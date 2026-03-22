@@ -1,0 +1,28 @@
+[instructions]
+base = '''
+# Metrics Module
+histogram.rs: HDR histogram (p50/p95/p99/p999). recall.rs: recall@K.
+export.rs: CSV + JSON. distance.rs: SIMD distance (cosine, L2, IP).
+SimSIMD with runtime CPU detection for dispatch.
+'''
+
+debug = '''
+Histogram overflow: increase max_value if latencies >10s.
+SIMD dispatch: SIMSIMD_LOG=1 to verify codepath.
+Recall O(N*K): use --sample-queries for large datasets.
+'''
+
+[commands.debug.check-simd-dispatch]
+content = '''
+Verify SIMD: cargo test test_simd_dispatch -- --nocapture, then cargo bench -- distance.
+'''
+
+[skills.debug.latency-analysis]
+content = '''
+# Latency Analysis
+Check p99/p50 ratio. If >10x: tail latency issue.
+Bimodal distribution = pool contention. Compare across ef_runtime values.
+'''
+
+[inherit]
+parent = ["mcp"]

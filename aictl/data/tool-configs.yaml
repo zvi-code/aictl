@@ -1,0 +1,90 @@
+# Tool configuration detection definitions.
+#
+# Defines where each AI tool stores its settings, what keys to extract,
+# and how to detect features like OTel, MCP, model selection.
+# Used by tool_config.py instead of hardcoded per-tool parser functions.
+
+vscode:
+  config_files:
+    - path_fn: vscode_user_dir
+      file: "settings.json"
+      format: json
+  features: {}
+
+claude-code:
+  config_files:
+    - path_fn: claude_global_dir
+      file: "settings.json"
+      format: json
+      extract:
+        model: "selectedModel"
+        effort: "effortLevel"
+    - path: "{project-root}/.claude/settings.local.json"
+      format: json
+      extract:
+        permissions: "permissions"
+        env: "env"
+  features:
+    auto_update:
+      file_fn: claude_global_dir
+      file: ".claude.json"
+      key: "autoUpdates"
+    scheduled_tasks:
+      file_fn: claude_global_dir
+      file: "claude_desktop_config.json"
+      key: "preferences.ccdScheduledTasksEnabled"
+
+claude-desktop:
+  config_files:
+    - path_fn: claude_desktop_config_dir
+      file: "claude_desktop_config.json"
+      format: json
+      extract:
+        launch_at_startup: "preferences.keepAwakeEnabled"
+        mcp_servers: "mcpServers"
+        sidebar_mode: "preferences.sidebarMode"
+        web_search: "preferences.coworkWebSearchEnabled"
+  features:
+    agent_mode:
+      key: "preferences.localAgentModeTrustedFolders"
+
+copilot:
+  config_files:
+    - path_fn: vscode_user_dir
+      file: "settings.json"
+      format: json
+      extract:
+        enabled: "github.copilot.enable"
+        model: "claudeCode.selectedModel"
+  otel:
+    detection_key: "github.copilot.advanced.debug.useElectron"
+    enable_instructions: "Set github.copilot.advanced.debug.useElectron to true in VS Code settings"
+    export_path_pattern: "**/otel*export*.jsonl"
+
+cursor:
+  config_files:
+    - path_fn: cursor_user_dir
+      file: "settings.json"
+      format: json
+      extract:
+        model: "cursor.aiModel"
+  features:
+    composer: true
+    agent_mode: true
+
+codex-cli:
+  config_files:
+    - path: "{home}/.codex/config.toml"
+      format: toml
+      extract:
+        model: "model"
+        reasoning_effort: "model_reasoning_effort"
+        multi_agent: "features.multi_agent"
+
+windsurf:
+  config_files:
+    - path_fn: windsurf_global_dir
+      file: "settings.json"
+      format: json
+      extract:
+        model: "windsurf.model"

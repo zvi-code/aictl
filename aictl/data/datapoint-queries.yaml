@@ -1,0 +1,553 @@
+alerts.headless_browser:
+  calc: Count browser processes in latest cycle.
+  query: SELECT COUNT(*) FROM samples WHERE metric = 'process.cpu.utilization' AND (tags LIKE '%chrome%' OR tags LIKE '%chromium%' OR tags LIKE '%firefox%') AND ts >= ?
+alerts.orphan_mcp:
+  calc: COUNT rows where status = orphan.
+  query: SELECT value, tags FROM samples WHERE metric = 'aictl.mcp.detail.status' AND ts = (SELECT MAX(ts) FROM samples WHERE metric = 'aictl.mcp.detail.status')
+alerts.process_anomalies:
+  calc: Direct count of anomaly events.
+  query: SELECT COUNT(*) FROM events WHERE kind = 'anomaly' AND ts >= ?
+alerts.subagent_memory:
+  calc: SUM memory for AI tool processes. Alert if > 2GB.
+  query: SELECT SUM(value) FROM samples WHERE metric = 'process.memory.usage' AND ts = (SELECT MAX(ts) FROM samples WHERE metric = 'process.memory.usage')
+api.api_calls:
+  calc: 'Parse detail for model, duration_ms, tokens, status. Summary: COUNT, AVG, P95.'
+  query: SELECT ts, detail FROM events WHERE kind IN ('api_call', 'api_error') AND ts BETWEEN ? AND ? ORDER BY ts DESC LIMIT ?
+api.file_content:
+  calc: Direct content. Truncated to 200KB.
+  query: SELECT content FROM file_store WHERE path = ?
+api.file_history:
+  calc: Direct rows. Each = change point snapshot.
+  query: SELECT ts, content_hash, size_bytes, tokens, lines FROM file_history WHERE path = ? ORDER BY ts DESC LIMIT ?
+api.project_costs:
+  calc: Cost apportioned from tool_telemetry by token share.
+  query: SELECT json_extract(detail, '$.project') as project, COUNT(*) as sessions, SUM(json_extract(detail, '$.input_tokens')) as input, SUM(json_extract(detail, '$.output_tokens')) as output FROM events
+    WHERE kind = 'session_end' AND ts >= ? GROUP BY project
+api.session_runs:
+  calc: Join start + end events. Total = input + output.
+  query: SELECT e1.tool, e1.ts as start_ts, e2.ts as end_ts, (e2.ts - e1.ts) as duration_s, json_extract(e2.detail, '$.input_tokens') as input, json_extract(e2.detail, '$.output_tokens') as output FROM
+    events e1 JOIN events e2 ON json_extract(e1.detail, '$.session_id') = json_extract(e2.detail, '$.session_id') AND e2.kind = 'session_end' WHERE e1.kind = 'session_start' ORDER BY e1.ts DESC LIMIT ?
+budget.context_window.always_loaded:
+  calc: Sum tokens. Realistic = global_always + largest_project_always.
+  query: SELECT SUM(f.tokens) FROM file_store f JOIN path_specs p ON f.tool = p.ai_tool WHERE p.sent_to_llm = 'yes' AND p.loaded_when = 'every-call'
+budget.context_window.cacheable:
+  calc: Sum tokens for cacheable files.
+  query: SELECT SUM(f.tokens) FROM file_store f JOIN path_specs p ON f.tool = p.ai_tool WHERE p.cacheable = 'yes'
+budget.context_window.conditional:
+  calc: Sum tokens for conditional files.
+  query: SELECT SUM(f.tokens) FROM file_store f JOIN path_specs p ON f.tool = p.ai_tool WHERE p.sent_to_llm IN ('conditional', 'partial')
+budget.context_window.on_demand:
+  calc: Sum tokens for on-demand files.
+  query: SELECT SUM(f.tokens) FROM file_store f JOIN path_specs p ON f.tool = p.ai_tool WHERE p.sent_to_llm = 'on-demand' OR p.loaded_when = 'on-demand'
+budget.context_window.percentage:
+  calc: (loaded / model_max_context(model)) * 100.
+  query: SELECT SUM(f.tokens) as loaded, (SELECT model FROM tool_telemetry ORDER BY ts DESC LIMIT 1) as model FROM file_store f JOIN path_specs p ON f.tool = p.ai_tool WHERE p.sent_to_llm = 'yes'
+budget.daily_tokens:
+  calc: Group by day and model. Stack bars per model.
+  query: SELECT date(ts, 'unixepoch') as day, tool, model, SUM(input_tokens) as input, SUM(output_tokens) as output, SUM(cache_read_tokens) as cr, SUM(cache_creation_tokens) as cw FROM tool_telemetry WHERE
+    ts >= ? GROUP BY day, tool, model ORDER BY day
+budget.live_token_usage:
+  calc: Direct time series for sparkline.
+  query: SELECT ts, live_tokens FROM metrics WHERE ts >= ? ORDER BY ts
+budget.model_detected:
+  calc: Direct value.
+  query: SELECT model FROM tool_telemetry WHERE model != '' ORDER BY ts DESC LIMIT 1
+budget.project_estimate:
+  calc: Largest project = MAX scope by tokens. Realistic = global + largest.
+  query: SELECT scope, SUM(tokens) as tokens FROM file_store GROUP BY scope ORDER BY tokens DESC
+budget.token_by_category:
+  calc: Direct grouping.
+  query: SELECT category, COUNT(*) as files, SUM(tokens) as tokens, SUM(size_bytes) as size FROM file_store GROUP BY category ORDER BY tokens DESC
+budget.token_by_tool:
+  calc: Latest telemetry per tool.
+  query: SELECT tool, source, confidence, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, total_sessions, cost_usd FROM tool_telemetry WHERE ts = (SELECT MAX(ts) FROM tool_telemetry)
+    ORDER BY input_tokens + output_tokens DESC
+events.feed:
+  calc: 'Direct rows. Optional filters: tool, kind, session_id.'
+  query: SELECT ts, tool, kind, detail FROM events WHERE ts BETWEEN ? AND ? ORDER BY ts DESC LIMIT ?
+events.tool.cpu_chart:
+  calc: Direct time series.
+  query: SELECT ts, cpu FROM tool_metrics WHERE tool = ? AND ts BETWEEN ? AND ? ORDER BY ts
+events.tool.live.cpu_percent:
+  calc: value * 100 = percent.
+  query: SELECT value FROM samples WHERE metric = 'aictl.tool.cpu' AND tags LIKE '%?tool?%' ORDER BY ts DESC LIMIT 1
+events.tool.live.inbound_rate_bps:
+  calc: Direct rate in bytes/sec.
+  query: SELECT value FROM samples WHERE metric = 'aictl.tool.network.io' AND tags LIKE '%?tool?%' AND tags LIKE '%receive%' ORDER BY ts DESC LIMIT 1
+events.tool.live.mem_mb:
+  calc: value in bytes / 1048576 = MB.
+  query: SELECT value FROM samples WHERE metric = 'aictl.tool.memory' AND tags LIKE '%?tool?%' ORDER BY ts DESC LIMIT 1
+events.tool.live.outbound_rate_bps:
+  calc: Direct rate in bytes/sec.
+  query: SELECT value FROM samples WHERE metric = 'aictl.tool.network.io' AND tags LIKE '%?tool?%' AND tags LIKE '%transmit%' ORDER BY ts DESC LIMIT 1
+events.tool.live.pid_count:
+  calc: Direct value.
+  query: SELECT value FROM samples WHERE metric = 'aictl.tool.pids' AND tags LIKE '%?tool?%' ORDER BY ts DESC LIMIT 1
+events.tool.live.session_count:
+  calc: Direct value.
+  query: SELECT value FROM samples WHERE metric = 'aictl.tool.sessions' AND tags LIKE '%?tool?%' ORDER BY ts DESC LIMIT 1
+events.tool.memory_chart:
+  calc: Direct time series in MB.
+  query: SELECT ts, mem_mb FROM tool_metrics WHERE tool = ? AND ts BETWEEN ? AND ? ORDER BY ts
+events.tool.tokens_chart:
+  calc: Direct time series.
+  query: SELECT ts, tokens FROM tool_metrics WHERE tool = ? AND ts BETWEEN ? AND ? ORDER BY ts
+events.tool.traffic_chart:
+  calc: Direct time series in bytes/sec.
+  query: SELECT ts, traffic FROM tool_metrics WHERE tool = ? AND ts BETWEEN ? AND ? ORDER BY ts
+files.category.count:
+  calc: Direct count per category.
+  query: SELECT category, COUNT(*) FROM file_store WHERE tool = ? GROUP BY category
+files.category.tokens:
+  calc: Direct sum per category.
+  query: SELECT category, SUM(tokens) FROM file_store WHERE tool = ? GROUP BY category
+files.item.activity:
+  calc: 'green: last_changed >= prev_cycle; orange: now - mtime < 300; grey: otherwise.'
+  query: SELECT mtime, last_changed FROM file_store WHERE path = ?
+files.item.lines:
+  calc: Direct value. Estimated as size_bytes / 40 if not loaded.
+  query: SELECT lines FROM file_store WHERE path = ?
+files.item.sent_to_llm:
+  calc: Direct lookup.
+  query: SELECT sent_to_llm FROM path_specs WHERE ai_tool = ? AND path_template = ?
+files.item.size:
+  calc: Direct value.
+  query: SELECT size_bytes FROM file_store WHERE path = ?
+files.item.tokens:
+  calc: Direct value.
+  query: SELECT tokens FROM file_store WHERE path = ?
+live.diagnostics.collector_name:
+  calc: Extract collector name from metric suffix.
+  query: SELECT DISTINCT metric FROM samples WHERE metric LIKE 'aictl.collector.%'
+live.diagnostics.mode:
+  calc: Parse mode from tags JSON.
+  query: SELECT tags FROM samples WHERE metric LIKE 'aictl.collector.%status' ORDER BY ts DESC
+live.diagnostics.status:
+  calc: value 1.0 = active, 0.0 = disabled.
+  query: SELECT value, tags FROM samples WHERE metric LIKE 'aictl.collector.%status' ORDER BY ts DESC
+live.monitor_roots:
+  calc: Union of workspace and state root paths.
+  query: SELECT DISTINCT json_extract(detail, '$.workspace') FROM events WHERE kind = 'session_start' AND ts >= ? UNION SELECT DISTINCT json_extract(detail, '$.state_root') FROM events WHERE kind = 'file_modified'
+    AND ts >= ?
+live.tool.files:
+  calc: touched = unique files, events = total events.
+  query: SELECT COUNT(DISTINCT json_extract(detail, '$.path')) as touched, COUNT(*) as events FROM events WHERE kind = 'file_modified' AND tool = ? AND ts >= ?
+live.tool.mcp:
+  calc: value >= 0.45 → detected. loops = network_peaks // 2.
+  query: SELECT value FROM samples WHERE metric = 'aictl.tool.mcp.score' AND tags LIKE '%?tool?%' ORDER BY ts DESC LIMIT 1
+live.tool.sessions:
+  calc: Direct value.
+  query: SELECT value FROM samples WHERE metric = 'aictl.tool.sessions' AND tags LIKE '%?tool?%' ORDER BY ts DESC LIMIT 1
+live.tool.tokens:
+  calc: type=input → input_tokens, type=output → output_tokens.
+  query: SELECT value, tags FROM samples WHERE metric = 'aictl.tool.token.usage' AND tags LIKE '%?tool?%' ORDER BY ts DESC
+live.tool.traffic:
+  calc: direction=transmit → outbound, direction=receive → inbound. Bytes/sec.
+  query: SELECT value, tags FROM samples WHERE metric = 'aictl.tool.network.io' AND tags LIKE '%?tool?%' ORDER BY ts DESC LIMIT 2
+live.tool.workspace:
+  calc: 'Distinct workspace paths. Size: SELECT SUM(size_bytes) FROM file_store WHERE tool = ?.'
+  query: SELECT DISTINCT json_extract(detail, '$.workspace') FROM events WHERE kind = 'session_start' AND tool = ? AND ts >= ?
+mcp.server.cpu:
+  calc: value * 100 = percent. Requires MCP server PID lookup first.
+  query: SELECT value FROM samples WHERE metric = 'process.cpu.utilization' AND tags LIKE '%?mcp_pid?%' ORDER BY ts DESC LIMIT 1
+mcp.server.mem:
+  calc: Direct value in bytes.
+  query: SELECT value FROM samples WHERE metric = 'process.memory.usage' AND tags LIKE '%?mcp_pid?%' ORDER BY ts DESC LIMIT 1
+mcp.server.name:
+  calc: Direct distinct names.
+  query: SELECT DISTINCT json_extract(tags, '$.aictl.mcp.server') FROM samples WHERE metric = 'aictl.mcp.detail.status'
+mcp.server.status:
+  calc: 1.0 = running, 0.0 = stopped.
+  query: SELECT value FROM samples WHERE metric = 'aictl.mcp.detail.status' AND tags LIKE '%?server?%' ORDER BY ts DESC LIMIT 1
+mcp.server.tool:
+  calc: Tool owning this MCP server.
+  query: SELECT json_extract(tags, '$.aictl.tool') FROM samples WHERE metric = 'aictl.mcp.detail.status' AND tags LIKE '%?server?%' ORDER BY ts DESC LIMIT 1
+mcp.server.transport:
+  calc: Direct from tag.
+  query: SELECT json_extract(tags, '$.transport') FROM samples WHERE metric = 'aictl.mcp.detail.status' AND tags LIKE '%?server?%' ORDER BY ts DESC LIMIT 1
+memory.entry.activity:
+  calc: 'green: last_changed in current cycle; orange: mtime within 300s; grey: otherwise.'
+  query: SELECT path, mtime, last_changed FROM file_store WHERE category = 'memory'
+memory.entry.tokens:
+  calc: Direct value. Estimated as ceil(size_bytes / 4).
+  query: SELECT tokens FROM file_store WHERE path = ?
+memory.growth_chart:
+  calc: Direct time series.
+  query: SELECT ts, mem_tokens FROM metrics WHERE ts >= ? ORDER BY ts
+memory.source_group:
+  calc: Group by tool (source).
+  query: SELECT tool, COUNT(*) as files, SUM(tokens) as tokens FROM file_store WHERE category = 'memory' GROUP BY tool
+otel.receiver.active:
+  calc: 1 if last OTel data within 300s, else 0.
+  query: SELECT CASE WHEN (strftime('%s','now') - MAX(ts)) < 300 THEN 1 ELSE 0 END FROM (SELECT MAX(ts) as ts FROM samples WHERE metric LIKE 'otel.%' UNION SELECT MAX(ts) FROM events WHERE kind LIKE 'otel:%')
+otel.receiver.api_calls_total:
+  calc: Count across logs + traces.
+  query: SELECT COUNT(*) FROM events WHERE kind IN ('otel:copilot_chat.api_request', 'otel:claude_code.api_request', 'otel:codex.api_request') OR (kind LIKE 'otel:%' AND (kind LIKE '%inference%' OR kind
+    LIKE '%chat.completion%'))
+otel.receiver.api_errors_total:
+  calc: Count across logs + traces.
+  query: SELECT COUNT(*) FROM events WHERE kind IN ('otel:copilot_chat.api_error', 'otel:claude_code.api_error', 'otel:codex.api_error') OR (kind LIKE 'otel:%' AND json_extract(detail, '$.error.type') IS
+    NOT NULL)
+otel.receiver.events_received:
+  calc: Total OTel-originated events in DB.
+  query: SELECT COUNT(*) FROM events WHERE kind LIKE 'otel:%'
+otel.receiver.last_receive:
+  calc: strftime('%s','now') - MAX(ts) = seconds since last OTel data.
+  query: SELECT MAX(ts) FROM (SELECT MAX(ts) as ts FROM samples WHERE metric LIKE 'otel.%' UNION SELECT MAX(ts) FROM events WHERE kind LIKE 'otel:%')
+otel.receiver.metrics_received:
+  calc: Total OTel-originated samples in DB.
+  query: SELECT COUNT(*) FROM samples WHERE metric LIKE 'otel.%'
+otel.receiver.parse_errors:
+  calc: Direct counter. Falls back to 0 if no sample.
+  query: SELECT value FROM samples WHERE metric = 'aictl.otel.parse_errors' ORDER BY ts DESC LIMIT 1
+otel.receiver.traces_received:
+  calc: Count of trace-originated events (have span.name in detail).
+  query: SELECT COUNT(*) FROM events WHERE kind LIKE 'otel:%' AND json_extract(detail, '$.span.name') IS NOT NULL
+otel.traces.api_calls:
+  calc: Count of API-related spans.
+  query: SELECT COUNT(*) FROM events WHERE kind LIKE 'otel:%' AND (kind LIKE '%api_request%' OR kind LIKE '%inference%' OR kind LIKE '%chat.completion%')
+otel.traces.api_errors:
+  calc: Count of error spans. Also check span status code in detail.
+  query: SELECT COUNT(*) FROM events WHERE kind LIKE 'otel:%' AND json_extract(detail, '$.error.type') IS NOT NULL
+otel.traces.operation_duration:
+  calc: Direct values in seconds. Tag span.name identifies the operation.
+  query: SELECT ts, value, tags FROM samples WHERE metric = 'otel.operation.duration' ORDER BY ts DESC LIMIT ?
+otel.traces.span_events:
+  calc: Direct rows. parent_span links to the originating span.
+  query: SELECT ts, tool, kind, detail FROM events WHERE kind LIKE 'otel:%' AND json_extract(detail, '$.parent_span') IS NOT NULL ORDER BY ts DESC LIMIT ?
+otel.traces.token_usage:
+  calc: Direct values. Tag gen_ai.token.type distinguishes input/output.
+  query: SELECT ts, value, tags FROM samples WHERE metric = 'otel.token.usage' AND tags LIKE '%otel_metric%gen_ai.usage%' ORDER BY ts DESC LIMIT ?
+overview.collector_health.errors:
+  calc: 'Parse errors from by_model_json. Or: COUNT from events WHERE kind LIKE ''error%''.'
+  query: SELECT tool, source, confidence FROM tool_telemetry WHERE ts = (SELECT MAX(ts) FROM tool_telemetry)
+overview.collector_health.live_tools:
+  calc: COUNT of tools with non-zero activity.
+  query: SELECT DISTINCT tool FROM tool_metrics WHERE ts = (SELECT MAX(ts) FROM tool_metrics) AND (cpu > 0 OR traffic > 0)
+overview.collector_health.otel_api_calls:
+  calc: Direct count.
+  query: SELECT COUNT(*) FROM events WHERE kind = 'api_call'
+overview.collector_health.otel_api_errors:
+  calc: Direct count.
+  query: SELECT COUNT(*) FROM events WHERE kind = 'api_error'
+overview.collector_health.otel_events_received:
+  calc: Count of OTel-sourced events.
+  query: SELECT COUNT(*) FROM events WHERE kind LIKE 'otel%' OR kind LIKE 'api_%'
+overview.collector_health.otel_last_receive:
+  calc: strftime('%s','now') - MAX(ts) = seconds since last OTel data.
+  query: SELECT MAX(ts) FROM samples WHERE metric LIKE 'gen_ai.%'
+overview.collector_health.otel_metrics_received:
+  calc: Total OTel-originated samples.
+  query: SELECT COUNT(*) FROM samples WHERE metric LIKE 'gen_ai.%' OR metric LIKE 'process.%'
+overview.collector_health.otel_parse_errors:
+  calc: Direct counter value.
+  query: SELECT value FROM samples WHERE metric = 'aictl.otel.parse_errors' ORDER BY ts DESC LIMIT 1
+overview.collector_health.otel_status:
+  calc: value = 1.0 means active.
+  query: SELECT value FROM samples WHERE metric = 'aictl.collector.status' AND tags LIKE '%otel%' ORDER BY ts DESC LIMIT 1
+overview.collector_health.stale_tools:
+  calc: COUNT of tools whose last telemetry is >300s old.
+  query: SELECT tool, MAX(ts) as last_ts FROM tool_telemetry GROUP BY tool HAVING (strftime('%s','now') - last_ts) > 300
+overview.collector_health.tools_with_telemetry:
+  calc: COUNT distinct tools / total tools.
+  query: SELECT DISTINCT tool FROM tool_telemetry WHERE confidence > 0 AND ts >= (SELECT MAX(ts) - 300 FROM tool_telemetry)
+overview.collector_pipeline.detail:
+  calc: Parse detail from tags JSON.
+  query: SELECT tags FROM samples WHERE metric LIKE 'aictl.collector.%status' ORDER BY ts DESC
+overview.collector_pipeline.name:
+  calc: Distinct collector names from sample tags.
+  query: SELECT DISTINCT json_extract(tags, '$.aictl.collector.mode') as name FROM samples WHERE metric LIKE 'aictl.collector.%'
+overview.collector_pipeline.status:
+  calc: value 1.0 = active, 0.0 = disabled.
+  query: SELECT value, tags FROM samples WHERE metric LIKE 'aictl.collector.%status' ORDER BY ts DESC
+overview.context_map.by_category:
+  calc: Direct grouping. Bar widths proportional to tokens.
+  query: SELECT category, COUNT(*) as files, SUM(tokens) as tokens FROM file_store GROUP BY category ORDER BY tokens DESC
+overview.context_map.by_project:
+  calc: Group by scope (project root).
+  query: SELECT scope, COUNT(*) as files, SUM(tokens) as tokens FROM file_store GROUP BY scope ORDER BY tokens DESC
+overview.context_map.conditional:
+  calc: Sum tokens for conditional files.
+  query: SELECT SUM(f.tokens) FROM file_store f JOIN path_specs p ON f.tool = p.ai_tool WHERE p.sent_to_llm IN ('conditional', 'partial')
+overview.context_map.not_sent:
+  calc: Sum tokens for never-sent files.
+  query: SELECT SUM(f.tokens) FROM file_store f JOIN path_specs p ON f.tool = p.ai_tool WHERE p.sent_to_llm = 'no'
+overview.context_map.on_demand:
+  calc: Sum tokens for on-demand files.
+  query: SELECT SUM(f.tokens) FROM file_store f JOIN path_specs p ON f.tool = p.ai_tool WHERE p.sent_to_llm = 'on-demand' OR p.loaded_when = 'on-demand'
+overview.context_map.sent_to_llm:
+  calc: Sum tokens for always-loaded files.
+  query: SELECT SUM(f.tokens) FROM file_store f JOIN path_specs p ON f.tool = p.ai_tool WHERE p.sent_to_llm = 'yes' AND p.loaded_when = 'every-call'
+overview.cpu:
+  calc: Direct value (sum of all tool process CPU %).
+  query: SELECT ts, cpu FROM metrics WHERE ts >= ? ORDER BY ts
+overview.cpu_per_core:
+  calc: One row per core (tag cpu.id). Value 0.0-1.0; multiply by 100 for percent.
+  query: SELECT ts, value, tags FROM samples WHERE metric = 'system.cpu.utilization' AND ts >= ? ORDER BY ts
+overview.csv_footprint_bar:
+  calc: Per-tool file count. Bar width proportional to cnt / SUM(cnt).
+  query: SELECT tool, COUNT(*) as cnt FROM file_store GROUP BY tool ORDER BY cnt DESC
+overview.files:
+  calc: Direct value. Latest row = current; series = sparkline.
+  query: SELECT ts, files FROM metrics WHERE ts >= ? ORDER BY ts
+overview.live_traffic_bar:
+  calc: Per-tool traffic bps. Bar width proportional to traffic / SUM(traffic).
+  query: SELECT tool, traffic FROM tool_metrics WHERE ts = (SELECT MAX(ts) FROM tool_metrics)
+overview.mem_mb:
+  calc: Direct value in MB. UI multiplies by 1048576 for byte display.
+  query: SELECT ts, mem_mb FROM metrics WHERE ts >= ? ORDER BY ts
+overview.tokens:
+  calc: Direct value.
+  query: SELECT ts, tokens FROM metrics WHERE ts >= ? ORDER BY ts
+overview.total_live_estimated_tokens:
+  calc: 'Direct value. Underlying: SUM per-tool token estimates from samples WHERE metric = ''aictl.tool.token.usage''.'
+  query: SELECT ts, live_tokens FROM metrics WHERE ts >= ? ORDER BY ts
+overview.total_live_inbound_rate_bps:
+  calc: Direct value.
+  query: SELECT ts, live_in_rate FROM metrics WHERE ts >= ? ORDER BY ts
+overview.total_live_outbound_rate_bps:
+  calc: Direct value.
+  query: SELECT ts, live_out_rate FROM metrics WHERE ts >= ? ORDER BY ts
+overview.total_live_sessions:
+  calc: Direct value from latest row.
+  query: SELECT ts, live_sessions FROM metrics WHERE ts >= ? ORDER BY ts
+overview.total_mcp_servers:
+  calc: Direct value from latest metrics row.
+  query: SELECT ts, mcp FROM metrics ORDER BY ts DESC LIMIT 1
+overview.total_memory_tokens:
+  calc: 'Direct value. Also: SELECT SUM(tokens) FROM file_store WHERE category = ''memory''.'
+  query: SELECT ts, mem_tokens FROM metrics WHERE ts >= ? ORDER BY ts
+overview.total_processes:
+  calc: SUM(value) grouped by tag aictl.tool.
+  query: SELECT value, tags FROM samples WHERE metric = 'aictl.discovery.processes' AND ts = (SELECT MAX(ts) FROM samples WHERE metric = 'aictl.discovery.processes')
+overview.total_size:
+  calc: Direct sum across all tracked files.
+  query: SELECT SUM(size_bytes) FROM file_store
+procs.tool.anomaly:
+  calc: Parse detail JSON for anomaly type, severity, affected PID.
+  query: SELECT detail FROM events WHERE kind = 'anomaly' AND tool = ? AND ts >= ? ORDER BY ts DESC
+procs.tool.config.auto_update:
+  calc: Parse auto_update from detail JSON.
+  query: SELECT detail FROM events WHERE kind = 'config_snapshot' AND tool = ? ORDER BY ts DESC LIMIT 1
+procs.tool.config.extensions:
+  calc: Parse extensions list from detail JSON.
+  query: SELECT detail FROM events WHERE kind = 'config_snapshot' AND tool = ? ORDER BY ts DESC LIMIT 1
+procs.tool.config.features:
+  calc: Parse features dict from detail JSON.
+  query: SELECT detail FROM events WHERE kind = 'config_snapshot' AND tool = ? ORDER BY ts DESC LIMIT 1
+procs.tool.config.hints:
+  calc: Parse hints list from detail JSON. Generated from config analysis.
+  query: SELECT detail FROM events WHERE kind = 'config_snapshot' AND tool = ? ORDER BY ts DESC LIMIT 1
+procs.tool.config.launch_at_startup:
+  calc: Parse launch_at_startup from detail JSON.
+  query: SELECT detail FROM events WHERE kind = 'config_snapshot' AND tool = ? ORDER BY ts DESC LIMIT 1
+procs.tool.config.mcp_servers:
+  calc: Distinct MCP server names for this tool.
+  query: SELECT DISTINCT json_extract(tags, '$.aictl.mcp.server') FROM samples WHERE metric = 'aictl.mcp.status' AND tags LIKE '%?tool?%'
+procs.tool.config.model:
+  calc: Model name from tag gen_ai.request.model.
+  query: SELECT value, tags FROM samples WHERE metric = 'aictl.config.model' AND tags LIKE '%?tool?%' ORDER BY ts DESC LIMIT 1
+procs.tool.config.otel:
+  calc: Parse OTel config from tags.
+  query: SELECT value, tags FROM samples WHERE metric LIKE 'aictl.collector.%' AND tags LIKE '%?tool?%' ORDER BY ts DESC LIMIT 1
+procs.tool.config.otel_capture_content:
+  calc: Parse otel.capture_content from detail JSON.
+  query: SELECT detail FROM events WHERE kind = 'config_snapshot' AND tool = ? ORDER BY ts DESC LIMIT 1
+procs.tool.cpu_pct:
+  calc: value * 100 = percent.
+  query: SELECT value FROM samples WHERE metric = 'process.cpu.utilization' AND tags LIKE '%?pid?%' ORDER BY ts DESC LIMIT 1
+procs.tool.files:
+  calc: Direct count per tool.
+  query: SELECT COUNT(*) FROM file_store WHERE tool = ?
+procs.tool.live.cpu:
+  calc: 'value * 100 = percent. Peak: MAX(value) over session.'
+  query: SELECT value FROM samples WHERE metric = 'aictl.tool.cpu' AND tags LIKE '%?tool?%' ORDER BY ts DESC LIMIT 1
+procs.tool.live.files_touched:
+  calc: Count unique file paths in session window.
+  query: SELECT COUNT(DISTINCT json_extract(detail, '$.path')) FROM events WHERE kind = 'file_modified' AND tool = ? AND ts >= ?
+procs.tool.live.mcp_detected:
+  calc: value >= 0.45 → detected. Loops = network_burst_peaks // 2.
+  query: SELECT value FROM samples WHERE metric = 'aictl.tool.mcp.score' AND tags LIKE '%?tool?%' ORDER BY ts DESC LIMIT 1
+procs.tool.live.pid_count:
+  calc: Direct value.
+  query: SELECT value FROM samples WHERE metric = 'aictl.tool.pids' AND tags LIKE '%?tool?%' ORDER BY ts DESC LIMIT 1
+procs.tool.live.session_count:
+  calc: Direct value.
+  query: SELECT value FROM samples WHERE metric = 'aictl.tool.sessions' AND tags LIKE '%?tool?%' ORDER BY ts DESC LIMIT 1
+procs.tool.live.tokens:
+  calc: type=input and type=output rows. Confidence from aictl.tool.token.confidence sample.
+  query: SELECT value, tags FROM samples WHERE metric = 'aictl.tool.token.usage' AND tags LIKE '%?tool?%' ORDER BY ts DESC LIMIT 2
+procs.tool.live.traffic:
+  calc: 'Two rows: direction=transmit (outbound), direction=receive (inbound). Bytes/sec.'
+  query: SELECT value, tags FROM samples WHERE metric = 'aictl.tool.network.io' AND tags LIKE '%?tool?%' ORDER BY ts DESC LIMIT 2
+procs.tool.live.workspaces:
+  calc: Distinct workspace paths from recent session_start events.
+  query: SELECT DISTINCT json_extract(detail, '$.workspace') FROM events WHERE kind = 'session_start' AND tool = ? AND ts >= ?
+procs.tool.mem_rss:
+  calc: Direct value in bytes.
+  query: SELECT value FROM samples WHERE metric = 'process.memory.usage' AND tags LIKE '%?pid?%' ORDER BY ts DESC LIMIT 1
+procs.tool.process_count:
+  calc: Direct value.
+  query: SELECT value FROM samples WHERE metric = 'aictl.discovery.processes' AND tags LIKE '%?tool?%' ORDER BY ts DESC LIMIT 1
+procs.tool.process_type:
+  calc: Direct lookup from CSV specs.
+  query: SELECT process_type FROM process_specs WHERE ai_tool = ? AND process_name = ?
+procs.tool.telemetry.active_session_input:
+  calc: Parse active_session_input from extended JSON.
+  query: SELECT by_model_json FROM tool_telemetry WHERE tool = ? ORDER BY ts DESC LIMIT 1
+procs.tool.telemetry.active_session_messages:
+  calc: Parse active_session_messages from extended JSON.
+  query: SELECT by_model_json FROM tool_telemetry WHERE tool = ? ORDER BY ts DESC LIMIT 1
+procs.tool.telemetry.active_session_output:
+  calc: Parse active_session_output from extended JSON.
+  query: SELECT by_model_json FROM tool_telemetry WHERE tool = ? ORDER BY ts DESC LIMIT 1
+procs.tool.telemetry.api_duration_ms:
+  calc: Parse quota_state.total_api_duration_ms. Timeout if value / sessions > 30000.
+  query: SELECT by_model_json FROM tool_telemetry WHERE tool = ? ORDER BY ts DESC LIMIT 1
+procs.tool.telemetry.by_model:
+  calc: 'JSON parse → {model: {input_tokens, output_tokens, cost_usd}}.'
+  query: SELECT by_model_json FROM tool_telemetry WHERE tool = ? ORDER BY ts DESC LIMIT 1
+procs.tool.telemetry.cache_read:
+  calc: Direct value.
+  query: SELECT cache_read_tokens FROM tool_telemetry WHERE tool = ? ORDER BY ts DESC LIMIT 1
+procs.tool.telemetry.cache_write:
+  calc: Direct value.
+  query: SELECT cache_creation_tokens FROM tool_telemetry WHERE tool = ? ORDER BY ts DESC LIMIT 1
+procs.tool.telemetry.code_changes:
+  calc: Parse quota_state.code_changes → {lines_added, lines_removed, files_modified}.
+  query: SELECT by_model_json FROM tool_telemetry WHERE tool = ? ORDER BY ts DESC LIMIT 1
+procs.tool.telemetry.confidence:
+  calc: Direct value 0.0-1.0. Multiply by 100 for percent.
+  query: SELECT confidence FROM tool_telemetry WHERE tool = ? ORDER BY ts DESC LIMIT 1
+procs.tool.telemetry.cost_usd:
+  calc: Direct value in USD.
+  query: SELECT cost_usd FROM tool_telemetry WHERE tool = ? ORDER BY ts DESC LIMIT 1
+procs.tool.telemetry.errors:
+  calc: Parse errors array from extended JSON.
+  query: SELECT by_model_json FROM tool_telemetry WHERE tool = ? ORDER BY ts DESC LIMIT 1
+procs.tool.telemetry.input_tokens:
+  calc: Direct value. Lifetime cumulative.
+  query: SELECT input_tokens FROM tool_telemetry WHERE tool = ? ORDER BY ts DESC LIMIT 1
+procs.tool.telemetry.messages:
+  calc: Direct value.
+  query: SELECT total_messages FROM tool_telemetry WHERE tool = ? ORDER BY ts DESC LIMIT 1
+procs.tool.telemetry.output_tokens:
+  calc: Direct value.
+  query: SELECT output_tokens FROM tool_telemetry WHERE tool = ? ORDER BY ts DESC LIMIT 1
+procs.tool.telemetry.premium_requests:
+  calc: Parse quota_state.premium_requests_used from JSON.
+  query: SELECT by_model_json FROM tool_telemetry WHERE tool = ? ORDER BY ts DESC LIMIT 1
+procs.tool.telemetry.sessions:
+  calc: Direct value.
+  query: SELECT total_sessions FROM tool_telemetry WHERE tool = ? ORDER BY ts DESC LIMIT 1
+procs.tool.tokens:
+  calc: Direct sum per tool.
+  query: SELECT SUM(tokens) FROM file_store WHERE tool = ?
+procs.tool.zombie_risk:
+  calc: Direct lookup from CSV specs.
+  query: SELECT zombie_risk FROM process_specs WHERE ai_tool = ? AND process_name = ?
+samples.metric_chart:
+  calc: Direct time series plot.
+  query: SELECT ts, value FROM samples WHERE metric = ? AND ts >= ? ORDER BY ts
+samples.metric_list:
+  calc: Direct grouping by dotted-name prefix.
+  query: SELECT metric, COUNT(*) as cnt FROM samples GROUP BY metric ORDER BY metric
+samples.metric_table:
+  calc: Direct rows. Parse tags JSON into columns.
+  query: SELECT ts, metric, value, tags FROM samples WHERE metric = ? ORDER BY ts DESC LIMIT 50
+self.cpu_percent:
+  calc: Direct from /api/self-status → psutil.Process(os.getpid()).cpu_percent().
+  query: SELECT cpu_percent FROM (SELECT value as cpu_percent FROM json_each(?) WHERE key = 'cpu_percent')
+self.db_rows:
+  calc: SUM of row counts across main data tables.
+  query: SELECT (SELECT COUNT(*) FROM metrics) + (SELECT COUNT(*) FROM tool_metrics) + (SELECT COUNT(*) FROM events) + (SELECT COUNT(*) FROM samples) as total
+self.db_size:
+  calc: 'Direct from /api/self-status → db.stats()[''file_size_bytes'']. Or: os.stat(db_path).st_size.'
+  query: SELECT file_size_bytes FROM (SELECT value as file_size_bytes FROM json_each(?) WHERE key = 'file_size_bytes')
+self.memory_rss:
+  calc: Direct from /api/self-status → psutil.Process(os.getpid()).memory_info().rss.
+  query: SELECT memory_rss_bytes FROM (SELECT value as memory_rss_bytes FROM json_each(?) WHERE key = 'memory_rss_bytes')
+self.threads:
+  calc: Direct from /api/self-status → psutil.Process(os.getpid()).num_threads().
+  query: SELECT threads FROM (SELECT value as threads FROM json_each(?) WHERE key = 'threads')
+self.uptime:
+  calc: Direct from /api/self-status → time.time() - process.create_time().
+  query: SELECT uptime_s FROM (SELECT value as uptime_s FROM json_each(?) WHERE key = 'uptime_s')
+sessions.active.cpu:
+  calc: Sum CPU across all PIDs in session.
+  query: SELECT SUM(value) FROM samples WHERE metric = 'process.cpu.utilization' AND tags LIKE '%?session_pids?%' AND ts = (SELECT MAX(ts) FROM samples WHERE metric = 'process.cpu.utilization')
+sessions.active.duration:
+  calc: strftime('%s','now') - ts = duration_seconds.
+  query: SELECT ts FROM events WHERE kind = 'session_start' AND tool = ? ORDER BY ts DESC LIMIT 1
+sessions.active.file_events:
+  calc: Direct count.
+  query: SELECT COUNT(*) FROM events WHERE kind = 'file_modified' AND json_extract(detail, '$.session_id') = ?
+sessions.active.files_touched_list:
+  calc: Distinct file paths.
+  query: SELECT DISTINCT json_extract(detail, '$.path') FROM events WHERE kind = 'file_modified' AND json_extract(detail, '$.session_id') = ?
+sessions.active.input_tokens:
+  calc: Direct value.
+  query: SELECT value FROM samples WHERE metric = 'aictl.tool.token.usage' AND tags LIKE '%?tool?%' AND tags LIKE '%input%' ORDER BY ts DESC LIMIT 1
+sessions.active.output_tokens:
+  calc: Direct value.
+  query: SELECT value FROM samples WHERE metric = 'aictl.tool.token.usage' AND tags LIKE '%?tool?%' AND tags LIKE '%output%' ORDER BY ts DESC LIMIT 1
+sessions.active.peak_cpu:
+  calc: MAX over session lifetime.
+  query: SELECT MAX(value) * 100 FROM samples WHERE metric = 'aictl.tool.cpu' AND tags LIKE '%?tool?%' AND ts >= ?
+sessions.active.pids:
+  calc: Parse PID list. COUNT for display.
+  query: SELECT json_extract(detail, '$.pids') FROM events WHERE kind = 'session_start' AND json_extract(detail, '$.session_id') = ?
+sessions.active.process_tree:
+  calc: Build tree from PID/PPID in tags. Role from process name patterns.
+  query: SELECT value, tags FROM samples WHERE metric = 'process.cpu.utilization' AND json_extract(tags, '$.process.pid') IN (?pids?) AND ts = (SELECT MAX(ts) FROM samples WHERE metric = 'process.cpu.utilization')
+sessions.active.state_writes:
+  calc: Sum growth_bytes from state file events.
+  query: SELECT SUM(json_extract(detail, '$.growth_bytes')) FROM events WHERE kind = 'file_modified' AND json_extract(detail, '$.session_id') = ?
+sessions.active.subprocesses:
+  calc: Parse subprocess counter from session detail.
+  query: SELECT json_extract(detail, '$.subprocess_count') FROM events WHERE kind = 'session_end' AND json_extract(detail, '$.session_id') = ?
+sessions.active.traffic:
+  calc: SUM inbound + outbound bytes over session.
+  query: SELECT SUM(value) FROM samples WHERE metric = 'aictl.tool.network.io' AND tags LIKE '%?tool?%' AND ts >= ?
+sessions.active.workspaces:
+  calc: Direct workspace paths.
+  query: SELECT json_extract(detail, '$.workspace') FROM events WHERE kind = 'session_start' AND json_extract(detail, '$.session_id') = ?
+sessions.agent_teams:
+  calc: Parse agent team data from session_end detail JSON.
+  query: SELECT detail FROM events WHERE kind = 'session_end' AND json_extract(detail, '$.agent_count') > 0 ORDER BY ts DESC LIMIT ?
+sessions.agent_teams.agent_is_sidechain:
+  calc: Parse agents array, extract is_sidechain per agent.
+  query: SELECT json_extract(detail, '$.agents') FROM events WHERE kind = 'session_end' AND json_extract(detail, '$.session_id') = ?
+sessions.agent_teams.agent_slug:
+  calc: Parse agents array, extract slug per agent.
+  query: SELECT json_extract(detail, '$.agents') FROM events WHERE kind = 'session_end' AND json_extract(detail, '$.session_id') = ?
+sessions.agent_teams.tools_used:
+  calc: Parse tools_used array. Union across agents.
+  query: SELECT json_extract(detail, '$.tools_used') FROM events WHERE kind = 'session_end' AND json_extract(detail, '$.session_id') = ?
+sessions.agent_teams.warmup_count:
+  calc: Direct from session_end detail.
+  query: SELECT json_extract(detail, '$.warmup_count') FROM events WHERE kind = 'session_end' AND json_extract(detail, '$.session_id') = ?
+sessions.history:
+  calc: Join start/end events. NULL ended = active.
+  query: SELECT e1.tool, json_extract(e1.detail, '$.session_id') as sid, e1.ts as started, e2.ts as ended, (e2.ts - e1.ts) as duration_s FROM events e1 LEFT JOIN events e2 ON json_extract(e1.detail, '$.session_id')
+    = json_extract(e2.detail, '$.session_id') AND e2.kind = 'session_end' WHERE e1.kind = 'session_start' ORDER BY e1.ts DESC LIMIT ?
+sessions.timeline:
+  calc: Each row = one bar. Width = end_ts - start_ts. NULL end_ts = active.
+  query: SELECT tool, json_extract(detail, '$.session_id') as sid, ts as start_ts, (SELECT e2.ts FROM events e2 WHERE e2.kind = 'session_end' AND json_extract(e2.detail, '$.session_id') = json_extract(e1.detail,
+    '$.session_id') LIMIT 1) as end_ts FROM events e1 WHERE e1.kind = 'session_start' AND e1.ts BETWEEN ? AND ? ORDER BY e1.ts
+sessions.timeline.bytes_written:
+  calc: Sum growth_bytes.
+  query: SELECT SUM(json_extract(detail, '$.growth_bytes')) FROM events WHERE kind = 'file_modified' AND json_extract(detail, '$.session_id') = ?
+sessions.timeline.conversations:
+  calc: Direct from session_end detail.
+  query: SELECT json_extract(detail, '$.conversations') FROM events WHERE kind = 'session_end' AND json_extract(detail, '$.session_id') = ?
+sessions.timeline.source_files:
+  calc: Count unique source code files (filtered by extension).
+  query: SELECT COUNT(DISTINCT json_extract(detail, '$.path')) FROM events WHERE kind = 'file_modified' AND json_extract(detail, '$.session_id') = ? AND (json_extract(detail, '$.path') LIKE '%.py' OR json_extract(detail,
+    '$.path') LIKE '%.js' OR json_extract(detail, '$.path') LIKE '%.ts')
+sessions.timeline.subagents:
+  calc: Direct from session_end detail.
+  query: SELECT json_extract(detail, '$.agent_count') FROM events WHERE kind = 'session_end' AND json_extract(detail, '$.session_id') = ?
+sessions.timeline.unique_files:
+  calc: Count unique file paths.
+  query: SELECT COUNT(DISTINCT json_extract(detail, '$.path')) FROM events WHERE kind = 'file_modified' AND json_extract(detail, '$.session_id') = ?

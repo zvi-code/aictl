@@ -1,0 +1,38 @@
+[project]
+name = "aictl"
+version = "0.4.0"
+description = "Scoped, composable, task-aware AI context management"
+requires-python = ">=3.10"
+classifiers = [
+    "Operating System :: OS Independent",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "click>=8.1",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dashboard = ["textual>=0.79"]
+processes = ["psutil>=5.9"]
+monitor = ["psutil>=5.9", "watchdog>=4.0"]
+otel = ["protobuf>=4.21", "opentelemetry-proto>=1.20"]
+all = ["textual>=0.79", "psutil>=5.9", "watchdog>=4.0", "protobuf>=4.21", "opentelemetry-proto>=1.20"]
+
+[project.scripts]
+aictl = "aictl.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["aictl*"]
+
+[tool.setuptools.package-data]
+"aictl.data" = ["*.csv", "*.yaml"]
+"aictl.dashboard" = ["*.html"]
+"aictl.dashboard.dist" = ["**/*"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

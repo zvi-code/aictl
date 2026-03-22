@@ -1,0 +1,19 @@
+[instructions]
+base = '''
+# Dataset Module
+Vector generation and ground truth. dataset.rs: trait + types.
+ground_truth.rs: brute-force KNN for recall. loader.rs: binary + HDF5 formats.
+Recall = intersection(results, ground_truth) / K.
+'''
+
+debug = '''
+Ground truth cached in .gt files — expensive to recompute.
+If recall drops: check if dataset regenerated without updating ground truth.
+HDF5: use h5dump to inspect dimensions.
+'''
+
+[skills.debug.dataset-inspector]
+content = '''
+# Dataset Inspector
+Load header, sample vectors, verify ground truth dimensions, report stats.
+'''
