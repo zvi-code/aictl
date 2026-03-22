@@ -1,0 +1,70 @@
+[base]
+# valkey-bench-rs
+Rust high-performance benchmarking framework for Valkey/Redis vector search.
+Measures latency (p50/p99), throughput (QPS), and recall across HNSW configs.
+Architecture: src/runner/ (execution engine), src/dataset/ (generation + ground truth), src/metrics/ (histograms + export).
+Build: cargo build --release. Test: cargo test. Bench: cargo bench.
+Feature flags: --features neon, --features sve, --features avx2.
+Conventions: thiserror+anyhow, tokio async, clap derive, no unwrap in lib code.
+
+[debug]
+Connection pool timeout: check Valkey server reachability.
+SIMD dispatch: wrong feature flag causes silent scalar fallback.
+Ground truth mismatch: regenerate if index params changed.
+OOM on large datasets: check --max-vectors and system memory.
+Use RUST_LOG=debug for trace output.
+
+[docs]
+Audience: contributors and users evaluating vector search performance.
+Results format in docs/results-format.md. Diagrams in Mermaid.
+
+[review]
+No unwrap() — use ? or expect() with context.
+No blocking IO in async. CLI flags need help text + README.
+Benchmark configs must be reproducible (fixed seeds).
+
+[command:_always:status]
+Show project health: cargo check, cargo test --no-run, valkey-cli ping.
+
+[command:debug:profile]
+Profile benchmark from $ARGUMENTS: perf record + cargo flamegraph, analyze hot paths.
+
+[command:debug:repro-recall]
+Reproduce recall issue from $ARGUMENTS: check seed, verify ground truth, single-query verbose.
+
+[command:docs:gen-bench-report]
+Generate benchmark report: parse results/, comparison tables, latency charts in Mermaid.
+
+[command:review:check-simd]
+Review SIMD changes: verify scalar fallback, feature flags, ARM/x86 parity, criterion before/after.
+
+[agent:_always:planner]
+Planning agent. Break tasks into steps. Suggest benchmarks for any perf-critical change.
+
+[agent:debug:perf-investigator]
+Performance specialist. Measure first, hypothesize, instrument, validate. Use flamegraph and criterion.
+
+[agent:review:rust-reviewer]
+Rust reviewer. Check ownership, error handling, unsafe, async correctness, SIMD safety, reproducibility.
+
+[skill:debug:flamegraph]
+# Flamegraph
+Build with frame pointers, perf record, inferno-collapse-perf, inferno-flamegraph.
+Look for hot paths in distance computation and HNSW traversal.
+
+[skill:docs:results-visualizer]
+# Results Visualization
+Parse CSV, generate Mermaid charts: latency distributions, throughput, recall vs speed.
+
+[mcp:_always:github]
+{"type": "http", "url": "https://api.githubcopilot.com/mcp/"}
+
+[mcp:debug:valkey-server]
+{"command": "valkey-cli", "args": ["ping"]}
+
+[memory:debug]
+SimSIMD dispatch refactored — check src/metrics/distance.rs for dispatch table.
+ARM Graviton3 needs sve, Graviton2 uses neon only.
+
+[inherit]
+recursive: skills

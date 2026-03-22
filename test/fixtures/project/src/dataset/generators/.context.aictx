@@ -1,0 +1,9 @@
+[base]
+# Vector Generators
+random.rs: uniform random. clustered.rs: gaussian clusters.
+hdf5.rs: standard datasets (SIFT, GloVe). All implement VectorGenerator trait.
+Seeds mandatory for reproducibility.
+
+[debug]
+Dimension mismatch: check generator config vs index schema.
+Use --seed to reproduce exact dataset.

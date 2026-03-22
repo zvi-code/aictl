@@ -1,0 +1,18 @@
+"""aictl — deploy AI context from .aictx files to native tool files."""
+
+import click
+
+from .commands.deploy import deploy
+from .commands.scan import scan_cmd
+from .commands.memory import memory
+
+
+@click.group()
+@click.version_option("0.3.0")
+def main():
+    """Deploy AI context from .aictx files to native tool files."""
+
+
+main.add_command(deploy)
+main.add_command(scan_cmd, name="scan")
+main.add_command(memory)
