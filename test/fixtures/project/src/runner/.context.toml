@@ -1,0 +1,12 @@
+[instructions]
+base = '''
+# Benchmark Runner
+Async execution engine on Tokio. runner.rs orchestrates workers.
+connection.rs: deadpool-redis pool (default 50). config.rs: TOML parsing.
+worker.rs: sends FT.SEARCH with vector payloads, records latency.
+'''
+
+debug = '''
+Pool exhaustion: RUST_LOG=deadpool=debug. Worker stalls: check INFO commandstats.
+Tokio contention: use tokio-console. If p99>>p50: pool contention or server GC.
+'''

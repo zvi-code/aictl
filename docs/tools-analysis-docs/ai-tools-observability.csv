@@ -1,0 +1,34 @@
+ai_tool,signal_category,signal_name,available,access_method,data_format,frequency,details,last_verified
+claude-code,event,session_start,yes,hook,json,on-event,SessionStart hook fires on startup/resume/clear/compact,2026-03-27
+claude-code,event,session_end,yes,hook,json,on-event,SessionEnd hook fires on exit,2026-03-27
+claude-code,event,tool_use,yes,hook,json,on-event,PreToolUse/PostToolUse hooks fire per tool call,2026-03-27
+claude-code,event,file_changed,yes,hook,json,on-event,FileChanged hook fires when monitored files change,2026-03-27
+claude-code,event,config_changed,yes,hook,json,on-event,ConfigChange hook fires when settings change,2026-03-27
+claude-code,event,compaction,yes,hook,json,on-event,PreCompact/PostCompact hooks fire around compaction,2026-03-27
+claude-code,event,instructions_loaded,yes,hook,json,on-event,InstructionsLoaded hook shows which files loaded,2026-03-27
+claude-code,event,stop,yes,hook,json,on-event,Stop hook fires when Claude finishes response,2026-03-27
+claude-code,event,stop_failure,yes,hook,json,on-event,StopFailure fires on API errors (rate_limit/auth/billing),2026-03-27
+claude-code,resource,token_usage,yes,api+hook,json,per-request,Input/output/cache tokens in API response and OTel,2026-03-27
+claude-code,resource,cost_usd,yes,api+hook,json,per-request,Cost in USD via OTel claude_code.cost.usage metric,2026-03-27
+claude-code,resource,rate_limits,yes,cli_command,json,on-demand,rate_limits field in statusLine (5h/7d windows),2026-03-27
+claude-code,resource,process_memory,inferred,process,text,polling,ps aux for process memory; main 150-400MB subagent ~45MB,2026-03-27
+claude-code,resource,process_count,inferred,process,text,polling,Count claude processes to detect subagent accumulation,2026-03-27
+claude-code,context,context_usage,yes,cli_command,text,on-demand,/context command shows token breakdown by component,2026-03-27
+claude-code,context,active_instructions,yes,hook,json,on-event,InstructionsLoaded hook lists loaded CLAUDE.md and rules,2026-03-27
+claude-code,context,auto_memory,yes,file,text,on-demand,Read ~/.claude/projects/<project>/memory/MEMORY.md,2026-03-27
+claude-code,state,active_model,yes,cli_command+env,text,on-demand,model setting or ANTHROPIC_MODEL or /model command,2026-03-27
+claude-code,state,permission_mode,yes,hook,json,per-event,permission_mode field in all hook input JSON,2026-03-27
+claude-code,state,effort_level,yes,cli_command+env,text,on-demand,effortLevel setting or CLAUDE_CODE_EFFORT_LEVEL,2026-03-27
+claude-code,state,connected_mcp,yes,cli_command,text,on-demand,claude mcp list or /mcp in session,2026-03-27
+claude-code,state,sandbox_active,yes,file,json,on-demand,sandbox.enabled in settings.json,2026-03-27
+claude-code,wip,active_session,inferred,process,text,polling,Running claude process indicates active session,2026-03-27
+claude-code,wip,active_subagents,inferred,process,text,polling,claude --print --resume processes are active subagents,2026-03-27
+claude-code,wip,active_worktrees,inferred,file,text,polling,<repo>/.claude/worktrees/ directories,2026-03-27
+claude-code,wip,task_queue,yes,api,json,on-demand,TaskGet/TaskList tools expose current tasks,2026-03-27
+claude-code,wip,stream_events,yes,api,json,real-time,--output-format stream-json for real-time tool/edit events,2026-03-27
+claude-code,instruction,claude_md_files,yes,hook,json,on-event,InstructionsLoaded lists all loaded instruction files,2026-03-27
+claude-code,instruction,rules_files,yes,hook,json,on-event,InstructionsLoaded includes path-scoped rule files,2026-03-27
+claude-code,instruction,hooks_active,yes,file,json,on-demand,Read hooks config from settings.json,2026-03-27
+claude-desktop,resource,process_memory,inferred,process,text,polling,ps aux for Electron process memory,2026-03-27
+claude-desktop,resource,mcp_subprocesses,inferred,process,text,polling,ps aux | grep mcp-server for MCP child processes,2026-03-27
+claude-desktop,state,mcp_config,yes,file,json,on-demand,Read claude_desktop_config.json,2026-03-27

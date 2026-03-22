@@ -1,0 +1,52 @@
+ai_tool,capability_category,capability_name,supported,details,config_location,doc_url,last_verified
+claude-code,core,interactive_chat,yes,Interactive REPL with streaming output,,https://code.claude.com/docs/en/overview,2026-03-27
+claude-code,core,batch_mode,yes,Non-interactive print mode (claude -p),,https://code.claude.com/docs/en/cli-reference,2026-03-27
+claude-code,core,model_selection,yes,"Opus 4.6 (default), Sonnet 4.6, Haiku 4.5",model setting or --model flag,https://code.claude.com/docs/en/settings,2026-03-27
+claude-code,core,extended_context,yes,200K standard / 1M for Max/Team/Enterprise,,https://code.claude.com/docs/en/contexts,2026-03-27
+claude-code,core,voice_input,yes,Push-to-talk in 20 languages,voiceEnabled setting,https://code.claude.com/docs/en/overview,2026-03-27
+claude-code,core,context_compaction,yes,Auto at ~95% capacity + manual /compact,CLAUDE_AUTOCOMPACT_PCT_OVERRIDE,https://code.claude.com/docs/en/compact,2026-03-27
+claude-code,instructions,claude_md,yes,Project instruction files with directory resolution,.claude/CLAUDE.md or ./CLAUDE.md,https://code.claude.com/docs/en/memory,2026-03-27
+claude-code,instructions,rules,yes,Topic-scoped rules with path frontmatter,.claude/rules/*.md,https://code.claude.com/docs/en/memory,2026-03-27
+claude-code,instructions,managed_policy,yes,Organization-wide CLAUDE.md and settings,/Library/Application Support/ClaudeCode/,https://code.claude.com/docs/en/settings,2026-03-27
+claude-code,agents,subagents,yes,Separate Claude instances with own context,.claude/agents/*.md,https://code.claude.com/docs/en/agent-teams,2026-03-27
+claude-code,agents,agent_teams,partial,Experimental team lead + teammates (requires env flag),CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1,https://code.claude.com/docs/en/agent-teams,2026-03-27
+claude-code,agents,worktree_isolation,yes,Git worktree for parallel file-safe work,--worktree flag or isolation: worktree,https://code.claude.com/docs/en/common-workflows,2026-03-27
+claude-code,agents,task_tracking,yes,TaskCreate/Get/List/Update tools,,https://code.claude.com/docs/en/tasks,2026-03-27
+claude-code,agents,scheduled_tasks,yes,CronCreate/Delete/List (session-scoped),CLAUDE_CODE_DISABLE_CRON,https://code.claude.com/docs/en/cli-reference,2026-03-27
+claude-code,hooks,hook_system,yes,25 named events with 4 handler types,hooks in settings.json,https://code.claude.com/docs/en/hooks,2026-03-27
+claude-code,hooks,hook_PreToolUse,yes,Block tool execution before it runs,hooks in settings.json,https://code.claude.com/docs/en/hooks,2026-03-27
+claude-code,hooks,hook_PostToolUse,yes,React after tool execution,hooks in settings.json,https://code.claude.com/docs/en/hooks,2026-03-27
+claude-code,hooks,hook_SessionStart,yes,React to session start/resume/clear/compact,hooks in settings.json,https://code.claude.com/docs/en/hooks,2026-03-27
+claude-code,hooks,hook_FileChanged,yes,React to monitored file changes,hooks in settings.json,https://code.claude.com/docs/en/hooks,2026-03-27
+claude-code,hooks,hook_http_handler,yes,POST JSON to URL endpoint,hooks in settings.json,https://code.claude.com/docs/en/hooks,2026-03-27
+claude-code,hooks,hook_prompt_handler,yes,Single-turn LLM evaluation,hooks in settings.json,https://code.claude.com/docs/en/hooks,2026-03-27
+claude-code,hooks,hook_agent_handler,yes,Spawn subagent for verification,hooks in settings.json,https://code.claude.com/docs/en/hooks,2026-03-27
+claude-code,mcp,mcp_stdio,yes,Stdio transport for MCP servers,.mcp.json or ~/.claude.json,https://code.claude.com/docs/en/mcp,2026-03-27
+claude-code,mcp,mcp_http,yes,HTTP transport (recommended),.mcp.json or ~/.claude.json,https://code.claude.com/docs/en/mcp,2026-03-27
+claude-code,mcp,mcp_sse,deprecated,SSE transport (deprecated in favor of HTTP),.mcp.json or ~/.claude.json,https://code.claude.com/docs/en/mcp,2026-03-27
+claude-code,mcp,mcp_elicitation,yes,MCP servers can request structured user input,,https://code.claude.com/docs/en/mcp,2026-03-27
+claude-code,mcp,mcp_channels,partial,MCP servers can push messages (research preview),,https://code.claude.com/docs/en/mcp,2026-03-27
+claude-code,extensions,plugin_system,yes,Git-hosted plugin packages,.claude-plugin/plugin.json,https://code.claude.com/docs/en/plugins,2026-03-27
+claude-code,extensions,skills,yes,SKILL.md with YAML frontmatter,.claude/skills/*/SKILL.md,https://code.claude.com/docs/en/plugins,2026-03-27
+claude-code,extensions,commands,yes,Legacy command system (same as skills),.claude/commands/*.md,https://code.claude.com/docs/en/plugins,2026-03-27
+claude-code,memory,auto_memory,yes,Automatic project memory with topic files,~/.claude/projects/<project>/memory/,https://code.claude.com/docs/en/memory,2026-03-27
+claude-code,memory,memory_management,yes,Browse/edit/delete memory via /memory command,,https://code.claude.com/docs/en/memory,2026-03-27
+claude-code,permissions,permission_modes,yes,"6 modes: default, acceptEdits, plan, auto, dontAsk, bypassPermissions",permissions.defaultMode,https://code.claude.com/docs/en/permissions,2026-03-27
+claude-code,permissions,sandbox,yes,OS-level sandboxing (Seatbelt/bubblewrap),sandbox.enabled,https://code.claude.com/docs/en/security,2026-03-27
+claude-code,permissions,allow_deny_rules,yes,Tool-level permission patterns,permissions.allow/deny,https://code.claude.com/docs/en/permissions,2026-03-27
+claude-code,settings,settings_hierarchy,yes,"Managed → Enterprise → User → Project → Local",settings.json at each scope,https://code.claude.com/docs/en/settings,2026-03-27
+claude-code,settings,env_vars,yes,100+ environment variables for configuration,,https://code.claude.com/docs/en/settings,2026-03-27
+claude-code,ide,vscode,yes,Extension anthropic.claude-code with IDE MCP server,,https://code.claude.com/docs/en/ide-integrations,2026-03-27
+claude-code,ide,jetbrains,yes,JetBrains extension,,https://code.claude.com/docs/en/ide-integrations,2026-03-27
+claude-code,cli,output_formats,yes,"text, json, stream-json",--output-format flag,https://code.claude.com/docs/en/cli-reference,2026-03-27
+claude-code,cli,structured_output,yes,JSON schema validation for output,--json-schema flag,https://code.claude.com/docs/en/cli-reference,2026-03-27
+claude-code,cli,bare_mode,yes,Lightweight mode skipping hooks/plugins/MCP,--bare flag,https://code.claude.com/docs/en/cli-reference,2026-03-27
+claude-desktop,core,interactive_chat,yes,Electron desktop chat app,,https://support.anthropic.com,2026-03-27
+claude-desktop,core,batch_mode,no,No CLI or batch mode,,https://support.anthropic.com,2026-03-27
+claude-desktop,mcp,mcp_stdio,yes,Stdio MCP servers,claude_desktop_config.json,https://support.anthropic.com,2026-03-27
+claude-desktop,mcp,mcp_http,yes,HTTP/SSE MCP servers,claude_desktop_config.json,https://support.anthropic.com,2026-03-27
+claude-desktop,hooks,hook_system,no,No hook system,,,2026-03-27
+claude-desktop,agents,subagents,no,No subagent support,,,2026-03-27
+claude-desktop,memory,auto_memory,no,Server-side memory only,,,2026-03-27
+claude-desktop,permissions,sandbox,no,No sandboxing,,,2026-03-27
+claude-desktop,extensions,plugin_system,no,No plugin system,,,2026-03-27

@@ -1,0 +1,114 @@
+# Telemetry source definitions for each AI tool.
+#
+# Defines where to find token/usage data, how to parse it, and what
+# confidence level to assign. Used by tool_telemetry.py instead of
+# hardcoded per-tool parser functions.
+#
+# Format:
+#   tool_name:
+#     source_id: <string>     # identifier for this source type
+#     confidence: <float>     # 0.0-1.0 base confidence
+#     files:                  # list of file patterns to scan
+#       - pattern: <glob>     # relative to tool's state directory
+#         format: <string>    # json, jsonl, toml, sqlite
+#     fields:                 # JSON path mappings for token extraction
+#       input_tokens: <path>
+#       output_tokens: <path>
+#       cache_read: <path>
+#       cache_creation: <path>
+#       sessions: <path>
+#       messages: <path>
+#       cost_usd: <path>
+#       model: <path>
+
+claude-code:
+  source_id: stats-cache
+  confidence: 0.95
+  state_dir_fn: claude_global_dir  # function in platforms.py
+  files:
+    - pattern: "statsig_cache.json"
+      format: json
+    - pattern: "projects/*/session_tokens.json"
+      format: json
+    - pattern: "projects/*/conversations/*/token_usage.json"
+      format: json
+  fields:
+    input_tokens: "costTracker.totalInputTokens"
+    output_tokens: "costTracker.totalOutputTokens"
+    cache_read: "costTracker.totalCacheReadTokens"
+    cache_creation: "costTracker.totalCacheCreationTokens"
+    sessions: "costTracker.totalSessions"
+    messages: "costTracker.totalMessages"
+    cost_usd: "costTracker.totalCostUSD"
+    model: "costTracker.model"
+  by_model_path: "costTracker.byModel"
+
+copilot-cli:
+  source_id: events-jsonl
+  confidence: 0.90
+  state_dir_fn: copilot_global_storage  # function in platforms.py
+  files:
+    - pattern: "**/*events*.jsonl"
+      format: jsonl
+    - pattern: "**/usage*.json"
+      format: json
+  fields:
+    input_tokens: "prompt_tokens"
+    output_tokens: "completion_tokens"
+    model: "model"
+  # Copilot events are per-request; sum across all lines
+  aggregation: sum
+
+codex-cli:
+  source_id: token-count
+  confidence: 0.85
+  state_dir_fn: codex_global_dir  # function in platforms.py (if exists)
+  files:
+    - pattern: "sessions/*/session.json"
+      format: json
+  fields:
+    input_tokens: "usage.input_tokens"
+    output_tokens: "usage.output_tokens"
+    model: "model"
+    cost_usd: "usage.cost_usd"
+  aggregation: sum
+
+cursor:
+  source_id: state-vscdb
+  confidence: 0.70
+  state_dir_fn: cursor_user_dir
+  files:
+    - pattern: "globalStorage/state.vscdb"
+      format: sqlite
+  fields:
+    input_tokens: "usage.inputTokens"
+    output_tokens: "usage.outputTokens"
+    model: "model"
+
+continue:
+  source_id: session-json
+  confidence: 0.75
+  files:
+    - pattern: "sessions/*.json"
+      format: json
+  fields:
+    input_tokens: "usage.promptTokens"
+    output_tokens: "usage.completionTokens"
+    model: "model"
+
+copilot-vscode:
+  source_id: otel-export
+  confidence: 0.95
+  state_dir_fn: vscode_user_dir
+  files:
+    - pattern: "**/*otel*export*.jsonl"
+      format: jsonl
+    - pattern: "**/*telemetry*.jsonl"
+      format: jsonl
+  fields:
+    # OTel span format
+    input_tokens: "attributes.llm.usage.prompt_tokens"
+    output_tokens: "attributes.llm.usage.completion_tokens"
+    model: "attributes.llm.request.model"
+  aggregation: sum
+  otel_span: true  # use OTel span extraction logic

@@ -1,0 +1,239 @@
+# Metric definitions — OTel Semantic Conventions where applicable.
+#
+# Every data point emitted through sink.emit() MUST have its metric
+# name defined here. Names follow OpenTelemetry conventions:
+#   - Standard OTel names for process/system/network/gen_ai metrics
+#   - aictl.* namespace for tool-specific custom metrics
+#
+# References:
+#   https://opentelemetry.io/docs/specs/semconv/system/process-metrics/
+#   https://opentelemetry.io/docs/specs/semconv/system/system-metrics/
+#   https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-metrics/
+
+# ─── System CPU (OTel: system.cpu.*) ─────────────────────────────
+system.cpu.utilization:
+  unit: "1"
+  tags: [cpu.id]
+  description: "Per-core CPU utilization (0.0-1.0)"
+  emitter: process
+  template: true  # system.cpu.utilization with tag cpu.id={i}
+
+# ─── Per-process (OTel: process.*) ───────────────────────────────
+process.cpu.utilization:
+  unit: "1"
+  tags: [process.pid, process.name]
+  optional_tags: [aictl.tool]
+  description: "Process CPU utilization (1.0 = 100% of 1 core)"
+  emitter: process
+  template: true  # keyed by process.pid
+
+process.memory.usage:
+  unit: By
+  tags: [process.pid, process.name]
+  optional_tags: [aictl.tool]
+  description: "Process resident memory in bytes"
+  emitter: process
+  template: true
+
+process.thread.count:
+  unit: "{thread}"
+  tags: [process.pid, process.name]
+  optional_tags: [aictl.tool]
+  description: "Child process/thread count"
+  emitter: process
+  template: true
+
+# ─── Network I/O (OTel: process.network.io) ─────────────────────
+process.network.io:
+  unit: By
+  tags: [process.pid, network.io.direction]
+  optional_tags: [process.name]
+  description: "Network bytes transferred (direction: receive|transmit)"
+  emitter: network
+  template: true
+
+# ─── Filesystem (OTel-aligned) ───────────────────────────────────
+process.disk.io:
+  unit: By
+  tags: [file.path]
+  optional_tags: [aictl.tool]
+  description: "File change event (growth in bytes)"
+  emitter: filesystem
+
+aictl.file.size:
+  unit: By
+  tags: [file.path]
+  optional_tags: [aictl.tool]
+  description: "Current file size after change"
+  emitter: filesystem
+
+# ─── GenAI token usage (OTel: gen_ai.client.token.usage) ────────
+gen_ai.client.token.usage:
+  unit: "{token}"
+  tags: [aictl.tool, gen_ai.token.type]
+  optional_tags: [gen_ai.request.model, aictl.source_file]
+  description: "Token count (type: input|output|cache_read|cache_creation)"
+  emitter: telemetry
+
+gen_ai.client.confidence:
+  unit: "1"
+  tags: [aictl.tool]
+  optional_tags: [aictl.source_file]
+  description: "Telemetry data confidence score"
+  emitter: telemetry
+
+# ─── Verified telemetry (lifetime aggregates) ────────────────────
+gen_ai.client.token.usage.verified:
+  unit: "{token}"
+  tags: [aictl.tool, aictl.source, gen_ai.token.type]
+  description: "Lifetime tokens from verified source (type: input|output)"
+  emitter: collect
+
+aictl.telemetry.sessions:
+  unit: "{session}"
+  tags: [aictl.tool, aictl.source]
+  description: "Total sessions from verified telemetry"
+  emitter: collect
+
+aictl.telemetry.messages:
+  unit: "{message}"
+  tags: [aictl.tool, aictl.source]
+  description: "Total messages from verified telemetry"
+  emitter: collect
+
+aictl.telemetry.cost:
+  unit: USD
+  tags: [aictl.tool, aictl.source]
+  description: "Accumulated cost in USD"
+  emitter: collect
+
+# ─── Discovery (aictl-specific) ─────────────────────────────────
+aictl.discovery.files:
+  unit: "{file}"
+  tags: [aictl.tool]
+  description: "Number of files discovered for a tool"
+  emitter: discovery
+
+aictl.discovery.tokens:
+  unit: "{token}"
+  tags: [aictl.tool]
+  description: "Total estimated tokens across all files for a tool"
+  emitter: discovery
+
+aictl.discovery.size:
+  unit: By
+  tags: [aictl.tool]
+  description: "Total file size across all files for a tool"
+  emitter: discovery
+
+aictl.discovery.processes:
+  unit: "{process}"
+  tags: [aictl.tool]
+  description: "Number of processes discovered for a tool"
+  emitter: discovery
+
+aictl.discovery.mcp_servers:
+  unit: "{server}"
+  tags: [aictl.tool]
+  description: "Number of MCP servers discovered for a tool"
+  emitter: discovery
+
+# ─── Per-file metrics ────────────────────────────────────────────
+aictl.file.tokens:
+  unit: "{token}"
+  tags: [aictl.tool, file.path]
+  optional_tags: [aictl.file.kind, aictl.file.scope, aictl.file.sent_to_llm]
+  description: "Estimated token count for a single file"
+  emitter: discovery
+
+aictl.file.bytes:
+  unit: By
+  tags: [aictl.tool, file.path]
+  optional_tags: [aictl.file.kind, aictl.file.scope, aictl.file.sent_to_llm]
+  description: "Size in bytes of a single file"
+  emitter: discovery
+
+# ─── MCP server status ──────────────────────────────────────────
+aictl.mcp.status:
+  unit: "1"
+  tags: [aictl.tool, aictl.mcp.server]
+  description: "MCP server status (1.0 = running, 0.0 = stopped)"
+  emitter: discovery
+
+aictl.mcp.detail.status:
+  unit: "1"
+  tags: [aictl.mcp.server, aictl.tool]
+  description: "Detailed MCP server status from collect_mcp_status"
+  emitter: collect
+
+# ─── Agent memory/context ────────────────────────────────────────
+aictl.memory.tokens:
+  unit: "{token}"
+  tags: [file.path]
+  optional_tags: [aictl.source]
+  description: "Token count for an agent memory/context file"
+  emitter: collect
+
+# ─── Tool config state ──────────────────────────────────────────
+aictl.config.model:
+  unit: "1"
+  tags: [aictl.tool, gen_ai.request.model]
+  description: "Active model for a tool (value always 1.0)"
+  emitter: collect
+
+# ─── Tool-level aggregates (from correlator) ─────────────────────
+aictl.tool.cpu:
+  unit: "1"
+  tags: [aictl.tool]
+  description: "Aggregate CPU utilization across all sessions for a tool"
+  emitter: correlator
+
+aictl.tool.memory:
+  unit: By
+  tags: [aictl.tool]
+  description: "Peak memory across sessions for a tool"
+  emitter: correlator
+
+aictl.tool.sessions:
+  unit: "{session}"
+  tags: [aictl.tool]
+  description: "Active session count for a tool"
+  emitter: correlator
+
+aictl.tool.pids:
+  unit: "{process}"
+  tags: [aictl.tool]
+  description: "Active PID count for a tool"
+  emitter: correlator
+
+aictl.tool.network.io:
+  unit: By
+  tags: [aictl.tool, network.io.direction]
+  description: "Network I/O rate for a tool (direction: receive|transmit)"
+  emitter: correlator
+
+aictl.tool.token.usage:
+  unit: "{token}"
+  tags: [aictl.tool, gen_ai.token.type]
+  description: "Estimated tokens for a tool (type: input|output)"
+  emitter: correlator
+
+aictl.tool.token.confidence:
+  unit: "1"
+  tags: [aictl.tool]
+  description: "Token estimation confidence for a tool"
+  emitter: correlator
+
+aictl.tool.mcp.score:
+  unit: "1"
+  tags: [aictl.tool]
+  description: "MCP loop detection confidence for a tool"
+  emitter: correlator
+
+# ─── Collector health ────────────────────────────────────────────
+aictl.collector.status:
+  unit: "1"
+  tags: [aictl.collector.mode]
+  description: "Collector health (1.0 = active, 0.0 = disabled)"
+  emitter: base
+  template: true  # aictl.collector.{name}.status

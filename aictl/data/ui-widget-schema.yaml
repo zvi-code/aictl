@@ -1,0 +1,118 @@
+# UI Widget Configuration Schema
+#
+# Defines the complete rendering spec for each widget kind.
+# Every widget in ui_widget.config MUST conform to the schema
+# for its kind. The frontend reads these configs and renders
+# accordingly — no hardcoded rendering logic in JavaScript.
+#
+# This file documents the schema. The actual widget configs live
+# in SQLite (ui_widget.config column) and are seeded by storage.py.
+
+widget_kinds:
+
+  sparkline:
+    description: "Time-series chart with current value overlay"
+    required_config:
+      field:        "Snapshot field name (e.g. 'files', 'cpu', 'tokens')"
+      color:        "CSS color for stroke and fill"
+    optional_config:
+      metric:       "metrics.yaml key — provides unit for formatting"
+      format:       "Value formatter: 'kilo', 'size', 'rate', 'percent', 'raw'"
+      smooth:       "Apply 3-point SMA smoothing (boolean)"
+      yMaxExpr:     "Expression for y-axis max: '100*cores', 'auto'"
+      refLines:     "Array of {valueExpr, label} for reference lines"
+      label:        "Override display label (defaults to widget title)"
+
+  stat:
+    description: "Single-number metric tile"
+    required_config:
+      field:        "Snapshot field name"
+    optional_config:
+      metric:       "metrics.yaml key"
+      format:       "Value formatter: 'kilo', 'size', 'rate', 'percent', 'raw'"
+      suffix:       "Text appended to value (e.g. 't' for tokens)"
+      accent:       "Use accent color for value (boolean)"
+      label:        "Override display label"
+
+  range:
+    description: "Time range selector buttons"
+    required_config:
+      options:      "Array of range IDs: ['live', '1h', '6h', '24h', '7d']"
+
+  timeline:
+    description: "Dot timeline showing events over time"
+    optional_config:
+      maxDots:      "Maximum dots to display (default 200)"
+      colorBy:      "Field to color dots by (default 'tool')"
+
+  bar_segment:
+    description: "Proportional bar segmented by tool/category"
+    required_config:
+      metric:       "What to segment: 'files' or 'traffic_rate'"
+      segment_by:   "Field to segment by: 'tool', 'vendor', 'host'"
+    optional_config:
+      showLegend:   "Show legend below bar (default true)"
+
+  tool_card:
+    description: "Per-tool summary card in overview grid"
+    optional_config:
+      showSparklines:   "Show mini sparklines per tool (boolean)"
+      sparklineMetrics: "Array of metric keys for per-tool sparklines"
+      showBadges:       "Show file/token/process count badges"
+      showLivePills:    "Show live session/network pills"
+      expandable:       "Allow click to expand details"
+
+  process_tree:
+    description: "Hierarchical process list grouped by tool"
+    optional_config:
+      groupBy:      "Primary grouping: 'tool', 'type'"
+      showCpuBars:  "Show CPU usage bars per process"
+      showMemBars:  "Show memory usage bars per process"
+      treeDepth:    "Max tree depth to expand by default"
+
+  memory_list:
+    description: "Grouped memory/context file list with inline preview"
+    optional_config:
+      groupBy:      "Grouping: 'source', 'profile'"
+      showPreview:  "Enable inline file preview on click"
+      tailLines:    "Number of lines in collapsed preview"
+
+  mcp_table:
+    description: "MCP server status table"
+    optional_config:
+      showTransport: "Show transport column"
+      showStatus:    "Show running/stopped status"
+
+  token_budget:
+    description: "Token budget breakdown with context window bar"
+    optional_config:
+      showVerified:      "Show verified telemetry section"
+      showContextBar:    "Show context window usage bar"
+      showByKind:        "Show per-kind breakdown"
+      showByModel:       "Show per-model breakdown"
+
+  events_feed:
+    description: "Per-tool event feed with charts"
+    optional_config:
+      chartMetrics: "Array of metric keys for per-tool charts"
+      maxEvents:    "Max events to show in feed"
+
+section_layout_modes:
+  grid:
+    description: "CSS grid with N columns"
+    config: { columns: "integer" }
+  flex:
+    description: "Flexbox wrapping"
+    config: {}
+  split:
+    description: "Side-by-side split (e.g. live traffic + events)"
+    config: { ratio: "string like '1:1' or '2:1'" }
+
+section_config:
+  collapsible:    "Section can be collapsed by user (boolean)"
+  collapsed:      "Default collapsed state (boolean)"
+  visible:        "Default visibility (boolean)"
+  minHeight:      "Minimum height in px to prevent layout shift"
+  groupByKey:     "Field to group items by (for tab content sections)"
+  sortBy:         "Field to sort items by"
+  sortOrder:      "asc or desc"

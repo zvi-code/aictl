@@ -1,0 +1,27 @@
+services:
+  aictl:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8484:8484"
+    environment:
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
+    volumes:
+      # Mount a temp project for Claude Code to work on
+      - aictl-project:/project
+    command: serve
+
+  # Run the full integration test suite
+  test:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
+    command: test
+    profiles:
+      - test
+
+volumes:
+  aictl-project:

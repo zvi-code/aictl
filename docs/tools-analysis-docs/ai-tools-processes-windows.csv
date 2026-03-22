@@ -1,0 +1,90 @@
+process_name,ai_tool,process_type,runtime,parent_process,starts_at,stops_at,is_daemon,auto_start,listens_port,outbound_targets,memory_idle_mb,memory_active_mb,known_leak,leak_pattern,zombie_risk,cleanup_command,ps_grep_pattern,platform,description
+Claude,claude-desktop,app,electron,root,app-launch,app-close,no,no,none,api.anthropic.com,300,500,no,,none,,Claude$|Claude.exe,all,Electron main process
+Claude Helper (Renderer),claude-desktop,helper,chromium,Claude,app-launch,app-close,no,yes,none,none,150,400,no,,none,,Claude Helper.*Renderer,all,Chromium renderer (chat UI)
+Claude Helper (GPU),claude-desktop,helper,chromium,Claude,app-launch,app-close,no,yes,none,none,50,200,no,,none,,Claude Helper.*GPU,all,GPU acceleration process
+Claude Helper (Utility),claude-desktop,helper,electron,Claude,app-launch,app-close,no,yes,none,none,30,80,no,,none,,Claude Helper.*Utility,all,Network/utility process
+Claude Helper (Plugin Host),claude-desktop,extension,electron,Claude,app-launch,app-close,no,yes,none,none,30,100,no,,none,,Claude Helper.*Plugin,all,Extension host (if plugins active)
+node mcp-server-*,claude-desktop,mcp-server,node,Claude,app-launch,app-close,no,yes,none,varies,15,50,yes,Not killed on app close sometimes,medium,pkill -f 'mcp-server',mcp-server-,all,One per configured MCP server (stdio transport)
+npx mcp-remote <url>,claude-desktop,mcp-server,node,Claude,app-launch,app-close,no,yes,none,mcp-endpoint-url,20,30,yes,Orphaned on mcp remove; keeps running indefinitely,high,pkill -f 'mcp-remote',mcp-remote,all,HTTP/SSE MCP server proxy
+claude,claude-code,cli,node,root,session-start,session-end,no,no,none,api.anthropic.com,150,400,no,,none,,^claude$|claude -p|claude --print,all,Main CLI process (interactive or non-interactive)
+cmd.exe,claude-code,shell,native-binary,claude,session-start,session-end,no,yes,none,none,5,20,no,,none,,cmd.exe,windows,Shell for Bash tool calls (Windows)
+node mcp-server-*,claude-code,mcp-server,node,claude,session-start,never(bug),no,yes,none,varies,15,50,yes,Not killed on session end or mcp remove,high,pkill -f 'mcp-server',mcp-server-,all,Stdio MCP servers — one per configured server
+npx mcp-remote <url>,claude-code,mcp-server,node,claude,session-start,never(bug),no,yes,none,mcp-endpoint-url,20,30,yes,Orphaned on mcp remove; triggers OAuth re-auth flows,high,pkill -f 'mcp-remote',mcp-remote,all,HTTP MCP server proxy — runs indefinitely after removal
+claude --print --resume <id>,claude-code,subagent,node,claude,on-tool-call,never(bug),no,no,none,api.anthropic.com,45,150,yes,"Subagents may not terminate after Task tool completes; ~45MB each, can accumulate to 10+GB",high,pkill -f 'claude --print',claude --print|claude --resume,all,Subagent spawned by Task tool (/task)
+agent-browser,claude-code,browser,node,claude,on-demand,never(bug),no,no,none,web-urls,100,300,yes,Browser daemon persists after web research completes,high,pkill -f 'agent-browser',agent-browser,all,Browser automation daemon for web research
+chrome-headless-shell,claude-code,browser,chromium,agent-browser,on-demand,never(bug),no,no,none,web-urls,200,400,yes,Headless Chromium persists after session; 200-400MB each,high,pkill -f 'chrome-headless-shell',chrome-headless-shell,all,Headless Chromium instance for web browsing
+playwright/driver,claude-code,browser,node,claude,on-demand,never(bug),no,no,none,web-urls,50,100,yes,Playwright driver persists after browser tests,medium,pkill -f 'playwright',playwright,all,Playwright browser controller
+esbuild,claude-code,child,native-binary,bash -l,on-tool-call,never(bug),no,no,none,none,20,50,yes,"Build tool started by agent, never stopped; 24h grace period",medium,,esbuild,all,JavaScript bundler started via Bash tool
+vite,claude-code,child,node,bash -l,on-tool-call,never(bug),no,no,random-localhost,none,100,300,yes,"Dev server started by agent, persists after session",medium,,vite,all,Dev server started via Bash tool
+next dev,claude-code,child,node,bash -l,on-tool-call,never(bug),no,no,random-localhost,none,100,300,yes,Next.js dev server started by agent,medium,,next dev,all,Next.js dev server started via Bash tool
+webpack,claude-code,child,node,bash -l,on-tool-call,never(bug),no,no,none,none,100,200,yes,Webpack bundler started by agent,medium,,webpack,all,Webpack bundler started via Bash tool
+npm exec / npx,claude-code,child,node,claude,on-mcp-config,never(bug),no,yes,none,none,10,20,yes,MCP server launcher without parent after session ends,medium,pkill -f 'npm exec|npx.*mcp',npm exec|npx,all,npm/npx processes for MCP server launching
+python mcp-server-*,claude-code,mcp-server,python,claude,session-start,never(bug),no,yes,none,varies,30,80,yes,Python MCP servers not cleaned up on session end,medium,pkill -f 'python.*mcp',python.*mcp-server,all,Python-based MCP servers
+Cursor,cursor,app,electron,root,app-launch,app-close,no,no,random-localhost,cursor-api-endpoints,400,800,no,,none,,Cursor$|Cursor.exe,all,Electron main process (VS Code fork)
+Cursor Helper (Renderer),cursor,helper,chromium,Cursor,app-launch,app-close,no,yes,none,none,200,500,no,,none,,Cursor Helper.*Renderer,all,Main editor UI renderer
+Cursor Helper (GPU),cursor,helper,chromium,Cursor,app-launch,app-close,no,yes,none,none,50,200,no,,none,,Cursor Helper.*GPU,all,GPU acceleration
+Cursor Helper (Extension Host),cursor,extension,electron,Cursor,app-launch,app-close,no,yes,none,none,100,300,no,,none,,Cursor Helper.*Extension,all,Extension host — runs all extensions
+Cursor Helper (Shared Process),cursor,helper,electron,Cursor,app-launch,app-close,no,yes,none,none,30,80,no,,none,,Cursor Helper.*Shared,all,Shared extension processes
+cursor-language-server,cursor,child,native-binary,Cursor,app-launch,app-close,no,yes,none,cursor-ai-api,50,200,no,,none,,cursor-language-server,all,Proprietary AI language server
+cursor-indexing,cursor,indexer,native-binary,Cursor,app-launch,app-close,no,yes,none,none,50,300,no,,low,,cursor-indexing,all,Codebase indexing worker (embedding generation)
+Shadow Workspace,cursor,indexer,electron,Cursor,app-launch,app-close,no,yes,none,none,200,500,no,Not a leak but causes 100% CPU on large projects,low,,cursor-indexing.*shadow,all,Invisible editor instance for pre-testing code changes
+Cursor Helper (FileWatcher),cursor,watcher,electron,Cursor,app-launch,app-close,no,yes,none,none,20,50,no,,none,,Cursor Helper.*FileWatcher,all,File system watcher for change detection
+rg (ripgrep),cursor,child,native-binary,Cursor,on-demand,process-exit,no,no,none,none,5,50,no,,none,,rg ,all,File search operations (ripgrep)
+node mcp-server-*,cursor,mcp-server,node,Cursor,app-launch,app-close,no,yes,none,varies,15,50,yes,May persist after Cursor closes,medium,pkill -f 'mcp-server',mcp-server-,all,MCP servers (if configured)
+GitHub Copilot,copilot-vscode,extension,node,Extension Host,app-launch,app-close,no,yes,none,api.github.com;copilot-proxy.githubusercontent.com,30,100,no,,none,,copilot-agent|copilot-lsp,all,Copilot extension (runs inside editor extension host)
+copilot-agent,copilot-vscode,child,node,GitHub Copilot,app-launch,app-close,no,yes,none,api.github.com,20,60,no,,none,,copilot-agent,all,Language model agent for completions
+copilot-lsp,copilot-vscode,child,node,GitHub Copilot,app-launch,app-close,no,yes,none,none,20,50,no,,none,,copilot-lsp,all,LSP server for inline completions
+copilot,copilot-cli,cli,node,root,session-start,session-end,no,no,none,api.github.com;model-endpoints,100,300,no,,none,,^copilot$|copilot.exe,all,Main Copilot CLI process
+node mcp-server-*,copilot-cli,mcp-server,node,copilot,session-start,session-end,no,yes,none,varies,15,50,yes,May not terminate on session end,medium,pkill -f 'mcp-server',mcp-server-,all,MCP servers (stdio)
+copilot (subagent),copilot-cli,subagent,node,copilot,on-tool-call,on-demand,no,no,none,api.github.com,45,100,no,,low,,copilot.*subagent|math-helper|explore|task,all,Subagent for delegated tasks (human-readable IDs)
+copilot (fleet worker),copilot-cli,subagent,node,copilot,on-demand,on-demand,no,no,none,api.github.com,45,100,no,,low,,copilot.*fleet,all,/fleet parallel worker process
+Windsurf,windsurf,app,electron,root,app-launch,app-close,no,no,random-localhost,codeium-cloud,300,600,no,,none,,Windsurf$|Windsurf.exe,all,Electron main process (VS Code fork)
+Windsurf Helper (Renderer),windsurf,helper,chromium,Windsurf,app-launch,app-close,no,yes,none,none,150,400,no,,none,,Windsurf Helper.*Renderer,all,Editor UI renderer
+Windsurf Helper (GPU),windsurf,helper,chromium,Windsurf,app-launch,app-close,no,yes,none,none,50,200,no,,none,,Windsurf Helper.*GPU,all,GPU acceleration
+Windsurf Helper (Extension Host),windsurf,extension,electron,Windsurf,app-launch,app-close,no,yes,none,none,100,300,no,,none,,Windsurf Helper.*Extension,all,Extension host — Cascade agent runs here
+codeium_language_server,windsurf,child,native-binary,Windsurf,app-launch,app-close,no,yes,random-localhost,codeium-cloud,50,200,yes,Can persist after Windsurf closes,medium,pkill -f 'codeium_language_server',codeium_language_server,all,Native binary for local completions and autocomplete
+windsurf-indexing,windsurf,indexer,native-binary,Windsurf,app-launch,app-close,no,yes,none,none,30,200,no,,none,,windsurf-indexing,all,Codebase indexing worker
+Windsurf Helper (FileWatcher),windsurf,watcher,electron,Windsurf,app-launch,app-close,no,yes,none,none,20,50,no,,none,,Windsurf Helper.*FileWatcher,all,File system watcher
+node mcp-server-*,windsurf,mcp-server,node,Windsurf,app-launch,app-close,no,yes,none,varies,15,50,yes,May persist after Windsurf closes,medium,pkill -f 'mcp-server',mcp-server-,all,MCP servers (if configured)
+gemini,gemini-cli,cli,node,root,session-start,session-end,no,no,none,generativelanguage.googleapis.com,80,200,no,,none,,^gemini$,all,Main Gemini CLI process (lightweight)
+node mcp-server-*,gemini-cli,mcp-server,node,gemini,session-start,session-end,no,yes,none,varies,15,50,no,,low,,mcp-server-,all,MCP servers (stdio)
+extension processes,gemini-cli,extension,node,gemini,session-start,session-end,no,yes,none,varies,20,100,no,,none,,,all,Installed extension child processes (~/.gemini/extensions/)
+openclaw gateway,openclaw,daemon,node,root,system-boot,gateway-stop,yes,yes,18789,api.anthropic.com;api.openai.com,100,300,no,,none,openclaw gateway stop,openclaw gateway|openclaw.*gateway,all,WebSocket Gateway — always-on system service (launchd/systemd/schtasks)
+node (session handler),openclaw,child,node,openclaw gateway,on-demand,on-demand,no,no,none,model-api-endpoints,30,100,no,,low,,node.*openclaw.*session,all,Per-conversation session handler
+claude / model CLI,openclaw,child,node,node (session handler),on-demand,on-demand,no,no,none,api.anthropic.com,45,150,no,,low,,claude|codex|gemini,all,Model CLI invoked per session
+whatsapp-web.js (Puppeteer),openclaw,browser,node,openclaw gateway,gateway-start,gateway-stop,yes,yes,none,web.whatsapp.com,100,400,no,,low,,puppeteer|whatsapp,all,WhatsApp Web session via headless Chromium
+chromium (WhatsApp),openclaw,browser,chromium,whatsapp-web.js,gateway-start,gateway-stop,yes,yes,none,web.whatsapp.com,200,500,no,,low,,chromium.*whatsapp|chrome.*whatsapp,all,Headless Chromium instance for WhatsApp
+telegram bot,openclaw,child,node,openclaw gateway,gateway-start,gateway-stop,yes,yes,none,api.telegram.org,20,50,no,,none,,telegram|tg-bot,all,Telegram bot polling connection
+discord bot,openclaw,child,node,openclaw gateway,gateway-start,gateway-stop,yes,yes,none,discord.com,30,60,no,,none,,discord,all,Discord.js bot connection
+node mcp-server-*,openclaw,mcp-server,node,openclaw gateway,gateway-start,gateway-stop,yes,yes,none,varies,15,50,no,,low,,mcp-server-,all,MCP servers for OpenClaw tools
+docker (sandbox),openclaw,child,docker,openclaw gateway,on-demand,on-demand,no,no,none,none,50,200,no,,none,,docker.*openclaw|docker.*sandbox,all,Per-session Docker sandbox (if sandbox.mode: non-main)
+cron scheduler,openclaw,child,node,openclaw gateway,gateway-start,gateway-stop,yes,yes,none,none,10,20,no,,none,,cron|heartbeat,all,Heartbeat & scheduled task runner
+opencode,opencode,cli,node,root,session-start,session-end,no,no,none,api.anthropic.com;api.openai.com,80,250,no,,none,,^opencode$,all,Main CLI/TUI process
+node mcp-server-*,opencode,mcp-server,node,opencode,session-start,session-end,no,yes,none,varies,15,50,no,,low,,mcp-server-,all,MCP servers
+opencode (subagent),opencode,subagent,node,opencode,on-tool-call,on-demand,no,no,none,model-api,40,100,no,,low,,opencode.*agent,all,Task-delegated subagent
+opencode-cli (sidecar),opencode,daemon,node,OpenCode Desktop,app-launch,app-close,no,yes,4096,model-api,80,250,no,,none,,opencode-cli|opencode.*sidecar,all,Desktop app sidecar — local CLI server
+OpenCode Desktop,opencode,app,electron,root,app-launch,app-close,no,no,none,none,200,400,no,,none,,OpenCode|opencode-desktop,all,Electron desktop app
+ChatGPT,chatgpt-desktop,app,electron,root,app-launch,app-close,no,no,none,api.openai.com;chatgpt.com,200,400,no,,none,,ChatGPT$|ChatGPT.exe,all,Electron main process (thin client)
+ChatGPT Helper (Renderer),chatgpt-desktop,helper,chromium,ChatGPT,app-launch,app-close,no,yes,none,none,100,300,no,,none,,ChatGPT Helper.*Renderer,all,Chat UI renderer
+ChatGPT Helper (GPU),chatgpt-desktop,helper,chromium,ChatGPT,app-launch,app-close,no,yes,none,none,30,100,no,,none,,ChatGPT Helper.*GPU,all,GPU acceleration
+ChatGPT Helper (Utility),chatgpt-desktop,helper,electron,ChatGPT,app-launch,app-close,no,yes,none,none,20,50,no,,none,,ChatGPT Helper.*Utility,all,Network/utility process
+node (orphan),any,child,node,dead-parent,on-tool-call,never(bug),no,no,none,varies,20,100,yes,Generic Node.js worker with AI tool path in cmdline; PPID=1,high,"ps -eo pid,ppid,args | awk '$2==1' | grep node",node.*claude|node.*mcp,all,Orphaned Node.js process from any AI tool
+tsx / ts-node / bun / deno,any,child,node,dead-parent,on-tool-call,never(bug),no,no,none,varies,20,50,yes,Runtime orphans from MCP server patterns,medium,,tsx|ts-node|bun.*mcp|deno.*mcp,all,Alternative JS/TS runtime orphans
+bun worker-service.cjs --daemon,claude-mem,daemon,node,root,session-start,manual,yes,yes,none,api.anthropic.com,30,100,yes,Spawns Claude SDK subprocesses that never terminate; can accumulate 2+ GB,high,pkill -f 'worker-service.cjs',worker-service.cjs,all,claude-mem plugin worker daemon
+node mcp-server.cjs,claude-mem,mcp-server,node,bun worker-service.cjs,session-start,manual,yes,yes,none,none,20,50,no,,low,,mcp-server.cjs,all,claude-mem MCP server for search tools
+teamsappdevtunnel,copilot365,daemon,native-binary,root,on-demand,on-demand,no,no,random-localhost,none,20,80,no,,none,,teamsappdevtunnel,all,Teams Toolkit dev tunnel for local testing of M365 Copilot plugins
+teamsfx,copilot365,cli,node,root,on-demand,process-exit,no,no,none,none,30,100,no,,none,,teamsfx,all,Teams Toolkit CLI (legacy name for Teams app scaffolding and deployment)
+ttk-*,copilot365,child,node,root,on-demand,process-exit,no,no,random-localhost,graph.microsoft.com,20,80,no,,none,,ttk-,all,Teams Toolkit child processes (various ttk- prefixed workers)
+node @microsoft/teams-*,copilot365,child,node,root,on-demand,process-exit,no,no,random-localhost,none,30,100,no,,none,,@microsoft/teams,all,Teams app runtime packages (teams-js SDK dev server)
+teams-toolkit,copilot365,extension,node,Extension Host,app-launch,app-close,no,yes,none,graph.microsoft.com;login.microsoftonline.com,50,150,no,,none,,teams-toolkit,all,Teams Toolkit VS Code extension process
+dotnet semantic.kernel,semantic-kernel,child,native-binary,root,on-demand,process-exit,no,no,none,api.openai.com;api.anthropic.com,50,200,no,,none,,semantic.kernel|SemanticKernel,all,.NET Semantic Kernel host process (plugin orchestration)
+SemanticKernel,semantic-kernel,child,native-binary,root,on-demand,process-exit,no,no,random-localhost,model-api-endpoints,50,300,no,,none,,SemanticKernel,all,Semantic Kernel runtime (may host local API for function calling)
+python promptflow,azure-promptflow,cli,python,root,on-demand,process-exit,no,no,random-localhost,none,50,200,no,,none,,promptflow|prompt.flow,all,Azure PromptFlow CLI / runtime (flow execution engine)
+pf flow,azure-promptflow,cli,python,root,on-demand,process-exit,no,no,random-localhost,none,40,150,no,,none,,\bpf\b.*flow,all,PromptFlow short-form CLI (pf flow test / pf flow serve)
+azd,azure-ai,cli,native-binary,root,on-demand,process-exit,no,no,none,management.azure.com;login.microsoftonline.com,20,80,no,,none,,\bazd\b|azure-dev,all,Azure Developer CLI — provision and deploy AI apps
+func host start,azure-ai,daemon,native-binary,root,on-demand,manual,no,no,7071,none,40,200,no,,none,,func.*(host|start)|azure-functions-core-tools,all,Azure Functions Core Tools local host (default port 7071)
+Microsoft.Azure.*,azure-ai,child,native-binary,func host,on-demand,process-exit,no,no,none,varies,20,100,no,,none,,Microsoft\.Azure,all,Azure SDK child processes spawned by Functions host
+copilot-language-server,copilot-vscode,child,node,Extension Host,app-launch,app-close,no,yes,none,api.github.com,30,80,no,,none,,copilot-language-server,all,Copilot language server (alternative name for copilot-lsp in some versions)
+copilot-server,copilot-vscode,child,node,Extension Host,app-launch,app-close,no,yes,none,api.github.com,30,80,no,,none,,copilot-server,all,Copilot server process (older Copilot extension versions)
+github.copilot,copilot-vscode,extension,node,Extension Host,app-launch,app-close,no,yes,none,api.github.com;copilot-proxy.githubusercontent.com,40,100,no,,none,,github\.copilot,all,Copilot extension main process (VS Code extension ID pattern)
+copilot-typescript-server,copilot-vscode,child,node,Extension Host,app-launch,app-close,no,yes,none,none,20,60,no,,none,,copilot-typescript-server,all,Copilot TypeScript-specific language server (legacy; merged into copilot-lsp)
