@@ -6,7 +6,7 @@
 |------|--------|-------|
 | `CLAUDE.md` | Root `[base]` | Always loaded at project level |
 | `CLAUDE.local.md` | Root `[profile]` + overlay | Personal, gitignored |
-| `.claude/rules/{scope}.md` | Sub-scope `[base]`+`[profile]` | Glob-matched (`applyTo`) |
+| `.claude/rules/{scope}.md` | Sub-scope `[base]`+`[profile]` | Glob-matched (`paths`) |
 | `.claude/commands/{name}.md` | `[command:*]` | Slash commands: `/project:name` |
 | `.claude/skills/{name}/SKILL.md` | `[skill:*]` | Agent skills |
 | `.mcp.json` | `[mcp:*]` | MCP servers |

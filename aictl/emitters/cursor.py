@@ -56,9 +56,9 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
 
 
 def _mdc(description: str, globs: str = "", always: bool = False, body: str = "") -> str:
-    lines = ["---", f'description: "{description}"']
+    lines = ["---", f"description: {description}"]
     if globs:
-        lines.append(f'globs: "{globs}"')
+        lines.append(f"globs: {globs}")
     lines.append(f"alwaysApply: {'true' if always else 'false'}")
     lines.extend(["---", "", body.strip(), ""])
     return "\n".join(lines)

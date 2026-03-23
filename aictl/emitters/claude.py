@@ -57,7 +57,7 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
                 safe = encode_scope(src).replace("--", "-")
                 fp = root / ".claude" / "rules" / f"{safe}.md"
                 glob = f"{src}/**"
-                body = f'---\napplyTo: "{glob}"\n---\n\n' + wrap_deployed(combined, src)
+                body = f'---\npaths:\n  - "{glob}"\n---\n\n' + wrap_deployed(combined, src)
                 if not dry_run:
                     write_safe(fp, body)
                 results.append({"path": str(fp), "tokens": estimate_tokens(body)})
