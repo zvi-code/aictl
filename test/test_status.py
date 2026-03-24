@@ -41,7 +41,7 @@ class TestDiscoverClaude:
     def test_finds_local_md(self, tmp_path):
         (tmp_path / "CLAUDE.local.md").write_text("Profile stuff")
         res = discover_claude(tmp_path)
-        assert any(f.kind == "instructions" for f in res.files)
+        assert any(f.kind == "instructions (local)" for f in res.files)
 
     def test_finds_rules(self, tmp_path):
         rules = tmp_path / ".claude" / "rules"
