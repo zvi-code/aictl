@@ -157,6 +157,19 @@ code {{ font-size: 0.8em; color: var(--fg2); }}
 }}
 .expand-btn:hover {{ background: var(--accent); color: var(--bg); }}
 
+/* Dir-grouped file sections */
+.dir-group {{ margin: 0.25rem 0; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }}
+.dir-summary {{
+  display: flex; align-items: center; gap: 0.5rem; list-style: none;
+  padding: 0.35rem 0.75rem; background: var(--bg); font-size: 0.82rem; cursor: pointer;
+}}
+.dir-summary::-webkit-details-marker {{ display: none; }}
+.dir-summary::before {{ content: "▶"; font-size: 0.65rem; opacity: 0.5; transition: transform 0.15s; }}
+details[open] > .dir-summary::before {{ transform: rotate(90deg); }}
+.dir-icon {{ opacity: 0.7; }}
+.dir-meta {{ color: var(--fg2); font-size: 0.73rem; margin-left: auto; white-space: nowrap; }}
+.dir-group > table {{ margin: 0; border-top: 1px solid var(--border); border-radius: 0; }}
+
 /* Memory entries */
 .mem-source {{ font-weight: 600; color: var(--accent); font-size: 0.75rem; text-transform: uppercase; }}
 .mem-entry {{ margin-bottom: 0.75rem; }}
@@ -332,38 +345,13 @@ def _render_tool_cards(snap: DashboardSnapshot, root: Path, home: Path) -> list[
 
         files_html = ""
         if tr.files:
-            file_rows = []
-            for f in tr.files:
-                _preview_counter += 1
-                uid = f"file-{_preview_counter}"
-                rel = _rel(f.path, root, home)
-                tok = f"{f.tokens:,}" if f.tokens else "—"
-
-                # Try to read file content for preview
-                content = _read_file_tail(f.path)
-                preview_html = ""
-                if content and content.strip():
-                    preview_html = f"""
-                    <tr class="file-preview-row"><td colspan="4" style="padding:0 0.5rem 0.5rem">
-                      {_render_content_preview(content, uid)}
-                    </td></tr>"""
-
-                file_rows.append(
-                    f"<tr><td><code>{_esc(rel)}</code></td>"
-                    f"<td>{_esc(f.kind)}</td>"
-                    f"<td class='num'>{_human_size(f.size)}</td>"
-                    f"<td class='num'>{tok}</td></tr>"
-                    f"{preview_html}"
-                )
-
-            files_html = f"""
-            <details open>
-              <summary>{len(tr.files)} file{'s' if len(tr.files) != 1 else ''}</summary>
-              <table class="file-table">
-                <thead><tr><th>Path</th><th>Kind</th><th>Size</th><th>Tokens</th></tr></thead>
-                <tbody>{''.join(file_rows)}</tbody>
-              </table>
-            </details>"""
+            dir_html = _files_html_by_dir(tr.files, root, home, f"file-{tr.tool}")
+            files_html = (
+                f'<details open>'
+                f'<summary>{len(tr.files)} file{"s" if len(tr.files) != 1 else ""}</summary>'
+                f"{dir_html}"
+                f"</details>"
+            )
 
         procs_html = ""
         if tr.processes:
@@ -567,40 +555,86 @@ def _render_aictl_section(snap: DashboardSnapshot, root: Path, home: Path) -> st
         if not tr.files:
             continue
 
+        dir_html = _files_html_by_dir(tr.files, root, home, "aictx")
+        sections.append(f'<div class="section-card">{dir_html}</div>')
+
+    return "".join(sections)
+
+
+
+
+def _files_html_by_dir(
+    files: list,
+    root: Path,
+    home: Path,
+    id_prefix: str,
+    auto_open_threshold: int = 5,
+) -> str:
+    """Render a list of ResourceFiles grouped by parent directory.
+
+    Each directory becomes a collapsible <details> block.
+    Dirs with <= auto_open_threshold files start expanded.
+    """
+    from collections import defaultdict
+
+    global _preview_counter
+
+    # Group by relative parent dir
+    groups: dict[str, list[tuple[str, object]]] = defaultdict(list)
+    for f in files:
+        rel = _rel(f.path, root, home)
+        parent = str(Path(rel).parent)
+        if parent == ".":
+            parent = "(root)"
+        groups[parent].append((rel, f))
+
+    parts = []
+    for dir_name in sorted(groups.keys()):
+        entries = groups[dir_name]
+        open_attr = "open" if len(entries) <= auto_open_threshold else ""
+        dir_tok = sum(f.tokens for _, f in entries)
+        tok_str = f" · {_human_tokens(dir_tok)} tok" if dir_tok else ""
+        n_str = f"{len(entries)} file{'s' if len(entries) != 1 else ''}"
+
         file_rows = []
-        for f in tr.files:
+        for rel, f in entries:
             _preview_counter += 1
-            uid = f"aictx-{_preview_counter}"
-            rel = _rel(f.path, root, home)
+            uid = f"{id_prefix}-{_preview_counter}"
             tok = f"{f.tokens:,}" if f.tokens else "—"
+            filename = Path(rel).name
 
             content = _read_file_tail(f.path)
             preview_html = ""
             if content and content.strip():
-                preview_html = f"""
-                <tr class="file-preview-row"><td colspan="4" style="padding:0 0.5rem 0.5rem">
-                  {_render_content_preview(content, uid)}
-                </td></tr>"""
+                preview_html = (
+                    f'<tr class="file-preview-row">'
+                    f'<td colspan="4" style="padding:0 0.5rem 0.5rem">'
+                    f"{_render_content_preview(content, uid)}"
+                    f"</td></tr>"
+                )
 
             file_rows.append(
-                f"<tr><td><code>{_esc(rel)}</code></td>"
+                f"<tr><td><code>{_esc(filename)}</code></td>"
                 f"<td>{_esc(f.kind)}</td>"
                 f"<td class='num'>{_human_size(f.size)}</td>"
                 f"<td class='num'>{tok}</td></tr>"
                 f"{preview_html}"
             )
 
-        sections.append(f"""
-        <div class="section-card">
-          <table class="file-table">
-            <thead><tr><th>Path</th><th>Kind</th><th>Size</th><th>Tokens</th></tr></thead>
-            <tbody>{''.join(file_rows)}</tbody>
-          </table>
-        </div>""")
+        parts.append(
+            f'<details {open_attr} class="dir-group">'
+            f'<summary class="dir-summary">'
+            f'<span class="dir-icon">📁</span>'
+            f"<code>{_esc(dir_name)}</code>"
+            f'<span class="dir-meta">{n_str}{tok_str}</span>'
+            f"</summary>"
+            f'<table class="file-table">'
+            f"<thead><tr><th>File</th><th>Kind</th><th>Size</th><th>Tokens</th></tr></thead>"
+            f"<tbody>{''.join(file_rows)}</tbody>"
+            f"</table></details>"
+        )
 
-    return "".join(sections)
-
-
+    return "\n".join(parts)
 
 
 def _esc(s: str) -> str:

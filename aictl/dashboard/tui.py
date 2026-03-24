@@ -25,6 +25,7 @@ from textual.widgets import (
     Rule,
     TabbedContent,
     TabPane,
+    Tree,
 )
 
 from .collector import DashboardSnapshot, collect
@@ -185,8 +186,18 @@ class DashboardApp(App):
         height: 3;
         margin: 0 0 1 0;
     }
-    #proc-table, #file-table, #memory-table {
+    #proc-table, #memory-table {
         height: 1fr;
+    }
+    #file-tree {
+        height: 1fr;
+        overflow-y: auto;
+    }
+    #file-detail {
+        height: 3;
+        border-top: solid $surface;
+        padding: 0 1;
+        color: $text-muted;
     }
     #mcp-detail-table {
         height: auto;
@@ -266,7 +277,8 @@ class DashboardApp(App):
                         yield DataTable(id="proc-table")
 
                     with TabPane("Files", id="tab-files"):
-                        yield DataTable(id="file-table")
+                        yield Tree("Files", id="file-tree")
+                        yield Label("", id="file-detail")
 
                     with TabPane("MCP Servers", id="tab-mcp"):
                         yield DataTable(id="mcp-detail-table")
@@ -283,10 +295,9 @@ class DashboardApp(App):
         pt.add_columns("PID", "Tool", "Name", "CPU%", "MEM MB", "Command")
         pt.cursor_type = "row"
 
-        # File table
-        ft = self.query_one("#file-table", DataTable)
-        ft.add_columns("Tool", "Kind", "Path", "Size", "Tokens")
-        ft.cursor_type = "row"
+        # File tree
+        ft = self.query_one("#file-tree", Tree)
+        ft.root.expand()
 
         # MCP detail table (enriched)
         mt = self.query_one("#mcp-detail-table", DataTable)
@@ -356,7 +367,7 @@ class DashboardApp(App):
 
         # Update all tables
         self._update_proc_table(snap)
-        self._update_file_table(snap)
+        self._update_file_tree(snap)
         self._update_mcp_detail_table(snap)
         self._update_memory_table(snap)
 
@@ -374,20 +385,58 @@ class DashboardApp(App):
                     p.cmdline[:80],
                 )
 
-    def _update_file_table(self, snap: DashboardSnapshot) -> None:
-        ft = self.query_one("#file-table", DataTable)
-        ft.clear()
+    def _update_file_tree(self, snap: DashboardSnapshot) -> None:
+        from collections import defaultdict
+        try:
+            tree = self.query_one("#file-tree", Tree)
+        except Exception:
+            return
+
+        tree.root.remove_children()
         root = Path(snap.root)
         home = Path.home()
+
         for tr in snap.tools:
+            if not tr.files:
+                continue
+
+            # Group files by parent directory
+            dir_groups: dict[str, list] = defaultdict(list)
             for f in tr.files:
-                ft.add_row(
-                    tr.label,
-                    f.kind,
-                    _rel_display(f.path, root, home),
-                    _human_size(f.size),
-                    str(f.tokens) if f.tokens else "",
+                rel = _rel_display(f.path, root, home)
+                parent = str(Path(rel).parent)
+                if parent == ".":
+                    parent = "(root)"
+                dir_groups[parent].append((rel, f))
+
+            colour = TOOL_COLOURS.get(tr.tool, "white")
+            tok_total = sum(f.tokens for f in tr.files)
+            tok_str = f"  {_human_tokens(tok_total)}" if tok_total else ""
+            tool_node = tree.root.add(
+                f"[{colour}]● {tr.label}[/]  ({len(tr.files)} files{tok_str})"
+            )
+            tool_node.expand()
+
+            for dir_name in sorted(dir_groups.keys()):
+                entries = dir_groups[dir_name]
+                dir_tok = sum(f.tokens for _, f in entries)
+                dir_tok_str = f"  {_human_tokens(dir_tok)}" if dir_tok else ""
+                dir_node = tool_node.add(
+                    f"📁 [dim]{dir_name}[/dim]  ({len(entries)}{dir_tok_str})"
                 )
+                # Auto-expand small dirs
+                if len(entries) <= 5:
+                    dir_node.expand()
+
+                for rel, f in sorted(entries, key=lambda x: Path(x[0]).name.lower()):
+                    filename = Path(rel).name
+                    tok_s = f"  [dim]~{_human_tokens(f.tokens)}[/dim]" if f.tokens else ""
+                    dir_node.add_leaf(
+                        f"{filename}  [dim]{f.kind}[/dim]  {_human_size(f.size)}{tok_s}",
+                        data=f,
+                    )
+
+        tree.root.expand()
 
     def _update_mcp_detail_table(self, snap: DashboardSnapshot) -> None:
         mt = self.query_one("#mcp-detail-table", DataTable)
@@ -424,6 +473,17 @@ class DashboardApp(App):
                 str(entry.lines),
                 preview,
             )
+
+    def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
+        """Show file path in detail bar when a file leaf is selected."""
+        if event.node.data is None:
+            return
+        f = event.node.data
+        try:
+            detail = self.query_one("#file-detail", Label)
+            detail.update(f"[bold]{Path(f.path).name}[/bold]  {f.kind}  {_human_size(f.size)}  [dim]{f.path}[/dim]")
+        except Exception:
+            pass
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """Show memory content preview when a row is selected in memory table."""
