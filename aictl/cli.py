@@ -5,6 +5,7 @@ import click
 from .commands.deploy import deploy
 from .commands.scan import scan_cmd
 from .commands.memory import memory
+from .commands.import_cmd import import_cmd
 
 
 @click.group()
@@ -16,3 +17,4 @@ def main():
 main.add_command(deploy)
 main.add_command(scan_cmd, name="scan")
 main.add_command(memory)
+main.add_command(import_cmd, name="import")
