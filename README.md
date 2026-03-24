@@ -67,6 +67,41 @@ aictl import --root . --prefer claude
 
 Running `aictl deploy` on the imported `.aictx` files reproduces the original native files.
 
+### Status: see all AI tool resources
+
+See every file, memory entry, MCP server, and running process across all tools in one view:
+
+```bash
+aictl status --root my-project/
+```
+
+```
+──────────────────────────────────────────────────────
+  Claude Code
+──────────────────────────────────────────────────────
+
+  Files:
+    [instructions] CLAUDE.md  1.2KB  ~300 tok
+    [settings] .claude/settings.json  1.0KB  ~252 tok
+    [memory (index)] ~/.claude/projects/.../memory/MEMORY.md  114B  ~28 tok
+
+  Memory:
+    140 tokens loaded every session
+    2 file(s) in /Users/you/.claude/projects/.../memory
+
+  MCP Servers:
+    filesystem — npx -y @modelcontextprotocol/server-filesystem /tmp
+```
+
+Add `--processes` to detect running tool processes via `ps`, and `--backtrace PID` to sample a stack trace:
+
+```bash
+aictl status --processes
+aictl status --backtrace 12345
+```
+
+Supports Claude Code, GitHub Copilot, Cursor, and Windsurf. Use `--tool claude` to filter to one tool, or `--json` for machine-readable output.
+
 ## Install
 
 ```bash
@@ -80,6 +115,9 @@ pip install -e .
 | `aictl scan --root .` | Discover `.aictx` files, show scope map |
 | `aictl deploy --root . --profile debug` | Scan → resolve → emit → cleanup → swap memory |
 | `aictl import --root .` | Read native tool files → generate `.context.aictx` |
+| `aictl status --root .` | Show all resources: files, memory, MCP servers, processes |
+| `aictl status --processes` | Include running processes (Claude, Copilot, Cursor, Windsurf) |
+| `aictl status --backtrace PID` | Sample a process stack trace |
 | `aictl memory show --root .` | Show Claude Code auto-memory content |
 | `aictl memory stashes --root .` | List per-profile memory stashes |
 
@@ -91,6 +129,15 @@ pip install -e .
 | `--profile NAME` | Override auto-detected profile name |
 | `--from claude,copilot,cursor` | Comma-separated list of importers to read from (default: all) |
 | `--dry-run` | Show what would be written without writing |
+
+### Status options
+
+| Option | Description |
+|--------|-------------|
+| `--tool claude\|copilot\|cursor\|windsurf\|aictl` | Show resources for one tool only |
+| `--processes` | Detect and display running processes for each tool |
+| `--backtrace PID` | Sample a process stack trace (macOS `sample`, Linux `eu-stack`/`gdb`) |
+| `--json` | Output as JSON for scripting |
 
 ## Documentation
 

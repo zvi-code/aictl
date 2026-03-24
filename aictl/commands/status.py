@@ -1,0 +1,148 @@
+"""Show all resources for AI coding tools in the current project."""
+
+from __future__ import annotations
+
+import dataclasses
+import json
+from pathlib import Path
+
+import click
+
+from ..discovery import discover_all, backtrace_process, ToolResources
+
+
+@click.command()
+@click.option("-r", "--root", "root_dir", default=".", help="Root directory")
+@click.option("--tool", "tool_filter", default=None,
+              help="Filter to one tool (claude, copilot, cursor, windsurf, aictl)")
+@click.option("--processes", "show_procs", is_flag=True,
+              help="Include running processes for each tool")
+@click.option("--backtrace", "bt_pid", type=int, default=None, metavar="PID",
+              help="Sample a process stack trace by PID")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def status(root_dir, tool_filter, show_procs, bt_pid, as_json):
+    """Show all resources for AI coding tools."""
+    root = Path(root_dir).resolve()
+
+    # --backtrace PID: just sample and exit
+    if bt_pid is not None:
+        _do_backtrace(bt_pid)
+        return
+
+    results = discover_all(root, include_processes=show_procs)
+
+    if tool_filter:
+        results = [r for r in results if r.tool == tool_filter]
+        if not results:
+            raise SystemExit(f"Unknown tool: {tool_filter}")
+
+    if as_json:
+        _print_json(results)
+    else:
+        _print_human(results, root, show_procs)
+
+
+# ─── Backtrace ──────────────────────────────────────────────────────
+
+def _do_backtrace(pid: int) -> None:
+    click.secho(f"\nSampling PID {pid} …", fg="yellow")
+    bt = backtrace_process(pid)
+    if bt:
+        click.echo(bt)
+    else:
+        click.secho("Could not obtain backtrace. May need elevated permissions.", fg="red")
+
+
+# ─── JSON output ────────────────────────────────────────────────────
+
+def _print_json(results: list[ToolResources]) -> None:
+    click.echo(json.dumps([dataclasses.asdict(r) for r in results], indent=2))
+
+
+# ─── Human output ───────────────────────────────────────────────────
+
+def _print_human(results: list[ToolResources], root: Path, show_procs: bool) -> None:
+    home = Path.home()
+    any_found = False
+
+    for res in results:
+        if not res.files and not res.processes and not res.mcp_servers:
+            continue
+        any_found = True
+
+        click.secho(f"\n{'─' * 54}", fg="bright_black")
+        click.secho(f"  {res.label}", bold=True)
+        click.secho(f"{'─' * 54}", fg="bright_black")
+
+        # ── Files
+        if res.files:
+            click.secho("\n  Files:", fg="cyan", bold=True)
+            for f in res.files:
+                size_str = _human_size(f.size)
+                tok_str = f"  ~{f.tokens} tok" if f.tokens else ""
+                kind = click.style(f"[{f.kind}]", fg="yellow")
+                rel = _rel_display(f.path, root, home)
+                click.echo(f"    {kind} {rel}"
+                           f"  {click.style(size_str, fg='bright_black')}"
+                           f"{click.style(tok_str, fg='bright_black')}")
+
+        # ── Memory (Claude)
+        if res.memory:
+            click.secho("\n  Memory:", fg="cyan", bold=True)
+            click.echo(f"    {res.memory['total_tokens']} tokens loaded every session")
+            click.echo(f"    {len(res.memory['files'])} file(s) in {res.memory['dir']}")
+
+        # ── MCP Servers
+        if res.mcp_servers:
+            click.secho("\n  MCP Servers:", fg="cyan", bold=True)
+            for srv in res.mcp_servers:
+                cmd = srv["config"].get("command", "?")
+                args = " ".join(srv["config"].get("args", []))
+                click.echo(f"    {click.style(srv['name'], fg='green')}"
+                           f" — {cmd} {args[:80]}")
+
+        # ── Processes
+        if show_procs:
+            if res.processes:
+                click.secho("\n  Processes:", fg="cyan", bold=True)
+                for p in res.processes:
+                    click.echo(
+                        f"    PID {click.style(str(p.pid), fg='green')}"
+                        f"  CPU {p.cpu_pct}%"
+                        f"  MEM {p.mem_mb}MB"
+                        f"  {p.name}"
+                    )
+                    if len(p.cmdline) > len(p.name):
+                        click.secho(f"      {p.cmdline[:120]}", fg="bright_black")
+                click.secho("\n    Tip: aictl status --backtrace <PID>", fg="bright_black")
+            else:
+                click.secho("\n  Processes: none detected", fg="bright_black")
+
+    if not any_found:
+        click.secho("\nNo AI tool resources found in this directory.\n", fg="bright_black")
+    else:
+        click.echo()
+
+
+# ─── Formatting helpers ─────────────────────────────────────────────
+
+def _rel_display(path_str: str, root: Path, home: Path) -> str:
+    """Show path relative to root, or with ~ for home."""
+    p = Path(path_str)
+    try:
+        return str(p.relative_to(root))
+    except ValueError:
+        pass
+    try:
+        return "~/" + str(p.relative_to(home))
+    except ValueError:
+        return path_str
+
+
+def _human_size(n: int) -> str:
+    if n < 1024:
+        return f"{n}B"
+    k = n / 1024
+    if k < 1024:
+        return f"{k:.1f}KB"
+    return f"{k / 1024:.1f}MB"
