@@ -7,22 +7,39 @@ Drop `.context.aictx` files in your code repo. Run `aictl deploy`. Get native co
 Install globally with [pipx](https://pipx.pypa.io):
 
 ```bash
-pipx install .                         # core (CLI, deploy, import, status)
-pipx install --force ".[dashboard]"    # add live TUI dashboard (installs textual)
+pipx install --force ".[dashboard]"    # TUI dashboard + all features
+# or just the core CLI:
+pipx install .
 ```
 
 If you don't have `pipx`:
 
 ```bash
-brew install pipx && pipx ensurepath   # macOS
-# or: pip install pipx
+# macOS
+brew install pipx && pipx ensurepath
+
+# Windows
+python -m pip install pipx
+python -m pipx ensurepath
+
+# Linux / other
+pip install --user pipx && pipx ensurepath
 ```
+
+**Optional: enhanced process detection** (cross-platform, recommended):
+
+```bash
+pipx inject aictl psutil
+# or include it at install time:
+pipx install --force ".[all]"
+```
+
+> Without `psutil`, process detection falls back to `ps` (macOS/Linux only; skipped on Windows).
 
 For development (editable install inside a venv):
 
 ```bash
-pip install -e .
-pip install -e ".[dashboard]"
+pip install -e ".[all]"
 ```
 
 ## How It Works

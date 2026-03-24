@@ -15,6 +15,16 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .platforms import (
+    claude_global_dir,
+    claude_account_config,
+    claude_projects_dir,
+    copilot_session_dir,
+    cursor_user_dir,
+    vscode_user_dir,
+    vscode_extensions_dir,
+    windsurf_global_dir,
+)
 from .utils import estimate_tokens
 
 
@@ -190,7 +200,7 @@ def discover_claude(root: Path) -> ToolResources:
     res = ToolResources("claude", "Claude Code")
 
     # User-global memory file
-    user_memory = Path.home() / ".claude" / "CLAUDE.md"
+    user_memory = claude_global_dir() / "CLAUDE.md"
     r = _file_resource(user_memory, "memory (user-global)")
     if r:
         res.files.append(r)
@@ -235,7 +245,7 @@ def discover_claude(root: Path) -> ToolResources:
                 res.files.append(r)
 
     # Global settings
-    claude_home = Path.home() / ".claude"
+    claude_home = claude_global_dir()
     for name in ("settings.json", "settings.local.json"):
         r = _file_resource(claude_home / name, "settings (global)")
         if r:
@@ -266,13 +276,13 @@ def discover_claude(root: Path) -> ToolResources:
         if summary:
             res.memory = summary
 
-    # ~/.claude.json — global account config (model prefs, tool usage, project registry)
-    r = _file_resource(Path.home() / ".claude.json", "config (account)")
+    # Global account config (model prefs, tool usage, project registry)
+    r = _file_resource(claude_account_config(), "config (account)")
     if r:
         res.files.append(r)
 
-    # ~/.claude plugins
-    claude_plugins = Path.home() / ".claude" / "plugins"
+    # Global plugins
+    claude_plugins = claude_global_dir() / "plugins"
     for name, kind in [
         ("blocklist.json", "plugins (blocklist)"),
         ("known_marketplaces.json", "plugins (marketplaces)"),
@@ -322,14 +332,12 @@ def discover_copilot(root: Path) -> ToolResources:
             _load_mcp(path, res)
 
     # VS Code user settings (global, contains github.copilot.* options)
-    if platform.system() == "Darwin":
-        vscode_user = Path.home() / "Library" / "Application Support" / "Code" / "User"
-        r = _file_resource(vscode_user / "settings.json", "settings (vscode user)")
-        if r:
-            res.files.append(r)
+    r = _file_resource(vscode_user_dir() / "settings.json", "settings (vscode user)")
+    if r:
+        res.files.append(r)
 
     # Installed Copilot extension version (from ~/.vscode/extensions)
-    vscode_ext_dir = Path.home() / ".vscode" / "extensions"
+    vscode_ext_dir = vscode_extensions_dir()
     if vscode_ext_dir.is_dir():
         for ext_dir in sorted(vscode_ext_dir.iterdir()):
             if "github.copilot" in ext_dir.name.lower() and (ext_dir / "package.json").is_file():
@@ -345,7 +353,7 @@ def discover_copilot(root: Path) -> ToolResources:
                 res.files.append(r)
 
     # Active Copilot agent sessions for this root
-    copilot_sessions = Path.home() / ".copilot" / "session-state"
+    copilot_sessions = copilot_session_dir()
     if copilot_sessions.is_dir():
         root_str = str(root)
         for session_dir in sorted(copilot_sessions.iterdir()):
@@ -383,12 +391,10 @@ def discover_cursor(root: Path) -> ToolResources:
             res.files.append(r)
             _load_mcp(mcp, res)
 
-    # Global settings (macOS)
-    if platform.system() == "Darwin":
-        cursor_app = Path.home() / "Library" / "Application Support" / "Cursor" / "User"
-        r = _file_resource(cursor_app / "settings.json", "settings (global)")
-        if r:
-            res.files.append(r)
+    # Global settings
+    r = _file_resource(cursor_user_dir() / "settings.json", "settings (global)")
+    if r:
+        res.files.append(r)
 
     return res
 
@@ -413,17 +419,16 @@ def discover_windsurf(root: Path) -> ToolResources:
             res.files.append(r)
             _load_mcp(mcp, res)
 
-    # Global rules / MCP (macOS)
-    if platform.system() == "Darwin":
-        ws_global = Path.home() / ".codeium" / "windsurf"
-        r = _file_resource(ws_global / "memories" / "global_rules.md", "instructions (global)")
-        if r:
-            res.files.append(r)
-        global_mcp = ws_global / "mcp_config.json"
-        r = _file_resource(global_mcp, "mcp (global)")
-        if r:
-            res.files.append(r)
-            _load_mcp(global_mcp, res)
+    # Global rules / MCP
+    ws_global = windsurf_global_dir()
+    r = _file_resource(ws_global / "memories" / "global_rules.md", "instructions (global)")
+    if r:
+        res.files.append(r)
+    global_mcp = ws_global / "mcp_config.json"
+    r = _file_resource(global_mcp, "mcp (global)")
+    if r:
+        res.files.append(r)
+        _load_mcp(global_mcp, res)
 
     return res
 
@@ -504,7 +509,29 @@ _PROCESS_PATTERNS: dict[str, list[str]] = {
 
 
 def _parse_ps_output() -> list[tuple[str, str, str, str, str]]:
-    """Run ps and return parsed rows: (pid, cpu, rss, comm, args)."""
+    """Return process rows as (pid, cpu, rss_kb, comm, args).
+
+    Uses psutil when available (cross-platform); falls back to POSIX `ps`.
+    """
+    try:
+        import psutil
+        rows = []
+        for proc in psutil.process_iter(["pid", "cpu_percent", "memory_info", "name", "cmdline"]):
+            try:
+                info = proc.info
+                pid = str(info["pid"])
+                cpu = f"{info['cpu_percent']:.1f}"
+                rss_kb = str((info["memory_info"].rss // 1024) if info["memory_info"] else 0)
+                comm = info["name"] or ""
+                args = " ".join(info["cmdline"] or []) or comm
+                rows.append((pid, cpu, rss_kb, comm, args))
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        return rows
+    except ImportError:
+        pass
+
+    # Fallback: POSIX ps (macOS / Linux only)
     try:
         result = subprocess.run(
             ["ps", "axo", "pid,pcpu,rss,comm,args"],

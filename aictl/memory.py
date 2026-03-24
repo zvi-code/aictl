@@ -63,7 +63,8 @@ def _find_project_dir(root: Path) -> Path | None:
     The first strategy that finds a unique directory wins.  If multiple
     candidates match we prefer the longest name (most specific path).
     """
-    projects = Path.home() / ".claude" / "projects"
+    from .platforms import claude_projects_dir
+    projects = claude_projects_dir()
     if not projects.is_dir():
         return None
 
