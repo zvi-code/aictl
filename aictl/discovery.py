@@ -8,6 +8,7 @@ and Windsurf.
 from __future__ import annotations
 
 import json
+import os
 import platform
 import re
 import subprocess
@@ -17,7 +18,43 @@ from pathlib import Path
 from .utils import estimate_tokens
 
 
-# ─── Data models ────────────────────────────────────────────────────
+# ─── Tree-walk helpers ──────────────────────────────────────────────
+
+# Directories that are never relevant for AI tool config
+_PRUNE_DIRS = frozenset({
+    ".git", ".venv", "venv", ".env", "node_modules", ".npm", ".yarn",
+    "__pycache__", ".mypy_cache", ".pytest_cache", ".tox", ".ruff_cache",
+    "dist", "build", ".cargo", "target", ".idea", ".vs",
+    "Pods", "DerivedData",  # Xcode / CocoaPods
+})
+
+
+def _find_in_tree(root: Path, filename: str) -> list[Path]:
+    """Find every file named *filename* under root, skipping irrelevant dirs."""
+    results = []
+    for dirpath_str, dirnames, filenames in os.walk(str(root)):
+        dirnames[:] = [d for d in dirnames if d not in _PRUNE_DIRS]
+        if filename in filenames:
+            results.append(Path(dirpath_str) / filename)
+    return sorted(results)
+
+
+def _find_dirs_in_tree(root: Path, dirname: str) -> list[Path]:
+    """Find every directory named *dirname* under root.
+
+    Does NOT recurse into found dirs (avoids descending into e.g. all of
+    .github/actions/subdir/.github); still visits all other branches.
+    """
+    results = []
+    for dirpath_str, dirnames, _ in os.walk(str(root)):
+        if dirname in dirnames:
+            results.append(Path(dirpath_str) / dirname)
+        dirnames[:] = [d for d in dirnames
+                       if d not in _PRUNE_DIRS and d != dirname]
+    return sorted(results)
+
+
+
 
 @dataclass
 class ResourceFile:
@@ -158,7 +195,7 @@ def discover_claude(root: Path) -> ToolResources:
     if r:
         res.files.append(r)
 
-    # CLAUDE.md in parent directories (Claude reads up the directory tree)
+    # CLAUDE.md / CLAUDE.local.md in parent directories (Claude reads up)
     home = Path.home()
     parent = root.parent
     visited: set[Path] = set()
@@ -172,31 +209,30 @@ def discover_claude(root: Path) -> ToolResources:
                 res.files.append(r)
         parent = parent.parent
 
-    # Project instruction files
-    for name in ("CLAUDE.md", "CLAUDE.local.md"):
-        r = _file_resource(root / name, "instructions")
+    # Instruction files — recursively across the whole tree
+    for path in _find_in_tree(root, "CLAUDE.md"):
+        r = _file_resource(path, "instructions")
+        if r:
+            res.files.append(r)
+    for path in _find_in_tree(root, "CLAUDE.local.md"):
+        r = _file_resource(path, "instructions (local)")
         if r:
             res.files.append(r)
 
-    # Rules
-    res.files.extend(_dir_resources(root / ".claude" / "rules", "*.md", "rules"))
-
-    # Commands
-    res.files.extend(_dir_resources(root / ".claude" / "commands", "*.md", "command"))
-
-    # Skills
-    skills_dir = root / ".claude" / "skills"
-    if skills_dir.is_dir():
-        for sd in sorted(p for p in skills_dir.iterdir() if p.is_dir()):
-            r = _file_resource(sd / "SKILL.md", "skill")
+    # .claude/ dirs anywhere in the tree → rules, commands, skills, settings
+    for claude_dir in _find_dirs_in_tree(root, ".claude"):
+        res.files.extend(_dir_resources(claude_dir / "rules", "*.md", "rules"))
+        res.files.extend(_dir_resources(claude_dir / "commands", "*.md", "command"))
+        skills_dir = claude_dir / "skills"
+        if skills_dir.is_dir():
+            for sd in sorted(p for p in skills_dir.iterdir() if p.is_dir()):
+                r = _file_resource(sd / "SKILL.md", "skill")
+                if r:
+                    res.files.append(r)
+        for name in ("settings.json", "settings.local.json"):
+            r = _file_resource(claude_dir / name, "settings")
             if r:
                 res.files.append(r)
-
-    # Project settings
-    for name in ("settings.json", "settings.local.json"):
-        r = _file_resource(root / ".claude" / name, "settings")
-        if r:
-            res.files.append(r)
 
     # Global settings
     claude_home = Path.home() / ".claude"
@@ -205,16 +241,16 @@ def discover_claude(root: Path) -> ToolResources:
         if r:
             res.files.append(r)
 
-    # MCP config
-    r = _file_resource(root / ".mcp.json", "mcp")
-    if r:
-        res.files.append(r)
-        _load_mcp(root / ".mcp.json", res)
-
-    # LSP config
-    r = _file_resource(root / ".lsp.json", "lsp")
-    if r:
-        res.files.append(r)
+    # MCP / LSP configs anywhere in tree
+    for path in _find_in_tree(root, ".mcp.json"):
+        r = _file_resource(path, "mcp")
+        if r:
+            res.files.append(r)
+            _load_mcp(path, res)
+    for path in _find_in_tree(root, ".lsp.json"):
+        r = _file_resource(path, "lsp")
+        if r:
+            res.files.append(r)
 
     # Memory — discover via Claude Code project directory
     from .memory import _find_project_dir, get_summary
@@ -250,51 +286,40 @@ def discover_claude(root: Path) -> ToolResources:
 
 def discover_copilot(root: Path) -> ToolResources:
     res = ToolResources("copilot", "GitHub Copilot")
-    gh = root / ".github"
 
-    # Root instructions
-    for path, kind in [
-        (gh / "copilot-instructions.md", "instructions"),
-        (root / "AGENTS.md", "instructions"),
-    ]:
-        r = _file_resource(path, kind)
+    # AGENTS.md anywhere in the tree
+    for path in _find_in_tree(root, "AGENTS.md"):
+        r = _file_resource(path, "instructions")
         if r:
             res.files.append(r)
 
-    # Sub-scope instructions
-    res.files.extend(_dir_resources(gh / "instructions", "*.instructions.md", "instructions"))
+    # .github/ dirs anywhere in tree → instructions, agents, skills, prompts
+    for gh in _find_dirs_in_tree(root, ".github"):
+        r = _file_resource(gh / "copilot-instructions.md", "instructions")
+        if r:
+            res.files.append(r)
+        res.files.extend(_dir_resources(gh / "instructions", "*.instructions.md", "instructions"))
+        res.files.extend(_dir_resources(gh / "agents", "*.agent.md", "agent"))
+        res.files.extend(_dir_resources(gh / "prompts", "*.prompt.md", "prompt"))
+        skills_dir = gh / "skills"
+        if skills_dir.is_dir():
+            for sd in sorted(p for p in skills_dir.iterdir() if p.is_dir()):
+                r = _file_resource(sd / "SKILL.md", "skill")
+                if r:
+                    res.files.append(r)
 
-    # Agents
-    res.files.extend(_dir_resources(gh / "agents", "*.agent.md", "agent"))
+    # .vscode/settings.json in each project dir in the tree
+    for vscode_dir in _find_dirs_in_tree(root, ".vscode"):
+        r = _file_resource(vscode_dir / "settings.json", "settings (vscode)")
+        if r:
+            res.files.append(r)
 
-    # Skills
-    skills_dir = gh / "skills"
-    if skills_dir.is_dir():
-        for sd in sorted(p for p in skills_dir.iterdir() if p.is_dir()):
-            r = _file_resource(sd / "SKILL.md", "skill")
-            if r:
-                res.files.append(r)
-
-    # Prompts
-    res.files.extend(_dir_resources(gh / "prompts", "*.prompt.md", "prompt"))
-
-    # AGENTS.md in subdirectories (Copilot reads these for sub-scope context)
-    for agents_md in sorted(root.rglob("AGENTS.md")):
-        if agents_md.parent != root:  # root already handled above
-            r = _file_resource(agents_md, "instructions (sub-scope)")
-            if r:
-                res.files.append(r)
-
-    # VS Code settings (often contains github.copilot.* configuration)
-    r = _file_resource(root / ".vscode" / "settings.json", "settings (vscode)")
-    if r:
-        res.files.append(r)
-
-    # MCP config
-    r = _file_resource(root / ".copilot-mcp.json", "mcp")
-    if r:
-        res.files.append(r)
-        _load_mcp(root / ".copilot-mcp.json", res)
+    # .copilot-mcp.json anywhere in tree
+    for path in _find_in_tree(root, ".copilot-mcp.json"):
+        r = _file_resource(path, "mcp")
+        if r:
+            res.files.append(r)
+            _load_mcp(path, res)
 
     # VS Code user settings (global, contains github.copilot.* options)
     if platform.system() == "Darwin":
@@ -307,17 +332,15 @@ def discover_copilot(root: Path) -> ToolResources:
     vscode_ext_dir = Path.home() / ".vscode" / "extensions"
     if vscode_ext_dir.is_dir():
         for ext_dir in sorted(vscode_ext_dir.iterdir()):
-            name = ext_dir.name.lower()
-            if "github.copilot" in name and (ext_dir / "package.json").is_file():
+            if "github.copilot" in ext_dir.name.lower() and (ext_dir / "package.json").is_file():
                 pkg = ext_dir / "package.json"
-                # Extract version only — don't count the full 200KB package.json tokens
                 version_str = ""
                 try:
                     data = json.loads(pkg.read_text("utf-8"))
                     version_str = data.get("version", "")
                 except (json.JSONDecodeError, OSError):
                     pass
-                label = f"extension ({ext_dir.name})" if not version_str else f"extension v{version_str}"
+                label = f"extension v{version_str}" if version_str else f"extension ({ext_dir.name})"
                 r = ResourceFile(str(pkg), label, pkg.stat().st_size, 0)
                 res.files.append(r)
 
@@ -344,21 +367,21 @@ def discover_copilot(root: Path) -> ToolResources:
 
 def discover_cursor(root: Path) -> ToolResources:
     res = ToolResources("cursor", "Cursor")
-    cursor_dir = root / ".cursor"
 
-    # Legacy .cursorrules
-    r = _file_resource(root / ".cursorrules", "instructions (legacy)")
-    if r:
-        res.files.append(r)
+    # .cursorrules anywhere in tree (legacy)
+    for path in _find_in_tree(root, ".cursorrules"):
+        r = _file_resource(path, "instructions (legacy)")
+        if r:
+            res.files.append(r)
 
-    # Rules
-    res.files.extend(_dir_resources(cursor_dir / "rules", "*.mdc", "rules"))
-
-    # MCP config
-    r = _file_resource(cursor_dir / "mcp.json", "mcp")
-    if r:
-        res.files.append(r)
-        _load_mcp(cursor_dir / "mcp.json", res)
+    # .cursor/ dirs anywhere in tree → rules, mcp
+    for cursor_dir in _find_dirs_in_tree(root, ".cursor"):
+        res.files.extend(_dir_resources(cursor_dir / "rules", "*.mdc", "rules"))
+        mcp = cursor_dir / "mcp.json"
+        r = _file_resource(mcp, "mcp")
+        if r:
+            res.files.append(r)
+            _load_mcp(mcp, res)
 
     # Global settings (macOS)
     if platform.system() == "Darwin":
@@ -375,74 +398,68 @@ def discover_cursor(root: Path) -> ToolResources:
 def discover_windsurf(root: Path) -> ToolResources:
     res = ToolResources("windsurf", "Windsurf")
 
-    # .windsurfrules
-    r = _file_resource(root / ".windsurfrules", "instructions")
-    if r:
-        res.files.append(r)
-
-    # Rules directory
-    res.files.extend(_dir_resources(root / ".windsurf" / "rules", "*.md", "rules"))
-
-    # Global rules (macOS)
-    if platform.system() == "Darwin":
-        global_rules = Path.home() / ".codeium" / "windsurf" / "memories" / "global_rules.md"
-        r = _file_resource(global_rules, "instructions (global)")
+    # .windsurfrules anywhere in tree
+    for path in _find_in_tree(root, ".windsurfrules"):
+        r = _file_resource(path, "instructions")
         if r:
             res.files.append(r)
 
-    # MCP config — project level, then global fallback
-    mcp_path = root / ".windsurf" / "mcp.json"
-    if not mcp_path.is_file() and platform.system() == "Darwin":
-        mcp_path = Path.home() / ".codeium" / "windsurf" / "mcp_config.json"
-    r = _file_resource(mcp_path, "mcp")
-    if r:
-        res.files.append(r)
-        _load_mcp(mcp_path, res)
+    # .windsurf/ dirs anywhere in tree → rules, mcp
+    for ws_dir in _find_dirs_in_tree(root, ".windsurf"):
+        res.files.extend(_dir_resources(ws_dir / "rules", "*.md", "rules"))
+        mcp = ws_dir / "mcp.json"
+        r = _file_resource(mcp, "mcp")
+        if r:
+            res.files.append(r)
+            _load_mcp(mcp, res)
+
+    # Global rules / MCP (macOS)
+    if platform.system() == "Darwin":
+        ws_global = Path.home() / ".codeium" / "windsurf"
+        r = _file_resource(ws_global / "memories" / "global_rules.md", "instructions (global)")
+        if r:
+            res.files.append(r)
+        global_mcp = ws_global / "mcp_config.json"
+        r = _file_resource(global_mcp, "mcp (global)")
+        if r:
+            res.files.append(r)
+            _load_mcp(global_mcp, res)
 
     return res
 
 
 # ─── Project environment / hidden config ────────────────────────────
 
-# Hidden directories to skip (not AI-related, noise)
-_SKIP_HIDDEN_DIRS = {
-    ".git", ".venv", ".env", "venv", ".tox", ".mypy_cache",
-    ".pytest_cache", ".ruff_cache", "__pycache__", ".cache",
-    ".idea", ".vs", "node_modules", ".npm", ".yarn",
-}
-
 def discover_project_env(root: Path) -> ToolResources:
-    """Discover environment and hidden config files in the project that affect LLM tools.
+    """Discover environment and hidden config files that affect LLM tools.
 
-    Covers:
-      - .env / .envrc — environment variables (may set API keys, tool config)
-      - Hidden dirs with AI-relevant config (e.g. .claude/, already in Claude discovery
-        but we surface other hidden config files here as a cross-cutting view)
+    Covers .env/.envrc files anywhere in the tree, and unknown hidden dirs
+    at each directory level that may contain AI-relevant config.
     """
     res = ToolResources("env", "Project Environment")
 
-    # Environment files that LLM tools may read
+    # .env / .envrc files anywhere in the tree
     for name in (".env", ".envrc", ".env.local", ".env.development"):
-        r = _file_resource(root / name, "env")
-        if r:
-            res.files.append(r)
+        for path in _find_in_tree(root, name):
+            r = _file_resource(path, "env")
+            if r:
+                res.files.append(r)
 
-    # Hidden dirs at project root that aren't tool-specific above
-    # but may contain AI config (e.g. .github/copilot-extensions/, .ai/, etc.)
+    # Unknown hidden dirs at each level of the tree (not covered by other tools)
     known_tool_dirs = {".claude", ".cursor", ".windsurf", ".github", ".git",
-                       ".venv", ".vscode", ".ai-deployed"}
-    if root.is_dir():
-        for item in sorted(root.iterdir()):
-            if (item.is_dir()
-                    and item.name.startswith(".")
-                    and item.name not in known_tool_dirs
-                    and item.name not in _SKIP_HIDDEN_DIRS):
-                # Collect any .json/.yaml/.md files one level deep
+                       ".venv", ".vscode", ".ai-deployed", ".copilot"}
+    skip = _PRUNE_DIRS | known_tool_dirs
+    for dirpath_str, dirnames, _ in os.walk(str(root)):
+        dirnames[:] = [d for d in dirnames if d not in _PRUNE_DIRS]
+        dp = Path(dirpath_str)
+        for d in sorted(dirnames):
+            if d.startswith(".") and d not in skip:
+                item = dp / d
                 for pat, kind in [("*.json", "config"), ("*.yaml", "config"),
                                    ("*.yml", "config"), ("*.md", "instructions")]:
                     for f in sorted(item.glob(pat)):
                         if f.is_file() and f.stat().st_size < 500_000:
-                            rf = _file_resource(f, f"hidden ({item.name})")
+                            rf = _file_resource(f, f"hidden ({d})")
                             if rf:
                                 res.files.append(rf)
 

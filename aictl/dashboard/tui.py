@@ -51,8 +51,6 @@ SOURCE_LABELS = {
     "claude-user-memory": "User Memory",
     "claude-project-memory": "Project Memory",
     "claude-auto-memory": "Auto Memory",
-    "aictx-hint": "Memory Hint",
-    "aictx-instruction": "Profile Policy",
 }
 
 
