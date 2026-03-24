@@ -84,3 +84,53 @@ def windsurf_global_dir() -> Path:
     # Linux
     xdg = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
     return Path(xdg) / "Codeium" / "windsurf"
+
+
+# ── GitHub CLI (gh) ─────────────────────────────────────────────
+
+def gh_config_dir() -> Path:
+    """GitHub CLI config directory (contains Copilot CLI auth + settings)."""
+    if _SYSTEM == "Windows":
+        return Path(os.environ.get("APPDATA", Path.home())) / "GitHub CLI"
+    xdg = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
+    return Path(xdg) / "gh"
+
+
+# ── Microsoft 365 / Teams Toolkit ───────────────────────────────
+
+def teams_global_dir() -> Path:
+    """Teams Toolkit global config directory."""
+    if _SYSTEM == "Windows":
+        return Path(os.environ.get("APPDATA", Path.home())) / "TeamsFx"
+    if _SYSTEM == "Darwin":
+        return Path.home() / "Library" / "Application Support" / "TeamsFx"
+    xdg = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
+    return Path(xdg) / "TeamsFx"
+
+
+def m365agents_global_dir() -> Path:
+    """M365 Agents Toolkit global config directory."""
+    if _SYSTEM == "Windows":
+        return Path(os.environ.get("APPDATA", Path.home())) / "M365AgentsToolkit"
+    if _SYSTEM == "Darwin":
+        return Path.home() / "Library" / "Application Support" / "M365AgentsToolkit"
+    xdg = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
+    return Path(xdg) / "M365AgentsToolkit"
+
+
+# ── Azure Developer CLI (azd) ────────────────────────────────────
+
+def azd_config_dir() -> Path:
+    """Azure Developer CLI config directory."""
+    if _SYSTEM == "Windows":
+        return Path(os.environ.get("USERPROFILE", Path.home())) / ".azd"
+    return Path.home() / ".azd"
+
+
+# ── Azure AI / PromptFlow ────────────────────────────────────────
+
+def promptflow_global_dir() -> Path:
+    """PromptFlow global config directory."""
+    if _SYSTEM == "Windows":
+        return Path(os.environ.get("USERPROFILE", Path.home())) / ".promptflow"
+    return Path.home() / ".promptflow"

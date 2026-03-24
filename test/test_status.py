@@ -219,3 +219,138 @@ class TestStatusCLI:
         runner = CliRunner()
         result = runner.invoke(status, ["-r", str(tmp_path), "--processes"])
         assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# Microsoft AI tools discovery
+# ---------------------------------------------------------------------------
+
+class TestDiscoverCopilot365:
+    def test_finds_declarative_agent(self, tmp_path):
+        from aictl.discovery import discover_copilot365
+        app_pkg = tmp_path / "appPackage"
+        app_pkg.mkdir()
+        (app_pkg / "declarativeAgent.json").write_text('{"version": "v1.6", "name": "MyAgent"}')
+        res = discover_copilot365(tmp_path)
+        assert res.tool == "copilot365"
+        assert any(f.kind == "agent (declarative)" for f in res.files)
+
+    def test_finds_teams_manifest(self, tmp_path):
+        from aictl.discovery import discover_copilot365
+        app_pkg = tmp_path / "appPackage"
+        app_pkg.mkdir()
+        (app_pkg / "manifest.json").write_text('{"manifestVersion": "1.17"}')
+        res = discover_copilot365(tmp_path)
+        assert any(f.kind == "manifest (teams app)" for f in res.files)
+
+    def test_finds_teamsapp_yml(self, tmp_path):
+        from aictl.discovery import discover_copilot365
+        (tmp_path / "teamsapp.yml").write_text("version: 1.0\n")
+        res = discover_copilot365(tmp_path)
+        assert any(f.kind == "config (teams toolkit)" for f in res.files)
+
+    def test_finds_aad_manifest(self, tmp_path):
+        from aictl.discovery import discover_copilot365
+        (tmp_path / "aad.manifest.json").write_text('{"id": "abc"}')
+        res = discover_copilot365(tmp_path)
+        assert any(f.kind == "manifest (aad)" for f in res.files)
+
+    def test_finds_instruction_txt(self, tmp_path):
+        from aictl.discovery import discover_copilot365
+        app_pkg = tmp_path / "appPackage"
+        app_pkg.mkdir()
+        (app_pkg / "instruction.txt").write_text("You are a helpful assistant.")
+        res = discover_copilot365(tmp_path)
+        assert any(f.kind == "instructions (agent)" for f in res.files)
+
+    def test_empty_dir(self, tmp_path):
+        from aictl.discovery import discover_copilot365
+        res = discover_copilot365(tmp_path)
+        assert res.tool == "copilot365"
+
+
+class TestDiscoverSemanticKernel:
+    def test_finds_skprompt(self, tmp_path):
+        from aictl.discovery import discover_semantic_kernel
+        fn_dir = tmp_path / "Plugins" / "MyPlugin" / "Summarize"
+        fn_dir.mkdir(parents=True)
+        (fn_dir / "skprompt.txt").write_text("Summarize the following: {{$input}}")
+        res = discover_semantic_kernel(tmp_path)
+        assert res.tool == "semantic_kernel"
+        assert any(f.kind == "prompt (sk)" for f in res.files)
+
+    def test_finds_config_json_sibling(self, tmp_path):
+        from aictl.discovery import discover_semantic_kernel
+        fn_dir = tmp_path / "Plugins" / "MyPlugin" / "Summarize"
+        fn_dir.mkdir(parents=True)
+        (fn_dir / "skprompt.txt").write_text("{{$input}}")
+        (fn_dir / "config.json").write_text('{"schema": 1}')
+        res = discover_semantic_kernel(tmp_path)
+        assert any(f.kind == "config (sk function)" for f in res.files)
+
+    def test_finds_appsettings(self, tmp_path):
+        from aictl.discovery import discover_semantic_kernel
+        (tmp_path / "appsettings.json").write_text('{"AzureOpenAI": {}}')
+        res = discover_semantic_kernel(tmp_path)
+        assert any(f.kind == "settings (appsettings)" for f in res.files)
+
+    def test_empty_dir(self, tmp_path):
+        from aictl.discovery import discover_semantic_kernel
+        res = discover_semantic_kernel(tmp_path)
+        assert res.tool == "semantic_kernel"
+
+
+class TestDiscoverPromptFlow:
+    def test_finds_dag_flow(self, tmp_path):
+        from aictl.discovery import discover_promptflow
+        (tmp_path / "flow.dag.yaml").write_text("inputs:\n  question:\n    type: string\n")
+        res = discover_promptflow(tmp_path)
+        assert res.tool == "promptflow"
+        assert any(f.kind == "flow (promptflow)" for f in res.files)
+
+    def test_finds_flex_flow(self, tmp_path):
+        from aictl.discovery import discover_promptflow
+        (tmp_path / "flow.flex.yaml").write_text("entry: main:flow\n")
+        res = discover_promptflow(tmp_path)
+        assert any(f.kind == "flow (promptflow)" for f in res.files)
+
+    def test_finds_promptflow_hidden_dir(self, tmp_path):
+        from aictl.discovery import discover_promptflow
+        pf_dir = tmp_path / ".promptflow"
+        pf_dir.mkdir()
+        (pf_dir / "local.connections.json").write_text("{}")
+        res = discover_promptflow(tmp_path)
+        assert any("promptflow" in f.kind for f in res.files)
+
+    def test_empty_dir(self, tmp_path):
+        from aictl.discovery import discover_promptflow
+        res = discover_promptflow(tmp_path)
+        assert res.tool == "promptflow"
+
+
+class TestDiscoverAzureAI:
+    def test_finds_azure_yaml(self, tmp_path):
+        from aictl.discovery import discover_azure_ai
+        (tmp_path / "azure.yaml").write_text("name: myapp\nservices:\n  api:\n    project: ./api\n")
+        res = discover_azure_ai(tmp_path)
+        assert res.tool == "azure_ai"
+        assert any(f.kind == "manifest (azd)" for f in res.files)
+
+    def test_finds_azure_dir(self, tmp_path):
+        from aictl.discovery import discover_azure_ai
+        azure_dir = tmp_path / ".azure" / "dev"
+        azure_dir.mkdir(parents=True)
+        (azure_dir / ".env").write_text("AZURE_SUBSCRIPTION_ID=abc")
+        res = discover_azure_ai(tmp_path)
+        assert any(f.kind == "env (azd)" for f in res.files)
+
+    def test_finds_local_settings(self, tmp_path):
+        from aictl.discovery import discover_azure_ai
+        (tmp_path / "local.settings.json").write_text('{"IsEncrypted": false}')
+        res = discover_azure_ai(tmp_path)
+        assert any(f.kind == "settings (azure functions)" for f in res.files)
+
+    def test_empty_dir(self, tmp_path):
+        from aictl.discovery import discover_azure_ai
+        res = discover_azure_ai(tmp_path)
+        assert res.tool == "azure_ai"

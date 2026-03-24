@@ -24,6 +24,9 @@ from .platforms import (
     vscode_user_dir,
     vscode_extensions_dir,
     windsurf_global_dir,
+    gh_config_dir,
+    azd_config_dir,
+    promptflow_global_dir,
 )
 from .utils import estimate_tokens
 
@@ -323,6 +326,9 @@ def discover_copilot(root: Path) -> ToolResources:
         r = _file_resource(vscode_dir / "settings.json", "settings (vscode)")
         if r:
             res.files.append(r)
+        r = _file_resource(vscode_dir / "extensions.json", "extensions (vscode)")
+        if r:
+            res.files.append(r)
 
     # .copilot-mcp.json anywhere in tree
     for path in _find_in_tree(root, ".copilot-mcp.json"):
@@ -367,6 +373,13 @@ def discover_copilot(root: Path) -> ToolResources:
                             res.files.append(r)
                 except OSError:
                     pass
+
+    # GitHub CLI config (hosts.yml contains Copilot auth tokens scope)
+    gh_cfg = gh_config_dir()
+    for name in ("config.yml", "hosts.yml"):
+        r = _file_resource(gh_cfg / name, "config (gh cli)")
+        if r:
+            res.files.append(r)
 
     return res
 
@@ -433,6 +446,207 @@ def discover_windsurf(root: Path) -> ToolResources:
     return res
 
 
+# ─── Microsoft 365 Copilot / Teams ──────────────────────────────────
+
+def discover_copilot365(root: Path) -> ToolResources:
+    """Discover Microsoft 365 Copilot and Teams AI artifacts.
+
+    Covers:
+    - Declarative Agent manifests (appPackage/declarativeAgent.json)
+    - Teams app manifests referencing Copilot extensions
+    - Teams Toolkit project config (teamsapp.yml, m365agents.yml)
+    - Azure AD app registration manifests
+    - Teams Toolkit environment variable files
+    - Older .fx/ (Teams Toolkit v4) project layouts
+    """
+    res = ToolResources("copilot365", "Microsoft 365 Copilot")
+
+    # Declarative agent manifest and instruction files inside appPackage/
+    for app_pkg in _find_dirs_in_tree(root, "appPackage"):
+        r = _file_resource(app_pkg / "manifest.json", "manifest (teams app)")
+        if r:
+            res.files.append(r)
+        r = _file_resource(app_pkg / "declarativeAgent.json", "agent (declarative)")
+        if r:
+            res.files.append(r)
+        r = _file_resource(app_pkg / "instruction.txt", "instructions (agent)")
+        if r:
+            res.files.append(r)
+        # Additional action plugins referenced by declarative agents
+        res.files.extend(_dir_resources(app_pkg, "*.json", "plugin (action)"))
+
+    # Teams Toolkit / M365 Agents Toolkit project config at any level
+    for name in ("teamsapp.yml", "teamsapp.local.yml", "teamsapp.testtool.yml",
+                 "m365agents.yml", "m365agents.local.yml"):
+        for path in _find_in_tree(root, name):
+            r = _file_resource(path, "config (teams toolkit)")
+            if r:
+                res.files.append(r)
+
+    # Azure AD app registration manifest
+    for path in _find_in_tree(root, "aad.manifest.json"):
+        r = _file_resource(path, "manifest (aad)")
+        if r:
+            res.files.append(r)
+
+    # Teams Toolkit env vars (env/ subdirs with .env.* files)
+    for env_dir in _find_dirs_in_tree(root, "env"):
+        for f in sorted(env_dir.glob(".env.*")):
+            if f.is_file():
+                r = _file_resource(f, "env (teams toolkit)")
+                if r:
+                    res.files.append(r)
+
+    # Older Teams Toolkit v4 layout: .fx/ directory
+    for fx_dir in _find_dirs_in_tree(root, ".fx"):
+        res.files.extend(_dir_resources(fx_dir, "*.json", "config (teams fx)"))
+        res.files.extend(_dir_resources(fx_dir / "configs", "*.json", "config (teams fx)"))
+        res.files.extend(_dir_resources(fx_dir / "states", "*.json", "state (teams fx)"))
+
+    res.files = _dedup_files(res.files)
+    return res
+
+
+# ─── Semantic Kernel ─────────────────────────────────────────────────
+
+def discover_semantic_kernel(root: Path) -> ToolResources:
+    """Discover Microsoft Semantic Kernel plugin and prompt artifacts.
+
+    Covers:
+    - Semantic function prompt templates (skprompt.txt)
+    - Semantic function config files (config.json beside skprompt.txt)
+    - Plugin directories (Plugins/, sk_plugins/, SemanticPlugins/, Skills/)
+    - appsettings.json files used to configure the SK kernel
+    """
+    res = ToolResources("semantic_kernel", "Semantic Kernel")
+
+    # skprompt.txt files define semantic functions — find them anywhere
+    for path in _find_in_tree(root, "skprompt.txt"):
+        r = _file_resource(path, "prompt (sk)")
+        if r:
+            res.files.append(r)
+        # config.json sibling describes the function's execution settings
+        cfg = path.parent / "config.json"
+        r2 = _file_resource(cfg, "config (sk function)")
+        if r2:
+            res.files.append(r2)
+
+    # Named plugin directories at any level
+    for plugin_dirname in ("Plugins", "sk_plugins", "SemanticPlugins", "Skills"):
+        for plugins_dir in _find_dirs_in_tree(root, plugin_dirname):
+            if plugins_dir.is_dir():
+                for plugin_dir in sorted(p for p in plugins_dir.iterdir() if p.is_dir()):
+                    for fn_dir in sorted(p for p in plugin_dir.iterdir() if p.is_dir()):
+                        r = _file_resource(fn_dir / "skprompt.txt", "prompt (sk)")
+                        if r:
+                            res.files.append(r)
+                        r = _file_resource(fn_dir / "config.json", "config (sk function)")
+                        if r:
+                            res.files.append(r)
+
+    # appsettings.json / appsettings.Development.json used to configure SK
+    for name in ("appsettings.json", "appsettings.Development.json",
+                 "appsettings.Local.json"):
+        for path in _find_in_tree(root, name):
+            r = _file_resource(path, "settings (appsettings)")
+            if r:
+                res.files.append(r)
+
+    res.files = _dedup_files(res.files)
+    return res
+
+
+# ─── Azure AI Foundry / PromptFlow ───────────────────────────────────
+
+def discover_promptflow(root: Path) -> ToolResources:
+    """Discover Azure AI Foundry PromptFlow artifacts.
+
+    Covers:
+    - DAG flow definitions (flow.dag.yaml)
+    - Flex flow definitions (flow.flex.yaml)
+    - .promptflow/ hidden dirs (connection and run cache)
+    - Global PromptFlow user config
+    """
+    res = ToolResources("promptflow", "Azure PromptFlow")
+
+    # DAG and Flex flow definition files
+    for name in ("flow.dag.yaml", "flow.flex.yaml"):
+        for path in _find_in_tree(root, name):
+            r = _file_resource(path, "flow (promptflow)")
+            if r:
+                res.files.append(r)
+
+    # .promptflow/ hidden dirs — connection configs and run metadata
+    for pf_dir in _find_dirs_in_tree(root, ".promptflow"):
+        res.files.extend(_dir_resources(pf_dir, "*.yaml", "config (promptflow)"))
+        res.files.extend(_dir_resources(pf_dir, "*.json", "config (promptflow)"))
+
+    # Global PromptFlow config
+    pf_global = promptflow_global_dir()
+    r = _file_resource(pf_global / "pf.yaml", "config (promptflow global)")
+    if r:
+        res.files.append(r)
+    res.files.extend(_dir_resources(pf_global / "connections", "*.yaml", "connection (promptflow)"))
+
+    res.files = _dedup_files(res.files)
+    return res
+
+
+# ─── Azure AI / Developer CLI ────────────────────────────────────────
+
+def discover_azure_ai(root: Path) -> ToolResources:
+    """Discover Azure AI and Azure Developer CLI (azd) artifacts.
+
+    Covers:
+    - Azure Developer CLI manifest (azure.yaml)
+    - .azure/ state directory (environment configs, subscription info)
+    - Azure Functions local settings (local.settings.json)
+    - AI Foundry network/model config files
+    """
+    res = ToolResources("azure_ai", "Azure AI")
+
+    # Azure Developer CLI manifest (root-level)
+    r = _file_resource(root / "azure.yaml", "manifest (azd)")
+    if r:
+        res.files.append(r)
+
+    # .azure/ — azd environment state (subscription, resource group, etc.)
+    azure_dir = root / ".azure"
+    if azure_dir.is_dir():
+        for env_dir in sorted(p for p in azure_dir.iterdir() if p.is_dir()):
+            r = _file_resource(env_dir / ".env", "env (azd)")
+            if r:
+                res.files.append(r)
+            r = _file_resource(env_dir / "config.json", "config (azd env)")
+            if r:
+                res.files.append(r)
+        r = _file_resource(azure_dir / "config.json", "config (azd)")
+        if r:
+            res.files.append(r)
+
+    # Azure Functions local settings (contains AI service connection strings)
+    for path in _find_in_tree(root, "local.settings.json"):
+        r = _file_resource(path, "settings (azure functions)")
+        if r:
+            res.files.append(r)
+
+    # AI Foundry / Azure AI project config files
+    for name in ("ai.network.yaml", "ai.project.yaml", "ai_project.yaml"):
+        for path in _find_in_tree(root, name):
+            r = _file_resource(path, "config (azure ai foundry)")
+            if r:
+                res.files.append(r)
+
+    # Global azd config
+    azd_cfg = azd_config_dir()
+    r = _file_resource(azd_cfg / "config.json", "config (azd global)")
+    if r:
+        res.files.append(r)
+
+    res.files = _dedup_files(res.files)
+    return res
+
+
 # ─── Project environment / hidden config ────────────────────────────
 
 def discover_project_env(root: Path) -> ToolResources:
@@ -452,7 +666,8 @@ def discover_project_env(root: Path) -> ToolResources:
 
     # Unknown hidden dirs at each level of the tree (not covered by other tools)
     known_tool_dirs = {".claude", ".cursor", ".windsurf", ".github", ".git",
-                       ".venv", ".vscode", ".ai-deployed", ".copilot"}
+                       ".venv", ".vscode", ".ai-deployed", ".copilot",
+                       ".promptflow", ".fx", ".azure"}
     skip = _PRUNE_DIRS | known_tool_dirs
     for dirpath_str, dirnames, _ in os.walk(str(root)):
         dirnames[:] = [d for d in dirnames if d not in _PRUNE_DIRS]
@@ -494,7 +709,18 @@ def discover_aictl(root: Path) -> ToolResources:
 
 # ─── Register discoverers ──────────────────────────────────────────
 
-_DISCOVERERS = [discover_claude, discover_copilot, discover_cursor, discover_windsurf, discover_project_env, discover_aictl]
+_DISCOVERERS = [
+    discover_claude,
+    discover_copilot,
+    discover_copilot365,
+    discover_semantic_kernel,
+    discover_promptflow,
+    discover_azure_ai,
+    discover_cursor,
+    discover_windsurf,
+    discover_project_env,
+    discover_aictl,
+]
 
 
 # ─── Process detection ──────────────────────────────────────────────
@@ -503,6 +729,12 @@ _PROCESS_PATTERNS: dict[str, list[str]] = {
     "claude": [r"\bclaude\b"],
     "copilot": [r"copilot-agent", r"copilot-language-server", r"copilot-server",
                 r"github\.copilot", r"copilot-typescript-server"],
+    "copilot365": [r"teamsappdevtunnel", r"teamsfx", r"ttk-",
+                   r"@microsoft/teams", r"teams-toolkit"],
+    "semantic_kernel": [r"semantic.kernel", r"SemanticKernel"],
+    "promptflow": [r"\bpf\b.*flow", r"promptflow", r"prompt.flow"],
+    "azure_ai": [r"\bazd\b", r"azure-dev", r"func\s+(host|start)",
+                 r"azure-functions-core-tools", r"Microsoft\.Azure"],
     "cursor": [r"Cursor Helper", r"Cursor\.app", r"\bCursor$"],
     "windsurf": [r"[Ww]indsurf"],
 }

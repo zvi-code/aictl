@@ -181,7 +181,7 @@ aictl status --processes
 aictl status --backtrace 12345
 ```
 
-Supports Claude Code, GitHub Copilot, Cursor, and Windsurf. Use `--tool claude` to filter to one tool, or `--json` for machine-readable output.
+Supports Claude Code, GitHub Copilot, GitHub Copilot (Microsoft 365), Semantic Kernel, Azure PromptFlow, Azure AI, Cursor, and Windsurf. Use `--tool claude` to filter to one tool, or `--json` for machine-readable output.
 
 ### Dashboard: live terminal UI
 
@@ -200,6 +200,27 @@ Requires the `textual` extra:
 ```bash
 pip install -e ".[dashboard]"
 ```
+
+### Microsoft AI tools: discovery coverage
+
+`aictl status` and `aictl dashboard` discover artifacts from the full Microsoft AI ecosystem in addition to Claude Code, Cursor, and Windsurf:
+
+| Tool | `--tool` key | What is discovered |
+|------|--------------|--------------------|
+| **GitHub Copilot** | `copilot` | `.github/copilot-instructions.md`, `.github/agents/*.agent.md`, `.github/prompts/*.prompt.md`, `.github/instructions/*.instructions.md`, `.github/skills/*/SKILL.md`, `AGENTS.md`, `.copilot-mcp.json`, `.vscode/settings.json`, `.vscode/extensions.json`, active agent sessions, GitHub CLI config |
+| **Microsoft 365 Copilot** | `copilot365` | `appPackage/declarativeAgent.json`, `appPackage/manifest.json`, `appPackage/instruction.txt`, `teamsapp.yml`, `m365agents.yml`, `aad.manifest.json`, Teams Toolkit `env/.env.*` files, `.fx/` layout (v4) |
+| **Semantic Kernel** | `semantic_kernel` | `skprompt.txt` + sibling `config.json` anywhere in tree, `Plugins/`, `sk_plugins/`, `SemanticPlugins/`, `Skills/` directories, `appsettings.json` |
+| **Azure PromptFlow** | `promptflow` | `flow.dag.yaml`, `flow.flex.yaml`, `.promptflow/` hidden dirs, global `~/.promptflow/pf.yaml` and connections |
+| **Azure AI / azd** | `azure_ai` | `azure.yaml` (azd manifest), `.azure/` env state, `local.settings.json` (Azure Functions), `ai.project.yaml`, global `~/.azd/config.json` |
+
+#### Hidden/config files specific to each Microsoft tool
+
+| Tool | Hidden dirs & config files |
+|------|-----------------------------|
+| GitHub Copilot | `.copilot/session-state/` (sessions), `~/.config/gh/hosts.yml` (CLI auth) |
+| M365 Copilot | `.fx/` (Teams Toolkit v4 state), `appPackage/` |
+| PromptFlow | `.promptflow/` (connection cache, run metadata) |
+| Azure AI | `.azure/` (azd env state — subscription IDs, resource group names) |
 
 ### HTML report: static snapshot
 
@@ -222,7 +243,7 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 | `aictl import --root .` | Read native tool files → generate `.context.aictx` |
 | `aictl plugin build --root . --name my-plugin` | Package `.aictx` as a Claude Code plugin |
 | `aictl status --root .` | Show all resources: files, memory, MCP servers, processes |
-| `aictl status --processes` | Include running processes (Claude, Copilot, Cursor, Windsurf) |
+| `aictl status --processes` | Include running processes (Claude, Copilot, Cursor, Windsurf, Azure AI, etc.) |
 | `aictl status --html -o report.html` | Generate self-contained HTML report |
 | `aictl status --backtrace PID` | Sample a process stack trace |
 | `aictl dashboard --root .` | Launch live terminal dashboard |
@@ -254,7 +275,7 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 
 | Option | Description |
 |--------|-------------|
-| `--tool claude\|copilot\|cursor\|windsurf\|aictl` | Show resources for one tool only |
+| `--tool claude\|copilot\|copilot365\|semantic_kernel\|promptflow\|azure_ai\|cursor\|windsurf\|aictl` | Show resources for one tool only |
 | `--processes` | Detect and display running processes for each tool |
 | `--backtrace PID` | Sample a process stack trace (macOS: `sample`, Linux: `eu-stack`/`gdb`; not available on Windows) |
 | `--json` | Output as JSON for scripting |
@@ -306,6 +327,9 @@ aictl --version
 | Cursor settings | `%APPDATA%\Cursor\User\settings.json` |
 | Windsurf / Codeium | `%APPDATA%\Codeium\windsurf\` |
 | Copilot sessions | `%APPDATA%\GitHub Copilot\session-state\` |
+| GitHub CLI | `%APPDATA%\GitHub CLI\` |
+| Azure Developer CLI | `%USERPROFILE%\.azd\` |
+| PromptFlow | `%USERPROFILE%\.promptflow\` |
 
 ### Known limitations on Windows
 
