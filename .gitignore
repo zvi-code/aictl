@@ -12,3 +12,6 @@ test/fixtures/project/.cursor/
 test/fixtures/project/.mcp.json
 test/fixtures/project/.copilot-mcp.json
 test/fixtures/project/.ai-deployed/
+
+build/
+dist/

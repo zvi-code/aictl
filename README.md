@@ -2,6 +2,29 @@
 
 Drop `.context.aictx` files in your code repo. Run `aictl deploy`. Get native context files for Claude Code, GitHub Copilot, and Cursor — including hooks, LSP servers, and MCP configs. Already have native files? Run `aictl import` to generate `.aictx` from them. Want to distribute your context as a Claude Code plugin? Run `aictl plugin build`.
 
+## Install
+
+Install globally with [pipx](https://pipx.pypa.io):
+
+```bash
+pipx install .                         # core (CLI, deploy, import, status)
+pipx install --force ".[dashboard]"    # add live TUI dashboard (installs textual)
+```
+
+If you don't have `pipx`:
+
+```bash
+brew install pipx && pipx ensurepath   # macOS
+# or: pip install pipx
+```
+
+For development (editable install inside a venv):
+
+```bash
+pip install -e .
+pip install -e ".[dashboard]"
+```
+
 ## How It Works
 
 ### Deploy: `.aictx` → native tool files
@@ -158,37 +181,7 @@ The report includes expandable file previews (last 5 lines shown, click to expan
 
 You can also pipe to stdout: `aictl status --html > report.html`.
 
-## Install
-
-The recommended way to install `aictl` as a global CLI tool is with [pipx](https://pipx.pypa.io), which keeps it isolated without requiring a virtual environment:
-
-```bash
-pipx install .               # core (CLI, deploy, import, status)
-pipx install ".[dashboard]"  # first install — includes textual for the live TUI dashboard
-```
-
-If aictl is already installed and you want to add dashboard support:
-
-```bash
-# Inject textual into aictl's existing pipx environment
-~/.local/pipx/venvs/aictl/bin/python -m pip install 'textual>=0.79'
-```
-
-If you don't have `pipx`:
-
-```bash
-brew install pipx && pipx ensurepath   # macOS
-# or: pip install pipx
-```
-
-For development (editable install inside a venv):
-
-```bash
-pip install -e .             # only available within the active venv
-pip install -e ".[dashboard]"
-```
-
-## Commands
+## How It Works
 
 | Command | What it does |
 |---------|-------------|
