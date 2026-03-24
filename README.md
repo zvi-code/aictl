@@ -160,9 +160,25 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 
 ## Install
 
+The recommended way to install `aictl` as a global CLI tool is with [pipx](https://pipx.pypa.io), which keeps it isolated without requiring a virtual environment:
+
 ```bash
-pip install -e .             # core (CLI, deploy, import, status)
-pip install -e ".[dashboard]"  # adds live TUI dashboard (textual)
+pipx install .               # core (CLI, deploy, import, status)
+pipx install ".[dashboard]"  # adds live TUI dashboard (textual)
+```
+
+If you don't have `pipx`:
+
+```bash
+brew install pipx && pipx ensurepath   # macOS
+# or: pip install pipx
+```
+
+For development (editable install inside a venv):
+
+```bash
+pip install -e .             # only available within the active venv
+pip install -e ".[dashboard]"
 ```
 
 ## Commands
