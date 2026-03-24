@@ -8,6 +8,7 @@ from .commands.memory import memory
 from .commands.import_cmd import import_cmd
 from .commands.status import status
 from .commands.plugin import plugin
+from .commands.dashboard import dashboard
 
 
 @click.group()
@@ -22,3 +23,4 @@ main.add_command(memory)
 main.add_command(import_cmd, name="import")
 main.add_command(status)
 main.add_command(plugin)
+main.add_command(dashboard)

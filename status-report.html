@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aictl status — /sessions/zen-magical-goodall/mnt/aictl</title>
+<style>
+:root {
+  --bg: #0f172a; --bg2: #1e293b; --fg: #e2e8f0; --fg2: #94a3b8;
+  --accent: #38bdf8; --border: #334155;
+  --green: #34d399; --red: #f87171; --orange: #fb923c;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f8fafc; --bg2: #ffffff; --fg: #1e293b; --fg2: #64748b;
+    --accent: #0284c7; --border: #e2e8f0;
+    --green: #059669; --red: #dc2626; --orange: #ea580c;
+  }
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+  background: var(--bg); color: var(--fg); padding: 1.5rem; line-height: 1.5;
+}
+h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+h3 { font-size: 1rem; margin: 1.5rem 0 0.75rem; color: var(--accent); }
+.subtitle { color: var(--fg2); font-size: 0.85rem; margin-bottom: 1.5rem; }
+
+/* Stat cards */
+.stat-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 0.75rem; margin-bottom: 1.5rem;
+}
+.stat-card {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 0.75rem 1rem; text-align: center;
+}
+.stat-card .label { color: var(--fg2); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.stat-card .value { font-size: 1.5rem; font-weight: 700; color: var(--accent); }
+
+/* Bar */
+.resource-bar {
+  display: flex; height: 8px; border-radius: 4px; overflow: hidden;
+  margin-bottom: 1.5rem; background: var(--border);
+}
+.bar-seg { transition: width 0.3s; }
+
+/* Cards */
+.tool-card {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem;
+}
+.tool-card h2 { font-size: 1.1rem; display: flex; align-items: center; gap: 0.5rem; }
+.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.badges { margin: 0.5rem 0; }
+.badge {
+  display: inline-block; background: var(--border); color: var(--fg2);
+  padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.75rem; margin-right: 0.25rem;
+}
+.section-card {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem;
+}
+
+/* Details / expand */
+details { margin: 0.5rem 0; }
+summary {
+  cursor: pointer; color: var(--fg2); font-size: 0.85rem;
+  padding: 0.25rem 0; user-select: none;
+}
+
+/* Tables */
+table {
+  width: 100%; border-collapse: collapse; font-size: 0.8rem; margin-top: 0.25rem;
+}
+th {
+  text-align: left; color: var(--fg2); font-weight: 600;
+  border-bottom: 1px solid var(--border); padding: 0.35rem 0.5rem;
+}
+td { padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--border); }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+code { font-size: 0.8em; color: var(--fg2); }
+
+/* Content preview blocks */
+.preview-box {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+  padding: 0.5rem 0.75rem; margin-top: 0.35rem; font-size: 0.78rem;
+  white-space: pre-wrap; color: var(--fg2); font-family: 'SF Mono', Menlo, Consolas, monospace;
+  line-height: 1.45; overflow-x: auto;
+}
+.preview-tail {
+  max-height: none;  /* shown by default */
+}
+.preview-full {
+  display: none;     /* hidden until expanded */
+}
+.preview-box .line-no {
+  color: var(--border); user-select: none; display: inline-block;
+  width: 3ch; text-align: right; margin-right: 0.75em;
+}
+.expand-btn {
+  display: inline-block; margin-top: 0.25rem; padding: 0.15rem 0.5rem;
+  background: var(--border); color: var(--fg2); border: none; border-radius: 3px;
+  font-size: 0.72rem; cursor: pointer; transition: all 0.15s;
+}
+.expand-btn:hover { background: var(--accent); color: var(--bg); }
+
+/* Memory entries */
+.mem-source { font-weight: 600; color: var(--accent); font-size: 0.75rem; text-transform: uppercase; }
+.mem-entry { margin-bottom: 0.75rem; }
+
+/* Tabs */
+.tab-nav {
+  display: flex; gap: 0; margin-bottom: 0; border-bottom: 2px solid var(--border);
+}
+.tab-btn {
+  padding: 0.5rem 1rem; cursor: pointer; background: none; border: none;
+  color: var(--fg2); font-size: 0.85rem; border-bottom: 2px solid transparent;
+  margin-bottom: -2px; transition: all 0.2s;
+}
+.tab-btn:hover { color: var(--fg); }
+.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.tab-panel { display: none; padding-top: 0.75rem; }
+.tab-panel.active { display: block; }
+
+/* Footer */
+.footer {
+  text-align: center; color: var(--fg2); font-size: 0.75rem;
+  margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border);
+}
+</style>
+</head>
+<body>
+<h1>aictl status</h1>
+<div class="subtitle">/sessions/zen-magical-goodall/mnt/aictl — generated 2026-03-24 19:09:27</div>
+
+<div class="stat-grid">
+  <div class="stat-card"><div class="label">Files</div><div class="value">7</div></div>
+  <div class="stat-card"><div class="label">Tokens</div><div class="value">2.0k</div></div>
+  <div class="stat-card"><div class="label">Processes</div><div class="value">4</div></div>
+  <div class="stat-card"><div class="label">CPU</div><div class="value">4.1%</div></div>
+  <div class="stat-card"><div class="label">Memory</div><div class="value">325 MB</div></div>
+  <div class="stat-card"><div class="label">MCP Servers</div><div class="value">0</div></div>
+  <div class="stat-card"><div class="label">Agent Memory</div><div class="value">8</div></div>
+  <div class="stat-card"><div class="label">Memory Tokens</div><div class="value">329</div></div>
+</div>
+
+<div class="resource-bar"><div class="bar-seg" style="width:28.6%;background:#c084fc" title="Claude Code: 2 files"></div><div class="bar-seg" style="width:71.4%;background:#94a3b8" title="aictl: 5 files"></div></div>
+
+<div class="tab-nav">
+  <button class="tab-btn active" onclick="showTab('tools')">AI Tools</button>
+  <button class="tab-btn" onclick="showTab('mcp')">MCP Servers</button>
+  <button class="tab-btn" onclick="showTab('memory')">Agent Memory</button>
+</div>
+
+<div id="tab-tools" class="tab-panel active">
+
+        <section class="tool-card" style="border-left: 4px solid #c084fc">
+          <h2><span class="dot" style="background:#c084fc"></span> Claude Code</h2>
+          <div class="badges"><span class="badge">2 files</span> <span class="badge">760</span> <span class="badge">CPU 4.1%</span> <span class="badge">MEM 325MB</span></div>
+          
+            <details open>
+              <summary>2 files</summary>
+              <table class="file-table">
+                <thead><tr><th>Path</th><th>Kind</th><th>Size</th><th>Tokens</th></tr></thead>
+                <tbody><tr><td><code>.claude/settings.json</code></td><td>settings</td><td class='num'>1.9KB</td><td class='num'>490</td></tr>
+                    <tr class="file-preview-row"><td colspan="4" style="padding:0 0.5rem 0.5rem">
+                      <div id="file-1-tail" class="preview-box preview-tail"><span class="line-no">31</span>      &quot;Bash(/Users/zvi/Projects/aictl/.venv/bin/python -m pytest test/ -v)&quot;,
+<span class="line-no">32</span>      &quot;Bash(/Users/zvi/Projects/aictl/.venv/bin/python -m pytest test/test_hooks_lsp_plugin.py -v)&quot;
+<span class="line-no">33</span>    ]
+<span class="line-no">34</span>  }
+<span class="line-no">35</span>}</div>
+<div id="file-1-full" class="preview-box preview-full" data-lines="35" style="display:none"><span class="line-no">1</span>{
+<span class="line-no">2</span>  &quot;permissions&quot;: {
+<span class="line-no">3</span>    &quot;allow&quot;: [
+<span class="line-no">4</span>      &quot;Bash(/Users/zvi/Projects/aictl/.venv/bin/python3 -m pytest test/test_import.py -v)&quot;,
+<span class="line-no">5</span>      &quot;Bash(/Users/zvi/Projects/aictl/.venv/bin/pip install:*)&quot;,
+<span class="line-no">6</span>      &quot;Bash(bash test/run.sh)&quot;,
+<span class="line-no">7</span>      &quot;Bash(python -m aictl status)&quot;,
+<span class="line-no">8</span>      &quot;Bash(python3 -m aictl status)&quot;,
+<span class="line-no">9</span>      &quot;Read(//usr/local/bin/**)&quot;,
+<span class="line-no">10</span>      &quot;Bash(ls /opt/homebrew/bin/python3*)&quot;,
+<span class="line-no">11</span>      &quot;Bash(/opt/homebrew/bin/python3.13 -m pip install -e /Users/zvi/Projects/aictl)&quot;,
+<span class="line-no">12</span>      &quot;Bash(/opt/homebrew/bin/python3.13 -c \&quot;:*)&quot;,
+<span class="line-no">13</span>      &quot;Read(//Users/zvi/.local/bin/**)&quot;,
+<span class="line-no">14</span>      &quot;Bash(pip list:*)&quot;,
+<span class="line-no">15</span>      &quot;Bash(/opt/homebrew/bin/pip3.13 list:*)&quot;,
+<span class="line-no">16</span>      &quot;Read(//opt/homebrew/Cellar/python@3.13/3.13.12_1/Frameworks/Python.framework/Versions/3.13/bin/**)&quot;,
+<span class="line-no">17</span>      &quot;Bash(/Users/zvi/Projects/aictl/.venv/bin/python -m aictl.cli status)&quot;,
+<span class="line-no">18</span>      &quot;Bash(/Users/zvi/Projects/aictl/.venv/bin/python -c \&quot;:*)&quot;,
+<span class="line-no">19</span>      &quot;Bash(/Users/zvi/Projects/aictl/.venv/bin/python -m aictl.cli status -r /Users/zvi/Projects/aictl)&quot;,
+<span class="line-no">20</span>      &quot;Bash(/Users/zvi/Projects/aictl/.venv/bin/python -m pytest test/ -x -q)&quot;,
+<span class="line-no">21</span>      &quot;Bash(git stash:*)&quot;,
+<span class="line-no">22</span>      &quot;Bash(/Users/zvi/Projects/aictl/.venv/bin/python -m pytest test/test_import.py::TestImporters::test_claude_importer_reads_fixture -x -q)&quot;,
+<span class="line-no">23</span>      &quot;Bash(/Users/zvi/Projects/aictl/.venv/bin/python -m pytest test/test_status.py -x -q)&quot;,
+<span class="line-no">24</span>      &quot;Bash(xargs ls:*)&quot;,
+<span class="line-no">25</span>      &quot;Read(//Users/zvi/docs/**)&quot;,
+<span class="line-no">26</span>      &quot;Bash(find /Users/zvi/Projects/aictl/test/fixtures/project -name *.aictx -o -name CLAUDE* -o -name .mcp.json -o -name *.md -o -name *.mdc -o -name *.json)&quot;,
+<span class="line-no">27</span>      &quot;Bash(python -m pytest test/ -v)&quot;,
+<span class="line-no">28</span>      &quot;Bash(python3 -m pytest test/ -v)&quot;,
+<span class="line-no">29</span>      &quot;Bash(ls /Users/zvi/Projects/aictl/.venv/bin/python*)&quot;,
+<span class="line-no">30</span>      &quot;Bash(ls /Users/zvi/Projects/aictl/venv/bin/python*)&quot;,
+<span class="line-no">31</span>      &quot;Bash(/Users/zvi/Projects/aictl/.venv/bin/python -m pytest test/ -v)&quot;,
+<span class="line-no">32</span>      &quot;Bash(/Users/zvi/Projects/aictl/.venv/bin/python -m pytest test/test_hooks_lsp_plugin.py -v)&quot;
+<span class="line-no">33</span>    ]
+<span class="line-no">34</span>  }
+<span class="line-no">35</span>}</div>
+<button id="file-1-btn" class="expand-btn" onclick="togglePreview('file-1')">show all (35 lines)</button>
+                    </td></tr><tr><td><code>.claude/settings.local.json</code></td><td>settings</td><td class='num'>1.1KB</td><td class='num'>270</td></tr>
+                    <tr class="file-preview-row"><td colspan="4" style="padding:0 0.5rem 0.5rem">
+                      <div id="file-2-tail" class="preview-box preview-tail"><span class="line-no">22</span>      &quot;Bash(python3 -c &#x27;import click&#x27;)&quot;,
+<span class="line-no">23</span>      &quot;Bash(pip3 list:*)&quot;
+<span class="line-no">24</span>    ]
+<span class="line-no">25</span>  }
+<span class="line-no">26</span>}</div>
+<div id="file-2-full" class="preview-box preview-full" data-lines="26" style="display:none"><span class="line-no">1</span>{
+<span class="line-no">2</span>  &quot;permissions&quot;: {
+<span class="line-no">3</span>    &quot;allow&quot;: [
+<span class="line-no">4</span>      &quot;Bash(pip install:*)&quot;,
+<span class="line-no">5</span>      &quot;Bash(pip3 install:*)&quot;,
+<span class="line-no">6</span>      &quot;Bash(brew --prefix python@3)&quot;,
+<span class="line-no">7</span>      &quot;Bash(/opt/homebrew/opt/python@3.14/bin/python3 --version)&quot;,
+<span class="line-no">8</span>      &quot;Bash(/opt/homebrew/opt/python@3.14/bin/python3 -m venv /Users/zvi/Projects/aictl/.venv)&quot;,
+<span class="line-no">9</span>      &quot;Bash(source /Users/zvi/Projects/aictl/.venv/bin/activate)&quot;,
+<span class="line-no">10</span>      &quot;Read(//opt/homebrew/opt/**)&quot;,
+<span class="line-no">11</span>      &quot;Read(//opt/homebrew/bin/**)&quot;,
+<span class="line-no">12</span>      &quot;Bash(brew install:*)&quot;,
+<span class="line-no">13</span>      &quot;Bash(export PATH=\&quot;/Users/zvi/Projects/aictl/.venv/bin:$PATH\&quot;)&quot;,
+<span class="line-no">14</span>      &quot;Bash(bash /Users/zvi/Projects/aictl/test/run.sh)&quot;,
+<span class="line-no">15</span>      &quot;Bash(git add:*)&quot;,
+<span class="line-no">16</span>      &quot;Bash(git commit:*)&quot;,
+<span class="line-no">17</span>      &quot;Bash(python -c \&quot;from aictl.importers import registry; print\\(registry.all_names\\(\\)\\)\&quot;)&quot;,
+<span class="line-no">18</span>      &quot;Bash(python3 -c \&quot;from aictl.importers import registry; print\\(registry.all_names\\(\\)\\)\&quot;)&quot;,
+<span class="line-no">19</span>      &quot;Bash(python3 -c \&quot;:*)&quot;,
+<span class="line-no">20</span>      &quot;Bash(python3 -m aictl import --root test/fixtures/project --dry-run)&quot;,
+<span class="line-no">21</span>      &quot;Bash(aictl import:*)&quot;,
+<span class="line-no">22</span>      &quot;Bash(python3 -c &#x27;import click&#x27;)&quot;,
+<span class="line-no">23</span>      &quot;Bash(pip3 list:*)&quot;
+<span class="line-no">24</span>    ]
+<span class="line-no">25</span>  }
+<span class="line-no">26</span>}</div>
+<button id="file-2-btn" class="expand-btn" onclick="togglePreview('file-2')">show all (26 lines)</button>
+                    </td></tr></tbody>
+              </table>
+            </details>
+          
+            <details open>
+              <summary>4 processes</summary>
+              <table class="proc-table">
+                <thead><tr><th>PID</th><th>Name</th><th>CPU</th><th>MEM</th><th>Command</th></tr></thead>
+                <tbody><tr><td class='num'>4978</td><td>bindfs</td><td class='num'>0.0%</td><td class='num'>1.0 MB</td><td><code>/usr/bin/bindfs -u 1005 -g 1005 -o nonempty -p u=rwX:go= /mnt/.virtiofs-root/shared/Library/Applicat</code></td></tr><tr><td class='num'>4987</td><td>bindfs</td><td class='num'>0.1%</td><td class='num'>1.0 MB</td><td><code>/usr/bin/bindfs -u 1005 -g 1005 -r -o nonempty -p u=rX:go= /mnt/.virtiofs-root/shared/Library/Applic</code></td></tr><tr><td class='num'>4994</td><td>sandbox-helper</td><td class='num'>0.0%</td><td class='num'>2.5 MB</td><td><code>/usr/local/bin/sandbox-helper 1005 1005 --no-srt /usr/local/bin/claude --output-format stream-json -</code></td></tr><tr><td class='num'>5001</td><td>claude</td><td class='num'>4.0%</td><td class='num'>320.9 MB</td><td><code>/usr/local/bin/claude --output-format stream-json --verbose --input-format stream-json --max-thinkin</code></td></tr></tbody>
+              </table>
+            </details>
+          
+        </section>
+        <section class="tool-card" style="border-left: 4px solid #94a3b8">
+          <h2><span class="dot" style="background:#94a3b8"></span> aictl</h2>
+          <div class="badges"><span class="badge">5 files</span> <span class="badge">1.3k</span></div>
+          
+            <details open>
+              <summary>5 files</summary>
+              <table class="file-table">
+                <thead><tr><th>Path</th><th>Kind</th><th>Size</th><th>Tokens</th></tr></thead>
+                <tbody><tr><td><code>test/fixtures/project/.context.aictx</code></td><td>context</td><td class='num'>3.0KB</td><td class='num'>777</td></tr>
+                    <tr class="file-preview-row"><td colspan="4" style="padding:0 0.5rem 0.5rem">
+                      <div id="file-3-tail" class="preview-box preview-tail"><span class="line-no">75</span>SimSIMD dispatch refactored — check src/metrics/distance.rs for dispatch table.
+<span class="line-no">76</span>ARM Graviton3 needs sve, Graviton2 uses neon only.
+<span class="line-no">77</span>
+<span class="line-no">78</span>[inherit]
+<span class="line-no">79</span>recursive: skills</div>
+<div id="file-3-full" class="preview-box preview-full" data-lines="79" style="display:none"><span class="line-no">1</span>[base]
+<span class="line-no">2</span># valkey-bench-rs
+<span class="line-no">3</span>Rust high-performance benchmarking framework for Valkey/Redis vector search.
+<span class="line-no">4</span>Measures latency (p50/p99), throughput (QPS), and recall across HNSW configs.
+<span class="line-no">5</span>Architecture: src/runner/ (execution engine), src/dataset/ (generation + ground truth), src/metrics/ (histograms + export).
+<span class="line-no">6</span>Build: cargo build --release. Test: cargo test. Bench: cargo bench.
+<span class="line-no">7</span>Feature flags: --features neon, --features sve, --features avx2.
+<span class="line-no">8</span>Conventions: thiserror+anyhow, tokio async, clap derive, no unwrap in lib code.
+<span class="line-no">9</span>
+<span class="line-no">10</span>[debug]
+<span class="line-no">11</span>Connection pool timeout: check Valkey server reachability.
+<span class="line-no">12</span>SIMD dispatch: wrong feature flag causes silent scalar fallback.
+<span class="line-no">13</span>Ground truth mismatch: regenerate if index params changed.
+<span class="line-no">14</span>OOM on large datasets: check --max-vectors and system memory.
+<span class="line-no">15</span>Use RUST_LOG=debug for trace output.
+<span class="line-no">16</span>
+<span class="line-no">17</span>[docs]
+<span class="line-no">18</span>Audience: contributors and users evaluating vector search performance.
+<span class="line-no">19</span>Results format in docs/results-format.md. Diagrams in Mermaid.
+<span class="line-no">20</span>
+<span class="line-no">21</span>[review]
+<span class="line-no">22</span>No unwrap() — use ? or expect() with context.
+<span class="line-no">23</span>No blocking IO in async. CLI flags need help text + README.
+<span class="line-no">24</span>Benchmark configs must be reproducible (fixed seeds).
+<span class="line-no">25</span>
+<span class="line-no">26</span>[command:_always:status]
+<span class="line-no">27</span>Show project health: cargo check, cargo test --no-run, valkey-cli ping.
+<span class="line-no">28</span>
+<span class="line-no">29</span>[command:debug:profile]
+<span class="line-no">30</span>Profile benchmark from $ARGUMENTS: perf record + cargo flamegraph, analyze hot paths.
+<span class="line-no">31</span>
+<span class="line-no">32</span>[command:debug:repro-recall]
+<span class="line-no">33</span>Reproduce recall issue from $ARGUMENTS: check seed, verify ground truth, single-query verbose.
+<span class="line-no">34</span>
+<span class="line-no">35</span>[command:docs:gen-bench-report]
+<span class="line-no">36</span>Generate benchmark report: parse results/, comparison tables, latency charts in Mermaid.
+<span class="line-no">37</span>
+<span class="line-no">38</span>[command:review:check-simd]
+<span class="line-no">39</span>Review SIMD changes: verify scalar fallback, feature flags, ARM/x86 parity, criterion before/after.
+<span class="line-no">40</span>
+<span class="line-no">41</span>[agent:_always:planner]
+<span class="line-no">42</span>Planning agent. Break tasks into steps. Suggest benchmarks for any perf-critical change.
+<span class="line-no">43</span>
+<span class="line-no">44</span>[agent:debug:perf-investigator]
+<span class="line-no">45</span>Performance specialist. Measure first, hypothesize, instrument, validate. Use flamegraph and criterion.
+<span class="line-no">46</span>
+<span class="line-no">47</span>[agent:review:rust-reviewer]
+<span class="line-no">48</span>Rust reviewer. Check ownership, error handling, unsafe, async correctness, SIMD safety, reproducibility.
+<span class="line-no">49</span>
+<span class="line-no">50</span>[skill:debug:flamegraph]
+<span class="line-no">51</span># Flamegraph
+<span class="line-no">52</span>Build with frame pointers, perf record, inferno-collapse-perf, inferno-flamegraph.
+<span class="line-no">53</span>Look for hot paths in distance computation and HNSW traversal.
+<span class="line-no">54</span>
+<span class="line-no">55</span>[skill:docs:results-visualizer]
+<span class="line-no">56</span># Results Visualization
+<span class="line-no">57</span>Parse CSV, generate Mermaid charts: latency distributions, throughput, recall vs speed.
+<span class="line-no">58</span>
+<span class="line-no">59</span>[mcp:_always:github]
+<span class="line-no">60</span>{&quot;type&quot;: &quot;http&quot;, &quot;url&quot;: &quot;https://api.githubcopilot.com/mcp/&quot;}
+<span class="line-no">61</span>
+<span class="line-no">62</span>[mcp:debug:valkey-server]
+<span class="line-no">63</span>{&quot;command&quot;: &quot;valkey-cli&quot;, &quot;args&quot;: [&quot;ping&quot;]}
+<span class="line-no">64</span>
+<span class="line-no">65</span>[hook:_always:PreToolUse]
+<span class="line-no">66</span>[{&quot;matcher&quot;: &quot;Bash&quot;, &quot;hooks&quot;: [{&quot;type&quot;: &quot;command&quot;, &quot;command&quot;: &quot;.claude/hooks/block-rm.sh&quot;}]}]
+<span class="line-no">67</span>
+<span class="line-no">68</span>[hook:debug:Stop]
+<span class="line-no">69</span>[{&quot;hooks&quot;: [{&quot;type&quot;: &quot;agent&quot;, &quot;prompt&quot;: &quot;Run cargo test and confirm all tests pass&quot;, &quot;timeout&quot;: 120}]}]
+<span class="line-no">70</span>
+<span class="line-no">71</span>[lsp:_always:rust-analyzer]
+<span class="line-no">72</span>{&quot;command&quot;: &quot;rust-analyzer&quot;, &quot;args&quot;: [], &quot;extensionToLanguage&quot;: {&quot;.rs&quot;: &quot;rust&quot;}}
+<span class="line-no">73</span>
+<span class="line-no">74</span>[memory:debug]
+<span class="line-no">75</span>SimSIMD dispatch refactored — check src/metrics/distance.rs for dispatch table.
+<span class="line-no">76</span>ARM Graviton3 needs sve, Graviton2 uses neon only.
+<span class="line-no">77</span>
+<span class="line-no">78</span>[inherit]
+<span class="line-no">79</span>recursive: skills</div>
+<button id="file-3-btn" class="expand-btn" onclick="togglePreview('file-3')">show all (79 lines)</button>
+                    </td></tr><tr><td><code>test/fixtures/project/src/dataset/.context.aictx</code></td><td>context</td><td class='num'>531B</td><td class='num'>133</td></tr>
+                    <tr class="file-preview-row"><td colspan="4" style="padding:0 0.5rem 0.5rem">
+                      <div id="file-4-tail" class="preview-box preview-tail"><span class="line-no">10</span>HDF5: use h5dump to inspect dimensions.
+<span class="line-no">11</span>
+<span class="line-no">12</span>[skill:debug:dataset-inspector]
+<span class="line-no">13</span># Dataset Inspector
+<span class="line-no">14</span>Load header, sample vectors, verify ground truth dimensions, report stats.</div>
+<div id="file-4-full" class="preview-box preview-full" data-lines="14" style="display:none"><span class="line-no">1</span>[base]
+<span class="line-no">2</span># Dataset Module
+<span class="line-no">3</span>Vector generation and ground truth. dataset.rs: trait + types.
+<span class="line-no">4</span>ground_truth.rs: brute-force KNN for recall. loader.rs: binary + HDF5 formats.
+<span class="line-no">5</span>Recall = intersection(results, ground_truth) / K.
+<span class="line-no">6</span>
+<span class="line-no">7</span>[debug]
+<span class="line-no">8</span>Ground truth cached in .gt files — expensive to recompute.
+<span class="line-no">9</span>If recall drops: check if dataset regenerated without updating ground truth.
+<span class="line-no">10</span>HDF5: use h5dump to inspect dimensions.
+<span class="line-no">11</span>
+<span class="line-no">12</span>[skill:debug:dataset-inspector]
+<span class="line-no">13</span># Dataset Inspector
+<span class="line-no">14</span>Load header, sample vectors, verify ground truth dimensions, report stats.</div>
+<button id="file-4-btn" class="expand-btn" onclick="togglePreview('file-4')">show all (14 lines)</button>
+                    </td></tr><tr><td><code>test/fixtures/project/src/metrics/.context.aictx</code></td><td>context</td><td class='num'>706B</td><td class='num'>177</td></tr>
+                    <tr class="file-preview-row"><td colspan="4" style="padding:0 0.5rem 0.5rem">
+                      <div id="file-5-tail" class="preview-box preview-tail"><span class="line-no">17</span>Check p99/p50 ratio. If &gt;10x: tail latency issue.
+<span class="line-no">18</span>Bimodal distribution = pool contention. Compare across ef_runtime values.
+<span class="line-no">19</span>
+<span class="line-no">20</span>[inherit]
+<span class="line-no">21</span>parent: mcp</div>
+<div id="file-5-full" class="preview-box preview-full" data-lines="21" style="display:none"><span class="line-no">1</span>[base]
+<span class="line-no">2</span># Metrics Module
+<span class="line-no">3</span>histogram.rs: HDR histogram (p50/p95/p99/p999). recall.rs: recall@K.
+<span class="line-no">4</span>export.rs: CSV + JSON. distance.rs: SIMD distance (cosine, L2, IP).
+<span class="line-no">5</span>SimSIMD with runtime CPU detection for dispatch.
+<span class="line-no">6</span>
+<span class="line-no">7</span>[debug]
+<span class="line-no">8</span>Histogram overflow: increase max_value if latencies &gt;10s.
+<span class="line-no">9</span>SIMD dispatch: SIMSIMD_LOG=1 to verify codepath.
+<span class="line-no">10</span>Recall O(N*K): use --sample-queries for large datasets.
+<span class="line-no">11</span>
+<span class="line-no">12</span>[command:debug:check-simd-dispatch]
+<span class="line-no">13</span>Verify SIMD: cargo test test_simd_dispatch -- --nocapture, then cargo bench -- distance.
+<span class="line-no">14</span>
+<span class="line-no">15</span>[skill:debug:latency-analysis]
+<span class="line-no">16</span># Latency Analysis
+<span class="line-no">17</span>Check p99/p50 ratio. If &gt;10x: tail latency issue.
+<span class="line-no">18</span>Bimodal distribution = pool contention. Compare across ef_runtime values.
+<span class="line-no">19</span>
+<span class="line-no">20</span>[inherit]
+<span class="line-no">21</span>parent: mcp</div>
+<button id="file-5-btn" class="expand-btn" onclick="togglePreview('file-5')">show all (21 lines)</button>
+                    </td></tr><tr><td><code>test/fixtures/project/src/runner/.context.aictx</code></td><td>context</td><td class='num'>402B</td><td class='num'>101</td></tr>
+                    <tr class="file-preview-row"><td colspan="4" style="padding:0 0.5rem 0.5rem">
+                      <div id="file-6-tail" class="preview-box preview-tail"><span class="line-no">5</span>worker.rs: sends FT.SEARCH with vector payloads, records latency.
+<span class="line-no">6</span>
+<span class="line-no">7</span>[debug]
+<span class="line-no">8</span>Pool exhaustion: RUST_LOG=deadpool=debug. Worker stalls: check INFO commandstats.
+<span class="line-no">9</span>Tokio contention: use tokio-console. If p99&gt;&gt;p50: pool contention or server GC.</div>
+<div id="file-6-full" class="preview-box preview-full" data-lines="9" style="display:none"><span class="line-no">1</span>[base]
+<span class="line-no">2</span># Benchmark Runner
+<span class="line-no">3</span>Async execution engine on Tokio. runner.rs orchestrates workers.
+<span class="line-no">4</span>connection.rs: deadpool-redis pool (default 50). config.rs: TOML parsing.
+<span class="line-no">5</span>worker.rs: sends FT.SEARCH with vector payloads, records latency.
+<span class="line-no">6</span>
+<span class="line-no">7</span>[debug]
+<span class="line-no">8</span>Pool exhaustion: RUST_LOG=deadpool=debug. Worker stalls: check INFO commandstats.
+<span class="line-no">9</span>Tokio contention: use tokio-console. If p99&gt;&gt;p50: pool contention or server GC.</div>
+<button id="file-6-btn" class="expand-btn" onclick="togglePreview('file-6')">show all (9 lines)</button>
+                    </td></tr><tr><td><code>test/fixtures/project/src/dataset/generators/.context.aictx</code></td><td>context</td><td class='num'>311B</td><td class='num'>78</td></tr>
+                    <tr class="file-preview-row"><td colspan="4" style="padding:0 0.5rem 0.5rem">
+                      <div id="file-7-tail" class="preview-box preview-tail"><span class="line-no">5</span>Seeds mandatory for reproducibility.
+<span class="line-no">6</span>
+<span class="line-no">7</span>[debug]
+<span class="line-no">8</span>Dimension mismatch: check generator config vs index schema.
+<span class="line-no">9</span>Use --seed to reproduce exact dataset.</div>
+<div id="file-7-full" class="preview-box preview-full" data-lines="9" style="display:none"><span class="line-no">1</span>[base]
+<span class="line-no">2</span># Vector Generators
+<span class="line-no">3</span>random.rs: uniform random. clustered.rs: gaussian clusters.
+<span class="line-no">4</span>hdf5.rs: standard datasets (SIFT, GloVe). All implement VectorGenerator trait.
+<span class="line-no">5</span>Seeds mandatory for reproducibility.
+<span class="line-no">6</span>
+<span class="line-no">7</span>[debug]
+<span class="line-no">8</span>Dimension mismatch: check generator config vs index schema.
+<span class="line-no">9</span>Use --seed to reproduce exact dataset.</div>
+<button id="file-7-btn" class="expand-btn" onclick="togglePreview('file-7')">show all (9 lines)</button>
+                    </td></tr></tbody>
+              </table>
+            </details>
+          
+          
+        </section>
+</div>
+
+<div id="tab-mcp" class="tab-panel">
+<div class="section-card"><p style="color:var(--fg2)">No MCP servers configured.</p></div>
+</div>
+
+<div id="tab-memory" class="tab-panel">
+
+        <div class="section-card">
+          <details open>
+            <summary>
+              <span class="mem-source">Memory Hint (.aictx)</span>
+              — 1 entry
+              (33)
+            </summary>
+            
+            <div class="mem-entry">
+              <div>
+                <span style="font-weight:600;color:var(--fg)">debug</span>
+                <span class="badge">33 tok</span>
+                <span class="badge">2 lines</span>
+                <code style="font-size:0.7rem;color:var(--fg2)">test/fixtures/project/.context.aictx</code>
+              </div>
+              <div class="preview-box"><span class="line-no">1</span>SimSIMD dispatch refactored — check src/metrics/distance.rs for dispatch table.
+<span class="line-no">2</span>ARM Graviton3 needs sve, Graviton2 uses neon only.</div>
+            </div>
+          </details>
+        </div>
+        <div class="section-card">
+          <details open>
+            <summary>
+              <span class="mem-source">Profile Policy (.aictx)</span>
+              — 7 entries
+              (296)
+            </summary>
+            
+            <div class="mem-entry">
+              <div>
+                <span style="font-weight:600;color:var(--fg)">debug</span>
+                <span class="badge">71 tok</span>
+                <span class="badge">5 lines</span>
+                <code style="font-size:0.7rem;color:var(--fg2)">test/fixtures/project/.context.aictx</code>
+              </div>
+              <div class="preview-box"><span class="line-no">1</span>Connection pool timeout: check Valkey server reachability.
+<span class="line-no">2</span>SIMD dispatch: wrong feature flag causes silent scalar fallback.
+<span class="line-no">3</span>Ground truth mismatch: regenerate if index params changed.
+<span class="line-no">4</span>OOM on large datasets: check --max-vectors and system memory.
+<span class="line-no">5</span>Use RUST_LOG=debug for trace output.</div>
+            </div>
+            <div class="mem-entry">
+              <div>
+                <span style="font-weight:600;color:var(--fg)">docs</span>
+                <span class="badge">34 tok</span>
+                <span class="badge">2 lines</span>
+                <code style="font-size:0.7rem;color:var(--fg2)">test/fixtures/project/.context.aictx</code>
+              </div>
+              <div class="preview-box"><span class="line-no">1</span>Audience: contributors and users evaluating vector search performance.
+<span class="line-no">2</span>Results format in docs/results-format.md. Diagrams in Mermaid.</div>
+            </div>
+            <div class="mem-entry">
+              <div>
+                <span style="font-weight:600;color:var(--fg)">review</span>
+                <span class="badge">40 tok</span>
+                <span class="badge">3 lines</span>
+                <code style="font-size:0.7rem;color:var(--fg2)">test/fixtures/project/.context.aictx</code>
+              </div>
+              <div class="preview-box"><span class="line-no">1</span>No unwrap() — use ? or expect() with context.
+<span class="line-no">2</span>No blocking IO in async. CLI flags need help text + README.
+<span class="line-no">3</span>Benchmark configs must be reproducible (fixed seeds).</div>
+            </div>
+            <div class="mem-entry">
+              <div>
+                <span style="font-weight:600;color:var(--fg)">debug</span>
+                <span class="badge">44 tok</span>
+                <span class="badge">3 lines</span>
+                <code style="font-size:0.7rem;color:var(--fg2)">test/fixtures/project/src/dataset/.context.aictx</code>
+              </div>
+              <div class="preview-box"><span class="line-no">1</span>Ground truth cached in .gt files — expensive to recompute.
+<span class="line-no">2</span>If recall drops: check if dataset regenerated without updating ground truth.
+<span class="line-no">3</span>HDF5: use h5dump to inspect dimensions.</div>
+            </div>
+            <div class="mem-entry">
+              <div>
+                <span style="font-weight:600;color:var(--fg)">debug</span>
+                <span class="badge">41 tok</span>
+                <span class="badge">3 lines</span>
+                <code style="font-size:0.7rem;color:var(--fg2)">test/fixtures/project/src/metrics/.context.aictx</code>
+              </div>
+              <div class="preview-box"><span class="line-no">1</span>Histogram overflow: increase max_value if latencies &gt;10s.
+<span class="line-no">2</span>SIMD dispatch: SIMSIMD_LOG=1 to verify codepath.
+<span class="line-no">3</span>Recall O(N*K): use --sample-queries for large datasets.</div>
+            </div>
+            <div class="mem-entry">
+              <div>
+                <span style="font-weight:600;color:var(--fg)">debug</span>
+                <span class="badge">41 tok</span>
+                <span class="badge">2 lines</span>
+                <code style="font-size:0.7rem;color:var(--fg2)">test/fixtures/project/src/runner/.context.aictx</code>
+              </div>
+              <div class="preview-box"><span class="line-no">1</span>Pool exhaustion: RUST_LOG=deadpool=debug. Worker stalls: check INFO commandstats.
+<span class="line-no">2</span>Tokio contention: use tokio-console. If p99&gt;&gt;p50: pool contention or server GC.</div>
+            </div>
+            <div class="mem-entry">
+              <div>
+                <span style="font-weight:600;color:var(--fg)">debug</span>
+                <span class="badge">25 tok</span>
+                <span class="badge">2 lines</span>
+                <code style="font-size:0.7rem;color:var(--fg2)">test/fixtures/project/src/dataset/generators/.context.aictx</code>
+              </div>
+              <div class="preview-box"><span class="line-no">1</span>Dimension mismatch: check generator config vs index schema.
+<span class="line-no">2</span>Use --seed to reproduce exact dataset.</div>
+            </div>
+          </details>
+        </div>
+</div>
+
+<div class="footer">
+  Generated by <strong>aictl 0.4.0</strong> — <code>aictl status --html</code>
+</div>
+
+<script>
+function showTab(name) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  event.target.classList.add('active');
+}
+
+function togglePreview(id) {
+  const tail = document.getElementById(id + '-tail');
+  const full = document.getElementById(id + '-full');
+  const btn = document.getElementById(id + '-btn');
+  if (full.style.display === 'none' || !full.style.display) {
+    full.style.display = 'block';
+    tail.style.display = 'none';
+    btn.textContent = 'collapse';
+  } else {
+    full.style.display = 'none';
+    tail.style.display = 'block';
+    btn.textContent = 'show all (' + full.dataset.lines + ' lines)';
+  }
+}
+
+window.__AICTL_SNAPSHOT__ = {
+  "timestamp": 1774372167.113266,
+  "root": "/sessions/zen-magical-goodall/mnt/aictl",
+  "total_files": 7,
+  "total_tokens": 2026,
+  "total_size": 8097,
+  "total_processes": 4,
+  "total_cpu": 4.1,
+  "total_mem_mb": 325.4,
+  "total_mcp_servers": 0,
+  "total_memory_entries": 8,
+  "total_memory_tokens": 329,
+  "tools": [
+    {
+      "tool": "claude",
+      "label": "Claude Code",
+      "files": [
+        {
+          "path": "/sessions/zen-magical-goodall/mnt/aictl/.claude/settings.json",
+          "kind": "settings",
+          "size": 1960,
+          "tokens": 490
+        },
+        {
+          "path": "/sessions/zen-magical-goodall/mnt/aictl/.claude/settings.local.json",
+          "kind": "settings",
+          "size": 1077,
+          "tokens": 270
+        }
+      ],
+      "processes": [
+        {
+          "pid": 4978,
+          "name": "bindfs",
+          "cmdline": "/usr/bin/bindfs -u 1005 -g 1005 -o nonempty -p u=rwX:go= /mnt/.virtiofs-root/shared/Library/Application Support/Claude/local-agent-mode-sessions/834cbde1-f3ca-47eb-acfa-83c80a8b2ef9/a7761f48-f87d-4309",
+          "cpu_pct": "0.0",
+          "mem_mb": "1.0"
+        },
+        {
+          "pid": 4987,
+          "name": "bindfs",
+          "cmdline": "/usr/bin/bindfs -u 1005 -g 1005 -r -o nonempty -p u=rX:go= /mnt/.virtiofs-root/shared/Library/Application Support/Claude/local-agent-mode-sessions/skills-plugin/a7761f48-f87d-4309-b02b-9964fd3a219b/83",
+          "cpu_pct": "0.1",
+          "mem_mb": "1.0"
+        },
+        {
+          "pid": 4994,
+          "name": "sandbox-helper",
+          "cmdline": "/usr/local/bin/sandbox-helper 1005 1005 --no-srt /usr/local/bin/claude --output-format stream-json --verbose --input-format stream-json --max-thinking-tokens 31999 --effort medium --model claude-opus-",
+          "cpu_pct": "0.0",
+          "mem_mb": "2.5"
+        },
+        {
+          "pid": 5001,
+          "name": "claude",
+          "cmdline": "/usr/local/bin/claude --output-format stream-json --verbose --input-format stream-json --max-thinking-tokens 31999 --effort medium --model claude-opus-4-6 --permission-prompt-tool stdio --resume 07b7c",
+          "cpu_pct": "4.0",
+          "mem_mb": "320.9"
+        }
+      ],
+      "mcp_servers": [],
+      "memory": null
+    },
+    {
+      "tool": "copilot",
+      "label": "GitHub Copilot",
+      "files": [],
+      "processes": [],
+      "mcp_servers": [],
+      "memory": null
+    },
+    {
+      "tool": "cursor",
+      "label": "Cursor",
+      "files": [],
+      "processes": [],
+      "mcp_servers": [],
+      "memory": null
+    },
+    {
+      "tool": "windsurf",
+      "label": "Windsurf",
+      "files": [],
+      "processes": [],
+      "mcp_servers": [],
+      "memory": null
+    },
+    {
+      "tool": "aictl",
+      "label": "aictl",
+      "files": [
+        {
+          "path": "/sessions/zen-magical-goodall/mnt/aictl/test/fixtures/project/.context.aictx",
+          "kind": "context",
+          "size": 3110,
+          "tokens": 777
+        },
+        {
+          "path": "/sessions/zen-magical-goodall/mnt/aictl/test/fixtures/project/src/dataset/.context.aictx",
+          "kind": "context",
+          "size": 531,
+          "tokens": 133
+        },
+        {
+          "path": "/sessions/zen-magical-goodall/mnt/aictl/test/fixtures/project/src/metrics/.context.aictx",
+          "kind": "context",
+          "size": 706,
+          "tokens": 177
+        },
+        {
+          "path": "/sessions/zen-magical-goodall/mnt/aictl/test/fixtures/project/src/runner/.context.aictx",
+          "kind": "context",
+          "size": 402,
+          "tokens": 101
+        },
+        {
+          "path": "/sessions/zen-magical-goodall/mnt/aictl/test/fixtures/project/src/dataset/generators/.context.aictx",
+          "kind": "context",
+          "size": 311,
+          "tokens": 78
+        }
+      ],
+      "processes": [],
+      "mcp_servers": [],
+      "memory": null
+    }
+  ],
+  "agent_memory": [
+    {
+      "source": "aictx-hint",
+      "profile": "debug",
+      "file": "/sessions/zen-magical-goodall/mnt/aictl/test/fixtures/project/.context.aictx",
+      "content": "SimSIMD dispatch refactored \u2014 check src/metrics/distance.rs for dispatch table.\nARM Graviton3 needs sve, Graviton2 uses neon only.",
+      "tokens": 33,
+      "lines": 2
+    },
+    {
+      "source": "aictx-instruction",
+      "profile": "debug",
+      "file": "/sessions/zen-magical-goodall/mnt/aictl/test/fixtures/project/.context.aictx",
+      "content": "Connection pool timeout: check Valkey server reachability.\nSIMD dispatch: wrong feature flag causes silent scalar fallback.\nGround truth mismatch: regenerate if index params changed.\nOOM on large datasets: check --max-vectors and system memory.\nUse RUST_LOG=debug for trace output.",
+      "tokens": 71,
+      "lines": 5
+    },
+    {
+      "source": "aictx-instruction",
+      "profile": "docs",
+      "file": "/sessions/zen-magical-goodall/mnt/aictl/test/fixtures/project/.context.aictx",
+      "content": "Audience: contributors and users evaluating vector search performance.\nResults format in docs/results-format.md. Diagrams in Mermaid.",
+      "tokens": 34,
+      "lines": 2
+    },
+    {
+      "source": "aictx-instruction",
+      "profile": "review",
+      "file": "/sessions/zen-magical-goodall/mnt/aictl/test/fixtures/project/.context.aictx",
+      "content": "No unwrap() \u2014 use ? or expect() with context.\nNo blocking IO in async. CLI flags need help text + README.\nBenchmark configs must be reproducible (fixed seeds).",
+      "tokens": 40,
+      "lines": 3
+    },
+    {
+      "source": "aictx-instruction",
+      "profile": "debug",
+      "file": "/sessions/zen-magical-goodall/mnt/aictl/test/fixtures/project/src/dataset/.context.aictx",
+      "content": "Ground truth cached in .gt files \u2014 expensive to recompute.\nIf recall drops: check if dataset regenerated without updating ground truth.\nHDF5: use h5dump to inspect dimensions.",
+      "tokens": 44,
+      "lines": 3
+    },
+    {
+      "source": "aictx-instruction",
+      "profile": "debug",
+      "file": "/sessions/zen-magical-goodall/mnt/aictl/test/fixtures/project/src/metrics/.context.aictx",
+      "content": "Histogram overflow: increase max_value if latencies >10s.\nSIMD dispatch: SIMSIMD_LOG=1 to verify codepath.\nRecall O(N*K): use --sample-queries for large datasets.",
+      "tokens": 41,
+      "lines": 3
+    },
+    {
+      "source": "aictx-instruction",
+      "profile": "debug",
+      "file": "/sessions/zen-magical-goodall/mnt/aictl/test/fixtures/project/src/runner/.context.aictx",
+      "content": "Pool exhaustion: RUST_LOG=deadpool=debug. Worker stalls: check INFO commandstats.\nTokio contention: use tokio-console. If p99>>p50: pool contention or server GC.",
+      "tokens": 41,
+      "lines": 2
+    },
+    {
+      "source": "aictx-instruction",
+      "profile": "debug",
+      "file": "/sessions/zen-magical-goodall/mnt/aictl/test/fixtures/project/src/dataset/generators/.context.aictx",
+      "content": "Dimension mismatch: check generator config vs index schema.\nUse --seed to reproduce exact dataset.",
+      "tokens": 25,
+      "lines": 2
+    }
+  ],
+  "mcp_detail": []
+};
+</script>
+</body>
+</html>

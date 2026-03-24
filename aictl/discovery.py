@@ -39,6 +39,31 @@ class ProcessInfo:
 
 
 @dataclass
+class McpServerInfo:
+    """Extended info about a configured MCP server."""
+    name: str
+    tool: str              # which AI tool owns this config
+    config: dict = field(default_factory=dict)
+    status: str = "unknown"  # unknown | running | stopped | error
+    pid: int | None = None
+    cpu_pct: str = ""
+    mem_mb: str = ""
+    transport: str = ""    # stdio | http | sse
+    endpoint: str = ""     # command or URL
+
+
+@dataclass
+class MemoryEntry:
+    """A piece of agent memory / policy / decision."""
+    source: str            # "claude-memory" | "aictx-hint" | "aictx-instruction"
+    profile: str           # which profile this applies to
+    file: str = ""         # filename or .aictx path
+    content: str = ""
+    tokens: int = 0
+    lines: int = 0
+
+
+@dataclass
 class ToolResources:
     """All discovered resources for a single tool."""
     tool: str
@@ -437,6 +462,243 @@ def _find_mcp_processes(
                 already_pids.add(pid)
                 break
     return found
+
+
+# ─── Agent memory & policy collection ─────────────────────────────
+
+def collect_agent_memory(root: Path) -> list[MemoryEntry]:
+    """Collect all agent memory, policies, and decisions from multiple sources.
+
+    Claude Code memory tiers (https://code.claude.com/docs/en/memory):
+      1. User memory     — ~/.claude/CLAUDE.md  (global, all projects)
+      2. Project memory  — <root>/CLAUDE.md     (checked into repo)
+      3. Auto-memory     — ~/.claude/projects/<hash>/memory/*.md (auto-learned)
+
+    Plus aictl-specific sources:
+      4. Memory hints from .aictx files ([memory:profile] sections)
+      5. Profile instructions from .aictx files (policies/decisions)
+    """
+    entries: list[MemoryEntry] = []
+
+    # 1. User memory — ~/.claude/CLAUDE.md
+    user_memory = Path.home() / ".claude" / "CLAUDE.md"
+    if user_memory.is_file():
+        try:
+            content = user_memory.read_text(errors="replace")
+            if content.strip():
+                entries.append(MemoryEntry(
+                    source="claude-user-memory",
+                    profile="(global)",
+                    file=str(user_memory),
+                    content=content,
+                    tokens=estimate_tokens(content),
+                    lines=len([l for l in content.splitlines() if l.strip()]),
+                ))
+        except OSError:
+            pass
+
+    # 2. Project memory — <root>/CLAUDE.md
+    project_memory = root / "CLAUDE.md"
+    if project_memory.is_file():
+        try:
+            content = project_memory.read_text(errors="replace")
+            if content.strip():
+                entries.append(MemoryEntry(
+                    source="claude-project-memory",
+                    profile="(project)",
+                    file=str(project_memory),
+                    content=content,
+                    tokens=estimate_tokens(content),
+                    lines=len([l for l in content.splitlines() if l.strip()]),
+                ))
+        except OSError:
+            pass
+
+    # Also check CLAUDE.local.md (local overrides, not checked in)
+    local_memory = root / "CLAUDE.local.md"
+    if local_memory.is_file():
+        try:
+            content = local_memory.read_text(errors="replace")
+            if content.strip():
+                entries.append(MemoryEntry(
+                    source="claude-project-memory",
+                    profile="(local)",
+                    file=str(local_memory),
+                    content=content,
+                    tokens=estimate_tokens(content),
+                    lines=len([l for l in content.splitlines() if l.strip()]),
+                ))
+        except OSError:
+            pass
+
+    # 3. Auto-memory — ~/.claude/projects/<hash>/memory/*.md
+    from .memory import _find_project_dir, get_summary, list_stashes
+    summary = get_summary(root)
+    if summary:
+        for f in summary.get("files", []):
+            entries.append(MemoryEntry(
+                source="claude-auto-memory",
+                profile="(active)",
+                file=f["file"],
+                content=f.get("content", ""),
+                tokens=f.get("tokens", 0),
+                lines=f.get("lines", 0),
+            ))
+
+    # Also get stashed auto-memories for other profiles
+    for stash in list_stashes(root):
+        if stash["profile"] == "(active)":
+            continue  # already captured above
+        stash_dir = Path(stash["dir"])
+        if stash_dir.is_dir():
+            for md in sorted(stash_dir.glob("*.md")):
+                try:
+                    content = md.read_text(errors="replace")
+                    entries.append(MemoryEntry(
+                        source="claude-auto-memory",
+                        profile=stash["profile"],
+                        file=md.name,
+                        content=content,
+                        tokens=estimate_tokens(content),
+                        lines=len([l for l in content.splitlines() if l.strip()]),
+                    ))
+                except OSError:
+                    pass
+
+    # 4 & 5. Memory hints and instructions from .aictx files
+    try:
+        from .scanner import scan
+        from .parser import ParsedAictx
+        for rel, parsed in scan(root):
+            # Memory hints
+            for profile, hint in parsed.memory_hints.items():
+                if hint.strip():
+                    entries.append(MemoryEntry(
+                        source="aictx-hint",
+                        profile=profile,
+                        file=str(parsed.path),
+                        content=hint.strip(),
+                        tokens=estimate_tokens(hint),
+                        lines=len([l for l in hint.splitlines() if l.strip()]),
+                    ))
+            # Profile instructions (act as policies)
+            for section, content in parsed.instructions.items():
+                if section == "base" or not content.strip():
+                    continue
+                entries.append(MemoryEntry(
+                    source="aictx-instruction",
+                    profile=section,
+                    file=str(parsed.path),
+                    content=content.strip(),
+                    tokens=estimate_tokens(content),
+                    lines=len([l for l in content.splitlines() if l.strip()]),
+                ))
+    except Exception:
+        pass
+
+    return entries
+
+
+# ─── MCP extended status ──────────────────────────────────────────
+
+def collect_mcp_status(all_tools: list[ToolResources]) -> list[McpServerInfo]:
+    """Build enriched MCP server info with connectivity status.
+
+    For each configured MCP server across all tools:
+      - Determine transport type (stdio vs http)
+      - Check if a matching process is running (→ "running" / "stopped")
+      - Attach process metrics (pid, CPU, mem) if found
+    """
+    servers: list[McpServerInfo] = []
+    seen: set[str] = set()  # dedup by name
+
+    # Gather all processes for matching
+    all_procs: list[tuple[str, ProcessInfo]] = []
+    for tr in all_tools:
+        for p in tr.processes:
+            all_procs.append((tr.tool, p))
+
+    for tr in all_tools:
+        for srv_dict in tr.mcp_servers:
+            name = srv_dict.get("name", "?")
+            if name in seen:
+                continue
+            seen.add(name)
+
+            config = srv_dict.get("config", {})
+            transport, endpoint = _classify_mcp_transport(config)
+
+            info = McpServerInfo(
+                name=name,
+                tool=tr.tool,
+                config=config,
+                transport=transport,
+                endpoint=endpoint,
+            )
+
+            # Try to match to a running process
+            matched = _match_mcp_to_process(name, config, all_procs)
+            if matched:
+                info.status = "running"
+                info.pid = matched.pid
+                info.cpu_pct = matched.cpu_pct
+                info.mem_mb = matched.mem_mb
+            else:
+                # For HTTP servers, try a quick connectivity check
+                if transport == "http":
+                    info.status = _probe_http_mcp(endpoint)
+                else:
+                    info.status = "stopped"
+
+            servers.append(info)
+
+    return servers
+
+
+def _classify_mcp_transport(config: dict) -> tuple[str, str]:
+    """Determine transport type and endpoint from MCP config."""
+    if "url" in config:
+        return ("http", config["url"])
+    if config.get("type") == "http":
+        return ("http", config.get("url", ""))
+    if config.get("type") == "sse":
+        return ("sse", config.get("url", ""))
+    cmd = config.get("command", "")
+    args = " ".join(config.get("args", []))
+    return ("stdio", f"{cmd} {args}".strip())
+
+
+def _match_mcp_to_process(
+    name: str, config: dict, all_procs: list[tuple[str, ProcessInfo]],
+) -> ProcessInfo | None:
+    """Try to find a running process that matches an MCP server."""
+    cmd = config.get("command", "")
+    args = config.get("args", [])
+
+    # Build search terms
+    terms = [t for t in [name, cmd] + [a for a in args if not a.startswith("-")] if t]
+    if not terms:
+        return None
+
+    for _tool, proc in all_procs:
+        matches = sum(1 for t in terms if t in proc.cmdline)
+        if matches >= 2 or (matches == 1 and name in proc.cmdline):
+            return proc
+    return None
+
+
+def _probe_http_mcp(url: str) -> str:
+    """Quick health probe for HTTP-based MCP servers."""
+    if not url:
+        return "unknown"
+    try:
+        import urllib.request
+        req = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            return "running" if resp.status < 500 else "error"
+    except Exception:
+        # Connection refused → stopped; timeout → unknown
+        return "stopped"
 
 
 def backtrace_process(pid: int) -> str | None:

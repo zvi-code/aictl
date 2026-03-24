@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/Users/zvi/Projects/aictl/.venv/bin/python3 -m pytest test/test_import.py -v)",
+      "Bash(/Users/zvi/Projects/aictl/.venv/bin/pip install:*)",
+      "Bash(bash test/run.sh)",
+      "Bash(python -m aictl status)",
+      "Bash(python3 -m aictl status)",
+      "Read(//usr/local/bin/**)",
+      "Bash(ls /opt/homebrew/bin/python3*)",
+      "Bash(/opt/homebrew/bin/python3.13 -m pip install -e /Users/zvi/Projects/aictl)",
+      "Bash(/opt/homebrew/bin/python3.13 -c \":*)",
+      "Read(//Users/zvi/.local/bin/**)",
+      "Bash(pip list:*)",
+      "Bash(/opt/homebrew/bin/pip3.13 list:*)",
+      "Read(//opt/homebrew/Cellar/python@3.13/3.13.12_1/Frameworks/Python.framework/Versions/3.13/bin/**)",
+      "Bash(/Users/zvi/Projects/aictl/.venv/bin/python -m aictl.cli status)",
+      "Bash(/Users/zvi/Projects/aictl/.venv/bin/python -c \":*)",
+      "Bash(/Users/zvi/Projects/aictl/.venv/bin/python -m aictl.cli status -r /Users/zvi/Projects/aictl)",
+      "Bash(/Users/zvi/Projects/aictl/.venv/bin/python -m pytest test/ -x -q)",
+      "Bash(git stash:*)",
+      "Bash(/Users/zvi/Projects/aictl/.venv/bin/python -m pytest test/test_import.py::TestImporters::test_claude_importer_reads_fixture -x -q)",
+      "Bash(/Users/zvi/Projects/aictl/.venv/bin/python -m pytest test/test_status.py -x -q)",
+      "Bash(xargs ls:*)",
+      "Read(//Users/zvi/docs/**)",
+      "Bash(find /Users/zvi/Projects/aictl/test/fixtures/project -name *.aictx -o -name CLAUDE* -o -name .mcp.json -o -name *.md -o -name *.mdc -o -name *.json)",
+      "Bash(python -m pytest test/ -v)",
+      "Bash(python3 -m pytest test/ -v)",
+      "Bash(ls /Users/zvi/Projects/aictl/.venv/bin/python*)",
+      "Bash(ls /Users/zvi/Projects/aictl/venv/bin/python*)",
+      "Bash(/Users/zvi/Projects/aictl/.venv/bin/python -m pytest test/ -v)",
+      "Bash(/Users/zvi/Projects/aictl/.venv/bin/python -m pytest test/test_hooks_lsp_plugin.py -v)"
+    ]
+  }
+}

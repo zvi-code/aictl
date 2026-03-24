@@ -128,10 +128,41 @@ aictl status --backtrace 12345
 
 Supports Claude Code, GitHub Copilot, Cursor, and Windsurf. Use `--tool claude` to filter to one tool, or `--json` for machine-readable output.
 
+### Dashboard: live terminal UI
+
+Launch a live-updating terminal dashboard that monitors all AI tool resources, processes, MCP servers, and agent memory in real time:
+
+```bash
+aictl dashboard --root my-project/
+```
+
+The dashboard refreshes every 5 seconds (configurable with `--interval`) and shows stat cards, per-tool panels with sparkline CPU/MEM history, and tabbed views for processes, files, MCP server status, and agent memory.
+
+Keybindings: `r` refresh now, `p` toggle processes, `f` toggle files, `m` toggle memory, `q` quit.
+
+Requires the `textual` extra:
+
+```bash
+pip install -e ".[dashboard]"
+```
+
+### HTML report: static snapshot
+
+Generate a self-contained HTML report with file content previews, MCP connectivity status, and agent memory browser:
+
+```bash
+aictl status --html -o report.html --root my-project/
+```
+
+The report includes expandable file previews (last 5 lines shown, click to expand full content), colour-coded MCP server status, and tabbed navigation between AI Tools, MCP Servers, and Agent Memory views. Open the file in any browser — no dependencies, dark/light mode adapts automatically.
+
+You can also pipe to stdout: `aictl status --html > report.html`.
+
 ## Install
 
 ```bash
-pip install -e .
+pip install -e .             # core (CLI, deploy, import, status)
+pip install -e ".[dashboard]"  # adds live TUI dashboard (textual)
 ```
 
 ## Commands
@@ -144,7 +175,9 @@ pip install -e .
 | `aictl plugin build --root . --name my-plugin` | Package `.aictx` as a Claude Code plugin |
 | `aictl status --root .` | Show all resources: files, memory, MCP servers, processes |
 | `aictl status --processes` | Include running processes (Claude, Copilot, Cursor, Windsurf) |
+| `aictl status --html -o report.html` | Generate self-contained HTML report |
 | `aictl status --backtrace PID` | Sample a process stack trace |
+| `aictl dashboard --root .` | Launch live terminal dashboard |
 | `aictl memory show --root .` | Show Claude Code auto-memory content |
 | `aictl memory stashes --root .` | List per-profile memory stashes |
 
@@ -177,6 +210,15 @@ pip install -e .
 | `--processes` | Detect and display running processes for each tool |
 | `--backtrace PID` | Sample a process stack trace (macOS `sample`, Linux `eu-stack`/`gdb`) |
 | `--json` | Output as JSON for scripting |
+| `--html` | Generate self-contained HTML report to stdout |
+| `-o FILE` | Write HTML report to file instead of stdout |
+
+### Dashboard options
+
+| Option | Description |
+|--------|-------------|
+| `--root DIR` | Root directory to monitor (default: `.`) |
+| `--interval SECS` | Refresh interval in seconds (default: `5`) |
 
 ## Documentation
 

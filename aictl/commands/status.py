@@ -20,7 +20,11 @@ from ..discovery import discover_all, backtrace_process, ToolResources
 @click.option("--backtrace", "bt_pid", type=int, default=None, metavar="PID",
               help="Sample a process stack trace by PID")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
-def status(root_dir, tool_filter, show_procs, bt_pid, as_json):
+@click.option("--html", "as_html", is_flag=True,
+              help="Generate a self-contained HTML report (stdout)")
+@click.option("-o", "--output", "out_file", default=None, type=click.Path(),
+              help="Write HTML report to file instead of stdout")
+def status(root_dir, tool_filter, show_procs, bt_pid, as_json, as_html, out_file):
     """Show all resources for AI coding tools."""
     root = Path(root_dir).resolve()
 
@@ -29,17 +33,45 @@ def status(root_dir, tool_filter, show_procs, bt_pid, as_json):
         _do_backtrace(bt_pid)
         return
 
-    results = discover_all(root, include_processes=show_procs)
+    # HTML report always includes processes
+    include_procs = show_procs or as_html or out_file
+    results = discover_all(root, include_processes=include_procs)
 
     if tool_filter:
         results = [r for r in results if r.tool == tool_filter]
         if not results:
             raise SystemExit(f"Unknown tool: {tool_filter}")
 
-    if as_json:
+    if as_html or out_file:
+        _emit_html(results, root, out_file)
+    elif as_json:
         _print_json(results)
     else:
         _print_human(results, root, show_procs)
+
+
+# ─── HTML output ─────────────────────────────────────────────────────
+
+def _emit_html(results: list[ToolResources], root: Path, out_file: str | None) -> None:
+    from ..dashboard.collector import DashboardSnapshot
+    from ..dashboard.html_report import render_html
+    from ..discovery import collect_agent_memory, collect_mcp_status
+    import time
+
+    snap = DashboardSnapshot(
+        timestamp=time.time(),
+        root=str(root),
+        tools=results,
+        agent_memory=collect_agent_memory(root),
+        mcp_detail=collect_mcp_status(results),
+    )
+    html = render_html(snap)
+
+    if out_file:
+        Path(out_file).write_text(html, encoding="utf-8")
+        click.secho(f"HTML report written to {out_file}", fg="green")
+    else:
+        click.echo(html)
 
 
 # ─── Backtrace ──────────────────────────────────────────────────────
