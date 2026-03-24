@@ -24,8 +24,6 @@ _SOURCE_LABELS = {
     "claude-user-memory": "User Memory (~/.claude/CLAUDE.md)",
     "claude-project-memory": "Project Memory (CLAUDE.md)",
     "claude-auto-memory": "Auto Memory (~/.claude/projects/)",
-    "aictx-hint": "Memory Hint (.aictx)",
-    "aictx-instruction": "Profile Policy (.aictx)",
 }
 
 _STATUS_COLOURS = {

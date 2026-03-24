@@ -664,20 +664,39 @@ def collect_agent_memory(root: Path) -> list[MemoryEntry]:
             pass
 
     # 3. Auto-memory — ~/.claude/projects/<hash>/memory/*.md
+    # Scan ALL project dirs under ~/.claude/projects/ for memory files,
+    # not just the one matching root (user may have global/parent memories too)
     from .memory import _find_project_dir, get_summary, list_stashes
-    summary = get_summary(root)
-    if summary:
-        for f in summary.get("files", []):
-            entries.append(MemoryEntry(
-                source="claude-auto-memory",
-                profile="(active)",
-                file=f["file"],
-                content=f.get("content", ""),
-                tokens=f.get("tokens", 0),
-                lines=f.get("lines", 0),
-            ))
+    claude_projects = Path.home() / ".claude" / "projects"
+    if claude_projects.is_dir():
+        proj_for_root = _find_project_dir(root)
+        for proj_dir in sorted(claude_projects.iterdir()):
+            if not proj_dir.is_dir():
+                continue
+            mem_dir = proj_dir / "memory"
+            if not mem_dir.is_dir():
+                continue
+            is_active_project = proj_dir == proj_for_root
+            # Convert encoded dir name back to a readable project name
+            # e.g. "-Users-zvi-Projects-aictl" → "aictl"
+            readable = proj_dir.name.lstrip("-").split("-")[-1] if not is_active_project else ""
+            profile_tag = "(active)" if is_active_project else f"({readable})"
+            for md in sorted(mem_dir.glob("*.md")):
+                try:
+                    content = md.read_text(errors="replace")
+                    if content.strip():
+                        entries.append(MemoryEntry(
+                            source="claude-auto-memory",
+                            profile=profile_tag,
+                            file=str(md),
+                            content=content,
+                            tokens=estimate_tokens(content),
+                            lines=len([l for l in content.splitlines() if l.strip()]),
+                        ))
+                except OSError:
+                    pass
 
-    # Also get stashed auto-memories for other profiles
+    # Also get stashed auto-memories for other profiles within the active project
     for stash in list_stashes(root):
         if stash["profile"] == "(active)":
             continue  # already captured above
@@ -689,44 +708,13 @@ def collect_agent_memory(root: Path) -> list[MemoryEntry]:
                     entries.append(MemoryEntry(
                         source="claude-auto-memory",
                         profile=stash["profile"],
-                        file=md.name,
+                        file=str(md),
                         content=content,
                         tokens=estimate_tokens(content),
                         lines=len([l for l in content.splitlines() if l.strip()]),
                     ))
                 except OSError:
                     pass
-
-    # 4 & 5. Memory hints and instructions from .aictx files
-    try:
-        from .scanner import scan
-        from .parser import ParsedAictx
-        for rel, parsed in scan(root):
-            # Memory hints
-            for profile, hint in parsed.memory_hints.items():
-                if hint.strip():
-                    entries.append(MemoryEntry(
-                        source="aictx-hint",
-                        profile=profile,
-                        file=str(parsed.path),
-                        content=hint.strip(),
-                        tokens=estimate_tokens(hint),
-                        lines=len([l for l in hint.splitlines() if l.strip()]),
-                    ))
-            # Profile instructions (act as policies)
-            for section, content in parsed.instructions.items():
-                if section == "base" or not content.strip():
-                    continue
-                entries.append(MemoryEntry(
-                    source="aictx-instruction",
-                    profile=section,
-                    file=str(parsed.path),
-                    content=content.strip(),
-                    tokens=estimate_tokens(content),
-                    lines=len([l for l in content.splitlines() if l.strip()]),
-                ))
-    except Exception:
-        pass
 
     return entries
 
