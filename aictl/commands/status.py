@@ -97,7 +97,11 @@ def _print_human(results: list[ToolResources], root: Path, show_procs: bool) -> 
     home = Path.home()
     any_found = False
 
-    for res in results:
+    # Separate aictl from real tool results
+    tool_results = [r for r in results if r.tool != "aictl"]
+    aictl_results = [r for r in results if r.tool == "aictl"]
+
+    for res in tool_results:
         if not res.files and not res.processes and not res.mcp_servers:
             continue
         any_found = True
@@ -153,6 +157,24 @@ def _print_human(results: list[ToolResources], root: Path, show_procs: bool) -> 
     if not any_found:
         click.secho("\nNo AI tool resources found in this directory.\n", fg="bright_black")
     else:
+        click.echo()
+
+    # ── aictl context files (separate section) ─────────────────────
+    for res in aictl_results:
+        if not res.files:
+            continue
+        click.secho(f"\n{'─' * 54}", fg="bright_black")
+        click.secho("  aictl context files  (.aictx — not read by LLM tools)", bold=True)
+        click.secho(f"{'─' * 54}", fg="bright_black")
+        click.secho("\n  Files:", fg="cyan", bold=True)
+        for f in res.files:
+            size_str = _human_size(f.size)
+            tok_str = f"  ~{f.tokens} tok" if f.tokens else ""
+            kind = click.style(f"[{f.kind}]", fg="yellow")
+            rel = _rel_display(f.path, root, home)
+            click.echo(f"    {kind} {rel}"
+                       f"  {click.style(size_str, fg='bright_black')}"
+                       f"{click.style(tok_str, fg='bright_black')}")
         click.echo()
 
 

@@ -152,6 +152,26 @@ def _load_mcp(path: Path, res: ToolResources) -> None:
 def discover_claude(root: Path) -> ToolResources:
     res = ToolResources("claude", "Claude Code")
 
+    # User-global memory file
+    user_memory = Path.home() / ".claude" / "CLAUDE.md"
+    r = _file_resource(user_memory, "memory (user-global)")
+    if r:
+        res.files.append(r)
+
+    # CLAUDE.md in parent directories (Claude reads up the directory tree)
+    home = Path.home()
+    parent = root.parent
+    visited: set[Path] = set()
+    while parent != parent.parent and parent not in visited:
+        visited.add(parent)
+        if parent == home or len(visited) > 10:
+            break
+        for name in ("CLAUDE.md", "CLAUDE.local.md"):
+            r = _file_resource(parent / name, "instructions (parent)")
+            if r:
+                res.files.append(r)
+        parent = parent.parent
+
     # Project instruction files
     for name in ("CLAUDE.md", "CLAUDE.local.md"):
         r = _file_resource(root / name, "instructions")
@@ -245,6 +265,18 @@ def discover_copilot(root: Path) -> ToolResources:
 
     # Prompts
     res.files.extend(_dir_resources(gh / "prompts", "*.prompt.md", "prompt"))
+
+    # AGENTS.md in subdirectories (Copilot reads these for sub-scope context)
+    for agents_md in sorted(root.rglob("AGENTS.md")):
+        if agents_md.parent != root:  # root already handled above
+            r = _file_resource(agents_md, "instructions (sub-scope)")
+            if r:
+                res.files.append(r)
+
+    # VS Code settings (often contains github.copilot.* configuration)
+    r = _file_resource(root / ".vscode" / "settings.json", "settings (vscode)")
+    if r:
+        res.files.append(r)
 
     # MCP config
     r = _file_resource(root / ".copilot-mcp.json", "mcp")

@@ -49,9 +49,11 @@ class DashboardSnapshot:
         self._compute_aggregates()
 
     def _compute_aggregates(self):
-        self.total_files = sum(len(t.files) for t in self.tools)
-        self.total_tokens = sum(f.tokens for t in self.tools for f in t.files)
-        self.total_size = sum(f.size for t in self.tools for f in t.files)
+        # Exclude aictl (.aictx) files from main stats — they have their own tab
+        tool_list = [t for t in self.tools if t.tool != "aictl"]
+        self.total_files = sum(len(t.files) for t in tool_list)
+        self.total_tokens = sum(f.tokens for t in tool_list for f in t.files)
+        self.total_size = sum(f.size for t in tool_list for f in t.files)
         self.total_processes = sum(len(t.processes) for t in self.tools)
         self.total_mcp_servers = sum(len(t.mcp_servers) for t in self.tools)
 

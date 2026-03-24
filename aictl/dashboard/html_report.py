@@ -49,6 +49,7 @@ def render_html(snap: DashboardSnapshot) -> str:
     bar_segments = _render_bar(snap)
     mcp_section = _render_mcp_section(snap)
     memory_section = _render_memory_section(snap, root, home)
+    aictl_section = _render_aictl_section(snap, root, home)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -204,6 +205,7 @@ code {{ font-size: 0.8em; color: var(--fg2); }}
   <button class="tab-btn active" onclick="showTab('tools')">AI Tools</button>
   <button class="tab-btn" onclick="showTab('mcp')">MCP Servers</button>
   <button class="tab-btn" onclick="showTab('memory')">Agent Memory</button>
+  <button class="tab-btn" onclick="showTab('aictl')">aictl (.aictx)</button>
 </div>
 
 <div id="tab-tools" class="tab-panel active">
@@ -216,6 +218,10 @@ code {{ font-size: 0.8em; color: var(--fg2); }}
 
 <div id="tab-memory" class="tab-panel">
 {memory_section}
+</div>
+
+<div id="tab-aictl" class="tab-panel">
+{aictl_section}
 </div>
 
 <div class="footer">
@@ -321,6 +327,8 @@ def _render_tool_cards(snap: DashboardSnapshot, root: Path, home: Path) -> list[
     tool_cards = []
 
     for tr in snap.tools:
+        if tr.tool == "aictl":
+            continue  # moved to its own tab
         if not tr.files and not tr.processes and not tr.mcp_servers:
             continue
 
@@ -540,8 +548,62 @@ def _render_memory_section(snap: DashboardSnapshot, root: Path, home: Path) -> s
 
     return "".join(sections)
 
+def _render_aictl_section(snap: DashboardSnapshot, root: Path, home: Path) -> str:
+    """Render the aictl (.aictx) tab — context files managed by aictl, not read by LLM tools."""
+    global _preview_counter
 
-# ── Helpers ──────────────────────────────────────────────────────
+    aictl_tools = [tr for tr in snap.tools if tr.tool == "aictl"]
+    if not aictl_tools or not any(tr.files for tr in aictl_tools):
+        return '<div class="section-card"><p style="color:var(--fg2)">No .aictx context files found.</p></div>'
+
+    sections = []
+    sections.append("""
+    <div class="section-card" style="margin-bottom:1rem">
+      <p style="color:var(--fg2);font-size:0.85rem">
+        These files are managed by <strong>aictl</strong> and are <em>not</em> read directly by LLM tools.
+        They are the source of truth from which <code>aictl deploy</code> generates native tool files.
+      </p>
+    </div>""")
+
+    for tr in aictl_tools:
+        if not tr.files:
+            continue
+
+        file_rows = []
+        for f in tr.files:
+            _preview_counter += 1
+            uid = f"aictx-{_preview_counter}"
+            rel = _rel(f.path, root, home)
+            tok = f"{f.tokens:,}" if f.tokens else "—"
+
+            content = _read_file_tail(f.path)
+            preview_html = ""
+            if content and content.strip():
+                preview_html = f"""
+                <tr class="file-preview-row"><td colspan="4" style="padding:0 0.5rem 0.5rem">
+                  {_render_content_preview(content, uid)}
+                </td></tr>"""
+
+            file_rows.append(
+                f"<tr><td><code>{_esc(rel)}</code></td>"
+                f"<td>{_esc(f.kind)}</td>"
+                f"<td class='num'>{_human_size(f.size)}</td>"
+                f"<td class='num'>{tok}</td></tr>"
+                f"{preview_html}"
+            )
+
+        sections.append(f"""
+        <div class="section-card">
+          <table class="file-table">
+            <thead><tr><th>Path</th><th>Kind</th><th>Size</th><th>Tokens</th></tr></thead>
+            <tbody>{''.join(file_rows)}</tbody>
+          </table>
+        </div>""")
+
+    return "".join(sections)
+
+
+
 
 def _esc(s: str) -> str:
     return html.escape(s)
