@@ -568,12 +568,12 @@ def _files_html_by_dir(
     root: Path,
     home: Path,
     id_prefix: str,
-    auto_open_threshold: int = 5,
+    auto_open_threshold: int = 0,
 ) -> str:
     """Render a list of ResourceFiles grouped by parent directory.
 
     Each directory becomes a collapsible <details> block.
-    Dirs with <= auto_open_threshold files start expanded.
+    Dirs with <= auto_open_threshold files start expanded (default: all collapsed).
     """
     from collections import defaultdict
 
