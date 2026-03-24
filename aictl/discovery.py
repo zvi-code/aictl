@@ -752,7 +752,8 @@ def _parse_ps_output() -> list[tuple[str, str, str, str, str]]:
             try:
                 info = proc.info
                 pid = str(info["pid"])
-                cpu = f"{info['cpu_percent']:.1f}"
+                cpu_val = info["cpu_percent"]
+                cpu = f"{cpu_val:.1f}" if cpu_val is not None else "0.0"
                 rss_kb = str((info["memory_info"].rss // 1024) if info["memory_info"] else 0)
                 comm = info["name"] or ""
                 args = " ".join(info["cmdline"] or []) or comm
