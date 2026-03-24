@@ -15,3 +15,5 @@ test/fixtures/project/.ai-deployed/
 
 build/
 dist/
+report.html
+status-report.html
