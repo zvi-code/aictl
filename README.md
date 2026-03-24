@@ -2,41 +2,56 @@
 
 Drop `.context.aictx` files in your code repo. Run `aictl deploy`. Get native context files for Claude Code, GitHub Copilot, and Cursor — including hooks, LSP servers, and MCP configs. Already have native files? Run `aictl import` to generate `.aictx` from them. Want to distribute your context as a Claude Code plugin? Run `aictl plugin build`.
 
+Runs on **macOS, Windows, and Linux**.
+
 ## Install
 
-Install globally with [pipx](https://pipx.pypa.io):
+Install globally with [pipx](https://pipx.pypa.io) (recommended — keeps `aictl` isolated from other Python projects):
 
 ```bash
-pipx install --force ".[dashboard]"    # TUI dashboard + all features
-# or just the core CLI:
+# Full install: CLI + live TUI dashboard + process detection
+pipx install --force ".[all]"
+
+# Core CLI only
 pipx install .
 ```
 
-If you don't have `pipx`:
+### Get pipx
 
+**macOS**
 ```bash
-# macOS
 brew install pipx && pipx ensurepath
+```
 
-# Windows
+**Windows** (PowerShell)
+```powershell
 python -m pip install pipx
 python -m pipx ensurepath
+# Then restart your terminal so PATH takes effect
+```
 
-# Linux / other
+**Linux**
+```bash
 pip install --user pipx && pipx ensurepath
 ```
 
-**Optional: enhanced process detection** (cross-platform, recommended):
+### Optional extras
+
+| Extra | Installs | When to use |
+|-------|----------|-------------|
+| `.[dashboard]` | `textual` | Live TUI dashboard (`aictl dashboard`) |
+| `.[processes]` | `psutil` | Cross-platform process detection |
+| `.[all]` | both | Recommended for full functionality |
 
 ```bash
+# Add an extra to an existing install
 pipx inject aictl psutil
-# or include it at install time:
-pipx install --force ".[all]"
+pipx inject aictl textual
 ```
 
-> Without `psutil`, process detection falls back to `ps` (macOS/Linux only; skipped on Windows).
+> **Without `psutil`:** process detection falls back to `ps` on macOS/Linux and is silently skipped on Windows.
 
-For development (editable install inside a venv):
+### Development install
 
 ```bash
 pip install -e ".[all]"
@@ -241,7 +256,7 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 |--------|-------------|
 | `--tool claude\|copilot\|cursor\|windsurf\|aictl` | Show resources for one tool only |
 | `--processes` | Detect and display running processes for each tool |
-| `--backtrace PID` | Sample a process stack trace (macOS `sample`, Linux `eu-stack`/`gdb`) |
+| `--backtrace PID` | Sample a process stack trace (macOS: `sample`, Linux: `eu-stack`/`gdb`; not available on Windows) |
 | `--json` | Output as JSON for scripting |
 | `--html` | Generate self-contained HTML report to stdout |
 | `-o FILE` | Write HTML report to file instead of stdout |
@@ -252,6 +267,101 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 |--------|-------------|
 | `--root DIR` | Root directory to monitor (default: `.`) |
 | `--interval SECS` | Refresh interval in seconds (default: `5`) |
+
+## Windows Installation & Troubleshooting
+
+### Prerequisites
+
+- **Python 3.10+** — download from [python.org](https://www.python.org/downloads/) or the Microsoft Store.
+  During install, check **"Add Python to PATH"**.
+- **pipx** — install via PowerShell:
+  ```powershell
+  python -m pip install pipx
+  python -m pipx ensurepath
+  ```
+  Restart your terminal after `ensurepath` so the PATH change takes effect.
+
+### Install aictl
+
+```powershell
+pipx install --force ".[all]"
+```
+
+Verify:
+
+```powershell
+aictl --version
+```
+
+### Config file locations on Windows
+
+`aictl status` discovers config files from the standard Windows locations:
+
+| Tool | Location |
+|------|----------|
+| Claude Code | `%APPDATA%\Claude\` |
+| Claude account | `%APPDATA%\Claude\.claude.json` |
+| VS Code settings | `%APPDATA%\Code\User\settings.json` |
+| VS Code extensions | `%USERPROFILE%\.vscode\extensions\` |
+| Cursor settings | `%APPDATA%\Cursor\User\settings.json` |
+| Windsurf / Codeium | `%APPDATA%\Codeium\windsurf\` |
+| Copilot sessions | `%APPDATA%\GitHub Copilot\session-state\` |
+
+### Known limitations on Windows
+
+| Feature | Status |
+|---------|--------|
+| File discovery (`status`, `dashboard`) | ✅ Full support |
+| Deploy / import / scan | ✅ Full support |
+| Process detection | ✅ Requires `psutil` (`pipx inject aictl psutil`) |
+| Live TUI dashboard | ✅ Requires `textual` (`pipx inject aictl textual`) |
+| HTML report | ✅ Full support |
+| `--backtrace PID` | ❌ Not available (uses macOS `sample` / Linux `eu-stack`) |
+| `ps` fallback (no psutil) | ❌ Skipped silently — install `psutil` instead |
+
+### Common errors
+
+**`aictl` not found after install**
+
+pipx installs to `%USERPROFILE%\.local\bin`. If that's not on your PATH:
+
+```powershell
+python -m pipx ensurepath
+# Restart PowerShell / Command Prompt
+```
+
+**`The dashboard requires the 'textual' package`**
+
+```powershell
+pipx inject aictl textual
+# or reinstall with all extras:
+pipx install --force ".[all]"
+```
+
+**`pipx install` silently skips (already installed)**
+
+Always use `--force` to update an existing install:
+
+```powershell
+pipx install --force ".[all]"
+```
+
+**Long paths cause errors**
+
+Windows has a 260-character path limit by default. Enable long paths in PowerShell (as Administrator):
+
+```powershell
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name LongPathsEnabled -Value 1
+```
+
+Or via Group Policy: *Computer Configuration → Administrative Templates → System → Filesystem → Enable Win32 long paths*.
+
+### Running tests on Windows
+
+```powershell
+python test\run.py
+python test\run.py -v   # verbose
+```
 
 ## Documentation
 
