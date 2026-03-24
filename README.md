@@ -1,8 +1,26 @@
 # aictl — AI Context from `.aictx` Files
 
-Drop `.context.aictx` files in your code repo. Run `aictl deploy`. Get native context files for Claude Code, GitHub Copilot, and Cursor — including hooks, LSP servers, and MCP configs. Already have native files? Run `aictl import` to generate `.aictx` from them. Want to distribute your context as a Claude Code plugin? Run `aictl plugin build`.
+AI coding tools accumulate project knowledge in incompatible, scattered formats — instruction files, MCP configs, hooks, memory entries, agent definitions — each duplicated per tool and invisible to the others. The knowledge is the same; only the packaging differs.
+
+`.aictx` is a single, declarative format for **project-specific and mode-specific AI knowledge**. One file captures everything an AI tool needs to understand about a codebase: instructions, commands, skills, MCP servers, LSP servers, hooks, and scoped rules. Profiles let you maintain distinct operational modes — debugging, documentation, review — each with its own context and agent memory.
+
+**`aictl`** is the control plane that bridges `.aictx` to the real world:
+
+- **Deploy** — translate `.aictx` into native files for Claude Code, GitHub Copilot, Cursor, and Windsurf, with profile-aware memory swap on every switch
+- **Import** — reverse-generate `.aictx` templates from existing native files, so nothing already written is lost
+- **Audit** — scan a project for every AI resource across all tools: config files, hidden state directories, memory entries, MCP servers, running processes, and their resource consumption
+- **Visualize** — a live terminal dashboard and a self-contained HTML report that surface everything in one view
+- **Package** — bundle `.aictx` into distributable Claude Code plugins
 
 Runs on **macOS, Windows, and Linux**.
+
+<img src="docs/screenshots/tui-image.png" width="100%" alt="Live TUI dashboard showing stat cards, per-tool panels, and sparkline CPU/MEM history">
+
+*Live terminal dashboard — stat cards for total tokens and files across tools, per-tool panels with file lists and MCP server health, sparkline CPU/memory history for every running AI process.*
+
+<img src="docs/screenshots/web-image.png" width="100%" alt="HTML status report with tabbed navigation, file content previews, and MCP server status">
+
+*Self-contained HTML report — tabbed navigation across AI tools, expandable file content previews with token counts, MCP server connectivity status, and agent memory browser. Opens in any browser, no dependencies.*
 
 ## Install
 
