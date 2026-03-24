@@ -65,6 +65,11 @@ def deploy(root_dir, profile, emitters, dry_run):
         click.secho("   caps: " + ", ".join(f"{v} {k}{'s' * (v > 1)}" for k, v in kinds.items()), fg="bright_black")
     if resolved.mcp_servers:
         click.secho("   mcp: " + ", ".join(resolved.mcp_servers), fg="bright_black")
+    if resolved.hooks:
+        n = sum(len(r) for r in resolved.hooks.values())
+        click.secho(f"   hooks: {len(resolved.hooks)} event(s), {n} rule(s)", fg="bright_black")
+    if resolved.lsp_servers:
+        click.secho("   lsp: " + ", ".join(resolved.lsp_servers), fg="bright_black")
 
     # --- Phase 4: Cleanup ---
     if not dry_run:

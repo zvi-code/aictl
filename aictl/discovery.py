@@ -166,6 +166,11 @@ def discover_claude(root: Path) -> ToolResources:
         res.files.append(r)
         _load_mcp(root / ".mcp.json", res)
 
+    # LSP config
+    r = _file_resource(root / ".lsp.json", "lsp")
+    if r:
+        res.files.append(r)
+
     # Memory — discover via Claude Code project directory
     from .memory import _find_project_dir, get_summary
     proj = _find_project_dir(root)

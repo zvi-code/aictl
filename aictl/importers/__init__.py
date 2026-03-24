@@ -31,8 +31,24 @@ class ImportedMcp:
 
 
 @dataclass
+class ImportedHook:
+    event: str           # PreToolUse, PostToolUse, Stop, etc.
+    rules: list[dict]    # list of hook rule objects
+    source: str
+
+
+@dataclass
+class ImportedLsp:
+    name: str
+    config: dict
+    source: str
+
+
+@dataclass
 class ImportResult:
     source: str
     scopes: list[ImportedScope] = field(default_factory=list)
     capabilities: list[ImportedCapability] = field(default_factory=list)
     mcp_servers: list[ImportedMcp] = field(default_factory=list)
+    hooks: list[ImportedHook] = field(default_factory=list)
+    lsp_servers: list[ImportedLsp] = field(default_factory=list)

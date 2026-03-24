@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .parser import ParsedAictx, Capability, McpServer
+from .parser import ParsedAictx, Capability, McpServer, Hook, LspServer
 
 
 @dataclass
@@ -32,6 +32,8 @@ class Resolved:
     scopes: list[ScopeOutput]                # instructions per scope
     capabilities: list[Capability]            # commands, agents, skills
     mcp_servers: dict[str, dict]              # merged MCP
+    hooks: dict[str, list[dict]]             # event → list of hook rules
+    lsp_servers: dict[str, dict]             # merged LSP servers
     memory_hints: str | None                  # memory hints for root+profile
 
 
@@ -48,7 +50,7 @@ def resolve(
         profile: active profile name or None
     """
     if not scanned:
-        return Resolved(root, profile, [], [], {}, None)
+        return Resolved(root, profile, [], [], {}, {}, {}, None)
 
     # Build lookup
     by_path: dict[str, ParsedAictx] = {rel: p for rel, p in scanned}
@@ -65,11 +67,17 @@ def resolve(
     # --- Capabilities: root only, plus inheritance ---
     caps: list[Capability] = []
     mcp: dict[str, dict] = {}
+    hooks: dict[str, list[dict]] = {}
+    lsp: dict[str, dict] = {}
 
     if root_parsed:
         # Root's own capabilities
         caps.extend(root_parsed.capabilities_for(profile))
         mcp.update(root_parsed.mcp_for(profile))
+        # Root's hooks and LSP
+        for event, rules in root_parsed.hooks_for(profile).items():
+            hooks.setdefault(event, []).extend(rules)
+        lsp.update(root_parsed.lsp_for(profile))
 
         # Root says recursive: pull children's capabilities up
         for kind in root_parsed.inherit.get("recursive", []):
@@ -84,6 +92,11 @@ def resolve(
                     caps.extend(c for c in parsed.capabilities_for(profile) if c.kind == "agent")
                 elif kind == "mcp":
                     mcp.update(parsed.mcp_for(profile))
+                elif kind in ("hooks", "hook"):
+                    for event, rules in parsed.hooks_for(profile).items():
+                        hooks.setdefault(event, []).extend(rules)
+                elif kind == "lsp":
+                    lsp.update(parsed.lsp_for(profile))
 
     # Children that say parent: inherit
     for rel, parsed in scanned:
@@ -98,6 +111,11 @@ def resolve(
                 caps.extend(c for c in parsed.capabilities_for(profile) if c.kind == "agent")
             elif kind == "mcp":
                 mcp.update(parsed.mcp_for(profile))
+            elif kind in ("hooks", "hook"):
+                for event, rules in parsed.hooks_for(profile).items():
+                    hooks.setdefault(event, []).extend(rules)
+            elif kind == "lsp":
+                lsp.update(parsed.lsp_for(profile))
 
     # --- Apply excludes ---
     if root_parsed:
@@ -106,6 +124,10 @@ def resolve(
             caps = [c for c in caps if f"{c.kind}:{c.profile}:{c.name}" not in excludes]
             mcp = {k: v for k, v in mcp.items()
                    if f"mcp:{profile}:{k}" not in excludes and f"mcp:_always:{k}" not in excludes}
+            hooks = {e: r for e, r in hooks.items()
+                     if f"hook:{profile}:{e}" not in excludes and f"hook:_always:{e}" not in excludes}
+            lsp = {k: v for k, v in lsp.items()
+                   if f"lsp:{profile}:{k}" not in excludes and f"lsp:_always:{k}" not in excludes}
 
     # --- Deduplicate capabilities (last wins) ---
     seen: dict[tuple, int] = {}
@@ -122,5 +144,7 @@ def resolve(
         scopes=scopes,
         capabilities=caps,
         mcp_servers=mcp,
+        hooks=hooks,
+        lsp_servers=lsp,
         memory_hints=memory,
     )

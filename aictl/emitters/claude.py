@@ -83,11 +83,40 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
             write_safe(fp, content)
         results.append({"path": str(fp), "tokens": estimate_tokens(content)})
 
+    # --- Hooks → .claude/settings.local.json ---
+    if resolved.hooks:
+        fp = root / ".claude" / "settings.local.json"
+        existing = _load_settings(fp) if not dry_run else {}
+        existing["hooks"] = resolved.hooks
+        content = json.dumps(existing, indent=2) + "\n"
+        if not dry_run:
+            write_safe(fp, content)
+        results.append({"path": str(fp), "tokens": estimate_tokens(content)})
+
+    # --- LSP → .lsp.json ---
+    if resolved.lsp_servers:
+        fp = root / ".lsp.json"
+        content = json.dumps(resolved.lsp_servers, indent=2) + "\n"
+        if not dry_run:
+            write_safe(fp, content)
+        results.append({"path": str(fp), "tokens": estimate_tokens(content)})
+
     return results
+
+
+def _load_settings(path: Path) -> dict:
+    """Load existing settings JSON, preserving non-hook keys."""
+    if path.is_file():
+        try:
+            return json.loads(path.read_text("utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
 
 
 GITIGNORE = [
     "CLAUDE.md", "CLAUDE.local.md",
     ".claude/rules/", ".claude/commands/", ".claude/skills/",
-    ".mcp.json", ".ai-deployed/",
+    ".claude/settings.local.json",
+    ".mcp.json", ".lsp.json", ".ai-deployed/",
 ]

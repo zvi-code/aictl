@@ -8,6 +8,9 @@ Section name grammar:
     [agent:_always:planner]             custom agent
     [skill:debug:flame-graph]           agent skill
     [mcp:_always:github]                MCP server (content is JSON)
+    [hook:_always:PreToolUse]           lifecycle hook (content is JSON array of rules)
+    [hook:debug:Stop]                   profile-specific hook
+    [lsp:_always:gopls]                 LSP server (content is JSON)
     [memory:debug]                      memory hints for profile
     [inherit]                           inheritance directives
     [exclude]                           exclusions from template
@@ -44,12 +47,28 @@ class McpServer:
 
 
 @dataclass
+class Hook:
+    profile: str     # _always | debug | ...
+    event: str       # PreToolUse | PostToolUse | Stop | SessionStart | ...
+    rules: list[dict]  # list of hook rule objects
+
+
+@dataclass
+class LspServer:
+    profile: str
+    name: str
+    config: dict
+
+
+@dataclass
 class ParsedAictx:
     path: Path
     instructions: dict[str, str] = field(default_factory=dict)
     # instructions["base"] = "...", instructions["debug"] = "..."
     capabilities: list[Capability] = field(default_factory=list)
     mcp_servers: list[McpServer] = field(default_factory=list)
+    hooks: list[Hook] = field(default_factory=list)
+    lsp_servers: list[LspServer] = field(default_factory=list)
     memory_hints: dict[str, str] = field(default_factory=dict)
     inherit: dict[str, list[str]] = field(default_factory=dict)
     # inherit["parent"] = ["mcp", "commands"]
@@ -78,6 +97,22 @@ class ParsedAictx:
         for m in self.mcp_servers:
             if m.profile == "_always" or m.profile == profile:
                 servers[m.name] = m.config
+        return servers
+
+    def hooks_for(self, profile: str | None) -> dict[str, list[dict]]:
+        """Get _always + profile hooks as merged dict of event → rules."""
+        result: dict[str, list[dict]] = {}
+        for h in self.hooks:
+            if h.profile == "_always" or h.profile == profile:
+                result.setdefault(h.event, []).extend(h.rules)
+        return result
+
+    def lsp_for(self, profile: str | None) -> dict[str, dict]:
+        """Get _always + profile LSP servers as merged dict."""
+        servers = {}
+        for s in self.lsp_servers:
+            if s.profile == "_always" or s.profile == profile:
+                servers[s.name] = s.config
         return servers
 
     def memory_for(self, profile: str | None) -> str | None:
@@ -143,6 +178,20 @@ def parse_aictx(path: Path) -> ParsedAictx | None:
                 try:
                     cfg = json.loads(content)
                     result.mcp_servers.append(McpServer(profile, name, cfg))
+                except json.JSONDecodeError:
+                    pass  # skip malformed
+            elif kind == "hook":
+                try:
+                    rules = json.loads(content)
+                    if isinstance(rules, dict):
+                        rules = [rules]
+                    result.hooks.append(Hook(profile, name, rules))
+                except json.JSONDecodeError:
+                    pass  # skip malformed
+            elif kind == "lsp":
+                try:
+                    cfg = json.loads(content)
+                    result.lsp_servers.append(LspServer(profile, name, cfg))
                 except json.JSONDecodeError:
                     pass  # skip malformed
             elif kind == "memory":

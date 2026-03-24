@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from .importers import ImportResult, ImportedScope, ImportedCapability, ImportedMcp
+from .importers import ImportResult, ImportedScope, ImportedCapability, ImportedMcp, ImportedHook, ImportedLsp
 from .parser import AICTX_FILENAME
 from .utils import write_safe
 
@@ -25,6 +25,8 @@ class AictxFile:
     profile_text: str = ""
     capabilities: list[ImportedCapability] = field(default_factory=list)
     mcp_servers: list[ImportedMcp] = field(default_factory=list)
+    hooks: list[ImportedHook] = field(default_factory=list)
+    lsp_servers: list[ImportedLsp] = field(default_factory=list)
 
 
 def synthesize(
@@ -114,15 +116,35 @@ def _merge(
             elif prefer and imp.source == prefer:
                 all_mcp[mcp.name] = mcp
 
-    # Attach capabilities + MCP to root scope
+    # Hooks: dedup by event, prefer --prefer source
+    all_hooks: dict[str, ImportedHook] = {}
+    for imp in imports:
+        for hook in imp.hooks:
+            if hook.event not in all_hooks:
+                all_hooks[hook.event] = hook
+            elif prefer and imp.source == prefer:
+                all_hooks[hook.event] = hook
+
+    # LSP: dedup by name, prefer --prefer source
+    all_lsp: dict[str, ImportedLsp] = {}
+    for imp in imports:
+        for lsp in imp.lsp_servers:
+            if lsp.name not in all_lsp:
+                all_lsp[lsp.name] = lsp
+            elif prefer and imp.source == prefer:
+                all_lsp[lsp.name] = lsp
+
+    # Attach capabilities + MCP + hooks + LSP to root scope
     root_file = next((f for f in aictx_files if f.rel_path == "."), None)
-    if root_file is None and (all_caps or all_mcp):
+    if root_file is None and (all_caps or all_mcp or all_hooks or all_lsp):
         root_file = AictxFile(rel_path=".")
         aictx_files.insert(0, root_file)
 
     if root_file:
         root_file.capabilities = list(all_caps.values())
         root_file.mcp_servers = list(all_mcp.values())
+        root_file.hooks = list(all_hooks.values())
+        root_file.lsp_servers = list(all_lsp.values())
 
     return aictx_files
 
@@ -164,5 +186,11 @@ def _serialize(af: AictxFile) -> str:
 
     for mcp in af.mcp_servers:
         sections.append(f"[mcp:_always:{mcp.name}]\n{json.dumps(mcp.config)}")
+
+    for hook in af.hooks:
+        sections.append(f"[hook:_always:{hook.event}]\n{json.dumps(hook.rules, indent=2)}")
+
+    for lsp in af.lsp_servers:
+        sections.append(f"[lsp:_always:{lsp.name}]\n{json.dumps(lsp.config)}")
 
     return "\n\n".join(sections) + "\n" if sections else ""

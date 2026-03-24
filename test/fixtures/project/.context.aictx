@@ -62,6 +62,15 @@ Parse CSV, generate Mermaid charts: latency distributions, throughput, recall vs
 [mcp:debug:valkey-server]
 {"command": "valkey-cli", "args": ["ping"]}
 
+[hook:_always:PreToolUse]
+[{"matcher": "Bash", "hooks": [{"type": "command", "command": ".claude/hooks/block-rm.sh"}]}]
+
+[hook:debug:Stop]
+[{"hooks": [{"type": "agent", "prompt": "Run cargo test and confirm all tests pass", "timeout": 120}]}]
+
+[lsp:_always:rust-analyzer]
+{"command": "rust-analyzer", "args": [], "extensionToLanguage": {".rs": "rust"}}
+
 [memory:debug]
 SimSIMD dispatch refactored — check src/metrics/distance.rs for dispatch table.
 ARM Graviton3 needs sve, Graviton2 uses neon only.

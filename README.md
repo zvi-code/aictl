@@ -1,6 +1,6 @@
 # aictl — AI Context from `.aictx` Files
 
-Drop `.context.aictx` files in your code repo. Run `aictl deploy`. Get native context files for Claude Code, GitHub Copilot, and Cursor. Already have native files? Run `aictl import` to generate `.aictx` from them.
+Drop `.context.aictx` files in your code repo. Run `aictl deploy`. Get native context files for Claude Code, GitHub Copilot, and Cursor — including hooks, LSP servers, and MCP configs. Already have native files? Run `aictl import` to generate `.aictx` from them. Want to distribute your context as a Claude Code plugin? Run `aictl plugin build`.
 
 ## How It Works
 
@@ -8,7 +8,7 @@ Drop `.context.aictx` files in your code repo. Run `aictl deploy`. Get native co
 
 ```
 my-project/
-├── .context.aictx                    ← root: instructions + commands + skills + MCP
+├── .context.aictx                    ← root: instructions + commands + skills + MCP + hooks + LSP
 ├── services/ingestion/.context.aictx ← sub-scope: scoped instructions
 └── services/query-engine/.context.aictx
 ```
@@ -27,6 +27,8 @@ my-project/
 ├── .claude/commands/investigate.md   ← slash command
 ├── .claude/skills/flame-graph/SKILL.md
 ├── .mcp.json                         ← MCP servers
+├── .lsp.json                         ← LSP servers (for plugins)
+├── .claude/settings.local.json       ← lifecycle hooks
 ├── .github/copilot-instructions.md   ← Copilot repo-wide
 ├── .github/agents/debugger.agent.md  ← Copilot agent
 ├── .github/prompts/investigate.prompt.md ← VS Code prompt file
@@ -66,6 +68,30 @@ aictl import --root . --prefer claude
 ```
 
 Running `aictl deploy` on the imported `.aictx` files reproduces the original native files.
+
+### Plugin: package as a Claude Code plugin
+
+Build a distributable Claude Code plugin from your `.aictx` files:
+
+```bash
+aictl plugin build --root my-project/ --name my-plugin --profile debug
+```
+
+Generates a complete plugin structure:
+
+```
+my-project/plugin/
+├── .claude-plugin/plugin.json   ← manifest
+├── commands/investigate.md      ← slash commands
+├── skills/flame-graph/SKILL.md  ← agent skills
+├── agents/debugger.md           ← custom agents
+├── hooks/hooks.json             ← lifecycle hooks
+├── .mcp.json                    ← MCP servers
+├── .lsp.json                    ← LSP servers
+└── settings.json                ← default agent
+```
+
+Test locally with `claude --plugin-dir ./plugin`, then submit to the plugin marketplace.
 
 ### Status: see all AI tool resources
 
@@ -115,6 +141,7 @@ pip install -e .
 | `aictl scan --root .` | Discover `.aictx` files, show scope map |
 | `aictl deploy --root . --profile debug` | Scan → resolve → emit → cleanup → swap memory |
 | `aictl import --root .` | Read native tool files → generate `.context.aictx` |
+| `aictl plugin build --root . --name my-plugin` | Package `.aictx` as a Claude Code plugin |
 | `aictl status --root .` | Show all resources: files, memory, MCP servers, processes |
 | `aictl status --processes` | Include running processes (Claude, Copilot, Cursor, Windsurf) |
 | `aictl status --backtrace PID` | Sample a process stack trace |
@@ -128,6 +155,18 @@ pip install -e .
 | `--prefer claude\|copilot\|cursor` | Preferred source when tools have different content for the same scope |
 | `--profile NAME` | Override auto-detected profile name |
 | `--from claude,copilot,cursor` | Comma-separated list of importers to read from (default: all) |
+| `--dry-run` | Show what would be written without writing |
+
+### Plugin build options
+
+| Option | Description |
+|--------|-------------|
+| `--name NAME` | Plugin name (required, used as namespace for skills) |
+| `--profile NAME` | Active profile to include |
+| `--output DIR` | Output directory (default: `<root>/plugin`) |
+| `--description TEXT` | Plugin description |
+| `--version X.Y.Z` | Plugin version (default: 1.0.0) |
+| `--author NAME` | Author name |
 | `--dry-run` | Show what would be written without writing |
 
 ### Status options

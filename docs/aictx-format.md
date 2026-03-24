@@ -35,6 +35,11 @@ my-project/
 [mcp:_always:name]                  MCP server, all profiles (content: JSON)
 [mcp:debug:name]                    MCP server, debug only
 
+[hook:_always:EventName]            lifecycle hook, all profiles (content: JSON)
+[hook:debug:EventName]              lifecycle hook, debug only
+[lsp:_always:name]                  LSP server, all profiles (content: JSON)
+[lsp:debug:name]                    LSP server, debug only
+
 [memory:debug]                      memory hints for profile
 
 [inherit]                           inheritance directives
@@ -94,6 +99,15 @@ Approach: reproduce, isolate, trace, diagnose, fix.
 
 [mcp:debug:grafana]
 {"command": "npx", "args": ["-y", "@grafana/mcp-server"]}
+
+[hook:_always:PreToolUse]
+[{"matcher": "Bash", "hooks": [{"type": "command", "command": ".claude/hooks/block-rm.sh"}]}]
+
+[hook:debug:Stop]
+[{"hooks": [{"type": "agent", "prompt": "Run make test and confirm all tests pass", "timeout": 120}]}]
+
+[lsp:_always:gopls]
+{"command": "gopls", "args": ["serve"], "extensionToLanguage": {".go": "go"}}
 
 [memory:debug]
 The connection pool issue was traced to missing connection timeouts.

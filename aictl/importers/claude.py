@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from . import ImportResult, ImportedScope, ImportedCapability, ImportedMcp
+from . import ImportResult, ImportedScope, ImportedCapability, ImportedMcp, ImportedHook, ImportedLsp
 from ._parse_helpers import strip_markers, split_yaml_frontmatter, glob_to_rel_path, extract_profile_name, strip_profile_header
 
 NAME = "claude"
@@ -24,6 +24,8 @@ def import_from(root: Path) -> ImportResult | None:
     scopes: list[ImportedScope] = []
     capabilities: list[ImportedCapability] = []
     mcp_servers: list[ImportedMcp] = []
+    hooks: list[ImportedHook] = []
+    lsp_servers: list[ImportedLsp] = []
 
     root_base = ""
     profile_name = None
@@ -85,7 +87,29 @@ def import_from(root: Path) -> ImportResult | None:
         except (json.JSONDecodeError, KeyError):
             pass
 
-    if not scopes and not capabilities and not mcp_servers:
+    # --- Hooks: .claude/settings.json and .claude/settings.local.json ---
+    for settings_name in ("settings.json", "settings.local.json"):
+        settings_file = root / ".claude" / settings_name
+        if settings_file.is_file():
+            try:
+                data = json.loads(settings_file.read_text("utf-8"))
+                for event, rules in data.get("hooks", {}).items():
+                    if isinstance(rules, list):
+                        hooks.append(ImportedHook(event, rules, NAME))
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+    # --- LSP: .lsp.json ---
+    lsp_file = root / ".lsp.json"
+    if lsp_file.is_file():
+        try:
+            data = json.loads(lsp_file.read_text("utf-8"))
+            for name, config in data.items():
+                lsp_servers.append(ImportedLsp(name, config, NAME))
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    if not scopes and not capabilities and not mcp_servers and not hooks and not lsp_servers:
         return None
 
-    return ImportResult(NAME, scopes, capabilities, mcp_servers)
+    return ImportResult(NAME, scopes, capabilities, mcp_servers, hooks, lsp_servers)

@@ -15,6 +15,8 @@ Walk the root directory tree. Find all `.context.aictx` files. Parse each into t
 - **Inheritance**: root's `[inherit] recursive: skills` pulls children's skills up. Children's `[inherit] parent: mcp` push their MCP to root.
 - **Excludes**: root's `[exclude]` filters out unwanted capabilities.
 - **MCP**: root's `[mcp:*]` merged into single config.
+- **Hooks**: root's `[hook:*]` merged by event into `{event: [rules...]}`.
+- **LSP**: root's `[lsp:*]` merged into single config.
 - **Memory**: root's `[memory:profile]` provides hints.
 
 ### Phase 3: Emit
@@ -40,6 +42,8 @@ Write `.ai-deployed/manifest.json` tracking all deployed files.
 | `[agent:*]` | — | `.github/agents/{name}.agent.md` | — |
 | `[skill:*]` | `.claude/skills/{name}/SKILL.md` | `.github/skills/{name}/SKILL.md` | — |
 | `[mcp:*]` | `.mcp.json` | `.copilot-mcp.json` | `.cursor/mcp.json` |
+| `[hook:*]` | `.claude/settings.local.json` | — | — |
+| `[lsp:*]` | `.lsp.json` | — | — |
 
 ## Root-Relative Scoping
 
