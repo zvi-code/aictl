@@ -230,11 +230,23 @@ def discover_claude(root: Path) -> ToolResources:
         if summary:
             res.memory = summary
 
+    # ~/.claude.json — global account config (model prefs, tool usage, project registry)
+    r = _file_resource(Path.home() / ".claude.json", "config (account)")
+    if r:
+        res.files.append(r)
+
+    # ~/.claude plugins
+    claude_plugins = Path.home() / ".claude" / "plugins"
+    for name, kind in [
+        ("blocklist.json", "plugins (blocklist)"),
+        ("known_marketplaces.json", "plugins (marketplaces)"),
+    ]:
+        r = _file_resource(claude_plugins / name, kind)
+        if r:
+            res.files.append(r)
+
     res.files = _dedup_files(res.files)
     return res
-
-
-# ─── GitHub Copilot ─────────────────────────────────────────────────
 
 def discover_copilot(root: Path) -> ToolResources:
     res = ToolResources("copilot", "GitHub Copilot")
@@ -283,6 +295,47 @@ def discover_copilot(root: Path) -> ToolResources:
     if r:
         res.files.append(r)
         _load_mcp(root / ".copilot-mcp.json", res)
+
+    # VS Code user settings (global, contains github.copilot.* options)
+    if platform.system() == "Darwin":
+        vscode_user = Path.home() / "Library" / "Application Support" / "Code" / "User"
+        r = _file_resource(vscode_user / "settings.json", "settings (vscode user)")
+        if r:
+            res.files.append(r)
+
+    # Installed Copilot extension version (from ~/.vscode/extensions)
+    vscode_ext_dir = Path.home() / ".vscode" / "extensions"
+    if vscode_ext_dir.is_dir():
+        for ext_dir in sorted(vscode_ext_dir.iterdir()):
+            name = ext_dir.name.lower()
+            if "github.copilot" in name and (ext_dir / "package.json").is_file():
+                pkg = ext_dir / "package.json"
+                # Extract version only — don't count the full 200KB package.json tokens
+                version_str = ""
+                try:
+                    data = json.loads(pkg.read_text("utf-8"))
+                    version_str = data.get("version", "")
+                except (json.JSONDecodeError, OSError):
+                    pass
+                label = f"extension ({ext_dir.name})" if not version_str else f"extension v{version_str}"
+                r = ResourceFile(str(pkg), label, pkg.stat().st_size, 0)
+                res.files.append(r)
+
+    # Active Copilot agent sessions for this root
+    copilot_sessions = Path.home() / ".copilot" / "session-state"
+    if copilot_sessions.is_dir():
+        root_str = str(root)
+        for session_dir in sorted(copilot_sessions.iterdir()):
+            workspace = session_dir / "workspace.yaml"
+            if workspace.is_file():
+                try:
+                    text = workspace.read_text(errors="replace")
+                    if f"cwd: {root_str}" in text or f"git_root: {root_str}" in text:
+                        r = _file_resource(workspace, "session (copilot agent)")
+                        if r:
+                            res.files.append(r)
+                except OSError:
+                    pass
 
     return res
 
@@ -349,6 +402,53 @@ def discover_windsurf(root: Path) -> ToolResources:
     return res
 
 
+# ─── Project environment / hidden config ────────────────────────────
+
+# Hidden directories to skip (not AI-related, noise)
+_SKIP_HIDDEN_DIRS = {
+    ".git", ".venv", ".env", "venv", ".tox", ".mypy_cache",
+    ".pytest_cache", ".ruff_cache", "__pycache__", ".cache",
+    ".idea", ".vs", "node_modules", ".npm", ".yarn",
+}
+
+def discover_project_env(root: Path) -> ToolResources:
+    """Discover environment and hidden config files in the project that affect LLM tools.
+
+    Covers:
+      - .env / .envrc — environment variables (may set API keys, tool config)
+      - Hidden dirs with AI-relevant config (e.g. .claude/, already in Claude discovery
+        but we surface other hidden config files here as a cross-cutting view)
+    """
+    res = ToolResources("env", "Project Environment")
+
+    # Environment files that LLM tools may read
+    for name in (".env", ".envrc", ".env.local", ".env.development"):
+        r = _file_resource(root / name, "env")
+        if r:
+            res.files.append(r)
+
+    # Hidden dirs at project root that aren't tool-specific above
+    # but may contain AI config (e.g. .github/copilot-extensions/, .ai/, etc.)
+    known_tool_dirs = {".claude", ".cursor", ".windsurf", ".github", ".git",
+                       ".venv", ".vscode", ".ai-deployed"}
+    if root.is_dir():
+        for item in sorted(root.iterdir()):
+            if (item.is_dir()
+                    and item.name.startswith(".")
+                    and item.name not in known_tool_dirs
+                    and item.name not in _SKIP_HIDDEN_DIRS):
+                # Collect any .json/.yaml/.md files one level deep
+                for pat, kind in [("*.json", "config"), ("*.yaml", "config"),
+                                   ("*.yml", "config"), ("*.md", "instructions")]:
+                    for f in sorted(item.glob(pat)):
+                        if f.is_file() and f.stat().st_size < 500_000:
+                            rf = _file_resource(f, f"hidden ({item.name})")
+                            if rf:
+                                res.files.append(rf)
+
+    return res
+
+
 # ─── aictl itself ───────────────────────────────────────────────────
 
 def discover_aictl(root: Path) -> ToolResources:
@@ -372,7 +472,7 @@ def discover_aictl(root: Path) -> ToolResources:
 
 # ─── Register discoverers ──────────────────────────────────────────
 
-_DISCOVERERS = [discover_claude, discover_copilot, discover_cursor, discover_windsurf, discover_aictl]
+_DISCOVERERS = [discover_claude, discover_copilot, discover_cursor, discover_windsurf, discover_project_env, discover_aictl]
 
 
 # ─── Process detection ──────────────────────────────────────────────

@@ -644,6 +644,7 @@ def _tool_colour(tool: str) -> str:
         "copilot": "#60a5fa",
         "cursor": "#34d399",
         "windsurf": "#fbbf24",
+        "env": "#f97316",
         "aictl": "#94a3b8",
     }.get(tool, "#64748b")
 
