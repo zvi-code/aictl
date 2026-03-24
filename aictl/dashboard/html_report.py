@@ -347,7 +347,7 @@ def _render_tool_cards(snap: DashboardSnapshot, root: Path, home: Path) -> list[
         if tr.files:
             dir_html = _files_html_by_dir(tr.files, root, home, f"file-{tr.tool}")
             files_html = (
-                f'<details open>'
+                f'<details>'
                 f'<summary>{len(tr.files)} file{"s" if len(tr.files) != 1 else ""}</summary>'
                 f"{dir_html}"
                 f"</details>"
@@ -365,8 +365,7 @@ def _render_tool_cards(snap: DashboardSnapshot, root: Path, home: Path) -> list[
                     f"<td><code>{_esc(p.cmdline[:100])}</code></td></tr>"
                 )
             procs_html = f"""
-            <details open>
-              <summary>{len(tr.processes)} process{'es' if len(tr.processes) != 1 else ''}</summary>
+            <details>
               <table class="proc-table">
                 <thead><tr><th>PID</th><th>Name</th><th>CPU</th><th>MEM</th><th>Command</th></tr></thead>
                 <tbody>{''.join(rows)}</tbody>
@@ -385,8 +384,7 @@ def _render_tool_cards(snap: DashboardSnapshot, root: Path, home: Path) -> list[
                     f"<td><code>{_esc(cmd)} {_esc(args[:80])}</code></td></tr>"
                 )
             mcp_html = f"""
-            <details open>
-              <summary>{len(tr.mcp_servers)} MCP server{'s' if len(tr.mcp_servers) != 1 else ''}</summary>
+            <details>
               <table class="mcp-table">
                 <thead><tr><th>Server</th><th>Command</th></tr></thead>
                 <tbody>{''.join(rows)}</tbody>
@@ -522,7 +520,7 @@ def _render_memory_section(snap: DashboardSnapshot, root: Path, home: Path) -> s
 
         sections.append(f"""
         <div class="section-card">
-          <details open>
+          <details>
             <summary>
               <span class="mem-source">{_esc(label)}</span>
               — {len(entries)} {'entry' if len(entries) == 1 else 'entries'}
