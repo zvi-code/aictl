@@ -164,7 +164,14 @@ The recommended way to install `aictl` as a global CLI tool is with [pipx](https
 
 ```bash
 pipx install .               # core (CLI, deploy, import, status)
-pipx install ".[dashboard]"  # adds live TUI dashboard (textual)
+pipx install ".[dashboard]"  # first install — includes textual for the live TUI dashboard
+```
+
+If aictl is already installed and you want to add dashboard support:
+
+```bash
+# Inject textual into aictl's existing pipx environment
+~/.local/pipx/venvs/aictl/bin/python -m pip install 'textual>=0.79'
 ```
 
 If you don't have `pipx`:
