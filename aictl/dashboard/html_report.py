@@ -157,18 +157,30 @@ code {{ font-size: 0.8em; color: var(--fg2); }}
 }}
 .expand-btn:hover {{ background: var(--accent); color: var(--bg); }}
 
-/* Dir-grouped file sections */
-.dir-group {{ margin: 0.25rem 0; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }}
+/* Dir tree */
+.dir-tree {{ margin: 0; padding: 0; }}
+.dir-group {{ margin: 0; }}
+.dir-group > .dir-children {{ padding-left: 1.25rem; border-left: 1px solid var(--border); margin-left: 0.75rem; }}
 .dir-summary {{
-  display: flex; align-items: center; gap: 0.5rem; list-style: none;
-  padding: 0.35rem 0.75rem; background: var(--bg); font-size: 0.82rem; cursor: pointer;
+  display: flex; align-items: center; gap: 0.4rem; list-style: none;
+  padding: 0.3rem 0.5rem; font-size: 0.82rem; cursor: pointer;
+  border-radius: 4px;
 }}
+.dir-summary:hover {{ background: var(--border); }}
 .dir-summary::-webkit-details-marker {{ display: none; }}
-.dir-summary::before {{ content: "▶"; font-size: 0.65rem; opacity: 0.5; transition: transform 0.15s; }}
+.dir-summary::before {{ content: "▶"; font-size: 0.6rem; opacity: 0.45; transition: transform 0.15s; min-width: 0.7rem; }}
 details[open] > .dir-summary::before {{ transform: rotate(90deg); }}
-.dir-icon {{ opacity: 0.7; }}
-.dir-meta {{ color: var(--fg2); font-size: 0.73rem; margin-left: auto; white-space: nowrap; }}
-.dir-group > table {{ margin: 0; border-top: 1px solid var(--border); border-radius: 0; }}
+.dir-icon {{ opacity: 0.7; font-size: 0.85rem; }}
+.dir-meta {{ color: var(--fg2); font-size: 0.72rem; margin-left: auto; white-space: nowrap; }}
+.file-row {{
+  display: flex; align-items: baseline; gap: 0.5rem; padding: 0.2rem 0.5rem;
+  font-size: 0.8rem; border-radius: 3px;
+}}
+.file-row:hover {{ background: var(--border); }}
+.file-name {{ font-family: 'SF Mono', Menlo, Consolas, monospace; }}
+.file-kind {{ color: var(--fg2); font-size: 0.72rem; }}
+.file-size {{ color: var(--fg2); font-size: 0.72rem; margin-left: auto; white-space: nowrap; }}
+.file-preview-wrap {{ padding: 0 0.5rem 0.5rem 1.5rem; }}
 
 /* Memory entries */
 .mem-source {{ font-weight: 600; color: var(--accent); font-size: 0.75rem; text-transform: uppercase; }}
@@ -568,71 +580,85 @@ def _files_html_by_dir(
     id_prefix: str,
     auto_open_threshold: int = 0,
 ) -> str:
-    """Render a list of ResourceFiles grouped by parent directory.
-
-    Each directory becomes a collapsible <details> block.
-    Dirs with <= auto_open_threshold files start expanded (default: all collapsed).
-    """
-    from collections import defaultdict
-
+    """Render a list of ResourceFiles as a nested collapsible directory tree."""
     global _preview_counter
 
-    # Group by relative parent dir
-    groups: dict[str, list[tuple[str, object]]] = defaultdict(list)
+    # Build tree: node = {"_files": [...], <subdir>: node}
+    tree: dict = {"_files": []}
     for f in files:
         rel = _rel(f.path, root, home)
-        parent = str(Path(rel).parent)
-        if parent == ".":
-            parent = "(root)"
-        groups[parent].append((rel, f))
+        parts = Path(rel).parts
+        node = tree
+        for part in parts[:-1]:
+            node = node.setdefault(part, {"_files": []})
+        node["_files"].append((parts[-1], rel, f))
 
-    parts = []
-    for dir_name in sorted(groups.keys()):
-        entries = groups[dir_name]
-        open_attr = "open" if len(entries) <= auto_open_threshold else ""
-        dir_tok = sum(f.tokens for _, f in entries)
-        tok_str = f" · {_human_tokens(dir_tok)} tok" if dir_tok else ""
-        n_str = f"{len(entries)} file{'s' if len(entries) != 1 else ''}"
+    def _count_files(node: dict) -> int:
+        n = len(node["_files"])
+        for k, v in node.items():
+            if k != "_files":
+                n += _count_files(v)
+        return n
 
-        file_rows = []
-        for rel, f in entries:
+    def _count_tokens(node: dict) -> int:
+        n = sum(f.tokens for _, _, f in node["_files"])
+        for k, v in node.items():
+            if k != "_files":
+                n += _count_tokens(v)
+        return n
+
+    def _render_node(node: dict, depth: int = 0) -> str:
+        global _preview_counter
+        parts_html = []
+
+        # Files in this node
+        for filename, rel, f in sorted(node["_files"], key=lambda x: x[0].lower()):
             _preview_counter += 1
             uid = f"{id_prefix}-{_preview_counter}"
-            tok = f"{f.tokens:,}" if f.tokens else "—"
-            filename = Path(rel).name
+            tok_str = f"~{_human_tokens(f.tokens)}" if f.tokens else ""
 
             content = _read_file_tail(f.path)
             preview_html = ""
             if content and content.strip():
                 preview_html = (
-                    f'<tr class="file-preview-row">'
-                    f'<td colspan="4" style="padding:0 0.5rem 0.5rem">'
+                    f'<div class="file-preview-wrap">'
                     f"{_render_content_preview(content, uid)}"
-                    f"</td></tr>"
+                    f"</div>"
                 )
 
-            file_rows.append(
-                f"<tr><td><code>{_esc(filename)}</code></td>"
-                f"<td>{_esc(f.kind)}</td>"
-                f"<td class='num'>{_human_size(f.size)}</td>"
-                f"<td class='num'>{tok}</td></tr>"
+            parts_html.append(
+                f'<div class="file-row">'
+                f'<span class="file-name">{_esc(filename)}</span>'
+                f'<span class="file-kind">{_esc(f.kind)}</span>'
+                f'<span class="file-size">{_human_size(f.size)}'
+                f'{"  " + tok_str if tok_str else ""}</span>'
+                f"</div>"
                 f"{preview_html}"
             )
 
-        parts.append(
-            f'<details {open_attr} class="dir-group">'
-            f'<summary class="dir-summary">'
-            f'<span class="dir-icon">📁</span>'
-            f"<code>{_esc(dir_name)}</code>"
-            f'<span class="dir-meta">{n_str}{tok_str}</span>'
-            f"</summary>"
-            f'<table class="file-table">'
-            f"<thead><tr><th>File</th><th>Kind</th><th>Size</th><th>Tokens</th></tr></thead>"
-            f"<tbody>{''.join(file_rows)}</tbody>"
-            f"</table></details>"
-        )
+        # Subdirectory nodes
+        for subdir in sorted(k for k in node if k != "_files"):
+            child = node[subdir]
+            n_files = _count_files(child)
+            dir_tok = _count_tokens(child)
+            tok_str = f" · {_human_tokens(dir_tok)}" if dir_tok else ""
+            meta = f"{n_files} file{'s' if n_files != 1 else ''}{tok_str}"
 
-    return "\n".join(parts)
+            child_html = _render_node(child, depth + 1)
+            parts_html.append(
+                f'<details class="dir-group">'
+                f'<summary class="dir-summary">'
+                f'<span class="dir-icon">📁</span>'
+                f"<code>{_esc(subdir)}</code>"
+                f'<span class="dir-meta">{meta}</span>'
+                f"</summary>"
+                f'<div class="dir-children">{child_html}</div>'
+                f"</details>"
+            )
+
+        return "\n".join(parts_html)
+
+    return f'<div class="dir-tree">{_render_node(tree)}</div>'
 
 
 def _esc(s: str) -> str:
