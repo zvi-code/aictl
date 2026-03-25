@@ -1270,6 +1270,37 @@ fi
 | **JetBrains Junie** | `.junie/guidelines.md` |
 | **Cross-tool** | `AGENTS.md` (read by Copilot, Gemini, Codex) |
 
+## Quick Cross-Reference: "What's the token weight of each file?"
+
+Files documented in this reference have different token costs. This table maps each file type to its
+approximate token impact and loading behavior. Use this to estimate your per-session overhead.
+See `ai-tools-traffic-monitoring.md` Section 9.5-9.7 for the full token assessment format and tools.
+
+| File | Approx. Tokens | When Loaded | Survives Compaction | Cacheable |
+|------|---------------|-------------|--------------------| ----------|
+| System prompt (built-in) | ~2,600-3,000 | Every call | Yes | Yes |
+| System tools (built-in, ~20 tools) | ~14,000-17,000 | Every call | Yes | Yes |
+| Autocompact buffer (reserved) | ~33,000 | Always reserved | N/A | N/A |
+| `CLAUDE.md` (project root) | ~100-5,000+ | Every call | Yes | Yes |
+| `~/.claude/CLAUDE.md` (global) | ~100-2,000 | Every call | Yes | Yes |
+| `CLAUDE.local.md` | ~100-1,000 | Every call | Yes | Yes |
+| `MEMORY.md` (auto-memory) | ~100-3,000 | Every call (first 200 lines) | Yes | Yes |
+| `.claude/rules/*.md` (each) | ~50-500 | When matching files touched | Yes | Yes |
+| `.claude/agents/*.md` (each) | ~200-500 | Every call (descriptions) | Yes | Yes |
+| `.claude/skills/*/SKILL.md` (each) | ~50-100 | Descriptions always; body on-demand | Desc: yes | Yes |
+| MCP server (small, 5 tools) | ~500-1,000 | Every call | Yes | Yes |
+| MCP server (medium, 10-15 tools) | ~1,500-2,500 | Every call | Yes | Yes |
+| MCP server (large, 20+ tools) | ~2,000-4,000 | Deferred if too large | Yes | Yes |
+| Conversation messages | Grows with session | Every call | No (compacted) | Partially |
+| File read results (in conversation) | ~1 token / 4 chars | Until compacted | No | No |
+
+**Rule of thumb for token estimation from file size:**
+- English text: **1 token ≈ 4 characters** (or ~0.75 words)
+- Code: **1 token ≈ 3 characters** (more token-dense)
+- Markdown: **byte count × 0.28 ≈ token count**
+
+**⚠️ Key insight:** A 200k context window has ~50k tokens of fixed overhead before you type anything. With 3-4 MCP servers and a moderate CLAUDE.md, overhead can reach 60-70k tokens (30-35%). The actual available space for your conversation is **130-140k tokens**, not 200k.
+
 ---
 
 ## Appendix A: Windows Path Equivalents & Gotchas

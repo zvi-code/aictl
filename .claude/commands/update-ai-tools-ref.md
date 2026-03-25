@@ -1,14 +1,20 @@
 ---
-description: Search for updates to the AI tools config paths reference document. Finds new tools, changed paths, new conventions, and adds them.
+description: Search for updates to the AI tools config paths reference document AND its companion CSV. Finds new tools, changed paths, new conventions, and adds them to both files.
 argument-hint: [topic or tool name to focus on, or 'full' for comprehensive scan]
 ---
 
-You are updating a living reference document that catalogs file structures, config paths, memory locations, temp/intermediate artifacts, ignore files, and naming conventions for all major AI coding tools.
+You are updating two living reference files that catalog file structures, config paths, memory locations, temp/intermediate artifacts, ignore files, and naming conventions for all major AI coding tools:
 
-## The document to update
+1. A **Markdown reference document** — the source of truth
+2. A **structured CSV inventory** — a flat table derived from the same data
 
-Read the current version of the reference document:
+Both must stay in sync. When you add, change, or deprecate a path in the Markdown, you must make the corresponding change in the CSV.
+
+## Files to update
+
+Read both current versions:
 @ai-tools-config-paths.md
+@ai-tools-paths-all.csv
 
 ## Your task
 
@@ -32,7 +38,7 @@ If a specific tool or topic is named, focus the search there.
 ## How to search
 
 For each major tool in the document, search for:
-- `"<tool name>" config file path 2026` 
+- `"<tool name>" config file path 2026`
 - `"<tool name>" breaking changes settings location`
 - `"<tool name>" new features memory config`
 - GitHub issues/changelogs for the tool's repo
@@ -42,7 +48,7 @@ Also search for:
 - Updates to the AGENTS.md standard
 - New cross-tool sync utilities
 
-## How to update
+## How to update the Markdown
 
 1. **Read the current document first** — understand what's already there
 2. **Search systematically** — don't skip tools
@@ -52,9 +58,43 @@ Also search for:
 6. **Add a changelog entry** at the top of the document noting what was updated and when
 7. **Be conservative** — don't remove content unless it's confirmed obsolete. Mark deprecated paths with ⚠️ DEPRECATED instead of deleting.
 
+## How to update the CSV
+
+After every change to the Markdown, apply the same change to `ai-tools-paths-all.csv`. The CSV columns are:
+
+```
+path,ai_tool,platform,hidden,scope,category,sent_to_llm,approx_tokens,read_write,survives_compaction,cacheable,loaded_when,path_args,description
+```
+
+Column definitions:
+- **path**: File/directory path (use `{curly-braces}` for template variables, `~` for home, `%VAR%` for Windows env vars)
+- **ai_tool**: Tool identifier (e.g., `claude-code`, `cursor`, `copilot-cli`, `windsurf`, `openclaw`, `opencode`, `gemini-cli`)
+- **platform**: `macos`, `linux`, `macos/linux`, `windows`, or `all`
+- **hidden**: `yes` if starts with `.` or in hidden dir, else `no`
+- **scope**: `global`, `project`, `session`
+- **category**: `config`, `instructions`, `memory`, `credentials`, `rules`, `agent`, `skills`, `commands`, `hooks`, `ignore`, `cache`, `temp`, `transcript`, `database`, `runtime`, `logs`, `extensions`, `app-data`, `backup`
+- **sent_to_llm**: `yes`, `partial`, `conditional`, `on-demand`, `no`
+- **approx_tokens**: Estimated tokens when sent (range like `100-5000+`, or `0`)
+- **read_write**: `read`, `rw`, `write`
+- **survives_compaction**: `yes`, `no`, `n/a`
+- **cacheable**: `yes`, `no`, `n/a`
+- **loaded_when**: `every-call`, `session-start`, `app-start`, `on-invoke`, `on-file-match`, `on-demand`, `runtime`, etc.
+- **path_args**: Template variables with format notes (e.g., `{project}=path-with-slashes-to-hyphens`)
+- **description**: Brief explanation
+
+Rules for CSV updates:
+- **New path** → append a row to the CSV
+- **Changed path** → update the existing row in place (find by matching `path` + `ai_tool` + `platform`)
+- **Deprecated path** → keep the row but prepend `⚠️ DEPRECATED: ` to the description column
+- **New tool** → add all its paths as new rows
+- **Platform variant** → add a separate row per platform (one for macOS/Linux, one for Windows) when paths differ
+
+If a path exists for both Unix and Windows with different locations, there should be two separate rows — do not combine them.
+
 ## Output
 
 After making updates, provide a summary of:
-- What was added or changed
+- What was added or changed (in both Markdown and CSV)
 - What was confirmed still current (no change needed)
 - What could not be verified (needs manual check)
+- Number of CSV rows added/modified/total
