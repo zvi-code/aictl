@@ -184,100 +184,83 @@ Test locally with `claude --plugin-dir ./plugin`, then submit to the plugin mark
 See every file, memory entry, MCP server, and running process across all tools in one view:
 
 ```bash
-aictl status --root my-project/
+aictl status
 ```
 
-```
-──────────────────────────────────────────────────────
-  Claude Code
-──────────────────────────────────────────────────────
-
-  Files:
-    [instructions] CLAUDE.md  1.2KB  ~300 tok
-    [settings] .claude/settings.json  1.0KB  ~252 tok
-    [memory (index)] ~/.claude/projects/.../memory/MEMORY.md  114B  ~28 tok
-
-  Memory:
-    140 tokens loaded every session
-    2 file(s) in /Users/you/.claude/projects/.../memory
-
-  MCP Servers:
-    filesystem — npx -y @modelcontextprotocol/server-filesystem /tmp
-```
-
-Add `--processes` to detect running tool processes via `ps`, and `--backtrace PID` to sample a stack trace:
+Discovery is CSV-driven and covers 27+ tools. Use `--tool claude` to filter (expands to all Claude sub-tools), `--processes` for running processes with anomaly detection, `--budget` for token cost analysis, or `--json` for machine-readable output.
 
 ```bash
-aictl status --processes
-aictl status --backtrace 12345
+aictl status --processes          # include process detection
+aictl status --budget             # token cost breakdown
+aictl status --tool copilot       # filter to Copilot tools only
+aictl status --json               # full JSON with enriched metadata
+aictl status --backtrace 12345    # sample a process stack trace
 ```
 
-Supports Claude Code, GitHub Copilot, GitHub Copilot (Microsoft 365), Semantic Kernel, Azure PromptFlow, Azure AI, Cursor, and Windsurf. Use `--tool claude` to filter to one tool, or `--json` for machine-readable output.
+### Viewing: three ways to explore
 
-### Web Dashboard: live monitoring with file inspection
+aictl offers three complementary ways to view AI tool resources, from quick terminal checks to full interactive dashboards:
 
-Launch a live web dashboard that monitors all AI tool resources in real time, with the ability to inspect actual file contents:
+#### 1. Web Dashboard (`aictl serve`) — recommended for exploration
 
 ```bash
-aictl serve
+aictl serve                     # opens browser at http://127.0.0.1:8484
+aictl serve --port 9000         # custom port
+aictl serve --no-open           # don't auto-open browser
 ```
 
-Opens your browser at `http://127.0.0.1:8484` with:
+The web dashboard is a real-time, interactive interface that auto-updates via Server-Sent Events:
 
-- **Real-time updates** — stat cards and tool panels refresh automatically via Server-Sent Events
-- **File content viewer** — click any file to open a slide-in panel showing the actual content (smart preview: first/last 50 lines for large files, expand to full)
-- **Tool panels** — per-tool breakdown with file lists, token counts, process anomalies
-- **MCP server status** — connectivity table with live status indicators
-- **Agent memory browser** — browse and inspect all memory files with content preview
-- **Token budget** — analysis of always-loaded, on-demand, cacheable, and compaction-surviving tokens
-- **Dark/light mode** — auto-detects system preference
+- **Overview-first** — all tools shown as collapsed summary cards in a grid. Each card shows file count, tokens, processes, MCP servers, and anomaly count at a glance. Click to expand.
+- **Hierarchical files** — expanded tool cards group files by category (instructions, config, rules, commands, skills, memory, transcript). Each category is collapsible.
+- **File content viewer** — click any file to open a slide-in panel showing the actual content. Large files show a smart preview (first/last 50 lines) with an expand button.
+- **Process monitoring** — dedicated Processes tab with all processes sorted by memory, visual memory bars, process type column, and anomaly icons with tooltips.
+- **MCP server status** — connectivity table with live status indicators (green/red/orange dots).
+- **Agent memory browser** — collapsible groups (User Memory, Project Memory, Auto Memory) with click-to-view content.
+- **Token budget** — breakdown of always-loaded, on-demand, cacheable, and compaction-surviving tokens.
+- **Dark/light mode** — auto-detects system preference.
+- **No extra dependencies** — uses Python stdlib `http.server`.
 
-The dashboard also exposes a REST API for scripting and integration:
+REST API for scripting and integration:
 
 ```bash
-# Full snapshot as JSON
-curl http://127.0.0.1:8484/api/snapshot | python3 -m json.tool
-
-# Read a specific discovered file
-curl "http://127.0.0.1:8484/api/file?path=/path/to/CLAUDE.md"
-
-# Token budget analysis
-curl http://127.0.0.1:8484/api/budget
-
-# Real-time SSE stream (for custom dashboards)
-curl -N http://127.0.0.1:8484/api/stream
+curl http://localhost:8484/api/snapshot     # full JSON snapshot
+curl "http://localhost:8484/api/file?path=/path/to/CLAUDE.md"  # file content
+curl http://localhost:8484/api/budget       # token cost analysis
+curl -N http://localhost:8484/api/stream    # real-time SSE stream
 ```
 
-> **Note:** The file API only serves files that appear in the discovered resource set — arbitrary paths are rejected with 403.
+> The file API only serves files in the discovered resource set — arbitrary paths are rejected with 403.
 
-Options:
-
-| Option | Description |
-|--------|-------------|
-| `--port PORT` | Port to listen on (default: `8484`) |
-| `--host HOST` | Host to bind to (default: `127.0.0.1`) |
-| `--interval SECS` | Refresh interval in seconds (default: `5`) |
-| `--no-open` | Don't auto-open the browser |
-
-### Terminal Dashboard: TUI
-
-Launch a live-updating terminal dashboard (requires the `textual` extra):
+#### 2. Terminal Dashboard (`aictl dashboard`) — for terminal-only environments
 
 ```bash
-aictl dashboard --root my-project/
+aictl dashboard                 # requires textual: pipx inject aictl textual
+aictl dashboard --interval 3    # faster refresh
 ```
 
-Refreshes every 5 seconds with stat cards, per-tool panels, sparkline CPU/MEM history, and tabbed views for processes, files, MCP server status, and agent memory.
+A Textual-based TUI with live-updating stat cards, per-tool summaries, sparkline CPU/MEM history, and tabbed views:
 
-Keybindings: `r` refresh now, `p` toggle processes, `f` toggle files, `m` toggle memory, `q` quit.
+- **Files tab** — hierarchical tree grouped by tool and category, with token counts. Select a file to see metadata and load content in the File Content tab.
+- **File Content tab** — displays actual file contents (with truncation for large files) when a file is selected.
+- **Processes tab** — all processes sorted by memory, with process type, anomalies, and tool labels.
+- **MCP Servers tab** — status table with color-coded dots.
+- **Agent Memory tab** — select an entry to preview content inline.
+
+Keybindings: `r` refresh, `p` toggle processes, `f` toggle files, `m` toggle memory, `q` quit.
+
+#### 3. HTML Report (`aictl status --html`) — for sharing and archival
 
 ```bash
-pip install -e ".[dashboard]"   # or: pipx inject aictl textual
+aictl status --html -o report.html    # generate self-contained HTML
+aictl status --html > report.html     # pipe to file
 ```
+
+A static, self-contained HTML file with embedded CSS/JS — open in any browser, no server needed. Includes expandable file content previews, MCP status table, and agent memory browser. Useful for sharing snapshots with teammates or archiving state.
 
 ### Microsoft AI tools: discovery coverage
 
-`aictl status` and `aictl dashboard` discover artifacts from the full Microsoft AI ecosystem in addition to Claude Code, Cursor, and Windsurf:
+All viewing commands (`aictl serve`, `aictl status`, `aictl dashboard`) discover artifacts from the full Microsoft AI ecosystem in addition to Claude Code, Cursor, and Windsurf:
 
 | Tool | `--tool` key | What is discovered |
 |------|--------------|--------------------|
