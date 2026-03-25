@@ -55,7 +55,15 @@ class DashboardSnapshot:
         self.total_tokens = sum(f.tokens for t in tool_list for f in t.files)
         self.total_size = sum(f.size for t in tool_list for f in t.files)
         self.total_processes = sum(len(t.processes) for t in self.tools)
-        self.total_mcp_servers = sum(len(t.mcp_servers) for t in self.tools)
+        # Use deduplicated mcp_detail count when available, fall back to raw sum
+        if self.mcp_detail:
+            self.total_mcp_servers = len(self.mcp_detail)
+        else:
+            seen: set[str] = set()
+            for t in self.tools:
+                for s in t.mcp_servers:
+                    seen.add(s.get("name", ""))
+            self.total_mcp_servers = len(seen)
 
         cpu = 0.0
         mem = 0.0

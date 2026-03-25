@@ -453,11 +453,21 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 .fv-head .path { font-size: 0.78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .fv-head button { background: var(--border); border: none; color: var(--fg); padding: 0.2rem 0.6rem; border-radius: 4px; cursor: pointer; }
 .fv-meta { padding: 0.4rem 0.8rem; font-size: 0.72rem; color: var(--fg2); background: var(--bg2); border-bottom: 1px solid var(--border); }
-.fv-body { flex: 1; overflow: auto; padding: 0.8rem; }
-.fv-body pre { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.78rem;
-  line-height: 1.5; white-space: pre-wrap; word-break: break-all; }
-.fv-expand { padding: 0.4rem 0.8rem; background: var(--bg2); text-align: center; }
-.fv-expand button { background: var(--accent); color: #000; border: none; padding: 0.25rem 0.8rem; border-radius: 4px; cursor: pointer; font-size: 0.78rem; }
+.fv-body { flex: 1; overflow: auto; padding: 0; }
+.fv-lines { display: table; width: 100%; font-family: 'SF Mono','Fira Code',monospace; font-size: 0.78rem; line-height: 1.6; }
+.fv-line { display: table-row; }
+.fv-line:hover { background: var(--bg3); }
+.fv-ln { display: table-cell; text-align: right; padding: 0 0.6rem 0 0.8rem; color: var(--fg2);
+  user-select: none; width: 1%; white-space: nowrap; border-right: 1px solid var(--border); font-size: 0.7rem; }
+.fv-code { display: table-cell; padding: 0 0.8rem; white-space: pre-wrap; word-break: break-all; }
+.fv-ellipsis { text-align: center; padding: 0.5rem; color: var(--accent); background: var(--bg3);
+  cursor: pointer; font-size: 0.78rem; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.fv-ellipsis:hover { background: var(--border); }
+.fv-toolbar { padding: 0.3rem 0.8rem; background: var(--bg2); display: flex; justify-content: space-between;
+  align-items: center; border-top: 1px solid var(--border); font-size: 0.72rem; color: var(--fg2); }
+.fv-toolbar button { background: var(--accent); color: #000; border: none; padding: 0.2rem 0.6rem;
+  border-radius: 4px; cursor: pointer; font-size: 0.72rem; }
+.fv-toolbar button:hover { opacity: 0.8; }
 
 /* Tables */
 table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
@@ -525,9 +535,10 @@ td { padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }
     <button onclick="closeViewer()">Close (Esc)</button>
   </div>
   <div class="fv-meta" id="fv-meta"></div>
-  <div class="fv-body"><pre id="fv-pre"></pre></div>
-  <div class="fv-expand" id="fv-exp" style="display:none">
-    <button onclick="expandViewer()">Show full content</button>
+  <div class="fv-body" id="fv-body"></div>
+  <div class="fv-toolbar" id="fv-toolbar">
+    <span id="fv-info"></span>
+    <button id="fv-toggle" onclick="toggleFullContent()" style="display:none">Show all</button>
   </div>
 </div>
 
@@ -802,26 +813,67 @@ function renderMemory(s) {
 }
 
 // === File Viewer ===
+const PREVIEW_LINES = 15;
+let fvExpanded = false;
+let fvLines = [];
+
 async function fetchFile(path) {
   const res = await fetch('/api/file?path='+encodeURIComponent(path));
   if(!res.ok){alert('Cannot read: '+res.statusText);return;}
   fullContent = await res.text();
-  const lines = fullContent.split('\n'), P=50;
+  fvLines = fullContent.split('\n');
+  fvExpanded = false;
   document.getElementById('fv-path').textContent=path;
+  // Find metadata
   let meta='';
-  if(snap){for(const t of snap.tools)for(const f of t.files)if(f.path===path){
-    meta=`${f.kind} | ${fmtSz(f.size)} | ~${fmtK(f.tokens)}tok | scope:${f.scope||'?'} | sent_to_llm:${f.sent_to_llm||'?'} | loaded:${f.loaded_when||'?'}`;break;}
-    if(!meta)for(const m of snap.agent_memory)if(m.file===path){meta=`${m.source} | ${m.profile} | ${m.tokens}tok | ${m.lines}ln`;break;}}
+  if(snap){
+    for(const t of snap.tools) for(const f of t.files) if(f.path===path){
+      meta=`${f.kind} | ${fmtSz(f.size)} | ~${fmtK(f.tokens)}tok | scope:${f.scope||'?'} | sent_to_llm:${f.sent_to_llm||'?'} | loaded:${f.loaded_when||'?'}`;break;}
+    if(!meta) for(const m of snap.agent_memory) if(m.file===path){
+      meta=`${m.source} | ${m.profile} | ${m.tokens}tok | ${m.lines}ln`;break;}
+  }
   document.getElementById('fv-meta').textContent=meta;
-  if(lines.length>P*2){
-    document.getElementById('fv-pre').textContent=lines.slice(0,P).join('\n')+'\n\n... ['+
-      (lines.length-P*2)+' lines hidden] ...\n\n'+lines.slice(-P).join('\n');
-    document.getElementById('fv-exp').style.display='';
-  } else { document.getElementById('fv-pre').textContent=fullContent; document.getElementById('fv-exp').style.display='none'; }
+  renderFileContent();
   document.getElementById('fv').classList.remove('hidden');
 }
-function expandViewer(){document.getElementById('fv-pre').textContent=fullContent;document.getElementById('fv-exp').style.display='none';}
-function closeViewer(){document.getElementById('fv').classList.add('hidden');}
+
+function renderFileContent() {
+  const body = document.getElementById('fv-body');
+  const info = document.getElementById('fv-info');
+  const toggle = document.getElementById('fv-toggle');
+  const total = fvLines.length;
+  const canCollapse = total > PREVIEW_LINES * 2;
+
+  if(!canCollapse || fvExpanded) {
+    // Show all lines
+    body.innerHTML = buildLineTable(fvLines, 1);
+    info.textContent = `${total} lines`;
+    toggle.style.display = canCollapse ? '' : 'none';
+    toggle.textContent = 'Collapse';
+  } else {
+    // Smart preview: first N lines, ellipsis, last N lines
+    const head = fvLines.slice(0, PREVIEW_LINES);
+    const tail = fvLines.slice(-PREVIEW_LINES);
+    const hidden = total - PREVIEW_LINES*2;
+    body.innerHTML =
+      buildLineTable(head, 1) +
+      `<div class="fv-ellipsis" onclick="toggleFullContent()">` +
+      `&#9660; ${hidden} more lines &#9660;</div>` +
+      buildLineTable(tail, total - PREVIEW_LINES + 1);
+    info.textContent = `${total} lines (showing ${PREVIEW_LINES*2} of ${total})`;
+    toggle.style.display = '';
+    toggle.textContent = 'Show all';
+  }
+}
+
+function buildLineTable(lines, startNum) {
+  return '<div class="fv-lines">' + lines.map((line, i) =>
+    `<div class="fv-line"><span class="fv-ln">${startNum+i}</span><span class="fv-code">${esc(line)||' '}</span></div>`
+  ).join('') + '</div>';
+}
+
+function toggleFullContent() { fvExpanded = !fvExpanded; renderFileContent(); }
+function closeViewer() { document.getElementById('fv').classList.add('hidden'); }
 
 // === Budget ===
 async function loadBudget() {
