@@ -14,13 +14,17 @@ AI coding tools accumulate project knowledge in incompatible, scattered formats 
 
 Runs on **macOS, Windows, and Linux**.
 
-<img src="docs/screenshots/tui-image.png" width="100%" alt="Live TUI dashboard showing stat cards, per-tool panels, and sparkline CPU/MEM history">
+<img src="docs/screenshots/web-overview.png" width="100%" alt="Live web dashboard overview — all AI tools at a glance with stat cards, resource bar, and collapsible tool cards">
 
-*Live terminal dashboard — stat cards for total tokens and files across tools, per-tool panels with file lists and MCP server health, sparkline CPU/memory history for every running AI process.*
+*Live web dashboard (`aictl serve`) — overview showing all discovered AI tools as collapsible cards sorted by resource weight. Stat cards show total files, tokens, processes, CPU, memory, and MCP servers across 27+ tools. Real-time updates via SSE.*
 
-<img src="docs/screenshots/web-image.png" width="100%" alt="HTML status report with tabbed navigation, file content previews, and MCP server status">
+<img src="docs/screenshots/web-detail.png" width="100%" alt="Expanded tool card with file categories, inline content preview, and process memory bars">
 
-*Self-contained HTML report — tabbed navigation across AI tools, expandable file content previews with token counts, MCP server connectivity status, and agent memory browser. Opens in any browser, no dependencies.*
+*Expanded tool card — files grouped by category (instructions, config, rules, commands, memory) with collapsible directory nodes. Click any file for inline content preview with line numbers. Processes shown with visual memory bars and anomaly detection.*
+
+<img src="docs/screenshots/tui-image.png" width="100%" alt="Terminal TUI dashboard with stat cards, per-tool panels, and sparkline history">
+
+*Terminal dashboard (`aictl dashboard`) — stat cards, per-tool summaries, sparkline CPU/MEM history, and tabbed views for processes, files, MCP servers, and agent memory.*
 
 ## Install
 
@@ -213,7 +217,7 @@ The web dashboard is a real-time, interactive interface that auto-updates via Se
 
 - **Overview-first** — all tools shown as collapsed summary cards in a grid. Each card shows file count, tokens, processes, MCP servers, and anomaly count at a glance. Click to expand.
 - **Hierarchical files** — expanded tool cards group files by category (instructions, config, rules, commands, skills, memory, transcript). Each category is collapsible.
-- **File content viewer** — click any file to open a slide-in panel showing the actual content. Large files show a smart preview (first/last 50 lines) with an expand button.
+- **Inline file preview** — click any file to see content inline with line numbers. Small files show fully; large files show a tail preview with "show all (N lines)" to expand. "open in viewer" button for full slide-in panel.
 - **Process monitoring** — dedicated Processes tab with all processes sorted by memory, visual memory bars, process type column, and anomaly icons with tooltips.
 - **MCP server status** — connectivity table with live status indicators (green/red/orange dots).
 - **Agent memory browser** — collapsible groups (User Memory, Project Memory, Auto Memory) with click-to-view content.

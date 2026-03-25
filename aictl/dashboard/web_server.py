@@ -378,8 +378,6 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 .stat-card .label { color: var(--fg2); font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em; }
 .stat-card .value { font-size: 1.2rem; font-weight: 700; color: var(--accent); transition: color 0.3s; }
 .stat-card .value.changed { color: var(--orange); }
-
-/* Smooth update flash */
 @keyframes flash { 0%{opacity:1} 50%{opacity:0.5} 100%{opacity:1} }
 .flash { animation: flash 0.4s ease; }
 
@@ -396,7 +394,7 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
 
-/* Tool grid — overview cards collapsed */
+/* Tool grid */
 .tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0.6rem; }
 .tcard { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
   transition: border-color 0.2s, box-shadow 0.2s; }
@@ -406,8 +404,8 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 .tcard-head { padding: 0.6rem 0.8rem; cursor: pointer; display: flex; align-items: center; gap: 0.5rem; }
 .tcard-head:hover { background: var(--bg3); }
 .tcard-head h2 { font-size: 0.9rem; flex: 1; display: flex; align-items: center; gap: 0.4rem; }
-.tcard-head .arrow { color: var(--fg2); font-size: 0.7rem; transition: transform 0.2s; }
-.tcard.open .arrow { transform: rotate(90deg); }
+.tcard-head .arrow { color: var(--fg2); font-size: 0.6rem; transition: transform 0.2s; flex-shrink: 0; }
+.tcard.open > .tcard-head .arrow { transform: rotate(90deg); }
 .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
 .badge { display: inline-block; background: var(--border); color: var(--fg2);
   padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.65rem; margin-left: 0.2rem; }
@@ -415,7 +413,7 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 .tcard-body { display: none; padding: 0 0.8rem 0.6rem; }
 .tcard.open .tcard-body { display: block; }
 
-/* Category groups inside expanded card */
+/* Category groups */
 .cat-group { margin-top: 0.4rem; }
 .cat-head { cursor: pointer; padding: 0.25rem 0; font-size: 0.8rem; color: var(--fg2);
   display: flex; align-items: center; gap: 0.3rem; user-select: none; }
@@ -447,7 +445,7 @@ header h1 span { color: var(--fg2); font-weight: 400; }
   color: var(--fg2); border: none; border-radius: 3px; font-size: 0.68rem; cursor: pointer; }
 .inline-preview .prev-btn:hover { background: var(--accent); color: var(--bg); }
 
-/* Process rows with memory bar */
+/* Process rows */
 .proc-section { margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.4rem; }
 .proc-section h3 { font-size: 0.78rem; color: var(--fg2); margin-bottom: 0.3rem; }
 .prow { display: flex; align-items: center; gap: 0.5rem; padding: 0.2rem 0; font-size: 0.78rem; }
@@ -491,8 +489,6 @@ table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
 th { text-align: left; color: var(--fg2); padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }
 td { padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-
-/* Process tab table */
 .ptable .mem-bar { width: 100px; }
 
 /* Budget */
@@ -504,7 +500,9 @@ td { padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }
 
 /* Memory tab */
 .mem-group { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 0.6rem; overflow: hidden; }
-.mem-group-head { padding: 0.5rem 0.8rem; cursor: pointer; font-size: 0.85rem; font-weight: 600; display: flex; align-items: center; gap: 0.3rem; }
+.mem-group-head { padding: 0.5rem 0.8rem; cursor: pointer; font-size: 0.85rem; font-weight: 600; display: flex; align-items: center; gap: 0.4rem; }
+.mem-group-head .carrow { font-size: 0.6rem; transition: transform 0.15s; }
+.mem-group.open > .mem-group-head .carrow { transform: rotate(90deg); }
 .mem-group-head:hover { background: var(--bg3); }
 .mem-group-body { display: none; }
 .mem-group.open .mem-group-body { display: block; }
@@ -530,11 +528,11 @@ td { padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }
 </div>
 
 <div class="tab-nav">
-  <button class="tab-btn active" onclick="switchTab('overview',this)">Overview <span class="kbd">1</span></button>
-  <button class="tab-btn" onclick="switchTab('procs',this)">Processes <span class="kbd">2</span></button>
-  <button class="tab-btn" onclick="switchTab('mcp',this)">MCP Servers <span class="kbd">3</span></button>
-  <button class="tab-btn" onclick="switchTab('memory',this)">Memory <span class="kbd">4</span></button>
-  <button class="tab-btn" onclick="switchTab('budget',this)">Token Budget <span class="kbd">5</span></button>
+  <button class="tab-btn active" onclick="switchTab('overview',this)" title="Shortcut: 1">Overview</button>
+  <button class="tab-btn" onclick="switchTab('procs',this)" title="Shortcut: 2">Processes</button>
+  <button class="tab-btn" onclick="switchTab('mcp',this)" title="Shortcut: 3">MCP Servers</button>
+  <button class="tab-btn" onclick="switchTab('memory',this)" title="Shortcut: 4">Memory</button>
+  <button class="tab-btn" onclick="switchTab('budget',this)" title="Shortcut: 5">Token Budget</button>
 </div>
 
 <div id="tab-overview" class="tab-panel active"></div>
@@ -570,7 +568,7 @@ const COLORS = {
 const SC = {running:'var(--green)',stopped:'var(--red)',error:'var(--orange)',unknown:'var(--fg2)'};
 let snap = null, fullContent = '', openCards = new Set(), openCats = new Set();
 let prevStats = {};
-let userInteracted = false; // pause SSE re-renders while user is interacting
+let userInteracted = false;
 let interactTimer = null;
 
 // === Theme ===
@@ -598,8 +596,7 @@ function applySearch() {
   const q = searchEl.value.toLowerCase().trim();
   document.querySelectorAll('.tcard').forEach(card => {
     if(!q) { card.classList.remove('hidden-by-search'); return; }
-    const text = card.textContent.toLowerCase();
-    card.classList.toggle('hidden-by-search', !text.includes(q));
+    card.classList.toggle('hidden-by-search', !card.textContent.toLowerCase().includes(q));
   });
 }
 
@@ -622,9 +619,16 @@ document.addEventListener('keydown', e => {
   }
 });
 
+// === Interaction pause ===
+function markInteracted() {
+  userInteracted = true;
+  clearTimeout(interactTimer);
+  interactTimer = setTimeout(() => { userInteracted = false; }, 30000);
+}
+
 // === Tabs ===
 function switchTab(name, btn) {
-  userInteracted = false; // fresh render for new tab
+  userInteracted = false;
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
@@ -638,16 +642,9 @@ function switchTab(name, btn) {
 }
 
 // === Render ===
-function markInteracted() {
-  userInteracted = true;
-  clearTimeout(interactTimer);
-  interactTimer = setTimeout(() => { userInteracted = false; }, 30000); // resume after 30s idle
-}
-
 function render(s) {
   renderStats(s);
   renderBar(s);
-  // Skip tab re-render while user is interacting (e.g. viewing inline preview)
   if(userInteracted) return;
   const active = document.querySelector('.tab-panel.active');
   if(active) {
@@ -665,12 +662,10 @@ function renderStats(s) {
     ['Processes',s.total_processes],['CPU',s.total_cpu+'%'],['Proc Mem',fmtSz(s.total_mem_mb*1048576)],
     ['MCP',s.total_mcp_servers],['Agent Mem',fmtK(s.total_memory_tokens)+'t']];
   const el = document.getElementById('stats');
-  // First render: build cards
   if(!el.children.length) {
     el.innerHTML = c.map(([l,v])=>
       `<div class="stat-card"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('');
   } else {
-    // Subsequent renders: only update changed values with flash
     c.forEach(([l,v],i) => {
       const valEl = el.children[i]?.querySelector('.value');
       if(valEl && valEl.textContent !== ''+v) {
@@ -694,7 +689,6 @@ function renderOverview(s) {
   const el = document.getElementById('tab-overview');
   const tools = s.tools.filter(t => t.tool!=='aictl' && (t.files.length||t.processes.length||t.mcp_servers.length));
   if(!tools.length){el.innerHTML='<p style="color:var(--fg2)">No AI tool resources found.</p>';return;}
-  // Sort by weight: files + processes + MCP, heaviest first
   tools.sort((a,b) => (b.files.length+b.processes.length+b.mcp_servers.length)-(a.files.length+a.processes.length+a.mcp_servers.length));
   el.innerHTML = '<div class="tool-grid">' + tools.map(t => {
     const c = COLORS[t.tool]||'#94a3b8';
@@ -703,13 +697,13 @@ function renderOverview(s) {
     const anom = t.processes.filter(p=>p.anomalies&&p.anomalies.length).length;
     return `<div class="tcard${isOpen?' open':''}${anom?' has-anomaly':''}" id="tc-${t.tool}">
       <div class="tcard-head" onclick="toggleCard('${t.tool}')">
+        <span class="arrow">&#9654;</span>
         <h2><span class="dot" style="background:${c}"></span>${esc(t.label)}</h2>
         <span class="badge">${t.files.length} files</span>
         <span class="badge">${fmtK(tok)} tok</span>
         ${t.processes.length?`<span class="badge">${t.processes.length} proc</span>`:''}
         ${t.mcp_servers.length?`<span class="badge">${t.mcp_servers.length} MCP</span>`:''}
         ${anom?`<span class="badge warn">${anom} anomaly</span>`:''}
-        <span class="arrow">&#9654;</span>
       </div>
       <div class="tcard-body">${isOpen?renderToolBody(t,s):''}
       </div>
@@ -724,7 +718,6 @@ function toggleCard(tool) {
 }
 
 function renderToolBody(t, s) {
-  // Group files by category
   const cats = {};
   t.files.forEach(f => { const k=f.kind||'other'; (cats[k]=cats[k]||[]).push(f); });
   const catOrder = ['instructions','config','rules','commands','skills','agent','memory','prompt','transcript','temp','runtime','credentials','extensions'];
@@ -736,7 +729,6 @@ function renderToolBody(t, s) {
     const files = cats[cat];
     const key = t.tool+'|'+cat;
     const isOpen = openCats.has(key);
-    // Group files by directory within category
     const dirGroups = groupByDir(files, s.root);
     return `<div class="cat-group${isOpen?' open':''}">
       <div class="cat-head" onclick="toggleCat('${esc(key)}')">
@@ -747,7 +739,6 @@ function renderToolBody(t, s) {
     </div>`;
   }).join('');
 
-  // Processes with memory bars
   if(t.processes.length) {
     const maxMem = Math.max(...t.processes.map(p=>parseFloat(p.mem_mb)||0), 100);
     html += `<div class="proc-section"><h3>Processes</h3>` +
@@ -766,7 +757,6 @@ function renderToolBody(t, s) {
       }).join('') + `</div>`;
   }
 
-  // MCP inline
   if(t.mcp_servers.length) {
     html += `<div class="proc-section"><h3>MCP Servers</h3>` +
       t.mcp_servers.map(m => {
@@ -787,17 +777,14 @@ function scopeLabel(path, root) {
   return 'external';
 }
 function shortDir(path, root) {
-  // Return a short, meaningful directory label
   if(path.startsWith(root+'/')) {
     const rel = path.slice(root.length+1);
     const parts = rel.split('/');
-    parts.pop(); // remove filename
+    parts.pop();
     return parts.length ? parts.join('/') : '(root)';
   }
-  // For global/shadow paths, show from last meaningful segment
   const parts = path.split('/');
-  parts.pop(); // remove filename
-  // Find the tool-specific root: .claude, .copilot, .cursor, etc.
+  parts.pop();
   for(let i=parts.length-1; i>=0; i--) {
     if(parts[i].startsWith('.') && parts[i].length>1 && parts[i]!=='..') {
       return '~/' + parts.slice(i).join('/');
@@ -816,7 +803,6 @@ function groupByDir(files, root) {
     const label = scope === 'project' ? dir : `${scope}: ${dir}`;
     (groups[label] = groups[label] || []).push(f);
   });
-  // Sort: project first, then global, then shadow, then external
   const order = {project:0, global:1, shadow:2, external:3};
   return Object.entries(groups).sort((a,b) => {
     const sa = a[1][0] ? scopeLabel(a[1][0].path, root) : 'z';
@@ -824,13 +810,12 @@ function groupByDir(files, root) {
     return (order[sa]||9) - (order[sb]||9);
   });
 }
+let previewCounter = 0;
 function renderDirTree(dirGroups, s, parentKey) {
   if(dirGroups.length === 1 && dirGroups[0][1].length <= 3) {
-    // Single small dir — show files flat, no nesting
     return dirGroups[0][1].map(f => renderFileItem(f)).join('');
   }
   return dirGroups.map(([dir, files]) => {
-    // Single-file dirs: show inline "dir/filename" without collapsible wrapper
     if(files.length === 1) {
       const f = files[0];
       const name = f.path.split('/').pop();
@@ -854,7 +839,6 @@ function renderDirTree(dirGroups, s, parentKey) {
     </div>`;
   }).join('');
 }
-let previewCounter = 0;
 function renderFileItem(f) {
   const name = f.path.split('/').pop();
   const pid = 'fp'+(previewCounter++);
@@ -871,17 +855,16 @@ function toggleCat(key) {
   markInteracted();
   if(openCats.has(key)) openCats.delete(key); else openCats.add(key);
   if(!snap) return;
-  // Re-render the tab that owns this key
   if(key.startsWith('mem|')) renderMemory(snap);
   else renderOverview(snap);
 }
 
-// === Processes tab (all tools) ===
+// === Processes tab ===
 function renderProcs(s) {
   const el = document.getElementById('tab-procs');
   const all = [];
   s.tools.forEach(t => t.processes.forEach(p => all.push({...p, _tool:t.tool, _label:t.label})));
-  if(!all.length){el.innerHTML='<p style="color:var(--fg2)">No processes detected. Run with --processes or wait for refresh.</p>';return;}
+  if(!all.length){el.innerHTML='<p style="color:var(--fg2)">No processes detected.</p>';return;}
   const maxMem = Math.max(...all.map(p=>parseFloat(p.mem_mb)||0),100);
   el.innerHTML = `<table class="ptable"><thead><tr><th>PID</th><th>Tool</th><th>Name</th><th>Type</th><th>CPU</th><th>Memory</th><th></th><th></th></tr></thead><tbody>
     ${all.sort((a,b)=>(parseFloat(b.mem_mb)||0)-(parseFloat(a.mem_mb)||0)).map(p => {
@@ -923,32 +906,31 @@ function renderMemory(s) {
   s.agent_memory.forEach(m=>{(groups[m.source]=groups[m.source]||[]).push(m);});
   el.innerHTML = Object.entries(groups).map(([src,entries])=>{
     const isOpen = openCats.has('mem|'+src);
-    // Group entries by directory
-    const dirGroups = {};
-    entries.forEach(m => {
-      const dir = shortDir(m.file, s.root);
-      (dirGroups[dir] = dirGroups[dir] || []).push(m);
-    });
+    // Group by profile first, then by directory within each profile
+    const byProfile = {};
+    entries.forEach(m => { (byProfile[m.profile] = byProfile[m.profile] || []).push(m); });
     return `<div class="mem-group${isOpen?' open':''}">
       <div class="mem-group-head" onclick="toggleCat('mem|${src}')">
-        <span class="carrow" style="font-size:0.6rem">&#9654;</span>
+        <span class="carrow">&#9654;</span>
         ${esc(LABELS[src]||src)} <span class="badge">${entries.length}</span>
         <span class="badge">${fmtK(entries.reduce((a,m)=>a+m.tokens,0))} tok</span>
       </div>
-      <div class="mem-group-body">${Object.entries(dirGroups).map(([dir,items])=>{
-        const dirKey = 'mem|'+src+'|'+dir;
-        const dirOpen = items.length <= 5 || openCats.has(dirKey);
-        return `<div class="cat-group${dirOpen?' open':''}" style="margin:0 0.5rem">
-          <div class="cat-head" onclick="toggleCat('${esc(dirKey)}')">
+      <div class="mem-group-body">${Object.entries(byProfile).map(([profile, items])=>{
+        const profTok = items.reduce((a,m)=>a+m.tokens,0);
+        const profKey = 'mem|'+src+'|'+profile;
+        const profOpen = items.length <= 5 || openCats.has(profKey);
+        return `<div class="cat-group${profOpen?' open':''}" style="margin:0 0.5rem">
+          <div class="cat-head" onclick="toggleCat('${esc(profKey)}')">
             <span class="carrow">&#9654;</span>
-            <span style="color:var(--fg2)">${esc(dir)}</span> <span class="badge">${items.length}</span>
+            <span style="color:var(--orange);font-weight:600">${esc(profile)}</span>
+            <span class="badge">${items.length} files</span>
+            <span class="badge">${fmtK(profTok)} tok</span>
           </div>
           <div class="cat-files">${items.map(m=>{
             const name = m.file.split('/').pop();
             const pid = 'mp'+(previewCounter++);
             return `<div class="fitem-wrap">
               <div class="mem-item" onclick="toggleInlinePreview('${pid}','${esc(m.file)}')">
-                <span style="color:var(--orange);min-width:40px;font-size:0.72rem">${esc(m.profile)}</span>
                 <span class="fpath" title="${esc(m.file)}">${esc(name)}</span>
                 <span class="fmeta">${m.tokens}tok ${m.lines}ln</span>
               </div>
@@ -969,12 +951,9 @@ async function toggleInlinePreview(id, path) {
   markInteracted();
   const el = document.getElementById(id);
   if(!el) return;
-  // Toggle off if already showing
   if(el.style.display !== 'none') { el.style.display = 'none'; return; }
-  // Show loading
   el.style.display = 'block';
   el.innerHTML = '<span style="color:var(--fg2)">loading...</span>';
-  // Fetch (with cache)
   let text = inlineCache[path];
   if(!text) {
     try {
@@ -991,7 +970,6 @@ function renderInlinePreview(el, text, path) {
   const lines = text.split('\n');
   const total = lines.length;
   const isSmall = total <= TAIL_LINES * 3;
-  // Build line-numbered HTML
   function numbered(arr, startIdx) {
     return arr.map((l,i) => `<span class="ln">${startIdx+i}</span>${esc(l)||' '}`).join('\n');
   }
@@ -999,7 +977,6 @@ function renderInlinePreview(el, text, path) {
     el.innerHTML = numbered(lines, 1) +
       `<div class="prev-actions"><button class="prev-btn" onclick="openFullViewer('${esc(path)}')">open in viewer</button></div>`;
   } else {
-    // Show tail preview
     const tail = lines.slice(-TAIL_LINES);
     const tailStart = total - TAIL_LINES + 1;
     el.innerHTML = numbered(tail, tailStart) +
@@ -1034,11 +1011,11 @@ function collapseInline(btn, path) {
 
 function openFullViewer(path) {
   const text = inlineCache[path];
-  if(text) { fullContent = text; showFullViewer(path, text); }
+  if(text) { showFullViewer(path, text); }
   else fetchFile(path);
 }
 
-// === Full File Viewer (secondary) ===
+// === Full File Viewer ===
 const PREVIEW_LINES = 15;
 let fvExpanded = false;
 let fvLines = [];
@@ -1079,13 +1056,11 @@ function renderFileContent() {
   const canCollapse = total > PREVIEW_LINES * 2;
 
   if(!canCollapse || fvExpanded) {
-    // Show all lines
     body.innerHTML = buildLineTable(fvLines, 1);
     info.textContent = `${total} lines`;
     toggle.style.display = canCollapse ? '' : 'none';
     toggle.textContent = 'Collapse';
   } else {
-    // Smart preview: first N lines, ellipsis, last N lines
     const head = fvLines.slice(0, PREVIEW_LINES);
     const tail = fvLines.slice(-PREVIEW_LINES);
     const hidden = total - PREVIEW_LINES*2;
