@@ -50,3 +50,10 @@ Claude Code supports multi-agent coordination where a team lead manages teammate
 - [ ] **`aictl diff`** — Show what would change between current deployed files and a new deploy (useful before profile switches).
 - [ ] **`aictl validate`** — Lint `.aictx` files for malformed JSON, unknown section types, missing profiles, etc.
 - [ ] **Watch mode** — `aictl deploy --watch` to re-deploy on `.aictx` file changes.
+
+
+## Using ignore files
+
+Many ai tools support ignore files to exclude certain files or directories from being processed. For example, you could have a `.aictlignore` file that lists patterns of files to ignore when deploying or running hooks. This can help prevent sensitive files from being exposed to the AI, or simply reduce noise by ignoring irrelevant files.
+
+This is also relevant for skipping the files for different tool than the one running. So when we run claude-cli, we should ignore copilot files, and vice versa. This can be achieved by having tool-specific ignore files, like `.claudeignore` and `.copilotignore`, and configuring the tools to respect those when processing files.

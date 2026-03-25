@@ -25,7 +25,10 @@ OVERLAY_RE = re.compile(
 
 
 def estimate_tokens(text: str) -> int:
-    return -(-len(text) // 4)
+    # Use UTF-8 byte length rather than character count — BPE tokenizers
+    # operate on bytes, so this gives much better estimates for CJK and
+    # other multi-byte scripts (3 bytes/char → ~3x more than chars/4).
+    return -(-len(text.encode("utf-8")) // 4)
 
 
 # --- File I/O ---
