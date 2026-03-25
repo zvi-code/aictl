@@ -70,3 +70,11 @@ While claude was working on a plan, it clearly had plan directory where it was w
 
 ## Telemetry and Usage Tracking (for supported tools)
 Some tools support telemetry and usage tracking. Consider also the ability of Claude Code to expose https://code.claude.com/docs/en/monitoring-usage and similar exists for github-copilot-cli and possibly others
+
+
+## Session state and history
+Some tools have the concept of a session with state and history (e.g., Claude Code's session transcripts). We could add support for capturing and displaying this session history in the dashboard, which would provide valuable context for understanding how the AI is being used over time. This could involve adding a new tab for session history, and implementing the necessary backend logic to capture and serve this data.
+
+## Show accumulated token usage over time
+The Token Budget tab currently shows a point-in-time snapshot of token usage. It would be valuable to track and visualize token usage over time, so users can see trends and identify when token usage spikes. This could be implemented as a time-series graph in the Token Budget tab, showing the accumulated tokens used over the course of a session or across sessions. This would require changes to the backend to track token usage history, and frontend changes to display the graph.
+In same way also network usage, memory usage, and other relevant metrics could be tracked and visualized over time to provide a more comprehensive view of resource consumption by the AI tools.
