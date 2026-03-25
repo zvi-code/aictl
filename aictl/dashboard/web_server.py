@@ -263,6 +263,7 @@ class _DashboardHandler(BaseHTTPRequestHandler):
 
 class _DashboardHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
+    allow_reuse_address = True
 
     def __init__(self, addr, handler, store, allowed, root):
         super().__init__(addr, handler)
