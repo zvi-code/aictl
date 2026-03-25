@@ -61,3 +61,38 @@ This is also relevant for skipping the files for different tool than the one run
 
 ## Add per tool enabled features
 Some features may only be relevant for certain tools. For example, the `teammateMode` setting is specific to Claude Code. We could add a section in the documentation that lists which features are enabled for which tools, and also add checks in the CLI to warn if a user tries to use a feature that isn't supported by their tool. For example, if a user tries to set `teammateMode` in their `.aictx` but they're using Copilot CLI, we could emit a warning that this setting is only applicable to Claude Code.
+
+
+## Problem statment as was given to claude code
+I would like to dramatically improve the project's capabilities to detect ai-tool related resources. These are needed for 
+
+
+
+
+
+optimal deployment per project, tool, mode. These would guid the generation of the .aictx files and their conversion in deployment to memory\file layout that is optimal for the tool execution 
+
+
+
+Monitoring inspecting and allowing visibility for user into the instructions, configurations and other data that eventually is fed into how the tool works (or why there are issues)
+
+
+
+
+
+Allow live monitoring and breakdown of all resources and visualization of them, including all processes (also allow finding of zombie processes or unexpected running entities)
+
+
+
+Provide static and real time evaluation of the cost in tokens of the accumulated state\memory\+ that is reflected in overhead over row token data
+
+In the folder next-phase I have several breakdowns and listing (in .csv you have table of file path regex and some info about them) - these are designed to allow more structured discovery process
+
+The folder also includes *dossier* files that are the processing of a wider research on the subject all in an attempt to structure better the exploration and relationships and impact.
+
+
+
+Review the project and the material in next-phase/ dir and plan how to refactor the code efficiently and without introducing enormous complexity. 
+
+While you think about it, if a specific tool introduces substantial uniq requirement, postpone the support in favor of cleaner smaller code base. The basic tools I'm using, including claude (all flavors), GitHub copilot (all flavors) and vscode (with the integrations with it) are mandatory and can;'t be deferred 
+
