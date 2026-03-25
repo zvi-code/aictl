@@ -997,6 +997,45 @@ function ProcSection({processes, maxMem}) {
   </div>`;
 }
 
+// ─── TelemetrySection (within ToolCard) ────────────────────────
+function TelemetrySection({telemetry}) {
+  if(!telemetry) return null;
+  const t = telemetry;
+  const totalTok = (t.input_tokens||0) + (t.output_tokens||0);
+  if(!totalTok && !t.active_session_input) return null;
+  return html`<div class="live-section">
+    <h3>Verified Token Usage <span class="badge">${t.source}</span> <span class="badge">${(t.confidence*100).toFixed(0)}% confidence</span></h3>
+    <div class="metric-grid">
+      <div class="metric-chip">
+        <span class="mlabel">Lifetime Input</span>
+        <span class="mvalue">${fmtK(t.input_tokens||0)}</span>
+        <span class="msub">cache read: ${fmtK(t.cache_read_tokens||0)} · creation: ${fmtK(t.cache_creation_tokens||0)}</span>
+      </div>
+      <div class="metric-chip">
+        <span class="mlabel">Lifetime Output</span>
+        <span class="mvalue">${fmtK(t.output_tokens||0)}</span>
+        <span class="msub">${t.total_sessions||0} sessions · ${t.total_messages||0} messages</span>
+      </div>
+      ${t.cost_usd > 0 && html`<div class="metric-chip">
+        <span class="mlabel">Estimated Cost</span>
+        <span class="mvalue">$${t.cost_usd.toFixed(2)}</span>
+      </div>`}
+      ${(t.active_session_input||t.active_session_output) && html`<div class="metric-chip" style="border-color:var(--accent)">
+        <span class="mlabel">Active Session</span>
+        <span class="mvalue">${fmtK((t.active_session_input||0)+(t.active_session_output||0))} tok</span>
+        <span class="msub">in: ${fmtK(t.active_session_input||0)} · out: ${fmtK(t.active_session_output||0)} · ${t.active_session_messages||0} msgs</span>
+      </div>`}
+      ${Object.keys(t.by_model||{}).length > 0 && html`<div class="metric-chip" style="grid-column:span 2">
+        <span class="mlabel">By Model</span>
+        ${Object.entries(t.by_model).map(([model,u])=>html`<div style="display:flex;justify-content:space-between;font-size:0.75rem;padding:0.1rem 0">
+          <span class="mono">${model}</span>
+          <span>in:${fmtK(u.input_tokens||0)} out:${fmtK(u.output_tokens||0)}</span>
+        </div>`)}
+      </div>`}
+    </div>
+  </div>`;
+}
+
 // ─── LiveSection (within ToolCard) ─────────────────────────────
 function LiveSection({live}) {
   if(!live) return null;
@@ -1082,6 +1121,7 @@ function ToolCard({tool: t, root}) {
     </button>
     ${isOpen && html`<div class="tcard-body">
       ${cats.map(({kind,files})=>html`<${CatGroup} key=${kind} label=${kind} files=${files} root=${root}/>`)}
+      <${TelemetrySection} telemetry=${t.token_breakdown?.telemetry}/>
       <${LiveSection} live=${t.live}/>
       <${ProcSection} processes=${t.processes} maxMem=${maxMem}/>
       ${t.mcp_servers.length>0 && html`<div class="proc-section"><h3>MCP Servers</h3>
@@ -1434,6 +1474,25 @@ function TabBudget() {
             <td><${TokenBar} always=${tb.always_loaded||0} onDemand=${tb.on_demand||0} conditional=${tb.conditional||0} never=${tb.never_sent||0} total=${tb.total||1}/></td>
           </tr>`;
         })}</tbody>
+      </table>
+    </div>`}
+
+    ${s && s.tool_telemetry && s.tool_telemetry.length>0 && html`<div class="budget-card budget-full">
+      <h3 style="margin-bottom:0.5rem;color:var(--accent)">Verified Tool Telemetry</h3>
+      <table role="table" aria-label="Tool telemetry">
+        <thead><tr><th>Tool</th><th>Source</th><th>Input Tokens</th><th>Output Tokens</th><th>Cache Read</th><th>Sessions</th><th>Messages</th><th>Cost</th><th>Active Session</th></tr></thead>
+        <tbody>${s.tool_telemetry.map(t=>html`<tr key=${t.tool}>
+          <td><span class="dot" style=${'background:'+(COLORS[t.tool]||'#94a3b8')+';margin-right:0.3rem'}></span>${esc(t.tool)}</td>
+          <td><span class="badge">${t.source}</span> <span style="color:var(--fg2)">${(t.confidence*100).toFixed(0)}%</span></td>
+          <td style="font-weight:600">${fmtK(t.input_tokens||0)}</td>
+          <td style="font-weight:600">${fmtK(t.output_tokens||0)}</td>
+          <td style="color:var(--fg2)">${fmtK(t.cache_read_tokens||0)}</td>
+          <td>${t.total_sessions||0}</td>
+          <td>${t.total_messages||0}</td>
+          <td>${t.cost_usd > 0 ? '$'+t.cost_usd.toFixed(2) : '-'}</td>
+          <td>${(t.active_session_input||0)+(t.active_session_output||0) > 0 ?
+            fmtK((t.active_session_input||0)+(t.active_session_output||0))+' tok' : '-'}</td>
+        </tr>`)}</tbody>
       </table>
     </div>`}
   </div>`;

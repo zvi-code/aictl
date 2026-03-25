@@ -25,6 +25,7 @@ from ..discovery import (
 )
 from ..monitoring.config import MonitorConfig
 from ..monitoring.runtime import MonitorRuntime
+from ..monitoring.tool_telemetry import collect_tool_telemetry
 
 
 @dataclass
@@ -53,6 +54,7 @@ class DashboardSnapshot:
     agent_memory: list[MemoryEntry] = field(default_factory=list)
     mcp_detail: list[McpServerInfo] = field(default_factory=list)
     live_monitor: dict = field(default_factory=dict)
+    tool_telemetry: list[dict] = field(default_factory=list)
 
     # ── System info ────────────────────────────────────────────
     cpu_cores: int = 0
@@ -161,6 +163,7 @@ class DashboardSnapshot:
             "agent_memory": [dataclasses.asdict(m) for m in self.agent_memory],
             "mcp_detail": [dataclasses.asdict(s) for s in self.mcp_detail],
             "live_monitor": self.live_monitor,
+            "tool_telemetry": self.tool_telemetry,
         }
 
     def to_json(self, indent: int = 2) -> str:
@@ -181,6 +184,11 @@ def collect(
     tools = _merge_dashboard_tools(discovered, live_monitor)
     agent_memory = collect_agent_memory(root_path)
     mcp_detail = collect_mcp_status(discovered)
+    # Tool-specific telemetry (Claude stats-cache, Copilot events, Codex sessions)
+    telemetry_reports = collect_tool_telemetry(root_path)
+    tool_telemetry = [r.to_dict() for r in telemetry_reports]
+    # Merge telemetry into DashboardTool.live if not already present
+    _merge_telemetry_into_tools(tools, telemetry_reports)
     return DashboardSnapshot(
         timestamp=time.time(),
         root=str(root_path),
@@ -188,6 +196,7 @@ def collect(
         agent_memory=agent_memory,
         mcp_detail=mcp_detail,
         live_monitor=live_monitor,
+        tool_telemetry=tool_telemetry,
     )
 
 
@@ -244,6 +253,34 @@ def _merge_dashboard_tools(discovered: list[ToolResources], live_monitor: dict) 
         tools_by_name[tool_name].live = live_report
 
     return list(tools_by_name.values())
+
+
+def _merge_telemetry_into_tools(
+    tools: list[DashboardTool],
+    telemetry_reports: list,
+) -> None:
+    """Attach parsed telemetry data to matching DashboardTool entries."""
+    telem_by_tool = {r.tool: r for r in telemetry_reports}
+    for tool in tools:
+        report = telem_by_tool.get(tool.tool)
+        if report is None:
+            continue
+        # Store as telemetry dict on the tool (separate from live monitor data)
+        tool.token_breakdown["telemetry"] = {
+            "source": report.source,
+            "confidence": report.confidence,
+            "input_tokens": report.input_tokens,
+            "output_tokens": report.output_tokens,
+            "cache_read_tokens": report.cache_read_tokens,
+            "cache_creation_tokens": report.cache_creation_tokens,
+            "total_sessions": report.total_sessions,
+            "total_messages": report.total_messages,
+            "by_model": report.by_model,
+            "cost_usd": report.cost_usd,
+            "active_session_input": report.active_session_input,
+            "active_session_output": report.active_session_output,
+            "active_session_messages": report.active_session_messages,
+        }
 
 
 def _collect_live_monitor(root: Path, live_sample_seconds: float) -> dict:
