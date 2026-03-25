@@ -269,7 +269,13 @@ def _collect_live_monitor(root: Path, live_sample_seconds: float) -> dict:
                 runtime.snapshot_after(sample_window), timeout=sample_window + 5.0
             )
 
-        snapshot = asyncio.run(_guarded_snapshot())
+        # asyncio.run() creates a new event loop. On Windows in threaded
+        # contexts, we need to explicitly create and set a new loop.
+        loop = asyncio.new_event_loop()
+        try:
+            snapshot = loop.run_until_complete(_guarded_snapshot())
+        finally:
+            loop.close()
         return {
             "platform": snapshot.platform,
             "diagnostics": snapshot.diagnostics,

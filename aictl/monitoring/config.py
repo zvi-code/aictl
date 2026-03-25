@@ -119,17 +119,23 @@ class MonitorConfig:
     def workspace_for_path(self, path: str | Path | None) -> str | None:
         if path is None:
             return None
-        text = str(Path(path).expanduser())
+        p = Path(path).expanduser()
         for root in self._workspace_roots:
-            if text == root or text.startswith(f"{root}/"):
+            try:
+                p.relative_to(root)
                 return root
+            except ValueError:
+                continue
         return None
 
     def state_root_for_path(self, path: str | Path | None) -> str | None:
         if path is None:
             return None
-        text = str(Path(path).expanduser())
+        p = Path(path).expanduser()
         for root in self._state_roots:
-            if text == root or text.startswith(f"{root}/"):
+            try:
+                p.relative_to(root)
                 return root
+            except ValueError:
+                continue
         return None

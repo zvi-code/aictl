@@ -360,7 +360,7 @@ def _resolve_literal(template: str) -> list[Path]:
     """Expand ~, env vars, then check existence. Handle globs."""
     expanded = _expand_home(template)
     # Skip relative patterns (e.g. "tmpclaude-*-cwd") — not absolute paths
-    if not expanded.startswith("/"):
+    if not Path(expanded).is_absolute():
         return []
     # Has parameters → treat as glob
     if _PARAM_RE.search(expanded):
@@ -392,7 +392,10 @@ def _resolve_rooted(template: str, root: Path) -> list[Path]:
     if _PARAM_RE.search(path_str):
         path_str = _params_to_glob(path_str)
     if "*" in path_str:
-        rel = path_str.replace(str(root) + "/", "", 1)
+        try:
+            rel = str(Path(path_str).relative_to(root))
+        except ValueError:
+            rel = path_str.replace(str(root) + os.sep, "", 1)
         return sorted(p for p in root.glob(rel) if p.exists())
     p = Path(path_str)
     return [p] if p.exists() else []
@@ -408,7 +411,8 @@ def _resolve_recursive(template: str, root: Path,
             relative = relative[len(prefix):]
             break
 
-    parts = relative.split("/")
+    # Normalize to forward slashes for consistent splitting (CSV uses /)
+    parts = relative.replace("\\", "/").split("/")
     first = parts[0]
 
     # Pattern A: hidden dir at first level → find_dirs_in_tree + glob subpath

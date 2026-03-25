@@ -4,6 +4,15 @@ path,ai_tool,platform,hidden,scope,category,sent_to_llm,approx_tokens,read_write
 %USERPROFILE%\.claude\CLAUDE.md,claude-code,windows,no,global,instructions,yes,100-2000,rw,yes,yes,every-call,,Global instructions for all projects,literal,cwd
 %USERPROFILE%\.claude\settings.json,claude-code,windows,no,global,config,no,0,rw,n/a,n/a,session-start,,Global user settings,literal,cwd
 %USERPROFILE%\.claude\.credentials.json,claude-code,windows,no,global,credentials,no,0,read,n/a,n/a,session-start,,API credentials (Windows),literal,cwd
+%USERPROFILE%\.claude\settings.local.json,claude-code,windows,no,global,config,no,0,rw,n/a,n/a,session-start,,Local user settings (not synced),literal,cwd
+%USERPROFILE%\.claude\commands\*.md,claude-code,windows,no,global,commands,on-demand,50-500,rw,n/a,n/a,on-invoke,,Personal slash commands (all projects),literal,cwd
+%USERPROFILE%\.claude\skills\{skill}\SKILL.md,claude-code,windows,no,global,skills,partial,50-100,rw,yes,yes,description-always;body-on-demand,{skill},Personal skills (all projects),literal,cwd
+%USERPROFILE%\.claude\hooks\*.sh,claude-code,windows,no,global,hooks,no,0,rw,n/a,n/a,on-hook-trigger,,Lifecycle hooks,literal,cwd
+%USERPROFILE%\.claude\plans\*.md,claude-code,windows,no,global,memory,on-demand,100-2000,rw,yes,yes,on-demand,,Implementation plan files,literal,cwd
+%USERPROFILE%\.claude\scheduled-tasks\*\SKILL.md,claude-code,windows,no,global,commands,on-demand,50-500,rw,n/a,n/a,on-schedule,,Scheduled task definitions,literal,cwd
+%USERPROFILE%\.claude\plugins\*,claude-code,windows,no,global,config,no,0,rw,n/a,n/a,session-start,,Plugin files,literal,cwd
+%USERPROFILE%\.claude\history.jsonl,claude-code,windows,no,global,transcript,no,0,rw,n/a,n/a,runtime,,Command history,literal,cwd
+%USERPROFILE%\.claude\*,claude-code,windows,no,global,runtime,no,0,rw,n/a,n/a,runtime,,Any file under .claude/ (catch-all),literal,cwd
 %USERPROFILE%\.claude\projects\{project}\memory\MEMORY.md,claude-code,windows,no,project,memory,yes,100-3000,rw,yes,yes,every-call,{project}=path-with-slashes-to-hyphens,Auto-memory entrypoint,shadow,cwd
 {project-root}/CLAUDE.md,claude-code,all,no,project,instructions,yes,100-5000+,rw,yes,yes,every-call,,Project instructions (commit to git),recursive,cwd
 {project-root}/CLAUDE.local.md,claude-code,all,no,project,instructions,yes,100-1000,rw,yes,yes,every-call,,Personal project overrides (.gitignore'd),recursive,cwd
@@ -32,6 +41,7 @@ tmpclaude-{hex}-cwd,claude-code,all,no,session,temp,no,0,rw,no,no,per-bash-call,
 {project-root}/.geminiignore,gemini-cli,all,yes,project,ignore,no,0,read,n/a,n/a,session-start,,Project-level ignore patterns,recursive,git-root
 {subdirectory}/GEMINI.md,gemini-cli,all,no,project,instructions,yes,100-2000,rw,yes,yes,on-file-access,{subdirectory},Component-specific instructions (recursive),recursive,git-root
 %USERPROFILE%\.copilot\config.json,copilot-cli,windows,no,global,config,no,0,rw,n/a,n/a,session-start,,Core CLI settings,literal,git-root
+%USERPROFILE%\.copilot\*,copilot-cli,windows,no,global,runtime,no,0,rw,n/a,n/a,runtime,,Any file under .copilot/ (catch-all),literal,git-root
 $HOME/.copilot/copilot-instructions.md,copilot-cli,all,yes,global,instructions,yes,100-2000,rw,yes,yes,every-call,,Global personal instructions (env var path),literal,git-root
 %APPDATA%\GitHub CLI\hosts.yml,copilot-cli,windows,no,global,credentials,no,0,read,n/a,n/a,session-start,,GitHub CLI auth tokens (Windows),literal,git-root
 {project-root}/.github/copilot-instructions.md,copilot,all,yes,project,instructions,yes,100-5000,rw,yes,yes,every-call,,Repo-wide AI instructions,recursive,git-root

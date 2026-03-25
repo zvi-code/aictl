@@ -122,13 +122,18 @@ class _WatchHandler:  # pragma: no cover - exercised through watchdog integratio
 
 
 def _tool_hint_for_path(path: str) -> str | None:
-    lowered = path.lower()
-    if "/.vscode/" in lowered or "\\.vscode\\" in lowered:
+    # Normalize to forward slashes for consistent matching
+    lowered = path.lower().replace("\\", "/")
+    if "/.vscode/" in lowered:
         return "copilot-vscode"
-    if "/.copilot/" in lowered or "\\.copilot\\" in lowered or "github/copilot" in lowered:
+    if "/.copilot/" in lowered or "github/copilot" in lowered:
         return "copilot-cli"
-    if "/.claude/" in lowered or "\\.claude\\" in lowered or lowered.endswith("claude.md"):
+    if "/.claude/" in lowered or lowered.endswith("claude.md"):
         return "claude-code"
-    if "/.codex/" in lowered or "\\.codex\\" in lowered:
+    if "/.codex/" in lowered:
         return "codex-cli"
+    if "/.cursor/" in lowered:
+        return "cursor"
+    if "/.windsurf/" in lowered or "/codeium/" in lowered:
+        return "windsurf"
     return None

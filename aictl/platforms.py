@@ -11,6 +11,31 @@ import platform
 from pathlib import Path
 
 _SYSTEM = platform.system()  # "Darwin" | "Windows" | "Linux"
+IS_WINDOWS = _SYSTEM == "Windows"
+IS_MACOS = _SYSTEM == "Darwin"
+
+
+# ── Cross-platform utilities ────────────────────────────────────
+
+def process_basename(comm: str) -> str:
+    """Extract short process name from command path, cross-platform."""
+    return Path(comm).name
+
+
+def is_path_under(child: str, parent: str) -> bool:
+    """Check if child path is under parent, cross-platform."""
+    try:
+        Path(child).relative_to(Path(parent))
+        return True
+    except ValueError:
+        return False
+
+
+def path_contains_component(path: str, component: str) -> bool:
+    """Check if a path contains a directory component (e.g. '.claude')."""
+    lowered = path.lower().replace("\\", "/")
+    comp = component.lower()
+    return f"/{comp}/" in f"/{lowered}/" or lowered.endswith(f"/{comp}")
 
 
 # ── Claude Code ──────────────────────────────────────────────────

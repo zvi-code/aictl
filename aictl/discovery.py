@@ -351,10 +351,12 @@ def _parse_ps_output() -> list[tuple[str, str, str, str, str]]:
 
 def _process_display_name(args: str) -> str:
     """Extract a readable process name from the full command line."""
+    from .platforms import IS_MACOS
     exe = args.split()[0] if args else "?"
-    m = re.search(r"/([^/]+?)\.app", args)
-    if m:
-        return m.group(1)
+    if IS_MACOS:
+        m = re.search(r"/([^/]+?)\.app", args)
+        if m:
+            return m.group(1)
     return Path(exe).name
 
 
@@ -382,7 +384,7 @@ def _discover_processes_csv(
     matched_pids: set[int] = set()
 
     for pid_s, cpu, rss, comm, args in rows:
-        basename = comm.split("/")[-1]
+        basename = Path(comm).name
         if basename in _SKIP_COMMS:
             continue
         pid = int(pid_s)
@@ -498,7 +500,7 @@ def _find_mcp_processes(
                     mem_mb = "?"
                 found.append(ProcessInfo(
                     pid=pid,
-                    name=f"[mcp:{srv_name}] {comm.split('/')[-1]}",
+                    name=f"[mcp:{srv_name}] {Path(comm).name}",
                     cmdline=args[:200],
                     cpu_pct=cpu,
                     mem_mb=mem_mb,
