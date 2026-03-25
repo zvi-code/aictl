@@ -57,3 +57,7 @@ Claude Code supports multi-agent coordination where a team lead manages teammate
 Many ai tools support ignore files to exclude certain files or directories from being processed. For example, you could have a `.aictlignore` file that lists patterns of files to ignore when deploying or running hooks. This can help prevent sensitive files from being exposed to the AI, or simply reduce noise by ignoring irrelevant files.
 
 This is also relevant for skipping the files for different tool than the one running. So when we run claude-cli, we should ignore copilot files, and vice versa. This can be achieved by having tool-specific ignore files, like `.claudeignore` and `.copilotignore`, and configuring the tools to respect those when processing files.
+
+
+## Add per tool enabled features
+Some features may only be relevant for certain tools. For example, the `teammateMode` setting is specific to Claude Code. We could add a section in the documentation that lists which features are enabled for which tools, and also add checks in the CLI to warn if a user tries to use a feature that isn't supported by their tool. For example, if a user tries to set `teammateMode` in their `.aictx` but they're using Copilot CLI, we could emit a warning that this setting is only applicable to Claude Code.

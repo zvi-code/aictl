@@ -456,11 +456,64 @@ ChatGPT (main)                         # Electron main process
 
 ---
 
+## 8.2 Microsoft 365 Copilot / Teams Toolkit
+
+**Process patterns:**
+
+| Process | Type | Runtime | Listens On | Notes |
+|---------|------|---------|-----------|-------|
+| `teamsappdevtunnel` | daemon | native-binary | random localhost | Dev tunnel for local testing of M365 Copilot plugins |
+| `teamsfx` | cli | node | — | Teams Toolkit CLI (legacy scaffolding/deployment) |
+| `ttk-*` | child | node | random localhost | Teams Toolkit child workers (various prefixed) |
+| `node @microsoft/teams-*` | child | node | random localhost | Teams SDK runtime packages (dev server) |
+| `teams-toolkit` | extension | node | — | VS Code extension process |
+
+All connect outbound to `graph.microsoft.com` and `login.microsoftonline.com`. No known zombie issues.
+
+### 8.3 Semantic Kernel
+
+| Process | Type | Runtime | Notes |
+|---------|------|---------|-------|
+| `dotnet semantic.kernel` | child | native-binary | .NET SK host process (plugin orchestration) |
+| `SemanticKernel` | child | native-binary | Runtime process, may host local API for function calling |
+
+Connects outbound to model API endpoints (OpenAI, Anthropic, Azure OpenAI). Typically 50-300 MB.
+
+### 8.4 Azure PromptFlow
+
+| Process | Type | Runtime | Listens On | Notes |
+|---------|------|---------|-----------|-------|
+| `python promptflow` | cli | python | random localhost | PromptFlow CLI / runtime (flow execution engine) |
+| `pf flow` | cli | python | random localhost | Short-form CLI (`pf flow test`, `pf flow serve`) |
+
+### 8.5 Azure AI / Azure Developer CLI
+
+| Process | Type | Runtime | Listens On | Notes |
+|---------|------|---------|-----------|-------|
+| `azd` | cli | native-binary | — | Azure Developer CLI — provision and deploy AI apps |
+| `func host start` | daemon | native-binary | **7071** | Azure Functions Core Tools local host |
+| `Microsoft.Azure.*` | child | native-binary | — | Azure SDK child processes spawned by Functions host |
+
+### 8.6 Copilot VS Code — Additional Process Names
+
+Older or alternative Copilot extension versions use different process names:
+
+| Process | Notes |
+|---------|-------|
+| `copilot-language-server` | Alternative name for `copilot-lsp` in some versions |
+| `copilot-server` | Older Copilot extension versions |
+| `github.copilot` | Extension main process (matches VS Code extension ID pattern) |
+| `copilot-typescript-server` | Legacy TS-specific language server (merged into `copilot-lsp`) |
+
+All run inside the Extension Host, connect to `api.github.com`.
+
+---
+
 ## 9. MCP Server Monitoring & Inspection
 
 MCP servers are uniquely opaque — they run as child processes with no standard dashboard, show up as generic `node` or `python` in process lists, and silently consume tokens on every API call even when idle. This section covers how to discover, inspect, measure, and manage them.
 
-### 12.1 Discovery: What MCP Servers Are Running?
+### 9.1 Discovery: What MCP Servers Are Running?
 
 **From inside the AI tool:**
 
@@ -512,7 +565,7 @@ cat ~/.codeium/windsurf/mcp_config.json 2>/dev/null | python3 -m json.tool 2>/de
 cat ~/.copilot/mcp-config.json 2>/dev/null | python3 -m json.tool 2>/dev/null
 ```
 
-### 12.2 Inspection: What Tools Does a Server Expose?
+### 9.2 Inspection: What Tools Does a Server Expose?
 
 **MCP Inspector (official tool):**
 ```bash
@@ -547,7 +600,7 @@ mcp_call() { local t="$1" a="$2"; shift 2; echo "{\"jsonrpc\":\"2.0\",\"method\"
 # mcp_call read_file '{"path":"/tmp/test.txt"}' npx -y @modelcontextprotocol/server-filesystem ~/Code
 ```
 
-### 12.3 Token Cost Measurement
+### 9.3 Token Cost Measurement
 
 Every MCP server has a **silent token tax** — its tool schemas load into the context window on every API call, even when idle.
 
@@ -584,7 +637,7 @@ Every MCP server has a **silent token tax** — its tool schemas load into the c
 /context                # see token change
 ```
 
-### 12.4 Tool Search / Deferred Loading
+### 9.4 Tool Search / Deferred Loading
 
 When MCP tool definitions exceed ~10% of the context window, Claude Code automatically defers them — loading tool schemas on-demand instead of upfront.
 
@@ -597,7 +650,7 @@ When MCP tool definitions exceed ~10% of the context window, Claude Code automat
 | **Tradeoff** | Extra round-trip per tool call for schema fetch |
 | **Available on** | Sonnet 4+ and Opus 4+ (automatic) |
 
-### 12.5 MCP Server Health Monitoring
+### 9.5 MCP Server Health Monitoring
 
 **Process-level health check script:**
 ```bash
@@ -642,7 +695,7 @@ echo "Orphaned: $orphans"
 echo "Total memory: ${total_mem} MB"
 ```
 
-### 12.6 Monitoring Tools & Dashboards
+### 9.6 Monitoring Tools & Dashboards
 
 | Tool | What it does | Install |
 |------|-------------|---------|
@@ -659,7 +712,7 @@ echo "Total memory: ${total_mem} MB"
 
 ## 10. Zombie Processes & Orphan Cleanup
 
-### 12.1 Common Zombie Patterns Across All Tools
+### 10.1 Common Zombie Patterns Across All Tools
 
 | Process | Source Tool | Pattern | Typical Leak |
 |---------|-----------|---------|-------------|
@@ -678,7 +731,7 @@ echo "Total memory: ${total_mem} MB"
 | `python` (MCP) | Any | Python MCP servers not cleaned up | 30-80 MB |
 | `codeium_language_server` | Windsurf | Can persist after Windsurf closes | 100-200 MB |
 
-### 12.2 How to Detect Orphans
+### 10.2 How to Detect Orphans
 
 An orphan is a process whose parent has died and been re-parented to init/launchd (PPID=1):
 
@@ -699,7 +752,7 @@ ps -eo ppid,rss,args | awk '$1==1' | \
   awk '{sum+=$2} END {printf "Total orphan memory: %.1f MB\n", sum/1024}'
 ```
 
-### 12.3 Safe Cleanup
+### 10.3 Safe Cleanup
 
 ```bash
 # DRY RUN — show what would be killed
@@ -720,7 +773,7 @@ ps -eo pid,ppid,args | awk '$2==1' | \
   grep -E 'claude --print|claude --resume' | awk '{print $1}' | xargs kill 2>/dev/null
 ```
 
-### 12.4 Automated Cleanup Tools
+### 10.4 Automated Cleanup Tools
 
 | Tool | Command | What it does |
 |------|---------|-------------|
@@ -752,7 +805,7 @@ ps -eo pid,ppid,args | awk '$2==1' | \
 
 ## 11. Inspection Commands Cheat Sheet
 
-### 12.1 Universal Discovery
+### 11.1 Universal Discovery
 
 ```bash
 # ===== FIND ALL AI TOOL PROCESSES =====
@@ -787,7 +840,7 @@ lsof -c claude 2>/dev/null | head -50
 find /tmp -name '*.sock' -o -name '*.socket' 2>/dev/null | grep -iE 'claude|cursor|codeium|mcp'
 ```
 
-### 12.2 Per-Tool Quick Check
+### 11.2 Per-Tool Quick Check
 
 ```bash
 # Claude Code — full status
@@ -809,7 +862,7 @@ openclaw gateway status 2>/dev/null || echo "gateway not running"
 openclaw health 2>/dev/null || echo "health check failed"
 ```
 
-### 12.3 Process Identification Reference
+### 11.3 Process Identification Reference
 
 | What you see in `ps` | What it is | Tool |
 |----------------------|-----------|------|
@@ -922,3 +975,7 @@ Get-CimInstance Win32_StartupCommand | Where-Object {
 | **OpenClaw** | 200-400 MB | 500 MB-2 GB | Gateway + channels + browsers | 18789 |
 | **OpenCode** | 100-200 MB | 200-400 MB | Shell + MCP | 4096 (if serving) |
 | **ChatGPT Desktop** | 300-500 MB | 400-600 MB | None (server-side inference) | None |
+| **M365 Copilot / Teams** | 50-150 MB | 100-400 MB | Dev tunnel + TTK workers | random localhost |
+| **Semantic Kernel** | 50-200 MB | 100-300 MB | .NET host process | random localhost |
+| **Azure PromptFlow** | 40-150 MB | 100-300 MB | Python flow engine | random localhost |
+| **Azure AI (func host)** | 40-200 MB | 80-300 MB | Functions Core Tools | 7071 |

@@ -95,7 +95,19 @@
 │   │   └── security-auditor.md
 │   └── rules/                   # Modular instruction files
 │       └── testing.md
-└── .mcp.json                    # Project-level MCP servers
+├── .mcp.json                    # Project-level MCP servers
+├── .claudeignore                # Files to exclude from Claude Code access
+└── .lsp.json                    # Language server configuration (project-level)
+```
+
+#### Additional Global Files
+
+```
+~/.claude.json                   # User-scoped MCP servers + account config
+                                 # (written by: claude mcp add --scope user)
+~/.claude/plugins/
+├── blocklist.json               # Disabled/blocked plugins
+└── known_marketplaces.json      # Known plugin marketplace registry
 ```
 
 #### Managed / Enterprise Settings
@@ -325,10 +337,25 @@ The official OpenAI desktop app stores minimal local config:
 │   │   ├── security.instructions.md
 │   │   ├── testing.instructions.md
 │   │   └── docs.instructions.md
-│   └── prompts/                     # Reusable prompt files
-│       └── CreateAnalyzer.prompt.md
+│   ├── prompts/                     # Reusable prompt files
+│   │   └── CreateAnalyzer.prompt.md
+│   ├── agents/                      # Custom agent definitions
+│   │   └── code-reviewer.agent.md
+│   ├── skills/                      # Copilot CLI skills
+│   │   └── my-skill/
+│   │       └── SKILL.md
+│   ├── hooks/                       # Lifecycle hook configurations
+│   │   └── preToolUse.json
+│   └── copilot/
+│       ├── settings.json            # Repo-level Copilot settings
+│       └── settings.local.json      # Personal repo overrides (not committed)
 ├── .copilot/
 │   └── mcp-config.json              # Project-level MCP servers
+├── .copilot-mcp.json                # Alternative project-level MCP config
+├── .vscode/
+│   ├── settings.json                # VS Code workspace settings (Copilot config)
+│   ├── extensions.json              # Recommended extensions list
+│   └── mcp.json                     # VS Code workspace MCP servers (Copilot agent mode)
 ├── AGENTS.md                        # Cross-tool agent instructions
 ├── CLAUDE.md                        # Claude-specific (also read by Copilot CLI)
 └── GEMINI.md                        # Gemini-specific (also read by Copilot CLI)
@@ -346,11 +373,13 @@ Always use type hints and docstrings.
 
 ### 4.3 VS Code Copilot Extension
 
-| Setting | Location |
-|---------|----------|
-| User settings | `~/.vscode/settings.json` → `github.copilot.*` keys |
-| Workspace settings | `.vscode/settings.json` |
-| Custom instructions toggle | `github.copilot.chat.codeGeneration.useInstructionFiles` |
+| Setting | macOS | Windows | Linux |
+|---------|-------|---------|-------|
+| User settings | `~/Library/Application Support/Code/User/settings.json` | `%APPDATA%\Code\User\settings.json` | `~/.config/Code/User/settings.json` |
+| Workspace settings | `.vscode/settings.json` | `.vscode/settings.json` | `.vscode/settings.json` |
+| Extension manifest | `~/.vscode/extensions/github.copilot*/package.json` | `%USERPROFILE%\.vscode\extensions\github.copilot*\package.json` | same as macOS |
+| Custom instructions toggle | `github.copilot.chat.codeGeneration.useInstructionFiles` in settings.json |
+| GitHub CLI config | `~/.config/gh/config.yml` | `%APPDATA%\GitHub CLI\config.yml` | same as macOS |
 
 ### 4.4 JetBrains Copilot
 
@@ -390,12 +419,13 @@ sqlite3 "~/Library/Application Support/Cursor/User/globalStorage/state.vscdb" \
 
 Cursor still reads standard VS Code settings:
 
-| Item | Path |
-|------|------|
-| User settings | `~/.cursor/settings.json` or within app data |
-| Workspace settings | `.vscode/settings.json` |
-| Extensions | `~/.cursor/extensions/` |
-| Keybindings | `~/Library/Application Support/Cursor/User/keybindings.json` (macOS) |
+| Item | macOS | Windows |
+|------|-------|---------|
+| User settings (JSON) | `~/Library/Application Support/Cursor/User/settings.json` | `%APPDATA%\Cursor\User\settings.json` |
+| User settings (legacy) | `~/.cursor/settings.json` | `%USERPROFILE%\.cursor\settings.json` |
+| Workspace settings | `.vscode/settings.json` | `.vscode/settings.json` |
+| Extensions | `~/.cursor/extensions/` | `%USERPROFILE%\.cursor\extensions\` |
+| Keybindings | `~/Library/Application Support/Cursor/User/keybindings.json` | `%APPDATA%\Cursor\User\keybindings.json` |
 
 ### 5.3 Project-Level AI Rules
 
@@ -403,12 +433,17 @@ Cursor still reads standard VS Code settings:
 <project-root>/
 ├── .cursorrules                 # Legacy: project-specific AI instructions (plain text)
 ├── .cursor/
-│   └── rules/                   # Modern: granular rule files (Wave 8+)
-│       ├── general.md           # Always-on rules
-│       ├── python.md            # File-glob scoped rules
-│       └── security.md          # @mentionable or auto-attached
-└── .cursorignore                # Files to exclude from AI context
+│   ├── rules/                   # Modern: granular rule files
+│   │   ├── general.md           # Always-on rules (.md format, current)
+│   │   ├── python.mdc           # File-glob scoped rules (.mdc format, legacy)
+│   │   └── security.md          # @mentionable or auto-attached
+│   └── mcp.json                 # Project-level MCP server configuration
+├── .cursorignore                # Files to exclude from AI context
+└── .vscode/
+    └── settings.json            # VS Code workspace settings (Cursor reads these too)
 ```
+
+**Note:** Cursor historically used `.mdc` extension for rule files; newer versions use `.md`. Both are supported.
 
 #### .cursorrules
 
@@ -450,10 +485,11 @@ Cursor still reads standard VS Code settings:
 <project-root>/
 ├── .windsurfrules               # Legacy: project-wide AI rules (plain text)
 ├── .windsurf/
-│   └── rules/                   # Modern (Wave 8+): granular rule files
-│       ├── general.md
-│       ├── backend.md
-│       └── frontend.md
+│   ├── rules/                   # Modern (Wave 8+): granular rule files
+│   │   ├── general.md
+│   │   ├── backend.md
+│   │   └── frontend.md
+│   └── mcp.json                 # Project-level MCP server configuration
 ├── .codeiumignore               # Project-level file exclusions
 └── cascade-memories/            # Cascade-generated memories (auto)
 ```
@@ -1218,6 +1254,71 @@ fi
 - Entirely cloud-based; no local config files
 - `.replit` file in project root controls run/build configuration
 - `replit.nix` for Nix environment setup
+
+### 11.7 Project Environment Files (Cross-Tool)
+
+These environment files are read by most AI tools and frameworks:
+
+```
+<project-root>/
+├── .env                         # Primary environment variables
+├── .env.local                   # Local overrides (Next.js, Vite, etc.)
+├── .env.development             # Development-specific variables
+├── .env.production              # Production variables
+└── .envrc                       # direnv auto-loaded on cd
+```
+
+### 11.8 Semantic Kernel (.NET AI Orchestration)
+
+```
+<project-root>/
+├── skprompt.txt                 # Prompt template file
+├── appsettings.json             # App settings (AI config section)
+└── plugins/                     # Semantic Kernel plugin directories
+    └── <plugin>/
+        └── skprompt.txt
+```
+
+### 11.9 Azure PromptFlow
+
+```
+<project-root>/
+├── flow.dag.yaml                # DAG flow definition
+├── flow.flex.yaml               # Flex flow definition
+└── .promptflow/                 # PromptFlow local config directory
+    └── flow.tools.json          # Tool configurations
+```
+
+### 11.10 Azure AI / Azure Developer CLI (azd)
+
+```
+<project-root>/
+├── azure.yaml                   # azd project configuration
+├── local.settings.json          # Azure Functions local settings (keys, connections)
+└── .azure/                      # azd local state directory
+    └── <environment>/
+        └── .env                 # Per-environment variables
+```
+
+### 11.11 Microsoft 365 Copilot / Teams Toolkit
+
+```
+<project-root>/
+├── teamsapp.yml                 # Teams app manifest
+├── aad.manifest.json            # Azure AD / Entra ID app registration
+└── .fx/                         # Teams Toolkit config directory
+    ├── configs/
+    └── states/
+```
+
+### 11.12 aictl
+
+```
+<project-root>/
+├── .context.aictx               # aictl project context file
+└── .ai-deployed/
+    └── manifest.json            # Deployment manifest
+```
 
 ---
 
