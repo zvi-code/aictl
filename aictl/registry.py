@@ -19,7 +19,7 @@ from pathlib import Path
 
 TOOL_GROUPS: dict[str, list[str]] = {
     "claude": ["claude-code", "claude-desktop"],
-    "copilot": ["copilot", "copilot-vscode", "copilot-cli"],
+    "copilot": ["copilot", "copilot-vscode", "copilot-cli", "copilot-jetbrains", "copilot-vs"],
     "codex": ["codex-cli"],
     "cursor": ["cursor"],
     "windsurf": ["windsurf"],
@@ -38,6 +38,8 @@ TOOL_LABELS: dict[str, str] = {
     "copilot": "GitHub Copilot",
     "copilot-vscode": "Copilot (VS Code)",
     "copilot-cli": "Copilot CLI",
+    "copilot-jetbrains": "Copilot (JetBrains)",
+    "copilot-vs": "Copilot (Visual Studio)",
     "copilot365": "Microsoft 365 Copilot",
     "cursor": "Cursor",
     "windsurf": "Windsurf",

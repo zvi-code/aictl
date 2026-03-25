@@ -156,7 +156,11 @@ $HOME/.copilot/copilot-instructions.md,copilot-cli,all,yes,global,instructions,y
 ~/Library/Application Support/Code/User/settings.json,copilot-vscode,macos,no,global,config,no,0,rw,n/a,n/a,app-start,,VS Code global user settings (Copilot preferences),literal,workspace
 ~/.config/Code/User/settings.json,copilot-vscode,linux,yes,global,config,no,0,rw,n/a,n/a,app-start,,VS Code global user settings (Linux),literal,workspace
 ~/.vscode/extensions/github.copilot*/package.json,copilot-vscode,macos/linux,yes,global,extensions,no,0,read,n/a,n/a,app-start,,Copilot extension manifest (version detection),literal,workspace
+~/.copilot/skills/{skill}/SKILL.md,copilot-cli,macos/linux,yes,global,skills,on-demand,50-500,rw,n/a,n/a,on-invoke,{skill},User-profile skill definitions,literal,git-root
 ~/.config/gh/config.yml,copilot-cli,macos/linux,yes,global,config,no,0,read,n/a,n/a,session-start,,GitHub CLI config (auth method preferences; companion to hosts.yml),literal,git-root
+~/Library/Application Support/JetBrains/*/options/github-copilot.xml,copilot-jetbrains,macos,no,global,config,no,0,rw,n/a,n/a,app-start,,JetBrains Copilot language allow-list and settings,literal,workspace
+~/.config/JetBrains/*/options/github-copilot.xml,copilot-jetbrains,linux,yes,global,config,no,0,rw,n/a,n/a,app-start,,JetBrains Copilot language allow-list and settings (Linux),literal,workspace
+~/.config/github-copilot/intellij/global-copilot-instructions.md,copilot-jetbrains,macos/linux,yes,global,instructions,yes,100-2000,rw,yes,yes,every-call,,JetBrains global Copilot instructions,literal,workspace
 {project-root}/.cursor/mcp.json,cursor,all,yes,project,config,no,0,rw,n/a,n/a,app-start,,Project-level MCP server configuration (Cursor-specific),recursive,workspace
 ~/Library/Application Support/Cursor/User/settings.json,cursor,macos,no,global,config,no,0,rw,n/a,n/a,app-start,,Cursor global user settings (VS Code compatible),literal,workspace
 {project-root}/.windsurf/mcp.json,windsurf,all,yes,project,config,no,0,rw,n/a,n/a,app-start,,Project-level MCP server configuration (Windsurf-specific),recursive,workspace
@@ -174,7 +178,16 @@ $HOME/.copilot/copilot-instructions.md,copilot-cli,all,yes,global,instructions,y
 {project-root}/azure.yaml,azure-ai,all,no,project,config,no,0,rw,n/a,n/a,runtime,,Azure Developer CLI (azd) project config,rooted,cwd
 {project-root}/.azure/,azure-ai,all,yes,project,runtime,no,0,rw,n/a,n/a,runtime,,Azure Developer CLI local state directory,rooted,cwd
 {project-root}/local.settings.json,azure-ai,all,no,project,config,no,0,rw,n/a,n/a,runtime,,Azure Functions local settings (connection strings and keys),recursive,cwd
-{project-root}/teamsapp.yml,copilot365,all,no,project,config,no,0,rw,n/a,n/a,runtime,,Microsoft 365 Copilot Teams app manifest,recursive,cwd
+{project-root}/teamsapp.yml,copilot365,all,no,project,config,no,0,rw,n/a,n/a,runtime,,Microsoft 365 Copilot Teams app manifest (M365 Agents Toolkit),recursive,cwd
+{project-root}/teamsapp.local.yml,copilot365,all,no,project,config,no,0,rw,n/a,n/a,runtime,,Local dev overrides for Teams app manifest,recursive,cwd
 {project-root}/aad.manifest.json,copilot365,all,no,project,config,no,0,rw,n/a,n/a,runtime,,Azure AD / Entra ID app registration manifest,recursive,cwd
-{project-root}/.fx/,copilot365,all,yes,project,config,no,0,rw,n/a,n/a,runtime,,Teams Toolkit project config directory,recursive,cwd
+{project-root}/appPackage/manifest.json,copilot365,all,no,project,config,no,0,rw,n/a,n/a,runtime,,M365 app manifest (schema v1.18+; defines copilotAgents node),recursive,cwd
+{project-root}/appPackage/declarativeAgent.json,copilot365,all,no,project,agent,yes,200-2000,rw,yes,yes,runtime,,Declarative agent manifest (schema v1.6; instructions up to 8000 chars),recursive,cwd
+{project-root}/appPackage/apiPlugin.json,copilot365,all,no,project,config,no,0,rw,n/a,n/a,runtime,,API plugin manifest for Copilot extensibility,recursive,cwd
+{project-root}/appPackage/color.png,copilot365,all,no,project,runtime,no,0,read,n/a,n/a,runtime,,192x192 full-color app icon,recursive,cwd
+{project-root}/appPackage/outline.png,copilot365,all,no,project,runtime,no,0,read,n/a,n/a,runtime,,32x32 outline app icon (transparent bg),recursive,cwd
+{project-root}/appPackage/localization/,copilot365,all,no,project,config,no,0,rw,n/a,n/a,runtime,,Localization files for multi-language support,recursive,cwd
+{project-root}/.fx/,copilot365,all,yes,project,config,no,0,rw,n/a,n/a,runtime,,Teams Toolkit project config directory (legacy),recursive,cwd
+{project-root}/env/.env.dev,copilot365,all,yes,project,credentials,no,0,rw,n/a,n/a,runtime,,M365 Agents Toolkit dev environment config,recursive,cwd
+{project-root}/env/.env.local,copilot365,all,yes,project,credentials,no,0,rw,n/a,n/a,runtime,,M365 Agents Toolkit local environment config,recursive,cwd
 {project-root}/.vscode/mcp.json,copilot-vscode,all,yes,project,config,no,0,rw,n/a,n/a,app-start,,VS Code workspace MCP server configuration (Copilot agent mode),recursive,workspace
