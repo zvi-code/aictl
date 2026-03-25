@@ -997,6 +997,48 @@ function ProcSection({processes, maxMem}) {
   </div>`;
 }
 
+// ─── ConfigSection (within ToolCard) ───────────────────────────
+function ConfigSection({config}) {
+  if(!config) return null;
+  const entries = Object.entries(config.settings||{});
+  const features = Object.entries(config.features||{});
+  const hasMcp = (config.mcp_servers||[]).length > 0;
+  const hasExt = (config.extensions||[]).length > 0;
+  if(!entries.length && !features.length && !hasMcp && !hasExt && config.model==null && config.launch_at_startup==null) return null;
+  return html`<div class="live-section">
+    <h3>Configuration
+      ${config.launch_at_startup===true && html`<span class="badge" style="background:var(--green);color:#000">auto-start</span>`}
+      ${config.launch_at_startup===false && html`<span class="badge">no auto-start</span>`}
+      ${config.auto_update===true && html`<span class="badge">auto-update</span>`}
+      ${config.model && html`<span class="badge">${config.model}</span>`}
+    </h3>
+    <div class="metric-grid">
+      ${entries.length>0 && html`<div class="metric-chip">
+        <span class="mlabel">Settings</span>
+        ${entries.map(([k,v])=>html`<div style="display:flex;justify-content:space-between;font-size:0.72rem;padding:0.05rem 0">
+          <span style="color:var(--fg2)">${k}</span>
+          <span class="mono">${typeof v==='object'?JSON.stringify(v):String(v)}</span>
+        </div>`)}
+      </div>`}
+      ${features.length>0 && html`<div class="metric-chip">
+        <span class="mlabel">Features</span>
+        ${features.map(([k,v])=>html`<div style="display:flex;justify-content:space-between;font-size:0.72rem;padding:0.05rem 0">
+          <span style="color:var(--fg2)">${k}</span>
+          <span style="color:${v===true?'var(--green)':v===false?'var(--red)':'var(--fg)'}">${String(v)}</span>
+        </div>`)}
+      </div>`}
+      ${hasMcp && html`<div class="metric-chip">
+        <span class="mlabel">MCP Servers</span>
+        <div class="stack-list">${config.mcp_servers.map(s=>html`<span class="pill mono">${s}</span>`)}</div>
+      </div>`}
+      ${hasExt && html`<div class="metric-chip">
+        <span class="mlabel">Extensions</span>
+        <div class="stack-list">${config.extensions.map(e=>html`<span class="pill mono">${e}</span>`)}</div>
+      </div>`}
+    </div>
+  </div>`;
+}
+
 // ─── TelemetrySection (within ToolCard) ────────────────────────
 function TelemetrySection({telemetry}) {
   if(!telemetry) return null;
@@ -1087,6 +1129,8 @@ function LiveSection({live}) {
 // ─── ToolCard Component ────────────────────────────────────────
 function ToolCard({tool: t, root}) {
   const [isOpen, setOpen] = useState(false);
+  const {snap: snapCtx} = useContext(SnapContext);
+  const toolConfig = useMemo(()=>(snapCtx?.tool_configs||[]).find(c=>c.tool===t.tool),[snapCtx,t.tool]);
   const c = COLORS[t.tool]||'#94a3b8';
   const tok = t.files.reduce((a,f)=>a+f.tokens,0);
   const anom = t.processes.filter(p=>p.anomalies&&p.anomalies.length).length;
@@ -1120,6 +1164,7 @@ function ToolCard({tool: t, root}) {
       </div>
     </button>
     ${isOpen && html`<div class="tcard-body">
+      <${ConfigSection} config=${toolConfig}/>
       <${TelemetrySection} telemetry=${t.token_breakdown?.telemetry}/>
       <${LiveSection} live=${t.live}/>
       ${cats.map(({kind,files})=>html`<${CatGroup} key=${kind} label=${kind} files=${files} root=${root}/>`)}

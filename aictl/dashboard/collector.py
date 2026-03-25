@@ -25,6 +25,7 @@ from ..discovery import (
 )
 from ..monitoring.config import MonitorConfig
 from ..monitoring.runtime import MonitorRuntime
+from ..monitoring.tool_config import collect_tool_configs
 from ..monitoring.tool_telemetry import collect_tool_telemetry
 
 
@@ -55,6 +56,7 @@ class DashboardSnapshot:
     mcp_detail: list[McpServerInfo] = field(default_factory=list)
     live_monitor: dict = field(default_factory=dict)
     tool_telemetry: list[dict] = field(default_factory=list)
+    tool_configs: list[dict] = field(default_factory=list)
 
     # ── System info ────────────────────────────────────────────
     cpu_cores: int = 0
@@ -164,6 +166,7 @@ class DashboardSnapshot:
             "mcp_detail": [dataclasses.asdict(s) for s in self.mcp_detail],
             "live_monitor": self.live_monitor,
             "tool_telemetry": self.tool_telemetry,
+            "tool_configs": self.tool_configs,
         }
 
     def to_json(self, indent: int = 2) -> str:
@@ -187,6 +190,9 @@ def collect(
     # Tool-specific telemetry (Claude stats-cache, Copilot events, Codex sessions)
     telemetry_reports = collect_tool_telemetry(root_path)
     tool_telemetry = [r.to_dict() for r in telemetry_reports]
+    # Tool configuration state (settings, startup, MCP, features)
+    tool_configs_list = collect_tool_configs(root_path)
+    tool_configs = [c.to_dict() for c in tool_configs_list]
     # Merge telemetry into DashboardTool.live if not already present
     _merge_telemetry_into_tools(tools, telemetry_reports)
     return DashboardSnapshot(
@@ -197,6 +203,7 @@ def collect(
         mcp_detail=mcp_detail,
         live_monitor=live_monitor,
         tool_telemetry=tool_telemetry,
+        tool_configs=tool_configs,
     )
 
 
