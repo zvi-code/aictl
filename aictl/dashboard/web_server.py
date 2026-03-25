@@ -401,6 +401,7 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 .tcard:hover { border-color: var(--accent); }
 .tcard.has-anomaly { border-color: var(--red); box-shadow: 0 0 8px rgba(248,113,113,0.15); }
 .tcard.hidden-by-search { display: none; }
+.tcard.open { grid-column: 1 / -1; } /* span full width when expanded */
 .tcard-head { padding: 0.6rem 0.8rem; cursor: pointer; display: flex; align-items: center; gap: 0.5rem; }
 .tcard-head:hover { background: var(--bg3); }
 .tcard-head h2 { font-size: 0.9rem; flex: 1; display: flex; align-items: center; gap: 0.4rem; }
@@ -411,7 +412,9 @@ header h1 span { color: var(--fg2); font-weight: 400; }
   padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.65rem; margin-left: 0.2rem; }
 .badge.warn { background: var(--red); color: #fff; }
 .tcard-body { display: none; padding: 0 0.8rem 0.6rem; }
-.tcard.open .tcard-body { display: block; }
+.tcard.open .tcard-body { display: flex; flex-wrap: wrap; gap: 0.8rem; }
+.tcard-body > .cat-group { flex: 1; min-width: 220px; max-width: 400px; }
+.tcard-body > .proc-section { flex-basis: 100%; }
 
 /* Category groups */
 .cat-group { margin-top: 0.4rem; }
@@ -856,32 +859,77 @@ function toggleCat(key) {
   if(openCats.has(key)) openCats.delete(key); else openCats.add(key);
   if(!snap) return;
   if(key.startsWith('mem|')) renderMemory(snap);
+  else if(key.startsWith('proc|')) renderProcs(snap);
   else renderOverview(snap);
 }
 
 // === Processes tab ===
 function renderProcs(s) {
   const el = document.getElementById('tab-procs');
-  const all = [];
-  s.tools.forEach(t => t.processes.forEach(p => all.push({...p, _tool:t.tool, _label:t.label})));
-  if(!all.length){el.innerHTML='<p style="color:var(--fg2)">No processes detected.</p>';return;}
-  const maxMem = Math.max(...all.map(p=>parseFloat(p.mem_mb)||0),100);
-  el.innerHTML = `<table class="ptable"><thead><tr><th>PID</th><th>Tool</th><th>Name</th><th>Type</th><th>CPU</th><th>Memory</th><th></th><th></th></tr></thead><tbody>
-    ${all.sort((a,b)=>(parseFloat(b.mem_mb)||0)-(parseFloat(a.mem_mb)||0)).map(p => {
-      const mem=parseFloat(p.mem_mb)||0; const pct=Math.min(mem/maxMem*100,100);
-      const barColor=(p.anomalies&&p.anomalies.length)?'var(--red)':mem>200?'var(--orange)':'var(--green)';
-      return `<tr>
-        <td style="color:var(--green)">${p.pid}</td>
-        <td><span class="dot" style="background:${COLORS[p._tool]||'#94a3b8'};width:7px;height:7px"></span> ${esc(p._label)}</td>
-        <td title="${esc(p.cmdline)}">${esc(p.name)}</td>
-        <td style="color:var(--fg2)">${esc(p.process_type||'')}</td>
-        <td>${p.cpu_pct}%</td>
-        <td><div class="mem-bar"><div class="mem-bar-fill" style="width:${pct.toFixed(0)}%;background:${barColor}"></div></div></td>
-        <td style="color:var(--fg2)">${p.mem_mb}MB</td>
-        <td>${p.anomalies&&p.anomalies.length?`<span class="anomaly-icon" title="${esc(p.anomalies.join('; '))}">&#9888;</span>`:''}</td>
-      </tr>`;
-    }).join('')}
-  </tbody></table>`;
+  // Group processes by tool
+  const byTool = {};
+  s.tools.forEach(t => {
+    if(!t.processes.length) return;
+    byTool[t.tool] = { label: t.label, procs: t.processes };
+  });
+  if(!Object.keys(byTool).length){el.innerHTML='<p style="color:var(--fg2)">No processes detected.</p>';return;}
+
+  // Find global max mem for consistent bar scaling
+  const allProcs = Object.values(byTool).flatMap(g => g.procs);
+  const maxMem = Math.max(...allProcs.map(p=>parseFloat(p.mem_mb)||0), 100);
+
+  el.innerHTML = Object.entries(byTool).map(([tool, {label, procs}]) => {
+    const c = COLORS[tool]||'#94a3b8';
+    const totalMem = procs.reduce((a,p)=>a+(parseFloat(p.mem_mb)||0),0);
+    const totalCpu = procs.reduce((a,p)=>a+(parseFloat(p.cpu_pct)||0),0);
+    const anomCount = procs.filter(p=>p.anomalies&&p.anomalies.length).length;
+    const key = 'proc|'+tool;
+    const isOpen = openCats.has(key);
+
+    // Group by process type for tree structure
+    const byType = {};
+    procs.forEach(p => { const t=p.process_type||'process'; (byType[t]=byType[t]||[]).push(p); });
+
+    return `<div class="cat-group${isOpen?' open':''}" style="margin-bottom:0.5rem">
+      <div class="cat-head" onclick="toggleCat('${esc(key)}')" style="padding:0.4rem 0.5rem;font-size:0.85rem">
+        <span class="carrow">&#9654;</span>
+        <span class="dot" style="background:${c}"></span>
+        <strong>${esc(label)}</strong>
+        <span class="badge">${procs.length} proc</span>
+        <span class="badge">CPU ${totalCpu.toFixed(1)}%</span>
+        <span class="badge">MEM ${totalMem.toFixed(0)}MB</span>
+        ${anomCount?`<span class="badge warn">${anomCount} anomaly</span>`:''}
+      </div>
+      <div class="cat-files" style="padding:0 0.3rem">
+        ${Object.entries(byType).map(([type, typeProcs]) => {
+          // If only one type, skip the type header
+          if(Object.keys(byType).length === 1) {
+            return typeProcs.sort((a,b)=>(parseFloat(b.mem_mb)||0)-(parseFloat(a.mem_mb)||0))
+              .map(p => renderProcRow(p, maxMem)).join('');
+          }
+          return `<div style="margin:0.3rem 0">
+            <div style="font-size:0.72rem;color:var(--fg2);padding:0.2rem 0;text-transform:uppercase;letter-spacing:0.03em">${esc(type)}</div>
+            ${typeProcs.sort((a,b)=>(parseFloat(b.mem_mb)||0)-(parseFloat(a.mem_mb)||0))
+              .map(p => renderProcRow(p, maxMem)).join('')}
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderProcRow(p, maxMem) {
+  const mem=parseFloat(p.mem_mb)||0;
+  const pct=Math.min(mem/maxMem*100, 100);
+  const barColor=(p.anomalies&&p.anomalies.length)?'var(--red)':mem>200?'var(--orange)':'var(--green)';
+  return `<div class="prow">
+    <span class="pid">${p.pid}</span>
+    <span class="pname" title="${esc(p.cmdline)}">${esc(p.name)}</span>
+    <span class="pcpu">${p.cpu_pct}%</span>
+    <div class="mem-bar"><div class="mem-bar-fill" style="width:${pct.toFixed(0)}%;background:${barColor}"></div></div>
+    <span class="pmem">${p.mem_mb}MB</span>
+    ${p.anomalies&&p.anomalies.length?`<span class="anomaly-icon" title="${esc(p.anomalies.join('; '))}">&#9888;</span>`:''}
+  </div>`;
 }
 
 // === MCP ===
