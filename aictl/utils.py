@@ -67,3 +67,42 @@ def encode_scope(path: str) -> str:
     if not path or path in ("/", "."):
         return "root"
     return path.replace("/", "--")
+
+
+# --- Display formatting (shared across CLI, TUI, HTML report) ---
+
+def human_size(n: int) -> str:
+    """Format byte count as human-readable string (e.g. 1.2KB, 3.5MB)."""
+    if n < 1024:
+        return f"{n}B"
+    k = n / 1024
+    if k < 1024:
+        return f"{k:.1f}KB"
+    m = k / 1024
+    if m < 1024:
+        return f"{m:.1f}MB"
+    return f"{m / 1024:.1f}GB"
+
+
+def human_tokens(n: int, suffix: bool = False) -> str:
+    """Format token count as human-readable string (e.g. 1.2k, 150k)."""
+    sfx = " tok" if suffix else ""
+    if n >= 1000:
+        k = n / 1000
+        if k >= 100:
+            return f"{k:.0f}k{sfx}"
+        return f"{k:.1f}k{sfx}"
+    return f"{n}{sfx}"
+
+
+def rel_display(path_str: str, root: Path, home: Path) -> str:
+    """Format a path for display — relative to root or ~/."""
+    try:
+        rp = Path(path_str).relative_to(root)
+        return str(rp)
+    except ValueError:
+        pass
+    try:
+        return "~/" + str(Path(path_str).relative_to(home))
+    except ValueError:
+        return path_str

@@ -160,12 +160,4 @@ def _extract_usage_tokens(payload: Any) -> tuple[int, int] | None:
     return None
 
 
-def _tool_hint_for_path(path: str) -> str | None:
-    lowered = path.lower()
-    if "claude" in lowered:
-        return "claude-code"
-    if "copilot" in lowered:
-        return "copilot-cli"
-    if "codex" in lowered:
-        return "codex-cli"
-    return None
+from ...platforms import tool_hint_for_path as _tool_hint_for_path

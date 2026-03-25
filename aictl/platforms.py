@@ -38,6 +38,28 @@ def path_contains_component(path: str, component: str) -> bool:
     return f"/{comp}/" in f"/{lowered}/" or lowered.endswith(f"/{comp}")
 
 
+def tool_hint_for_path(path: str) -> str | None:
+    """Infer which AI tool owns a file path based on directory components.
+
+    Used by filesystem and telemetry collectors to attribute file events
+    to tool sessions without process information.
+    """
+    lowered = path.lower().replace("\\", "/")
+    if "/.vscode/" in lowered:
+        return "copilot-vscode"
+    if "/.copilot/" in lowered or "github/copilot" in lowered:
+        return "copilot-cli"
+    if "/.claude/" in lowered or lowered.endswith("claude.md"):
+        return "claude-code"
+    if "/.codex/" in lowered:
+        return "codex-cli"
+    if "/.cursor/" in lowered:
+        return "cursor"
+    if "/.windsurf/" in lowered or "/codeium/" in lowered:
+        return "windsurf"
+    return None
+
+
 # ── Claude Code ──────────────────────────────────────────────────
 
 def claude_global_dir() -> Path:

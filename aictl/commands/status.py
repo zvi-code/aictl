@@ -191,28 +191,9 @@ def _print_human(results: list[ToolResources], root: Path, show_procs: bool) -> 
         click.echo()
 
 
-# ─── Formatting helpers ─────────────────────────────────────────────
+# ─── Formatting helpers (delegated to utils.py) ───────────────────
 
-def _rel_display(path_str: str, root: Path, home: Path) -> str:
-    """Show path relative to root, or with ~ for home."""
-    p = Path(path_str)
-    try:
-        return str(p.relative_to(root))
-    except ValueError:
-        pass
-    try:
-        return "~/" + str(p.relative_to(home))
-    except ValueError:
-        return path_str
-
-
-def _human_size(n: int) -> str:
-    if n < 1024:
-        return f"{n}B"
-    k = n / 1024
-    if k < 1024:
-        return f"{k:.1f}KB"
-    return f"{k / 1024:.1f}MB"
+from ..utils import human_size as _human_size, rel_display as _rel_display
 
 
 def _print_budget(results: list[ToolResources]) -> None:

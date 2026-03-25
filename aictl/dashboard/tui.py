@@ -674,41 +674,19 @@ class DashboardApp(App):
         self.show_memory = not self.show_memory
 
 
-# ── Formatting helpers ───────────────────────────────────────────
+# ── Formatting helpers (delegated to shared utils) ──────────────
+
+from ..utils import human_size as _human_size, human_tokens, rel_display as _rel_display
+
 
 def _human_tokens(n: int) -> str:
-    if n < 1000:
-        return f"{n} tok"
-    if n < 100_000:
-        return f"{n / 1000:.1f}k tok"
-    return f"{n / 1000:.0f}k tok"
-
-
-def _human_size(n: int) -> str:
-    if n < 1024:
-        return f"{n}B"
-    k = n / 1024
-    if k < 1024:
-        return f"{k:.1f}KB"
-    return f"{k / 1024:.1f}MB"
+    return human_tokens(n, suffix=True)
 
 
 def _human_rate(n: float) -> str:
     if n <= 0:
         return "0B/s"
     return f"{_human_size(int(n))}/s"
-
-
-def _rel_display(path_str: str, root: Path, home: Path) -> str:
-    p = Path(path_str)
-    try:
-        return str(p.relative_to(root))
-    except ValueError:
-        pass
-    try:
-        return "~/" + str(p.relative_to(home))
-    except ValueError:
-        return path_str
 
 
 # ── Entry point ──────────────────────────────────────────────────

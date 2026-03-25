@@ -665,33 +665,7 @@ def _esc(s: str) -> str:
     return html.escape(s)
 
 
-def _rel(path_str: str, root: Path, home: Path) -> str:
-    p = Path(path_str)
-    try:
-        return str(p.relative_to(root))
-    except ValueError:
-        pass
-    try:
-        return "~/" + str(p.relative_to(home))
-    except ValueError:
-        return path_str
-
-
-def _human_size(n: int) -> str:
-    if n < 1024:
-        return f"{n}B"
-    k = n / 1024
-    if k < 1024:
-        return f"{k:.1f}KB"
-    return f"{k / 1024:.1f}MB"
-
-
-def _human_tokens(n: int) -> str:
-    if n < 1000:
-        return str(n)
-    if n < 100_000:
-        return f"{n / 1000:.1f}k"
-    return f"{n / 1000:.0f}k"
+from ..utils import human_size as _human_size, human_tokens as _human_tokens, rel_display as _rel
 
 
 def _tool_colour(tool: str) -> str:
