@@ -209,7 +209,12 @@ class SessionCorrelator:
             self.pid_to_session[process.pid] = parent_session.session_id
             return parent_session
 
-        session_id = f"{match.tool}:{process.pid}"
+        session_id = f"{match.tool}:{process.pid}:{int(ts)}"
+        # Check for existing session for this tool:pid (may have different timestamp suffix)
+        for sid, sess in self.sessions.items():
+            if sess.tool == match.tool and sess.root_pid == process.pid:
+                session_id = sid
+                break
         session = self.sessions.get(session_id)
         if session is None:
             session = SessionState(

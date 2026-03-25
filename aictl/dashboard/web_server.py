@@ -586,7 +586,9 @@ td { padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 
 /* Budget */
-.budget-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 0.8rem; max-width: 500px; }
+.budget-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 0.8rem; }
+.budget-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; }
+.budget-full { grid-column: 1 / -1; }
 .brow { display: flex; justify-content: space-between; padding: 0.35rem 0; border-bottom: 1px solid var(--border); }
 .brow:last-child { border-bottom: none; }
 .blabel { color: var(--fg2); }
@@ -1379,9 +1381,9 @@ function TabBudget() {
     ['Cacheable portion', '~'+fmtK(budget.cacheable_tokens)+' tokens', null],
     ['Survives compaction', '~'+fmtK(budget.survives_compaction_tokens)+' tokens', null],
   ];
-  return html`<div style="display:grid;gap:0.8rem;max-width:900px">
+  return html`<div class="budget-grid">
     <div class="budget-card">
-      <h3 style="margin-bottom:0.5rem;color:var(--accent)">Token Budget Overview</h3>
+      <h3 style="margin-bottom:0.5rem;color:var(--accent)">Context Window Usage</h3>
       <div style="margin-bottom:0.5rem">
         <div style="display:flex;justify-content:space-between;font-size:0.78rem;margin-bottom:0.2rem">
           <span>~${fmtK(budget.total_potential_tokens)} of ${fmtK(contextWindow)} context window</span>
@@ -1402,10 +1404,24 @@ function TabBudget() {
       <div class="brow"><span class="blabel">Files never sent to LLM</span><span class="bval">${budget.never_sent_count}</span></div>
     </div>
 
-    ${toolBreakdowns.length>0 && html`<div class="budget-card" style="max-width:none">
-      <h3 style="margin-bottom:0.5rem;color:var(--accent)">Per-Tool Token Breakdown</h3>
+    ${catBreakdown.length>0 && html`<div class="budget-card">
+      <h3 style="margin-bottom:0.5rem;color:var(--accent)">By Category</h3>
+      <table role="table" aria-label="Per-category tokens">
+        <thead><tr><th>Category</th><th>Files</th><th>Tokens</th><th>Size</th><th style="width:80px">Distribution</th></tr></thead>
+        <tbody>${catBreakdown.map(c=>html`<tr key=${c.kind}>
+          <td>${esc(c.kind)}</td>
+          <td>${c.count}</td>
+          <td style="font-weight:600">${fmtK(c.tokens)}</td>
+          <td>${fmtSz(c.size)}</td>
+          <td><${TokenBar} always=${c.always} onDemand=${c.onDemand} conditional=${c.conditional} never=${c.never} total=${c.tokens||1}/></td>
+        </tr>`)}</tbody>
+      </table>
+    </div>`}
+
+    ${toolBreakdowns.length>0 && html`<div class="budget-card budget-full">
+      <h3 style="margin-bottom:0.5rem;color:var(--accent)">By Tool</h3>
       <table role="table" aria-label="Per-tool tokens">
-        <thead><tr><th>Tool</th><th>Always</th><th>On-demand</th><th>Conditional</th><th>Never sent</th><th>Total</th><th style="width:120px">Distribution</th></tr></thead>
+        <thead><tr><th>Tool</th><th>Always</th><th>On-demand</th><th>Conditional</th><th>Never sent</th><th>Total</th><th style="width:150px">Distribution</th></tr></thead>
         <tbody>${toolBreakdowns.map(t=>{
           const tb=t.token_breakdown;
           return html`<tr key=${t.tool}>
@@ -1418,23 +1434,6 @@ function TabBudget() {
             <td><${TokenBar} always=${tb.always_loaded||0} onDemand=${tb.on_demand||0} conditional=${tb.conditional||0} never=${tb.never_sent||0} total=${tb.total||1}/></td>
           </tr>`;
         })}</tbody>
-      </table>
-    </div>`}
-
-    ${catBreakdown.length>0 && html`<div class="budget-card" style="max-width:none">
-      <h3 style="margin-bottom:0.5rem;color:var(--accent)">Per-Category Token Breakdown</h3>
-      <table role="table" aria-label="Per-category tokens">
-        <thead><tr><th>Category</th><th>Files</th><th>Tokens</th><th>Size</th><th>Always</th><th>On-demand</th><th>Conditional</th><th style="width:120px">Distribution</th></tr></thead>
-        <tbody>${catBreakdown.map(c=>html`<tr key=${c.kind}>
-          <td>${esc(c.kind)}</td>
-          <td>${c.count}</td>
-          <td style="font-weight:600">${fmtK(c.tokens)}</td>
-          <td>${fmtSz(c.size)}</td>
-          <td style="color:var(--green)">${fmtK(c.always)}</td>
-          <td style="color:var(--yellow)">${fmtK(c.onDemand)}</td>
-          <td style="color:var(--orange)">${fmtK(c.conditional)}</td>
-          <td><${TokenBar} always=${c.always} onDemand=${c.onDemand} conditional=${c.conditional} never=${c.never} total=${c.tokens||1}/></td>
-        </tr>`)}</tbody>
       </table>
     </div>`}
   </div>`;
