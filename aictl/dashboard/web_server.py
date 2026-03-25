@@ -7,6 +7,7 @@ inspection, and token budget analysis.
 
 from __future__ import annotations
 
+import collections
 import json
 import os
 import sys
@@ -30,11 +31,19 @@ class _SnapshotStore:
         self._version: int = 0
         self._lock = threading.Lock()
         self._condition = threading.Condition(self._lock)
+        # Ring buffer for time-series sparklines. Appended on each update()
+        # call (tied to scan interval). At ~5.86s/tick, 360 entries ≈ 35 min.
+        self._history: collections.deque[tuple] = collections.deque(maxlen=360)
 
     def update(self, snap: DashboardSnapshot) -> None:
         with self._condition:
             self._snap = snap
             self._version += 1
+            self._history.append((
+                snap.timestamp, snap.total_files, snap.total_tokens,
+                snap.total_cpu, snap.total_mem_mb,
+                snap.total_mcp_servers, snap.total_memory_tokens,
+            ))
             self._condition.notify_all()
 
     def wait_for_update(self, known_version: int,
@@ -54,6 +63,23 @@ class _SnapshotStore:
     def version(self) -> int:
         with self._lock:
             return self._version
+
+    def history_json(self) -> str:
+        """Return time-series history as column-major JSON (uPlot native format)."""
+        with self._lock:
+            rows = list(self._history)
+        if not rows:
+            return json.dumps({"ts": [], "files": [], "tokens": [],
+                               "cpu": [], "mem_mb": [], "mcp": [],
+                               "mem_tokens": []})
+        # Transpose rows → columns
+        ts, files, tokens, cpu, mem_mb, mcp, mem_tokens = zip(*rows)
+        return json.dumps({
+            "ts": list(ts), "files": list(files), "tokens": list(tokens),
+            "cpu": [round(v, 1) for v in cpu],
+            "mem_mb": [round(v, 1) for v in mem_mb],
+            "mcp": list(mcp), "mem_tokens": list(mem_tokens),
+        })
 
 
 # ─── File path whitelist ─────────────────────────────────────────
@@ -161,6 +187,8 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             self._serve_sse()
         elif path == "/api/budget":
             self._serve_budget()
+        elif path == "/api/history":
+            self._serve_history()
         else:
             self.send_error(404)
 
@@ -237,6 +265,14 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             self.wfile.write(f"data: {line}\n".encode("utf-8"))
         self.wfile.write(b"\n")
         self.wfile.flush()
+
+    def _serve_history(self) -> None:
+        body = self.server.store.history_json().encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
 
     def _serve_budget(self) -> None:
         snap = self.server.store.snapshot
@@ -325,6 +361,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>aictl live dashboard</title>
+<link rel="stylesheet" href="https://esm.sh/uplot@1.6.31/dist/uPlot.min.css">
 <style>
 [data-theme="dark"], [data-theme="auto"] {
   --bg: #0f172a; --bg2: #1e293b; --bg3: #162032; --fg: #e2e8f0; --fg2: #94a3b8;
@@ -349,7 +386,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monos
   transition: background 0.2s, color 0.2s; }
 
 /* Layout */
-.dash { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 header { display: flex; justify-content: space-between; align-items: center;
   padding: 0.4rem 1.2rem; background: var(--bg2); border-bottom: 1px solid var(--border); flex-shrink: 0; gap: 0.8rem; }
 header h1 { font-size: 1.1rem; white-space: nowrap; }
@@ -365,34 +401,38 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 .theme-btn { background: none; border: 1px solid var(--border); border-radius: 4px;
   padding: 0.2rem 0.5rem; cursor: pointer; font-size: 0.85rem; color: var(--fg); }
 .theme-btn:hover { background: var(--border); }
-.sticky-stats { position: sticky; top: 0; z-index: 50; background: var(--bg); padding: 0.6rem 0 0.2rem; }
+.main-wrap { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .main { flex: 1; overflow: auto; padding: 0.6rem 1.2rem; }
 .kbd { font-size: 0.6rem; color: var(--fg2); padding: 0.1rem 0.3rem; border: 1px solid var(--border);
   border-radius: 2px; font-family: monospace; margin-left: 0.2rem; }
 
-/* Stat cards */
-.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
-  gap: 0.4rem; margin-bottom: 0.8rem; }
+/* Stat cards — two-tier hierarchy */
+.stat-primary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.4rem; margin-bottom: 0.3rem; }
+.stat-secondary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.4rem; margin-bottom: 0.8rem; }
 .stat-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
-  padding: 0.4rem 0.6rem; text-align: center; }
+  padding: 0.4rem 0.6rem; text-align: center; position: relative; overflow: hidden; }
+.stat-card.primary { border-left: 3px solid var(--accent); }
 .stat-card .label { color: var(--fg2); font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em; }
-.stat-card .value { font-size: 1.2rem; font-weight: 700; color: var(--accent); transition: color 0.3s; }
-.stat-card .value.changed { color: var(--orange); }
+.stat-card.primary .value { font-size: 1.5rem; font-weight: 700; color: var(--accent); }
+.stat-card.secondary .value { font-size: 1.0rem; font-weight: 600; color: var(--fg2); }
+.sparkline-wrap { height: 30px; margin-top: 2px; }
 @keyframes flash { 0%{opacity:1} 50%{opacity:0.5} 100%{opacity:1} }
 .flash { animation: flash 0.4s ease; }
 
-/* Resource bar */
+/* Resource bar + legend */
 .rbar { display: flex; height: 6px; border-radius: 3px; overflow: hidden;
-  margin-bottom: 0.8rem; background: var(--border); }
+  margin-bottom: 0.3rem; background: var(--border); }
 .rbar-seg { transition: width 0.3s; }
+.rbar-legend { display: flex; flex-wrap: wrap; gap: 0.4rem 0.8rem; margin-bottom: 0.8rem; font-size: 0.7rem; color: var(--fg2); }
+.rbar-legend-item { display: flex; align-items: center; gap: 0.25rem; }
+.rbar-legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 
-/* Tabs */
+/* Tabs — accessible */
 .tab-nav { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 0.8rem; }
 .tab-btn { background: none; border: none; color: var(--fg2); padding: 0.4rem 0.8rem;
   cursor: pointer; font-size: 0.8rem; border-bottom: 2px solid transparent; }
-.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
-.tab-panel { display: none; }
-.tab-panel.active { display: block; }
+.tab-btn:hover { color: var(--fg); }
+.tab-btn[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
 
 /* Tool grid */
 .tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0.6rem; }
@@ -400,9 +440,9 @@ header h1 span { color: var(--fg2); font-weight: 400; }
   transition: border-color 0.2s, box-shadow 0.2s; }
 .tcard:hover { border-color: var(--accent); }
 .tcard.has-anomaly { border-color: var(--red); box-shadow: 0 0 8px rgba(248,113,113,0.15); }
-.tcard.hidden-by-search { display: none; }
-.tcard.open { grid-column: 1 / -1; } /* span full width when expanded */
-.tcard-head { padding: 0.6rem 0.8rem; cursor: pointer; display: flex; align-items: center; gap: 0.5rem; }
+.tcard.open { grid-column: 1 / -1; }
+.tcard-head { padding: 0.6rem 0.8rem; cursor: pointer; display: flex; align-items: center; gap: 0.5rem;
+  background: none; border: none; width: 100%; text-align: left; color: inherit; font: inherit; }
 .tcard-head:hover { background: var(--bg3); }
 .tcard-head h2 { font-size: 0.9rem; flex: 1; display: flex; align-items: center; gap: 0.4rem; }
 .tcard-head .arrow { color: var(--fg2); font-size: 0.6rem; transition: transform 0.2s; flex-shrink: 0; }
@@ -411,24 +451,22 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 .badge { display: inline-block; background: var(--border); color: var(--fg2);
   padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.65rem; margin-left: 0.2rem; }
 .badge.warn { background: var(--red); color: #fff; }
-.tcard-body { display: none; padding: 0 0.8rem 0.6rem; }
-.tcard.open .tcard-body { display: block; columns: 3 250px; column-gap: 1rem; }
+.tcard-body { padding: 0 0.8rem 0.6rem; columns: 3 250px; column-gap: 1rem; }
 .tcard-body > .cat-group { break-inside: avoid; margin-bottom: 0.4rem; }
 .tcard-body > .proc-section { break-inside: avoid; column-span: all; }
 
 /* Category groups */
 .cat-group { margin-top: 0.4rem; }
 .cat-head { cursor: pointer; padding: 0.25rem 0; font-size: 0.8rem; color: var(--fg2);
-  display: flex; align-items: center; gap: 0.3rem; user-select: none; }
+  display: flex; align-items: center; gap: 0.3rem; user-select: none;
+  background: none; border: none; width: 100%; text-align: left; font: inherit; }
 .cat-head:hover { color: var(--fg); }
 .cat-head .carrow { font-size: 0.6rem; transition: transform 0.15s; }
-.cat-group.open .carrow { transform: rotate(90deg); }
-.cat-files { display: none; padding-left: 0.8rem; }
-.cat-group.open .cat-files { display: block; }
+.cat-head.open .carrow { transform: rotate(90deg); }
 
 /* File items */
-.fitem-wrap { }
-.fitem { padding: 0.15rem 0; font-size: 0.78rem; cursor: pointer; display: flex; gap: 0.4rem; }
+.fitem { padding: 0.15rem 0; font-size: 0.78rem; cursor: pointer; display: flex; gap: 0.4rem;
+  background: none; border: none; width: 100%; text-align: left; color: inherit; font: inherit; }
 .fitem:hover { background: var(--bg3); border-radius: 3px; }
 .fpath { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fmeta { color: var(--fg2); white-space: nowrap; font-size: 0.72rem; }
@@ -443,10 +481,9 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 .inline-preview .ln { color: var(--border); user-select: none; display: inline-block;
   width: 3ch; text-align: right; margin-right: 0.6em; }
 .inline-preview .prev-actions { margin-top: 0.3rem; display: flex; gap: 0.4rem; }
-.inline-preview .prev-btn {
-  display: inline-block; padding: 0.1rem 0.4rem; background: var(--border);
+.prev-btn { display: inline-block; padding: 0.1rem 0.4rem; background: var(--border);
   color: var(--fg2); border: none; border-radius: 3px; font-size: 0.68rem; cursor: pointer; }
-.inline-preview .prev-btn:hover { background: var(--accent); color: var(--bg); }
+.prev-btn:hover { background: var(--accent); color: var(--bg); }
 
 /* Process rows */
 .proc-section { margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.4rem; }
@@ -465,7 +502,6 @@ header h1 span { color: var(--fg2); font-weight: 400; }
   background: var(--bg); border-left: 2px solid var(--accent);
   display: flex; flex-direction: column; z-index: 100;
   box-shadow: -4px 0 20px rgba(0,0,0,0.5); }
-.fv.hidden { display: none; }
 .fv-head { display: flex; justify-content: space-between; align-items: center;
   padding: 0.6rem 0.8rem; background: var(--bg2); border-bottom: 1px solid var(--border); }
 .fv-head .path { font-size: 0.78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
@@ -492,7 +528,6 @@ table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
 th { text-align: left; color: var(--fg2); padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }
 td { padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-.ptable .mem-bar { width: 100px; }
 
 /* Budget */
 .budget-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 0.8rem; max-width: 500px; }
@@ -503,64 +538,29 @@ td { padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }
 
 /* Memory tab */
 .mem-group { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 0.6rem; overflow: hidden; }
-.mem-group-head { padding: 0.5rem 0.8rem; cursor: pointer; font-size: 0.85rem; font-weight: 600; display: flex; align-items: center; gap: 0.4rem; }
+.mem-group-head { padding: 0.5rem 0.8rem; cursor: pointer; font-size: 0.85rem; font-weight: 600;
+  display: flex; align-items: center; gap: 0.4rem;
+  background: none; border: none; width: 100%; text-align: left; color: inherit; font: inherit; font-weight: 600; font-size: 0.85rem; }
 .mem-group-head .carrow { font-size: 0.6rem; transition: transform 0.15s; }
-.mem-group.open > .mem-group-head .carrow { transform: rotate(90deg); }
+.mem-group-head.open .carrow { transform: rotate(90deg); }
 .mem-group-head:hover { background: var(--bg3); }
-.mem-group-body { display: none; }
-.mem-group.open .mem-group-body { display: block; }
-.mem-item { padding: 0.2rem 0.8rem; font-size: 0.78rem; cursor: pointer; display: flex; gap: 0.4rem; border-top: 1px solid var(--border); }
-.mem-item:hover { background: var(--bg3); }
+
+/* Accessibility */
+button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.u-hidden { display: none; }
 </style>
 </head>
 <body>
-<div class="dash">
-<header>
-  <h1>aictl <span>live dashboard</span></h1>
-  <div class="hdr-right">
-    <input type="text" id="search" class="search-box" placeholder="Filter... ( / )" />
-    <button class="theme-btn" onclick="cycleTheme()" id="theme-btn" title="Toggle dark/light mode">&#9790;</button>
-    <span id="conn" class="conn ok">live</span>
-  </div>
-</header>
-<div class="main">
+<div id="app"></div>
+<script type="module">
+// ─── CDN Imports ───────────────────────────────────────────────
+import { h, render as preactRender, createContext } from 'https://esm.sh/preact@10.25.4';
+import { useState, useEffect, useRef, useCallback, useMemo, useContext } from 'https://esm.sh/preact@10.25.4/hooks';
+import htm from 'https://esm.sh/htm@3.1.1';
+import uPlot from 'https://esm.sh/uplot@1.6.31';
+const html = htm.bind(h);
 
-<div class="sticky-stats">
-  <div id="stats" class="stat-grid"></div>
-  <div id="rbar" class="rbar"></div>
-</div>
-
-<div class="tab-nav">
-  <button class="tab-btn active" onclick="switchTab('overview',this)" title="Shortcut: 1">Overview</button>
-  <button class="tab-btn" onclick="switchTab('procs',this)" title="Shortcut: 2">Processes</button>
-  <button class="tab-btn" onclick="switchTab('mcp',this)" title="Shortcut: 3">MCP Servers</button>
-  <button class="tab-btn" onclick="switchTab('memory',this)" title="Shortcut: 4">Memory</button>
-  <button class="tab-btn" onclick="switchTab('budget',this)" title="Shortcut: 5">Token Budget</button>
-</div>
-
-<div id="tab-overview" class="tab-panel active"></div>
-<div id="tab-procs" class="tab-panel"></div>
-<div id="tab-mcp" class="tab-panel"></div>
-<div id="tab-memory" class="tab-panel"></div>
-<div id="tab-budget" class="tab-panel"></div>
-
-</div>
-</div>
-
-<div id="fv" class="fv hidden">
-  <div class="fv-head">
-    <span class="path" id="fv-path"></span>
-    <button onclick="closeViewer()">Close (Esc)</button>
-  </div>
-  <div class="fv-meta" id="fv-meta"></div>
-  <div class="fv-body" id="fv-body"></div>
-  <div class="fv-toolbar" id="fv-toolbar">
-    <span id="fv-info"></span>
-    <button id="fv-toggle" onclick="toggleFullContent()" style="display:none">Show all</button>
-  </div>
-</div>
-
-<script>
+// ─── Constants ─────────────────────────────────────────────────
 const COLORS = {
   'claude-code':'#a78bfa','claude-desktop':'#c4b5fd','claude-mcp-memory':'#c4b5fd',
   'copilot':'#60a5fa','copilot-vscode':'#93c5fd','copilot-cli':'#3b82f6',
@@ -569,595 +569,715 @@ const COLORS = {
   'gemini-cli':'#34d399','opencode':'#94a3b8','aider':'#f472b6',
 };
 const SC = {running:'var(--green)',stopped:'var(--red)',error:'var(--orange)',unknown:'var(--fg2)'};
-let snap = null, fullContent = '', openCards = new Set(), openCats = new Set();
-let prevStats = {};
-let userInteracted = false;
-let interactTimer = null;
+const THEMES = ['auto','dark','light'];
+const THEME_ICONS = {auto:'\u263E',dark:'\u263E',light:'\u2600'};
+const TAIL_LINES = 5;
+const PREVIEW_LINES = 15;
+const MEM_LABELS = {'claude-user-memory':'User Memory','claude-project-memory':'Project Memory','claude-auto-memory':'Auto Memory'};
+const CAT_ORDER = ['instructions','config','rules','commands','skills','agent','memory','prompt','transcript','temp','runtime','credentials','extensions'];
+const TABS = [
+  {id:'overview', label:'Overview', key:'1'},
+  {id:'procs', label:'Processes', key:'2'},
+  {id:'mcp', label:'MCP Servers', key:'3'},
+  {id:'memory', label:'Memory', key:'4'},
+  {id:'budget', label:'Token Budget', key:'5'},
+];
 
-// === Theme ===
-const themes = ['auto','dark','light'];
-const themeIcons = {auto:'\u263E',dark:'\u263E',light:'\u2600'};
-let themeIdx = 0;
-function cycleTheme() {
-  themeIdx = (themeIdx+1)%themes.length;
-  const t = themes[themeIdx];
-  document.documentElement.setAttribute('data-theme', t);
-  document.getElementById('theme-btn').textContent = themeIcons[t];
-  document.getElementById('theme-btn').title = 'Theme: '+t;
-  try { localStorage.setItem('aictl-theme', t); } catch(e){}
-}
-(function initTheme(){
-  try { const t=localStorage.getItem('aictl-theme'); if(t){themeIdx=themes.indexOf(t);
-    if(themeIdx>=0){document.documentElement.setAttribute('data-theme',t);
-    document.getElementById('theme-btn').textContent=themeIcons[t];}else themeIdx=0;}} catch(e){}
-})();
+// ─── Module-level shared state ─────────────────────────────────
+const fileCache = new Map();
 
-// === Search ===
-const searchEl = document.getElementById('search');
-searchEl.addEventListener('input', applySearch);
-function applySearch() {
-  const q = searchEl.value.toLowerCase().trim();
-  document.querySelectorAll('.tcard').forEach(card => {
-    if(!q) { card.classList.remove('hidden-by-search'); return; }
-    card.classList.toggle('hidden-by-search', !card.textContent.toLowerCase().includes(q));
-  });
-}
+// ─── Context ───────────────────────────────────────────────────
+const SnapContext = createContext(null);
 
-// === SSE ===
-function connectSSE() {
-  const es = new EventSource('/api/stream');
-  es.onmessage = e => { snap = JSON.parse(e.data); render(snap);
-    document.getElementById('conn').className='conn ok'; document.getElementById('conn').textContent='live'; };
-  es.onerror = () => { document.getElementById('conn').className='conn err'; document.getElementById('conn').textContent='reconnecting...'; };
-}
-
-// === Keyboard ===
-document.addEventListener('keydown', e => {
-  if(e.key==='Escape') closeViewer();
-  if(e.key==='/' && document.activeElement!==searchEl) { e.preventDefault(); searchEl.focus(); }
-  if(e.key>='1'&&e.key<='5'&&document.activeElement!==searchEl) {
-    const tabs=['overview','procs','mcp','memory','budget'];
-    const btn=document.querySelectorAll('.tab-btn')[parseInt(e.key)-1];
-    if(btn) switchTab(tabs[parseInt(e.key)-1],btn);
-  }
-});
-
-// === Interaction pause ===
-function markInteracted() {
-  userInteracted = true;
-  clearTimeout(interactTimer);
-  interactTimer = setTimeout(() => { userInteracted = false; }, 30000);
-}
-
-// === Tabs ===
-function switchTab(name, btn) {
-  userInteracted = false;
-  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById('tab-'+name).classList.add('active');
-  if(btn) btn.classList.add('active');
-  if(!snap) return;
-  if(name==='overview') renderOverview(snap);
-  else if(name==='procs') renderProcs(snap);
-  else if(name==='mcp') renderMCP(snap);
-  else if(name==='memory') renderMemory(snap);
-  else if(name==='budget') loadBudget();
-}
-
-// === Render ===
-function render(s) {
-  renderStats(s);
-  renderBar(s);
-  if(userInteracted) return;
-  const active = document.querySelector('.tab-panel.active');
-  if(active) {
-    const id = active.id;
-    if(id==='tab-overview') renderOverview(s);
-    else if(id==='tab-procs') renderProcs(s);
-    else if(id==='tab-mcp') renderMCP(s);
-    else if(id==='tab-memory') renderMemory(s);
-  }
-  applySearch();
-}
-
-function renderStats(s) {
-  const c = [['Files',s.total_files],['Tokens',fmtK(s.total_tokens)],['Size',fmtSz(s.total_size)],
-    ['Processes',s.total_processes],['CPU',s.total_cpu+'%'],['Proc Mem',fmtSz(s.total_mem_mb*1048576)],
-    ['MCP',s.total_mcp_servers],['Agent Mem',fmtK(s.total_memory_tokens)+'t']];
-  const el = document.getElementById('stats');
-  if(!el.children.length) {
-    el.innerHTML = c.map(([l,v])=>
-      `<div class="stat-card"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('');
-  } else {
-    c.forEach(([l,v],i) => {
-      const valEl = el.children[i]?.querySelector('.value');
-      if(valEl && valEl.textContent !== ''+v) {
-        valEl.textContent = v;
-        valEl.classList.add('flash');
-        setTimeout(()=>valEl.classList.remove('flash'), 500);
-      }
-    });
-  }
-}
-
-function renderBar(s) {
-  const tools = s.tools.filter(t=>t.tool!=='aictl');
-  const total = tools.reduce((a,t)=>a+t.files.length,0) || 1;
-  document.getElementById('rbar').innerHTML = tools.filter(t=>t.files.length).map(t =>
-    `<div class="rbar-seg" style="width:${(t.files.length/total*100).toFixed(1)}%;background:${COLORS[t.tool]||'#94a3b8'}" title="${t.label}: ${t.files.length} files"></div>`
-  ).join('');
-}
-
-function renderOverview(s) {
-  const el = document.getElementById('tab-overview');
-  const tools = s.tools.filter(t => t.tool!=='aictl' && (t.files.length||t.processes.length||t.mcp_servers.length));
-  if(!tools.length){el.innerHTML='<p style="color:var(--fg2)">No AI tool resources found.</p>';return;}
-  tools.sort((a,b) => (b.files.length+b.processes.length+b.mcp_servers.length)-(a.files.length+a.processes.length+a.mcp_servers.length));
-  el.innerHTML = '<div class="tool-grid">' + tools.map(t => {
-    const c = COLORS[t.tool]||'#94a3b8';
-    const isOpen = openCards.has(t.tool);
-    const tok = t.files.reduce((a,f)=>a+f.tokens,0);
-    const anom = t.processes.filter(p=>p.anomalies&&p.anomalies.length).length;
-    return `<div class="tcard${isOpen?' open':''}${anom?' has-anomaly':''}" id="tc-${t.tool}">
-      <div class="tcard-head" onclick="toggleCard('${t.tool}')">
-        <span class="arrow">&#9654;</span>
-        <h2><span class="dot" style="background:${c}"></span>${esc(t.label)}</h2>
-        <span class="badge">${t.files.length} files</span>
-        <span class="badge">${fmtK(tok)} tok</span>
-        ${t.processes.length?`<span class="badge">${t.processes.length} proc</span>`:''}
-        ${t.mcp_servers.length?`<span class="badge">${t.mcp_servers.length} MCP</span>`:''}
-        ${anom?`<span class="badge warn">${anom} anomaly</span>`:''}
-      </div>
-      <div class="tcard-body">${isOpen?renderToolBody(t,s):''}
-      </div>
-    </div>`;
-  }).join('') + '</div>';
-}
-
-function toggleCard(tool) {
-  markInteracted();
-  if(openCards.has(tool)) openCards.delete(tool); else openCards.add(tool);
-  if(snap) renderOverview(snap);
-}
-
-function renderToolBody(t, s) {
-  const cats = {};
-  t.files.forEach(f => { const k=f.kind||'other'; (cats[k]=cats[k]||[]).push(f); });
-  const catOrder = ['instructions','config','rules','commands','skills','agent','memory','prompt','transcript','temp','runtime','credentials','extensions'];
-  const sorted = Object.keys(cats).sort((a,b) => {
-    const ai=catOrder.indexOf(a), bi=catOrder.indexOf(b);
-    return (ai<0?99:ai)-(bi<0?99:bi);
-  });
-  let html = sorted.map(cat => {
-    const files = cats[cat];
-    const key = t.tool+'|'+cat;
-    const isOpen = openCats.has(key);
-    const dirGroups = groupByDir(files, s.root);
-    return `<div class="cat-group${isOpen?' open':''}">
-      <div class="cat-head" onclick="toggleCat('${esc(key)}')">
-        <span class="carrow">&#9654;</span>
-        <span>${esc(cat)}</span> <span class="badge">${files.length}</span>
-      </div>
-      <div class="cat-files">${renderDirTree(dirGroups, s, key)}</div>
-    </div>`;
-  }).join('');
-
-  if(t.processes.length) {
-    const maxMem = Math.max(...t.processes.map(p=>parseFloat(p.mem_mb)||0), 100);
-    const totalMem = t.processes.reduce((a,p)=>a+(parseFloat(p.mem_mb)||0),0);
-    const totalCpu = t.processes.reduce((a,p)=>a+(parseFloat(p.cpu_pct)||0),0);
-    // Group by type
-    const byType = {};
-    t.processes.forEach(p => { const tp=p.process_type||'process'; (byType[tp]=byType[tp]||[]).push(p); });
-    html += `<div class="proc-section"><h3>Processes <span class="badge">${t.processes.length}</span> <span class="badge">CPU ${totalCpu.toFixed(1)}%</span> <span class="badge">MEM ${totalMem.toFixed(0)}MB</span></h3>` +
-      Object.entries(byType).map(([type, procs]) => {
-        if(Object.keys(byType).length === 1) {
-          return procs.sort((a,b)=>(parseFloat(b.mem_mb)||0)-(parseFloat(a.mem_mb)||0))
-            .map(p => renderProcRow(p, maxMem)).join('');
-        }
-        return `<div style="margin:0.3rem 0">
-          <div style="font-size:0.72rem;color:var(--fg2);padding:0.2rem 0;text-transform:uppercase;letter-spacing:0.03em">${esc(type)}</div>
-          ${procs.sort((a,b)=>(parseFloat(b.mem_mb)||0)-(parseFloat(a.mem_mb)||0))
-            .map(p => renderProcRow(p, maxMem)).join('')}
-        </div>`;
-      }).join('') + `</div>`;
-  }
-
-  if(t.mcp_servers.length) {
-    html += `<div class="proc-section"><h3>MCP Servers</h3>` +
-      t.mcp_servers.map(m => {
-        const cfg = m.config||{};
-        return `<div class="fitem"><span class="fpath" style="color:var(--green)">${esc(m.name)}</span>
-          <span class="fmeta">${esc(cfg.command||'')} ${(cfg.args||[]).join(' ').slice(0,60)}</span></div>`;
-      }).join('') + `</div>`;
-  }
-  return html;
-}
-
-// === Directory tree helpers ===
+// ─── Utility Functions ─────────────────────────────────────────
+function fmtK(n){return n>=1000?(n/1000).toFixed(1)+'k':''+n;}
+function fmtSz(n){if(n<1024)return n+'B';if(n<1048576)return(n/1024).toFixed(1)+'KB';return(n/1048576).toFixed(1)+'MB';}
+function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
 function scopeLabel(path, root) {
   if(path.startsWith(root+'/')) return 'project';
   if(path.includes('/.claude/projects/')) return 'shadow';
-  if(path.includes('/.claude/') || path.includes('/.config/') || path.includes('/Library/')) return 'global';
-  if(path.includes('/.copilot/') || path.includes('/.vscode/')) return 'global';
+  if(path.includes('/.claude/')||path.includes('/.config/')||path.includes('/Library/')) return 'global';
+  if(path.includes('/.copilot/')||path.includes('/.vscode/')) return 'global';
   return 'external';
 }
 function shortDir(path, root) {
   if(path.startsWith(root+'/')) {
-    const rel = path.slice(root.length+1);
-    const parts = rel.split('/');
-    parts.pop();
+    const rel=path.slice(root.length+1), parts=rel.split('/'); parts.pop();
     return parts.length ? parts.join('/') : '(root)';
   }
-  const parts = path.split('/');
-  parts.pop();
-  for(let i=parts.length-1; i>=0; i--) {
-    if(parts[i].startsWith('.') && parts[i].length>1 && parts[i]!=='..') {
-      return '~/' + parts.slice(i).join('/');
-    }
-    if(parts[i]==='Library') {
-      return '~/' + parts.slice(i).join('/');
-    }
+  const parts=path.split('/'); parts.pop();
+  for(let i=parts.length-1;i>=0;i--) {
+    if(parts[i].startsWith('.')&&parts[i].length>1&&parts[i]!=='..') return '~/'+parts.slice(i).join('/');
+    if(parts[i]==='Library') return '~/'+parts.slice(i).join('/');
   }
   return parts.slice(-2).join('/');
 }
 function groupByDir(files, root) {
-  const groups = {};
-  files.forEach(f => {
-    const scope = scopeLabel(f.path, root);
-    const dir = shortDir(f.path, root);
-    const label = scope === 'project' ? dir : `${scope}: ${dir}`;
-    (groups[label] = groups[label] || []).push(f);
-  });
-  const order = {project:0, global:1, shadow:2, external:3};
-  return Object.entries(groups).sort((a,b) => {
-    const sa = a[1][0] ? scopeLabel(a[1][0].path, root) : 'z';
-    const sb = b[1][0] ? scopeLabel(b[1][0].path, root) : 'z';
-    return (order[sa]||9) - (order[sb]||9);
+  const groups={};
+  files.forEach(f=>{const scope=scopeLabel(f.path,root),dir=shortDir(f.path,root);
+    const label=scope==='project'?dir:scope+': '+dir;(groups[label]=groups[label]||[]).push(f);});
+  const order={project:0,global:1,shadow:2,external:3};
+  return Object.entries(groups).sort((a,b)=>{
+    const sa=a[1][0]?scopeLabel(a[1][0].path,root):'z',sb=b[1][0]?scopeLabel(b[1][0].path,root):'z';
+    return (order[sa]||9)-(order[sb]||9);
   });
 }
-let previewCounter = 0;
-function renderDirTree(dirGroups, s, parentKey) {
-  if(dirGroups.length === 1 && dirGroups[0][1].length <= 3) {
-    return dirGroups[0][1].map(f => renderFileItem(f)).join('');
-  }
-  return dirGroups.map(([dir, files]) => {
-    if(files.length === 1) {
-      const f = files[0];
-      const name = f.path.split('/').pop();
-      const pid = 'fp'+(previewCounter++);
-      return `<div class="fitem-wrap" style="margin-left:0.5rem">
-        <div class="fitem" onclick="toggleInlinePreview('${pid}','${esc(f.path)}')">
-          <span class="fpath" title="${esc(f.path)}"><span style="color:var(--fg2)">${esc(dir)}/</span>${esc(name)}</span>
-          <span class="fmeta">${fmtSz(f.size)}${f.tokens?' ~'+fmtK(f.tokens)+'t':''}</span>
-        </div>
-        <div class="inline-preview" id="${pid}" style="display:none"></div>
-      </div>`;
-    }
-    const dirKey = parentKey + '|' + dir;
-    const isOpen = openCats.has(dirKey);
-    return `<div class="cat-group${isOpen?' open':''}" style="margin-left:0.5rem">
-      <div class="cat-head" onclick="toggleCat('${esc(dirKey)}')">
-        <span class="carrow">&#9654;</span>
-        <span style="color:var(--fg2)">${esc(dir)}</span> <span class="badge">${files.length}</span>
-      </div>
-      <div class="cat-files">${files.map(f => renderFileItem(f)).join('')}</div>
-    </div>`;
-  }).join('');
+function sma3(arr) {
+  if(arr.length<3) return arr.slice();
+  const out=[arr[0],(arr[0]+arr[1])/2];
+  for(let i=2;i<arr.length;i++) out.push((arr[i-2]+arr[i-1]+arr[i])/3);
+  return out;
 }
-function renderFileItem(f) {
-  const name = f.path.split('/').pop();
-  const pid = 'fp'+(previewCounter++);
-  return `<div class="fitem-wrap">
-    <div class="fitem" onclick="toggleInlinePreview('${pid}','${esc(f.path)}')">
-      <span class="fpath" title="${esc(f.path)}">${esc(name)}</span>
-      <span class="fmeta">${fmtSz(f.size)}${f.tokens?' ~'+fmtK(f.tokens)+'t':''}</span>
+async function fetchFileContent(path) {
+  if(fileCache.has(path)) return fileCache.get(path);
+  const res = await fetch('/api/file?path='+encodeURIComponent(path));
+  if(!res.ok) throw new Error(res.statusText);
+  const text = await res.text();
+  fileCache.set(path, text);
+  return text;
+}
+
+// ─── Sparkline Component ───────────────────────────────────────
+function Sparkline({data, color, smooth}) {
+  const ref = useRef(null);
+  const chartRef = useRef(null);
+  useEffect(()=>{
+    if(!ref.current || !data || data[0].length<2) return;
+    const vals = smooth ? sma3(data[1]) : data[1];
+    const plotData = [data[0], vals];
+    if(chartRef.current) { chartRef.current.setData(plotData); return; }
+    const opts = {
+      width: ref.current.clientWidth || 100, height: 30,
+      cursor:{show:false}, legend:{show:false}, select:{show:false},
+      scales:{x:{time:false},y:{auto:true,range:(u,min,max)=>[Math.max(0,min*0.9),max*1.1]}},
+      axes:[{show:false},{show:false}],
+      series:[{},{stroke:color,width:1.5,fill:color+'20'}],
+    };
+    chartRef.current = new uPlot(opts, plotData, ref.current);
+    return ()=>{ if(chartRef.current){chartRef.current.destroy();chartRef.current=null;} };
+  },[data, color, smooth]);
+  useEffect(()=>{
+    if(!chartRef.current||!ref.current) return;
+    const ro = new ResizeObserver(()=>{
+      if(chartRef.current && ref.current) chartRef.current.setSize({width:ref.current.clientWidth,height:30});
+    });
+    ro.observe(ref.current);
+    return ()=>ro.disconnect();
+  },[]);
+  return html`<div class="sparkline-wrap" ref=${ref}></div>`;
+}
+
+// ─── StatCard Component ────────────────────────────────────────
+function StatCard({label, value, primary, sparkData, sparkColor, smooth}) {
+  const prevRef = useRef(value);
+  const [flashing, setFlashing] = useState(false);
+  useEffect(()=>{
+    if(prevRef.current !== value) { setFlashing(true); setTimeout(()=>setFlashing(false),500); }
+    prevRef.current = value;
+  },[value]);
+  const cls = 'stat-card '+(primary?'primary':'secondary');
+  return html`<div class=${cls} aria-label="${label}: ${value}">
+    <div class="label">${label}</div>
+    <div class=${'value'+(flashing?' flash':'')}>${value}</div>
+    ${primary && sparkData && html`<${Sparkline} data=${sparkData} color=${sparkColor||'var(--accent)'} smooth=${smooth}/>`}
+  </div>`;
+}
+
+// ─── StatBar Component ─────────────────────────────────────────
+function StatBar({snap: s, history: hist}) {
+  const sparkFor = (key) => {
+    if(!hist || !hist.ts || hist.ts.length<2) return null;
+    return [hist.ts, hist[key]];
+  };
+  if(!s) return null;
+  return html`
+    <div class="stat-primary">
+      <${StatCard} label="Files" value=${s.total_files} primary sparkData=${sparkFor('files')} sparkColor="var(--accent)" />
+      <${StatCard} label="Tokens" value=${fmtK(s.total_tokens)} primary sparkData=${sparkFor('tokens')} sparkColor="var(--green)" />
+      <${StatCard} label="CPU" value=${s.total_cpu+'%'} primary sparkData=${sparkFor('cpu')} sparkColor="var(--orange)" smooth />
+      <${StatCard} label="Memory" value=${fmtSz(s.total_mem_mb*1048576)} primary sparkData=${sparkFor('mem_mb')} sparkColor="var(--yellow)" />
     </div>
-    <div class="inline-preview" id="${pid}" style="display:none"></div>
-  </div>`;
-}
-
-function toggleCat(key) {
-  markInteracted();
-  if(openCats.has(key)) openCats.delete(key); else openCats.add(key);
-  if(!snap) return;
-  if(key.startsWith('mem|')) renderMemory(snap);
-  else if(key.startsWith('proc|')) renderProcs(snap);
-  else renderOverview(snap);
-}
-
-// === Processes tab ===
-function renderProcs(s) {
-  const el = document.getElementById('tab-procs');
-  // Group processes by tool
-  const byTool = {};
-  s.tools.forEach(t => {
-    if(!t.processes.length) return;
-    byTool[t.tool] = { label: t.label, procs: t.processes };
-  });
-  if(!Object.keys(byTool).length){el.innerHTML='<p style="color:var(--fg2)">No processes detected.</p>';return;}
-
-  // Find global max mem for consistent bar scaling
-  const allProcs = Object.values(byTool).flatMap(g => g.procs);
-  const maxMem = Math.max(...allProcs.map(p=>parseFloat(p.mem_mb)||0), 100);
-
-  el.innerHTML = Object.entries(byTool).map(([tool, {label, procs}]) => {
-    const c = COLORS[tool]||'#94a3b8';
-    const totalMem = procs.reduce((a,p)=>a+(parseFloat(p.mem_mb)||0),0);
-    const totalCpu = procs.reduce((a,p)=>a+(parseFloat(p.cpu_pct)||0),0);
-    const anomCount = procs.filter(p=>p.anomalies&&p.anomalies.length).length;
-    const key = 'proc|'+tool;
-    const isOpen = openCats.has(key);
-
-    // Group by process type for tree structure
-    const byType = {};
-    procs.forEach(p => { const t=p.process_type||'process'; (byType[t]=byType[t]||[]).push(p); });
-
-    return `<div class="cat-group${isOpen?' open':''}" style="margin-bottom:0.5rem">
-      <div class="cat-head" onclick="toggleCat('${esc(key)}')" style="padding:0.4rem 0.5rem;font-size:0.85rem">
-        <span class="carrow">&#9654;</span>
-        <span class="dot" style="background:${c}"></span>
-        <strong>${esc(label)}</strong>
-        <span class="badge">${procs.length} proc</span>
-        <span class="badge">CPU ${totalCpu.toFixed(1)}%</span>
-        <span class="badge">MEM ${totalMem.toFixed(0)}MB</span>
-        ${anomCount?`<span class="badge warn">${anomCount} anomaly</span>`:''}
-      </div>
-      <div class="cat-files" style="padding:0 0.3rem">
-        ${Object.entries(byType).map(([type, typeProcs]) => {
-          // If only one type, skip the type header
-          if(Object.keys(byType).length === 1) {
-            return typeProcs.sort((a,b)=>(parseFloat(b.mem_mb)||0)-(parseFloat(a.mem_mb)||0))
-              .map(p => renderProcRow(p, maxMem)).join('');
-          }
-          return `<div style="margin:0.3rem 0">
-            <div style="font-size:0.72rem;color:var(--fg2);padding:0.2rem 0;text-transform:uppercase;letter-spacing:0.03em">${esc(type)}</div>
-            ${typeProcs.sort((a,b)=>(parseFloat(b.mem_mb)||0)-(parseFloat(a.mem_mb)||0))
-              .map(p => renderProcRow(p, maxMem)).join('')}
-          </div>`;
-        }).join('')}
-      </div>
+    <div class="stat-secondary">
+      <${StatCard} label="Processes" value=${s.total_processes} />
+      <${StatCard} label="Size" value=${fmtSz(s.total_size)} />
+      <${StatCard} label="MCP" value=${s.total_mcp_servers} />
+      <${StatCard} label="Agent Mem" value=${fmtK(s.total_memory_tokens)+'t'} />
     </div>`;
-  }).join('');
 }
 
-function renderProcRow(p, maxMem) {
-  const mem=parseFloat(p.mem_mb)||0;
-  const pct=Math.min(mem/maxMem*100, 100);
-  const barColor=(p.anomalies&&p.anomalies.length)?'var(--red)':mem>200?'var(--orange)':'var(--green)';
-  return `<div class="prow">
-    <span class="pid">${p.pid}</span>
-    <span class="pname" title="${esc(p.cmdline)}">${esc(p.name)}</span>
-    <span class="pcpu">${p.cpu_pct}%</span>
-    <div class="mem-bar"><div class="mem-bar-fill" style="width:${pct.toFixed(0)}%;background:${barColor}"></div></div>
-    <span class="pmem">${p.mem_mb}MB</span>
-    ${p.anomalies&&p.anomalies.length?`<span class="anomaly-icon" title="${esc(p.anomalies.join('; '))}">&#9888;</span>`:''}
-  </div>`;
+// ─── ResourceBar Component ─────────────────────────────────────
+function ResourceBar({snap: s}) {
+  if(!s) return null;
+  const tools = s.tools.filter(t=>t.tool!=='aictl'&&t.files.length);
+  const total = tools.reduce((a,t)=>a+t.files.length,0)||1;
+  return html`
+    <div class="rbar">${tools.map(t=>html`
+      <div class="rbar-seg" style=${'width:'+(t.files.length/total*100).toFixed(1)+'%;background:'+(COLORS[t.tool]||'#94a3b8')}
+        title="${t.label}: ${t.files.length} files"></div>`)}
+    </div>
+    <div class="rbar-legend">${tools.map(t=>html`
+      <span class="rbar-legend-item">
+        <span class="rbar-legend-dot" style=${'background:'+(COLORS[t.tool]||'#94a3b8')}></span>
+        ${t.label} <span style="color:var(--fg2)">${t.files.length}</span>
+      </span>`)}
+    </div>`;
 }
 
-// === MCP ===
-function renderMCP(s) {
-  const el = document.getElementById('tab-mcp');
-  if(!s.mcp_detail.length){el.innerHTML='<p style="color:var(--fg2)">No MCP servers configured.</p>';return;}
-  el.innerHTML = `<table><thead><tr><th></th><th>Server</th><th>Tool</th><th>Transport</th><th>Endpoint</th><th>Status</th></tr></thead><tbody>
-    ${s.mcp_detail.map(m=>`<tr>
-      <td><span class="status-dot" style="background:${SC[m.status]||'var(--fg2)'}"></span></td>
-      <td>${esc(m.name)}</td><td>${esc(m.tool)}</td><td>${esc(m.transport)}</td>
-      <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(m.endpoint)}">${esc((m.endpoint||'').slice(0,80))}</td>
-      <td>${m.status}${m.pid?' (PID '+m.pid+')':''}</td>
-    </tr>`).join('')}</tbody></table>`;
+// ─── InlinePreview Component ───────────────────────────────────
+function InlinePreview({path}) {
+  const [show, setShow] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [text, setText] = useState(null);
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const ctx = useContext(SnapContext);
+  const toggle = useCallback(async ()=>{
+    if(show) { setShow(false); return; }
+    setShow(true);
+    if(fileCache.has(path)) { setText(fileCache.get(path)); return; }
+    setLoading(true); setError(null);
+    try { const t=await fetchFileContent(path); setText(t); }
+    catch(e) { setError(e.message); }
+    finally { setLoading(false); }
+  },[show,path]);
+  if(!show) return html`<button class="fitem" onClick=${toggle} aria-label="Preview file">
+    <span class="fpath" title=${path}>${path.split('/').pop()}</span>
+    <span class="fmeta">${'click to preview'}</span></button>`;
+  // This won't render here — it's called from FileItem
+  return null;
 }
 
-// === Memory ===
-function renderMemory(s) {
-  const el = document.getElementById('tab-memory');
-  if(!s.agent_memory.length){el.innerHTML='<p style="color:var(--fg2)">No agent memory found.</p>';return;}
-  const LABELS = {'claude-user-memory':'User Memory','claude-project-memory':'Project Memory','claude-auto-memory':'Auto Memory'};
-  const groups = {};
-  s.agent_memory.forEach(m=>{(groups[m.source]=groups[m.source]||[]).push(m);});
-  el.innerHTML = Object.entries(groups).map(([src,entries])=>{
-    const isOpen = openCats.has('mem|'+src);
-    // Group by profile first, then by directory within each profile
-    const byProfile = {};
-    entries.forEach(m => { (byProfile[m.profile] = byProfile[m.profile] || []).push(m); });
-    return `<div class="mem-group${isOpen?' open':''}">
-      <div class="mem-group-head" onclick="toggleCat('mem|${src}')">
-        <span class="carrow">&#9654;</span>
-        ${esc(LABELS[src]||src)} <span class="badge">${entries.length}</span>
-        <span class="badge">${fmtK(entries.reduce((a,m)=>a+m.tokens,0))} tok</span>
-      </div>
-      <div class="mem-group-body">${Object.entries(byProfile).map(([profile, items])=>{
-        const profTok = items.reduce((a,m)=>a+m.tokens,0);
-        const profKey = 'mem|'+src+'|'+profile;
-        const profOpen = items.length <= 5 || openCats.has(profKey);
-        return `<div class="cat-group${profOpen?' open':''}" style="margin:0 0.5rem">
-          <div class="cat-head" onclick="toggleCat('${esc(profKey)}')">
-            <span class="carrow">&#9654;</span>
-            <span style="color:var(--orange);font-weight:600">${esc(profile)}</span>
-            <span class="badge">${items.length} files</span>
-            <span class="badge">${fmtK(profTok)} tok</span>
-          </div>
-          <div class="cat-files">${items.map(m=>{
-            const name = m.file.split('/').pop();
-            const pid = 'mp'+(previewCounter++);
-            return `<div class="fitem-wrap">
-              <div class="mem-item" onclick="toggleInlinePreview('${pid}','${esc(m.file)}')">
-                <span class="fpath" title="${esc(m.file)}">${esc(name)}</span>
-                <span class="fmeta">${m.tokens}tok ${m.lines}ln</span>
-              </div>
-              <div class="inline-preview" id="${pid}" style="display:none"></div>
-            </div>`;
-          }).join('')}</div>
+// ─── FileItem Component ────────────────────────────────────────
+function FileItem({file, dirPrefix}) {
+  const [showPreview, setShowPreview] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [text, setText] = useState(null);
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const ctx = useContext(SnapContext);
+  const name = file.path.split('/').pop();
+  const toggle = useCallback(async ()=>{
+    if(showPreview) { setShowPreview(false); return; }
+    setShowPreview(true);
+    if(fileCache.has(file.path)) { setText(fileCache.get(file.path)); return; }
+    setLoading(true); setError(null);
+    try { const t=await fetchFileContent(file.path); setText(t); }
+    catch(e) { setError(e.message); }
+    finally { setLoading(false); }
+  },[showPreview, file.path]);
+  const numbered = (arr, start) => arr.map((l,i)=>
+    html`<span class="ln">${start+i}</span>${esc(l)||' '}\n`);
+  const renderPreview = () => {
+    if(loading) return html`<span style="color:var(--fg2)">loading...</span>`;
+    if(error) return html`<span style="color:var(--red)">${error}</span>`;
+    if(!text) return null;
+    const lines = text.split('\n'), total = lines.length;
+    const isSmall = total <= TAIL_LINES*3;
+    if(isSmall || expanded) {
+      return html`${numbered(lines,1)}
+        <div class="prev-actions">
+          ${expanded && html`<button class="prev-btn" onClick=${()=>setExpanded(false)}>collapse</button>`}
+          <button class="prev-btn" onClick=${()=>ctx.openViewer(file.path)}>open in viewer</button>
         </div>`;
-      }).join('')}</div>
-    </div>`;
-  }).join('');
-}
-
-// === Inline Preview ===
-const TAIL_LINES = 5;
-const inlineCache = {};
-
-async function toggleInlinePreview(id, path) {
-  markInteracted();
-  const el = document.getElementById(id);
-  if(!el) return;
-  if(el.style.display !== 'none') { el.style.display = 'none'; return; }
-  el.style.display = 'block';
-  el.innerHTML = '<span style="color:var(--fg2)">loading...</span>';
-  let text = inlineCache[path];
-  if(!text) {
-    try {
-      const res = await fetch('/api/file?path='+encodeURIComponent(path));
-      if(!res.ok) { el.innerHTML = '<span style="color:var(--red)">'+res.statusText+'</span>'; return; }
-      text = await res.text();
-      inlineCache[path] = text;
-    } catch(e) { el.innerHTML = '<span style="color:var(--red)">fetch error</span>'; return; }
-  }
-  renderInlinePreview(el, text, path);
-}
-
-function renderInlinePreview(el, text, path) {
-  const lines = text.split('\n');
-  const total = lines.length;
-  const isSmall = total <= TAIL_LINES * 3;
-  function numbered(arr, startIdx) {
-    return arr.map((l,i) => `<span class="ln">${startIdx+i}</span>${esc(l)||' '}`).join('\n');
-  }
-  if(isSmall) {
-    el.innerHTML = numbered(lines, 1) +
-      `<div class="prev-actions"><button class="prev-btn" onclick="openFullViewer('${esc(path)}')">open in viewer</button></div>`;
-  } else {
-    const tail = lines.slice(-TAIL_LINES);
-    const tailStart = total - TAIL_LINES + 1;
-    el.innerHTML = numbered(tail, tailStart) +
-      `<div class="prev-actions">
-        <button class="prev-btn" onclick="expandInline(this,'${esc(path)}')">show all (${total} lines)</button>
-        <button class="prev-btn" onclick="openFullViewer('${esc(path)}')">open in viewer</button>
+    }
+    const tail = lines.slice(-TAIL_LINES), tailStart = total-TAIL_LINES+1;
+    return html`${numbered(tail,tailStart)}
+      <div class="prev-actions">
+        <button class="prev-btn" onClick=${()=>setExpanded(true)}>show all (${total} lines)</button>
+        <button class="prev-btn" onClick=${()=>ctx.openViewer(file.path)}>open in viewer</button>
       </div>`;
-  }
+  };
+  return html`<div>
+    <button class="fitem" onClick=${toggle} aria-expanded=${showPreview} title=${file.path}>
+      <span class="fpath">${dirPrefix ? html`<span style="color:var(--fg2)">${dirPrefix}/</span>` : ''}${esc(name)}</span>
+      <span class="fmeta">${fmtSz(file.size)}${file.tokens?' ~'+fmtK(file.tokens)+'t':''}</span>
+    </button>
+    ${showPreview && html`<div class="inline-preview">${renderPreview()}</div>`}
+  </div>`;
 }
 
-function expandInline(btn, path) {
-  const el = btn.closest('.inline-preview');
-  const text = inlineCache[path];
-  if(!text || !el) return;
-  const lines = text.split('\n');
-  function numbered(arr, startIdx) {
-    return arr.map((l,i) => `<span class="ln">${startIdx+i}</span>${esc(l)||' '}`).join('\n');
-  }
-  el.innerHTML = numbered(lines, 1) +
-    `<div class="prev-actions">
-      <button class="prev-btn" onclick="collapseInline(this,'${esc(path)}')">collapse</button>
-      <button class="prev-btn" onclick="openFullViewer('${esc(path)}')">open in viewer</button>
-    </div>`;
+// ─── CatGroup Component ───────────────────────────────────────
+function CatGroup({label, files, root, badge, style, startOpen}) {
+  const [isOpen, setOpen] = useState(!!startOpen);
+  const dirGroups = useMemo(()=>groupByDir(files,root),[files,root]);
+  const renderFiles = () => {
+    if(dirGroups.length===1 && dirGroups[0][1].length<=3) {
+      return dirGroups[0][1].map(f=>html`<${FileItem} key=${f.path} file=${f}/>`);
+    }
+    return dirGroups.map(([dir, dfiles])=>{
+      if(dfiles.length===1) {
+        return html`<div style="margin-left:0.5rem"><${FileItem} key=${dfiles[0].path} file=${dfiles[0]} dirPrefix=${dir}/></div>`;
+      }
+      return html`<${DirGroup} key=${dir} dir=${dir} files=${dfiles}/>`;
+    });
+  };
+  return html`<div class="cat-group" style=${style||''}>
+    <button class=${'cat-head'+(isOpen?' open':'')} onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}>
+      <span class="carrow">\u25B6</span>
+      <span>${esc(label)}</span> <span class="badge">${badge||files.length}</span>
+    </button>
+    ${isOpen && html`<div style="padding-left:0.8rem">${renderFiles()}</div>`}
+  </div>`;
+}
+function DirGroup({dir, files}) {
+  const [isOpen, setOpen] = useState(false);
+  return html`<div class="cat-group" style="margin-left:0.5rem">
+    <button class=${'cat-head'+(isOpen?' open':'')} onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}>
+      <span class="carrow">\u25B6</span>
+      <span style="color:var(--fg2)">${esc(dir)}</span> <span class="badge">${files.length}</span>
+    </button>
+    ${isOpen && html`<div style="padding-left:0.8rem">${files.map(f=>html`<${FileItem} key=${f.path} file=${f}/>`)}</div>`}
+  </div>`;
 }
 
-function collapseInline(btn, path) {
-  const el = btn.closest('.inline-preview');
-  const text = inlineCache[path];
-  if(!text || !el) return;
-  renderInlinePreview(el, text, path);
+// ─── ProcRow Component ─────────────────────────────────────────
+function ProcRow({proc: p, maxMem}) {
+  const mem=parseFloat(p.mem_mb)||0, pct=Math.min(mem/maxMem*100,100);
+  const barColor=(p.anomalies&&p.anomalies.length)?'var(--red)':mem>200?'var(--orange)':'var(--green)';
+  return html`<div class="prow">
+    <span class="pid">${p.pid}</span>
+    <span class="pname" title=${p.cmdline}>${esc(p.name)}</span>
+    <span class="pcpu">${p.cpu_pct}%</span>
+    <div class="mem-bar"><div class="mem-bar-fill" style=${'width:'+pct.toFixed(0)+'%;background:'+barColor}></div></div>
+    <span class="pmem">${p.mem_mb}MB</span>
+    ${p.anomalies&&p.anomalies.length && html`<span class="anomaly-icon" title=${p.anomalies.join('; ')}>\u26A0</span>`}
+  </div>`;
 }
 
-function openFullViewer(path) {
-  const text = inlineCache[path];
-  if(text) { showFullViewer(path, text); }
-  else fetchFile(path);
+// ─── ProcSection (within ToolCard) ─────────────────────────────
+function ProcSection({processes, maxMem}) {
+  if(!processes||!processes.length) return null;
+  const totalMem = processes.reduce((a,p)=>a+(parseFloat(p.mem_mb)||0),0);
+  const totalCpu = processes.reduce((a,p)=>a+(parseFloat(p.cpu_pct)||0),0);
+  const byType = {};
+  processes.forEach(p=>{const t=p.process_type||'process';(byType[t]=byType[t]||[]).push(p);});
+  return html`<div class="proc-section">
+    <h3>Processes <span class="badge">${processes.length}</span>
+      <span class="badge">CPU ${totalCpu.toFixed(1)}%</span>
+      <span class="badge">MEM ${totalMem.toFixed(0)}MB</span></h3>
+    ${Object.entries(byType).map(([type,procs])=>{
+      const sorted=procs.sort((a,b)=>(parseFloat(b.mem_mb)||0)-(parseFloat(a.mem_mb)||0));
+      if(Object.keys(byType).length===1) return sorted.map(p=>html`<${ProcRow} key=${p.pid} proc=${p} maxMem=${maxMem}/>`);
+      return html`<div style="margin:0.3rem 0">
+        <div style="font-size:0.72rem;color:var(--fg2);padding:0.2rem 0;text-transform:uppercase;letter-spacing:0.03em">${esc(type)}</div>
+        ${sorted.map(p=>html`<${ProcRow} key=${p.pid} proc=${p} maxMem=${maxMem}/>`)}
+      </div>`;
+    })}
+  </div>`;
 }
 
-// === Full File Viewer ===
-const PREVIEW_LINES = 15;
-let fvExpanded = false;
-let fvLines = [];
-
-async function fetchFile(path) {
-  let text = inlineCache[path];
-  if(!text) {
-    const res = await fetch('/api/file?path='+encodeURIComponent(path));
-    if(!res.ok){alert('Cannot read: '+res.statusText);return;}
-    text = await res.text();
-    inlineCache[path] = text;
-  }
-  showFullViewer(path, text);
+// ─── ToolCard Component ────────────────────────────────────────
+function ToolCard({tool: t, root}) {
+  const [isOpen, setOpen] = useState(false);
+  const c = COLORS[t.tool]||'#94a3b8';
+  const tok = t.files.reduce((a,f)=>a+f.tokens,0);
+  const anom = t.processes.filter(p=>p.anomalies&&p.anomalies.length).length;
+  const maxMem = useMemo(()=>Math.max(...t.processes.map(p=>parseFloat(p.mem_mb)||0),100),[t.processes]);
+  const cats = useMemo(()=>{
+    const c={};
+    t.files.forEach(f=>{const k=f.kind||'other';(c[k]=c[k]||[]).push(f);});
+    return Object.keys(c).sort((a,b)=>{
+      const ai=CAT_ORDER.indexOf(a),bi=CAT_ORDER.indexOf(b);
+      return (ai<0?99:ai)-(bi<0?99:bi);
+    }).map(k=>({kind:k, files:c[k]}));
+  },[t.files]);
+  const cls = 'tcard'+(isOpen?' open':'')+(anom?' has-anomaly':'');
+  return html`<div class=${cls}>
+    <button class="tcard-head" onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}>
+      <span class="arrow">\u25B6</span>
+      <h2><span class="dot" style=${'background:'+c}></span>${esc(t.label)}</h2>
+      <span class="badge">${t.files.length} files</span>
+      <span class="badge">${fmtK(tok)} tok</span>
+      ${t.processes.length>0 && html`<span class="badge">${t.processes.length} proc</span>`}
+      ${t.mcp_servers.length>0 && html`<span class="badge">${t.mcp_servers.length} MCP</span>`}
+      ${anom>0 && html`<span class="badge warn">${anom} anomaly</span>`}
+    </button>
+    ${isOpen && html`<div class="tcard-body">
+      ${cats.map(({kind,files})=>html`<${CatGroup} key=${kind} label=${kind} files=${files} root=${root}/>`)}
+      <${ProcSection} processes=${t.processes} maxMem=${maxMem}/>
+      ${t.mcp_servers.length>0 && html`<div class="proc-section"><h3>MCP Servers</h3>
+        ${t.mcp_servers.map(m=>html`<div class="fitem" style="cursor:default">
+          <span class="fpath" style="color:var(--green)">${esc(m.name)}</span>
+          <span class="fmeta">${esc((m.config||{}).command||'')} ${((m.config||{}).args||[]).join(' ').slice(0,60)}</span>
+        </div>`)}</div>`}
+    </div>`}
+  </div>`;
 }
 
-function showFullViewer(path, text) {
-  fullContent = text;
-  fvLines = text.split('\n');
-  fvExpanded = false;
-  document.getElementById('fv-path').textContent=path;
-  let meta='';
-  if(snap){
-    for(const t of snap.tools) for(const f of t.files) if(f.path===path){
-      meta=`${f.kind} | ${fmtSz(f.size)} | ~${fmtK(f.tokens)}tok | scope:${f.scope||'?'} | sent_to_llm:${f.sent_to_llm||'?'} | loaded:${f.loaded_when||'?'}`;break;}
-    if(!meta) for(const m of snap.agent_memory) if(m.file===path){
-      meta=`${m.source} | ${m.profile} | ${m.tokens}tok | ${m.lines}ln`;break;}
-  }
-  document.getElementById('fv-meta').textContent=meta;
-  renderFileContent();
-  document.getElementById('fv').classList.remove('hidden');
+// ─── TabOverview ───────────────────────────────────────────────
+function TabOverview() {
+  const {snap: s} = useContext(SnapContext);
+  const tools = useMemo(()=>{
+    if(!s) return [];
+    return s.tools.filter(t=>t.tool!=='aictl'&&(t.files.length||t.processes.length||t.mcp_servers.length))
+      .sort((a,b)=>(b.files.length+b.processes.length+b.mcp_servers.length)-(a.files.length+a.processes.length+a.mcp_servers.length));
+  },[s]);
+  if(!s) return html`<p style="color:var(--fg2)">Loading...</p>`;
+  if(!tools.length) return html`<p style="color:var(--fg2)">No AI tool resources found.</p>`;
+  return html`<div class="tool-grid">
+    ${tools.map(t=>html`<${ToolCard} key=${t.tool} tool=${t} root=${s.root}/>`)}
+  </div>`;
 }
 
-function renderFileContent() {
-  const body = document.getElementById('fv-body');
-  const info = document.getElementById('fv-info');
-  const toggle = document.getElementById('fv-toggle');
-  const total = fvLines.length;
-  const canCollapse = total > PREVIEW_LINES * 2;
-
-  if(!canCollapse || fvExpanded) {
-    body.innerHTML = buildLineTable(fvLines, 1);
-    info.textContent = `${total} lines`;
-    toggle.style.display = canCollapse ? '' : 'none';
-    toggle.textContent = 'Collapse';
-  } else {
-    const head = fvLines.slice(0, PREVIEW_LINES);
-    const tail = fvLines.slice(-PREVIEW_LINES);
-    const hidden = total - PREVIEW_LINES*2;
-    body.innerHTML =
-      buildLineTable(head, 1) +
-      `<div class="fv-ellipsis" onclick="toggleFullContent()">` +
-      `&#9660; ${hidden} more lines &#9660;</div>` +
-      buildLineTable(tail, total - PREVIEW_LINES + 1);
-    info.textContent = `${total} lines (showing ${PREVIEW_LINES*2} of ${total})`;
-    toggle.style.display = '';
-    toggle.textContent = 'Show all';
-  }
+// ─── TabProcesses ──────────────────────────────────────────────
+function ProcToolGroup({tool, label, procs, maxMem}) {
+  const [isOpen, setOpen] = useState(false);
+  const c = COLORS[tool]||'#94a3b8';
+  const totalMem = procs.reduce((a,p)=>a+(parseFloat(p.mem_mb)||0),0);
+  const totalCpu = procs.reduce((a,p)=>a+(parseFloat(p.cpu_pct)||0),0);
+  const anomCount = procs.filter(p=>p.anomalies&&p.anomalies.length).length;
+  const byType = useMemo(()=>{
+    const bt={};
+    procs.forEach(p=>{const t=p.process_type||'process';(bt[t]=bt[t]||[]).push(p);});
+    return bt;
+  },[procs]);
+  return html`<div class="cat-group" style="margin-bottom:0.5rem">
+    <button class=${'cat-head'+(isOpen?' open':'')} onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}
+      style="padding:0.4rem 0.5rem;font-size:0.85rem">
+      <span class="carrow">\u25B6</span>
+      <span class="dot" style=${'background:'+c}></span>
+      <strong>${esc(label)}</strong>
+      <span class="badge">${procs.length} proc</span>
+      <span class="badge">CPU ${totalCpu.toFixed(1)}%</span>
+      <span class="badge">MEM ${totalMem.toFixed(0)}MB</span>
+      ${anomCount>0 && html`<span class="badge warn">${anomCount} anomaly</span>`}
+    </button>
+    ${isOpen && html`<div style="padding:0 0.3rem">
+      ${Object.entries(byType).map(([type,typeProcs])=>{
+        const sorted=typeProcs.sort((a,b)=>(parseFloat(b.mem_mb)||0)-(parseFloat(a.mem_mb)||0));
+        if(Object.keys(byType).length===1) return sorted.map(p=>html`<${ProcRow} key=${p.pid} proc=${p} maxMem=${maxMem}/>`);
+        return html`<div style="margin:0.3rem 0">
+          <div style="font-size:0.72rem;color:var(--fg2);padding:0.2rem 0;text-transform:uppercase;letter-spacing:0.03em">${esc(type)}</div>
+          ${sorted.map(p=>html`<${ProcRow} key=${p.pid} proc=${p} maxMem=${maxMem}/>`)}
+        </div>`;
+      })}
+    </div>`}
+  </div>`;
+}
+function TabProcesses() {
+  const {snap: s} = useContext(SnapContext);
+  if(!s) return null;
+  const byTool = [];
+  s.tools.forEach(t=>{ if(t.processes.length) byTool.push({tool:t.tool, label:t.label, procs:t.processes}); });
+  if(!byTool.length) return html`<p style="color:var(--fg2)">No processes detected.</p>`;
+  const allProcs = byTool.flatMap(g=>g.procs);
+  const maxMem = Math.max(...allProcs.map(p=>parseFloat(p.mem_mb)||0),100);
+  return html`${byTool.map(({tool,label,procs})=>
+    html`<${ProcToolGroup} key=${tool} tool=${tool} label=${label} procs=${procs} maxMem=${maxMem}/>`)}`;
 }
 
-function buildLineTable(lines, startNum) {
-  return '<div class="fv-lines">' + lines.map((line, i) =>
-    `<div class="fv-line"><span class="fv-ln">${startNum+i}</span><span class="fv-code">${esc(line)||' '}</span></div>`
-  ).join('') + '</div>';
+// ─── TabMcp ────────────────────────────────────────────────────
+function TabMcp() {
+  const {snap: s} = useContext(SnapContext);
+  if(!s||!s.mcp_detail.length) return html`<p style="color:var(--fg2)">No MCP servers configured.</p>`;
+  return html`<table role="table" aria-label="MCP Servers">
+    <thead><tr><th></th><th>Server</th><th>Tool</th><th>Transport</th><th>Endpoint</th><th>Status</th></tr></thead>
+    <tbody>${s.mcp_detail.map(m=>html`<tr key=${m.name+m.tool}>
+      <td><span class="status-dot" style=${'background:'+SC[m.status]||'var(--fg2)'}></span></td>
+      <td>${esc(m.name)}</td><td>${esc(m.tool)}</td><td>${esc(m.transport)}</td>
+      <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title=${m.endpoint}>${esc((m.endpoint||'').slice(0,80))}</td>
+      <td>${m.status}${m.pid?' (PID '+m.pid+')':''}</td>
+    </tr>`)}</tbody>
+  </table>`;
 }
 
-function toggleFullContent() { fvExpanded = !fvExpanded; renderFileContent(); }
-function closeViewer() { document.getElementById('fv').classList.add('hidden'); }
-
-// === Budget ===
-async function loadBudget() {
-  const el=document.getElementById('tab-budget');
-  try{const r=await fetch('/api/budget');const b=await r.json();
-  el.innerHTML=`<div class="budget-card"><h3 style="margin-bottom:0.5rem;color:var(--accent)">Token Budget Analysis</h3>
-    <div class="brow"><span class="blabel">Always loaded (every call)</span><span class="bval">~${fmtK(b.always_loaded_tokens)} tokens</span></div>
-    <div class="brow"><span class="blabel">On-demand (when invoked)</span><span class="bval">~${fmtK(b.on_demand_tokens)} tokens</span></div>
-    <div class="brow"><span class="blabel">Conditional (file-matched)</span><span class="bval">~${fmtK(b.conditional_tokens)} tokens</span></div>
-    <div class="brow"><span class="blabel">Cacheable portion</span><span class="bval">~${fmtK(b.cacheable_tokens)} tokens</span></div>
-    <div class="brow"><span class="blabel">Survives compaction</span><span class="bval">~${fmtK(b.survives_compaction_tokens)} tokens</span></div>
-    <div class="brow" style="font-weight:700"><span>Total potential overhead</span><span class="bval" style="color:var(--accent)">~${fmtK(b.total_potential_tokens)} tokens</span></div>
-    <div class="brow"><span class="blabel">Files never sent to LLM</span><span class="bval">${b.never_sent_count}</span></div>
-  </div>`;}catch(e){el.innerHTML='<p style="color:var(--red)">Failed to load budget.</p>';}
+// ─── TabMemory ─────────────────────────────────────────────────
+function MemItem({mem}) {
+  const [showPreview, setShowPreview] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [text, setText] = useState(null);
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const ctx = useContext(SnapContext);
+  const name = mem.file.split('/').pop();
+  const toggle = useCallback(async ()=>{
+    if(showPreview) { setShowPreview(false); return; }
+    setShowPreview(true);
+    if(fileCache.has(mem.file)) { setText(fileCache.get(mem.file)); return; }
+    setLoading(true); setError(null);
+    try { const t=await fetchFileContent(mem.file); setText(t); }
+    catch(e) { setError(e.message); }
+    finally { setLoading(false); }
+  },[showPreview, mem.file]);
+  const numbered = (arr, start) => arr.map((l,i)=>
+    html`<span class="ln">${start+i}</span>${esc(l)||' '}\n`);
+  const renderPreview = () => {
+    if(loading) return html`<span style="color:var(--fg2)">loading...</span>`;
+    if(error) return html`<span style="color:var(--red)">${error}</span>`;
+    if(!text) return null;
+    const lines = text.split('\n'), total = lines.length;
+    if(total<=TAIL_LINES*3||expanded) {
+      return html`${numbered(lines,1)}
+        <div class="prev-actions">
+          ${expanded && html`<button class="prev-btn" onClick=${()=>setExpanded(false)}>collapse</button>`}
+          <button class="prev-btn" onClick=${()=>ctx.openViewer(mem.file)}>open in viewer</button>
+        </div>`;
+    }
+    const tail=lines.slice(-TAIL_LINES), tailStart=total-TAIL_LINES+1;
+    return html`${numbered(tail,tailStart)}
+      <div class="prev-actions">
+        <button class="prev-btn" onClick=${()=>setExpanded(true)}>show all (${total} lines)</button>
+        <button class="prev-btn" onClick=${()=>ctx.openViewer(mem.file)}>open in viewer</button>
+      </div>`;
+  };
+  return html`<div>
+    <button class="fitem" style="border-top:1px solid var(--border);padding:0.2rem 0.8rem" onClick=${toggle}
+      aria-expanded=${showPreview} title=${mem.file}>
+      <span class="fpath">${esc(name)}</span>
+      <span class="fmeta">${mem.tokens}tok ${mem.lines}ln</span>
+    </button>
+    ${showPreview && html`<div class="inline-preview" style="margin:0 0.8rem 0.4rem">${renderPreview()}</div>`}
+  </div>`;
+}
+function MemProfileGroup({profile, items}) {
+  const [isOpen, setOpen] = useState(items.length<=5);
+  const profTok = items.reduce((a,m)=>a+m.tokens,0);
+  return html`<div class="cat-group" style="margin:0 0.5rem">
+    <button class=${'cat-head'+(isOpen?' open':'')} onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}>
+      <span class="carrow">\u25B6</span>
+      <span style="color:var(--orange);font-weight:600">${esc(profile)}</span>
+      <span class="badge">${items.length} files</span>
+      <span class="badge">${fmtK(profTok)} tok</span>
+    </button>
+    ${isOpen && html`<div>${items.map(m=>html`<${MemItem} key=${m.file} mem=${m}/>`)}</div>`}
+  </div>`;
+}
+function MemSourceGroup({source, entries}) {
+  const [isOpen, setOpen] = useState(false);
+  const byProfile = useMemo(()=>{
+    const bp={};
+    entries.forEach(m=>{(bp[m.profile]=bp[m.profile]||[]).push(m);});
+    return Object.entries(bp);
+  },[entries]);
+  return html`<div class="mem-group">
+    <button class=${'mem-group-head'+(isOpen?' open':'')} onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}>
+      <span class="carrow">\u25B6</span>
+      ${esc(MEM_LABELS[source]||source)} <span class="badge">${entries.length}</span>
+      <span class="badge">${fmtK(entries.reduce((a,m)=>a+m.tokens,0))} tok</span>
+    </button>
+    ${isOpen && html`<div>${byProfile.map(([prof,items])=>
+      html`<${MemProfileGroup} key=${prof} profile=${prof} items=${items}/>`)}</div>`}
+  </div>`;
+}
+function TabMemory() {
+  const {snap: s} = useContext(SnapContext);
+  if(!s||!s.agent_memory.length) return html`<p style="color:var(--fg2)">No agent memory found.</p>`;
+  const groups = useMemo(()=>{
+    const g={};
+    s.agent_memory.forEach(m=>{(g[m.source]=g[m.source]||[]).push(m);});
+    return Object.entries(g);
+  },[s.agent_memory]);
+  return html`${groups.map(([src,entries])=>
+    html`<${MemSourceGroup} key=${src} source=${src} entries=${entries}/>`)}`;
 }
 
-// === Helpers ===
-function fmtK(n){return n>=1000?(n/1000).toFixed(1)+'k':''+n;}
-function fmtSz(n){if(n<1024)return n+'B';if(n<1048576)return(n/1024).toFixed(1)+'KB';return(n/1048576).toFixed(1)+'MB';}
-function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
-function relPath(p,root){if(p.startsWith(root+'/'))return p.slice(root.length+1);return p.replace(/^\/Users\/[^/]+/,'~');}
+// ─── TabBudget ─────────────────────────────────────────────────
+function TabBudget() {
+  const [budget, setBudget] = useState(null);
+  const [error, setError] = useState(false);
+  useEffect(()=>{
+    fetch('/api/budget').then(r=>r.json()).then(setBudget).catch(()=>setError(true));
+  },[]);
+  if(error) return html`<p style="color:var(--red)">Failed to load budget.</p>`;
+  if(!budget) return html`<p style="color:var(--fg2)">Loading...</p>`;
+  const rows = [
+    ['Always loaded (every call)', '~'+fmtK(budget.always_loaded_tokens)+' tokens'],
+    ['On-demand (when invoked)', '~'+fmtK(budget.on_demand_tokens)+' tokens'],
+    ['Conditional (file-matched)', '~'+fmtK(budget.conditional_tokens)+' tokens'],
+    ['Cacheable portion', '~'+fmtK(budget.cacheable_tokens)+' tokens'],
+    ['Survives compaction', '~'+fmtK(budget.survives_compaction_tokens)+' tokens'],
+  ];
+  return html`<div class="budget-card">
+    <h3 style="margin-bottom:0.5rem;color:var(--accent)">Token Budget Analysis</h3>
+    ${rows.map(([l,v])=>html`<div class="brow"><span class="blabel">${l}</span><span class="bval">${v}</span></div>`)}
+    <div class="brow" style="font-weight:700">
+      <span>Total potential overhead</span>
+      <span class="bval" style="color:var(--accent)">~${fmtK(budget.total_potential_tokens)} tokens</span>
+    </div>
+    <div class="brow"><span class="blabel">Files never sent to LLM</span><span class="bval">${budget.never_sent_count}</span></div>
+  </div>`;
+}
 
-// === Init ===
-connectSSE();
+// ─── FileViewer Component ──────────────────────────────────────
+function FileViewer({path, onClose}) {
+  const {snap: s} = useContext(SnapContext);
+  const [text, setText] = useState(null);
+  const [expanded, setExpanded] = useState(false);
+  const [error, setError] = useState(null);
+  useEffect(()=>{
+    if(!path) return;
+    setExpanded(false); setError(null);
+    if(fileCache.has(path)) { setText(fileCache.get(path)); return; }
+    fetchFileContent(path).then(setText).catch(e=>setError(e.message));
+  },[path]);
+  if(!path) return null;
+  const meta = useMemo(()=>{
+    if(!s) return '';
+    for(const t of s.tools) for(const f of t.files) if(f.path===path)
+      return (f.kind||'')+' | '+fmtSz(f.size)+' | ~'+fmtK(f.tokens)+'tok | scope:'+(f.scope||'?')+' | sent_to_llm:'+(f.sent_to_llm||'?')+' | loaded:'+(f.loaded_when||'?');
+    for(const m of s.agent_memory) if(m.file===path)
+      return m.source+' | '+m.profile+' | '+m.tokens+'tok | '+m.lines+'ln';
+    return '';
+  },[s,path]);
+  const lines = text ? text.split('\n') : [];
+  const total = lines.length;
+  const canCollapse = total > PREVIEW_LINES*2;
+  const buildLines = (arr, start) => arr.map((line,i)=>
+    html`<div class="fv-line"><span class="fv-ln">${start+i}</span><span class="fv-code">${esc(line)||' '}</span></div>`);
+  return html`<div class="fv" role="dialog" aria-label="File viewer">
+    <div class="fv-head">
+      <span class="path">${path}</span>
+      <button onClick=${onClose} aria-label="Close file viewer">Close (Esc)</button>
+    </div>
+    <div class="fv-meta">${meta}</div>
+    <div class="fv-body">
+      ${error ? html`<p style="color:var(--red);padding:1rem">${error}</p>` :
+        !text ? html`<p style="color:var(--fg2);padding:1rem">Loading...</p>` :
+        (!canCollapse||expanded) ?
+          html`<div class="fv-lines">${buildLines(lines,1)}</div>` :
+          html`<div class="fv-lines">${buildLines(lines.slice(0,PREVIEW_LINES),1)}</div>
+            <div class="fv-ellipsis" onClick=${()=>setExpanded(true)}>\u25BC ${total-PREVIEW_LINES*2} more lines \u25BC</div>
+            <div class="fv-lines">${buildLines(lines.slice(-PREVIEW_LINES),total-PREVIEW_LINES+1)}</div>`}
+    </div>
+    <div class="fv-toolbar">
+      <span>${total} lines${canCollapse&&!expanded?' (showing '+PREVIEW_LINES*2+' of '+total+')':''}</span>
+      ${canCollapse && html`<button onClick=${()=>setExpanded(!expanded)}>${expanded?'Collapse':'Show all'}</button>`}
+    </div>
+  </div>`;
+}
+
+// ─── App Component ─────────────────────────────────────────────
+function App() {
+  const [snap, setSnap] = useState(null);
+  const [history, setHistory] = useState(null);
+  const [connected, setConnected] = useState(false);
+  const [activeTab, setActiveTab] = useState('overview');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [theme, setTheme] = useState(()=>{
+    try { return localStorage.getItem('aictl-theme')||'auto'; } catch(e){ return 'auto'; }
+  });
+  const [viewerPath, setViewerPath] = useState(null);
+  const searchRef = useRef(null);
+
+  // Theme sync
+  useEffect(()=>{
+    document.documentElement.setAttribute('data-theme', theme);
+    try { localStorage.setItem('aictl-theme', theme); } catch(e){}
+  },[theme]);
+  const cycleTheme = useCallback(()=>{
+    setTheme(t=>THEMES[(THEMES.indexOf(t)+1)%THEMES.length]);
+  },[]);
+
+  // SSE connection with exponential backoff
+  useEffect(()=>{
+    let es, retryDelay=1000, closed=false;
+    function connect(){
+      if(closed) return;
+      es = new EventSource('/api/stream');
+      es.onmessage = e => {
+        const data = JSON.parse(e.data);
+        setSnap(data);
+        setConnected(true);
+        retryDelay = 1000;
+        // Append to history client-side
+        setHistory(prev => {
+          if(!prev) return prev;
+          const h = {...prev};
+          Object.keys(h).forEach(k=>{ h[k] = [...h[k]]; });
+          h.ts.push(data.timestamp);
+          h.files.push(data.total_files);
+          h.tokens.push(data.total_tokens);
+          h.cpu.push(Math.round(data.total_cpu*10)/10);
+          h.mem_mb.push(Math.round(data.total_mem_mb*10)/10);
+          h.mcp.push(data.total_mcp_servers);
+          h.mem_tokens.push(data.total_memory_tokens);
+          // Keep max 360 points
+          if(h.ts.length>360) Object.keys(h).forEach(k=>h[k].shift());
+          return h;
+        });
+      };
+      es.onerror = () => {
+        setConnected(false);
+        es.close();
+        if(!closed) setTimeout(connect, retryDelay);
+        retryDelay = Math.min(retryDelay*2, 30000);
+      };
+    }
+    connect();
+    fetch('/api/history').then(r=>r.json()).then(setHistory).catch(()=>{});
+    return ()=>{ closed=true; if(es) es.close(); };
+  },[]);
+
+  // Keyboard shortcuts
+  useEffect(()=>{
+    const handler = e => {
+      if(e.key==='Escape') setViewerPath(null);
+      if(e.key==='/'&&document.activeElement!==searchRef.current) { e.preventDefault(); searchRef.current?.focus(); }
+      if(e.key>='1'&&e.key<='5'&&document.activeElement!==searchRef.current) {
+        setActiveTab(TABS[parseInt(e.key)-1].id);
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return ()=>document.removeEventListener('keydown', handler);
+  },[]);
+
+  // Budget re-fetch on tab switch handled by TabBudget's own useEffect
+
+  const openViewer = useCallback((path)=>setViewerPath(path),[]);
+
+  // Search filter — applied to tools before rendering
+  const filteredSnap = useMemo(()=>{
+    if(!snap || !searchQuery) return snap;
+    const q = searchQuery.toLowerCase();
+    return {...snap, tools: snap.tools.filter(t=>
+      t.label.toLowerCase().includes(q) ||
+      t.files.some(f=>f.path.toLowerCase().includes(q))
+    )};
+  },[snap, searchQuery]);
+
+  const ctxValue = useMemo(()=>({snap: filteredSnap, history, openViewer}),[filteredSnap, history, openViewer]);
+
+  const tabContent = {
+    overview: html`<${TabOverview}/>`,
+    procs: html`<${TabProcesses}/>`,
+    mcp: html`<${TabMcp}/>`,
+    memory: html`<${TabMemory}/>`,
+    budget: html`<${TabBudget} key=${'budget-'+activeTab}/>`,
+  };
+
+  return html`<${SnapContext.Provider} value=${ctxValue}>
+    <div class="main-wrap">
+      <header role="banner">
+        <h1>aictl <span>live dashboard</span></h1>
+        <div class="hdr-right">
+          <input type="text" ref=${searchRef} class="search-box" placeholder="Filter... ( / )"
+            aria-label="Filter tools" value=${searchQuery} onInput=${e=>setSearchQuery(e.target.value)}/>
+          <button class="theme-btn" onClick=${cycleTheme} aria-label="Toggle theme: ${theme}"
+            title="Theme: ${theme}">${THEME_ICONS[theme]}</button>
+          <span class=${'conn '+(connected?'ok':'err')}>${connected?'live':'reconnecting...'}</span>
+        </div>
+      </header>
+      <main class="main">
+        <div style="position:sticky;top:0;z-index:50;background:var(--bg);padding:0.6rem 0 0.2rem">
+          <${StatBar} snap=${snap} history=${history}/>
+          <${ResourceBar} snap=${snap}/>
+        </div>
+        <nav class="tab-nav" role="tablist" aria-label="Dashboard tabs">
+          ${TABS.map(t=>html`<button key=${t.id} class="tab-btn" role="tab"
+            aria-selected=${activeTab===t.id} onClick=${()=>setActiveTab(t.id)}
+            title="Shortcut: ${t.key}">${t.label} <span class="kbd">${t.key}</span></button>`)}
+        </nav>
+        <div role="tabpanel" aria-label=${TABS.find(t=>t.id===activeTab)?.label}>
+          ${tabContent[activeTab]}
+        </div>
+      </main>
+    </div>
+    <${FileViewer} path=${viewerPath} onClose=${()=>setViewerPath(null)}/>
+  </${SnapContext.Provider}>`;
+}
+
+// ─── Mount ─────────────────────────────────────────────────────
+preactRender(html`<${App}/>`, document.getElementById('app'));
 </script>
 </body>
 </html>
