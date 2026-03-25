@@ -319,19 +319,24 @@ _TOOL_COLORS = {
 }
 
 _DASHBOARD_HTML = r"""<!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="auto">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>aictl live dashboard</title>
 <style>
-:root {
-  --bg: #0f172a; --bg2: #1e293b; --bg3: #0f172a; --fg: #e2e8f0; --fg2: #94a3b8;
+[data-theme="dark"], [data-theme="auto"] {
+  --bg: #0f172a; --bg2: #1e293b; --bg3: #162032; --fg: #e2e8f0; --fg2: #94a3b8;
   --accent: #38bdf8; --border: #334155;
   --green: #34d399; --red: #f87171; --orange: #fb923c; --yellow: #fbbf24;
 }
+[data-theme="light"] {
+  --bg: #f8fafc; --bg2: #ffffff; --bg3: #f1f5f9; --fg: #1e293b; --fg2: #64748b;
+  --accent: #0284c7; --border: #e2e8f0;
+  --green: #059669; --red: #dc2626; --orange: #ea580c; --yellow: #d97706;
+}
 @media (prefers-color-scheme: light) {
-  :root {
+  [data-theme="auto"] {
     --bg: #f8fafc; --bg2: #ffffff; --bg3: #f1f5f9; --fg: #1e293b; --fg2: #64748b;
     --accent: #0284c7; --border: #e2e8f0;
     --green: #059669; --red: #dc2626; --orange: #ea580c; --yellow: #d97706;
@@ -339,18 +344,30 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 }
 * { margin:0; padding:0; box-sizing:border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
-  background: var(--bg); color: var(--fg); line-height: 1.5; font-size: 0.85rem; }
+  background: var(--bg); color: var(--fg); line-height: 1.5; font-size: 0.85rem;
+  transition: background 0.2s, color 0.2s; }
 
 /* Layout */
 .dash { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 header { display: flex; justify-content: space-between; align-items: center;
-  padding: 0.5rem 1.2rem; background: var(--bg2); border-bottom: 1px solid var(--border); flex-shrink: 0; }
-header h1 { font-size: 1.1rem; }
+  padding: 0.4rem 1.2rem; background: var(--bg2); border-bottom: 1px solid var(--border); flex-shrink: 0; gap: 0.8rem; }
+header h1 { font-size: 1.1rem; white-space: nowrap; }
 header h1 span { color: var(--fg2); font-weight: 400; }
+.hdr-right { display: flex; align-items: center; gap: 0.5rem; }
 .conn { font-size: 0.7rem; padding: 0.15rem 0.5rem; border-radius: 4px; }
 .conn.ok { background: var(--green); color: #000; }
 .conn.err { background: var(--red); color: #fff; }
-.main { flex: 1; overflow: auto; padding: 1rem 1.2rem; }
+.search-box { background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+  padding: 0.25rem 0.5rem; color: var(--fg); font-size: 0.78rem; width: 200px; outline: none; }
+.search-box:focus { border-color: var(--accent); }
+.search-box::placeholder { color: var(--fg2); }
+.theme-btn { background: none; border: 1px solid var(--border); border-radius: 4px;
+  padding: 0.2rem 0.5rem; cursor: pointer; font-size: 0.85rem; color: var(--fg); }
+.theme-btn:hover { background: var(--border); }
+.sticky-stats { position: sticky; top: 0; z-index: 50; background: var(--bg); padding: 0.6rem 0 0.2rem; }
+.main { flex: 1; overflow: auto; padding: 0.6rem 1.2rem; }
+.kbd { font-size: 0.6rem; color: var(--fg2); padding: 0.1rem 0.3rem; border: 1px solid var(--border);
+  border-radius: 2px; font-family: monospace; margin-left: 0.2rem; }
 
 /* Stat cards */
 .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
@@ -358,7 +375,12 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 .stat-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
   padding: 0.4rem 0.6rem; text-align: center; }
 .stat-card .label { color: var(--fg2); font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em; }
-.stat-card .value { font-size: 1.2rem; font-weight: 700; color: var(--accent); }
+.stat-card .value { font-size: 1.2rem; font-weight: 700; color: var(--accent); transition: color 0.3s; }
+.stat-card .value.changed { color: var(--orange); }
+
+/* Smooth update flash */
+@keyframes flash { 0%{opacity:1} 50%{opacity:0.5} 100%{opacity:1} }
+.flash { animation: flash 0.4s ease; }
 
 /* Resource bar */
 .rbar { display: flex; height: 6px; border-radius: 3px; overflow: hidden;
@@ -374,8 +396,12 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 .tab-panel.active { display: block; }
 
 /* Tool grid — overview cards collapsed */
-.tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 0.6rem; }
-.tcard { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0.6rem; }
+.tcard { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
+  transition: border-color 0.2s, box-shadow 0.2s; }
+.tcard:hover { border-color: var(--accent); }
+.tcard.has-anomaly { border-color: var(--red); box-shadow: 0 0 8px rgba(248,113,113,0.15); }
+.tcard.hidden-by-search { display: none; }
 .tcard-head { padding: 0.6rem 0.8rem; cursor: pointer; display: flex; align-items: center; gap: 0.5rem; }
 .tcard-head:hover { background: var(--bg3); }
 .tcard-head h2 { font-size: 0.9rem; flex: 1; display: flex; align-items: center; gap: 0.4rem; }
@@ -463,19 +489,25 @@ td { padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }
 <div class="dash">
 <header>
   <h1>aictl <span>live dashboard</span></h1>
-  <span id="conn" class="conn ok">live</span>
+  <div class="hdr-right">
+    <input type="text" id="search" class="search-box" placeholder="Filter... ( / )" />
+    <button class="theme-btn" onclick="cycleTheme()" id="theme-btn" title="Toggle dark/light mode">&#9790;</button>
+    <span id="conn" class="conn ok">live</span>
+  </div>
 </header>
 <div class="main">
 
-<div id="stats" class="stat-grid"></div>
-<div id="rbar" class="rbar"></div>
+<div class="sticky-stats">
+  <div id="stats" class="stat-grid"></div>
+  <div id="rbar" class="rbar"></div>
+</div>
 
 <div class="tab-nav">
-  <button class="tab-btn active" onclick="switchTab('overview',this)">Overview</button>
-  <button class="tab-btn" onclick="switchTab('procs',this)">Processes</button>
-  <button class="tab-btn" onclick="switchTab('mcp',this)">MCP Servers</button>
-  <button class="tab-btn" onclick="switchTab('memory',this)">Memory</button>
-  <button class="tab-btn" onclick="switchTab('budget',this)">Token Budget</button>
+  <button class="tab-btn active" onclick="switchTab('overview',this)">Overview <span class="kbd">1</span></button>
+  <button class="tab-btn" onclick="switchTab('procs',this)">Processes <span class="kbd">2</span></button>
+  <button class="tab-btn" onclick="switchTab('mcp',this)">MCP Servers <span class="kbd">3</span></button>
+  <button class="tab-btn" onclick="switchTab('memory',this)">Memory <span class="kbd">4</span></button>
+  <button class="tab-btn" onclick="switchTab('budget',this)">Token Budget <span class="kbd">5</span></button>
 </div>
 
 <div id="tab-overview" class="tab-panel active"></div>
@@ -509,6 +541,37 @@ const COLORS = {
 };
 const SC = {running:'var(--green)',stopped:'var(--red)',error:'var(--orange)',unknown:'var(--fg2)'};
 let snap = null, fullContent = '', openCards = new Set(), openCats = new Set();
+let prevStats = {};
+
+// === Theme ===
+const themes = ['auto','dark','light'];
+const themeIcons = {auto:'\u263E',dark:'\u263E',light:'\u2600'};
+let themeIdx = 0;
+function cycleTheme() {
+  themeIdx = (themeIdx+1)%themes.length;
+  const t = themes[themeIdx];
+  document.documentElement.setAttribute('data-theme', t);
+  document.getElementById('theme-btn').textContent = themeIcons[t];
+  document.getElementById('theme-btn').title = 'Theme: '+t;
+  try { localStorage.setItem('aictl-theme', t); } catch(e){}
+}
+(function initTheme(){
+  try { const t=localStorage.getItem('aictl-theme'); if(t){themeIdx=themes.indexOf(t);
+    if(themeIdx>=0){document.documentElement.setAttribute('data-theme',t);
+    document.getElementById('theme-btn').textContent=themeIcons[t];}else themeIdx=0;}} catch(e){}
+})();
+
+// === Search ===
+const searchEl = document.getElementById('search');
+searchEl.addEventListener('input', applySearch);
+function applySearch() {
+  const q = searchEl.value.toLowerCase().trim();
+  document.querySelectorAll('.tcard').forEach(card => {
+    if(!q) { card.classList.remove('hidden-by-search'); return; }
+    const text = card.textContent.toLowerCase();
+    card.classList.toggle('hidden-by-search', !text.includes(q));
+  });
+}
 
 // === SSE ===
 function connectSSE() {
@@ -517,6 +580,17 @@ function connectSSE() {
     document.getElementById('conn').className='conn ok'; document.getElementById('conn').textContent='live'; };
   es.onerror = () => { document.getElementById('conn').className='conn err'; document.getElementById('conn').textContent='reconnecting...'; };
 }
+
+// === Keyboard ===
+document.addEventListener('keydown', e => {
+  if(e.key==='Escape') closeViewer();
+  if(e.key==='/' && document.activeElement!==searchEl) { e.preventDefault(); searchEl.focus(); }
+  if(e.key>='1'&&e.key<='5'&&document.activeElement!==searchEl) {
+    const tabs=['overview','procs','mcp','memory','budget'];
+    const btn=document.querySelectorAll('.tab-btn')[parseInt(e.key)-1];
+    if(btn) switchTab(tabs[parseInt(e.key)-1],btn);
+  }
+});
 
 // === Tabs ===
 function switchTab(name, btn) {
@@ -530,14 +604,30 @@ function switchTab(name, btn) {
 
 // === Render ===
 function render(s) { renderStats(s); renderBar(s); renderOverview(s); renderMCP(s); renderMemory(s);
-  if(document.getElementById('tab-procs').classList.contains('active')) renderProcs(s); }
+  if(document.getElementById('tab-procs').classList.contains('active')) renderProcs(s);
+  applySearch(); // re-apply filter after render
+}
 
 function renderStats(s) {
   const c = [['Files',s.total_files],['Tokens',fmtK(s.total_tokens)],['Size',fmtSz(s.total_size)],
     ['Processes',s.total_processes],['CPU',s.total_cpu+'%'],['Proc Mem',fmtSz(s.total_mem_mb*1048576)],
     ['MCP',s.total_mcp_servers],['Agent Mem',fmtK(s.total_memory_tokens)+'t']];
-  document.getElementById('stats').innerHTML = c.map(([l,v])=>
-    `<div class="stat-card"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('');
+  const el = document.getElementById('stats');
+  // First render: build cards
+  if(!el.children.length) {
+    el.innerHTML = c.map(([l,v])=>
+      `<div class="stat-card"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('');
+  } else {
+    // Subsequent renders: only update changed values with flash
+    c.forEach(([l,v],i) => {
+      const valEl = el.children[i]?.querySelector('.value');
+      if(valEl && valEl.textContent !== ''+v) {
+        valEl.textContent = v;
+        valEl.classList.add('flash');
+        setTimeout(()=>valEl.classList.remove('flash'), 500);
+      }
+    });
+  }
 }
 
 function renderBar(s) {
@@ -552,12 +642,14 @@ function renderOverview(s) {
   const el = document.getElementById('tab-overview');
   const tools = s.tools.filter(t => t.tool!=='aictl' && (t.files.length||t.processes.length||t.mcp_servers.length));
   if(!tools.length){el.innerHTML='<p style="color:var(--fg2)">No AI tool resources found.</p>';return;}
+  // Sort by weight: files + processes + MCP, heaviest first
+  tools.sort((a,b) => (b.files.length+b.processes.length+b.mcp_servers.length)-(a.files.length+a.processes.length+a.mcp_servers.length));
   el.innerHTML = '<div class="tool-grid">' + tools.map(t => {
     const c = COLORS[t.tool]||'#94a3b8';
     const isOpen = openCards.has(t.tool);
     const tok = t.files.reduce((a,f)=>a+f.tokens,0);
     const anom = t.processes.filter(p=>p.anomalies&&p.anomalies.length).length;
-    return `<div class="tcard${isOpen?' open':''}" id="tc-${t.tool}">
+    return `<div class="tcard${isOpen?' open':''}${anom?' has-anomaly':''}" id="tc-${t.tool}">
       <div class="tcard-head" onclick="toggleCard('${t.tool}')">
         <h2><span class="dot" style="background:${c}"></span>${esc(t.label)}</h2>
         <span class="badge">${t.files.length} files</span>
@@ -754,7 +846,6 @@ function relPath(p,root){if(p.startsWith(root+'/'))return p.slice(root.length+1)
 
 // === Init ===
 connectSSE();
-document.addEventListener('keydown',e=>{if(e.key==='Escape')closeViewer();});
 </script>
 </body>
 </html>
