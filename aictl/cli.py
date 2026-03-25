@@ -11,6 +11,7 @@ from .commands.plugin import plugin
 from .commands.dashboard import dashboard
 from .commands.serve import serve
 from .commands.monitor import monitor
+from .commands.config_cmd import config
 
 
 @click.group()
@@ -28,3 +29,4 @@ main.add_command(plugin)
 main.add_command(dashboard)
 main.add_command(serve)
 main.add_command(monitor)
+main.add_command(config)
