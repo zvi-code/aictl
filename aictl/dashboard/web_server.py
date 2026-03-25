@@ -610,14 +610,30 @@ function switchTab(name, btn) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
   if(btn) btn.classList.add('active');
-  if(name==='budget') loadBudget();
-  if(name==='procs' && snap) renderProcs(snap);
+  // Render the newly active tab
+  if(!snap) return;
+  if(name==='overview') renderOverview(snap);
+  else if(name==='procs') renderProcs(snap);
+  else if(name==='mcp') renderMCP(snap);
+  else if(name==='memory') renderMemory(snap);
+  else if(name==='budget') loadBudget();
 }
 
 // === Render ===
-function render(s) { renderStats(s); renderBar(s); renderOverview(s); renderMCP(s); renderMemory(s);
-  if(document.getElementById('tab-procs').classList.contains('active')) renderProcs(s);
-  applySearch(); // re-apply filter after render
+function render(s) {
+  renderStats(s);
+  renderBar(s);
+  // Only re-render the active tab to avoid disrupting user interaction
+  const active = document.querySelector('.tab-panel.active');
+  if(active) {
+    const id = active.id;
+    if(id==='tab-overview') renderOverview(s);
+    else if(id==='tab-procs') renderProcs(s);
+    else if(id==='tab-mcp') renderMCP(s);
+    else if(id==='tab-memory') renderMemory(s);
+    // budget tab is on-demand, not refreshed
+  }
+  applySearch();
 }
 
 function renderStats(s) {
@@ -789,6 +805,15 @@ function renderDirTree(dirGroups, s, parentKey) {
     return dirGroups[0][1].map(f => renderFileItem(f)).join('');
   }
   return dirGroups.map(([dir, files]) => {
+    // Single-file dirs: show inline "dir/filename" without collapsible wrapper
+    if(files.length === 1) {
+      const f = files[0];
+      const name = f.path.split('/').pop();
+      return `<div class="fitem" onclick="fetchFile('${esc(f.path)}')" style="margin-left:0.5rem">
+        <span class="fpath" title="${esc(f.path)}"><span style="color:var(--fg2)">${esc(dir)}/</span>${esc(name)}</span>
+        <span class="fmeta">${fmtSz(f.size)}${f.tokens?' ~'+fmtK(f.tokens)+'t':''}</span>
+      </div>`;
+    }
     const dirKey = parentKey + '|' + dir;
     const isOpen = openCats.has(dirKey);
     return `<div class="cat-group${isOpen?' open':''}" style="margin-left:0.5rem">
@@ -810,7 +835,10 @@ function renderFileItem(f) {
 
 function toggleCat(key) {
   if(openCats.has(key)) openCats.delete(key); else openCats.add(key);
-  if(snap) renderOverview(snap);
+  if(!snap) return;
+  // Re-render the tab that owns this key
+  if(key.startsWith('mem|')) renderMemory(snap);
+  else renderOverview(snap);
 }
 
 // === Processes tab (all tools) ===
