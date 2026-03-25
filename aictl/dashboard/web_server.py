@@ -412,9 +412,9 @@ header h1 span { color: var(--fg2); font-weight: 400; }
   padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.65rem; margin-left: 0.2rem; }
 .badge.warn { background: var(--red); color: #fff; }
 .tcard-body { display: none; padding: 0 0.8rem 0.6rem; }
-.tcard.open .tcard-body { display: flex; flex-wrap: wrap; gap: 0.8rem; }
-.tcard-body > .cat-group { flex: 1; min-width: 220px; max-width: 400px; }
-.tcard-body > .proc-section { flex-basis: 100%; }
+.tcard.open .tcard-body { display: block; columns: 3 250px; column-gap: 1rem; }
+.tcard-body > .cat-group { break-inside: avoid; margin-bottom: 0.4rem; }
+.tcard-body > .proc-section { break-inside: avoid; column-span: all; }
 
 /* Category groups */
 .cat-group { margin-top: 0.4rem; }
@@ -744,18 +744,21 @@ function renderToolBody(t, s) {
 
   if(t.processes.length) {
     const maxMem = Math.max(...t.processes.map(p=>parseFloat(p.mem_mb)||0), 100);
-    html += `<div class="proc-section"><h3>Processes</h3>` +
-      t.processes.map(p => {
-        const mem = parseFloat(p.mem_mb)||0;
-        const pct = Math.min(mem/maxMem*100, 100);
-        const barColor = (p.anomalies&&p.anomalies.length)?'var(--red)':mem>200?'var(--orange)':'var(--green)';
-        return `<div class="prow">
-          <span class="pid">${p.pid}</span>
-          <span class="pname" title="${esc(p.cmdline)}">${esc(p.name)}</span>
-          <span class="pcpu">${p.cpu_pct}%</span>
-          <div class="mem-bar"><div class="mem-bar-fill" style="width:${pct.toFixed(0)}%;background:${barColor}"></div></div>
-          <span class="pmem">${p.mem_mb}MB</span>
-          ${p.anomalies&&p.anomalies.length?`<span class="anomaly-icon" title="${esc(p.anomalies.join('; '))}">&#9888;</span>`:''}
+    const totalMem = t.processes.reduce((a,p)=>a+(parseFloat(p.mem_mb)||0),0);
+    const totalCpu = t.processes.reduce((a,p)=>a+(parseFloat(p.cpu_pct)||0),0);
+    // Group by type
+    const byType = {};
+    t.processes.forEach(p => { const tp=p.process_type||'process'; (byType[tp]=byType[tp]||[]).push(p); });
+    html += `<div class="proc-section"><h3>Processes <span class="badge">${t.processes.length}</span> <span class="badge">CPU ${totalCpu.toFixed(1)}%</span> <span class="badge">MEM ${totalMem.toFixed(0)}MB</span></h3>` +
+      Object.entries(byType).map(([type, procs]) => {
+        if(Object.keys(byType).length === 1) {
+          return procs.sort((a,b)=>(parseFloat(b.mem_mb)||0)-(parseFloat(a.mem_mb)||0))
+            .map(p => renderProcRow(p, maxMem)).join('');
+        }
+        return `<div style="margin:0.3rem 0">
+          <div style="font-size:0.72rem;color:var(--fg2);padding:0.2rem 0;text-transform:uppercase;letter-spacing:0.03em">${esc(type)}</div>
+          ${procs.sort((a,b)=>(parseFloat(b.mem_mb)||0)-(parseFloat(a.mem_mb)||0))
+            .map(p => renderProcRow(p, maxMem)).join('')}
         </div>`;
       }).join('') + `</div>`;
   }
