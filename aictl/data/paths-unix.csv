@@ -16,6 +16,8 @@ path,ai_tool,platform,hidden,scope,category,sent_to_llm,approx_tokens,read_write
 ~/.claude/history.jsonl,claude-code,macos/linux,yes,global,transcript,no,0,rw,n/a,n/a,runtime,,Command history,literal,cwd
 ~/.claude/ide/,claude-code,macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,IDE integration state,literal,cwd
 ~/.claude/session-env/,claude-code,macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Session environment snapshots,literal,cwd
+~/.claude/*,claude-code,macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Any file directly under ~/.claude/ (catch-all),literal,cwd
+~/.claude/*/,claude-code,macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Any subdirectory under ~/.claude/ (catch-all),literal,cwd
 ~/.claude/projects/{project}/memory/MEMORY.md,claude-code,macos/linux,yes,project,memory,yes,100-3000,rw,yes,yes,every-call,{project}=path-with-slashes-to-hyphens,Auto-memory entrypoint (first 200 lines loaded),shadow,cwd
 ~/.claude/projects/{project}/memory/{topic}.md,claude-code,macos/linux,yes,project,memory,on-demand,100-1000,rw,yes,yes,on-demand,"{project};{topic}=e.g. debugging,api-conventions",Topic-specific auto-memory files,shadow,cwd
 ~/.claude/projects/{project}/session-{timestamp}.jsonl,claude-code,macos/linux,yes,session,transcript,no,0,rw,n/a,n/a,runtime,{project};{timestamp}=ISO-datetime,Full session transcript (JSON Lines),shadow,cwd
@@ -50,6 +52,7 @@ tmpclaude-{hex}-cwd,claude-code,all,no,session,temp,no,0,rw,no,no,per-bash-call,
 ~/.openai/config.json,openai-api,all,yes,global,config,no,0,rw,n/a,n/a,runtime,,OpenAI API settings,literal,none
 ~/.codex/config.json,codex-cli,all,yes,global,config,no,0,rw,n/a,n/a,session-start,,Codex CLI configuration,literal,git-root
 ~/.codex/instructions.md,codex-cli,all,yes,global,instructions,yes,100-2000,rw,yes,yes,every-call,,Codex CLI custom instructions (now uses AGENTS.md),literal,git-root
+~/.codex/*,codex-cli,all,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Any file under ~/.codex/ (catch-all),literal,git-root
 ~/.gemini/GEMINI.md,gemini-cli,macos/linux,yes,global,instructions,yes,100-2000,rw,yes,yes,every-call,,Global context/instructions for all projects,literal,git-root
 ~/.gemini/settings.json,gemini-cli,macos/linux,yes,global,config,no,0,rw,n/a,n/a,session-start,,"CLI settings (model, MCP servers, context config)",literal,git-root
 ~/.gemini/memory/,gemini-cli,macos/linux,yes,global,memory,on-demand,varies,rw,n/a,n/a,on-demand,,Persistent memory (via save_memory tool),literal,git-root
@@ -71,6 +74,7 @@ $HOME/.copilot/copilot-instructions.md,copilot-cli,all,yes,global,instructions,y
 ~/.copilot/session-state/{session}/plan.md,copilot-cli,macos/linux,yes,session,runtime,no,0,rw,n/a,n/a,runtime,{session}=uuid,Implementation plan (if created),literal,git-root
 ~/.copilot/session-state/{session}/checkpoints/,copilot-cli,macos/linux,yes,session,runtime,no,0,rw,n/a,n/a,on-compaction,{session}=uuid,Context compaction snapshots,literal,git-root
 ~/.copilot/session-state/{session}/files/,copilot-cli,macos/linux,yes,session,temp,no,0,rw,n/a,n/a,runtime,{session}=uuid,Persistent session artifacts,literal,git-root
+~/.copilot/*,copilot-cli,macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Any file under ~/.copilot/ (catch-all),literal,git-root
 ~/.copilot/logs/,copilot-cli,macos/linux,yes,global,logs,no,0,write,n/a,n/a,runtime,,Debug and error logs,literal,git-root
 ~/.config/gh/hosts.yml,copilot-cli,macos/linux,yes,global,credentials,no,0,read,n/a,n/a,session-start,,GitHub CLI authentication tokens,literal,git-root
 {project-root}/.github/copilot-instructions.md,copilot,all,yes,project,instructions,yes,100-5000,rw,yes,yes,every-call,,Repo-wide AI instructions,recursive,git-root

@@ -248,15 +248,16 @@ def _merge_dashboard_tools(discovered: list[ToolResources], live_monitor: dict) 
 
 def _collect_live_monitor(root: Path, live_sample_seconds: float) -> dict:
     try:
-        # Network needs ≥2 samples to compute deltas, so use a short
-        # network interval (0.5s) and ensure the sample window is ≥2s.
-        sample_window = max(2.5, live_sample_seconds)
+        # nettop -L 4 needs ~4s to produce CSV snapshots at 1s default
+        # interval. Deltas require ≥2 snapshots. Use ≥5s to ensure
+        # at least 2-3 complete nettop cycles finish before snapshot.
+        sample_window = max(5.0, live_sample_seconds)
         config = MonitorConfig.for_root(
             root,
-            sample_interval=0.5,
+            sample_interval=1.0,
             refresh_interval=1.0,
             process_interval=1.0,
-            network_interval=0.5,
+            network_interval=1.0,
             telemetry_interval=5.0,
             filesystem_enabled=True,
             telemetry_enabled=True,

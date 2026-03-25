@@ -56,8 +56,13 @@ class MacOSNetworkCollector(NetworkCollector):
         def _reader():
             """Sync thread: run nettop, push events to queue."""
             try:
+                # nettop -L (CSV mode) + -s (interval) is broken on some macOS
+                # versions — it prints help instead of data. Use -L without -s.
+                # Use a small sample count so nettop finishes within the
+                # monitoring window (each sample takes ~1s at default interval).
+                # -L 4 = 4 snapshots over ~4s: first is baseline, 2-4 produce deltas.
                 proc = subprocess.Popen(
-                    ["nettop", "-P", "-L", "100", "-n", "-s", str(self.interval)],
+                    ["nettop", "-P", "-L", "4", "-n"],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
@@ -76,8 +81,11 @@ class MacOSNetworkCollector(NetworkCollector):
                 proc.wait()
             except Exception:
                 pass
-            # Signal done
-            loop.call_soon_threadsafe(queue.put_nowait, None)
+            # Signal done — loop may already be closed if snapshot timed out
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+            except RuntimeError:
+                pass
 
         reader_thread = threading.Thread(target=_reader, daemon=True)
         reader_thread.start()

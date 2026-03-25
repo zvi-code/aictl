@@ -637,7 +637,7 @@ const TABS = [
   {id:'overview', label:'Overview', key:'1'},
   {id:'procs', label:'Processes', key:'2'},
   {id:'mcp', label:'MCP Servers', key:'3'},
-  {id:'memory', label:'Memory', key:'4'},
+  {id:'memory', label:'AI Context', key:'4'},
   {id:'live', label:'Live Monitor', key:'5'},
   {id:'budget', label:'Token Budget', key:'6'},
 ];
@@ -760,13 +760,13 @@ function StatBar({snap: s, history: hist}) {
       <${StatCard} label="Files" value=${s.total_files} primary sparkData=${sparkFor('files')} sparkColor="var(--accent)" />
       <${StatCard} label="Tokens" value=${fmtK(s.total_tokens)} primary sparkData=${sparkFor('tokens')} sparkColor="var(--green)" />
       <${StatCard} label="CPU" value=${cpuLabel} primary sparkData=${sparkFor('cpu')} sparkColor="var(--orange)" smooth />
-      <${StatCard} label="Memory" value=${fmtSz(s.total_mem_mb*1048576)} primary sparkData=${sparkFor('mem_mb')} sparkColor="var(--yellow)" />
+      <${StatCard} label="Proc RAM" value=${fmtSz(s.total_mem_mb*1048576)} primary sparkData=${sparkFor('mem_mb')} sparkColor="var(--yellow)" />
     </div>
     <div class="stat-secondary">
       <${StatCard} label="Processes" value=${s.total_processes} />
       <${StatCard} label="Size" value=${fmtSz(s.total_size)} />
       <${StatCard} label="MCP" value=${s.total_mcp_servers} />
-      <${StatCard} label="Agent Mem" value=${fmtK(s.total_memory_tokens)+'t'} />
+      <${StatCard} label="AI Context" value=${fmtK(s.total_memory_tokens)+'t'} />
     </div>
     ${hasLive && html`<div class="stat-secondary" style="margin-top:0.2rem">
       <${StatCard} label="Live Sessions" value=${s.total_live_sessions} sparkData=${sparkFor('live_sessions')} sparkColor="var(--accent)" />
