@@ -20,6 +20,7 @@ from pathlib import Path
 TOOL_GROUPS: dict[str, list[str]] = {
     "claude": ["claude-code", "claude-desktop"],
     "copilot": ["copilot", "copilot-vscode", "copilot-cli"],
+    "codex": ["codex-cli"],
     "cursor": ["cursor"],
     "windsurf": ["windsurf"],
     "copilot365": ["copilot365"],

@@ -70,12 +70,14 @@ The web dashboard (`aictl serve`) works with zero extra dependencies. For the TU
 |-------|----------|-------------|
 | `.[dashboard]` | `textual` | Terminal TUI dashboard (`aictl dashboard`) |
 | `.[processes]` | `psutil` | Cross-platform process detection |
-| `.[all]` | both | Recommended for full functionality |
+| `.[monitor]` | `psutil`, `watchdog` | Live observability (`aictl monitor`) |
+| `.[all]` | `textual`, `psutil`, `watchdog` | Recommended for full functionality |
 
 ```bash
 # Add an extra to an existing install
 pipx inject aictl psutil
 pipx inject aictl textual
+pipx inject aictl watchdog
 ```
 
 > **Without `psutil`:** process detection falls back to `ps` on macOS/Linux and is silently skipped on Windows.
@@ -200,6 +202,43 @@ aictl status --tool copilot       # filter to Copilot tools only
 aictl status --json               # full JSON with enriched metadata
 aictl status --backtrace 12345    # sample a process stack trace
 ```
+
+### Monitor: live AI-tool observability
+
+Run a passive, best-effort live monitor for active AI sessions:
+
+```bash
+aictl monitor live
+```
+
+It is designed for **macOS, Windows, and Linux** and focuses on:
+
+- **VS Code Copilot** / editor-hosted Copilot activity
+- **Claude Code**
+- **Copilot CLI**
+- **Codex CLI**
+
+The monitor correlates:
+
+- **process activity** via `psutil`
+- **filesystem activity** via `watchdog`
+- **network activity** through platform adapters
+- **structured telemetry** when tools expose usage-like logs
+
+It reports traffic, best-effort token estimates with confidence, MCP-style loop detection, and workspace context:
+
+```bash
+aictl monitor live --once
+aictl monitor live --json
+aictl monitor doctor
+```
+
+Notes:
+
+- **macOS** uses a `nettop`-backed per-process adapter
+- **Linux** uses `ss`/`tcpinfo` deltas as the current fallback path
+- **Windows** currently uses a degraded connection-weighted fallback until ETW/WFP bindings are added
+- token counts are **signals, not exact billing/accounting**
 
 ### Viewing: three ways to explore
 

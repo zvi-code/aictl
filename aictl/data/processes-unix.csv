@@ -39,6 +39,7 @@ copilot,copilot-cli,cli,node,root,session-start,session-end,no,no,none,api.githu
 node mcp-server-*,copilot-cli,mcp-server,node,copilot,session-start,session-end,no,yes,none,varies,15,50,yes,May not terminate on session end,medium,pkill -f 'mcp-server',mcp-server-,all,MCP servers (stdio)
 copilot (subagent),copilot-cli,subagent,node,copilot,on-tool-call,on-demand,no,no,none,api.github.com,45,100,no,,low,,copilot.*subagent,all,Subagent for delegated tasks
 copilot (fleet worker),copilot-cli,subagent,node,copilot,on-demand,on-demand,no,no,none,api.github.com,45,100,no,,low,,copilot.*fleet,all,/fleet parallel worker process
+codex,codex-cli,cli,node,root,session-start,session-end,no,no,none,api.openai.com;chatgpt.com,80,250,no,,none,,^codex$|codex.exe,all,Main Codex CLI process
 Windsurf,windsurf,app,electron,root,app-launch,app-close,no,no,random-localhost,codeium-cloud,300,600,no,,none,,Windsurf$|Windsurf.exe,all,Electron main process (VS Code fork)
 Windsurf Helper (Renderer),windsurf,helper,chromium,Windsurf,app-launch,app-close,no,yes,none,none,150,400,no,,none,,Windsurf Helper.*Renderer,all,Editor UI renderer
 Windsurf Helper (GPU),windsurf,helper,chromium,Windsurf,app-launch,app-close,no,yes,none,none,50,200,no,,none,,Windsurf Helper.*GPU,all,GPU acceleration

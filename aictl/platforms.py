@@ -96,6 +96,13 @@ def gh_config_dir() -> Path:
     return Path(xdg) / "gh"
 
 
+# ── Codex CLI ─────────────────────────────────────────────────────
+
+def codex_global_dir() -> Path:
+    """Codex CLI global config directory."""
+    return Path.home() / ".codex"
+
+
 # ── Microsoft 365 / Teams Toolkit ───────────────────────────────
 
 def teams_global_dir() -> Path:

@@ -18,7 +18,8 @@ dependencies = [
 [project.optional-dependencies]
 dashboard = ["textual>=0.79"]
 processes = ["psutil>=5.9"]
-all = ["textual>=0.79", "psutil>=5.9"]
+monitor = ["psutil>=5.9", "watchdog>=4.0"]
+all = ["textual>=0.79", "psutil>=5.9", "watchdog>=4.0"]
 
 [project.scripts]
 aictl = "aictl.cli:main"
