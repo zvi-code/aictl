@@ -151,11 +151,16 @@ $HOME/.copilot/copilot-instructions.md,copilot-cli,all,yes,global,instructions,y
 {project-root}/.github/agents/*.agent.md,copilot,all,yes,project,agent,on-demand,200-500,rw,n/a,n/a,on-delegation,,Custom agent definitions (repo-level; also available at org level),recursive,git-root
 {project-root}/.github/skills/{skill}/SKILL.md,copilot-cli,all,yes,project,skills,on-demand,50-500,rw,n/a,n/a,on-invoke,{skill},Copilot CLI skill definitions (project-level),recursive,git-root
 {project-root}/.copilot-mcp.json,copilot-cli,all,yes,project,config,no,0,rw,n/a,n/a,session-start,,Alternative project-level MCP config (alternative to .copilot/mcp-config.json),recursive,git-root
-{project-root}/.vscode/settings.json,copilot-vscode,all,yes,project,config,no,0,rw,n/a,n/a,app-start,,VS Code workspace settings (Copilot config lives here),recursive,workspace
+{project-root}/.vscode/settings.json,copilot-vscode,all,yes,project,config,no,0,rw,n/a,n/a,app-start,,VS Code workspace settings (all AI/Copilot/OTel settings live here),recursive,workspace
 {project-root}/.vscode/extensions.json,copilot-vscode,all,yes,project,config,no,0,read,n/a,n/a,app-start,,Recommended extensions list (includes Copilot),recursive,workspace
-~/Library/Application Support/Code/User/settings.json,copilot-vscode,macos,no,global,config,no,0,rw,n/a,n/a,app-start,,VS Code global user settings (Copilot preferences),literal,workspace
+{project-root}/.vscode/launch.json,copilot-vscode,all,yes,project,config,no,0,rw,n/a,n/a,app-start,,Debug launch configurations,recursive,workspace
+{project-root}/.vscode/tasks.json,copilot-vscode,all,yes,project,config,no,0,rw,n/a,n/a,app-start,,Task runner definitions (build/test/lint),recursive,workspace
+{project-root}/.devcontainer/devcontainer.json,copilot-vscode,all,yes,project,config,no,0,rw,n/a,n/a,app-start,,Dev Container config (can embed AI settings and Copilot extensions),recursive,workspace
+~/Library/Application Support/Code/User/settings.json,copilot-vscode,macos,no,global,config,no,0,rw,n/a,n/a,app-start,,VS Code global user settings (Copilot/OTel preferences),literal,workspace
 ~/.config/Code/User/settings.json,copilot-vscode,linux,yes,global,config,no,0,rw,n/a,n/a,app-start,,VS Code global user settings (Linux),literal,workspace
 ~/.vscode/extensions/github.copilot*/package.json,copilot-vscode,macos/linux,yes,global,extensions,no,0,read,n/a,n/a,app-start,,Copilot extension manifest (version detection),literal,workspace
+~/Library/Application Support/Code/User/globalStorage/github.copilot-chat/,copilot-vscode,macos,no,global,memory,no,0,rw,n/a,n/a,runtime,,Copilot Chat globalStorage (embeddings; session state; agent workspaces),literal,workspace
+~/.config/Code/User/globalStorage/github.copilot-chat/,copilot-vscode,linux,yes,global,memory,no,0,rw,n/a,n/a,runtime,,Copilot Chat globalStorage (Linux),literal,workspace
 ~/.copilot/skills/{skill}/SKILL.md,copilot-cli,macos/linux,yes,global,skills,on-demand,50-500,rw,n/a,n/a,on-invoke,{skill},User-profile skill definitions,literal,git-root
 ~/.config/gh/config.yml,copilot-cli,macos/linux,yes,global,config,no,0,read,n/a,n/a,session-start,,GitHub CLI config (auth method preferences; companion to hosts.yml),literal,git-root
 ~/Library/Application Support/JetBrains/*/options/github-copilot.xml,copilot-jetbrains,macos,no,global,config,no,0,rw,n/a,n/a,app-start,,JetBrains Copilot language allow-list and settings,literal,workspace

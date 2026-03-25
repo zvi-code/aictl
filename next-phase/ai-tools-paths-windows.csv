@@ -84,10 +84,14 @@ $HOME/.copilot/copilot-instructions.md,copilot-cli,all,yes,global,instructions,y
 {project-root}/.github/agents/*.agent.md,copilot,all,yes,project,agent,on-demand,200-500,rw,n/a,n/a,on-delegation,,Custom agent definitions (repo-level; also available at org level),recursive,git-root
 {project-root}/.github/skills/{skill}/SKILL.md,copilot-cli,all,yes,project,skills,on-demand,50-500,rw,n/a,n/a,on-invoke,{skill},Copilot CLI skill definitions (project-level),recursive,git-root
 {project-root}/.copilot-mcp.json,copilot-cli,all,yes,project,config,no,0,rw,n/a,n/a,session-start,,Alternative project-level MCP config (alternative to .copilot/mcp-config.json),recursive,git-root
-{project-root}/.vscode/settings.json,copilot-vscode,all,yes,project,config,no,0,rw,n/a,n/a,app-start,,VS Code workspace settings (Copilot config lives here),recursive,workspace
+{project-root}/.vscode/settings.json,copilot-vscode,all,yes,project,config,no,0,rw,n/a,n/a,app-start,,VS Code workspace settings (all AI/Copilot/OTel settings live here),recursive,workspace
 {project-root}/.vscode/extensions.json,copilot-vscode,all,yes,project,config,no,0,read,n/a,n/a,app-start,,Recommended extensions list (includes Copilot),recursive,workspace
-%APPDATA%\Code\User\settings.json,copilot-vscode,windows,no,global,config,no,0,rw,n/a,n/a,app-start,,VS Code global user settings (Windows),literal,workspace
+{project-root}/.vscode/launch.json,copilot-vscode,all,yes,project,config,no,0,rw,n/a,n/a,app-start,,Debug launch configurations,recursive,workspace
+{project-root}/.vscode/tasks.json,copilot-vscode,all,yes,project,config,no,0,rw,n/a,n/a,app-start,,Task runner definitions (build/test/lint),recursive,workspace
+{project-root}/.devcontainer/devcontainer.json,copilot-vscode,all,yes,project,config,no,0,rw,n/a,n/a,app-start,,Dev Container config (can embed AI settings and Copilot extensions),recursive,workspace
+%APPDATA%\Code\User\settings.json,copilot-vscode,windows,no,global,config,no,0,rw,n/a,n/a,app-start,,VS Code global user settings (Copilot/OTel preferences),literal,workspace
 %USERPROFILE%\.vscode\extensions\github.copilot*\package.json,copilot-vscode,windows,no,global,extensions,no,0,read,n/a,n/a,app-start,,Copilot extension manifest (Windows),literal,workspace
+%APPDATA%\Code\User\globalStorage\github.copilot-chat\,copilot-vscode,windows,no,global,memory,no,0,rw,n/a,n/a,runtime,,Copilot Chat globalStorage (embeddings; session state; agent workspaces),literal,workspace
 {project-root}/.cursor/mcp.json,cursor,all,yes,project,config,no,0,rw,n/a,n/a,app-start,,Project-level MCP server configuration (Cursor-specific),recursive,workspace
 %APPDATA%\Cursor\User\settings.json,cursor,windows,no,global,config,no,0,rw,n/a,n/a,app-start,,Cursor global user settings (Windows),literal,workspace
 {project-root}/.windsurf/mcp.json,windsurf,all,yes,project,config,no,0,rw,n/a,n/a,app-start,,Project-level MCP server configuration (Windsurf-specific),recursive,workspace

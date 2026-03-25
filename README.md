@@ -240,6 +240,36 @@ Notes:
 - **Windows** currently uses a degraded connection-weighted fallback until ETW/WFP bindings are added
 - token counts are **signals, not exact billing/accounting**
 
+### Copilot OpenTelemetry integration
+
+GitHub Copilot in VS Code supports exporting detailed traces, metrics, and events via OpenTelemetry — but it's **off by default**. When enabled, `aictl` can correlate OTel spans with its own process/network observations for high-confidence token accounting.
+
+**Enable OTel in VS Code** (add to `.vscode/settings.json` or user settings):
+
+```json
+{
+  "github.copilot.chat.otel.enabled": true,
+  "github.copilot.chat.otel.exporterType": "file",
+  "github.copilot.chat.otel.outfile": "/tmp/copilot-otel.jsonl",
+  "github.copilot.chat.otel.captureContent": false
+}
+```
+
+Exporter types: `otlp-http` (→ collector at `localhost:4318`), `otlp-grpc`, `console`, `file` (JSON-lines).
+
+**What OTel provides** (when enabled):
+- `gen_ai.client.token.usage` — exact input/output token counts per LLM call
+- `copilot_chat.tool.call.count` / `copilot_chat.tool.call.duration` — tool execution metrics
+- `copilot_chat.agent.invocation.duration` / `copilot_chat.agent.turn.count` — agent session metrics
+- `copilot_chat.time_to_first_token` — latency metrics
+- Full trace hierarchy: `invoke_agent` → `chat` → `execute_tool`
+
+**aictl dashboard behavior:**
+- When OTel is **disabled** (default): the dashboard shows a hint in the Telemetry tab suggesting the settings above to enable richer data
+- When OTel is **enabled**: the telemetry collector reads the OTel export and provides verified token counts (shown with higher confidence in the dashboard)
+
+Environment variables also work: `COPILOT_OTEL_ENABLED=true`, `COPILOT_OTEL_ENDPOINT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `COPILOT_OTEL_CAPTURE_CONTENT`.
+
 ### Viewing: three ways to explore
 
 aictl offers three complementary ways to view AI tool resources, from quick terminal checks to full interactive dashboards:
@@ -312,8 +342,8 @@ All viewing commands (`aictl serve`, `aictl status`, `aictl dashboard`) discover
 
 | Tool | `--tool` key | What is discovered |
 |------|--------------|--------------------|
-| **GitHub Copilot** | `copilot` | `.github/copilot-instructions.md`, `.github/agents/*.agent.md`, `.github/prompts/*.prompt.md`, `.github/instructions/*.instructions.md`, `.github/skills/*/SKILL.md`, `AGENTS.md`, `.copilot-mcp.json`, `.vscode/settings.json`, `.vscode/extensions.json`, active agent sessions, GitHub CLI config |
-| **Microsoft 365 Copilot** | `copilot365` | `appPackage/declarativeAgent.json`, `appPackage/manifest.json`, `appPackage/instruction.txt`, `teamsapp.yml`, `m365agents.yml`, `aad.manifest.json`, Teams Toolkit `env/.env.*` files, `.fx/` layout (v4) |
+| **GitHub Copilot** | `copilot` | `.github/copilot-instructions.md`, `.github/agents/*.agent.md`, `.github/prompts/*.prompt.md`, `.github/instructions/*.instructions.md`, `.github/skills/*/SKILL.md`, `.github/hooks/*.json`, `AGENTS.md`, `.copilot-mcp.json`, `.vscode/settings.json`, `.vscode/mcp.json`, `.vscode/extensions.json`, `.devcontainer/devcontainer.json`, Copilot Chat globalStorage, active agent sessions, GitHub CLI config, JetBrains `github-copilot.xml` |
+| **Microsoft 365 Copilot** | `copilot365` | `appPackage/manifest.json` (v1.18+), `appPackage/declarativeAgent.json` (v1.6), `appPackage/apiPlugin.json`, `teamsapp.yml`, `teamsapp.local.yml`, `aad.manifest.json`, Teams Toolkit `env/.env.*` files, `.fx/` layout (v4) |
 | **Semantic Kernel** | `semantic_kernel` | `skprompt.txt` + sibling `config.json` anywhere in tree, `Plugins/`, `sk_plugins/`, `SemanticPlugins/`, `Skills/` directories, `appsettings.json` |
 | **Azure PromptFlow** | `promptflow` | `flow.dag.yaml`, `flow.flex.yaml`, `.promptflow/` hidden dirs, global `~/.promptflow/pf.yaml` and connections |
 | **Azure AI / azd** | `azure_ai` | `azure.yaml` (azd manifest), `.azure/` env state, `local.settings.json` (Azure Functions), `ai.project.yaml`, global `~/.azd/config.json` |
