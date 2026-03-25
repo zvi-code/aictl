@@ -10,10 +10,18 @@ path,ai_tool,platform,hidden,scope,category,sent_to_llm,approx_tokens,read_write
 ~/.claude/skills/{skill}/SKILL.md,claude-code,macos/linux,yes,global,skills,partial,50-100,rw,yes,yes,description-always;body-on-demand,{skill},Personal skills (all projects),literal,cwd
 ~/.claude/hooks/*.sh,claude-code,macos/linux,yes,global,hooks,no,0,rw,n/a,n/a,on-hook-trigger,,"Lifecycle hooks (PreToolUse, SessionEnd, etc.)",literal,cwd
 ~/.claude/shell-snapshots/,claude-code,macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Shell environment snapshots,literal,cwd
+~/.claude/plans/*.md,claude-code,macos/linux,yes,global,memory,on-demand,100-2000,rw,yes,yes,on-demand,,Implementation plan files (active and historical),literal,cwd
+~/.claude/scheduled-tasks/*/SKILL.md,claude-code,macos/linux,yes,global,commands,on-demand,50-500,rw,n/a,n/a,on-schedule,,Scheduled task definitions (cron-like),literal,cwd
+~/.claude/plugins/*/plugin.json,claude-code,macos/linux,yes,global,config,no,0,rw,n/a,n/a,session-start,,Plugin manifests,literal,cwd
+~/.claude/history.jsonl,claude-code,macos/linux,yes,global,transcript,no,0,rw,n/a,n/a,runtime,,Command history,literal,cwd
+~/.claude/ide/,claude-code,macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,IDE integration state,literal,cwd
+~/.claude/session-env/,claude-code,macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Session environment snapshots,literal,cwd
 ~/.claude/projects/{project}/memory/MEMORY.md,claude-code,macos/linux,yes,project,memory,yes,100-3000,rw,yes,yes,every-call,{project}=path-with-slashes-to-hyphens,Auto-memory entrypoint (first 200 lines loaded),shadow,cwd
 ~/.claude/projects/{project}/memory/{topic}.md,claude-code,macos/linux,yes,project,memory,on-demand,100-1000,rw,yes,yes,on-demand,"{project};{topic}=e.g. debugging,api-conventions",Topic-specific auto-memory files,shadow,cwd
 ~/.claude/projects/{project}/session-{timestamp}.jsonl,claude-code,macos/linux,yes,session,transcript,no,0,rw,n/a,n/a,runtime,{project};{timestamp}=ISO-datetime,Full session transcript (JSON Lines),shadow,cwd
 ~/.claude/projects/{project}/{session}/subagents/agent-{hex}.jsonl,claude-code,macos/linux,yes,session,transcript,no,0,write,n/a,n/a,runtime,{project};{session}=uuid;{hex}=7-char-hex,Subagent task transcript,shadow,cwd
+~/.claude/projects/{project}/{session}/plans/*.md,claude-code,macos/linux,yes,project,memory,on-demand,100-2000,rw,yes,yes,on-demand,{project};{session}=uuid,Session-specific plan files,shadow,cwd
+~/.claude/projects/{project}/{session}/todos/*.json,claude-code,macos/linux,yes,session,runtime,no,0,rw,n/a,n/a,runtime,{project};{session}=uuid,Todo list state per session,shadow,cwd
 {project-root}/CLAUDE.md,claude-code,all,no,project,instructions,yes,100-5000+,rw,yes,yes,every-call,,Project instructions (commit to git),recursive,cwd
 {project-root}/CLAUDE.local.md,claude-code,all,no,project,instructions,yes,100-1000,rw,yes,yes,every-call,,Personal project overrides (.gitignore'd),recursive,cwd
 {parent}/CLAUDE.md,claude-code,all,no,parent,instructions,yes,100-5000+,read,yes,yes,every-call,,Instructions from parent directories (traverses up to $HOME; monorepo support),parent,cwd
@@ -26,6 +34,7 @@ path,ai_tool,platform,hidden,scope,category,sent_to_llm,approx_tokens,read_write
 {project-root}/.claude/agents/{agent}.md,claude-code,all,yes,project,agent,yes,200-500,rw,yes,yes,every-call,"{agent}=e.g. code-reviewer,security-auditor",Subagent persona definitions,recursive,cwd
 {project-root}/.claude/rules/{rule}.md,claude-code,all,yes,project,rules,conditional,50-500,rw,yes,yes,on-file-match,{rule},Modular instruction files (glob-matched),recursive,cwd
 {project-root}/.mcp.json,claude-code,all,yes,project,config,no,0,rw,n/a,n/a,session-start,,Project-level MCP server configuration,recursive,cwd
+{project-root}/.claude/launch.json,claude-code,all,yes,project,config,no,0,rw,n/a,n/a,session-start,,Dev server launch configurations,recursive,cwd
 {project-root}/.claudeignore,claude-code,all,yes,project,ignore,no,0,read,n/a,n/a,session-start,,Files to exclude from Claude Code access (buggy enforcement),recursive,cwd
 /Library/Application Support/ClaudeCode/managed-settings.json,claude-code,macos,no,global,config,no,0,read,n/a,n/a,session-start,,Managed/enterprise settings,literal,cwd
 /etc/claude-code/managed-settings.json,claude-code,linux,no,global,config,no,0,read,n/a,n/a,session-start,,Managed/enterprise settings,literal,cwd

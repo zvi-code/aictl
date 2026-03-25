@@ -262,7 +262,13 @@ def _collect_live_monitor(root: Path, live_sample_seconds: float) -> dict:
             telemetry_enabled=True,
         )
         runtime = MonitorRuntime(config)
-        snapshot = asyncio.run(runtime.snapshot_after(sample_window))
+
+        async def _guarded_snapshot():
+            return await asyncio.wait_for(
+                runtime.snapshot_after(sample_window), timeout=sample_window + 5.0
+            )
+
+        snapshot = asyncio.run(_guarded_snapshot())
         return {
             "platform": snapshot.platform,
             "diagnostics": snapshot.diagnostics,

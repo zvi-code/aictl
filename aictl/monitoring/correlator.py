@@ -72,6 +72,14 @@ class SessionCorrelator:
         """Aggregate current sessions into tool-level reports."""
 
         cutoff = time.time() - 180
+        # GC: remove stale sessions (>300s) to prevent unbounded growth
+        gc_cutoff = time.time() - 300
+        stale_ids = [sid for sid, s in self.sessions.items() if s.last_seen_at < gc_cutoff]
+        for sid in stale_ids:
+            session = self.sessions.pop(sid)
+            for pid in session.pids:
+                self.pid_to_session.pop(pid, None)
+
         grouped: dict[str, list[SessionState]] = defaultdict(list)
         for session in self.sessions.values():
             if session.last_seen_at >= cutoff:

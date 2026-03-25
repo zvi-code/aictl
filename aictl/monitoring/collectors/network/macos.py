@@ -68,7 +68,10 @@ class MacOSNetworkCollector(NetworkCollector):
                         break
                     event = parse_nettop_line(line.strip(), previous)
                     if event is not None:
-                        loop.call_soon_threadsafe(queue.put_nowait, event)
+                        try:
+                            loop.call_soon_threadsafe(queue.put_nowait, event)
+                        except (asyncio.QueueFull, RuntimeError):
+                            pass  # drop event if queue full or loop closed
                 proc.terminate()
                 proc.wait()
             except Exception:

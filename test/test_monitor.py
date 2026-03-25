@@ -48,7 +48,7 @@ def test_process_classifier_distinguishes_codex_from_vscode():
 
     assert classify_process(codex).tool == "codex-cli"
     assert classify_process(code_helper).tool == "copilot-vscode"
-    assert classify_process(claude_desktop).tool is None
+    assert classify_process(claude_desktop).tool == "claude-desktop"
 
 
 def test_parse_nettop_line_emits_deltas():

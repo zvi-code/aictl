@@ -34,7 +34,7 @@ class MonitorRuntime:
     def __init__(self, config: MonitorConfig) -> None:
         self.config = config
         self.platform = _platform_name()
-        self.queue: asyncio.Queue = asyncio.Queue()
+        self.queue: asyncio.Queue = asyncio.Queue(maxsize=5000)
         self.workspace_sizes = {
             str(path): _dir_size(path, config.ignored_dir_names) for path in config.workspace_paths
         }
