@@ -11,7 +11,9 @@ import click
 @click.option("-r", "--root", "root_dir", default=".", help="Root directory")
 @click.option("--interval", type=float, default=5.0,
               help="Refresh interval in seconds (default: 5)")
-def dashboard(root_dir, interval):
+@click.option("--monitor/--no-monitor", "include_live_monitor", default=True,
+              help="Enable live runtime monitoring overlay")
+def dashboard(root_dir, interval, include_live_monitor):
     """Launch a live terminal dashboard showing AI tool resources."""
     root = Path(root_dir).resolve()
 
@@ -25,4 +27,4 @@ def dashboard(root_dir, interval):
         )
         raise SystemExit(1)
 
-    run_dashboard(root, interval=interval)
+    run_dashboard(root, interval=interval, include_live_monitor=include_live_monitor)

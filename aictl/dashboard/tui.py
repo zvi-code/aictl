@@ -41,6 +41,7 @@ TOOL_COLOURS = {
     "copilot": "#60a5fa",
     "copilot-vscode": "#93c5fd",
     "copilot-cli": "#3b82f6",
+    "codex-cli": "#f97316",
     "cursor": "#34d399",
     "windsurf": "#2dd4bf",
     "project-env": "#fbbf24",
@@ -123,6 +124,10 @@ class DashboardApp(App):
         layout: vertical;
     }
     #top-stats {
+        height: 11;
+        margin: 0 0 1 0;
+    }
+    .stat-row {
         height: 5;
         margin: 0 0 1 0;
     }
@@ -147,6 +152,9 @@ class DashboardApp(App):
     #cpu-spark, #mem-spark {
         height: 3;
         margin: 0 0 1 0;
+    }
+    #live-tool-table, #collector-table {
+        height: 1fr;
     }
     #proc-table, #memory-table {
         height: 1fr;
@@ -211,10 +219,18 @@ class DashboardApp(App):
     show_files: reactive[bool] = reactive(True)
     show_memory: reactive[bool] = reactive(True)
 
-    def __init__(self, root: Path, interval: float = 5.0, **kw):
+    def __init__(
+        self,
+        root: Path,
+        interval: float = 5.0,
+        *,
+        include_live_monitor: bool = True,
+        **kw,
+    ):
         super().__init__(**kw)
         self._root = root
         self._interval = interval
+        self._include_live_monitor = include_live_monitor
         self._cpu_history = MetricHistory(60)
         self._mem_history = MetricHistory(60)
         self._snapshot: DashboardSnapshot | None = None
@@ -224,14 +240,19 @@ class DashboardApp(App):
         yield Header()
 
         # Top stat cards
-        with Horizontal(id="top-stats"):
-            yield StatCard("Files", id="sc-files")
-            yield StatCard("Tokens", id="sc-tokens")
-            yield StatCard("Processes", id="sc-procs")
-            yield StatCard("CPU %", id="sc-cpu")
-            yield StatCard("Memory", id="sc-mem")
-            yield StatCard("MCP", id="sc-mcp")
-            yield StatCard("Agent Mem", id="sc-agentmem")
+        with Vertical(id="top-stats"):
+            with Horizontal(classes="stat-row"):
+                yield StatCard("Live Sessions", id="sc-live-sessions")
+                yield StatCard("Live Tokens", id="sc-live-tokens")
+                yield StatCard("Outbound", id="sc-live-out")
+                yield StatCard("Inbound", id="sc-live-in")
+                yield StatCard("Files", id="sc-files")
+            with Horizontal(classes="stat-row"):
+                yield StatCard("Static Tokens", id="sc-tokens")
+                yield StatCard("CPU %", id="sc-cpu")
+                yield StatCard("Memory", id="sc-mem")
+                yield StatCard("MCP", id="sc-mcp")
+                yield StatCard("Agent Mem", id="sc-agentmem")
 
         # Main area: left=tool overview, right=tabbed detail
         with Horizontal(id="main-area"):
@@ -264,6 +285,10 @@ class DashboardApp(App):
                         yield DataTable(id="memory-table")
                         yield Label("", id="memory-preview")
 
+                    with TabPane("Live Monitor", id="tab-live"):
+                        yield DataTable(id="live-tool-table")
+                        yield DataTable(id="collector-table")
+
         yield Footer()
 
     def on_mount(self) -> None:
@@ -286,6 +311,24 @@ class DashboardApp(App):
         mem_t.add_columns("Source", "Profile", "File", "Tokens", "Lines", "Preview")
         mem_t.cursor_type = "row"
 
+        live_t = self.query_one("#live-tool-table", DataTable)
+        live_t.add_columns(
+            "Tool",
+            "Sessions",
+            "PIDs",
+            "Traffic",
+            "Tokens",
+            "MCP",
+            "Files",
+            "CPU",
+            "Confidence",
+        )
+        live_t.cursor_type = "row"
+
+        collector_t = self.query_one("#collector-table", DataTable)
+        collector_t.add_columns("Collector", "Status", "Mode", "Detail")
+        collector_t.cursor_type = "row"
+
         # Initial data load + start timer
         self._do_refresh()
         self._refresh_timer = self.set_interval(self._interval, self._do_refresh)
@@ -293,7 +336,12 @@ class DashboardApp(App):
     @work(thread=True)
     def _do_refresh(self) -> None:
         """Collect data in a worker thread to keep TUI responsive."""
-        snap = collect(self._root, include_processes=True)
+        snap = collect(
+            self._root,
+            include_processes=True,
+            include_live_monitor=self._include_live_monitor,
+            live_sample_seconds=max(1.0, min(1.5, self._interval / 2)),
+        )
         self.call_from_thread(self._apply_snapshot, snap)
 
     def _apply_snapshot(self, snap: DashboardSnapshot) -> None:
@@ -304,9 +352,18 @@ class DashboardApp(App):
         self._mem_history.push(snap.total_mem_mb)
 
         # Update stat cards
+        self.query_one("#sc-live-sessions", StatCard).update_value(str(snap.total_live_sessions))
+        self.query_one("#sc-live-tokens", StatCard).update_value(
+            _human_tokens(snap.total_live_estimated_tokens)
+        )
+        self.query_one("#sc-live-out", StatCard).update_value(
+            _human_rate(snap.total_live_outbound_rate_bps)
+        )
+        self.query_one("#sc-live-in", StatCard).update_value(
+            _human_rate(snap.total_live_inbound_rate_bps)
+        )
         self.query_one("#sc-files", StatCard).update_value(str(snap.total_files))
         self.query_one("#sc-tokens", StatCard).update_value(_human_tokens(snap.total_tokens))
-        self.query_one("#sc-procs", StatCard).update_value(str(snap.total_processes))
         self.query_one("#sc-cpu", StatCard).update_value(f"{snap.total_cpu:.1f}%")
         self.query_one("#sc-mem", StatCard).update_value(f"{snap.total_mem_mb:.0f} MB")
         self.query_one("#sc-mcp", StatCard).update_value(str(snap.total_mcp_servers))
@@ -332,6 +389,7 @@ class DashboardApp(App):
         self._update_file_tree(snap)
         self._update_mcp_detail_table(snap)
         self._update_memory_table(snap)
+        self._update_live_tables(snap)
 
     def _update_tool_summaries(self, snap: DashboardSnapshot) -> None:
         """Render compact tool summary list in left panel."""
@@ -339,7 +397,7 @@ class DashboardApp(App):
         for tr in snap.tools:
             if tr.tool == "aictl":
                 continue
-            if not tr.files and not tr.processes and not tr.mcp_servers:
+            if not tr.files and not tr.processes and not tr.mcp_servers and not tr.live:
                 continue
             colour = TOOL_COLOURS.get(tr.tool, "white")
             label = TOOL_LABELS.get(tr.tool, tr.label)
@@ -358,6 +416,20 @@ class DashboardApp(App):
                 parts.append(f"  {len(tr.processes)} proc  CPU {cpu:.1f}%  MEM {mem:.0f}MB")
             if tr.mcp_servers:
                 parts.append(f"  {len(tr.mcp_servers)} MCP server{'s' if len(tr.mcp_servers) != 1 else ''}")
+            if tr.live:
+                token_estimate = tr.live.get("token_estimate", {})
+                parts.append(
+                    "  live "
+                    f"{tr.live.get('session_count', 0)} sess  "
+                    f"out {_human_rate(float(tr.live.get('outbound_rate_bps', 0.0)))}  "
+                    f"in {_human_rate(float(tr.live.get('inbound_rate_bps', 0.0)))}"
+                )
+                parts.append(
+                    "  "
+                    f"tok {_human_tokens(int(token_estimate.get('input_tokens', 0)) + int(token_estimate.get('output_tokens', 0)))}  "
+                    f"mcp {tr.live.get('mcp', {}).get('loops', 0)} loop"
+                    f"{'s' if int(tr.live.get('mcp', {}).get('loops', 0)) != 1 else ''}"
+                )
             if anom:
                 parts.append(f"  [#f87171]{anom} anomal{'ies' if anom != 1 else 'y'}[/]")
             lines.extend(parts)
@@ -476,6 +548,41 @@ class DashboardApp(App):
                 preview,
             )
 
+    def _update_live_tables(self, snap: DashboardSnapshot) -> None:
+        live_t = self.query_one("#live-tool-table", DataTable)
+        live_t.clear()
+        live_tools = [tr for tr in snap.tools if tr.live]
+        for tr in sorted(
+            live_tools,
+            key=lambda item: float(item.live.get("outbound_rate_bps", 0.0)) if item.live else 0.0,
+            reverse=True,
+        ):
+            live = tr.live or {}
+            token_estimate = live.get("token_estimate", {})
+            mcp = live.get("mcp", {})
+            live_t.add_row(
+                TOOL_LABELS.get(tr.tool, tr.label),
+                str(live.get("session_count", 0)),
+                str(live.get("pid_count", 0)),
+                f"↑ {_human_rate(float(live.get('outbound_rate_bps', 0.0)))} / ↓ {_human_rate(float(live.get('inbound_rate_bps', 0.0)))}",
+                f"{_human_tokens(int(token_estimate.get('input_tokens', 0)) + int(token_estimate.get('output_tokens', 0)))} ({token_estimate.get('source', 'n/a')})",
+                f"{'YES' if mcp.get('detected') else 'NO'} ({mcp.get('loops', 0)})",
+                f"{live.get('files_touched', 0)} / {live.get('file_events', 0)}",
+                f"{float(live.get('cpu_percent', 0.0)):.1f}% peak {float(live.get('peak_cpu_percent', 0.0)):.1f}%",
+                f"{float(live.get('confidence', 0.0)):.2f}",
+            )
+
+        collector_t = self.query_one("#collector-table", DataTable)
+        collector_t.clear()
+        diagnostics = (snap.live_monitor or {}).get("diagnostics", {})
+        for name, detail in sorted(diagnostics.items()):
+            collector_t.add_row(
+                name,
+                str(detail.get("status", "unknown")),
+                str(detail.get("mode", "unknown")),
+                str(detail.get("detail", ""))[:120],
+            )
+
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         """Show file details and load content when a file leaf is selected."""
         if event.node.data is None:
@@ -586,6 +693,12 @@ def _human_size(n: int) -> str:
     return f"{k / 1024:.1f}MB"
 
 
+def _human_rate(n: float) -> str:
+    if n <= 0:
+        return "0B/s"
+    return f"{_human_size(int(n))}/s"
+
+
 def _rel_display(path_str: str, root: Path, home: Path) -> str:
     p = Path(path_str)
     try:
@@ -600,7 +713,7 @@ def _rel_display(path_str: str, root: Path, home: Path) -> str:
 
 # ── Entry point ──────────────────────────────────────────────────
 
-def run_dashboard(root: Path, interval: float = 5.0) -> None:
+def run_dashboard(root: Path, interval: float = 5.0, *, include_live_monitor: bool = True) -> None:
     """Launch the live TUI dashboard."""
-    app = DashboardApp(root=root, interval=interval)
+    app = DashboardApp(root=root, interval=interval, include_live_monitor=include_live_monitor)
     app.run()

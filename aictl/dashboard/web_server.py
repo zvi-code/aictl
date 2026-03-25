@@ -43,6 +43,8 @@ class _SnapshotStore:
                 snap.timestamp, snap.total_files, snap.total_tokens,
                 snap.total_cpu, snap.total_mem_mb,
                 snap.total_mcp_servers, snap.total_memory_tokens,
+                snap.total_live_sessions, snap.total_live_estimated_tokens,
+                snap.total_live_inbound_rate_bps, snap.total_live_outbound_rate_bps,
             ))
             self._condition.notify_all()
 
@@ -71,14 +73,19 @@ class _SnapshotStore:
         if not rows:
             return json.dumps({"ts": [], "files": [], "tokens": [],
                                "cpu": [], "mem_mb": [], "mcp": [],
-                               "mem_tokens": []})
+                               "mem_tokens": [], "live_sessions": [],
+                               "live_tokens": [], "live_in_rate": [], "live_out_rate": []})
         # Transpose rows → columns
-        ts, files, tokens, cpu, mem_mb, mcp, mem_tokens = zip(*rows)
+        ts, files, tokens, cpu, mem_mb, mcp, mem_tokens, live_sessions, live_tokens, live_in_rate, live_out_rate = zip(*rows)
         return json.dumps({
             "ts": list(ts), "files": list(files), "tokens": list(tokens),
             "cpu": [round(v, 1) for v in cpu],
             "mem_mb": [round(v, 1) for v in mem_mb],
             "mcp": list(mcp), "mem_tokens": list(mem_tokens),
+            "live_sessions": list(live_sessions),
+            "live_tokens": list(live_tokens),
+            "live_in_rate": [round(v, 2) for v in live_in_rate],
+            "live_out_rate": [round(v, 2) for v in live_out_rate],
         })
 
 
@@ -122,19 +129,31 @@ class _AllowedPaths:
 class _RefreshThread(threading.Thread):
     """Periodically collects a new snapshot."""
 
-    def __init__(self, root: Path, interval: float,
-                 store: _SnapshotStore, allowed: _AllowedPaths) -> None:
+    def __init__(
+        self,
+        root: Path,
+        interval: float,
+        store: _SnapshotStore,
+        allowed: _AllowedPaths,
+        include_live_monitor: bool,
+    ) -> None:
         super().__init__(daemon=True)
         self._root = root
         self._interval = interval
         self._store = store
         self._allowed = allowed
+        self._include_live_monitor = include_live_monitor
         self._stop = threading.Event()
 
     def run(self) -> None:
         while not self._stop.is_set():
             try:
-                snap = collect(self._root, include_processes=True)
+                snap = collect(
+                    self._root,
+                    include_processes=True,
+                    include_live_monitor=self._include_live_monitor,
+                    live_sample_seconds=max(1.0, min(1.5, self._interval / 2)),
+                )
                 self._store.update(snap)
                 self._allowed.update(snap)
             except Exception:
@@ -310,20 +329,31 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
 
 # ─── Entry point ─────────────────────────────────────────────────
 
-def run_server(root: Path, host: str = "127.0.0.1", port: int = 8484,
-               interval: float = 5.0, open_browser: bool = True) -> None:
+def run_server(
+    root: Path,
+    host: str = "127.0.0.1",
+    port: int = 8484,
+    interval: float = 5.0,
+    open_browser: bool = True,
+    include_live_monitor: bool = True,
+) -> None:
     """Start the dashboard HTTP server. Blocks until Ctrl-C."""
     store = _SnapshotStore()
     allowed = _AllowedPaths()
 
     # Initial collection so /api/snapshot is ready immediately
     print("  collecting initial snapshot ...", file=sys.stderr)
-    snap = collect(root, include_processes=True)
+    snap = collect(
+        root,
+        include_processes=True,
+        include_live_monitor=include_live_monitor,
+        live_sample_seconds=max(1.0, min(1.5, interval / 2)),
+    )
     store.update(snap)
     allowed.update(snap)
 
     # Start background refresh
-    refresh = _RefreshThread(root, interval, store, allowed)
+    refresh = _RefreshThread(root, interval, store, allowed, include_live_monitor)
     refresh.start()
 
     # Start HTTP server
@@ -407,8 +437,8 @@ header h1 span { color: var(--fg2); font-weight: 400; }
   border-radius: 2px; font-family: monospace; margin-left: 0.2rem; }
 
 /* Stat cards — two-tier hierarchy */
-.stat-primary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.4rem; margin-bottom: 0.3rem; }
-.stat-secondary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.4rem; margin-bottom: 0.8rem; }
+.stat-primary { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.4rem; margin-bottom: 0.3rem; }
+.stat-secondary { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 0.4rem; margin-bottom: 0.8rem; }
 .stat-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
   padding: 0.4rem 0.6rem; text-align: center; position: relative; overflow: hidden; }
 .stat-card.primary { border-left: 3px solid var(--accent); }
@@ -420,6 +450,8 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 .flash { animation: flash 0.4s ease; }
 
 /* Resource bar + legend */
+.rbar-block { margin-bottom: 0.8rem; }
+.rbar-title { font-size: 0.72rem; color: var(--fg2); margin-bottom: 0.25rem; text-transform: uppercase; letter-spacing: 0.05em; }
 .rbar { display: flex; height: 6px; border-radius: 3px; overflow: hidden;
   margin-bottom: 0.3rem; background: var(--border); }
 .rbar-seg { transition: width 0.3s; }
@@ -454,6 +486,7 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 .tcard-body { padding: 0 0.8rem 0.6rem; columns: 3 250px; column-gap: 1rem; }
 .tcard-body > .cat-group { break-inside: avoid; margin-bottom: 0.4rem; }
 .tcard-body > .proc-section { break-inside: avoid; column-span: all; }
+.tcard-body > .live-section { break-inside: avoid; column-span: all; }
 
 /* Category groups */
 .cat-group { margin-top: 0.4rem; }
@@ -496,6 +529,22 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 .mem-bar-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
 .prow .pmem { min-width: 55px; text-align: right; color: var(--fg2); font-size: 0.72rem; }
 .prow .anomaly-icon { color: var(--red); cursor: help; }
+
+/* Live monitor sections */
+.live-section { margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.4rem; }
+.live-section h3 { font-size: 0.78rem; color: var(--fg2); margin-bottom: 0.35rem; }
+.metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.4rem; }
+.metric-chip { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 0.45rem 0.55rem; }
+.metric-chip .mlabel { display: block; font-size: 0.65rem; color: var(--fg2); text-transform: uppercase; letter-spacing: 0.04em; }
+.metric-chip .mvalue { display: block; font-size: 0.95rem; font-weight: 700; color: var(--fg); }
+.metric-chip .msub { display: block; font-size: 0.72rem; color: var(--fg2); margin-top: 0.1rem; }
+.live-stack { display: grid; gap: 0.8rem; }
+.diag-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 0.8rem; }
+.diag-card h3 { font-size: 0.9rem; margin-bottom: 0.45rem; color: var(--accent); }
+.stack-list { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.pill { display: inline-block; background: var(--bg3); border: 1px solid var(--border); border-radius: 999px; padding: 0.15rem 0.5rem; font-size: 0.7rem; color: var(--fg2); }
+.mono { font-family: 'SF Mono', Menlo, Consolas, monospace; }
+.empty-state { color: var(--fg2); font-size: 0.8rem; }
 
 /* File viewer */
 .fv { position: fixed; top: 0; right: 0; width: 55%; height: 100vh;
@@ -580,7 +629,8 @@ const TABS = [
   {id:'procs', label:'Processes', key:'2'},
   {id:'mcp', label:'MCP Servers', key:'3'},
   {id:'memory', label:'Memory', key:'4'},
-  {id:'budget', label:'Token Budget', key:'5'},
+  {id:'live', label:'Live Monitor', key:'5'},
+  {id:'budget', label:'Token Budget', key:'6'},
 ];
 
 // ─── Module-level shared state ─────────────────────────────────
@@ -592,7 +642,10 @@ const SnapContext = createContext(null);
 // ─── Utility Functions ─────────────────────────────────────────
 function fmtK(n){return n>=1000?(n/1000).toFixed(1)+'k':''+n;}
 function fmtSz(n){if(n<1024)return n+'B';if(n<1048576)return(n/1024).toFixed(1)+'KB';return(n/1048576).toFixed(1)+'MB';}
+function fmtRate(n){return (!n||n<=0)?'0B/s':fmtSz(n)+'/s';}
+function fmtPct(n){return (Number(n)||0).toFixed(2);}
 function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+function liveTokenTotal(live){const t=(live&&live.token_estimate)||{};return (t.input_tokens||0)+(t.output_tokens||0);}
 function scopeLabel(path, root) {
   if(path.startsWith(root+'/')) return 'project';
   if(path.includes('/.claude/projects/')) return 'shadow';
@@ -692,14 +745,18 @@ function StatBar({snap: s, history: hist}) {
   if(!s) return null;
   return html`
     <div class="stat-primary">
-      <${StatCard} label="Files" value=${s.total_files} primary sparkData=${sparkFor('files')} sparkColor="var(--accent)" />
-      <${StatCard} label="Tokens" value=${fmtK(s.total_tokens)} primary sparkData=${sparkFor('tokens')} sparkColor="var(--green)" />
-      <${StatCard} label="CPU" value=${s.total_cpu+'%'} primary sparkData=${sparkFor('cpu')} sparkColor="var(--orange)" smooth />
-      <${StatCard} label="Memory" value=${fmtSz(s.total_mem_mb*1048576)} primary sparkData=${sparkFor('mem_mb')} sparkColor="var(--yellow)" />
+      <${StatCard} label="Live Sessions" value=${s.total_live_sessions} primary sparkData=${sparkFor('live_sessions')} sparkColor="var(--accent)" />
+      <${StatCard} label="Live Tokens" value=${fmtK(s.total_live_estimated_tokens)} primary sparkData=${sparkFor('live_tokens')} sparkColor="var(--green)" />
+      <${StatCard} label="Outbound" value=${fmtRate(s.total_live_outbound_rate_bps)} primary sparkData=${sparkFor('live_out_rate')} sparkColor="var(--orange)" smooth />
+      <${StatCard} label="Inbound" value=${fmtRate(s.total_live_inbound_rate_bps)} primary sparkData=${sparkFor('live_in_rate')} sparkColor="var(--yellow)" smooth />
     </div>
     <div class="stat-secondary">
+      <${StatCard} label="Files" value=${s.total_files} />
+      <${StatCard} label="Static Tokens" value=${fmtK(s.total_tokens)} />
       <${StatCard} label="Processes" value=${s.total_processes} />
-      <${StatCard} label="Size" value=${fmtSz(s.total_size)} />
+      <${StatCard} label="CPU" value=${s.total_cpu+'%'} />
+      <${StatCard} label="Memory" value=${fmtSz(s.total_mem_mb*1048576)} />
+      <${StatCard} label="Workspace Size" value=${fmtSz(s.total_size)} />
       <${StatCard} label="MCP" value=${s.total_mcp_servers} />
       <${StatCard} label="Agent Mem" value=${fmtK(s.total_memory_tokens)+'t'} />
     </div>`;
@@ -708,19 +765,42 @@ function StatBar({snap: s, history: hist}) {
 // ─── ResourceBar Component ─────────────────────────────────────
 function ResourceBar({snap: s}) {
   if(!s) return null;
-  const tools = s.tools.filter(t=>t.tool!=='aictl'&&t.files.length);
-  const total = tools.reduce((a,t)=>a+t.files.length,0)||1;
+  const fileTools = s.tools.filter(t=>t.tool!=='aictl'&&t.files.length);
+  const fileTotal = fileTools.reduce((a,t)=>a+t.files.length,0)||1;
+  const liveTools = s.tools.filter(t=>t.tool!=='aictl'&&t.live&&(t.live.outbound_rate_bps||t.live.inbound_rate_bps));
+  const liveTotal = liveTools.reduce((a,t)=>a+(t.live.outbound_rate_bps||0)+(t.live.inbound_rate_bps||0),0)||1;
   return html`
-    <div class="rbar">${tools.map(t=>html`
-      <div class="rbar-seg" style=${'width:'+(t.files.length/total*100).toFixed(1)+'%;background:'+(COLORS[t.tool]||'#94a3b8')}
-        title="${t.label}: ${t.files.length} files"></div>`)}
-    </div>
-    <div class="rbar-legend">${tools.map(t=>html`
-      <span class="rbar-legend-item">
-        <span class="rbar-legend-dot" style=${'background:'+(COLORS[t.tool]||'#94a3b8')}></span>
-        ${t.label} <span style="color:var(--fg2)">${t.files.length}</span>
-      </span>`)}
-    </div>`;
+    ${fileTools.length>0 && html`<div class="rbar-block">
+      <div class="rbar-title">CSV Footprint</div>
+      <div class="rbar">${fileTools.map(t=>html`
+        <div class="rbar-seg" style=${'width:'+(t.files.length/fileTotal*100).toFixed(1)+'%;background:'+(COLORS[t.tool]||'#94a3b8')}
+          title="${t.label}: ${t.files.length} files"></div>`)}
+      </div>
+      <div class="rbar-legend">${fileTools.map(t=>html`
+        <span class="rbar-legend-item">
+          <span class="rbar-legend-dot" style=${'background:'+(COLORS[t.tool]||'#94a3b8')}></span>
+          ${t.label} <span style="color:var(--fg2)">${t.files.length} files</span>
+        </span>`)}
+      </div>
+    </div>`}
+    ${liveTools.length>0 && html`<div class="rbar-block">
+      <div class="rbar-title">Live Traffic</div>
+      <div class="rbar">${liveTools.map(t=>{
+        const weight=(t.live.outbound_rate_bps||0)+(t.live.inbound_rate_bps||0);
+        return html`<div class="rbar-seg" style=${'width:'+(weight/liveTotal*100).toFixed(1)+'%;background:'+(COLORS[t.tool]||'#94a3b8')}
+          title="${t.label}: ${fmtRate(weight)}"></div>`;
+      })}
+      </div>
+      <div class="rbar-legend">${liveTools.map(t=>{
+        const weight=(t.live.outbound_rate_bps||0)+(t.live.inbound_rate_bps||0);
+        return html`<span class="rbar-legend-item">
+          <span class="rbar-legend-dot" style=${'background:'+(COLORS[t.tool]||'#94a3b8')}></span>
+          ${t.label} <span style="color:var(--fg2)">${fmtRate(weight)}</span>
+        </span>`;
+      })}
+      </div>
+    </div>`}
+    ${!fileTools.length && !liveTools.length && html`<div class="empty-state">No AI tool resources found yet.</div>`}`;
 }
 
 // ─── InlinePreview Component ───────────────────────────────────
@@ -866,12 +946,63 @@ function ProcSection({processes, maxMem}) {
   </div>`;
 }
 
+// ─── LiveSection (within ToolCard) ─────────────────────────────
+function LiveSection({live}) {
+  if(!live) return null;
+  const tokenEstimate = live.token_estimate || {};
+  const mcp = live.mcp || {};
+  const tokenTotal = liveTokenTotal(live);
+  return html`<div class="live-section">
+    <h3>Live Monitor
+      <span class="badge">${live.session_count||0} sess</span>
+      <span class="badge">${live.pid_count||0} pid</span>
+      <span class="badge">${fmtPct(live.confidence)} conf</span>
+      ${mcp.detected && html`<span class="badge warn">${mcp.loops||0} MCP loop${(mcp.loops||0)===1?'':'s'}</span>`}
+    </h3>
+    <div class="metric-grid">
+      <div class="metric-chip">
+        <span class="mlabel">Traffic</span>
+        <span class="mvalue">↑ ${fmtRate(live.outbound_rate_bps||0)}</span>
+        <span class="msub">↓ ${fmtRate(live.inbound_rate_bps||0)} total ${fmtSz((live.outbound_bytes||0)+(live.inbound_bytes||0))}</span>
+      </div>
+      <div class="metric-chip">
+        <span class="mlabel">Tokens</span>
+        <span class="mvalue">${fmtK(tokenTotal)}</span>
+        <span class="msub">${tokenEstimate.source||'network-inference'} at ${fmtPct(tokenEstimate.confidence||0)} confidence</span>
+      </div>
+      <div class="metric-chip">
+        <span class="mlabel">MCP</span>
+        <span class="mvalue">${mcp.detected ? 'Detected' : 'No loop'}</span>
+        <span class="msub">${mcp.loops||0} loops at ${fmtPct(mcp.confidence||0)} confidence</span>
+      </div>
+      <div class="metric-chip">
+        <span class="mlabel">Context</span>
+        <span class="mvalue">${live.files_touched||0} files</span>
+        <span class="msub">${live.file_events||0} events · repo ${fmtSz((live.workspace_size_mb||0)*1048576)}</span>
+      </div>
+      <div class="metric-chip">
+        <span class="mlabel">CPU</span>
+        <span class="mvalue">${(live.cpu_percent||0).toFixed(1)}%</span>
+        <span class="msub">peak ${(live.peak_cpu_percent||0).toFixed(1)}%</span>
+      </div>
+      <div class="metric-chip">
+        <span class="mlabel">Workspaces</span>
+        <span class="mvalue">${(live.workspaces||[]).length || 0}</span>
+        <span class="msub mono">${(live.workspaces||[]).slice(0,2).join(' | ') || '(unknown)'}</span>
+      </div>
+    </div>
+  </div>`;
+}
+
 // ─── ToolCard Component ────────────────────────────────────────
 function ToolCard({tool: t, root}) {
   const [isOpen, setOpen] = useState(false);
   const c = COLORS[t.tool]||'#94a3b8';
   const tok = t.files.reduce((a,f)=>a+f.tokens,0);
   const anom = t.processes.filter(p=>p.anomalies&&p.anomalies.length).length;
+  const liveTok = liveTokenTotal(t.live);
+  const liveTraffic = (t.live?.outbound_rate_bps||0) + (t.live?.inbound_rate_bps||0);
+  const liveLoops = t.live?.mcp?.loops || 0;
   const maxMem = useMemo(()=>Math.max(...t.processes.map(p=>parseFloat(p.mem_mb)||0),100),[t.processes]);
   const cats = useMemo(()=>{
     const c={};
@@ -890,10 +1021,15 @@ function ToolCard({tool: t, root}) {
       <span class="badge">${fmtK(tok)} tok</span>
       ${t.processes.length>0 && html`<span class="badge">${t.processes.length} proc</span>`}
       ${t.mcp_servers.length>0 && html`<span class="badge">${t.mcp_servers.length} MCP</span>`}
+      ${t.live && html`<span class="badge">${t.live.session_count||0} live</span>`}
+      ${t.live && html`<span class="badge">${fmtRate(liveTraffic)}</span>`}
+      ${t.live && liveTok>0 && html`<span class="badge">${fmtK(liveTok)} live tok</span>`}
+      ${t.live?.mcp?.detected && html`<span class="badge warn">${liveLoops} loop${liveLoops===1?'':'s'}</span>`}
       ${anom>0 && html`<span class="badge warn">${anom} anomaly</span>`}
     </button>
     ${isOpen && html`<div class="tcard-body">
       ${cats.map(({kind,files})=>html`<${CatGroup} key=${kind} label=${kind} files=${files} root=${root}/>`)}
+      <${LiveSection} live=${t.live}/>
       <${ProcSection} processes=${t.processes} maxMem=${maxMem}/>
       ${t.mcp_servers.length>0 && html`<div class="proc-section"><h3>MCP Servers</h3>
         ${t.mcp_servers.map(m=>html`<div class="fitem" style="cursor:default">
@@ -909,8 +1045,12 @@ function TabOverview() {
   const {snap: s} = useContext(SnapContext);
   const tools = useMemo(()=>{
     if(!s) return [];
-    return s.tools.filter(t=>t.tool!=='aictl'&&(t.files.length||t.processes.length||t.mcp_servers.length))
-      .sort((a,b)=>(b.files.length+b.processes.length+b.mcp_servers.length)-(a.files.length+a.processes.length+a.mcp_servers.length));
+    return s.tools.filter(t=>t.tool!=='aictl'&&(t.files.length||t.processes.length||t.mcp_servers.length||t.live))
+      .sort((a,b)=>{
+        const scoreA = (a.files.length*2) + a.processes.length + a.mcp_servers.length + (a.live?.session_count||0) + liveTokenTotal(a.live)/1000;
+        const scoreB = (b.files.length*2) + b.processes.length + b.mcp_servers.length + (b.live?.session_count||0) + liveTokenTotal(b.live)/1000;
+        return scoreB - scoreA;
+      });
   },[s]);
   if(!s) return html`<p style="color:var(--fg2)">Loading...</p>`;
   if(!tools.length) return html`<p style="color:var(--fg2)">No AI tool resources found.</p>`;
@@ -1071,6 +1211,60 @@ function TabMemory() {
     html`<${MemSourceGroup} key=${src} source=${src} entries=${entries}/>`)}`;
 }
 
+// ─── TabLive ───────────────────────────────────────────────────
+function TabLive() {
+  const {snap: s} = useContext(SnapContext);
+  if(!s) return html`<p class="empty-state">Loading...</p>`;
+  const liveTools = s.tools.filter(t=>t.live).sort((a,b)=>
+    ((b.live?.outbound_rate_bps||0)+(b.live?.inbound_rate_bps||0)) -
+    ((a.live?.outbound_rate_bps||0)+(a.live?.inbound_rate_bps||0))
+  );
+  const diagnostics = Object.entries((s.live_monitor&&s.live_monitor.diagnostics)||{});
+  return html`<div class="live-stack">
+    <div class="diag-card">
+      <h3>Collector Health</h3>
+      ${diagnostics.length ? html`<table role="table" aria-label="Collector diagnostics">
+        <thead><tr><th>Collector</th><th>Status</th><th>Mode</th><th>Detail</th></tr></thead>
+        <tbody>${diagnostics.map(([name,detail])=>html`<tr key=${name}>
+          <td class="mono">${name}</td>
+          <td>${esc(detail.status||'unknown')}</td>
+          <td>${esc(detail.mode||'unknown')}</td>
+          <td>${esc(detail.detail||'')}</td>
+        </tr>`)}</tbody>
+      </table>` : html`<p class="empty-state">Live monitor disabled or no collector diagnostics yet.</p>`}
+    </div>
+
+    <div class="diag-card">
+      <h3>Tool Sessions</h3>
+      ${liveTools.length ? html`<table role="table" aria-label="Live tool sessions">
+        <thead><tr><th>Tool</th><th>Sessions</th><th>Traffic</th><th>Tokens</th><th>MCP</th><th>Files</th><th>CPU</th><th>Workspaces</th></tr></thead>
+        <tbody>${liveTools.map(t=>{
+          const live=t.live||{}, tok=live.token_estimate||{}, mcp=live.mcp||{};
+          return html`<tr key=${t.tool}>
+            <td>${esc(t.label)}</td>
+            <td>${live.session_count||0} sess / ${live.pid_count||0} pid</td>
+            <td>↑ ${fmtRate(live.outbound_rate_bps||0)}<br/>↓ ${fmtRate(live.inbound_rate_bps||0)}</td>
+            <td>${fmtK(liveTokenTotal(live))}<br/><span style="color:var(--fg2)">${esc(tok.source||'network-inference')} @ ${fmtPct(tok.confidence||0)}</span></td>
+            <td>${mcp.detected ? 'YES' : 'NO'}<br/><span style="color:var(--fg2)">${mcp.loops||0} loops @ ${fmtPct(mcp.confidence||0)}</span></td>
+            <td>${live.files_touched||0} touched<br/><span style="color:var(--fg2)">${live.file_events||0} events</span></td>
+            <td>${(live.cpu_percent||0).toFixed(1)}%<br/><span style="color:var(--fg2)">peak ${(live.peak_cpu_percent||0).toFixed(1)}%</span></td>
+            <td class="mono">${esc((live.workspaces||[]).join(' | ') || '(unknown)')}</td>
+          </tr>`;
+        })}</tbody>
+      </table>` : html`<p class="empty-state">No active AI-tool sessions detected yet.</p>`}
+    </div>
+
+    <div class="diag-card">
+      <h3>Monitor Roots</h3>
+      <div class="stack-list">
+        ${(s.live_monitor?.workspace_paths||[]).map(path=>html`<span class="pill mono" key=${'ws-'+path}>workspace: ${path}</span>`)}
+        ${(s.live_monitor?.state_paths||[]).map(path=>html`<span class="pill mono" key=${'state-'+path}>state: ${path}</span>`)}
+        ${!(s.live_monitor?.workspace_paths||[]).length && !(s.live_monitor?.state_paths||[]).length && html`<span class="pill">No monitor roots reported</span>`}
+      </div>
+    </div>
+  </div>`;
+}
+
 // ─── TabBudget ─────────────────────────────────────────────────
 function TabBudget() {
   const [budget, setBudget] = useState(null);
@@ -1191,6 +1385,10 @@ function App() {
           h.mem_mb.push(Math.round(data.total_mem_mb*10)/10);
           h.mcp.push(data.total_mcp_servers);
           h.mem_tokens.push(data.total_memory_tokens);
+          h.live_sessions.push(data.total_live_sessions);
+          h.live_tokens.push(data.total_live_estimated_tokens);
+          h.live_in_rate.push(Math.round((data.total_live_inbound_rate_bps||0)*100)/100);
+          h.live_out_rate.push(Math.round((data.total_live_outbound_rate_bps||0)*100)/100);
           // Keep max 360 points
           if(h.ts.length>360) Object.keys(h).forEach(k=>h[k].shift());
           return h;
@@ -1213,7 +1411,7 @@ function App() {
     const handler = e => {
       if(e.key==='Escape') setViewerPath(null);
       if(e.key==='/'&&document.activeElement!==searchRef.current) { e.preventDefault(); searchRef.current?.focus(); }
-      if(e.key>='1'&&e.key<='5'&&document.activeElement!==searchRef.current) {
+      if(e.key>='1'&&e.key<='6'&&document.activeElement!==searchRef.current) {
         setActiveTab(TABS[parseInt(e.key)-1].id);
       }
     };
@@ -1231,7 +1429,12 @@ function App() {
     const q = searchQuery.toLowerCase();
     return {...snap, tools: snap.tools.filter(t=>
       t.label.toLowerCase().includes(q) ||
-      t.files.some(f=>f.path.toLowerCase().includes(q))
+      t.files.some(f=>f.path.toLowerCase().includes(q)) ||
+      t.processes.some(p=>(p.name||'').toLowerCase().includes(q) || (p.cmdline||'').toLowerCase().includes(q)) ||
+      (t.live && (
+        (t.live.workspaces||[]).some(w=>w.toLowerCase().includes(q)) ||
+        (t.live.sources||[]).some(src=>src.toLowerCase().includes(q))
+      ))
     )};
   },[snap, searchQuery]);
 
@@ -1242,6 +1445,7 @@ function App() {
     procs: html`<${TabProcesses}/>`,
     mcp: html`<${TabMcp}/>`,
     memory: html`<${TabMemory}/>`,
+    live: html`<${TabLive}/>`,
     budget: html`<${TabBudget} key=${'budget-'+activeTab}/>`,
   };
 

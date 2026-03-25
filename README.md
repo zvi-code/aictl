@@ -250,16 +250,19 @@ aictl offers three complementary ways to view AI tool resources, from quick term
 aictl serve                     # opens browser at http://127.0.0.1:8484
 aictl serve --port 9000         # custom port
 aictl serve --no-open           # don't auto-open browser
+aictl serve --no-monitor        # disable live runtime overlay
 ```
 
-The web dashboard is a real-time, interactive interface that auto-updates via Server-Sent Events:
+The web dashboard is a real-time, interactive interface that auto-updates via Server-Sent Events and layers live monitor data on top of the CSV-driven discovery schema:
 
-- **Overview-first** — all tools shown as collapsed summary cards in a grid. Each card shows file count, tokens, processes, MCP servers, and anomaly count at a glance. Click to expand.
+- **Overview-first** — all tools shown as collapsed summary cards in a grid. Each card combines CSV-discovered files/processes/MCP state with live monitor signals like session count, traffic rate, token estimates, and MCP-loop inference. Click to expand.
+- **Dual signal bars** — separate bars for static CSV footprint and live traffic so you can compare durable context against runtime activity.
 - **Hierarchical files** — expanded tool cards group files by category (instructions, config, rules, commands, skills, memory, transcript). Each category is collapsible.
 - **Inline file preview** — click any file to see content inline with line numbers. Small files show fully; large files show a tail preview with "show all (N lines)" to expand. "open in viewer" button for full slide-in panel.
 - **Process monitoring** — dedicated Processes tab with all processes sorted by memory, visual memory bars, process type column, and anomaly icons with tooltips.
 - **MCP server status** — connectivity table with live status indicators (green/red/orange dots).
 - **Agent memory browser** — collapsible groups (User Memory, Project Memory, Auto Memory) with click-to-view content.
+- **Live Monitor tab** — collector diagnostics, per-tool sessions, live traffic, token inference confidence, workspace roots, and monitored state paths.
 - **Token budget** — breakdown of always-loaded, on-demand, cacheable, and compaction-surviving tokens.
 - **Dark/light mode** — auto-detects system preference.
 - **No extra dependencies** — uses Python stdlib `http.server`.
@@ -280,6 +283,7 @@ curl -N http://localhost:8484/api/stream    # real-time SSE stream
 ```bash
 aictl dashboard                 # requires textual: pipx inject aictl textual
 aictl dashboard --interval 3    # faster refresh
+aictl dashboard --no-monitor    # disable live runtime overlay
 ```
 
 A Textual-based TUI with live-updating stat cards, per-tool summaries, sparkline CPU/MEM history, and tabbed views:
@@ -289,6 +293,7 @@ A Textual-based TUI with live-updating stat cards, per-tool summaries, sparkline
 - **Processes tab** — all processes sorted by memory, with process type, anomalies, and tool labels.
 - **MCP Servers tab** — status table with color-coded dots.
 - **Agent Memory tab** — select an entry to preview content inline.
+- **Live Monitor tab** — active tool sessions plus collector health and runtime confidence.
 
 Keybindings: `r` refresh, `p` toggle processes, `f` toggle files, `m` toggle memory, `q` quit.
 
