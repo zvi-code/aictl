@@ -1404,6 +1404,120 @@ See `ai-tools-traffic-monitoring.md` Section 9.5-9.7 for the full token assessme
 
 ---
 
+## Discovery Model: Interest Scope & Path Resolution
+
+This section formalizes how a discovery tool (like `aictl`) determines which files and directories to inspect for a given project root. The companion CSV (`ai-tools-paths-*.csv`) encodes this model in two columns: `resolution` and `root_strategy`.
+
+### Root Strategy
+
+Each AI tool determines its **effective project root** differently. The `root_strategy` column in the CSV records this per-tool:
+
+| Strategy | Tools | Rule |
+|----------|-------|------|
+| `cwd` | claude-code, opencode, openclaw, aictl | Root = the working directory the tool was launched from |
+| `git-root` | copilot-cli, copilot, gemini-cli, codex-cli, aider | Root = `git rev-parse --show-toplevel`, fallback to cwd |
+| `workspace` | cursor, windsurf, copilot-vscode, continue, junie, tabnine | Root = IDE-opened folder (equivalent to cwd for CLI discovery) |
+| `none` | claude-desktop, chatgpt-desktop, chatgpt-lencx, openai-api | No project root — only global-scope paths apply |
+| `varies` | cross-tool entries (AGENTS.md, CLAUDE.md, GEMINI.md) | Depends on which tool reads the file |
+
+### Interest Scope
+
+For a given `user_dir`, the **interest scope** is the union of five directory layers:
+
+```
+InterestScope(user_dir) = Global ∪ Root ∪ Subtree ∪ Parents ∪ Shadows
+```
+
+**Layer 1 — Global** (`resolution: literal`). Platform-specific per-tool directories that exist regardless of project context. Examples: `~/.claude/`, `~/.copilot/`, `~/.codeium/windsurf/`. Session-scoped paths (transcripts, temp files) also fall here. These are absolute paths — expand `~` or `%APPDATA%` and check existence.
+
+**Layer 2 — Root** (`resolution: rooted`). Files that only appear at the project root, never in subdirectories. Examples: `azure.yaml`, `opencode.json`, `.ai-deployed/manifest.json`. Substitute `{project-root}` with the effective root and check existence.
+
+**Layer 3 — Subtree** (`resolution: recursive`). Files and directories that can appear at any level in the project tree. This is the largest category — instruction files, rules, MCP configs, ignore files, etc. Examples: `CLAUDE.md`, `.mcp.json`, `.github/copilot-instructions.md`, `.cursorrules`. The discovery engine walks the full directory tree under root, pruning irrelevant directories (`.git`, `node_modules`, `.venv`, `__pycache__`, etc.).
+
+**Layer 4 — Parents** (`resolution: parent`). Files in directories above the project root, traversing upward to `$HOME`. Currently only Claude Code uses this — it reads `CLAUDE.md` and `CLAUDE.local.md` from every parent directory. This enables monorepo setups where a top-level `CLAUDE.md` applies to all sub-projects.
+
+**Layer 5 — Shadows** (`resolution: shadow`). Directories outside the project tree that are **associated** with it via a deterministic encoding. See "Associated Directory Groups" below.
+
+### Path Resolution (the `resolution` column)
+
+Each row in the CSV has a `resolution` value that tells the discovery engine how to expand the path template:
+
+| Value | Template form | Algorithm |
+|-------|--------------|-----------|
+| `literal` | `~/.claude/CLAUDE.md`, `%APPDATA%\...` | Expand env vars / `~` → check existence. Glob if `*` present. |
+| `rooted` | `{project-root}/azure.yaml` | Substitute `{project-root}` → check existence. |
+| `recursive` | `{project-root}/CLAUDE.md` | Walk all subdirectories under root, match filename/pattern at every level (including root itself). Prune `.git`, `node_modules`, `.venv`, etc. |
+| `parent` | `{parent}/CLAUDE.md` | Starting from `root.parent`, walk upward toward `$HOME`, checking each directory. Stop at `$HOME` or after 10 levels. |
+| `shadow` | `~/.claude/projects/{project}/memory/` | Resolve `{project}` using the tool's shadow encoding (see below), then expand remaining template variables. |
+
+**Template variables** in path patterns:
+
+| Variable | Meaning | Expansion |
+|----------|---------|-----------|
+| `~` | User home directory | `Path.home()` |
+| `%APPDATA%`, `%LOCALAPPDATA%`, etc. | Windows env vars | `os.environ[...]` |
+| `{project-root}` | Effective project root | Determined by `root_strategy` |
+| `{parent}` | Parent directories above root | Traversal, not substitution |
+| `{project}` | Shadow-encoded root path | Tool-specific encoding (see below) |
+| `{skill}`, `{command}`, `{agent}`, `{rule}` | Named resources | Glob enumeration in parent directory |
+| `{session}`, `{timestamp}`, `{hex}`, `{topic}` | Runtime identifiers | Glob enumeration |
+| `*` | Standard glob | `Path.glob()` |
+
+### Associated Directory Groups (Shadow Directories)
+
+A **shadow directory** is a directory that lives outside the project tree but is keyed to a specific project path. When a project directory `D` is in the interest scope, its **associated directory group** includes all shadows of `D`.
+
+Known shadow encodings:
+
+| Tool | Shadow location | Encoding rule | Example |
+|------|----------------|---------------|---------|
+| **claude-code** | `~/.claude/projects/{project}/` | Path separators (`/`, `\`) → dashes | `/Users/zvi/Projects/foo` → `-Users-zvi-Projects-foo` |
+| **claude-code** | `/tmp/claude-{user}/{project}/` | Same dash encoding | Session temp files |
+| **cursor** | `~/Library/.../workspaceStorage/{hash}/` | SHA-based hash of absolute path | Opaque hash, requires enumeration |
+| **copilot-cli** | `~/.copilot/session-state/{uuid}/` | UUID session dirs, linked via `workspace.yaml` containing `cwd: D` | Requires reading YAML to match |
+
+Shadow resolution algorithm:
+1. Compute the expected encoded name from the absolute path of `D`
+2. Search the tool's shadow parent directory for matches
+3. Apply fuzzy matching strategies in order:
+   - Exact encoding match
+   - Case-insensitive match (macOS HFS+/APFS)
+   - All path segments present as dash-separated substrings
+   - Trailing project name on a dash boundary
+   - Structural check (presence of expected subdirectory like `memory/`)
+4. Prefer the longest (most specific) match if multiple candidates exist
+
+### Pruned Directories
+
+When performing recursive tree walks (`resolution: recursive`), skip these directories to avoid irrelevant noise and performance issues:
+
+`.git`, `.venv`, `venv`, `.env`, `node_modules`, `.npm`, `.yarn`, `__pycache__`, `.mypy_cache`, `.pytest_cache`, `.tox`, `.ruff_cache`, `dist`, `build`, `.cargo`, `target`, `.idea`, `.vs`, `Pods`, `DerivedData`
+
+### CSV Column Reference
+
+The `ai-tools-paths-*.csv` files use these columns:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `path` | string | Path template (see template variables above) |
+| `ai_tool` | string | Tool identifier (e.g., `claude-code`, `cursor`, `copilot-cli`) |
+| `platform` | enum | `all`, `macos`, `linux`, `macos/linux`, `windows` |
+| `hidden` | bool | Whether the path starts with `.` (hidden on Unix) |
+| `scope` | enum | `global`, `project`, `session`, `parent` |
+| `category` | string | `instructions`, `config`, `rules`, `commands`, `skills`, `memory`, `mcp`, `credentials`, `hooks`, `agent`, `cache`, `runtime`, `temp`, etc. |
+| `sent_to_llm` | enum | `yes`, `no`, `on-demand`, `conditional`, `partial` |
+| `approx_tokens` | string | Typical token range (e.g., `100-2000`) or `0` |
+| `read_write` | enum | `read`, `rw`, `write` |
+| `survives_compaction` | enum | `yes`, `no`, `n/a` |
+| `cacheable` | enum | `yes`, `no`, `n/a` |
+| `loaded_when` | string | `app-start`, `session-start`, `every-call`, `on-demand`, `on-invoke`, `on-hook-trigger`, `on-file-match`, `runtime`, etc. |
+| `path_args` | string | Documentation of template variable semantics |
+| `description` | string | Human-readable purpose |
+| `resolution` | enum | **`literal`**, **`rooted`**, **`recursive`**, **`parent`**, **`shadow`** — how to expand the path template |
+| `root_strategy` | enum | **`cwd`**, **`git-root`**, **`workspace`**, **`none`**, **`varies`** — how the tool determines project root |
+
+---
+
 ## Appendix A: Windows Path Equivalents & Gotchas
 
 Every path listed in the main document uses Unix notation (`~/`, `/tmp/`). This appendix maps them to their Windows equivalents and documents Windows-specific behavior differences.

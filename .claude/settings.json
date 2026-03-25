@@ -29,7 +29,15 @@
       "Bash(ls /Users/zvi/Projects/aictl/.venv/bin/python*)",
       "Bash(ls /Users/zvi/Projects/aictl/venv/bin/python*)",
       "Bash(/Users/zvi/Projects/aictl/.venv/bin/python -m pytest test/ -v)",
-      "Bash(/Users/zvi/Projects/aictl/.venv/bin/python -m pytest test/test_hooks_lsp_plugin.py -v)"
+      "Bash(/Users/zvi/Projects/aictl/.venv/bin/python -m pytest test/test_hooks_lsp_plugin.py -v)",
+      "Bash(wc -l /Users/zvi/Projects/aictl/ai-tools-*.csv)",
+      "Bash(head -1 /Users/zvi/Projects/aictl/ai-tools-*.csv)",
+      "Bash(wc -l /Users/zvi/Projects/aictl/aictl/*.py)",
+      "Bash(ls -la /Users/zvi/Projects/aictl/*.md)",
+      "Bash(python3 _add_csv_columns.py)",
+      "Bash(python3 _finalize_csvs.py)",
+      "Bash(python3 -c \":*)",
+      "Bash(awk -F',' '{print NF}' /Users/zvi/Projects/aictl/ai-tools-monitoring-dossiers.csv)"
     ]
   }
 }

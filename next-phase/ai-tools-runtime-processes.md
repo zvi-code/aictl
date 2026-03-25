@@ -962,6 +962,121 @@ Get-CimInstance Win32_StartupCommand | Where-Object {
 
 ---
 
+## CSV-Driven Process Detection Model
+
+The companion CSV (`ai-tools-processes-*.csv`) provides a structured, machine-readable registry of every known AI tool process. This section documents how to use the CSV for automated process discovery, matching, and anomaly detection.
+
+### Detection Algorithm
+
+Process detection is a single-pass operation — scan the OS process table once, match against all compiled patterns:
+
+```
+1. Load CSV, filter by current platform (macos/linux/windows → match 'all' + platform)
+2. Compile each row's ps_grep_pattern into a regex
+3. Snapshot the process table (via psutil or `ps axo pid,pcpu,rss,comm,args`)
+4. For each process:
+   a. Skip shells (zsh, bash, sh, fish) and inspection tools (grep, ps, awk)
+   b. Match comm and args against all compiled patterns
+   c. On match: annotate with CSV row metadata
+5. Return matched processes with structured context
+```
+
+### Matching: the `ps_grep_pattern` column
+
+Each CSV row has a `ps_grep_pattern` — a regex or `|`-separated alternatives designed to match against process names and command lines:
+
+| Pattern style | Example | Matches |
+|---------------|---------|---------|
+| Simple name | `esbuild` | Process named or running esbuild |
+| Anchored | `^claude$` | Exact process name "claude" |
+| Alternatives | `claude --print\|claude --resume` | Subagent variants |
+| Regex | `Cursor Helper.*Renderer` | Specific Electron helper |
+| Empty | *(empty string)* | Generic category (e.g., extension processes) — match by parent/context only |
+
+A process matches a row when `re.search(pattern, comm)` or `re.search(pattern, args)` succeeds.
+
+### Anomaly Detection Using CSV Metadata
+
+Each matched process carries rich metadata from the CSV row. Use it for automated anomaly detection:
+
+| CSV column | Anomaly condition | Alert |
+|------------|------------------|-------|
+| `memory_active_mb` | `actual_mem > memory_active_mb * 2` | Memory leak suspected |
+| `memory_idle_mb` | `actual_mem > memory_idle_mb * 5` (idle process) | Unbounded growth |
+| `known_leak` = `yes` | Process matched AND `leak_pattern` describes the scenario | Known leak — show `cleanup_command` |
+| `zombie_risk` = `high` | Process PPID = 1 (orphaned) or parent process dead | Orphan detected — suggest cleanup |
+| `stops_at` = `never(bug)` | Process still running after its trigger ended | Lingering process |
+| `is_daemon` = `no` | Process running with no apparent parent session | Unexpected daemon behavior |
+
+### Per-Process Enrichment
+
+For each matched process, the CSV provides context that static `ps` output cannot:
+
+```
+MatchedProcess:
+  pid:              12345
+  actual_cpu:       2.5%
+  actual_mem_mb:    450
+  csv_row:
+    process_name:   "claude --print --resume <id>"
+    ai_tool:        "claude-code"
+    process_type:   "subagent"
+    parent_process: "claude"
+    starts_at:      "on-tool-call"
+    stops_at:       "never(bug)"
+    known_leak:     yes
+    leak_pattern:   "Subagents may not terminate after Task tool completes; ~45MB each..."
+    zombie_risk:    "high"
+    cleanup_command: "pkill -f 'claude --print'"
+    memory_active_mb: 150    ← expected
+  anomalies:
+    - "Memory 450MB exceeds expected 150MB (3x)"
+    - "Process type is subagent but PPID=1 (orphaned)"
+```
+
+### CSV Column Reference
+
+The `ai-tools-processes-*.csv` files use these columns:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `process_name` | string | Human-readable process name |
+| `ai_tool` | string | Tool identifier (e.g., `claude-code`, `cursor`, `copilot-cli`) |
+| `process_type` | enum | `app`, `helper`, `cli`, `shell`, `mcp-server`, `subagent`, `browser`, `child`, `extension`, `indexer`, `watcher`, `daemon` |
+| `runtime` | enum | `electron`, `chromium`, `node`, `python`, `native-binary`, `bash`, `docker` |
+| `parent_process` | string | Expected parent process name |
+| `starts_at` | string | When the process starts: `app-launch`, `session-start`, `on-tool-call`, `on-demand`, `gateway-start`, `system-boot`, `on-mcp-config` |
+| `stops_at` | string | When it should stop: `app-close`, `session-end`, `process-exit`, `on-demand`, `gateway-stop`, `manual`, `never(bug)` |
+| `is_daemon` | bool | Whether this is a long-running background service |
+| `auto_start` | bool | Whether parent starts this automatically |
+| `listens_port` | string | Port the process listens on (`none`, `random-localhost`, or specific port) |
+| `outbound_targets` | string | Domains/endpoints the process connects to |
+| `memory_idle_mb` | int | Expected memory when idle (MB) |
+| `memory_active_mb` | int | Expected memory under load (MB) |
+| `known_leak` | bool | Whether this process has a known memory/resource leak |
+| `leak_pattern` | string | Description of the leak behavior |
+| `zombie_risk` | enum | `none`, `low`, `medium`, `high` |
+| `cleanup_command` | string | Shell command to kill this process (if orphaned) |
+| `ps_grep_pattern` | string | Regex pattern for matching against `ps` output |
+| `platform` | enum | `all`, `macos/linux`, `windows` |
+| `description` | string | Human-readable purpose |
+
+### Platform Filtering
+
+Three CSV variants exist for convenience:
+
+- `ai-tools-processes-all.csv` — all rows, all platforms
+- `ai-tools-processes-unix.csv` — rows where `platform` is `all` or `macos/linux`
+- `ai-tools-processes-windows.csv` — rows where `platform` is `all` or `windows`
+
+At runtime, load the platform-appropriate variant (or load `all` and filter by `platform.system()`).
+
+### Relationship to Interest Scope
+
+Process detection is **system-wide** — unlike file discovery, it does not depend on project root or directory scoping. All processes matching a tool's patterns are reported regardless of which project they belong to. To associate a process with a specific project, inspect the process command line for the project path (e.g., `claude` processes often contain the working directory in their args).
+
+---
+
 ## Quick Reference: Expected Resource Usage
 
 | Tool | Idle Memory | Active Memory | Background Processes | Listens On |
