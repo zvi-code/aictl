@@ -426,10 +426,26 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 .cat-group.open .cat-files { display: block; }
 
 /* File items */
+.fitem-wrap { }
 .fitem { padding: 0.15rem 0; font-size: 0.78rem; cursor: pointer; display: flex; gap: 0.4rem; }
 .fitem:hover { background: var(--bg3); border-radius: 3px; }
 .fpath { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fmeta { color: var(--fg2); white-space: nowrap; font-size: 0.72rem; }
+
+/* Inline file preview */
+.inline-preview {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+  margin: 0.2rem 0 0.4rem 0; padding: 0.4rem 0.6rem; font-size: 0.75rem;
+  font-family: 'SF Mono', Menlo, Consolas, monospace; line-height: 1.45;
+  white-space: pre-wrap; color: var(--fg2); overflow-x: auto;
+}
+.inline-preview .ln { color: var(--border); user-select: none; display: inline-block;
+  width: 3ch; text-align: right; margin-right: 0.6em; }
+.inline-preview .prev-actions { margin-top: 0.3rem; display: flex; gap: 0.4rem; }
+.inline-preview .prev-btn {
+  display: inline-block; padding: 0.1rem 0.4rem; background: var(--border);
+  color: var(--fg2); border: none; border-radius: 3px; font-size: 0.68rem; cursor: pointer; }
+.inline-preview .prev-btn:hover { background: var(--accent); color: var(--bg); }
 
 /* Process rows with memory bar */
 .proc-section { margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.4rem; }
@@ -554,6 +570,8 @@ const COLORS = {
 const SC = {running:'var(--green)',stopped:'var(--red)',error:'var(--orange)',unknown:'var(--fg2)'};
 let snap = null, fullContent = '', openCards = new Set(), openCats = new Set();
 let prevStats = {};
+let userInteracted = false; // pause SSE re-renders while user is interacting
+let interactTimer = null;
 
 // === Theme ===
 const themes = ['auto','dark','light'];
@@ -606,11 +624,11 @@ document.addEventListener('keydown', e => {
 
 // === Tabs ===
 function switchTab(name, btn) {
+  userInteracted = false; // fresh render for new tab
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
   if(btn) btn.classList.add('active');
-  // Render the newly active tab
   if(!snap) return;
   if(name==='overview') renderOverview(snap);
   else if(name==='procs') renderProcs(snap);
@@ -620,10 +638,17 @@ function switchTab(name, btn) {
 }
 
 // === Render ===
+function markInteracted() {
+  userInteracted = true;
+  clearTimeout(interactTimer);
+  interactTimer = setTimeout(() => { userInteracted = false; }, 30000); // resume after 30s idle
+}
+
 function render(s) {
   renderStats(s);
   renderBar(s);
-  // Only re-render the active tab to avoid disrupting user interaction
+  // Skip tab re-render while user is interacting (e.g. viewing inline preview)
+  if(userInteracted) return;
   const active = document.querySelector('.tab-panel.active');
   if(active) {
     const id = active.id;
@@ -631,7 +656,6 @@ function render(s) {
     else if(id==='tab-procs') renderProcs(s);
     else if(id==='tab-mcp') renderMCP(s);
     else if(id==='tab-memory') renderMemory(s);
-    // budget tab is on-demand, not refreshed
   }
   applySearch();
 }
@@ -694,6 +718,7 @@ function renderOverview(s) {
 }
 
 function toggleCard(tool) {
+  markInteracted();
   if(openCards.has(tool)) openCards.delete(tool); else openCards.add(tool);
   if(snap) renderOverview(snap);
 }
@@ -809,9 +834,13 @@ function renderDirTree(dirGroups, s, parentKey) {
     if(files.length === 1) {
       const f = files[0];
       const name = f.path.split('/').pop();
-      return `<div class="fitem" onclick="fetchFile('${esc(f.path)}')" style="margin-left:0.5rem">
-        <span class="fpath" title="${esc(f.path)}"><span style="color:var(--fg2)">${esc(dir)}/</span>${esc(name)}</span>
-        <span class="fmeta">${fmtSz(f.size)}${f.tokens?' ~'+fmtK(f.tokens)+'t':''}</span>
+      const pid = 'fp'+(previewCounter++);
+      return `<div class="fitem-wrap" style="margin-left:0.5rem">
+        <div class="fitem" onclick="toggleInlinePreview('${pid}','${esc(f.path)}')">
+          <span class="fpath" title="${esc(f.path)}"><span style="color:var(--fg2)">${esc(dir)}/</span>${esc(name)}</span>
+          <span class="fmeta">${fmtSz(f.size)}${f.tokens?' ~'+fmtK(f.tokens)+'t':''}</span>
+        </div>
+        <div class="inline-preview" id="${pid}" style="display:none"></div>
       </div>`;
     }
     const dirKey = parentKey + '|' + dir;
@@ -825,15 +854,21 @@ function renderDirTree(dirGroups, s, parentKey) {
     </div>`;
   }).join('');
 }
+let previewCounter = 0;
 function renderFileItem(f) {
   const name = f.path.split('/').pop();
-  return `<div class="fitem" onclick="fetchFile('${esc(f.path)}')">
-    <span class="fpath" title="${esc(f.path)}">${esc(name)}</span>
-    <span class="fmeta">${fmtSz(f.size)}${f.tokens?' ~'+fmtK(f.tokens)+'t':''}</span>
+  const pid = 'fp'+(previewCounter++);
+  return `<div class="fitem-wrap">
+    <div class="fitem" onclick="toggleInlinePreview('${pid}','${esc(f.path)}')">
+      <span class="fpath" title="${esc(f.path)}">${esc(name)}</span>
+      <span class="fmeta">${fmtSz(f.size)}${f.tokens?' ~'+fmtK(f.tokens)+'t':''}</span>
+    </div>
+    <div class="inline-preview" id="${pid}" style="display:none"></div>
   </div>`;
 }
 
 function toggleCat(key) {
+  markInteracted();
   if(openCats.has(key)) openCats.delete(key); else openCats.add(key);
   if(!snap) return;
   // Re-render the tab that owns this key
@@ -910,10 +945,14 @@ function renderMemory(s) {
           </div>
           <div class="cat-files">${items.map(m=>{
             const name = m.file.split('/').pop();
-            return `<div class="mem-item" onclick="fetchFile('${esc(m.file)}')">
-              <span style="color:var(--orange);min-width:40px;font-size:0.72rem">${esc(m.profile)}</span>
-              <span class="fpath" title="${esc(m.file)}">${esc(name)}</span>
-              <span class="fmeta">${m.tokens}tok ${m.lines}ln</span>
+            const pid = 'mp'+(previewCounter++);
+            return `<div class="fitem-wrap">
+              <div class="mem-item" onclick="toggleInlinePreview('${pid}','${esc(m.file)}')">
+                <span style="color:var(--orange);min-width:40px;font-size:0.72rem">${esc(m.profile)}</span>
+                <span class="fpath" title="${esc(m.file)}">${esc(name)}</span>
+                <span class="fmeta">${m.tokens}tok ${m.lines}ln</span>
+              </div>
+              <div class="inline-preview" id="${pid}" style="display:none"></div>
             </div>`;
           }).join('')}</div>
         </div>`;
@@ -922,19 +961,104 @@ function renderMemory(s) {
   }).join('');
 }
 
-// === File Viewer ===
+// === Inline Preview ===
+const TAIL_LINES = 5;
+const inlineCache = {};
+
+async function toggleInlinePreview(id, path) {
+  markInteracted();
+  const el = document.getElementById(id);
+  if(!el) return;
+  // Toggle off if already showing
+  if(el.style.display !== 'none') { el.style.display = 'none'; return; }
+  // Show loading
+  el.style.display = 'block';
+  el.innerHTML = '<span style="color:var(--fg2)">loading...</span>';
+  // Fetch (with cache)
+  let text = inlineCache[path];
+  if(!text) {
+    try {
+      const res = await fetch('/api/file?path='+encodeURIComponent(path));
+      if(!res.ok) { el.innerHTML = '<span style="color:var(--red)">'+res.statusText+'</span>'; return; }
+      text = await res.text();
+      inlineCache[path] = text;
+    } catch(e) { el.innerHTML = '<span style="color:var(--red)">fetch error</span>'; return; }
+  }
+  renderInlinePreview(el, text, path);
+}
+
+function renderInlinePreview(el, text, path) {
+  const lines = text.split('\n');
+  const total = lines.length;
+  const isSmall = total <= TAIL_LINES * 3;
+  // Build line-numbered HTML
+  function numbered(arr, startIdx) {
+    return arr.map((l,i) => `<span class="ln">${startIdx+i}</span>${esc(l)||' '}`).join('\n');
+  }
+  if(isSmall) {
+    el.innerHTML = numbered(lines, 1) +
+      `<div class="prev-actions"><button class="prev-btn" onclick="openFullViewer('${esc(path)}')">open in viewer</button></div>`;
+  } else {
+    // Show tail preview
+    const tail = lines.slice(-TAIL_LINES);
+    const tailStart = total - TAIL_LINES + 1;
+    el.innerHTML = numbered(tail, tailStart) +
+      `<div class="prev-actions">
+        <button class="prev-btn" onclick="expandInline(this,'${esc(path)}')">show all (${total} lines)</button>
+        <button class="prev-btn" onclick="openFullViewer('${esc(path)}')">open in viewer</button>
+      </div>`;
+  }
+}
+
+function expandInline(btn, path) {
+  const el = btn.closest('.inline-preview');
+  const text = inlineCache[path];
+  if(!text || !el) return;
+  const lines = text.split('\n');
+  function numbered(arr, startIdx) {
+    return arr.map((l,i) => `<span class="ln">${startIdx+i}</span>${esc(l)||' '}`).join('\n');
+  }
+  el.innerHTML = numbered(lines, 1) +
+    `<div class="prev-actions">
+      <button class="prev-btn" onclick="collapseInline(this,'${esc(path)}')">collapse</button>
+      <button class="prev-btn" onclick="openFullViewer('${esc(path)}')">open in viewer</button>
+    </div>`;
+}
+
+function collapseInline(btn, path) {
+  const el = btn.closest('.inline-preview');
+  const text = inlineCache[path];
+  if(!text || !el) return;
+  renderInlinePreview(el, text, path);
+}
+
+function openFullViewer(path) {
+  const text = inlineCache[path];
+  if(text) { fullContent = text; showFullViewer(path, text); }
+  else fetchFile(path);
+}
+
+// === Full File Viewer (secondary) ===
 const PREVIEW_LINES = 15;
 let fvExpanded = false;
 let fvLines = [];
 
 async function fetchFile(path) {
-  const res = await fetch('/api/file?path='+encodeURIComponent(path));
-  if(!res.ok){alert('Cannot read: '+res.statusText);return;}
-  fullContent = await res.text();
-  fvLines = fullContent.split('\n');
+  let text = inlineCache[path];
+  if(!text) {
+    const res = await fetch('/api/file?path='+encodeURIComponent(path));
+    if(!res.ok){alert('Cannot read: '+res.statusText);return;}
+    text = await res.text();
+    inlineCache[path] = text;
+  }
+  showFullViewer(path, text);
+}
+
+function showFullViewer(path, text) {
+  fullContent = text;
+  fvLines = text.split('\n');
   fvExpanded = false;
   document.getElementById('fv-path').textContent=path;
-  // Find metadata
   let meta='';
   if(snap){
     for(const t of snap.tools) for(const f of t.files) if(f.path===path){
