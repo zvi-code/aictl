@@ -694,20 +694,14 @@ function renderToolBody(t, s) {
     const files = cats[cat];
     const key = t.tool+'|'+cat;
     const isOpen = openCats.has(key);
+    // Group files by directory within category
+    const dirGroups = groupByDir(files, s.root);
     return `<div class="cat-group${isOpen?' open':''}">
       <div class="cat-head" onclick="toggleCat('${esc(key)}')">
         <span class="carrow">&#9654;</span>
         <span>${esc(cat)}</span> <span class="badge">${files.length}</span>
       </div>
-      <div class="cat-files">${files.map(f => {
-        const rel = relPath(f.path, s.root);
-        const name = rel.split('/').pop();
-        const dir = rel.substring(0, rel.length - name.length);
-        return `<div class="fitem" onclick="fetchFile('${esc(f.path)}')">
-          <span class="fpath" title="${esc(f.path)}"><span style="color:var(--fg2)">${esc(dir)}</span>${esc(name)}</span>
-          <span class="fmeta">${fmtSz(f.size)}${f.tokens?' ~'+fmtK(f.tokens)+'t':''}</span>
-        </div>`;
-      }).join('')}</div>
+      <div class="cat-files">${renderDirTree(dirGroups, s, key)}</div>
     </div>`;
   }).join('');
 
@@ -740,6 +734,77 @@ function renderToolBody(t, s) {
       }).join('') + `</div>`;
   }
   return html;
+}
+
+// === Directory tree helpers ===
+function scopeLabel(path, root) {
+  if(path.startsWith(root+'/')) return 'project';
+  if(path.includes('/.claude/projects/')) return 'shadow';
+  if(path.includes('/.claude/') || path.includes('/.config/') || path.includes('/Library/')) return 'global';
+  if(path.includes('/.copilot/') || path.includes('/.vscode/')) return 'global';
+  return 'external';
+}
+function shortDir(path, root) {
+  // Return a short, meaningful directory label
+  if(path.startsWith(root+'/')) {
+    const rel = path.slice(root.length+1);
+    const parts = rel.split('/');
+    parts.pop(); // remove filename
+    return parts.length ? parts.join('/') : '(root)';
+  }
+  // For global/shadow paths, show from last meaningful segment
+  const parts = path.split('/');
+  parts.pop(); // remove filename
+  // Find the tool-specific root: .claude, .copilot, .cursor, etc.
+  for(let i=parts.length-1; i>=0; i--) {
+    if(parts[i].startsWith('.') && parts[i].length>1 && parts[i]!=='..') {
+      return '~/' + parts.slice(i).join('/');
+    }
+    if(parts[i]==='Library') {
+      return '~/' + parts.slice(i).join('/');
+    }
+  }
+  return parts.slice(-2).join('/');
+}
+function groupByDir(files, root) {
+  const groups = {};
+  files.forEach(f => {
+    const scope = scopeLabel(f.path, root);
+    const dir = shortDir(f.path, root);
+    const label = scope === 'project' ? dir : `${scope}: ${dir}`;
+    (groups[label] = groups[label] || []).push(f);
+  });
+  // Sort: project first, then global, then shadow, then external
+  const order = {project:0, global:1, shadow:2, external:3};
+  return Object.entries(groups).sort((a,b) => {
+    const sa = a[1][0] ? scopeLabel(a[1][0].path, root) : 'z';
+    const sb = b[1][0] ? scopeLabel(b[1][0].path, root) : 'z';
+    return (order[sa]||9) - (order[sb]||9);
+  });
+}
+function renderDirTree(dirGroups, s, parentKey) {
+  if(dirGroups.length === 1 && dirGroups[0][1].length <= 3) {
+    // Single small dir — show files flat, no nesting
+    return dirGroups[0][1].map(f => renderFileItem(f)).join('');
+  }
+  return dirGroups.map(([dir, files]) => {
+    const dirKey = parentKey + '|' + dir;
+    const isOpen = openCats.has(dirKey);
+    return `<div class="cat-group${isOpen?' open':''}" style="margin-left:0.5rem">
+      <div class="cat-head" onclick="toggleCat('${esc(dirKey)}')">
+        <span class="carrow">&#9654;</span>
+        <span style="color:var(--fg2)">${esc(dir)}</span> <span class="badge">${files.length}</span>
+      </div>
+      <div class="cat-files">${files.map(f => renderFileItem(f)).join('')}</div>
+    </div>`;
+  }).join('');
+}
+function renderFileItem(f) {
+  const name = f.path.split('/').pop();
+  return `<div class="fitem" onclick="fetchFile('${esc(f.path)}')">
+    <span class="fpath" title="${esc(f.path)}">${esc(name)}</span>
+    <span class="fmeta">${fmtSz(f.size)}${f.tokens?' ~'+fmtK(f.tokens)+'t':''}</span>
+  </div>`;
 }
 
 function toggleCat(key) {
@@ -794,18 +859,34 @@ function renderMemory(s) {
   s.agent_memory.forEach(m=>{(groups[m.source]=groups[m.source]||[]).push(m);});
   el.innerHTML = Object.entries(groups).map(([src,entries])=>{
     const isOpen = openCats.has('mem|'+src);
+    // Group entries by directory
+    const dirGroups = {};
+    entries.forEach(m => {
+      const dir = shortDir(m.file, s.root);
+      (dirGroups[dir] = dirGroups[dir] || []).push(m);
+    });
     return `<div class="mem-group${isOpen?' open':''}">
       <div class="mem-group-head" onclick="toggleCat('mem|${src}')">
         <span class="carrow" style="font-size:0.6rem">&#9654;</span>
         ${esc(LABELS[src]||src)} <span class="badge">${entries.length}</span>
         <span class="badge">${fmtK(entries.reduce((a,m)=>a+m.tokens,0))} tok</span>
       </div>
-      <div class="mem-group-body">${entries.map(m=>{
-        const rel=relPath(m.file,s.root);
-        return `<div class="mem-item" onclick="fetchFile('${esc(m.file)}')">
-          <span style="color:var(--orange);min-width:60px">[${esc(m.profile)}]</span>
-          <span class="fpath" title="${esc(m.file)}">${esc(rel)}</span>
-          <span class="fmeta">${m.tokens}tok ${m.lines}ln</span>
+      <div class="mem-group-body">${Object.entries(dirGroups).map(([dir,items])=>{
+        const dirKey = 'mem|'+src+'|'+dir;
+        const dirOpen = items.length <= 5 || openCats.has(dirKey);
+        return `<div class="cat-group${dirOpen?' open':''}" style="margin:0 0.5rem">
+          <div class="cat-head" onclick="toggleCat('${esc(dirKey)}')">
+            <span class="carrow">&#9654;</span>
+            <span style="color:var(--fg2)">${esc(dir)}</span> <span class="badge">${items.length}</span>
+          </div>
+          <div class="cat-files">${items.map(m=>{
+            const name = m.file.split('/').pop();
+            return `<div class="mem-item" onclick="fetchFile('${esc(m.file)}')">
+              <span style="color:var(--orange);min-width:40px;font-size:0.72rem">${esc(m.profile)}</span>
+              <span class="fpath" title="${esc(m.file)}">${esc(name)}</span>
+              <span class="fmeta">${m.tokens}tok ${m.lines}ln</span>
+            </div>`;
+          }).join('')}</div>
         </div>`;
       }).join('')}</div>
     </div>`;
