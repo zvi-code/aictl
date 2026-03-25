@@ -23,6 +23,9 @@ from ..discovery import compute_token_budget
 
 # ─── Thread-safe snapshot store ──────────────────────────────────
 
+_HISTORY_TUPLE_LEN = 11  # bump when adding fields to the history tuple
+
+
 class _SnapshotStore:
     """Thread-safe snapshot storage with version-based change notification."""
 
@@ -39,13 +42,17 @@ class _SnapshotStore:
         with self._condition:
             self._snap = snap
             self._version += 1
-            self._history.append((
+            row = (
                 snap.timestamp, snap.total_files, snap.total_tokens,
                 snap.total_cpu, snap.total_mem_mb,
                 snap.total_mcp_servers, snap.total_memory_tokens,
                 snap.total_live_sessions, snap.total_live_estimated_tokens,
                 snap.total_live_inbound_rate_bps, snap.total_live_outbound_rate_bps,
-            ))
+            )
+            # Clear history if schema changed (prevents zip unpack crash)
+            if self._history and len(self._history[0]) != len(row):
+                self._history.clear()
+            self._history.append(row)
             self._condition.notify_all()
 
     def wait_for_update(self, known_version: int,
@@ -743,23 +750,28 @@ function StatBar({snap: s, history: hist}) {
     return [hist.ts, hist[key]];
   };
   if(!s) return null;
+  const cores = s.cpu_cores || 1;
+  const cpuLabel = s.total_cpu+'% of '+cores+' cores';
+  const hasLive = s.total_live_sessions > 0;
   return html`
     <div class="stat-primary">
-      <${StatCard} label="Live Sessions" value=${s.total_live_sessions} primary sparkData=${sparkFor('live_sessions')} sparkColor="var(--accent)" />
-      <${StatCard} label="Live Tokens" value=${fmtK(s.total_live_estimated_tokens)} primary sparkData=${sparkFor('live_tokens')} sparkColor="var(--green)" />
-      <${StatCard} label="Outbound" value=${fmtRate(s.total_live_outbound_rate_bps)} primary sparkData=${sparkFor('live_out_rate')} sparkColor="var(--orange)" smooth />
-      <${StatCard} label="Inbound" value=${fmtRate(s.total_live_inbound_rate_bps)} primary sparkData=${sparkFor('live_in_rate')} sparkColor="var(--yellow)" smooth />
+      <${StatCard} label="Files" value=${s.total_files} primary sparkData=${sparkFor('files')} sparkColor="var(--accent)" />
+      <${StatCard} label="Tokens" value=${fmtK(s.total_tokens)} primary sparkData=${sparkFor('tokens')} sparkColor="var(--green)" />
+      <${StatCard} label="CPU" value=${cpuLabel} primary sparkData=${sparkFor('cpu')} sparkColor="var(--orange)" smooth />
+      <${StatCard} label="Memory" value=${fmtSz(s.total_mem_mb*1048576)} primary sparkData=${sparkFor('mem_mb')} sparkColor="var(--yellow)" />
     </div>
     <div class="stat-secondary">
-      <${StatCard} label="Files" value=${s.total_files} />
-      <${StatCard} label="Static Tokens" value=${fmtK(s.total_tokens)} />
       <${StatCard} label="Processes" value=${s.total_processes} />
-      <${StatCard} label="CPU" value=${s.total_cpu+'%'} />
-      <${StatCard} label="Memory" value=${fmtSz(s.total_mem_mb*1048576)} />
-      <${StatCard} label="Workspace Size" value=${fmtSz(s.total_size)} />
+      <${StatCard} label="Size" value=${fmtSz(s.total_size)} />
       <${StatCard} label="MCP" value=${s.total_mcp_servers} />
       <${StatCard} label="Agent Mem" value=${fmtK(s.total_memory_tokens)+'t'} />
-    </div>`;
+    </div>
+    ${hasLive && html`<div class="stat-secondary" style="margin-top:0.2rem">
+      <${StatCard} label="Live Sessions" value=${s.total_live_sessions} sparkData=${sparkFor('live_sessions')} sparkColor="var(--accent)" />
+      <${StatCard} label="Live Tokens" value=${fmtK(s.total_live_estimated_tokens)} sparkData=${sparkFor('live_tokens')} sparkColor="var(--green)" />
+      <${StatCard} label="↑ Outbound" value=${fmtRate(s.total_live_outbound_rate_bps)} sparkData=${sparkFor('live_out_rate')} sparkColor="var(--orange)" smooth />
+      <${StatCard} label="↓ Inbound" value=${fmtRate(s.total_live_inbound_rate_bps)} sparkData=${sparkFor('live_in_rate')} sparkColor="var(--yellow)" smooth />
+    </div>`}`;
 }
 
 // ─── ResourceBar Component ─────────────────────────────────────
@@ -828,6 +840,15 @@ function InlinePreview({path}) {
 }
 
 // ─── FileItem Component ────────────────────────────────────────
+function fmtAgo(mtime) {
+  if(!mtime) return '';
+  const sec = Math.floor(Date.now()/1000 - mtime);
+  if(sec<0) return '';
+  if(sec<60) return sec+'s ago';
+  if(sec<3600) return Math.floor(sec/60)+'m ago';
+  if(sec<86400) return Math.floor(sec/3600)+'h ago';
+  return Math.floor(sec/86400)+'d ago';
+}
 function FileItem({file, dirPrefix}) {
   const [showPreview, setShowPreview] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -836,6 +857,8 @@ function FileItem({file, dirPrefix}) {
   const [loading, setLoading] = useState(false);
   const ctx = useContext(SnapContext);
   const name = file.path.split('/').pop();
+  const s2l = (file.sent_to_llm||'').toLowerCase();
+  const recentlyModified = file.mtime && (Date.now()/1000 - file.mtime) < 300;
   const toggle = useCallback(async ()=>{
     if(showPreview) { setShowPreview(false); return; }
     setShowPreview(true);
@@ -869,17 +892,37 @@ function FileItem({file, dirPrefix}) {
   };
   return html`<div>
     <button class="fitem" onClick=${toggle} aria-expanded=${showPreview} title=${file.path}>
+      ${recentlyModified && html`<span style="color:var(--orange);font-size:0.6rem" title="Modified ${fmtAgo(file.mtime)}">●</span>`}
       <span class="fpath">${dirPrefix ? html`<span style="color:var(--fg2)">${dirPrefix}/</span>` : ''}${esc(name)}</span>
-      <span class="fmeta">${fmtSz(file.size)}${file.tokens?' ~'+fmtK(file.tokens)+'t':''}</span>
+      <span class="fmeta">
+        ${s2l && s2l!=='no' && html`<span style="color:${s2lColor(s2l)};font-size:0.6rem;margin-right:0.2rem" title="sent_to_llm: ${s2l}">${s2l==='yes'?'◆':s2l==='on-demand'?'◇':'○'}</span>`}
+        ${fmtSz(file.size)}${file.tokens?' ~'+fmtK(file.tokens)+'t':''}
+        ${file.mtime && recentlyModified ? html` <span style="color:var(--orange);font-size:0.65rem">${fmtAgo(file.mtime)}</span>` : ''}
+      </span>
     </button>
     ${showPreview && html`<div class="inline-preview">${renderPreview()}</div>`}
   </div>`;
 }
 
 // ─── CatGroup Component ───────────────────────────────────────
+function s2lColor(val) {
+  const v = (val||'').toLowerCase();
+  if(v==='yes') return 'var(--green)';
+  if(v==='on-demand') return 'var(--yellow)';
+  if(v==='conditional'||v==='partial') return 'var(--orange)';
+  return 'var(--fg2)';
+}
 function CatGroup({label, files, root, badge, style, startOpen}) {
   const [isOpen, setOpen] = useState(!!startOpen);
   const dirGroups = useMemo(()=>groupByDir(files,root),[files,root]);
+  const totalTok = useMemo(()=>files.reduce((a,f)=>a+f.tokens,0),[files]);
+  const totalSz = useMemo(()=>files.reduce((a,f)=>a+f.size,0),[files]);
+  // Dominant sent_to_llm for category indicator
+  const dominantS2l = useMemo(()=>{
+    const counts={};
+    files.forEach(f=>{const v=(f.sent_to_llm||'no').toLowerCase();counts[v]=(counts[v]||0)+1;});
+    return Object.entries(counts).sort((a,b)=>b[1]-a[1])[0]?.[0]||'no';
+  },[files]);
   const renderFiles = () => {
     if(dirGroups.length===1 && dirGroups[0][1].length<=3) {
       return dirGroups[0][1].map(f=>html`<${FileItem} key=${f.path} file=${f}/>`);
@@ -894,7 +937,11 @@ function CatGroup({label, files, root, badge, style, startOpen}) {
   return html`<div class="cat-group" style=${style||''}>
     <button class=${'cat-head'+(isOpen?' open':'')} onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}>
       <span class="carrow">\u25B6</span>
-      <span>${esc(label)}</span> <span class="badge">${badge||files.length}</span>
+      <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${s2lColor(dominantS2l)};margin-right:0.2rem" title="sent_to_llm: ${dominantS2l}"></span>
+      <span>${esc(label)}</span>
+      <span class="badge">${badge||files.length}</span>
+      <span class="badge">${fmtSz(totalSz)}</span>
+      <span class="badge">${fmtK(totalTok)}t</span>
     </button>
     ${isOpen && html`<div style="padding-left:0.8rem">${renderFiles()}</div>`}
   </div>`;
@@ -913,11 +960,13 @@ function DirGroup({dir, files}) {
 // ─── ProcRow Component ─────────────────────────────────────────
 function ProcRow({proc: p, maxMem}) {
   const mem=parseFloat(p.mem_mb)||0, pct=Math.min(mem/maxMem*100,100);
+  const cpuVal = parseFloat(p.cpu_pct)||0;
   const barColor=(p.anomalies&&p.anomalies.length)?'var(--red)':mem>200?'var(--orange)':'var(--green)';
+  const cpuColor = cpuVal>100?'var(--red)':cpuVal>50?'var(--orange)':'inherit';
   return html`<div class="prow">
     <span class="pid">${p.pid}</span>
     <span class="pname" title=${p.cmdline}>${esc(p.name)}</span>
-    <span class="pcpu">${p.cpu_pct}%</span>
+    <span class="pcpu" style=${'color:'+cpuColor}>${p.cpu_pct}%</span>
     <div class="mem-bar"><div class="mem-bar-fill" style=${'width:'+pct.toFixed(0)+'%;background:'+barColor}></div></div>
     <span class="pmem">${p.mem_mb}MB</span>
     ${p.anomalies&&p.anomalies.length && html`<span class="anomaly-icon" title=${p.anomalies.join('; ')}>\u26A0</span>`}
@@ -1002,7 +1051,8 @@ function ToolCard({tool: t, root}) {
   const anom = t.processes.filter(p=>p.anomalies&&p.anomalies.length).length;
   const liveTok = liveTokenTotal(t.live);
   const liveTraffic = (t.live?.outbound_rate_bps||0) + (t.live?.inbound_rate_bps||0);
-  const liveLoops = t.live?.mcp?.loops || 0;
+  const totalCpu = t.processes.reduce((a,p)=>a+(parseFloat(p.cpu_pct)||0),0);
+  const totalMem = t.processes.reduce((a,p)=>a+(parseFloat(p.mem_mb)||0),0);
   const maxMem = useMemo(()=>Math.max(...t.processes.map(p=>parseFloat(p.mem_mb)||0),100),[t.processes]);
   const cats = useMemo(()=>{
     const c={};
@@ -1014,18 +1064,19 @@ function ToolCard({tool: t, root}) {
   },[t.files]);
   const cls = 'tcard'+(isOpen?' open':'')+(anom?' has-anomaly':'');
   return html`<div class=${cls}>
-    <button class="tcard-head" onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}>
+    <button class="tcard-head" onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}
+      style="flex-wrap:wrap;row-gap:0.2rem">
       <span class="arrow">\u25B6</span>
       <h2><span class="dot" style=${'background:'+c}></span>${esc(t.label)}</h2>
       <span class="badge">${t.files.length} files</span>
       <span class="badge">${fmtK(tok)} tok</span>
-      ${t.processes.length>0 && html`<span class="badge">${t.processes.length} proc</span>`}
+      ${t.processes.length>0 && html`<span class="badge">${t.processes.length} proc ${totalCpu.toFixed(1)}% ${totalMem.toFixed(0)}MB</span>`}
       ${t.mcp_servers.length>0 && html`<span class="badge">${t.mcp_servers.length} MCP</span>`}
-      ${t.live && html`<span class="badge">${t.live.session_count||0} live</span>`}
-      ${t.live && html`<span class="badge">${fmtRate(liveTraffic)}</span>`}
-      ${t.live && liveTok>0 && html`<span class="badge">${fmtK(liveTok)} live tok</span>`}
-      ${t.live?.mcp?.detected && html`<span class="badge warn">${liveLoops} loop${liveLoops===1?'':'s'}</span>`}
       ${anom>0 && html`<span class="badge warn">${anom} anomaly</span>`}
+      ${t.live && html`<span class="badge" style="background:var(--accent);color:var(--bg)">${t.live.session_count||0} live · ${fmtRate(liveTraffic)}${liveTok>0?' · '+fmtK(liveTok)+'tok':''}</span>`}
+      <div style="width:100%;display:flex;flex-wrap:wrap;gap:0.15rem;margin-top:0.1rem">
+        ${cats.map(({kind,files:cf})=>html`<span style="font-size:0.6rem;color:var(--fg2)">${kind}:${cf.length}</span>`)}
+      </div>
     </button>
     ${isOpen && html`<div class="tcard-body">
       ${cats.map(({kind,files})=>html`<${CatGroup} key=${kind} label=${kind} files=${files} root=${root}/>`)}
@@ -1160,11 +1211,13 @@ function MemItem({mem}) {
         <button class="prev-btn" onClick=${()=>ctx.openViewer(mem.file)}>open in viewer</button>
       </div>`;
   };
+  const recentMod = mem.mtime && (Date.now()/1000 - mem.mtime) < 300;
   return html`<div>
     <button class="fitem" style="border-top:1px solid var(--border);padding:0.2rem 0.8rem" onClick=${toggle}
       aria-expanded=${showPreview} title=${mem.file}>
+      ${recentMod && html`<span style="color:var(--orange);font-size:0.6rem" title="Modified ${fmtAgo(mem.mtime)}">●</span>`}
       <span class="fpath">${esc(name)}</span>
-      <span class="fmeta">${mem.tokens}tok ${mem.lines}ln</span>
+      <span class="fmeta">${mem.tokens}tok ${mem.lines}ln${mem.mtime && recentMod ? html` <span style="color:var(--orange);font-size:0.65rem">${fmtAgo(mem.mtime)}</span>` : ''}</span>
     </button>
     ${showPreview && html`<div class="inline-preview" style="margin:0 0.8rem 0.4rem">${renderPreview()}</div>`}
   </div>`;
@@ -1266,29 +1319,124 @@ function TabLive() {
 }
 
 // ─── TabBudget ─────────────────────────────────────────────────
+function TokenBar({always, onDemand, conditional, never, total}) {
+  if(!total) return null;
+  const w = v => (v/total*100).toFixed(1)+'%';
+  return html`<div style="display:flex;height:10px;border-radius:5px;overflow:hidden;background:var(--border);margin:0.3rem 0">
+    ${always>0 && html`<div style="width:${w(always)};background:var(--green)" title="Always loaded: ${fmtK(always)}"></div>`}
+    ${onDemand>0 && html`<div style="width:${w(onDemand)};background:var(--yellow)" title="On-demand: ${fmtK(onDemand)}"></div>`}
+    ${conditional>0 && html`<div style="width:${w(conditional)};background:var(--orange)" title="Conditional: ${fmtK(conditional)}"></div>`}
+    ${never>0 && html`<div style="width:${w(never)};background:var(--fg2);opacity:0.3" title="Never sent: ${fmtK(never)}"></div>`}
+  </div>`;
+}
 function TabBudget() {
+  const {snap: s} = useContext(SnapContext);
   const [budget, setBudget] = useState(null);
   const [error, setError] = useState(false);
   useEffect(()=>{
+    setBudget(null); setError(false);
     fetch('/api/budget').then(r=>r.json()).then(setBudget).catch(()=>setError(true));
   },[]);
   if(error) return html`<p style="color:var(--red)">Failed to load budget.</p>`;
   if(!budget) return html`<p style="color:var(--fg2)">Loading...</p>`;
+
+  const contextWindow = 200000;
+  const pct = ((budget.total_potential_tokens||0)/contextWindow*100).toFixed(1);
+
+  // Per-tool breakdown from snapshot
+  const toolBreakdowns = useMemo(()=>{
+    if(!s) return [];
+    return s.tools.filter(t=>t.tool!=='aictl'&&t.token_breakdown&&t.token_breakdown.total>0)
+      .sort((a,b)=>(b.token_breakdown.total||0)-(a.token_breakdown.total||0));
+  },[s]);
+
+  // Per-category aggregate
+  const catBreakdown = useMemo(()=>{
+    if(!s) return [];
+    const bk={};
+    s.tools.forEach(t=>{
+      if(t.tool==='aictl') return;
+      (t.files||[]).forEach(f=>{
+        const k=f.kind||'other';
+        if(!bk[k]) bk[k]={kind:k,count:0,tokens:0,size:0,always:0,onDemand:0,conditional:0,never:0};
+        bk[k].count++;
+        bk[k].tokens+=f.tokens;
+        bk[k].size+=f.size;
+        const v=(f.sent_to_llm||'').toLowerCase();
+        if(v==='yes') bk[k].always+=f.tokens;
+        else if(v==='on-demand') bk[k].onDemand+=f.tokens;
+        else if(v==='conditional'||v==='partial') bk[k].conditional+=f.tokens;
+        else bk[k].never+=f.tokens;
+      });
+    });
+    return Object.values(bk).sort((a,b)=>b.tokens-a.tokens);
+  },[s]);
+
   const rows = [
-    ['Always loaded (every call)', '~'+fmtK(budget.always_loaded_tokens)+' tokens'],
-    ['On-demand (when invoked)', '~'+fmtK(budget.on_demand_tokens)+' tokens'],
-    ['Conditional (file-matched)', '~'+fmtK(budget.conditional_tokens)+' tokens'],
-    ['Cacheable portion', '~'+fmtK(budget.cacheable_tokens)+' tokens'],
-    ['Survives compaction', '~'+fmtK(budget.survives_compaction_tokens)+' tokens'],
+    ['Always loaded (every call)', '~'+fmtK(budget.always_loaded_tokens)+' tokens', 'var(--green)'],
+    ['On-demand (when invoked)', '~'+fmtK(budget.on_demand_tokens)+' tokens', 'var(--yellow)'],
+    ['Conditional (file-matched)', '~'+fmtK(budget.conditional_tokens)+' tokens', 'var(--orange)'],
+    ['Cacheable portion', '~'+fmtK(budget.cacheable_tokens)+' tokens', null],
+    ['Survives compaction', '~'+fmtK(budget.survives_compaction_tokens)+' tokens', null],
   ];
-  return html`<div class="budget-card">
-    <h3 style="margin-bottom:0.5rem;color:var(--accent)">Token Budget Analysis</h3>
-    ${rows.map(([l,v])=>html`<div class="brow"><span class="blabel">${l}</span><span class="bval">${v}</span></div>`)}
-    <div class="brow" style="font-weight:700">
-      <span>Total potential overhead</span>
-      <span class="bval" style="color:var(--accent)">~${fmtK(budget.total_potential_tokens)} tokens</span>
+  return html`<div style="display:grid;gap:0.8rem;max-width:900px">
+    <div class="budget-card">
+      <h3 style="margin-bottom:0.5rem;color:var(--accent)">Token Budget Overview</h3>
+      <div style="margin-bottom:0.5rem">
+        <div style="display:flex;justify-content:space-between;font-size:0.78rem;margin-bottom:0.2rem">
+          <span>~${fmtK(budget.total_potential_tokens)} of ${fmtK(contextWindow)} context window</span>
+          <span style="font-weight:700;color:var(--accent)">${pct}%</span>
+        </div>
+        <div style="height:8px;border-radius:4px;background:var(--border);overflow:hidden">
+          <div style="height:100%;width:${Math.min(parseFloat(pct),100)}%;background:var(--accent);border-radius:4px"></div>
+        </div>
+      </div>
+      ${rows.map(([l,v,color])=>html`<div class="brow">
+        <span class="blabel">${color?html`<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:0.3rem"></span>`:''}${l}</span>
+        <span class="bval">${v}</span>
+      </div>`)}
+      <div class="brow" style="font-weight:700">
+        <span>Total potential overhead</span>
+        <span class="bval" style="color:var(--accent)">~${fmtK(budget.total_potential_tokens)} tokens</span>
+      </div>
+      <div class="brow"><span class="blabel">Files never sent to LLM</span><span class="bval">${budget.never_sent_count}</span></div>
     </div>
-    <div class="brow"><span class="blabel">Files never sent to LLM</span><span class="bval">${budget.never_sent_count}</span></div>
+
+    ${toolBreakdowns.length>0 && html`<div class="budget-card" style="max-width:none">
+      <h3 style="margin-bottom:0.5rem;color:var(--accent)">Per-Tool Token Breakdown</h3>
+      <table role="table" aria-label="Per-tool tokens">
+        <thead><tr><th>Tool</th><th>Always</th><th>On-demand</th><th>Conditional</th><th>Never sent</th><th>Total</th><th style="width:120px">Distribution</th></tr></thead>
+        <tbody>${toolBreakdowns.map(t=>{
+          const tb=t.token_breakdown;
+          return html`<tr key=${t.tool}>
+            <td><span class="dot" style=${'background:'+(COLORS[t.tool]||'#94a3b8')+';margin-right:0.3rem'}></span>${esc(t.label)}</td>
+            <td style="color:var(--green)">${fmtK(tb.always_loaded||0)}</td>
+            <td style="color:var(--yellow)">${fmtK(tb.on_demand||0)}</td>
+            <td style="color:var(--orange)">${fmtK(tb.conditional||0)}</td>
+            <td style="color:var(--fg2)">${fmtK(tb.never_sent||0)}</td>
+            <td style="font-weight:600">${fmtK(tb.total||0)}</td>
+            <td><${TokenBar} always=${tb.always_loaded||0} onDemand=${tb.on_demand||0} conditional=${tb.conditional||0} never=${tb.never_sent||0} total=${tb.total||1}/></td>
+          </tr>`;
+        })}</tbody>
+      </table>
+    </div>`}
+
+    ${catBreakdown.length>0 && html`<div class="budget-card" style="max-width:none">
+      <h3 style="margin-bottom:0.5rem;color:var(--accent)">Per-Category Token Breakdown</h3>
+      <table role="table" aria-label="Per-category tokens">
+        <thead><tr><th>Category</th><th>Files</th><th>Tokens</th><th>Size</th><th>Always</th><th>On-demand</th><th>Conditional</th><th style="width:120px">Distribution</th></tr></thead>
+        <tbody>${catBreakdown.map(c=>html`<tr key=${c.kind}>
+          <td>${esc(c.kind)}</td>
+          <td>${c.count}</td>
+          <td style="font-weight:600">${fmtK(c.tokens)}</td>
+          <td>${fmtSz(c.size)}</td>
+          <td style="color:var(--green)">${fmtK(c.always)}</td>
+          <td style="color:var(--yellow)">${fmtK(c.onDemand)}</td>
+          <td style="color:var(--orange)">${fmtK(c.conditional)}</td>
+          <td><${TokenBar} always=${c.always} onDemand=${c.onDemand} conditional=${c.conditional} never=${c.never} total=${c.tokens||1}/></td>
+        </tr>`)}</tbody>
+      </table>
+    </div>`}
   </div>`;
 }
 

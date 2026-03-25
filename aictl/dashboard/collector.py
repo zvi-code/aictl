@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,6 +17,7 @@ from pathlib import Path
 from ..discovery import (
     McpServerInfo,
     MemoryEntry,
+    ResourceFile,
     ToolResources,
     collect_agent_memory,
     collect_mcp_status,
@@ -31,11 +33,12 @@ class DashboardTool:
 
     tool: str
     label: str
-    files: list = field(default_factory=list)
+    files: list[ResourceFile] = field(default_factory=list)
     processes: list = field(default_factory=list)
     mcp_servers: list[dict] = field(default_factory=list)
     memory: dict | None = None
     live: dict | None = None
+    token_breakdown: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -50,6 +53,9 @@ class DashboardSnapshot:
     agent_memory: list[MemoryEntry] = field(default_factory=list)
     mcp_detail: list[McpServerInfo] = field(default_factory=list)
     live_monitor: dict = field(default_factory=dict)
+
+    # ── System info ────────────────────────────────────────────
+    cpu_cores: int = 0
 
     # ── Aggregate stats (computed once) ──────────────────────────
     total_files: int = 0
@@ -74,6 +80,7 @@ class DashboardSnapshot:
         self._compute_aggregates()
 
     def _compute_aggregates(self):
+        self.cpu_cores = os.cpu_count() or 1
         # Exclude aictl (.aictx) files from main stats — they have their own tab
         tool_list = [t for t in self.tools if t.tool != "aictl"]
         self.total_files = sum(len(t.files) for t in tool_list)
@@ -132,6 +139,7 @@ class DashboardSnapshot:
         return {
             "timestamp": self.timestamp,
             "root": self.root,
+            "cpu_cores": self.cpu_cores,
             "total_files": self.total_files,
             "total_tokens": self.total_tokens,
             "total_size": self.total_size,
@@ -183,16 +191,45 @@ def collect(
     )
 
 
+def _compute_token_breakdown(files: list[ResourceFile]) -> dict:
+    """Compute per-tool token breakdown from file metadata."""
+    always = on_demand = conditional = never = 0
+    by_kind: dict[str, int] = {}
+    for f in files:
+        tok = f.tokens
+        s2l = (f.sent_to_llm or "").lower()
+        if s2l == "yes":
+            always += tok
+        elif s2l == "on-demand":
+            on_demand += tok
+        elif s2l in ("conditional", "partial"):
+            conditional += tok
+        else:
+            never += tok
+        kind = f.kind or "other"
+        by_kind[kind] = by_kind.get(kind, 0) + tok
+    return {
+        "always_loaded": always,
+        "on_demand": on_demand,
+        "conditional": conditional,
+        "never_sent": never,
+        "total": always + on_demand + conditional + never,
+        "by_kind": by_kind,
+    }
+
+
 def _merge_dashboard_tools(discovered: list[ToolResources], live_monitor: dict) -> list[DashboardTool]:
     tools_by_name: dict[str, DashboardTool] = {}
     for resource in discovered:
+        files = list(resource.files)
         tools_by_name[resource.tool] = DashboardTool(
             tool=resource.tool,
             label=resource.label,
-            files=list(resource.files),
+            files=files,
             processes=list(resource.processes),
             mcp_servers=list(resource.mcp_servers),
             memory=resource.memory,
+            token_breakdown=_compute_token_breakdown(files),
         )
 
     for live_report in live_monitor.get("tools", []):

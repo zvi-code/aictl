@@ -46,6 +46,7 @@ class ResourceFile:
     loaded_when: str = ""         # every-call, session-start, on-demand, etc.
     cacheable: str = ""           # yes, no, n/a
     survives_compaction: str = "" # yes, no, n/a
+    mtime: float = 0.0           # file modification time (epoch seconds)
 
 
 @dataclass
@@ -89,6 +90,7 @@ class MemoryEntry:
     content: str = ""
     tokens: int = 0
     lines: int = 0
+    mtime: float = 0.0           # file modification time (epoch seconds)
 
 
 @dataclass
@@ -109,7 +111,9 @@ def _file_resource(path: Path, kind: str) -> ResourceFile | None:
     if not path.is_file():
         return None
     try:
-        size = path.stat().st_size
+        st = path.stat()
+        size = st.st_size
+        mtime = st.st_mtime
     except OSError:
         return None
     tokens = 0
@@ -119,7 +123,9 @@ def _file_resource(path: Path, kind: str) -> ResourceFile | None:
             tokens = estimate_tokens(text)
         except OSError:
             pass
-    return ResourceFile(str(path), kind, size, tokens)
+    rf = ResourceFile(str(path), kind, size, tokens)
+    rf.mtime = mtime
+    return rf
 
 
 def _dir_resources(directory: Path, pattern: str, kind: str) -> list[ResourceFile]:
@@ -556,6 +562,31 @@ def compute_token_budget(tools: list[ToolResources]) -> dict:
 
 # ─── Agent memory & policy collection ────────────────────────────
 
+def _read_memory_file(path: Path, source: str, profile: str) -> MemoryEntry | None:
+    """Read a memory file and return a MemoryEntry with mtime, or None."""
+    try:
+        content = path.read_text(errors="replace")
+        if not content.strip():
+            return None
+        mtime = 0.0
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            pass
+        entry = MemoryEntry(
+            source=source,
+            profile=profile,
+            file=str(path),
+            content=content,
+            tokens=estimate_tokens(content),
+            lines=len([l for l in content.splitlines() if l.strip()]),
+        )
+        entry.mtime = mtime
+        return entry
+    except OSError:
+        return None
+
+
 def collect_agent_memory(root: Path) -> list[MemoryEntry]:
     """Collect all agent memory, policies, and decisions from multiple sources."""
     entries: list[MemoryEntry] = []
@@ -563,52 +594,22 @@ def collect_agent_memory(root: Path) -> list[MemoryEntry]:
     # 1. User memory — ~/.claude/CLAUDE.md
     user_memory = Path.home() / ".claude" / "CLAUDE.md"
     if user_memory.is_file():
-        try:
-            content = user_memory.read_text(errors="replace")
-            if content.strip():
-                entries.append(MemoryEntry(
-                    source="claude-user-memory",
-                    profile="(global)",
-                    file=str(user_memory),
-                    content=content,
-                    tokens=estimate_tokens(content),
-                    lines=len([l for l in content.splitlines() if l.strip()]),
-                ))
-        except OSError:
-            pass
+        entry = _read_memory_file(user_memory, "claude-user-memory", "(global)")
+        if entry:
+            entries.append(entry)
 
     # 2. Project memory — <root>/CLAUDE.md
     project_memory = root / "CLAUDE.md"
     if project_memory.is_file():
-        try:
-            content = project_memory.read_text(errors="replace")
-            if content.strip():
-                entries.append(MemoryEntry(
-                    source="claude-project-memory",
-                    profile="(project)",
-                    file=str(project_memory),
-                    content=content,
-                    tokens=estimate_tokens(content),
-                    lines=len([l for l in content.splitlines() if l.strip()]),
-                ))
-        except OSError:
-            pass
+        entry = _read_memory_file(project_memory, "claude-project-memory", "(project)")
+        if entry:
+            entries.append(entry)
 
     local_memory = root / "CLAUDE.local.md"
     if local_memory.is_file():
-        try:
-            content = local_memory.read_text(errors="replace")
-            if content.strip():
-                entries.append(MemoryEntry(
-                    source="claude-project-memory",
-                    profile="(local)",
-                    file=str(local_memory),
-                    content=content,
-                    tokens=estimate_tokens(content),
-                    lines=len([l for l in content.splitlines() if l.strip()]),
-                ))
-        except OSError:
-            pass
+        entry = _read_memory_file(local_memory, "claude-project-memory", "(local)")
+        if entry:
+            entries.append(entry)
 
     # 3. Auto-memory — ~/.claude/projects/<hash>/memory/*.md
     from .memory import _find_project_dir, list_stashes
@@ -625,19 +626,9 @@ def collect_agent_memory(root: Path) -> list[MemoryEntry]:
             readable = proj_dir.name.lstrip("-").split("-")[-1] if not is_active_project else ""
             profile_tag = "(active)" if is_active_project else f"({readable})"
             for md in sorted(mem_dir.glob("*.md")):
-                try:
-                    content = md.read_text(errors="replace")
-                    if content.strip():
-                        entries.append(MemoryEntry(
-                            source="claude-auto-memory",
-                            profile=profile_tag,
-                            file=str(md),
-                            content=content,
-                            tokens=estimate_tokens(content),
-                            lines=len([l for l in content.splitlines() if l.strip()]),
-                        ))
-                except OSError:
-                    pass
+                entry = _read_memory_file(md, "claude-auto-memory", profile_tag)
+                if entry:
+                    entries.append(entry)
 
     for stash in list_stashes(root):
         if stash["profile"] == "(active)":
@@ -645,18 +636,9 @@ def collect_agent_memory(root: Path) -> list[MemoryEntry]:
         stash_dir = Path(stash["dir"])
         if stash_dir.is_dir():
             for md in sorted(stash_dir.glob("*.md")):
-                try:
-                    content = md.read_text(errors="replace")
-                    entries.append(MemoryEntry(
-                        source="claude-auto-memory",
-                        profile=stash["profile"],
-                        file=str(md),
-                        content=content,
-                        tokens=estimate_tokens(content),
-                        lines=len([l for l in content.splitlines() if l.strip()]),
-                    ))
-                except OSError:
-                    pass
+                entry = _read_memory_file(md, "claude-auto-memory", stash["profile"])
+                if entry:
+                    entries.append(entry)
 
     return entries
 
