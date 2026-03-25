@@ -448,9 +448,12 @@ def _detect_anomalies(actual_mem_mb: float, pid: int, spec: ProcessSpec) -> list
         except Exception:
             pass
 
-    # Known leak warning
+    # Known leak: only flag if process is actually orphaned or has memory bloat
     if spec.known_leak and spec.leak_pattern:
-        anomalies.append(f"known leak: {spec.leak_pattern}")
+        is_orphaned = any("orphaned" in a for a in anomalies)
+        is_bloated = any("memory" in a and ">>" in a for a in anomalies)
+        if is_orphaned or is_bloated:
+            anomalies.append(f"known leak: {spec.leak_pattern}")
 
     return anomalies
 

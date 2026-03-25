@@ -9,7 +9,7 @@ AI coding tools accumulate project knowledge in incompatible, scattered formats 
 - **Deploy** — translate `.aictx` into native files for Claude Code, GitHub Copilot, Cursor, and Windsurf, with profile-aware memory swap on every switch
 - **Import** — reverse-generate `.aictx` templates from existing native files, so nothing already written is lost
 - **Audit** — scan a project for every AI resource across all tools: config files, hidden state directories, memory entries, MCP servers, running processes, and their resource consumption
-- **Visualize** — a live terminal dashboard and a self-contained HTML report that surface everything in one view
+- **Visualize** — a live web dashboard with file content inspection, a terminal TUI, and a self-contained HTML report
 - **Package** — bundle `.aictx` into distributable Claude Code plugins
 
 Runs on **macOS, Windows, and Linux**.
@@ -27,12 +27,17 @@ Runs on **macOS, Windows, and Linux**.
 Install globally with [pipx](https://pipx.pypa.io) (recommended — keeps `aictl` isolated from other Python projects):
 
 ```bash
-# Full install: CLI + live TUI dashboard + process detection
+# Full install: CLI + web dashboard + TUI + process detection
 pipx install --force ".[all]"
 
-# Core CLI only
+# Core CLI only (includes web dashboard — no extra deps needed)
 pipx install .
 ```
+
+> **After updating source code**, you must reinstall for the `aictl` command to pick up changes:
+> ```bash
+> pipx install --force -e ".[all]"   # editable + all extras
+> ```
 
 ### Get pipx
 
@@ -55,9 +60,11 @@ pip install --user pipx && pipx ensurepath
 
 ### Optional extras
 
+The web dashboard (`aictl serve`) works with zero extra dependencies. For the TUI and process detection:
+
 | Extra | Installs | When to use |
 |-------|----------|-------------|
-| `.[dashboard]` | `textual` | Live TUI dashboard (`aictl dashboard`) |
+| `.[dashboard]` | `textual` | Terminal TUI dashboard (`aictl dashboard`) |
 | `.[processes]` | `psutil` | Cross-platform process detection |
 | `.[all]` | both | Recommended for full functionality |
 
@@ -72,8 +79,14 @@ pipx inject aictl textual
 ### Development install
 
 ```bash
+# If using pipx (recommended — keeps the `aictl` command working):
+pipx install --force -e ".[all]"
+
+# Or plain pip (won't update the pipx-installed `aictl` command):
 pip install -e ".[all]"
 ```
+
+> **Tip:** If you get `No such command 'serve'` after pulling new code, run `pipx install --force -e ".[all]"` to re-register all commands.
 
 ## How It Works
 
@@ -201,22 +214,65 @@ aictl status --backtrace 12345
 
 Supports Claude Code, GitHub Copilot, GitHub Copilot (Microsoft 365), Semantic Kernel, Azure PromptFlow, Azure AI, Cursor, and Windsurf. Use `--tool claude` to filter to one tool, or `--json` for machine-readable output.
 
-### Dashboard: live terminal UI
+### Web Dashboard: live monitoring with file inspection
 
-Launch a live-updating terminal dashboard that monitors all AI tool resources, processes, MCP servers, and agent memory in real time:
+Launch a live web dashboard that monitors all AI tool resources in real time, with the ability to inspect actual file contents:
+
+```bash
+aictl serve
+```
+
+Opens your browser at `http://127.0.0.1:8484` with:
+
+- **Real-time updates** — stat cards and tool panels refresh automatically via Server-Sent Events
+- **File content viewer** — click any file to open a slide-in panel showing the actual content (smart preview: first/last 50 lines for large files, expand to full)
+- **Tool panels** — per-tool breakdown with file lists, token counts, process anomalies
+- **MCP server status** — connectivity table with live status indicators
+- **Agent memory browser** — browse and inspect all memory files with content preview
+- **Token budget** — analysis of always-loaded, on-demand, cacheable, and compaction-surviving tokens
+- **Dark/light mode** — auto-detects system preference
+
+The dashboard also exposes a REST API for scripting and integration:
+
+```bash
+# Full snapshot as JSON
+curl http://127.0.0.1:8484/api/snapshot | python3 -m json.tool
+
+# Read a specific discovered file
+curl "http://127.0.0.1:8484/api/file?path=/path/to/CLAUDE.md"
+
+# Token budget analysis
+curl http://127.0.0.1:8484/api/budget
+
+# Real-time SSE stream (for custom dashboards)
+curl -N http://127.0.0.1:8484/api/stream
+```
+
+> **Note:** The file API only serves files that appear in the discovered resource set — arbitrary paths are rejected with 403.
+
+Options:
+
+| Option | Description |
+|--------|-------------|
+| `--port PORT` | Port to listen on (default: `8484`) |
+| `--host HOST` | Host to bind to (default: `127.0.0.1`) |
+| `--interval SECS` | Refresh interval in seconds (default: `5`) |
+| `--no-open` | Don't auto-open the browser |
+
+### Terminal Dashboard: TUI
+
+Launch a live-updating terminal dashboard (requires the `textual` extra):
 
 ```bash
 aictl dashboard --root my-project/
 ```
 
-The dashboard refreshes every 5 seconds (configurable with `--interval`) and shows stat cards, per-tool panels with sparkline CPU/MEM history, and tabbed views for processes, files, MCP server status, and agent memory.
+Refreshes every 5 seconds with stat cards, per-tool panels, sparkline CPU/MEM history, and tabbed views for processes, files, MCP server status, and agent memory.
 
 Keybindings: `r` refresh now, `p` toggle processes, `f` toggle files, `m` toggle memory, `q` quit.
 
-Requires the `textual` extra:
-
 ```bash
-pip install -e ".[dashboard]"
+pip install -e ".[dashboard]"   # or: pipx inject aictl textual
 ```
 
 ### Microsoft AI tools: discovery coverage
@@ -261,10 +317,12 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 | `aictl import --root .` | Read native tool files → generate `.context.aictx` |
 | `aictl plugin build --root . --name my-plugin` | Package `.aictx` as a Claude Code plugin |
 | `aictl status --root .` | Show all resources: files, memory, MCP servers, processes |
-| `aictl status --processes` | Include running processes (Claude, Copilot, Cursor, Windsurf, Azure AI, etc.) |
+| `aictl status --processes` | Include running processes with anomaly detection |
+| `aictl status --budget` | Show token cost analysis (always-loaded, on-demand, cacheable) |
 | `aictl status --html -o report.html` | Generate self-contained HTML report |
 | `aictl status --backtrace PID` | Sample a process stack trace |
-| `aictl dashboard --root .` | Launch live terminal dashboard |
+| `aictl serve` | Launch live web dashboard with REST API at localhost:8484 |
+| `aictl dashboard --root .` | Launch live terminal dashboard (TUI) |
 | `aictl memory show --root .` | Show Claude Code auto-memory content |
 | `aictl memory stashes --root .` | List per-profile memory stashes |
 
@@ -293,14 +351,25 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 
 | Option | Description |
 |--------|-------------|
-| `--tool claude\|copilot\|copilot365\|semantic_kernel\|promptflow\|azure_ai\|cursor\|windsurf\|aictl` | Show resources for one tool only |
-| `--processes` | Detect and display running processes for each tool |
+| `--tool NAME` | Show resources for one tool only (`claude`, `copilot`, `cursor`, `windsurf`, `aictl`, or specific names like `claude-code`, `copilot-vscode`) |
+| `--processes` | Detect and display running processes with anomaly flags |
+| `--budget` | Show token cost analysis (always-loaded, on-demand, cacheable, compaction-surviving) |
 | `--backtrace PID` | Sample a process stack trace (macOS: `sample`, Linux: `eu-stack`/`gdb`; not available on Windows) |
-| `--json` | Output as JSON for scripting |
+| `--json` | Output as JSON with full metadata (scope, sent_to_llm, loaded_when, etc.) |
 | `--html` | Generate self-contained HTML report to stdout |
 | `-o FILE` | Write HTML report to file instead of stdout |
 
-### Dashboard options
+### Serve options
+
+| Option | Description |
+|--------|-------------|
+| `--root DIR` | Root directory to monitor (default: `.`) |
+| `--port PORT` | Port to listen on (default: `8484`) |
+| `--host HOST` | Host to bind to (default: `127.0.0.1`) |
+| `--interval SECS` | Refresh interval in seconds (default: `5`) |
+| `--no-open` | Don't auto-open the browser |
+
+### Dashboard options (TUI)
 
 | Option | Description |
 |--------|-------------|
@@ -353,8 +422,9 @@ aictl --version
 
 | Feature | Status |
 |---------|--------|
-| File discovery (`status`, `dashboard`) | ✅ Full support |
+| File discovery (`status`, `serve`, `dashboard`) | ✅ Full support |
 | Deploy / import / scan | ✅ Full support |
+| Web dashboard (`aictl serve`) | ✅ Full support (no extra deps) |
 | Process detection | ✅ Requires `psutil` (`pipx inject aictl psutil`) |
 | Live TUI dashboard | ✅ Requires `textual` (`pipx inject aictl textual`) |
 | HTML report | ✅ Full support |

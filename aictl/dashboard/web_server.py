@@ -1,0 +1,761 @@
+"""Live web dashboard server with REST + SSE API.
+
+Serves a self-contained HTML dashboard at / with real-time updates via
+Server-Sent Events, plus REST endpoints for snapshot data, file content
+inspection, and token budget analysis.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+from .collector import DashboardSnapshot, collect
+from ..discovery import compute_token_budget
+
+
+# ─── Thread-safe snapshot store ──────────────────────────────────
+
+class _SnapshotStore:
+    """Thread-safe snapshot storage with version-based change notification."""
+
+    def __init__(self) -> None:
+        self._snap: DashboardSnapshot | None = None
+        self._version: int = 0
+        self._lock = threading.Lock()
+        self._condition = threading.Condition(self._lock)
+
+    def update(self, snap: DashboardSnapshot) -> None:
+        with self._condition:
+            self._snap = snap
+            self._version += 1
+            self._condition.notify_all()
+
+    def wait_for_update(self, known_version: int,
+                        timeout: float = 30.0) -> tuple[DashboardSnapshot | None, int]:
+        """Block until a new version is available or timeout."""
+        with self._condition:
+            self._condition.wait_for(
+                lambda: self._version > known_version, timeout=timeout)
+            return self._snap, self._version
+
+    @property
+    def snapshot(self) -> DashboardSnapshot | None:
+        with self._lock:
+            return self._snap
+
+    @property
+    def version(self) -> int:
+        with self._lock:
+            return self._version
+
+
+# ─── File path whitelist ─────────────────────────────────────────
+
+class _AllowedPaths:
+    """Maintains the set of file paths that may be served via /api/file."""
+
+    def __init__(self) -> None:
+        self._paths: set[str] = set()
+        self._lock = threading.Lock()
+
+    def update(self, snap: DashboardSnapshot) -> None:
+        paths: set[str] = set()
+        for tr in snap.tools:
+            for f in tr.files:
+                try:
+                    paths.add(os.path.realpath(f.path))
+                except (OSError, ValueError):
+                    pass
+        for mem in snap.agent_memory:
+            if mem.file:
+                try:
+                    paths.add(os.path.realpath(mem.file))
+                except (OSError, ValueError):
+                    pass
+        with self._lock:
+            self._paths = paths
+
+    def is_allowed(self, path: str) -> bool:
+        try:
+            real = os.path.realpath(path)
+        except (OSError, ValueError):
+            return False
+        with self._lock:
+            return real in self._paths
+
+
+# ─── Background refresh thread ───────────────────────────────────
+
+class _RefreshThread(threading.Thread):
+    """Periodically collects a new snapshot."""
+
+    def __init__(self, root: Path, interval: float,
+                 store: _SnapshotStore, allowed: _AllowedPaths) -> None:
+        super().__init__(daemon=True)
+        self._root = root
+        self._interval = interval
+        self._store = store
+        self._allowed = allowed
+        self._stop = threading.Event()
+
+    def run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                snap = collect(self._root, include_processes=True)
+                self._store.update(snap)
+                self._allowed.update(snap)
+            except Exception:
+                pass  # don't crash the refresh loop
+            self._stop.wait(self._interval)
+
+    def stop(self) -> None:
+        self._stop.set()
+
+
+# ─── Safe file reading ───────────────────────────────────────────
+
+_MAX_FILE_SIZE = 200_000
+
+
+def _read_file_safe(path_str: str) -> str | None:
+    """Read file content with safety limits."""
+    try:
+        p = Path(path_str)
+        if not p.is_file():
+            return None
+        size = p.stat().st_size
+        if size > _MAX_FILE_SIZE:
+            with open(p, "r", errors="replace") as f:
+                f.seek(max(0, size - _MAX_FILE_SIZE))
+                f.readline()  # skip partial line
+                tail = f.read()
+            return f"[... truncated, showing last {len(tail)} chars of {size} ...]\n{tail}"
+        return p.read_text(errors="replace")
+    except OSError:
+        return None
+
+
+# ─── HTTP handler ────────────────────────────────────────────────
+
+class _DashboardHandler(BaseHTTPRequestHandler):
+    """Routes requests to the appropriate handler."""
+
+    server: _DashboardHTTPServer  # type hint for IDE
+
+    def do_GET(self) -> None:
+        path = urlparse(self.path).path
+        if path == "/":
+            self._serve_html()
+        elif path == "/api/snapshot":
+            self._serve_snapshot()
+        elif path == "/api/file":
+            self._serve_file()
+        elif path == "/api/stream":
+            self._serve_sse()
+        elif path == "/api/budget":
+            self._serve_budget()
+        else:
+            self.send_error(404)
+
+    def _serve_html(self) -> None:
+        body = _DASHBOARD_HTML.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_snapshot(self) -> None:
+        snap = self.server.store.snapshot
+        if snap is None:
+            self.send_error(503, "No data yet")
+            return
+        body = snap.to_json().encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_file(self) -> None:
+        qs = parse_qs(urlparse(self.path).query)
+        file_path = qs.get("path", [None])[0]
+        if not file_path:
+            self.send_error(400, "Missing path parameter")
+            return
+        if not self.server.allowed.is_allowed(file_path):
+            self.send_error(403, "Path not in discovered resource set")
+            return
+        content = _read_file_safe(file_path)
+        if content is None:
+            self.send_error(404, "File not readable")
+            return
+        body = content.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_sse(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+        version = 0
+        # Send current snapshot immediately
+        snap = self.server.store.snapshot
+        if snap:
+            self._write_sse(snap)
+            version = self.server.store.version
+
+        while True:
+            try:
+                snap, version = self.server.store.wait_for_update(
+                    version, timeout=30.0)
+                if snap:
+                    self._write_sse(snap)
+                else:
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                break
+
+    def _write_sse(self, snap: DashboardSnapshot) -> None:
+        data = snap.to_json()
+        for line in data.splitlines():
+            self.wfile.write(f"data: {line}\n".encode("utf-8"))
+        self.wfile.write(b"\n")
+        self.wfile.flush()
+
+    def _serve_budget(self) -> None:
+        snap = self.server.store.snapshot
+        if snap is None:
+            self.send_error(503, "No data yet")
+            return
+        budget = compute_token_budget(snap.tools)
+        body = json.dumps(budget, indent=2).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args) -> None:
+        # Suppress noisy SSE keepalive logs
+        msg = fmt % args if args else fmt
+        if "/api/stream" in str(msg):
+            return
+        print(f"  {msg}", file=sys.stderr)
+
+
+# ─── HTTP server ─────────────────────────────────────────────────
+
+class _DashboardHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, addr, handler, store, allowed, root):
+        super().__init__(addr, handler)
+        self.store: _SnapshotStore = store
+        self.allowed: _AllowedPaths = allowed
+        self.root: Path = root
+
+
+# ─── Entry point ─────────────────────────────────────────────────
+
+def run_server(root: Path, host: str = "127.0.0.1", port: int = 8484,
+               interval: float = 5.0, open_browser: bool = True) -> None:
+    """Start the dashboard HTTP server. Blocks until Ctrl-C."""
+    store = _SnapshotStore()
+    allowed = _AllowedPaths()
+
+    # Initial collection so /api/snapshot is ready immediately
+    print("  collecting initial snapshot ...", file=sys.stderr)
+    snap = collect(root, include_processes=True)
+    store.update(snap)
+    allowed.update(snap)
+
+    # Start background refresh
+    refresh = _RefreshThread(root, interval, store, allowed)
+    refresh.start()
+
+    # Start HTTP server
+    server = _DashboardHTTPServer((host, port), _DashboardHandler,
+                                  store, allowed, root)
+    url = f"http://{host}:{port}"
+    print(f"  aictl serve — dashboard at {url}", file=sys.stderr)
+    print(f"  press Ctrl-C to stop\n", file=sys.stderr)
+
+    if open_browser:
+        import webbrowser
+        webbrowser.open(url)
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        refresh.stop()
+        server.shutdown()
+
+
+# ─── Inline HTML dashboard ───────────────────────────────────────
+
+_TOOL_COLORS = {
+    "claude-code": "#a78bfa", "claude-desktop": "#c4b5fd",
+    "copilot": "#60a5fa", "copilot-vscode": "#93c5fd", "copilot-cli": "#3b82f6",
+    "cursor": "#34d399", "windsurf": "#2dd4bf",
+    "project-env": "#fbbf24", "aictl": "#94a3b8",
+}
+
+_DASHBOARD_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aictl live dashboard</title>
+<style>
+:root {
+  --bg: #0f172a; --bg2: #1e293b; --bg3: #0f172a; --fg: #e2e8f0; --fg2: #94a3b8;
+  --accent: #38bdf8; --border: #334155;
+  --green: #34d399; --red: #f87171; --orange: #fb923c; --yellow: #fbbf24;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f8fafc; --bg2: #ffffff; --bg3: #f1f5f9; --fg: #1e293b; --fg2: #64748b;
+    --accent: #0284c7; --border: #e2e8f0;
+    --green: #059669; --red: #dc2626; --orange: #ea580c; --yellow: #d97706;
+  }
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+  background: var(--bg); color: var(--fg); line-height: 1.5; font-size: 0.85rem; }
+
+/* Layout */
+.dash { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+header { display: flex; justify-content: space-between; align-items: center;
+  padding: 0.5rem 1.2rem; background: var(--bg2); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+header h1 { font-size: 1.1rem; }
+header h1 span { color: var(--fg2); font-weight: 400; }
+.conn { font-size: 0.7rem; padding: 0.15rem 0.5rem; border-radius: 4px; }
+.conn.ok { background: var(--green); color: #000; }
+.conn.err { background: var(--red); color: #fff; }
+.main { flex: 1; overflow: auto; padding: 1rem 1.2rem; }
+
+/* Stat cards */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 0.4rem; margin-bottom: 0.8rem; }
+.stat-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 0.4rem 0.6rem; text-align: center; }
+.stat-card .label { color: var(--fg2); font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.stat-card .value { font-size: 1.2rem; font-weight: 700; color: var(--accent); }
+
+/* Resource bar */
+.rbar { display: flex; height: 6px; border-radius: 3px; overflow: hidden;
+  margin-bottom: 0.8rem; background: var(--border); }
+.rbar-seg { transition: width 0.3s; }
+
+/* Tabs */
+.tab-nav { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 0.8rem; }
+.tab-btn { background: none; border: none; color: var(--fg2); padding: 0.4rem 0.8rem;
+  cursor: pointer; font-size: 0.8rem; border-bottom: 2px solid transparent; }
+.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* Tool grid — overview cards collapsed */
+.tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 0.6rem; }
+.tcard { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.tcard-head { padding: 0.6rem 0.8rem; cursor: pointer; display: flex; align-items: center; gap: 0.5rem; }
+.tcard-head:hover { background: var(--bg3); }
+.tcard-head h2 { font-size: 0.9rem; flex: 1; display: flex; align-items: center; gap: 0.4rem; }
+.tcard-head .arrow { color: var(--fg2); font-size: 0.7rem; transition: transform 0.2s; }
+.tcard.open .arrow { transform: rotate(90deg); }
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.badge { display: inline-block; background: var(--border); color: var(--fg2);
+  padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.65rem; margin-left: 0.2rem; }
+.badge.warn { background: var(--red); color: #fff; }
+.tcard-body { display: none; padding: 0 0.8rem 0.6rem; }
+.tcard.open .tcard-body { display: block; }
+
+/* Category groups inside expanded card */
+.cat-group { margin-top: 0.4rem; }
+.cat-head { cursor: pointer; padding: 0.25rem 0; font-size: 0.8rem; color: var(--fg2);
+  display: flex; align-items: center; gap: 0.3rem; user-select: none; }
+.cat-head:hover { color: var(--fg); }
+.cat-head .carrow { font-size: 0.6rem; transition: transform 0.15s; }
+.cat-group.open .carrow { transform: rotate(90deg); }
+.cat-files { display: none; padding-left: 0.8rem; }
+.cat-group.open .cat-files { display: block; }
+
+/* File items */
+.fitem { padding: 0.15rem 0; font-size: 0.78rem; cursor: pointer; display: flex; gap: 0.4rem; }
+.fitem:hover { background: var(--bg3); border-radius: 3px; }
+.fpath { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fmeta { color: var(--fg2); white-space: nowrap; font-size: 0.72rem; }
+
+/* Process rows with memory bar */
+.proc-section { margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.4rem; }
+.proc-section h3 { font-size: 0.78rem; color: var(--fg2); margin-bottom: 0.3rem; }
+.prow { display: flex; align-items: center; gap: 0.5rem; padding: 0.2rem 0; font-size: 0.78rem; }
+.prow .pid { color: var(--green); min-width: 50px; }
+.prow .pname { min-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prow .pcpu { min-width: 45px; text-align: right; }
+.mem-bar { width: 80px; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; position: relative; }
+.mem-bar-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
+.prow .pmem { min-width: 55px; text-align: right; color: var(--fg2); font-size: 0.72rem; }
+.prow .anomaly-icon { color: var(--red); cursor: help; }
+
+/* File viewer */
+.fv { position: fixed; top: 0; right: 0; width: 55%; height: 100vh;
+  background: var(--bg); border-left: 2px solid var(--accent);
+  display: flex; flex-direction: column; z-index: 100;
+  box-shadow: -4px 0 20px rgba(0,0,0,0.5); }
+.fv.hidden { display: none; }
+.fv-head { display: flex; justify-content: space-between; align-items: center;
+  padding: 0.6rem 0.8rem; background: var(--bg2); border-bottom: 1px solid var(--border); }
+.fv-head .path { font-size: 0.78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.fv-head button { background: var(--border); border: none; color: var(--fg); padding: 0.2rem 0.6rem; border-radius: 4px; cursor: pointer; }
+.fv-meta { padding: 0.4rem 0.8rem; font-size: 0.72rem; color: var(--fg2); background: var(--bg2); border-bottom: 1px solid var(--border); }
+.fv-body { flex: 1; overflow: auto; padding: 0.8rem; }
+.fv-body pre { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.78rem;
+  line-height: 1.5; white-space: pre-wrap; word-break: break-all; }
+.fv-expand { padding: 0.4rem 0.8rem; background: var(--bg2); text-align: center; }
+.fv-expand button { background: var(--accent); color: #000; border: none; padding: 0.25rem 0.8rem; border-radius: 4px; cursor: pointer; font-size: 0.78rem; }
+
+/* Tables */
+table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+th { text-align: left; color: var(--fg2); padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }
+td { padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+
+/* Process tab table */
+.ptable .mem-bar { width: 100px; }
+
+/* Budget */
+.budget-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 0.8rem; max-width: 500px; }
+.brow { display: flex; justify-content: space-between; padding: 0.35rem 0; border-bottom: 1px solid var(--border); }
+.brow:last-child { border-bottom: none; }
+.blabel { color: var(--fg2); }
+.bval { font-weight: 600; }
+
+/* Memory tab */
+.mem-group { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 0.6rem; overflow: hidden; }
+.mem-group-head { padding: 0.5rem 0.8rem; cursor: pointer; font-size: 0.85rem; font-weight: 600; display: flex; align-items: center; gap: 0.3rem; }
+.mem-group-head:hover { background: var(--bg3); }
+.mem-group-body { display: none; }
+.mem-group.open .mem-group-body { display: block; }
+.mem-item { padding: 0.2rem 0.8rem; font-size: 0.78rem; cursor: pointer; display: flex; gap: 0.4rem; border-top: 1px solid var(--border); }
+.mem-item:hover { background: var(--bg3); }
+</style>
+</head>
+<body>
+<div class="dash">
+<header>
+  <h1>aictl <span>live dashboard</span></h1>
+  <span id="conn" class="conn ok">live</span>
+</header>
+<div class="main">
+
+<div id="stats" class="stat-grid"></div>
+<div id="rbar" class="rbar"></div>
+
+<div class="tab-nav">
+  <button class="tab-btn active" onclick="switchTab('overview',this)">Overview</button>
+  <button class="tab-btn" onclick="switchTab('procs',this)">Processes</button>
+  <button class="tab-btn" onclick="switchTab('mcp',this)">MCP Servers</button>
+  <button class="tab-btn" onclick="switchTab('memory',this)">Memory</button>
+  <button class="tab-btn" onclick="switchTab('budget',this)">Token Budget</button>
+</div>
+
+<div id="tab-overview" class="tab-panel active"></div>
+<div id="tab-procs" class="tab-panel"></div>
+<div id="tab-mcp" class="tab-panel"></div>
+<div id="tab-memory" class="tab-panel"></div>
+<div id="tab-budget" class="tab-panel"></div>
+
+</div>
+</div>
+
+<div id="fv" class="fv hidden">
+  <div class="fv-head">
+    <span class="path" id="fv-path"></span>
+    <button onclick="closeViewer()">Close (Esc)</button>
+  </div>
+  <div class="fv-meta" id="fv-meta"></div>
+  <div class="fv-body"><pre id="fv-pre"></pre></div>
+  <div class="fv-expand" id="fv-exp" style="display:none">
+    <button onclick="expandViewer()">Show full content</button>
+  </div>
+</div>
+
+<script>
+const COLORS = {
+  'claude-code':'#a78bfa','claude-desktop':'#c4b5fd','claude-mcp-memory':'#c4b5fd',
+  'copilot':'#60a5fa','copilot-vscode':'#93c5fd','copilot-cli':'#3b82f6',
+  'cursor':'#34d399','windsurf':'#2dd4bf',
+  'project-env':'#fbbf24','aictl':'#94a3b8','cross-tool':'#cbd5e1',
+  'gemini-cli':'#34d399','opencode':'#94a3b8','aider':'#f472b6',
+};
+const SC = {running:'var(--green)',stopped:'var(--red)',error:'var(--orange)',unknown:'var(--fg2)'};
+let snap = null, fullContent = '', openCards = new Set(), openCats = new Set();
+
+// === SSE ===
+function connectSSE() {
+  const es = new EventSource('/api/stream');
+  es.onmessage = e => { snap = JSON.parse(e.data); render(snap);
+    document.getElementById('conn').className='conn ok'; document.getElementById('conn').textContent='live'; };
+  es.onerror = () => { document.getElementById('conn').className='conn err'; document.getElementById('conn').textContent='reconnecting...'; };
+}
+
+// === Tabs ===
+function switchTab(name, btn) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-'+name).classList.add('active');
+  if(btn) btn.classList.add('active');
+  if(name==='budget') loadBudget();
+  if(name==='procs' && snap) renderProcs(snap);
+}
+
+// === Render ===
+function render(s) { renderStats(s); renderBar(s); renderOverview(s); renderMCP(s); renderMemory(s);
+  if(document.getElementById('tab-procs').classList.contains('active')) renderProcs(s); }
+
+function renderStats(s) {
+  const c = [['Files',s.total_files],['Tokens',fmtK(s.total_tokens)],['Size',fmtSz(s.total_size)],
+    ['Processes',s.total_processes],['CPU',s.total_cpu+'%'],['Proc Mem',fmtSz(s.total_mem_mb*1048576)],
+    ['MCP',s.total_mcp_servers],['Agent Mem',fmtK(s.total_memory_tokens)+'t']];
+  document.getElementById('stats').innerHTML = c.map(([l,v])=>
+    `<div class="stat-card"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('');
+}
+
+function renderBar(s) {
+  const tools = s.tools.filter(t=>t.tool!=='aictl');
+  const total = tools.reduce((a,t)=>a+t.files.length,0) || 1;
+  document.getElementById('rbar').innerHTML = tools.filter(t=>t.files.length).map(t =>
+    `<div class="rbar-seg" style="width:${(t.files.length/total*100).toFixed(1)}%;background:${COLORS[t.tool]||'#94a3b8'}" title="${t.label}: ${t.files.length} files"></div>`
+  ).join('');
+}
+
+function renderOverview(s) {
+  const el = document.getElementById('tab-overview');
+  const tools = s.tools.filter(t => t.tool!=='aictl' && (t.files.length||t.processes.length||t.mcp_servers.length));
+  if(!tools.length){el.innerHTML='<p style="color:var(--fg2)">No AI tool resources found.</p>';return;}
+  el.innerHTML = '<div class="tool-grid">' + tools.map(t => {
+    const c = COLORS[t.tool]||'#94a3b8';
+    const isOpen = openCards.has(t.tool);
+    const tok = t.files.reduce((a,f)=>a+f.tokens,0);
+    const anom = t.processes.filter(p=>p.anomalies&&p.anomalies.length).length;
+    return `<div class="tcard${isOpen?' open':''}" id="tc-${t.tool}">
+      <div class="tcard-head" onclick="toggleCard('${t.tool}')">
+        <h2><span class="dot" style="background:${c}"></span>${esc(t.label)}</h2>
+        <span class="badge">${t.files.length} files</span>
+        <span class="badge">${fmtK(tok)} tok</span>
+        ${t.processes.length?`<span class="badge">${t.processes.length} proc</span>`:''}
+        ${t.mcp_servers.length?`<span class="badge">${t.mcp_servers.length} MCP</span>`:''}
+        ${anom?`<span class="badge warn">${anom} anomaly</span>`:''}
+        <span class="arrow">&#9654;</span>
+      </div>
+      <div class="tcard-body">${isOpen?renderToolBody(t,s):''}
+      </div>
+    </div>`;
+  }).join('') + '</div>';
+}
+
+function toggleCard(tool) {
+  if(openCards.has(tool)) openCards.delete(tool); else openCards.add(tool);
+  if(snap) renderOverview(snap);
+}
+
+function renderToolBody(t, s) {
+  // Group files by category
+  const cats = {};
+  t.files.forEach(f => { const k=f.kind||'other'; (cats[k]=cats[k]||[]).push(f); });
+  const catOrder = ['instructions','config','rules','commands','skills','agent','memory','prompt','transcript','temp','runtime','credentials','extensions'];
+  const sorted = Object.keys(cats).sort((a,b) => {
+    const ai=catOrder.indexOf(a), bi=catOrder.indexOf(b);
+    return (ai<0?99:ai)-(bi<0?99:bi);
+  });
+  let html = sorted.map(cat => {
+    const files = cats[cat];
+    const key = t.tool+'|'+cat;
+    const isOpen = openCats.has(key);
+    return `<div class="cat-group${isOpen?' open':''}">
+      <div class="cat-head" onclick="toggleCat('${esc(key)}')">
+        <span class="carrow">&#9654;</span>
+        <span>${esc(cat)}</span> <span class="badge">${files.length}</span>
+      </div>
+      <div class="cat-files">${files.map(f => {
+        const rel = relPath(f.path, s.root);
+        const name = rel.split('/').pop();
+        const dir = rel.substring(0, rel.length - name.length);
+        return `<div class="fitem" onclick="fetchFile('${esc(f.path)}')">
+          <span class="fpath" title="${esc(f.path)}"><span style="color:var(--fg2)">${esc(dir)}</span>${esc(name)}</span>
+          <span class="fmeta">${fmtSz(f.size)}${f.tokens?' ~'+fmtK(f.tokens)+'t':''}</span>
+        </div>`;
+      }).join('')}</div>
+    </div>`;
+  }).join('');
+
+  // Processes with memory bars
+  if(t.processes.length) {
+    const maxMem = Math.max(...t.processes.map(p=>parseFloat(p.mem_mb)||0), 100);
+    html += `<div class="proc-section"><h3>Processes</h3>` +
+      t.processes.map(p => {
+        const mem = parseFloat(p.mem_mb)||0;
+        const pct = Math.min(mem/maxMem*100, 100);
+        const barColor = (p.anomalies&&p.anomalies.length)?'var(--red)':mem>200?'var(--orange)':'var(--green)';
+        return `<div class="prow">
+          <span class="pid">${p.pid}</span>
+          <span class="pname" title="${esc(p.cmdline)}">${esc(p.name)}</span>
+          <span class="pcpu">${p.cpu_pct}%</span>
+          <div class="mem-bar"><div class="mem-bar-fill" style="width:${pct.toFixed(0)}%;background:${barColor}"></div></div>
+          <span class="pmem">${p.mem_mb}MB</span>
+          ${p.anomalies&&p.anomalies.length?`<span class="anomaly-icon" title="${esc(p.anomalies.join('; '))}">&#9888;</span>`:''}
+        </div>`;
+      }).join('') + `</div>`;
+  }
+
+  // MCP inline
+  if(t.mcp_servers.length) {
+    html += `<div class="proc-section"><h3>MCP Servers</h3>` +
+      t.mcp_servers.map(m => {
+        const cfg = m.config||{};
+        return `<div class="fitem"><span class="fpath" style="color:var(--green)">${esc(m.name)}</span>
+          <span class="fmeta">${esc(cfg.command||'')} ${(cfg.args||[]).join(' ').slice(0,60)}</span></div>`;
+      }).join('') + `</div>`;
+  }
+  return html;
+}
+
+function toggleCat(key) {
+  if(openCats.has(key)) openCats.delete(key); else openCats.add(key);
+  if(snap) renderOverview(snap);
+}
+
+// === Processes tab (all tools) ===
+function renderProcs(s) {
+  const el = document.getElementById('tab-procs');
+  const all = [];
+  s.tools.forEach(t => t.processes.forEach(p => all.push({...p, _tool:t.tool, _label:t.label})));
+  if(!all.length){el.innerHTML='<p style="color:var(--fg2)">No processes detected. Run with --processes or wait for refresh.</p>';return;}
+  const maxMem = Math.max(...all.map(p=>parseFloat(p.mem_mb)||0),100);
+  el.innerHTML = `<table class="ptable"><thead><tr><th>PID</th><th>Tool</th><th>Name</th><th>Type</th><th>CPU</th><th>Memory</th><th></th><th></th></tr></thead><tbody>
+    ${all.sort((a,b)=>(parseFloat(b.mem_mb)||0)-(parseFloat(a.mem_mb)||0)).map(p => {
+      const mem=parseFloat(p.mem_mb)||0; const pct=Math.min(mem/maxMem*100,100);
+      const barColor=(p.anomalies&&p.anomalies.length)?'var(--red)':mem>200?'var(--orange)':'var(--green)';
+      return `<tr>
+        <td style="color:var(--green)">${p.pid}</td>
+        <td><span class="dot" style="background:${COLORS[p._tool]||'#94a3b8'};width:7px;height:7px"></span> ${esc(p._label)}</td>
+        <td title="${esc(p.cmdline)}">${esc(p.name)}</td>
+        <td style="color:var(--fg2)">${esc(p.process_type||'')}</td>
+        <td>${p.cpu_pct}%</td>
+        <td><div class="mem-bar"><div class="mem-bar-fill" style="width:${pct.toFixed(0)}%;background:${barColor}"></div></div></td>
+        <td style="color:var(--fg2)">${p.mem_mb}MB</td>
+        <td>${p.anomalies&&p.anomalies.length?`<span class="anomaly-icon" title="${esc(p.anomalies.join('; '))}">&#9888;</span>`:''}</td>
+      </tr>`;
+    }).join('')}
+  </tbody></table>`;
+}
+
+// === MCP ===
+function renderMCP(s) {
+  const el = document.getElementById('tab-mcp');
+  if(!s.mcp_detail.length){el.innerHTML='<p style="color:var(--fg2)">No MCP servers configured.</p>';return;}
+  el.innerHTML = `<table><thead><tr><th></th><th>Server</th><th>Tool</th><th>Transport</th><th>Endpoint</th><th>Status</th></tr></thead><tbody>
+    ${s.mcp_detail.map(m=>`<tr>
+      <td><span class="status-dot" style="background:${SC[m.status]||'var(--fg2)'}"></span></td>
+      <td>${esc(m.name)}</td><td>${esc(m.tool)}</td><td>${esc(m.transport)}</td>
+      <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(m.endpoint)}">${esc((m.endpoint||'').slice(0,80))}</td>
+      <td>${m.status}${m.pid?' (PID '+m.pid+')':''}</td>
+    </tr>`).join('')}</tbody></table>`;
+}
+
+// === Memory ===
+function renderMemory(s) {
+  const el = document.getElementById('tab-memory');
+  if(!s.agent_memory.length){el.innerHTML='<p style="color:var(--fg2)">No agent memory found.</p>';return;}
+  const LABELS = {'claude-user-memory':'User Memory','claude-project-memory':'Project Memory','claude-auto-memory':'Auto Memory'};
+  const groups = {};
+  s.agent_memory.forEach(m=>{(groups[m.source]=groups[m.source]||[]).push(m);});
+  el.innerHTML = Object.entries(groups).map(([src,entries])=>{
+    const isOpen = openCats.has('mem|'+src);
+    return `<div class="mem-group${isOpen?' open':''}">
+      <div class="mem-group-head" onclick="toggleCat('mem|${src}')">
+        <span class="carrow" style="font-size:0.6rem">&#9654;</span>
+        ${esc(LABELS[src]||src)} <span class="badge">${entries.length}</span>
+        <span class="badge">${fmtK(entries.reduce((a,m)=>a+m.tokens,0))} tok</span>
+      </div>
+      <div class="mem-group-body">${entries.map(m=>{
+        const rel=relPath(m.file,s.root);
+        return `<div class="mem-item" onclick="fetchFile('${esc(m.file)}')">
+          <span style="color:var(--orange);min-width:60px">[${esc(m.profile)}]</span>
+          <span class="fpath" title="${esc(m.file)}">${esc(rel)}</span>
+          <span class="fmeta">${m.tokens}tok ${m.lines}ln</span>
+        </div>`;
+      }).join('')}</div>
+    </div>`;
+  }).join('');
+}
+
+// === File Viewer ===
+async function fetchFile(path) {
+  const res = await fetch('/api/file?path='+encodeURIComponent(path));
+  if(!res.ok){alert('Cannot read: '+res.statusText);return;}
+  fullContent = await res.text();
+  const lines = fullContent.split('\n'), P=50;
+  document.getElementById('fv-path').textContent=path;
+  let meta='';
+  if(snap){for(const t of snap.tools)for(const f of t.files)if(f.path===path){
+    meta=`${f.kind} | ${fmtSz(f.size)} | ~${fmtK(f.tokens)}tok | scope:${f.scope||'?'} | sent_to_llm:${f.sent_to_llm||'?'} | loaded:${f.loaded_when||'?'}`;break;}
+    if(!meta)for(const m of snap.agent_memory)if(m.file===path){meta=`${m.source} | ${m.profile} | ${m.tokens}tok | ${m.lines}ln`;break;}}
+  document.getElementById('fv-meta').textContent=meta;
+  if(lines.length>P*2){
+    document.getElementById('fv-pre').textContent=lines.slice(0,P).join('\n')+'\n\n... ['+
+      (lines.length-P*2)+' lines hidden] ...\n\n'+lines.slice(-P).join('\n');
+    document.getElementById('fv-exp').style.display='';
+  } else { document.getElementById('fv-pre').textContent=fullContent; document.getElementById('fv-exp').style.display='none'; }
+  document.getElementById('fv').classList.remove('hidden');
+}
+function expandViewer(){document.getElementById('fv-pre').textContent=fullContent;document.getElementById('fv-exp').style.display='none';}
+function closeViewer(){document.getElementById('fv').classList.add('hidden');}
+
+// === Budget ===
+async function loadBudget() {
+  const el=document.getElementById('tab-budget');
+  try{const r=await fetch('/api/budget');const b=await r.json();
+  el.innerHTML=`<div class="budget-card"><h3 style="margin-bottom:0.5rem;color:var(--accent)">Token Budget Analysis</h3>
+    <div class="brow"><span class="blabel">Always loaded (every call)</span><span class="bval">~${fmtK(b.always_loaded_tokens)} tokens</span></div>
+    <div class="brow"><span class="blabel">On-demand (when invoked)</span><span class="bval">~${fmtK(b.on_demand_tokens)} tokens</span></div>
+    <div class="brow"><span class="blabel">Conditional (file-matched)</span><span class="bval">~${fmtK(b.conditional_tokens)} tokens</span></div>
+    <div class="brow"><span class="blabel">Cacheable portion</span><span class="bval">~${fmtK(b.cacheable_tokens)} tokens</span></div>
+    <div class="brow"><span class="blabel">Survives compaction</span><span class="bval">~${fmtK(b.survives_compaction_tokens)} tokens</span></div>
+    <div class="brow" style="font-weight:700"><span>Total potential overhead</span><span class="bval" style="color:var(--accent)">~${fmtK(b.total_potential_tokens)} tokens</span></div>
+    <div class="brow"><span class="blabel">Files never sent to LLM</span><span class="bval">${b.never_sent_count}</span></div>
+  </div>`;}catch(e){el.innerHTML='<p style="color:var(--red)">Failed to load budget.</p>';}
+}
+
+// === Helpers ===
+function fmtK(n){return n>=1000?(n/1000).toFixed(1)+'k':''+n;}
+function fmtSz(n){if(n<1024)return n+'B';if(n<1048576)return(n/1024).toFixed(1)+'KB';return(n/1048576).toFixed(1)+'MB';}
+function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+function relPath(p,root){if(p.startsWith(root+'/'))return p.slice(root.length+1);return p.replace(/^\/Users\/[^/]+/,'~');}
+
+// === Init ===
+connectSSE();
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeViewer();});
+</script>
+</body>
+</html>
+"""
