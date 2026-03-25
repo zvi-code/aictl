@@ -6,6 +6,8 @@ import asyncio
 import csv
 import re
 import shutil
+import subprocess
+import threading
 
 from .base import NetworkCollector
 from ...events import EventKind, ProcessInfo, UnifiedEvent
@@ -43,37 +45,49 @@ class MacOSNetworkCollector(NetworkCollector):
             detail="Streaming per-process network samples via nettop",
         )
 
-        process = await asyncio.create_subprocess_exec(
-            "nettop",
-            "-P",
-            "-L",
-            "0",
-            "-x",
-            "-n",
-            "-s",
-            str(self.interval),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        # nettop block-buffers when stdout is not a tty. asyncio PIPE
+        # never receives data. Work around: run Popen in a thread, push
+        # parsed events into a thread-safe queue, drain from async side.
+        loop = asyncio.get_running_loop()
+        stop_event = threading.Event()
+        queue: asyncio.Queue = asyncio.Queue()
         previous: dict[int, tuple[int, int]] = {}
 
+        def _reader():
+            """Sync thread: run nettop, push events to queue."""
+            try:
+                proc = subprocess.Popen(
+                    ["nettop", "-P", "-L", "100", "-n", "-s", str(self.interval)],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    bufsize=1,
+                )
+                for line in proc.stdout:
+                    if stop_event.is_set():
+                        break
+                    event = parse_nettop_line(line.strip(), previous)
+                    if event is not None:
+                        loop.call_soon_threadsafe(queue.put_nowait, event)
+                proc.terminate()
+                proc.wait()
+            except Exception:
+                pass
+            # Signal done
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        reader_thread = threading.Thread(target=_reader, daemon=True)
+        reader_thread.start()
+
         try:
-            assert process.stdout is not None
             while True:
-                line = await process.stdout.readline()
-                if not line:
+                event = await queue.get()
+                if event is None:
                     break
-                event = parse_nettop_line(line.decode(errors="ignore").strip(), previous)
-                if event is not None:
-                    await emit(event)
+                await emit(event)
         except asyncio.CancelledError:
-            if process.returncode is None:
-                process.terminate()
+            stop_event.set()
             raise
-        finally:
-            if process.returncode is None:
-                process.terminate()
-            await process.wait()
 
 
 def parse_nettop_line(line: str, previous: dict[int, tuple[int, int]]) -> UnifiedEvent | None:

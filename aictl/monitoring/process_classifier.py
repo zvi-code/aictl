@@ -74,16 +74,27 @@ def classify_process(process: ProcessInfo) -> MatchResult:
     if " gh copilot" in f" {cmdline}" or name == "copilot" or "github copilot" in combined:
         return MatchResult(tool="copilot-cli", root_candidate=True)
 
-    # ── Codex CLI ─────────────────────────────────────────────
+    # ── Codex (desktop app or CLI) ──────────────────────────────
+    if "codex.app/" in combined or "codex helper" in name:
+        return MatchResult(tool="codex-cli", root_candidate=True)
     if " codex" in f" {cmdline}" or name == "codex" or "/codex" in exe or "\\codex" in exe:
         return MatchResult(tool="codex-cli", root_candidate=True)
 
-    # ── Claude Desktop (must check before Claude Code) ────────
+    # ── Claude Code CLI (check before Desktop — claude-code binary
+    #    lives inside a claude.app/ directory but has "claude-code" in path) ──
+    if "claude-code" in combined:
+        return MatchResult(tool="claude-code", root_candidate=True)
+    if " claude" in f" {cmdline}" and "claude.app/" not in combined:
+        return MatchResult(tool="claude-code", root_candidate=True)
+    if name == "claude" and "claude.app/contents/macos/claude" not in combined:
+        return MatchResult(tool="claude-code", root_candidate=True)
+
+    # ── Claude Desktop (Electron app — /Applications/Claude.app/) ──
     if "claude.app/" in combined or "claude helper" in name:
         return MatchResult(tool="claude-desktop", root_candidate=True)
 
-    # ── Claude Code CLI ───────────────────────────────────────
-    if " claude" in f" {cmdline}" or name == "claude" or "/claude" in exe or "\\claude" in exe:
+    # ── Claude Code CLI fallback ──────────────────────────────
+    if name == "claude" or "/claude" in exe or "\\claude" in exe:
         return MatchResult(tool="claude-code", root_candidate=True)
 
     return MatchResult(tool=None, root_candidate=False)
