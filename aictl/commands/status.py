@@ -8,7 +8,8 @@ from pathlib import Path
 
 import click
 
-from ..discovery import discover_all, backtrace_process, ToolResources
+from ..discovery import discover_all, backtrace_process, compute_token_budget, ToolResources
+from ..registry import expand_tool_filter
 
 
 @click.command()
@@ -19,12 +20,14 @@ from ..discovery import discover_all, backtrace_process, ToolResources
               help="Include running processes for each tool")
 @click.option("--backtrace", "bt_pid", type=int, default=None, metavar="PID",
               help="Sample a process stack trace by PID")
+@click.option("--budget", "show_budget", is_flag=True,
+              help="Show token cost summary")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 @click.option("--html", "as_html", is_flag=True,
               help="Generate a self-contained HTML report (stdout)")
 @click.option("-o", "--output", "out_file", default=None, type=click.Path(),
               help="Write HTML report to file instead of stdout")
-def status(root_dir, tool_filter, show_procs, bt_pid, as_json, as_html, out_file):
+def status(root_dir, tool_filter, show_procs, bt_pid, show_budget, as_json, as_html, out_file):
     """Show all resources for AI coding tools."""
     root = Path(root_dir).resolve()
 
@@ -38,8 +41,11 @@ def status(root_dir, tool_filter, show_procs, bt_pid, as_json, as_html, out_file
     results = discover_all(root, include_processes=include_procs)
 
     if tool_filter:
-        results = [r for r in results if r.tool == tool_filter]
-        if not results:
+        from ..registry import TOOL_GROUPS, TOOL_LABELS
+        expanded = expand_tool_filter([tool_filter])
+        results = [r for r in results if r.tool in expanded or r.tool == tool_filter]
+        # Only error if the tool name is truly unknown (not in groups or labels)
+        if not results and tool_filter not in TOOL_GROUPS and tool_filter not in TOOL_LABELS:
             raise SystemExit(f"Unknown tool: {tool_filter}")
 
     if as_html or out_file:
@@ -48,6 +54,8 @@ def status(root_dir, tool_filter, show_procs, bt_pid, as_json, as_html, out_file
         _print_json(results)
     else:
         _print_human(results, root, show_procs)
+        if show_budget:
+            _print_budget(results)
 
 
 # ─── HTML output ─────────────────────────────────────────────────────
@@ -150,6 +158,11 @@ def _print_human(results: list[ToolResources], root: Path, show_procs: bool) -> 
                     )
                     if len(p.cmdline) > len(p.name):
                         click.secho(f"      {p.cmdline[:120]}", fg="bright_black")
+                    if p.anomalies:
+                        for a in p.anomalies:
+                            click.secho(f"      ⚠ {a}", fg="red")
+                        if p.cleanup_cmd:
+                            click.secho(f"      cleanup: {p.cleanup_cmd}", fg="bright_black")
                 click.secho("\n    Tip: aictl status --backtrace <PID>", fg="bright_black")
             else:
                 click.secho("\n  Processes: none detected", fg="bright_black")
@@ -200,3 +213,19 @@ def _human_size(n: int) -> str:
     if k < 1024:
         return f"{k:.1f}KB"
     return f"{k / 1024:.1f}MB"
+
+
+def _print_budget(results: list[ToolResources]) -> None:
+    budget = compute_token_budget(results)
+    click.secho(f"\n{'─' * 54}", fg="bright_black")
+    click.secho("  Token Budget", bold=True)
+    click.secho(f"{'─' * 54}", fg="bright_black")
+    click.echo(f"    Always loaded (every call):  ~{budget['always_loaded_tokens']} tokens")
+    click.echo(f"    On-demand (when invoked):    ~{budget['on_demand_tokens']} tokens")
+    click.echo(f"    Conditional (file-matched):  ~{budget['conditional_tokens']} tokens")
+    click.echo(f"    Cacheable portion:           ~{budget['cacheable_tokens']} tokens")
+    click.echo(f"    Survives compaction:         ~{budget['survives_compaction_tokens']} tokens")
+    click.secho(f"    Total potential overhead:    ~{budget['total_potential_tokens']} tokens",
+                bold=True)
+    click.echo(f"    Files never sent to LLM:      {budget['never_sent_count']}")
+    click.echo()

@@ -23,6 +23,9 @@ all = ["textual>=0.79", "psutil>=5.9"]
 [project.scripts]
 aictl = "aictl.cli:main"
 
+[tool.setuptools.package-data]
+"aictl.data" = ["*.csv"]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

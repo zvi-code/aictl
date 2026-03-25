@@ -1,0 +1,111 @@
+path,ai_tool,platform,hidden,scope,category,sent_to_llm,approx_tokens,read_write,survives_compaction,cacheable,loaded_when,path_args,description,resolution,root_strategy
+%APPDATA%\Claude\claude_desktop_config.json,claude-desktop,windows,no,global,config,no,0,rw,n/a,n/a,app-start,,MCP server configuration,literal,none
+%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude_desktop_config.json,claude-desktop,windows,no,global,config,no,0,rw,n/a,n/a,app-start,,MSIX virtualized actual read path (Windows),literal,none
+%USERPROFILE%\.claude\CLAUDE.md,claude-code,windows,no,global,instructions,yes,100-2000,rw,yes,yes,every-call,,Global instructions for all projects,literal,cwd
+%USERPROFILE%\.claude\settings.json,claude-code,windows,no,global,config,no,0,rw,n/a,n/a,session-start,,Global user settings,literal,cwd
+%USERPROFILE%\.claude\.credentials.json,claude-code,windows,no,global,credentials,no,0,read,n/a,n/a,session-start,,API credentials (Windows),literal,cwd
+%USERPROFILE%\.claude\projects\{project}\memory\MEMORY.md,claude-code,windows,no,project,memory,yes,100-3000,rw,yes,yes,every-call,{project}=path-with-slashes-to-hyphens,Auto-memory entrypoint,shadow,cwd
+{project-root}/CLAUDE.md,claude-code,all,no,project,instructions,yes,100-5000+,rw,yes,yes,every-call,,Project instructions (commit to git),recursive,cwd
+{project-root}/CLAUDE.local.md,claude-code,all,no,project,instructions,yes,100-1000,rw,yes,yes,every-call,,Personal project overrides (.gitignore'd),recursive,cwd
+{parent}/CLAUDE.md,claude-code,all,no,parent,instructions,yes,100-5000+,read,yes,yes,every-call,,Instructions from parent directories (traverses up to $HOME; monorepo support),parent,cwd
+{parent}/CLAUDE.local.md,claude-code,all,no,parent,instructions,yes,100-1000,read,yes,yes,every-call,,Local overrides from parent directories (traverses up to $HOME),parent,cwd
+{project-root}/.claude/CLAUDE.md,claude-code,all,yes,project,instructions,yes,100-5000+,rw,yes,yes,every-call,,Alternative project instructions location,recursive,cwd
+{project-root}/.claude/settings.json,claude-code,all,yes,project,config,no,0,rw,n/a,n/a,session-start,,"Project settings (shared, committed)",recursive,cwd
+{project-root}/.claude/settings.local.json,claude-code,all,yes,project,config,no,0,rw,n/a,n/a,session-start,,Personal project settings (not committed),recursive,cwd
+{project-root}/.claude/commands/{command}.md,claude-code,all,yes,project,commands,on-demand,50-500,rw,n/a,n/a,on-invoke,{command},Project slash commands,recursive,cwd
+{project-root}/.claude/skills/{skill}/SKILL.md,claude-code,all,yes,project,skills,partial,50-100,rw,yes,yes,description-always;body-on-demand,{skill},Project skills,recursive,cwd
+{project-root}/.claude/agents/{agent}.md,claude-code,all,yes,project,agent,yes,200-500,rw,yes,yes,every-call,"{agent}=e.g. code-reviewer,security-auditor",Subagent persona definitions,recursive,cwd
+{project-root}/.claude/rules/{rule}.md,claude-code,all,yes,project,rules,conditional,50-500,rw,yes,yes,on-file-match,{rule},Modular instruction files (glob-matched),recursive,cwd
+{project-root}/.mcp.json,claude-code,all,yes,project,config,no,0,rw,n/a,n/a,session-start,,Project-level MCP server configuration,recursive,cwd
+{project-root}/.claudeignore,claude-code,all,yes,project,ignore,no,0,read,n/a,n/a,session-start,,Files to exclude from Claude Code access (buggy enforcement),recursive,cwd
+C:\Program Files\ClaudeCode\managed-settings.json,claude-code,windows,no,global,config,no,0,read,n/a,n/a,session-start,,Managed/enterprise settings,literal,cwd
+%TEMP%\claude\{project}\{session}\scratchpad\,claude-code,windows,no,session,temp,no,0,rw,no,no,runtime,{project}=hash;{session}=uuid,Per-session scratchpad (Windows),shadow,cwd
+tmpclaude-{hex}-cwd,claude-code,all,no,session,temp,no,0,rw,no,no,per-bash-call,{hex}=4-char-hex,CWD tracking file (BUG: drops in project root),literal,cwd
+{project-root}/tmp/attachments/,claude-code,all,no,session,temp,no,0,write,no,no,session-start,,Attachment staging dir (BUG: created in project root),rooted,cwd
+%APPDATA%\ChatGPT\,chatgpt-desktop,windows,no,global,app-data,no,0,rw,n/a,n/a,app-start,,ChatGPT desktop app data,literal,none
+~/.openai/.env,openai-api,all,yes,global,credentials,no,0,read,n/a,n/a,runtime,,OPENAI_API_KEY,literal,none
+~/.openai/config.json,openai-api,all,yes,global,config,no,0,rw,n/a,n/a,runtime,,OpenAI API settings,literal,none
+~/.codex/config.json,codex-cli,all,yes,global,config,no,0,rw,n/a,n/a,session-start,,Codex CLI configuration,literal,git-root
+~/.codex/instructions.md,codex-cli,all,yes,global,instructions,yes,100-2000,rw,yes,yes,every-call,,Codex CLI custom instructions (now uses AGENTS.md),literal,git-root
+%USERPROFILE%\.gemini\GEMINI.md,gemini-cli,windows,no,global,instructions,yes,100-2000,rw,yes,yes,every-call,,Global context/instructions,literal,git-root
+{project-root}/GEMINI.md,gemini-cli,all,no,project,instructions,yes,100-5000+,rw,yes,yes,every-call,,Project-specific context (primary),recursive,git-root
+{project-root}/.geminiignore,gemini-cli,all,yes,project,ignore,no,0,read,n/a,n/a,session-start,,Project-level ignore patterns,recursive,git-root
+{subdirectory}/GEMINI.md,gemini-cli,all,no,project,instructions,yes,100-2000,rw,yes,yes,on-file-access,{subdirectory},Component-specific instructions (recursive),recursive,git-root
+%USERPROFILE%\.copilot\config.json,copilot-cli,windows,no,global,config,no,0,rw,n/a,n/a,session-start,,Core CLI settings,literal,git-root
+$HOME/.copilot/copilot-instructions.md,copilot-cli,all,yes,global,instructions,yes,100-2000,rw,yes,yes,every-call,,Global personal instructions (env var path),literal,git-root
+%APPDATA%\GitHub CLI\hosts.yml,copilot-cli,windows,no,global,credentials,no,0,read,n/a,n/a,session-start,,GitHub CLI auth tokens (Windows),literal,git-root
+{project-root}/.github/copilot-instructions.md,copilot,all,yes,project,instructions,yes,100-5000,rw,yes,yes,every-call,,Repo-wide AI instructions,recursive,git-root
+{project-root}/.github/instructions/*.instructions.md,copilot,all,yes,project,instructions,conditional,50-500,rw,yes,yes,on-file-match,applyTo glob in frontmatter,Path-specific instructions,recursive,git-root
+{project-root}/.github/prompts/*.prompt.md,copilot,all,yes,project,commands,on-demand,100-1000,rw,n/a,n/a,on-invoke,,Reusable prompt templates,recursive,git-root
+{project-root}/.github/git-commit-instructions.md,copilot,all,yes,project,instructions,conditional,50-300,rw,yes,yes,on-commit,,Commit message guidance,recursive,git-root
+{project-root}/.github/hooks/*.json,copilot-cli,all,yes,project,hooks,no,0,read,n/a,n/a,on-hook-trigger,,Lifecycle hook configurations,recursive,git-root
+{project-root}/.github/copilot/settings.json,copilot-cli,all,yes,project,config,no,0,rw,n/a,n/a,session-start,,Repo-level Copilot settings,recursive,git-root
+{project-root}/.github/copilot/settings.local.json,copilot-cli,all,yes,project,config,no,0,rw,n/a,n/a,session-start,,Personal repo overrides (not committed),recursive,git-root
+{project-root}/.copilot/mcp-config.json,copilot-cli,all,yes,project,config,no,0,rw,n/a,n/a,session-start,,Project-level MCP servers,recursive,git-root
+{project-root}/AGENTS.md,copilot-cli,all,no,project,instructions,yes,100-5000+,rw,yes,yes,every-call,,Cross-tool agent instructions (primary for Copilot CLI),recursive,git-root
+%USERPROFILE%\copilot-instructions.md,copilot-vs,windows,no,global,instructions,yes,100-2000,rw,yes,yes,every-call,,VS user-level preferences (Windows),literal,workspace
+%LOCALAPPDATA%\github-copilot\intellij\global-copilot-instructions.md,copilot-jetbrains,windows,no,global,instructions,yes,100-2000,rw,yes,yes,every-call,,JetBrains global instructions (Windows),literal,workspace
+%APPDATA%\Cursor\User\globalStorage\state.vscdb,cursor,windows,no,global,database,no,0,rw,n/a,n/a,app-start,,SQLite settings database (Windows),literal,workspace
+%APPDATA%\Cursor\CachedData\{version}\,cursor,windows,no,global,cache,no,0,rw,n/a,n/a,runtime,{version}=hash,Per-version cache (never auto-cleaned),literal,workspace
+%USERPROFILE%\.cursor\extensions\,cursor,windows,no,global,extensions,no,0,rw,n/a,n/a,app-start,,Extension installations (Windows),literal,workspace
+{project-root}/.cursorrules,cursor,all,yes,project,instructions,yes,100-5000+,rw,yes,yes,every-call,,Legacy project AI rules (injected into system prompt),recursive,workspace
+{project-root}/.cursor/rules/*.md,cursor,all,yes,project,rules,conditional,50-500,rw,yes,yes,on-file-match/always/mention,,Modern granular rule files (.md format),recursive,workspace
+{project-root}/.cursor/rules/*.mdc,cursor,all,yes,project,rules,conditional,50-500,rw,yes,yes,on-file-match/always/mention,,Legacy granular rule files (.mdc format — older Cursor versions),recursive,workspace
+{project-root}/.cursorignore,cursor,all,yes,project,ignore,no,0,read,n/a,n/a,session-start,,Files excluded from AI context/indexing,recursive,workspace
+%USERPROFILE%\.codeium\windsurf\memories\global_rules.md,windsurf,windows,no,global,instructions,yes,100-2000,rw,yes,yes,every-call,,Global AI guidelines (Windows),literal,workspace
+%USERPROFILE%\.codeium\windsurf\mcp_config.json,windsurf,windows,no,global,config,no,0,rw,n/a,n/a,app-start,,MCP server configuration (Windows),literal,workspace
+{project-root}/.windsurfrules,windsurf,all,yes,project,instructions,yes,100-5000+,rw,yes,yes,every-call,,Legacy project-wide AI rules,recursive,workspace
+{project-root}/.windsurf/rules/*.md,windsurf,all,yes,project,rules,conditional,50-500,rw,yes,yes,on-match/always/mention,,Modern granular rules (Wave 8+),recursive,workspace
+{project-root}/.codeiumignore,windsurf,all,yes,project,ignore,no,0,read,n/a,n/a,app-start,,Project-level file exclusions,recursive,workspace
+{project-root}/cascade-memories/,windsurf,all,no,project,memory,partial,varies,rw,n/a,n/a,runtime,,"Cascade-generated memories (auto, in project root)",recursive,workspace
+%USERPROFILE%\.openclaw\openclaw.json,openclaw,windows,no,global,config,no,0,rw,n/a,n/a,gateway-start,,Main configuration (Windows),literal,cwd
+{project-root}/openclaw.config.json,openclaw,all,no,project,config,no,0,rw,n/a,n/a,gateway-start,,Project-specific config (merges with global),rooted,cwd
+%USERPROFILE%\.config\opencode\opencode.json,opencode,windows,no,global,config,no,0,rw,n/a,n/a,session-start,,Global config (Windows),literal,cwd
+{project-root}/opencode.json,opencode,all,no,project,config,no,0,rw,n/a,n/a,session-start,,Project config (merges with global),rooted,cwd
+{project-root}/AGENTS.md,opencode,all,no,project,instructions,yes,100-5000+,rw,yes,yes,every-call,,Project instructions (primary),recursive,cwd
+{project-root}/.opencode/agents/{agent}.md,opencode,all,yes,project,agent,on-demand,200-500,rw,n/a,n/a,on-delegation,{agent},Project-specific agents,recursive,cwd
+{project-root}/.opencode/commands/{command}.md,opencode,all,yes,project,commands,on-demand,50-500,rw,n/a,n/a,on-invoke,{command},Project-specific commands,recursive,cwd
+{project-root}/.ignore,opencode,all,yes,project,ignore,no,0,read,n/a,n/a,session-start,,Override .gitignore — allow excluded files back into context,rooted,cwd
+{project-root}/AGENTS.md,cross-tool,all,no,project,instructions,yes,100-5000+,rw,yes,yes,every-call,,"Cross-tool standard (Copilot CLI, Gemini, Codex, OpenCode)",recursive,varies
+{project-root}/CLAUDE.md,cross-tool,all,no,project,instructions,yes,100-5000+,rw,yes,yes,every-call,,"Claude-specific (also read by Copilot CLI, OpenCode)",recursive,varies
+{project-root}/GEMINI.md,cross-tool,all,no,project,instructions,yes,100-5000+,rw,yes,yes,every-call,,"Gemini-specific (also read by Copilot CLI, OpenCode)",recursive,varies
+~/.aider/.aider.conf.yml,aider,all,yes,global,config,no,0,rw,n/a,n/a,session-start,,Aider global config,literal,git-root
+{project-root}/.aider.conf.yml,aider,all,yes,project,config,no,0,rw,n/a,n/a,session-start,,Aider project config,recursive,git-root
+{project-root}/.aiderignore,aider,all,yes,project,ignore,no,0,read,n/a,n/a,session-start,,Files to exclude from Aider,recursive,git-root
+{project-root}/.aider.tags.cache.v3/,aider,all,yes,project,cache,no,0,rw,n/a,n/a,runtime,,Code indexing cache,recursive,git-root
+~/.continue/config.yaml,continue,all,yes,global,config,no,0,rw,n/a,n/a,session-start,,Continue extension config,literal,workspace
+~/.continue/.env,continue,all,yes,global,credentials,no,0,read,n/a,n/a,session-start,,Continue API keys,literal,workspace
+{project-root}/.continuerules,continue,all,yes,project,instructions,yes,100-2000,rw,yes,yes,every-call,,Continue project-specific rules,recursive,workspace
+{project-root}/.continueignore,continue,all,yes,project,ignore,no,0,read,n/a,n/a,session-start,,Files to exclude from Continue,recursive,workspace
+{project-root}/.junie/guidelines.md,junie,all,yes,project,instructions,yes,100-2000,rw,yes,yes,every-call,,JetBrains Junie project configuration,recursive,workspace
+~/.tabnine/tabnine_config.json,tabnine,all,yes,global,config,no,0,rw,n/a,n/a,app-start,,Tabnine global configuration,literal,workspace
+%USERPROFILE%\.claude.json,claude-code,windows,no,global,config,no,0,rw,n/a,n/a,session-start,,User-scoped MCP servers and account config (Windows),literal,cwd
+{project-root}/.lsp.json,claude-code,all,yes,project,config,no,0,rw,n/a,n/a,session-start,,Language server configuration (project-level),recursive,cwd
+{project-root}/.github/agents/*.agent.md,copilot,all,yes,project,agent,on-demand,200-500,rw,n/a,n/a,on-delegation,,Custom agent definitions (repo-level; also available at org level),recursive,git-root
+{project-root}/.github/skills/{skill}/SKILL.md,copilot-cli,all,yes,project,skills,on-demand,50-500,rw,n/a,n/a,on-invoke,{skill},Copilot CLI skill definitions (project-level),recursive,git-root
+{project-root}/.copilot-mcp.json,copilot-cli,all,yes,project,config,no,0,rw,n/a,n/a,session-start,,Alternative project-level MCP config (alternative to .copilot/mcp-config.json),recursive,git-root
+{project-root}/.vscode/settings.json,copilot-vscode,all,yes,project,config,no,0,rw,n/a,n/a,app-start,,VS Code workspace settings (Copilot config lives here),recursive,workspace
+{project-root}/.vscode/extensions.json,copilot-vscode,all,yes,project,config,no,0,read,n/a,n/a,app-start,,Recommended extensions list (includes Copilot),recursive,workspace
+%APPDATA%\Code\User\settings.json,copilot-vscode,windows,no,global,config,no,0,rw,n/a,n/a,app-start,,VS Code global user settings (Windows),literal,workspace
+%USERPROFILE%\.vscode\extensions\github.copilot*\package.json,copilot-vscode,windows,no,global,extensions,no,0,read,n/a,n/a,app-start,,Copilot extension manifest (Windows),literal,workspace
+{project-root}/.cursor/mcp.json,cursor,all,yes,project,config,no,0,rw,n/a,n/a,app-start,,Project-level MCP server configuration (Cursor-specific),recursive,workspace
+%APPDATA%\Cursor\User\settings.json,cursor,windows,no,global,config,no,0,rw,n/a,n/a,app-start,,Cursor global user settings (Windows),literal,workspace
+{project-root}/.windsurf/mcp.json,windsurf,all,yes,project,config,no,0,rw,n/a,n/a,app-start,,Project-level MCP server configuration (Windsurf-specific),recursive,workspace
+{project-root}/.env,project-env,all,yes,project,credentials,no,0,read,n/a,n/a,runtime,,Environment variables (read by most AI tools and frameworks),recursive,cwd
+{project-root}/.envrc,project-env,all,yes,project,credentials,no,0,read,n/a,n/a,runtime,,direnv environment config (auto-loaded on cd),recursive,cwd
+{project-root}/.env.local,project-env,all,yes,project,credentials,no,0,read,n/a,n/a,runtime,,Local env overrides (Next.js and other frameworks),recursive,cwd
+{project-root}/.env.development,project-env,all,yes,project,credentials,no,0,read,n/a,n/a,runtime,,Development environment variables,recursive,cwd
+{project-root}/.context.aictx,aictl,all,yes,project,config,no,0,rw,n/a,n/a,session-start,,aictl project context file,recursive,cwd
+{project-root}/.ai-deployed/manifest.json,aictl,all,yes,project,runtime,no,0,rw,n/a,n/a,runtime,,aictl deployment manifest,rooted,cwd
+{project-root}/skprompt.txt,semantic-kernel,all,no,project,instructions,yes,100-2000,rw,yes,yes,every-call,,Semantic Kernel prompt template file,recursive,cwd
+{project-root}/appsettings.json,semantic-kernel,all,no,project,config,no,0,rw,n/a,n/a,app-start,,Semantic Kernel / .NET app settings (AI config section),recursive,cwd
+{project-root}/flow.dag.yaml,azure-promptflow,all,no,project,config,no,0,rw,n/a,n/a,runtime,,Azure PromptFlow DAG flow definition,recursive,cwd
+{project-root}/flow.flex.yaml,azure-promptflow,all,no,project,config,no,0,rw,n/a,n/a,runtime,,Azure PromptFlow flex flow definition,recursive,cwd
+{project-root}/.promptflow/,azure-promptflow,all,yes,project,config,no,0,rw,n/a,n/a,runtime,,Azure PromptFlow local config directory,recursive,cwd
+{project-root}/azure.yaml,azure-ai,all,no,project,config,no,0,rw,n/a,n/a,runtime,,Azure Developer CLI (azd) project config,rooted,cwd
+{project-root}/.azure/,azure-ai,all,yes,project,runtime,no,0,rw,n/a,n/a,runtime,,Azure Developer CLI local state directory,rooted,cwd
+{project-root}/local.settings.json,azure-ai,all,no,project,config,no,0,rw,n/a,n/a,runtime,,Azure Functions local settings (connection strings and keys),recursive,cwd
+{project-root}/teamsapp.yml,copilot365,all,no,project,config,no,0,rw,n/a,n/a,runtime,,Microsoft 365 Copilot Teams app manifest,recursive,cwd
+{project-root}/aad.manifest.json,copilot365,all,no,project,config,no,0,rw,n/a,n/a,runtime,,Azure AD / Entra ID app registration manifest,recursive,cwd
+{project-root}/.fx/,copilot365,all,yes,project,config,no,0,rw,n/a,n/a,runtime,,Teams Toolkit project config directory,recursive,cwd
+{project-root}/.vscode/mcp.json,copilot-vscode,all,yes,project,config,no,0,rw,n/a,n/a,app-start,,VS Code workspace MCP server configuration (Copilot agent mode),recursive,workspace
