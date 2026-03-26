@@ -389,6 +389,7 @@ class DashboardApp(App):
             if not tr.files and not tr.processes and not tr.mcp_servers and not tr.live:
                 continue
             colour = TOOL_COLOURS.get(tr.tool, "white")
+            icon = TOOL_ICONS.get(tr.tool, DEFAULT_TOOL_ICON)
             label = TOOL_LABELS.get(tr.tool, tr.label)
             tok = sum(f.tokens for f in tr.files)
             cpu = sum(float(p.cpu_pct) for p in tr.processes
@@ -397,7 +398,14 @@ class DashboardApp(App):
                       if p.mem_mb.replace('.', '', 1).isdigit())
             anom = sum(1 for p in tr.processes if p.anomalies)
 
-            lines.append(f"[{colour}]●[/] [bold]{label}[/bold]")
+            # Check for telemetry errors
+            tel_errors = 0
+            tel = tr.token_breakdown.get("telemetry") if tr.token_breakdown else None
+            if tel and isinstance(tel, dict):
+                tel_errors = len(tel.get("errors", []))
+
+            err_badge = f" [#f87171]{tel_errors} err[/]" if tel_errors else ""
+            lines.append(f"{icon} [{colour}]●[/] [bold]{label}[/bold]{err_badge}")
             parts = []
             if tr.files:
                 parts.append(f"  {len(tr.files)} files ({_human_tokens(tok)})")
@@ -422,6 +430,11 @@ class DashboardApp(App):
             if anom:
                 parts.append(f"  [#f87171]{anom} anomal{'ies' if anom != 1 else 'y'}[/]")
             lines.extend(parts)
+            # Show config hints if available
+            tool_config = next((c for c in (snap.tool_configs or []) if c.get("tool") == tr.tool), None)
+            if tool_config:
+                for hint in tool_config.get("hints", [])[:2]:
+                    lines.append(f"  [#fb923c]💡 {hint}[/]")
             lines.append("")
 
         try:
