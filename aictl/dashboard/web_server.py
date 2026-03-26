@@ -1355,7 +1355,7 @@ function TabOverview() {
   const {snap: s} = useContext(SnapContext);
   const tools = useMemo(()=>{
     if(!s) return [];
-    return s.tools.filter(t=>t.tool!=='aictl'&&(t.files.length||t.processes.length||t.mcp_servers.length||t.live))
+    return s.tools.filter(t=>t.tool!=='aictl'&&t.tool!=='any'&&(t.files.length||t.processes.length||t.mcp_servers.length||t.live))
       .sort((a,b)=>{
         // Sort by static metrics only — prevents jarring card reordering on live data changes
         const scoreA = (a.files.length*2) + a.processes.length + a.mcp_servers.length;

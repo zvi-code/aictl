@@ -36,7 +36,7 @@ TOOL_LABELS: dict[str, str] = {
     "claude-desktop": "Claude Desktop",
     "claude-mcp-memory": "Claude MCP Memory",
     "copilot": "GitHub Copilot",
-    "copilot-vscode": "Copilot (VS Code)",
+    "copilot-vscode": "Copilot VS Code",
     "copilot-cli": "Copilot CLI",
     "copilot-jetbrains": "Copilot (JetBrains)",
     "copilot-vs": "Copilot (Visual Studio)",
@@ -59,7 +59,8 @@ TOOL_LABELS: dict[str, str] = {
     "opencode": "OpenCode",
     "tabnine": "Tabnine",
     "junie": "Junie",
-    "cross-tool": "Cross-Tool",
+    "cross-tool": "Shared Instructions",
+    "any": "Unclassified",
 }
 
 
