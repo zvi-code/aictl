@@ -35,6 +35,8 @@ class DashboardTool:
 
     tool: str
     label: str
+    vendor: str = ""
+    host: str = ""
     files: list[ResourceFile] = field(default_factory=list)
     processes: list = field(default_factory=list)
     mcp_servers: list[dict] = field(default_factory=list)
@@ -235,12 +237,15 @@ def _compute_token_breakdown(files: list[ResourceFile]) -> dict:
 
 
 def _merge_dashboard_tools(discovered: list[ToolResources], live_monitor: dict) -> list[DashboardTool]:
+    from ..registry import tool_vendor, tool_hosts, TOOL_LABELS
     tools_by_name: dict[str, DashboardTool] = {}
     for resource in discovered:
         files = list(resource.files)
         tools_by_name[resource.tool] = DashboardTool(
             tool=resource.tool,
             label=resource.label,
+            vendor=tool_vendor(resource.tool),
+            host=",".join(tool_hosts(resource.tool)),
             files=files,
             processes=list(resource.processes),
             mcp_servers=list(resource.mcp_servers),
@@ -255,7 +260,9 @@ def _merge_dashboard_tools(discovered: list[ToolResources], live_monitor: dict) 
         if tool_name not in tools_by_name:
             tools_by_name[tool_name] = DashboardTool(
                 tool=tool_name,
-                label=str(live_report.get("label", tool_name)),
+                label=TOOL_LABELS.get(tool_name, tool_name),
+                vendor=tool_vendor(tool_name),
+                host=",".join(tool_hosts(tool_name)),
             )
         tools_by_name[tool_name].live = live_report
 

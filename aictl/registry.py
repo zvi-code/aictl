@@ -31,6 +31,130 @@ TOOL_GROUPS: dict[str, list[str]] = {
     "aictl": ["aictl"],
 }
 
+# ─── Faceted taxonomy ────────────────────────────────────────────
+#
+# Each tool has: vendor (who makes it), host (where it runs), and
+# optionally default_model.  A tool can run on multiple hosts.
+#
+# Vendors:
+#   anthropic, github, openai, google, jetbrains, cursor-inc,
+#   codeium, microsoft, community, mixed, meta (aictl itself)
+#
+# Hosts:
+#   cli          — terminal / command-line
+#   vscode       — VS Code / VS Code fork extension
+#   jetbrains    — JetBrains IDE plugin
+#   desktop      — standalone desktop application
+#   web          — browser-based interface
+#   standalone   — bundled IDE (Cursor, Windsurf — host IS the tool)
+#   m365         — Microsoft 365 integration
+#   any          — applies to multiple / not host-specific
+
+@dataclass(frozen=True, slots=True)
+class ToolMeta:
+    """Taxonomy metadata for one AI tool."""
+    vendor: str
+    hosts: tuple[str, ...]
+    default_model: str = ""
+
+TOOL_TAXONOMY: dict[str, ToolMeta] = {
+    # ── Anthropic ──
+    "claude-code":       ToolMeta("anthropic",   ("cli", "vscode"), "claude-sonnet-4"),
+    "claude-desktop":    ToolMeta("anthropic",   ("desktop",),      "claude-sonnet-4"),
+    "claude-mcp-memory": ToolMeta("anthropic",   ("cli", "vscode")),
+    "claude-mem":        ToolMeta("anthropic",   ("cli", "vscode")),
+    # ── GitHub / Microsoft ──
+    "copilot":           ToolMeta("github",      ("vscode", "jetbrains", "cli")),
+    "copilot-vscode":    ToolMeta("github",      ("vscode",)),
+    "copilot-cli":       ToolMeta("github",      ("cli",)),
+    "copilot-jetbrains": ToolMeta("github",      ("jetbrains",)),
+    "copilot-vs":        ToolMeta("github",      ("vscode",)),  # Visual Studio
+    "copilot365":        ToolMeta("microsoft",   ("m365",)),
+    # ── OpenAI ──
+    "codex-cli":         ToolMeta("openai",      ("cli",),          "gpt-5.4"),
+    "chatgpt-desktop":   ToolMeta("openai",      ("desktop",)),
+    "chatgpt-lencx":     ToolMeta("openai",      ("desktop",)),
+    "openai-api":        ToolMeta("openai",      ("any",)),
+    # ── Google ──
+    "gemini-cli":        ToolMeta("google",      ("cli",),          "gemini-2.5-pro"),
+    # ── Standalone IDEs (host IS the tool) ──
+    "cursor":            ToolMeta("cursor-inc",  ("standalone",)),
+    "windsurf":          ToolMeta("codeium",     ("standalone",)),
+    # ── JetBrains ──
+    "junie":             ToolMeta("jetbrains",   ("jetbrains",)),
+    # ── Community / OSS ──
+    "aider":             ToolMeta("community",   ("cli",)),
+    "continue":          ToolMeta("community",   ("vscode", "jetbrains")),
+    "openclaw":          ToolMeta("community",   ("cli",)),
+    "opencode":          ToolMeta("community",   ("cli",)),
+    "tabnine":           ToolMeta("tabnine",     ("vscode", "jetbrains")),
+    # ── Azure / Enterprise ──
+    "semantic-kernel":   ToolMeta("microsoft",   ("any",)),
+    "azure-promptflow":  ToolMeta("microsoft",   ("any",)),
+    "azure-ai":          ToolMeta("microsoft",   ("any",)),
+    # ── Cross-cutting ──
+    "cross-tool":        ToolMeta("mixed",       ("any",)),
+    "project-env":       ToolMeta("mixed",       ("any",)),
+    "any":               ToolMeta("mixed",       ("any",)),
+    "aictl":             ToolMeta("meta",        ("cli",)),
+}
+
+# Vendor display labels
+VENDOR_LABELS: dict[str, str] = {
+    "anthropic": "Anthropic",
+    "github": "GitHub",
+    "openai": "OpenAI",
+    "google": "Google",
+    "microsoft": "Microsoft",
+    "cursor-inc": "Cursor Inc",
+    "codeium": "Codeium",
+    "jetbrains": "JetBrains",
+    "community": "Community",
+    "tabnine": "Tabnine",
+    "mixed": "Multi-vendor",
+    "meta": "aictl",
+}
+
+# Host display labels
+HOST_LABELS: dict[str, str] = {
+    "cli": "CLI Tools",
+    "vscode": "VS Code",
+    "jetbrains": "JetBrains",
+    "desktop": "Desktop Apps",
+    "web": "Web",
+    "standalone": "Standalone IDEs",
+    "m365": "Microsoft 365",
+    "any": "Cross-platform",
+}
+
+# Vendor colors (for group-by vendor view)
+VENDOR_COLORS: dict[str, str] = {
+    "anthropic": "#a78bfa",
+    "github": "#60a5fa",
+    "openai": "#10b981",
+    "google": "#34d399",
+    "microsoft": "#60a5fa",
+    "cursor-inc": "#34d399",
+    "codeium": "#2dd4bf",
+    "jetbrains": "#fb923c",
+    "community": "#94a3b8",
+    "tabnine": "#e879f9",
+    "mixed": "#cbd5e1",
+    "meta": "#94a3b8",
+}
+
+
+def tool_vendor(tool: str) -> str:
+    """Return the vendor for a tool."""
+    meta = TOOL_TAXONOMY.get(tool)
+    return meta.vendor if meta else "community"
+
+
+def tool_hosts(tool: str) -> tuple[str, ...]:
+    """Return the host(s) a tool runs on."""
+    meta = TOOL_TAXONOMY.get(tool)
+    return meta.hosts if meta else ("any",)
+
 TOOL_LABELS: dict[str, str] = {
     "claude-code": "Claude Code",
     "claude-desktop": "Claude Desktop",
@@ -156,6 +280,8 @@ class PathSpec:
     """One row from the paths CSV."""
     path_template: str
     ai_tool: str
+    vendor: str
+    host: str
     platform: str
     hidden: bool
     scope: str
@@ -177,6 +303,8 @@ class ProcessSpec:
     """One row from the processes CSV."""
     process_name: str
     ai_tool: str
+    vendor: str
+    host: str
     process_type: str
     runtime: str
     parent_process: str
@@ -231,6 +359,8 @@ def _load_path_csv(path: Path) -> list[PathSpec]:
                     specs.append(PathSpec(
                         path_template=row["path"],
                         ai_tool=row["ai_tool"],
+                        vendor=row.get("vendor", tool_vendor(row["ai_tool"])),
+                        host=row.get("host", ",".join(tool_hosts(row["ai_tool"]))),
                         platform=row["platform"],
                         hidden=_bool_field(row.get("hidden", "no")),
                         scope=row["scope"],
@@ -262,6 +392,8 @@ def _load_process_csv(path: Path) -> list[ProcessSpec]:
                     specs.append(ProcessSpec(
                         process_name=row["process_name"],
                         ai_tool=row["ai_tool"],
+                        vendor=row.get("vendor", tool_vendor(row["ai_tool"])),
+                        host=row.get("host", ",".join(tool_hosts(row["ai_tool"]))),
                         process_type=row.get("process_type", ""),
                         runtime=row.get("runtime", ""),
                         parent_process=row.get("parent_process", ""),
