@@ -67,6 +67,11 @@ names = [".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", 
 [daemon]
 pid_file = ""  # Empty = auto (~/.config/aictl/aictl.pid)
 log_file = ""  # Empty = auto (~/.config/aictl/aictl.log)
+
+[storage]
+db_path = ""  # Empty = auto (~/.config/aictl/history.db)
+flush_interval = 10.0  # Seconds between batch writes to SQLite
+retention_days = 30  # Delete data older than this
 """
 
 
@@ -97,6 +102,16 @@ class AictlConfig:
     # daemon
     pid_file: str = ""
     log_file: str = ""
+
+    # storage
+    db_path: str = ""
+    flush_interval: float = 10.0
+    retention_days: int = 30
+
+    def effective_db_path(self) -> Path:
+        if self.db_path:
+            return Path(self.db_path)
+        return config_dir() / "history.db"
 
     def effective_pid_file(self) -> Path:
         if self.pid_file:
@@ -157,6 +172,15 @@ def load_config() -> AictlConfig:
     if "log_file" in daemon:
         cfg.log_file = str(daemon["log_file"])
 
+    # [storage]
+    storage = data.get("storage", {})
+    if "db_path" in storage:
+        cfg.db_path = str(storage["db_path"])
+    if "flush_interval" in storage:
+        cfg.flush_interval = float(storage["flush_interval"])
+    if "retention_days" in storage:
+        cfg.retention_days = int(storage["retention_days"])
+
     return cfg
 
 
@@ -192,5 +216,10 @@ def show_config() -> str:
         "[daemon]",
         f"  pid_file        = {cfg.effective_pid_file()}",
         f"  log_file        = {cfg.effective_log_file()}",
+        "",
+        "[storage]",
+        f"  db_path         = {cfg.effective_db_path()}",
+        f"  flush_interval  = {cfg.flush_interval}",
+        f"  retention_days  = {cfg.retention_days}",
     ]
     return "\n".join(lines)

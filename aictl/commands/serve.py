@@ -24,10 +24,12 @@ from ..config import load_config
               help="Enable live runtime monitoring overlay")
 @click.option("--daemon/--no-daemon", "daemon_mode", default=False,
               help="Run as background daemon")
+@click.option("--db", "db_path", default=None, type=click.Path(),
+              help="Path to SQLite history database")
 @click.option("--stop", is_flag=True, help="Stop a running daemon")
 @click.option("--status", "show_status", is_flag=True, help="Show daemon status")
 def serve(root_dir, port, host, interval, open_browser, include_live_monitor,
-          daemon_mode, stop, show_status):
+          db_path, daemon_mode, stop, show_status):
     """Start a live web dashboard with REST + SSE API."""
     cfg = load_config()
 
@@ -38,6 +40,7 @@ def serve(root_dir, port, host, interval, open_browser, include_live_monitor,
     open_browser = open_browser if open_browser is not None else cfg.serve_open_browser
     include_live_monitor = include_live_monitor if include_live_monitor is not None else cfg.serve_monitor
 
+    db_path = db_path or cfg.effective_db_path()
     pid_file = cfg.effective_pid_file()
 
     if show_status:
@@ -57,7 +60,8 @@ def serve(root_dir, port, host, interval, open_browser, include_live_monitor,
     root = Path(root_dir).resolve()
     run_server(root, host=host, port=port, interval=interval,
                open_browser=open_browser,
-               include_live_monitor=include_live_monitor)
+               include_live_monitor=include_live_monitor,
+               db_path=db_path)
 
 
 def _start_daemon(root_dir, host, port, interval, include_live_monitor, pid_file, cfg):
