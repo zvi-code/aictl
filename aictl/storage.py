@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = config_dir() / "history.db"
 FLUSH_INTERVAL = 10.0  # seconds between batch writes
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # bump when adding migrations
 
 # Retention thresholds (seconds)
 _1H = 3_600
@@ -108,6 +108,25 @@ CREATE TABLE IF NOT EXISTS file_history (
     PRIMARY KEY (path, ts)
 );
 
+-- Per-tool telemetry (OTel / stats-cache / events.jsonl)
+-- Schema is additive: new metrics become new columns via migration.
+CREATE TABLE IF NOT EXISTS tool_telemetry (
+    ts                  REAL NOT NULL,
+    tool                TEXT NOT NULL,
+    source              TEXT DEFAULT '',     -- 'stats-cache', 'events-jsonl', 'otel', 'network-inference'
+    confidence          REAL DEFAULT 0,
+    input_tokens        INTEGER DEFAULT 0,
+    output_tokens       INTEGER DEFAULT 0,
+    cache_read_tokens   INTEGER DEFAULT 0,
+    cache_creation_tokens INTEGER DEFAULT 0,
+    total_sessions      INTEGER DEFAULT 0,
+    total_messages       INTEGER DEFAULT 0,
+    cost_usd            REAL DEFAULT 0,
+    model               TEXT DEFAULT '',     -- primary model in use
+    by_model_json       TEXT DEFAULT '{}',   -- JSON: {model: {input, output, ...}}
+    PRIMARY KEY (ts, tool)
+);
+
 CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics(ts);
 CREATE INDEX IF NOT EXISTS idx_tool_metrics_ts ON tool_metrics(ts);
 CREATE INDEX IF NOT EXISTS idx_tool_metrics_tool ON tool_metrics(tool, ts);
@@ -116,6 +135,8 @@ CREATE INDEX IF NOT EXISTS idx_events_tool ON events(tool, ts);
 CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind, ts);
 CREATE INDEX IF NOT EXISTS idx_file_store_tool ON file_store(tool);
 CREATE INDEX IF NOT EXISTS idx_file_history_path ON file_history(path, ts);
+CREATE INDEX IF NOT EXISTS idx_tool_telemetry_ts ON tool_telemetry(ts);
+CREATE INDEX IF NOT EXISTS idx_tool_telemetry_tool ON tool_telemetry(tool, ts);
 """
 
 
@@ -156,6 +177,24 @@ class EventRow:
     tool: str
     kind: str
     detail: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class TelemetryRow:
+    """Per-tool telemetry snapshot (from OTel / stats-cache / events.jsonl)."""
+    ts: float
+    tool: str
+    source: str = ""           # 'stats-cache', 'events-jsonl', 'otel', 'network-inference'
+    confidence: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    total_sessions: int = 0
+    total_messages: int = 0
+    cost_usd: float = 0.0
+    model: str = ""
+    by_model: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -256,16 +295,51 @@ class HistoryDB:
     def _init_schema(self) -> None:
         conn = self._conn()
         conn.executescript(_SCHEMA_SQL)
-        # Check / set schema version
+        # Check current version
         cur = conn.execute("SELECT MAX(version) FROM schema_version")
         row = cur.fetchone()
         current = row[0] if row and row[0] else 0
+        # Run migrations
         if current < SCHEMA_VERSION:
+            self._migrate(conn, current)
             conn.execute(
                 "INSERT OR REPLACE INTO schema_version(version) VALUES(?)",
                 (SCHEMA_VERSION,),
             )
             conn.commit()
+
+    def _migrate(self, conn: sqlite3.Connection, from_version: int) -> None:
+        """Run incremental migrations from *from_version* to SCHEMA_VERSION.
+
+        Each migration is idempotent (uses ALTER TABLE IF NOT EXISTS pattern).
+        New columns are always added with DEFAULT values so old data stays valid.
+        """
+        if from_version < 2:
+            # v1 → v2: add tool_telemetry table (handled by CREATE TABLE IF NOT EXISTS
+            # in _SCHEMA_SQL). Also ensure any new columns on existing tables.
+            self._ensure_columns(conn, "tool_metrics", [
+                ("model", "TEXT DEFAULT ''"),
+            ])
+            log.info("Migrated DB schema from v%d to v%d", from_version, SCHEMA_VERSION)
+
+    @staticmethod
+    def _ensure_columns(
+        conn: sqlite3.Connection,
+        table: str,
+        columns: list[tuple[str, str]],
+    ) -> None:
+        """Add columns to *table* if they don't already exist.
+
+        *columns* is a list of (name, type_with_default) tuples.
+        Uses PRAGMA table_info to check existing columns — idempotent.
+        """
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for col_name, col_def in columns:
+            if col_name not in existing:
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}")
+                except sqlite3.OperationalError:
+                    pass  # column already exists (race or duplicate)
 
     # ── Append (buffered) ──────────────────────────────────────────
 
@@ -485,6 +559,117 @@ class HistoryDB:
                      detail=json.loads(r[3]) if r[3] else {})
             for r in rows
         ]
+
+    # ── Telemetry (per-tool OTel / stats-cache) ─────────────────
+
+    def append_telemetry(self, row: TelemetryRow) -> None:
+        """Buffer a per-tool telemetry row."""
+        conn = self._conn()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO tool_telemetry"
+                "(ts, tool, source, confidence, input_tokens, output_tokens,"
+                " cache_read_tokens, cache_creation_tokens,"
+                " total_sessions, total_messages, cost_usd, model, by_model_json)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (row.ts, row.tool, row.source, round(row.confidence, 2),
+                 row.input_tokens, row.output_tokens,
+                 row.cache_read_tokens, row.cache_creation_tokens,
+                 row.total_sessions, row.total_messages,
+                 round(row.cost_usd, 4), row.model,
+                 json.dumps(row.by_model)),
+            )
+            conn.commit()
+        except sqlite3.Error as exc:
+            log.warning("Telemetry write error: %s", exc)
+
+    def append_telemetry_batch(self, rows: list[TelemetryRow]) -> None:
+        """Batch insert telemetry rows."""
+        if not rows:
+            return
+        conn = self._conn()
+        try:
+            conn.executemany(
+                "INSERT OR REPLACE INTO tool_telemetry"
+                "(ts, tool, source, confidence, input_tokens, output_tokens,"
+                " cache_read_tokens, cache_creation_tokens,"
+                " total_sessions, total_messages, cost_usd, model, by_model_json)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [
+                    (r.ts, r.tool, r.source, round(r.confidence, 2),
+                     r.input_tokens, r.output_tokens,
+                     r.cache_read_tokens, r.cache_creation_tokens,
+                     r.total_sessions, r.total_messages,
+                     round(r.cost_usd, 4), r.model,
+                     json.dumps(r.by_model))
+                    for r in rows
+                ],
+            )
+            conn.commit()
+        except sqlite3.Error as exc:
+            log.warning("Telemetry batch write error: %s", exc)
+
+    def query_telemetry(
+        self,
+        tool: str | None = None,
+        since: float | None = None,
+        until: float | None = None,
+    ) -> list[TelemetryRow]:
+        """Return telemetry rows, optionally filtered by tool and time range."""
+        conn = self._conn()
+        clauses: list[str] = []
+        params: list[Any] = []
+        if tool:
+            clauses.append("tool = ?")
+            params.append(tool)
+        if since is not None:
+            clauses.append("ts >= ?")
+            params.append(since)
+        if until is not None:
+            clauses.append("ts <= ?")
+            params.append(until)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        cur = conn.execute(
+            "SELECT ts, tool, source, confidence, input_tokens, output_tokens,"
+            " cache_read_tokens, cache_creation_tokens,"
+            " total_sessions, total_messages, cost_usd, model, by_model_json"
+            f" FROM tool_telemetry{where} ORDER BY ts DESC",
+            params,
+        )
+        return [
+            TelemetryRow(
+                ts=r[0], tool=r[1], source=r[2], confidence=r[3],
+                input_tokens=r[4], output_tokens=r[5],
+                cache_read_tokens=r[6], cache_creation_tokens=r[7],
+                total_sessions=r[8], total_messages=r[9],
+                cost_usd=r[10], model=r[11],
+                by_model=json.loads(r[12]) if r[12] else {},
+            )
+            for r in cur.fetchall()
+        ]
+
+    def latest_telemetry(self) -> dict[str, TelemetryRow]:
+        """Return the most recent telemetry row per tool."""
+        conn = self._conn()
+        cur = conn.execute(
+            "SELECT ts, tool, source, confidence, input_tokens, output_tokens,"
+            " cache_read_tokens, cache_creation_tokens,"
+            " total_sessions, total_messages, cost_usd, model, by_model_json"
+            " FROM tool_telemetry"
+            " WHERE ts = (SELECT MAX(t2.ts) FROM tool_telemetry t2 WHERE t2.tool = tool_telemetry.tool)"
+            " ORDER BY tool",
+        )
+        result: dict[str, TelemetryRow] = {}
+        for r in cur.fetchall():
+            result[r[1]] = TelemetryRow(
+                ts=r[0], tool=r[1], source=r[2], confidence=r[3],
+                input_tokens=r[4], output_tokens=r[5],
+                cache_read_tokens=r[6], cache_creation_tokens=r[7],
+                total_sessions=r[8], total_messages=r[9],
+                cost_usd=r[10], model=r[11],
+                by_model=json.loads(r[12]) if r[12] else {},
+            )
+        return result
 
     # ── KV file store ────────────────────────────────────────────
 

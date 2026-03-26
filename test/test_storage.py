@@ -7,7 +7,10 @@ import time
 
 import pytest
 
-from aictl.storage import EventRow, FileEntry, HistoryDB, MetricsRow, ToolMetricsRow
+from aictl.storage import (
+    EventRow, FileEntry, HistoryDB, MetricsRow,
+    TelemetryRow, ToolMetricsRow,
+)
 
 
 @pytest.fixture()
@@ -213,6 +216,111 @@ class TestFileBased:
 
 
 # ── KV File Store ──────────────────────────────────────────────────
+
+class TestTelemetry:
+    def test_append_and_query(self, db: HistoryDB):
+        now = time.time()
+        db.append_telemetry(TelemetryRow(
+            ts=now, tool="claude-code", source="stats-cache",
+            confidence=0.95, input_tokens=1000, output_tokens=5000,
+            cache_read_tokens=500, total_sessions=3, total_messages=42,
+            model="claude-opus-4-6",
+            by_model={"claude-opus-4-6": {"input": 1000, "output": 5000}},
+        ))
+        rows = db.query_telemetry(tool="claude-code")
+        assert len(rows) == 1
+        assert rows[0].source == "stats-cache"
+        assert rows[0].input_tokens == 1000
+        assert rows[0].by_model["claude-opus-4-6"]["output"] == 5000
+
+    def test_batch_append(self, db: HistoryDB):
+        now = time.time()
+        db.append_telemetry_batch([
+            TelemetryRow(ts=now, tool="claude-code", input_tokens=100),
+            TelemetryRow(ts=now, tool="copilot-cli", input_tokens=200),
+        ])
+        rows = db.query_telemetry()
+        assert len(rows) == 2
+
+    def test_latest_telemetry(self, db: HistoryDB):
+        now = time.time()
+        db.append_telemetry(TelemetryRow(
+            ts=now - 10, tool="claude-code", input_tokens=100))
+        db.append_telemetry(TelemetryRow(
+            ts=now, tool="claude-code", input_tokens=500))
+        db.append_telemetry(TelemetryRow(
+            ts=now, tool="copilot-cli", input_tokens=200))
+        latest = db.latest_telemetry()
+        assert "claude-code" in latest
+        assert latest["claude-code"].input_tokens == 500
+        assert "copilot-cli" in latest
+
+    def test_query_with_time_range(self, db: HistoryDB):
+        now = time.time()
+        db.append_telemetry(TelemetryRow(ts=now - 100, tool="t", input_tokens=1))
+        db.append_telemetry(TelemetryRow(ts=now, tool="t", input_tokens=2))
+        rows = db.query_telemetry(since=now - 50)
+        assert len(rows) == 1
+        assert rows[0].input_tokens == 2
+
+
+class TestMigration:
+    def test_v1_to_v2_migration(self, tmp_path):
+        """Simulate a v1 DB missing the tool_telemetry table and model column."""
+        db_file = tmp_path / "migrate.db"
+        # Create a bare v1 DB (without tool_telemetry table)
+        import sqlite3
+        conn = sqlite3.connect(str(db_file))
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+            INSERT INTO schema_version VALUES (1);
+            CREATE TABLE metrics (ts REAL PRIMARY KEY, files INTEGER, tokens INTEGER,
+                cpu REAL, mem_mb REAL, mcp INTEGER, mem_tokens INTEGER,
+                live_sessions INTEGER DEFAULT 0, live_tokens INTEGER DEFAULT 0,
+                live_in_rate REAL DEFAULT 0, live_out_rate REAL DEFAULT 0);
+            CREATE TABLE tool_metrics (ts REAL, tool TEXT, cpu REAL, mem_mb REAL,
+                tokens INTEGER, traffic REAL, PRIMARY KEY(ts, tool));
+            CREATE TABLE events (ts REAL, tool TEXT, kind TEXT, detail TEXT,
+                PRIMARY KEY(ts, tool, kind));
+            CREATE TABLE file_store (path TEXT PRIMARY KEY, tool TEXT, category TEXT DEFAULT '',
+                scope TEXT DEFAULT '', content TEXT DEFAULT '', content_hash TEXT DEFAULT '',
+                size_bytes INTEGER DEFAULT 0, tokens INTEGER DEFAULT 0, lines INTEGER DEFAULT 0,
+                mtime REAL DEFAULT 0, first_seen REAL DEFAULT 0, last_read REAL DEFAULT 0,
+                last_changed REAL DEFAULT 0, meta TEXT DEFAULT '{}');
+            CREATE TABLE file_history (path TEXT, ts REAL, content TEXT DEFAULT '',
+                content_hash TEXT DEFAULT '', size_bytes INTEGER DEFAULT 0,
+                tokens INTEGER DEFAULT 0, lines INTEGER DEFAULT 0, PRIMARY KEY(path, ts));
+        """)
+        # Insert v1 data
+        conn.execute("INSERT INTO metrics VALUES (1000, 10, 500, 5.0, 256.0, 1, 100, 0, 0, 0, 0)")
+        conn.execute("INSERT INTO tool_metrics VALUES (1000, 'claude-code', 5.0, 256.0, 500, 0)")
+        conn.commit()
+        conn.close()
+
+        # Open with HistoryDB — should migrate to v2
+        db = HistoryDB(db_path=db_file, flush_interval=0)
+
+        # Old data should still be accessible
+        result = db.query_metrics()
+        assert result["files"] == [10]
+
+        # tool_metrics should now have 'model' column
+        tm = db.query_tool_metrics(tool="claude-code")
+        assert "claude-code" in tm
+
+        # tool_telemetry table should exist
+        db.append_telemetry(TelemetryRow(
+            ts=time.time(), tool="test", input_tokens=42))
+        rows = db.query_telemetry(tool="test")
+        assert len(rows) == 1
+
+        # Schema version should be updated
+        conn2 = sqlite3.connect(str(db_file))
+        ver = conn2.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
+        assert ver == 2
+        conn2.close()
+        db.close()
+
 
 class TestFileStore:
     def test_upsert_new_file(self, db: HistoryDB):
