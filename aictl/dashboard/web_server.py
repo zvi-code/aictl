@@ -141,6 +141,26 @@ class _SnapshotStore:
                                  detail=e.get("detail", {}))
                         for e in snap.events if e.get("tool") and e.get("kind")
                     ])
+                # Persist telemetry snapshots (from stats-cache, events.jsonl, etc.)
+                if snap.tool_telemetry:
+                    from ..storage import TelemetryRow
+                    self._db.append_telemetry_batch([
+                        TelemetryRow(
+                            ts=snap.timestamp, tool=t.get("tool", ""),
+                            source=t.get("source", ""),
+                            confidence=t.get("confidence", 0),
+                            input_tokens=t.get("input_tokens", 0),
+                            output_tokens=t.get("output_tokens", 0),
+                            cache_read_tokens=t.get("cache_read_tokens", 0),
+                            cache_creation_tokens=t.get("cache_creation_tokens", 0),
+                            total_sessions=t.get("total_sessions", 0),
+                            total_messages=t.get("total_messages", 0),
+                            cost_usd=t.get("cost_usd", 0),
+                            model=t.get("model", ""),
+                            by_model=t.get("by_model", {}),
+                        )
+                        for t in snap.tool_telemetry if t.get("tool")
+                    ])
             except Exception:
                 pass  # don't crash server if DB write fails
 
@@ -238,8 +258,103 @@ class _AllowedPaths:
 
 # ─── Background refresh thread ───────────────────────────────────
 
+class _PersistentMonitor:
+    """Runs MonitorRuntime continuously on a background asyncio loop.
+
+    Unlike the old approach (create runtime → run 5s → discard), this
+    keeps the correlator alive so sessions, network deltas, and telemetry
+    diffs accumulate across snapshot cycles.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self._runtime = None
+        self._loop = None
+        self._thread = None
+        self._root = root
+        self._ready = threading.Event()
+
+    def start(self) -> None:
+        """Start the monitor on a background thread."""
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                         name="aictl-monitor")
+        self._thread.start()
+        # Wait up to 10s for collectors to start
+        self._ready.wait(timeout=10.0)
+
+    def _run(self) -> None:
+        import asyncio
+        from ..monitoring.config import MonitorConfig
+        from ..monitoring.runtime import MonitorRuntime
+
+        config = MonitorConfig.for_root(
+            self._root,
+            sample_interval=1.0,
+            refresh_interval=1.0,
+            process_interval=1.0,
+            network_interval=1.0,
+            telemetry_interval=5.0,
+            filesystem_enabled=True,
+            telemetry_enabled=True,
+        )
+        self._runtime = MonitorRuntime(config)
+
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+
+        async def _run_forever():
+            consumer_task = asyncio.create_task(
+                self._runtime._consume(), name="monitor-consumer")
+            collector_tasks = [
+                asyncio.create_task(
+                    collector.run(self._runtime.queue.put),
+                    name=f"collector:{collector.name}")
+                for collector in self._runtime.collectors
+            ]
+            self._ready.set()
+            try:
+                # Run until cancelled
+                await asyncio.gather(*collector_tasks, consumer_task)
+            except asyncio.CancelledError:
+                pass
+            finally:
+                for task in collector_tasks:
+                    task.cancel()
+                consumer_task.cancel()
+
+        try:
+            self._loop.run_until_complete(_run_forever())
+        except Exception:
+            pass
+
+    def snapshot_dict(self) -> dict | None:
+        """Take a snapshot from the running runtime (instant, no blocking)."""
+        if not self._runtime:
+            return None
+        try:
+            snap = self._runtime.snapshot()
+            return {
+                "platform": snap.platform,
+                "diagnostics": snap.diagnostics,
+                "tools": snap.tools,
+                "workspace_paths": snap.workspace_paths,
+                "state_paths": snap.state_paths,
+                "events": getattr(snap, "events", []),
+            }
+        except Exception:
+            return None
+
+    def stop(self) -> None:
+        if self._loop and self._loop.is_running():
+            for task in asyncio.all_tasks(self._loop):
+                self._loop.call_soon_threadsafe(task.cancel)
+
+
 class _RefreshThread(threading.Thread):
-    """Periodically collects a new snapshot."""
+    """Periodically collects a new snapshot.
+
+    Uses _PersistentMonitor for live data instead of creating a new
+    MonitorRuntime on each cycle.
+    """
 
     def __init__(
         self,
@@ -248,6 +363,7 @@ class _RefreshThread(threading.Thread):
         store: _SnapshotStore,
         allowed: _AllowedPaths,
         include_live_monitor: bool,
+        monitor: "_PersistentMonitor | None" = None,
     ) -> None:
         super().__init__(daemon=True)
         self._root = root
@@ -255,16 +371,22 @@ class _RefreshThread(threading.Thread):
         self._store = store
         self._allowed = allowed
         self._include_live_monitor = include_live_monitor
+        self._monitor = monitor
         self._stop = threading.Event()
 
     def run(self) -> None:
         while not self._stop.is_set():
             try:
+                # Get live monitor data from persistent runtime (instant)
+                live_monitor = {}
+                if self._include_live_monitor and self._monitor:
+                    live_monitor = self._monitor.snapshot_dict() or {}
+
                 snap = collect(
                     self._root,
                     include_processes=True,
-                    include_live_monitor=self._include_live_monitor,
-                    live_sample_seconds=max(1.0, min(1.5, self._interval / 2)),
+                    include_live_monitor=False,  # handled by persistent monitor
+                    _live_monitor_override=live_monitor,
                 )
                 self._store.update(snap)
                 self._allowed.update(snap)
@@ -521,19 +643,27 @@ def run_server(
     store = _SnapshotStore(db=db)
     allowed = _AllowedPaths()
 
+    # Start persistent live monitor (runs continuously, accumulates state)
+    monitor = None
+    if include_live_monitor:
+        print("  starting persistent live monitor ...", file=sys.stderr)
+        monitor = _PersistentMonitor(root)
+        monitor.start()
+
     # Initial collection so /api/snapshot is ready immediately
     print("  collecting initial snapshot ...", file=sys.stderr)
+    live_override = monitor.snapshot_dict() if monitor else None
     snap = collect(
         root,
         include_processes=True,
-        include_live_monitor=include_live_monitor,
-        live_sample_seconds=max(1.0, min(1.5, interval / 2)),
+        _live_monitor_override=live_override or {},
     )
     store.update(snap)
     allowed.update(snap)
 
-    # Start background refresh
-    refresh = _RefreshThread(root, interval, store, allowed, include_live_monitor)
+    # Start background refresh (uses persistent monitor for live data)
+    refresh = _RefreshThread(root, interval, store, allowed,
+                              include_live_monitor, monitor=monitor)
     refresh.start()
 
     # Start HTTP server
@@ -553,6 +683,8 @@ def run_server(
         pass
     finally:
         refresh.stop()
+        if monitor:
+            monitor.stop()
         server.shutdown()
         if db:
             db.close()

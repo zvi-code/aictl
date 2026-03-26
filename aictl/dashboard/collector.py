@@ -183,11 +183,21 @@ def collect(
     *,
     include_live_monitor: bool = False,
     live_sample_seconds: float = 1.2,
+    _live_monitor_override: dict | None = None,
 ) -> DashboardSnapshot:
-    """Take a single snapshot."""
+    """Take a single snapshot.
+
+    If *_live_monitor_override* is provided (from a persistent monitor),
+    it's used directly instead of spinning up a temporary MonitorRuntime.
+    """
     root_path = root.resolve()
     discovered = discover_all(root_path, include_processes=include_processes)
-    live_monitor = _collect_live_monitor(root_path, live_sample_seconds) if include_live_monitor else {}
+    if _live_monitor_override is not None:
+        live_monitor = _live_monitor_override
+    elif include_live_monitor:
+        live_monitor = _collect_live_monitor(root_path, live_sample_seconds)
+    else:
+        live_monitor = {}
     tools = _merge_dashboard_tools(discovered, live_monitor)
     agent_memory = collect_agent_memory(root_path)
     mcp_detail = collect_mcp_status(discovered)
