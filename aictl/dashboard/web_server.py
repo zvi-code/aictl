@@ -116,7 +116,7 @@ class _SnapshotStore:
         # Persist to SQLite (non-blocking — HistoryDB buffers internally)
         if self._db:
             try:
-                from ..storage import MetricsRow, ToolMetricsRow
+                from ..storage import MetricsRow, ToolMetricsRow, EventRow
                 self._db.append_metrics(MetricsRow(
                     ts=snap.timestamp, files=snap.total_files,
                     tokens=snap.total_tokens, cpu=snap.total_cpu,
@@ -132,6 +132,15 @@ class _SnapshotStore:
                                    cpu=cpu, mem_mb=mem, tokens=tok, traffic=tr)
                     for name, cpu, mem, tok, tr in tool_rows
                 ])
+                # Persist events from live monitor
+                if snap.events:
+                    self._db.append_events([
+                        EventRow(ts=e.get("ts", snap.timestamp),
+                                 tool=e.get("tool", ""),
+                                 kind=e.get("kind", ""),
+                                 detail=e.get("detail", {}))
+                        for e in snap.events if e.get("tool") and e.get("kind")
+                    ])
             except Exception:
                 pass  # don't crash server if DB write fails
 
@@ -311,6 +320,8 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             self._serve_budget()
         elif path == "/api/history":
             self._serve_history()
+        elif path.startswith("/api/events"):
+            self._serve_events()
         else:
             self.send_error(404)
 
@@ -416,6 +427,36 @@ class _DashboardHandler(BaseHTTPRequestHandler):
         else:
             body = self.server.store.history_json().encode("utf-8")
 
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_events(self) -> None:
+        """Serve recent events from SQLite.
+
+        Params: ?since=<unix_ts>&tool=<name>&kind=<type>&limit=<n>
+        """
+        from urllib.parse import parse_qs, urlparse
+        parsed = urlparse(self.path)
+        qs = parse_qs(parsed.query)
+
+        events_list = []
+        db = self.server.store._db
+        if db:
+            import time as _time
+            since = float((qs.get("since") or [str(_time.time() - 3600)])[0])
+            tool = (qs.get("tool") or [None])[0]
+            kind = (qs.get("kind") or [None])[0]
+            limit = int((qs.get("limit") or ["200"])[0])
+            rows = db.query_events(since=since, tool=tool, kind=kind, limit=limit)
+            events_list = [
+                {"ts": r.ts, "tool": r.tool, "kind": r.kind, "detail": r.detail}
+                for r in rows
+            ]
+
+        body = json.dumps(events_list).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -624,6 +665,20 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 .metric .value.accent { color: var(--accent); }
 @keyframes flash { 0%{opacity:1} 50%{opacity:0.5} 100%{opacity:1} }
 .flash { animation: flash 0.4s ease; }
+
+/* Event timeline */
+.timeline { position: relative; height: 28px; background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 4px; margin-bottom: 0.5rem; overflow: hidden; }
+.timeline-label { position: absolute; left: 4px; top: 2px; font-size: 0.55rem; color: var(--fg2);
+  text-transform: uppercase; letter-spacing: 0.04em; z-index: 2; pointer-events: none; }
+.timeline-dot { position: absolute; width: 8px; height: 8px; border-radius: 50%; top: 14px;
+  transform: translateX(-4px); cursor: pointer; z-index: 3; transition: transform 0.1s; }
+.timeline-dot:hover { transform: translateX(-4px) scale(1.8); z-index: 4; }
+.timeline-tip { position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%);
+  background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 0.3rem 0.5rem;
+  font-size: 0.65rem; white-space: nowrap; z-index: 10; pointer-events: none;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3); display: none; }
+.timeline-dot:hover .timeline-tip { display: block; }
 
 /* Resource bar + legend */
 .rbar-block { margin-bottom: 0.8rem; }
@@ -1013,6 +1068,41 @@ function StatBar({snap: s, history: hist, historyRange, onRangeChange}) {
 }
 
 // ─── ResourceBar Component ─────────────────────────────────────
+// ─── Event Timeline ───────────────────────────────────────────
+const EVENT_COLORS = {
+  session_start: 'var(--green)', session_end: 'var(--red)',
+  file_modified: 'var(--accent)', config_change: 'var(--yellow)',
+  anomaly: 'var(--orange)', model_switch: '#e879f9',
+  mcp_start: 'var(--green)', mcp_stop: 'var(--red)',
+  process_exit: 'var(--red)', quota_warning: 'var(--orange)',
+};
+
+function EventTimeline({events, rangeSeconds}) {
+  if(!events || !events.length) return null;
+  const now = Date.now()/1000;
+  const span = rangeSeconds || 3600;
+  const earliest = now - span;
+  // Filter to range and deduplicate (keep last per tool+kind per 5s bucket)
+  const filtered = events.filter(e=>e.ts >= earliest);
+  if(!filtered.length) return null;
+  return html`<div class="timeline">
+    <span class="timeline-label">Events (${filtered.length})</span>
+    ${filtered.map((e,i)=>{
+      const pct = Math.max(0, Math.min(100, ((e.ts - earliest) / span) * 100));
+      const color = EVENT_COLORS[e.kind] || 'var(--fg2)';
+      const time = new Date(e.ts*1000).toLocaleTimeString();
+      const detail = e.detail ? Object.entries(e.detail).map(([k,v])=>k+'='+v).join(' ') : '';
+      return html`<div key=${i} class="timeline-dot" style=${'left:'+pct+'%;background:'+color}
+        title=${e.tool+' '+e.kind+' '+time}>
+        <div class="timeline-tip">
+          <strong>${e.tool}</strong> ${e.kind}<br/>
+          <span style="color:var(--fg2)">${time}${detail ? ' · '+detail : ''}</span>
+        </div>
+      </div>`;
+    })}
+  </div>`;
+}
+
 function ResourceBar({snap: s}) {
   if(!s) return null;
   const fileTools = s.tools.filter(t=>t.tool!=='aictl'&&t.files.length);
@@ -2007,6 +2097,7 @@ function App() {
   const [history, setHistory] = useState(null);
   const [dbHistory, setDbHistory] = useState(null);  // SQLite-backed history for extended ranges
   const [historyRange, setHistoryRange] = useState('live');
+  const [events, setEvents] = useState([]);
   const [connected, setConnected] = useState(false);
   const [activeTab, setActiveTab] = useState('overview');
   const [searchQuery, setSearchQuery] = useState('');
@@ -2082,6 +2173,7 @@ function App() {
     }
     connect();
     fetch('/api/history').then(r=>r.json()).then(setHistory).catch(()=>{});
+    fetch('/api/events?since='+(Date.now()/1000-3600)).then(r=>r.json()).then(setEvents).catch(()=>{});
     return ()=>{ closed=true; if(es) es.close(); };
   },[]);
 
@@ -2089,11 +2181,17 @@ function App() {
   const handleRangeChange = useCallback((range)=>{
     setHistoryRange(range);
     if(range === 'live') {
-      setDbHistory(null);  // use in-memory history
+      setDbHistory(null);
     } else {
       fetch('/api/history?range='+range)
         .then(r=>r.json()).then(setDbHistory).catch(()=>{});
     }
+    // Fetch events for the selected range
+    const rangeMap = {live:'1h',['1h']:'1h',['6h']:'6h',['24h']:'24h',['7d']:'7d'};
+    const sinceMap = {live:3600,['1h']:3600,['6h']:21600,['24h']:86400,['7d']:604800};
+    const since = Date.now()/1000 - (sinceMap[range]||3600);
+    fetch('/api/events?since='+since)
+      .then(r=>r.json()).then(setEvents).catch(()=>{});
   },[]);
 
   // Effective history: dbHistory when viewing extended range, otherwise live
@@ -2157,6 +2255,8 @@ function App() {
       <main class="main">
         <div style="position:sticky;top:0;z-index:50;background:var(--bg);padding:0.6rem 0 0.2rem">
           <${StatBar} snap=${snap} history=${effectiveHistory} historyRange=${historyRange} onRangeChange=${handleRangeChange}/>
+          <${EventTimeline} events=${events}
+            rangeSeconds=${{live:3600,['1h']:3600,['6h']:21600,['24h']:86400,['7d']:604800}[historyRange]||3600}/>
           <${ResourceBar} snap=${snap}/>
         </div>
         <nav class="tab-nav" role="tablist" aria-label="Dashboard tabs">

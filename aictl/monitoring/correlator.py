@@ -24,10 +24,15 @@ class MonitorSnapshot:
     tools: list[dict[str, object]]
     workspace_paths: list[str]
     state_paths: list[str]
+    events: list[dict] = ()  # type: ignore[assignment]  # structural events from correlator
 
 
 class SessionCorrelator:
-    """Builds live tool sessions from process, network, file, and telemetry events."""
+    """Builds live tool sessions from process, network, file, and telemetry events.
+
+    Emits structured events (session_start, session_end, anomaly, etc.)
+    into ``self.pending_events`` for consumption by the dashboard layer.
+    """
 
     def __init__(self, config: MonitorConfig, workspace_sizes: dict[str, int] | None = None) -> None:
         self.config = config
@@ -37,6 +42,8 @@ class SessionCorrelator:
         self.pid_to_process: dict[int, ProcessInfo] = {}
         self.pid_parent: dict[int, int | None] = {}
         self.collector_status: dict[str, dict[str, object]] = {}
+        # Pending events for the dashboard/storage layer to drain
+        self.pending_events: list[dict] = []
 
     def ingest(self, event: UnifiedEvent) -> None:
         """Accept one event from any collector."""
@@ -74,9 +81,16 @@ class SessionCorrelator:
         cutoff = time.time() - 180
         # GC: remove stale sessions (>300s) to prevent unbounded growth
         gc_cutoff = time.time() - 300
+        now = time.time()
         stale_ids = [sid for sid, s in self.sessions.items() if s.last_seen_at < gc_cutoff]
         for sid in stale_ids:
             session = self.sessions.pop(sid)
+            self.pending_events.append({
+                "ts": now, "tool": session.tool, "kind": "session_end",
+                "detail": {"session_id": sid,
+                           "duration_s": round(session.last_seen_at - session.started_at, 1),
+                           "pids": len(session.pids)},
+            })
             for pid in session.pids:
                 self.pid_to_session.pop(pid, None)
 
@@ -96,6 +110,12 @@ class SessionCorrelator:
             reverse=True,
         )
         return reports
+
+    def drain_events(self) -> list[dict]:
+        """Return and clear all pending events."""
+        events = self.pending_events
+        self.pending_events = []
+        return events
 
     def diagnostics(self) -> dict[str, dict[str, object]]:
         """Collector health/status map."""
@@ -149,13 +169,20 @@ class SessionCorrelator:
         if session is None:
             return
         path = str(event.payload.get("path", ""))
+        growth = int(event.metrics.get("growth_bytes", 0))
         session.add_file_activity(
             event.ts,
             path,
             event.workspace,
             self.config.state_root_for_path(path),
-            int(event.metrics.get("growth_bytes", 0)),
+            growth,
         )
+        # Emit file_modified event for significant changes
+        if growth != 0 or event.metrics.get("event_type") in ("created", "modified"):
+            self.pending_events.append({
+                "ts": event.ts, "tool": session.tool, "kind": "file_modified",
+                "detail": {"path": path, "growth_bytes": growth},
+            })
 
     def _handle_telemetry_event(self, event: UnifiedEvent) -> None:
         session = self._resolve_session_for_event(event, allow_ephemeral=True)
@@ -225,6 +252,11 @@ class SessionCorrelator:
                 last_seen_at=ts,
             )
             self.sessions[session_id] = session
+            self.pending_events.append({
+                "ts": ts, "tool": match.tool, "kind": "session_start",
+                "detail": {"pid": process.pid, "name": process.name,
+                           "session_id": session_id},
+            })
 
         self.pid_to_session[process.pid] = session_id
         return session

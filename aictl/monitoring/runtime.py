@@ -87,6 +87,7 @@ class MonitorRuntime:
             tools=[report.to_dict() for report in self.correlator.tool_reports()],
             workspace_paths=[str(path) for path in self.config.workspace_paths],
             state_paths=[str(path) for path in self.config.state_paths],
+            events=self.correlator.drain_events(),
         )
 
     def collector_plan(self) -> CollectorPlan:

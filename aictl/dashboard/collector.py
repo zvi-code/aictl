@@ -59,6 +59,7 @@ class DashboardSnapshot:
     live_monitor: dict = field(default_factory=dict)
     tool_telemetry: list[dict] = field(default_factory=list)
     tool_configs: list[dict] = field(default_factory=list)
+    events: list[dict] = field(default_factory=list)
 
     # ── System info ────────────────────────────────────────────
     cpu_cores: int = 0
@@ -169,6 +170,7 @@ class DashboardSnapshot:
             "live_monitor": self.live_monitor,
             "tool_telemetry": self.tool_telemetry,
             "tool_configs": self.tool_configs,
+            "events": self.events,
         }
 
     def to_json(self, indent: int = 2) -> str:
@@ -197,6 +199,9 @@ def collect(
     tool_configs = [c.to_dict() for c in tool_configs_list]
     # Merge telemetry into DashboardTool.live if not already present
     _merge_telemetry_into_tools(tools, telemetry_reports)
+    # Extract events from live monitor
+    monitor_events = live_monitor.get("events", []) if live_monitor else []
+
     return DashboardSnapshot(
         timestamp=time.time(),
         root=str(root_path),
@@ -206,6 +211,7 @@ def collect(
         live_monitor=live_monitor,
         tool_telemetry=tool_telemetry,
         tool_configs=tool_configs,
+        events=monitor_events,
     )
 
 
@@ -333,6 +339,7 @@ def _collect_live_monitor(root: Path, live_sample_seconds: float) -> dict:
             "tools": snapshot.tools,
             "workspace_paths": snapshot.workspace_paths,
             "state_paths": snapshot.state_paths,
+            "events": getattr(snapshot, "events", []),
         }
     except Exception as exc:  # pragma: no cover - defensive path
         return {
