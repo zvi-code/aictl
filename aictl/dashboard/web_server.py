@@ -26,6 +26,96 @@ from ..discovery import compute_token_budget
 _HISTORY_TUPLE_LEN = 11  # bump when adding fields to the history tuple
 
 
+def _extract_samples(snap) -> list:
+    """Extract all data points from a snapshot as universal Sample objects.
+
+    This is the "emit everything" function — every measurable data point
+    gets a timestamped sample so nothing is discarded.  The samples table
+    serves as a write-ahead log; downstream processing is staged/async.
+    """
+    from ..storage import Sample
+    ts = snap.timestamp
+    samples: list[Sample] = []
+
+    # Per-core CPU
+    for i, pct in enumerate(getattr(snap, "cpu_per_core", []) or []):
+        samples.append(Sample(ts=ts, metric=f"cpu.core.{i}", value=round(pct, 1)))
+
+    # Per-process data
+    for t in snap.tools:
+        tool = t.tool
+        if tool == "aictl":
+            continue
+        tags_t = {"tool": tool}
+        # Per-process CPU and memory
+        for p in t.processes:
+            pid = p.get("pid") if isinstance(p, dict) else getattr(p, "pid", None)
+            cpu = p.get("cpu_pct") if isinstance(p, dict) else getattr(p, "cpu_pct", 0)
+            mem = p.get("mem_mb") if isinstance(p, dict) else getattr(p, "mem_mb", 0)
+            name = p.get("name") if isinstance(p, dict) else getattr(p, "name", "")
+            try:
+                cpu_f = float(cpu) if cpu else 0
+                mem_f = float(mem) if mem else 0
+            except (ValueError, TypeError):
+                cpu_f = mem_f = 0
+            if pid:
+                ptags = {"tool": tool, "pid": str(pid), "name": str(name)}
+                samples.append(Sample(ts=ts, metric=f"proc.{pid}.cpu", value=round(cpu_f, 2), tags=ptags))
+                samples.append(Sample(ts=ts, metric=f"proc.{pid}.mem_mb", value=round(mem_f, 1), tags=ptags))
+
+        # Per-file stats
+        for f in t.files:
+            path = f.path if hasattr(f, "path") else (f.get("path") if isinstance(f, dict) else "")
+            tokens = f.tokens if hasattr(f, "tokens") else (f.get("tokens", 0) if isinstance(f, dict) else 0)
+            size = f.size if hasattr(f, "size") else (f.get("size", 0) if isinstance(f, dict) else 0)
+            if path:
+                ftags = {"tool": tool, "path": path}
+                samples.append(Sample(ts=ts, metric=f"file.tokens", value=tokens, tags=ftags))
+                samples.append(Sample(ts=ts, metric=f"file.size", value=size, tags=ftags))
+
+        # MCP server status
+        for m in t.mcp_servers:
+            mname = m.get("name", "") if isinstance(m, dict) else getattr(m, "name", "")
+            status = m.get("status", "") if isinstance(m, dict) else getattr(m, "status", "")
+            if mname:
+                samples.append(Sample(ts=ts, metric=f"mcp.status",
+                                      value=1.0 if status == "running" else 0.0,
+                                      tags={"tool": tool, "server": mname}))
+
+        # Live monitor per-tool (session count, network, tokens)
+        if t.live:
+            live = t.live
+            for k in ("session_count", "pid_count", "cpu_percent", "inbound_rate_bps",
+                       "outbound_rate_bps", "inbound_bytes", "outbound_bytes",
+                       "files_touched", "file_events"):
+                val = live.get(k)
+                if val is not None:
+                    try:
+                        samples.append(Sample(ts=ts, metric=f"live.{k}", value=float(val), tags=tags_t))
+                    except (ValueError, TypeError):
+                        pass
+            # Token estimate
+            tok_est = live.get("token_estimate", {})
+            if tok_est:
+                for tk in ("input_tokens", "output_tokens", "confidence"):
+                    tv = tok_est.get(tk)
+                    if tv is not None:
+                        try:
+                            samples.append(Sample(ts=ts, metric=f"live.tokens.{tk}", value=float(tv), tags=tags_t))
+                        except (ValueError, TypeError):
+                            pass
+
+    # Memory entries (AI context files)
+    for m in getattr(snap, "agent_memory", []) or []:
+        mpath = m.file if hasattr(m, "file") else (m.get("file", "") if isinstance(m, dict) else "")
+        mtokens = m.tokens if hasattr(m, "tokens") else (m.get("tokens", 0) if isinstance(m, dict) else 0)
+        if mpath:
+            samples.append(Sample(ts=ts, metric="memory.tokens",
+                                  value=mtokens, tags={"path": mpath}))
+
+    return samples
+
+
 class _SnapshotStore:
     """Thread-safe snapshot storage with version-based change notification.
 
@@ -161,6 +251,11 @@ class _SnapshotStore:
                         )
                         for t in snap.tool_telemetry if t.get("tool")
                     ])
+                # Universal samples: emit every data point we collect
+                from ..storage import Sample
+                samples = _extract_samples(snap)
+                if samples:
+                    self._db.append_samples(samples)
             except Exception:
                 pass  # don't crash server if DB write fails
 
@@ -442,6 +537,8 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             self._serve_budget()
         elif path == "/api/history":
             self._serve_history()
+        elif path.startswith("/api/samples"):
+            self._serve_samples()
         elif path.startswith("/api/events"):
             self._serve_events()
         else:
@@ -554,6 +651,62 @@ class _DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
+
+    def _serve_samples(self) -> None:
+        """Serve universal samples.
+
+        Params: ?metric=X&prefix=X&since=<ts>&tag.tool=X&limit=N
+        Or: ?list=1&prefix=X  to list distinct metric names.
+        Or: ?series=X&since=<ts>  to get a single metric as time-series.
+        """
+        from urllib.parse import parse_qs, urlparse
+        parsed = urlparse(self.path)
+        qs = parse_qs(parsed.query)
+
+        db = self.server.store._db
+        if not db:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"[]")
+            return
+
+        import time as _time
+        # Mode: list metrics
+        if "list" in qs:
+            prefix = (qs.get("prefix") or [""])[0]
+            result = db.list_metrics(prefix=prefix)
+            body = json.dumps(result)
+        # Mode: single metric series
+        elif "series" in qs:
+            metric = qs["series"][0]
+            since = float((qs.get("since") or [str(_time.time() - 3600)])[0])
+            result = db.query_samples_series(metric, since=since)
+            body = json.dumps(result)
+        # Mode: query samples
+        else:
+            metric = (qs.get("metric") or [None])[0]
+            prefix = (qs.get("prefix") or [None])[0]
+            since = float((qs.get("since") or [str(_time.time() - 3600)])[0])
+            limit = int((qs.get("limit") or ["1000"])[0])
+            # Extract tag filters from tag.X=Y params
+            tag_filter = {}
+            for k, v in qs.items():
+                if k.startswith("tag."):
+                    tag_filter[k[4:]] = v[0]
+            rows = db.query_samples(
+                metric=metric, metric_prefix=prefix,
+                since=since, tag_filter=tag_filter or None, limit=limit,
+            )
+            result = [{"ts": s.ts, "metric": s.metric, "value": s.value, "tags": s.tags}
+                      for s in rows]
+            body = json.dumps(result)
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body.encode("utf-8"))
 
     def _serve_events(self) -> None:
         """Serve recent events from SQLite.

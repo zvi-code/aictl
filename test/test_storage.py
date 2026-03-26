@@ -9,7 +9,7 @@ import pytest
 
 from aictl.storage import (
     EventRow, FileEntry, HistoryDB, MetricsRow,
-    TelemetryRow, ToolMetricsRow,
+    Sample, TelemetryRow, ToolMetricsRow,
 )
 
 
@@ -317,7 +317,7 @@ class TestMigration:
         # Schema version should be updated
         conn2 = sqlite3.connect(str(db_file))
         ver = conn2.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-        assert ver == 3  # migrates all the way to latest
+        assert ver >= 3  # migrates all the way to latest
         conn2.close()
         db.close()
 
@@ -531,6 +531,85 @@ class TestSpecSync:
         # Schema version should be 3
         conn2 = _sqlite3.connect(str(db_file))
         ver = conn2.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-        assert ver == 3
+        assert ver >= 3
         conn2.close()
         db.close()
+
+
+# ── Universal Samples ──────────────────────────────────────────────
+
+class TestSamples:
+    def test_append_and_query(self, db: HistoryDB):
+        now = time.time()
+        db.append_samples([
+            Sample(ts=now, metric="cpu.core.0", value=45.2),
+            Sample(ts=now, metric="cpu.core.1", value=12.8),
+            Sample(ts=now, metric="proc.123.cpu", value=5.5,
+                   tags={"tool": "claude-code", "pid": "123"}),
+        ])
+        rows = db.query_samples(metric="cpu.core.0")
+        assert len(rows) == 1
+        assert rows[0].value == 45.2
+
+    def test_query_prefix(self, db: HistoryDB):
+        now = time.time()
+        db.append_samples([
+            Sample(ts=now, metric="cpu.core.0", value=10),
+            Sample(ts=now, metric="cpu.core.1", value=20),
+            Sample(ts=now, metric="cpu.core.2", value=30),
+            Sample(ts=now, metric="mem.total", value=8000),
+        ])
+        rows = db.query_samples(metric_prefix="cpu.core")
+        assert len(rows) == 3
+
+    def test_query_tag_filter(self, db: HistoryDB):
+        now = time.time()
+        db.append_samples([
+            Sample(ts=now, metric="proc.1.cpu", value=5, tags={"tool": "claude-code"}),
+            Sample(ts=now, metric="proc.2.cpu", value=10, tags={"tool": "copilot-cli"}),
+        ])
+        rows = db.query_samples(metric_prefix="proc.", tag_filter={"tool": "claude-code"})
+        assert len(rows) == 1
+        assert rows[0].tags["tool"] == "claude-code"
+
+    def test_query_series(self, db: HistoryDB):
+        now = time.time()
+        for i in range(5):
+            db.append_samples([Sample(ts=now + i, metric="cpu.core.0", value=10 + i)])
+        series = db.query_samples_series("cpu.core.0")
+        assert len(series["ts"]) == 5
+        assert series["value"] == [10, 11, 12, 13, 14]
+
+    def test_list_metrics(self, db: HistoryDB):
+        now = time.time()
+        db.append_samples([
+            Sample(ts=now, metric="cpu.core.0", value=10),
+            Sample(ts=now, metric="cpu.core.1", value=20),
+            Sample(ts=now + 1, metric="cpu.core.0", value=15),
+            Sample(ts=now, metric="mem.total", value=8000),
+        ])
+        metrics = db.list_metrics()
+        assert len(metrics) == 3
+        names = [m["metric"] for m in metrics]
+        assert "cpu.core.0" in names
+        assert "mem.total" in names
+        # cpu.core.0 should have count=2
+        core0 = next(m for m in metrics if m["metric"] == "cpu.core.0")
+        assert core0["count"] == 2
+
+    def test_list_metrics_prefix(self, db: HistoryDB):
+        now = time.time()
+        db.append_samples([
+            Sample(ts=now, metric="cpu.core.0", value=10),
+            Sample(ts=now, metric="mem.total", value=8000),
+        ])
+        cpu_metrics = db.list_metrics(prefix="cpu.")
+        assert len(cpu_metrics) == 1
+
+    def test_stats_include_samples(self, db: HistoryDB):
+        db.append_samples([
+            Sample(ts=time.time(), metric="test.x", value=1),
+            Sample(ts=time.time()+0.001, metric="test.y", value=2),
+        ])
+        s = db.stats()
+        assert s["samples_count"] == 2

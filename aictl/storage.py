@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = config_dir() / "history.db"
 FLUSH_INTERVAL = 10.0  # seconds between batch writes
-SCHEMA_VERSION = 3  # bump when adding migrations
+SCHEMA_VERSION = 4  # bump when adding migrations
 
 # Retention thresholds (seconds)
 _1H = 3_600
@@ -187,10 +187,25 @@ CREATE INDEX IF NOT EXISTS idx_file_store_tool ON file_store(tool);
 CREATE INDEX IF NOT EXISTS idx_file_history_path ON file_history(path, ts);
 CREATE INDEX IF NOT EXISTS idx_tool_telemetry_ts ON tool_telemetry(ts);
 CREATE INDEX IF NOT EXISTS idx_tool_telemetry_tool ON tool_telemetry(tool, ts);
+-- Universal samples table (Prometheus-style metric store).
+-- Every data point we collect gets written here with a timestamp.
+-- Typed tables (metrics, tool_metrics, etc.) remain for structured
+-- high-frequency queries; this table catches EVERYTHING else.
+-- Processing/aggregation happens async via staged reads.
+CREATE TABLE IF NOT EXISTS samples (
+    ts      REAL NOT NULL,
+    metric  TEXT NOT NULL,       -- dotted name: 'cpu.core.3', 'proc.71416.cpu', 'mcp.server1.status'
+    value   REAL NOT NULL,       -- numeric value (for strings: 1=true/running, 0=false/stopped)
+    tags    TEXT DEFAULT '{}',   -- JSON: {"tool":"claude-code","pid":71416,"path":"/..."}
+    PRIMARY KEY (ts, metric)
+);
+
 CREATE INDEX IF NOT EXISTS idx_path_specs_tool ON path_specs(ai_tool);
 CREATE INDEX IF NOT EXISTS idx_path_specs_vendor ON path_specs(vendor);
 CREATE INDEX IF NOT EXISTS idx_process_specs_tool ON process_specs(ai_tool);
 CREATE INDEX IF NOT EXISTS idx_process_specs_vendor ON process_specs(vendor);
+CREATE INDEX IF NOT EXISTS idx_samples_metric ON samples(metric, ts);
+CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts);
 """
 
 
@@ -249,6 +264,15 @@ class TelemetryRow:
     cost_usd: float = 0.0
     model: str = ""
     by_model: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class Sample:
+    """One universal metric sample (Prometheus-style)."""
+    ts: float
+    metric: str     # dotted name: 'cpu.core.3', 'proc.71416.cpu'
+    value: float
+    tags: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -311,6 +335,7 @@ class HistoryDB:
         self._metrics_buf: list[MetricsRow] = []
         self._tool_buf: list[ToolMetricsRow] = []
         self._events_buf: list[EventRow] = []
+        self._samples_buf: list[Sample] = []
 
         # Connection pool: one connection per thread
         self._local = threading.local()
@@ -381,6 +406,10 @@ class HistoryDB:
             # Populate from CSV on first migration.
             self._sync_csv_to_db(conn)
             log.info("Migrated DB schema v2 → v3 (CSV specs loaded)")
+        if from_version < 4:
+            # v3 → v4: add universal samples table
+            # (handled by CREATE TABLE IF NOT EXISTS in _SCHEMA_SQL).
+            log.info("Migrated DB schema v3 → v4 (samples table)")
 
     @staticmethod
     def _ensure_columns(
@@ -431,6 +460,15 @@ class HistoryDB:
         if self._flush_interval <= 0:
             self.flush()
 
+    def append_samples(self, samples: list[Sample]) -> None:
+        """Buffer universal metric samples for batch insert."""
+        if not samples:
+            return
+        with self._lock:
+            self._samples_buf.extend(samples)
+        if self._flush_interval <= 0:
+            self.flush()
+
     # ── Flush ──────────────────────────────────────────────────────
 
     def flush(self) -> int:
@@ -442,8 +480,10 @@ class HistoryDB:
             self._tool_buf = []
             e_buf = self._events_buf
             self._events_buf = []
+            s_buf = self._samples_buf
+            self._samples_buf = []
 
-        if not m_buf and not t_buf and not e_buf:
+        if not m_buf and not t_buf and not e_buf and not s_buf:
             return 0
 
         total = 0
@@ -488,6 +528,17 @@ class HistoryDB:
                     ],
                 )
                 total += len(e_buf)
+
+            if s_buf:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO samples(ts, metric, value, tags)"
+                    " VALUES(?,?,?,?)",
+                    [
+                        (s.ts, s.metric, s.value, json.dumps(s.tags))
+                        for s in s_buf
+                    ],
+                )
+                total += len(s_buf)
 
             conn.commit()
         except sqlite3.Error as exc:
@@ -995,6 +1046,110 @@ class HistoryDB:
 
         return stats
 
+    # ── Universal samples ──────────────────────────────────────────
+
+    def query_samples(
+        self,
+        metric: str | None = None,
+        metric_prefix: str | None = None,
+        since: float | None = None,
+        until: float | None = None,
+        tag_filter: dict[str, str] | None = None,
+        limit: int = 5000,
+    ) -> list[Sample]:
+        """Query samples with optional filters.
+
+        *metric*: exact match on metric name.
+        *metric_prefix*: prefix match (e.g. 'cpu.core' matches 'cpu.core.0', 'cpu.core.1').
+        *tag_filter*: JSON tag key-value pairs that must match.
+        """
+        conn = self._conn()
+        clauses: list[str] = []
+        params: list[Any] = []
+        if metric:
+            clauses.append("metric = ?")
+            params.append(metric)
+        if metric_prefix:
+            clauses.append("metric LIKE ?")
+            params.append(metric_prefix + "%")
+        if since is not None:
+            clauses.append("ts >= ?")
+            params.append(since)
+        if until is not None:
+            clauses.append("ts <= ?")
+            params.append(until)
+        if tag_filter:
+            for k, v in tag_filter.items():
+                clauses.append(f"json_extract(tags, '$.{k}') = ?")
+                params.append(v)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        cur = conn.execute(
+            f"SELECT ts, metric, value, tags FROM samples{where}"
+            f" ORDER BY ts DESC LIMIT ?",
+            params,
+        )
+        return [
+            Sample(ts=r[0], metric=r[1], value=r[2],
+                   tags=json.loads(r[3]) if r[3] else {})
+            for r in cur.fetchall()
+        ]
+
+    def query_samples_series(
+        self,
+        metric: str,
+        since: float | None = None,
+        until: float | None = None,
+    ) -> dict[str, list]:
+        """Return a single metric as column-major {ts: [...], value: [...]}.
+
+        Optimized for time-series charting.
+        """
+        conn = self._conn()
+        clauses = ["metric = ?"]
+        params: list[Any] = [metric]
+        if since is not None:
+            clauses.append("ts >= ?")
+            params.append(since)
+        if until is not None:
+            clauses.append("ts <= ?")
+            params.append(until)
+        where = " WHERE " + " AND ".join(clauses)
+        cur = conn.execute(
+            f"SELECT ts, value FROM samples{where} ORDER BY ts",
+            params,
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return {"ts": [], "value": []}
+        ts_list, val_list = zip(*rows)
+        return {"ts": list(ts_list), "value": list(val_list)}
+
+    def list_metrics(self, prefix: str = "") -> list[dict[str, Any]]:
+        """List distinct metric names with latest value and count.
+
+        Useful for metric discovery/browsing.
+        """
+        conn = self._conn()
+        if prefix:
+            cur = conn.execute(
+                "SELECT metric, COUNT(*) as cnt, MAX(ts) as latest, "
+                "  (SELECT value FROM samples s2 WHERE s2.metric=samples.metric ORDER BY ts DESC LIMIT 1) as last_val"
+                " FROM samples WHERE metric LIKE ?"
+                " GROUP BY metric ORDER BY metric",
+                (prefix + "%",),
+            )
+        else:
+            cur = conn.execute(
+                "SELECT metric, COUNT(*) as cnt, MAX(ts) as latest, "
+                "  (SELECT value FROM samples s2 WHERE s2.metric=samples.metric ORDER BY ts DESC LIMIT 1) as last_val"
+                " FROM samples GROUP BY metric ORDER BY metric",
+            )
+        return [
+            {"metric": r[0], "count": r[1], "latest_ts": r[2], "last_value": r[3]}
+            for r in cur.fetchall()
+        ]
+
     # ── CSV spec sync ──────────────────────────────────────────────
 
     def _sync_csv_to_db(self, conn: sqlite3.Connection) -> None:
@@ -1138,7 +1293,7 @@ class HistoryDB:
         # Row counts
         for table in ("metrics", "tool_metrics", "events",
                        "file_store", "file_history",
-                       "path_specs", "process_specs"):
+                       "path_specs", "process_specs", "samples"):
             cur = conn.execute(f"SELECT COUNT(*) FROM {table}")
             result[f"{table}_count"] = cur.fetchone()[0]
         # Time range
@@ -1196,6 +1351,10 @@ class HistoryDB:
         # 4. Delete events older than 30 days
         cur = conn.execute("DELETE FROM events WHERE ts < ?", (cutoff_30d,))
         result["events_deleted_30d"] = cur.rowcount
+
+        # 5. Delete samples older than 30 days
+        cur = conn.execute("DELETE FROM samples WHERE ts < ?", (cutoff_30d,))
+        result["samples_deleted_30d"] = cur.rowcount
 
         conn.commit()
         return result
