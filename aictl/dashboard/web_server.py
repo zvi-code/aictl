@@ -27,9 +27,12 @@ _HISTORY_TUPLE_LEN = 11  # bump when adding fields to the history tuple
 
 
 class _SnapshotStore:
-    """Thread-safe snapshot storage with version-based change notification."""
+    """Thread-safe snapshot storage with version-based change notification.
 
-    def __init__(self) -> None:
+    Optionally backed by a HistoryDB for persistence across restarts.
+    """
+
+    def __init__(self, db: "HistoryDB | None" = None) -> None:
         self._snap: DashboardSnapshot | None = None
         self._version: int = 0
         self._lock = threading.Lock()
@@ -39,6 +42,39 @@ class _SnapshotStore:
         self._history: collections.deque[tuple] = collections.deque(maxlen=360)
         # Per-tool history: {tool_name: deque[(ts, cpu, mem_mb, tokens, traffic_bps)]}
         self._tool_history: dict[str, collections.deque] = {}
+        # SQLite persistence (optional)
+        self._db = db
+        if db:
+            self._load_from_db()
+
+    def _load_from_db(self) -> None:
+        """Populate ring buffers from SQLite so charts start with history."""
+        if not self._db:
+            return
+        try:
+            import time as _time
+            since = _time.time() - 3600  # load last 1 hour
+            data = self._db.query_metrics(since=since)
+            if data["ts"]:
+                for i in range(len(data["ts"])):
+                    row = (
+                        data["ts"][i], data["files"][i], data["tokens"][i],
+                        data["cpu"][i], data["mem_mb"][i], data["mcp"][i],
+                        data["mem_tokens"][i], data["live_sessions"][i],
+                        data["live_tokens"][i], data["live_in_rate"][i],
+                        data["live_out_rate"][i],
+                    )
+                    self._history.append(row)
+            # Per-tool history
+            tool_data = self._db.query_tool_metrics(since=since)
+            for tool_name, td in tool_data.items():
+                dq = collections.deque(maxlen=120)
+                for i in range(len(td["ts"])):
+                    dq.append((td["ts"][i], td["cpu"][i], td["mem_mb"][i],
+                               td["tokens"][i], td["traffic"][i]))
+                self._tool_history[tool_name] = dq
+        except Exception:
+            pass  # don't crash server if DB read fails
 
     def update(self, snap: DashboardSnapshot) -> None:
         with self._condition:
@@ -58,6 +94,7 @@ class _SnapshotStore:
 
             # Per-tool history
             ts = snap.timestamp
+            tool_rows = []
             for t in snap.tools:
                 if t.tool == "aictl":
                     continue
@@ -72,8 +109,31 @@ class _SnapshotStore:
                 if t.tool not in self._tool_history:
                     self._tool_history[t.tool] = collections.deque(maxlen=120)  # ~12 min
                 self._tool_history[t.tool].append((ts, cpu, mem, tok, traffic))
+                tool_rows.append((t.tool, cpu, mem, tok, traffic))
 
             self._condition.notify_all()
+
+        # Persist to SQLite (non-blocking — HistoryDB buffers internally)
+        if self._db:
+            try:
+                from ..storage import MetricsRow, ToolMetricsRow
+                self._db.append_metrics(MetricsRow(
+                    ts=snap.timestamp, files=snap.total_files,
+                    tokens=snap.total_tokens, cpu=snap.total_cpu,
+                    mem_mb=snap.total_mem_mb, mcp=snap.total_mcp_servers,
+                    mem_tokens=snap.total_memory_tokens,
+                    live_sessions=snap.total_live_sessions,
+                    live_tokens=snap.total_live_estimated_tokens,
+                    live_in_rate=snap.total_live_inbound_rate_bps,
+                    live_out_rate=snap.total_live_outbound_rate_bps,
+                ))
+                self._db.append_tool_metrics([
+                    ToolMetricsRow(ts=snap.timestamp, tool=name,
+                                   cpu=cpu, mem_mb=mem, tokens=tok, traffic=tr)
+                    for name, cpu, mem, tok, tr in tool_rows
+                ])
+            except Exception:
+                pass  # don't crash server if DB write fails
 
     def wait_for_update(self, known_version: int,
                         timeout: float = 30.0) -> tuple[DashboardSnapshot | None, int]:
@@ -332,7 +392,29 @@ class _DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def _serve_history(self) -> None:
-        body = self.server.store.history_json().encode("utf-8")
+        """Serve time-series history.
+
+        Without ?range, returns in-memory ring buffer (fast, ~35 min).
+        With ?range=1h|6h|24h|7d, queries SQLite for longer history.
+        """
+        from urllib.parse import parse_qs, urlparse
+        parsed = urlparse(self.path)
+        qs = parse_qs(parsed.query)
+        range_str = (qs.get("range") or [None])[0]
+
+        if range_str and self.server.store._db:
+            # Query from SQLite for extended history
+            import time as _time
+            range_map = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800}
+            secs = range_map.get(range_str, 3600)
+            since = _time.time() - secs
+            data = self.server.store._db.query_metrics(since=since)
+            tool_data = self.server.store._db.query_tool_metrics(since=since)
+            data["by_tool"] = tool_data
+            body = json.dumps(data).encode("utf-8")
+        else:
+            body = self.server.store.history_json().encode("utf-8")
+
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -382,9 +464,19 @@ def run_server(
     interval: float = 5.0,
     open_browser: bool = True,
     include_live_monitor: bool = True,
+    db_path: Path | str | None = None,
 ) -> None:
     """Start the dashboard HTTP server. Blocks until Ctrl-C."""
-    store = _SnapshotStore()
+    # Initialize SQLite persistence
+    db = None
+    try:
+        from ..storage import HistoryDB
+        db = HistoryDB(db_path=db_path)
+        print(f"  history db: {db_path or '~/.config/aictl/history.db'}", file=sys.stderr)
+    except Exception as exc:
+        print(f"  warning: history db unavailable ({exc})", file=sys.stderr)
+
+    store = _SnapshotStore(db=db)
     allowed = _AllowedPaths()
 
     # Initial collection so /api/snapshot is ready immediately
@@ -420,6 +512,8 @@ def run_server(
     finally:
         refresh.stop()
         server.shutdown()
+        if db:
+            db.close()
 
 
 # ─── Inline HTML dashboard ───────────────────────────────────────
@@ -486,6 +580,13 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 .kbd { font-size: 0.6rem; color: var(--fg2); padding: 0.1rem 0.3rem; border: 1px solid var(--border);
   border-radius: 2px; font-family: monospace; margin-left: 0.2rem; }
 
+/* Range selector */
+.range-bar { display: flex; align-items: center; gap: 0.3rem; margin-bottom: 0.3rem; }
+.range-bar .range-label { font-size: 0.6rem; color: var(--fg2); text-transform: uppercase; letter-spacing: 0.05em; }
+.range-btn { font-size: 0.65rem; padding: 0.15rem 0.5rem; border-radius: 3px; cursor: pointer;
+  background: var(--bg2); border: 1px solid var(--border); color: var(--fg2); font-family: inherit; }
+.range-btn:hover { color: var(--fg); border-color: var(--fg2); }
+.range-btn.active { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
 /* Charts row — top */
 .chart-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.4rem; margin-bottom: 0.4rem; }
 .chart-box { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
@@ -839,7 +940,15 @@ function Metric({label, value, accent}) {
 }
 
 // ─── StatBar: charts on top, inventory + live below ───────────
-function StatBar({snap: s, history: hist}) {
+const RANGES = [
+  {id:'live', label:'Live'},
+  {id:'1h', label:'1h'},
+  {id:'6h', label:'6h'},
+  {id:'24h', label:'24h'},
+  {id:'7d', label:'7d'},
+];
+
+function StatBar({snap: s, history: hist, historyRange, onRangeChange}) {
   const sparkFor = (key) => {
     if(!hist || !hist.ts || hist.ts.length<2) return null;
     return [hist.ts, hist[key]];
@@ -853,6 +962,12 @@ function StatBar({snap: s, history: hist}) {
   if(cores >= 2) cpuRefs.push({value: 100*cores, label: cores+' cores'});
   const hasLive = s.total_live_sessions > 0;
   return html`<Fragment>
+    <div class="range-bar">
+      <span class="range-label">Range:</span>
+      ${RANGES.map(r=>html`<button key=${r.id}
+        class=${historyRange===r.id?'range-btn active':'range-btn'}
+        onClick=${()=>onRangeChange(r.id)}>${r.label}</button>`)}
+    </div>
     <div class="chart-row">
       <${ChartCard} label="Files" value=${s.total_files} data=${sparkFor('files')} chartColor="var(--accent)" />
       <${ChartCard} label="Tokens" value=${fmtK(s.total_tokens)} data=${sparkFor('tokens')} chartColor="var(--green)" />
@@ -1810,6 +1925,8 @@ function FileViewer({path, onClose}) {
 function App() {
   const [snap, setSnap] = useState(null);
   const [history, setHistory] = useState(null);
+  const [dbHistory, setDbHistory] = useState(null);  // SQLite-backed history for extended ranges
+  const [historyRange, setHistoryRange] = useState('live');
   const [connected, setConnected] = useState(false);
   const [activeTab, setActiveTab] = useState('overview');
   const [searchQuery, setSearchQuery] = useState('');
@@ -1888,6 +2005,20 @@ function App() {
     return ()=>{ closed=true; if(es) es.close(); };
   },[]);
 
+  // Range change: fetch from SQLite for extended history
+  const handleRangeChange = useCallback((range)=>{
+    setHistoryRange(range);
+    if(range === 'live') {
+      setDbHistory(null);  // use in-memory history
+    } else {
+      fetch('/api/history?range='+range)
+        .then(r=>r.json()).then(setDbHistory).catch(()=>{});
+    }
+  },[]);
+
+  // Effective history: dbHistory when viewing extended range, otherwise live
+  const effectiveHistory = historyRange === 'live' ? history : (dbHistory || history);
+
   // Keyboard shortcuts
   useEffect(()=>{
     const handler = e => {
@@ -1945,7 +2076,7 @@ function App() {
       </header>
       <main class="main">
         <div style="position:sticky;top:0;z-index:50;background:var(--bg);padding:0.6rem 0 0.2rem">
-          <${StatBar} snap=${snap} history=${history}/>
+          <${StatBar} snap=${snap} history=${effectiveHistory} historyRange=${historyRange} onRangeChange=${handleRangeChange}/>
           <${ResourceBar} snap=${snap}/>
         </div>
         <nav class="tab-nav" role="tablist" aria-label="Dashboard tabs">
