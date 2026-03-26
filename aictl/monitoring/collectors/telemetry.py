@@ -18,13 +18,19 @@ _INTERESTING_SUFFIXES = (".json", ".jsonl", ".ndjson", ".log")
 
 
 class StructuredTelemetryCollector(BaseCollector):
-    """Tail structured logs for token counts when tools expose them."""
+    """Tail structured logs for token counts when tools expose them.
+
+    Also consumes explicit OTel file exports when detected by tool_config.
+    OTel spans produce high-confidence (0.95) events vs generic scanning (0.40).
+    """
 
     name = "telemetry:structured"
 
     def __init__(self, config: MonitorConfig) -> None:
         self.config = config
         self._offsets: dict[str, int] = {}
+        # Explicit OTel file paths added by external detection (tool_config.py)
+        self._otel_files: set[str] = set()
 
     async def run(self, emit) -> None:
         if not any(path.exists() for path in self.config.state_paths):
@@ -55,8 +61,19 @@ class StructuredTelemetryCollector(BaseCollector):
             events.extend(self._parse_file(path))
         return events
 
+    def add_otel_file(self, path: str) -> None:
+        """Register an explicit OTel export file path for monitoring."""
+        if path and Path(path).exists():
+            self._otel_files.add(path)
+
     def _candidate_files(self) -> list[Path]:
         candidates: list[Path] = []
+        # Explicit OTel files (highest priority — from tool_config detection)
+        for otel_path in self._otel_files:
+            p = Path(otel_path)
+            if p.is_file():
+                candidates.append(p)
+        # Discovery-based scanning
         for root in self.config.state_paths:
             if not root.exists():
                 continue
@@ -74,11 +91,14 @@ class StructuredTelemetryCollector(BaseCollector):
                         continue
                     if not any(fragment in lowered for fragment in _INTERESTING_NAMES):
                         continue
-                    candidates.append(current_path / filename)
+                    fp = current_path / filename
+                    if str(fp) not in self._otel_files:  # avoid double-parse
+                        candidates.append(fp)
         return candidates
 
     def _parse_file(self, path: Path) -> list[UnifiedEvent]:
         key = str(path)
+        is_otel_file = key in self._otel_files
         events: list[UnifiedEvent] = []
         try:
             size = path.stat().st_size
@@ -98,6 +118,26 @@ class StructuredTelemetryCollector(BaseCollector):
                     payload = _parse_json_candidate(line)
                     if payload is None:
                         continue
+
+                    # Try OTel span format first (higher confidence)
+                    otel_usage = _extract_otel_span_tokens(payload) if is_otel_file else None
+                    if otel_usage:
+                        events.append(
+                            UnifiedEvent(
+                                kind=EventKind.TELEMETRY,
+                                source="telemetry:otel-verified",
+                                tool_hint=_tool_hint_for_path(key) or "copilot-vscode",
+                                metrics={
+                                    "input_tokens": otel_usage[0],
+                                    "output_tokens": otel_usage[1],
+                                    "confidence": 0.95,
+                                },
+                                payload={"path": key, "otel": True},
+                            )
+                        )
+                        continue
+
+                    # Fallback to generic token extraction
                     usage = _extract_usage_tokens(payload)
                     if usage is None:
                         continue
@@ -156,6 +196,49 @@ def _extract_usage_tokens(payload: Any) -> tuple[int, int] | None:
             nested = _extract_usage_tokens(item)
             if nested is not None:
                 return nested
+
+    return None
+
+
+def _extract_otel_span_tokens(payload: Any) -> tuple[int, int] | None:
+    """Extract token usage from OTel span format.
+
+    OTel spans from Copilot have attributes like:
+      gen_ai.client.token.usage.input_tokens
+      gen_ai.client.token.usage.output_tokens
+    or nested under 'attributes' dict.
+    """
+    if not isinstance(payload, dict):
+        return None
+
+    attrs = payload.get("attributes", payload)
+    if not isinstance(attrs, dict):
+        return None
+
+    # Standard OTel gen_ai convention
+    for in_key, out_key in (
+        ("gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens"),
+        ("gen_ai.usage.prompt_tokens", "gen_ai.usage.completion_tokens"),
+        ("gen_ai.client.token.usage.input_tokens", "gen_ai.client.token.usage.output_tokens"),
+    ):
+        if in_key in attrs or out_key in attrs:
+            return (int(attrs.get(in_key, 0) or 0), int(attrs.get(out_key, 0) or 0))
+
+    # Check for nested events array (OTel batch format)
+    events = payload.get("events", [])
+    if isinstance(events, list):
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            ev_attrs = ev.get("attributes", {})
+            if not isinstance(ev_attrs, dict):
+                continue
+            for in_key, out_key in (
+                ("gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens"),
+                ("gen_ai.usage.prompt_tokens", "gen_ai.usage.completion_tokens"),
+            ):
+                if in_key in ev_attrs or out_key in ev_attrs:
+                    return (int(ev_attrs.get(in_key, 0) or 0), int(ev_attrs.get(out_key, 0) or 0))
 
     return None
 
