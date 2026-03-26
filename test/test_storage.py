@@ -317,7 +317,7 @@ class TestMigration:
         # Schema version should be updated
         conn2 = sqlite3.connect(str(db_file))
         ver = conn2.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-        assert ver == 2
+        assert ver == 3  # migrates all the way to latest
         conn2.close()
         db.close()
 
@@ -434,3 +434,103 @@ class TestFileStore:
         assert s["files_tracked"] == 1
         assert s["files_total_bytes"] > 0
         assert s["files_total_tokens"] > 0
+
+
+# ── CSV Spec Tables ────────────────────────────────────────────────
+
+class TestSpecSync:
+    def test_sync_specs_loads_from_registry(self, db: HistoryDB):
+        result = db.sync_specs()
+        # Should have loaded specs from the actual CSV files
+        assert result["path_specs"] > 0
+        assert result["process_specs"] > 0
+
+    def test_query_path_specs_no_filter(self, db: HistoryDB):
+        db.sync_specs()
+        specs = db.query_path_specs()
+        assert len(specs) > 0
+        # Each row should be a dict with expected keys
+        assert "path_template" in specs[0]
+        assert "ai_tool" in specs[0]
+        assert "vendor" in specs[0]
+        assert "host" in specs[0]
+
+    def test_query_path_specs_by_tool(self, db: HistoryDB):
+        db.sync_specs()
+        claude_specs = db.query_path_specs(tool="claude-code")
+        all_specs = db.query_path_specs()
+        assert 0 < len(claude_specs) < len(all_specs)
+        assert all(s["ai_tool"] == "claude-code" for s in claude_specs)
+
+    def test_query_path_specs_by_vendor(self, db: HistoryDB):
+        db.sync_specs()
+        anthropic_specs = db.query_path_specs(vendor="anthropic")
+        assert len(anthropic_specs) > 0
+        assert all(s["vendor"] == "anthropic" for s in anthropic_specs)
+
+    def test_query_process_specs_by_tool(self, db: HistoryDB):
+        db.sync_specs()
+        claude_procs = db.query_process_specs(tool="claude-code")
+        assert len(claude_procs) > 0
+        assert all(s["ai_tool"] == "claude-code" for s in claude_procs)
+
+    def test_sync_is_idempotent(self, db: HistoryDB):
+        r1 = db.sync_specs()
+        r2 = db.sync_specs()
+        assert r1 == r2  # same counts after re-sync
+
+    def test_stats_include_spec_counts(self, db: HistoryDB):
+        db.sync_specs()
+        s = db.stats()
+        assert s["path_specs_count"] > 0
+        assert s["process_specs_count"] > 0
+
+    def test_migration_v2_to_v3(self, tmp_path):
+        """Simulate a v2 DB and verify migration creates spec tables."""
+        import sqlite3 as _sqlite3
+        db_file = tmp_path / "v2.db"
+        conn = _sqlite3.connect(str(db_file))
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+            INSERT INTO schema_version VALUES (2);
+            CREATE TABLE metrics (ts REAL PRIMARY KEY, files INTEGER, tokens INTEGER,
+                cpu REAL, mem_mb REAL, mcp INTEGER, mem_tokens INTEGER,
+                live_sessions INTEGER DEFAULT 0, live_tokens INTEGER DEFAULT 0,
+                live_in_rate REAL DEFAULT 0, live_out_rate REAL DEFAULT 0);
+            CREATE TABLE tool_metrics (ts REAL, tool TEXT, cpu REAL, mem_mb REAL,
+                tokens INTEGER, traffic REAL, model TEXT DEFAULT '',
+                PRIMARY KEY(ts, tool));
+            CREATE TABLE events (ts REAL, tool TEXT, kind TEXT, detail TEXT,
+                PRIMARY KEY(ts, tool, kind));
+            CREATE TABLE tool_telemetry (ts REAL, tool TEXT, source TEXT DEFAULT '',
+                confidence REAL DEFAULT 0, input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0, cache_read_tokens INTEGER DEFAULT 0,
+                cache_creation_tokens INTEGER DEFAULT 0, total_sessions INTEGER DEFAULT 0,
+                total_messages INTEGER DEFAULT 0, cost_usd REAL DEFAULT 0,
+                model TEXT DEFAULT '', by_model_json TEXT DEFAULT '{}',
+                PRIMARY KEY(ts, tool));
+            CREATE TABLE file_store (path TEXT PRIMARY KEY, tool TEXT, category TEXT DEFAULT '',
+                scope TEXT DEFAULT '', content TEXT DEFAULT '', content_hash TEXT DEFAULT '',
+                size_bytes INTEGER DEFAULT 0, tokens INTEGER DEFAULT 0, lines INTEGER DEFAULT 0,
+                mtime REAL DEFAULT 0, first_seen REAL DEFAULT 0, last_read REAL DEFAULT 0,
+                last_changed REAL DEFAULT 0, meta TEXT DEFAULT '{}');
+            CREATE TABLE file_history (path TEXT, ts REAL, content TEXT DEFAULT '',
+                content_hash TEXT DEFAULT '', size_bytes INTEGER DEFAULT 0,
+                tokens INTEGER DEFAULT 0, lines INTEGER DEFAULT 0, PRIMARY KEY(path, ts));
+        """)
+        conn.commit()
+        conn.close()
+
+        # Open with HistoryDB — should migrate v2 → v3
+        db = HistoryDB(db_path=db_file, flush_interval=0)
+        # Verify spec tables exist and are populated
+        specs = db.query_path_specs()
+        assert len(specs) > 0
+        procs = db.query_process_specs()
+        assert len(procs) > 0
+        # Schema version should be 3
+        conn2 = _sqlite3.connect(str(db_file))
+        ver = conn2.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
+        assert ver == 3
+        conn2.close()
+        db.close()

@@ -140,6 +140,76 @@ PK: `(ts, tool)`
 
 ---
 
+## Version 3 (added CSV spec tables)
+
+### Migration from v2
+
+- Creates `path_specs` and `process_specs` tables
+- Auto-populates from CSV files via registry on first migration
+
+### `path_specs` — CSV path specifications
+
+Mirror of `paths-unix.csv` / `paths-windows.csv`. Enables SQL queries
+across tool specifications (e.g. "all files for vendor=anthropic").
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `path_template` | TEXT | Path pattern (with `{project-root}`, `~`, etc.) |
+| `ai_tool` | TEXT | Tool identifier |
+| `vendor` | TEXT | Vendor (anthropic, github, openai, etc.) |
+| `host` | TEXT | Host runtime (cli, vscode, desktop, etc.) |
+| `platform` | TEXT | OS platform (macos, linux, windows, all) |
+| `hidden` | INTEGER | Whether file is in hidden directory |
+| `scope` | TEXT | global, project, user |
+| `category` | TEXT | instructions, config, rules, memory, etc. |
+| `sent_to_llm` | TEXT | yes/no/conditional |
+| `approx_tokens` | TEXT | Estimated token range |
+| `read_write` | TEXT | r, rw, w |
+| `survives_compaction` | TEXT | Whether content survives context compaction |
+| `cacheable` | TEXT | Whether content can be cached |
+| `loaded_when` | TEXT | When the file is loaded (every-call, on-demand, etc.) |
+| `path_args` | TEXT | Additional path arguments |
+| `description` | TEXT | Human-readable description |
+| `resolution` | TEXT | Resolution strategy (literal, rooted, recursive, etc.) |
+| `root_strategy` | TEXT | How to find project root |
+
+PK: `(path_template, ai_tool)`
+
+### `process_specs` — CSV process specifications
+
+Mirror of `processes-unix.csv` / `processes-windows.csv`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `process_name` | TEXT | Process display name |
+| `ai_tool` | TEXT | Tool identifier |
+| `vendor` | TEXT | Vendor |
+| `host` | TEXT | Host runtime |
+| `process_type` | TEXT | app, child, daemon, etc. |
+| `runtime` | TEXT | node, electron, python, etc. |
+| `parent_process` | TEXT | Parent process name |
+| `starts_at` | TEXT | When process starts |
+| `stops_at` | TEXT | When process stops |
+| `is_daemon` | INTEGER | Whether process is a daemon |
+| `auto_start` | INTEGER | Whether process auto-starts |
+| `listens_port` | TEXT | Port(s) the process listens on |
+| `outbound_targets` | TEXT | Outbound network targets |
+| `memory_idle_mb` | TEXT | Idle memory usage |
+| `memory_active_mb` | TEXT | Active memory usage |
+| `known_leak` | INTEGER | Whether a memory leak is known |
+| `leak_pattern` | TEXT | Description of leak pattern |
+| `zombie_risk` | TEXT | Risk level for zombie processes |
+| `cleanup_command` | TEXT | Command to clean up |
+| `ps_grep_pattern` | TEXT | Regex for process matching |
+| `platform` | TEXT | OS platform |
+| `description` | TEXT | Human-readable description |
+
+PK: `(process_name, ai_tool)`
+
+**Refresh**: Call `db.sync_specs()` after modifying CSV files.
+
+---
+
 ## Configuration
 
 ```toml

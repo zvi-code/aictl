@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = config_dir() / "history.db"
 FLUSH_INTERVAL = 10.0  # seconds between batch writes
-SCHEMA_VERSION = 2  # bump when adding migrations
+SCHEMA_VERSION = 3  # bump when adding migrations
 
 # Retention thresholds (seconds)
 _1H = 3_600
@@ -127,6 +127,56 @@ CREATE TABLE IF NOT EXISTS tool_telemetry (
     PRIMARY KEY (ts, tool)
 );
 
+-- CSV path specifications (mirroring paths-unix.csv / paths-windows.csv)
+CREATE TABLE IF NOT EXISTS path_specs (
+    path_template   TEXT NOT NULL,
+    ai_tool         TEXT NOT NULL,
+    vendor          TEXT DEFAULT '',
+    host            TEXT DEFAULT '',
+    platform        TEXT DEFAULT 'all',
+    hidden          INTEGER DEFAULT 0,
+    scope           TEXT DEFAULT '',
+    category        TEXT DEFAULT '',
+    sent_to_llm     TEXT DEFAULT '',
+    approx_tokens   TEXT DEFAULT '0',
+    read_write      TEXT DEFAULT '',
+    survives_compaction TEXT DEFAULT '',
+    cacheable       TEXT DEFAULT '',
+    loaded_when     TEXT DEFAULT '',
+    path_args       TEXT DEFAULT '',
+    description     TEXT DEFAULT '',
+    resolution      TEXT DEFAULT 'literal',
+    root_strategy   TEXT DEFAULT '',
+    PRIMARY KEY (path_template, ai_tool)
+);
+
+-- CSV process specifications (mirroring processes-unix.csv / processes-windows.csv)
+CREATE TABLE IF NOT EXISTS process_specs (
+    process_name    TEXT NOT NULL,
+    ai_tool         TEXT NOT NULL,
+    vendor          TEXT DEFAULT '',
+    host            TEXT DEFAULT '',
+    process_type    TEXT DEFAULT '',
+    runtime         TEXT DEFAULT '',
+    parent_process  TEXT DEFAULT '',
+    starts_at       TEXT DEFAULT '',
+    stops_at        TEXT DEFAULT '',
+    is_daemon       INTEGER DEFAULT 0,
+    auto_start      INTEGER DEFAULT 0,
+    listens_port    TEXT DEFAULT '',
+    outbound_targets TEXT DEFAULT '',
+    memory_idle_mb  TEXT DEFAULT '',
+    memory_active_mb TEXT DEFAULT '',
+    known_leak      INTEGER DEFAULT 0,
+    leak_pattern    TEXT DEFAULT '',
+    zombie_risk     TEXT DEFAULT 'none',
+    cleanup_command  TEXT DEFAULT '',
+    ps_grep_pattern TEXT DEFAULT '',
+    platform        TEXT DEFAULT 'all',
+    description     TEXT DEFAULT '',
+    PRIMARY KEY (process_name, ai_tool)
+);
+
 CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics(ts);
 CREATE INDEX IF NOT EXISTS idx_tool_metrics_ts ON tool_metrics(ts);
 CREATE INDEX IF NOT EXISTS idx_tool_metrics_tool ON tool_metrics(tool, ts);
@@ -137,6 +187,10 @@ CREATE INDEX IF NOT EXISTS idx_file_store_tool ON file_store(tool);
 CREATE INDEX IF NOT EXISTS idx_file_history_path ON file_history(path, ts);
 CREATE INDEX IF NOT EXISTS idx_tool_telemetry_ts ON tool_telemetry(ts);
 CREATE INDEX IF NOT EXISTS idx_tool_telemetry_tool ON tool_telemetry(tool, ts);
+CREATE INDEX IF NOT EXISTS idx_path_specs_tool ON path_specs(ai_tool);
+CREATE INDEX IF NOT EXISTS idx_path_specs_vendor ON path_specs(vendor);
+CREATE INDEX IF NOT EXISTS idx_process_specs_tool ON process_specs(ai_tool);
+CREATE INDEX IF NOT EXISTS idx_process_specs_vendor ON process_specs(vendor);
 """
 
 
@@ -320,7 +374,13 @@ class HistoryDB:
             self._ensure_columns(conn, "tool_metrics", [
                 ("model", "TEXT DEFAULT ''"),
             ])
-            log.info("Migrated DB schema from v%d to v%d", from_version, SCHEMA_VERSION)
+            log.info("Migrated DB schema v1 → v2")
+        if from_version < 3:
+            # v2 → v3: add path_specs and process_specs tables
+            # (handled by CREATE TABLE IF NOT EXISTS in _SCHEMA_SQL).
+            # Populate from CSV on first migration.
+            self._sync_csv_to_db(conn)
+            log.info("Migrated DB schema v2 → v3 (CSV specs loaded)")
 
     @staticmethod
     def _ensure_columns(
@@ -935,6 +995,135 @@ class HistoryDB:
 
         return stats
 
+    # ── CSV spec sync ──────────────────────────────────────────────
+
+    def _sync_csv_to_db(self, conn: sqlite3.Connection) -> None:
+        """Load CSV specs from registry into path_specs and process_specs tables."""
+        try:
+            from .registry import get_registry
+            registry = get_registry()
+            self._sync_path_specs(conn, registry.path_specs())
+            self._sync_process_specs(conn, registry.process_specs())
+        except Exception as exc:
+            log.warning("Failed to sync CSV specs to DB: %s", exc)
+
+    @staticmethod
+    def _sync_path_specs(conn: sqlite3.Connection, specs: list) -> None:
+        """Upsert path specs into the path_specs table."""
+        conn.execute("DELETE FROM path_specs")
+        conn.executemany(
+            "INSERT INTO path_specs"
+            "(path_template, ai_tool, vendor, host, platform, hidden, scope,"
+            " category, sent_to_llm, approx_tokens, read_write,"
+            " survives_compaction, cacheable, loaded_when, path_args,"
+            " description, resolution, root_strategy)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (s.path_template, s.ai_tool, s.vendor, s.host,
+                 s.platform, int(s.hidden), s.scope, s.category,
+                 s.sent_to_llm, s.approx_tokens, s.read_write,
+                 s.survives_compaction, s.cacheable, s.loaded_when,
+                 s.path_args, s.description, s.resolution, s.root_strategy)
+                for s in specs
+            ],
+        )
+        conn.commit()
+
+    @staticmethod
+    def _sync_process_specs(conn: sqlite3.Connection, specs: list) -> None:
+        """Upsert process specs into the process_specs table."""
+        conn.execute("DELETE FROM process_specs")
+        conn.executemany(
+            "INSERT INTO process_specs"
+            "(process_name, ai_tool, vendor, host, process_type, runtime,"
+            " parent_process, starts_at, stops_at, is_daemon, auto_start,"
+            " listens_port, outbound_targets, memory_idle_mb, memory_active_mb,"
+            " known_leak, leak_pattern, zombie_risk, cleanup_command,"
+            " ps_grep_pattern, platform, description)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (s.process_name, s.ai_tool, s.vendor, s.host,
+                 s.process_type, s.runtime, s.parent_process,
+                 s.starts_at, s.stops_at, int(s.is_daemon), int(s.auto_start),
+                 s.listens_port, s.outbound_targets, s.memory_idle_mb,
+                 s.memory_active_mb, int(s.known_leak), s.leak_pattern,
+                 s.zombie_risk, s.cleanup_command, s.ps_grep_pattern,
+                 s.platform, s.description)
+                for s in specs
+            ],
+        )
+        conn.commit()
+
+    def sync_specs(self) -> dict[str, int]:
+        """Re-sync CSV specs from registry to SQLite.
+
+        Call this after CSV files have been updated to refresh the DB.
+        Returns {"path_specs": N, "process_specs": N}.
+        """
+        conn = self._conn()
+        self._sync_csv_to_db(conn)
+        path_count = conn.execute("SELECT COUNT(*) FROM path_specs").fetchone()[0]
+        proc_count = conn.execute("SELECT COUNT(*) FROM process_specs").fetchone()[0]
+        return {"path_specs": path_count, "process_specs": proc_count}
+
+    def query_path_specs(
+        self,
+        tool: str | None = None,
+        vendor: str | None = None,
+        host: str | None = None,
+        category: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Query path specs with optional filters."""
+        conn = self._conn()
+        clauses: list[str] = []
+        params: list[Any] = []
+        if tool:
+            clauses.append("ai_tool = ?")
+            params.append(tool)
+        if vendor:
+            clauses.append("vendor = ?")
+            params.append(vendor)
+        if host:
+            clauses.append("host LIKE ?")
+            params.append(f"%{host}%")
+        if category:
+            clauses.append("category = ?")
+            params.append(category)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        cur = conn.execute(
+            f"SELECT * FROM path_specs{where} ORDER BY ai_tool, category, path_template",
+            params,
+        )
+        cols = [desc[0] for desc in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    def query_process_specs(
+        self,
+        tool: str | None = None,
+        vendor: str | None = None,
+        host: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Query process specs with optional filters."""
+        conn = self._conn()
+        clauses: list[str] = []
+        params: list[Any] = []
+        if tool:
+            clauses.append("ai_tool = ?")
+            params.append(tool)
+        if vendor:
+            clauses.append("vendor = ?")
+            params.append(vendor)
+        if host:
+            clauses.append("host LIKE ?")
+            params.append(f"%{host}%")
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        cur = conn.execute(
+            f"SELECT * FROM process_specs{where} ORDER BY ai_tool, process_name",
+            params,
+        )
+        cols = [desc[0] for desc in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
     # ── Stats ──────────────────────────────────────────────────────
 
     def stats(self) -> dict[str, Any]:
@@ -948,7 +1137,8 @@ class HistoryDB:
             result["file_size_bytes"] = 0
         # Row counts
         for table in ("metrics", "tool_metrics", "events",
-                       "file_store", "file_history"):
+                       "file_store", "file_history",
+                       "path_specs", "process_specs"):
             cur = conn.execute(f"SELECT COUNT(*) FROM {table}")
             result[f"{table}_count"] = cur.fetchone()[0]
         # Time range
