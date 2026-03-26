@@ -486,16 +486,22 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 .kbd { font-size: 0.6rem; color: var(--fg2); padding: 0.1rem 0.3rem; border: 1px solid var(--border);
   border-radius: 2px; font-family: monospace; margin-left: 0.2rem; }
 
-/* Stat cards — two-tier hierarchy */
-.stat-primary { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.4rem; margin-bottom: 0.3rem; }
-.stat-secondary { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 0.4rem; margin-bottom: 0.8rem; }
-.stat-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
-  padding: 0.4rem 0.6rem; text-align: center; position: relative; overflow: hidden; }
-.stat-card.primary { border-left: 3px solid var(--accent); }
-.stat-card .label { color: var(--fg2); font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em; }
-.stat-card.primary .value { font-size: 1.5rem; font-weight: 700; color: var(--accent); }
-.stat-card.secondary .value { font-size: 1.0rem; font-weight: 600; color: var(--fg2); }
-.sparkline-wrap { height: 30px; margin-top: 2px; }
+/* Top bar — charts on top, metrics below */
+.chart-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.4rem; margin-bottom: 0.4rem; }
+.chart-box { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 0.3rem 0.5rem 0.1rem; overflow: hidden; min-height: 80px; position: relative; }
+.chart-box .chart-hdr { display: flex; justify-content: space-between; align-items: baseline; }
+.chart-box .chart-label { color: var(--fg2); font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.chart-box .chart-val { font-size: 1.1rem; font-weight: 700; }
+.chart-wrap { height: 55px; position: relative; }
+.chart-ref-line { position: absolute; left: 0; right: 0; border-top: 1px dashed var(--fg2); opacity: 0.3; pointer-events: none; z-index: 1; }
+.chart-ref-label { position: absolute; right: 2px; font-size: 0.5rem; color: var(--fg2); opacity: 0.5; pointer-events: none; z-index: 1; }
+.metrics-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 0.3rem; margin-bottom: 0.6rem; }
+.metric { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 0.3rem 0.5rem; text-align: center; }
+.metric .label { color: var(--fg2); font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.metric .value { font-size: 0.95rem; font-weight: 600; color: var(--fg); }
+.metric .value.accent { color: var(--accent); }
 @keyframes flash { 0%{opacity:1} 50%{opacity:0.5} 100%{opacity:1} }
 .flash { animation: flash 0.4s ease; }
 
@@ -749,21 +755,26 @@ async function fetchFileContent(path) {
   return text;
 }
 
-// ─── Sparkline Component ───────────────────────────────────────
-function Sparkline({data, color, smooth}) {
+// ─── MiniChart Component ──────────────────────────────────────
+// refLines: [{value, label, color?}] — horizontal reference lines
+function MiniChart({data, color, smooth, height, yMax}) {
   const ref = useRef(null);
   const chartRef = useRef(null);
+  const h = height || 55;
   useEffect(()=>{
     if(!ref.current || !data || data[0].length<2) return;
     const vals = smooth ? sma3(data[1]) : data[1];
     const plotData = [data[0], vals];
     if(chartRef.current) { chartRef.current.setData(plotData); return; }
+    const rangeY = yMax
+      ? (u,dMin,dMax) => [0, Math.max(yMax, dMax*1.05)]
+      : (u,dMin,dMax) => [Math.max(0,dMin*0.9), dMax*1.1];
     const opts = {
-      width: ref.current.clientWidth || 100, height: 30,
+      width: ref.current.clientWidth || 200, height: h,
       cursor:{show:false}, legend:{show:false}, select:{show:false},
-      scales:{x:{time:false},y:{auto:true,range:(u,min,max)=>[Math.max(0,min*0.9),max*1.1]}},
+      scales:{x:{time:false},y:{auto:true,range:rangeY}},
       axes:[{show:false},{show:false}],
-      series:[{},{stroke:color,width:1.5,fill:color+'20'}],
+      series:[{},{stroke:color,width:1.5,fill:color+'18'}],
     };
     chartRef.current = new uPlot(opts, plotData, ref.current);
     return ()=>{ if(chartRef.current){chartRef.current.destroy();chartRef.current=null;} };
@@ -771,31 +782,59 @@ function Sparkline({data, color, smooth}) {
   useEffect(()=>{
     if(!chartRef.current||!ref.current) return;
     const ro = new ResizeObserver(()=>{
-      if(chartRef.current && ref.current) chartRef.current.setSize({width:ref.current.clientWidth,height:30});
+      if(chartRef.current && ref.current) chartRef.current.setSize({width:ref.current.clientWidth,height:h});
     });
     ro.observe(ref.current);
     return ()=>ro.disconnect();
   },[]);
-  return html`<div class="sparkline-wrap" ref=${ref}></div>`;
+  return html`<div class="chart-wrap" style=${'height:'+h+'px'} ref=${ref}></div>`;
 }
 
-// ─── StatCard Component ────────────────────────────────────────
-function StatCard({label, value, primary, sparkData, sparkColor, smooth}) {
+// ─── ChartCard: label + current value + chart + reference lines
+function ChartCard({label, value, valColor, data, chartColor, smooth, refLines, yMax}) {
+  // Compute reference line positions as % of chart height
+  const computeRefPos = (refVal) => {
+    if(!data || !data[1] || data[1].length < 2) return null;
+    const max = yMax ? Math.max(yMax, Math.max(...data[1])*1.05) : Math.max(...data[1])*1.1;
+    if(max <= 0) return null;
+    const pct = (1 - refVal / max) * 100;
+    return pct >= 0 && pct <= 95 ? pct : null;
+  };
+  return html`<div class="chart-box">
+    <div class="chart-hdr">
+      <span class="chart-label">${label}</span>
+      <span class="chart-val" style=${'color:'+(valColor||chartColor||'var(--accent)')}>${value}</span>
+    </div>
+    <div style="position:relative">
+      ${(refLines||[]).map(r => {
+        const top = computeRefPos(r.value);
+        if(top==null) return null;
+        return html`<Fragment>
+          <div class="chart-ref-line" style=${'top:'+top+'%'} />
+          <div class="chart-ref-label" style=${'top:calc('+top+'% - 8px)'}>${r.label}</div>
+        </Fragment>`;
+      })}
+      ${data && data[0].length>=2 ? html`<${MiniChart} data=${data} color=${chartColor||'var(--accent)'} smooth=${smooth} yMax=${yMax}/>` :
+        html`<div class="chart-wrap" style="display:flex;align-items:center;justify-content:center;color:var(--fg2);font-size:0.7rem">collecting...</div>`}
+    </div>
+  </div>`;
+}
+
+// ─── Metric: compact number-only card ─────────────────────────
+function Metric({label, value, accent}) {
   const prevRef = useRef(value);
   const [flashing, setFlashing] = useState(false);
   useEffect(()=>{
     if(prevRef.current !== value) { setFlashing(true); setTimeout(()=>setFlashing(false),500); }
     prevRef.current = value;
   },[value]);
-  const cls = 'stat-card '+(primary?'primary':'secondary');
-  return html`<div class=${cls} aria-label="${label}: ${value}">
+  return html`<div class="metric" aria-label="${label}: ${value}">
     <div class="label">${label}</div>
-    <div class=${'value'+(flashing?' flash':'')}>${value}</div>
-    ${primary && sparkData && html`<${Sparkline} data=${sparkData} color=${sparkColor||'var(--accent)'} smooth=${smooth}/>`}
+    <div class=${'value'+(accent?' accent':'')+(flashing?' flash':'')}>${value}</div>
   </div>`;
 }
 
-// ─── StatBar Component ─────────────────────────────────────────
+// ─── StatBar: charts on top, metrics below ────────────────────
 function StatBar({snap: s, history: hist}) {
   const sparkFor = (key) => {
     if(!hist || !hist.ts || hist.ts.length<2) return null;
@@ -804,26 +843,31 @@ function StatBar({snap: s, history: hist}) {
   if(!s) return null;
   const cores = s.cpu_cores || 1;
   const cpuLabel = s.total_cpu+'% of '+cores+' cores';
+  // CPU reference lines: 100% per core
+  const cpuRefs = [];
+  if(cores >= 1) cpuRefs.push({value: 100, label: '1 core'});
+  if(cores >= 4) cpuRefs.push({value: 100*cores, label: cores+' cores'});
+  else if(cores >= 2) cpuRefs.push({value: 100*cores, label: cores+' cores'});
   const hasLive = s.total_live_sessions > 0;
-  return html`
-    <div class="stat-primary">
-      <${StatCard} label="Files" value=${s.total_files} primary sparkData=${sparkFor('files')} sparkColor="var(--accent)" />
-      <${StatCard} label="Tokens" value=${fmtK(s.total_tokens)} primary sparkData=${sparkFor('tokens')} sparkColor="var(--green)" />
-      <${StatCard} label="CPU" value=${cpuLabel} primary sparkData=${sparkFor('cpu')} sparkColor="var(--orange)" smooth />
-      <${StatCard} label="Proc RAM" value=${fmtSz(s.total_mem_mb*1048576)} primary sparkData=${sparkFor('mem_mb')} sparkColor="var(--yellow)" />
+  return html`<Fragment>
+    <div class="chart-row">
+      <${ChartCard} label="Files" value=${s.total_files} data=${sparkFor('files')} chartColor="var(--accent)" />
+      <${ChartCard} label="Tokens" value=${fmtK(s.total_tokens)} data=${sparkFor('tokens')} chartColor="var(--green)" />
+      <${ChartCard} label="CPU" value=${cpuLabel} data=${sparkFor('cpu')} chartColor="var(--orange)" smooth
+        refLines=${cpuRefs} yMax=${100*cores} />
+      <${ChartCard} label="Proc RAM" value=${fmtSz(s.total_mem_mb*1048576)} data=${sparkFor('mem_mb')} chartColor="var(--yellow)" smooth />
     </div>
-    <div class="stat-secondary">
-      <${StatCard} label="Processes" value=${s.total_processes} />
-      <${StatCard} label="Size" value=${fmtSz(s.total_size)} />
-      <${StatCard} label="MCP" value=${s.total_mcp_servers} />
-      <${StatCard} label="AI Context" value=${fmtK(s.total_memory_tokens)+'t'} />
+    <div class="metrics-row">
+      <${Metric} label="Processes" value=${s.total_processes} />
+      <${Metric} label="Disk Size" value=${fmtSz(s.total_size)} />
+      <${Metric} label="MCP" value=${s.total_mcp_servers} />
+      <${Metric} label="AI Context" value=${fmtK(s.total_memory_tokens)+'t'} />
+      <${Metric} label="Sessions" value=${s.total_live_sessions} />
+      ${hasLive && html`<${Metric} label="Live Tokens" value=${fmtK(s.total_live_estimated_tokens)} />`}
+      ${hasLive && html`<${Metric} label="↑ Out" value=${fmtRate(s.total_live_outbound_rate_bps)} />`}
+      ${hasLive && html`<${Metric} label="↓ In" value=${fmtRate(s.total_live_inbound_rate_bps)} />`}
     </div>
-    ${hasLive && html`<div class="stat-secondary" style="margin-top:0.2rem">
-      <${StatCard} label="Live Sessions" value=${s.total_live_sessions} sparkData=${sparkFor('live_sessions')} sparkColor="var(--accent)" />
-      <${StatCard} label="Live Tokens" value=${fmtK(s.total_live_estimated_tokens)} sparkData=${sparkFor('live_tokens')} sparkColor="var(--green)" />
-      <${StatCard} label="↑ Outbound" value=${fmtRate(s.total_live_outbound_rate_bps)} sparkData=${sparkFor('live_out_rate')} sparkColor="var(--orange)" smooth />
-      <${StatCard} label="↓ Inbound" value=${fmtRate(s.total_live_inbound_rate_bps)} sparkData=${sparkFor('live_in_rate')} sparkColor="var(--yellow)" smooth />
-    </div>`}`;
+  </Fragment>`;
 }
 
 // ─── ResourceBar Component ─────────────────────────────────────
