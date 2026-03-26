@@ -9,12 +9,11 @@ Reads:
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
-from . import ImportResult, ImportedScope, ImportedCapability, ImportedMcp
-from ._parse_helpers import split_yaml_frontmatter, glob_to_rel_path, extract_profile_name, strip_profile_header
+from . import ImportResult, ImportedScope, ImportedCapability
+from ._parse_helpers import split_yaml_frontmatter, glob_to_rel_path, extract_profile_name, strip_profile_header, import_mcp_from_json
 
 NAME = "cursor"
 
@@ -64,14 +63,7 @@ def import_from(root: Path) -> ImportResult | None:
                 scopes.append(ImportedScope(rel, NAME, body))
 
     # --- MCP: .cursor/mcp.json ---
-    mcp_file = root / ".cursor" / "mcp.json"
-    if mcp_file.is_file():
-        try:
-            data = json.loads(mcp_file.read_text("utf-8"))
-            for name, config in data.get("mcpServers", {}).items():
-                mcp_servers.append(ImportedMcp(name, config, NAME))
-        except (json.JSONDecodeError, KeyError):
-            pass
+    mcp_servers = import_mcp_from_json(root / ".cursor" / "mcp.json", NAME)
 
     if not scopes and not mcp_servers:
         return None

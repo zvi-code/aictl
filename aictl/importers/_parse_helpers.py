@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 
 import yaml
 
@@ -69,3 +71,42 @@ def extract_profile_name(text: str) -> str | None:
 def strip_profile_header(text: str) -> str:
     """Remove the '# Active Profile: <name>' header line from text."""
     return _PROFILE_RE.sub("", text).strip()
+
+
+def safe_json_load(path: Path) -> dict | None:
+    """Read a JSON file, returning None on missing/malformed."""
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text("utf-8"))
+    except (json.JSONDecodeError, OSError, KeyError):
+        return None
+
+
+def import_mcp_from_json(
+    path: Path,
+    source: str,
+    server_key: str = "mcpServers",
+    seen: set[str] | None = None,
+) -> list:
+    """Read MCP servers from a JSON config file.
+
+    Handles both 'mcpServers' (Copilot/Claude) and 'servers' (VS Code) keys.
+    Returns list of ImportedMcp. Deduplicates by name via `seen` set.
+    """
+    from . import ImportedMcp
+
+    data = safe_json_load(path)
+    if not data:
+        return []
+    servers = data.get(server_key, data.get("mcpServers", data.get("servers", {})))
+    if not isinstance(servers, dict):
+        return []
+    if seen is None:
+        seen = set()
+    results = []
+    for name, config in servers.items():
+        if name not in seen:
+            results.append(ImportedMcp(name, config, source))
+            seen.add(name)
+    return results

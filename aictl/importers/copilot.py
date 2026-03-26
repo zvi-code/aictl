@@ -15,11 +15,13 @@ Reads:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-from . import ImportResult, ImportedScope, ImportedCapability, ImportedMcp, ImportedHook, ImportedLsp
-from ._parse_helpers import strip_markers, split_yaml_frontmatter, glob_to_rel_path, extract_profile_name, strip_profile_header
+from . import ImportResult, ImportedScope, ImportedCapability, ImportedHook, ImportedLsp
+from ._parse_helpers import (
+    strip_markers, split_yaml_frontmatter, glob_to_rel_path,
+    extract_profile_name, strip_profile_header, safe_json_load, import_mcp_from_json,
+)
 
 NAME = "copilot"
 
@@ -93,46 +95,26 @@ def import_from(root: Path) -> ImportResult | None:
             if content:
                 capabilities.append(ImportedCapability("command", name, content, NAME))
 
-    # --- MCP: .copilot-mcp.json + .vscode/mcp.json ---
+    # --- MCP: .copilot-mcp.json + .vscode/mcp.json (deduplicated) ---
     seen_mcp: set[str] = set()
-    for mcp_file, key in [
-        (root / ".copilot-mcp.json", "mcpServers"),
-        (root / ".vscode" / "mcp.json", "servers"),  # VS Code uses "servers" key
-    ]:
-        if mcp_file.is_file():
-            try:
-                data = json.loads(mcp_file.read_text("utf-8"))
-                # Handle both "servers" and "mcpServers" for robustness
-                servers = data.get(key, data.get("mcpServers", data.get("servers", {})))
-                for name, config in servers.items():
-                    if name not in seen_mcp:
-                        mcp_servers.append(ImportedMcp(name, config, NAME))
-                        seen_mcp.add(name)
-            except (json.JSONDecodeError, KeyError):
-                pass
+    mcp_servers.extend(import_mcp_from_json(root / ".copilot-mcp.json", NAME, seen=seen_mcp))
+    mcp_servers.extend(import_mcp_from_json(root / ".vscode" / "mcp.json", NAME, server_key="servers", seen=seen_mcp))
 
     # --- Hooks: .github/hooks/*.json ---
     hooks_dir = gh / "hooks"
     if hooks_dir.is_dir():
         for f in sorted(hooks_dir.glob("*.json")):
-            try:
-                data = json.loads(f.read_text("utf-8"))
-                hook_data = data.get("hooks", {})
-                for event, rules in hook_data.items():
+            data = safe_json_load(f)
+            if data:
+                for event, rules in data.get("hooks", {}).items():
                     if isinstance(rules, list) and rules:
                         hooks.append(ImportedHook(event, rules, NAME))
-            except (json.JSONDecodeError, KeyError):
-                pass
 
     # --- LSP: .github/lsp.json ---
-    lsp_file = gh / "lsp.json"
-    if lsp_file.is_file():
-        try:
-            data = json.loads(lsp_file.read_text("utf-8"))
-            for name, config in data.get("lspServers", {}).items():
-                lsp_servers.append(ImportedLsp(name, config, NAME))
-        except (json.JSONDecodeError, KeyError):
-            pass
+    lsp_data = safe_json_load(gh / "lsp.json")
+    if lsp_data:
+        for name, config in lsp_data.get("lspServers", {}).items():
+            lsp_servers.append(ImportedLsp(name, config, NAME))
 
     if not scopes and not capabilities and not mcp_servers and not hooks and not lsp_servers:
         return None

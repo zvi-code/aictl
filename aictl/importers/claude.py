@@ -11,11 +11,13 @@ Reads:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-from . import ImportResult, ImportedScope, ImportedCapability, ImportedMcp, ImportedHook, ImportedLsp
-from ._parse_helpers import strip_markers, split_yaml_frontmatter, glob_to_rel_path, extract_profile_name, strip_profile_header
+from . import ImportResult, ImportedScope, ImportedCapability, ImportedHook, ImportedLsp
+from ._parse_helpers import (
+    strip_markers, split_yaml_frontmatter, glob_to_rel_path,
+    extract_profile_name, strip_profile_header, safe_json_load, import_mcp_from_json,
+)
 
 NAME = "claude"
 
@@ -78,36 +80,21 @@ def import_from(root: Path) -> ImportResult | None:
                     capabilities.append(ImportedCapability("skill", skill_dir.name, content, NAME))
 
     # --- MCP: .mcp.json ---
-    mcp_file = root / ".mcp.json"
-    if mcp_file.is_file():
-        try:
-            data = json.loads(mcp_file.read_text("utf-8"))
-            for name, config in data.get("mcpServers", {}).items():
-                mcp_servers.append(ImportedMcp(name, config, NAME))
-        except (json.JSONDecodeError, KeyError):
-            pass
+    mcp_servers = import_mcp_from_json(root / ".mcp.json", NAME)
 
     # --- Hooks: .claude/settings.json and .claude/settings.local.json ---
     for settings_name in ("settings.json", "settings.local.json"):
-        settings_file = root / ".claude" / settings_name
-        if settings_file.is_file():
-            try:
-                data = json.loads(settings_file.read_text("utf-8"))
-                for event, rules in data.get("hooks", {}).items():
-                    if isinstance(rules, list):
-                        hooks.append(ImportedHook(event, rules, NAME))
-            except (json.JSONDecodeError, KeyError):
-                pass
+        data = safe_json_load(root / ".claude" / settings_name)
+        if data:
+            for event, rules in data.get("hooks", {}).items():
+                if isinstance(rules, list):
+                    hooks.append(ImportedHook(event, rules, NAME))
 
     # --- LSP: .lsp.json ---
-    lsp_file = root / ".lsp.json"
-    if lsp_file.is_file():
-        try:
-            data = json.loads(lsp_file.read_text("utf-8"))
-            for name, config in data.items():
-                lsp_servers.append(ImportedLsp(name, config, NAME))
-        except (json.JSONDecodeError, KeyError):
-            pass
+    lsp_data = safe_json_load(root / ".lsp.json")
+    if lsp_data:
+        for name, config in lsp_data.items():
+            lsp_servers.append(ImportedLsp(name, config, NAME))
 
     if not scopes and not capabilities and not mcp_servers and not hooks and not lsp_servers:
         return None
