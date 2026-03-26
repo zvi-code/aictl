@@ -34,9 +34,11 @@ class _SnapshotStore:
         self._version: int = 0
         self._lock = threading.Lock()
         self._condition = threading.Condition(self._lock)
-        # Ring buffer for time-series sparklines. Appended on each update()
-        # call (tied to scan interval). At ~5.86s/tick, 360 entries ≈ 35 min.
+        # Ring buffer for global time-series sparklines.
+        # At ~5.86s/tick, 360 entries ≈ 35 min.
         self._history: collections.deque[tuple] = collections.deque(maxlen=360)
+        # Per-tool history: {tool_name: deque[(ts, cpu, mem_mb, tokens, traffic_bps)]}
+        self._tool_history: dict[str, collections.deque] = {}
 
     def update(self, snap: DashboardSnapshot) -> None:
         with self._condition:
@@ -53,6 +55,24 @@ class _SnapshotStore:
             if self._history and len(self._history[0]) != len(row):
                 self._history.clear()
             self._history.append(row)
+
+            # Per-tool history
+            ts = snap.timestamp
+            for t in snap.tools:
+                if t.tool == "aictl":
+                    continue
+                cpu = sum(float(p.cpu_pct) for p in t.processes
+                          if hasattr(p, 'cpu_pct') and str(p.cpu_pct).replace('.', '', 1).isdigit())
+                mem = sum(float(p.mem_mb) for p in t.processes
+                          if hasattr(p, 'mem_mb') and str(p.mem_mb).replace('.', '', 1).isdigit())
+                tok = sum(f.tokens for f in t.files)
+                traffic = 0.0
+                if t.live:
+                    traffic = float(t.live.get("outbound_rate_bps", 0)) + float(t.live.get("inbound_rate_bps", 0))
+                if t.tool not in self._tool_history:
+                    self._tool_history[t.tool] = collections.deque(maxlen=120)  # ~12 min
+                self._tool_history[t.tool].append((ts, cpu, mem, tok, traffic))
+
             self._condition.notify_all()
 
     def wait_for_update(self, known_version: int,
@@ -84,6 +104,21 @@ class _SnapshotStore:
                                "live_tokens": [], "live_in_rate": [], "live_out_rate": []})
         # Transpose rows → columns
         ts, files, tokens, cpu, mem_mb, mcp, mem_tokens, live_sessions, live_tokens, live_in_rate, live_out_rate = zip(*rows)
+        # Per-tool history
+        tool_hist: dict[str, dict] = {}
+        for tool_name, dq in self._tool_history.items():
+            if not dq:
+                continue
+            t_rows = list(dq)
+            t_ts, t_cpu, t_mem, t_tok, t_traffic = zip(*t_rows)
+            tool_hist[tool_name] = {
+                "ts": list(t_ts),
+                "cpu": [round(v, 1) for v in t_cpu],
+                "mem_mb": [round(v, 1) for v in t_mem],
+                "tokens": list(t_tok),
+                "traffic": [round(v, 2) for v in t_traffic],
+            }
+
         return json.dumps({
             "ts": list(ts), "files": list(files), "tokens": list(tokens),
             "cpu": [round(v, 1) for v in cpu],
@@ -93,6 +128,7 @@ class _SnapshotStore:
             "live_tokens": list(live_tokens),
             "live_in_rate": [round(v, 2) for v in live_in_rate],
             "live_out_rate": [round(v, 2) for v in live_out_rate],
+            "by_tool": tool_hist,
         })
 
 
@@ -1176,8 +1212,9 @@ function LiveSection({live}) {
 // ─── ToolCard Component ────────────────────────────────────────
 function ToolCard({tool: t, root}) {
   const [isOpen, setOpen] = useState(false);
-  const {snap: snapCtx} = useContext(SnapContext);
+  const {snap: snapCtx, history: hist} = useContext(SnapContext);
   const toolConfig = useMemo(()=>(snapCtx?.tool_configs||[]).find(c=>c.tool===t.tool),[snapCtx,t.tool]);
+  const toolHist = useMemo(()=>hist?.by_tool?.[t.tool],[hist, t.tool]);
   const c = COLORS[t.tool]||'#94a3b8';
   const icon = ICONS[t.tool]||'\u{1F539}';
   const tok = t.files.reduce((a,f)=>a+f.tokens,0);
@@ -1212,6 +1249,20 @@ function ToolCard({tool: t, root}) {
       <div style="width:100%;display:flex;flex-wrap:wrap;gap:0.15rem;margin-top:0.1rem">
         ${cats.map(({kind,files:cf})=>html`<span style="font-size:0.6rem;color:var(--fg2)">${kind}:${cf.length}</span>`)}
       </div>
+      ${toolHist && toolHist.ts.length>2 && html`<div style="width:100%;display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.3rem;margin-top:0.2rem" onClick=${e=>e.stopPropagation()}>
+        <div style="position:relative">
+          <span style="position:absolute;top:0;left:0;font-size:0.55rem;color:var(--fg2);z-index:1">CPU</span>
+          <${Sparkline} data=${[toolHist.ts,toolHist.cpu]} color=${c} smooth=${true}/>
+        </div>
+        <div style="position:relative">
+          <span style="position:absolute;top:0;left:0;font-size:0.55rem;color:var(--fg2);z-index:1">MEM</span>
+          <${Sparkline} data=${[toolHist.ts,toolHist.mem_mb]} color=${'var(--green)'}/>
+        </div>
+        <div style="position:relative">
+          <span style="position:absolute;top:0;left:0;font-size:0.55rem;color:var(--fg2);z-index:1">${t.live?'Traffic':'Tokens'}</span>
+          <${Sparkline} data=${[toolHist.ts, t.live ? toolHist.traffic : toolHist.tokens]} color=${'var(--orange)'}/>
+        </div>
+      </div>`}
     </button>
     ${isOpen && html`<div class="tcard-body">
       <${ConfigSection} config=${toolConfig}/>
@@ -1243,8 +1294,22 @@ function TabOverview() {
   },[s]);
   if(!s) return html`<p style="color:var(--fg2)">Loading...</p>`;
   if(!tools.length) return html`<p style="color:var(--fg2)">No AI tool resources found.</p>`;
-  return html`<div class="tool-grid">
-    ${tools.map(t=>html`<${ToolCard} key=${t.tool} tool=${t} root=${s.root}/>`)}
+  // Inline AI Context (merged from separate tab)
+  const memGroups = useMemo(()=>{
+    if(!s?.agent_memory?.length) return [];
+    const g={};
+    s.agent_memory.forEach(m=>{(g[m.source]=g[m.source]||[]).push(m);});
+    return Object.entries(g);
+  },[s?.agent_memory]);
+  return html`<div>
+    <div class="tool-grid">
+      ${tools.map(t=>html`<${ToolCard} key=${t.tool} tool=${t} root=${s.root}/>`)}
+    </div>
+    ${memGroups.length>0 && html`<div style="margin-top:1rem">
+      <h3 style="color:var(--accent);margin-bottom:0.4rem;font-size:0.9rem">AI Context & Memory</h3>
+      ${memGroups.map(([src,entries])=>
+        html`<${MemSourceGroup} key=${src} source=${src} entries=${entries}/>`)}
+    </div>`}
   </div>`;
 }
 
@@ -1680,11 +1745,11 @@ function App() {
         setSnap(data);
         setConnected(true);
         retryDelay = 1000;
-        // Append to history client-side
+        // Append to history client-side (global + per-tool)
         setHistory(prev => {
           if(!prev) return prev;
           const h = {...prev};
-          Object.keys(h).forEach(k=>{ h[k] = [...h[k]]; });
+          Object.keys(h).forEach(k=>{ if(k!=='by_tool') h[k] = [...h[k]]; });
           h.ts.push(data.timestamp);
           h.files.push(data.total_files);
           h.tokens.push(data.total_tokens);
@@ -1696,8 +1761,24 @@ function App() {
           h.live_tokens.push(data.total_live_estimated_tokens);
           h.live_in_rate.push(Math.round((data.total_live_inbound_rate_bps||0)*100)/100);
           h.live_out_rate.push(Math.round((data.total_live_outbound_rate_bps||0)*100)/100);
+          // Per-tool history append
+          const bt = {...(h.by_tool||{})};
+          (data.tools||[]).forEach(t=>{
+            if(t.tool==='aictl') return;
+            const cpu = (t.processes||[]).reduce((a,p)=>a+(parseFloat(p.cpu_pct)||0),0);
+            const mem = (t.processes||[]).reduce((a,p)=>a+(parseFloat(p.mem_mb)||0),0);
+            const tok = (t.files||[]).reduce((a,f)=>a+f.tokens,0);
+            const tr = (t.live?.outbound_rate_bps||0)+(t.live?.inbound_rate_bps||0);
+            if(!bt[t.tool]) bt[t.tool] = {ts:[],cpu:[],mem_mb:[],tokens:[],traffic:[]};
+            const th = bt[t.tool];
+            th.ts=[...th.ts,data.timestamp]; th.cpu=[...th.cpu,Math.round(cpu*10)/10];
+            th.mem_mb=[...th.mem_mb,Math.round(mem*10)/10]; th.tokens=[...th.tokens,tok];
+            th.traffic=[...th.traffic,Math.round(tr*100)/100];
+            if(th.ts.length>120){Object.keys(th).forEach(k=>th[k]=th[k].slice(-120));}
+          });
+          h.by_tool = bt;
           // Keep max 360 points
-          if(h.ts.length>360) Object.keys(h).forEach(k=>h[k].shift());
+          if(h.ts.length>360) Object.keys(h).forEach(k=>{if(k!=='by_tool')h[k].shift();});
           return h;
         });
       };
