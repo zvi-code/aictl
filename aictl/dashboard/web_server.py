@@ -648,6 +648,15 @@ td { padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }
 .mem-group-head .carrow { font-size: 0.6rem; transition: transform 0.15s; }
 .mem-group-head.open .carrow { transform: rotate(90deg); }
 .mem-group-head:hover { background: var(--bg3); }
+.mem-profile-head { cursor: pointer; padding: 0.25rem 0; font-size: 0.8rem; color: var(--fg2);
+  display: grid; grid-template-columns: 0.7rem 1fr auto auto; align-items: center; gap: 0.3rem;
+  user-select: none; background: none; border: none; width: 100%; text-align: left; font: inherit;
+  overflow: hidden; }
+.mem-profile-head:hover { color: var(--fg); }
+.mem-profile-head .carrow { font-size: 0.6rem; transition: transform 0.15s; }
+.mem-profile-head.open .carrow { transform: rotate(90deg); }
+.mem-profile-head .cat-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.mem-profile-head .badge { min-width: 40px; text-align: center; }
 
 /* Accessibility */
 button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -991,10 +1000,16 @@ function CatGroup({label, files, root, badge, style, startOpen}) {
 }
 function DirGroup({dir, files}) {
   const [isOpen, setOpen] = useState(false);
+  const dirTok = files.reduce((a,f)=>a+f.tokens,0);
+  const dirSz = files.reduce((a,f)=>a+f.size,0);
   return html`<div class="cat-group" style="margin-left:0.5rem">
-    <button class=${'cat-head'+(isOpen?' open':'')} onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}>
+    <button class=${isOpen?'mem-profile-head open':'mem-profile-head'} onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}
+      style="grid-template-columns: 0.7rem 1fr auto auto auto">
       <span class="carrow">\u25B6</span>
-      <span style="color:var(--fg2)">${esc(dir)}</span> <span class="badge">${files.length}</span>
+      <span class="cat-label" style="color:var(--fg2)" title=${dir}>${esc(dir)}</span>
+      <span class="badge">${files.length}</span>
+      <span class="badge">${fmtSz(dirSz)}</span>
+      <span class="badge">${fmtK(dirTok)}t</span>
     </button>
     ${isOpen && html`<div style="padding-left:0.8rem">${files.map(f=>html`<${FileItem} key=${f.path} file=${f}/>`)}</div>`}
   </div>`;
@@ -1430,9 +1445,9 @@ function MemProfileGroup({profile, items}) {
   const [isOpen, setOpen] = useState(items.length<=5);
   const profTok = items.reduce((a,m)=>a+m.tokens,0);
   return html`<div class="cat-group" style="margin:0 0.5rem">
-    <button class=${'cat-head'+(isOpen?' open':'')} onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}>
+    <button class=${isOpen?'mem-profile-head open':'mem-profile-head'} onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}>
       <span class="carrow">\u25B6</span>
-      <span style="color:var(--orange);font-weight:600">${esc(profile)}</span>
+      <span class="cat-label" style="color:var(--orange);font-weight:600" title=${profile}>${esc(profile)}</span>
       <span class="badge">${items.length} files</span>
       <span class="badge">${fmtK(profTok)} tok</span>
     </button>
