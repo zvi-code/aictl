@@ -108,6 +108,16 @@ def vscode_extensions_dir() -> Path:
     return Path.home() / ".vscode" / "extensions"
 
 
+def vscode_global_storage(extension_id: str) -> Path:
+    """VS Code globalStorage path for a specific extension."""
+    return vscode_user_dir().parent / "globalStorage" / extension_id
+
+
+def copilot_global_storage() -> Path:
+    """Copilot Chat globalStorage directory."""
+    return vscode_global_storage("github.copilot-chat")
+
+
 # ── Cursor ───────────────────────────────────────────────────────
 
 def cursor_user_dir() -> Path:
