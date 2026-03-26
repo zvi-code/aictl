@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from aictl.storage import EventRow, HistoryDB, MetricsRow, ToolMetricsRow
+from aictl.storage import EventRow, FileEntry, HistoryDB, MetricsRow, ToolMetricsRow
 
 
 @pytest.fixture()
@@ -210,3 +210,119 @@ class TestFileBased:
         db1.append_metrics(MetricsRow(ts=time.time(), files=1))
         db1.close()
         assert db_file.exists()
+
+
+# ── KV File Store ──────────────────────────────────────────────────
+
+class TestFileStore:
+    def test_upsert_new_file(self, db: HistoryDB):
+        changed = db.upsert_file(
+            path="/home/user/.claude/CLAUDE.md",
+            tool="claude-code", category="instructions",
+            content="# My instructions\nBe helpful.",
+        )
+        assert changed is True
+        entry = db.get_file("/home/user/.claude/CLAUDE.md")
+        assert entry is not None
+        assert entry.tool == "claude-code"
+        assert entry.category == "instructions"
+        assert entry.content == "# My instructions\nBe helpful."
+        assert entry.lines == 2
+        assert entry.tokens > 0
+        assert entry.content_hash != ""
+
+    def test_upsert_unchanged_content(self, db: HistoryDB):
+        content = "same content"
+        db.upsert_file(path="/a.md", tool="t", content=content)
+        changed = db.upsert_file(path="/a.md", tool="t", content=content)
+        assert changed is False
+
+    def test_upsert_changed_content(self, db: HistoryDB):
+        db.upsert_file(path="/a.md", tool="t", content="v1")
+        changed = db.upsert_file(path="/a.md", tool="t", content="v2")
+        assert changed is True
+
+    def test_metadata_only_update(self, db: HistoryDB):
+        db.upsert_file(path="/a.md", tool="t", content="hello")
+        db.upsert_file(path="/a.md", tool="t2", category="config")
+        entry = db.get_file("/a.md")
+        assert entry.tool == "t2"
+        assert entry.category == "config"
+        assert entry.content == "hello"  # content preserved
+
+    def test_list_files(self, db: HistoryDB):
+        db.upsert_file(path="/a.md", tool="claude-code", category="instructions", content="a")
+        db.upsert_file(path="/b.md", tool="copilot-cli", category="config", content="b")
+        db.upsert_file(path="/c.md", tool="claude-code", category="rules", content="c")
+
+        all_files = db.list_files()
+        assert len(all_files) == 3
+        # Content should be empty in list (efficiency)
+        assert all(f.content == "" for f in all_files)
+
+        claude_files = db.list_files(tool="claude-code")
+        assert len(claude_files) == 2
+
+        config_files = db.list_files(category="config")
+        assert len(config_files) == 1
+
+    def test_file_history(self, db: HistoryDB):
+        db.upsert_file(path="/a.md", tool="t", content="v1")
+        time.sleep(0.01)
+        db.upsert_file(path="/a.md", tool="t", content="v2")
+        time.sleep(0.01)
+        db.upsert_file(path="/a.md", tool="t", content="v3")
+
+        history = db.file_history("/a.md")
+        assert len(history) == 3
+        # Most recent first
+        assert history[0]["tokens"] > 0
+
+    def test_file_content_at(self, db: HistoryDB):
+        t1 = time.time()
+        db.upsert_file(path="/a.md", tool="t", content="version-1")
+        time.sleep(0.01)
+        t2 = time.time()
+        db.upsert_file(path="/a.md", tool="t", content="version-2")
+
+        # Query at t1 should get v1
+        content = db.file_content_at("/a.md", t1 + 0.001)
+        assert content == "version-1"
+
+        # Query at t2 should get v2
+        content = db.file_content_at("/a.md", t2 + 0.001)
+        assert content == "version-2"
+
+    def test_remove_file(self, db: HistoryDB):
+        db.upsert_file(path="/a.md", tool="t", content="x")
+        assert db.remove_file("/a.md") is True
+        assert db.get_file("/a.md") is None
+        assert db.remove_file("/nonexistent") is False
+
+    def test_sync_from_discovery(self, db: HistoryDB):
+        discovered = [
+            {"path": "/a.md", "tool": "claude-code", "category": "instructions",
+             "scope": "project", "mtime": 1000.0, "content": "hello"},
+            {"path": "/b.md", "tool": "copilot-cli", "category": "config",
+             "scope": "global", "mtime": 2000.0, "content": "world"},
+        ]
+        result = db.sync_files_from_discovery(discovered)
+        assert result["added"] == 2
+        assert result["unchanged"] == 0
+
+        # Sync again with same mtime → unchanged (lazy)
+        result = db.sync_files_from_discovery(discovered)
+        assert result["unchanged"] == 2
+        assert result["updated"] == 0
+
+        # Sync with one removed
+        result = db.sync_files_from_discovery([discovered[0]])
+        assert result["removed"] == 1
+
+    def test_stats_include_files(self, db: HistoryDB):
+        db.upsert_file(path="/a.md", tool="t", content="hello world")
+        s = db.stats()
+        assert s["file_store_count"] == 1
+        assert s["files_tracked"] == 1
+        assert s["files_total_bytes"] > 0
+        assert s["files_total_tokens"] > 0

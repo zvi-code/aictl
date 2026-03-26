@@ -12,6 +12,7 @@ Design goals:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -77,12 +78,44 @@ CREATE TABLE IF NOT EXISTS events (
     PRIMARY KEY (ts, tool, kind)
 );
 
+-- KV file store: tracked file contents with lazy updates
+CREATE TABLE IF NOT EXISTS file_store (
+    path        TEXT PRIMARY KEY,     -- absolute file path
+    tool        TEXT NOT NULL,        -- owning ai_tool
+    category    TEXT DEFAULT '',      -- instructions, config, rules, memory, etc.
+    scope       TEXT DEFAULT '',      -- global, project, user
+    content     TEXT DEFAULT '',      -- file text content
+    content_hash TEXT DEFAULT '',     -- sha256 hex of content (for cheap diff)
+    size_bytes  INTEGER DEFAULT 0,
+    tokens      INTEGER DEFAULT 0,    -- estimated token count (~4 chars/tok)
+    lines       INTEGER DEFAULT 0,
+    mtime       REAL DEFAULT 0,       -- file mtime at last read
+    first_seen  REAL DEFAULT 0,       -- when we first discovered it
+    last_read   REAL DEFAULT 0,       -- when we last read the content
+    last_changed REAL DEFAULT 0,      -- when content last changed (hash diff)
+    meta        TEXT DEFAULT '{}'     -- JSON blob for tool-specific metadata
+);
+
+-- File content history (snapshot of content at change points)
+CREATE TABLE IF NOT EXISTS file_history (
+    path        TEXT NOT NULL,
+    ts          REAL NOT NULL,        -- timestamp of the change
+    content     TEXT DEFAULT '',
+    content_hash TEXT DEFAULT '',
+    size_bytes  INTEGER DEFAULT 0,
+    tokens      INTEGER DEFAULT 0,
+    lines       INTEGER DEFAULT 0,
+    PRIMARY KEY (path, ts)
+);
+
 CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics(ts);
 CREATE INDEX IF NOT EXISTS idx_tool_metrics_ts ON tool_metrics(ts);
 CREATE INDEX IF NOT EXISTS idx_tool_metrics_tool ON tool_metrics(tool, ts);
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_events_tool ON events(tool, ts);
 CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind, ts);
+CREATE INDEX IF NOT EXISTS idx_file_store_tool ON file_store(tool);
+CREATE INDEX IF NOT EXISTS idx_file_history_path ON file_history(path, ts);
 """
 
 
@@ -123,6 +156,35 @@ class EventRow:
     tool: str
     kind: str
     detail: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class FileEntry:
+    """A tracked file in the KV store."""
+    path: str
+    tool: str
+    category: str = ""
+    scope: str = ""
+    content: str = ""
+    content_hash: str = ""
+    size_bytes: int = 0
+    tokens: int = 0
+    lines: int = 0
+    mtime: float = 0.0
+    first_seen: float = 0.0
+    last_read: float = 0.0
+    last_changed: float = 0.0
+    meta: dict[str, Any] = field(default_factory=dict)
+
+
+def _content_hash(content: str) -> str:
+    """SHA-256 hex digest of content string."""
+    return hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def _estimate_tokens(content: str) -> int:
+    """Rough token estimate: ~4 chars per token."""
+    return max(1, len(content) // 4) if content else 0
 
 
 # ─── HistoryDB ─────────────────────────────────────────────────────
@@ -424,6 +486,270 @@ class HistoryDB:
             for r in rows
         ]
 
+    # ── KV file store ────────────────────────────────────────────
+
+    def upsert_file(
+        self,
+        path: str,
+        tool: str,
+        category: str = "",
+        scope: str = "",
+        content: str | None = None,
+        mtime: float | None = None,
+        meta: dict[str, Any] | None = None,
+    ) -> bool:
+        """Insert or lazily update a tracked file.
+
+        Returns True if content actually changed (new or different hash).
+        Content is only re-read when *content* is explicitly provided.
+        If content is None, only metadata (tool, category, scope, mtime,
+        meta) is updated — content stays as-is.
+        """
+        conn = self._conn()
+        now = time.time()
+
+        # Check existing entry
+        cur = conn.execute(
+            "SELECT content_hash, first_seen FROM file_store WHERE path = ?",
+            (path,),
+        )
+        row = cur.fetchone()
+        existing_hash = row[0] if row else None
+        first_seen = row[1] if row else now
+
+        changed = False
+        if content is not None:
+            new_hash = _content_hash(content)
+            new_tokens = _estimate_tokens(content)
+            new_lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+            new_size = len(content.encode("utf-8", errors="replace"))
+            changed = existing_hash != new_hash
+
+            last_changed = now if changed else 0
+            if not changed and row:
+                # Keep existing last_changed
+                cur2 = conn.execute(
+                    "SELECT last_changed FROM file_store WHERE path = ?", (path,))
+                r2 = cur2.fetchone()
+                last_changed = r2[0] if r2 else now
+
+            conn.execute(
+                "INSERT OR REPLACE INTO file_store"
+                "(path, tool, category, scope, content, content_hash,"
+                " size_bytes, tokens, lines, mtime, first_seen, last_read,"
+                " last_changed, meta)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (path, tool, category, scope, content, new_hash,
+                 new_size, new_tokens, new_lines,
+                 mtime or 0, first_seen, now,
+                 last_changed if changed else (row[0] if row else now) and last_changed,
+                 json.dumps(meta or {})),
+            )
+
+            # Save history snapshot on change
+            if changed:
+                conn.execute(
+                    "INSERT OR REPLACE INTO file_history"
+                    "(path, ts, content, content_hash, size_bytes, tokens, lines)"
+                    " VALUES(?,?,?,?,?,?,?)",
+                    (path, now, content, new_hash, new_size, new_tokens, new_lines),
+                )
+        else:
+            # Metadata-only update (no content re-read)
+            meta_json = json.dumps(meta or {})
+            if row:
+                conn.execute(
+                    "UPDATE file_store SET tool=?, category=?, scope=?,"
+                    " mtime=?, meta=? WHERE path=?",
+                    (tool, category, scope, mtime or 0, meta_json, path),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO file_store"
+                    "(path, tool, category, scope, mtime, first_seen, meta)"
+                    " VALUES(?,?,?,?,?,?,?)",
+                    (path, tool, category, scope, mtime or 0, now, meta_json),
+                )
+
+        conn.commit()
+        return changed
+
+    def get_file(self, path: str) -> FileEntry | None:
+        """Get a tracked file by path, or None if not tracked."""
+        conn = self._conn()
+        cur = conn.execute(
+            "SELECT path, tool, category, scope, content, content_hash,"
+            " size_bytes, tokens, lines, mtime, first_seen, last_read,"
+            " last_changed, meta"
+            " FROM file_store WHERE path = ?",
+            (path,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return FileEntry(
+            path=row[0], tool=row[1], category=row[2], scope=row[3],
+            content=row[4] or "", content_hash=row[5] or "",
+            size_bytes=row[6], tokens=row[7], lines=row[8],
+            mtime=row[9], first_seen=row[10], last_read=row[11],
+            last_changed=row[12],
+            meta=json.loads(row[13]) if row[13] else {},
+        )
+
+    def list_files(
+        self,
+        tool: str | None = None,
+        category: str | None = None,
+        changed_since: float | None = None,
+    ) -> list[FileEntry]:
+        """List tracked files, optionally filtered.
+
+        Does NOT return content (for efficiency) — use get_file() for that.
+        """
+        conn = self._conn()
+        clauses: list[str] = []
+        params: list[Any] = []
+        if tool:
+            clauses.append("tool = ?")
+            params.append(tool)
+        if category:
+            clauses.append("category = ?")
+            params.append(category)
+        if changed_since is not None:
+            clauses.append("last_changed >= ?")
+            params.append(changed_since)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        cur = conn.execute(
+            "SELECT path, tool, category, scope, '', content_hash,"
+            " size_bytes, tokens, lines, mtime, first_seen, last_read,"
+            " last_changed, meta"
+            f" FROM file_store{where} ORDER BY tool, category, path",
+            params,
+        )
+        return [
+            FileEntry(
+                path=r[0], tool=r[1], category=r[2], scope=r[3],
+                content="",  # intentionally empty for list
+                content_hash=r[5] or "",
+                size_bytes=r[6], tokens=r[7], lines=r[8],
+                mtime=r[9], first_seen=r[10], last_read=r[11],
+                last_changed=r[12],
+                meta=json.loads(r[13]) if r[13] else {},
+            )
+            for r in cur.fetchall()
+        ]
+
+    def file_history(
+        self,
+        path: str,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return content change history for a file (most recent first)."""
+        conn = self._conn()
+        cur = conn.execute(
+            "SELECT ts, content_hash, size_bytes, tokens, lines"
+            " FROM file_history WHERE path = ? ORDER BY ts DESC LIMIT ?",
+            (path, limit),
+        )
+        return [
+            {"ts": r[0], "content_hash": r[1], "size_bytes": r[2],
+             "tokens": r[3], "lines": r[4]}
+            for r in cur.fetchall()
+        ]
+
+    def file_content_at(self, path: str, ts: float) -> str | None:
+        """Return file content at a specific historical timestamp."""
+        conn = self._conn()
+        cur = conn.execute(
+            "SELECT content FROM file_history"
+            " WHERE path = ? AND ts <= ? ORDER BY ts DESC LIMIT 1",
+            (path, ts),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+    def remove_file(self, path: str) -> bool:
+        """Remove a file from the store. Returns True if it existed."""
+        conn = self._conn()
+        cur = conn.execute("DELETE FROM file_store WHERE path = ?", (path,))
+        conn.commit()
+        return cur.rowcount > 0
+
+    def sync_files_from_discovery(
+        self,
+        discovered: list[dict[str, Any]],
+        read_content: bool = False,
+    ) -> dict[str, int]:
+        """Bulk sync from discovery results.
+
+        *discovered* is a list of dicts with keys: path, tool, category,
+        scope, mtime (and optionally content if read_content is True).
+
+        Lazy: only reads file content when mtime differs from stored mtime.
+
+        Returns {"added": N, "updated": N, "unchanged": N, "removed": N}.
+        """
+        conn = self._conn()
+        now = time.time()
+        stats = {"added": 0, "updated": 0, "unchanged": 0, "removed": 0}
+        seen_paths: set[str] = set()
+
+        for item in discovered:
+            path = item["path"]
+            seen_paths.add(path)
+            tool = item.get("tool", "")
+            category = item.get("category", "")
+            scope = item.get("scope", "")
+            mtime = item.get("mtime", 0)
+
+            # Check if we need to re-read content
+            cur = conn.execute(
+                "SELECT mtime, content_hash FROM file_store WHERE path = ?",
+                (path,),
+            )
+            existing = cur.fetchone()
+
+            if existing and abs(existing[0] - mtime) < 0.01:
+                # mtime unchanged — skip content read (lazy)
+                stats["unchanged"] += 1
+                continue
+
+            content = item.get("content")
+            if content is None and read_content:
+                try:
+                    content = Path(path).read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    content = None
+
+            if content is not None:
+                changed = self.upsert_file(
+                    path=path, tool=tool, category=category,
+                    scope=scope, content=content, mtime=mtime,
+                )
+                if existing:
+                    stats["updated" if changed else "unchanged"] += 1
+                else:
+                    stats["added"] += 1
+            else:
+                # Metadata-only update
+                self.upsert_file(
+                    path=path, tool=tool, category=category,
+                    scope=scope, mtime=mtime,
+                )
+                if existing:
+                    stats["unchanged"] += 1
+                else:
+                    stats["added"] += 1
+
+        # Remove files no longer in discovery
+        cur = conn.execute("SELECT path FROM file_store")
+        for (stored_path,) in cur.fetchall():
+            if stored_path not in seen_paths:
+                self.remove_file(stored_path)
+                stats["removed"] += 1
+
+        return stats
+
     # ── Stats ──────────────────────────────────────────────────────
 
     def stats(self) -> dict[str, Any]:
@@ -436,7 +762,8 @@ class HistoryDB:
         else:
             result["file_size_bytes"] = 0
         # Row counts
-        for table in ("metrics", "tool_metrics", "events"):
+        for table in ("metrics", "tool_metrics", "events",
+                       "file_store", "file_history"):
             cur = conn.execute(f"SELECT COUNT(*) FROM {table}")
             result[f"{table}_count"] = cur.fetchone()[0]
         # Time range
@@ -444,6 +771,13 @@ class HistoryDB:
         row = cur.fetchone()
         result["earliest_ts"] = row[0]
         result["latest_ts"] = row[1]
+        # File store totals
+        cur = conn.execute(
+            "SELECT COUNT(*), SUM(size_bytes), SUM(tokens) FROM file_store")
+        row = cur.fetchone()
+        result["files_tracked"] = row[0] or 0
+        result["files_total_bytes"] = row[1] or 0
+        result["files_total_tokens"] = row[2] or 0
         return result
 
     # ── Compaction ─────────────────────────────────────────────────
