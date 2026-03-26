@@ -486,7 +486,7 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 .kbd { font-size: 0.6rem; color: var(--fg2); padding: 0.1rem 0.3rem; border: 1px solid var(--border);
   border-radius: 2px; font-family: monospace; margin-left: 0.2rem; }
 
-/* Top bar — charts on top, metrics below */
+/* Charts row — top */
 .chart-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.4rem; margin-bottom: 0.4rem; }
 .chart-box { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
   padding: 0.3rem 0.5rem 0.1rem; overflow: hidden; min-height: 80px; position: relative; }
@@ -496,7 +496,11 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 .chart-wrap { height: 55px; position: relative; }
 .chart-ref-line { position: absolute; left: 0; right: 0; border-top: 1px dashed var(--fg2); opacity: 0.3; pointer-events: none; z-index: 1; }
 .chart-ref-label { position: absolute; right: 2px; font-size: 0.5rem; color: var(--fg2); opacity: 0.5; pointer-events: none; z-index: 1; }
-.metrics-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 0.3rem; margin-bottom: 0.6rem; }
+/* Metric groups — labeled rows */
+.metric-group { margin-bottom: 0.4rem; }
+.metric-group-label { font-size: 0.6rem; color: var(--fg2); text-transform: uppercase; letter-spacing: 0.06em;
+  margin-bottom: 0.2rem; padding-left: 0.2rem; opacity: 0.7; }
+.metrics-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 0.3rem; }
 .metric { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
   padding: 0.3rem 0.5rem; text-align: center; }
 .metric .label { color: var(--fg2); font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.05em; }
@@ -834,7 +838,7 @@ function Metric({label, value, accent}) {
   </div>`;
 }
 
-// ─── StatBar: charts on top, metrics below ────────────────────
+// ─── StatBar: charts on top, inventory + live below ───────────
 function StatBar({snap: s, history: hist}) {
   const sparkFor = (key) => {
     if(!hist || !hist.ts || hist.ts.length<2) return null;
@@ -846,8 +850,7 @@ function StatBar({snap: s, history: hist}) {
   // CPU reference lines: 100% per core
   const cpuRefs = [];
   if(cores >= 1) cpuRefs.push({value: 100, label: '1 core'});
-  if(cores >= 4) cpuRefs.push({value: 100*cores, label: cores+' cores'});
-  else if(cores >= 2) cpuRefs.push({value: 100*cores, label: cores+' cores'});
+  if(cores >= 2) cpuRefs.push({value: 100*cores, label: cores+' cores'});
   const hasLive = s.total_live_sessions > 0;
   return html`<Fragment>
     <div class="chart-row">
@@ -857,16 +860,24 @@ function StatBar({snap: s, history: hist}) {
         refLines=${cpuRefs} yMax=${100*cores} />
       <${ChartCard} label="Proc RAM" value=${fmtSz(s.total_mem_mb*1048576)} data=${sparkFor('mem_mb')} chartColor="var(--yellow)" smooth />
     </div>
-    <div class="metrics-row">
-      <${Metric} label="Processes" value=${s.total_processes} />
-      <${Metric} label="Disk Size" value=${fmtSz(s.total_size)} />
-      <${Metric} label="MCP" value=${s.total_mcp_servers} />
-      <${Metric} label="AI Context" value=${fmtK(s.total_memory_tokens)+'t'} />
-      <${Metric} label="Sessions" value=${s.total_live_sessions} />
-      ${hasLive && html`<${Metric} label="Live Tokens" value=${fmtK(s.total_live_estimated_tokens)} />`}
-      ${hasLive && html`<${Metric} label="↑ Out" value=${fmtRate(s.total_live_outbound_rate_bps)} />`}
-      ${hasLive && html`<${Metric} label="↓ In" value=${fmtRate(s.total_live_inbound_rate_bps)} />`}
+    <div class="metric-group">
+      <div class="metric-group-label">Inventory</div>
+      <div class="metrics-row">
+        <${Metric} label="Processes" value=${s.total_processes} />
+        <${Metric} label="Disk Size" value=${fmtSz(s.total_size)} />
+        <${Metric} label="MCP Servers" value=${s.total_mcp_servers} />
+        <${Metric} label="AI Context" value=${fmtK(s.total_memory_tokens)+'t'} />
+      </div>
     </div>
+    ${hasLive && html`<div class="metric-group">
+      <div class="metric-group-label">Live Monitor</div>
+      <div class="metrics-row">
+        <${Metric} label="Sessions" value=${s.total_live_sessions} accent />
+        <${Metric} label="Est. Tokens" value=${fmtK(s.total_live_estimated_tokens)} />
+        <${Metric} label="↑ Outbound" value=${fmtRate(s.total_live_outbound_rate_bps)} />
+        <${Metric} label="↓ Inbound" value=${fmtRate(s.total_live_inbound_rate_bps)} />
+      </div>
+    </div>`}
   </Fragment>`;
 }
 
