@@ -1323,15 +1323,15 @@ function ToolCard({tool: t, root}) {
       ${toolHist && toolHist.ts.length>2 && html`<div style="width:100%;display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.3rem;margin-top:0.2rem" onClick=${e=>e.stopPropagation()}>
         <div style="position:relative">
           <span style="position:absolute;top:0;left:0;font-size:0.55rem;color:var(--fg2);z-index:1">CPU</span>
-          <${Sparkline} data=${[toolHist.ts,toolHist.cpu]} color=${c} smooth=${true}/>
+          <${MiniChart} data=${[toolHist.ts,toolHist.cpu]} color=${c} smooth=${true} height=${30}/>
         </div>
         <div style="position:relative">
           <span style="position:absolute;top:0;left:0;font-size:0.55rem;color:var(--fg2);z-index:1">MEM</span>
-          <${Sparkline} data=${[toolHist.ts,toolHist.mem_mb]} color=${'var(--green)'}/>
+          <${MiniChart} data=${[toolHist.ts,toolHist.mem_mb]} color=${'var(--green)'} height=${30}/>
         </div>
         <div style="position:relative">
           <span style="position:absolute;top:0;left:0;font-size:0.55rem;color:var(--fg2);z-index:1">${t.live?'Traffic':'Tokens'}</span>
-          <${Sparkline} data=${[toolHist.ts, t.live ? toolHist.traffic : toolHist.tokens]} color=${'var(--orange)'}/>
+          <${MiniChart} data=${[toolHist.ts, t.live ? toolHist.traffic : toolHist.tokens]} color=${'var(--orange)'} height=${30}/>
         </div>
       </div>`}
     </button>
