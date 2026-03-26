@@ -1188,11 +1188,12 @@ function StatBar({snap: s, history: hist, historyRange, onRangeChange}) {
   };
   if(!s) return null;
   const cores = s.cpu_cores || 1;
-  const cpuLabel = s.total_cpu+'% of '+cores+' cores';
-  // CPU reference lines: 100% per core
+  const cpuLabel = s.total_cpu+'%';
+  // CPU reference lines: 100% per core thresholds
   const cpuRefs = [];
-  if(cores >= 1) cpuRefs.push({value: 100, label: '1 core'});
-  if(cores >= 2) cpuRefs.push({value: 100*cores, label: cores+' cores'});
+  if(cores >= 2) cpuRefs.push({value: 100, label: '1 core'});
+  if(cores >= 4) cpuRefs.push({value: 400, label: '4 cores'});
+  if(cores >= 8) cpuRefs.push({value: 100*cores, label: cores+' cores'});
   const hasLive = s.total_live_sessions > 0;
   return html`<Fragment>
     <div class="range-bar">
@@ -1866,6 +1867,19 @@ function ProcToolGroup({tool, label, procs, maxMem}) {
     </div>`}
   </div>`;
 }
+function CoreBars({perCore}) {
+  if(!perCore||!perCore.length) return null;
+  const maxVal = 100;
+  return html`<div style="display:flex;gap:2px;align-items:end;height:40px;margin-bottom:0.4rem">
+    ${perCore.map((pct,i)=>{
+      const h = Math.max(1, (pct/maxVal)*100);
+      const color = pct > 80 ? 'var(--red)' : pct > 50 ? 'var(--orange)' : pct > 20 ? 'var(--green)' : 'var(--fg2)';
+      return html`<div key=${i} title=${'Core '+i+': '+pct.toFixed(1)+'%'}
+        style=${'flex:1;min-width:3px;max-width:20px;background:'+color+';height:'+h+'%;border-radius:1px;opacity:0.8;transition:height 0.3s'}/>`;
+    })}
+  </div>`;
+}
+
 function TabProcesses() {
   const {snap: s} = useContext(SnapContext);
   if(!s) return null;
@@ -1874,8 +1888,21 @@ function TabProcesses() {
   if(!byTool.length) return html`<p style="color:var(--fg2)">No processes detected.</p>`;
   const allProcs = byTool.flatMap(g=>g.procs);
   const maxMem = Math.max(...allProcs.map(p=>parseFloat(p.mem_mb)||0),100);
-  return html`${byTool.map(({tool,label,procs})=>
-    html`<${ProcToolGroup} key=${tool} tool=${tool} label=${label} procs=${procs} maxMem=${maxMem}/>`)}`;
+  const perCore = s.cpu_per_core||[];
+  const totalCpu = s.total_cpu||0;
+  const cores = s.cpu_cores||1;
+  const activeCores = perCore.filter(p=>p>5).length;
+  return html`<div>
+    ${perCore.length>0 && html`<div style="margin-bottom:0.8rem">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:0.2rem">
+        <span class="es-section-title" style="margin:0">CPU per Core</span>
+        <span style="font-size:0.7rem;color:var(--fg2)">${totalCpu}% total · ${activeCores}/${cores} active</span>
+      </div>
+      <${CoreBars} perCore=${perCore}/>
+    </div>`}
+    ${byTool.map(({tool,label,procs})=>
+      html`<${ProcToolGroup} key=${tool} tool=${tool} label=${label} procs=${procs} maxMem=${maxMem}/>`)}
+  </div>`;
 }
 
 // ─── TabMcp ────────────────────────────────────────────────────

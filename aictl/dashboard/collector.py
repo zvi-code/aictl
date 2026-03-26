@@ -63,6 +63,7 @@ class DashboardSnapshot:
 
     # ── System info ────────────────────────────────────────────
     cpu_cores: int = 0
+    cpu_per_core: list[float] = field(default_factory=list)
 
     # ── Aggregate stats (computed once) ──────────────────────────
     total_files: int = 0
@@ -88,6 +89,11 @@ class DashboardSnapshot:
 
     def _compute_aggregates(self):
         self.cpu_cores = os.cpu_count() or 1
+        try:
+            import psutil
+            self.cpu_per_core = psutil.cpu_percent(interval=0, percpu=True)
+        except Exception:
+            self.cpu_per_core = []
         # Exclude aictl (.aictx) files from main stats — they have their own tab
         tool_list = [t for t in self.tools if t.tool != "aictl"]
         self.total_files = sum(len(t.files) for t in tool_list)
@@ -147,6 +153,7 @@ class DashboardSnapshot:
             "timestamp": self.timestamp,
             "root": self.root,
             "cpu_cores": self.cpu_cores,
+            "cpu_per_core": self.cpu_per_core,
             "total_files": self.total_files,
             "total_tokens": self.total_tokens,
             "total_size": self.total_size,
