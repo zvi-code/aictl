@@ -318,6 +318,7 @@ class _DashboardHandler(BaseHTTPRequestHandler):
         html = _DASHBOARD_HTML
         html = html.replace("%%TOOL_COLORS_JS%%", _make_js_colors())
         html = html.replace("%%TOOL_ICONS_JS%%", _make_js_icons())
+        html = html.replace("%%TAXONOMY_JS%%", _make_js_taxonomy())
         body = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -518,7 +519,13 @@ def run_server(
 
 # ─── Inline HTML dashboard ───────────────────────────────────────
 
-from ..registry import TOOL_COLORS as _REG_COLORS, TOOL_ICONS as _REG_ICONS
+from ..registry import (
+    TOOL_COLORS as _REG_COLORS,
+    TOOL_ICONS as _REG_ICONS,
+    VENDOR_LABELS as _REG_VENDOR_LABELS,
+    VENDOR_COLORS as _REG_VENDOR_COLORS,
+    HOST_LABELS as _REG_HOST_LABELS,
+)
 import json as _json
 
 def _make_js_colors() -> str:
@@ -528,6 +535,14 @@ def _make_js_colors() -> str:
 def _make_js_icons() -> str:
     """Generate the JavaScript ICONS const from the registry."""
     return f"const ICONS = {_json.dumps(_REG_ICONS)};"
+
+def _make_js_taxonomy() -> str:
+    """Generate vendor/host label and color constants."""
+    return (
+        f"const VENDOR_LABELS = {_json.dumps(_REG_VENDOR_LABELS)};\n"
+        f"const VENDOR_COLORS = {_json.dumps(_REG_VENDOR_COLORS)};\n"
+        f"const HOST_LABELS = {_json.dumps(_REG_HOST_LABELS)};"
+    )
 
 _DASHBOARD_HTML = r"""<!DOCTYPE html>
 <html lang="en" data-theme="auto">
@@ -787,6 +802,7 @@ const html = htm.bind(h);
 // ─── Constants (injected from registry.py at serve-time) ───────
 %%TOOL_COLORS_JS%%
 %%TOOL_ICONS_JS%%
+%%TAXONOMY_JS%%
 const SC = {running:'var(--green)',stopped:'var(--red)',error:'var(--orange)',unknown:'var(--fg2)'};
 const THEMES = ['auto','dark','light'];
 const THEME_ICONS = {auto:'\u263E',dark:'\u263E',light:'\u2600'};
@@ -1466,31 +1482,95 @@ function ToolCard({tool: t, root}) {
 }
 
 // ─── TabOverview ───────────────────────────────────────────────
+const GROUP_MODES = [
+  {id:'product', label:'Product'},
+  {id:'vendor', label:'Vendor'},
+  {id:'host', label:'Host'},
+];
+
+function ToolGroup({groupKey, groupLabel, groupColor, tools, root}) {
+  const [isOpen, setOpen] = useState(true);
+  const totalFiles = tools.reduce((a,t)=>a+t.files.length,0);
+  const totalTok = tools.reduce((a,t)=>a+t.files.reduce((b,f)=>b+f.tokens,0),0);
+  return html`<div style="margin-bottom:0.6rem">
+    <button onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}
+      style="display:flex;align-items:center;gap:0.4rem;background:none;border:none;cursor:pointer;padding:0.3rem 0;font:inherit;color:var(--fg);width:100%">
+      <span style="font-size:0.6rem;transition:transform 0.15s;${isOpen?'transform:rotate(90deg)':''}">\u25B6</span>
+      <span style="width:10px;height:10px;border-radius:50%;background:${groupColor};flex-shrink:0"></span>
+      <span style="font-weight:700;font-size:0.85rem">${groupLabel}</span>
+      <span class="badge">${tools.length} tools</span>
+      <span class="badge">${totalFiles} files</span>
+      <span class="badge">${fmtK(totalTok)} tok</span>
+    </button>
+    ${isOpen && html`<div class="tool-grid" style="margin-top:0.3rem">
+      ${tools.map(t=>html`<${ToolCard} key=${t.tool} tool=${t} root=${root}/>`)}
+    </div>`}
+  </div>`;
+}
+
 function TabOverview() {
   const {snap: s} = useContext(SnapContext);
+  const [groupBy, setGroupBy] = useState('product');
   const tools = useMemo(()=>{
     if(!s) return [];
     return s.tools.filter(t=>t.tool!=='aictl'&&t.tool!=='any'&&(t.files.length||t.processes.length||t.mcp_servers.length||t.live))
       .sort((a,b)=>{
-        // Sort by static metrics only — prevents jarring card reordering on live data changes
         const scoreA = (a.files.length*2) + a.processes.length + a.mcp_servers.length;
         const scoreB = (b.files.length*2) + b.processes.length + b.mcp_servers.length;
         return scoreB - scoreA || a.tool.localeCompare(b.tool);
       });
   },[s]);
+
+  const grouped = useMemo(()=>{
+    if(groupBy === 'product' || !tools.length) return null;
+    const groups = {};
+    tools.forEach(t=>{
+      let key, label, color;
+      if(groupBy === 'vendor') {
+        key = t.vendor || 'community';
+        label = VENDOR_LABELS[key] || key;
+        color = VENDOR_COLORS[key] || 'var(--fg2)';
+      } else {
+        // host — use first host
+        key = (t.host||'any').split(',')[0];
+        label = HOST_LABELS[key] || key;
+        color = 'var(--fg2)';
+      }
+      if(!groups[key]) groups[key] = {label, color, tools:[]};
+      groups[key].tools.push(t);
+    });
+    // Sort groups by total files descending
+    return Object.entries(groups).sort((a,b)=>{
+      const fa = a[1].tools.reduce((s,t)=>s+t.files.length,0);
+      const fb = b[1].tools.reduce((s,t)=>s+t.files.length,0);
+      return fb - fa;
+    });
+  },[tools, groupBy]);
+
   if(!s) return html`<p style="color:var(--fg2)">Loading...</p>`;
   if(!tools.length) return html`<p style="color:var(--fg2)">No AI tool resources found.</p>`;
-  // Inline AI Context (merged from separate tab)
+
+  // Inline AI Context
   const memGroups = useMemo(()=>{
     if(!s?.agent_memory?.length) return [];
     const g={};
     s.agent_memory.forEach(m=>{(g[m.source]=g[m.source]||[]).push(m);});
     return Object.entries(g);
   },[s?.agent_memory]);
+
   return html`<div>
-    <div class="tool-grid">
-      ${tools.map(t=>html`<${ToolCard} key=${t.tool} tool=${t} root=${s.root}/>`)}
+    <div class="range-bar" style="margin-bottom:0.5rem">
+      <span class="range-label">Group by:</span>
+      ${GROUP_MODES.map(m=>html`<button key=${m.id}
+        class=${groupBy===m.id?'range-btn active':'range-btn'}
+        onClick=${()=>setGroupBy(m.id)}>${m.label}</button>`)}
     </div>
+    ${grouped ? grouped.map(([key, g])=>html`<${ToolGroup} key=${key}
+      groupKey=${key} groupLabel=${g.label} groupColor=${g.color}
+      tools=${g.tools} root=${s.root}/>`)
+    : html`<div class="tool-grid">
+        ${tools.map(t=>html`<${ToolCard} key=${t.tool} tool=${t} root=${s.root}/>`)}
+      </div>`}
     ${memGroups.length>0 && html`<div style="margin-top:1rem">
       <h3 style="color:var(--accent);margin-bottom:0.4rem;font-size:0.9rem">AI Context & Memory</h3>
       ${memGroups.map(([src,entries])=>
