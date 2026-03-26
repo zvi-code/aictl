@@ -82,6 +82,7 @@ $HOME/.copilot/copilot-instructions.md,copilot-cli,all,yes,global,instructions,y
 {project-root}/.github/prompts/*.prompt.md,copilot,all,yes,project,commands,on-demand,100-1000,rw,n/a,n/a,on-invoke,,Reusable prompt templates,recursive,git-root
 {project-root}/.github/git-commit-instructions.md,copilot,all,yes,project,instructions,conditional,50-300,rw,yes,yes,on-commit,,Commit message guidance,recursive,git-root
 {project-root}/.github/hooks/*.json,copilot-cli,all,yes,project,hooks,no,0,read,n/a,n/a,on-hook-trigger,,Lifecycle hook configurations,recursive,git-root
+{project-root}/.github/lsp.json,copilot-cli,all,yes,project,config,no,0,rw,n/a,n/a,session-start,,Repository-level LSP server configuration (Copilot CLI code intelligence),recursive,git-root
 {project-root}/.github/copilot/settings.json,copilot-cli,all,yes,project,config,no,0,rw,n/a,n/a,session-start,,Repo-level Copilot settings,recursive,git-root
 {project-root}/.github/copilot/settings.local.json,copilot-cli,all,yes,project,config,no,0,rw,n/a,n/a,session-start,,Personal repo overrides (not committed),recursive,git-root
 {project-root}/.copilot/mcp-config.json,copilot-cli,all,yes,project,config,no,0,rw,n/a,n/a,session-start,,Project-level MCP servers,recursive,git-root

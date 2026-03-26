@@ -70,11 +70,19 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
             results.append({"path": str(fp), "tokens": estimate_tokens(cap.content)})
 
     if resolved.mcp_servers:
+        # Copilot CLI format: .copilot-mcp.json with "mcpServers" key
         fp = root / ".copilot-mcp.json"
         content = json.dumps({"mcpServers": resolved.mcp_servers}, indent=2) + "\n"
         if not dry_run:
             write_safe(fp, content)
         results.append({"path": str(fp), "tokens": estimate_tokens(content)})
+
+        # VS Code format: .vscode/mcp.json with "servers" key
+        vscode_fp = root / ".vscode" / "mcp.json"
+        vscode_content = json.dumps({"servers": resolved.mcp_servers}, indent=2) + "\n"
+        if not dry_run:
+            write_safe(vscode_fp, vscode_content)
+        results.append({"path": str(vscode_fp), "tokens": estimate_tokens(vscode_content)})
 
     return results
 
@@ -82,5 +90,5 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
 GITIGNORE = [
     ".github/copilot-instructions.md", ".github/instructions/",
     ".github/agents/", ".github/skills/", ".github/prompts/",
-    "AGENTS.md", ".copilot-mcp.json", ".ai-deployed/",
+    "AGENTS.md", ".copilot-mcp.json", ".vscode/mcp.json", ".ai-deployed/",
 ]
