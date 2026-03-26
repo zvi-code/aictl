@@ -1544,8 +1544,15 @@ function TabBudget() {
   if(error) return html`<p style="color:var(--red)">Failed to load budget.</p>`;
   if(!budget) return html`<p style="color:var(--fg2)">Loading...</p>`;
 
-  const contextWindow = 200000;
-  const pct = ((budget.total_potential_tokens||0)/contextWindow*100).toFixed(1);
+  // Detect context window from tool configs (model-aware)
+  const modelWindows = {'claude-opus-4-6':1000000,'claude-sonnet-4.6':1000000,'claude-sonnet-4':200000,'claude-haiku-4.5':200000,'gpt-5.4':200000,'gpt-5':128000};
+  const detectedModel = (s?.tool_configs||[]).map(c=>c.model).filter(Boolean)[0] || '';
+  const contextWindow = modelWindows[detectedModel] || 200000;
+  // Primary metric: always-loaded tokens (what actually fills the context window)
+  const alwaysLoaded = budget.always_loaded_tokens || 0;
+  const totalPotential = budget.total_potential_tokens || 0;
+  const pctAlways = (alwaysLoaded/contextWindow*100).toFixed(1);
+  const pctTotal = (totalPotential/contextWindow*100).toFixed(1);
 
   // Per-tool breakdown from snapshot
   const toolBreakdowns = useMemo(()=>{
@@ -1604,20 +1611,36 @@ function TabBudget() {
     </div>`}
 
     <div class="budget-card">
-      <h3 style="margin-bottom:0.5rem;color:var(--accent)">Context Window Usage</h3>
+      <h3 style="margin-bottom:0.5rem;color:var(--accent)">Context Window Usage${detectedModel ? html` <span class="badge">${detectedModel}</span>` : ''} <span class="badge">${fmtK(contextWindow)} window</span></h3>
+      <div style="margin-bottom:0.3rem;font-size:0.72rem;color:var(--fg2)">
+        Always loaded (sent every request): <strong style="color:var(--green)">${fmtK(alwaysLoaded)}</strong> ·
+        Total potential (all files): <strong>${fmtK(totalPotential)}</strong>
+      </div>
       <div style="margin-bottom:0.5rem">
         <div style="display:flex;justify-content:space-between;font-size:0.78rem;margin-bottom:0.2rem">
-          <span>~${fmtK(budget.total_potential_tokens)} of ${fmtK(contextWindow)} context window</span>
-          <span style="font-weight:700;color:${parseFloat(pct)>100?'var(--red)':'var(--accent)'}">${pct}%${parseFloat(pct)>100?' ⚠':''}${parseFloat(pct)>200?' OVER BUDGET':''}</span>
+          <span>Always-loaded: ~${fmtK(alwaysLoaded)} of ${fmtK(contextWindow)}</span>
+          <span style="font-weight:700;color:${parseFloat(pctAlways)>80?'var(--orange)':parseFloat(pctAlways)>50?'var(--yellow)':'var(--green)'}">${pctAlways}%</span>
         </div>
-        <div style="height:8px;border-radius:4px;background:var(--border);overflow:hidden;position:relative">
-          ${parseFloat(pct)>100
-            ? html`<div style="height:100%;width:100%;background:linear-gradient(90deg,var(--accent) ${(100/parseFloat(pct)*100).toFixed(0)}%,var(--red) 100%);border-radius:4px"></div>`
-            : html`<div style="height:100%;width:${pct}%;background:var(--accent);border-radius:4px"></div>`}
+        <div style="height:8px;border-radius:4px;background:var(--border);overflow:hidden">
+          <div style="height:100%;width:${Math.min(parseFloat(pctAlways),100)}%;background:var(--green);border-radius:4px"></div>
         </div>
-        ${parseFloat(pct)>100 && html`<div style="font-size:0.68rem;color:var(--red);margin-top:0.15rem">
-          Exceeds context window by ~${fmtK(budget.total_potential_tokens - contextWindow)} tokens (${(parseFloat(pct)-100).toFixed(0)}% over)
-        </div>`}
+        ${parseFloat(pctAlways)>80 ? html`<div style="font-size:0.68rem;color:var(--orange);margin-top:0.15rem">
+          Always-loaded context is ${pctAlways}% of window — on-demand files may not fit
+        </div>` : null}
+      </div>
+      <div style="margin-bottom:0.5rem">
+        <div style="display:flex;justify-content:space-between;font-size:0.78rem;margin-bottom:0.2rem">
+          <span>If all files loaded: ~${fmtK(totalPotential)} of ${fmtK(contextWindow)}</span>
+          <span style="font-weight:700;color:${parseFloat(pctTotal)>100?'var(--red)':'var(--fg2)'}">${pctTotal}%${parseFloat(pctTotal)>100?' ⚠':''}</span>
+        </div>
+        <div style="height:6px;border-radius:3px;background:var(--border);overflow:hidden">
+          ${parseFloat(pctTotal)>100
+            ? html`<div style="height:100%;width:100%;background:linear-gradient(90deg,var(--fg2) ${(100/parseFloat(pctTotal)*100).toFixed(0)}%,var(--red) 100%);border-radius:3px"></div>`
+            : html`<div style="height:100%;width:${pctTotal}%;background:var(--fg2);opacity:0.5;border-radius:3px"></div>`}
+        </div>
+        ${parseFloat(pctTotal)>100 ? html`<div style="font-size:0.68rem;color:var(--fg2);margin-top:0.1rem">
+          Worst case: all ${fmtK(totalPotential)} tokens loaded simultaneously would exceed window
+        </div>` : null}
       </div>
       ${rows.map(([l,v,color])=>html`<div class="brow">
         <span class="blabel">${color?html`<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:0.3rem"></span>`:''}${l}</span>
