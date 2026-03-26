@@ -506,17 +506,19 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 .cat-group { margin-top: 0.4rem; }
 .cat-head { cursor: pointer; padding: 0.25rem 0; font-size: 0.8rem; color: var(--fg2);
   display: flex; align-items: center; gap: 0.3rem; user-select: none;
-  background: none; border: none; width: 100%; text-align: left; font: inherit; }
+  background: none; border: none; width: 100%; text-align: left; font: inherit;
+  overflow: hidden; max-width: 100%; }
 .cat-head:hover { color: var(--fg); }
-.cat-head .carrow { font-size: 0.6rem; transition: transform 0.15s; }
+.cat-head .carrow { font-size: 0.6rem; transition: transform 0.15s; flex-shrink: 0; }
 .cat-head.open .carrow { transform: rotate(90deg); }
+.cat-head .cat-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
 
 /* File items */
 .fitem { padding: 0.15rem 0; font-size: 0.78rem; cursor: pointer; display: flex; gap: 0.4rem;
   background: none; border: none; width: 100%; text-align: left; color: inherit; font: inherit; }
 .fitem:hover { background: var(--bg3); border-radius: 3px; }
-.fpath { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fmeta { color: var(--fg2); white-space: nowrap; font-size: 0.72rem; }
+.fpath { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.fmeta { color: var(--fg2); white-space: nowrap; font-size: 0.72rem; min-width: 100px; text-align: right; flex-shrink: 0; }
 
 /* Inline file preview */
 .inline-preview {
@@ -799,8 +801,8 @@ function ResourceBar({snap: s}) {
         </span>`)}
       </div>
     </div>`}
-    ${liveTools.length>0 && html`<div class="rbar-block">
-      <div class="rbar-title">Live Traffic</div>
+    ${html`<div class="rbar-block">
+      <div class="rbar-title">Live Traffic${liveTools.length===0?' — no active traffic':''}</div>
       <div class="rbar">${liveTools.map(t=>{
         const weight=(t.live.outbound_rate_bps||0)+(t.live.inbound_rate_bps||0);
         return html`<div class="rbar-seg" style=${'width:'+(weight/liveTotal*100).toFixed(1)+'%;background:'+(COLORS[t.tool]||'#94a3b8')}
@@ -941,9 +943,9 @@ function CatGroup({label, files, root, badge, style, startOpen}) {
   return html`<div class="cat-group" style=${style||''}>
     <button class=${'cat-head'+(isOpen?' open':'')} onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}>
       <span class="carrow">\u25B6</span>
-      <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${s2lColor(dominantS2l)};margin-right:0.2rem" title="sent_to_llm: ${dominantS2l}"></span>
-      <span>${esc(label)}</span>
-      <span class="badge">${badge||files.length}</span>
+      <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${s2lColor(dominantS2l)};margin-right:0.2rem;flex-shrink:0" title="sent_to_llm: ${dominantS2l}"></span>
+      <span class="cat-label" title=${label}>${esc(label)}</span>
+      <span class="badge" style="flex-shrink:0">${badge||files.length}</span>
       <span class="badge">${fmtSz(totalSz)}</span>
       <span class="badge">${fmtK(totalTok)}t</span>
     </button>
@@ -1233,9 +1235,10 @@ function TabOverview() {
     if(!s) return [];
     return s.tools.filter(t=>t.tool!=='aictl'&&(t.files.length||t.processes.length||t.mcp_servers.length||t.live))
       .sort((a,b)=>{
-        const scoreA = (a.files.length*2) + a.processes.length + a.mcp_servers.length + (a.live?.session_count||0) + liveTokenTotal(a.live)/1000;
-        const scoreB = (b.files.length*2) + b.processes.length + b.mcp_servers.length + (b.live?.session_count||0) + liveTokenTotal(b.live)/1000;
-        return scoreB - scoreA;
+        // Sort by static metrics only — prevents jarring card reordering on live data changes
+        const scoreA = (a.files.length*2) + a.processes.length + a.mcp_servers.length;
+        const scoreB = (b.files.length*2) + b.processes.length + b.mcp_servers.length;
+        return scoreB - scoreA || a.tool.localeCompare(b.tool);
       });
   },[s]);
   if(!s) return html`<p style="color:var(--fg2)">Loading...</p>`;
@@ -1259,14 +1262,14 @@ function ProcToolGroup({tool, label, procs, maxMem}) {
   },[procs]);
   return html`<div class="cat-group" style="margin-bottom:0.5rem">
     <button class=${'cat-head'+(isOpen?' open':'')} onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}
-      style="padding:0.4rem 0.5rem;font-size:0.85rem">
+      style="padding:0.4rem 0.5rem;font-size:0.85rem;display:grid;grid-template-columns:0.8rem 0.5rem 1fr auto auto auto auto;align-items:center;gap:0.4rem">
       <span class="carrow">\u25B6</span>
       <span class="dot" style=${'background:'+c}></span>
-      <strong>${esc(label)}</strong>
+      <strong style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(label)}</strong>
       <span class="badge">${procs.length} proc</span>
-      <span class="badge">CPU ${totalCpu.toFixed(1)}%</span>
-      <span class="badge">MEM ${totalMem.toFixed(0)}MB</span>
-      ${anomCount>0 && html`<span class="badge warn">${anomCount} anomaly</span>`}
+      <span class="badge" style="min-width:65px;text-align:right">CPU ${totalCpu.toFixed(1)}%</span>
+      <span class="badge" style="min-width:75px;text-align:right">MEM ${totalMem.toFixed(0)}MB</span>
+      ${anomCount>0?html`<span class="badge warn">${anomCount} anomaly</span>`:html`<span></span>`}
     </button>
     ${isOpen && html`<div style="padding:0 0.3rem">
       ${Object.entries(byType).map(([type,typeProcs])=>{
@@ -1539,11 +1542,16 @@ function TabBudget() {
       <div style="margin-bottom:0.5rem">
         <div style="display:flex;justify-content:space-between;font-size:0.78rem;margin-bottom:0.2rem">
           <span>~${fmtK(budget.total_potential_tokens)} of ${fmtK(contextWindow)} context window</span>
-          <span style="font-weight:700;color:var(--accent)">${pct}%</span>
+          <span style="font-weight:700;color:${parseFloat(pct)>100?'var(--red)':'var(--accent)'}">${pct}%${parseFloat(pct)>100?' ⚠':''}${parseFloat(pct)>200?' OVER BUDGET':''}</span>
         </div>
-        <div style="height:8px;border-radius:4px;background:var(--border);overflow:hidden">
-          <div style="height:100%;width:${Math.min(parseFloat(pct),100)}%;background:var(--accent);border-radius:4px"></div>
+        <div style="height:8px;border-radius:4px;background:var(--border);overflow:hidden;position:relative">
+          ${parseFloat(pct)>100
+            ? html`<div style="height:100%;width:100%;background:linear-gradient(90deg,var(--accent) ${(100/parseFloat(pct)*100).toFixed(0)}%,var(--red) 100%);border-radius:4px"></div>`
+            : html`<div style="height:100%;width:${pct}%;background:var(--accent);border-radius:4px"></div>`}
         </div>
+        ${parseFloat(pct)>100 && html`<div style="font-size:0.68rem;color:var(--red);margin-top:0.15rem">
+          Exceeds context window by ~${fmtK(budget.total_potential_tokens - contextWindow)} tokens (${(parseFloat(pct)-100).toFixed(0)}% over)
+        </div>`}
       </div>
       ${rows.map(([l,v,color])=>html`<div class="brow">
         <span class="blabel">${color?html`<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:0.3rem"></span>`:''}${l}</span>
