@@ -541,13 +541,14 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 /* Category groups */
 .cat-group { margin-top: 0.4rem; }
 .cat-head { cursor: pointer; padding: 0.25rem 0; font-size: 0.8rem; color: var(--fg2);
-  display: flex; align-items: center; gap: 0.3rem; user-select: none;
-  background: none; border: none; width: 100%; text-align: left; font: inherit;
+  display: grid; grid-template-columns: 0.7rem 8px 1fr auto auto auto; align-items: center; gap: 0.3rem;
+  user-select: none; background: none; border: none; width: 100%; text-align: left; font: inherit;
   overflow: hidden; max-width: 100%; }
 .cat-head:hover { color: var(--fg); }
-.cat-head .carrow { font-size: 0.6rem; transition: transform 0.15s; flex-shrink: 0; }
+.cat-head .carrow { font-size: 0.6rem; transition: transform 0.15s; }
 .cat-head.open .carrow { transform: rotate(90deg); }
-.cat-head .cat-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.cat-head .cat-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.cat-head .badge { min-width: 40px; text-align: center; }
 
 /* File items */
 .fitem { padding: 0.15rem 0; font-size: 0.78rem; cursor: pointer; display: flex; gap: 0.4rem;
@@ -573,14 +574,14 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 /* Process rows */
 .proc-section { margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.4rem; }
 .proc-section h3 { font-size: 0.78rem; color: var(--fg2); margin-bottom: 0.3rem; }
-.prow { display: flex; align-items: center; gap: 0.5rem; padding: 0.2rem 0; font-size: 0.78rem; }
-.prow .pid { color: var(--green); min-width: 50px; }
-.prow .pname { min-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.prow .pcpu { min-width: 45px; text-align: right; }
-.mem-bar { width: 80px; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; position: relative; }
+.prow { display: grid; grid-template-columns: 50px 1fr 55px 90px 65px 20px; align-items: center; gap: 0.4rem; padding: 0.2rem 0; font-size: 0.78rem; }
+.prow .pid { color: var(--green); }
+.prow .pname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.prow .pcpu { text-align: right; }
+.mem-bar { height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; position: relative; }
 .mem-bar-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
-.prow .pmem { min-width: 55px; text-align: right; color: var(--fg2); font-size: 0.72rem; }
-.prow .anomaly-icon { color: var(--red); cursor: help; }
+.prow .pmem { text-align: right; color: var(--fg2); font-size: 0.72rem; }
+.prow .anomaly-icon { color: var(--red); cursor: help; text-align: center; }
 
 /* Live monitor sections */
 .live-section { margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.4rem; }
@@ -1011,7 +1012,7 @@ function ProcRow({proc: p, maxMem}) {
     <span class="pcpu" style=${'color:'+cpuColor}>${p.cpu_pct}%</span>
     <div class="mem-bar"><div class="mem-bar-fill" style=${'width:'+pct.toFixed(0)+'%;background:'+barColor}></div></div>
     <span class="pmem">${p.mem_mb}MB</span>
-    ${p.anomalies&&p.anomalies.length && html`<span class="anomaly-icon" title=${p.anomalies.join('; ')}>\u26A0</span>`}
+    <span class="anomaly-icon">${p.anomalies&&p.anomalies.length?html`<span title=${p.anomalies.join('; ')} style="color:var(--red);cursor:help">\u26A0</span>`:''}</span>
   </div>`;
 }
 
@@ -1125,10 +1126,10 @@ function TelemetrySection({telemetry}) {
         <span class="mvalue">${fmtK(t.output_tokens||0)}</span>
         <span class="msub">${t.total_sessions||0} sessions · ${t.total_messages||0} messages</span>
       </div>
-      ${t.cost_usd > 0 && html`<div class="metric-chip">
+      ${t.cost_usd > 0 ? html`<div class="metric-chip">
         <span class="mlabel">Estimated Cost</span>
         <span class="mvalue">$${t.cost_usd.toFixed(2)}</span>
-      </div>`}
+      </div>` : null}
       ${(quota.premium_requests_used>0 || quota.total_api_duration_ms>0) && html`<div class="metric-chip">
         <span class="mlabel">Operational</span>
         ${quota.premium_requests_used>0 && html`<div style="font-size:0.72rem">Premium requests: <span class="mono">${quota.premium_requests_used}</span></div>`}
@@ -1136,18 +1137,18 @@ function TelemetrySection({telemetry}) {
         ${quota.current_model && html`<div style="font-size:0.72rem">Model: <span class="mono">${quota.current_model}</span></div>`}
         ${quota.code_changes && html`<div style="font-size:0.72rem;color:var(--green)">+${quota.code_changes.lines_added} -${quota.code_changes.lines_removed} (${quota.code_changes.files_modified} files)</div>`}
       </div>`}
-      ${(t.active_session_input||t.active_session_output) && html`<div class="metric-chip" style="border-color:var(--accent)">
+      ${(t.active_session_input>0||t.active_session_output>0) ? html`<div class="metric-chip" style="border-color:var(--accent)">
         <span class="mlabel">Active Session</span>
         <span class="mvalue">${fmtK((t.active_session_input||0)+(t.active_session_output||0))} tok</span>
         <span class="msub">in: ${fmtK(t.active_session_input||0)} · out: ${fmtK(t.active_session_output||0)} · ${t.active_session_messages||0} msgs</span>
-      </div>`}
-      ${Object.keys(t.by_model||{}).length > 0 && html`<div class="metric-chip" style="grid-column:span 2">
+      </div>` : null}
+      ${Object.keys(t.by_model||{}).length > 0 ? html`<div class="metric-chip" style="grid-column:span 2">
         <span class="mlabel">By Model</span>
         ${Object.entries(t.by_model).map(([model,u])=>html`<div style="display:flex;justify-content:space-between;font-size:0.75rem;padding:0.1rem 0">
           <span class="mono">${model}</span>
           <span>in:${fmtK(u.input_tokens||0)} out:${fmtK(u.output_tokens||0)}${u.requests?' · '+u.requests+'req':''}</span>
         </div>`)}
-      </div>`}
+      </div>` : null}
     </div>
     ${showErrors && errors.length>0 && html`<div style="margin-top:0.4rem;padding:0.4rem 0.6rem;border-left:3px solid var(--red);background:color-mix(in srgb,var(--red) 8%,transparent);border-radius:0 4px 4px 0;max-height:10rem;overflow-y:auto">
       <div style="font-size:0.72rem;font-weight:600;color:var(--red);margin-bottom:0.2rem">Recent Errors</div>
