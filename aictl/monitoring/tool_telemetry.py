@@ -51,6 +51,15 @@ class ToolTelemetryReport:
     active_session_output: int = 0
     active_session_messages: int = 0
 
+    # Errors and operational health
+    errors: list[dict] = field(default_factory=list)
+    # Each: {"type": "overloaded"|"rate_limit"|"timeout"|"api_error"|"shutdown_error",
+    #        "message": str, "timestamp": str, "model": str}
+
+    quota_state: dict = field(default_factory=dict)
+    # {"premium_requests_used": int, "total_api_duration_ms": int,
+    #  "code_changes": {"lines_added": int, "lines_removed": int, "files_modified": int}}
+
     def to_dict(self) -> dict:
         return {
             "tool": self.tool,
@@ -68,6 +77,8 @@ class ToolTelemetryReport:
             "active_session_input": self.active_session_input,
             "active_session_output": self.active_session_output,
             "active_session_messages": self.active_session_messages,
+            "errors": self.errors[-20:],  # Last 20 errors
+            "quota_state": self.quota_state,
         }
 
 
@@ -126,8 +137,21 @@ def parse_claude_telemetry(root: Path) -> ToolTelemetryReport | None:
     return None
 
 
+# Error pattern keywords for scanning session content
+_ERROR_PATTERNS = {
+    "overloaded": "overloaded",
+    "rate_limit": "rate_limit",
+    "rate limit": "rate_limit",
+    "429": "rate_limit",
+    "capacity": "overloaded",
+    "quota": "quota",
+    "timeout": "timeout",
+    "timed out": "timeout",
+}
+
+
 def _parse_claude_active_session(root: Path, report: ToolTelemetryReport) -> None:
-    """Parse the most recent Claude Code session JSONL for active token counts."""
+    """Parse the most recent Claude Code session JSONL for active token counts and errors."""
     projects_dir = claude_projects_dir()
     if not projects_dir.is_dir():
         return
@@ -152,11 +176,11 @@ def _parse_claude_active_session(root: Path, report: ToolTelemetryReport) -> Non
     if time.time() - latest.stat().st_mtime > 1800:
         return
 
-    # Read last 200 lines (tail) to avoid parsing entire multi-MB file
+    # Read last 500 lines (tail) to catch errors + recent tokens
     try:
         text = latest.read_text(errors="replace")
         lines = text.splitlines()
-        tail = lines[-200:] if len(lines) > 200 else lines
+        tail = lines[-500:] if len(lines) > 500 else lines
         for line in tail:
             if not line.strip():
                 continue
@@ -164,6 +188,9 @@ def _parse_claude_active_session(root: Path, report: ToolTelemetryReport) -> Non
                 obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
+
+            obj_type = obj.get("type", "")
+
             # Claude JSONL: assistant messages have .message.usage
             msg = obj.get("message", {})
             usage = msg.get("usage") if isinstance(msg, dict) else None
@@ -171,8 +198,51 @@ def _parse_claude_active_session(root: Path, report: ToolTelemetryReport) -> Non
                 report.active_session_input += int(usage.get("input_tokens", 0))
                 report.active_session_output += int(usage.get("output_tokens", 0))
                 report.active_session_messages += 1
+
+            # Error detection: check for API errors in system messages and error responses
+            _detect_claude_errors(obj, obj_type, report)
+
     except OSError:
         pass
+
+
+def _detect_claude_errors(obj: dict, obj_type: str, report: ToolTelemetryReport) -> None:
+    """Detect API errors, overloaded states, and rate limits in Claude session entries."""
+    timestamp = obj.get("timestamp", "")
+    model = ""
+
+    # Check message content for error patterns
+    msg = obj.get("message", {})
+    if isinstance(msg, dict):
+        model = msg.get("model", "")
+        error_obj = msg.get("error", {})
+        if isinstance(error_obj, dict) and error_obj.get("type"):
+            report.errors.append({
+                "type": error_obj["type"],
+                "message": str(error_obj.get("message", ""))[:200],
+                "timestamp": timestamp,
+                "model": model,
+            })
+            return
+
+    # Check for error in toolUseResult
+    tool_result = obj.get("toolUseResult", "")
+    if isinstance(tool_result, str) and tool_result.startswith("Error:"):
+        # Tool errors are common and not API issues — skip
+        pass
+
+    # Scan serialized content for API-level error patterns
+    if obj_type in ("system", "progress"):
+        content = json.dumps(obj).lower()
+        for pattern, error_type in _ERROR_PATTERNS.items():
+            if pattern in content:
+                report.errors.append({
+                    "type": error_type,
+                    "message": f"Detected '{pattern}' in {obj_type} event",
+                    "timestamp": timestamp,
+                    "model": model,
+                })
+                break  # One error per entry
 
 
 # ─── Copilot CLI ────────────────────────────────────────────────
@@ -213,7 +283,7 @@ def parse_copilot_telemetry() -> ToolTelemetryReport | None:
 
 
 def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> None:
-    """Parse a single Copilot CLI events.jsonl for token data."""
+    """Parse a single Copilot CLI events.jsonl for token data, metrics, and errors."""
     try:
         text = events_file.read_text(errors="replace")
         for line in text.splitlines():
@@ -226,6 +296,7 @@ def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> Non
 
             event_type = obj.get("type", "")
             data = obj.get("data", {}) if isinstance(obj.get("data"), dict) else {}
+            timestamp = obj.get("timestamp", "")
 
             # assistant.message has outputTokens (under data)
             if event_type == "assistant.message":
@@ -233,8 +304,37 @@ def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> Non
                 report.output_tokens += out_tok
                 report.total_messages += 1
 
-            # session.shutdown has comprehensive modelMetrics (under data)
+            # session.shutdown has comprehensive modelMetrics
             elif event_type == "session.shutdown":
+                shutdown_type = data.get("shutdownType", "routine")
+
+                # Error detection: non-routine shutdowns
+                if shutdown_type != "routine":
+                    report.errors.append({
+                        "type": "shutdown_error",
+                        "message": f"Session shutdown: {shutdown_type}",
+                        "timestamp": timestamp,
+                        "model": data.get("currentModel", ""),
+                    })
+
+                # Quota/operational state
+                premium = int(data.get("totalPremiumRequests", 0))
+                api_dur = int(data.get("totalApiDurationMs", 0))
+                code_changes = data.get("codeChanges", {})
+                if premium or api_dur or code_changes:
+                    report.quota_state = {
+                        "premium_requests_used": report.quota_state.get("premium_requests_used", 0) + premium,
+                        "total_api_duration_ms": report.quota_state.get("total_api_duration_ms", 0) + api_dur,
+                        "current_model": data.get("currentModel", ""),
+                    }
+                    if isinstance(code_changes, dict) and any(code_changes.values()):
+                        report.quota_state["code_changes"] = {
+                            "lines_added": int(code_changes.get("linesAdded", 0)),
+                            "lines_removed": int(code_changes.get("linesRemoved", 0)),
+                            "files_modified": len(code_changes.get("filesModified", [])),
+                        }
+
+                # Timeout detection: API duration > 30s per request suggests timeouts
                 metrics = data.get("modelMetrics", {})
                 for model, model_data in metrics.items():
                     usage = model_data.get("usage", {})
@@ -243,19 +343,47 @@ def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> Non
                     cr = int(usage.get("cacheReadTokens", 0))
                     cw = int(usage.get("cacheWriteTokens", 0))
                     report.input_tokens += inp
-                    # Don't double-count output (shutdown has cumulative)
-                    # Reset output to shutdown value for this session
                     report.cache_read_tokens += cr
                     report.cache_creation_tokens += cw
 
                     if model not in report.by_model:
-                        report.by_model[model] = {"input_tokens": 0, "output_tokens": 0}
+                        report.by_model[model] = {
+                            "input_tokens": 0, "output_tokens": 0,
+                            "cache_read_tokens": 0, "requests": 0, "cost_usd": 0.0,
+                        }
                     report.by_model[model]["input_tokens"] += inp
                     report.by_model[model]["output_tokens"] += out
+                    report.by_model[model]["cache_read_tokens"] += cr
 
                     req_data = model_data.get("requests", {})
+                    req_count = int(req_data.get("count", 0))
                     cost = float(req_data.get("cost", 0))
+                    report.by_model[model]["requests"] += req_count
+                    report.by_model[model]["cost_usd"] += cost
                     report.cost_usd += cost
+
+                    # Detect potential timeouts: high latency per request
+                    if req_count > 0 and api_dur > 0:
+                        avg_ms = api_dur / req_count
+                        if avg_ms > 30000:  # >30s per request
+                            report.errors.append({
+                                "type": "timeout",
+                                "message": f"High avg API latency: {avg_ms/1000:.1f}s/req ({model})",
+                                "timestamp": timestamp,
+                                "model": model,
+                            })
+
+            # tool.execution_complete: track tool usage
+            elif event_type == "tool.execution_complete":
+                tool_name = data.get("toolName", "")
+                duration = int(data.get("durationMs", 0))
+                if tool_name and duration > 60000:  # >60s tool execution
+                    report.errors.append({
+                        "type": "timeout",
+                        "message": f"Slow tool: {tool_name} ({duration/1000:.1f}s)",
+                        "timestamp": timestamp,
+                        "model": "",
+                    })
 
     except OSError:
         pass
