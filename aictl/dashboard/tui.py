@@ -30,23 +30,12 @@ from textual.widgets import (
 )
 
 from .collector import DashboardSnapshot, collect
-from ..registry import TOOL_LABELS
-
+from ..registry import TOOL_LABELS, TOOL_COLORS, DEFAULT_TOOL_COLOR, TOOL_ICONS, DEFAULT_TOOL_ICON
 
 # ── Colour palette ───────────────────────────────────────────────
 
-TOOL_COLOURS = {
-    "claude-code": "#c084fc",
-    "claude-desktop": "#a855f7",
-    "copilot": "#60a5fa",
-    "copilot-vscode": "#93c5fd",
-    "copilot-cli": "#3b82f6",
-    "codex-cli": "#f97316",
-    "cursor": "#34d399",
-    "windsurf": "#2dd4bf",
-    "project-env": "#fbbf24",
-    "aictl": "#94a3b8",
-}
+# Use registry as single source of truth
+TOOL_COLOURS = TOOL_COLORS  # alias for backward compat within this file
 
 STATUS_COLOURS = {
     "running": "#34d399",

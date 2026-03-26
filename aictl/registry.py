@@ -63,6 +63,80 @@ TOOL_LABELS: dict[str, str] = {
 }
 
 
+# Single source of truth for tool display colors (hex).
+# Dashboard (web + TUI) both read from here — no duplicates.
+TOOL_COLORS: dict[str, str] = {
+    "claude-code": "#a78bfa",
+    "claude-desktop": "#c4b5fd",
+    "claude-mcp-memory": "#c4b5fd",
+    "copilot": "#60a5fa",
+    "copilot-vscode": "#93c5fd",
+    "copilot-cli": "#3b82f6",
+    "copilot-jetbrains": "#60a5fa",
+    "copilot-vs": "#60a5fa",
+    "copilot365": "#60a5fa",
+    "codex-cli": "#f97316",
+    "cursor": "#34d399",
+    "windsurf": "#2dd4bf",
+    "project-env": "#fbbf24",
+    "aictl": "#94a3b8",
+    "cross-tool": "#cbd5e1",
+    "gemini-cli": "#34d399",
+    "chatgpt-desktop": "#10b981",
+    "chatgpt-lencx": "#10b981",
+    "openai-api": "#10b981",
+    "aider": "#f472b6",
+    "continue": "#818cf8",
+    "openclaw": "#94a3b8",
+    "opencode": "#94a3b8",
+    "tabnine": "#e879f9",
+    "junie": "#fb923c",
+    "semantic-kernel": "#a78bfa",
+    "azure-promptflow": "#60a5fa",
+    "azure-ai": "#60a5fa",
+    "claude-mem": "#c4b5fd",
+}
+
+DEFAULT_TOOL_COLOR = "#94a3b8"
+
+# Product icons — emoji for now, can upgrade to SVG data-URIs later.
+TOOL_ICONS: dict[str, str] = {
+    "claude-code": "🟣",
+    "claude-desktop": "🟣",
+    "claude-mcp-memory": "🟣",
+    "copilot": "🤖",
+    "copilot-vscode": "🤖",
+    "copilot-cli": "🤖",
+    "copilot-jetbrains": "🤖",
+    "copilot-vs": "🤖",
+    "copilot365": "🤖",
+    "codex-cli": "🟠",
+    "cursor": "🟢",
+    "windsurf": "🌊",
+    "gemini-cli": "💎",
+    "chatgpt-desktop": "🟢",
+    "openai-api": "🟢",
+    "aider": "🔧",
+    "continue": "🔵",
+    "openclaw": "🦞",
+    "opencode": "⚡",
+    "tabnine": "🟪",
+    "junie": "🟧",
+}
+
+DEFAULT_TOOL_ICON = "🔹"
+
+
+def tool_color(tool: str) -> str:
+    """Return the hex color for a tool, with fallback."""
+    return TOOL_COLORS.get(tool, DEFAULT_TOOL_COLOR)
+
+
+def tool_icon(tool: str) -> str:
+    """Return the icon for a tool, with fallback."""
+    return TOOL_ICONS.get(tool, DEFAULT_TOOL_ICON)
+
+
 def expand_tool_filter(tools: list[str]) -> set[str]:
     """Expand group names and individual tool names into CSV tool names."""
     result: set[str] = set()

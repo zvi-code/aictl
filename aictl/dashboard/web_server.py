@@ -219,7 +219,10 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def _serve_html(self) -> None:
-        body = _DASHBOARD_HTML.encode("utf-8")
+        html = _DASHBOARD_HTML
+        html = html.replace("%%TOOL_COLORS_JS%%", _make_js_colors())
+        html = html.replace("%%TOOL_ICONS_JS%%", _make_js_icons())
+        body = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
@@ -385,12 +388,16 @@ def run_server(
 
 # ─── Inline HTML dashboard ───────────────────────────────────────
 
-_TOOL_COLORS = {
-    "claude-code": "#a78bfa", "claude-desktop": "#c4b5fd",
-    "copilot": "#60a5fa", "copilot-vscode": "#93c5fd", "copilot-cli": "#3b82f6",
-    "cursor": "#34d399", "windsurf": "#2dd4bf",
-    "project-env": "#fbbf24", "aictl": "#94a3b8",
-}
+from ..registry import TOOL_COLORS as _REG_COLORS, TOOL_ICONS as _REG_ICONS
+import json as _json
+
+def _make_js_colors() -> str:
+    """Generate the JavaScript COLORS const from the registry."""
+    return f"const COLORS = {_json.dumps(_REG_COLORS)};"
+
+def _make_js_icons() -> str:
+    """Generate the JavaScript ICONS const from the registry."""
+    return f"const ICONS = {_json.dumps(_REG_ICONS)};"
 
 _DASHBOARD_HTML = r"""<!DOCTYPE html>
 <html lang="en" data-theme="auto">
@@ -618,14 +625,9 @@ import htm from 'https://esm.sh/htm@3.1.1';
 import uPlot from 'https://esm.sh/uplot@1.6.31';
 const html = htm.bind(h);
 
-// ─── Constants ─────────────────────────────────────────────────
-const COLORS = {
-  'claude-code':'#a78bfa','claude-desktop':'#c4b5fd','claude-mcp-memory':'#c4b5fd',
-  'copilot':'#60a5fa','copilot-vscode':'#93c5fd','copilot-cli':'#3b82f6',
-  'cursor':'#34d399','windsurf':'#2dd4bf',
-  'project-env':'#fbbf24','aictl':'#94a3b8','cross-tool':'#cbd5e1',
-  'gemini-cli':'#34d399','opencode':'#94a3b8','aider':'#f472b6',
-};
+// ─── Constants (injected from registry.py at serve-time) ───────
+%%TOOL_COLORS_JS%%
+%%TOOL_ICONS_JS%%
 const SC = {running:'var(--green)',stopped:'var(--red)',error:'var(--orange)',unknown:'var(--fg2)'};
 const THEMES = ['auto','dark','light'];
 const THEME_ICONS = {auto:'\u263E',dark:'\u263E',light:'\u2600'};
