@@ -6,6 +6,8 @@ Reads tool-specific settings files to extract operational config:
 - Are MCP servers configured?
 - What permissions/features are enabled?
 - Is auto-update enabled?
+- Is OpenTelemetry / observability enabled?
+- Errors / quota / rate-limit state from recent sessions
 
 Results feed into the dashboard as tool_configs on DashboardSnapshot.
 """
@@ -31,6 +33,25 @@ from ..platforms import (
 
 
 @dataclass
+class OTelConfig:
+    """Standardized OpenTelemetry configuration state."""
+
+    enabled: bool = False
+    exporter: str = ""          # "otlp-http", "otlp-grpc", "console", "file", ""
+    endpoint: str = ""          # e.g. "http://localhost:4318"
+    file_path: str = ""         # For "file" exporter — the JSON-lines path
+    capture_content: bool = False
+    source: str = ""            # "vscode-settings", "codex-toml", "env-var", etc.
+
+    def to_dict(self) -> dict:
+        return {k: v for k, v in {
+            "enabled": self.enabled, "exporter": self.exporter,
+            "endpoint": self.endpoint, "file_path": self.file_path,
+            "capture_content": self.capture_content, "source": self.source,
+        }.items() if v}
+
+
+@dataclass
 class ToolConfig:
     """Parsed configuration state for one AI tool."""
 
@@ -42,9 +63,11 @@ class ToolConfig:
     mcp_servers: list[str] = field(default_factory=list)  # Server names
     features: dict = field(default_factory=dict)  # Feature flags
     extensions: list[str] = field(default_factory=list)  # Installed extensions
+    otel: OTelConfig = field(default_factory=OTelConfig)
+    hints: list[str] = field(default_factory=list)  # Actionable suggestions
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "tool": self.tool,
             "settings": self.settings,
             "launch_at_startup": self.launch_at_startup,
@@ -53,7 +76,10 @@ class ToolConfig:
             "mcp_servers": self.mcp_servers,
             "features": self.features,
             "extensions": self.extensions,
+            "otel": self.otel.to_dict(),
+            "hints": self.hints,
         }
+        return d
 
 
 def _read_json(path: Path) -> dict | None:
@@ -109,6 +135,86 @@ def _macos_launch_agents() -> set[str]:
     return {f.stem for f in agents_dir.iterdir() if f.suffix == ".plist"}
 
 
+# ─── Generic OTel detection ─────────────────────────────────────
+
+def _detect_otel_from_vscode_settings(settings: dict) -> OTelConfig:
+    """Extract OTel config from VS Code settings dict (github.copilot.chat.otel.* keys)."""
+    otel = OTelConfig(source="vscode-settings")
+    otel.enabled = bool(settings.get("github.copilot.chat.otel.enabled", False))
+    otel.exporter = str(settings.get("github.copilot.chat.otel.exporterType", ""))
+    otel.endpoint = str(settings.get("github.copilot.chat.otel.otlpEndpoint", ""))
+    otel.file_path = str(settings.get("github.copilot.chat.otel.outfile", ""))
+    otel.capture_content = bool(settings.get("github.copilot.chat.otel.captureContent", False))
+    # Also check env-var overrides
+    if not otel.enabled and os.environ.get("COPILOT_OTEL_ENABLED", "").lower() in ("true", "1"):
+        otel.enabled = True
+        otel.source = "env-var"
+    if not otel.endpoint:
+        otel.endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+    return otel
+
+
+def _detect_otel_from_codex_toml(data: dict) -> OTelConfig:
+    """Extract OTel config from Codex config.toml."""
+    otel_section = data.get("otel", {})
+    if not otel_section:
+        return OTelConfig(source="codex-toml")
+    return OTelConfig(
+        enabled=bool(otel_section.get("enabled", False)),
+        exporter=str(otel_section.get("exporter", "")),
+        endpoint=str(otel_section.get("endpoint", "")),
+        file_path=str(otel_section.get("outfile", "")),
+        source="codex-toml",
+    )
+
+
+def _detect_otel_from_claude() -> OTelConfig:
+    """Detect Claude Code telemetry availability."""
+    otel = OTelConfig(source="claude-stats")
+    # Claude Code exposes stats-cache.json as built-in telemetry
+    stats = claude_global_dir() / "stats-cache.json"
+    if stats.is_file():
+        otel.enabled = True
+        otel.exporter = "built-in"
+        otel.file_path = str(stats)
+    # Check for ANTHROPIC_LOG_DIR env var
+    log_dir = os.environ.get("ANTHROPIC_LOG_DIR", "")
+    if log_dir:
+        otel.enabled = True
+        otel.source = "env-var"
+        otel.file_path = log_dir
+    return otel
+
+
+def _generate_hints(cfg: ToolConfig) -> list[str]:
+    """Generate actionable suggestions based on tool configuration state."""
+    hints: list[str] = []
+
+    # OTel hints
+    if not cfg.otel.enabled:
+        if cfg.tool == "copilot":
+            hints.append(
+                'OTel disabled — enable for verified token counts: '
+                'set "github.copilot.chat.otel.enabled": true in VS Code settings'
+            )
+        elif cfg.tool == "codex-cli":
+            hints.append(
+                'OTel not configured — set [otel] exporter in ~/.codex/config.toml '
+                'for telemetry export'
+            )
+    else:
+        if cfg.otel.exporter == "file" and cfg.otel.file_path:
+            hints.append(f"OTel active — writing to {cfg.otel.file_path}")
+        elif cfg.otel.exporter in ("otlp-http", "otlp-grpc") and cfg.otel.endpoint:
+            hints.append(f"OTel active — exporting to {cfg.otel.endpoint}")
+        elif cfg.otel.exporter == "built-in":
+            pass  # Claude built-in stats — no hint needed
+        elif cfg.otel.enabled:
+            hints.append("OTel enabled")
+
+    return hints
+
+
 # ─── Tool-specific parsers ──────────────────────────────────────
 
 def _parse_claude_code_config(root: Path) -> ToolConfig | None:
@@ -149,11 +255,15 @@ def _parse_claude_code_config(root: Path) -> ToolConfig | None:
             if d.is_dir() and "claude" in d.name.lower()
         ]
 
+    # OTel / telemetry
+    cfg.otel = _detect_otel_from_claude()
+
     # Startup: check if claude is in login items
     if IS_MACOS:
         login_items = _macos_login_items()
         cfg.launch_at_startup = "Claude" in login_items
 
+    cfg.hints = _generate_hints(cfg)
     return cfg if (cfg.settings or cfg.mcp_servers or cfg.extensions) else None
 
 
@@ -192,24 +302,62 @@ def _parse_claude_desktop_config() -> ToolConfig | None:
         login_items = _macos_login_items()
         cfg.launch_at_startup = "Claude" in login_items
 
+    cfg.hints = _generate_hints(cfg)
     return cfg if (cfg.mcp_servers or cfg.features or cfg.settings) else None
 
 
 def _parse_copilot_config(root: Path) -> ToolConfig | None:
     cfg = ToolConfig(tool="copilot")
 
-    # VS Code settings
-    vscode_settings = _read_json(vscode_user_dir() / "settings.json")
-    if vscode_settings:
-        copilot_enable = vscode_settings.get("github.copilot.enable", {})
-        if copilot_enable:
-            cfg.features["enable"] = copilot_enable
-        for k, v in vscode_settings.items():
-            if k.startswith("github.copilot.") and k != "github.copilot.enable":
-                short = k.replace("github.copilot.", "")
-                cfg.settings[short] = v
+    # ── Global VS Code settings ─────────────────────────────────
+    vscode_settings = _read_json(vscode_user_dir() / "settings.json") or {}
 
-    # Copilot extensions
+    copilot_enable = vscode_settings.get("github.copilot.enable", {})
+    if copilot_enable:
+        cfg.features["enable"] = copilot_enable
+    for k, v in vscode_settings.items():
+        if k.startswith("github.copilot.") and k != "github.copilot.enable":
+            short = k.replace("github.copilot.", "")
+            cfg.settings[short] = v
+
+    # Agent mode
+    agent_enabled = vscode_settings.get("github.copilot.chat.agent.enabled")
+    if agent_enabled is not None:
+        cfg.features["agent_mode"] = agent_enabled
+    max_requests = vscode_settings.get("chat.agent.maxRequests")
+    if max_requests is not None:
+        cfg.settings["agent_maxRequests"] = max_requests
+
+    # Memory
+    local_mem = vscode_settings.get("github.copilot.chat.tools.memory.enabled")
+    if local_mem is not None:
+        cfg.features["local_memory"] = local_mem
+    github_mem = vscode_settings.get("github.copilot.chat.copilotMemory.enabled")
+    if github_mem is not None:
+        cfg.features["github_memory"] = github_mem
+
+    # Claude agent in VS Code
+    claude_agent = vscode_settings.get("github.copilot.chat.claudeAgent.enabled")
+    if claude_agent is not None:
+        cfg.features["claude_agent"] = claude_agent
+
+    # OTel detection (global settings)
+    cfg.otel = _detect_otel_from_vscode_settings(vscode_settings)
+
+    # ── Workspace VS Code settings ──────────────────────────────
+    ws_settings = _read_json(root / ".vscode" / "settings.json")
+    if ws_settings:
+        for k, v in ws_settings.items():
+            if k.startswith("github.copilot."):
+                short = "ws:" + k.replace("github.copilot.", "")
+                cfg.settings[short] = v
+        # Workspace OTel overrides global
+        ws_otel = _detect_otel_from_vscode_settings(ws_settings)
+        if ws_otel.enabled and not cfg.otel.enabled:
+            cfg.otel = ws_otel
+            cfg.otel.source = "vscode-workspace"
+
+    # ── Extensions ──────────────────────────────────────────────
     vscode_ext = Path.home() / ".vscode" / "extensions"
     if vscode_ext.is_dir():
         cfg.extensions = [
@@ -217,12 +365,25 @@ def _parse_copilot_config(root: Path) -> ToolConfig | None:
             if d.is_dir() and "copilot" in d.name.lower()
         ]
 
-    # MCP config
-    mcp = _read_json(root / ".copilot" / "mcp-config.json") or _read_json(root / ".copilot-mcp.json")
-    if mcp and "mcpServers" in mcp:
-        cfg.mcp_servers = list(mcp["mcpServers"].keys())
+    # ── MCP config (check all locations) ────────────────────────
+    mcp_sources = [
+        root / ".copilot" / "mcp-config.json",
+        root / ".copilot-mcp.json",
+        root / ".vscode" / "mcp.json",
+    ]
+    seen_servers: set[str] = set()
+    for mcp_path in mcp_sources:
+        mcp = _read_json(mcp_path)
+        if not mcp:
+            continue
+        servers = mcp.get("mcpServers", mcp.get("servers", {}))
+        for name in servers:
+            if name not in seen_servers:
+                cfg.mcp_servers.append(name)
+                seen_servers.add(name)
 
-    return cfg if (cfg.settings or cfg.extensions or cfg.features) else None
+    cfg.hints = _generate_hints(cfg)
+    return cfg if (cfg.settings or cfg.extensions or cfg.features or cfg.otel.enabled) else None
 
 
 def _parse_cursor_config(root: Path) -> ToolConfig | None:
@@ -247,6 +408,7 @@ def _parse_cursor_config(root: Path) -> ToolConfig | None:
             if d.is_dir() and any(x in d.name.lower() for x in ("copilot", "claude", "ai"))
         ][:10]
 
+    cfg.hints = _generate_hints(cfg)
     return cfg if (cfg.settings or cfg.mcp_servers) else None
 
 
@@ -264,10 +426,10 @@ def _parse_codex_config() -> ToolConfig | None:
     for k, v in features.items():
         cfg.features[k] = v
 
-    otel = data.get("otel", {})
-    if otel:
-        cfg.settings["otel_exporter"] = otel.get("exporter", "none")
+    # OTel detection
+    cfg.otel = _detect_otel_from_codex_toml(data)
 
+    cfg.hints = _generate_hints(cfg)
     return cfg if (cfg.model or cfg.features) else None
 
 
@@ -289,6 +451,7 @@ def _parse_windsurf_config(root: Path) -> ToolConfig | None:
     if rules.is_file():
         cfg.settings["global_rules"] = "configured"
 
+    cfg.hints = _generate_hints(cfg)
     return cfg if (cfg.mcp_servers or cfg.settings) else None
 
 
