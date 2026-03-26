@@ -812,6 +812,35 @@ header h1 span { color: var(--fg2); font-weight: 400; }
   box-shadow: 0 2px 6px rgba(0,0,0,0.3); display: none; }
 .timeline-dot:hover .timeline-tip { display: block; }
 
+/* Events & Stats tab */
+.es-layout { display: grid; grid-template-columns: 200px 1fr; gap: 0.6rem; }
+@media(max-width:800px) { .es-layout { grid-template-columns: 1fr; } }
+.es-tool-list { display: flex; flex-direction: column; gap: 0.2rem; }
+.es-tool-btn { display: flex; align-items: center; gap: 0.4rem; padding: 0.35rem 0.6rem;
+  background: none; border: 1px solid transparent; border-radius: 4px; cursor: pointer;
+  font: inherit; font-size: 0.78rem; color: var(--fg2); text-align: left; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.es-tool-btn:hover { background: var(--bg2); color: var(--fg); }
+.es-tool-btn.active { background: var(--bg2); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.es-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem; margin-bottom: 0.6rem; }
+@media(max-width:600px) { .es-charts { grid-template-columns: 1fr; } }
+.es-section { margin-bottom: 0.6rem; }
+.es-section-title { font-size: 0.7rem; color: var(--fg2); text-transform: uppercase;
+  letter-spacing: 0.05em; margin-bottom: 0.3rem; padding-left: 0.2rem; }
+.es-feed { max-height: 300px; overflow-y: auto; background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 6px; font-size: 0.72rem; }
+.es-event { display: grid; grid-template-columns: 70px 90px 1fr; gap: 0.4rem; padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid var(--border); align-items: center; }
+.es-event:last-child { border-bottom: none; }
+.es-event-kind { font-weight: 600; font-size: 0.68rem; }
+.es-event-time { color: var(--fg2); font-size: 0.65rem; font-family: var(--mono); }
+.es-event-detail { color: var(--fg2); font-size: 0.65rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.es-kv { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.3rem; }
+.es-kv-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 0.3rem 0.5rem; text-align: center; }
+.es-kv-card .label { color: var(--fg2); font-size: 0.6rem; text-transform: uppercase; }
+.es-kv-card .value { font-size: 0.9rem; font-weight: 600; }
+
 /* Resource bar + legend */
 .rbar-block { margin-bottom: 0.8rem; }
 .rbar-title { font-size: 0.72rem; color: var(--fg2); margin-bottom: 0.25rem; text-transform: uppercase; letter-spacing: 0.05em; }
@@ -1003,7 +1032,8 @@ const TABS = [
   {id:'mcp', label:'MCP Servers', key:'3'},
   {id:'memory', label:'AI Context', key:'4'},
   {id:'live', label:'Live Monitor', key:'5'},
-  {id:'budget', label:'Token Budget', key:'6'},
+  {id:'events', label:'Events & Stats', key:'6'},
+  {id:'budget', label:'Token Budget', key:'7'},
 ];
 
 // ─── Module-level shared state ─────────────────────────────────
@@ -2020,6 +2050,146 @@ function TokenBar({always, onDemand, conditional, never, total}) {
     ${never>0 && html`<div style="width:${w(never)};background:var(--fg2);opacity:0.3" title="Never sent: ${fmtK(never)}"></div>`}
   </div>`;
 }
+// ─── TabEventsStats ───────────────────────────────────────────
+function TabEventsStats() {
+  const {snap: s} = useContext(SnapContext);
+  const [selectedTool, setTool] = useState(null);
+  const [events, setEvents] = useState([]);
+  const [toolHistory, setToolHistory] = useState(null);
+
+  // Available tools (with live data or files)
+  const tools = useMemo(()=>{
+    if(!s) return [];
+    return s.tools.filter(t=>t.tool!=='aictl'&&t.tool!=='any'&&(t.files.length||t.processes.length||t.live))
+      .sort((a,b)=>a.label.localeCompare(b.label));
+  },[s]);
+
+  // Auto-select first tool
+  useEffect(()=>{
+    if(!selectedTool && tools.length) setTool(tools[0].tool);
+  },[tools, selectedTool]);
+
+  // Fetch events for selected tool
+  useEffect(()=>{
+    if(!selectedTool) return;
+    const since = Date.now()/1000 - 86400; // last 24h
+    fetch('/api/events?tool='+encodeURIComponent(selectedTool)+'&since='+since+'&limit=200')
+      .then(r=>r.json()).then(setEvents).catch(()=>setEvents([]));
+  },[selectedTool]);
+
+  // Fetch per-tool history
+  useEffect(()=>{
+    if(!selectedTool) return;
+    fetch('/api/history')
+      .then(r=>r.json())
+      .then(h=>setToolHistory(h?.by_tool?.[selectedTool]||null))
+      .catch(()=>setToolHistory(null));
+  },[selectedTool]);
+
+  if(!s) return html`<p style="color:var(--fg2)">Loading...</p>`;
+
+  const tool = tools.find(t=>t.tool===selectedTool);
+  const telem = s.tool_telemetry?.find(t=>t.tool===selectedTool);
+  const live = tool?.live;
+  const c = COLORS[selectedTool]||'var(--fg2)';
+
+  return html`<div class="es-layout">
+    <div class="es-tool-list">
+      <div class="es-section-title">Tools</div>
+      ${tools.map(t=>html`<button key=${t.tool}
+        class=${selectedTool===t.tool?'es-tool-btn active':'es-tool-btn'}
+        onClick=${()=>setTool(t.tool)}>
+        <span style="color:${COLORS[t.tool]||'var(--fg2)'}">${ICONS[t.tool]||'🔹'}</span>
+        ${t.label}
+        ${t.live ? html`<span class="badge" style="font-size:0.55rem;margin-left:auto">live</span>` : ''}
+      </button>`)}
+    </div>
+    <div>
+      ${selectedTool && html`<Fragment>
+        <h3 style="margin-bottom:0.4rem;display:flex;align-items:center;gap:0.4rem">
+          <span style="color:${c}">${ICONS[selectedTool]||'🔹'}</span>
+          ${tool?.label||selectedTool}
+          ${tool?.vendor ? html`<span class="badge">${VENDOR_LABELS[tool.vendor]||tool.vendor}</span>` : ''}
+          ${telem?.model ? html`<span class="badge mono">${telem.model}</span>` : ''}
+        </h3>
+
+        ${''/* Per-tool charts */}
+        ${toolHistory && toolHistory.ts?.length >= 2 ? html`<div class="es-section">
+          <div class="es-section-title">Time Series</div>
+          <div class="es-charts">
+            <${ChartCard} label="CPU %" value=${tool?.live?.cpu_percent!=null ? tool.live.cpu_percent+'%' : '-'}
+              data=${[toolHistory.ts, toolHistory.cpu]} chartColor=${c} smooth />
+            <${ChartCard} label="Memory (MB)" value=${tool?.live?.mem_mb!=null ? Math.round(tool.live.mem_mb||0)+'MB' : '-'}
+              data=${[toolHistory.ts, toolHistory.mem_mb]} chartColor="var(--green)" smooth />
+            <${ChartCard} label="Tokens" value=${fmtK(toolHistory.tokens[toolHistory.tokens.length-1]||0)}
+              data=${[toolHistory.ts, toolHistory.tokens]} chartColor="var(--accent)" />
+            <${ChartCard} label="Traffic (B/s)" value=${fmtRate(toolHistory.traffic[toolHistory.traffic.length-1]||0)}
+              data=${[toolHistory.ts, toolHistory.traffic]} chartColor="var(--orange)" smooth />
+          </div>
+        </div>` : html`<div class="es-section">
+          <div class="es-section-title">Time Series</div>
+          <p style="color:var(--fg2);font-size:0.75rem">Collecting data...</p>
+        </div>`}
+
+        ${''/* Telemetry summary */}
+        ${telem ? html`<div class="es-section">
+          <div class="es-section-title">Telemetry
+            <span class="badge" style="margin-left:0.3rem">${telem.source}</span>
+            <span class="badge">${(telem.confidence*100).toFixed(0)}%</span>
+          </div>
+          <div class="es-kv">
+            <div class="es-kv-card"><div class="label">Input Tokens</div><div class="value">${fmtK(telem.input_tokens)}</div></div>
+            <div class="es-kv-card"><div class="label">Output Tokens</div><div class="value">${fmtK(telem.output_tokens)}</div></div>
+            <div class="es-kv-card"><div class="label">Cache Read</div><div class="value">${fmtK(telem.cache_read_tokens||0)}</div></div>
+            <div class="es-kv-card"><div class="label">Sessions</div><div class="value">${telem.total_sessions||0}</div></div>
+            <div class="es-kv-card"><div class="label">Messages</div><div class="value">${telem.total_messages||0}</div></div>
+            <div class="es-kv-card"><div class="label">Cost</div><div class="value">${telem.cost_usd ? '$'+telem.cost_usd.toFixed(2) : '-'}</div></div>
+          </div>
+          ${Object.keys(telem.by_model||{}).length > 0 && html`<div style="margin-top:0.3rem">
+            <div class="es-section-title">By Model</div>
+            ${Object.entries(telem.by_model).map(([model,u])=>html`<div key=${model}
+              style="display:flex;justify-content:space-between;font-size:0.72rem;padding:0.15rem 0.4rem;
+                     background:var(--bg2);border-radius:3px;margin-bottom:0.15rem">
+              <span class="mono">${model}</span>
+              <span>in: ${fmtK(u.input||0)} · out: ${fmtK(u.output||0)}</span>
+            </div>`)}
+          </div>`}
+        </div>` : ''}
+
+        ${''/* Live stats */}
+        ${live ? html`<div class="es-section">
+          <div class="es-section-title">Live Monitor</div>
+          <div class="es-kv">
+            <div class="es-kv-card"><div class="label">Sessions</div><div class="value">${live.session_count||0}</div></div>
+            <div class="es-kv-card"><div class="label">PIDs</div><div class="value">${live.pid_count||0}</div></div>
+            <div class="es-kv-card"><div class="label">CPU</div><div class="value">${live.cpu_percent||0}%</div></div>
+            <div class="es-kv-card"><div class="label">Memory</div><div class="value">${fmtSz((live.mem_mb||0)*1048576)}</div></div>
+            <div class="es-kv-card"><div class="label">↑ Out</div><div class="value">${fmtRate(live.outbound_rate_bps||0)}</div></div>
+            <div class="es-kv-card"><div class="label">↓ In</div><div class="value">${fmtRate(live.inbound_rate_bps||0)}</div></div>
+          </div>
+        </div>` : ''}
+
+        ${''/* Event feed */}
+        <div class="es-section">
+          <div class="es-section-title">Events (${events.length})</div>
+          ${events.length ? html`<div class="es-feed">
+            ${events.map((e,i)=>{
+              const color = EVENT_COLORS[e.kind]||'var(--fg2)';
+              const time = new Date(e.ts*1000).toLocaleTimeString();
+              const detail = e.detail ? Object.entries(e.detail).map(([k,v])=>k+'='+v).join(', ') : '';
+              return html`<div key=${i} class="es-event">
+                <span class="es-event-time">${time}</span>
+                <span class="es-event-kind" style="color:${color}">${e.kind}</span>
+                <span class="es-event-detail" title=${detail}>${detail||'-'}</span>
+              </div>`;
+            })}
+          </div>` : html`<p style="color:var(--fg2);font-size:0.75rem">No events in the last 24h for this tool.</p>`}
+        </div>
+      </Fragment>`}
+    </div>
+  </div>`;
+}
+
 function TabBudget() {
   const {snap: s} = useContext(SnapContext);
   const [budget, setBudget] = useState(null);
@@ -2369,6 +2539,7 @@ function App() {
     mcp: html`<${TabMcp}/>`,
     memory: html`<${TabMemory}/>`,
     live: html`<${TabLive}/>`,
+    events: html`<${TabEventsStats} key=${'events-'+activeTab}/>`,
     budget: html`<${TabBudget} key=${'budget-'+activeTab}/>`,
   };
 
