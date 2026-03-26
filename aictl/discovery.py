@@ -642,6 +642,45 @@ def collect_agent_memory(root: Path) -> list[MemoryEntry]:
                 if entry:
                     entries.append(entry)
 
+    # 4. Copilot Chat globalStorage — agent definitions, session state
+    from .platforms import copilot_global_storage
+    copilot_storage = copilot_global_storage()
+    if copilot_storage.is_dir():
+        # Agent .md files (e.g. ask-agent/Ask.agent.md)
+        for md in sorted(copilot_storage.rglob("*.md")):
+            entry = _read_memory_file(md, "copilot-agent-memory", "(copilot)")
+            if entry:
+                entries.append(entry)
+        # Session state JSON files (workspace sessions, CLI metadata)
+        for jf in sorted(copilot_storage.glob("*.json")):
+            if jf.stat().st_size > 1_000_000:  # skip large embedding files
+                continue
+            entry = _read_memory_file(jf, "copilot-session-state", "(copilot)")
+            if entry:
+                entries.append(entry)
+
+    # 5. Copilot CLI instructions — ~/.copilot/copilot-instructions.md
+    copilot_instructions = Path.home() / ".copilot" / "copilot-instructions.md"
+    if copilot_instructions.is_file():
+        entry = _read_memory_file(copilot_instructions, "copilot-user-memory", "(global)")
+        if entry:
+            entries.append(entry)
+
+    # 6. Codex CLI instructions — ~/.codex/instructions.md
+    codex_instructions = Path.home() / ".codex" / "instructions.md"
+    if codex_instructions.is_file():
+        entry = _read_memory_file(codex_instructions, "codex-user-memory", "(global)")
+        if entry:
+            entries.append(entry)
+
+    # 7. Windsurf global rules — ~/.codeium/windsurf/memories/global_rules.md
+    from .platforms import windsurf_global_dir
+    windsurf_rules = windsurf_global_dir() / "memories" / "global_rules.md"
+    if windsurf_rules.is_file():
+        entry = _read_memory_file(windsurf_rules, "windsurf-user-memory", "(global)")
+        if entry:
+            entries.append(entry)
+
     return entries
 
 

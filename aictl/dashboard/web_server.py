@@ -633,7 +633,7 @@ const THEMES = ['auto','dark','light'];
 const THEME_ICONS = {auto:'\u263E',dark:'\u263E',light:'\u2600'};
 const TAIL_LINES = 5;
 const PREVIEW_LINES = 15;
-const MEM_LABELS = {'claude-user-memory':'User Memory','claude-project-memory':'Project Memory','claude-auto-memory':'Auto Memory'};
+const MEM_LABELS = {'claude-user-memory':'Claude User Memory','claude-project-memory':'Claude Project Memory','claude-auto-memory':'Claude Auto Memory','copilot-agent-memory':'Copilot Agent Memory','copilot-session-state':'Copilot Session State','copilot-user-memory':'Copilot Instructions','codex-user-memory':'Codex Instructions','windsurf-user-memory':'Windsurf Global Rules'};
 const CAT_ORDER = ['instructions','config','rules','commands','skills','agent','memory','prompt','transcript','temp','runtime','credentials','extensions'];
 const TABS = [
   {id:'overview', label:'Overview', key:'1'},
