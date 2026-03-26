@@ -1006,15 +1006,32 @@ function ConfigSection({config}) {
   const features = Object.entries(config.features||{});
   const hasMcp = (config.mcp_servers||[]).length > 0;
   const hasExt = (config.extensions||[]).length > 0;
-  if(!entries.length && !features.length && !hasMcp && !hasExt && config.model==null && config.launch_at_startup==null) return null;
+  const otel = config.otel||{};
+  const hints = config.hints||[];
+  if(!entries.length && !features.length && !hasMcp && !hasExt && !otel.enabled && !hints.length && config.model==null && config.launch_at_startup==null) return null;
   return html`<div class="live-section">
     <h3>Configuration
       ${config.launch_at_startup===true && html`<span class="badge" style="background:var(--green);color:#000">auto-start</span>`}
       ${config.launch_at_startup===false && html`<span class="badge">no auto-start</span>`}
       ${config.auto_update===true && html`<span class="badge">auto-update</span>`}
       ${config.model && html`<span class="badge">${config.model}</span>`}
+      ${otel.enabled && html`<span class="badge" style="background:var(--green);color:#000">OTel ${otel.exporter||'on'}</span>`}
+      ${!otel.enabled && otel.source && html`<span class="badge" style="background:var(--orange);color:#000">OTel off</span>`}
     </h3>
     <div class="metric-grid">
+      ${otel.enabled && html`<div class="metric-chip" style="border-color:var(--green)">
+        <span class="mlabel" style="color:var(--green)">OpenTelemetry</span>
+        <div style="font-size:0.72rem;padding:0.05rem 0">
+          <span style="color:var(--fg2)">Exporter:</span> <span class="mono">${otel.exporter}</span>
+        </div>
+        ${otel.endpoint && html`<div style="font-size:0.72rem;padding:0.05rem 0">
+          <span style="color:var(--fg2)">Endpoint:</span> <span class="mono">${otel.endpoint}</span>
+        </div>`}
+        ${otel.file_path && html`<div style="font-size:0.72rem;padding:0.05rem 0">
+          <span style="color:var(--fg2)">File:</span> <span class="mono">${otel.file_path}</span>
+        </div>`}
+        ${otel.capture_content && html`<div style="font-size:0.72rem;padding:0.05rem 0;color:var(--orange)">⚠ Content capture enabled</div>`}
+      </div>`}
       ${entries.length>0 && html`<div class="metric-chip">
         <span class="mlabel">Settings</span>
         ${entries.map(([k,v])=>html`<div style="display:flex;justify-content:space-between;font-size:0.72rem;padding:0.05rem 0">
@@ -1038,6 +1055,11 @@ function ConfigSection({config}) {
         <div class="stack-list">${config.extensions.map(e=>html`<span class="pill mono">${e}</span>`)}</div>
       </div>`}
     </div>
+    ${hints.length>0 && html`<div style="margin-top:0.4rem;padding:0.4rem 0.6rem;border-left:3px solid var(--orange);background:color-mix(in srgb,var(--orange) 8%,transparent);border-radius:0 4px 4px 0">
+      ${hints.map(h=>html`<div style="font-size:0.72rem;padding:0.15rem 0;color:var(--orange)">
+        <span style="margin-right:0.3rem">💡</span>${h}
+      </div>`)}
+    </div>`}
   </div>`;
 }
 
@@ -1046,9 +1068,14 @@ function TelemetrySection({telemetry}) {
   if(!telemetry) return null;
   const t = telemetry;
   const totalTok = (t.input_tokens||0) + (t.output_tokens||0);
-  if(!totalTok && !t.active_session_input) return null;
+  const errors = t.errors||[];
+  const quota = t.quota_state||{};
+  if(!totalTok && !t.active_session_input && !errors.length) return null;
+  const [showErrors, setShowErrors] = useState(false);
   return html`<div class="live-section">
-    <h3>Verified Token Usage <span class="badge">${t.source}</span> <span class="badge">${(t.confidence*100).toFixed(0)}% confidence</span></h3>
+    <h3>Verified Token Usage <span class="badge">${t.source}</span> <span class="badge">${(t.confidence*100).toFixed(0)}% confidence</span>
+      ${errors.length>0 && html`<span class="badge warn" style="cursor:pointer" onClick=${(e)=>{e.stopPropagation();setShowErrors(!showErrors)}}>${errors.length} error${errors.length>1?'s':''}</span>`}
+    </h3>
     <div class="metric-grid">
       <div class="metric-chip">
         <span class="mlabel">Lifetime Input</span>
@@ -1064,6 +1091,13 @@ function TelemetrySection({telemetry}) {
         <span class="mlabel">Estimated Cost</span>
         <span class="mvalue">$${t.cost_usd.toFixed(2)}</span>
       </div>`}
+      ${(quota.premium_requests_used>0 || quota.total_api_duration_ms>0) && html`<div class="metric-chip">
+        <span class="mlabel">Operational</span>
+        ${quota.premium_requests_used>0 && html`<div style="font-size:0.72rem">Premium requests: <span class="mono">${quota.premium_requests_used}</span></div>`}
+        ${quota.total_api_duration_ms>0 && html`<div style="font-size:0.72rem">API time: <span class="mono">${(quota.total_api_duration_ms/1000).toFixed(0)}s</span></div>`}
+        ${quota.current_model && html`<div style="font-size:0.72rem">Model: <span class="mono">${quota.current_model}</span></div>`}
+        ${quota.code_changes && html`<div style="font-size:0.72rem;color:var(--green)">+${quota.code_changes.lines_added} -${quota.code_changes.lines_removed} (${quota.code_changes.files_modified} files)</div>`}
+      </div>`}
       ${(t.active_session_input||t.active_session_output) && html`<div class="metric-chip" style="border-color:var(--accent)">
         <span class="mlabel">Active Session</span>
         <span class="mvalue">${fmtK((t.active_session_input||0)+(t.active_session_output||0))} tok</span>
@@ -1073,10 +1107,19 @@ function TelemetrySection({telemetry}) {
         <span class="mlabel">By Model</span>
         ${Object.entries(t.by_model).map(([model,u])=>html`<div style="display:flex;justify-content:space-between;font-size:0.75rem;padding:0.1rem 0">
           <span class="mono">${model}</span>
-          <span>in:${fmtK(u.input_tokens||0)} out:${fmtK(u.output_tokens||0)}</span>
+          <span>in:${fmtK(u.input_tokens||0)} out:${fmtK(u.output_tokens||0)}${u.requests?' · '+u.requests+'req':''}</span>
         </div>`)}
       </div>`}
     </div>
+    ${showErrors && errors.length>0 && html`<div style="margin-top:0.4rem;padding:0.4rem 0.6rem;border-left:3px solid var(--red);background:color-mix(in srgb,var(--red) 8%,transparent);border-radius:0 4px 4px 0;max-height:10rem;overflow-y:auto">
+      <div style="font-size:0.72rem;font-weight:600;color:var(--red);margin-bottom:0.2rem">Recent Errors</div>
+      ${errors.map(e=>html`<div style="font-size:0.68rem;padding:0.1rem 0;display:flex;gap:0.4rem">
+        <span class="mono" style="color:var(--fg2);white-space:nowrap">${(e.timestamp||'').slice(11,19)}</span>
+        <span class="badge" style="font-size:0.6rem;background:var(--red);color:#fff;padding:0.05rem 0.25rem">${e.type}</span>
+        <span style="color:var(--fg2)">${e.message}</span>
+        ${e.model && html`<span class="mono" style="color:var(--fg2)">${e.model}</span>`}
+      </div>`)}
+    </div>`}
   </div>`;
 }
 
@@ -1134,6 +1177,7 @@ function ToolCard({tool: t, root}) {
   const {snap: snapCtx} = useContext(SnapContext);
   const toolConfig = useMemo(()=>(snapCtx?.tool_configs||[]).find(c=>c.tool===t.tool),[snapCtx,t.tool]);
   const c = COLORS[t.tool]||'#94a3b8';
+  const icon = ICONS[t.tool]||'\u{1F539}';
   const tok = t.files.reduce((a,f)=>a+f.tokens,0);
   const anom = t.processes.filter(p=>p.anomalies&&p.anomalies.length).length;
   const liveTok = liveTokenTotal(t.live);
@@ -1141,6 +1185,7 @@ function ToolCard({tool: t, root}) {
   const totalCpu = t.processes.reduce((a,p)=>a+(parseFloat(p.cpu_pct)||0),0);
   const totalMem = t.processes.reduce((a,p)=>a+(parseFloat(p.mem_mb)||0),0);
   const maxMem = useMemo(()=>Math.max(...t.processes.map(p=>parseFloat(p.mem_mb)||0),100),[t.processes]);
+  const telErrors = (t.token_breakdown?.telemetry?.errors||[]).length;
   const cats = useMemo(()=>{
     const c={};
     t.files.forEach(f=>{const k=f.kind||'other';(c[k]=c[k]||[]).push(f);});
@@ -1149,17 +1194,18 @@ function ToolCard({tool: t, root}) {
       return (ai<0?99:ai)-(bi<0?99:bi);
     }).map(k=>({kind:k, files:c[k]}));
   },[t.files]);
-  const cls = 'tcard'+(isOpen?' open':'')+(anom?' has-anomaly':'');
+  const cls = 'tcard'+(isOpen?' open':'')+(anom||telErrors?' has-anomaly':'');
   return html`<div class=${cls}>
     <button class="tcard-head" onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}
       style="flex-wrap:wrap;row-gap:0.2rem">
       <span class="arrow">\u25B6</span>
-      <h2><span class="dot" style=${'background:'+c}></span>${esc(t.label)}</h2>
+      <h2><span style="margin-right:0.25rem">${icon}</span>${esc(t.label)}</h2>
       <span class="badge">${t.files.length} files</span>
       <span class="badge">${fmtK(tok)} tok</span>
       ${t.processes.length>0 && html`<span class="badge">${t.processes.length} proc ${totalCpu.toFixed(1)}% ${totalMem.toFixed(0)}MB</span>`}
       ${t.mcp_servers.length>0 && html`<span class="badge">${t.mcp_servers.length} MCP</span>`}
       ${anom>0 && html`<span class="badge warn">${anom} anomaly</span>`}
+      ${telErrors>0 && html`<span class="badge" style="background:var(--red);color:#fff">${telErrors} error${telErrors>1?'s':''}</span>`}
       ${t.live && html`<span class="badge" style="background:var(--accent);color:var(--bg)">${t.live.session_count||0} live · ${fmtRate(liveTraffic)}${liveTok>0?' · '+fmtK(liveTok)+'tok':''}</span>`}
       <div style="width:100%;display:flex;flex-wrap:wrap;gap:0.15rem;margin-top:0.1rem">
         ${cats.map(({kind,files:cf})=>html`<span style="font-size:0.6rem;color:var(--fg2)">${kind}:${cf.length}</span>`)}
