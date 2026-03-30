@@ -54,6 +54,8 @@ def enable(port: int | None, tool: str, print_only: bool, shell: str | None):
     import json
     import platform
     from pathlib import Path
+    from ..guard import WriteGuard
+    guard = WriteGuard.install("otel enable")
 
     port = port if port is not None else _default_port()
     endpoint = f"http://localhost:{port}"
@@ -109,8 +111,10 @@ def enable(port: int | None, tool: str, print_only: bool, shell: str | None):
                     new_content = before + "\n" + block
                     if rest:
                         new_content += "\n".join(rest)
+                    guard.confirm(profile, "modify")
                     profile.write_text(new_content)
                 else:
+                    guard.confirm(profile, "modify")
                     with open(profile, "a") as f:
                         f.write("\n" + block)
                 actions.append(f"Updated {profile}")
@@ -145,6 +149,7 @@ def enable(port: int | None, tool: str, print_only: bool, shell: str | None):
                 settings = {}
                 settings_path.parent.mkdir(parents=True, exist_ok=True)
             settings.update(copilot_settings)
+            guard.confirm(settings_path, "modify")
             settings_path.write_text(json.dumps(settings, indent=4) + "\n")
             actions.append(f"VS Code settings: {settings_path}")
         except Exception as exc:
@@ -157,6 +162,7 @@ def enable(port: int | None, tool: str, print_only: bool, shell: str | None):
             if codex_toml.exists():
                 content = codex_toml.read_text()
                 if "[otel]" not in content:
+                    guard.confirm(codex_toml, "modify")
                     with open(codex_toml, "a") as f:
                         f.write(f'\n[otel]\nenabled = true\n'
                                 f'endpoint = "{endpoint}"\n')

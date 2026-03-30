@@ -23,6 +23,9 @@ from ..synthesizer import synthesize
 @click.option("--dry-run", is_flag=True, help="Show what would be written")
 def import_cmd(root_dir, profile, prefer, from_tools, dry_run):
     """Import native AI tool files and generate .context.toml files."""
+    from ..guard import WriteGuard
+    if not dry_run:
+        WriteGuard.install("import")
     root = Path(root_dir).resolve()
     if not root.is_dir():
         raise SystemExit(f"Not a directory: {root}")

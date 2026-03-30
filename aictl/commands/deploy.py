@@ -219,6 +219,9 @@ def _watch_loop(root: Path, profile: str | None, emitter_names: list[str], dry_r
 @click.option("--watch", is_flag=True, help="Re-deploy when .toml files change")
 def deploy(root_dir, profile, emitters, dry_run, watch):
     """Scan .toml files and deploy native AI context files."""
+    from ..guard import WriteGuard
+    if not dry_run:
+        WriteGuard.install("deploy")
     root = Path(root_dir).resolve()
     if not root.is_dir():
         raise SystemExit(f"Not a directory: {root}")

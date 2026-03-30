@@ -312,6 +312,8 @@ exit 0
 )
 def init(root: str, force: bool, hooks: bool) -> None:
     """Scaffold a starter .context.toml file."""
+    from ..guard import WriteGuard
+    guard = WriteGuard.install("init")
     root_path = Path(root)
     target = root_path / AICTX_FILENAME
 
@@ -322,6 +324,7 @@ def init(root: str, force: bool, hooks: bool) -> None:
 
     # Choose the template variant based on --hooks.
     template = _TEMPLATE_WITH_HOOKS if hooks else _TEMPLATE
+    guard.confirm(target, "replace")
     target.write_text(template, encoding="utf-8")
     click.echo(f"Created {target}")
 
@@ -344,6 +347,10 @@ def _write_hook_scripts(root_path: Path, force: bool = False) -> None:
         if script_path.exists() and not force:
             click.echo(f"Skipped {script_path} (already exists, use --force to overwrite)")
             continue
+        from ..guard import WriteGuard
+        _guard = WriteGuard.current()
+        if _guard:
+            _guard.confirm(script_path, "replace")
         script_path.write_text(content, encoding="utf-8")
         # Make executable: owner rwx, group rx, others rx.
         script_path.chmod(
