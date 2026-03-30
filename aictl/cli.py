@@ -21,6 +21,7 @@ from .commands.config_cmd import config
 from .commands.validate_cmd import validate_cmd
 from .commands.catalog import catalog
 from .commands.db import db
+from .commands.enable_cmd import enable
 
 
 @click.group()
@@ -46,3 +47,4 @@ main.add_command(config)
 main.add_command(validate_cmd, name="validate")
 main.add_command(catalog)
 main.add_command(db)
+main.add_command(enable)

@@ -50,10 +50,13 @@ HOOK_EVENTS = [
 def _settings_path(scope: str) -> Path:
     """Return the Claude Code settings path for the given scope."""
     if scope == "project":
-        return Path.cwd() / ".claude" / "settings.json"
-    # User-level settings
-    home = Path.home()
-    return home / ".claude" / "settings.json"
+        # Use settings.local.json — hooks contain localhost:PORT which is
+        # machine-specific and must not be committed to git.
+        return Path.cwd() / ".claude" / "settings.local.json"
+    # User-level: ~/.claude/settings.json (macOS/Linux) or
+    # %APPDATA%\Claude\settings.json (Windows)
+    from ..platforms import claude_global_dir
+    return claude_global_dir() / "settings.json"
 
 
 def _is_aictl_hook(hook: dict) -> bool:
