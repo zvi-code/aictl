@@ -35,6 +35,9 @@ def build(root_dir, profile, out_dir, plugin_name, plugin_desc, plugin_version, 
     Plugin metadata can be supplied via CLI flags or a [plugin] section in the
     root .context.toml file.  CLI flags take precedence over [plugin] values.
     """
+    from ..guard import WriteGuard
+    if not dry_run:
+        WriteGuard.install("plugin build")
     root = Path(root_dir).resolve()
     if not root.is_dir():
         raise SystemExit(f"Not a directory: {root}")

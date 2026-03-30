@@ -116,6 +116,8 @@ def install(port: int | None, scope: str, events: str | None, force: bool):
     is rejected unless --force is passed.
     """
     import os
+    from ..guard import WriteGuard
+    guard = WriteGuard.install("hooks install")
     if port is None:
         try:
             port = int(os.environ.get("AICTL_PORT", "8484"))
@@ -170,6 +172,7 @@ def install(port: int | None, scope: str, events: str | None, force: bool):
         existing_hooks[event] = current
     existing["hooks"] = existing_hooks
 
+    guard.confirm(settings_path, "modify")
     settings_path.write_text(json.dumps(existing, indent=2) + "\n")
 
     click.echo(f"Installed {len(target_events)} hook events → localhost:{port}/api/hooks")
@@ -184,6 +187,8 @@ def install(port: int | None, scope: str, events: str | None, force: bool):
               help="Remove hooks at project or user level")
 def uninstall(scope: str):
     """Remove aictl hook configuration from Claude Code settings."""
+    from ..guard import WriteGuard
+    guard = WriteGuard.install("hooks uninstall")
     settings_path = _settings_path(scope)
     if not settings_path.exists():
         click.echo("No settings file found.")
@@ -213,5 +218,6 @@ def uninstall(scope: str):
     elif "hooks" in existing:
         del existing["hooks"]
 
+    guard.confirm(settings_path, "modify")
     settings_path.write_text(json.dumps(existing, indent=2) + "\n")
     click.echo(f"Removed aictl hooks from {settings_path}")

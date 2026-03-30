@@ -14,6 +14,7 @@ import click
 from .hooks import _build_hook_config, _is_aictl_hook, HOOK_EVENTS
 from .otel import _build_env_block, _shell_profiles
 from ..platforms import claude_global_dir, vscode_user_dir
+from ..guard import WriteGuard
 
 
 # VS Code settings that unlock the full agent + hooks + context experience.
@@ -61,6 +62,9 @@ def _write_json_settings(path: Path, updates: dict) -> str:
         path.parent.mkdir(parents=True, exist_ok=True)
         status = "created"
     existing.update(updates)
+    guard = WriteGuard.current()
+    if guard:
+        guard.confirm(path, "modify")
     path.write_text(json.dumps(existing, indent=4) + "\n", encoding="utf-8")
     return status
 
@@ -89,6 +93,9 @@ def _install_hooks(scope: str, port: int, actions: list[str]) -> None:
         existing_hooks[event] = current
     existing["hooks"] = existing_hooks
 
+    guard = WriteGuard.current()
+    if guard:
+        guard.confirm(settings_path, "modify")
     settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
     actions.append(f"Claude Code hooks ({len(HOOK_EVENTS)} events) → {settings_path}")
 
@@ -132,8 +139,14 @@ def _enable_otel(port: int, actions: list[str]) -> None:
                         else:
                             past_block = True
                             rest.append(line)
+                    _g = WriteGuard.current()
+                    if _g:
+                        _g.confirm(profile, "modify")
                     profile.write_text(before + "\n" + block + ("\n".join(rest) if rest else ""))
                 else:
+                    _g = WriteGuard.current()
+                    if _g:
+                        _g.confirm(profile, "modify")
                     with open(profile, "a") as f:
                         f.write("\n" + block)
                 actions.append(f"OTel env vars → {profile}")
@@ -166,6 +179,9 @@ def _enable_otel(port: int, actions: list[str]) -> None:
         if codex_toml.exists():
             content = codex_toml.read_text()
             if "[otel]" not in content:
+                _g = WriteGuard.current()
+                if _g:
+                    _g.confirm(codex_toml, "modify")
                 with open(codex_toml, "a") as f:
                     f.write(f'\n[otel]\nenabled = true\nendpoint = "{endpoint}"\n')
                 actions.append(f"Codex OTel → {codex_toml} (appended)")
@@ -226,6 +242,8 @@ def enable(scope: str, port: int | None, dry_run: bool) -> None:
         aictl enable --dry-run           # preview without writing
     """
     port = port if port is not None else _default_port()
+    if not dry_run:
+        WriteGuard.install("enable")
 
     if dry_run:
         click.secho("Dry run — nothing will be written.\n", fg="yellow")

@@ -38,6 +38,15 @@ def estimate_tokens(text: str) -> int:
 
 def write_safe(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import click as _click
+        _ctx = _click.get_current_context(silent=True)
+        if _ctx is not None:
+            _guard = _ctx.meta.get("_write_guard")
+            if _guard is not None:
+                _guard.confirm(path, "replace")
+    except Exception:
+        pass
     path.write_text(content, encoding="utf-8")
 
 
