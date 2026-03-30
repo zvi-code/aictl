@@ -89,7 +89,7 @@ def _validate_file(path: Path, rel: str) -> FileResult:
     result = FileResult(path=rel)
     try:
         raw = path.read_text(encoding="utf-8")
-    except Exception as exc:
+    except (OSError, PermissionError) as exc:
         result.issues.append(Issue(rel, None, "error", f"Cannot read file: {exc}"))
         return result
 

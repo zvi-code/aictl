@@ -47,7 +47,7 @@ def write_safe(path: Path, content: str) -> None:
                 _guard.confirm(path, "replace")
     except _click.Abort:
         raise
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 — guard infra errors must not block writes; Abort is re-raised above
         pass
     path.write_text(content, encoding="utf-8")
 

@@ -152,7 +152,7 @@ def enable(port: int | None, tool: str, print_only: bool, shell: str | None):
             guard.confirm(settings_path, "modify")
             settings_path.write_text(json.dumps(settings, indent=4) + "\n", encoding="utf-8")
             actions.append(f"VS Code settings: {settings_path}")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — best-effort integration; FAILED is reported and exits 1
             actions.append(f"VS Code settings: FAILED ({exc})")
 
     # ── Codex config.toml ──────────────────────────────────────
@@ -175,10 +175,11 @@ def enable(port: int | None, tool: str, print_only: bool, shell: str | None):
                 codex_toml.write_text(f'[otel]\nenabled = true\n'
                                       f'endpoint = "{endpoint}"\n', encoding="utf-8")
                 actions.append(f"Codex config: created {codex_toml}")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — best-effort integration; FAILED is reported and exits 1
             actions.append(f"Codex config: FAILED ({exc})")
 
     # ── Summary ────────────────────────────────────────────────
+    failures = [a for a in actions if "FAILED" in a]
     click.secho("OTel enabled:", fg="green", bold=True)
     for action in actions:
         click.echo(f"  {action}")
@@ -189,6 +190,8 @@ def enable(port: int | None, tool: str, print_only: bool, shell: str | None):
     click.echo("Restart AI tools to pick up changes.")
     if "copilot" in tools:
         click.echo("VS Code: Cmd/Ctrl+Shift+P → 'Developer: Reload Window'")
+    if failures:
+        raise SystemExit(1)
 
 
 def _print_exports(port: int | None, tool: str, shell: str | None) -> None:
@@ -308,8 +311,8 @@ def verify():
                         i += 1
                     except OSError:
                         break
-        except Exception:
-            pass
+        except OSError:
+            pass  # winreg not available or key unreadable; reg_env stays empty
 
     required = [
         ("AICTL_PORT", None),
@@ -374,7 +377,7 @@ def verify():
                     click.echo(f"    {ok}  {key}={val}")
         else:
             click.echo(f"    {miss}  {settings_path} — not found")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — best-effort integration; FAILED is reported and exits 1
         click.echo(f"    {warn}  Could not check: {exc}")
 
     # ── Codex config ──────────────────────────────────────────
@@ -396,6 +399,7 @@ def verify():
     click.echo("\n  aictl server:")
     port = _default_port()
     try:
+        import urllib.error
         import urllib.request
         url = f"http://localhost:{port}/api/otel-status"
         with urllib.request.urlopen(url, timeout=3) as resp:
@@ -408,7 +412,7 @@ def verify():
             click.echo(f"    {warn}  localhost:{port} — {total} received, {errors} errors")
         else:
             click.echo(f"    {warn}  localhost:{port} — running but no data received yet")
-    except Exception:
+    except (OSError, urllib.error.URLError, ValueError):
         click.echo(f"    {miss}  localhost:{port} — not reachable")
 
 
