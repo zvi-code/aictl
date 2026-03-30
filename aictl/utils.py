@@ -45,6 +45,8 @@ def write_safe(path: Path, content: str) -> None:
             _guard = _ctx.meta.get("_write_guard")
             if _guard is not None:
                 _guard.confirm(path, "replace")
+    except _click.Abort:
+        raise
     except Exception:
         pass
     path.write_text(content, encoding="utf-8")
