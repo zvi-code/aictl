@@ -92,7 +92,7 @@ def enable(port: int | None, tool: str, print_only: bool, shell: str | None):
 
         for profile in _shell_profiles():
             if profile.exists():
-                content = profile.read_text()
+                content = profile.read_text(encoding="utf-8")
                 if marker in content:
                     # Replace existing block
                     before = content.split(marker)[0].rstrip()
@@ -112,14 +112,14 @@ def enable(port: int | None, tool: str, print_only: bool, shell: str | None):
                     if rest:
                         new_content += "\n".join(rest)
                     guard.confirm(profile, "modify")
-                    profile.write_text(new_content)
+                    profile.write_text(new_content, encoding="utf-8")
                 else:
                     guard.confirm(profile, "modify")
-                    with open(profile, "a") as f:
+                    with open(profile, "a", encoding="utf-8") as f:
                         f.write("\n" + block)
                 actions.append(f"Updated {profile}")
             else:
-                profile.write_text(block)
+                profile.write_text(block, encoding="utf-8")
                 actions.append(f"Created {profile}")
 
     # ── macOS launchctl (for GUI apps) ──────────────────────────
@@ -140,7 +140,7 @@ def enable(port: int | None, tool: str, print_only: bool, shell: str | None):
                 "github.copilot.chat.otel.captureContent": True,
             }
             if settings_path.exists():
-                content = settings_path.read_text()
+                content = settings_path.read_text(encoding="utf-8")
                 try:
                     settings = json.loads(content)
                 except json.JSONDecodeError:
@@ -150,20 +150,21 @@ def enable(port: int | None, tool: str, print_only: bool, shell: str | None):
                 settings_path.parent.mkdir(parents=True, exist_ok=True)
             settings.update(copilot_settings)
             guard.confirm(settings_path, "modify")
-            settings_path.write_text(json.dumps(settings, indent=4) + "\n")
+            settings_path.write_text(json.dumps(settings, indent=4) + "\n", encoding="utf-8")
             actions.append(f"VS Code settings: {settings_path}")
         except Exception as exc:
             actions.append(f"VS Code settings: FAILED ({exc})")
 
     # ── Codex config.toml ──────────────────────────────────────
     if "codex" in tools:
-        codex_toml = Path.home() / ".codex" / "config.toml"
+        from ..platforms import codex_global_dir
+        codex_toml = codex_global_dir() / "config.toml"
         try:
             if codex_toml.exists():
-                content = codex_toml.read_text()
+                content = codex_toml.read_text(encoding="utf-8")
                 if "[otel]" not in content:
                     guard.confirm(codex_toml, "modify")
-                    with open(codex_toml, "a") as f:
+                    with open(codex_toml, "a", encoding="utf-8") as f:
                         f.write(f'\n[otel]\nenabled = true\n'
                                 f'endpoint = "{endpoint}"\n')
                     actions.append(f"Codex config: added [otel] to {codex_toml}")
@@ -172,7 +173,7 @@ def enable(port: int | None, tool: str, print_only: bool, shell: str | None):
             else:
                 codex_toml.parent.mkdir(parents=True, exist_ok=True)
                 codex_toml.write_text(f'[otel]\nenabled = true\n'
-                                      f'endpoint = "{endpoint}"\n')
+                                      f'endpoint = "{endpoint}"\n', encoding="utf-8")
                 actions.append(f"Codex config: created {codex_toml}")
         except Exception as exc:
             actions.append(f"Codex config: FAILED ({exc})")
@@ -378,9 +379,10 @@ def verify():
 
     # ── Codex config ──────────────────────────────────────────
     click.echo("\n  Codex config:")
-    codex_toml = Path.home() / ".codex" / "config.toml"
+    from ..platforms import codex_global_dir
+    codex_toml = codex_global_dir() / "config.toml"
     if codex_toml.exists():
-        content = codex_toml.read_text()
+        content = codex_toml.read_text(encoding="utf-8")
         if "[otel]" in content and "enabled = true" in content:
             click.echo(f"    {ok}  {codex_toml} — [otel] enabled")
         elif "[otel]" in content:

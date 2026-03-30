@@ -64,22 +64,36 @@ def _is_aictl_hook(hook: dict) -> bool:
     return isinstance(hook, dict) and "/api/hooks" in str(hook.get("command", ""))
 
 
+def _python_cmd() -> str:
+    """Return a quoted path to the current Python interpreter.
+
+    Using sys.executable ensures we invoke the exact same Python that runs
+    aictl — correct venv, correct version — on every platform including
+    Windows where 'python3' is not available.
+    """
+    import sys
+    exe = sys.executable
+    # Quote the path in case it contains spaces (common on Windows).
+    return f'"{exe}"'
+
+
 def _build_hook_config(port: int, events: list[str] | None) -> dict:
     """Build the hooks configuration dict for Claude Code.
 
     Each hook reads the rich JSON payload from stdin, merges in
     environment variables, and POSTs everything to aictl.
-    The jq-free approach uses python3 one-liner for portability.
+    Uses sys.executable instead of 'python3' for cross-platform compatibility.
     """
     target_events = events or HOOK_EVENTS
     hooks: dict[str, list[dict]] = {}
+    python = _python_cmd()
 
     # The hook command: read stdin (Claude's rich JSON), merge env vars, POST to aictl.
     # Claude Code provides: tool_name, tool_input, tool_output, session_id, etc. via stdin.
     # We add the event name and env vars ($SESSION_ID, $CWD, $TOOL_NAME) as fallbacks.
     for event in target_events:
         cmd = (
-            f"python3 -c \""
+            f"{python} -c \""
             f"import sys,json,os,urllib.request as u;"
             f"d=json.load(sys.stdin) if not sys.stdin.isatty() else {{}};"
             f"d['event']='{event}';"
@@ -138,7 +152,7 @@ def install(port: int | None, scope: str, events: str | None, force: bool):
     existing: dict = {}
     if settings_path.exists():
         try:
-            existing = json.loads(settings_path.read_text())
+            existing = json.loads(settings_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -173,7 +187,7 @@ def install(port: int | None, scope: str, events: str | None, force: bool):
     existing["hooks"] = existing_hooks
 
     guard.confirm(settings_path, "modify")
-    settings_path.write_text(json.dumps(existing, indent=2) + "\n")
+    settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
 
     click.echo(f"Installed {len(target_events)} hook events → localhost:{port}/api/hooks")
     click.echo(f"  Scope: {scope} ({settings_path})")
@@ -195,7 +209,7 @@ def uninstall(scope: str):
         return
 
     try:
-        existing = json.loads(settings_path.read_text())
+        existing = json.loads(settings_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         click.echo("Could not read settings file.")
         return
@@ -219,5 +233,5 @@ def uninstall(scope: str):
         del existing["hooks"]
 
     guard.confirm(settings_path, "modify")
-    settings_path.write_text(json.dumps(existing, indent=2) + "\n")
+    settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
     click.echo(f"Removed aictl hooks from {settings_path}")

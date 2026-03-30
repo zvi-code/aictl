@@ -126,7 +126,7 @@ def _enable_otel(port: int, actions: list[str]) -> None:
 
         for profile in _shell_profiles():
             if profile.exists():
-                content = profile.read_text()
+                content = profile.read_text(encoding="utf-8")
                 if marker in content:
                     before = content.split(marker)[0].rstrip()
                     after_lines = content.split(marker, 1)[1].split("\n")
@@ -142,16 +142,16 @@ def _enable_otel(port: int, actions: list[str]) -> None:
                     _g = WriteGuard.current()
                     if _g:
                         _g.confirm(profile, "modify")
-                    profile.write_text(before + "\n" + block + ("\n".join(rest) if rest else ""))
+                    profile.write_text(before + "\n" + block + ("\n".join(rest) if rest else ""), encoding="utf-8")
                 else:
                     _g = WriteGuard.current()
                     if _g:
                         _g.confirm(profile, "modify")
-                    with open(profile, "a") as f:
+                    with open(profile, "a", encoding="utf-8") as f:
                         f.write("\n" + block)
                 actions.append(f"OTel env vars → {profile}")
             else:
-                profile.write_text(block)
+                profile.write_text(block, encoding="utf-8")
                 actions.append(f"OTel env vars → {profile} (created)")
 
     if is_macos:
@@ -174,22 +174,23 @@ def _enable_otel(port: int, actions: list[str]) -> None:
         actions.append(f"Copilot OTel → VS Code settings.json FAILED ({exc})")
 
     # Codex config.toml
-    codex_toml = Path.home() / ".codex" / "config.toml"
+    from ..platforms import codex_global_dir
+    codex_toml = codex_global_dir() / "config.toml"
     try:
         if codex_toml.exists():
-            content = codex_toml.read_text()
+            content = codex_toml.read_text(encoding="utf-8")
             if "[otel]" not in content:
                 _g = WriteGuard.current()
                 if _g:
                     _g.confirm(codex_toml, "modify")
-                with open(codex_toml, "a") as f:
+                with open(codex_toml, "a", encoding="utf-8") as f:
                     f.write(f'\n[otel]\nenabled = true\nendpoint = "{endpoint}"\n')
                 actions.append(f"Codex OTel → {codex_toml} (appended)")
             else:
                 actions.append(f"Codex OTel → {codex_toml} (already configured)")
         else:
             codex_toml.parent.mkdir(parents=True, exist_ok=True)
-            codex_toml.write_text(f'[otel]\nenabled = true\nendpoint = "{endpoint}"\n')
+            codex_toml.write_text(f'[otel]\nenabled = true\nendpoint = "{endpoint}"\n', encoding="utf-8")
             actions.append(f"Codex OTel → {codex_toml} (created)")
     except Exception as exc:
         actions.append(f"Codex OTel → {codex_toml} FAILED ({exc})")

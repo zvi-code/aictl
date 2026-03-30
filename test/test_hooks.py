@@ -304,3 +304,52 @@ class TestHookEventsCompleteness:
             f"  In hooks only: {hooks_set - validator_set}\n"
             f"  In validator only: {validator_set - hooks_set}"
         )
+
+
+class TestPythonCmd:
+    """Hook command uses sys.executable, not the hardcoded 'python3' string."""
+
+    def test_does_not_use_bare_python3(self):
+        """Hook command must not start with the bare 'python3' invocation.
+
+        The interpreter is sys.executable (a full path, possibly containing
+        'python3' as part of the path, e.g. /usr/bin/python3.11). The old
+        implementation used the bare literal 'python3 -c', which breaks on
+        Windows where 'python3' is not available. We check that the command
+        starts with a quoted full path, not the literal word 'python3'.
+        """
+        import sys
+        config = _build_hook_config(8484, ["SessionStart"])
+        cmd = config["SessionStart"][0]["command"]
+        # Command must start with the quoted sys.executable, not bare 'python3'
+        assert cmd.startswith(f'"{sys.executable}"'), (
+            f"Hook command should start with quoted sys.executable, got: {cmd[:80]}"
+        )
+
+    def test_uses_current_interpreter_path(self):
+        """Hook command must embed the current Python interpreter path."""
+        import sys
+        config = _build_hook_config(8484, ["SessionStart"])
+        cmd = config["SessionStart"][0]["command"]
+        # sys.executable may be quoted with double quotes
+        assert sys.executable in cmd
+
+    def test_executable_path_is_quoted(self):
+        """Executable path must be quoted to handle spaces (e.g. Program Files)."""
+        config = _build_hook_config(8484, ["SessionStart"])
+        cmd = config["SessionStart"][0]["command"]
+        import sys
+        assert f'"{sys.executable}"' in cmd
+
+    def test_hook_command_works_on_simulated_windows_path(self):
+        """Hook config is valid when sys.executable has a Windows-style path."""
+        fake_exe = r"C:\Program Files\Python311\python.exe"
+        with patch("sys.executable", fake_exe):
+            from aictl.commands import hooks as hooks_mod
+            import importlib
+            # Re-import _python_cmd with patched sys.executable
+            from aictl.commands.hooks import _python_cmd
+            quoted = _python_cmd()
+        assert fake_exe in quoted
+        assert quoted.startswith('"')
+        assert quoted.endswith('"')

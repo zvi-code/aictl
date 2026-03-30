@@ -910,3 +910,160 @@ class TestEnableGuard:
             assert local.exists(), "project scope must write to settings.local.json"
             committed = Path(td) / ".claude" / "settings.json"
             assert not committed.exists(), "project scope must NOT write to settings.json"
+
+
+# ---------------------------------------------------------------------------
+# Encoding correctness (Windows: default encoding is cp1252, not utf-8)
+# ---------------------------------------------------------------------------
+
+class TestFileIOEncoding:
+    """All file reads/writes must use explicit utf-8 encoding."""
+
+    def test_hooks_settings_read_uses_utf8(self, tmp_path, monkeypatch):
+        """hooks install reads settings.json with utf-8 encoding."""
+        from aictl.commands.hooks import hooks
+
+        settings_file = tmp_path / ".claude" / "settings.json"
+        settings_file.parent.mkdir(parents=True)
+        # Write a settings file with non-ASCII content (em-dash in a comment key)
+        data = {"selectedModel": "opus", "note": "caf\u00e9"}
+        settings_file.write_text(json.dumps(data), encoding="utf-8")
+
+        monkeypatch.setattr("aictl.commands.hooks._settings_path", lambda scope: settings_file)
+        monkeypatch.setenv("AICTL_PORT", "8484")
+
+        runner = CliRunner()
+        result = runner.invoke(hooks, ["install"], catch_exceptions=False)
+        assert result.exit_code == 0
+        # Non-ASCII value must survive round-trip
+        saved = json.loads(settings_file.read_text(encoding="utf-8"))
+        assert saved["note"] == "caf\u00e9"
+
+    def test_hooks_settings_write_uses_utf8(self, tmp_path, monkeypatch):
+        """hooks install writes settings.json with utf-8 encoding."""
+        from aictl.commands.hooks import hooks, HOOK_EVENTS
+
+        settings_file = tmp_path / ".claude" / "settings.json"
+        monkeypatch.setattr("aictl.commands.hooks._settings_path", lambda scope: settings_file)
+        monkeypatch.setenv("AICTL_PORT", "8484")
+
+        runner = CliRunner()
+        runner.invoke(hooks, ["install"], catch_exceptions=False)
+
+        # File must be readable as utf-8 without errors
+        raw = settings_file.read_bytes()
+        decoded = raw.decode("utf-8")
+        data = json.loads(decoded)
+        assert "hooks" in data
+
+    def test_otel_shell_profile_encoding(self, tmp_path, monkeypatch):
+        """otel enable writes shell profiles with utf-8 encoding."""
+        from aictl.commands.otel import otel
+
+        profile = tmp_path / ".zshrc"
+        profile.write_text("# existing profile with caf\u00e9\n", encoding="utf-8")
+
+        monkeypatch.setattr("aictl.commands.otel._shell_profiles", lambda: [profile])
+        monkeypatch.setenv("AICTL_PORT", "8484")
+
+        runner = CliRunner()
+        result = runner.invoke(otel, ["enable", "--tool", "claude"], catch_exceptions=False)
+        assert result.exit_code == 0
+
+        # File must be valid utf-8 and preserve the original content
+        content = profile.read_text(encoding="utf-8")
+        assert "caf\u00e9" in content
+        assert "AICTL_PORT" in content
+
+    def test_otel_shell_profile_update_preserves_unicode(self, tmp_path, monkeypatch):
+        """Updating an existing otel block in a profile preserves non-ASCII chars."""
+        from aictl.commands.otel import otel
+
+        marker = "# \u2500\u2500 aictl: OTel for AI tools \u2500\u2500"
+        profile = tmp_path / ".zshrc"
+        # Pre-existing profile with previous otel block and unicode content
+        profile.write_text(
+            "# my profile \u00e9\u00e0\u00fc\n"
+            + marker + "\nexport AICTL_PORT=8484\n"
+            + "# after-block content\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr("aictl.commands.otel._shell_profiles", lambda: [profile])
+        monkeypatch.setenv("AICTL_PORT", "8484")
+
+        runner = CliRunner()
+        result = runner.invoke(otel, ["enable", "--tool", "claude"], catch_exceptions=False)
+        assert result.exit_code == 0
+        content = profile.read_text(encoding="utf-8")
+        assert "\u00e9\u00e0\u00fc" in content  # unicode must survive
+
+    def test_enable_cmd_profile_encoding(self, tmp_path, monkeypatch):
+        """enable writes shell profiles with utf-8 encoding."""
+        from aictl.commands.enable_cmd import enable
+
+        profile = tmp_path / ".zshrc"
+        profile.write_text("# profile \u00e9\n", encoding="utf-8")
+
+        monkeypatch.setattr("aictl.commands.enable_cmd._shell_profiles", lambda: [profile])
+        monkeypatch.setattr(
+            "aictl.commands.enable_cmd.claude_global_dir", lambda: tmp_path / "claude"
+        )
+        monkeypatch.setattr(
+            "aictl.commands.enable_cmd.vscode_user_dir", lambda: tmp_path / "vscode"
+        )
+        monkeypatch.setenv("AICTL_PORT", "8484")
+
+        runner = CliRunner()
+        result = runner.invoke(enable, ["--scope", "user"], catch_exceptions=False)
+        assert result.exit_code == 0
+        content = profile.read_text(encoding="utf-8")
+        assert "\u00e9" in content
+
+
+# ---------------------------------------------------------------------------
+# Codex path uses codex_global_dir() from platforms.py
+# ---------------------------------------------------------------------------
+
+class TestCodexPathPlatformAbstraction:
+    """otel enable and enable must use codex_global_dir() not Path.home() / '.codex'."""
+
+    def test_otel_enable_uses_codex_global_dir(self, tmp_path, monkeypatch):
+        """otel enable writes codex config to codex_global_dir(), not ~/.codex.
+
+        codex_global_dir is imported inside the function body, so we patch
+        the source in aictl.platforms rather than the command module.
+        """
+        from aictl.commands.otel import otel
+
+        custom_codex = tmp_path / "custom_codex"
+
+        monkeypatch.setattr("aictl.platforms.codex_global_dir", lambda: custom_codex)
+        monkeypatch.setattr("aictl.commands.otel._shell_profiles", lambda: [])
+        monkeypatch.setenv("AICTL_PORT", "8484")
+
+        runner = CliRunner()
+        result = runner.invoke(otel, ["enable", "--tool", "codex"], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert (custom_codex / "config.toml").exists()
+
+    def test_enable_cmd_uses_codex_global_dir(self, tmp_path, monkeypatch):
+        """enable must write codex config to codex_global_dir(), not ~/.codex."""
+        from aictl.commands.enable_cmd import enable
+
+        custom_codex = tmp_path / "custom_codex"
+
+        monkeypatch.setattr("aictl.platforms.codex_global_dir", lambda: custom_codex)
+        monkeypatch.setattr("aictl.commands.enable_cmd._shell_profiles", lambda: [])
+        monkeypatch.setattr(
+            "aictl.commands.enable_cmd.claude_global_dir", lambda: tmp_path / "claude"
+        )
+        monkeypatch.setattr(
+            "aictl.commands.enable_cmd.vscode_user_dir", lambda: tmp_path / "vscode"
+        )
+        monkeypatch.setenv("AICTL_PORT", "8484")
+
+        runner = CliRunner()
+        result = runner.invoke(enable, ["--scope", "user"], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert (custom_codex / "config.toml").exists()
