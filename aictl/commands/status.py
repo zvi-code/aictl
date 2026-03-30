@@ -55,8 +55,8 @@ def status(root_dir, tool_filter, show_procs, bt_pid, show_budget, as_json, as_h
                     click.echo(json.dumps(snap_dict, indent=2))
                     return
                 click.secho("(connected to aictl serve)", fg="green", err=True)
-        except Exception:
-            pass
+        except (OSError, ConnectionError):
+            pass  # server not running; fall through to local discovery
 
     # Fall back to local discovery
     if results is None:

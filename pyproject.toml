@@ -33,6 +33,28 @@ include = ["aictl*"]
 "aictl.dashboard" = ["*.html"]
 "aictl.dashboard.dist" = ["**/*"]
 
+[tool.ruff.lint]
+# S110 = try-except-pass (no-op exception swallow — always hides bugs in command code)
+# BLE001 = blind exception catch (except Exception / except BaseException)
+# Enforced on command and utility code. The daemon/monitoring layer is excluded
+# because those components must survive individual metric/event failures.
+select = ["S110", "BLE001"]
+
+[tool.ruff.lint.per-file-ignores]
+# Long-running daemons: broad catches intentional — must not crash on noisy input.
+"aictl/orchestrator.py" = ["S110", "BLE001"]
+"aictl/sink.py" = ["S110", "BLE001"]
+"aictl/storage.py" = ["S110", "BLE001"]
+"aictl/store.py" = ["S110", "BLE001"]
+"aictl/dashboard/tui.py" = ["S110", "BLE001"]
+"aictl/dashboard/web_server.py" = ["S110", "BLE001"]
+"aictl/dashboard/html_report.py" = ["S110", "BLE001"]
+"aictl/dashboard/models.py" = ["S110", "BLE001"]
+"aictl/monitoring/**" = ["S110", "BLE001"]
+"aictl/client.py" = ["S110", "BLE001"]
+"aictl/discovery.py" = ["S110", "BLE001"]
+"aictl/datapoint_provenance.py" = ["S110", "BLE001"]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

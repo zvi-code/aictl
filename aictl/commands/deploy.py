@@ -165,7 +165,7 @@ def _watch_loop(root: Path, profile: str | None, emitter_names: list[str], dry_r
         click.secho(f"\nDetected change in {rel}, re-deploying...", fg="cyan")
         try:
             _run_deploy(root, profile, emitter_names, dry_run)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — watch loop must survive redeploy errors
             click.secho(f"Deploy error: {exc}", fg="red")
         click.secho("Watching for changes...", fg="bright_black")
 

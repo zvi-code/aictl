@@ -170,7 +170,7 @@ def _enable_otel(port: int, actions: list[str]) -> None:
         }
         status = _write_json_settings(settings_path, otel_settings)
         actions.append(f"Copilot OTel → VS Code settings.json ({status})")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — best-effort integration; FAILED is reported and exits 1
         actions.append(f"Copilot OTel → VS Code settings.json FAILED ({exc})")
 
     # Codex config.toml
@@ -192,7 +192,7 @@ def _enable_otel(port: int, actions: list[str]) -> None:
             codex_toml.parent.mkdir(parents=True, exist_ok=True)
             codex_toml.write_text(f'[otel]\nenabled = true\nendpoint = "{endpoint}"\n', encoding="utf-8")
             actions.append(f"Codex OTel → {codex_toml} (created)")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — best-effort integration; FAILED is reported and exits 1
         actions.append(f"Codex OTel → {codex_toml} FAILED ({exc})")
 
 
@@ -203,7 +203,7 @@ def _enable_vscode(scope: str, port: int, actions: list[str]) -> None:
     else:
         try:
             settings_path = vscode_user_dir() / "settings.json"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — best-effort integration; FAILED is reported and exits 1
             actions.append(f"VS Code agent settings FAILED ({exc})")
             return
 
@@ -211,7 +211,7 @@ def _enable_vscode(scope: str, port: int, actions: list[str]) -> None:
         status = _write_json_settings(settings_path, _VSCODE_AGENT_SETTINGS)
         n = len(_VSCODE_AGENT_SETTINGS)
         actions.append(f"VS Code agent/hooks/context ({n} settings) → {settings_path} ({status})")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — best-effort integration; FAILED is reported and exits 1
         actions.append(f"VS Code agent settings → {settings_path} FAILED ({exc})")
 
 
@@ -259,7 +259,7 @@ def enable(scope: str, port: int | None, dry_run: bool) -> None:
             hooks_path = claude_global_dir() / "settings.json"
             try:
                 vscode_path = vscode_user_dir() / "settings.json"
-            except Exception:
+            except (KeyError, OSError):
                 vscode_path = Path("(VS Code settings not found)")
 
         click.echo(f"  [hooks]  {hooks_path}")
@@ -281,6 +281,7 @@ def enable(scope: str, port: int | None, dry_run: bool) -> None:
     _enable_otel(port, actions)
     _enable_vscode(scope, port, actions)
 
+    failures = [a for a in actions if "FAILED" in a]
     click.secho("\naictl integrations enabled:", fg="green", bold=True)
     for action in actions:
         click.echo(f"  {action}")
@@ -294,3 +295,5 @@ def enable(scope: str, port: int | None, dry_run: bool) -> None:
     click.echo("  2. Reload VS Code: Ctrl+Shift+P → 'Developer: Reload Window'")
     if platform.system() != "Windows":
         click.echo("  3. Reload shell:   source ~/.zshrc  (or open a new terminal)")
+    if failures:
+        raise SystemExit(1)
