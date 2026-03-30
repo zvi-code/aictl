@@ -111,3 +111,39 @@ def stats(ctx):
 
     if s.get("files_tracked"):
         click.echo(f"Files tracked: {s['files_tracked']:,} ({s['files_total_bytes'] / 1024**2:.1f} MB, {s['files_total_tokens']:,} tokens)")
+
+
+@db.command()
+@click.option("--yes", "-y", is_flag=True,
+              help="Skip confirmation prompt")
+@click.pass_context
+def reset(ctx, yes):
+    """Delete the database and start fresh.
+
+    \b
+    Removes the existing history database and initialises an empty one.
+    All recorded metrics, events, and telemetry are permanently deleted.
+    """
+    from ..storage import HistoryDB, DEFAULT_DB_PATH
+
+    db_path = ctx.obj.get("db_path")
+    path = Path(db_path) if db_path else DEFAULT_DB_PATH
+
+    if path.exists():
+        size_mb = path.stat().st_size / 1024 ** 2
+        click.echo(f"Database: {path}")
+        click.echo(f"Size: {size_mb:.1f} MB")
+        if not yes:
+            click.confirm(
+                "Permanently delete ALL data and start a new database?",
+                abort=True,
+            )
+        path.unlink()
+        click.secho("Database deleted.", fg="yellow")
+    else:
+        click.echo(f"Database: {path}")
+        click.echo("(does not exist yet — will be created fresh)")
+
+    # Initialise a fresh empty database by opening it.
+    HistoryDB(db_path=str(path)).close()
+    click.secho(f"Fresh database initialised: {path}", fg="green")

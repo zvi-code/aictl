@@ -90,8 +90,13 @@ aictl deploy --profile debug        # translates .context.toml → CLAUDE.md, Co
 
 To connect live AI telemetry (token counts, latency, session traces):
 ```bash
-eval $(aictl otel enable --print)   # export OTel env vars for this shell
+aictl enable                        # one-shot: hooks + OTel + VS Code agent settings (persistent)
 aictl serve                         # now receives OTel data from Claude Code, Copilot, Codex
+```
+
+Or just for the current shell session:
+```bash
+eval $(aictl otel enable --print)   # export OTel env vars for this shell only
 ```
 
 ## Install
@@ -354,7 +359,19 @@ launchctl setenv COPILOT_OTEL_ENABLED true
 launchctl setenv COPILOT_OTEL_ENDPOINT http://localhost:8484
 ```
 
-Or use `aictl otel enable` to persist everything automatically:
+Or use `aictl enable` (recommended) to set up everything at once:
+
+```bash
+aictl enable                   # hooks + OTel + VS Code agent settings — all tools, all persistent
+aictl enable --scope project   # same, but scoped to the current project only
+aictl enable --dry-run         # preview what would be written without writing anything
+```
+
+`aictl enable` combines `aictl hooks install`, `aictl otel enable`, and VS Code agent/hooks/MCP settings into a single idempotent command. Re-running it is safe — existing content is merged, not overwritten.
+
+> **WriteGuard:** commands that write to existing config files (`enable`, `deploy`, `hooks install`, `otel enable`) prompt for confirmation before modifying each file — `Y` to approve, `A` to approve all remaining, `N` to skip. Pass `--yes` where available or pipe input non-interactively to suppress prompts.
+
+Or use `aictl otel enable` for OTel-only setup:
 
 ```bash
 aictl otel enable              # all tools — writes shell profiles, VS Code
@@ -556,6 +573,9 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 | `aictl status --backtrace PID` | Sample a process stack trace |
 | `aictl serve` | Launch live web dashboard with REST API at localhost:8484 |
 | `aictl dashboard --root .` | Launch live terminal dashboard (TUI) |
+| `aictl enable` | One-shot: install hooks + OTel + VS Code agent settings (all tools, persistent) |
+| `aictl enable --scope project` | Same, scoped to current project (`.claude/settings.local.json`, `.vscode/settings.json`) |
+| `aictl enable --dry-run` | Preview what `aictl enable` would write without writing anything |
 | `aictl hooks install` | Configure Claude Code to push hook events to aictl |
 | `aictl hooks uninstall` | Remove aictl hook configuration from Claude Code settings |
 | `aictl otel enable` | Persist OTel config: shell profiles, VS Code, Codex, launchctl |
@@ -563,6 +583,9 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 | `aictl otel status` | Check OTel receiver health |
 | `aictl memory show --root .` | Show Claude Code auto-memory content |
 | `aictl memory stashes --root .` | List per-profile memory stashes |
+| `aictl db stats` | Show database size, table row counts, and time range |
+| `aictl db compact` | Downsample old data, delete expired rows, reclaim space |
+| `aictl db reset` | Delete the history database and initialise a fresh empty one |
 
 ### Import options
 
@@ -607,6 +630,22 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 | `--interval SECS` | Refresh interval in seconds (default: `5`) |
 | `--no-open` | Don't auto-open the browser |
 | `--no-monitor` | Disable live runtime overlay (process/network/filesystem collectors) |
+
+### Enable options
+
+| Option | Description |
+|--------|-------------|
+| `--scope user\|project` | `user`: global (default) — `project`: write to `cwd/.claude/` and `.vscode/` |
+| `--port PORT` | aictl server port (default: `$AICTL_PORT` or `8484`) |
+| `--dry-run` | Show what would be done without writing anything |
+
+### Database options (`aictl db`)
+
+| Option | Description |
+|--------|-------------|
+| `--db PATH` | Path to SQLite database (default: `~/.config/aictl/history.db`) |
+
+`aictl db reset` accepts `-y` / `--yes` to skip the confirmation prompt.
 
 ### Dashboard options (TUI)
 
@@ -730,6 +769,8 @@ Test suite includes:
 - **Snapshot aggregation tests** — verifies computed totals (files, tokens, live sessions, rates) from tool data.
 - **Storage tests** — SQLite history, metrics, telemetry, events CRUD.
 - **Monitor tests** — process classification, network snapshots, collector status.
+- **WriteGuard tests** — 48 tests covering interactive confirmation, approve-all, abort, non-TTY pass-through, per-command integration (deploy, hooks, otel).
+- **Exception discipline tests** — static analysis (AST + regex) enforcing no silent `except Exception: pass` swallows and no swallowed `click.Abort`; also validates exit-code 1 on partial failures.
 - **Integration tests** — end-to-end deploy/import/scan against fixture projects.
 
 ### Docker integration test (fresh-install validation)
