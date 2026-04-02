@@ -298,12 +298,10 @@ _DIFF_STYLES = [
     ("@@", "cyan", False), ("+", "green", False), ("-", "red", False),
 ]
 
-# Every emitter module that imports write_safe directly.
+# Modules whose write_safe we patch to capture intended file content.
+# All emitters route through emit_file() → write_safe() in aictl.utils.
 _WRITE_SAFE_TARGETS = [
-    "aictl.emitters.claude",
-    "aictl.emitters.copilot",
-    "aictl.emitters.cursor",
-    "aictl.emitters.windsurf",
+    "aictl.utils",
 ]
 
 

@@ -4,11 +4,11 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from ..resolver import Resolved
-from ..utils import write_safe, estimate_tokens, encode_scope, wrap_deployed, merge_json_block, merge_ignore_file, emit_file
+from ..utils import encode_scope, emit_file
+from ._helpers import emit_mcp_servers, emit_ignores
 
 NAME = "cursor"
 
@@ -37,14 +37,9 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
                 safe = encode_scope(src).replace("--", "-")
                 emit_file(rules / f"{safe}.mdc", _mdc(f"Context for {src}", globs=f"{src}/**", body=combined), dry_run, results)
 
-    if resolved.mcp_servers:
-        fp = root / ".cursor" / "mcp.json"
-        emit_file(fp, merge_json_block(fp, "mcpServers", resolved.mcp_servers) if not dry_run else json.dumps({"mcpServers": resolved.mcp_servers}, indent=2) + "\n", dry_run, results)
+    emit_mcp_servers(root / ".cursor" / "mcp.json", "mcpServers", resolved, dry_run, results)
 
-    # --- Ignores → .cursorignore ---
-    if resolved.ignores:
-        fp = root / ".cursorignore"
-        emit_file(fp, merge_ignore_file(fp, resolved.ignores) if not dry_run else "\n".join(resolved.ignores) + "\n", dry_run, results)
+    emit_ignores(root / ".cursorignore", resolved, dry_run, results)
 
     return results
 
