@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from aictl.monitoring.entity_state import EntityStateTracker
+from aictl.monitoring.correlator import EntityStateTracker
 
 
 def test_session_lifecycle():

@@ -1,17 +1,30 @@
 # aictl - Cross-platform AI Tool Context Control + Dashboard
 # Copyright (c) 2026 Zvi Schneider. MIT License.
-"""Show all resources for AI coding tools in the current project."""
+"""CLI commands: status + memory — status and memory inspection."""
 
 from __future__ import annotations
 
 import dataclasses
 import json
+import time
 from pathlib import Path
 
 import click
 
-from ..discovery import discover_all, backtrace_process, compute_token_budget, ToolResources
-from ..registry import expand_tool_filter
+from ..tools import (
+    discover_all,
+    backtrace_process,
+    compute_token_budget,
+    ToolResources,
+    expand_tool_filter,
+    TOOL_GROUPS,
+    TOOL_LABELS,
+    collect_agent_memory,
+    collect_mcp_status,
+)
+from ..dashboard.models import DashboardSnapshot, STATUS_COLOURS, SOURCE_LABELS
+from ..dashboard.html_report import render_html
+from ..memory import get_summary, list_stashes
 
 
 @click.command()
@@ -48,7 +61,7 @@ def status(root_dir, tool_filter, show_procs, bt_pid, show_budget, as_json, as_h
             client = ServerClient.try_connect()
             if client:
                 snap_dict = client.get_snapshot()
-                from ..dashboard.collector import DashboardSnapshot
+                from ..dashboard.models import DashboardSnapshot
                 snap = DashboardSnapshot.from_dict(snap_dict)
                 results = [t for t in snap.tools]
                 if as_json:
@@ -64,7 +77,6 @@ def status(root_dir, tool_filter, show_procs, bt_pid, show_budget, as_json, as_h
         results = discover_all(root, include_processes=include_procs)
 
     if tool_filter:
-        from ..registry import TOOL_GROUPS, TOOL_LABELS
         expanded = expand_tool_filter([tool_filter])
         results = [r for r in results if r.tool in expanded or r.tool == tool_filter]
         # Only error if the tool name is truly unknown (not in groups or labels)
@@ -84,10 +96,6 @@ def status(root_dir, tool_filter, show_procs, bt_pid, show_budget, as_json, as_h
 # ─── HTML output ─────────────────────────────────────────────────────
 
 def _emit_html(results: list[ToolResources], root: Path, out_file: str | None) -> None:
-    from ..dashboard.collector import DashboardSnapshot
-    from ..dashboard.html_report import render_html
-    from ..discovery import collect_agent_memory, collect_mcp_status
-    import time
 
     snap = DashboardSnapshot(
         timestamp=time.time(),
@@ -240,3 +248,44 @@ def _print_budget(results: list[ToolResources], root: str = "") -> None:
                 bold=True)
     click.echo(f"    Files never sent to LLM:      {budget['never_sent_count']}")
     click.echo()
+
+
+# ─── memory ──────────────────────────────────────────────────────────────────
+
+
+@click.group()
+def memory():
+    """Inspect Claude Code auto-memory (read-only)."""
+
+
+@memory.command()
+@click.option("-r", "--root", "root_dir", default=".", help="Root directory")
+def show(root_dir):
+    """Show active memory content and token cost."""
+    s = get_summary(Path(root_dir).resolve())
+    if not s:
+        click.secho("\nNo auto-memory found.\n", fg="bright_black")
+        return
+    click.secho(f"\n🧠  Active memory: {s['dir']}", bold=True)
+    click.secho(f"   Total: {s['total_tokens']} tokens loaded every session\n", fg="bright_black")
+    for f in s["files"]:
+        click.echo(f"   {click.style(f['file'], fg='cyan')} — {f['lines']} lines, {click.style(str(f['tokens'])+' tok', fg='yellow')}")
+        preview = [l for l in f["content"].splitlines() if l.strip() and not l.startswith("#")][:3]
+        for line in preview:
+            click.secho(f"     {line}", fg="bright_black")
+    click.echo()
+
+
+@memory.command()
+@click.option("-r", "--root", "root_dir", default=".", help="Root directory")
+def stashes(root_dir):
+    """List per-profile memory stashes."""
+    items = list_stashes(Path(root_dir).resolve())
+    if not items:
+        click.secho("\nNo memory stashes.\n", fg="bright_black")
+        return
+    click.secho("\n🧠  Memory stashes:\n", bold=True)
+    for s in items:
+        marker = click.style("●", fg="green") if s["profile"] == "(active)" else click.style("○", fg="bright_black")
+        click.echo(f"   {marker} {s['profile']} — {s['files']} file(s), {s['lines']} lines")
+    click.secho("\n   Swapped automatically on profile switch.\n", fg="bright_black")

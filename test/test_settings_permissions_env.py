@@ -8,8 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from aictl.parser import parse_aictx, Setting, Permission, EnvVars
-from aictl.scanner import scan
+from aictl.context import parse_aictx, Setting, Permission, EnvVars, scan
 from aictl.resolver import resolve
 from aictl.emitters import claude as claude_emit
 

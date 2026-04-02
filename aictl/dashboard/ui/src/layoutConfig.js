@@ -46,7 +46,7 @@ export const LAYOUT = {
     { id: 'events',   label: 'Events & Stats',   icon: '\uD83D\uDCC8', key: '5' },
     { id: 'budget',   label: 'Token Budget',     icon: '\uD83D\uDCB0', key: '6' },
     { id: 'sessions', label: 'Sessions',         icon: '\uD83D\uDD04', key: '7' },
-    { id: 'samples',  label: 'Metrics Explorer', icon: '\uD83D\uDD2C', key: '8' },
+    { id: 'analytics', label: 'Analytics',        icon: '\uD83D\uDD2C', key: '8' },
     { id: 'flow',     label: 'Session Flow',      icon: '\uD83D\uDD00', key: '9' },
     { id: 'config',   label: 'Configuration',     icon: '\u2699\uFE0F', key: '0' },
   ],

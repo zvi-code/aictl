@@ -11,7 +11,7 @@ from unittest.mock import patch
 import pytest
 from click.testing import CliRunner
 
-from aictl.discovery import (
+from aictl.tools import (
     discover_all,
     compute_token_budget,
     _process_display_name,
@@ -28,7 +28,7 @@ def _discover_tool(root: Path, tool: str) -> ToolResources:
 
     When tool is a group name (e.g. "copilot"), merges all sub-tools.
     """
-    from aictl.registry import expand_tool_filter
+    from aictl.tools import expand_tool_filter
     results = discover_all(root, tools=[tool])
     if not results:
         return ToolResources(tool=tool, label=tool)

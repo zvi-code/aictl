@@ -13,23 +13,30 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
+import subprocess
 import sys
 import time
 import threading
+import webbrowser
 from pathlib import Path
 
 from .dashboard.models import DashboardSnapshot, DashboardTool
 from .data.schema import metric_name as M
-from .discovery import (
+from .tools import (
     ResourceFile,
     ToolResources,
     collect_agent_memory,
     collect_mcp_status,
     discover_all,
+    tool_vendor,
+    tool_hosts,
+    tool_is_meta,
+    TOOL_LABELS,
+    get_registry,
 )
 from .monitoring.tool_config import collect_tool_configs
 from .monitoring.tool_telemetry import collect_tool_telemetry, scan_agent_teams
-from .store import AllowedPaths, SnapshotStore
 
 
 # ─── Persistent live monitor ─────────────────────────────────────
@@ -188,7 +195,7 @@ class RefreshLoop(threading.Thread):
         """Read cached discover_all() result from the DiscoveryCollector."""
         if not self._monitor or not self._monitor._runtime:
             return None
-        from .monitoring.collectors.discovery import DiscoveryCollector
+        from .monitoring.runtime import DiscoveryCollector
         for c in self._monitor._runtime.collectors:
             if isinstance(c, DiscoveryCollector) and c.latest is not None:
                 return c.latest
@@ -239,10 +246,10 @@ def collect(
                 _sink.emit_if_changed(M("aictl.file.tokens"), float(f.tokens), ftags, ts=ts)
                 _sink.emit_if_changed(M("aictl.file.bytes"), float(f.size), ftags, ts=ts)
             for m in tool_res.mcp_servers:
-                mname = m.get("name", "") if isinstance(m, dict) else getattr(m, "name", "")
-                status = m.get("status", "") if isinstance(m, dict) else getattr(m, "status", "")
+                mname = m.get("name", "")
                 if mname:
-                    _sink.emit_if_changed(M("aictl.mcp.status"), 1.0 if status == "running" else 0.0,
+                    _sink.emit_if_changed(M("aictl.mcp.status"),
+                               1.0 if m.get("status") == "running" else 0.0,
                                {"aictl.tool": tool, "aictl.mcp.server": mname}, ts=ts)
 
     live_monitor = _live_monitor_override if _live_monitor_override is not None else {}
@@ -252,50 +259,39 @@ def collect(
     telemetry_reports = collect_tool_telemetry(root_path)
     tool_telemetry = [r.to_dict() for r in telemetry_reports]
     agent_teams = scan_agent_teams(root_path)
-    tool_configs_list = collect_tool_configs(root_path)
-    tool_configs = [c.to_dict() for c in tool_configs_list]
+    tool_configs = [c.to_dict() for c in collect_tool_configs(root_path)]
     _merge_telemetry_into_tools(tools, telemetry_reports)
 
     # Emit enrichment data through sink
     if _sink:
         ts = time.time()
         for m in agent_memory:
-            path = m.file if hasattr(m, "file") else ""
-            tokens = m.tokens if hasattr(m, "tokens") else 0
-            source = m.source if hasattr(m, "source") else ""
-            if path:
-                _sink.emit_if_changed(M("aictl.memory.tokens"), float(tokens),
-                           {"file.path": path, "aictl.source": source}, ts=ts)
+            if m.file:
+                _sink.emit_if_changed(M("aictl.memory.tokens"), float(m.tokens),
+                           {"file.path": m.file, "aictl.source": m.source}, ts=ts)
         for s in mcp_detail:
-            name = s.name if hasattr(s, "name") else (s.get("name", "") if isinstance(s, dict) else "")
-            stool = s.tool if hasattr(s, "tool") else (s.get("tool", "") if isinstance(s, dict) else "")
-            status_val = s.status if hasattr(s, "status") else (s.get("status", "") if isinstance(s, dict) else "")
-            if name:
-                _sink.emit_if_changed(M("aictl.mcp.detail.status"), 1.0 if status_val == "running" else 0.0,
-                           {"aictl.mcp.server": name, "aictl.tool": stool}, ts=ts)
+            if s.name:
+                _sink.emit_if_changed(M("aictl.mcp.detail.status"),
+                           1.0 if s.status == "running" else 0.0,
+                           {"aictl.mcp.server": s.name, "aictl.tool": s.tool}, ts=ts)
         for r in telemetry_reports:
-            t = r.tool if hasattr(r, "tool") else ""
-            if t:
-                rtags = {"tool": t, "source": getattr(r, "source", "")}
-                _sink.emit(M("gen_ai.client.token.usage.verified"), float(getattr(r, "input_tokens", 0)),
+            if r.tool:
+                rtags = {"tool": r.tool, "source": r.source}
+                _sink.emit(M("gen_ai.client.token.usage.verified"), float(r.input_tokens),
                            {**rtags, "gen_ai.token.type": "input"}, ts=ts)
-                _sink.emit(M("gen_ai.client.token.usage.verified"), float(getattr(r, "output_tokens", 0)),
+                _sink.emit(M("gen_ai.client.token.usage.verified"), float(r.output_tokens),
                            {**rtags, "gen_ai.token.type": "output"}, ts=ts)
-                _sink.emit(M("aictl.telemetry.sessions"), float(getattr(r, "total_sessions", 0)), rtags, ts=ts)
-                _sink.emit(M("aictl.telemetry.messages"), float(getattr(r, "total_messages", 0)), rtags, ts=ts)
-                cost = getattr(r, "cost_usd", 0)
-                if cost:
-                    _sink.emit(M("aictl.telemetry.cost"), float(cost), rtags, ts=ts)
-        for c in tool_configs_list:
-            t = c.tool if hasattr(c, "tool") else ""
-            if t:
-                model = getattr(c, "model", None)
-                if model:
-                    _sink.emit_if_changed(M("aictl.config.model"), 1.0,
-                               {"aictl.tool": t, "gen_ai.request.model": model}, ts=ts)
+                _sink.emit(M("aictl.telemetry.sessions"), float(r.total_sessions), rtags, ts=ts)
+                _sink.emit(M("aictl.telemetry.messages"), float(r.total_messages), rtags, ts=ts)
+                if r.cost_usd:
+                    _sink.emit(M("aictl.telemetry.cost"), float(r.cost_usd), rtags, ts=ts)
+        for c in tool_configs:
+            if c.get("tool") and c.get("model"):
+                _sink.emit_if_changed(M("aictl.config.model"), 1.0,
+                           {"aictl.tool": c["tool"], "gen_ai.request.model": c["model"]}, ts=ts)
 
-    monitor_events = live_monitor.get("events", []) if live_monitor else []
-    monitor_sessions = live_monitor.get("sessions", []) if live_monitor else []
+    monitor_events = live_monitor.get("events", [])
+    monitor_sessions = live_monitor.get("sessions", [])
 
     return DashboardSnapshot(
         timestamp=time.time(),
@@ -312,33 +308,43 @@ def collect(
     )
 
 
+_S2L_CATEGORY: dict[str, str] = {
+    "yes": "always_loaded",
+    "on-demand": "on_demand",
+    "conditional": "conditional",
+    "partial": "conditional",
+}
+
+
 def _compute_token_breakdown(files: list[ResourceFile]) -> dict:
-    always = on_demand = conditional = never = 0
+    cats: dict[str, int] = {"always_loaded": 0, "on_demand": 0, "conditional": 0, "never_sent": 0}
     by_kind: dict[str, int] = {}
     for f in files:
         tok = f.tokens
-        s2l = (f.sent_to_llm or "").lower()
-        if s2l == "yes":
-            always += tok
-        elif s2l == "on-demand":
-            on_demand += tok
-        elif s2l in ("conditional", "partial"):
-            conditional += tok
-        else:
-            never += tok
-        kind = f.kind or "other"
-        by_kind[kind] = by_kind.get(kind, 0) + tok
-    return {
-        "always_loaded": always, "on_demand": on_demand,
-        "conditional": conditional, "never_sent": never,
-        "total": always + on_demand + conditional + never,
-        "by_kind": by_kind,
-    }
+        cat = _S2L_CATEGORY.get((f.sent_to_llm or "").lower(), "never_sent")
+        cats[cat] += tok
+        by_kind[f.kind or "other"] = by_kind.get(f.kind or "other", 0) + tok
+    return {**cats, "total": sum(cats.values()), "by_kind": by_kind}
+
+
+def _sum_process_stat(processes, attr: str) -> float:
+    """Sum a numeric string attribute (cpu_pct or mem_mb) across processes."""
+    return sum(
+        float(getattr(p, attr))
+        for p in processes
+        if hasattr(p, attr) and str(getattr(p, attr)).replace(".", "", 1).isdigit()
+    )
+
+
+def _make_dt(name: str) -> DashboardTool:
+    return DashboardTool(
+        tool=name, label=TOOL_LABELS.get(name, name),
+        vendor=tool_vendor(name), host=",".join(tool_hosts(name)),
+        meta=tool_is_meta(name),
+    )
 
 
 def _merge_dashboard_tools(discovered: list[ToolResources], live_monitor: dict) -> list[DashboardTool]:
-    from .registry import tool_vendor, tool_hosts, tool_is_meta, TOOL_LABELS, get_registry
-
     tools_by_name: dict[str, DashboardTool] = {}
 
     # Seed with all tracked tools. Skip internal/infrastructure entries that
@@ -346,17 +352,9 @@ def _merge_dashboard_tools(discovered: list[ToolResources], live_monitor: dict) 
     ui_skip = {"aictl", "any"}
     try:
         registry = get_registry()
-        all_tool_names = set()
-        for s in registry.path_specs():
-            all_tool_names.add(s.ai_tool)
-        for s in registry.process_specs():
-            all_tool_names.add(s.ai_tool)
+        all_tool_names = {s.ai_tool for s in registry.path_specs()} | {s.ai_tool for s in registry.process_specs()}
         for name in sorted(all_tool_names - ui_skip):
-            tools_by_name[name] = DashboardTool(
-                tool=name, label=TOOL_LABELS.get(name, name),
-                vendor=tool_vendor(name), host=",".join(tool_hosts(name)),
-                meta=tool_is_meta(name),
-            )
+            tools_by_name[name] = _make_dt(name)
     except Exception:
         pass
 
@@ -364,13 +362,7 @@ def _merge_dashboard_tools(discovered: list[ToolResources], live_monitor: dict) 
     for tr in discovered:
         if tr.tool in ui_skip:
             continue
-        dt = tools_by_name.get(tr.tool)
-        if dt is None:
-            dt = DashboardTool(
-                tool=tr.tool, label=TOOL_LABELS.get(tr.tool, tr.tool),
-                vendor=tool_vendor(tr.tool), host=",".join(tool_hosts(tr.tool)),
-                meta=tool_is_meta(tr.tool),
-            )
+        dt = tools_by_name.get(tr.tool) or _make_dt(tr.tool)
         dt.files = list(tr.files)
         dt.processes = list(tr.processes)
         dt.mcp_servers = list(tr.mcp_servers)
@@ -383,14 +375,7 @@ def _merge_dashboard_tools(discovered: list[ToolResources], live_monitor: dict) 
         tool_name = live_report.get("tool", "")
         if not tool_name or tool_name in ui_skip:
             continue
-        dt = tools_by_name.get(tool_name)
-        if dt is None:
-            dt = DashboardTool(
-                tool=tool_name, label=TOOL_LABELS.get(tool_name, tool_name),
-                vendor=tool_vendor(tool_name), host=",".join(tool_hosts(tool_name)),
-                meta=tool_is_meta(tool_name),
-            )
-            tools_by_name[tool_name] = dt
+        dt = tools_by_name.setdefault(tool_name, _make_dt(tool_name))
         dt.live = live_report
 
     # Sort: active first, then by file count
@@ -409,7 +394,7 @@ def _merge_telemetry_into_tools(tools: list[DashboardTool], telemetry_reports) -
         dt.live.setdefault("telemetry", {
             "source": report.source, "confidence": report.confidence,
             "input_tokens": report.input_tokens, "output_tokens": report.output_tokens,
-            "cache_read": report.cache_read_tokens, "cache_creation": report.cache_creation_tokens,
+            "cache_read_tokens": report.cache_read_tokens, "cache_creation_tokens": report.cache_creation_tokens,
             "total_sessions": report.total_sessions, "total_messages": report.total_messages,
             "by_model": report.by_model, "cost_usd": report.cost_usd,
             "active_session_input": report.active_session_input,
@@ -422,8 +407,6 @@ def _merge_telemetry_into_tools(tools: list[DashboardTool], telemetry_reports) -
 
 def _kill_stale_server(port: int) -> None:
     """Kill a previous aictl on *port*, or abort if the port is taken by something else."""
-    import signal
-    import subprocess
     try:
         result = subprocess.run(
             ["lsof", "-ti", f"tcp:{port}"],
@@ -479,10 +462,10 @@ def start_server(
     # Initialize datapoint file logger (if configured)
     dp_logger = None
     try:
-        from .config import load_config
+        from .platforms import load_config
         cfg = load_config()
         if cfg.logging_enabled:
-            from .datapoint_logger import DatapointLogger
+            from .sink import DatapointLogger
             dp_logger = DatapointLogger(
                 log_dir=cfg.logging_dir,
                 max_bytes=cfg.logging_max_file_bytes,
@@ -538,12 +521,17 @@ def start_server(
     # Start HTTP server
     server = _DashboardHTTPServer((host, port), _DashboardHandler,
                                   store, allowed, root)
+
+    # Register SSE pre-serialization callback so build_sse_summary runs once
+    # per update cycle (in the RefreshLoop thread) instead of per-SSE-client.
+    from .dashboard.web_server import build_sse_summary as _build_sse
+    import json as _json_mod
+    store._sse_builder = lambda snap: _json_mod.dumps(_build_sse(snap))
     url = f"http://{host}:{port}"
     print(f"  aictl serve — dashboard at {url}", file=sys.stderr)
     print(f"  press Ctrl-C to stop\n", file=sys.stderr)
 
     if open_browser:
-        import webbrowser
         webbrowser.open(url)
 
     try:
@@ -558,3 +546,418 @@ def start_server(
         sink.close()
         if db:
             db.close()
+
+
+# ── SnapshotStore / AllowedPaths ────────────────────────────────────
+
+import collections
+import json as _json
+import os as _os
+import threading as _threading
+import time as _time
+from typing import TYPE_CHECKING as _TYPE_CHECKING
+
+from .dashboard.models import DashboardSnapshot as _DashboardSnapshot
+
+if _TYPE_CHECKING:
+    from .sink import SampleSink as _SampleSink
+    from .storage import HistoryDB as _HistoryDB
+
+
+# ─── Metric emission ────────────────────────────────────────────
+
+HISTORY_TUPLE_LEN = 11  # bump when adding fields to the history tuple
+
+
+# emit_snapshot_to_sink DELETED.
+#
+# All metrics are now emitted at the point of collection:
+#   cpu.core.*            → PsutilProcessCollector
+#   proc.{pid}.cpu/mem    → PsutilProcessCollector
+#   file.tokens/size      → DiscoveryCollector
+#   discovery.*           → DiscoveryCollector
+#   mcp.status            → DiscoveryCollector
+#   memory.tokens         → collect() enrichment block
+#   fs.change/size        → WatchdogFileCollector
+#   telemetry.*           → StructuredTelemetryCollector
+#   net.{pid}.*           → Network collectors
+#   tool.*                → SessionCorrelator.tool_reports()
+#   collector.*.status    → BaseCollector.report_status()
+
+
+# ─── Thread-safe snapshot store ──────────────────────────────────
+
+class SnapshotStore:
+    """Thread-safe snapshot storage with version-based change notification.
+
+    Optionally backed by a HistoryDB for persistence across restarts.
+    Uses SampleSink for universal metric emission.
+    """
+
+    def __init__(self, db: "_HistoryDB | None" = None, sink: "_SampleSink | None" = None) -> None:
+        self._snap: _DashboardSnapshot | None = None
+        self._snap_json_bytes: bytes = b""  # pre-serialized snapshot (compact, slim)
+        self._version: int = 0
+        self._lock = _threading.Lock()
+        self._condition = _threading.Condition(self._lock)
+        # Pre-serialized SSE JSON (set by _sse_builder callback)
+        self._sse_json: str = ""
+        # Callback to build SSE JSON from snapshot (set by web_server)
+        self._sse_builder: "callable | None" = None
+        # Ring buffer for global time-series sparklines.
+        # At ~5.86s/tick, 360 entries ≈ 35 min.
+        self._history: collections.deque[tuple] = collections.deque(maxlen=360)
+        # Per-tool history: {tool_name: deque[(ts, cpu, mem_mb, tokens, traffic_bps)]}
+        self._tool_history: dict[str, collections.deque] = {}
+        # SQLite persistence (optional)
+        self._db = db
+        # Universal metric sink
+        self._sink = sink
+        if db:
+            self._load_from_db()
+
+    def _load_from_db(self) -> None:
+        """Populate ring buffers from SQLite so charts start with history."""
+        if not self._db:
+            return
+        try:
+            since = _time.time() - 3600  # load last 1 hour
+            data = self._db.query_metrics(since=since)
+            if data["ts"]:
+                me_list = data.get("memory_entries") or [0] * len(data["ts"])
+                for i in range(len(data["ts"])):
+                    row = (
+                        data["ts"][i], data["files"][i], data["tokens"][i],
+                        data["cpu"][i], data["mem_mb"][i], data["mcp"][i],
+                        data["mem_tokens"][i], me_list[i],
+                        data["live_sessions"][i],
+                        data["live_tokens"][i], data["live_in_rate"][i],
+                        data["live_out_rate"][i],
+                    )
+                    self._history.append(row)
+            # Per-tool history
+            tool_data = self._db.query_tool_metrics(since=since)
+            for tool_name, td in tool_data.items():
+                dq = collections.deque(maxlen=120)
+                for i in range(len(td["ts"])):
+                    dq.append((td["ts"][i], td["cpu"][i], td["mem_mb"][i],
+                               td["tokens"][i], td["traffic"][i]))
+                self._tool_history[tool_name] = dq
+        except Exception:
+            pass  # don't crash server if DB read fails
+
+    def update(self, snap: _DashboardSnapshot) -> None:
+        with self._condition:
+            self._snap = snap
+            self._version += 1
+            row = (
+                snap.timestamp, snap.total_files, snap.total_tokens,
+                snap.total_cpu, snap.total_mem_mb,
+                snap.total_mcp_servers, snap.total_memory_tokens,
+                snap.total_memory_entries,
+                snap.total_live_sessions, snap.total_live_estimated_tokens,
+                snap.total_live_inbound_rate_bps, snap.total_live_outbound_rate_bps,
+            )
+            # Clear history if schema changed (prevents zip unpack crash)
+            if self._history and len(self._history[0]) != len(row):
+                self._history.clear()
+            self._history.append(row)
+
+            # Per-tool history
+            ts = snap.timestamp
+            tool_rows = []
+            for t in snap.tools:
+                if t.tool == "aictl":
+                    continue
+                cpu = _sum_process_stat(t.processes, "cpu_pct")
+                mem = _sum_process_stat(t.processes, "mem_mb")
+                tok = sum(f.tokens for f in t.files)
+                traffic = 0.0
+                if t.live:
+                    traffic = float(t.live.get("outbound_rate_bps", 0)) + float(t.live.get("inbound_rate_bps", 0))
+                if t.tool not in self._tool_history:
+                    self._tool_history[t.tool] = collections.deque(maxlen=120)  # ~12 min
+                self._tool_history[t.tool].append((ts, cpu, mem, tok, traffic))
+                tool_rows.append((t.tool, cpu, mem, tok, traffic))
+
+            # Pre-serialize snapshot + SSE BEFORE notifying clients.
+            # This ensures readers see data matching the version they woke for.
+            try:
+                self._snap_json_bytes = snap.to_json_slim().encode("utf-8")
+            except Exception:
+                self._snap_json_bytes = b""
+            if self._sse_builder:
+                try:
+                    self._sse_json = self._sse_builder(snap)
+                except Exception:
+                    self._sse_json = ""
+
+            self._condition.notify_all()
+
+        # Persist to SQLite (non-blocking — HistoryDB buffers internally)
+        if self._db:
+            try:
+                from .storage import MetricsRow, ToolMetricsRow, EventRow
+                self._db.append_metrics(MetricsRow(
+                    ts=snap.timestamp, files=snap.total_files,
+                    tokens=snap.total_tokens, cpu=snap.total_cpu,
+                    mem_mb=snap.total_mem_mb, mcp=snap.total_mcp_servers,
+                    mem_tokens=snap.total_memory_tokens,
+                    memory_entries=snap.total_memory_entries,
+                    live_sessions=snap.total_live_sessions,
+                    live_tokens=snap.total_live_estimated_tokens,
+                    live_in_rate=snap.total_live_inbound_rate_bps,
+                    live_out_rate=snap.total_live_outbound_rate_bps,
+                ))
+                self._db.append_tool_metrics([
+                    ToolMetricsRow(ts=snap.timestamp, tool=name,
+                                   cpu=cpu, mem_mb=mem, tokens=tok, traffic=tr)
+                    for name, cpu, mem, tok, tr in tool_rows
+                ])
+                # Persist events from live monitor
+                if snap.events:
+                    self._db.append_events([
+                        EventRow(ts=e.get("ts", snap.timestamp),
+                                 tool=e.get("tool", ""),
+                                 kind=e.get("kind", ""),
+                                 detail=e.get("detail", {}),
+                                 session_id=e.get("detail", {}).get("session_id", ""),
+                                 pid=int(e.get("detail", {}).get("pid", 0) or 0))
+                        for e in snap.events if e.get("tool") and e.get("kind")
+                    ])
+                    # Also write to sessions table for session_start/end events
+                    self._persist_session_events(snap.events, snap.timestamp)
+                # Persist telemetry snapshots (from stats-cache, events.jsonl, etc.)
+                if snap.tool_telemetry:
+                    from .storage import TelemetryRow
+                    self._db.append_telemetry_batch([
+                        TelemetryRow(
+                            ts=snap.timestamp, tool=t.get("tool", ""),
+                            source=t.get("source", ""),
+                            confidence=t.get("confidence", 0),
+                            input_tokens=t.get("input_tokens", 0),
+                            output_tokens=t.get("output_tokens", 0),
+                            cache_read_tokens=t.get("cache_read_tokens", 0),
+                            cache_creation_tokens=t.get("cache_creation_tokens", 0),
+                            total_sessions=t.get("total_sessions", 0),
+                            total_messages=t.get("total_messages", 0),
+                            cost_usd=t.get("cost_usd", 0),
+                            model=t.get("model", ""),
+                            by_model=t.get("by_model", {}),
+                        )
+                        for t in snap.tool_telemetry if t.get("tool")
+                    ])
+                # Persist agent teams (agents + per-turn requests)
+                if snap.agent_teams:
+                    self._persist_agent_teams(snap.agent_teams, snap.timestamp)
+
+                # All metric emission now happens at collection time
+                # (collectors + DiscoveryCollector + collect() enrichment).
+                # No snapshot-level emission needed.
+
+                # Refresh dynamic source provenance for the datapoint catalog.
+                try:
+                    from .sink import update_provenance
+                    update_provenance(self._db, snap)
+                except Exception:
+                    pass  # provenance is best-effort
+            except Exception:
+                pass  # don't crash server if DB write fails
+
+    def _persist_agent_teams(self, agent_teams: list[dict], snapshot_ts: float) -> None:
+        """Write agent team data to the sessions, agents, and requests tables."""
+        if not self._db or not agent_teams:
+            return
+        try:
+            from .storage import AgentRow, RequestRow, SessionRow
+            from .monitoring.tool_telemetry import _parse_iso_ts
+            for team in agent_teams:
+                session_id = team.get("session_id", "")
+                # Upsert a session row for this UUID session with aggregated token totals
+                if session_id:
+                    agents = team.get("agents", [])
+                    ts_vals = [_parse_iso_ts(a.get("started_at", "")) for a in agents]
+                    ts_vals = [t for t in ts_vals if t > 0]
+                    session_started = min(ts_vals) if ts_vals else snapshot_ts
+                    self._db.upsert_session(SessionRow(
+                        session_id=session_id,
+                        tool="claude-code",
+                        started_at=session_started,
+                        source="claude-code-jsonl",
+                        input_tokens=team.get("total_input_tokens", 0),
+                        output_tokens=team.get("total_output_tokens", 0),
+                    ))
+                for agent in team.get("agents", []):
+                    agent_id = agent.get("agent_id", "")
+                    if not agent_id:
+                        continue
+                    self._db.upsert_agent(AgentRow(
+                        agent_id=agent_id,
+                        session_id=session_id,
+                        tool="claude-code",
+                        task=agent.get("task", ""),
+                        model=agent.get("model", ""),
+                        is_sidechain=1 if agent.get("is_sidechain") else 0,
+                        started_at=_parse_iso_ts(agent.get("started_at", "")),
+                        ended_at=_parse_iso_ts(agent.get("ended_at", "")) or None,
+                        completed=1 if agent.get("completed") else 0,
+                        input_tokens=agent.get("input_tokens", 0),
+                        output_tokens=agent.get("output_tokens", 0),
+                        cache_read_tokens=agent.get("cache_read_tokens", 0),
+                        cache_creation_tokens=agent.get("cache_creation_tokens", 0),
+                    ))
+                    # Write per-turn requests from this agent's JSONL
+                    for turn in agent.get("turns", []):
+                        self._db.append_request(RequestRow(
+                            ts=snapshot_ts,
+                            source_ts=turn.get("source_ts", 0.0),
+                            session_id=session_id,
+                            agent_id=agent_id,
+                            tool="claude-code",
+                            model=turn.get("model", "") or agent.get("model", ""),
+                            input_tokens=turn.get("input_tokens", 0),
+                            output_tokens=turn.get("output_tokens", 0),
+                            cache_read_tokens=turn.get("cache_read_tokens", 0),
+                            cache_creation_tokens=turn.get("cache_creation_tokens", 0),
+                            source="claude-code-jsonl",
+                        ))
+        except Exception:
+            pass  # best-effort
+
+    def _persist_session_events(self, events: list[dict], fallback_ts: float) -> None:
+        """Write session_start/session_end events to the sessions table."""
+        if not self._db:
+            return
+        try:
+            from .storage import SessionRow
+            for e in events:
+                kind = e.get("kind", "")
+                detail = e.get("detail", {})
+                sid = detail.get("session_id", "")
+                if not sid:
+                    continue
+                if kind == "session_start":
+                    ev_pid = int(detail.get("pid", 0) or 0)
+                    self._db.upsert_session(SessionRow(
+                        session_id=sid,
+                        tool=e.get("tool", ""),
+                        pid=ev_pid,
+                        started_at=e.get("ts", fallback_ts),
+                        project_path=detail.get("project", ""),
+                        source="correlator",
+                    ))
+                    self._db.link_session_process(
+                        sid, ev_pid, tool=e.get("tool", ""))
+                elif kind == "session_end":
+                    self._db.update_session_end(
+                        sid,
+                        ended_at=e.get("ts", fallback_ts),
+                        input_tokens=detail.get("input_tokens", 0),
+                        output_tokens=detail.get("output_tokens", 0),
+                        files_modified=detail.get("files_modified", 0),
+                    )
+        except Exception:
+            pass  # best-effort
+
+    def wait_for_update(self, known_version: int,
+                        timeout: float = 30.0) -> tuple[_DashboardSnapshot | None, int]:
+        """Block until a new version is available or timeout."""
+        with self._condition:
+            self._condition.wait_for(
+                lambda: self._version > known_version, timeout=timeout)
+            return self._snap, self._version
+
+    @property
+    def snapshot(self) -> _DashboardSnapshot | None:
+        with self._lock:
+            return self._snap
+
+    @property
+    def snapshot_json_bytes(self) -> bytes:
+        """Pre-serialized compact JSON snapshot (slim agent_teams)."""
+        return self._snap_json_bytes
+
+    @property
+    def sse_json(self) -> str:
+        """Pre-serialized SSE summary JSON (set by web_server after build)."""
+        return self._sse_json
+
+    @sse_json.setter
+    def sse_json(self, value: str) -> None:
+        self._sse_json = value
+
+    @property
+    def version(self) -> int:
+        with self._lock:
+            return self._version
+
+    def history_json(self) -> str:
+        """Return time-series history as column-major JSON (uPlot native format)."""
+        from .storage import METRICS_KEYS
+        with self._lock:
+            rows = list(self._history)
+        if not rows:
+            return _json.dumps({k: [] for k in METRICS_KEYS})
+        # Transpose rows → columns; order must match METRICS_KEYS
+        cols = zip(*rows)
+        _ROUND2 = {"cpu", "live_in_rate", "live_out_rate"}
+        _ROUND1 = {"mem_mb"}
+        result = {}
+        for key, col in zip(METRICS_KEYS, cols):
+            vals = list(col)
+            if key in _ROUND1:
+                result[key] = [round(v, 1) for v in vals]
+            elif key in _ROUND2:
+                result[key] = [round(v, 2) for v in vals]
+            else:
+                result[key] = vals
+        # Per-tool history
+        tool_hist: dict[str, dict] = {}
+        for tool_name, dq in self._tool_history.items():
+            if not dq:
+                continue
+            t_ts, t_cpu, t_mem, t_tok, t_traffic = zip(*dq)
+            tool_hist[tool_name] = {
+                "ts": list(t_ts),
+                "cpu": [round(v, 1) for v in t_cpu],
+                "mem_mb": [round(v, 1) for v in t_mem],
+                "tokens": list(t_tok),
+                "traffic": [round(v, 2) for v in t_traffic],
+            }
+        result["by_tool"] = tool_hist
+        return _json.dumps(result)
+
+
+# ─── File path whitelist ─────────────────────────────────────────
+
+class AllowedPaths:
+    """Maintains the set of file paths that may be served via /api/file."""
+
+    def __init__(self) -> None:
+        self._paths: set[str] = set()
+        self._lock = _threading.Lock()
+
+    def update(self, snap: _DashboardSnapshot) -> None:
+        paths: set[str] = set()
+        for tr in snap.tools:
+            for f in tr.files:
+                try:
+                    paths.add(_os.path.realpath(f.path))
+                except (OSError, ValueError):
+                    pass
+        for mem in snap.agent_memory:
+            if mem.file:
+                try:
+                    paths.add(_os.path.realpath(mem.file))
+                except (OSError, ValueError):
+                    pass
+        with self._lock:
+            self._paths = paths
+
+    def is_allowed(self, path: str) -> bool:
+        try:
+            real = _os.path.realpath(path)
+        except (OSError, ValueError):
+            return False
+        with self._lock:
+            return real in self._paths

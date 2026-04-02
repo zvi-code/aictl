@@ -18,7 +18,7 @@ import pytest
 from aictl.storage import (
     EventRow, FileEntry, HistoryDB, Sample, TelemetryRow,
 )
-from aictl.store import AllowedPaths, SnapshotStore
+from aictl.orchestrator import AllowedPaths, SnapshotStore
 from aictl.dashboard.models import DashboardSnapshot, DashboardTool
 
 

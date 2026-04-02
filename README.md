@@ -16,7 +16,7 @@ Runs on macOS, Linux, and Windows. No cloud dependency. Zero config to start.
 
 ### Contextual Context Management
 
-`.context.toml` is a single source of intent — what the AI should know, in human language — with multiple realizations per tool. Define instructions, commands, skills, MCP servers, LSP servers, hooks, and scoped rules once; `aictl deploy` translates them into the native format of each target tool (Claude Code, GitHub Copilot, Cursor, Windsurf). Place `.context.toml` at the project root for global context, and in subdirectories for path-scoped context — not all context of a large project needs to be loaded for every task.
+`.context.toml` is a single source of intent — what the AI should know, in human language — with multiple realizations per tool. Define instructions, commands, skills, MCP servers, LSP servers, hooks, and scoped rules once; `aictl ctx deploy` translates them into the native format of each target tool (Claude Code, GitHub Copilot, Cursor, Windsurf). Place `.context.toml` at the project root for global context, and in subdirectories for path-scoped context — not all context of a large project needs to be loaded for every task.
 
 Profiles switch intent by mode — the same codebase, different mental models. You define whatever modes make sense for your project; here are some **Examples**:
 
@@ -29,7 +29,7 @@ Profiles switch intent by mode — the same codebase, different mental models. Y
 
 
 
-Each profile carries its own instructions, commands, MCP servers, hooks, and agent memory — switch with `aictl deploy --profile docs` and the entire AI context rotates.
+Each profile carries its own instructions, commands, MCP servers, hooks, and agent memory — switch with `aictl ctx deploy --profile docs` and the entire AI context rotates.
 
 - **Deploy** — scan the `.context.toml` tree, translate into native files for each tool, with profile-aware memory swap on every switch
 - **Import** — reverse-generate `.context.toml` from existing native files, so nothing already written is lost
@@ -51,7 +51,7 @@ Each profile carries its own instructions, commands, MCP servers, hooks, and age
 
 <img src="docs/screenshots/dashboard-light.png" width="100%" alt="Dashboard overview with inventory stats, live monitor, traffic bars, and monitoring health table">
 
-*Live web dashboard (`aictl serve`) — inventory stats, live monitor with active sessions and traffic rates, per-tool status with token counts and OTel diagnostics. [More screenshots below.](#screenshots)*
+*Live web dashboard (`aictl daemon serve`) — inventory stats, live monitor with active sessions and traffic rates, per-tool status with token counts and OTel diagnostics. [More screenshots below.](#screenshots)*
  
 ## Session Flow
 
@@ -76,22 +76,22 @@ pipx install ".[all]"
 
 # 2. Scaffold context for your project
 cd my-project
-aictl init                          # creates .context.toml
+aictl ctx init                      # creates .context.toml
 
 # 3. Start the dashboard (opens browser automatically)
-aictl serve
+aictl daemon serve
 
 # 4. Use any AI tool (Claude Code, Copilot, Cursor…), then reload the dashboard
 #    to see sessions, tokens, processes, and MCP servers across all tools.
 
 # 5. Deploy your context to all tools
-aictl deploy --profile debug        # translates .context.toml → CLAUDE.md, Copilot rules, Cursor rules, …
+aictl ctx deploy --profile debug    # translates .context.toml → CLAUDE.md, Copilot rules, Cursor rules, …
 ```
 
 To connect live AI telemetry (token counts, latency, session traces):
 ```bash
 aictl enable                        # one-shot: hooks + OTel + VS Code agent settings (persistent)
-aictl serve                         # now receives OTel data from Claude Code, Copilot, Codex
+aictl daemon serve                  # now receives OTel data from Claude Code, Copilot, Codex
 ```
 
 Or just for the current shell session:
@@ -137,13 +137,13 @@ pip install --user pipx && pipx ensurepath
 
 ### Optional extras
 
-The web dashboard (`aictl serve`) works with zero extra dependencies. For the TUI and process detection:
+The web dashboard (`aictl daemon serve`) works with zero extra dependencies. For the TUI and process detection:
 
 | Extra | Installs | When to use |
 |-------|----------|-------------|
-| `.[dashboard]` | `textual` | Terminal TUI dashboard (`aictl dashboard`) |
+| `.[dashboard]` | `textual` | Terminal TUI dashboard (`aictl daemon dashboard`) |
 | `.[processes]` | `psutil` | Cross-platform process detection |
-| `.[monitor]` | `psutil`, `watchdog` | Live observability (`aictl monitor`) |
+| `.[monitor]` | `psutil`, `watchdog` | Live observability (`aictl daemon monitor`) |
 | `.[all]` | `textual`, `psutil`, `watchdog` | Recommended for full functionality |
 
 ```bash
@@ -165,7 +165,7 @@ pipx install --force -e ".[all]"
 pip install -e ".[all]"
 ```
 
-> **Tip:** If you get `No such command 'serve'` after pulling new code, run `pipx install --force -e ".[all]"` to re-register all commands.
+> **Tip:** If you get `No such command 'daemon'` after pulling new code, run `pipx install --force -e ".[all]"` to re-register all commands.
 
 ## How It Works
 
@@ -179,7 +179,7 @@ my-project/
 ```
 
 ```bash
-aictl deploy --root my-project/ --profile debug
+aictl ctx deploy --root my-project/ --profile debug
 ```
 
 Generates all native files at the root:
@@ -206,7 +206,7 @@ my-project/
 Switch profile — old files removed, new files created, memory swapped:
 
 ```bash
-aictl deploy --root my-project/ --profile docs
+aictl ctx deploy --root my-project/ --profile docs
 ```
 
 ### Import: native tool files → `.context.toml`
@@ -232,7 +232,7 @@ Works with both aictl-generated files (strips deployment markers) and hand-writt
 aictl import --root . --prefer claude
 ```
 
-Running `aictl deploy` on the imported `.context.toml` files reproduces the original native files.
+Running `aictl ctx deploy` on the imported `.context.toml` files reproduces the original native files.
 
 ### Plugin: package as a Claude Code plugin
 
@@ -281,7 +281,7 @@ aictl status --backtrace 12345    # sample a process stack trace
 Run a passive, best-effort live monitor for active AI sessions:
 
 ```bash
-aictl monitor live
+aictl daemon monitor live
 ```
 
 It is designed for **macOS, Windows, and Linux** and focuses on:
@@ -301,9 +301,9 @@ The monitor correlates:
 It reports traffic, best-effort token estimates with confidence, MCP-style loop detection, and workspace context:
 
 ```bash
-aictl monitor live --once
-aictl monitor live --json
-aictl monitor doctor
+aictl daemon monitor live --once
+aictl daemon monitor live --json
+aictl daemon monitor doctor
 ```
 
 Notes:
@@ -346,7 +346,7 @@ export CODEX_OTEL_ENABLED=1
 export CODEX_OTEL_ENDPOINT="http://localhost:${AICTL_PORT}"
 ```
 
-`AICTL_PORT` is the single source of truth — change it once and all tools follow. The `aictl serve`, `aictl otel enable --print`, and `aictl otel status` commands also read `AICTL_PORT` as their default port. If you pass `--port` explicitly and it doesn't match `AICTL_PORT`, aictl warns you.
+`AICTL_PORT` is the single source of truth — change it once and all tools follow. The `aictl daemon serve`, `aictl otel enable --print`, and `aictl otel status` commands also read `AICTL_PORT` as their default port. If you pass `--port` explicitly and it doesn't match `AICTL_PORT`, aictl warns you.
 
 For **macOS GUI apps** (VS Code launched from Dock/Spotlight), env vars from shell profiles aren't inherited. Set them system-wide:
 
@@ -440,7 +440,7 @@ See [docs/vscode-otel-raw-output.md](docs/vscode-otel-raw-output.md) for a compl
 #### Verify
 
 ```bash
-aictl serve
+aictl daemon serve
 # Use any AI tool, then check:
 aictl otel status
 # Or: curl http://localhost:8484/api/otel-status
@@ -453,13 +453,13 @@ The dashboard Collector Health section shows OTel receiver status — green "OTe
 
 aictl offers three complementary ways to view AI tool resources, from quick terminal checks to full interactive dashboards:
 
-#### 1. Web Dashboard (`aictl serve`) — recommended for exploration
+#### 1. Web Dashboard (`aictl daemon serve`) — recommended for exploration
 
 ```bash
-aictl serve                     # opens browser at http://127.0.0.1:8484
-aictl serve --port 9000         # custom port
-aictl serve --no-open           # don't auto-open browser
-aictl serve --no-monitor        # disable live runtime overlay
+aictl daemon serve                  # opens browser at http://127.0.0.1:8484
+aictl daemon serve --port 9000         # custom port
+aictl daemon serve --no-open           # don't auto-open browser
+aictl daemon serve --no-monitor        # disable live runtime overlay
 ```
 
 The web dashboard is a real-time, interactive interface built with Vite + Preact. It auto-updates via Server-Sent Events (with periodic full-snapshot refresh) and layers live monitor data on top of the CSV-driven discovery schema:
@@ -491,12 +491,12 @@ curl "http://localhost:8484/api/samples?metric=aictl.cpu&since=3600"  # Promethe
 
 > The file API only serves files in the discovered resource set — arbitrary paths are rejected with 403.
 
-#### 2. Terminal Dashboard (`aictl dashboard`) — for terminal-only environments
+#### 2. Terminal Dashboard (`aictl daemon dashboard`) — for terminal-only environments
 
 ```bash
-aictl dashboard                 # requires textual: pipx inject aictl textual
-aictl dashboard --interval 3    # faster refresh
-aictl dashboard --no-monitor    # disable live runtime overlay
+aictl daemon dashboard           # requires textual: pipx inject aictl textual
+aictl daemon dashboard --interval 3    # faster refresh
+aictl daemon dashboard --no-monitor    # disable live runtime overlay
 ```
 
 A Textual-based TUI with live-updating stat cards, per-tool summaries, sparkline CPU/MEM history, and tabbed views:
@@ -521,7 +521,7 @@ A static, self-contained HTML file with embedded CSS/JS — open in any browser,
 
 ### Microsoft AI tools: discovery coverage
 
-All viewing commands (`aictl serve`, `aictl status`, `aictl dashboard`) discover artifacts from the full Microsoft AI ecosystem in addition to Claude Code, Cursor, and Windsurf:
+All viewing commands (`aictl daemon serve`, `aictl status`, `aictl daemon dashboard`) discover artifacts from the full Microsoft AI ecosystem in addition to Claude Code, Cursor, and Windsurf:
 
 | Tool | `--tool` key | What is discovered |
 |------|--------------|--------------------|
@@ -556,14 +556,14 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 
 | Command | What it does |
 |---------|-------------|
-| `aictl init` | Scaffold a starter `.context.toml` in the current directory |
-| `aictl init --hooks` | Also generate example Claude Code hook scripts in `.claude/hooks/` |
-| `aictl validate` | Lint all `.context.toml` files — check syntax, unknown keys, missing fields |
-| `aictl diff` | Dry-run: show what files would change on the next deploy (no writes) |
+| `aictl ctx init` | Scaffold a starter `.context.toml` in the current directory |
+| `aictl ctx init --hooks` | Also generate example Claude Code hook scripts in `.claude/hooks/` |
+| `aictl ctx validate` | Lint all `.context.toml` files — check syntax, unknown keys, missing fields |
+| `aictl ctx diff` | Dry-run: show what files would change on the next deploy (no writes) |
 | `aictl config show` | Print effective aictl configuration (port, tool list, paths) |
 | `aictl config init` | Create `config.toml` with defaults if it doesn't exist |
-| `aictl scan --root .` | Discover `.context.toml` files, show scope map |
-| `aictl deploy --root . --profile debug` | Scan → resolve → emit → cleanup → swap memory |
+| `aictl ctx scan --root .` | Discover `.context.toml` files, show scope map |
+| `aictl ctx deploy --root . --profile debug` | Scan → resolve → emit → cleanup → swap memory |
 | `aictl import --root .` | Read native tool files → generate `.context.toml` |
 | `aictl plugin build --root . --name my-plugin` | Package `.context.toml` as a Claude Code plugin |
 | `aictl status --root .` | Show all resources: files, memory, MCP servers, processes |
@@ -571,8 +571,8 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 | `aictl status --budget` | Show token cost analysis (always-loaded, on-demand, cacheable) |
 | `aictl status --html -o report.html` | Generate self-contained HTML report |
 | `aictl status --backtrace PID` | Sample a process stack trace |
-| `aictl serve` | Launch live web dashboard with REST API at localhost:8484 |
-| `aictl dashboard --root .` | Launch live terminal dashboard (TUI) |
+| `aictl daemon serve` | Launch live web dashboard with REST API at localhost:8484 |
+| `aictl daemon dashboard --root .` | Launch live terminal dashboard (TUI) |
 | `aictl enable` | One-shot: install hooks + OTel + VS Code agent settings (all tools, persistent) |
 | `aictl enable --scope project` | Same, scoped to current project (`.claude/settings.local.json`, `.vscode/settings.json`) |
 | `aictl enable --dry-run` | Preview what `aictl enable` would write without writing anything |
@@ -620,7 +620,7 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 | `--html` | Generate self-contained HTML report to stdout |
 | `-o FILE` | Write HTML report to file instead of stdout |
 
-### Serve options
+### Serve options (`aictl daemon serve`)
 
 | Option | Description |
 |--------|-------------|
@@ -647,7 +647,7 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 
 `aictl db reset` accepts `-y` / `--yes` to skip the confirmation prompt.
 
-### Dashboard options (TUI)
+### Dashboard options (`aictl daemon dashboard`)
 
 | Option | Description |
 |--------|-------------|
@@ -700,9 +700,9 @@ aictl --version
 
 | Feature | Status |
 |---------|--------|
-| File discovery (`status`, `serve`, `dashboard`) | ✅ Full support |
-| Deploy / import / scan | ✅ Full support |
-| Web dashboard (`aictl serve`) | ✅ Full support (no extra deps) |
+| File discovery (`status`, `daemon serve`, `daemon dashboard`) | ✅ Full support |
+| Deploy (`aictl ctx deploy`) / import / scan | ✅ Full support |
+| Web dashboard (`aictl daemon serve`) | ✅ Full support (no extra deps) |
 | Process detection | ✅ Requires `psutil` (`pipx inject aictl psutil`) |
 | Live TUI dashboard | ✅ Requires `textual` (`pipx inject aictl textual`) |
 | HTML report | ✅ Full support |

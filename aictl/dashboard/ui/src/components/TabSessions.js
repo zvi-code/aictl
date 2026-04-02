@@ -195,23 +195,36 @@ function _shortModel(m) { return m ? m.replace('claude-','').replace('-20251001'
 
 function AgentTeamCard({team}) {
   const [expanded, setExpanded] = useState(false);
+  const [agents, setAgents] = useState(team.agents || null);
+  const [loading, setLoading] = useState(false);
   const models = team.models || {};
-  const agents = team.agents || [];
-  const real = agents.filter(a => (a.input_tokens || 0) + (a.output_tokens || 0) > 50);
-  const warmup = agents.length - real.length;
+
+  // Lazy-load full agent detail on first expand
+  useEffect(() => {
+    if (!expanded || agents) return;
+    setLoading(true);
+    fetch('/api/agent-teams?session_id=' + encodeURIComponent(team.session_id))
+      .then(r => r.json())
+      .then(data => { setAgents(data.agents || []); setLoading(false); })
+      .catch(() => { setAgents([]); setLoading(false); });
+  }, [expanded]);
+
+  const real = (agents || []).filter(a => (a.input_tokens || 0) + (a.output_tokens || 0) > 50);
+  const warmup = (agents || []).length - real.length;
   const sorted = real.sort((a, b) => (b.input_tokens + b.output_tokens) - (a.input_tokens + a.output_tokens));
   const maxTok = sorted[0] ? (sorted[0].input_tokens || 0) + (sorted[0].output_tokens || 0) : 1;
 
   return html`<div class="diag-card" style="border-left:3px solid var(--accent);padding:var(--sp-4)">
     <div class="flex-row gap-sm mb-sm" style="align-items:center;cursor:pointer" onClick=${() => setExpanded(!expanded)}>
-      <span class="badge" style="background:var(--accent);color:var(--bg)">${real.length} agents${warmup ? html` <span style="opacity:0.6">+${warmup}w</span>` : null}</span>
+      <span class="badge" style="background:var(--accent);color:var(--bg)">${team.agent_count || real.length} agents${warmup ? html` <span style="opacity:0.6">+${warmup}w</span>` : null}</span>
       <span class="text-muted text-xs">${fmtK(team.total_input_tokens || 0)}in / ${fmtK(team.total_output_tokens || 0)}out</span>
       ${(team.tools_used || []).length > 0 && html`<span class="text-muted text-xs">${team.tools_used.join(', ')}</span>`}
       <span class="mono text-xs text-muted" style="margin-left:auto" title=${team.session_id}>${team.session_id.slice(0, 12)}\u2026</span>
       <span class="text-xs text-muted">${expanded ? '\u25B2' : '\u25BC'}</span>
     </div>
-    <!-- Always show: compact agent rows with task + tokens -->
-    <div style="display:flex;flex-direction:column;gap:1px">
+    <!-- Agent rows: show loading, or compact agent rows with task + tokens -->
+    ${loading ? html`<div class="text-muted text-xs" style="padding:var(--sp-2)">Loading agents\u2026</div>`
+    : html`<div style="display:flex;flex-direction:column;gap:1px">
       ${sorted.slice(0, expanded ? 999 : 5).map(a => {
         const tok = (a.input_tokens || 0) + (a.output_tokens || 0);
         const pct = Math.max(1, tok / maxTok * 100);
@@ -234,7 +247,7 @@ function AgentTeamCard({team}) {
       })}
       ${!expanded && sorted.length > 5 ? html`<div class="text-muted text-xs cursor-ptr" style="padding:2px var(--sp-2)"
         onClick=${(e) => { e.stopPropagation(); setExpanded(true); }}>+${sorted.length - 5} more agents\u2026</div>` : null}
-    </div>
+    </div>`}
   </div>`;
 }
 

@@ -7,8 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from aictl.parser import parse_aictx, IgnoreRule
-from aictl.scanner import scan
+from aictl.context import parse_aictx, IgnoreRule, scan
 from aictl.resolver import resolve
 from aictl.emitters import claude as claude_emit
 from aictl.emitters import copilot as copilot_emit

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import platform
 import re
 from pathlib import Path, PurePosixPath
 

@@ -15,6 +15,34 @@ from dataclasses import dataclass, field
 
 from ..utils import norm_path
 
+# ── Shared display constants ──────────────────────────────────────
+# Single source of truth — imported by tui.py and html_report.py.
+
+# Keys to keep from each agent_teams entry (drops nested 'agents' array)
+_TEAM_SUMMARY_KEYS = frozenset({
+    "session_id", "project_dir", "agent_count",
+    "total_input_tokens", "total_output_tokens", "total_messages",
+    "models", "tools_used",
+})
+
+
+def _slim_agent_teams(teams: list[dict]) -> list[dict]:
+    """Strip per-agent detail from agent_teams, keeping team-level summaries."""
+    return [{k: v for k, v in t.items() if k in _TEAM_SUMMARY_KEYS} for t in teams]
+
+STATUS_COLOURS: dict[str, str] = {
+    "running": "#34d399",
+    "stopped": "#f87171",
+    "error": "#fb923c",
+    "unknown": "#94a3b8",
+}
+
+SOURCE_LABELS: dict[str, str] = {
+    "claude-user-memory": "User Memory",
+    "claude-project-memory": "Project Memory",
+    "claude-auto-memory": "Auto Memory",
+}
+
 
 @dataclass
 class DashboardTool:
@@ -82,9 +110,9 @@ class DashboardSnapshot:
         self.cpu_cores = os.cpu_count() or 1
         try:
             import psutil
-            # interval=0 returns since last call; first call is always 0.
-            # Use interval=0.1 to get a real sample on every snapshot.
-            self.cpu_per_core = psutil.cpu_percent(interval=0.1, percpu=True)
+            # interval=0 returns since last call; RefreshLoop runs every ~5s
+            # so the since-last-call measurement window is fine.
+            self.cpu_per_core = psutil.cpu_percent(interval=0, percpu=True)
         except Exception:
             self.cpu_per_core = []
         tool_list = [t for t in self.tools if t.tool != "aictl"]
@@ -164,48 +192,31 @@ class DashboardSnapshot:
 
     def to_dict(self) -> dict:
         """Serialisable dict for JSON export and HTML template."""
-        return {
-            "timestamp": self.timestamp,
-            "root": self.root,
-            "cpu_cores": self.cpu_cores,
-            "cpu_per_core": self.cpu_per_core,
-            "total_files": self.total_files,
-            "total_tokens": self.total_tokens,
-            "total_size": self.total_size,
-            "total_processes": self.total_processes,
-            "total_cpu": self.total_cpu,
-            "total_mem_mb": self.total_mem_mb,
-            "total_mcp_servers": self.total_mcp_servers,
-            "total_memory_entries": self.total_memory_entries,
-            "total_memory_tokens": self.total_memory_tokens,
-            "total_live_sessions": self.total_live_sessions,
-            "total_live_tools": self.total_live_tools,
-            "total_live_inbound_bytes": self.total_live_inbound_bytes,
-            "total_live_outbound_bytes": self.total_live_outbound_bytes,
-            "total_live_inbound_rate_bps": self.total_live_inbound_rate_bps,
-            "total_live_outbound_rate_bps": self.total_live_outbound_rate_bps,
-            "total_live_estimated_tokens": self.total_live_estimated_tokens,
-            "total_live_files_touched": self.total_live_files_touched,
-            "tools": [dataclasses.asdict(t) for t in self.tools],
-            "agent_memory": [dataclasses.asdict(m) if dataclasses.is_dataclass(m) else m
-                             for m in self.agent_memory],
-            "mcp_detail": [dataclasses.asdict(s) if dataclasses.is_dataclass(s) else s
-                           for s in self.mcp_detail],
-            "live_monitor": self.live_monitor,
-            "tool_telemetry": self.tool_telemetry,
-            "tool_configs": self.tool_configs,
-            "events": self.events,
-            "sessions": self.sessions,
-            "agent_teams": self.agent_teams,
-        }
+        return dataclasses.asdict(self)
 
-    def to_json(self, indent: int = 2) -> str:
+    def to_dict_slim(self) -> dict:
+        """Serialisable dict with agent_teams stripped of per-agent detail.
+
+        Used for /api/snapshot and SSE — keeps team-level summaries
+        (session_id, agent_count, tokens, models, tools_used) but drops
+        the nested ``agents`` array which can be multi-MB.
+        Full agent detail is available via ``/api/agent-teams?session_id=X``.
+        """
+        d = self.to_dict()
+        d["agent_teams"] = _slim_agent_teams(d.get("agent_teams", []))
+        return d
+
+    def to_json(self, indent: int | None = None) -> str:
         return json.dumps(self.to_dict(), indent=indent)
+
+    def to_json_slim(self) -> str:
+        """Compact JSON with slim agent_teams (no per-agent detail)."""
+        return json.dumps(self.to_dict_slim())
 
     @classmethod
     def from_dict(cls, d: dict) -> "DashboardSnapshot":
         """Reconstruct from a dict (e.g. from /api/snapshot JSON)."""
-        from ..discovery import ResourceFile, MemoryEntry, McpServerInfo
+        from ..tools import ResourceFile, MemoryEntry, McpServerInfo
 
         tools = []
         for td in d.get("tools", []):
@@ -249,5 +260,6 @@ class DashboardSnapshot:
             tool_configs=d.get("tool_configs", []),
             events=d.get("events", []),
             sessions=d.get("sessions", []),
+            agent_teams=d.get("agent_teams", []),
             cpu_per_core=d.get("cpu_per_core", []),
         )

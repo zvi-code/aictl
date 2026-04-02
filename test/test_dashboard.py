@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 
-from aictl.dashboard.collector import DashboardSnapshot, DashboardTool, collect
-from aictl.dashboard.web_server import build_sse_summary
-from aictl.store import SnapshotStore
-from aictl.discovery import ResourceFile, ToolResources
+from aictl.dashboard.models import DashboardSnapshot, DashboardTool
+from aictl.orchestrator import collect
+from aictl.dashboard.web_server import build_sse_summary, _DashboardHandler
+from aictl.orchestrator import SnapshotStore
+from aictl.storage import EventRow
+from aictl.tools import ResourceFile, ToolResources
 
 
 def test_dashboard_snapshot_aggregates_live_metrics():
@@ -264,3 +266,216 @@ def test_sse_summary_is_json_serializable():
     roundtrip = json.loads(data)
     assert roundtrip["timestamp"] == 1.0
     assert roundtrip["_sse_summary"] is True
+
+
+# ─── collect() sink emit path tests ─────────────────────────────
+#
+# Root cause of the tool_configs_list bug: the entire `if _sink:` block in
+# collect() (orchestrator.py lines 228–291) was never exercised by any test.
+# Every existing test passes _sink=None (the default), so the variable rename
+# from `tool_configs_list` → `tool_configs` introduced a NameError that no
+# test could detect.
+#
+# Additional similar gaps (currently untested with a real sink):
+#   - Discovery emit path  (lines 228–253): if _sink and _discovered_override is None
+#   - Memory emit path     (lines 268–271): for m in agent_memory
+#   - MCP detail emit path (lines 272–276): for s in mcp_detail
+#   - Telemetry emit path  (lines 277–286): for r in telemetry_reports
+#
+# Each test below exercises one of these code paths with a mock sink so that
+# any future variable rename or deletion fails loudly here rather than at
+# runtime.
+
+
+class _MockSink:
+    """Minimal sink double recording all emit() and emit_if_changed() calls."""
+    def __init__(self):
+        self.emitted: list[tuple] = []
+        self.changed: list[tuple] = []
+
+    def emit(self, metric, value, tags, ts=None):
+        self.emitted.append((metric, value, dict(tags)))
+
+    def emit_if_changed(self, metric, value, tags, ts=None):
+        self.changed.append((metric, value, dict(tags)))
+
+
+def _base_monkeypatches(monkeypatch):
+    """Patch all external calls in collect() to return empty/no-op."""
+    monkeypatch.setattr("aictl.orchestrator.discover_all", lambda *a, **kw: [])
+    monkeypatch.setattr("aictl.orchestrator.collect_agent_memory", lambda root: [])
+    monkeypatch.setattr("aictl.orchestrator.collect_mcp_status", lambda d: [])
+    monkeypatch.setattr("aictl.orchestrator.collect_tool_telemetry", lambda root: [])
+    monkeypatch.setattr("aictl.orchestrator.scan_agent_teams", lambda root: [])
+    monkeypatch.setattr("aictl.orchestrator.collect_tool_configs", lambda root: [])
+
+
+def test_collect_emits_tool_config_model_through_sink(monkeypatch, tmp_path):
+    """collect() must emit aictl.config.model for each ToolConfig with tool+model via _sink.
+
+    THIS TEST IS EXPECTED TO FAIL with:
+        NameError: name 'tool_configs_list' is not defined
+    because the refactor renamed the variable but the loop on line 288 still
+    references the old name.  Fix: change `tool_configs_list` → `tool_configs`
+    on that line.
+    """
+    from aictl.monitoring.tool_config import ToolConfig
+
+    _base_monkeypatches(monkeypatch)
+    monkeypatch.setattr(
+        "aictl.orchestrator.collect_tool_configs",
+        lambda root: [ToolConfig(tool="claude-code", model="claude-sonnet-4.6")],
+    )
+
+    sink = _MockSink()
+    collect(tmp_path, _sink=sink)
+
+    config_model = [
+        (metric, tags) for metric, _val, tags in sink.changed
+        if "config.model" in metric
+    ]
+    assert len(config_model) == 1, "Expected exactly one aictl.config.model emit"
+    assert config_model[0][1]["aictl.tool"] == "claude-code"
+    assert config_model[0][1]["gen_ai.request.model"] == "claude-sonnet-4.6"
+
+
+def test_collect_emits_memory_tokens_through_sink(monkeypatch, tmp_path):
+    """collect() must emit aictl.memory.tokens for each MemoryEntry with a file path."""
+    from aictl.tools import MemoryEntry
+
+    _base_monkeypatches(monkeypatch)
+    monkeypatch.setattr(
+        "aictl.orchestrator.collect_agent_memory",
+        lambda root: [MemoryEntry(source="claude-memory", profile="_always",
+                                  file="/tmp/.claude/memory.md", tokens=300)],
+    )
+
+    sink = _MockSink()
+    collect(tmp_path, _sink=sink)
+
+    memory_metrics = [
+        (metric, tags) for metric, _val, tags in sink.changed
+        if "memory.tokens" in metric
+    ]
+    assert len(memory_metrics) == 1
+    assert memory_metrics[0][1]["aictl.source"] == "claude-memory"
+
+
+def test_collect_emits_mcp_detail_status_through_sink(monkeypatch, tmp_path):
+    """collect() must emit aictl.mcp.detail.status for each named McpServerInfo."""
+    from aictl.tools import McpServerInfo
+
+    _base_monkeypatches(monkeypatch)
+    monkeypatch.setattr(
+        "aictl.orchestrator.collect_mcp_status",
+        lambda d: [McpServerInfo(name="mcp-fs", tool="claude-code", status="running")],
+    )
+
+    sink = _MockSink()
+    collect(tmp_path, _sink=sink)
+
+    mcp_metrics = [
+        (metric, val, tags) for metric, val, tags in sink.changed
+        if "mcp.detail.status" in metric
+    ]
+    assert len(mcp_metrics) == 1
+    assert mcp_metrics[0][1] == 1.0  # status="running" → 1.0
+    assert mcp_metrics[0][2]["aictl.mcp.server"] == "mcp-fs"
+    assert mcp_metrics[0][2]["aictl.tool"] == "claude-code"
+
+
+def test_collect_emits_telemetry_tokens_through_sink(monkeypatch, tmp_path):
+    """collect() must emit gen_ai.client.token.usage.verified for each telemetry report."""
+    from aictl.monitoring.tool_telemetry import ToolTelemetryReport
+
+    _base_monkeypatches(monkeypatch)
+    report = ToolTelemetryReport(
+        tool="copilot-cli", source="events-jsonl", confidence=0.9,
+        input_tokens=1000, output_tokens=250,
+    )
+    monkeypatch.setattr("aictl.orchestrator.collect_tool_telemetry", lambda root: [report])
+
+    sink = _MockSink()
+    collect(tmp_path, _sink=sink)
+
+    token_metrics = [
+        (metric, val, tags) for metric, val, tags in sink.emitted
+        if "token.usage.verified" in metric
+    ]
+    assert len(token_metrics) == 2  # one input, one output
+    types = {tags["gen_ai.token.type"]: val for _m, val, tags in token_metrics}
+    assert types["input"] == 1000.0
+    assert types["output"] == 250.0
+
+
+def test_collect_emits_discovery_metrics_through_sink(monkeypatch, tmp_path):
+    """collect() must emit aictl.discovery.* for each discovered tool when _sink provided."""
+    _base_monkeypatches(monkeypatch)
+    monkeypatch.setattr(
+        "aictl.orchestrator.discover_all",
+        lambda *a, **kw: [
+            ToolResources(
+                tool="copilot-cli",
+                label="Copilot CLI",
+                files=[ResourceFile(path="/tmp/.copilot/state.json", kind="session",
+                                    size=512, tokens=64)],
+            )
+        ],
+    )
+
+    sink = _MockSink()
+    collect(tmp_path, _sink=sink)
+
+    discovery_files = [
+        (metric, val, tags) for metric, val, tags in sink.changed
+        if "discovery.files" in metric
+    ]
+    assert len(discovery_files) == 1
+    assert discovery_files[0][1] == 1.0  # one file
+    assert discovery_files[0][2]["tool"] == "copilot-cli"
+
+
+# ── _attribute_api_to_turns filter ────────────────────────────────
+
+class TestAttributeApiToTurns:
+    """Regression: _attribute_api_to_turns must skip non-api OTel events."""
+
+    @staticmethod
+    def _make_turn(ts):
+        return {
+            "ts": ts, "type": "user_message",
+            "tokens": {"input": 0, "output": 0,
+                       "cache_read": 0, "cache_creation": 0},
+            "model": "", "api_calls": 0, "duration_ms": 0, "end_ts": ts,
+        }
+
+    def test_only_api_request_events_attributed(self):
+        turn = self._make_turn(1.0)
+        events = [
+            EventRow(ts=2.0, tool="claude-code", kind="otel:api_request",
+                     detail={"input_tokens": 100, "output_tokens": 50,
+                             "model": "opus"}),
+            EventRow(ts=3.0, tool="claude-code", kind="otel:tool_decision",
+                     detail={"tool_name": "Bash"}),
+            EventRow(ts=4.0, tool="claude-code", kind="otel:tool_result",
+                     detail={"tool_name": "Bash", "success": True}),
+            EventRow(ts=5.0, tool="claude-code", kind="otel:user_prompt",
+                     detail={"prompt": "hello"}),
+        ]
+        _DashboardHandler._attribute_api_to_turns([turn], events)
+        assert turn["tokens"]["input"] == 100
+        assert turn["tokens"]["output"] == 50
+        assert turn["api_calls"] == 1  # only api_request counted
+        assert turn["model"] == "opus"
+
+    def test_chat_span_events_attributed(self):
+        """OTel chat spans (Copilot) should also be attributed."""
+        turn = self._make_turn(1.0)
+        events = [
+            EventRow(ts=2.0, tool="copilot-vscode",
+                     kind="otel:chat claude-opus-4.6",
+                     detail={"input_tokens": 200, "output_tokens": 80}),
+        ]
+        _DashboardHandler._attribute_api_to_turns([turn], events)
+        assert turn["tokens"]["input"] == 200
+        assert turn["api_calls"] == 1

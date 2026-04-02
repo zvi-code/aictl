@@ -1,27 +1,109 @@
 # aictl - Cross-platform AI Tool Context Control + Dashboard
 # Copyright (c) 2026 Zvi Schneider. MIT License.
-"""Runtime orchestration for the live monitor."""
+"""Runtime orchestration for the live monitor.
+
+Also contains DiscoveryCollector.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import os
-import platform
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .collectors.discovery import DiscoveryCollector
-from .collectors.filesystem import WatchdogFileCollector
-from .collectors.network.fallback import PsutilFallbackNetworkCollector
-from .collectors.network.linux import LinuxNetworkCollector
-from .collectors.network.macos import MacOSNetworkCollector
-from .collectors.network.windows import WindowsNetworkCollector
+from .collectors import BaseCollector
+from .collectors.process import WatchdogFileCollector
+from .collectors.network import (
+    LinuxNetworkCollector,
+    MacOSNetworkCollector,
+    PsutilFallbackNetworkCollector,
+    WindowsNetworkCollector,
+)
 from .collectors.process import PsutilProcessCollector
 from .collectors.telemetry import StructuredTelemetryCollector
 from .config import MonitorConfig
 from .correlator import MonitorSnapshot, SessionCorrelator
+from ..platforms import CURRENT_PLATFORM, IS_MACOS, IS_WINDOWS
+from ..utils import human_size as _format_bytes, human_tokens as _format_tokens
+
+
+# ── Discovery collector ─────────────────────────────────────────────────────
+
+
+class DiscoveryCollector(BaseCollector):
+    """Periodically scan for AI tool files, configs, MCP servers, and processes.
+
+    Runs ``discover_all()`` periodically on a thread (CPU-bound: file stat,
+    glob, CSV parsing) and emits results through the correlator and sink,
+    just like every other collector.
+    """
+
+    name = "discovery:csv"
+
+    def __init__(self, config: MonitorConfig, *, interval: float = 10.0,
+                 include_processes: bool = True) -> None:
+        super().__init__(config=config)
+        self._interval = interval
+        self._include_processes = include_processes
+        self._root = config.workspace_paths[0] if config.workspace_paths else Path(".")
+        self._latest: list | None = None
+
+    @property
+    def latest(self):
+        """Most recent discover_all() result (list[ToolResources] or None)."""
+        return self._latest
+
+    async def run(self) -> None:
+        from ..tools import discover_all
+        from ..data.schema import metric_name as _M
+
+        await self.report_status(
+            status="active",
+            mode="csv-scan",
+            detail=f"Scanning {self._root} every {self._interval}s",
+        )
+
+        while True:
+            discovered = await asyncio.to_thread(
+                discover_all, self._root,
+                include_processes=self._include_processes)
+            self._latest = discovered
+
+            for tool_res in discovered:
+                tool = tool_res.tool
+                if tool == "aictl":
+                    continue
+                tags = {"tool": tool}
+                self.sink_emit_if_changed(_M("aictl.discovery.files"), float(len(tool_res.files)), tags)
+                self.sink_emit_if_changed(_M("aictl.discovery.tokens"),
+                               float(sum(f.tokens for f in tool_res.files)), tags)
+                self.sink_emit_if_changed(_M("aictl.discovery.size"),
+                               float(sum(f.size for f in tool_res.files)), tags)
+                self.sink_emit_if_changed(_M("aictl.discovery.processes"),
+                               float(len(tool_res.processes)), tags)
+                self.sink_emit_if_changed(_M("aictl.discovery.mcp_servers"),
+                               float(len(tool_res.mcp_servers)), tags)
+
+                for f in tool_res.files:
+                    ftags = {"aictl.tool": tool, "file.path": f.path,
+                             "aictl.file.kind": f.kind, "aictl.file.scope": f.scope,
+                             "aictl.file.sent_to_llm": f.sent_to_llm}
+                    self.sink_emit_if_changed(_M("aictl.file.tokens"), float(f.tokens), ftags)
+                    self.sink_emit_if_changed(_M("aictl.file.bytes"), float(f.size), ftags)
+
+                for m in tool_res.mcp_servers:
+                    mname = m.get("name", "")
+                    if mname:
+                        self.sink_emit_if_changed(_M("aictl.mcp.status"),
+                                       1.0 if m.get("status") == "running" else 0.0,
+                                       {"aictl.tool": tool, "aictl.mcp.server": mname})
+
+            await self.sleep(self._interval)
 
 
 @dataclass(slots=True)
@@ -36,7 +118,7 @@ class MonitorRuntime:
 
     def __init__(self, config: MonitorConfig, sink: "Any | None" = None) -> None:
         self.config = config
-        self.platform = _platform_name()
+        self.platform = CURRENT_PLATFORM
         self.sink = sink
         self.workspace_sizes = {
             str(path): _dir_size(path, config.ignored_dir_names) for path in config.workspace_paths
@@ -53,14 +135,24 @@ class MonitorRuntime:
 
         return await self._run_temporarily(seconds)
 
+    @contextlib.asynccontextmanager
+    async def _collectors_running(self):
+        """Start all collector tasks; cancel and join them on exit."""
+        tasks = [
+            asyncio.create_task(c.run(), name=f"collector:{c.name}")
+            for c in self.collectors
+        ]
+        try:
+            yield tasks
+        finally:
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def run_live(self) -> int:
         """Run until duration/interrupt and render snapshots as we go."""
 
-        collector_tasks = [
-            asyncio.create_task(collector.run(), name=f"collector:{collector.name}")
-            for collector in self.collectors
-        ]
-        try:
+        async with self._collectors_running():
             if self.config.once:
                 await asyncio.sleep(max(self.config.sample_interval * 2, self.config.refresh_interval))
                 self._print_snapshot(self.snapshot())
@@ -76,10 +168,6 @@ class MonitorRuntime:
                 await asyncio.sleep(self.config.refresh_interval)
                 self._print_snapshot(self.snapshot())
             return 0
-        finally:
-            for task in collector_tasks:
-                task.cancel()
-            await asyncio.gather(*collector_tasks, return_exceptions=True)
 
     def snapshot(self) -> MonitorSnapshot:
         """Current in-memory snapshot."""
@@ -101,17 +189,9 @@ class MonitorRuntime:
         return CollectorPlan(names=[collector.name for collector in self.collectors])
 
     async def _run_temporarily(self, seconds: float) -> MonitorSnapshot:
-        collector_tasks = [
-            asyncio.create_task(collector.run(), name=f"collector:{collector.name}")
-            for collector in self.collectors
-        ]
-        try:
+        async with self._collectors_running():
             await asyncio.sleep(seconds)
             return self.snapshot()
-        finally:
-            for task in collector_tasks:
-                task.cancel()
-            await asyncio.gather(*collector_tasks, return_exceptions=True)
 
     def _print_snapshot(self, snapshot: MonitorSnapshot) -> None:
         if self.config.json_output:
@@ -186,41 +266,20 @@ def render_text_snapshot(snapshot: MonitorSnapshot) -> str:
 
 
 def _snapshot_json(snapshot: MonitorSnapshot) -> str:
-    import json
-
-    return json.dumps(
-        {
-            "generated_at": snapshot.generated_at,
-            "platform": snapshot.platform,
-            "diagnostics": snapshot.diagnostics,
-            "tools": snapshot.tools,
-            "workspace_paths": snapshot.workspace_paths,
-            "state_paths": snapshot.state_paths,
-        },
-        indent=2,
-    )
+    d = asdict(snapshot)
+    d.pop("events")
+    d.pop("sessions")
+    return json.dumps(d, indent=2)
 
 
 def _select_network_collector(config: MonitorConfig):
-    system = platform.system()
-    if system == "Darwin" and MacOSNetworkCollector.is_supported():
+    if IS_MACOS and MacOSNetworkCollector.is_supported():
         return MacOSNetworkCollector(config.network_interval, debug=config.debug_network)
-    if system == "Linux" and LinuxNetworkCollector.is_supported():
+    if not IS_MACOS and not IS_WINDOWS and LinuxNetworkCollector.is_supported():
         return LinuxNetworkCollector(config.network_interval)
-    if system == "Windows":
+    if IS_WINDOWS:
         return WindowsNetworkCollector(config.network_interval)
     return PsutilFallbackNetworkCollector(config.network_interval)
-
-
-def _platform_name() -> str:
-    system = platform.system()
-    if system == "Darwin":
-        return "macos"
-    if system == "Windows":
-        return "windows"
-    if system == "Linux":
-        return "linux"
-    return system.lower()
 
 
 def _dir_size(path: Path, ignored_dir_names: tuple[str, ...]) -> int:
@@ -237,21 +296,5 @@ def _dir_size(path: Path, ignored_dir_names: tuple[str, ...]) -> int:
     return total
 
 
-def _format_bytes(value: int) -> str:
-    if value < 1024:
-        return f"{value} B"
-    if value < 1024 * 1024:
-        return f"{value / 1024:.1f} KB"
-    if value < 1024 * 1024 * 1024:
-        return f"{value / (1024 * 1024):.1f} MB"
-    return f"{value / (1024 * 1024 * 1024):.1f} GB"
-
-
 def _format_rate(value: float) -> str:
     return f"{_format_bytes(int(value))}/s"
-
-
-def _format_tokens(value: int) -> str:
-    if value >= 1000:
-        return f"{value / 1000:.1f}k"
-    return str(value)

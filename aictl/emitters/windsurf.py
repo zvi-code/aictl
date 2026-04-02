@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 
 from ..resolver import Resolved
-from ..utils import write_safe, estimate_tokens, encode_scope, wrap_deployed, merge_json_block
+from ..utils import write_safe, estimate_tokens, encode_scope, wrap_deployed, merge_json_block, emit_file
 
 NAME = "windsurf"
 
@@ -31,28 +31,19 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
         if scope.is_root:
             # Root → .windsurfrules (single project-wide rules file)
             if combined:
-                fp = root / ".windsurfrules"
-                content = wrap_deployed(combined, src)
-                if not dry_run:
-                    write_safe(fp, content)
-                results.append({"path": str(fp), "tokens": estimate_tokens(content)})
+                emit_file(root / ".windsurfrules", wrap_deployed(combined, src), dry_run, results)
         else:
             # Sub-scope → .windsurf/rules/{scope}.md with YAML frontmatter
             if combined:
                 safe = encode_scope(src).replace("--", "-")
-                fp = rules / f"{safe}.md"
                 glob = f"{src}/**"
-                body = f'---\ntrigger: always\npaths:\n  - "{glob}"\n---\n\n' + wrap_deployed(combined, src)
-                if not dry_run:
-                    write_safe(fp, body)
-                results.append({"path": str(fp), "tokens": estimate_tokens(body)})
+                emit_file(rules / f"{safe}.md",
+                          f'---\ntrigger: always\npaths:\n  - "{glob}"\n---\n\n' + wrap_deployed(combined, src),
+                          dry_run, results)
 
     if resolved.mcp_servers:
         fp = root / ".windsurf" / "mcp.json"
-        content = merge_json_block(fp, "mcpServers", resolved.mcp_servers) if not dry_run else json.dumps({"mcpServers": resolved.mcp_servers}, indent=2) + "\n"
-        if not dry_run:
-            write_safe(fp, content)
-        results.append({"path": str(fp), "tokens": estimate_tokens(content)})
+        emit_file(fp, merge_json_block(fp, "mcpServers", resolved.mcp_servers) if not dry_run else json.dumps({"mcpServers": resolved.mcp_servers}, indent=2) + "\n", dry_run, results)
 
     return results
 

@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 from ..resolver import Resolved
-from ..utils import write_safe, estimate_tokens, encode_scope, wrap_deployed, merge_json_block, merge_ignore_file
+from ..utils import write_safe, estimate_tokens, encode_scope, wrap_deployed, merge_json_block, merge_ignore_file, emit_file
 
 NAME = "cursor"
 
@@ -25,42 +25,26 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
 
         if scope.is_root:
             if scope.base:
-                fp = rules / "base.mdc"
-                content = _mdc("Project-wide context", always=True, body=scope.base)
-                if not dry_run:
-                    write_safe(fp, content)
-                results.append({"path": str(fp), "tokens": estimate_tokens(content)})
+                emit_file(rules / "base.mdc", _mdc("Project-wide context", always=True, body=scope.base), dry_run, results)
 
             if scope.profile_text and resolved.profile:
-                fp = rules / "profile-active.mdc"
-                content = _mdc(f"Active profile: {resolved.profile}", always=True,
-                               body=f"# Active Profile: {resolved.profile}\n\n{scope.profile_text}")
-                if not dry_run:
-                    write_safe(fp, content)
-                results.append({"path": str(fp), "tokens": estimate_tokens(content)})
+                emit_file(rules / "profile-active.mdc",
+                          _mdc(f"Active profile: {resolved.profile}", always=True,
+                               body=f"# Active Profile: {resolved.profile}\n\n{scope.profile_text}"),
+                          dry_run, results)
         else:
             if combined:
                 safe = encode_scope(src).replace("--", "-")
-                fp = rules / f"{safe}.mdc"
-                content = _mdc(f"Context for {src}", globs=f"{src}/**", body=combined)
-                if not dry_run:
-                    write_safe(fp, content)
-                results.append({"path": str(fp), "tokens": estimate_tokens(content)})
+                emit_file(rules / f"{safe}.mdc", _mdc(f"Context for {src}", globs=f"{src}/**", body=combined), dry_run, results)
 
     if resolved.mcp_servers:
         fp = root / ".cursor" / "mcp.json"
-        content = merge_json_block(fp, "mcpServers", resolved.mcp_servers) if not dry_run else json.dumps({"mcpServers": resolved.mcp_servers}, indent=2) + "\n"
-        if not dry_run:
-            write_safe(fp, content)
-        results.append({"path": str(fp), "tokens": estimate_tokens(content)})
+        emit_file(fp, merge_json_block(fp, "mcpServers", resolved.mcp_servers) if not dry_run else json.dumps({"mcpServers": resolved.mcp_servers}, indent=2) + "\n", dry_run, results)
 
     # --- Ignores → .cursorignore ---
     if resolved.ignores:
         fp = root / ".cursorignore"
-        content = merge_ignore_file(fp, resolved.ignores) if not dry_run else "\n".join(resolved.ignores) + "\n"
-        if not dry_run:
-            write_safe(fp, content)
-        results.append({"path": str(fp), "tokens": estimate_tokens(content)})
+        emit_file(fp, merge_ignore_file(fp, resolved.ignores) if not dry_run else "\n".join(resolved.ignores) + "\n", dry_run, results)
 
     return results
 

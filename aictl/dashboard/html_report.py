@@ -14,12 +14,13 @@ The report includes:
 from __future__ import annotations
 
 import html
+import itertools
 import json
 import time
 from datetime import datetime
 from pathlib import Path
 
-from .collector import DashboardSnapshot
+from .models import DashboardSnapshot, STATUS_COLOURS as _STATUS_COLOURS
 
 
 _SOURCE_LABELS = {
@@ -28,15 +29,16 @@ _SOURCE_LABELS = {
     "claude-auto-memory": "Auto Memory (~/.claude/projects/)",
 }
 
-_STATUS_COLOURS = {
-    "running": "#34d399",
-    "stopped": "#f87171",
-    "error": "#fb923c",
-    "unknown": "#94a3b8",
-}
-
 # How many tail lines to show in the collapsed preview
 _PREVIEW_LINES = 5
+
+# Token breakdown badge config: (key, color, label)
+_TOKEN_BADGE_DEFS = [
+    ("always_loaded", "#34d399", "always"),
+    ("on_demand",     "#38bdf8", "on-demand"),
+    ("conditional",   "#fb923c", "conditional"),
+    ("never_sent",    "#94a3b8", "never"),
+]
 
 
 def render_html(snap: DashboardSnapshot) -> str:
@@ -296,7 +298,7 @@ window.__AICTL_SNAPSHOT__ = {snap.to_json()};
 
 # ── Content preview helper ───────────────────────────────────────
 
-_preview_counter = 0
+_uid = itertools.count(1)
 
 def _render_content_preview(content: str, uid: str, tail_lines: int = _PREVIEW_LINES) -> str:
     """Render a content block showing the last N lines with an expand button.
@@ -360,7 +362,6 @@ def _read_file_tail(path_str: str, max_size: int = 50_000) -> str | None:
 # ── Section renderers ────────────────────────────────────────────
 
 def _render_tool_cards(snap: DashboardSnapshot, root: Path, home: Path) -> list[str]:
-    global _preview_counter
     tool_cards = []
 
     for tr in snap.tools:
@@ -448,15 +449,11 @@ def _render_tool_cards(snap: DashboardSnapshot, root: Path, home: Path) -> list[
         tb = tr.token_breakdown
         tb_html = ""
         if tb and tb.get("total", 0) > 0:
-            tb_parts = []
-            if tb.get("always_loaded"):
-                tb_parts.append(f'<span class="badge" style="background:#34d39933;color:#34d399">always: {_human_tokens(tb["always_loaded"])}</span>')
-            if tb.get("on_demand"):
-                tb_parts.append(f'<span class="badge" style="background:#38bdf833;color:#38bdf8">on-demand: {_human_tokens(tb["on_demand"])}</span>')
-            if tb.get("conditional"):
-                tb_parts.append(f'<span class="badge" style="background:#fb923c33;color:#fb923c">conditional: {_human_tokens(tb["conditional"])}</span>')
-            if tb.get("never_sent"):
-                tb_parts.append(f'<span class="badge" style="background:#64748b33;color:#94a3b8">never: {_human_tokens(tb["never_sent"])}</span>')
+            tb_parts = [
+                f'<span class="badge" style="background:{color}33;color:{color}">{label}: {_human_tokens(tb[key])}</span>'
+                for key, color, label in _TOKEN_BADGE_DEFS
+                if tb.get(key)
+            ]
             if tb_parts:
                 tb_html = f'<div class="badges" style="margin-top:0.25rem">{" ".join(tb_parts)}</div>'
 
@@ -490,7 +487,7 @@ def _render_bar(snap: DashboardSnapshot) -> str:
 
 def _render_mcp_section(snap: DashboardSnapshot) -> str:
     if not snap.mcp_detail:
-        return '<div class="section-card"><p style="color:var(--fg2)">No MCP servers configured.</p></div>'
+        return _empty_card("No MCP servers configured.")
 
     rows = []
     running = sum(1 for s in snap.mcp_detail if s.status == "running")
@@ -536,10 +533,8 @@ def _render_mcp_section(snap: DashboardSnapshot) -> str:
 
 
 def _render_memory_section(snap: DashboardSnapshot, root: Path, home: Path) -> str:
-    global _preview_counter
-
     if not snap.agent_memory:
-        return '<div class="section-card"><p style="color:var(--fg2)">No agent memory found.</p></div>'
+        return _empty_card("No agent memory found.")
 
     # Group by source type
     groups: dict[str, list] = {}
@@ -552,8 +547,7 @@ def _render_memory_section(snap: DashboardSnapshot, root: Path, home: Path) -> s
         total_tok = sum(e.tokens for e in entries)
         items = []
         for entry in entries:
-            _preview_counter += 1
-            uid = f"mem-{_preview_counter}"
+            uid = f"mem-{next(_uid)}"
             file_display = _rel(entry.file, root, home) if entry.file else "—"
 
             preview = _render_content_preview(entry.content, uid)
@@ -585,11 +579,9 @@ def _render_memory_section(snap: DashboardSnapshot, root: Path, home: Path) -> s
 
 def _render_aictl_section(snap: DashboardSnapshot, root: Path, home: Path) -> str:
     """Render the aictl (.aictx) tab — context files managed by aictl, not read by LLM tools."""
-    global _preview_counter
-
     aictl_tools = [tr for tr in snap.tools if tr.tool == "aictl"]
     if not aictl_tools or not any(tr.files for tr in aictl_tools):
-        return '<div class="section-card"><p style="color:var(--fg2)">No .aictx context files found.</p></div>'
+        return _empty_card("No .aictx context files found.")
 
     sections = []
     sections.append("""
@@ -620,8 +612,6 @@ def _files_html_by_dir(
     auto_open_threshold: int = 0,
 ) -> str:
     """Render a list of ResourceFiles as a nested collapsible directory tree."""
-    global _preview_counter
-
     # Build tree: node = {"_files": [...], <subdir>: node}
     tree: dict = {"_files": []}
     for f in files:
@@ -647,13 +637,11 @@ def _files_html_by_dir(
         return n
 
     def _render_node(node: dict, depth: int = 0) -> str:
-        global _preview_counter
         parts_html = []
 
         # Files in this node
         for filename, rel, f in sorted(node["_files"], key=lambda x: x[0].lower()):
-            _preview_counter += 1
-            uid = f"{id_prefix}-{_preview_counter}"
+            uid = f"{id_prefix}-{next(_uid)}"
             tok_str = f"~{_human_tokens(f.tokens)}" if f.tokens else ""
 
             content = _read_file_tail(f.path)
@@ -703,7 +691,7 @@ def _files_html_by_dir(
 def _render_telemetry_section(snap: DashboardSnapshot) -> str:
     """Render per-tool telemetry: token usage, cost, sessions, errors."""
     if not snap.tool_telemetry:
-        return '<div class="section-card"><p style="color:var(--fg2)">No telemetry data collected.</p></div>'
+        return _empty_card("No telemetry data collected.")
 
     rows = []
     for tel in snap.tool_telemetry:
@@ -777,7 +765,7 @@ def _render_telemetry_section(snap: DashboardSnapshot) -> str:
 def _render_events_section(snap: DashboardSnapshot) -> str:
     """Render recent events as a table."""
     if not snap.events:
-        return '<div class="section-card"><p style="color:var(--fg2)">No events recorded.</p></div>'
+        return _empty_card("No events recorded.")
 
     rows = []
     for ev in snap.events[-50:]:  # Last 50 events
@@ -788,7 +776,6 @@ def _render_events_section(snap: DashboardSnapshot) -> str:
 
         # Format timestamp
         if isinstance(ts, (int, float)):
-            from datetime import datetime
             ts = datetime.fromtimestamp(ts).strftime("%H:%M:%S")
 
         # Colour by kind
@@ -801,19 +788,12 @@ def _render_events_section(snap: DashboardSnapshot) -> str:
         kc = kind_colours.get(kind, "var(--fg)")
 
         # Format data summary
-        summary_parts = []
-        if data.get("pid"):
-            summary_parts.append(f"pid={data['pid']}")
-        if data.get("name"):
-            summary_parts.append(data["name"])
-        if data.get("path"):
-            summary_parts.append(data["path"])
-        if data.get("type"):
-            summary_parts.append(data["type"])
-        if data.get("duration_s"):
-            summary_parts.append(f"{data['duration_s']:.1f}s")
-        if data.get("growth_bytes"):
-            summary_parts.append(f"+{_human_size(data['growth_bytes'])}")
+        summary_parts = (
+            ([f"pid={data['pid']}"] if data.get("pid") else [])
+            + [v for k in ("name", "path", "type") if (v := data.get(k))]
+            + ([f"{data['duration_s']:.1f}s"] if data.get("duration_s") else [])
+            + ([f"+{_human_size(data['growth_bytes'])}"] if data.get("growth_bytes") else [])
+        )
         summary = ", ".join(summary_parts) if summary_parts else "—"
 
         rows.append(
@@ -841,16 +821,20 @@ def _esc(s: str) -> str:
     return html.escape(s)
 
 
+def _empty_card(msg: str) -> str:
+    return f'<div class="section-card"><p style="color:var(--fg2)">{msg}</p></div>'
+
+
 from ..utils import human_size as _human_size, human_tokens as _human_tokens, rel_display as _rel
 
 
 def _tool_colour(tool: str) -> str:
-    from ..registry import TOOL_COLORS
+    from ..tools import TOOL_COLORS
     return TOOL_COLORS.get(tool, "#64748b")
 
 
 def _tool_icon(tool: str) -> str:
-    from ..registry import TOOL_ICONS, DEFAULT_TOOL_ICON
+    from ..tools import TOOL_ICONS, DEFAULT_TOOL_ICON
     return TOOL_ICONS.get(tool, DEFAULT_TOOL_ICON)
 
 

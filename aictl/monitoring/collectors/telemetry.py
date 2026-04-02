@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .base import BaseCollector
+from . import BaseCollector
 from ..config import MonitorConfig
 from ...data.schema import metric_name as M
 

@@ -89,36 +89,21 @@ class MonitorConfig:
         self._state_roots = tuple(str(path) for path in self.state_paths)
 
     @classmethod
-    def for_root(
-        cls,
-        root: Path,
-        *,
-        sample_interval: float = 1.0,
-        refresh_interval: float = 1.0,
-        process_interval: float = 1.0,
-        network_interval: float = 1.0,
-        telemetry_interval: float = 5.0,
-        filesystem_enabled: bool = True,
-        telemetry_enabled: bool = True,
-        json_output: bool = False,
-        once: bool = False,
-        duration_seconds: float | None = None,
-    ) -> "MonitorConfig":
+    def for_root(cls, root: Path, **kwargs) -> "MonitorConfig":
+        """Construct a MonitorConfig for a single workspace root.
+
+        All MonitorConfig fields (sample_interval, refresh_interval,
+        process_interval, network_interval, telemetry_interval,
+        filesystem_enabled, telemetry_enabled, json_output, once,
+        duration_seconds, debug_network, ignored_dir_names) may be
+        passed as keyword arguments; defaults come from field defaults.
+        """
         resolved_root = root.expanduser().resolve()
         return cls(
             root=resolved_root,
             workspace_paths=(resolved_root,),
             state_paths=default_state_paths(resolved_root),
-            sample_interval=sample_interval,
-            refresh_interval=refresh_interval,
-            process_interval=process_interval,
-            network_interval=network_interval,
-            telemetry_interval=telemetry_interval,
-            filesystem_enabled=filesystem_enabled,
-            telemetry_enabled=telemetry_enabled,
-            json_output=json_output,
-            once=once,
-            duration_seconds=duration_seconds,
+            **kwargs,
         )
 
     def workspace_for_path(self, path: str | Path | None) -> str | None:

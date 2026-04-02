@@ -1,17 +1,197 @@
 # aictl - Cross-platform AI Tool Context Control + Dashboard
 # Copyright (c) 2026 Zvi Schneider. MIT License.
-"""CLI command group: datapoint catalog — dump, sync, validate."""
+"""CLI command groups: db + config + catalog — admin commands."""
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 import click
 
-from ..config import load_config
+from ..platforms import config_path, load_config, show_config, write_default_config
+
+
+# ─── db ─────────────────────────────────────────────────────────────────────
+
+
+def _resolve_db_path(db_path: str | None) -> Path:
+    """Return db Path, exiting with error if it doesn't exist."""
+    from ..storage import DEFAULT_DB_PATH
+    path = Path(db_path) if db_path else DEFAULT_DB_PATH
+    if not path.exists():
+        click.echo(f"Database not found: {path}", err=True)
+        sys.exit(1)
+    return path
+
+
+@click.group()
+@click.option("--db", "db_path", default=None, type=click.Path(),
+              help="Path to SQLite history database")
+@click.pass_context
+def db(ctx, db_path):
+    """Database maintenance — compact, vacuum, stats."""
+    ctx.ensure_object(dict)
+    ctx.obj["db_path"] = db_path
+
+
+@db.command()
+@click.option("--vacuum/--no-vacuum", default=True,
+              help="Run VACUUM after compaction to reclaim disk space")
+@click.pass_context
+def compact(ctx, vacuum):
+    """Compact the database — downsample old data, delete expired rows, reclaim space.
+
+    \b
+    Retention policy:
+      Samples:  full res 1h → 1-min buckets 24h → 5-min buckets 7d → delete
+      Metrics:  full res 24h → 1-min buckets 7d → 5-min buckets 30d → delete
+      Events:   30 days → delete
+      Telemetry: 30 days → delete
+    """
+    from ..storage import HistoryDB
+
+    db_path = ctx.obj.get("db_path")
+    path = _resolve_db_path(db_path)
+
+    size_before = path.stat().st_size
+    click.echo(f"Database: {path}")
+    click.echo(f"Size before: {size_before / 1024**2:.1f} MB")
+
+    hist_db = HistoryDB(db_path=db_path)
+
+    click.echo("Compacting...")
+    t0 = time.time()
+    result = hist_db.compact()
+    elapsed = time.time() - t0
+
+    click.echo(f"Compacted in {elapsed:.1f}s:")
+    for k, v in sorted(result.items()):
+        if v:
+            click.echo(f"  {k}: {v:,}")
+
+    if vacuum:
+        click.echo("Running VACUUM (reclaiming disk space)...")
+        t0 = time.time()
+        conn = hist_db._conn()
+        conn.execute("VACUUM")
+        click.echo(f"VACUUM done in {time.time() - t0:.1f}s")
+
+    hist_db.close()
+
+    size_after = path.stat().st_size
+    saved = size_before - size_after
+    click.echo(f"\nSize after:  {size_after / 1024**2:.1f} MB")
+    if saved > 0:
+        click.echo(f"Reclaimed:   {saved / 1024**2:.1f} MB ({saved / size_before * 100:.0f}%)")
+
+
+@db.command()
+@click.pass_context
+def stats(ctx):
+    """Show database size, row counts, and time ranges."""
+    from ..storage import HistoryDB
+
+    db_path = ctx.obj.get("db_path")
+    path = _resolve_db_path(db_path)
+
+    hist_db = HistoryDB(db_path=db_path)
+    s = hist_db.stats()
+    hist_db.close()
+
+    click.echo(f"Database: {path}")
+    click.echo(f"File size: {s['file_size_bytes'] / 1024**2:.1f} MB")
+    click.echo()
+
+    click.echo("Table                  Rows")
+    click.echo("-" * 40)
+    for k in sorted(s):
+        if k.endswith("_count"):
+            name = k.replace("_count", "")
+            click.echo(f"{name:22s} {s[k]:>12,}")
+
+    if s.get("earliest_ts") and s.get("latest_ts"):
+        import datetime
+        earliest = datetime.datetime.fromtimestamp(s["earliest_ts"])
+        latest = datetime.datetime.fromtimestamp(s["latest_ts"])
+        span = latest - earliest
+        click.echo(f"\nTime range: {earliest:%Y-%m-%d %H:%M} — {latest:%Y-%m-%d %H:%M} ({span.days}d {span.seconds//3600}h)")
+
+    if s.get("files_tracked"):
+        click.echo(f"Files tracked: {s['files_tracked']:,} ({s['files_total_bytes'] / 1024**2:.1f} MB, {s['files_total_tokens']:,} tokens)")
+
+
+@db.command()
+@click.option("--yes", "-y", is_flag=True,
+              help="Skip confirmation prompt")
+@click.pass_context
+def reset(ctx, yes):
+    """Delete the database and start fresh.
+
+    \b
+    Removes the existing history database and initialises an empty one.
+    All recorded metrics, events, and telemetry are permanently deleted.
+    """
+    from ..storage import HistoryDB, DEFAULT_DB_PATH
+
+    db_path = ctx.obj.get("db_path")
+    path = Path(db_path) if db_path else DEFAULT_DB_PATH
+
+    if path.exists():
+        size_mb = path.stat().st_size / 1024 ** 2
+        click.echo(f"Database: {path}")
+        click.echo(f"Size: {size_mb:.1f} MB")
+        if not yes:
+            click.confirm(
+                "Permanently delete ALL data and start a new database?",
+                abort=True,
+            )
+        path.unlink()
+        click.secho("Database deleted.", fg="yellow")
+    else:
+        click.echo(f"Database: {path}")
+        click.echo("(does not exist yet — will be created fresh)")
+
+    # Initialise a fresh empty database by opening it.
+    HistoryDB(db_path=str(path)).close()
+    click.secho(f"Fresh database initialised: {path}", fg="green")
+
+
+# ─── config ──────────────────────────────────────────────────────────────────
+
+
+@click.group()
+def config():
+    """Show or manage aictl configuration."""
+
+
+@config.command()
+def show():
+    """Show current effective configuration."""
+    click.echo(show_config())
+
+
+@config.command()
+def init():
+    """Create default config.toml if it doesn't exist."""
+    path = write_default_config()
+    if path.is_file():
+        click.echo(f"Config file: {path}")
+    else:
+        click.echo(f"Created: {path}")
+
+
+@config.command()
+def path():
+    """Print config file path."""
+    click.echo(config_path())
+
+
+# ─── catalog ─────────────────────────────────────────────────────────────────
 
 
 @click.group(invoke_without_command=True)
@@ -98,7 +278,6 @@ def validate(ctx, fix):
       - YAML and DB are in sync
     """
     from ..storage import HistoryDB
-    from collections import Counter
 
     db_path = ctx.obj.get("db_path") if ctx.obj else None
     db = HistoryDB(db_path=db_path)
@@ -183,10 +362,9 @@ def _render_markdown(entries: list[dict]) -> str:
     def esc(s: str) -> str:
         return " ".join(s.strip().split()).replace("|", "\\|")
 
-    type_counts: dict[str, int] = {}
+    type_counts = Counter(e["source_type"] for e in entries)
     tabs: dict[str, list[dict]] = {}
     for e in entries:
-        type_counts[e["source_type"]] = type_counts.get(e["source_type"], 0) + 1
         tabs.setdefault(e["tab"], []).append(e)
 
     lines: list[str] = []

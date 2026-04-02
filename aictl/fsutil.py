@@ -20,7 +20,7 @@ import glob as _glob_mod
 import logging
 import os
 from pathlib import Path
-from typing import Generator, Iterable
+from collections.abc import Generator, Iterable
 
 from .utils import norm_path  # re-export so callers get everything from one place
 

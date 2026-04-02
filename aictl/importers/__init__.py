@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 
 @dataclass
@@ -56,3 +58,29 @@ class ImportResult:
     lsp_servers: list[ImportedLsp] = field(default_factory=list)
     plugin_meta: dict[str, str] = field(default_factory=dict)
     # plugin_meta is populated by the plugin importer from plugin.json manifest
+
+
+# ── Registry (from registry.py) ──
+
+from . import claude, copilot, cursor, windsurf, plugin
+
+_IMPORTERS = {"claude": claude, "copilot": copilot, "cursor": cursor, "windsurf": windsurf, "plugin": plugin}
+
+
+def get(name: str):
+    if name not in _IMPORTERS:
+        raise SystemExit(f'Unknown importer "{name}". Available: {", ".join(_IMPORTERS)}')
+    return _IMPORTERS[name]
+
+
+def all_names() -> list[str]:
+    return list(_IMPORTERS)
+
+
+# ── BaseImporter ──
+
+class BaseImporter(ABC):
+    NAME: ClassVar[str]
+
+    @abstractmethod
+    def import_from(self, root) -> object | None: ...

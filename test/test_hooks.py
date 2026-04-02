@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 from click.testing import CliRunner
 
-from aictl.commands.hooks import (
+from aictl.commands.integrations import (
     hooks, install, uninstall,
     HOOK_EVENTS, _build_hook_config, _is_aictl_hook, _settings_path,
 )
@@ -20,7 +20,7 @@ def tmp_settings(tmp_path, monkeypatch):
     def _fake_path(scope):
         return settings_file
 
-    monkeypatch.setattr("aictl.commands.hooks._settings_path", _fake_path)
+    monkeypatch.setattr("aictl.commands.integrations._settings_path", _fake_path)
     monkeypatch.setenv("AICTL_PORT", "8484")
     return settings_file
 
@@ -32,9 +32,19 @@ class TestBuildHookConfig:
         for event in HOOK_EVENTS:
             assert event in config
 
+    def test_nested_format(self):
+        """Each event must use the Claude-documented nested hook format."""
+        config = _build_hook_config(8484, ["SessionStart"])
+        entry = config["SessionStart"][0]
+        assert "matcher" in entry
+        assert "hooks" in entry
+        assert isinstance(entry["hooks"], list)
+        assert entry["hooks"][0]["type"] == "command"
+        assert "command" in entry["hooks"][0]
+
     def test_custom_port(self):
         config = _build_hook_config(9999, None)
-        cmd = config["SessionStart"][0]["command"]
+        cmd = config["SessionStart"][0]["hooks"][0]["command"]
         assert "localhost:9999" in cmd
 
     def test_custom_event_subset(self):
@@ -45,32 +55,42 @@ class TestBuildHookConfig:
 
     def test_reads_stdin(self):
         config = _build_hook_config(8484, ["PostToolUse"])
-        cmd = config["PostToolUse"][0]["command"]
+        cmd = config["PostToolUse"][0]["hooks"][0]["command"]
         assert "sys.stdin" in cmd
 
     def test_posts_to_api_hooks(self):
         config = _build_hook_config(8484, ["PostToolUse"])
-        cmd = config["PostToolUse"][0]["command"]
+        cmd = config["PostToolUse"][0]["hooks"][0]["command"]
         assert "/api/hooks" in cmd
 
     def test_sets_event_name(self):
         config = _build_hook_config(8484, ["PreToolUse"])
-        cmd = config["PreToolUse"][0]["command"]
+        cmd = config["PreToolUse"][0]["hooks"][0]["command"]
         assert "'PreToolUse'" in cmd
 
     def test_merges_env_vars(self):
         config = _build_hook_config(8484, ["SessionStart"])
-        cmd = config["SessionStart"][0]["command"]
+        cmd = config["SessionStart"][0]["hooks"][0]["command"]
         assert "SESSION_ID" in cmd
         assert "CWD" in cmd
 
 
 class TestIsAictlHook:
-    def test_detects_aictl_hook(self):
+    def test_detects_nested_format(self):
+        """Current nested format {"matcher", "hooks": [...]} is detected."""
+        hook = {"matcher": "", "hooks": [{"type": "command", "command": "python -c '...http://localhost:8484/api/hooks...'"}]}
+        assert _is_aictl_hook(hook)
+
+    def test_detects_old_flat_format_for_migration(self):
+        """Old flat format (pre-fix) is detected so reinstall can clean it up."""
         hook = {"type": "command", "command": "curl -s http://localhost:8484/api/hooks ..."}
         assert _is_aictl_hook(hook)
 
-    def test_rejects_user_hook(self):
+    def test_rejects_user_nested_hook(self):
+        hook = {"matcher": "", "hooks": [{"type": "command", "command": "my-custom-linter.sh"}]}
+        assert not _is_aictl_hook(hook)
+
+    def test_rejects_user_flat_hook(self):
         hook = {"type": "command", "command": "my-custom-linter.sh"}
         assert not _is_aictl_hook(hook)
 
@@ -78,7 +98,7 @@ class TestIsAictlHook:
         assert not _is_aictl_hook("string")
         assert not _is_aictl_hook(42)
 
-    def test_detects_new_python_hook(self):
+    def test_detects_generated_hook(self):
         # Use an actual generated hook to test detection
         config = _build_hook_config(8484, ["SessionStart"])
         hook = config["SessionStart"][0]
@@ -207,11 +227,17 @@ class TestInstallConflictDetection:
         result = runner.invoke(hooks, ["install", "--force"], catch_exceptions=False)
         assert result.exit_code == 0
         data = json.loads(tmp_settings.read_text())
-        # Should have both: user hook + aictl hook
+        # Should have both: user hook (flat) + aictl hook (nested)
         assert len(data["hooks"]["PreToolUse"]) == 2
-        commands = [h["command"] for h in data["hooks"]["PreToolUse"]]
-        assert any("my-linter.sh" in c for c in commands)
-        assert any("/api/hooks" in c for c in commands)
+        # Flatten commands from both flat and nested entries
+        all_cmds = []
+        for h in data["hooks"]["PreToolUse"]:
+            if "hooks" in h:
+                all_cmds.extend(sub["command"] for sub in h["hooks"])
+            else:
+                all_cmds.append(h.get("command", ""))
+        assert any("my-linter.sh" in c for c in all_cmds)
+        assert any("/api/hooks" in c for c in all_cmds)
 
     def test_no_conflict_when_only_aictl_hooks_exist(self, tmp_settings):
         """Re-installing when only old aictl hooks exist should succeed without --force."""
@@ -296,7 +322,7 @@ class TestHookEventsCompleteness:
     """Ensure HOOK_EVENTS stays in sync with KNOWN_HOOK_EVENTS."""
 
     def test_hook_events_match_validator(self):
-        from aictl.commands.validate_cmd import KNOWN_HOOK_EVENTS
+        from aictl.commands.integrations import HOOK_EVENTS as KNOWN_HOOK_EVENTS
         hooks_set = set(HOOK_EVENTS)
         validator_set = set(KNOWN_HOOK_EVENTS)
         assert hooks_set == validator_set, (
@@ -320,7 +346,7 @@ class TestPythonCmd:
         """
         import sys
         config = _build_hook_config(8484, ["SessionStart"])
-        cmd = config["SessionStart"][0]["command"]
+        cmd = config["SessionStart"][0]["hooks"][0]["command"]
         # Command must start with the quoted sys.executable, not bare 'python3'
         assert cmd.startswith(f'"{sys.executable}"'), (
             f"Hook command should start with quoted sys.executable, got: {cmd[:80]}"
@@ -330,14 +356,14 @@ class TestPythonCmd:
         """Hook command must embed the current Python interpreter path."""
         import sys
         config = _build_hook_config(8484, ["SessionStart"])
-        cmd = config["SessionStart"][0]["command"]
+        cmd = config["SessionStart"][0]["hooks"][0]["command"]
         # sys.executable may be quoted with double quotes
         assert sys.executable in cmd
 
     def test_executable_path_is_quoted(self):
         """Executable path must be quoted to handle spaces (e.g. Program Files)."""
         config = _build_hook_config(8484, ["SessionStart"])
-        cmd = config["SessionStart"][0]["command"]
+        cmd = config["SessionStart"][0]["hooks"][0]["command"]
         import sys
         assert f'"{sys.executable}"' in cmd
 
@@ -345,10 +371,10 @@ class TestPythonCmd:
         """Hook config is valid when sys.executable has a Windows-style path."""
         fake_exe = r"C:\Program Files\Python311\python.exe"
         with patch("sys.executable", fake_exe):
-            from aictl.commands import hooks as hooks_mod
+            import aictl.commands.integrations as hooks_mod
             import importlib
             # Re-import _python_cmd with patched sys.executable
-            from aictl.commands.hooks import _python_cmd
+            from aictl.commands.integrations import _python_cmd
             quoted = _python_cmd()
         assert fake_exe in quoted
         assert quoted.startswith('"')

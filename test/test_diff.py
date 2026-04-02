@@ -9,7 +9,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from aictl.commands.diff_cmd import diff
+from aictl.commands.ctx_pipeline import diff
 
 
 def test_diff_no_aictx_files():
@@ -28,9 +28,9 @@ def test_diff_no_changes(tmp_path):
     aictx.write_text('[instructions]\nbase = "Hello world."\n')
 
     # First deploy to create the files
-    from aictl.scanner import scan
+    from aictl.context import scan
     from aictl.resolver import resolve
-    from aictl.emitters import registry
+    from aictl import emitters as registry
 
     scanned = scan(tmp_path)
     if scanned:

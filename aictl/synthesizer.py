@@ -11,10 +11,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from collections.abc import Callable
 
 from .importers import ImportResult, ImportedScope, ImportedCapability, ImportedMcp, ImportedHook, ImportedLsp
-from .parser import AICTX_FILENAME
+from .context import AICTX_FILENAME
 from .utils import write_safe
 
 
@@ -63,6 +63,17 @@ def synthesize(
     return results
 
 
+def _dedup(imports: list[ImportResult], attr: str, key_fn, prefer: str | None) -> list:
+    """Collect items from all imports, deduplicating by key_fn; prefer wins ties."""
+    result: dict = {}
+    for imp in imports:
+        for item in getattr(imp, attr):
+            k = key_fn(item)
+            if k not in result or (prefer and imp.source == prefer):
+                result[k] = item
+    return list(result.values())
+
+
 def _merge(
     imports: list[ImportResult],
     prefer: str | None,
@@ -100,42 +111,10 @@ def _merge(
             profile_text=profile_text,
         ))
 
-    # Capabilities: dedup by (kind, name), prefer --prefer source
-    all_caps: dict[tuple[str, str], ImportedCapability] = {}
-    for imp in imports:
-        for cap in imp.capabilities:
-            key = (cap.kind, cap.name)
-            if key not in all_caps:
-                all_caps[key] = cap
-            elif prefer and imp.source == prefer:
-                all_caps[key] = cap
-
-    # MCP: dedup by name, prefer --prefer source
-    all_mcp: dict[str, ImportedMcp] = {}
-    for imp in imports:
-        for mcp in imp.mcp_servers:
-            if mcp.name not in all_mcp:
-                all_mcp[mcp.name] = mcp
-            elif prefer and imp.source == prefer:
-                all_mcp[mcp.name] = mcp
-
-    # Hooks: dedup by event, prefer --prefer source
-    all_hooks: dict[str, ImportedHook] = {}
-    for imp in imports:
-        for hook in imp.hooks:
-            if hook.event not in all_hooks:
-                all_hooks[hook.event] = hook
-            elif prefer and imp.source == prefer:
-                all_hooks[hook.event] = hook
-
-    # LSP: dedup by name, prefer --prefer source
-    all_lsp: dict[str, ImportedLsp] = {}
-    for imp in imports:
-        for lsp in imp.lsp_servers:
-            if lsp.name not in all_lsp:
-                all_lsp[lsp.name] = lsp
-            elif prefer and imp.source == prefer:
-                all_lsp[lsp.name] = lsp
+    all_caps  = _dedup(imports, "capabilities", lambda c: (c.kind, c.name), prefer)
+    all_mcp   = _dedup(imports, "mcp_servers",  lambda m: m.name,           prefer)
+    all_hooks = _dedup(imports, "hooks",         lambda h: h.event,          prefer)
+    all_lsp   = _dedup(imports, "lsp_servers",  lambda s: s.name,           prefer)
 
     # Attach capabilities + MCP + hooks + LSP to root scope
     root_file = next((f for f in aictx_files if f.rel_path == "."), None)
@@ -144,10 +123,10 @@ def _merge(
         aictx_files.insert(0, root_file)
 
     if root_file:
-        root_file.capabilities = list(all_caps.values())
-        root_file.mcp_servers = list(all_mcp.values())
-        root_file.hooks = list(all_hooks.values())
-        root_file.lsp_servers = list(all_lsp.values())
+        root_file.capabilities = all_caps
+        root_file.mcp_servers  = all_mcp
+        root_file.hooks        = all_hooks
+        root_file.lsp_servers  = all_lsp
 
     # Plugin metadata: extract from any import that carries plugin_meta
     plugin_meta: dict[str, str] = {}
@@ -262,21 +241,7 @@ def _toml_key(s: str) -> str:
 
 def _toml_kv(key: str, value: object) -> str:
     """Format a key-value pair for TOML."""
-    if isinstance(value, str):
-        return f"{_toml_key(key)} = {_toml_str(value)}"
-    elif isinstance(value, bool):
-        return f"{_toml_key(key)} = {'true' if value else 'false'}"
-    elif isinstance(value, (int, float)):
-        return f"{_toml_key(key)} = {value}"
-    elif isinstance(value, list):
-        items = ", ".join(_toml_value(v) for v in value)
-        return f"{_toml_key(key)} = [{items}]"
-    elif isinstance(value, dict):
-        # Inline table for nested dicts in MCP/LSP config
-        items = ", ".join(f"{_toml_key(k)} = {_toml_value(v)}" for k, v in value.items())
-        return f"{_toml_key(key)} = {{{items}}}"
-    else:
-        return f"{_toml_key(key)} = {_toml_str(str(value))}"
+    return f"{_toml_key(key)} = {_toml_value(value)}"
 
 
 def _toml_value(value: object) -> str:

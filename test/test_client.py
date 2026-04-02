@@ -28,8 +28,8 @@ class TestServerClient:
 class TestDashboardSnapshotFromDict:
     def test_round_trip(self):
         """from_dict should reconstruct a snapshot from to_dict output."""
-        from aictl.dashboard.collector import DashboardSnapshot, DashboardTool
-        from aictl.discovery import ResourceFile
+        from aictl.dashboard.models import DashboardSnapshot, DashboardTool
+        from aictl.tools import ResourceFile
 
         snap = DashboardSnapshot(
             timestamp=1000.0,
@@ -61,14 +61,14 @@ class TestDashboardSnapshotFromDict:
         assert restored.tools[0].files[0].tokens == 25
 
     def test_from_empty_dict(self):
-        from aictl.dashboard.collector import DashboardSnapshot
+        from aictl.dashboard.models import DashboardSnapshot
         snap = DashboardSnapshot.from_dict({})
         assert snap.timestamp == 0
         assert snap.tools == []
         assert snap.agent_memory == []
 
     def test_from_partial_dict(self):
-        from aictl.dashboard.collector import DashboardSnapshot
+        from aictl.dashboard.models import DashboardSnapshot
         snap = DashboardSnapshot.from_dict({
             "timestamp": 2000.0,
             "root": "/x",

@@ -14,61 +14,44 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from . import ImportResult, ImportedScope, ImportedCapability
-from ._parse_helpers import split_yaml_frontmatter, glob_to_rel_path, extract_profile_name, strip_profile_header, import_mcp_from_json
+from . import ImportResult, ImportedScope
+from ._parse_helpers import (
+    split_yaml_frontmatter, extract_profile_name, strip_profile_header,
+    read_sub_scopes, import_mcp_from_json,
+)
 
 NAME = "cursor"
-
-_SKIP_FILES = {"base.mdc", "profile-active.mdc"}
+_SKIP = frozenset({"base.mdc", "profile-active.mdc"})
+_ACTIVE_PROFILE_RE = re.compile(r"[Aa]ctive profile:\s*(\S+)")
 
 
 def import_from(root: Path) -> ImportResult | None:
-    scopes: list[ImportedScope] = []
-    mcp_servers: list[ImportedMcp] = []
-
     rules_dir = root / ".cursor" / "rules"
-    root_base = ""
-    profile_name = None
-    profile_text = ""
 
-    # --- Root base: .cursor/rules/base.mdc ---
+    # Root base: .cursor/rules/base.mdc
+    root_base = ""
     base_file = rules_dir / "base.mdc"
     if base_file.is_file():
-        _meta, body = split_yaml_frontmatter(base_file.read_text("utf-8"))
-        root_base = body
+        _, root_base = split_yaml_frontmatter(base_file.read_text("utf-8"))
 
-    # --- Root profile: .cursor/rules/profile-active.mdc ---
+    # Root profile: .cursor/rules/profile-active.mdc
+    # Cursor stores the profile name in the YAML description field
+    profile_name = None
+    profile_text = ""
     profile_file = rules_dir / "profile-active.mdc"
     if profile_file.is_file():
         meta, body = split_yaml_frontmatter(profile_file.read_text("utf-8"))
         desc = meta.get("description", "")
-        # Extract profile name from description like "Active profile: review"
-        m = re.search(r"[Aa]ctive profile:\s*(\S+)", desc)
-        if m:
-            profile_name = m.group(1)
-        if not profile_name:
-            profile_name = extract_profile_name(body)
+        m = _ACTIVE_PROFILE_RE.search(desc)
+        profile_name = m.group(1) if m else extract_profile_name(body)
         profile_text = strip_profile_header(body)
 
-    if root_base or profile_text:
-        scopes.append(ImportedScope(".", NAME, root_base, profile_name, profile_text))
+    scopes = ([ImportedScope(".", NAME, root_base, profile_name, profile_text)]
+              if root_base or profile_text else [])
+    scopes += read_sub_scopes(rules_dir, "*.mdc", NAME, meta_key="globs", skip=_SKIP)
 
-    # --- Sub-scopes: .cursor/rules/*.mdc (excluding base and profile-active) ---
-    if rules_dir.is_dir():
-        for f in sorted(rules_dir.glob("*.mdc")):
-            if f.name in _SKIP_FILES:
-                continue
-            meta, body = split_yaml_frontmatter(f.read_text("utf-8"))
-            globs = meta.get("globs", "")
-            rel = glob_to_rel_path(globs) if globs else ""
-            if rel and body:
-                scopes.append(ImportedScope(rel, NAME, body))
-
-    # --- MCP: .cursor/mcp.json ---
     mcp_servers = import_mcp_from_json(root / ".cursor" / "mcp.json", NAME)
 
     if not scopes and not mcp_servers:
         return None
-
-    # Cursor has no capability concept — only instructions + MCP
     return ImportResult(NAME, scopes, [], mcp_servers)
