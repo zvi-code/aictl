@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Callable
 
+import tomli_w
+
 from .importers import ImportResult, ImportedScope, ImportedCapability, ImportedMcp, ImportedHook, ImportedLsp
 from .context import AICTX_FILENAME
 from .utils import write_safe
@@ -168,94 +170,52 @@ def _pick_best(
 
 def _serialize(af: AictxFile) -> str:
     """Serialize an AictxFile to .context.toml format."""
-    sections: list[str] = []
+    data: dict = {}
 
     if af.plugin_meta:
-        lines = [f'{k} = {_toml_str(v)}' for k, v in af.plugin_meta.items()]
-        sections.append("[plugin]\n" + "\n".join(lines))
+        data["plugin"] = dict(af.plugin_meta)
 
     # Instructions
-    instr_parts: list[str] = []
+    instructions: dict = {}
     if af.base_text:
-        instr_parts.append(f"base = {_toml_ml(af.base_text)}")
+        instructions["base"] = af.base_text
     if af.profile_name and af.profile_text:
-        instr_parts.append(f"{_toml_key(af.profile_name)} = {_toml_ml(af.profile_text)}")
-    if instr_parts:
-        sections.append("[instructions]\n" + "\n\n".join(instr_parts))
+        instructions[af.profile_name] = af.profile_text
+    if instructions:
+        data["instructions"] = instructions
 
     # Capabilities (commands, agents, skills)
     for cap in af.capabilities:
         kind_plural = cap.kind + "s"
-        sections.append(
-            f"[{kind_plural}._always.{_toml_key(cap.name)}]\n"
-            f"content = {_toml_ml(cap.content)}"
-        )
+        data.setdefault(kind_plural, {}).setdefault("_always", {})[cap.name] = {
+            "content": cap.content,
+        }
 
     # MCP servers
     for mcp in af.mcp_servers:
-        header = f"[mcp._always.{_toml_key(mcp.name)}]"
-        lines = [_toml_kv(k, v) for k, v in mcp.config.items()]
-        sections.append(header + "\n" + "\n".join(lines))
-
-    # Hooks
-    hook_groups: dict[str, list[str]] = {}
-    for hook in af.hooks:
-        hook_groups.setdefault("_always", []).append(
-            f"{_toml_key(hook.event)} = {_toml_str(json.dumps(hook.rules))}"
+        data.setdefault("mcp", {}).setdefault("_always", {})[mcp.name] = _sanitize(
+            mcp.config,
         )
-    for profile, lines in hook_groups.items():
-        sections.append(f"[hooks.{profile}]\n" + "\n".join(lines))
+
+    # Hooks (stored as JSON strings)
+    for hook in af.hooks:
+        data.setdefault("hooks", {}).setdefault("_always", {})[hook.event] = json.dumps(
+            hook.rules,
+        )
 
     # LSP servers
     for lsp in af.lsp_servers:
-        header = f"[lsp._always.{_toml_key(lsp.name)}]"
-        lines = [_toml_kv(k, v) for k, v in lsp.config.items()]
-        sections.append(header + "\n" + "\n".join(lines))
+        data.setdefault("lsp", {}).setdefault("_always", {})[lsp.name] = _sanitize(
+            lsp.config,
+        )
 
-    return "\n\n".join(sections) + "\n" if sections else ""
-
-
-def _toml_str(s: str) -> str:
-    """Format a string as a TOML quoted string."""
-    # Use single-line basic string with escaping
-    escaped = s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-    return f'"{escaped}"'
+    return tomli_w.dumps(data) if data else ""
 
 
-def _toml_ml(s: str) -> str:
-    """Format a string as a TOML multi-line literal string (''')."""
-    # Use triple-quoted literal string — no escaping needed except for '''
-    if "'''" in s:
-        # Fall back to basic multi-line string with escaping
-        escaped = s.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
-        return f'"""\n{escaped}\n"""'
-    return f"'''\n{s}\n'''"
-
-
-def _toml_key(s: str) -> str:
-    """Format a TOML key, quoting if needed."""
-    if all(c.isalnum() or c in "-_" for c in s) and s:
-        return s
-    return f'"{s}"'
-
-
-def _toml_kv(key: str, value: object) -> str:
-    """Format a key-value pair for TOML."""
-    return f"{_toml_key(key)} = {_toml_value(value)}"
-
-
-def _toml_value(value: object) -> str:
-    """Format a TOML value."""
-    if isinstance(value, str):
-        return _toml_str(value)
-    elif isinstance(value, bool):
-        return "true" if value else "false"
-    elif isinstance(value, (int, float)):
-        return str(value)
-    elif isinstance(value, list):
-        items = ", ".join(_toml_value(v) for v in value)
-        return f"[{items}]"
-    elif isinstance(value, dict):
-        items = ", ".join(f"{_toml_key(k)} = {_toml_value(v)}" for k, v in value.items())
-        return f"{{{items}}}"
-    return _toml_str(str(value))
+def _sanitize(obj: object) -> object:
+    """Remove None values (unsupported in TOML) from nested structures."""
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list):
+        return [_sanitize(v) for v in obj if v is not None]
+    return obj
