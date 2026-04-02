@@ -589,42 +589,31 @@ HISTORY_TUPLE_LEN = 11  # bump when adding fields to the history tuple
 
 # ─── Thread-safe snapshot store ──────────────────────────────────
 
-class SnapshotStore:
-    """Thread-safe snapshot storage with version-based change notification.
 
-    Optionally backed by a HistoryDB for persistence across restarts.
-    Uses SampleSink for universal metric emission.
-    """
+class SnapshotState:
+    """Version-tracked snapshot with ring buffers and change notification."""
 
-    def __init__(self, db: "_HistoryDB | None" = None, sink: "_SampleSink | None" = None) -> None:
+    def __init__(self) -> None:
         self._snap: _DashboardSnapshot | None = None
-        self._snap_json_bytes: bytes = b""  # pre-serialized snapshot (compact, slim)
+        self._snap_json_bytes: bytes = b""
         self._version: int = 0
         self._lock = _threading.Lock()
         self._condition = _threading.Condition(self._lock)
-        # Pre-serialized SSE JSON (set by _sse_builder callback)
         self._sse_json: str = ""
-        # Callback to build SSE JSON from snapshot (set by web_server)
         self._sse_builder: "callable | None" = None
         # Ring buffer for global time-series sparklines.
         # At ~5.86s/tick, 360 entries ≈ 35 min.
         self._history: collections.deque[tuple] = collections.deque(maxlen=360)
         # Per-tool history: {tool_name: deque[(ts, cpu, mem_mb, tokens, traffic_bps)]}
         self._tool_history: dict[str, collections.deque] = {}
-        # SQLite persistence (optional)
-        self._db = db
-        # Universal metric sink
-        self._sink = sink
-        if db:
-            self._load_from_db()
 
-    def _load_from_db(self) -> None:
+    def load_from_db(self, db: "_HistoryDB") -> None:
         """Populate ring buffers from SQLite so charts start with history."""
-        if not self._db:
+        if not db:
             return
         try:
             since = _time.time() - 3600  # load last 1 hour
-            data = self._db.query_metrics(since=since)
+            data = db.query_metrics(since=since)
             if data["ts"]:
                 me_list = data.get("memory_entries") or [0] * len(data["ts"])
                 for i in range(len(data["ts"])):
@@ -638,7 +627,7 @@ class SnapshotStore:
                     )
                     self._history.append(row)
             # Per-tool history
-            tool_data = self._db.query_tool_metrics(since=since)
+            tool_data = db.query_tool_metrics(since=since)
             for tool_name, td in tool_data.items():
                 dq = collections.deque(maxlen=120)
                 for i in range(len(td["ts"])):
@@ -648,7 +637,9 @@ class SnapshotStore:
         except Exception as exc:
             log.warning("Failed to load history from DB: %s", exc)
 
-    def update(self, snap: _DashboardSnapshot) -> None:
+    def update(self, snap: _DashboardSnapshot,
+               serializer: "SnapshotSerializer") -> list[tuple]:
+        """Update state, pre-serialize, notify waiters. Returns tool_rows."""
         with self._condition:
             self._snap = snap
             self._version += 1
@@ -667,7 +658,7 @@ class SnapshotStore:
 
             # Per-tool history
             ts = snap.timestamp
-            tool_rows = []
+            tool_rows: list[tuple] = []
             for t in snap.tools:
                 if t.tool == "aictl":
                     continue
@@ -684,89 +675,191 @@ class SnapshotStore:
 
             # Pre-serialize snapshot + SSE BEFORE notifying clients.
             # This ensures readers see data matching the version they woke for.
-            try:
-                self._snap_json_bytes = snap.to_json_slim().encode("utf-8")
-            except Exception:
-                self._snap_json_bytes = b""
-            if self._sse_builder:
-                try:
-                    self._sse_json = self._sse_builder(snap)
-                except Exception:
-                    self._sse_json = ""
+            self._snap_json_bytes = serializer.serialize_snapshot(snap)
+            self._sse_json = serializer.serialize_sse(snap, self._sse_builder)
 
             self._condition.notify_all()
+        return tool_rows
 
-        # Persist to SQLite (non-blocking — HistoryDB buffers internally)
-        if self._db:
+    def wait_for_update(self, known_version: int,
+                        timeout: float = 30.0) -> tuple[_DashboardSnapshot | None, int]:
+        """Block until a new version is available or timeout."""
+        with self._condition:
+            self._condition.wait_for(
+                lambda: self._version > known_version, timeout=timeout)
+            return self._snap, self._version
+
+    @property
+    def snapshot(self) -> _DashboardSnapshot | None:
+        with self._lock:
+            return self._snap
+
+    @property
+    def snapshot_json_bytes(self) -> bytes:
+        """Pre-serialized compact JSON snapshot (slim agent_teams)."""
+        return self._snap_json_bytes
+
+    @property
+    def sse_json(self) -> str:
+        """Pre-serialized SSE summary JSON."""
+        return self._sse_json
+
+    @sse_json.setter
+    def sse_json(self, value: str) -> None:
+        self._sse_json = value
+
+    @property
+    def version(self) -> int:
+        with self._lock:
+            return self._version
+
+    def history_data(self) -> tuple[list[tuple], dict[str, collections.deque]]:
+        """Extract ring buffer data for serialization."""
+        with self._lock:
+            rows = list(self._history)
+        return rows, self._tool_history
+
+
+class SnapshotSerializer:
+    """Pre-serializes snapshots to JSON/SSE formats."""
+
+    @staticmethod
+    def serialize_snapshot(snap: _DashboardSnapshot) -> bytes:
+        """Compact JSON bytes from a DashboardSnapshot."""
+        try:
+            return snap.to_json_slim().encode("utf-8")
+        except Exception:
+            return b""
+
+    @staticmethod
+    def serialize_sse(snap: _DashboardSnapshot,
+                      builder: "callable | None") -> str:
+        """SSE-formatted JSON via the registered builder callback."""
+        if builder:
             try:
-                from .storage import MetricsRow, ToolMetricsRow, EventRow
-                self._db.append_metrics(MetricsRow(
-                    ts=snap.timestamp, files=snap.total_files,
-                    tokens=snap.total_tokens, cpu=snap.total_cpu,
-                    mem_mb=snap.total_mem_mb, mcp=snap.total_mcp_servers,
-                    mem_tokens=snap.total_memory_tokens,
-                    memory_entries=snap.total_memory_entries,
-                    live_sessions=snap.total_live_sessions,
-                    live_tokens=snap.total_live_estimated_tokens,
-                    live_in_rate=snap.total_live_inbound_rate_bps,
-                    live_out_rate=snap.total_live_outbound_rate_bps,
-                ))
-                self._db.append_tool_metrics([
-                    ToolMetricsRow(ts=snap.timestamp, tool=name,
-                                   cpu=cpu, mem_mb=mem, tokens=tok, traffic=tr)
-                    for name, cpu, mem, tok, tr in tool_rows
+                return builder(snap)
+            except Exception:
+                return ""
+        return ""
+
+    @staticmethod
+    def serialize_history(rows: list[tuple],
+                          tool_history: dict[str, collections.deque]) -> str:
+        """Return time-series history as column-major JSON (uPlot format)."""
+        from .storage import METRICS_KEYS
+        if not rows:
+            return _json.dumps({k: [] for k in METRICS_KEYS})
+        # Transpose rows → columns; order must match METRICS_KEYS
+        cols = zip(*rows)
+        _ROUND2 = {"cpu", "live_in_rate", "live_out_rate"}
+        _ROUND1 = {"mem_mb"}
+        result: dict = {}
+        for key, col in zip(METRICS_KEYS, cols):
+            vals = list(col)
+            if key in _ROUND1:
+                result[key] = [round(v, 1) for v in vals]
+            elif key in _ROUND2:
+                result[key] = [round(v, 2) for v in vals]
+            else:
+                result[key] = vals
+        # Per-tool history
+        tool_hist: dict[str, dict] = {}
+        for tool_name, dq in tool_history.items():
+            if not dq:
+                continue
+            t_ts, t_cpu, t_mem, t_tok, t_traffic = zip(*dq)
+            tool_hist[tool_name] = {
+                "ts": list(t_ts),
+                "cpu": [round(v, 1) for v in t_cpu],
+                "mem_mb": [round(v, 1) for v in t_mem],
+                "tokens": list(t_tok),
+                "traffic": [round(v, 2) for v in t_traffic],
+            }
+        result["by_tool"] = tool_hist
+        return _json.dumps(result)
+
+
+class SnapshotPersistence:
+    """Writes snapshot data to HistoryDB (injected dependency)."""
+
+    def __init__(self, db: "_HistoryDB | None") -> None:
+        self._db = db
+
+    def persist(self, snap: _DashboardSnapshot,
+                tool_rows: list[tuple]) -> None:
+        """Persist metrics, events, telemetry, and agent teams to SQLite."""
+        if not self._db:
+            return
+        try:
+            from .storage import MetricsRow, ToolMetricsRow, EventRow
+            self._db.append_metrics(MetricsRow(
+                ts=snap.timestamp, files=snap.total_files,
+                tokens=snap.total_tokens, cpu=snap.total_cpu,
+                mem_mb=snap.total_mem_mb, mcp=snap.total_mcp_servers,
+                mem_tokens=snap.total_memory_tokens,
+                memory_entries=snap.total_memory_entries,
+                live_sessions=snap.total_live_sessions,
+                live_tokens=snap.total_live_estimated_tokens,
+                live_in_rate=snap.total_live_inbound_rate_bps,
+                live_out_rate=snap.total_live_outbound_rate_bps,
+            ))
+            self._db.append_tool_metrics([
+                ToolMetricsRow(ts=snap.timestamp, tool=name,
+                               cpu=cpu, mem_mb=mem, tokens=tok, traffic=tr)
+                for name, cpu, mem, tok, tr in tool_rows
+            ])
+            # Persist events from live monitor
+            if snap.events:
+                self._db.append_events([
+                    EventRow(ts=e.get("ts", snap.timestamp),
+                             tool=e.get("tool", ""),
+                             kind=e.get("kind", ""),
+                             detail=e.get("detail", {}),
+                             session_id=e.get("detail", {}).get("session_id", ""),
+                             pid=int(e.get("detail", {}).get("pid", 0) or 0))
+                    for e in snap.events if e.get("tool") and e.get("kind")
                 ])
-                # Persist events from live monitor
-                if snap.events:
-                    self._db.append_events([
-                        EventRow(ts=e.get("ts", snap.timestamp),
-                                 tool=e.get("tool", ""),
-                                 kind=e.get("kind", ""),
-                                 detail=e.get("detail", {}),
-                                 session_id=e.get("detail", {}).get("session_id", ""),
-                                 pid=int(e.get("detail", {}).get("pid", 0) or 0))
-                        for e in snap.events if e.get("tool") and e.get("kind")
-                    ])
-                    # Also write to sessions table for session_start/end events
-                    self._persist_session_events(snap.events, snap.timestamp)
-                # Persist telemetry snapshots (from stats-cache, events.jsonl, etc.)
-                if snap.tool_telemetry:
-                    from .storage import TelemetryRow
-                    self._db.append_telemetry_batch([
-                        TelemetryRow(
-                            ts=snap.timestamp, tool=t.get("tool", ""),
-                            source=t.get("source", ""),
-                            confidence=t.get("confidence", 0),
-                            input_tokens=t.get("input_tokens", 0),
-                            output_tokens=t.get("output_tokens", 0),
-                            cache_read_tokens=t.get("cache_read_tokens", 0),
-                            cache_creation_tokens=t.get("cache_creation_tokens", 0),
-                            total_sessions=t.get("total_sessions", 0),
-                            total_messages=t.get("total_messages", 0),
-                            cost_usd=t.get("cost_usd", 0),
-                            model=t.get("model", ""),
-                            by_model=t.get("by_model", {}),
-                        )
-                        for t in snap.tool_telemetry if t.get("tool")
-                    ])
-                # Persist agent teams (agents + per-turn requests)
-                if snap.agent_teams:
-                    self._persist_agent_teams(snap.agent_teams, snap.timestamp)
+                # Also write to sessions table for session_start/end events
+                self._persist_session_events(snap.events, snap.timestamp)
+            # Persist telemetry snapshots (from stats-cache, events.jsonl, etc.)
+            if snap.tool_telemetry:
+                from .storage import TelemetryRow
+                self._db.append_telemetry_batch([
+                    TelemetryRow(
+                        ts=snap.timestamp, tool=t.get("tool", ""),
+                        source=t.get("source", ""),
+                        confidence=t.get("confidence", 0),
+                        input_tokens=t.get("input_tokens", 0),
+                        output_tokens=t.get("output_tokens", 0),
+                        cache_read_tokens=t.get("cache_read_tokens", 0),
+                        cache_creation_tokens=t.get("cache_creation_tokens", 0),
+                        total_sessions=t.get("total_sessions", 0),
+                        total_messages=t.get("total_messages", 0),
+                        cost_usd=t.get("cost_usd", 0),
+                        model=t.get("model", ""),
+                        by_model=t.get("by_model", {}),
+                    )
+                    for t in snap.tool_telemetry if t.get("tool")
+                ])
+            # Persist agent teams (agents + per-turn requests)
+            if snap.agent_teams:
+                self._persist_agent_teams(snap.agent_teams, snap.timestamp)
 
-                # All metric emission now happens at collection time
-                # (collectors + DiscoveryCollector + collect() enrichment).
-                # No snapshot-level emission needed.
+            # All metric emission now happens at collection time
+            # (collectors + DiscoveryCollector + collect() enrichment).
+            # No snapshot-level emission needed.
 
-                # Refresh dynamic source provenance for the datapoint catalog.
-                try:
-                    from .sink import update_provenance
-                    update_provenance(self._db, snap)
-                except Exception as exc:
-                    log.debug("Provenance update failed: %s", exc)
+            # Refresh dynamic source provenance for the datapoint catalog.
+            try:
+                from .sink import update_provenance
+                update_provenance(self._db, snap)
             except Exception as exc:
-                log.warning("DB write failed: %s", exc)
+                log.debug("Provenance update failed: %s", exc)
+        except Exception as exc:
+            log.warning("DB write failed: %s", exc)
 
-    def _persist_agent_teams(self, agent_teams: list[dict], snapshot_ts: float) -> None:
+    def _persist_agent_teams(self, agent_teams: list[dict],
+                             snapshot_ts: float) -> None:
         """Write agent team data to the sessions, agents, and requests tables."""
         if not self._db or not agent_teams:
             return
@@ -826,7 +919,8 @@ class SnapshotStore:
         except Exception as exc:
             log.warning("Agent team persistence failed: %s", exc)
 
-    def _persist_session_events(self, events: list[dict], fallback_ts: float) -> None:
+    def _persist_session_events(self, events: list[dict],
+                                fallback_ts: float) -> None:
         """Write session_start/session_end events to the sessions table."""
         if not self._db:
             return
@@ -861,76 +955,68 @@ class SnapshotStore:
         except Exception as exc:
             log.warning("Session event persistence failed: %s", exc)
 
+
+class SnapshotStore:
+    """Facade composing state, serialization, and persistence.
+
+    Optionally backed by a HistoryDB for persistence across restarts.
+    Uses SampleSink for universal metric emission.
+    """
+
+    def __init__(self, db: "_HistoryDB | None" = None, sink: "_SampleSink | None" = None) -> None:
+        self._state = SnapshotState()
+        self._serializer = SnapshotSerializer()
+        self._persistence = SnapshotPersistence(db)
+        # Exposed for callers that access these directly
+        self._db = db
+        self._sink = sink
+        if db:
+            self._state.load_from_db(db)
+
+    @property
+    def _sse_builder(self):
+        return self._state._sse_builder
+
+    @_sse_builder.setter
+    def _sse_builder(self, value):
+        self._state._sse_builder = value
+
+    def update(self, snap: _DashboardSnapshot) -> None:
+        tool_rows = self._state.update(snap, self._serializer)
+        self._persistence.persist(snap, tool_rows)
+
     def wait_for_update(self, known_version: int,
                         timeout: float = 30.0) -> tuple[_DashboardSnapshot | None, int]:
         """Block until a new version is available or timeout."""
-        with self._condition:
-            self._condition.wait_for(
-                lambda: self._version > known_version, timeout=timeout)
-            return self._snap, self._version
+        return self._state.wait_for_update(known_version, timeout)
 
     @property
     def snapshot(self) -> _DashboardSnapshot | None:
-        with self._lock:
-            return self._snap
+        return self._state.snapshot
 
     @property
     def snapshot_json_bytes(self) -> bytes:
         """Pre-serialized compact JSON snapshot (slim agent_teams)."""
-        return self._snap_json_bytes
+        return self._state.snapshot_json_bytes
 
     @property
     def sse_json(self) -> str:
         """Pre-serialized SSE summary JSON (set by web_server after build)."""
-        return self._sse_json
+        return self._state.sse_json
 
     @sse_json.setter
     def sse_json(self, value: str) -> None:
-        self._sse_json = value
+        self._state.sse_json = value
 
     @property
     def version(self) -> int:
-        with self._lock:
-            return self._version
+        return self._state.version
 
     def history_json(self) -> str:
         """Return time-series history as column-major JSON (uPlot native format)."""
-        from .storage import METRICS_KEYS
-        with self._lock:
-            rows = list(self._history)
-        if not rows:
-            return _json.dumps({k: [] for k in METRICS_KEYS})
-        # Transpose rows → columns; order must match METRICS_KEYS
-        cols = zip(*rows)
-        _ROUND2 = {"cpu", "live_in_rate", "live_out_rate"}
-        _ROUND1 = {"mem_mb"}
-        result = {}
-        for key, col in zip(METRICS_KEYS, cols):
-            vals = list(col)
-            if key in _ROUND1:
-                result[key] = [round(v, 1) for v in vals]
-            elif key in _ROUND2:
-                result[key] = [round(v, 2) for v in vals]
-            else:
-                result[key] = vals
-        # Per-tool history
-        tool_hist: dict[str, dict] = {}
-        for tool_name, dq in self._tool_history.items():
-            if not dq:
-                continue
-            t_ts, t_cpu, t_mem, t_tok, t_traffic = zip(*dq)
-            tool_hist[tool_name] = {
-                "ts": list(t_ts),
-                "cpu": [round(v, 1) for v in t_cpu],
-                "mem_mb": [round(v, 1) for v in t_mem],
-                "tokens": list(t_tok),
-                "traffic": [round(v, 2) for v in t_traffic],
-            }
-        result["by_tool"] = tool_hist
-        return _json.dumps(result)
+        rows, tool_history = self._state.history_data()
+        return self._serializer.serialize_history(rows, tool_history)
 
-
-# ─── File path whitelist ─────────────────────────────────────────
 
 class AllowedPaths:
     """Maintains the set of file paths that may be served via /api/file."""
