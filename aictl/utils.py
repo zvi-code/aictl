@@ -56,6 +56,13 @@ def read_if_exists(path: Path) -> str | None:
     return path.read_text(encoding="utf-8") if path.is_file() else None
 
 
+def emit_file(fp: Path, content: str, dry_run: bool, results: list) -> None:
+    """Write *content* to *fp* (unless dry_run) and record the result."""
+    if not dry_run:
+        write_safe(fp, content)
+    results.append({"path": str(fp), "tokens": estimate_tokens(content)})
+
+
 def extract_overlay(path: Path) -> str:
     content = read_if_exists(path)
     if not content:
@@ -184,3 +191,78 @@ def rel_display(path_str: str, root: Path, home: Path) -> str:
         return "~/" + str(Path(path_str).relative_to(home))
     except ValueError:
         return path_str
+
+
+# ── WriteGuard ──────────────────────────────────────────────────────
+
+# Key used to store the guard in click.Context.meta
+_CTX_KEY = "_write_guard"
+
+
+class WriteGuard:
+    def __init__(self, command: str) -> None:
+        self.command = command
+        self._approve_all = False
+
+    # ── Registration ──────────────────────────────────────────────
+
+    @classmethod
+    def install(cls, command: str) -> "WriteGuard":
+        """Create a guard and register it in the current Click context.
+
+        Call once at the top of a Click command handler:
+            guard = WriteGuard.install("hooks install")
+        """
+        import click
+        guard = cls(command)
+        ctx = click.get_current_context(silent=True)
+        if ctx is not None:
+            ctx.meta[_CTX_KEY] = guard
+        return guard
+
+    @classmethod
+    def current(cls) -> "WriteGuard | None":
+        """Return the guard from the current Click context, or None."""
+        import click
+        ctx = click.get_current_context(silent=True)
+        if ctx is None:
+            return None
+        return ctx.meta.get(_CTX_KEY)
+
+    # ── Gate ─────────────────────────────────────────────────────
+
+    def confirm(self, path: "Path | str", action: str = "modify") -> None:
+        """Prompt the user before touching a pre-existing file.
+
+        - New files (do not exist yet): silently approved.
+        - Y: approved for this file; subsequent files still ask.
+        - A: approved; all remaining files in this invocation skip prompting.
+        - N (or anything else): raises click.Abort() — command exits cleanly.
+
+        Args:
+            path:   file about to be written/modified/deleted
+            action: verb shown in the prompt — "modify", "replace", or "delete"
+        """
+        path = Path(path)
+        if not path.exists() or self._approve_all:
+            return
+
+        import sys
+        import click
+        # Only prompt when running interactively inside a Click command.
+        # In tests (CliRunner) or piped/scripted contexts, auto-approve.
+        if click.get_current_context(silent=True) is None:
+            return
+        if not sys.stdin.isatty():
+            return
+
+        click.echo()
+        click.secho(
+            f"aictl {self.command} is about to {action} {path}",
+            fg="yellow",
+        )
+        response = click.prompt("[Y] Yes, [N] No, [A] All").strip().upper()[:1]
+        if response == "A":
+            self._approve_all = True
+        elif response != "Y":
+            raise click.Abort()

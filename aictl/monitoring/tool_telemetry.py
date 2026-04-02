@@ -19,11 +19,12 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from collections import Counter
+from collections.abc import Callable, Iterator
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable
 
-from ..platforms import claude_global_dir, claude_projects_dir, codex_global_dir, cursor_user_dir
+from ..platforms import IS_WINDOWS, claude_global_dir, claude_projects_dir, codex_global_dir, cursor_user_dir
 from ..fsutil import safe_iterdir, safe_glob
 from ..data.schema import load_telemetry_sources
 
@@ -72,25 +73,10 @@ class ToolTelemetryReport:
     #  "code_changes": {"lines_added": int, "lines_removed": int, "files_modified": int}}
 
     def to_dict(self) -> dict:
-        return {
-            "tool": self.tool,
-            "source": self.source,
-            "confidence": self.confidence,
-            "input_tokens": self.input_tokens,
-            "output_tokens": self.output_tokens,
-            "cache_read_tokens": self.cache_read_tokens,
-            "cache_creation_tokens": self.cache_creation_tokens,
-            "total_sessions": self.total_sessions,
-            "total_messages": self.total_messages,
-            "by_model": self.by_model,
-            "daily": self.daily[-7:],  # Last 7 days only
-            "cost_usd": self.cost_usd,
-            "active_session_input": self.active_session_input,
-            "active_session_output": self.active_session_output,
-            "active_session_messages": self.active_session_messages,
-            "errors": self.errors[-20:],  # Last 20 errors
-            "quota_state": self.quota_state,
-        }
+        d = asdict(self)
+        d["daily"] = d["daily"][-7:]    # last 7 days only
+        d["errors"] = d["errors"][-20:] # last 20 errors
+        return d
 
 
 # ─── Agent team detection (file-based) ──────────────────────────
@@ -137,10 +123,7 @@ def scan_agent_teams(root: Path) -> list[dict]:
                 total_in = sum(a["input_tokens"] for a in agents)
                 total_out = sum(a["output_tokens"] for a in agents)
                 all_tools = sorted(set(t for a in agents for t in a["tools_used"]))
-                models = {}
-                for a in agents:
-                    m = a.get("model") or "unknown"
-                    models[m] = models.get(m, 0) + 1
+                models = dict(Counter(a.get("model") or "unknown" for a in agents))
                 results.append({
                     "session_id": sess_dir.name,
                     "project_dir": proj_dir.name,
@@ -205,6 +188,7 @@ def _parse_agent_file(path: Path) -> dict | None:
     tools = set()
     tool_use_count = 0
     last_type = ""
+    turns: list[dict] = []
     for line in lines:
         if not line.strip():
             continue
@@ -215,7 +199,8 @@ def _parse_agent_file(path: Path) -> dict | None:
 
         msg_type = obj.get("type", "")
         last_type = msg_type
-        result["ended_at"] = obj.get("timestamp", result["ended_at"])
+        line_ts = obj.get("timestamp", "")
+        result["ended_at"] = line_ts or result["ended_at"]
         msg = obj.get("message", {})
         if not isinstance(msg, dict):
             continue
@@ -227,10 +212,25 @@ def _parse_agent_file(path: Path) -> dict | None:
         # Token usage (cumulative from usage fields)
         usage = msg.get("usage", {})
         if usage:
-            result["input_tokens"] += int(usage.get("input_tokens", 0))
-            result["output_tokens"] += int(usage.get("output_tokens", 0))
-            result["cache_read_tokens"] += int(usage.get("cache_read_input_tokens", 0))
-            result["cache_creation_tokens"] += int(usage.get("cache_creation_input_tokens", 0))
+            in_tok = int(usage.get("input_tokens", 0))
+            out_tok = int(usage.get("output_tokens", 0))
+            cache_r = int(usage.get("cache_read_input_tokens", 0))
+            cache_c = int(usage.get("cache_creation_input_tokens", 0))
+            result["input_tokens"] += in_tok
+            result["output_tokens"] += out_tok
+            result["cache_read_tokens"] += cache_r
+            result["cache_creation_tokens"] += cache_c
+
+            # Per-turn request record (assistant messages with usage are API calls)
+            if msg_type == "assistant":
+                turns.append({
+                    "source_ts": _parse_iso_ts(line_ts),
+                    "model": msg.get("model", ""),
+                    "input_tokens": in_tok,
+                    "output_tokens": out_tok,
+                    "cache_read_tokens": cache_r,
+                    "cache_creation_tokens": cache_c,
+                })
 
         # Task (first user message content)
         if msg_type == "user" and not result["task"]:
@@ -254,6 +254,7 @@ def _parse_agent_file(path: Path) -> dict | None:
     result["tools_used"] = sorted(tools)
     result["tool_use_count"] = tool_use_count
     result["completed"] = last_type == "assistant"
+    result["turns"] = turns
     return result
 
 
@@ -343,23 +344,19 @@ def parse_claude_telemetry(root: Path, tool: str = "claude-code",
 
             model_usage = data.get("modelUsage", {})
             for model, usage in model_usage.items():
-                inp = int(usage.get("inputTokens", 0))
-                out = int(usage.get("outputTokens", 0))
-                cr = int(usage.get("cacheReadInputTokens", 0))
-                cc = int(usage.get("cacheCreationInputTokens", 0))
-                cost = float(usage.get("costUSD", 0))
-                report.input_tokens += inp
-                report.output_tokens += out
-                report.cache_read_tokens += cr
-                report.cache_creation_tokens += cc
-                report.cost_usd += cost
-                report.by_model[model] = {
-                    "input_tokens": inp,
-                    "output_tokens": out,
-                    "cache_read_tokens": cr,
-                    "cache_creation_tokens": cc,
-                    "cost_usd": cost,
+                m = {
+                    "input_tokens": int(usage.get("inputTokens", 0)),
+                    "output_tokens": int(usage.get("outputTokens", 0)),
+                    "cache_read_tokens": int(usage.get("cacheReadInputTokens", 0)),
+                    "cache_creation_tokens": int(usage.get("cacheCreationInputTokens", 0)),
+                    "cost_usd": float(usage.get("costUSD", 0)),
                 }
+                report.input_tokens += m["input_tokens"]
+                report.output_tokens += m["output_tokens"]
+                report.cache_read_tokens += m["cache_read_tokens"]
+                report.cache_creation_tokens += m["cache_creation_tokens"]
+                report.cost_usd += m["cost_usd"]
+                report.by_model[model] = m
 
             # Daily token data
             daily_tokens = data.get("dailyModelTokens", [])
@@ -382,6 +379,46 @@ def parse_claude_telemetry(root: Path, tool: str = "claude-code",
 
 
 # Error pattern keywords for scanning session content
+def _recent_files(
+    directory: Path,
+    pattern: str,
+    *,
+    days: int = 7,
+    max_files: int = 10,
+) -> list[Path]:
+    """Return up to max_files files matching pattern, modified within days, newest first."""
+    cutoff = time.time() - days * 86400
+    files = []
+    for f in directory.glob(pattern):
+        try:
+            if f.stat().st_mtime >= cutoff:
+                files.append(f)
+        except OSError:
+            continue
+    return sorted(files, key=lambda f: f.stat().st_mtime, reverse=True)[:max_files]
+
+
+def _first_int(d: dict, *keys: str) -> int:
+    """Return the first non-zero integer value from d for the given keys, or 0."""
+    for key in keys:
+        if v := d.get(key):
+            return int(v)
+    return 0
+
+
+def _iter_jsonl(path: Path) -> Iterator[dict]:
+    """Yield parsed JSON objects from a JSONL file. Never raises."""
+    try:
+        for line in path.read_text(errors="replace").splitlines():
+            if line.strip():
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError:
+                    pass
+    except OSError:
+        pass
+
+
 _ERROR_PATTERNS = {
     "overloaded": "overloaded",
     "rate_limit": "rate_limit",
@@ -492,7 +529,7 @@ def _detect_claude_errors(obj: dict, obj_type: str, report: ToolTelemetryReport)
 # ─── Copilot CLI ────────────────────────────────────────────────
 
 
-def parse_copilot_telemetry(tool: str = "copilot-cli",
+def parse_copilot_telemetry(root: Path | None = None, tool: str = "copilot-cli",
                             source: str = "events-jsonl",
                             confidence: float = 0.90) -> ToolTelemetryReport | None:
     """Parse GitHub Copilot CLI telemetry from session-state events.jsonl files."""
@@ -530,115 +567,102 @@ def parse_copilot_telemetry(tool: str = "copilot-cli",
 
 def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> None:
     """Parse a single Copilot CLI events.jsonl for token data, metrics, and errors."""
-    try:
-        text = events_file.read_text(errors="replace")
-        for line in text.splitlines():
-            if not line.strip():
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+    for obj in _iter_jsonl(events_file):
+        event_type = obj.get("type", "")
+        data = obj.get("data", {}) if isinstance(obj.get("data"), dict) else {}
+        timestamp = obj.get("timestamp", "")
 
-            event_type = obj.get("type", "")
-            data = obj.get("data", {}) if isinstance(obj.get("data"), dict) else {}
-            timestamp = obj.get("timestamp", "")
+        # assistant.message has outputTokens (under data)
+        if event_type == "assistant.message":
+            out_tok = int(data.get("outputTokens", 0))
+            report.output_tokens += out_tok
+            report.total_messages += 1
 
-            # assistant.message has outputTokens (under data)
-            if event_type == "assistant.message":
-                out_tok = int(data.get("outputTokens", 0))
-                report.output_tokens += out_tok
-                report.total_messages += 1
+        # session.shutdown has comprehensive modelMetrics
+        elif event_type == "session.shutdown":
+            shutdown_type = data.get("shutdownType", "routine")
 
-            # session.shutdown has comprehensive modelMetrics
-            elif event_type == "session.shutdown":
-                shutdown_type = data.get("shutdownType", "routine")
+            # Error detection: non-routine shutdowns
+            if shutdown_type != "routine":
+                report.errors.append({
+                    "type": "shutdown_error",
+                    "message": f"Session shutdown: {shutdown_type}",
+                    "timestamp": timestamp,
+                    "model": data.get("currentModel", ""),
+                })
 
-                # Error detection: non-routine shutdowns
-                if shutdown_type != "routine":
-                    report.errors.append({
-                        "type": "shutdown_error",
-                        "message": f"Session shutdown: {shutdown_type}",
-                        "timestamp": timestamp,
-                        "model": data.get("currentModel", ""),
-                    })
-
-                # Quota/operational state
-                premium = int(data.get("totalPremiumRequests", 0))
-                api_dur = int(data.get("totalApiDurationMs", 0))
-                code_changes = data.get("codeChanges", {})
-                if premium or api_dur or code_changes:
-                    report.quota_state = {
-                        "premium_requests_used": report.quota_state.get("premium_requests_used", 0) + premium,
-                        "total_api_duration_ms": report.quota_state.get("total_api_duration_ms", 0) + api_dur,
-                        "current_model": data.get("currentModel", ""),
+            # Quota/operational state
+            premium = int(data.get("totalPremiumRequests", 0))
+            api_dur = int(data.get("totalApiDurationMs", 0))
+            code_changes = data.get("codeChanges", {})
+            if premium or api_dur or code_changes:
+                report.quota_state = {
+                    "premium_requests_used": report.quota_state.get("premium_requests_used", 0) + premium,
+                    "total_api_duration_ms": report.quota_state.get("total_api_duration_ms", 0) + api_dur,
+                    "current_model": data.get("currentModel", ""),
+                }
+                if isinstance(code_changes, dict) and any(code_changes.values()):
+                    report.quota_state["code_changes"] = {
+                        "lines_added": int(code_changes.get("linesAdded", 0)),
+                        "lines_removed": int(code_changes.get("linesRemoved", 0)),
+                        "files_modified": len(code_changes.get("filesModified", [])),
                     }
-                    if isinstance(code_changes, dict) and any(code_changes.values()):
-                        report.quota_state["code_changes"] = {
-                            "lines_added": int(code_changes.get("linesAdded", 0)),
-                            "lines_removed": int(code_changes.get("linesRemoved", 0)),
-                            "files_modified": len(code_changes.get("filesModified", [])),
-                        }
 
-                # Timeout detection: API duration > 30s per request suggests timeouts
-                metrics = data.get("modelMetrics", {})
-                for model, model_data in metrics.items():
-                    usage = model_data.get("usage", {})
-                    inp = int(usage.get("inputTokens", 0))
-                    out = int(usage.get("outputTokens", 0))
-                    cr = int(usage.get("cacheReadTokens", 0))
-                    cw = int(usage.get("cacheWriteTokens", 0))
-                    report.input_tokens += inp
-                    report.cache_read_tokens += cr
-                    report.cache_creation_tokens += cw
+            # Timeout detection: API duration > 30s per request suggests timeouts
+            metrics = data.get("modelMetrics", {})
+            for model, model_data in metrics.items():
+                usage = model_data.get("usage", {})
+                inp = int(usage.get("inputTokens", 0))
+                out = int(usage.get("outputTokens", 0))
+                cr = int(usage.get("cacheReadTokens", 0))
+                cw = int(usage.get("cacheWriteTokens", 0))
+                report.input_tokens += inp
+                report.cache_read_tokens += cr
+                report.cache_creation_tokens += cw
 
-                    if model not in report.by_model:
-                        report.by_model[model] = {
-                            "input_tokens": 0, "output_tokens": 0,
-                            "cache_read_tokens": 0, "requests": 0, "cost_usd": 0.0,
-                        }
-                    report.by_model[model]["input_tokens"] += inp
-                    report.by_model[model]["output_tokens"] += out
-                    report.by_model[model]["cache_read_tokens"] += cr
+                mb = report.by_model.setdefault(model, {
+                    "input_tokens": 0, "output_tokens": 0,
+                    "cache_read_tokens": 0, "requests": 0, "cost_usd": 0.0,
+                })
+                mb["input_tokens"] += inp
+                mb["output_tokens"] += out
+                mb["cache_read_tokens"] += cr
 
-                    req_data = model_data.get("requests", {})
-                    req_count = int(req_data.get("count", 0))
-                    cost = float(req_data.get("cost", 0))
-                    report.by_model[model]["requests"] += req_count
-                    report.by_model[model]["cost_usd"] += cost
-                    report.cost_usd += cost
+                req_data = model_data.get("requests", {})
+                req_count = int(req_data.get("count", 0))
+                cost = float(req_data.get("cost", 0))
+                mb["requests"] += req_count
+                mb["cost_usd"] += cost
+                report.cost_usd += cost
 
-                    # Detect potential timeouts: high latency per request
-                    if req_count > 0 and api_dur > 0:
-                        avg_ms = api_dur / req_count
-                        if avg_ms > 30000:  # >30s per request
-                            report.errors.append({
-                                "type": "timeout",
-                                "message": f"High avg API latency: {avg_ms/1000:.1f}s/req ({model})",
-                                "timestamp": timestamp,
-                                "model": model,
-                            })
+                # Detect potential timeouts: high latency per request
+                if req_count > 0 and api_dur > 0:
+                    avg_ms = api_dur / req_count
+                    if avg_ms > 30000:  # >30s per request
+                        report.errors.append({
+                            "type": "timeout",
+                            "message": f"High avg API latency: {avg_ms/1000:.1f}s/req ({model})",
+                            "timestamp": timestamp,
+                            "model": model,
+                        })
 
-            # tool.execution_complete: track tool usage
-            elif event_type == "tool.execution_complete":
-                tool_name = data.get("toolName", "")
-                duration = int(data.get("durationMs", 0))
-                if tool_name and duration > 60000:  # >60s tool execution
-                    report.errors.append({
-                        "type": "timeout",
-                        "message": f"Slow tool: {tool_name} ({duration/1000:.1f}s)",
-                        "timestamp": timestamp,
-                        "model": "",
-                    })
-
-    except OSError:
-        pass
+        # tool.execution_complete: track tool usage
+        elif event_type == "tool.execution_complete":
+            tool_name = data.get("toolName", "")
+            duration = int(data.get("durationMs", 0))
+            if tool_name and duration > 60000:  # >60s tool execution
+                report.errors.append({
+                    "type": "timeout",
+                    "message": f"Slow tool: {tool_name} ({duration/1000:.1f}s)",
+                    "timestamp": timestamp,
+                    "model": "",
+                })
 
 
 # ─── Codex CLI ──────────────────────────────────────────────────
 
 
-def parse_codex_telemetry(tool: str = "codex-cli",
+def parse_codex_telemetry(root: Path | None = None, tool: str = "codex-cli",
                           source: str = "token-count",
                           confidence: float = 0.85) -> ToolTelemetryReport | None:
     """Parse OpenAI Codex CLI telemetry from session JSONL files."""
@@ -648,19 +672,7 @@ def parse_codex_telemetry(tool: str = "codex-cli",
 
     report = ToolTelemetryReport(tool=tool, source=source, confidence=confidence)
 
-    # Find recent session files (last 7 days)
-    cutoff = time.time() - 7 * 86400
-    session_files = []
-    for jsonl in sessions_dir.rglob("*.jsonl"):
-        try:
-            if jsonl.stat().st_mtime >= cutoff:
-                session_files.append(jsonl)
-        except OSError:
-            continue
-
-    session_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-
-    for sess_file in session_files[:10]:  # Max 10 most recent
+    for sess_file in _recent_files(sessions_dir, "**/*.jsonl"):
         report.total_sessions += 1
         _parse_codex_session(sess_file, report)
 
@@ -671,55 +683,41 @@ def parse_codex_telemetry(tool: str = "codex-cli",
 
 def _parse_codex_session(sess_file: Path, report: ToolTelemetryReport) -> None:
     """Parse a single Codex CLI session JSONL for token_count events."""
-    try:
-        text = sess_file.read_text(errors="replace")
-        last_total = None
-        for line in text.splitlines():
-            if not line.strip():
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+    last_total = None
+    for obj in _iter_jsonl(sess_file):
+        # Codex events: {"type": "event_msg", "payload": {"type": "token_count", ...}}
+        if obj.get("type") == "event_msg":
+            payload = obj.get("payload", {})
+            if payload.get("type") == "token_count":
+                total_usage = payload.get("total_token_usage", {})
+                if total_usage:
+                    last_total = total_usage
+                    report.total_messages += 1
 
-            # Codex events: {"type": "event_msg", "payload": {"type": "token_count", ...}}
-            if obj.get("type") == "event_msg":
-                payload = obj.get("payload", {})
-                if payload.get("type") == "token_count":
-                    total_usage = payload.get("total_token_usage", {})
-                    if total_usage:
-                        last_total = total_usage
-                        report.total_messages += 1
+        # Also check for session_meta to get model info
+        elif obj.get("type") == "session_meta":
+            payload = obj.get("payload", {}) if isinstance(obj.get("payload"), dict) else {}
+            if model := payload.get("model", "") or payload.get("model_provider", ""):
+                report.by_model.setdefault(model, {"input_tokens": 0, "output_tokens": 0})
 
-            # Also check for session_meta to get model info
-            elif obj.get("type") == "session_meta":
-                payload = obj.get("payload", {}) if isinstance(obj.get("payload"), dict) else {}
-                model = payload.get("model", "") or payload.get("model_provider", "")
-                if model and model not in report.by_model:
-                    report.by_model[model] = {"input_tokens": 0, "output_tokens": 0}
-
-        # Use the last cumulative total (most accurate)
-        if last_total:
-            inp = int(last_total.get("input_tokens", 0))
-            out = int(last_total.get("output_tokens", 0))
-            cached = int(last_total.get("cached_input_tokens", 0))
-            reasoning = int(last_total.get("reasoning_output_tokens", 0))
-            report.input_tokens += inp
-            report.output_tokens += out
-            report.cache_read_tokens += cached
-            # Distribute to model if known
-            for model in report.by_model:
-                report.by_model[model]["input_tokens"] += inp
-                report.by_model[model]["output_tokens"] += out
-
-    except OSError:
-        pass
+    # Use the last cumulative total (most accurate)
+    if last_total:
+        inp = int(last_total.get("input_tokens", 0))
+        out = int(last_total.get("output_tokens", 0))
+        cached = int(last_total.get("cached_input_tokens", 0))
+        report.input_tokens += inp
+        report.output_tokens += out
+        report.cache_read_tokens += cached
+        # Distribute to model if known
+        for model in report.by_model:
+            report.by_model[model]["input_tokens"] += inp
+            report.by_model[model]["output_tokens"] += out
 
 
 # ─── Cursor (SQLite state.vscdb) ─────────────────────────────────
 
 
-def parse_cursor_telemetry(tool: str = "cursor",
+def parse_cursor_telemetry(root: Path | None = None, tool: str = "cursor",
                            source: str = "state-vscdb",
                            confidence: float = 0.70) -> ToolTelemetryReport | None:
     """Parse Cursor telemetry from state.vscdb SQLite database.
@@ -739,8 +737,7 @@ def parse_cursor_telemetry(tool: str = "cursor",
     try:
         # On Windows, VS Code/Cursor holds an exclusive lock on the vscdb.
         # Copy to temp file to avoid "file handle in use" errors.
-        import platform
-        if platform.system() == "Windows":
+        if IS_WINDOWS:
             import shutil, tempfile
             tmp = Path(tempfile.gettempdir()) / f"aictl-{tool}-state.vscdb"
             try:
@@ -781,8 +778,8 @@ def parse_cursor_telemetry(tool: str = "cursor",
             for usage_key in ("usage", "tokenUsage", "token_usage"):
                 usage = val.get(usage_key, {})
                 if isinstance(usage, dict):
-                    inp = int(usage.get("inputTokens", 0) or usage.get("input_tokens", 0) or 0)
-                    out = int(usage.get("outputTokens", 0) or usage.get("output_tokens", 0) or 0)
+                    inp = _first_int(usage, "inputTokens", "input_tokens")
+                    out = _first_int(usage, "outputTokens", "output_tokens")
                     if inp or out:
                         report.input_tokens += inp
                         report.output_tokens += out
@@ -810,7 +807,7 @@ def _continue_sessions_dir() -> Path:
     return Path.home() / ".continue" / "sessions"
 
 
-def parse_continue_telemetry(tool: str = "continue",
+def parse_continue_telemetry(root: Path | None = None, tool: str = "continue",
                              source: str = "session-json",
                              confidence: float = 0.75) -> ToolTelemetryReport | None:
     """Parse Continue IDE extension telemetry from session JSON files.
@@ -824,18 +821,7 @@ def parse_continue_telemetry(tool: str = "continue",
 
     report = ToolTelemetryReport(tool=tool, source=source, confidence=confidence)
 
-    cutoff = time.time() - 7 * 86400
-    session_files = []
-    for jf in sessions_dir.glob("*.json"):
-        try:
-            if jf.stat().st_mtime >= cutoff:
-                session_files.append(jf)
-        except OSError:
-            continue
-
-    session_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-
-    for sess_file in session_files[:20]:
+    for sess_file in _recent_files(sessions_dir, "*.json", max_files=20):
         report.total_sessions += 1
         _parse_continue_session(sess_file, report)
 
@@ -867,25 +853,16 @@ def _parse_continue_session(sess_file: Path, report: ToolTelemetryReport) -> Non
         # Token usage can be in .usage, .tokenCount, or .promptTokens/.completionTokens
         usage = msg.get("usage", {})
         if isinstance(usage, dict):
-            report.input_tokens += int(usage.get("inputTokens", 0) or usage.get("input_tokens", 0)
-                                       or usage.get("promptTokens", 0) or usage.get("prompt_tokens", 0) or 0)
-            report.output_tokens += int(usage.get("outputTokens", 0) or usage.get("output_tokens", 0)
-                                        or usage.get("completionTokens", 0) or usage.get("completion_tokens", 0) or 0)
+            report.input_tokens += _first_int(usage, "inputTokens", "input_tokens", "promptTokens", "prompt_tokens")
+            report.output_tokens += _first_int(usage, "outputTokens", "output_tokens", "completionTokens", "completion_tokens")
 
         # Direct token fields on message
-        for inp_key in ("promptTokens", "prompt_tokens", "inputTokens", "input_tokens"):
-            if inp_key in msg:
-                report.input_tokens += int(msg[inp_key] or 0)
-                break
-        for out_key in ("completionTokens", "completion_tokens", "outputTokens", "output_tokens"):
-            if out_key in msg:
-                report.output_tokens += int(msg[out_key] or 0)
-                break
+        report.input_tokens += _first_int(msg, "promptTokens", "prompt_tokens", "inputTokens", "input_tokens")
+        report.output_tokens += _first_int(msg, "completionTokens", "completion_tokens", "outputTokens", "output_tokens")
 
         # Model info
-        model = msg.get("model", "") or msg.get("modelTitle", "")
-        if model and model not in report.by_model:
-            report.by_model[model] = {"input_tokens": 0, "output_tokens": 0}
+        if model := msg.get("model", "") or msg.get("modelTitle", ""):
+            report.by_model.setdefault(model, {"input_tokens": 0, "output_tokens": 0})
 
 
 # ─── Public API ─────────────────────────────────────────────────
@@ -895,23 +872,13 @@ def _parse_continue_session(sess_file: Path, report: ToolTelemetryReport) -> Non
 # Parsers receive (root, tool, source, confidence) from YAML config.
 # The root param is the project root (only used by claude parser).
 
-_PARSER_REGISTRY: dict[str, Callable] = {}
-
-
-def _register_parser(tool: str) -> Callable:
-    """Decorator to register a telemetry parser for a tool name."""
-    def decorator(fn: Callable) -> Callable:
-        _PARSER_REGISTRY[tool] = fn
-        return fn
-    return decorator
-
-
-# Register existing parsers
-_PARSER_REGISTRY["claude-code"] = parse_claude_telemetry
-_PARSER_REGISTRY["copilot-cli"] = parse_copilot_telemetry
-_PARSER_REGISTRY["codex-cli"] = parse_codex_telemetry
-_PARSER_REGISTRY["cursor"] = parse_cursor_telemetry
-_PARSER_REGISTRY["continue"] = parse_continue_telemetry
+_PARSER_REGISTRY: dict[str, Callable] = {
+    "claude-code":  parse_claude_telemetry,
+    "copilot-cli":  parse_copilot_telemetry,
+    "codex-cli":    parse_codex_telemetry,
+    "cursor":       parse_cursor_telemetry,
+    "continue":     parse_continue_telemetry,
+}
 
 
 def collect_tool_telemetry(root: Path) -> list[ToolTelemetryReport]:
@@ -929,18 +896,12 @@ def collect_tool_telemetry(root: Path) -> list[ToolTelemetryReport]:
             log.debug("No parser registered for tool %s", tool_name)
             continue
         try:
-            # Build kwargs from YAML config
-            kwargs = {
-                "tool": tool_name,
-                "source": config.get("source_id", "unknown"),
-                "confidence": config.get("confidence", 0.5),
-            }
-            # Claude parser needs root param
-            import inspect
-            sig = inspect.signature(parser)
-            if "root" in sig.parameters:
-                kwargs["root"] = root
-            report = parser(**kwargs)
+            report = parser(
+                root,
+                tool=tool_name,
+                source=config.get("source_id", "unknown"),
+                confidence=config.get("confidence", 0.5),
+            )
             if report:
                 reports.append(report)
         except Exception:

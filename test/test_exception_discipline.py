@@ -46,7 +46,6 @@ COMMAND_FILES = sorted(
     [
         *Path(REPO_ROOT / "aictl" / "commands").glob("*.py"),
         REPO_ROOT / "aictl" / "utils.py",
-        REPO_ROOT / "aictl" / "guard.py",
     ]
 )
 
@@ -63,7 +62,6 @@ EXCLUDED_PATTERNS = [
     "aictl/monitoring/",
     "aictl/client.py",
     "aictl/discovery.py",
-    "aictl/datapoint_provenance.py",
 ]
 
 
@@ -224,16 +222,16 @@ def test_broad_catch_reraises_abort(path: Path):
 
 def test_otel_enable_exits_1_on_partial_failure(tmp_path, monkeypatch):
     """otel enable must exit 1 if any action fails, so CI/scripts detect partial failure."""
-    from aictl.commands.otel import otel
+    from aictl.commands.integrations import otel
     from click.testing import CliRunner
 
-    monkeypatch.setattr("aictl.commands.otel._shell_profiles", lambda: [])
+    monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [])
     monkeypatch.setenv("AICTL_PORT", "8484")
 
     # Inject a VS Code path that is a file (unwritable as a directory) to force FAILED
     bad_vscode = tmp_path / "bad"
     bad_vscode.write_text("I am a file, not a directory")
-    monkeypatch.setattr("aictl.platforms.vscode_user_dir", lambda: bad_vscode)
+    monkeypatch.setattr("aictl.commands.integrations.vscode_user_dir", lambda: bad_vscode)
 
     runner = CliRunner()
     result = runner.invoke(otel, ["enable", "--tool", "copilot"])
@@ -244,20 +242,20 @@ def test_otel_enable_exits_1_on_partial_failure(tmp_path, monkeypatch):
 
 def test_enable_exits_1_on_partial_failure(tmp_path, monkeypatch):
     """aictl enable must exit 1 if any integration fails."""
-    from aictl.commands.enable_cmd import enable
+    from aictl.commands.integrations import enable
     from click.testing import CliRunner
 
-    monkeypatch.setattr("aictl.commands.enable_cmd._shell_profiles", lambda: [])
+    monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [])
     monkeypatch.setattr(
-        "aictl.commands.enable_cmd.claude_global_dir", lambda: tmp_path / "claude"
+        "aictl.commands.integrations.claude_global_dir", lambda: tmp_path / "claude"
     )
     monkeypatch.setenv("AICTL_PORT", "8484")
 
     # Force VS Code to fail
     bad_vscode = tmp_path / "bad_vscode_file"
     bad_vscode.write_text("not a directory")
-    monkeypatch.setattr("aictl.commands.enable_cmd.vscode_user_dir", lambda: bad_vscode)
-    monkeypatch.setattr("aictl.platforms.vscode_user_dir", lambda: bad_vscode)
+    monkeypatch.setattr("aictl.commands.integrations.vscode_user_dir", lambda: bad_vscode)
+    monkeypatch.setattr("aictl.commands.integrations.vscode_user_dir", lambda: bad_vscode)
 
     runner = CliRunner()
     result = runner.invoke(enable, ["--scope", "user"])

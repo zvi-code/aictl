@@ -31,26 +31,15 @@ from textual.widgets import (
     Tree,
 )
 
-from .collector import DashboardSnapshot, collect
-from ..registry import TOOL_LABELS, TOOL_COLORS, DEFAULT_TOOL_COLOR, TOOL_ICONS, DEFAULT_TOOL_ICON
+from .models import DashboardSnapshot, STATUS_COLOURS, SOURCE_LABELS
+from ..orchestrator import collect
+from ..tools import TOOL_LABELS, TOOL_COLORS, DEFAULT_TOOL_COLOR, TOOL_ICONS, DEFAULT_TOOL_ICON
 
 # ── Colour palette ───────────────────────────────────────────────
 
 # Use registry as single source of truth
 TOOL_COLOURS = TOOL_COLORS  # alias for backward compat within this file
 
-STATUS_COLOURS = {
-    "running": "#34d399",
-    "stopped": "#f87171",
-    "error": "#fb923c",
-    "unknown": "#94a3b8",
-}
-
-SOURCE_LABELS = {
-    "claude-user-memory": "User Memory",
-    "claude-project-memory": "Project Memory",
-    "claude-auto-memory": "Auto Memory",
-}
 
 
 # ── Sparkline data ring-buffer ───────────────────────────────────
@@ -308,60 +297,29 @@ class DashboardApp(App):
 
         yield Footer()
 
+    def _init_table(self, table_id: str, *columns: str) -> DataTable:
+        t = self.query_one(f"#{table_id}", DataTable)
+        t.add_columns(*columns)
+        t.cursor_type = "row"
+        return t
+
+    def _cleared_table(self, table_id: str) -> DataTable:
+        t = self.query_one(f"#{table_id}", DataTable)
+        t.clear()
+        return t
+
     def on_mount(self) -> None:
-        # Process table
-        pt = self.query_one("#proc-table", DataTable)
-        pt.add_columns("PID", "Tool", "Type", "Name", "CPU%", "MEM MB", "Anomalies")
-        pt.cursor_type = "row"
+        self._init_table("proc-table", "PID", "Tool", "Type", "Name", "CPU%", "MEM MB", "Anomalies")
+        self._init_table("mcp-detail-table", "Status", "Server", "Tool", "Transport", "Endpoint", "PID", "CPU%", "MEM MB")
+        self._init_table("memory-table", "Source", "Profile", "File", "Tokens", "Lines", "Preview")
+        self._init_table("live-tool-table", "Tool", "Sessions", "PIDs", "Traffic", "Tokens", "MCP", "Files", "CPU", "Workspace", "State")
+        self._init_table("collector-table", "Collector", "Status", "Mode", "Detail")
+        self._init_table("session-table", "Tool", "Session ID", "Duration", "CPU", "Input Tok", "Output Tok", "Files", "PIDs", "Traffic", "State", "Status")
+        self._init_table("event-table", "Time", "Tool", "Kind", "Detail")
+        self._init_table("budget-table", "Tool", "Input Tok", "Output Tok", "Cache Read", "Cache Create", "Cost", "Sessions", "Model")
+        self._init_table("metrics-table", "Metric", "Samples", "Latest Value")
 
-        # File tree
-        ft = self.query_one("#file-tree", Tree)
-        ft.root.expand()
-
-        # MCP detail table
-        mt = self.query_one("#mcp-detail-table", DataTable)
-        mt.add_columns("Status", "Server", "Tool", "Transport", "Endpoint", "PID", "CPU%", "MEM MB")
-        mt.cursor_type = "row"
-
-        # Memory table
-        mem_t = self.query_one("#memory-table", DataTable)
-        mem_t.add_columns("Source", "Profile", "File", "Tokens", "Lines", "Preview")
-        mem_t.cursor_type = "row"
-
-        live_t = self.query_one("#live-tool-table", DataTable)
-        live_t.add_columns(
-            "Tool",
-            "Sessions",
-            "PIDs",
-            "Traffic",
-            "Tokens",
-            "MCP",
-            "Files",
-            "CPU",
-            "Workspace",
-            "State",
-        )
-        live_t.cursor_type = "row"
-
-        collector_t = self.query_one("#collector-table", DataTable)
-        collector_t.add_columns("Collector", "Status", "Mode", "Detail")
-        collector_t.cursor_type = "row"
-
-        session_t = self.query_one("#session-table", DataTable)
-        session_t.add_columns("Tool", "Session ID", "Duration", "CPU", "Input Tok", "Output Tok", "Files", "PIDs", "Traffic", "State", "Status")
-        session_t.cursor_type = "row"
-
-        event_t = self.query_one("#event-table", DataTable)
-        event_t.add_columns("Time", "Tool", "Kind", "Detail")
-        event_t.cursor_type = "row"
-
-        budget_t = self.query_one("#budget-table", DataTable)
-        budget_t.add_columns("Tool", "Input Tok", "Output Tok", "Cache Read", "Cache Create", "Cost", "Sessions", "Model")
-        budget_t.cursor_type = "row"
-
-        metrics_t = self.query_one("#metrics-table", DataTable)
-        metrics_t.add_columns("Metric", "Samples", "Latest Value")
-        metrics_t.cursor_type = "row"
+        self.query_one("#file-tree", Tree).root.expand()
 
         self._metrics_list: list[dict] = []
 
@@ -423,24 +381,19 @@ class DashboardApp(App):
         self._mem_history.push(snap.total_mem_mb)
 
         # Update stat cards
-        self.query_one("#sc-live-sessions", StatCard).update_value(str(snap.total_live_sessions))
-        self.query_one("#sc-live-tokens", StatCard).update_value(
-            _human_tokens(snap.total_live_estimated_tokens)
-        )
-        self.query_one("#sc-live-out", StatCard).update_value(
-            _human_rate(snap.total_live_outbound_rate_bps)
-        )
-        self.query_one("#sc-live-in", StatCard).update_value(
-            _human_rate(snap.total_live_inbound_rate_bps)
-        )
-        self.query_one("#sc-files", StatCard).update_value(str(snap.total_files))
-        self.query_one("#sc-tokens", StatCard).update_value(_human_tokens(snap.total_tokens))
-        self.query_one("#sc-cpu", StatCard).update_value(f"{snap.total_cpu:.1f}%")
-        self.query_one("#sc-mem", StatCard).update_value(f"{snap.total_mem_mb:.0f} MB")
-        self.query_one("#sc-mcp", StatCard).update_value(str(snap.total_mcp_servers))
-        self.query_one("#sc-agentmem", StatCard).update_value(
-            f"{snap.total_memory_entries} ({_human_tokens(snap.total_memory_tokens)})"
-        )
+        for card_id, value in [
+            ("sc-live-sessions", str(snap.total_live_sessions)),
+            ("sc-live-tokens",   _human_tokens(snap.total_live_estimated_tokens)),
+            ("sc-live-out",      _human_rate(snap.total_live_outbound_rate_bps)),
+            ("sc-live-in",       _human_rate(snap.total_live_inbound_rate_bps)),
+            ("sc-files",         str(snap.total_files)),
+            ("sc-tokens",        _human_tokens(snap.total_tokens)),
+            ("sc-cpu",           f"{snap.total_cpu:.1f}%"),
+            ("sc-mem",           f"{snap.total_mem_mb:.0f} MB"),
+            ("sc-mcp",           str(snap.total_mcp_servers)),
+            ("sc-agentmem",      f"{snap.total_memory_entries} ({_human_tokens(snap.total_memory_tokens)})"),
+        ]:
+            self.query_one(f"#{card_id}", StatCard).update_value(value)
 
         # Update sparklines
         try:
@@ -529,8 +482,7 @@ class DashboardApp(App):
             pass
 
     def _update_proc_table(self, snap: DashboardSnapshot) -> None:
-        pt = self.query_one("#proc-table", DataTable)
-        pt.clear()
+        pt = self._cleared_table("proc-table")
         all_procs = []
         for tr in snap.tools:
             for p in tr.processes:
@@ -605,8 +557,7 @@ class DashboardApp(App):
         tree.root.expand()
 
     def _update_mcp_detail_table(self, snap: DashboardSnapshot) -> None:
-        mt = self.query_one("#mcp-detail-table", DataTable)
-        mt.clear()
+        mt = self._cleared_table("mcp-detail-table")
         for srv in snap.mcp_detail:
             colour = STATUS_COLOURS.get(srv.status, "#94a3b8")
             status_display = f"[{colour}]● {srv.status}[/]"
@@ -622,8 +573,7 @@ class DashboardApp(App):
             )
 
     def _update_memory_table(self, snap: DashboardSnapshot) -> None:
-        mem_t = self.query_one("#memory-table", DataTable)
-        mem_t.clear()
+        mem_t = self._cleared_table("memory-table")
         root = Path(snap.root)
         home = Path.home()
         for entry in snap.agent_memory:
@@ -640,8 +590,7 @@ class DashboardApp(App):
             )
 
     def _update_live_tables(self, snap: DashboardSnapshot) -> None:
-        live_t = self.query_one("#live-tool-table", DataTable)
-        live_t.clear()
+        live_t = self._cleared_table("live-tool-table")
         live_tools = [tr for tr in snap.tools if tr.live]
         for tr in sorted(
             live_tools,
@@ -668,8 +617,7 @@ class DashboardApp(App):
                 state_str,
             )
 
-        collector_t = self.query_one("#collector-table", DataTable)
-        collector_t.clear()
+        collector_t = self._cleared_table("collector-table")
         diagnostics = (snap.live_monitor or {}).get("diagnostics", {})
         for name, detail in sorted(diagnostics.items()):
             collector_t.add_row(
@@ -680,19 +628,13 @@ class DashboardApp(App):
             )
 
     def _update_session_table(self, snap: DashboardSnapshot) -> None:
-        session_t = self.query_one("#session-table", DataTable)
-        session_t.clear()
+        session_t = self._cleared_table("session-table")
         for s in (snap.sessions or []):
             tool = s.get("tool", "")
             sid = s.get("session_id", "")
             short_id = (sid[:12] + "…") if len(sid) > 12 else sid
             dur_s = s.get("duration_s", 0)
-            if dur_s < 60:
-                dur = f"{dur_s:.0f}s"
-            elif dur_s < 3600:
-                dur = f"{dur_s // 60:.0f}m {dur_s % 60:.0f}s"
-            else:
-                dur = f"{dur_s // 3600:.0f}h {(dur_s % 3600) // 60:.0f}m"
+            dur = _format_dur(dur_s)
             cpu = f"{s.get('cpu_percent', 0):.1f}%"
             in_tok = _human_tokens(s.get("exact_input_tokens", 0))
             out_tok = _human_tokens(s.get("exact_output_tokens", 0))
@@ -711,8 +653,7 @@ class DashboardApp(App):
             )
 
     def _update_event_table(self, snap: DashboardSnapshot) -> None:
-        event_t = self.query_one("#event-table", DataTable)
-        event_t.clear()
+        event_t = self._cleared_table("event-table")
         events = snap.events or []
         # Show most recent 100 events, newest first
         for ev in reversed(events[-100:]):
@@ -740,21 +681,17 @@ class DashboardApp(App):
             )
 
     def _update_budget_table(self, snap: DashboardSnapshot) -> None:
-        budget_t = self.query_one("#budget-table", DataTable)
-        budget_t.clear()
+        budget_t = self._cleared_table("budget-table")
         for tel in (snap.tool_telemetry or []):
             tool = tel.get("tool", "")
-            data = tel.get("data", {})
-            if not data:
-                continue
-            in_tok = int(data.get("input_tokens", 0))
-            out_tok = int(data.get("output_tokens", 0))
-            cache_read = int(data.get("cache_read_tokens", 0))
-            cache_create = int(data.get("cache_creation_tokens", 0))
-            cost = data.get("estimated_cost_usd", 0)
+            in_tok = int(tel.get("input_tokens", 0))
+            out_tok = int(tel.get("output_tokens", 0))
+            cache_read = int(tel.get("cache_read_tokens", 0))
+            cache_create = int(tel.get("cache_creation_tokens", 0))
+            cost = tel.get("cost_usd", 0)
             cost_str = f"${cost:.2f}" if cost else "—"
-            sessions = str(data.get("active_sessions", 0) or data.get("sessions", 0))
-            model = data.get("model", "—")
+            sessions = str(tel.get("total_sessions", 0))
+            model = tel.get("model", "—")
             budget_t.add_row(
                 TOOL_LABELS.get(tool, tool),
                 _human_tokens(in_tok),
@@ -929,11 +866,19 @@ class DashboardApp(App):
 
 # ── Formatting helpers (delegated to shared utils) ──────────────
 
+from functools import partial
 from ..utils import human_size as _human_size, human_tokens, rel_display as _rel_display
 
+_human_tokens = partial(human_tokens, suffix=True)
 
-def _human_tokens(n: int) -> str:
-    return human_tokens(n, suffix=True)
+
+def _format_dur(dur_s: float) -> str:
+    """Format a duration in seconds to a human-readable string."""
+    if dur_s < 60:
+        return f"{dur_s:.0f}s"
+    if dur_s < 3600:
+        return f"{dur_s // 60:.0f}m {dur_s % 60:.0f}s"
+    return f"{dur_s // 3600:.0f}h {(dur_s % 3600) // 60:.0f}m"
 
 
 def _human_rate(n: float) -> str:

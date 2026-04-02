@@ -9,13 +9,13 @@ import urllib.request
 
 import pytest
 
-from aictl.otel_receiver import (
+from aictl.dashboard.web_server import (
     METRIC_MAP,
     OtelReceiver,
-    _extract_data_points,
-    _extract_value,
+    _extract_otel_data_points as _extract_data_points,
+    _extract_otel_value as _extract_value,
     _nano_to_epoch,
-    _parse_attributes,
+    _parse_otel_attributes as _parse_attributes,
     _promote_session_id,
 )
 from aictl.storage import EventRow, HistoryDB, Sample
@@ -349,7 +349,7 @@ def otel_server(tmp_path):
     from aictl.dashboard.web_server import (
         _DashboardHTTPServer, _DashboardHandler,
     )
-    from aictl.store import AllowedPaths, SnapshotStore
+    from aictl.orchestrator import AllowedPaths, SnapshotStore
     from aictl.dashboard.models import DashboardSnapshot
 
     db = HistoryDB(db_path=str(tmp_path / "otel.db"), flush_interval=0)
@@ -545,3 +545,74 @@ def test_traces_include_session_id():
     }
     samples, events = r.parse_traces(body)
     assert any(e.detail.get("session_id") == "trace-sess-2" for e in events)
+
+
+def test_extract_requests_list_finish_reason():
+    """finish_reason from Copilot OTel is a list ["stop"] — must not crash flush."""
+    from aictl.storage import EventRow
+    r = OtelReceiver()
+    events = [EventRow(
+        ts=1700000001.0,
+        tool="copilot-vscode",
+        kind="otel:gen_ai.client.inference.operation.details",
+        detail={
+            "gen_ai.request.model": "gpt-4o-mini",
+            "gen_ai.response.finish_reasons": ["stop"],   # list, not string
+            "gen_ai.usage.input_tokens": 500,
+            "gen_ai.usage.output_tokens": 20,
+            "session_id": "test-copilot-sess",
+        },
+    )]
+    requests = r.extract_requests(events)
+    assert len(requests) == 1
+    req = requests[0]
+    assert req.finish_reason == "stop"   # coerced from ["stop"]
+    assert req.input_tokens == 500
+    assert req.model == "gpt-4o-mini"
+    assert req.session_id == "test-copilot-sess"
+
+
+def test_extract_requests_scalar_finish_reason():
+    """Claude Code sends finish_reason as a plain string — must also work."""
+    from aictl.storage import EventRow
+    r = OtelReceiver()
+    events = [EventRow(
+        ts=1700000002.0,
+        tool="claude-code",
+        kind="otel:api_request",
+        detail={
+            "model": "claude-sonnet-4-6",
+            "gen_ai.response.finish_reasons": "end_turn",
+            "input_tokens": "100",
+            "output_tokens": "50",
+            "session_id": "test-claude-sess",
+        },
+    )]
+    requests = r.extract_requests(events)
+    assert len(requests) == 1
+    assert requests[0].finish_reason == "end_turn"
+
+
+# ── Hook handler integration ─────────────────────────────────────
+
+
+def test_hook_handler_returns_200(otel_server):
+    """Hook POST must return 200 and store the event (Bug #1 regression:
+    NameError on event_record crashed the handler after DB write)."""
+    base, srv, db = otel_server
+    hook_payload = {
+        "event": "UserPromptSubmit",
+        "session_id": "hook-test-sess",
+        "message": "hello world",
+        "tool": "claude-code",
+        "ts": time.time(),
+    }
+    status, resp = _post_json(f"{base}/api/hooks", hook_payload)
+    assert status == 200
+    assert resp["ok"] is True
+
+    # Verify event is stored
+    events = db.query_events(since=0, until=time.time() + 3600,
+                              kind="hook:UserPromptSubmit")
+    assert len(events) >= 1
+    assert events[0].session_id == "hook-test-sess"

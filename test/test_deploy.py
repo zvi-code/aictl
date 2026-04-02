@@ -10,7 +10,7 @@ from unittest.mock import patch, MagicMock
 
 from click.testing import CliRunner
 
-from aictl.commands.deploy import deploy, _run_deploy, _collect_watch_dirs
+from aictl.commands.ctx_pipeline import deploy, _run_deploy, _collect_watch_dirs
 
 
 def test_deploy_no_aictx_files():
@@ -95,6 +95,6 @@ def test_watch_no_aictx_files():
     runner = CliRunner()
     with runner.isolated_filesystem():
         # Patch _watch_loop to test that watch flag routes correctly
-        with patch("aictl.commands.deploy._watch_loop") as mock_loop:
+        with patch("aictl.commands.ctx_pipeline._watch_loop") as mock_loop:
             result = runner.invoke(deploy, ["--root", ".", "--watch"])
             assert mock_loop.called

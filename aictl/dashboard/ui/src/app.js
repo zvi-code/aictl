@@ -18,7 +18,7 @@ import TabLive from './components/TabLive.js';
 import TabEventsStats from './components/TabEventsStats.js';
 import TabBudget from './components/TabBudget.js';
 import TabSessions from './components/TabSessions.js';
-import TabSamples from './components/TabSamples.js';
+import TabAnalytics from './components/TabAnalytics.js';
 import TabSessionFlow from './components/TabSessionFlow.js';
 import TabToolConfig from './components/TabToolConfig.js';
 import ContextMap from './components/ContextMap.js';
@@ -424,7 +424,7 @@ export default function App() {
 
   // SSE connection + initial fetches
   useEffect(()=>{
-    let es, retryDelay=1000, closed=false;
+    let es, retryDelay=1000, closed=false, snapInflight=false;
 
     fetch('/api/snapshot')
       .then(r=>r.json())
@@ -450,24 +450,23 @@ export default function App() {
       es.onerror = () => {
         dispatch({ type: 'SET_CONNECTED', payload: false });
         es.close();
-        if(!closed) setTimeout(()=>{
-          connect();
-          fetch('/api/snapshot')
-            .then(r=>r.json())
-            .then(data => dispatch({ type: 'SNAP_REPLACE', payload: data }))
-            .catch(()=>{});
-        }, retryDelay);
+        // Reconnect SSE only — no snapshot fetch here.
+        // The SSE stream pushes current state on connect (server line 2050-2053),
+        // and the 30s interval provides a safety net.
+        if(!closed) setTimeout(connect, retryDelay);
         retryDelay = Math.min(retryDelay*2, 30000);
       };
     }
     connect();
 
     const refreshInterval = setInterval(()=>{
-      if(closed) return;
+      if(closed || snapInflight) return;
+      snapInflight = true;
       fetch('/api/snapshot')
         .then(r=>r.json())
         .then(data => dispatch({ type: 'SNAP_REPLACE', payload: data }))
-        .catch(()=>{});
+        .catch(()=>{})
+        .finally(()=>{ snapInflight = false; });
     }, 30000);
 
     return ()=>{ closed=true; if(es) es.close(); clearInterval(refreshInterval); };
@@ -603,7 +602,7 @@ export default function App() {
     events: () => html`<div class="mb-lg"><${TabEventsStats} key=${'events-'+activeTab}/></div>`,
     budget: () => html`<div class="mb-lg"><${TabBudget} key=${'budget-'+activeTab}/></div>`,
     sessions: () => html`<div class="mb-lg"><${TabSessions} key=${'sessions-'+activeTab}/></div>`,
-    samples: () => html`<div class="mb-lg"><${TabSamples} key=${'samples-'+activeTab}/></div>`,
+    analytics: () => html`<div class="mb-lg"><${TabAnalytics} key=${'analytics-'+activeTab}/></div>`,
     flow:    () => html`<div class="mb-lg"><${TabSessionFlow} key=${'flow-'+activeTab}/></div>`,
     config:  () => html`<div class="mb-lg"><${TabToolConfig}/></div>`,
   };

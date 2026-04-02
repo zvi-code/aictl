@@ -11,10 +11,12 @@ Rules:
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
-from .parser import ParsedAictx, Capability, McpServer, Hook, LspServer, Setting, Permission, EnvVars, IgnoreRule
+from .context import ParsedAictx, Capability, McpServer, Hook, LspServer, Setting, Permission, EnvVars, IgnoreRule
 
 
 @dataclass
@@ -41,6 +43,24 @@ class Resolved:
     env: dict[str, str]                      # merged env vars
     ignores: list[str]                       # merged ignore patterns
     memory_hints: str | None                  # memory hints for root+profile
+
+
+def _apply_kind(kind: str, parsed: ParsedAictx, profile: str | None,
+                caps: list, mcp: dict, hooks: dict, lsp: dict) -> None:
+    """Pull one inherited kind from *parsed* into the shared collection containers."""
+    if kind in ("commands", "command"):
+        caps.extend(c for c in parsed.capabilities_for(profile) if c.kind == "command")
+    elif kind in ("skills", "skill"):
+        caps.extend(c for c in parsed.capabilities_for(profile) if c.kind == "skill")
+    elif kind in ("agents", "agent"):
+        caps.extend(c for c in parsed.capabilities_for(profile) if c.kind == "agent")
+    elif kind == "mcp":
+        mcp.update(parsed.mcp_for(profile))
+    elif kind in ("hooks", "hook"):
+        for event, rules in parsed.hooks_for(profile).items():
+            hooks.setdefault(event, []).extend(rules)
+    elif kind == "lsp":
+        lsp.update(parsed.lsp_for(profile))
 
 
 def resolve(
@@ -88,40 +108,14 @@ def resolve(
         # Root says recursive: pull children's capabilities up
         for kind in root_parsed.inherit.get("recursive", []):
             for rel, parsed in scanned:
-                if rel == ".":
-                    continue
-                if kind in ("commands", "command"):
-                    caps.extend(c for c in parsed.capabilities_for(profile) if c.kind == "command")
-                elif kind in ("skills", "skill"):
-                    caps.extend(c for c in parsed.capabilities_for(profile) if c.kind == "skill")
-                elif kind in ("agents", "agent"):
-                    caps.extend(c for c in parsed.capabilities_for(profile) if c.kind == "agent")
-                elif kind == "mcp":
-                    mcp.update(parsed.mcp_for(profile))
-                elif kind in ("hooks", "hook"):
-                    for event, rules in parsed.hooks_for(profile).items():
-                        hooks.setdefault(event, []).extend(rules)
-                elif kind == "lsp":
-                    lsp.update(parsed.lsp_for(profile))
+                if rel != ".":
+                    _apply_kind(kind, parsed, profile, caps, mcp, hooks, lsp)
 
     # Children that say parent: inherit
     for rel, parsed in scanned:
-        if rel == ".":
-            continue
-        for kind in parsed.inherit.get("parent", []):
-            if kind in ("commands", "command"):
-                caps.extend(c for c in parsed.capabilities_for(profile) if c.kind == "command")
-            elif kind in ("skills", "skill"):
-                caps.extend(c for c in parsed.capabilities_for(profile) if c.kind == "skill")
-            elif kind in ("agents", "agent"):
-                caps.extend(c for c in parsed.capabilities_for(profile) if c.kind == "agent")
-            elif kind == "mcp":
-                mcp.update(parsed.mcp_for(profile))
-            elif kind in ("hooks", "hook"):
-                for event, rules in parsed.hooks_for(profile).items():
-                    hooks.setdefault(event, []).extend(rules)
-            elif kind == "lsp":
-                lsp.update(parsed.lsp_for(profile))
+        if rel != ".":
+            for kind in parsed.inherit.get("parent", []):
+                _apply_kind(kind, parsed, profile, caps, mcp, hooks, lsp)
 
     # --- Apply excludes ---
     if root_parsed:
@@ -164,3 +158,58 @@ def resolve(
         ignores=ignores,
         memory_hints=memory,
     )
+
+
+# ── Manifest (from manifest.py) ──
+
+MANIFEST_DIR = ".ai-deployed"
+
+
+def load_manifest(root: Path) -> dict | None:
+    p = root / MANIFEST_DIR / "manifest.json"
+    if p.is_file():
+        try:
+            return json.loads(p.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    return None
+
+
+def save_manifest(root: Path, profile: str | None, paths: list[str]) -> None:
+    p = root / MANIFEST_DIR / "manifest.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({
+        "deployed_at": datetime.now(timezone.utc).isoformat(),
+        "profile": profile,
+        "root": str(root),
+        "files": paths,
+    }, indent=2) + "\n")
+
+
+def cleanup_stale(root: Path, old: dict | None, new_paths: set[str]) -> list[str]:
+    if not old or not old.get("files"):
+        return []
+    removed = []
+    for f in old["files"]:
+        p = Path(f)
+        if str(p) not in new_paths and p.is_file():
+            try:
+                p.unlink()
+                removed.append(f)
+                _clean_parents(p, root)
+            except OSError:
+                pass
+    return removed
+
+
+def _clean_parents(path: Path, stop: Path):
+    d = path.parent
+    s = stop.resolve()
+    while d.resolve() != s and str(d).startswith(str(s)):
+        try:
+            if any(d.iterdir()):
+                break
+            d.rmdir()
+            d = d.parent
+        except OSError:
+            break

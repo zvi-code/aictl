@@ -4,24 +4,12 @@
 
 import click
 
-from .commands.deploy import deploy
-from .commands.diff_cmd import diff
-from .commands.init_cmd import init
-from .commands.scan import scan_cmd
-from .commands.memory import memory
-from .commands.import_cmd import import_cmd
-from .commands.status import status
-from .commands.plugin import plugin
-from .commands.hooks import hooks
-from .commands.otel import otel
-from .commands.dashboard import dashboard
-from .commands.serve import serve
-from .commands.monitor import monitor
-from .commands.config_cmd import config
-from .commands.validate_cmd import validate_cmd
-from .commands.catalog import catalog
-from .commands.db import db
-from .commands.enable_cmd import enable
+from .commands.ctx_pipeline import deploy, scan_cmd, diff, validate_cmd, init
+from .commands.status import status, memory
+from .commands.import_plugin import import_cmd, plugin
+from .commands.integrations import hooks, otel, enable
+from .commands.daemon import serve, monitor, dashboard
+from .commands.admin import config, catalog, db
 
 
 @click.group()
@@ -30,21 +18,43 @@ def main():
     """Deploy AI context from .aictx files to native tool files."""
 
 
-main.add_command(deploy)
-main.add_command(diff)
-main.add_command(init)
-main.add_command(scan_cmd, name="scan")
+# ── ctx subgroup ────────────────────────────────────────────────────────────
+
+@click.group("ctx")
+def ctx_group():
+    """Context pipeline — deploy, scan, diff, validate, init."""
+
+
+ctx_group.add_command(deploy)
+ctx_group.add_command(scan_cmd, name="scan")
+ctx_group.add_command(diff)
+ctx_group.add_command(validate_cmd, name="validate")
+ctx_group.add_command(init)
+
+main.add_command(ctx_group)
+
+# ── daemon subgroup ──────────────────────────────────────────────────────────
+
+@click.group("daemon")
+def daemon_group():
+    """Daemon commands — serve, monitor, dashboard."""
+
+
+daemon_group.add_command(serve)
+daemon_group.add_command(monitor)
+daemon_group.add_command(dashboard)
+
+main.add_command(daemon_group)
+
+# ── top-level commands ───────────────────────────────────────────────────────
+
 main.add_command(memory)
 main.add_command(import_cmd, name="import")
 main.add_command(status)
 main.add_command(plugin)
 main.add_command(hooks)
 main.add_command(otel)
-main.add_command(dashboard)
-main.add_command(serve)
-main.add_command(monitor)
 main.add_command(config)
-main.add_command(validate_cmd, name="validate")
 main.add_command(catalog)
 main.add_command(db)
 main.add_command(enable)

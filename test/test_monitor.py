@@ -10,11 +10,10 @@ from click.testing import CliRunner
 from aictl.cli import main
 from aictl.monitoring.config import MonitorConfig
 from aictl.monitoring.correlator import MonitorSnapshot, SessionCorrelator
-from aictl.monitoring.events import ProcessInfo
-from aictl.monitoring.process_classifier import classify_process
+from aictl.monitoring.session import ProcessInfo
+from aictl.monitoring.collectors.process import classify_process
 from aictl.monitoring.runtime import CollectorPlan
-from aictl.monitoring.collectors.network.linux import parse_ss_snapshot
-from aictl.monitoring.collectors.network.macos import parse_nettop_line
+from aictl.monitoring.collectors.network import parse_ss_snapshot, parse_nettop_line
 from aictl.monitoring.collectors.process import PsutilProcessCollector
 
 
@@ -73,7 +72,7 @@ def test_parse_ss_snapshot(monkeypatch):
         ]
     )
     monkeypatch.setattr(
-        "aictl.monitoring.collectors.network.linux.subprocess.run",
+        "aictl.monitoring.collectors.network.subprocess.run",
         lambda *args, **kwargs: Mock(returncode=0, stdout=sample),
     )
 
@@ -205,9 +204,9 @@ def test_monitor_doctor_cli_json(monkeypatch, tmp_path):
         def collector_plan(self):
             return CollectorPlan(names=["process:psutil", "network:macos-bpf"])
 
-    monkeypatch.setattr("aictl.commands.monitor.MonitorRuntime", DummyRuntime)
+    monkeypatch.setattr("aictl.commands.daemon.MonitorRuntime", DummyRuntime)
 
-    result = CliRunner().invoke(main, ["monitor", "doctor", "-r", str(tmp_path), "--json"])
+    result = CliRunner().invoke(main, ["daemon", "monitor", "doctor", "-r", str(tmp_path), "--json"])
 
     assert result.exit_code == 0
     assert '"platform": "macos"' in result.output

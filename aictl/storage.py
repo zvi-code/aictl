@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .config import config_dir
+from .platforms import config_dir
 
 log = logging.getLogger(__name__)
 
@@ -32,13 +32,20 @@ log = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = config_dir() / "history.db"
 FLUSH_INTERVAL = 10.0  # seconds between batch writes
-SCHEMA_VERSION = 12  # bump when adding migrations
+SCHEMA_VERSION = 21  # bump when adding migrations
+LARGE_FILE_THRESHOLD = 100_000  # bytes; files larger than this use blob storage
 
 # Retention thresholds (seconds)
 _1H = 3_600
 _24H = 86_400
 _7D = 7 * _24H
 _30D = 30 * _24H
+
+# Old tables to drop when migrating from v12 to v20
+_OLD_TABLES_TO_DROP = (
+    "metrics", "tool_metrics", "tool_telemetry",
+    "samples", "file_store", "path_specs", "process_specs",
+)
 
 # ─── Schema ────────────────────────────────────────────────────────
 
@@ -47,102 +54,162 @@ CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY
 );
 
-CREATE TABLE IF NOT EXISTS metrics (
-    ts          REAL PRIMARY KEY,
-    files       INTEGER,
-    tokens      INTEGER,
-    cpu         REAL,
-    mem_mb      REAL,
-    mcp         INTEGER,
-    mem_tokens  INTEGER,
-    memory_entries INTEGER DEFAULT 0,
-    live_sessions  INTEGER DEFAULT 0,
-    live_tokens    INTEGER DEFAULT 0,
-    live_in_rate   REAL DEFAULT 0,
-    live_out_rate  REAL DEFAULT 0
+-- ═══ Registry ═══
+
+CREATE TABLE IF NOT EXISTS tools (
+    tool TEXT PRIMARY KEY, vendor TEXT DEFAULT '', host TEXT DEFAULT '',
+    display_name TEXT DEFAULT '', first_seen_at REAL DEFAULT 0, last_seen_at REAL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS projects (
+    path TEXT PRIMARY KEY, name TEXT DEFAULT '', git_remote TEXT DEFAULT '',
+    git_branch TEXT DEFAULT '', first_seen_at REAL DEFAULT 0, last_seen_at REAL DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS tool_metrics (
-    ts       REAL NOT NULL,
-    tool     TEXT NOT NULL,
-    cpu      REAL DEFAULT 0,
-    mem_mb   REAL DEFAULT 0,
-    tokens   INTEGER DEFAULT 0,
-    traffic  REAL DEFAULT 0,
-    model    TEXT DEFAULT '',
-    PRIMARY KEY (ts, tool)
+-- ═══ Process lifecycle ═══
+
+CREATE TABLE IF NOT EXISTS processes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, pid INTEGER NOT NULL, tool TEXT DEFAULT '',
+    project_path TEXT DEFAULT '', cwd TEXT DEFAULT '', cmdline TEXT DEFAULT '',
+    ppid INTEGER DEFAULT 0, started_at REAL DEFAULT 0, ended_at REAL,
+    exit_code INTEGER, source TEXT DEFAULT '', meta TEXT DEFAULT '{}',
+    UNIQUE(pid, started_at)
+);
+CREATE TABLE IF NOT EXISTS process_snapshots (
+    ts REAL NOT NULL, pid INTEGER NOT NULL, tool TEXT DEFAULT '',
+    cpu_percent REAL DEFAULT 0, memory_rss_mb REAL DEFAULT 0,
+    memory_vms_mb REAL DEFAULT 0, open_files INTEGER DEFAULT 0,
+    threads INTEGER DEFAULT 0,
+    PRIMARY KEY (ts, pid)
+);
+CREATE TABLE IF NOT EXISTS system_snapshots (
+    ts REAL PRIMARY KEY, cpu_percent REAL DEFAULT 0, cpu_per_core TEXT DEFAULT '[]',
+    memory_used_mb REAL DEFAULT 0, memory_total_mb REAL DEFAULT 0,
+    active_sessions INTEGER DEFAULT 0, active_processes INTEGER DEFAULT 0,
+    ai_token_rate REAL DEFAULT 0,
+    -- sparkline compat fields:
+    files INTEGER DEFAULT 0, tokens INTEGER DEFAULT 0, mcp INTEGER DEFAULT 0,
+    mem_tokens INTEGER DEFAULT 0, memory_entries INTEGER DEFAULT 0,
+    live_sessions INTEGER DEFAULT 0, live_tokens INTEGER DEFAULT 0,
+    live_in_rate REAL DEFAULT 0, live_out_rate REAL DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS events (
-    ts       REAL NOT NULL,
-    tool     TEXT NOT NULL,
-    kind     TEXT NOT NULL,
-    detail   TEXT DEFAULT '{}',
-    seq      INTEGER NOT NULL DEFAULT 0,  -- disambiguates events at same ts+tool+kind
-    session_id   TEXT DEFAULT '',
-    pid          INTEGER DEFAULT 0,
-    session_ts   REAL DEFAULT 0,
-    model        TEXT DEFAULT '',
-    path         TEXT DEFAULT '',
-    input_tokens  INTEGER DEFAULT 0,
-    output_tokens INTEGER DEFAULT 0,
-    duration_ms  REAL DEFAULT 0,
-    tool_name    TEXT DEFAULT '',
-    prompt_id    TEXT DEFAULT '',
-    PRIMARY KEY (ts, tool, kind, seq)
+-- ═══ Session lifecycle ═══
+
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id TEXT PRIMARY KEY, tool TEXT DEFAULT '', pid INTEGER DEFAULT 0,
+    project_path TEXT DEFAULT '', model TEXT DEFAULT '',
+    git_branch TEXT DEFAULT '', git_commit TEXT DEFAULT '',
+    started_at REAL DEFAULT 0, ended_at REAL, source TEXT DEFAULT '',
+    input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0, cache_creation_tokens INTEGER DEFAULT 0,
+    cost_usd REAL DEFAULT 0, request_count INTEGER DEFAULT 0,
+    tool_call_count INTEGER DEFAULT 0, files_modified INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS session_processes (
+    session_id TEXT NOT NULL, pid INTEGER NOT NULL, tool TEXT DEFAULT '',
+    joined_at REAL DEFAULT 0, role TEXT DEFAULT 'subprocess',
+    PRIMARY KEY (session_id, pid)
+);
+CREATE TABLE IF NOT EXISTS agents (
+    agent_id TEXT PRIMARY KEY, session_id TEXT DEFAULT '', tool TEXT DEFAULT '',
+    task TEXT DEFAULT '', model TEXT DEFAULT '', is_sidechain INTEGER DEFAULT 0,
+    started_at REAL DEFAULT 0, ended_at REAL, completed INTEGER DEFAULT 0,
+    input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0, cache_creation_tokens INTEGER DEFAULT 0,
+    cost_usd REAL DEFAULT 0
 );
 
--- KV file store: tracked file contents with lazy updates
-CREATE TABLE IF NOT EXISTS file_store (
-    path        TEXT PRIMARY KEY,     -- absolute file path
-    tool        TEXT NOT NULL,        -- owning ai_tool
-    category    TEXT DEFAULT '',      -- instructions, config, rules, memory, etc.
-    scope       TEXT DEFAULT '',      -- global, project, user
-    content     TEXT DEFAULT '',      -- file text content
-    content_hash TEXT DEFAULT '',     -- sha256 hex of content (for cheap diff)
-    size_bytes  INTEGER DEFAULT 0,
-    tokens      INTEGER DEFAULT 0,    -- estimated token count (~4 chars/tok)
-    lines       INTEGER DEFAULT 0,
-    mtime       REAL DEFAULT 0,       -- file mtime at last read
-    first_seen  REAL DEFAULT 0,       -- when we first discovered it
-    last_read   REAL DEFAULT 0,       -- when we last read the content
-    last_changed REAL DEFAULT 0,      -- when content last changed (hash diff)
-    meta        TEXT DEFAULT '{}'     -- JSON blob for tool-specific metadata
-);
+-- ═══ LLM requests (core fact tables) ═══
 
--- File content history (snapshot of content at change points)
+CREATE TABLE IF NOT EXISTS requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, dedup_key TEXT DEFAULT '',
+    ts REAL NOT NULL, session_id TEXT DEFAULT '', agent_id TEXT DEFAULT '',
+    tool TEXT DEFAULT '', project_path TEXT DEFAULT '', pid INTEGER DEFAULT 0,
+    model TEXT DEFAULT '', input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0, cache_read_tokens INTEGER DEFAULT 0,
+    cache_creation_tokens INTEGER DEFAULT 0, cost_usd REAL DEFAULT 0,
+    duration_ms REAL DEFAULT 0, finish_reason TEXT DEFAULT '',
+    is_error INTEGER DEFAULT 0, error_type TEXT DEFAULT '',
+    http_status INTEGER DEFAULT 0, source TEXT DEFAULT '', prompt_id TEXT DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_requests_dedup ON requests(dedup_key) WHERE dedup_key != '';
+
+CREATE TABLE IF NOT EXISTS tool_invocations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, dedup_key TEXT DEFAULT '',
+    ts REAL NOT NULL, session_id TEXT DEFAULT '', request_id INTEGER DEFAULT 0,
+    tool TEXT DEFAULT '', tool_name TEXT DEFAULT '', project_path TEXT DEFAULT '',
+    pid INTEGER DEFAULT 0, is_error INTEGER DEFAULT 0, duration_ms REAL DEFAULT 0,
+    input TEXT DEFAULT '{}', result_summary TEXT DEFAULT '', source TEXT DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_inv_dedup ON tool_invocations(dedup_key) WHERE dedup_key != '';
+
+-- ═══ File tracking ═══
+
+CREATE TABLE IF NOT EXISTS file_blobs (
+    hash TEXT PRIMARY KEY, content TEXT NOT NULL,
+    size_bytes INTEGER DEFAULT 0, created_at REAL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS files (
+    path TEXT PRIMARY KEY, tool TEXT DEFAULT '', category TEXT DEFAULT '',
+    scope TEXT DEFAULT '', content TEXT DEFAULT '', blob_hash TEXT DEFAULT '',
+    content_hash TEXT DEFAULT '', size_bytes INTEGER DEFAULT 0,
+    tokens INTEGER DEFAULT 0, lines INTEGER DEFAULT 0, mtime REAL DEFAULT 0,
+    first_seen REAL DEFAULT 0, last_read REAL DEFAULT 0,
+    last_changed REAL DEFAULT 0, meta TEXT DEFAULT '{}'
+);
 CREATE TABLE IF NOT EXISTS file_history (
-    path        TEXT NOT NULL,
-    ts          REAL NOT NULL,        -- timestamp of the change
-    content     TEXT DEFAULT '',
-    content_hash TEXT DEFAULT '',
-    size_bytes  INTEGER DEFAULT 0,
-    tokens      INTEGER DEFAULT 0,
-    lines       INTEGER DEFAULT 0,
+    path TEXT NOT NULL, ts REAL NOT NULL, content TEXT DEFAULT '',
+    blob_hash TEXT DEFAULT '', content_hash TEXT DEFAULT '',
+    size_bytes INTEGER DEFAULT 0, tokens INTEGER DEFAULT 0, lines INTEGER DEFAULT 0,
     PRIMARY KEY (path, ts)
 );
 
--- Per-tool telemetry (OTel / stats-cache / events.jsonl)
--- Schema is additive: new metrics become new columns via migration.
-CREATE TABLE IF NOT EXISTS tool_telemetry (
-    ts                  REAL NOT NULL,
-    tool                TEXT NOT NULL,
-    source              TEXT DEFAULT '',     -- 'stats-cache', 'events-jsonl', 'otel', 'network-inference'
-    confidence          REAL DEFAULT 0,
-    input_tokens        INTEGER DEFAULT 0,
-    output_tokens       INTEGER DEFAULT 0,
-    cache_read_tokens   INTEGER DEFAULT 0,
-    cache_creation_tokens INTEGER DEFAULT 0,
-    total_sessions      INTEGER DEFAULT 0,
-    total_messages       INTEGER DEFAULT 0,
-    cost_usd            REAL DEFAULT 0,
-    model               TEXT DEFAULT '',     -- primary model in use
-    by_model_json       TEXT DEFAULT '{}',   -- JSON: {model: {input, output, ...}}
+-- ═══ Configuration & environment ═══
+
+CREATE TABLE IF NOT EXISTS tool_config (
+    ts REAL NOT NULL, tool TEXT NOT NULL, project_path TEXT DEFAULT '',
+    key TEXT NOT NULL, value TEXT DEFAULT '', source TEXT DEFAULT '',
+    PRIMARY KEY (ts, tool, project_path, key)
+);
+CREATE TABLE IF NOT EXISTS environment_vars (
+    ts REAL NOT NULL, project_path TEXT NOT NULL, tool TEXT DEFAULT '',
+    key TEXT NOT NULL, value TEXT DEFAULT '', is_secret INTEGER DEFAULT 0,
+    source TEXT DEFAULT '',
+    PRIMARY KEY (ts, project_path, tool, key)
+);
+
+-- ═══ Tool stats (from external sources) ═══
+
+CREATE TABLE IF NOT EXISTS tool_stats (
+    ts REAL NOT NULL, tool TEXT NOT NULL, source TEXT DEFAULT '',
+    confidence REAL DEFAULT 0, input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0, cache_read_tokens INTEGER DEFAULT 0,
+    cache_creation_tokens INTEGER DEFAULT 0, total_sessions INTEGER DEFAULT 0,
+    total_messages INTEGER DEFAULT 0, cost_usd REAL DEFAULT 0,
+    model TEXT DEFAULT '', by_model TEXT DEFAULT '{}', by_project TEXT DEFAULT '{}',
     PRIMARY KEY (ts, tool)
 );
 
--- CSV path specifications (mirroring paths-unix.csv / paths-windows.csv)
-CREATE TABLE IF NOT EXISTS path_specs (
+-- ═══ Catch-alls ═══
+
+CREATE TABLE IF NOT EXISTS events (
+    ts REAL NOT NULL, tool TEXT NOT NULL, kind TEXT NOT NULL,
+    session_id TEXT DEFAULT '', pid INTEGER DEFAULT 0,
+    project_path TEXT DEFAULT '', detail TEXT DEFAULT '{}',
+    seq INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (ts, tool, kind, seq)
+);
+CREATE TABLE IF NOT EXISTS metrics (
+    ts REAL NOT NULL, metric TEXT NOT NULL, value REAL NOT NULL,
+    tool TEXT DEFAULT '', project_path TEXT DEFAULT '',
+    session_id TEXT DEFAULT '', tags TEXT DEFAULT '{}',
+    seq INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (ts, metric, seq)
+);
+
+-- ═══ Spec registry (renamed) ═══
+
+CREATE TABLE IF NOT EXISTS path_defs (
     path_template   TEXT NOT NULL,
     ai_tool         TEXT NOT NULL,
     vendor          TEXT DEFAULT '',
@@ -163,9 +230,7 @@ CREATE TABLE IF NOT EXISTS path_specs (
     root_strategy   TEXT DEFAULT '',
     PRIMARY KEY (path_template, ai_tool)
 );
-
--- CSV process specifications (mirroring processes-unix.csv / processes-windows.csv)
-CREATE TABLE IF NOT EXISTS process_specs (
+CREATE TABLE IF NOT EXISTS process_defs (
     process_name    TEXT NOT NULL,
     ai_tool         TEXT NOT NULL,
     vendor          TEXT DEFAULT '',
@@ -191,46 +256,55 @@ CREATE TABLE IF NOT EXISTS process_specs (
     PRIMARY KEY (process_name, ai_tool)
 );
 
-CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics(ts);
-CREATE INDEX IF NOT EXISTS idx_tool_metrics_ts ON tool_metrics(ts);
-CREATE INDEX IF NOT EXISTS idx_tool_metrics_tool ON tool_metrics(tool, ts);
+-- ═══ Indexes ═══
+
+-- processes
+CREATE INDEX IF NOT EXISTS idx_processes_tool ON processes(tool, started_at);
+CREATE INDEX IF NOT EXISTS idx_processes_pid ON processes(pid, started_at);
+-- process_snapshots
+CREATE INDEX IF NOT EXISTS idx_proc_snapshots_pid ON process_snapshots(pid, ts);
+CREATE INDEX IF NOT EXISTS idx_proc_snapshots_tool ON process_snapshots(tool, ts);
+-- sessions
+CREATE INDEX IF NOT EXISTS idx_sessions_tool ON sessions(tool, started_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_path, started_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions(ended_at, tool);
+-- session_processes
+CREATE INDEX IF NOT EXISTS idx_session_procs_session ON session_processes(session_id);
+-- agents
+CREATE INDEX IF NOT EXISTS idx_agents_session ON agents(session_id);
+-- requests
+CREATE INDEX IF NOT EXISTS idx_requests_session ON requests(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_requests_tool ON requests(tool, ts);
+CREATE INDEX IF NOT EXISTS idx_requests_ts ON requests(ts);
+CREATE INDEX IF NOT EXISTS idx_requests_prompt ON requests(prompt_id, ts);
+-- tool_invocations
+CREATE INDEX IF NOT EXISTS idx_tool_inv_session ON tool_invocations(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_tool_inv_name ON tool_invocations(tool_name, ts);
+CREATE INDEX IF NOT EXISTS idx_tool_inv_ts ON tool_invocations(ts);
+-- files
+CREATE INDEX IF NOT EXISTS idx_files_tool ON files(tool);
+CREATE INDEX IF NOT EXISTS idx_file_history_path ON file_history(path, ts);
+-- tool_config
+CREATE INDEX IF NOT EXISTS idx_tool_config_tool ON tool_config(tool, ts);
+-- environment_vars
+CREATE INDEX IF NOT EXISTS idx_env_vars_project ON environment_vars(project_path, ts);
+-- tool_stats
+CREATE INDEX IF NOT EXISTS idx_tool_stats_tool ON tool_stats(tool, ts);
+-- events
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_events_tool ON events(tool, ts);
 CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind, ts);
-CREATE INDEX IF NOT EXISTS idx_file_store_tool ON file_store(tool);
-CREATE INDEX IF NOT EXISTS idx_file_history_path ON file_history(path, ts);
-CREATE INDEX IF NOT EXISTS idx_tool_telemetry_ts ON tool_telemetry(ts);
-CREATE INDEX IF NOT EXISTS idx_tool_telemetry_tool ON tool_telemetry(tool, ts);
--- Universal samples table (Prometheus-style metric store).
--- Every data point we collect gets written here with a timestamp.
--- Typed tables (metrics, tool_metrics, etc.) remain for structured
--- high-frequency queries; this table catches EVERYTHING else.
--- Processing/aggregation happens async via staged reads.
-CREATE TABLE IF NOT EXISTS samples (
-    ts      REAL NOT NULL,
-    metric  TEXT NOT NULL,       -- dotted name: 'cpu.core.3', 'proc.71416.cpu', 'mcp.server1.status'
-    value   REAL NOT NULL,       -- numeric value (for strings: 1=true/running, 0=false/stopped)
-    tags    TEXT DEFAULT '{}',   -- JSON: {"tool":"claude-code","pid":71416,"path":"/..."}
-    seq     INTEGER NOT NULL DEFAULT 0,  -- disambiguates samples at same ts+metric
-    session_id  TEXT DEFAULT '',
-    tool        TEXT DEFAULT '',
-    PRIMARY KEY (ts, metric, seq)
-);
-
-CREATE INDEX IF NOT EXISTS idx_path_specs_tool ON path_specs(ai_tool);
-CREATE INDEX IF NOT EXISTS idx_path_specs_vendor ON path_specs(vendor);
-CREATE INDEX IF NOT EXISTS idx_process_specs_tool ON process_specs(ai_tool);
-CREATE INDEX IF NOT EXISTS idx_process_specs_vendor ON process_specs(vendor);
-CREATE INDEX IF NOT EXISTS idx_samples_metric ON samples(metric, ts);
-CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts);
-CREATE INDEX IF NOT EXISTS idx_samples_session ON samples(session_id, ts);
-CREATE INDEX IF NOT EXISTS idx_samples_tool ON samples(tool, ts);
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, ts);
-CREATE INDEX IF NOT EXISTS idx_events_prompt ON events(prompt_id, ts);
+-- metrics
+CREATE INDEX IF NOT EXISTS idx_metrics_metric ON metrics(metric, ts);
+CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics(ts);
+CREATE INDEX IF NOT EXISTS idx_metrics_session ON metrics(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_metrics_tool ON metrics(tool, ts);
+-- spec tables
+CREATE INDEX IF NOT EXISTS idx_path_defs_tool ON path_defs(ai_tool);
+CREATE INDEX IF NOT EXISTS idx_process_defs_tool ON process_defs(ai_tool);
 
--- ========================================
--- UI Schema: data-driven dashboard layout
--- ========================================
+-- ═══ UI Schema: data-driven dashboard layout (unchanged) ═══
 
 CREATE TABLE IF NOT EXISTS ui_dashboard (
     id          INTEGER PRIMARY KEY,
@@ -321,24 +395,22 @@ CREATE TABLE IF NOT EXISTS ui_theme (
 );
 
 -- Datapoint catalog: explains every metric shown in the dashboard.
--- Static explanation + dynamic source provenance, persisted to avoid
--- recomputing on every page load.
 CREATE TABLE IF NOT EXISTS datapoint_catalog (
-    key             TEXT PRIMARY KEY,       -- e.g. "overview.tokens", "procs.tool.telemetry.cost_usd"
+    key             TEXT PRIMARY KEY,
     label           TEXT NOT NULL DEFAULT '',
     tab             TEXT NOT NULL DEFAULT '',
     section         TEXT NOT NULL DEFAULT '',
     explanation     TEXT NOT NULL DEFAULT '',
-    source_static   TEXT NOT NULL DEFAULT '',  -- how the value is collected (human-readable)
-    source_type     TEXT NOT NULL DEFAULT 'raw',  -- raw | deduced | aggregated
-    unit            TEXT NOT NULL DEFAULT '',     -- tokens, bytes, percent, count, rate_bps, usd, etc.
-    update_freq     TEXT NOT NULL DEFAULT '',     -- realtime | on-collect | on-discovery | static
-    otel_metric     TEXT NOT NULL DEFAULT '',     -- corresponding OTel metric name
-    dynamic_source  INTEGER NOT NULL DEFAULT 0,  -- 1 if source_dynamic is updated at runtime
-    source_dynamic  TEXT NOT NULL DEFAULT '{}',   -- JSON: runtime provenance (contributing sessions, etc.)
-    query           TEXT NOT NULL DEFAULT '',     -- SQL query to retrieve the raw data
-    calc            TEXT NOT NULL DEFAULT '',     -- calculation/post-processing over query results
-    updated_at      REAL NOT NULL DEFAULT 0       -- epoch when source_dynamic was last refreshed
+    source_static   TEXT NOT NULL DEFAULT '',
+    source_type     TEXT NOT NULL DEFAULT 'raw',
+    unit            TEXT NOT NULL DEFAULT '',
+    update_freq     TEXT NOT NULL DEFAULT '',
+    otel_metric     TEXT NOT NULL DEFAULT '',
+    dynamic_source  INTEGER NOT NULL DEFAULT 0,
+    source_dynamic  TEXT NOT NULL DEFAULT '{}',
+    query           TEXT NOT NULL DEFAULT '',
+    calc            TEXT NOT NULL DEFAULT '',
+    updated_at      REAL NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_datapoint_catalog_tab ON datapoint_catalog(tab);
@@ -347,26 +419,85 @@ CREATE INDEX IF NOT EXISTS idx_datapoint_catalog_tab ON datapoint_catalog(tab);
 
 # ─── Data types ────────────────────────────────────────────────────
 
+class SystemSnapshotRow:
+    """One global system snapshot row (was MetricsRow).
+
+    Accepts both new field names (cpu_percent, memory_used_mb) and
+    old field names (cpu, mem_mb) for backward compatibility.
+    """
+    __slots__ = (
+        "ts", "cpu_percent", "cpu_per_core", "memory_used_mb",
+        "memory_total_mb", "active_sessions", "active_processes",
+        "ai_token_rate", "files", "tokens", "mcp", "mem_tokens",
+        "memory_entries", "live_sessions", "live_tokens",
+        "live_in_rate", "live_out_rate",
+    )
+
+    def __init__(
+        self,
+        ts: float,
+        cpu_percent: float = 0.0,
+        cpu_per_core: list[float] | None = None,
+        memory_used_mb: float = 0.0,
+        memory_total_mb: float = 0.0,
+        active_sessions: int = 0,
+        active_processes: int = 0,
+        ai_token_rate: float = 0.0,
+        files: int = 0,
+        tokens: int = 0,
+        mcp: int = 0,
+        mem_tokens: int = 0,
+        memory_entries: int = 0,
+        live_sessions: int = 0,
+        live_tokens: int = 0,
+        live_in_rate: float = 0.0,
+        live_out_rate: float = 0.0,
+        # Backward compat aliases:
+        cpu: float | None = None,
+        mem_mb: float | None = None,
+    ) -> None:
+        self.ts = ts
+        self.cpu_percent = cpu if cpu is not None else cpu_percent
+        self.cpu_per_core = cpu_per_core or []
+        self.memory_used_mb = mem_mb if mem_mb is not None else memory_used_mb
+        self.memory_total_mb = memory_total_mb
+        self.active_sessions = active_sessions
+        self.active_processes = active_processes
+        self.ai_token_rate = ai_token_rate
+        self.files = files
+        self.tokens = tokens
+        self.mcp = mcp
+        self.mem_tokens = mem_tokens
+        self.memory_entries = memory_entries
+        self.live_sessions = live_sessions
+        self.live_tokens = live_tokens
+        self.live_in_rate = live_in_rate
+        self.live_out_rate = live_out_rate
+
+
+# Backward compat alias
+MetricsRow = SystemSnapshotRow
+
+
 @dataclass(slots=True)
-class MetricsRow:
-    """One global snapshot row."""
+class ProcessSnapshotRow:
+    """One per-process snapshot row (was ToolMetricsRow)."""
     ts: float
-    files: int = 0
-    tokens: int = 0
-    cpu: float = 0.0
-    mem_mb: float = 0.0
-    mcp: int = 0
-    mem_tokens: int = 0
-    memory_entries: int = 0
-    live_sessions: int = 0
-    live_tokens: int = 0
-    live_in_rate: float = 0.0
-    live_out_rate: float = 0.0
+    pid: int = 0
+    tool: str = ""
+    cpu_percent: float = 0.0
+    memory_rss_mb: float = 0.0
+    memory_vms_mb: float = 0.0
+    open_files: int = 0
+    threads: int = 0
 
 
 @dataclass(slots=True)
 class ToolMetricsRow:
-    """One per-tool snapshot row."""
+    """Backward compat: old per-tool snapshot row.
+
+    Translates to ProcessSnapshotRow internally.
+    """
     ts: float
     tool: str
     cpu: float = 0.0
@@ -383,14 +514,16 @@ class EventRow:
     tool: str
     kind: str
     detail: dict[str, Any] = field(default_factory=dict)
+    session_id: str = ""
+    pid: int = 0
 
 
 @dataclass(slots=True)
-class TelemetryRow:
-    """Per-tool telemetry snapshot (from OTel / stats-cache / events.jsonl)."""
+class ToolStatsRow:
+    """Per-tool stats snapshot (from OTel / stats-cache / events.jsonl)."""
     ts: float
     tool: str
-    source: str = ""           # 'stats-cache', 'events-jsonl', 'otel', 'network-inference'
+    source: str = ""
     confidence: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
@@ -401,15 +534,24 @@ class TelemetryRow:
     cost_usd: float = 0.0
     model: str = ""
     by_model: dict[str, Any] = field(default_factory=dict)
+    by_project: dict[str, Any] = field(default_factory=dict)
+
+
+# Backward compat alias
+TelemetryRow = ToolStatsRow
 
 
 @dataclass(slots=True)
-class Sample:
+class Metric:
     """One universal metric sample (Prometheus-style)."""
     ts: float
     metric: str     # dotted name: 'cpu.core.3', 'proc.71416.cpu'
     value: float
     tags: dict[str, Any] = field(default_factory=dict)
+
+
+# Backward compat alias
+Sample = Metric
 
 
 @dataclass(slots=True)
@@ -420,6 +562,7 @@ class FileEntry:
     category: str = ""
     scope: str = ""
     content: str = ""
+    blob_hash: str = ""
     content_hash: str = ""
     size_bytes: int = 0
     tokens: int = 0
@@ -431,9 +574,223 @@ class FileEntry:
     meta: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(slots=True)
+class SessionRow:
+    """A session record."""
+    session_id: str
+    tool: str = ""
+    pid: int = 0
+    project_path: str = ""
+    model: str = ""
+    git_branch: str = ""
+    git_commit: str = ""
+    started_at: float = 0.0
+    ended_at: float | None = None
+    source: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    cost_usd: float = 0.0
+    request_count: int = 0
+    tool_call_count: int = 0
+    files_modified: int = 0
+
+
+@dataclass(slots=True)
+class RequestRow:
+    """One LLM request record.
+
+    ``ts`` is the wall-clock time we stored this row (reporting time).
+    ``source_ts`` is the timestamp embedded in the *source data itself* (e.g.
+    OTel timeUnixNano converted to epoch seconds).  It is used for dedup:
+      - If source_ts > 0: dedup key = hash(session_id + source_ts_ms + model + source)
+      - If source_ts == 0 (no embedded ts): dedup key = hash(session_id + model
+        + input_tokens + output_tokens + source) — i.e. value-based only.
+    """
+    ts: float
+    session_id: str = ""
+    agent_id: str = ""
+    tool: str = ""
+    project_path: str = ""
+    pid: int = 0
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    cost_usd: float = 0.0
+    duration_ms: float = 0.0
+    finish_reason: str = ""
+    is_error: int = 0
+    error_type: str = ""
+    http_status: int = 0
+    source: str = ""
+    prompt_id: str = ""
+    source_ts: float = 0.0   # embedded timestamp from source data (0 = absent)
+
+
+@dataclass(slots=True)
+class ToolInvocationRow:
+    """One tool invocation record.
+
+    ``source_ts`` follows the same convention as RequestRow: the timestamp
+    embedded in the source event payload (e.g. OTel timeUnixNano or hook
+    event timestamp).  0 means no embedded timestamp was present.
+    """
+    ts: float
+    session_id: str = ""
+    request_id: int = 0
+    tool: str = ""
+    tool_name: str = ""
+    project_path: str = ""
+    pid: int = 0
+    is_error: int = 0
+    duration_ms: float = 0.0
+    input: dict[str, Any] = field(default_factory=dict)
+    result_summary: str = ""
+    source: str = ""
+    source_ts: float = 0.0   # embedded timestamp from source data (0 = absent)
+
+
+@dataclass(slots=True)
+class ProcessRow:
+    """One process record."""
+    pid: int
+    tool: str = ""
+    project_path: str = ""
+    cwd: str = ""
+    cmdline: str = ""
+    ppid: int = 0
+    started_at: float = 0.0
+    ended_at: float | None = None
+    exit_code: int | None = None
+    source: str = ""
+    meta: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class AgentRow:
+    """One agent record."""
+    agent_id: str
+    session_id: str = ""
+    tool: str = ""
+    task: str = ""
+    model: str = ""
+    is_sidechain: int = 0
+    started_at: float = 0.0
+    ended_at: float | None = None
+    completed: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    cost_usd: float = 0.0
+
+
+# ─── Tool stats SQL helpers ───────────────────────────────────────
+
+def _tool_stats_row(r: tuple) -> ToolStatsRow:
+    return ToolStatsRow(
+        ts=r[0], tool=r[1], source=r[2], confidence=r[3],
+        input_tokens=r[4], output_tokens=r[5],
+        cache_read_tokens=r[6], cache_creation_tokens=r[7],
+        total_sessions=r[8], total_messages=r[9],
+        cost_usd=r[10], model=r[11],
+        by_model=_json(r[12]),
+        by_project=_json(r[13]) if len(r) > 13 else {},
+    )
+
+
+def _tool_stats_tuple(r: ToolStatsRow) -> tuple:
+    return (r.ts, r.tool, r.source, round(r.confidence, 2),
+            r.input_tokens, r.output_tokens,
+            r.cache_read_tokens, r.cache_creation_tokens,
+            r.total_sessions, r.total_messages,
+            round(r.cost_usd, 4), r.model,
+            json.dumps(r.by_model), json.dumps(r.by_project))
+
+
+# Backward compat aliases for old function names
+_telemetry_row = _tool_stats_row
+_telemetry_tuple = _tool_stats_tuple
+
+_TOOL_STATS_SELECT = (
+    "SELECT ts, tool, source, confidence, input_tokens, output_tokens,"
+    " cache_read_tokens, cache_creation_tokens,"
+    " total_sessions, total_messages, cost_usd, model, by_model, by_project"
+    " FROM tool_stats"
+)
+
+_TOOL_STATS_INSERT = (
+    "INSERT OR REPLACE INTO tool_stats"
+    "(ts, tool, source, confidence, input_tokens, output_tokens,"
+    " cache_read_tokens, cache_creation_tokens,"
+    " total_sessions, total_messages, cost_usd, model, by_model, by_project)"
+    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+)
+
+# Backward compat aliases
+_TELEMETRY_SELECT = _TOOL_STATS_SELECT
+_TELEMETRY_INSERT = _TOOL_STATS_INSERT
+
+# System snapshot keys (for column-major output)
+SYSTEM_SNAPSHOT_KEYS = [
+    "ts", "cpu_percent", "cpu_per_core",
+    "memory_used_mb", "memory_total_mb",
+    "active_sessions", "active_processes", "ai_token_rate",
+    "files", "tokens", "mcp", "mem_tokens", "memory_entries",
+    "live_sessions", "live_tokens", "live_in_rate", "live_out_rate",
+]
+
+# Backward compat: old code references METRICS_KEYS for sparkline fields
+METRICS_KEYS = [
+    "ts", "files", "tokens", "cpu", "mem_mb", "mcp",
+    "mem_tokens", "memory_entries", "live_sessions",
+    "live_tokens", "live_in_rate", "live_out_rate",
+]
+_METRICS_KEYS = METRICS_KEYS  # backward-compat alias
+
+
+# ─── Helpers ──────────────────────────────────────────────────────
+
 def _content_hash(content: str) -> str:
     """SHA-256 hex digest of content string."""
     return hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def _dedup_key(*parts: str) -> str:
+    """Compute a 16-char hex dedup key from string parts."""
+    combined = "".join(parts)
+    return hashlib.sha256(combined.encode("utf-8")).hexdigest()[:16]
+
+
+def _session_pid(session_or_id) -> str | None:
+    """Return the PID string from a session dict (prefers structured ``pid`` field)
+    or from a composite 'tool:pid:ts' session_id string."""
+    if isinstance(session_or_id, dict):
+        pid = session_or_id.get("pid", 0)
+        if pid:
+            return str(pid)
+        session_or_id = session_or_id.get("session_id", "")
+    parts = session_or_id.split(":")
+    if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+        return parts[1]
+    return None
+
+
+def _merge_session_stats(primary: dict, secondary: dict) -> None:
+    """Add secondary's file/activity stats into primary in-place."""
+    primary["files_modified"] += secondary["files_modified"]
+    primary["unique_files"] += secondary["unique_files"]
+    primary["bytes_written"] += secondary["bytes_written"]
+    primary["source_files"] += secondary["source_files"]
+    primary["conversations"] = max(primary["conversations"], secondary["conversations"])
+    primary["subagents"] = max(primary["subagents"], secondary["subagents"])
+    bucket_map: dict[int, int] = {b: c for b, c in primary["activity"]}
+    for b, c in secondary["activity"]:
+        bucket_map[b] = bucket_map.get(b, 0) + c
+    primary["activity"] = sorted(bucket_map.items())
 
 
 def _estimate_tokens(content: str) -> int:
@@ -442,7 +799,7 @@ def _estimate_tokens(content: str) -> int:
 
 
 def _parse_session_id(sid: str) -> tuple[int, float]:
-    """Parse 'tool:pid:epoch' → (pid, epoch).  Returns (0, 0.0) on failure."""
+    """Parse 'tool:pid:epoch' -> (pid, epoch).  Returns (0, 0.0) on failure."""
     if not sid or ":" not in sid:
         return 0, 0.0
     parts = sid.split(":")
@@ -455,27 +812,28 @@ def _parse_session_id(sid: str) -> tuple[int, float]:
 
 
 def _event_row_tuple(e: EventRow) -> tuple:
-    """Convert an EventRow to a tuple with structured columns for INSERT."""
+    """Convert an EventRow to a tuple for INSERT into events table."""
     d = e.detail if isinstance(e.detail, dict) else {}
-    sid = d.get("session_id", "")
-    pid, sess_ts = _parse_session_id(sid)
-    model = (d.get("model") or d.get("gen_ai.request.model")
-             or d.get("gen_ai.response.model") or "")
+    # Prefer first-class fields; fall back to detail dict for backward compat
+    sid = e.session_id or d.get("session_id", "")
+    pid = e.pid or _parse_session_id(sid)[0]
     return (
-        e.ts, e.tool, e.kind, json.dumps(e.detail),
+        e.ts, e.tool, e.kind,
         sid,
         pid,
-        sess_ts,
-        model,
-        d.get("path", ""),
-        int(_safe_num(d.get("input_tokens",
-            d.get("gen_ai.usage.input_tokens", 0)))),
-        int(_safe_num(d.get("output_tokens",
-            d.get("gen_ai.usage.output_tokens", 0)))),
-        _safe_num(d.get("duration_ms", d.get("duration", 0))),
-        d.get("tool_name", ""),
-        d.get("prompt.id", ""),
+        d.get("project_path", d.get("path", "")),
+        json.dumps(e.detail),
     )
+
+
+def _json(s: str | None) -> dict:
+    """Decode a JSON string, returning {} for None/empty/invalid."""
+    if not s:
+        return {}
+    try:
+        return json.loads(s)
+    except (json.JSONDecodeError, TypeError):
+        return {}
 
 
 def _safe_num(v) -> float:
@@ -502,14 +860,58 @@ def _assign_seq(rows: list[tuple], key_indices: tuple[int, ...]) -> list[tuple]:
     return result
 
 
-def _sample_row_tuple(s: Sample) -> tuple:
-    """Convert a Sample to a tuple with structured columns for INSERT."""
+def _where(conditions: list[tuple[str, Any]]) -> tuple[str, list]:
+    """Build a SQL WHERE clause from (expr, value) pairs, skipping None values."""
+    clauses, params = [], []
+    for expr, val in conditions:
+        if val is not None:
+            clauses.append(expr)
+            params.append(val)
+    return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
+
+
+def _placeholders(ids: list) -> str:
+    """Return a SQL placeholder string for IN clauses: '?,?,?'."""
+    return ",".join("?" * len(ids))
+
+
+def _last_id(conn: sqlite3.Connection) -> int:
+    """Return the last auto-inserted row ID."""
+    return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+
+def _rows_to_dicts(cur: sqlite3.Cursor) -> list[dict]:
+    """Convert all rows in a cursor to dicts keyed by column name."""
+    cols = [desc[0] for desc in cur.description]
+    return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def _file_entry_from_row(row: tuple) -> FileEntry:
+    """Construct a FileEntry from a SELECT row."""
+    return FileEntry(
+        path=row[0], tool=row[1], category=row[2], scope=row[3],
+        content=row[4] or "", blob_hash=row[5] or "",
+        content_hash=row[6] or "",
+        size_bytes=row[7], tokens=row[8], lines=row[9],
+        mtime=row[10], first_seen=row[11], last_read=row[12],
+        last_changed=row[13],
+        meta=_json(row[14]),
+    )
+
+
+def _metric_row_tuple(s: Metric) -> tuple:
+    """Convert a Metric to a tuple for INSERT."""
     tags = s.tags if isinstance(s.tags, dict) else {}
     return (
         s.ts, s.metric, s.value, json.dumps(s.tags),
-        tags.get("session_id", ""),
         tags.get("tool", ""),
+        tags.get("project_path", ""),
+        tags.get("session_id", ""),
     )
+
+
+# Backward compat alias
+_sample_row_tuple = _metric_row_tuple
 
 
 # ─── HistoryDB ─────────────────────────────────────────────────────
@@ -520,7 +922,7 @@ class HistoryDB:
     Parameters
     ----------
     db_path : Path | str | None
-        Path to the SQLite database file.  ``None`` → in-memory only
+        Path to the SQLite database file.  ``None`` -> in-memory only
         (useful for testing).  ``":memory:"`` also works.
         Default is ``~/.config/aictl/history.db``.
     flush_interval : float
@@ -542,10 +944,15 @@ class HistoryDB:
 
         # Pending rows (written by any thread, flushed by _flush_thread)
         self._lock = threading.Lock()
-        self._metrics_buf: list[MetricsRow] = []
-        self._tool_buf: list[ToolMetricsRow] = []
+        self._system_snapshot_buf: list[SystemSnapshotRow] = []
+        self._process_snapshot_buf: list[ProcessSnapshotRow] = []
         self._events_buf: list[EventRow] = []
-        self._samples_buf: list[Sample] = []
+        self._metrics_buf: list[Metric] = []
+        self._requests_buf: list[RequestRow] = []
+        self._tool_invocations_buf: list[ToolInvocationRow] = []
+
+        # Process snapshot dedup cache: (pid, tool) -> (cpu_percent, memory_rss_mb)
+        self._proc_snapshot_cache: dict[tuple[int, str], tuple[float, float]] = {}
 
         # Connection pool: one connection per thread
         self._local = threading.local()
@@ -583,15 +990,29 @@ class HistoryDB:
 
     def _init_schema(self) -> None:
         conn = self._conn()
+        # Check if schema_version table exists to detect pre-v20 DB
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
+        )
+        has_schema_table = cur.fetchone() is not None
+
+        current = 0
+        if has_schema_table:
+            cur = conn.execute("SELECT MAX(version) FROM schema_version")
+            row = cur.fetchone()
+            current = row[0] if row and row[0] else 0
+
+        # Drop old tables when migrating from v12 to v20
+        if current > 0 and current < 20:
+            self._drop_old_tables(conn)
+
         conn.executescript(_SCHEMA_SQL)
-        # Check current version
-        cur = conn.execute("SELECT MAX(version) FROM schema_version")
-        row = cur.fetchone()
-        current = row[0] if row and row[0] else 0
+
         # Fresh install: seed data tables
         if current == 0:
             self._sync_csv_to_db(conn)
             self._seed_ui_layout(conn)
+
         # Run migrations for existing DBs
         if current < SCHEMA_VERSION:
             self._migrate(conn, current)
@@ -600,26 +1021,41 @@ class HistoryDB:
                 (SCHEMA_VERSION,),
             )
             conn.commit()
+
         # Always re-sync catalog from YAML (cheap INSERT OR REPLACE)
         try:
             self._sync_datapoint_catalog(conn)
         except Exception:
             pass
 
+    def _drop_old_tables(self, conn: sqlite3.Connection) -> None:
+        """Drop old tables that are being replaced in v20 schema."""
+        for table in _OLD_TABLES_TO_DROP:
+            try:
+                conn.execute(f"DROP TABLE IF EXISTS {table}")
+            except sqlite3.OperationalError:
+                pass
+        conn.commit()
+        log.info("Dropped old tables for v20 migration: %s",
+                 ", ".join(_OLD_TABLES_TO_DROP))
+
     def _migrate(self, conn: sqlite3.Connection, from_version: int) -> None:
         """Run incremental migrations from *from_version* to SCHEMA_VERSION.
 
         Each migration is idempotent (uses ALTER TABLE IF NOT EXISTS pattern).
         New columns are always added with DEFAULT values so old data stays valid.
-
-        v12 is the initial public release — no pre-v12 migrations needed.
-        Future migrations (v12 → v13, etc.) go here.
         """
-        # -- future migrations go here --
-        # if from_version < 13:
-        #     ...
-        #     log.info("Migrated DB schema v12 → v13 (...)")
-        pass
+        # v12 -> v20: major schema refactor. Old tables dropped in _drop_old_tables.
+        # No column migrations needed -- fresh tables.
+
+        if from_version < 21:
+            # v20 -> v21: add pid column to sessions table
+            try:
+                conn.execute(
+                    "ALTER TABLE sessions ADD COLUMN pid INTEGER DEFAULT 0"
+                )
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
     @staticmethod
     def _sync_datapoint_catalog(conn: sqlite3.Connection) -> None:
@@ -671,7 +1107,7 @@ class HistoryDB:
         """Seed ``ui_*`` tables with the default dashboard layout.
 
         Uses ``INSERT OR IGNORE`` with explicit IDs so the migration is
-        fully idempotent — re-running against a populated DB is a no-op.
+        fully idempotent -- re-running against a populated DB is a no-op.
         All data is derived from the current hardcoded Preact/JS layout.
         """
         # ── Dashboard ──────────────────────────────────────────────
@@ -697,8 +1133,6 @@ class HistoryDB:
         )
 
         # ── Sections ──────────────────────────────────────────────
-        # Global sections (tab_id=NULL) render above the tab strip.
-        # Tab-scoped sections render only inside that tab.
         conn.executemany(
             "INSERT OR IGNORE INTO ui_section"
             "(id, dashboard_id, tab_id, key, title, sort_order, columns)"
@@ -726,16 +1160,6 @@ class HistoryDB:
         )
 
         # ── Widgets (20) ──────────────────────────────────────────
-        # Every widget config is a complete rendering spec:
-        #   field    → snapshot field to read
-        #   metric   → metrics.yaml key (provides unit/description)
-        #   format   → value formatter (kilo, size, rate, percent, raw)
-        #   color    → CSS color for chart/accent
-        #   smooth   → 3-point SMA smoothing
-        #   yMaxExpr → expression for y-axis max
-        #   refLines → reference line definitions
-        #   suffix   → text appended to formatted value
-        #   accent   → use accent color for value
         conn.executemany(
             "INSERT OR IGNORE INTO ui_widget"
             "(id, section_id, key, kind, title, sort_order, config)"
@@ -838,9 +1262,7 @@ class HistoryDB:
             ],
         )
 
-        # ── Widget ↔ Datasource links ────────────────────────────
-        # Maps each widget to its data source(s).
-        # datasource IDs: 1=snapshot, 2=stream, 3=history, 4=budget, 5=samples, 6=events
+        # ── Widget <-> Datasource links ────────────────────────────
         conn.executemany(
             "INSERT OR IGNORE INTO ui_widget_datasource"
             "(widget_id, datasource_id, role) VALUES(?,?,?)",
@@ -936,32 +1358,77 @@ class HistoryDB:
         table: str,
         columns: list[tuple[str, str]],
     ) -> None:
-        """Add columns to *table* if they don't already exist.
-
-        *columns* is a list of (name, type_with_default) tuples.
-        Uses PRAGMA table_info to check existing columns — idempotent.
-        """
+        """Add columns to *table* if they don't already exist."""
         existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
         for col_name, col_def in columns:
             if col_name not in existing:
                 try:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}")
                 except sqlite3.OperationalError:
-                    pass  # column already exists (race or duplicate)
+                    pass
+
+    # ── File blob support ─────────────────────────────────────────
+
+    @staticmethod
+    def _store_blob(conn: sqlite3.Connection, content: str) -> str:
+        """Store content in file_blobs if not already present. Returns hash."""
+        blob_hash = hashlib.sha256(
+            content.encode("utf-8", errors="replace")
+        ).hexdigest()[:32]
+        conn.execute(
+            "INSERT OR IGNORE INTO file_blobs(hash, content, size_bytes, created_at)"
+            " VALUES(?,?,?,?)",
+            (blob_hash, content,
+             len(content.encode("utf-8", errors="replace")),
+             time.time()),
+        )
+        return blob_hash
+
+    @staticmethod
+    def _resolve_content(conn: sqlite3.Connection, content: str, blob_hash: str) -> str:
+        """Resolve content: if content is empty and blob_hash is set, fetch from blobs."""
+        if content:
+            return content
+        if blob_hash:
+            row = conn.execute(
+                "SELECT content FROM file_blobs WHERE hash = ?", (blob_hash,)
+            ).fetchone()
+            return row[0] if row else ""
+        return ""
 
     # ── Append (buffered) ──────────────────────────────────────────
 
-    def append_metrics(self, row: MetricsRow) -> None:
-        """Buffer a global metrics row for batch insert."""
+    def append_metrics(self, row: SystemSnapshotRow | MetricsRow) -> None:
+        """Buffer a system snapshot row for batch insert.
+
+        Backward compat: accepts old MetricsRow (which is now an alias for
+        SystemSnapshotRow).
+        """
         with self._lock:
-            self._metrics_buf.append(row)
+            self._system_snapshot_buf.append(row)
         if self._flush_interval <= 0:
             self.flush()
 
-    def append_tool_metrics(self, rows: list[ToolMetricsRow]) -> None:
-        """Buffer per-tool metrics rows."""
+    def append_tool_metrics(self, rows: list[ToolMetricsRow | ProcessSnapshotRow]) -> None:
+        """Buffer per-tool/process metrics rows.
+
+        Backward compat: accepts old ToolMetricsRow, converts to
+        ProcessSnapshotRow internally.
+        """
+        converted = []
+        for r in rows:
+            if isinstance(r, ToolMetricsRow):
+                # Use a synthetic pid derived from tool name hash to avoid
+                # PK collisions when multiple tools share pid=0
+                synth_pid = abs(hash(r.tool)) % 2_000_000_000
+                converted.append(ProcessSnapshotRow(
+                    ts=r.ts, pid=synth_pid, tool=r.tool,
+                    cpu_percent=r.cpu, memory_rss_mb=r.mem_mb,
+                ))
+            else:
+                converted.append(r)
         with self._lock:
-            self._tool_buf.extend(rows)
+            self._process_snapshot_buf.extend(converted)
         if self._flush_interval <= 0:
             self.flush()
 
@@ -994,8 +1461,8 @@ class HistoryDB:
                 tool=event.tool,
                 kind=event.kind,
                 detail=d,
-                session_id=d.get("session_id", ""),
-                pid=_parse_session_id(d.get("session_id", ""))[0],
+                session_id=event.session_id or d.get("session_id", ""),
+                pid=event.pid or _parse_session_id(d.get("session_id", ""))[0],
                 model=(d.get("model") or d.get("gen_ai.request.model") or ""),
                 path=d.get("path", ""),
                 input_tokens=int(_safe_num(d.get("input_tokens",
@@ -1009,12 +1476,30 @@ class HistoryDB:
         except Exception:
             pass  # never block event buffering on log I/O
 
-    def append_samples(self, samples: list[Sample]) -> None:
-        """Buffer universal metric samples for batch insert."""
+    def append_samples(self, samples: list[Metric | Sample]) -> None:
+        """Buffer universal metric samples for batch insert.
+
+        Backward compat: ``Sample`` is now an alias for ``Metric``.
+        Writes to the ``metrics`` table (was ``samples``).
+        """
         if not samples:
             return
         with self._lock:
-            self._samples_buf.extend(samples)
+            self._metrics_buf.extend(samples)
+        if self._flush_interval <= 0:
+            self.flush()
+
+    def append_request(self, row: RequestRow) -> None:
+        """Buffer an LLM request for batch insert."""
+        with self._lock:
+            self._requests_buf.append(row)
+        if self._flush_interval <= 0:
+            self.flush()
+
+    def append_tool_invocation(self, row: ToolInvocationRow) -> None:
+        """Buffer a tool invocation for batch insert."""
+        with self._lock:
+            self._tool_invocations_buf.append(row)
         if self._flush_interval <= 0:
             self.flush()
 
@@ -1023,93 +1508,164 @@ class HistoryDB:
     def flush(self) -> int:
         """Write all buffered rows to SQLite.  Returns rows written."""
         with self._lock:
-            m_buf = self._metrics_buf
-            self._metrics_buf = []
-            t_buf = self._tool_buf
-            self._tool_buf = []
+            ss_buf = self._system_snapshot_buf
+            self._system_snapshot_buf = []
+            ps_buf = self._process_snapshot_buf
+            self._process_snapshot_buf = []
             e_buf = self._events_buf
             self._events_buf = []
-            s_buf = self._samples_buf
-            self._samples_buf = []
+            m_buf = self._metrics_buf
+            self._metrics_buf = []
+            req_buf = self._requests_buf
+            self._requests_buf = []
+            ti_buf = self._tool_invocations_buf
+            self._tool_invocations_buf = []
 
-        if not m_buf and not t_buf and not e_buf and not s_buf:
+        if not ss_buf and not ps_buf and not e_buf and not m_buf and not req_buf and not ti_buf:
             return 0
 
         total = 0
         conn = self._conn()
         try:
-            if m_buf:
+            if ss_buf:
                 conn.executemany(
-                    "INSERT OR REPLACE INTO metrics"
-                    "(ts, files, tokens, cpu, mem_mb, mcp, mem_tokens,"
+                    "INSERT OR REPLACE INTO system_snapshots"
+                    "(ts, cpu_percent, cpu_per_core,"
+                    " memory_used_mb, memory_total_mb,"
+                    " active_sessions, active_processes, ai_token_rate,"
+                    " files, tokens, mcp, mem_tokens,"
                     " memory_entries, live_sessions, live_tokens,"
                     " live_in_rate, live_out_rate)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     [
-                        (r.ts, r.files, r.tokens, round(r.cpu, 2),
-                         round(r.mem_mb, 1), r.mcp, r.mem_tokens,
+                        (r.ts, round(r.cpu_percent, 2),
+                         json.dumps(r.cpu_per_core) if r.cpu_per_core else "[]",
+                         round(r.memory_used_mb, 1), round(r.memory_total_mb, 1),
+                         r.active_sessions, r.active_processes,
+                         round(r.ai_token_rate, 2),
+                         r.files, r.tokens, r.mcp, r.mem_tokens,
                          r.memory_entries, r.live_sessions, r.live_tokens,
                          round(r.live_in_rate, 2), round(r.live_out_rate, 2))
-                        for r in m_buf
+                        for r in ss_buf
                     ],
+                )
+                total += len(ss_buf)
+
+            if ps_buf:
+                # Apply dedup: only write if cpu or mem changed significantly
+                filtered = []
+                for r in ps_buf:
+                    cache_key = (r.pid, r.tool)
+                    cached = self._proc_snapshot_cache.get(cache_key)
+                    if cached is None or abs(r.cpu_percent - cached[0]) > 1.0 or abs(r.memory_rss_mb - cached[1]) > 1.0:
+                        self._proc_snapshot_cache[cache_key] = (r.cpu_percent, r.memory_rss_mb)
+                        filtered.append(r)
+                if filtered:
+                    conn.executemany(
+                        "INSERT OR REPLACE INTO process_snapshots"
+                        "(ts, pid, tool, cpu_percent, memory_rss_mb,"
+                        " memory_vms_mb, open_files, threads)"
+                        " VALUES(?,?,?,?,?,?,?,?)",
+                        [
+                            (r.ts, r.pid, r.tool,
+                             round(r.cpu_percent, 2), round(r.memory_rss_mb, 1),
+                             round(r.memory_vms_mb, 1), r.open_files, r.threads)
+                            for r in filtered
+                        ],
+                    )
+                    total += len(filtered)
+
+            if e_buf:
+                rows = _assign_seq(
+                    [_event_row_tuple(e) for e in e_buf],
+                    key_indices=(0, 1, 2),  # ts, tool, kind
+                )
+                conn.executemany(
+                    "INSERT OR IGNORE INTO events"
+                    "(ts, tool, kind, session_id, pid,"
+                    " project_path, detail, seq)"
+                    " VALUES(?,?,?,?,?,?,?,?)",
+                    rows,
+                )
+                total += len(e_buf)
+
+            if m_buf:
+                rows = _assign_seq(
+                    [_metric_row_tuple(s) for s in m_buf],
+                    key_indices=(0, 1),  # ts, metric
+                )
+                conn.executemany(
+                    "INSERT OR IGNORE INTO metrics"
+                    "(ts, metric, value, tags, tool,"
+                    " project_path, session_id, seq)"
+                    " VALUES(?,?,?,?,?,?,?,?)",
+                    rows,
                 )
                 total += len(m_buf)
 
-            if t_buf:
-                conn.executemany(
-                    "INSERT OR REPLACE INTO tool_metrics"
-                    "(ts, tool, cpu, mem_mb, tokens, traffic, model)"
-                    " VALUES(?,?,?,?,?,?,?)",
-                    [
-                        (r.ts, r.tool, round(r.cpu, 2), round(r.mem_mb, 1),
-                         r.tokens, round(r.traffic, 2), r.model)
-                        for r in t_buf
-                    ],
-                )
-                total += len(t_buf)
+            if req_buf:
+                for r in req_buf:
+                    # Use embedded source timestamp when present (Case A).
+                    # Fall back to value-based dedup when absent (Case B) —
+                    # never use our reporting time (r.ts) as a dedup factor.
+                    if r.source_ts > 0:
+                        dk = _dedup_key(
+                            r.session_id, str(int(r.source_ts * 1000)),
+                            r.model, r.source,
+                        )
+                    else:
+                        dk = _dedup_key(
+                            r.session_id, r.model,
+                            str(r.input_tokens), str(r.output_tokens), r.source,
+                        )
+                    conn.execute(
+                        "INSERT OR IGNORE INTO requests"
+                        "(dedup_key, ts, session_id, agent_id, tool,"
+                        " project_path, pid, model, input_tokens,"
+                        " output_tokens, cache_read_tokens,"
+                        " cache_creation_tokens, cost_usd, duration_ms,"
+                        " finish_reason, is_error, error_type,"
+                        " http_status, source, prompt_id)"
+                        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (dk, r.ts, r.session_id, r.agent_id, r.tool,
+                         r.project_path, r.pid, r.model, r.input_tokens,
+                         r.output_tokens, r.cache_read_tokens,
+                         r.cache_creation_tokens, round(r.cost_usd, 6),
+                         round(r.duration_ms, 1), r.finish_reason,
+                         r.is_error, r.error_type, r.http_status,
+                         r.source, r.prompt_id),
+                    )
+                total += len(req_buf)
 
-            if e_buf:
-                # Assign seq numbers to disambiguate events at same (ts,tool,kind)
-                rows = [_event_row_tuple(e) for e in e_buf]
-                rows = _assign_seq(rows, key_indices=(0, 1, 2))  # ts, tool, kind
-                try:
-                    conn.executemany(
-                        "INSERT OR IGNORE INTO events"
-                        "(ts, tool, kind, detail,"
-                        " session_id, pid, session_ts, model, path,"
-                        " input_tokens, output_tokens, duration_ms,"
-                        " tool_name, prompt_id, seq)"
-                        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        rows,
+            if ti_buf:
+                for r in ti_buf:
+                    # Same Case A/B logic as requests.
+                    # Hook events (no embedded ts): dedup only on full value equality.
+                    # OTel events (embedded ts present): dedup on ts + identity fields.
+                    if r.source_ts > 0:
+                        dk = _dedup_key(
+                            r.session_id, str(int(r.source_ts * 1000)),
+                            r.tool_name,
+                        )
+                    else:
+                        input_sig = json.dumps(r.input, sort_keys=True) if isinstance(r.input, dict) else str(r.input)
+                        dk = _dedup_key(
+                            r.session_id, r.tool_name, input_sig,
+                            str(r.is_error), r.source,
+                        )
+                    conn.execute(
+                        "INSERT OR IGNORE INTO tool_invocations"
+                        "(dedup_key, ts, session_id, request_id, tool,"
+                        " tool_name, project_path, pid, is_error,"
+                        " duration_ms, input, result_summary, source)"
+                        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (dk, r.ts, r.session_id, r.request_id, r.tool,
+                         r.tool_name, r.project_path, r.pid, r.is_error,
+                         round(r.duration_ms, 1),
+                         json.dumps(r.input) if isinstance(r.input, dict) else r.input,
+                         r.result_summary, r.source),
                     )
-                except sqlite3.OperationalError:
-                    # Pre-v12 schema: no seq column
-                    conn.executemany(
-                        "INSERT OR REPLACE INTO events"
-                        "(ts, tool, kind, detail) VALUES(?,?,?,?)",
-                        [(e.ts, e.tool, e.kind, json.dumps(e.detail))
-                         for e in e_buf],
-                    )
-                total += len(e_buf)
-
-            if s_buf:
-                rows = [_sample_row_tuple(s) for s in s_buf]
-                rows = _assign_seq(rows, key_indices=(0, 1))  # ts, metric
-                try:
-                    conn.executemany(
-                        "INSERT OR IGNORE INTO samples"
-                        "(ts, metric, value, tags, session_id, tool, seq)"
-                        " VALUES(?,?,?,?,?,?,?)",
-                        rows,
-                    )
-                except sqlite3.OperationalError:
-                    conn.executemany(
-                        "INSERT OR IGNORE INTO samples"
-                        "(ts, metric, value, tags) VALUES(?,?,?,?)",
-                        [(s.ts, s.metric, s.value, json.dumps(s.tags))
-                         for s in s_buf],
-                    )
-                total += len(s_buf)
+                total += len(ti_buf)
 
             conn.commit()
         except sqlite3.Error as exc:
@@ -1126,7 +1682,7 @@ class HistoryDB:
             except Exception as exc:
                 log.warning("DB flush loop error: %s", exc)
 
-    # ── Query: global metrics ──────────────────────────────────────
+    # ── Query: system snapshots (was global metrics) ──────────────
 
     def query_metrics(
         self,
@@ -1134,38 +1690,23 @@ class HistoryDB:
         until: float | None = None,
         limit: int = 0,
     ) -> dict[str, list]:
-        """Return global metrics as column-major dict (uPlot-ready).
+        """Return system snapshots as column-major dict (uPlot-ready).
 
-        Keys: ts, files, tokens, cpu, mem_mb, mcp, mem_tokens,
-              live_sessions, live_tokens, live_in_rate, live_out_rate
+        Backward compat: returns keys matching old METRICS_KEYS format
+        (ts, files, tokens, cpu, mem_mb, ...) for sparkline compatibility.
         """
         conn = self._conn()
-        clauses: list[str] = []
-        params: list[Any] = []
-        if since is not None:
-            clauses.append("ts >= ?")
-            params.append(since)
-        if until is not None:
-            clauses.append("ts <= ?")
-            params.append(until)
-        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        order = " ORDER BY ts"
+        where, params = _where([("ts >= ?", since), ("ts <= ?", until)])
         lim = f" LIMIT {limit}" if limit > 0 else ""
-        sql = f"SELECT ts, files, tokens, cpu, mem_mb, mcp, mem_tokens," \
-              f" memory_entries, live_sessions, live_tokens," \
-              f" live_in_rate, live_out_rate" \
-              f" FROM metrics{where}{order}{lim}"
+        sql = (f"SELECT ts, files, tokens, cpu_percent, memory_used_mb, mcp, mem_tokens,"
+               f" memory_entries, live_sessions, live_tokens,"
+               f" live_in_rate, live_out_rate"
+               f" FROM system_snapshots{where} ORDER BY ts{lim}")
         rows = conn.execute(sql, params).fetchall()
         if not rows:
-            return {k: [] for k in (
-                "ts", "files", "tokens", "cpu", "mem_mb", "mcp",
-                "mem_tokens", "memory_entries", "live_sessions",
-                "live_tokens", "live_in_rate", "live_out_rate")}
+            return {k: [] for k in _METRICS_KEYS}
         cols = list(zip(*rows))
-        keys = ["ts", "files", "tokens", "cpu", "mem_mb", "mcp",
-                "mem_tokens", "memory_entries", "live_sessions",
-                "live_tokens", "live_in_rate", "live_out_rate"]
-        return {k: list(c) for k, c in zip(keys, cols)}
+        return {k: list(c) for k, c in zip(_METRICS_KEYS, cols)}
 
     def query_tool_metrics(
         self,
@@ -1175,35 +1716,25 @@ class HistoryDB:
     ) -> dict[str, dict[str, list]]:
         """Return per-tool metrics as {tool: {ts, cpu, mem_mb, tokens, traffic}}.
 
-        If *tool* is given, returns only that tool.
+        Backward compat wrapper over process_snapshots.
         """
         conn = self._conn()
-        clauses: list[str] = []
-        params: list[Any] = []
-        if tool:
-            clauses.append("tool = ?")
-            params.append(tool)
-        if since is not None:
-            clauses.append("ts >= ?")
-            params.append(since)
-        if until is not None:
-            clauses.append("ts <= ?")
-            params.append(until)
-        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        sql = f"SELECT ts, tool, cpu, mem_mb, tokens, traffic" \
-              f" FROM tool_metrics{where} ORDER BY ts"
+        where, params = _where([
+            ("tool = ?", tool or None),
+            ("ts >= ?", since), ("ts <= ?", until),
+        ])
+        sql = (f"SELECT ts, tool, cpu_percent, memory_rss_mb"
+               f" FROM process_snapshots{where} ORDER BY ts")
         rows = conn.execute(sql, params).fetchall()
         result: dict[str, dict[str, list]] = {}
-        for ts, tl, cpu, mem, tok, traffic in rows:
-            if tl not in result:
-                result[tl] = {"ts": [], "cpu": [], "mem_mb": [],
-                              "tokens": [], "traffic": []}
-            d = result[tl]
+        for ts, tl, cpu, mem in rows:
+            d = result.setdefault(tl, {"ts": [], "cpu": [], "mem_mb": [],
+                                       "tokens": [], "traffic": []})
             d["ts"].append(ts)
             d["cpu"].append(cpu)
             d["mem_mb"].append(mem)
-            d["tokens"].append(tok)
-            d["traffic"].append(traffic)
+            d["tokens"].append(0)
+            d["traffic"].append(0)
         return result
 
     # ── Query: events ──────────────────────────────────────────────
@@ -1215,36 +1746,28 @@ class HistoryDB:
         tool: str | None = None,
         kind: str | None = None,
         session_id: str | None = None,
+        pid: int | None = None,
         limit: int = 500,
     ) -> list[EventRow]:
         """Return events matching the filter criteria."""
         conn = self._conn()
-        clauses: list[str] = []
-        params: list[Any] = []
-        if since is not None:
-            clauses.append("ts >= ?")
-            params.append(since)
-        if until is not None:
-            clauses.append("ts <= ?")
-            params.append(until)
-        if tool:
-            clauses.append("tool = ?")
-            params.append(tool)
-        if kind:
-            clauses.append("kind = ?")
-            params.append(kind)
+        where, params = _where([
+            ("ts >= ?", since), ("ts <= ?", until),
+            ("tool = ?", tool or None), ("kind = ?", kind or None),
+            ("pid = ?", pid or None),
+        ])
         if session_id:
-            # v11+: use indexed session_id column; fall back to JSON extract
-            clauses.append("(session_id = ? OR json_extract(detail, '$.session_id') = ?)")
+            sep = " AND " if where else " WHERE "
+            where += sep + "(session_id = ? OR json_extract(detail, '$.session_id') = ?)"
             params.extend([session_id, session_id])
-        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        sql = f"SELECT ts, tool, kind, detail FROM events{where}" \
-              f" ORDER BY ts DESC LIMIT ?"
+        sql = (f"SELECT ts, tool, kind, detail, session_id, pid FROM events{where}"
+               f" ORDER BY ts DESC LIMIT ?")
         params.append(limit)
         rows = conn.execute(sql, params).fetchall()
         return [
             EventRow(ts=r[0], tool=r[1], kind=r[2],
-                     detail=json.loads(r[3]) if r[3] else {})
+                     detail=_json(r[3]), session_id=r[4] or "",
+                     pid=r[5] or 0)
             for r in rows
         ]
 
@@ -1255,22 +1778,88 @@ class HistoryDB:
     ) -> list[dict]:
         """Return enriched session profiles for the given time window.
 
-        Each profile includes: session_id, tool, start/end times, duration,
-        conversation count, subagent count, file stats, and activity buckets.
-        Built from session_start/end + file_modified events.
+        Backward compat wrapper: first tries the sessions table, then
+        falls back to event-based reconstruction.
         """
         conn = self._conn()
-        # Step 1: Find all sessions that overlap the window
-        # A session overlaps if it started before until AND ended after since
+        # Try sessions table first
+        where_parts = ["started_at >= ?"]
+        params: list[Any] = [since]
+        if until is not None:
+            where_parts.append("started_at <= ?")
+            params.append(until)
+        where_sql = " WHERE " + " AND ".join(where_parts)
+
+        session_rows = _rows_to_dicts(conn.execute(
+            f"SELECT * FROM sessions{where_sql} ORDER BY started_at",
+            params,
+        ))
+
+        if session_rows:
+            # Convert sessions table rows to profile format
+            profiles: dict[str, dict] = {}
+            result = []
+            for s in session_rows:
+                p = {
+                    "session_id": s["session_id"],
+                    "tool": s["tool"],
+                    "pid": s.get("pid", 0) or 0,
+                    "started_at": s["started_at"],
+                    "ended_at": s["ended_at"],
+                    "duration_s": round(s["ended_at"] - s["started_at"], 1) if s["ended_at"] else None,
+                    "active": s["ended_at"] is None,
+                    "conversations": 0,
+                    "subagents": 0,
+                    "files_modified": s["files_modified"],
+                    "unique_files": 0,
+                    "bytes_written": 0,
+                    "source_files": 0,
+                    "activity": [],
+                }
+                profiles[s["session_id"]] = p
+                result.append(p)
+
+            # Enrich with file_modified event counts (sessions table may
+            # not have these populated — the events table is authoritative).
+            file_where = " AND ts <= ?" if until is not None else ""
+            file_params: list[Any] = [since]
+            if until is not None:
+                file_params.append(until)
+            file_rows = conn.execute(
+                "SELECT session_id, COUNT(*) as cnt"
+                " FROM events"
+                " WHERE kind = 'file_modified' AND ts >= ?"
+                + file_where
+                + " AND session_id != ''"
+                " GROUP BY session_id",
+                file_params,
+            ).fetchall()
+            for sid, cnt in file_rows:
+                if sid in profiles and profiles[sid]["files_modified"] < cnt:
+                    profiles[sid]["files_modified"] = cnt
+
+            # Apply the same merge logic used by the event-based path:
+            # merge sessions with the same (tool, pid).
+            return self._merge_session_profiles(result)
+
+        # Fall back to event-based reconstruction
+        return self._query_session_profiles_from_events(since, until)
+
+    def _query_session_profiles_from_events(
+        self,
+        since: float,
+        until: float | None = None,
+    ) -> list[dict]:
+        """Reconstruct session profiles from events (backward compat)."""
+        conn = self._conn()
         params: list[Any] = [since]
         until_clause = ""
         if until is not None:
             until_clause = " AND ts <= ?"
             params.append(until)
 
-        # Get session_start events in range
         starts = conn.execute(
-            "SELECT ts, tool, session_id, detail FROM events"
+            "SELECT ts, tool, session_id, pid, detail FROM events"
             " WHERE kind = 'session_start' AND ts >= ?"
             + until_clause + " ORDER BY ts",
             params,
@@ -1279,16 +1868,16 @@ class HistoryDB:
         if not starts:
             return []
 
-        # Collect session IDs and their start info
         sessions: dict[str, dict] = {}
-        for ts, tool, sid_col, detail_json in starts:
-            detail = json.loads(detail_json) if detail_json else {}
+        for ts, tool, sid_col, ev_pid, detail_json in starts:
+            detail = _json(detail_json)
             sid = sid_col or detail.get("session_id", "")
             if not sid:
                 continue
             sessions[sid] = {
                 "session_id": sid,
                 "tool": tool,
+                "pid": ev_pid or int(detail.get("pid", 0) or 0),
                 "started_at": ts,
                 "ended_at": None,
                 "duration_s": None,
@@ -1299,13 +1888,13 @@ class HistoryDB:
                 "unique_files": 0,
                 "bytes_written": 0,
                 "source_files": 0,
-                "activity": [],  # 5-min buckets of event counts
+                "activity": [],
             }
 
         if not sessions:
             return []
 
-        # Step 2: Find matching session_end events
+        # Find matching session_end events
         for sid in sessions:
             end_rows = conn.execute(
                 "SELECT ts, detail FROM events"
@@ -1316,7 +1905,7 @@ class HistoryDB:
             ).fetchall()
             if end_rows:
                 end_ts, end_detail_json = end_rows[0]
-                end_detail = json.loads(end_detail_json) if end_detail_json else {}
+                end_detail = _json(end_detail_json)
                 sessions[sid]["ended_at"] = end_ts
                 sessions[sid]["duration_s"] = end_detail.get(
                     "duration_s",
@@ -1325,8 +1914,7 @@ class HistoryDB:
                 sessions[sid]["active"] = False
                 sessions[sid]["project"] = end_detail.get("project", "")
 
-        # Step 3: Aggregate file_modified events per session
-        # Use a single query for all sessions in the time window
+        # Aggregate file_modified events per session
         file_params: list[Any] = [since]
         file_until = ""
         if until is not None:
@@ -1335,7 +1923,7 @@ class HistoryDB:
 
         file_rows = conn.execute(
             "SELECT session_id as sid,"
-            "       path,"
+            "       json_extract(detail, '$.path') as path,"
             "       COUNT(*) as cnt,"
             "       SUM(json_extract(detail, '$.growth_bytes')) as growth"
             " FROM events"
@@ -1356,7 +1944,7 @@ class HistoryDB:
             if path:
                 npath = path.replace("\\", "/")
                 if "/subagents/" in npath:
-                    s["subagents"] += 1  # unique subagent files
+                    s["subagents"] += 1
                 elif npath.endswith(".jsonl") and "/projects/" in npath and "/subagents/" not in npath:
                     s["conversations"] += 1
                 elif any(npath.endswith(ext) for ext in (
@@ -1367,7 +1955,7 @@ class HistoryDB:
                     if "/.claude/" not in npath and "/__pycache__/" not in npath:
                         s["source_files"] += 1
 
-        # Step 4: Activity buckets (5-min resolution) per session
+        # Activity buckets
         bucket_rows = conn.execute(
             "SELECT session_id as sid,"
             "       CAST(ts / 300 AS INT) * 300 as bucket,"
@@ -1385,158 +1973,649 @@ class HistoryDB:
             if sid in sessions:
                 sessions[sid]["activity"].append([bucket, cnt])
 
-        # Step 5: Merge duplicate sessions — same tool + start time within 60s.
-        # This happens when the correlator and Claude Code hooks each emit
-        # session_start with different session_ids for the same real session.
-        # Strategy: keep the session with session_end (has duration) as primary;
-        # merge file/activity stats from the secondary into it.
-        result: list[dict] = list(sessions.values())
-        result.sort(key=lambda s: s["started_at"])
+        return self._merge_session_profiles(list(sessions.values()))
+
+    @staticmethod
+    def _merge_session_profiles(profiles: list[dict]) -> list[dict]:
+        """Merge duplicate session profiles by (tool, pid).
+
+        Pass A: merge sessions from the same tool within 60s of each other.
+        Pass B: merge all sessions sharing the same (tool, pid) pair.
+        """
+        profiles.sort(key=lambda s: s["started_at"])
+
+        # Pass A: merge close-in-time sessions
         merged: list[dict] = []
         used: set[str] = set()
-        for i, primary in enumerate(result):
+        for i, primary in enumerate(profiles):
             if primary["session_id"] in used:
                 continue
-            for secondary in result[i + 1:]:
+            for secondary in profiles[i + 1:]:
                 if secondary["session_id"] in used:
                     continue
                 if secondary["tool"] != primary["tool"]:
                     continue
                 if abs(secondary["started_at"] - primary["started_at"]) > 60:
-                    break  # sorted by time, no need to keep looking
-                # Same tool within 60s — merge secondary into primary.
-                # If secondary has session_end and primary doesn't, swap roles.
+                    break
+                p_pid = _session_pid(primary)
+                s_pid = _session_pid(secondary)
+                if p_pid is not None and s_pid is not None and p_pid != s_pid:
+                    continue
                 if secondary["ended_at"] and not primary["ended_at"]:
                     primary, secondary = secondary, primary
-                primary["files_modified"] += secondary["files_modified"]
-                primary["unique_files"] += secondary["unique_files"]
-                primary["bytes_written"] += secondary["bytes_written"]
-                primary["source_files"] += secondary["source_files"]
-                primary["conversations"] = max(
-                    primary["conversations"], secondary["conversations"])
-                primary["subagents"] = max(
-                    primary["subagents"], secondary["subagents"])
-                # Merge activity buckets
-                bucket_map: dict[int, int] = {b: c for b, c in primary["activity"]}
-                for b, c in secondary["activity"]:
-                    bucket_map[b] = bucket_map.get(b, 0) + c
-                primary["activity"] = sorted(bucket_map.items())
+                _merge_session_stats(primary, secondary)
                 used.add(secondary["session_id"])
             merged.append(primary)
             used.add(primary["session_id"])
 
-        return merged
+        # Pass B: merge by (tool, pid)
+        pid_groups: dict[tuple, list[dict]] = {}
+        for s in merged:
+            pid = _session_pid(s)
+            if pid is not None:
+                key = (s["tool"], pid)
+                pid_groups.setdefault(key, []).append(s)
 
-    # ── Telemetry (per-tool OTel / stats-cache) ─────────────────
+        deduped: list[dict] = []
+        consumed: set[str] = set()
+        for s in merged:
+            if s["session_id"] in consumed:
+                continue
+            pid = _session_pid(s)
+            if pid is not None:
+                group = pid_groups.get((s["tool"], pid), [])
+                if len(group) > 1:
+                    group.sort(key=lambda x: x["started_at"])
+                    canonical = group[0]
+                    if canonical["session_id"] in consumed:
+                        continue
+                    for other in group[1:]:
+                        if other["session_id"] in consumed:
+                            continue
+                        if other["ended_at"]:
+                            if canonical["ended_at"] is None or other["ended_at"] > canonical["ended_at"]:
+                                canonical["ended_at"] = other["ended_at"]
+                        else:
+                            canonical["ended_at"] = None
+                        _merge_session_stats(canonical, other)
+                        consumed.add(other["session_id"])
+                    if canonical["ended_at"]:
+                        canonical["duration_s"] = round(
+                            canonical["ended_at"] - canonical["started_at"], 1)
+                    else:
+                        canonical["duration_s"] = None
+                    deduped.append(canonical)
+                    consumed.add(canonical["session_id"])
+                    continue
+            deduped.append(s)
+            consumed.add(s["session_id"])
 
-    def append_telemetry(self, row: TelemetryRow) -> None:
-        """Buffer a per-tool telemetry row."""
+        return deduped
+
+    # ── Sessions (new) ─────────────────────────────────────────────
+
+    def upsert_session(self, row: SessionRow) -> None:
+        """Insert a session (INSERT OR IGNORE on session_id PK)."""
+        conn = self._conn()
+        conn.execute(
+            "INSERT OR IGNORE INTO sessions"
+            "(session_id, tool, pid, project_path, model, git_branch, git_commit,"
+            " started_at, ended_at, source, input_tokens, output_tokens,"
+            " cache_read_tokens, cache_creation_tokens, cost_usd,"
+            " request_count, tool_call_count, files_modified)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (row.session_id, row.tool, row.pid, row.project_path, row.model,
+             row.git_branch, row.git_commit, row.started_at, row.ended_at,
+             row.source, row.input_tokens, row.output_tokens,
+             row.cache_read_tokens, row.cache_creation_tokens,
+             round(row.cost_usd, 6), row.request_count,
+             row.tool_call_count, row.files_modified),
+        )
+        conn.commit()
+
+    def link_session_process(
+        self, session_id: str, pid: int,
+        tool: str = "", role: str = "lead",
+    ) -> None:
+        """Record that a PID belongs to a session (INSERT OR IGNORE)."""
+        if not session_id or not pid:
+            return
+        conn = self._conn()
+        conn.execute(
+            "INSERT OR IGNORE INTO session_processes"
+            "(session_id, pid, tool, joined_at, role)"
+            " VALUES(?,?,?,?,?)",
+            (session_id, pid, tool, time.time(), role),
+        )
+        conn.commit()
+
+    def find_session_ids_by_pid(self, pid: int) -> list[str]:
+        """Return all session_ids linked to the given PID."""
+        if not pid:
+            return []
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT session_id FROM session_processes WHERE pid = ?",
+            (pid,),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def batch_link_sessions(
+        self, entries: list[tuple[str, str, int, float, str]],
+    ) -> None:
+        """Batch upsert sessions and link PIDs in a single transaction.
+
+        Each entry is (session_id, tool, pid, started_at, source).
+        Replaces per-row upsert_session + link_session_process calls that
+        each did a synchronous commit — this does one commit for the batch.
+        """
+        if not entries:
+            return
+        conn = self._conn()
+        now = time.time()
+        for session_id, tool, pid, started_at, source in entries:
+            conn.execute(
+                "INSERT OR IGNORE INTO sessions"
+                "(session_id, tool, pid, project_path, model, git_branch,"
+                " git_commit, started_at, ended_at, source, input_tokens,"
+                " output_tokens, cache_read_tokens, cache_creation_tokens,"
+                " cost_usd, request_count, tool_call_count, files_modified)"
+                " VALUES(?,?,?,'','','','',?,NULL,?,0,0,0,0,0,0,0,0)",
+                (session_id, tool, pid, started_at, source),
+            )
+            if session_id and pid:
+                conn.execute(
+                    "INSERT OR IGNORE INTO session_processes"
+                    "(session_id, pid, tool, joined_at, role)"
+                    " VALUES(?,?,?,?,?)",
+                    (session_id, pid, tool, now, "lead"),
+                )
+        conn.commit()
+
+    def update_session_end(self, session_id: str, ended_at: float, **kwargs) -> None:
+        """Update session end time and optional fields."""
+        conn = self._conn()
+        sets = ["ended_at = ?"]
+        params: list[Any] = [ended_at]
+        for k in ("input_tokens", "output_tokens", "cache_read_tokens",
+                   "cache_creation_tokens", "cost_usd", "request_count",
+                   "tool_call_count", "files_modified"):
+            if k in kwargs:
+                sets.append(f"{k} = ?")
+                params.append(kwargs[k])
+        params.append(session_id)
+        conn.execute(
+            f"UPDATE sessions SET {', '.join(sets)} WHERE session_id = ?",
+            params,
+        )
+        conn.commit()
+
+    def update_tool_invocation_duration(
+        self, dedup_key: str, duration_ms: float,
+        is_error: int = 0, result_summary: str = "",
+    ) -> bool:
+        """Update an existing tool invocation with duration and result.
+
+        Returns True if a row was updated, False if not found.
+        Used by PostToolUse hooks to complete the record started by PreToolUse.
+        """
+        conn = self._conn()
+        sets = ["duration_ms = ?"]
+        params: list[Any] = [round(duration_ms, 1)]
+        if is_error:
+            sets.append("is_error = ?")
+            params.append(is_error)
+        if result_summary:
+            sets.append("result_summary = ?")
+            params.append(result_summary[:500])
+        params.append(dedup_key)
+        cur = conn.execute(
+            f"UPDATE tool_invocations SET {', '.join(sets)} WHERE dedup_key = ?",
+            params,
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+    def query_sessions(
+        self,
+        since: float | None = None,
+        until: float | None = None,
+        tool: str | None = None,
+        active: bool | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        """Query sessions with optional filters."""
+        conn = self._conn()
+        conditions = [
+            ("started_at >= ?", since),
+            ("started_at <= ?", until),
+            ("tool = ?", tool or None),
+        ]
+        if active is True:
+            conditions.append(("ended_at IS NULL", ""))
+        elif active is False:
+            conditions.append(("ended_at IS NOT NULL", ""))
+
+        # Special handling: active uses IS NULL, not = ?
+        where_parts, params = [], []
+        for expr, val in conditions:
+            if val is not None and val != "":
+                where_parts.append(expr)
+                params.append(val)
+            elif "IS NULL" in expr or "IS NOT NULL" in expr:
+                where_parts.append(expr)
+        where = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+        params.append(limit)
+        return _rows_to_dicts(conn.execute(
+            f"SELECT * FROM sessions{where} ORDER BY started_at DESC LIMIT ?",
+            params,
+        ))
+
+    def query_session_flow(self, session_id: str) -> dict:
+        """Return requests and tool_invocations for a session."""
+        conn = self._conn()
+        requests = _rows_to_dicts(conn.execute(
+            "SELECT * FROM requests WHERE session_id = ? ORDER BY ts",
+            (session_id,),
+        ))
+        invocations = _rows_to_dicts(conn.execute(
+            "SELECT * FROM tool_invocations WHERE session_id = ? ORDER BY ts",
+            (session_id,),
+        ))
+        return {"requests": requests, "tool_invocations": invocations}
+
+    # ── Requests (new) ─────────────────────────────────────────────
+
+    def query_requests(
+        self,
+        session_id: str | None = None,
+        since: float | None = None,
+        until: float | None = None,
+        tool: str | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        """Query LLM requests with optional filters."""
+        conn = self._conn()
+        where, params = _where([
+            ("session_id = ?", session_id or None),
+            ("ts >= ?", since), ("ts <= ?", until),
+            ("tool = ?", tool or None),
+        ])
+        params.append(limit)
+        return _rows_to_dicts(conn.execute(
+            f"SELECT * FROM requests{where} ORDER BY ts DESC LIMIT ?",
+            params,
+        ))
+
+    # ── Tool invocations (new) ─────────────────────────────────────
+
+    def query_tool_invocations(
+        self,
+        session_id: str | None = None,
+        since: float | None = None,
+        until: float | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        """Query tool invocations with optional filters."""
+        conn = self._conn()
+        where, params = _where([
+            ("session_id = ?", session_id or None),
+            ("ts >= ?", since), ("ts <= ?", until),
+        ])
+        params.append(limit)
+        return _rows_to_dicts(conn.execute(
+            f"SELECT * FROM tool_invocations{where} ORDER BY ts DESC LIMIT ?",
+            params,
+        ))
+
+    def query_requests_analytics(
+        self,
+        since: float | None = None,
+        until: float | None = None,
+        limit: int = 2000,
+    ) -> list[dict]:
+        """Return lightweight request rows for analytics (no large text fields)."""
+        conn = self._conn()
+        where, params = _where([("ts >= ?", since), ("ts <= ?", until)])
+        params.append(limit)
+        return _rows_to_dicts(conn.execute(
+            "SELECT ts, session_id, agent_id, model, input_tokens, output_tokens,"
+            " cache_read_tokens, cost_usd, duration_ms, finish_reason, is_error"
+            f" FROM requests{where} ORDER BY ts DESC LIMIT ?",
+            params,
+        ))
+
+    def query_tool_invocations_agg(
+        self,
+        since: float | None = None,
+        until: float | None = None,
+    ) -> list[dict]:
+        """Aggregate tool invocations by tool_name in SQL.
+
+        Returns [{tool_name, count, total_ms, error_count}] — no per-row transfer.
+        """
+        conn = self._conn()
+        where, params = _where([("ts >= ?", since), ("ts <= ?", until)])
+        return _rows_to_dicts(conn.execute(
+            "SELECT tool_name, COUNT(*) as count,"
+            " SUM(duration_ms) as total_ms,"
+            " SUM(CASE WHEN is_error THEN 1 ELSE 0 END) as error_count"
+            f" FROM tool_invocations{where}"
+            " GROUP BY tool_name ORDER BY count DESC",
+            params,
+        ))
+
+    def query_tool_analytics_from_events(
+        self,
+        since: float | None = None,
+        until: float | None = None,
+    ) -> list[dict]:
+        """Compute tool usage analytics by matching Pre/PostToolUse events.
+
+        Joins events by tool_use_id to compute real durations.  This is more
+        accurate than tool_invocations (which had a dedup bug) and captures
+        all invocations, not just the ones that survived dedup.
+
+        Returns [{tool_name, count, avg_ms, total_ms, error_count, durations}].
+        """
+        conn = self._conn()
+        # Build WHERE clause for the pre-event timestamp range
+        clauses = []
+        params: list = []
+        if since is not None:
+            clauses.append("pre.ts >= ?")
+            params.append(since)
+        if until is not None:
+            clauses.append("pre.ts <= ?")
+            params.append(until)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+
+        rows = _rows_to_dicts(conn.execute(
+            "SELECT"
+            " json_extract(pre.detail, '$.tool_name') as tool_name,"
+            " COUNT(*) as count,"
+            " ROUND(SUM((post.ts - pre.ts) * 1000), 1) as total_ms,"
+            " ROUND(AVG((post.ts - pre.ts) * 1000), 1) as avg_ms,"
+            " SUM(CASE WHEN json_extract(post.detail, '$.is_error') THEN 1 ELSE 0 END) as error_count"
+            " FROM events pre"
+            " JOIN events post"
+            "  ON json_extract(pre.detail, '$.tool_use_id') = json_extract(post.detail, '$.tool_use_id')"
+            "  AND pre.kind = 'hook:PreToolUse'"
+            "  AND post.kind = 'hook:PostToolUse'"
+            f"{where}"
+            " GROUP BY tool_name ORDER BY count DESC",
+            params,
+        ))
+        return rows
+
+    def query_tool_breakdown_from_events(
+        self,
+        since: float | None = None,
+        until: float | None = None,
+    ) -> dict[str, list[dict]]:
+        """Per tool_name, return count breakdown by CLI tool (claude-code, codex, …).
+
+        Returns {tool_name: [{cli_tool, count}, …], …}.
+        """
+        conn = self._conn()
+        clauses: list[str] = []
+        params: list = []
+        if since is not None:
+            clauses.append("pre.ts >= ?")
+            params.append(since)
+        if until is not None:
+            clauses.append("pre.ts <= ?")
+            params.append(until)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = conn.execute(
+            "SELECT"
+            " json_extract(pre.detail, '$.tool_name') as tool_name,"
+            " pre.tool as cli_tool,"
+            " COUNT(*) as count"
+            " FROM events pre"
+            " JOIN events post"
+            "  ON json_extract(pre.detail, '$.tool_use_id') = json_extract(post.detail, '$.tool_use_id')"
+            "  AND pre.kind = 'hook:PreToolUse'"
+            "  AND post.kind = 'hook:PostToolUse'"
+            f"{where}"
+            " GROUP BY tool_name, cli_tool ORDER BY tool_name, count DESC",
+            params,
+        ).fetchall()
+        result: dict[str, list[dict]] = {}
+        for r in rows:
+            tn = r[0] or "(unknown)"
+            result.setdefault(tn, []).append({"cli_tool": r[1], "count": r[2]})
+        return result
+
+    def query_tool_durations_from_events(
+        self,
+        tool_name: str,
+        since: float | None = None,
+        until: float | None = None,
+        limit: int = 500,
+    ) -> list[float]:
+        """Return raw duration_ms values for a tool from Pre/Post event matching."""
+        conn = self._conn()
+        clauses = ["json_extract(pre.detail, '$.tool_name') = ?"]
+        params: list = [tool_name]
+        if since is not None:
+            clauses.append("pre.ts >= ?")
+            params.append(since)
+        if until is not None:
+            clauses.append("pre.ts <= ?")
+            params.append(until)
+        where = " WHERE " + " AND ".join(clauses)
+        params.append(limit)
+        return [
+            r[0] for r in conn.execute(
+                "SELECT ROUND((post.ts - pre.ts) * 1000, 1) as duration_ms"
+                " FROM events pre"
+                " JOIN events post"
+                "  ON json_extract(pre.detail, '$.tool_use_id') = json_extract(post.detail, '$.tool_use_id')"
+                "  AND pre.kind = 'hook:PreToolUse'"
+                "  AND post.kind = 'hook:PostToolUse'"
+                f"{where}"
+                " ORDER BY pre.ts DESC LIMIT ?",
+                params,
+            ).fetchall()
+        ]
+
+    def query_tool_invocations_durations(
+        self,
+        tool_name: str,
+        since: float | None = None,
+        until: float | None = None,
+        limit: int = 500,
+    ) -> list[float]:
+        """Return raw duration_ms values for a single tool (for percentile calc)."""
+        conn = self._conn()
+        where, params = _where([
+            ("tool_name = ?", tool_name),
+            ("ts >= ?", since), ("ts <= ?", until),
+        ])
+        params.append(limit)
+        return [row[0] for row in conn.execute(
+            f"SELECT duration_ms FROM tool_invocations{where} ORDER BY ts DESC LIMIT ?",
+            params,
+        )]
+
+    # ── Processes (new) ────────────────────────────────────────────
+
+    def upsert_process(self, row: ProcessRow) -> None:
+        """Insert a process (INSERT OR IGNORE on UNIQUE(pid, started_at))."""
+        conn = self._conn()
+        conn.execute(
+            "INSERT OR IGNORE INTO processes"
+            "(pid, tool, project_path, cwd, cmdline, ppid,"
+            " started_at, ended_at, exit_code, source, meta)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (row.pid, row.tool, row.project_path, row.cwd, row.cmdline,
+             row.ppid, row.started_at, row.ended_at, row.exit_code,
+             row.source, json.dumps(row.meta)),
+        )
+        conn.commit()
+
+    def update_process_exit(
+        self, pid: int, started_at: float,
+        ended_at: float, exit_code: int | None = None,
+    ) -> None:
+        """Update process exit info."""
+        conn = self._conn()
+        conn.execute(
+            "UPDATE processes SET ended_at = ?, exit_code = ?"
+            " WHERE pid = ? AND started_at = ?",
+            (ended_at, exit_code, pid, started_at),
+        )
+        conn.commit()
+
+    def query_processes(
+        self,
+        tool: str | None = None,
+        active: bool | None = None,
+        since: float | None = None,
+    ) -> list[dict]:
+        """Query processes with optional filters."""
+        conn = self._conn()
+        conditions = [
+            ("tool = ?", tool or None),
+            ("started_at >= ?", since),
+        ]
+        where_parts, params = [], []
+        for expr, val in conditions:
+            if val is not None:
+                where_parts.append(expr)
+                params.append(val)
+        if active is True:
+            where_parts.append("ended_at IS NULL")
+        elif active is False:
+            where_parts.append("ended_at IS NOT NULL")
+        where = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+        return _rows_to_dicts(conn.execute(
+            f"SELECT * FROM processes{where} ORDER BY started_at DESC",
+            params,
+        ))
+
+    # ── Agents (new) ───────────────────────────────────────────────
+
+    def upsert_agent(self, row: AgentRow) -> None:
+        """Insert or replace an agent."""
+        conn = self._conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO agents"
+            "(agent_id, session_id, tool, task, model, is_sidechain,"
+            " started_at, ended_at, completed, input_tokens, output_tokens,"
+            " cache_read_tokens, cache_creation_tokens, cost_usd)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (row.agent_id, row.session_id, row.tool, row.task, row.model,
+             row.is_sidechain, row.started_at, row.ended_at, row.completed,
+             row.input_tokens, row.output_tokens, row.cache_read_tokens,
+             row.cache_creation_tokens, round(row.cost_usd, 6)),
+        )
+        conn.commit()
+
+    def query_agents(self, session_id: str) -> list[dict]:
+        """Query agents for a session."""
+        conn = self._conn()
+        return _rows_to_dicts(conn.execute(
+            "SELECT * FROM agents WHERE session_id = ? ORDER BY started_at",
+            (session_id,),
+        ))
+
+    # ── Config/env (new) ──────────────────────────────────────────
+
+    def upsert_tool_config(
+        self, ts: float, tool: str, project_path: str,
+        key: str, value: str, source: str = "",
+    ) -> bool:
+        """Upsert tool config. Returns True if value changed."""
+        conn = self._conn()
+        # Check last value
+        cur = conn.execute(
+            "SELECT value FROM tool_config"
+            " WHERE tool = ? AND project_path = ? AND key = ?"
+            " ORDER BY ts DESC LIMIT 1",
+            (tool, project_path, key),
+        )
+        row = cur.fetchone()
+        if row and row[0] == value:
+            return False  # unchanged
+        conn.execute(
+            "INSERT OR REPLACE INTO tool_config"
+            "(ts, tool, project_path, key, value, source)"
+            " VALUES(?,?,?,?,?,?)",
+            (ts, tool, project_path, key, value, source),
+        )
+        conn.commit()
+        return True
+
+    def upsert_env_var(
+        self, ts: float, project_path: str, tool: str,
+        key: str, value: str, is_secret: bool = False,
+        source: str = "",
+    ) -> bool:
+        """Upsert environment variable. Returns True if value changed."""
+        conn = self._conn()
+        cur = conn.execute(
+            "SELECT value FROM environment_vars"
+            " WHERE project_path = ? AND tool = ? AND key = ?"
+            " ORDER BY ts DESC LIMIT 1",
+            (project_path, tool, key),
+        )
+        row = cur.fetchone()
+        if row and row[0] == value:
+            return False
+        conn.execute(
+            "INSERT OR REPLACE INTO environment_vars"
+            "(ts, project_path, tool, key, value, is_secret, source)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (ts, project_path, tool, key, value, int(is_secret), source),
+        )
+        conn.commit()
+        return True
+
+    # ── Tool stats (was telemetry) ─────────────────────────────────
+
+    def append_telemetry(self, row: ToolStatsRow | TelemetryRow) -> None:
+        """Write a tool stats row (was append_telemetry)."""
         conn = self._conn()
         try:
-            conn.execute(
-                "INSERT OR REPLACE INTO tool_telemetry"
-                "(ts, tool, source, confidence, input_tokens, output_tokens,"
-                " cache_read_tokens, cache_creation_tokens,"
-                " total_sessions, total_messages, cost_usd, model, by_model_json)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (row.ts, row.tool, row.source, round(row.confidence, 2),
-                 row.input_tokens, row.output_tokens,
-                 row.cache_read_tokens, row.cache_creation_tokens,
-                 row.total_sessions, row.total_messages,
-                 round(row.cost_usd, 4), row.model,
-                 json.dumps(row.by_model)),
-            )
+            conn.execute(_TOOL_STATS_INSERT, _tool_stats_tuple(row))
             conn.commit()
         except sqlite3.Error as exc:
-            log.warning("Telemetry write error: %s", exc)
+            log.warning("Tool stats write error: %s", exc)
 
-    def append_telemetry_batch(self, rows: list[TelemetryRow]) -> None:
-        """Batch insert telemetry rows."""
+    def append_telemetry_batch(self, rows: list[ToolStatsRow | TelemetryRow]) -> None:
+        """Batch insert tool stats rows."""
         if not rows:
             return
         conn = self._conn()
         try:
-            conn.executemany(
-                "INSERT OR REPLACE INTO tool_telemetry"
-                "(ts, tool, source, confidence, input_tokens, output_tokens,"
-                " cache_read_tokens, cache_creation_tokens,"
-                " total_sessions, total_messages, cost_usd, model, by_model_json)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                [
-                    (r.ts, r.tool, r.source, round(r.confidence, 2),
-                     r.input_tokens, r.output_tokens,
-                     r.cache_read_tokens, r.cache_creation_tokens,
-                     r.total_sessions, r.total_messages,
-                     round(r.cost_usd, 4), r.model,
-                     json.dumps(r.by_model))
-                    for r in rows
-                ],
-            )
+            conn.executemany(_TOOL_STATS_INSERT, [_tool_stats_tuple(r) for r in rows])
             conn.commit()
         except sqlite3.Error as exc:
-            log.warning("Telemetry batch write error: %s", exc)
+            log.warning("Tool stats batch write error: %s", exc)
 
     def query_telemetry(
         self,
         tool: str | None = None,
         since: float | None = None,
         until: float | None = None,
-    ) -> list[TelemetryRow]:
-        """Return telemetry rows, optionally filtered by tool and time range."""
+    ) -> list[ToolStatsRow]:
+        """Return tool stats rows, optionally filtered."""
         conn = self._conn()
-        clauses: list[str] = []
-        params: list[Any] = []
-        if tool:
-            clauses.append("tool = ?")
-            params.append(tool)
-        if since is not None:
-            clauses.append("ts >= ?")
-            params.append(since)
-        if until is not None:
-            clauses.append("ts <= ?")
-            params.append(until)
-        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        cur = conn.execute(
-            "SELECT ts, tool, source, confidence, input_tokens, output_tokens,"
-            " cache_read_tokens, cache_creation_tokens,"
-            " total_sessions, total_messages, cost_usd, model, by_model_json"
-            f" FROM tool_telemetry{where} ORDER BY ts DESC",
-            params,
-        )
-        return [
-            TelemetryRow(
-                ts=r[0], tool=r[1], source=r[2], confidence=r[3],
-                input_tokens=r[4], output_tokens=r[5],
-                cache_read_tokens=r[6], cache_creation_tokens=r[7],
-                total_sessions=r[8], total_messages=r[9],
-                cost_usd=r[10], model=r[11],
-                by_model=json.loads(r[12]) if r[12] else {},
-            )
-            for r in cur.fetchall()
-        ]
+        where, params = _where([("tool = ?", tool or None), ("ts >= ?", since), ("ts <= ?", until)])
+        cur = conn.execute(f"{_TOOL_STATS_SELECT}{where} ORDER BY ts DESC", params)
+        return [_tool_stats_row(r) for r in cur.fetchall()]
 
-    def latest_telemetry(self) -> dict[str, TelemetryRow]:
-        """Return the most recent telemetry row per tool."""
+    def latest_telemetry(self) -> dict[str, ToolStatsRow]:
+        """Return the most recent tool stats row per tool."""
         conn = self._conn()
         cur = conn.execute(
-            "SELECT ts, tool, source, confidence, input_tokens, output_tokens,"
-            " cache_read_tokens, cache_creation_tokens,"
-            " total_sessions, total_messages, cost_usd, model, by_model_json"
-            " FROM tool_telemetry"
-            " WHERE ts = (SELECT MAX(t2.ts) FROM tool_telemetry t2 WHERE t2.tool = tool_telemetry.tool)"
+            f"{_TOOL_STATS_SELECT}"
+            " WHERE ts = (SELECT MAX(t2.ts) FROM tool_stats t2 WHERE t2.tool = tool_stats.tool)"
             " ORDER BY tool",
         )
-        result: dict[str, TelemetryRow] = {}
-        for r in cur.fetchall():
-            result[r[1]] = TelemetryRow(
-                ts=r[0], tool=r[1], source=r[2], confidence=r[3],
-                input_tokens=r[4], output_tokens=r[5],
-                cache_read_tokens=r[6], cache_creation_tokens=r[7],
-                total_sessions=r[8], total_messages=r[9],
-                cost_usd=r[10], model=r[11],
-                by_model=json.loads(r[12]) if r[12] else {},
-            )
-        return result
+        return {r[1]: _tool_stats_row(r) for r in cur.fetchall()}
 
     # ── KV file store ────────────────────────────────────────────
 
@@ -1553,16 +2632,12 @@ class HistoryDB:
         """Insert or lazily update a tracked file.
 
         Returns True if content actually changed (new or different hash).
-        Content is only re-read when *content* is explicitly provided.
-        If content is None, only metadata (tool, category, scope, mtime,
-        meta) is updated — content stays as-is.
         """
         conn = self._conn()
         now = time.time()
 
-        # Check existing entry
         cur = conn.execute(
-            "SELECT content_hash, first_seen FROM file_store WHERE path = ?",
+            "SELECT content_hash, first_seen FROM files WHERE path = ?",
             (path,),
         )
         row = cur.fetchone()
@@ -1579,19 +2654,23 @@ class HistoryDB:
 
             last_changed = now if changed else 0
             if not changed and row:
-                # Keep existing last_changed
                 cur2 = conn.execute(
-                    "SELECT last_changed FROM file_store WHERE path = ?", (path,))
+                    "SELECT last_changed FROM files WHERE path = ?", (path,))
                 r2 = cur2.fetchone()
                 last_changed = r2[0] if r2 else now
 
+            # Store blob for large files
+            blob_hash = ""
+            if new_size > LARGE_FILE_THRESHOLD:
+                blob_hash = self._store_blob(conn, content)
+
             conn.execute(
-                "INSERT OR REPLACE INTO file_store"
-                "(path, tool, category, scope, content, content_hash,"
+                "INSERT OR REPLACE INTO files"
+                "(path, tool, category, scope, content, blob_hash, content_hash,"
                 " size_bytes, tokens, lines, mtime, first_seen, last_read,"
                 " last_changed, meta)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (path, tool, category, scope, content, new_hash,
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (path, tool, category, scope, content, blob_hash, new_hash,
                  new_size, new_tokens, new_lines,
                  mtime or 0, first_seen, now,
                  last_changed if changed else (row[0] if row else now) and last_changed,
@@ -1600,24 +2679,30 @@ class HistoryDB:
 
             # Save history snapshot on change
             if changed:
+                hist_content = content
+                hist_blob_hash = ""
+                if new_size > LARGE_FILE_THRESHOLD:
+                    hist_blob_hash = blob_hash
+                    hist_content = ""  # content stored in blob
                 conn.execute(
                     "INSERT OR REPLACE INTO file_history"
-                    "(path, ts, content, content_hash, size_bytes, tokens, lines)"
-                    " VALUES(?,?,?,?,?,?,?)",
-                    (path, now, content, new_hash, new_size, new_tokens, new_lines),
+                    "(path, ts, content, blob_hash, content_hash,"
+                    " size_bytes, tokens, lines)"
+                    " VALUES(?,?,?,?,?,?,?,?)",
+                    (path, now, hist_content, hist_blob_hash, new_hash,
+                     new_size, new_tokens, new_lines),
                 )
         else:
-            # Metadata-only update (no content re-read)
             meta_json = json.dumps(meta or {})
             if row:
                 conn.execute(
-                    "UPDATE file_store SET tool=?, category=?, scope=?,"
+                    "UPDATE files SET tool=?, category=?, scope=?,"
                     " mtime=?, meta=? WHERE path=?",
                     (tool, category, scope, mtime or 0, meta_json, path),
                 )
             else:
                 conn.execute(
-                    "INSERT INTO file_store"
+                    "INSERT INTO files"
                     "(path, tool, category, scope, mtime, first_seen, meta)"
                     " VALUES(?,?,?,?,?,?,?)",
                     (path, tool, category, scope, mtime or 0, now, meta_json),
@@ -1630,23 +2715,14 @@ class HistoryDB:
         """Get a tracked file by path, or None if not tracked."""
         conn = self._conn()
         cur = conn.execute(
-            "SELECT path, tool, category, scope, content, content_hash,"
-            " size_bytes, tokens, lines, mtime, first_seen, last_read,"
-            " last_changed, meta"
-            " FROM file_store WHERE path = ?",
+            "SELECT path, tool, category, scope, content, blob_hash,"
+            " content_hash, size_bytes, tokens, lines, mtime, first_seen,"
+            " last_read, last_changed, meta"
+            " FROM files WHERE path = ?",
             (path,),
         )
         row = cur.fetchone()
-        if not row:
-            return None
-        return FileEntry(
-            path=row[0], tool=row[1], category=row[2], scope=row[3],
-            content=row[4] or "", content_hash=row[5] or "",
-            size_bytes=row[6], tokens=row[7], lines=row[8],
-            mtime=row[9], first_seen=row[10], last_read=row[11],
-            last_changed=row[12],
-            meta=json.loads(row[13]) if row[13] else {},
-        )
+        return _file_entry_from_row(row) if row else None
 
     def list_files(
         self,
@@ -1656,40 +2732,21 @@ class HistoryDB:
     ) -> list[FileEntry]:
         """List tracked files, optionally filtered.
 
-        Does NOT return content (for efficiency) — use get_file() for that.
+        Does NOT return content (for efficiency) -- use get_file() for that.
         """
         conn = self._conn()
-        clauses: list[str] = []
-        params: list[Any] = []
-        if tool:
-            clauses.append("tool = ?")
-            params.append(tool)
-        if category:
-            clauses.append("category = ?")
-            params.append(category)
-        if changed_since is not None:
-            clauses.append("last_changed >= ?")
-            params.append(changed_since)
-        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        where, params = _where([
+            ("tool = ?", tool or None), ("category = ?", category or None),
+            ("last_changed >= ?", changed_since),
+        ])
         cur = conn.execute(
-            "SELECT path, tool, category, scope, '', content_hash,"
-            " size_bytes, tokens, lines, mtime, first_seen, last_read,"
-            " last_changed, meta"
-            f" FROM file_store{where} ORDER BY tool, category, path",
+            "SELECT path, tool, category, scope, '', '',"
+            " content_hash, size_bytes, tokens, lines, mtime, first_seen,"
+            " last_read, last_changed, meta"
+            f" FROM files{where} ORDER BY tool, category, path",
             params,
         )
-        return [
-            FileEntry(
-                path=r[0], tool=r[1], category=r[2], scope=r[3],
-                content="",  # intentionally empty for list
-                content_hash=r[5] or "",
-                size_bytes=r[6], tokens=r[7], lines=r[8],
-                mtime=r[9], first_seen=r[10], last_read=r[11],
-                last_changed=r[12],
-                meta=json.loads(r[13]) if r[13] else {},
-            )
-            for r in cur.fetchall()
-        ]
+        return [_file_entry_from_row(r) for r in cur.fetchall()]
 
     def file_history(
         self,
@@ -1698,32 +2755,64 @@ class HistoryDB:
     ) -> list[dict[str, Any]]:
         """Return content change history for a file (most recent first)."""
         conn = self._conn()
-        cur = conn.execute(
+        return _rows_to_dicts(conn.execute(
             "SELECT ts, content_hash, size_bytes, tokens, lines"
             " FROM file_history WHERE path = ? ORDER BY ts DESC LIMIT ?",
             (path, limit),
-        )
-        return [
-            {"ts": r[0], "content_hash": r[1], "size_bytes": r[2],
-             "tokens": r[3], "lines": r[4]}
-            for r in cur.fetchall()
-        ]
+        ))
+
+    def file_history_bulk(
+        self,
+        paths: list[str],
+        since: float | None = None,
+        until: float | None = None,
+        limit_per_path: int = 100,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Return file_history for multiple paths, keyed by path.
+
+        Single SQL query with ``path IN (...)`` to avoid N+1.
+        """
+        if not paths:
+            return {}
+        conn = self._conn()
+        ph = _placeholders(paths)
+        params: list[Any] = list(paths)
+        where = f" WHERE path IN ({ph})"
+        if since is not None:
+            where += " AND ts >= ?"
+            params.append(since)
+        if until is not None:
+            where += " AND ts <= ?"
+            params.append(until)
+        rows = _rows_to_dicts(conn.execute(
+            f"SELECT path, ts, content_hash, size_bytes, tokens, lines"
+            f" FROM file_history{where} ORDER BY path, ts",
+            params,
+        ))
+        result: dict[str, list[dict[str, Any]]] = {p: [] for p in paths}
+        for r in rows:
+            p = r.pop("path")
+            if p in result and len(result[p]) < limit_per_path:
+                result[p].append(r)
+        return result
 
     def file_content_at(self, path: str, ts: float) -> str | None:
         """Return file content at a specific historical timestamp."""
         conn = self._conn()
         cur = conn.execute(
-            "SELECT content FROM file_history"
+            "SELECT content, blob_hash FROM file_history"
             " WHERE path = ? AND ts <= ? ORDER BY ts DESC LIMIT 1",
             (path, ts),
         )
         row = cur.fetchone()
-        return row[0] if row else None
+        if not row:
+            return None
+        return self._resolve_content(conn, row[0] or "", row[1] or "")
 
     def remove_file(self, path: str) -> bool:
         """Remove a file from the store. Returns True if it existed."""
         conn = self._conn()
-        cur = conn.execute("DELETE FROM file_store WHERE path = ?", (path,))
+        cur = conn.execute("DELETE FROM files WHERE path = ?", (path,))
         conn.commit()
         return cur.rowcount > 0
 
@@ -1734,11 +2823,7 @@ class HistoryDB:
     ) -> dict[str, int]:
         """Bulk sync from discovery results.
 
-        *discovered* is a list of dicts with keys: path, tool, category,
-        scope, mtime (and optionally content if read_content is True).
-
         Lazy: only reads file content when mtime differs from stored mtime.
-
         Returns {"added": N, "updated": N, "unchanged": N, "removed": N}.
         """
         conn = self._conn()
@@ -1754,15 +2839,13 @@ class HistoryDB:
             scope = item.get("scope", "")
             mtime = item.get("mtime", 0)
 
-            # Check if we need to re-read content
             cur = conn.execute(
-                "SELECT mtime, content_hash FROM file_store WHERE path = ?",
+                "SELECT mtime, content_hash FROM files WHERE path = ?",
                 (path,),
             )
             existing = cur.fetchone()
 
             if existing and abs(existing[0] - mtime) < 0.01:
-                # mtime unchanged — skip content read (lazy)
                 stats["unchanged"] += 1
                 continue
 
@@ -1783,7 +2866,6 @@ class HistoryDB:
                 else:
                     stats["added"] += 1
             else:
-                # Metadata-only update
                 self.upsert_file(
                     path=path, tool=tool, category=category,
                     scope=scope, mtime=mtime,
@@ -1794,7 +2876,7 @@ class HistoryDB:
                     stats["added"] += 1
 
         # Remove files no longer in discovery
-        cur = conn.execute("SELECT path FROM file_store")
+        cur = conn.execute("SELECT path FROM files")
         for (stored_path,) in cur.fetchall():
             if stored_path not in seen_paths:
                 self.remove_file(stored_path)
@@ -1802,7 +2884,7 @@ class HistoryDB:
 
         return stats
 
-    # ── Universal samples ──────────────────────────────────────────
+    # ── Universal metrics (was samples) ───────────────────────────
 
     def query_samples(
         self,
@@ -1812,42 +2894,31 @@ class HistoryDB:
         until: float | None = None,
         tag_filter: dict[str, str] | None = None,
         limit: int = 5000,
-    ) -> list[Sample]:
-        """Query samples with optional filters.
+    ) -> list[Metric]:
+        """Query metrics with optional filters.
 
-        *metric*: exact match on metric name.
-        *metric_prefix*: prefix match (e.g. 'cpu.core' matches 'cpu.core.0', 'cpu.core.1').
-        *tag_filter*: JSON tag key-value pairs that must match.
+        Backward compat: method name preserved, queries ``metrics`` table.
         """
         conn = self._conn()
-        clauses: list[str] = []
-        params: list[Any] = []
-        if metric:
-            clauses.append("metric = ?")
-            params.append(metric)
-        if metric_prefix:
-            clauses.append("metric LIKE ?")
-            params.append(metric_prefix + "%")
-        if since is not None:
-            clauses.append("ts >= ?")
-            params.append(since)
-        if until is not None:
-            clauses.append("ts <= ?")
-            params.append(until)
+        where, params = _where([
+            ("metric = ?", metric or None),
+            ("metric LIKE ?", (metric_prefix + "%") if metric_prefix else None),
+            ("ts >= ?", since), ("ts <= ?", until),
+        ])
         if tag_filter:
-            for k, v in tag_filter.items():
-                clauses.append(f"json_extract(tags, '$.{k}') = ?")
-                params.append(v)
-        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+            prefix = " AND " if where else " WHERE "
+            where += prefix + " AND ".join(
+                f"json_extract(tags, '$.{k}') = ?" for k in tag_filter
+            )
+            params.extend(tag_filter.values())
         params.append(limit)
         cur = conn.execute(
-            f"SELECT ts, metric, value, tags FROM samples{where}"
-            f" ORDER BY ts DESC LIMIT ?",
+            f"SELECT ts, metric, value, tags FROM metrics{where} ORDER BY ts DESC LIMIT ?",
             params,
         )
         return [
-            Sample(ts=r[0], metric=r[1], value=r[2],
-                   tags=json.loads(r[3]) if r[3] else {})
+            Metric(ts=r[0], metric=r[1], value=r[2],
+                   tags=_json(r[3]))
             for r in cur.fetchall()
         ]
 
@@ -1862,17 +2933,9 @@ class HistoryDB:
         Optimized for time-series charting.
         """
         conn = self._conn()
-        clauses = ["metric = ?"]
-        params: list[Any] = [metric]
-        if since is not None:
-            clauses.append("ts >= ?")
-            params.append(since)
-        if until is not None:
-            clauses.append("ts <= ?")
-            params.append(until)
-        where = " WHERE " + " AND ".join(clauses)
+        where, params = _where([("metric = ?", metric), ("ts >= ?", since), ("ts <= ?", until)])
         cur = conn.execute(
-            f"SELECT ts, value FROM samples{where} ORDER BY ts",
+            f"SELECT ts, value FROM metrics{where} ORDER BY ts",
             params,
         )
         rows = cur.fetchall()
@@ -1882,50 +2945,28 @@ class HistoryDB:
         return {"ts": list(ts_list), "value": list(val_list)}
 
     def list_metrics(self, prefix: str = "") -> list[dict[str, Any]]:
-        """List distinct metric names with latest value and count.
-
-        Useful for metric discovery/browsing.  Uses a two-step approach
-        to avoid the expensive correlated subquery that caused O(N*M)
-        performance on large sample tables.
-        """
+        """List distinct metric names with latest value and count."""
         conn = self._conn()
-        # Step 1: fast aggregate (uses idx_samples_metric)
-        if prefix:
-            agg = conn.execute(
-                "SELECT metric, COUNT(*) as cnt, MAX(ts) as latest"
-                " FROM samples WHERE metric LIKE ?"
-                " GROUP BY metric ORDER BY metric",
-                (prefix + "%",),
-            ).fetchall()
-        else:
-            agg = conn.execute(
-                "SELECT metric, COUNT(*) as cnt, MAX(ts) as latest"
-                " FROM samples GROUP BY metric ORDER BY metric",
-            ).fetchall()
+        where, params = _where([("metric LIKE ?", (prefix + "%") if prefix else None)])
+        agg = _rows_to_dicts(conn.execute(
+            f"SELECT metric, COUNT(*) as count, MAX(ts) as latest_ts"
+            f" FROM metrics{where} GROUP BY metric ORDER BY metric",
+            params,
+        ))
         if not agg:
             return []
-        # Step 2: batch-fetch latest values using (metric, ts) index
-        results = []
-        for name, cnt, latest_ts in agg:
+        for r in agg:
             row = conn.execute(
-                "SELECT value FROM samples WHERE metric = ? AND ts = ? LIMIT 1",
-                (name, latest_ts),
+                "SELECT value FROM metrics WHERE metric = ? AND ts = ? LIMIT 1",
+                (r["metric"], r["latest_ts"]),
             ).fetchone()
-            results.append({
-                "metric": name,
-                "count": cnt,
-                "latest_ts": latest_ts,
-                "last_value": row[0] if row else None,
-            })
-        return results
+            r["last_value"] = row[0] if row else None
+        return agg
 
     # ── UI layout queries ──────────────────────────────────────────
 
     def get_layout(self, slug: str = "main") -> dict[str, Any]:
-        """Return the full layout tree for a dashboard as a nested dict.
-
-        Returns ``{}`` if the dashboard *slug* does not exist.
-        """
+        """Return the full layout tree for a dashboard as a nested dict."""
         conn = self._conn()
 
         row = conn.execute(
@@ -1939,21 +2980,19 @@ class HistoryDB:
         # ── Tabs + group-by options ──
         tabs: list[dict] = []
         tab_id_to_key: dict[int, str] = {}
-        for t in conn.execute(
+        for t in _rows_to_dicts(conn.execute(
             "SELECT id, key, title, shortcut, sort_order, visible, icon"
-            " FROM ui_tab WHERE dashboard_id = ? ORDER BY sort_order",
-            (dash_id,),
-        ).fetchall():
-            tid, tkey, ttitle, tshortcut, tsort, tvis, ticon = t
-            tab_id_to_key[tid] = tkey
+            " FROM ui_tab WHERE dashboard_id = ? ORDER BY sort_order", (dash_id,),
+        )):
+            tab_id_to_key[t["id"]] = t["key"]
             gbo = conn.execute(
                 "SELECT key, label, sort_order, is_default"
                 " FROM ui_group_by_option WHERE tab_id = ? ORDER BY sort_order",
-                (tid,),
+                (t["id"],),
             ).fetchall()
             tabs.append({
-                "key": tkey, "title": ttitle, "shortcut": tshortcut,
-                "sort_order": tsort, "visible": bool(tvis), "icon": ticon,
+                "key": t["key"], "title": t["title"], "shortcut": t["shortcut"],
+                "sort_order": t["sort_order"], "visible": bool(t["visible"]), "icon": t["icon"],
                 "group_by_options": [
                     {"key": g[0], "label": g[1], "is_default": bool(g[3])}
                     for g in gbo
@@ -1963,56 +3002,51 @@ class HistoryDB:
         # ── Datasources ──
         ds_by_id: dict[int, str] = {}
         datasources: dict[str, dict] = {}
-        for d in conn.execute(
+        for d in _rows_to_dicts(conn.execute(
             "SELECT id, key, kind, endpoint, poll_ms, config FROM ui_datasource"
-        ).fetchall():
-            did, dkey, dkind, dendpoint, dpoll, dconfig = d
-            ds_by_id[did] = dkey
-            datasources[dkey] = {
-                "kind": dkind, "endpoint": dendpoint,
-                "poll_ms": dpoll, "config": json.loads(dconfig or "{}"),
+        )):
+            ds_by_id[d["id"]] = d["key"]
+            datasources[d["key"]] = {
+                "kind": d["kind"], "endpoint": d["endpoint"],
+                "poll_ms": d["poll_ms"], "config": json.loads(d["config"] or "{}"),
             }
 
         # ── Sections + widgets ──
         sections: list[dict] = []
-        for s in conn.execute(
+        for s in _rows_to_dicts(conn.execute(
             "SELECT id, key, title, sort_order, visible, collapsed, columns, tab_id"
-            " FROM ui_section WHERE dashboard_id = ? ORDER BY sort_order",
-            (dash_id,),
-        ).fetchall():
-            sid, skey, stitle, ssort, svis, scoll, scols, stab_id = s
+            " FROM ui_section WHERE dashboard_id = ? ORDER BY sort_order", (dash_id,),
+        )):
             widgets: list[dict] = []
-            for w in conn.execute(
+            for w in _rows_to_dicts(conn.execute(
                 "SELECT id, key, kind, title, sort_order, col_span, row_span,"
                 " visible, config"
-                " FROM ui_widget WHERE section_id = ? ORDER BY sort_order",
-                (sid,),
-            ).fetchall():
-                wid, wkey, wkind, wtitle, wsort, wcol, wrow, wvis, wconfig = w
+                " FROM ui_widget WHERE section_id = ? ORDER BY sort_order", (s["id"],),
+            )):
                 wd_rows = conn.execute(
                     "SELECT datasource_id, role"
                     " FROM ui_widget_datasource WHERE widget_id = ?",
-                    (wid,),
+                    (w["id"],),
                 ).fetchall()
                 widgets.append({
-                    "key": wkey, "kind": wkind, "title": wtitle,
-                    "sort_order": wsort, "col_span": wcol, "row_span": wrow,
-                    "visible": bool(wvis),
-                    "config": json.loads(wconfig or "{}"),
+                    "key": w["key"], "kind": w["kind"], "title": w["title"],
+                    "sort_order": w["sort_order"], "col_span": w["col_span"],
+                    "row_span": w["row_span"], "visible": bool(w["visible"]),
+                    "config": json.loads(w["config"] or "{}"),
                     "datasources": [
                         {"key": ds_by_id.get(wd[0], ""), "role": wd[1]}
                         for wd in wd_rows
                     ],
                 })
             sections.append({
-                "key": skey, "title": stitle, "sort_order": ssort,
-                "visible": bool(svis), "collapsed": bool(scoll),
-                "columns": scols,
-                "tab_key": tab_id_to_key.get(stab_id) if stab_id else None,
+                "key": s["key"], "title": s["title"], "sort_order": s["sort_order"],
+                "visible": bool(s["visible"]), "collapsed": bool(s["collapsed"]),
+                "columns": s["columns"],
+                "tab_key": tab_id_to_key.get(s["tab_id"]) if s["tab_id"] else None,
                 "widgets": widgets,
             })
 
-        # ── Preferences (system defaults: user_id IS NULL) ──
+        # ── Preferences ──
         prefs = {
             r[0]: r[1]
             for r in conn.execute(
@@ -2038,19 +3072,11 @@ class HistoryDB:
         pref_value: str,
         user_id: str | None = None,
     ) -> None:
-        """Upsert a single UI preference.
-
-        For *user_id=None* (system default) uses DELETE + INSERT because
-        SQLite does not enforce UNIQUE when a column is NULL.
-        """
+        """Upsert a single UI preference."""
         conn = self._conn()
-        row = conn.execute(
-            "SELECT id FROM ui_dashboard WHERE slug = ?",
-            (dashboard_slug,),
-        ).fetchone()
-        if not row:
+        dash_id = self._get_dashboard_id(conn, dashboard_slug)
+        if not dash_id:
             return
-        dash_id = row[0]
         if user_id is None:
             conn.execute(
                 "DELETE FROM ui_preference"
@@ -2077,33 +3103,22 @@ class HistoryDB:
         dashboard_slug: str,
         user_id: str | None = None,
     ) -> dict[str, str]:
-        """Get all preferences for a dashboard.
-
-        Returns system defaults (user_id IS NULL), then overlays
-        user-specific prefs when *user_id* is given.
-        """
+        """Get all preferences for a dashboard."""
         conn = self._conn()
-        row = conn.execute(
-            "SELECT id FROM ui_dashboard WHERE slug = ?",
-            (dashboard_slug,),
-        ).fetchone()
-        if not row:
+        dash_id = self._get_dashboard_id(conn, dashboard_slug)
+        if not dash_id:
             return {}
-        dash_id = row[0]
-        prefs: dict[str, str] = {}
-        for r in conn.execute(
+        prefs = dict(conn.execute(
             "SELECT pref_key, pref_value FROM ui_preference"
             " WHERE dashboard_id = ? AND user_id IS NULL",
             (dash_id,),
-        ).fetchall():
-            prefs[r[0]] = r[1]
+        ).fetchall())
         if user_id is not None:
-            for r in conn.execute(
+            prefs.update(conn.execute(
                 "SELECT pref_key, pref_value FROM ui_preference"
                 " WHERE dashboard_id = ? AND user_id = ?",
                 (dash_id, user_id),
-            ).fetchall():
-                prefs[r[0]] = r[1]
+            ).fetchall())
         return prefs
 
     # ── Layout import / export ─────────────────────────────────────
@@ -2133,57 +3148,40 @@ class HistoryDB:
             )
         conn.commit()
 
-    def update_section(self, key: str, **kwargs) -> None:
-        """Update section fields (visible, collapsed, title, columns)."""
+    def _get_dashboard_id(self, conn: sqlite3.Connection, slug: str) -> int | None:
+        row = conn.execute("SELECT id FROM ui_dashboard WHERE slug = ?", (slug,)).fetchone()
+        return row[0] if row else None
+
+    def _update_ui_row(self, table: str, key: str, allowed: set[str], **kwargs) -> None:
         conn = self._conn()
-        allowed = {"visible", "collapsed", "title", "columns"}
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
             return
         set_clause = ", ".join(f"{k} = ?" for k in updates)
-        conn.execute(
-            f"UPDATE ui_section SET {set_clause} WHERE key = ?",
-            (*updates.values(), key),
-        )
+        conn.execute(f"UPDATE {table} SET {set_clause} WHERE key = ?", (*updates.values(), key))
         conn.commit()
+
+    def update_section(self, key: str, **kwargs) -> None:
+        """Update section fields (visible, collapsed, title, columns)."""
+        self._update_ui_row("ui_section", key, {"visible", "collapsed", "title", "columns"}, **kwargs)
 
     def update_widget(self, key: str, **kwargs) -> None:
         """Update widget fields (visible, title, sort_order, config, col_span, row_span)."""
-        conn = self._conn()
-        allowed = {"visible", "title", "sort_order", "config", "col_span", "row_span"}
-        updates = {k: v for k, v in kwargs.items() if k in allowed}
-        if not updates:
-            return
-        set_clause = ", ".join(f"{k} = ?" for k in updates)
-        conn.execute(
-            f"UPDATE ui_widget SET {set_clause} WHERE key = ?",
-            (*updates.values(), key),
-        )
-        conn.commit()
+        self._update_ui_row("ui_widget", key, {"visible", "title", "sort_order", "config", "col_span", "row_span"}, **kwargs)
 
     def export_layout(self, slug: str = "main") -> str:
-        """Export a dashboard layout as a JSON string.
-
-        Convenience wrapper around :meth:`get_layout`.
-        """
+        """Export a dashboard layout as a JSON string."""
         return json.dumps(self.get_layout(slug), indent=2)
 
     def import_layout(self, data: dict[str, Any]) -> None:
         """Import a full dashboard layout from a nested dict.
 
         Replaces all ``ui_*`` rows belonging to the given dashboard slug.
-        The *data* dict should match the structure returned by
-        :meth:`get_layout` (slug, title, tabs, sections, datasources,
-        preferences).
-
-        The import is performed inside a single transaction — either
-        everything succeeds or nothing changes.
         """
         conn = self._conn()
         slug = data.get("slug", "main")
         title = data.get("title", slug)
 
-        # ── Upsert dashboard ──
         conn.execute(
             "INSERT INTO ui_dashboard(slug, title)"
             " VALUES(?, ?)"
@@ -2196,47 +3194,39 @@ class HistoryDB:
             "SELECT id FROM ui_dashboard WHERE slug = ?", (slug,)
         ).fetchone()[0]
 
-        # ── Clear old child rows for this dashboard ──
-        # Delete in FK order: widgets → sections, group_by → tabs,
-        # widget_datasource is cascaded via widget delete.
+        # Clear old child rows
         old_section_ids = [r[0] for r in conn.execute(
             "SELECT id FROM ui_section WHERE dashboard_id = ?", (dash_id,)
         ).fetchall()]
         if old_section_ids:
-            placeholders = ",".join("?" * len(old_section_ids))
+            ph = _placeholders(old_section_ids)
             old_widget_ids = [r[0] for r in conn.execute(
-                f"SELECT id FROM ui_widget WHERE section_id IN ({placeholders})",
+                f"SELECT id FROM ui_widget WHERE section_id IN ({ph})",
                 old_section_ids,
             ).fetchall()]
             if old_widget_ids:
-                wp = ",".join("?" * len(old_widget_ids))
                 conn.execute(
-                    f"DELETE FROM ui_widget_datasource WHERE widget_id IN ({wp})",
+                    f"DELETE FROM ui_widget_datasource WHERE widget_id IN ({_placeholders(old_widget_ids)})",
                     old_widget_ids,
                 )
-            conn.execute(
-                f"DELETE FROM ui_widget WHERE section_id IN ({placeholders})",
-                old_section_ids,
-            )
+            conn.execute(f"DELETE FROM ui_widget WHERE section_id IN ({ph})", old_section_ids)
         conn.execute("DELETE FROM ui_section WHERE dashboard_id = ?", (dash_id,))
 
         old_tab_ids = [r[0] for r in conn.execute(
             "SELECT id FROM ui_tab WHERE dashboard_id = ?", (dash_id,)
         ).fetchall()]
         if old_tab_ids:
-            tp = ",".join("?" * len(old_tab_ids))
             conn.execute(
-                f"DELETE FROM ui_group_by_option WHERE tab_id IN ({tp})",
+                f"DELETE FROM ui_group_by_option WHERE tab_id IN ({_placeholders(old_tab_ids)})",
                 old_tab_ids,
             )
         conn.execute("DELETE FROM ui_tab WHERE dashboard_id = ?", (dash_id,))
         conn.execute(
             "DELETE FROM ui_preference WHERE dashboard_id = ?", (dash_id,)
         )
-        # Datasources are global (not per-dashboard), clear & re-insert
         conn.execute("DELETE FROM ui_datasource")
 
-        # ── Insert tabs ──
+        # Insert tabs
         tab_key_to_id: dict[str, int] = {}
         for t in data.get("tabs", []):
             conn.execute(
@@ -2247,9 +3237,7 @@ class HistoryDB:
                  t.get("shortcut"), t.get("sort_order", 0),
                  int(t.get("visible", True)), t.get("icon")),
             )
-            tab_key_to_id[t["key"]] = conn.execute(
-                "SELECT last_insert_rowid()"
-            ).fetchone()[0]
+            tab_key_to_id[t["key"]] = _last_id(conn)
             for g in t.get("group_by_options", []):
                 conn.execute(
                     "INSERT INTO ui_group_by_option"
@@ -2259,7 +3247,7 @@ class HistoryDB:
                      g.get("sort_order", 0), int(g.get("is_default", False))),
                 )
 
-        # ── Insert datasources ──
+        # Insert datasources
         ds_key_to_id: dict[str, int] = {}
         for dkey, ds in data.get("datasources", {}).items():
             conn.execute(
@@ -2268,11 +3256,9 @@ class HistoryDB:
                 (dkey, ds.get("kind", "rest"), ds.get("endpoint"),
                  ds.get("poll_ms"), json.dumps(ds.get("config", {}))),
             )
-            ds_key_to_id[dkey] = conn.execute(
-                "SELECT last_insert_rowid()"
-            ).fetchone()[0]
+            ds_key_to_id[dkey] = _last_id(conn)
 
-        # ── Insert sections + widgets ──
+        # Insert sections + widgets
         for s in data.get("sections", []):
             tab_id = tab_key_to_id.get(s.get("tab_key")) if s.get("tab_key") else None
             conn.execute(
@@ -2284,7 +3270,7 @@ class HistoryDB:
                  s.get("sort_order", 0), int(s.get("visible", True)),
                  int(s.get("collapsed", False)), s.get("columns")),
             )
-            sec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            sec_id = _last_id(conn)
             for w in s.get("widgets", []):
                 conn.execute(
                     "INSERT INTO ui_widget"
@@ -2297,7 +3283,7 @@ class HistoryDB:
                      int(w.get("visible", True)),
                      json.dumps(w.get("config", {}))),
                 )
-                wid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                wid = _last_id(conn)
                 for wd in w.get("datasources", []):
                     ds_id = ds_key_to_id.get(wd.get("key"))
                     if ds_id:
@@ -2307,7 +3293,7 @@ class HistoryDB:
                             (wid, ds_id, wd.get("role", "primary")),
                         )
 
-        # ── Insert preferences ──
+        # Insert preferences
         for pkey, pval in data.get("preferences", {}).items():
             conn.execute(
                 "INSERT INTO ui_preference"
@@ -2321,9 +3307,9 @@ class HistoryDB:
     # ── CSV spec sync ──────────────────────────────────────────────
 
     def _sync_csv_to_db(self, conn: sqlite3.Connection) -> None:
-        """Load CSV specs from registry into path_specs and process_specs tables."""
+        """Load CSV specs from registry into path_defs and process_defs tables."""
         try:
-            from .registry import get_registry
+            from .tools import get_registry
             registry = get_registry()
             self._sync_path_specs(conn, registry.path_specs())
             self._sync_process_specs(conn, registry.process_specs())
@@ -2332,10 +3318,10 @@ class HistoryDB:
 
     @staticmethod
     def _sync_path_specs(conn: sqlite3.Connection, specs: list) -> None:
-        """Upsert path specs into the path_specs table."""
-        conn.execute("DELETE FROM path_specs")
+        """Upsert path specs into the path_defs table."""
+        conn.execute("DELETE FROM path_defs")
         conn.executemany(
-            "INSERT INTO path_specs"
+            "INSERT INTO path_defs"
             "(path_template, ai_tool, vendor, host, platform, hidden, scope,"
             " category, sent_to_llm, approx_tokens, read_write,"
             " survives_compaction, cacheable, loaded_when, path_args,"
@@ -2354,10 +3340,10 @@ class HistoryDB:
 
     @staticmethod
     def _sync_process_specs(conn: sqlite3.Connection, specs: list) -> None:
-        """Upsert process specs into the process_specs table."""
-        conn.execute("DELETE FROM process_specs")
+        """Upsert process specs into the process_defs table."""
+        conn.execute("DELETE FROM process_defs")
         conn.executemany(
-            "INSERT INTO process_specs"
+            "INSERT INTO process_defs"
             "(process_name, ai_tool, vendor, host, process_type, runtime,"
             " parent_process, starts_at, stops_at, is_daemon, auto_start,"
             " listens_port, outbound_targets, memory_idle_mb, memory_active_mb,"
@@ -2380,13 +3366,12 @@ class HistoryDB:
     def sync_specs(self) -> dict[str, int]:
         """Re-sync CSV specs from registry to SQLite.
 
-        Call this after CSV files have been updated to refresh the DB.
         Returns {"path_specs": N, "process_specs": N}.
         """
         conn = self._conn()
         self._sync_csv_to_db(conn)
-        path_count = conn.execute("SELECT COUNT(*) FROM path_specs").fetchone()[0]
-        proc_count = conn.execute("SELECT COUNT(*) FROM process_specs").fetchone()[0]
+        path_count = conn.execute("SELECT COUNT(*) FROM path_defs").fetchone()[0]
+        proc_count = conn.execute("SELECT COUNT(*) FROM process_defs").fetchone()[0]
         return {"path_specs": path_count, "process_specs": proc_count}
 
     def query_path_specs(
@@ -2398,27 +3383,15 @@ class HistoryDB:
     ) -> list[dict[str, Any]]:
         """Query path specs with optional filters."""
         conn = self._conn()
-        clauses: list[str] = []
-        params: list[Any] = []
-        if tool:
-            clauses.append("ai_tool = ?")
-            params.append(tool)
-        if vendor:
-            clauses.append("vendor = ?")
-            params.append(vendor)
-        if host:
-            clauses.append("host LIKE ?")
-            params.append(f"%{host}%")
-        if category:
-            clauses.append("category = ?")
-            params.append(category)
-        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        cur = conn.execute(
-            f"SELECT * FROM path_specs{where} ORDER BY ai_tool, category, path_template",
+        where, params = _where([
+            ("ai_tool = ?", tool or None), ("vendor = ?", vendor or None),
+            ("host LIKE ?", (f"%{host}%") if host else None),
+            ("category = ?", category or None),
+        ])
+        return _rows_to_dicts(conn.execute(
+            f"SELECT * FROM path_defs{where} ORDER BY ai_tool, category, path_template",
             params,
-        )
-        cols = [desc[0] for desc in cur.description]
-        return [dict(zip(cols, row)) for row in cur.fetchall()]
+        ))
 
     def query_process_specs(
         self,
@@ -2428,24 +3401,14 @@ class HistoryDB:
     ) -> list[dict[str, Any]]:
         """Query process specs with optional filters."""
         conn = self._conn()
-        clauses: list[str] = []
-        params: list[Any] = []
-        if tool:
-            clauses.append("ai_tool = ?")
-            params.append(tool)
-        if vendor:
-            clauses.append("vendor = ?")
-            params.append(vendor)
-        if host:
-            clauses.append("host LIKE ?")
-            params.append(f"%{host}%")
-        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        cur = conn.execute(
-            f"SELECT * FROM process_specs{where} ORDER BY ai_tool, process_name",
+        where, params = _where([
+            ("ai_tool = ?", tool or None), ("vendor = ?", vendor or None),
+            ("host LIKE ?", (f"%{host}%") if host else None),
+        ])
+        return _rows_to_dicts(conn.execute(
+            f"SELECT * FROM process_defs{where} ORDER BY ai_tool, process_name",
             params,
-        )
-        cols = [desc[0] for desc in cur.description]
-        return [dict(zip(cols, row)) for row in cur.fetchall()]
+        ))
 
     # ── Datapoint Catalog ────────────────────────────────────────
 
@@ -2457,32 +3420,17 @@ class HistoryDB:
     ) -> list[dict[str, Any]]:
         """Query the datapoint catalog with optional filters."""
         conn = self._conn()
-        clauses: list[str] = []
-        params: list[Any] = []
-        if tab:
-            clauses.append("tab = ?")
-            params.append(tab)
-        if key:
-            clauses.append("key = ?")
-            params.append(key)
-        if source_type:
-            clauses.append("source_type = ?")
-            params.append(source_type)
-        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        cur = conn.execute(
+        where, params = _where([
+            ("tab = ?", tab or None), ("key = ?", key or None),
+            ("source_type = ?", source_type or None),
+        ])
+        rows = _rows_to_dicts(conn.execute(
             f"SELECT * FROM datapoint_catalog{where} ORDER BY tab, section, key",
             params,
-        )
-        cols = [desc[0] for desc in cur.description]
-        rows = []
-        for row in cur.fetchall():
-            d = dict(zip(cols, row))
+        ))
+        for d in rows:
             d["dynamic_source"] = bool(d.get("dynamic_source"))
-            try:
-                d["source_dynamic"] = json.loads(d.get("source_dynamic", "{}"))
-            except (json.JSONDecodeError, TypeError):
-                d["source_dynamic"] = {}
-            rows.append(d)
+            d["source_dynamic"] = _json(d.get("source_dynamic"))
         return rows
 
     def update_datapoint_source(
@@ -2514,20 +3462,37 @@ class HistoryDB:
             result["file_size_bytes"] = self._path.stat().st_size
         else:
             result["file_size_bytes"] = 0
-        # Row counts
-        for table in ("metrics", "tool_metrics", "events",
-                       "file_store", "file_history",
-                       "path_specs", "process_specs", "samples"):
+
+        # Row counts -- map old names for backward compat
+        table_map = {
+            "system_snapshots": "metrics",      # old: metrics_count
+            "process_snapshots": "tool_metrics", # old: tool_metrics_count
+            "events": "events",
+            "files": "file_store",               # old: file_store_count
+            "file_history": "file_history",
+            "path_defs": "path_specs",           # old: path_specs_count
+            "process_defs": "process_specs",     # old: process_specs_count
+            "metrics": "samples",                # old: samples_count
+        }
+        for real_table, compat_name in table_map.items():
+            cur = conn.execute(f"SELECT COUNT(*) FROM {real_table}")
+            result[f"{compat_name}_count"] = cur.fetchone()[0]
+
+        # Additional new table counts
+        for table in ("sessions", "requests", "tool_invocations",
+                       "processes", "agents", "tool_stats"):
             cur = conn.execute(f"SELECT COUNT(*) FROM {table}")
             result[f"{table}_count"] = cur.fetchone()[0]
-        # Time range
-        cur = conn.execute("SELECT MIN(ts), MAX(ts) FROM metrics")
+
+        # Time range (from system_snapshots)
+        cur = conn.execute("SELECT MIN(ts), MAX(ts) FROM system_snapshots")
         row = cur.fetchone()
         result["earliest_ts"] = row[0]
         result["latest_ts"] = row[1]
+
         # File store totals
         cur = conn.execute(
-            "SELECT COUNT(*), SUM(size_bytes), SUM(tokens) FROM file_store")
+            "SELECT COUNT(*), SUM(size_bytes), SUM(tokens) FROM files")
         row = cur.fetchone()
         result["files_tracked"] = row[0] or 0
         result["files_total_bytes"] = row[1] or 0
@@ -2545,30 +3510,28 @@ class HistoryDB:
         conn = self._conn()
         result: dict[str, int] = {}
 
-        # 1. Delete metrics older than 30 days
+        # 1. Delete system_snapshots older than 30 days
         cutoff_30d = now - _30D
-        cur = conn.execute("DELETE FROM metrics WHERE ts < ?", (cutoff_30d,))
+        cur = conn.execute("DELETE FROM system_snapshots WHERE ts < ?", (cutoff_30d,))
         result["metrics_deleted_30d"] = cur.rowcount
-        cur = conn.execute("DELETE FROM tool_metrics WHERE ts < ?", (cutoff_30d,))
+        cur = conn.execute("DELETE FROM process_snapshots WHERE ts < ?", (cutoff_30d,))
         result["tool_metrics_deleted_30d"] = cur.rowcount
 
-        # 2. Downsample metrics 7d–30d to 5-minute buckets
-        #    Window: [cutoff_30d, cutoff_7d)  (oldest → 7 days ago)
+        # 2. Downsample system_snapshots 7d-30d to 5-minute buckets
         cutoff_7d = now - _7D
         result["metrics_compacted_7d"] = self._downsample(
-            conn, "metrics", cutoff_30d, cutoff_7d, bucket_secs=300,
+            conn, "system_snapshots", cutoff_30d, cutoff_7d, bucket_secs=300,
         )
-        result["tool_metrics_compacted_7d"] = self._downsample_tool(
+        result["tool_metrics_compacted_7d"] = self._downsample_process_snapshots(
             conn, cutoff_30d, cutoff_7d, bucket_secs=300,
         )
 
-        # 3. Downsample metrics 24h–7d to 1-minute buckets
-        #    Window: [cutoff_7d, cutoff_24h)  (7 days ago → 24h ago)
+        # 3. Downsample 24h-7d to 1-minute buckets
         cutoff_24h = now - _24H
         result["metrics_compacted_24h"] = self._downsample(
-            conn, "metrics", cutoff_7d, cutoff_24h, bucket_secs=60,
+            conn, "system_snapshots", cutoff_7d, cutoff_24h, bucket_secs=60,
         )
-        result["tool_metrics_compacted_24h"] = self._downsample_tool(
+        result["tool_metrics_compacted_24h"] = self._downsample_process_snapshots(
             conn, cutoff_7d, cutoff_24h, bucket_secs=60,
         )
 
@@ -2576,44 +3539,52 @@ class HistoryDB:
         cur = conn.execute("DELETE FROM events WHERE ts < ?", (cutoff_30d,))
         result["events_deleted_30d"] = cur.rowcount
 
-        # 5. Delete samples older than 7 days (samples are high-volume)
-        cur = conn.execute("DELETE FROM samples WHERE ts < ?", (cutoff_7d,))
+        # 5. Delete metrics (was samples) older than 7 days
+        cur = conn.execute("DELETE FROM metrics WHERE ts < ?", (cutoff_7d,))
         result["samples_deleted_7d"] = cur.rowcount
 
-        # 6. Downsample samples 24h–7d: keep 1 per metric per 5-minute bucket
-        self._downsample_samples(conn, cutoff_7d, cutoff_24h, bucket_secs=300)
+        # 6. Downsample metrics 24h-7d
+        self._downsample_metrics(conn, cutoff_7d, cutoff_24h, bucket_secs=300)
 
-        # 7. Downsample samples 1h–24h: keep 1 per metric per 1-minute bucket
+        # 7. Downsample metrics 1h-24h
         cutoff_1h = now - _1H
-        self._downsample_samples(conn, cutoff_24h, cutoff_1h, bucket_secs=60)
+        self._downsample_metrics(conn, cutoff_24h, cutoff_1h, bucket_secs=60)
 
-        # 8. Delete telemetry older than 30 days
-        cur = conn.execute("DELETE FROM tool_telemetry WHERE ts < ?", (cutoff_30d,))
+        # 8. Delete tool_stats older than 30 days
+        cur = conn.execute("DELETE FROM tool_stats WHERE ts < ?", (cutoff_30d,))
         result["telemetry_deleted_30d"] = cur.rowcount
 
-        # 9. Delete file history older than 30 days
+        # 9. Delete file_history older than 30 days
         cur = conn.execute("DELETE FROM file_history WHERE ts < ?", (cutoff_30d,))
         result["file_history_deleted_30d"] = cur.rowcount
+
+        # 10. Delete old requests/tool_invocations older than 30 days
+        cur = conn.execute("DELETE FROM requests WHERE ts < ?", (cutoff_30d,))
+        result["requests_deleted_30d"] = cur.rowcount
+        cur = conn.execute("DELETE FROM tool_invocations WHERE ts < ?", (cutoff_30d,))
+        result["tool_invocations_deleted_30d"] = cur.rowcount
 
         conn.commit()
         return result
 
-    def _downsample_samples(
+    def _downsample_metrics(
         self,
         conn: sqlite3.Connection,
         since: float,
         until: float,
         bucket_secs: int,
     ) -> None:
-        """Keep only one sample per metric per time bucket in the given range."""
-        # For each metric+bucket, keep the row with MAX(rowid) and delete the rest.
+        """Keep only one metric row per metric per time bucket in the given range."""
         conn.execute("""
-            DELETE FROM samples WHERE rowid NOT IN (
-                SELECT MAX(rowid) FROM samples
+            DELETE FROM metrics WHERE rowid NOT IN (
+                SELECT MAX(rowid) FROM metrics
                 WHERE ts >= ? AND ts < ?
                 GROUP BY metric, CAST(ts / ? AS INTEGER)
             ) AND ts >= ? AND ts < ?
         """, (since, until, bucket_secs, since, until))
+
+    # Backward compat alias
+    _downsample_samples = _downsample_metrics
 
     def _downsample(
         self,
@@ -2624,7 +3595,6 @@ class HistoryDB:
         bucket_secs: int,
     ) -> int:
         """Replace rows in [since, until) with bucket averages."""
-        # Check if there's anything to compact
         cur = conn.execute(
             f"SELECT COUNT(*) FROM {table} WHERE ts >= ? AND ts < ?",
             (since, until),
@@ -2633,13 +3603,17 @@ class HistoryDB:
         if count == 0:
             return 0
 
-        # Get bucket averages
         bucket_expr = f"CAST(ts / {bucket_secs} AS INTEGER) * {bucket_secs}"
         sql = f"""
             SELECT {bucket_expr} as bucket_ts,
+                   AVG(cpu_percent), '[]',
+                   AVG(memory_used_mb), AVG(memory_total_mb),
+                   CAST(AVG(active_sessions) AS INTEGER),
+                   CAST(AVG(active_processes) AS INTEGER),
+                   AVG(ai_token_rate),
                    CAST(AVG(files) AS INTEGER), CAST(AVG(tokens) AS INTEGER),
-                   AVG(cpu), AVG(mem_mb),
                    CAST(AVG(mcp) AS INTEGER), CAST(AVG(mem_tokens) AS INTEGER),
+                   CAST(AVG(memory_entries) AS INTEGER),
                    CAST(AVG(live_sessions) AS INTEGER),
                    CAST(AVG(live_tokens) AS INTEGER),
                    AVG(live_in_rate), AVG(live_out_rate)
@@ -2651,31 +3625,33 @@ class HistoryDB:
         if not buckets:
             return 0
 
-        # Delete originals
         conn.execute(
             f"DELETE FROM {table} WHERE ts >= ? AND ts < ?",
             (since, until),
         )
-        # Insert averages
         conn.executemany(
             f"INSERT OR REPLACE INTO {table}"
-            f"(ts, files, tokens, cpu, mem_mb, mcp, mem_tokens,"
-            f" live_sessions, live_tokens, live_in_rate, live_out_rate)"
-            f" VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            f"(ts, cpu_percent, cpu_per_core,"
+            f" memory_used_mb, memory_total_mb,"
+            f" active_sessions, active_processes, ai_token_rate,"
+            f" files, tokens, mcp, mem_tokens,"
+            f" memory_entries, live_sessions, live_tokens,"
+            f" live_in_rate, live_out_rate)"
+            f" VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             buckets,
         )
-        return count - len(buckets)  # rows saved
+        return count - len(buckets)
 
-    def _downsample_tool(
+    def _downsample_process_snapshots(
         self,
         conn: sqlite3.Connection,
         since: float,
         until: float,
         bucket_secs: int,
     ) -> int:
-        """Downsample tool_metrics in [since, until) by tool+bucket."""
+        """Downsample process_snapshots in [since, until) by pid+bucket."""
         cur = conn.execute(
-            "SELECT COUNT(*) FROM tool_metrics WHERE ts >= ? AND ts < ?",
+            "SELECT COUNT(*) FROM process_snapshots WHERE ts >= ? AND ts < ?",
             (since, until),
         )
         count = cur.fetchone()[0]
@@ -2684,29 +3660,34 @@ class HistoryDB:
 
         bucket_expr = f"CAST(ts / {bucket_secs} AS INTEGER) * {bucket_secs}"
         sql = f"""
-            SELECT {bucket_expr} as bucket_ts, tool,
-                   AVG(cpu), AVG(mem_mb),
-                   CAST(AVG(tokens) AS INTEGER), AVG(traffic),
-                   ''
-            FROM tool_metrics
+            SELECT {bucket_expr} as bucket_ts, pid, tool,
+                   AVG(cpu_percent), AVG(memory_rss_mb),
+                   AVG(memory_vms_mb),
+                   CAST(AVG(open_files) AS INTEGER),
+                   CAST(AVG(threads) AS INTEGER)
+            FROM process_snapshots
             WHERE ts >= ? AND ts < ?
-            GROUP BY {bucket_expr}, tool
+            GROUP BY {bucket_expr}, pid
         """
         buckets = conn.execute(sql, (since, until)).fetchall()
         if not buckets:
             return 0
 
         conn.execute(
-            "DELETE FROM tool_metrics WHERE ts >= ? AND ts < ?",
+            "DELETE FROM process_snapshots WHERE ts >= ? AND ts < ?",
             (since, until),
         )
         conn.executemany(
-            "INSERT OR REPLACE INTO tool_metrics"
-            "(ts, tool, cpu, mem_mb, tokens, traffic, model)"
-            " VALUES(?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO process_snapshots"
+            "(ts, pid, tool, cpu_percent, memory_rss_mb,"
+            " memory_vms_mb, open_files, threads)"
+            " VALUES(?,?,?,?,?,?,?,?)",
             buckets,
         )
         return count - len(buckets)
+
+    # Backward compat alias
+    _downsample_tool = _downsample_process_snapshots
 
     # ── Lifecycle ──────────────────────────────────────────────────
 

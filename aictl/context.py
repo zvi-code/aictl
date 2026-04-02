@@ -1,6 +1,8 @@
 # aictl - Cross-platform AI Tool Context Control + Dashboard
 # Copyright (c) 2026 Zvi Schneider. MIT License.
-"""Parse .context.toml files.
+"""Context pipeline: parse, scan, and feature-check .context.toml files.
+
+Combines parser.py, scanner.py, and feature_matrix.py into one module.
 
 TOML table mapping:
     [instructions]                      base/profile text (key = profile name)
@@ -32,6 +34,10 @@ try:
     import tomllib
 except ModuleNotFoundError:
     import tomli as tomllib  # type: ignore[no-redef]
+
+from .fsutil import safe_iterdir
+
+# ── Parser (from parser.py) ──
 
 AICTX_FILENAME = ".context.toml"
 
@@ -90,6 +96,11 @@ class IgnoreRule:
     patterns: list[str]  # gitignore-style patterns (one per line)
 
 
+def _for_profile(items, profile: str | None) -> list:
+    """Filter items whose .profile is '_always' or matches the given profile."""
+    return [item for item in items if item.profile == "_always" or item.profile == profile]
+
+
 @dataclass
 class ParsedAictx:
     path: Path
@@ -122,34 +133,22 @@ class ParsedAictx:
 
     def capabilities_for(self, profile: str | None) -> list[Capability]:
         """Get _always + profile capabilities."""
-        return [
-            c for c in self.capabilities
-            if c.profile == "_always" or c.profile == profile
-        ]
+        return _for_profile(self.capabilities, profile)
 
     def mcp_for(self, profile: str | None) -> dict[str, dict]:
         """Get _always + profile MCP servers as merged dict."""
-        servers = {}
-        for m in self.mcp_servers:
-            if m.profile == "_always" or m.profile == profile:
-                servers[m.name] = m.config
-        return servers
+        return {m.name: m.config for m in _for_profile(self.mcp_servers, profile)}
 
     def hooks_for(self, profile: str | None) -> dict[str, list[dict]]:
         """Get _always + profile hooks as merged dict of event → rules."""
         result: dict[str, list[dict]] = {}
-        for h in self.hooks:
-            if h.profile == "_always" or h.profile == profile:
-                result.setdefault(h.event, []).extend(h.rules)
+        for h in _for_profile(self.hooks, profile):
+            result.setdefault(h.event, []).extend(h.rules)
         return result
 
     def lsp_for(self, profile: str | None) -> dict[str, dict]:
         """Get _always + profile LSP servers as merged dict."""
-        servers = {}
-        for s in self.lsp_servers:
-            if s.profile == "_always" or s.profile == profile:
-                servers[s.name] = s.config
-        return servers
+        return {s.name: s.config for s in _for_profile(self.lsp_servers, profile)}
 
     def memory_for(self, profile: str | None) -> str | None:
         """Get _always + profile memory hints."""
@@ -162,38 +161,31 @@ class ParsedAictx:
 
     def settings_for(self, profile: str | None) -> dict[str, object]:
         """Get _always + profile settings as merged dict of key → value."""
-        result: dict[str, object] = {}
-        for s in self.settings:
-            if s.profile == "_always" or s.profile == profile:
-                result[s.key] = s.value
-        return result
+        return {s.key: s.value for s in _for_profile(self.settings, profile)}
 
     def permissions_for(self, profile: str | None) -> list[str]:
         """Get _always + profile permission patterns as merged list."""
         result: list[str] = []
-        for p in self.permissions:
-            if p.profile == "_always" or p.profile == profile:
-                result.extend(p.patterns)
+        for p in _for_profile(self.permissions, profile):
+            result.extend(p.patterns)
         return result
 
     def env_for(self, profile: str | None) -> dict[str, str]:
         """Get _always + profile env vars as merged dict."""
         result: dict[str, str] = {}
-        for e in self.env_vars:
-            if e.profile == "_always" or e.profile == profile:
-                result.update(e.vars)
+        for e in _for_profile(self.env_vars, profile):
+            result.update(e.vars)
         return result
 
     def ignores_for(self, profile: str | None) -> list[str]:
         """Get _always + profile ignore patterns, deduplicated."""
         seen: set[str] = set()
         result: list[str] = []
-        for ig in self.ignores:
-            if ig.profile == "_always" or ig.profile == profile:
-                for p in ig.patterns:
-                    if p not in seen:
-                        seen.add(p)
-                        result.append(p)
+        for ig in _for_profile(self.ignores, profile):
+            for p in ig.patterns:
+                if p not in seen:
+                    seen.add(p)
+                    result.append(p)
         return result
 
     def should_inherit(self, direction: str, kind: str) -> bool:
@@ -319,3 +311,104 @@ def parse_aictx(path: Path) -> ParsedAictx | None:
         result.excludes = [str(e) for e in excludes]
 
     return result
+
+
+# ── Scanner (from scanner.py) ──
+
+SKIP_DIRS = {
+    ".git", ".hg", ".svn",
+    "node_modules", "__pycache__", ".venv", "venv",
+    ".claude", ".github", ".cursor", ".ai-deployed",
+    "dist", "build", "target", "out", "bin", "obj",
+}
+
+
+def scan(root: Path) -> list[tuple[str, ParsedAictx]]:
+    """Walk root downward, return [(relative_path, parsed)] sorted by depth.
+
+    relative_path is "." for root, "services/ingestion" for children, etc.
+    """
+    root = root.resolve()
+    results: list[tuple[str, ParsedAictx]] = []
+
+    for aictx_file in _walk(root):
+        rel = aictx_file.parent.relative_to(root)
+        rel_str = str(rel) if str(rel) != "." else "."
+        parsed = parse_aictx(aictx_file)
+        if parsed:
+            results.append((rel_str, parsed))
+
+    # Sort: root first, then by path depth
+    results.sort(key=lambda x: (x[0] != ".", x[0].replace("\\", "/").count("/"), x[0]))
+    return results
+
+
+def _walk(root: Path):
+    """Yield .context.toml files, root first, then children."""
+    f = root / AICTX_FILENAME
+    if f.is_file():
+        yield f
+    for item in safe_iterdir(root):
+        if item.is_dir() and item.name not in SKIP_DIRS:
+            yield from _walk(item)
+
+
+# ── Feature matrix (from feature_matrix.py) ──
+
+# Feature support by tool: {section_kind: {tool_name: supported}}
+FEATURE_SUPPORT: dict[str, dict[str, bool]] = {
+    "command":    {"claude": True,  "copilot": True,  "cursor": False, "windsurf": False, "copilot365": False},
+    "agent":      {"claude": False, "copilot": True,  "cursor": False, "windsurf": False, "copilot365": True},
+    "skill":      {"claude": True,  "copilot": True,  "cursor": False, "windsurf": False, "copilot365": False},
+    "hook":       {"claude": True,  "copilot": True,  "cursor": False, "windsurf": False, "copilot365": False},
+    "lsp":        {"claude": True,  "copilot": False, "cursor": False, "windsurf": False, "copilot365": False},
+    "setting":    {"claude": True,  "copilot": False, "cursor": False, "windsurf": False, "copilot365": False},
+    "permission": {"claude": True,  "copilot": False, "cursor": False, "windsurf": False, "copilot365": False},
+    "env":        {"claude": True,  "copilot": False, "cursor": False, "windsurf": False, "copilot365": False},
+    "ignore":     {"claude": True,  "copilot": True,  "cursor": True,  "windsurf": False, "copilot365": False},
+    "memory":     {"claude": True,  "copilot": False, "cursor": False, "windsurf": False, "copilot365": False},
+}
+
+ALL_TOOLS = ["claude", "copilot", "cursor", "windsurf", "copilot365"]
+
+
+def unsupported_tools(kind: str) -> list[str]:
+    """Return list of tool names that do NOT support the given section kind.
+
+    Returns empty list if the kind is not in the matrix (e.g. instructions,
+    inherit, exclude — these are universal or structural).
+    """
+    support = FEATURE_SUPPORT.get(kind)
+    if support is None:
+        return []
+    return [tool for tool in ALL_TOOLS if not support.get(tool, False)]
+
+
+def check_parsed_features(parsed) -> list[tuple[str, str, list[str]]]:
+    """Check a ParsedAictx for features unsupported by target tools.
+
+    Returns a list of (kind, section_label, unsupported_tools) tuples.
+    Each entry represents one section type that has at least one unsupported tool.
+    """
+    warnings: list[tuple[str, str, list[str]]] = []
+
+    # Capabilities have dynamic kinds (command/agent/skill)
+    for cap in parsed.capabilities:
+        if tools := unsupported_tools(cap.kind):
+            warnings.append((cap.kind, f"{cap.kind}:{cap.profile}:{cap.name}", tools))
+
+    # All other section types have a fixed kind; memory_hints is a dict so iteration yields profile keys
+    for kind, items, label_fn in [
+        ("hook",       parsed.hooks,        lambda h: f"hook:{h.profile}:{h.event}"),
+        ("lsp",        parsed.lsp_servers,  lambda s: f"lsp:{s.profile}:{s.name}"),
+        ("setting",    parsed.settings,     lambda s: f"setting:{s.profile}:{s.key}"),
+        ("permission", parsed.permissions,  lambda p: f"permission:{p.profile}"),
+        ("env",        parsed.env_vars,     lambda e: f"env:{e.profile}"),
+        ("ignore",     parsed.ignores,      lambda i: f"ignore:{i.profile}"),
+        ("memory",     parsed.memory_hints, lambda p: f"memory:{p}"),
+    ]:
+        if (tools := unsupported_tools(kind)) and items:
+            for item in items:
+                warnings.append((kind, label_fn(item), tools))
+
+    return warnings

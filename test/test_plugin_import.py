@@ -15,8 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from aictl.parser import parse_aictx
-from aictl.scanner import scan
+from aictl.context import parse_aictx, scan
 from aictl.resolver import resolve
 from aictl.importers import plugin as plugin_imp
 from aictl.synthesizer import synthesize

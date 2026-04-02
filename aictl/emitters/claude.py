@@ -19,7 +19,7 @@ from ..resolver import Resolved
 from ..utils import (
     wrap_deployed, compose_with_overlay, extract_overlay,
     write_safe, estimate_tokens, encode_scope,
-    merge_json_block, merge_ignore_file,
+    merge_json_block, merge_ignore_file, emit_file,
 )
 
 NAME = "claude"
@@ -37,54 +37,37 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
         if scope.is_root:
             # Root base → CLAUDE.md
             if scope.base:
-                fp = root / "CLAUDE.md"
-                content = wrap_deployed(scope.base, src)
-                if not dry_run:
-                    write_safe(fp, content)
-                results.append({"path": str(fp), "tokens": estimate_tokens(content)})
+                emit_file(root / "CLAUDE.md", wrap_deployed(scope.base, src), dry_run, results)
 
             # Root profile → CLAUDE.local.md (with overlay)
             if scope.profile_text and resolved.profile:
                 fp = root / "CLAUDE.local.md"
                 overlay = "" if dry_run else extract_overlay(fp)
-                content = compose_with_overlay(
+                emit_file(fp, compose_with_overlay(
                     f"# Active Profile: {resolved.profile}\n\n{scope.profile_text}",
                     overlay, src, resolved.profile,
-                )
-                if not dry_run:
-                    write_safe(fp, content)
-                results.append({"path": str(fp), "tokens": estimate_tokens(content)})
+                ), dry_run, results)
         else:
             # Sub-scope → .claude/rules/{scope}.md (base + profile merged)
             if combined:
                 safe = encode_scope(src).replace("--", "-")
-                fp = root / ".claude" / "rules" / f"{safe}.md"
                 glob = f"{src}/**"
-                body = f'---\npaths:\n  - "{glob}"\n---\n\n' + wrap_deployed(combined, src)
-                if not dry_run:
-                    write_safe(fp, body)
-                results.append({"path": str(fp), "tokens": estimate_tokens(body)})
+                emit_file(root / ".claude" / "rules" / f"{safe}.md",
+                          f'---\npaths:\n  - "{glob}"\n---\n\n' + wrap_deployed(combined, src),
+                          dry_run, results)
 
     # --- Capabilities (root only) ---
     for cap in resolved.capabilities:
         if cap.kind == "command":
-            fp = root / ".claude" / "commands" / f"{cap.name}.md"
-            if not dry_run:
-                write_safe(fp, cap.content)
-            results.append({"path": str(fp), "tokens": estimate_tokens(cap.content)})
+            emit_file(root / ".claude" / "commands" / f"{cap.name}.md", cap.content, dry_run, results)
         elif cap.kind == "skill":
-            fp = root / ".claude" / "skills" / cap.name / "SKILL.md"
-            if not dry_run:
-                write_safe(fp, cap.content)
-            results.append({"path": str(fp), "tokens": estimate_tokens(cap.content)})
+            emit_file(root / ".claude" / "skills" / cap.name / "SKILL.md", cap.content, dry_run, results)
 
     # --- MCP ---
     if resolved.mcp_servers:
         fp = root / ".mcp.json"
         content = merge_json_block(fp, "mcpServers", resolved.mcp_servers) if not dry_run else json.dumps({"mcpServers": resolved.mcp_servers}, indent=2) + "\n"
-        if not dry_run:
-            write_safe(fp, content)
-        results.append({"path": str(fp), "tokens": estimate_tokens(content)})
+        emit_file(fp, content, dry_run, results)
 
     # --- Hooks + settings + permissions + env → .claude/settings.local.json ---
     has_settings_data = (
@@ -102,26 +85,19 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
         # Arbitrary settings: merge top-level keys
         for key, value in resolved.settings.items():
             existing[key] = value
-        content = json.dumps(existing, indent=2) + "\n"
-        if not dry_run:
-            write_safe(fp, content)
-        results.append({"path": str(fp), "tokens": estimate_tokens(content)})
+        emit_file(fp, json.dumps(existing, indent=2) + "\n", dry_run, results)
 
     # --- LSP → .lsp.json ---
     if resolved.lsp_servers:
         fp = root / ".lsp.json"
         content = merge_json_block(fp, None, resolved.lsp_servers) if not dry_run else json.dumps(resolved.lsp_servers, indent=2) + "\n"
-        if not dry_run:
-            write_safe(fp, content)
-        results.append({"path": str(fp), "tokens": estimate_tokens(content)})
+        emit_file(fp, content, dry_run, results)
 
     # --- Ignores → .claudeignore ---
     if resolved.ignores:
         fp = root / ".claudeignore"
         content = merge_ignore_file(fp, resolved.ignores) if not dry_run else "\n".join(resolved.ignores) + "\n"
-        if not dry_run:
-            write_safe(fp, content)
-        results.append({"path": str(fp), "tokens": estimate_tokens(content)})
+        emit_file(fp, content, dry_run, results)
 
     return results
 

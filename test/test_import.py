@@ -17,8 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from aictl.parser import parse_aictx
-from aictl.scanner import scan
+from aictl.context import parse_aictx, scan
 from aictl.resolver import resolve
 from aictl.emitters import claude as claude_emit, copilot as copilot_emit, cursor as cursor_emit
 from aictl.importers import claude as claude_imp, copilot as copilot_imp, cursor as cursor_imp

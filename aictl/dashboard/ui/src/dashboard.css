@@ -697,3 +697,22 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
 .dp-tooltip-code { font-family: var(--ff-mono, monospace); font-size: var(--fs-2xs);
   background: var(--bg); padding: var(--sp-2) var(--sp-3); border-radius: 3px;
   display: block; white-space: pre-wrap; word-break: break-all; max-height: 120px; overflow-y: auto; }
+/* ── Analytics tab ──────────────────────────────────────────────── */
+.analytics-grid { display: flex; flex-direction: column; gap: var(--sp-8); }
+.analytics-section { }
+.analytics-section-title { font-size: var(--fs-lg); color: var(--fg); font-weight: 600;
+  margin-bottom: var(--sp-4); padding-bottom: var(--sp-2); border-bottom: 1px solid var(--border); }
+.analytics-charts { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-4); }
+@media(max-width:800px) { .analytics-charts { grid-template-columns: 1fr; } }
+.analytics-chart-wrap { height: 200px; position: relative; }
+/* Horizontal bar charts */
+.hbar-list { display: flex; flex-direction: column; gap: var(--sp-1); padding: var(--sp-2) 0; }
+.hbar-row { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-1) 0; }
+.hbar-label { width: 110px; font-size: var(--fs-sm); text-align: right; flex-shrink: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hbar-track { flex: 1; height: 18px; background: var(--border); border-radius: 3px;
+  overflow: hidden; position: relative; }
+.hbar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+.hbar-p95 { position: absolute; top: 0; height: 100%; border-right: 2px dashed var(--orange);
+  pointer-events: none; }
+.hbar-value { width: 60px; font-size: var(--fs-sm); font-variant-numeric: tabular-nums; flex-shrink: 0; }

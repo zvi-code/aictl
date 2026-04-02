@@ -21,7 +21,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from aictl.guard import WriteGuard
+from aictl.utils import WriteGuard
 
 
 # ---------------------------------------------------------------------------
@@ -326,13 +326,13 @@ class TestHooksInstallGuard:
     @pytest.fixture
     def tmp_settings(self, tmp_path, monkeypatch):
         settings_file = tmp_path / ".claude" / "settings.json"
-        monkeypatch.setattr("aictl.commands.hooks._settings_path", lambda scope: settings_file)
+        monkeypatch.setattr("aictl.commands.integrations._settings_path", lambda scope: settings_file)
         monkeypatch.setenv("AICTL_PORT", "8484")
         return settings_file
 
     def test_install_no_prompt_for_new_settings_file(self, tmp_settings):
         """Installing into a non-existent settings file never prompts."""
-        from aictl.commands.hooks import hooks
+        from aictl.commands.integrations import hooks
 
         runner = CliRunner()
         result = runner.invoke(hooks, ["install"], catch_exceptions=False)
@@ -341,7 +341,7 @@ class TestHooksInstallGuard:
 
     def test_install_installs_guard(self, tmp_settings):
         """hooks install registers a WriteGuard in the Click context."""
-        from aictl.commands.hooks import hooks
+        from aictl.commands.integrations import hooks
 
         installed = []
 
@@ -360,7 +360,7 @@ class TestHooksInstallGuard:
 
     def test_install_guard_abort_prevents_write(self, tmp_settings):
         """If guard.confirm aborts, install must not write to settings.json."""
-        from aictl.commands.hooks import hooks
+        from aictl.commands.integrations import hooks
 
         tmp_settings.parent.mkdir(parents=True, exist_ok=True)
         tmp_settings.write_text(json.dumps({}))  # pre-existing
@@ -379,7 +379,7 @@ class TestHooksInstallGuard:
 
     def test_install_guard_approve_proceeds(self, tmp_settings):
         """If guard.confirm approves, install writes hooks correctly."""
-        from aictl.commands.hooks import hooks, HOOK_EVENTS
+        from aictl.commands.integrations import hooks, HOOK_EVENTS
 
         tmp_settings.parent.mkdir(parents=True, exist_ok=True)
         tmp_settings.write_text(json.dumps({}))
@@ -400,7 +400,7 @@ class TestHooksInstallGuard:
 
     def test_uninstall_installs_guard(self, tmp_settings):
         """hooks uninstall registers a WriteGuard in the Click context."""
-        from aictl.commands.hooks import hooks
+        from aictl.commands.integrations import hooks
 
         # Install first (no guard)
         runner = CliRunner()
@@ -421,7 +421,7 @@ class TestHooksInstallGuard:
 
     def test_uninstall_guard_abort_prevents_write(self, tmp_settings):
         """If guard.confirm aborts, uninstall must not modify settings.json."""
-        from aictl.commands.hooks import hooks
+        from aictl.commands.integrations import hooks
 
         runner = CliRunner()
         runner.invoke(hooks, ["install"], catch_exceptions=False)
@@ -447,7 +447,7 @@ class TestHooksInstallGuard:
 class TestInitGuard:
     def test_init_no_prompt_for_new_toml(self, tmp_path):
         """init into a fresh directory never prompts."""
-        from aictl.commands.init_cmd import init
+        from aictl.commands.ctx_pipeline import init
 
         runner = CliRunner()
         result = runner.invoke(init, ["--root", str(tmp_path)], catch_exceptions=False)
@@ -456,7 +456,7 @@ class TestInitGuard:
 
     def test_init_guard_abort_prevents_overwrite(self, tmp_path):
         """If guard.confirm aborts, init --force must not overwrite the .context.toml."""
-        from aictl.commands.init_cmd import init
+        from aictl.commands.ctx_pipeline import init
 
         toml = tmp_path / ".context.toml"
         toml.write_text("# original")
@@ -476,7 +476,7 @@ class TestInitGuard:
 
     def test_init_guard_approve_overwrites(self, tmp_path):
         """If guard.confirm approves, init --force overwrites the .context.toml."""
-        from aictl.commands.init_cmd import init
+        from aictl.commands.ctx_pipeline import init
 
         toml = tmp_path / ".context.toml"
         toml.write_text("# original")
@@ -496,7 +496,7 @@ class TestInitGuard:
 
     def test_init_hooks_no_prompt_for_new_scripts(self, tmp_path):
         """init --hooks into fresh dir creates scripts without prompting."""
-        from aictl.commands.init_cmd import init
+        from aictl.commands.ctx_pipeline import init
 
         runner = CliRunner()
         result = runner.invoke(init, ["--root", str(tmp_path), "--hooks"], catch_exceptions=False)
@@ -506,7 +506,7 @@ class TestInitGuard:
 
     def test_init_hooks_guard_abort_preserves_existing_script(self, tmp_path):
         """If guard.confirm aborts on a hook script, it must not be overwritten."""
-        from aictl.commands.init_cmd import init
+        from aictl.commands.ctx_pipeline import init
 
         hooks_dir = tmp_path / ".claude" / "hooks"
         hooks_dir.mkdir(parents=True)
@@ -536,7 +536,7 @@ class TestInitGuard:
 
     def test_init_hooks_approve_all_updates_both_scripts(self, tmp_path):
         """If guard sets _approve_all on first confirm, both hook scripts are updated."""
-        from aictl.commands.init_cmd import init
+        from aictl.commands.ctx_pipeline import init
 
         hooks_dir = tmp_path / ".claude" / "hooks"
         hooks_dir.mkdir(parents=True)
@@ -572,7 +572,7 @@ class TestDeployGuard:
 
     def test_deploy_dry_run_no_guard_installed(self, tmp_path):
         """dry-run must NOT call WriteGuard.install."""
-        from aictl.commands.deploy import deploy
+        from aictl.commands.ctx_pipeline import deploy
 
         self._make_toml(tmp_path)
         installed = []
@@ -592,7 +592,7 @@ class TestDeployGuard:
 
     def test_deploy_new_files_no_guard_prompt(self, tmp_path):
         """Deploying for the first time (no output files yet) completes without prompting."""
-        from aictl.commands.deploy import deploy
+        from aictl.commands.ctx_pipeline import deploy
 
         self._make_toml(tmp_path)
         runner = CliRunner()
@@ -603,7 +603,7 @@ class TestDeployGuard:
 
     def test_deploy_guard_abort_prevents_write(self, tmp_path):
         """If guard.confirm aborts, deploy must not overwrite existing output files."""
-        from aictl.commands.deploy import deploy
+        from aictl.commands.ctx_pipeline import deploy
 
         self._make_toml(tmp_path)
         runner = CliRunner()
@@ -623,7 +623,7 @@ class TestDeployGuard:
 
     def test_deploy_guard_approve_all_succeeds(self, tmp_path):
         """If guard approves all, second deploy succeeds."""
-        from aictl.commands.deploy import deploy
+        from aictl.commands.ctx_pipeline import deploy
 
         self._make_toml(tmp_path)
         runner = CliRunner()
@@ -650,7 +650,7 @@ class TestDeployGuard:
 class TestImportGuard:
     def test_import_dry_run_no_guard_installed(self, tmp_path):
         """import --dry-run must NOT call WriteGuard.install."""
-        from aictl.commands.import_cmd import import_cmd
+        from aictl.commands.import_plugin import import_cmd
 
         (tmp_path / "CLAUDE.md").write_text("# base\nProject info.\n")
         installed = []
@@ -672,7 +672,7 @@ class TestImportGuard:
 
     def test_import_guard_abort_preserves_existing_toml(self, tmp_path):
         """If guard.confirm aborts, import must not overwrite existing .context.toml."""
-        from aictl.commands.import_cmd import import_cmd
+        from aictl.commands.import_plugin import import_cmd
 
         (tmp_path / "CLAUDE.md").write_text("# base\nProject info.\n")
         toml = tmp_path / ".context.toml"
@@ -695,7 +695,7 @@ class TestImportGuard:
 
     def test_import_guard_approve_overwrites(self, tmp_path):
         """If guard approves, import overwrites the existing .context.toml."""
-        from aictl.commands.import_cmd import import_cmd
+        from aictl.commands.import_plugin import import_cmd
 
         (tmp_path / "CLAUDE.md").write_text("# base\nProject info.\n")
         toml = tmp_path / ".context.toml"
@@ -731,7 +731,7 @@ class TestPluginBuildGuard:
 
     def test_plugin_build_dry_run_no_guard_installed(self, tmp_path):
         """plugin build --dry-run must NOT call WriteGuard.install."""
-        from aictl.commands.plugin import plugin
+        from aictl.commands.import_plugin import plugin
 
         self._make_plugin_toml(tmp_path)
         installed = []
@@ -751,7 +751,7 @@ class TestPluginBuildGuard:
 
     def test_plugin_build_new_files_no_prompt(self, tmp_path):
         """First build (no pre-existing output) completes without prompting."""
-        from aictl.commands.plugin import plugin
+        from aictl.commands.import_plugin import plugin
 
         self._make_plugin_toml(tmp_path)
         runner = CliRunner()
@@ -761,7 +761,7 @@ class TestPluginBuildGuard:
 
     def test_plugin_build_guard_abort_prevents_write(self, tmp_path):
         """If guard.confirm aborts, plugin build must not overwrite existing output."""
-        from aictl.commands.plugin import plugin
+        from aictl.commands.import_plugin import plugin
 
         self._make_plugin_toml(tmp_path)
         runner = CliRunner()
@@ -784,7 +784,7 @@ class TestPluginBuildGuard:
 
     def test_plugin_build_guard_approve_all_succeeds(self, tmp_path):
         """If guard approves all, rebuilding existing output succeeds."""
-        from aictl.commands.plugin import plugin
+        from aictl.commands.import_plugin import plugin
 
         self._make_plugin_toml(tmp_path)
         runner = CliRunner()
@@ -813,23 +813,23 @@ class TestEnableGuard:
     def patched_enable(self, tmp_path, monkeypatch):
         """Redirect all enable output paths to tmp_path."""
         monkeypatch.setattr(
-            "aictl.commands.enable_cmd.claude_global_dir",
+            "aictl.commands.integrations.claude_global_dir",
             lambda: tmp_path / "claude",
         )
         monkeypatch.setattr(
-            "aictl.commands.enable_cmd.vscode_user_dir",
+            "aictl.commands.integrations.vscode_user_dir",
             lambda: tmp_path / "vscode",
         )
         profile = tmp_path / ".zshrc"
         profile.write_text("")
-        monkeypatch.setattr("aictl.commands.enable_cmd._shell_profiles", lambda: [profile])
-        monkeypatch.setattr("aictl.commands.otel._shell_profiles", lambda: [profile])
+        monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [profile])
+        monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [profile])
         monkeypatch.setenv("AICTL_PORT", "8484")
         return tmp_path
 
     def test_enable_dry_run_no_guard_installed(self, patched_enable):
         """enable --dry-run must NOT call WriteGuard.install."""
-        from aictl.commands.enable_cmd import enable
+        from aictl.commands.integrations import enable
 
         installed = []
         original = WriteGuard.install
@@ -846,7 +846,7 @@ class TestEnableGuard:
 
     def test_enable_new_files_no_prompt(self, patched_enable):
         """enable into fresh dirs never prompts."""
-        from aictl.commands.enable_cmd import enable
+        from aictl.commands.integrations import enable
 
         runner = CliRunner()
         result = runner.invoke(enable, ["--scope", "user"], catch_exceptions=False)
@@ -854,7 +854,7 @@ class TestEnableGuard:
 
     def test_enable_guard_abort_prevents_write(self, patched_enable):
         """If guard.confirm aborts, enable must not write any files."""
-        from aictl.commands.enable_cmd import enable
+        from aictl.commands.integrations import enable
 
         settings = patched_enable / "claude" / "settings.json"
         settings.parent.mkdir(parents=True)
@@ -876,7 +876,7 @@ class TestEnableGuard:
 
     def test_enable_guard_approve_all_writes_settings(self, patched_enable):
         """If guard approves all, enable writes hooks and VS Code settings."""
-        from aictl.commands.enable_cmd import enable
+        from aictl.commands.integrations import enable
 
         settings = patched_enable / "claude" / "settings.json"
         settings.parent.mkdir(parents=True)
@@ -898,9 +898,9 @@ class TestEnableGuard:
 
     def test_enable_project_scope_writes_local_settings(self, patched_enable, monkeypatch):
         """--scope project writes to .claude/settings.local.json, not settings.json."""
-        from aictl.commands.enable_cmd import enable
+        from aictl.commands.integrations import enable
 
-        monkeypatch.setattr("aictl.commands.enable_cmd._shell_profiles", lambda: [])
+        monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [])
 
         runner = CliRunner()
         with runner.isolated_filesystem() as td:
@@ -921,7 +921,7 @@ class TestFileIOEncoding:
 
     def test_hooks_settings_read_uses_utf8(self, tmp_path, monkeypatch):
         """hooks install reads settings.json with utf-8 encoding."""
-        from aictl.commands.hooks import hooks
+        from aictl.commands.integrations import hooks
 
         settings_file = tmp_path / ".claude" / "settings.json"
         settings_file.parent.mkdir(parents=True)
@@ -929,7 +929,7 @@ class TestFileIOEncoding:
         data = {"selectedModel": "opus", "note": "caf\u00e9"}
         settings_file.write_text(json.dumps(data), encoding="utf-8")
 
-        monkeypatch.setattr("aictl.commands.hooks._settings_path", lambda scope: settings_file)
+        monkeypatch.setattr("aictl.commands.integrations._settings_path", lambda scope: settings_file)
         monkeypatch.setenv("AICTL_PORT", "8484")
 
         runner = CliRunner()
@@ -941,10 +941,10 @@ class TestFileIOEncoding:
 
     def test_hooks_settings_write_uses_utf8(self, tmp_path, monkeypatch):
         """hooks install writes settings.json with utf-8 encoding."""
-        from aictl.commands.hooks import hooks, HOOK_EVENTS
+        from aictl.commands.integrations import hooks, HOOK_EVENTS
 
         settings_file = tmp_path / ".claude" / "settings.json"
-        monkeypatch.setattr("aictl.commands.hooks._settings_path", lambda scope: settings_file)
+        monkeypatch.setattr("aictl.commands.integrations._settings_path", lambda scope: settings_file)
         monkeypatch.setenv("AICTL_PORT", "8484")
 
         runner = CliRunner()
@@ -958,12 +958,12 @@ class TestFileIOEncoding:
 
     def test_otel_shell_profile_encoding(self, tmp_path, monkeypatch):
         """otel enable writes shell profiles with utf-8 encoding."""
-        from aictl.commands.otel import otel
+        from aictl.commands.integrations import otel
 
         profile = tmp_path / ".zshrc"
         profile.write_text("# existing profile with caf\u00e9\n", encoding="utf-8")
 
-        monkeypatch.setattr("aictl.commands.otel._shell_profiles", lambda: [profile])
+        monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [profile])
         monkeypatch.setenv("AICTL_PORT", "8484")
 
         runner = CliRunner()
@@ -977,7 +977,7 @@ class TestFileIOEncoding:
 
     def test_otel_shell_profile_update_preserves_unicode(self, tmp_path, monkeypatch):
         """Updating an existing otel block in a profile preserves non-ASCII chars."""
-        from aictl.commands.otel import otel
+        from aictl.commands.integrations import otel
 
         marker = "# \u2500\u2500 aictl: OTel for AI tools \u2500\u2500"
         profile = tmp_path / ".zshrc"
@@ -989,7 +989,7 @@ class TestFileIOEncoding:
             encoding="utf-8",
         )
 
-        monkeypatch.setattr("aictl.commands.otel._shell_profiles", lambda: [profile])
+        monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [profile])
         monkeypatch.setenv("AICTL_PORT", "8484")
 
         runner = CliRunner()
@@ -1000,17 +1000,17 @@ class TestFileIOEncoding:
 
     def test_enable_cmd_profile_encoding(self, tmp_path, monkeypatch):
         """enable writes shell profiles with utf-8 encoding."""
-        from aictl.commands.enable_cmd import enable
+        from aictl.commands.integrations import enable
 
         profile = tmp_path / ".zshrc"
         profile.write_text("# profile \u00e9\n", encoding="utf-8")
 
-        monkeypatch.setattr("aictl.commands.enable_cmd._shell_profiles", lambda: [profile])
+        monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [profile])
         monkeypatch.setattr(
-            "aictl.commands.enable_cmd.claude_global_dir", lambda: tmp_path / "claude"
+            "aictl.commands.integrations.claude_global_dir", lambda: tmp_path / "claude"
         )
         monkeypatch.setattr(
-            "aictl.commands.enable_cmd.vscode_user_dir", lambda: tmp_path / "vscode"
+            "aictl.commands.integrations.vscode_user_dir", lambda: tmp_path / "vscode"
         )
         monkeypatch.setenv("AICTL_PORT", "8484")
 
@@ -1034,12 +1034,12 @@ class TestCodexPathPlatformAbstraction:
         codex_global_dir is imported inside the function body, so we patch
         the source in aictl.platforms rather than the command module.
         """
-        from aictl.commands.otel import otel
+        from aictl.commands.integrations import otel
 
         custom_codex = tmp_path / "custom_codex"
 
-        monkeypatch.setattr("aictl.platforms.codex_global_dir", lambda: custom_codex)
-        monkeypatch.setattr("aictl.commands.otel._shell_profiles", lambda: [])
+        monkeypatch.setattr("aictl.commands.integrations.codex_global_dir", lambda: custom_codex)
+        monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [])
         monkeypatch.setenv("AICTL_PORT", "8484")
 
         runner = CliRunner()
@@ -1049,17 +1049,17 @@ class TestCodexPathPlatformAbstraction:
 
     def test_enable_cmd_uses_codex_global_dir(self, tmp_path, monkeypatch):
         """enable must write codex config to codex_global_dir(), not ~/.codex."""
-        from aictl.commands.enable_cmd import enable
+        from aictl.commands.integrations import enable
 
         custom_codex = tmp_path / "custom_codex"
 
-        monkeypatch.setattr("aictl.platforms.codex_global_dir", lambda: custom_codex)
-        monkeypatch.setattr("aictl.commands.enable_cmd._shell_profiles", lambda: [])
+        monkeypatch.setattr("aictl.commands.integrations.codex_global_dir", lambda: custom_codex)
+        monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [])
         monkeypatch.setattr(
-            "aictl.commands.enable_cmd.claude_global_dir", lambda: tmp_path / "claude"
+            "aictl.commands.integrations.claude_global_dir", lambda: tmp_path / "claude"
         )
         monkeypatch.setattr(
-            "aictl.commands.enable_cmd.vscode_user_dir", lambda: tmp_path / "vscode"
+            "aictl.commands.integrations.vscode_user_dir", lambda: tmp_path / "vscode"
         )
         monkeypatch.setenv("AICTL_PORT", "8484")
 
