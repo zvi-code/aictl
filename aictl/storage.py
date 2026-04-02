@@ -1025,8 +1025,8 @@ class HistoryDB:
         # Always re-sync catalog from YAML (cheap INSERT OR REPLACE)
         try:
             self._sync_datapoint_catalog(conn)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("Datapoint catalog sync failed: %s", exc)
 
     def _drop_old_tables(self, conn: sqlite3.Connection) -> None:
         """Drop old tables that are being replaced in v20 schema."""
@@ -1473,8 +1473,8 @@ class HistoryDB:
                 tool_name=d.get("tool_name", ""),
                 prompt_id=d.get("prompt.id", ""),
             )
-        except Exception:
-            pass  # never block event buffering on log I/O
+        except Exception as exc:
+            log.debug("Event log error: %s", exc)
 
     def append_samples(self, samples: list[Metric | Sample]) -> None:
         """Buffer universal metric samples for batch insert.

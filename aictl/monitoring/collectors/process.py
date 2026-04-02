@@ -139,7 +139,7 @@ class PsutilProcessCollector(BaseCollector):
                 for i, pct in enumerate(per_core):
                     self.sink_emit_cpu(M("system.cpu.utilization"),
                                       pct / 100, {"cpu.id": str(i)})
-            except Exception:
+            except (psutil.Error, OSError):
                 pass
 
             for pid, sample in snapshot.items():
@@ -195,7 +195,7 @@ class PsutilProcessCollector(BaseCollector):
                 }
                 if ppid is not None:
                     children[ppid].add(pid)
-            except Exception:
+            except (psutil.Error, OSError, KeyError, TypeError):
                 continue
 
         tracked = self._tracked_pids(all_processes, children)
@@ -208,7 +208,7 @@ class PsutilProcessCollector(BaseCollector):
                     handle = psutil_module.Process(pid)
                     handle.cpu_percent(None)
                     self._handles[pid] = handle
-                except Exception:
+                except (psutil.Error, OSError):
                     continue
 
             cwd = None
@@ -221,9 +221,9 @@ class PsutilProcessCollector(BaseCollector):
                     memory_rss = int(handle.memory_info().rss)
                     try:
                         cwd = str(handle.cwd())
-                    except Exception:
+                    except (psutil.Error, OSError):
                         cwd = None
-            except Exception:
+            except (psutil.Error, OSError):
                 continue
 
             snapshot[pid] = {

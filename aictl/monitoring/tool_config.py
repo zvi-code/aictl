@@ -103,7 +103,7 @@ def _read_toml(path: Path) -> dict | None:
     try:
         with open(path, "rb") as f:
             return tomllib.load(f)
-    except Exception:
+    except (OSError, tomllib.TOMLDecodeError):
         return None
 
 

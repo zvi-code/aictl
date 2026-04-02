@@ -201,8 +201,8 @@ class MacOSNetworkCollector(NetworkCollector):
                                 pass
                     proc.terminate()
                     proc.wait()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.warning("nettop reader error: %s", exc)
                 # Brief pause between restarts (nettop already took ~6s)
                 stop_event.wait(0.5)
             # Signal done

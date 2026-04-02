@@ -139,8 +139,8 @@ class SampleSink:
                     session_id=t.get("session_id", ""),
                     tool=t.get("tool", ""),
                 )
-            except Exception:
-                pass  # never block emission on log I/O
+            except Exception as exc:
+                log.debug("Datapoint log error: %s", exc)
 
         # Buffer for SQLite persistence
         with self._lock:
@@ -306,8 +306,8 @@ class SampleSink:
             for handler in self._handlers:
                 try:
                     handler(metric, value, t, ts)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.debug("Batch handler error on %s: %s", metric, exc)
 
         if self._buffer_size == 0 or len(self._buffer) >= self._buffer_size:
             self.flush()
@@ -525,8 +525,8 @@ def update_provenance(db: "HistoryDB", snap: "DashboardSnapshot") -> int:
         try:
             db.update_datapoint_source(key, prov)
             count += 1
-        except Exception:
-            pass  # don't crash collection on provenance failure
+        except Exception as exc:
+            _prov_log.debug("Provenance update failed for %s: %s", key, exc)
     return count
 
 

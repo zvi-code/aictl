@@ -1200,8 +1200,8 @@ class _DashboardHandler(BaseHTTPRequestHandler):
                 msg = cls()
                 msg.ParseFromString(body)
                 return MessageToDict(msg)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Protobuf parse failed: %s", exc)
 
         logger.warning(
             "OTel: invalid body (Content-Type: %s, %d bytes)",
@@ -2813,8 +2813,8 @@ def _load_template() -> str:
                                capture_output=True, timeout=120)
             subprocess.run(["npm", "run", "build"], cwd=ui_dir, check=True,
                            capture_output=True, timeout=60)
-        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            logger.warning("npm build failed (dashboard UI may be stale): %s", exc)
         # Re-check after build
         if dist_path.exists():
             tpl_path = dist_path
