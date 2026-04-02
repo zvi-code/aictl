@@ -62,3 +62,13 @@ _temp/
 *.png
 !docs/screenshots/*.png
 session-investigation.md
+
+# scratch / temp files
+_test_*.py
+aictl.log
+const-issue.md
+package-lock.json
+
+# editor/tool settings (user-specific)
+.gemini/
+.vscode/
