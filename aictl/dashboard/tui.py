@@ -33,6 +33,7 @@ from textual.widgets import (
 )
 
 from .models import DashboardSnapshot, STATUS_COLOURS, SOURCE_LABELS
+from .view_helpers import compute_tool_summary, safe_float, format_duration
 from ..orchestrator import collect
 from ..tools import TOOL_LABELS, TOOL_COLORS, DEFAULT_TOOL_COLOR, TOOL_ICONS, DEFAULT_TOOL_ICON
 
@@ -431,11 +432,8 @@ class DashboardApp(App):
             colour = TOOL_COLOURS.get(tr.tool, "white")
             icon = TOOL_ICONS.get(tr.tool, DEFAULT_TOOL_ICON)
             label = TOOL_LABELS.get(tr.tool, tr.label)
-            tok = sum(f.tokens for f in tr.files)
-            cpu = sum(float(p.cpu_pct) for p in tr.processes
-                      if p.cpu_pct.replace('.', '', 1).isdigit())
-            mem = sum(float(p.mem_mb) for p in tr.processes
-                      if p.mem_mb.replace('.', '', 1).isdigit())
+            ts = compute_tool_summary(tr)
+            tok, cpu, mem = ts.total_tokens, ts.total_cpu, ts.total_mem
             anom = sum(1 for p in tr.processes if p.anomalies)
 
             # Check for telemetry errors
@@ -489,7 +487,7 @@ class DashboardApp(App):
             for p in tr.processes:
                 all_procs.append((tr, p))
         # Sort by memory descending
-        all_procs.sort(key=lambda x: -(float(x[1].mem_mb) if x[1].mem_mb.replace('.', '', 1).isdigit() else 0))
+        all_procs.sort(key=lambda x: -safe_float(x[1].mem_mb))
         for tr, p in all_procs:
             anom_str = "; ".join(p.anomalies) if p.anomalies else ""
             cleanup = getattr(p, "cleanup_cmd", None) or ""
@@ -635,7 +633,7 @@ class DashboardApp(App):
             sid = s.get("session_id", "")
             short_id = (sid[:12] + "…") if len(sid) > 12 else sid
             dur_s = s.get("duration_s", 0)
-            dur = _format_dur(dur_s)
+            dur = format_duration(dur_s)
             cpu = f"{s.get('cpu_percent', 0):.1f}%"
             in_tok = _human_tokens(s.get("exact_input_tokens", 0))
             out_tok = _human_tokens(s.get("exact_output_tokens", 0))
@@ -871,15 +869,6 @@ from functools import partial
 from ..utils import human_size as _human_size, human_tokens, rel_display as _rel_display
 
 _human_tokens = partial(human_tokens, suffix=True)
-
-
-def _format_dur(dur_s: float) -> str:
-    """Format a duration in seconds to a human-readable string."""
-    if dur_s < 60:
-        return f"{dur_s:.0f}s"
-    if dur_s < 3600:
-        return f"{dur_s // 60:.0f}m {dur_s % 60:.0f}s"
-    return f"{dur_s // 3600:.0f}h {(dur_s % 3600) // 60:.0f}m"
 
 
 def _human_rate(n: float) -> str:
