@@ -190,6 +190,23 @@ def path():
     click.echo(config_path())
 
 
+def _find_project_root() -> Path:
+    """Find the aictl source root (directory containing pyproject.toml).
+
+    When installed via pipx, __file__ points into site-packages, not the
+    source tree.  Walk up from cwd first, then fall back to __file__.
+    """
+    for anchor in (Path.cwd(), Path(__file__).resolve()):
+        p = anchor
+        for _ in range(10):
+            if (p / "pyproject.toml").is_file() and (p / "aictl").is_dir():
+                return p
+            if p.parent == p:
+                break
+            p = p.parent
+    return None
+
+
 @click.command("build-ui")
 def build_ui():
     """Build the dashboard frontend (npm run build).
@@ -200,7 +217,10 @@ def build_ui():
     import shutil
     import subprocess
 
-    root = Path(__file__).parent.parent.parent
+    root = _find_project_root()
+    if root is None:
+        raise click.ClickException(
+            "Cannot find aictl source tree. Run this from the project directory.")
     ui_dir = root / "aictl" / "dashboard" / "ui"
     dist_dir = root / "aictl" / "dashboard" / "dist"
 
@@ -247,7 +267,10 @@ def reinstall(skip_ui):
     import shutil
     import subprocess
 
-    root = Path(__file__).parent.parent.parent
+    root = _find_project_root()
+    if root is None:
+        raise click.ClickException(
+            "Cannot find aictl source tree. Run this from the project directory.")
     ui_dir = root / "aictl" / "dashboard" / "ui"
 
     # ── Step 1: UI build ────────────────────────────────────────────────────
@@ -272,7 +295,7 @@ def reinstall(skip_ui):
     # ── Step 2: Python reinstall ────────────────────────────────────────────
     pipx = shutil.which("pipx")
     if pipx:
-        click.echo("→ Reinstalling via pipx (--force --editable)...")
+        click.echo(f"→ Reinstalling via pipx (--force --editable) from {root}...")
         try:
             subprocess.run(
                 [pipx, "install", "--force", "-e", f"{root}[all]"],
@@ -285,7 +308,7 @@ def reinstall(skip_ui):
         pip = shutil.which("pip3") or shutil.which("pip")
         if not pip:
             raise click.ClickException("Neither pipx nor pip found on PATH")
-        click.echo("→ Reinstalling via pip (editable)...")
+        click.echo(f"→ Reinstalling via pip (editable) from {root}...")
         try:
             subprocess.run(
                 [pip, "install", "-e", f"{root}[all]"],
