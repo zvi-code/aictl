@@ -13,6 +13,7 @@ from pathlib import Path
 
 import click
 
+from ..cli_context import CliContext
 from ..platforms import config_path, load_config, show_config, write_default_config
 
 
@@ -35,8 +36,8 @@ def _resolve_db_path(db_path: str | None) -> Path:
 @click.pass_context
 def db(ctx, db_path):
     """Database maintenance — compact, vacuum, stats."""
-    ctx.ensure_object(dict)
-    ctx.obj["db_path"] = db_path
+    ctx.ensure_object(CliContext)
+    ctx.obj.db_path = db_path
 
 
 @db.command()
@@ -55,7 +56,7 @@ def compact(ctx, vacuum):
     """
     from ..storage import HistoryDB
 
-    db_path = ctx.obj.get("db_path")
+    db_path = ctx.obj.db_path
     path = _resolve_db_path(db_path)
 
     size_before = path.stat().st_size
@@ -96,7 +97,7 @@ def stats(ctx):
     """Show database size, row counts, and time ranges."""
     from ..storage import HistoryDB
 
-    db_path = ctx.obj.get("db_path")
+    db_path = ctx.obj.db_path
     path = _resolve_db_path(db_path)
 
     hist_db = HistoryDB(db_path=db_path)
@@ -138,7 +139,7 @@ def reset(ctx, yes):
     """
     from ..storage import HistoryDB, DEFAULT_DB_PATH
 
-    db_path = ctx.obj.get("db_path")
+    db_path = ctx.obj.db_path
     path = Path(db_path) if db_path else DEFAULT_DB_PATH
 
     if path.exists():
@@ -267,8 +268,8 @@ def catalog(ctx, out_path, fmt, tab, source_type, db_path):
       aictl catalog validate               # check for gaps
     """
     if ctx.invoked_subcommand is not None:
-        ctx.ensure_object(dict)
-        ctx.obj["db_path"] = db_path
+        ctx.ensure_object(CliContext)
+        ctx.obj.db_path = db_path
         return
 
     from ..storage import HistoryDB
@@ -303,7 +304,7 @@ def sync(ctx):
     run repeatedly — uses INSERT OR REPLACE.
     """
     from ..storage import HistoryDB
-    db_path = ctx.obj.get("db_path") if ctx.obj else None
+    db_path = ctx.obj.db_path if ctx.obj else None
     db = HistoryDB(db_path=db_path)
     count = db.sync_datapoint_catalog()
     db.close()
@@ -324,7 +325,7 @@ def validate(ctx, fix):
     """
     from ..storage import HistoryDB
 
-    db_path = ctx.obj.get("db_path") if ctx.obj else None
+    db_path = ctx.obj.db_path if ctx.obj else None
     db = HistoryDB(db_path=db_path)
     entries = db.query_datapoint_catalog()
 
