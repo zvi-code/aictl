@@ -34,7 +34,7 @@ def import_cmd(root_dir, profile, prefer, from_tools, dry_run):
         WriteGuard.install("import")
     root = Path(root_dir).resolve()
     if not root.is_dir():
-        raise SystemExit(f"Not a directory: {root}")
+        raise click.ClickException(f"Not a directory: {root}")
 
     tool_names = [t.strip() for t in from_tools.split(",")]
 
@@ -101,7 +101,7 @@ def build(root_dir, profile, out_dir, plugin_name, plugin_desc, plugin_version, 
         WriteGuard.install("plugin build")
     root = Path(root_dir).resolve()
     if not root.is_dir():
-        raise SystemExit(f"Not a directory: {root}")
+        raise click.ClickException(f"Not a directory: {root}")
 
     output = Path(out_dir).resolve() if out_dir else root / "plugin"
 
@@ -120,7 +120,7 @@ def build(root_dir, profile, out_dir, plugin_name, plugin_desc, plugin_version, 
     # CLI flags override [plugin] section values
     plugin_name = plugin_name or meta.get("name")
     if not plugin_name:
-        raise SystemExit("Plugin name is required: use --name or add 'name: ...' in [plugin] section")
+        raise click.ClickException("Plugin name is required: use --name or add 'name: ...' in [plugin] section")
     plugin_desc = plugin_desc or meta.get("description", "")
     plugin_version = plugin_version or meta.get("version", "1.0.0")
     author = author or meta.get("author", "")

@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import time
 from collections import Counter
 from pathlib import Path
@@ -24,8 +23,7 @@ def _resolve_db_path(db_path: str | None) -> Path:
     from ..storage import DEFAULT_DB_PATH
     path = Path(db_path) if db_path else DEFAULT_DB_PATH
     if not path.exists():
-        click.echo(f"Database not found: {path}", err=True)
-        sys.exit(1)
+        raise click.ClickException(f"Database not found: {path}")
     return path
 
 
@@ -206,8 +204,7 @@ def build_ui():
     dist_dir = root / "aictl" / "dashboard" / "dist"
 
     if not ui_dir.is_dir():
-        click.echo(f"Error: UI source directory not found at {ui_dir}", err=True)
-        sys.exit(1)
+        raise click.ClickException(f"UI source directory not found at {ui_dir}")
 
     click.echo(f"Building UI in {ui_dir}...")
 
@@ -216,21 +213,18 @@ def build_ui():
     try:
         subprocess.run(["npm", "install"], cwd=ui_dir, check=True)
     except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        click.echo(f"Error: npm install failed. Make sure Node.js/npm is installed. ({exc})", err=True)
-        sys.exit(1)
+        raise click.ClickException(f"npm install failed. Make sure Node.js/npm is installed. ({exc})")
 
     # 2. npm run build
     click.echo("Running npm run build...")
     try:
         subprocess.run(["npm", "run", "build"], cwd=ui_dir, check=True)
     except subprocess.CalledProcessError as exc:
-        click.echo(f"Error: npm build failed ({exc})", err=True)
-        sys.exit(1)
+        raise click.ClickException(f"npm build failed ({exc})")
 
     # 3. Verify
     if not dist_dir.is_dir():
-        click.echo(f"Error: Build completed but {dist_dir} not found", err=True)
-        sys.exit(1)
+        raise click.ClickException(f"Build completed but {dist_dir} not found")
 
     click.secho("\nUI build successful!", fg="green", bold=True)
     click.echo(f"Assets located in: {dist_dir}")
@@ -277,8 +271,7 @@ def catalog(ctx, out_path, fmt, tab, source_type, db_path):
     db.close()
 
     if not entries:
-        click.echo("No catalog entries found. Run 'aictl catalog sync' to seed the DB.", err=True)
-        sys.exit(1)
+        raise click.ClickException("No catalog entries found. Run 'aictl catalog sync' to seed the DB.")
 
     if fmt == "json":
         output = json.dumps(entries, indent=2, default=str)
@@ -396,7 +389,7 @@ def validate(ctx, fix):
             click.echo(f"Synced {count} entries. Re-run validate to check.")
         else:
             click.echo("\nRun with --fix to auto-sync from YAML files.")
-        sys.exit(1)
+        raise SystemExit(1)
     else:
         click.echo("\nAll checks passed.")
 
