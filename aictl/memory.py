@@ -13,9 +13,29 @@ aictl only renames directories. Never reads/writes memory content.
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import os
 import re
+import time
+from dataclasses import dataclass, asdict
 from pathlib import Path, PurePosixPath
+
+log = logging.getLogger(__name__)
+
+SWAP_MARKER = ".aictl-swap-in-progress"
+
+
+@dataclass
+class SwapResult:
+    stashed: str | None  # profile that was stashed away
+    restored: str | None  # profile that was restored
+    recovered: bool  # whether crash recovery ran
+    created: bool = False  # whether a fresh memory dir was created
+
+    def __getitem__(self, key: str):
+        """Dict-style access for backward compatibility."""
+        return getattr(self, key)
 
 
 def _memory_key(root: Path, profile: str | None) -> str:
@@ -161,38 +181,96 @@ def _find_project_dir(root: Path) -> Path | None:
     return None
 
 
-def swap_memory(root: Path, old_profile: str | None, new_profile: str | None) -> dict | None:
-    """Swap memory for profile change at given root."""
+def swap_memory(root: Path, old_profile: str | None, new_profile: str | None) -> SwapResult | None:
+    """Swap memory for profile change at given root.
+
+    Writes a WAL marker before any renames so an incomplete swap can be
+    detected and recovered by :func:`recover_swap`.
+    """
     proj = _find_project_dir(root)
     if not proj:
         return None
 
     mem = proj / "memory"
-    result = {"stashed": None, "restored": None, "created": False}
+    result = SwapResult(stashed=None, restored=None, recovered=False, created=False)
 
-    # Stash current
-    if old_profile and mem.is_dir():
-        stash = proj / f"memory--{old_profile}"
-        if stash.exists():
-            import time
-            stash.rename(proj / f"memory--{old_profile}.bak.{int(time.time())}")
-        mem.rename(stash)
-        result["stashed"] = old_profile
+    # Write WAL marker before any filesystem mutations
+    marker = proj / SWAP_MARKER
+    plan = {"old_profile": old_profile, "new_profile": new_profile, "timestamp": time.time()}
+    marker.write_text(json.dumps(plan))
 
-    # Restore new
-    if new_profile:
-        restore = proj / f"memory--{new_profile}"
-        if restore.is_dir():
-            if mem.is_dir():
-                import time
-                mem.rename(proj / f"memory--_unstashed.{int(time.time())}")
-            restore.rename(mem)
-            result["restored"] = new_profile
-        elif not mem.is_dir():
-            mem.mkdir(parents=True)
-            result["created"] = True
+    try:
+        # Stash current
+        if old_profile and mem.is_dir():
+            stash = proj / f"memory--{old_profile}"
+            if stash.exists():
+                stash.rename(proj / f"memory--{old_profile}.bak.{int(time.time())}")
+            mem.rename(stash)
+            result.stashed = old_profile
+
+        # Restore new
+        if new_profile:
+            restore = proj / f"memory--{new_profile}"
+            if restore.is_dir():
+                if mem.is_dir():
+                    mem.rename(proj / f"memory--_unstashed.{int(time.time())}")
+                restore.rename(mem)
+                result.restored = new_profile
+            elif not mem.is_dir():
+                mem.mkdir(parents=True)
+                result.created = True
+    finally:
+        # Remove marker on completion (success or handled failure)
+        if marker.exists():
+            marker.unlink()
 
     return result
+
+
+def recover_swap(root: Path) -> bool:
+    """Check for incomplete swap and recover. Returns True if recovery was needed."""
+    proj = _find_project_dir(root)
+    if not proj:
+        return False
+
+    marker = proj / SWAP_MARKER
+    if not marker.exists():
+        return False
+
+    try:
+        plan = json.loads(marker.read_text())
+    except (json.JSONDecodeError, OSError):
+        log.warning("Corrupt swap marker at %s — removing", marker)
+        marker.unlink(missing_ok=True)
+        return True
+
+    old_profile = plan.get("old_profile")
+    new_profile = plan.get("new_profile")
+    mem = proj / "memory"
+
+    log.warning(
+        "Found incomplete memory swap (old=%s, new=%s, ts=%s) — recovering",
+        old_profile, new_profile, plan.get("timestamp"),
+    )
+
+    # If old_profile was being stashed and the stash dir exists but
+    # memory/ does not, the stash rename completed — try to continue
+    # with the restore phase.
+    if new_profile:
+        restore = proj / f"memory--{new_profile}"
+        if restore.is_dir() and not mem.is_dir():
+            try:
+                restore.rename(mem)
+                log.warning("Recovery: restored profile %s", new_profile)
+            except OSError as exc:
+                log.warning("Recovery: failed to restore %s: %s", new_profile, exc)
+
+    # If old_profile stash failed (memory/ still exists, stash does not)
+    # the swap never started — nothing to undo.
+
+    marker.unlink(missing_ok=True)
+    log.warning("Swap recovery complete, marker removed")
+    return True
 
 
 def list_stashes(root: Path) -> list[dict]:
