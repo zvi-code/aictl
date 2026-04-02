@@ -231,6 +231,73 @@ def build_ui():
     click.echo(f"Assets located in: {dist_dir}")
 
 
+@click.command("reinstall")
+@click.option("--skip-ui", is_flag=True, help="Skip dashboard UI build")
+def reinstall(skip_ui):
+    """Rebuild and reinstall aictl so code changes take effect.
+
+    \b
+    This runs:
+      1. npm install + build (dashboard UI)    — skip with --skip-ui
+      2. pipx install --force -e ".[all]"      — reinstalls the CLI
+
+    Use this after pulling changes or editing source code. Without it,
+    the installed 'aictl' command runs stale copies from site-packages.
+    """
+    import shutil
+    import subprocess
+
+    root = Path(__file__).parent.parent.parent
+    ui_dir = root / "aictl" / "dashboard" / "ui"
+
+    # ── Step 1: UI build ────────────────────────────────────────────────────
+    if skip_ui:
+        click.echo("⏭  Skipping UI build (--skip-ui)")
+    elif not ui_dir.is_dir():
+        click.echo("⏭  UI source not found, skipping")
+    else:
+        click.echo("→ Building dashboard UI...")
+        try:
+            if not (ui_dir / "node_modules").is_dir():
+                subprocess.run(["npm", "install"], cwd=ui_dir, check=True,
+                               capture_output=True)
+            subprocess.run(["npm", "run", "build"], cwd=ui_dir, check=True,
+                           capture_output=True)
+            click.secho("  ✅ UI built", fg="green")
+        except FileNotFoundError:
+            click.secho("  ⚠ npm not found — skipping UI build", fg="yellow")
+        except subprocess.CalledProcessError as exc:
+            click.secho(f"  ⚠ UI build failed: {exc}", fg="yellow")
+
+    # ── Step 2: Python reinstall ────────────────────────────────────────────
+    pipx = shutil.which("pipx")
+    if pipx:
+        click.echo("→ Reinstalling via pipx (--force --editable)...")
+        try:
+            subprocess.run(
+                [pipx, "install", "--force", "-e", f"{root}[all]"],
+                check=True,
+            )
+            click.secho("✅ aictl reinstalled", fg="green", bold=True)
+        except subprocess.CalledProcessError as exc:
+            raise click.ClickException(f"pipx install failed: {exc}")
+    else:
+        pip = shutil.which("pip3") or shutil.which("pip")
+        if not pip:
+            raise click.ClickException("Neither pipx nor pip found on PATH")
+        click.echo("→ Reinstalling via pip (editable)...")
+        try:
+            subprocess.run(
+                [pip, "install", "-e", f"{root}[all]"],
+                check=True,
+            )
+            click.secho("✅ aictl reinstalled", fg="green", bold=True)
+        except subprocess.CalledProcessError as exc:
+            raise click.ClickException(f"pip install failed: {exc}")
+
+    click.echo("\nRun 'aictl --version' to verify.")
+
+
 # ─── catalog ─────────────────────────────────────────────────────────────────
 
 

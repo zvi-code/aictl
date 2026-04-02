@@ -158,14 +158,25 @@ pipx inject aictl watchdog
 ### Development install
 
 ```bash
-# If using pipx (recommended — keeps the `aictl` command working):
-pipx install --force -e ".[all]"
+# Recommended: use make (does everything)
+make install          # builds UI + reinstalls Python package
 
-# Or plain pip (won't update the pipx-installed `aictl` command):
-pip install -e ".[all]"
+# Or use the CLI command (works even with a stale install):
+aictl reinstall       # builds UI + pipx install --force -e ".[all]"
+aictl reinstall --skip-ui  # skip the npm build
+
+# Or manually:
+pipx install --force -e ".[all]"   # Python only
+npm run build --prefix aictl/dashboard/ui  # UI only
 ```
 
-> **Tip:** If you get `No such command 'daemon'` after pulling new code, run `pipx install --force -e ".[all]"` to re-register all commands.
+> **Why is this needed?** `pipx install` copies files into an isolated
+> virtualenv. Source edits are not picked up until you reinstall.
+> The `-e` (editable) flag avoids this, but `--force` is still required
+> to re-register new CLI commands.
+
+> **Tip:** If you get `No such command 'daemon'` after pulling new code,
+> run `make install` to rebuild everything.
 
 ## How It Works
 
