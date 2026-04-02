@@ -16,7 +16,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .collectors import BaseCollector
+from .collectors import BaseCollector, build_collectors
 from .collectors.process import WatchdogFileCollector
 from .collectors.network import (
     LinuxNetworkCollector,
@@ -202,16 +202,7 @@ class MonitorRuntime:
         print(render_text_snapshot(snapshot))
 
     def _build_collectors(self):
-        collectors = [
-            PsutilProcessCollector(self.config),
-            _select_network_collector(self.config),
-            DiscoveryCollector(self.config, interval=10.0, include_processes=True),
-        ]
-        if self.config.filesystem_enabled:
-            collectors.append(WatchdogFileCollector(self.config))
-        if self.config.telemetry_enabled:
-            collectors.append(StructuredTelemetryCollector(self.config))
-        return collectors
+        return build_collectors(self.config)
 
 
 def render_text_snapshot(snapshot: MonitorSnapshot) -> str:
