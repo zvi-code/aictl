@@ -1,0 +1,27 @@
+{
+  "generated_at": "2026-04-02T20:06:18Z",
+  "git": {
+    "head_commit": "be87968",
+    "head_date": "2026-04-02 23:06:09 +0300",
+    "checkpoint_commit": "2cb3cfd",
+    "commits_since_checkpoint": 2,
+    "changed_files_since_checkpoint": "_test_gemini/.context.toml,_test_gemini/.gemini/commands/test.md,_test_gemini/GEMINI.md,aictl/cli.py,aictl/commands/admin.py,aictl/commands/ctx_pipeline.py,aictl/commands/import_plugin.py,aictl/commands/integrations.py,aictl/context.py,aictl/dashboard/dist/assets/index-BaVaGeXv.js,aictl/dashboard/dist/index.html,aictl/dashboard/tui.py,aictl/dashboard/ui/src/app.js,aictl/dashboard/ui/src/components/TabToolConfig.js,aictl/dashboard/web_server.py,aictl/data/tool-configs.yaml,aictl/emitters/__init__.py,aictl/emitters/gemini.py,aictl/importers/__init__.py,aictl/importers/gemini.py,aictl/monitoring/collectors/network.py,aictl/monitoring/collectors/process.py,aictl/monitoring/tool_config.py,aictl/monitoring/tool_telemetry.py,aictl/orchestrator.py,aictl/platforms.py,aictl/sink.py,aictl/storage.py,aictl/tools.py"
+  },
+  "checkpoint": {
+    "exists": true,
+    "date": "2026-04-02 10:00",
+    "stale": true
+  },
+  "work": {
+    "has_work": true,
+    "open_checklist_items": ["**Plugin marketplace integration** — `aictl plugin publish` to submit to the official marketplace. (open — not aligned with current direction, see wip/open-items/plugin-marketplace.md)"],
+    "open_sections": ["Plugin Ecosystem"],
+    "deferred_items": [],
+    "wip_files_with_open_items": [],
+    "open_item_count": 1,
+    "open_section_count": 1
+  },
+  "tests": {
+    "test_file_count": 23
+  }
+}
