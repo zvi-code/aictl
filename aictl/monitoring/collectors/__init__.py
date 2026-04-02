@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
-from typing import Any, ClassVar, TYPE_CHECKING
+from typing import Any, Callable, ClassVar, TYPE_CHECKING
 
 from ...data.schema import metric_name as M
 
@@ -94,3 +94,60 @@ class BaseCollector(ABC):
 
     async def sleep(self, seconds: float) -> None:
         await asyncio.sleep(seconds)
+
+
+# ── Collector registry ───────────────────────────────────────────────────────
+
+# Registry: name → (factory_callable, config_check)
+# config_check is a callable(MonitorConfig) → bool that determines if collector is enabled
+_COLLECTOR_REGISTRY: dict[str, tuple[type | Callable, Callable]] = {}
+
+
+def register_collector(
+    name: str,
+    cls: type | Callable,
+    enabled_check: Callable[["MonitorConfig"], bool] = lambda cfg: True,
+) -> None:
+    """Register a collector class (or factory) with the registry."""
+    _COLLECTOR_REGISTRY[name] = (cls, enabled_check)
+
+
+def build_collectors(config: "MonitorConfig") -> list[BaseCollector]:
+    """Build all enabled collectors from the registry."""
+    collectors: list[BaseCollector] = []
+    for _name, (cls_or_factory, enabled_check) in _COLLECTOR_REGISTRY.items():
+        if enabled_check(config):
+            collectors.append(cls_or_factory(config))
+    return collectors
+
+
+def _register_builtins() -> None:
+    """Register all built-in collectors. Called once at import time."""
+    from .process import PsutilProcessCollector, WatchdogFileCollector
+    from .telemetry import StructuredTelemetryCollector
+
+    # _select_network_collector lives in runtime; import lazily to avoid circular dep
+    def _network_factory(config: "MonitorConfig") -> BaseCollector:
+        from ..runtime import _select_network_collector
+        return _select_network_collector(config)
+
+    def _discovery_factory(config: "MonitorConfig") -> BaseCollector:
+        from ..runtime import DiscoveryCollector
+        return DiscoveryCollector(config, interval=10.0, include_processes=True)
+
+    register_collector("process", PsutilProcessCollector)
+    register_collector("network", _network_factory)
+    register_collector("discovery", _discovery_factory)
+    register_collector(
+        "filesystem",
+        WatchdogFileCollector,
+        enabled_check=lambda cfg: cfg.filesystem_enabled,
+    )
+    register_collector(
+        "telemetry",
+        StructuredTelemetryCollector,
+        enabled_check=lambda cfg: cfg.telemetry_enabled,
+    )
+
+
+_register_builtins()
