@@ -427,11 +427,8 @@ def _render_tool_cards(snap: DashboardSnapshot, root: Path, home: Path) -> list[
             </details>"""
 
         colour = _tool_colour(tr.tool)
-        total_tokens = sum(f.tokens for f in tr.files)
-        total_cpu = sum(float(p.cpu_pct) for p in tr.processes
-                        if p.cpu_pct.replace('.', '', 1).isdigit())
-        total_mem = sum(float(p.mem_mb) for p in tr.processes
-                        if p.mem_mb.replace('.', '', 1).isdigit())
+        ts = compute_tool_summary(tr)
+        total_tokens, total_cpu, total_mem = ts.total_tokens, ts.total_cpu, ts.total_mem
 
         badge_parts = []
         if tr.files:
@@ -826,6 +823,7 @@ def _empty_card(msg: str) -> str:
 
 
 from ..utils import human_size as _human_size, human_tokens as _human_tokens, rel_display as _rel
+from .view_helpers import compute_tool_summary, safe_float
 
 
 def _tool_colour(tool: str) -> str:
