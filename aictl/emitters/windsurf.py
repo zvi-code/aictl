@@ -9,41 +9,38 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from ..resolver import Resolved
-from ..utils import write_safe, estimate_tokens, encode_scope, wrap_deployed, merge_json_block, emit_file
+from ..utils import wrap_deployed, emit_file
+from ._helpers import emit_sub_scope, emit_mcp_servers
 
 NAME = "windsurf"
 
 
+def _windsurf_frontmatter(glob: str) -> str:
+    return f'---\ntrigger: always\npaths:\n  - "{glob}"\n---\n\n'
+
+
 def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
     results = []
-    rules = root / ".windsurf" / "rules"
 
     for scope in resolved.scopes:
-        src = scope.rel_path
-        combined = scope.base
-        if scope.profile_text:
-            combined += "\n\n" + scope.profile_text
-
         if scope.is_root:
             # Root → .windsurfrules (single project-wide rules file)
+            combined = scope.base
+            if scope.profile_text:
+                combined += "\n\n" + scope.profile_text
             if combined:
-                emit_file(root / ".windsurfrules", wrap_deployed(combined, src), dry_run, results)
+                emit_file(root / ".windsurfrules", wrap_deployed(combined, scope.rel_path), dry_run, results)
         else:
-            # Sub-scope → .windsurf/rules/{scope}.md with YAML frontmatter
-            if combined:
-                safe = encode_scope(src).replace("--", "-")
-                glob = f"{src}/**"
-                emit_file(rules / f"{safe}.md",
-                          f'---\ntrigger: always\npaths:\n  - "{glob}"\n---\n\n' + wrap_deployed(combined, src),
-                          dry_run, results)
+            emit_sub_scope(
+                scope, rules_dir=root / ".windsurf" / "rules", ext=".md",
+                frontmatter_fn=_windsurf_frontmatter,
+                dry_run=dry_run, results=results,
+            )
 
-    if resolved.mcp_servers:
-        fp = root / ".windsurf" / "mcp.json"
-        emit_file(fp, merge_json_block(fp, "mcpServers", resolved.mcp_servers) if not dry_run else json.dumps({"mcpServers": resolved.mcp_servers}, indent=2) + "\n", dry_run, results)
+    emit_mcp_servers(root / ".windsurf" / "mcp.json", "mcpServers", resolved, dry_run, results)
 
     return results
 
