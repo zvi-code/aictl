@@ -111,9 +111,11 @@ pipx install --force ".[all]"
 pipx install .
 ```
 
-> **After updating source code**, you must reinstall for the `aictl` command to pick up changes:
+> **After updating source code**, reinstall for changes to take effect:
 > ```bash
-> pipx install --force -e ".[all]"   # editable + all extras
+> make install                        # recommended: rebuilds UI + reinstalls
+> # or: aictl reinstall               # same thing, from the CLI
+> # or: pipx install --force -e ".[all]"  # manual
 > ```
 
 ### Get pipx
@@ -597,6 +599,9 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 | `aictl db stats` | Show database size, table row counts, and time range |
 | `aictl db compact` | Downsample old data, delete expired rows, reclaim space |
 | `aictl db reset` | Delete the history database and initialise a fresh empty one |
+| `aictl build-ui` | Build the dashboard frontend (npm install + Vite build) |
+| `aictl reinstall` | Rebuild UI + reinstall Python package so code changes take effect |
+| `aictl reinstall --skip-ui` | Reinstall Python package only (faster, skips npm build) |
 
 ### Import options
 
@@ -741,7 +746,7 @@ pipx install --force ".[all]"
 
 **`pipx install` silently skips (already installed)**
 
-Always use `--force` to update an existing install:
+Always use `--force` to update an existing install (or use `make install`):
 
 ```powershell
 pipx install --force ".[all]"
@@ -769,7 +774,8 @@ python test\run.py -v   # verbose
 ### Unit tests
 
 ```bash
-python3 -m pytest test/ -v            # all tests
+make test                              # quick: runs full suite
+python3 -m pytest test/ -v            # all tests (verbose)
 python3 -m pytest test/test_dashboard.py -v   # dashboard + SSE contract tests
 python test/run.py                     # integration tests (deploy, import, scan)
 python test/run.py -v                  # verbose
