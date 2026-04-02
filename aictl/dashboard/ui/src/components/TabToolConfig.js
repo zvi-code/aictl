@@ -81,6 +81,23 @@ const TIPS = {
   hasCompletedOnboarding: 'Whether the initial Claude Code onboarding flow has been completed.',
   project_settings:     'A .claude/settings.json exists in this project with project-specific configuration.',
   project_permissions:  'Project settings include a permissions block controlling tool access.',
+  // Gemini CLI
+  vimMode:              'Enables Vim-style keybindings in the Gemini CLI.',
+  approvalMode:         'Tool execution mode: default (prompt), auto_edit (auto-approve edits), or plan (read-only).',
+  notifications:        'Enables OS notifications for prompt alerts and session completion.',
+  respectGeminiIgnore:  'Controls whether the CLI respects patterns in .geminiignore files.',
+  additionalIgnores:    'Number of extra patterns added to the global file ignore list.',
+  lineNumbers:          'Shows line numbers in code blocks within the chat interface.',
+  alternateScreen:      'Uses the terminal alternate buffer to preserve shell scrollback history.',
+  hideContext:          'Hides the summary of attached files/context above the input prompt.',
+  // Gemini CLI - Thinking
+  effort:               'Reasoning effort level for the model (e.g., standard, high).',
+  temperature:          'Sampling temperature for model requests. 0 = deterministic; higher = more creative.',
+  budget:               'Maximum token budget for reasoning/extended thinking.',
+  // Gemini CLI - Agent
+  coreTools:            'Number of built-in tools explicitly enabled for the agent.',
+  excludeTools:         'Number of tools explicitly disabled for safety or cost control.',
+  customAgents:         'Number of custom agent definitions discovered (.agent.md, AGENTS.md, or .gemini/agents/*.md).',
   // Claude Desktop modes
   sidebarMode:          'Controls whether Claude Desktop opens as a sidebar or full window.',
   trustedFolders:       'Number of directories where Claude Code (embedded in Desktop) can run without additional permission prompts.',

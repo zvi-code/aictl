@@ -22,9 +22,9 @@ from ..utils import write_safe, estimate_tokens
 @click.command("import")
 @click.option("-r", "--root", "root_dir", default=".", help="Root directory to import from")
 @click.option("-p", "--profile", help="Override detected profile name")
-@click.option("--prefer", type=click.Choice(["claude", "copilot", "cursor", "windsurf"]),
+@click.option("--prefer", type=click.Choice(["claude", "copilot", "cursor", "windsurf", "gemini"]),
               help="Preferred source when tools disagree")
-@click.option("--from", "from_tools", default="claude,copilot,cursor,windsurf,plugin",
+@click.option("--from", "from_tools", default="claude,copilot,cursor,windsurf,gemini,plugin",
               help="Comma-separated importers to read from")
 @click.option("--dry-run", is_flag=True, help="Show what would be written")
 def import_cmd(root_dir, profile, prefer, from_tools, dry_run):

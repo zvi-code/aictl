@@ -212,7 +212,7 @@ def _watch_loop(root: Path, profile: str | None, emitter_names: list[str], dry_r
 @click.command()
 @click.option("-r", "--root", "root_dir", default=".", help="Root directory to deploy from")
 @click.option("-p", "--profile", help="Active profile (debug, docs, review, ...)")
-@click.option("-e", "--emit", "emitters", default="claude,copilot,cursor,windsurf", help="Comma-separated emitters")
+@click.option("-e", "--emit", "emitters", default="claude,copilot,cursor,windsurf,gemini", help="Comma-separated emitters")
 @click.option("--dry-run", is_flag=True, help="Show what would be written")
 @click.option("--watch", is_flag=True, help="Re-deploy when .toml files change")
 def deploy(root_dir, profile, emitters, dry_run, watch):

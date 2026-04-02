@@ -224,7 +224,7 @@ function RangeBar({globalRange, onPreset, onApplyCustom}) {
 const VERIFIED_TOOLS = new Set([
   'claude-code','claude-desktop',
   'copilot','copilot-vscode','copilot-cli','copilot-jetbrains','copilot-vs','copilot365',
-  'codex-cli',
+  'codex-cli', 'gemini', 'gemini-cli',
 ]);
 
 function ToolFilterBar({snap, enabledTools, onToggle, onSetAll}) {

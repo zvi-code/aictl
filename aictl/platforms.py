@@ -62,6 +62,8 @@ def tool_hint_for_path(path: str) -> str | None:
         return "cursor"
     if "/.windsurf/" in lowered or "/codeium/" in lowered:
         return "windsurf"
+    if "/.gemini/" in lowered or lowered.endswith("gemini.md"):
+        return "gemini-cli"
     return None
 
 
@@ -179,6 +181,13 @@ def teams_global_dir() -> Path:
 def m365agents_global_dir() -> Path:
     """M365 Agents Toolkit global config directory."""
     return _app_dir("M365AgentsToolkit", mac="M365AgentsToolkit", xdg="M365AgentsToolkit")
+
+
+# ── Gemini CLI ──────────────────────────────────────────────────
+
+def gemini_global_dir() -> Path:
+    """~/.gemini  (macOS/Linux)  |  %USERPROFILE%/.gemini  (Windows)"""
+    return _app_dir(".gemini", dot=".gemini", win_env="USERPROFILE")
 
 
 # ── Azure Developer CLI (azd) / Azure AI / PromptFlow ───────────

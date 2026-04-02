@@ -191,6 +191,51 @@ def path():
     click.echo(config_path())
 
 
+@click.command("build-ui")
+def build_ui():
+    """Build the dashboard frontend (npm run build).
+
+    Automates the process of installing dependencies, building the
+    Vite/Preact frontend, and syncing assets to the Python package.
+    """
+    import shutil
+    import subprocess
+
+    root = Path(__file__).parent.parent.parent
+    ui_dir = root / "aictl" / "dashboard" / "ui"
+    dist_dir = root / "aictl" / "dashboard" / "dist"
+
+    if not ui_dir.is_dir():
+        click.echo(f"Error: UI source directory not found at {ui_dir}", err=True)
+        sys.exit(1)
+
+    click.echo(f"Building UI in {ui_dir}...")
+
+    # 1. npm install
+    click.echo("Running npm install...")
+    try:
+        subprocess.run(["npm", "install"], cwd=ui_dir, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        click.echo(f"Error: npm install failed. Make sure Node.js/npm is installed. ({exc})", err=True)
+        sys.exit(1)
+
+    # 2. npm run build
+    click.echo("Running npm run build...")
+    try:
+        subprocess.run(["npm", "run", "build"], cwd=ui_dir, check=True)
+    except subprocess.CalledProcessError as exc:
+        click.echo(f"Error: npm build failed ({exc})", err=True)
+        sys.exit(1)
+
+    # 3. Verify
+    if not dist_dir.is_dir():
+        click.echo(f"Error: Build completed but {dist_dir} not found", err=True)
+        sys.exit(1)
+
+    click.secho("\nUI build successful!", fg="green", bold=True)
+    click.echo(f"Assets located in: {dist_dir}")
+
+
 # ─── catalog ─────────────────────────────────────────────────────────────────
 
 

@@ -88,3 +88,39 @@ windsurf:
       format: json
       extract:
         model: "windsurf.model"
+
+gemini-cli:
+  config_files:
+    - path_fn: gemini_global_dir
+      file: "settings.json"
+      format: json
+      extract:
+        model: "model"
+        vim_mode: "general.vimMode"
+        approval_mode: "general.defaultApprovalMode"
+        auto_update: "general.enableAutoUpdate"
+        notifications: "general.enableNotifications"
+        max_attempts: "general.maxAttempts"
+        line_numbers: "ui.showLineNumbers"
+        alternate_screen: "ui.useAlternateScreen"
+        hide_context: "ui.hideContextSummary"
+        theme: "ui.theme"
+    - path: "{project-root}/.gemini/settings.json"
+      format: json
+      extract:
+        project_settings: "configured"
+  defaults:
+    vim_mode: false
+    approval_mode: "default"
+    auto_update: true
+    notifications: true
+    max_attempts: 3
+    line_numbers: true
+    alternate_screen: true
+    hide_context: false
+  features:
+    hooks:
+      key: "hooks"
+      type: count_events
+    agents:
+      type: md_agent_discovery

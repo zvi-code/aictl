@@ -357,19 +357,19 @@ def _walk(root: Path):
 
 # Feature support by tool: {section_kind: {tool_name: supported}}
 FEATURE_SUPPORT: dict[str, dict[str, bool]] = {
-    "command":    {"claude": True,  "copilot": True,  "cursor": False, "windsurf": False, "copilot365": False},
-    "agent":      {"claude": False, "copilot": True,  "cursor": False, "windsurf": False, "copilot365": True},
-    "skill":      {"claude": True,  "copilot": True,  "cursor": False, "windsurf": False, "copilot365": False},
-    "hook":       {"claude": True,  "copilot": True,  "cursor": False, "windsurf": False, "copilot365": False},
-    "lsp":        {"claude": True,  "copilot": False, "cursor": False, "windsurf": False, "copilot365": False},
-    "setting":    {"claude": True,  "copilot": False, "cursor": False, "windsurf": False, "copilot365": False},
-    "permission": {"claude": True,  "copilot": False, "cursor": False, "windsurf": False, "copilot365": False},
-    "env":        {"claude": True,  "copilot": False, "cursor": False, "windsurf": False, "copilot365": False},
-    "ignore":     {"claude": True,  "copilot": True,  "cursor": True,  "windsurf": False, "copilot365": False},
-    "memory":     {"claude": True,  "copilot": False, "cursor": False, "windsurf": False, "copilot365": False},
+    "command":    {"claude": True,  "copilot": True,  "cursor": False, "windsurf": False, "copilot365": False, "gemini": True},
+    "agent":      {"claude": False, "copilot": True,  "cursor": False, "windsurf": False, "copilot365": True,  "gemini": False},
+    "skill":      {"claude": True,  "copilot": True,  "cursor": False, "windsurf": False, "copilot365": False, "gemini": True},
+    "hook":       {"claude": True,  "copilot": True,  "cursor": False, "windsurf": False, "copilot365": False, "gemini": True},
+    "lsp":        {"claude": True,  "copilot": False, "cursor": False, "windsurf": False, "copilot365": False, "gemini": False},
+    "setting":    {"claude": True,  "copilot": False, "cursor": False, "windsurf": False, "copilot365": False, "gemini": True},
+    "permission": {"claude": True,  "copilot": False, "cursor": False, "windsurf": False, "copilot365": False, "gemini": True},
+    "env":        {"claude": True,  "copilot": False, "cursor": False, "windsurf": False, "copilot365": False, "gemini": True},
+    "ignore":     {"claude": True,  "copilot": True,  "cursor": True,  "windsurf": False, "copilot365": False, "gemini": True},
+    "memory":     {"claude": True,  "copilot": False, "cursor": False, "windsurf": False, "copilot365": False, "gemini": False},
 }
 
-ALL_TOOLS = ["claude", "copilot", "cursor", "windsurf", "copilot365"]
+ALL_TOOLS = ["claude", "copilot", "cursor", "windsurf", "copilot365", "gemini"]
 
 
 def unsupported_tools(kind: str) -> list[str]:
