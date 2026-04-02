@@ -16,6 +16,7 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.timer import Timer
 from textual.widgets import (
@@ -89,7 +90,7 @@ class StatCard(Static):
         self._value = val
         try:
             self.query_one(".stat-value", Label).update(val)
-        except Exception:
+        except NoMatches:
             pass
 
 
@@ -398,11 +399,11 @@ class DashboardApp(App):
         # Update sparklines
         try:
             self.query_one("#cpu-spark", Sparkline).data = self._cpu_history.values
-        except Exception:
+        except NoMatches:
             pass
         try:
             self.query_one("#mem-spark", Sparkline).data = self._mem_history.values
-        except Exception:
+        except NoMatches:
             pass
 
         # Update dynamic tool summaries in left panel
@@ -478,7 +479,7 @@ class DashboardApp(App):
 
         try:
             self.query_one("#tool-summaries", Label).update("\n".join(lines) if lines else "  No resources")
-        except Exception:
+        except NoMatches:
             pass
 
     def _update_proc_table(self, snap: DashboardSnapshot) -> None:
@@ -507,7 +508,7 @@ class DashboardApp(App):
     def _update_file_tree(self, snap: DashboardSnapshot) -> None:
         try:
             tree = self.query_one("#file-tree", Tree)
-        except Exception:
+        except NoMatches:
             return
 
         tree.root.remove_children()
@@ -763,7 +764,7 @@ class DashboardApp(App):
                 )
             else:
                 info.update("No samples in the last hour")
-        except Exception:
+        except NoMatches:
             pass
 
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
@@ -784,7 +785,7 @@ class DashboardApp(App):
             if f.sent_to_llm:
                 meta_parts.append(f"sent:{f.sent_to_llm}")
             detail.update(f"[bold]{rel}[/bold]  {' | '.join(meta_parts)}")
-        except Exception:
+        except NoMatches:
             pass
 
         # Load file content into the File Content tab
@@ -815,7 +816,7 @@ class DashboardApp(App):
         try:
             pane = self.query_one("#file-content-pane", Label)
             pane.update(f"[bold]{rel}[/bold]\n{'─' * 50}\n{content}")
-        except Exception:
+        except NoMatches:
             pass
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -846,7 +847,7 @@ class DashboardApp(App):
                 # Also load full content in the content tab
                 if entry.file:
                     self._load_file_content(entry.file)
-        except Exception:
+        except NoMatches:
             pass
 
     # ── Actions ──────────────────────────────────────────────────

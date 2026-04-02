@@ -12,6 +12,7 @@ Contains:
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import signal
 import subprocess
@@ -20,6 +21,8 @@ import time
 import threading
 import webbrowser
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 from .dashboard.models import DashboardSnapshot, DashboardTool
 from .data.schema import metric_name as M
@@ -102,8 +105,8 @@ class PersistentMonitor:
 
         try:
             self._loop.run_until_complete(_run_forever())
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("Monitor event loop exited: %s", exc)
 
     def snapshot_dict(self) -> dict | None:
         """Take a snapshot from the running runtime (instant, no blocking)."""
@@ -120,7 +123,8 @@ class PersistentMonitor:
                 "events": getattr(snap, "events", []),
                 "sessions": getattr(snap, "sessions", []),
             }
-        except Exception:
+        except Exception as exc:
+            log.debug("snapshot_dict failed: %s", exc)
             return None
 
     def stop(self) -> None:
@@ -185,10 +189,10 @@ class RefreshLoop(threading.Thread):
                 if self._cycle % 100 == 0 and self._store._db:
                     try:
                         self._store._db.compact()
-                    except Exception:
-                        pass
-            except Exception:
-                pass  # don't crash the refresh loop
+                    except Exception as exc:
+                        log.debug("DB compact failed: %s", exc)
+            except Exception as exc:
+                log.warning("Refresh loop error: %s", exc)
             self._stop.wait(self._interval)
 
     def _get_discovery_cache(self):
@@ -355,10 +359,8 @@ def _merge_dashboard_tools(discovered: list[ToolResources], live_monitor: dict) 
         all_tool_names = {s.ai_tool for s in registry.path_specs()} | {s.ai_tool for s in registry.process_specs()}
         for name in sorted(all_tool_names - ui_skip):
             tools_by_name[name] = _make_dt(name)
-    except Exception:
-        pass
-
-    # Merge discovered files/processes (overwrites empty shells)
+    except Exception as exc:
+        log.warning("Registry loading failed: %s", exc)
     for tr in discovered:
         if tr.tool in ui_skip:
             continue
@@ -412,7 +414,7 @@ def _kill_stale_server(port: int) -> None:
             ["lsof", "-ti", f"tcp:{port}"],
             capture_output=True, text=True, timeout=5,
         )
-    except Exception:
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
         return  # lsof unavailable, let the bind fail naturally
     if result.returncode != 0 or not result.stdout.strip():
         return  # port is free
@@ -428,14 +430,14 @@ def _kill_stale_server(port: int) -> None:
             import psutil
             proc = psutil.Process(pid)
             cmdline = " ".join(proc.cmdline())
-        except Exception:
+        except (ImportError, psutil.Error, OSError):
             cmdline = ""
         if "aictl" in cmdline:
             print(f"  killing stale aictl on port {port} (pid {pid})", file=sys.stderr)
             try:
                 os.kill(pid, signal.SIGTERM)
                 psutil.Process(pid).wait(timeout=5)
-            except Exception:
+            except (OSError, psutil.Error):
                 pass
         else:
             name = cmdline.split()[0] if cmdline else f"pid {pid}"
@@ -643,8 +645,8 @@ class SnapshotStore:
                     dq.append((td["ts"][i], td["cpu"][i], td["mem_mb"][i],
                                td["tokens"][i], td["traffic"][i]))
                 self._tool_history[tool_name] = dq
-        except Exception:
-            pass  # don't crash server if DB read fails
+        except Exception as exc:
+            log.warning("Failed to load history from DB: %s", exc)
 
     def update(self, snap: _DashboardSnapshot) -> None:
         with self._condition:
@@ -759,10 +761,10 @@ class SnapshotStore:
                 try:
                     from .sink import update_provenance
                     update_provenance(self._db, snap)
-                except Exception:
-                    pass  # provenance is best-effort
-            except Exception:
-                pass  # don't crash server if DB write fails
+                except Exception as exc:
+                    log.debug("Provenance update failed: %s", exc)
+            except Exception as exc:
+                log.warning("DB write failed: %s", exc)
 
     def _persist_agent_teams(self, agent_teams: list[dict], snapshot_ts: float) -> None:
         """Write agent team data to the sessions, agents, and requests tables."""
@@ -821,8 +823,8 @@ class SnapshotStore:
                             cache_creation_tokens=turn.get("cache_creation_tokens", 0),
                             source="claude-code-jsonl",
                         ))
-        except Exception:
-            pass  # best-effort
+        except Exception as exc:
+            log.warning("Agent team persistence failed: %s", exc)
 
     def _persist_session_events(self, events: list[dict], fallback_ts: float) -> None:
         """Write session_start/session_end events to the sessions table."""
@@ -856,8 +858,8 @@ class SnapshotStore:
                         output_tokens=detail.get("output_tokens", 0),
                         files_modified=detail.get("files_modified", 0),
                     )
-        except Exception:
-            pass  # best-effort
+        except Exception as exc:
+            log.warning("Session event persistence failed: %s", exc)
 
     def wait_for_update(self, known_version: int,
                         timeout: float = 30.0) -> tuple[_DashboardSnapshot | None, int]:

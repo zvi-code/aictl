@@ -904,6 +904,6 @@ def collect_tool_telemetry(root: Path) -> list[ToolTelemetryReport]:
             )
             if report:
                 reports.append(report)
-        except Exception:
-            pass  # Never crash the dashboard for telemetry
+        except Exception as exc:
+            log.warning("Telemetry parser %s failed: %s", tool_name, exc)
     return reports

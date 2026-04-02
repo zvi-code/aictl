@@ -1191,7 +1191,9 @@ def _detect_anomalies(actual_mem_mb: float, pid: int, spec: ProcessSpec) -> list
                     "ppid": proc.ppid(),
                     "risk": spec.zombie_risk,
                 })
-        except Exception:
+        except ImportError:
+            pass
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
             pass
 
     # Known leak: only flag if process is actually orphaned or has memory bloat
