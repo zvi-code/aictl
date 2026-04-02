@@ -7,9 +7,9 @@ from typing import ClassVar
 
 # ── Registry (from registry.py) ──
 
-from . import claude, copilot, cursor, windsurf
+from . import claude, copilot, cursor, windsurf, gemini
 
-_EMITTERS = {"claude": claude, "copilot": copilot, "cursor": cursor, "windsurf": windsurf}
+_EMITTERS = {"claude": claude, "copilot": copilot, "cursor": cursor, "windsurf": windsurf, "gemini": gemini}
 
 
 def get(name: str):

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import click
 
-from ..platforms import IS_MACOS, IS_WINDOWS, claude_global_dir, vscode_user_dir, codex_global_dir
+from ..platforms import IS_MACOS, IS_WINDOWS, claude_global_dir, vscode_user_dir, codex_global_dir, gemini_global_dir
 from ..utils import WriteGuard
 
 
@@ -59,6 +59,32 @@ HOOK_EVENTS = [
     # MCP elicitation
     "Elicitation", "ElicitationResult",
 ]
+
+
+# Gemini CLI specific hook events (from official documentation)
+GEMINI_HOOK_EVENTS = [
+    "SessionStart", "SessionEnd",
+    "BeforeAgent", "AfterAgent",
+    "BeforeModel", "AfterModel",
+    "BeforeToolSelection",
+    "BeforeTool", "AfterTool",
+    "PreCompress",
+    "Notification",
+]
+
+# Map internal HOOK_EVENTS (Claude-style) to Gemini CLI events
+GEMINI_HOOK_MAP = {
+    "SessionStart": "SessionStart",
+    "SessionEnd": "SessionEnd",
+    "UserPromptSubmit": "BeforeAgent",
+    "PreToolUse": "BeforeTool",
+    "PostToolUse": "AfterTool",
+    "PostToolUseFailure": "AfterTool",
+    "Stop": "AfterAgent",
+    "StopFailure": "AfterAgent",
+    "PreCompact": "PreCompress",
+    "Notification": "Notification",
+}
 
 
 def _update_shell_profiles_block(
@@ -139,33 +165,39 @@ def _python_cmd() -> str:
     return f'"{exe}"'
 
 
-def _build_hook_config(port: int, events: list[str] | None) -> dict:
-    """Build the hooks configuration dict for Claude Code.
+def _build_hook_config(port: int, events: list[str] | None, event_map: dict[str, str] | None = None, matcher: str = "") -> dict:
+    """Build the hooks configuration dict for AI tools.
 
     Each hook reads the rich JSON payload from stdin, merges in
     environment variables, and POSTs everything to aictl.
     Uses sys.executable instead of 'python3' for cross-platform compatibility.
+
+    Optional event_map can translate internal HOOK_EVENTS names to tool-specific names.
+    matcher: "" for Claude (default), "*" for Gemini.
     """
     target_events = events or HOOK_EVENTS
     hooks: dict[str, list[dict]] = {}
     python = _python_cmd()
 
-    # The hook command: read stdin (Claude's rich JSON), merge env vars, POST to aictl.
-    # Claude Code provides: tool_name, tool_input, tool_output, session_id, etc. via stdin.
-    # We add the event name and env vars ($SESSION_ID, $CWD, $TOOL_NAME) as fallbacks.
+    # The hook command: read stdin (Node-based tool's rich JSON), merge env vars, POST to aictl.
+    # We must print the final JSON to stdout for tool continuity.
     for event in target_events:
+        tool_event_name = event_map.get(event, event) if event_map else event
+        # Single-line Python command using semicolons for maximum compatibility.
+        # No literal newlines or complex escaping.
         cmd = (
             f"{python} -c \""
-            f"import sys,json,os,urllib.request as u;"
-            f"d=json.load(sys.stdin) if not sys.stdin.isatty() else {{}};"
-            f"d['event']='{event}';"
-            f"d.setdefault('session_id',os.environ.get('SESSION_ID',''));"
-            f"d.setdefault('cwd',os.environ.get('CWD',''));"
-            f"exec('try:\\n u.urlopen(u.Request(\\\"http://localhost:{port}/api/hooks\\\","
-            f"json.dumps(d).encode(),{{\\\"Content-Type\\\":\\\"application/json\\\"}}))\\nexcept:pass')"
-            f"\""
+            f"import sys,json,os,urllib.request as u; "
+            f"d=json.load(sys.stdin) if not sys.stdin.isatty() else {{}}; "
+            f"d['event']='{event}'; "
+            f"d.setdefault('session_id',os.environ.get('SESSION_ID','')); "
+            f"d.setdefault('cwd',os.environ.get('CWD','')); "
+            f"exec('try: u.urlopen(u.Request(\\\"http://localhost:{port}/api/hooks\\\", "
+            f"json.dumps(d).encode(), {{\\\"Content-Type\\\":\\\"application/json\\\"}}), timeout=2)\\n"
+            f"except: pass'); "  # noqa: S110 — generated hook script must not crash if aictl server is unreachable
+            f"print(json.dumps(d))\""
         )
-        hooks[event] = [{"matcher": "", "hooks": [{"type": "command", "command": cmd}]}]
+        hooks[tool_event_name] = [{"matcher": matcher, "hooks": [{"type": "command", "command": cmd}]}]
     return hooks
 
 
@@ -312,7 +344,7 @@ def otel():
 @otel.command()
 @click.option("--port", default=None, type=int,
               help="aictl server port (default: $AICTL_PORT or 8484)")
-@click.option("--tool", type=click.Choice(["claude", "copilot", "codex", "all"]),
+@click.option("--tool", type=click.Choice(["claude", "copilot", "codex", "gemini", "all"]),
               default="all", help="Which tool(s) to configure")
 @click.option("--print", "print_only", is_flag=True,
               help="Print shell exports to stdout instead of persisting (for eval)")
@@ -485,6 +517,13 @@ def _build_env_block(port: int, tools: list[str]) -> dict[str, str]:
         env.update({
             "CODEX_OTEL_ENABLED": "1",
             "CODEX_OTEL_ENDPOINT": endpoint,
+        })
+
+    if "gemini" in tools:
+        env.update({
+            "GEMINI_OTEL_ENABLED": "1",
+            "OTEL_METRICS_EXPORTER": "otlp",
+            "OTEL_LOGS_EXPORTER": "otlp",
         })
 
     env.update({
@@ -748,12 +787,19 @@ def _install_hooks(scope: str, port: int, actions: list[str]) -> None:
         except (json.JSONDecodeError, OSError):
             pass
 
-    hook_config = _build_hook_config(port, None)
     existing_hooks = existing.get("hooks", {})
+    # Purge ALL old aictl hooks from ALL event keys first
+    # This cleans up events that may have been renamed or removed (like Claude->Gemini map)
+    for ev in list(existing_hooks.keys()):
+        cleaned = [h for h in existing_hooks[ev] if not _is_aictl_hook(h)]
+        if not cleaned:
+            del existing_hooks[ev]
+        else:
+            existing_hooks[ev] = cleaned
+
+    hook_config = _build_hook_config(port, None)
     for event, new_rules in hook_config.items():
-        current = [h for h in existing_hooks.get(event, []) if not _is_aictl_hook(h)]
-        current.extend(new_rules)
-        existing_hooks[event] = current
+        existing_hooks.setdefault(event, []).extend(new_rules)
     existing["hooks"] = existing_hooks
 
     guard = WriteGuard.current()
@@ -762,11 +808,47 @@ def _install_hooks(scope: str, port: int, actions: list[str]) -> None:
     settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
     actions.append(f"Claude Code hooks ({len(HOOK_EVENTS)} events) → {settings_path}")
 
+    # Gemini CLI hooks
+    if scope == "project":
+        gemini_path = Path.cwd() / ".gemini" / "settings.json"
+    else:
+        gemini_path = gemini_global_dir() / "settings.json"
+
+    gemini_path.parent.mkdir(parents=True, exist_ok=True)
+    g_existing: dict = {}
+    if gemini_path.exists():
+        try:
+            g_existing = json.loads(gemini_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    g_hooks = g_existing.get("hooks", {})
+    # Purge all old aictl hooks from Gemini settings first
+    for ev in list(g_hooks.keys()):
+        cleaned = [h for h in g_hooks[ev] if not _is_aictl_hook(h)]
+        if not cleaned:
+            del g_hooks[ev]
+        else:
+            g_hooks[ev] = cleaned
+
+    # Map internal HOOK_EVENTS (PascalCase) to official Gemini CLI events
+    # Use the same hook configuration logic as Claude but with Gemini names
+    gemini_only_events = [e for e in HOOK_EVENTS if e in GEMINI_HOOK_MAP]
+    hook_config = _build_hook_config(port, gemini_only_events, event_map=GEMINI_HOOK_MAP, matcher="*")
+    
+    for tool_event, new_rules in hook_config.items():
+        g_hooks.setdefault(tool_event, []).extend(new_rules)
+    g_existing["hooks"] = g_hooks
+
+    if guard:
+        guard.confirm(gemini_path, "modify")
+    gemini_path.write_text(json.dumps(g_existing, indent=2) + "\n", encoding="utf-8")
+    actions.append(f"Gemini CLI hooks ({len(GEMINI_HOOK_MAP)} events) → {gemini_path}")
+
 
 def _enable_otel(port: int, actions: list[str]) -> None:
     """Enable OTel for all tools and report actions."""
     endpoint = f"http://localhost:{port}"
-    tools = ["claude", "copilot", "codex"]
+    tools = ["claude", "copilot", "codex", "gemini"]
     env_block = _build_env_block(port, tools)
 
     if IS_WINDOWS:
@@ -879,9 +961,11 @@ def enable(scope: str, port: int | None, dry_run: bool) -> None:
 
         if scope == "project":
             hooks_path = Path.cwd() / ".claude" / "settings.local.json"
+            gemini_hooks_path = Path.cwd() / ".gemini" / "settings.json"
             vscode_path = Path.cwd() / ".vscode" / "settings.json"
         else:
             hooks_path = claude_global_dir() / "settings.json"
+            gemini_hooks_path = gemini_global_dir() / "settings.json"
             try:
                 vscode_path = vscode_user_dir() / "settings.json"
             except (KeyError, OSError):
@@ -889,8 +973,10 @@ def enable(scope: str, port: int | None, dry_run: bool) -> None:
 
         click.echo(f"  [hooks]  {hooks_path}")
         click.echo(f"           {len(HOOK_EVENTS)} Claude Code events → {endpoint}/api/hooks")
+        click.echo(f"  [hooks]  {gemini_hooks_path}")
+        click.echo(f"           {len(GEMINI_HOOK_MAP)} Gemini CLI events → {endpoint}/api/hooks")
         if IS_WINDOWS:
-            click.echo(f"  [otel]   Windows env vars via setx ({len(_build_env_block(port, ['claude','copilot','codex']))} vars)")
+            click.echo(f"  [otel]   Windows env vars via setx ({len(_build_env_block(port, ['claude','copilot','codex','gemini']))} vars)")
         else:
             for p in _shell_profiles():
                 click.echo(f"  [otel]   {p}")

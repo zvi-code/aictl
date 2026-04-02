@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
 from collections.abc import Callable
 import dataclasses
@@ -112,6 +113,18 @@ def _pick(get_fn: Callable, pairs: list[tuple[str, str]]) -> dict:
 
 
 # ─── macOS login item / launch agent detection ──────────────────
+
+def _count_md_agents(root: Path, tool_dir: Path | None = None) -> int:
+    """Count .agent.md and AGENTS.md files in root and tool_dir/agents/."""
+    count = 0
+    # Root files
+    if (root / "AGENTS.md").is_file(): count += 1
+    if (root / ".agent.md").is_file(): count += 1
+    # Tool-specific agent dir
+    if tool_dir and (tool_dir / "agents").is_dir():
+        count += len([f for f in safe_iterdir(tool_dir / "agents") if f.suffix == ".md"])
+    return count
+
 
 def _macos_login_items() -> set[str]:
     """Get macOS login items (app names)."""
@@ -795,6 +808,137 @@ def _parse_copilot365_config(root: Path, tool: str = "copilot365") -> ToolConfig
 
 # ─── Public API ─────────────────────────────────────────────────
 
+def _get_nested(data: dict, key_path: str) -> Any | None:
+    """Resolve a dot-notated key (e.g. 'general.vimMode') against a nested dict."""
+    parts = key_path.split(".")
+    curr = data
+    for p in parts:
+        if not isinstance(curr, dict) or p not in curr:
+            return None
+        curr = curr[p]
+    return curr
+
+
+def _parse_generic_config(root: Path, tool_name: str, spec: dict) -> ToolConfig | None:
+    """Generic parser that uses extraction rules from tool-configs.yaml."""
+    from ..platforms import (
+        claude_global_dir, vscode_user_dir, codex_global_dir, 
+        cursor_user_dir, windsurf_global_dir, gemini_global_dir
+    )
+    
+    _PATH_FNS = {
+        "claude_global_dir": claude_global_dir,
+        "vscode_user_dir": vscode_user_dir,
+        "codex_global_dir": codex_global_dir,
+        "cursor_user_dir": cursor_user_dir,
+        "windsurf_global_dir": windsurf_global_dir,
+        "gemini_global_dir": gemini_global_dir,
+    }
+
+    cfg = ToolConfig(tool=tool_name)
+    has_data = False
+
+    # 0. Check if tool is likely installed
+    # Check binary
+    if shutil.which(tool_name.split("-")[0]):
+        has_data = True
+    
+    # Check global config dir
+    path_fn_name = None
+    for f_spec in spec.get("config_files", []):
+        if "path_fn" in f_spec:
+            path_fn_name = f_spec["path_fn"]
+            break
+    if path_fn_name:
+        fn = _PATH_FNS.get(path_fn_name)
+        if fn and fn().is_dir():
+            has_data = True
+
+    # 1. Process config files
+    for f_spec in spec.get("config_files", []):
+        path = None
+        if "path_fn" in f_spec:
+            fn = _PATH_FNS.get(f_spec["path_fn"])
+            if fn: path = fn() / f_spec["file"]
+        elif "path" in f_spec:
+            p_str = f_spec["path"].replace("{project-root}", str(root)).replace("{home}", str(Path.home()))
+            path = Path(p_str)
+        
+        if not path or not path.is_file():
+            continue
+        
+        data = _read_json(path) if f_spec.get("format") == "json" else _read_toml(path)
+        if not data:
+            continue
+        
+        has_data = True
+        
+        # Extraction
+        for attr, key_path in f_spec.get("extract", {}).items():
+            val = _get_nested(data, key_path)
+            if val is not None:
+                if attr == "model": cfg.model = str(val)
+                else: cfg.settings[attr] = val
+
+    # 2. Apply defaults for missing settings
+    defaults = spec.get("defaults", {})
+    for attr, default_val in defaults.items():
+        if attr not in cfg.settings and (not hasattr(cfg, attr) or not getattr(cfg, attr)):
+            if hasattr(cfg, attr): setattr(cfg, attr, default_val)
+            else: cfg.settings[attr] = default_val
+
+    # 3. Special feature discovery
+    feat_spec = spec.get("features", {})
+    
+    # Hooks
+    if "hooks" in feat_spec and feat_spec["hooks"].get("type") == "count_events":
+        hook_data = cfg.settings.get("hooks") or {}
+        if isinstance(hook_data, dict) and hook_data:
+            rule_count = sum(len(rules) for rules in hook_data.values() if isinstance(rules, list))
+            cfg.settings["hooks"] = f"{len(hook_data)} events, {rule_count} rules"
+            has_data = True
+
+    # MD Agents
+    if "agents" in feat_spec and feat_spec["agents"].get("type") == "md_agent_discovery":
+        # Guess prefix from tool name (claude-code -> .claude, gemini-cli -> .gemini)
+        prefix = tool_name.split("-")[0]
+        count = _count_md_agents(root, root / f".{prefix}")
+        if count > 0:
+            cfg.feature_groups.setdefault("Agent", {})["customAgents"] = count
+            has_data = True
+
+    # 4. Map settings to feature groups for UI
+    # We now drive this from YAML if possible, or fall back to tool-specific logic
+    group_spec = spec.get("ui_groups", {})
+    if group_spec:
+        for group_name, pairs in group_spec.items():
+            chunk = _pick(cfg.settings.get, [(p[0], p[1]) for p in pairs.items()])
+            if chunk:
+                cfg.feature_groups[group_name] = cfg.feature_groups.get(group_name, {}) | chunk
+    
+    # Fallback/Legacy hardcoded groups for gemini-cli if not in YAML
+    if tool_name == "gemini-cli" and not group_spec:
+        cfg.feature_groups["General"] = _pick(cfg.settings.get, [
+            ("vim_mode", "vimMode"), ("approval_mode", "approvalMode"),
+            ("auto_update", "autoUpdate"), ("notifications", "notifications"),
+            ("max_attempts", "maxAttempts")
+        ])
+        cfg.feature_groups["UI"] = _pick(cfg.settings.get, [
+            ("line_numbers", "lineNumbers"), ("alternate_screen", "alternateScreen"),
+            ("hide_context", "hideContext"), ("theme", "theme")
+        ])
+
+    return _finish(cfg, has_data)
+
+
+def _parse_gemini_config(root: Path, tool: str = "gemini-cli") -> ToolConfig | None:
+    # Delegate to generic parser using YAML spec
+    from ..data.schema import load_tool_configs
+    spec = load_tool_configs().get(tool)
+    if not spec: return None
+    return _parse_generic_config(root, tool, spec)
+
+
 # ─── Config parser registry (tool name → parser function) ────────
 _CONFIG_PARSER_REGISTRY: dict[str, Callable] = {
     "vscode": _parse_vscode_config,
@@ -805,6 +949,7 @@ _CONFIG_PARSER_REGISTRY: dict[str, Callable] = {
     "cursor": _parse_cursor_config,
     "codex-cli": _parse_codex_config,
     "windsurf": _parse_windsurf_config,
+    "gemini-cli": _parse_gemini_config,
 }
 
 
@@ -825,6 +970,6 @@ def collect_tool_configs(root: Path) -> list[ToolConfig]:
             result = parser(root, tool=tool_name)
             if result:
                 configs.append(result)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.error("Error parsing config for %s: %s", tool_name, exc)
     return configs

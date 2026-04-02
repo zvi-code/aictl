@@ -27,6 +27,7 @@ TOOL_GROUPS: dict[str, list[str]] = {
     "cursor": ["cursor"],
     "windsurf": ["windsurf"],
     "copilot365": ["copilot365"],
+    "gemini": ["gemini-cli"],
     "project-env": ["project-env"],
     "aictl": ["aictl"],
 }
@@ -74,6 +75,7 @@ TOOL_TAXONOMY: dict[str, ToolMeta] = {
     "chatgpt-desktop":   ToolMeta("openai",      ("desktop",)),
     "chatgpt-lencx":     ToolMeta("openai",      ("desktop",)),
     # ── Google ──
+    "gemini":           ToolMeta("google",      ("cli",),          "gemini-2.5-pro"),
     "gemini-cli":        ToolMeta("google",      ("cli",),          "gemini-2.5-pro"),
     # ── Standalone IDEs (host IS the tool) ──
     "cursor":            ToolMeta("cursor-inc",  ("standalone",)),
@@ -162,6 +164,7 @@ TOOL_LABELS: dict[str, str] = {
     "windsurf": "Windsurf",
     "project-env": "Project Environment",
     "aictl": "aictl",
+    "gemini": "Gemini",
     "gemini-cli": "Gemini CLI",
     "codex-cli": "Codex CLI",
     "chatgpt-desktop": "ChatGPT Desktop",
@@ -191,6 +194,7 @@ TOOL_COLORS: dict[str, str] = {
     "project-env": "#fbbf24",
     "aictl": "#94a3b8",
     "cross-tool": "#cbd5e1",
+    "gemini": "#34d399",
     "gemini-cli": "#34d399",
     "chatgpt-desktop": "#10b981",
     "chatgpt-lencx": "#10b981",
@@ -214,6 +218,7 @@ TOOL_ICONS: dict[str, str] = {
     "codex-cli": "🟠",
     "cursor": "🟢",
     "windsurf": "🌊",
+    "gemini": "💎",
     "gemini-cli": "💎",
     "chatgpt-desktop": "🟢",
     "openclaw": "🦞",

@@ -9,7 +9,7 @@ from .commands.status import status, memory
 from .commands.import_plugin import import_cmd, plugin
 from .commands.integrations import hooks, otel, enable
 from .commands.daemon import serve, monitor, dashboard
-from .commands.admin import config, catalog, db
+from .commands.admin import config, catalog, db, build_ui
 
 
 @click.group()
@@ -58,3 +58,8 @@ main.add_command(config)
 main.add_command(catalog)
 main.add_command(db)
 main.add_command(enable)
+main.add_command(build_ui)
+
+
+if __name__ == "__main__":
+    main()
