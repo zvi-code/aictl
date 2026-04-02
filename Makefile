@@ -6,6 +6,12 @@
 # Why: aictl has TWO build layers (Python + JS). pipx copies files on
 # install, so source edits aren't picked up until you reinstall. This
 # Makefile eliminates the guesswork.
+#
+# Windows: use 'aictl reinstall' or 'pip install -e .[all]' instead.
+
+ifeq ($(OS),Windows_NT)
+$(error This Makefile requires Unix/macOS. On Windows use: aictl reinstall)
+endif
 
 SHELL   := /bin/bash
 PROJECT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))

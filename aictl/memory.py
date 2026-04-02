@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path, PurePosixPath
@@ -204,8 +205,9 @@ def swap_memory(root: Path, old_profile: str | None, new_profile: str | None) ->
         if old_profile and mem.is_dir():
             stash = proj / f"memory--{old_profile}"
             if stash.exists():
-                stash.rename(proj / f"memory--{old_profile}.bak.{int(time.time())}")
-            mem.rename(stash)
+                # shutil.move handles Windows (os.rename fails if target exists)
+                shutil.move(str(stash), str(proj / f"memory--{old_profile}.bak.{int(time.time())}"))
+            shutil.move(str(mem), str(stash))
             result.stashed = old_profile
 
         # Restore new
@@ -213,8 +215,8 @@ def swap_memory(root: Path, old_profile: str | None, new_profile: str | None) ->
             restore = proj / f"memory--{new_profile}"
             if restore.is_dir():
                 if mem.is_dir():
-                    mem.rename(proj / f"memory--_unstashed.{int(time.time())}")
-                restore.rename(mem)
+                    shutil.move(str(mem), str(proj / f"memory--_unstashed.{int(time.time())}"))
+                shutil.move(str(restore), str(mem))
                 result.restored = new_profile
             elif not mem.is_dir():
                 mem.mkdir(parents=True)
@@ -260,7 +262,7 @@ def recover_swap(root: Path) -> bool:
         restore = proj / f"memory--{new_profile}"
         if restore.is_dir() and not mem.is_dir():
             try:
-                restore.rename(mem)
+                shutil.move(str(restore), str(mem))
                 log.warning("Recovery: restored profile %s", new_profile)
             except OSError as exc:
                 log.warning("Recovery: failed to restore %s: %s", new_profile, exc)
