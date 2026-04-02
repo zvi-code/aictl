@@ -207,6 +207,10 @@ def _find_project_root() -> Path:
     return None
 
 
+# On Windows, npm is a .cmd wrapper — subprocess needs shell=True to find it.
+_IS_WINDOWS = os.name == "nt"
+
+
 @click.command("build-ui")
 def build_ui():
     """Build the dashboard frontend (npm run build).
@@ -232,14 +236,14 @@ def build_ui():
     # 1. npm install
     click.echo("Running npm install...")
     try:
-        subprocess.run(["npm", "install"], cwd=ui_dir, check=True)
+        subprocess.run(["npm", "install"], cwd=ui_dir, check=True, shell=_IS_WINDOWS)
     except (subprocess.CalledProcessError, FileNotFoundError) as exc:
         raise click.ClickException(f"npm install failed. Make sure Node.js/npm is installed. ({exc})")
 
     # 2. npm run build
     click.echo("Running npm run build...")
     try:
-        subprocess.run(["npm", "run", "build"], cwd=ui_dir, check=True)
+        subprocess.run(["npm", "run", "build"], cwd=ui_dir, check=True, shell=_IS_WINDOWS)
     except subprocess.CalledProcessError as exc:
         raise click.ClickException(f"npm build failed ({exc})")
 
@@ -283,9 +287,9 @@ def reinstall(skip_ui):
         try:
             if not (ui_dir / "node_modules").is_dir():
                 subprocess.run(["npm", "install"], cwd=ui_dir, check=True,
-                               capture_output=True)
+                               capture_output=True, shell=_IS_WINDOWS)
             subprocess.run(["npm", "run", "build"], cwd=ui_dir, check=True,
-                           capture_output=True)
+                           capture_output=True, shell=_IS_WINDOWS)
             click.secho("  ✅ UI built", fg="green")
         except FileNotFoundError:
             click.secho("  ⚠ npm not found — skipping UI build", fg="yellow")
