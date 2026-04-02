@@ -132,7 +132,7 @@ def _watch_loop(root: Path, profile: str | None, emitter_names: list[str], dry_r
         from watchdog.events import FileSystemEventHandler
         from watchdog.observers import Observer
     except ImportError:
-        raise SystemExit(
+        raise click.ClickException(
             "watchdog is required for --watch mode.\n"
             "Install it with: pip install aictl[monitor]"
         )
@@ -222,7 +222,7 @@ def deploy(root_dir, profile, emitters, dry_run, watch):
         WriteGuard.install("deploy")
     root = Path(root_dir).resolve()
     if not root.is_dir():
-        raise SystemExit(f"Not a directory: {root}")
+        raise click.ClickException(f"Not a directory: {root}")
 
     emitter_names = [e.strip() for e in emitters.split(",")]
 
@@ -315,7 +315,7 @@ def diff(root_dir: str, profile: str | None, emitters: str | None) -> None:
     """Show what would change on the next deploy (dry-run diff)."""
     root = Path(root_dir).resolve()
     if not root.is_dir():
-        raise SystemExit(f"Not a directory: {root}")
+        raise click.ClickException(f"Not a directory: {root}")
 
     emitter_names = (
         [e.strip() for e in emitters.split(",")]

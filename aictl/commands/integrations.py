@@ -230,9 +230,10 @@ def install(port: int | None, scope: str, events: str | None, force: bool):
     if event_list:
         invalid = [e for e in event_list if e not in HOOK_EVENTS]
         if invalid:
-            click.echo(f"Unknown events: {', '.join(invalid)}", err=True)
-            click.echo(f"Valid events: {', '.join(HOOK_EVENTS)}", err=True)
-            sys.exit(1)
+            raise click.ClickException(
+                f"Unknown events: {', '.join(invalid)}. "
+                f"Valid events: {', '.join(HOOK_EVENTS)}"
+            )
 
     settings_path = _settings_path(scope)
     settings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -263,7 +264,7 @@ def install(port: int | None, scope: str, events: str | None, force: bool):
                     cmd = cmd[:77] + "..."
                 click.echo(f"  {ev}: {cmd}", err=True)
         click.echo(f"\nUse --force to install alongside existing hooks.", err=True)
-        sys.exit(1)
+        raise SystemExit(1)
 
     # Merge hooks into existing settings (per-event, preserving user hooks)
     hook_config = _build_hook_config(port, event_list)
@@ -697,8 +698,7 @@ def status(port: int | None):
     port = port if port is not None else _default_port()
     data = _fetch_otel_status(port)
     if data is None:
-        click.echo(f"Could not connect to aictl at localhost:{port}", err=True)
-        raise SystemExit(1)
+        raise click.ClickException(f"Could not connect to aictl at localhost:{port}")
 
     active = data.get("active", False)
     indicator = click.style("active", fg="green") if active else click.style("inactive", fg="yellow")

@@ -81,7 +81,7 @@ def status(root_dir, tool_filter, show_procs, bt_pid, show_budget, as_json, as_h
         results = [r for r in results if r.tool in expanded or r.tool == tool_filter]
         # Only error if the tool name is truly unknown (not in groups or labels)
         if not results and tool_filter not in TOOL_GROUPS and tool_filter not in TOOL_LABELS:
-            raise SystemExit(f"Unknown tool: {tool_filter}")
+            raise click.ClickException(f"Unknown tool: {tool_filter}")
 
     if as_html or out_file:
         _emit_html(results, root, out_file)
