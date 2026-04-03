@@ -1,0 +1,55 @@
+{
+  "_doc": "Simulated OTLP metrics payload from GitHub Copilot (GenAI semantic conventions)",
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "github-copilot"}},
+          {"key": "session.id", "value": {"stringValue": "copilot-sess-001"}}
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "scope": {"name": "copilot_chat"},
+          "metrics": [
+            {
+              "name": "gen_ai.client.token.usage",
+              "sum": {
+                "dataPoints": [
+                  {
+                    "asInt": "4200",
+                    "timeUnixNano": "1700000020000000000",
+                    "attributes": [
+                      {"key": "gen_ai.token.type", "value": {"stringValue": "input"}},
+                      {"key": "gen_ai.request.model", "value": {"stringValue": "gpt-4o"}}
+                    ]
+                  },
+                  {
+                    "asInt": "620",
+                    "timeUnixNano": "1700000020000000000",
+                    "attributes": [
+                      {"key": "gen_ai.token.type", "value": {"stringValue": "output"}},
+                      {"key": "gen_ai.request.model", "value": {"stringValue": "gpt-4o"}}
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "copilot_chat.session.count",
+              "sum": {
+                "dataPoints": [
+                  {
+                    "asInt": "1",
+                    "timeUnixNano": "1700000020000000000",
+                    "attributes": []
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

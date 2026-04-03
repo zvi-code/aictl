@@ -1,0 +1,41 @@
+{
+  "_doc": "Simulated Gemini CLI hook event sequence",
+  "session_id": "gemini:99002:1700000100",
+  "tool": "gemini-cli",
+  "cwd": "/tmp/e2e-project",
+  "events": [
+    {
+      "event": "SessionStart",
+      "_delay_ms": 0,
+      "model": "gemini-2.5-pro",
+      "pid": 99002
+    },
+    {
+      "event": "UserPromptSubmit",
+      "_delay_ms": 100,
+      "message": "List files in the current directory",
+      "pid": 99002
+    },
+    {
+      "event": "PreToolUse",
+      "_delay_ms": 400,
+      "tool_name": "shell",
+      "input": {"command": "ls -la"},
+      "pid": 99002
+    },
+    {
+      "event": "PostToolUse",
+      "_delay_ms": 200,
+      "tool_name": "shell",
+      "result": "total 8\ndrwxr-xr-x  2 user user 4096 ...",
+      "pid": 99002
+    },
+    {
+      "event": "Stop",
+      "_delay_ms": 200,
+      "pid": 99002,
+      "input_tokens": 1800,
+      "output_tokens": 220
+    }
+  ]
+}

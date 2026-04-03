@@ -21,7 +21,7 @@ DIST_DIR:= $(PROJECT)aictl/dashboard/dist
 # Detect install method
 HAS_PIPX := $(shell command -v pipx 2>/dev/null)
 
-.PHONY: install install-py install-ui test lint clean help
+.PHONY: install install-py install-ui test test-e2e test-all lint clean help
 
 # ── Primary target: full rebuild + reinstall ─────────────────────────────────
 
@@ -54,8 +54,14 @@ $(DIST_DIR)/index.html: $(shell find $(UI_DIR)/src -type f 2>/dev/null) $(UI_DIR
 
 # ── Test & Lint ──────────────────────────────────────────────────────────────
 
-test:  ## Run full test suite
-	python3 -m pytest test/ -q --tb=short
+test:  ## Run unit tests (fast, no server needed)
+	python3 -m pytest test/ -q --tb=short --ignore=test/e2e
+
+test-e2e:  ## Run E2E tests (starts aictl server, posts synthetic data)
+	python3 -m pytest test/e2e/ -v --timeout=120
+
+test-all:  ## Run everything (unit + E2E)
+	python3 -m pytest test/ -v --timeout=120 --override-ini="addopts="
 
 lint:  ## Run ruff linter
 	python3 -m ruff check aictl/

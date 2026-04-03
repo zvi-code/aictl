@@ -1,0 +1,83 @@
+# docker-compose.test.yml — aictl test matrix
+#
+# Usage:
+#   docker compose -f docker/docker-compose.test.yml up --build --abort-on-container-exit
+#
+# Profiles:
+#   (default)     — unit tests + simulated E2E (no secrets needed)
+#   tools         — real AI tool tests (needs CLAUDE_CODE_OAUTH_TOKEN etc.)
+
+services:
+  # ── aictl server (shared by E2E tests) ──────────────────────────
+  aictl-server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8484:8484"
+    command: serve
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8484/api/otel-status')"]
+      interval: 3s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  # ── Unit tests (always runs) ────────────────────────────────────
+  test-unit:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: >
+      bash -c "
+        pip install --quiet pytest pytest-timeout &&
+        python3 -m pytest /app/test/ -q --tb=short --ignore=/app/test/e2e -x
+      "
+
+  # ── Simulated E2E (always runs — no external tools needed) ─────
+  test-e2e:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    depends_on:
+      aictl-server:
+        condition: service_healthy
+    environment:
+      AICTL_TEST_URL: http://aictl-server:8484
+    command: >
+      bash -c "
+        pip install --quiet pytest pytest-timeout &&
+        python3 -m pytest /app/test/e2e/ -v --timeout=120
+      "
+
+  # ── Full integration (install flow, DB schema, etc.) ────────────
+  test-integration:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
+    command: test
+
+  # ── Claude Code E2E (optional — needs token) ───────────────────
+  test-claude:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    depends_on:
+      aictl-server:
+        condition: service_healthy
+    environment:
+      AICTL_TEST_URL: http://aictl-server:8484
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN}
+    command: >
+      bash -c "
+        pip install --quiet pytest pytest-timeout pexpect &&
+        python3 -m pytest /app/test/e2e_tools/test_claude_e2e.py -v --timeout=180 || true
+      "
+    profiles:
+      - tools
+
+volumes:
+  aictl-project:

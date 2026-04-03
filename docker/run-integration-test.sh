@@ -262,14 +262,28 @@ echo "--- Unit tests ---"
 kill $SERVER_PID 2>/dev/null || true
 sleep 1
 
-pip install --quiet pytest 2>/dev/null
-PYTEST_OUTPUT=$(python3 -m pytest /app/test/ -x -q 2>&1)
+pip install --quiet pytest pytest-timeout 2>/dev/null
+
+# 7a. Unit tests
+PYTEST_OUTPUT=$(python3 -m pytest /app/test/ -x -q --ignore=/app/test/e2e 2>&1)
 PYTEST_LAST=$(echo "$PYTEST_OUTPUT" | tail -1)
 if echo "$PYTEST_LAST" | grep -q "passed"; then
-    pass "pytest: $PYTEST_LAST"
+    pass "pytest unit: $PYTEST_LAST"
 else
     echo "$PYTEST_OUTPUT" | tail -10
-    fail "pytest: $PYTEST_LAST"
+    fail "pytest unit: $PYTEST_LAST"
+fi
+
+# 7b. E2E simulated tests (starts its own server)
+echo ""
+echo "--- E2E simulated tests ---"
+E2E_OUTPUT=$(python3 -m pytest /app/test/e2e/ -v --timeout=120 2>&1)
+E2E_LAST=$(echo "$E2E_OUTPUT" | tail -1)
+if echo "$E2E_LAST" | grep -q "passed"; then
+    pass "pytest e2e: $E2E_LAST"
+else
+    echo "$E2E_OUTPUT" | tail -20
+    fail "pytest e2e: $E2E_LAST"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────
