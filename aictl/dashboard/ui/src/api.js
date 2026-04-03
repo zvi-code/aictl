@@ -85,6 +85,18 @@ export async function getAgentTeams(sessionId) {
   return r.json();
 }
 
+// ─── Session Transcripts ───────────────────────────────────────
+
+export async function getTranscript(sessionId) {
+  const r = await fetch(url('/api/transcript/' + encodeURIComponent(sessionId)));
+  return r.json();
+}
+
+export async function getTranscripts(cutoff = 300) {
+  const r = await fetch(url('/api/transcripts?cutoff=' + cutoff));
+  return r.json();
+}
+
 // ─── Analytics & Costs ─────────────────────────────────────────
 
 export async function getAnalytics(path, opts = {}) {

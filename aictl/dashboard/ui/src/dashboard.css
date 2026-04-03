@@ -716,3 +716,106 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
 .hbar-p95 { position: absolute; top: 0; height: 100%; border-right: 2px dashed var(--orange);
   pointer-events: none; }
 .hbar-value { width: 60px; font-size: var(--fs-sm); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+
+/* ─── Session Transcript ─────────────────────────────────────── */
+.tr-container { display: flex; flex-direction: column; height: calc(100vh - 180px); }
+.tr-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--sp-4); }
+.tr-title { font-size: var(--fs-xl); font-weight: 600; margin: 0; color: var(--fg); }
+.tr-controls { display: flex; gap: var(--sp-3); align-items: center; }
+
+/* Session selector pills */
+.tr-sess-btn { display: flex; flex-direction: column; align-items: center; gap: 1px;
+  padding: var(--sp-2) var(--sp-4); border-radius: 6px; border: 1px solid var(--border);
+  background: var(--bg2); color: var(--fg2); cursor: pointer; white-space: nowrap;
+  font-size: var(--fs-xs); min-width: 60px; transition: all 0.15s; }
+.tr-sess-btn:hover { border-color: var(--accent); color: var(--fg); }
+.tr-sess-active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--bg2));
+  color: var(--accent); }
+.tr-sess-time { font-variant-numeric: tabular-nums; }
+.tr-sess-dur { font-size: var(--fs-2xs); opacity: 0.7; }
+.tr-sess-live { color: var(--green); font-size: var(--fs-2xs); animation: pulse-live 2s infinite; }
+@keyframes pulse-live { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+/* Summary bar */
+.tr-summary { display: flex; gap: var(--sp-5); align-items: center; flex-wrap: wrap;
+  padding: var(--sp-3) var(--sp-5); margin-bottom: var(--sp-5);
+  background: var(--bg2); border-radius: 6px; border: 1px solid var(--border);
+  font-size: var(--fs-sm); }
+.tr-summary-item { display: flex; align-items: center; gap: var(--sp-1); color: var(--fg2); }
+.tr-summary-live { color: var(--green); font-weight: 600; animation: pulse-live 2s infinite; }
+.tr-summary-source { margin-left: auto; color: var(--fg2); opacity: 0.6; font-size: var(--fs-xs); }
+
+/* Turn list */
+.tr-turns { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: var(--sp-3); }
+
+/* Turn card */
+.tr-turn { border: 1px solid var(--border); border-radius: 8px; background: var(--bg2);
+  overflow: hidden; transition: border-color 0.15s; }
+.tr-turn:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+.tr-turn-expanded { border-color: var(--accent); }
+
+/* Turn header */
+.tr-turn-header { display: flex; align-items: center; gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4); cursor: pointer; user-select: none; }
+.tr-turn-header:hover { background: var(--bg3); }
+.tr-turn-num { min-width: 22px; height: 22px; border-radius: 50%;
+  background: var(--accent); color: var(--bg); font-size: var(--fs-xs);
+  display: flex; align-items: center; justify-content: center; font-weight: 700;
+  flex-shrink: 0; }
+.tr-turn-meta { display: flex; gap: var(--sp-3); align-items: center; font-size: var(--fs-xs);
+  color: var(--fg2); }
+.tr-turn-time { font-variant-numeric: tabular-nums; }
+.tr-turn-model { padding: 1px var(--sp-2); border-radius: 3px;
+  background: color-mix(in srgb, var(--green) 15%, var(--bg3)); color: var(--green);
+  font-size: var(--fs-2xs); }
+.tr-turn-dur { opacity: 0.7; }
+.tr-turn-stats { display: flex; gap: var(--sp-3); margin-left: auto; font-size: var(--fs-xs); }
+.tr-stat { color: var(--fg2); }
+.tr-stat-err { color: var(--red); }
+.tr-turn-chevron { color: var(--fg2); font-size: var(--fs-xs); width: 14px; text-align: center; }
+
+/* Prompt block */
+.tr-prompt { display: flex; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  border-top: 1px solid var(--border); }
+.tr-prompt-icon { font-size: var(--fs-sm); flex-shrink: 0; padding-top: 1px; }
+.tr-prompt-text { font-size: var(--fs-sm); color: var(--fg); line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word; }
+.tr-prompt-full .tr-prompt-text { max-height: none; }
+.tr-prompt:not(.tr-prompt-full) .tr-prompt-text { max-height: 2.5em; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.tr-prompt-empty .tr-prompt-text { font-style: italic; }
+
+/* Action timeline */
+.tr-actions { padding: 0 var(--sp-4) var(--sp-3);
+  border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 2px; }
+.tr-action-row { display: flex; align-items: center; gap: var(--sp-2);
+  padding: 2px var(--sp-2); border-radius: 4px; font-size: var(--fs-xs); }
+.tr-action-row:hover { background: var(--bg3); }
+.tr-action-icon { width: 16px; text-align: center; flex-shrink: 0; font-size: var(--fs-2xs); }
+.tr-action-name { font-weight: 600; min-width: 70px; flex-shrink: 0; }
+.tr-action-args { color: var(--fg2); flex: 1; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-family: var(--font-mono, monospace); font-size: var(--fs-2xs); }
+.tr-action-result { color: var(--fg2); opacity: 0.7; max-width: 200px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-2xs); }
+.tr-action-meta { display: flex; gap: var(--sp-2); align-items: center;
+  margin-left: auto; color: var(--fg2); font-variant-numeric: tabular-nums;
+  flex-shrink: 0; }
+.tr-action-offset { opacity: 0.5; }
+.tr-action-dur { color: var(--yellow); }
+.tr-action-tok { color: var(--green); }
+.tr-action-fail { color: var(--red); font-weight: 700; }
+.tr-action-ok { color: var(--green); }
+
+/* Token breakdown bar */
+.tr-token-bar { display: flex; height: 16px; margin: 0 var(--sp-4) var(--sp-3);
+  border-radius: 4px; overflow: hidden; font-size: var(--fs-2xs);
+  border: 1px solid var(--border); }
+.tr-token-seg { display: flex; align-items: center; justify-content: center;
+  min-width: 0; overflow: hidden; white-space: nowrap; padding: 0 var(--sp-2); }
+.tr-tok-in { background: color-mix(in srgb, var(--accent) 25%, var(--bg3)); color: var(--accent); }
+.tr-tok-cache { background: color-mix(in srgb, var(--yellow) 20%, var(--bg3)); color: var(--yellow); }
+.tr-tok-out { background: color-mix(in srgb, var(--green) 25%, var(--bg3)); color: var(--green); }
+
+/* Auto-refresh toggle */
+.tr-auto-refresh { cursor: pointer; color: var(--fg2); }
+.tr-auto-refresh input { accent-color: var(--accent); }
