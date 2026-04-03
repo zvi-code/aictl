@@ -113,6 +113,23 @@ class SessionAnalyzer:
         self._max_cached = max_cached
         self._stale_seconds = stale_seconds
 
+    # ── Turn management ───────────────────────────────
+
+    @staticmethod
+    def _ensure_turn(transcript: SessionTranscript, ts: float,
+                     prompt: str = "") -> Turn:
+        """Return the current turn or create one if none exists.
+
+        Unlike calling ``start_turn`` directly, this reuses the existing
+        turn so that orphan events (tool use, exception, etc. arriving
+        before a user prompt) are grouped into the current turn instead
+        of spawning hundreds of empty ones.
+        """
+        turn = transcript.current_turn
+        if turn is not None:
+            return turn
+        return transcript.start_turn(ts, prompt)
+
     # ── Public API ──────────────────────────────────────
 
     def ingest_event(self, event: EventRow) -> SessionTranscript | None:
@@ -300,9 +317,7 @@ class SessionAnalyzer:
             transcript.is_live = False
 
         elif hook_name == "PreToolUse":
-            turn = transcript.current_turn
-            if turn is None:
-                turn = transcript.start_turn(event.ts)
+            turn = self._ensure_turn(transcript, event.ts)
             tool_name = detail.get("tool_name", detail.get("name", ""))
             turn.add_action(Action(
                 ts=event.ts,
@@ -342,9 +357,7 @@ class SessionAnalyzer:
             })
 
         elif hook_name == "SubagentStart":
-            turn = transcript.current_turn
-            if turn is None:
-                turn = transcript.start_turn(event.ts)
+            turn = self._ensure_turn(transcript, event.ts)
             agent_id = detail.get("agent_id",
                                   detail.get("subagent_id", ""))
             task = detail.get("task", detail.get("description", ""))
@@ -375,8 +388,9 @@ class SessionAnalyzer:
             if turn is None:
                 # Synthesize user message from Copilot's embedded request
                 user_req = detail.get("copilot_chat.user_request", "")
-                turn = transcript.start_turn(
-                    event.ts, str(user_req)[:2000] if user_req else "")
+                turn = self._ensure_turn(
+                    transcript, event.ts,
+                    str(user_req)[:2000] if user_req else "")
 
             turn.add_action(Action(
                 ts=event.ts,
@@ -423,9 +437,7 @@ class SessionAnalyzer:
                 ))
 
         elif "tool_decision" in otel_name or "tool_result" in otel_name:
-            turn = transcript.current_turn
-            if turn is None:
-                turn = transcript.start_turn(event.ts)
+            turn = self._ensure_turn(transcript, event.ts)
             tool_name = detail.get("tool_name",
                          detail.get("name",
                          detail.get("span.name", otel_name)))
@@ -446,9 +458,7 @@ class SessionAnalyzer:
             ))
 
         elif otel_name == "exception":
-            turn = transcript.current_turn
-            if turn is None:
-                turn = transcript.start_turn(event.ts)
+            turn = self._ensure_turn(transcript, event.ts)
             turn.add_action(Action(
                 ts=event.ts,
                 kind=ActionKind.ERROR,
@@ -458,9 +468,7 @@ class SessionAnalyzer:
             ))
 
         elif otel_name.startswith("invoke_agent") or "subagent" in otel_name.lower():
-            turn = transcript.current_turn
-            if turn is None:
-                turn = transcript.start_turn(event.ts)
+            turn = self._ensure_turn(transcript, event.ts)
             agent_name = (otel_name.replace("invoke_agent ", "").strip()
                           or detail.get("agent_id", "agent"))
             turn.add_action(Action(
