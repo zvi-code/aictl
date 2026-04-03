@@ -5,6 +5,7 @@ import { fmtK, fmtSz, fmtTime } from '../utils.js';
 import ChartCard from './ChartCard.js';
 import AnalyticsChart from './AnalyticsChart.js';
 import TabSamples from './TabSamples.js';
+import * as api from '../api.js';
 
 const MODEL_COLORS = [
   'var(--green)', 'var(--orange)', 'var(--accent)', 'var(--red)',
@@ -284,11 +285,10 @@ export default function TabAnalytics() {
     setError(null);
     const since = globalRange?.since || (Date.now() / 1000 - 86400);
     const until = globalRange?.until || '';
-    const url = `/api/analytics?since=${since}${until ? '&until=' + until : ''}`;
+    const analyticsUrl = `/api/analytics?since=${since}${until ? '&until=' + until : ''}`;
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 15000);
-    fetch(url, { signal: ctrl.signal })
-      .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+    api.getAnalytics(analyticsUrl, { signal: ctrl.signal })
       .then(d => { setData(d); setError(null); })
       .catch(e => {
         if (e.name === 'AbortError') setError('Request timed out');

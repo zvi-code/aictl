@@ -3,6 +3,7 @@ import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS, ICONS, VENDOR_LABELS, EVENT_COLORS, fmtK, fmtTok, fmtSz, fmtRate, fmtPct, esc, liveTokenTotal } from '../utils.js';
 import ChartCard from './ChartCard.js';
+import * as api from '../api.js';
 
 export default function TabEventsStats() {
   const {snap: s, globalRange} = useContext(SnapContext);
@@ -23,20 +24,14 @@ export default function TabEventsStats() {
   // Fetch events when tool or global range changes
   useEffect(() => {
     if (!selectedTool || !globalRange) return;
-    let url = '/api/events?tool=' + encodeURIComponent(selectedTool)
-      + '&since=' + globalRange.since + '&limit=500';
-    if (globalRange.until != null) url += '&until=' + globalRange.until;
-    fetch(url).then(r => r.json()).then(setEvents).catch(() => setEvents([]));
+    api.getEvents({ tool: selectedTool, since: globalRange.since, limit: 500, until: globalRange.until })
+      .then(setEvents).catch(() => setEvents([]));
   }, [selectedTool, globalRange]);
 
   // Fetch tool history when tool or global range changes
   useEffect(() => {
     if (!selectedTool || !globalRange) return;
-    let url = '/api/history?since=' + globalRange.since
-      + '&tool=' + encodeURIComponent(selectedTool);
-    if (globalRange.until != null) url += '&until=' + globalRange.until;
-    fetch(url)
-      .then(r => r.json())
+    api.getHistory({ since: globalRange.since, tool: selectedTool, until: globalRange.until })
       .then(h => setToolHistory(h?.by_tool?.[selectedTool] || null))
       .catch(() => setToolHistory(null));
   }, [selectedTool, globalRange]);

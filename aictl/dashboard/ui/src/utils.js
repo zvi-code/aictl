@@ -35,6 +35,8 @@ export const GROUP_MODES = [
   {id:'host', label:'Host'},
 ];
 
+import { getFile } from './api.js';
+
 // ─── Module-level shared state ─────────────────────────────────
 export const fileCache = new Map(); // { path → { content, ts } }
 const FILE_CACHE_TTL = 60_000; // 60 seconds
@@ -164,7 +166,7 @@ export async function fetchFileContent(path) {
   if (cached && Date.now() - cached.ts < FILE_CACHE_TTL) return cached.content;
   const headers = {};
   if (cached && cached.etag) headers['If-None-Match'] = cached.etag;
-  const res = await fetch('/api/file?path='+encodeURIComponent(path), { headers });
+  const res = await getFile(path, headers);
   if (res.status === 304 && cached) {
     cached.ts = Date.now();
     return cached.content;

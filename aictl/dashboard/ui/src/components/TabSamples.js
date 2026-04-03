@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { fmtK, fmtTime, esc } from '../utils.js';
 import ChartCard from './ChartCard.js';
+import * as api from '../api.js';
 
 /** Group metric entries by prefix (drop last dotted segment). */
 function groupByPrefix(entries) {
@@ -27,8 +28,7 @@ export default function TabSamples() {
 
   // Load metric list on mount
   useEffect(() => {
-    fetch('/api/samples?list=1')
-      .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+    api.getSamplesList()
       .then(names => { setMetrics(names || []); setListError(null); })
       .catch(e => { setMetrics([]); setListError(e.message); });
   }, []);
@@ -44,13 +44,11 @@ export default function TabSamples() {
 
     const since = Math.floor(Date.now() / 1000) - 1800; // 30 min ago
 
-    const seriesReq = fetch('/api/samples?series=' + encodeURIComponent(name) + '&since=' + since)
-      .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+    const seriesReq = api.getSamplesSeries(name, since)
       .then(d => setSeries(d))
       .catch(() => setSeries(null));
 
-    const rawReq = fetch('/api/samples?metric=' + encodeURIComponent(name) + '&since=' + since)
-      .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+    const rawReq = api.getSamplesRaw(name, since)
       .then(d => setRawSamples(Array.isArray(d) ? d : []))
       .catch(() => setRawSamples([]));
 

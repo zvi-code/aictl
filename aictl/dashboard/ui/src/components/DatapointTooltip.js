@@ -1,28 +1,22 @@
 import { useState, useEffect, useRef, useCallback } from 'preact/hooks';
 import { html } from 'htm/preact';
+import { getDatapoints } from '../api.js';
 
 // Module-level cache — shared across mounts, fetched once per page load.
 let _catalog = null;
-let _fetchPromise = null;
 
 function fetchCatalog() {
   if (_catalog) return Promise.resolve(_catalog);
-  if (_fetchPromise) return _fetchPromise;
-  _fetchPromise = fetch('/api/datapoints')
-    .then(r => r.ok ? r.json() : [])
+  return getDatapoints()
     .then(rows => {
       const map = {};
-      for (const r of rows) {
+      for (const r of (rows || [])) {
         map[r.key] = r;
       }
       _catalog = map;
       return map;
     })
-    .catch(() => {
-      _fetchPromise = null;
-      return {};
-    });
-  return _fetchPromise;
+    .catch(() => ({}));
 }
 
 function firstSentence(text) {

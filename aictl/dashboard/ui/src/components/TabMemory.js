@@ -3,6 +3,7 @@ import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { fmtK, fmtSz, fmtAgo, esc, fileCache, fetchFileContent, MEM_LABELS, TAIL_LINES } from '../utils.js';
 import ChartCard from './ChartCard.js';
+import * as api from '../api.js';
 
 function MemItem({mem}) {
   const [showPreview, setShowPreview] = useState(false);
@@ -96,8 +97,7 @@ function MemSourceGroup({source, entries}) {
 function MemoryGrowthChart() {
   const [hist, setHist] = useState(null);
   useEffect(() => {
-    fetch('/api/history')
-      .then(r => r.json())
+    api.getHistory()
       .then(data => {
         if (data && data.ts && data.ts.length >= 2) setHist(data);
       })
