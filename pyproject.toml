@@ -39,10 +39,13 @@ include = ["aictl*"]
 testpaths = ["test"]
 markers = [
     "e2e: end-to-end tests requiring a live aictl server",
+    "tool_claude: requires claude CLI installed and authenticated",
+    "tool_gemini: requires gemini CLI installed and authenticated",
+    "tool_codex: requires codex CLI installed and authenticated",
     "slow: tests taking >30s",
 ]
 # Default: only run unit tests (not e2e) unless explicitly requested.
-addopts = "--ignore=test/e2e"
+addopts = "--ignore=test/e2e --ignore=test/e2e_tools"
 
 [tool.ruff.lint]
 # S110 = try-except-pass (no-op exception swallow — always hides bugs in command code)
