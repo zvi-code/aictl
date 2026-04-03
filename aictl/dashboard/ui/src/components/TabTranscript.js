@@ -253,7 +253,13 @@ export default function TabTranscript() {
     setTranscriptLoading(true);
     api.getTranscript(activeSessionId)
       .then(data => {
-        setTranscript(data);
+        // Detect session-flow format (flat events with "type" field)
+        // vs transcript format (grouped turns with "prompt"/"actions")
+        if (isSessionFlowFormat(data)) {
+          setTranscript(normalizeFlowToTranscript(data, activeSessionId));
+        } else {
+          setTranscript(data);
+        }
         setTranscriptLoading(false);
       })
       .catch(() => {
@@ -263,7 +269,6 @@ export default function TabTranscript() {
         const until = sess?.ended_at ? sess.ended_at + 60 : Date.now() / 1000 + 60;
         api.getSessionFlow(activeSessionId, since, until)
           .then(flow => {
-            // Convert session-flow format to transcript-like format
             setTranscript(normalizeFlowToTranscript(flow, activeSessionId));
             setTranscriptLoading(false);
           })
@@ -301,8 +306,11 @@ export default function TabTranscript() {
     }
   }, [expandAll, transcript]);
 
-  // Extract turns (transcript API or normalized flow)
-  const turns = transcript?.turns || [];
+  // Extract turns — filter out empty ones (no prompt AND no actions)
+  const turns = (transcript?.turns || []).filter(t =>
+    (t.prompt && t.prompt.length > 0) || (t.actions && t.actions.length > 0)
+    || (t.tool_use_count > 0)
+  );
   const summary = transcript?.summary || null;
 
   return html`<div class="tr-container">
@@ -352,6 +360,16 @@ export default function TabTranscript() {
   </div>`;
 }
 
+// ─── Format detection ────────────────────────────────────────
+
+function isSessionFlowFormat(data) {
+  if (!data || !data.turns || data.turns.length === 0) return false;
+  // Session-flow format: flat events with "type" field (api_call, tool_use, etc.)
+  // Transcript format: grouped turns with "prompt"/"actions" fields
+  const first = data.turns[0];
+  return (first.type != null && first.actions == null);
+}
+
 // ─── Normalize session-flow format to transcript-like ────────
 
 function normalizeFlowToTranscript(flow, sessionId) {
@@ -361,6 +379,15 @@ function normalizeFlowToTranscript(flow, sessionId) {
   // Group by user_message turns (each starts a new transcript turn)
   const turns = [];
   let current = null;
+
+  const kindMap = {
+    api_call: 'api_call',
+    api_response: 'api_response',
+    tool_use: 'tool_use',
+    subagent: 'subagent',
+    error: 'error',
+    hook: 'tool_use',
+  };
 
   for (const ev of rawTurns) {
     if (ev.type === 'user_message') {
@@ -391,17 +418,52 @@ function normalizeFlowToTranscript(flow, sessionId) {
         }
         current.tool_use_count = ev.tools.length;
       }
+    } else if (ev.type === 'session_start' || ev.type === 'session_end') {
+      // Skip lifecycle events — don't create turns for them
+      continue;
+    } else if (ev.type === 'compaction') {
+      // Skip compaction events
+      continue;
     } else if (current) {
       // Map flow event types to action kinds
-      const kindMap = {
-        api_call: 'api_call',
-        api_response: 'api_response',
-        tool_use: 'tool_use',
-        subagent: 'subagent',
-        error: 'error',
-      };
       const kind = kindMap[ev.type];
       if (kind) {
+        current.actions.push({
+          ts: ev.ts,
+          kind,
+          name: ev.model || ev.to || ev.tool_name || ev.hook_name || '',
+          input_summary: ev.params || ev.decision || '',
+          output_summary: ev.response_preview || ev.error_message || '',
+          duration_ms: ev.duration_ms || 0,
+          tokens: ev.tokens,
+          success: ev.success === 'true' ? true : ev.success === 'false' ? false : undefined,
+        });
+        if (kind === 'tool_use') current.tool_use_count++;
+        if (kind === 'api_call' && ev.tokens) {
+          current.tokens.input += ev.tokens.input || 0;
+          current.tokens.output += ev.tokens.output || 0;
+          current.tokens.cache_read += (ev.tokens.cache_read || 0);
+          current.api_calls++;
+        }
+      }
+    } else {
+      // No current turn yet — for OTel sessions where api_calls arrive
+      // before any user_message, create a synthetic turn
+      const kind = kindMap[ev.type];
+      if (kind && kind !== 'api_response') {
+        current = {
+          ts: ev.ts,
+          end_ts: ev.ts,
+          prompt: '',
+          prompt_preview: '',
+          model: ev.model || '',
+          tokens: { input: 0, output: 0, cache_read: 0, cache_creation: 0, total: 0 },
+          api_calls: 0,
+          duration_ms: 0,
+          wall_ms: 0,
+          actions: [],
+          tool_use_count: 0,
+        };
         current.actions.push({
           ts: ev.ts,
           kind,
@@ -413,7 +475,6 @@ function normalizeFlowToTranscript(flow, sessionId) {
           success: ev.success === 'true' ? true : ev.success === 'false' ? false : undefined,
         });
         if (kind === 'tool_use') current.tool_use_count++;
-        // Accumulate API tokens
         if (kind === 'api_call' && ev.tokens) {
           current.tokens.input += ev.tokens.input || 0;
           current.tokens.output += ev.tokens.output || 0;
@@ -428,6 +489,11 @@ function normalizeFlowToTranscript(flow, sessionId) {
   // Compute totals
   for (const t of turns) {
     t.tokens.total = (t.tokens.input || 0) + (t.tokens.output || 0);
+    // Track end_ts from last action
+    if (t.actions.length > 0) {
+      const lastAction = t.actions[t.actions.length - 1];
+      t.end_ts = Math.max(t.end_ts || 0, lastAction.ts + (lastAction.duration_ms || 0) / 1000);
+    }
   }
 
   return {
