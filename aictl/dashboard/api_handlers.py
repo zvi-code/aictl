@@ -114,6 +114,63 @@ class _APIHandlersMixin:
         result = build_session_flow(db, session_id, since, until)
         self._json_response(result)
 
+    def _serve_transcript(self) -> None:
+        """Return structured transcript for a single session.
+
+        GET /api/transcript/<session_id>
+        Returns the full SessionTranscript (turns, actions, summary).
+        """
+        from urllib.parse import unquote
+        # Extract session_id from path: /api/transcript/<session_id>
+        path = self.path.split("?")[0]
+        session_id = unquote(path.split("/api/transcript/", 1)[-1])
+        if not session_id:
+            self._json_response({"error": "session_id required"}, status=400)
+            return
+
+        analyzer = self.server.session_analyzer
+        transcript = analyzer.get_transcript(session_id)
+
+        if transcript is None:
+            # Fall back to building from DB events (for historical sessions)
+            db = self._db
+            if db:
+                since = self._qs_float("since", time.time() - 86400 * 7)
+                until = self._qs_float("until", time.time())
+                result = build_session_flow(db, session_id, since, until)
+                self._json_response(result)
+            else:
+                self._json_response({"error": "session not found"}, status=404)
+            return
+
+        self._json_response(transcript.to_dict())
+
+    def _serve_transcripts(self) -> None:
+        """Return list of active session transcripts.
+
+        GET /api/transcripts?cutoff=300
+        """
+        cutoff = self._qs_float("cutoff", 300)
+        analyzer = self.server.session_analyzer
+        transcripts = analyzer.get_active_transcripts(cutoff_seconds=cutoff)
+        self._json_response({
+            "transcripts": [
+                {
+                    "session_id": t.session_id,
+                    "tool": t.tool,
+                    "project": t.project,
+                    "model": t.model,
+                    "started_at": t.started_at,
+                    "is_live": t.is_live,
+                    "last_updated": t.last_updated,
+                    "turns": len(t.turns),
+                    "summary": t.build_summary().to_dict(),
+                }
+                for t in transcripts
+            ],
+            "count": len(transcripts),
+        })
+
     def _serve_otel_status(self) -> None:
         """Return OTel receiver health status."""
         status = self.server.otel_receiver.status()
