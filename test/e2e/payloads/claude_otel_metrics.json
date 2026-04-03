@@ -1,0 +1,69 @@
+{
+  "_doc": "Simulated OTLP metrics payload from Claude Code",
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "claude-code"}},
+          {"key": "session.id", "value": {"stringValue": "otel-claude-sess-001"}}
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "scope": {"name": "claude_code"},
+          "metrics": [
+            {
+              "name": "claude_code.token.usage",
+              "sum": {
+                "dataPoints": [
+                  {
+                    "asInt": "3500",
+                    "timeUnixNano": "1700000010000000000",
+                    "attributes": [
+                      {"key": "token_type", "value": {"stringValue": "input"}},
+                      {"key": "model", "value": {"stringValue": "claude-sonnet-4-20250514"}}
+                    ]
+                  },
+                  {
+                    "asInt": "450",
+                    "timeUnixNano": "1700000010000000000",
+                    "attributes": [
+                      {"key": "token_type", "value": {"stringValue": "output"}},
+                      {"key": "model", "value": {"stringValue": "claude-sonnet-4-20250514"}}
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "claude_code.cost.usage",
+              "sum": {
+                "dataPoints": [
+                  {
+                    "asDouble": 0.0089,
+                    "timeUnixNano": "1700000010000000000",
+                    "attributes": [
+                      {"key": "model", "value": {"stringValue": "claude-sonnet-4-20250514"}}
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "claude_code.session.count",
+              "sum": {
+                "dataPoints": [
+                  {
+                    "asInt": "1",
+                    "timeUnixNano": "1700000010000000000",
+                    "attributes": []
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

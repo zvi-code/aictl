@@ -22,6 +22,7 @@ processes = ["psutil>=5.9"]
 monitor = ["psutil>=5.9", "watchdog>=4.0"]
 otel = ["protobuf>=4.21", "opentelemetry-proto>=1.20"]
 all = ["textual>=0.79", "psutil>=5.9", "watchdog>=4.0", "protobuf>=4.21", "opentelemetry-proto>=1.20"]
+test = ["pytest>=7.0", "pytest-timeout>=2.0"]
 
 [project.scripts]
 aictl = "aictl.cli:main"
@@ -33,6 +34,15 @@ include = ["aictl*"]
 "aictl.data" = ["*.csv", "*.yaml"]
 "aictl.dashboard" = ["*.html"]
 "aictl.dashboard.dist" = ["**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+markers = [
+    "e2e: end-to-end tests requiring a live aictl server",
+    "slow: tests taking >30s",
+]
+# Default: only run unit tests (not e2e) unless explicitly requested.
+addopts = "--ignore=test/e2e"
 
 [tool.ruff.lint]
 # S110 = try-except-pass (no-op exception swallow — always hides bugs in command code)

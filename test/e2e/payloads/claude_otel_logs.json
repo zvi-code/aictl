@@ -1,0 +1,42 @@
+{
+  "_doc": "Simulated OTLP logs payload from Claude Code — API request events",
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "claude-code"}},
+          {"key": "session.id", "value": {"stringValue": "otel-claude-sess-001"}}
+        ]
+      },
+      "scopeLogs": [
+        {
+          "logRecords": [
+            {
+              "timeUnixNano": "1700000010000000000",
+              "attributes": [
+                {"key": "event.name", "value": {"stringValue": "claude_code.api_request"}},
+                {"key": "model", "value": {"stringValue": "claude-sonnet-4-20250514"}},
+                {"key": "duration_ms", "value": {"stringValue": "420"}},
+                {"key": "input_tokens", "value": {"stringValue": "2100"}},
+                {"key": "output_tokens", "value": {"stringValue": "310"}},
+                {"key": "cache_read_tokens", "value": {"stringValue": "800"}},
+                {"key": "status", "value": {"stringValue": "success"}}
+              ]
+            },
+            {
+              "timeUnixNano": "1700000015000000000",
+              "attributes": [
+                {"key": "event.name", "value": {"stringValue": "claude_code.api_request"}},
+                {"key": "model", "value": {"stringValue": "claude-sonnet-4-20250514"}},
+                {"key": "duration_ms", "value": {"stringValue": "280"}},
+                {"key": "input_tokens", "value": {"stringValue": "1400"}},
+                {"key": "output_tokens", "value": {"stringValue": "140"}},
+                {"key": "status", "value": {"stringValue": "success"}}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

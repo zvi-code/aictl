@@ -1,0 +1,57 @@
+{
+  "_doc": "Simulated Claude Code hook event sequence: session start → prompt → tool calls → stop",
+  "session_id": "claude:99001:1700000000",
+  "tool": "claude-code",
+  "cwd": "/tmp/e2e-project",
+  "events": [
+    {
+      "event": "SessionStart",
+      "_delay_ms": 0,
+      "model": "claude-sonnet-4-20250514",
+      "pid": 99001
+    },
+    {
+      "event": "UserPromptSubmit",
+      "_delay_ms": 100,
+      "message": "Create a hello world Python script",
+      "pid": 99001
+    },
+    {
+      "event": "PreToolUse",
+      "_delay_ms": 500,
+      "tool_name": "Write",
+      "input": {"file_path": "hello.py", "content": "print('hello world')"},
+      "pid": 99001
+    },
+    {
+      "event": "PostToolUse",
+      "_delay_ms": 200,
+      "tool_name": "Write",
+      "result": "File written: hello.py",
+      "pid": 99001
+    },
+    {
+      "event": "PreToolUse",
+      "_delay_ms": 300,
+      "tool_name": "Bash",
+      "input": {"command": "python hello.py"},
+      "pid": 99001
+    },
+    {
+      "event": "PostToolUse",
+      "_delay_ms": 150,
+      "tool_name": "Bash",
+      "result": "hello world",
+      "pid": 99001
+    },
+    {
+      "event": "Stop",
+      "_delay_ms": 200,
+      "pid": 99001,
+      "input_tokens": 2500,
+      "output_tokens": 350,
+      "cache_read_tokens": 1200,
+      "cost_usd": 0.0125
+    }
+  ]
+}

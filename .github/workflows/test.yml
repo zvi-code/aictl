@@ -1,0 +1,69 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Nightly at 06:00 UTC — includes tool E2E tests
+    - cron: "0 6 * * *"
+
+jobs:
+  # ── Unit tests (fast, always) ───────────────────────────────────
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: pip install -e ".[all,test]"
+      - name: Unit tests
+        run: pytest test/ -q --tb=short --ignore=test/e2e -x
+
+  # ── E2E simulated (no external tools, no secrets) ──────────────
+  e2e-simulated:
+    runs-on: ubuntu-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e ".[all,test]"
+      - name: E2E simulated tests
+        run: pytest test/e2e/ -v --timeout=120
+
+  # ── Docker integration (full install flow) ─────────────────────
+  docker:
+    runs-on: ubuntu-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test
+        run: |
+          docker compose -f docker/docker-compose.test.yml run --build test-integration
+
+  # ── Nightly: real tool E2E (costs API tokens) ──────────────────
+  e2e-tools:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    needs: [unit, e2e-simulated]
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: [claude]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run tool tests
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          docker compose -f docker/docker-compose.test.yml \
+            --profile tools run --build test-${{ matrix.tool }}
