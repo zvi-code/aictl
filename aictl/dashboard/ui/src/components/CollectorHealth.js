@@ -2,6 +2,7 @@ import { useState, useEffect, useContext, useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { fmtK, fmtAgo, fmtPct, fmtSz, esc, COLORS, ICONS } from '../utils.js';
+import * as api from '../api.js';
 
 const STATUS_COLORS = { active: 'var(--green)', degraded: 'var(--orange)', disabled: 'var(--fg2)', unknown: 'var(--fg2)' };
 
@@ -20,9 +21,9 @@ export default function CollectorHealth() {
   useEffect(() => {
     let running = true;
     const poll = () => {
-      fetch('/api/otel-status').then(r => r.json())
+      api.getOtelStatus()
         .then(d => { if (running) setOtel(d); }).catch(() => {});
-      fetch('/api/self-status').then(r => r.json())
+      api.getSelfStatus()
         .then(d => { if (running) setSelfStatus(d); }).catch(() => {});
     };
     poll();

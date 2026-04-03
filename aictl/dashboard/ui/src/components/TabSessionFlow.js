@@ -2,6 +2,7 @@ import { useState, useEffect, useContext, useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { fmtK, esc, COLORS, ICONS } from '../utils.js';
+import * as api from '../api.js';
 
 // ─── Formatting helpers ──────────────────────────────────────
 function fmtDur(ms) {
@@ -463,10 +464,8 @@ export default function TabSessionFlow() {
   useEffect(() => {
     setLoading(true);
     const since = globalRange ? Math.min(globalRange.since, Date.now() / 1000 - 86400) : Date.now() / 1000 - 86400;
-    let url = '/api/session-timeline?since=' + since;
-    if (globalRange && globalRange.until != null) url += '&until=' + globalRange.until;
-    fetch(url)
-      .then(r => r.json())
+    const until = globalRange?.until;
+    api.getSessionTimeline(null, { since, until })
       .then(data => {
         data.sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
         setSessions(data);
@@ -502,8 +501,7 @@ export default function TabSessionFlow() {
     const sess = sessions.find(s => s.session_id === activeSessionId);
     const since = sess?.started_at ? sess.started_at - 60 : Date.now() / 1000 - 86400;
     const until = sess?.ended_at ? sess.ended_at + 60 : Date.now() / 1000 + 60;
-    fetch(`/api/session-flow?session_id=${encodeURIComponent(activeSessionId)}&since=${since}&until=${until}`)
-      .then(r => r.json())
+    api.getSessionFlow(activeSessionId, since, until)
       .then(data => { setFlowData(data); setFlowLoading(false); })
       .catch(() => { setFlowData(null); setFlowLoading(false); });
   }, [activeSessionId]);

@@ -4,6 +4,7 @@ import { SnapContext } from '../context.js';
 import { fmtK, fmtPct, fmtSz, fmtRate, esc, fmtTime, fmtAgo, COLORS, ICONS } from '../utils.js';
 import SessionDetailView from './SessionDetail.js';
 import SessionTimeline from './SessionTimeline.js';
+import * as api from '../api.js';
 
 // ─── Duration formatting (Xm Ys) ───────────────────────────────
 function fmtDur(sec) {
@@ -203,8 +204,7 @@ function AgentTeamCard({team}) {
   useEffect(() => {
     if (!expanded || agents) return;
     setLoading(true);
-    fetch('/api/agent-teams?session_id=' + encodeURIComponent(team.session_id))
-      .then(r => r.json())
+    api.getAgentTeams(team.session_id)
       .then(data => { setAgents(data.agents || []); setLoading(false); })
       .catch(() => { setAgents([]); setLoading(false); });
   }, [expanded]);
@@ -264,8 +264,7 @@ export default function TabSessions() {
   useEffect(() => {
     setLoading(true);
     setHistError(false);
-    fetch('/api/sessions?active=false')
-      .then(r => r.json())
+    api.getSessions({ active: false })
       .then(data => { setHistory(data); setLoading(false); })
       .catch(() => { setHistError(true); setLoading(false); });
   }, []);
@@ -274,9 +273,8 @@ export default function TabSessions() {
   useEffect(() => {
     if (!globalRange) return;
     const since = Math.min(globalRange.since, Date.now()/1000 - 86400);
-    let url = '/api/session-timeline?since=' + since;
-    if (globalRange.until != null) url += '&until=' + globalRange.until;
-    fetch(url).then(r => r.json()).then(setTimeline).catch(() => setTimeline([]));
+    api.getSessionTimeline(null, { since, until: globalRange.until })
+      .then(setTimeline).catch(() => setTimeline([]));
   }, [globalRange]);
 
   // Listen for session selection from the timeline bar

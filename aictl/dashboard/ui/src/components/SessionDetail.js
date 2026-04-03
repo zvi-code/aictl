@@ -3,6 +3,7 @@ import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { fmtK, fmtSz, fmtPct, fmtRate, esc, fmtAgo, COLORS } from '../utils.js';
 import TeamTree, { TaskBoard } from './TeamTree.js';
+import * as api from '../api.js';
 
 // ─── Duration formatting ──────────────────────────────────────
 function fmtDur(sec) {
@@ -40,8 +41,7 @@ function ActionsPanel({sessionId}) {
     if (!sessionId) return;
     setLoading(true);
     const since = Math.floor(Date.now() / 1000) - 86400;
-    fetch(`/api/events?session_id=${encodeURIComponent(sessionId)}&limit=200&since=${since}`)
-      .then(r => r.json())
+    api.getEvents({ sessionId, limit: 200, since })
       .then(data => { setEvents(data.reverse()); setLoading(false); })
       .catch(() => setLoading(false));
   }, [sessionId]);
@@ -222,8 +222,7 @@ function ResourcesPanel({session}) {
   // 5.1: Fetch historical sessions for comparison
   useEffect(() => {
     if (!session.tool) return;
-    fetch(`/api/sessions?tool=${encodeURIComponent(session.tool)}&active=false&limit=20`)
-      .then(r => r.json())
+    api.getSessions({ tool: session.tool, active: false, limit: 20 })
       .then(data => {
         if (data.length > 1) {
           const durations = data.filter(s => s.duration_s > 0).map(s => s.duration_s);
@@ -267,8 +266,7 @@ function ProjectCostPanel({project}) {
 
   useEffect(() => {
     if (!project) return;
-    fetch('/api/project-costs?days=7')
-      .then(r => r.json())
+    api.getProjectCosts(7)
       .then(data => {
         const match = data.find(p => p.project === project);
         setCosts(match || null);
@@ -311,8 +309,7 @@ function RunHistoryPanel({project, tool}) {
 
   useEffect(() => {
     if (!project || !tool) return;
-    fetch(`/api/session-runs?project=${encodeURIComponent(project)}&tool=${encodeURIComponent(tool)}&days=30&limit=20`)
-      .then(r => r.json())
+    api.getSessionRuns(project, tool, 30, 20)
       .then(setRuns)
       .catch(() => setRuns([]));
   }, [project, tool]);
@@ -357,8 +354,7 @@ function ApiCallsPanel({sessionId}) {
   useEffect(() => {
     setLoading(true);
     const since = Math.floor(Date.now() / 1000) - 3600;
-    fetch(`/api/api-calls?since=${since}&limit=100`)
-      .then(r => r.json())
+    api.getApiCalls(since, 100)
       .then(d => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
   }, [sessionId]);

@@ -3,6 +3,7 @@ import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS, fmtK, fmtSz, fmtPct, esc } from '../utils.js';
 import MiniChart from './MiniChart.js';
+import * as api from '../api.js';
 
 const MODEL_PALETTE = ['var(--green)','var(--model-7)','var(--orange)','var(--red)','var(--model-5)','var(--yellow)','var(--accent)','var(--model-8)'];
 
@@ -33,7 +34,7 @@ export default function TabBudget() {
   const [error, setError] = useState(false);
   useEffect(()=>{
     setBudget(null); setError(false);
-    fetch('/api/budget').then(r=>r.json()).then(setBudget).catch(()=>setError(true));
+    api.getBudget().then(setBudget).catch(()=>setError(true));
   },[]);
   if(error) return html`<p class="error-state">Failed to load budget.</p>`;
   if(!budget) return html`<p class="loading-state">Loading...</p>`;
