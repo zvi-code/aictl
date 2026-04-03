@@ -263,7 +263,7 @@ def _parse_agent_file(path: Path) -> dict | None:
 
 def _parse_iso_ts(ts_str: str) -> float:
     """Parse an ISO 8601 timestamp to epoch seconds.  Returns 0.0 on failure."""
-    if not ts_str:
+    if not ts_str or not isinstance(ts_str, str):
         return 0.0
     try:
         from datetime import datetime

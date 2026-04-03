@@ -1518,12 +1518,13 @@ def collect_mcp_status(all_tools: list[ToolResources]) -> list[McpServerInfo]:
 
 
 def _classify_mcp_transport(config: dict) -> tuple[str, str]:
-    if "url" in config:
-        return ("http", config["url"])
-    if config.get("type") == "http":
-        return ("http", config.get("url", ""))
+    # Check explicit type first (takes precedence over url key)
     if config.get("type") == "sse":
         return ("sse", config.get("url", ""))
+    if config.get("type") == "http":
+        return ("http", config.get("url", ""))
+    if "url" in config:
+        return ("http", config["url"])
     cmd = config.get("command", "")
     args = " ".join(config.get("args", []))
     return ("stdio", f"{cmd} {args}".strip())
