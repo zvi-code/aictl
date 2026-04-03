@@ -765,30 +765,75 @@ Or via Group Policy: *Computer Configuration → Administrative Templates → Sy
 ### Running tests on Windows
 
 ```powershell
-python test\run.py
-python test\run.py -v   # verbose
+python -m pytest test\ -v --ignore=test\e2e --ignore=test\e2e_tools   # unit tests
+python -m pytest test\e2e\ -v --timeout=120                            # simulated E2E
+python -m pytest test\e2e_tools\ -v --timeout=180                      # real-tool E2E
+python test\run.py -v                                                   # legacy integration
 ```
 
 ## Testing
 
+aictl has a three-tier test suite: unit tests (fast, no external deps), simulated E2E tests (real server, synthetic payloads), and real-tool E2E tests (actual Claude/Gemini CLIs).
+
+### Quick reference
+
+```bash
+make test          # unit tests only (562 tests, ~45s)
+make test-e2e      # simulated E2E — starts aictl server, posts synthetic data (40 tests)
+make test-tools    # real-tool E2E — runs Claude/Gemini CLI, verifies hooks (14 tests, skips missing tools)
+make test-all      # everything above
+```
+
 ### Unit tests
 
 ```bash
-make test                              # quick: runs full suite
-python3 -m pytest test/ -v            # all tests (verbose)
-python3 -m pytest test/test_dashboard.py -v   # dashboard + SSE contract tests
-python test/run.py                     # integration tests (deploy, import, scan)
-python test/run.py -v                  # verbose
+make test                                       # full unit suite
+python3 -m pytest test/test_dashboard.py -v     # specific module
+python test/run.py                              # legacy integration tests (deploy, import, scan)
 ```
 
-Test suite includes:
-- **SSE↔Snapshot contract tests** — asserts every `DashboardSnapshot` key appears in the SSE summary, preventing stale-data regressions. Adding a field to the snapshot without updating the SSE builder fails the test.
-- **Snapshot aggregation tests** — verifies computed totals (files, tokens, live sessions, rates) from tool data.
-- **Storage tests** — SQLite history, metrics, telemetry, events CRUD.
-- **Monitor tests** — process classification, network snapshots, collector status.
-- **WriteGuard tests** — 48 tests covering interactive confirmation, approve-all, abort, non-TTY pass-through, per-command integration (deploy, hooks, otel).
-- **Exception discipline tests** — static analysis (AST + regex) enforcing no silent `except Exception: pass` swallows and no swallowed `click.Abort`; also validates exit-code 1 on partial failures.
-- **Integration tests** — end-to-end deploy/import/scan against fixture projects.
+Coverage includes:
+- **SSE↔Snapshot contract** — every `DashboardSnapshot` key must appear in the SSE summary
+- **Snapshot aggregation** — computed totals (files, tokens, live sessions, rates)
+- **Storage** — SQLite history, metrics, telemetry, events CRUD
+- **Monitor** — process classification, network snapshots, collector status
+- **WriteGuard** — 48 tests: interactive confirmation, approve-all, abort, non-TTY pass-through
+- **Exception discipline** — AST + regex static analysis enforcing no silent exception swallowing
+- **Integration** — deploy/import/scan against fixture projects
+
+### Simulated E2E tests (Tier 1)
+
+Starts a real `aictl daemon serve` on a random port and posts synthetic hook/OTel payloads:
+
+```bash
+make test-e2e
+# or directly:
+python3 -m pytest test/e2e/ -v --timeout=120
+```
+
+Tests cover:
+- **Hook flows** — Claude and Gemini hook payloads create sessions and events
+- **OTel ingestion** — OTLP metrics, logs, and traces are accepted and stored
+- **Session lifecycle** — concurrent sessions, hybrid hook+OTel, event ordering
+- **SSE streaming** — live updates arrive via Server-Sent Events
+
+### Real-tool E2E tests (Tier 2)
+
+Runs actual AI tool CLIs in non-interactive mode and verifies hooks fire back to aictl:
+
+```bash
+make test-tools
+# or directly:
+python3 -m pytest test/e2e_tools/ -v --timeout=180
+```
+
+**Requirements:** Claude Code (`claude`) and/or Gemini CLI (`gemini`) installed and authenticated. Tests that need a missing tool are automatically skipped.
+
+Tests cover:
+- **Claude** — JSON output structure, session_id, usage stats, hooks fire, sessions created, tool invocations captured
+- **Gemini** — JSON output, response content, session_id, token stats, hooks fire, session end, payload structure
+
+Run only one tool: `pytest test/e2e_tools/ -m tool_gemini` or `pytest test/e2e_tools/ -m tool_claude`
 
 ### Docker integration test (fresh-install validation)
 
@@ -816,6 +861,14 @@ docker compose run aictl shell
 ```
 
 See [docker/README.md](docker/README.md) for full details.
+
+### CI
+
+GitHub Actions runs automatically on push/PR (`.github/workflows/test.yml`):
+- **Unit tests** — Python 3.11/3.12/3.13 matrix
+- **Simulated E2E** — starts server, runs all 40 synthetic tests
+- **Docker** — fresh-install validation
+- **Nightly** — real-tool E2E with Claude + Gemini (scheduled, opt-in)
 
 ## Documentation
 
