@@ -22,6 +22,7 @@ import TabBudget from './components/TabBudget.js';
 import TabSessions from './components/TabSessions.js';
 import TabAnalytics from './components/TabAnalytics.js';
 import TabSessionFlow from './components/TabSessionFlow.js';
+import TabTranscript from './components/TabTranscript.js';
 import TabToolConfig from './components/TabToolConfig.js';
 import ContextMap from './components/ContextMap.js';
 import CollectorHealth from './components/CollectorHealth.js';
@@ -544,6 +545,7 @@ export default function App() {
     sessions: () => html`<div class="mb-lg"><${TabSessions} key=${'sessions-'+activeTab}/></div>`,
     analytics: () => html`<div class="mb-lg"><${TabAnalytics} key=${'analytics-'+activeTab}/></div>`,
     flow:    () => html`<div class="mb-lg"><${TabSessionFlow} key=${'flow-'+activeTab}/></div>`,
+    transcript: () => html`<div class="mb-lg"><${TabTranscript} key=${'transcript-'+activeTab}/></div>`,
     config:  () => html`<div class="mb-lg"><${TabToolConfig}/></div>`,
   };
 

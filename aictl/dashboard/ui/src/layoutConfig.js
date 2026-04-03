@@ -48,6 +48,7 @@ export const LAYOUT = {
     { id: 'sessions', label: 'Sessions',         icon: '\uD83D\uDD04', key: '7' },
     { id: 'analytics', label: 'Analytics',        icon: '\uD83D\uDD2C', key: '8' },
     { id: 'flow',     label: 'Session Flow',      icon: '\uD83D\uDD00', key: '9' },
+    { id: 'transcript', label: 'Transcript',      icon: '\uD83D\uDCDC', key: 't' },
     { id: 'config',   label: 'Configuration',     icon: '\u2699\uFE0F', key: '0' },
   ],
 
