@@ -958,6 +958,9 @@ class HistoryDB:
         self._local = threading.local()
         self._closed = False
 
+        # Event listeners — callables receiving EventRow on append
+        self._event_listeners: list = []
+
         # Ensure parent dir exists
         if isinstance(self._path, Path):
             self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -1432,9 +1435,14 @@ class HistoryDB:
         if self._flush_interval <= 0:
             self.flush()
 
+    def add_event_listener(self, callback) -> None:
+        """Register a callback that receives each EventRow on append."""
+        self._event_listeners.append(callback)
+
     def append_event(self, event: EventRow) -> None:
         """Buffer an event for batch insert."""
         self._log_event(event)
+        self._notify_listeners(event)
         with self._lock:
             self._events_buf.append(event)
         if self._flush_interval <= 0:
@@ -1444,10 +1452,19 @@ class HistoryDB:
         """Buffer multiple events."""
         for e in events:
             self._log_event(e)
+            self._notify_listeners(e)
         with self._lock:
             self._events_buf.extend(events)
         if self._flush_interval <= 0:
             self.flush()
+
+    def _notify_listeners(self, event: EventRow) -> None:
+        """Call all registered event listeners."""
+        for cb in self._event_listeners:
+            try:
+                cb(event)
+            except Exception:
+                pass  # listeners must not break the write path
 
     def _log_event(self, event: EventRow) -> None:
         """Write event to datapoint log file if configured."""

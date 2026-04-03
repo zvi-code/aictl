@@ -219,6 +219,10 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._serve_session_stats()
         elif path.startswith("/api/session-flow"):
             self._serve_session_flow()
+        elif path.startswith("/api/transcript/"):
+            self._serve_transcript()
+        elif path.startswith("/api/transcripts"):
+            self._serve_transcripts()
         elif path.startswith("/api/otel-status"):
             self._serve_otel_status()
         elif path.startswith("/api/api-calls"):
@@ -779,6 +783,9 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
         self.entity_tracker: EntityStateTracker = EntityStateTracker()
         # OTel OTLP receiver for Claude Code telemetry
         self.otel_receiver: OtelReceiver = OtelReceiver()
+        # Session analyzer — independent live transcript builder
+        from ..analysis.analyzer import SessionAnalyzer
+        self.session_analyzer: SessionAnalyzer = SessionAnalyzer()
         # Background analytics cache — no SQL on request path
         self.analytics_cache: _AnalyticsCache = _AnalyticsCache()
         self.analytics_cache.start(store)

@@ -524,6 +524,10 @@ def start_server(
     server = _DashboardHTTPServer((host, port), _DashboardHandler,
                                   store, allowed, root)
 
+    # Wire session analyzer as an event listener on the database
+    if db is not None:
+        db.add_event_listener(server.session_analyzer.ingest_event)
+
     # Register SSE pre-serialization callback so build_sse_summary runs once
     # per update cycle (in the RefreshLoop thread) instead of per-SSE-client.
     from .dashboard.web_server import build_sse_summary as _build_sse
