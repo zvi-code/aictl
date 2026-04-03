@@ -7,6 +7,8 @@ import {
   COLORS, ICONS, SC, esc,
 } from './utils.js';
 import { LAYOUT } from './layoutConfig.js';
+import { mergeSseSummary, appendHistory } from './selectors.js';
+import * as api from './api.js';
 import ChartCard from './components/ChartCard.js';
 import Metric from './components/Metric.js';
 import ResourceBar from './components/ResourceBar.js';
@@ -39,63 +41,7 @@ function toLocalISOString(ts) {
   return new Date(d.getTime() - off * 60000).toISOString().slice(0, 16);
 }
 
-// ─── SSE merge helpers ─────────────────────────────────────────
-const MAX_GLOBAL = 200;
-const MAX_TOOL = 80;
-
-const GLOBAL_KEYS = ['ts','files','tokens','cpu','mem_mb','mcp','mem_tokens',
-                     'live_sessions','live_tokens','live_in_rate','live_out_rate'];
-
-function mergeSseSummary(prev, data) {
-  if(!prev) return data;
-  const toolMap = Object.fromEntries((data.tools || []).map(t => [t.tool, t]));
-  return {
-    ...prev,
-    ...data,
-    tools: prev.tools.map(t => {
-      const update = toolMap[t.tool];
-      if(!update) return t;
-      return { ...t, live: update.live, vendor: update.vendor || t.vendor, host: update.host || t.host };
-    }),
-  };
-}
-
-function appendHistory(prev, data) {
-  if(!prev) return prev;
-  prev.ts.push(data.timestamp);
-  prev.files.push(data.total_files);
-  prev.tokens.push(data.total_tokens);
-  prev.cpu.push(Math.round(data.total_cpu * 10) / 10);
-  prev.mem_mb.push(Math.round(data.total_mem_mb * 10) / 10);
-  prev.mcp.push(data.total_mcp_servers);
-  prev.mem_tokens.push(data.total_memory_tokens);
-  prev.live_sessions.push(data.total_live_sessions);
-  prev.live_tokens.push(data.total_live_estimated_tokens);
-  prev.live_in_rate.push(Math.round((data.total_live_inbound_rate_bps || 0) * 100) / 100);
-  prev.live_out_rate.push(Math.round((data.total_live_outbound_rate_bps || 0) * 100) / 100);
-  if(prev.ts.length > MAX_GLOBAL) {
-    for(const k of GLOBAL_KEYS) prev[k] = prev[k].slice(-MAX_GLOBAL);
-  }
-  const bt = prev.by_tool || {};
-  for(const t of (data.tools || [])) {
-    if(t.tool === 'aictl') continue;
-    const cpu = t.live?.cpu_percent || 0;
-    const mem = t.live?.mem_mb || 0;
-    const tok = t.tokens || 0;
-    const tr = (t.live?.outbound_rate_bps || 0) + (t.live?.inbound_rate_bps || 0);
-    if(!bt[t.tool]) bt[t.tool] = { ts: [], cpu: [], mem_mb: [], tokens: [], traffic: [] };
-    const th = bt[t.tool];
-    th.ts.push(data.timestamp);
-    th.cpu.push(Math.round(cpu * 10) / 10);
-    th.mem_mb.push(Math.round(mem * 10) / 10);
-    th.tokens.push(tok);
-    th.traffic.push(Math.round(tr * 100) / 100);
-    if(th.ts.length > MAX_TOOL) {
-      for(const k of Object.keys(th)) th[k] = th[k].slice(-MAX_TOOL);
-    }
-  }
-  return { ...prev, by_tool: bt };
-}
+// ─── SSE merge helpers (imported from selectors.js) ────────────
 
 // ─── Range presets ──────────────────────────────────────────────
 const RANGE_PRESETS = [
@@ -109,7 +55,7 @@ const RANGE_SECONDS = {};
 RANGE_PRESETS.forEach(r => { RANGE_SECONDS[r.id] = r.seconds; });
 
 // ─── Reducer ───────────────────────────────────────────────────
-const initialState = {
+export const initialState = {
   snap: null,
   history: null,
   connected: false,
@@ -127,7 +73,7 @@ const initialState = {
   enabledTools: loadPref('tool_filter', null),  // null = all enabled
 };
 
-function reducer(state, action) {
+export function reducer(state, action) {
   switch(action.type) {
     case 'SSE_UPDATE': {
       const data = action.payload;
@@ -402,22 +348,19 @@ export default function App() {
   // ─── Data fetching on range changes ──────────────────────────
   const fetchForRange = useCallback((range) => {
     const since = range.since;
-    const untilParam = range.until != null ? '&until=' + range.until : '';
+    const until = range.until;
 
     // History
     if (range.id === 'live') {
       setDbHistory(null);
     } else if (range.id !== 'custom') {
-      fetch('/api/history?range=' + range.id)
-        .then(r=>r.json()).then(setDbHistory).catch(()=>{});
+      api.getHistory({ range: range.id }).then(setDbHistory).catch(()=>{});
     } else {
-      fetch('/api/history?since=' + since + untilParam)
-        .then(r=>r.json()).then(setDbHistory).catch(()=>{});
+      api.getHistory({ since, until }).then(setDbHistory).catch(()=>{});
     }
 
     // Events
-    fetch('/api/events?since=' + since + untilParam)
-      .then(r=>r.json())
+    api.getEvents({ since, until })
       .then(data => dispatch({ type: 'EVENTS_INIT', payload: data }))
       .catch(()=>{});
   }, []);
@@ -426,13 +369,11 @@ export default function App() {
   useEffect(()=>{
     let es, retryDelay=1000, closed=false, snapInflight=false;
 
-    fetch('/api/snapshot')
-      .then(r=>r.json())
+    api.getSnapshot()
       .then(data => dispatch({ type: 'SNAP_REPLACE', payload: data }))
       .catch(()=>{});
 
-    fetch('/api/history')
-      .then(r=>r.json())
+    api.getHistory()
       .then(data => dispatch({ type: 'HISTORY_INIT', payload: data }))
       .catch(()=>{});
 
@@ -441,7 +382,7 @@ export default function App() {
 
     function connect(){
       if(closed) return;
-      es = new EventSource('/api/stream');
+      es = new EventSource(api.streamUrl());
       es.onmessage = e => {
         const data = JSON.parse(e.data);
         dispatch({ type: 'SSE_UPDATE', payload: data });
@@ -462,8 +403,7 @@ export default function App() {
     const refreshInterval = setInterval(()=>{
       if(closed || snapInflight) return;
       snapInflight = true;
-      fetch('/api/snapshot')
-        .then(r=>r.json())
+      api.getSnapshot()
         .then(data => dispatch({ type: 'SNAP_REPLACE', payload: data }))
         .catch(()=>{})
         .finally(()=>{ snapInflight = false; });
@@ -623,7 +563,7 @@ export default function App() {
   const [otelActive, setOtelActive] = useState(false);
   useEffect(()=>{
     let running = true;
-    const check = () => fetch('/api/otel-status').then(r=>r.json())
+    const check = () => api.getOtelStatus()
       .then(d=>{ if(running) setOtelActive(d.active||false); })
       .catch(()=>{ if(running) setOtelActive(false); });
     check();
