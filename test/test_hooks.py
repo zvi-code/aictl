@@ -45,7 +45,7 @@ class TestBuildHookConfig:
     def test_custom_port(self):
         config = _build_hook_config(9999, None)
         cmd = config["SessionStart"][0]["hooks"][0]["command"]
-        assert "localhost:9999" in cmd
+        assert "--port 9999" in cmd
 
     def test_custom_event_subset(self):
         config = _build_hook_config(8484, ["SessionStart", "SessionEnd"])
@@ -53,36 +53,37 @@ class TestBuildHookConfig:
         assert "SessionStart" in config
         assert "SessionEnd" in config
 
-    def test_reads_stdin(self):
+    def test_invokes_hook_handler_module(self):
         config = _build_hook_config(8484, ["PostToolUse"])
         cmd = config["PostToolUse"][0]["hooks"][0]["command"]
-        assert "sys.stdin" in cmd
-
-    def test_posts_to_api_hooks(self):
-        config = _build_hook_config(8484, ["PostToolUse"])
-        cmd = config["PostToolUse"][0]["hooks"][0]["command"]
-        assert "/api/hooks" in cmd
+        assert "aictl.hook_handler" in cmd
 
     def test_sets_event_name(self):
         config = _build_hook_config(8484, ["PreToolUse"])
         cmd = config["PreToolUse"][0]["hooks"][0]["command"]
-        assert "'PreToolUse'" in cmd
+        assert "--event PreToolUse" in cmd
 
-    def test_merges_env_vars(self):
+    def test_no_inline_python(self):
+        """Command must invoke the module, not an inline -c one-liner."""
         config = _build_hook_config(8484, ["SessionStart"])
         cmd = config["SessionStart"][0]["hooks"][0]["command"]
-        assert "SESSION_ID" in cmd
-        assert "CWD" in cmd
+        assert " -c " not in cmd
+        assert "-m aictl.hook_handler" in cmd
 
 
 class TestIsAictlHook:
-    def test_detects_nested_format(self):
-        """Current nested format {"matcher", "hooks": [...]} is detected."""
+    def test_detects_module_format(self):
+        """Current module-based format is detected."""
+        hook = {"matcher": "", "hooks": [{"type": "command", "command": "python -m aictl.hook_handler --event SessionStart --port 8484"}]}
+        assert _is_aictl_hook(hook)
+
+    def test_detects_old_inline_format(self):
+        """Previous inline -c format with /api/hooks is detected for migration."""
         hook = {"matcher": "", "hooks": [{"type": "command", "command": "python -c '...http://localhost:8484/api/hooks...'"}]}
         assert _is_aictl_hook(hook)
 
     def test_detects_old_flat_format_for_migration(self):
-        """Old flat format (pre-fix) is detected so reinstall can clean it up."""
+        """Legacy flat format (pre-fix) is detected so reinstall can clean it up."""
         hook = {"type": "command", "command": "curl -s http://localhost:8484/api/hooks ..."}
         assert _is_aictl_hook(hook)
 
@@ -237,7 +238,7 @@ class TestInstallConflictDetection:
             else:
                 all_cmds.append(h.get("command", ""))
         assert any("my-linter.sh" in c for c in all_cmds)
-        assert any("/api/hooks" in c for c in all_cmds)
+        assert any("aictl.hook_handler" in c for c in all_cmds)
 
     def test_no_conflict_when_only_aictl_hooks_exist(self, tmp_settings):
         """Re-installing when only old aictl hooks exist should succeed without --force."""
@@ -332,17 +333,67 @@ class TestHookEventsCompleteness:
         )
 
 
+class TestHookHandler:
+    """Tests for the aictl.hook_handler module."""
+
+    def test_enriches_event_and_env(self, monkeypatch):
+        import io
+        from aictl.hook_handler import main
+        monkeypatch.setattr("sys.argv", ["hook_handler", "--event", "PreToolUse", "--port", "9999"])
+        monkeypatch.setattr("sys.stdin", io.StringIO('{"tool": "Bash"}'))
+        monkeypatch.setenv("SESSION_ID", "test-session")
+        monkeypatch.setenv("CWD", "/tmp")
+        captured = io.StringIO()
+        monkeypatch.setattr("sys.stdout", captured)
+        # urlopen will fail (no server) but should not raise
+        main()
+        result = json.loads(captured.getvalue())
+        assert result["event"] == "PreToolUse"
+        assert result["tool"] == "Bash"
+        assert result["session_id"] == "test-session"
+        assert result["cwd"] == "/tmp"
+
+    def test_empty_stdin(self, monkeypatch):
+        """When stdin is a tty (no pipe), handler uses empty dict."""
+        import io
+        from aictl.hook_handler import main
+        monkeypatch.setattr("sys.argv", ["hook_handler", "--event", "SessionStart", "--port", "8484"])
+
+        class FakeTTY(io.StringIO):
+            def isatty(self):
+                return True
+
+        monkeypatch.setattr("sys.stdin", FakeTTY())
+        captured = io.StringIO()
+        monkeypatch.setattr("sys.stdout", captured)
+        main()
+        result = json.loads(captured.getvalue())
+        assert result["event"] == "SessionStart"
+
+    def test_does_not_overwrite_existing_session_id(self, monkeypatch):
+        """If payload already has session_id, don't overwrite with env var."""
+        import io
+        from aictl.hook_handler import main
+        monkeypatch.setattr("sys.argv", ["hook_handler", "--event", "Stop", "--port", "8484"])
+        monkeypatch.setattr("sys.stdin", io.StringIO('{"session_id": "from-payload"}'))
+        monkeypatch.setenv("SESSION_ID", "from-env")
+        captured = io.StringIO()
+        monkeypatch.setattr("sys.stdout", captured)
+        main()
+        result = json.loads(captured.getvalue())
+        assert result["session_id"] == "from-payload"
+
+
 class TestPythonCmd:
     """Hook command uses sys.executable, not the hardcoded 'python3' string."""
 
     def test_does_not_use_bare_python3(self):
-        """Hook command must not start with the bare 'python3' invocation.
+        """Hook command must not start with a bare 'python3' invocation.
 
         The interpreter is sys.executable (a full path, possibly containing
-        'python3' as part of the path, e.g. /usr/bin/python3.11). The old
-        implementation used the bare literal 'python3 -c', which breaks on
-        Windows where 'python3' is not available. We check that the command
-        starts with a quoted full path, not the literal word 'python3'.
+        'python3' as part of the path, e.g. /usr/bin/python3.11). We check
+        that the command starts with a quoted full path, not the literal
+        word 'python3', since 'python3' is not available on Windows.
         """
         import sys
         config = _build_hook_config(8484, ["SessionStart"])
