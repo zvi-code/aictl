@@ -838,6 +838,36 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
 .tc-legend-item { display: flex; align-items: center; gap: 4px; }
 .tc-legend-swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
 
+/* Filter controls */
+.tc-controls {
+  display: flex; flex-wrap: wrap; gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+}
+.tc-filter {
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: 4px; font-size: var(--fs-xs);
+}
+.tc-filter-label {
+  font-weight: 600; color: var(--fg2); margin-right: 4px;
+  text-transform: uppercase; letter-spacing: 0.05em; font-size: 10px;
+}
+.tc-filter-btn {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 3px; padding: 1px 6px; cursor: pointer;
+  color: var(--fg2); font-size: 10px;
+}
+.tc-filter-btn:hover { color: var(--fg); border-color: var(--fg2); }
+.tc-filter-check {
+  display: flex; align-items: center; gap: 3px;
+  cursor: pointer; padding: 1px 5px; border-radius: 3px;
+  border: 1px solid transparent; color: var(--fg2);
+  user-select: none;
+}
+.tc-filter-check.active { color: var(--fg); border-color: var(--border); background: var(--bg2); }
+.tc-filter-check input { display: none; }
+
+/* Flow container */
 .tc-flow {
   display: flex; flex-wrap: wrap; align-items: flex-end;
   padding: var(--sp-2) var(--sp-4);
@@ -851,9 +881,32 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
   width: 100%; box-sizing: border-box;
   border: 1px solid #000;
   transition: opacity 0.1s;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  background: var(--bar-color);
 }
-.tc-flow-bar:hover .tc-flow-fill { opacity: 1; border-color: var(--fg); }
+.tc-flow-bar:hover .tc-flow-fill { border-color: var(--fg); }
+/* When split into fresh+cached, parent must not paint solid */
+.tc-flow-fill.tc-split { background: none; }
 
+/* Fresh (solid) portion of the bar */
+.tc-fill-fresh {
+  background: var(--bar-color);
+  flex-shrink: 0;
+}
+/* Cached (hatched) portion of the bar */
+.tc-fill-cached {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--bar-color) 0px,
+    var(--bar-color) 2px,
+    transparent 2px,
+    transparent 4px
+  );
+  flex-shrink: 0;
+}
+
+/* Gap spacer */
 .tc-flow-gap {
   width: 40px; display: flex; flex-direction: column;
   align-items: center; justify-content: flex-end;
