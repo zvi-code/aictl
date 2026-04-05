@@ -194,6 +194,8 @@ function SummaryBar({summary}) {
 
 // ─── Constants ────────────────────────────────────────────────
 const BAR_AREA_H = 110;
+const TIME_AXIS_H = 16;  // reserved height for time labels below bars
+const SLOT_H = BAR_AREA_H + TIME_AXIS_H;
 const GAP_THRESHOLD = 30;
 
 // ─── Build slot list from filtered bars ───────────────────────
@@ -258,13 +260,22 @@ function BarFlow({bars, tokenMode, onHover, onLeave}) {
   const slots = buildSlots(bars);
   const maxTok = Math.max(1, ...bars.map(b => barTokens(b, tokenMode)));
 
+  // Decide which bar-slots get a time label: first, last, every ~20th
+  const barIndices = [];
+  slots.forEach((s, i) => { if (s.type === 'bar') barIndices.push(i); });
+  const labelEvery = Math.max(1, Math.floor(barIndices.length / Math.ceil(barIndices.length / 20)));
+  const labelSet = new Set();
+  barIndices.forEach((si, nth) => {
+    if (nth === 0 || nth === barIndices.length - 1 || nth % labelEvery === 0) labelSet.add(si);
+  });
+
   return html`<div class="tc-flow">
     ${slots.map((slot, si) => {
       if (slot.type === 'gap') {
-        return html`<div key=${'g'+si} class="tc-flow-gap">
-          <span class="tc-gap-label">${fmtHHMM(slot.endTs)}</span>
-          <span class="tc-gap-dots">\u00b7\u00b7 ${fmtGap(slot.gap)} \u00b7\u00b7</span>
-          <span class="tc-gap-label">${fmtHHMM(slot.startTs)}</span>
+        const tipText = fmtDateTime(slot.endTs) + ' \u2192 ' + fmtDateTime(slot.startTs) + '  (' + fmtGap(slot.gap) + ' gap)';
+        return html`<div key=${'g'+si} class="tc-flow-slot" style="height:${SLOT_H}px" title=${tipText}>
+          <div class="tc-flow-gap-line" style="height:${BAR_AREA_H}px"></div>
+          <div class="tc-flow-time">${fmtGap(slot.gap)}</div>
         </div>`;
       }
 
@@ -278,7 +289,6 @@ function BarFlow({bars, tokenMode, onHover, onLeave}) {
       const entity = barEntity(b);
       const color = entityColor(entity);
 
-      // Split bar into fresh (solid) + cached (hatched) portions
       const fresh = tokFresh(b);
       const cached = tokCached(b);
       const tokTotal = fresh + cached;
@@ -295,17 +305,20 @@ function BarFlow({bars, tokenMode, onHover, onLeave}) {
       }
 
       const hasSplit = cachedPct > 0;
+      const showTime = labelSet.has(si);
 
-      return html`<div key=${si} class="tc-flow-bar"
-        style="height:${BAR_AREA_H}px"
+      return html`<div key=${si} class="tc-flow-slot" style="height:${SLOT_H}px"
         onMouseEnter=${(e) => onHover(b, e)}
         onMouseLeave=${onLeave}>
-        <div class="tc-flow-fill ${hasSplit ? 'tc-split' : ''}"
-          style="height:${hPx}px;--bar-color:${color}">
-          ${hasSplit && html`
-            ${freshPct > 0 && html`<div class="tc-fill-fresh" style="height:${freshPct}%"></div>`}
-            <div class="tc-fill-cached" style="height:${freshPct > 0 ? cachedPct : 100}%"></div>`}
+        <div class="tc-flow-bar-area" style="height:${BAR_AREA_H}px">
+          <div class="tc-flow-fill ${hasSplit ? 'tc-split' : ''}"
+            style="height:${hPx}px;--bar-color:${color}">
+            ${hasSplit && html`
+              ${freshPct > 0 && html`<div class="tc-fill-fresh" style="height:${freshPct}%"></div>`}
+              <div class="tc-fill-cached" style="height:${freshPct > 0 ? cachedPct : 100}%"></div>`}
+          </div>
         </div>
+        <div class="tc-flow-time">${showTime ? fmtHHMM(b.ts) : ''}</div>
       </div>`;
     })}
   </div>`;

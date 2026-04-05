@@ -750,7 +750,7 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
 
 /* Turn card */
 .tr-turn { border: 1px solid var(--border); border-radius: 8px; background: var(--bg2);
-  overflow: hidden; transition: border-color 0.15s; }
+  transition: border-color 0.15s; }
 .tr-turn:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
 .tr-turn-expanded { border-color: var(--accent); }
 
@@ -787,7 +787,8 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
 
 /* Action timeline */
 .tr-actions { padding: 0 var(--sp-4) var(--sp-3);
-  border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 2px; }
+  border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 2px;
+  max-height: 60vh; overflow-y: auto; }
 .tr-action-row { display: flex; align-items: center; gap: var(--sp-2);
   padding: 2px var(--sp-2); border-radius: 4px; font-size: var(--fs-xs); }
 .tr-action-row:hover { background: var(--bg3); }
@@ -873,9 +874,22 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
   padding: var(--sp-2) var(--sp-4);
   gap: 0;
 }
-.tc-flow-bar {
-  width: 10px; display: flex; align-items: flex-end;
-  cursor: pointer; box-sizing: border-box;
+/* Each slot (bar or gap) has fixed height = bar area + time axis */
+.tc-flow-slot {
+  width: 10px; display: flex; flex-direction: column;
+  justify-content: flex-end; align-items: stretch;
+  box-sizing: border-box;
+}
+/* Bar area: bottom-aligned fill */
+.tc-flow-bar-area {
+  display: flex; align-items: flex-end;
+  cursor: pointer;
+}
+/* Time axis: fixed-height row below every bar */
+.tc-flow-time {
+  font-size: 8px; color: var(--fg2); text-align: center;
+  white-space: nowrap; line-height: 16px; height: 16px;
+  overflow: visible;
 }
 .tc-flow-fill {
   width: 100%; box-sizing: border-box;
@@ -906,18 +920,11 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
   flex-shrink: 0;
 }
 
-/* Gap spacer */
-.tc-flow-gap {
-  width: 40px; display: flex; flex-direction: column;
-  align-items: center; justify-content: flex-end;
-  font-size: 8px; color: var(--fg2); gap: 1px;
-  height: 110px; box-sizing: border-box;
-  padding-bottom: 2px;
+/* Gap line inside the bar-area portion of a gap slot */
+.tc-flow-gap-line {
   border-left: 1px dashed var(--border);
-  border-right: 1px dashed var(--border);
+  cursor: help;
 }
-.tc-gap-label { white-space: nowrap; line-height: 1; }
-.tc-gap-dots { white-space: nowrap; line-height: 1; color: var(--border); }
 
 .tc-tooltip {
   position: absolute; z-index: 100;
