@@ -1066,6 +1066,7 @@
                 <thead><tr>
                   <th>Tool</th>
                   <th>Session ID</th>
+                  <th>PID</th>
                   <th>Duration</th>
                   <th>Status</th>
                   <th>Time</th>
@@ -1077,6 +1078,7 @@
                       ${Q(b.tool)}
                     </td>
                     <td><span class="mono" title=${b.session_id} style="font-size:0.7rem">${I}</span></td>
+                    <td><span class="mono" style="font-size:0.7rem">${b.pid||"—"}</span></td>
                     <td>${Do(b.duration_s)}</td>
                     <td>${b.active?r`<span class="badge" style="background:var(--green);color:var(--bg);font-size:var(--fs-xs)">active</span>`:r`<span class="badge" style="font-size:var(--fs-xs)">ended</span>`}</td>
                     <td>${b.ended_at?Nt(b.ended_at):"—"}</td>

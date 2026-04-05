@@ -350,9 +350,15 @@ class SessionCorrelator:
             return parent_session
 
         session_id = f"{match.tool}:{process.pid}:{int(ts)}"
-        # Check for existing session for this tool:pid (may have different timestamp suffix)
+        # Check for a *recent* existing session for this tool:pid.
+        # Reattach if the session was seen within the last 10 minutes —
+        # long enough to survive missed scan cycles, short enough that
+        # a genuinely reused PID (hours later) creates a new session.
+        _SESSION_REUSE_WINDOW = 600  # seconds
         for sid, sess in self.sessions.items():
-            if sess.tool == match.tool and sess.root_pid == process.pid:
+            if (sess.tool == match.tool
+                    and sess.root_pid == process.pid
+                    and ts - sess.last_seen_at < _SESSION_REUSE_WINDOW):
                 session_id = sid
                 break
         session = self.sessions.get(session_id)

@@ -526,6 +526,7 @@ class _APIHandlersMixin:
                         sessions.append({
                             "session_id": sid,
                             "tool": s.get("tool", ""),
+                            "pid": s.get("pid", 0),
                             "started_at": s.get("started_at"),
                             "ended_at": s.get("ended_at"),
                             "duration_s": (round(s["ended_at"] - s["started_at"], 1)

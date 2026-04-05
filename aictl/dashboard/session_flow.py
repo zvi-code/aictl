@@ -8,10 +8,15 @@ events, producing an ordered list of turns for the session flow waterfall.
 
 from __future__ import annotations
 
+import re
 import time
 
 from ..storage import EventRow
 from .otel_receiver import _num
+
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
+)
 
 
 def build_session_flow(db, session_id: str, since: float, until: float) -> dict:
@@ -22,6 +27,7 @@ def build_session_flow(db, session_id: str, since: float, until: float) -> dict:
     # Parse structured fields from session_id
     tool = None
     session_pid = 0
+    is_uuid = bool(_UUID_RE.match(session_id))
     if ":" in session_id:
         parts = session_id.split(":")
         tool = parts[0]
@@ -42,11 +48,16 @@ def build_session_flow(db, session_id: str, since: float, until: float) -> dict:
     # This bridges the correlator "tool:pid:ts" ↔ OTel/hook UUID gap:
     # both session types record their PID in session_processes during
     # ingestion, so a PID lookup finds all session_ids for that process.
+    #
+    # Skip PID bridging entirely for UUID-identified sessions — their
+    # events are already tagged with the UUID directly, and PID lookups
+    # risk pulling in unrelated sessions that reused the same PID.
     api_by_session: list[EventRow] = []
     related_sids: set[str] = set()
 
-    if session_pid:
-        related_sids = set(db.find_session_ids_by_pid(session_pid))
+    if session_pid and not is_uuid:
+        related_sids = set(db.find_session_ids_by_pid(
+            session_pid, since=since, until=until))
         related_sids.discard(session_id)
 
     # Fetch OTel/hook events from related sessions

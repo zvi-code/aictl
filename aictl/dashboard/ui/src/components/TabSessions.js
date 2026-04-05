@@ -393,6 +393,7 @@ export default function TabSessions() {
                 <thead><tr>
                   <th>Tool</th>
                   <th>Session ID</th>
+                  <th>PID</th>
                   <th>Duration</th>
                   <th>Status</th>
                   <th>Time</th>
@@ -412,6 +413,7 @@ export default function TabSessions() {
                       ${esc(h.tool)}
                     </td>
                     <td><span class="mono" title=${h.session_id} style="font-size:0.7rem">${shortId}</span></td>
+                    <td><span class="mono" style="font-size:0.7rem">${h.pid || '\u2014'}</span></td>
                     <td>${fmtDur(h.duration_s)}</td>
                     <td>${h.active
                       ? html`<span class="badge" style="background:var(--green);color:var(--bg);font-size:var(--fs-xs)">active</span>`

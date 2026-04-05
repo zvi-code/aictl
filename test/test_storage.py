@@ -236,6 +236,52 @@ class TestSessionProfileDedup:
         profiles = db.query_session_profiles(since=base - 1)
         assert len(profiles) == 2
 
+    def test_different_pids_same_start_merged(self, db: HistoryDB):
+        """Multiple PIDs from the same process tree (started within seconds)
+        must be collapsed into a single session profile."""
+        base = 1_743_000_000.0
+        # Same session, 4 PIDs from process tree, all starting within 2s
+        self._emit_session(db, "claude-code:18664:1743000000", "claude-code",
+                           base, end_ts=base + 1426, files=1505)
+        self._emit_session(db, "claude-code:15590:1743000000", "claude-code",
+                           base + 1, end_ts=base + 1426, files=0)
+        self._emit_session(db, "claude-code:17323:1743000001", "claude-code",
+                           base + 1, end_ts=base + 1426, files=0)
+        self._emit_session(db, "claude-code:4878:1743000002", "claude-code",
+                           base + 2, end_ts=base + 1426, files=0)
+
+        profiles = db.query_session_profiles(since=base - 1)
+        assert len(profiles) == 1, (
+            f"Same session with 4 PIDs should merge into 1, got {len(profiles)}")
+        assert profiles[0]["files_modified"] == 1505
+
+    def test_different_pids_different_start_not_merged(self, db: HistoryDB):
+        """Two truly separate sessions (different PIDs, >10s apart) must stay
+        separate even if same tool."""
+        base = 1_743_000_000.0
+        self._emit_session(db, "claude-code:11111:1743000000", "claude-code",
+                           base, end_ts=base + 3600, files=10)
+        self._emit_session(db, "claude-code:22222:1743000060", "claude-code",
+                           base + 60, end_ts=base + 3660, files=5)
+
+        profiles = db.query_session_profiles(since=base - 1)
+        assert len(profiles) == 2, (
+            "Separate sessions 60s apart with different PIDs must stay separate")
+
+    def test_same_pid_far_apart_not_merged(self, db: HistoryDB):
+        """PID reuse hours later must NOT merge into a single session."""
+        base = 1_743_000_000.0
+        # Session A: ends at base + 3600
+        self._emit_session(db, "claude-code:49719:1743000000", "claude-code",
+                           base, end_ts=base + 3600, files=5)
+        # Session B: starts 12 hours later, same PID
+        self._emit_session(db, "claude-code:49719:1743043200", "claude-code",
+                           base + 43200, end_ts=base + 46800, files=3)
+
+        profiles = db.query_session_profiles(since=base - 1)
+        assert len(profiles) == 2, (
+            "Same PID sessions 12h apart must remain separate")
+
 
 # ── Stats ──────────────────────────────────────────────────────────
 
@@ -1260,3 +1306,35 @@ class TestSessionFlowPidCorrelation:
         """link_session_process must be a no-op when pid is 0."""
         db.link_session_process("some-session", 0, tool="test")
         assert db.find_session_ids_by_pid(0) == []
+
+    def test_find_session_ids_by_pid_time_scoped(self, db):
+        """PID reuse across sessions: time-scoped lookup returns only the
+        session that overlaps the given window."""
+        ts_old = 1_700_000_000.0
+        ts_new = ts_old + 86400  # 24h later — definitely a PID reuse
+
+        # Old session (ended)
+        db.upsert_session(SessionRow(
+            session_id="old-session", tool="claude-code", pid=5555,
+            started_at=ts_old, ended_at=ts_old + 3600, source="hook"))
+        db.link_session_process("old-session", 5555, tool="claude-code")
+
+        # New session (still active, same PID)
+        db.upsert_session(SessionRow(
+            session_id="new-session", tool="claude-code", pid=5555,
+            started_at=ts_new, source="hook"))
+        db.link_session_process("new-session", 5555, tool="claude-code")
+
+        # Unscoped returns both
+        assert set(db.find_session_ids_by_pid(5555)) == {
+            "old-session", "new-session"}
+
+        # Scoped to the new window returns only the new session
+        scoped = db.find_session_ids_by_pid(
+            5555, since=ts_new - 60, until=ts_new + 7200)
+        assert set(scoped) == {"new-session"}
+
+        # Scoped to the old window returns only the old session
+        scoped_old = db.find_session_ids_by_pid(
+            5555, since=ts_old - 60, until=ts_old + 7200)
+        assert set(scoped_old) == {"old-session"}
