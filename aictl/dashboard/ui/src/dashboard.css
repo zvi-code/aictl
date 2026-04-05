@@ -819,3 +819,63 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
 /* Auto-refresh toggle */
 .tr-auto-refresh { cursor: pointer; color: var(--fg2); }
 .tr-auto-refresh input { accent-color: var(--accent); }
+
+/* ─── Timeline Chart (TabTimelineChart) ───────────────────────── */
+.tc-container { position: relative; }
+
+.tc-summary {
+  display: flex; gap: var(--sp-6); padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border); font-size: var(--fs-sm);
+}
+.tc-summary-item { text-align: center; }
+.tc-summary-val { font-weight: 600; font-size: var(--fs-lg); }
+.tc-summary-label { color: var(--fg2); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: 0.05em; }
+
+.tc-legend {
+  display: flex; flex-wrap: wrap; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-xs); color: var(--fg2);
+}
+.tc-legend-item { display: flex; align-items: center; gap: 4px; }
+.tc-legend-swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+
+.tc-flow {
+  display: flex; flex-wrap: wrap; align-items: flex-end;
+  padding: var(--sp-2) var(--sp-4);
+  gap: 0;
+}
+.tc-flow-bar {
+  width: 10px; display: flex; align-items: flex-end;
+  cursor: pointer; box-sizing: border-box;
+}
+.tc-flow-fill {
+  width: 100%; box-sizing: border-box;
+  border: 1px solid #000;
+  transition: opacity 0.1s;
+}
+.tc-flow-bar:hover .tc-flow-fill { opacity: 1; border-color: var(--fg); }
+
+.tc-flow-gap {
+  width: 40px; display: flex; flex-direction: column;
+  align-items: center; justify-content: flex-end;
+  font-size: 8px; color: var(--fg2); gap: 1px;
+  height: 110px; box-sizing: border-box;
+  padding-bottom: 2px;
+  border-left: 1px dashed var(--border);
+  border-right: 1px dashed var(--border);
+}
+.tc-gap-label { white-space: nowrap; line-height: 1; }
+.tc-gap-dots { white-space: nowrap; line-height: 1; color: var(--border); }
+
+.tc-tooltip {
+  position: absolute; z-index: 100;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 6px; padding: var(--sp-3);
+  font-size: var(--fs-xs); min-width: 220px; max-width: 340px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3); pointer-events: none;
+}
+.tc-tip-row {
+  display: flex; justify-content: space-between; gap: var(--sp-3);
+  padding: 2px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+.tc-tip-row:last-child { border-bottom: none; }
+.tc-tip-label { color: var(--fg2); flex-shrink: 0; }
