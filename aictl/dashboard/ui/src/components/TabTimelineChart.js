@@ -1,9 +1,9 @@
 /**
  * TabTimelineChart — horizontal bar-chart view of a session's activity over time.
  *
- * Bars flow left-to-right and wrap to the next row when they reach
- * the container edge.  Empty time gaps are collapsed to a single
- * gap-marker with timestamps.  Each bar is colored by entity name.
+ * Bars flow left-to-right via flex-wrap.  Empty time gaps collapse to a
+ * single gap-marker.  Entity filter and cached/non-cached token mode
+ * let the user slice the view interactively.
  */
 import { useState, useEffect, useContext, useMemo, useRef, useCallback } from 'preact/hooks';
 import { html } from 'htm/preact';
@@ -11,7 +11,7 @@ import { SnapContext } from '../context.js';
 import { fmtK, esc, COLORS, ICONS } from '../utils.js';
 import * as api from '../api.js';
 
-// ─── Entity colour palette (matches SessionFlow sfColor) ──────
+// ─── Entity colour palette ────────────────────────────────────
 const _PALETTE = [
   '#f97316','#a78bfa','#60a5fa','#f472b6',
   '#34d399','#fbbf24','#06b6d4','#84cc16',
@@ -33,23 +33,19 @@ function entityColor(name) {
 // ─── Helpers ───────────────────────────────────────────────────
 function fmtHHMM(ts) {
   if (!ts) return '';
-  const d = new Date(ts * 1000);
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 function fmtDateHHMM(ts) {
   if (!ts) return '';
-  const d = new Date(ts * 1000);
-  return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return new Date(ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 function fmtDateTime(ts) {
   if (!ts) return '';
-  const d = new Date(ts * 1000);
-  return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return new Date(ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 function fmtDurMs(ms) {
   if (!ms) return '';
-  if (ms < 1000) return ms + 'ms';
-  return (ms / 1000).toFixed(1) + 's';
+  return ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's';
 }
 function fmtDurSec(s) {
   if (!s || s <= 0) return '0s';
@@ -72,9 +68,23 @@ function shortSid(sid) {
   return sid.slice(-6);
 }
 
-function turnTokens(t) {
+// ─── Token helpers ────────────────────────────────────────────
+function tokFresh(t) {
   const tok = t.tokens || {};
-  return (tok.input || 0) + (tok.output || 0) + (tok.cache_read || 0) + (tok.cache_creation || 0);
+  return (tok.input || 0) + (tok.output || 0);
+}
+function tokCached(t) {
+  const tok = t.tokens || {};
+  return (tok.cache_read || 0) + (tok.cache_creation || 0);
+}
+function tokAll(t) { return tokFresh(t) + tokCached(t); }
+
+// Compute visible token count for a bar given the token mode
+// mode: 'all' | 'fresh' | 'cached'
+function barTokens(t, mode) {
+  if (mode === 'fresh') return tokFresh(t);
+  if (mode === 'cached') return tokCached(t);
+  return tokAll(t);
 }
 
 function barEntity(t) {
@@ -151,9 +161,9 @@ function BarTooltip({bar, x, y}) {
       <div class="tc-tip-row"><span class="tc-tip-label">Agent</span><span>${t.to || '?'}</span></div>`}
     ${t.duration_ms > 0 && html`
       <div class="tc-tip-row"><span class="tc-tip-label">Duration</span><span>${fmtDurMs(t.duration_ms)}</span></div>`}
-    ${(tok.input || tok.output) ? html`
+    ${(tok.input || tok.output || tok.cache_read) ? html`
       <div class="tc-tip-row"><span class="tc-tip-label">Tokens</span>
-        <span>in:${fmtK(tok.input || 0)} out:${fmtK(tok.output || 0)}${tok.cache_read ? ' cache:' + fmtK(tok.cache_read) : ''}</span>
+        <span>in:${fmtK(tok.input || 0)} out:${fmtK(tok.output || 0)}${tok.cache_read ? ' cache:' + fmtK(tok.cache_read) : ''}${tok.cache_creation ? ' cache_w:' + fmtK(tok.cache_creation) : ''}</span>
       </div>` : null}
     ${t.type === 'error' && html`
       <div class="tc-tip-row"><span class="tc-tip-label">Error</span><span style="color:var(--red)">${t.error_type || ''}: ${(t.error_message || '').slice(0, 100)}</span></div>`}
@@ -161,16 +171,6 @@ function BarTooltip({bar, x, y}) {
       <div class="tc-tip-row"><span class="tc-tip-label">Count</span><span>#${t.compaction_count || ''}</span></div>`}
     ${t.agent_name && html`
       <div class="tc-tip-row"><span class="tc-tip-label">Agent</span><span>${t.agent_name}</span></div>`}
-  </div>`;
-}
-
-// ─── Legend ────────────────────────────────────────────────────
-function Legend({entities}) {
-  return html`<div class="tc-legend">
-    ${entities.map(name => html`<span key=${name} class="tc-legend-item">
-      <span class="tc-legend-swatch" style="background:${entityColor(name)}"></span>
-      ${esc(name)}
-    </span>`)}
   </div>`;
 }
 
@@ -192,11 +192,11 @@ function SummaryBar({summary}) {
   </div>`;
 }
 
-// ─── Bar height (px) ──────────────────────────────────────────
+// ─── Constants ────────────────────────────────────────────────
 const BAR_AREA_H = 110;
-const GAP_THRESHOLD = 30; // seconds — gaps larger than this get a spacer
+const GAP_THRESHOLD = 30;
 
-// ─── Build slot list from bars ────────────────────────────────
+// ─── Build slot list from filtered bars ───────────────────────
 function buildSlots(bars) {
   const slots = [];
   for (let i = 0; i < bars.length; i++) {
@@ -211,6 +211,106 @@ function buildSlots(bars) {
   return slots;
 }
 
+// ─── Entity filter (multi-select checkboxes) ──────────────────
+function EntityFilter({entities, selected, onToggle, onAll, onNone}) {
+  return html`<div class="tc-filter">
+    <span class="tc-filter-label">Entities</span>
+    <button class="tc-filter-btn" onClick=${onAll}>All</button>
+    <button class="tc-filter-btn" onClick=${onNone}>None</button>
+    ${entities.map(name => {
+      const active = selected.has(name);
+      return html`<label key=${name} class="tc-filter-check ${active ? 'active' : ''}"
+        style="--swatch:${entityColor(name)}">
+        <input type="checkbox" checked=${active}
+          onChange=${() => onToggle(name)}/>
+        <span class="tc-legend-swatch" style="background:${entityColor(name)}"></span>
+        ${esc(name)}
+      </label>`;
+    })}
+  </div>`;
+}
+
+// ─── Token mode selector ──────────────────────────────────────
+function TokenModeSelector({mode, onChange}) {
+  const modes = [
+    ['all',    'All Tokens'],
+    ['fresh',  'Non-Cached'],
+    ['cached', 'Cached Only'],
+  ];
+  return html`<div class="tc-filter">
+    <span class="tc-filter-label">Tokens</span>
+    ${modes.map(([val, label]) => html`<label key=${val}
+      class="tc-filter-check ${mode === val ? 'active' : ''}">
+      <input type="radio" name="tc-tok-mode" checked=${mode === val}
+        onChange=${() => onChange(val)}/>
+      ${label}
+    </label>`)}
+  </div>`;
+}
+
+// ─── BarFlow — the flex-wrap container ────────────────────────
+// Takes filtered bars + config, renders the entire bar chart.
+function BarFlow({bars, tokenMode, onHover, onLeave}) {
+  if (!bars.length) return html`<div class="empty-state" style="padding:var(--sp-8)">
+    <p>No matching events.</p>
+  </div>`;
+
+  const slots = buildSlots(bars);
+  const maxTok = Math.max(1, ...bars.map(b => barTokens(b, tokenMode)));
+
+  return html`<div class="tc-flow">
+    ${slots.map((slot, si) => {
+      if (slot.type === 'gap') {
+        return html`<div key=${'g'+si} class="tc-flow-gap">
+          <span class="tc-gap-label">${fmtHHMM(slot.endTs)}</span>
+          <span class="tc-gap-dots">\u00b7\u00b7 ${fmtGap(slot.gap)} \u00b7\u00b7</span>
+          <span class="tc-gap-label">${fmtHHMM(slot.startTs)}</span>
+        </div>`;
+      }
+
+      const b = slot.bar;
+      const total = barTokens(b, tokenMode);
+      const hFrac = maxTok > 0
+        ? Math.max(0.08, Math.log1p(total) / Math.log1p(maxTok))
+        : 0.08;
+      const hPx = Math.max(6, hFrac * BAR_AREA_H);
+
+      const entity = barEntity(b);
+      const color = entityColor(entity);
+
+      // Split bar into fresh (solid) + cached (hatched) portions
+      const fresh = tokFresh(b);
+      const cached = tokCached(b);
+      const tokTotal = fresh + cached;
+      let freshPct, cachedPct;
+      if (tokenMode === 'cached') {
+        freshPct = 0; cachedPct = 100;
+      } else if (tokenMode === 'fresh') {
+        freshPct = 100; cachedPct = 0;
+      } else if (tokTotal > 0) {
+        freshPct = Math.round((fresh / tokTotal) * 100);
+        cachedPct = 100 - freshPct;
+      } else {
+        freshPct = 100; cachedPct = 0;
+      }
+
+      const hasSplit = cachedPct > 0;
+
+      return html`<div key=${si} class="tc-flow-bar"
+        style="height:${BAR_AREA_H}px"
+        onMouseEnter=${(e) => onHover(b, e)}
+        onMouseLeave=${onLeave}>
+        <div class="tc-flow-fill ${hasSplit ? 'tc-split' : ''}"
+          style="height:${hPx}px;--bar-color:${color}">
+          ${hasSplit && html`
+            ${freshPct > 0 && html`<div class="tc-fill-fresh" style="height:${freshPct}%"></div>`}
+            <div class="tc-fill-cached" style="height:${freshPct > 0 ? cachedPct : 100}%"></div>`}
+        </div>
+      </div>`;
+    })}
+  </div>`;
+}
+
 // ─── Main component ───────────────────────────────────────────
 export default function TabTimelineChart() {
   const {snap: s, globalRange, enabledTools} = useContext(SnapContext);
@@ -221,6 +321,8 @@ export default function TabTimelineChart() {
   const [flowData, setFlowData] = useState(null);
   const [flowLoading, setFlowLoading] = useState(false);
   const [tooltip, setTooltip] = useState(null);
+  const [selectedEntities, setSelectedEntities] = useState(null); // null = all
+  const [tokenMode, setTokenMode] = useState('all');
   const containerRef = useRef(null);
 
   // Fetch sessions
@@ -254,7 +356,6 @@ export default function TabTimelineChart() {
     }
   }, [activeTool, toolSessions.length]);
 
-  // Fetch flow data
   useEffect(() => {
     if (!activeSessionId) { setFlowData(null); return; }
     setFlowLoading(true);
@@ -262,27 +363,41 @@ export default function TabTimelineChart() {
     const since = sess?.started_at ? sess.started_at - 60 : Date.now() / 1000 - 86400;
     const until = sess?.ended_at ? sess.ended_at + 60 : Date.now() / 1000 + 60;
     api.getSessionFlow(activeSessionId, since, until)
-      .then(data => { setFlowData(data); setFlowLoading(false); })
+      .then(data => { setFlowData(data); setFlowLoading(false); setSelectedEntities(null); })
       .catch(() => { setFlowData(null); setFlowLoading(false); });
   }, [activeSessionId]);
 
-  // Process turns into slots
-  const { slots, maxTokens, entities } = useMemo(() => {
+  // All bars + all entity names (unfiltered)
+  const { allBars, allEntities } = useMemo(() => {
     const turns = flowData?.turns || [];
-    if (!turns.length) return { slots: [], maxTokens: 0, entities: [] };
-
-    const bars = turns.filter(t =>
+    const allBars = turns.filter(t =>
       ['user_message', 'api_call', 'api_response', 'tool_use',
        'compaction', 'subagent', 'error', 'hook'].includes(t.type)
     );
-    if (!bars.length) return { slots: [], maxTokens: 0, entities: [] };
-
-    const maxTokens = Math.max(1, ...bars.map(turnTokens));
     const entitySet = new Set();
-    for (const b of bars) entitySet.add(barEntity(b));
-
-    return { slots: buildSlots(bars), maxTokens, entities: [...entitySet].sort() };
+    for (const b of allBars) entitySet.add(barEntity(b));
+    return { allBars, allEntities: [...entitySet].sort() };
   }, [flowData]);
+
+  // Effective selected set (null means all)
+  const selected = selectedEntities || new Set(allEntities);
+
+  // Filtered bars
+  const filteredBars = useMemo(() =>
+    allBars.filter(b => selected.has(barEntity(b))),
+    [allBars, selected]
+  );
+
+  // Entity filter handlers
+  const toggleEntity = useCallback((name) => {
+    setSelectedEntities(prev => {
+      const s = new Set(prev || allEntities);
+      if (s.has(name)) s.delete(name); else s.add(name);
+      return s;
+    });
+  }, [allEntities]);
+  const selectAll = useCallback(() => setSelectedEntities(null), []);
+  const selectNone = useCallback(() => setSelectedEntities(new Set()), []);
 
   const handleHover = useCallback((bar, e) => {
     const rect = containerRef.current?.getBoundingClientRect();
@@ -303,7 +418,7 @@ export default function TabTimelineChart() {
 
     ${flowLoading
       ? html`<div class="loading-state" style="padding:var(--sp-8)">Loading timeline...</div>`
-      : slots.length === 0
+      : allBars.length === 0
         ? html`<div class="empty-state" style="padding:var(--sp-8)">
             <p>No timeline data for this session.</p>
             <p class="text-muted text-xs" style="margin-top:var(--sp-3)">
@@ -311,34 +426,13 @@ export default function TabTimelineChart() {
             </p>
           </div>`
         : html`
-          <${Legend} entities=${entities}/>
-          <div class="tc-flow">
-            ${slots.map((slot, si) => {
-              if (slot.type === 'gap') {
-                return html`<div key=${'g'+si} class="tc-flow-gap">
-                  <span class="tc-gap-label">${fmtHHMM(slot.endTs)}</span>
-                  <span class="tc-gap-dots">\u00b7\u00b7 ${fmtGap(slot.gap)} \u00b7\u00b7</span>
-                  <span class="tc-gap-label">${fmtHHMM(slot.startTs)}</span>
-                </div>`;
-              }
-
-              const b = slot.bar;
-              const tok = turnTokens(b);
-              const hFrac = maxTokens > 0
-                ? Math.max(0.08, Math.log1p(tok) / Math.log1p(maxTokens))
-                : 0.08;
-              const hPx = Math.max(6, hFrac * BAR_AREA_H);
-              const entity = barEntity(b);
-              const color = entityColor(entity);
-
-              return html`<div key=${si} class="tc-flow-bar"
-                style="height:${BAR_AREA_H}px"
-                onMouseEnter=${(e) => handleHover(b, e)}
-                onMouseLeave=${handleLeave}>
-                <div class="tc-flow-fill" style="height:${hPx}px;background:${color}"></div>
-              </div>`;
-            })}
+          <div class="tc-controls">
+            <${EntityFilter} entities=${allEntities} selected=${selected}
+              onToggle=${toggleEntity} onAll=${selectAll} onNone=${selectNone}/>
+            <${TokenModeSelector} mode=${tokenMode} onChange=${setTokenMode}/>
           </div>
+          <${BarFlow} bars=${filteredBars} tokenMode=${tokenMode}
+            onHover=${handleHover} onLeave=${handleLeave}/>
           ${tooltip && html`<${BarTooltip} bar=${tooltip.bar} x=${tooltip.x} y=${tooltip.y}/>`}
         `}
   </div>`;
