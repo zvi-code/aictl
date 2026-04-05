@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && node -e \"fs=require('fs');fs.writeFileSync('../dist/__init__.py','');fs.mkdirSync('../dist/assets',{recursive:true});fs.writeFileSync('../dist/assets/__init__.py','')\"",
+    "build": "vite build",
     "watch": "vite build --watch",
     "preview": "vite preview",
     "test": "vitest run",

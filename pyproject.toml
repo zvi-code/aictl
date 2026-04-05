@@ -32,8 +32,7 @@ include = ["aictl*"]
 
 [tool.setuptools.package-data]
 "aictl.data" = ["*.csv", "*.yaml"]
-"aictl.dashboard" = ["*.html"]
-"aictl.dashboard.dist" = ["**/*"]
+"aictl.dashboard" = ["*.html", "dist/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["test"]
