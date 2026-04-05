@@ -138,19 +138,28 @@ def _settings_path(scope: str) -> Path:
     return claude_global_dir() / "settings.json"
 
 
+_AICTL_HOOK_MARKERS = ("/api/hooks", "aictl.hook_handler")
+
+
 def _is_aictl_hook(hook: dict) -> bool:
     """Return True if the hook entry was installed by aictl.
 
-    Handles both the current nested format {"matcher": ..., "hooks": [...]} and
-    the old flat format {"type": "command", "command": "..."} (for migration).
+    Detects three generations of hook format:
+    - Current: ``python -m aictl.hook_handler --event ...``
+    - Previous: inline ``python -c "... /api/hooks ..."``
+    - Legacy flat: ``curl ... /api/hooks ...``
     """
     if not isinstance(hook, dict):
         return False
-    # Current format: {"matcher": ..., "hooks": [{"type": "command", "command": "..."}]}
+    # Current nested format: {"matcher": ..., "hooks": [{"type": "command", "command": "..."}]}
     if "hooks" in hook and isinstance(hook["hooks"], list):
-        return any("/api/hooks" in str(h.get("command", "")) for h in hook["hooks"])
+        return any(
+            any(m in str(h.get("command", "")) for m in _AICTL_HOOK_MARKERS)
+            for h in hook["hooks"]
+        )
     # Old flat format (pre-fix): {"type": "command", "command": "..."}
-    return "/api/hooks" in str(hook.get("command", ""))
+    cmd = str(hook.get("command", ""))
+    return any(m in cmd for m in _AICTL_HOOK_MARKERS)
 
 
 def _python_cmd() -> str:
@@ -168,9 +177,12 @@ def _python_cmd() -> str:
 def _build_hook_config(port: int, events: list[str] | None, event_map: dict[str, str] | None = None, matcher: str = "") -> dict:
     """Build the hooks configuration dict for AI tools.
 
-    Each hook reads the rich JSON payload from stdin, merges in
-    environment variables, and POSTs everything to aictl.
-    Uses sys.executable instead of 'python3' for cross-platform compatibility.
+    Each hook invokes ``python -m aictl.hook_handler`` which reads the
+    rich JSON payload from stdin, merges environment variables, POSTs
+    everything to aictl, and passes the payload through to stdout.
+
+    Using a module invocation instead of an inline ``-c`` one-liner
+    avoids shell-escaping issues on Windows and complex quoting.
 
     Optional event_map can translate internal HOOK_EVENTS names to tool-specific names.
     matcher: "" for Claude (default), "*" for Gemini.
@@ -179,24 +191,9 @@ def _build_hook_config(port: int, events: list[str] | None, event_map: dict[str,
     hooks: dict[str, list[dict]] = {}
     python = _python_cmd()
 
-    # The hook command: read stdin (Node-based tool's rich JSON), merge env vars, POST to aictl.
-    # We must print the final JSON to stdout for tool continuity.
     for event in target_events:
         tool_event_name = event_map.get(event, event) if event_map else event
-        # Single-line Python command using semicolons for maximum compatibility.
-        # No literal newlines or complex escaping.
-        cmd = (
-            f"{python} -c \""
-            f"import sys,json,os,urllib.request as u; "
-            f"d=json.load(sys.stdin) if not sys.stdin.isatty() else {{}}; "
-            f"d['event']='{event}'; "
-            f"d.setdefault('session_id',os.environ.get('SESSION_ID','')); "
-            f"d.setdefault('cwd',os.environ.get('CWD','')); "
-            f"exec('try: u.urlopen(u.Request(\\\"http://localhost:{port}/api/hooks\\\", "
-            f"json.dumps(d).encode(), {{\\\"Content-Type\\\":\\\"application/json\\\"}}), timeout=2)\\n"
-            f"except: pass'); "  # noqa: S110 — generated hook script must not crash if aictl server is unreachable
-            f"print(json.dumps(d))\""
-        )
+        cmd = f"{python} -m aictl.hook_handler --event {event} --port {port}"
         hooks[tool_event_name] = [{"matcher": matcher, "hooks": [{"type": "command", "command": cmd}]}]
     return hooks
 
