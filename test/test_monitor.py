@@ -110,6 +110,73 @@ def test_correlator_resolves_network_pid_from_process_collector(tmp_path):
     assert session.inbound_bytes > 0
 
 
+def test_correlator_pid_reuse_creates_new_session(tmp_path):
+    """A process that reuses a PID from an old session (>10min ago) must
+    create a new session rather than reattaching to the stale one."""
+    import time as _time
+    config = MonitorConfig.for_root(tmp_path)
+    correlator = SessionCorrelator(config)
+
+    now = _time.time()
+    old_ts = now - 3600  # 1 hour ago
+
+    # First session with PID 7777
+    proc_old = ProcessInfo(
+        pid=7777, ppid=1, name="claude",
+        cmdline=("claude",), cwd=str(tmp_path),
+    )
+    correlator.on_process(proc_old, cpu_percent=5.0, memory_rss=0,
+                          child_count=0, ts=old_ts, is_new=True)
+    old_session_id = correlator.pid_to_session[7777]
+
+    # Simulate exit 5 minutes later (last_seen_at = old_ts + 300)
+    correlator.on_process_exit(7777, ts=old_ts + 300)
+
+    # New process reuses PID 7777, much later (well beyond 10min window)
+    new_ts = now
+    proc_new = ProcessInfo(
+        pid=7777, ppid=1, name="claude",
+        cmdline=("claude",), cwd=str(tmp_path),
+    )
+    correlator.on_process(proc_new, cpu_percent=3.0, memory_rss=0,
+                          child_count=0, ts=new_ts, is_new=True)
+    new_session_id = correlator.pid_to_session[7777]
+
+    assert new_session_id != old_session_id, (
+        "Reused PID should create a new session, not reattach to old one")
+    assert len(correlator.sessions) == 2
+
+
+def test_correlator_brief_disappearance_reattaches(tmp_path):
+    """A process that briefly disappears from a scan (e.g. missed one cycle)
+    and reappears within 10 minutes must reattach to its existing session,
+    NOT create a duplicate."""
+    import time as _time
+    config = MonitorConfig.for_root(tmp_path)
+    correlator = SessionCorrelator(config)
+
+    now = _time.time()
+    proc = ProcessInfo(
+        pid=9999, ppid=1, name="claude",
+        cmdline=("claude",), cwd=str(tmp_path),
+    )
+    correlator.on_process(proc, cpu_percent=5.0, memory_rss=0,
+                          child_count=0, ts=now, is_new=True)
+    original_sid = correlator.pid_to_session[9999]
+
+    # Process disappears from scan (missed cycle)
+    correlator.on_process_exit(9999, ts=now + 5)
+
+    # Reappears 10 seconds later — same session
+    correlator.on_process(proc, cpu_percent=3.0, memory_rss=0,
+                          child_count=0, ts=now + 15, is_new=True)
+    reattached_sid = correlator.pid_to_session[9999]
+
+    assert reattached_sid == original_sid, (
+        "Brief disappearance should reattach to existing session")
+    assert len(correlator.sessions) == 1
+
+
 def test_correlator_resolves_network_via_parent_pid(tmp_path):
     """Network for a child PID resolves via stored ppid even when nettop
     provides ppid=None."""

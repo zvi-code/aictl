@@ -1994,10 +1994,12 @@ class HistoryDB:
 
     @staticmethod
     def _merge_session_profiles(profiles: list[dict]) -> list[dict]:
-        """Merge duplicate session profiles by (tool, pid).
+        """Merge duplicate session profiles.
 
-        Pass A: merge sessions from the same tool within 60s of each other.
-        Pass B: merge all sessions sharing the same (tool, pid) pair.
+        Pass A: merge sessions from the same tool within 60s of each other
+                (same PID) or 10s (different PIDs — same process tree).
+        Pass B: merge all sessions sharing the same (tool, pid) pair
+                when temporally adjacent.
         """
         profiles.sort(key=lambda s: s["started_at"])
 
@@ -2012,12 +2014,16 @@ class HistoryDB:
                     continue
                 if secondary["tool"] != primary["tool"]:
                     continue
-                if abs(secondary["started_at"] - primary["started_at"]) > 60:
+                gap = abs(secondary["started_at"] - primary["started_at"])
+                if gap > 60:
                     break
                 p_pid = _session_pid(primary)
                 s_pid = _session_pid(secondary)
+                # Different PIDs: only merge if start times are very close
+                # (same process tree spawned by the same session).
                 if p_pid is not None and s_pid is not None and p_pid != s_pid:
-                    continue
+                    if gap > 10:
+                        continue
                 if secondary["ended_at"] and not primary["ended_at"]:
                     primary, secondary = secondary, primary
                 _merge_session_stats(primary, secondary)
@@ -2025,7 +2031,14 @@ class HistoryDB:
             merged.append(primary)
             used.add(primary["session_id"])
 
-        # Pass B: merge by (tool, pid)
+        # Pass B: merge by (tool, pid) when the gap between sessions is
+        # small.  Same PID + same tool + small gap = same logical session
+        # (the process scanner had intermittent detection, or multiple
+        # sources created entries for the same session).  A large gap
+        # means the OS reused the PID for a genuinely different session.
+        _GAP_ENDED = 600     # max gap after a known end time (10 min)
+        _GAP_ACTIVE = 7200   # max gap when end time is unknown (2 hours)
+
         pid_groups: dict[tuple, list[dict]] = {}
         for s in merged:
             pid = _session_pid(s)
@@ -2044,26 +2057,42 @@ class HistoryDB:
                 if len(group) > 1:
                     group.sort(key=lambda x: x["started_at"])
                     canonical = group[0]
-                    if canonical["session_id"] in consumed:
-                        continue
-                    for other in group[1:]:
-                        if other["session_id"] in consumed:
-                            continue
-                        if other["ended_at"]:
-                            if canonical["ended_at"] is None or other["ended_at"] > canonical["ended_at"]:
-                                canonical["ended_at"] = other["ended_at"]
+                    # If s IS canonical, chain-merge adjacent members.
+                    if s["session_id"] == canonical["session_id"]:
+                        for other in group[1:]:
+                            if other["session_id"] in consumed:
+                                continue
+                            # Gap = time between canonical's last known
+                            # activity and other's start.  Small gap →
+                            # same session; large gap → PID reuse.
+                            if canonical["ended_at"]:
+                                gap = other["started_at"] - canonical["ended_at"]
+                                max_gap = _GAP_ENDED
+                            else:
+                                ref = canonical.get("last_seen_at") or canonical["started_at"]
+                                gap = other["started_at"] - ref
+                                max_gap = _GAP_ACTIVE
+                            if gap > max_gap:
+                                continue
+                            if other["ended_at"]:
+                                if canonical["ended_at"] is None or other["ended_at"] > canonical["ended_at"]:
+                                    canonical["ended_at"] = other["ended_at"]
+                            else:
+                                canonical["ended_at"] = None
+                            _merge_session_stats(canonical, other)
+                            consumed.add(other["session_id"])
+                        if canonical["ended_at"]:
+                            canonical["duration_s"] = round(
+                                canonical["ended_at"] - canonical["started_at"], 1)
                         else:
-                            canonical["ended_at"] = None
-                        _merge_session_stats(canonical, other)
-                        consumed.add(other["session_id"])
-                    if canonical["ended_at"]:
-                        canonical["duration_s"] = round(
-                            canonical["ended_at"] - canonical["started_at"], 1)
-                    else:
-                        canonical["duration_s"] = None
-                    deduped.append(canonical)
-                    consumed.add(canonical["session_id"])
-                    continue
+                            canonical["duration_s"] = None
+                        deduped.append(canonical)
+                        consumed.add(canonical["session_id"])
+                        continue
+                    # s is a later group member — if canonical already
+                    # consumed it (merged), skip; otherwise emit standalone.
+                    if s["session_id"] in consumed:
+                        continue
             deduped.append(s)
             consumed.add(s["session_id"])
 
@@ -2106,15 +2135,41 @@ class HistoryDB:
         )
         conn.commit()
 
-    def find_session_ids_by_pid(self, pid: int) -> list[str]:
-        """Return all session_ids linked to the given PID."""
+    def find_session_ids_by_pid(
+        self, pid: int, *,
+        since: float = 0, until: float = 0,
+    ) -> list[str]:
+        """Return session_ids linked to the given PID.
+
+        When *since*/*until* are provided, only sessions whose time range
+        overlaps the window are returned.  This prevents PID reuse from
+        bleeding across unrelated sessions.
+        """
         if not pid:
             return []
         conn = self._conn()
-        rows = conn.execute(
-            "SELECT session_id FROM session_processes WHERE pid = ?",
-            (pid,),
-        ).fetchall()
+        if since or until:
+            # Join with sessions table to filter by time overlap
+            sql = (
+                "SELECT sp.session_id FROM session_processes sp"
+                " JOIN sessions s ON sp.session_id = s.session_id"
+                " WHERE sp.pid = ?"
+            )
+            params: list = [pid]
+            if since:
+                # Session must not have ended before our window
+                sql += " AND (s.ended_at IS NULL OR s.ended_at >= ?)"
+                params.append(since)
+            if until:
+                # Session must have started before our window ends
+                sql += " AND s.started_at <= ?"
+                params.append(until)
+            rows = conn.execute(sql, params).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT session_id FROM session_processes WHERE pid = ?",
+                (pid,),
+            ).fetchall()
         return [r[0] for r in rows]
 
     def batch_link_sessions(
