@@ -372,6 +372,40 @@ class TestHookEventsCompleteness:
         )
 
 
+class TestCorruptSettingsGuard:
+    """A corrupted settings.json must not be silently clobbered (item #4)."""
+
+    def test_install_refuses_corrupt_json_without_force(self, tmp_settings):
+        tmp_settings.parent.mkdir(parents=True, exist_ok=True)
+        garbage = "{ not json, definitely not"
+        tmp_settings.write_text(garbage, encoding="utf-8")
+        runner = CliRunner()
+        result = runner.invoke(hooks, ["install"])
+        assert result.exit_code != 0, "install must fail on corrupt settings.json"
+        assert tmp_settings.read_text(encoding="utf-8") == garbage, (
+            "corrupt file must remain byte-identical when install refuses"
+        )
+
+    def test_install_force_overwrites_corrupt_json(self, tmp_settings):
+        tmp_settings.parent.mkdir(parents=True, exist_ok=True)
+        tmp_settings.write_text("{ not json", encoding="utf-8")
+        runner = CliRunner()
+        result = runner.invoke(hooks, ["install", "--force"], catch_exceptions=False)
+        assert result.exit_code == 0
+        # With --force, the corrupt file is overwritten with fresh settings
+        data = json.loads(tmp_settings.read_text(encoding="utf-8"))
+        assert "hooks" in data
+
+    def test_uninstall_refuses_corrupt_json_without_force(self, tmp_settings):
+        tmp_settings.parent.mkdir(parents=True, exist_ok=True)
+        garbage = "definitely: not json"
+        tmp_settings.write_text(garbage, encoding="utf-8")
+        runner = CliRunner()
+        result = runner.invoke(hooks, ["uninstall"])
+        assert result.exit_code != 0
+        assert tmp_settings.read_text(encoding="utf-8") == garbage
+
+
 class TestHookHandler:
     """Tests for the aictl.hook_handler module."""
 

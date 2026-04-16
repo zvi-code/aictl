@@ -824,6 +824,7 @@ class TestEnableGuard:
         profile.write_text("")
         monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [profile])
         monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [profile])
+        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("AICTL_PORT", "8484")
         return tmp_path
 
@@ -964,19 +965,24 @@ class TestFileIOEncoding:
         profile.write_text("# existing profile with caf\u00e9\n", encoding="utf-8")
 
         monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [profile])
+        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("AICTL_PORT", "8484")
 
         runner = CliRunner()
         result = runner.invoke(otel, ["enable", "--tool", "claude"], catch_exceptions=False)
         assert result.exit_code == 0
 
-        # File must be valid utf-8 and preserve the original content
+        # Profile keeps its original unicode + gains the source-line block
         content = profile.read_text(encoding="utf-8")
         assert "caf\u00e9" in content
-        assert "AICTL_PORT" in content
+        assert "# >>> aictl env >>>" in content
+        # Env vars live in the sourced file, not in the profile itself
+        env_file = tmp_path / ".config" / "aictl" / "env.sh"
+        assert env_file.exists()
+        assert "AICTL_PORT" in env_file.read_text(encoding="utf-8")
 
     def test_otel_shell_profile_update_preserves_unicode(self, tmp_path, monkeypatch):
-        """Updating an existing otel block in a profile preserves non-ASCII chars."""
+        """Migrating from an old inline otel block preserves surrounding unicode."""
         from aictl.commands.integrations import otel
 
         marker = "# \u2500\u2500 aictl: OTel for AI tools \u2500\u2500"
@@ -990,6 +996,7 @@ class TestFileIOEncoding:
         )
 
         monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [profile])
+        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("AICTL_PORT", "8484")
 
         runner = CliRunner()
@@ -1006,6 +1013,7 @@ class TestFileIOEncoding:
         profile.write_text("# profile \u00e9\n", encoding="utf-8")
 
         monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [profile])
+        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setattr(
             "aictl.commands.integrations.claude_global_dir", lambda: tmp_path / "claude"
         )
