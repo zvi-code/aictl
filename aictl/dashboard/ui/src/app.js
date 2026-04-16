@@ -1,14 +1,17 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from './context.js';
-import { THEME_ICONS, fmtSz } from './utils.js';
+import { fmtSz } from './utils.js';
 import * as api from './api.js';
 import { useDashboard } from './hooks/useDashboard.js';
-import { useRange, RANGE_SECONDS } from './hooks/useRange.js';
+import { useRange, RANGE_SECONDS, RANGE_PRESETS } from './hooks/useRange.js';
 import { useTools } from './hooks/useTools.js';
 import { useTabs } from './hooks/useTabs.js';
 import { useTheme } from './hooks/useTheme.js';
 import { useDensity } from './hooks/useDensity.js';
+import { useSavedViews } from './hooks/useSavedViews.js';
+import { useCommandPalette } from './hooks/useCommandPalette.js';
+import { announce } from './utils/a11y.js';
 
 import FileViewer from './components/FileViewer.js';
 import TabOverview from './components/TabOverview.js';
@@ -29,9 +32,15 @@ import ErrorBoundary from './components/ErrorBoundary.js';
 import DashboardContent from './components/DashboardContent.js';
 import RangeBar from './components/RangeBar.js';
 import ToolFilterBar from './components/ToolFilterBar.js';
+import GlobalHeader from './components/shell/GlobalHeader.js';
+import ActivityRail from './components/shell/ActivityRail.js';
+import CommandPalette from './components/shell/CommandPalette.js';
+import SkipLink from './components/shell/SkipLink.js';
+import ToastProvider from './components/ui/ToastProvider.js';
+import Skeleton from './components/ui/Skeleton.js';
+import { toast } from './components/ui/Toast.js';
 
-// Re-export reducer + initialState so test/reducer.test.js keeps working;
-// the active App consumes hooks instead.
+// Re-export reducer + initialState so test/reducer.test.js keeps working.
 export { reducer, initialState } from './reducer.js';
 
 const VERIFIED_TOOLS = new Set([
@@ -84,6 +93,29 @@ function useRangeBoundData(globalRange) {
   return { dbHistory, events };
 }
 
+/** Fire toasts on SSE disconnect/reconnect (after initial connect). */
+function useConnectionToasts(connected) {
+  const hasConnectedOnce = useRef(false);
+  const prevRef = useRef(connected);
+  useEffect(() => {
+    if (connected && !hasConnectedOnce.current) {
+      hasConnectedOnce.current = true;
+      prevRef.current = connected;
+      return;
+    }
+    if (connected !== prevRef.current) {
+      if (connected) {
+        toast.success('Reconnected');
+        announce('Connection restored');
+      } else if (hasConnectedOnce.current) {
+        toast.error('Disconnected. Retrying…');
+        announce('Connection lost, retrying', 'assertive');
+      }
+      prevRef.current = connected;
+    }
+  }, [connected]);
+}
+
 function computeAlerts(snap) {
   if (!snap) return [];
   const out = [];
@@ -126,13 +158,79 @@ function filterSnap(snap, enabledTools, searchQuery) {
   return { ...snap, tools };
 }
 
+function dispatchSessionSelect(sessionId, tool) {
+  try {
+    document.dispatchEvent(new CustomEvent('aictl:select-session', {
+      detail: { sessionId, tool },
+    }));
+  } catch { /* noop */ }
+}
+
+function buildCommands({
+  tabs, setActiveTab,
+  setPreset, presets,
+  allTools, toggleTool,
+  setTheme, setDensity,
+  views, applyView,
+  snap,
+}) {
+  const out = [];
+  tabs.forEach(t => out.push({
+    id: 'tab:' + t.id, group: 'Jump to tab', label: t.label,
+    shortcut: t.key, action: () => setActiveTab(t.id),
+  }));
+  presets.forEach(r => out.push({
+    id: 'range:' + r.id, group: 'Range', label: 'Set range: ' + r.label,
+    action: () => setPreset(r.id),
+  }));
+  (allTools || []).forEach(tool => out.push({
+    id: 'filter:' + tool, group: 'Filter', label: 'Toggle tool: ' + tool,
+    action: () => toggleTool(tool),
+  }));
+  if (snap) {
+    for (const t of snap.tools || []) {
+      const sessions = (t.live && t.live.sessions) || [];
+      for (const s of sessions.slice(0, 20)) {
+        if (s.active === false) continue;
+        const sid = s.session_id || s.id;
+        if (!sid) continue;
+        out.push({
+          id: 'session:' + sid, group: 'Session',
+          label: 'Open session ' + String(sid).split(':').slice(-1)[0] + ' (' + (t.label || t.tool) + ')',
+          action: () => { setActiveTab('sessions'); dispatchSessionSelect(sid, t.tool); },
+        });
+      }
+    }
+  }
+  views.forEach(v => out.push({
+    id: 'view:' + v.id, group: 'View', label: 'Apply view: ' + v.name,
+    action: () => applyView(v.id),
+  }));
+  ['auto', 'dark', 'light'].forEach(th => out.push({
+    id: 'theme:' + th, group: 'Appearance', label: 'Theme: ' + th,
+    action: () => setTheme(th),
+  }));
+  ['compact', 'normal', 'spacious'].forEach(d => out.push({
+    id: 'density:' + d, group: 'Appearance', label: 'Density: ' + d,
+    action: () => setDensity(d),
+  }));
+  out.push({
+    id: 'help:shortcuts', group: 'Shortcuts', label: 'Keyboard shortcuts',
+    action: () => {
+      const lines = tabs.map(t => t.key + ' → ' + t.label).join('\n');
+      alert('Tab shortcuts:\n' + lines + '\n\n⌘K — Command palette\n/ — Focus filter\nEsc — Close panels');
+    },
+  });
+  return out;
+}
+
 // ─── App ───────────────────────────────────────────────────────
 export default function App() {
   const { snapshot: snap, history, connected } = useDashboard();
-  const { range: globalRange, setPreset, setCustom } = useRange();
+  const { range: globalRange, setPreset, setCustom, setRange } = useRange();
   const { activeTab, setActiveTab, tabs } = useTabs();
-  const { theme, cycleTheme } = useTheme();
-  useDensity();
+  const { theme, setTheme, cycleTheme } = useTheme();
+  const { density, setDensity } = useDensity();
 
   const verifiedTools = useMemo(() => (
     snap ? snap.tools.filter(t => t.tool !== 'aictl' && t.tool !== 'any' && VERIFIED_TOOLS.has(t.tool)).map(t => t.tool) : []
@@ -143,8 +241,33 @@ export default function App() {
   const [viewerPath, setViewerPath] = useState(null);
   const searchRef = useRef(null);
   useSearchShortcut(searchRef, setViewerPath);
+  useConnectionToasts(connected);
   const otelActive = useOtelStatus();
   const { dbHistory, events } = useRangeBoundData(globalRange);
+
+  const currentViewState = useMemo(() => ({
+    tab: activeTab, range: globalRange, tools: enabledTools, density, theme,
+  }), [activeTab, globalRange, enabledTools, density, theme]);
+  const applyViewState = useCallback((v) => {
+    if (v.tab) setActiveTab(v.tab);
+    if (v.range) setRange(v.range);
+    if (v.tools !== undefined) setTools(v.tools);
+    if (v.density) setDensity(v.density);
+    if (v.theme) setTheme(v.theme);
+  }, [setActiveTab, setRange, setTools, setDensity, setTheme]);
+  const { views, saveView, deleteView, applyView, matchingView } =
+    useSavedViews(currentViewState, applyViewState);
+
+  const palette = useCommandPalette();
+
+  const commands = useMemo(() => buildCommands({
+    tabs, setActiveTab,
+    setPreset, presets: RANGE_PRESETS,
+    allTools: verifiedTools, toggleTool,
+    setTheme, setDensity,
+    views, applyView, snap,
+  }), [tabs, setActiveTab, setPreset, verifiedTools, toggleTool,
+       setTheme, setDensity, views, applyView, snap]);
 
   const effectiveHistory = globalRange.id === 'live' ? history : (dbHistory || history);
   const rangeSeconds = globalRange.until
@@ -193,44 +316,57 @@ export default function App() {
     config:     () => html`<${TabBoundary} tabName="config"><div class="mb-lg"><${TabToolConfig}/></div></${TabBoundary}>`,
   };
 
+  const ready = connected && snap;
+
   return html`<${SnapContext.Provider} value=${ctxValue}>
     <div class="main-wrap">
-      <a href="#main-content" class="skip-link">Skip to main content</a>
-      <header role="banner">
-        <h1>aictl <span>live dashboard</span></h1>
-        <div class="hdr-right">
-          <input type="text" ref=${searchRef} class="search-box" placeholder="Filter... ( / )"
-            aria-label="Filter tools" value=${searchQuery}
-            onInput=${e => setSearchQuery(e.target.value)}/>
-          <button class="theme-btn" onClick=${cycleTheme} aria-label="Toggle theme: ${theme}"
-            title="Theme: ${theme}">${THEME_ICONS[theme]}</button>
-          ${otelActive && html`<span class="conn ok" title="OTel receiver active">OTel</span>`}
-          <span class=${'conn ' + (connected ? 'ok' : 'err')} role="status" aria-live="polite">
-            ${connected ? 'live' : 'reconnecting...'}
-            <span class="sr-only">${connected ? ' — connected' : ' — connection lost, reconnecting'}</span>
-          </span>
-        </div>
-      </header>
+      <${SkipLink}/>
+      <${GlobalHeader}
+        searchRef=${searchRef} searchQuery=${searchQuery} onSearchChange=${setSearchQuery}
+        theme=${theme} cycleTheme=${cycleTheme}
+        density=${density} setDensity=${setDensity}
+        otelActive=${otelActive} connected=${connected}
+        globalRange=${globalRange} onPreset=${setPreset} onApplyCustom=${setCustom}
+        snap=${snap} enabledTools=${enabledTools}
+        onToggleTool=${toggleTool} onSetAllTools=${setTools}
+        views=${views} matchingView=${matchingView}
+        onApplyView=${applyView} onDeleteView=${deleteView} onSaveView=${saveView}
+        onOpenPalette=${palette.open}
+      />
       ${alerts.length > 0 && html`<div class="alert-banner" role="alert">
         ${alerts.map((a, i) => html`<div key=${i} class="alert-item" style="color:var(--${a.level})">\u26A0 ${a.msg}</div>`)}
       </div>`}
       <${RangeBar} globalRange=${globalRange} onPreset=${setPreset} onApplyCustom=${setCustom}/>
-      <main class="main">
-        <nav class="tab-nav" role="tablist" aria-label="Dashboard tabs">
-          ${tabs.map(t => html`<button key=${t.id} class="tab-btn" role="tab"
-            aria-selected=${activeTab === t.id} onClick=${() => setActiveTab(t.id)}
-            title="Shortcut: ${t.key}">${t.icon ? t.icon + ' ' : ''}${t.label}</button>`)}
-        </nav>
-        <${ToolFilterBar} snap=${snap} enabledTools=${enabledTools}
-          onToggle=${toggleTool} onSetAll=${setTools}/>
-        <div id="main-content" role="tabpanel" aria-label=${tabs.find(t => t.id === activeTab)?.label}>
-          ${TAB_RENDERERS[activeTab]
-            ? TAB_RENDERERS[activeTab]()
-            : html`<p class="text-muted">Unknown tab "${activeTab}"</p>`}
-        </div>
-      </main>
+      <div class="shell-body">
+        <${ActivityRail} snap=${snap}
+          onSelectSession=${() => setActiveTab('sessions')}/>
+        <main class="main" id="main-content" role="main">
+          <nav class="tab-nav" role="navigation" aria-label="Dashboard tabs">
+            ${tabs.map(t => html`<button key=${t.id} class="tab-btn"
+              aria-current=${activeTab === t.id ? 'page' : null} onClick=${() => setActiveTab(t.id)}
+              title="Shortcut: ${t.key}">${t.icon ? t.icon + ' ' : ''}${t.label}</button>`)}
+          </nav>
+          <${ToolFilterBar} snap=${snap} enabledTools=${enabledTools}
+            onToggle=${toggleTool} onSetAll=${setTools}/>
+          <div aria-label=${tabs.find(t => t.id === activeTab)?.label}>
+            ${!ready
+              ? html`<div class="tab-skeleton" aria-busy="true" aria-label="Loading dashboard">
+                  <${Skeleton} height="120px" radius="6px"/>
+                  <${Skeleton} height="60px"  radius="6px"/>
+                  <${Skeleton} height="200px" radius="6px"/>
+                </div>`
+              : TAB_RENDERERS[activeTab]
+                ? TAB_RENDERERS[activeTab]()
+                : html`<p class="text-muted">Unknown tab "${activeTab}"</p>`}
+          </div>
+        </main>
+      </div>
     </div>
     <${FileViewer} path=${viewerPath} onClose=${() => setViewerPath(null)}/>
     <${DatapointTooltip}/>
+    <${CommandPalette} commands=${commands}
+      isOpen=${palette.isOpen} onClose=${palette.close}
+      lru=${palette.lru} onRun=${c => palette.recordUse(c.id)}/>
+    <${ToastProvider}/>
   </${SnapContext.Provider}>`;
 }
