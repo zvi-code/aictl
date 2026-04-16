@@ -46,12 +46,21 @@ markers = [
 # Default: only run unit tests (not e2e) unless explicitly requested.
 addopts = "--ignore=test/e2e --ignore=test/e2e_tools"
 
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.format]
+
 [tool.ruff.lint]
+# E/F = pycodestyle errors / pyflakes (correctness baseline)
+# I    = isort (import ordering)
+# UP   = pyupgrade (modern Python idioms)
+# B    = flake8-bugbear (likely bugs)
 # S110 = try-except-pass (no-op exception swallow — always hides bugs in command code)
 # BLE001 = blind exception catch (except Exception / except BaseException)
 # Enforced on command and utility code. The daemon/monitoring layer is excluded
 # because those components must survive individual metric/event failures.
-select = ["S110", "BLE001"]
+select = ["E", "F", "I", "UP", "B", "S110", "BLE001"]
 
 [tool.ruff.lint.per-file-ignores]
 # Long-running daemons: broad catches intentional — must not crash on noisy input.
