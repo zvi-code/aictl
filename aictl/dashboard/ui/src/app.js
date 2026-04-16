@@ -28,6 +28,11 @@ import TabToolConfig from './components/TabToolConfig.js';
 import ContextMap from './components/ContextMap.js';
 import CollectorHealth from './components/CollectorHealth.js';
 import DatapointTooltip from './components/DatapointTooltip.js';
+import ErrorBoundary from './components/ErrorBoundary.js';
+
+function TabErrorBoundary({ tabName, children }) {
+  return html`<${ErrorBoundary} key=${tabName}>${children}</${ErrorBoundary}>`;
+}
 
 // ─── Preference persistence (localStorage only) ────────────────
 function persistPref(key, value) {
@@ -527,28 +532,30 @@ export default function App() {
   }),[filteredSnap, history, openViewer, recentFiles, globalRange, rangeSeconds, enabledTools]);
 
   // ─── Tab content ─────────────────────────────────────────────
+  // Each tab renderer is wrapped in a TabErrorBoundary so a crash in one
+  // tab doesn't take down the whole dashboard.
   const TAB_RENDERERS = {
-    overview: () => html`
+    overview: () => html`<${TabErrorBoundary} tabName="overview">
       <${DashboardContent} snap=${filteredSnap} history=${effectiveHistory}
         globalRange=${globalRange}/>
       <div class="mb-lg"><${CollectorHealth}/></div>
-    `,
-    procs: () => html`
+    </${TabErrorBoundary}>`,
+    procs: () => html`<${TabErrorBoundary} tabName="procs">
       <div class="mb-lg"><${TabOverview}/></div>
-    `,
-    memory: () => html`
+    </${TabErrorBoundary}>`,
+    memory: () => html`<${TabErrorBoundary} tabName="memory">
       <div class="mb-lg"><${ContextMap}/></div>
       <div class="mb-lg"><${TabMemory}/></div>
-    `,
-    live: () => html`<div class="mb-lg"><${TabLive}/></div>`,
-    events: () => html`<div class="mb-lg"><${TabEventsStats} key=${'events-'+activeTab}/></div>`,
-    budget: () => html`<div class="mb-lg"><${TabBudget} key=${'budget-'+activeTab}/></div>`,
-    sessions: () => html`<div class="mb-lg"><${TabSessions} key=${'sessions-'+activeTab}/></div>`,
-    analytics: () => html`<div class="mb-lg"><${TabAnalytics} key=${'analytics-'+activeTab}/></div>`,
-    flow:    () => html`<div class="mb-lg"><${TabSessionFlow} key=${'flow-'+activeTab}/></div>`,
-    transcript: () => html`<div class="mb-lg"><${TabTranscript} key=${'transcript-'+activeTab}/></div>`,
-    timeline: () => html`<div class="mb-lg"><${TabTimelineChart} key=${'timeline-'+activeTab}/></div>`,
-    config:  () => html`<div class="mb-lg"><${TabToolConfig}/></div>`,
+    </${TabErrorBoundary}>`,
+    live: () => html`<${TabErrorBoundary} tabName="live"><div class="mb-lg"><${TabLive}/></div></${TabErrorBoundary}>`,
+    events: () => html`<${TabErrorBoundary} tabName="events"><div class="mb-lg"><${TabEventsStats} key=${'events-'+activeTab}/></div></${TabErrorBoundary}>`,
+    budget: () => html`<${TabErrorBoundary} tabName="budget"><div class="mb-lg"><${TabBudget} key=${'budget-'+activeTab}/></div></${TabErrorBoundary}>`,
+    sessions: () => html`<${TabErrorBoundary} tabName="sessions"><div class="mb-lg"><${TabSessions} key=${'sessions-'+activeTab}/></div></${TabErrorBoundary}>`,
+    analytics: () => html`<${TabErrorBoundary} tabName="analytics"><div class="mb-lg"><${TabAnalytics} key=${'analytics-'+activeTab}/></div></${TabErrorBoundary}>`,
+    flow:    () => html`<${TabErrorBoundary} tabName="flow"><div class="mb-lg"><${TabSessionFlow} key=${'flow-'+activeTab}/></div></${TabErrorBoundary}>`,
+    transcript: () => html`<${TabErrorBoundary} tabName="transcript"><div class="mb-lg"><${TabTranscript} key=${'transcript-'+activeTab}/></div></${TabErrorBoundary}>`,
+    timeline: () => html`<${TabErrorBoundary} tabName="timeline"><div class="mb-lg"><${TabTimelineChart} key=${'timeline-'+activeTab}/></div></${TabErrorBoundary}>`,
+    config:  () => html`<${TabErrorBoundary} tabName="config"><div class="mb-lg"><${TabToolConfig}/></div></${TabErrorBoundary}>`,
   };
 
   const handleTabChange = useCallback((tabId)=>{
