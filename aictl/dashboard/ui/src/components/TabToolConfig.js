@@ -2,6 +2,7 @@ import { useContext, useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS, ICONS } from '../utils.js';
+import { Icon } from './ui/index.js';
 
 // ─── Tooltip descriptions ────────────────────────────────────────
 // Keyed by the setting/feature key that appears in feature_groups or settings.
@@ -236,8 +237,8 @@ function VsCodeCard({cfg}) {
       <span>🔷</span>
       <span style="font-weight:700;font-size:var(--fs-base);color:#007acc">VS Code — AI Platform Settings</span>
       <span class="text-muted" style="font-size:var(--fs-sm)">chat.* — applies to all AI tools</span>
-      ${yolo && html`<span class="badge" style="margin-left:auto;background:var(--red);color:#fff;font-weight:700">⚠ YOLO MODE ON</span>`}
-      ${!yolo && noReply && html`<span class="badge" style="margin-left:auto;background:var(--orange);color:#fff">⚠ auto-reply on</span>`}
+      ${yolo && html`<span class="badge" style="margin-left:auto;background:var(--red);color:#fff;font-weight:700"><${Icon} name="alert-triangle" size="0.9em"/> YOLO MODE ON</span>`}
+      ${!yolo && noReply && html`<span class="badge" style="margin-left:auto;background:var(--orange);color:#fff"><${Icon} name="alert-triangle" size="0.9em"/> auto-reply on</span>`}
     </div>
     <div style="padding:var(--sp-4);display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:var(--sp-4)">
       <${OTelBlock} otel=${cfg.otel}/>
@@ -256,7 +257,7 @@ function AictlCard({snap}) {
                            display:flex;flex-direction:column;height:100%">
     <div style="padding:var(--sp-4) var(--sp-5);background:color-mix(in srgb,${color} 10%,var(--bg2));
                 display:flex;align-items:center;gap:var(--sp-3);border-bottom:2px solid ${color}">
-      <span>⚙️</span>
+      <span><${Icon} name="settings" size="1em"/></span>
       <span style="font-weight:700;font-size:var(--fs-base);color:${color}">aictl</span>
       <span class="text-muted" style="font-size:var(--fs-sm)">monitoring engine</span>
     </div>
