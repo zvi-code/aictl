@@ -2107,6 +2107,8 @@ class HistoryDB:
                     "bytes_written": 0,
                     "source_files": 0,
                     "activity": [],
+                    "git_branch": s.get("git_branch", "") or "",
+                    "git_commit": s.get("git_commit", "") or "",
                 }
                 profiles[s["session_id"]] = p
                 result.append(p)
@@ -2178,6 +2180,8 @@ class HistoryDB:
                 "bytes_written": 0,
                 "source_files": 0,
                 "activity": [],
+                "git_branch": "",
+                "git_commit": "",
             }
 
         if not sessions:
