@@ -13,10 +13,6 @@ from pathlib import Path
 
 import click
 
-from ..platforms import IS_MACOS, IS_WINDOWS, claude_global_dir, vscode_user_dir, codex_global_dir, gemini_global_dir
-from ..utils import CorruptJSONError, WriteGuard, read_json_or_fail
-from .._hook_owner import _AICTL_OWNER_MARKER, _is_aictl_hook, _is_legacy_aictl_hook  # re-exported for tests
-
 
 def _run_env_persist(argv: list[str]) -> None:
     """Best-effort env persistence via an external tool (setx / launchctl).
@@ -33,6 +29,21 @@ def _run_env_persist(argv: list[str]) -> None:
     if result.returncode != 0:
         stderr = (result.stderr or "").strip() or f"exit {result.returncode}"
         click.echo(f"warning: {argv[0]} failed: {stderr}", err=True)
+
+from .._hook_owner import (  # re-exported for tests
+    _AICTL_OWNER_MARKER,
+    _is_aictl_hook,
+    _is_legacy_aictl_hook,
+)
+from ..platforms import (
+    IS_MACOS,
+    IS_WINDOWS,
+    claude_global_dir,
+    codex_global_dir,
+    gemini_global_dir,
+    vscode_user_dir,
+)
+from ..utils import CorruptJSONError, WriteGuard, read_json_or_fail
 
 
 def _read_json_strict(path: Path, *, force: bool = False) -> dict:
@@ -349,7 +360,7 @@ def install(port: int | None, scope: str, events: str | None, force: bool, dry_r
                 if len(cmd) > 80:
                     cmd = cmd[:77] + "..."
                 click.echo(f"  {ev}: {cmd}", err=True)
-        click.echo(f"\nUse --force to install alongside existing hooks.", err=True)
+        click.echo("\nUse --force to install alongside existing hooks.", err=True)
         raise SystemExit(1)
 
     # Merge hooks into existing settings (per-event, preserving user hooks)
@@ -373,7 +384,7 @@ def install(port: int | None, scope: str, events: str | None, force: bool, dry_r
 
     click.echo(f"Installed {len(target_events)} hook events → localhost:{port}/api/hooks")
     click.echo(f"  Scope: {scope} ({settings_path})")
-    click.echo(f"  Mode: stdin passthrough (reads full event payload)")
+    click.echo("  Mode: stdin passthrough (reads full event payload)")
     if conflicts:
         click.echo(f"  Note: {len(conflicts)} event(s) have additional non-aictl hooks (preserved)")
 
@@ -439,6 +450,189 @@ def _print_settings_diff(path: Path, before: dict, after: dict) -> None:
         tofile=f"{path} (proposed)",
     )
     click.echo("".join(diff), nl=False)
+
+
+# ─── hooks doctor / verify ──────────────────────────────────────────────────
+
+
+def _iter_installed_aictl_hooks(settings_path: Path):
+    """Yield (event, rule_dict) for every aictl-owned hook in *settings_path*.
+
+    The rule dict is the nested {"matcher", "hooks": [...]} shape produced by
+    ``_build_hook_config``. Emits legacy entries too — the caller decides
+    how to classify them.
+    """
+    if not settings_path.exists():
+        return
+    try:
+        settings = read_json_or_fail(settings_path)
+    except CorruptJSONError:
+        return
+    hooks_cfg = settings.get("hooks", {})
+    if not isinstance(hooks_cfg, dict):
+        return
+    for event, rules in hooks_cfg.items():
+        if not isinstance(rules, list):
+            continue
+        for rule in rules:
+            if isinstance(rule, dict) and _is_aictl_hook(rule):
+                yield event, rule
+
+
+def _extract_hook_command(rule: dict) -> str:
+    """Return the command string from an aictl hook rule (nested or flat)."""
+    inner = rule.get("hooks")
+    if isinstance(inner, list) and inner and isinstance(inner[0], dict):
+        return str(inner[0].get("command", ""))
+    return str(rule.get("command", ""))
+
+
+def _shlex_split_cmd(cmd: str) -> list[str]:
+    """Split a command string using shlex; posix=False on Windows to handle quotes."""
+    import shlex
+    try:
+        return shlex.split(cmd, posix=not IS_WINDOWS)
+    except ValueError:
+        return cmd.split()
+
+
+def _extract_port_from_cmd(cmd: str) -> int | None:
+    tokens = _shlex_split_cmd(cmd)
+    for i, tok in enumerate(tokens):
+        if tok == "--port" and i + 1 < len(tokens):
+            try:
+                return int(tokens[i + 1])
+            except ValueError:
+                return None
+        if tok.startswith("--port="):
+            try:
+                return int(tok.split("=", 1)[1])
+            except ValueError:
+                return None
+    return None
+
+
+def _hook_cmd_summary(cmd: str, max_len: int = 60) -> str:
+    if len(cmd) <= max_len:
+        return cmd
+    return cmd[: max_len - 3] + "..."
+
+
+def _doctor_check_one(event: str, rule: dict) -> dict:
+    """Run static checks against a single hook rule. Returns a result dict."""
+    import shutil
+
+    cmd = _extract_hook_command(rule)
+    tokens = _shlex_split_cmd(cmd)
+    interp = tokens[0].strip('"') if tokens else ""
+    port = _extract_port_from_cmd(cmd)
+
+    owner = rule.get("_aictl_owner")
+    legacy = owner != _AICTL_OWNER_MARKER and _is_legacy_aictl_hook(rule)
+
+    status = "OK"
+    reasons: list[str] = []
+
+    if not tokens:
+        status = "FAIL"
+        reasons.append("empty command")
+    else:
+        # Check 1: interpreter resolvable
+        is_path_like = any(sep in interp for sep in ("/", "\\"))
+        if is_path_like:
+            p = Path(interp)
+            if not p.exists():
+                status = "FAIL"
+                reasons.append(f"interpreter not found: {interp}")
+            elif not os.access(str(p), os.X_OK) and not IS_WINDOWS:
+                status = "FAIL"
+                reasons.append(f"interpreter not executable: {interp}")
+        else:
+            if shutil.which(interp) is None:
+                status = "FAIL"
+                reasons.append(f"command not on PATH: {interp}")
+
+        # Check 2: aictl importable from this interpreter (only when -m aictl.hook_handler)
+        if status != "FAIL" and "-m aictl.hook_handler" in cmd:
+            try:
+                probe = subprocess.run(
+                    [interp, "-c", "import aictl.hook_handler"],
+                    capture_output=True, timeout=5, text=True,
+                )
+                if probe.returncode != 0:
+                    status = "FAIL"
+                    err = (probe.stderr or "").strip().splitlines()[-1:]
+                    reasons.append(f"aictl not importable: {' '.join(err) or 'import failed'}")
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                status = "FAIL"
+                reasons.append(f"import probe failed: {exc}")
+
+    if legacy:
+        # Legacy takes WARN unless something else already FAILed.
+        if status == "OK":
+            status = "WARN"
+        reasons.append("legacy aictl version (missing current owner marker)")
+
+    return {
+        "event": event,
+        "command": cmd,
+        "command_summary": _hook_cmd_summary(cmd),
+        "interpreter": interp,
+        "port": port,
+        "owner": owner,
+        "legacy": legacy,
+        "status": status,
+        "reasons": reasons,
+    }
+
+
+def _collect_doctor_results(scope: str) -> list[dict]:
+    settings_path = _settings_path(scope)
+    results = [
+        _doctor_check_one(event, rule)
+        for event, rule in _iter_installed_aictl_hooks(settings_path)
+    ]
+    return results
+
+
+def _emit_doctor_text(results: list[dict], settings_path: Path) -> None:
+    if not results:
+        click.echo(f"No aictl hooks found in {settings_path}")
+        return
+    click.echo(f"Checking {len(results)} aictl hook(s) in {settings_path}")
+    for r in results:
+        reason = "; ".join(r["reasons"]) if r["reasons"] else ""
+        tag = f"[{r['status']}]"
+        line = f"  {tag} {r['event']} -> {r['command_summary']}"
+        if reason:
+            line += f"   {reason}"
+        if r["port"] is not None:
+            line += f"   port={r['port']}"
+        click.echo(line)
+
+
+@hooks.command(name="doctor")
+@click.option("--scope", type=click.Choice(["project", "user"]), default="user",
+              help="Check hooks at project or user level")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON")
+def doctor(scope: str, as_json: bool):
+    """Run static health checks against installed aictl hooks.
+
+    Verifies the interpreter exists, ``aictl`` is importable from it, and
+    flags entries left behind by a previous aictl version. No network
+    calls — see ``aictl hooks verify`` for a live ping.
+    """
+    settings_path = _settings_path(scope)
+    results = _collect_doctor_results(scope)
+    if as_json:
+        click.echo(json.dumps({
+            "settings_path": str(settings_path),
+            "results": results,
+        }, indent=2))
+    else:
+        _emit_doctor_text(results, settings_path)
+    if any(r["status"] == "FAIL" for r in results):
+        raise SystemExit(1)
 
 
 # ─── otel ────────────────────────────────────────────────────────────────────
@@ -1078,7 +1272,7 @@ def enable(scope: str, port: int | None, dry_run: bool, force: bool) -> None:
             for p in _shell_profiles():
                 click.echo(f"  [otel]   {p}")
             if IS_MACOS:
-                click.echo(f"  [otel]   macOS launchctl")
+                click.echo("  [otel]   macOS launchctl")
         click.echo(f"  [otel]   {vscode_path} (Copilot OTel keys)")
         click.echo(f"  [vscode] {vscode_path} ({len(_VSCODE_AGENT_SETTINGS)} agent/hooks/context keys)")
         return
