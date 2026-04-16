@@ -9,6 +9,7 @@ from pathlib import Path
 
 from ..resolver import Resolved
 from ..utils import merge_json_block, emit_file
+from .._hook_owner import _tag_hooks
 from ._helpers import (
     emit_root_scope, emit_sub_scope, emit_capabilities,
     emit_mcp_servers, emit_ignores,
@@ -51,7 +52,8 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
     # --- Hooks → .github/hooks/hooks.json (copilot-only) ---
     if resolved.hooks:
         fp = gh / "hooks" / "hooks.json"
-        emit_file(fp, merge_json_block(fp, "hooks", resolved.hooks) if not dry_run else json.dumps({"hooks": resolved.hooks}, indent=2) + "\n", dry_run, results)
+        tagged = _tag_hooks({e: list(rules) for e, rules in resolved.hooks.items()})
+        emit_file(fp, merge_json_block(fp, "hooks", tagged) if not dry_run else json.dumps({"hooks": tagged}, indent=2) + "\n", dry_run, results)
 
     emit_ignores(gh / "copilot-ignore", resolved, dry_run, results)
 

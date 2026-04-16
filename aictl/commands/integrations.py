@@ -13,6 +13,7 @@ import click
 
 from ..platforms import IS_MACOS, IS_WINDOWS, claude_global_dir, vscode_user_dir, codex_global_dir, gemini_global_dir
 from ..utils import WriteGuard
+from .._hook_owner import _AICTL_OWNER_MARKER, _is_aictl_hook, _is_legacy_aictl_hook  # re-exported for tests
 
 
 def _fetch_otel_status(port: int) -> dict | None:
@@ -138,28 +139,7 @@ def _settings_path(scope: str) -> Path:
     return claude_global_dir() / "settings.json"
 
 
-_AICTL_HOOK_MARKERS = ("/api/hooks", "aictl.hook_handler")
-
-
-def _is_aictl_hook(hook: dict) -> bool:
-    """Return True if the hook entry was installed by aictl.
-
-    Detects three generations of hook format:
-    - Current: ``python -m aictl.hook_handler --event ...``
-    - Previous: inline ``python -c "... /api/hooks ..."``
-    - Legacy flat: ``curl ... /api/hooks ...``
-    """
-    if not isinstance(hook, dict):
-        return False
-    # Current nested format: {"matcher": ..., "hooks": [{"type": "command", "command": "..."}]}
-    if "hooks" in hook and isinstance(hook["hooks"], list):
-        return any(
-            any(m in str(h.get("command", "")) for m in _AICTL_HOOK_MARKERS)
-            for h in hook["hooks"]
-        )
-    # Old flat format (pre-fix): {"type": "command", "command": "..."}
-    cmd = str(hook.get("command", ""))
-    return any(m in cmd for m in _AICTL_HOOK_MARKERS)
+_AICTL_HOOK_MARKERS = ("/api/hooks", "aictl.hook_handler")  # kept for backward-compat imports
 
 
 def _python_cmd() -> str:
@@ -194,7 +174,11 @@ def _build_hook_config(port: int, events: list[str] | None, event_map: dict[str,
     for event in target_events:
         tool_event_name = event_map.get(event, event) if event_map else event
         cmd = f"{python} -m aictl.hook_handler --event {event} --port {port}"
-        hooks[tool_event_name] = [{"matcher": matcher, "hooks": [{"type": "command", "command": cmd}]}]
+        hooks[tool_event_name] = [{
+            "_aictl_owner": _AICTL_OWNER_MARKER,
+            "matcher": matcher,
+            "hooks": [{"type": "command", "command": cmd}],
+        }]
     return hooks
 
 
