@@ -69,8 +69,9 @@ test-tools:  ## Run real-tool E2E tests (skips missing tools)
 test-all:  ## Run everything (unit + E2E + tools)
 	python3 -m pytest test/ -v --timeout=180 --override-ini="addopts="
 
-lint:  ## Run ruff linter
-	python3 -m ruff check aictl/
+lint:  ## Run ruff linter + format check
+	python3 -m ruff check .
+	python3 -m ruff format --check .
 
 # ── Cleanup ──────────────────────────────────────────────────────────────────
 
