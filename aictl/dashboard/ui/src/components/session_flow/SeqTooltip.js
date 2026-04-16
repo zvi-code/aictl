@@ -43,6 +43,8 @@ export default function SeqTooltip({event}) {
   }
   if (event.type === 'api_response') {
     const tok = event.tokens || {};
+    const httpNum = Number(event.http_status);
+    const httpBad = Number.isFinite(httpNum) && httpNum >= 400;
     return html`<div class="sf-seq-tooltip">
       <div class="sf-tip-label">API Response${event.model ? ' \u2014 ' + event.model : ''}</div>
       <div class="sf-tip-meta">
@@ -50,6 +52,11 @@ export default function SeqTooltip({event}) {
         ${event.duration_ms > 0 ? ' \u00B7 Latency: ' + fmtDur(event.duration_ms) : ''}
         ${event.finish_reason ? ' \u00B7 ' + event.finish_reason : ''}
       </div>
+      ${(event.error_type || event.http_status) && html`<div class="sf-tip-meta">
+        ${event.error_type ? html`<span style="color:var(--red)">${esc(String(event.error_type))}</span>` : ''}
+        ${event.error_type && event.http_status ? ' \u00B7 ' : ''}
+        ${event.http_status ? html`<span style="color:${httpBad ? 'var(--red)' : 'var(--fg-muted)'}">HTTP ${esc(String(event.http_status))}</span>` : ''}
+      </div>`}
       ${event.response_preview && html`<div class="sf-tip-body">${esc(event.response_preview)}</div>`}
     </div>`;
   }

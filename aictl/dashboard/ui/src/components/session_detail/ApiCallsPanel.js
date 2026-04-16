@@ -43,6 +43,8 @@ export default function ApiCallsPanel({sessionId}) {
       ${calls.slice(0, 30).map((c, i) => {
         const isErr = c.status === 'error';
         const date = new Date(c.ts * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'});
+        const httpNum = Number(c.http_status);
+        const httpBad = Number.isFinite(httpNum) && httpNum >= 400;
         return html`<div key=${i} class="flex-row gap-sm" style="padding:2px 0;align-items:center">
           <span class="text-muted" style="width:60px;flex-shrink:0">${date}</span>
           <span style="width:6px;height:6px;border-radius:50%;flex-shrink:0;background:${isErr ? 'var(--red)' : 'var(--green)'}"></span>
@@ -50,6 +52,9 @@ export default function ApiCallsPanel({sessionId}) {
           ${!isErr && html`<span style="width:50px;flex-shrink:0;text-align:right">${c.duration_ms || 0}ms</span>`}
           ${!isErr && html`<span class="text-muted" style="width:70px;flex-shrink:0;text-align:right">${fmtK(c.input_tokens || 0)}in</span>`}
           ${isErr && html`<span style="color:var(--red)">${esc(c.error || 'error')}</span>`}
+          ${c.finish_reason && html`<span class="badge" style="font-size:var(--fs-xs);color:${c.finish_reason === 'length' ? 'var(--orange)' : 'var(--fg-muted)'}">${esc(String(c.finish_reason))}</span>`}
+          ${c.error_type && html`<span class="badge" style="font-size:var(--fs-xs);color:var(--red)">${esc(String(c.error_type))}</span>`}
+          ${c.http_status && html`<span class="badge" style="font-size:var(--fs-xs);color:${httpBad ? 'var(--red)' : 'var(--fg-muted)'}">${esc(String(c.http_status))}</span>`}
         </div>`;
       })}
     </div>

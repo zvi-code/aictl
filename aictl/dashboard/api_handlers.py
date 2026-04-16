@@ -210,6 +210,43 @@ class _APIHandlersMixin:
             limit=limit,
         )
 
+        def _enrich(d: dict, is_error: bool) -> dict:
+            extra: dict = {}
+            # finish_reason: prefer OTel list `gen_ai.response.finish_reasons`,
+            # fall back to legacy scalar keys.
+            reasons = d.get("gen_ai.response.finish_reasons")
+            fr = None
+            if isinstance(reasons, list) and reasons:
+                fr = reasons[0]
+            elif isinstance(reasons, str) and reasons:
+                fr = reasons
+            if not fr:
+                fr = d.get("finish_reason") or d.get("stop_reason")
+            if fr:
+                extra["finish_reason"] = str(fr)
+            # http_status: accept OTel `http.status_code` and newer
+            # `http.response.status_code`, plus legacy keys. Coerce to int.
+            hs = (
+                d.get("http.status_code")
+                or d.get("http.response.status_code")
+                or d.get("http_status")
+                or d.get("status_code")
+            )
+            if hs is not None and hs != "":
+                try:
+                    extra["http_status"] = int(hs)
+                except (TypeError, ValueError):
+                    pass
+            # error_type: prefer OTel `error.type`, fall back to legacy keys.
+            # Only fall back to bare `type` on error events (too generic on
+            # api_request).
+            et = d.get("error.type") or d.get("error_type")
+            if not et and is_error:
+                et = d.get("type")
+            if et:
+                extra["error_type"] = str(et)
+            return extra
+
         calls = []
         for ev in api_events:
             d = ev.detail if isinstance(ev.detail, dict) else {}
@@ -224,6 +261,7 @@ class _APIHandlersMixin:
                     "cache_read_tokens": usage.cache_read,
                     "prompt_id": d.get("prompt.id", d.get("prompt_id", "")),
                     "status": "ok",
+                    **_enrich(d, is_error=False),
                 }
             )
         for ev in error_events:
@@ -233,9 +271,9 @@ class _APIHandlersMixin:
                     "ts": ev.ts,
                     "model": d.get("model", ""),
                     "error": d.get("error", d.get("message", "unknown")),
-                    "error_type": d.get("error_type", d.get("type", "")),
                     "prompt_id": d.get("prompt.id", d.get("prompt_id", "")),
                     "status": "error",
+                    **_enrich(d, is_error=True),
                 }
             )
         calls.sort(key=lambda c: c["ts"], reverse=True)
