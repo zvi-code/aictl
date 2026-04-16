@@ -19,7 +19,7 @@ export default class ErrorBoundary extends Component {
     if (this.state.hasError) {
       return html`<div class="text-red" style="padding:var(--sp-10)">
         <h3>Something went wrong</h3>
-        <pre style="font-size:0.75rem;margin-top:var(--sp-5)">${this.state.error?.message || 'Unknown error'}</pre>
+        <pre style="font-size:var(--fs-md);margin-top:var(--sp-5)">${this.state.error?.message || 'Unknown error'}</pre>
         <button class="prev-btn" style="margin-top:var(--sp-5)" onClick=${()=>this.setState({hasError:false,error:null})}>Try again</button>
       </div>`;
     }

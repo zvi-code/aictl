@@ -46,7 +46,7 @@ export default function TabLive() {
             <td colspan="9" style="padding:var(--sp-1) var(--sp-5);background:var(--bg)">
               <details style="font-size:var(--fs-base)">
                 <summary class="cursor-ptr text-muted">${live.processes.length} processes</summary>
-                <div class="text-mono" style="margin-top:var(--sp-1);font-size:0.7rem">
+                <div class="text-mono" style="margin-top:var(--sp-1);font-size:var(--fs-base)">
                   ${live.processes.sort((a,b)=>(b.cpu_pct||0)-(a.cpu_pct||0)).map(p=>
                     html`<div key=${p.pid} style="display:flex;gap:var(--sp-5);padding:var(--sp-1) 0">
                       <span class="text-muted" style="min-width:5ch">${p.pid}</span>

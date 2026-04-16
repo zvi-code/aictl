@@ -198,7 +198,7 @@ export function TelemetrySection({telemetry}) {
       </div>` : null}
       ${Object.keys(t.by_model||{}).length > 0 ? html`<div class="metric-chip" style="grid-column:span 2">
         <span class="mlabel">By Model</span>
-        ${Object.entries(t.by_model).map(([model,u])=>html`<div key=${model} class="flex-between flex-wrap" style="font-size:0.75rem;padding:0.1rem 0;gap:0.2rem">
+        ${Object.entries(t.by_model).map(([model,u])=>html`<div key=${model} class="flex-between flex-wrap" style="font-size:var(--fs-md);padding:0.1rem 0;gap:0.2rem">
           <span class="mono">${model}</span>
           <span>in:${fmtTok(u.input_tokens||0)} tok out:${fmtTok(u.output_tokens||0)} tok${u.cache_read_tokens?' cR:'+fmtTok(u.cache_read_tokens)+' tok':''}${u.requests?' \u00B7 '+u.requests+'req':''}${u.cost_usd?' \u00B7 $'+u.cost_usd.toFixed(2):''}</span>
         </div>`)}
@@ -206,7 +206,7 @@ export function TelemetrySection({telemetry}) {
     </div>
     ${showErrors && errors.length>0 && html`<div class="mt-sm" style="padding:var(--sp-4) var(--sp-6);border-left:3px solid var(--red);background:color-mix(in srgb,var(--red) 8%,transparent);border-radius:0 4px 4px 0;max-height:10rem;overflow-y:auto">
       <div class="text-red text-bold" style="font-size:var(--fs-base);margin-bottom:0.2rem">Recent Errors</div>
-      ${errors.map(e=>html`<div class="flex-row gap-sm" style="font-size:0.68rem;padding:0.1rem 0">
+      ${errors.map(e=>html`<div class="flex-row gap-sm" style="font-size:var(--fs-sm);padding:0.1rem 0">
         <span class="mono text-muted text-nowrap">${(e.timestamp||'').slice(11,19)}</span>
         <span class="badge" style="font-size:var(--fs-xs);background:var(--red);color:var(--bg);padding:0.05rem var(--sp-2)">${e.type}</span>
         <span class="text-muted">${e.message}</span>

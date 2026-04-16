@@ -37,13 +37,13 @@ function ProcessNode({node, depth}) {
     <div class="flex-row" style="padding:2px 0;align-items:center;gap:var(--sp-2);min-height:24px">
       ${kids.length > 0
         ? html`<span class="cursor-ptr" onClick=${(e) => {e.stopPropagation(); setOpen(v=>!v);}}
-            style="font-size:0.6rem;width:12px;text-align:center;flex-shrink:0">${open ? '\u25BC' : '\u25B6'}</span>`
+            style="font-size:var(--fs-xs);width:12px;text-align:center;flex-shrink:0">${open ? '\u25BC' : '\u25B6'}</span>`
         : html`<span style="width:12px;flex-shrink:0"></span>`}
-      <span class="badge" style="background:${rs.bg};color:var(--bg);font-size:0.55rem;padding:1px 4px;flex-shrink:0">${rs.label}</span>
-      <span class="mono" style="font-size:0.7rem;${isAgent ? 'font-weight:600' : ''}">${esc(node.name)}</span>
-      <span class="text-muted" style="font-size:0.6rem">PID ${node.pid}</span>
-      ${node.cwd && html`<span class="text-muted text-ellipsis" style="font-size:0.55rem;max-width:200px" title=${node.cwd}>${esc(node.cwd)}</span>`}
-      <span class="text-muted" style="font-size:0.6rem;margin-left:auto;flex-shrink:0;white-space:nowrap">
+      <span class="badge" style="background:${rs.bg};color:var(--bg);font-size:var(--fs-2xs);padding:1px 4px;flex-shrink:0">${rs.label}</span>
+      <span class="mono" style="font-size:var(--fs-base);${isAgent ? 'font-weight:600' : ''}">${esc(node.name)}</span>
+      <span class="text-muted" style="font-size:var(--fs-xs)">PID ${node.pid}</span>
+      ${node.cwd && html`<span class="text-muted text-ellipsis" style="font-size:var(--fs-2xs);max-width:200px" title=${node.cwd}>${esc(node.cwd)}</span>`}
+      <span class="text-muted" style="font-size:var(--fs-xs);margin-left:auto;flex-shrink:0;white-space:nowrap">
         ${node.cpu_pct > 0 ? node.cpu_pct + '% ' : ''}${node.mem_mb > 0 ? node.mem_mb + 'MB' : ''}
       </span>
     </div>
@@ -79,9 +79,9 @@ function ProcessTree({tree}) {
 
   return html`<div style="margin-top:var(--sp-3)">
     <div class="flex-row gap-sm" style="align-items:center;margin-bottom:var(--sp-2)">
-      <strong class="text-muted" style="font-size:0.75rem">Process Tree</strong>
-      <span class="text-muted" style="font-size:0.65rem">(${total} processes${hasTeam ? ', ' + agents + ' agents' : ''})</span>
-      ${hasTeam && html`<span class="badge" style="background:var(--accent);color:var(--bg);font-size:0.55rem">Agent Team</span>`}
+      <strong class="text-muted" style="font-size:var(--fs-md)">Process Tree</strong>
+      <span class="text-muted" style="font-size:var(--fs-sm)">(${total} processes${hasTeam ? ', ' + agents + ' agents' : ''})</span>
+      ${hasTeam && html`<span class="badge" style="background:var(--accent);color:var(--bg);font-size:var(--fs-2xs)">Agent Team</span>`}
     </div>
     <div style="font-family:var(--mono);border-left:2px solid var(--border);padding-left:var(--sp-2)">
       ${tree.map(node => html`<${ProcessNode} key=${node.pid} node=${node} depth=${0}/>`)}
@@ -97,7 +97,7 @@ function SessionDetail({session}) {
   const subprocs = session.subprocess_count || {};
   const tree = session.process_tree || [];
 
-  return html`<div style="padding:var(--sp-4) 0;font-size:0.75rem">
+  return html`<div style="padding:var(--sp-4) 0;font-size:var(--fs-md)">
     <div class="es-kv mb-sm" style="gap:var(--sp-3)">
       <div class="es-kv-card"><div class="label">Peak CPU</div><div class="value">${fmtPct(session.peak_cpu_percent || 0)}</div></div>
       <div class="es-kv-card"><div class="label">Traffic</div><div class="value">\u2191${fmtSz(session.outbound_bytes||0)} \u2193${fmtSz(session.inbound_bytes||0)}</div></div>
@@ -106,19 +106,19 @@ function SessionDetail({session}) {
 
     ${workspaces.length > 0 && html`<div style="margin-bottom:var(--sp-3)">
       <strong class="text-muted">Workspaces:</strong>
-      <span class="mono" style="margin-left:var(--sp-3);font-size:0.7rem">${workspaces.join(', ')}</span>
+      <span class="mono" style="margin-left:var(--sp-3);font-size:var(--fs-base)">${workspaces.join(', ')}</span>
     </div>`}
 
     ${tree.length > 0
       ? html`<${ProcessTree} tree=${tree}/>`
       : pids.length > 0 && html`<details style="margin-bottom:var(--sp-3)">
           <summary class="cursor-ptr text-muted">${pids.length} PIDs</summary>
-          <div class="mono text-muted" style="font-size:0.68rem;margin-top:0.2rem">${pids.join(', ')}</div>
+          <div class="mono text-muted" style="font-size:var(--fs-sm);margin-top:0.2rem">${pids.join(', ')}</div>
         </details>`}
 
     ${Object.keys(subprocs).length > 0 && tree.length === 0 && html`<details style="margin-bottom:var(--sp-3)">
       <summary class="cursor-ptr text-muted">Subprocesses</summary>
-      <div style="font-size:0.68rem;margin-top:0.2rem">
+      <div style="font-size:var(--fs-sm);margin-top:0.2rem">
         ${Object.entries(subprocs).map(([name, count]) =>
           html`<span class="pill mono" key=${name} style="margin:0.1rem">${esc(name)}: ${count}</span>`
         )}
@@ -412,8 +412,8 @@ export default function TabSessions() {
                       <span style="color:${c};margin-right:var(--sp-2)">${icon}</span>
                       ${esc(h.tool)}
                     </td>
-                    <td><span class="mono" title=${h.session_id} style="font-size:0.7rem">${shortId}</span></td>
-                    <td><span class="mono" style="font-size:0.7rem">${h.pid || '\u2014'}</span></td>
+                    <td><span class="mono" title=${h.session_id} style="font-size:var(--fs-base)">${shortId}</span></td>
+                    <td><span class="mono" style="font-size:var(--fs-base)">${h.pid || '\u2014'}</span></td>
                     <td>${fmtDur(h.duration_s)}</td>
                     <td>${h.active
                       ? html`<span class="badge" style="background:var(--green);color:var(--bg);font-size:var(--fs-xs)">active</span>`
