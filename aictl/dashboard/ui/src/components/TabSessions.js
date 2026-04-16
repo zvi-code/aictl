@@ -4,6 +4,7 @@ import { SnapContext } from '../context.js';
 import { fmtK, fmtPct, fmtSz, fmtRate, esc, fmtTime, fmtAgo, COLORS, ICONS } from '../utils.js';
 import SessionDetailView from './SessionDetail.js';
 import SessionTimeline from './SessionTimeline.js';
+import DataTable from './ui/DataTable.js';
 import * as api from '../api.js';
 
 // ─── Duration formatting (Xm Ys) ───────────────────────────────
@@ -387,41 +388,44 @@ export default function TabSessions() {
         ? html`<p class="loading-state">Loading...</p>`
         : histError
           ? html`<p class="error-state">Failed to load session history.</p>`
-          : !filteredHistory.length
-            ? html`<p class="empty-state">No past sessions recorded.</p>`
-            : html`<table role="table" aria-label="Session history" class="text-sm">
-                <thead><tr>
-                  <th>Tool</th>
-                  <th>Session ID</th>
-                  <th>PID</th>
-                  <th>Duration</th>
-                  <th>Status</th>
-                  <th>Time</th>
-                </tr></thead>
-                <tbody>${filteredHistory.map(h => {
-                  const c = COLORS[h.tool] || 'var(--fg2)';
-                  const icon = ICONS[h.tool] || '\u{1F539}';
-                  const shortId = h.session_id
-                    ? h.session_id.length > 12
-                      ? h.session_id.slice(0, 12) + '\u2026'
-                      : h.session_id
-                    : '\u2014';
-                  return html`<tr key=${h.session_id} style="cursor:pointer;${h.session_id === selectedId ? 'background:var(--bg2)' : ''}"
-                    onClick=${() => { setSelectedId(h.session_id === selectedId ? null : h.session_id); setExternalSession(null); }}>
-                    <td>
-                      <span style="color:${c};margin-right:var(--sp-2)">${icon}</span>
-                      ${esc(h.tool)}
-                    </td>
-                    <td><span class="mono" title=${h.session_id} style="font-size:var(--fs-base)">${shortId}</span></td>
-                    <td><span class="mono" style="font-size:var(--fs-base)">${h.pid || '\u2014'}</span></td>
-                    <td>${fmtDur(h.duration_s)}</td>
-                    <td>${h.active
-                      ? html`<span class="badge" style="background:var(--green);color:var(--bg);font-size:var(--fs-xs)">active</span>`
-                      : html`<span class="badge" style="font-size:var(--fs-xs)">ended</span>`}</td>
-                    <td>${h.ended_at ? fmtAgo(h.ended_at) : '\u2014'}</td>
-                  </tr>`;
-                })}</tbody>
-              </table>`}
+          : html`<${DataTable}
+              ariaLabel="Session history"
+              rowKey="session_id"
+              persistKey="sessions-history"
+              data=${filteredHistory}
+              onRowClick=${(row) => { setSelectedId(row.session_id === selectedId ? null : row.session_id); setExternalSession(null); }}
+              emptyState="No past sessions recorded."
+              initialSort=${{ id: 'started_at', desc: true }}
+              columns=${[
+                {
+                  accessorKey: 'tool', header: 'Tool',
+                  cell: (v) => html`<span style="color:${COLORS[v] || 'var(--fg2)'};margin-right:var(--sp-2)">${ICONS[v] || '\u{1F539}'}</span>${esc(v)}`,
+                },
+                {
+                  accessorKey: 'session_id', header: 'Session ID',
+                  cell: (v) => html`<span class="mono" title=${v} style="font-size:var(--fs-base)">${v ? (v.length > 12 ? v.slice(0,12) + '\u2026' : v) : '\u2014'}</span>`,
+                },
+                {
+                  accessorKey: 'pid', header: 'PID', align: 'right',
+                  cell: (v) => html`<span class="mono" style="font-size:var(--fs-base)">${v || '\u2014'}</span>`,
+                },
+                { accessorKey: 'duration_s', header: 'Duration', align: 'right', cell: (v) => fmtDur(v) },
+                {
+                  accessorKey: 'active', header: 'Status',
+                  cell: (v) => v
+                    ? html`<span class="badge" style="background:var(--green);color:var(--bg);font-size:var(--fs-xs)">active</span>`
+                    : html`<span class="badge" style="font-size:var(--fs-xs)">ended</span>`,
+                },
+                {
+                  accessorKey: 'started_at', header: 'Started', align: 'right',
+                  cell: (_v, row) => row.started_at ? fmtTime(row.started_at) : '\u2014',
+                },
+                {
+                  accessorKey: 'ended_at', header: 'Time', align: 'right',
+                  cell: (v) => v ? fmtAgo(v) : '\u2014',
+                },
+              ]}
+            />`}
     </div>
   </div>`;
 }

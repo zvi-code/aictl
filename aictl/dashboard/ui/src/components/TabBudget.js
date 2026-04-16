@@ -3,6 +3,7 @@ import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS, fmtK, fmtSz, fmtPct, esc } from '../utils.js';
 import MiniChart from './MiniChart.js';
+import DataTable from './ui/DataTable.js';
 import * as api from '../api.js';
 
 const MODEL_PALETTE = ['var(--green)','var(--model-7)','var(--orange)','var(--red)','var(--model-5)','var(--yellow)','var(--accent)','var(--model-8)'];
@@ -290,18 +291,23 @@ export default function TabBudget() {
     <!-- By category -->
     ${catBreakdown.length>0 && html`<div class="budget-card budget-full">
       <h3 class="text-accent" style="margin-bottom:var(--sp-4)">By Category</h3>
-      <div style="overflow-x:auto">
-        <table role="table" aria-label="Per-category tokens" style="width:100%">
-          <thead><tr><th>Category</th><th style="text-align:right">Files</th><th style="text-align:right">Tokens</th><th style="text-align:right">Size</th><th style="width:120px">Distribution</th></tr></thead>
-          <tbody>${catBreakdown.map(c=>html`<tr key=${c.kind}>
-            <td>${esc(c.kind)}</td>
-            <td style="text-align:right">${c.count}</td>
-            <td style="text-align:right" class="text-bold">${fmtK(c.tokens)}</td>
-            <td style="text-align:right">${fmtSz(c.size)}</td>
-            <td><${TokenBar} always=${c.always} onDemand=${c.onDemand} conditional=${c.conditional} never=${c.never} total=${c.tokens||1}/></td>
-          </tr>`)}</tbody>
-        </table>
-      </div>
+      <${DataTable}
+        ariaLabel="Per-category tokens"
+        rowKey="kind"
+        persistKey="budget-categories"
+        data=${catBreakdown}
+        columns=${[
+          { accessorKey:'kind', header:'Category', cell:(v)=>esc(v) },
+          { accessorKey:'count', header:'Files', align:'right' },
+          { accessorKey:'always', header:'Always', align:'right', cell:(v)=>fmtK(v||0) },
+          { accessorKey:'onDemand', header:'On-Demand', align:'right', cell:(v)=>fmtK(v||0) },
+          { accessorKey:'conditional', header:'Conditional', align:'right', cell:(v)=>fmtK(v||0) },
+          { accessorKey:'never', header:'Never', align:'right', cell:(v)=>fmtK(v||0) },
+          { accessorKey:'tokens', header:'Total', align:'right', cell:(v)=>html`<span class="text-bold">${fmtK(v||0)}</span>` },
+          { accessorKey:'_dist', header:'Distribution', sortable:false, cell:(_v,c)=>html`<${TokenBar} always=${c.always} onDemand=${c.onDemand} conditional=${c.conditional} never=${c.never} total=${c.tokens||1}/>`, width: 140 },
+        ]}
+        initialSort=${{ id:'tokens', desc:true }}
+      />
     </div>`}
   </div>`;
 }
