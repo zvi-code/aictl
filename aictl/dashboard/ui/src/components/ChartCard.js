@@ -26,7 +26,7 @@ export default function ChartCard({label, value, valColor, data, chartColor, smo
           <div class="chart-ref-label" style=${'top:calc('+r.pct+'% - 8px)'}>${r.label}</div>
         </Fragment>`)}
       ${data && data[0].length>=2 ? html`<${MiniChart} data=${data} color=${chartColor||'var(--accent)'} smooth=${smooth} yMax=${yMax}/>` :
-        html`<div class="chart-wrap text-muted" style="display:flex;align-items:center;justify-content:center;font-size:0.7rem">collecting...</div>`}
+        html`<div class="chart-wrap text-muted" style="display:flex;align-items:center;justify-content:center;font-size:var(--fs-base)">collecting...</div>`}
     </div>
   </div>`;
 }

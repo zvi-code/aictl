@@ -46,7 +46,7 @@ function buildTip(s, color, icon, now) {
     <div class="stl-tip-head">
       <span style=${'color:' + color}>${icon}</span>
       <strong>${s.tool}</strong>
-      ${isLive ? html`<span class="badge" style="font-size:9px;background:var(--green);color:#000">live</span>` : ''}
+      ${isLive ? html`<span class="badge" style="font-size:var(--fs-2xs);background:var(--green);color:#000">live</span>` : ''}
     </div>
     <div class="stl-tip-time">${startStr} – ${endStr}</div>
     <div class="stl-tip-stats">${parts.join(' · ')}</div>

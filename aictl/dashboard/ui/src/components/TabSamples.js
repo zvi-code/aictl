@@ -76,7 +76,7 @@ export default function TabSamples() {
       ${listError && html`<p class="error-state" style="padding:0 var(--sp-4)">Error: ${esc(listError)}</p>`}
       ${!listError && !metrics.length && html`<p class="empty-state" style="padding:0 var(--sp-4)">No metrics available.</p>`}
       ${grouped.map(([prefix, entries]) => html`<div key=${prefix}>
-        <div class="text-muted" style="font-size:0.62rem;padding:0.35rem var(--sp-5) 0.1rem;text-transform:uppercase;letter-spacing:0.03em">${prefix}</div>
+        <div class="text-muted" style="font-size:var(--fs-xs);padding:0.35rem var(--sp-5) 0.1rem;text-transform:uppercase;letter-spacing:0.03em">${prefix}</div>
         ${entries.map(entry => html`<button key=${entry.name}
           class=${selected === entry.name ? 'es-tool-btn active' : 'es-tool-btn'}
           onClick=${() => loadSeries(entry.name)}>

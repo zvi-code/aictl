@@ -181,7 +181,7 @@ export default function ContextMap() {
                   cursor:pointer;transition:opacity 0.15s"
                   title="${name}: ${fmtK(p.tokens)} tok (${p.count} files)"
                   onClick=${() => setActiveTab(activeTab === name ? null : name)}>
-                  ${elPct > 12 && barW > 15 ? html`<span style="font-size:9px;color:var(--bg);
+                  ${elPct > 12 && barW > 15 ? html`<span style="font-size:var(--fs-2xs);color:var(--bg);
                     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 2px;font-weight:600">${name}</span>` : null}
                 </div>`;
               })}
@@ -235,7 +235,7 @@ export default function ContextMap() {
                       border-right:1px solid var(--bg);
                       display:flex;align-items:center;justify-content:center;overflow:hidden;min-width:1px"
                       title="${name}: ${fmtK(tok)} tok">
-                      ${pct > 10 && barW > 20 ? html`<span style="font-size:9px;color:#111;
+                      ${pct > 10 && barW > 20 ? html`<span style="font-size:var(--fs-2xs);color:#111;
                         white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 2px;font-weight:700">${name}</span>` : null}
                     </div>`;
                   })}

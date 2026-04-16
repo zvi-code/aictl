@@ -41,7 +41,7 @@ function AgentNode({agent, tasks, now}) {
       ${agentTasks.map(t => {
         const ts = STATE_STYLE[t.state] || STATE_STYLE.pending;
         return html`<div key=${t.task_id} class="flex-row gap-sm text-xs" style="padding:2px 0;align-items:center">
-          <span class="badge" style="background:${ts.bg};color:var(--bg);font-size:0.6rem;padding:1px 4px">${ts.label}</span>
+          <span class="badge" style="background:${ts.bg};color:var(--bg);font-size:var(--fs-xs);padding:1px 4px">${ts.label}</span>
           <span class="mono">${esc(t.name || t.task_id)}</span>
         </div>`;
       })}

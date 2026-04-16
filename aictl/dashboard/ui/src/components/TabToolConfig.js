@@ -130,7 +130,7 @@ function Row({k, v, indent}) {
            padding:3px ${indent?'var(--sp-6)':'var(--sp-4)'};font-size:var(--fs-sm);
            border-bottom:1px solid color-mix(in srgb,var(--bg2) 60%,transparent);
            cursor:${t?'help':'default'}">
-    <span style="color:var(--fg2)">${label}${t ? html`<span style="color:var(--fg3);margin-left:3px;font-size:0.6em">?</span>` : ''}</span>
+    <span style="color:var(--fg2)">${label}${t ? html`<span style="color:var(--fg3);margin-left:3px;font-size:var(--fs-xs)">?</span>` : ''}</span>
     <${Val} v=${v}/>
   </div>`;
 }
