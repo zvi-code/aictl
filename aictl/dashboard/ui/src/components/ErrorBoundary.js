@@ -1,5 +1,8 @@
 import { Component } from 'preact';
 import { html } from 'htm/preact';
+import EmptyState from './ui/EmptyState.js';
+import Button from './ui/Button.js';
+import { toast } from './ui/Toast.js';
 
 export default class ErrorBoundary extends Component {
   constructor(props) {
@@ -13,15 +16,19 @@ export default class ErrorBoundary extends Component {
 
   componentDidCatch(error, errorInfo) {
     console.error('Dashboard error:', error, errorInfo);
+    try { toast.error('Something went wrong in this view'); } catch { /* noop */ }
   }
 
   render() {
     if (this.state.hasError) {
-      return html`<div class="text-red" style="padding:var(--sp-10)">
-        <h3>Something went wrong</h3>
-        <pre style="font-size:var(--fs-md);margin-top:var(--sp-5)">${this.state.error?.message || 'Unknown error'}</pre>
-        <button class="prev-btn" style="margin-top:var(--sp-5)" onClick=${()=>this.setState({hasError:false,error:null})}>Try again</button>
-      </div>`;
+      const msg = this.state.error?.message || 'Unknown error';
+      const retry = () => this.setState({ hasError: false, error: null });
+      return html`<${EmptyState}
+        icon="alert-triangle"
+        title="Something went wrong"
+        description=${msg}
+        action=${html`<${Button} variant="primary" onClick=${retry}>Retry</${Button}>`}
+      />`;
     }
     return this.props.children;
   }
