@@ -635,6 +635,99 @@ def doctor(scope: str, as_json: bool):
         raise SystemExit(1)
 
 
+def _hook_verify_ping(port: int, event: str, timeout: float = 5.0) -> dict:
+    """POST a synthetic hook payload. Returns {status, detail}."""
+    import urllib.error
+    import urllib.request
+
+    payload = json.dumps({
+        "event": event,
+        "session_id": "aictl-verify",
+        "_aictl_verify": True,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        f"http://localhost:{port}/api/hooks",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            code = resp.getcode()
+            if 200 <= code < 300:
+                return {"status": "OK", "http": code, "detail": f"HTTP {code}"}
+            return {"status": "WARN", "http": code, "detail": f"HTTP {code}"}
+    except urllib.error.HTTPError as exc:
+        return {"status": "WARN", "http": exc.code, "detail": f"HTTP {exc.code}"}
+    except urllib.error.URLError as exc:
+        reason = getattr(exc, "reason", exc)
+        msg = str(reason)
+        if "refused" in msg.lower():
+            return {"status": "FAIL", "http": None,
+                    "detail": f"server not running on port {port}"}
+        if "timed out" in msg.lower() or isinstance(reason, TimeoutError):
+            return {"status": "FAIL", "http": None, "detail": "timeout"}
+        return {"status": "FAIL", "http": None, "detail": msg}
+    except TimeoutError:
+        return {"status": "FAIL", "http": None, "detail": "timeout"}
+    except OSError as exc:
+        return {"status": "FAIL", "http": None, "detail": str(exc)}
+
+
+@hooks.command(name="verify")
+@click.option("--scope", type=click.Choice(["project", "user"]), default="user",
+              help="Check hooks at project or user level")
+@click.option("--port", default=None, type=int,
+              help="Override port discovered from each hook's command")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON")
+def verify_hooks(scope: str, port: int | None, as_json: bool):
+    """Live-check every installed aictl hook by POSTing a synthetic payload.
+
+    Runs the same static checks as ``hooks doctor``, then pings each hook's
+    port with ``{"_aictl_verify": true}``. The aictl server may log these as
+    events; that's noise but harmless.
+    """
+    settings_path = _settings_path(scope)
+    static_results = _collect_doctor_results(scope)
+    combined: list[dict] = []
+    for r in static_results:
+        entry = dict(r)
+        if r["status"] == "FAIL":
+            entry["verify"] = {"status": "SKIP", "detail": "static check failed"}
+        else:
+            target_port = port if port is not None else r["port"]
+            if target_port is None:
+                entry["verify"] = {"status": "FAIL",
+                                   "detail": "no --port in hook command"}
+                entry["status"] = "FAIL"
+            else:
+                res = _hook_verify_ping(target_port, r["event"])
+                entry["verify"] = res
+                # Verify status dominates the final status for live check
+                entry["status"] = res["status"]
+        combined.append(entry)
+
+    if as_json:
+        click.echo(json.dumps({
+            "settings_path": str(settings_path),
+            "results": combined,
+        }, indent=2))
+    else:
+        if not combined:
+            click.echo(f"No aictl hooks found in {settings_path}")
+        else:
+            click.echo(f"Live-checking {len(combined)} aictl hook(s) in {settings_path}")
+            click.echo("Note: verify payloads carry _aictl_verify:true and may appear "
+                       "in the event feed as noise.")
+            for r in combined:
+                v = r.get("verify", {})
+                tag = f"[{r['status']}]"
+                click.echo(f"  {tag} {r['event']} -> {_hook_cmd_summary(r['command'])}"
+                           f"   {v.get('detail', '')}")
+    if any(r["status"] == "FAIL" for r in combined):
+        raise SystemExit(1)
+
+
 # ─── otel ────────────────────────────────────────────────────────────────────
 
 

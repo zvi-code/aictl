@@ -108,3 +108,94 @@ class TestHooksDoctor:
         result = CliRunner().invoke(hooks, ["doctor"])
         assert result.exit_code == 0, result.output
         assert "No aictl hooks" in result.output
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# verify
+
+
+class _FakeResp:
+    def __init__(self, code=200):
+        self._code = code
+
+    def getcode(self):
+        return self._code
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class TestHooksVerify:
+    def test_live_ok(self, tmp_settings, monkeypatch):
+        _write_settings(tmp_settings, {"SessionStart": [_current_rule(port=8484)]})
+        monkeypatch.setattr(
+            "urllib.request.urlopen",
+            lambda req, timeout=5: _FakeResp(200),
+        )
+        result = CliRunner().invoke(hooks, ["verify"])
+        assert result.exit_code == 0, result.output
+        assert "[OK]" in result.output
+
+    def test_connection_refused(self, tmp_settings, monkeypatch):
+        _write_settings(tmp_settings, {"SessionStart": [_current_rule(port=8484)]})
+
+        def _boom(req, timeout=5):
+            raise urllib.error.URLError("Connection refused")
+
+        monkeypatch.setattr("urllib.request.urlopen", _boom)
+        result = CliRunner().invoke(hooks, ["verify"])
+        assert result.exit_code == 1, result.output
+        assert "[FAIL]" in result.output
+        assert "server not running" in result.output
+
+    def test_timeout(self, tmp_settings, monkeypatch):
+        _write_settings(tmp_settings, {"SessionStart": [_current_rule(port=8484)]})
+
+        def _boom(req, timeout=5):
+            raise urllib.error.URLError("timed out")
+
+        monkeypatch.setattr("urllib.request.urlopen", _boom)
+        result = CliRunner().invoke(hooks, ["verify"])
+        assert result.exit_code == 1, result.output
+        assert "timeout" in result.output
+
+    def test_non_2xx_warn(self, tmp_settings, monkeypatch):
+        _write_settings(tmp_settings, {"SessionStart": [_current_rule(port=8484)]})
+
+        def _http_err(req, timeout=5):
+            raise urllib.error.HTTPError(req.full_url, 500, "boom", {}, None)
+
+        monkeypatch.setattr("urllib.request.urlopen", _http_err)
+        result = CliRunner().invoke(hooks, ["verify"])
+        assert result.exit_code == 0, result.output
+        assert "[WARN]" in result.output
+        assert "HTTP 500" in result.output
+
+    def test_json_output(self, tmp_settings, monkeypatch):
+        _write_settings(tmp_settings, {"SessionStart": [_current_rule(port=8484)]})
+        monkeypatch.setattr(
+            "urllib.request.urlopen",
+            lambda req, timeout=5: _FakeResp(200),
+        )
+        result = CliRunner().invoke(hooks, ["verify", "--json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["results"][0]["status"] == "OK"
+        assert payload["results"][0]["verify"]["http"] == 200
+
+    def test_port_override(self, tmp_settings, monkeypatch):
+        _write_settings(tmp_settings, {"SessionStart": [_current_rule(port=8484)]})
+        captured = {}
+
+        def _capture(req, timeout=5):
+            captured["url"] = req.full_url
+            return _FakeResp(200)
+
+        monkeypatch.setattr("urllib.request.urlopen", _capture)
+        result = CliRunner().invoke(hooks, ["verify", "--port", "9000"])
+        assert result.exit_code == 0, result.output
+        assert ":9000/" in captured["url"]
+
