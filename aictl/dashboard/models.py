@@ -110,11 +110,11 @@ class DashboardSnapshot:
     total_live_estimated_tokens: int = 0
     total_live_files_touched: int = 0
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.root = norm_path(self.root)
         self._compute_aggregates()
 
-    def _compute_aggregates(self):
+    def _compute_aggregates(self) -> None:
         self.cpu_cores = os.cpu_count() or 1
         try:
             import psutil

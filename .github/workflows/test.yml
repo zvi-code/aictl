@@ -25,6 +25,20 @@ jobs:
       - name: ruff format --check
         run: ruff format --check .
 
+  # ── Typecheck (mypy on strictly-typed modules) ───────────────────
+  typecheck:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install mypy + stubs
+        run: pip install mypy types-PyYAML
+      - name: make typecheck
+        run: make typecheck
+
   # ── Unit tests (fast, always) ───────────────────────────────────
   unit:
     runs-on: ubuntu-latest

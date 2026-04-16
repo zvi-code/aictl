@@ -36,6 +36,7 @@ def swallow_errors(
         if logger is not None:
             logger.debug("swallowed (%s): %s", reason, exc)
 
+
 # --- Markers ---
 
 
