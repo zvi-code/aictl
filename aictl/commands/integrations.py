@@ -7,6 +7,7 @@ from __future__ import annotations
 import difflib
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -15,6 +16,23 @@ import click
 from ..platforms import IS_MACOS, IS_WINDOWS, claude_global_dir, vscode_user_dir, codex_global_dir, gemini_global_dir
 from ..utils import CorruptJSONError, WriteGuard, read_json_or_fail
 from .._hook_owner import _AICTL_OWNER_MARKER, _is_aictl_hook, _is_legacy_aictl_hook  # re-exported for tests
+
+
+def _run_env_persist(argv: list[str]) -> None:
+    """Best-effort env persistence via an external tool (setx / launchctl).
+
+    Never raises; surfaces non-zero exits as a warning on stderr and
+    continues. argv is a list — never a shell string — so values that
+    contain spaces or shell metacharacters can't inject commands.
+    """
+    try:
+        result = subprocess.run(argv, check=False, capture_output=True, text=True)
+    except OSError as exc:
+        click.echo(f"warning: {argv[0]} failed: {exc}", err=True)
+        return
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip() or f"exit {result.returncode}"
+        click.echo(f"warning: {argv[0]} failed: {stderr}", err=True)
 
 
 def _read_json_strict(path: Path, *, force: bool = False) -> dict:
@@ -485,7 +503,7 @@ def enable(port: int | None, tool: str, print_only: bool, shell: str | None, for
         # Windows: set via setx (persistent user env vars)
         # Also update current process so verify works immediately
         for key, val in env_block.items():
-            os.system(f'setx {key} "{val}" >nul 2>&1')
+            _run_env_persist(["setx", key, val])
             os.environ[key] = val
         actions.append(f"Windows user env vars set via setx ({len(env_block)} vars)")
         actions.append("Note: new terminals will inherit these; current session updated")
@@ -496,7 +514,7 @@ def enable(port: int | None, tool: str, print_only: bool, shell: str | None, for
     # ── macOS launchctl (for GUI apps) ──────────────────────────
     if IS_MACOS:
         for key, val in env_block.items():
-            os.system(f'launchctl setenv {key} "{val}" 2>/dev/null')
+            _run_env_persist(["launchctl", "setenv", key, val])
         actions.append(f"macOS launchctl setenv ({len(env_block)} vars)")
 
     # ── VS Code settings.json ──────────────────────────────────
@@ -930,7 +948,7 @@ def _enable_otel(port: int, actions: list[str], *, force: bool = False) -> None:
 
     if IS_WINDOWS:
         for key, val in env_block.items():
-            os.system(f'setx {key} "{val}" >nul 2>&1')
+            _run_env_persist(["setx", key, val])
             os.environ[key] = val
         actions.append(f"OTel env vars → Windows user environment ({len(env_block)} vars via setx)")
         actions.append("  Note: new terminals will inherit; current session updated")
@@ -943,7 +961,7 @@ def _enable_otel(port: int, actions: list[str], *, force: bool = False) -> None:
 
     if IS_MACOS:
         for key, val in env_block.items():
-            os.system(f'launchctl setenv {key} "{val}" 2>/dev/null')
+            _run_env_persist(["launchctl", "setenv", key, val])
         actions.append(f"OTel env vars → macOS launchctl ({len(env_block)} vars)")
 
     # Copilot OTel settings in VS Code
