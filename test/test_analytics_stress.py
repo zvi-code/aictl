@@ -18,9 +18,9 @@ import pytest
 from aictl.storage import HistoryDB
 
 
-def _bulk_seed_db(db_path: str, n_requests: int = 500_000,
-                  n_tool_inv: int = 1_000_000,
-                  n_events: int = 2_000_000) -> None:
+def _bulk_seed_db(
+    db_path: str, n_requests: int = 500_000, n_tool_inv: int = 1_000_000, n_events: int = 2_000_000
+) -> None:
     """Seed database directly via SQL for speed (bypasses dedup/buffering)."""
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -28,10 +28,8 @@ def _bulk_seed_db(db_path: str, n_requests: int = 500_000,
 
     base = time.time() - 7 * 86400  # 7 days ago
     models = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5", "gpt-4o-mini"]
-    tools = ["Read", "Edit", "Bash", "Glob", "Grep", "Write", "Agent",
-             "ToolSearch", "TaskCreate", "TaskUpdate"]
-    paths = [f"/project/session-{i}/agent-{j}.jsonl"
-             for i in range(100) for j in range(20)]
+    tools = ["Read", "Edit", "Bash", "Glob", "Grep", "Write", "Agent", "ToolSearch", "TaskCreate", "TaskUpdate"]
+    paths = [f"/project/session-{i}/agent-{j}.jsonl" for i in range(100) for j in range(20)]
 
     print(f"  Seeding {n_requests:,} requests...")
     conn.executemany(
@@ -40,12 +38,20 @@ def _bulk_seed_db(db_path: str, n_requests: int = 500_000,
         " cache_read_tokens, cost_usd, duration_ms, finish_reason, is_error, source)"
         " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
         [
-            (f"r-{i}", base + i * (7 * 86400 / n_requests),
-             f"s-{i % 500}", models[i % len(models)],
-             500 + (i % 200) * 50, 100 + (i % 100) * 20,
-             (i % 50) * 100, round(0.001 * (500 + i % 1000), 4),
-             200 + (i % 500) * 10, "stop" if i % 3 else "tool_use",
-             1 if i % 100 == 0 else 0, "test")
+            (
+                f"r-{i}",
+                base + i * (7 * 86400 / n_requests),
+                f"s-{i % 500}",
+                models[i % len(models)],
+                500 + (i % 200) * 50,
+                100 + (i % 100) * 20,
+                (i % 50) * 100,
+                round(0.001 * (500 + i % 1000), 4),
+                200 + (i % 500) * 10,
+                "stop" if i % 3 else "tool_use",
+                1 if i % 100 == 0 else 0,
+                "test",
+            )
             for i in range(n_requests)
         ],
     )
@@ -60,9 +66,15 @@ def _bulk_seed_db(db_path: str, n_requests: int = 500_000,
             "(dedup_key, ts, session_id, tool_name, duration_ms, is_error, source)"
             " VALUES(?,?,?,?,?,?,?)",
             [
-                (f"t-{i}", base + i * (7 * 86400 / n_tool_inv),
-                 f"s-{i % 500}", tools[i % len(tools)],
-                 10 + (i % 200) * 5, 1 if i % 80 == 0 else 0, "test")
+                (
+                    f"t-{i}",
+                    base + i * (7 * 86400 / n_tool_inv),
+                    f"s-{i % 500}",
+                    tools[i % len(tools)],
+                    10 + (i % 200) * 5,
+                    1 if i % 80 == 0 else 0,
+                    "test",
+                )
                 for i in range(start, end)
             ],
         )
@@ -72,14 +84,16 @@ def _bulk_seed_db(db_path: str, n_requests: int = 500_000,
     for start in range(0, n_events, batch):
         end = min(start + batch, n_events)
         conn.executemany(
-            "INSERT OR IGNORE INTO events(ts, tool, kind, session_id, detail, seq)"
-            " VALUES(?,?,?,?,?,?)",
+            "INSERT OR IGNORE INTO events(ts, tool, kind, session_id, detail, seq) VALUES(?,?,?,?,?,?)",
             [
-                (base + i * (7 * 86400 / n_events),
-                 "claude-code", "file_modified", f"s-{i % 500}",
-                 json.dumps({"path": paths[i % len(paths)],
-                             "growth_bytes": (i % 50) * 100}),
-                 i % 10)
+                (
+                    base + i * (7 * 86400 / n_events),
+                    "claude-code",
+                    "file_modified",
+                    f"s-{i % 500}",
+                    json.dumps({"path": paths[i % len(paths)], "growth_bytes": (i % 50) * 100}),
+                    i % 10,
+                )
                 for i in range(start, end)
             ],
         )
@@ -101,10 +115,7 @@ def large_db(tmp_path_factory):
     db = HistoryDB(db_path=db_path, flush_interval=0)
     db.close()
 
-    _bulk_seed_db(db_path,
-                  n_requests=500_000,
-                  n_tool_inv=1_000_000,
-                  n_events=2_000_000)
+    _bulk_seed_db(db_path, n_requests=500_000, n_tool_inv=1_000_000, n_events=2_000_000)
 
     db = HistoryDB(db_path=db_path, flush_interval=0)
     yield db
@@ -166,6 +177,7 @@ class TestFullPipelineAtScale:
             _compute_response_time,
             _compute_tools,
         )
+
         since = time.time() - 7 * 86400
         until = time.time()
 
@@ -182,9 +194,13 @@ class TestFullPipelineAtScale:
         t_files = time.monotonic() - start
 
         total = t_rt + t_tools + t_files
-        print(f"\n  Full 7d recompute: response_time={t_rt:.2f}s tools={t_tools:.2f}s files={t_files:.2f}s total={total:.2f}s")
-        print(f"    requests={len(rt['requests'])} models={len(rt['by_model'])} "
-              f"tools={len(tools['invocations'])} files={len(files['memory_timeline'])}")
+        print(
+            f"\n  Full 7d recompute: response_time={t_rt:.2f}s tools={t_tools:.2f}s files={t_files:.2f}s total={total:.2f}s"
+        )
+        print(
+            f"    requests={len(rt['requests'])} models={len(rt['by_model'])} "
+            f"tools={len(tools['invocations'])} files={len(files['memory_timeline'])}"
+        )
         assert total < 10.0, f"total {total:.2f}s — must be <10s (runs in background, not request path)"
 
     def test_full_recompute_1h(self, large_db: HistoryDB):
@@ -193,6 +209,7 @@ class TestFullPipelineAtScale:
             _compute_response_time,
             _compute_tools,
         )
+
         since = time.time() - 3600
         until = time.time()
 
@@ -237,8 +254,8 @@ class TestConcurrentAccess:
                 results.append(elapsed)
 
         max_time = max(results)
-        print(f"\n  10 concurrent reads: max={max_time*1000:.1f}ms avg={sum(results)/len(results)*1000:.1f}ms")
-        assert max_time < 0.01, f"max read took {max_time*1000:.1f}ms — must be <10ms"
+        print(f"\n  10 concurrent reads: max={max_time * 1000:.1f}ms avg={sum(results) / len(results) * 1000:.1f}ms")
+        assert max_time < 0.01, f"max read took {max_time * 1000:.1f}ms — must be <10ms"
 
     def test_concurrent_reads_during_recompute(self, large_db: HistoryDB):
         """Reads must not block while a recompute is in progress."""
@@ -277,5 +294,5 @@ class TestConcurrentAccess:
 
         if read_times:
             max_read = max(read_times)
-            print(f"\n  Reads during recompute: {len(read_times)} reads, max={max_read*1000:.1f}ms")
-            assert max_read < 0.1, f"max read {max_read*1000:.1f}ms — must be <100ms"
+            print(f"\n  Reads during recompute: {len(read_times)} reads, max={max_read * 1000:.1f}ms")
+            assert max_read < 0.1, f"max read {max_read * 1000:.1f}ms — must be <100ms"

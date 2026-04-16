@@ -44,9 +44,9 @@ AICTX_FILENAME = ".context.toml"
 
 @dataclass
 class Capability:
-    kind: str        # command | agent | skill
-    profile: str     # _always | debug | docs | ...
-    name: str        # investigate, planner, flame-graph
+    kind: str  # command | agent | skill
+    profile: str  # _always | debug | docs | ...
+    name: str  # investigate, planner, flame-graph
     content: str
 
 
@@ -59,8 +59,8 @@ class McpServer:
 
 @dataclass
 class Hook:
-    profile: str     # _always | debug | ...
-    event: str       # PreToolUse | PostToolUse | Stop | SessionStart | ...
+    profile: str  # _always | debug | ...
+    event: str  # PreToolUse | PostToolUse | Stop | SessionStart | ...
     rules: list[dict]  # list of hook rule objects
 
 
@@ -73,26 +73,26 @@ class LspServer:
 
 @dataclass
 class Setting:
-    profile: str     # _always | debug | ...
-    key: str         # e.g. "teammateMode", "theme"
-    value: object    # parsed JSON value
+    profile: str  # _always | debug | ...
+    key: str  # e.g. "teammateMode", "theme"
+    value: object  # parsed JSON value
 
 
 @dataclass
 class Permission:
-    profile: str     # _always | debug | ...
+    profile: str  # _always | debug | ...
     patterns: list[str]  # e.g. ["Bash(npm run *)", "Read(*)"]
 
 
 @dataclass
 class EnvVars:
-    profile: str     # _always | debug | ...
+    profile: str  # _always | debug | ...
     vars: dict[str, str]  # e.g. {"DEBUG": "true", "NODE_ENV": "development"}
 
 
 @dataclass
 class IgnoreRule:
-    profile: str         # _always | debug | ...
+    profile: str  # _always | debug | ...
     patterns: list[str]  # gitignore-style patterns (one per line)
 
 
@@ -222,9 +222,7 @@ def parse_aictx(path: Path) -> ParsedAictx | None:
                 else:
                     continue
                 if content:
-                    result.capabilities.append(
-                        Capability(singular, profile, name, content)
-                    )
+                    result.capabilities.append(Capability(singular, profile, name, content))
 
     # --- mcp servers (native TOML tables) ---
     for profile, servers in doc.get("mcp", {}).items():
@@ -316,10 +314,23 @@ def parse_aictx(path: Path) -> ParsedAictx | None:
 # ── Scanner (from scanner.py) ──
 
 SKIP_DIRS = {
-    ".git", ".hg", ".svn",
-    "node_modules", "__pycache__", ".venv", "venv",
-    ".claude", ".github", ".cursor", ".ai-deployed",
-    "dist", "build", "target", "out", "bin", "obj",
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".claude",
+    ".github",
+    ".cursor",
+    ".ai-deployed",
+    "dist",
+    "build",
+    "target",
+    "out",
+    "bin",
+    "obj",
 }
 
 
@@ -357,16 +368,51 @@ def _walk(root: Path):
 
 # Feature support by tool: {section_kind: {tool_name: supported}}
 FEATURE_SUPPORT: dict[str, dict[str, bool]] = {
-    "command":    {"claude": True,  "copilot": True,  "cursor": False, "windsurf": False, "copilot365": False, "gemini": True},
-    "agent":      {"claude": False, "copilot": True,  "cursor": False, "windsurf": False, "copilot365": True,  "gemini": False},
-    "skill":      {"claude": True,  "copilot": True,  "cursor": False, "windsurf": False, "copilot365": False, "gemini": True},
-    "hook":       {"claude": True,  "copilot": True,  "cursor": False, "windsurf": False, "copilot365": False, "gemini": True},
-    "lsp":        {"claude": True,  "copilot": False, "cursor": False, "windsurf": False, "copilot365": False, "gemini": False},
-    "setting":    {"claude": True,  "copilot": False, "cursor": False, "windsurf": False, "copilot365": False, "gemini": True},
-    "permission": {"claude": True,  "copilot": False, "cursor": False, "windsurf": False, "copilot365": False, "gemini": True},
-    "env":        {"claude": True,  "copilot": False, "cursor": False, "windsurf": False, "copilot365": False, "gemini": True},
-    "ignore":     {"claude": True,  "copilot": True,  "cursor": True,  "windsurf": False, "copilot365": False, "gemini": True},
-    "memory":     {"claude": True,  "copilot": False, "cursor": False, "windsurf": False, "copilot365": False, "gemini": False},
+    "command": {
+        "claude": True,
+        "copilot": True,
+        "cursor": False,
+        "windsurf": False,
+        "copilot365": False,
+        "gemini": True,
+    },
+    "agent": {
+        "claude": False,
+        "copilot": True,
+        "cursor": False,
+        "windsurf": False,
+        "copilot365": True,
+        "gemini": False,
+    },
+    "skill": {"claude": True, "copilot": True, "cursor": False, "windsurf": False, "copilot365": False, "gemini": True},
+    "hook": {"claude": True, "copilot": True, "cursor": False, "windsurf": False, "copilot365": False, "gemini": True},
+    "lsp": {"claude": True, "copilot": False, "cursor": False, "windsurf": False, "copilot365": False, "gemini": False},
+    "setting": {
+        "claude": True,
+        "copilot": False,
+        "cursor": False,
+        "windsurf": False,
+        "copilot365": False,
+        "gemini": True,
+    },
+    "permission": {
+        "claude": True,
+        "copilot": False,
+        "cursor": False,
+        "windsurf": False,
+        "copilot365": False,
+        "gemini": True,
+    },
+    "env": {"claude": True, "copilot": False, "cursor": False, "windsurf": False, "copilot365": False, "gemini": True},
+    "ignore": {"claude": True, "copilot": True, "cursor": True, "windsurf": False, "copilot365": False, "gemini": True},
+    "memory": {
+        "claude": True,
+        "copilot": False,
+        "cursor": False,
+        "windsurf": False,
+        "copilot365": False,
+        "gemini": False,
+    },
 }
 
 ALL_TOOLS = ["claude", "copilot", "cursor", "windsurf", "copilot365", "gemini"]
@@ -399,13 +445,13 @@ def check_parsed_features(parsed) -> list[tuple[str, str, list[str]]]:
 
     # All other section types have a fixed kind; memory_hints is a dict so iteration yields profile keys
     for kind, items, label_fn in [
-        ("hook",       parsed.hooks,        lambda h: f"hook:{h.profile}:{h.event}"),
-        ("lsp",        parsed.lsp_servers,  lambda s: f"lsp:{s.profile}:{s.name}"),
-        ("setting",    parsed.settings,     lambda s: f"setting:{s.profile}:{s.key}"),
-        ("permission", parsed.permissions,  lambda p: f"permission:{p.profile}"),
-        ("env",        parsed.env_vars,     lambda e: f"env:{e.profile}"),
-        ("ignore",     parsed.ignores,      lambda i: f"ignore:{i.profile}"),
-        ("memory",     parsed.memory_hints, lambda p: f"memory:{p}"),
+        ("hook", parsed.hooks, lambda h: f"hook:{h.profile}:{h.event}"),
+        ("lsp", parsed.lsp_servers, lambda s: f"lsp:{s.profile}:{s.name}"),
+        ("setting", parsed.settings, lambda s: f"setting:{s.profile}:{s.key}"),
+        ("permission", parsed.permissions, lambda p: f"permission:{p.profile}"),
+        ("env", parsed.env_vars, lambda e: f"env:{e.profile}"),
+        ("ignore", parsed.ignores, lambda i: f"ignore:{i.profile}"),
+        ("memory", parsed.memory_hints, lambda p: f"memory:{p}"),
     ]:
         if (tools := unsupported_tools(kind)) and items:
             for item in items:

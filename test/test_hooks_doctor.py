@@ -36,10 +36,12 @@ def _current_rule(port=8484, interp=None):
     return {
         "_aictl_owner": _AICTL_OWNER_MARKER,
         "matcher": "",
-        "hooks": [{
-            "type": "command",
-            "command": f'"{interp}" -m aictl.hook_handler --event SessionStart --port {port}',
-        }],
+        "hooks": [
+            {
+                "type": "command",
+                "command": f'"{interp}" -m aictl.hook_handler --event SessionStart --port {port}',
+            }
+        ],
     }
 
 
@@ -48,10 +50,12 @@ def _legacy_rule(port=8484, interp=None):
     interp = interp or sys.executable
     return {
         "matcher": "",
-        "hooks": [{
-            "type": "command",
-            "command": f'"{interp}" -m aictl.hook_handler --event SessionStart --port {port}',
-        }],
+        "hooks": [
+            {
+                "type": "command",
+                "command": f'"{interp}" -m aictl.hook_handler --event SessionStart --port {port}',
+            }
+        ],
     }
 
 
@@ -72,10 +76,12 @@ class TestHooksDoctor:
         rule = {
             "_aictl_owner": _AICTL_OWNER_MARKER,
             "matcher": "",
-            "hooks": [{
-                "type": "command",
-                "command": f'"{bad_interp}" -m aictl.hook_handler --event Stop --port 8484',
-            }],
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": f'"{bad_interp}" -m aictl.hook_handler --event Stop --port 8484',
+                }
+            ],
         }
         _write_settings(tmp_settings, {"Stop": [rule]})
         result = CliRunner().invoke(hooks, ["doctor"])
@@ -198,4 +204,3 @@ class TestHooksVerify:
         result = CliRunner().invoke(hooks, ["verify", "--port", "9000"])
         assert result.exit_code == 0, result.output
         assert ":9000/" in captured["url"]
-

@@ -40,21 +40,32 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
     for scope in resolved.scopes:
         if scope.is_root:
             emit_root_scope(
-                scope, base_path=root / "CLAUDE.md",
+                scope,
+                base_path=root / "CLAUDE.md",
                 profile_path=root / "CLAUDE.local.md",
-                resolved=resolved, dry_run=dry_run, results=results,
+                resolved=resolved,
+                dry_run=dry_run,
+                results=results,
             )
         else:
             emit_sub_scope(
-                scope, rules_dir=tool / "rules", ext=".md",
+                scope,
+                rules_dir=tool / "rules",
+                ext=".md",
                 frontmatter_fn=_paths_frontmatter,
-                dry_run=dry_run, results=results,
+                dry_run=dry_run,
+                results=results,
             )
 
-    emit_capabilities(resolved, {
-        "command": lambda n: tool / "commands" / f"{n}.md",
-        "skill": lambda n: tool / "skills" / n / "SKILL.md",
-    }, dry_run, results)
+    emit_capabilities(
+        resolved,
+        {
+            "command": lambda n: tool / "commands" / f"{n}.md",
+            "skill": lambda n: tool / "skills" / n / "SKILL.md",
+        },
+        dry_run,
+        results,
+    )
 
     emit_mcp_servers(root / ".mcp.json", "mcpServers", resolved, dry_run, results)
 
@@ -63,7 +74,11 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
     # --- LSP → .lsp.json (claude-only) ---
     if resolved.lsp_servers:
         fp = root / ".lsp.json"
-        content = merge_json_block(fp, None, resolved.lsp_servers) if not dry_run else json.dumps(resolved.lsp_servers, indent=2) + "\n"
+        content = (
+            merge_json_block(fp, None, resolved.lsp_servers)
+            if not dry_run
+            else json.dumps(resolved.lsp_servers, indent=2) + "\n"
+        )
         emit_file(fp, content, dry_run, results)
 
     emit_ignores(root / ".claudeignore", resolved, dry_run, results)
@@ -72,8 +87,14 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
 
 
 GITIGNORE = [
-    "CLAUDE.md", "CLAUDE.local.md",
-    ".claude/rules/", ".claude/commands/", ".claude/skills/",
+    "CLAUDE.md",
+    "CLAUDE.local.md",
+    ".claude/rules/",
+    ".claude/commands/",
+    ".claude/skills/",
     ".claude/settings.local.json",
-    ".mcp.json", ".lsp.json", ".claudeignore", ".ai-deployed/",
+    ".mcp.json",
+    ".lsp.json",
+    ".claudeignore",
+    ".ai-deployed/",
 ]

@@ -26,20 +26,16 @@ from ..platforms import IS_WINDOWS, load_config
 @click.option("-r", "--root", "root_dir", default=".", help="Root directory")
 @click.option("--port", type=int, default=None, help="Port to listen on")
 @click.option("--host", default=None, help="Host to bind to")
-@click.option("--interval", type=float, default=None,
-              help="Refresh interval in seconds")
-@click.option("--open/--no-open", "open_browser", default=None,
-              help="Open browser automatically")
-@click.option("--monitor/--no-monitor", "include_live_monitor", default=None,
-              help="Enable live runtime monitoring overlay")
-@click.option("--daemon/--no-daemon", "daemon_mode", default=False,
-              help="Run as background daemon")
-@click.option("--db", "db_path", default=None, type=click.Path(),
-              help="Path to SQLite history database")
+@click.option("--interval", type=float, default=None, help="Refresh interval in seconds")
+@click.option("--open/--no-open", "open_browser", default=None, help="Open browser automatically")
+@click.option(
+    "--monitor/--no-monitor", "include_live_monitor", default=None, help="Enable live runtime monitoring overlay"
+)
+@click.option("--daemon/--no-daemon", "daemon_mode", default=False, help="Run as background daemon")
+@click.option("--db", "db_path", default=None, type=click.Path(), help="Path to SQLite history database")
 @click.option("--stop", is_flag=True, help="Stop a running daemon")
 @click.option("--status", "show_status", is_flag=True, help="Show daemon status")
-def serve(root_dir, port, host, interval, open_browser, include_live_monitor,
-          db_path, daemon_mode, stop, show_status):
+def serve(root_dir, port, host, interval, open_browser, include_live_monitor, db_path, daemon_mode, stop, show_status):
     """Start a live web dashboard with REST + SSE API."""
     cfg = load_config()
 
@@ -54,9 +50,9 @@ def serve(root_dir, port, host, interval, open_browser, include_live_monitor,
     env_port = os.environ.get("AICTL_PORT")
     if env_port and port != int(env_port):
         click.secho(
-            f"Warning: AICTL_PORT={env_port} but serving on port {port}. "
-            f"OTel tools will send to port {env_port}.",
-            fg="yellow", err=True,
+            f"Warning: AICTL_PORT={env_port} but serving on port {port}. OTel tools will send to port {env_port}.",
+            fg="yellow",
+            err=True,
         )
 
     db_path = db_path or cfg.effective_db_path()
@@ -76,19 +72,25 @@ def serve(root_dir, port, host, interval, open_browser, include_live_monitor,
 
     # Foreground mode
     root = Path(root_dir).resolve()
-    start_server(root, host=host, port=port, interval=interval,
-                 open_browser=open_browser,
-                 include_live_monitor=include_live_monitor,
-                 db_path=db_path)
+    start_server(
+        root,
+        host=host,
+        port=port,
+        interval=interval,
+        open_browser=open_browser,
+        include_live_monitor=include_live_monitor,
+        db_path=db_path,
+    )
 
 
 def _start_daemon(root_dir, host, port, interval, include_live_monitor, pid_file, cfg):
     """Fork to background and run the server."""
 
     if IS_WINDOWS:
-        click.secho("Daemon mode is not supported on Windows. "
-                     "Use 'aictl serve' in a terminal or as a Windows Service.",
-                     fg="red")
+        click.secho(
+            "Daemon mode is not supported on Windows. Use 'aictl serve' in a terminal or as a Windows Service.",
+            fg="red",
+        )
         return
 
     # Kill existing daemon on the same port before starting
@@ -100,6 +102,7 @@ def _start_daemon(root_dir, host, port, interval, include_live_monitor, pid_file
             os.kill(old_pid, signal.SIGTERM)
             # Wait briefly for clean shutdown
             import time
+
             for _ in range(50):
                 try:
                     os.kill(old_pid, 0)
@@ -143,10 +146,11 @@ def _start_daemon(root_dir, host, port, interval, include_live_monitor, pid_file
     # Run server
     try:
         from ..orchestrator import start_server
+
         root = Path(root_dir).resolve()
-        start_server(root, host=host, port=port, interval=interval,
-                     open_browser=False,
-                     include_live_monitor=include_live_monitor)
+        start_server(
+            root, host=host, port=port, interval=interval, open_browser=False, include_live_monitor=include_live_monitor
+        )
     finally:
         pid_file.unlink(missing_ok=True)
 
@@ -293,14 +297,12 @@ def doctor(root_dir, as_json, sample_seconds):
 
 @click.command()
 @click.option("-r", "--root", "root_dir", default=".", help="Root directory")
-@click.option("--interval", type=float, default=5.0,
-              help="Refresh interval in seconds (default: 5)")
-@click.option("--monitor/--no-monitor", "include_live_monitor", default=True,
-              help="Enable live runtime monitoring overlay")
-@click.option("--port", type=int, default=None,
-              help="Port of running aictl serve (auto-detect if not set)")
-@click.option("--host", default=None,
-              help="Host of running aictl serve")
+@click.option("--interval", type=float, default=5.0, help="Refresh interval in seconds (default: 5)")
+@click.option(
+    "--monitor/--no-monitor", "include_live_monitor", default=True, help="Enable live runtime monitoring overlay"
+)
+@click.option("--port", type=int, default=None, help="Port of running aictl serve (auto-detect if not set)")
+@click.option("--host", default=None, help="Host of running aictl serve")
 def dashboard(root_dir, interval, include_live_monitor, port, host):
     """Launch a live terminal dashboard showing AI tool resources.
 
@@ -318,12 +320,15 @@ def dashboard(root_dir, interval, include_live_monitor, port, host):
         from ..dashboard.tui import run_dashboard
     except ImportError:
         click.secho(
-            "The dashboard requires the 'textual' package.\n"
-            "Install it with:  pip install textual",
+            "The dashboard requires the 'textual' package.\nInstall it with:  pip install textual",
             fg="red",
         )
         raise SystemExit(1)
 
-    run_dashboard(root, interval=interval,
-                  include_live_monitor=include_live_monitor,
-                  server_host=server_host, server_port=server_port)
+    run_dashboard(
+        root,
+        interval=interval,
+        include_live_monitor=include_live_monitor,
+        server_host=server_host,
+        server_port=server_port,
+    )

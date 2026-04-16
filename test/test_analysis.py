@@ -1,5 +1,6 @@
 # Tests for aictl.analysis — session identity, transcript, and analyzer
 """Comprehensive tests for the session analysis layer."""
+
 from __future__ import annotations
 
 import time
@@ -25,6 +26,7 @@ from aictl.storage import EventRow
 # ══════════════════════════════════════════════════════════════
 # session_id tests
 # ══════════════════════════════════════════════════════════════
+
 
 class TestIdType:
     def test_uuid(self):
@@ -74,15 +76,13 @@ class TestSessionIdentity:
         assert si.has_id("abc")
 
     def test_has_id_alias(self):
-        si = SessionIdentity(canonical_id="abc", tool="t",
-                             source_ids=["def", "ghi"])
+        si = SessionIdentity(canonical_id="abc", tool="t", source_ids=["def", "ghi"])
         assert si.has_id("def")
         assert si.has_id("ghi")
         assert not si.has_id("xyz")
 
     def test_has_pid(self):
-        si = SessionIdentity(canonical_id="abc", tool="t",
-                             pids={100, 200})
+        si = SessionIdentity(canonical_id="abc", tool="t", pids={100, 200})
         assert si.has_pid(100)
         assert not si.has_pid(300)
 
@@ -100,8 +100,7 @@ class TestSessionIdentity:
         assert si.pids == {100}
 
     def test_to_dict(self):
-        si = SessionIdentity(canonical_id="abc", tool="t",
-                             pids={3, 1, 2}, started_at=1000.0)
+        si = SessionIdentity(canonical_id="abc", tool="t", pids={3, 1, 2}, started_at=1000.0)
         d = si.to_dict()
         assert d["canonical_id"] == "abc"
         assert d["pids"] == [1, 2, 3]  # sorted
@@ -127,7 +126,9 @@ class TestResolveSessionId:
 
     def test_creates_fingerprint(self):
         si = resolve_session_id(
-            tool="gemini", pid=555, start_ts=1000.0,
+            tool="gemini",
+            pid=555,
+            start_ts=1000.0,
             workspace="/my/project",
         )
         assert si.canonical_id.startswith("gemini-")
@@ -158,11 +159,13 @@ class TestMergeIdentities:
     def test_prefers_uuid_canonical(self):
         a = SessionIdentity(
             canonical_id="claude-code:12345:1000",
-            tool="claude-code", pids={12345},
+            tool="claude-code",
+            pids={12345},
         )
         b = SessionIdentity(
             canonical_id="550e8400-e29b-41d4-a716-446655440000",
-            tool="claude-code", pids={12345, 12346},
+            tool="claude-code",
+            pids={12345, 12346},
         )
         merged = merge_identities(a, b)
         assert merged.canonical_id == "550e8400-e29b-41d4-a716-446655440000"
@@ -189,8 +192,7 @@ class TestCanMerge:
         assert can_merge(a, b)
 
     def test_shared_alias(self):
-        a = SessionIdentity(canonical_id="a", tool="t",
-                            source_ids=["shared"])
+        a = SessionIdentity(canonical_id="a", tool="t", source_ids=["shared"])
         b = SessionIdentity(canonical_id="shared", tool="t")
         assert can_merge(a, b)
 
@@ -209,6 +211,7 @@ class TestCanMerge:
 # transcript tests
 # ══════════════════════════════════════════════════════════════
 
+
 class TestAction:
     def test_to_dict_minimal(self):
         a = Action(ts=100.0, kind=ActionKind.TOOL_USE, name="read_file")
@@ -218,8 +221,7 @@ class TestAction:
         assert "tokens" not in d  # no tokens, excluded
 
     def test_to_dict_with_tokens(self):
-        a = Action(ts=100.0, kind=ActionKind.API_CALL, name="gpt-4",
-                   tokens_in=100, tokens_out=50)
+        a = Action(ts=100.0, kind=ActionKind.API_CALL, name="gpt-4", tokens_in=100, tokens_out=50)
         d = a.to_dict()
         assert d["tokens"]["input"] == 100
         assert d["tokens"]["output"] == 50
@@ -228,14 +230,26 @@ class TestAction:
 class TestTurn:
     def test_add_action_accumulates_api_tokens(self):
         turn = Turn(ts=100.0)
-        turn.add_action(Action(
-            ts=101.0, kind=ActionKind.API_CALL, name="gpt-4",
-            tokens_in=100, tokens_out=50, duration_ms=500,
-        ))
-        turn.add_action(Action(
-            ts=102.0, kind=ActionKind.API_CALL, name="gpt-4",
-            tokens_in=200, tokens_out=100, duration_ms=300,
-        ))
+        turn.add_action(
+            Action(
+                ts=101.0,
+                kind=ActionKind.API_CALL,
+                name="gpt-4",
+                tokens_in=100,
+                tokens_out=50,
+                duration_ms=500,
+            )
+        )
+        turn.add_action(
+            Action(
+                ts=102.0,
+                kind=ActionKind.API_CALL,
+                name="gpt-4",
+                tokens_in=200,
+                tokens_out=100,
+                duration_ms=300,
+            )
+        )
         assert turn.input_tokens == 300
         assert turn.output_tokens == 150
         assert turn.api_calls == 2
@@ -243,12 +257,9 @@ class TestTurn:
 
     def test_tool_uses_filtered(self):
         turn = Turn(ts=100.0)
-        turn.add_action(Action(ts=101.0, kind=ActionKind.TOOL_USE,
-                               name="read_file"))
-        turn.add_action(Action(ts=102.0, kind=ActionKind.API_CALL,
-                               name="gpt-4"))
-        turn.add_action(Action(ts=103.0, kind=ActionKind.TOOL_USE,
-                               name="write_file"))
+        turn.add_action(Action(ts=101.0, kind=ActionKind.TOOL_USE, name="read_file"))
+        turn.add_action(Action(ts=102.0, kind=ActionKind.API_CALL, name="gpt-4"))
+        turn.add_action(Action(ts=103.0, kind=ActionKind.TOOL_USE, name="write_file"))
         assert len(turn.tool_uses) == 2
 
     def test_total_tokens(self):
@@ -262,10 +273,8 @@ class TestTurn:
 
     def test_model_from_first_api_call(self):
         turn = Turn(ts=100.0)
-        turn.add_action(Action(ts=101.0, kind=ActionKind.API_CALL,
-                               name="claude-3.5"))
-        turn.add_action(Action(ts=102.0, kind=ActionKind.API_CALL,
-                               name="claude-3"))
+        turn.add_action(Action(ts=101.0, kind=ActionKind.API_CALL, name="claude-3.5"))
+        turn.add_action(Action(ts=102.0, kind=ActionKind.API_CALL, name="claude-3"))
         assert turn.model == "claude-3.5"
 
     def test_to_dict_wall_ms(self):
@@ -293,15 +302,10 @@ class TestSessionTranscript:
     def test_build_summary(self):
         t = SessionTranscript(session_id="test", started_at=100.0)
         turn1 = t.start_turn(100.0, "First")
-        turn1.add_action(Action(ts=101.0, kind=ActionKind.API_CALL,
-                                name="gpt-4", tokens_in=100,
-                                tokens_out=50))
-        turn1.add_action(Action(ts=102.0, kind=ActionKind.TOOL_USE,
-                                name="read_file"))
+        turn1.add_action(Action(ts=101.0, kind=ActionKind.API_CALL, name="gpt-4", tokens_in=100, tokens_out=50))
+        turn1.add_action(Action(ts=102.0, kind=ActionKind.TOOL_USE, name="read_file"))
         turn2 = t.start_turn(200.0, "Second")
-        turn2.add_action(Action(ts=201.0, kind=ActionKind.API_CALL,
-                                name="gpt-4", tokens_in=200,
-                                tokens_out=100))
+        turn2.add_action(Action(ts=201.0, kind=ActionKind.API_CALL, name="gpt-4", tokens_in=200, tokens_out=100))
         t.add_lifecycle_event({"type": "compaction", "ts": 150.0})
 
         summary = t.build_summary()
@@ -320,8 +324,7 @@ class TestSessionTranscript:
         assert summary.total_tokens == 0
 
     def test_to_dict(self):
-        t = SessionTranscript(session_id="test", tool="claude-code",
-                              started_at=100.0, pids={1, 2})
+        t = SessionTranscript(session_id="test", tool="claude-code", started_at=100.0, pids={1, 2})
         d = t.to_dict()
         assert d["session_id"] == "test"
         assert d["pids"] == [1, 2]
@@ -331,8 +334,7 @@ class TestSessionTranscript:
 
 class TestTranscriptSummary:
     def test_total_tokens(self):
-        s = TranscriptSummary(total_input_tokens=100,
-                              total_output_tokens=50)
+        s = TranscriptSummary(total_input_tokens=100, total_output_tokens=50)
         assert s.total_tokens == 150
 
     def test_avg_tokens_zero_calls(self):
@@ -341,9 +343,7 @@ class TestTranscriptSummary:
         assert d["avg_tokens_per_call"] == 0
 
     def test_avg_tokens(self):
-        s = TranscriptSummary(total_input_tokens=300,
-                              total_output_tokens=100,
-                              total_api_calls=4)
+        s = TranscriptSummary(total_input_tokens=300, total_output_tokens=100, total_api_calls=4)
         d = s.to_dict()
         assert d["avg_tokens_per_call"] == 100
 
@@ -352,12 +352,15 @@ class TestTranscriptSummary:
 # analyzer tests
 # ══════════════════════════════════════════════════════════════
 
-def _ev(ts=100.0, tool="claude-code", kind="hook:UserPromptSubmit",
-        detail=None, session_id="sess-1", pid=1000):
+
+def _ev(ts=100.0, tool="claude-code", kind="hook:UserPromptSubmit", detail=None, session_id="sess-1", pid=1000):
     return EventRow(
-        ts=ts, tool=tool, kind=kind,
+        ts=ts,
+        tool=tool,
+        kind=kind,
         detail=detail or {},
-        session_id=session_id, pid=pid,
+        session_id=session_id,
+        pid=pid,
     )
 
 
@@ -397,21 +400,21 @@ class TestAnalyzerHookEvents:
     def test_user_prompt_creates_turn(self):
         a = SessionAnalyzer()
         a.ingest_event(_ev(kind="hook:SessionStart"))
-        a.ingest_event(_ev(ts=101.0,
-                           kind="hook:UserPromptSubmit",
-                           detail={"message": "Fix the auth bug"}))
+        a.ingest_event(_ev(ts=101.0, kind="hook:UserPromptSubmit", detail={"message": "Fix the auth bug"}))
         t = a.get_transcript("sess-1")
         assert len(t.turns) == 1
         assert t.turns[0].prompt == "Fix the auth bug"
 
     def test_tool_use_added_to_turn(self):
         a = SessionAnalyzer()
-        a.ingest_event(_ev(kind="hook:UserPromptSubmit",
-                           detail={"message": "Read this file"}))
-        a.ingest_event(_ev(ts=101.0,
-                           kind="hook:PreToolUse",
-                           detail={"tool_name": "read_file",
-                                   "input": {"file_path": "/src/main.py"}}))
+        a.ingest_event(_ev(kind="hook:UserPromptSubmit", detail={"message": "Read this file"}))
+        a.ingest_event(
+            _ev(
+                ts=101.0,
+                kind="hook:PreToolUse",
+                detail={"tool_name": "read_file", "input": {"file_path": "/src/main.py"}},
+            )
+        )
         t = a.get_transcript("sess-1")
         assert len(t.turns[0].actions) == 1
         assert t.turns[0].actions[0].name == "read_file"
@@ -419,14 +422,9 @@ class TestAnalyzerHookEvents:
 
     def test_post_tool_use_sets_duration(self):
         a = SessionAnalyzer()
-        a.ingest_event(_ev(kind="hook:UserPromptSubmit",
-                           detail={"message": "test"}))
-        a.ingest_event(_ev(ts=101.0,
-                           kind="hook:PreToolUse",
-                           detail={"tool_name": "bash"}))
-        a.ingest_event(_ev(ts=103.0,
-                           kind="hook:PostToolUse",
-                           detail={"tool_name": "bash"}))
+        a.ingest_event(_ev(kind="hook:UserPromptSubmit", detail={"message": "test"}))
+        a.ingest_event(_ev(ts=101.0, kind="hook:PreToolUse", detail={"tool_name": "bash"}))
+        a.ingest_event(_ev(ts=103.0, kind="hook:PostToolUse", detail={"tool_name": "bash"}))
         t = a.get_transcript("sess-1")
         assert t.turns[0].actions[0].duration_ms == 2000
 
@@ -440,14 +438,10 @@ class TestAnalyzerHookEvents:
 
     def test_multiple_turns(self):
         a = SessionAnalyzer()
-        a.ingest_event(_ev(ts=100.0, kind="hook:UserPromptSubmit",
-                           detail={"message": "First"}))
-        a.ingest_event(_ev(ts=101.0, kind="hook:PreToolUse",
-                           detail={"tool_name": "read_file"}))
-        a.ingest_event(_ev(ts=200.0, kind="hook:UserPromptSubmit",
-                           detail={"message": "Second"}))
-        a.ingest_event(_ev(ts=201.0, kind="hook:PreToolUse",
-                           detail={"tool_name": "write_file"}))
+        a.ingest_event(_ev(ts=100.0, kind="hook:UserPromptSubmit", detail={"message": "First"}))
+        a.ingest_event(_ev(ts=101.0, kind="hook:PreToolUse", detail={"tool_name": "read_file"}))
+        a.ingest_event(_ev(ts=200.0, kind="hook:UserPromptSubmit", detail={"message": "Second"}))
+        a.ingest_event(_ev(ts=201.0, kind="hook:PreToolUse", detail={"tool_name": "write_file"}))
         t = a.get_transcript("sess-1")
         assert len(t.turns) == 2
         assert t.turns[0].prompt == "First"
@@ -457,11 +451,10 @@ class TestAnalyzerHookEvents:
 
     def test_subagent(self):
         a = SessionAnalyzer()
-        a.ingest_event(_ev(kind="hook:UserPromptSubmit",
-                           detail={"message": "test"}))
-        a.ingest_event(_ev(ts=101.0, kind="hook:SubagentStart",
-                           detail={"agent_id": "agent-1",
-                                   "task": "Refactor utils"}))
+        a.ingest_event(_ev(kind="hook:UserPromptSubmit", detail={"message": "test"}))
+        a.ingest_event(
+            _ev(ts=101.0, kind="hook:SubagentStart", detail={"agent_id": "agent-1", "task": "Refactor utils"})
+        )
         t = a.get_transcript("sess-1")
         action = t.turns[0].actions[0]
         assert action.kind == ActionKind.SUBAGENT
@@ -471,11 +464,9 @@ class TestAnalyzerHookEvents:
     def test_compaction_lifecycle(self):
         a = SessionAnalyzer()
         a.ingest_event(_ev(kind="hook:PreCompact"))
-        a.ingest_event(_ev(ts=105.0, kind="hook:PostCompact",
-                           detail={"compaction_count": 3}))
+        a.ingest_event(_ev(ts=105.0, kind="hook:PostCompact", detail={"compaction_count": 3}))
         t = a.get_transcript("sess-1")
-        comp = [e for e in t.lifecycle_events
-                if e["type"] == "compaction"]
+        comp = [e for e in t.lifecycle_events if e["type"] == "compaction"]
         assert len(comp) == 1
         assert comp[0]["compaction_count"] == 3
 
@@ -483,32 +474,30 @@ class TestAnalyzerHookEvents:
 class TestAnalyzerOtelEvents:
     def test_user_prompt(self):
         a = SessionAnalyzer()
-        a.ingest_event(_ev(kind="otel:user_prompt",
-                           detail={"prompt": "Help me debug"}))
+        a.ingest_event(_ev(kind="otel:user_prompt", detail={"prompt": "Help me debug"}))
         t = a.get_transcript("sess-1")
         assert len(t.turns) == 1
         assert t.turns[0].prompt == "Help me debug"
 
     def test_redacted_prompt(self):
         a = SessionAnalyzer()
-        a.ingest_event(_ev(kind="otel:user_prompt",
-                           detail={"prompt": "<REDACTED>"}))
+        a.ingest_event(_ev(kind="otel:user_prompt", detail={"prompt": "<REDACTED>"}))
         t = a.get_transcript("sess-1")
         assert t.turns[0].prompt == ""
 
     def test_api_request(self):
         a = SessionAnalyzer()
-        a.ingest_event(_ev(kind="otel:user_prompt",
-                           detail={"prompt": "test"}))
-        a.ingest_event(_ev(ts=101.0, kind="otel:api_request",
-                           detail={"model": "gpt-4",
-                                   "input_tokens": 500,
-                                   "output_tokens": 200,
-                                   "duration_ms": 1500}))
+        a.ingest_event(_ev(kind="otel:user_prompt", detail={"prompt": "test"}))
+        a.ingest_event(
+            _ev(
+                ts=101.0,
+                kind="otel:api_request",
+                detail={"model": "gpt-4", "input_tokens": 500, "output_tokens": 200, "duration_ms": 1500},
+            )
+        )
         t = a.get_transcript("sess-1")
         # Should have API call + API response actions
-        api_calls = [act for act in t.turns[0].actions
-                     if act.kind == ActionKind.API_CALL]
+        api_calls = [act for act in t.turns[0].actions if act.kind == ActionKind.API_CALL]
         assert len(api_calls) == 1
         assert api_calls[0].name == "gpt-4"
         assert api_calls[0].tokens_in == 500
@@ -519,16 +508,18 @@ class TestAnalyzerOtelEvents:
     def test_copilot_embedded_user_request(self):
         """Copilot chat spans embed user_request — should synthesize turn."""
         a = SessionAnalyzer()
-        a.ingest_event(_ev(
-            kind="otel:chat completion",
-            detail={
-                "copilot_chat.user_request": "Explain this code",
-                "model": "gpt-4",
-                "input_tokens": 300,
-                "output_tokens": 100,
-                "duration_ms": 800,
-            },
-        ))
+        a.ingest_event(
+            _ev(
+                kind="otel:chat completion",
+                detail={
+                    "copilot_chat.user_request": "Explain this code",
+                    "model": "gpt-4",
+                    "input_tokens": 300,
+                    "output_tokens": 100,
+                    "duration_ms": 800,
+                },
+            )
+        )
         t = a.get_transcript("sess-1")
         assert len(t.turns) == 1
         assert t.turns[0].prompt == "Explain this code"
@@ -536,15 +527,13 @@ class TestAnalyzerOtelEvents:
 
     def test_tool_decision_and_result(self):
         a = SessionAnalyzer()
-        a.ingest_event(_ev(kind="otel:user_prompt",
-                           detail={"prompt": "test"}))
-        a.ingest_event(_ev(ts=101.0, kind="otel:tool_decision",
-                           detail={"tool_name": "search",
-                                   "decision": "allowed"}))
-        a.ingest_event(_ev(ts=102.0, kind="otel:tool_result",
-                           detail={"tool_name": "search",
-                                   "success": "true",
-                                   "duration_ms": 150}))
+        a.ingest_event(_ev(kind="otel:user_prompt", detail={"prompt": "test"}))
+        a.ingest_event(_ev(ts=101.0, kind="otel:tool_decision", detail={"tool_name": "search", "decision": "allowed"}))
+        a.ingest_event(
+            _ev(
+                ts=102.0, kind="otel:tool_result", detail={"tool_name": "search", "success": "true", "duration_ms": 150}
+            )
+        )
         t = a.get_transcript("sess-1")
         actions = t.turns[0].actions
         assert len(actions) == 2
@@ -554,11 +543,14 @@ class TestAnalyzerOtelEvents:
 
     def test_exception_event(self):
         a = SessionAnalyzer()
-        a.ingest_event(_ev(kind="otel:user_prompt",
-                           detail={"prompt": "test"}))
-        a.ingest_event(_ev(ts=101.0, kind="otel:exception",
-                           detail={"exception.type": "RateLimitError",
-                                   "exception.message": "Too many requests"}))
+        a.ingest_event(_ev(kind="otel:user_prompt", detail={"prompt": "test"}))
+        a.ingest_event(
+            _ev(
+                ts=101.0,
+                kind="otel:exception",
+                detail={"exception.type": "RateLimitError", "exception.message": "Too many requests"},
+            )
+        )
         t = a.get_transcript("sess-1")
         err = t.turns[0].actions[0]
         assert err.kind == ActionKind.ERROR
@@ -576,8 +568,7 @@ class TestAnalyzerOtelEvents:
 class TestAnalyzerCorrelatorEvents:
     def test_session_start(self):
         a = SessionAnalyzer()
-        a.ingest_event(_ev(kind="session_start",
-                           detail={"pid": 1000}))
+        a.ingest_event(_ev(kind="session_start", detail={"pid": 1000}))
         t = a.get_transcript("sess-1")
         assert t.is_live
         assert len(t.lifecycle_events) == 1
@@ -591,13 +582,10 @@ class TestAnalyzerCorrelatorEvents:
 
     def test_file_modified_in_turn(self):
         a = SessionAnalyzer()
-        a.ingest_event(_ev(kind="hook:UserPromptSubmit",
-                           detail={"message": "edit it"}))
-        a.ingest_event(_ev(ts=101.0, kind="file_modified",
-                           detail={"path": "/src/main.py"}))
+        a.ingest_event(_ev(kind="hook:UserPromptSubmit", detail={"message": "edit it"}))
+        a.ingest_event(_ev(ts=101.0, kind="file_modified", detail={"path": "/src/main.py"}))
         t = a.get_transcript("sess-1")
-        file_edits = [act for act in t.turns[0].actions
-                      if act.kind == ActionKind.FILE_EDIT]
+        file_edits = [act for act in t.turns[0].actions if act.kind == ActionKind.FILE_EDIT]
         assert len(file_edits) == 1
         assert file_edits[0].name == "/src/main.py"
 
@@ -607,21 +595,22 @@ class TestAnalyzerSessionMerge:
         """Events with same session_id go to same transcript."""
         a = SessionAnalyzer()
         a.ingest_event(_ev(kind="hook:SessionStart", session_id="X"))
-        a.ingest_event(_ev(ts=101.0, kind="hook:UserPromptSubmit",
-                           session_id="X",
-                           detail={"message": "hello"}))
+        a.ingest_event(_ev(ts=101.0, kind="hook:UserPromptSubmit", session_id="X", detail={"message": "hello"}))
         assert len(a.get_all_transcripts()) == 1
 
     def test_pid_bridges_sessions(self):
         """Same PID, different session IDs → same transcript."""
         a = SessionAnalyzer()
-        a.ingest_event(_ev(kind="hook:SessionStart",
-                           session_id="hook-id", pid=5000))
-        a.ingest_event(_ev(ts=101.0, kind="otel:api_request",
-                           session_id="otel-id", pid=5000,
-                           detail={"model": "gpt-4",
-                                   "input_tokens": 100,
-                                   "output_tokens": 50}))
+        a.ingest_event(_ev(kind="hook:SessionStart", session_id="hook-id", pid=5000))
+        a.ingest_event(
+            _ev(
+                ts=101.0,
+                kind="otel:api_request",
+                session_id="otel-id",
+                pid=5000,
+                detail={"model": "gpt-4", "input_tokens": 100, "output_tokens": 50},
+            )
+        )
         # Should have merged into one transcript
         assert len(a.get_all_transcripts()) == 1
         t = a.get_transcript("hook-id")
@@ -631,10 +620,8 @@ class TestAnalyzerSessionMerge:
 
     def test_different_pids_different_transcripts(self):
         a = SessionAnalyzer()
-        a.ingest_event(_ev(kind="hook:SessionStart",
-                           session_id="s1", pid=100))
-        a.ingest_event(_ev(kind="hook:SessionStart",
-                           session_id="s2", pid=200))
+        a.ingest_event(_ev(kind="hook:SessionStart", session_id="s1", pid=100))
+        a.ingest_event(_ev(kind="hook:SessionStart", session_id="s2", pid=200))
         assert len(a.get_all_transcripts()) == 2
 
 
@@ -642,13 +629,10 @@ class TestAnalyzerGC:
     def test_gc_removes_stale(self):
         a = SessionAnalyzer(stale_seconds=10)
         old_time = time.time() - 100
-        a.ingest_event(_ev(ts=old_time, kind="session_start",
-                           session_id="old"))
+        a.ingest_event(_ev(ts=old_time, kind="session_start", session_id="old"))
         # Mark as ended (not live) so GC considers it
-        a.ingest_event(_ev(ts=old_time + 1, kind="session_end",
-                           session_id="old"))
-        a.ingest_event(_ev(kind="session_start",
-                           session_id="new", pid=2))
+        a.ingest_event(_ev(ts=old_time + 1, kind="session_end", session_id="old"))
+        a.ingest_event(_ev(kind="session_start", session_id="new", pid=2))
         removed = a.gc()
         assert removed == 1
         assert a.get_transcript("old") is None
@@ -657,19 +641,16 @@ class TestAnalyzerGC:
     def test_gc_lru_eviction(self):
         a = SessionAnalyzer(max_cached=2, stale_seconds=999999)
         for i in range(5):
-            a.ingest_event(_ev(kind="session_start",
-                               session_id=f"s{i}", pid=i + 1))
+            a.ingest_event(_ev(kind="session_start", session_id=f"s{i}", pid=i + 1))
         a.gc()
         assert len(a.get_all_transcripts()) == 2
 
     def test_active_transcripts_filter(self):
         a = SessionAnalyzer()
         old_time = time.time() - 600
-        a.ingest_event(_ev(ts=old_time, kind="session_start",
-                           session_id="old", pid=1))
+        a.ingest_event(_ev(ts=old_time, kind="session_start", session_id="old", pid=1))
         now = time.time()
-        a.ingest_event(_ev(ts=now, kind="session_start",
-                           session_id="new", pid=2))
+        a.ingest_event(_ev(ts=now, kind="session_start", session_id="new", pid=2))
         active = a.get_active_transcripts(cutoff_seconds=300)
         assert len(active) == 1
         assert active[0].session_id is not None
@@ -684,63 +665,120 @@ class TestAnalyzerFullFlow:
         pid = 12345
 
         # Session start
-        a.ingest_event(_ev(
-            ts=1000.0, kind="hook:SessionStart", session_id=sid, pid=pid,
-            detail={"cwd": "/project", "model": "claude-3.5-sonnet"},
-        ))
+        a.ingest_event(
+            _ev(
+                ts=1000.0,
+                kind="hook:SessionStart",
+                session_id=sid,
+                pid=pid,
+                detail={"cwd": "/project", "model": "claude-3.5-sonnet"},
+            )
+        )
 
         # Turn 1: user prompt + tool use + API call
-        a.ingest_event(_ev(
-            ts=1001.0, kind="hook:UserPromptSubmit", session_id=sid, pid=pid,
-            detail={"message": "Fix the login validation bug in auth.py"},
-        ))
-        a.ingest_event(_ev(
-            ts=1002.0, kind="hook:PreToolUse", session_id=sid, pid=pid,
-            detail={"tool_name": "read_file",
-                    "input": {"file_path": "auth.py"}},
-        ))
-        a.ingest_event(_ev(
-            ts=1003.0, kind="hook:PostToolUse", session_id=sid, pid=pid,
-            detail={"tool_name": "read_file"},
-        ))
-        a.ingest_event(_ev(
-            ts=1004.0, kind="hook:PreToolUse", session_id=sid, pid=pid,
-            detail={"tool_name": "write_file",
-                    "input": {"file_path": "auth.py"}},
-        ))
-        a.ingest_event(_ev(
-            ts=1005.0, kind="hook:PostToolUse", session_id=sid, pid=pid,
-            detail={"tool_name": "write_file"},
-        ))
+        a.ingest_event(
+            _ev(
+                ts=1001.0,
+                kind="hook:UserPromptSubmit",
+                session_id=sid,
+                pid=pid,
+                detail={"message": "Fix the login validation bug in auth.py"},
+            )
+        )
+        a.ingest_event(
+            _ev(
+                ts=1002.0,
+                kind="hook:PreToolUse",
+                session_id=sid,
+                pid=pid,
+                detail={"tool_name": "read_file", "input": {"file_path": "auth.py"}},
+            )
+        )
+        a.ingest_event(
+            _ev(
+                ts=1003.0,
+                kind="hook:PostToolUse",
+                session_id=sid,
+                pid=pid,
+                detail={"tool_name": "read_file"},
+            )
+        )
+        a.ingest_event(
+            _ev(
+                ts=1004.0,
+                kind="hook:PreToolUse",
+                session_id=sid,
+                pid=pid,
+                detail={"tool_name": "write_file", "input": {"file_path": "auth.py"}},
+            )
+        )
+        a.ingest_event(
+            _ev(
+                ts=1005.0,
+                kind="hook:PostToolUse",
+                session_id=sid,
+                pid=pid,
+                detail={"tool_name": "write_file"},
+            )
+        )
 
         # Turn 2: follow-up
-        a.ingest_event(_ev(
-            ts=1010.0, kind="hook:UserPromptSubmit", session_id=sid, pid=pid,
-            detail={"message": "Now add unit tests for the fix"},
-        ))
-        a.ingest_event(_ev(
-            ts=1011.0, kind="hook:PreToolUse", session_id=sid, pid=pid,
-            detail={"tool_name": "write_file",
-                    "input": {"file_path": "test_auth.py"}},
-        ))
-        a.ingest_event(_ev(
-            ts=1012.0, kind="hook:PostToolUse", session_id=sid, pid=pid,
-            detail={"tool_name": "write_file"},
-        ))
+        a.ingest_event(
+            _ev(
+                ts=1010.0,
+                kind="hook:UserPromptSubmit",
+                session_id=sid,
+                pid=pid,
+                detail={"message": "Now add unit tests for the fix"},
+            )
+        )
+        a.ingest_event(
+            _ev(
+                ts=1011.0,
+                kind="hook:PreToolUse",
+                session_id=sid,
+                pid=pid,
+                detail={"tool_name": "write_file", "input": {"file_path": "test_auth.py"}},
+            )
+        )
+        a.ingest_event(
+            _ev(
+                ts=1012.0,
+                kind="hook:PostToolUse",
+                session_id=sid,
+                pid=pid,
+                detail={"tool_name": "write_file"},
+            )
+        )
 
         # Compaction
-        a.ingest_event(_ev(
-            ts=1020.0, kind="hook:PreCompact", session_id=sid, pid=pid,
-        ))
-        a.ingest_event(_ev(
-            ts=1022.0, kind="hook:PostCompact", session_id=sid, pid=pid,
-            detail={"compaction_count": 1},
-        ))
+        a.ingest_event(
+            _ev(
+                ts=1020.0,
+                kind="hook:PreCompact",
+                session_id=sid,
+                pid=pid,
+            )
+        )
+        a.ingest_event(
+            _ev(
+                ts=1022.0,
+                kind="hook:PostCompact",
+                session_id=sid,
+                pid=pid,
+                detail={"compaction_count": 1},
+            )
+        )
 
         # Session end
-        a.ingest_event(_ev(
-            ts=1030.0, kind="hook:SessionEnd", session_id=sid, pid=pid,
-        ))
+        a.ingest_event(
+            _ev(
+                ts=1030.0,
+                kind="hook:SessionEnd",
+                session_id=sid,
+                pid=pid,
+            )
+        )
 
         # Verify transcript
         t = a.get_transcript(sid)

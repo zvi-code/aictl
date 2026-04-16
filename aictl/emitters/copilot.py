@@ -32,22 +32,33 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
     for scope in resolved.scopes:
         if scope.is_root:
             emit_root_scope(
-                scope, base_path=gh / "copilot-instructions.md",
+                scope,
+                base_path=gh / "copilot-instructions.md",
                 profile_path=root / "AGENTS.md",
-                resolved=resolved, dry_run=dry_run, results=results,
+                resolved=resolved,
+                dry_run=dry_run,
+                results=results,
             )
         else:
             emit_sub_scope(
-                scope, rules_dir=gh / "instructions", ext=".instructions.md",
+                scope,
+                rules_dir=gh / "instructions",
+                ext=".instructions.md",
                 frontmatter_fn=_applyto_frontmatter,
-                dry_run=dry_run, results=results,
+                dry_run=dry_run,
+                results=results,
             )
 
-    emit_capabilities(resolved, {
-        "agent": lambda n: gh / "agents" / f"{n}.agent.md",
-        "skill": lambda n: gh / "skills" / n / "SKILL.md",
-        "command": lambda n: gh / "prompts" / f"{n}.prompt.md",
-    }, dry_run, results)
+    emit_capabilities(
+        resolved,
+        {
+            "agent": lambda n: gh / "agents" / f"{n}.agent.md",
+            "skill": lambda n: gh / "skills" / n / "SKILL.md",
+            "command": lambda n: gh / "prompts" / f"{n}.prompt.md",
+        },
+        dry_run,
+        results,
+    )
 
     emit_mcp_servers(root / ".copilot-mcp.json", "mcpServers", resolved, dry_run, results)
     emit_mcp_servers(root / ".vscode" / "mcp.json", "servers", resolved, dry_run, results)
@@ -56,7 +67,12 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
     if resolved.hooks:
         fp = gh / "hooks" / "hooks.json"
         tagged = _tag_hooks({e: list(rules) for e, rules in resolved.hooks.items()})
-        emit_file(fp, merge_json_block(fp, "hooks", tagged) if not dry_run else json.dumps({"hooks": tagged}, indent=2) + "\n", dry_run, results)
+        emit_file(
+            fp,
+            merge_json_block(fp, "hooks", tagged) if not dry_run else json.dumps({"hooks": tagged}, indent=2) + "\n",
+            dry_run,
+            results,
+        )
 
     emit_ignores(gh / "copilot-ignore", resolved, dry_run, results)
 
@@ -64,8 +80,15 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
 
 
 GITIGNORE = [
-    ".github/copilot-instructions.md", ".github/instructions/",
-    ".github/agents/", ".github/skills/", ".github/prompts/",
-    ".github/hooks/", ".github/copilot-ignore",
-    "AGENTS.md", ".copilot-mcp.json", ".vscode/mcp.json", ".ai-deployed/",
+    ".github/copilot-instructions.md",
+    ".github/instructions/",
+    ".github/agents/",
+    ".github/skills/",
+    ".github/prompts/",
+    ".github/hooks/",
+    ".github/copilot-ignore",
+    "AGENTS.md",
+    ".copilot-mcp.json",
+    ".vscode/mcp.json",
+    ".ai-deployed/",
 ]

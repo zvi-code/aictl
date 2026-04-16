@@ -33,12 +33,8 @@ def patched_env(tmp_path, monkeypatch):
         "# <<< aictl env <<<\n"
         "# trailing user content\n"
     )
-    monkeypatch.setattr(
-        "aictl.commands.integrations._shell_profiles", lambda: [profile]
-    )
-    monkeypatch.setattr(
-        "aictl.commands.disable._shell_profiles", lambda: [profile]
-    )
+    monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [profile])
+    monkeypatch.setattr("aictl.commands.disable._shell_profiles", lambda: [profile])
     # Pre-populate an env.sh so disable has something to delete.
     env_sh = tmp_path / ".config" / "aictl" / "env.sh"
     env_sh.parent.mkdir(parents=True)
@@ -51,19 +47,23 @@ def _seed_settings(settings_path: Path, *, corrupt: bool = False):
     if corrupt:
         settings_path.write_text("{not-valid-json")
         return
-    settings_path.write_text(json.dumps({
-        "hooks": {
-            "PreToolUse": [
-                {
-                    "_aictl_owner": "aictl.managed",
-                    "matcher": "",
-                    "hooks": [{"type": "command", "command": "x"}],
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "_aictl_owner": "aictl.managed",
+                            "matcher": "",
+                            "hooks": [{"type": "command", "command": "x"}],
+                        },
+                        # A user hook — must be preserved.
+                        {"matcher": "", "hooks": [{"type": "command", "command": "user-script"}]},
+                    ],
                 },
-                # A user hook — must be preserved.
-                {"matcher": "", "hooks": [{"type": "command", "command": "user-script"}]},
-            ],
-        },
-    }))
+            }
+        )
+    )
 
 
 class TestDisableDryRun:
@@ -123,6 +123,7 @@ class TestAudit:
 
     def test_audit_path_filter(self, patched_env, tmp_path):
         from aictl import mutation_ledger
+
         f = tmp_path / "x"
         mutation_ledger.record("c", f, "create", None, b"a")
         mutation_ledger.record("c", tmp_path / "other", "create", None, b"b")

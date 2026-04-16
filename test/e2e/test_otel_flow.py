@@ -30,9 +30,7 @@ class TestClaudeOtelMetrics:
         # Metrics received count should increase
         before_count = status_before.get("metrics_received", 0)
         after_count = status_after.get("metrics_received", 0)
-        assert after_count > before_count, (
-            f"OTel metrics_received did not increase: {before_count} → {after_count}"
-        )
+        assert after_count > before_count, f"OTel metrics_received did not increase: {before_count} → {after_count}"
 
     def test_samples_stored(self, aictl_server, claude_otel_metrics):
         """Samples appear via /api/samples after metric ingestion."""
@@ -60,7 +58,9 @@ class TestClaudeOtelLogs:
         aictl_server.post_otel_logs(claude_otel_logs)
 
         events = aictl_server.get_events(
-            kind="otel:claude_code.api_request", since="0", min_count=2,
+            kind="otel:claude_code.api_request",
+            since="0",
+            min_count=2,
         )
         assert len(events) >= 2, f"Expected ≥2 API request events, got {len(events)}"
 
@@ -101,26 +101,20 @@ class TestCopilotOtelMetrics:
         aictl_server.post_otel_metrics(copilot_otel_metrics)
         time.sleep(0.3)
         status_after = aictl_server.get_otel_status()
-        assert status_after.get("metrics_received", 0) > status_before.get(
-            "metrics_received", 0
-        )
+        assert status_after.get("metrics_received", 0) > status_before.get("metrics_received", 0)
 
 
 class TestMixedOtelIngestion:
     """Interleaved metrics and logs from multiple tools."""
 
-    def test_interleaved_metrics(
-        self, aictl_server, claude_otel_metrics, copilot_otel_metrics
-    ):
+    def test_interleaved_metrics(self, aictl_server, claude_otel_metrics, copilot_otel_metrics):
         """Both Claude and Copilot metrics are accepted without interference."""
         r1 = aictl_server.post_otel_metrics(claude_otel_metrics)
         r2 = aictl_server.post_otel_metrics(copilot_otel_metrics)
         assert r1 == {"ok": True}
         assert r2 == {"ok": True}
 
-    def test_metrics_then_logs(
-        self, aictl_server, claude_otel_metrics, claude_otel_logs
-    ):
+    def test_metrics_then_logs(self, aictl_server, claude_otel_metrics, claude_otel_logs):
         """Metrics and logs from same tool are both processed."""
         aictl_server.post_otel_metrics(claude_otel_metrics)
         aictl_server.post_otel_logs(claude_otel_logs)
@@ -150,26 +144,26 @@ class TestOtelEdgeCases:
     def test_unknown_service_name(self, aictl_server):
         """Metrics with unrecognized service.name are still accepted."""
         payload = {
-            "resourceMetrics": [{
-                "resource": {
-                    "attributes": [
-                        {"key": "service.name", "value": {"stringValue": "future-tool-v9"}}
-                    ]
-                },
-                "scopeMetrics": [{
-                    "scope": {"name": "unknown"},
-                    "metrics": [{
-                        "name": "future_tool.token.usage",
-                        "sum": {
-                            "dataPoints": [{
-                                "asInt": "100",
-                                "timeUnixNano": "1700000030000000000",
-                                "attributes": []
-                            }]
+            "resourceMetrics": [
+                {
+                    "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "future-tool-v9"}}]},
+                    "scopeMetrics": [
+                        {
+                            "scope": {"name": "unknown"},
+                            "metrics": [
+                                {
+                                    "name": "future_tool.token.usage",
+                                    "sum": {
+                                        "dataPoints": [
+                                            {"asInt": "100", "timeUnixNano": "1700000030000000000", "attributes": []}
+                                        ]
+                                    },
+                                }
+                            ],
                         }
-                    }]
-                }]
-            }]
+                    ],
+                }
+            ]
         }
         resp = aictl_server.post_otel_metrics(payload)
         assert resp == {"ok": True}

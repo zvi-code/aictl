@@ -45,39 +45,39 @@ class BaseCollector(ABC):
     def correlator(self) -> SessionCorrelator | None:
         return self._correlator
 
-    def sink_emit(self, metric: str, value: float,
-                  tags: dict[str, Any] | None = None) -> None:
+    def sink_emit(self, metric: str, value: float, tags: dict[str, Any] | None = None) -> None:
         """Emit a metric sample through the sink (if available)."""
         if self._sink is not None:
             self._sink.emit(metric, value, tags)
 
-    def sink_emit_if_changed(self, metric: str, value: float,
-                              tags: dict[str, Any] | None = None) -> None:
+    def sink_emit_if_changed(self, metric: str, value: float, tags: dict[str, Any] | None = None) -> None:
         """Emit only if value changed (skip DB write for unchanged)."""
         if self._sink is not None:
             self._sink.emit_if_changed(metric, value, tags)
 
-    def sink_emit_cpu(self, metric: str, value: float,
-                      tags: dict[str, Any] | None = None) -> None:
+    def sink_emit_cpu(self, metric: str, value: float, tags: dict[str, Any] | None = None) -> None:
         """Emit CPU metric with sensitivity (ratio 0-1, rounded to 0.1%)."""
         if self._sink is not None:
             self._sink.emit_with_sensitivity(
-                metric, value, tags,
-                abs_threshold=0.10,   # 10% of a core always emits
-                max_threshold=0.05,   # at t=0, need >5% diff; decays to 0
-                rounding=3,           # 0.1% precision
+                metric,
+                value,
+                tags,
+                abs_threshold=0.10,  # 10% of a core always emits
+                max_threshold=0.05,  # at t=0, need >5% diff; decays to 0
+                rounding=3,  # 0.1% precision
             )
 
-    def sink_emit_memory(self, metric: str, value: float,
-                         tags: dict[str, Any] | None = None) -> None:
+    def sink_emit_memory(self, metric: str, value: float, tags: dict[str, Any] | None = None) -> None:
         """Emit memory metric with sensitivity (bytes, rounded to 64KB)."""
         if self._sink is not None:
             # Round to nearest 64KB
             rounded = round(value / 65536) * 65536
             self._sink.emit_with_sensitivity(
-                metric, rounded, tags,
+                metric,
+                rounded,
+                tags,
                 abs_threshold=1_048_576,  # 1MB always emits
-                max_threshold=10_485_760, # at t=0, need >10MB diff; decays
+                max_threshold=10_485_760,  # at t=0, need >10MB diff; decays
                 rounding=0,
             )
 
@@ -89,9 +89,11 @@ class BaseCollector(ABC):
         """Report collector health to correlator + sink."""
         if self._correlator:
             self._correlator.on_collector_status(self.name, status, mode, detail)
-        self.sink_emit_if_changed(M("aictl.collector.status"),
-                       1.0 if status == "active" else 0.0,
-                       {"aictl.collector.name": self.name, "aictl.collector.mode": mode})
+        self.sink_emit_if_changed(
+            M("aictl.collector.status"),
+            1.0 if status == "active" else 0.0,
+            {"aictl.collector.name": self.name, "aictl.collector.mode": mode},
+        )
 
     async def sleep(self, seconds: float) -> None:
         await asyncio.sleep(seconds)
@@ -130,10 +132,12 @@ def _register_builtins() -> None:
     # _select_network_collector lives in runtime; import lazily to avoid circular dep
     def _network_factory(config: MonitorConfig) -> BaseCollector:
         from ..runtime import _select_network_collector
+
         return _select_network_collector(config)
 
     def _discovery_factory(config: MonitorConfig) -> BaseCollector:
         from ..runtime import DiscoveryCollector
+
         return DiscoveryCollector(config, interval=10.0, include_processes=True)
 
     register_collector("process", PsutilProcessCollector)

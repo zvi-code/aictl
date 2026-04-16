@@ -30,7 +30,8 @@ from ..utils import (
 
 
 def emit_root_scope(
-    scope, *,
+    scope,
+    *,
     base_path: Path,
     profile_path: Path,
     resolved: Resolved,
@@ -47,14 +48,22 @@ def emit_root_scope(
         emit_file(base_path, wrap_deployed(scope.base, src), dry_run, results)
     if scope.profile_text and resolved.profile:
         overlay = "" if dry_run else extract_overlay(profile_path)
-        emit_file(profile_path, compose_with_overlay(
-            f"# Active Profile: {resolved.profile}\n\n{scope.profile_text}",
-            overlay, src, resolved.profile,
-        ), dry_run, results)
+        emit_file(
+            profile_path,
+            compose_with_overlay(
+                f"# Active Profile: {resolved.profile}\n\n{scope.profile_text}",
+                overlay,
+                src,
+                resolved.profile,
+            ),
+            dry_run,
+            results,
+        )
 
 
 def emit_sub_scope(
-    scope, *,
+    scope,
+    *,
     rules_dir: Path,
     ext: str,
     frontmatter_fn: Callable[[str], str],
@@ -77,7 +86,8 @@ def emit_sub_scope(
     emit_file(
         rules_dir / f"{safe}{ext}",
         frontmatter_fn(glob) + wrap_deployed(combined, src),
-        dry_run, results,
+        dry_run,
+        results,
     )
 
 
@@ -192,9 +202,5 @@ def emit_ignores(
     """Emit ignore patterns to an ignore file."""
     if not resolved.ignores:
         return
-    content = (
-        merge_ignore_file(fp, resolved.ignores)
-        if not dry_run
-        else "\n".join(resolved.ignores) + "\n"
-    )
+    content = merge_ignore_file(fp, resolved.ignores) if not dry_run else "\n".join(resolved.ignores) + "\n"
     emit_file(fp, content, dry_run, results)

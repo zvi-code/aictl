@@ -16,14 +16,12 @@ from aictl.resolver import resolve
 # Parser tests
 # ---------------------------------------------------------------------------
 
+
 class TestParserIgnores:
     def test_parse_ignore_always(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / ".context.toml").write_text(
-                '[ignores]\n'
-                '_always = ["*.log", "node_modules/", ".env"]\n'
-            )
+            (root / ".context.toml").write_text('[ignores]\n_always = ["*.log", "node_modules/", ".env"]\n')
             parsed = parse_aictx(root / ".context.toml")
             assert len(parsed.ignores) == 1
             ig = parsed.ignores[0]
@@ -33,10 +31,7 @@ class TestParserIgnores:
     def test_parse_ignore_profile(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / ".context.toml").write_text(
-                '[ignores]\n'
-                'debug = ["coverage/", "*.prof"]\n'
-            )
+            (root / ".context.toml").write_text('[ignores]\ndebug = ["coverage/", "*.prof"]\n')
             parsed = parse_aictx(root / ".context.toml")
             assert len(parsed.ignores) == 1
             ig = parsed.ignores[0]
@@ -47,10 +42,7 @@ class TestParserIgnores:
         """TOML arrays don't have comments; test that empty arrays are skipped."""
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / ".context.toml").write_text(
-                '[ignores]\n'
-                '_always = ["dist/", "node_modules/"]\n'
-            )
+            (root / ".context.toml").write_text('[ignores]\n_always = ["dist/", "node_modules/"]\n')
             parsed = parse_aictx(root / ".context.toml")
             assert len(parsed.ignores) == 1
             assert parsed.ignores[0].patterns == ["dist/", "node_modules/"]
@@ -58,10 +50,7 @@ class TestParserIgnores:
     def test_parse_ignore_empty_array_skipped(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / ".context.toml").write_text(
-                '[ignores]\n'
-                '_always = []\n'
-            )
+            (root / ".context.toml").write_text("[ignores]\n_always = []\n")
             parsed = parse_aictx(root / ".context.toml")
             # Empty array is skipped
             assert len(parsed.ignores) == 0
@@ -70,10 +59,7 @@ class TestParserIgnores:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[ignores]\n'
-                '_always = ["*.log", ".env"]\n'
-                'debug = ["coverage/", "*.prof"]\n'
-                'review = [".cache/"]\n'
+                '[ignores]\n_always = ["*.log", ".env"]\ndebug = ["coverage/", "*.prof"]\nreview = [".cache/"]\n'
             )
             parsed = parse_aictx(root / ".context.toml")
             assert len(parsed.ignores) == 3
@@ -94,9 +80,7 @@ class TestParserIgnores:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[ignores]\n'
-                '_always = ["*.log", "dist/"]\n'
-                'debug = ["*.log", "coverage/"]\n'  # *.log is duplicate
+                '[ignores]\n_always = ["*.log", "dist/"]\ndebug = ["*.log", "coverage/"]\n'  # *.log is duplicate
             )
             parsed = parse_aictx(root / ".context.toml")
             patterns = parsed.ignores_for("debug")
@@ -107,14 +91,15 @@ class TestParserIgnores:
 # Resolver tests
 # ---------------------------------------------------------------------------
 
+
 class TestResolverIgnores:
     def test_resolve_ignores_from_root(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
+                "[instructions]\n"
                 'base = "Test project"\n\n'
-                '[ignores]\n'
+                "[ignores]\n"
                 '_always = ["*.log", "node_modules/"]\n'
                 'debug = ["coverage/"]\n'
             )
@@ -126,11 +111,7 @@ class TestResolverIgnores:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n\n'
-                '[ignores]\n'
-                '_always = ["*.log"]\n'
-                'debug = ["coverage/"]\n'
+                '[instructions]\nbase = "Test project"\n\n[ignores]\n_always = ["*.log"]\ndebug = ["coverage/"]\n'
             )
             scanned = scan(root)
             resolved = resolve(root, scanned, None)
@@ -139,10 +120,7 @@ class TestResolverIgnores:
     def test_resolve_no_ignores(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n'
-            )
+            (root / ".context.toml").write_text('[instructions]\nbase = "Test project"\n')
             scanned = scan(root)
             resolved = resolve(root, scanned, None)
             assert resolved.ignores == []
@@ -158,15 +136,13 @@ class TestResolverIgnores:
 # Claude emitter tests
 # ---------------------------------------------------------------------------
 
+
 class TestClaudeEmitterIgnores:
     def test_emit_claudeignore(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n\n'
-                '[ignores]\n'
-                '_always = ["*.log", "node_modules/", ".env"]\n'
+                '[instructions]\nbase = "Test project"\n\n[ignores]\n_always = ["*.log", "node_modules/", ".env"]\n'
             )
             scanned = scan(root)
             resolved = resolve(root, scanned, None)
@@ -188,10 +164,7 @@ class TestClaudeEmitterIgnores:
     def test_emit_no_claudeignore_when_empty(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n'
-            )
+            (root / ".context.toml").write_text('[instructions]\nbase = "Test project"\n')
             scanned = scan(root)
             resolved = resolve(root, scanned, None)
             claude_emit.emit(root, resolved)
@@ -206,15 +179,13 @@ class TestClaudeEmitterIgnores:
 # Copilot emitter tests
 # ---------------------------------------------------------------------------
 
+
 class TestCopilotEmitterIgnores:
     def test_emit_copilot_ignore(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n\n'
-                '[ignores]\n'
-                '_always = ["dist/", "build/"]\n'
+                '[instructions]\nbase = "Test project"\n\n[ignores]\n_always = ["dist/", "build/"]\n'
             )
             scanned = scan(root)
             resolved = resolve(root, scanned, None)
@@ -238,15 +209,13 @@ class TestCopilotEmitterIgnores:
 # Cursor emitter tests
 # ---------------------------------------------------------------------------
 
+
 class TestCursorEmitterIgnores:
     def test_emit_cursorignore(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n\n'
-                '[ignores]\n'
-                '_always = ["*.log", ".env"]\n'
+                '[instructions]\nbase = "Test project"\n\n[ignores]\n_always = ["*.log", ".env"]\n'
             )
             scanned = scan(root)
             resolved = resolve(root, scanned, None)
@@ -270,15 +239,13 @@ class TestCursorEmitterIgnores:
 # Windsurf emitter tests (should NOT emit ignores)
 # ---------------------------------------------------------------------------
 
+
 class TestWindsurfEmitterIgnores:
     def test_windsurf_does_not_emit_ignore_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n\n'
-                '[ignores]\n'
-                '_always = ["*.log"]\n'
+                '[instructions]\nbase = "Test project"\n\n[ignores]\n_always = ["*.log"]\n'
             )
             scanned = scan(root)
             resolved = resolve(root, scanned, None)
@@ -294,15 +261,13 @@ class TestWindsurfEmitterIgnores:
 # Dry-run tests
 # ---------------------------------------------------------------------------
 
+
 class TestIgnoresDryRun:
     def test_dry_run_does_not_write_ignore_files(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n\n'
-                '[ignores]\n'
-                '_always = ["*.log"]\n'
+                '[instructions]\nbase = "Test project"\n\n[ignores]\n_always = ["*.log"]\n'
             )
             scanned = scan(root)
             resolved = resolve(root, scanned, None)
@@ -320,16 +285,13 @@ class TestIgnoresDryRun:
 # Profile-specific emit tests
 # ---------------------------------------------------------------------------
 
+
 class TestIgnoresProfileEmit:
     def test_emit_with_profile_merges_patterns(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n\n'
-                '[ignores]\n'
-                '_always = ["*.log"]\n'
-                'debug = ["coverage/"]\n'
+                '[instructions]\nbase = "Test project"\n\n[ignores]\n_always = ["*.log"]\ndebug = ["coverage/"]\n'
             )
             scanned = scan(root)
             resolved = resolve(root, scanned, "debug")

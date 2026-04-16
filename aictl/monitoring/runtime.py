@@ -42,8 +42,7 @@ class DiscoveryCollector(BaseCollector):
 
     name = "discovery:csv"
 
-    def __init__(self, config: MonitorConfig, *, interval: float = 10.0,
-                 include_processes: bool = True) -> None:
+    def __init__(self, config: MonitorConfig, *, interval: float = 10.0, include_processes: bool = True) -> None:
         super().__init__(config=config)
         self._interval = interval
         self._include_processes = include_processes
@@ -66,9 +65,7 @@ class DiscoveryCollector(BaseCollector):
         )
 
         while True:
-            discovered = await asyncio.to_thread(
-                discover_all, self._root,
-                include_processes=self._include_processes)
+            discovered = await asyncio.to_thread(discover_all, self._root, include_processes=self._include_processes)
             self._latest = discovered
 
             for tool_res in discovered:
@@ -77,28 +74,32 @@ class DiscoveryCollector(BaseCollector):
                     continue
                 tags = {"tool": tool}
                 self.sink_emit_if_changed(_M("aictl.discovery.files"), float(len(tool_res.files)), tags)
-                self.sink_emit_if_changed(_M("aictl.discovery.tokens"),
-                               float(sum(f.tokens for f in tool_res.files)), tags)
-                self.sink_emit_if_changed(_M("aictl.discovery.size"),
-                               float(sum(f.size for f in tool_res.files)), tags)
-                self.sink_emit_if_changed(_M("aictl.discovery.processes"),
-                               float(len(tool_res.processes)), tags)
-                self.sink_emit_if_changed(_M("aictl.discovery.mcp_servers"),
-                               float(len(tool_res.mcp_servers)), tags)
+                self.sink_emit_if_changed(
+                    _M("aictl.discovery.tokens"), float(sum(f.tokens for f in tool_res.files)), tags
+                )
+                self.sink_emit_if_changed(_M("aictl.discovery.size"), float(sum(f.size for f in tool_res.files)), tags)
+                self.sink_emit_if_changed(_M("aictl.discovery.processes"), float(len(tool_res.processes)), tags)
+                self.sink_emit_if_changed(_M("aictl.discovery.mcp_servers"), float(len(tool_res.mcp_servers)), tags)
 
                 for f in tool_res.files:
-                    ftags = {"aictl.tool": tool, "file.path": f.path,
-                             "aictl.file.kind": f.kind, "aictl.file.scope": f.scope,
-                             "aictl.file.sent_to_llm": f.sent_to_llm}
+                    ftags = {
+                        "aictl.tool": tool,
+                        "file.path": f.path,
+                        "aictl.file.kind": f.kind,
+                        "aictl.file.scope": f.scope,
+                        "aictl.file.sent_to_llm": f.sent_to_llm,
+                    }
                     self.sink_emit_if_changed(_M("aictl.file.tokens"), float(f.tokens), ftags)
                     self.sink_emit_if_changed(_M("aictl.file.bytes"), float(f.size), ftags)
 
                 for m in tool_res.mcp_servers:
                     mname = m.get("name", "")
                     if mname:
-                        self.sink_emit_if_changed(_M("aictl.mcp.status"),
-                                       1.0 if m.get("status") == "running" else 0.0,
-                                       {"aictl.tool": tool, "aictl.mcp.server": mname})
+                        self.sink_emit_if_changed(
+                            _M("aictl.mcp.status"),
+                            1.0 if m.get("status") == "running" else 0.0,
+                            {"aictl.tool": tool, "aictl.mcp.server": mname},
+                        )
 
             await self.sleep(self._interval)
 
@@ -117,9 +118,7 @@ class MonitorRuntime:
         self.config = config
         self.platform = CURRENT_PLATFORM
         self.sink = sink
-        self.workspace_sizes = {
-            str(path): _dir_size(path, config.ignored_dir_names) for path in config.workspace_paths
-        }
+        self.workspace_sizes = {str(path): _dir_size(path, config.ignored_dir_names) for path in config.workspace_paths}
         self.correlator = SessionCorrelator(config, workspace_sizes=self.workspace_sizes, sink=sink)
         self.collectors = self._build_collectors()
         for collector in self.collectors:
@@ -135,10 +134,7 @@ class MonitorRuntime:
     @contextlib.asynccontextmanager
     async def _collectors_running(self):
         """Start all collector tasks; cancel and join them on exit."""
-        tasks = [
-            asyncio.create_task(c.run(), name=f"collector:{c.name}")
-            for c in self.collectors
-        ]
+        tasks = [asyncio.create_task(c.run(), name=f"collector:{c.name}") for c in self.collectors]
         try:
             yield tasks
         finally:

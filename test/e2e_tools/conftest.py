@@ -27,18 +27,13 @@ CLAUDE_BIN = shutil.which("claude")
 GEMINI_BIN = shutil.which("gemini")
 CODEX_BIN = shutil.which("codex")
 
-requires_claude = pytest.mark.skipif(
-    not CLAUDE_BIN, reason="claude CLI not installed"
-)
-requires_gemini = pytest.mark.skipif(
-    not GEMINI_BIN, reason="gemini CLI not installed"
-)
-requires_codex = pytest.mark.skipif(
-    not CODEX_BIN, reason="codex CLI not installed"
-)
+requires_claude = pytest.mark.skipif(not CLAUDE_BIN, reason="claude CLI not installed")
+requires_gemini = pytest.mark.skipif(not GEMINI_BIN, reason="gemini CLI not installed")
+requires_codex = pytest.mark.skipif(not CODEX_BIN, reason="codex CLI not installed")
 
 
 # ── Tool runner helpers (exposed as fixtures) ─────────────────────
+
 
 def _run_claude(
     prompt: str,
@@ -50,15 +45,23 @@ def _run_claude(
 ) -> dict:
     """Run ``claude -p`` in non-interactive mode, return parsed JSON output."""
     cmd = [
-        CLAUDE_BIN, "-p", prompt,
-        "--max-turns", str(max_turns),
-        "--output-format", "json",
+        CLAUDE_BIN,
+        "-p",
+        prompt,
+        "--max-turns",
+        str(max_turns),
+        "--output-format",
+        "json",
     ]
     run_env = {**os.environ, **(env or {})}
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True,
-            timeout=timeout, cwd=str(cwd), env=run_env,
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(cwd),
+            env=run_env,
         )
         if result.stdout.strip():
             return json.loads(result.stdout.strip())
@@ -86,16 +89,20 @@ def _run_gemini(
     stdout = ""
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True,
+            cmd,
+            capture_output=True,
+            text=True,
             input=prompt,
-            timeout=timeout, cwd=str(cwd), env=run_env,
+            timeout=timeout,
+            cwd=str(cwd),
+            env=run_env,
         )
         stdout = result.stdout.strip()
         if stdout:
             # Find the first '{' and parse only the first JSON object
             # (gemini may append trailing data after the main JSON)
             for line_start in range(len(stdout)):
-                if stdout[line_start] == '{':
+                if stdout[line_start] == "{":
                     decoder = json.JSONDecoder()
                     obj, _ = decoder.raw_decode(stdout[line_start:])
                     return obj
@@ -125,6 +132,7 @@ def run_gemini():
 
 # ── Project fixture with hooks installed ──────────────────────────
 
+
 def _install_claude_hooks(project_dir: Path, port: int) -> None:
     """Write Claude hook config directly into project settings."""
     settings_dir = project_dir / ".claude"
@@ -132,6 +140,7 @@ def _install_claude_hooks(project_dir: Path, port: int) -> None:
     settings_path = settings_dir / "settings.local.json"
 
     from aictl.commands.integrations import _build_hook_config
+
     hook_config = _build_hook_config(port, None)
 
     settings = {"hooks": hook_config}
@@ -149,6 +158,7 @@ def _install_gemini_hooks(project_dir: Path, port: int) -> None:
         HOOK_EVENTS,
         _build_hook_config,
     )
+
     gemini_events = [e for e in HOOK_EVENTS if e in GEMINI_HOOK_MAP]
     hook_config = _build_hook_config(port, gemini_events, event_map=GEMINI_HOOK_MAP, matcher="*")
 
@@ -180,9 +190,15 @@ def gemini_project(aictl_server, tmp_path) -> Path:
     subprocess.run(["git", "add", "."], cwd=str(project), capture_output=True)
     subprocess.run(
         ["git", "commit", "-m", "init", "--allow-empty"],
-        cwd=str(project), capture_output=True,
-        env={**os.environ, "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@t",
-             "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@t"},
+        cwd=str(project),
+        capture_output=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "test",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "test",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        },
     )
     _install_gemini_hooks(project, aictl_server.port)
     return project

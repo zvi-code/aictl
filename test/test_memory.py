@@ -46,6 +46,7 @@ def test_swap_auto_recovers_stale_marker(fake_project):
     # Simulate a crash from a previous swap: marker present + partial state
     # (restore dir exists but memory/ does not — mimics a crash mid-restore)
     import shutil
+
     shutil.rmtree(proj / "memory")
     (proj / "memory--old").mkdir()
     (proj / "memory--old" / "CLAUDE.md").write_text("stale")

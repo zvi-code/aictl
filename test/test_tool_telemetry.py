@@ -26,6 +26,7 @@ from aictl.monitoring.tool_telemetry import (
 # ToolTelemetryReport dataclass
 # ────────────────────────────────────────────────────────────────
 
+
 class TestToolTelemetryReport:
     def test_defaults(self):
         r = ToolTelemetryReport(tool="t", source="s")
@@ -58,6 +59,7 @@ class TestToolTelemetryReport:
 # _parse_iso_ts
 # ────────────────────────────────────────────────────────────────
 
+
 class TestParseIsoTs:
     def test_valid_iso(self):
         ts = _parse_iso_ts("2024-06-15T10:30:00+00:00")
@@ -84,6 +86,7 @@ class TestParseIsoTs:
 # _first_int
 # ────────────────────────────────────────────────────────────────
 
+
 class TestFirstInt:
     def test_returns_first_nonzero(self):
         assert _first_int({"a": 0, "b": 5, "c": 10}, "a", "b", "c") == 5
@@ -104,6 +107,7 @@ class TestFirstInt:
 # ────────────────────────────────────────────────────────────────
 # _iter_jsonl
 # ────────────────────────────────────────────────────────────────
+
 
 class TestIterJsonl:
     def test_valid_jsonl(self, tmp_path):
@@ -133,6 +137,7 @@ class TestIterJsonl:
 # ────────────────────────────────────────────────────────────────
 # _disambiguate_conversations
 # ────────────────────────────────────────────────────────────────
+
 
 class TestDisambiguateConversations:
     def test_empty_list(self):
@@ -201,6 +206,7 @@ class TestDisambiguateConversations:
 # _detect_claude_errors
 # ────────────────────────────────────────────────────────────────
 
+
 class TestDetectClaudeErrors:
     def test_message_with_error_obj(self):
         report = ToolTelemetryReport(tool="t", source="s")
@@ -241,14 +247,20 @@ class TestDetectClaudeErrors:
 # _parse_copilot_events
 # ────────────────────────────────────────────────────────────────
 
+
 class TestParseCopilotEvents:
     def test_assistant_message(self, tmp_path):
         events = tmp_path / "events.jsonl"
-        events.write_text(json.dumps({
-            "type": "assistant.message",
-            "data": {"outputTokens": 500},
-            "timestamp": "2024-01-01T00:00:00Z",
-        }) + "\n")
+        events.write_text(
+            json.dumps(
+                {
+                    "type": "assistant.message",
+                    "data": {"outputTokens": 500},
+                    "timestamp": "2024-01-01T00:00:00Z",
+                }
+            )
+            + "\n"
+        )
         report = ToolTelemetryReport(tool="copilot-cli", source="events-jsonl")
         _parse_copilot_events(events, report)
         assert report.output_tokens == 500
@@ -256,21 +268,26 @@ class TestParseCopilotEvents:
 
     def test_session_shutdown_metrics(self, tmp_path):
         events = tmp_path / "events.jsonl"
-        events.write_text(json.dumps({
-            "type": "session.shutdown",
-            "data": {
-                "shutdownType": "routine",
-                "modelMetrics": {
-                    "gpt-4": {
-                        "usage": {"inputTokens": 1000, "outputTokens": 200},
-                        "requests": {"count": 5, "cost": 0.05},
-                    }
-                },
-                "totalPremiumRequests": 3,
-                "totalApiDurationMs": 15000,
-            },
-            "timestamp": "2024-01-01T00:00:00Z",
-        }) + "\n")
+        events.write_text(
+            json.dumps(
+                {
+                    "type": "session.shutdown",
+                    "data": {
+                        "shutdownType": "routine",
+                        "modelMetrics": {
+                            "gpt-4": {
+                                "usage": {"inputTokens": 1000, "outputTokens": 200},
+                                "requests": {"count": 5, "cost": 0.05},
+                            }
+                        },
+                        "totalPremiumRequests": 3,
+                        "totalApiDurationMs": 15000,
+                    },
+                    "timestamp": "2024-01-01T00:00:00Z",
+                }
+            )
+            + "\n"
+        )
         report = ToolTelemetryReport(tool="copilot-cli", source="events-jsonl")
         _parse_copilot_events(events, report)
         assert report.input_tokens == 1000
@@ -279,11 +296,16 @@ class TestParseCopilotEvents:
 
     def test_non_routine_shutdown_records_error(self, tmp_path):
         events = tmp_path / "events.jsonl"
-        events.write_text(json.dumps({
-            "type": "session.shutdown",
-            "data": {"shutdownType": "crash", "modelMetrics": {}},
-            "timestamp": "2024-01-01T00:00:00Z",
-        }) + "\n")
+        events.write_text(
+            json.dumps(
+                {
+                    "type": "session.shutdown",
+                    "data": {"shutdownType": "crash", "modelMetrics": {}},
+                    "timestamp": "2024-01-01T00:00:00Z",
+                }
+            )
+            + "\n"
+        )
         report = ToolTelemetryReport(tool="copilot-cli", source="events-jsonl")
         _parse_copilot_events(events, report)
         assert len(report.errors) == 1
@@ -291,11 +313,16 @@ class TestParseCopilotEvents:
 
     def test_slow_tool_execution(self, tmp_path):
         events = tmp_path / "events.jsonl"
-        events.write_text(json.dumps({
-            "type": "tool.execution_complete",
-            "data": {"toolName": "bash", "durationMs": 120000},
-            "timestamp": "2024-01-01T00:00:00Z",
-        }) + "\n")
+        events.write_text(
+            json.dumps(
+                {
+                    "type": "tool.execution_complete",
+                    "data": {"toolName": "bash", "durationMs": 120000},
+                    "timestamp": "2024-01-01T00:00:00Z",
+                }
+            )
+            + "\n"
+        )
         report = ToolTelemetryReport(tool="copilot-cli", source="events-jsonl")
         _parse_copilot_events(events, report)
         assert len(report.errors) == 1
@@ -307,14 +334,21 @@ class TestParseCopilotEvents:
 # _parse_codex_session
 # ────────────────────────────────────────────────────────────────
 
+
 class TestParseCodexSession:
     def test_token_count_event(self, tmp_path):
         sess = tmp_path / "session.jsonl"
         sess.write_text(
-            json.dumps({"type": "event_msg", "payload": {
-                "type": "token_count",
-                "total_token_usage": {"input_tokens": 5000, "output_tokens": 1000, "cached_input_tokens": 200},
-            }}) + "\n"
+            json.dumps(
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "total_token_usage": {"input_tokens": 5000, "output_tokens": 1000, "cached_input_tokens": 200},
+                    },
+                }
+            )
+            + "\n"
         )
         report = ToolTelemetryReport(tool="codex-cli", source="token-count")
         _parse_codex_session(sess, report)
@@ -325,11 +359,18 @@ class TestParseCodexSession:
     def test_session_meta_model(self, tmp_path):
         sess = tmp_path / "session.jsonl"
         sess.write_text(
-            json.dumps({"type": "session_meta", "payload": {"model": "o3-mini"}}) + "\n" +
-            json.dumps({"type": "event_msg", "payload": {
-                "type": "token_count",
-                "total_token_usage": {"input_tokens": 100, "output_tokens": 50},
-            }}) + "\n"
+            json.dumps({"type": "session_meta", "payload": {"model": "o3-mini"}})
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "total_token_usage": {"input_tokens": 100, "output_tokens": 50},
+                    },
+                }
+            )
+            + "\n"
         )
         report = ToolTelemetryReport(tool="codex-cli", source="token-count")
         _parse_codex_session(sess, report)
@@ -339,14 +380,26 @@ class TestParseCodexSession:
         """Codex uses cumulative totals — only the LAST token_count matters."""
         sess = tmp_path / "session.jsonl"
         sess.write_text(
-            json.dumps({"type": "event_msg", "payload": {
-                "type": "token_count",
-                "total_token_usage": {"input_tokens": 100, "output_tokens": 50},
-            }}) + "\n" +
-            json.dumps({"type": "event_msg", "payload": {
-                "type": "token_count",
-                "total_token_usage": {"input_tokens": 300, "output_tokens": 150},
-            }}) + "\n"
+            json.dumps(
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "total_token_usage": {"input_tokens": 100, "output_tokens": 50},
+                    },
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "total_token_usage": {"input_tokens": 300, "output_tokens": 150},
+                    },
+                }
+            )
+            + "\n"
         )
         report = ToolTelemetryReport(tool="codex-cli", source="token-count")
         _parse_codex_session(sess, report)
@@ -359,15 +412,20 @@ class TestParseCodexSession:
 # _parse_continue_session
 # ────────────────────────────────────────────────────────────────
 
+
 class TestParseContinueSession:
     def test_messages_with_usage(self, tmp_path):
         sess = tmp_path / "session.json"
-        sess.write_text(json.dumps({
-            "history": [
-                {"role": "user", "usage": {"inputTokens": 100, "outputTokens": 0}},
-                {"role": "assistant", "usage": {"inputTokens": 100, "outputTokens": 200}},
-            ]
-        }))
+        sess.write_text(
+            json.dumps(
+                {
+                    "history": [
+                        {"role": "user", "usage": {"inputTokens": 100, "outputTokens": 0}},
+                        {"role": "assistant", "usage": {"inputTokens": 100, "outputTokens": 200}},
+                    ]
+                }
+            )
+        )
         report = ToolTelemetryReport(tool="continue", source="session-json")
         _parse_continue_session(sess, report)
         assert report.input_tokens == 200
@@ -376,11 +434,19 @@ class TestParseContinueSession:
 
     def test_model_extraction(self, tmp_path):
         sess = tmp_path / "session.json"
-        sess.write_text(json.dumps({
-            "history": [
-                {"role": "assistant", "model": "claude-3-haiku", "usage": {"inputTokens": 10, "outputTokens": 5}},
-            ]
-        }))
+        sess.write_text(
+            json.dumps(
+                {
+                    "history": [
+                        {
+                            "role": "assistant",
+                            "model": "claude-3-haiku",
+                            "usage": {"inputTokens": 10, "outputTokens": 5},
+                        },
+                    ]
+                }
+            )
+        )
         report = ToolTelemetryReport(tool="continue", source="session-json")
         _parse_continue_session(sess, report)
         assert "claude-3-haiku" in report.by_model
@@ -399,11 +465,15 @@ class TestParseContinueSession:
 
     def test_fallback_to_messages_key(self, tmp_path):
         sess = tmp_path / "session.json"
-        sess.write_text(json.dumps({
-            "messages": [
-                {"role": "assistant", "usage": {"inputTokens": 50, "outputTokens": 25}},
-            ]
-        }))
+        sess.write_text(
+            json.dumps(
+                {
+                    "messages": [
+                        {"role": "assistant", "usage": {"inputTokens": 50, "outputTokens": 25}},
+                    ]
+                }
+            )
+        )
         report = ToolTelemetryReport(tool="continue", source="session-json")
         _parse_continue_session(sess, report)
         assert report.input_tokens == 50
@@ -412,6 +482,7 @@ class TestParseContinueSession:
 # ────────────────────────────────────────────────────────────────
 # _recent_files
 # ────────────────────────────────────────────────────────────────
+
 
 class TestRecentFiles:
     def test_returns_recent_files(self, tmp_path):
@@ -435,6 +506,7 @@ class TestRecentFiles:
 # _PARSER_REGISTRY
 # ────────────────────────────────────────────────────────────────
 
+
 class TestParserRegistry:
     def test_all_tools_registered(self):
         expected = {"claude-code", "copilot-cli", "codex-cli", "cursor", "continue"}
@@ -449,6 +521,7 @@ class TestParserRegistry:
 # collect_tool_telemetry (integration)
 # ────────────────────────────────────────────────────────────────
 
+
 class TestCollectToolTelemetry:
     def test_no_sources_returns_empty(self, tmp_path):
         with patch("aictl.monitoring.tool_telemetry.load_telemetry_sources", return_value={}):
@@ -459,9 +532,13 @@ class TestCollectToolTelemetry:
         mock_report = ToolTelemetryReport(tool="test", source="s", input_tokens=100)
         mock_parser = MagicMock(return_value=mock_report)
 
-        with patch("aictl.monitoring.tool_telemetry.load_telemetry_sources",
-                    return_value={"test-tool": {"source_id": "mock", "confidence": 0.9}}), \
-             patch.dict(_PARSER_REGISTRY, {"test-tool": mock_parser}):
+        with (
+            patch(
+                "aictl.monitoring.tool_telemetry.load_telemetry_sources",
+                return_value={"test-tool": {"source_id": "mock", "confidence": 0.9}},
+            ),
+            patch.dict(_PARSER_REGISTRY, {"test-tool": mock_parser}),
+        ):
             result = collect_tool_telemetry(tmp_path)
 
         assert len(result) == 1
@@ -470,9 +547,13 @@ class TestCollectToolTelemetry:
     def test_parser_returning_none_excluded(self, tmp_path):
         mock_parser = MagicMock(return_value=None)
 
-        with patch("aictl.monitoring.tool_telemetry.load_telemetry_sources",
-                    return_value={"test-tool": {"source_id": "mock", "confidence": 0.9}}), \
-             patch.dict(_PARSER_REGISTRY, {"test-tool": mock_parser}):
+        with (
+            patch(
+                "aictl.monitoring.tool_telemetry.load_telemetry_sources",
+                return_value={"test-tool": {"source_id": "mock", "confidence": 0.9}},
+            ),
+            patch.dict(_PARSER_REGISTRY, {"test-tool": mock_parser}),
+        ):
             result = collect_tool_telemetry(tmp_path)
 
         assert result == []
@@ -480,9 +561,13 @@ class TestCollectToolTelemetry:
     def test_parser_exception_swallowed(self, tmp_path):
         mock_parser = MagicMock(side_effect=RuntimeError("boom"))
 
-        with patch("aictl.monitoring.tool_telemetry.load_telemetry_sources",
-                    return_value={"test-tool": {"source_id": "mock", "confidence": 0.9}}), \
-             patch.dict(_PARSER_REGISTRY, {"test-tool": mock_parser}):
+        with (
+            patch(
+                "aictl.monitoring.tool_telemetry.load_telemetry_sources",
+                return_value={"test-tool": {"source_id": "mock", "confidence": 0.9}},
+            ),
+            patch.dict(_PARSER_REGISTRY, {"test-tool": mock_parser}),
+        ):
             # Should not raise
             result = collect_tool_telemetry(tmp_path)
         assert result == []

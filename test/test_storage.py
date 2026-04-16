@@ -38,15 +38,14 @@ def db():
 
 # ── Basic CRUD ─────────────────────────────────────────────────────
 
+
 class TestSystemSnapshots:
     """Tests for system_snapshots (was metrics table)."""
 
     def test_append_and_query(self, db: HistoryDB):
         now = time.time()
-        db.append_metrics(SystemSnapshotRow(ts=now, files=10, tokens=5000,
-                                            cpu_percent=12.3, memory_used_mb=512.5))
-        db.append_metrics(SystemSnapshotRow(ts=now + 5, files=11, tokens=5100,
-                                            cpu_percent=15.0, memory_used_mb=520.0))
+        db.append_metrics(SystemSnapshotRow(ts=now, files=10, tokens=5000, cpu_percent=12.3, memory_used_mb=512.5))
+        db.append_metrics(SystemSnapshotRow(ts=now + 5, files=11, tokens=5100, cpu_percent=15.0, memory_used_mb=520.0))
         result = db.query_metrics()
         assert len(result["ts"]) == 2
         assert result["files"] == [10, 11]
@@ -83,10 +82,12 @@ class TestProcessSnapshots:
 
     def test_append_and_query(self, db: HistoryDB):
         now = time.time()
-        db.append_tool_metrics([
-            ToolMetricsRow(ts=now, tool="claude-code", cpu=5.0, mem_mb=300),
-            ToolMetricsRow(ts=now, tool="copilot-cli", cpu=2.0, mem_mb=100),
-        ])
+        db.append_tool_metrics(
+            [
+                ToolMetricsRow(ts=now, tool="claude-code", cpu=5.0, mem_mb=300),
+                ToolMetricsRow(ts=now, tool="copilot-cli", cpu=2.0, mem_mb=100),
+            ]
+        )
         result = db.query_tool_metrics()
         assert "claude-code" in result
         assert "copilot-cli" in result
@@ -94,23 +95,29 @@ class TestProcessSnapshots:
 
     def test_query_by_tool(self, db: HistoryDB):
         now = time.time()
-        db.append_tool_metrics([
-            ToolMetricsRow(ts=now, tool="claude-code", cpu=5.0),
-            ToolMetricsRow(ts=now + 0.001, tool="copilot-cli", cpu=2.0),
-        ])
+        db.append_tool_metrics(
+            [
+                ToolMetricsRow(ts=now, tool="claude-code", cpu=5.0),
+                ToolMetricsRow(ts=now + 0.001, tool="copilot-cli", cpu=2.0),
+            ]
+        )
         result = db.query_tool_metrics(tool="claude-code")
         assert "claude-code" in result
         assert "copilot-cli" not in result
 
     def test_query_with_since(self, db: HistoryDB):
         now = time.time()
-        db.append_tool_metrics([
-            ToolMetricsRow(ts=now - 100, tool="claude-code", cpu=1.0, mem_mb=100),
-        ])
+        db.append_tool_metrics(
+            [
+                ToolMetricsRow(ts=now - 100, tool="claude-code", cpu=1.0, mem_mb=100),
+            ]
+        )
         # Need different enough values to pass dedup
-        db.append_tool_metrics([
-            ToolMetricsRow(ts=now, tool="claude-code", cpu=5.0, mem_mb=300),
-        ])
+        db.append_tool_metrics(
+            [
+                ToolMetricsRow(ts=now, tool="claude-code", cpu=5.0, mem_mb=300),
+            ]
+        )
         result = db.query_tool_metrics(since=now - 50)
         assert len(result.get("claude-code", {}).get("ts", [])) == 1
 
@@ -118,10 +125,14 @@ class TestProcessSnapshots:
 class TestEvents:
     def test_append_and_query(self, db: HistoryDB):
         now = time.time()
-        db.append_event(EventRow(
-            ts=now, tool="claude-code", kind="session_start",
-            detail={"pid": 123, "model": "claude-opus-4-6"},
-        ))
+        db.append_event(
+            EventRow(
+                ts=now,
+                tool="claude-code",
+                kind="session_start",
+                detail={"pid": 123, "model": "claude-opus-4-6"},
+            )
+        )
         events = db.query_events()
         assert len(events) == 1
         assert events[0].tool == "claude-code"
@@ -130,34 +141,36 @@ class TestEvents:
 
     def test_query_by_tool(self, db: HistoryDB):
         now = time.time()
-        db.append_events([
-            EventRow(ts=now, tool="claude-code", kind="session_start"),
-            EventRow(ts=now, tool="copilot-cli", kind="session_start"),
-        ])
+        db.append_events(
+            [
+                EventRow(ts=now, tool="claude-code", kind="session_start"),
+                EventRow(ts=now, tool="copilot-cli", kind="session_start"),
+            ]
+        )
         events = db.query_events(tool="claude-code")
         assert len(events) == 1
 
     def test_query_by_kind(self, db: HistoryDB):
         now = time.time()
-        db.append_events([
-            EventRow(ts=now, tool="claude-code", kind="session_start"),
-            EventRow(ts=now + 1, tool="claude-code", kind="config_change"),
-        ])
+        db.append_events(
+            [
+                EventRow(ts=now, tool="claude-code", kind="session_start"),
+                EventRow(ts=now + 1, tool="claude-code", kind="config_change"),
+            ]
+        )
         events = db.query_events(kind="config_change")
         assert len(events) == 1
         assert events[0].kind == "config_change"
 
     def test_batch_append(self, db: HistoryDB):
         now = time.time()
-        db.append_events([
-            EventRow(ts=now + i, tool="claude-code", kind=f"event_{i}")
-            for i in range(10)
-        ])
+        db.append_events([EventRow(ts=now + i, tool="claude-code", kind=f"event_{i}") for i in range(10)])
         events = db.query_events()
         assert len(events) == 10
 
 
 # ── Session profile helpers ────────────────────────────────────────
+
 
 class TestSessionHelpers:
     def test_session_pid_correlator_format(self):
@@ -169,10 +182,24 @@ class TestSessionHelpers:
         assert _session_pid("tool:123") is None
 
     def test_merge_session_stats_sums_files(self):
-        primary = {"files_modified": 10, "unique_files": 3, "bytes_written": 100,
-                   "source_files": 5, "conversations": 2, "subagents": 1, "activity": []}
-        secondary = {"files_modified": 5, "unique_files": 2, "bytes_written": 50,
-                     "source_files": 3, "conversations": 1, "subagents": 2, "activity": []}
+        primary = {
+            "files_modified": 10,
+            "unique_files": 3,
+            "bytes_written": 100,
+            "source_files": 5,
+            "conversations": 2,
+            "subagents": 1,
+            "activity": [],
+        }
+        secondary = {
+            "files_modified": 5,
+            "unique_files": 2,
+            "bytes_written": 50,
+            "source_files": 3,
+            "conversations": 1,
+            "subagents": 2,
+            "activity": [],
+        }
         _merge_session_stats(primary, secondary)
         assert primary["files_modified"] == 15
         assert primary["unique_files"] == 5
@@ -182,12 +209,24 @@ class TestSessionHelpers:
         assert primary["subagents"] == 2
 
     def test_merge_session_stats_merges_activity_buckets(self):
-        primary = {"files_modified": 0, "unique_files": 0, "bytes_written": 0,
-                   "source_files": 0, "conversations": 0, "subagents": 0,
-                   "activity": [[1000, 3], [2000, 5]]}
-        secondary = {"files_modified": 0, "unique_files": 0, "bytes_written": 0,
-                     "source_files": 0, "conversations": 0, "subagents": 0,
-                     "activity": [[2000, 2], [3000, 4]]}
+        primary = {
+            "files_modified": 0,
+            "unique_files": 0,
+            "bytes_written": 0,
+            "source_files": 0,
+            "conversations": 0,
+            "subagents": 0,
+            "activity": [[1000, 3], [2000, 5]],
+        }
+        secondary = {
+            "files_modified": 0,
+            "unique_files": 0,
+            "bytes_written": 0,
+            "source_files": 0,
+            "conversations": 0,
+            "subagents": 0,
+            "activity": [[2000, 2], [3000, 4]],
+        }
         _merge_session_stats(primary, secondary)
         assert primary["activity"] == [(1000, 3), (2000, 7), (3000, 4)]
 
@@ -196,31 +235,38 @@ class TestSessionProfileDedup:
     """query_session_profiles should collapse same-PID sessions into one tab."""
 
     def _emit_session(self, db, session_id, tool, start_ts, end_ts=None, files=0):
-        db.append_event(EventRow(
-            ts=start_ts, tool=tool, kind="session_start",
-            detail={"session_id": session_id},
-        ))
+        db.append_event(
+            EventRow(
+                ts=start_ts,
+                tool=tool,
+                kind="session_start",
+                detail={"session_id": session_id},
+            )
+        )
         if end_ts is not None:
-            db.append_event(EventRow(
-                ts=end_ts, tool=tool, kind="session_end",
-                detail={"session_id": session_id,
-                        "duration_s": round(end_ts - start_ts, 1)},
-            ))
+            db.append_event(
+                EventRow(
+                    ts=end_ts,
+                    tool=tool,
+                    kind="session_end",
+                    detail={"session_id": session_id, "duration_s": round(end_ts - start_ts, 1)},
+                )
+            )
         for i in range(files):
-            db.append_event(EventRow(
-                ts=start_ts + i, tool=tool, kind="file_modified",
-                detail={"session_id": session_id,
-                        "path": f"/repo/file_{i}.py", "growth_bytes": 10},
-            ))
+            db.append_event(
+                EventRow(
+                    ts=start_ts + i,
+                    tool=tool,
+                    kind="file_modified",
+                    detail={"session_id": session_id, "path": f"/repo/file_{i}.py", "growth_bytes": 10},
+                )
+            )
 
     def test_same_pid_sessions_merged(self, db: HistoryDB):
         base = 1_743_000_000.0
-        self._emit_session(db, "claude-code:49719:1743000000", "claude-code",
-                           base, files=10)
-        self._emit_session(db, "claude-code:49719:1743003600", "claude-code",
-                           base + 3600, files=5)
-        self._emit_session(db, "claude-code:49719:1743007200", "claude-code",
-                           base + 7200, files=8)
+        self._emit_session(db, "claude-code:49719:1743000000", "claude-code", base, files=10)
+        self._emit_session(db, "claude-code:49719:1743003600", "claude-code", base + 3600, files=5)
+        self._emit_session(db, "claude-code:49719:1743007200", "claude-code", base + 7200, files=8)
 
         profiles = db.query_session_profiles(since=base - 1)
         assert len(profiles) == 1
@@ -231,20 +277,16 @@ class TestSessionProfileDedup:
 
     def test_different_pids_not_merged(self, db: HistoryDB):
         base = 1_743_000_000.0
-        self._emit_session(db, "claude-code:11111:1743000000", "claude-code",
-                           base, end_ts=base + 1800, files=10)
-        self._emit_session(db, "claude-code:22222:1743000000", "claude-code",
-                           base + 60, end_ts=base + 3600, files=5)
+        self._emit_session(db, "claude-code:11111:1743000000", "claude-code", base, end_ts=base + 1800, files=10)
+        self._emit_session(db, "claude-code:22222:1743000000", "claude-code", base + 60, end_ts=base + 3600, files=5)
 
         profiles = db.query_session_profiles(since=base - 1)
         assert len(profiles) == 2
 
     def test_non_correlator_ids_not_affected(self, db: HistoryDB):
         base = 1_743_000_000.0
-        self._emit_session(db, "abc123def456", "copilot-vscode",
-                           base, end_ts=base + 3600, files=10)
-        self._emit_session(db, "xyz789uvw012", "copilot-vscode",
-                           base + 7200, end_ts=base + 10800, files=5)
+        self._emit_session(db, "abc123def456", "copilot-vscode", base, end_ts=base + 3600, files=10)
+        self._emit_session(db, "xyz789uvw012", "copilot-vscode", base + 7200, end_ts=base + 10800, files=5)
 
         profiles = db.query_session_profiles(since=base - 1)
         assert len(profiles) == 2
@@ -254,49 +296,41 @@ class TestSessionProfileDedup:
         must be collapsed into a single session profile."""
         base = 1_743_000_000.0
         # Same session, 4 PIDs from process tree, all starting within 2s
-        self._emit_session(db, "claude-code:18664:1743000000", "claude-code",
-                           base, end_ts=base + 1426, files=1505)
-        self._emit_session(db, "claude-code:15590:1743000000", "claude-code",
-                           base + 1, end_ts=base + 1426, files=0)
-        self._emit_session(db, "claude-code:17323:1743000001", "claude-code",
-                           base + 1, end_ts=base + 1426, files=0)
-        self._emit_session(db, "claude-code:4878:1743000002", "claude-code",
-                           base + 2, end_ts=base + 1426, files=0)
+        self._emit_session(db, "claude-code:18664:1743000000", "claude-code", base, end_ts=base + 1426, files=1505)
+        self._emit_session(db, "claude-code:15590:1743000000", "claude-code", base + 1, end_ts=base + 1426, files=0)
+        self._emit_session(db, "claude-code:17323:1743000001", "claude-code", base + 1, end_ts=base + 1426, files=0)
+        self._emit_session(db, "claude-code:4878:1743000002", "claude-code", base + 2, end_ts=base + 1426, files=0)
 
         profiles = db.query_session_profiles(since=base - 1)
-        assert len(profiles) == 1, (
-            f"Same session with 4 PIDs should merge into 1, got {len(profiles)}")
+        assert len(profiles) == 1, f"Same session with 4 PIDs should merge into 1, got {len(profiles)}"
         assert profiles[0]["files_modified"] == 1505
 
     def test_different_pids_different_start_not_merged(self, db: HistoryDB):
         """Two truly separate sessions (different PIDs, >10s apart) must stay
         separate even if same tool."""
         base = 1_743_000_000.0
-        self._emit_session(db, "claude-code:11111:1743000000", "claude-code",
-                           base, end_ts=base + 3600, files=10)
-        self._emit_session(db, "claude-code:22222:1743000060", "claude-code",
-                           base + 60, end_ts=base + 3660, files=5)
+        self._emit_session(db, "claude-code:11111:1743000000", "claude-code", base, end_ts=base + 3600, files=10)
+        self._emit_session(db, "claude-code:22222:1743000060", "claude-code", base + 60, end_ts=base + 3660, files=5)
 
         profiles = db.query_session_profiles(since=base - 1)
-        assert len(profiles) == 2, (
-            "Separate sessions 60s apart with different PIDs must stay separate")
+        assert len(profiles) == 2, "Separate sessions 60s apart with different PIDs must stay separate"
 
     def test_same_pid_far_apart_not_merged(self, db: HistoryDB):
         """PID reuse hours later must NOT merge into a single session."""
         base = 1_743_000_000.0
         # Session A: ends at base + 3600
-        self._emit_session(db, "claude-code:49719:1743000000", "claude-code",
-                           base, end_ts=base + 3600, files=5)
+        self._emit_session(db, "claude-code:49719:1743000000", "claude-code", base, end_ts=base + 3600, files=5)
         # Session B: starts 12 hours later, same PID
-        self._emit_session(db, "claude-code:49719:1743043200", "claude-code",
-                           base + 43200, end_ts=base + 46800, files=3)
+        self._emit_session(
+            db, "claude-code:49719:1743043200", "claude-code", base + 43200, end_ts=base + 46800, files=3
+        )
 
         profiles = db.query_session_profiles(since=base - 1)
-        assert len(profiles) == 2, (
-            "Same PID sessions 12h apart must remain separate")
+        assert len(profiles) == 2, "Same PID sessions 12h apart must remain separate"
 
 
 # ── Stats ──────────────────────────────────────────────────────────
+
 
 class TestStats:
     def test_stats_empty(self, db: HistoryDB):
@@ -317,6 +351,7 @@ class TestStats:
 
 
 # ── Compaction ─────────────────────────────────────────────────────
+
 
 class TestCompaction:
     def test_delete_old(self, db: HistoryDB):
@@ -349,6 +384,7 @@ class TestCompaction:
 
 # ── File-based DB ──────────────────────────────────────────────────
 
+
 class TestFileBased:
     def test_create_and_reopen(self, tmp_path):
         db_file = tmp_path / "test.db"
@@ -379,16 +415,25 @@ class TestFileBased:
 
 # ── Tool Stats (was Telemetry) ────────────────────────────────────
 
+
 class TestToolStats:
     def test_append_and_query(self, db: HistoryDB):
         now = time.time()
-        db.append_telemetry(ToolStatsRow(
-            ts=now, tool="claude-code", source="stats-cache",
-            confidence=0.95, input_tokens=1000, output_tokens=5000,
-            cache_read_tokens=500, total_sessions=3, total_messages=42,
-            model="claude-opus-4-6",
-            by_model={"claude-opus-4-6": {"input": 1000, "output": 5000}},
-        ))
+        db.append_telemetry(
+            ToolStatsRow(
+                ts=now,
+                tool="claude-code",
+                source="stats-cache",
+                confidence=0.95,
+                input_tokens=1000,
+                output_tokens=5000,
+                cache_read_tokens=500,
+                total_sessions=3,
+                total_messages=42,
+                model="claude-opus-4-6",
+                by_model={"claude-opus-4-6": {"input": 1000, "output": 5000}},
+            )
+        )
         rows = db.query_telemetry(tool="claude-code")
         assert len(rows) == 1
         assert rows[0].source == "stats-cache"
@@ -397,21 +442,20 @@ class TestToolStats:
 
     def test_batch_append(self, db: HistoryDB):
         now = time.time()
-        db.append_telemetry_batch([
-            ToolStatsRow(ts=now, tool="claude-code", input_tokens=100),
-            ToolStatsRow(ts=now, tool="copilot-cli", input_tokens=200),
-        ])
+        db.append_telemetry_batch(
+            [
+                ToolStatsRow(ts=now, tool="claude-code", input_tokens=100),
+                ToolStatsRow(ts=now, tool="copilot-cli", input_tokens=200),
+            ]
+        )
         rows = db.query_telemetry()
         assert len(rows) == 2
 
     def test_latest_telemetry(self, db: HistoryDB):
         now = time.time()
-        db.append_telemetry(ToolStatsRow(
-            ts=now - 10, tool="claude-code", input_tokens=100))
-        db.append_telemetry(ToolStatsRow(
-            ts=now, tool="claude-code", input_tokens=500))
-        db.append_telemetry(ToolStatsRow(
-            ts=now, tool="copilot-cli", input_tokens=200))
+        db.append_telemetry(ToolStatsRow(ts=now - 10, tool="claude-code", input_tokens=100))
+        db.append_telemetry(ToolStatsRow(ts=now, tool="claude-code", input_tokens=500))
+        db.append_telemetry(ToolStatsRow(ts=now, tool="copilot-cli", input_tokens=200))
         latest = db.latest_telemetry()
         assert "claude-code" in latest
         assert latest["claude-code"].input_tokens == 500
@@ -434,25 +478,41 @@ class TestMigration:
     def test_fresh_install_schema(self, tmp_path):
         """Fresh DB should get full v20 schema with all tables and indexes."""
         import sqlite3
+
         db_file = tmp_path / "fresh.db"
         db = HistoryDB(db_path=db_file, flush_interval=0)
         conn = sqlite3.connect(str(db_file))
 
         ver = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
         from aictl.storage import SCHEMA_VERSION
+
         assert ver == SCHEMA_VERSION
         assert ver == 21
 
         # New tables should exist
-        tables = {r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()}
-        for t in ("system_snapshots", "process_snapshots", "sessions",
-                   "session_processes", "agents", "requests",
-                   "tool_invocations", "files", "file_blobs",
-                   "file_history", "tool_config", "environment_vars",
-                   "tool_stats", "events", "metrics", "path_defs",
-                   "process_defs", "tools", "projects", "processes"):
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        for t in (
+            "system_snapshots",
+            "process_snapshots",
+            "sessions",
+            "session_processes",
+            "agents",
+            "requests",
+            "tool_invocations",
+            "files",
+            "file_blobs",
+            "file_history",
+            "tool_config",
+            "environment_vars",
+            "tool_stats",
+            "events",
+            "metrics",
+            "path_defs",
+            "process_defs",
+            "tools",
+            "projects",
+            "processes",
+        ):
             assert t in tables, f"Missing table: {t}"
 
         # events table should have v20 columns
@@ -473,7 +533,8 @@ class TestFileStore:
     def test_upsert_new_file(self, db: HistoryDB):
         changed = db.upsert_file(
             path="/home/user/.claude/CLAUDE.md",
-            tool="claude-code", category="instructions",
+            tool="claude-code",
+            category="instructions",
             content="# My instructions\nBe helpful.",
         )
         assert changed is True
@@ -552,10 +613,22 @@ class TestFileStore:
 
     def test_sync_from_discovery(self, db: HistoryDB):
         discovered = [
-            {"path": "/a.md", "tool": "claude-code", "category": "instructions",
-             "scope": "project", "mtime": 1000.0, "content": "hello"},
-            {"path": "/b.md", "tool": "copilot-cli", "category": "config",
-             "scope": "global", "mtime": 2000.0, "content": "world"},
+            {
+                "path": "/a.md",
+                "tool": "claude-code",
+                "category": "instructions",
+                "scope": "project",
+                "mtime": 1000.0,
+                "content": "hello",
+            },
+            {
+                "path": "/b.md",
+                "tool": "copilot-cli",
+                "category": "config",
+                "scope": "global",
+                "mtime": 2000.0,
+                "content": "world",
+            },
         ]
         result = db.sync_files_from_discovery(discovered)
         assert result["added"] == 2
@@ -578,6 +651,7 @@ class TestFileStore:
 
 
 # ── CSV Spec Tables (renamed to path_defs/process_defs) ───────────
+
 
 class TestSpecSync:
     def test_sync_specs_loads_from_registry(self, db: HistoryDB):
@@ -627,38 +701,44 @@ class TestSpecSync:
 
 # ── Universal Metrics (was Samples) ───────────────────────────────
 
+
 class TestMetrics:
     """Tests for the universal metrics table (was samples)."""
 
     def test_append_and_query(self, db: HistoryDB):
         now = time.time()
-        db.append_samples([
-            Metric(ts=now, metric="cpu.core.0", value=45.2),
-            Metric(ts=now, metric="cpu.core.1", value=12.8),
-            Metric(ts=now, metric="proc.123.cpu", value=5.5,
-                   tags={"tool": "claude-code", "pid": "123"}),
-        ])
+        db.append_samples(
+            [
+                Metric(ts=now, metric="cpu.core.0", value=45.2),
+                Metric(ts=now, metric="cpu.core.1", value=12.8),
+                Metric(ts=now, metric="proc.123.cpu", value=5.5, tags={"tool": "claude-code", "pid": "123"}),
+            ]
+        )
         rows = db.query_samples(metric="cpu.core.0")
         assert len(rows) == 1
         assert rows[0].value == 45.2
 
     def test_query_prefix(self, db: HistoryDB):
         now = time.time()
-        db.append_samples([
-            Metric(ts=now, metric="cpu.core.0", value=10),
-            Metric(ts=now, metric="cpu.core.1", value=20),
-            Metric(ts=now, metric="cpu.core.2", value=30),
-            Metric(ts=now, metric="mem.total", value=8000),
-        ])
+        db.append_samples(
+            [
+                Metric(ts=now, metric="cpu.core.0", value=10),
+                Metric(ts=now, metric="cpu.core.1", value=20),
+                Metric(ts=now, metric="cpu.core.2", value=30),
+                Metric(ts=now, metric="mem.total", value=8000),
+            ]
+        )
         rows = db.query_samples(metric_prefix="cpu.core")
         assert len(rows) == 3
 
     def test_query_tag_filter(self, db: HistoryDB):
         now = time.time()
-        db.append_samples([
-            Metric(ts=now, metric="proc.1.cpu", value=5, tags={"tool": "claude-code"}),
-            Metric(ts=now, metric="proc.2.cpu", value=10, tags={"tool": "copilot-cli"}),
-        ])
+        db.append_samples(
+            [
+                Metric(ts=now, metric="proc.1.cpu", value=5, tags={"tool": "claude-code"}),
+                Metric(ts=now, metric="proc.2.cpu", value=10, tags={"tool": "copilot-cli"}),
+            ]
+        )
         rows = db.query_samples(metric_prefix="proc.", tag_filter={"tool": "claude-code"})
         assert len(rows) == 1
         assert rows[0].tags["tool"] == "claude-code"
@@ -673,12 +753,14 @@ class TestMetrics:
 
     def test_list_metrics(self, db: HistoryDB):
         now = time.time()
-        db.append_samples([
-            Metric(ts=now, metric="cpu.core.0", value=10),
-            Metric(ts=now, metric="cpu.core.1", value=20),
-            Metric(ts=now + 1, metric="cpu.core.0", value=15),
-            Metric(ts=now, metric="mem.total", value=8000),
-        ])
+        db.append_samples(
+            [
+                Metric(ts=now, metric="cpu.core.0", value=10),
+                Metric(ts=now, metric="cpu.core.1", value=20),
+                Metric(ts=now + 1, metric="cpu.core.0", value=15),
+                Metric(ts=now, metric="mem.total", value=8000),
+            ]
+        )
         metrics = db.list_metrics()
         assert len(metrics) == 3
         names = [m["metric"] for m in metrics]
@@ -689,18 +771,22 @@ class TestMetrics:
 
     def test_list_metrics_prefix(self, db: HistoryDB):
         now = time.time()
-        db.append_samples([
-            Metric(ts=now, metric="cpu.core.0", value=10),
-            Metric(ts=now, metric="mem.total", value=8000),
-        ])
+        db.append_samples(
+            [
+                Metric(ts=now, metric="cpu.core.0", value=10),
+                Metric(ts=now, metric="mem.total", value=8000),
+            ]
+        )
         cpu_metrics = db.list_metrics(prefix="cpu.")
         assert len(cpu_metrics) == 1
 
     def test_stats_include_samples(self, db: HistoryDB):
-        db.append_samples([
-            Metric(ts=time.time(), metric="test.x", value=1),
-            Metric(ts=time.time()+0.001, metric="test.y", value=2),
-        ])
+        db.append_samples(
+            [
+                Metric(ts=time.time(), metric="test.x", value=1),
+                Metric(ts=time.time() + 0.001, metric="test.y", value=2),
+            ]
+        )
         s = db.stats()
         assert s["samples_count"] == 2
 
@@ -711,14 +797,20 @@ class TestMetrics:
 
 # ── Sessions (new) ─────────────────────────────────────────────────
 
+
 class TestSessions:
     def test_upsert_and_query(self, db: HistoryDB):
         now = time.time()
-        db.upsert_session(SessionRow(
-            session_id="sess-1", tool="claude-code",
-            project_path="/repo", model="claude-opus-4-6",
-            started_at=now, source="hook",
-        ))
+        db.upsert_session(
+            SessionRow(
+                session_id="sess-1",
+                tool="claude-code",
+                project_path="/repo",
+                model="claude-opus-4-6",
+                started_at=now,
+                source="hook",
+            )
+        )
         sessions = db.query_sessions()
         assert len(sessions) == 1
         assert sessions[0]["session_id"] == "sess-1"
@@ -743,8 +835,7 @@ class TestSessions:
     def test_query_active_sessions(self, db: HistoryDB):
         now = time.time()
         db.upsert_session(SessionRow(session_id="active", started_at=now))
-        db.upsert_session(SessionRow(session_id="ended", started_at=now,
-                                     ended_at=now + 100))
+        db.upsert_session(SessionRow(session_id="ended", started_at=now, ended_at=now + 100))
         active = db.query_sessions(active=True)
         assert len(active) == 1
         assert active[0]["session_id"] == "active"
@@ -754,17 +845,25 @@ class TestSessions:
         even when the sessions table has files_modified=0 (Bug #2 regression)."""
         now = time.time()
         sid = "claude-code:1234:1700000000"
-        db.upsert_session(SessionRow(
-            session_id=sid, tool="claude-code",
-            started_at=now - 100, source="correlator",
-        ))
+        db.upsert_session(
+            SessionRow(
+                session_id=sid,
+                tool="claude-code",
+                started_at=now - 100,
+                source="correlator",
+            )
+        )
         # Simulate file_modified events (written by correlator)
         for i in range(3):
-            db.append_event(EventRow(
-                ts=now - 50 + i, tool="claude-code",
-                kind="file_modified", session_id=sid,
-                detail={"path": f"/repo/file{i}.py", "growth_bytes": 100},
-            ))
+            db.append_event(
+                EventRow(
+                    ts=now - 50 + i,
+                    tool="claude-code",
+                    kind="file_modified",
+                    session_id=sid,
+                    detail={"path": f"/repo/file{i}.py", "growth_bytes": 100},
+                )
+            )
         profiles = db.query_session_profiles(since=now - 200)
         assert len(profiles) == 1
         assert profiles[0]["files_modified"] == 3
@@ -772,10 +871,8 @@ class TestSessions:
     def test_query_session_flow(self, db: HistoryDB):
         now = time.time()
         db.upsert_session(SessionRow(session_id="s1", started_at=now))
-        db.append_request(RequestRow(ts=now, session_id="s1", model="claude-opus-4-6",
-                                     input_tokens=100, source="test"))
-        db.append_tool_invocation(ToolInvocationRow(
-            ts=now, session_id="s1", tool_name="bash", source="test"))
+        db.append_request(RequestRow(ts=now, session_id="s1", model="claude-opus-4-6", input_tokens=100, source="test"))
+        db.append_tool_invocation(ToolInvocationRow(ts=now, session_id="s1", tool_name="bash", source="test"))
         flow = db.query_session_flow("s1")
         assert len(flow["requests"]) == 1
         assert len(flow["tool_invocations"]) == 1
@@ -783,14 +880,21 @@ class TestSessions:
 
 # ── Requests (new) ─────────────────────────────────────────────────
 
+
 class TestRequests:
     def test_append_and_query(self, db: HistoryDB):
         now = time.time()
-        db.append_request(RequestRow(
-            ts=now, session_id="s1", model="claude-opus-4-6",
-            input_tokens=100, output_tokens=500,
-            cost_usd=0.01, source="test",
-        ))
+        db.append_request(
+            RequestRow(
+                ts=now,
+                session_id="s1",
+                model="claude-opus-4-6",
+                input_tokens=100,
+                output_tokens=500,
+                cost_usd=0.01,
+                source="test",
+            )
+        )
         rows = db.query_requests(session_id="s1")
         assert len(rows) == 1
         assert rows[0]["model"] == "claude-opus-4-6"
@@ -799,23 +903,34 @@ class TestRequests:
     def test_dedup(self, db: HistoryDB):
         now = time.time()
         for _ in range(3):
-            db.append_request(RequestRow(
-                ts=now, session_id="s1", model="m1", source="x",
-            ))
+            db.append_request(
+                RequestRow(
+                    ts=now,
+                    session_id="s1",
+                    model="m1",
+                    source="x",
+                )
+            )
         rows = db.query_requests()
         assert len(rows) == 1  # deduped
 
 
 # ── Tool Invocations (new) ─────────────────────────────────────────
 
+
 class TestToolInvocations:
     def test_append_and_query(self, db: HistoryDB):
         now = time.time()
-        db.append_tool_invocation(ToolInvocationRow(
-            ts=now, session_id="s1", tool_name="bash",
-            input={"command": "ls"}, result_summary="ok",
-            source="test",
-        ))
+        db.append_tool_invocation(
+            ToolInvocationRow(
+                ts=now,
+                session_id="s1",
+                tool_name="bash",
+                input={"command": "ls"},
+                result_summary="ok",
+                source="test",
+            )
+        )
         rows = db.query_tool_invocations(session_id="s1")
         assert len(rows) == 1
         assert rows[0]["tool_name"] == "bash"
@@ -823,13 +938,18 @@ class TestToolInvocations:
 
 # ── Processes (new) ────────────────────────────────────────────────
 
+
 class TestProcesses:
     def test_upsert_and_query(self, db: HistoryDB):
         now = time.time()
-        db.upsert_process(ProcessRow(
-            pid=12345, tool="claude-code", started_at=now,
-            cmdline="/usr/bin/node claude",
-        ))
+        db.upsert_process(
+            ProcessRow(
+                pid=12345,
+                tool="claude-code",
+                started_at=now,
+                cmdline="/usr/bin/node claude",
+            )
+        )
         procs = db.query_processes(tool="claude-code")
         assert len(procs) == 1
         assert procs[0]["pid"] == 12345
@@ -837,8 +957,7 @@ class TestProcesses:
     def test_update_process_exit(self, db: HistoryDB):
         now = time.time()
         db.upsert_process(ProcessRow(pid=111, started_at=now))
-        db.update_process_exit(pid=111, started_at=now,
-                               ended_at=now + 60, exit_code=0)
+        db.update_process_exit(pid=111, started_at=now, ended_at=now + 60, exit_code=0)
         procs = db.query_processes()
         assert procs[0]["ended_at"] == now + 60
         assert procs[0]["exit_code"] == 0
@@ -846,14 +965,20 @@ class TestProcesses:
 
 # ── Agents (new) ───────────────────────────────────────────────────
 
+
 class TestAgents:
     def test_upsert_and_query(self, db: HistoryDB):
         now = time.time()
-        db.upsert_agent(AgentRow(
-            agent_id="agent-1", session_id="s1", tool="claude-code",
-            task="refactor storage.py", model="claude-opus-4-6",
-            started_at=now,
-        ))
+        db.upsert_agent(
+            AgentRow(
+                agent_id="agent-1",
+                session_id="s1",
+                tool="claude-code",
+                task="refactor storage.py",
+                model="claude-opus-4-6",
+                started_at=now,
+            )
+        )
         agents = db.query_agents("s1")
         assert len(agents) == 1
         assert agents[0]["task"] == "refactor storage.py"
@@ -861,34 +986,29 @@ class TestAgents:
 
 # ── Config/Env (new) ──────────────────────────────────────────────
 
+
 class TestConfigEnv:
     def test_upsert_tool_config(self, db: HistoryDB):
         now = time.time()
-        changed = db.upsert_tool_config(now, "claude-code", "/repo",
-                                         "max_tokens", "4096")
+        changed = db.upsert_tool_config(now, "claude-code", "/repo", "max_tokens", "4096")
         assert changed is True
         # Same value again
-        changed = db.upsert_tool_config(now + 1, "claude-code", "/repo",
-                                         "max_tokens", "4096")
+        changed = db.upsert_tool_config(now + 1, "claude-code", "/repo", "max_tokens", "4096")
         assert changed is False
         # Different value
-        changed = db.upsert_tool_config(now + 2, "claude-code", "/repo",
-                                         "max_tokens", "8192")
+        changed = db.upsert_tool_config(now + 2, "claude-code", "/repo", "max_tokens", "8192")
         assert changed is True
 
     def test_upsert_env_var(self, db: HistoryDB):
         now = time.time()
-        changed = db.upsert_env_var(now, "/repo", "claude-code",
-                                     "ANTHROPIC_API_KEY", "sk-***",
-                                     is_secret=True)
+        changed = db.upsert_env_var(now, "/repo", "claude-code", "ANTHROPIC_API_KEY", "sk-***", is_secret=True)
         assert changed is True
-        changed = db.upsert_env_var(now + 1, "/repo", "claude-code",
-                                     "ANTHROPIC_API_KEY", "sk-***",
-                                     is_secret=True)
+        changed = db.upsert_env_var(now + 1, "/repo", "claude-code", "ANTHROPIC_API_KEY", "sk-***", is_secret=True)
         assert changed is False
 
 
 # ── UI layout seed + queries ──────────────────────────────────────
+
 
 class TestUILayout:
     """Tests for UI schema seed data and layout queries."""
@@ -904,9 +1024,7 @@ class TestUILayout:
         conn = db._conn()
         count = conn.execute("SELECT COUNT(*) FROM ui_tab").fetchone()[0]
         assert count == 7
-        keys = [r[0] for r in conn.execute(
-            "SELECT key FROM ui_tab ORDER BY sort_order"
-        ).fetchall()]
+        keys = [r[0] for r in conn.execute("SELECT key FROM ui_tab ORDER BY sort_order").fetchall()]
         assert keys == ["overview", "procs", "mcp", "memory", "live", "events", "budget"]
 
     def test_seed_sections(self, db: HistoryDB):
@@ -968,8 +1086,7 @@ class TestUILayout:
     def test_get_layout_global_vs_tab_scoped(self, db: HistoryDB):
         layout = db.get_layout("main")
         for s in layout["sections"]:
-            if s["key"] in ("sparklines", "inventory", "live_metrics",
-                            "event_timeline", "resource_bars"):
+            if s["key"] in ("sparklines", "inventory", "live_metrics", "event_timeline", "resource_bars"):
                 assert s["tab_key"] is None, f"{s['key']} should be global"
             elif s["key"] == "tool_charts":
                 assert s["tab_key"] == "events"
@@ -1002,16 +1119,14 @@ class TestUILayout:
         conn1 = db1._conn()
         counts1 = {
             t: conn1.execute(f"SELECT COUNT(*) FROM ui_{t}").fetchone()[0]
-            for t in ("dashboard", "tab", "section", "widget",
-                      "datasource", "group_by_option", "preference")
+            for t in ("dashboard", "tab", "section", "widget", "datasource", "group_by_option", "preference")
         }
         db1.close()
         db2 = HistoryDB(db_path=db_file, flush_interval=0)
         conn2 = db2._conn()
         counts2 = {
             t: conn2.execute(f"SELECT COUNT(*) FROM ui_{t}").fetchone()[0]
-            for t in ("dashboard", "tab", "section", "widget",
-                      "datasource", "group_by_option", "preference")
+            for t in ("dashboard", "tab", "section", "widget", "datasource", "group_by_option", "preference")
         }
         db2.close()
         assert counts1 == counts2
@@ -1047,16 +1162,33 @@ class TestUILayout:
             "slug": "main",
             "title": "custom dashboard",
             "tabs": [
-                {"key": "home", "title": "Home", "shortcut": "1", "sort_order": 0,
-                 "visible": True, "group_by_options": []},
+                {
+                    "key": "home",
+                    "title": "Home",
+                    "shortcut": "1",
+                    "sort_order": 0,
+                    "visible": True,
+                    "group_by_options": [],
+                },
             ],
             "sections": [
-                {"key": "hero", "title": "Hero", "sort_order": 0, "visible": True,
-                 "columns": 2, "tab_key": None,
-                 "widgets": [
-                     {"key": "greeting", "kind": "text", "title": "Welcome",
-                      "sort_order": 0, "config": {"message": "hello"}},
-                 ]},
+                {
+                    "key": "hero",
+                    "title": "Hero",
+                    "sort_order": 0,
+                    "visible": True,
+                    "columns": 2,
+                    "tab_key": None,
+                    "widgets": [
+                        {
+                            "key": "greeting",
+                            "kind": "text",
+                            "title": "Welcome",
+                            "sort_order": 0,
+                            "config": {"message": "hello"},
+                        },
+                    ],
+                },
             ],
             "datasources": {
                 "snapshot": {"kind": "rest", "endpoint": "/api/snapshot", "config": {}},
@@ -1075,6 +1207,7 @@ class TestUILayout:
 
 
 # ── File Blob Support (new) ────────────────────────────────────────
+
 
 class TestFileBlobs:
     def test_large_file_uses_blob(self, db: HistoryDB):
@@ -1104,6 +1237,7 @@ class TestFileBlobs:
 
 
 # ── Dedup Key ──────────────────────────────────────────────────────
+
 
 class TestDedupKey:
     def test_deterministic(self):
@@ -1139,44 +1273,60 @@ class TestSessionFlowPidCorrelation:
         corr_sid_1 = "claude-code:1111:1711900000"
         corr_sid_2 = "claude-code:2222:1711900500"
 
-        db.upsert_session(SessionRow(
-            session_id=corr_sid_1, tool="claude-code", pid=1111,
-            started_at=ts, source="correlator"))
+        db.upsert_session(
+            SessionRow(session_id=corr_sid_1, tool="claude-code", pid=1111, started_at=ts, source="correlator")
+        )
         db.link_session_process(corr_sid_1, 1111, tool="claude-code")
 
-        db.upsert_session(SessionRow(
-            session_id=corr_sid_2, tool="claude-code", pid=2222,
-            started_at=ts + 500, source="correlator"))
+        db.upsert_session(
+            SessionRow(session_id=corr_sid_2, tool="claude-code", pid=2222, started_at=ts + 500, source="correlator")
+        )
         db.link_session_process(corr_sid_2, 2222, tool="claude-code")
 
         # ── Simulate OTel events arriving for each PID with different UUIDs ──
         otel_sid_1 = "uuid-aaaa-1111"
         otel_sid_2 = "uuid-bbbb-2222"
 
-        db.upsert_session(SessionRow(
-            session_id=otel_sid_1, tool="claude-code", pid=1111,
-            started_at=ts, source="otel"))
+        db.upsert_session(SessionRow(session_id=otel_sid_1, tool="claude-code", pid=1111, started_at=ts, source="otel"))
         db.link_session_process(otel_sid_1, 1111, tool="claude-code")
 
-        db.upsert_session(SessionRow(
-            session_id=otel_sid_2, tool="claude-code", pid=2222,
-            started_at=ts + 500, source="otel"))
+        db.upsert_session(
+            SessionRow(session_id=otel_sid_2, tool="claude-code", pid=2222, started_at=ts + 500, source="otel")
+        )
         db.link_session_process(otel_sid_2, 2222, tool="claude-code")
 
         # OTel API request events — each session gets different token counts
-        db.append_event(EventRow(
-            ts=ts + 10, tool="claude-code", kind="otel:api_request",
-            detail={"input_tokens": 100, "session_id": otel_sid_1},
-            session_id=otel_sid_1, pid=1111))
-        db.append_event(EventRow(
-            ts=ts + 20, tool="claude-code", kind="otel:api_request",
-            detail={"input_tokens": 200, "session_id": otel_sid_1},
-            session_id=otel_sid_1, pid=1111))
+        db.append_event(
+            EventRow(
+                ts=ts + 10,
+                tool="claude-code",
+                kind="otel:api_request",
+                detail={"input_tokens": 100, "session_id": otel_sid_1},
+                session_id=otel_sid_1,
+                pid=1111,
+            )
+        )
+        db.append_event(
+            EventRow(
+                ts=ts + 20,
+                tool="claude-code",
+                kind="otel:api_request",
+                detail={"input_tokens": 200, "session_id": otel_sid_1},
+                session_id=otel_sid_1,
+                pid=1111,
+            )
+        )
 
-        db.append_event(EventRow(
-            ts=ts + 510, tool="claude-code", kind="otel:api_request",
-            detail={"input_tokens": 999, "session_id": otel_sid_2},
-            session_id=otel_sid_2, pid=2222))
+        db.append_event(
+            EventRow(
+                ts=ts + 510,
+                tool="claude-code",
+                kind="otel:api_request",
+                detail={"input_tokens": 999, "session_id": otel_sid_2},
+                session_id=otel_sid_2,
+                pid=2222,
+            )
+        )
         db.flush()
 
         # ── Verify PID correlation ──
@@ -1193,9 +1343,7 @@ class TestSessionFlowPidCorrelation:
 
         # ── Simulate what _serve_session_flow does for session 1 ──
         # Step 1: Direct events for correlator session_id
-        direct_events = db.query_events(
-            since=ts - 60, until=ts + 7200,
-            session_id=corr_sid_1, limit=5000)
+        direct_events = db.query_events(since=ts - 60, until=ts + 7200, session_id=corr_sid_1, limit=5000)
 
         # Step 2: Find related sessions via PID
         related = set(db.find_session_ids_by_pid(1111))
@@ -1203,11 +1351,8 @@ class TestSessionFlowPidCorrelation:
 
         api_events_1 = []
         for rel_sid in related:
-            rel = db.query_events(
-                since=ts - 7200, until=ts + 7200,
-                session_id=rel_sid, limit=5000)
-            api_events_1.extend(
-                e for e in rel if e.kind.startswith("otel:"))
+            rel = db.query_events(since=ts - 7200, until=ts + 7200, session_id=rel_sid, limit=5000)
+            api_events_1.extend(e for e in rel if e.kind.startswith("otel:"))
 
         # Session 1 should see exactly 2 OTel events (tokens 100 and 200)
         assert len(api_events_1) == 2
@@ -1220,11 +1365,8 @@ class TestSessionFlowPidCorrelation:
 
         api_events_2 = []
         for rel_sid in related2:
-            rel = db.query_events(
-                since=ts - 7200, until=ts + 7200,
-                session_id=rel_sid, limit=5000)
-            api_events_2.extend(
-                e for e in rel if e.kind.startswith("otel:"))
+            rel = db.query_events(since=ts - 7200, until=ts + 7200, session_id=rel_sid, limit=5000)
+            api_events_2.extend(e for e in rel if e.kind.startswith("otel:"))
 
         # Session 2 should see exactly 1 OTel event (tokens 999)
         assert len(api_events_2) == 1
@@ -1232,28 +1374,37 @@ class TestSessionFlowPidCorrelation:
 
         # ── THE BUG: without PID correlation, both would see all 3 events ──
         # Verify that tool+time query (old broken path) returns ALL events
-        all_tool_events = db.query_events(
-            since=ts - 7200, until=ts + 7200,
-            tool="claude-code", limit=5000)
+        all_tool_events = db.query_events(since=ts - 7200, until=ts + 7200, tool="claude-code", limit=5000)
         otel_all = [e for e in all_tool_events if e.kind.startswith("otel:")]
         assert len(otel_all) == 3  # all 3 events mixed — the old bug
 
     def test_pid_stored_on_session(self, db):
         """PID must be stored as a structured column, not buried in session_id."""
-        db.upsert_session(SessionRow(
-            session_id="claude-code:4242:1711900000",
-            tool="claude-code", pid=4242,
-            started_at=time.time(), source="correlator"))
+        db.upsert_session(
+            SessionRow(
+                session_id="claude-code:4242:1711900000",
+                tool="claude-code",
+                pid=4242,
+                started_at=time.time(),
+                source="correlator",
+            )
+        )
         rows = db.query_sessions(tool="claude-code")
         assert len(rows) == 1
         assert rows[0]["pid"] == 4242
 
     def test_event_row_carries_pid_and_session_id(self, db):
         """EventRow must carry pid and session_id as first-class fields."""
-        db.append_event(EventRow(
-            ts=time.time(), tool="test", kind="otel:api_request",
-            detail={"foo": "bar"},
-            session_id="uuid-123", pid=9999))
+        db.append_event(
+            EventRow(
+                ts=time.time(),
+                tool="test",
+                kind="otel:api_request",
+                detail={"foo": "bar"},
+                session_id="uuid-123",
+                pid=9999,
+            )
+        )
         db.flush()
 
         events = db.query_events(tool="test")
@@ -1264,12 +1415,12 @@ class TestSessionFlowPidCorrelation:
     def test_query_events_pid_filter(self, db):
         """query_events(pid=X) must return only events for that PID."""
         ts = time.time()
-        db.append_event(EventRow(
-            ts=ts, tool="claude-code", kind="otel:api_request",
-            detail={}, session_id="a", pid=111))
-        db.append_event(EventRow(
-            ts=ts + 1, tool="claude-code", kind="otel:api_request",
-            detail={}, session_id="b", pid=222))
+        db.append_event(
+            EventRow(ts=ts, tool="claude-code", kind="otel:api_request", detail={}, session_id="a", pid=111)
+        )
+        db.append_event(
+            EventRow(ts=ts + 1, tool="claude-code", kind="otel:api_request", detail={}, session_id="b", pid=222)
+        )
         db.flush()
 
         pid111 = db.query_events(tool="claude-code", pid=111)
@@ -1286,20 +1437,30 @@ class TestSessionFlowPidCorrelation:
 
         receiver = OtelReceiver()
         body = {
-            "resourceLogs": [{
-                "resource": {"attributes": [
-                    {"key": "service.name", "value": {"stringValue": "claude-code"}},
-                    {"key": "session.id", "value": {"stringValue": "otel-uuid-123"}},
-                    {"key": "process.pid", "value": {"intValue": 5555}},
-                ]},
-                "scopeLogs": [{"logRecords": [{
-                    "timeUnixNano": "1711900000000000000",
-                    "attributes": [
-                        {"key": "event.name", "value": {"stringValue": "api_request"}},
-                        {"key": "input_tokens", "value": {"intValue": 100}},
+            "resourceLogs": [
+                {
+                    "resource": {
+                        "attributes": [
+                            {"key": "service.name", "value": {"stringValue": "claude-code"}},
+                            {"key": "session.id", "value": {"stringValue": "otel-uuid-123"}},
+                            {"key": "process.pid", "value": {"intValue": 5555}},
+                        ]
+                    },
+                    "scopeLogs": [
+                        {
+                            "logRecords": [
+                                {
+                                    "timeUnixNano": "1711900000000000000",
+                                    "attributes": [
+                                        {"key": "event.name", "value": {"stringValue": "api_request"}},
+                                        {"key": "input_tokens", "value": {"intValue": 100}},
+                                    ],
+                                }
+                            ]
+                        }
                     ],
-                }]}],
-            }],
+                }
+            ],
         }
         events = receiver.parse_logs(body)
         assert len(events) == 1
@@ -1327,27 +1488,31 @@ class TestSessionFlowPidCorrelation:
         ts_new = ts_old + 86400  # 24h later — definitely a PID reuse
 
         # Old session (ended)
-        db.upsert_session(SessionRow(
-            session_id="old-session", tool="claude-code", pid=5555,
-            started_at=ts_old, ended_at=ts_old + 3600, source="hook"))
+        db.upsert_session(
+            SessionRow(
+                session_id="old-session",
+                tool="claude-code",
+                pid=5555,
+                started_at=ts_old,
+                ended_at=ts_old + 3600,
+                source="hook",
+            )
+        )
         db.link_session_process("old-session", 5555, tool="claude-code")
 
         # New session (still active, same PID)
-        db.upsert_session(SessionRow(
-            session_id="new-session", tool="claude-code", pid=5555,
-            started_at=ts_new, source="hook"))
+        db.upsert_session(
+            SessionRow(session_id="new-session", tool="claude-code", pid=5555, started_at=ts_new, source="hook")
+        )
         db.link_session_process("new-session", 5555, tool="claude-code")
 
         # Unscoped returns both
-        assert set(db.find_session_ids_by_pid(5555)) == {
-            "old-session", "new-session"}
+        assert set(db.find_session_ids_by_pid(5555)) == {"old-session", "new-session"}
 
         # Scoped to the new window returns only the new session
-        scoped = db.find_session_ids_by_pid(
-            5555, since=ts_new - 60, until=ts_new + 7200)
+        scoped = db.find_session_ids_by_pid(5555, since=ts_new - 60, until=ts_new + 7200)
         assert set(scoped) == {"new-session"}
 
         # Scoped to the old window returns only the old session
-        scoped_old = db.find_session_ids_by_pid(
-            5555, since=ts_old - 60, until=ts_old + 7200)
+        scoped_old = db.find_session_ids_by_pid(5555, since=ts_old - 60, until=ts_old + 7200)
         assert set(scoped_old) == {"old-session"}

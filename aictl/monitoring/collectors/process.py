@@ -74,6 +74,7 @@ def _load_csv_patterns() -> list[tuple[re.Pattern, str]]:
 
 # ─── Public API ────────────────────────────────────────────────
 
+
 def classify_process(process: ProcessInfo) -> MatchResult:
     """Map a process to a monitored tool family.
 
@@ -136,8 +137,7 @@ class PsutilProcessCollector(BaseCollector):
             try:
                 per_core = psutil.cpu_percent(interval=0, percpu=True)
                 for i, pct in enumerate(per_core):
-                    self.sink_emit_cpu(M("system.cpu.utilization"),
-                                      pct / 100, {"cpu.id": str(i)})
+                    self.sink_emit_cpu(M("system.cpu.utilization"), pct / 100, {"cpu.id": str(i)})
             except (psutil.Error, OSError):
                 pass
 
@@ -150,21 +150,16 @@ class PsutilProcessCollector(BaseCollector):
 
                 # Correlator: typed session tracking
                 if self.correlator:
-                    self.correlator.on_process(
-                        proc, cpu_pct, mem_rss, sample["child_count"],
-                        is_new=is_new)
+                    self.correlator.on_process(proc, cpu_pct, mem_rss, sample["child_count"], is_new=is_new)
 
                 # Sink: full-resolution per-PID metrics (OTel conventions)
                 ptags = {"process.pid": str(pid), "process.name": proc.name}
                 match = classify_process(proc)
                 if match.tool:
                     ptags["aictl.tool"] = match.tool
-                self.sink_emit_cpu(M("process.cpu.utilization"),
-                               cpu_pct / 100, ptags)
-                self.sink_emit_memory(M("process.memory.usage"),
-                               float(mem_rss or 0), ptags)
-                self.sink_emit_if_changed(M("process.thread.count"),
-                               float(sample["child_count"]), ptags)
+                self.sink_emit_cpu(M("process.cpu.utilization"), cpu_pct / 100, ptags)
+                self.sink_emit_memory(M("process.memory.usage"), float(mem_rss or 0), ptags)
+                self.sink_emit_if_changed(M("process.thread.count"), float(sample["child_count"]), ptags)
 
             for pid in sorted(self._known_pids - current_pids):
                 self._handles.pop(pid, None)
@@ -272,7 +267,9 @@ class PsutilProcessCollector(BaseCollector):
                     queue.append(child_pid)
         return tracked
 
+
 # ── Filesystem collector ────────────────────────────────
+
 
 class WatchdogFileCollector(BaseCollector):
     """Watch project and state directories for file activity."""
@@ -330,9 +327,7 @@ class WatchdogFileCollector(BaseCollector):
 
                 # Correlator: typed session tracking
                 if self.correlator and path:
-                    self.correlator.on_file(
-                        path, growth, event_type,
-                        tool_hint=tool_hint, workspace=workspace)
+                    self.correlator.on_file(path, growth, event_type, tool_hint=tool_hint, workspace=workspace)
 
                 # Sink: per-file metrics
                 if path:

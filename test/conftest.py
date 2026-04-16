@@ -25,6 +25,8 @@ def _aictl_assume_yes(monkeypatch):
     """Tests run in non-TTY context; explicitly approve writes so WriteGuard
     doesn't abort. Individual tests can override via monkeypatch.delenv."""
     monkeypatch.setenv("AICTL_ASSUME_YES", "1")
+
+
 _PYTHON = sys.executable
 
 
@@ -136,19 +138,22 @@ def aictl_server(tmp_path_factory) -> ServerHandle:
     db_path = db_dir / "e2e_test.db"
 
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
-    cli_invoke = (
-        "import sys; sys.argv = ['aictl'] + sys.argv[1:]; "
-        "from aictl.cli import main; main()"
-    )
+    cli_invoke = "import sys; sys.argv = ['aictl'] + sys.argv[1:]; from aictl.cli import main; main()"
     proc = subprocess.Popen(
         [
-            _PYTHON, "-c", cli_invoke,
-            "daemon", "serve",
-            "--port", str(port),
+            _PYTHON,
+            "-c",
+            cli_invoke,
+            "daemon",
+            "serve",
+            "--port",
+            str(port),
             "--no-open",
             "--no-monitor",
-            "--db", str(db_path),
-            "--root", str(REPO_ROOT),
+            "--db",
+            str(db_path),
+            "--root",
+            str(REPO_ROOT),
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -161,8 +166,7 @@ def aictl_server(tmp_path_factory) -> ServerHandle:
         proc.kill()
         stdout, stderr = proc.communicate(timeout=5)
         raise RuntimeError(
-            f"aictl serve failed to start on :{port}\n"
-            f"stdout: {stdout.decode()[:500]}\nstderr: {stderr.decode()[:500]}"
+            f"aictl serve failed to start on :{port}\nstdout: {stdout.decode()[:500]}\nstderr: {stderr.decode()[:500]}"
         )
 
     handle = ServerHandle(port=port, db_path=db_path, proc=proc)

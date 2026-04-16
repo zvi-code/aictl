@@ -36,9 +36,7 @@ class TestGeminiBasic:
         if result.get("error"):
             pytest.skip(f"Gemini unavailable: {result['error']}")
         response = result.get("response", "")
-        assert "GEMINI_CONTENT_CHECK" in response, (
-            f"Expected 'GEMINI_CONTENT_CHECK' in response, got: {response[:200]}"
-        )
+        assert "GEMINI_CONTENT_CHECK" in response, f"Expected 'GEMINI_CONTENT_CHECK' in response, got: {response[:200]}"
 
     def test_gemini_json_has_session_id(self, run_gemini, gemini_project):
         result = run_gemini("Say exactly: SESSION_CHECK", cwd=gemini_project)
@@ -57,9 +55,7 @@ class TestGeminiBasic:
         assert len(models) > 0, "No model stats returned"
         for _model_name, model_stats in models.items():
             tokens = model_stats.get("tokens", {})
-            assert tokens.get("input", 0) > 0 or tokens.get("total", 0) > 0, (
-                f"No token stats for model {_model_name}"
-            )
+            assert tokens.get("input", 0) > 0 or tokens.get("total", 0) > 0, f"No token stats for model {_model_name}"
             break
 
 
@@ -87,12 +83,8 @@ class TestGeminiHooksIntegration:
             pytest.skip(f"Gemini unavailable: {result['error']}")
 
         events = aictl_server.get_events(since="0", min_count=1, timeout=20)
-        end_events = [
-            e for e in events if e["kind"] in ("hook:SessionEnd", "hook:Stop")
-        ]
-        assert len(end_events) >= 1, (
-            f"No session end hooks found. Kinds: {[e['kind'] for e in events[:10]]}"
-        )
+        end_events = [e for e in events if e["kind"] in ("hook:SessionEnd", "hook:Stop")]
+        assert len(end_events) >= 1, f"No session end hooks found. Kinds: {[e['kind'] for e in events[:10]]}"
 
     def test_hook_payload_structure(self, run_gemini, aictl_server, gemini_project):
         """Hook payloads from Gemini have expected fields."""
@@ -115,7 +107,8 @@ class TestGeminiHooksIntegration:
         """If Gemini uses tools, the events are captured."""
         result = run_gemini(
             "Read the file hello.py and tell me what it prints",
-            cwd=gemini_project, timeout=90,
+            cwd=gemini_project,
+            timeout=90,
         )
         if result.get("error"):
             pytest.skip(f"Gemini unavailable: {result['error']}")

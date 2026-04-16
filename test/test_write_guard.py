@@ -26,6 +26,7 @@ from aictl.utils import WriteGuard
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 @contextmanager
 def _fake_click_ctx():
     """Push a minimal Click context so WriteGuard.install/current works."""
@@ -44,14 +45,14 @@ def _confirm_interactive(guard, path, action="modify", user_input="Y"):
     click.prompt to return a canned response — bypassing all actual I/O.
     """
     with _fake_click_ctx():
-        with patch("sys.stdin.isatty", return_value=True), \
-             patch("click.prompt", return_value=user_input):
+        with patch("sys.stdin.isatty", return_value=True), patch("click.prompt", return_value=user_input):
             guard.confirm(path, action)
 
 
 # ---------------------------------------------------------------------------
 # WriteGuard unit tests — install / current
 # ---------------------------------------------------------------------------
+
 
 class TestWriteGuardInstall:
     def test_install_returns_guard(self):
@@ -106,6 +107,7 @@ class TestWriteGuardInstall:
 # WriteGuard.confirm() — silent paths (no prompt expected)
 # ---------------------------------------------------------------------------
 
+
 class TestWriteGuardConfirmSilent:
     def test_new_file_no_prompt(self, tmp_path):
         """Files that don't exist yet are always silently approved."""
@@ -156,6 +158,7 @@ class TestWriteGuardConfirmSilent:
 # WriteGuard.confirm() — interactive paths (TTY + Click context)
 # ---------------------------------------------------------------------------
 
+
 class TestWriteGuardConfirmInteractive:
     """Use _confirm_interactive() to drive the prompt with canned responses."""
 
@@ -200,9 +203,11 @@ class TestWriteGuardConfirmInteractive:
 
         echoed = []
         with _fake_click_ctx():
-            with patch("sys.stdin.isatty", return_value=True), \
-                 patch("click.prompt", return_value="Y"), \
-                 patch("click.secho", side_effect=lambda msg, **kw: echoed.append(msg)):
+            with (
+                patch("sys.stdin.isatty", return_value=True),
+                patch("click.prompt", return_value="Y"),
+                patch("click.secho", side_effect=lambda msg, **kw: echoed.append(msg)),
+            ):
                 guard.confirm(existing, "modify")
 
         full_output = "\n".join(echoed)
@@ -217,9 +222,11 @@ class TestWriteGuardConfirmInteractive:
 
         echoed = []
         with _fake_click_ctx():
-            with patch("sys.stdin.isatty", return_value=True), \
-                 patch("click.prompt", return_value="Y"), \
-                 patch("click.secho", side_effect=lambda msg, **kw: echoed.append(msg)):
+            with (
+                patch("sys.stdin.isatty", return_value=True),
+                patch("click.prompt", return_value="Y"),
+                patch("click.secho", side_effect=lambda msg, **kw: echoed.append(msg)),
+            ):
                 guard.confirm(existing, "replace")
 
         assert any("replace" in m for m in echoed)
@@ -228,6 +235,7 @@ class TestWriteGuardConfirmInteractive:
 # ---------------------------------------------------------------------------
 # write_safe() integration
 # ---------------------------------------------------------------------------
+
 
 class TestWriteSafeGuardIntegration:
     def test_write_safe_calls_guard_confirm_for_existing_file(self, tmp_path):
@@ -308,6 +316,7 @@ class TestWriteSafeGuardIntegration:
 # Shared helper: simulate N / Y / A through guard.confirm mock
 # ---------------------------------------------------------------------------
 
+
 def _abort_confirm(path, action="modify"):
     raise click.Abort()
 
@@ -319,6 +328,7 @@ def _noop_confirm(path, action="modify"):
 # ---------------------------------------------------------------------------
 # hooks install / uninstall
 # ---------------------------------------------------------------------------
+
 
 class TestHooksInstallGuard:
     @pytest.fixture
@@ -442,6 +452,7 @@ class TestHooksInstallGuard:
 # init command
 # ---------------------------------------------------------------------------
 
+
 class TestInitGuard:
     def test_init_no_prompt_for_new_toml(self, tmp_path):
         """init into a fresh directory never prompts."""
@@ -552,9 +563,7 @@ class TestInitGuard:
 
         runner = CliRunner()
         with patch.object(WriteGuard, "install", staticmethod(_install_approving)):
-            result = runner.invoke(
-                init, ["--root", str(tmp_path), "--hooks", "--force"], catch_exceptions=False
-            )
+            result = runner.invoke(init, ["--root", str(tmp_path), "--hooks", "--force"], catch_exceptions=False)
         assert result.exit_code == 0
         assert "# old" not in (hooks_dir / "block-rm.sh").read_text()
         assert "# old" not in (hooks_dir / "lint-on-write.sh").read_text()
@@ -563,6 +572,7 @@ class TestInitGuard:
 # ---------------------------------------------------------------------------
 # deploy command
 # ---------------------------------------------------------------------------
+
 
 class TestDeployGuard:
     def _make_toml(self, root: Path) -> None:
@@ -582,9 +592,7 @@ class TestDeployGuard:
 
         runner = CliRunner()
         with patch.object(WriteGuard, "install", staticmethod(_track)):
-            result = runner.invoke(
-                deploy, ["--root", str(tmp_path), "--dry-run"], catch_exceptions=False
-            )
+            result = runner.invoke(deploy, ["--root", str(tmp_path), "--dry-run"], catch_exceptions=False)
         assert result.exit_code == 0
         assert not installed
 
@@ -594,9 +602,7 @@ class TestDeployGuard:
 
         self._make_toml(tmp_path)
         runner = CliRunner()
-        result = runner.invoke(
-            deploy, ["--root", str(tmp_path), "--emit", "claude"], catch_exceptions=False
-        )
+        result = runner.invoke(deploy, ["--root", str(tmp_path), "--emit", "claude"], catch_exceptions=False)
         assert result.exit_code == 0
 
     def test_deploy_guard_abort_prevents_write(self, tmp_path):
@@ -635,15 +641,14 @@ class TestDeployGuard:
             return g
 
         with patch.object(WriteGuard, "install", staticmethod(_install_approving)):
-            result = runner.invoke(
-                deploy, ["--root", str(tmp_path), "--emit", "claude"], catch_exceptions=False
-            )
+            result = runner.invoke(deploy, ["--root", str(tmp_path), "--emit", "claude"], catch_exceptions=False)
         assert result.exit_code == 0
 
 
 # ---------------------------------------------------------------------------
 # import command
 # ---------------------------------------------------------------------------
+
 
 class TestImportGuard:
     def test_import_dry_run_no_guard_installed(self, tmp_path):
@@ -685,9 +690,7 @@ class TestImportGuard:
 
         runner = CliRunner()
         with patch.object(WriteGuard, "install", staticmethod(_install_aborting)):
-            result = runner.invoke(
-                import_cmd, ["--root", str(tmp_path), "--from", "claude"]
-            )
+            result = runner.invoke(import_cmd, ["--root", str(tmp_path), "--from", "claude"])
         assert result.exit_code != 0
         assert toml.read_text() == "# original"
 
@@ -709,7 +712,8 @@ class TestImportGuard:
         runner = CliRunner()
         with patch.object(WriteGuard, "install", staticmethod(_install_approving)):
             result = runner.invoke(
-                import_cmd, ["--root", str(tmp_path), "--from", "claude"],
+                import_cmd,
+                ["--root", str(tmp_path), "--from", "claude"],
                 catch_exceptions=False,
             )
         assert result.exit_code == 0
@@ -720,11 +724,11 @@ class TestImportGuard:
 # plugin build command
 # ---------------------------------------------------------------------------
 
+
 class TestPluginBuildGuard:
     def _make_plugin_toml(self, root: Path) -> None:
         (root / ".context.toml").write_text(
-            '[plugin]\nname = "myplugin"\nversion = "1.0.0"\n\n'
-            '[commands._always.hello]\ncontent = "Say hello."\n'
+            '[plugin]\nname = "myplugin"\nversion = "1.0.0"\n\n[commands._always.hello]\ncontent = "Say hello."\n'
         )
 
     def test_plugin_build_dry_run_no_guard_installed(self, tmp_path):
@@ -741,9 +745,7 @@ class TestPluginBuildGuard:
 
         runner = CliRunner()
         with patch.object(WriteGuard, "install", staticmethod(_track)):
-            result = runner.invoke(
-                plugin, ["build", "--root", str(tmp_path), "--dry-run"], catch_exceptions=False
-            )
+            result = runner.invoke(plugin, ["build", "--root", str(tmp_path), "--dry-run"], catch_exceptions=False)
         assert result.exit_code == 0
         assert not installed
 
@@ -796,15 +798,14 @@ class TestPluginBuildGuard:
             return g
 
         with patch.object(WriteGuard, "install", staticmethod(_install_approving)):
-            result = runner.invoke(
-                plugin, ["build", "--root", str(tmp_path)], catch_exceptions=False
-            )
+            result = runner.invoke(plugin, ["build", "--root", str(tmp_path)], catch_exceptions=False)
         assert result.exit_code == 0
 
 
 # ---------------------------------------------------------------------------
 # enable command
 # ---------------------------------------------------------------------------
+
 
 class TestEnableGuard:
     @pytest.fixture
@@ -915,6 +916,7 @@ class TestEnableGuard:
 # Encoding correctness (Windows: default encoding is cp1252, not utf-8)
 # ---------------------------------------------------------------------------
 
+
 class TestFileIOEncoding:
     """All file reads/writes must use explicit utf-8 encoding."""
 
@@ -987,9 +989,7 @@ class TestFileIOEncoding:
         profile = tmp_path / ".zshrc"
         # Pre-existing profile with previous otel block and unicode content
         profile.write_text(
-            "# my profile \u00e9\u00e0\u00fc\n"
-            + marker + "\nexport AICTL_PORT=8484\n"
-            + "# after-block content\n",
+            "# my profile \u00e9\u00e0\u00fc\n" + marker + "\nexport AICTL_PORT=8484\n" + "# after-block content\n",
             encoding="utf-8",
         )
 
@@ -1012,12 +1012,8 @@ class TestFileIOEncoding:
 
         monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [profile])
         monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.setattr(
-            "aictl.commands.integrations.claude_global_dir", lambda: tmp_path / "claude"
-        )
-        monkeypatch.setattr(
-            "aictl.commands.integrations.vscode_user_dir", lambda: tmp_path / "vscode"
-        )
+        monkeypatch.setattr("aictl.commands.integrations.claude_global_dir", lambda: tmp_path / "claude")
+        monkeypatch.setattr("aictl.commands.integrations.vscode_user_dir", lambda: tmp_path / "vscode")
         monkeypatch.setenv("AICTL_PORT", "8484")
 
         runner = CliRunner()
@@ -1030,6 +1026,7 @@ class TestFileIOEncoding:
 # ---------------------------------------------------------------------------
 # Codex path uses codex_global_dir() from platforms.py
 # ---------------------------------------------------------------------------
+
 
 class TestCodexPathPlatformAbstraction:
     """otel enable and enable must use codex_global_dir() not Path.home() / '.codex'."""
@@ -1061,12 +1058,8 @@ class TestCodexPathPlatformAbstraction:
 
         monkeypatch.setattr("aictl.commands.integrations.codex_global_dir", lambda: custom_codex)
         monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [])
-        monkeypatch.setattr(
-            "aictl.commands.integrations.claude_global_dir", lambda: tmp_path / "claude"
-        )
-        monkeypatch.setattr(
-            "aictl.commands.integrations.vscode_user_dir", lambda: tmp_path / "vscode"
-        )
+        monkeypatch.setattr("aictl.commands.integrations.claude_global_dir", lambda: tmp_path / "claude")
+        monkeypatch.setattr("aictl.commands.integrations.vscode_user_dir", lambda: tmp_path / "vscode")
         monkeypatch.setenv("AICTL_PORT", "8484")
 
         runner = CliRunner()
@@ -1078,6 +1071,7 @@ class TestCodexPathPlatformAbstraction:
 # ---------------------------------------------------------------------------
 # Atomic write_safe + backup behavior
 # ---------------------------------------------------------------------------
+
 
 class TestWriteSafeAtomic:
     def test_write_safe_atomic_on_replace_failure(self, tmp_path, monkeypatch):
@@ -1151,6 +1145,7 @@ class TestWriteSafeAtomic:
 # ---------------------------------------------------------------------------
 # Non-TTY gate via AICTL_ASSUME_YES
 # ---------------------------------------------------------------------------
+
 
 class TestWriteGuardNonTTYGate:
     def test_non_tty_aborts_without_env(self, tmp_path, monkeypatch):

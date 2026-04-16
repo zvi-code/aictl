@@ -26,56 +26,58 @@ logger = logging.getLogger(__name__)
 
 METRIC_MAP: dict[str, str] = {
     # ── Claude Code ──────────────────────────────────────────
-    "claude_code.token.usage":            "otel.token.usage",
-    "claude_code.cost.usage":             "otel.cost.usage",
-    "claude_code.session.count":          "otel.session.count",
-    "claude_code.active_time.total":      "otel.active_time",
-    "claude_code.lines_of_code.count":    "otel.loc.count",
-    "claude_code.commit.count":           "otel.commit.count",
-    "claude_code.pull_request.count":     "otel.pr.count",
+    "claude_code.token.usage": "otel.token.usage",
+    "claude_code.cost.usage": "otel.cost.usage",
+    "claude_code.session.count": "otel.session.count",
+    "claude_code.active_time.total": "otel.active_time",
+    "claude_code.lines_of_code.count": "otel.loc.count",
+    "claude_code.commit.count": "otel.commit.count",
+    "claude_code.pull_request.count": "otel.pr.count",
     "claude_code.code_edit_tool.decision": "otel.code_edit.decision",
-
     # ── VS Code Copilot (GenAI semantic conventions) ─────────
-    "gen_ai.client.token.usage":              "otel.token.usage",
-    "gen_ai.client.operation.duration":       "otel.operation.duration",
-    "copilot_chat.session.count":             "otel.session.count",
+    "gen_ai.client.token.usage": "otel.token.usage",
+    "gen_ai.client.operation.duration": "otel.operation.duration",
+    "copilot_chat.session.count": "otel.session.count",
     "copilot_chat.agent.invocation.duration": "otel.agent.duration",
-    "copilot_chat.tool.call.count":           "otel.tool.call.count",
-    "copilot_chat.tool.call.duration":        "otel.tool.call.duration",
-
+    "copilot_chat.tool.call.count": "otel.tool.call.count",
+    "copilot_chat.tool.call.duration": "otel.tool.call.duration",
     # ── Codex CLI ────────────────────────────────────────────
-    "codex.token.usage":     "otel.token.usage",
-    "codex.session.count":   "otel.session.count",
-    "codex.cost.usage":      "otel.cost.usage",
+    "codex.token.usage": "otel.token.usage",
+    "codex.session.count": "otel.session.count",
+    "codex.cost.usage": "otel.cost.usage",
 }
 
 # Events recognised for API-call tracking (all tools).
-API_REQUEST_EVENTS = frozenset({
-    "api_request",               # Claude Code (current format)
-    "claude_code.api_request",   # Claude Code (legacy format)
-    "gen_ai.client.inference.operation.details",
-    "copilot_chat.api_request",
-    "codex.api_request",
-})
+API_REQUEST_EVENTS = frozenset(
+    {
+        "api_request",  # Claude Code (current format)
+        "claude_code.api_request",  # Claude Code (legacy format)
+        "gen_ai.client.inference.operation.details",
+        "copilot_chat.api_request",
+        "codex.api_request",
+    }
+)
 
-API_ERROR_EVENTS = frozenset({
-    "claude_code.api_error",
-    "copilot_chat.api_error",
-    "codex.api_error",
-})
+API_ERROR_EVENTS = frozenset(
+    {
+        "claude_code.api_error",
+        "copilot_chat.api_error",
+        "codex.api_error",
+    }
+)
 
 # Service-name → tool label for auto-detection when service.name is
 # set but doesn't match a known tool verbatim.
 SERVICE_NAME_ALIASES: dict[str, str] = {
-    "claude-code":          "claude-code",
-    "claude_code":          "claude-code",
-    "anthropic-claude":     "claude-code",
-    "github-copilot-chat":  "copilot-vscode",
-    "github-copilot":       "copilot-vscode",
-    "copilot":              "copilot-vscode",
-    "copilot-chat":         "copilot-vscode",
-    "codex-cli":            "codex-cli",
-    "codex":                "codex-cli",
+    "claude-code": "claude-code",
+    "claude_code": "claude-code",
+    "anthropic-claude": "claude-code",
+    "github-copilot-chat": "copilot-vscode",
+    "github-copilot": "copilot-vscode",
+    "copilot": "copilot-vscode",
+    "copilot-chat": "copilot-vscode",
+    "codex-cli": "codex-cli",
+    "codex": "codex-cli",
 }
 
 
@@ -99,6 +101,7 @@ def _resolve_tool(service_name: str) -> str:
 @dataclass
 class OtelStats:
     """Receiver health counters."""
+
     metrics_received: int = 0
     events_received: int = 0
     last_receive_at: float = 0.0
@@ -137,10 +140,14 @@ class OtelReceiver:
                         tags["otel_metric"] = name
                         _promote_session_id(tags, resource_attrs)
                         _promote_pid(tags, resource_attrs)
-                        samples.append(_Sample(
-                            ts=ts, metric=mapped,
-                            value=value, tags=tags,
-                        ))
+                        samples.append(
+                            _Sample(
+                                ts=ts,
+                                metric=mapped,
+                                value=value,
+                                tags=tags,
+                            )
+                        )
 
         self.stats.metrics_received += len(samples)
         if samples:
@@ -165,15 +172,13 @@ class OtelReceiver:
                         record.get("attributes", []),
                     )
 
-                    event_name = (
-                        attrs.pop("event.name", "")
-                        or attrs.pop("name", "")
-                    )
+                    event_name = attrs.pop("event.name", "") or attrs.pop("name", "")
                     if not event_name:
                         body_val = record.get("body", {})
                         if isinstance(body_val, dict):
                             event_name = body_val.get(
-                                "stringValue", "otel_log",
+                                "stringValue",
+                                "otel_log",
                             )
                         else:
                             event_name = "otel_log"
@@ -189,11 +194,16 @@ class OtelReceiver:
                     elif event_name in API_ERROR_EVENTS:
                         self.stats.api_errors_total += 1
 
-                    events.append(EventRow(
-                        ts=ts, tool=tool, kind=kind, detail=attrs,
-                        session_id=attrs.get("session_id", ""),
-                        pid=int(attrs.get("pid", 0) or 0),
-                    ))
+                    events.append(
+                        EventRow(
+                            ts=ts,
+                            tool=tool,
+                            kind=kind,
+                            detail=attrs,
+                            session_id=attrs.get("session_id", ""),
+                            pid=int(attrs.get("pid", 0) or 0),
+                        )
+                    )
 
         self.stats.events_received += len(events)
         if events:
@@ -213,31 +223,31 @@ class OtelReceiver:
             d = e.detail if isinstance(e.detail, dict) else {}
             # e.ts is derived from OTel timeUnixNano — it IS the embedded
             # source timestamp, so pass it as source_ts for correct dedup.
-            requests.append(RequestRow(
-                ts=e.ts,
-                source_ts=e.ts,  # OTel always has an embedded timestamp
-                session_id=e.session_id or d.get("session_id", ""),
-                pid=e.pid or int(d.get("pid", 0) or 0),
-                tool=e.tool,
-                model=(d.get("gen_ai.request.model")
-                       or d.get("gen_ai.response.model")
-                       or d.get("model", "")),
-                # TODO(#token-usage): migrate to TokenUsage.from_dict
-                input_tokens=int(d.get("gen_ai.usage.input_tokens",
-                                       d.get("input_tokens", 0)) or 0),
-                output_tokens=int(d.get("gen_ai.usage.output_tokens",
-                                        d.get("output_tokens", 0)) or 0),
-                cache_read_tokens=int(d.get("gen_ai.usage.cache_read_input_tokens",
-                                            d.get("cache_read_tokens", 0)) or 0),
-                cache_creation_tokens=int(d.get("gen_ai.usage.cache_creation_input_tokens",
-                                                d.get("cache_creation_tokens", 0)) or 0),
-                cost_usd=float(d.get("cost_usd", 0) or 0),
-                duration_ms=float(d.get("duration_ms", 0) or 0),
-                finish_reason=_coerce_str(d.get("gen_ai.response.finish_reasons", "")),
-                is_error=1 if d.get("error") or d.get("is_error") else 0,
-                source="otel",
-                prompt_id=d.get("prompt.id", ""),
-            ))
+            requests.append(
+                RequestRow(
+                    ts=e.ts,
+                    source_ts=e.ts,  # OTel always has an embedded timestamp
+                    session_id=e.session_id or d.get("session_id", ""),
+                    pid=e.pid or int(d.get("pid", 0) or 0),
+                    tool=e.tool,
+                    model=(d.get("gen_ai.request.model") or d.get("gen_ai.response.model") or d.get("model", "")),
+                    # TODO(#token-usage): migrate to TokenUsage.from_dict
+                    input_tokens=int(d.get("gen_ai.usage.input_tokens", d.get("input_tokens", 0)) or 0),
+                    output_tokens=int(d.get("gen_ai.usage.output_tokens", d.get("output_tokens", 0)) or 0),
+                    cache_read_tokens=int(
+                        d.get("gen_ai.usage.cache_read_input_tokens", d.get("cache_read_tokens", 0)) or 0
+                    ),
+                    cache_creation_tokens=int(
+                        d.get("gen_ai.usage.cache_creation_input_tokens", d.get("cache_creation_tokens", 0)) or 0
+                    ),
+                    cost_usd=float(d.get("cost_usd", 0) or 0),
+                    duration_ms=float(d.get("duration_ms", 0) or 0),
+                    finish_reason=_coerce_str(d.get("gen_ai.response.finish_reasons", "")),
+                    is_error=1 if d.get("error") or d.get("is_error") else 0,
+                    source="otel",
+                    prompt_id=d.get("prompt.id", ""),
+                )
+            )
         return requests
 
     @staticmethod
@@ -256,19 +266,21 @@ class OtelReceiver:
             # source_ts stays 0 and dedup falls back to value-based comparison
             # (Case B) — every hook invocation is an independent event.
             hook_ts = float(d.get("timestamp", 0) or d.get("ts", 0) or 0)
-            invocations.append(ToolInvocationRow(
-                ts=e.ts,
-                source_ts=hook_ts,  # 0 if hook payload had no embedded timestamp
-                session_id=d.get("session_id", ""),
-                tool=e.tool,
-                tool_name=tool_name,
-                pid=int(d.get("pid", 0) or 0),
-                is_error=1 if d.get("is_error") else 0,
-                duration_ms=float(d.get("duration_ms", 0) or 0),
-                input=d.get("input", {}),
-                result_summary=str(d.get("result", ""))[:500],
-                source="hook",
-            ))
+            invocations.append(
+                ToolInvocationRow(
+                    ts=e.ts,
+                    source_ts=hook_ts,  # 0 if hook payload had no embedded timestamp
+                    session_id=d.get("session_id", ""),
+                    tool=e.tool,
+                    tool_name=tool_name,
+                    pid=int(d.get("pid", 0) or 0),
+                    is_error=1 if d.get("is_error") else 0,
+                    duration_ms=float(d.get("duration_ms", 0) or 0),
+                    input=d.get("input", {}),
+                    result_summary=str(d.get("result", ""))[:500],
+                    source="hook",
+                )
+            )
         return invocations
 
     # ── Traces (spans) ───────────────────────────────────────
@@ -299,36 +311,45 @@ class OtelReceiver:
                         attrs["duration_ms"] = round(duration_ms, 1)
 
                     # Extract token usage from span attributes
-                    for token_key in ("gen_ai.usage.input_tokens",
-                                      "gen_ai.usage.output_tokens",
-                                      "gen_ai.usage.prompt_tokens",
-                                      "gen_ai.usage.completion_tokens"):
+                    for token_key in (
+                        "gen_ai.usage.input_tokens",
+                        "gen_ai.usage.output_tokens",
+                        "gen_ai.usage.prompt_tokens",
+                        "gen_ai.usage.completion_tokens",
+                    ):
                         val = attrs.get(token_key)
                         if val is not None:
                             try:
-                                mapped = METRIC_MAP.get("gen_ai.client.token.usage",
-                                                         "otel.token.usage")
+                                mapped = METRIC_MAP.get("gen_ai.client.token.usage", "otel.token.usage")
                                 tok_type = "input" if "input" in token_key or "prompt" in token_key else "output"
-                                samples.append(_Sample(
-                                    ts=start_ts, metric=mapped,
-                                    value=float(val),
-                                    tags={"tool": tool, "gen_ai.token.type": tok_type,
-                                          "otel_metric": token_key,
-                                          "gen_ai.request.model": attrs.get("gen_ai.request.model", "")},
-                                ))
+                                samples.append(
+                                    _Sample(
+                                        ts=start_ts,
+                                        metric=mapped,
+                                        value=float(val),
+                                        tags={
+                                            "tool": tool,
+                                            "gen_ai.token.type": tok_type,
+                                            "otel_metric": token_key,
+                                            "gen_ai.request.model": attrs.get("gen_ai.request.model", ""),
+                                        },
+                                    )
+                                )
                             except (ValueError, TypeError):
                                 pass
 
                     # Extract duration as metric
-                    if duration_ms > 0 and any(k in name.lower() for k in
-                                                ("inference", "chat", "api", "request", "completion")):
-                        samples.append(_Sample(
-                            ts=start_ts,
-                            metric=METRIC_MAP.get("gen_ai.client.operation.duration",
-                                                   "otel.operation.duration"),
-                            value=duration_ms / 1000,
-                            tags={"tool": tool, "span.name": name},
-                        ))
+                    if duration_ms > 0 and any(
+                        k in name.lower() for k in ("inference", "chat", "api", "request", "completion")
+                    ):
+                        samples.append(
+                            _Sample(
+                                ts=start_ts,
+                                metric=METRIC_MAP.get("gen_ai.client.operation.duration", "otel.operation.duration"),
+                                value=duration_ms / 1000,
+                                tags={"tool": tool, "span.name": name},
+                            )
+                        )
 
                     # Track API call events
                     kind = f"otel:{name}"
@@ -340,10 +361,16 @@ class OtelReceiver:
 
                     otel_sid = attrs.get("session_id", "")
                     otel_pid = int(attrs.get("pid", 0) or 0)
-                    events.append(EventRow(
-                        ts=start_ts, tool=tool, kind=kind, detail=attrs,
-                        session_id=otel_sid, pid=otel_pid,
-                    ))
+                    events.append(
+                        EventRow(
+                            ts=start_ts,
+                            tool=tool,
+                            kind=kind,
+                            detail=attrs,
+                            session_id=otel_sid,
+                            pid=otel_pid,
+                        )
+                    )
 
                     # Span-level events (e.g. exceptions)
                     for span_event in span.get("events", []):
@@ -352,11 +379,16 @@ class OtelReceiver:
                         ev_attrs["tool"] = tool
                         ev_attrs["parent_span"] = name
                         ev_name = span_event.get("name", "span_event")
-                        events.append(EventRow(
-                            ts=ev_ts, tool=tool,
-                            kind=f"otel:{ev_name}", detail=ev_attrs,
-                            session_id=otel_sid, pid=otel_pid,
-                        ))
+                        events.append(
+                            EventRow(
+                                ts=ev_ts,
+                                tool=tool,
+                                kind=f"otel:{ev_name}",
+                                detail=ev_attrs,
+                                session_id=otel_sid,
+                                pid=otel_pid,
+                            )
+                        )
 
         self.stats.metrics_received += len(samples)
         self.stats.events_received += len(events)
@@ -372,9 +404,8 @@ class OtelReceiver:
         return {**dataclasses.asdict(self.stats), "active": self.stats.last_receive_at > now - 300}
 
 
-
-
 # ── OTLP JSON helpers ─────────────────────────────────────────────
+
 
 def _parse_otel_attributes(attrs: list[dict]) -> dict:
     """Convert OTLP ``KeyValue[]`` to a flat Python dict."""
@@ -382,12 +413,16 @@ def _parse_otel_attributes(attrs: list[dict]) -> dict:
     for kv in attrs:
         key = kv.get("key", "")
         v = kv.get("value", {})
-        if "stringValue" in v:   result[key] = v["stringValue"]
-        elif "intValue" in v:    result[key] = int(v["intValue"])
-        elif "doubleValue" in v: result[key] = float(v["doubleValue"])
-        elif "boolValue" in v:   result[key] = bool(v["boolValue"])
-        elif "arrayValue" in v:  result[key] = [_extract_any_otel_value(x)
-                                                 for x in v["arrayValue"].get("values", [])]
+        if "stringValue" in v:
+            result[key] = v["stringValue"]
+        elif "intValue" in v:
+            result[key] = int(v["intValue"])
+        elif "doubleValue" in v:
+            result[key] = float(v["doubleValue"])
+        elif "boolValue" in v:
+            result[key] = bool(v["boolValue"])
+        elif "arrayValue" in v:
+            result[key] = [_extract_any_otel_value(x) for x in v["arrayValue"].get("values", [])]
     return result
 
 
@@ -472,7 +507,6 @@ def _extract_otel_data_points(metric: dict) -> list[dict]:
     return []
 
 
-
 # ─── OTLP protobuf support (lazy-loaded) ────────────────────────
 
 _otlp_proto_classes: dict | None = None
@@ -493,6 +527,7 @@ def _load_otlp_proto() -> dict:
         from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
             ExportTraceServiceRequest,
         )
+
         _otlp_proto_classes = {
             "metrics": ExportMetricsServiceRequest,
             "logs": ExportLogsServiceRequest,

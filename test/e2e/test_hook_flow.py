@@ -27,9 +27,7 @@ class TestClaudeHookFlow:
         sessions = aictl_server.get_sessions(since="0")
         session_ids = {s["session_id"] for s in sessions}
         expected_sid = claude_hook_sequence[0]["session_id"]
-        assert expected_sid in session_ids, (
-            f"Session {expected_sid} not found. Got: {session_ids}"
-        )
+        assert expected_sid in session_ids, f"Session {expected_sid} not found. Got: {session_ids}"
 
     def test_session_tool_is_claude(self, aictl_server, claude_hook_sequence):
         for ev in claude_hook_sequence:
@@ -64,7 +62,10 @@ class TestClaudeHookFlow:
 
         sid = claude_hook_sequence[0]["session_id"]
         events = aictl_server.get_events(
-            session_id=sid, kind="hook:PreToolUse", since="0", min_count=2,
+            session_id=sid,
+            kind="hook:PreToolUse",
+            since="0",
+            min_count=2,
         )
         tool_names = [e["detail"].get("tool_name", "") for e in events]
         assert "Write" in tool_names
@@ -127,7 +128,10 @@ class TestMultiToolSessions:
     """Verify concurrent sessions from different tools coexist."""
 
     def test_two_tools_two_sessions(
-        self, aictl_server, claude_hook_sequence, gemini_hook_sequence,
+        self,
+        aictl_server,
+        claude_hook_sequence,
+        gemini_hook_sequence,
     ):
         for ev in claude_hook_sequence:
             aictl_server.post_hook(ev)
@@ -142,7 +146,10 @@ class TestMultiToolSessions:
         assert any("gemini" in t for t in tools)
 
     def test_session_isolation(
-        self, aictl_server, claude_hook_sequence, gemini_hook_sequence,
+        self,
+        aictl_server,
+        claude_hook_sequence,
+        gemini_hook_sequence,
     ):
         """Events from one session don't leak into another."""
         for ev in claude_hook_sequence:
@@ -169,28 +176,34 @@ class TestHookEdgeCases:
 
     def test_unknown_event_accepted(self, aictl_server):
         """Server accepts hook events with unknown event names."""
-        resp = aictl_server.post_hook({
-            "event": "CustomEvent",
-            "session_id": "edge-test-1",
-            "tool": "test-tool",
-            "ts": time.time(),
-        })
+        resp = aictl_server.post_hook(
+            {
+                "event": "CustomEvent",
+                "session_id": "edge-test-1",
+                "tool": "test-tool",
+                "ts": time.time(),
+            }
+        )
         assert resp == {"ok": True}
 
     def test_minimal_payload(self, aictl_server):
         """Bare minimum payload (just event name) is accepted."""
-        resp = aictl_server.post_hook({
-            "event": "Ping",
-        })
+        resp = aictl_server.post_hook(
+            {
+                "event": "Ping",
+            }
+        )
         assert resp == {"ok": True}
 
     def test_session_id_derived_from_pattern(self, aictl_server):
         """When tool is omitted, it's derived from session_id pattern 'tool:pid:ts'."""
-        resp = aictl_server.post_hook({
-            "event": "SessionStart",
-            "session_id": "claude-code:12345:1700000000",
-            "ts": time.time(),
-        })
+        resp = aictl_server.post_hook(
+            {
+                "event": "SessionStart",
+                "session_id": "claude-code:12345:1700000000",
+                "ts": time.time(),
+            }
+        )
         assert resp == {"ok": True}
         time.sleep(0.3)
 
@@ -204,10 +217,12 @@ class TestHookEdgeCases:
 
     def test_large_detail_payload(self, aictl_server):
         """Event with large detail body is accepted."""
-        resp = aictl_server.post_hook({
-            "event": "UserPromptSubmit",
-            "session_id": "edge-large-1",
-            "message": "x" * 50_000,
-            "ts": time.time(),
-        })
+        resp = aictl_server.post_hook(
+            {
+                "event": "UserPromptSubmit",
+                "session_id": "edge-large-1",
+                "message": "x" * 50_000,
+                "ts": time.time(),
+            }
+        )
         assert resp == {"ok": True}

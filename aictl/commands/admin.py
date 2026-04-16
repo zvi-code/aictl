@@ -21,6 +21,7 @@ from ..platforms import config_path, show_config, write_default_config
 def _resolve_db_path(db_path: str | None) -> Path:
     """Return db Path, exiting with error if it doesn't exist."""
     from ..storage import DEFAULT_DB_PATH
+
     path = Path(db_path) if db_path else DEFAULT_DB_PATH
     if not path.exists():
         raise click.ClickException(f"Database not found: {path}")
@@ -28,8 +29,7 @@ def _resolve_db_path(db_path: str | None) -> Path:
 
 
 @click.group()
-@click.option("--db", "db_path", default=None, type=click.Path(),
-              help="Path to SQLite history database")
+@click.option("--db", "db_path", default=None, type=click.Path(), help="Path to SQLite history database")
 @click.pass_context
 def db(ctx, db_path):
     """Database maintenance — compact, vacuum, stats."""
@@ -38,8 +38,7 @@ def db(ctx, db_path):
 
 
 @db.command()
-@click.option("--vacuum/--no-vacuum", default=True,
-              help="Run VACUUM after compaction to reclaim disk space")
+@click.option("--vacuum/--no-vacuum", default=True, help="Run VACUUM after compaction to reclaim disk space")
 @click.pass_context
 def compact(ctx, vacuum):
     """Compact the database — downsample old data, delete expired rows, reclaim space.
@@ -114,18 +113,22 @@ def stats(ctx):
 
     if s.get("earliest_ts") and s.get("latest_ts"):
         import datetime
+
         earliest = datetime.datetime.fromtimestamp(s["earliest_ts"])
         latest = datetime.datetime.fromtimestamp(s["latest_ts"])
         span = latest - earliest
-        click.echo(f"\nTime range: {earliest:%Y-%m-%d %H:%M} — {latest:%Y-%m-%d %H:%M} ({span.days}d {span.seconds//3600}h)")
+        click.echo(
+            f"\nTime range: {earliest:%Y-%m-%d %H:%M} — {latest:%Y-%m-%d %H:%M} ({span.days}d {span.seconds // 3600}h)"
+        )
 
     if s.get("files_tracked"):
-        click.echo(f"Files tracked: {s['files_tracked']:,} ({s['files_total_bytes'] / 1024**2:.1f} MB, {s['files_total_tokens']:,} tokens)")
+        click.echo(
+            f"Files tracked: {s['files_tracked']:,} ({s['files_total_bytes'] / 1024**2:.1f} MB, {s['files_total_tokens']:,} tokens)"
+        )
 
 
 @db.command()
-@click.option("--yes", "-y", is_flag=True,
-              help="Skip confirmation prompt")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
 @click.pass_context
 def reset(ctx, yes):
     """Delete the database and start fresh.
@@ -140,7 +143,7 @@ def reset(ctx, yes):
     path = Path(db_path) if db_path else DEFAULT_DB_PATH
 
     if path.exists():
-        size_mb = path.stat().st_size / 1024 ** 2
+        size_mb = path.stat().st_size / 1024**2
         click.echo(f"Database: {path}")
         click.echo(f"Size: {size_mb:.1f} MB")
         if not yes:
@@ -221,8 +224,7 @@ def build_ui():
 
     root = _find_project_root()
     if root is None:
-        raise click.ClickException(
-            "Cannot find aictl source tree. Run this from the project directory.")
+        raise click.ClickException("Cannot find aictl source tree. Run this from the project directory.")
     ui_dir = root / "aictl" / "dashboard" / "ui"
     dist_dir = root / "aictl" / "dashboard" / "dist"
 
@@ -271,8 +273,7 @@ def reinstall(skip_ui):
 
     root = _find_project_root()
     if root is None:
-        raise click.ClickException(
-            "Cannot find aictl source tree. Run this from the project directory.")
+        raise click.ClickException("Cannot find aictl source tree. Run this from the project directory.")
     ui_dir = root / "aictl" / "dashboard" / "ui"
 
     # ── Step 1: UI build ────────────────────────────────────────────────────
@@ -284,10 +285,8 @@ def reinstall(skip_ui):
         click.echo("→ Building dashboard UI...")
         try:
             if not (ui_dir / "node_modules").is_dir():
-                subprocess.run(["npm", "install"], cwd=ui_dir, check=True,
-                               capture_output=True, shell=_IS_WINDOWS)
-            subprocess.run(["npm", "run", "build"], cwd=ui_dir, check=True,
-                           capture_output=True, shell=_IS_WINDOWS)
+                subprocess.run(["npm", "install"], cwd=ui_dir, check=True, capture_output=True, shell=_IS_WINDOWS)
+            subprocess.run(["npm", "run", "build"], cwd=ui_dir, check=True, capture_output=True, shell=_IS_WINDOWS)
             click.secho("  ✅ UI built", fg="green")
         except FileNotFoundError:
             click.secho("  ⚠ npm not found — skipping UI build", fg="yellow")
@@ -327,16 +326,15 @@ def reinstall(skip_ui):
 
 
 @click.group(invoke_without_command=True)
-@click.option("-o", "--output", "out_path", default=None, type=click.Path(),
-              help="Output file path (default: stdout)")
-@click.option("--format", "fmt", default="md", type=click.Choice(["md", "json"]),
-              help="Output format: md (table) or json")
+@click.option("-o", "--output", "out_path", default=None, type=click.Path(), help="Output file path (default: stdout)")
+@click.option(
+    "--format", "fmt", default="md", type=click.Choice(["md", "json"]), help="Output format: md (table) or json"
+)
 @click.option("--tab", default=None, help="Filter by tab name")
-@click.option("--source-type", default=None,
-              type=click.Choice(["raw", "deduced", "aggregated"]),
-              help="Filter by source type")
-@click.option("--db", "db_path", default=None, type=click.Path(),
-              help="Path to SQLite history database")
+@click.option(
+    "--source-type", default=None, type=click.Choice(["raw", "deduced", "aggregated"]), help="Filter by source type"
+)
+@click.option("--db", "db_path", default=None, type=click.Path(), help="Path to SQLite history database")
 @click.pass_context
 def catalog(ctx, out_path, fmt, tab, source_type, db_path):
     """Datapoint catalog — explanations, queries, sources for every dashboard metric.
@@ -359,6 +357,7 @@ def catalog(ctx, out_path, fmt, tab, source_type, db_path):
         return
 
     from ..storage import HistoryDB
+
     db = HistoryDB(db_path=db_path)
     entries = db.query_datapoint_catalog(tab=tab, source_type=source_type)
     db.close()
@@ -389,6 +388,7 @@ def sync(ctx):
     run repeatedly — uses INSERT OR REPLACE.
     """
     from ..storage import HistoryDB
+
     db_path = ctx.obj.db_path if ctx.obj else None
     db = HistoryDB(db_path=db_path)
     count = db.sync_datapoint_catalog()
@@ -437,6 +437,7 @@ def validate(ctx, fix):
 
     # Check YAML vs DB sync
     import yaml
+
     yaml_path = Path(__file__).parent.parent / "data" / "datapoint-catalog.yaml"
     if yaml_path.exists():
         with open(yaml_path) as f:
@@ -465,9 +466,11 @@ def validate(ctx, fix):
     by_type = Counter(e["source_type"] for e in entries)
     dynamic = sum(1 for e in entries if e.get("dynamic_source"))
     click.echo(f"Catalog: {len(entries)} entries")
-    click.echo(f"  Raw: {by_type.get('raw', 0)} | "
-               f"Deduced: {by_type.get('deduced', 0)} | "
-               f"Aggregated: {by_type.get('aggregated', 0)}")
+    click.echo(
+        f"  Raw: {by_type.get('raw', 0)} | "
+        f"Deduced: {by_type.get('deduced', 0)} | "
+        f"Aggregated: {by_type.get('aggregated', 0)}"
+    )
     click.echo(f"  Dynamic: {dynamic} | Static: {len(entries) - dynamic}")
 
     if issues:
@@ -501,9 +504,7 @@ def _render_markdown(entries: list[dict]) -> str:
     lines: list[str] = []
     lines.append("# aictl Dashboard Datapoint Catalog")
     lines.append("")
-    lines.append(
-        f"> **{len(entries)}** datapoints across **{len(tabs)}** tabs.  "
-    )
+    lines.append(f"> **{len(entries)}** datapoints across **{len(tabs)}** tabs.  ")
     lines.append(
         f"> Raw: {type_counts.get('raw', 0)}"
         f" | Deduced: {type_counts.get('deduced', 0)}"
@@ -548,19 +549,11 @@ def _render_markdown(entries: list[dict]) -> str:
     lines.append("---")
     lines.append("## Legend")
     lines.append("")
-    lines.append(
-        "- **RAW**: Direct reading from a DB table or config lookup"
-    )
+    lines.append("- **RAW**: Direct reading from a DB table or config lookup")
     lines.append("- **DEDUCED**: Requires calculation over queried data")
     lines.append("- **AGGREGATED**: SUM/COUNT/GROUP BY over queried rows")
-    lines.append(
-        "- **\\***: Dynamic \u2014 live provenance JSON updated each cycle"
-        " (`GET /api/datapoints?key=<key>`)"
-    )
-    lines.append(
-        "- `?param?` in queries: bind parameter"
-        " (tool name, PID, timestamp, session ID)"
-    )
+    lines.append("- **\\***: Dynamic \u2014 live provenance JSON updated each cycle (`GET /api/datapoints?key=<key>`)")
+    lines.append("- `?param?` in queries: bind parameter (tool name, PID, timestamp, session ID)")
     lines.append("")
 
     return "\n".join(lines)

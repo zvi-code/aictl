@@ -45,8 +45,7 @@ class SessionCorrelator:
     into ``self.pending_events`` for consumption by the dashboard layer.
     """
 
-    def __init__(self, config: MonitorConfig, workspace_sizes: dict[str, int] | None = None,
-                 sink=None) -> None:
+    def __init__(self, config: MonitorConfig, workspace_sizes: dict[str, int] | None = None, sink=None) -> None:
         self.config = config
         self.workspace_sizes = workspace_sizes or {}
         self.sink = sink  # SampleSink for derived metric emission
@@ -54,8 +53,8 @@ class SessionCorrelator:
         self.pid_to_session: dict[int, str] = {}
         self.pid_to_process: dict[int, ProcessInfo] = {}
         self.pid_parent: dict[int, int | None] = {}
-        self.pid_cpu: dict[int, float] = {}   # latest CPU per PID
-        self.pid_mem: dict[int, float] = {}   # latest mem MB per PID
+        self.pid_cpu: dict[int, float] = {}  # latest CPU per PID
+        self.pid_mem: dict[int, float] = {}  # latest mem MB per PID
         self.collector_status: dict[str, dict[str, object]] = {}
         # Pending events for the dashboard/storage layer to drain
         self.pending_events: list[dict] = []
@@ -69,9 +68,15 @@ class SessionCorrelator:
     def on_collector_status(self, source: str, status: str, mode: str, detail: str) -> None:
         self.collector_status[source] = {"status": status, "mode": mode, "detail": detail}
 
-    def on_process(self, process: ProcessInfo, cpu_percent: float,
-                   memory_rss: int, child_count: int, ts: float | None = None,
-                   is_new: bool = False) -> None:
+    def on_process(
+        self,
+        process: ProcessInfo,
+        cpu_percent: float,
+        memory_rss: int,
+        child_count: int,
+        ts: float | None = None,
+        is_new: bool = False,
+    ) -> None:
         ts = ts or time.time()
         self.pid_cpu[process.pid] = cpu_percent
         self.pid_mem[process.pid] = memory_rss / 1048576 if memory_rss else 0
@@ -86,14 +91,18 @@ class SessionCorrelator:
         self.pid_mem.pop(pid, None)
         if session_id and session_id in self.sessions:
             self.sessions[session_id].pids.discard(pid)
-            self.sessions[session_id].last_seen_at = max(
-                self.sessions[session_id].last_seen_at, ts)
+            self.sessions[session_id].last_seen_at = max(self.sessions[session_id].last_seen_at, ts)
 
-    def on_network(self, pid: int, bytes_in: int, bytes_out: int,
-                   process: ProcessInfo | None = None,
-                   tool_hint: str | None = None,
-                   workspace: str | None = None,
-                   ts: float | None = None) -> str | None:
+    def on_network(
+        self,
+        pid: int,
+        bytes_in: int,
+        bytes_out: int,
+        process: ProcessInfo | None = None,
+        tool_hint: str | None = None,
+        workspace: str | None = None,
+        ts: float | None = None,
+    ) -> str | None:
         """Attribute network bytes to a session. Returns session_id or None."""
         ts = ts or time.time()
         session = self._resolve_session_typed(pid, process, tool_hint, workspace, ts)
@@ -102,37 +111,47 @@ class SessionCorrelator:
             return session.session_id
         return None
 
-    def on_file(self, path: str, growth_bytes: int = 0,
-                event_type: str = "modified",
-                pid: int | None = None, process: ProcessInfo | None = None,
-                tool_hint: str | None = None, workspace: str | None = None,
-                ts: float | None = None,
-                sent_to_llm: str | None = None) -> None:
+    def on_file(
+        self,
+        path: str,
+        growth_bytes: int = 0,
+        event_type: str = "modified",
+        pid: int | None = None,
+        process: ProcessInfo | None = None,
+        tool_hint: str | None = None,
+        workspace: str | None = None,
+        ts: float | None = None,
+        sent_to_llm: str | None = None,
+    ) -> None:
         ts = ts or time.time()
         session = self._resolve_session_typed(pid, process, tool_hint, workspace, ts)
         if session is None:
             return
-        session.add_file_activity(
-            ts, path, workspace,
-            self.config.state_root_for_path(path), growth_bytes)
+        session.add_file_activity(ts, path, workspace, self.config.state_root_for_path(path), growth_bytes)
         if sent_to_llm and sent_to_llm.lower() in ("yes", "conditional", "partial"):
             session.files_loaded.add(path)
         if growth_bytes != 0 or event_type in ("created", "modified"):
-            self._emit_event(ts, session.tool, "file_modified",
-                             {"path": path, "growth_bytes": growth_bytes,
-                              "session_id": session.session_id})
+            self._emit_event(
+                ts,
+                session.tool,
+                "file_modified",
+                {"path": path, "growth_bytes": growth_bytes, "session_id": session.session_id},
+            )
 
-    def on_telemetry(self, input_tokens: int, output_tokens: int,
-                     tool_hint: str | None = None, pid: int | None = None,
-                     process: ProcessInfo | None = None,
-                     workspace: str | None = None,
-                     ts: float | None = None) -> None:
+    def on_telemetry(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        tool_hint: str | None = None,
+        pid: int | None = None,
+        process: ProcessInfo | None = None,
+        workspace: str | None = None,
+        ts: float | None = None,
+    ) -> None:
         ts = ts or time.time()
-        session = self._resolve_session_typed(
-            pid, process, tool_hint, workspace, ts, allow_ephemeral=True)
+        session = self._resolve_session_typed(pid, process, tool_hint, workspace, ts, allow_ephemeral=True)
         if session:
             session.add_telemetry(ts, input_tokens, output_tokens)
-
 
     def tool_reports(self) -> list[ToolReport]:
         """Aggregate current sessions into tool-level reports."""
@@ -144,13 +163,19 @@ class SessionCorrelator:
         stale_ids = [sid for sid, s in self.sessions.items() if s.last_seen_at < gc_cutoff]
         for sid in stale_ids:
             session = self.sessions.pop(sid)
-            self._emit_event(now, session.tool, "session_end",
-                             {"session_id": sid,
-                              "project": session.project,
-                              "duration_s": round(session.last_seen_at - session.started_at, 1),
-                              "pids": len(session.pids),
-                              "input_tokens": session.exact_input_tokens,
-                              "output_tokens": session.exact_output_tokens})
+            self._emit_event(
+                now,
+                session.tool,
+                "session_end",
+                {
+                    "session_id": sid,
+                    "project": session.project,
+                    "duration_s": round(session.last_seen_at - session.started_at, 1),
+                    "pids": len(session.pids),
+                    "input_tokens": session.exact_input_tokens,
+                    "output_tokens": session.exact_output_tokens,
+                },
+            )
             for pid in session.pids:
                 self.pid_to_session.pop(pid, None)
 
@@ -176,27 +201,45 @@ class SessionCorrelator:
                 tags = {"aictl.tool": r.tool}
                 # Continuously varying — use sensitivity-aware emission
                 self.sink.emit_with_sensitivity(
-                    M("aictl.tool.cpu"), r.cpu_percent / 100, tags,
-                    abs_threshold=0.10, max_threshold=0.05, rounding=3)
+                    M("aictl.tool.cpu"), r.cpu_percent / 100, tags, abs_threshold=0.10, max_threshold=0.05, rounding=3
+                )
                 self.sink.emit_with_sensitivity(
                     M("aictl.tool.memory"),
                     round(float(r.peak_cpu_percent * 1048576) / 65536) * 65536,
-                    tags, abs_threshold=1_048_576, max_threshold=10_485_760, rounding=0)
+                    tags,
+                    abs_threshold=1_048_576,
+                    max_threshold=10_485_760,
+                    rounding=0,
+                )
                 self.sink.emit_with_sensitivity(
-                    M("aictl.tool.network.io"), r.inbound_rate_bps,
+                    M("aictl.tool.network.io"),
+                    r.inbound_rate_bps,
                     {**tags, "network.io.direction": "receive"},
-                    abs_threshold=1024, max_threshold=512, rounding=0)
+                    abs_threshold=1024,
+                    max_threshold=512,
+                    rounding=0,
+                )
                 self.sink.emit_with_sensitivity(
-                    M("aictl.tool.network.io"), r.outbound_rate_bps,
+                    M("aictl.tool.network.io"),
+                    r.outbound_rate_bps,
                     {**tags, "network.io.direction": "transmit"},
-                    abs_threshold=1024, max_threshold=512, rounding=0)
+                    abs_threshold=1024,
+                    max_threshold=512,
+                    rounding=0,
+                )
                 # Change infrequently — skip if unchanged
                 self.sink.emit_if_changed(M("aictl.tool.sessions"), float(r.session_count), tags)
                 self.sink.emit_if_changed(M("aictl.tool.pids"), float(r.pid_count), tags)
-                self.sink.emit_if_changed(M("aictl.tool.token.usage"), float(r.token_estimate.input_tokens),
-                               {**tags, "gen_ai.token.type": "input"})
-                self.sink.emit_if_changed(M("aictl.tool.token.usage"), float(r.token_estimate.output_tokens),
-                               {**tags, "gen_ai.token.type": "output"})
+                self.sink.emit_if_changed(
+                    M("aictl.tool.token.usage"),
+                    float(r.token_estimate.input_tokens),
+                    {**tags, "gen_ai.token.type": "input"},
+                )
+                self.sink.emit_if_changed(
+                    M("aictl.tool.token.usage"),
+                    float(r.token_estimate.output_tokens),
+                    {**tags, "gen_ai.token.type": "output"},
+                )
                 self.sink.emit_if_changed(M("aictl.tool.token.confidence"), r.token_estimate.confidence, tags)
                 self.sink.emit_if_changed(M("aictl.tool.mcp.score"), r.mcp.confidence, tags)
         return reports
@@ -248,8 +291,7 @@ class SessionCorrelator:
                 roots.append(node)
         return roots
 
-    def _classify_process_role(self, pid: int, info: ProcessInfo,
-                               session: SessionState) -> str:
+    def _classify_process_role(self, pid: int, info: ProcessInfo, session: SessionState) -> str:
         """Classify a process's role within a session."""
         if pid == session.root_pid:
             return "lead"
@@ -278,8 +320,7 @@ class SessionCorrelator:
 
     # ── Internal typed handlers ────────────────────────────────────
 
-    def _handle_process_event_typed(self, process: ProcessInfo, cpu_percent: float,
-                                     ts: float, is_new: bool) -> None:
+    def _handle_process_event_typed(self, process: ProcessInfo, cpu_percent: float, ts: float, is_new: bool) -> None:
         self.pid_to_process[process.pid] = process
         self.pid_parent[process.pid] = process.ppid
 
@@ -364,9 +405,11 @@ class SessionCorrelator:
         # a genuinely reused PID (hours later) creates a new session.
         _SESSION_REUSE_WINDOW = 600  # seconds
         for sid, sess in self.sessions.items():
-            if (sess.tool == match.tool
-                    and sess.root_pid == process.pid
-                    and ts - sess.last_seen_at < _SESSION_REUSE_WINDOW):
+            if (
+                sess.tool == match.tool
+                and sess.root_pid == process.pid
+                and ts - sess.last_seen_at < _SESSION_REUSE_WINDOW
+            ):
                 session_id = sid
                 break
         session = self.sessions.get(session_id)
@@ -380,9 +423,9 @@ class SessionCorrelator:
                 project=_derive_project(process.cwd),
             )
             self.sessions[session_id] = session
-            self._emit_event(ts, match.tool, "session_start",
-                             {"pid": process.pid, "name": process.name,
-                              "session_id": session_id})
+            self._emit_event(
+                ts, match.tool, "session_start", {"pid": process.pid, "name": process.name, "session_id": session_id}
+            )
 
         self.pid_to_session[process.pid] = session_id
         return session
@@ -447,15 +490,17 @@ class SessionCorrelator:
         for pid in sorted(pids):
             proc_info = self.pid_to_process.get(pid)
             if proc_info:
-                proc_details.append({
-                    "pid": pid,
-                    "ppid": proc_info.ppid,
-                    "name": proc_info.name,
-                    "exe": proc_info.exe or "",
-                    "cwd": proc_info.cwd or "",
-                    "cpu_pct": round(self.pid_cpu.get(pid, 0), 1),
-                    "mem_mb": round(self.pid_mem.get(pid, 0), 1),
-                })
+                proc_details.append(
+                    {
+                        "pid": pid,
+                        "ppid": proc_info.ppid,
+                        "name": proc_info.name,
+                        "exe": proc_info.exe or "",
+                        "cwd": proc_info.cwd or "",
+                        "cpu_pct": round(self.pid_cpu.get(pid, 0), 1),
+                        "mem_mb": round(self.pid_mem.get(pid, 0), 1),
+                    }
+                )
 
         return ToolReport(
             tool=tool,
@@ -487,7 +532,13 @@ def _combine_token_estimates(estimates: Iterable[TokenEstimate]) -> TokenEstimat
     if not estimate_list:
         return TokenEstimate(input_tokens=0, output_tokens=0, confidence=0.0, source="network-inference")
     sources = {estimate.source for estimate in estimate_list}
-    source = "telemetry" if "telemetry" in sources else "session-files" if "session-files" in sources else "network-inference"
+    source = (
+        "telemetry"
+        if "telemetry" in sources
+        else "session-files"
+        if "session-files" in sources
+        else "network-inference"
+    )
     return TokenEstimate(
         input_tokens=sum(estimate.input_tokens for estimate in estimate_list),
         output_tokens=sum(estimate.output_tokens for estimate in estimate_list),
@@ -532,9 +583,11 @@ CONTEXT_STATES = ("empty", "base_loaded", "filling", "compacting")
 
 # ── Entity dataclasses ──────────────────────────────────────────
 
+
 @dataclass
 class AgentState:
     """State of a single agent (subagent/teammate)."""
+
     agent_id: str
     session_id: str
     state: str = "active"
@@ -558,6 +611,7 @@ class AgentState:
 @dataclass
 class TaskState:
     """State of a task within a session/agent."""
+
     task_id: str
     session_id: str
     agent_id: str = ""
@@ -573,6 +627,7 @@ class TaskState:
 @dataclass
 class SessionEntityState:
     """Reconstructed entity state for a session from hook events."""
+
     session_id: str
     state: str = "active"
     tool: str = "claude-code"
@@ -622,6 +677,7 @@ class SessionEntityState:
 
 
 # ── State tracker ───────────────────────────────────────────────
+
 
 class EntityStateTracker:
     """Processes hook events and maintains entity state machines.
@@ -721,8 +777,7 @@ class EntityStateTracker:
             return
         self._last_gc = now
         cutoff = now - self._gc_interval
-        stale = [sid for sid, s in self.sessions.items()
-                 if s.ended_at and s.ended_at < cutoff]
+        stale = [sid for sid, s in self.sessions.items() if s.ended_at and s.ended_at < cutoff]
         for sid in stale:
             del self.sessions[sid]
 

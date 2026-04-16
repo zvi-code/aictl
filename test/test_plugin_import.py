@@ -22,17 +22,18 @@ from aictl.synthesizer import synthesize
 # Parser: [plugin] section
 # ---------------------------------------------------------------------------
 
+
 class TestParserPluginMeta:
     def test_parse_plugin_section(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[plugin]\n'
+                "[plugin]\n"
                 'name = "my-plugin"\n'
                 'version = "2.0.0"\n'
                 'author = "Jane Doe"\n'
                 'description = "A great plugin"\n\n'
-                '[instructions]\n'
+                "[instructions]\n"
                 'base = "Some instructions"\n'
             )
             parsed = parse_aictx(root / ".context.toml")
@@ -48,10 +49,7 @@ class TestParserPluginMeta:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[plugin]\n'
-                'name = "minimal-plugin"\n\n'
-                '[instructions]\n'
-                'base = "Instructions here"\n'
+                '[plugin]\nname = "minimal-plugin"\n\n[instructions]\nbase = "Instructions here"\n'
             )
             parsed = parse_aictx(root / ".context.toml")
             assert parsed.plugin_meta["name"] == "minimal-plugin"
@@ -61,10 +59,7 @@ class TestParserPluginMeta:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[plugin]\n'
-                '# Plugin metadata\n'
-                'name = "commented-plugin"\n'
-                'version = "1.0.0"\n'
+                '[plugin]\n# Plugin metadata\nname = "commented-plugin"\nversion = "1.0.0"\n'
             )
             parsed = parse_aictx(root / ".context.toml")
             assert parsed.plugin_meta["name"] == "commented-plugin"
@@ -81,6 +76,7 @@ class TestParserPluginMeta:
 # Plugin importer
 # ---------------------------------------------------------------------------
 
+
 class TestPluginImporter:
     def test_import_from_claude_plugin_dir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -88,12 +84,16 @@ class TestPluginImporter:
             # Create a .claude-plugin/ structure
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "test-plugin",
-                "description": "A test plugin",
-                "version": "1.0.0",
-                "author": {"name": "Test Author"},
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "test-plugin",
+                        "description": "A test plugin",
+                        "version": "1.0.0",
+                        "author": {"name": "Test Author"},
+                    }
+                )
+            )
 
             # Commands
             cmds_dir = root / "commands"
@@ -114,21 +114,17 @@ class TestPluginImporter:
             # Hooks
             hooks_dir = root / "hooks"
             hooks_dir.mkdir()
-            (hooks_dir / "hooks.json").write_text(json.dumps({
-                "hooks": {
-                    "Stop": [{"hooks": [{"type": "command", "command": "test.sh"}]}]
-                }
-            }))
+            (hooks_dir / "hooks.json").write_text(
+                json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "test.sh"}]}]}})
+            )
 
             # MCP
-            (root / ".mcp.json").write_text(json.dumps({
-                "mcpServers": {"github": {"type": "http", "url": "https://example.com"}}
-            }))
+            (root / ".mcp.json").write_text(
+                json.dumps({"mcpServers": {"github": {"type": "http", "url": "https://example.com"}}})
+            )
 
             # LSP
-            (root / ".lsp.json").write_text(json.dumps({
-                "gopls": {"command": "gopls", "args": ["serve"]}
-            }))
+            (root / ".lsp.json").write_text(json.dumps({"gopls": {"command": "gopls", "args": ["serve"]}}))
 
             result = plugin_imp.import_from(root)
             assert result is not None
@@ -174,10 +170,14 @@ class TestPluginImporter:
             root = Path(tmpdir)
             plugin_dir = root / "plugin" / ".claude-plugin"
             plugin_dir.mkdir(parents=True)
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "nested-plugin",
-                "version": "0.1.0",
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "nested-plugin",
+                        "version": "0.1.0",
+                    }
+                )
+            )
 
             cmds_dir = root / "plugin" / "commands"
             cmds_dir.mkdir()
@@ -206,10 +206,14 @@ class TestPluginImporter:
             root = Path(tmpdir)
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "string-author-plugin",
-                "author": "Simple Name",
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "string-author-plugin",
+                        "author": "Simple Name",
+                    }
+                )
+            )
 
             result = plugin_imp.import_from(root)
             assert result is not None
@@ -220,6 +224,7 @@ class TestPluginImporter:
 # Synthesizer: plugin metadata roundtrip
 # ---------------------------------------------------------------------------
 
+
 class TestSynthesizerPluginMeta:
     def test_synthesize_includes_plugin_section(self):
         """Synthesizer should emit [plugin] section from plugin import metadata."""
@@ -229,11 +234,15 @@ class TestSynthesizerPluginMeta:
             # Create plugin structure
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "synth-test",
-                "description": "Synthesizer test",
-                "version": "2.0.0",
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "synth-test",
+                        "description": "Synthesizer test",
+                        "version": "2.0.0",
+                    }
+                )
+            )
             cmds_dir = root / "commands"
             cmds_dir.mkdir()
             (cmds_dir / "hello.md").write_text("Say hello")
@@ -253,6 +262,7 @@ class TestSynthesizerPluginMeta:
 # Plugin build: [plugin] metadata as defaults
 # ---------------------------------------------------------------------------
 
+
 class TestPluginBuildWithMeta:
     def test_build_uses_aictx_plugin_meta(self):
         """Plugin build should use [plugin] section values when CLI flags are absent."""
@@ -263,27 +273,30 @@ class TestPluginBuildWithMeta:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[plugin]\n'
+                "[plugin]\n"
                 'name = "meta-plugin"\n'
                 'version = "3.0.0"\n'
                 'author = "Meta Author"\n'
                 'description = "From metadata"\n\n'
-                '[instructions]\n'
+                "[instructions]\n"
                 'base = "Test project"\n\n'
-                '[commands._always.hello]\n'
+                "[commands._always.hello]\n"
                 'content = "Say hello"\n'
             )
 
             runner = CliRunner()
-            result = runner.invoke(main, [
-                "plugin", "build",
-                "--root", str(root),
-            ])
+            result = runner.invoke(
+                main,
+                [
+                    "plugin",
+                    "build",
+                    "--root",
+                    str(root),
+                ],
+            )
             assert result.exit_code == 0, result.output
 
-            manifest = json.loads(
-                (root / "plugin" / ".claude-plugin" / "plugin.json").read_text("utf-8")
-            )
+            manifest = json.loads((root / "plugin" / ".claude-plugin" / "plugin.json").read_text("utf-8"))
             assert manifest["name"] == "meta-plugin"
             assert manifest["version"] == "3.0.0"
             assert manifest["description"] == "From metadata"
@@ -298,29 +311,35 @@ class TestPluginBuildWithMeta:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[plugin]\n'
+                "[plugin]\n"
                 'name = "aictx-name"\n'
                 'version = "1.0.0"\n'
                 'description = "From aictx"\n\n'
-                '[instructions]\n'
+                "[instructions]\n"
                 'base = "Test project"\n\n'
-                '[commands._always.hello]\n'
+                "[commands._always.hello]\n"
                 'content = "Say hello"\n'
             )
 
             runner = CliRunner()
-            result = runner.invoke(main, [
-                "plugin", "build",
-                "--root", str(root),
-                "--name", "cli-name",
-                "--version", "9.9.9",
-                "--description", "From CLI",
-            ])
+            result = runner.invoke(
+                main,
+                [
+                    "plugin",
+                    "build",
+                    "--root",
+                    str(root),
+                    "--name",
+                    "cli-name",
+                    "--version",
+                    "9.9.9",
+                    "--description",
+                    "From CLI",
+                ],
+            )
             assert result.exit_code == 0, result.output
 
-            manifest = json.loads(
-                (root / "plugin" / ".claude-plugin" / "plugin.json").read_text("utf-8")
-            )
+            manifest = json.loads((root / "plugin" / ".claude-plugin" / "plugin.json").read_text("utf-8"))
             assert manifest["name"] == "cli-name"
             assert manifest["version"] == "9.9.9"
             assert manifest["description"] == "From CLI"
@@ -334,17 +353,19 @@ class TestPluginBuildWithMeta:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n\n'
-                '[commands._always.hello]\n'
-                'content = "Say hello"\n'
+                '[instructions]\nbase = "Test project"\n\n[commands._always.hello]\ncontent = "Say hello"\n'
             )
 
             runner = CliRunner()
-            result = runner.invoke(main, [
-                "plugin", "build",
-                "--root", str(root),
-            ])
+            result = runner.invoke(
+                main,
+                [
+                    "plugin",
+                    "build",
+                    "--root",
+                    str(root),
+                ],
+            )
             assert result.exit_code != 0
             assert "Plugin name is required" in result.output
 
@@ -352,6 +373,7 @@ class TestPluginBuildWithMeta:
 # ---------------------------------------------------------------------------
 # Roundtrip: build -> import -> synthesize
 # ---------------------------------------------------------------------------
+
 
 class TestPluginRoundtrip:
     def test_build_import_roundtrip(self):
@@ -363,32 +385,37 @@ class TestPluginRoundtrip:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[plugin]\n'
+                "[plugin]\n"
                 'name = "roundtrip-plugin"\n'
                 'version = "1.5.0"\n'
                 'author = "Test Author"\n'
                 'description = "Roundtrip test plugin"\n\n'
-                '[instructions]\n'
+                "[instructions]\n"
                 'base = "Test project for roundtrip"\n\n'
-                '[commands._always.status]\n'
+                "[commands._always.status]\n"
                 'content = "Show project status"\n\n'
-                '[skills._always.deploy]\n'
+                "[skills._always.deploy]\n"
                 'content = """\n# Deploy\nDeploy the app\n"""\n\n'
-                '[hooks._always]\n'
+                "[hooks._always]\n"
                 'Stop = \'[{"hooks": [{"type": "command", "command": "test.sh"}]}]\'\n\n'
-                '[mcp._always.github]\n'
+                "[mcp._always.github]\n"
                 'type = "http"\n'
                 'url = "https://example.com"\n\n'
-                '[lsp._always.gopls]\n'
+                "[lsp._always.gopls]\n"
                 'command = "gopls"\n'
             )
 
             # Phase 1: Build plugin
             runner = CliRunner()
-            result = runner.invoke(main, [
-                "plugin", "build",
-                "--root", str(root),
-            ])
+            result = runner.invoke(
+                main,
+                [
+                    "plugin",
+                    "build",
+                    "--root",
+                    str(root),
+                ],
+            )
             assert result.exit_code == 0, result.output
 
             plugin_dir = root / "plugin"
@@ -441,6 +468,7 @@ class TestPluginRoundtrip:
 # CLI integration
 # ---------------------------------------------------------------------------
 
+
 class TestCLIPluginImport:
     def test_import_with_plugin_source(self):
         """aictl import --from plugin should find .claude-plugin/ dirs."""
@@ -452,20 +480,30 @@ class TestCLIPluginImport:
             root = Path(tmpdir)
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "cli-test",
-                "description": "CLI test plugin",
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "cli-test",
+                        "description": "CLI test plugin",
+                    }
+                )
+            )
             cmds_dir = root / "commands"
             cmds_dir.mkdir()
             (cmds_dir / "hello.md").write_text("Say hello")
 
             runner = CliRunner()
-            result = runner.invoke(main, [
-                "import", "--root", str(root),
-                "--from", "plugin",
-                "--dry-run",
-            ])
+            result = runner.invoke(
+                main,
+                [
+                    "import",
+                    "--root",
+                    str(root),
+                    "--from",
+                    "plugin",
+                    "--dry-run",
+                ],
+            )
             assert result.exit_code == 0, result.output
             assert "found plugin" in result.output
             assert "(dry)" in result.output
@@ -478,10 +516,16 @@ class TestCLIPluginImport:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             runner = CliRunner()
-            result = runner.invoke(main, [
-                "import", "--root", tmpdir,
-                "--from", "plugin",
-            ])
+            result = runner.invoke(
+                main,
+                [
+                    "import",
+                    "--root",
+                    tmpdir,
+                    "--from",
+                    "plugin",
+                ],
+            )
             assert result.exit_code == 0
             assert "skip plugin" in result.output
 
@@ -495,17 +539,27 @@ class TestCLIPluginImport:
             root = Path(tmpdir)
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "all-test",
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "all-test",
+                    }
+                )
+            )
             cmds_dir = root / "commands"
             cmds_dir.mkdir()
             (cmds_dir / "test.md").write_text("Test command")
 
             runner = CliRunner()
-            result = runner.invoke(main, [
-                "import", "--root", str(root), "--dry-run",
-            ])
+            result = runner.invoke(
+                main,
+                [
+                    "import",
+                    "--root",
+                    str(root),
+                    "--dry-run",
+                ],
+            )
             assert result.exit_code == 0
             assert "found plugin" in result.output
 
@@ -513,6 +567,7 @@ class TestCLIPluginImport:
 # ---------------------------------------------------------------------------
 # Plugin validation test harness
 # ---------------------------------------------------------------------------
+
 
 class TestPluginValidation:
     """Validate plugin structure, manifest schemas, and roundtrip integrity.
@@ -532,15 +587,18 @@ class TestPluginValidation:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n\n'
-                '[commands._always.hello]\n'
-                'content = "Say hello"\n'
+                '[instructions]\nbase = "Test project"\n\n[commands._always.hello]\ncontent = "Say hello"\n'
             )
             runner = CliRunner()
-            result = runner.invoke(main, [
-                "plugin", "build", "--root", str(root),
-            ])
+            result = runner.invoke(
+                main,
+                [
+                    "plugin",
+                    "build",
+                    "--root",
+                    str(root),
+                ],
+            )
             assert result.exit_code != 0
             assert "Plugin name is required" in result.output
 
@@ -551,10 +609,14 @@ class TestPluginValidation:
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
             # Author as integer — unusual but should not crash
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "bad-author",
-                "author": 42,
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "bad-author",
+                        "author": 42,
+                    }
+                )
+            )
             result = plugin_imp.import_from(root)
             assert result is not None
             # Author should be coerced to string
@@ -566,10 +628,14 @@ class TestPluginValidation:
             root = Path(tmpdir)
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "null-author",
-                "author": None,
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "null-author",
+                        "author": None,
+                    }
+                )
+            )
             result = plugin_imp.import_from(root)
             assert result is not None
             # None is falsy so author should not appear
@@ -581,9 +647,13 @@ class TestPluginValidation:
             root = Path(tmpdir)
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "minimal-plugin",
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "minimal-plugin",
+                    }
+                )
+            )
             result = plugin_imp.import_from(root)
             assert result is not None
             assert result.plugin_meta["name"] == "minimal-plugin"
@@ -597,13 +667,17 @@ class TestPluginValidation:
             root = Path(tmpdir)
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "extra-fields",
-                "version": "1.0.0",
-                "license": "MIT",
-                "homepage": "https://example.com",
-                "customThing": {"nested": True},
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "extra-fields",
+                        "version": "1.0.0",
+                        "license": "MIT",
+                        "homepage": "https://example.com",
+                        "customThing": {"nested": True},
+                    }
+                )
+            )
             result = plugin_imp.import_from(root)
             assert result is not None
             assert result.plugin_meta["name"] == "extra-fields"
@@ -617,9 +691,13 @@ class TestPluginValidation:
             root = Path(tmpdir)
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "struct-test",
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "struct-test",
+                    }
+                )
+            )
 
             skills_dir = root / "skills"
             skills_dir.mkdir()
@@ -641,9 +719,13 @@ class TestPluginValidation:
             root = Path(tmpdir)
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "no-skill-md",
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "no-skill-md",
+                    }
+                )
+            )
             skills_dir = root / "skills"
             skills_dir.mkdir()
             (skills_dir / "empty-skill").mkdir()
@@ -660,9 +742,13 @@ class TestPluginValidation:
             root = Path(tmpdir)
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "flat-cmds",
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "flat-cmds",
+                    }
+                )
+            )
             cmds_dir = root / "commands"
             cmds_dir.mkdir()
             (cmds_dir / "hello.md").write_text("Say hello")
@@ -683,17 +769,25 @@ class TestPluginValidation:
             root = Path(tmpdir)
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "hooks-test",
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "hooks-test",
+                    }
+                )
+            )
             hooks_dir = root / "hooks"
             hooks_dir.mkdir()
-            (hooks_dir / "hooks.json").write_text(json.dumps({
-                "hooks": {
-                    "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "lint.sh"}]}],
-                    "Stop": [{"hooks": [{"type": "agent", "prompt": "Run tests"}]}],
-                }
-            }))
+            (hooks_dir / "hooks.json").write_text(
+                json.dumps(
+                    {
+                        "hooks": {
+                            "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "lint.sh"}]}],
+                            "Stop": [{"hooks": [{"type": "agent", "prompt": "Run tests"}]}],
+                        }
+                    }
+                )
+            )
 
             result = plugin_imp.import_from(root)
             assert result is not None
@@ -706,15 +800,23 @@ class TestPluginValidation:
             root = Path(tmpdir)
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "mcp-test",
-            }))
-            (root / ".mcp.json").write_text(json.dumps({
-                "mcpServers": {
-                    "github": {"type": "http", "url": "https://github.example.com"},
-                    "slack": {"type": "http", "url": "https://slack.example.com"},
-                }
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "mcp-test",
+                    }
+                )
+            )
+            (root / ".mcp.json").write_text(
+                json.dumps(
+                    {
+                        "mcpServers": {
+                            "github": {"type": "http", "url": "https://github.example.com"},
+                            "slack": {"type": "http", "url": "https://slack.example.com"},
+                        }
+                    }
+                )
+            )
 
             result = plugin_imp.import_from(root)
             assert result is not None
@@ -727,13 +829,21 @@ class TestPluginValidation:
             root = Path(tmpdir)
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "lsp-test",
-            }))
-            (root / ".lsp.json").write_text(json.dumps({
-                "gopls": {"command": "gopls", "args": ["serve"]},
-                "pyright": {"command": "pyright-langserver", "args": ["--stdio"]},
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "lsp-test",
+                    }
+                )
+            )
+            (root / ".lsp.json").write_text(
+                json.dumps(
+                    {
+                        "gopls": {"command": "gopls", "args": ["serve"]},
+                        "pyright": {"command": "pyright-langserver", "args": ["--stdio"]},
+                    }
+                )
+            )
 
             result = plugin_imp.import_from(root)
             assert result is not None
@@ -749,10 +859,7 @@ class TestPluginValidation:
             # In TOML, duplicate keys in same table are not allowed, so we use
             # a single command (dedup tested at the resolver level instead)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n\n'
-                '[commands._always.hello]\n'
-                'content = "Second hello"\n'
+                '[instructions]\nbase = "Test project"\n\n[commands._always.hello]\ncontent = "Second hello"\n'
             )
             scanned = scan(root)
             resolved = resolve(root, scanned, None)
@@ -791,23 +898,25 @@ class TestPluginValidation:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n\n'
-                '[commands._always.hello]\n'
-                'content = "Say hello"\n'
+                '[instructions]\nbase = "Test project"\n\n[commands._always.hello]\ncontent = "Say hello"\n'
             )
             runner = CliRunner()
-            result = runner.invoke(main, [
-                "plugin", "build",
-                "--root", str(root),
-                "--name", "my-great.plugin_v2",
-                "--description", "A plugin with special chars: <>&\"'",
-            ])
+            result = runner.invoke(
+                main,
+                [
+                    "plugin",
+                    "build",
+                    "--root",
+                    str(root),
+                    "--name",
+                    "my-great.plugin_v2",
+                    "--description",
+                    "A plugin with special chars: <>&\"'",
+                ],
+            )
             assert result.exit_code == 0, result.output
 
-            manifest = json.loads(
-                (root / "plugin" / ".claude-plugin" / "plugin.json").read_text("utf-8")
-            )
+            manifest = json.loads((root / "plugin" / ".claude-plugin" / "plugin.json").read_text("utf-8"))
             assert manifest["name"] == "my-great.plugin_v2"
             assert "<>&\"'" in manifest["description"]
 
@@ -831,17 +940,23 @@ class TestPluginValidation:
                 "\U0001f680 Rocket emoji"
             )
             (root / ".context.toml").write_text(
-                '[instructions]\n'
+                "[instructions]\n"
                 'base = "Test project"\n\n'
-                '[commands._always.greet]\n'
+                "[commands._always.greet]\n"
                 f"content = '''\n{unicode_text}\n'''\n"
             )
             runner = CliRunner()
-            result = runner.invoke(main, [
-                "plugin", "build",
-                "--root", str(root),
-                "--name", "unicode-test",
-            ])
+            result = runner.invoke(
+                main,
+                [
+                    "plugin",
+                    "build",
+                    "--root",
+                    str(root),
+                    "--name",
+                    "unicode-test",
+                ],
+            )
             assert result.exit_code == 0, result.output
 
             # Import and check content
@@ -859,10 +974,14 @@ class TestPluginValidation:
             root = Path(tmpdir)
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "empty-caps",
-                "description": "Has no capabilities",
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "empty-caps",
+                        "description": "Has no capabilities",
+                    }
+                )
+            )
 
             result = plugin_imp.import_from(root)
             assert result is not None
@@ -875,9 +994,13 @@ class TestPluginValidation:
             root = Path(tmpdir)
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "empty-cmd",
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "empty-cmd",
+                    }
+                )
+            )
             cmds_dir = root / "commands"
             cmds_dir.mkdir()
             (cmds_dir / "empty.md").write_text("")
@@ -895,9 +1018,13 @@ class TestPluginValidation:
             root = Path(tmpdir)
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "empty-skill",
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "empty-skill",
+                    }
+                )
+            )
             skills_dir = root / "skills" / "blank"
             skills_dir.mkdir(parents=True)
             (skills_dir / "SKILL.md").write_text("   \n\n  ")
@@ -915,10 +1042,14 @@ class TestPluginValidation:
             root = Path(tmpdir)
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "meta-only",
-                "description": "Plugin with manifest but nothing else",
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "meta-only",
+                        "description": "Plugin with manifest but nothing else",
+                    }
+                )
+            )
 
             result = plugin_imp.import_from(root)
             assert result is not None
@@ -946,9 +1077,13 @@ class TestPluginValidation:
             root = Path(tmpdir)
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "bad-hooks",
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "bad-hooks",
+                    }
+                )
+            )
             hooks_dir = root / "hooks"
             hooks_dir.mkdir()
             (hooks_dir / "hooks.json").write_text("{ not valid json !!!")
@@ -963,9 +1098,13 @@ class TestPluginValidation:
             root = Path(tmpdir)
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "bad-mcp",
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "bad-mcp",
+                    }
+                )
+            )
             (root / ".mcp.json").write_text("<<< broken JSON >>>")
 
             result = plugin_imp.import_from(root)
@@ -978,9 +1117,13 @@ class TestPluginValidation:
             root = Path(tmpdir)
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "bad-lsp",
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "bad-lsp",
+                    }
+                )
+            )
             (root / ".lsp.json").write_text("not json at all")
 
             result = plugin_imp.import_from(root)
@@ -1021,17 +1164,25 @@ class TestPluginValidation:
             root = Path(tmpdir)
             plugin_dir = root / ".claude-plugin"
             plugin_dir.mkdir()
-            (plugin_dir / "plugin.json").write_text(json.dumps({
-                "name": "empty-hook-rules",
-            }))
+            (plugin_dir / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "empty-hook-rules",
+                    }
+                )
+            )
             hooks_dir = root / "hooks"
             hooks_dir.mkdir()
-            (hooks_dir / "hooks.json").write_text(json.dumps({
-                "hooks": {
-                    "PreToolUse": [],
-                    "Stop": [{"hooks": [{"type": "command", "command": "test.sh"}]}],
-                }
-            }))
+            (hooks_dir / "hooks.json").write_text(
+                json.dumps(
+                    {
+                        "hooks": {
+                            "PreToolUse": [],
+                            "Stop": [{"hooks": [{"type": "command", "command": "test.sh"}]}],
+                        }
+                    }
+                )
+            )
 
             result = plugin_imp.import_from(root)
             assert result is not None

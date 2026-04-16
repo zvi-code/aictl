@@ -46,7 +46,8 @@ class TestRecord:
 
     def test_ioerror_does_not_raise(self, monkeypatch, tmp_path):
         monkeypatch.setattr(
-            mutation_ledger, "_ledger_path",
+            mutation_ledger,
+            "_ledger_path",
             lambda: Path("/proc/1/unwritable/ledger.jsonl"),
         )
         # Must not raise.
@@ -75,7 +76,8 @@ class TestWriteSafeIntegration:
 
     def test_write_safe_survives_ledger_failure(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            mutation_ledger, "record",
+            mutation_ledger,
+            "record",
             lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
         )
         f = tmp_path / "still-writes.txt"

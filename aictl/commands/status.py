@@ -29,21 +29,22 @@ from ..tools import (
 
 @click.command()
 @click.option("-r", "--root", "root_dir", default=".", help="Root directory")
-@click.option("--tool", "tool_filter", default=None,
-              help="Filter to one tool (claude, copilot, cursor, windsurf, aictl)")
-@click.option("--processes", "show_procs", is_flag=True,
-              help="Include running processes for each tool")
-@click.option("--backtrace", "bt_pid", type=int, default=None, metavar="PID",
-              help="Sample a process stack trace by PID")
-@click.option("--budget", "show_budget", is_flag=True,
-              help="Show token cost summary")
+@click.option(
+    "--tool", "tool_filter", default=None, help="Filter to one tool (claude, copilot, cursor, windsurf, aictl)"
+)
+@click.option("--processes", "show_procs", is_flag=True, help="Include running processes for each tool")
+@click.option(
+    "--backtrace", "bt_pid", type=int, default=None, metavar="PID", help="Sample a process stack trace by PID"
+)
+@click.option("--budget", "show_budget", is_flag=True, help="Show token cost summary")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
-@click.option("--html", "as_html", is_flag=True,
-              help="Generate a self-contained HTML report (stdout)")
-@click.option("-o", "--output", "out_file", default=None, type=click.Path(),
-              help="Write HTML report to file instead of stdout")
-@click.option("--server/--no-server", "use_server", default=True,
-              help="Try connecting to running aictl serve (default: yes)")
+@click.option("--html", "as_html", is_flag=True, help="Generate a self-contained HTML report (stdout)")
+@click.option(
+    "-o", "--output", "out_file", default=None, type=click.Path(), help="Write HTML report to file instead of stdout"
+)
+@click.option(
+    "--server/--no-server", "use_server", default=True, help="Try connecting to running aictl serve (default: yes)"
+)
 def status(root_dir, tool_filter, show_procs, bt_pid, show_budget, as_json, as_html, out_file, use_server):
     """Show all resources for AI coding tools."""
     root = Path(root_dir).resolve()
@@ -58,10 +59,12 @@ def status(root_dir, tool_filter, show_procs, bt_pid, show_budget, as_json, as_h
     if use_server and not as_html and not out_file:
         try:
             from ..client import ServerClient
+
             client = ServerClient.try_connect()
             if client:
                 snap_dict = client.get_snapshot()
                 from ..dashboard.models import DashboardSnapshot
+
                 snap = DashboardSnapshot.from_dict(snap_dict)
                 results = [t for t in snap.tools]
                 if as_json:
@@ -95,6 +98,7 @@ def status(root_dir, tool_filter, show_procs, bt_pid, show_budget, as_json, as_h
 
 # ─── HTML output ─────────────────────────────────────────────────────
 
+
 def _emit_html(results: list[ToolResources], root: Path, out_file: str | None) -> None:
 
     snap = DashboardSnapshot(
@@ -115,6 +119,7 @@ def _emit_html(results: list[ToolResources], root: Path, out_file: str | None) -
 
 # ─── Backtrace ──────────────────────────────────────────────────────
 
+
 def _do_backtrace(pid: int) -> None:
     click.secho(f"\nSampling PID {pid} …", fg="yellow")
     bt = backtrace_process(pid)
@@ -126,11 +131,13 @@ def _do_backtrace(pid: int) -> None:
 
 # ─── JSON output ────────────────────────────────────────────────────
 
+
 def _print_json(results: list[ToolResources]) -> None:
     click.echo(json.dumps([dataclasses.asdict(r) for r in results], indent=2))
 
 
 # ─── Human output ───────────────────────────────────────────────────
+
 
 def _print_human(results: list[ToolResources], root: Path, show_procs: bool) -> None:
     home = Path.home()
@@ -157,9 +164,11 @@ def _print_human(results: list[ToolResources], root: Path, show_procs: bool) -> 
                 tok_str = f"  ~{f.tokens} tok" if f.tokens else ""
                 kind = click.style(f"[{f.kind}]", fg="yellow")
                 rel = _rel_display(f.path, root, home)
-                click.echo(f"    {kind} {rel}"
-                           f"  {click.style(size_str, fg='bright_black')}"
-                           f"{click.style(tok_str, fg='bright_black')}")
+                click.echo(
+                    f"    {kind} {rel}"
+                    f"  {click.style(size_str, fg='bright_black')}"
+                    f"{click.style(tok_str, fg='bright_black')}"
+                )
 
         # ── Memory (Claude)
         if res.memory:
@@ -173,32 +182,26 @@ def _print_human(results: list[ToolResources], root: Path, show_procs: bool) -> 
             for srv in res.mcp_servers:
                 cmd = srv["config"].get("command", "?")
                 args = " ".join(srv["config"].get("args", []))
-                click.echo(f"    {click.style(srv['name'], fg='green')}"
-                           f" — {cmd} {args[:80]}")
+                click.echo(f"    {click.style(srv['name'], fg='green')} — {cmd} {args[:80]}")
 
         # ── Processes
         if show_procs:
             if res.processes:
                 click.secho("\n  Processes:", fg="cyan", bold=True)
                 for p in res.processes:
-                    pid = p.pid if hasattr(p, 'pid') else p.get('pid', '?')
-                    cpu = p.cpu_pct if hasattr(p, 'cpu_pct') else p.get('cpu_pct', 0)
-                    mem = p.mem_mb if hasattr(p, 'mem_mb') else p.get('mem_mb', 0)
-                    name = p.name if hasattr(p, 'name') else p.get('name', '?')
-                    cmdline = p.cmdline if hasattr(p, 'cmdline') else p.get('cmdline', name)
-                    anomalies = p.anomalies if hasattr(p, 'anomalies') else p.get('anomalies', [])
-                    click.echo(
-                        f"    PID {click.style(str(pid), fg='green')}"
-                        f"  CPU {cpu}%"
-                        f"  MEM {mem}MB"
-                        f"  {name}"
-                    )
+                    pid = p.pid if hasattr(p, "pid") else p.get("pid", "?")
+                    cpu = p.cpu_pct if hasattr(p, "cpu_pct") else p.get("cpu_pct", 0)
+                    mem = p.mem_mb if hasattr(p, "mem_mb") else p.get("mem_mb", 0)
+                    name = p.name if hasattr(p, "name") else p.get("name", "?")
+                    cmdline = p.cmdline if hasattr(p, "cmdline") else p.get("cmdline", name)
+                    anomalies = p.anomalies if hasattr(p, "anomalies") else p.get("anomalies", [])
+                    click.echo(f"    PID {click.style(str(pid), fg='green')}  CPU {cpu}%  MEM {mem}MB  {name}")
                     if len(cmdline) > len(name):
                         click.secho(f"      {cmdline[:120]}", fg="bright_black")
                     if anomalies:
                         for a in anomalies:
                             click.secho(f"      ⚠ {a}", fg="red")
-                        cleanup = p.cleanup_cmd if hasattr(p, 'cleanup_cmd') else p.get('cleanup_cmd', '')
+                        cleanup = p.cleanup_cmd if hasattr(p, "cleanup_cmd") else p.get("cleanup_cmd", "")
                         if cleanup:
                             click.secho(f"      cleanup: {cleanup}", fg="bright_black")
                 click.secho("\n    Tip: aictl status --backtrace <PID>", fg="bright_black")
@@ -223,9 +226,9 @@ def _print_human(results: list[ToolResources], root: Path, show_procs: bool) -> 
             tok_str = f"  ~{f.tokens} tok" if f.tokens else ""
             kind = click.style(f"[{f.kind}]", fg="yellow")
             rel = _rel_display(f.path, root, home)
-            click.echo(f"    {kind} {rel}"
-                       f"  {click.style(size_str, fg='bright_black')}"
-                       f"{click.style(tok_str, fg='bright_black')}")
+            click.echo(
+                f"    {kind} {rel}  {click.style(size_str, fg='bright_black')}{click.style(tok_str, fg='bright_black')}"
+            )
         click.echo()
 
 
@@ -245,8 +248,7 @@ def _print_budget(results: list[ToolResources], root: str = "") -> None:
     click.echo(f"    Conditional (file-matched):  ~{budget['conditional_tokens']} tokens")
     click.echo(f"    Cacheable portion:           ~{budget['cacheable_tokens']} tokens")
     click.echo(f"    Survives compaction:         ~{budget['survives_compaction_tokens']} tokens")
-    click.secho(f"    Total potential overhead:    ~{budget['total_potential_tokens']} tokens",
-                bold=True)
+    click.secho(f"    Total potential overhead:    ~{budget['total_potential_tokens']} tokens", bold=True)
     click.echo(f"    Files never sent to LLM:      {budget['never_sent_count']}")
     click.echo()
 
@@ -270,7 +272,9 @@ def show(root_dir):
     click.secho(f"\n🧠  Active memory: {s['dir']}", bold=True)
     click.secho(f"   Total: {s['total_tokens']} tokens loaded every session\n", fg="bright_black")
     for f in s["files"]:
-        click.echo(f"   {click.style(f['file'], fg='cyan')} — {f['lines']} lines, {click.style(str(f['tokens'])+' tok', fg='yellow')}")
+        click.echo(
+            f"   {click.style(f['file'], fg='cyan')} — {f['lines']} lines, {click.style(str(f['tokens']) + ' tok', fg='yellow')}"
+        )
         preview = [l for l in f["content"].splitlines() if l.strip() and not l.startswith("#")][:3]
         for line in preview:
             click.secho(f"     {line}", fg="bright_black")

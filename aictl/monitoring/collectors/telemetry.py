@@ -59,19 +59,20 @@ class StructuredTelemetryCollector(BaseCollector):
 
                 # Correlator: typed session tracking
                 if self.correlator and (inp or out):
-                    self.correlator.on_telemetry(
-                        inp, out, tool_hint=tool)
+                    self.correlator.on_telemetry(inp, out, tool_hint=tool)
 
                 # Sink: token telemetry at source resolution
                 ttags = {"tool": tool}
                 if s.get("path"):
                     ttags["source_file"] = s["path"]
                 if inp:
-                    self.sink_emit_if_changed(M("gen_ai.client.token.usage"), float(inp),
-                                   {**ttags, "gen_ai.token.type": "input"})
+                    self.sink_emit_if_changed(
+                        M("gen_ai.client.token.usage"), float(inp), {**ttags, "gen_ai.token.type": "input"}
+                    )
                 if out:
-                    self.sink_emit_if_changed(M("gen_ai.client.token.usage"), float(out),
-                                   {**ttags, "gen_ai.token.type": "output"})
+                    self.sink_emit_if_changed(
+                        M("gen_ai.client.token.usage"), float(out), {**ttags, "gen_ai.token.type": "output"}
+                    )
                 if conf:
                     self.sink_emit_if_changed(M("gen_ai.client.confidence"), float(conf), ttags)
             await self.sleep(self.config.telemetry_interval)
@@ -143,25 +144,29 @@ class StructuredTelemetryCollector(BaseCollector):
                     # Try OTel span format first (higher confidence)
                     otel_usage = _extract_otel_span_tokens(payload) if is_otel_file else None
                     if otel_usage:
-                        samples.append({
-                            "tool_hint": _tool_hint_for_path(key) or "",
-                            "input_tokens": otel_usage[0],
-                            "output_tokens": otel_usage[1],
-                            "confidence": 0.95,
-                            "path": key,
-                        })
+                        samples.append(
+                            {
+                                "tool_hint": _tool_hint_for_path(key) or "",
+                                "input_tokens": otel_usage[0],
+                                "output_tokens": otel_usage[1],
+                                "confidence": 0.95,
+                                "path": key,
+                            }
+                        )
                         continue
 
                     # Fallback to generic token extraction
                     usage = _extract_usage_tokens(payload)
                     if usage is None:
                         continue
-                    samples.append({
-                        "tool_hint": _tool_hint_for_path(key),
-                        "input_tokens": usage[0],
-                        "output_tokens": usage[1],
-                        "path": key,
-                    })
+                    samples.append(
+                        {
+                            "tool_hint": _tool_hint_for_path(key),
+                            "input_tokens": usage[0],
+                            "output_tokens": usage[1],
+                            "path": key,
+                        }
+                    )
                 self._offsets[key] = handle.tell()
         except OSError:
             return samples
@@ -185,7 +190,7 @@ def _extract_usage_tokens(payload: Any) -> tuple[int, int] | None:
             ("input_tokens", "output_tokens"),
             ("prompt_tokens", "completion_tokens"),
             ("promptTokens", "completionTokens"),
-            ("inputTokens", "outputTokens"),         # Copilot CLI events
+            ("inputTokens", "outputTokens"),  # Copilot CLI events
         ):
             if input_key in payload or output_key in payload:
                 return int(payload.get(input_key, 0) or 0), int(payload.get(output_key, 0) or 0)

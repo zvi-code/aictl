@@ -26,6 +26,7 @@ from aictl.storage import (
 
 # ── Fixtures ──────────────────────────────────────────────────────
 
+
 @pytest.fixture()
 def populated_db(tmp_path):
     """File-based DB pre-populated with samples, events, telemetry, and files.
@@ -37,47 +38,72 @@ def populated_db(tmp_path):
     now = time.time()
 
     # Samples
-    db.append_samples([
-        Sample(ts=now - 60, metric="cpu.core.0", value=45.2),
-        Sample(ts=now - 30, metric="cpu.core.0", value=52.1),
-        Sample(ts=now, metric="cpu.core.0", value=48.7),
-        Sample(ts=now - 60, metric="cpu.core.1", value=12.8),
-        Sample(ts=now, metric="mem.total", value=8192,
-               tags={"tool": "claude-code"}),
-    ])
+    db.append_samples(
+        [
+            Sample(ts=now - 60, metric="cpu.core.0", value=45.2),
+            Sample(ts=now - 30, metric="cpu.core.0", value=52.1),
+            Sample(ts=now, metric="cpu.core.0", value=48.7),
+            Sample(ts=now - 60, metric="cpu.core.1", value=12.8),
+            Sample(ts=now, metric="mem.total", value=8192, tags={"tool": "claude-code"}),
+        ]
+    )
 
     # Events (including session_end for historical sessions)
-    db.append_event(EventRow(
-        ts=now - 300, tool="claude-code", kind="session_start",
-        detail={"session_id": "sess-001"},
-    ))
-    db.append_event(EventRow(
-        ts=now - 100, tool="claude-code", kind="session_end",
-        detail={"session_id": "sess-001", "duration_s": 200},
-    ))
-    db.append_event(EventRow(
-        ts=now - 50, tool="copilot-cli", kind="session_start",
-        detail={"session_id": "sess-002"},
-    ))
+    db.append_event(
+        EventRow(
+            ts=now - 300,
+            tool="claude-code",
+            kind="session_start",
+            detail={"session_id": "sess-001"},
+        )
+    )
+    db.append_event(
+        EventRow(
+            ts=now - 100,
+            tool="claude-code",
+            kind="session_end",
+            detail={"session_id": "sess-001", "duration_s": 200},
+        )
+    )
+    db.append_event(
+        EventRow(
+            ts=now - 50,
+            tool="copilot-cli",
+            kind="session_start",
+            detail={"session_id": "sess-002"},
+        )
+    )
 
     # Telemetry
-    db.append_telemetry(TelemetryRow(
-        ts=now - 60, tool="claude-code", source="stats-cache",
-        confidence=0.95, input_tokens=1000, output_tokens=5000,
-        cache_read_tokens=500, total_sessions=3, total_messages=42,
-        model="claude-opus-4-6",
-        by_model={"claude-opus-4-6": {"input": 1000, "output": 5000}},
-    ))
-    db.append_telemetry(TelemetryRow(
-        ts=now, tool="copilot-cli", source="direct",
-        confidence=0.8, input_tokens=200, output_tokens=800,
-    ))
+    db.append_telemetry(
+        TelemetryRow(
+            ts=now - 60,
+            tool="claude-code",
+            source="stats-cache",
+            confidence=0.95,
+            input_tokens=1000,
+            output_tokens=5000,
+            cache_read_tokens=500,
+            total_sessions=3,
+            total_messages=42,
+            model="claude-opus-4-6",
+            by_model={"claude-opus-4-6": {"input": 1000, "output": 5000}},
+        )
+    )
+    db.append_telemetry(
+        TelemetryRow(
+            ts=now,
+            tool="copilot-cli",
+            source="direct",
+            confidence=0.8,
+            input_tokens=200,
+            output_tokens=800,
+        )
+    )
 
     # Files
-    db.upsert_file(path="/project/README.md", tool="claude-code",
-                   category="instructions", content="# Hello\nWorld")
-    db.upsert_file(path="/project/.env", tool="copilot-cli",
-                   category="config", content="KEY=val")
+    db.upsert_file(path="/project/README.md", tool="claude-code", category="instructions", content="# Hello\nWorld")
+    db.upsert_file(path="/project/.env", tool="copilot-cli", category="config", content="KEY=val")
 
     yield db
     db.close()
@@ -105,17 +131,30 @@ def server(populated_db):
 
     store = SnapshotStore(db=populated_db)
     # Give the store a snapshot so /api/sessions doesn't 503
-    store.update(_make_snapshot(sessions=[
-        {"session_id": "live-001", "tool": "claude-code",
-         "duration_s": 120, "cpu_percent": 5.2,
-         "exact_input_tokens": 500, "exact_output_tokens": 2000,
-         "file_events": 3, "pids": [1234]},
-    ]))
+    store.update(
+        _make_snapshot(
+            sessions=[
+                {
+                    "session_id": "live-001",
+                    "tool": "claude-code",
+                    "duration_s": 120,
+                    "cpu_percent": 5.2,
+                    "exact_input_tokens": 500,
+                    "exact_output_tokens": 2000,
+                    "file_events": 3,
+                    "pids": [1234],
+                },
+            ]
+        )
+    )
 
     allowed = AllowedPaths()
     srv = _DashboardHTTPServer(
-        ("127.0.0.1", 0), _DashboardHandler,
-        store, allowed, Path("/tmp/test-project"),
+        ("127.0.0.1", 0),
+        _DashboardHandler,
+        store,
+        allowed,
+        Path("/tmp/test-project"),
     )
     port = srv.server_address[1]
     t = threading.Thread(target=srv.serve_forever, daemon=True)
@@ -144,6 +183,7 @@ def _get_status(url):
 
 # ── Samples API ───────────────────────────────────────────────────
 
+
 class TestSamplesAPI:
     def test_list_metrics(self, server):
         data = _get_json(f"{server}/api/samples?list=1")
@@ -166,8 +206,7 @@ class TestSamplesAPI:
 
     def test_series(self, server):
         since = int(time.time()) - 3600
-        data = _get_json(
-            f"{server}/api/samples?series=cpu.core.0&since={since}")
+        data = _get_json(f"{server}/api/samples?series=cpu.core.0&since={since}")
         assert "ts" in data
         assert "value" in data
         assert len(data["ts"]) == 3
@@ -177,8 +216,7 @@ class TestSamplesAPI:
 
     def test_query_by_metric(self, server):
         since = int(time.time()) - 3600
-        data = _get_json(
-            f"{server}/api/samples?metric=mem.total&since={since}")
+        data = _get_json(f"{server}/api/samples?metric=mem.total&since={since}")
         assert isinstance(data, list)
         assert len(data) == 1
         assert data[0]["metric"] == "mem.total"
@@ -187,14 +225,12 @@ class TestSamplesAPI:
 
     def test_query_by_prefix(self, server):
         since = int(time.time()) - 3600
-        data = _get_json(
-            f"{server}/api/samples?prefix=cpu.core&since={since}")
+        data = _get_json(f"{server}/api/samples?prefix=cpu.core&since={since}")
         assert len(data) == 4  # 3 for core.0 + 1 for core.1
 
     def test_query_with_tag_filter(self, server):
         since = int(time.time()) - 3600
-        data = _get_json(
-            f"{server}/api/samples?since={since}&tag.tool=claude-code")
+        data = _get_json(f"{server}/api/samples?since={since}&tag.tool=claude-code")
         assert len(data) >= 1
         assert all(s["tags"]["tool"] == "claude-code" for s in data)
 
@@ -211,8 +247,11 @@ class TestSamplesAPI:
         store = SnapshotStore(db=None)
         allowed = AllowedPaths()
         srv = _DashboardHTTPServer(
-            ("127.0.0.1", 0), _DashboardHandler,
-            store, allowed, Path("/tmp"),
+            ("127.0.0.1", 0),
+            _DashboardHandler,
+            store,
+            allowed,
+            Path("/tmp"),
         )
         port = srv.server_address[1]
         t = threading.Thread(target=srv.serve_forever, daemon=True)
@@ -225,6 +264,7 @@ class TestSamplesAPI:
 
 
 # ── Sessions API ──────────────────────────────────────────────────
+
 
 class TestSessionsAPI:
     def test_active_sessions(self, server):
@@ -265,8 +305,11 @@ class TestSessionsAPI:
         # Don't call store.update() → snapshot is None
         allowed = AllowedPaths()
         srv = _DashboardHTTPServer(
-            ("127.0.0.1", 0), _DashboardHandler,
-            store, allowed, Path("/tmp"),
+            ("127.0.0.1", 0),
+            _DashboardHandler,
+            store,
+            allowed,
+            Path("/tmp"),
         )
         port = srv.server_address[1]
         t = threading.Thread(target=srv.serve_forever, daemon=True)
@@ -279,6 +322,7 @@ class TestSessionsAPI:
 
 
 # ── Files API ─────────────────────────────────────────────────────
+
 
 class TestFilesAPI:
     def test_list_all_files(self, server):
@@ -304,15 +348,28 @@ class TestFilesAPI:
     def test_file_has_expected_fields(self, server):
         data = _get_json(f"{server}/api/files?tool=claude-code")
         f = data[0]
-        for key in ("path", "tool", "category", "scope", "content_hash",
-                     "size_bytes", "tokens", "lines", "mtime",
-                     "first_seen", "last_read", "last_changed", "meta"):
+        for key in (
+            "path",
+            "tool",
+            "category",
+            "scope",
+            "content_hash",
+            "size_bytes",
+            "tokens",
+            "lines",
+            "mtime",
+            "first_seen",
+            "last_read",
+            "last_changed",
+            "meta",
+        ):
             assert key in f, f"Missing key: {key}"
         assert f["lines"] == 2
         assert f["tokens"] > 0
 
 
 # ── File History API ──────────────────────────────────────────────
+
 
 class TestFileHistoryAPI:
     def test_missing_path_returns_400(self, server):
@@ -322,11 +379,8 @@ class TestFileHistoryAPI:
     def test_history_timeline(self, server, populated_db):
         # Add a second version
         time.sleep(0.01)
-        populated_db.upsert_file(
-            path="/project/README.md", tool="claude-code",
-            content="# Hello\nWorld\nUpdated")
-        data = _get_json(
-            f"{server}/api/files/history?path=/project/README.md")
+        populated_db.upsert_file(path="/project/README.md", tool="claude-code", content="# Hello\nWorld\nUpdated")
+        data = _get_json(f"{server}/api/files/history?path=/project/README.md")
         assert isinstance(data, list)
         assert len(data) >= 2
 
@@ -334,17 +388,14 @@ class TestFileHistoryAPI:
         # Insert a version, record its time, then insert another
         t1 = time.time()
         time.sleep(0.01)
-        populated_db.upsert_file(
-            path="/project/new.md", tool="t", content="version-1")
+        populated_db.upsert_file(path="/project/new.md", tool="t", content="version-1")
         time.sleep(0.01)
         t2 = time.time()
         time.sleep(0.01)
-        populated_db.upsert_file(
-            path="/project/new.md", tool="t", content="version-2")
+        populated_db.upsert_file(path="/project/new.md", tool="t", content="version-2")
 
         # Get content at t2 (should be version-1)
-        req = urllib.request.Request(
-            f"{server}/api/files/history?path=/project/new.md&ts={t2}")
+        req = urllib.request.Request(f"{server}/api/files/history?path=/project/new.md&ts={t2}")
         with urllib.request.urlopen(req, timeout=5) as resp:
             assert resp.status == 200
             body = resp.read().decode()
@@ -352,6 +403,7 @@ class TestFileHistoryAPI:
 
 
 # ── Telemetry API ─────────────────────────────────────────────────
+
 
 class TestTelemetryAPI:
     def test_query_all(self, server):
@@ -364,8 +416,7 @@ class TestTelemetryAPI:
 
     def test_filter_by_tool(self, server):
         since = int(time.time()) - 3600
-        data = _get_json(
-            f"{server}/api/telemetry?tool=claude-code&since={since}")
+        data = _get_json(f"{server}/api/telemetry?tool=claude-code&since={since}")
         assert len(data) == 1
         r = data[0]
         assert r["tool"] == "claude-code"
@@ -378,15 +429,26 @@ class TestTelemetryAPI:
         since = int(time.time()) - 3600
         data = _get_json(f"{server}/api/telemetry?since={since}")
         r = data[0]
-        for key in ("ts", "tool", "source", "confidence",
-                     "input_tokens", "output_tokens",
-                     "cache_read_tokens", "cache_creation_tokens",
-                     "total_sessions", "total_messages",
-                     "cost_usd", "model", "by_model"):
+        for key in (
+            "ts",
+            "tool",
+            "source",
+            "confidence",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+            "total_sessions",
+            "total_messages",
+            "cost_usd",
+            "model",
+            "by_model",
+        ):
             assert key in r, f"Missing key: {key}"
 
 
 # ── Events API ────────────────────────────────────────────────────
+
 
 class TestEventsAPI:
     def test_query_all(self, server):
@@ -400,31 +462,25 @@ class TestEventsAPI:
 
     def test_filter_by_tool(self, server):
         since = int(time.time()) - 3600
-        data = _get_json(
-            f"{server}/api/events?tool=copilot-cli&since={since}")
+        data = _get_json(f"{server}/api/events?tool=copilot-cli&since={since}")
         assert all(e["tool"] == "copilot-cli" for e in data)
 
     def test_filter_by_kind(self, server):
         since = int(time.time()) - 3600
-        data = _get_json(
-            f"{server}/api/events?kind=session_end&since={since}")
+        data = _get_json(f"{server}/api/events?kind=session_end&since={since}")
         assert all(e["kind"] == "session_end" for e in data)
 
     def test_event_has_detail(self, server):
         since = int(time.time()) - 3600
-        data = _get_json(
-            f"{server}/api/events?kind=session_end&since={since}")
+        data = _get_json(f"{server}/api/events?kind=session_end&since={since}")
         assert len(data) >= 1
         assert "session_id" in data[0]["detail"]
 
     def test_filter_by_session_id(self, server):
         since = int(time.time()) - 3600
         # Get all events first to find a valid session_id
-        all_events = _get_json(
-            f"{server}/api/events?kind=session_end&since={since}")
+        all_events = _get_json(f"{server}/api/events?kind=session_end&since={since}")
         if all_events:
             sid = all_events[0]["detail"]["session_id"]
-            filtered = _get_json(
-                f"{server}/api/events?session_id={sid}&since={since}")
-            assert all(
-                e["detail"].get("session_id") == sid for e in filtered)
+            filtered = _get_json(f"{server}/api/events?session_id={sid}&since={since}")
+            assert all(e["detail"].get("session_id") == sid for e in filtered)

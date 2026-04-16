@@ -34,19 +34,17 @@ NAME = "claude"
 def import_from(root: Path) -> ImportResult | None:
     claude_dir = root / ".claude"
 
-    root_base, profile_name, profile_text = read_root_scope(
-        root / "CLAUDE.md", root / "CLAUDE.local.md", NAME)
-    scopes = ([ImportedScope(".", NAME, root_base, profile_name, profile_text)]
-              if root_base or profile_text else [])
+    root_base, profile_name, profile_text = read_root_scope(root / "CLAUDE.md", root / "CLAUDE.local.md", NAME)
+    scopes = [ImportedScope(".", NAME, root_base, profile_name, profile_text)] if root_base or profile_text else []
     scopes += read_sub_scopes(claude_dir / "rules", "*.md", NAME, meta_key="paths")
 
-    capabilities = (read_cap_dir(claude_dir / "commands", "*.md", "command", NAME)
-                    + read_skills_dir(claude_dir / "skills", NAME))
+    capabilities = read_cap_dir(claude_dir / "commands", "*.md", "command", NAME) + read_skills_dir(
+        claude_dir / "skills", NAME
+    )
 
     mcp_servers = import_mcp_from_json(root / ".mcp.json", NAME)
 
-    hooks = read_hooks_from_settings(
-        [claude_dir / "settings.json", claude_dir / "settings.local.json"], NAME)
+    hooks = read_hooks_from_settings([claude_dir / "settings.json", claude_dir / "settings.local.json"], NAME)
 
     lsp_servers = read_lsp_json(root / ".lsp.json", NAME, key="")
 

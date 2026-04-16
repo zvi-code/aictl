@@ -29,6 +29,7 @@ def main():
 
 # ── ctx subgroup ────────────────────────────────────────────────────────────
 
+
 @click.group("ctx")
 def ctx_group():
     """Context pipeline — deploy, scan, diff, validate, init."""
@@ -43,6 +44,7 @@ ctx_group.add_command(init)
 main.add_command(ctx_group)
 
 # ── daemon subgroup ──────────────────────────────────────────────────────────
+
 
 @click.group("daemon")
 def daemon_group():

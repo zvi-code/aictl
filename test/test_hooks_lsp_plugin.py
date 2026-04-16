@@ -21,12 +21,13 @@ FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "project"
 # Parser tests
 # ---------------------------------------------------------------------------
 
+
 class TestParserHooks:
     def test_parse_hook_single_rule(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[hooks._always]\n'
+                "[hooks._always]\n"
                 'PreToolUse = \'[{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo hi"}]}]\'\n'
             )
             parsed = parse_aictx(root / ".context.toml")
@@ -41,8 +42,7 @@ class TestParserHooks:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[hooks.debug]\n'
-                'Stop = \'{"hooks": [{"type": "agent", "prompt": "Run tests"}]}\'\n'
+                '[hooks.debug]\nStop = \'{"hooks": [{"type": "agent", "prompt": "Run tests"}]}\'\n'
             )
             parsed = parse_aictx(root / ".context.toml")
             assert len(parsed.hooks) == 1
@@ -55,7 +55,7 @@ class TestParserHooks:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[hooks._always]\n'
+                "[hooks._always]\n"
                 'PreToolUse = \'[{"matcher": "Bash", "hooks": [{"type": "command", "command": "lint.sh"}]}, {"matcher": "Write", "hooks": [{"type": "command", "command": "log.sh"}]}]\'\n'
             )
             parsed = parse_aictx(root / ".context.toml")
@@ -65,10 +65,7 @@ class TestParserHooks:
     def test_parse_hook_skips_malformed_json(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / ".context.toml").write_text(
-                '[hooks._always]\n'
-                'PreToolUse = "not valid json"\n'
-            )
+            (root / ".context.toml").write_text('[hooks._always]\nPreToolUse = "not valid json"\n')
             parsed = parse_aictx(root / ".context.toml")
             assert len(parsed.hooks) == 0
 
@@ -76,11 +73,11 @@ class TestParserHooks:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[hooks._always]\n'
+                "[hooks._always]\n"
                 'PreToolUse = \'[{"matcher": "Bash", "hooks": [{"type": "command", "command": "a.sh"}]}]\'\n\n'
-                '[hooks.debug]\n'
+                "[hooks.debug]\n"
                 'Stop = \'[{"hooks": [{"type": "agent", "prompt": "test"}]}]\'\n\n'
-                '[hooks.review]\n'
+                "[hooks.review]\n"
                 'Stop = \'[{"hooks": [{"type": "agent", "prompt": "lint"}]}]\'\n'
             )
             parsed = parse_aictx(root / ".context.toml")
@@ -107,11 +104,7 @@ class TestParserLsp:
     def test_parse_lsp_server(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / ".context.toml").write_text(
-                '[lsp._always.gopls]\n'
-                'command = "gopls"\n'
-                'args = ["serve"]\n'
-            )
+            (root / ".context.toml").write_text('[lsp._always.gopls]\ncommand = "gopls"\nargs = ["serve"]\n')
             parsed = parse_aictx(root / ".context.toml")
             assert len(parsed.lsp_servers) == 1
             s = parsed.lsp_servers[0]
@@ -122,10 +115,10 @@ class TestParserLsp:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[lsp._always.gopls]\n'
+                "[lsp._always.gopls]\n"
                 'command = "gopls"\n'
                 'args = ["serve"]\n\n'
-                '[lsp.debug.delve]\n'
+                "[lsp.debug.delve]\n"
                 'command = "dlv"\n'
                 'args = ["dap"]\n'
             )
@@ -143,16 +136,17 @@ class TestParserLsp:
 # Resolver tests
 # ---------------------------------------------------------------------------
 
+
 class TestResolverHooks:
     def test_resolve_hooks_from_root(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
+                "[instructions]\n"
                 'base = "Test project"\n\n'
-                '[hooks._always]\n'
+                "[hooks._always]\n"
                 'PreToolUse = \'[{"matcher": "Bash", "hooks": [{"type": "command", "command": "a.sh"}]}]\'\n\n'
-                '[hooks.debug]\n'
+                "[hooks.debug]\n"
                 'Stop = \'[{"hooks": [{"type": "agent", "prompt": "test"}]}]\'\n'
             )
             scanned = scan(root)
@@ -165,9 +159,9 @@ class TestResolverHooks:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
                 'exclude = ["hook:_always:Stop"]\n\n'
-                '[instructions]\n'
+                "[instructions]\n"
                 'base = "Test project"\n\n'
-                '[hooks._always]\n'
+                "[hooks._always]\n"
                 'PreToolUse = \'[{"matcher": "Bash", "hooks": [{"type": "command", "command": "a.sh"}]}]\'\n'
                 'Stop = \'[{"hooks": [{"type": "agent", "prompt": "test"}]}]\'\n'
             )
@@ -180,11 +174,7 @@ class TestResolverHooks:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n\n'
-                '[lsp._always.gopls]\n'
-                'command = "gopls"\n'
-                'args = ["serve"]\n'
+                '[instructions]\nbase = "Test project"\n\n[lsp._always.gopls]\ncommand = "gopls"\nargs = ["serve"]\n'
             )
             scanned = scan(root)
             resolved = resolve(root, scanned, None)
@@ -195,14 +185,15 @@ class TestResolverHooks:
 # Claude emitter tests
 # ---------------------------------------------------------------------------
 
+
 class TestClaudeEmitterHooks:
     def test_emit_hooks_to_settings(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
+                "[instructions]\n"
                 'base = "Test project"\n\n'
-                '[hooks._always]\n'
+                "[hooks._always]\n"
                 'PreToolUse = \'[{"matcher": "Bash", "hooks": [{"type": "command", "command": "block-rm.sh"}]}]\'\n'
             )
             scanned = scan(root)
@@ -224,12 +215,13 @@ class TestClaudeEmitterHooks:
             settings_dir = root / ".claude"
             settings_dir.mkdir(parents=True)
             (settings_dir / "settings.local.json").write_text(
-                json.dumps({"permissions": {"allow": ["Bash(npm run *)"]}}))
+                json.dumps({"permissions": {"allow": ["Bash(npm run *)"]}})
+            )
 
             (root / ".context.toml").write_text(
-                '[instructions]\n'
+                "[instructions]\n"
                 'base = "Test project"\n\n'
-                '[hooks._always]\n'
+                "[hooks._always]\n"
                 'Stop = \'[{"hooks": [{"type": "command", "command": "notify.sh"}]}]\'\n'
             )
             scanned = scan(root)
@@ -247,11 +239,7 @@ class TestClaudeEmitterHooks:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n\n'
-                '[lsp._always.gopls]\n'
-                'command = "gopls"\n'
-                'args = ["serve"]\n'
+                '[instructions]\nbase = "Test project"\n\n[lsp._always.gopls]\ncommand = "gopls"\nargs = ["serve"]\n'
             )
             scanned = scan(root)
             resolved = resolve(root, scanned, None)
@@ -268,14 +256,15 @@ class TestClaudeEmitterHooks:
 # Copilot emitter hook tests
 # ---------------------------------------------------------------------------
 
+
 class TestCopilotEmitterHooks:
     def test_emit_hooks_to_github_hooks(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
+                "[instructions]\n"
                 'base = "Test project"\n\n'
-                '[hooks._always]\n'
+                "[hooks._always]\n"
                 'preToolUse = \'[{"type": "command", "command": "check-safety.sh"}]\'\n'
             )
             scanned = scan(root)
@@ -294,15 +283,19 @@ class TestCopilotEmitterHooks:
             root = Path(tmpdir)
             hooks_dir = root / ".github" / "hooks"
             hooks_dir.mkdir(parents=True)
-            (hooks_dir / "hooks.json").write_text(json.dumps({
-                "hooks": {"postToolUse": [{"type": "command", "command": "existing.sh"}]},
-                "custom_key": "preserved",
-            }))
+            (hooks_dir / "hooks.json").write_text(
+                json.dumps(
+                    {
+                        "hooks": {"postToolUse": [{"type": "command", "command": "existing.sh"}]},
+                        "custom_key": "preserved",
+                    }
+                )
+            )
 
             (root / ".context.toml").write_text(
-                '[instructions]\n'
+                "[instructions]\n"
                 'base = "Test project"\n\n'
-                '[hooks._always]\n'
+                "[hooks._always]\n"
                 'preToolUse = \'[{"type": "command", "command": "new.sh"}]\'\n'
             )
             scanned = scan(root)
@@ -320,10 +313,7 @@ class TestCopilotEmitterHooks:
     def test_no_hooks_no_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n'
-            )
+            (root / ".context.toml").write_text('[instructions]\nbase = "Test project"\n')
             scanned = scan(root)
             resolved = resolve(root, scanned, None)
             copilot_emit.emit(root, resolved)
@@ -337,12 +327,16 @@ class TestCopilotImporterHooks:
             root = Path(tmpdir)
             hooks_dir = root / ".github" / "hooks"
             hooks_dir.mkdir(parents=True)
-            (hooks_dir / "hooks.json").write_text(json.dumps({
-                "hooks": {
-                    "preToolUse": [{"type": "command", "command": "safety.sh"}],
-                    "postToolUse": [{"type": "command", "command": "lint.sh"}],
-                }
-            }))
+            (hooks_dir / "hooks.json").write_text(
+                json.dumps(
+                    {
+                        "hooks": {
+                            "preToolUse": [{"type": "command", "command": "safety.sh"}],
+                            "postToolUse": [{"type": "command", "command": "lint.sh"}],
+                        }
+                    }
+                )
+            )
 
             result = copilot_imp.import_from(root)
             assert result is not None
@@ -357,9 +351,9 @@ class TestCopilotHookRoundtrip:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
+                "[instructions]\n"
                 'base = "Test project"\n\n'
-                '[hooks._always]\n'
+                "[hooks._always]\n"
                 'preToolUse = \'[{"type": "command", "command": "check.sh"}]\'\n'
                 'postToolUse = \'[{"type": "command", "command": "lint.sh"}]\'\n'
             )
@@ -384,22 +378,23 @@ class TestCopilotHookRoundtrip:
 # Claude importer tests
 # ---------------------------------------------------------------------------
 
+
 class TestClaudeImporterHooks:
     def test_import_hooks_from_settings(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             settings_dir = root / ".claude"
             settings_dir.mkdir()
-            (settings_dir / "settings.local.json").write_text(json.dumps({
-                "hooks": {
-                    "PreToolUse": [
-                        {"matcher": "Bash", "hooks": [{"type": "command", "command": "check.sh"}]}
-                    ],
-                    "Stop": [
-                        {"hooks": [{"type": "agent", "prompt": "Run tests"}]}
-                    ],
-                }
-            }))
+            (settings_dir / "settings.local.json").write_text(
+                json.dumps(
+                    {
+                        "hooks": {
+                            "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "check.sh"}]}],
+                            "Stop": [{"hooks": [{"type": "agent", "prompt": "Run tests"}]}],
+                        }
+                    }
+                )
+            )
 
             result = claude_imp.import_from(root)
             assert result is not None
@@ -410,10 +405,14 @@ class TestClaudeImporterHooks:
     def test_import_lsp_from_lsp_json(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / ".lsp.json").write_text(json.dumps({
-                "gopls": {"command": "gopls", "args": ["serve"]},
-                "rust-analyzer": {"command": "rust-analyzer"},
-            }))
+            (root / ".lsp.json").write_text(
+                json.dumps(
+                    {
+                        "gopls": {"command": "gopls", "args": ["serve"]},
+                        "rust-analyzer": {"command": "rust-analyzer"},
+                    }
+                )
+            )
 
             result = claude_imp.import_from(root)
             assert result is not None
@@ -426,18 +425,19 @@ class TestClaudeImporterHooks:
 # Roundtrip tests
 # ---------------------------------------------------------------------------
 
+
 class TestHookRoundtrip:
     def test_hooks_roundtrip(self):
         """context.toml with hooks → deploy → import → synthesize → compare."""
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             original_aictx = (
-                '[instructions]\n'
+                "[instructions]\n"
                 'base = "Test project"\n\n'
-                '[hooks._always]\n'
+                "[hooks._always]\n"
                 'PreToolUse = \'[{"matcher": "Bash", "hooks": [{"type": "command", "command": "check.sh"}]}]\'\n'
                 'Stop = \'[{"hooks": [{"type": "agent", "prompt": "Run tests", "timeout": 120}]}]\'\n\n'
-                '[lsp._always.gopls]\n'
+                "[lsp._always.gopls]\n"
                 'command = "gopls"\n'
                 'args = ["serve"]\n'
             )
@@ -475,6 +475,7 @@ class TestHookRoundtrip:
 # Fixture tests
 # ---------------------------------------------------------------------------
 
+
 class TestFixtureHooksAndLsp:
     def test_fixture_has_hooks_and_lsp(self):
         """The updated fixture .context.toml should parse hooks and LSP."""
@@ -497,6 +498,7 @@ class TestFixtureHooksAndLsp:
             root = Path(tmpdir)
             # Copy .context.toml files
             import shutil
+
             for aictx_path in FIXTURE_ROOT.rglob(".context.toml"):
                 rel = aictx_path.relative_to(FIXTURE_ROOT)
                 dest = root / rel
@@ -530,6 +532,7 @@ class TestFixtureHooksAndLsp:
 # Plugin build tests
 # ---------------------------------------------------------------------------
 
+
 class TestPluginBuild:
     def test_plugin_build_basic(self):
         from click.testing import CliRunner
@@ -539,30 +542,37 @@ class TestPluginBuild:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
+                "[instructions]\n"
                 'base = "Test project"\n\n'
-                '[commands._always.status]\n'
+                "[commands._always.status]\n"
                 'content = "Show status"\n\n'
-                '[skills._always.deploy]\n'
+                "[skills._always.deploy]\n"
                 'content = """\n# Deploy\nDeploy the app\n"""\n\n'
-                '[agents._always.planner]\n'
+                "[agents._always.planner]\n"
                 'content = "Planning agent"\n\n'
-                '[hooks._always]\n'
+                "[hooks._always]\n"
                 'Stop = \'[{"hooks": [{"type": "command", "command": "test.sh"}]}]\'\n\n'
-                '[mcp._always.github]\n'
+                "[mcp._always.github]\n"
                 'type = "http"\n'
                 'url = "https://example.com"\n\n'
-                '[lsp._always.gopls]\n'
+                "[lsp._always.gopls]\n"
                 'command = "gopls"\n'
             )
 
             runner = CliRunner()
-            result = runner.invoke(main, [
-                "plugin", "build",
-                "--root", str(root),
-                "--name", "test-plugin",
-                "--description", "A test plugin",
-            ])
+            result = runner.invoke(
+                main,
+                [
+                    "plugin",
+                    "build",
+                    "--root",
+                    str(root),
+                    "--name",
+                    "test-plugin",
+                    "--description",
+                    "A test plugin",
+                ],
+            )
             assert result.exit_code == 0, result.output
 
             plugin_dir = root / "plugin"
@@ -606,19 +616,22 @@ class TestPluginBuild:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n\n'
-                '[commands._always.hello]\n'
-                'content = "Say hello"\n'
+                '[instructions]\nbase = "Test project"\n\n[commands._always.hello]\ncontent = "Say hello"\n'
             )
 
             runner = CliRunner()
-            result = runner.invoke(main, [
-                "plugin", "build",
-                "--root", str(root),
-                "--name", "my-plugin",
-                "--dry-run",
-            ])
+            result = runner.invoke(
+                main,
+                [
+                    "plugin",
+                    "build",
+                    "--root",
+                    str(root),
+                    "--name",
+                    "my-plugin",
+                    "--dry-run",
+                ],
+            )
             assert result.exit_code == 0
             assert "(dry)" in result.output
             # No files should be written
@@ -632,23 +645,30 @@ class TestPluginBuild:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
+                "[instructions]\n"
                 'base = "Test project"\n\n'
-                '[commands._always.status]\n'
+                "[commands._always.status]\n"
                 'content = "Always available"\n\n'
-                '[commands.debug.profile]\n'
+                "[commands.debug.profile]\n"
                 'content = "Debug only"\n\n'
-                '[hooks.debug]\n'
+                "[hooks.debug]\n"
                 'Stop = \'[{"hooks": [{"type": "command", "command": "test.sh"}]}]\'\n'
             )
 
             runner = CliRunner()
-            result = runner.invoke(main, [
-                "plugin", "build",
-                "--root", str(root),
-                "--name", "debug-plugin",
-                "--profile", "debug",
-            ])
+            result = runner.invoke(
+                main,
+                [
+                    "plugin",
+                    "build",
+                    "--root",
+                    str(root),
+                    "--name",
+                    "debug-plugin",
+                    "--profile",
+                    "debug",
+                ],
+            )
             assert result.exit_code == 0
 
             plugin_dir = root / "plugin"

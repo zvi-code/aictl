@@ -27,11 +27,15 @@ def patch_vscode_user_dir(tmp_path, monkeypatch):
 
 
 def test_agent_debug_log_detected(patch_vscode_user_dir):
-    (patch_vscode_user_dir / "settings.json").write_text(json.dumps({
-        "github.copilot.chat.agentDebugLog.enabled": True,
-        "github.copilot.chat.agentDebugLog.fileLogging.enabled": True,
-        "github.copilot.chat.debug.requestLogger.maxEntries": 500,
-    }))
+    (patch_vscode_user_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "github.copilot.chat.agentDebugLog.enabled": True,
+                "github.copilot.chat.agentDebugLog.fileLogging.enabled": True,
+                "github.copilot.chat.debug.requestLogger.maxEntries": 500,
+            }
+        )
+    )
     cfg = _parse_copilot_config(Path("."))
     assert cfg is not None
     debug = cfg.feature_groups.get("Debug Logging", {})
@@ -41,20 +45,28 @@ def test_agent_debug_log_detected(patch_vscode_user_dir):
 
 
 def test_agent_debug_log_hint(patch_vscode_user_dir):
-    (patch_vscode_user_dir / "settings.json").write_text(json.dumps({
-        "github.copilot.chat.agentDebugLog.enabled": True,
-    }))
+    (patch_vscode_user_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "github.copilot.chat.agentDebugLog.enabled": True,
+            }
+        )
+    )
     cfg = _parse_copilot_config(Path("."))
     assert any("troubleshoot" in h for h in cfg.hints)
 
 
 def test_agent_behavior_settings_detected(patch_vscode_user_dir):
-    (patch_vscode_user_dir / "settings.json").write_text(json.dumps({
-        "github.copilot.chat.agent.autoFix": False,
-        "github.copilot.chat.agent.currentEditorContext.enabled": True,
-        "github.copilot.chat.agent.largeToolResultsToDisk.enabled": True,
-        "github.copilot.chat.agentHistorySummarizationMode": "auto",
-    }))
+    (patch_vscode_user_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "github.copilot.chat.agent.autoFix": False,
+                "github.copilot.chat.agent.currentEditorContext.enabled": True,
+                "github.copilot.chat.agent.largeToolResultsToDisk.enabled": True,
+                "github.copilot.chat.agentHistorySummarizationMode": "auto",
+            }
+        )
+    )
     cfg = _parse_copilot_config(Path("."))
     assert cfg is not None
     agent = cfg.feature_groups.get("Agent Mode", {})
@@ -65,12 +77,16 @@ def test_agent_behavior_settings_detected(patch_vscode_user_dir):
 
 
 def test_cli_mode_settings_detected(patch_vscode_user_dir):
-    (patch_vscode_user_dir / "settings.json").write_text(json.dumps({
-        "github.copilot.chat.cli.mcp.enabled": True,
-        "github.copilot.chat.cli.isolationOption.enabled": False,
-        "github.copilot.chat.cli.autoCommit.enabled": True,
-        "github.copilot.chat.cli.branchSupport.enabled": True,
-    }))
+    (patch_vscode_user_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "github.copilot.chat.cli.mcp.enabled": True,
+                "github.copilot.chat.cli.isolationOption.enabled": False,
+                "github.copilot.chat.cli.autoCommit.enabled": True,
+                "github.copilot.chat.cli.branchSupport.enabled": True,
+            }
+        )
+    )
     cfg = _parse_copilot_config(Path("."))
     assert cfg is not None
     cli = cfg.feature_groups.get("CLI Mode", {})
@@ -81,27 +97,39 @@ def test_cli_mode_settings_detected(patch_vscode_user_dir):
 
 
 def test_cli_autocommit_hint(patch_vscode_user_dir):
-    (patch_vscode_user_dir / "settings.json").write_text(json.dumps({
-        "github.copilot.chat.cli.autoCommit.enabled": True,
-    }))
+    (patch_vscode_user_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "github.copilot.chat.cli.autoCommit.enabled": True,
+            }
+        )
+    )
     cfg = _parse_copilot_config(Path("."))
     assert any("autoCommit" in h or "commit" in h.lower() for h in cfg.hints)
 
 
 def test_cli_autocommit_no_isolation_hint(patch_vscode_user_dir):
-    (patch_vscode_user_dir / "settings.json").write_text(json.dumps({
-        "github.copilot.chat.cli.autoCommit.enabled": True,
-        "github.copilot.chat.cli.isolationOption.enabled": False,
-    }))
+    (patch_vscode_user_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "github.copilot.chat.cli.autoCommit.enabled": True,
+                "github.copilot.chat.cli.isolationOption.enabled": False,
+            }
+        )
+    )
     cfg = _parse_copilot_config(Path("."))
     # Should warn about lack of isolation when autocommit is on
     assert any("isolation" in h.lower() for h in cfg.hints)
 
 
 def test_tools_view_image_detected(patch_vscode_user_dir):
-    (patch_vscode_user_dir / "settings.json").write_text(json.dumps({
-        "github.copilot.chat.tools.viewImage.enabled": True,
-    }))
+    (patch_vscode_user_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "github.copilot.chat.tools.viewImage.enabled": True,
+            }
+        )
+    )
     cfg = _parse_copilot_config(Path("."))
     assert cfg is not None
     mem_tools = cfg.feature_groups.get("Memory & Tools", {})
@@ -109,10 +137,14 @@ def test_tools_view_image_detected(patch_vscode_user_dir):
 
 
 def test_otel_console_exporter_hint(patch_vscode_user_dir):
-    (patch_vscode_user_dir / "settings.json").write_text(json.dumps({
-        "github.copilot.chat.otel.enabled": True,
-        "github.copilot.chat.otel.exporterType": "console",
-    }))
+    (patch_vscode_user_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "github.copilot.chat.otel.enabled": True,
+                "github.copilot.chat.otel.exporterType": "console",
+            }
+        )
+    )
     cfg = _parse_copilot_config(Path("."))
     assert any("console" in h for h in cfg.hints)
 

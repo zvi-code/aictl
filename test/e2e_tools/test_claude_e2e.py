@@ -57,7 +57,10 @@ class TestClaudeHooksIntegration:
     def test_hooks_fire(self, run_claude, aictl_server, claude_project):
         """After running Claude, hook events appear in aictl."""
         result = run_claude(
-            "Say exactly: HOOKS_FIRE_TEST", cwd=claude_project, max_turns=1, timeout=60,
+            "Say exactly: HOOKS_FIRE_TEST",
+            cwd=claude_project,
+            max_turns=1,
+            timeout=60,
         )
         if result.get("error") and "timeout" in str(result.get("error", "")):
             pytest.skip("Claude timed out")
@@ -69,7 +72,10 @@ class TestClaudeHooksIntegration:
             pytest.skip("No session_id returned — can't verify hooks")
 
         events = aictl_server.get_events(
-            session_id=session_id, since="0", min_count=1, timeout=20,
+            session_id=session_id,
+            since="0",
+            min_count=1,
+            timeout=20,
         )
         assert len(events) >= 1, f"No hook events for Claude session {session_id}"
 
@@ -85,7 +91,10 @@ class TestClaudeHooksIntegration:
     def test_session_created(self, run_claude, aictl_server, claude_project):
         """Claude session appears in /api/sessions after running."""
         result = run_claude(
-            "Say exactly: SESSION_CREATE_TEST", cwd=claude_project, max_turns=1, timeout=60,
+            "Say exactly: SESSION_CREATE_TEST",
+            cwd=claude_project,
+            max_turns=1,
+            timeout=60,
         )
         if result.get("is_error") and "usage" in result.get("result", ""):
             pytest.skip("Claude rate-limited")
@@ -99,8 +108,7 @@ class TestClaudeHooksIntegration:
         found = [s for s in sessions if s["session_id"] == session_id]
 
         assert len(found) >= 1, (
-            f"Session {session_id} not found in aictl. "
-            f"Available: {[s['session_id'][:20] for s in sessions[:5]]}"
+            f"Session {session_id} not found in aictl. Available: {[s['session_id'][:20] for s in sessions[:5]]}"
         )
         assert found[0]["tool"] == "claude-code"
 
@@ -108,7 +116,9 @@ class TestClaudeHooksIntegration:
         """If Claude uses tools, PreToolUse/PostToolUse events are captured."""
         result = run_claude(
             "Read the file hello.py and tell me what it does",
-            cwd=claude_project, max_turns=2, timeout=90,
+            cwd=claude_project,
+            max_turns=2,
+            timeout=90,
         )
         if result.get("is_error") and "usage" in result.get("result", ""):
             pytest.skip("Claude rate-limited")
@@ -118,12 +128,13 @@ class TestClaudeHooksIntegration:
             pytest.skip("No session_id returned")
 
         events = aictl_server.get_events(
-            session_id=session_id, since="0", min_count=2, timeout=20,
+            session_id=session_id,
+            since="0",
+            min_count=2,
+            timeout=20,
         )
         assert len(events) >= 2, f"Expected ≥2 events, got {len(events)}"
 
-        tool_events = [
-            e for e in events if e["kind"] in ("hook:PreToolUse", "hook:PostToolUse")
-        ]
+        tool_events = [e for e in events if e["kind"] in ("hook:PreToolUse", "hook:PostToolUse")]
         for te in tool_events:
             assert "tool_name" in te.get("detail", {}), f"Tool event missing tool_name: {te}"

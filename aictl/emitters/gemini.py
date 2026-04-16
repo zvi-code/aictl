@@ -38,21 +38,32 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
     for scope in resolved.scopes:
         if scope.is_root:
             emit_root_scope(
-                scope, base_path=root / "GEMINI.md",
+                scope,
+                base_path=root / "GEMINI.md",
                 profile_path=root / "GEMINI.local.md",
-                resolved=resolved, dry_run=dry_run, results=results,
+                resolved=resolved,
+                dry_run=dry_run,
+                results=results,
             )
         else:
             emit_sub_scope(
-                scope, rules_dir=tool / "rules", ext=".md",
+                scope,
+                rules_dir=tool / "rules",
+                ext=".md",
                 frontmatter_fn=_paths_frontmatter,
-                dry_run=dry_run, results=results,
+                dry_run=dry_run,
+                results=results,
             )
 
-    emit_capabilities(resolved, {
-        "command": lambda n: tool / "commands" / f"{n}.md",
-        "skill": lambda n: tool / "skills" / n / "SKILL.md",
-    }, dry_run, results)
+    emit_capabilities(
+        resolved,
+        {
+            "command": lambda n: tool / "commands" / f"{n}.md",
+            "skill": lambda n: tool / "skills" / n / "SKILL.md",
+        },
+        dry_run,
+        results,
+    )
 
     emit_mcp_servers(root / ".mcp.json", "mcpServers", resolved, dry_run, results)
 
@@ -64,8 +75,13 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
 
 
 GITIGNORE = [
-    "GEMINI.md", "GEMINI.local.md",
-    ".gemini/rules/", ".gemini/commands/", ".gemini/skills/",
+    "GEMINI.md",
+    "GEMINI.local.md",
+    ".gemini/rules/",
+    ".gemini/commands/",
+    ".gemini/skills/",
     ".gemini/settings.json",
-    ".mcp.json", ".geminiignore", ".ai-deployed/",
+    ".mcp.json",
+    ".geminiignore",
+    ".ai-deployed/",
 ]

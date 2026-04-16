@@ -12,8 +12,9 @@ from typing import ClassVar
 @dataclass
 class ImportedScope:
     """Instructions extracted from one tool for one scope."""
-    rel_path: str          # "." or "src/api"
-    source: str            # "claude" | "copilot" | "cursor"
+
+    rel_path: str  # "." or "src/api"
+    source: str  # "claude" | "copilot" | "cursor"
     base_text: str
     profile_name: str | None = None
     profile_text: str = ""
@@ -21,7 +22,7 @@ class ImportedScope:
 
 @dataclass
 class ImportedCapability:
-    kind: str              # "command" | "agent" | "skill"
+    kind: str  # "command" | "agent" | "skill"
     name: str
     content: str
     source: str
@@ -36,8 +37,8 @@ class ImportedMcp:
 
 @dataclass
 class ImportedHook:
-    event: str           # PreToolUse, PostToolUse, Stop, etc.
-    rules: list[dict]    # list of hook rule objects
+    event: str  # PreToolUse, PostToolUse, Stop, etc.
+    rules: list[dict]  # list of hook rule objects
     source: str
 
 
@@ -64,7 +65,14 @@ class ImportResult:
 
 from . import claude, copilot, cursor, gemini, plugin, windsurf
 
-_IMPORTERS = {"claude": claude, "copilot": copilot, "cursor": cursor, "windsurf": windsurf, "gemini": gemini, "plugin": plugin}
+_IMPORTERS = {
+    "claude": claude,
+    "copilot": copilot,
+    "cursor": cursor,
+    "windsurf": windsurf,
+    "gemini": gemini,
+    "plugin": plugin,
+}
 
 
 def get(name: str):
@@ -78,6 +86,7 @@ def all_names() -> list[str]:
 
 
 # ── BaseImporter ──
+
 
 class BaseImporter(ABC):
     NAME: ClassVar[str]

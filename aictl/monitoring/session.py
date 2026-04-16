@@ -242,6 +242,7 @@ def _tool_has_session_files(tool: str) -> bool:
     """
     try:
         from ..data.schema import load_telemetry_sources
+
         sources = load_telemetry_sources()
         cfg = sources.get(tool, {})
         # Tools with aggregation=sum typically write per-request event files
@@ -252,34 +253,44 @@ def _tool_has_session_files(tool: str) -> bool:
 
 # ─── Token estimation constants ────────────────────────────────
 
-CHARS_PER_TOKEN = 4                    # ~4 characters per BPE token (approximate)
-NETWORK_CONTENT_RATIO = 0.7           # ~70% of HTTP bytes are actual content (rest is framing)
-SESSION_FILE_INPUT_RATIO = 0.6        # ~60% of session file bytes are prompt/input
-SESSION_FILE_OUTPUT_RATIO = 0.4       # ~40% attributed to model output
+CHARS_PER_TOKEN = 4  # ~4 characters per BPE token (approximate)
+NETWORK_CONTENT_RATIO = 0.7  # ~70% of HTTP bytes are actual content (rest is framing)
+SESSION_FILE_INPUT_RATIO = 0.6  # ~60% of session file bytes are prompt/input
+SESSION_FILE_OUTPUT_RATIO = 0.4  # ~40% attributed to model output
 
 # Confidence tiers
-CONFIDENCE_TELEMETRY = 0.95           # Verified from tool-native stats
-CONFIDENCE_SESSION_FILES = 0.60       # Derived from session state file sizes
-CONFIDENCE_NETWORK = 0.40             # Inferred from network traffic
-CONFIDENCE_NO_DATA = 0.10             # No traffic observed, placeholder
+CONFIDENCE_TELEMETRY = 0.95  # Verified from tool-native stats
+CONFIDENCE_SESSION_FILES = 0.60  # Derived from session state file sizes
+CONFIDENCE_NETWORK = 0.40  # Inferred from network traffic
+CONFIDENCE_NO_DATA = 0.10  # No traffic observed, placeholder
 
 # ─── MCP loop detection thresholds ─────────────────────────────
 
-NETWORK_BURST_THRESHOLD = 32_000      # Bytes per sample: indicates significant API traffic
-CPU_SPIKE_THRESHOLD = 20.0            # Percent: active computation (tool execution)
-TOOL_SUBPROCESS_NAMES = frozenset({   # Known subprocesses spawned by tool-calling loops
-    "git", "rg", "ripgrep", "bash", "zsh", "sh", "pwsh", "powershell", "cmd.exe",
-})
+NETWORK_BURST_THRESHOLD = 32_000  # Bytes per sample: indicates significant API traffic
+CPU_SPIKE_THRESHOLD = 20.0  # Percent: active computation (tool execution)
+TOOL_SUBPROCESS_NAMES = frozenset(
+    {  # Known subprocesses spawned by tool-calling loops
+        "git",
+        "rg",
+        "ripgrep",
+        "bash",
+        "zsh",
+        "sh",
+        "pwsh",
+        "powershell",
+        "cmd.exe",
+    }
+)
 
 # MCP scoring weights (each signal's max contribution, sum > 1.0 intentional)
-NETWORK_SCORE_WEIGHT = 0.15           # Per-peak contribution
-NETWORK_SCORE_CAP = 0.45              # Maximum from network signal alone
-CPU_SCORE_WEIGHT = 0.10               # Per-spike contribution
-CPU_SCORE_CAP = 0.30                  # Maximum from CPU signal alone
-SUBPROCESS_SCORE_WEIGHT = 0.08        # Per-burst contribution
-SUBPROCESS_SCORE_CAP = 0.35           # Maximum from subprocess signal alone
-CORRELATION_BONUS = 0.15              # Bonus when CPU + network both active (likely tool loop)
-MCP_DETECTION_THRESHOLD = 0.45        # Minimum confidence to flag MCP loop
+NETWORK_SCORE_WEIGHT = 0.15  # Per-peak contribution
+NETWORK_SCORE_CAP = 0.45  # Maximum from network signal alone
+CPU_SCORE_WEIGHT = 0.10  # Per-spike contribution
+CPU_SCORE_CAP = 0.30  # Maximum from CPU signal alone
+SUBPROCESS_SCORE_WEIGHT = 0.08  # Per-burst contribution
+SUBPROCESS_SCORE_CAP = 0.35  # Maximum from subprocess signal alone
+CORRELATION_BONUS = 0.15  # Bonus when CPU + network both active (likely tool loop)
+MCP_DETECTION_THRESHOLD = 0.45  # Minimum confidence to flag MCP loop
 
 
 def estimate_tokens(session: SessionState) -> TokenEstimate:

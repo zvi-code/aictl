@@ -32,16 +32,19 @@ def test_from_empty_dict():
 
 
 def test_from_dict_none_values_coalesce_to_zero():
-    u = TokenUsage.from_dict({
-        "input_tokens": None,
-        "output_tokens": None,
-        "cache_read_input_tokens": None,
-        "cache_creation_input_tokens": None,
-    })
+    u = TokenUsage.from_dict(
+        {
+            "input_tokens": None,
+            "output_tokens": None,
+            "cache_read_input_tokens": None,
+            "cache_creation_input_tokens": None,
+        }
+    )
     assert u == TokenUsage()
 
 
 # ── Input aliases ────────────────────────────────────────────────────────────
+
 
 def test_input_alias_input_tokens():
     assert TokenUsage.from_dict({"input_tokens": 7}).input == 7
@@ -61,6 +64,7 @@ def test_input_alias_otel_semconv():
 
 # ── Output aliases ───────────────────────────────────────────────────────────
 
+
 def test_output_alias_output_tokens():
     assert TokenUsage.from_dict({"output_tokens": 9}).output == 9
 
@@ -78,6 +82,7 @@ def test_output_alias_otel_semconv():
 
 
 # ── Cache-read aliases ───────────────────────────────────────────────────────
+
 
 def test_cache_read_alias_cache_read_input_tokens():
     assert TokenUsage.from_dict({"cache_read_input_tokens": 3}).cache_read == 3
@@ -97,6 +102,7 @@ def test_cache_read_alias_otel_semconv():
 
 # ── Cache-write aliases ──────────────────────────────────────────────────────
 
+
 def test_cache_write_alias_cache_creation_input_tokens():
     assert TokenUsage.from_dict({"cache_creation_input_tokens": 5}).cache_write == 5
 
@@ -115,6 +121,7 @@ def test_cache_write_alias_otel_semconv():
 
 # ── Mixed / precedence ───────────────────────────────────────────────────────
 
+
 def test_first_alias_wins():
     """Earlier aliases in the list take precedence over later ones."""
     u = TokenUsage.from_dict({"input_tokens": 1, "prompt_tokens": 99})
@@ -126,11 +133,13 @@ def test_string_numeric_values_coerced():
 
 
 def test_full_payload_all_dimensions():
-    u = TokenUsage.from_dict({
-        "input_tokens": 10,
-        "output_tokens": 20,
-        "cache_read_input_tokens": 30,
-        "cache_creation_input_tokens": 40,
-    })
+    u = TokenUsage.from_dict(
+        {
+            "input_tokens": 10,
+            "output_tokens": 20,
+            "cache_read_input_tokens": 30,
+            "cache_creation_input_tokens": 40,
+        }
+    )
     assert u == TokenUsage(input=10, output=20, cache_read=30, cache_write=40)
     assert u.total == 100

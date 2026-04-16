@@ -22,18 +22,10 @@ from aictl.commands.integrations import _AICTL_ENV_BEGIN, _AICTL_ENV_END, otel
 def fake_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("AICTL_PORT", "8484")
-    monkeypatch.setattr(
-        "aictl.commands.integrations.claude_global_dir", lambda: tmp_path / "claude"
-    )
-    monkeypatch.setattr(
-        "aictl.commands.integrations.vscode_user_dir", lambda: tmp_path / "vscode"
-    )
-    monkeypatch.setattr(
-        "aictl.commands.integrations.codex_global_dir", lambda: tmp_path / "codex"
-    )
-    monkeypatch.setattr(
-        "aictl.commands.integrations.gemini_global_dir", lambda: tmp_path / "gemini"
-    )
+    monkeypatch.setattr("aictl.commands.integrations.claude_global_dir", lambda: tmp_path / "claude")
+    monkeypatch.setattr("aictl.commands.integrations.vscode_user_dir", lambda: tmp_path / "vscode")
+    monkeypatch.setattr("aictl.commands.integrations.codex_global_dir", lambda: tmp_path / "codex")
+    monkeypatch.setattr("aictl.commands.integrations.gemini_global_dir", lambda: tmp_path / "gemini")
     return tmp_path
 
 

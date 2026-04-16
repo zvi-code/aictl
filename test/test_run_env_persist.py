@@ -16,6 +16,7 @@ class TestRunEnvPersist:
             class R:
                 returncode = 0
                 stderr = ""
+
             return R()
 
         monkeypatch.setattr(subprocess, "run", fake_run)
@@ -55,9 +56,10 @@ class TestNoOsSystemRemaining:
 
     def test_integrations_has_no_os_system(self):
         from pathlib import Path
+
         import aictl.commands.integrations as mod
+
         src = Path(mod.__file__).read_text(encoding="utf-8")
         assert "os.system(" not in src, (
-            "os.system is banned in integrations.py — use _run_env_persist "
-            "or subprocess.run with list argv instead."
+            "os.system is banned in integrations.py — use _run_env_persist or subprocess.run with list argv instead."
         )

@@ -14,6 +14,7 @@ import pytest
 
 PAYLOADS_DIR = Path(__file__).parent / "payloads"
 
+
 def _load_payload(name: str) -> dict:
     return json.loads((PAYLOADS_DIR / name).read_text())
 
@@ -30,13 +31,15 @@ def claude_hook_sequence() -> list[dict]:
     offset = 0.0
     for ev in data["events"]:
         offset += ev.pop("_delay_ms", 0) / 1000
-        result.append({
-            **ev,
-            "session_id": session_id,
-            "tool": tool,
-            "cwd": cwd,
-            "ts": base_ts + offset,
-        })
+        result.append(
+            {
+                **ev,
+                "session_id": session_id,
+                "tool": tool,
+                "cwd": cwd,
+                "ts": base_ts + offset,
+            }
+        )
     return result
 
 
@@ -52,13 +55,15 @@ def gemini_hook_sequence() -> list[dict]:
     offset = 0.0
     for ev in data["events"]:
         offset += ev.pop("_delay_ms", 0) / 1000
-        result.append({
-            **ev,
-            "session_id": session_id,
-            "tool": tool,
-            "cwd": cwd,
-            "ts": base_ts + offset,
-        })
+        result.append(
+            {
+                **ev,
+                "session_id": session_id,
+                "tool": tool,
+                "cwd": cwd,
+                "ts": base_ts + offset,
+            }
+        )
     return result
 
 

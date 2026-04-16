@@ -41,8 +41,7 @@ def _extract_tool_args_summary(detail: dict) -> str:
     """Extract a short summary of tool invocation arguments."""
     tool_input = detail.get("input", detail.get("tool_input", ""))
     if isinstance(tool_input, dict):
-        for key in ("file_path", "command", "pattern", "query",
-                     "path", "url", "description"):
+        for key in ("file_path", "command", "pattern", "query", "path", "url", "description"):
             if key in tool_input:
                 return str(tool_input[key])[:200]
     if isinstance(tool_input, str):
@@ -55,11 +54,14 @@ def _extract_tool_args_summary(detail: dict) -> str:
 
 def _extract_prompt(detail: dict) -> str:
     """Extract user prompt text from event detail."""
-    msg = (detail.get("message")
-           or detail.get("content")
-           or detail.get("prompt")
-           or detail.get("copilot_chat.user_request")
-           or detail.get("body") or "")
+    msg = (
+        detail.get("message")
+        or detail.get("content")
+        or detail.get("prompt")
+        or detail.get("copilot_chat.user_request")
+        or detail.get("body")
+        or ""
+    )
     if isinstance(msg, dict):
         msg = msg.get("stringValue", str(msg))
     msg = str(msg).strip() if msg else ""
@@ -71,24 +73,35 @@ def _extract_prompt(detail: dict) -> str:
 def _extract_api_tokens(detail: dict) -> tuple[int, int, int, int]:
     """Extract (input, output, cache_read, cache_creation) tokens."""
     # TODO(#token-usage): migrate to TokenUsage.from_dict
-    in_tok = int(_num(detail.get("input_tokens",
-                 detail.get("gen_ai.usage.input_tokens",
-                 detail.get("gen_ai.usage.prompt_tokens", 0)))))
-    out_tok = int(_num(detail.get("output_tokens",
-                  detail.get("gen_ai.usage.output_tokens",
-                  detail.get("gen_ai.usage.completion_tokens", 0)))))
-    cache_r = int(_num(detail.get("cache_read_tokens",
-                  detail.get("gen_ai.usage.cache_read.input_tokens", 0))))
+    in_tok = int(
+        _num(
+            detail.get(
+                "input_tokens", detail.get("gen_ai.usage.input_tokens", detail.get("gen_ai.usage.prompt_tokens", 0))
+            )
+        )
+    )
+    out_tok = int(
+        _num(
+            detail.get(
+                "output_tokens",
+                detail.get("gen_ai.usage.output_tokens", detail.get("gen_ai.usage.completion_tokens", 0)),
+            )
+        )
+    )
+    cache_r = int(_num(detail.get("cache_read_tokens", detail.get("gen_ai.usage.cache_read.input_tokens", 0))))
     cache_c = int(_num(detail.get("cache_creation_tokens", 0)))
     return in_tok, out_tok, cache_r, cache_c
 
 
 def _extract_model(detail: dict) -> str:
     """Extract model name from event detail."""
-    return (detail.get("model")
-            or detail.get("gen_ai.request.model")
-            or detail.get("gen_ai.response.model")
-            or detail.get("span.name") or "")
+    return (
+        detail.get("model")
+        or detail.get("gen_ai.request.model")
+        or detail.get("gen_ai.response.model")
+        or detail.get("span.name")
+        or ""
+    )
 
 
 class SessionAnalyzer:
@@ -101,8 +114,7 @@ class SessionAnalyzer:
     correlator/hook/OTel IDs that refer to the same session.
     """
 
-    def __init__(self, *, max_cached: int = _MAX_CACHED,
-                 stale_seconds: float = _STALE_SECONDS):
+    def __init__(self, *, max_cached: int = _MAX_CACHED, stale_seconds: float = _STALE_SECONDS):
         # canonical_id → SessionTranscript
         self._transcripts: OrderedDict[str, SessionTranscript] = OrderedDict()
         # alias → canonical_id (for fast lookup by any known ID)
@@ -117,8 +129,7 @@ class SessionAnalyzer:
     # ── Turn management ───────────────────────────────
 
     @staticmethod
-    def _ensure_turn(transcript: SessionTranscript, ts: float,
-                     prompt: str = "") -> Turn:
+    def _ensure_turn(transcript: SessionTranscript, ts: float, prompt: str = "") -> Turn:
         """Return the current turn or create one if none exists.
 
         Unlike calling ``start_turn`` directly, this reuses the existing
@@ -147,8 +158,12 @@ class SessionAnalyzer:
 
         # Resolve identity
         transcript = self._resolve_transcript(
-            session_id=session_id, tool=tool, pid=pid, ts=event.ts,
-            detail=detail, kind=kind,
+            session_id=session_id,
+            tool=tool,
+            pid=pid,
+            ts=event.ts,
+            detail=detail,
+            kind=kind,
         )
         if not transcript:
             return None
@@ -178,10 +193,7 @@ class SessionAnalyzer:
     def get_active_transcripts(self, cutoff_seconds: float = 300) -> list[SessionTranscript]:
         """Return transcripts active within the last *cutoff_seconds*."""
         cutoff = time.time() - cutoff_seconds
-        return [
-            t for t in self._transcripts.values()
-            if t.last_updated >= cutoff
-        ]
+        return [t for t in self._transcripts.values() if t.last_updated >= cutoff]
 
     def get_all_transcripts(self) -> list[SessionTranscript]:
         """Return all cached transcripts (active + recent)."""
@@ -190,10 +202,7 @@ class SessionAnalyzer:
     def gc(self) -> int:
         """Garbage-collect stale transcripts. Returns count removed."""
         cutoff = time.time() - self._stale_seconds
-        stale = [
-            sid for sid, t in self._transcripts.items()
-            if t.last_updated < cutoff and not t.is_live
-        ]
+        stale = [sid for sid, t in self._transcripts.items() if t.last_updated < cutoff and not t.is_live]
         for sid in stale:
             self._remove_transcript(sid)
         # LRU eviction if still over limit
@@ -204,10 +213,9 @@ class SessionAnalyzer:
 
     # ── Transcript resolution ───────────────────────────
 
-    def _resolve_transcript(self, *, session_id: str, tool: str,
-                            pid: int, ts: float,
-                            detail: dict,
-                            kind: str = "") -> SessionTranscript | None:
+    def _resolve_transcript(
+        self, *, session_id: str, tool: str, pid: int, ts: float, detail: dict, kind: str = ""
+    ) -> SessionTranscript | None:
         """Find or create the transcript for this event."""
         # Try direct lookup by session_id
         if session_id:
@@ -263,8 +271,7 @@ class SessionAnalyzer:
             self._id_map[session_id] = identity.canonical_id
         return transcript
 
-    def _register_transcript(self, transcript: SessionTranscript,
-                             identity: SessionIdentity) -> None:
+    def _register_transcript(self, transcript: SessionTranscript, identity: SessionIdentity) -> None:
         """Register a new transcript and its identity mappings."""
         cid = transcript.session_id
         self._transcripts[cid] = transcript
@@ -292,126 +299,134 @@ class SessionAnalyzer:
 
     # ── Hook event handlers ─────────────────────────────
 
-    def _handle_hook(self, transcript: SessionTranscript, event: EventRow,
-                     hook_name: str, detail: dict) -> None:
+    def _handle_hook(self, transcript: SessionTranscript, event: EventRow, hook_name: str, detail: dict) -> None:
         if hook_name == "UserPromptSubmit":
             prompt = _extract_prompt(detail)
             transcript.start_turn(event.ts, prompt)
 
         elif hook_name in ("Init", "SessionStart"):
-            transcript.add_lifecycle_event({
-                "ts": event.ts, "type": "session_start",
-                "source": "hook", "tool": event.tool,
-                "cwd": detail.get("cwd", ""),
-                "model": detail.get("model", ""),
-            })
+            transcript.add_lifecycle_event(
+                {
+                    "ts": event.ts,
+                    "type": "session_start",
+                    "source": "hook",
+                    "tool": event.tool,
+                    "cwd": detail.get("cwd", ""),
+                    "model": detail.get("model", ""),
+                }
+            )
             if detail.get("model"):
                 transcript.model = detail["model"]
             transcript.is_live = True
 
         elif hook_name == "SessionEnd":
-            transcript.add_lifecycle_event({
-                "ts": event.ts, "type": "session_end",
-                "source": "hook", "tool": event.tool,
-            })
+            transcript.add_lifecycle_event(
+                {
+                    "ts": event.ts,
+                    "type": "session_end",
+                    "source": "hook",
+                    "tool": event.tool,
+                }
+            )
             transcript.ended_at = event.ts
             transcript.is_live = False
 
         elif hook_name == "PreToolUse":
             turn = self._ensure_turn(transcript, event.ts)
             tool_name = detail.get("tool_name", detail.get("name", ""))
-            turn.add_action(Action(
-                ts=event.ts,
-                kind=ActionKind.TOOL_USE,
-                name=tool_name,
-                input_summary=_extract_tool_args_summary(detail),
-                detail={"tool_use_id": detail.get("tool_use_id", "")},
-            ))
+            turn.add_action(
+                Action(
+                    ts=event.ts,
+                    kind=ActionKind.TOOL_USE,
+                    name=tool_name,
+                    input_summary=_extract_tool_args_summary(detail),
+                    detail={"tool_use_id": detail.get("tool_use_id", "")},
+                )
+            )
 
         elif hook_name == "PostToolUse":
             turn = transcript.current_turn
             if turn and turn.actions:
                 tool_name = detail.get("tool_name", detail.get("name", ""))
                 for action in reversed(turn.actions):
-                    if (action.kind == ActionKind.TOOL_USE
-                            and action.name == tool_name
-                            and action.duration_ms == 0):
-                        action.duration_ms = round(
-                            (event.ts - action.ts) * 1000)
+                    if action.kind == ActionKind.TOOL_USE and action.name == tool_name and action.duration_ms == 0:
+                        action.duration_ms = round((event.ts - action.ts) * 1000)
                         result = detail.get("result", detail.get("output", ""))
                         if isinstance(result, str):
                             action.output_summary = result[:200]
                         break
 
         elif hook_name == "PreCompact":
-            transcript.add_lifecycle_event({
-                "ts": event.ts, "type": "compaction_start",
-                "source": "hook",
-            })
+            transcript.add_lifecycle_event(
+                {
+                    "ts": event.ts,
+                    "type": "compaction_start",
+                    "source": "hook",
+                }
+            )
 
         elif hook_name == "PostCompact":
-            transcript.add_lifecycle_event({
-                "ts": event.ts, "type": "compaction",
-                "source": "hook",
-                "compaction_count": detail.get(
-                    "compaction_count", detail.get("count", 0)),
-            })
+            transcript.add_lifecycle_event(
+                {
+                    "ts": event.ts,
+                    "type": "compaction",
+                    "source": "hook",
+                    "compaction_count": detail.get("compaction_count", detail.get("count", 0)),
+                }
+            )
 
         elif hook_name == "SubagentStart":
             turn = self._ensure_turn(transcript, event.ts)
-            agent_id = detail.get("agent_id",
-                                  detail.get("subagent_id", ""))
+            agent_id = detail.get("agent_id", detail.get("subagent_id", ""))
             task = detail.get("task", detail.get("description", ""))
-            turn.add_action(Action(
-                ts=event.ts,
-                kind=ActionKind.SUBAGENT,
-                name=agent_id or "subagent",
-                input_summary=task[:200] if task else "",
-            ))
+            turn.add_action(
+                Action(
+                    ts=event.ts,
+                    kind=ActionKind.SUBAGENT,
+                    name=agent_id or "subagent",
+                    input_summary=task[:200] if task else "",
+                )
+            )
 
     # ── OTel event handlers ─────────────────────────────
 
-    def _handle_otel(self, transcript: SessionTranscript, event: EventRow,
-                     otel_name: str, detail: dict) -> None:
+    def _handle_otel(self, transcript: SessionTranscript, event: EventRow, otel_name: str, detail: dict) -> None:
         if otel_name in ("user_prompt", "user_message"):
             prompt = _extract_prompt(detail)
             transcript.start_turn(event.ts, prompt)
 
-        elif ("api_request" in otel_name
-              or otel_name.startswith("chat ")
-              or "inference" in otel_name):
+        elif "api_request" in otel_name or otel_name.startswith("chat ") or "inference" in otel_name:
             model = _extract_model(detail)
             in_tok, out_tok, cache_r, cache_c = _extract_api_tokens(detail)
-            dur = int(_num(detail.get("duration_ms",
-                           detail.get("duration", 0))))
+            dur = int(_num(detail.get("duration_ms", detail.get("duration", 0))))
 
             turn = transcript.current_turn
             if turn is None:
                 # Synthesize user message from Copilot's embedded request
                 user_req = detail.get("copilot_chat.user_request", "")
-                turn = self._ensure_turn(
-                    transcript, event.ts,
-                    str(user_req)[:2000] if user_req else "")
+                turn = self._ensure_turn(transcript, event.ts, str(user_req)[:2000] if user_req else "")
 
-            turn.add_action(Action(
-                ts=event.ts,
-                kind=ActionKind.API_CALL,
-                name=model,
-                tokens_in=in_tok,
-                tokens_out=out_tok,
-                cache_read=cache_r,
-                cache_creation=cache_c,
-                duration_ms=dur,
-                detail={
-                    k: v for k, v in {
-                        "ttft_ms": int(_num(
-                            detail.get("copilot_chat.time_to_first_token", 0))),
-                        "agent_name": detail.get("gen_ai.agent.name", ""),
-                        "finish_reasons": detail.get(
-                            "gen_ai.response.finish_reasons", []),
-                    }.items() if v
-                },
-            ))
+            turn.add_action(
+                Action(
+                    ts=event.ts,
+                    kind=ActionKind.API_CALL,
+                    name=model,
+                    tokens_in=in_tok,
+                    tokens_out=out_tok,
+                    cache_read=cache_r,
+                    cache_creation=cache_c,
+                    duration_ms=dur,
+                    detail={
+                        k: v
+                        for k, v in {
+                            "ttft_ms": int(_num(detail.get("copilot_chat.time_to_first_token", 0))),
+                            "agent_name": detail.get("gen_ai.agent.name", ""),
+                            "finish_reasons": detail.get("gen_ai.response.finish_reasons", []),
+                        }.items()
+                        if v
+                    },
+                )
+            )
 
             # Also extract response text if available
             resp_text = ""
@@ -419,98 +434,112 @@ class SessionAnalyzer:
             if isinstance(out_msgs, list) and out_msgs:
                 for om in out_msgs:
                     if isinstance(om, dict):
-                        for part in (om.get("parts") or []):
-                            if isinstance(part, dict) and \
-                                    part.get("type") == "text":
-                                resp_text = str(
-                                    part.get("content", ""))[:500]
+                        for part in om.get("parts") or []:
+                            if isinstance(part, dict) and part.get("type") == "text":
+                                resp_text = str(part.get("content", ""))[:500]
                                 break
                     if resp_text:
                         break
             if resp_text or out_tok > 0:
-                turn.add_action(Action(
-                    ts=event.ts + (dur / 1000 if dur else 0.1),
-                    kind=ActionKind.API_RESPONSE,
-                    name=model,
-                    output_summary=resp_text[:200],
-                    tokens_out=out_tok,
-                    duration_ms=dur,
-                ))
+                turn.add_action(
+                    Action(
+                        ts=event.ts + (dur / 1000 if dur else 0.1),
+                        kind=ActionKind.API_RESPONSE,
+                        name=model,
+                        output_summary=resp_text[:200],
+                        tokens_out=out_tok,
+                        duration_ms=dur,
+                    )
+                )
 
         elif "tool_decision" in otel_name or "tool_result" in otel_name:
             turn = self._ensure_turn(transcript, event.ts)
-            tool_name = detail.get("tool_name",
-                         detail.get("name",
-                         detail.get("span.name", otel_name)))
+            tool_name = detail.get("tool_name", detail.get("name", detail.get("span.name", otel_name)))
             is_result = "tool_result" in otel_name
-            turn.add_action(Action(
-                ts=event.ts,
-                kind=ActionKind.TOOL_USE,
-                name=tool_name,
-                input_summary=_extract_tool_args_summary(detail),
-                success=(detail.get("success") == "true"
-                         if "success" in detail else None),
-                duration_ms=int(_num(detail.get("duration_ms", 0))),
-                detail={
-                    "subtype": "result" if is_result else "decision",
-                    "decision": detail.get("decision", ""),
-                    "result_size": detail.get("tool_result_size_bytes", ""),
-                },
-            ))
+            turn.add_action(
+                Action(
+                    ts=event.ts,
+                    kind=ActionKind.TOOL_USE,
+                    name=tool_name,
+                    input_summary=_extract_tool_args_summary(detail),
+                    success=(detail.get("success") == "true" if "success" in detail else None),
+                    duration_ms=int(_num(detail.get("duration_ms", 0))),
+                    detail={
+                        "subtype": "result" if is_result else "decision",
+                        "decision": detail.get("decision", ""),
+                        "result_size": detail.get("tool_result_size_bytes", ""),
+                    },
+                )
+            )
 
         elif otel_name == "exception":
             turn = self._ensure_turn(transcript, event.ts)
-            turn.add_action(Action(
-                ts=event.ts,
-                kind=ActionKind.ERROR,
-                name=detail.get("exception.type", "error"),
-                output_summary=detail.get("exception.message", "")[:200],
-                success=False,
-            ))
+            turn.add_action(
+                Action(
+                    ts=event.ts,
+                    kind=ActionKind.ERROR,
+                    name=detail.get("exception.type", "error"),
+                    output_summary=detail.get("exception.message", "")[:200],
+                    success=False,
+                )
+            )
 
         elif otel_name.startswith("invoke_agent") or "subagent" in otel_name.lower():
             turn = self._ensure_turn(transcript, event.ts)
-            agent_name = (otel_name.replace("invoke_agent ", "").strip()
-                          or detail.get("agent_id", "agent"))
-            turn.add_action(Action(
-                ts=event.ts,
-                kind=ActionKind.SUBAGENT,
-                name=agent_name,
-            ))
+            agent_name = otel_name.replace("invoke_agent ", "").strip() or detail.get("agent_id", "agent")
+            turn.add_action(
+                Action(
+                    ts=event.ts,
+                    kind=ActionKind.SUBAGENT,
+                    name=agent_name,
+                )
+            )
 
         elif otel_name == "copilot_chat.session.start":
-            transcript.add_lifecycle_event({
-                "ts": event.ts, "type": "session_start",
-                "source": "otel", "tool": event.tool,
-            })
+            transcript.add_lifecycle_event(
+                {
+                    "ts": event.ts,
+                    "type": "session_start",
+                    "source": "otel",
+                    "tool": event.tool,
+                }
+            )
 
     # ── Correlator event handlers ───────────────────────
 
-    def _handle_correlator(self, transcript: SessionTranscript,
-                           event: EventRow, kind: str,
-                           detail: dict) -> None:
+    def _handle_correlator(self, transcript: SessionTranscript, event: EventRow, kind: str, detail: dict) -> None:
         if kind == "session_start":
-            transcript.add_lifecycle_event({
-                "ts": event.ts, "type": "session_start",
-                "source": "correlator", "tool": event.tool,
-                "pid": detail.get("pid", 0),
-            })
+            transcript.add_lifecycle_event(
+                {
+                    "ts": event.ts,
+                    "type": "session_start",
+                    "source": "correlator",
+                    "tool": event.tool,
+                    "pid": detail.get("pid", 0),
+                }
+            )
             transcript.is_live = True
 
         elif kind == "session_end":
-            transcript.add_lifecycle_event({
-                "ts": event.ts, "type": "session_end",
-                "source": "correlator", "tool": event.tool,
-            })
+            transcript.add_lifecycle_event(
+                {
+                    "ts": event.ts,
+                    "type": "session_end",
+                    "source": "correlator",
+                    "tool": event.tool,
+                }
+            )
             transcript.ended_at = event.ts
             transcript.is_live = False
 
         elif kind == "file_modified":
             turn = transcript.current_turn
             if turn:
-                turn.add_action(Action(
-                    ts=event.ts,
-                    kind=ActionKind.FILE_EDIT,
-                    name=detail.get("path", detail.get("file", "")),
-                    input_summary=detail.get("change", ""),
-                ))
+                turn.add_action(
+                    Action(
+                        ts=event.ts,
+                        kind=ActionKind.FILE_EDIT,
+                        name=detail.get("path", detail.get("file", "")),
+                        input_summary=detail.get("change", ""),
+                    )
+                )

@@ -34,6 +34,7 @@ def all_gitignore() -> list[str]:
 
 # ── BaseEmitter ──
 
+
 class BaseEmitter(ABC):
     NAME: ClassVar[str]
     GITIGNORE: ClassVar[list[str]] = []

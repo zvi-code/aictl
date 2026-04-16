@@ -32,10 +32,7 @@ def _is_legacy_aictl_hook(hook: dict) -> bool:
     """
     # Current nested format: {"matcher": ..., "hooks": [{"type": "command", "command": "..."}]}
     if "hooks" in hook and isinstance(hook["hooks"], list):
-        return any(
-            any(m in str(h.get("command", "")) for m in _LEGACY_AICTL_HOOK_MARKERS)
-            for h in hook["hooks"]
-        )
+        return any(any(m in str(h.get("command", "")) for m in _LEGACY_AICTL_HOOK_MARKERS) for h in hook["hooks"])
     # Old flat format: {"type": "command", "command": "..."}
     cmd = str(hook.get("command", ""))
     return any(m in cmd for m in _LEGACY_AICTL_HOOK_MARKERS)

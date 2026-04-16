@@ -43,6 +43,7 @@ from .tools import (
 
 # ─── Persistent live monitor ─────────────────────────────────────
 
+
 class PersistentMonitor:
     """Runs MonitorRuntime continuously on a background asyncio loop.
 
@@ -61,8 +62,7 @@ class PersistentMonitor:
 
     def start(self) -> None:
         """Start the monitor on a background thread."""
-        self._thread = threading.Thread(target=self._run, daemon=True,
-                                         name="aictl-monitor")
+        self._thread = threading.Thread(target=self._run, daemon=True, name="aictl-monitor")
         self._thread.start()
         # Wait up to 10s for collectors to start
         self._ready.wait(timeout=10.0)
@@ -88,9 +88,7 @@ class PersistentMonitor:
 
         async def _run_forever():
             collector_tasks = [
-                asyncio.create_task(
-                    collector.run(),
-                    name=f"collector:{collector.name}")
+                asyncio.create_task(collector.run(), name=f"collector:{collector.name}")
                 for collector in self._runtime.collectors
             ]
             self._ready.set()
@@ -133,6 +131,7 @@ class PersistentMonitor:
 
 
 # ─── Background refresh loop ─────────────────────────────────────
+
 
 class RefreshLoop(threading.Thread):
     """Periodically collects a new snapshot.
@@ -199,6 +198,7 @@ class RefreshLoop(threading.Thread):
         if not self._monitor or not self._monitor._runtime:
             return None
         from .monitoring.runtime import DiscoveryCollector
+
         for c in self._monitor._runtime.collectors:
             if isinstance(c, DiscoveryCollector) and c.latest is not None:
                 return c.latest
@@ -209,6 +209,7 @@ class RefreshLoop(threading.Thread):
 
 
 # ─── Snapshot collection ─────────────────────────────────────────
+
 
 def collect(
     root: Path,
@@ -236,24 +237,33 @@ def collect(
                 continue
             tags = {"tool": tool}
             _sink.emit_if_changed(M("aictl.discovery.files"), float(len(tool_res.files)), tags, ts=ts)
-            _sink.emit_if_changed(M("aictl.discovery.tokens"), float(sum(f.tokens for f in tool_res.files)), tags, ts=ts)
+            _sink.emit_if_changed(
+                M("aictl.discovery.tokens"), float(sum(f.tokens for f in tool_res.files)), tags, ts=ts
+            )
             _sink.emit_if_changed(M("aictl.discovery.size"), float(sum(f.size for f in tool_res.files)), tags, ts=ts)
             _sink.emit_if_changed(M("aictl.discovery.processes"), float(len(tool_res.processes)), tags, ts=ts)
             _sink.emit_if_changed(M("aictl.discovery.mcp_servers"), float(len(tool_res.mcp_servers)), tags, ts=ts)
             # Per-file metrics: only emit on change (not every cycle).
             # The sink's dedup handles this — we just need a stable cache key.
             for f in tool_res.files:
-                ftags = {"aictl.tool": tool, "file.path": f.path,
-                         "aictl.file.kind": f.kind, "aictl.file.scope": f.scope,
-                         "aictl.file.sent_to_llm": f.sent_to_llm}
+                ftags = {
+                    "aictl.tool": tool,
+                    "file.path": f.path,
+                    "aictl.file.kind": f.kind,
+                    "aictl.file.scope": f.scope,
+                    "aictl.file.sent_to_llm": f.sent_to_llm,
+                }
                 _sink.emit_if_changed(M("aictl.file.tokens"), float(f.tokens), ftags, ts=ts)
                 _sink.emit_if_changed(M("aictl.file.bytes"), float(f.size), ftags, ts=ts)
             for m in tool_res.mcp_servers:
                 mname = m.get("name", "")
                 if mname:
-                    _sink.emit_if_changed(M("aictl.mcp.status"),
-                               1.0 if m.get("status") == "running" else 0.0,
-                               {"aictl.tool": tool, "aictl.mcp.server": mname}, ts=ts)
+                    _sink.emit_if_changed(
+                        M("aictl.mcp.status"),
+                        1.0 if m.get("status") == "running" else 0.0,
+                        {"aictl.tool": tool, "aictl.mcp.server": mname},
+                        ts=ts,
+                    )
 
     live_monitor = _live_monitor_override if _live_monitor_override is not None else {}
     tools = _merge_dashboard_tools(discovered, live_monitor)
@@ -270,28 +280,41 @@ def collect(
         ts = time.time()
         for m in agent_memory:
             if m.file:
-                _sink.emit_if_changed(M("aictl.memory.tokens"), float(m.tokens),
-                           {"file.path": m.file, "aictl.source": m.source}, ts=ts)
+                _sink.emit_if_changed(
+                    M("aictl.memory.tokens"), float(m.tokens), {"file.path": m.file, "aictl.source": m.source}, ts=ts
+                )
         for s in mcp_detail:
             if s.name:
-                _sink.emit_if_changed(M("aictl.mcp.detail.status"),
-                           1.0 if s.status == "running" else 0.0,
-                           {"aictl.mcp.server": s.name, "aictl.tool": s.tool}, ts=ts)
+                _sink.emit_if_changed(
+                    M("aictl.mcp.detail.status"),
+                    1.0 if s.status == "running" else 0.0,
+                    {"aictl.mcp.server": s.name, "aictl.tool": s.tool},
+                    ts=ts,
+                )
         for r in telemetry_reports:
             if r.tool:
                 rtags = {"tool": r.tool, "source": r.source}
-                _sink.emit(M("gen_ai.client.token.usage.verified"), float(r.input_tokens),
-                           {**rtags, "gen_ai.token.type": "input"}, ts=ts)
-                _sink.emit(M("gen_ai.client.token.usage.verified"), float(r.output_tokens),
-                           {**rtags, "gen_ai.token.type": "output"}, ts=ts)
+                _sink.emit(
+                    M("gen_ai.client.token.usage.verified"),
+                    float(r.input_tokens),
+                    {**rtags, "gen_ai.token.type": "input"},
+                    ts=ts,
+                )
+                _sink.emit(
+                    M("gen_ai.client.token.usage.verified"),
+                    float(r.output_tokens),
+                    {**rtags, "gen_ai.token.type": "output"},
+                    ts=ts,
+                )
                 _sink.emit(M("aictl.telemetry.sessions"), float(r.total_sessions), rtags, ts=ts)
                 _sink.emit(M("aictl.telemetry.messages"), float(r.total_messages), rtags, ts=ts)
                 if r.cost_usd:
                     _sink.emit(M("aictl.telemetry.cost"), float(r.cost_usd), rtags, ts=ts)
         for c in tool_configs:
             if c.get("tool") and c.get("model"):
-                _sink.emit_if_changed(M("aictl.config.model"), 1.0,
-                           {"aictl.tool": c["tool"], "gen_ai.request.model": c["model"]}, ts=ts)
+                _sink.emit_if_changed(
+                    M("aictl.config.model"), 1.0, {"aictl.tool": c["tool"], "gen_ai.request.model": c["model"]}, ts=ts
+                )
 
     monitor_events = live_monitor.get("events", [])
     monitor_sessions = live_monitor.get("sessions", [])
@@ -341,8 +364,10 @@ def _sum_process_stat(processes, attr: str) -> float:
 
 def _make_dt(name: str) -> DashboardTool:
     return DashboardTool(
-        tool=name, label=TOOL_LABELS.get(name, name),
-        vendor=tool_vendor(name), host=",".join(tool_hosts(name)),
+        tool=name,
+        label=TOOL_LABELS.get(name, name),
+        vendor=tool_vendor(name),
+        host=",".join(tool_hosts(name)),
         meta=tool_is_meta(name),
     )
 
@@ -380,8 +405,7 @@ def _merge_dashboard_tools(discovered: list[ToolResources], live_monitor: dict) 
         dt.live = live_report
 
     # Sort: active first, then by file count
-    return sorted(tools_by_name.values(),
-                  key=lambda t: (len(t.files) + (10 if t.live else 0)), reverse=True)
+    return sorted(tools_by_name.values(), key=lambda t: len(t.files) + (10 if t.live else 0), reverse=True)
 
 
 def _merge_telemetry_into_tools(tools: list[DashboardTool], telemetry_reports) -> None:
@@ -392,26 +416,37 @@ def _merge_telemetry_into_tools(tools: list[DashboardTool], telemetry_reports) -
             continue
         if dt.live is None:
             dt.live = {}
-        dt.live.setdefault("telemetry", {
-            "source": report.source, "confidence": report.confidence,
-            "input_tokens": report.input_tokens, "output_tokens": report.output_tokens,
-            "cache_read_tokens": report.cache_read_tokens, "cache_creation_tokens": report.cache_creation_tokens,
-            "total_sessions": report.total_sessions, "total_messages": report.total_messages,
-            "by_model": report.by_model, "cost_usd": report.cost_usd,
-            "active_session_input": report.active_session_input,
-            "active_session_output": report.active_session_output,
-            "active_session_messages": report.active_session_messages,
-        })
+        dt.live.setdefault(
+            "telemetry",
+            {
+                "source": report.source,
+                "confidence": report.confidence,
+                "input_tokens": report.input_tokens,
+                "output_tokens": report.output_tokens,
+                "cache_read_tokens": report.cache_read_tokens,
+                "cache_creation_tokens": report.cache_creation_tokens,
+                "total_sessions": report.total_sessions,
+                "total_messages": report.total_messages,
+                "by_model": report.by_model,
+                "cost_usd": report.cost_usd,
+                "active_session_input": report.active_session_input,
+                "active_session_output": report.active_session_output,
+                "active_session_messages": report.active_session_messages,
+            },
+        )
 
 
 # ─── Port management ─────────────────────────────────────────────
+
 
 def _kill_stale_server(port: int) -> None:
     """Kill a previous aictl on *port*, or abort if the port is taken by something else."""
     try:
         result = subprocess.run(
             ["lsof", "-ti", f"tcp:{port}"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
     except (FileNotFoundError, subprocess.SubprocessError, OSError):
         return  # lsof unavailable, let the bind fail naturally
@@ -427,6 +462,7 @@ def _kill_stale_server(port: int) -> None:
             continue
         try:
             import psutil
+
             proc = psutil.Process(pid)
             cmdline = " ".join(proc.cmdline())
         except (ImportError, psutil.Error, OSError):
@@ -447,6 +483,7 @@ def _kill_stale_server(port: int) -> None:
 
 # ─── Entry point ─────────────────────────────────────────────────
 
+
 def start_server(
     root: Path,
     host: str = "127.0.0.1",
@@ -464,9 +501,11 @@ def start_server(
     dp_logger = None
     try:
         from .platforms import load_config
+
         cfg = load_config()
         if cfg.logging_enabled:
             from .sink import DatapointLogger
+
             dp_logger = DatapointLogger(
                 log_dir=cfg.logging_dir,
                 max_bytes=cfg.logging_max_file_bytes,
@@ -480,6 +519,7 @@ def start_server(
     db = None
     try:
         from .storage import HistoryDB
+
         db = HistoryDB(db_path=db_path, datapoint_logger=dp_logger)
         print(f"  history db: {db_path or '~/.config/aictl/history.db'}", file=sys.stderr)
     except Exception as exc:
@@ -487,6 +527,7 @@ def start_server(
 
     # Initialize SampleSink for universal metric emission
     from .sink import SampleSink
+
     sink = SampleSink(db=db, buffer_size=5000, datapoint_logger=dp_logger)
 
     store = SnapshotStore(db=db, sink=sink)
@@ -512,16 +553,14 @@ def start_server(
     allowed.update(snap)
 
     # Start background refresh (uses persistent monitor for live data)
-    refresh = RefreshLoop(root, interval, store, allowed,
-                          include_live_monitor, monitor=monitor)
+    refresh = RefreshLoop(root, interval, store, allowed, include_live_monitor, monitor=monitor)
     refresh.start()
 
     # Kill any existing aictl on this port before binding
     _kill_stale_server(port)
 
     # Start HTTP server
-    server = _DashboardHTTPServer((host, port), _DashboardHandler,
-                                  store, allowed, root)
+    server = _DashboardHTTPServer((host, port), _DashboardHandler, store, allowed, root)
 
     # Wire session analyzer as an event listener on the database
     if db is not None:
@@ -532,6 +571,7 @@ def start_server(
     import json as _json_mod
 
     from .dashboard.web_server import build_sse_summary as _build_sse
+
     store._sse_builder = lambda snap: _json_mod.dumps(_build_sse(snap))
     url = f"http://{host}:{port}"
     print(f"  aictl serve — dashboard at {url}", file=sys.stderr)
@@ -622,11 +662,17 @@ class SnapshotState:
                 me_list = data.get("memory_entries") or [0] * len(data["ts"])
                 for i in range(len(data["ts"])):
                     row = (
-                        data["ts"][i], data["files"][i], data["tokens"][i],
-                        data["cpu"][i], data["mem_mb"][i], data["mcp"][i],
-                        data["mem_tokens"][i], me_list[i],
+                        data["ts"][i],
+                        data["files"][i],
+                        data["tokens"][i],
+                        data["cpu"][i],
+                        data["mem_mb"][i],
+                        data["mcp"][i],
+                        data["mem_tokens"][i],
+                        me_list[i],
                         data["live_sessions"][i],
-                        data["live_tokens"][i], data["live_in_rate"][i],
+                        data["live_tokens"][i],
+                        data["live_in_rate"][i],
                         data["live_out_rate"][i],
                     )
                     self._history.append(row)
@@ -635,25 +681,29 @@ class SnapshotState:
             for tool_name, td in tool_data.items():
                 dq = collections.deque(maxlen=120)
                 for i in range(len(td["ts"])):
-                    dq.append((td["ts"][i], td["cpu"][i], td["mem_mb"][i],
-                               td["tokens"][i], td["traffic"][i]))
+                    dq.append((td["ts"][i], td["cpu"][i], td["mem_mb"][i], td["tokens"][i], td["traffic"][i]))
                 self._tool_history[tool_name] = dq
         except Exception as exc:
             log.warning("Failed to load history from DB: %s", exc)
 
-    def update(self, snap: _DashboardSnapshot,
-               serializer: SnapshotSerializer) -> list[tuple]:
+    def update(self, snap: _DashboardSnapshot, serializer: SnapshotSerializer) -> list[tuple]:
         """Update state, pre-serialize, notify waiters. Returns tool_rows."""
         with self._condition:
             self._snap = snap
             self._version += 1
             row = (
-                snap.timestamp, snap.total_files, snap.total_tokens,
-                snap.total_cpu, snap.total_mem_mb,
-                snap.total_mcp_servers, snap.total_memory_tokens,
+                snap.timestamp,
+                snap.total_files,
+                snap.total_tokens,
+                snap.total_cpu,
+                snap.total_mem_mb,
+                snap.total_mcp_servers,
+                snap.total_memory_tokens,
                 snap.total_memory_entries,
-                snap.total_live_sessions, snap.total_live_estimated_tokens,
-                snap.total_live_inbound_rate_bps, snap.total_live_outbound_rate_bps,
+                snap.total_live_sessions,
+                snap.total_live_estimated_tokens,
+                snap.total_live_inbound_rate_bps,
+                snap.total_live_outbound_rate_bps,
             )
             # Clear history if schema changed (prevents zip unpack crash)
             if self._history and len(self._history[0]) != len(row):
@@ -685,12 +735,10 @@ class SnapshotState:
             self._condition.notify_all()
         return tool_rows
 
-    def wait_for_update(self, known_version: int,
-                        timeout: float = 30.0) -> tuple[_DashboardSnapshot | None, int]:
+    def wait_for_update(self, known_version: int, timeout: float = 30.0) -> tuple[_DashboardSnapshot | None, int]:
         """Block until a new version is available or timeout."""
         with self._condition:
-            self._condition.wait_for(
-                lambda: self._version > known_version, timeout=timeout)
+            self._condition.wait_for(lambda: self._version > known_version, timeout=timeout)
             return self._snap, self._version
 
     @property
@@ -736,8 +784,7 @@ class SnapshotSerializer:
             return b""
 
     @staticmethod
-    def serialize_sse(snap: _DashboardSnapshot,
-                      builder: callable | None) -> str:
+    def serialize_sse(snap: _DashboardSnapshot, builder: callable | None) -> str:
         """SSE-formatted JSON via the registered builder callback."""
         if builder:
             try:
@@ -747,10 +794,10 @@ class SnapshotSerializer:
         return ""
 
     @staticmethod
-    def serialize_history(rows: list[tuple],
-                          tool_history: dict[str, collections.deque]) -> str:
+    def serialize_history(rows: list[tuple], tool_history: dict[str, collections.deque]) -> str:
         """Return time-series history as column-major JSON (uPlot format)."""
         from .storage import METRICS_KEYS
+
         if not rows:
             return _json.dumps({k: [] for k in METRICS_KEYS})
         # Transpose rows → columns; order must match METRICS_KEYS
@@ -789,62 +836,78 @@ class SnapshotPersistence:
     def __init__(self, db: _HistoryDB | None) -> None:
         self._db = db
 
-    def persist(self, snap: _DashboardSnapshot,
-                tool_rows: list[tuple]) -> None:
+    def persist(self, snap: _DashboardSnapshot, tool_rows: list[tuple]) -> None:
         """Persist metrics, events, telemetry, and agent teams to SQLite."""
         if not self._db:
             return
         try:
             from .storage import EventRow, MetricsRow, ToolMetricsRow
-            self._db.append_metrics(MetricsRow(
-                ts=snap.timestamp, files=snap.total_files,
-                tokens=snap.total_tokens, cpu=snap.total_cpu,
-                mem_mb=snap.total_mem_mb, mcp=snap.total_mcp_servers,
-                mem_tokens=snap.total_memory_tokens,
-                memory_entries=snap.total_memory_entries,
-                live_sessions=snap.total_live_sessions,
-                live_tokens=snap.total_live_estimated_tokens,
-                live_in_rate=snap.total_live_inbound_rate_bps,
-                live_out_rate=snap.total_live_outbound_rate_bps,
-            ))
-            self._db.append_tool_metrics([
-                ToolMetricsRow(ts=snap.timestamp, tool=name,
-                               cpu=cpu, mem_mb=mem, tokens=tok, traffic=tr)
-                for name, cpu, mem, tok, tr in tool_rows
-            ])
+
+            self._db.append_metrics(
+                MetricsRow(
+                    ts=snap.timestamp,
+                    files=snap.total_files,
+                    tokens=snap.total_tokens,
+                    cpu=snap.total_cpu,
+                    mem_mb=snap.total_mem_mb,
+                    mcp=snap.total_mcp_servers,
+                    mem_tokens=snap.total_memory_tokens,
+                    memory_entries=snap.total_memory_entries,
+                    live_sessions=snap.total_live_sessions,
+                    live_tokens=snap.total_live_estimated_tokens,
+                    live_in_rate=snap.total_live_inbound_rate_bps,
+                    live_out_rate=snap.total_live_outbound_rate_bps,
+                )
+            )
+            self._db.append_tool_metrics(
+                [
+                    ToolMetricsRow(ts=snap.timestamp, tool=name, cpu=cpu, mem_mb=mem, tokens=tok, traffic=tr)
+                    for name, cpu, mem, tok, tr in tool_rows
+                ]
+            )
             # Persist events from live monitor
             if snap.events:
-                self._db.append_events([
-                    EventRow(ts=e.get("ts", snap.timestamp),
-                             tool=e.get("tool", ""),
-                             kind=e.get("kind", ""),
-                             detail=e.get("detail", {}),
-                             session_id=e.get("detail", {}).get("session_id", ""),
-                             pid=int(e.get("detail", {}).get("pid", 0) or 0))
-                    for e in snap.events if e.get("tool") and e.get("kind")
-                ])
+                self._db.append_events(
+                    [
+                        EventRow(
+                            ts=e.get("ts", snap.timestamp),
+                            tool=e.get("tool", ""),
+                            kind=e.get("kind", ""),
+                            detail=e.get("detail", {}),
+                            session_id=e.get("detail", {}).get("session_id", ""),
+                            pid=int(e.get("detail", {}).get("pid", 0) or 0),
+                        )
+                        for e in snap.events
+                        if e.get("tool") and e.get("kind")
+                    ]
+                )
                 # Also write to sessions table for session_start/end events
                 self._persist_session_events(snap.events, snap.timestamp)
             # Persist telemetry snapshots (from stats-cache, events.jsonl, etc.)
             if snap.tool_telemetry:
                 from .storage import TelemetryRow
-                self._db.append_telemetry_batch([
-                    TelemetryRow(
-                        ts=snap.timestamp, tool=t.get("tool", ""),
-                        source=t.get("source", ""),
-                        confidence=t.get("confidence", 0),
-                        input_tokens=t.get("input_tokens", 0),
-                        output_tokens=t.get("output_tokens", 0),
-                        cache_read_tokens=t.get("cache_read_tokens", 0),
-                        cache_creation_tokens=t.get("cache_creation_tokens", 0),
-                        total_sessions=t.get("total_sessions", 0),
-                        total_messages=t.get("total_messages", 0),
-                        cost_usd=t.get("cost_usd", 0),
-                        model=t.get("model", ""),
-                        by_model=t.get("by_model", {}),
-                    )
-                    for t in snap.tool_telemetry if t.get("tool")
-                ])
+
+                self._db.append_telemetry_batch(
+                    [
+                        TelemetryRow(
+                            ts=snap.timestamp,
+                            tool=t.get("tool", ""),
+                            source=t.get("source", ""),
+                            confidence=t.get("confidence", 0),
+                            input_tokens=t.get("input_tokens", 0),
+                            output_tokens=t.get("output_tokens", 0),
+                            cache_read_tokens=t.get("cache_read_tokens", 0),
+                            cache_creation_tokens=t.get("cache_creation_tokens", 0),
+                            total_sessions=t.get("total_sessions", 0),
+                            total_messages=t.get("total_messages", 0),
+                            cost_usd=t.get("cost_usd", 0),
+                            model=t.get("model", ""),
+                            by_model=t.get("by_model", {}),
+                        )
+                        for t in snap.tool_telemetry
+                        if t.get("tool")
+                    ]
+                )
             # Persist agent teams (agents + per-turn requests)
             if snap.agent_teams:
                 self._persist_agent_teams(snap.agent_teams, snap.timestamp)
@@ -856,20 +919,21 @@ class SnapshotPersistence:
             # Refresh dynamic source provenance for the datapoint catalog.
             try:
                 from .sink import update_provenance
+
                 update_provenance(self._db, snap)
             except Exception as exc:
                 log.debug("Provenance update failed: %s", exc)
         except Exception as exc:
             log.warning("DB write failed: %s", exc)
 
-    def _persist_agent_teams(self, agent_teams: list[dict],
-                             snapshot_ts: float) -> None:
+    def _persist_agent_teams(self, agent_teams: list[dict], snapshot_ts: float) -> None:
         """Write agent team data to the sessions, agents, and requests tables."""
         if not self._db or not agent_teams:
             return
         try:
             from .monitoring.tool_telemetry import _parse_iso_ts
             from .storage import AgentRow, RequestRow, SessionRow
+
             for team in agent_teams:
                 session_id = team.get("session_id", "")
                 # Upsert a session row for this UUID session with aggregated token totals
@@ -878,58 +942,64 @@ class SnapshotPersistence:
                     ts_vals = [_parse_iso_ts(a.get("started_at", "")) for a in agents]
                     ts_vals = [t for t in ts_vals if t > 0]
                     session_started = min(ts_vals) if ts_vals else snapshot_ts
-                    self._db.upsert_session(SessionRow(
-                        session_id=session_id,
-                        tool="claude-code",
-                        started_at=session_started,
-                        source="claude-code-jsonl",
-                        input_tokens=team.get("total_input_tokens", 0),
-                        output_tokens=team.get("total_output_tokens", 0),
-                    ))
+                    self._db.upsert_session(
+                        SessionRow(
+                            session_id=session_id,
+                            tool="claude-code",
+                            started_at=session_started,
+                            source="claude-code-jsonl",
+                            input_tokens=team.get("total_input_tokens", 0),
+                            output_tokens=team.get("total_output_tokens", 0),
+                        )
+                    )
                 for agent in team.get("agents", []):
                     agent_id = agent.get("agent_id", "")
                     if not agent_id:
                         continue
-                    self._db.upsert_agent(AgentRow(
-                        agent_id=agent_id,
-                        session_id=session_id,
-                        tool="claude-code",
-                        task=agent.get("task", ""),
-                        model=agent.get("model", ""),
-                        is_sidechain=1 if agent.get("is_sidechain") else 0,
-                        started_at=_parse_iso_ts(agent.get("started_at", "")),
-                        ended_at=_parse_iso_ts(agent.get("ended_at", "")) or None,
-                        completed=1 if agent.get("completed") else 0,
-                        input_tokens=agent.get("input_tokens", 0),
-                        output_tokens=agent.get("output_tokens", 0),
-                        cache_read_tokens=agent.get("cache_read_tokens", 0),
-                        cache_creation_tokens=agent.get("cache_creation_tokens", 0),
-                    ))
+                    self._db.upsert_agent(
+                        AgentRow(
+                            agent_id=agent_id,
+                            session_id=session_id,
+                            tool="claude-code",
+                            task=agent.get("task", ""),
+                            model=agent.get("model", ""),
+                            is_sidechain=1 if agent.get("is_sidechain") else 0,
+                            started_at=_parse_iso_ts(agent.get("started_at", "")),
+                            ended_at=_parse_iso_ts(agent.get("ended_at", "")) or None,
+                            completed=1 if agent.get("completed") else 0,
+                            input_tokens=agent.get("input_tokens", 0),
+                            output_tokens=agent.get("output_tokens", 0),
+                            cache_read_tokens=agent.get("cache_read_tokens", 0),
+                            cache_creation_tokens=agent.get("cache_creation_tokens", 0),
+                        )
+                    )
                     # Write per-turn requests from this agent's JSONL
                     for turn in agent.get("turns", []):
-                        self._db.append_request(RequestRow(
-                            ts=snapshot_ts,
-                            source_ts=turn.get("source_ts", 0.0),
-                            session_id=session_id,
-                            agent_id=agent_id,
-                            tool="claude-code",
-                            model=turn.get("model", "") or agent.get("model", ""),
-                            input_tokens=turn.get("input_tokens", 0),
-                            output_tokens=turn.get("output_tokens", 0),
-                            cache_read_tokens=turn.get("cache_read_tokens", 0),
-                            cache_creation_tokens=turn.get("cache_creation_tokens", 0),
-                            source="claude-code-jsonl",
-                        ))
+                        self._db.append_request(
+                            RequestRow(
+                                ts=snapshot_ts,
+                                source_ts=turn.get("source_ts", 0.0),
+                                session_id=session_id,
+                                agent_id=agent_id,
+                                tool="claude-code",
+                                model=turn.get("model", "") or agent.get("model", ""),
+                                input_tokens=turn.get("input_tokens", 0),
+                                output_tokens=turn.get("output_tokens", 0),
+                                cache_read_tokens=turn.get("cache_read_tokens", 0),
+                                cache_creation_tokens=turn.get("cache_creation_tokens", 0),
+                                source="claude-code-jsonl",
+                            )
+                        )
         except Exception as exc:
             log.warning("Agent team persistence failed: %s", exc)
 
-    def _persist_session_events(self, events: list[dict],
-                                fallback_ts: float) -> None:
+    def _persist_session_events(self, events: list[dict], fallback_ts: float) -> None:
         """Write session_start/session_end events to the sessions table."""
         if not self._db:
             return
         try:
             from .storage import SessionRow
+
             for e in events:
                 kind = e.get("kind", "")
                 detail = e.get("detail", {})
@@ -938,16 +1008,17 @@ class SnapshotPersistence:
                     continue
                 if kind == "session_start":
                     ev_pid = int(detail.get("pid", 0) or 0)
-                    self._db.upsert_session(SessionRow(
-                        session_id=sid,
-                        tool=e.get("tool", ""),
-                        pid=ev_pid,
-                        started_at=e.get("ts", fallback_ts),
-                        project_path=detail.get("project", ""),
-                        source="correlator",
-                    ))
-                    self._db.link_session_process(
-                        sid, ev_pid, tool=e.get("tool", ""))
+                    self._db.upsert_session(
+                        SessionRow(
+                            session_id=sid,
+                            tool=e.get("tool", ""),
+                            pid=ev_pid,
+                            started_at=e.get("ts", fallback_ts),
+                            project_path=detail.get("project", ""),
+                            source="correlator",
+                        )
+                    )
+                    self._db.link_session_process(sid, ev_pid, tool=e.get("tool", ""))
                 elif kind == "session_end":
                     self._db.update_session_end(
                         sid,
@@ -989,8 +1060,7 @@ class SnapshotStore:
         tool_rows = self._state.update(snap, self._serializer)
         self._persistence.persist(snap, tool_rows)
 
-    def wait_for_update(self, known_version: int,
-                        timeout: float = 30.0) -> tuple[_DashboardSnapshot | None, int]:
+    def wait_for_update(self, known_version: int, timeout: float = 30.0) -> tuple[_DashboardSnapshot | None, int]:
         """Block until a new version is available or timeout."""
         return self._state.wait_for_update(known_version, timeout)
 

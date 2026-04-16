@@ -35,12 +35,9 @@ NAME = "copilot"
 def import_from(root: Path) -> ImportResult | None:
     gh = root / ".github"
 
-    root_base, profile_name, profile_text = read_root_scope(
-        gh / "copilot-instructions.md", root / "AGENTS.md", NAME)
-    scopes = ([ImportedScope(".", NAME, root_base, profile_name, profile_text)]
-              if root_base or profile_text else [])
-    scopes += read_sub_scopes(
-        gh / "instructions", "*.instructions.md", NAME, meta_key="applyTo")
+    root_base, profile_name, profile_text = read_root_scope(gh / "copilot-instructions.md", root / "AGENTS.md", NAME)
+    scopes = [ImportedScope(".", NAME, root_base, profile_name, profile_text)] if root_base or profile_text else []
+    scopes += read_sub_scopes(gh / "instructions", "*.instructions.md", NAME, meta_key="applyTo")
 
     capabilities = (
         read_cap_dir(gh / "agents", "*.agent.md", "agent", NAME, suffix=".agent")
@@ -50,8 +47,7 @@ def import_from(root: Path) -> ImportResult | None:
 
     seen_mcp: set[str] = set()
     mcp_servers = import_mcp_from_json(root / ".copilot-mcp.json", NAME, seen=seen_mcp)
-    mcp_servers += import_mcp_from_json(
-        root / ".vscode" / "mcp.json", NAME, server_key="servers", seen=seen_mcp)
+    mcp_servers += import_mcp_from_json(root / ".vscode" / "mcp.json", NAME, server_key="servers", seen=seen_mcp)
 
     hooks = read_hooks_from_dir(gh / "hooks", NAME)
     lsp_servers = read_lsp_json(gh / "lsp.json", NAME, key="lspServers")

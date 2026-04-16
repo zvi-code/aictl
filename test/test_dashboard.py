@@ -31,7 +31,12 @@ def test_dashboard_snapshot_aggregates_live_metrics():
                     "outbound_rate_bps": 1024.25,
                     "files_touched": 4,
                     "file_events": 7,
-                    "token_estimate": {"input_tokens": 1500, "output_tokens": 400, "confidence": 0.6, "source": "telemetry"},
+                    "token_estimate": {
+                        "input_tokens": 1500,
+                        "output_tokens": 400,
+                        "confidence": 0.6,
+                        "source": "telemetry",
+                    },
                     "mcp": {"detected": True, "confidence": 0.7, "loops": 2},
                     "confidence": 0.65,
                     "workspaces": ["/tmp/project"],
@@ -89,7 +94,12 @@ def test_collect_merges_csv_discovery_with_live_monitor(monkeypatch, tmp_path):
                 "file_events": 2,
                 "cpu_percent": 12.0,
                 "peak_cpu_percent": 25.0,
-                "token_estimate": {"input_tokens": 1000, "output_tokens": 250, "confidence": 0.6, "source": "telemetry"},
+                "token_estimate": {
+                    "input_tokens": 1000,
+                    "output_tokens": 250,
+                    "confidence": 0.6,
+                    "source": "telemetry",
+                },
                 "mcp": {"detected": False, "confidence": 0.2, "loops": 0},
                 "confidence": 0.5,
                 "sources": ["telemetry"],
@@ -108,7 +118,12 @@ def test_collect_merges_csv_discovery_with_live_monitor(monkeypatch, tmp_path):
                 "file_events": 1,
                 "cpu_percent": 6.0,
                 "peak_cpu_percent": 10.0,
-                "token_estimate": {"input_tokens": 200, "output_tokens": 80, "confidence": 0.4, "source": "network-inference"},
+                "token_estimate": {
+                    "input_tokens": 200,
+                    "output_tokens": 80,
+                    "confidence": 0.4,
+                    "source": "network-inference",
+                },
                 "mcp": {"detected": False, "confidence": 0.1, "loops": 0},
                 "confidence": 0.3,
                 "sources": ["network-inference"],
@@ -148,7 +163,12 @@ def test_snapshot_store_history_tracks_live_rates():
                     "outbound_rate_bps": 88.8,
                     "files_touched": 1,
                     "file_events": 2,
-                    "token_estimate": {"input_tokens": 100, "output_tokens": 25, "confidence": 0.4, "source": "network-inference"},
+                    "token_estimate": {
+                        "input_tokens": 100,
+                        "output_tokens": 25,
+                        "confidence": 0.4,
+                        "source": "network-inference",
+                    },
                     "mcp": {"detected": False, "confidence": 0.0, "loops": 0},
                     "confidence": 0.3,
                     "workspaces": ["/tmp/project"],
@@ -169,6 +189,7 @@ def test_snapshot_store_history_tracks_live_rates():
 
 # ─── SSE ↔ Snapshot contract tests ──────────────────────────────
 
+
 def _make_rich_snapshot():
     """Build a snapshot with data in every field to exercise the SSE contract."""
     return DashboardSnapshot(
@@ -184,15 +205,27 @@ def _make_rich_snapshot():
                 processes=[{"pid": 100, "name": "claude", "cpu_pct": "12.3", "mem_mb": "450"}],
                 mcp_servers=[{"name": "mcp-fs", "status": "running"}],
                 live={
-                    "tool": "claude-code", "label": "Claude Code",
-                    "session_count": 1, "pid_count": 2,
-                    "inbound_bytes": 1024, "outbound_bytes": 4096,
-                    "inbound_rate_bps": 100.0, "outbound_rate_bps": 400.0,
-                    "files_touched": 3, "file_events": 5,
-                    "cpu_percent": 12.0, "peak_cpu_percent": 25.0,
-                    "token_estimate": {"input_tokens": 5000, "output_tokens": 1000, "confidence": 0.8, "source": "telemetry"},
+                    "tool": "claude-code",
+                    "label": "Claude Code",
+                    "session_count": 1,
+                    "pid_count": 2,
+                    "inbound_bytes": 1024,
+                    "outbound_bytes": 4096,
+                    "inbound_rate_bps": 100.0,
+                    "outbound_rate_bps": 400.0,
+                    "files_touched": 3,
+                    "file_events": 5,
+                    "cpu_percent": 12.0,
+                    "peak_cpu_percent": 25.0,
+                    "token_estimate": {
+                        "input_tokens": 5000,
+                        "output_tokens": 1000,
+                        "confidence": 0.8,
+                        "source": "telemetry",
+                    },
                     "mcp": {"detected": False, "confidence": 0.0, "loops": 0},
-                    "confidence": 0.8, "workspaces": ["/tmp/project"],
+                    "confidence": 0.8,
+                    "workspaces": ["/tmp/project"],
                 },
                 token_breakdown={"telemetry": {"input_tokens": 5000, "output_tokens": 1000}},
             ),
@@ -288,6 +321,7 @@ def test_sse_summary_is_json_serializable():
 
 class _MockSink:
     """Minimal sink double recording all emit() and emit_if_changed() calls."""
+
     def __init__(self):
         self.emitted: list[tuple] = []
         self.changed: list[tuple] = []
@@ -329,10 +363,7 @@ def test_collect_emits_tool_config_model_through_sink(monkeypatch, tmp_path):
     sink = _MockSink()
     collect(tmp_path, _sink=sink)
 
-    config_model = [
-        (metric, tags) for metric, _val, tags in sink.changed
-        if "config.model" in metric
-    ]
+    config_model = [(metric, tags) for metric, _val, tags in sink.changed if "config.model" in metric]
     assert len(config_model) == 1, "Expected exactly one aictl.config.model emit"
     assert config_model[0][1]["aictl.tool"] == "claude-code"
     assert config_model[0][1]["gen_ai.request.model"] == "claude-sonnet-4.6"
@@ -345,17 +376,15 @@ def test_collect_emits_memory_tokens_through_sink(monkeypatch, tmp_path):
     _base_monkeypatches(monkeypatch)
     monkeypatch.setattr(
         "aictl.orchestrator.collect_agent_memory",
-        lambda root: [MemoryEntry(source="claude-memory", profile="_always",
-                                  file="/tmp/.claude/memory.md", tokens=300)],
+        lambda root: [
+            MemoryEntry(source="claude-memory", profile="_always", file="/tmp/.claude/memory.md", tokens=300)
+        ],
     )
 
     sink = _MockSink()
     collect(tmp_path, _sink=sink)
 
-    memory_metrics = [
-        (metric, tags) for metric, _val, tags in sink.changed
-        if "memory.tokens" in metric
-    ]
+    memory_metrics = [(metric, tags) for metric, _val, tags in sink.changed if "memory.tokens" in metric]
     assert len(memory_metrics) == 1
     assert memory_metrics[0][1]["aictl.source"] == "claude-memory"
 
@@ -373,10 +402,7 @@ def test_collect_emits_mcp_detail_status_through_sink(monkeypatch, tmp_path):
     sink = _MockSink()
     collect(tmp_path, _sink=sink)
 
-    mcp_metrics = [
-        (metric, val, tags) for metric, val, tags in sink.changed
-        if "mcp.detail.status" in metric
-    ]
+    mcp_metrics = [(metric, val, tags) for metric, val, tags in sink.changed if "mcp.detail.status" in metric]
     assert len(mcp_metrics) == 1
     assert mcp_metrics[0][1] == 1.0  # status="running" → 1.0
     assert mcp_metrics[0][2]["aictl.mcp.server"] == "mcp-fs"
@@ -389,18 +415,18 @@ def test_collect_emits_telemetry_tokens_through_sink(monkeypatch, tmp_path):
 
     _base_monkeypatches(monkeypatch)
     report = ToolTelemetryReport(
-        tool="copilot-cli", source="events-jsonl", confidence=0.9,
-        input_tokens=1000, output_tokens=250,
+        tool="copilot-cli",
+        source="events-jsonl",
+        confidence=0.9,
+        input_tokens=1000,
+        output_tokens=250,
     )
     monkeypatch.setattr("aictl.orchestrator.collect_tool_telemetry", lambda root: [report])
 
     sink = _MockSink()
     collect(tmp_path, _sink=sink)
 
-    token_metrics = [
-        (metric, val, tags) for metric, val, tags in sink.emitted
-        if "token.usage.verified" in metric
-    ]
+    token_metrics = [(metric, val, tags) for metric, val, tags in sink.emitted if "token.usage.verified" in metric]
     assert len(token_metrics) == 2  # one input, one output
     types = {tags["gen_ai.token.type"]: val for _m, val, tags in token_metrics}
     assert types["input"] == 1000.0
@@ -416,8 +442,7 @@ def test_collect_emits_discovery_metrics_through_sink(monkeypatch, tmp_path):
             ToolResources(
                 tool="copilot-cli",
                 label="Copilot CLI",
-                files=[ResourceFile(path="/tmp/.copilot/state.json", kind="session",
-                                    size=512, tokens=64)],
+                files=[ResourceFile(path="/tmp/.copilot/state.json", kind="session", size=512, tokens=64)],
             )
         ],
     )
@@ -425,10 +450,7 @@ def test_collect_emits_discovery_metrics_through_sink(monkeypatch, tmp_path):
     sink = _MockSink()
     collect(tmp_path, _sink=sink)
 
-    discovery_files = [
-        (metric, val, tags) for metric, val, tags in sink.changed
-        if "discovery.files" in metric
-    ]
+    discovery_files = [(metric, val, tags) for metric, val, tags in sink.changed if "discovery.files" in metric]
     assert len(discovery_files) == 1
     assert discovery_files[0][1] == 1.0  # one file
     assert discovery_files[0][2]["tool"] == "copilot-cli"
@@ -436,30 +458,36 @@ def test_collect_emits_discovery_metrics_through_sink(monkeypatch, tmp_path):
 
 # ── _attribute_api_to_turns filter ────────────────────────────────
 
+
 class TestAttributeApiToTurns:
     """Regression: _attribute_api_to_turns must skip non-api OTel events."""
 
     @staticmethod
     def _make_turn(ts):
         return {
-            "ts": ts, "type": "user_message",
-            "tokens": {"input": 0, "output": 0,
-                       "cache_read": 0, "cache_creation": 0},
-            "model": "", "api_calls": 0, "duration_ms": 0, "end_ts": ts,
+            "ts": ts,
+            "type": "user_message",
+            "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0},
+            "model": "",
+            "api_calls": 0,
+            "duration_ms": 0,
+            "end_ts": ts,
         }
 
     def test_only_api_request_events_attributed(self):
         turn = self._make_turn(1.0)
         events = [
-            EventRow(ts=2.0, tool="claude-code", kind="otel:api_request",
-                     detail={"input_tokens": 100, "output_tokens": 50,
-                             "model": "opus"}),
-            EventRow(ts=3.0, tool="claude-code", kind="otel:tool_decision",
-                     detail={"tool_name": "Bash"}),
-            EventRow(ts=4.0, tool="claude-code", kind="otel:tool_result",
-                     detail={"tool_name": "Bash", "success": True}),
-            EventRow(ts=5.0, tool="claude-code", kind="otel:user_prompt",
-                     detail={"prompt": "hello"}),
+            EventRow(
+                ts=2.0,
+                tool="claude-code",
+                kind="otel:api_request",
+                detail={"input_tokens": 100, "output_tokens": 50, "model": "opus"},
+            ),
+            EventRow(ts=3.0, tool="claude-code", kind="otel:tool_decision", detail={"tool_name": "Bash"}),
+            EventRow(
+                ts=4.0, tool="claude-code", kind="otel:tool_result", detail={"tool_name": "Bash", "success": True}
+            ),
+            EventRow(ts=5.0, tool="claude-code", kind="otel:user_prompt", detail={"prompt": "hello"}),
         ]
         _DashboardHandler._attribute_api_to_turns([turn], events)
         assert turn["tokens"]["input"] == 100
@@ -471,9 +499,12 @@ class TestAttributeApiToTurns:
         """OTel chat spans (Copilot) should also be attributed."""
         turn = self._make_turn(1.0)
         events = [
-            EventRow(ts=2.0, tool="copilot-vscode",
-                     kind="otel:chat claude-opus-4.6",
-                     detail={"input_tokens": 200, "output_tokens": 80}),
+            EventRow(
+                ts=2.0,
+                tool="copilot-vscode",
+                kind="otel:chat claude-opus-4.6",
+                detail={"input_tokens": 200, "output_tokens": 80},
+            ),
         ]
         _DashboardHandler._attribute_api_to_turns([turn], events)
         assert turn["tokens"]["input"] == 200

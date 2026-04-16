@@ -50,41 +50,44 @@ TOOL_GROUPS: dict[str, list[str]] = {
 #   m365         — Microsoft 365 integration
 #   any          — applies to multiple / not host-specific
 
+
 @dataclass(frozen=True, slots=True)
 class ToolMeta:
     """Taxonomy metadata for one AI tool."""
+
     vendor: str
     hosts: tuple[str, ...]
     default_model: str = ""
-    meta: bool = False   # True = not an interactive AI tool (context files, env, infra)
+    meta: bool = False  # True = not an interactive AI tool (context files, env, infra)
+
 
 TOOL_TAXONOMY: dict[str, ToolMeta] = {
     # ── Anthropic ──
-    "claude-code":       ToolMeta("anthropic",   ("cli", "vscode"), "claude-sonnet-4"),
-    "claude-desktop":    ToolMeta("anthropic",   ("desktop",),      "claude-sonnet-4"),
+    "claude-code": ToolMeta("anthropic", ("cli", "vscode"), "claude-sonnet-4"),
+    "claude-desktop": ToolMeta("anthropic", ("desktop",), "claude-sonnet-4"),
     # ── GitHub / Microsoft ──
-    "copilot":           ToolMeta("github",      ("vscode", "jetbrains", "cli")),
-    "copilot-vscode":    ToolMeta("github",      ("vscode",)),
-    "copilot-cli":       ToolMeta("github",      ("cli",)),
-    "copilot-jetbrains": ToolMeta("github",      ("jetbrains",)),
-    "copilot-vs":        ToolMeta("github",      ("vscode",)),  # Visual Studio
-    "copilot365":        ToolMeta("microsoft",   ("m365",)),
+    "copilot": ToolMeta("github", ("vscode", "jetbrains", "cli")),
+    "copilot-vscode": ToolMeta("github", ("vscode",)),
+    "copilot-cli": ToolMeta("github", ("cli",)),
+    "copilot-jetbrains": ToolMeta("github", ("jetbrains",)),
+    "copilot-vs": ToolMeta("github", ("vscode",)),  # Visual Studio
+    "copilot365": ToolMeta("microsoft", ("m365",)),
     # ── OpenAI ──
-    "codex-cli":         ToolMeta("openai",      ("cli",),          "gpt-5.4"),
-    "chatgpt-desktop":   ToolMeta("openai",      ("desktop",)),
-    "chatgpt-lencx":     ToolMeta("openai",      ("desktop",)),
+    "codex-cli": ToolMeta("openai", ("cli",), "gpt-5.4"),
+    "chatgpt-desktop": ToolMeta("openai", ("desktop",)),
+    "chatgpt-lencx": ToolMeta("openai", ("desktop",)),
     # ── Google ──
-    "gemini":           ToolMeta("google",      ("cli",),          "gemini-2.5-pro"),
-    "gemini-cli":        ToolMeta("google",      ("cli",),          "gemini-2.5-pro"),
+    "gemini": ToolMeta("google", ("cli",), "gemini-2.5-pro"),
+    "gemini-cli": ToolMeta("google", ("cli",), "gemini-2.5-pro"),
     # ── Standalone IDEs (host IS the tool) ──
-    "cursor":            ToolMeta("cursor-inc",  ("standalone",)),
-    "windsurf":          ToolMeta("codeium",     ("standalone",)),
+    "cursor": ToolMeta("cursor-inc", ("standalone",)),
+    "windsurf": ToolMeta("codeium", ("standalone",)),
     # ── Community / OSS ──
-    "openclaw":          ToolMeta("community",   ("cli",)),
+    "openclaw": ToolMeta("community", ("cli",)),
     # ── Project context (meta: not interactive AI tools) ──
-    "project-env":       ToolMeta("mixed",       ("any",),          meta=True),
-    "any":               ToolMeta("mixed",       ("any",),          meta=True),
-    "aictl":             ToolMeta("meta",        ("cli",),          meta=True),
+    "project-env": ToolMeta("mixed", ("any",), meta=True),
+    "any": ToolMeta("mixed", ("any",), meta=True),
+    "aictl": ToolMeta("meta", ("cli",), meta=True),
 }
 
 # Vendor display labels
@@ -150,6 +153,7 @@ def tool_is_meta(tool: str) -> bool:
     """Return True if the tool is infrastructure/context, not an interactive AI tool."""
     return _tool_meta_attr(tool, "meta", False)
 
+
 TOOL_LABELS: dict[str, str] = {
     "claude-code": "Claude Code",
     "claude-desktop": "Claude Desktop",
@@ -181,7 +185,7 @@ TOOL_COLORS: dict[str, str] = {
     "claude-code": "#a78bfa",
     "claude-desktop": "#c4b5fd",
     "claude-mcp-memory": "#c4b5fd",
-    "copilot":           "#60a5fa",
+    "copilot": "#60a5fa",
     "copilot-vscode": "#93c5fd",
     "copilot-cli": "#3b82f6",
     "copilot-jetbrains": "#60a5fa",
@@ -230,23 +234,43 @@ DEFAULT_TOOL_ICON = "🔹"
 # Rendered as info badges in the dashboard ToolCard when expanded.
 TOOL_RELATIONSHIPS: dict[str, list[dict[str, str]]] = {
     "claude-desktop": [
-        {"type": "bundles", "tool": "claude-code", "label": "Bundles its own claude binary (may differ from CLI version)"},
+        {
+            "type": "bundles",
+            "tool": "claude-code",
+            "label": "Bundles its own claude binary (may differ from CLI version)",
+        },
     ],
     "claude-code": [
         {"type": "bundled-by", "tool": "claude-desktop", "label": "Desktop app bundles a separate claude binary"},
-        {"type": "delegated-from", "tool": "copilot-vscode", "label": "Copilot Chat 'Claude' session target delegates to this harness"},
+        {
+            "type": "delegated-from",
+            "tool": "copilot-vscode",
+            "label": "Copilot Chat 'Claude' session target delegates to this harness",
+        },
     ],
     "copilot-vscode": [
         {"type": "delegates-to", "tool": "claude-code", "label": "'Claude' session target uses Claude Code harness"},
         {"type": "shares-billing", "tool": "copilot-cli", "label": "Same GitHub Copilot subscription"},
-        {"type": "session-targets", "tool": "copilot-vscode", "label": "4 session targets: Local, Cloud, Claude, Copilot CLI"},
+        {
+            "type": "session-targets",
+            "tool": "copilot-vscode",
+            "label": "4 session targets: Local, Cloud, Claude, Copilot CLI",
+        },
     ],
     "copilot-cli": [
         {"type": "shares-billing", "tool": "copilot-vscode", "label": "Same GitHub Copilot subscription"},
-        {"type": "bridge", "tool": "copilot-vscode", "label": "CLI\u2194VS Code bridge via copilotCli/ and /ide command"},
+        {
+            "type": "bridge",
+            "tool": "copilot-vscode",
+            "label": "CLI\u2194VS Code bridge via copilotCli/ and /ide command",
+        },
     ],
     "copilot365": [
-        {"type": "cloud-only", "tool": "copilot365", "label": "Thin WebView2 client \u2014 all AI is cloud-only via Azure OpenAI"},
+        {
+            "type": "cloud-only",
+            "tool": "copilot365",
+            "label": "Thin WebView2 client \u2014 all AI is cloud-only via Azure OpenAI",
+        },
     ],
 }
 
@@ -274,9 +298,11 @@ def expand_tool_filter(tools: list[str]) -> set[str]:
 
 # ─── Dataclasses ──────────────────────────────────────────────────
 
+
 @dataclass(frozen=True, slots=True)
 class PathSpec:
     """One row from the paths CSV."""
+
     path_template: str
     ai_tool: str
     vendor: str
@@ -300,6 +326,7 @@ class PathSpec:
 @dataclass(frozen=True, slots=True)
 class ProcessSpec:
     """One row from the processes CSV."""
+
     process_name: str
     ai_tool: str
     vendor: str
@@ -326,9 +353,9 @@ class ProcessSpec:
 
 # ─── CSV loading ──────────────────────────────────────────────────
 
+
 def _data_path(filename: str) -> Path:
     return Path(__file__).parent / "data" / filename
-
 
 
 def _platform_match(spec_platform: str, current: str) -> bool:
@@ -366,53 +393,59 @@ def _load_csv(path: Path, factory: Callable[[dict], object]) -> list:
 
 
 def _load_path_csv(path: Path) -> list[PathSpec]:
-    return _load_csv(path, lambda row: PathSpec(
-        path_template=row["path"],
-        ai_tool=row["ai_tool"],
-        vendor=row.get("vendor", tool_vendor(row["ai_tool"])),
-        host=row.get("host", ",".join(tool_hosts(row["ai_tool"]))),
-        platform=row["platform"],
-        hidden=_bool_field(row.get("hidden", "no")),
-        scope=row["scope"],
-        category=row["category"],
-        sent_to_llm=row.get("sent_to_llm", ""),
-        approx_tokens=row.get("approx_tokens", "0"),
-        read_write=row.get("read_write", ""),
-        survives_compaction=row.get("survives_compaction", ""),
-        cacheable=row.get("cacheable", ""),
-        loaded_when=row.get("loaded_when", ""),
-        path_args=row.get("path_args", ""),
-        description=row.get("description", ""),
-        resolution=row.get("resolution", "literal"),
-        root_strategy=row.get("root_strategy", ""),
-    ))
+    return _load_csv(
+        path,
+        lambda row: PathSpec(
+            path_template=row["path"],
+            ai_tool=row["ai_tool"],
+            vendor=row.get("vendor", tool_vendor(row["ai_tool"])),
+            host=row.get("host", ",".join(tool_hosts(row["ai_tool"]))),
+            platform=row["platform"],
+            hidden=_bool_field(row.get("hidden", "no")),
+            scope=row["scope"],
+            category=row["category"],
+            sent_to_llm=row.get("sent_to_llm", ""),
+            approx_tokens=row.get("approx_tokens", "0"),
+            read_write=row.get("read_write", ""),
+            survives_compaction=row.get("survives_compaction", ""),
+            cacheable=row.get("cacheable", ""),
+            loaded_when=row.get("loaded_when", ""),
+            path_args=row.get("path_args", ""),
+            description=row.get("description", ""),
+            resolution=row.get("resolution", "literal"),
+            root_strategy=row.get("root_strategy", ""),
+        ),
+    )
 
 
 def _load_process_csv(path: Path) -> list[ProcessSpec]:
-    return _load_csv(path, lambda row: ProcessSpec(
-        process_name=row["process_name"],
-        ai_tool=row["ai_tool"],
-        vendor=row.get("vendor", tool_vendor(row["ai_tool"])),
-        host=row.get("host", ",".join(tool_hosts(row["ai_tool"]))),
-        process_type=row.get("process_type", ""),
-        runtime=row.get("runtime", ""),
-        parent_process=row.get("parent_process", ""),
-        starts_at=row.get("starts_at", ""),
-        stops_at=row.get("stops_at", ""),
-        is_daemon=_bool_field(row.get("is_daemon", "no")),
-        auto_start=_bool_field(row.get("auto_start", "no")),
-        listens_port=row.get("listens_port", ""),
-        outbound_targets=row.get("outbound_targets", ""),
-        memory_idle_mb=row.get("memory_idle_mb", ""),
-        memory_active_mb=row.get("memory_active_mb", ""),
-        known_leak=_bool_field(row.get("known_leak", "no")),
-        leak_pattern=row.get("leak_pattern", ""),
-        zombie_risk=row.get("zombie_risk", "none"),
-        cleanup_command=row.get("cleanup_command", ""),
-        ps_grep_pattern=row.get("ps_grep_pattern", ""),
-        platform=row.get("platform", "all"),
-        description=row.get("description", ""),
-    ))
+    return _load_csv(
+        path,
+        lambda row: ProcessSpec(
+            process_name=row["process_name"],
+            ai_tool=row["ai_tool"],
+            vendor=row.get("vendor", tool_vendor(row["ai_tool"])),
+            host=row.get("host", ",".join(tool_hosts(row["ai_tool"]))),
+            process_type=row.get("process_type", ""),
+            runtime=row.get("runtime", ""),
+            parent_process=row.get("parent_process", ""),
+            starts_at=row.get("starts_at", ""),
+            stops_at=row.get("stops_at", ""),
+            is_daemon=_bool_field(row.get("is_daemon", "no")),
+            auto_start=_bool_field(row.get("auto_start", "no")),
+            listens_port=row.get("listens_port", ""),
+            outbound_targets=row.get("outbound_targets", ""),
+            memory_idle_mb=row.get("memory_idle_mb", ""),
+            memory_active_mb=row.get("memory_active_mb", ""),
+            known_leak=_bool_field(row.get("known_leak", "no")),
+            leak_pattern=row.get("leak_pattern", ""),
+            zombie_risk=row.get("zombie_risk", "none"),
+            cleanup_command=row.get("cleanup_command", ""),
+            ps_grep_pattern=row.get("ps_grep_pattern", ""),
+            platform=row.get("platform", "all"),
+            description=row.get("description", ""),
+        ),
+    )
 
 
 def _filter_specs(specs: list, platform: str, tools: list[str] | None) -> list:
@@ -425,6 +458,7 @@ def _filter_specs(specs: list, platform: str, tools: list[str] | None) -> list:
 
 
 # ─── Registry ─────────────────────────────────────────────────────
+
 
 class Registry:
     """Loads and filters CSV specifications for path and process discovery."""
@@ -459,12 +493,30 @@ def get_registry() -> Registry:
 
 # ─── Tree-walk helpers ────────────────────────────────────────────
 
-PRUNE_DIRS = frozenset({
-    ".git", ".venv", "venv", ".env", "node_modules", ".npm", ".yarn",
-    "__pycache__", ".mypy_cache", ".pytest_cache", ".tox", ".ruff_cache",
-    "dist", "build", ".cargo", "target", ".idea", ".vs",
-    "Pods", "DerivedData",
-})
+PRUNE_DIRS = frozenset(
+    {
+        ".git",
+        ".venv",
+        "venv",
+        ".env",
+        "node_modules",
+        ".npm",
+        ".yarn",
+        "__pycache__",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".tox",
+        ".ruff_cache",
+        "dist",
+        "build",
+        ".cargo",
+        "target",
+        ".idea",
+        ".vs",
+        "Pods",
+        "DerivedData",
+    }
+)
 
 
 def find_in_tree(root: Path, filename: str) -> list[Path]:
@@ -483,8 +535,7 @@ def find_dirs_in_tree(root: Path, dirname: str) -> list[Path]:
     for dirpath_str, dirnames, _ in os.walk(str(root)):
         if dirname in dirnames:
             results.append(Path(dirpath_str) / dirname)
-        dirnames[:] = [d for d in dirnames
-                       if d not in PRUNE_DIRS and d != dirname]
+        dirnames[:] = [d for d in dirnames if d not in PRUNE_DIRS and d != dirname]
     return sorted(results)
 
 
@@ -538,16 +589,15 @@ def _params_to_glob(path: str) -> str:
 
 # Dispatch table: resolution strategy → callable(spec, root, _cache) → list[Path]
 _RESOLVE_DISPATCH = {
-    "literal":   lambda s, r, c: _resolve_literal(s.path_template),
-    "rooted":    lambda s, r, c: _resolve_rooted(s.path_template, r),
+    "literal": lambda s, r, c: _resolve_literal(s.path_template),
+    "rooted": lambda s, r, c: _resolve_rooted(s.path_template, r),
     "recursive": lambda s, r, c: _resolve_recursive(s.path_template, r, c),
-    "parent":    lambda s, r, c: _resolve_parent(s.path_template, r),
-    "shadow":    lambda s, r, c: _resolve_shadow(s.path_template, s.ai_tool, r),
+    "parent": lambda s, r, c: _resolve_parent(s.path_template, r),
+    "shadow": lambda s, r, c: _resolve_shadow(s.path_template, s.ai_tool, r),
 }
 
 
-def resolve_path(spec: PathSpec, root: Path,
-                 _cache: dict | None = None) -> list[Path]:
+def resolve_path(spec: PathSpec, root: Path, _cache: dict | None = None) -> list[Path]:
     """Resolve a PathSpec template against a project root.
 
     _cache is an optional dict from batch_resolve_paths() that holds
@@ -602,14 +652,13 @@ def _resolve_rooted(template: str, root: Path) -> list[Path]:
     return [p] if p.exists() else []
 
 
-def _resolve_recursive(template: str, root: Path,
-                       _cache: dict | None = None) -> list[Path]:
+def _resolve_recursive(template: str, root: Path, _cache: dict | None = None) -> list[Path]:
     """Find files/dirs matching the template anywhere under root."""
     # Strip prefix
     relative = template
     for prefix in ("{project-root}/", "{subdirectory}/"):
         if relative.startswith(prefix):
-            relative = relative[len(prefix):]
+            relative = relative[len(prefix) :]
             break
 
     # Normalize to forward slashes for consistent splitting (CSV uses /)
@@ -628,9 +677,7 @@ def _resolve_recursive(template: str, root: Path,
             found_dirs = find_dirs_in_tree(root, first)
         for found_dir in found_dirs:
             if "*" in sub_pattern:
-                results.extend(sorted(
-                    p for p in found_dir.glob(sub_pattern) if p.is_file()
-                ))
+                results.extend(sorted(p for p in found_dir.glob(sub_pattern) if p.is_file()))
             else:
                 p = found_dir / sub_pattern
                 if p.exists():
@@ -698,6 +745,7 @@ def _resolve_shadow(template: str, tool: str, root: Path) -> list[Path]:
     if tool != "claude-code":
         return []
     from .memory import _find_project_dir
+
     proj = _find_project_dir(root)
     if not proj:
         return []
@@ -717,8 +765,10 @@ def _resolve_shadow(template: str, tool: str, root: Path) -> list[Path]:
 
 # ─── Batch resolution ─────────────────────────────────────────────
 
+
 def batch_resolve_paths(
-    specs: list[PathSpec], root: Path,
+    specs: list[PathSpec],
+    root: Path,
 ) -> list[tuple[PathSpec, list[Path]]]:
     """Resolve all path specs, using a single tree walk for recursive specs."""
     # Collect what recursive specs need
@@ -730,7 +780,7 @@ def batch_resolve_paths(
         relative = spec.path_template
         for prefix in ("{project-root}/", "{subdirectory}/"):
             if relative.startswith(prefix):
-                relative = relative[len(prefix):]
+                relative = relative[len(prefix) :]
                 break
         parts = relative.replace("\\", "/").split("/")
         first = parts[0]
@@ -763,21 +813,23 @@ from .utils import estimate_tokens, norm_path
 
 # ─── Data classes ─────────────────────────────────────────────────
 
+
 @dataclass
 class ResourceFile:
     """A file resource belonging to a tool."""
+
     path: str
-    kind: str          # instructions, rules, command, skill, agent, mcp, settings, memory, prompt, config
+    kind: str  # instructions, rules, command, skill, agent, mcp, settings, memory, prompt, config
     size: int = 0
     tokens: int = 0
     # CSV-enriched metadata
     tool: str = ""
-    scope: str = ""               # global, project, parent, shadow, session
-    sent_to_llm: str = ""         # yes, no, on-demand, partial, conditional
-    loaded_when: str = ""         # every-call, session-start, on-demand, etc.
-    cacheable: str = ""           # yes, no, n/a
-    survives_compaction: str = "" # yes, no, n/a
-    mtime: float = 0.0           # file modification time (epoch seconds)
+    scope: str = ""  # global, project, parent, shadow, session
+    sent_to_llm: str = ""  # yes, no, on-demand, partial, conditional
+    loaded_when: str = ""  # every-call, session-start, on-demand, etc.
+    cacheable: str = ""  # yes, no, n/a
+    survives_compaction: str = ""  # yes, no, n/a
+    mtime: float = 0.0  # file modification time (epoch seconds)
 
     def __post_init__(self):
         self.path = norm_path(self.path)
@@ -786,6 +838,7 @@ class ResourceFile:
 @dataclass
 class ProcessInfo:
     """A running process associated with a tool."""
+
     pid: int
     name: str
     cmdline: str
@@ -793,10 +846,10 @@ class ProcessInfo:
     mem_mb: str = ""
     # CSV-enriched metadata
     tool: str = ""
-    process_type: str = ""       # app, helper, mcp-server, cli, subagent, etc.
-    expected_mem_mb: str = ""    # from CSV memory_active_mb
+    process_type: str = ""  # app, helper, mcp-server, cli, subagent, etc.
+    expected_mem_mb: str = ""  # from CSV memory_active_mb
     known_leak: bool = False
-    zombie_risk: str = ""        # none, low, medium, high
+    zombie_risk: str = ""  # none, low, medium, high
     cleanup_cmd: str = ""
     anomalies: list[dict] = field(default_factory=list)
 
@@ -804,27 +857,29 @@ class ProcessInfo:
 @dataclass
 class McpServerInfo:
     """Extended info about a configured MCP server."""
+
     name: str
-    tool: str              # which AI tool owns this config
+    tool: str  # which AI tool owns this config
     config: dict = field(default_factory=dict)
     status: str = "unknown"  # unknown | running | stopped | error
     pid: int | None = None
     cpu_pct: str = ""
     mem_mb: str = ""
-    transport: str = ""    # stdio | http | sse
-    endpoint: str = ""     # command or URL
+    transport: str = ""  # stdio | http | sse
+    endpoint: str = ""  # command or URL
 
 
 @dataclass
 class MemoryEntry:
     """A piece of agent memory / policy / decision."""
-    source: str            # "claude-memory" | "aictx-hint" | "aictx-instruction"
-    profile: str           # which profile this applies to
-    file: str = ""         # filename or .aictx path
+
+    source: str  # "claude-memory" | "aictx-hint" | "aictx-instruction"
+    profile: str  # which profile this applies to
+    file: str = ""  # filename or .aictx path
     content: str = ""
     tokens: int = 0
     lines: int = 0
-    mtime: float = 0.0           # file modification time (epoch seconds)
+    mtime: float = 0.0  # file modification time (epoch seconds)
 
     def __post_init__(self):
         self.file = norm_path(self.file)
@@ -833,6 +888,7 @@ class MemoryEntry:
 @dataclass
 class ToolResources:
     """All discovered resources for a single tool."""
+
     tool: str
     label: str
     files: list[ResourceFile] = field(default_factory=list)
@@ -842,6 +898,7 @@ class ToolResources:
 
 
 # ─── File helpers ────────────────────────────────────────────────
+
 
 def _file_resource(path: Path, kind: str) -> ResourceFile | None:
     """Create a ResourceFile if path exists, else None."""
@@ -890,8 +947,7 @@ def _dedup_files(files: list[ResourceFile]) -> list[ResourceFile]:
 
 # ─── MCP helpers ────────────────────────────────────────────────
 
-_MCP_FILENAMES = {".mcp.json", "mcp.json", ".copilot-mcp.json",
-                  "mcp_config.json", "mcp-config.json"}
+_MCP_FILENAMES = {".mcp.json", "mcp.json", ".copilot-mcp.json", "mcp_config.json", "mcp-config.json"}
 
 
 def _load_mcp(path: Path, res: ToolResources) -> None:
@@ -905,6 +961,7 @@ def _load_mcp(path: Path, res: ToolResources) -> None:
 
 
 # ─── Top-level API ───────────────────────────────────────────────
+
 
 def discover_all(
     root: Path,
@@ -921,9 +978,13 @@ def discover_all(
 
     for spec, paths in resolved:
         tool_name = spec.ai_tool
-        tr = results_by_tool.setdefault(tool_name, ToolResources(
-            tool=tool_name, label=TOOL_LABELS.get(tool_name, tool_name),
-        ))
+        tr = results_by_tool.setdefault(
+            tool_name,
+            ToolResources(
+                tool=tool_name,
+                label=TOOL_LABELS.get(tool_name, tool_name),
+            ),
+        )
         for path in paths:
             rf = _file_resource(path, spec.category)
             if rf:
@@ -969,6 +1030,7 @@ def discover_all(
 
 # ─── Special-case enrichments ────────────────────────────────────
 
+
 def _enrich_mcp_servers(results: dict[str, ToolResources]) -> None:
     """Parse discovered MCP config files and populate mcp_servers."""
     for tr in results.values():
@@ -983,6 +1045,7 @@ def _enrich_claude_memory(root: Path, results: dict[str, ToolResources]) -> None
     if not claude_tr:
         return
     from .memory import get_summary
+
     summary = get_summary(root)
     if summary:
         claude_tr.memory = summary
@@ -990,20 +1053,38 @@ def _enrich_claude_memory(root: Path, results: dict[str, ToolResources]) -> None
 
 # ─── Project environment / hidden config ─────────────────────────
 
+
 def _discover_project_env(root: Path) -> ToolResources:
     """Discover unknown hidden dirs that may contain AI-relevant config."""
     res = ToolResources("project-env", "Project Environment")
 
-    known_tool_dirs = {".claude", ".cursor", ".windsurf", ".github", ".git",
-                       ".venv", ".vscode", ".ai-deployed", ".copilot",
-                       ".promptflow", ".fx", ".azure", ".opencode", ".junie"}
+    known_tool_dirs = {
+        ".claude",
+        ".cursor",
+        ".windsurf",
+        ".github",
+        ".git",
+        ".venv",
+        ".vscode",
+        ".ai-deployed",
+        ".copilot",
+        ".promptflow",
+        ".fx",
+        ".azure",
+        ".opencode",
+        ".junie",
+    }
     skip = PRUNE_DIRS | known_tool_dirs
     for dp, dirnames, _ in safe_walk(root, prune_dirs=PRUNE_DIRS):
         for d in sorted(dirnames):
             if d.startswith(".") and d not in skip:
                 item = dp / d
-                for pat, kind in [("*.json", "config"), ("*.yaml", "config"),
-                                   ("*.yml", "config"), ("*.md", "instructions")]:
+                for pat, kind in [
+                    ("*.json", "config"),
+                    ("*.yaml", "config"),
+                    ("*.yml", "config"),
+                    ("*.md", "instructions"),
+                ]:
                     for f in safe_glob(item, pat):
                         st = safe_stat(f)
                         if f.is_file() and st and st.st_size < 500_000:
@@ -1016,10 +1097,12 @@ def _discover_project_env(root: Path) -> ToolResources:
 
 # ─── aictl itself ────────────────────────────────────────────────
 
+
 def _discover_aictl(root: Path) -> ToolResources:
     """Discover aictl's own deployment state and .aictx files."""
     res = ToolResources("aictl", "aictl")
     from .context import scan
+
     for _rel, parsed in scan(root):
         r = _file_resource(parsed.path, "context")
         if r:
@@ -1032,10 +1115,20 @@ def _discover_aictl(root: Path) -> ToolResources:
 
 # ─── CSV-driven process detection ────────────────────────────────
 
-_SKIP_COMMS = frozenset({
-    "zsh", "bash", "sh", "fish", "grep", "ps", "awk", "sed",
-    "python", "python3",
-})
+_SKIP_COMMS = frozenset(
+    {
+        "zsh",
+        "bash",
+        "sh",
+        "fish",
+        "grep",
+        "ps",
+        "awk",
+        "sed",
+        "python",
+        "python3",
+    }
+)
 
 
 def _parse_ps_output() -> list[tuple[str, str, str, str, str]]:
@@ -1045,6 +1138,7 @@ def _parse_ps_output() -> list[tuple[str, str, str, str, str]]:
     """
     try:
         import psutil
+
         rows = []
         for proc in psutil.process_iter(["pid", "cpu_percent", "memory_info", "name", "cmdline"]):
             try:
@@ -1066,7 +1160,9 @@ def _parse_ps_output() -> list[tuple[str, str, str, str, str]]:
     try:
         result = subprocess.run(
             ["ps", "axo", "pid,pcpu,rss,comm,args"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode != 0:
             return []
@@ -1086,6 +1182,7 @@ def _parse_ps_output() -> list[tuple[str, str, str, str, str]]:
 def _process_display_name(args: str) -> str:
     """Extract a readable process name from the full command line."""
     from .platforms import IS_MACOS
+
     exe = args.split()[0] if args else "?"
     if IS_MACOS:
         m = re.search(r"/([^/]+?)\.app", args)
@@ -1147,9 +1244,13 @@ def _discover_processes_csv(
                 )
 
                 tool_name = spec.ai_tool
-                results.setdefault(tool_name, ToolResources(
-                    tool=tool_name, label=TOOL_LABELS.get(tool_name, tool_name),
-                )).processes.append(pi)
+                results.setdefault(
+                    tool_name,
+                    ToolResources(
+                        tool=tool_name,
+                        label=TOOL_LABELS.get(tool_name, tool_name),
+                    ),
+                ).processes.append(pi)
                 matched_pids.add(pid)
                 break
 
@@ -1170,11 +1271,13 @@ def _detect_anomalies(actual_mem_mb: float, pid: int, spec: ProcessSpec) -> list
     try:
         expected = float(spec.memory_active_mb)
         if expected > 0 and actual_mem_mb > expected * 2:
-            anomalies.append({
-                "type": "high_memory",
-                "actual_mb": round(actual_mem_mb, 1),
-                "expected_mb": round(expected, 1),
-            })
+            anomalies.append(
+                {
+                    "type": "high_memory",
+                    "actual_mb": round(actual_mem_mb, 1),
+                    "expected_mb": round(expected, 1),
+                }
+            )
     except (ValueError, TypeError):
         pass
 
@@ -1182,13 +1285,16 @@ def _detect_anomalies(actual_mem_mb: float, pid: int, spec: ProcessSpec) -> list
     if spec.zombie_risk in ("high", "medium"):
         try:
             import psutil
+
             proc = psutil.Process(pid)
             if proc.ppid() in (0, 1):
-                anomalies.append({
-                    "type": "zombie",
-                    "ppid": proc.ppid(),
-                    "risk": spec.zombie_risk,
-                })
+                anomalies.append(
+                    {
+                        "type": "zombie",
+                        "ppid": proc.ppid(),
+                        "risk": spec.zombie_risk,
+                    }
+                )
         except ImportError:
             pass
         except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
@@ -1196,23 +1302,22 @@ def _detect_anomalies(actual_mem_mb: float, pid: int, spec: ProcessSpec) -> list
 
     # Known leak: only flag if process is actually orphaned or has memory bloat
     if spec.known_leak and spec.leak_pattern:
-        is_orphaned = any(
-            (isinstance(a, dict) and a.get("type") == "zombie") for a in anomalies
-        )
-        is_bloated = any(
-            (isinstance(a, dict) and a.get("type") == "high_memory") for a in anomalies
-        )
+        is_orphaned = any((isinstance(a, dict) and a.get("type") == "zombie") for a in anomalies)
+        is_bloated = any((isinstance(a, dict) and a.get("type") == "high_memory") for a in anomalies)
         if is_orphaned or is_bloated:
-            anomalies.append({
-                "type": "known_leak",
-                "pattern": spec.leak_pattern,
-            })
+            anomalies.append(
+                {
+                    "type": "known_leak",
+                    "pattern": spec.leak_pattern,
+                }
+            )
 
     return anomalies
 
 
 def _find_mcp_processes(
-    mcp_servers: list[dict], already: list[ProcessInfo],
+    mcp_servers: list[dict],
+    already: list[ProcessInfo],
     global_exclude_pids: set[int] | None = None,
 ) -> list[ProcessInfo]:
     """Try to find running processes matching configured MCP servers."""
@@ -1243,19 +1348,22 @@ def _find_mcp_processes(
         for srv_name, pattern in search_terms:
             if pattern and re.search(pattern, args):
                 _, mem_mb = _rss_to_mb(rss)
-                found.append(ProcessInfo(
-                    pid=pid,
-                    name=f"[mcp:{srv_name}] {Path(comm).name}",
-                    cmdline=args[:200],
-                    cpu_pct=cpu,
-                    mem_mb=mem_mb,
-                ))
+                found.append(
+                    ProcessInfo(
+                        pid=pid,
+                        name=f"[mcp:{srv_name}] {Path(comm).name}",
+                        cmdline=args[:200],
+                        cpu_pct=cpu,
+                        mem_mb=mem_mb,
+                    )
+                )
                 already_pids.add(pid)
                 break
     return found
 
 
 # ─── Token cost aggregation ──────────────────────────────────────
+
 
 def compute_token_budget(tools: list[ToolResources], root: str = "") -> dict:
     """Estimate token overhead for a single context window.
@@ -1324,7 +1432,7 @@ def compute_token_budget(tools: list[ToolResources], root: str = "") -> dict:
             if not is_global and nroot and f.path:
                 npath = norm_path(f.path)
                 if npath.startswith(nroot + "/"):
-                    rel = npath[len(nroot) + 1:]
+                    rel = npath[len(nroot) + 1 :]
                     first = rel.split("/")[0]
                     # Files directly in root's own .claude/ etc. are "root project"
                     if first.startswith("."):
@@ -1382,6 +1490,7 @@ def compute_token_budget(tools: list[ToolResources], root: str = "") -> dict:
 
 # ─── Agent memory & policy collection ────────────────────────────
 
+
 def _read_memory_file(path: Path, source: str, profile: str) -> MemoryEntry | None:
     """Read a memory file and return a MemoryEntry with mtime, or None."""
     try:
@@ -1417,11 +1526,11 @@ def collect_agent_memory(root: Path) -> list[MemoryEntry]:
 
     # 1–2. Claude Code single-file sources
     for path, source, profile in [
-        (home / ".claude" / "CLAUDE.md",           "claude-user-memory",    "(global)"),
-        (root / "CLAUDE.md",                        "claude-project-memory", "(project)"),
-        (root / "CLAUDE.local.md",                  "claude-project-memory", "(local)"),
+        (home / ".claude" / "CLAUDE.md", "claude-user-memory", "(global)"),
+        (root / "CLAUDE.md", "claude-project-memory", "(project)"),
+        (root / "CLAUDE.local.md", "claude-project-memory", "(local)"),
         (home / ".copilot" / "copilot-instructions.md", "copilot-user-memory", "(global)"),
-        (home / ".codex" / "instructions.md",       "codex-user-memory",     "(global)"),
+        (home / ".codex" / "instructions.md", "codex-user-memory", "(global)"),
         (windsurf_global_dir() / "memories" / "global_rules.md", "windsurf-user-memory", "(global)"),
     ]:
         if entry := _read_memory_file(path, source, profile):
@@ -1469,6 +1578,7 @@ def collect_agent_memory(root: Path) -> list[MemoryEntry]:
 
 
 # ─── MCP extended status ─────────────────────────────────────────
+
 
 def collect_mcp_status(all_tools: list[ToolResources]) -> list[McpServerInfo]:
     """Build enriched MCP server info with connectivity status."""
@@ -1529,7 +1639,9 @@ def _classify_mcp_transport(config: dict) -> tuple[str, str]:
 
 
 def _match_mcp_to_process(
-    name: str, config: dict, all_procs: list[tuple[str, ProcessInfo]],
+    name: str,
+    config: dict,
+    all_procs: list[tuple[str, ProcessInfo]],
 ) -> ProcessInfo | None:
     cmd = config.get("command", "")
     args = config.get("args", [])
@@ -1548,6 +1660,7 @@ def _probe_http_mcp(url: str) -> str:
         return "unknown"
     try:
         import urllib.request
+
         req = urllib.request.Request(url, method="HEAD")
         with urllib.request.urlopen(req, timeout=3) as resp:
             return "running" if resp.status < 500 else "error"
@@ -1557,13 +1670,16 @@ def _probe_http_mcp(url: str) -> str:
 
 # ─── Process backtrace ───────────────────────────────────────────
 
+
 def backtrace_process(pid: int) -> str | None:
     """Get a stack sample of a process."""
     if IS_MACOS:
         try:
             result = subprocess.run(
                 ["sample", str(pid), "1", "-mayDie"],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
             return result.stdout if result.returncode == 0 else result.stderr
         except (subprocess.TimeoutExpired, FileNotFoundError):

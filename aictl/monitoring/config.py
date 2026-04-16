@@ -41,8 +41,8 @@ def default_state_paths(root: Path) -> tuple[Path, ...]:
         root / ".copilot",
         root / ".claude",
         root / ".github" / "copilot",
-        root / "appPackage",     # M365 Copilot declarative agent manifests
-        root / ".fx",            # M365 Teams Toolkit legacy config
+        root / "appPackage",  # M365 Copilot declarative agent manifests
+        root / ".fx",  # M365 Teams Toolkit legacy config
     ]
 
     return _existing_paths(paths + project_paths)

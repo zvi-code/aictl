@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 # ── Safe numeric parsing ─────────────────────────────────────────
 
+
 def safe_float(val: str, default: float = 0.0) -> float:
     """Safely parse a numeric string that might have non-digit chars.
 
@@ -32,6 +33,7 @@ def safe_float(val: str, default: float = 0.0) -> float:
 
 
 # ── Per-tool summary ─────────────────────────────────────────────
+
 
 @dataclass
 class ToolSummary:
@@ -71,6 +73,7 @@ def compute_tool_summary(tr: DashboardTool) -> ToolSummary:
 
 
 # ── Formatting helpers ───────────────────────────────────────────
+
 
 def format_duration(dur_s: float) -> str:
     """Format seconds into a human-readable duration (e.g. '2m 15s')."""

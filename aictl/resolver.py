@@ -26,31 +26,34 @@ from .utils import WriteGuard
 @dataclass
 class ScopeOutput:
     """Resolved output for one .aictx scope."""
-    rel_path: str          # "." or "services/ingestion"
-    base: str              # base instructions (always-on)
-    profile_text: str      # profile-specific instructions (may be empty)
+
+    rel_path: str  # "." or "services/ingestion"
+    base: str  # base instructions (always-on)
+    profile_text: str  # profile-specific instructions (may be empty)
     is_root: bool
 
 
 @dataclass
 class Resolved:
     """Complete resolved output for deployment."""
+
     root: Path
     profile: str | None
-    scopes: list[ScopeOutput]                # instructions per scope
-    capabilities: list[Capability]            # commands, agents, skills
-    mcp_servers: dict[str, dict]              # merged MCP
-    hooks: dict[str, list[dict]]             # event → list of hook rules
-    lsp_servers: dict[str, dict]             # merged LSP servers
-    settings: dict[str, object]              # merged settings key → value
-    permissions: list[str]                   # merged permission patterns
-    env: dict[str, str]                      # merged env vars
-    ignores: list[str]                       # merged ignore patterns
-    memory_hints: str | None                  # memory hints for root+profile
+    scopes: list[ScopeOutput]  # instructions per scope
+    capabilities: list[Capability]  # commands, agents, skills
+    mcp_servers: dict[str, dict]  # merged MCP
+    hooks: dict[str, list[dict]]  # event → list of hook rules
+    lsp_servers: dict[str, dict]  # merged LSP servers
+    settings: dict[str, object]  # merged settings key → value
+    permissions: list[str]  # merged permission patterns
+    env: dict[str, str]  # merged env vars
+    ignores: list[str]  # merged ignore patterns
+    memory_hints: str | None  # memory hints for root+profile
 
 
-def _apply_kind(kind: str, parsed: ParsedAictx, profile: str | None,
-                caps: list, mcp: dict, hooks: dict, lsp: dict) -> None:
+def _apply_kind(
+    kind: str, parsed: ParsedAictx, profile: str | None, caps: list, mcp: dict, hooks: dict, lsp: dict
+) -> None:
     """Pull one inherited kind from *parsed* into the shared collection containers."""
     if kind in ("commands", "command"):
         caps.extend(c for c in parsed.capabilities_for(profile) if c.kind == "command")
@@ -126,12 +129,21 @@ def resolve(
         excludes = set(root_parsed.excludes)
         if excludes:
             caps = [c for c in caps if f"{c.kind}:{c.profile}:{c.name}" not in excludes]
-            mcp = {k: v for k, v in mcp.items()
-                   if f"mcp:{profile}:{k}" not in excludes and f"mcp:_always:{k}" not in excludes}
-            hooks = {e: r for e, r in hooks.items()
-                     if f"hook:{profile}:{e}" not in excludes and f"hook:_always:{e}" not in excludes}
-            lsp = {k: v for k, v in lsp.items()
-                   if f"lsp:{profile}:{k}" not in excludes and f"lsp:_always:{k}" not in excludes}
+            mcp = {
+                k: v
+                for k, v in mcp.items()
+                if f"mcp:{profile}:{k}" not in excludes and f"mcp:_always:{k}" not in excludes
+            }
+            hooks = {
+                e: r
+                for e, r in hooks.items()
+                if f"hook:{profile}:{e}" not in excludes and f"hook:_always:{e}" not in excludes
+            }
+            lsp = {
+                k: v
+                for k, v in lsp.items()
+                if f"lsp:{profile}:{k}" not in excludes and f"lsp:_always:{k}" not in excludes
+            }
 
     # --- Deduplicate capabilities (last wins) ---
     seen: dict[tuple, int] = {}
@@ -182,12 +194,18 @@ def load_manifest(root: Path) -> dict | None:
 def save_manifest(root: Path, profile: str | None, paths: list[str]) -> None:
     p = root / MANIFEST_DIR / "manifest.json"
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps({
-        "deployed_at": datetime.now(timezone.utc).isoformat(),
-        "profile": profile,
-        "root": str(root),
-        "files": paths,
-    }, indent=2) + "\n")
+    p.write_text(
+        json.dumps(
+            {
+                "deployed_at": datetime.now(timezone.utc).isoformat(),
+                "profile": profile,
+                "root": str(root),
+                "files": paths,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
 
 
 def cleanup_stale(root: Path, old: dict | None, new_paths: set[str]) -> list[str]:
@@ -205,6 +223,7 @@ def cleanup_stale(root: Path, old: dict | None, new_paths: set[str]) -> list[str
                 continue
             if not p_resolved.is_relative_to(root_resolved):
                 import click
+
                 click.secho(
                     f"   \u26a0 skipping stale cleanup of {p} (outside {root})",
                     fg="yellow",

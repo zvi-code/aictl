@@ -94,6 +94,7 @@ def _asdict_list(items) -> list:
 
 # ─── SSE summary builder ─────────────────────────────────────────
 
+
 def build_sse_summary(snap: DashboardSnapshot) -> dict:
     """Build lightweight SSE summary from a full snapshot.
 
@@ -124,14 +125,21 @@ def build_sse_summary(snap: DashboardSnapshot) -> dict:
         "total_live_estimated_tokens": snap.total_live_estimated_tokens,
         "total_live_files_touched": snap.total_live_files_touched,
         # Per-tool summary (no files, just aggregates + live)
-        "tools": [{
-            "tool": t.tool, "label": t.label,
-            "vendor": t.vendor, "host": t.host,
-            "files_count": len(t.files), "tokens": sum(f.tokens for f in t.files),
-            "processes_count": len(t.processes),
-            "mcp_count": len(t.mcp_servers),
-            "live": t.live,
-        } for t in snap.tools if t.tool != "aictl"],
+        "tools": [
+            {
+                "tool": t.tool,
+                "label": t.label,
+                "vendor": t.vendor,
+                "host": t.host,
+                "files_count": len(t.files),
+                "tokens": sum(f.tokens for f in t.files),
+                "processes_count": len(t.processes),
+                "mcp_count": len(t.mcp_servers),
+                "live": t.live,
+            }
+            for t in snap.tools
+            if t.tool != "aictl"
+        ],
         # Enrichment data (small enough for SSE)
         "agent_memory": _asdict_list(snap.agent_memory),
         "mcp_detail": _asdict_list(snap.mcp_detail),
@@ -141,23 +149,27 @@ def build_sse_summary(snap: DashboardSnapshot) -> dict:
         # Events (lightweight)
         "events": snap.events[-50:] if snap.events else [],
         # Active sessions (compact: id, tool, duration, tokens)
-        "sessions": [{
-            "session_id": s.get("session_id", ""),
-            "tool": s.get("tool", ""),
-            "project": s.get("project", ""),
-            "duration_s": s.get("duration_s", 0),
-            "cpu_percent": s.get("cpu_percent", 0),
-            "exact_input_tokens": s.get("exact_input_tokens", 0),
-            "exact_output_tokens": s.get("exact_output_tokens", 0),
-            "file_events": s.get("file_events", 0),
-            "pids": len(s.get("pids", [])),
-        } for s in (snap.sessions or [])],
+        "sessions": [
+            {
+                "session_id": s.get("session_id", ""),
+                "tool": s.get("tool", ""),
+                "project": s.get("project", ""),
+                "duration_s": s.get("duration_s", 0),
+                "cpu_percent": s.get("cpu_percent", 0),
+                "exact_input_tokens": s.get("exact_input_tokens", 0),
+                "exact_output_tokens": s.get("exact_output_tokens", 0),
+                "file_events": s.get("file_events", 0),
+                "pids": len(s.get("pids", [])),
+            }
+            for s in (snap.sessions or [])
+        ],
         "agent_teams": _slim_agent_teams(snap.agent_teams or []),
         "_sse_summary": True,
     }
 
 
 # ─── HTTP handler ────────────────────────────────────────────────
+
 
 class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
     """Routes requests to the appropriate handler.
@@ -288,8 +300,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
 
         hook_pid = int(data.get("pid", 0) or 0)
         _HOOK_SKIP = {"event", "hook_event_name", "session_id", "tool", "cwd", "ts", "pid"}
-        detail = {"session_id": session_id, "cwd": cwd,
-                  **{k: v for k, v in data.items() if k not in _HOOK_SKIP}}
+        detail = {"session_id": session_id, "cwd": cwd, **{k: v for k, v in data.items() if k not in _HOOK_SKIP}}
         if hook_pid:
             detail["pid"] = hook_pid
 
@@ -298,26 +309,35 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         # Store as event in the database
         db = self._db
         if db:
-            db.append_event(EventRow(
-                ts=ts, tool=tool, kind=f"hook:{event_name}", detail=detail,
-                session_id=session_id, pid=hook_pid,
-            ))
+            db.append_event(
+                EventRow(
+                    ts=ts,
+                    tool=tool,
+                    kind=f"hook:{event_name}",
+                    detail=detail,
+                    session_id=session_id,
+                    pid=hook_pid,
+                )
+            )
 
             # Also write to structured tables
             if event_name in ("Init", "SessionStart"):
-                db.upsert_session(SessionRow(
-                    session_id=session_id,
-                    tool=tool,
-                    pid=hook_pid,
-                    project_path=cwd,
-                    model=detail.get("model", ""),
-                    started_at=ts,
-                    source="hook",
-                ))
+                db.upsert_session(
+                    SessionRow(
+                        session_id=session_id,
+                        tool=tool,
+                        pid=hook_pid,
+                        project_path=cwd,
+                        model=detail.get("model", ""),
+                        started_at=ts,
+                        source="hook",
+                    )
+                )
                 db.link_session_process(session_id, hook_pid, tool=tool)
             elif event_name in ("Stop", "SessionEnd"):
                 db.update_session_end(
-                    session_id, ended_at=ts,
+                    session_id,
+                    ended_at=ts,
                     input_tokens=int(detail.get("input_tokens", 0) or 0),
                     output_tokens=int(detail.get("output_tokens", 0) or 0),
                 )
@@ -328,23 +348,31 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                     if event_name == "PreToolUse":
                         # Store the invocation (duration unknown yet).
                         # Use tool_use_id in dedup key so Pre and Post don't collide.
-                        db.append_tool_invocation(ToolInvocationRow(
-                            ts=ts, source_ts=0, session_id=session_id, tool=tool,
-                            tool_name=tool_name,
-                            is_error=0,
-                            duration_ms=0,
-                            input=detail.get("input", detail.get("tool_input", {})),
-                            result_summary="",
-                            source="hook",
-                        ))
+                        db.append_tool_invocation(
+                            ToolInvocationRow(
+                                ts=ts,
+                                source_ts=0,
+                                session_id=session_id,
+                                tool=tool,
+                                tool_name=tool_name,
+                                is_error=0,
+                                duration_ms=0,
+                                input=detail.get("input", detail.get("tool_input", {})),
+                                result_summary="",
+                                source="hook",
+                            )
+                        )
                         # Cache pre-event info so PostToolUse can compute duration.
                         if tool_use_id:
                             # Compute dedup key matching what flush() will produce.
                             # flush() uses _dedup_key(session_id, tool_name, input_sig, is_error, source)
                             # when source_ts == 0.
                             input_val = detail.get("input", detail.get("tool_input", {}))
-                            input_sig = json.dumps(input_val, sort_keys=True) if isinstance(input_val, dict) else str(input_val)
+                            input_sig = (
+                                json.dumps(input_val, sort_keys=True) if isinstance(input_val, dict) else str(input_val)
+                            )
                             from ..storage import _dedup_key
+
                             dk = _dedup_key(session_id, tool_name, input_sig, "0", "hook")
                             self.server.pending_tool_use[tool_use_id] = (ts, dk)
                             # Evict stale entries (older than 10 minutes)
@@ -362,15 +390,20 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                             db.update_tool_invocation_duration(dk, duration_ms, is_err, result)
                         else:
                             # No matching Pre — store as standalone invocation.
-                            db.append_tool_invocation(ToolInvocationRow(
-                                ts=ts, source_ts=0, session_id=session_id, tool=tool,
-                                tool_name=tool_name,
-                                is_error=1 if detail.get("is_error") else 0,
-                                duration_ms=0,
-                                input=detail.get("input", detail.get("tool_input", {})),
-                                result_summary=str(detail.get("tool_response", detail.get("result", "")))[:500],
-                                source="hook",
-                            ))
+                            db.append_tool_invocation(
+                                ToolInvocationRow(
+                                    ts=ts,
+                                    source_ts=0,
+                                    session_id=session_id,
+                                    tool=tool,
+                                    tool_name=tool_name,
+                                    is_error=1 if detail.get("is_error") else 0,
+                                    duration_ms=0,
+                                    input=detail.get("input", detail.get("tool_input", {})),
+                                    result_summary=str(detail.get("tool_response", detail.get("result", "")))[:500],
+                                    source="hook",
+                                )
+                            )
 
         # Feed into entity state tracker
         self.server.entity_tracker.process_event(event_record)
@@ -397,8 +430,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self.rfile.readline()  # CRLF after chunk data
         return bytes(buf)
 
-    def _read_post_otlp(self, signal: str,
-                        max_size: int = 2_000_000) -> dict | None:
+    def _read_post_otlp(self, signal: str, max_size: int = 2_000_000) -> dict | None:
         """Read OTLP POST body, auto-detecting JSON vs protobuf."""
         transfer_encoding = self.headers.get("Transfer-Encoding", "")
         content_length = 0
@@ -431,7 +463,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                 )
                 self.server.otel_receiver.stats.errors += 1
                 self.send_error(
-                    415, "Install opentelemetry-proto: pip install 'aictl[otel]'",
+                    415,
+                    "Install opentelemetry-proto: pip install 'aictl[otel]'",
                 )
                 return None
             cls = proto_classes.get(signal)
@@ -441,6 +474,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                 return None
             try:
                 from google.protobuf.json_format import MessageToDict
+
                 msg = cls()
                 msg.ParseFromString(body)
                 return MessageToDict(msg)
@@ -462,6 +496,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         if cls is not None:
             try:
                 from google.protobuf.json_format import MessageToDict
+
                 msg = cls()
                 msg.ParseFromString(body)
                 return MessageToDict(msg)
@@ -470,7 +505,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
 
         logger.warning(
             "OTel: invalid body (Content-Type: %s, %d bytes)",
-            content_type, len(body),
+            content_type,
+            len(body),
         )
         self.server.otel_receiver.stats.errors += 1
         self.send_error(400, "Invalid JSON")
@@ -504,12 +540,14 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                     db.append_tool_invocation(inv)
                 # Batch-link sessions and PIDs (one commit instead of N*2)
                 db.batch_link_sessions(
-                    [(r.session_id, r.tool, r.pid, r.source_ts or r.ts, "otel")
-                     for r in requests if r.session_id])
-            logger.debug("OTel logs received: %d events, %d requests, %d invocations",
-                         len(events),
-                         len(requests) if events else 0,
-                         len(invocations) if events else 0)
+                    [(r.session_id, r.tool, r.pid, r.source_ts or r.ts, "otel") for r in requests if r.session_id]
+                )
+            logger.debug(
+                "OTel logs received: %d events, %d requests, %d invocations",
+                len(events),
+                len(requests) if events else 0,
+                len(invocations) if events else 0,
+            )
         except Exception:
             logger.exception("Error processing OTel logs")
             self.server.otel_receiver.stats.errors += 1
@@ -536,10 +574,9 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                     db.append_request(r)
                 # Batch-link sessions and PIDs (one commit instead of N*2)
                 db.batch_link_sessions(
-                    [(r.session_id, r.tool, r.pid, r.source_ts or r.ts, "otel")
-                     for r in requests if r.session_id])
-            logger.debug("OTel traces received: %d samples, %d events",
-                         len(samples), len(events))
+                    [(r.session_id, r.tool, r.pid, r.source_ts or r.ts, "otel") for r in requests if r.session_id]
+                )
+            logger.debug("OTel traces received: %d samples, %d events", len(samples), len(events))
         except Exception:
             logger.exception("Error processing OTel traces")
             self.server.otel_receiver.stats.errors += 1
@@ -562,6 +599,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
     def _serve_static(self, path: str) -> None:
         """Serve static assets from the dist/ directory."""
         import mimetypes
+
         rel = path.lstrip("/")
         candidates = [
             Path(__file__).parent / "dist",
@@ -627,8 +665,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("ETag", etag)
-        self.send_header("Last-Modified",
-                         email.utils.formatdate(mtime, usegmt=True))
+        self.send_header("Last-Modified", email.utils.formatdate(mtime, usegmt=True))
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
@@ -640,8 +677,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         # Enforce max SSE client limit to avoid thread exhaustion
         with _sse_client_lock:
             if _sse_client_count >= _MAX_SSE_CLIENTS:
-                logger.warning("SSE client limit reached (%d), rejecting connection",
-                               _MAX_SSE_CLIENTS)
+                logger.warning("SSE client limit reached (%d), rejecting connection", _MAX_SSE_CLIENTS)
                 self.send_error(503, "Too many SSE clients")
                 return
             _sse_client_count += 1
@@ -663,8 +699,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
 
             while True:
                 try:
-                    snap, version = self.server.store.wait_for_update(
-                        version, timeout=30.0)
+                    snap, version = self.server.store.wait_for_update(version, timeout=30.0)
                     if snap:
                         self._write_sse(snap)
                     else:
@@ -769,6 +804,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
 
 # ─── HTTP server ─────────────────────────────────────────────────
 
+
 class _DashboardHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -780,11 +816,13 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
         self.root: Path = root
         # Entity state tracker for hook events (Phase 3.3)
         from ..monitoring.correlator import EntityStateTracker
+
         self.entity_tracker: EntityStateTracker = EntityStateTracker()
         # OTel OTLP receiver for Claude Code telemetry
         self.otel_receiver: OtelReceiver = OtelReceiver()
         # Session analyzer — independent live transcript builder
         from ..analysis.analyzer import SessionAnalyzer
+
         self.session_analyzer: SessionAnalyzer = SessionAnalyzer()
         # Background analytics cache — no SQL on request path
         self.analytics_cache: _AnalyticsCache = _AnalyticsCache()
@@ -792,7 +830,6 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
         # In-memory cache for matching PreToolUse → PostToolUse by tool_use_id.
         # Maps tool_use_id → (pre_ts, dedup_key).  Entries auto-expire on access.
         self.pending_tool_use: dict[str, tuple[float, str]] = {}
-
 
 
 # ─── Inline HTML dashboard ───────────────────────────────────────
@@ -823,9 +860,11 @@ def _make_js_colors() -> str:
     """Generate the JavaScript COLORS const from the registry."""
     return f"window.COLORS = {_json.dumps(_REG_COLORS)};"
 
+
 def _make_js_icons() -> str:
     """Generate the JavaScript ICONS const from the registry."""
     return f"window.ICONS = {_json.dumps(_REG_ICONS)};"
+
 
 def _make_js_taxonomy() -> str:
     """Generate vendor/host label and color constants."""
@@ -835,6 +874,7 @@ def _make_js_taxonomy() -> str:
         f"window.HOST_LABELS = {_json.dumps(_REG_HOST_LABELS)};\n"
         f"window.TOOL_RELATIONSHIPS = {_json.dumps(_REG_RELATIONSHIPS)};"
     )
+
 
 _TEMPLATE_CACHE: str | None = None
 _TEMPLATE_MTIME: float = 0.0
@@ -874,19 +914,15 @@ def _load_template() -> str:
         src_dir = ui_dir / "src"
         if src_dir.is_dir():
             build_mtime = tpl_path.stat().st_mtime
-            needs_build = any(
-                f.stat().st_mtime > build_mtime
-                for f in src_dir.rglob("*") if f.is_file()
-            )
+            needs_build = any(f.stat().st_mtime > build_mtime for f in src_dir.rglob("*") if f.is_file())
 
     if needs_build and (ui_dir / "package.json").exists():
         import subprocess
+
         try:
             if not (ui_dir / "node_modules").exists():
-                subprocess.run(["npm", "install"], cwd=ui_dir, check=True,
-                               capture_output=True, timeout=120)
-            subprocess.run(["npm", "run", "build"], cwd=ui_dir, check=True,
-                           capture_output=True, timeout=60)
+                subprocess.run(["npm", "install"], cwd=ui_dir, check=True, capture_output=True, timeout=120)
+            subprocess.run(["npm", "run", "build"], cwd=ui_dir, check=True, capture_output=True, timeout=60)
         except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
             logger.warning("npm build failed (dashboard UI may be stale): %s", exc)
         # Re-check after build
@@ -897,8 +933,7 @@ def _load_template() -> str:
 
     if tpl_path is None:
         raise FileNotFoundError(
-            "Dashboard not found. Run 'npm install && npm run build' in "
-            f"{Path(__file__).parent / 'ui'}"
+            f"Dashboard not found. Run 'npm install && npm run build' in {Path(__file__).parent / 'ui'}"
         )
 
     # Reload if file changed on disk (one stat() call — negligible cost)

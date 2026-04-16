@@ -30,6 +30,7 @@ from .utils import write_safe
 @dataclass
 class AictxFile:
     """Represents one .context.toml file to be generated."""
+
     rel_path: str
     base_text: str = ""
     profile_name: str | None = None
@@ -113,17 +114,19 @@ def _merge(
         base_text = _pick_best(scopes, prefer, lambda s: s.base_text)
         profile_text = _pick_best(scopes, prefer, lambda s: s.profile_text)
 
-        aictx_files.append(AictxFile(
-            rel_path=rel_path,
-            base_text=base_text,
-            profile_name=detected_profile if profile_text else None,
-            profile_text=profile_text,
-        ))
+        aictx_files.append(
+            AictxFile(
+                rel_path=rel_path,
+                base_text=base_text,
+                profile_name=detected_profile if profile_text else None,
+                profile_text=profile_text,
+            )
+        )
 
-    all_caps  = _dedup(imports, "capabilities", lambda c: (c.kind, c.name), prefer)
-    all_mcp   = _dedup(imports, "mcp_servers",  lambda m: m.name,           prefer)
-    all_hooks = _dedup(imports, "hooks",         lambda h: h.event,          prefer)
-    all_lsp   = _dedup(imports, "lsp_servers",  lambda s: s.name,           prefer)
+    all_caps = _dedup(imports, "capabilities", lambda c: (c.kind, c.name), prefer)
+    all_mcp = _dedup(imports, "mcp_servers", lambda m: m.name, prefer)
+    all_hooks = _dedup(imports, "hooks", lambda h: h.event, prefer)
+    all_lsp = _dedup(imports, "lsp_servers", lambda s: s.name, prefer)
 
     # Attach capabilities + MCP + hooks + LSP to root scope
     root_file = next((f for f in aictx_files if f.rel_path == "."), None)
@@ -133,9 +136,9 @@ def _merge(
 
     if root_file:
         root_file.capabilities = all_caps
-        root_file.mcp_servers  = all_mcp
-        root_file.hooks        = all_hooks
-        root_file.lsp_servers  = all_lsp
+        root_file.mcp_servers = all_mcp
+        root_file.hooks = all_hooks
+        root_file.lsp_servers = all_lsp
 
     # Plugin metadata: extract from any import that carries plugin_meta
     plugin_meta: dict[str, str] = {}
