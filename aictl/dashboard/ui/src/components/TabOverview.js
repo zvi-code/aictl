@@ -3,6 +3,7 @@ import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS, VENDOR_LABELS, VENDOR_COLORS, HOST_LABELS, GROUP_MODES, fmtK, esc } from '../utils.js';
 import ToolCard from './ToolCard.js';
+import { Icon } from './ui/index.js';
 
 function ToolGroup({groupKey, groupLabel, groupColor, tools, root}) {
   const [isOpen, setOpen] = useState(true);
@@ -92,7 +93,7 @@ export default function TabOverview() {
       </div>`)}
     ${metaTools.length > 0 && html`<details style="margin-top:var(--sp-6)">
       <summary class="cursor-ptr text-muted" style="font-size:var(--fs-base);padding:var(--sp-2) 0;list-style:none;display:flex;align-items:center;gap:var(--sp-3)">
-        <span style="font-size:var(--fs-xs)">▶</span>
+        <span style="font-size:var(--fs-xs)"><${Icon} name="chevron-right" size="0.8em"/></span>
         <span>Project Context</span>
         <span class="badge">${metaTools.length}</span>
         <span class="text-muted" style="font-size:var(--fs-xs)">env files, shared instructions</span>

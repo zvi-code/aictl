@@ -1,6 +1,7 @@
 import { html } from 'htm/preact';
 import { fmtPct, fmtSz, esc } from '../utils.js';
 import { describeAnomaly } from '../anomalyMeta.js';
+import { Icon } from './ui/index.js';
 
 /**
  * ProcRow — renders a single process with memory bar, anomaly indicators,
@@ -22,13 +23,13 @@ export default function ProcRow({proc: p, maxMem}) {
       <span class="pcpu" style=${'color:'+cpuColor}>${fmtPct(cpuVal)}</span>
       <div class="mem-bar"><div class="mem-bar-fill" style=${'width:'+pct.toFixed(0)+'%;background:'+barColor}></div></div>
       <span class="pmem">${fmtSz(mem*1048576)}</span>
-      <span class="anomaly-icon">${hasAnom?html`<span class="text-red">\u26A0</span>`:''}</span>
+      <span class="anomaly-icon">${hasAnom?html`<span class="text-red"><${Icon} name="alert-triangle" size="0.9em"/></span>`:''}</span>
     </div>
     ${hasAnom && html`<div class="anomaly-list" style="padding:0.1rem var(--sp-3) 0.2rem 2.5rem">
       ${p.anomalies.map((a,i)=>{
         const { label, detail, severity } = describeAnomaly(a, p);
         return html`<div key=${(a.type||a)+'-'+i} class="anomaly-item">
-          <span class="anomaly-item__icon" style=${'color:var(--'+severity+')'}>⚠</span>
+          <span class="anomaly-item__icon" style=${'color:var(--'+severity+')'}><${Icon} name="alert-triangle" size="0.9em"/></span>
           <span class="anomaly-item__label">${label}</span>
           ${detail && html`<span class="anomaly-item__detail">${detail}</span>`}
         </div>`;

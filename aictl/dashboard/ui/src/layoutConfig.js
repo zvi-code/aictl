@@ -39,18 +39,21 @@ export const LAYOUT = {
   ],
 
   tabs: [
-    { id: 'overview', label: 'Dashboard',        icon: '\uD83D\uDCCA', key: '1' },
-    { id: 'procs',    label: 'Processes',        icon: '\u2699\uFE0F', key: '2' },
-    { id: 'memory',   label: 'AI Context',       icon: '\uD83D\uDCDD', key: '3' },
-    { id: 'live',     label: 'Live Monitor',     icon: '\uD83D\uDCE1', key: '4' },
-    { id: 'events',   label: 'Events & Stats',   icon: '\uD83D\uDCC8', key: '5' },
-    { id: 'budget',   label: 'Token Budget',     icon: '\uD83D\uDCB0', key: '6' },
-    { id: 'sessions', label: 'Sessions',         icon: '\uD83D\uDD04', key: '7' },
-    { id: 'analytics', label: 'Analytics',        icon: '\uD83D\uDD2C', key: '8' },
-    { id: 'flow',     label: 'Session Flow',      icon: '\uD83D\uDD00', key: '9' },
-    { id: 'transcript', label: 'Transcript',      icon: '\uD83D\uDCDC', key: 't' },
-    { id: 'timeline', label: 'Timeline',          icon: '\uD83D\uDCC9', key: 'y' },
-    { id: 'config',   label: 'Configuration',     icon: '\u2699\uFE0F', key: '0' },
+    // iconName: Lucide icon for use with <Icon name=/>. Emoji `icon` kept for
+    // backward-compat until app.js migrates tab buttons to the Icon primitive.
+    // TODO(agent-J): migrate tab icons to <Icon name={t.iconName}/> and drop `icon`.
+    { id: 'overview', label: 'Dashboard',        icon: '\uD83D\uDCCA', iconName: 'layout-dashboard', key: '1' },
+    { id: 'procs',    label: 'Processes',        icon: '\u2699\uFE0F', iconName: 'cpu',              key: '2' },
+    { id: 'memory',   label: 'AI Context',       icon: '\uD83D\uDCDD', iconName: 'brain',            key: '3' },
+    { id: 'live',     label: 'Live Monitor',     icon: '\uD83D\uDCE1', iconName: 'radio',            key: '4' },
+    { id: 'events',   label: 'Events & Stats',   icon: '\uD83D\uDCC8', iconName: 'activity',         key: '5' },
+    { id: 'budget',   label: 'Token Budget',     icon: '\uD83D\uDCB0', iconName: 'wallet',           key: '6' },
+    { id: 'sessions', label: 'Sessions',         icon: '\uD83D\uDD04', iconName: 'refresh-cw',       key: '7' },
+    { id: 'analytics', label: 'Analytics',        icon: '\uD83D\uDD2C', iconName: 'bar-chart-3',      key: '8' },
+    { id: 'flow',     label: 'Session Flow',      icon: '\uD83D\uDD00', iconName: 'git-branch',       key: '9' },
+    { id: 'transcript', label: 'Transcript',      icon: '\uD83D\uDCDC', iconName: 'file-text',        key: 't' },
+    { id: 'timeline', label: 'Timeline',          icon: '\uD83D\uDCC9', iconName: 'line-chart',       key: 'y' },
+    { id: 'config',   label: 'Configuration',     icon: '\u2699\uFE0F', iconName: 'settings',         key: '0' },
   ],
 
   eventTimeline: { maxDots: 200 },
