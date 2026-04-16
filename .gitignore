@@ -72,3 +72,7 @@ package-lock.json
 # editor/tool settings (user-specific)
 .gemini/
 .vscode/
+
+# aictl atomic-write sidecars
+*.aictl.bak
+*.aictl-tmp
