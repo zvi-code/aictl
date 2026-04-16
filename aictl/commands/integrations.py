@@ -13,36 +13,22 @@ from pathlib import Path
 import click
 
 from ..platforms import IS_MACOS, IS_WINDOWS, claude_global_dir, vscode_user_dir, codex_global_dir, gemini_global_dir
-from ..utils import WriteGuard
+from ..utils import CorruptJSONError, WriteGuard, read_json_or_fail
 from .._hook_owner import _AICTL_OWNER_MARKER, _is_aictl_hook, _is_legacy_aictl_hook  # re-exported for tests
 
 
-# TODO: replace with aictl.utils.read_json_or_fail once merged.
 def _read_json_strict(path: Path, *, force: bool = False) -> dict:
-    """Read JSON file. Missing or empty → {}. Corrupted + not force → ClickException.
+    """Thin CLI adapter around ``aictl.utils.read_json_or_fail``.
 
-    Replaces the old ``except (JSONDecodeError, OSError): pass`` pattern that
-    silently clobbered a user's valid-but-unparseable settings on the next
-    write. With --force the user opts in to overwriting a corrupt file.
+    Converts ``CorruptJSONError`` into ``click.ClickException`` so the CLI
+    surfaces a clean actionable message (and non-zero exit) rather than a
+    traceback. On ``force=True`` the underlying helper quarantines the
+    corrupted original to a ``.bak.<timestamp>`` sibling before returning {}.
     """
-    if not path.exists():
-        return {}
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise click.ClickException(f"Cannot read {path}: {exc}")
-    if not text.strip():
-        return {}
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        if force:
-            click.echo(f"Warning: {path} is corrupted, overwriting (--force): {exc}", err=True)
-            return {}
-        raise click.ClickException(
-            f"Cannot parse {path}: {exc}. "
-            f"Pass --force to overwrite the corrupted file."
-        )
+        return read_json_or_fail(path, force=force)
+    except CorruptJSONError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 def _fetch_otel_status(port: int) -> dict | None:
