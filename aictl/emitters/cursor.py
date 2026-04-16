@@ -7,8 +7,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..resolver import Resolved
-from ..utils import encode_scope, emit_file
-from ._helpers import emit_mcp_servers, emit_ignores
+from ..utils import emit_file, encode_scope
+from ._helpers import emit_ignores, emit_mcp_servers
 
 NAME = "cursor"
 

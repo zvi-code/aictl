@@ -9,14 +9,21 @@ and writes .context.toml files at the appropriate directory levels.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from collections.abc import Callable
 
 import tomli_w
 
-from .importers import ImportResult, ImportedScope, ImportedCapability, ImportedMcp, ImportedHook, ImportedLsp
 from .context import AICTX_FILENAME
+from .importers import (
+    ImportedCapability,
+    ImportedHook,
+    ImportedLsp,
+    ImportedMcp,
+    ImportedScope,
+    ImportResult,
+)
 from .utils import write_safe
 
 

@@ -4,23 +4,19 @@ from __future__ import annotations
 
 import json
 import sys
-import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
 
-from aictl.tools import (
-    discover_all,
-    compute_token_budget,
-    _process_display_name,
-    _parse_ps_output,
-    ResourceFile,
-    ProcessInfo,
-    ToolResources,
-)
 from aictl.commands.status import status
+from aictl.tools import (
+    ResourceFile,
+    ToolResources,
+    _process_display_name,
+    compute_token_budget,
+    discover_all,
+)
 
 
 def _discover_tool(root: Path, tool: str) -> ToolResources:
@@ -28,7 +24,6 @@ def _discover_tool(root: Path, tool: str) -> ToolResources:
 
     When tool is a group name (e.g. "copilot"), merges all sub-tools.
     """
-    from aictl.tools import expand_tool_filter
     results = discover_all(root, tools=[tool])
     if not results:
         return ToolResources(tool=tool, label=tool)

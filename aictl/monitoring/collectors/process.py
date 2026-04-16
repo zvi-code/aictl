@@ -17,11 +17,10 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import BaseCollector
+from ...data.schema import metric_name as M
 from ..config import MonitorConfig
 from ..session import ProcessInfo
-from ...data.schema import metric_name as M
-
+from . import BaseCollector
 
 # ─── Process classification ─────────────────────────────────────────────────
 

@@ -6,8 +6,7 @@ from abc import ABC, abstractmethod
 from typing import ClassVar
 
 # ── Registry (from registry.py) ──
-
-from . import claude, copilot, cursor, windsurf, gemini
+from . import claude, copilot, cursor, gemini, windsurf
 
 _EMITTERS = {"claude": claude, "copilot": copilot, "cursor": cursor, "windsurf": windsurf, "gemini": gemini}
 

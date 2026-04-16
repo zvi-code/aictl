@@ -10,13 +10,12 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
-from aictl.commands.integrations import otel, enable, _AICTL_ENV_BEGIN, _AICTL_ENV_END
+from aictl.commands.integrations import _AICTL_ENV_BEGIN, _AICTL_ENV_END, otel
 
 
 @pytest.fixture

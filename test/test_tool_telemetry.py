@@ -3,27 +3,24 @@
 from __future__ import annotations
 
 import json
-import time
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from aictl.monitoring.tool_telemetry import (
+    _PARSER_REGISTRY,
     ToolTelemetryReport,
-    _parse_iso_ts,
+    _detect_claude_errors,
+    _disambiguate_conversations,
     _first_int,
     _iter_jsonl,
-    _disambiguate_conversations,
-    _detect_claude_errors,
-    _parse_copilot_events,
     _parse_codex_session,
     _parse_continue_session,
+    _parse_copilot_events,
+    _parse_iso_ts,
     _recent_files,
-    _PARSER_REGISTRY,
     collect_tool_telemetry,
 )
-
 
 # ────────────────────────────────────────────────────────────────
 # ToolTelemetryReport dataclass

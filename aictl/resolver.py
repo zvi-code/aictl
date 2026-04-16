@@ -12,11 +12,14 @@ Rules:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .context import ParsedAictx, Capability, McpServer, Hook, LspServer, Setting, Permission, EnvVars, IgnoreRule
+from .context import (
+    Capability,
+    ParsedAictx,
+)
 from .utils import WriteGuard
 
 

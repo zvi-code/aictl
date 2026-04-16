@@ -4,13 +4,11 @@
 
 from __future__ import annotations
 
-import threading
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from aictl.commands.ctx_pipeline import deploy, _run_deploy, _collect_watch_dirs
+from aictl.commands.ctx_pipeline import _collect_watch_dirs, _run_deploy, deploy
 
 
 def test_deploy_no_aictx_files():

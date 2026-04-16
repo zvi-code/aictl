@@ -9,11 +9,12 @@ producing Sample and EventRow objects for storage.
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import dataclass
 import logging
 import time
+from dataclasses import dataclass
 
-from ..storage import EventRow, RequestRow, ToolInvocationRow, Sample as _Sample
+from ..storage import EventRow, RequestRow, ToolInvocationRow
+from ..storage import Sample as _Sample
 
 logger = logging.getLogger(__name__)
 
@@ -483,11 +484,11 @@ def _load_otlp_proto() -> dict:
     if _otlp_proto_classes is not None:
         return _otlp_proto_classes
     try:
-        from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
-            ExportMetricsServiceRequest,
-        )
         from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import (
             ExportLogsServiceRequest,
+        )
+        from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
+            ExportMetricsServiceRequest,
         )
         from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
             ExportTraceServiceRequest,

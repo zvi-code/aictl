@@ -9,9 +9,8 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-import tempfile
-import time
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pytest
@@ -163,7 +162,9 @@ class TestFullPipelineAtScale:
 
     def test_full_recompute_7d(self, large_db: HistoryDB):
         from aictl.dashboard.web_server import (
-            _compute_response_time, _compute_tools, _compute_files,
+            _compute_files,
+            _compute_response_time,
+            _compute_tools,
         )
         since = time.time() - 7 * 86400
         until = time.time()
@@ -188,7 +189,9 @@ class TestFullPipelineAtScale:
 
     def test_full_recompute_1h(self, large_db: HistoryDB):
         from aictl.dashboard.web_server import (
-            _compute_response_time, _compute_tools, _compute_files,
+            _compute_files,
+            _compute_response_time,
+            _compute_tools,
         )
         since = time.time() - 3600
         until = time.time()
@@ -208,8 +211,9 @@ class TestConcurrentAccess:
 
     def test_concurrent_cache_reads(self, large_db: HistoryDB):
         """10 concurrent get() calls must all return in <1ms."""
-        from aictl.dashboard.web_server import _AnalyticsCache
         from unittest.mock import MagicMock
+
+        from aictl.dashboard.web_server import _AnalyticsCache
 
         cache = _AnalyticsCache()
         store = MagicMock()
@@ -238,8 +242,9 @@ class TestConcurrentAccess:
 
     def test_concurrent_reads_during_recompute(self, large_db: HistoryDB):
         """Reads must not block while a recompute is in progress."""
-        from aictl.dashboard.web_server import _AnalyticsCache
         from unittest.mock import MagicMock
+
+        from aictl.dashboard.web_server import _AnalyticsCache
 
         cache = _AnalyticsCache()
         store = MagicMock()

@@ -12,14 +12,19 @@ import pytest
 from aictl.dashboard.web_server import (
     METRIC_MAP,
     OtelReceiver,
-    _extract_otel_data_points as _extract_data_points,
-    _extract_otel_value as _extract_value,
     _nano_to_epoch,
-    _parse_otel_attributes as _parse_attributes,
     _promote_session_id,
 )
+from aictl.dashboard.web_server import (
+    _extract_otel_data_points as _extract_data_points,
+)
+from aictl.dashboard.web_server import (
+    _extract_otel_value as _extract_value,
+)
+from aictl.dashboard.web_server import (
+    _parse_otel_attributes as _parse_attributes,
+)
 from aictl.storage import EventRow, HistoryDB, Sample
-
 
 # ── Unit tests: OTLP JSON parsing helpers ────────────────────────
 
@@ -346,11 +351,12 @@ def otel_server(tmp_path):
     """Start a real HTTP server for OTel endpoint testing."""
     from pathlib import Path
 
+    from aictl.dashboard.models import DashboardSnapshot
     from aictl.dashboard.web_server import (
-        _DashboardHTTPServer, _DashboardHandler,
+        _DashboardHandler,
+        _DashboardHTTPServer,
     )
     from aictl.orchestrator import AllowedPaths, SnapshotStore
-    from aictl.dashboard.models import DashboardSnapshot
 
     db = HistoryDB(db_path=str(tmp_path / "otel.db"), flush_interval=0)
     store = SnapshotStore(db=db)

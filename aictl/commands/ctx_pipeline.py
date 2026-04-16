@@ -18,16 +18,11 @@ from unittest.mock import patch
 
 import click
 
-from ..context import scan, SKIP_DIRS
-from ..resolver import resolve
 from .. import emitters as registry
-from ..resolver import load_manifest, save_manifest, cleanup_stale
+from ..context import AICTX_FILENAME, SKIP_DIRS, check_parsed_features, parse_aictx, scan
 from ..memory import swap_memory
-from ..utils import estimate_tokens
-from ..context import check_parsed_features
-from ..context import AICTX_FILENAME, parse_aictx
+from ..resolver import cleanup_stale, load_manifest, resolve, save_manifest
 from .integrations import HOOK_EVENTS as _HOOK_EVENTS
-
 
 # ─── deploy ──────────────────────────────────────────────────────────────────
 
@@ -384,7 +379,7 @@ def diff(root_dir: str, profile: str | None, emitters: str | None) -> None:
         to_label = f"b/{_rel(file_path, root)}"
 
         if not current:
-            click.secho(f"\n--- /dev/null", fg="red")
+            click.secho("\n--- /dev/null", fg="red")
             click.secho(f"+++ {to_label}", fg="green")
             click.secho("(new file)", fg="cyan")
             for line in intended.splitlines():

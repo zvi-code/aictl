@@ -5,24 +5,21 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import click
 import pytest
 from click.testing import CliRunner
 
 from aictl.commands.admin import (
-    db,
-    compact,
-    stats,
-    reset,
-    config,
-    catalog,
-    build_ui,
-    reinstall,
     _find_project_root,
     _render_markdown,
     _resolve_db_path,
+    build_ui,
+    catalog,
+    config,
+    db,
+    reinstall,
 )
 
 

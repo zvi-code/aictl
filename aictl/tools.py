@@ -17,7 +17,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
 # ─── Tool naming ──────────────────────────────────────────────────
 
 TOOL_GROUPS: dict[str, list[str]] = {
@@ -761,7 +760,6 @@ def batch_resolve_paths(
 from .fsutil import safe_glob, safe_iterdir, safe_rglob, safe_stat, safe_walk
 from .platforms import CURRENT_PLATFORM, IS_MACOS
 from .utils import estimate_tokens, norm_path
-
 
 # ─── Data classes ─────────────────────────────────────────────────
 

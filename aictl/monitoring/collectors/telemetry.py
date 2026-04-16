@@ -10,10 +10,9 @@ import os
 from pathlib import Path
 from typing import Any
 
-from . import BaseCollector
-from ..config import MonitorConfig
 from ...data.schema import metric_name as M
-
+from ..config import MonitorConfig
+from . import BaseCollector
 
 _INTERESTING_NAMES = ("otel", "trace", "span", "telemetry", "usage", "session", "events", "history", "stats", "logs")
 _INTERESTING_SUFFIXES = (".json", ".jsonl", ".ndjson", ".log")

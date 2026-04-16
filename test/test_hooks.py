@@ -1,16 +1,17 @@
 # Tests for aictl hooks install/uninstall command.
 import json
-import os
-import pytest
-from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 from click.testing import CliRunner
 
-from aictl.commands.integrations import (
-    hooks, install, uninstall,
-    HOOK_EVENTS, _build_hook_config, _is_aictl_hook, _settings_path,
-)
 from aictl._hook_owner import _AICTL_OWNER_MARKER
+from aictl.commands.integrations import (
+    HOOK_EVENTS,
+    _build_hook_config,
+    _is_aictl_hook,
+    hooks,
+)
 
 
 @pytest.fixture
@@ -411,6 +412,7 @@ class TestHookHandler:
 
     def test_enriches_event_and_env(self, monkeypatch):
         import io
+
         from aictl.hook_handler import main
         monkeypatch.setattr("sys.argv", ["hook_handler", "--event", "PreToolUse", "--port", "9999"])
         monkeypatch.setattr("sys.stdin", io.StringIO('{"tool": "Bash"}'))
@@ -429,6 +431,7 @@ class TestHookHandler:
     def test_empty_stdin(self, monkeypatch):
         """When stdin is a tty (no pipe), handler uses empty dict."""
         import io
+
         from aictl.hook_handler import main
         monkeypatch.setattr("sys.argv", ["hook_handler", "--event", "SessionStart", "--port", "8484"])
 
@@ -446,6 +449,7 @@ class TestHookHandler:
     def test_does_not_overwrite_existing_session_id(self, monkeypatch):
         """If payload already has session_id, don't overwrite with env var."""
         import io
+
         from aictl.hook_handler import main
         monkeypatch.setattr("sys.argv", ["hook_handler", "--event", "Stop", "--port", "8484"])
         monkeypatch.setattr("sys.stdin", io.StringIO('{"session_id": "from-payload"}'))
@@ -495,8 +499,6 @@ class TestPythonCmd:
         """Hook config is valid when sys.executable has a Windows-style path."""
         fake_exe = r"C:\Program Files\Python311\python.exe"
         with patch("sys.executable", fake_exe):
-            import aictl.commands.integrations as hooks_mod
-            import importlib
             # Re-import _python_cmd with patched sys.executable
             from aictl.commands.integrations import _python_cmd
             quoted = _python_cmd()

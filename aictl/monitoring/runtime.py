@@ -16,21 +16,18 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from ..platforms import CURRENT_PLATFORM, IS_MACOS, IS_WINDOWS
+from ..utils import human_size as _format_bytes
+from ..utils import human_tokens as _format_tokens
 from .collectors import BaseCollector, build_collectors
-from .collectors.process import WatchdogFileCollector
 from .collectors.network import (
     LinuxNetworkCollector,
     MacOSNetworkCollector,
     PsutilFallbackNetworkCollector,
     WindowsNetworkCollector,
 )
-from .collectors.process import PsutilProcessCollector
-from .collectors.telemetry import StructuredTelemetryCollector
 from .config import MonitorConfig
 from .correlator import MonitorSnapshot, SessionCorrelator
-from ..platforms import CURRENT_PLATFORM, IS_MACOS, IS_WINDOWS
-from ..utils import human_size as _format_bytes, human_tokens as _format_tokens
-
 
 # ── Discovery collector ─────────────────────────────────────────────────────
 
@@ -59,8 +56,8 @@ class DiscoveryCollector(BaseCollector):
         return self._latest
 
     async def run(self) -> None:
-        from ..tools import discover_all
         from ..data.schema import metric_name as _M
+        from ..tools import discover_all
 
         await self.report_status(
             status="active",
@@ -116,7 +113,7 @@ class CollectorPlan:
 class MonitorRuntime:
     """Owns collector lifecycle and snapshot rendering."""
 
-    def __init__(self, config: MonitorConfig, sink: "Any | None" = None) -> None:
+    def __init__(self, config: MonitorConfig, sink: Any | None = None) -> None:
         self.config = config
         self.platform = CURRENT_PLATFORM
         self.sink = sink

@@ -19,8 +19,8 @@ from __future__ import annotations
 import glob as _glob_mod
 import logging
 import os
-from pathlib import Path
 from collections.abc import Generator, Iterable
+from pathlib import Path
 
 from .utils import norm_path  # re-export so callers get everything from one place
 

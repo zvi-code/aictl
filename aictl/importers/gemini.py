@@ -16,10 +16,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import ImportResult, ImportedScope
+from . import ImportedScope, ImportResult
 from ._parse_helpers import (
-    read_root_scope, read_sub_scopes, read_cap_dir, read_skills_dir,
-    read_hooks_from_settings, import_mcp_from_json,
+    import_mcp_from_json,
+    read_cap_dir,
+    read_hooks_from_settings,
+    read_root_scope,
+    read_skills_dir,
+    read_sub_scopes,
 )
 
 NAME = "gemini"

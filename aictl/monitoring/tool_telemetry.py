@@ -17,16 +17,21 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from ..platforms import IS_WINDOWS, claude_global_dir, claude_projects_dir, codex_global_dir, cursor_user_dir
-from ..fsutil import safe_iterdir, safe_glob
 from ..data.schema import load_telemetry_sources
+from ..fsutil import safe_glob, safe_iterdir
+from ..platforms import (
+    IS_WINDOWS,
+    claude_global_dir,
+    claude_projects_dir,
+    codex_global_dir,
+    cursor_user_dir,
+)
 
 log = logging.getLogger(__name__)
 
@@ -738,7 +743,8 @@ def parse_cursor_telemetry(root: Path | None = None, tool: str = "cursor",
         # On Windows, VS Code/Cursor holds an exclusive lock on the vscdb.
         # Copy to temp file to avoid "file handle in use" errors.
         if IS_WINDOWS:
-            import shutil, tempfile
+            import shutil
+            import tempfile
             tmp = Path(tempfile.gettempdir()) / f"aictl-{tool}-state.vscdb"
             try:
                 shutil.copy2(vscdb, tmp)

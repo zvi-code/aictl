@@ -214,9 +214,9 @@ class DashboardSnapshot:
         return json.dumps(self.to_dict_slim())
 
     @classmethod
-    def from_dict(cls, d: dict) -> "DashboardSnapshot":
+    def from_dict(cls, d: dict) -> DashboardSnapshot:
         """Reconstruct from a dict (e.g. from /api/snapshot JSON)."""
-        from ..tools import ResourceFile, MemoryEntry, McpServerInfo
+        from ..tools import McpServerInfo, MemoryEntry, ResourceFile
 
         tools = []
         for td in d.get("tools", []):

@@ -14,10 +14,10 @@ import threading
 from collections import defaultdict
 from dataclasses import dataclass
 
-from . import BaseCollector
-from ..session import ProcessInfo
 from ...data.schema import metric_name as M
 from ...platforms import IS_MACOS, IS_WINDOWS
+from ..session import ProcessInfo
+from . import BaseCollector
 
 log = logging.getLogger(__name__)
 

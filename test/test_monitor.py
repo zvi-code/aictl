@@ -8,13 +8,12 @@ from unittest.mock import Mock
 from click.testing import CliRunner
 
 from aictl.cli import main
+from aictl.monitoring.collectors.network import parse_nettop_line, parse_ss_snapshot
+from aictl.monitoring.collectors.process import PsutilProcessCollector, classify_process
 from aictl.monitoring.config import MonitorConfig
 from aictl.monitoring.correlator import MonitorSnapshot, SessionCorrelator
-from aictl.monitoring.session import ProcessInfo
-from aictl.monitoring.collectors.process import classify_process
 from aictl.monitoring.runtime import CollectorPlan
-from aictl.monitoring.collectors.network import parse_ss_snapshot, parse_nettop_line
-from aictl.monitoring.collectors.process import PsutilProcessCollector
+from aictl.monitoring.session import ProcessInfo
 
 
 def test_process_classifier_distinguishes_codex_from_vscode():

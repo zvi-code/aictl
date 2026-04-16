@@ -16,13 +16,12 @@ import contextlib
 import hashlib
 import json
 import logging
-import os
 import re
 import shutil
 import sys
 import time
-from dataclasses import dataclass, asdict
-from pathlib import Path, PurePosixPath
+from dataclasses import dataclass
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 

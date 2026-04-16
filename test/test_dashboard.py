@@ -5,9 +5,8 @@ from __future__ import annotations
 import json
 
 from aictl.dashboard.models import DashboardSnapshot, DashboardTool
-from aictl.orchestrator import collect
-from aictl.dashboard.web_server import build_sse_summary, _DashboardHandler
-from aictl.orchestrator import SnapshotStore
+from aictl.dashboard.web_server import _DashboardHandler, build_sse_summary
+from aictl.orchestrator import SnapshotStore, collect
 from aictl.storage import EventRow
 from aictl.tools import ResourceFile, ToolResources
 

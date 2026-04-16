@@ -9,7 +9,6 @@ events, producing an ordered list of turns for the session flow waterfall.
 from __future__ import annotations
 
 import re
-import time
 
 from ..storage import EventRow
 from .otel_receiver import _num

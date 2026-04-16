@@ -14,13 +14,12 @@ from pathlib import Path
 
 import pytest
 
+from aictl.emitters._helpers import _load_settings
 from aictl.utils import (
     CorruptJSONError,
     merge_json_block,
     read_json_or_fail,
 )
-from aictl.emitters._helpers import _load_settings
-
 
 # ── read_json_or_fail ──────────────────────────────────────────────
 

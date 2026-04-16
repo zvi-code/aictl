@@ -9,11 +9,19 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 
-from .config import MonitorConfig
-from .collectors.process import classify_process
-from .session import (MCPState, ProcessInfo, SessionState, TokenEstimate, ToolReport,
-                      _derive_project, estimate_mcp, estimate_tokens)
 from ..data.schema import metric_name as M
+from .collectors.process import classify_process
+from .config import MonitorConfig
+from .session import (
+    MCPState,
+    ProcessInfo,
+    SessionState,
+    TokenEstimate,
+    ToolReport,
+    _derive_project,
+    estimate_mcp,
+    estimate_tokens,
+)
 
 
 @dataclass(frozen=True, slots=True)

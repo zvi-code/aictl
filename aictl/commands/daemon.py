@@ -14,11 +14,10 @@ from pathlib import Path
 
 import click
 
-from ..orchestrator import start_server
-from ..platforms import load_config, IS_WINDOWS
 from ..monitoring.config import MonitorConfig
 from ..monitoring.runtime import MonitorRuntime
-
+from ..orchestrator import start_server
+from ..platforms import IS_WINDOWS, load_config
 
 # ─── serve ───────────────────────────────────────────────────────────────────
 
@@ -123,7 +122,7 @@ def _start_daemon(root_dir, host, port, interval, include_live_monitor, pid_file
         click.echo(f"  dashboard at http://{host}:{port}")
         click.echo(f"  log: {log_file}")
         click.echo(f"  pid: {pid_file}")
-        click.echo(f"  stop: aictl serve --stop")
+        click.echo("  stop: aictl serve --stop")
         return
 
     # Child — detach

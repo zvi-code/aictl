@@ -13,8 +13,7 @@ from pathlib import Path
 import click
 
 from ..cli_context import CliContext
-from ..platforms import config_path, load_config, show_config, write_default_config
-
+from ..platforms import config_path, show_config, write_default_config
 
 # ─── db ─────────────────────────────────────────────────────────────────────
 
@@ -135,7 +134,7 @@ def reset(ctx, yes):
     Removes the existing history database and initialises an empty one.
     All recorded metrics, events, and telemetry are permanently deleted.
     """
-    from ..storage import HistoryDB, DEFAULT_DB_PATH
+    from ..storage import DEFAULT_DB_PATH, HistoryDB
 
     db_path = ctx.obj.db_path
     path = Path(db_path) if db_path else DEFAULT_DB_PATH
@@ -218,7 +217,6 @@ def build_ui():
     Automates the process of installing dependencies, building the
     Vite/Preact frontend, and syncing assets to the Python package.
     """
-    import shutil
     import subprocess
 
     root = _find_project_root()

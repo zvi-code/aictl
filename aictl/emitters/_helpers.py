@@ -10,17 +10,21 @@ needs to supply its file paths and formatting details.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
+from .._hook_owner import _is_aictl_hook, _tag_hooks
 from ..resolver import Resolved
 from ..utils import (
-    wrap_deployed, compose_with_overlay, extract_overlay,
-    encode_scope, merge_json_block, merge_ignore_file, emit_file,
+    compose_with_overlay,
+    emit_file,
+    encode_scope,
+    extract_overlay,
+    merge_ignore_file,
+    merge_json_block,
     read_json_or_fail,
+    wrap_deployed,
 )
-from .._hook_owner import _is_aictl_hook, _tag_hooks
-
 
 # ── Scope helpers ───────────────────────────────────────────────────
 

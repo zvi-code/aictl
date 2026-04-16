@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import time
 
 import pytest
@@ -275,8 +274,9 @@ class TestAnalyticsCache:
     """Test the background analytics cache serves results without blocking."""
 
     def test_cache_recomputes_and_serves(self, db: HistoryDB):
-        from aictl.dashboard.web_server import _AnalyticsCache
         from unittest.mock import MagicMock
+
+        from aictl.dashboard.web_server import _AnalyticsCache
         base = time.time()
         _seed_requests(db, base)
         _seed_tool_invocations(db, base)

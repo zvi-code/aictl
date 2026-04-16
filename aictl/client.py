@@ -20,9 +20,10 @@ from __future__ import annotations
 
 import json
 import logging
-import urllib.request
 import urllib.error
-from typing import Any, Iterator
+import urllib.request
+from collections.abc import Iterator
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ class ServerClient:
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
         timeout: float = 1.5,
-    ) -> "ServerClient | None":
+    ) -> ServerClient | None:
         """Probe for a running server. Returns client or None."""
         url = f"http://{host}:{port}"
         try:

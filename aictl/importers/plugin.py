@@ -20,11 +20,17 @@ The plugin directory may live at:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-from . import ImportResult, ImportedScope, ImportedCapability, ImportedHook, ImportedLsp, ImportedMcp
-from ._parse_helpers import safe_json_load, import_mcp_from_json
+from . import (
+    ImportedCapability,
+    ImportedHook,
+    ImportedLsp,
+    ImportedMcp,
+    ImportedScope,
+    ImportResult,
+)
+from ._parse_helpers import import_mcp_from_json, safe_json_load
 
 NAME = "plugin"
 

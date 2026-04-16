@@ -15,14 +15,12 @@ from __future__ import annotations
 
 import html
 import itertools
-import json
-import time
 from datetime import datetime
 from pathlib import Path
 
 from ..data.token_usage import TokenUsage
-from .models import DashboardSnapshot, STATUS_COLOURS as _STATUS_COLOURS
-
+from .models import STATUS_COLOURS as _STATUS_COLOURS
+from .models import DashboardSnapshot
 
 _SOURCE_LABELS = {
     "claude-user-memory": "User Memory (~/.claude/CLAUDE.md)",
@@ -350,7 +348,7 @@ def _read_file_tail(path_str: str, max_size: int = 50_000) -> str | None:
         size = p.stat().st_size
         if size > max_size:
             # Read only the tail for large files
-            with open(p, "r", errors="replace") as f:
+            with open(p, errors="replace") as f:
                 f.seek(max(0, size - max_size))
                 if size > max_size:
                     f.readline()  # skip partial first line
@@ -824,8 +822,10 @@ def _empty_card(msg: str) -> str:
     return f'<div class="section-card"><p style="color:var(--fg2)">{msg}</p></div>'
 
 
-from ..utils import human_size as _human_size, human_tokens as _human_tokens, rel_display as _rel
-from .view_helpers import compute_tool_summary, safe_float
+from ..utils import human_size as _human_size
+from ..utils import human_tokens as _human_tokens
+from ..utils import rel_display as _rel
+from .view_helpers import compute_tool_summary
 
 
 def _tool_colour(tool: str) -> str:
@@ -834,7 +834,7 @@ def _tool_colour(tool: str) -> str:
 
 
 def _tool_icon(tool: str) -> str:
-    from ..tools import TOOL_ICONS, DEFAULT_TOOL_ICON
+    from ..tools import DEFAULT_TOOL_ICON, TOOL_ICONS
     return TOOL_ICONS.get(tool, DEFAULT_TOOL_ICON)
 
 
