@@ -21,7 +21,7 @@ DIST_DIR:= $(PROJECT)aictl/dashboard/dist
 # Detect install method
 HAS_PIPX := $(shell command -v pipx 2>/dev/null)
 
-.PHONY: install install-py install-ui test test-ui test-e2e test-tools test-all lint clean help
+.PHONY: install install-py install-ui test test-ui test-e2e test-tools test-all lint typecheck clean help
 
 # ── Primary target: full rebuild + reinstall ─────────────────────────────────
 
@@ -72,6 +72,9 @@ test-all:  ## Run everything (unit + E2E + tools)
 lint:  ## Run ruff linter + format check
 	python3 -m ruff check .
 	python3 -m ruff format --check .
+
+typecheck:  ## Run mypy on strictly-typed modules (aictl/data + dashboard/models)
+	python3 -m mypy aictl/data aictl/dashboard/models.py
 
 # ── Cleanup ──────────────────────────────────────────────────────────────────
 

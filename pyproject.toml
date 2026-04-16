@@ -23,6 +23,7 @@ monitor = ["psutil>=5.9", "watchdog>=4.0"]
 otel = ["protobuf>=4.21", "opentelemetry-proto>=1.20"]
 all = ["textual>=0.79", "psutil>=5.9", "watchdog>=4.0", "protobuf>=4.21", "opentelemetry-proto>=1.20"]
 test = ["pytest>=7.0", "pytest-timeout>=2.0"]
+dev = ["pytest>=7.0", "pytest-timeout>=2.0", "ruff>=0.5", "mypy>=1.8", "types-PyYAML", "types-psutil"]
 
 [project.scripts]
 aictl = "aictl.cli:main"
@@ -108,3 +109,22 @@ ignore = [
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.mypy]
+python_version = "3.11"
+strict_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_optional = true
+check_untyped_defs = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["aictl.*"]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = ["aictl.data.*", "aictl.dashboard.models"]
+ignore_errors = false
+disallow_untyped_defs = true
