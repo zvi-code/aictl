@@ -76,12 +76,18 @@ class TestBuildHookConfig:
 class TestIsAictlHook:
     def test_detects_module_format(self):
         """Current module-based format is detected."""
-        hook = {"matcher": "", "hooks": [{"type": "command", "command": "python -m aictl.hook_handler --event SessionStart --port 8484"}]}
+        hook = {
+            "matcher": "",
+            "hooks": [{"type": "command", "command": "python -m aictl.hook_handler --event SessionStart --port 8484"}],
+        }
         assert _is_aictl_hook(hook)
 
     def test_detects_old_inline_format(self):
         """Previous inline -c format with /api/hooks is detected for migration."""
-        hook = {"matcher": "", "hooks": [{"type": "command", "command": "python -c '...http://localhost:8484/api/hooks...'"}]}
+        hook = {
+            "matcher": "",
+            "hooks": [{"type": "command", "command": "python -c '...http://localhost:8484/api/hooks...'"}],
+        }
         assert _is_aictl_hook(hook)
 
     def test_detects_old_flat_format_for_migration(self):
@@ -133,8 +139,10 @@ class TestIsAictlHook:
 
     def test_legacy_entry_without_marker_still_detected(self):
         # Upgrade path: pre-marker installs must still be cleanable.
-        hook = {"matcher": "", "hooks": [{"type": "command",
-                 "command": "python -m aictl.hook_handler --event SessionStart --port 8484"}]}
+        hook = {
+            "matcher": "",
+            "hooks": [{"type": "command", "command": "python -m aictl.hook_handler --event SessionStart --port 8484"}],
+        }
         assert "_aictl_owner" not in hook
         assert _is_aictl_hook(hook)
 
@@ -174,10 +182,14 @@ class TestInstallPreservesExistingSettings:
 
     def test_preserves_non_hook_keys(self, tmp_settings):
         tmp_settings.parent.mkdir(parents=True, exist_ok=True)
-        tmp_settings.write_text(json.dumps({
-            "permissions": {"allow": ["Read", "Write"]},
-            "env": {"MY_VAR": "value"},
-        }))
+        tmp_settings.write_text(
+            json.dumps(
+                {
+                    "permissions": {"allow": ["Read", "Write"]},
+                    "env": {"MY_VAR": "value"},
+                }
+            )
+        )
         runner = CliRunner()
         runner.invoke(hooks, ["install"], catch_exceptions=False)
         data = json.loads(tmp_settings.read_text())
@@ -231,11 +243,15 @@ class TestInstallConflictDetection:
 
     def test_rejects_when_user_hooks_exist(self, tmp_settings):
         tmp_settings.parent.mkdir(parents=True, exist_ok=True)
-        tmp_settings.write_text(json.dumps({
-            "hooks": {
-                "PreToolUse": [{"type": "command", "command": "my-linter.sh"}],
-            }
-        }))
+        tmp_settings.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [{"type": "command", "command": "my-linter.sh"}],
+                    }
+                }
+            )
+        )
         runner = CliRunner()
         result = runner.invoke(hooks, ["install"])
         assert result.exit_code != 0
@@ -243,12 +259,16 @@ class TestInstallConflictDetection:
 
     def test_shows_conflicting_events(self, tmp_settings):
         tmp_settings.parent.mkdir(parents=True, exist_ok=True)
-        tmp_settings.write_text(json.dumps({
-            "hooks": {
-                "PreToolUse": [{"type": "command", "command": "my-linter.sh"}],
-                "PostToolUse": [{"type": "command", "command": "my-logger.sh"}],
-            }
-        }))
+        tmp_settings.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [{"type": "command", "command": "my-linter.sh"}],
+                        "PostToolUse": [{"type": "command", "command": "my-logger.sh"}],
+                    }
+                }
+            )
+        )
         runner = CliRunner()
         result = runner.invoke(hooks, ["install"])
         assert result.exit_code != 0
@@ -259,11 +279,15 @@ class TestInstallConflictDetection:
 
     def test_force_installs_alongside_user_hooks(self, tmp_settings):
         tmp_settings.parent.mkdir(parents=True, exist_ok=True)
-        tmp_settings.write_text(json.dumps({
-            "hooks": {
-                "PreToolUse": [{"type": "command", "command": "my-linter.sh"}],
-            }
-        }))
+        tmp_settings.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [{"type": "command", "command": "my-linter.sh"}],
+                    }
+                }
+            )
+        )
         runner = CliRunner()
         result = runner.invoke(hooks, ["install", "--force"], catch_exceptions=False)
         assert result.exit_code == 0
@@ -283,11 +307,15 @@ class TestInstallConflictDetection:
     def test_no_conflict_when_only_aictl_hooks_exist(self, tmp_settings):
         """Re-installing when only old aictl hooks exist should succeed without --force."""
         tmp_settings.parent.mkdir(parents=True, exist_ok=True)
-        tmp_settings.write_text(json.dumps({
-            "hooks": {
-                "SessionStart": [{"type": "command", "command": "curl http://localhost:8484/api/hooks"}],
-            }
-        }))
+        tmp_settings.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "SessionStart": [{"type": "command", "command": "curl http://localhost:8484/api/hooks"}],
+                    }
+                }
+            )
+        )
         runner = CliRunner()
         result = runner.invoke(hooks, ["install"], catch_exceptions=False)
         assert result.exit_code == 0
@@ -295,11 +323,15 @@ class TestInstallConflictDetection:
     def test_conflict_only_on_targeted_events(self, tmp_settings):
         """User hooks on events NOT being installed should not trigger conflict."""
         tmp_settings.parent.mkdir(parents=True, exist_ok=True)
-        tmp_settings.write_text(json.dumps({
-            "hooks": {
-                "Stop": [{"type": "command", "command": "my-script.sh"}],
-            }
-        }))
+        tmp_settings.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "Stop": [{"type": "command", "command": "my-script.sh"}],
+                    }
+                }
+            )
+        )
         runner = CliRunner()
         # Install only SessionStart — no conflict with Stop
         result = runner.invoke(hooks, ["install", "--events", "SessionStart"], catch_exceptions=False)
@@ -317,14 +349,18 @@ class TestUninstall:
 
     def test_preserves_user_hooks(self, tmp_settings):
         tmp_settings.parent.mkdir(parents=True, exist_ok=True)
-        tmp_settings.write_text(json.dumps({
-            "hooks": {
-                "PreToolUse": [
-                    {"type": "command", "command": "my-linter.sh"},
-                    {"type": "command", "command": "curl http://localhost:8484/api/hooks"},
-                ],
-            }
-        }))
+        tmp_settings.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {"type": "command", "command": "my-linter.sh"},
+                            {"type": "command", "command": "curl http://localhost:8484/api/hooks"},
+                        ],
+                    }
+                }
+            )
+        )
         runner = CliRunner()
         runner.invoke(hooks, ["uninstall"], catch_exceptions=False)
         data = json.loads(tmp_settings.read_text())
@@ -333,12 +369,16 @@ class TestUninstall:
 
     def test_preserves_non_hook_settings(self, tmp_settings):
         tmp_settings.parent.mkdir(parents=True, exist_ok=True)
-        tmp_settings.write_text(json.dumps({
-            "permissions": {"allow": ["Read"]},
-            "hooks": {
-                "SessionStart": [{"type": "command", "command": "curl http://localhost:8484/api/hooks"}],
-            },
-        }))
+        tmp_settings.write_text(
+            json.dumps(
+                {
+                    "permissions": {"allow": ["Read"]},
+                    "hooks": {
+                        "SessionStart": [{"type": "command", "command": "curl http://localhost:8484/api/hooks"}],
+                    },
+                }
+            )
+        )
         runner = CliRunner()
         runner.invoke(hooks, ["uninstall"], catch_exceptions=False)
         data = json.loads(tmp_settings.read_text())
@@ -364,6 +404,7 @@ class TestHookEventsCompleteness:
 
     def test_hook_events_match_validator(self):
         from aictl.commands.integrations import HOOK_EVENTS as KNOWN_HOOK_EVENTS
+
         hooks_set = set(HOOK_EVENTS)
         validator_set = set(KNOWN_HOOK_EVENTS)
         assert hooks_set == validator_set, (
@@ -414,6 +455,7 @@ class TestHookHandler:
         import io
 
         from aictl.hook_handler import main
+
         monkeypatch.setattr("sys.argv", ["hook_handler", "--event", "PreToolUse", "--port", "9999"])
         monkeypatch.setattr("sys.stdin", io.StringIO('{"tool": "Bash"}'))
         monkeypatch.setenv("SESSION_ID", "test-session")
@@ -433,6 +475,7 @@ class TestHookHandler:
         import io
 
         from aictl.hook_handler import main
+
         monkeypatch.setattr("sys.argv", ["hook_handler", "--event", "SessionStart", "--port", "8484"])
 
         class FakeTTY(io.StringIO):
@@ -451,6 +494,7 @@ class TestHookHandler:
         import io
 
         from aictl.hook_handler import main
+
         monkeypatch.setattr("sys.argv", ["hook_handler", "--event", "Stop", "--port", "8484"])
         monkeypatch.setattr("sys.stdin", io.StringIO('{"session_id": "from-payload"}'))
         monkeypatch.setenv("SESSION_ID", "from-env")
@@ -473,6 +517,7 @@ class TestPythonCmd:
         word 'python3', since 'python3' is not available on Windows.
         """
         import sys
+
         config = _build_hook_config(8484, ["SessionStart"])
         cmd = config["SessionStart"][0]["hooks"][0]["command"]
         # Command must start with the quoted sys.executable, not bare 'python3'
@@ -483,6 +528,7 @@ class TestPythonCmd:
     def test_uses_current_interpreter_path(self):
         """Hook command must embed the current Python interpreter path."""
         import sys
+
         config = _build_hook_config(8484, ["SessionStart"])
         cmd = config["SessionStart"][0]["hooks"][0]["command"]
         # sys.executable may be quoted with double quotes
@@ -493,6 +539,7 @@ class TestPythonCmd:
         config = _build_hook_config(8484, ["SessionStart"])
         cmd = config["SessionStart"][0]["hooks"][0]["command"]
         import sys
+
         assert f'"{sys.executable}"' in cmd
 
     def test_hook_command_works_on_simulated_windows_path(self):
@@ -501,6 +548,7 @@ class TestPythonCmd:
         with patch("sys.executable", fake_exe):
             # Re-import _python_cmd with patched sys.executable
             from aictl.commands.integrations import _python_cmd
+
             quoted = _python_cmd()
         assert fake_exe in quoted
         assert quoted.startswith('"')

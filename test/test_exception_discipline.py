@@ -121,15 +121,15 @@ def test_no_noop_exception_swallow(path: Path):
     # Allow lines with explicit noqa markers (ruff S110 acknowledgement)
     hits = [(ln, snip) for ln, snip in hits if "# noqa" not in source.splitlines()[ln - 1]]
 
-    assert not hits, (
-        f"{path.relative_to(REPO_ROOT)} contains no-op exception swallows:\n"
-        + "\n".join(f"  line {ln}: {snip}" for ln, snip in hits)
+    assert not hits, f"{path.relative_to(REPO_ROOT)} contains no-op exception swallows:\n" + "\n".join(
+        f"  line {ln}: {snip}" for ln, snip in hits
     )
 
 
 # ---------------------------------------------------------------------------
 # Pattern B: broad catch without re-raising click.Abort (AST-based)
 # ---------------------------------------------------------------------------
+
 
 class _BroadCatchVisitor(ast.NodeVisitor):
     """Collect ExceptHandler nodes that catch Exception broadly.
@@ -182,11 +182,7 @@ def _broad_catches_without_reraise(path: Path) -> list[tuple[int, str]]:
     visitor.visit(tree)
     # Filter out lines with explicit noqa markers
     lines = source.splitlines()
-    return [
-        (ln, snip)
-        for ln, snip in visitor.violations
-        if "# noqa" not in lines[ln - 1]
-    ]
+    return [(ln, snip) for ln, snip in visitor.violations if "# noqa" not in lines[ln - 1]]
 
 
 @pytest.mark.parametrize("path", COMMAND_FILES, ids=lambda p: p.relative_to(REPO_ROOT).as_posix())
@@ -219,6 +215,7 @@ def test_broad_catch_reraises_abort(path: Path):
 # Pattern C: exit code discipline — commands with FAILED actions must exit 1
 # ---------------------------------------------------------------------------
 
+
 def test_otel_enable_exits_1_on_partial_failure(tmp_path, monkeypatch):
     """otel enable must exit 1 if any action fails, so CI/scripts detect partial failure."""
     from click.testing import CliRunner
@@ -235,9 +232,7 @@ def test_otel_enable_exits_1_on_partial_failure(tmp_path, monkeypatch):
 
     runner = CliRunner()
     result = runner.invoke(otel, ["enable", "--tool", "copilot"])
-    assert result.exit_code != 0, (
-        "otel enable must return non-zero exit code when an action fails"
-    )
+    assert result.exit_code != 0, "otel enable must return non-zero exit code when an action fails"
 
 
 def test_enable_exits_1_on_partial_failure(tmp_path, monkeypatch):
@@ -247,9 +242,7 @@ def test_enable_exits_1_on_partial_failure(tmp_path, monkeypatch):
     from aictl.commands.integrations import enable
 
     monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [])
-    monkeypatch.setattr(
-        "aictl.commands.integrations.claude_global_dir", lambda: tmp_path / "claude"
-    )
+    monkeypatch.setattr("aictl.commands.integrations.claude_global_dir", lambda: tmp_path / "claude")
     monkeypatch.setenv("AICTL_PORT", "8484")
 
     # Force VS Code to fail
@@ -260,6 +253,4 @@ def test_enable_exits_1_on_partial_failure(tmp_path, monkeypatch):
 
     runner = CliRunner()
     result = runner.invoke(enable, ["--scope", "user"])
-    assert result.exit_code != 0, (
-        "enable must return non-zero exit code when any integration fails"
-    )
+    assert result.exit_code != 0, "enable must return non-zero exit code when any integration fails"

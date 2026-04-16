@@ -29,62 +29,72 @@ def _make_session(
     t = 0.0
 
     # Session start
-    events.append({
-        "event": "SessionStart",
-        "session_id": session_id,
-        "tool": tool,
-        "cwd": cwd,
-        "model": model,
-        "pid": 55000,
-        "ts": base_ts + t,
-    })
+    events.append(
+        {
+            "event": "SessionStart",
+            "session_id": session_id,
+            "tool": tool,
+            "cwd": cwd,
+            "model": model,
+            "pid": 55000,
+            "ts": base_ts + t,
+        }
+    )
     t += 0.1
 
     # User prompt
-    events.append({
-        "event": "UserPromptSubmit",
-        "session_id": session_id,
-        "tool": tool,
-        "message": "Do some work",
-        "ts": base_ts + t,
-    })
+    events.append(
+        {
+            "event": "UserPromptSubmit",
+            "session_id": session_id,
+            "tool": tool,
+            "message": "Do some work",
+            "ts": base_ts + t,
+        }
+    )
     t += 0.3
 
     # Tool call pairs
     for i in range(tool_calls):
         tool_name = ["Write", "Bash", "Read", "Search"][i % 4]
-        events.append({
-            "event": "PreToolUse",
-            "session_id": session_id,
-            "tool": tool,
-            "tool_name": tool_name,
-            "tool_use_id": f"{session_id}-tool-{i}",
-            "input": {"command": f"action-{i}"},
-            "ts": base_ts + t,
-        })
+        events.append(
+            {
+                "event": "PreToolUse",
+                "session_id": session_id,
+                "tool": tool,
+                "tool_name": tool_name,
+                "tool_use_id": f"{session_id}-tool-{i}",
+                "input": {"command": f"action-{i}"},
+                "ts": base_ts + t,
+            }
+        )
         t += 0.2
-        events.append({
-            "event": "PostToolUse",
-            "session_id": session_id,
-            "tool": tool,
-            "tool_name": tool_name,
-            "tool_use_id": f"{session_id}-tool-{i}",
-            "result": f"result-{i}",
-            "ts": base_ts + t,
-        })
+        events.append(
+            {
+                "event": "PostToolUse",
+                "session_id": session_id,
+                "tool": tool,
+                "tool_name": tool_name,
+                "tool_use_id": f"{session_id}-tool-{i}",
+                "result": f"result-{i}",
+                "ts": base_ts + t,
+            }
+        )
         t += 0.1
 
     # Session stop
-    events.append({
-        "event": "Stop",
-        "session_id": session_id,
-        "tool": tool,
-        "pid": 55000,
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "cost_usd": 0.025,
-        "ts": base_ts + t,
-    })
+    events.append(
+        {
+            "event": "Stop",
+            "session_id": session_id,
+            "tool": tool,
+            "pid": 55000,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cost_usd": 0.025,
+            "ts": base_ts + t,
+        }
+    )
     return events
 
 
@@ -105,7 +115,10 @@ class TestSessionLifecycle:
     def test_full_session_has_correct_metadata(self, aictl_server):
         sid = f"lifecycle-meta-{int(time.time() * 1000)}"
         events = _make_session(
-            sid, model="claude-opus-4-20250514", input_tokens=10000, output_tokens=1500,
+            sid,
+            model="claude-opus-4-20250514",
+            input_tokens=10000,
+            output_tokens=1500,
         )
         for ev in events:
             aictl_server.post_hook(ev)

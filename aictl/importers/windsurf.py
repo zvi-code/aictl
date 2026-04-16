@@ -39,8 +39,7 @@ def import_from(root: Path) -> ImportResult | None:
         else:
             root_base = raw
 
-    scopes = ([ImportedScope(".", NAME, root_base, profile_name, profile_text)]
-              if root_base or profile_text else [])
+    scopes = [ImportedScope(".", NAME, root_base, profile_name, profile_text)] if root_base or profile_text else []
     scopes += read_sub_scopes(root / ".windsurf" / "rules", "*.md", NAME, meta_key="paths")
 
     mcp_servers = import_mcp_from_json(root / ".windsurf" / "mcp.json", NAME)

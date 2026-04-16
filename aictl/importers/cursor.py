@@ -49,8 +49,7 @@ def import_from(root: Path) -> ImportResult | None:
         profile_name = m.group(1) if m else extract_profile_name(body)
         profile_text = strip_profile_header(body)
 
-    scopes = ([ImportedScope(".", NAME, root_base, profile_name, profile_text)]
-              if root_base or profile_text else [])
+    scopes = [ImportedScope(".", NAME, root_base, profile_name, profile_text)] if root_base or profile_text else []
     scopes += read_sub_scopes(rules_dir, "*.mdc", NAME, meta_key="globs", skip=_SKIP)
 
     mcp_servers = import_mcp_from_json(root / ".cursor" / "mcp.json", NAME)

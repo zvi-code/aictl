@@ -26,6 +26,7 @@ log = logging.getLogger(__name__)
 # Base
 # ---------------------------------------------------------------------------
 
+
 class NetworkCollector(BaseCollector):
     """Base class for network collectors."""
 
@@ -35,6 +36,7 @@ class NetworkCollector(BaseCollector):
 # ---------------------------------------------------------------------------
 # Psutil fallback (cross-platform degraded adapter)
 # ---------------------------------------------------------------------------
+
 
 class PsutilFallbackNetworkCollector(NetworkCollector):
     """Approximate per-process traffic by weighting system totals."""
@@ -96,19 +98,21 @@ class PsutilFallbackNetworkCollector(NetworkCollector):
                     proc = ProcessInfo(pid=pid, ppid=None, name=str(sample["name"]))
                     if self.correlator:
                         self.correlator.on_network(pid, bytes_in, bytes_out, process=proc)
-                    self.sink_emit(M("process.network.io"), float(bytes_in),
-                                   {"process.pid": str(pid), "process.name": proc.name,
-                                    "network.io.direction": "receive"})
-                    self.sink_emit(M("process.network.io"), float(bytes_out),
-                                   {"process.pid": str(pid), "process.name": proc.name,
-                                    "network.io.direction": "transmit"})
+                    self.sink_emit(
+                        M("process.network.io"),
+                        float(bytes_in),
+                        {"process.pid": str(pid), "process.name": proc.name, "network.io.direction": "receive"},
+                    )
+                    self.sink_emit(
+                        M("process.network.io"),
+                        float(bytes_out),
+                        {"process.pid": str(pid), "process.name": proc.name, "network.io.direction": "transmit"},
+                    )
 
             await self.sleep(self.interval)
 
     def _sample(self, psutil_module):
-        grouped: dict[int, dict[str, object]] = defaultdict(
-            lambda: {"weight": 0, "remotes": set(), "name": "unknown"}
-        )
+        grouped: dict[int, dict[str, object]] = defaultdict(lambda: {"weight": 0, "remotes": set(), "name": "unknown"})
         try:
             connections = psutil_module.net_connections(kind="tcp")
         except Exception:
@@ -220,29 +224,33 @@ class MacOSNetworkCollector(NetworkCollector):
                 if sample is None:
                     break
                 if self.debug:
-                    log.info("nettop sample: pid=%d name=%s in=%d out=%d",
-                             sample.pid, sample.name, sample.bytes_in, sample.bytes_out)
+                    log.info(
+                        "nettop sample: pid=%d name=%s in=%d out=%d",
+                        sample.pid,
+                        sample.name,
+                        sample.bytes_in,
+                        sample.bytes_out,
+                    )
                 # Correlator: typed session tracking
                 if self.correlator:
                     proc = ProcessInfo(pid=sample.pid, ppid=None, name=sample.name)
-                    resolved = self.correlator.on_network(
-                        sample.pid, sample.bytes_in, sample.bytes_out,
-                        process=proc)
+                    resolved = self.correlator.on_network(sample.pid, sample.bytes_in, sample.bytes_out, process=proc)
                     if self.debug:
                         if resolved:
                             log.info("  -> resolved to session %s", resolved)
                         else:
-                            log.info("  -> unresolved (pid %d, name '%s')",
-                                     sample.pid, sample.name)
+                            log.info("  -> unresolved (pid %d, name '%s')", sample.pid, sample.name)
                 # Sink: per-PID network at full nettop resolution
-                self.sink_emit(M("process.network.io"),
-                               float(sample.bytes_in),
-                               {"process.pid": str(sample.pid), "process.name": sample.name,
-                                "network.io.direction": "receive"})
-                self.sink_emit(M("process.network.io"),
-                               float(sample.bytes_out),
-                               {"process.pid": str(sample.pid), "process.name": sample.name,
-                                "network.io.direction": "transmit"})
+                self.sink_emit(
+                    M("process.network.io"),
+                    float(sample.bytes_in),
+                    {"process.pid": str(sample.pid), "process.name": sample.name, "network.io.direction": "receive"},
+                )
+                self.sink_emit(
+                    M("process.network.io"),
+                    float(sample.bytes_out),
+                    {"process.pid": str(sample.pid), "process.name": sample.name, "network.io.direction": "transmit"},
+                )
         except asyncio.CancelledError:
             stop_event.set()
             raise
@@ -251,6 +259,7 @@ class MacOSNetworkCollector(NetworkCollector):
 @dataclass(slots=True)
 class NetSample:
     """Parsed nettop network delta for one process."""
+
     pid: int
     name: str
     bytes_in: int
@@ -349,12 +358,16 @@ class LinuxNetworkCollector(NetworkCollector):
                 proc = ProcessInfo(pid=pid, ppid=None, name=current[2])
                 if self.correlator:
                     self.correlator.on_network(pid, bytes_in, bytes_out, process=proc)
-                self.sink_emit(M("process.network.io"), float(bytes_in),
-                               {"process.pid": str(pid), "process.name": proc.name,
-                                "network.io.direction": "receive"})
-                self.sink_emit(M("process.network.io"), float(bytes_out),
-                               {"process.pid": str(pid), "process.name": proc.name,
-                                "network.io.direction": "transmit"})
+                self.sink_emit(
+                    M("process.network.io"),
+                    float(bytes_in),
+                    {"process.pid": str(pid), "process.name": proc.name, "network.io.direction": "receive"},
+                )
+                self.sink_emit(
+                    M("process.network.io"),
+                    float(bytes_out),
+                    {"process.pid": str(pid), "process.name": proc.name, "network.io.direction": "transmit"},
+                )
             previous = snapshot
             await self.sleep(self.interval)
 
@@ -416,6 +429,7 @@ def _first_int(*matches) -> int:
 # Windows — ETW/WFP fallback
 # ---------------------------------------------------------------------------
 
+
 class WindowsNetworkCollector(PsutilFallbackNetworkCollector):
     """Connection-weighted fallback for Windows."""
 
@@ -432,6 +446,7 @@ class WindowsNetworkCollector(PsutilFallbackNetworkCollector):
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
+
 
 def select_network_collector(config):
     """Return the right network collector instance for the current platform."""

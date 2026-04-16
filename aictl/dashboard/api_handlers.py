@@ -55,9 +55,11 @@ class _APIHandlersMixin:
     def _serve_self_status(self) -> None:
         """Return aictl's own resource usage and DB stats."""
         import os
+
         result = {}
         try:
             import psutil
+
             proc = psutil.Process(os.getpid())
             mem = proc.memory_info()
             # interval=0 returns since last call — non-blocking.
@@ -78,7 +80,7 @@ class _APIHandlersMixin:
             except Exception:
                 result["db"] = {}
         # Sink stats (emission rates, flood protection)
-        sink = getattr(self.server.store, '_sink', None)
+        sink = getattr(self.server.store, "_sink", None)
         if sink:
             try:
                 result["sink"] = sink.stats()
@@ -121,6 +123,7 @@ class _APIHandlersMixin:
         Returns the full SessionTranscript (turns, actions, summary).
         """
         from urllib.parse import unquote
+
         # Extract session_id from path: /api/transcript/<session_id>
         path = self.path.split("?")[0]
         session_id = unquote(path.split("/api/transcript/", 1)[-1])
@@ -153,23 +156,25 @@ class _APIHandlersMixin:
         cutoff = self._qs_float("cutoff", 300)
         analyzer = self.server.session_analyzer
         transcripts = analyzer.get_active_transcripts(cutoff_seconds=cutoff)
-        self._json_response({
-            "transcripts": [
-                {
-                    "session_id": t.session_id,
-                    "tool": t.tool,
-                    "project": t.project,
-                    "model": t.model,
-                    "started_at": t.started_at,
-                    "is_live": t.is_live,
-                    "last_updated": t.last_updated,
-                    "turns": len(t.turns),
-                    "summary": t.build_summary().to_dict(),
-                }
-                for t in transcripts
-            ],
-            "count": len(transcripts),
-        })
+        self._json_response(
+            {
+                "transcripts": [
+                    {
+                        "session_id": t.session_id,
+                        "tool": t.tool,
+                        "project": t.project,
+                        "model": t.model,
+                        "started_at": t.started_at,
+                        "is_live": t.is_live,
+                        "last_updated": t.last_updated,
+                        "turns": len(t.turns),
+                        "summary": t.build_summary().to_dict(),
+                    }
+                    for t in transcripts
+                ],
+                "count": len(transcripts),
+            }
+        )
 
     def _serve_otel_status(self) -> None:
         """Return OTel receiver health status."""
@@ -193,12 +198,14 @@ class _APIHandlersMixin:
 
         # Query API request events
         api_events = db.query_events(
-            since=since, until=until,
+            since=since,
+            until=until,
             kind="otel:claude_code.api_request",
             limit=limit,
         )
         error_events = db.query_events(
-            since=since, until=until,
+            since=since,
+            until=until,
             kind="otel:claude_code.api_error",
             limit=limit,
         )
@@ -207,26 +214,30 @@ class _APIHandlersMixin:
         for ev in api_events:
             d = ev.detail if isinstance(ev.detail, dict) else {}
             usage = TokenUsage.from_dict(d)
-            calls.append({
-                "ts": ev.ts,
-                "model": d.get("model", ""),
-                "duration_ms": _num(d.get("duration_ms", d.get("duration", 0))),
-                "input_tokens": usage.input,
-                "output_tokens": usage.output,
-                "cache_read_tokens": usage.cache_read,
-                "prompt_id": d.get("prompt.id", d.get("prompt_id", "")),
-                "status": "ok",
-            })
+            calls.append(
+                {
+                    "ts": ev.ts,
+                    "model": d.get("model", ""),
+                    "duration_ms": _num(d.get("duration_ms", d.get("duration", 0))),
+                    "input_tokens": usage.input,
+                    "output_tokens": usage.output,
+                    "cache_read_tokens": usage.cache_read,
+                    "prompt_id": d.get("prompt.id", d.get("prompt_id", "")),
+                    "status": "ok",
+                }
+            )
         for ev in error_events:
             d = ev.detail if isinstance(ev.detail, dict) else {}
-            calls.append({
-                "ts": ev.ts,
-                "model": d.get("model", ""),
-                "error": d.get("error", d.get("message", "unknown")),
-                "error_type": d.get("error_type", d.get("type", "")),
-                "prompt_id": d.get("prompt.id", d.get("prompt_id", "")),
-                "status": "error",
-            })
+            calls.append(
+                {
+                    "ts": ev.ts,
+                    "model": d.get("model", ""),
+                    "error": d.get("error", d.get("message", "unknown")),
+                    "error_type": d.get("error_type", d.get("type", "")),
+                    "prompt_id": d.get("prompt.id", d.get("prompt_id", "")),
+                    "status": "error",
+                }
+            )
         calls.sort(key=lambda c: c["ts"], reverse=True)
 
         # Build summary
@@ -272,6 +283,7 @@ class _APIHandlersMixin:
         use_db = (range_str or since_str) and self._db
         if use_db:
             import time as _time
+
             if since_str:
                 since = float(since_str)
             else:
@@ -280,8 +292,7 @@ class _APIHandlersMixin:
                 since = _time.time() - secs
             until = self._qs_float_opt("until")
             data = self._db.query_metrics(since=since, until=until)
-            tool_data = self._db.query_tool_metrics(
-                tool=tool_filter, since=since, until=until)
+            tool_data = self._db.query_tool_metrics(tool=tool_filter, since=since, until=until)
             data["by_tool"] = tool_data
             body = json.dumps(data).encode("utf-8")
         else:
@@ -319,11 +330,13 @@ class _APIHandlersMixin:
             # Extract tag filters from tag.X=Y params
             tag_filter = {k[4:]: v[0] for k, v in qs.items() if k.startswith("tag.")}
             rows = db.query_samples(
-                metric=metric, metric_prefix=prefix,
-                since=since, tag_filter=tag_filter or None, limit=limit,
+                metric=metric,
+                metric_prefix=prefix,
+                since=since,
+                tag_filter=tag_filter or None,
+                limit=limit,
             )
-            result = [{"ts": s.ts, "metric": s.metric, "value": s.value, "tags": s.tags}
-                      for s in rows]
+            result = [{"ts": s.ts, "metric": s.metric, "value": s.value, "tags": s.tags} for s in rows]
 
         self._json_response(result)
 
@@ -371,20 +384,24 @@ class _APIHandlersMixin:
 
         # Build response
         result = []
-        for proj, data in sorted(projects.items(), key=lambda x: x[1]["input_tokens"] + x[1]["output_tokens"], reverse=True):
+        for proj, data in sorted(
+            projects.items(), key=lambda x: x[1]["input_tokens"] + x[1]["output_tokens"], reverse=True
+        ):
             total = data["input_tokens"] + data["output_tokens"]
             # Rough cost estimate: $3/Mtok input, $15/Mtok output (Opus-class)
             cost_usd = data["input_tokens"] / 1e6 * 3.0 + data["output_tokens"] / 1e6 * 15.0
             daily = [{"date": d, **v} for d, v in sorted(data["daily"].items())]
-            result.append({
-                "project": proj,
-                "sessions": data["sessions"],
-                "input_tokens": data["input_tokens"],
-                "output_tokens": data["output_tokens"],
-                "total_tokens": total,
-                "cost_usd": round(cost_usd, 2),
-                "daily": daily,
-            })
+            result.append(
+                {
+                    "project": proj,
+                    "sessions": data["sessions"],
+                    "input_tokens": data["input_tokens"],
+                    "output_tokens": data["output_tokens"],
+                    "total_tokens": total,
+                    "cost_usd": round(cost_usd, 2),
+                    "daily": daily,
+                }
+            )
 
         self._json_response(result)
 
@@ -415,16 +432,18 @@ class _APIHandlersMixin:
                     continue
                 in_tok = detail.get("input_tokens") or 0
                 out_tok = detail.get("output_tokens") or 0
-                runs.append({
-                    "session_id": detail.get("session_id", ""),
-                    "ts": ev.ts,
-                    "project": ev_project,
-                    "tool": ev.tool,
-                    "duration_s": detail.get("duration_s") or 0,
-                    "input_tokens": in_tok,
-                    "output_tokens": out_tok,
-                    "total_tokens": in_tok + out_tok,
-                })
+                runs.append(
+                    {
+                        "session_id": detail.get("session_id", ""),
+                        "ts": ev.ts,
+                        "project": ev_project,
+                        "tool": ev.tool,
+                        "duration_s": detail.get("duration_s") or 0,
+                        "input_tokens": in_tok,
+                        "output_tokens": out_tok,
+                        "total_tokens": in_tok + out_tok,
+                    }
+                )
         # Sort by timestamp descending (most recent first), apply limit
         runs.sort(key=lambda r: r["ts"], reverse=True)
         runs = runs[:limit]
@@ -460,9 +479,7 @@ class _APIHandlersMixin:
             kind = self._qs_get("kind")
             session_id = self._qs_get("session_id")
             limit = int(self._qs_get("limit", "200"))
-            rows = db.query_events(since=since, until=until, tool=tool,
-                                   kind=kind, session_id=session_id,
-                                   limit=limit)
+            rows = db.query_events(since=since, until=until, tool=tool, kind=kind, session_id=session_id, limit=limit)
             events_list = [dataclasses.asdict(r) for r in rows]
 
         self._json_response(events_list)
@@ -479,9 +496,7 @@ class _APIHandlersMixin:
         entries = []
         db = self._db
         if db:
-            entries = db.query_datapoint_catalog(
-                tab=tab, key=key, source_type=source_type
-            )
+            entries = db.query_datapoint_catalog(tab=tab, key=key, source_type=source_type)
 
         self._json_response(entries)
 
@@ -518,27 +533,33 @@ class _APIHandlersMixin:
 
                 # Query sessions table (v20)
                 db_sessions = db.query_sessions(
-                    since=since, tool=tool or None,
-                    active=None, limit=limit,
+                    since=since,
+                    tool=tool or None,
+                    active=None,
+                    limit=limit,
                 )
                 for s in db_sessions:
                     sid = s.get("session_id", "")
                     if sid and sid not in active_ids:
-                        sessions.append({
-                            "session_id": sid,
-                            "tool": s.get("tool", ""),
-                            "pid": s.get("pid", 0),
-                            "started_at": s.get("started_at"),
-                            "ended_at": s.get("ended_at"),
-                            "duration_s": (round(s["ended_at"] - s["started_at"], 1)
-                                          if s.get("ended_at") and s.get("started_at")
-                                          else None),
-                            "active": s.get("ended_at") is None,
-                            "model": s.get("model", ""),
-                            "input_tokens": s.get("input_tokens", 0),
-                            "output_tokens": s.get("output_tokens", 0),
-                            "cost_usd": s.get("cost_usd", 0),
-                        })
+                        sessions.append(
+                            {
+                                "session_id": sid,
+                                "tool": s.get("tool", ""),
+                                "pid": s.get("pid", 0),
+                                "started_at": s.get("started_at"),
+                                "ended_at": s.get("ended_at"),
+                                "duration_s": (
+                                    round(s["ended_at"] - s["started_at"], 1)
+                                    if s.get("ended_at") and s.get("started_at")
+                                    else None
+                                ),
+                                "active": s.get("ended_at") is None,
+                                "model": s.get("model", ""),
+                                "input_tokens": s.get("input_tokens", 0),
+                                "output_tokens": s.get("output_tokens", 0),
+                                "cost_usd": s.get("cost_usd", 0),
+                            }
+                        )
                         active_ids.add(sid)
 
                 # Also fall back to event-based reconstruction for sessions
@@ -548,13 +569,15 @@ class _APIHandlersMixin:
                     d = ev.detail if isinstance(ev.detail, dict) else {}
                     sid = d.get("session_id", "")
                     if sid and sid not in active_ids:
-                        sessions.append({
-                            "session_id": sid,
-                            "tool": ev.tool,
-                            "ended_at": ev.ts,
-                            "duration_s": d.get("duration_s", 0),
-                            "active": False,
-                        })
+                        sessions.append(
+                            {
+                                "session_id": sid,
+                                "tool": ev.tool,
+                                "ended_at": ev.ts,
+                                "duration_s": d.get("duration_s", 0),
+                                "active": False,
+                            }
+                        )
                         active_ids.add(sid)
 
         # Mark active sessions
@@ -613,11 +636,7 @@ class _APIHandlersMixin:
         profiles = db.query_session_profiles(since=since, until=until)
 
         # Filter to meaningful sessions (have file activity or >60s duration)
-        profiles = [
-            p for p in profiles
-            if p["files_modified"] > 0
-            or (p.get("duration_s") and p["duration_s"] > 60)
-        ]
+        profiles = [p for p in profiles if p["files_modified"] > 0 or (p.get("duration_s") and p["duration_s"] > 60)]
 
         # Merge live session data for active sessions
         snap = self.server.store.snapshot
@@ -649,8 +668,7 @@ class _APIHandlersMixin:
         changed_since = float(changed_since_str) if changed_since_str else None
 
         files = db.list_files(tool=tool, category=category, changed_since=changed_since)
-        self._json_response([{k: v for k, v in dataclasses.asdict(f).items() if k != "content"}
-                              for f in files])
+        self._json_response([{k: v for k, v in dataclasses.asdict(f).items() if k != "content"} for f in files])
 
     def _serve_file_history(self) -> None:
         """Serve file change history.

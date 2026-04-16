@@ -100,10 +100,15 @@ def test_merge_json_block_missing_file_writes_fresh(tmp_path: Path) -> None:
 
 def test_merge_json_block_valid_preserves_user_keys(tmp_path: Path) -> None:
     p = tmp_path / "mcp.json"
-    p.write_text(json.dumps({
-        "mcpServers": {"user-srv": {"command": "user"}},
-        "unrelated": 42,
-    }), encoding="utf-8")
+    p.write_text(
+        json.dumps(
+            {
+                "mcpServers": {"user-srv": {"command": "user"}},
+                "unrelated": 42,
+            }
+        ),
+        encoding="utf-8",
+    )
 
     out = merge_json_block(p, "mcpServers", {"aictl-srv": {"command": "aictl"}})
     parsed = json.loads(out)
@@ -137,7 +142,10 @@ def test_merge_json_block_corrupt_with_force_writes_backup_and_merges(
     p.write_text(original, encoding="utf-8")
 
     out = merge_json_block(
-        p, "mcpServers", {"aictl-srv": {"command": "aictl"}}, force=True,
+        p,
+        "mcpServers",
+        {"aictl-srv": {"command": "aictl"}},
+        force=True,
     )
     parsed = json.loads(out)
     # User content is lost (it was unparseable) but aictl entries made it in.

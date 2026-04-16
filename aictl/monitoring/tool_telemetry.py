@@ -79,8 +79,8 @@ class ToolTelemetryReport:
 
     def to_dict(self) -> dict:
         d = asdict(self)
-        d["daily"] = d["daily"][-7:]    # last 7 days only
-        d["errors"] = d["errors"][-20:] # last 20 errors
+        d["daily"] = d["daily"][-7:]  # last 7 days only
+        d["errors"] = d["errors"][-20:]  # last 20 errors
         return d
 
 
@@ -129,17 +129,19 @@ def scan_agent_teams(root: Path) -> list[dict]:
                 total_out = sum(a["output_tokens"] for a in agents)
                 all_tools = sorted(set(t for a in agents for t in a["tools_used"]))
                 models = dict(Counter(a.get("model") or "unknown" for a in agents))
-                results.append({
-                    "session_id": sess_dir.name,
-                    "project_dir": proj_dir.name,
-                    "agent_count": len(agents),
-                    "total_input_tokens": total_in,
-                    "total_output_tokens": total_out,
-                    "total_messages": sum(a["messages"] for a in agents),
-                    "tools_used": all_tools,
-                    "models": models,
-                    "agents": agents,
-                })
+                results.append(
+                    {
+                        "session_id": sess_dir.name,
+                        "project_dir": proj_dir.name,
+                        "agent_count": len(agents),
+                        "total_input_tokens": total_in,
+                        "total_output_tokens": total_out,
+                        "total_messages": sum(a["messages"] for a in agents),
+                        "tools_used": all_tools,
+                        "models": models,
+                        "agents": agents,
+                    }
+                )
 
     return results
 
@@ -228,14 +230,16 @@ def _parse_agent_file(path: Path) -> dict | None:
 
             # Per-turn request record (assistant messages with usage are API calls)
             if msg_type == "assistant":
-                turns.append({
-                    "source_ts": _parse_iso_ts(line_ts),
-                    "model": msg.get("model", ""),
-                    "input_tokens": in_tok,
-                    "output_tokens": out_tok,
-                    "cache_read_tokens": cache_r,
-                    "cache_creation_tokens": cache_c,
-                })
+                turns.append(
+                    {
+                        "source_ts": _parse_iso_ts(line_ts),
+                        "model": msg.get("model", ""),
+                        "input_tokens": in_tok,
+                        "output_tokens": out_tok,
+                        "cache_read_tokens": cache_r,
+                        "cache_creation_tokens": cache_c,
+                    }
+                )
 
         # Task (first user message content)
         if msg_type == "user" and not result["task"]:
@@ -272,6 +276,7 @@ def _parse_iso_ts(ts_str: str) -> float:
         return 0.0
     try:
         from datetime import datetime
+
         dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
         return dt.timestamp()
     except (ValueError, TypeError):
@@ -310,17 +315,13 @@ def _disambiguate_conversations(agents: list[dict]) -> None:
             agent["relationship"] = "sidechain"
             continue
 
-        if i == 0 or all(
-            agents[j].get("is_sidechain") for j in range(i)
-        ):
+        if i == 0 or all(agents[j].get("is_sidechain") for j in range(i)):
             # First non-sidechain agent is the primary
             agent["relationship"] = "primary"
             continue
 
         overlaps = any(
-            agent["_start_epoch"] < agents[j]["_end_epoch"]
-            for j in range(i)
-            if not agents[j].get("is_sidechain")
+            agent["_start_epoch"] < agents[j]["_end_epoch"] for j in range(i) if not agents[j].get("is_sidechain")
         )
         agent["relationship"] = "parallel" if overlaps else "sequential"
 
@@ -333,9 +334,9 @@ def _disambiguate_conversations(agents: list[dict]) -> None:
 # ─── Claude Code ────────────────────────────────────────────────
 
 
-def parse_claude_telemetry(root: Path, tool: str = "claude-code",
-                           source: str = "stats-cache",
-                           confidence: float = 0.95) -> ToolTelemetryReport | None:
+def parse_claude_telemetry(
+    root: Path, tool: str = "claude-code", source: str = "stats-cache", confidence: float = 0.95
+) -> ToolTelemetryReport | None:
     """Parse Claude Code telemetry from stats-cache.json + active session JSONL."""
     report = ToolTelemetryReport(tool=tool, source=source, confidence=confidence)
 
@@ -368,10 +369,12 @@ def parse_claude_telemetry(root: Path, tool: str = "claude-code",
             if isinstance(daily_tokens, list):
                 for entry in daily_tokens:
                     if isinstance(entry, dict) and "date" in entry:
-                        report.daily.append({
-                            "date": entry["date"],
-                            "tokens_by_model": entry.get("tokensByModel", {}),
-                        })
+                        report.daily.append(
+                            {
+                                "date": entry["date"],
+                                "tokens_by_model": entry.get("tokensByModel", {}),
+                            }
+                        )
         except (json.JSONDecodeError, OSError, KeyError):
             pass
 
@@ -503,12 +506,14 @@ def _detect_claude_errors(obj: dict, obj_type: str, report: ToolTelemetryReport)
         model = msg.get("model", "")
         error_obj = msg.get("error", {})
         if isinstance(error_obj, dict) and error_obj.get("type"):
-            report.errors.append({
-                "type": error_obj["type"],
-                "message": str(error_obj.get("message", ""))[:200],
-                "timestamp": timestamp,
-                "model": model,
-            })
+            report.errors.append(
+                {
+                    "type": error_obj["type"],
+                    "message": str(error_obj.get("message", ""))[:200],
+                    "timestamp": timestamp,
+                    "model": model,
+                }
+            )
             return
 
     # Check for error in toolUseResult
@@ -522,21 +527,23 @@ def _detect_claude_errors(obj: dict, obj_type: str, report: ToolTelemetryReport)
         content = json.dumps(obj).lower()
         for pattern, error_type in _ERROR_PATTERNS.items():
             if pattern in content:
-                report.errors.append({
-                    "type": error_type,
-                    "message": f"Detected '{pattern}' in {obj_type} event",
-                    "timestamp": timestamp,
-                    "model": model,
-                })
+                report.errors.append(
+                    {
+                        "type": error_type,
+                        "message": f"Detected '{pattern}' in {obj_type} event",
+                        "timestamp": timestamp,
+                        "model": model,
+                    }
+                )
                 break  # One error per entry
 
 
 # ─── Copilot CLI ────────────────────────────────────────────────
 
 
-def parse_copilot_telemetry(root: Path | None = None, tool: str = "copilot-cli",
-                            source: str = "events-jsonl",
-                            confidence: float = 0.90) -> ToolTelemetryReport | None:
+def parse_copilot_telemetry(
+    root: Path | None = None, tool: str = "copilot-cli", source: str = "events-jsonl", confidence: float = 0.90
+) -> ToolTelemetryReport | None:
     """Parse GitHub Copilot CLI telemetry from session-state events.jsonl files."""
     session_dir = Path.home() / ".copilot" / "session-state"
     if not session_dir.is_dir():
@@ -589,12 +596,14 @@ def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> Non
 
             # Error detection: non-routine shutdowns
             if shutdown_type != "routine":
-                report.errors.append({
-                    "type": "shutdown_error",
-                    "message": f"Session shutdown: {shutdown_type}",
-                    "timestamp": timestamp,
-                    "model": data.get("currentModel", ""),
-                })
+                report.errors.append(
+                    {
+                        "type": "shutdown_error",
+                        "message": f"Session shutdown: {shutdown_type}",
+                        "timestamp": timestamp,
+                        "model": data.get("currentModel", ""),
+                    }
+                )
 
             # Quota/operational state
             premium = int(data.get("totalPremiumRequests", 0))
@@ -625,10 +634,16 @@ def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> Non
                 report.cache_read_tokens += cr
                 report.cache_creation_tokens += cw
 
-                mb = report.by_model.setdefault(model, {
-                    "input_tokens": 0, "output_tokens": 0,
-                    "cache_read_tokens": 0, "requests": 0, "cost_usd": 0.0,
-                })
+                mb = report.by_model.setdefault(
+                    model,
+                    {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cache_read_tokens": 0,
+                        "requests": 0,
+                        "cost_usd": 0.0,
+                    },
+                )
                 mb["input_tokens"] += inp
                 mb["output_tokens"] += out
                 mb["cache_read_tokens"] += cr
@@ -644,32 +659,36 @@ def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> Non
                 if req_count > 0 and api_dur > 0:
                     avg_ms = api_dur / req_count
                     if avg_ms > 30000:  # >30s per request
-                        report.errors.append({
-                            "type": "timeout",
-                            "message": f"High avg API latency: {avg_ms/1000:.1f}s/req ({model})",
-                            "timestamp": timestamp,
-                            "model": model,
-                        })
+                        report.errors.append(
+                            {
+                                "type": "timeout",
+                                "message": f"High avg API latency: {avg_ms / 1000:.1f}s/req ({model})",
+                                "timestamp": timestamp,
+                                "model": model,
+                            }
+                        )
 
         # tool.execution_complete: track tool usage
         elif event_type == "tool.execution_complete":
             tool_name = data.get("toolName", "")
             duration = int(data.get("durationMs", 0))
             if tool_name and duration > 60000:  # >60s tool execution
-                report.errors.append({
-                    "type": "timeout",
-                    "message": f"Slow tool: {tool_name} ({duration/1000:.1f}s)",
-                    "timestamp": timestamp,
-                    "model": "",
-                })
+                report.errors.append(
+                    {
+                        "type": "timeout",
+                        "message": f"Slow tool: {tool_name} ({duration / 1000:.1f}s)",
+                        "timestamp": timestamp,
+                        "model": "",
+                    }
+                )
 
 
 # ─── Codex CLI ──────────────────────────────────────────────────
 
 
-def parse_codex_telemetry(root: Path | None = None, tool: str = "codex-cli",
-                          source: str = "token-count",
-                          confidence: float = 0.85) -> ToolTelemetryReport | None:
+def parse_codex_telemetry(
+    root: Path | None = None, tool: str = "codex-cli", source: str = "token-count", confidence: float = 0.85
+) -> ToolTelemetryReport | None:
     """Parse OpenAI Codex CLI telemetry from session JSONL files."""
     sessions_dir = codex_global_dir() / "sessions"
     if not sessions_dir.is_dir():
@@ -722,9 +741,9 @@ def _parse_codex_session(sess_file: Path, report: ToolTelemetryReport) -> None:
 # ─── Cursor (SQLite state.vscdb) ─────────────────────────────────
 
 
-def parse_cursor_telemetry(root: Path | None = None, tool: str = "cursor",
-                           source: str = "state-vscdb",
-                           confidence: float = 0.70) -> ToolTelemetryReport | None:
+def parse_cursor_telemetry(
+    root: Path | None = None, tool: str = "cursor", source: str = "state-vscdb", confidence: float = 0.70
+) -> ToolTelemetryReport | None:
     """Parse Cursor telemetry from state.vscdb SQLite database.
 
     Cursor stores session/usage state in a vscdb (SQLite) database in
@@ -745,6 +764,7 @@ def parse_cursor_telemetry(root: Path | None = None, tool: str = "cursor",
         if IS_WINDOWS:
             import shutil
             import tempfile
+
             tmp = Path(tempfile.gettempdir()) / f"aictl-{tool}-state.vscdb"
             try:
                 shutil.copy2(vscdb, tmp)
@@ -754,8 +774,7 @@ def parse_cursor_telemetry(root: Path | None = None, tool: str = "cursor",
             db_path = str(tmp)
         else:
             db_path = f"file:{vscdb}?mode=ro"
-        conn = sqlite3.connect(db_path if "file:" in db_path else db_path,
-                               uri="file:" in db_path, timeout=3)
+        conn = sqlite3.connect(db_path if "file:" in db_path else db_path, uri="file:" in db_path, timeout=3)
         conn.row_factory = sqlite3.Row
         try:
             rows = conn.execute(
@@ -813,9 +832,9 @@ def _continue_sessions_dir() -> Path:
     return Path.home() / ".continue" / "sessions"
 
 
-def parse_continue_telemetry(root: Path | None = None, tool: str = "continue",
-                             source: str = "session-json",
-                             confidence: float = 0.75) -> ToolTelemetryReport | None:
+def parse_continue_telemetry(
+    root: Path | None = None, tool: str = "continue", source: str = "session-json", confidence: float = 0.75
+) -> ToolTelemetryReport | None:
     """Parse Continue IDE extension telemetry from session JSON files.
 
     Continue stores session data as ``~/.continue/sessions/{uuid}.json``
@@ -860,11 +879,15 @@ def _parse_continue_session(sess_file: Path, report: ToolTelemetryReport) -> Non
         usage = msg.get("usage", {})
         if isinstance(usage, dict):
             report.input_tokens += _first_int(usage, "inputTokens", "input_tokens", "promptTokens", "prompt_tokens")
-            report.output_tokens += _first_int(usage, "outputTokens", "output_tokens", "completionTokens", "completion_tokens")
+            report.output_tokens += _first_int(
+                usage, "outputTokens", "output_tokens", "completionTokens", "completion_tokens"
+            )
 
         # Direct token fields on message
         report.input_tokens += _first_int(msg, "promptTokens", "prompt_tokens", "inputTokens", "input_tokens")
-        report.output_tokens += _first_int(msg, "completionTokens", "completion_tokens", "outputTokens", "output_tokens")
+        report.output_tokens += _first_int(
+            msg, "completionTokens", "completion_tokens", "outputTokens", "output_tokens"
+        )
 
         # Model info
         if model := msg.get("model", "") or msg.get("modelTitle", ""):
@@ -879,11 +902,11 @@ def _parse_continue_session(sess_file: Path, report: ToolTelemetryReport) -> Non
 # The root param is the project root (only used by claude parser).
 
 _PARSER_REGISTRY: dict[str, Callable] = {
-    "claude-code":  parse_claude_telemetry,
-    "copilot-cli":  parse_copilot_telemetry,
-    "codex-cli":    parse_codex_telemetry,
-    "cursor":       parse_cursor_telemetry,
-    "continue":     parse_continue_telemetry,
+    "claude-code": parse_claude_telemetry,
+    "copilot-cli": parse_copilot_telemetry,
+    "codex-cli": parse_codex_telemetry,
+    "cursor": parse_cursor_telemetry,
+    "continue": parse_continue_telemetry,
 }
 
 

@@ -50,7 +50,7 @@ def split_yaml_frontmatter(text: str) -> tuple[dict, str]:
         meta = yaml.safe_load(text[3:end]) or {}
     except yaml.YAMLError:
         meta = {}
-    body = text[end + 3:].strip()
+    body = text[end + 3 :].strip()
     return meta, body
 
 

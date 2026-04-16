@@ -30,6 +30,7 @@ def _run_env_persist(argv: list[str]) -> None:
         stderr = (result.stderr or "").strip() or f"exit {result.returncode}"
         click.echo(f"warning: {argv[0]} failed: {stderr}", err=True)
 
+
 from .._hook_owner import (  # re-exported for tests
     _AICTL_OWNER_MARKER,
     _is_aictl_hook,
@@ -64,10 +65,9 @@ def _fetch_otel_status(port: int) -> dict | None:
     """GET /api/otel-status from the running aictl server. Returns dict or None."""
     import urllib.error
     import urllib.request
+
     try:
-        with urllib.request.urlopen(
-            f"http://localhost:{port}/api/otel-status", timeout=5
-        ) as resp:
+        with urllib.request.urlopen(f"http://localhost:{port}/api/otel-status", timeout=5) as resp:
             return json.loads(resp.read())
     except (OSError, urllib.error.URLError, ValueError):
         return None
@@ -80,39 +80,52 @@ def _fetch_otel_status(port: int) -> dict | None:
 # Grouped by category for readability.
 HOOK_EVENTS = [
     # Session lifecycle
-    "SessionStart", "SessionEnd",
+    "SessionStart",
+    "SessionEnd",
     "InstructionsLoaded",
     # User interaction
     "UserPromptSubmit",
     # Tool execution
-    "PreToolUse", "PostToolUse", "PostToolUseFailure",
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",
     "PermissionRequest",
     # Agent response
-    "Stop", "StopFailure",
+    "Stop",
+    "StopFailure",
     # Subagents & teams
-    "SubagentStart", "SubagentStop",
+    "SubagentStart",
+    "SubagentStop",
     "TeammateIdle",
-    "TaskCreated", "TaskCompleted",
+    "TaskCreated",
+    "TaskCompleted",
     # Notifications & file events
     "Notification",
     # Context compaction
-    "PreCompact", "PostCompact",
+    "PreCompact",
+    "PostCompact",
     # Configuration
     "ConfigChange",
     # Worktrees
-    "WorktreeCreate", "WorktreeRemove",
+    "WorktreeCreate",
+    "WorktreeRemove",
     # MCP elicitation
-    "Elicitation", "ElicitationResult",
+    "Elicitation",
+    "ElicitationResult",
 ]
 
 
 # Gemini CLI specific hook events (from official documentation)
 GEMINI_HOOK_EVENTS = [
-    "SessionStart", "SessionEnd",
-    "BeforeAgent", "AfterAgent",
-    "BeforeModel", "AfterModel",
+    "SessionStart",
+    "SessionEnd",
+    "BeforeAgent",
+    "AfterAgent",
+    "BeforeModel",
+    "AfterModel",
     "BeforeToolSelection",
-    "BeforeTool", "AfterTool",
+    "BeforeTool",
+    "AfterTool",
     "PreCompress",
     "Notification",
 ]
@@ -135,9 +148,7 @@ GEMINI_HOOK_MAP = {
 _AICTL_ENV_BEGIN = "# >>> aictl env >>>"
 _AICTL_ENV_END = "# <<< aictl env <<<"
 _AICTL_ENV_SOURCE_BLOCK = (
-    f'{_AICTL_ENV_BEGIN}\n'
-    '[ -f "$HOME/.config/aictl/env.sh" ] && . "$HOME/.config/aictl/env.sh"\n'
-    f'{_AICTL_ENV_END}'
+    f'{_AICTL_ENV_BEGIN}\n[ -f "$HOME/.config/aictl/env.sh" ] && . "$HOME/.config/aictl/env.sh"\n{_AICTL_ENV_END}'
 )
 
 
@@ -206,10 +217,7 @@ def _ensure_source_line_in_profiles(actions: list[str]) -> None:
         else:
             sep = "" if migrated == "" or migrated.endswith("\n") else "\n"
             new_content = migrated + sep + _AICTL_ENV_SOURCE_BLOCK + "\n"
-            label = (
-                f"Created {profile}" if not profile.exists()
-                else f"Updated {profile}"
-            )
+            label = f"Created {profile}" if not profile.exists() else f"Updated {profile}"
         guard = WriteGuard.current()
         if guard:
             guard.confirm(profile, "modify" if profile.exists() else "create")
@@ -233,10 +241,10 @@ def _update_shell_profiles_block(
     _ensure_source_line_in_profiles(profile_actions)
     for entry in profile_actions:
         if entry.startswith("Updated "):
-            profile = entry[len("Updated "):]
+            profile = entry[len("Updated ") :]
             actions.append(update_label.format(profile=profile))
         elif entry.startswith("Created "):
-            profile = entry[len("Created "):]
+            profile = entry[len("Created ") :]
             actions.append(create_label.format(profile=profile))
         else:
             actions.append(entry)
@@ -268,7 +276,9 @@ def _python_cmd() -> str:
     return f'"{exe}"'
 
 
-def _build_hook_config(port: int, events: list[str] | None, event_map: dict[str, str] | None = None, matcher: str = "") -> dict:
+def _build_hook_config(
+    port: int, events: list[str] | None, event_map: dict[str, str] | None = None, matcher: str = ""
+) -> dict:
     """Build the hooks configuration dict for AI tools.
 
     Each hook invokes ``python -m aictl.hook_handler`` which reads the
@@ -288,11 +298,13 @@ def _build_hook_config(port: int, events: list[str] | None, event_map: dict[str,
     for event in target_events:
         tool_event_name = event_map.get(event, event) if event_map else event
         cmd = f"{python} -m aictl.hook_handler --event {event} --port {port}"
-        hooks[tool_event_name] = [{
-            "_aictl_owner": _AICTL_OWNER_MARKER,
-            "matcher": matcher,
-            "hooks": [{"type": "command", "command": cmd}],
-        }]
+        hooks[tool_event_name] = [
+            {
+                "_aictl_owner": _AICTL_OWNER_MARKER,
+                "matcher": matcher,
+                "hooks": [{"type": "command", "command": cmd}],
+            }
+        ]
     return hooks
 
 
@@ -303,14 +315,16 @@ def hooks():
 
 @hooks.command()
 @click.option("--port", default=None, type=int, help="aictl server port (default: $AICTL_PORT or 8484)")
-@click.option("--scope", type=click.Choice(["project", "user"]), default="user",
-              help="Install hooks at project or user level")
+@click.option(
+    "--scope", type=click.Choice(["project", "user"]), default="user", help="Install hooks at project or user level"
+)
 @click.option("--events", default=None, help="Comma-separated event names (default: all)")
-@click.option("--force", is_flag=True,
-              help="Install even if non-aictl hooks exist on the same events, "
-                   "and overwrite a corrupted settings.json")
-@click.option("--dry-run", is_flag=True,
-              help="Print the settings.json diff that would be applied and exit 0")
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Install even if non-aictl hooks exist on the same events, and overwrite a corrupted settings.json",
+)
+@click.option("--dry-run", is_flag=True, help="Print the settings.json diff that would be applied and exit 0")
 def install(port: int | None, scope: str, events: str | None, force: bool, dry_run: bool):
     """Configure Claude Code to push hook events to aictl.
 
@@ -330,10 +344,7 @@ def install(port: int | None, scope: str, events: str | None, force: bool, dry_r
     if event_list:
         invalid = [e for e in event_list if e not in HOOK_EVENTS]
         if invalid:
-            raise click.ClickException(
-                f"Unknown events: {', '.join(invalid)}. "
-                f"Valid events: {', '.join(HOOK_EVENTS)}"
-            )
+            raise click.ClickException(f"Unknown events: {', '.join(invalid)}. Valid events: {', '.join(HOOK_EVENTS)}")
 
     settings_path = _settings_path(scope)
     if not dry_run:
@@ -375,8 +386,7 @@ def install(port: int | None, scope: str, events: str | None, force: bool, dry_r
 
     if dry_run:
         _print_settings_diff(settings_path, before_snapshot, existing)
-        click.echo(f"\n[dry-run] Would install {len(target_events)} hook events "
-                   f"→ localhost:{port}/api/hooks")
+        click.echo(f"\n[dry-run] Would install {len(target_events)} hook events → localhost:{port}/api/hooks")
         return
 
     guard.confirm(settings_path, "modify")
@@ -390,12 +400,11 @@ def install(port: int | None, scope: str, events: str | None, force: bool, dry_r
 
 
 @hooks.command()
-@click.option("--scope", type=click.Choice(["project", "user"]), default="user",
-              help="Remove hooks at project or user level")
-@click.option("--force", is_flag=True,
-              help="Overwrite a corrupted settings.json instead of refusing")
-@click.option("--dry-run", is_flag=True,
-              help="Print the settings.json diff that would be applied and exit 0")
+@click.option(
+    "--scope", type=click.Choice(["project", "user"]), default="user", help="Remove hooks at project or user level"
+)
+@click.option("--force", is_flag=True, help="Overwrite a corrupted settings.json instead of refusing")
+@click.option("--dry-run", is_flag=True, help="Print the settings.json diff that would be applied and exit 0")
 def uninstall(scope: str, force: bool, dry_run: bool):
     """Remove aictl hook configuration from Claude Code settings."""
     if not dry_run:
@@ -413,10 +422,7 @@ def uninstall(scope: str, force: bool, dry_run: bool):
     for event in HOOK_EVENTS:
         if event in hooks_config:
             # Remove only aictl-related hook entries
-            hooks_config[event] = [
-                h for h in hooks_config[event]
-                if not _is_aictl_hook(h)
-            ]
+            hooks_config[event] = [h for h in hooks_config[event] if not _is_aictl_hook(h)]
             if not hooks_config[event]:
                 del hooks_config[event]
             removed += 1
@@ -490,6 +496,7 @@ def _extract_hook_command(rule: dict) -> str:
 def _shlex_split_cmd(cmd: str) -> list[str]:
     """Split a command string using shlex; posix=False on Windows to handle quotes."""
     import shlex
+
     try:
         return shlex.split(cmd, posix=not IS_WINDOWS)
     except ValueError:
@@ -557,7 +564,9 @@ def _doctor_check_one(event: str, rule: dict) -> dict:
             try:
                 probe = subprocess.run(
                     [interp, "-c", "import aictl.hook_handler"],
-                    capture_output=True, timeout=5, text=True,
+                    capture_output=True,
+                    timeout=5,
+                    text=True,
                 )
                 if probe.returncode != 0:
                     status = "FAIL"
@@ -588,10 +597,7 @@ def _doctor_check_one(event: str, rule: dict) -> dict:
 
 def _collect_doctor_results(scope: str) -> list[dict]:
     settings_path = _settings_path(scope)
-    results = [
-        _doctor_check_one(event, rule)
-        for event, rule in _iter_installed_aictl_hooks(settings_path)
-    ]
+    results = [_doctor_check_one(event, rule) for event, rule in _iter_installed_aictl_hooks(settings_path)]
     return results
 
 
@@ -612,8 +618,9 @@ def _emit_doctor_text(results: list[dict], settings_path: Path) -> None:
 
 
 @hooks.command(name="doctor")
-@click.option("--scope", type=click.Choice(["project", "user"]), default="user",
-              help="Check hooks at project or user level")
+@click.option(
+    "--scope", type=click.Choice(["project", "user"]), default="user", help="Check hooks at project or user level"
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON")
 def doctor(scope: str, as_json: bool):
     """Run static health checks against installed aictl hooks.
@@ -625,10 +632,15 @@ def doctor(scope: str, as_json: bool):
     settings_path = _settings_path(scope)
     results = _collect_doctor_results(scope)
     if as_json:
-        click.echo(json.dumps({
-            "settings_path": str(settings_path),
-            "results": results,
-        }, indent=2))
+        click.echo(
+            json.dumps(
+                {
+                    "settings_path": str(settings_path),
+                    "results": results,
+                },
+                indent=2,
+            )
+        )
     else:
         _emit_doctor_text(results, settings_path)
     if any(r["status"] == "FAIL" for r in results):
@@ -640,11 +652,13 @@ def _hook_verify_ping(port: int, event: str, timeout: float = 5.0) -> dict:
     import urllib.error
     import urllib.request
 
-    payload = json.dumps({
-        "event": event,
-        "session_id": "aictl-verify",
-        "_aictl_verify": True,
-    }).encode("utf-8")
+    payload = json.dumps(
+        {
+            "event": event,
+            "session_id": "aictl-verify",
+            "_aictl_verify": True,
+        }
+    ).encode("utf-8")
     req = urllib.request.Request(
         f"http://localhost:{port}/api/hooks",
         data=payload,
@@ -663,8 +677,7 @@ def _hook_verify_ping(port: int, event: str, timeout: float = 5.0) -> dict:
         reason = getattr(exc, "reason", exc)
         msg = str(reason)
         if "refused" in msg.lower():
-            return {"status": "FAIL", "http": None,
-                    "detail": f"server not running on port {port}"}
+            return {"status": "FAIL", "http": None, "detail": f"server not running on port {port}"}
         if "timed out" in msg.lower() or isinstance(reason, TimeoutError):
             return {"status": "FAIL", "http": None, "detail": "timeout"}
         return {"status": "FAIL", "http": None, "detail": msg}
@@ -675,10 +688,10 @@ def _hook_verify_ping(port: int, event: str, timeout: float = 5.0) -> dict:
 
 
 @hooks.command(name="verify")
-@click.option("--scope", type=click.Choice(["project", "user"]), default="user",
-              help="Check hooks at project or user level")
-@click.option("--port", default=None, type=int,
-              help="Override port discovered from each hook's command")
+@click.option(
+    "--scope", type=click.Choice(["project", "user"]), default="user", help="Check hooks at project or user level"
+)
+@click.option("--port", default=None, type=int, help="Override port discovered from each hook's command")
 @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON")
 def verify_hooks(scope: str, port: int | None, as_json: bool):
     """Live-check every installed aictl hook by POSTing a synthetic payload.
@@ -697,8 +710,7 @@ def verify_hooks(scope: str, port: int | None, as_json: bool):
         else:
             target_port = port if port is not None else r["port"]
             if target_port is None:
-                entry["verify"] = {"status": "FAIL",
-                                   "detail": "no --port in hook command"}
+                entry["verify"] = {"status": "FAIL", "detail": "no --port in hook command"}
                 entry["status"] = "FAIL"
             else:
                 res = _hook_verify_ping(target_port, r["event"])
@@ -708,22 +720,25 @@ def verify_hooks(scope: str, port: int | None, as_json: bool):
         combined.append(entry)
 
     if as_json:
-        click.echo(json.dumps({
-            "settings_path": str(settings_path),
-            "results": combined,
-        }, indent=2))
+        click.echo(
+            json.dumps(
+                {
+                    "settings_path": str(settings_path),
+                    "results": combined,
+                },
+                indent=2,
+            )
+        )
     else:
         if not combined:
             click.echo(f"No aictl hooks found in {settings_path}")
         else:
             click.echo(f"Live-checking {len(combined)} aictl hook(s) in {settings_path}")
-            click.echo("Note: verify payloads carry _aictl_verify:true and may appear "
-                       "in the event feed as noise.")
+            click.echo("Note: verify payloads carry _aictl_verify:true and may appear in the event feed as noise.")
             for r in combined:
                 v = r.get("verify", {})
                 tag = f"[{r['status']}]"
-                click.echo(f"  {tag} {r['event']} -> {_hook_cmd_summary(r['command'])}"
-                           f"   {v.get('detail', '')}")
+                click.echo(f"  {tag} {r['event']} -> {_hook_cmd_summary(r['command'])}   {v.get('detail', '')}")
     if any(r["status"] == "FAIL" for r in combined):
         raise SystemExit(1)
 
@@ -745,16 +760,23 @@ def otel():
 
 
 @otel.command()
-@click.option("--port", default=None, type=int,
-              help="aictl server port (default: $AICTL_PORT or 8484)")
-@click.option("--tool", type=click.Choice(["claude", "copilot", "codex", "gemini", "all"]),
-              default="all", help="Which tool(s) to configure")
-@click.option("--print", "print_only", is_flag=True,
-              help="Print shell exports to stdout instead of persisting (for eval)")
-@click.option("--shell", type=click.Choice(["bash", "zsh", "fish", "powershell"]),
-              default=None, help="Shell format for --print output (auto-detected)")
-@click.option("--force", is_flag=True,
-              help="Overwrite corrupted settings.json files instead of refusing")
+@click.option("--port", default=None, type=int, help="aictl server port (default: $AICTL_PORT or 8484)")
+@click.option(
+    "--tool",
+    type=click.Choice(["claude", "copilot", "codex", "gemini", "all"]),
+    default="all",
+    help="Which tool(s) to configure",
+)
+@click.option(
+    "--print", "print_only", is_flag=True, help="Print shell exports to stdout instead of persisting (for eval)"
+)
+@click.option(
+    "--shell",
+    type=click.Choice(["bash", "zsh", "fish", "powershell"]),
+    default=None,
+    help="Shell format for --print output (auto-detected)",
+)
+@click.option("--force", is_flag=True, help="Overwrite corrupted settings.json files instead of refusing")
 def enable(port: int | None, tool: str, print_only: bool, shell: str | None, force: bool):
     """Enable OTel export for AI coding tools.
 
@@ -835,15 +857,13 @@ def enable(port: int | None, tool: str, print_only: bool, shell: str | None, for
                 if "[otel]" not in content:
                     guard.confirm(codex_toml, "modify")
                     with open(codex_toml, "a", encoding="utf-8") as f:
-                        f.write(f'\n[otel]\nenabled = true\n'
-                                f'endpoint = "{endpoint}"\n')
+                        f.write(f'\n[otel]\nenabled = true\nendpoint = "{endpoint}"\n')
                     actions.append(f"Codex config: added [otel] to {codex_toml}")
                 else:
                     actions.append(f"Codex config: [otel] already present in {codex_toml}")
             else:
                 codex_toml.parent.mkdir(parents=True, exist_ok=True)
-                codex_toml.write_text(f'[otel]\nenabled = true\n'
-                                      f'endpoint = "{endpoint}"\n', encoding="utf-8")
+                codex_toml.write_text(f'[otel]\nenabled = true\nendpoint = "{endpoint}"\n', encoding="utf-8")
                 actions.append(f"Codex config: created {codex_toml}")
         except Exception as exc:  # noqa: BLE001 — best-effort integration; FAILED is reported and exits 1
             actions.append(f"Codex config: FAILED ({exc})")
@@ -900,37 +920,47 @@ def _build_env_block(port: int, tools: list[str]) -> dict[str, str]:
     env: dict[str, str] = {"AICTL_PORT": str(port)}
 
     if "claude" in tools:
-        env.update({
-            "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
-            "OTEL_METRICS_EXPORTER": "otlp",
-            "OTEL_LOGS_EXPORTER": "otlp",
-            "OTEL_LOG_USER_PROMPTS": "1",
-            "OTEL_LOG_TOOL_DETAILS": "1",
-        })
+        env.update(
+            {
+                "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+                "OTEL_METRICS_EXPORTER": "otlp",
+                "OTEL_LOGS_EXPORTER": "otlp",
+                "OTEL_LOG_USER_PROMPTS": "1",
+                "OTEL_LOG_TOOL_DETAILS": "1",
+            }
+        )
 
     if "copilot" in tools:
-        env.update({
-            "COPILOT_OTEL_ENABLED": "true",
-            "COPILOT_OTEL_ENDPOINT": endpoint,
-        })
+        env.update(
+            {
+                "COPILOT_OTEL_ENABLED": "true",
+                "COPILOT_OTEL_ENDPOINT": endpoint,
+            }
+        )
 
     if "codex" in tools:
-        env.update({
-            "CODEX_OTEL_ENABLED": "1",
-            "CODEX_OTEL_ENDPOINT": endpoint,
-        })
+        env.update(
+            {
+                "CODEX_OTEL_ENABLED": "1",
+                "CODEX_OTEL_ENDPOINT": endpoint,
+            }
+        )
 
     if "gemini" in tools:
-        env.update({
-            "GEMINI_OTEL_ENABLED": "1",
-            "OTEL_METRICS_EXPORTER": "otlp",
-            "OTEL_LOGS_EXPORTER": "otlp",
-        })
+        env.update(
+            {
+                "GEMINI_OTEL_ENABLED": "1",
+                "OTEL_METRICS_EXPORTER": "otlp",
+                "OTEL_LOGS_EXPORTER": "otlp",
+            }
+        )
 
-    env.update({
-        "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
-        "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
-    })
+    env.update(
+        {
+            "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
+            "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
+        }
+    )
     return env
 
 
@@ -979,6 +1009,7 @@ def verify():
     if IS_WINDOWS:
         try:
             import winreg
+
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
                 i = 0
                 while True:
@@ -1107,6 +1138,7 @@ def status(port: int | None):
     last = data.get("last_receive_at", 0)
     if last > 0:
         import time
+
         ago = int(time.time() - last)
         if ago < 60:
             click.echo(f"  Last data:        {ago}s ago")
@@ -1216,7 +1248,7 @@ def _install_hooks(scope: str, port: int, actions: list[str], *, force: bool = F
     # Use the same hook configuration logic as Claude but with Gemini names
     gemini_only_events = [e for e in HOOK_EVENTS if e in GEMINI_HOOK_MAP]
     hook_config = _build_hook_config(port, gemini_only_events, event_map=GEMINI_HOOK_MAP, matcher="*")
-    
+
     for tool_event, new_rules in hook_config.items():
         g_hooks.setdefault(tool_event, []).extend(new_rules)
     g_existing["hooks"] = g_hooks
@@ -1241,7 +1273,9 @@ def _enable_otel(port: int, actions: list[str], *, force: bool = False) -> None:
         actions.append("  Note: new terminals will inherit; current session updated")
     else:
         _update_shell_profiles_block(
-            _OTEL_MARKER, env_block, actions,
+            _OTEL_MARKER,
+            env_block,
+            actions,
             update_label="OTel env vars → {profile}",
             create_label="OTel env vars → {profile} (created)",
         )
@@ -1307,14 +1341,15 @@ def _enable_vscode(scope: str, port: int, actions: list[str], *, force: bool = F
 
 
 @click.command("enable")
-@click.option("--scope", type=click.Choice(["user", "project"]), default="user",
-              help="user: global (default)  project: write to cwd/.claude/ and .vscode/")
-@click.option("--port", default=None, type=int,
-              help="aictl server port (default: $AICTL_PORT or 8484)")
-@click.option("--dry-run", is_flag=True,
-              help="Show what would be done without writing anything")
-@click.option("--force", is_flag=True,
-              help="Overwrite corrupted settings.json files instead of refusing")
+@click.option(
+    "--scope",
+    type=click.Choice(["user", "project"]),
+    default="user",
+    help="user: global (default)  project: write to cwd/.claude/ and .vscode/",
+)
+@click.option("--port", default=None, type=int, help="aictl server port (default: $AICTL_PORT or 8484)")
+@click.option("--dry-run", is_flag=True, help="Show what would be done without writing anything")
+@click.option("--force", is_flag=True, help="Overwrite corrupted settings.json files instead of refusing")
 def enable(scope: str, port: int | None, dry_run: bool, force: bool) -> None:
     """Enable all aictl integrations: hooks, OTel, and VS Code agent features.
 
@@ -1360,7 +1395,9 @@ def enable(scope: str, port: int | None, dry_run: bool, force: bool) -> None:
         click.echo(f"  [hooks]  {gemini_hooks_path}")
         click.echo(f"           {len(GEMINI_HOOK_MAP)} Gemini CLI events → {endpoint}/api/hooks")
         if IS_WINDOWS:
-            click.echo(f"  [otel]   Windows env vars via setx ({len(_build_env_block(port, ['claude','copilot','codex','gemini']))} vars)")
+            click.echo(
+                f"  [otel]   Windows env vars via setx ({len(_build_env_block(port, ['claude', 'copilot', 'codex', 'gemini']))} vars)"
+            )
         else:
             for p in _shell_profiles():
                 click.echo(f"  [otel]   {p}")

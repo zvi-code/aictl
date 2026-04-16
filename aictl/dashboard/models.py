@@ -19,16 +19,24 @@ from ..utils import norm_path
 # Single source of truth — imported by tui.py and html_report.py.
 
 # Keys to keep from each agent_teams entry (drops nested 'agents' array)
-_TEAM_SUMMARY_KEYS = frozenset({
-    "session_id", "project_dir", "agent_count",
-    "total_input_tokens", "total_output_tokens", "total_messages",
-    "models", "tools_used",
-})
+_TEAM_SUMMARY_KEYS = frozenset(
+    {
+        "session_id",
+        "project_dir",
+        "agent_count",
+        "total_input_tokens",
+        "total_output_tokens",
+        "total_messages",
+        "models",
+        "tools_used",
+    }
+)
 
 
 def _slim_agent_teams(teams: list[dict]) -> list[dict]:
     """Strip per-agent detail from agent_teams, keeping team-level summaries."""
     return [{k: v for k, v in t.items() if k in _TEAM_SUMMARY_KEYS} for t in teams]
+
 
 STATUS_COLOURS: dict[str, str] = {
     "running": "#34d399",
@@ -52,7 +60,7 @@ class DashboardTool:
     label: str
     vendor: str = ""
     host: str = ""
-    meta: bool = False   # True = infrastructure/context, not an interactive AI tool
+    meta: bool = False  # True = infrastructure/context, not an interactive AI tool
     files: list = field(default_factory=list)
     processes: list = field(default_factory=list)
     mcp_servers: list[dict] = field(default_factory=list)
@@ -110,6 +118,7 @@ class DashboardSnapshot:
         self.cpu_cores = os.cpu_count() or 1
         try:
             import psutil
+
             # interval=0 returns since last call; RefreshLoop runs every ~5s
             # so the since-last-call measurement window is fine.
             self.cpu_per_core = psutil.cpu_percent(interval=0, percpu=True)
@@ -177,12 +186,8 @@ class DashboardSnapshot:
         self.total_live_sessions = sum(int(t.get("session_count", 0)) for t in live_tools)
         self.total_live_inbound_bytes = sum(int(t.get("inbound_bytes", 0)) for t in live_tools)
         self.total_live_outbound_bytes = sum(int(t.get("outbound_bytes", 0)) for t in live_tools)
-        self.total_live_inbound_rate_bps = round(
-            sum(float(t.get("inbound_rate_bps", 0.0)) for t in live_tools), 2
-        )
-        self.total_live_outbound_rate_bps = round(
-            sum(float(t.get("outbound_rate_bps", 0.0)) for t in live_tools), 2
-        )
+        self.total_live_inbound_rate_bps = round(sum(float(t.get("inbound_rate_bps", 0.0)) for t in live_tools), 2)
+        self.total_live_outbound_rate_bps = round(sum(float(t.get("outbound_rate_bps", 0.0)) for t in live_tools), 2)
         self.total_live_estimated_tokens = sum(
             int(t.get("token_estimate", {}).get("input_tokens", 0))
             + int(t.get("token_estimate", {}).get("output_tokens", 0))
@@ -220,20 +225,21 @@ class DashboardSnapshot:
 
         tools = []
         for td in d.get("tools", []):
-            files = [ResourceFile(**f) if isinstance(f, dict) else f
-                     for f in td.get("files", [])]
-            tools.append(DashboardTool(
-                tool=td.get("tool", ""),
-                label=td.get("label", ""),
-                vendor=td.get("vendor", ""),
-                host=td.get("host", ""),
-                files=files,
-                processes=td.get("processes", []),
-                mcp_servers=td.get("mcp_servers", []),
-                memory=td.get("memory"),
-                live=td.get("live"),
-                token_breakdown=td.get("token_breakdown", {}),
-            ))
+            files = [ResourceFile(**f) if isinstance(f, dict) else f for f in td.get("files", [])]
+            tools.append(
+                DashboardTool(
+                    tool=td.get("tool", ""),
+                    label=td.get("label", ""),
+                    vendor=td.get("vendor", ""),
+                    host=td.get("host", ""),
+                    files=files,
+                    processes=td.get("processes", []),
+                    mcp_servers=td.get("mcp_servers", []),
+                    memory=td.get("memory"),
+                    live=td.get("live"),
+                    token_breakdown=td.get("token_breakdown", {}),
+                )
+            )
 
         memory = []
         for md in d.get("agent_memory", []):

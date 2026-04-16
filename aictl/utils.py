@@ -12,10 +12,12 @@ from pathlib import Path
 
 # --- Markers ---
 
+
 def deployed_start(source: str, profile: str | None) -> str:
     p = f" | profile: {profile}" if profile else ""
     d = datetime.now(timezone.utc).isoformat()
     return f"<!-- AI-CONTEXT:DEPLOYED — source: {source}{p} | deployed: {d} -->"
+
 
 DEPLOYED_END = "<!-- AI-CONTEXT:DEPLOYED-END -->"
 OVERLAY_START = "<!-- AI-CONTEXT:OVERLAY — agent-managed section -->"
@@ -36,10 +38,12 @@ def estimate_tokens(text: str) -> int:
 
 # --- File I/O ---
 
+
 def _infer_command_from_click_ctx() -> str:
     """Best-effort: derive a human-readable command name from the active Click context."""
     try:
         import click as _click
+
         _ctx = _click.get_current_context(silent=True)
         if _ctx is None:
             return "<none>"
@@ -52,6 +56,7 @@ def write_safe(path: Path, content: str, *, command: str | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         import click as _click
+
         _ctx = _click.get_current_context(silent=True)
         if _ctx is not None:
             _guard = _ctx.meta.get("_write_guard")
@@ -89,6 +94,7 @@ def write_safe(path: Path, content: str, *, command: str | None = None) -> None:
     # Ledger logging — audit trail only, never raises into callers.
     try:
         from aictl import mutation_ledger
+
         new_bytes = content.encode("utf-8")
         mutation_ledger.record(
             command=command or _infer_command_from_click_ctx(),
@@ -125,10 +131,20 @@ def wrap_deployed(content: str, source: str, profile: str | None = None) -> str:
 
 
 def compose_with_overlay(deployed: str, overlay: str, source: str, profile: str | None) -> str:
-    return "\n".join([
-        deployed_start(source, profile), "", deployed.strip(), "", DEPLOYED_END,
-        "", OVERLAY_START, "", (overlay + "\n") if overlay else "", OVERLAY_END,
-    ])
+    return "\n".join(
+        [
+            deployed_start(source, profile),
+            "",
+            deployed.strip(),
+            "",
+            DEPLOYED_END,
+            "",
+            OVERLAY_START,
+            "",
+            (overlay + "\n") if overlay else "",
+            OVERLAY_END,
+        ]
+    )
 
 
 # --- Merge helpers (preserve user content in shared files) ---
@@ -239,11 +255,13 @@ def merge_ignore_file(path: Path, aictl_patterns: list[str]) -> str:
     """
     existing = read_if_exists(path) or ""
     user_content = _IGNORE_DEPLOYED_RE.sub("", existing).strip()
-    deployed_block = "\n".join([
-        IGNORE_DEPLOYED_START,
-        *aictl_patterns,
-        IGNORE_DEPLOYED_END,
-    ])
+    deployed_block = "\n".join(
+        [
+            IGNORE_DEPLOYED_START,
+            *aictl_patterns,
+            IGNORE_DEPLOYED_END,
+        ]
+    )
     parts = [deployed_block]
     if user_content:
         parts.append(user_content)
@@ -251,6 +269,7 @@ def merge_ignore_file(path: Path, aictl_patterns: list[str]) -> str:
 
 
 # --- Path normalisation (cross-platform) ---
+
 
 def norm_path(path: str) -> str:
     """Normalise path separators to forward slashes.
@@ -264,6 +283,7 @@ def norm_path(path: str) -> str:
 
 # --- Path encoding ---
 
+
 def encode_scope(path: str) -> str:
     if not path or path in ("/", "\\", "."):
         return "root"
@@ -271,6 +291,7 @@ def encode_scope(path: str) -> str:
 
 
 # --- Display formatting (shared across CLI, TUI, HTML report) ---
+
 
 def human_size(n: int) -> str:
     """Format byte count as human-readable string (e.g. 1.2KB, 3.5MB)."""
@@ -330,6 +351,7 @@ class WriteGuard:
             guard = WriteGuard.install("hooks install")
         """
         import click
+
         guard = cls(command)
         ctx = click.get_current_context(silent=True)
         if ctx is not None:
@@ -340,6 +362,7 @@ class WriteGuard:
     def current(cls) -> WriteGuard | None:
         """Return the guard from the current Click context, or None."""
         import click
+
         ctx = click.get_current_context(silent=True)
         if ctx is None:
             return None
@@ -366,6 +389,7 @@ class WriteGuard:
         import sys
 
         import click
+
         # Only prompt when running interactively inside a Click command.
         # In library mode (no Click context), return silently.
         if click.get_current_context(silent=True) is None:
@@ -374,8 +398,7 @@ class WriteGuard:
             if os.environ.get("AICTL_ASSUME_YES") == "1":
                 return
             click.echo(
-                f"aictl refuses to {action} {path} in non-interactive context. "
-                f"Set AICTL_ASSUME_YES=1 to proceed.",
+                f"aictl refuses to {action} {path} in non-interactive context. Set AICTL_ASSUME_YES=1 to proceed.",
                 err=True,
             )
             raise click.Abort()

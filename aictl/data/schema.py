@@ -30,6 +30,7 @@ def _load_yaml(name: str) -> dict:
 
 # ─── Metrics ─────────────────────────────────────────────────────
 
+
 @functools.cache
 def load_metrics() -> dict[str, dict]:
     """Load metrics.yaml → {metric_key: {unit, tags, description, ...}}."""
@@ -56,6 +57,7 @@ def metric_name(key: str, **kwargs: str) -> str:
         metrics = load_metrics()
         if key not in metrics:
             import warnings
+
             warnings.warn(f"Unknown metric key: {key!r}", stacklevel=2)
     return key
 
@@ -67,6 +69,7 @@ def validate_metric(name: str) -> bool:
 
 # ─── Telemetry sources ───────────────────────────────────────────
 
+
 @functools.cache
 def load_telemetry_sources() -> dict[str, dict]:
     """Load telemetry-sources.yaml → {tool: {source_id, files, fields, ...}}."""
@@ -74,6 +77,7 @@ def load_telemetry_sources() -> dict[str, dict]:
 
 
 # ─── Tool configs ────────────────────────────────────────────────
+
 
 @functools.cache
 def load_tool_configs() -> dict[str, dict]:

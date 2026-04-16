@@ -18,7 +18,7 @@ _USER_HOOK = {
 }
 
 _AICTX_WITH_HOOK = (
-    '[hooks._always]\n'
+    "[hooks._always]\n"
     'PreToolUse = \'[{"matcher": "", "hooks": [{"type": "command", '
     '"command": "python -m aictl.hook_handler --event PreToolUse --port 8484"}]}]\'\n'
 )
@@ -27,8 +27,7 @@ _AICTX_NO_HOOK = (
     # Keep *some* settings output so the file stays in the emit set
     # (avoids manifest-cleanup deleting settings.local.json outright —
     # that is an orthogonal file-lifecycle concern outside this fix).
-    '[permissions]\n'
-    '_always = ["Read"]\n'
+    '[permissions]\n_always = ["Read"]\n'
 )
 
 
@@ -39,10 +38,15 @@ def _write_user_settings(root: Path, extra_aictl_hook: dict | None = None) -> Pa
     hooks_dict = {"PreToolUse": [dict(_USER_HOOK)]}
     if extra_aictl_hook is not None:
         hooks_dict["PreToolUse"].append(extra_aictl_hook)
-    settings.write_text(json.dumps({
-        "permissions": {"allow": ["Read"]},
-        "hooks": hooks_dict,
-    }, indent=2))
+    settings.write_text(
+        json.dumps(
+            {
+                "permissions": {"allow": ["Read"]},
+                "hooks": hooks_dict,
+            },
+            indent=2,
+        )
+    )
     return settings
 
 
@@ -120,8 +124,7 @@ def test_deploy_strips_legacy_aictl_hook_without_marker(tmp_path):
     # Simulate a pre-marker install left behind from a prior aictl version.
     legacy = {
         "matcher": "",
-        "hooks": [{"type": "command",
-                   "command": "python -m aictl.hook_handler --event PreToolUse --port 8484"}],
+        "hooks": [{"type": "command", "command": "python -m aictl.hook_handler --event PreToolUse --port 8484"}],
     }
     (tmp_path / ".context.toml").write_text(_AICTX_WITH_HOOK)
     settings = _write_user_settings(tmp_path, extra_aictl_hook=legacy)

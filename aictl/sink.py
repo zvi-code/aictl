@@ -154,12 +154,13 @@ class SampleSink:
         if self._flood_count > self._flood_max:
             self._total_dropped += 1
             self._flood_drop_count += 1
-            log.debug("Flood drop: metric=%s total_dropped=%d", metric,
-                       self._total_dropped)
+            log.debug("Flood drop: metric=%s total_dropped=%d", metric, self._total_dropped)
             if not self._drop_logged:
-                log.warning("Flood protection: dropping samples (>%d/s). "
-                            "Total dropped: %d", self._flood_max,
-                            self._total_dropped)
+                log.warning(
+                    "Flood protection: dropping samples (>%d/s). Total dropped: %d",
+                    self._flood_max,
+                    self._total_dropped,
+                )
                 self._drop_logged = True
             return
 
@@ -171,7 +172,10 @@ class SampleSink:
         if self._datapoint_logger:
             try:
                 self._datapoint_logger.log_sample(
-                    ts, metric, value, t,
+                    ts,
+                    metric,
+                    value,
+                    t,
                     session_id=t.get("session_id", ""),
                     tool=t.get("tool", ""),
                 )
@@ -182,8 +186,7 @@ class SampleSink:
         with self._lock:
             self._buffer.append((ts, metric, value, t))
             self._total_emitted += 1
-            should_flush = (self._buffer_size == 0 or
-                            len(self._buffer) >= self._buffer_size)
+            should_flush = self._buffer_size == 0 or len(self._buffer) >= self._buffer_size
 
         # Periodic dedup GC
         self._emit_count_since_gc += 1
@@ -397,10 +400,8 @@ class SampleSink:
 
         try:
             from .storage import Sample
-            samples = [
-                Sample(ts=ts, metric=metric, value=value, tags=tags)
-                for ts, metric, value, tags in buf
-            ]
+
+            samples = [Sample(ts=ts, metric=metric, value=value, tags=tags) for ts, metric, value, tags in buf]
             self._db.append_samples(samples)
             self._total_flushed += len(samples)
             return len(samples)
@@ -451,6 +452,7 @@ class SampleSink:
 
 # ── DatapointLogger ─────────────────────────────────────────────────
 
+
 def _make_rotating_logger(
     name: str,
     filepath: Path,
@@ -497,10 +499,8 @@ class DatapointLogger:
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
-        self._samples_log = _make_rotating_logger(
-            "samples", self.log_dir / "samples.log", max_bytes, backup_count)
-        self._events_log = _make_rotating_logger(
-            "events", self.log_dir / "events.log", max_bytes, backup_count)
+        self._samples_log = _make_rotating_logger("samples", self.log_dir / "samples.log", max_bytes, backup_count)
+        self._events_log = _make_rotating_logger("events", self.log_dir / "events.log", max_bytes, backup_count)
 
     def log_sample(
         self,
@@ -534,12 +534,24 @@ class DatapointLogger:
     ) -> None:
         """Write one event as a JSON line."""
         line: dict[str, Any] = {"ts": ts, "tool": tool, "kind": kind}
-        line.update({k: v for k, v in {
-            "session_id": session_id, "pid": pid, "model": model,
-            "path": path, "input_tokens": input_tokens, "output_tokens": output_tokens,
-            "duration_ms": round(duration_ms, 1), "tool_name": tool_name,
-            "prompt_id": prompt_id, "detail": detail,
-        }.items() if v})
+        line.update(
+            {
+                k: v
+                for k, v in {
+                    "session_id": session_id,
+                    "pid": pid,
+                    "model": model,
+                    "path": path,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "duration_ms": round(duration_ms, 1),
+                    "tool_name": tool_name,
+                    "prompt_id": prompt_id,
+                    "detail": detail,
+                }.items()
+                if v
+            }
+        )
         self._events_log.info(json.dumps(line, separators=(",", ":")))
 
     def close(self) -> None:
@@ -607,10 +619,7 @@ def _build_provenance(snap: DashboardSnapshot) -> dict[str, dict[str, Any]]:
     # ── Overview: live monitor metrics ────────────────────────────
 
     prov["overview.total_live_sessions"] = {
-        "contributing_tools": {
-            t.tool: t.live.get("session_count", 0)
-            for t in live_tools
-        },
+        "contributing_tools": {t.tool: t.live.get("session_count", 0) for t in live_tools},
         "total": snap.total_live_sessions,
         "tool_count": len(live_tools),
     }
@@ -628,45 +637,31 @@ def _build_provenance(snap: DashboardSnapshot) -> dict[str, dict[str, Any]]:
     prov["overview.total_live_estimated_tokens"] = {
         "contributing_tools": token_sources,
         "total": snap.total_live_estimated_tokens,
-        "estimation_tiers_used": sorted(set(
-            v["method"] for v in token_sources.values()
-        )),
+        "estimation_tiers_used": sorted(set(v["method"] for v in token_sources.values())),
     }
 
     # Traffic rates
     prov["overview.total_live_outbound_rate_bps"] = {
-        "contributing_tools": {
-            t.tool: round(float(t.live.get("outbound_rate_bps", 0)), 2)
-            for t in live_tools
-        },
+        "contributing_tools": {t.tool: round(float(t.live.get("outbound_rate_bps", 0)), 2) for t in live_tools},
         "total_bps": snap.total_live_outbound_rate_bps,
     }
 
     prov["overview.total_live_inbound_rate_bps"] = {
-        "contributing_tools": {
-            t.tool: round(float(t.live.get("inbound_rate_bps", 0)), 2)
-            for t in live_tools
-        },
+        "contributing_tools": {t.tool: round(float(t.live.get("inbound_rate_bps", 0)), 2) for t in live_tools},
         "total_bps": snap.total_live_inbound_rate_bps,
     }
 
     # Resource bars
     prov["overview.live_traffic_bar"] = {
         "tools": {
-            t.tool: round(
-                float(t.live.get("outbound_rate_bps", 0))
-                + float(t.live.get("inbound_rate_bps", 0)), 2
-            )
+            t.tool: round(float(t.live.get("outbound_rate_bps", 0)) + float(t.live.get("inbound_rate_bps", 0)), 2)
             for t in live_tools
         },
     }
 
     # ── Collector health ─────────────────────────────────────────
 
-    tools_with_telemetry = [
-        te.get("tool") for te in telemetry
-        if te.get("source") and te.get("confidence", 0) > 0
-    ]
+    tools_with_telemetry = [te.get("tool") for te in telemetry if te.get("source") and te.get("confidence", 0) > 0]
     prov["overview.collector_health.tools_with_telemetry"] = {
         "tools_with_telemetry": tools_with_telemetry,
         "total_tools": len(tools),
@@ -692,11 +687,13 @@ def _build_provenance(snap: DashboardSnapshot) -> dict[str, dict[str, Any]]:
     for te in telemetry:
         errs = te.get("errors", [])
         if errs:
-            error_tools.append({
-                "tool": te.get("tool"),
-                "error_count": len(errs),
-                "latest_type": errs[-1].get("type", "") if errs else "",
-            })
+            error_tools.append(
+                {
+                    "tool": te.get("tool"),
+                    "error_count": len(errs),
+                    "latest_type": errs[-1].get("type", "") if errs else "",
+                }
+            )
     prov["overview.collector_health.errors"] = {
         "tools_with_errors": error_tools,
         "total_errors": sum(e["error_count"] for e in error_tools),
@@ -715,14 +712,16 @@ def _build_provenance(snap: DashboardSnapshot) -> dict[str, dict[str, Any]]:
     anomaly_tools: list[dict] = []
     for t in tools:
         for p in t.processes:
-            anoms = (_get(p, "anomalies") or [])
+            anoms = _get(p, "anomalies") or []
             if anoms:
                 pid = _get(p, "pid", 0)
-                anomaly_tools.append({
-                    "tool": t.tool,
-                    "pid": pid,
-                    "anomalies": [a if isinstance(a, str) else str(a) for a in anoms[:3]],
-                })
+                anomaly_tools.append(
+                    {
+                        "tool": t.tool,
+                        "pid": pid,
+                        "anomalies": [a if isinstance(a, str) else str(a) for a in anoms[:3]],
+                    }
+                )
     prov["alerts.process_anomalies"] = {
         "affected_processes": anomaly_tools[:20],
         "total": len(anomaly_tools),
@@ -737,7 +736,7 @@ def _build_provenance(snap: DashboardSnapshot) -> dict[str, dict[str, Any]]:
     # Subagent memory
     mem_by_tool: dict[str, int] = {}
     for t in live_tools:
-        for proc in (t.live.get("processes") or []):
+        for proc in t.live.get("processes") or []:
             mem_by_tool.setdefault(t.tool, 0)
             mem_by_tool[t.tool] += int(_get(proc, "mem", 0))
     prov["alerts.subagent_memory"] = {
@@ -773,9 +772,18 @@ def _build_provenance(snap: DashboardSnapshot) -> dict[str, dict[str, Any]]:
             "sessions": te.get("total_sessions", 0),
             "error_count": len(te.get("errors", [])),
         }
-        for suffix in ("input_tokens", "output_tokens", "cache_read",
-                        "cache_write", "sessions", "messages", "cost_usd",
-                        "by_model", "confidence", "errors"):
+        for suffix in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read",
+            "cache_write",
+            "sessions",
+            "messages",
+            "cost_usd",
+            "by_model",
+            "confidence",
+            "errors",
+        ):
             key = f"procs.tool.telemetry.{suffix}"
             if key not in prov:
                 prov[key] = {"by_tool": {}}
@@ -871,11 +879,7 @@ def _build_provenance(snap: DashboardSnapshot) -> dict[str, dict[str, Any]]:
             daily_sources.append(te.get("tool", ""))
     prov["budget.daily_tokens"] = {
         "tools_with_daily_data": daily_sources,
-        "models": sorted(set(
-            model
-            for te in telemetry
-            for model in (te.get("by_model") or {}).keys()
-        )),
+        "models": sorted(set(model for te in telemetry for model in (te.get("by_model") or {}).keys())),
     }
 
     prov["budget.token_by_tool"] = {
@@ -892,43 +896,32 @@ def _build_provenance(snap: DashboardSnapshot) -> dict[str, dict[str, Any]]:
     # ── Sessions tab ──────────────────────────────────────────────
 
     prov["sessions.timeline"] = {
-        "active_sessions": len([
-            s for s in sessions
-            if isinstance(s, dict) and not s.get("ended_at")
-        ]),
+        "active_sessions": len([s for s in sessions if isinstance(s, dict) and not s.get("ended_at")]),
         "total_sessions": len(sessions),
     }
 
     prov["sessions.agent_teams"] = {
         "team_count": len(agent_teams),
-        "total_agents": sum(
-            len(team.get("agents", []))
-            for team in agent_teams
-        ),
+        "total_agents": sum(len(team.get("agents", [])) for team in agent_teams),
     }
 
     # Active session provenance (aggregated across all active sessions)
-    active = [s for s in sessions
-              if isinstance(s, dict) and not s.get("ended_at")]
-    for key_suffix in ("duration", "cpu", "input_tokens", "output_tokens",
-                        "file_events", "pids", "process_tree"):
+    active = [s for s in sessions if isinstance(s, dict) and not s.get("ended_at")]
+    for key_suffix in ("duration", "cpu", "input_tokens", "output_tokens", "file_events", "pids", "process_tree"):
         prov[f"sessions.active.{key_suffix}"] = {
             "active_session_count": len(active),
-            "tools": list(set(
-                s.get("tool", "") for s in active
-            )),
+            "tools": list(set(s.get("tool", "") for s in active)),
         }
 
     prov["sessions.history"] = {
         "total": len(sessions),
-        "tools": sorted(set(
-            s.get("tool", "") for s in sessions if isinstance(s, dict)
-        )),
+        "tools": sorted(set(s.get("tool", "") for s in sessions if isinstance(s, dict))),
     }
 
     # ── Events tab ────────────────────────────────────────────────
 
     from collections import Counter
+
     event_kinds = Counter(_get(e, "kind", "") for e in events if _get(e, "kind"))
     prov["events.feed"] = {
         "event_count": len(events),
@@ -938,10 +931,13 @@ def _build_provenance(snap: DashboardSnapshot) -> dict[str, dict[str, Any]]:
 
     # ── Metrics Explorer / File activity (static notes) ─────────────
     for _key, _note in [
-        ("samples.metric_list",   "Populated from samples table — all metrics emitted through SampleSink"),
-        ("samples.metric_chart",  "Time series from samples table for selected metric, last 30 minutes"),
-        ("samples.metric_table",  "Recent 50 samples from samples table with parsed JSON tags"),
-        ("files.item.activity",   "Based on file mtime: green if changed since last cycle, orange if <5min, grey otherwise"),
+        ("samples.metric_list", "Populated from samples table — all metrics emitted through SampleSink"),
+        ("samples.metric_chart", "Time series from samples table for selected metric, last 30 minutes"),
+        ("samples.metric_table", "Recent 50 samples from samples table with parsed JSON tags"),
+        (
+            "files.item.activity",
+            "Based on file mtime: green if changed since last cycle, orange if <5min, grey otherwise",
+        ),
     ]:
         prov[_key] = {"note": _note}
 
@@ -976,18 +972,22 @@ def _build_provenance(snap: DashboardSnapshot) -> dict[str, dict[str, Any]]:
             continue
         qs = te.get("quota_state", {})
         if qs:
-            for key in ("procs.tool.telemetry.premium_requests",
-                        "procs.tool.telemetry.api_duration_ms",
-                        "procs.tool.telemetry.code_changes"):
+            for key in (
+                "procs.tool.telemetry.premium_requests",
+                "procs.tool.telemetry.api_duration_ms",
+                "procs.tool.telemetry.code_changes",
+            ):
                 prov.setdefault(key, {"by_tool": {}})
                 prov[key]["by_tool"][tool] = {
                     "premium_requests": qs.get("premium_requests_used", 0),
                     "api_duration_ms": qs.get("total_api_duration_ms", 0),
                     "code_changes": qs.get("code_changes", {}),
                 }
-        for key in ("procs.tool.telemetry.active_session_input",
-                    "procs.tool.telemetry.active_session_output",
-                    "procs.tool.telemetry.active_session_messages"):
+        for key in (
+            "procs.tool.telemetry.active_session_input",
+            "procs.tool.telemetry.active_session_output",
+            "procs.tool.telemetry.active_session_messages",
+        ):
             prov.setdefault(key, {"by_tool": {}})
             prov[key]["by_tool"][tool] = {
                 "input": te.get("active_session_input", 0),
@@ -1005,24 +1005,26 @@ def _build_provenance(snap: DashboardSnapshot) -> dict[str, dict[str, Any]]:
                     "status": info.get("status", "unknown"),
                     "mode": info.get("mode", ""),
                 }
-    for key in ("live.diagnostics.collector_name",
-                "live.diagnostics.status",
-                "live.diagnostics.mode"):
+    for key in ("live.diagnostics.collector_name", "live.diagnostics.status", "live.diagnostics.mode"):
         prov[key] = {"collectors": collectors}
 
     # Collector pipeline
-    for key in ("overview.collector_pipeline.name",
-                "overview.collector_pipeline.status",
-                "overview.collector_pipeline.detail"):
+    for key in (
+        "overview.collector_pipeline.name",
+        "overview.collector_pipeline.status",
+        "overview.collector_pipeline.detail",
+    ):
         prov[key] = {"collectors": collectors}
 
     # OTel receiver stats
     otel_status = snap.live_monitor.get("otel", {}) if snap.live_monitor else {}
-    for key in ("overview.collector_health.otel_events_received",
-                "overview.collector_health.otel_api_calls",
-                "overview.collector_health.otel_api_errors",
-                "overview.collector_health.otel_parse_errors",
-                "overview.collector_health.otel_last_receive"):
+    for key in (
+        "overview.collector_health.otel_events_received",
+        "overview.collector_health.otel_api_calls",
+        "overview.collector_health.otel_api_errors",
+        "overview.collector_health.otel_parse_errors",
+        "overview.collector_health.otel_last_receive",
+    ):
         prov[key] = {"otel": otel_status}
 
     # Events tab live monitor cards (same data source as procs.tool.live)
@@ -1035,21 +1037,25 @@ def _build_provenance(snap: DashboardSnapshot) -> dict[str, dict[str, Any]]:
             "outbound_rate_bps": live.get("outbound_rate_bps", 0),
             "inbound_rate_bps": live.get("inbound_rate_bps", 0),
         }
-        for key in ("events.tool.live.session_count",
-                     "events.tool.live.pid_count",
-                     "events.tool.live.cpu_percent",
-                     "events.tool.live.mem_mb",
-                     "events.tool.live.outbound_rate_bps",
-                     "events.tool.live.inbound_rate_bps"):
+        for key in (
+            "events.tool.live.session_count",
+            "events.tool.live.pid_count",
+            "events.tool.live.cpu_percent",
+            "events.tool.live.mem_mb",
+            "events.tool.live.outbound_rate_bps",
+            "events.tool.live.inbound_rate_bps",
+        ):
             prov.setdefault(key, {"by_tool": {}})
             prov[key]["by_tool"][t.tool] = tool_summary
 
     # Session timeline tooltip extras
-    for key in ("sessions.timeline.conversations",
-                "sessions.timeline.subagents",
-                "sessions.timeline.source_files",
-                "sessions.timeline.unique_files",
-                "sessions.timeline.bytes_written"):
+    for key in (
+        "sessions.timeline.conversations",
+        "sessions.timeline.subagents",
+        "sessions.timeline.source_files",
+        "sessions.timeline.unique_files",
+        "sessions.timeline.bytes_written",
+    ):
         prov[key] = {
             "total_sessions": len(sessions),
             "note": "Computed per-session from events and file data in query_session_profiles()",
@@ -1057,12 +1063,14 @@ def _build_provenance(snap: DashboardSnapshot) -> dict[str, dict[str, Any]]:
 
     # Session detail extras
     active_tools = list(set(s.get("tool", "") for s in active))
-    for key in ("sessions.active.peak_cpu",
-                "sessions.active.traffic",
-                "sessions.active.state_writes",
-                "sessions.active.workspaces",
-                "sessions.active.subprocesses",
-                "sessions.active.files_touched_list"):
+    for key in (
+        "sessions.active.peak_cpu",
+        "sessions.active.traffic",
+        "sessions.active.state_writes",
+        "sessions.active.workspaces",
+        "sessions.active.subprocesses",
+        "sessions.active.files_touched_list",
+    ):
         prov[key] = {
             "active_session_count": len(active),
             "tools": active_tools,
@@ -1071,36 +1079,27 @@ def _build_provenance(snap: DashboardSnapshot) -> dict[str, dict[str, Any]]:
     # Agent team extras
     prov["sessions.agent_teams.tools_used"] = {
         "team_count": len(agent_teams),
-        "all_tools": sorted(set(
-            tool_name
-            for team in agent_teams
-            for tool_name in team.get("tools_used", [])
-        )),
+        "all_tools": sorted(set(tool_name for team in agent_teams for tool_name in team.get("tools_used", []))),
     }
 
-    for key in ("sessions.agent_teams.agent_slug",
-                "sessions.agent_teams.agent_is_sidechain",
-                "sessions.agent_teams.warmup_count"):
+    for key in (
+        "sessions.agent_teams.agent_slug",
+        "sessions.agent_teams.agent_is_sidechain",
+        "sessions.agent_teams.warmup_count",
+    ):
         prov[key] = {
             "team_count": len(agent_teams),
-            "total_agents": sum(
-                len(team.get("agents", []))
-                for team in agent_teams
-            ),
+            "total_agents": sum(len(team.get("agents", [])) for team in agent_teams),
         }
 
     # Budget extras
     prov["budget.model_detected"] = {
-        "models": sorted(set(
-            te.get("model", "") for te in telemetry if te.get("model")
-        )),
+        "models": sorted(set(te.get("model", "") for te in telemetry if te.get("model"))),
     }
 
     # API-only endpoints
     prov["api.project_costs"] = {
-        "tools_with_cost": [
-            te.get("tool") for te in telemetry if te.get("cost_usd", 0) > 0
-        ],
+        "tools_with_cost": [te.get("tool") for te in telemetry if te.get("cost_usd", 0) > 0],
     }
 
     prov["api.session_runs"] = {
@@ -1116,13 +1115,21 @@ def _build_provenance(snap: DashboardSnapshot) -> dict[str, dict[str, Any]]:
     }
 
     # OTel receiver / traces datapoints
-    for key in ("otel.traces.token_usage", "otel.traces.operation_duration",
-                "otel.traces.span_events", "otel.traces.api_calls",
-                "otel.traces.api_errors", "otel.receiver.metrics_received",
-                "otel.receiver.events_received", "otel.receiver.traces_received",
-                "otel.receiver.api_calls_total", "otel.receiver.api_errors_total",
-                "otel.receiver.parse_errors", "otel.receiver.last_receive",
-                "otel.receiver.active"):
+    for key in (
+        "otel.traces.token_usage",
+        "otel.traces.operation_duration",
+        "otel.traces.span_events",
+        "otel.traces.api_calls",
+        "otel.traces.api_errors",
+        "otel.receiver.metrics_received",
+        "otel.receiver.events_received",
+        "otel.receiver.traces_received",
+        "otel.receiver.api_calls_total",
+        "otel.receiver.api_errors_total",
+        "otel.receiver.parse_errors",
+        "otel.receiver.last_receive",
+        "otel.receiver.active",
+    ):
         prov[key] = {"otel": otel_status}
 
     return prov

@@ -24,8 +24,7 @@ class _AnalyticsCache:
 
     def start(self, store) -> None:
         self._store = store
-        self._thread = threading.Thread(target=self._loop, daemon=True,
-                                        name="analytics-cache")
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="analytics-cache")
         self._thread.start()
 
     def stop(self) -> None:
@@ -74,7 +73,7 @@ class _AnalyticsCache:
                 logger.exception("Analytics cache recompute error")
 
     def _recompute(self) -> None:
-        db = getattr(self._store, '_db', None) if self._store else None
+        db = getattr(self._store, "_db", None) if self._store else None
         if not db:
             return
         rng = self._requested_range
@@ -109,17 +108,22 @@ def _compute_response_time(db, since: float, until: float, limit: int = 2000) ->
         reqs.sort(key=lambda r: r["ts"])
         for seq, r in enumerate(reqs, 1):
             # TODO(#token-usage): migrate to TokenUsage.from_dict
-            requests_out.append({
-                "ts": r["ts"], "duration_ms": r.get("duration_ms", 0),
-                "input_tokens": r.get("input_tokens", 0),
-                "output_tokens": r.get("output_tokens", 0),
-                "cache_read_tokens": r.get("cache_read_tokens", 0),
-                "model": r.get("model", ""),
-                "session_id": sid, "agent_id": r.get("agent_id", ""),
-                "finish_reason": r.get("finish_reason", ""),
-                "cost_usd": r.get("cost_usd", 0),
-                "is_error": r.get("is_error", 0), "seq": seq,
-            })
+            requests_out.append(
+                {
+                    "ts": r["ts"],
+                    "duration_ms": r.get("duration_ms", 0),
+                    "input_tokens": r.get("input_tokens", 0),
+                    "output_tokens": r.get("output_tokens", 0),
+                    "cache_read_tokens": r.get("cache_read_tokens", 0),
+                    "model": r.get("model", ""),
+                    "session_id": sid,
+                    "agent_id": r.get("agent_id", ""),
+                    "finish_reason": r.get("finish_reason", ""),
+                    "cost_usd": r.get("cost_usd", 0),
+                    "is_error": r.get("is_error", 0),
+                    "seq": seq,
+                }
+            )
 
     model_groups: dict[str, list[float]] = {}
     model_tokens: dict[str, int] = {}
@@ -132,13 +136,16 @@ def _compute_response_time(db, since: float, until: float, limit: int = 2000) ->
     for m, durations in sorted(model_groups.items()):
         ds = sorted(durations)
         n = len(ds)
-        by_model.append({
-            "model": m, "count": n,
-            "avg_ms": round(sum(ds) / n, 1) if n else 0,
-            "p50_ms": round(ds[n // 2], 1) if n else 0,
-            "p95_ms": round(ds[min(int(n * 0.95), n - 1)], 1) if n else 0,
-            "total_tokens": model_tokens.get(m, 0),
-        })
+        by_model.append(
+            {
+                "model": m,
+                "count": n,
+                "avg_ms": round(sum(ds) / n, 1) if n else 0,
+                "p50_ms": round(ds[n // 2], 1) if n else 0,
+                "p95_ms": round(ds[min(int(n * 0.95), n - 1)], 1) if n else 0,
+                "total_tokens": model_tokens.get(m, 0),
+            }
+        )
 
     requests_out.sort(key=lambda r: r["ts"])
     return {"requests": requests_out, "by_model": by_model}
@@ -184,17 +191,17 @@ def _compute_tools(db, since: float, until: float) -> dict:
 
         # Get per-invocation durations for percentile calculation
         if use_events:
-            durations = sorted(db.query_tool_durations_from_events(
-                name, since=since, until=until, limit=500))
+            durations = sorted(db.query_tool_durations_from_events(name, since=since, until=until, limit=500))
         else:
-            durations = sorted(db.query_tool_invocations_durations(
-                name, since=since, until=until, limit=500))
+            durations = sorted(db.query_tool_invocations_durations(name, since=since, until=until, limit=500))
         n = len(durations)
         p95 = round(durations[min(int(n * 0.95), n - 1)], 1) if n else 0
 
         entry: dict = {
-            "tool_name": name, "count": count,
-            "avg_ms": avg_ms, "p95_ms": p95,
+            "tool_name": name,
+            "count": count,
+            "avg_ms": avg_ms,
+            "p95_ms": p95,
             "error_count": row.get("error_count", 0),
         }
         if name in breakdown:
@@ -227,11 +234,16 @@ def _compute_files(db, since: float, until: float) -> dict:
             prev_size = 0
             for e in entries:
                 sz = e["size_bytes"]
-                memory_events.append({
-                    "ts": e["ts"], "path": p, "size_bytes": sz,
-                    "prev_size": prev_size, "delta": sz - prev_size,
-                    "tokens": e.get("tokens", 0),
-                })
+                memory_events.append(
+                    {
+                        "ts": e["ts"],
+                        "path": p,
+                        "size_bytes": sz,
+                        "prev_size": prev_size,
+                        "delta": sz - prev_size,
+                        "tokens": e.get("tokens", 0),
+                    }
+                )
                 prev_size = sz
         memory_events.sort(key=lambda e: e["ts"], reverse=True)
         return {"memory_timeline": memory_timeline, "memory_events": memory_events[:50]}
@@ -272,16 +284,24 @@ def _compute_files(db, since: float, until: float) -> dict:
             ts_list.append(ts_val)
             cumulative.append(running)
         memory_timeline[path] = {
-            "ts": ts_list, "size_bytes": cumulative, "tokens": [c // 4 for c in cumulative],
+            "ts": ts_list,
+            "size_bytes": cumulative,
+            "tokens": [c // 4 for c in cumulative],
         }
 
     memory_events = []
     for ts_val, path, growth in reversed(rows):
         if growth and growth > 0:
-            memory_events.append({
-                "ts": ts_val, "path": path or "", "size_bytes": growth,
-                "prev_size": 0, "delta": growth, "tokens": growth // 4,
-            })
+            memory_events.append(
+                {
+                    "ts": ts_val,
+                    "path": path or "",
+                    "size_bytes": growth,
+                    "prev_size": 0,
+                    "delta": growth,
+                    "tokens": growth // 4,
+                }
+            )
             if len(memory_events) >= 50:
                 break
 

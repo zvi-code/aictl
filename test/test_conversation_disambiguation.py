@@ -144,36 +144,49 @@ def test_no_temp_fields_leak():
 def test_parse_agent_file_tool_use_count():
     """_parse_agent_file extracts tool_use_count from content blocks."""
     lines = [
-        json.dumps({
-            "agentId": "agent-1", "slug": "test", "sessionId": "s1",
-            "timestamp": "2026-03-29T10:00:00Z",
-        }),
-        json.dumps({
-            "type": "user", "timestamp": "2026-03-29T10:00:01Z",
-            "message": {"content": "fix the bug"},
-        }),
-        json.dumps({
-            "type": "assistant", "timestamp": "2026-03-29T10:00:02Z",
-            "message": {
-                "model": "claude-sonnet-4-6",
-                "content": [
-                    {"type": "text", "text": "Let me read the file"},
-                    {"type": "tool_use", "name": "Read", "input": {"path": "/foo"}},
-                ],
-                "usage": {"input_tokens": 100, "output_tokens": 50},
-            },
-        }),
-        json.dumps({
-            "type": "assistant", "timestamp": "2026-03-29T10:00:03Z",
-            "message": {
-                "model": "claude-sonnet-4-6",
-                "content": [
-                    {"type": "tool_use", "name": "Edit", "input": {}},
-                    {"type": "tool_use", "name": "Bash", "input": {}},
-                ],
-                "usage": {"input_tokens": 200, "output_tokens": 100},
-            },
-        }),
+        json.dumps(
+            {
+                "agentId": "agent-1",
+                "slug": "test",
+                "sessionId": "s1",
+                "timestamp": "2026-03-29T10:00:00Z",
+            }
+        ),
+        json.dumps(
+            {
+                "type": "user",
+                "timestamp": "2026-03-29T10:00:01Z",
+                "message": {"content": "fix the bug"},
+            }
+        ),
+        json.dumps(
+            {
+                "type": "assistant",
+                "timestamp": "2026-03-29T10:00:02Z",
+                "message": {
+                    "model": "claude-sonnet-4-6",
+                    "content": [
+                        {"type": "text", "text": "Let me read the file"},
+                        {"type": "tool_use", "name": "Read", "input": {"path": "/foo"}},
+                    ],
+                    "usage": {"input_tokens": 100, "output_tokens": 50},
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "assistant",
+                "timestamp": "2026-03-29T10:00:03Z",
+                "message": {
+                    "model": "claude-sonnet-4-6",
+                    "content": [
+                        {"type": "tool_use", "name": "Edit", "input": {}},
+                        {"type": "tool_use", "name": "Bash", "input": {}},
+                    ],
+                    "usage": {"input_tokens": 200, "output_tokens": 100},
+                },
+            }
+        ),
     ]
     with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
         f.write("\n".join(lines))

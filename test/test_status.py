@@ -45,6 +45,7 @@ def _discover_tool(root: Path, tool: str) -> ToolResources:
 # File discovery
 # ---------------------------------------------------------------------------
 
+
 class TestDiscoverClaude:
     def test_finds_claude_md(self, tmp_path):
         (tmp_path / "CLAUDE.md").write_text("Hello")
@@ -176,11 +177,10 @@ class TestDiscoverAictl:
 # Process helpers
 # ---------------------------------------------------------------------------
 
+
 class TestProcessHelpers:
     def test_display_name_app_bundle(self):
-        assert _process_display_name(
-            "/Applications/Cursor.app/Contents/MacOS/Cursor Helper"
-        ) == "Cursor"
+        assert _process_display_name("/Applications/Cursor.app/Contents/MacOS/Cursor Helper") == "Cursor"
 
     def test_display_name_plain_binary(self):
         assert _process_display_name("/usr/local/bin/claude --flag") == "claude"
@@ -197,18 +197,30 @@ class TestProcessHelpers:
 # Token budget
 # ---------------------------------------------------------------------------
 
+
 class TestTokenBudget:
     def test_basic_budget(self):
         tr = ToolResources(tool="test", label="Test")
         tr.files = [
-            ResourceFile("a.md", "instructions", tokens=100,
-                         sent_to_llm="yes", loaded_when="every-call",
-                         cacheable="yes", survives_compaction="yes"),
-            ResourceFile("b.md", "rules", tokens=50,
-                         sent_to_llm="conditional", loaded_when="on-file-match",
-                         cacheable="yes", survives_compaction="yes"),
-            ResourceFile("c.json", "config", tokens=30,
-                         sent_to_llm="no", loaded_when="session-start"),
+            ResourceFile(
+                "a.md",
+                "instructions",
+                tokens=100,
+                sent_to_llm="yes",
+                loaded_when="every-call",
+                cacheable="yes",
+                survives_compaction="yes",
+            ),
+            ResourceFile(
+                "b.md",
+                "rules",
+                tokens=50,
+                sent_to_llm="conditional",
+                loaded_when="on-file-match",
+                cacheable="yes",
+                survives_compaction="yes",
+            ),
+            ResourceFile("c.json", "config", tokens=30, sent_to_llm="no", loaded_when="session-start"),
         ]
         budget = compute_token_budget([tr])
         assert budget["always_loaded_tokens"] == 100
@@ -220,6 +232,7 @@ class TestTokenBudget:
 # ---------------------------------------------------------------------------
 # CLI integration
 # ---------------------------------------------------------------------------
+
 
 class TestStatusCLI:
     def test_basic_run(self, tmp_path):
@@ -273,6 +286,7 @@ class TestStatusCLI:
 # ---------------------------------------------------------------------------
 # CSV-driven discovery for tools that were previously separate functions
 # ---------------------------------------------------------------------------
+
 
 class TestDiscoverCopilot365:
     def test_finds_teamsapp_yml(self, tmp_path):

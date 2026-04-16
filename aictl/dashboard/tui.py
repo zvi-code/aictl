@@ -43,8 +43,8 @@ from .view_helpers import compute_tool_summary, format_duration, safe_float
 TOOL_COLOURS = TOOL_COLORS  # alias for backward compat within this file
 
 
-
 # ── Sparkline data ring-buffer ───────────────────────────────────
+
 
 class MetricHistory:
     """Keep last N values for a metric."""
@@ -56,7 +56,7 @@ class MetricHistory:
     def push(self, v: float):
         self._values.append(v)
         if len(self._values) > self._maxlen:
-            self._values = self._values[-self._maxlen:]
+            self._values = self._values[-self._maxlen :]
 
     @property
     def values(self) -> list[float]:
@@ -64,6 +64,7 @@ class MetricHistory:
 
 
 # ── Helper widgets ───────────────────────────────────────────────
+
 
 class StatCard(Static):
     """A single metric card."""
@@ -96,6 +97,7 @@ class StatCard(Static):
 
 
 # ── Main dashboard app ───────────────────────────────────────────
+
 
 class DashboardApp(App):
     """Live aictl dashboard."""
@@ -312,13 +314,42 @@ class DashboardApp(App):
 
     def on_mount(self) -> None:
         self._init_table("proc-table", "PID", "Tool", "Type", "Name", "CPU%", "MEM MB", "Anomalies")
-        self._init_table("mcp-detail-table", "Status", "Server", "Tool", "Transport", "Endpoint", "PID", "CPU%", "MEM MB")
+        self._init_table(
+            "mcp-detail-table", "Status", "Server", "Tool", "Transport", "Endpoint", "PID", "CPU%", "MEM MB"
+        )
         self._init_table("memory-table", "Source", "Profile", "File", "Tokens", "Lines", "Preview")
-        self._init_table("live-tool-table", "Tool", "Sessions", "PIDs", "Traffic", "Tokens", "MCP", "Files", "CPU", "Workspace", "State")
+        self._init_table(
+            "live-tool-table",
+            "Tool",
+            "Sessions",
+            "PIDs",
+            "Traffic",
+            "Tokens",
+            "MCP",
+            "Files",
+            "CPU",
+            "Workspace",
+            "State",
+        )
         self._init_table("collector-table", "Collector", "Status", "Mode", "Detail")
-        self._init_table("session-table", "Tool", "Session ID", "Duration", "CPU", "Input Tok", "Output Tok", "Files", "PIDs", "Traffic", "State", "Status")
+        self._init_table(
+            "session-table",
+            "Tool",
+            "Session ID",
+            "Duration",
+            "CPU",
+            "Input Tok",
+            "Output Tok",
+            "Files",
+            "PIDs",
+            "Traffic",
+            "State",
+            "Status",
+        )
         self._init_table("event-table", "Time", "Tool", "Kind", "Detail")
-        self._init_table("budget-table", "Tool", "Input Tok", "Output Tok", "Cache Read", "Cache Create", "Cost", "Sessions", "Model")
+        self._init_table(
+            "budget-table", "Tool", "Input Tok", "Output Tok", "Cache Read", "Cache Create", "Cost", "Sessions", "Model"
+        )
         self._init_table("metrics-table", "Metric", "Samples", "Latest Value")
 
         self.query_one("#file-tree", Tree).root.expand()
@@ -327,8 +358,8 @@ class DashboardApp(App):
 
         # Try connecting to running aictl serve instance
         from ..client import ServerClient
-        self._client = ServerClient.try_connect(
-            host=self._server_host, port=self._server_port)
+
+        self._client = ServerClient.try_connect(host=self._server_host, port=self._server_port)
         if self._client:
             self.sub_title = f"connected to {self._server_host}:{self._server_port}"
         else:
@@ -337,6 +368,7 @@ class DashboardApp(App):
             if self._include_live_monitor:
                 try:
                     from ..orchestrator import PersistentMonitor
+
                     self._monitor = PersistentMonitor(self._root)
                     self._monitor.start()
                 except Exception:
@@ -362,8 +394,7 @@ class DashboardApp(App):
             except Exception:
                 # Server went away — fall back to standalone
                 self._client = None
-                self.call_from_thread(
-                    lambda: setattr(self, "sub_title", "standalone mode (server disconnected)"))
+                self.call_from_thread(lambda: setattr(self, "sub_title", "standalone mode (server disconnected)"))
         # Use persistent monitor snapshot if available (no temporary runtime)
         live_override = None
         if self._monitor:
@@ -385,15 +416,15 @@ class DashboardApp(App):
         # Update stat cards
         for card_id, value in [
             ("sc-live-sessions", str(snap.total_live_sessions)),
-            ("sc-live-tokens",   _human_tokens(snap.total_live_estimated_tokens)),
-            ("sc-live-out",      _human_rate(snap.total_live_outbound_rate_bps)),
-            ("sc-live-in",       _human_rate(snap.total_live_inbound_rate_bps)),
-            ("sc-files",         str(snap.total_files)),
-            ("sc-tokens",        _human_tokens(snap.total_tokens)),
-            ("sc-cpu",           f"{snap.total_cpu:.1f}%"),
-            ("sc-mem",           f"{snap.total_mem_mb:.0f} MB"),
-            ("sc-mcp",           str(snap.total_mcp_servers)),
-            ("sc-agentmem",      f"{snap.total_memory_entries} ({_human_tokens(snap.total_memory_tokens)})"),
+            ("sc-live-tokens", _human_tokens(snap.total_live_estimated_tokens)),
+            ("sc-live-out", _human_rate(snap.total_live_outbound_rate_bps)),
+            ("sc-live-in", _human_rate(snap.total_live_inbound_rate_bps)),
+            ("sc-files", str(snap.total_files)),
+            ("sc-tokens", _human_tokens(snap.total_tokens)),
+            ("sc-cpu", f"{snap.total_cpu:.1f}%"),
+            ("sc-mem", f"{snap.total_mem_mb:.0f} MB"),
+            ("sc-mcp", str(snap.total_mcp_servers)),
+            ("sc-agentmem", f"{snap.total_memory_entries} ({_human_tokens(snap.total_memory_tokens)})"),
         ]:
             self.query_one(f"#{card_id}", StatCard).update_value(value)
 
@@ -526,20 +557,28 @@ class DashboardApp(App):
             label = TOOL_LABELS.get(tr.tool, tr.label)
             tok_total = sum(f.tokens for f in tr.files)
             tok_str = f"  {_human_tokens(tok_total)}" if tok_total else ""
-            tool_node = tree.root.add(
-                f"[{colour}]●[/] {label}  ({len(tr.files)} files{tok_str})"
-            )
+            tool_node = tree.root.add(f"[{colour}]●[/] {label}  ({len(tr.files)} files{tok_str})")
 
-            cat_order = ['instructions', 'config', 'rules', 'commands', 'skills',
-                         'agent', 'memory', 'prompt', 'transcript', 'temp',
-                         'runtime', 'credentials', 'extensions']
+            cat_order = [
+                "instructions",
+                "config",
+                "rules",
+                "commands",
+                "skills",
+                "agent",
+                "memory",
+                "prompt",
+                "transcript",
+                "temp",
+                "runtime",
+                "credentials",
+                "extensions",
+            ]
             for cat in sorted(cats.keys(), key=lambda c: cat_order.index(c) if c in cat_order else 99):
                 files = cats[cat]
                 cat_tok = sum(f.tokens for f in files)
                 cat_tok_str = f"  {_human_tokens(cat_tok)}" if cat_tok else ""
-                cat_node = tool_node.add(
-                    f"[dim]{cat}[/dim]  ({len(files)}{cat_tok_str})"
-                )
+                cat_node = tool_node.add(f"[dim]{cat}[/dim]  ({len(files)}{cat_tok_str})")
                 # Auto-expand small categories
                 if len(files) <= 5:
                     cat_node.expand()
@@ -628,7 +667,7 @@ class DashboardApp(App):
 
     def _update_session_table(self, snap: DashboardSnapshot) -> None:
         session_t = self._cleared_table("session-table")
-        for s in (snap.sessions or []):
+        for s in snap.sessions or []:
             tool = s.get("tool", "")
             sid = s.get("session_id", "")
             short_id = (sid[:12] + "…") if len(sid) > 12 else sid
@@ -648,7 +687,16 @@ class DashboardApp(App):
             status = "[#34d399]active[/]" if s.get("active", True) else "ended"
             session_t.add_row(
                 TOOL_LABELS.get(tool, tool),
-                short_id, dur, cpu, in_tok, out_tok, files, pids, traffic, state_str, status,
+                short_id,
+                dur,
+                cpu,
+                in_tok,
+                out_tok,
+                files,
+                pids,
+                traffic,
+                state_str,
+                status,
             )
 
     def _update_event_table(self, snap: DashboardSnapshot) -> None:
@@ -681,7 +729,7 @@ class DashboardApp(App):
 
     def _update_budget_table(self, snap: DashboardSnapshot) -> None:
         budget_t = self._cleared_table("budget-table")
-        for tel in (snap.tool_telemetry or []):
+        for tel in snap.tool_telemetry or []:
             tool = tel.get("tool", "")
             # TODO(#token-usage): migrate to TokenUsage.from_dict
             in_tok = int(tel.get("input_tokens", 0))
@@ -741,13 +789,16 @@ class DashboardApp(App):
             return
         try:
             import time as _time
+
             series = self._client.get_samples(series=metric_name, since=_time.time() - 3600)
             values = series.get("value", [])
             self.call_from_thread(self._apply_metric_series, metric_name, values)
         except Exception:
             self.call_from_thread(
                 lambda: self.query_one("#metric-info", Label).update(
-                    f"[dim]Failed to load series for {metric_name}[/dim]"))
+                    f"[dim]Failed to load series for {metric_name}[/dim]"
+                )
+            )
 
     def _apply_metric_series(self, name: str, values: list[float]) -> None:
         try:
@@ -757,9 +808,7 @@ class DashboardApp(App):
             info = self.query_one("#metric-info", Label)
             if values:
                 info.update(
-                    f"{len(values)} samples  "
-                    f"min={min(values):.4g}  max={max(values):.4g}  "
-                    f"latest={values[-1]:.4g}"
+                    f"{len(values)} samples  min={min(values):.4g}  max={max(values):.4g}  latest={values[-1]:.4g}"
                 )
             else:
                 info.update("No samples in the last hour")
@@ -840,8 +889,7 @@ class DashboardApp(App):
                 if len(entry.content) > 500:
                     text += "\n…"
                 preview_label.update(
-                    f"[bold]{SOURCE_LABELS.get(entry.source, entry.source)}[/bold] "
-                    f"({entry.profile})\n{text}"
+                    f"[bold]{SOURCE_LABELS.get(entry.source, entry.source)}[/bold] ({entry.profile})\n{text}"
                 )
                 # Also load full content in the content tab
                 if entry.file:
@@ -883,6 +931,7 @@ def _human_rate(n: float) -> str:
 
 # ── Entry point ──────────────────────────────────────────────────
 
+
 def run_dashboard(
     root: Path,
     interval: float = 5.0,
@@ -897,8 +946,10 @@ def run_dashboard(
     Falls back to standalone collection if no server is detected.
     """
     app = DashboardApp(
-        root=root, interval=interval,
+        root=root,
+        interval=interval,
         include_live_monitor=include_live_monitor,
-        server_host=server_host, server_port=server_port,
+        server_host=server_host,
+        server_port=server_port,
     )
     app.run()

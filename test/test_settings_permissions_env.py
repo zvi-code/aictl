@@ -14,14 +14,12 @@ from aictl.resolver import resolve
 # Parser tests — settings
 # ---------------------------------------------------------------------------
 
+
 class TestParserSettings:
     def test_parse_setting_string_value(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / ".context.toml").write_text(
-                '[settings._always]\n'
-                'teammateMode = "tmux"\n'
-            )
+            (root / ".context.toml").write_text('[settings._always]\nteammateMode = "tmux"\n')
             parsed = parse_aictx(root / ".context.toml")
             assert len(parsed.settings) == 1
             s = parsed.settings[0]
@@ -32,10 +30,7 @@ class TestParserSettings:
     def test_parse_setting_boolean_value(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / ".context.toml").write_text(
-                '[settings._always]\n'
-                'verbose = true\n'
-            )
+            (root / ".context.toml").write_text("[settings._always]\nverbose = true\n")
             parsed = parse_aictx(root / ".context.toml")
             assert len(parsed.settings) == 1
             assert parsed.settings[0].value is True
@@ -43,10 +38,7 @@ class TestParserSettings:
     def test_parse_setting_object_value(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / ".context.toml").write_text(
-                '[settings._always]\n'
-                'customConfig = {timeout = 30, retries = 3}\n'
-            )
+            (root / ".context.toml").write_text("[settings._always]\ncustomConfig = {timeout = 30, retries = 3}\n")
             parsed = parse_aictx(root / ".context.toml")
             assert len(parsed.settings) == 1
             assert parsed.settings[0].value == {"timeout": 30, "retries": 3}
@@ -55,10 +47,7 @@ class TestParserSettings:
         """A settings section with no keys results in no settings."""
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n'
-            )
+            (root / ".context.toml").write_text('[instructions]\nbase = "Test project"\n')
             parsed = parse_aictx(root / ".context.toml")
             assert len(parsed.settings) == 0
 
@@ -66,10 +55,7 @@ class TestParserSettings:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[settings._always]\n'
-                'teammateMode = "tmux"\n\n'
-                '[settings.debug]\n'
-                'theme = "dark"\n'
+                '[settings._always]\nteammateMode = "tmux"\n\n[settings.debug]\ntheme = "dark"\n'
             )
             parsed = parse_aictx(root / ".context.toml")
             assert len(parsed.settings) == 2
@@ -78,11 +64,11 @@ class TestParserSettings:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[settings._always]\n'
+                "[settings._always]\n"
                 'teammateMode = "tmux"\n\n'
-                '[settings.debug]\n'
+                "[settings.debug]\n"
                 'theme = "dark"\n\n'
-                '[settings.review]\n'
+                "[settings.review]\n"
                 'theme = "light"\n'
             )
             parsed = parse_aictx(root / ".context.toml")
@@ -104,13 +90,13 @@ class TestParserSettings:
 # Parser tests — permissions
 # ---------------------------------------------------------------------------
 
+
 class TestParserPermissions:
     def test_parse_permission_basic(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[permissions]\n'
-                '_always = ["Bash(npm run *)", "Bash(python -m pytest *)", "Read(*)"]\n'
+                '[permissions]\n_always = ["Bash(npm run *)", "Bash(python -m pytest *)", "Read(*)"]\n'
             )
             parsed = parse_aictx(root / ".context.toml")
             assert len(parsed.permissions) == 1
@@ -122,10 +108,7 @@ class TestParserPermissions:
         """TOML arrays don't have blank lines; test basic array parsing."""
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / ".context.toml").write_text(
-                '[permissions]\n'
-                '_always = ["Bash(npm run *)", "Read(*)"]\n'
-            )
+            (root / ".context.toml").write_text('[permissions]\n_always = ["Bash(npm run *)", "Read(*)"]\n')
             parsed = parse_aictx(root / ".context.toml")
             assert parsed.permissions[0].patterns == ["Bash(npm run *)", "Read(*)"]
 
@@ -133,7 +116,7 @@ class TestParserPermissions:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[permissions]\n'
+                "[permissions]\n"
                 '_always = ["Read(*)", "Write(*)"]\n'
                 'debug = ["Bash(gdb *)"]\n'
                 'review = ["Bash(gh pr *)"]\n'
@@ -157,15 +140,12 @@ class TestParserPermissions:
 # Parser tests — env
 # ---------------------------------------------------------------------------
 
+
 class TestParserEnv:
     def test_parse_env_basic(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / ".context.toml").write_text(
-                '[env._always]\n'
-                'DEBUG = "true"\n'
-                'NODE_ENV = "development"\n'
-            )
+            (root / ".context.toml").write_text('[env._always]\nDEBUG = "true"\nNODE_ENV = "development"\n')
             parsed = parse_aictx(root / ".context.toml")
             assert len(parsed.env_vars) == 1
             e = parsed.env_vars[0]
@@ -176,12 +156,7 @@ class TestParserEnv:
         """TOML handles comments natively; test multiple env keys."""
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / ".context.toml").write_text(
-                '[env._always]\n'
-                '# This is a comment\n'
-                'FOO = "bar"\n'
-                'BAZ = "qux"\n'
-            )
+            (root / ".context.toml").write_text('[env._always]\n# This is a comment\nFOO = "bar"\nBAZ = "qux"\n')
             parsed = parse_aictx(root / ".context.toml")
             assert parsed.env_vars[0].vars == {"FOO": "bar", "BAZ": "qux"}
 
@@ -189,8 +164,7 @@ class TestParserEnv:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[env._always]\n'
-                'DATABASE_URL = "postgres://user:pass@host/db?opt=val"\n'
+                '[env._always]\nDATABASE_URL = "postgres://user:pass@host/db?opt=val"\n'
             )
             parsed = parse_aictx(root / ".context.toml")
             assert parsed.env_vars[0].vars["DATABASE_URL"] == "postgres://user:pass@host/db?opt=val"
@@ -199,10 +173,10 @@ class TestParserEnv:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[env._always]\n'
+                "[env._always]\n"
                 'NODE_ENV = "production"\n'
                 'LOG_LEVEL = "info"\n\n'
-                '[env.debug]\n'
+                "[env.debug]\n"
                 'NODE_ENV = "development"\n'
                 'DEBUG = "true"\n'
             )
@@ -221,16 +195,17 @@ class TestParserEnv:
 # Resolver tests
 # ---------------------------------------------------------------------------
 
+
 class TestResolverSettingsPermissionsEnv:
     def test_resolve_settings_from_root(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
+                "[instructions]\n"
                 'base = "Test project"\n\n'
-                '[settings._always]\n'
+                "[settings._always]\n"
                 'teammateMode = "tmux"\n\n'
-                '[settings.debug]\n'
+                "[settings.debug]\n"
                 'theme = "dark"\n'
             )
             scanned = scan(root)
@@ -241,10 +216,7 @@ class TestResolverSettingsPermissionsEnv:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n\n'
-                '[permissions]\n'
-                '_always = ["Bash(npm run *)", "Read(*)"]\n'
+                '[instructions]\nbase = "Test project"\n\n[permissions]\n_always = ["Bash(npm run *)", "Read(*)"]\n'
             )
             scanned = scan(root)
             resolved = resolve(root, scanned, None)
@@ -254,11 +226,7 @@ class TestResolverSettingsPermissionsEnv:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n\n'
-                '[env._always]\n'
-                'DEBUG = "true"\n'
-                'NODE_ENV = "development"\n'
+                '[instructions]\nbase = "Test project"\n\n[env._always]\nDEBUG = "true"\nNODE_ENV = "development"\n'
             )
             scanned = scan(root)
             resolved = resolve(root, scanned, None)
@@ -267,10 +235,7 @@ class TestResolverSettingsPermissionsEnv:
     def test_resolve_empty_when_no_sections(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n'
-            )
+            (root / ".context.toml").write_text('[instructions]\nbase = "Test project"\n')
             scanned = scan(root)
             resolved = resolve(root, scanned, None)
             assert resolved.settings == {}
@@ -282,15 +247,13 @@ class TestResolverSettingsPermissionsEnv:
 # Claude emitter tests
 # ---------------------------------------------------------------------------
 
+
 class TestClaudeEmitterSettings:
     def test_emit_settings_to_settings_json(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n\n'
-                '[settings._always]\n'
-                'teammateMode = "tmux"\n'
+                '[instructions]\nbase = "Test project"\n\n[settings._always]\nteammateMode = "tmux"\n'
             )
             scanned = scan(root)
             resolved = resolve(root, scanned, None)
@@ -305,9 +268,9 @@ class TestClaudeEmitterSettings:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
+                "[instructions]\n"
                 'base = "Test project"\n\n'
-                '[permissions]\n'
+                "[permissions]\n"
                 '_always = ["Bash(npm run *)", "Bash(python -m pytest *)", "Read(*)"]\n'
             )
             scanned = scan(root)
@@ -318,19 +281,13 @@ class TestClaudeEmitterSettings:
             assert settings_path.is_file()
             data = json.loads(settings_path.read_text("utf-8"))
             assert "permissions" in data
-            assert data["permissions"]["allow"] == [
-                "Bash(npm run *)", "Bash(python -m pytest *)", "Read(*)"
-            ]
+            assert data["permissions"]["allow"] == ["Bash(npm run *)", "Bash(python -m pytest *)", "Read(*)"]
 
     def test_emit_env_to_settings_json(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n\n'
-                '[env._always]\n'
-                'DEBUG = "true"\n'
-                'NODE_ENV = "development"\n'
+                '[instructions]\nbase = "Test project"\n\n[env._always]\nDEBUG = "true"\nNODE_ENV = "development"\n'
             )
             scanned = scan(root)
             resolved = resolve(root, scanned, None)
@@ -346,15 +303,15 @@ class TestClaudeEmitterSettings:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
+                "[instructions]\n"
                 'base = "Test project"\n\n'
-                '[hooks._always]\n'
+                "[hooks._always]\n"
                 'PreToolUse = \'[{"matcher": "Bash", "hooks": [{"type": "command", "command": "lint.sh"}]}]\'\n\n'
-                '[settings._always]\n'
+                "[settings._always]\n"
                 'teammateMode = "tmux"\n\n'
-                '[permissions]\n'
+                "[permissions]\n"
                 '_always = ["Bash(npm run *)", "Read(*)"]\n\n'
-                '[env._always]\n'
+                "[env._always]\n"
                 'DEBUG = "true"\n'
             )
             scanned = scan(root)
@@ -376,15 +333,10 @@ class TestClaudeEmitterSettings:
             root = Path(tmpdir)
             settings_dir = root / ".claude"
             settings_dir.mkdir(parents=True)
-            (settings_dir / "settings.local.json").write_text(
-                json.dumps({"customKey": "preserve-me"})
-            )
+            (settings_dir / "settings.local.json").write_text(json.dumps({"customKey": "preserve-me"}))
 
             (root / ".context.toml").write_text(
-                '[instructions]\n'
-                'base = "Test project"\n\n'
-                '[settings._always]\n'
-                'teammateMode = "tmux"\n'
+                '[instructions]\nbase = "Test project"\n\n[settings._always]\nteammateMode = "tmux"\n'
             )
             scanned = scan(root)
             resolved = resolve(root, scanned, None)
@@ -398,13 +350,13 @@ class TestClaudeEmitterSettings:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
+                "[instructions]\n"
                 'base = "Test project"\n\n'
-                '[settings._always]\n'
+                "[settings._always]\n"
                 'teammateMode = "tmux"\n\n'
-                '[permissions]\n'
+                "[permissions]\n"
                 '_always = ["Read(*)"]\n\n'
-                '[env._always]\n'
+                "[env._always]\n"
                 'FOO = "bar"\n'
             )
             scanned = scan(root)
@@ -423,18 +375,18 @@ class TestClaudeEmitterSettings:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / ".context.toml").write_text(
-                '[instructions]\n'
+                "[instructions]\n"
                 'base = "Test project"\n\n'
-                '[settings._always]\n'
+                "[settings._always]\n"
                 'teammateMode = "tmux"\n\n'
-                '[settings.debug]\n'
+                "[settings.debug]\n"
                 'theme = "dark"\n\n'
-                '[permissions]\n'
+                "[permissions]\n"
                 '_always = ["Read(*)"]\n'
                 'debug = ["Bash(gdb *)"]\n\n'
-                '[env._always]\n'
+                "[env._always]\n"
                 'LOG_LEVEL = "info"\n\n'
-                '[env.debug]\n'
+                "[env.debug]\n"
                 'DEBUG = "true"\n'
             )
             scanned = scan(root)

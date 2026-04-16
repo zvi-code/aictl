@@ -23,11 +23,13 @@ class TestEmit:
 
     def test_emit_batch(self):
         sink = SampleSink()
-        sink.emit_batch([
-            ("cpu.core.0", 10.0, None),
-            ("cpu.core.1", 20.0, None),
-            ("cpu.core.2", 30.0, {"note": "hot"}),
-        ])
+        sink.emit_batch(
+            [
+                ("cpu.core.0", 10.0, None),
+                ("cpu.core.1", 20.0, None),
+                ("cpu.core.2", 30.0, {"note": "hot"}),
+            ]
+        )
         assert sink.stats()["total_emitted"] == 3
         assert sink.stats()["metrics_tracked"] == 3
 
@@ -74,7 +76,7 @@ class TestHandlers:
 
     def test_handler_error_doesnt_crash(self):
         sink = SampleSink()
-        sink.register_handler(lambda m, v, t, ts: 1/0)  # raises ZeroDivisionError
+        sink.register_handler(lambda m, v, t, ts: 1 / 0)  # raises ZeroDivisionError
         sink.emit("test", 1.0)  # should not raise
         assert sink.stats()["total_emitted"] == 1
 

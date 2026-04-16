@@ -20,9 +20,7 @@ from dataclasses import dataclass, field
 _CORRELATOR_ID_RE = re.compile(r"^([a-z0-9_-]+):(\d+):(\d+)$")
 _EPHEMERAL_RE = re.compile(r"^([a-z0-9_-]+):ephemeral$")
 # UUID v4
-_UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
-)
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
 
 def id_type(session_id: str) -> str:
@@ -49,8 +47,7 @@ def _parse_correlator_id(session_id: str) -> tuple[str, int, int] | None:
     return None
 
 
-def fingerprint_session(tool: str, pid: int, start_ts: float,
-                        workspace: str = "") -> str:
+def fingerprint_session(tool: str, pid: int, start_ts: float, workspace: str = "") -> str:
     """Create a stable composite hash for a PID-based session.
 
     The hash is deterministic for the same inputs, surviving daemon
@@ -112,6 +109,7 @@ class SessionIdentity:
 
 
 # ── Resolution / merge ──────────────────────────────────────
+
 
 def resolve_session_id(
     *,
@@ -189,17 +187,14 @@ def merge_identities(a: SessionIdentity, b: SessionIdentity) -> SessionIdentity:
         tool=primary.tool or secondary.tool,
         project=primary.project or secondary.project,
         workspace=primary.workspace or secondary.workspace,
-        started_at=min(
-            t for t in (primary.started_at, secondary.started_at) if t
-        ) if (primary.started_at or secondary.started_at) else 0.0,
+        started_at=min(t for t in (primary.started_at, secondary.started_at) if t)
+        if (primary.started_at or secondary.started_at)
+        else 0.0,
         source=primary.source or secondary.source,
     )
     # Collect all aliases
     seen = {merged.canonical_id}
-    for sid in (
-        primary.source_ids + secondary.source_ids
-        + [secondary.canonical_id]
-    ):
+    for sid in primary.source_ids + secondary.source_ids + [secondary.canonical_id]:
         if sid and sid not in seen:
             merged.source_ids.append(sid)
             seen.add(sid)

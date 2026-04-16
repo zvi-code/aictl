@@ -35,9 +35,12 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
                 emit_file(root / ".windsurfrules", wrap_deployed(combined, scope.rel_path), dry_run, results)
         else:
             emit_sub_scope(
-                scope, rules_dir=root / ".windsurf" / "rules", ext=".md",
+                scope,
+                rules_dir=root / ".windsurf" / "rules",
+                ext=".md",
                 frontmatter_fn=_windsurf_frontmatter,
-                dry_run=dry_run, results=results,
+                dry_run=dry_run,
+                results=results,
             )
 
     emit_mcp_servers(root / ".windsurf" / "mcp.json", "mcpServers", resolved, dry_run, results)

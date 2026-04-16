@@ -106,16 +106,19 @@ class TestSSEConnection:
             initial_count = len(reader.events)
 
             # Post a hook event
-            aictl_server.post_hook({
-                "event": "SessionStart",
-                "session_id": f"sse-test-{int(time.time() * 1000)}",
-                "tool": "claude-code",
-                "ts": time.time(),
-            })
+            aictl_server.post_hook(
+                {
+                    "event": "SessionStart",
+                    "session_id": f"sse-test-{int(time.time() * 1000)}",
+                    "tool": "claude-code",
+                    "ts": time.time(),
+                }
+            )
 
             # Wait for an update (SSE refresh interval ~5s, wait up to 15s)
             events = reader.wait_for_events(
-                min_count=initial_count + 1, timeout=15,
+                min_count=initial_count + 1,
+                timeout=15,
             )
             assert len(events) > initial_count, (
                 f"No SSE update after hook (got {len(events)} total, initial was {initial_count})"

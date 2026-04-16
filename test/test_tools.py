@@ -57,6 +57,7 @@ from aictl.tools import (
 # Taxonomy lookups (pure functions)
 # ────────────────────────────────────────────────────────────────
 
+
 class TestToolTaxonomy:
     def test_tool_vendor_known(self):
         assert tool_vendor("claude-code") == "anthropic"
@@ -154,6 +155,7 @@ class TestExpandToolFilter:
 # CSV helpers (pure)
 # ────────────────────────────────────────────────────────────────
 
+
 class TestPlatformMatch:
     def test_all_matches_everything(self):
         assert _platform_match("all", "macos") is True
@@ -244,11 +246,13 @@ class TestLoadCsv:
         csv_file.write_text("a,b\n1,2\n3,4\n")
         # Factory that fails on second row
         call_count = [0]
+
         def factory(row):
             call_count[0] += 1
             if call_count[0] == 2:
                 raise KeyError("intentional")
             return row["a"]
+
         result = _load_csv(csv_file, factory)
         assert len(result) == 1
         assert result[0] == "1"
@@ -257,31 +261,43 @@ class TestLoadCsv:
 class TestFilterSpecs:
     def _make_spec(self, platform, ai_tool):
         return PathSpec(
-            path_template="", ai_tool=ai_tool, vendor="", host="",
-            platform=platform, hidden=False, scope="", category="",
-            sent_to_llm="", approx_tokens="", read_write="",
-            survives_compaction="", cacheable="", loaded_when="",
-            path_args="", description="", resolution="literal",
+            path_template="",
+            ai_tool=ai_tool,
+            vendor="",
+            host="",
+            platform=platform,
+            hidden=False,
+            scope="",
+            category="",
+            sent_to_llm="",
+            approx_tokens="",
+            read_write="",
+            survives_compaction="",
+            cacheable="",
+            loaded_when="",
+            path_args="",
+            description="",
+            resolution="literal",
             root_strategy="",
         )
 
     def test_filter_by_platform(self):
-        specs = [self._make_spec("macos", "claude-code"),
-                 self._make_spec("linux", "claude-code")]
+        specs = [self._make_spec("macos", "claude-code"), self._make_spec("linux", "claude-code")]
         result = _filter_specs(specs, "macos", None)
         assert len(result) == 1
 
     def test_filter_by_tool(self):
-        specs = [self._make_spec("all", "claude-code"),
-                 self._make_spec("all", "cursor")]
+        specs = [self._make_spec("all", "claude-code"), self._make_spec("all", "cursor")]
         result = _filter_specs(specs, "macos", ["cursor"])
         assert len(result) == 1
         assert result[0].ai_tool == "cursor"
 
     def test_filter_tool_group(self):
-        specs = [self._make_spec("all", "claude-code"),
-                 self._make_spec("all", "claude-desktop"),
-                 self._make_spec("all", "cursor")]
+        specs = [
+            self._make_spec("all", "claude-code"),
+            self._make_spec("all", "claude-desktop"),
+            self._make_spec("all", "cursor"),
+        ]
         result = _filter_specs(specs, "macos", ["claude"])
         assert len(result) == 2
 
@@ -294,6 +310,7 @@ class TestFilterSpecs:
 # ────────────────────────────────────────────────────────────────
 # Path template helpers (pure)
 # ────────────────────────────────────────────────────────────────
+
 
 class TestExpandHome:
     def test_tilde_expansion(self):
@@ -315,8 +332,9 @@ class TestParamsToGlob:
         assert _params_to_glob("{project-root}/.claude") == "*/.claude"
 
     def test_multiple_params(self):
-        assert _params_to_glob("{root}/{profile}/settings.json") == "*/*/*/settings.json" or \
-               "*" in _params_to_glob("{root}/{profile}/settings.json")
+        assert _params_to_glob("{root}/{profile}/settings.json") == "*/*/*/settings.json" or "*" in _params_to_glob(
+            "{root}/{profile}/settings.json"
+        )
 
     def test_no_params(self):
         assert _params_to_glob("/plain/path") == "/plain/path"
@@ -325,6 +343,7 @@ class TestParamsToGlob:
 # ────────────────────────────────────────────────────────────────
 # Tree walk helpers (use tmp_path)
 # ────────────────────────────────────────────────────────────────
+
 
 class TestTreeWalk:
     def test_find_in_tree(self, tmp_path):
@@ -363,9 +382,7 @@ class TestTreeWalk:
         (tmp_path / "sub").mkdir()
         (tmp_path / "target.txt").touch()
         (tmp_path / "sub" / ".claude").mkdir()
-        files, dirs = batch_find_in_tree(
-            tmp_path, {"target.txt"}, {".claude"}
-        )
+        files, dirs = batch_find_in_tree(tmp_path, {"target.txt"}, {".claude"})
         assert len(files["target.txt"]) == 1
         assert len(dirs[".claude"]) == 1
 
@@ -373,6 +390,7 @@ class TestTreeWalk:
 # ────────────────────────────────────────────────────────────────
 # Dataclass tests
 # ────────────────────────────────────────────────────────────────
+
 
 class TestDataclasses:
     def test_resource_file_normalizes_path(self):
@@ -402,11 +420,23 @@ class TestDataclasses:
 
     def test_pathspec_frozen(self):
         ps = PathSpec(
-            path_template="~/.claude", ai_tool="claude-code", vendor="anthropic",
-            host="cli", platform="all", hidden=False, scope="global",
-            category="settings", sent_to_llm="", approx_tokens="0",
-            read_write="", survives_compaction="", cacheable="",
-            loaded_when="", path_args="", description="", resolution="literal",
+            path_template="~/.claude",
+            ai_tool="claude-code",
+            vendor="anthropic",
+            host="cli",
+            platform="all",
+            hidden=False,
+            scope="global",
+            category="settings",
+            sent_to_llm="",
+            approx_tokens="0",
+            read_write="",
+            survives_compaction="",
+            cacheable="",
+            loaded_when="",
+            path_args="",
+            description="",
+            resolution="literal",
             root_strategy="",
         )
         with pytest.raises(AttributeError):
@@ -416,6 +446,7 @@ class TestDataclasses:
 # ────────────────────────────────────────────────────────────────
 # File dedup
 # ────────────────────────────────────────────────────────────────
+
 
 class TestDedupFiles:
     def test_no_dupes(self):
@@ -443,6 +474,7 @@ class TestDedupFiles:
 # ────────────────────────────────────────────────────────────────
 # MCP transport classification (pure)
 # ────────────────────────────────────────────────────────────────
+
 
 class TestClassifyMcpTransport:
     def test_url_field(self):
@@ -496,6 +528,7 @@ class TestMatchMcpToProcess:
 # Process display name
 # ────────────────────────────────────────────────────────────────
 
+
 class TestProcessDisplayName:
     @patch("aictl.tools.IS_MACOS", False)
     def test_simple_name(self):
@@ -503,9 +536,7 @@ class TestProcessDisplayName:
 
     @patch("aictl.tools.IS_MACOS", True)
     def test_macos_app_bundle(self):
-        name = _process_display_name(
-            "/Applications/Claude.app/Contents/MacOS/Claude --flag"
-        )
+        name = _process_display_name("/Applications/Claude.app/Contents/MacOS/Claude --flag")
         assert name == "Claude"
 
     @patch("aictl.tools.IS_MACOS", False)
@@ -517,15 +548,31 @@ class TestProcessDisplayName:
 # Anomaly detection
 # ────────────────────────────────────────────────────────────────
 
+
 class TestDetectAnomalies:
     def _make_process_spec(self, **overrides):
         defaults = dict(
-            process_name="test", ai_tool="test", vendor="test", host="cli",
-            process_type="", runtime="", parent_process="", starts_at="",
-            stops_at="", is_daemon=False, auto_start=False, listens_port="",
-            outbound_targets="", memory_idle_mb="", memory_active_mb="100",
-            known_leak=False, leak_pattern="", zombie_risk="none",
-            cleanup_command="", ps_grep_pattern="", platform="all",
+            process_name="test",
+            ai_tool="test",
+            vendor="test",
+            host="cli",
+            process_type="",
+            runtime="",
+            parent_process="",
+            starts_at="",
+            stops_at="",
+            is_daemon=False,
+            auto_start=False,
+            listens_port="",
+            outbound_targets="",
+            memory_idle_mb="",
+            memory_active_mb="100",
+            known_leak=False,
+            leak_pattern="",
+            zombie_risk="none",
+            cleanup_command="",
+            ps_grep_pattern="",
+            platform="all",
             description="",
         )
         defaults.update(overrides)
@@ -555,9 +602,7 @@ class TestDetectAnomalies:
         assert len(anomalies) == 0  # should not crash
 
     def test_known_leak_only_with_bloat(self):
-        spec = self._make_process_spec(
-            memory_active_mb="100", known_leak=True, leak_pattern="leaks memory over time"
-        )
+        spec = self._make_process_spec(memory_active_mb="100", known_leak=True, leak_pattern="leaks memory over time")
         # No bloat → no leak warning
         anomalies = _detect_anomalies(50.0, 1234, spec)
         assert not any(a["type"] == "known_leak" for a in anomalies)
@@ -572,18 +617,25 @@ class TestDetectAnomalies:
 # Token budget computation
 # ────────────────────────────────────────────────────────────────
 
+
 class TestComputeTokenBudget:
     def _make_tool(self, tool, files):
         return ToolResources(
             tool=tool,
             label=tool,
-            files=[ResourceFile(path=f["path"], kind="instructions",
-                                tokens=f["tokens"], scope=f.get("scope", "project"),
-                                sent_to_llm=f.get("sent_to_llm", "yes"),
-                                loaded_when=f.get("loaded_when", "every-call"),
-                                cacheable=f.get("cacheable", ""),
-                                survives_compaction=f.get("survives_compaction", ""))
-                   for f in files],
+            files=[
+                ResourceFile(
+                    path=f["path"],
+                    kind="instructions",
+                    tokens=f["tokens"],
+                    scope=f.get("scope", "project"),
+                    sent_to_llm=f.get("sent_to_llm", "yes"),
+                    loaded_when=f.get("loaded_when", "every-call"),
+                    cacheable=f.get("cacheable", ""),
+                    survives_compaction=f.get("survives_compaction", ""),
+                )
+                for f in files
+            ],
         )
 
     def test_empty(self):
@@ -592,55 +644,102 @@ class TestComputeTokenBudget:
         assert result["project_count"] == 0
 
     def test_single_always_loaded_file(self):
-        tool = self._make_tool("claude-code", [
-            {"path": "/project/.claude/settings.json", "tokens": 500,
-             "sent_to_llm": "yes", "loaded_when": "every-call", "scope": "project"},
-        ])
+        tool = self._make_tool(
+            "claude-code",
+            [
+                {
+                    "path": "/project/.claude/settings.json",
+                    "tokens": 500,
+                    "sent_to_llm": "yes",
+                    "loaded_when": "every-call",
+                    "scope": "project",
+                },
+            ],
+        )
         result = compute_token_budget([tool], root="/project")
         assert result["always_loaded_tokens"] == 500
         assert result["total_potential_tokens"] == 500
 
     def test_never_sent_counted(self):
-        tool = self._make_tool("claude-code", [
-            {"path": "/project/.claude/config.json", "tokens": 100,
-             "sent_to_llm": "no", "scope": "project"},
-        ])
+        tool = self._make_tool(
+            "claude-code",
+            [
+                {"path": "/project/.claude/config.json", "tokens": 100, "sent_to_llm": "no", "scope": "project"},
+            ],
+        )
         result = compute_token_budget([tool], root="/project")
         assert result["never_sent_count"] == 1
         assert result["total_potential_tokens"] == 0
 
     def test_on_demand_categorized(self):
-        tool = self._make_tool("claude-code", [
-            {"path": "/project/src/file.py", "tokens": 200,
-             "sent_to_llm": "on-demand", "loaded_when": "on-demand", "scope": "project"},
-        ])
+        tool = self._make_tool(
+            "claude-code",
+            [
+                {
+                    "path": "/project/src/file.py",
+                    "tokens": 200,
+                    "sent_to_llm": "on-demand",
+                    "loaded_when": "on-demand",
+                    "scope": "project",
+                },
+            ],
+        )
         result = compute_token_budget([tool], root="/project")
         assert result["on_demand_tokens"] == 200
 
     def test_cacheable_counted(self):
-        tool = self._make_tool("claude-code", [
-            {"path": "/project/.claude/rules.md", "tokens": 300,
-             "sent_to_llm": "yes", "loaded_when": "every-call",
-             "cacheable": "yes", "scope": "project"},
-        ])
+        tool = self._make_tool(
+            "claude-code",
+            [
+                {
+                    "path": "/project/.claude/rules.md",
+                    "tokens": 300,
+                    "sent_to_llm": "yes",
+                    "loaded_when": "every-call",
+                    "cacheable": "yes",
+                    "scope": "project",
+                },
+            ],
+        )
         result = compute_token_budget([tool], root="/project")
         assert result["cacheable_tokens"] == 300
 
     def test_global_scope_tokens(self):
-        tool = self._make_tool("claude-code", [
-            {"path": "/home/user/.claude/settings.json", "tokens": 100,
-             "sent_to_llm": "yes", "loaded_when": "every-call", "scope": "global"},
-        ])
+        tool = self._make_tool(
+            "claude-code",
+            [
+                {
+                    "path": "/home/user/.claude/settings.json",
+                    "tokens": 100,
+                    "sent_to_llm": "yes",
+                    "loaded_when": "every-call",
+                    "scope": "global",
+                },
+            ],
+        )
         result = compute_token_budget([tool], root="/project")
         assert result["global_tokens"] == 100
 
     def test_sub_projects_largest_wins(self):
-        tool = self._make_tool("claude-code", [
-            {"path": "/project/app1/.claude/rules.md", "tokens": 100,
-             "sent_to_llm": "yes", "loaded_when": "every-call", "scope": "project"},
-            {"path": "/project/app2/.claude/rules.md", "tokens": 500,
-             "sent_to_llm": "yes", "loaded_when": "every-call", "scope": "project"},
-        ])
+        tool = self._make_tool(
+            "claude-code",
+            [
+                {
+                    "path": "/project/app1/.claude/rules.md",
+                    "tokens": 100,
+                    "sent_to_llm": "yes",
+                    "loaded_when": "every-call",
+                    "scope": "project",
+                },
+                {
+                    "path": "/project/app2/.claude/rules.md",
+                    "tokens": 500,
+                    "sent_to_llm": "yes",
+                    "loaded_when": "every-call",
+                    "scope": "project",
+                },
+            ],
+        )
         result = compute_token_budget([tool], root="/project")
         assert result["largest_project"] == "app2"
         assert result["largest_project_tokens"] == 500
@@ -651,6 +750,7 @@ class TestComputeTokenBudget:
 # ────────────────────────────────────────────────────────────────
 # Registry and data path
 # ────────────────────────────────────────────────────────────────
+
 
 class TestDataPath:
     def test_returns_path_in_data_dir(self):
@@ -668,23 +768,27 @@ class TestDataPath:
 class TestRegistrySingleton:
     def test_get_registry_returns_registry(self):
         from aictl.tools import Registry, get_registry
+
         reg = get_registry()
         assert isinstance(reg, Registry)
 
     def test_registry_loads_specs(self):
         from aictl.tools import get_registry
+
         reg = get_registry()
         specs = reg.path_specs()
         assert len(specs) > 0, "Registry loaded no path specs"
 
     def test_registry_process_specs(self):
         from aictl.tools import get_registry
+
         reg = get_registry()
         specs = reg.process_specs()
         assert isinstance(specs, list)
 
     def test_registry_filter_by_tool(self):
         from aictl.tools import get_registry
+
         reg = get_registry()
         all_specs = reg.path_specs()
         filtered = reg.path_specs(tools=["claude-code"])

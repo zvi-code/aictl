@@ -40,10 +40,15 @@ class TestDashboardSnapshotFromDict:
                     label="Claude Code",
                     vendor="anthropic",
                     host="cli,vscode",
-                    files=[ResourceFile(
-                        path="/test/CLAUDE.md", tool="claude-code",
-                        kind="instructions", size=100, tokens=25,
-                    )],
+                    files=[
+                        ResourceFile(
+                            path="/test/CLAUDE.md",
+                            tool="claude-code",
+                            kind="instructions",
+                            size=100,
+                            tokens=25,
+                        )
+                    ],
                     processes=[{"pid": 123, "name": "claude", "cpu_pct": 5.0, "mem_mb": 256}],
                 ),
             ],
@@ -62,6 +67,7 @@ class TestDashboardSnapshotFromDict:
 
     def test_from_empty_dict(self):
         from aictl.dashboard.models import DashboardSnapshot
+
         snap = DashboardSnapshot.from_dict({})
         assert snap.timestamp == 0
         assert snap.tools == []
@@ -69,11 +75,14 @@ class TestDashboardSnapshotFromDict:
 
     def test_from_partial_dict(self):
         from aictl.dashboard.models import DashboardSnapshot
-        snap = DashboardSnapshot.from_dict({
-            "timestamp": 2000.0,
-            "root": "/x",
-            "tools": [{"tool": "test", "label": "Test"}],
-        })
+
+        snap = DashboardSnapshot.from_dict(
+            {
+                "timestamp": 2000.0,
+                "root": "/x",
+                "tools": [{"tool": "test", "label": "Test"}],
+            }
+        )
         assert snap.timestamp == 2000.0
         assert len(snap.tools) == 1
         assert snap.tools[0].tool == "test"

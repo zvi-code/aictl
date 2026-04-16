@@ -43,8 +43,13 @@ _30D = 30 * _24H
 
 # Old tables to drop when migrating from v12 to v20
 _OLD_TABLES_TO_DROP = (
-    "metrics", "tool_metrics", "tool_telemetry",
-    "samples", "file_store", "path_specs", "process_specs",
+    "metrics",
+    "tool_metrics",
+    "tool_telemetry",
+    "samples",
+    "file_store",
+    "path_specs",
+    "process_specs",
 )
 
 # ─── Schema ────────────────────────────────────────────────────────
@@ -419,18 +424,32 @@ CREATE INDEX IF NOT EXISTS idx_datapoint_catalog_tab ON datapoint_catalog(tab);
 
 # ─── Data types ────────────────────────────────────────────────────
 
+
 class SystemSnapshotRow:
     """One global system snapshot row (was MetricsRow).
 
     Accepts both new field names (cpu_percent, memory_used_mb) and
     old field names (cpu, mem_mb) for backward compatibility.
     """
+
     __slots__ = (
-        "ts", "cpu_percent", "cpu_per_core", "memory_used_mb",
-        "memory_total_mb", "active_sessions", "active_processes",
-        "ai_token_rate", "files", "tokens", "mcp", "mem_tokens",
-        "memory_entries", "live_sessions", "live_tokens",
-        "live_in_rate", "live_out_rate",
+        "ts",
+        "cpu_percent",
+        "cpu_per_core",
+        "memory_used_mb",
+        "memory_total_mb",
+        "active_sessions",
+        "active_processes",
+        "ai_token_rate",
+        "files",
+        "tokens",
+        "mcp",
+        "mem_tokens",
+        "memory_entries",
+        "live_sessions",
+        "live_tokens",
+        "live_in_rate",
+        "live_out_rate",
     )
 
     def __init__(
@@ -482,6 +501,7 @@ MetricsRow = SystemSnapshotRow
 @dataclass(slots=True)
 class ProcessSnapshotRow:
     """One per-process snapshot row (was ToolMetricsRow)."""
+
     ts: float
     pid: int = 0
     tool: str = ""
@@ -498,6 +518,7 @@ class ToolMetricsRow:
 
     Translates to ProcessSnapshotRow internally.
     """
+
     ts: float
     tool: str
     cpu: float = 0.0
@@ -510,6 +531,7 @@ class ToolMetricsRow:
 @dataclass(slots=True)
 class EventRow:
     """One event log entry."""
+
     ts: float
     tool: str
     kind: str
@@ -521,6 +543,7 @@ class EventRow:
 @dataclass(slots=True)
 class ToolStatsRow:
     """Per-tool stats snapshot (from OTel / stats-cache / events.jsonl)."""
+
     ts: float
     tool: str
     source: str = ""
@@ -544,8 +567,9 @@ TelemetryRow = ToolStatsRow
 @dataclass(slots=True)
 class Metric:
     """One universal metric sample (Prometheus-style)."""
+
     ts: float
-    metric: str     # dotted name: 'cpu.core.3', 'proc.71416.cpu'
+    metric: str  # dotted name: 'cpu.core.3', 'proc.71416.cpu'
     value: float
     tags: dict[str, Any] = field(default_factory=dict)
 
@@ -557,6 +581,7 @@ Sample = Metric
 @dataclass(slots=True)
 class FileEntry:
     """A tracked file in the KV store."""
+
     path: str
     tool: str
     category: str = ""
@@ -577,6 +602,7 @@ class FileEntry:
 @dataclass(slots=True)
 class SessionRow:
     """A session record."""
+
     session_id: str
     tool: str = ""
     pid: int = 0
@@ -608,6 +634,7 @@ class RequestRow:
       - If source_ts == 0 (no embedded ts): dedup key = hash(session_id + model
         + input_tokens + output_tokens + source) — i.e. value-based only.
     """
+
     ts: float
     session_id: str = ""
     agent_id: str = ""
@@ -627,7 +654,7 @@ class RequestRow:
     http_status: int = 0
     source: str = ""
     prompt_id: str = ""
-    source_ts: float = 0.0   # embedded timestamp from source data (0 = absent)
+    source_ts: float = 0.0  # embedded timestamp from source data (0 = absent)
 
 
 @dataclass(slots=True)
@@ -638,6 +665,7 @@ class ToolInvocationRow:
     embedded in the source event payload (e.g. OTel timeUnixNano or hook
     event timestamp).  0 means no embedded timestamp was present.
     """
+
     ts: float
     session_id: str = ""
     request_id: int = 0
@@ -650,12 +678,13 @@ class ToolInvocationRow:
     input: dict[str, Any] = field(default_factory=dict)
     result_summary: str = ""
     source: str = ""
-    source_ts: float = 0.0   # embedded timestamp from source data (0 = absent)
+    source_ts: float = 0.0  # embedded timestamp from source data (0 = absent)
 
 
 @dataclass(slots=True)
 class ProcessRow:
     """One process record."""
+
     pid: int
     tool: str = ""
     project_path: str = ""
@@ -672,6 +701,7 @@ class ProcessRow:
 @dataclass(slots=True)
 class AgentRow:
     """One agent record."""
+
     agent_id: str
     session_id: str = ""
     tool: str = ""
@@ -690,25 +720,43 @@ class AgentRow:
 
 # ─── Tool stats SQL helpers ───────────────────────────────────────
 
+
 def _tool_stats_row(r: tuple) -> ToolStatsRow:
     return ToolStatsRow(
-        ts=r[0], tool=r[1], source=r[2], confidence=r[3],
-        input_tokens=r[4], output_tokens=r[5],
-        cache_read_tokens=r[6], cache_creation_tokens=r[7],
-        total_sessions=r[8], total_messages=r[9],
-        cost_usd=r[10], model=r[11],
+        ts=r[0],
+        tool=r[1],
+        source=r[2],
+        confidence=r[3],
+        input_tokens=r[4],
+        output_tokens=r[5],
+        cache_read_tokens=r[6],
+        cache_creation_tokens=r[7],
+        total_sessions=r[8],
+        total_messages=r[9],
+        cost_usd=r[10],
+        model=r[11],
         by_model=_json(r[12]),
         by_project=_json(r[13]) if len(r) > 13 else {},
     )
 
 
 def _tool_stats_tuple(r: ToolStatsRow) -> tuple:
-    return (r.ts, r.tool, r.source, round(r.confidence, 2),
-            r.input_tokens, r.output_tokens,
-            r.cache_read_tokens, r.cache_creation_tokens,
-            r.total_sessions, r.total_messages,
-            round(r.cost_usd, 4), r.model,
-            json.dumps(r.by_model), json.dumps(r.by_project))
+    return (
+        r.ts,
+        r.tool,
+        r.source,
+        round(r.confidence, 2),
+        r.input_tokens,
+        r.output_tokens,
+        r.cache_read_tokens,
+        r.cache_creation_tokens,
+        r.total_sessions,
+        r.total_messages,
+        round(r.cost_usd, 4),
+        r.model,
+        json.dumps(r.by_model),
+        json.dumps(r.by_project),
+    )
 
 
 # Backward compat aliases for old function names
@@ -736,23 +784,45 @@ _TELEMETRY_INSERT = _TOOL_STATS_INSERT
 
 # System snapshot keys (for column-major output)
 SYSTEM_SNAPSHOT_KEYS = [
-    "ts", "cpu_percent", "cpu_per_core",
-    "memory_used_mb", "memory_total_mb",
-    "active_sessions", "active_processes", "ai_token_rate",
-    "files", "tokens", "mcp", "mem_tokens", "memory_entries",
-    "live_sessions", "live_tokens", "live_in_rate", "live_out_rate",
+    "ts",
+    "cpu_percent",
+    "cpu_per_core",
+    "memory_used_mb",
+    "memory_total_mb",
+    "active_sessions",
+    "active_processes",
+    "ai_token_rate",
+    "files",
+    "tokens",
+    "mcp",
+    "mem_tokens",
+    "memory_entries",
+    "live_sessions",
+    "live_tokens",
+    "live_in_rate",
+    "live_out_rate",
 ]
 
 # Backward compat: old code references METRICS_KEYS for sparkline fields
 METRICS_KEYS = [
-    "ts", "files", "tokens", "cpu", "mem_mb", "mcp",
-    "mem_tokens", "memory_entries", "live_sessions",
-    "live_tokens", "live_in_rate", "live_out_rate",
+    "ts",
+    "files",
+    "tokens",
+    "cpu",
+    "mem_mb",
+    "mcp",
+    "mem_tokens",
+    "memory_entries",
+    "live_sessions",
+    "live_tokens",
+    "live_in_rate",
+    "live_out_rate",
 ]
 _METRICS_KEYS = METRICS_KEYS  # backward-compat alias
 
 
 # ─── Helpers ──────────────────────────────────────────────────────
+
 
 def _content_hash(content: str) -> str:
     """SHA-256 hex digest of content string."""
@@ -818,7 +888,9 @@ def _event_row_tuple(e: EventRow) -> tuple:
     sid = e.session_id or d.get("session_id", "")
     pid = e.pid or _parse_session_id(sid)[0]
     return (
-        e.ts, e.tool, e.kind,
+        e.ts,
+        e.tool,
+        e.kind,
         sid,
         pid,
         d.get("project_path", d.get("path", "")),
@@ -889,11 +961,19 @@ def _rows_to_dicts(cur: sqlite3.Cursor) -> list[dict]:
 def _file_entry_from_row(row: tuple) -> FileEntry:
     """Construct a FileEntry from a SELECT row."""
     return FileEntry(
-        path=row[0], tool=row[1], category=row[2], scope=row[3],
-        content=row[4] or "", blob_hash=row[5] or "",
+        path=row[0],
+        tool=row[1],
+        category=row[2],
+        scope=row[3],
+        content=row[4] or "",
+        blob_hash=row[5] or "",
         content_hash=row[6] or "",
-        size_bytes=row[7], tokens=row[8], lines=row[9],
-        mtime=row[10], first_seen=row[11], last_read=row[12],
+        size_bytes=row[7],
+        tokens=row[8],
+        lines=row[9],
+        mtime=row[10],
+        first_seen=row[11],
+        last_read=row[12],
         last_changed=row[13],
         meta=_json(row[14]),
     )
@@ -903,7 +983,10 @@ def _metric_row_tuple(s: Metric) -> tuple:
     """Convert a Metric to a tuple for INSERT."""
     tags = s.tags if isinstance(s.tags, dict) else {}
     return (
-        s.ts, s.metric, s.value, json.dumps(s.tags),
+        s.ts,
+        s.metric,
+        s.value,
+        json.dumps(s.tags),
         tags.get("tool", ""),
         tags.get("project_path", ""),
         tags.get("session_id", ""),
@@ -915,6 +998,7 @@ _sample_row_tuple = _metric_row_tuple
 
 
 # ─── HistoryDB ─────────────────────────────────────────────────────
+
 
 class HistoryDB:
     """Thread-safe SQLite store for metrics, per-tool metrics, and events.
@@ -972,9 +1056,7 @@ class HistoryDB:
         self._flush_stop = threading.Event()
         self._flush_thread: threading.Thread | None = None
         if flush_interval > 0:
-            self._flush_thread = threading.Thread(
-                target=self._flush_loop, daemon=True, name="aictl-db-flush"
-            )
+            self._flush_thread = threading.Thread(target=self._flush_loop, daemon=True, name="aictl-db-flush")
             self._flush_thread.start()
 
     # ── Connection management ──────────────────────────────────────
@@ -994,9 +1076,7 @@ class HistoryDB:
     def _init_schema(self) -> None:
         conn = self._conn()
         # Check if schema_version table exists to detect pre-v20 DB
-        cur = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
-        )
+        cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
         has_schema_table = cur.fetchone() is not None
 
         current = 0
@@ -1039,8 +1119,7 @@ class HistoryDB:
             except sqlite3.OperationalError:
                 pass
         conn.commit()
-        log.info("Dropped old tables for v20 migration: %s",
-                 ", ".join(_OLD_TABLES_TO_DROP))
+        log.info("Dropped old tables for v20 migration: %s", ", ".join(_OLD_TABLES_TO_DROP))
 
     def _migrate(self, conn: sqlite3.Connection, from_version: int) -> None:
         """Run incremental migrations from *from_version* to SCHEMA_VERSION.
@@ -1054,9 +1133,7 @@ class HistoryDB:
         if from_version < 21:
             # v20 -> v21: add pid column to sessions table
             try:
-                conn.execute(
-                    "ALTER TABLE sessions ADD COLUMN pid INTEGER DEFAULT 0"
-                )
+                conn.execute("ALTER TABLE sessions ADD COLUMN pid INTEGER DEFAULT 0")
             except sqlite3.OperationalError:
                 pass  # column already exists
 
@@ -1064,6 +1141,7 @@ class HistoryDB:
     def _sync_datapoint_catalog(conn: sqlite3.Connection) -> None:
         """Seed/refresh ``datapoint_catalog`` from datapoint-catalog.yaml + queries."""
         import yaml
+
         cat_path = Path(__file__).parent / "data" / "datapoint-catalog.yaml"
         if not cat_path.exists():
             log.warning("datapoint-catalog.yaml not found, skipping catalog seed")
@@ -1114,10 +1192,7 @@ class HistoryDB:
         All data is derived from the current hardcoded Preact/JS layout.
         """
         # ── Dashboard ──────────────────────────────────────────────
-        conn.execute(
-            "INSERT OR IGNORE INTO ui_dashboard(id, slug, title)"
-            " VALUES(1, 'main', 'aictl live dashboard')"
-        )
+        conn.execute("INSERT OR IGNORE INTO ui_dashboard(id, slug, title) VALUES(1, 'main', 'aictl live dashboard')")
 
         # ── Tabs (7) ──────────────────────────────────────────────
         conn.executemany(
@@ -1125,13 +1200,13 @@ class HistoryDB:
             "(id, dashboard_id, key, title, shortcut, sort_order, icon)"
             " VALUES(?,?,?,?,?,?,?)",
             [
-                (1, 1, "overview", "Overview",       "1", 0, "\U0001f4ca"),  # 📊
-                (2, 1, "procs",    "Processes",       "2", 1, "\u2699\ufe0f"),  # ⚙️
-                (3, 1, "mcp",      "MCP Servers",     "3", 2, "\U0001f517"),  # 🔗
-                (4, 1, "memory",   "AI Context",      "4", 3, "\U0001f4dd"),  # 📝
-                (5, 1, "live",     "Live Monitor",    "5", 4, "\U0001f4e1"),  # 📡
-                (6, 1, "events",   "Events & Stats",  "6", 5, "\U0001f4c8"),  # 📈
-                (7, 1, "budget",   "Token Budget",    "7", 6, "\U0001f4b0"),  # 💰
+                (1, 1, "overview", "Overview", "1", 0, "\U0001f4ca"),  # 📊
+                (2, 1, "procs", "Processes", "2", 1, "\u2699\ufe0f"),  # ⚙️
+                (3, 1, "mcp", "MCP Servers", "3", 2, "\U0001f517"),  # 🔗
+                (4, 1, "memory", "AI Context", "4", 3, "\U0001f4dd"),  # 📝
+                (5, 1, "live", "Live Monitor", "5", 4, "\U0001f4e1"),  # 📡
+                (6, 1, "events", "Events & Stats", "6", 5, "\U0001f4c8"),  # 📈
+                (7, 1, "budget", "Token Budget", "7", 6, "\U0001f4b0"),  # 💰
             ],
         )
 
@@ -1142,23 +1217,23 @@ class HistoryDB:
             " VALUES(?,?,?,?,?,?,?)",
             [
                 # Global header sections
-                (1, 1, None, "sparklines",     "Sparklines",      0, 4),
-                (2, 1, None, "inventory",      "Inventory",       1, 4),
-                (3, 1, None, "live_metrics",   "Live Monitor",    2, 4),
-                (4, 1, None, "event_timeline", "Event Timeline",  3, 1),
-                (5, 1, None, "resource_bars",  "Resource Bars",   4, 1),
+                (1, 1, None, "sparklines", "Sparklines", 0, 4),
+                (2, 1, None, "inventory", "Inventory", 1, 4),
+                (3, 1, None, "live_metrics", "Live Monitor", 2, 4),
+                (4, 1, None, "event_timeline", "Event Timeline", 3, 1),
+                (5, 1, None, "resource_bars", "Resource Bars", 4, 1),
                 # Tab-scoped sections
-                (6,  1, 6,  "tool_charts",       "Per-Tool Charts",        0, 4),
-                (7,  1, 1,  "overview_tools",    "Tool Cards",             0, 1),
-                (8,  1, 1,  "overview_memory",   "AI Context & Memory",    1, 1),
-                (9,  1, 2,  "procs_cores",       "CPU Cores",              0, 1),
-                (10, 1, 2,  "procs_tree",        "Process Tree",           1, 1),
-                (11, 1, 3,  "mcp_servers",       "MCP Servers",            0, 1),
-                (12, 1, 4,  "memory_groups",     "Memory Files",           0, 1),
-                (13, 1, 5,  "live_diagnostics",  "Diagnostics & Sessions", 0, 1),
-                (14, 1, 7,  "budget_verified",   "Verified Token Usage",   0, 1),
-                (15, 1, 7,  "budget_context",    "Context Window",         1, 1),
-                (16, 1, 7,  "budget_breakdown",  "Token Breakdown",        2, 1),
+                (6, 1, 6, "tool_charts", "Per-Tool Charts", 0, 4),
+                (7, 1, 1, "overview_tools", "Tool Cards", 0, 1),
+                (8, 1, 1, "overview_memory", "AI Context & Memory", 1, 1),
+                (9, 1, 2, "procs_cores", "CPU Cores", 0, 1),
+                (10, 1, 2, "procs_tree", "Process Tree", 1, 1),
+                (11, 1, 3, "mcp_servers", "MCP Servers", 0, 1),
+                (12, 1, 4, "memory_groups", "Memory Files", 0, 1),
+                (13, 1, 5, "live_diagnostics", "Diagnostics & Sessions", 0, 1),
+                (14, 1, 7, "budget_verified", "Verified Token Usage", 0, 1),
+                (15, 1, 7, "budget_context", "Context Window", 1, 1),
+                (16, 1, 7, "budget_breakdown", "Token Breakdown", 2, 1),
             ],
         )
 
@@ -1169,118 +1244,288 @@ class HistoryDB:
             " VALUES(?,?,?,?,?,?,?)",
             [
                 # Sparklines section (id=1) — time-series charts
-                (1,  1, "files",     "sparkline", "Files",    0,
-                 '{"field":"files","metric":"discovery.files","format":"raw","color":"var(--accent)"}'),
-                (2,  1, "tokens",    "sparkline", "Tokens",   1,
-                 '{"field":"tokens","metric":"discovery.tokens","format":"kilo","color":"var(--green)"}'),
-                (3,  1, "cpu",       "sparkline", "CPU",      2,
-                 '{"field":"cpu","metric":"tool.cpu","format":"percent","color":"var(--orange)","smooth":true,'
-                 '"yMaxExpr":"100*cores","refLines":[{"valueExpr":"100","label":"1 core"},{"valueExpr":"100*cores","label":"{cores} cores"}]}'),
-                (4,  1, "proc_ram",  "sparkline", "Proc RAM", 3,
-                 '{"field":"mem_mb","metric":"aictl.tool.memory","format":"size","color":"var(--yellow)","smooth":true,"multiply":1048576}'),
+                (
+                    1,
+                    1,
+                    "files",
+                    "sparkline",
+                    "Files",
+                    0,
+                    '{"field":"files","metric":"discovery.files","format":"raw","color":"var(--accent)"}',
+                ),
+                (
+                    2,
+                    1,
+                    "tokens",
+                    "sparkline",
+                    "Tokens",
+                    1,
+                    '{"field":"tokens","metric":"discovery.tokens","format":"kilo","color":"var(--green)"}',
+                ),
+                (
+                    3,
+                    1,
+                    "cpu",
+                    "sparkline",
+                    "CPU",
+                    2,
+                    '{"field":"cpu","metric":"tool.cpu","format":"percent","color":"var(--orange)","smooth":true,'
+                    '"yMaxExpr":"100*cores","refLines":[{"valueExpr":"100","label":"1 core"},{"valueExpr":"100*cores","label":"{cores} cores"}]}',
+                ),
+                (
+                    4,
+                    1,
+                    "proc_ram",
+                    "sparkline",
+                    "Proc RAM",
+                    3,
+                    '{"field":"mem_mb","metric":"aictl.tool.memory","format":"size","color":"var(--yellow)","smooth":true,"multiply":1048576}',
+                ),
                 # Inventory section (id=2) — static/slow metrics
-                (5,  2, "processes",   "stat", "Processes",   0,
-                 '{"field":"total_processes","metric":"discovery.processes","format":"raw"}'),
-                (6,  2, "disk_size",   "stat", "Disk Size",   1,
-                 '{"field":"total_size","metric":"discovery.size","format":"size"}'),
-                (7,  2, "mcp_servers", "stat", "MCP Servers", 2,
-                 '{"field":"total_mcp_servers","metric":"discovery.mcp_servers","format":"raw"}'),
-                (8,  2, "ai_context",  "stat", "AI Context",  3,
-                 '{"field":"total_memory_tokens","metric":"memory.tokens","format":"kilo","suffix":"t"}'),
+                (
+                    5,
+                    2,
+                    "processes",
+                    "stat",
+                    "Processes",
+                    0,
+                    '{"field":"total_processes","metric":"discovery.processes","format":"raw"}',
+                ),
+                (
+                    6,
+                    2,
+                    "disk_size",
+                    "stat",
+                    "Disk Size",
+                    1,
+                    '{"field":"total_size","metric":"discovery.size","format":"size"}',
+                ),
+                (
+                    7,
+                    2,
+                    "mcp_servers",
+                    "stat",
+                    "MCP Servers",
+                    2,
+                    '{"field":"total_mcp_servers","metric":"discovery.mcp_servers","format":"raw"}',
+                ),
+                (
+                    8,
+                    2,
+                    "ai_context",
+                    "stat",
+                    "AI Context",
+                    3,
+                    '{"field":"total_memory_tokens","metric":"memory.tokens","format":"kilo","suffix":"t"}',
+                ),
                 # Live Monitor section (id=3) — real-time metrics
-                (9,  3, "sessions",   "stat", "Sessions",    0,
-                 '{"field":"total_live_sessions","metric":"tool.sessions","format":"raw","accent":true}'),
-                (10, 3, "est_tokens", "stat", "Est. Tokens", 1,
-                 '{"field":"total_live_estimated_tokens","metric":"tool.tokens.input","format":"kilo"}'),
-                (11, 3, "outbound",   "stat", "\u2191 Outbound", 2,
-                 '{"field":"total_live_outbound_rate_bps","metric":"tool.net.out_bps","format":"rate"}'),
-                (12, 3, "inbound",    "stat", "\u2193 Inbound",  3,
-                 '{"field":"total_live_inbound_rate_bps","metric":"tool.net.in_bps","format":"rate"}'),
+                (
+                    9,
+                    3,
+                    "sessions",
+                    "stat",
+                    "Sessions",
+                    0,
+                    '{"field":"total_live_sessions","metric":"tool.sessions","format":"raw","accent":true}',
+                ),
+                (
+                    10,
+                    3,
+                    "est_tokens",
+                    "stat",
+                    "Est. Tokens",
+                    1,
+                    '{"field":"total_live_estimated_tokens","metric":"tool.tokens.input","format":"kilo"}',
+                ),
+                (
+                    11,
+                    3,
+                    "outbound",
+                    "stat",
+                    "\u2191 Outbound",
+                    2,
+                    '{"field":"total_live_outbound_rate_bps","metric":"tool.net.out_bps","format":"rate"}',
+                ),
+                (
+                    12,
+                    3,
+                    "inbound",
+                    "stat",
+                    "\u2193 Inbound",
+                    3,
+                    '{"field":"total_live_inbound_rate_bps","metric":"tool.net.in_bps","format":"rate"}',
+                ),
                 # Resource Bars section (id=5) — proportional bars
-                (13, 5, "csv_footprint", "bar_segment", "CSV Footprint", 0,
-                 '{"metric":"files","segment_by":"tool","showLegend":true}'),
-                (14, 5, "live_traffic",  "bar_segment", "Live Traffic",  1,
-                 '{"metric":"traffic_rate","segment_by":"tool","showLegend":true,"minHeight":36}'),
+                (
+                    13,
+                    5,
+                    "csv_footprint",
+                    "bar_segment",
+                    "CSV Footprint",
+                    0,
+                    '{"metric":"files","segment_by":"tool","showLegend":true}',
+                ),
+                (
+                    14,
+                    5,
+                    "live_traffic",
+                    "bar_segment",
+                    "Live Traffic",
+                    1,
+                    '{"metric":"traffic_rate","segment_by":"tool","showLegend":true,"minHeight":36}',
+                ),
                 # Per-Tool Charts section (id=6) — Events & Stats tab
-                (15, 6, "tool_cpu",     "sparkline", "CPU %",        0,
-                 '{"field":"cpu","metric":"tool.cpu","format":"percent","color":"tool","smooth":true}'),
-                (16, 6, "tool_mem",     "sparkline", "Memory (MB)",  1,
-                 '{"field":"mem_mb","metric":"tool.mem_mb","format":"size","color":"var(--green)","smooth":true}'),
-                (17, 6, "tool_tokens",  "sparkline", "Tokens",       2,
-                 '{"field":"tokens","metric":"tool.tokens.input","format":"kilo","color":"var(--accent)"}'),
-                (18, 6, "tool_traffic", "sparkline", "Traffic (B/s)", 3,
-                 '{"field":"traffic","metric":"tool.net.out_bps","format":"rate","color":"var(--orange)","smooth":true}'),
+                (
+                    15,
+                    6,
+                    "tool_cpu",
+                    "sparkline",
+                    "CPU %",
+                    0,
+                    '{"field":"cpu","metric":"tool.cpu","format":"percent","color":"tool","smooth":true}',
+                ),
+                (
+                    16,
+                    6,
+                    "tool_mem",
+                    "sparkline",
+                    "Memory (MB)",
+                    1,
+                    '{"field":"mem_mb","metric":"tool.mem_mb","format":"size","color":"var(--green)","smooth":true}',
+                ),
+                (
+                    17,
+                    6,
+                    "tool_tokens",
+                    "sparkline",
+                    "Tokens",
+                    2,
+                    '{"field":"tokens","metric":"tool.tokens.input","format":"kilo","color":"var(--accent)"}',
+                ),
+                (
+                    18,
+                    6,
+                    "tool_traffic",
+                    "sparkline",
+                    "Traffic (B/s)",
+                    3,
+                    '{"field":"traffic","metric":"tool.net.out_bps","format":"rate","color":"var(--orange)","smooth":true}',
+                ),
                 # Event Timeline section (id=4) — dot strip
-                (19, 4, "events_dot_timeline", "timeline", "Events", 0,
-                 '{"maxDots":200,"colorBy":"tool"}'),
+                (19, 4, "events_dot_timeline", "timeline", "Events", 0, '{"maxDots":200,"colorBy":"tool"}'),
                 # Range selector (virtual widget)
-                (20, 1, "range_selector", "range", "Range", 99,
-                 '{"options":["live","1h","6h","24h","7d"]}'),
+                (20, 1, "range_selector", "range", "Range", 99, '{"options":["live","1h","6h","24h","7d"]}'),
                 # ── Tab-scoped widgets ─────────────────────────────
                 # Overview tab (section 7=overview_tools, 8=overview_memory)
-                (21, 7,  "tool_card_grid", "tool_card_grid", "Tools", 0,
-                 '{"showSparklines":true,"sparklineMetrics":["cpu","mem_mb","tokens","traffic"],'
-                 '"showBadges":true,"showLivePills":true,"expandable":true}'),
-                (22, 8,  "memory_inline", "memory_list", "AI Context & Memory", 0,
-                 '{"groupBy":"source","showPreview":true,"tailLines":15}'),
+                (
+                    21,
+                    7,
+                    "tool_card_grid",
+                    "tool_card_grid",
+                    "Tools",
+                    0,
+                    '{"showSparklines":true,"sparklineMetrics":["cpu","mem_mb","tokens","traffic"],'
+                    '"showBadges":true,"showLivePills":true,"expandable":true}',
+                ),
+                (
+                    22,
+                    8,
+                    "memory_inline",
+                    "memory_list",
+                    "AI Context & Memory",
+                    0,
+                    '{"groupBy":"source","showPreview":true,"tailLines":15}',
+                ),
                 # Processes tab (section 9=procs_cores, 10=procs_tree)
-                (23, 9,  "core_bars", "core_bars", "Per-Core CPU", 0,
-                 '{"metric":"system.cpu.utilization"}'),
-                (24, 10, "process_tree", "process_tree", "Processes", 0,
-                 '{"groupBy":"tool","showCpuBars":true,"showMemBars":true,"treeDepth":2}'),
+                (23, 9, "core_bars", "core_bars", "Per-Core CPU", 0, '{"metric":"system.cpu.utilization"}'),
+                (
+                    24,
+                    10,
+                    "process_tree",
+                    "process_tree",
+                    "Processes",
+                    0,
+                    '{"groupBy":"tool","showCpuBars":true,"showMemBars":true,"treeDepth":2}',
+                ),
                 # MCP Servers tab (section 11)
-                (25, 11, "mcp_table", "mcp_table", "MCP Servers", 0,
-                 '{"showTransport":true,"showStatus":true}'),
+                (25, 11, "mcp_table", "mcp_table", "MCP Servers", 0, '{"showTransport":true,"showStatus":true}'),
                 # AI Context tab (section 12)
-                (26, 12, "memory_full", "memory_list", "Memory Files", 0,
-                 '{"groupBy":"source","showPreview":true,"tailLines":15}'),
+                (
+                    26,
+                    12,
+                    "memory_full",
+                    "memory_list",
+                    "Memory Files",
+                    0,
+                    '{"groupBy":"source","showPreview":true,"tailLines":15}',
+                ),
                 # Live Monitor tab (section 13)
-                (27, 13, "live_monitor", "live_monitor_table", "Live Monitor", 0,
-                 '{"showDiagnostics":true,"showPerTool":true}'),
+                (
+                    27,
+                    13,
+                    "live_monitor",
+                    "live_monitor_table",
+                    "Live Monitor",
+                    0,
+                    '{"showDiagnostics":true,"showPerTool":true}',
+                ),
                 # Token Budget tab (section 14=verified, 15=context, 16=breakdown)
-                (28, 14, "budget_verified", "token_budget", "Verified Usage", 0,
-                 '{"section":"verified","showByModel":true}'),
-                (29, 15, "budget_context", "token_budget", "Context Window", 0,
-                 '{"section":"context","showBar":true}'),
-                (30, 16, "budget_breakdown", "token_budget", "Breakdown", 0,
-                 '{"section":"breakdown","showByKind":true}'),
+                (
+                    28,
+                    14,
+                    "budget_verified",
+                    "token_budget",
+                    "Verified Usage",
+                    0,
+                    '{"section":"verified","showByModel":true}',
+                ),
+                (29, 15, "budget_context", "token_budget", "Context Window", 0, '{"section":"context","showBar":true}'),
+                (
+                    30,
+                    16,
+                    "budget_breakdown",
+                    "token_budget",
+                    "Breakdown",
+                    0,
+                    '{"section":"breakdown","showByKind":true}',
+                ),
                 # Events & Stats tab — tool_charts section already has widgets 15-18
-                (31, 6,  "event_feed", "events_feed", "Event Feed", 4,
-                 '{"maxEvents":100}'),
+                (31, 6, "event_feed", "events_feed", "Event Feed", 4, '{"maxEvents":100}'),
             ],
         )
 
         # ── Datasources (6) ───────────────────────────────────────
         conn.executemany(
-            "INSERT OR IGNORE INTO ui_datasource"
-            "(id, key, kind, endpoint, poll_ms, config)"
-            " VALUES(?,?,?,?,?,?)",
+            "INSERT OR IGNORE INTO ui_datasource(id, key, kind, endpoint, poll_ms, config) VALUES(?,?,?,?,?,?)",
             [
                 (1, "snapshot", "rest", "/api/snapshot", None, "{}"),
-                (2, "stream",   "sse",  "/api/stream",  None, "{}"),
-                (3, "history",  "rest", "/api/history",  None, "{}"),
-                (4, "budget",   "rest", "/api/budget",   None, "{}"),
-                (5, "samples",  "rest", "/api/samples",  None, "{}"),
-                (6, "events",   "rest", "/api/events",   None, "{}"),
+                (2, "stream", "sse", "/api/stream", None, "{}"),
+                (3, "history", "rest", "/api/history", None, "{}"),
+                (4, "budget", "rest", "/api/budget", None, "{}"),
+                (5, "samples", "rest", "/api/samples", None, "{}"),
+                (6, "events", "rest", "/api/events", None, "{}"),
             ],
         )
 
         # ── Widget <-> Datasource links ────────────────────────────
         conn.executemany(
-            "INSERT OR IGNORE INTO ui_widget_datasource"
-            "(widget_id, datasource_id, role) VALUES(?,?,?)",
+            "INSERT OR IGNORE INTO ui_widget_datasource(widget_id, datasource_id, role) VALUES(?,?,?)",
             [
                 # Sparklines: history (chart) + snapshot (current value)
-                (1, 3, "primary"), (1, 1, "secondary"),   # files
-                (2, 3, "primary"), (2, 1, "secondary"),   # tokens
-                (3, 3, "primary"), (3, 1, "secondary"),   # cpu
-                (4, 3, "primary"), (4, 1, "secondary"),   # proc_ram
+                (1, 3, "primary"),
+                (1, 1, "secondary"),  # files
+                (2, 3, "primary"),
+                (2, 1, "secondary"),  # tokens
+                (3, 3, "primary"),
+                (3, 1, "secondary"),  # cpu
+                (4, 3, "primary"),
+                (4, 1, "secondary"),  # proc_ram
                 # Stats: snapshot only
-                (5, 1, "primary"),   # processes
-                (6, 1, "primary"),   # disk_size
-                (7, 1, "primary"),   # mcp_servers
-                (8, 1, "primary"),   # ai_context
-                (9, 1, "primary"),   # sessions
+                (5, 1, "primary"),  # processes
+                (6, 1, "primary"),  # disk_size
+                (7, 1, "primary"),  # mcp_servers
+                (8, 1, "primary"),  # ai_context
+                (9, 1, "primary"),  # sessions
                 (10, 1, "primary"),  # est_tokens
                 (11, 1, "primary"),  # outbound
                 (12, 1, "primary"),  # inbound
@@ -1312,7 +1557,8 @@ class HistoryDB:
                 (29, 4, "primary"),
                 (30, 4, "primary"),
                 # Event feed: events + history
-                (31, 6, "primary"), (31, 3, "secondary"),
+                (31, 6, "primary"),
+                (31, 3, "secondary"),
             ],
         )
 
@@ -1323,8 +1569,8 @@ class HistoryDB:
             " VALUES(?,?,?,?,?,?)",
             [
                 (1, 1, "product", "Product", 0, 1),
-                (2, 1, "vendor",  "Vendor",  1, 0),
-                (3, 1, "host",    "Host",    2, 0),
+                (2, 1, "vendor", "Vendor", 1, 0),
+                (3, 1, "host", "Host", 2, 0),
             ],
         )
 
@@ -1332,23 +1578,29 @@ class HistoryDB:
         conn.executemany(
             "INSERT OR IGNORE INTO ui_theme(id, key, tokens) VALUES(?,?,?)",
             [
-                (1, "dark", '{"bg":"#0f172a","bg2":"#1e293b","bg3":"#162032",'
-                 '"fg":"#e2e8f0","fg2":"#94a3b8","accent":"#38bdf8","border":"#334155",'
-                 '"green":"#34d399","red":"#f87171","orange":"#fb923c","yellow":"#fbbf24"}'),
-                (2, "light", '{"bg":"#f8fafc","bg2":"#ffffff","bg3":"#f1f5f9",'
-                 '"fg":"#1e293b","fg2":"#64748b","accent":"#0284c7","border":"#e2e8f0",'
-                 '"green":"#059669","red":"#dc2626","orange":"#ea580c","yellow":"#d97706"}'),
+                (
+                    1,
+                    "dark",
+                    '{"bg":"#0f172a","bg2":"#1e293b","bg3":"#162032",'
+                    '"fg":"#e2e8f0","fg2":"#94a3b8","accent":"#38bdf8","border":"#334155",'
+                    '"green":"#34d399","red":"#f87171","orange":"#fb923c","yellow":"#fbbf24"}',
+                ),
+                (
+                    2,
+                    "light",
+                    '{"bg":"#f8fafc","bg2":"#ffffff","bg3":"#f1f5f9",'
+                    '"fg":"#1e293b","fg2":"#64748b","accent":"#0284c7","border":"#e2e8f0",'
+                    '"green":"#059669","red":"#dc2626","orange":"#ea580c","yellow":"#d97706"}',
+                ),
             ],
         )
 
         # ── Default preferences ────────────────────────────────────
         conn.executemany(
-            "INSERT OR IGNORE INTO ui_preference"
-            "(id, dashboard_id, user_id, pref_key, pref_value)"
-            " VALUES(?,?,?,?,?)",
+            "INSERT OR IGNORE INTO ui_preference(id, dashboard_id, user_id, pref_key, pref_value) VALUES(?,?,?,?,?)",
             [
-                (1, 1, None, "theme",      "auto"),
-                (2, 1, None, "range",      "live"),
+                (1, 1, None, "theme", "auto"),
+                (2, 1, None, "range", "live"),
                 (3, 1, None, "active_tab", "overview"),
             ],
         )
@@ -1375,15 +1627,10 @@ class HistoryDB:
     @staticmethod
     def _store_blob(conn: sqlite3.Connection, content: str) -> str:
         """Store content in file_blobs if not already present. Returns hash."""
-        blob_hash = hashlib.sha256(
-            content.encode("utf-8", errors="replace")
-        ).hexdigest()[:32]
+        blob_hash = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:32]
         conn.execute(
-            "INSERT OR IGNORE INTO file_blobs(hash, content, size_bytes, created_at)"
-            " VALUES(?,?,?,?)",
-            (blob_hash, content,
-             len(content.encode("utf-8", errors="replace")),
-             time.time()),
+            "INSERT OR IGNORE INTO file_blobs(hash, content, size_bytes, created_at) VALUES(?,?,?,?)",
+            (blob_hash, content, len(content.encode("utf-8", errors="replace")), time.time()),
         )
         return blob_hash
 
@@ -1393,9 +1640,7 @@ class HistoryDB:
         if content:
             return content
         if blob_hash:
-            row = conn.execute(
-                "SELECT content FROM file_blobs WHERE hash = ?", (blob_hash,)
-            ).fetchone()
+            row = conn.execute("SELECT content FROM file_blobs WHERE hash = ?", (blob_hash,)).fetchone()
             return row[0] if row else ""
         return ""
 
@@ -1424,10 +1669,15 @@ class HistoryDB:
                 # Use a synthetic pid derived from tool name hash to avoid
                 # PK collisions when multiple tools share pid=0
                 synth_pid = abs(hash(r.tool)) % 2_000_000_000
-                converted.append(ProcessSnapshotRow(
-                    ts=r.ts, pid=synth_pid, tool=r.tool,
-                    cpu_percent=r.cpu, memory_rss_mb=r.mem_mb,
-                ))
+                converted.append(
+                    ProcessSnapshotRow(
+                        ts=r.ts,
+                        pid=synth_pid,
+                        tool=r.tool,
+                        cpu_percent=r.cpu,
+                        memory_rss_mb=r.mem_mb,
+                    )
+                )
             else:
                 converted.append(r)
         with self._lock:
@@ -1482,10 +1732,8 @@ class HistoryDB:
                 pid=event.pid or _parse_session_id(d.get("session_id", ""))[0],
                 model=(d.get("model") or d.get("gen_ai.request.model") or ""),
                 path=d.get("path", ""),
-                input_tokens=int(_safe_num(d.get("input_tokens",
-                    d.get("gen_ai.usage.input_tokens", 0)))),
-                output_tokens=int(_safe_num(d.get("output_tokens",
-                    d.get("gen_ai.usage.output_tokens", 0)))),
+                input_tokens=int(_safe_num(d.get("input_tokens", d.get("gen_ai.usage.input_tokens", 0)))),
+                output_tokens=int(_safe_num(d.get("output_tokens", d.get("gen_ai.usage.output_tokens", 0)))),
                 duration_ms=_safe_num(d.get("duration_ms", 0)),
                 tool_name=d.get("tool_name", ""),
                 prompt_id=d.get("prompt.id", ""),
@@ -1555,14 +1803,25 @@ class HistoryDB:
                     " live_in_rate, live_out_rate)"
                     " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     [
-                        (r.ts, round(r.cpu_percent, 2),
-                         json.dumps(r.cpu_per_core) if r.cpu_per_core else "[]",
-                         round(r.memory_used_mb, 1), round(r.memory_total_mb, 1),
-                         r.active_sessions, r.active_processes,
-                         round(r.ai_token_rate, 2),
-                         r.files, r.tokens, r.mcp, r.mem_tokens,
-                         r.memory_entries, r.live_sessions, r.live_tokens,
-                         round(r.live_in_rate, 2), round(r.live_out_rate, 2))
+                        (
+                            r.ts,
+                            round(r.cpu_percent, 2),
+                            json.dumps(r.cpu_per_core) if r.cpu_per_core else "[]",
+                            round(r.memory_used_mb, 1),
+                            round(r.memory_total_mb, 1),
+                            r.active_sessions,
+                            r.active_processes,
+                            round(r.ai_token_rate, 2),
+                            r.files,
+                            r.tokens,
+                            r.mcp,
+                            r.mem_tokens,
+                            r.memory_entries,
+                            r.live_sessions,
+                            r.live_tokens,
+                            round(r.live_in_rate, 2),
+                            round(r.live_out_rate, 2),
+                        )
                         for r in ss_buf
                     ],
                 )
@@ -1584,9 +1843,16 @@ class HistoryDB:
                         " memory_vms_mb, open_files, threads)"
                         " VALUES(?,?,?,?,?,?,?,?)",
                         [
-                            (r.ts, r.pid, r.tool,
-                             round(r.cpu_percent, 2), round(r.memory_rss_mb, 1),
-                             round(r.memory_vms_mb, 1), r.open_files, r.threads)
+                            (
+                                r.ts,
+                                r.pid,
+                                r.tool,
+                                round(r.cpu_percent, 2),
+                                round(r.memory_rss_mb, 1),
+                                round(r.memory_vms_mb, 1),
+                                r.open_files,
+                                r.threads,
+                            )
                             for r in filtered
                         ],
                     )
@@ -1627,13 +1893,18 @@ class HistoryDB:
                     # never use our reporting time (r.ts) as a dedup factor.
                     if r.source_ts > 0:
                         dk = _dedup_key(
-                            r.session_id, str(int(r.source_ts * 1000)),
-                            r.model, r.source,
+                            r.session_id,
+                            str(int(r.source_ts * 1000)),
+                            r.model,
+                            r.source,
                         )
                     else:
                         dk = _dedup_key(
-                            r.session_id, r.model,
-                            str(r.input_tokens), str(r.output_tokens), r.source,
+                            r.session_id,
+                            r.model,
+                            str(r.input_tokens),
+                            str(r.output_tokens),
+                            r.source,
                         )
                     conn.execute(
                         "INSERT OR IGNORE INTO requests"
@@ -1644,13 +1915,28 @@ class HistoryDB:
                         " finish_reason, is_error, error_type,"
                         " http_status, source, prompt_id)"
                         " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (dk, r.ts, r.session_id, r.agent_id, r.tool,
-                         r.project_path, r.pid, r.model, r.input_tokens,
-                         r.output_tokens, r.cache_read_tokens,
-                         r.cache_creation_tokens, round(r.cost_usd, 6),
-                         round(r.duration_ms, 1), r.finish_reason,
-                         r.is_error, r.error_type, r.http_status,
-                         r.source, r.prompt_id),
+                        (
+                            dk,
+                            r.ts,
+                            r.session_id,
+                            r.agent_id,
+                            r.tool,
+                            r.project_path,
+                            r.pid,
+                            r.model,
+                            r.input_tokens,
+                            r.output_tokens,
+                            r.cache_read_tokens,
+                            r.cache_creation_tokens,
+                            round(r.cost_usd, 6),
+                            round(r.duration_ms, 1),
+                            r.finish_reason,
+                            r.is_error,
+                            r.error_type,
+                            r.http_status,
+                            r.source,
+                            r.prompt_id,
+                        ),
                     )
                 total += len(req_buf)
 
@@ -1661,14 +1947,18 @@ class HistoryDB:
                     # OTel events (embedded ts present): dedup on ts + identity fields.
                     if r.source_ts > 0:
                         dk = _dedup_key(
-                            r.session_id, str(int(r.source_ts * 1000)),
+                            r.session_id,
+                            str(int(r.source_ts * 1000)),
                             r.tool_name,
                         )
                     else:
                         input_sig = json.dumps(r.input, sort_keys=True) if isinstance(r.input, dict) else str(r.input)
                         dk = _dedup_key(
-                            r.session_id, r.tool_name, input_sig,
-                            str(r.is_error), r.source,
+                            r.session_id,
+                            r.tool_name,
+                            input_sig,
+                            str(r.is_error),
+                            r.source,
                         )
                     conn.execute(
                         "INSERT OR IGNORE INTO tool_invocations"
@@ -1676,11 +1966,21 @@ class HistoryDB:
                         " tool_name, project_path, pid, is_error,"
                         " duration_ms, input, result_summary, source)"
                         " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (dk, r.ts, r.session_id, r.request_id, r.tool,
-                         r.tool_name, r.project_path, r.pid, r.is_error,
-                         round(r.duration_ms, 1),
-                         json.dumps(r.input) if isinstance(r.input, dict) else r.input,
-                         r.result_summary, r.source),
+                        (
+                            dk,
+                            r.ts,
+                            r.session_id,
+                            r.request_id,
+                            r.tool,
+                            r.tool_name,
+                            r.project_path,
+                            r.pid,
+                            r.is_error,
+                            round(r.duration_ms, 1),
+                            json.dumps(r.input) if isinstance(r.input, dict) else r.input,
+                            r.result_summary,
+                            r.source,
+                        ),
                     )
                 total += len(ti_buf)
 
@@ -1715,10 +2015,12 @@ class HistoryDB:
         conn = self._conn()
         where, params = _where([("ts >= ?", since), ("ts <= ?", until)])
         lim = f" LIMIT {limit}" if limit > 0 else ""
-        sql = (f"SELECT ts, files, tokens, cpu_percent, memory_used_mb, mcp, mem_tokens,"
-               f" memory_entries, live_sessions, live_tokens,"
-               f" live_in_rate, live_out_rate"
-               f" FROM system_snapshots{where} ORDER BY ts{lim}")
+        sql = (
+            f"SELECT ts, files, tokens, cpu_percent, memory_used_mb, mcp, mem_tokens,"
+            f" memory_entries, live_sessions, live_tokens,"
+            f" live_in_rate, live_out_rate"
+            f" FROM system_snapshots{where} ORDER BY ts{lim}"
+        )
         rows = conn.execute(sql, params).fetchall()
         if not rows:
             return {k: [] for k in _METRICS_KEYS}
@@ -1736,17 +2038,18 @@ class HistoryDB:
         Backward compat wrapper over process_snapshots.
         """
         conn = self._conn()
-        where, params = _where([
-            ("tool = ?", tool or None),
-            ("ts >= ?", since), ("ts <= ?", until),
-        ])
-        sql = (f"SELECT ts, tool, cpu_percent, memory_rss_mb"
-               f" FROM process_snapshots{where} ORDER BY ts")
+        where, params = _where(
+            [
+                ("tool = ?", tool or None),
+                ("ts >= ?", since),
+                ("ts <= ?", until),
+            ]
+        )
+        sql = f"SELECT ts, tool, cpu_percent, memory_rss_mb FROM process_snapshots{where} ORDER BY ts"
         rows = conn.execute(sql, params).fetchall()
         result: dict[str, dict[str, list]] = {}
         for ts, tl, cpu, mem in rows:
-            d = result.setdefault(tl, {"ts": [], "cpu": [], "mem_mb": [],
-                                       "tokens": [], "traffic": []})
+            d = result.setdefault(tl, {"ts": [], "cpu": [], "mem_mb": [], "tokens": [], "traffic": []})
             d["ts"].append(ts)
             d["cpu"].append(cpu)
             d["mem_mb"].append(mem)
@@ -1768,23 +2071,24 @@ class HistoryDB:
     ) -> list[EventRow]:
         """Return events matching the filter criteria."""
         conn = self._conn()
-        where, params = _where([
-            ("ts >= ?", since), ("ts <= ?", until),
-            ("tool = ?", tool or None), ("kind = ?", kind or None),
-            ("pid = ?", pid or None),
-        ])
+        where, params = _where(
+            [
+                ("ts >= ?", since),
+                ("ts <= ?", until),
+                ("tool = ?", tool or None),
+                ("kind = ?", kind or None),
+                ("pid = ?", pid or None),
+            ]
+        )
         if session_id:
             sep = " AND " if where else " WHERE "
             where += sep + "(session_id = ? OR json_extract(detail, '$.session_id') = ?)"
             params.extend([session_id, session_id])
-        sql = (f"SELECT ts, tool, kind, detail, session_id, pid FROM events{where}"
-               f" ORDER BY ts DESC LIMIT ?")
+        sql = f"SELECT ts, tool, kind, detail, session_id, pid FROM events{where} ORDER BY ts DESC LIMIT ?"
         params.append(limit)
         rows = conn.execute(sql, params).fetchall()
         return [
-            EventRow(ts=r[0], tool=r[1], kind=r[2],
-                     detail=_json(r[3]), session_id=r[4] or "",
-                     pid=r[5] or 0)
+            EventRow(ts=r[0], tool=r[1], kind=r[2], detail=_json(r[3]), session_id=r[4] or "", pid=r[5] or 0)
             for r in rows
         ]
 
@@ -1807,10 +2111,12 @@ class HistoryDB:
             params.append(until)
         where_sql = " WHERE " + " AND ".join(where_parts)
 
-        session_rows = _rows_to_dicts(conn.execute(
-            f"SELECT * FROM sessions{where_sql} ORDER BY started_at",
-            params,
-        ))
+        session_rows = _rows_to_dicts(
+            conn.execute(
+                f"SELECT * FROM sessions{where_sql} ORDER BY started_at",
+                params,
+            )
+        )
 
         if session_rows:
             # Convert sessions table rows to profile format
@@ -1845,9 +2151,7 @@ class HistoryDB:
             file_rows = conn.execute(
                 "SELECT session_id, COUNT(*) as cnt"
                 " FROM events"
-                " WHERE kind = 'file_modified' AND ts >= ?"
-                + file_where
-                + " AND session_id != ''"
+                " WHERE kind = 'file_modified' AND ts >= ?" + file_where + " AND session_id != ''"
                 " GROUP BY session_id",
                 file_params,
             ).fetchall()
@@ -1877,8 +2181,7 @@ class HistoryDB:
 
         starts = conn.execute(
             "SELECT ts, tool, session_id, pid, detail FROM events"
-            " WHERE kind = 'session_start' AND ts >= ?"
-            + until_clause + " ORDER BY ts",
+            " WHERE kind = 'session_start' AND ts >= ?" + until_clause + " ORDER BY ts",
             params,
         ).fetchall()
 
@@ -1914,10 +2217,7 @@ class HistoryDB:
         # Find matching session_end events
         for sid in sessions:
             end_rows = conn.execute(
-                "SELECT ts, detail FROM events"
-                " WHERE kind = 'session_end'"
-                "   AND session_id = ?"
-                " LIMIT 1",
+                "SELECT ts, detail FROM events WHERE kind = 'session_end'   AND session_id = ? LIMIT 1",
                 (sid,),
             ).fetchall()
             if end_rows:
@@ -1944,9 +2244,7 @@ class HistoryDB:
             "       COUNT(*) as cnt,"
             "       SUM(json_extract(detail, '$.growth_bytes')) as growth"
             " FROM events"
-            " WHERE kind = 'file_modified' AND ts >= ?"
-            + file_until
-            + "   AND session_id != ''"
+            " WHERE kind = 'file_modified' AND ts >= ?" + file_until + "   AND session_id != ''"
             " GROUP BY sid, path",
             file_params,
         ).fetchall()
@@ -1957,18 +2255,35 @@ class HistoryDB:
             s = sessions[sid]
             s["files_modified"] += cnt
             s["unique_files"] += 1
-            s["bytes_written"] += (growth or 0)
+            s["bytes_written"] += growth or 0
             if path:
                 npath = path.replace("\\", "/")
                 if "/subagents/" in npath:
                     s["subagents"] += 1
                 elif npath.endswith(".jsonl") and "/projects/" in npath and "/subagents/" not in npath:
                     s["conversations"] += 1
-                elif any(npath.endswith(ext) for ext in (
-                    ".py", ".js", ".ts", ".jsx", ".tsx", ".css",
-                    ".html", ".go", ".rs", ".java", ".rb", ".sh",
-                    ".md", ".toml", ".yaml", ".yml", ".json",
-                )):
+                elif any(
+                    npath.endswith(ext)
+                    for ext in (
+                        ".py",
+                        ".js",
+                        ".ts",
+                        ".jsx",
+                        ".tsx",
+                        ".css",
+                        ".html",
+                        ".go",
+                        ".rs",
+                        ".java",
+                        ".rb",
+                        ".sh",
+                        ".md",
+                        ".toml",
+                        ".yaml",
+                        ".yml",
+                        ".json",
+                    )
+                ):
                     if "/.claude/" not in npath and "/__pycache__/" not in npath:
                         s["source_files"] += 1
 
@@ -1978,9 +2293,7 @@ class HistoryDB:
             "       CAST(ts / 300 AS INT) * 300 as bucket,"
             "       COUNT(*) as cnt"
             " FROM events"
-            " WHERE kind = 'file_modified' AND ts >= ?"
-            + file_until
-            + "   AND session_id != ''"
+            " WHERE kind = 'file_modified' AND ts >= ?" + file_until + "   AND session_id != ''"
             " GROUP BY sid, bucket"
             " ORDER BY sid, bucket",
             file_params,
@@ -2009,7 +2322,7 @@ class HistoryDB:
         for i, primary in enumerate(profiles):
             if primary["session_id"] in used:
                 continue
-            for secondary in profiles[i + 1:]:
+            for secondary in profiles[i + 1 :]:
                 if secondary["session_id"] in used:
                     continue
                 if secondary["tool"] != primary["tool"]:
@@ -2036,8 +2349,8 @@ class HistoryDB:
         # (the process scanner had intermittent detection, or multiple
         # sources created entries for the same session).  A large gap
         # means the OS reused the PID for a genuinely different session.
-        _GAP_ENDED = 600     # max gap after a known end time (10 min)
-        _GAP_ACTIVE = 7200   # max gap when end time is unknown (2 hours)
+        _GAP_ENDED = 600  # max gap after a known end time (10 min)
+        _GAP_ACTIVE = 7200  # max gap when end time is unknown (2 hours)
 
         pid_groups: dict[tuple, list[dict]] = {}
         for s in merged:
@@ -2082,8 +2395,7 @@ class HistoryDB:
                             _merge_session_stats(canonical, other)
                             consumed.add(other["session_id"])
                         if canonical["ended_at"]:
-                            canonical["duration_s"] = round(
-                                canonical["ended_at"] - canonical["started_at"], 1)
+                            canonical["duration_s"] = round(canonical["ended_at"] - canonical["started_at"], 1)
                         else:
                             canonical["duration_s"] = None
                         deduped.append(canonical)
@@ -2110,34 +2422,52 @@ class HistoryDB:
             " cache_read_tokens, cache_creation_tokens, cost_usd,"
             " request_count, tool_call_count, files_modified)"
             " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (row.session_id, row.tool, row.pid, row.project_path, row.model,
-             row.git_branch, row.git_commit, row.started_at, row.ended_at,
-             row.source, row.input_tokens, row.output_tokens,
-             row.cache_read_tokens, row.cache_creation_tokens,
-             round(row.cost_usd, 6), row.request_count,
-             row.tool_call_count, row.files_modified),
+            (
+                row.session_id,
+                row.tool,
+                row.pid,
+                row.project_path,
+                row.model,
+                row.git_branch,
+                row.git_commit,
+                row.started_at,
+                row.ended_at,
+                row.source,
+                row.input_tokens,
+                row.output_tokens,
+                row.cache_read_tokens,
+                row.cache_creation_tokens,
+                round(row.cost_usd, 6),
+                row.request_count,
+                row.tool_call_count,
+                row.files_modified,
+            ),
         )
         conn.commit()
 
     def link_session_process(
-        self, session_id: str, pid: int,
-        tool: str = "", role: str = "lead",
+        self,
+        session_id: str,
+        pid: int,
+        tool: str = "",
+        role: str = "lead",
     ) -> None:
         """Record that a PID belongs to a session (INSERT OR IGNORE)."""
         if not session_id or not pid:
             return
         conn = self._conn()
         conn.execute(
-            "INSERT OR IGNORE INTO session_processes"
-            "(session_id, pid, tool, joined_at, role)"
-            " VALUES(?,?,?,?,?)",
+            "INSERT OR IGNORE INTO session_processes(session_id, pid, tool, joined_at, role) VALUES(?,?,?,?,?)",
             (session_id, pid, tool, time.time(), role),
         )
         conn.commit()
 
     def find_session_ids_by_pid(
-        self, pid: int, *,
-        since: float = 0, until: float = 0,
+        self,
+        pid: int,
+        *,
+        since: float = 0,
+        until: float = 0,
     ) -> list[str]:
         """Return session_ids linked to the given PID.
 
@@ -2173,7 +2503,8 @@ class HistoryDB:
         return [r[0] for r in rows]
 
     def batch_link_sessions(
-        self, entries: list[tuple[str, str, int, float, str]],
+        self,
+        entries: list[tuple[str, str, int, float, str]],
     ) -> None:
         """Batch upsert sessions and link PIDs in a single transaction.
 
@@ -2197,9 +2528,7 @@ class HistoryDB:
             )
             if session_id and pid:
                 conn.execute(
-                    "INSERT OR IGNORE INTO session_processes"
-                    "(session_id, pid, tool, joined_at, role)"
-                    " VALUES(?,?,?,?,?)",
+                    "INSERT OR IGNORE INTO session_processes(session_id, pid, tool, joined_at, role) VALUES(?,?,?,?,?)",
                     (session_id, pid, tool, now, "lead"),
                 )
         conn.commit()
@@ -2209,9 +2538,16 @@ class HistoryDB:
         conn = self._conn()
         sets = ["ended_at = ?"]
         params: list[Any] = [ended_at]
-        for k in ("input_tokens", "output_tokens", "cache_read_tokens",
-                   "cache_creation_tokens", "cost_usd", "request_count",
-                   "tool_call_count", "files_modified"):
+        for k in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+            "cost_usd",
+            "request_count",
+            "tool_call_count",
+            "files_modified",
+        ):
             if k in kwargs:
                 sets.append(f"{k} = ?")
                 params.append(kwargs[k])
@@ -2223,8 +2559,11 @@ class HistoryDB:
         conn.commit()
 
     def update_tool_invocation_duration(
-        self, dedup_key: str, duration_ms: float,
-        is_error: int = 0, result_summary: str = "",
+        self,
+        dedup_key: str,
+        duration_ms: float,
+        is_error: int = 0,
+        result_summary: str = "",
     ) -> bool:
         """Update an existing tool invocation with duration and result.
 
@@ -2278,22 +2617,28 @@ class HistoryDB:
                 where_parts.append(expr)
         where = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
         params.append(limit)
-        return _rows_to_dicts(conn.execute(
-            f"SELECT * FROM sessions{where} ORDER BY started_at DESC LIMIT ?",
-            params,
-        ))
+        return _rows_to_dicts(
+            conn.execute(
+                f"SELECT * FROM sessions{where} ORDER BY started_at DESC LIMIT ?",
+                params,
+            )
+        )
 
     def query_session_flow(self, session_id: str) -> dict:
         """Return requests and tool_invocations for a session."""
         conn = self._conn()
-        requests = _rows_to_dicts(conn.execute(
-            "SELECT * FROM requests WHERE session_id = ? ORDER BY ts",
-            (session_id,),
-        ))
-        invocations = _rows_to_dicts(conn.execute(
-            "SELECT * FROM tool_invocations WHERE session_id = ? ORDER BY ts",
-            (session_id,),
-        ))
+        requests = _rows_to_dicts(
+            conn.execute(
+                "SELECT * FROM requests WHERE session_id = ? ORDER BY ts",
+                (session_id,),
+            )
+        )
+        invocations = _rows_to_dicts(
+            conn.execute(
+                "SELECT * FROM tool_invocations WHERE session_id = ? ORDER BY ts",
+                (session_id,),
+            )
+        )
         return {"requests": requests, "tool_invocations": invocations}
 
     # ── Requests (new) ─────────────────────────────────────────────
@@ -2308,16 +2653,21 @@ class HistoryDB:
     ) -> list[dict]:
         """Query LLM requests with optional filters."""
         conn = self._conn()
-        where, params = _where([
-            ("session_id = ?", session_id or None),
-            ("ts >= ?", since), ("ts <= ?", until),
-            ("tool = ?", tool or None),
-        ])
+        where, params = _where(
+            [
+                ("session_id = ?", session_id or None),
+                ("ts >= ?", since),
+                ("ts <= ?", until),
+                ("tool = ?", tool or None),
+            ]
+        )
         params.append(limit)
-        return _rows_to_dicts(conn.execute(
-            f"SELECT * FROM requests{where} ORDER BY ts DESC LIMIT ?",
-            params,
-        ))
+        return _rows_to_dicts(
+            conn.execute(
+                f"SELECT * FROM requests{where} ORDER BY ts DESC LIMIT ?",
+                params,
+            )
+        )
 
     # ── Tool invocations (new) ─────────────────────────────────────
 
@@ -2330,15 +2680,20 @@ class HistoryDB:
     ) -> list[dict]:
         """Query tool invocations with optional filters."""
         conn = self._conn()
-        where, params = _where([
-            ("session_id = ?", session_id or None),
-            ("ts >= ?", since), ("ts <= ?", until),
-        ])
+        where, params = _where(
+            [
+                ("session_id = ?", session_id or None),
+                ("ts >= ?", since),
+                ("ts <= ?", until),
+            ]
+        )
         params.append(limit)
-        return _rows_to_dicts(conn.execute(
-            f"SELECT * FROM tool_invocations{where} ORDER BY ts DESC LIMIT ?",
-            params,
-        ))
+        return _rows_to_dicts(
+            conn.execute(
+                f"SELECT * FROM tool_invocations{where} ORDER BY ts DESC LIMIT ?",
+                params,
+            )
+        )
 
     def query_requests_analytics(
         self,
@@ -2350,12 +2705,14 @@ class HistoryDB:
         conn = self._conn()
         where, params = _where([("ts >= ?", since), ("ts <= ?", until)])
         params.append(limit)
-        return _rows_to_dicts(conn.execute(
-            "SELECT ts, session_id, agent_id, model, input_tokens, output_tokens,"
-            " cache_read_tokens, cost_usd, duration_ms, finish_reason, is_error"
-            f" FROM requests{where} ORDER BY ts DESC LIMIT ?",
-            params,
-        ))
+        return _rows_to_dicts(
+            conn.execute(
+                "SELECT ts, session_id, agent_id, model, input_tokens, output_tokens,"
+                " cache_read_tokens, cost_usd, duration_ms, finish_reason, is_error"
+                f" FROM requests{where} ORDER BY ts DESC LIMIT ?",
+                params,
+            )
+        )
 
     def query_tool_invocations_agg(
         self,
@@ -2368,14 +2725,16 @@ class HistoryDB:
         """
         conn = self._conn()
         where, params = _where([("ts >= ?", since), ("ts <= ?", until)])
-        return _rows_to_dicts(conn.execute(
-            "SELECT tool_name, COUNT(*) as count,"
-            " SUM(duration_ms) as total_ms,"
-            " SUM(CASE WHEN is_error THEN 1 ELSE 0 END) as error_count"
-            f" FROM tool_invocations{where}"
-            " GROUP BY tool_name ORDER BY count DESC",
-            params,
-        ))
+        return _rows_to_dicts(
+            conn.execute(
+                "SELECT tool_name, COUNT(*) as count,"
+                " SUM(duration_ms) as total_ms,"
+                " SUM(CASE WHEN is_error THEN 1 ELSE 0 END) as error_count"
+                f" FROM tool_invocations{where}"
+                " GROUP BY tool_name ORDER BY count DESC",
+                params,
+            )
+        )
 
     def query_tool_analytics_from_events(
         self,
@@ -2402,22 +2761,24 @@ class HistoryDB:
             params.append(until)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
 
-        rows = _rows_to_dicts(conn.execute(
-            "SELECT"
-            " json_extract(pre.detail, '$.tool_name') as tool_name,"
-            " COUNT(*) as count,"
-            " ROUND(SUM((post.ts - pre.ts) * 1000), 1) as total_ms,"
-            " ROUND(AVG((post.ts - pre.ts) * 1000), 1) as avg_ms,"
-            " SUM(CASE WHEN json_extract(post.detail, '$.is_error') THEN 1 ELSE 0 END) as error_count"
-            " FROM events pre"
-            " JOIN events post"
-            "  ON json_extract(pre.detail, '$.tool_use_id') = json_extract(post.detail, '$.tool_use_id')"
-            "  AND pre.kind = 'hook:PreToolUse'"
-            "  AND post.kind = 'hook:PostToolUse'"
-            f"{where}"
-            " GROUP BY tool_name ORDER BY count DESC",
-            params,
-        ))
+        rows = _rows_to_dicts(
+            conn.execute(
+                "SELECT"
+                " json_extract(pre.detail, '$.tool_name') as tool_name,"
+                " COUNT(*) as count,"
+                " ROUND(SUM((post.ts - pre.ts) * 1000), 1) as total_ms,"
+                " ROUND(AVG((post.ts - pre.ts) * 1000), 1) as avg_ms,"
+                " SUM(CASE WHEN json_extract(post.detail, '$.is_error') THEN 1 ELSE 0 END) as error_count"
+                " FROM events pre"
+                " JOIN events post"
+                "  ON json_extract(pre.detail, '$.tool_use_id') = json_extract(post.detail, '$.tool_use_id')"
+                "  AND pre.kind = 'hook:PreToolUse'"
+                "  AND post.kind = 'hook:PostToolUse'"
+                f"{where}"
+                " GROUP BY tool_name ORDER BY count DESC",
+                params,
+            )
+        )
         return rows
 
     def query_tool_breakdown_from_events(
@@ -2479,7 +2840,8 @@ class HistoryDB:
         where = " WHERE " + " AND ".join(clauses)
         params.append(limit)
         return [
-            r[0] for r in conn.execute(
+            r[0]
+            for r in conn.execute(
                 "SELECT ROUND((post.ts - pre.ts) * 1000, 1) as duration_ms"
                 " FROM events pre"
                 " JOIN events post"
@@ -2501,15 +2863,21 @@ class HistoryDB:
     ) -> list[float]:
         """Return raw duration_ms values for a single tool (for percentile calc)."""
         conn = self._conn()
-        where, params = _where([
-            ("tool_name = ?", tool_name),
-            ("ts >= ?", since), ("ts <= ?", until),
-        ])
+        where, params = _where(
+            [
+                ("tool_name = ?", tool_name),
+                ("ts >= ?", since),
+                ("ts <= ?", until),
+            ]
+        )
         params.append(limit)
-        return [row[0] for row in conn.execute(
-            f"SELECT duration_ms FROM tool_invocations{where} ORDER BY ts DESC LIMIT ?",
-            params,
-        )]
+        return [
+            row[0]
+            for row in conn.execute(
+                f"SELECT duration_ms FROM tool_invocations{where} ORDER BY ts DESC LIMIT ?",
+                params,
+            )
+        ]
 
     # ── Processes (new) ────────────────────────────────────────────
 
@@ -2521,21 +2889,33 @@ class HistoryDB:
             "(pid, tool, project_path, cwd, cmdline, ppid,"
             " started_at, ended_at, exit_code, source, meta)"
             " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-            (row.pid, row.tool, row.project_path, row.cwd, row.cmdline,
-             row.ppid, row.started_at, row.ended_at, row.exit_code,
-             row.source, json.dumps(row.meta)),
+            (
+                row.pid,
+                row.tool,
+                row.project_path,
+                row.cwd,
+                row.cmdline,
+                row.ppid,
+                row.started_at,
+                row.ended_at,
+                row.exit_code,
+                row.source,
+                json.dumps(row.meta),
+            ),
         )
         conn.commit()
 
     def update_process_exit(
-        self, pid: int, started_at: float,
-        ended_at: float, exit_code: int | None = None,
+        self,
+        pid: int,
+        started_at: float,
+        ended_at: float,
+        exit_code: int | None = None,
     ) -> None:
         """Update process exit info."""
         conn = self._conn()
         conn.execute(
-            "UPDATE processes SET ended_at = ?, exit_code = ?"
-            " WHERE pid = ? AND started_at = ?",
+            "UPDATE processes SET ended_at = ?, exit_code = ? WHERE pid = ? AND started_at = ?",
             (ended_at, exit_code, pid, started_at),
         )
         conn.commit()
@@ -2562,10 +2942,12 @@ class HistoryDB:
         elif active is False:
             where_parts.append("ended_at IS NOT NULL")
         where = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
-        return _rows_to_dicts(conn.execute(
-            f"SELECT * FROM processes{where} ORDER BY started_at DESC",
-            params,
-        ))
+        return _rows_to_dicts(
+            conn.execute(
+                f"SELECT * FROM processes{where} ORDER BY started_at DESC",
+                params,
+            )
+        )
 
     # ── Agents (new) ───────────────────────────────────────────────
 
@@ -2578,51 +2960,71 @@ class HistoryDB:
             " started_at, ended_at, completed, input_tokens, output_tokens,"
             " cache_read_tokens, cache_creation_tokens, cost_usd)"
             " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (row.agent_id, row.session_id, row.tool, row.task, row.model,
-             row.is_sidechain, row.started_at, row.ended_at, row.completed,
-             row.input_tokens, row.output_tokens, row.cache_read_tokens,
-             row.cache_creation_tokens, round(row.cost_usd, 6)),
+            (
+                row.agent_id,
+                row.session_id,
+                row.tool,
+                row.task,
+                row.model,
+                row.is_sidechain,
+                row.started_at,
+                row.ended_at,
+                row.completed,
+                row.input_tokens,
+                row.output_tokens,
+                row.cache_read_tokens,
+                row.cache_creation_tokens,
+                round(row.cost_usd, 6),
+            ),
         )
         conn.commit()
 
     def query_agents(self, session_id: str) -> list[dict]:
         """Query agents for a session."""
         conn = self._conn()
-        return _rows_to_dicts(conn.execute(
-            "SELECT * FROM agents WHERE session_id = ? ORDER BY started_at",
-            (session_id,),
-        ))
+        return _rows_to_dicts(
+            conn.execute(
+                "SELECT * FROM agents WHERE session_id = ? ORDER BY started_at",
+                (session_id,),
+            )
+        )
 
     # ── Config/env (new) ──────────────────────────────────────────
 
     def upsert_tool_config(
-        self, ts: float, tool: str, project_path: str,
-        key: str, value: str, source: str = "",
+        self,
+        ts: float,
+        tool: str,
+        project_path: str,
+        key: str,
+        value: str,
+        source: str = "",
     ) -> bool:
         """Upsert tool config. Returns True if value changed."""
         conn = self._conn()
         # Check last value
         cur = conn.execute(
-            "SELECT value FROM tool_config"
-            " WHERE tool = ? AND project_path = ? AND key = ?"
-            " ORDER BY ts DESC LIMIT 1",
+            "SELECT value FROM tool_config WHERE tool = ? AND project_path = ? AND key = ? ORDER BY ts DESC LIMIT 1",
             (tool, project_path, key),
         )
         row = cur.fetchone()
         if row and row[0] == value:
             return False  # unchanged
         conn.execute(
-            "INSERT OR REPLACE INTO tool_config"
-            "(ts, tool, project_path, key, value, source)"
-            " VALUES(?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO tool_config(ts, tool, project_path, key, value, source) VALUES(?,?,?,?,?,?)",
             (ts, tool, project_path, key, value, source),
         )
         conn.commit()
         return True
 
     def upsert_env_var(
-        self, ts: float, project_path: str, tool: str,
-        key: str, value: str, is_secret: bool = False,
+        self,
+        ts: float,
+        project_path: str,
+        tool: str,
+        key: str,
+        value: str,
+        is_secret: bool = False,
         source: str = "",
     ) -> bool:
         """Upsert environment variable. Returns True if value changed."""
@@ -2726,8 +3128,7 @@ class HistoryDB:
 
             last_changed = now if changed else 0
             if not changed and row:
-                cur2 = conn.execute(
-                    "SELECT last_changed FROM files WHERE path = ?", (path,))
+                cur2 = conn.execute("SELECT last_changed FROM files WHERE path = ?", (path,))
                 r2 = cur2.fetchone()
                 last_changed = r2[0] if r2 else now
 
@@ -2742,11 +3143,23 @@ class HistoryDB:
                 " size_bytes, tokens, lines, mtime, first_seen, last_read,"
                 " last_changed, meta)"
                 " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (path, tool, category, scope, content, blob_hash, new_hash,
-                 new_size, new_tokens, new_lines,
-                 mtime or 0, first_seen, now,
-                 last_changed if changed else (row[0] if row else now) and last_changed,
-                 json.dumps(meta or {})),
+                (
+                    path,
+                    tool,
+                    category,
+                    scope,
+                    content,
+                    blob_hash,
+                    new_hash,
+                    new_size,
+                    new_tokens,
+                    new_lines,
+                    mtime or 0,
+                    first_seen,
+                    now,
+                    last_changed if changed else (row[0] if row else now) and last_changed,
+                    json.dumps(meta or {}),
+                ),
             )
 
             # Save history snapshot on change
@@ -2761,22 +3174,18 @@ class HistoryDB:
                     "(path, ts, content, blob_hash, content_hash,"
                     " size_bytes, tokens, lines)"
                     " VALUES(?,?,?,?,?,?,?,?)",
-                    (path, now, hist_content, hist_blob_hash, new_hash,
-                     new_size, new_tokens, new_lines),
+                    (path, now, hist_content, hist_blob_hash, new_hash, new_size, new_tokens, new_lines),
                 )
         else:
             meta_json = json.dumps(meta or {})
             if row:
                 conn.execute(
-                    "UPDATE files SET tool=?, category=?, scope=?,"
-                    " mtime=?, meta=? WHERE path=?",
+                    "UPDATE files SET tool=?, category=?, scope=?, mtime=?, meta=? WHERE path=?",
                     (tool, category, scope, mtime or 0, meta_json, path),
                 )
             else:
                 conn.execute(
-                    "INSERT INTO files"
-                    "(path, tool, category, scope, mtime, first_seen, meta)"
-                    " VALUES(?,?,?,?,?,?,?)",
+                    "INSERT INTO files(path, tool, category, scope, mtime, first_seen, meta) VALUES(?,?,?,?,?,?,?)",
                     (path, tool, category, scope, mtime or 0, now, meta_json),
                 )
 
@@ -2807,10 +3216,13 @@ class HistoryDB:
         Does NOT return content (for efficiency) -- use get_file() for that.
         """
         conn = self._conn()
-        where, params = _where([
-            ("tool = ?", tool or None), ("category = ?", category or None),
-            ("last_changed >= ?", changed_since),
-        ])
+        where, params = _where(
+            [
+                ("tool = ?", tool or None),
+                ("category = ?", category or None),
+                ("last_changed >= ?", changed_since),
+            ]
+        )
         cur = conn.execute(
             "SELECT path, tool, category, scope, '', '',"
             " content_hash, size_bytes, tokens, lines, mtime, first_seen,"
@@ -2827,11 +3239,13 @@ class HistoryDB:
     ) -> list[dict[str, Any]]:
         """Return content change history for a file (most recent first)."""
         conn = self._conn()
-        return _rows_to_dicts(conn.execute(
-            "SELECT ts, content_hash, size_bytes, tokens, lines"
-            " FROM file_history WHERE path = ? ORDER BY ts DESC LIMIT ?",
-            (path, limit),
-        ))
+        return _rows_to_dicts(
+            conn.execute(
+                "SELECT ts, content_hash, size_bytes, tokens, lines"
+                " FROM file_history WHERE path = ? ORDER BY ts DESC LIMIT ?",
+                (path, limit),
+            )
+        )
 
     def file_history_bulk(
         self,
@@ -2856,11 +3270,12 @@ class HistoryDB:
         if until is not None:
             where += " AND ts <= ?"
             params.append(until)
-        rows = _rows_to_dicts(conn.execute(
-            f"SELECT path, ts, content_hash, size_bytes, tokens, lines"
-            f" FROM file_history{where} ORDER BY path, ts",
-            params,
-        ))
+        rows = _rows_to_dicts(
+            conn.execute(
+                f"SELECT path, ts, content_hash, size_bytes, tokens, lines FROM file_history{where} ORDER BY path, ts",
+                params,
+            )
+        )
         result: dict[str, list[dict[str, Any]]] = {p: [] for p in paths}
         for r in rows:
             p = r.pop("path")
@@ -2872,8 +3287,7 @@ class HistoryDB:
         """Return file content at a specific historical timestamp."""
         conn = self._conn()
         cur = conn.execute(
-            "SELECT content, blob_hash FROM file_history"
-            " WHERE path = ? AND ts <= ? ORDER BY ts DESC LIMIT 1",
+            "SELECT content, blob_hash FROM file_history WHERE path = ? AND ts <= ? ORDER BY ts DESC LIMIT 1",
             (path, ts),
         )
         row = cur.fetchone()
@@ -2930,8 +3344,12 @@ class HistoryDB:
 
             if content is not None:
                 changed = self.upsert_file(
-                    path=path, tool=tool, category=category,
-                    scope=scope, content=content, mtime=mtime,
+                    path=path,
+                    tool=tool,
+                    category=category,
+                    scope=scope,
+                    content=content,
+                    mtime=mtime,
                 )
                 if existing:
                     stats["updated" if changed else "unchanged"] += 1
@@ -2939,8 +3357,11 @@ class HistoryDB:
                     stats["added"] += 1
             else:
                 self.upsert_file(
-                    path=path, tool=tool, category=category,
-                    scope=scope, mtime=mtime,
+                    path=path,
+                    tool=tool,
+                    category=category,
+                    scope=scope,
+                    mtime=mtime,
                 )
                 if existing:
                     stats["unchanged"] += 1
@@ -2972,27 +3393,24 @@ class HistoryDB:
         Backward compat: method name preserved, queries ``metrics`` table.
         """
         conn = self._conn()
-        where, params = _where([
-            ("metric = ?", metric or None),
-            ("metric LIKE ?", (metric_prefix + "%") if metric_prefix else None),
-            ("ts >= ?", since), ("ts <= ?", until),
-        ])
+        where, params = _where(
+            [
+                ("metric = ?", metric or None),
+                ("metric LIKE ?", (metric_prefix + "%") if metric_prefix else None),
+                ("ts >= ?", since),
+                ("ts <= ?", until),
+            ]
+        )
         if tag_filter:
             prefix = " AND " if where else " WHERE "
-            where += prefix + " AND ".join(
-                f"json_extract(tags, '$.{k}') = ?" for k in tag_filter
-            )
+            where += prefix + " AND ".join(f"json_extract(tags, '$.{k}') = ?" for k in tag_filter)
             params.extend(tag_filter.values())
         params.append(limit)
         cur = conn.execute(
             f"SELECT ts, metric, value, tags FROM metrics{where} ORDER BY ts DESC LIMIT ?",
             params,
         )
-        return [
-            Metric(ts=r[0], metric=r[1], value=r[2],
-                   tags=_json(r[3]))
-            for r in cur.fetchall()
-        ]
+        return [Metric(ts=r[0], metric=r[1], value=r[2], tags=_json(r[3])) for r in cur.fetchall()]
 
     def query_samples_series(
         self,
@@ -3020,11 +3438,13 @@ class HistoryDB:
         """List distinct metric names with latest value and count."""
         conn = self._conn()
         where, params = _where([("metric LIKE ?", (prefix + "%") if prefix else None)])
-        agg = _rows_to_dicts(conn.execute(
-            f"SELECT metric, COUNT(*) as count, MAX(ts) as latest_ts"
-            f" FROM metrics{where} GROUP BY metric ORDER BY metric",
-            params,
-        ))
+        agg = _rows_to_dicts(
+            conn.execute(
+                f"SELECT metric, COUNT(*) as count, MAX(ts) as latest_ts"
+                f" FROM metrics{where} GROUP BY metric ORDER BY metric",
+                params,
+            )
+        )
         if not agg:
             return []
         for r in agg:
@@ -3052,78 +3472,96 @@ class HistoryDB:
         # ── Tabs + group-by options ──
         tabs: list[dict] = []
         tab_id_to_key: dict[int, str] = {}
-        for t in _rows_to_dicts(conn.execute(
-            "SELECT id, key, title, shortcut, sort_order, visible, icon"
-            " FROM ui_tab WHERE dashboard_id = ? ORDER BY sort_order", (dash_id,),
-        )):
+        for t in _rows_to_dicts(
+            conn.execute(
+                "SELECT id, key, title, shortcut, sort_order, visible, icon"
+                " FROM ui_tab WHERE dashboard_id = ? ORDER BY sort_order",
+                (dash_id,),
+            )
+        ):
             tab_id_to_key[t["id"]] = t["key"]
             gbo = conn.execute(
                 "SELECT key, label, sort_order, is_default"
                 " FROM ui_group_by_option WHERE tab_id = ? ORDER BY sort_order",
                 (t["id"],),
             ).fetchall()
-            tabs.append({
-                "key": t["key"], "title": t["title"], "shortcut": t["shortcut"],
-                "sort_order": t["sort_order"], "visible": bool(t["visible"]), "icon": t["icon"],
-                "group_by_options": [
-                    {"key": g[0], "label": g[1], "is_default": bool(g[3])}
-                    for g in gbo
-                ],
-            })
+            tabs.append(
+                {
+                    "key": t["key"],
+                    "title": t["title"],
+                    "shortcut": t["shortcut"],
+                    "sort_order": t["sort_order"],
+                    "visible": bool(t["visible"]),
+                    "icon": t["icon"],
+                    "group_by_options": [{"key": g[0], "label": g[1], "is_default": bool(g[3])} for g in gbo],
+                }
+            )
 
         # ── Datasources ──
         ds_by_id: dict[int, str] = {}
         datasources: dict[str, dict] = {}
-        for d in _rows_to_dicts(conn.execute(
-            "SELECT id, key, kind, endpoint, poll_ms, config FROM ui_datasource"
-        )):
+        for d in _rows_to_dicts(conn.execute("SELECT id, key, kind, endpoint, poll_ms, config FROM ui_datasource")):
             ds_by_id[d["id"]] = d["key"]
             datasources[d["key"]] = {
-                "kind": d["kind"], "endpoint": d["endpoint"],
-                "poll_ms": d["poll_ms"], "config": json.loads(d["config"] or "{}"),
+                "kind": d["kind"],
+                "endpoint": d["endpoint"],
+                "poll_ms": d["poll_ms"],
+                "config": json.loads(d["config"] or "{}"),
             }
 
         # ── Sections + widgets ──
         sections: list[dict] = []
-        for s in _rows_to_dicts(conn.execute(
-            "SELECT id, key, title, sort_order, visible, collapsed, columns, tab_id"
-            " FROM ui_section WHERE dashboard_id = ? ORDER BY sort_order", (dash_id,),
-        )):
+        for s in _rows_to_dicts(
+            conn.execute(
+                "SELECT id, key, title, sort_order, visible, collapsed, columns, tab_id"
+                " FROM ui_section WHERE dashboard_id = ? ORDER BY sort_order",
+                (dash_id,),
+            )
+        ):
             widgets: list[dict] = []
-            for w in _rows_to_dicts(conn.execute(
-                "SELECT id, key, kind, title, sort_order, col_span, row_span,"
-                " visible, config"
-                " FROM ui_widget WHERE section_id = ? ORDER BY sort_order", (s["id"],),
-            )):
+            for w in _rows_to_dicts(
+                conn.execute(
+                    "SELECT id, key, kind, title, sort_order, col_span, row_span,"
+                    " visible, config"
+                    " FROM ui_widget WHERE section_id = ? ORDER BY sort_order",
+                    (s["id"],),
+                )
+            ):
                 wd_rows = conn.execute(
-                    "SELECT datasource_id, role"
-                    " FROM ui_widget_datasource WHERE widget_id = ?",
+                    "SELECT datasource_id, role FROM ui_widget_datasource WHERE widget_id = ?",
                     (w["id"],),
                 ).fetchall()
-                widgets.append({
-                    "key": w["key"], "kind": w["kind"], "title": w["title"],
-                    "sort_order": w["sort_order"], "col_span": w["col_span"],
-                    "row_span": w["row_span"], "visible": bool(w["visible"]),
-                    "config": json.loads(w["config"] or "{}"),
-                    "datasources": [
-                        {"key": ds_by_id.get(wd[0], ""), "role": wd[1]}
-                        for wd in wd_rows
-                    ],
-                })
-            sections.append({
-                "key": s["key"], "title": s["title"], "sort_order": s["sort_order"],
-                "visible": bool(s["visible"]), "collapsed": bool(s["collapsed"]),
-                "columns": s["columns"],
-                "tab_key": tab_id_to_key.get(s["tab_id"]) if s["tab_id"] else None,
-                "widgets": widgets,
-            })
+                widgets.append(
+                    {
+                        "key": w["key"],
+                        "kind": w["kind"],
+                        "title": w["title"],
+                        "sort_order": w["sort_order"],
+                        "col_span": w["col_span"],
+                        "row_span": w["row_span"],
+                        "visible": bool(w["visible"]),
+                        "config": json.loads(w["config"] or "{}"),
+                        "datasources": [{"key": ds_by_id.get(wd[0], ""), "role": wd[1]} for wd in wd_rows],
+                    }
+                )
+            sections.append(
+                {
+                    "key": s["key"],
+                    "title": s["title"],
+                    "sort_order": s["sort_order"],
+                    "visible": bool(s["visible"]),
+                    "collapsed": bool(s["collapsed"]),
+                    "columns": s["columns"],
+                    "tab_key": tab_id_to_key.get(s["tab_id"]) if s["tab_id"] else None,
+                    "widgets": widgets,
+                }
+            )
 
         # ── Preferences ──
         prefs = {
             r[0]: r[1]
             for r in conn.execute(
-                "SELECT pref_key, pref_value FROM ui_preference"
-                " WHERE dashboard_id = ? AND user_id IS NULL",
+                "SELECT pref_key, pref_value FROM ui_preference WHERE dashboard_id = ? AND user_id IS NULL",
                 (dash_id,),
             ).fetchall()
         }
@@ -3151,13 +3589,11 @@ class HistoryDB:
             return
         if user_id is None:
             conn.execute(
-                "DELETE FROM ui_preference"
-                " WHERE dashboard_id = ? AND user_id IS NULL AND pref_key = ?",
+                "DELETE FROM ui_preference WHERE dashboard_id = ? AND user_id IS NULL AND pref_key = ?",
                 (dash_id, pref_key),
             )
             conn.execute(
-                "INSERT INTO ui_preference(dashboard_id, user_id, pref_key, pref_value)"
-                " VALUES(?, NULL, ?, ?)",
+                "INSERT INTO ui_preference(dashboard_id, user_id, pref_key, pref_value) VALUES(?, NULL, ?, ?)",
                 (dash_id, pref_key, pref_value),
             )
         else:
@@ -3180,17 +3616,19 @@ class HistoryDB:
         dash_id = self._get_dashboard_id(conn, dashboard_slug)
         if not dash_id:
             return {}
-        prefs = dict(conn.execute(
-            "SELECT pref_key, pref_value FROM ui_preference"
-            " WHERE dashboard_id = ? AND user_id IS NULL",
-            (dash_id,),
-        ).fetchall())
+        prefs = dict(
+            conn.execute(
+                "SELECT pref_key, pref_value FROM ui_preference WHERE dashboard_id = ? AND user_id IS NULL",
+                (dash_id,),
+            ).fetchall()
+        )
         if user_id is not None:
-            prefs.update(conn.execute(
-                "SELECT pref_key, pref_value FROM ui_preference"
-                " WHERE dashboard_id = ? AND user_id = ?",
-                (dash_id, user_id),
-            ).fetchall())
+            prefs.update(
+                conn.execute(
+                    "SELECT pref_key, pref_value FROM ui_preference WHERE dashboard_id = ? AND user_id = ?",
+                    (dash_id, user_id),
+                ).fetchall()
+            )
         return prefs
 
     # ── Layout import / export ─────────────────────────────────────
@@ -3208,9 +3646,7 @@ class HistoryDB:
     def reorder_widgets(self, section_key: str, widget_keys: list[str]) -> None:
         """Update sort_order for widgets within a section."""
         conn = self._conn()
-        section_id = conn.execute(
-            "SELECT id FROM ui_section WHERE key = ?", (section_key,)
-        ).fetchone()
+        section_id = conn.execute("SELECT id FROM ui_section WHERE key = ?", (section_key,)).fetchone()
         if not section_id:
             return
         for i, key in enumerate(widget_keys):
@@ -3239,7 +3675,9 @@ class HistoryDB:
 
     def update_widget(self, key: str, **kwargs) -> None:
         """Update widget fields (visible, title, sort_order, config, col_span, row_span)."""
-        self._update_ui_row("ui_widget", key, {"visible", "title", "sort_order", "config", "col_span", "row_span"}, **kwargs)
+        self._update_ui_row(
+            "ui_widget", key, {"visible", "title", "sort_order", "config", "col_span", "row_span"}, **kwargs
+        )
 
     def export_layout(self, slug: str = "main") -> str:
         """Export a dashboard layout as a JSON string."""
@@ -3262,20 +3700,21 @@ class HistoryDB:
             " updated_at = strftime('%s','now')",
             (slug, title),
         )
-        dash_id = conn.execute(
-            "SELECT id FROM ui_dashboard WHERE slug = ?", (slug,)
-        ).fetchone()[0]
+        dash_id = conn.execute("SELECT id FROM ui_dashboard WHERE slug = ?", (slug,)).fetchone()[0]
 
         # Clear old child rows
-        old_section_ids = [r[0] for r in conn.execute(
-            "SELECT id FROM ui_section WHERE dashboard_id = ?", (dash_id,)
-        ).fetchall()]
+        old_section_ids = [
+            r[0] for r in conn.execute("SELECT id FROM ui_section WHERE dashboard_id = ?", (dash_id,)).fetchall()
+        ]
         if old_section_ids:
             ph = _placeholders(old_section_ids)
-            old_widget_ids = [r[0] for r in conn.execute(
-                f"SELECT id FROM ui_widget WHERE section_id IN ({ph})",
-                old_section_ids,
-            ).fetchall()]
+            old_widget_ids = [
+                r[0]
+                for r in conn.execute(
+                    f"SELECT id FROM ui_widget WHERE section_id IN ({ph})",
+                    old_section_ids,
+                ).fetchall()
+            ]
             if old_widget_ids:
                 conn.execute(
                     f"DELETE FROM ui_widget_datasource WHERE widget_id IN ({_placeholders(old_widget_ids)})",
@@ -3284,18 +3723,16 @@ class HistoryDB:
             conn.execute(f"DELETE FROM ui_widget WHERE section_id IN ({ph})", old_section_ids)
         conn.execute("DELETE FROM ui_section WHERE dashboard_id = ?", (dash_id,))
 
-        old_tab_ids = [r[0] for r in conn.execute(
-            "SELECT id FROM ui_tab WHERE dashboard_id = ?", (dash_id,)
-        ).fetchall()]
+        old_tab_ids = [
+            r[0] for r in conn.execute("SELECT id FROM ui_tab WHERE dashboard_id = ?", (dash_id,)).fetchall()
+        ]
         if old_tab_ids:
             conn.execute(
                 f"DELETE FROM ui_group_by_option WHERE tab_id IN ({_placeholders(old_tab_ids)})",
                 old_tab_ids,
             )
         conn.execute("DELETE FROM ui_tab WHERE dashboard_id = ?", (dash_id,))
-        conn.execute(
-            "DELETE FROM ui_preference WHERE dashboard_id = ?", (dash_id,)
-        )
+        conn.execute("DELETE FROM ui_preference WHERE dashboard_id = ?", (dash_id,))
         conn.execute("DELETE FROM ui_datasource")
 
         # Insert tabs
@@ -3305,28 +3742,35 @@ class HistoryDB:
                 "INSERT INTO ui_tab"
                 "(dashboard_id, key, title, shortcut, sort_order, visible, icon)"
                 " VALUES(?,?,?,?,?,?,?)",
-                (dash_id, t["key"], t.get("title", t["key"]),
-                 t.get("shortcut"), t.get("sort_order", 0),
-                 int(t.get("visible", True)), t.get("icon")),
+                (
+                    dash_id,
+                    t["key"],
+                    t.get("title", t["key"]),
+                    t.get("shortcut"),
+                    t.get("sort_order", 0),
+                    int(t.get("visible", True)),
+                    t.get("icon"),
+                ),
             )
             tab_key_to_id[t["key"]] = _last_id(conn)
             for g in t.get("group_by_options", []):
                 conn.execute(
-                    "INSERT INTO ui_group_by_option"
-                    "(tab_id, key, label, sort_order, is_default)"
-                    " VALUES(?,?,?,?,?)",
-                    (tab_key_to_id[t["key"]], g["key"], g.get("label", g["key"]),
-                     g.get("sort_order", 0), int(g.get("is_default", False))),
+                    "INSERT INTO ui_group_by_option(tab_id, key, label, sort_order, is_default) VALUES(?,?,?,?,?)",
+                    (
+                        tab_key_to_id[t["key"]],
+                        g["key"],
+                        g.get("label", g["key"]),
+                        g.get("sort_order", 0),
+                        int(g.get("is_default", False)),
+                    ),
                 )
 
         # Insert datasources
         ds_key_to_id: dict[str, int] = {}
         for dkey, ds in data.get("datasources", {}).items():
             conn.execute(
-                "INSERT INTO ui_datasource(key, kind, endpoint, poll_ms, config)"
-                " VALUES(?,?,?,?,?)",
-                (dkey, ds.get("kind", "rest"), ds.get("endpoint"),
-                 ds.get("poll_ms"), json.dumps(ds.get("config", {}))),
+                "INSERT INTO ui_datasource(key, kind, endpoint, poll_ms, config) VALUES(?,?,?,?,?)",
+                (dkey, ds.get("kind", "rest"), ds.get("endpoint"), ds.get("poll_ms"), json.dumps(ds.get("config", {}))),
             )
             ds_key_to_id[dkey] = _last_id(conn)
 
@@ -3338,9 +3782,16 @@ class HistoryDB:
                 "(dashboard_id, tab_id, key, title, sort_order, visible,"
                 " collapsed, columns)"
                 " VALUES(?,?,?,?,?,?,?,?)",
-                (dash_id, tab_id, s["key"], s.get("title", s["key"]),
-                 s.get("sort_order", 0), int(s.get("visible", True)),
-                 int(s.get("collapsed", False)), s.get("columns")),
+                (
+                    dash_id,
+                    tab_id,
+                    s["key"],
+                    s.get("title", s["key"]),
+                    s.get("sort_order", 0),
+                    int(s.get("visible", True)),
+                    int(s.get("collapsed", False)),
+                    s.get("columns"),
+                ),
             )
             sec_id = _last_id(conn)
             for w in s.get("widgets", []):
@@ -3349,28 +3800,31 @@ class HistoryDB:
                     "(section_id, key, kind, title, sort_order, col_span,"
                     " row_span, visible, config)"
                     " VALUES(?,?,?,?,?,?,?,?,?)",
-                    (sec_id, w["key"], w.get("kind", "stat"),
-                     w.get("title", w["key"]), w.get("sort_order", 0),
-                     w.get("col_span", 1), w.get("row_span", 1),
-                     int(w.get("visible", True)),
-                     json.dumps(w.get("config", {}))),
+                    (
+                        sec_id,
+                        w["key"],
+                        w.get("kind", "stat"),
+                        w.get("title", w["key"]),
+                        w.get("sort_order", 0),
+                        w.get("col_span", 1),
+                        w.get("row_span", 1),
+                        int(w.get("visible", True)),
+                        json.dumps(w.get("config", {})),
+                    ),
                 )
                 wid = _last_id(conn)
                 for wd in w.get("datasources", []):
                     ds_id = ds_key_to_id.get(wd.get("key"))
                     if ds_id:
                         conn.execute(
-                            "INSERT INTO ui_widget_datasource"
-                            "(widget_id, datasource_id, role) VALUES(?,?,?)",
+                            "INSERT INTO ui_widget_datasource(widget_id, datasource_id, role) VALUES(?,?,?)",
                             (wid, ds_id, wd.get("role", "primary")),
                         )
 
         # Insert preferences
         for pkey, pval in data.get("preferences", {}).items():
             conn.execute(
-                "INSERT INTO ui_preference"
-                "(dashboard_id, user_id, pref_key, pref_value)"
-                " VALUES(?, NULL, ?, ?)",
+                "INSERT INTO ui_preference(dashboard_id, user_id, pref_key, pref_value) VALUES(?, NULL, ?, ?)",
                 (dash_id, pkey, str(pval)),
             )
 
@@ -3382,6 +3836,7 @@ class HistoryDB:
         """Load CSV specs from registry into path_defs and process_defs tables."""
         try:
             from .tools import get_registry
+
             registry = get_registry()
             self._sync_path_specs(conn, registry.path_specs())
             self._sync_process_specs(conn, registry.process_specs())
@@ -3400,11 +3855,26 @@ class HistoryDB:
             " description, resolution, root_strategy)"
             " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
-                (s.path_template, s.ai_tool, s.vendor, s.host,
-                 s.platform, int(s.hidden), s.scope, s.category,
-                 s.sent_to_llm, s.approx_tokens, s.read_write,
-                 s.survives_compaction, s.cacheable, s.loaded_when,
-                 s.path_args, s.description, s.resolution, s.root_strategy)
+                (
+                    s.path_template,
+                    s.ai_tool,
+                    s.vendor,
+                    s.host,
+                    s.platform,
+                    int(s.hidden),
+                    s.scope,
+                    s.category,
+                    s.sent_to_llm,
+                    s.approx_tokens,
+                    s.read_write,
+                    s.survives_compaction,
+                    s.cacheable,
+                    s.loaded_when,
+                    s.path_args,
+                    s.description,
+                    s.resolution,
+                    s.root_strategy,
+                )
                 for s in specs
             ],
         )
@@ -3423,13 +3893,30 @@ class HistoryDB:
             " ps_grep_pattern, platform, description)"
             " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
-                (s.process_name, s.ai_tool, s.vendor, s.host,
-                 s.process_type, s.runtime, s.parent_process,
-                 s.starts_at, s.stops_at, int(s.is_daemon), int(s.auto_start),
-                 s.listens_port, s.outbound_targets, s.memory_idle_mb,
-                 s.memory_active_mb, int(s.known_leak), s.leak_pattern,
-                 s.zombie_risk, s.cleanup_command, s.ps_grep_pattern,
-                 s.platform, s.description)
+                (
+                    s.process_name,
+                    s.ai_tool,
+                    s.vendor,
+                    s.host,
+                    s.process_type,
+                    s.runtime,
+                    s.parent_process,
+                    s.starts_at,
+                    s.stops_at,
+                    int(s.is_daemon),
+                    int(s.auto_start),
+                    s.listens_port,
+                    s.outbound_targets,
+                    s.memory_idle_mb,
+                    s.memory_active_mb,
+                    int(s.known_leak),
+                    s.leak_pattern,
+                    s.zombie_risk,
+                    s.cleanup_command,
+                    s.ps_grep_pattern,
+                    s.platform,
+                    s.description,
+                )
                 for s in specs
             ],
         )
@@ -3455,15 +3942,20 @@ class HistoryDB:
     ) -> list[dict[str, Any]]:
         """Query path specs with optional filters."""
         conn = self._conn()
-        where, params = _where([
-            ("ai_tool = ?", tool or None), ("vendor = ?", vendor or None),
-            ("host LIKE ?", (f"%{host}%") if host else None),
-            ("category = ?", category or None),
-        ])
-        return _rows_to_dicts(conn.execute(
-            f"SELECT * FROM path_defs{where} ORDER BY ai_tool, category, path_template",
-            params,
-        ))
+        where, params = _where(
+            [
+                ("ai_tool = ?", tool or None),
+                ("vendor = ?", vendor or None),
+                ("host LIKE ?", (f"%{host}%") if host else None),
+                ("category = ?", category or None),
+            ]
+        )
+        return _rows_to_dicts(
+            conn.execute(
+                f"SELECT * FROM path_defs{where} ORDER BY ai_tool, category, path_template",
+                params,
+            )
+        )
 
     def query_process_specs(
         self,
@@ -3473,14 +3965,19 @@ class HistoryDB:
     ) -> list[dict[str, Any]]:
         """Query process specs with optional filters."""
         conn = self._conn()
-        where, params = _where([
-            ("ai_tool = ?", tool or None), ("vendor = ?", vendor or None),
-            ("host LIKE ?", (f"%{host}%") if host else None),
-        ])
-        return _rows_to_dicts(conn.execute(
-            f"SELECT * FROM process_defs{where} ORDER BY ai_tool, process_name",
-            params,
-        ))
+        where, params = _where(
+            [
+                ("ai_tool = ?", tool or None),
+                ("vendor = ?", vendor or None),
+                ("host LIKE ?", (f"%{host}%") if host else None),
+            ]
+        )
+        return _rows_to_dicts(
+            conn.execute(
+                f"SELECT * FROM process_defs{where} ORDER BY ai_tool, process_name",
+                params,
+            )
+        )
 
     # ── Datapoint Catalog ────────────────────────────────────────
 
@@ -3492,22 +3989,25 @@ class HistoryDB:
     ) -> list[dict[str, Any]]:
         """Query the datapoint catalog with optional filters."""
         conn = self._conn()
-        where, params = _where([
-            ("tab = ?", tab or None), ("key = ?", key or None),
-            ("source_type = ?", source_type or None),
-        ])
-        rows = _rows_to_dicts(conn.execute(
-            f"SELECT * FROM datapoint_catalog{where} ORDER BY tab, section, key",
-            params,
-        ))
+        where, params = _where(
+            [
+                ("tab = ?", tab or None),
+                ("key = ?", key or None),
+                ("source_type = ?", source_type or None),
+            ]
+        )
+        rows = _rows_to_dicts(
+            conn.execute(
+                f"SELECT * FROM datapoint_catalog{where} ORDER BY tab, section, key",
+                params,
+            )
+        )
         for d in rows:
             d["dynamic_source"] = bool(d.get("dynamic_source"))
             d["source_dynamic"] = _json(d.get("source_dynamic"))
         return rows
 
-    def update_datapoint_source(
-        self, key: str, source_dynamic: dict[str, Any]
-    ) -> None:
+    def update_datapoint_source(self, key: str, source_dynamic: dict[str, Any]) -> None:
         """Update the dynamic source provenance for a catalog entry."""
         conn = self._conn()
         conn.execute(
@@ -3537,22 +4037,21 @@ class HistoryDB:
 
         # Row counts -- map old names for backward compat
         table_map = {
-            "system_snapshots": "metrics",      # old: metrics_count
-            "process_snapshots": "tool_metrics", # old: tool_metrics_count
+            "system_snapshots": "metrics",  # old: metrics_count
+            "process_snapshots": "tool_metrics",  # old: tool_metrics_count
             "events": "events",
-            "files": "file_store",               # old: file_store_count
+            "files": "file_store",  # old: file_store_count
             "file_history": "file_history",
-            "path_defs": "path_specs",           # old: path_specs_count
-            "process_defs": "process_specs",     # old: process_specs_count
-            "metrics": "samples",                # old: samples_count
+            "path_defs": "path_specs",  # old: path_specs_count
+            "process_defs": "process_specs",  # old: process_specs_count
+            "metrics": "samples",  # old: samples_count
         }
         for real_table, compat_name in table_map.items():
             cur = conn.execute(f"SELECT COUNT(*) FROM {real_table}")
             result[f"{compat_name}_count"] = cur.fetchone()[0]
 
         # Additional new table counts
-        for table in ("sessions", "requests", "tool_invocations",
-                       "processes", "agents", "tool_stats"):
+        for table in ("sessions", "requests", "tool_invocations", "processes", "agents", "tool_stats"):
             cur = conn.execute(f"SELECT COUNT(*) FROM {table}")
             result[f"{table}_count"] = cur.fetchone()[0]
 
@@ -3563,8 +4062,7 @@ class HistoryDB:
         result["latest_ts"] = row[1]
 
         # File store totals
-        cur = conn.execute(
-            "SELECT COUNT(*), SUM(size_bytes), SUM(tokens) FROM files")
+        cur = conn.execute("SELECT COUNT(*), SUM(size_bytes), SUM(tokens) FROM files")
         row = cur.fetchone()
         result["files_tracked"] = row[0] or 0
         result["files_total_bytes"] = row[1] or 0
@@ -3592,19 +4090,33 @@ class HistoryDB:
         # 2. Downsample system_snapshots 7d-30d to 5-minute buckets
         cutoff_7d = now - _7D
         result["metrics_compacted_7d"] = self._downsample(
-            conn, "system_snapshots", cutoff_30d, cutoff_7d, bucket_secs=300,
+            conn,
+            "system_snapshots",
+            cutoff_30d,
+            cutoff_7d,
+            bucket_secs=300,
         )
         result["tool_metrics_compacted_7d"] = self._downsample_process_snapshots(
-            conn, cutoff_30d, cutoff_7d, bucket_secs=300,
+            conn,
+            cutoff_30d,
+            cutoff_7d,
+            bucket_secs=300,
         )
 
         # 3. Downsample 24h-7d to 1-minute buckets
         cutoff_24h = now - _24H
         result["metrics_compacted_24h"] = self._downsample(
-            conn, "system_snapshots", cutoff_7d, cutoff_24h, bucket_secs=60,
+            conn,
+            "system_snapshots",
+            cutoff_7d,
+            cutoff_24h,
+            bucket_secs=60,
         )
         result["tool_metrics_compacted_24h"] = self._downsample_process_snapshots(
-            conn, cutoff_7d, cutoff_24h, bucket_secs=60,
+            conn,
+            cutoff_7d,
+            cutoff_24h,
+            bucket_secs=60,
         )
 
         # 4. Delete events older than 30 days
@@ -3647,13 +4159,16 @@ class HistoryDB:
         bucket_secs: int,
     ) -> None:
         """Keep only one metric row per metric per time bucket in the given range."""
-        conn.execute("""
+        conn.execute(
+            """
             DELETE FROM metrics WHERE rowid NOT IN (
                 SELECT MAX(rowid) FROM metrics
                 WHERE ts >= ? AND ts < ?
                 GROUP BY metric, CAST(ts / ? AS INTEGER)
             ) AND ts >= ? AND ts < ?
-        """, (since, until, bucket_secs, since, until))
+        """,
+            (since, until, bucket_secs, since, until),
+        )
 
     # Backward compat alias
     _downsample_samples = _downsample_metrics

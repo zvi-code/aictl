@@ -69,12 +69,9 @@ def _strip_env_source_block(profile: Path) -> bool:
 
 
 @click.command("disable")
-@click.option("--dry-run", is_flag=True,
-              help="Print the planned revert actions without mutating anything.")
-@click.option("--since", "since_ts", default=None,
-              help="Only revert ledger entries after this ISO8601 timestamp.")
-@click.option("--force", is_flag=True,
-              help="Pass --force through to subcommands (tolerate corrupt settings.json).")
+@click.option("--dry-run", is_flag=True, help="Print the planned revert actions without mutating anything.")
+@click.option("--since", "since_ts", default=None, help="Only revert ledger entries after this ISO8601 timestamp.")
+@click.option("--force", is_flag=True, help="Pass --force through to subcommands (tolerate corrupt settings.json).")
 def disable(dry_run: bool, since_ts: str | None, force: bool) -> None:
     """Revert what ``aictl enable`` installed: hooks, env source-block, env.sh.
 
@@ -134,16 +131,22 @@ def disable(dry_run: bool, since_ts: str | None, force: bool) -> None:
             actions.append(f"Deleted {env_file}")
             # Record the delete in the ledger.
             mutation_ledger.record(
-                command="disable", path=env_file, op="delete",
-                previous_content=None, new_content=None,
+                command="disable",
+                path=env_file,
+                op="delete",
+                previous_content=None,
+                new_content=None,
             )
         except OSError as exc:
             actions.append(f"Delete {env_file}: FAILED ({exc})")
 
     # 4. Log the disable invocation itself.
     mutation_ledger.record(
-        command="disable", path=Path("<summary>"), op="modify",
-        previous_content=None, new_content=None,
+        command="disable",
+        path=Path("<summary>"),
+        op="modify",
+        previous_content=None,
+        new_content=None,
     )
 
     click.secho("aictl disable:", fg="green", bold=True)
@@ -154,6 +157,7 @@ def disable(dry_run: bool, since_ts: str | None, force: bool) -> None:
 
 
 # ── audit ────────────────────────────────────────────────────────────────────
+
 
 @click.group("audit")
 def audit() -> None:

@@ -43,18 +43,25 @@ class OTelConfig:
     """Standardized OpenTelemetry configuration state."""
 
     enabled: bool = False
-    exporter: str = ""          # "otlp-http", "otlp-grpc", "console", "file", ""
-    endpoint: str = ""          # e.g. "http://localhost:4318"
-    file_path: str = ""         # For "file" exporter — the JSON-lines path
+    exporter: str = ""  # "otlp-http", "otlp-grpc", "console", "file", ""
+    endpoint: str = ""  # e.g. "http://localhost:4318"
+    file_path: str = ""  # For "file" exporter — the JSON-lines path
     capture_content: bool = False
-    source: str = ""            # "vscode-settings", "codex-toml", "env-var", etc.
+    source: str = ""  # "vscode-settings", "codex-toml", "env-var", etc.
 
     def to_dict(self) -> dict:
-        return {k: v for k, v in {
-            "enabled": self.enabled, "exporter": self.exporter,
-            "endpoint": self.endpoint, "file_path": self.file_path,
-            "capture_content": self.capture_content, "source": self.source,
-        }.items() if v}
+        return {
+            k: v
+            for k, v in {
+                "enabled": self.enabled,
+                "exporter": self.exporter,
+                "endpoint": self.endpoint,
+                "file_path": self.file_path,
+                "capture_content": self.capture_content,
+                "source": self.source,
+            }.items()
+            if v
+        }
 
 
 @dataclass
@@ -114,12 +121,15 @@ def _pick(get_fn: Callable, pairs: list[tuple[str, str]]) -> dict:
 
 # ─── macOS login item / launch agent detection ──────────────────
 
+
 def _count_md_agents(root: Path, tool_dir: Path | None = None) -> int:
     """Count .agent.md and AGENTS.md files in root and tool_dir/agents/."""
     count = 0
     # Root files
-    if (root / "AGENTS.md").is_file(): count += 1
-    if (root / ".agent.md").is_file(): count += 1
+    if (root / "AGENTS.md").is_file():
+        count += 1
+    if (root / ".agent.md").is_file():
+        count += 1
     # Tool-specific agent dir
     if tool_dir and (tool_dir / "agents").is_dir():
         count += len([f for f in safe_iterdir(tool_dir / "agents") if f.suffix == ".md"])
@@ -132,9 +142,10 @@ def _macos_login_items() -> set[str]:
         return set()
     try:
         result = subprocess.run(
-            ["osascript", "-e",
-             'tell application "System Events" to get the name of every login item'],
-            capture_output=True, text=True, timeout=3,
+            ["osascript", "-e", 'tell application "System Events" to get the name of every login item'],
+            capture_output=True,
+            text=True,
+            timeout=3,
         )
         return set(result.stdout.strip().split(", ")) if result.returncode == 0 else set()
     except Exception:
@@ -169,6 +180,7 @@ def _find_extensions(ext_dir: Path, *keywords: str, limit: int | None = None) ->
 
 
 # ─── Generic OTel detection ─────────────────────────────────────
+
 
 def _detect_otel_from_vscode_settings(settings: dict) -> OTelConfig:
     """Extract OTel config from VS Code settings dict (github.copilot.chat.otel.* keys)."""
@@ -227,14 +239,11 @@ def _generate_hints(cfg: ToolConfig) -> list[str]:
     if not cfg.otel.enabled:
         if cfg.tool == "copilot":
             hints.append(
-                'OTel disabled — enable for verified token counts: '
+                "OTel disabled — enable for verified token counts: "
                 'set "github.copilot.chat.otel.enabled": true in VS Code settings'
             )
         elif cfg.tool == "codex-cli":
-            hints.append(
-                'OTel not configured — set [otel] exporter in ~/.codex/config.toml '
-                'for telemetry export'
-            )
+            hints.append("OTel not configured — set [otel] exporter in ~/.codex/config.toml for telemetry export")
     else:
         if cfg.otel.exporter == "file" and cfg.otel.file_path:
             hints.append(f"OTel active — writing to {cfg.otel.file_path}")
@@ -263,6 +272,7 @@ def _generate_hints(cfg: ToolConfig) -> list[str]:
 
 
 # ─── Tool-specific parsers ──────────────────────────────────────
+
 
 def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConfig | None:
     cfg = ToolConfig(tool=tool)
@@ -345,8 +355,7 @@ def _parse_claude_desktop_config(root: Path | None = None, tool: str = "claude-d
 
     # Cowork mode (autonomous)
     cowork = {}
-    for key in ("coworkWebSearchEnabled", "coworkScheduledTasksEnabled",
-                "allowAllBrowserActions"):
+    for key in ("coworkWebSearchEnabled", "coworkScheduledTasksEnabled", "allowAllBrowserActions"):
         if key in prefs:
             label = key.replace("cowork", "").replace("Enabled", "").replace("allow", "")
             label = label[0].lower() + label[1:] if label else key
@@ -355,9 +364,14 @@ def _parse_claude_desktop_config(root: Path | None = None, tool: str = "claude-d
         cfg.feature_groups["Cowork (Autonomous)"] = cowork
 
     # Flat features for backward compat
-    for key in ("keepAwakeEnabled", "coworkScheduledTasksEnabled",
-                "allowAllBrowserActions", "sidebarMode",
-                "coworkWebSearchEnabled", "launchPreviewPersistSession"):
+    for key in (
+        "keepAwakeEnabled",
+        "coworkScheduledTasksEnabled",
+        "allowAllBrowserActions",
+        "sidebarMode",
+        "coworkWebSearchEnabled",
+        "launchPreviewPersistSession",
+    ):
         if key in prefs:
             cfg.features[key] = prefs[key]
 
@@ -383,8 +397,8 @@ def _parse_vscode_config(root: Path, tool: str = "vscode") -> ToolConfig | None:
     if not user_dir.exists():
         return None  # VS Code not installed
 
-    user_settings  = _read_json(user_dir / "settings.json") or {}
-    ws_settings    = _read_json(root / ".vscode" / "settings.json") or {}
+    user_settings = _read_json(user_dir / "settings.json") or {}
+    ws_settings = _read_json(root / ".vscode" / "settings.json") or {}
     # Workspace overrides user
     vscode_settings: dict = {**user_settings, **ws_settings}
 
@@ -392,23 +406,23 @@ def _parse_vscode_config(root: Path, tool: str = "vscode") -> ToolConfig | None:
     # Shown when the user hasn't explicitly set the key — gives full visibility
     # even on a default install.
     _DEFAULTS: dict = {
-        "chat.agent.enabled":                         True,
-        "chat.agent.maxRequests":                     50,
-        "chat.autopilot.enabled":                     True,
-        "chat.autoReply":                             False,
-        "chat.useHooks":                              True,
-        "chat.useClaudeHooks":                        False,
-        "chat.useCustomAgentHooks":                   False,
-        "chat.useClaudeMdFile":                       True,
-        "chat.useAgentsMdFile":                       True,
-        "chat.useNestedAgentsMdFiles":                False,
-        "chat.includeApplyingInstructions":           True,
-        "chat.tools.global.autoApprove":              False,
-        "chat.tools.terminal.sandbox.enabled":        False,
-        "chat.tools.terminal.enableAutoApprove":      True,
+        "chat.agent.enabled": True,
+        "chat.agent.maxRequests": 50,
+        "chat.autopilot.enabled": True,
+        "chat.autoReply": False,
+        "chat.useHooks": True,
+        "chat.useClaudeHooks": False,
+        "chat.useCustomAgentHooks": False,
+        "chat.useClaudeMdFile": True,
+        "chat.useAgentsMdFile": True,
+        "chat.useNestedAgentsMdFiles": False,
+        "chat.includeApplyingInstructions": True,
+        "chat.tools.global.autoApprove": False,
+        "chat.tools.terminal.sandbox.enabled": False,
+        "chat.tools.terminal.enableAutoApprove": True,
         "chat.tools.terminal.autoApproveWorkspaceNpmScripts": True,
-        "chat.mcp.access":                            "all",
-        "chat.mcp.autostart":                         "newAndOutdated",
+        "chat.mcp.access": "all",
+        "chat.mcp.autostart": "newAndOutdated",
     }
 
     def get(key: str):
@@ -418,41 +432,59 @@ def _parse_vscode_config(root: Path, tool: str = "vscode") -> ToolConfig | None:
         return _DEFAULTS.get(key)
 
     for group_name, pairs in (
-        ("Agent", [
-            ("chat.agent.enabled",       "enabled"),
-            ("chat.autopilot.enabled",   "autopilot"),
-            ("chat.autoReply",           "autoReply"),
-            ("chat.agent.maxRequests",   "maxRequests"),
-        ]),
-        ("Hooks", [
-            ("chat.useHooks",                "enabled"),
-            ("chat.useClaudeHooks",          "claudeHooks"),
-            ("chat.useCustomAgentHooks",     "customAgentHooks"),
-            ("chat.hookFilesLocations",      "locations"),
-        ]),
-        ("Safety", [
-            ("chat.tools.global.autoApprove",                       "globalAutoApprove"),
-            ("chat.tools.terminal.sandbox.enabled",                  "terminalSandbox"),
-            ("chat.tools.terminal.enableAutoApprove",               "terminalAutoApprove"),
-            ("chat.tools.terminal.autoApproveWorkspaceNpmScripts",  "autoApproveNpmScripts"),
-        ]),
-        ("Context Files", [
-            ("chat.useClaudeMdFile",              "claudeMd"),
-            ("chat.useAgentsMdFile",              "agentsMd"),
-            ("chat.useNestedAgentsMdFiles",       "nestedAgentsMd"),
-            ("chat.includeApplyingInstructions",  "applyingInstructions"),
-        ]),
-        ("File Locations", [
-            ("chat.instructionsFilesLocations",  "instructions"),
-            ("chat.agentFilesLocations",         "agents"),
-            ("chat.agentSkillsLocations",        "skills"),
-            ("chat.promptFilesLocations",        "prompts"),
-        ]),
-        ("MCP", [
-            ("chat.mcp.access",             "access"),
-            ("chat.mcp.autostart",          "autostart"),
-            ("chat.mcp.discovery.enabled",  "discovery"),
-        ]),
+        (
+            "Agent",
+            [
+                ("chat.agent.enabled", "enabled"),
+                ("chat.autopilot.enabled", "autopilot"),
+                ("chat.autoReply", "autoReply"),
+                ("chat.agent.maxRequests", "maxRequests"),
+            ],
+        ),
+        (
+            "Hooks",
+            [
+                ("chat.useHooks", "enabled"),
+                ("chat.useClaudeHooks", "claudeHooks"),
+                ("chat.useCustomAgentHooks", "customAgentHooks"),
+                ("chat.hookFilesLocations", "locations"),
+            ],
+        ),
+        (
+            "Safety",
+            [
+                ("chat.tools.global.autoApprove", "globalAutoApprove"),
+                ("chat.tools.terminal.sandbox.enabled", "terminalSandbox"),
+                ("chat.tools.terminal.enableAutoApprove", "terminalAutoApprove"),
+                ("chat.tools.terminal.autoApproveWorkspaceNpmScripts", "autoApproveNpmScripts"),
+            ],
+        ),
+        (
+            "Context Files",
+            [
+                ("chat.useClaudeMdFile", "claudeMd"),
+                ("chat.useAgentsMdFile", "agentsMd"),
+                ("chat.useNestedAgentsMdFiles", "nestedAgentsMd"),
+                ("chat.includeApplyingInstructions", "applyingInstructions"),
+            ],
+        ),
+        (
+            "File Locations",
+            [
+                ("chat.instructionsFilesLocations", "instructions"),
+                ("chat.agentFilesLocations", "agents"),
+                ("chat.agentSkillsLocations", "skills"),
+                ("chat.promptFilesLocations", "prompts"),
+            ],
+        ),
+        (
+            "MCP",
+            [
+                ("chat.mcp.access", "access"),
+                ("chat.mcp.autostart", "autostart"),
+                ("chat.mcp.discovery.enabled", "discovery"),
+            ],
+        ),
     ):
         if group := _pick(get, pairs):
             cfg.feature_groups[group_name] = group
@@ -464,53 +496,53 @@ def _parse_vscode_config(root: Path, tool: str = "vscode") -> ToolConfig | None:
 
 
 _COPILOT_FEATURES: list[tuple[str, str]] = [
-    ("github.copilot.chat.agent.enabled",                                  "agent_mode"),
-    ("github.copilot.chat.agent.autoFix",                                  "agent_autoFix"),
-    ("github.copilot.chat.agent.currentEditorContext.enabled",             "agent_editorContext"),
-    ("github.copilot.chat.agent.largeToolResultsToDisk.enabled",           "agent_largeResultsToDisk"),
-    ("github.copilot.chat.agentDebugLog.enabled",                          "agentDebugLog"),
-    ("github.copilot.chat.agentDebugLog.fileLogging.enabled",              "agentDebugLog_fileLogging"),
-    ("github.copilot.chat.tools.memory.enabled",                           "local_memory"),
-    ("github.copilot.chat.copilotMemory.enabled",                          "github_memory"),
-    ("github.copilot.chat.tools.viewImage.enabled",                        "tool_viewImage"),
-    ("github.copilot.chat.claudeAgent.enabled",                            "claude_agent"),
-    ("github.copilot.chat.cli.mcp.enabled",                                "cli_mcp"),
-    ("github.copilot.chat.cli.isolationOption.enabled",                    "cli_worktreeIsolation"),
-    ("github.copilot.chat.cli.autoCommit.enabled",                         "cli_autoCommit"),
-    ("github.copilot.chat.cli.branchSupport.enabled",                      "cli_branchSupport"),
-    ("chat.useHooks",                                                       "hooks_enabled"),
-    ("chat.useClaudeHooks",                                                 "hooks_claude"),
-    ("chat.useCustomAgentHooks",                                            "hooks_custom_agent"),
-    ("chat.autopilot.enabled",                                              "autopilot"),
-    ("chat.tools.global.autoApprove",                                      "global_autoApprove"),
-    ("chat.autoReply",                                                      "autoReply"),
-    ("chat.tools.terminal.autoApprove",                                    "autoApprove"),
-    ("chat.tools.terminal.sandbox.enabled",                                "terminal_sandbox"),
-    ("chat.plugins.enabled",                                               "plugins"),
-    ("chat.useCustomizationsInParentRepositories",                         "parent_repo_discovery"),
-    ("chat.useClaudeMdFile",                                               "ctx_claudeMd"),
-    ("chat.useAgentsMdFile",                                               "ctx_agentsMd"),
-    ("chat.useNestedAgentsMdFiles",                                        "ctx_nestedAgentsMd"),
-    ("github.copilot.chat.anthropic.tools.websearch.enabled",             "anthropic_websearch"),
-    ("github.copilot.chat.claudeAgent.allowDangerouslySkipPermissions",   "claudeAgent_skipPermissions"),
-    ("chat.mcp.discovery.enabled",                                         "mcp_discovery"),
+    ("github.copilot.chat.agent.enabled", "agent_mode"),
+    ("github.copilot.chat.agent.autoFix", "agent_autoFix"),
+    ("github.copilot.chat.agent.currentEditorContext.enabled", "agent_editorContext"),
+    ("github.copilot.chat.agent.largeToolResultsToDisk.enabled", "agent_largeResultsToDisk"),
+    ("github.copilot.chat.agentDebugLog.enabled", "agentDebugLog"),
+    ("github.copilot.chat.agentDebugLog.fileLogging.enabled", "agentDebugLog_fileLogging"),
+    ("github.copilot.chat.tools.memory.enabled", "local_memory"),
+    ("github.copilot.chat.copilotMemory.enabled", "github_memory"),
+    ("github.copilot.chat.tools.viewImage.enabled", "tool_viewImage"),
+    ("github.copilot.chat.claudeAgent.enabled", "claude_agent"),
+    ("github.copilot.chat.cli.mcp.enabled", "cli_mcp"),
+    ("github.copilot.chat.cli.isolationOption.enabled", "cli_worktreeIsolation"),
+    ("github.copilot.chat.cli.autoCommit.enabled", "cli_autoCommit"),
+    ("github.copilot.chat.cli.branchSupport.enabled", "cli_branchSupport"),
+    ("chat.useHooks", "hooks_enabled"),
+    ("chat.useClaudeHooks", "hooks_claude"),
+    ("chat.useCustomAgentHooks", "hooks_custom_agent"),
+    ("chat.autopilot.enabled", "autopilot"),
+    ("chat.tools.global.autoApprove", "global_autoApprove"),
+    ("chat.autoReply", "autoReply"),
+    ("chat.tools.terminal.autoApprove", "autoApprove"),
+    ("chat.tools.terminal.sandbox.enabled", "terminal_sandbox"),
+    ("chat.plugins.enabled", "plugins"),
+    ("chat.useCustomizationsInParentRepositories", "parent_repo_discovery"),
+    ("chat.useClaudeMdFile", "ctx_claudeMd"),
+    ("chat.useAgentsMdFile", "ctx_agentsMd"),
+    ("chat.useNestedAgentsMdFiles", "ctx_nestedAgentsMd"),
+    ("github.copilot.chat.anthropic.tools.websearch.enabled", "anthropic_websearch"),
+    ("github.copilot.chat.claudeAgent.allowDangerouslySkipPermissions", "claudeAgent_skipPermissions"),
+    ("chat.mcp.discovery.enabled", "mcp_discovery"),
 ]
 
 _COPILOT_SETTINGS: list[tuple[str, str]] = [
-    ("chat.agent.maxRequests",                                  "agent_maxRequests"),
-    ("github.copilot.chat.agentHistorySummarizationMode",       "agent_historySummarizationMode"),
-    ("github.copilot.chat.debug.requestLogger.maxEntries",      "debug_requestLoggerMaxEntries"),
-    ("chat.hookFilesLocations",                                 "hookFilesLocations"),
-    ("github.copilot.chat.anthropic.thinking.budgetTokens",     "anthropic_thinkingBudget"),
-    ("github.copilot.chat.anthropic.thinking.effort",           "anthropic_thinkingEffort"),
-    ("github.copilot.chat.agent.temperature",                   "agent_temperature"),
-    ("chat.mcp.access",                                         "mcp_access"),
-    ("chat.planAgent.defaultModel",                             "planModel"),
-    ("github.copilot.chat.implementAgent.model",                "implementModel"),
-    ("chat.instructionsFilesLocations",                         "instructionsFilesLocations"),
-    ("chat.agentFilesLocations",                                "agentFilesLocations"),
-    ("chat.agentSkillsLocations",                               "agentSkillsLocations"),
-    ("chat.promptFilesLocations",                               "promptFilesLocations"),
+    ("chat.agent.maxRequests", "agent_maxRequests"),
+    ("github.copilot.chat.agentHistorySummarizationMode", "agent_historySummarizationMode"),
+    ("github.copilot.chat.debug.requestLogger.maxEntries", "debug_requestLoggerMaxEntries"),
+    ("chat.hookFilesLocations", "hookFilesLocations"),
+    ("github.copilot.chat.anthropic.thinking.budgetTokens", "anthropic_thinkingBudget"),
+    ("github.copilot.chat.anthropic.thinking.effort", "anthropic_thinkingEffort"),
+    ("github.copilot.chat.agent.temperature", "agent_temperature"),
+    ("chat.mcp.access", "mcp_access"),
+    ("chat.planAgent.defaultModel", "planModel"),
+    ("github.copilot.chat.implementAgent.model", "implementModel"),
+    ("chat.instructionsFilesLocations", "instructionsFilesLocations"),
+    ("chat.agentFilesLocations", "agentFilesLocations"),
+    ("chat.agentSkillsLocations", "agentSkillsLocations"),
+    ("chat.promptFilesLocations", "promptFilesLocations"),
 ]
 
 
@@ -570,45 +602,99 @@ def _parse_copilot_config(root: Path, tool: str = "copilot") -> ToolConfig | Non
     f, s = cfg.features.get, cfg.settings.get
     for group_name, pairs, store in (
         ("Session Targets", [("claude_agent", "claudeTarget"), ("autopilot", "autopilot")], f),
-        ("Agent Mode", [
-            ("agent_mode", "enabled"), ("agent_autoFix", "autoFix"),
-            ("agent_editorContext", "editorContext"), ("agent_largeResultsToDisk", "largeResultsToDisk"),
-            ("plugins", "plugins"),
-        ], f),
-        ("Agent Mode", [
-            ("agent_maxRequests", "maxRequests"), ("agent_historySummarizationMode", "historySummarizationMode"),
-        ], s),
-        ("Debug Logging", [
-            ("agentDebugLog", "enabled"), ("agentDebugLog_fileLogging", "fileLogging"),
-        ], f),
+        (
+            "Agent Mode",
+            [
+                ("agent_mode", "enabled"),
+                ("agent_autoFix", "autoFix"),
+                ("agent_editorContext", "editorContext"),
+                ("agent_largeResultsToDisk", "largeResultsToDisk"),
+                ("plugins", "plugins"),
+            ],
+            f,
+        ),
+        (
+            "Agent Mode",
+            [
+                ("agent_maxRequests", "maxRequests"),
+                ("agent_historySummarizationMode", "historySummarizationMode"),
+            ],
+            s,
+        ),
+        (
+            "Debug Logging",
+            [
+                ("agentDebugLog", "enabled"),
+                ("agentDebugLog_fileLogging", "fileLogging"),
+            ],
+            f,
+        ),
         ("Debug Logging", [("debug_requestLoggerMaxEntries", "requestLoggerMaxEntries")], s),
-        ("Memory & Tools", [
-            ("local_memory", "local"), ("github_memory", "github"), ("tool_viewImage", "viewImage"),
-        ], f),
-        ("CLI Mode", [
-            ("cli_mcp", "mcp"), ("cli_worktreeIsolation", "worktreeIsolation"),
-            ("cli_autoCommit", "autoCommit"), ("cli_branchSupport", "branchSupport"),
-        ], f),
-        ("Hooks", [
-            ("hooks_enabled", "enabled"), ("hooks_claude", "claudeHooks"),
-            ("hooks_custom_agent", "customAgentHooks"),
-        ], f),
+        (
+            "Memory & Tools",
+            [
+                ("local_memory", "local"),
+                ("github_memory", "github"),
+                ("tool_viewImage", "viewImage"),
+            ],
+            f,
+        ),
+        (
+            "CLI Mode",
+            [
+                ("cli_mcp", "mcp"),
+                ("cli_worktreeIsolation", "worktreeIsolation"),
+                ("cli_autoCommit", "autoCommit"),
+                ("cli_branchSupport", "branchSupport"),
+            ],
+            f,
+        ),
+        (
+            "Hooks",
+            [
+                ("hooks_enabled", "enabled"),
+                ("hooks_claude", "claudeHooks"),
+                ("hooks_custom_agent", "customAgentHooks"),
+            ],
+            f,
+        ),
         ("Hooks", [("hookFilesLocations", "locations")], s),
-        ("Safety", [
-            ("autoApprove", "autoApprove"), ("terminal_sandbox", "terminalSandbox"),
-            ("global_autoApprove", "globalAutoApprove"), ("autoReply", "autoReply"),
-        ], f),
-        ("Context Files", [
-            ("ctx_claudeMd", "claudeMd"), ("ctx_agentsMd", "agentsMd"),
-            ("ctx_nestedAgentsMd", "nestedAgentsMd"),
-        ], f),
-        ("Claude (Anthropic)", [
-            ("anthropic_websearch", "webSearch"), ("claudeAgent_skipPermissions", "skipPermissions"),
-        ], f),
-        ("Claude (Anthropic)", [
-            ("anthropic_thinkingBudget", "thinkingBudget"), ("anthropic_thinkingEffort", "thinkingEffort"),
-            ("agent_temperature", "temperature"),
-        ], s),
+        (
+            "Safety",
+            [
+                ("autoApprove", "autoApprove"),
+                ("terminal_sandbox", "terminalSandbox"),
+                ("global_autoApprove", "globalAutoApprove"),
+                ("autoReply", "autoReply"),
+            ],
+            f,
+        ),
+        (
+            "Context Files",
+            [
+                ("ctx_claudeMd", "claudeMd"),
+                ("ctx_agentsMd", "agentsMd"),
+                ("ctx_nestedAgentsMd", "nestedAgentsMd"),
+            ],
+            f,
+        ),
+        (
+            "Claude (Anthropic)",
+            [
+                ("anthropic_websearch", "webSearch"),
+                ("claudeAgent_skipPermissions", "skipPermissions"),
+            ],
+            f,
+        ),
+        (
+            "Claude (Anthropic)",
+            [
+                ("anthropic_thinkingBudget", "thinkingBudget"),
+                ("anthropic_thinkingEffort", "thinkingEffort"),
+                ("agent_temperature", "temperature"),
+            ],
+            s,
+        ),
     ):
         if chunk := _pick(store, pairs):
             cfg.feature_groups[group_name] = cfg.feature_groups.get(group_name, {}) | chunk
@@ -675,9 +761,12 @@ def _parse_windsurf_config(root: Path, tool: str = "windsurf") -> ToolConfig | N
 
 # Simple capability name → feature flag (normalised to lowercase + underscores)
 _CAP_FEATURE_FLAGS: dict[str, str] = {
-    "websearch": "web_search", "web_search": "web_search",
-    "codeinterpreter": "code_interpreter", "code_interpreter": "code_interpreter",
-    "graphskills": "graph_skills", "graph_skills": "graph_skills",
+    "websearch": "web_search",
+    "web_search": "web_search",
+    "codeinterpreter": "code_interpreter",
+    "code_interpreter": "code_interpreter",
+    "graphskills": "graph_skills",
+    "graph_skills": "graph_skills",
 }
 
 
@@ -696,8 +785,8 @@ def _parse_copilot365_config(root: Path, tool: str = "copilot365") -> ToolConfig
     # ── Project manifest (YAML) ────────────────────────────────
     # New format first, legacy fallback
     manifest_files = [
-        ("m365agents.yml", "m365agents.local.yml"),      # new (ATK v5.12+)
-        ("teamsapp.yml", "teamsapp.local.yml"),           # legacy
+        ("m365agents.yml", "m365agents.local.yml"),  # new (ATK v5.12+)
+        ("teamsapp.yml", "teamsapp.local.yml"),  # legacy
     ]
     found_manifest = False
     for main_name, local_name in manifest_files:
@@ -707,6 +796,7 @@ def _parse_copilot365_config(root: Path, tool: str = "copilot365") -> ToolConfig
                 continue
             try:
                 import yaml
+
                 data = yaml.safe_load(manifest.read_text(errors="replace")) or {}
                 if name == main_name:
                     cfg.settings["version"] = data.get("version", "")
@@ -754,7 +844,8 @@ def _parse_copilot365_config(root: Path, tool: str = "copilot365") -> ToolConfig
                         ids = [
                             conn["connection_id"]
                             for item in caps
-                            if isinstance(item, dict) and item.get("name", "").lower().replace(" ", "") == "graphconnectors"
+                            if isinstance(item, dict)
+                            and item.get("name", "").lower().replace(" ", "") == "graphconnectors"
                             for conn in item.get("connections", [])
                             if isinstance(conn, dict) and conn.get("connection_id")
                         ]
@@ -783,14 +874,18 @@ def _parse_copilot365_config(root: Path, tool: str = "copilot365") -> ToolConfig
             if isinstance(fns, list) and fns:
                 fn_defs = [
                     {"name": fn.get("name", ""), "description": (fn.get("description", "") or "")[:100]}
-                    for fn in fns if isinstance(fn, dict)
+                    for fn in fns
+                    if isinstance(fn, dict)
                 ]
                 cfg.settings["functions"] = fn_defs
                 cfg.settings["function_count"] = len(fn_defs)
             runtimes = [rt for rt in plugin_data.get("runtimes", []) if isinstance(rt, dict)]
             if rt_types := sorted({rt.get("type", "") for rt in runtimes} - {""}):
                 cfg.settings["runtime_types"] = rt_types
-            if auth_types := sorted({rt["auth"]["type"] for rt in runtimes if isinstance(rt.get("auth"), dict) and rt["auth"].get("type")} - {""}):
+            if auth_types := sorted(
+                {rt["auth"]["type"] for rt in runtimes if isinstance(rt.get("auth"), dict) and rt["auth"].get("type")}
+                - {""}
+            ):
                 cfg.settings["auth_types"] = auth_types
 
     # ── Environment files ──────────────────────────────────────
@@ -807,6 +902,7 @@ def _parse_copilot365_config(root: Path, tool: str = "copilot365") -> ToolConfig
 
 
 # ─── Public API ─────────────────────────────────────────────────
+
 
 def _get_nested(data: dict, key_path: str) -> Any | None:
     """Resolve a dot-notated key (e.g. 'general.vimMode') against a nested dict."""
@@ -829,7 +925,7 @@ def _parse_generic_config(root: Path, tool_name: str, spec: dict) -> ToolConfig 
         vscode_user_dir,
         windsurf_global_dir,
     )
-    
+
     _PATH_FNS = {
         "claude_global_dir": claude_global_dir,
         "vscode_user_dir": vscode_user_dir,
@@ -846,7 +942,7 @@ def _parse_generic_config(root: Path, tool_name: str, spec: dict) -> ToolConfig 
     # Check binary
     if shutil.which(tool_name.split("-")[0]):
         has_data = True
-    
+
     # Check global config dir
     path_fn_name = None
     for f_spec in spec.get("config_files", []):
@@ -863,37 +959,42 @@ def _parse_generic_config(root: Path, tool_name: str, spec: dict) -> ToolConfig 
         path = None
         if "path_fn" in f_spec:
             fn = _PATH_FNS.get(f_spec["path_fn"])
-            if fn: path = fn() / f_spec["file"]
+            if fn:
+                path = fn() / f_spec["file"]
         elif "path" in f_spec:
             p_str = f_spec["path"].replace("{project-root}", str(root)).replace("{home}", str(Path.home()))
             path = Path(p_str)
-        
+
         if not path or not path.is_file():
             continue
-        
+
         data = _read_json(path) if f_spec.get("format") == "json" else _read_toml(path)
         if not data:
             continue
-        
+
         has_data = True
-        
+
         # Extraction
         for attr, key_path in f_spec.get("extract", {}).items():
             val = _get_nested(data, key_path)
             if val is not None:
-                if attr == "model": cfg.model = str(val)
-                else: cfg.settings[attr] = val
+                if attr == "model":
+                    cfg.model = str(val)
+                else:
+                    cfg.settings[attr] = val
 
     # 2. Apply defaults for missing settings
     defaults = spec.get("defaults", {})
     for attr, default_val in defaults.items():
         if attr not in cfg.settings and (not hasattr(cfg, attr) or not getattr(cfg, attr)):
-            if hasattr(cfg, attr): setattr(cfg, attr, default_val)
-            else: cfg.settings[attr] = default_val
+            if hasattr(cfg, attr):
+                setattr(cfg, attr, default_val)
+            else:
+                cfg.settings[attr] = default_val
 
     # 3. Special feature discovery
     feat_spec = spec.get("features", {})
-    
+
     # Hooks
     if "hooks" in feat_spec and feat_spec["hooks"].get("type") == "count_events":
         hook_data = cfg.settings.get("hooks") or {}
@@ -919,18 +1020,28 @@ def _parse_generic_config(root: Path, tool_name: str, spec: dict) -> ToolConfig 
             chunk = _pick(cfg.settings.get, [(p[0], p[1]) for p in pairs.items()])
             if chunk:
                 cfg.feature_groups[group_name] = cfg.feature_groups.get(group_name, {}) | chunk
-    
+
     # Fallback/Legacy hardcoded groups for gemini-cli if not in YAML
     if tool_name == "gemini-cli" and not group_spec:
-        cfg.feature_groups["General"] = _pick(cfg.settings.get, [
-            ("vim_mode", "vimMode"), ("approval_mode", "approvalMode"),
-            ("auto_update", "autoUpdate"), ("notifications", "notifications"),
-            ("max_attempts", "maxAttempts")
-        ])
-        cfg.feature_groups["UI"] = _pick(cfg.settings.get, [
-            ("line_numbers", "lineNumbers"), ("alternate_screen", "alternateScreen"),
-            ("hide_context", "hideContext"), ("theme", "theme")
-        ])
+        cfg.feature_groups["General"] = _pick(
+            cfg.settings.get,
+            [
+                ("vim_mode", "vimMode"),
+                ("approval_mode", "approvalMode"),
+                ("auto_update", "autoUpdate"),
+                ("notifications", "notifications"),
+                ("max_attempts", "maxAttempts"),
+            ],
+        )
+        cfg.feature_groups["UI"] = _pick(
+            cfg.settings.get,
+            [
+                ("line_numbers", "lineNumbers"),
+                ("alternate_screen", "alternateScreen"),
+                ("hide_context", "hideContext"),
+                ("theme", "theme"),
+            ],
+        )
 
     return _finish(cfg, has_data)
 
@@ -938,8 +1049,10 @@ def _parse_generic_config(root: Path, tool_name: str, spec: dict) -> ToolConfig 
 def _parse_gemini_config(root: Path, tool: str = "gemini-cli") -> ToolConfig | None:
     # Delegate to generic parser using YAML spec
     from ..data.schema import load_tool_configs
+
     spec = load_tool_configs().get(tool)
-    if not spec: return None
+    if not spec:
+        return None
     return _parse_generic_config(root, tool, spec)
 
 

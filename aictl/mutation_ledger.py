@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 def _ledger_path() -> Path:
     try:
         from aictl.platforms import config_dir
+
         return config_dir() / "mutation-log.jsonl"
     except Exception:  # noqa: BLE001
         return Path.home() / ".config" / "aictl" / "mutation-log.jsonl"
@@ -33,6 +34,7 @@ def _ledger_path() -> Path:
 def _aictl_version() -> str:
     try:
         from importlib.metadata import PackageNotFoundError, version
+
         try:
             return version("aictl")
         except PackageNotFoundError:

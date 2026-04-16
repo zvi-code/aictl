@@ -21,14 +21,22 @@ from ..utils import estimate_tokens, write_safe
 @click.command("import")
 @click.option("-r", "--root", "root_dir", default=".", help="Root directory to import from")
 @click.option("-p", "--profile", help="Override detected profile name")
-@click.option("--prefer", type=click.Choice(["claude", "copilot", "cursor", "windsurf", "gemini"]),
-              help="Preferred source when tools disagree")
-@click.option("--from", "from_tools", default="claude,copilot,cursor,windsurf,gemini,plugin",
-              help="Comma-separated importers to read from")
+@click.option(
+    "--prefer",
+    type=click.Choice(["claude", "copilot", "cursor", "windsurf", "gemini"]),
+    help="Preferred source when tools disagree",
+)
+@click.option(
+    "--from",
+    "from_tools",
+    default="claude,copilot,cursor,windsurf,gemini,plugin",
+    help="Comma-separated importers to read from",
+)
 @click.option("--dry-run", is_flag=True, help="Show what would be written")
 def import_cmd(root_dir, profile, prefer, from_tools, dry_run):
     """Import native AI tool files and generate .context.toml files."""
     from ..utils import WriteGuard
+
     if not dry_run:
         WriteGuard.install("import")
     root = Path(root_dir).resolve()
@@ -82,8 +90,7 @@ def plugin():
 @plugin.command()
 @click.option("-r", "--root", "root_dir", default=".", help="Root directory with .toml files")
 @click.option("-p", "--profile", help="Active profile")
-@click.option("-o", "--output", "out_dir", default=None,
-              help="Output directory for plugin (default: <root>/plugin)")
+@click.option("-o", "--output", "out_dir", default=None, help="Output directory for plugin (default: <root>/plugin)")
 @click.option("-n", "--name", "plugin_name", default=None, help="Plugin name (used as namespace)")
 @click.option("--description", "plugin_desc", default="", help="Plugin description")
 @click.option("--version", "plugin_version", default="", help="Plugin version")
@@ -96,6 +103,7 @@ def build(root_dir, profile, out_dir, plugin_name, plugin_desc, plugin_version, 
     root .context.toml file.  CLI flags take precedence over [plugin] values.
     """
     from ..utils import WriteGuard
+
     if not dry_run:
         WriteGuard.install("plugin build")
     root = Path(root_dir).resolve()
@@ -206,7 +214,7 @@ def build(root_dir, profile, out_dir, plugin_name, plugin_desc, plugin_version, 
     # --- Report ---
     for r in results:
         pfx = click.style("   (dry)", fg="yellow") if dry_run else click.style("   ✓", fg="green")
-        tok = click.style(f'{r["tokens"]} tok', fg="cyan")
+        tok = click.style(f"{r['tokens']} tok", fg="cyan")
         fp = click.style(r["path"], fg="bright_black")
         click.echo(f"{pfx} {fp} ({tok})")
 

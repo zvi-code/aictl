@@ -36,12 +36,14 @@ def _swap_lock(proj: Path):
     try:
         if sys.platform == "win32":
             import msvcrt
+
             try:
                 msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
             except OSError:
                 raise RuntimeError("another aictl swap is in progress for this project")
         else:
             import fcntl
+
             try:
                 fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
@@ -51,9 +53,11 @@ def _swap_lock(proj: Path):
         try:
             if sys.platform == "win32":
                 import msvcrt
+
                 msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
             else:
                 import fcntl
+
                 fcntl.flock(fh, fcntl.LOCK_UN)
         except Exception:
             pass
@@ -119,6 +123,7 @@ def _find_project_dir(root: Path) -> Path | None:
     candidates match we prefer the longest name (most specific path).
     """
     from .platforms import claude_projects_dir
+
     projects = claude_projects_dir()
     if not projects.is_dir():
         return None
@@ -188,8 +193,7 @@ def _find_project_dir(root: Path) -> Path | None:
         if ename == project_name or ename.endswith(f"-{project_name}"):
             matches.append(entry)
         # Case-insensitive variant
-        elif ename.lower() == project_name.lower() or \
-                ename.lower().endswith(f"-{project_name.lower()}"):
+        elif ename.lower() == project_name.lower() or ename.lower().endswith(f"-{project_name.lower()}"):
             matches.append(entry)
 
     if len(matches) == 1:
@@ -289,7 +293,9 @@ def recover_swap(root: Path) -> bool:
 
     log.warning(
         "Found incomplete memory swap (old=%s, new=%s, ts=%s) — recovering",
-        old_profile, new_profile, plan.get("timestamp"),
+        old_profile,
+        new_profile,
+        plan.get("timestamp"),
     )
 
     # If old_profile was being stashed and the stash dir exists but
@@ -337,8 +343,14 @@ def get_summary(root: Path) -> dict | None:
     for f in sorted(mem.iterdir()):
         if f.suffix == ".md":
             c = f.read_text(errors="replace")
-            files.append({"file": f.name, "lines": len([l for l in c.splitlines() if l.strip()]),
-                          "tokens": -(-len(c) // 4), "content": c})
+            files.append(
+                {
+                    "file": f.name,
+                    "lines": len([l for l in c.splitlines() if l.strip()]),
+                    "tokens": -(-len(c) // 4),
+                    "content": c,
+                }
+            )
     return {"dir": str(mem), "files": files, "total_tokens": sum(f["tokens"] for f in files)} if files else None
 
 

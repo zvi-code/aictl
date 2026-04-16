@@ -34,9 +34,9 @@ _PREVIEW_LINES = 5
 # Token breakdown badge config: (key, color, label)
 _TOKEN_BADGE_DEFS = [
     ("always_loaded", "#34d399", "always"),
-    ("on_demand",     "#38bdf8", "on-demand"),
-    ("conditional",   "#fb923c", "conditional"),
-    ("never_sent",    "#94a3b8", "never"),
+    ("on_demand", "#38bdf8", "on-demand"),
+    ("conditional", "#fb923c", "conditional"),
+    ("never_sent", "#94a3b8", "never"),
 ]
 
 
@@ -239,7 +239,7 @@ details[open] > .dir-summary::before {{ transform: rotate(90deg); }}
 </div>
 
 <div id="tab-tools" class="tab-panel active">
-{''.join(tool_cards)}
+{"".join(tool_cards)}
 </div>
 
 <div id="tab-telemetry" class="tab-panel">
@@ -299,6 +299,7 @@ window.__AICTL_SNAPSHOT__ = {snap.to_json()};
 
 _uid = itertools.count(1)
 
+
 def _render_content_preview(content: str, uid: str, tail_lines: int = _PREVIEW_LINES) -> str:
     """Render a content block showing the last N lines with an expand button.
 
@@ -333,9 +334,7 @@ def _number_lines(lines: list[str], start: int = 1) -> str:
     parts = []
     for i, line in enumerate(lines):
         num = start + i
-        parts.append(
-            f'<span class="line-no">{num}</span>{_esc(line)}'
-        )
+        parts.append(f'<span class="line-no">{num}</span>{_esc(line)}')
     return "\n".join(parts)
 
 
@@ -360,6 +359,7 @@ def _read_file_tail(path_str: str, max_size: int = 50_000) -> str | None:
 
 # ── Section renderers ────────────────────────────────────────────
 
+
 def _render_tool_cards(snap: DashboardSnapshot, root: Path, home: Path) -> list[str]:
     tool_cards = []
 
@@ -373,8 +373,8 @@ def _render_tool_cards(snap: DashboardSnapshot, root: Path, home: Path) -> list[
         if tr.files:
             dir_html = _files_html_by_dir(tr.files, root, home, f"file-{tr.tool}")
             files_html = (
-                f'<details>'
-                f'<summary>{len(tr.files)} file{"s" if len(tr.files) != 1 else ""}</summary>'
+                f"<details>"
+                f"<summary>{len(tr.files)} file{'s' if len(tr.files) != 1 else ''}</summary>"
                 f"{dir_html}"
                 f"</details>"
             )
@@ -402,7 +402,7 @@ def _render_tool_cards(snap: DashboardSnapshot, root: Path, home: Path) -> list[
             <details>
               <table class="proc-table">
                 <thead><tr><th>PID</th><th>Name</th><th>CPU</th><th>MEM</th><th>Command</th><th>Cleanup</th></tr></thead>
-                <tbody>{''.join(rows)}</tbody>
+                <tbody>{"".join(rows)}</tbody>
               </table>
             </details>"""
 
@@ -413,15 +413,12 @@ def _render_tool_cards(snap: DashboardSnapshot, root: Path, home: Path) -> list[
                 name = srv.get("name", "?")
                 cmd = srv.get("config", {}).get("command", "?")
                 args = " ".join(srv.get("config", {}).get("args", []))
-                rows.append(
-                    f"<tr><td>{_esc(name)}</td>"
-                    f"<td><code>{_esc(cmd)} {_esc(args[:80])}</code></td></tr>"
-                )
+                rows.append(f"<tr><td>{_esc(name)}</td><td><code>{_esc(cmd)} {_esc(args[:80])}</code></td></tr>")
             mcp_html = f"""
             <details>
               <table class="mcp-table">
                 <thead><tr><th>Server</th><th>Command</th></tr></thead>
-                <tbody>{''.join(rows)}</tbody>
+                <tbody>{"".join(rows)}</tbody>
               </table>
             </details>"""
 
@@ -523,7 +520,7 @@ def _render_mcp_section(snap: DashboardSnapshot) -> str:
           <th>Status</th><th>Server</th><th>Tool</th><th>Transport</th>
           <th>Endpoint</th><th>PID</th><th>CPU</th><th>MEM</th>
         </tr></thead>
-        <tbody>{''.join(rows)}</tbody>
+        <tbody>{"".join(rows)}</tbody>
       </table>
     </div>"""
 
@@ -564,14 +561,15 @@ def _render_memory_section(snap: DashboardSnapshot, root: Path, home: Path) -> s
           <details>
             <summary>
               <span class="mem-source">{_esc(label)}</span>
-              — {len(entries)} {'entry' if len(entries) == 1 else 'entries'}
+              — {len(entries)} {"entry" if len(entries) == 1 else "entries"}
               ({_human_tokens(total_tok)})
             </summary>
-            {''.join(items)}
+            {"".join(items)}
           </details>
         </div>""")
 
     return "".join(sections)
+
 
 def _render_aictl_section(snap: DashboardSnapshot, root: Path, home: Path) -> str:
     """Render the aictl (.aictx) tab — context files managed by aictl, not read by LLM tools."""
@@ -596,8 +594,6 @@ def _render_aictl_section(snap: DashboardSnapshot, root: Path, home: Path) -> st
         sections.append(f'<div class="section-card">{dir_html}</div>')
 
     return "".join(sections)
-
-
 
 
 def _files_html_by_dir(
@@ -643,18 +639,14 @@ def _files_html_by_dir(
             content = _read_file_tail(f.path)
             preview_html = ""
             if content and content.strip():
-                preview_html = (
-                    f'<div class="file-preview-wrap">'
-                    f"{_render_content_preview(content, uid)}"
-                    f"</div>"
-                )
+                preview_html = f'<div class="file-preview-wrap">{_render_content_preview(content, uid)}</div>'
 
             parts_html.append(
                 f'<div class="file-row">'
                 f'<span class="file-name">{_esc(filename)}</span>'
                 f'<span class="file-kind">{_esc(f.kind)}</span>'
                 f'<span class="file-size">{_human_size(f.size)}'
-                f'{"  " + tok_str if tok_str else ""}</span>'
+                f"{'  ' + tok_str if tok_str else ''}</span>"
                 f"</div>"
                 f"{preview_html}"
             )
@@ -742,7 +734,7 @@ def _render_telemetry_section(snap: DashboardSnapshot) -> str:
             <details style="margin-top:0.75rem">
               <summary>{_esc(tool)} — daily token usage (last 7 days)</summary>
               <table><thead><tr><th>Date</th><th>Tokens by Model</th></tr></thead>
-              <tbody>{''.join(daily_rows)}</tbody></table>
+              <tbody>{"".join(daily_rows)}</tbody></table>
             </details>"""
 
     return f"""
@@ -753,7 +745,7 @@ def _render_telemetry_section(snap: DashboardSnapshot) -> str:
           <th>Cache Create</th><th>Cost</th><th>Sessions</th><th>Messages</th>
           <th>Confidence</th><th>Source</th><th>Errors</th>
         </tr></thead>
-        <tbody>{''.join(rows)}</tbody>
+        <tbody>{"".join(rows)}</tbody>
       </table>
       {daily_html}
     </div>"""
@@ -809,7 +801,7 @@ def _render_events_section(snap: DashboardSnapshot) -> str:
       </div>
       <table>
         <thead><tr><th>Time</th><th>Kind</th><th>Tool</th><th>Details</th></tr></thead>
-        <tbody>{''.join(rows)}</tbody>
+        <tbody>{"".join(rows)}</tbody>
       </table>
     </div>"""
 
@@ -830,17 +822,20 @@ from .view_helpers import compute_tool_summary
 
 def _tool_colour(tool: str) -> str:
     from ..tools import TOOL_COLORS
+
     return TOOL_COLORS.get(tool, "#64748b")
 
 
 def _tool_icon(tool: str) -> str:
     from ..tools import DEFAULT_TOOL_ICON, TOOL_ICONS
+
     return TOOL_ICONS.get(tool, DEFAULT_TOOL_ICON)
 
 
 def _version() -> str:
     try:
         from importlib.metadata import version
+
         return version("aictl")
     except Exception:
         return "0.4.0"

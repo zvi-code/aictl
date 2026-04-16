@@ -139,8 +139,7 @@ class ServerClient:
         automatically on connection errors.
         """
         url = self.base_url + "/api/stream"
-        req = urllib.request.Request(
-            url, headers={"Accept": "text/event-stream"})
+        req = urllib.request.Request(url, headers={"Accept": "text/event-stream"})
         try:
             resp = urllib.request.urlopen(req, timeout=timeout)
         except (urllib.error.URLError, OSError, TimeoutError):

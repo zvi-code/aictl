@@ -19,6 +19,7 @@ from aictl.utils import WriteGuard
 # Issue 1: cleanup_stale refuses paths outside root
 # ---------------------------------------------------------------------------
 
+
 def test_cleanup_stale_refuses_outside_root(tmp_path):
     """A manifest pointing outside root must not delete that file."""
     root = tmp_path / "project"
@@ -68,6 +69,7 @@ def test_cleanup_stale_deletes_inside_root(tmp_path):
 # Issue 1: cleanup_stale routes through WriteGuard
 # ---------------------------------------------------------------------------
 
+
 def test_cleanup_stale_routes_through_write_guard(tmp_path):
     """When a WriteGuard is installed, cleanup_stale calls guard.confirm(p, 'delete')."""
     root = tmp_path
@@ -102,6 +104,7 @@ def test_cleanup_stale_routes_through_write_guard(tmp_path):
 # ---------------------------------------------------------------------------
 # Issue 2: _clean_parents sibling-directory safety
 # ---------------------------------------------------------------------------
+
 
 def test_clean_parents_skips_sibling(tmp_path):
     """`/tmp/foo` must not have `/tmp/foo-bar/x` walk into it via prefix match."""
@@ -140,6 +143,7 @@ def test_clean_parents_removes_empty_dirs_inside_root(tmp_path):
 # Issue 3: partial emitter failure must NOT save manifest
 # ---------------------------------------------------------------------------
 
+
 def test_run_deploy_partial_failure_does_not_save_manifest(tmp_path):
     """If an emitter raises, save_manifest must not be called."""
     (tmp_path / ".context.toml").write_text('[instructions]\nbase = "Hi."\n')
@@ -147,9 +151,11 @@ def test_run_deploy_partial_failure_does_not_save_manifest(tmp_path):
     failing = MagicMock()
     failing.emit.side_effect = RuntimeError("boom")
 
-    with patch("aictl.commands.ctx_pipeline.registry.get", return_value=failing), \
-         patch("aictl.commands.ctx_pipeline.save_manifest") as save_mock, \
-         patch("aictl.commands.ctx_pipeline.cleanup_stale") as cleanup_mock:
+    with (
+        patch("aictl.commands.ctx_pipeline.registry.get", return_value=failing),
+        patch("aictl.commands.ctx_pipeline.save_manifest") as save_mock,
+        patch("aictl.commands.ctx_pipeline.cleanup_stale") as cleanup_mock,
+    ):
         with pytest.raises(RuntimeError, match="boom"):
             _run_deploy(tmp_path, None, ["claude"], dry_run=False)
 

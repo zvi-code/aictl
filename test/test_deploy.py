@@ -75,6 +75,7 @@ def test_watch_missing_watchdog():
     runner = CliRunner()
     with runner.isolated_filesystem():
         import builtins
+
         real_import = builtins.__import__
 
         def mock_import(name, *args, **kwargs):

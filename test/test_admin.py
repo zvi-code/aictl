@@ -32,6 +32,7 @@ def runner():
 # _resolve_db_path
 # ────────────────────────────────────────────────────────────────
 
+
 class TestResolveDbPath:
     def test_existing_path(self, tmp_path):
         db_file = tmp_path / "test.db"
@@ -55,6 +56,7 @@ class TestResolveDbPath:
 # ────────────────────────────────────────────────────────────────
 # _find_project_root
 # ────────────────────────────────────────────────────────────────
+
 
 class TestFindProjectRoot:
     def test_finds_root_from_cwd(self):
@@ -87,6 +89,7 @@ class TestFindProjectRoot:
 # _render_markdown (pure function)
 # ────────────────────────────────────────────────────────────────
 
+
 class TestRenderMarkdown:
     def test_basic_render(self):
         entries = [
@@ -109,12 +112,26 @@ class TestRenderMarkdown:
 
     def test_multiple_tabs(self):
         entries = [
-            {"key": "m1", "tab": "budget", "section": "s1",
-             "source_type": "raw", "explanation": "e1", "query": "q1",
-             "calc": "c1", "dynamic_source": None},
-            {"key": "m2", "tab": "status", "section": "s2",
-             "source_type": "deduced", "explanation": "e2", "query": "q2",
-             "calc": "c2", "dynamic_source": None},
+            {
+                "key": "m1",
+                "tab": "budget",
+                "section": "s1",
+                "source_type": "raw",
+                "explanation": "e1",
+                "query": "q1",
+                "calc": "c1",
+                "dynamic_source": None,
+            },
+            {
+                "key": "m2",
+                "tab": "status",
+                "section": "s2",
+                "source_type": "deduced",
+                "explanation": "e2",
+                "query": "q2",
+                "calc": "c2",
+                "dynamic_source": None,
+            },
         ]
         output = _render_markdown(entries)
         assert "## budget" in output
@@ -123,37 +140,67 @@ class TestRenderMarkdown:
 
     def test_dynamic_badge(self):
         entries = [
-            {"key": "dyn1", "tab": "t1", "section": "s1",
-             "source_type": "aggregated", "explanation": "e",
-             "query": "q", "calc": "c", "dynamic_source": "live"},
+            {
+                "key": "dyn1",
+                "tab": "t1",
+                "section": "s1",
+                "source_type": "aggregated",
+                "explanation": "e",
+                "query": "q",
+                "calc": "c",
+                "dynamic_source": "live",
+            },
         ]
         output = _render_markdown(entries)
         assert "AGGREGATED *" in output
 
     def test_empty_query_shows_dash(self):
         entries = [
-            {"key": "k", "tab": "t", "section": "s",
-             "source_type": "raw", "explanation": "e",
-             "query": "", "calc": "c", "dynamic_source": None},
+            {
+                "key": "k",
+                "tab": "t",
+                "section": "s",
+                "source_type": "raw",
+                "explanation": "e",
+                "query": "",
+                "calc": "c",
+                "dynamic_source": None,
+            },
         ]
         output = _render_markdown(entries)
         assert "—" in output  # em dash for empty query
 
     def test_pipe_in_text_escaped(self):
         entries = [
-            {"key": "k", "tab": "t", "section": "s",
-             "source_type": "raw", "explanation": "has | pipe",
-             "query": "q", "calc": "c", "dynamic_source": None},
+            {
+                "key": "k",
+                "tab": "t",
+                "section": "s",
+                "source_type": "raw",
+                "explanation": "has | pipe",
+                "query": "q",
+                "calc": "c",
+                "dynamic_source": None,
+            },
         ]
         output = _render_markdown(entries)
         assert "\\|" in output
 
     def test_legend_included(self):
-        output = _render_markdown([
-            {"key": "k", "tab": "t", "section": "s",
-             "source_type": "raw", "explanation": "e",
-             "query": "q", "calc": "c", "dynamic_source": None},
-        ])
+        output = _render_markdown(
+            [
+                {
+                    "key": "k",
+                    "tab": "t",
+                    "section": "s",
+                    "source_type": "raw",
+                    "explanation": "e",
+                    "query": "q",
+                    "calc": "c",
+                    "dynamic_source": None,
+                },
+            ]
+        )
         assert "## Legend" in output
         assert "RAW" in output
         assert "DEDUCED" in output
@@ -163,6 +210,7 @@ class TestRenderMarkdown:
 # ────────────────────────────────────────────────────────────────
 # db stats command
 # ────────────────────────────────────────────────────────────────
+
 
 class TestDbStats:
     def test_stats_output(self, runner, tmp_path):
@@ -191,6 +239,7 @@ class TestDbStats:
 # ────────────────────────────────────────────────────────────────
 # db compact command
 # ────────────────────────────────────────────────────────────────
+
 
 class TestDbCompact:
     def test_compact_runs(self, runner, tmp_path):
@@ -229,6 +278,7 @@ class TestDbCompact:
 # db reset command
 # ────────────────────────────────────────────────────────────────
 
+
 class TestDbReset:
     def test_reset_with_yes(self, runner, tmp_path):
         db_file = tmp_path / "test.db"
@@ -256,6 +306,7 @@ class TestDbReset:
 # config commands
 # ────────────────────────────────────────────────────────────────
 
+
 class TestConfigCommands:
     def test_config_show(self, runner):
         with patch("aictl.commands.admin.show_config", return_value="mock_config_output"):
@@ -281,6 +332,7 @@ class TestConfigCommands:
 # build-ui command
 # ────────────────────────────────────────────────────────────────
 
+
 class TestBuildUi:
     def test_no_project_root(self, runner):
         with patch("aictl.commands.admin._find_project_root", return_value=None):
@@ -297,8 +349,10 @@ class TestBuildUi:
     def test_npm_install_failure(self, runner, tmp_path):
         ui_dir = tmp_path / "aictl" / "dashboard" / "ui"
         ui_dir.mkdir(parents=True)
-        with patch("aictl.commands.admin._find_project_root", return_value=tmp_path), \
-             patch("subprocess.run", side_effect=FileNotFoundError("npm not found")):
+        with (
+            patch("aictl.commands.admin._find_project_root", return_value=tmp_path),
+            patch("subprocess.run", side_effect=FileNotFoundError("npm not found")),
+        ):
             result = runner.invoke(build_ui)
         assert result.exit_code != 0
         assert "npm" in result.output.lower()
@@ -308,6 +362,7 @@ class TestBuildUi:
 # reinstall command
 # ────────────────────────────────────────────────────────────────
 
+
 class TestReinstall:
     def test_no_project_root(self, runner):
         with patch("aictl.commands.admin._find_project_root", return_value=None):
@@ -316,9 +371,11 @@ class TestReinstall:
         assert "Cannot find" in result.output
 
     def test_reinstall_with_pipx(self, runner, tmp_path):
-        with patch("aictl.commands.admin._find_project_root", return_value=tmp_path), \
-             patch("shutil.which", return_value="/usr/bin/pipx"), \
-             patch("subprocess.run") as mock_run:
+        with (
+            patch("aictl.commands.admin._find_project_root", return_value=tmp_path),
+            patch("shutil.which", return_value="/usr/bin/pipx"),
+            patch("subprocess.run") as mock_run,
+        ):
             mock_run.return_value = MagicMock(returncode=0)
             result = runner.invoke(reinstall, ["--skip-ui"])
         assert result.exit_code == 0
@@ -328,16 +385,20 @@ class TestReinstall:
         def mock_which(cmd):
             return "/usr/bin/pip3" if cmd == "pip3" else None
 
-        with patch("aictl.commands.admin._find_project_root", return_value=tmp_path), \
-             patch("shutil.which", side_effect=mock_which), \
-             patch("subprocess.run") as mock_run:
+        with (
+            patch("aictl.commands.admin._find_project_root", return_value=tmp_path),
+            patch("shutil.which", side_effect=mock_which),
+            patch("subprocess.run") as mock_run,
+        ):
             mock_run.return_value = MagicMock(returncode=0)
             result = runner.invoke(reinstall, ["--skip-ui"])
         assert result.exit_code == 0
 
     def test_reinstall_no_pip_no_pipx(self, runner, tmp_path):
-        with patch("aictl.commands.admin._find_project_root", return_value=tmp_path), \
-             patch("shutil.which", return_value=None):
+        with (
+            patch("aictl.commands.admin._find_project_root", return_value=tmp_path),
+            patch("shutil.which", return_value=None),
+        ):
             result = runner.invoke(reinstall, ["--skip-ui"])
         assert result.exit_code != 0
         assert "Neither pipx nor pip" in result.output
@@ -347,12 +408,21 @@ class TestReinstall:
 # catalog commands
 # ────────────────────────────────────────────────────────────────
 
+
 class TestCatalog:
     def test_catalog_dump_md(self, runner):
         mock_db = MagicMock()
         mock_db.query_datapoint_catalog.return_value = [
-            {"key": "k1", "tab": "t", "section": "s", "source_type": "raw",
-             "explanation": "e", "query": "q", "calc": "c", "dynamic_source": None},
+            {
+                "key": "k1",
+                "tab": "t",
+                "section": "s",
+                "source_type": "raw",
+                "explanation": "e",
+                "query": "q",
+                "calc": "c",
+                "dynamic_source": None,
+            },
         ]
         with patch("aictl.storage.HistoryDB", return_value=mock_db):
             result = runner.invoke(catalog, [])
@@ -362,8 +432,16 @@ class TestCatalog:
     def test_catalog_dump_json(self, runner):
         mock_db = MagicMock()
         mock_db.query_datapoint_catalog.return_value = [
-            {"key": "k1", "tab": "t", "section": "s", "source_type": "raw",
-             "explanation": "e", "query": "q", "calc": "c", "dynamic_source": None},
+            {
+                "key": "k1",
+                "tab": "t",
+                "section": "s",
+                "source_type": "raw",
+                "explanation": "e",
+                "query": "q",
+                "calc": "c",
+                "dynamic_source": None,
+            },
         ]
         with patch("aictl.storage.HistoryDB", return_value=mock_db):
             result = runner.invoke(catalog, ["--format", "json"])
@@ -384,8 +462,16 @@ class TestCatalog:
         out_file = tmp_path / "catalog.md"
         mock_db = MagicMock()
         mock_db.query_datapoint_catalog.return_value = [
-            {"key": "k1", "tab": "t", "section": "s", "source_type": "raw",
-             "explanation": "e", "query": "q", "calc": "c", "dynamic_source": None},
+            {
+                "key": "k1",
+                "tab": "t",
+                "section": "s",
+                "source_type": "raw",
+                "explanation": "e",
+                "query": "q",
+                "calc": "c",
+                "dynamic_source": None,
+            },
         ]
         with patch("aictl.storage.HistoryDB", return_value=mock_db):
             result = runner.invoke(catalog, ["-o", str(out_file)])

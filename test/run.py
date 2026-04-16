@@ -19,7 +19,7 @@ from pathlib import Path
 # ── Setup ────────────────────────────────────────────────────────
 
 TEST_DIR = Path(__file__).parent.resolve()
-FIXTURES  = TEST_DIR / "fixtures" / "project"
+FIXTURES = TEST_DIR / "fixtures" / "project"
 
 PASS = 0
 FAIL = 0
@@ -27,6 +27,7 @@ VERBOSE = False
 
 
 # ── Assertion helpers ────────────────────────────────────────────
+
 
 def ok(path: Path) -> None:
     global PASS, FAIL
@@ -88,10 +89,13 @@ def _fail(msg: str) -> None:
 
 # ── Utilities ────────────────────────────────────────────────────
 
+
 def run(args: list[str], *, check: bool = False) -> str:
     """Run a command, return stdout+stderr combined."""
     result = subprocess.run(
-        args, capture_output=True, text=True,
+        args,
+        capture_output=True,
+        text=True,
     )
     combined = result.stdout + result.stderr
     if VERBOSE:
@@ -122,17 +126,18 @@ def section(title: str) -> None:
 
 # ── Tests ────────────────────────────────────────────────────────
 
+
 def test_1_scan() -> None:
     section("=== TEST 1: Scan ===")
     out = aictl("scan", "--root", str(FIXTURES))
     if VERBOSE:
         print(out)
-    scan_has(out, "(root)",       "root scope")
-    scan_has(out, "src/runner",   "src/runner")
-    scan_has(out, "src/dataset",  "src/dataset")
-    scan_has(out, "src/metrics",  "src/metrics")
-    scan_has(out, "generators",   "generators")
-    scan_has(out, "5 scope",      "5 scopes")
+    scan_has(out, "(root)", "root scope")
+    scan_has(out, "src/runner", "src/runner")
+    scan_has(out, "src/dataset", "src/dataset")
+    scan_has(out, "src/metrics", "src/metrics")
+    scan_has(out, "generators", "generators")
+    scan_has(out, "5 scope", "5 scopes")
 
 
 def test_2_deploy_debug() -> None:
@@ -143,9 +148,9 @@ def test_2_deploy_debug() -> None:
     section("--- Root instructions ---")
     ok(FIXTURES / "CLAUDE.md")
     ok(FIXTURES / "CLAUDE.local.md")
-    has(FIXTURES / "CLAUDE.md",       "valkey-bench-rs")
-    has(FIXTURES / "CLAUDE.md",       "cargo build")
-    has(FIXTURES / "CLAUDE.md",       "thiserror")
+    has(FIXTURES / "CLAUDE.md", "valkey-bench-rs")
+    has(FIXTURES / "CLAUDE.md", "cargo build")
+    has(FIXTURES / "CLAUDE.md", "thiserror")
     has(FIXTURES / "CLAUDE.local.md", "Active Profile: debug")
     has(FIXTURES / "CLAUDE.local.md", "SIMD dispatch")
     has(FIXTURES / "CLAUDE.local.md", "RUST_LOG")
@@ -156,12 +161,12 @@ def test_2_deploy_debug() -> None:
     ok(rules / "src-dataset.md")
     ok(rules / "src-dataset-generators.md")
     ok(rules / "src-metrics.md")
-    has(rules / "src-runner.md",             "deadpool-redis")
-    has(rules / "src-runner.md",             "tokio-console")
-    has(rules / "src-dataset.md",            "ground truth")
+    has(rules / "src-runner.md", "deadpool-redis")
+    has(rules / "src-runner.md", "tokio-console")
+    has(rules / "src-dataset.md", "ground truth")
     has(rules / "src-dataset-generators.md", "VectorGenerator")
-    has(rules / "src-metrics.md",            "SimSIMD")
-    has(rules / "src-metrics.md",            "SIMSIMD_LOG")
+    has(rules / "src-metrics.md", "SimSIMD")
+    has(rules / "src-metrics.md", "SIMSIMD_LOG")
 
     section("--- Copilot + Cursor ---")
     gh = FIXTURES / ".github"
@@ -203,7 +208,7 @@ def test_2_deploy_debug() -> None:
     ok(mcp)
     has(mcp, "github")
     has(mcp, "valkey-server")
-    no(mcp,  "azure")
+    no(mcp, "azure")
 
     section("--- Manifest ---")
     manifest = FIXTURES / ".ai-deployed" / "manifest.json"
@@ -227,28 +232,28 @@ def test_4_switch_docs() -> None:
     aictl("deploy", "--root", str(FIXTURES), "--profile", "docs")
 
     section("--- Debug removed ---")
-    cmds   = FIXTURES / ".claude" / "commands"
+    cmds = FIXTURES / ".claude" / "commands"
     skills = FIXTURES / ".claude" / "skills"
     agents = FIXTURES / ".github" / "agents"
-    gone(cmds   / "profile.md")
-    gone(cmds   / "repro-recall.md")
+    gone(cmds / "profile.md")
+    gone(cmds / "repro-recall.md")
     gone(agents / "perf-investigator.agent.md")
-    gone(skills / "flamegraph"        / "SKILL.md")
+    gone(skills / "flamegraph" / "SKILL.md")
     gone(skills / "dataset-inspector" / "SKILL.md")
-    gone(skills / "latency-analysis"  / "SKILL.md")
+    gone(skills / "latency-analysis" / "SKILL.md")
 
     section("--- Docs present ---")
-    ok(cmds   / "gen-bench-report.md")
+    ok(cmds / "gen-bench-report.md")
     ok(skills / "results-visualizer" / "SKILL.md")
 
     section("--- Always survived ---")
-    ok(cmds   / "status.md")
+    ok(cmds / "status.md")
     ok(agents / "planner.agent.md")
 
     section("--- MCP switched ---")
     mcp = FIXTURES / ".mcp.json"
     has(mcp, "github")
-    no(mcp,  "valkey-server")
+    no(mcp, "valkey-server")
 
     section("--- Overlay survived ---")
     local_md = FIXTURES / "CLAUDE.local.md"
@@ -261,18 +266,19 @@ def test_5_switch_review() -> None:
     section("=== TEST 5: Switch to review ===")
     aictl("deploy", "--root", str(FIXTURES), "--profile", "review")
 
-    cmds   = FIXTURES / ".claude" / "commands"
+    cmds = FIXTURES / ".claude" / "commands"
     agents = FIXTURES / ".github" / "agents"
-    ok(cmds   / "check-simd.md")
+    ok(cmds / "check-simd.md")
     ok(agents / "rust-reviewer.agent.md")
     gone(cmds / "gen-bench-report.md")
-    ok(cmds   / "status.md")
+    ok(cmds / "status.md")
     has(FIXTURES / "CLAUDE.local.md", "unwrap")
 
 
 def test_6_memory_swap() -> None:
     import os
     import platform as _platform
+
     section("=== TEST 6: Memory swap ===")
     # Resolve claude projects dir cross-platform (mirrors platforms.py logic)
     if _platform.system() == "Windows":
@@ -280,7 +286,7 @@ def test_6_memory_swap() -> None:
     else:
         base = Path.home() / ".claude"
     proj = base / "projects" / "project"
-    mem  = proj / "memory"
+    mem = proj / "memory"
     shutil.rmtree(proj, ignore_errors=True)
     mem.mkdir(parents=True)
     (mem / "MEMORY.md").write_text("- Graviton3 sve confirmed\n", encoding="utf-8")
@@ -311,11 +317,11 @@ def test_6_memory_swap() -> None:
 
 # ── Entry point ──────────────────────────────────────────────────
 
+
 def main() -> None:
     global VERBOSE
     parser = argparse.ArgumentParser(description="aictl integration tests")
-    parser.add_argument("-v", "--verbose", action="store_true",
-                        help="Show full aictl command output")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Show full aictl command output")
     args = parser.parse_args()
     VERBOSE = args.verbose
 

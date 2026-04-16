@@ -13,9 +13,7 @@ import re
 from ..storage import EventRow
 from .otel_receiver import _num
 
-_UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
-)
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
 
 def build_session_flow(db, session_id: str, since: float, until: float) -> dict:
@@ -38,7 +36,8 @@ def build_session_flow(db, session_id: str, since: float, until: float) -> dict:
 
     # Step 1: Direct events for this session_id
     all_events = db.query_events(
-        since=since, until=until,
+        since=since,
+        until=until,
         session_id=session_id,
         limit=5000,
     )
@@ -55,37 +54,36 @@ def build_session_flow(db, session_id: str, since: float, until: float) -> dict:
     related_sids: set[str] = set()
 
     if session_pid and not is_uuid:
-        related_sids = set(db.find_session_ids_by_pid(
-            session_pid, since=since, until=until))
+        related_sids = set(db.find_session_ids_by_pid(session_pid, since=since, until=until))
         related_sids.discard(session_id)
 
     # Fetch OTel/hook events from related sessions
     for rel_sid in related_sids:
         rel_events = db.query_events(
-            since=since - 7200, until=until,
+            since=since - 7200,
+            until=until,
             session_id=rel_sid,
             limit=5000,
         )
         all_events.extend(rel_events)
-        api_by_session.extend(
-            e for e in rel_events if (e.kind or "").startswith("otel:"))
+        api_by_session.extend(e for e in rel_events if (e.kind or "").startswith("otel:"))
 
     # Step 3: If no PID-based matches yet, try direct PID filter on events
     if not api_by_session and session_pid:
         pid_events = db.query_events(
-            since=since - 7200, until=until,
-            tool=tool, pid=session_pid,
+            since=since - 7200,
+            until=until,
+            tool=tool,
+            pid=session_pid,
             limit=5000,
         )
         all_events.extend(pid_events)
-        api_by_session.extend(
-            e for e in pid_events if (e.kind or "").startswith("otel:"))
+        api_by_session.extend(e for e in pid_events if (e.kind or "").startswith("otel:"))
 
     # Step 4: For non-correlator sessions (UUID), OTel events are already
     # in all_events via direct session_id match — extract them.
     if not session_pid:
-        api_by_session.extend(
-            e for e in all_events if (e.kind or "").startswith("otel:"))
+        api_by_session.extend(e for e in all_events if (e.kind or "").startswith("otel:"))
 
     # Step 5: Last-resort fallback — tool + time window (pre-migration DBs
     # or when PID bridge has no entries yet).  Adds OTel events to
@@ -93,8 +91,10 @@ def build_session_flow(db, session_id: str, since: float, until: float) -> dict:
     # has_prompts can detect hook-based sessions.
     if not api_by_session and tool:
         fallback_events = db.query_events(
-            since=since - 7200, until=until,
-            tool=tool, limit=5000,
+            since=since - 7200,
+            until=until,
+            tool=tool,
+            limit=5000,
         )
         for e in fallback_events:
             kind = e.kind or ""
@@ -122,15 +122,12 @@ def build_session_flow(db, session_id: str, since: float, until: float) -> dict:
     api_by_session = sorted(deduped_api, key=lambda e: e.ts)
 
     # Check if we have UserPromptSubmit events
-    has_prompts = any(
-        (e.kind or "") == "hook:UserPromptSubmit" for e in all_events
-    )
+    has_prompts = any((e.kind or "") == "hook:UserPromptSubmit" for e in all_events)
 
     if has_prompts:
         turns = build_turns_from_hooks(all_events, api_by_session)
     else:
-        turns = build_turns_from_otel(
-            all_events, api_by_session, session_id)
+        turns = build_turns_from_otel(all_events, api_by_session, session_id)
 
     # Build summary
     summary = _build_summary(turns, has_prompts)
@@ -143,18 +140,13 @@ def _build_summary(turns: list[dict], has_prompts: bool) -> dict:
     # Count tokens from api_call turns (OTel mode) or
     # user_message turns (hook mode, where attribute_api_to_turns puts
     # the tokens on user_message entries).
-    api_turns = [t for t in turns
-                 if t["type"] == "api_call" and t.get("tokens")]
+    api_turns = [t for t in turns if t["type"] == "api_call" and t.get("tokens")]
     user_msgs = [t for t in turns if t["type"] == "user_message"]
     token_source = api_turns if api_turns else user_msgs
-    total_input = sum(t.get("tokens", {}).get("input", 0)
-                      for t in token_source)
-    total_output = sum(t.get("tokens", {}).get("output", 0)
-                       for t in token_source)
-    total_cache = sum(t.get("tokens", {}).get("cache_read", 0)
-                      for t in token_source)
-    total_api_calls = (len(api_turns) if api_turns
-                       else sum(t.get("api_calls", 0) for t in user_msgs))
+    total_input = sum(t.get("tokens", {}).get("input", 0) for t in token_source)
+    total_output = sum(t.get("tokens", {}).get("output", 0) for t in token_source)
+    total_cache = sum(t.get("tokens", {}).get("cache_read", 0) for t in token_source)
+    total_api_calls = len(api_turns) if api_turns else sum(t.get("api_calls", 0) for t in user_msgs)
     compactions = sum(1 for t in turns if t["type"] == "compaction")
     tool_uses = sum(1 for t in turns if t["type"] == "tool_use")
     first_ts = turns[0]["ts"] if turns else 0
@@ -168,9 +160,7 @@ def _build_summary(turns: list[dict], has_prompts: bool) -> dict:
         "total_output_tokens": total_output,
         "total_cache_tokens": total_cache,
         "total_tokens": total_input + total_output,
-        "avg_tokens_per_call": (
-            round((total_input + total_output) / total_api_calls)
-            if total_api_calls else 0),
+        "avg_tokens_per_call": (round((total_input + total_output) / total_api_calls) if total_api_calls else 0),
         "compactions": compactions,
         "duration_s": round(last_ts - first_ts, 1) if first_ts else 0,
         "source": "hooks" if has_prompts else "otel",
@@ -198,8 +188,7 @@ def build_turns_from_hooks(all_events, api_by_session):
                 "type": "user_message",
                 "message": msg,
                 "preview": preview,
-                "tokens": {"input": 0, "output": 0,
-                           "cache_read": 0, "cache_creation": 0},
+                "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0},
                 "tools": [],
                 "model": "",
                 "api_calls": 0,
@@ -216,50 +205,51 @@ def build_turns_from_hooks(all_events, api_by_session):
             continue
 
         if kind == "hook:PostCompact":
-            turns.append({
-                "ts": compaction_start_ts or ev.ts,
-                "type": "compaction",
-                "end_ts": ev.ts,
-                "duration_ms": round(
-                    (ev.ts - (compaction_start_ts or ev.ts)) * 1000),
-                "compaction_count": detail.get("compaction_count",
-                                               detail.get("count", 0)),
-            })
+            turns.append(
+                {
+                    "ts": compaction_start_ts or ev.ts,
+                    "type": "compaction",
+                    "end_ts": ev.ts,
+                    "duration_ms": round((ev.ts - (compaction_start_ts or ev.ts)) * 1000),
+                    "compaction_count": detail.get("compaction_count", detail.get("count", 0)),
+                }
+            )
             compaction_start_ts = None
             continue
 
         if kind == "hook:SubagentStart" and current_turn is not None:
-            agent_id = detail.get("agent_id",
-                                  detail.get("subagent_id", ""))
+            agent_id = detail.get("agent_id", detail.get("subagent_id", ""))
             task = detail.get("task", detail.get("description", ""))
-            current_turn["tools"].append({
-                "name": "Agent",
-                "args_summary": task or agent_id,
-                "ts": ev.ts,
-                "duration_ms": 0,
-                "is_agent": True,
-            })
+            current_turn["tools"].append(
+                {
+                    "name": "Agent",
+                    "args_summary": task or agent_id,
+                    "ts": ev.ts,
+                    "duration_ms": 0,
+                    "is_agent": True,
+                }
+            )
             continue
 
         if kind == "hook:PreToolUse" and current_turn is not None:
             tool_name = detail.get("tool_name", detail.get("name", ""))
-            tool_input = detail.get("input",
-                                    detail.get("tool_input", ""))
+            tool_input = detail.get("input", detail.get("tool_input", ""))
             args_summary = ""
             if isinstance(tool_input, dict):
-                for key in ("file_path", "command", "pattern", "query",
-                            "path", "url", "description"):
+                for key in ("file_path", "command", "pattern", "query", "path", "url", "description"):
                     if key in tool_input:
                         args_summary = str(tool_input[key])[:120]
                         break
             elif isinstance(tool_input, str):
                 args_summary = tool_input[:120]
-            current_turn["tools"].append({
-                "name": tool_name,
-                "args_summary": args_summary,
-                "ts": ev.ts,
-                "duration_ms": 0,
-            })
+            current_turn["tools"].append(
+                {
+                    "name": tool_name,
+                    "args_summary": args_summary,
+                    "ts": ev.ts,
+                    "duration_ms": 0,
+                }
+            )
             current_turn["end_ts"] = ev.ts
             continue
 
@@ -273,21 +263,27 @@ def build_turns_from_hooks(all_events, api_by_session):
             continue
 
         if kind == "hook:SessionStart":
-            turns.append({
-                "ts": ev.ts, "type": "session_start",
-                "tool": ev.tool,
-                "cwd": detail.get("cwd", ""),
-            })
+            turns.append(
+                {
+                    "ts": ev.ts,
+                    "type": "session_start",
+                    "tool": ev.tool,
+                    "cwd": detail.get("cwd", ""),
+                }
+            )
             continue
 
         if kind == "hook:SessionEnd":
             if current_turn:
                 turns.append(current_turn)
                 current_turn = None
-            turns.append({
-                "ts": ev.ts, "type": "session_end",
-                "tool": ev.tool,
-            })
+            turns.append(
+                {
+                    "ts": ev.ts,
+                    "type": "session_end",
+                    "tool": ev.tool,
+                }
+            )
             continue
 
     if current_turn:
@@ -320,37 +316,46 @@ def build_turns_from_otel(all_events, otel_events, session_id):
         detail = ev.detail if isinstance(ev.detail, dict) else {}
 
         if kind == "session_start":
-            turns.append({
-                "ts": ev.ts, "type": "session_start",
-                "tool": ev.tool,
-                "cwd": detail.get("cwd", ""),
-            })
+            turns.append(
+                {
+                    "ts": ev.ts,
+                    "type": "session_start",
+                    "tool": ev.tool,
+                    "cwd": detail.get("cwd", ""),
+                }
+            )
         elif kind == "session_end":
-            turns.append({
-                "ts": ev.ts, "type": "session_end",
-                "tool": ev.tool,
-            })
+            turns.append(
+                {
+                    "ts": ev.ts,
+                    "type": "session_end",
+                    "tool": ev.tool,
+                }
+            )
         elif kind == "hook:PreCompact":
             compaction_start_ts = ev.ts
         elif kind == "hook:PostCompact":
-            turns.append({
-                "ts": compaction_start_ts or ev.ts,
-                "type": "compaction",
-                "end_ts": ev.ts,
-                "duration_ms": round(
-                    (ev.ts - (compaction_start_ts or ev.ts)) * 1000),
-                "compaction_count": detail.get("compaction_count",
-                                               detail.get("count", 0)),
-            })
+            turns.append(
+                {
+                    "ts": compaction_start_ts or ev.ts,
+                    "type": "compaction",
+                    "end_ts": ev.ts,
+                    "duration_ms": round((ev.ts - (compaction_start_ts or ev.ts)) * 1000),
+                    "compaction_count": detail.get("compaction_count", detail.get("count", 0)),
+                }
+            )
             compaction_start_ts = None
         elif kind.startswith("hook:"):
             # Pass through any hook events as-is for the diagram
-            turns.append({
-                "ts": ev.ts, "type": "hook",
-                "hook_name": kind[5:],
-                "detail": detail,
-                "tool": ev.tool,
-            })
+            turns.append(
+                {
+                    "ts": ev.ts,
+                    "type": "hook",
+                    "hook_name": kind[5:],
+                    "detail": detail,
+                    "tool": ev.tool,
+                }
+            )
 
     # Process OTel events into sequence diagram entries
     for ev in otel_events:
@@ -361,60 +366,69 @@ def build_turns_from_otel(all_events, otel_events, session_id):
         if kind in ("otel:user_prompt", "otel:user_message"):
             # Claude Code: "prompt" key (may be <REDACTED>)
             # Copilot: "copilot_chat.user_request" or body
-            msg = (detail.get("prompt")
-                   or detail.get("copilot_chat.user_request")
-                   or detail.get("message")
-                   or detail.get("content")
-                   or detail.get("body") or "")
+            msg = (
+                detail.get("prompt")
+                or detail.get("copilot_chat.user_request")
+                or detail.get("message")
+                or detail.get("content")
+                or detail.get("body")
+                or ""
+            )
             if isinstance(msg, dict):
                 msg = msg.get("stringValue", str(msg))
             msg = str(msg).strip() if msg else ""
-            redacted = (not msg
-                        or msg in ("<REDACTED>", "REDACTED")
-                        or "REDACTED" in msg.upper())
+            redacted = not msg or msg in ("<REDACTED>", "REDACTED") or "REDACTED" in msg.upper()
             prompt_len = detail.get("prompt_length", "")
             prompt_id = detail.get("prompt.id", "")
-            turns.append({
-                "ts": ev.ts,
-                "type": "user_message",
-                "from": "user",
-                "to": ev.tool,
-                "message": "" if redacted else msg[:2000],
-                "preview": "" if redacted else msg[:120],
-                "redacted": redacted,
-                "prompt_length": prompt_len,
-                "prompt_id": prompt_id,
-                "tokens": {"input": 0, "output": 0,
-                           "cache_read": 0, "cache_creation": 0},
-                "model": "",
-                "api_calls": 0,
-                "duration_ms": 0,
-            })
+            turns.append(
+                {
+                    "ts": ev.ts,
+                    "type": "user_message",
+                    "from": "user",
+                    "to": ev.tool,
+                    "message": "" if redacted else msg[:2000],
+                    "preview": "" if redacted else msg[:120],
+                    "redacted": redacted,
+                    "prompt_length": prompt_len,
+                    "prompt_id": prompt_id,
+                    "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0},
+                    "model": "",
+                    "api_calls": 0,
+                    "duration_ms": 0,
+                }
+            )
 
         # ── API call / chat span events ──────────────────
         # TODO: tighten "inference" to explicit kind values
-        elif ("api_request" in kind
-              or kind.startswith("otel:chat ")
-              or "inference" in kind):
-            model = (detail.get("model")
-                     or detail.get("gen_ai.request.model")
-                     or detail.get("gen_ai.response.model")
-                     or detail.get("span.name") or "")
+        elif "api_request" in kind or kind.startswith("otel:chat ") or "inference" in kind:
+            model = (
+                detail.get("model")
+                or detail.get("gen_ai.request.model")
+                or detail.get("gen_ai.response.model")
+                or detail.get("span.name")
+                or ""
+            )
             # TODO(#token-usage): migrate to TokenUsage.from_dict
-            in_tok = int(_num(detail.get("input_tokens",
-                detail.get("gen_ai.usage.input_tokens",
-                detail.get("gen_ai.usage.prompt_tokens", 0)))))
-            out_tok = int(_num(detail.get("output_tokens",
-                detail.get("gen_ai.usage.output_tokens",
-                detail.get("gen_ai.usage.completion_tokens", 0)))))
-            cache_r = int(_num(
-                detail.get("cache_read_tokens",
-                detail.get("gen_ai.usage.cache_read.input_tokens", 0))))
+            in_tok = int(
+                _num(
+                    detail.get(
+                        "input_tokens",
+                        detail.get("gen_ai.usage.input_tokens", detail.get("gen_ai.usage.prompt_tokens", 0)),
+                    )
+                )
+            )
+            out_tok = int(
+                _num(
+                    detail.get(
+                        "output_tokens",
+                        detail.get("gen_ai.usage.output_tokens", detail.get("gen_ai.usage.completion_tokens", 0)),
+                    )
+                )
+            )
+            cache_r = int(_num(detail.get("cache_read_tokens", detail.get("gen_ai.usage.cache_read.input_tokens", 0))))
             cache_c = int(_num(detail.get("cache_creation_tokens", 0)))
-            dur = int(_num(detail.get("duration_ms",
-                           detail.get("duration", 0))))
-            ttft = int(_num(
-                detail.get("copilot_chat.time_to_first_token", 0)))
+            dur = int(_num(detail.get("duration_ms", detail.get("duration", 0))))
+            ttft = int(_num(detail.get("copilot_chat.time_to_first_token", 0)))
             agent_name = detail.get("gen_ai.agent.name", "")
             # Extract user request from chat spans (Copilot embeds it)
             user_req = detail.get("copilot_chat.user_request", "")
@@ -424,116 +438,120 @@ def build_turns_from_otel(all_events, otel_events, session_id):
             if isinstance(out_msgs, list) and out_msgs:
                 for om in out_msgs:
                     if isinstance(om, dict):
-                        for part in (om.get("parts") or []):
-                            if isinstance(part, dict) and \
-                                    part.get("type") == "text":
-                                resp_text = str(
-                                    part.get("content", ""))[:500]
+                        for part in om.get("parts") or []:
+                            if isinstance(part, dict) and part.get("type") == "text":
+                                resp_text = str(part.get("content", ""))[:500]
                                 break
                     if resp_text:
                         break
             finish = detail.get("gen_ai.response.finish_reasons", [])
-            is_error = ("error" in finish
-                        or detail.get("error.type", ""))
+            is_error = "error" in finish or detail.get("error.type", "")
 
             # If this span has a user request and no user_message
             # event was emitted, synthesize one
             if user_req:
-                turns.append({
-                    "ts": ev.ts - 0.001,  # just before the API call
-                    "type": "user_message",
-                    "from": "user",
-                    "to": ev.tool,
-                    "message": str(user_req)[:2000],
-                    "preview": str(user_req)[:120],
-                    "redacted": False,
-                    "tokens": {"input": 0, "output": 0,
-                               "cache_read": 0, "cache_creation": 0},
-                    "model": "",
-                    "api_calls": 0,
-                    "duration_ms": 0,
-                })
+                turns.append(
+                    {
+                        "ts": ev.ts - 0.001,  # just before the API call
+                        "type": "user_message",
+                        "from": "user",
+                        "to": ev.tool,
+                        "message": str(user_req)[:2000],
+                        "preview": str(user_req)[:120],
+                        "redacted": False,
+                        "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0},
+                        "model": "",
+                        "api_calls": 0,
+                        "duration_ms": 0,
+                    }
+                )
 
             # Request arrow: tool → API
-            turns.append({
-                "ts": ev.ts,
-                "type": "api_call",
-                "from": ev.tool,
-                "to": "api",
-                "model": model,
-                "agent_name": agent_name,
-                "tokens": {"input": in_tok, "output": out_tok,
-                           "cache_read": cache_r,
-                           "cache_creation": cache_c},
-                "duration_ms": dur,
-                "ttft_ms": ttft,
-                "is_error": is_error,
-                "error_type": detail.get("error.type", ""),
-            })
+            turns.append(
+                {
+                    "ts": ev.ts,
+                    "type": "api_call",
+                    "from": ev.tool,
+                    "to": "api",
+                    "model": model,
+                    "agent_name": agent_name,
+                    "tokens": {"input": in_tok, "output": out_tok, "cache_read": cache_r, "cache_creation": cache_c},
+                    "duration_ms": dur,
+                    "ttft_ms": ttft,
+                    "is_error": is_error,
+                    "error_type": detail.get("error.type", ""),
+                }
+            )
             # Response arrow: API → tool (with output tokens + text)
             if out_tok > 0 or resp_text:
                 resp_ts = ev.ts + (dur / 1000 if dur else 0.1)
-                turns.append({
-                    "ts": resp_ts,
-                    "type": "api_response",
-                    "from": "api",
-                    "to": ev.tool,
-                    "model": model,
-                    "tokens": {"output": out_tok},
-                    "duration_ms": dur,
-                    "response_preview": resp_text[:200] if resp_text
-                                        else "",
-                    "finish_reason": (finish[0] if finish
-                                      else ""),
-                })
+                turns.append(
+                    {
+                        "ts": resp_ts,
+                        "type": "api_response",
+                        "from": "api",
+                        "to": ev.tool,
+                        "model": model,
+                        "tokens": {"output": out_tok},
+                        "duration_ms": dur,
+                        "response_preview": resp_text[:200] if resp_text else "",
+                        "finish_reason": (finish[0] if finish else ""),
+                    }
+                )
 
         # ── Agent invocation (Copilot) ───────────────────
         elif kind.startswith("otel:invoke_agent"):
             agent_name = kind.replace("otel:invoke_agent ", "").strip()
-            turns.append({
-                "ts": ev.ts,
-                "type": "subagent",
-                "from": ev.tool,
-                "to": agent_name or "agent",
-                "detail": {k: v for k, v in detail.items()
-                           if k not in ("tool", "session_id")},
-            })
+            turns.append(
+                {
+                    "ts": ev.ts,
+                    "type": "subagent",
+                    "from": ev.tool,
+                    "to": agent_name or "agent",
+                    "detail": {k: v for k, v in detail.items() if k not in ("tool", "session_id")},
+                }
+            )
 
         # ── Copilot session/turn events ──────────────────
         elif kind == "otel:copilot_chat.session.start":
-            turns.append({
-                "ts": ev.ts, "type": "session_start",
-                "tool": ev.tool,
-                "cwd": detail.get("cwd", ""),
-            })
+            turns.append(
+                {
+                    "ts": ev.ts,
+                    "type": "session_start",
+                    "tool": ev.tool,
+                    "cwd": detail.get("cwd", ""),
+                }
+            )
         elif kind == "otel:copilot_chat.agent.turn":
             agent_name = detail.get("gen_ai.agent.name", "agent")
-            turns.append({
-                "ts": ev.ts,
-                "type": "subagent",
-                "from": ev.tool,
-                "to": agent_name,
-                "detail": detail,
-            })
+            turns.append(
+                {
+                    "ts": ev.ts,
+                    "type": "subagent",
+                    "from": ev.tool,
+                    "to": agent_name,
+                    "detail": detail,
+                }
+            )
 
         # ── Exception events ─────────────────────────────
         elif kind == "otel:exception":
             err_type = detail.get("exception.type", "error")
             err_msg = detail.get("exception.message", "")
             parent = detail.get("parent_span", "")
-            turns.append({
-                "ts": ev.ts,
-                "type": "error",
-                "from": "api",
-                "to": ev.tool,
-                "error_type": err_type,
-                "error_message": err_msg[:200],
-                "parent_span": parent,
-            })
+            turns.append(
+                {
+                    "ts": ev.ts,
+                    "type": "error",
+                    "from": "api",
+                    "to": ev.tool,
+                    "error_type": err_type,
+                    "error_message": err_msg[:200],
+                    "parent_span": parent,
+                }
+            )
         elif "tool_decision" in kind or "tool_result" in kind:
-            tool_name = detail.get("tool_name",
-                         detail.get("name",
-                         detail.get("span.name", kind)))
+            tool_name = detail.get("tool_name", detail.get("name", detail.get("span.name", kind)))
             is_result = "tool_result" in kind
             # Extract tool parameters/args for display
             params = detail.get("tool_parameters", "")
@@ -541,30 +559,32 @@ def build_turns_from_otel(all_events, otel_events, session_id):
                 params = params[:200] + "..."
             success = detail.get("success", "")
             result_size = detail.get("tool_result_size_bytes", "")
-            turns.append({
-                "ts": ev.ts,
-                "type": "tool_use",
-                "from": ev.tool,
-                "to": tool_name,
-                "subtype": "result" if is_result else "decision",
-                "decision": detail.get("decision", ""),
-                "success": success,
-                "params": params,
-                "result_size": result_size,
-                "prompt_id": detail.get("prompt.id", ""),
-                "duration_ms": int(_num(
-                    detail.get("duration_ms", 0))),
-            })
+            turns.append(
+                {
+                    "ts": ev.ts,
+                    "type": "tool_use",
+                    "from": ev.tool,
+                    "to": tool_name,
+                    "subtype": "result" if is_result else "decision",
+                    "decision": detail.get("decision", ""),
+                    "success": success,
+                    "params": params,
+                    "result_size": result_size,
+                    "prompt_id": detail.get("prompt.id", ""),
+                    "duration_ms": int(_num(detail.get("duration_ms", 0))),
+                }
+            )
         elif kind == "otel:SubagentStart" or "subagent" in kind.lower():
-            agent_id = detail.get("agent_id",
-                        detail.get("subagent_id", ""))
-            turns.append({
-                "ts": ev.ts,
-                "type": "subagent",
-                "from": ev.tool,
-                "to": agent_id or "subagent",
-                "detail": detail,
-            })
+            agent_id = detail.get("agent_id", detail.get("subagent_id", ""))
+            turns.append(
+                {
+                    "ts": ev.ts,
+                    "type": "subagent",
+                    "from": ev.tool,
+                    "to": agent_id or "subagent",
+                    "detail": detail,
+                }
+            )
 
     # Sort all events chronologically
     turns.sort(key=lambda t: t["ts"])
@@ -581,10 +601,8 @@ def build_turns_from_otel(all_events, otel_events, session_id):
             tok["output"] += t["tokens"]["output"]
             tok["cache_read"] += t["tokens"]["cache_read"]
             tok["cache_creation"] += t["tokens"]["cache_creation"]
-            current_round["api_calls"] = \
-                current_round.get("api_calls", 0) + 1
-            current_round["duration_ms"] = \
-                current_round.get("duration_ms", 0) + t["duration_ms"]
+            current_round["api_calls"] = current_round.get("api_calls", 0) + 1
+            current_round["duration_ms"] = current_round.get("duration_ms", 0) + t["duration_ms"]
             if not current_round.get("model") and t.get("model"):
                 current_round["model"] = t["model"]
 
@@ -602,9 +620,7 @@ def attribute_api_to_turns(turn_user_msgs, api_by_session):
     for api_ev in api_by_session:
         kind = api_ev.kind or ""
         # TODO: tighten "inference" to explicit kind values
-        if not (kind in _API_KINDS
-                or kind.startswith("otel:chat ")
-                or "inference" in kind):
+        if not (kind in _API_KINDS or kind.startswith("otel:chat ") or "inference" in kind):
             continue
         d = api_ev.detail if isinstance(api_ev.detail, dict) else {}
         best_turn = None
@@ -615,14 +631,10 @@ def attribute_api_to_turns(turn_user_msgs, api_by_session):
                 break
         if best_turn:
             # TODO(#token-usage): migrate to TokenUsage.from_dict
-            best_turn["tokens"]["input"] += int(_num(
-                d.get("input_tokens", 0)))
-            best_turn["tokens"]["output"] += int(_num(
-                d.get("output_tokens", 0)))
-            best_turn["tokens"]["cache_read"] += int(_num(
-                d.get("cache_read_tokens", 0)))
-            best_turn["tokens"]["cache_creation"] += int(_num(
-                d.get("cache_creation_tokens", 0)))
+            best_turn["tokens"]["input"] += int(_num(d.get("input_tokens", 0)))
+            best_turn["tokens"]["output"] += int(_num(d.get("output_tokens", 0)))
+            best_turn["tokens"]["cache_read"] += int(_num(d.get("cache_read_tokens", 0)))
+            best_turn["tokens"]["cache_creation"] += int(_num(d.get("cache_creation_tokens", 0)))
             best_turn["api_calls"] += 1
             model = d.get("model", "")
             if model and not best_turn["model"]:

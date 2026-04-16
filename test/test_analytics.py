@@ -26,19 +26,62 @@ def _seed_requests(db: HistoryDB, base_ts: float):
     """Insert a realistic set of requests across two sessions and two models."""
     reqs = [
         # Session A — 4 requests, mixed models
-        RequestRow(ts=base_ts,       session_id="s-a", model="opus-4", input_tokens=500,
-                   output_tokens=200, duration_ms=1000, finish_reason="stop"),
-        RequestRow(ts=base_ts + 10,  session_id="s-a", model="opus-4", input_tokens=1500,
-                   output_tokens=400, duration_ms=2000, finish_reason="tool_use"),
-        RequestRow(ts=base_ts + 20,  session_id="s-a", model="sonnet-4", input_tokens=800,
-                   output_tokens=300, duration_ms=500, finish_reason="stop"),
-        RequestRow(ts=base_ts + 30,  session_id="s-a", model="opus-4", input_tokens=3000,
-                   output_tokens=600, duration_ms=4000, finish_reason="stop"),
+        RequestRow(
+            ts=base_ts,
+            session_id="s-a",
+            model="opus-4",
+            input_tokens=500,
+            output_tokens=200,
+            duration_ms=1000,
+            finish_reason="stop",
+        ),
+        RequestRow(
+            ts=base_ts + 10,
+            session_id="s-a",
+            model="opus-4",
+            input_tokens=1500,
+            output_tokens=400,
+            duration_ms=2000,
+            finish_reason="tool_use",
+        ),
+        RequestRow(
+            ts=base_ts + 20,
+            session_id="s-a",
+            model="sonnet-4",
+            input_tokens=800,
+            output_tokens=300,
+            duration_ms=500,
+            finish_reason="stop",
+        ),
+        RequestRow(
+            ts=base_ts + 30,
+            session_id="s-a",
+            model="opus-4",
+            input_tokens=3000,
+            output_tokens=600,
+            duration_ms=4000,
+            finish_reason="stop",
+        ),
         # Session B — 2 requests
-        RequestRow(ts=base_ts + 5,   session_id="s-b", model="sonnet-4", input_tokens=200,
-                   output_tokens=100, duration_ms=300, finish_reason="stop"),
-        RequestRow(ts=base_ts + 15,  session_id="s-b", model="sonnet-4", input_tokens=600,
-                   output_tokens=250, duration_ms=700, finish_reason="stop", is_error=1),
+        RequestRow(
+            ts=base_ts + 5,
+            session_id="s-b",
+            model="sonnet-4",
+            input_tokens=200,
+            output_tokens=100,
+            duration_ms=300,
+            finish_reason="stop",
+        ),
+        RequestRow(
+            ts=base_ts + 15,
+            session_id="s-b",
+            model="sonnet-4",
+            input_tokens=600,
+            output_tokens=250,
+            duration_ms=700,
+            finish_reason="stop",
+            is_error=1,
+        ),
     ]
     for r in reqs:
         db.append_request(r)
@@ -47,10 +90,12 @@ def _seed_requests(db: HistoryDB, base_ts: float):
 def _seed_tool_invocations(db: HistoryDB, base_ts: float):
     """Insert tool invocations for testing."""
     invocations = [
-        ToolInvocationRow(ts=base_ts,      source_ts=base_ts,      session_id="s-a", tool_name="Read", duration_ms=50),
-        ToolInvocationRow(ts=base_ts + 5,  source_ts=base_ts + 5,  session_id="s-a", tool_name="Read", duration_ms=30),
+        ToolInvocationRow(ts=base_ts, source_ts=base_ts, session_id="s-a", tool_name="Read", duration_ms=50),
+        ToolInvocationRow(ts=base_ts + 5, source_ts=base_ts + 5, session_id="s-a", tool_name="Read", duration_ms=30),
         ToolInvocationRow(ts=base_ts + 10, source_ts=base_ts + 10, session_id="s-a", tool_name="Edit", duration_ms=200),
-        ToolInvocationRow(ts=base_ts + 15, source_ts=base_ts + 15, session_id="s-a", tool_name="Bash", duration_ms=5000, is_error=1),
+        ToolInvocationRow(
+            ts=base_ts + 15, source_ts=base_ts + 15, session_id="s-a", tool_name="Bash", duration_ms=5000, is_error=1
+        ),
         ToolInvocationRow(ts=base_ts + 20, source_ts=base_ts + 20, session_id="s-a", tool_name="Read", duration_ms=80),
     ]
     for inv in invocations:
@@ -60,16 +105,28 @@ def _seed_tool_invocations(db: HistoryDB, base_ts: float):
 def _seed_memory_files(db: HistoryDB, base_ts: float):
     """Insert memory files with history."""
     # Create the file entries
-    db.upsert_file("/mem/user.md", tool="claude-code", category="memory",
-                   content="# User\nrole: engineer", mtime=base_ts)
-    db.upsert_file("/mem/feedback.md", tool="claude-code", category="memory",
-                   content="# Feedback\nkeep it short", mtime=base_ts + 10)
+    db.upsert_file(
+        "/mem/user.md", tool="claude-code", category="memory", content="# User\nrole: engineer", mtime=base_ts
+    )
+    db.upsert_file(
+        "/mem/feedback.md",
+        tool="claude-code",
+        category="memory",
+        content="# Feedback\nkeep it short",
+        mtime=base_ts + 10,
+    )
     # Simulate growth by upserting with different content
-    db.upsert_file("/mem/user.md", tool="claude-code", category="memory",
-                   content="# User\nrole: engineer\nprefers: terse responses", mtime=base_ts + 20)
+    db.upsert_file(
+        "/mem/user.md",
+        tool="claude-code",
+        category="memory",
+        content="# User\nrole: engineer\nprefers: terse responses",
+        mtime=base_ts + 20,
+    )
 
 
 # ── file_history_bulk ─────────────────────────────────────────────
+
 
 class TestFileHistoryBulk:
     def test_empty_paths(self, db: HistoryDB):
@@ -109,6 +166,7 @@ class TestFileHistoryBulk:
 
 
 # ── Analytics: response_time section ──────────────────────────────
+
 
 class TestAnalyticsResponseTime:
     """Test the analytics response_time aggregation logic by calling the
@@ -174,6 +232,7 @@ class TestAnalyticsResponseTime:
 
 # ── Analytics: tools section ──────────────────────────────────────
 
+
 class TestAnalyticsTools:
     def test_sql_aggregation(self, db: HistoryDB):
         base = time.time()
@@ -206,6 +265,7 @@ class TestAnalyticsTools:
 
 # ── Analytics: files section ──────────────────────────────────────
 
+
 class TestAnalyticsFiles:
     def test_memory_files_listed(self, db: HistoryDB):
         base = time.time()
@@ -227,47 +287,54 @@ class TestAnalyticsFiles:
 
 # ── Analytics endpoint performance ────────────────────────────────
 
+
 def _seed_many_events(db: HistoryDB, base_ts: float, count: int = 10000):
     """Insert many file_modified events to simulate realistic load."""
     paths = [f"/project/session-{i % 20}/file-{i % 100}.jsonl" for i in range(count)]
     for i in range(count):
-        db.append_event(EventRow(
-            ts=base_ts + i * 0.5,
-            tool="claude-code",
-            kind="file_modified",
-            detail={"path": paths[i], "growth_bytes": (i % 50) * 100},
-            session_id=f"s-{i % 20}",
-        ))
+        db.append_event(
+            EventRow(
+                ts=base_ts + i * 0.5,
+                tool="claude-code",
+                kind="file_modified",
+                detail={"path": paths[i], "growth_bytes": (i % 50) * 100},
+                session_id=f"s-{i % 20}",
+            )
+        )
 
 
 def _seed_many_requests(db: HistoryDB, base_ts: float, count: int = 3000):
     """Insert many requests to simulate a 7-day load."""
     models = ["opus-4", "sonnet-4", "haiku-4.5"]
     for i in range(count):
-        db.append_request(RequestRow(
-            ts=base_ts + i * 2,
-            source_ts=base_ts + i * 2,
-            session_id=f"s-{i % 30}",
-            model=models[i % len(models)],
-            input_tokens=500 + (i % 100) * 50,
-            output_tokens=100 + (i % 50) * 20,
-            duration_ms=200 + (i % 200) * 10,
-            finish_reason="stop" if i % 3 else "tool_use",
-        ))
+        db.append_request(
+            RequestRow(
+                ts=base_ts + i * 2,
+                source_ts=base_ts + i * 2,
+                session_id=f"s-{i % 30}",
+                model=models[i % len(models)],
+                input_tokens=500 + (i % 100) * 50,
+                output_tokens=100 + (i % 50) * 20,
+                duration_ms=200 + (i % 200) * 10,
+                finish_reason="stop" if i % 3 else "tool_use",
+            )
+        )
 
 
 def _seed_many_tool_invocations(db: HistoryDB, base_ts: float, count: int = 5000):
     """Insert many tool invocations."""
     tools = ["Read", "Edit", "Bash", "Glob", "Grep", "Write", "Agent"]
     for i in range(count):
-        db.append_tool_invocation(ToolInvocationRow(
-            ts=base_ts + i * 0.3,
-            source_ts=base_ts + i * 0.3,
-            session_id=f"s-{i % 30}",
-            tool_name=tools[i % len(tools)],
-            duration_ms=10 + (i % 100) * 5,
-            is_error=1 if i % 50 == 0 else 0,
-        ))
+        db.append_tool_invocation(
+            ToolInvocationRow(
+                ts=base_ts + i * 0.3,
+                source_ts=base_ts + i * 0.3,
+                session_id=f"s-{i % 30}",
+                tool_name=tools[i % len(tools)],
+                duration_ms=10 + (i % 100) * 5,
+                is_error=1 if i % 50 == 0 else 0,
+            )
+        )
 
 
 class TestAnalyticsCache:
@@ -277,6 +344,7 @@ class TestAnalyticsCache:
         from unittest.mock import MagicMock
 
         from aictl.dashboard.web_server import _AnalyticsCache
+
         base = time.time()
         _seed_requests(db, base)
         _seed_tool_invocations(db, base)
@@ -301,13 +369,14 @@ class TestAnalyticsCache:
     def test_cache_get_never_blocks_on_sql(self, db: HistoryDB):
         """Verify get() returns in <1ms even with no pre-computed data."""
         from aictl.dashboard.web_server import _AnalyticsCache
+
         cache = _AnalyticsCache()
 
         start = time.monotonic()
         result = cache.get(0, time.time())
         elapsed = time.monotonic() - start
 
-        assert elapsed < 0.001, f"get() took {elapsed*1000:.1f}ms (must be <1ms)"
+        assert elapsed < 0.001, f"get() took {elapsed * 1000:.1f}ms (must be <1ms)"
         assert isinstance(result, dict)
 
 
@@ -381,8 +450,7 @@ class TestAnalyticsPerformance:
         agg = db.query_tool_invocations_agg(since=base - 1, until=base + 10000)
         assert len(agg) > 0
         for row in agg[:30]:
-            db.query_tool_invocations_durations(
-                row["tool_name"], since=base - 1, until=base + 10000, limit=500)
+            db.query_tool_invocations_durations(row["tool_name"], since=base - 1, until=base + 10000, limit=500)
 
         # Files section (single-scan)
         conn = db._conn()

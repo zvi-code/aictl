@@ -22,6 +22,7 @@ CURRENT_PLATFORM: str = "macos" if IS_MACOS else ("windows" if IS_WINDOWS else "
 
 # ── Cross-platform utilities ────────────────────────────────────
 
+
 def process_basename(comm: str) -> str:
     """Extract short process name from command path, cross-platform."""
     return Path(comm).name
@@ -69,11 +70,12 @@ def tool_hint_for_path(path: str) -> str | None:
 
 # ── Cross-platform app directory helper ─────────────────────────
 
+
 def _app_dir(
     win: str,
-    mac: str | None = None,   # ~/Library/Application Support/{mac}  (macOS)
-    dot: str | None = None,   # ~/{dot}  (macOS when mac absent, Linux when xdg absent)
-    xdg: str | None = None,   # XDG_CONFIG_HOME/{xdg}  (Linux; macOS fallback when no mac/dot)
+    mac: str | None = None,  # ~/Library/Application Support/{mac}  (macOS)
+    dot: str | None = None,  # ~/{dot}  (macOS when mac absent, Linux when xdg absent)
+    xdg: str | None = None,  # XDG_CONFIG_HOME/{xdg}  (Linux; macOS fallback when no mac/dot)
     *,
     win_env: str = "APPDATA",
 ) -> Path:
@@ -86,7 +88,7 @@ def _app_dir(
             return Path.home() / "Library" / "Application Support" / mac
         if dot:
             return Path.home() / dot
-        return _xdg_base / (xdg or win)   # gh and other POSIX tools use XDG on macOS too
+        return _xdg_base / (xdg or win)  # gh and other POSIX tools use XDG on macOS too
     # Linux: prefer explicit XDG subdir, then dotfile, then XDG/{win}
     if xdg:
         return _xdg_base / xdg
@@ -96,6 +98,7 @@ def _app_dir(
 
 
 # ── Claude Code ──────────────────────────────────────────────────
+
 
 def claude_global_dir() -> Path:
     """~/.claude  (macOS/Linux)  |  %APPDATA%/Claude  (Windows)"""
@@ -116,12 +119,14 @@ def claude_projects_dir() -> Path:
 
 # ── GitHub Copilot ───────────────────────────────────────────────
 
+
 def copilot_session_dir() -> Path:
     """Directory where Copilot agent sessions are stored."""
     return _app_dir("GitHub Copilot/session-state", dot=".copilot/session-state")
 
 
 # ── VS Code ──────────────────────────────────────────────────────
+
 
 def vscode_user_dir() -> Path:
     """VS Code user settings directory."""
@@ -145,12 +150,14 @@ def copilot_global_storage() -> Path:
 
 # ── Cursor ───────────────────────────────────────────────────────
 
+
 def cursor_user_dir() -> Path:
     """Cursor app user settings directory."""
     return _app_dir("Cursor/User", mac="Cursor/User", xdg="Cursor/User")
 
 
 # ── Windsurf / Codeium ───────────────────────────────────────────
+
 
 def windsurf_global_dir() -> Path:
     """Windsurf / Codeium global config directory."""
@@ -159,6 +166,7 @@ def windsurf_global_dir() -> Path:
 
 # ── GitHub CLI (gh) ─────────────────────────────────────────────
 
+
 def gh_config_dir() -> Path:
     """GitHub CLI config directory (contains Copilot CLI auth + settings)."""
     return _app_dir("GitHub CLI", xdg="gh")
@@ -166,12 +174,14 @@ def gh_config_dir() -> Path:
 
 # ── Codex CLI ─────────────────────────────────────────────────────
 
+
 def codex_global_dir() -> Path:
     """Codex CLI global config directory."""
     return Path.home() / ".codex"
 
 
 # ── Microsoft 365 / Teams Toolkit ───────────────────────────────
+
 
 def teams_global_dir() -> Path:
     """Teams Toolkit global config directory."""
@@ -185,12 +195,14 @@ def m365agents_global_dir() -> Path:
 
 # ── Gemini CLI ──────────────────────────────────────────────────
 
+
 def gemini_global_dir() -> Path:
     """~/.gemini  (macOS/Linux)  |  %USERPROFILE%/.gemini  (Windows)"""
     return _app_dir(".gemini", dot=".gemini", win_env="USERPROFILE")
 
 
 # ── Azure Developer CLI (azd) / Azure AI / PromptFlow ───────────
+
 
 def azd_config_dir() -> Path:
     """Azure Developer CLI config directory."""
@@ -290,10 +302,20 @@ class AictlConfig:
     telemetry_interval: float = 5.0
     filesystem_enabled: bool = True
     telemetry_enabled: bool = True
-    ignored_dirs: list[str] = field(default_factory=lambda: [
-        ".git", ".hg", ".svn", "node_modules", "__pycache__",
-        ".venv", "venv", "build", "dist", ".next",
-    ])
+    ignored_dirs: list[str] = field(
+        default_factory=lambda: [
+            ".git",
+            ".hg",
+            ".svn",
+            "node_modules",
+            "__pycache__",
+            ".venv",
+            "venv",
+            "build",
+            "dist",
+            ".next",
+        ]
+    )
 
     # daemon
     pid_file: str = ""

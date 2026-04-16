@@ -16,6 +16,7 @@ from enum import Enum
 
 class ActionKind(str, Enum):
     """Kinds of actions an AI tool can take within a turn."""
+
     TOOL_USE = "tool_use"
     API_CALL = "api_call"
     API_RESPONSE = "api_response"
@@ -31,15 +32,15 @@ class Action:
 
     ts: float
     kind: ActionKind
-    name: str = ""                  # tool name, model, agent ID
-    input_summary: str = ""         # first 200 chars of input/args
-    output_summary: str = ""        # first 200 chars of result
+    name: str = ""  # tool name, model, agent ID
+    input_summary: str = ""  # first 200 chars of input/args
+    output_summary: str = ""  # first 200 chars of result
     duration_ms: float = 0.0
     tokens_in: int = 0
     tokens_out: int = 0
     cache_read: int = 0
     cache_creation: int = 0
-    success: bool | None = None     # None = unknown
+    success: bool | None = None  # None = unknown
     detail: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -73,8 +74,8 @@ class Turn:
 
     ts: float
     end_ts: float = 0.0
-    prompt: str = ""                # full user prompt
-    prompt_preview: str = ""        # first 200 chars
+    prompt: str = ""  # full user prompt
+    prompt_preview: str = ""  # first 200 chars
     actions: list[Action] = field(default_factory=list)
     model: str = ""
     input_tokens: int = 0
@@ -146,7 +147,7 @@ class TranscriptSummary:
     errors: int = 0
     subagents: int = 0
     duration_s: float = 0.0
-    source: str = ""       # "hooks", "otel", "mixed"
+    source: str = ""  # "hooks", "otel", "mixed"
     event_count: int = 0
 
     @property
@@ -162,10 +163,7 @@ class TranscriptSummary:
             "total_output_tokens": self.total_output_tokens,
             "total_cache_tokens": self.total_cache_tokens,
             "total_tokens": self.total_tokens,
-            "avg_tokens_per_call": (
-                round(self.total_tokens / self.total_api_calls)
-                if self.total_api_calls else 0
-            ),
+            "avg_tokens_per_call": (round(self.total_tokens / self.total_api_calls) if self.total_api_calls else 0),
             "compactions": self.compactions,
             "errors": self.errors,
             "subagents": self.subagents,
@@ -220,22 +218,11 @@ class SessionTranscript:
         total_output = sum(t.output_tokens for t in self.turns)
         total_cache = sum(t.cache_read_tokens for t in self.turns)
         total_api = sum(t.api_calls for t in self.turns)
-        compactions = sum(
-            1 for e in self.lifecycle_events if e.get("type") == "compaction"
-        )
-        errors = sum(
-            1 for t in self.turns
-            for a in t.actions if a.kind == ActionKind.ERROR
-        )
-        subagents = sum(
-            1 for t in self.turns
-            for a in t.actions if a.kind == ActionKind.SUBAGENT
-        )
+        compactions = sum(1 for e in self.lifecycle_events if e.get("type") == "compaction")
+        errors = sum(1 for t in self.turns for a in t.actions if a.kind == ActionKind.ERROR)
+        subagents = sum(1 for t in self.turns for a in t.actions if a.kind == ActionKind.SUBAGENT)
         first_ts = self.turns[0].ts if self.turns else self.started_at
-        last_ts = (
-            max(t.end_ts for t in self.turns)
-            if self.turns else (self.ended_at or self.started_at)
-        )
+        last_ts = max(t.end_ts for t in self.turns) if self.turns else (self.ended_at or self.started_at)
         # Determine source
         has_prompts = any(t.prompt for t in self.turns)
         sources = set()
@@ -257,8 +244,7 @@ class SessionTranscript:
             subagents=subagents,
             duration_s=last_ts - first_ts if first_ts else 0,
             source=source,
-            event_count=sum(len(t.actions) for t in self.turns)
-                        + len(self.lifecycle_events),
+            event_count=sum(len(t.actions) for t in self.turns) + len(self.lifecycle_events),
         )
 
     def to_dict(self) -> dict:

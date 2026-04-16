@@ -25,17 +25,30 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
 
         if scope.is_root:
             if scope.base:
-                emit_file(rules / "base.mdc", _mdc("Project-wide context", always=True, body=scope.base), dry_run, results)
+                emit_file(
+                    rules / "base.mdc", _mdc("Project-wide context", always=True, body=scope.base), dry_run, results
+                )
 
             if scope.profile_text and resolved.profile:
-                emit_file(rules / "profile-active.mdc",
-                          _mdc(f"Active profile: {resolved.profile}", always=True,
-                               body=f"# Active Profile: {resolved.profile}\n\n{scope.profile_text}"),
-                          dry_run, results)
+                emit_file(
+                    rules / "profile-active.mdc",
+                    _mdc(
+                        f"Active profile: {resolved.profile}",
+                        always=True,
+                        body=f"# Active Profile: {resolved.profile}\n\n{scope.profile_text}",
+                    ),
+                    dry_run,
+                    results,
+                )
         else:
             if combined:
                 safe = encode_scope(src).replace("--", "-")
-                emit_file(rules / f"{safe}.mdc", _mdc(f"Context for {src}", globs=f"{src}/**", body=combined), dry_run, results)
+                emit_file(
+                    rules / f"{safe}.mdc",
+                    _mdc(f"Context for {src}", globs=f"{src}/**", body=combined),
+                    dry_run,
+                    results,
+                )
 
     emit_mcp_servers(root / ".cursor" / "mcp.json", "mcpServers", resolved, dry_run, results)
 

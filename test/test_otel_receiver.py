@@ -51,12 +51,17 @@ def test_parse_attributes_empty():
 
 def test_parse_attributes_array_value():
     attrs = [
-        {"key": "tags", "value": {"arrayValue": {
-            "values": [
-                {"stringValue": "a"},
-                {"intValue": "42"},
-            ]
-        }}},
+        {
+            "key": "tags",
+            "value": {
+                "arrayValue": {
+                    "values": [
+                        {"stringValue": "a"},
+                        {"intValue": "42"},
+                    ]
+                }
+            },
+        },
     ]
     result = _parse_attributes(attrs)
     assert result["tags"] == ["a", "42"]
@@ -95,35 +100,46 @@ def test_extract_data_points_empty():
 # ── Unit tests: OtelReceiver.parse_metrics ────────────────────────
 
 
-def _make_otlp_metrics(metric_name, value, ts_nano="1700000000000000000",
-                        attrs=None, tool="claude-code"):
+def _make_otlp_metrics(metric_name, value, ts_nano="1700000000000000000", attrs=None, tool="claude-code"):
     """Build a minimal OTLP JSON metrics payload."""
-    dp_attrs = [{"key": k, "value": {"stringValue": str(v)}}
-                for k, v in (attrs or {}).items()]
+    dp_attrs = [{"key": k, "value": {"stringValue": str(v)}} for k, v in (attrs or {}).items()]
     return {
-        "resourceMetrics": [{
-            "resource": {"attributes": [
-                {"key": "service.name", "value": {"stringValue": tool}},
-            ]},
-            "scopeMetrics": [{
-                "scope": {"name": "claude_code"},
-                "metrics": [{
-                    "name": metric_name,
-                    "sum": {"dataPoints": [{
-                        "asInt": str(value),
-                        "timeUnixNano": ts_nano,
-                        "attributes": dp_attrs,
-                    }]},
-                }],
-            }],
-        }],
+        "resourceMetrics": [
+            {
+                "resource": {
+                    "attributes": [
+                        {"key": "service.name", "value": {"stringValue": tool}},
+                    ]
+                },
+                "scopeMetrics": [
+                    {
+                        "scope": {"name": "claude_code"},
+                        "metrics": [
+                            {
+                                "name": metric_name,
+                                "sum": {
+                                    "dataPoints": [
+                                        {
+                                            "asInt": str(value),
+                                            "timeUnixNano": ts_nano,
+                                            "attributes": dp_attrs,
+                                        }
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
     }
 
 
 def test_parse_metrics_token_usage():
     receiver = OtelReceiver()
     body = _make_otlp_metrics(
-        "claude_code.token.usage", 5000,
+        "claude_code.token.usage",
+        5000,
         attrs={"token_type": "input", "model": "claude-opus-4-6"},
     )
     samples = receiver.parse_metrics(body)
@@ -156,19 +172,27 @@ def test_parse_metrics_unknown_maps_to_otel_prefix():
 def test_parse_metrics_multiple_data_points():
     receiver = OtelReceiver()
     body = {
-        "resourceMetrics": [{
-            "resource": {"attributes": []},
-            "scopeMetrics": [{
-                "scope": {"name": "test"},
-                "metrics": [{
-                    "name": "claude_code.session.count",
-                    "sum": {"dataPoints": [
-                        {"asInt": "1", "timeUnixNano": "1700000000000000000", "attributes": []},
-                        {"asInt": "2", "timeUnixNano": "1700000001000000000", "attributes": []},
-                    ]},
-                }],
-            }],
-        }],
+        "resourceMetrics": [
+            {
+                "resource": {"attributes": []},
+                "scopeMetrics": [
+                    {
+                        "scope": {"name": "test"},
+                        "metrics": [
+                            {
+                                "name": "claude_code.session.count",
+                                "sum": {
+                                    "dataPoints": [
+                                        {"asInt": "1", "timeUnixNano": "1700000000000000000", "attributes": []},
+                                        {"asInt": "2", "timeUnixNano": "1700000001000000000", "attributes": []},
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
     }
     samples = receiver.parse_metrics(body)
     assert len(samples) == 2
@@ -194,36 +218,45 @@ def test_parse_metrics_all_known_metrics():
 # ── Unit tests: OtelReceiver.parse_logs ───────────────────────────
 
 
-def _make_otlp_logs(event_name, attrs=None, tool="claude-code",
-                     ts_nano="1700000000000000000"):
+def _make_otlp_logs(event_name, attrs=None, tool="claude-code", ts_nano="1700000000000000000"):
     """Build a minimal OTLP JSON logs payload."""
     log_attrs = [
         {"key": "event.name", "value": {"stringValue": event_name}},
     ]
-    log_attrs += [{"key": k, "value": {"stringValue": str(v)}}
-                  for k, v in (attrs or {}).items()]
+    log_attrs += [{"key": k, "value": {"stringValue": str(v)}} for k, v in (attrs or {}).items()]
     return {
-        "resourceLogs": [{
-            "resource": {"attributes": [
-                {"key": "service.name", "value": {"stringValue": tool}},
-            ]},
-            "scopeLogs": [{
-                "logRecords": [{
-                    "timeUnixNano": ts_nano,
-                    "attributes": log_attrs,
-                }],
-            }],
-        }],
+        "resourceLogs": [
+            {
+                "resource": {
+                    "attributes": [
+                        {"key": "service.name", "value": {"stringValue": tool}},
+                    ]
+                },
+                "scopeLogs": [
+                    {
+                        "logRecords": [
+                            {
+                                "timeUnixNano": ts_nano,
+                                "attributes": log_attrs,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
     }
 
 
 def test_parse_logs_api_request():
     receiver = OtelReceiver()
-    body = _make_otlp_logs("claude_code.api_request", attrs={
-        "model": "claude-opus-4-6",
-        "duration_ms": "350",
-        "input_tokens": "1500",
-    })
+    body = _make_otlp_logs(
+        "claude_code.api_request",
+        attrs={
+            "model": "claude-opus-4-6",
+            "duration_ms": "350",
+            "input_tokens": "1500",
+        },
+    )
     events = receiver.parse_logs(body)
 
     assert len(events) == 1
@@ -238,9 +271,12 @@ def test_parse_logs_api_request():
 
 def test_parse_logs_api_error():
     receiver = OtelReceiver()
-    body = _make_otlp_logs("claude_code.api_error", attrs={
-        "error": "rate_limit_exceeded",
-    })
+    body = _make_otlp_logs(
+        "claude_code.api_error",
+        attrs={
+            "error": "rate_limit_exceeded",
+        },
+    )
     events = receiver.parse_logs(body)
     assert events[0].kind == "otel:claude_code.api_error"
     assert receiver.stats.api_errors_total == 1
@@ -248,9 +284,12 @@ def test_parse_logs_api_error():
 
 def test_parse_logs_user_prompt():
     receiver = OtelReceiver()
-    body = _make_otlp_logs("claude_code.user_prompt", attrs={
-        "prompt.id": "abc-123",
-    })
+    body = _make_otlp_logs(
+        "claude_code.user_prompt",
+        attrs={
+            "prompt.id": "abc-123",
+        },
+    )
     events = receiver.parse_logs(body)
     assert events[0].kind == "otel:claude_code.user_prompt"
     assert events[0].detail.get("prompt.id") == "abc-123"
@@ -259,16 +298,22 @@ def test_parse_logs_user_prompt():
 def test_parse_logs_unknown_event_fallback():
     receiver = OtelReceiver()
     body = {
-        "resourceLogs": [{
-            "resource": {"attributes": []},
-            "scopeLogs": [{
-                "logRecords": [{
-                    "timeUnixNano": "1700000000000000000",
-                    "body": {"stringValue": "some log message"},
-                    "attributes": [],
-                }],
-            }],
-        }],
+        "resourceLogs": [
+            {
+                "resource": {"attributes": []},
+                "scopeLogs": [
+                    {
+                        "logRecords": [
+                            {
+                                "timeUnixNano": "1700000000000000000",
+                                "body": {"stringValue": "some log message"},
+                                "attributes": [],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
     }
     events = receiver.parse_logs(body)
     assert events[0].kind == "otel:some log message"
@@ -314,7 +359,8 @@ def test_metrics_stored_in_db(tmp_path):
     # Query back
     result = db.query_samples(
         metric="otel.token.usage",
-        since=0, until=time.time() + 3600,
+        since=0,
+        until=time.time() + 3600,
     )
     assert len(result) == 1
     assert result[0].value == 5000.0
@@ -326,16 +372,20 @@ def test_events_stored_in_db(tmp_path):
     db = HistoryDB(db_path=str(tmp_path / "otel.db"), flush_interval=0)
     receiver = OtelReceiver()
 
-    body = _make_otlp_logs("claude_code.api_request", attrs={
-        "model": "claude-opus-4-6",
-        "duration_ms": "350",
-    })
+    body = _make_otlp_logs(
+        "claude_code.api_request",
+        attrs={
+            "model": "claude-opus-4-6",
+            "duration_ms": "350",
+        },
+    )
     events = receiver.parse_logs(body)
     db.append_events(events)
 
     # Query back
     result = db.query_events(
-        since=0, until=time.time() + 3600,
+        since=0,
+        until=time.time() + 3600,
         kind="otel:claude_code.api_request",
     )
     assert len(result) == 1
@@ -360,14 +410,22 @@ def otel_server(tmp_path):
 
     db = HistoryDB(db_path=str(tmp_path / "otel.db"), flush_interval=0)
     store = SnapshotStore(db=db)
-    store.update(DashboardSnapshot(
-        timestamp=time.time(), root="/tmp", tools=[], sessions=[],
-    ))
+    store.update(
+        DashboardSnapshot(
+            timestamp=time.time(),
+            root="/tmp",
+            tools=[],
+            sessions=[],
+        )
+    )
 
     allowed = AllowedPaths()
     srv = _DashboardHTTPServer(
-        ("127.0.0.1", 0), _DashboardHandler,
-        store, allowed, Path("/tmp"),
+        ("127.0.0.1", 0),
+        _DashboardHandler,
+        store,
+        allowed,
+        Path("/tmp"),
     )
     port = srv.server_address[1]
     t = threading.Thread(target=srv.serve_forever, daemon=True)
@@ -379,8 +437,7 @@ def otel_server(tmp_path):
 
 def _post_json(url, data):
     body = json.dumps(data).encode("utf-8")
-    req = urllib.request.Request(url, data=body, method="POST",
-                                 headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=5) as resp:
         return resp.status, json.loads(resp.read())
 
@@ -398,8 +455,7 @@ def test_post_v1_metrics(otel_server):
     assert resp["ok"] is True
 
     # Verify stored
-    samples = db.query_samples(metric="otel.token.usage", since=0,
-                                until=time.time() + 3600)
+    samples = db.query_samples(metric="otel.token.usage", since=0, until=time.time() + 3600)
     assert len(samples) == 1
 
 
@@ -410,8 +466,7 @@ def test_post_v1_logs(otel_server):
     assert status == 200
     assert resp["ok"] is True
 
-    events = db.query_events(since=0, until=time.time() + 3600,
-                              kind="otel:claude_code.api_request")
+    events = db.query_events(since=0, until=time.time() + 3600, kind="otel:claude_code.api_request")
     assert len(events) == 1
 
 
@@ -422,8 +477,7 @@ def test_otel_status_endpoint(otel_server):
     assert data["metrics_received"] == 0
 
     # Push some data then check again
-    _post_json(f"{base}/v1/metrics",
-               _make_otlp_metrics("claude_code.cost.usage", 10))
+    _post_json(f"{base}/v1/metrics", _make_otlp_metrics("claude_code.cost.usage", 10))
     data = _get_json(f"{base}/api/otel-status")
     assert data["metrics_received"] == 1
     assert data["active"] is True
@@ -434,17 +488,23 @@ def test_api_calls_endpoint(otel_server):
 
     # Push API request events
     for i in range(3):
-        _post_json(f"{base}/v1/logs", _make_otlp_logs(
-            "claude_code.api_request",
-            attrs={"model": "claude-opus-4-6", "duration_ms": str(200 + i * 50)},
-            ts_nano=str(int((time.time() - i) * 1e9)),
-        ))
+        _post_json(
+            f"{base}/v1/logs",
+            _make_otlp_logs(
+                "claude_code.api_request",
+                attrs={"model": "claude-opus-4-6", "duration_ms": str(200 + i * 50)},
+                ts_nano=str(int((time.time() - i) * 1e9)),
+            ),
+        )
     # Push one error
-    _post_json(f"{base}/v1/logs", _make_otlp_logs(
-        "claude_code.api_error",
-        attrs={"error": "rate_limit", "model": "opus"},
-        ts_nano=str(int(time.time() * 1e9)),
-    ))
+    _post_json(
+        f"{base}/v1/logs",
+        _make_otlp_logs(
+            "claude_code.api_error",
+            attrs={"error": "rate_limit", "model": "opus"},
+            ts_nano=str(int(time.time() * 1e9)),
+        ),
+    )
 
     data = _get_json(f"{base}/api/api-calls?since=0")
     assert data["summary"]["total_calls"] == 3
@@ -491,20 +551,34 @@ def test_promote_session_id_noop():
 def test_metrics_include_session_id():
     r = OtelReceiver()
     body = {
-        "resourceMetrics": [{
-            "resource": {"attributes": [
-                {"key": "service.name", "value": {"stringValue": "claude-code"}},
-                {"key": "session.id", "value": {"stringValue": "sess-789"}},
-            ]},
-            "scopeMetrics": [{"metrics": [{
-                "name": "claude_code.cost.usage",
-                "gauge": {"dataPoints": [{
-                    "timeUnixNano": "1700000000000000000",
-                    "asDouble": 0.05,
-                    "attributes": [],
-                }]},
-            }]}],
-        }],
+        "resourceMetrics": [
+            {
+                "resource": {
+                    "attributes": [
+                        {"key": "service.name", "value": {"stringValue": "claude-code"}},
+                        {"key": "session.id", "value": {"stringValue": "sess-789"}},
+                    ]
+                },
+                "scopeMetrics": [
+                    {
+                        "metrics": [
+                            {
+                                "name": "claude_code.cost.usage",
+                                "gauge": {
+                                    "dataPoints": [
+                                        {
+                                            "timeUnixNano": "1700000000000000000",
+                                            "asDouble": 0.05,
+                                            "attributes": [],
+                                        }
+                                    ]
+                                },
+                            }
+                        ]
+                    }
+                ],
+            }
+        ],
     }
     samples = r.parse_metrics(body)
     assert len(samples) == 1
@@ -514,18 +588,28 @@ def test_metrics_include_session_id():
 def test_logs_include_session_id():
     r = OtelReceiver()
     body = {
-        "resourceLogs": [{
-            "resource": {"attributes": [
-                {"key": "service.name", "value": {"stringValue": "claude-code"}},
-            ]},
-            "scopeLogs": [{"logRecords": [{
-                "timeUnixNano": "1700000000000000000",
-                "attributes": [
-                    {"key": "event.name", "value": {"stringValue": "tool_use"}},
-                    {"key": "session.id", "value": {"stringValue": "log-sess-1"}},
+        "resourceLogs": [
+            {
+                "resource": {
+                    "attributes": [
+                        {"key": "service.name", "value": {"stringValue": "claude-code"}},
+                    ]
+                },
+                "scopeLogs": [
+                    {
+                        "logRecords": [
+                            {
+                                "timeUnixNano": "1700000000000000000",
+                                "attributes": [
+                                    {"key": "event.name", "value": {"stringValue": "tool_use"}},
+                                    {"key": "session.id", "value": {"stringValue": "log-sess-1"}},
+                                ],
+                            }
+                        ]
+                    }
                 ],
-            }]}],
-        }],
+            }
+        ],
     }
     events = r.parse_logs(body)
     assert len(events) == 1
@@ -535,19 +619,29 @@ def test_logs_include_session_id():
 def test_traces_include_session_id():
     r = OtelReceiver()
     body = {
-        "resourceSpans": [{
-            "resource": {"attributes": [
-                {"key": "service.name", "value": {"stringValue": "claude-code"}},
-                {"key": "session.id", "value": {"stringValue": "trace-sess-2"}},
-            ]},
-            "scopeSpans": [{"spans": [{
-                "name": "api_request",
-                "startTimeUnixNano": "1700000000000000000",
-                "endTimeUnixNano": "1700000001000000000",
-                "attributes": [],
-                "status": {},
-            }]}],
-        }],
+        "resourceSpans": [
+            {
+                "resource": {
+                    "attributes": [
+                        {"key": "service.name", "value": {"stringValue": "claude-code"}},
+                        {"key": "session.id", "value": {"stringValue": "trace-sess-2"}},
+                    ]
+                },
+                "scopeSpans": [
+                    {
+                        "spans": [
+                            {
+                                "name": "api_request",
+                                "startTimeUnixNano": "1700000000000000000",
+                                "endTimeUnixNano": "1700000001000000000",
+                                "attributes": [],
+                                "status": {},
+                            }
+                        ]
+                    }
+                ],
+            }
+        ],
     }
     samples, events = r.parse_traces(body)
     assert any(e.detail.get("session_id") == "trace-sess-2" for e in events)
@@ -556,23 +650,26 @@ def test_traces_include_session_id():
 def test_extract_requests_list_finish_reason():
     """finish_reason from Copilot OTel is a list ["stop"] — must not crash flush."""
     from aictl.storage import EventRow
+
     r = OtelReceiver()
-    events = [EventRow(
-        ts=1700000001.0,
-        tool="copilot-vscode",
-        kind="otel:gen_ai.client.inference.operation.details",
-        detail={
-            "gen_ai.request.model": "gpt-4o-mini",
-            "gen_ai.response.finish_reasons": ["stop"],   # list, not string
-            "gen_ai.usage.input_tokens": 500,
-            "gen_ai.usage.output_tokens": 20,
-            "session_id": "test-copilot-sess",
-        },
-    )]
+    events = [
+        EventRow(
+            ts=1700000001.0,
+            tool="copilot-vscode",
+            kind="otel:gen_ai.client.inference.operation.details",
+            detail={
+                "gen_ai.request.model": "gpt-4o-mini",
+                "gen_ai.response.finish_reasons": ["stop"],  # list, not string
+                "gen_ai.usage.input_tokens": 500,
+                "gen_ai.usage.output_tokens": 20,
+                "session_id": "test-copilot-sess",
+            },
+        )
+    ]
     requests = r.extract_requests(events)
     assert len(requests) == 1
     req = requests[0]
-    assert req.finish_reason == "stop"   # coerced from ["stop"]
+    assert req.finish_reason == "stop"  # coerced from ["stop"]
     assert req.input_tokens == 500
     assert req.model == "gpt-4o-mini"
     assert req.session_id == "test-copilot-sess"
@@ -581,19 +678,22 @@ def test_extract_requests_list_finish_reason():
 def test_extract_requests_scalar_finish_reason():
     """Claude Code sends finish_reason as a plain string — must also work."""
     from aictl.storage import EventRow
+
     r = OtelReceiver()
-    events = [EventRow(
-        ts=1700000002.0,
-        tool="claude-code",
-        kind="otel:api_request",
-        detail={
-            "model": "claude-sonnet-4-6",
-            "gen_ai.response.finish_reasons": "end_turn",
-            "input_tokens": "100",
-            "output_tokens": "50",
-            "session_id": "test-claude-sess",
-        },
-    )]
+    events = [
+        EventRow(
+            ts=1700000002.0,
+            tool="claude-code",
+            kind="otel:api_request",
+            detail={
+                "model": "claude-sonnet-4-6",
+                "gen_ai.response.finish_reasons": "end_turn",
+                "input_tokens": "100",
+                "output_tokens": "50",
+                "session_id": "test-claude-sess",
+            },
+        )
+    ]
     requests = r.extract_requests(events)
     assert len(requests) == 1
     assert requests[0].finish_reason == "end_turn"
@@ -618,7 +718,6 @@ def test_hook_handler_returns_200(otel_server):
     assert resp["ok"] is True
 
     # Verify event is stored
-    events = db.query_events(since=0, until=time.time() + 3600,
-                              kind="hook:UserPromptSubmit")
+    events = db.query_events(since=0, until=time.time() + 3600, kind="hook:UserPromptSubmit")
     assert len(events) >= 1
     assert events[0].session_id == "hook-test-sess"

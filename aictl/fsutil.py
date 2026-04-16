@@ -39,6 +39,7 @@ _log = logging.getLogger(__name__)
 
 # ── Safe directory listing ────────────────────────────────────────
 
+
 def safe_iterdir(path: Path, *, sort: bool = True) -> list[Path]:
     """List directory contents, returning [] on any OS error.
 
@@ -54,6 +55,7 @@ def safe_iterdir(path: Path, *, sort: bool = True) -> list[Path]:
 
 
 # ── Safe glob / rglob ────────────────────────────────────────────
+
 
 def safe_glob(
     base: Path,
@@ -104,6 +106,7 @@ def safe_rglob(
 
 # ── Safe os.walk wrapper ─────────────────────────────────────────
 
+
 def safe_walk(
     root: Path,
     *,
@@ -137,6 +140,7 @@ def _walk_error(err: OSError) -> None:
 
 # ── Safe stat ─────────────────────────────────────────────────────
 
+
 def safe_stat(path: Path) -> os.stat_result | None:
     """Return stat result or None if the file vanished / is inaccessible."""
     try:
@@ -146,6 +150,7 @@ def safe_stat(path: Path) -> os.stat_result | None:
 
 
 # ── Basename helper ───────────────────────────────────────────────
+
 
 def path_basename(path: str) -> str:
     """Extract the filename from a path string, handling both separators."""

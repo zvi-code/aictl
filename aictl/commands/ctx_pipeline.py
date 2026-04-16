@@ -62,7 +62,7 @@ def _run_deploy(root: Path, profile: str | None, emitter_names: list[str], dry_r
             for r in results:
                 all_paths.append(r["path"])
                 pfx = click.style("   (dry)", fg="yellow") if dry_run else click.style("   \u2713", fg="green")
-                tok = click.style(f'{r["tokens"]} tok', fg="cyan")
+                tok = click.style(f"{r['tokens']} tok", fg="cyan")
                 fp = click.style(r["path"], fg="bright_black")
                 click.echo(f"{pfx} {ename} \u2192 {fp} ({tok})")
     except Exception as e:
@@ -133,8 +133,7 @@ def _watch_loop(root: Path, profile: str | None, emitter_names: list[str], dry_r
         from watchdog.observers import Observer
     except ImportError:
         raise click.ClickException(
-            "watchdog is required for --watch mode.\n"
-            "Install it with: pip install aictl[monitor]"
+            "watchdog is required for --watch mode.\nInstall it with: pip install aictl[monitor]"
         )
 
     # Initial deploy
@@ -212,12 +211,15 @@ def _watch_loop(root: Path, profile: str | None, emitter_names: list[str], dry_r
 @click.command()
 @click.option("-r", "--root", "root_dir", default=".", help="Root directory to deploy from")
 @click.option("-p", "--profile", help="Active profile (debug, docs, review, ...)")
-@click.option("-e", "--emit", "emitters", default="claude,copilot,cursor,windsurf,gemini", help="Comma-separated emitters")
+@click.option(
+    "-e", "--emit", "emitters", default="claude,copilot,cursor,windsurf,gemini", help="Comma-separated emitters"
+)
 @click.option("--dry-run", is_flag=True, help="Show what would be written")
 @click.option("--watch", is_flag=True, help="Re-deploy when .toml files change")
 def deploy(root_dir, profile, emitters, dry_run, watch):
     """Scan .toml files and deploy native AI context files."""
     from ..utils import WriteGuard
+
     if not dry_run:
         WriteGuard.install("deploy")
     root = Path(root_dir).resolve()
@@ -289,13 +291,14 @@ def scan_cmd(root_dir):
 
 # Regex to normalize the deploy-timestamp inside marker comments so that
 # timestamp-only differences don't show up as spurious diffs.
-_DEPLOY_TS_RE = re.compile(
-    r"(<!-- AI-CONTEXT:DEPLOYED\b[^|]*\|[^|]*\| deployed: )\S+(-->)"
-)
+_DEPLOY_TS_RE = re.compile(r"(<!-- AI-CONTEXT:DEPLOYED\b[^|]*\|[^|]*\| deployed: )\S+(-->)")
 
 _DIFF_STYLES = [
-    ("+++", "white", True), ("---", "white", True),
-    ("@@", "cyan", False), ("+", "green", False), ("-", "red", False),
+    ("+++", "white", True),
+    ("---", "white", True),
+    ("@@", "cyan", False),
+    ("+", "green", False),
+    ("-", "red", False),
 ]
 
 # Modules whose write_safe we patch to capture intended file content.
@@ -315,11 +318,7 @@ def diff(root_dir: str, profile: str | None, emitters: str | None) -> None:
     if not root.is_dir():
         raise click.ClickException(f"Not a directory: {root}")
 
-    emitter_names = (
-        [e.strip() for e in emitters.split(",")]
-        if emitters
-        else registry.all_names()
-    )
+    emitter_names = [e.strip() for e in emitters.split(",")] if emitters else registry.all_names()
 
     # --- Phase 1: Scan ---
     scanned = scan(root)
@@ -385,13 +384,15 @@ def diff(root_dir: str, profile: str | None, emitters: str | None) -> None:
             for line in intended.splitlines():
                 click.secho(f"+{line}", fg="green")
         else:
-            diff_lines = list(difflib.unified_diff(
-                norm_current.splitlines(),
-                norm_intended.splitlines(),
-                fromfile=from_label,
-                tofile=to_label,
-                lineterm="",
-            ))
+            diff_lines = list(
+                difflib.unified_diff(
+                    norm_current.splitlines(),
+                    norm_intended.splitlines(),
+                    fromfile=from_label,
+                    tofile=to_label,
+                    lineterm="",
+                )
+            )
             for line in diff_lines:
                 for prefix, fg, bold in _DIFF_STYLES:
                     if line.startswith(prefix):
@@ -436,9 +437,19 @@ def _rel(file_path: str, root: Path) -> str:
 _SECTION_RE = re.compile(r"^\[([^\]]+)\]$")
 
 KNOWN_TYPES = {
-    "command", "agent", "skill", "mcp", "hook", "lsp",
-    "setting", "permission", "env", "ignore",
-    "memory", "inherit", "exclude",
+    "command",
+    "agent",
+    "skill",
+    "mcp",
+    "hook",
+    "lsp",
+    "setting",
+    "permission",
+    "env",
+    "ignore",
+    "memory",
+    "inherit",
+    "exclude",
 }
 
 KNOWN_HOOK_EVENTS = set(_HOOK_EVENTS)
@@ -523,9 +534,9 @@ def _validate_file(path: Path, rel: str) -> FileResult:
             current_lines = []
             if current_header in seen_headers:
                 result.err(
-                    f"Duplicate section [{current_header}] "
-                    f"(first seen at line {seen_headers[current_header]})",
-                    current_start)
+                    f"Duplicate section [{current_header}] (first seen at line {seen_headers[current_header]})",
+                    current_start,
+                )
             else:
                 seen_headers[current_header] = current_start
         else:
@@ -641,8 +652,11 @@ def validate_cmd(root_dir):
         click.secho(f"  {fr.path}", bold=True)
         for issue in fr.issues:
             line_hint = f":{issue.line}" if issue.line else ""
-            marker = (click.style("error", fg="red", bold=True) if issue.level == "error"
-                      else click.style("warn ", fg="yellow"))
+            marker = (
+                click.style("error", fg="red", bold=True)
+                if issue.level == "error"
+                else click.style("warn ", fg="yellow")
+            )
             click.echo(f"    {marker} {issue.message} (line{line_hint})")
         click.echo()
 
@@ -664,11 +678,15 @@ def validate_cmd(root_dir):
     if error_count == 0 and warning_count == 0 and compat_count == 0:
         click.secho("  All files valid.\n", fg="green")
     else:
-        parts = [s for n, label, kw in [
-            (error_count,   "error(s)",        {"fg": "red", "bold": True}),
-            (warning_count, "warning(s)",       {"fg": "yellow"}),
-            (compat_count,  "compat warning(s)", {"fg": "yellow"}),
-        ] if n and (s := click.style(f"{n} {label}", **kw))]
+        parts = [
+            s
+            for n, label, kw in [
+                (error_count, "error(s)", {"fg": "red", "bold": True}),
+                (warning_count, "warning(s)", {"fg": "yellow"}),
+                (compat_count, "compat warning(s)", {"fg": "yellow"}),
+            ]
+            if n and (s := click.style(f"{n} {label}", **kw))
+        ]
         click.echo(f"  {', '.join(parts)}\n")
 
     if error_count > 0:
@@ -930,14 +948,13 @@ exit 0
 def init(root: str, force: bool, hooks: bool) -> None:
     """Scaffold a starter .context.toml file."""
     from ..utils import WriteGuard
+
     guard = WriteGuard.install("init")
     root_path = Path(root)
     target = root_path / AICTX_FILENAME
 
     if target.exists() and not force:
-        raise click.ClickException(
-            f"{target} already exists. Use --force to overwrite."
-        )
+        raise click.ClickException(f"{target} already exists. Use --force to overwrite.")
 
     # Choose the template variant based on --hooks.
     template = _TEMPLATE_WITH_HOOKS if hooks else _TEMPLATE
@@ -965,12 +982,11 @@ def _write_hook_scripts(root_path: Path, force: bool = False) -> None:
             click.echo(f"Skipped {script_path} (already exists, use --force to overwrite)")
             continue
         from ..utils import WriteGuard
+
         _guard = WriteGuard.current()
         if _guard:
             _guard.confirm(script_path, "replace")
         script_path.write_text(content, encoding="utf-8")
         # Make executable: owner rwx, group rx, others rx.
-        script_path.chmod(
-            script_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
-        )
+        script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         click.echo(f"Created {script_path}")
