@@ -15,12 +15,14 @@ import urllib.request
 
 import pytest
 
-from aictl.storage import (
-    EventRow, FileEntry, HistoryDB, Sample, TelemetryRow,
-)
+from aictl.dashboard.models import DashboardSnapshot
 from aictl.orchestrator import AllowedPaths, SnapshotStore
-from aictl.dashboard.models import DashboardSnapshot, DashboardTool
-
+from aictl.storage import (
+    EventRow,
+    HistoryDB,
+    Sample,
+    TelemetryRow,
+)
 
 # ── Fixtures ──────────────────────────────────────────────────────
 
@@ -94,10 +96,12 @@ def _make_snapshot(sessions=None):
 @pytest.fixture()
 def server(populated_db):
     """Start a real HTTP server on a random port, yield its base URL."""
-    from aictl.dashboard.web_server import (
-        _DashboardHTTPServer, _DashboardHandler,
-    )
     from pathlib import Path
+
+    from aictl.dashboard.web_server import (
+        _DashboardHandler,
+        _DashboardHTTPServer,
+    )
 
     store = SnapshotStore(db=populated_db)
     # Give the store a snapshot so /api/sessions doesn't 503
@@ -196,10 +200,12 @@ class TestSamplesAPI:
 
     def test_empty_db_returns_empty(self):
         """Samples endpoint with no DB returns []."""
-        from aictl.dashboard.web_server import (
-            _DashboardHTTPServer, _DashboardHandler,
-        )
         from pathlib import Path
+
+        from aictl.dashboard.web_server import (
+            _DashboardHandler,
+            _DashboardHTTPServer,
+        )
 
         # SnapshotStore with no DB
         store = SnapshotStore(db=None)
@@ -248,10 +254,12 @@ class TestSessionsAPI:
 
     def test_no_snapshot_returns_503(self):
         """Sessions endpoint with no snapshot returns 503."""
-        from aictl.dashboard.web_server import (
-            _DashboardHTTPServer, _DashboardHandler,
-        )
         from pathlib import Path
+
+        from aictl.dashboard.web_server import (
+            _DashboardHandler,
+            _DashboardHTTPServer,
+        )
 
         store = SnapshotStore(db=None)
         # Don't call store.update() → snapshot is None

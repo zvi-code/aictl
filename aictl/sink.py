@@ -28,13 +28,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 import time
 from collections import OrderedDict, defaultdict, deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 log = logging.getLogger(__name__)
 
@@ -565,7 +564,7 @@ _REFRESH_INTERVAL = 30.0
 _last_refresh: float = 0.0
 
 
-def update_provenance(db: "HistoryDB", snap: "DashboardSnapshot") -> int:
+def update_provenance(db: HistoryDB, snap: DashboardSnapshot) -> int:
     """Refresh dynamic source provenance from a live snapshot.
 
     Returns the number of catalog entries updated.
@@ -592,7 +591,7 @@ def _get(obj, key: str, default=None):
     return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
 
 
-def _build_provenance(snap: "DashboardSnapshot") -> dict[str, dict[str, Any]]:
+def _build_provenance(snap: DashboardSnapshot) -> dict[str, dict[str, Any]]:
     """Build source_dynamic dicts for all dynamic datapoints."""
     prov: dict[str, dict[str, Any]] = {}
 

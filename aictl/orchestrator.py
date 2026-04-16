@@ -17,8 +17,8 @@ import os
 import signal
 import subprocess
 import sys
-import time
 import threading
+import time
 import webbrowser
 from pathlib import Path
 
@@ -26,21 +26,20 @@ log = logging.getLogger(__name__)
 
 from .dashboard.models import DashboardSnapshot, DashboardTool
 from .data.schema import metric_name as M
+from .monitoring.tool_config import collect_tool_configs
+from .monitoring.tool_telemetry import collect_tool_telemetry, scan_agent_teams
 from .tools import (
+    TOOL_LABELS,
     ResourceFile,
     ToolResources,
     collect_agent_memory,
     collect_mcp_status,
     discover_all,
-    tool_vendor,
+    get_registry,
     tool_hosts,
     tool_is_meta,
-    TOOL_LABELS,
-    get_registry,
+    tool_vendor,
 )
-from .monitoring.tool_config import collect_tool_configs
-from .monitoring.tool_telemetry import collect_tool_telemetry, scan_agent_teams
-
 
 # ─── Persistent live monitor ─────────────────────────────────────
 
@@ -149,7 +148,7 @@ class RefreshLoop(threading.Thread):
         store: SnapshotStore,
         allowed: AllowedPaths,
         include_live_monitor: bool,
-        monitor: "PersistentMonitor | None" = None,
+        monitor: PersistentMonitor | None = None,
     ) -> None:
         super().__init__(daemon=True)
         self._root = root
@@ -442,7 +441,7 @@ def _kill_stale_server(port: int) -> None:
         else:
             name = cmdline.split()[0] if cmdline else f"pid {pid}"
             print(f"  error: port {port} is in use by {name}", file=sys.stderr)
-            print(f"  either kill it or use --port <other>", file=sys.stderr)
+            print("  either kill it or use --port <other>", file=sys.stderr)
             sys.exit(1)
 
 
@@ -455,11 +454,11 @@ def start_server(
     interval: float = 5.0,
     open_browser: bool = True,
     include_live_monitor: bool = True,
-    db_path: "Path | str | None" = None,
+    db_path: Path | str | None = None,
 ) -> None:
     """Start the dashboard HTTP server. Blocks until Ctrl-C."""
     # Import HTTP classes from the web layer
-    from .dashboard.web_server import _DashboardHTTPServer, _DashboardHandler
+    from .dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
 
     # Initialize datapoint file logger (if configured)
     dp_logger = None
@@ -530,12 +529,13 @@ def start_server(
 
     # Register SSE pre-serialization callback so build_sse_summary runs once
     # per update cycle (in the RefreshLoop thread) instead of per-SSE-client.
-    from .dashboard.web_server import build_sse_summary as _build_sse
     import json as _json_mod
+
+    from .dashboard.web_server import build_sse_summary as _build_sse
     store._sse_builder = lambda snap: _json_mod.dumps(_build_sse(snap))
     url = f"http://{host}:{port}"
     print(f"  aictl serve — dashboard at {url}", file=sys.stderr)
-    print(f"  press Ctrl-C to stop\n", file=sys.stderr)
+    print("  press Ctrl-C to stop\n", file=sys.stderr)
 
     if open_browser:
         webbrowser.open(url)
@@ -604,14 +604,14 @@ class SnapshotState:
         self._lock = _threading.Lock()
         self._condition = _threading.Condition(self._lock)
         self._sse_json: str = ""
-        self._sse_builder: "callable | None" = None
+        self._sse_builder: callable | None = None
         # Ring buffer for global time-series sparklines.
         # At ~5.86s/tick, 360 entries ≈ 35 min.
         self._history: collections.deque[tuple] = collections.deque(maxlen=360)
         # Per-tool history: {tool_name: deque[(ts, cpu, mem_mb, tokens, traffic_bps)]}
         self._tool_history: dict[str, collections.deque] = {}
 
-    def load_from_db(self, db: "_HistoryDB") -> None:
+    def load_from_db(self, db: _HistoryDB) -> None:
         """Populate ring buffers from SQLite so charts start with history."""
         if not db:
             return
@@ -642,7 +642,7 @@ class SnapshotState:
             log.warning("Failed to load history from DB: %s", exc)
 
     def update(self, snap: _DashboardSnapshot,
-               serializer: "SnapshotSerializer") -> list[tuple]:
+               serializer: SnapshotSerializer) -> list[tuple]:
         """Update state, pre-serialize, notify waiters. Returns tool_rows."""
         with self._condition:
             self._snap = snap
@@ -737,7 +737,7 @@ class SnapshotSerializer:
 
     @staticmethod
     def serialize_sse(snap: _DashboardSnapshot,
-                      builder: "callable | None") -> str:
+                      builder: callable | None) -> str:
         """SSE-formatted JSON via the registered builder callback."""
         if builder:
             try:
@@ -786,7 +786,7 @@ class SnapshotSerializer:
 class SnapshotPersistence:
     """Writes snapshot data to HistoryDB (injected dependency)."""
 
-    def __init__(self, db: "_HistoryDB | None") -> None:
+    def __init__(self, db: _HistoryDB | None) -> None:
         self._db = db
 
     def persist(self, snap: _DashboardSnapshot,
@@ -795,7 +795,7 @@ class SnapshotPersistence:
         if not self._db:
             return
         try:
-            from .storage import MetricsRow, ToolMetricsRow, EventRow
+            from .storage import EventRow, MetricsRow, ToolMetricsRow
             self._db.append_metrics(MetricsRow(
                 ts=snap.timestamp, files=snap.total_files,
                 tokens=snap.total_tokens, cpu=snap.total_cpu,
@@ -868,8 +868,8 @@ class SnapshotPersistence:
         if not self._db or not agent_teams:
             return
         try:
-            from .storage import AgentRow, RequestRow, SessionRow
             from .monitoring.tool_telemetry import _parse_iso_ts
+            from .storage import AgentRow, RequestRow, SessionRow
             for team in agent_teams:
                 session_id = team.get("session_id", "")
                 # Upsert a session row for this UUID session with aggregated token totals
@@ -967,7 +967,7 @@ class SnapshotStore:
     Uses SampleSink for universal metric emission.
     """
 
-    def __init__(self, db: "_HistoryDB | None" = None, sink: "_SampleSink | None" = None) -> None:
+    def __init__(self, db: _HistoryDB | None = None, sink: _SampleSink | None = None) -> None:
         self._state = SnapshotState()
         self._serializer = SnapshotSerializer()
         self._persistence = SnapshotPersistence(db)

@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
-from typing import Any, Callable, ClassVar, TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from ...data.schema import metric_name as M
 
 if TYPE_CHECKING:
-    from ..correlator import SessionCorrelator
     from ..config import MonitorConfig
+    from ..correlator import SessionCorrelator
 
 
 class BaseCollector(ABC):
@@ -27,7 +28,7 @@ class BaseCollector(ABC):
 
     name: ClassVar[str] = "collector"
 
-    def __init__(self, config: "MonitorConfig | None" = None) -> None:
+    def __init__(self, config: MonitorConfig | None = None) -> None:
         self._sink: Any | None = None
         self._correlator: SessionCorrelator | None = None
         self.config = config
@@ -36,12 +37,12 @@ class BaseCollector(ABC):
         """Inject a SampleSink for direct metric persistence."""
         self._sink = sink
 
-    def set_correlator(self, correlator: "SessionCorrelator") -> None:
+    def set_correlator(self, correlator: SessionCorrelator) -> None:
         """Inject the correlator for typed session tracking calls."""
         self._correlator = correlator
 
     @property
-    def correlator(self) -> "SessionCorrelator | None":
+    def correlator(self) -> SessionCorrelator | None:
         return self._correlator
 
     def sink_emit(self, metric: str, value: float,
@@ -106,13 +107,13 @@ _COLLECTOR_REGISTRY: dict[str, tuple[type | Callable, Callable]] = {}
 def register_collector(
     name: str,
     cls: type | Callable,
-    enabled_check: Callable[["MonitorConfig"], bool] = lambda cfg: True,
+    enabled_check: Callable[[MonitorConfig], bool] = lambda cfg: True,
 ) -> None:
     """Register a collector class (or factory) with the registry."""
     _COLLECTOR_REGISTRY[name] = (cls, enabled_check)
 
 
-def build_collectors(config: "MonitorConfig") -> list[BaseCollector]:
+def build_collectors(config: MonitorConfig) -> list[BaseCollector]:
     """Build all enabled collectors from the registry."""
     collectors: list[BaseCollector] = []
     for _name, (cls_or_factory, enabled_check) in _COLLECTOR_REGISTRY.items():
@@ -127,11 +128,11 @@ def _register_builtins() -> None:
     from .telemetry import StructuredTelemetryCollector
 
     # _select_network_collector lives in runtime; import lazily to avoid circular dep
-    def _network_factory(config: "MonitorConfig") -> BaseCollector:
+    def _network_factory(config: MonitorConfig) -> BaseCollector:
         from ..runtime import _select_network_collector
         return _select_network_collector(config)
 
-    def _discovery_factory(config: "MonitorConfig") -> BaseCollector:
+    def _discovery_factory(config: MonitorConfig) -> BaseCollector:
         from ..runtime import DiscoveryCollector
         return DiscoveryCollector(config, interval=10.0, include_processes=True)
 

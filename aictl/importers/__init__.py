@@ -62,7 +62,7 @@ class ImportResult:
 
 # ── Registry (from registry.py) ──
 
-from . import claude, copilot, cursor, windsurf, gemini, plugin
+from . import claude, copilot, cursor, gemini, plugin, windsurf
 
 _IMPORTERS = {"claude": claude, "copilot": copilot, "cursor": cursor, "windsurf": windsurf, "gemini": gemini, "plugin": plugin}
 

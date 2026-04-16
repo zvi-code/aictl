@@ -27,7 +27,7 @@ class SSEReader:
         self._thread: threading.Thread | None = None
         self._started = threading.Event()
 
-    def start(self) -> "SSEReader":
+    def start(self) -> SSEReader:
         self._thread = threading.Thread(target=self._read_loop, daemon=True)
         self._thread.start()
         # Wait for initial connection

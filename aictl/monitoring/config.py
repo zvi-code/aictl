@@ -89,7 +89,7 @@ class MonitorConfig:
         self._state_roots = tuple(str(path) for path in self.state_paths)
 
     @classmethod
-    def for_root(cls, root: Path, **kwargs) -> "MonitorConfig":
+    def for_root(cls, root: Path, **kwargs) -> MonitorConfig:
         """Construct a MonitorConfig for a single workspace root.
 
         All MonitorConfig fields (sample_interval, refresh_interval,

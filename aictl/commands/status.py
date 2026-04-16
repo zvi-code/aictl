@@ -11,20 +11,20 @@ from pathlib import Path
 
 import click
 
+from ..dashboard.html_report import render_html
+from ..dashboard.models import DashboardSnapshot
+from ..memory import get_summary, list_stashes
 from ..tools import (
-    discover_all,
-    backtrace_process,
-    compute_token_budget,
-    ToolResources,
-    expand_tool_filter,
     TOOL_GROUPS,
     TOOL_LABELS,
+    ToolResources,
+    backtrace_process,
     collect_agent_memory,
     collect_mcp_status,
+    compute_token_budget,
+    discover_all,
+    expand_tool_filter,
 )
-from ..dashboard.models import DashboardSnapshot, STATUS_COLOURS, SOURCE_LABELS
-from ..dashboard.html_report import render_html
-from ..memory import get_summary, list_stashes
 
 
 @click.command()
@@ -231,7 +231,8 @@ def _print_human(results: list[ToolResources], root: Path, show_procs: bool) -> 
 
 # ─── Formatting helpers (delegated to utils.py) ───────────────────
 
-from ..utils import human_size as _human_size, rel_display as _rel_display
+from ..utils import human_size as _human_size
+from ..utils import rel_display as _rel_display
 
 
 def _print_budget(results: list[ToolResources], root: str = "") -> None:

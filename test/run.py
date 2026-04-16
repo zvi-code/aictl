@@ -11,7 +11,6 @@ Run from the repo root or from the test/ directory:
 from __future__ import annotations
 
 import argparse
-import re
 import shutil
 import subprocess
 import sys

@@ -6,16 +6,13 @@ import json
 import tempfile
 from pathlib import Path
 
-import pytest
-
-from aictl.context import parse_aictx, Hook, LspServer, scan
-from aictl.resolver import resolve
+from aictl.context import parse_aictx, scan
 from aictl.emitters import claude as claude_emit
 from aictl.emitters import copilot as copilot_emit
 from aictl.importers import claude as claude_imp
 from aictl.importers import copilot as copilot_imp
+from aictl.resolver import resolve
 from aictl.synthesizer import synthesize
-
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "project"
 
@@ -536,6 +533,7 @@ class TestFixtureHooksAndLsp:
 class TestPluginBuild:
     def test_plugin_build_basic(self):
         from click.testing import CliRunner
+
         from aictl.cli import main
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -602,6 +600,7 @@ class TestPluginBuild:
 
     def test_plugin_build_dry_run(self):
         from click.testing import CliRunner
+
         from aictl.cli import main
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -627,6 +626,7 @@ class TestPluginBuild:
 
     def test_plugin_build_with_profile(self):
         from click.testing import CliRunner
+
         from aictl.cli import main
 
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -5,16 +5,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import click
 import pytest
 from click.testing import CliRunner
 
-from aictl.resolver import cleanup_stale, _clean_parents, save_manifest
-from aictl.utils import WriteGuard
 from aictl.commands.ctx_pipeline import _run_deploy
-
+from aictl.resolver import _clean_parents, cleanup_stale
+from aictl.utils import WriteGuard
 
 # ---------------------------------------------------------------------------
 # Issue 1: cleanup_stale refuses paths outside root

@@ -8,17 +8,16 @@ supply all /api/* endpoint implementations.
 
 from __future__ import annotations
 
-from collections import Counter
 import dataclasses
-from datetime import datetime, timezone
 import time
+from collections import Counter
+from datetime import datetime, timezone
 
 from ..data.token_usage import TokenUsage
 from ..tools import compute_token_budget
+from .models import _slim_agent_teams
 from .otel_receiver import _num
 from .session_flow import build_session_flow
-from .models import _slim_agent_teams
-
 
 # ─── Budget cache ────────────────────────────────────────────────
 

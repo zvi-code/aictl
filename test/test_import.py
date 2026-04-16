@@ -15,14 +15,15 @@ import shutil
 import tempfile
 from pathlib import Path
 
-import pytest
-
-from aictl.context import parse_aictx, scan
+from aictl.context import scan
+from aictl.emitters import claude as claude_emit
+from aictl.emitters import copilot as copilot_emit
+from aictl.emitters import cursor as cursor_emit
+from aictl.importers import claude as claude_imp
+from aictl.importers import copilot as copilot_imp
+from aictl.importers import cursor as cursor_imp
 from aictl.resolver import resolve
-from aictl.emitters import claude as claude_emit, copilot as copilot_emit, cursor as cursor_emit
-from aictl.importers import claude as claude_imp, copilot as copilot_imp, cursor as cursor_imp
 from aictl.synthesizer import synthesize
-
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "project"
 
@@ -359,6 +360,7 @@ class TestCLI:
 
     def test_import_cli_dry_run(self):
         from click.testing import CliRunner
+
         from aictl.cli import main
 
         runner = CliRunner()
@@ -374,6 +376,7 @@ class TestCLI:
 
     def test_import_cli_empty_dir(self):
         from click.testing import CliRunner
+
         from aictl.cli import main
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -384,6 +387,7 @@ class TestCLI:
 
     def test_import_cli_with_prefer(self):
         from click.testing import CliRunner
+
         from aictl.cli import main
 
         runner = CliRunner()

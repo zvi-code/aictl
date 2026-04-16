@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import ast
 import re
-import sys
 from pathlib import Path
 
 import pytest
@@ -222,8 +221,9 @@ def test_broad_catch_reraises_abort(path: Path):
 
 def test_otel_enable_exits_1_on_partial_failure(tmp_path, monkeypatch):
     """otel enable must exit 1 if any action fails, so CI/scripts detect partial failure."""
-    from aictl.commands.integrations import otel
     from click.testing import CliRunner
+
+    from aictl.commands.integrations import otel
 
     monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [])
     monkeypatch.setenv("AICTL_PORT", "8484")
@@ -242,8 +242,9 @@ def test_otel_enable_exits_1_on_partial_failure(tmp_path, monkeypatch):
 
 def test_enable_exits_1_on_partial_failure(tmp_path, monkeypatch):
     """aictl enable must exit 1 if any integration fails."""
-    from aictl.commands.integrations import enable
     from click.testing import CliRunner
+
+    from aictl.commands.integrations import enable
 
     monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [])
     monkeypatch.setattr(

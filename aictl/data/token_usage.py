@@ -57,7 +57,7 @@ class TokenUsage:
     cache_write: int = 0
 
     @classmethod
-    def from_dict(cls, d: dict) -> "TokenUsage":
+    def from_dict(cls, d: dict) -> TokenUsage:
         """Build from a tool/SDK dict tolerating known field-name aliases.
 
         Uses ``dict.get(...)`` with ``None``-coalescing so that explicit

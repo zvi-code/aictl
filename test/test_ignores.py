@@ -5,15 +5,12 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-import pytest
-
-from aictl.context import parse_aictx, IgnoreRule, scan
-from aictl.resolver import resolve
+from aictl.context import parse_aictx, scan
 from aictl.emitters import claude as claude_emit
 from aictl.emitters import copilot as copilot_emit
 from aictl.emitters import cursor as cursor_emit
 from aictl.emitters import windsurf as windsurf_emit
-
+from aictl.resolver import resolve
 
 # ---------------------------------------------------------------------------
 # Parser tests

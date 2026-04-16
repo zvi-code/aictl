@@ -13,16 +13,18 @@ registered parsers — no hardcoded tool names in the collection loop.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
 import shutil
 import subprocess
 from collections.abc import Callable
-import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..data.schema import load_tool_configs
+from ..fsutil import safe_iterdir
 from ..platforms import (
     IS_MACOS,
     IS_WINDOWS,
@@ -32,8 +34,6 @@ from ..platforms import (
     vscode_user_dir,
     windsurf_global_dir,
 )
-from ..data.schema import load_tool_configs
-from ..fsutil import safe_iterdir
 
 log = logging.getLogger(__name__)
 
@@ -156,7 +156,7 @@ def _mcp_server_names(data: dict | None) -> list[str]:
     return list((data or {}).get("mcpServers", {}).keys())
 
 
-def _finish(cfg: "ToolConfig", has_data: bool) -> "ToolConfig | None":
+def _finish(cfg: ToolConfig, has_data: bool) -> ToolConfig | None:
     """Generate hints, then return cfg if has_data, else None."""
     cfg.hints = _generate_hints(cfg)
     return cfg if has_data else None
@@ -822,8 +822,12 @@ def _get_nested(data: dict, key_path: str) -> Any | None:
 def _parse_generic_config(root: Path, tool_name: str, spec: dict) -> ToolConfig | None:
     """Generic parser that uses extraction rules from tool-configs.yaml."""
     from ..platforms import (
-        claude_global_dir, vscode_user_dir, codex_global_dir, 
-        cursor_user_dir, windsurf_global_dir, gemini_global_dir
+        claude_global_dir,
+        codex_global_dir,
+        cursor_user_dir,
+        gemini_global_dir,
+        vscode_user_dir,
+        windsurf_global_dir,
     )
     
     _PATH_FNS = {

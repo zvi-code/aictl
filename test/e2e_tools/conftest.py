@@ -145,9 +145,9 @@ def _install_gemini_hooks(project_dir: Path, port: int) -> None:
     settings_path = settings_dir / "settings.json"
 
     from aictl.commands.integrations import (
-        _build_hook_config,
-        HOOK_EVENTS,
         GEMINI_HOOK_MAP,
+        HOOK_EVENTS,
+        _build_hook_config,
     )
     gemini_events = [e for e in HOOK_EVENTS if e in GEMINI_HOOK_MAP]
     hook_config = _build_hook_config(port, gemini_events, event_map=GEMINI_HOOK_MAP, matcher="*")

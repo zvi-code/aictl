@@ -2,65 +2,56 @@
 
 from __future__ import annotations
 
-import csv
-import io
-import os
-import textwrap
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from aictl.tools import (
-    # Taxonomy lookups
-    TOOL_TAXONOMY,
+    # Tree walk
     TOOL_GROUPS,
     TOOL_LABELS,
-    TOOL_COLORS,
-    TOOL_ICONS,
-    ToolMeta,
-    tool_vendor,
-    tool_hosts,
-    tool_is_meta,
-    tool_color,
-    tool_icon,
-    expand_tool_filter,
-    _tool_meta_attr,
-    # CSV helpers
-    _platform_match,
-    _bool_field,
-    _rss_to_mb,
-    _load_csv,
-    _filter_specs,
-    _data_path,
-    # Dataclasses
-    PathSpec,
-    ProcessSpec,
-    ResourceFile,
-    ProcessInfo,
+    # Taxonomy lookups
+    TOOL_TAXONOMY,
     McpServerInfo,
     MemoryEntry,
+    # Dataclasses
+    PathSpec,
+    ProcessInfo,
+    ProcessSpec,
+    ResourceFile,
     ToolResources,
-    # Tree walk
-    PRUNE_DIRS,
-    find_in_tree,
-    find_dirs_in_tree,
-    batch_find_in_tree,
-    # Path template helpers
-    _expand_home,
-    _params_to_glob,
-    # File helpers
-    _dedup_files,
+    _bool_field,
     # MCP helpers
     _classify_mcp_transport,
+    _data_path,
+    # File helpers
+    _dedup_files,
+    _detect_anomalies,
+    # Path template helpers
+    _expand_home,
+    _filter_specs,
+    _load_csv,
     _match_mcp_to_process,
+    _params_to_glob,
+    # CSV helpers
+    _platform_match,
     # Process helpers
     _process_display_name,
-    _detect_anomalies,
+    _rss_to_mb,
+    _tool_meta_attr,
+    batch_find_in_tree,
     # Token budget
     compute_token_budget,
+    expand_tool_filter,
+    find_dirs_in_tree,
+    find_in_tree,
+    tool_color,
+    tool_hosts,
+    tool_icon,
+    tool_is_meta,
+    tool_vendor,
 )
-
 
 # ────────────────────────────────────────────────────────────────
 # Taxonomy lookups (pure functions)
@@ -676,7 +667,7 @@ class TestDataPath:
 
 class TestRegistrySingleton:
     def test_get_registry_returns_registry(self):
-        from aictl.tools import get_registry, Registry
+        from aictl.tools import Registry, get_registry
         reg = get_registry()
         assert isinstance(reg, Registry)
 

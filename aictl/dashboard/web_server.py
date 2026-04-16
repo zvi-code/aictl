@@ -28,9 +28,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .models import DashboardSnapshot, _slim_agent_teams
-from ..orchestrator import SnapshotStore, AllowedPaths
+from ..orchestrator import AllowedPaths, SnapshotStore
 from ..storage import EventRow, SessionRow, ToolInvocationRow
+from .analytics import (  # noqa: F401 — re-exports
+    _AnalyticsCache,
+    _compute_files,
+    _compute_response_time,
+    _compute_tools,
+)
+from .api_handlers import _APIHandlersMixin
+from .models import DashboardSnapshot, _slim_agent_teams
 
 # ── Re-exports for backward compatibility ────────────────────────
 # Other modules (tests, orchestrator) import these from web_server.
@@ -46,13 +53,6 @@ from .otel_receiver import (  # noqa: F401 — re-exports
     _parse_otel_attributes,
     _promote_session_id,
 )
-from .analytics import (  # noqa: F401 — re-exports
-    _AnalyticsCache,
-    _compute_files,
-    _compute_response_time,
-    _compute_tools,
-)
-from .api_handlers import _APIHandlersMixin
 
 logger = logging.getLogger(__name__)
 _log = logger  # alias used by _serve_static
@@ -77,7 +77,7 @@ def _read_file_safe(path_str: str) -> str | None:
             return None
         size = p.stat().st_size
         if size > _MAX_FILE_SIZE:
-            with open(p, "r", errors="replace") as f:
+            with open(p, errors="replace") as f:
                 f.seek(max(0, size - _MAX_FILE_SIZE))
                 f.readline()  # skip partial line
                 tail = f.read()
@@ -683,7 +683,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             # Fallback: serialize now (first push before store has SSE cached)
             summary = build_sse_summary(snap)
             data = json.dumps(summary)
-        self.wfile.write(f"data: {data}\n\n".encode("utf-8"))
+        self.wfile.write(f"data: {data}\n\n".encode())
         self.wfile.flush()
 
     # ── Shared helpers (used by _APIHandlersMixin and core) ──
@@ -797,15 +797,27 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
 
 # ─── Inline HTML dashboard ───────────────────────────────────────
 
+import json as _json
+
+from ..tools import (
+    HOST_LABELS as _REG_HOST_LABELS,
+)
 from ..tools import (
     TOOL_COLORS as _REG_COLORS,
+)
+from ..tools import (
     TOOL_ICONS as _REG_ICONS,
-    VENDOR_LABELS as _REG_VENDOR_LABELS,
-    VENDOR_COLORS as _REG_VENDOR_COLORS,
-    HOST_LABELS as _REG_HOST_LABELS,
+)
+from ..tools import (
     TOOL_RELATIONSHIPS as _REG_RELATIONSHIPS,
 )
-import json as _json
+from ..tools import (
+    VENDOR_COLORS as _REG_VENDOR_COLORS,
+)
+from ..tools import (
+    VENDOR_LABELS as _REG_VENDOR_LABELS,
+)
+
 
 def _make_js_colors() -> str:
     """Generate the JavaScript COLORS const from the registry."""

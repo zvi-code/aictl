@@ -12,10 +12,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import ImportResult, ImportedScope
+from . import ImportedScope, ImportResult
 from ._parse_helpers import (
-    strip_markers, extract_profile_name, strip_profile_header,
-    read_sub_scopes, import_mcp_from_json,
+    extract_profile_name,
+    import_mcp_from_json,
+    read_sub_scopes,
+    strip_markers,
+    strip_profile_header,
 )
 
 NAME = "windsurf"

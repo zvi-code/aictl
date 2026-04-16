@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import tempfile
-from pathlib import Path
 
 from click.testing import CliRunner
 
@@ -28,9 +27,9 @@ def test_diff_no_changes(tmp_path):
     aictx.write_text('[instructions]\nbase = "Hello world."\n')
 
     # First deploy to create the files
+    from aictl import emitters as registry
     from aictl.context import scan
     from aictl.resolver import resolve
-    from aictl import emitters as registry
 
     scanned = scan(tmp_path)
     if scanned:

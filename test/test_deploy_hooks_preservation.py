@@ -12,7 +12,6 @@ from click.testing import CliRunner
 from aictl._hook_owner import _AICTL_OWNER_MARKER, _is_aictl_hook
 from aictl.commands.ctx_pipeline import deploy
 
-
 _USER_HOOK = {
     "matcher": "Bash",
     "hooks": [{"type": "command", "command": "user-lint.sh"}],

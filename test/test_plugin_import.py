@@ -13,13 +13,10 @@ import json
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from aictl.context import parse_aictx, scan
-from aictl.resolver import resolve
 from aictl.importers import plugin as plugin_imp
+from aictl.resolver import resolve
 from aictl.synthesizer import synthesize
-
 
 # ---------------------------------------------------------------------------
 # Parser: [plugin] section
@@ -260,6 +257,7 @@ class TestPluginBuildWithMeta:
     def test_build_uses_aictx_plugin_meta(self):
         """Plugin build should use [plugin] section values when CLI flags are absent."""
         from click.testing import CliRunner
+
         from aictl.cli import main
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -294,6 +292,7 @@ class TestPluginBuildWithMeta:
     def test_build_cli_flags_override_plugin_meta(self):
         """CLI flags should take precedence over [plugin] section values."""
         from click.testing import CliRunner
+
         from aictl.cli import main
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -329,6 +328,7 @@ class TestPluginBuildWithMeta:
     def test_build_fails_without_name(self):
         """Build should fail if no name is provided via CLI or [plugin]."""
         from click.testing import CliRunner
+
         from aictl.cli import main
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -357,6 +357,7 @@ class TestPluginRoundtrip:
     def test_build_import_roundtrip(self):
         """Build a plugin from .context.toml, then import it back and verify equivalence."""
         from click.testing import CliRunner
+
         from aictl.cli import main
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -444,6 +445,7 @@ class TestCLIPluginImport:
     def test_import_with_plugin_source(self):
         """aictl import --from plugin should find .claude-plugin/ dirs."""
         from click.testing import CliRunner
+
         from aictl.cli import main
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -471,6 +473,7 @@ class TestCLIPluginImport:
     def test_import_plugin_not_found(self):
         """aictl import --from plugin on empty dir should report skip."""
         from click.testing import CliRunner
+
         from aictl.cli import main
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -485,6 +488,7 @@ class TestCLIPluginImport:
     def test_import_all_includes_plugin(self):
         """Default --from should include the plugin importer."""
         from click.testing import CliRunner
+
         from aictl.cli import main
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -522,6 +526,7 @@ class TestPluginValidation:
     def test_manifest_requires_name_for_build(self):
         """Plugin build must fail when no name is provided."""
         from click.testing import CliRunner
+
         from aictl.cli import main
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -780,6 +785,7 @@ class TestPluginValidation:
     def test_special_characters_in_plugin_name(self):
         """Plugin names with hyphens/dots survive the build -> import roundtrip."""
         from click.testing import CliRunner
+
         from aictl.cli import main
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -813,6 +819,7 @@ class TestPluginValidation:
     def test_unicode_content_roundtrip(self):
         """Unicode in command content survives build -> import."""
         from click.testing import CliRunner
+
         from aictl.cli import main
 
         with tempfile.TemporaryDirectory() as tmpdir:

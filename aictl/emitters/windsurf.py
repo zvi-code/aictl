@@ -12,8 +12,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..resolver import Resolved
-from ..utils import wrap_deployed, emit_file
-from ._helpers import emit_sub_scope, emit_mcp_servers
+from ..utils import emit_file, wrap_deployed
+from ._helpers import emit_mcp_servers, emit_sub_scope
 
 NAME = "windsurf"
 

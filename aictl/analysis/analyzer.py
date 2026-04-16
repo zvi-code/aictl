@@ -16,8 +16,8 @@ from collections import OrderedDict
 from typing import Any
 
 from ..storage import EventRow
-from .session_id import SessionIdentity, resolve_session_id, can_merge, merge_identities
-from .transcript import Action, ActionKind, Turn, SessionTranscript
+from .session_id import SessionIdentity, resolve_session_id
+from .transcript import Action, ActionKind, SessionTranscript, Turn
 
 log = logging.getLogger(__name__)
 

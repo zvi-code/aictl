@@ -16,8 +16,12 @@ from pathlib import Path
 
 from ..resolver import Resolved
 from ._helpers import (
-    emit_root_scope, emit_sub_scope, emit_capabilities,
-    emit_mcp_servers, emit_settings, emit_ignores,
+    emit_capabilities,
+    emit_ignores,
+    emit_mcp_servers,
+    emit_root_scope,
+    emit_settings,
+    emit_sub_scope,
 )
 
 NAME = "gemini"

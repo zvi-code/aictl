@@ -16,7 +16,6 @@ contains ``/api/hooks``.
 
 from __future__ import annotations
 
-
 _AICTL_OWNER_MARKER = "aictl.managed"
 
 # Legacy substring markers used for pre-marker hook entries.

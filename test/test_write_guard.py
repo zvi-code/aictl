@@ -12,17 +12,15 @@ Coverage:
 from __future__ import annotations
 
 import json
-import sys
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import click
 import pytest
 from click.testing import CliRunner
 
 from aictl.utils import WriteGuard
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -379,7 +377,7 @@ class TestHooksInstallGuard:
 
     def test_install_guard_approve_proceeds(self, tmp_settings):
         """If guard.confirm approves, install writes hooks correctly."""
-        from aictl.commands.integrations import hooks, HOOK_EVENTS
+        from aictl.commands.integrations import HOOK_EVENTS, hooks
 
         tmp_settings.parent.mkdir(parents=True, exist_ok=True)
         tmp_settings.write_text(json.dumps({}))
@@ -942,7 +940,7 @@ class TestFileIOEncoding:
 
     def test_hooks_settings_write_uses_utf8(self, tmp_path, monkeypatch):
         """hooks install writes settings.json with utf-8 encoding."""
-        from aictl.commands.integrations import hooks, HOOK_EVENTS
+        from aictl.commands.integrations import hooks
 
         settings_file = tmp_path / ".claude" / "settings.json"
         monkeypatch.setattr("aictl.commands.integrations._settings_path", lambda scope: settings_file)
@@ -1084,8 +1082,8 @@ class TestCodexPathPlatformAbstraction:
 class TestWriteSafeAtomic:
     def test_write_safe_atomic_on_replace_failure(self, tmp_path, monkeypatch):
         """If os.replace fails, the original file must remain untouched."""
-        from aictl.utils import write_safe
         import aictl.utils as utils_mod
+        from aictl.utils import write_safe
 
         existing = tmp_path / "file.txt"
         existing.write_text("original")

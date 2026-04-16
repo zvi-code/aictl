@@ -113,7 +113,7 @@ class ServerHandle:
         self,
         path: str,
         *,
-        check: "callable",
+        check: callable,
         timeout: float = 15,
         **params: str,
     ) -> Any:

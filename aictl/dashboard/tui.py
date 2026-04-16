@@ -20,22 +20,22 @@ from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.timer import Timer
 from textual.widgets import (
+    DataTable,
     Footer,
     Header,
     Label,
-    Static,
-    DataTable,
-    Sparkline,
     Rule,
+    Sparkline,
+    Static,
     TabbedContent,
     TabPane,
     Tree,
 )
 
-from .models import DashboardSnapshot, STATUS_COLOURS, SOURCE_LABELS
-from .view_helpers import compute_tool_summary, safe_float, format_duration
 from ..orchestrator import collect
-from ..tools import TOOL_LABELS, TOOL_COLORS, DEFAULT_TOOL_COLOR, TOOL_ICONS, DEFAULT_TOOL_ICON
+from ..tools import DEFAULT_TOOL_ICON, TOOL_COLORS, TOOL_ICONS, TOOL_LABELS
+from .models import SOURCE_LABELS, STATUS_COLOURS, DashboardSnapshot
+from .view_helpers import compute_tool_summary, format_duration, safe_float
 
 # ── Colour palette ───────────────────────────────────────────────
 
@@ -798,7 +798,7 @@ class DashboardApp(App):
                 content = f"[dim]File not found: {path_str}[/dim]"
             elif p.stat().st_size > 200_000:
                 # Read tail for large files
-                with open(p, "r", errors="replace") as fh:
+                with open(p, errors="replace") as fh:
                     fh.seek(max(0, p.stat().st_size - 50_000))
                     fh.readline()  # skip partial
                     tail = fh.read()
@@ -867,7 +867,10 @@ class DashboardApp(App):
 # ── Formatting helpers (delegated to shared utils) ──────────────
 
 from functools import partial
-from ..utils import human_size as _human_size, human_tokens, rel_display as _rel_display
+
+from ..utils import human_size as _human_size
+from ..utils import human_tokens
+from ..utils import rel_display as _rel_display
 
 _human_tokens = partial(human_tokens, suffix=True)
 

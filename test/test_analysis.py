@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import time
 
-import pytest
-
+from aictl.analysis.analyzer import SessionAnalyzer
 from aictl.analysis.session_id import (
     SessionIdentity,
     can_merge,
@@ -21,9 +20,7 @@ from aictl.analysis.transcript import (
     TranscriptSummary,
     Turn,
 )
-from aictl.analysis.analyzer import SessionAnalyzer
 from aictl.storage import EventRow
-
 
 # ══════════════════════════════════════════════════════════════
 # session_id tests

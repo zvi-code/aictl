@@ -10,11 +10,10 @@ from pathlib import Path
 import click
 
 from .. import importers as import_registry
-from ..synthesizer import synthesize
 from ..context import scan
 from ..resolver import resolve
-from ..utils import write_safe, estimate_tokens
-
+from ..synthesizer import synthesize
+from ..utils import estimate_tokens, write_safe
 
 # ─── import ──────────────────────────────────────────────────────────────────
 

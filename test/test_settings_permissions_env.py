@@ -6,12 +6,9 @@ import json
 import tempfile
 from pathlib import Path
 
-import pytest
-
-from aictl.context import parse_aictx, Setting, Permission, EnvVars, scan
-from aictl.resolver import resolve
+from aictl.context import parse_aictx, scan
 from aictl.emitters import claude as claude_emit
-
+from aictl.resolver import resolve
 
 # ---------------------------------------------------------------------------
 # Parser tests — settings
