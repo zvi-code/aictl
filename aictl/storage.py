@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Any
 
 from .platforms import config_dir
+from .storage_migrations import CURRENT_VERSION as SCHEMA_VERSION
+from .storage_migrations import apply_pending as _apply_pending_migrations
 
 log = logging.getLogger(__name__)
 
@@ -32,7 +34,8 @@ log = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = config_dir() / "history.db"
 FLUSH_INTERVAL = 10.0  # seconds between batch writes
-SCHEMA_VERSION = 21  # bump when adding migrations
+# SCHEMA_VERSION is re-exported from aictl.storage_migrations so the
+# migrations package remains the single source of truth.
 LARGE_FILE_THRESHOLD = 100_000  # bytes; files larger than this use blob storage
 
 # Retention thresholds (seconds)
@@ -40,17 +43,6 @@ _1H = 3_600
 _24H = 86_400
 _7D = 7 * _24H
 _30D = 30 * _24H
-
-# Old tables to drop when migrating from v12 to v20
-_OLD_TABLES_TO_DROP = (
-    "metrics",
-    "tool_metrics",
-    "tool_telemetry",
-    "samples",
-    "file_store",
-    "path_specs",
-    "process_specs",
-)
 
 # ─── Schema ────────────────────────────────────────────────────────
 
@@ -1085,9 +1077,13 @@ class HistoryDB:
             row = cur.fetchone()
             current = row[0] if row and row[0] else 0
 
-        # Drop old tables when migrating from v12 to v20
-        if current > 0 and current < 20:
-            self._drop_old_tables(conn)
+        # Apply pre-baseline migrations (e.g. dropping legacy tables that
+        # would collide with the new baseline DDL). For an existing DB
+        # we run every migration whose target version is above ``current``
+        # BEFORE executing the baseline, so that drops happen first and
+        # ALTERs happen against freshly-created tables.
+        if current > 0 and current < SCHEMA_VERSION:
+            _apply_pending_migrations(conn, current)
 
         conn.executescript(_SCHEMA_SQL)
 
@@ -1096,9 +1092,8 @@ class HistoryDB:
             self._sync_csv_to_db(conn)
             self._seed_ui_layout(conn)
 
-        # Run migrations for existing DBs
+        # Record new schema version for existing DBs we just migrated.
         if current < SCHEMA_VERSION:
-            self._migrate(conn, current)
             conn.execute(
                 "INSERT OR REPLACE INTO schema_version(version) VALUES(?)",
                 (SCHEMA_VERSION,),
@@ -1110,32 +1105,6 @@ class HistoryDB:
             self._sync_datapoint_catalog(conn)
         except Exception as exc:
             log.warning("Datapoint catalog sync failed: %s", exc)
-
-    def _drop_old_tables(self, conn: sqlite3.Connection) -> None:
-        """Drop old tables that are being replaced in v20 schema."""
-        for table in _OLD_TABLES_TO_DROP:
-            try:
-                conn.execute(f"DROP TABLE IF EXISTS {table}")
-            except sqlite3.OperationalError:
-                pass
-        conn.commit()
-        log.info("Dropped old tables for v20 migration: %s", ", ".join(_OLD_TABLES_TO_DROP))
-
-    def _migrate(self, conn: sqlite3.Connection, from_version: int) -> None:
-        """Run incremental migrations from *from_version* to SCHEMA_VERSION.
-
-        Each migration is idempotent (uses ALTER TABLE IF NOT EXISTS pattern).
-        New columns are always added with DEFAULT values so old data stays valid.
-        """
-        # v12 -> v20: major schema refactor. Old tables dropped in _drop_old_tables.
-        # No column migrations needed -- fresh tables.
-
-        if from_version < 21:
-            # v20 -> v21: add pid column to sessions table
-            try:
-                conn.execute("ALTER TABLE sessions ADD COLUMN pid INTEGER DEFAULT 0")
-            except sqlite3.OperationalError:
-                pass  # column already exists
 
     @staticmethod
     def _sync_datapoint_catalog(conn: sqlite3.Connection) -> None:
