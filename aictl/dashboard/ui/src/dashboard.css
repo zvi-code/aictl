@@ -28,7 +28,19 @@
   }
 }
 /* ─── Typography + spacing design tokens ─────────────────────── */
+/*
+ * Responsive breakpoints (used consistently throughout this file):
+ *   mobile  : (max-width: 640px)
+ *   tablet  : (max-width: 1024px)
+ *   desktop : default (> 1024px)
+ *
+ * Density scale is applied via `--density` and multiplies all --sp-*
+ * tokens so paddings/gaps shrink or grow uniformly. Set via
+ * <html data-density="compact|normal|spacious"> (see useDensity hook).
+ */
 :root {
+  /* Density multiplier — overridden by [data-density="…"] below. */
+  --density: 1;
   /* Typography scale (8-tier, purpose-driven) */
   --fs-2xs: 0.55rem;  /* chart annotations, ref labels */
   --fs-xs:  0.6rem;   /* badges, icons, uppercase labels */
@@ -38,17 +50,19 @@
   --fs-lg:  0.85rem;  /* body text, tab buttons, interactive */
   --fs-xl:  0.95rem;  /* card titles, metric values */
   --fs-2xl: 1.1rem;   /* page heading, chart hero values */
-  /* Spacing scale */
-  --sp-1:  0.15rem;   /* tight: badge/process-row padding */
-  --sp-2:  0.25rem;   /* compact: small padding, legend gap */
-  --sp-3:  0.3rem;    /* small: range gap, metrics gap */
-  --sp-4:  0.4rem;    /* medium: chart gap, standard gap */
-  --sp-5:  0.5rem;    /* standard: cell padding, header gap */
-  --sp-6:  0.6rem;    /* section: card padding, layout gap */
-  --sp-8:  0.8rem;    /* large: tab margin, card padding */
-  --sp-10: 1rem;      /* xlarge: column gap */
-  --sp-12: 1.2rem;    /* header: page padding */
+  /* Spacing scale (density-aware — multiplied by --density) */
+  --sp-1:  calc(0.15rem * var(--density));
+  --sp-2:  calc(0.25rem * var(--density));
+  --sp-3:  calc(0.3rem  * var(--density));
+  --sp-4:  calc(0.4rem  * var(--density));
+  --sp-5:  calc(0.5rem  * var(--density));
+  --sp-6:  calc(0.6rem  * var(--density));
+  --sp-8:  calc(0.8rem  * var(--density));
+  --sp-10: calc(1rem    * var(--density));
+  --sp-12: calc(1.2rem  * var(--density));
 }
+[data-density="compact"]  { --density: 0.85; }
+[data-density="spacious"] { --density: 1.15; }
 * { margin:0; padding:0; box-sizing:border-box; }
 html, body, #app { height: 100%; overflow: hidden; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
@@ -574,7 +588,7 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
 .sf-stab-dur { color: var(--fg2); }
 .sf-stab-tok { font-weight: 600; color: var(--accent); }
 .sf-stab-files { color: var(--fg2); }
-.sf-stab-live { color: var(--green); font-size: 8px; }
+.sf-stab-live { color: var(--green); font-size: var(--fs-2xs); }
 
 /* Summary bar */
 .sf-summary { display: flex; gap: var(--sp-4); margin-bottom: var(--sp-4);
@@ -851,12 +865,12 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
 }
 .tc-filter-label {
   font-weight: 600; color: var(--fg2); margin-right: 4px;
-  text-transform: uppercase; letter-spacing: 0.05em; font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.05em; font-size: var(--fs-sm);
 }
 .tc-filter-btn {
   background: var(--bg2); border: 1px solid var(--border);
   border-radius: 3px; padding: 1px 6px; cursor: pointer;
-  color: var(--fg2); font-size: 10px;
+  color: var(--fg2); font-size: var(--fs-sm);
 }
 .tc-filter-btn:hover { color: var(--fg); border-color: var(--fg2); }
 .tc-filter-check {
@@ -887,7 +901,7 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
 }
 /* Time axis: fixed-height row below every bar */
 .tc-flow-time {
-  font-size: 8px; color: var(--fg2); text-align: center;
+  font-size: var(--fs-2xs); color: var(--fg2); text-align: center;
   white-space: nowrap; line-height: 16px; height: 16px;
   overflow: visible;
 }
@@ -925,6 +939,78 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
   border-left: 1px dashed var(--border);
   cursor: help;
 }
+
+/* ─── Responsive layers ──────────────────────────────────────── */
+/*   Breakpoint conventions used throughout:
+ *     mobile  : (max-width: 640px)
+ *     tablet  : (max-width: 1024px)
+ *     desktop : default
+ *   The rules below fix the top layouts that previously assumed a
+ *   desktop-width viewport: the sparkline grid, the tab nav, and
+ *   the tool filter bar. Other legacy (max-width: 800px|600px)
+ *   queries earlier in this file are left in place — they still
+ *   cover their specific components (es-layout, es-charts, etc.).
+ */
+
+/* Sparkline grid — used by DashboardContent (overview tab). */
+.grid-sparklines {
+  display: grid;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-4);
+  grid-template-columns: repeat(4, 1fr);
+}
+@media (max-width: 1024px) {
+  .grid-sparklines { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 640px) {
+  .grid-sparklines { grid-template-columns: repeat(2, 1fr); gap: var(--sp-2); }
+}
+
+/* Header top row — side-by-side on desktop, stacked on mobile. */
+.header-top-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-4);
+  align-items: start;
+}
+@media (max-width: 640px) {
+  .header-top-row { grid-template-columns: 1fr; }
+}
+
+/* Inventory strip — shrinks column count on narrow screens. */
+.grid-inventory {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--sp-2);
+}
+
+/* Tab nav — scroll horizontally on narrow viewports. */
+@media (max-width: 1024px) {
+  .tab-nav {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+  }
+  .tab-btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    min-width: max-content;
+    padding: var(--sp-3) var(--sp-4);
+  }
+}
+
+/* Tool filter bar + header + main — compact on mobile. */
+@media (max-width: 640px) {
+  .tool-filter-bar {
+    gap: var(--sp-1) var(--sp-3);
+    padding: var(--sp-2) var(--sp-3);
+  }
+  .global-range-bar { padding: var(--sp-2) var(--sp-4); }
+  header { padding: var(--sp-3) var(--sp-5); gap: var(--sp-4); }
+  .main { padding: var(--sp-4) var(--sp-5); }
+  .search-box { width: 140px; }
+}
+
 
 .tc-tooltip {
   position: absolute; z-index: 100;
