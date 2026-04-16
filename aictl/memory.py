@@ -12,12 +12,14 @@ aictl only renames directories. Never reads/writes memory content.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
 import os
 import re
 import shutil
+import sys
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path, PurePosixPath
@@ -25,6 +27,38 @@ from pathlib import Path, PurePosixPath
 log = logging.getLogger(__name__)
 
 SWAP_MARKER = ".aictl-swap-in-progress"
+
+
+@contextlib.contextmanager
+def _swap_lock(proj: Path):
+    lock_path = proj / ".aictl-swap.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_path, "w")
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            try:
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                raise RuntimeError("another aictl swap is in progress for this project")
+        else:
+            import fcntl
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                raise RuntimeError("another aictl swap is in progress for this project")
+        yield
+    finally:
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fh, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        fh.close()
 
 
 @dataclass
@@ -188,43 +222,47 @@ def swap_memory(root: Path, old_profile: str | None, new_profile: str | None) ->
     Writes a WAL marker before any renames so an incomplete swap can be
     detected and recovered by :func:`recover_swap`.
     """
+    # Self-heal from any prior crashed swap before starting a new one
+    recovered = recover_swap(root)
+
     proj = _find_project_dir(root)
     if not proj:
         return None
 
     mem = proj / "memory"
-    result = SwapResult(stashed=None, restored=None, recovered=False, created=False)
+    result = SwapResult(stashed=None, restored=None, recovered=recovered, created=False)
 
-    # Write WAL marker before any filesystem mutations
-    marker = proj / SWAP_MARKER
-    plan = {"old_profile": old_profile, "new_profile": new_profile, "timestamp": time.time()}
-    marker.write_text(json.dumps(plan))
+    with _swap_lock(proj):
+        # Write WAL marker before any filesystem mutations
+        marker = proj / SWAP_MARKER
+        plan = {"old_profile": old_profile, "new_profile": new_profile, "timestamp": time.time()}
+        marker.write_text(json.dumps(plan))
 
-    try:
-        # Stash current
-        if old_profile and mem.is_dir():
-            stash = proj / f"memory--{old_profile}"
-            if stash.exists():
-                # shutil.move handles Windows (os.rename fails if target exists)
-                shutil.move(str(stash), str(proj / f"memory--{old_profile}.bak.{int(time.time())}"))
-            shutil.move(str(mem), str(stash))
-            result.stashed = old_profile
+        try:
+            # Stash current
+            if old_profile and mem.is_dir():
+                stash = proj / f"memory--{old_profile}"
+                if stash.exists():
+                    # shutil.move handles Windows (os.rename fails if target exists)
+                    shutil.move(str(stash), str(proj / f"memory--{old_profile}.bak.{int(time.time())}"))
+                shutil.move(str(mem), str(stash))
+                result.stashed = old_profile
 
-        # Restore new
-        if new_profile:
-            restore = proj / f"memory--{new_profile}"
-            if restore.is_dir():
-                if mem.is_dir():
-                    shutil.move(str(mem), str(proj / f"memory--_unstashed.{int(time.time())}"))
-                shutil.move(str(restore), str(mem))
-                result.restored = new_profile
-            elif not mem.is_dir():
-                mem.mkdir(parents=True)
-                result.created = True
-    finally:
-        # Remove marker on completion (success or handled failure)
-        if marker.exists():
-            marker.unlink()
+            # Restore new
+            if new_profile:
+                restore = proj / f"memory--{new_profile}"
+                if restore.is_dir():
+                    if mem.is_dir():
+                        shutil.move(str(mem), str(proj / f"memory--_unstashed.{int(time.time())}"))
+                    shutil.move(str(restore), str(mem))
+                    result.restored = new_profile
+                elif not mem.is_dir():
+                    mem.mkdir(parents=True)
+                    result.created = True
+        finally:
+            # Remove marker on completion (success or handled failure)
+            if marker.exists():
+                marker.unlink()
 
     return result
 
