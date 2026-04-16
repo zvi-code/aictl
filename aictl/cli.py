@@ -2,18 +2,18 @@
 # Copyright (c) 2026 Zvi Schneider. MIT License.
 """aictl — deploy AI context from .aictx files to native tool files."""
 
-from importlib.metadata import PackageNotFoundError, version as _pkg_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 
 import click
 
-from .commands.ctx_pipeline import deploy, scan_cmd, diff, validate_cmd, init
-from .commands.status import status, memory
+from .commands.admin import build_ui, catalog, config, db, reinstall
+from .commands.ctx_pipeline import deploy, diff, init, scan_cmd, validate_cmd
+from .commands.daemon import dashboard, monitor, serve
+from .commands.disable import audit, disable
 from .commands.import_plugin import import_cmd, plugin
-from .commands.integrations import hooks, otel, enable
-from .commands.daemon import serve, monitor, dashboard
-from .commands.admin import config, catalog, db, build_ui, reinstall
-from .commands.disable import disable, audit
-
+from .commands.integrations import enable, hooks, otel
+from .commands.status import memory, status
 
 try:
     __version__ = _pkg_version("aictl")
