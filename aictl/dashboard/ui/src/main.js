@@ -1,6 +1,7 @@
 import { render } from 'preact';
 import { html } from 'htm/preact';
 import './dashboard.css';
+import './components/ui/ui.css';
 import 'uplot/dist/uPlot.min.css';
 import App from './app.js';
 
