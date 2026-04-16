@@ -8,4 +8,7 @@ export default defineConfig({
     outDir: '../dist',
     emptyOutDir: true,
   },
+  optimizeDeps: {
+    include: ['echarts/core', 'echarts/charts', 'echarts/components', 'echarts/renderers'],
+  },
 })
