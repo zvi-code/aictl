@@ -19,11 +19,12 @@ import TabMemory from './components/TabMemory.js';
 import TabLive from './components/TabLive.js';
 import TabEventsStats from './components/TabEventsStats.js';
 import TabBudget from './components/TabBudget.js';
-import TabSessions from './components/TabSessions.js';
 import TabAnalytics from './components/TabAnalytics.js';
 import TabSessionFlow from './components/TabSessionFlow.js';
 import TabTranscript from './components/TabTranscript.js';
 import TabTimelineChart from './components/TabTimelineChart.js';
+import TabExplorer from './components/TabExplorer.js';
+import TabHeatmap from './components/TabHeatmap.js';
 import TabToolConfig from './components/TabToolConfig.js';
 import ContextMap from './components/ContextMap.js';
 import CollectorHealth from './components/CollectorHealth.js';
@@ -308,11 +309,9 @@ export default function App() {
     live:       () => html`<${TabBoundary} tabName="live"><div class="mb-lg"><${TabLive}/></div></${TabBoundary}>`,
     events:     () => html`<${TabBoundary} tabName="events"><div class="mb-lg"><${TabEventsStats} key=${'events-' + activeTab}/></div></${TabBoundary}>`,
     budget:     () => html`<${TabBoundary} tabName="budget"><div class="mb-lg"><${TabBudget} key=${'budget-' + activeTab}/></div></${TabBoundary}>`,
-    sessions:   () => html`<${TabBoundary} tabName="sessions"><div class="mb-lg"><${TabSessions} key=${'sessions-' + activeTab}/></div></${TabBoundary}>`,
     analytics:  () => html`<${TabBoundary} tabName="analytics"><div class="mb-lg"><${TabAnalytics} key=${'analytics-' + activeTab}/></div></${TabBoundary}>`,
-    flow:       () => html`<${TabBoundary} tabName="flow"><div class="mb-lg"><${TabSessionFlow} key=${'flow-' + activeTab}/></div></${TabBoundary}>`,
-    transcript: () => html`<${TabBoundary} tabName="transcript"><div class="mb-lg"><${TabTranscript} key=${'transcript-' + activeTab}/></div></${TabBoundary}>`,
-    timeline:   () => html`<${TabBoundary} tabName="timeline"><div class="mb-lg"><${TabTimelineChart} key=${'timeline-' + activeTab}/></div></${TabBoundary}>`,
+    heatmap:    () => html`<${TabBoundary} tabName="heatmap"><div class="mb-lg"><${TabHeatmap} key=${'heatmap-' + activeTab}/></div></${TabBoundary}>`,
+    explorer:   () => html`<${TabBoundary} tabName="explorer"><div class="mb-lg"><${TabExplorer} key=${'explorer-' + activeTab}/></div></${TabBoundary}>`,
     config:     () => html`<${TabBoundary} tabName="config"><div class="mb-lg"><${TabToolConfig}/></div></${TabBoundary}>`,
   };
 

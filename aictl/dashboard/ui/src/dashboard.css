@@ -836,6 +836,34 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
 .tr-auto-refresh { cursor: pointer; color: var(--fg2); }
 .tr-auto-refresh input { accent-color: var(--accent); }
 
+/* ─── Session Explorer (TabExplorer) ──────────────────────────── */
+.explorer-container {
+  display: flex; flex-direction: column; gap: var(--sp-3);
+}
+.explorer-picker {
+  position: sticky; top: 0; z-index: 10;
+  background: var(--bg);
+  padding-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--border);
+}
+.explorer-session-header {
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--bg1);
+  border-radius: 6px;
+}
+.explorer-subtabs {
+  display: flex; gap: var(--sp-2);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: var(--sp-1);
+  margin-top: var(--sp-1);
+}
+.explorer-subtab-btn {
+  font-size: var(--fs-sm);
+}
+.explorer-content {
+  min-height: 200px;
+}
+
 /* ─── Timeline Chart (TabTimelineChart) ───────────────────────── */
 .tc-container { position: relative; }
 

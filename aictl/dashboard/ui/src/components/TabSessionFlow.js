@@ -12,7 +12,11 @@ import { discoverParticipants } from './session_flow/participants.js';
 
 // Thin orchestrator — fetches sessions/flow data, owns tool + session
 // selection state, and composes sub-components under components/session_flow/.
-export default function TabSessionFlow() {
+//
+// When `externalSessionId` is passed (e.g. from TabExplorer), the internal
+// tool/session pickers are hidden and the component becomes a headless
+// detail renderer driven by the parent.
+export default function TabSessionFlow({ externalSessionId = null } = {}) {
   const {globalRange, enabledTools} = useContext(SnapContext);
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -21,6 +25,8 @@ export default function TabSessionFlow() {
   const [flowData, setFlowData] = useState(null);
   const [flowLoading, setFlowLoading] = useState(false);
   const [hoveredIdx, setHoveredIdx] = useState(null);
+  const embedded = externalSessionId != null;
+  const effectiveSessionId = embedded ? externalSessionId : activeSessionId;
 
   // Fetch sessions
   useEffect(() => {
@@ -58,15 +64,15 @@ export default function TabSessionFlow() {
 
   // Fetch flow data
   useEffect(() => {
-    if (!activeSessionId) { setFlowData(null); return; }
+    if (!effectiveSessionId) { setFlowData(null); return; }
     setFlowLoading(true);
-    const sess = sessions.find(s => s.session_id === activeSessionId);
+    const sess = sessions.find(s => s.session_id === effectiveSessionId);
     const since = sess?.started_at ? sess.started_at - 60 : Date.now() / 1000 - 86400;
     const until = sess?.ended_at ? sess.ended_at + 60 : Date.now() / 1000 + 60;
-    api.getSessionFlow(activeSessionId, since, until)
+    api.getSessionFlow(effectiveSessionId, since, until)
       .then(data => { setFlowData(data); setFlowLoading(false); })
       .catch(() => { setFlowData(null); setFlowLoading(false); });
-  }, [activeSessionId]);
+  }, [effectiveSessionId, sessions.length]);
 
   // Process turns: assign _from/_to and compute running token totals
   const {processedTurns, participants} = useMemo(() => {
@@ -117,10 +123,10 @@ export default function TabSessionFlow() {
   const summary = flowData?.summary || {};
 
   return html`<div class="sf-container">
-    <${ToolTabs} tools=${tools} activeTool=${activeTool} onSelect=${setActiveTool}/>
+    ${!embedded && html`<${ToolTabs} tools=${tools} activeTool=${activeTool} onSelect=${setActiveTool}/>`}
 
-    <${SessionTabs} sessions=${toolSessions} activeId=${activeSessionId}
-      onSelect=${setActiveSessionId} loading=${loading}/>
+    ${!embedded && html`<${SessionTabs} sessions=${toolSessions} activeId=${activeSessionId}
+      onSelect=${setActiveSessionId} loading=${loading}/>`}
 
     <${SummaryBar} summary=${summary}/>
 

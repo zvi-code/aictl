@@ -10,7 +10,11 @@ import { isSessionFlowFormat, normalizeFlowToTranscript } from './transcript/nor
 
 // Thin orchestrator — owns session/transcript fetch state and composes
 // sub-components from components/transcript/.
-export default function TabTranscript() {
+//
+// When `externalSessionId` is passed (e.g. from TabExplorer), the internal
+// tool/session pickers are hidden and the component acts as a headless
+// transcript renderer for the given session.
+export default function TabTranscript({ externalSessionId = null } = {}) {
   const { globalRange, enabledTools } = useContext(SnapContext);
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -21,6 +25,8 @@ export default function TabTranscript() {
   const [expandedTurns, setExpandedTurns] = useState(new Set());
   const [expandAll, setExpandAll] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const embedded = externalSessionId != null;
+  const effectiveSessionId = embedded ? externalSessionId : activeSessionId;
 
   // Fetch session list
   useEffect(() => {
@@ -58,29 +64,29 @@ export default function TabTranscript() {
 
   // Fetch transcript (with session-flow fallback)
   const fetchTranscript = useCallback(() => {
-    if (!activeSessionId) { setTranscript(null); return; }
+    if (!effectiveSessionId) { setTranscript(null); return; }
     setTranscriptLoading(true);
-    api.getTranscript(activeSessionId)
+    api.getTranscript(effectiveSessionId)
       .then(data => {
         if (isSessionFlowFormat(data)) {
-          setTranscript(normalizeFlowToTranscript(data, activeSessionId));
+          setTranscript(normalizeFlowToTranscript(data, effectiveSessionId));
         } else {
           setTranscript(data);
         }
         setTranscriptLoading(false);
       })
       .catch(() => {
-        const sess = sessions.find(s => s.session_id === activeSessionId);
+        const sess = sessions.find(s => s.session_id === effectiveSessionId);
         const since = sess?.started_at ? sess.started_at - 60 : Date.now() / 1000 - 86400;
         const until = sess?.ended_at ? sess.ended_at + 60 : Date.now() / 1000 + 60;
-        api.getSessionFlow(activeSessionId, since, until)
+        api.getSessionFlow(effectiveSessionId, since, until)
           .then(flow => {
-            setTranscript(normalizeFlowToTranscript(flow, activeSessionId));
+            setTranscript(normalizeFlowToTranscript(flow, effectiveSessionId));
             setTranscriptLoading(false);
           })
           .catch(() => { setTranscript(null); setTranscriptLoading(false); });
       });
-  }, [activeSessionId, sessions]);
+  }, [effectiveSessionId, sessions]);
 
   useEffect(fetchTranscript, [fetchTranscript]);
 
@@ -135,8 +141,8 @@ export default function TabTranscript() {
 
     <${ToolTabs} tools=${tools} activeTool=${activeTool} onSelect=${setActiveTool}/>
 
-    <${SessionSelector} sessions=${toolSessions} activeId=${activeSessionId}
-      onSelect=${setActiveSessionId} loading=${loading}/>
+    ${!embedded && html`<${SessionSelector} sessions=${toolSessions} activeId=${activeSessionId}
+      onSelect=${setActiveSessionId} loading=${loading}/>`}
 
     <${SummaryHeader} summary=${summary} transcript=${transcript}/>
 
