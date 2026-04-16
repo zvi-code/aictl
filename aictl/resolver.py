@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .context import ParsedAictx, Capability, McpServer, Hook, LspServer, Setting, Permission, EnvVars, IgnoreRule
+from .utils import WriteGuard
 
 
 @dataclass
@@ -190,9 +191,24 @@ def cleanup_stale(root: Path, old: dict | None, new_paths: set[str]) -> list[str
     if not old or not old.get("files"):
         return []
     removed = []
+    root_resolved = root.resolve()
+    guard = WriteGuard.current()
     for f in old["files"]:
         p = Path(f)
         if str(p) not in new_paths and p.is_file():
+            try:
+                p_resolved = p.resolve()
+            except OSError:
+                continue
+            if not p_resolved.is_relative_to(root_resolved):
+                import click
+                click.secho(
+                    f"   \u26a0 skipping stale cleanup of {p} (outside {root})",
+                    fg="yellow",
+                )
+                continue
+            if guard:
+                guard.confirm(p, "delete")
             try:
                 p.unlink()
                 removed.append(f)
@@ -205,11 +221,17 @@ def cleanup_stale(root: Path, old: dict | None, new_paths: set[str]) -> list[str
 def _clean_parents(path: Path, stop: Path):
     d = path.parent
     s = stop.resolve()
-    while d.resolve() != s and str(d).startswith(str(s)):
+    while True:
+        try:
+            d_resolved = d.resolve()
+        except OSError:
+            break
+        if d_resolved == s or not d_resolved.is_relative_to(s):
+            break
         try:
             if any(d.iterdir()):
                 break
             d.rmdir()
-            d = d.parent
         except OSError:
             break
+        d = d.parent

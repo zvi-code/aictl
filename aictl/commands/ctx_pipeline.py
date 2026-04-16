@@ -60,15 +60,20 @@ def _run_deploy(root: Path, profile: str | None, emitter_names: list[str], dry_r
     old_manifest = None if dry_run else load_manifest(root)
     all_paths: list[str] = []
 
-    for ename in emitter_names:
-        emitter = registry.get(ename)
-        results = emitter.emit(root, resolved, dry_run=dry_run)
-        for r in results:
-            all_paths.append(r["path"])
-            pfx = click.style("   (dry)", fg="yellow") if dry_run else click.style("   \u2713", fg="green")
-            tok = click.style(f'{r["tokens"]} tok', fg="cyan")
-            fp = click.style(r["path"], fg="bright_black")
-            click.echo(f"{pfx} {ename} \u2192 {fp} ({tok})")
+    try:
+        for ename in emitter_names:
+            emitter = registry.get(ename)
+            results = emitter.emit(root, resolved, dry_run=dry_run)
+            for r in results:
+                all_paths.append(r["path"])
+                pfx = click.style("   (dry)", fg="yellow") if dry_run else click.style("   \u2713", fg="green")
+                tok = click.style(f'{r["tokens"]} tok', fg="cyan")
+                fp = click.style(r["path"], fg="bright_black")
+                click.echo(f"{pfx} {ename} \u2192 {fp} ({tok})")
+    except Exception as e:
+        click.secho(f"\n   \u2717 emitter '{ename}' failed: {e}", fg="red")
+        click.secho("   skipping manifest save + cleanup (deploy incomplete)", fg="yellow")
+        raise
 
     # Report capabilities
     kinds = Counter(c.kind for c in resolved.capabilities)
