@@ -10,7 +10,6 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-
 # --- Markers ---
 
 def deployed_start(source: str, profile: str | None) -> str:
@@ -37,7 +36,19 @@ def estimate_tokens(text: str) -> int:
 
 # --- File I/O ---
 
-def write_safe(path: Path, content: str) -> None:
+def _infer_command_from_click_ctx() -> str:
+    """Best-effort: derive a human-readable command name from the active Click context."""
+    try:
+        import click as _click
+        _ctx = _click.get_current_context(silent=True)
+        if _ctx is None:
+            return "<none>"
+        return _ctx.command_path or _ctx.info_name or "<none>"
+    except Exception:  # noqa: BLE001
+        return "<none>"
+
+
+def write_safe(path: Path, content: str, *, command: str | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         import click as _click
@@ -51,8 +62,10 @@ def write_safe(path: Path, content: str) -> None:
     except Exception:  # noqa: BLE001, S110 — guard infra errors must not block writes; Abort is re-raised above
         pass
     tmp = path.with_suffix(path.suffix + ".aictl-tmp")
+    existing_bytes: bytes | None = None
+    pre_existed = path.exists()
     try:
-        if path.exists():
+        if pre_existed:
             try:
                 existing_bytes = path.read_bytes()
             except OSError:
@@ -73,6 +86,19 @@ def write_safe(path: Path, content: str) -> None:
                 tmp.unlink()
         except OSError:
             pass
+    # Ledger logging — audit trail only, never raises into callers.
+    try:
+        from aictl import mutation_ledger
+        new_bytes = content.encode("utf-8")
+        mutation_ledger.record(
+            command=command or _infer_command_from_click_ctx(),
+            path=path,
+            op="modify" if pre_existed else "create",
+            previous_content=existing_bytes,
+            new_content=new_bytes,
+        )
+    except Exception:  # noqa: BLE001, S110 — ledger must never break writes
+        pass
 
 
 def read_if_exists(path: Path) -> str | None:
@@ -297,7 +323,7 @@ class WriteGuard:
     # ── Registration ──────────────────────────────────────────────
 
     @classmethod
-    def install(cls, command: str) -> "WriteGuard":
+    def install(cls, command: str) -> WriteGuard:
         """Create a guard and register it in the current Click context.
 
         Call once at the top of a Click command handler:
@@ -311,7 +337,7 @@ class WriteGuard:
         return guard
 
     @classmethod
-    def current(cls) -> "WriteGuard | None":
+    def current(cls) -> WriteGuard | None:
         """Return the guard from the current Click context, or None."""
         import click
         ctx = click.get_current_context(silent=True)
@@ -321,7 +347,7 @@ class WriteGuard:
 
     # ── Gate ─────────────────────────────────────────────────────
 
-    def confirm(self, path: "Path | str", action: str = "modify") -> None:
+    def confirm(self, path: Path | str, action: str = "modify") -> None:
         """Prompt the user before touching a pre-existing file.
 
         - New files (do not exist yet): silently approved.
@@ -338,6 +364,7 @@ class WriteGuard:
             return
 
         import sys
+
         import click
         # Only prompt when running interactively inside a Click command.
         # In library mode (no Click context), return silently.
