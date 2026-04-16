@@ -1067,3 +1067,120 @@ class TestCodexPathPlatformAbstraction:
         result = runner.invoke(enable, ["--scope", "user"], catch_exceptions=False)
         assert result.exit_code == 0
         assert (custom_codex / "config.toml").exists()
+
+
+# ---------------------------------------------------------------------------
+# Atomic write_safe + backup behavior
+# ---------------------------------------------------------------------------
+
+class TestWriteSafeAtomic:
+    def test_write_safe_atomic_on_replace_failure(self, tmp_path, monkeypatch):
+        """If os.replace fails, the original file must remain untouched."""
+        from aictl.utils import write_safe
+        import aictl.utils as utils_mod
+
+        existing = tmp_path / "file.txt"
+        existing.write_text("original")
+
+        def _boom(src, dst):
+            raise OSError("simulated replace failure")
+
+        monkeypatch.setattr(utils_mod.os, "replace", _boom)
+
+        with pytest.raises(OSError):
+            write_safe(existing, "new content")
+        assert existing.read_text() == "original"
+        tmp = existing.with_suffix(existing.suffix + ".aictl-tmp")
+        assert not tmp.exists()
+
+    def test_write_safe_creates_bak_for_user_file(self, tmp_path):
+        """Pre-existing file without aictl markers must produce a .aictl.bak."""
+        from aictl.utils import write_safe
+
+        existing = tmp_path / "settings.json"
+        existing.write_text('{"user": "data"}')
+
+        write_safe(existing, '{"new": "content"}')
+        assert existing.read_text() == '{"new": "content"}'
+        bak = existing.with_suffix(existing.suffix + ".aictl.bak")
+        assert bak.exists()
+        assert bak.read_text() == '{"user": "data"}'
+
+    def test_write_safe_no_bak_for_deployed_marker(self, tmp_path):
+        """Pre-existing file with AI-CONTEXT:DEPLOYED marker must NOT be backed up."""
+        from aictl.utils import write_safe
+
+        existing = tmp_path / "CLAUDE.md"
+        existing.write_text("<!-- AI-CONTEXT:DEPLOYED - source: x -->\nhello\n")
+
+        write_safe(existing, "new")
+        bak = existing.with_suffix(existing.suffix + ".aictl.bak")
+        assert not bak.exists()
+
+    def test_write_safe_no_bak_for_overlay_marker(self, tmp_path):
+        """Pre-existing file with AI-CONTEXT:OVERLAY marker must NOT be backed up."""
+        from aictl.utils import write_safe
+
+        existing = tmp_path / "GEMINI.md"
+        existing.write_text("<!-- AI-CONTEXT:OVERLAY - agent-managed section -->\n")
+
+        write_safe(existing, "new")
+        bak = existing.with_suffix(existing.suffix + ".aictl.bak")
+        assert not bak.exists()
+
+    def test_write_safe_bak_is_overwritten(self, tmp_path):
+        """Only one .bak generation is kept - a new bak overwrites the prior one."""
+        from aictl.utils import write_safe
+
+        existing = tmp_path / "file.txt"
+        existing.write_text("v1")
+        write_safe(existing, "v2")
+        bak = existing.with_suffix(existing.suffix + ".aictl.bak")
+        assert bak.read_text() == "v1"
+
+        write_safe(existing, "v3")
+        assert bak.read_text() == "v2"
+
+
+# ---------------------------------------------------------------------------
+# Non-TTY gate via AICTL_ASSUME_YES
+# ---------------------------------------------------------------------------
+
+class TestWriteGuardNonTTYGate:
+    def test_non_tty_aborts_without_env(self, tmp_path, monkeypatch):
+        existing = tmp_path / "file.txt"
+        existing.write_text("data")
+
+        monkeypatch.delenv("AICTL_ASSUME_YES", raising=False)
+
+        runner = CliRunner()
+
+        @click.command()
+        def _cmd():
+            guard = WriteGuard.install("deploy")
+            guard.confirm(existing)
+            click.echo("should not reach")
+
+        result = runner.invoke(_cmd)
+        assert result.exit_code != 0
+        combined = (result.output or "") + (str(result.exception) if result.exception else "")
+        # Abort message is printed to stderr; CliRunner merges by default.
+        assert "AICTL_ASSUME_YES=1" in result.output
+
+    def test_non_tty_approves_with_env(self, tmp_path, monkeypatch):
+        existing = tmp_path / "file.txt"
+        existing.write_text("data")
+
+        monkeypatch.setenv("AICTL_ASSUME_YES", "1")
+
+        runner = CliRunner()
+
+        @click.command()
+        def _cmd():
+            guard = WriteGuard.install("deploy")
+            guard.confirm(existing)
+            click.echo("ok")
+
+        result = runner.invoke(_cmd)
+        assert result.exit_code == 0
+        assert "ok" in result.output

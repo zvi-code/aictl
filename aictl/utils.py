@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,7 +50,29 @@ def write_safe(path: Path, content: str) -> None:
         raise
     except Exception:  # noqa: BLE001, S110 — guard infra errors must not block writes; Abort is re-raised above
         pass
-    path.write_text(content, encoding="utf-8")
+    tmp = path.with_suffix(path.suffix + ".aictl-tmp")
+    try:
+        if path.exists():
+            try:
+                existing_bytes = path.read_bytes()
+            except OSError:
+                existing_bytes = None
+            if existing_bytes is not None:
+                try:
+                    existing_text = existing_bytes.decode("utf-8", errors="ignore")
+                except Exception:  # noqa: BLE001
+                    existing_text = ""
+                if "AI-CONTEXT:DEPLOYED" not in existing_text and "AI-CONTEXT:OVERLAY" not in existing_text:
+                    bak = path.with_suffix(path.suffix + ".aictl.bak")
+                    bak.write_bytes(existing_bytes)
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
 
 
 def read_if_exists(path: Path) -> str | None:
@@ -250,11 +273,18 @@ class WriteGuard:
         import sys
         import click
         # Only prompt when running interactively inside a Click command.
-        # In tests (CliRunner) or piped/scripted contexts, auto-approve.
+        # In library mode (no Click context), return silently.
         if click.get_current_context(silent=True) is None:
             return
         if not sys.stdin.isatty():
-            return
+            if os.environ.get("AICTL_ASSUME_YES") == "1":
+                return
+            click.echo(
+                f"aictl refuses to {action} {path} in non-interactive context. "
+                f"Set AICTL_ASSUME_YES=1 to proceed.",
+                err=True,
+            )
+            raise click.Abort()
 
         click.echo()
         click.secho(

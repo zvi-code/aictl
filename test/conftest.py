@@ -18,6 +18,13 @@ from urllib.request import Request, urlopen
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture(autouse=True)
+def _aictl_assume_yes(monkeypatch):
+    """Tests run in non-TTY context; explicitly approve writes so WriteGuard
+    doesn't abort. Individual tests can override via monkeypatch.delenv."""
+    monkeypatch.setenv("AICTL_ASSUME_YES", "1")
 _PYTHON = sys.executable
 
 
