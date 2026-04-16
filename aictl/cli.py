@@ -2,6 +2,8 @@
 # Copyright (c) 2026 Zvi Schneider. MIT License.
 """aictl — deploy AI context from .aictx files to native tool files."""
 
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
 import click
 
 from .commands.ctx_pipeline import deploy, scan_cmd, diff, validate_cmd, init
@@ -10,10 +12,17 @@ from .commands.import_plugin import import_cmd, plugin
 from .commands.integrations import hooks, otel, enable
 from .commands.daemon import serve, monitor, dashboard
 from .commands.admin import config, catalog, db, build_ui, reinstall
+from .commands.disable import disable, audit
+
+
+try:
+    __version__ = _pkg_version("aictl")
+except PackageNotFoundError:  # editable dev install without metadata
+    __version__ = "0.0.0-dev"
 
 
 @click.group()
-@click.version_option("0.4.0")
+@click.version_option(__version__)
 def main():
     """Deploy AI context from .aictx files to native tool files."""
 
@@ -58,6 +67,8 @@ main.add_command(config)
 main.add_command(catalog)
 main.add_command(db)
 main.add_command(enable)
+main.add_command(disable)
+main.add_command(audit)
 main.add_command(build_ui)
 main.add_command(reinstall)
 
