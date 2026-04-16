@@ -10,6 +10,7 @@ from aictl.commands.integrations import (
     hooks, install, uninstall,
     HOOK_EVENTS, _build_hook_config, _is_aictl_hook, _settings_path,
 )
+from aictl._hook_owner import _AICTL_OWNER_MARKER
 
 
 @pytest.fixture
@@ -103,6 +104,44 @@ class TestIsAictlHook:
         # Use an actual generated hook to test detection
         config = _build_hook_config(8484, ["SessionStart"])
         hook = config["SessionStart"][0]
+        assert _is_aictl_hook(hook)
+
+    def test_generated_hook_carries_owner_marker(self):
+        config = _build_hook_config(8484, ["SessionStart"])
+        hook = config["SessionStart"][0]
+        assert hook.get("_aictl_owner") == _AICTL_OWNER_MARKER
+
+    def test_detects_marker_even_with_nonmatching_command(self):
+        # Marker claims ownership regardless of command shape.
+        hook = {
+            "_aictl_owner": _AICTL_OWNER_MARKER,
+            "matcher": "",
+            "hooks": [{"type": "command", "command": "something-totally-unrelated.sh"}],
+        }
+        assert _is_aictl_hook(hook)
+
+    def test_foreign_marker_is_not_ours_even_with_aictl_substring(self):
+        # A non-aictl marker is authoritative: do NOT claim this entry,
+        # even if the command contains an aictl-looking substring.
+        hook = {
+            "_aictl_owner": "someone-else",
+            "matcher": "",
+            "hooks": [{"type": "command", "command": "curl http://x/api/hooks"}],
+        }
+        assert not _is_aictl_hook(hook)
+
+    def test_legacy_entry_without_marker_still_detected(self):
+        # Upgrade path: pre-marker installs must still be cleanable.
+        hook = {"matcher": "", "hooks": [{"type": "command",
+                 "command": "python -m aictl.hook_handler --event SessionStart --port 8484"}]}
+        assert "_aictl_owner" not in hook
+        assert _is_aictl_hook(hook)
+
+    def test_user_hook_with_api_hooks_substring_matches_legacy(self):
+        # Documented false-positive: a user curl-to-/api/hooks without a marker
+        # is still claimed by the legacy fallback. This is expected behavior
+        # during the migration window — the marker is the cure going forward.
+        hook = {"type": "command", "command": "curl http://myservice/api/hooks"}
         assert _is_aictl_hook(hook)
 
 

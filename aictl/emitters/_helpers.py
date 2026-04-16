@@ -18,6 +18,7 @@ from ..utils import (
     wrap_deployed, compose_with_overlay, extract_overlay,
     encode_scope, merge_json_block, merge_ignore_file, emit_file,
 )
+from .._hook_owner import _is_aictl_hook, _tag_hooks
 
 
 # ── Scope helpers ───────────────────────────────────────────────────
@@ -123,8 +124,36 @@ def emit_settings(
     if not has_data:
         return
     existing = _load_settings(fp) if not dry_run else {}
-    if resolved.hooks:
-        existing["hooks"] = resolved.hooks
+    # Per-event hook merge: always strip prior aictl-managed entries from
+    # *every* event (so a hook removed from .context.toml is cleaned up on
+    # redeploy), then append our freshly-tagged rules per event. User hooks
+    # (without the marker) are preserved.
+    existing_hooks = existing.get("hooks", {})
+    if not isinstance(existing_hooks, dict):
+        existing_hooks = {}
+    tagged = _tag_hooks({e: list(rules) for e, rules in (resolved.hooks or {}).items()})
+    touched = False
+    for event, current in list(existing_hooks.items()):
+        if not isinstance(current, list):
+            continue
+        cleaned = [h for h in current if not _is_aictl_hook(h)]
+        if cleaned != current:
+            touched = True
+        if cleaned:
+            existing_hooks[event] = cleaned
+        else:
+            del existing_hooks[event]
+    for event, new_rules in tagged.items():
+        current = existing_hooks.get(event, [])
+        if not isinstance(current, list):
+            current = []
+        current.extend(new_rules)
+        existing_hooks[event] = current
+        touched = True
+    if existing_hooks:
+        existing["hooks"] = existing_hooks
+    elif touched and "hooks" in existing:
+        del existing["hooks"]
     if resolved.permissions:
         existing.setdefault("permissions", {})["allow"] = resolved.permissions
     if resolved.env:
