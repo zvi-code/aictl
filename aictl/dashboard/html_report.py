@@ -20,6 +20,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from ..data.token_usage import TokenUsage
 from .models import DashboardSnapshot, STATUS_COLOURS as _STATUS_COLOURS
 
 
@@ -693,10 +694,11 @@ def _render_telemetry_section(snap: DashboardSnapshot) -> str:
     rows = []
     for tel in snap.tool_telemetry:
         tool = tel.get("tool", "?")
-        inp = tel.get("input_tokens", 0)
-        out = tel.get("output_tokens", 0)
-        cache_r = tel.get("cache_read_tokens", 0)
-        cache_c = tel.get("cache_creation_tokens", 0)
+        usage = TokenUsage.from_dict(tel)
+        inp = usage.input
+        out = usage.output
+        cache_r = usage.cache_read
+        cache_c = usage.cache_write
         cost = tel.get("cost_usd", 0)
         sessions = tel.get("total_sessions", 0)
         messages = tel.get("total_messages", 0)

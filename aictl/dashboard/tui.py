@@ -683,6 +683,7 @@ class DashboardApp(App):
         budget_t = self._cleared_table("budget-table")
         for tel in (snap.tool_telemetry or []):
             tool = tel.get("tool", "")
+            # TODO(#token-usage): migrate to TokenUsage.from_dict
             in_tok = int(tel.get("input_tokens", 0))
             out_tok = int(tel.get("output_tokens", 0))
             cache_read = int(tel.get("cache_read_tokens", 0))

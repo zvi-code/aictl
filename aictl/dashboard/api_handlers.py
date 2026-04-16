@@ -13,6 +13,7 @@ import dataclasses
 from datetime import datetime, timezone
 import time
 
+from ..data.token_usage import TokenUsage
 from ..tools import compute_token_budget
 from .otel_receiver import _num
 from .session_flow import build_session_flow
@@ -206,13 +207,14 @@ class _APIHandlersMixin:
         calls = []
         for ev in api_events:
             d = ev.detail if isinstance(ev.detail, dict) else {}
+            usage = TokenUsage.from_dict(d)
             calls.append({
                 "ts": ev.ts,
                 "model": d.get("model", ""),
                 "duration_ms": _num(d.get("duration_ms", d.get("duration", 0))),
-                "input_tokens": _num(d.get("input_tokens", 0)),
-                "output_tokens": _num(d.get("output_tokens", 0)),
-                "cache_read_tokens": _num(d.get("cache_read_tokens", 0)),
+                "input_tokens": usage.input,
+                "output_tokens": usage.output,
+                "cache_read_tokens": usage.cache_read,
                 "prompt_id": d.get("prompt.id", d.get("prompt_id", "")),
                 "status": "ok",
             })

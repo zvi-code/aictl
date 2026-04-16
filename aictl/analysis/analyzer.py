@@ -70,6 +70,7 @@ def _extract_prompt(detail: dict) -> str:
 
 def _extract_api_tokens(detail: dict) -> tuple[int, int, int, int]:
     """Extract (input, output, cache_read, cache_creation) tokens."""
+    # TODO(#token-usage): migrate to TokenUsage.from_dict
     in_tok = int(_num(detail.get("input_tokens",
                  detail.get("gen_ai.usage.input_tokens",
                  detail.get("gen_ai.usage.prompt_tokens", 0)))))
