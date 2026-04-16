@@ -116,19 +116,86 @@ _IGNORE_DEPLOYED_RE = re.compile(
 )
 
 
-def merge_json_block(path: Path, wrapper_key: str | None, managed_entries: dict) -> str:
+class CorruptJSONError(Exception):
+    """Raised when an existing JSON file can't be parsed and the caller has not opted into --force overwrite."""
+
+
+def read_json_or_fail(path: Path, *, force: bool = False) -> dict:
+    """Read and parse a JSON file, with strict safety on corruption.
+
+    Policy:
+    - Missing file (not ``is_file``) → return ``{}``. Not an error.
+    - Unreadable (OSError on read) → return ``{}``. Not an error.
+    - Empty or whitespace-only contents → return ``{}``.
+    - Parse error on non-empty contents:
+        * ``force=False`` (default) → raise ``CorruptJSONError`` so the caller
+          can surface a clear, actionable failure to the user *without*
+          clobbering their file.
+        * ``force=True`` → save a sibling ``.bak.<timestamp>`` of the
+          corrupted original, then return ``{}`` so the caller may proceed.
+
+    The return value is always a ``dict``; if the file parses to a non-dict
+    JSON value (list, string, number, ...) the same corruption policy applies.
+    """
+    if not path.is_file():
+        return {}
+    try:
+        raw = path.read_text("utf-8")
+    except OSError:
+        return {}
+    if not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        if not force:
+            raise CorruptJSONError(
+                f"{path}: refusing to overwrite corrupted JSON "
+                f"({exc.msg} at line {exc.lineno} col {exc.colno}). "
+                f"Re-run with force=True (or --force) to quarantine and proceed."
+            ) from exc
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        bak = path.with_suffix(path.suffix + f".bak.{ts}")
+        try:
+            bak.write_text(raw, encoding="utf-8")
+        except OSError:
+            pass
+        return {}
+    if not isinstance(data, dict):
+        if not force:
+            raise CorruptJSONError(
+                f"{path}: refusing to overwrite — top-level JSON is "
+                f"{type(data).__name__}, expected object. "
+                f"Re-run with force=True (or --force) to quarantine and proceed."
+            )
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        bak = path.with_suffix(path.suffix + f".bak.{ts}")
+        try:
+            bak.write_text(raw, encoding="utf-8")
+        except OSError:
+            pass
+        return {}
+    return data
+
+
+def merge_json_block(
+    path: Path,
+    wrapper_key: str | None,
+    managed_entries: dict,
+    *,
+    force: bool = False,
+) -> str:
     """Read existing JSON, merge *managed_entries*, return serialized.
 
     If *wrapper_key* is given (e.g. ``"mcpServers"``), entries are merged into
     ``existing[wrapper_key]``.  If *wrapper_key* is ``None``, entries are merged
     at the root dict level.  Existing keys not in *managed_entries* are preserved.
+
+    Raises :class:`CorruptJSONError` when the existing file is malformed and
+    ``force`` is False.  With ``force=True`` the corrupted original is saved
+    alongside as ``<path>.bak.<timestamp>`` before being replaced.
     """
-    existing: dict = {}
-    if path.is_file():
-        try:
-            existing = json.loads(path.read_text("utf-8"))
-        except (json.JSONDecodeError, OSError):
-            pass
+    existing = read_json_or_fail(path, force=force)
     if wrapper_key is not None:
         block = existing.get(wrapper_key, {})
         block.update(managed_entries)
