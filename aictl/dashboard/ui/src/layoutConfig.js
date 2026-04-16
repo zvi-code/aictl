@@ -50,6 +50,7 @@ export const LAYOUT = {
     { id: 'budget',   label: 'Token Budget',     icon: '\uD83D\uDCB0', iconName: 'wallet',           key: '6' },
     { id: 'sessions', label: 'Sessions',         icon: '\uD83D\uDD04', iconName: 'refresh-cw',       key: '7' },
     { id: 'analytics', label: 'Analytics',        icon: '\uD83D\uDD2C', iconName: 'bar-chart-3',      key: '8' },
+    { id: 'heatmap',  label: 'Tool Heatmap',      icon: '\uD83D\uDD33', iconName: 'grid-3x3',         key: 'h' },
     { id: 'flow',     label: 'Session Flow',      icon: '\uD83D\uDD00', iconName: 'git-branch',       key: '9' },
     { id: 'transcript', label: 'Transcript',      icon: '\uD83D\uDCDC', iconName: 'file-text',        key: 't' },
     { id: 'timeline', label: 'Timeline',          icon: '\uD83D\uDCC9', iconName: 'line-chart',       key: 'y' },
