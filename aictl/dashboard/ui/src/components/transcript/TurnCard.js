@@ -1,0 +1,60 @@
+import { html } from 'htm/preact';
+import { fmtK } from '../../utils.js';
+import { fmtDur, fmtHHMMSS, shortModel, truncate } from './helpers.js';
+import ActionRow from './ActionRow.js';
+
+export default function TurnCard({ turn, index, expanded, onToggle }) {
+  const hasPrompt = turn.prompt && turn.prompt.length > 0;
+  const actions = turn.actions || [];
+  const toolUses = actions.filter(a => a.kind === 'tool_use');
+  const apiCalls = actions.filter(a => a.kind === 'api_call');
+  const errors = actions.filter(a => a.kind === 'error');
+  const tokens = turn.tokens || {};
+  const totalTok = (tokens.input || 0) + (tokens.output || 0);
+  const wallMs = turn.wall_ms || turn.duration_ms || 0;
+
+  return html`<div class="tr-turn ${expanded ? 'tr-turn-expanded' : ''}">
+    <div class="tr-turn-header" onClick=${onToggle}>
+      <div class="tr-turn-num">${index + 1}</div>
+      <div class="tr-turn-meta">
+        <span class="tr-turn-time">${fmtHHMMSS(turn.ts)}</span>
+        ${turn.model ? html`<span class="tr-turn-model">${shortModel(turn.model)}</span>` : null}
+        ${wallMs > 0 ? html`<span class="tr-turn-dur">${fmtDur(wallMs)}</span>` : null}
+      </div>
+      <div class="tr-turn-stats">
+        ${totalTok > 0 ? html`<span class="tr-stat" title="Tokens">\uD83E\uDE99 ${fmtK(totalTok)}</span>` : null}
+        ${toolUses.length > 0 ? html`<span class="tr-stat" title="Tool uses">\uD83D\uDD27 ${toolUses.length}</span>` : null}
+        ${apiCalls.length > 0 ? html`<span class="tr-stat" title="API calls">\uD83C\uDF10 ${apiCalls.length}</span>` : null}
+        ${errors.length > 0 ? html`<span class="tr-stat tr-stat-err" title="Errors">\u274C ${errors.length}</span>` : null}
+      </div>
+      <div class="tr-turn-chevron">${expanded ? '\u25BE' : '\u25B8'}</div>
+    </div>
+
+    ${hasPrompt ? html`<div class="tr-prompt ${expanded ? 'tr-prompt-full' : ''}">
+      <div class="tr-prompt-icon">\uD83D\uDC64</div>
+      <div class="tr-prompt-text">${expanded ? turn.prompt : truncate(turn.prompt_preview || turn.prompt, 120)}</div>
+    </div>` : html`<div class="tr-prompt tr-prompt-empty">
+      <div class="tr-prompt-icon">\uD83D\uDC64</div>
+      <div class="tr-prompt-text text-muted">(no prompt captured)</div>
+    </div>`}
+
+    ${expanded && actions.length > 0 ? html`<div class="tr-actions">
+      ${actions.map((a, i) => html`<${ActionRow} key=${i} action=${a} turnTs=${turn.ts}/>`)}
+    </div>` : null}
+
+    ${expanded && totalTok > 0 ? html`<div class="tr-token-bar">
+      <div class="tr-token-seg tr-tok-in"
+        style="flex:${tokens.input || 0}" title="Input: ${fmtK(tokens.input || 0)}">
+        ${tokens.input > 0 ? 'in ' + fmtK(tokens.input) : ''}
+      </div>
+      ${tokens.cache_read > 0 ? html`<div class="tr-token-seg tr-tok-cache"
+        style="flex:${tokens.cache_read}" title="Cache read: ${fmtK(tokens.cache_read)}">
+        cache ${fmtK(tokens.cache_read)}
+      </div>` : null}
+      <div class="tr-token-seg tr-tok-out"
+        style="flex:${tokens.output || 0}" title="Output: ${fmtK(tokens.output || 0)}">
+        ${tokens.output > 0 ? 'out ' + fmtK(tokens.output) : ''}
+      </div>
+    </div>` : null}
+  </div>`;
+}
