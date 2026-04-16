@@ -484,3 +484,92 @@ class TestEventsAPI:
             sid = all_events[0]["detail"]["session_id"]
             filtered = _get_json(f"{server}/api/events?session_id={sid}&since={since}")
             assert all(e["detail"].get("session_id") == sid for e in filtered)
+
+
+# ── API Calls endpoint: OTel attribute extraction ─────────────────
+
+
+@pytest.fixture()
+def api_calls_server(tmp_path):
+    """Server with DB pre-populated with OTel api_request/api_error events
+    whose detail dicts use the real OTel attribute keys."""
+    from pathlib import Path
+
+    from aictl.dashboard.web_server import (
+        _DashboardHandler,
+        _DashboardHTTPServer,
+    )
+
+    db = HistoryDB(db_path=str(tmp_path / "apicalls.db"), flush_interval=0)
+    now = time.time()
+
+    # Successful request with real OTel keys: finish_reasons list + http.status_code
+    db.append_event(
+        EventRow(
+            ts=now - 10,
+            tool="claude-code",
+            kind="otel:claude_code.api_request",
+            detail={
+                "model": "claude-opus-4-6",
+                "duration_ms": 250,
+                "gen_ai.response.finish_reasons": ["length"],
+                "http.status_code": 200,
+            },
+        )
+    )
+    # Error with real OTel keys: error.type + http.response.status_code (newer)
+    db.append_event(
+        EventRow(
+            ts=now - 5,
+            tool="claude-code",
+            kind="otel:claude_code.api_error",
+            detail={
+                "model": "claude-opus-4-6",
+                "error": "429 Too Many Requests",
+                "error.type": "rate_limit",
+                "http.response.status_code": "429",  # string — must coerce to int
+            },
+        )
+    )
+    db.flush()
+
+    store = SnapshotStore(db=db)
+    store.update(_make_snapshot())
+
+    allowed = AllowedPaths()
+    srv = _DashboardHTTPServer(
+        ("127.0.0.1", 0),
+        _DashboardHandler,
+        store,
+        allowed,
+        Path("/tmp/test-project"),
+    )
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    yield f"http://127.0.0.1:{port}"
+    srv.shutdown()
+    db.close()
+
+
+class TestApiCallsOtelEnrichment:
+    def test_extracts_finish_reason_from_otel_list(self, api_calls_server):
+        data = _get_json(f"{api_calls_server}/api/api-calls?since=0")
+        ok = [c for c in data["calls"] if c["status"] == "ok"]
+        assert len(ok) == 1
+        assert ok[0]["finish_reason"] == "length"
+
+    def test_extracts_http_status_from_otel_key_as_int(self, api_calls_server):
+        data = _get_json(f"{api_calls_server}/api/api-calls?since=0")
+        ok = [c for c in data["calls"] if c["status"] == "ok"]
+        assert ok[0]["http_status"] == 200
+        assert isinstance(ok[0]["http_status"], int)
+
+    def test_extracts_error_type_and_http_status_on_error(self, api_calls_server):
+        data = _get_json(f"{api_calls_server}/api/api-calls?since=0")
+        err = [c for c in data["calls"] if c["status"] == "error"]
+        assert len(err) == 1
+        assert err[0]["error_type"] == "rate_limit"
+        # http.response.status_code was a string "429" — must be coerced to int
+        assert err[0]["http_status"] == 429
+        assert isinstance(err[0]["http_status"], int)
