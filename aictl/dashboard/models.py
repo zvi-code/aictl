@@ -122,7 +122,9 @@ class DashboardSnapshot:
             # interval=0 returns since last call; RefreshLoop runs every ~5s
             # so the since-last-call measurement window is fine.
             self.cpu_per_core = psutil.cpu_percent(interval=0, percpu=True)
-        except Exception:
+        except (ImportError, OSError, AttributeError):
+            # ImportError: psutil not installed (optional dep).
+            # OSError/AttributeError: unusual platform where /proc probes fail.
             self.cpu_per_core = []
         tool_list = [t for t in self.tools if t.tool != "aictl"]
         self.total_files = sum(len(t.files) for t in tool_list)

@@ -53,14 +53,12 @@ EXCLUDED_PATTERNS = [
     "aictl/orchestrator.py",
     "aictl/sink.py",
     "aictl/storage.py",
-    "aictl/store.py",
     "aictl/dashboard/tui.py",
     "aictl/dashboard/web_server.py",
     "aictl/dashboard/html_report.py",
-    "aictl/dashboard/models.py",
     "aictl/monitoring/",
     "aictl/client.py",
-    "aictl/discovery.py",
+    "aictl/memory.py",
 ]
 
 
@@ -254,3 +252,77 @@ def test_enable_exits_1_on_partial_failure(tmp_path, monkeypatch):
     runner = CliRunner()
     result = runner.invoke(enable, ["--scope", "user"])
     assert result.exit_code != 0, "enable must return non-zero exit code when any integration fails"
+
+
+# ---------------------------------------------------------------------------
+# Pattern D: ratchet — BLE001/S110 ignore list must not grow
+# ---------------------------------------------------------------------------
+
+# Snapshot of files granted BLE001 or S110 exemption in pyproject.toml.
+# Every entry is documented with a one-line justification in pyproject.toml.
+# Adding to this set requires a deliberate edit in both places so reviewers
+# see the carve-out in code review.
+EXPECTED_BLE_S110_IGNORED_FILES = frozenset(
+    {
+        "aictl/orchestrator.py",
+        "aictl/sink.py",
+        "aictl/storage.py",
+        "aictl/dashboard/tui.py",
+        "aictl/dashboard/web_server.py",
+        "aictl/dashboard/html_report.py",
+        "aictl/dashboard/api_handlers.py",
+        "aictl/monitoring/**",
+        "aictl/client.py",
+        "aictl/memory.py",
+        "aictl/platforms.py",
+        "aictl/tools.py",
+    }
+)
+
+
+def _parse_ruff_per_file_ignores() -> dict[str, list[str]]:
+    """Return {glob: [rule,...]} from pyproject.toml's ruff per-file-ignores."""
+    try:
+        import tomllib  # Python 3.11+
+    except ImportError:
+        import tomli as tomllib  # type: ignore[no-redef]
+
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    return data.get("tool", {}).get("ruff", {}).get("lint", {}).get("per-file-ignores", {})
+
+
+def test_ble001_s110_ignore_list_does_not_grow():
+    """Ratchet: the set of files allowed broad exception catches cannot expand silently.
+
+    If you're adding a file here, first try narrowing the catches to specific
+    types (OSError, json.JSONDecodeError, sqlite3.Error, etc.).  If the file
+    genuinely belongs on the daemon layer, update
+    EXPECTED_BLE_S110_IGNORED_FILES *and* add a one-line comment in
+    pyproject.toml explaining WHY.
+    """
+    ignores = _parse_ruff_per_file_ignores()
+    actual = {
+        glob
+        for glob, rules in ignores.items()
+        if ("BLE001" in rules or "S110" in rules) and not glob.startswith("test/")
+    }
+    extras = actual - EXPECTED_BLE_S110_IGNORED_FILES
+    assert not extras, (
+        f"New files granted BLE001/S110 exemption without updating the ratchet:\n"
+        f"  {sorted(extras)}\n"
+        f"Narrow the catches first; only update EXPECTED_BLE_S110_IGNORED_FILES if truly daemon-layer."
+    )
+    # Also catch the inverse: entries removed from pyproject but still in the ratchet.
+    # Missing entries are fine (means someone did narrowing work) — only warn in output.
+    missing = EXPECTED_BLE_S110_IGNORED_FILES - actual
+    if missing:
+        # Not a hard failure — narrowing is always welcome — but surface it so
+        # the ratchet stays truthful.  Update EXPECTED_BLE_S110_IGNORED_FILES
+        # when you remove entries from pyproject.toml.
+        import warnings
+
+        warnings.warn(
+            f"Ratchet out of date: these files no longer need BLE001/S110 exemption — "
+            f"remove from EXPECTED_BLE_S110_IGNORED_FILES: {sorted(missing)}",
+            stacklevel=1,
+        )

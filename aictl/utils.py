@@ -5,10 +5,36 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+@contextmanager
+def swallow_errors(
+    reason: str,
+    *,
+    logger: logging.Logger | None = None,
+) -> Iterator[None]:
+    """Self-documenting broad-exception swallow.
+
+    Use at call sites where a failure genuinely must not propagate (infrastructure
+    probes, best-effort telemetry, optional-dep imports).  The ``reason`` argument
+    forces the author to name WHY the error is being dropped; if a logger is
+    supplied the exception is recorded at debug level for post-hoc inspection.
+
+    Existing broad-swallow sites are NOT migrated in this wave — the helper
+    exists so future code has a lint-clean path that records intent.
+    """
+    try:
+        yield
+    except Exception as exc:  # noqa: BLE001 — this is the whole point of the helper
+        if logger is not None:
+            logger.debug("swallowed (%s): %s", reason, exc)
 
 # --- Markers ---
 
