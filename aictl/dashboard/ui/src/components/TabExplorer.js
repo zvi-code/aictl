@@ -37,7 +37,7 @@ const VIEWS = [
   { id: 'timeline',   label: 'Timeline',   hint: 'Activity bar chart over time' },
 ];
 
-function SessionHeader({ session }) {
+export function SessionHeader({ session }) {
   if (!session) return null;
   const c = COLORS[session.tool] || 'var(--fg2)';
   const inTok = session.exact_input_tokens || session.input_tokens || 0;
@@ -59,6 +59,12 @@ function SessionHeader({ session }) {
       <strong style="font-size:var(--fs-lg);color:${c}">${esc(session.tool)}</strong>
       ${projShort && html`<span class="text-muted text-xs mono text-ellipsis"
         style="max-width:360px" title=${session.project}>${esc(projShort)}</span>`}
+      ${session.git_branch && html`<span class="badge text-xs"
+        style="background:var(--bg2);color:var(--fg2)"
+        title="git branch">⎇ ${esc(session.git_branch)}</span>`}
+      ${session.git_commit && html`<span class="badge text-xs mono"
+        style="background:var(--bg2);color:var(--fg2)"
+        title=${session.git_commit}>${esc(String(session.git_commit).slice(0, 7))}</span>`}
       ${started && html`<span class="text-muted text-xs">${esc(started)}</span>`}
       ${dur > 0 && html`<span class="badge"
         style="background:var(--bg2);color:var(--fg);font-size:var(--fs-xs)">${fmtDurSec(dur)}</span>`}
