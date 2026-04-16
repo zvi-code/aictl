@@ -108,6 +108,7 @@ def _compute_response_time(db, since: float, until: float, limit: int = 2000) ->
     for sid, reqs in by_session.items():
         reqs.sort(key=lambda r: r["ts"])
         for seq, r in enumerate(reqs, 1):
+            # TODO(#token-usage): migrate to TokenUsage.from_dict
             requests_out.append({
                 "ts": r["ts"], "duration_ms": r.get("duration_ms", 0),
                 "input_tokens": r.get("input_tokens", 0),

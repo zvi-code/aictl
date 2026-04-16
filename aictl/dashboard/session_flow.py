@@ -401,6 +401,7 @@ def build_turns_from_otel(all_events, otel_events, session_id):
                      or detail.get("gen_ai.request.model")
                      or detail.get("gen_ai.response.model")
                      or detail.get("span.name") or "")
+            # TODO(#token-usage): migrate to TokenUsage.from_dict
             in_tok = int(_num(detail.get("input_tokens",
                 detail.get("gen_ai.usage.input_tokens",
                 detail.get("gen_ai.usage.prompt_tokens", 0)))))
@@ -614,6 +615,7 @@ def attribute_api_to_turns(turn_user_msgs, api_by_session):
             else:
                 break
         if best_turn:
+            # TODO(#token-usage): migrate to TokenUsage.from_dict
             best_turn["tokens"]["input"] += int(_num(
                 d.get("input_tokens", 0)))
             best_turn["tokens"]["output"] += int(_num(

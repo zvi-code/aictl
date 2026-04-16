@@ -221,6 +221,7 @@ class OtelReceiver:
                 model=(d.get("gen_ai.request.model")
                        or d.get("gen_ai.response.model")
                        or d.get("model", "")),
+                # TODO(#token-usage): migrate to TokenUsage.from_dict
                 input_tokens=int(d.get("gen_ai.usage.input_tokens",
                                        d.get("input_tokens", 0)) or 0),
                 output_tokens=int(d.get("gen_ai.usage.output_tokens",
