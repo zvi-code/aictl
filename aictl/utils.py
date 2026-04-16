@@ -220,6 +220,26 @@ def read_json_or_fail(path: Path, *, force: bool = False) -> dict:
     return data
 
 
+def _deep_merge(existing: dict, updates: dict) -> dict:
+    """Recursively merge *updates* into *existing* in place.
+
+    When both values at a key are dicts, merge recursively — this preserves
+    sub-keys the caller didn't mention (e.g. VS Code namespaced settings like
+    ``"[python]": {"formatOnSave": true}`` are not clobbered when the caller
+    writes ``"[python]": {"tabSize": 4}``).
+
+    Otherwise the incoming value replaces the existing value.  Lists are
+    replaced (not concatenated), which is the safer default: concatenation
+    would produce duplicates on repeated deploys.
+    """
+    for k, v in updates.items():
+        if isinstance(v, dict) and isinstance(existing.get(k), dict):
+            _deep_merge(existing[k], v)
+        else:
+            existing[k] = v
+    return existing
+
+
 def merge_json_block(
     path: Path,
     wrapper_key: str | None,
@@ -233,6 +253,11 @@ def merge_json_block(
     ``existing[wrapper_key]``.  If *wrapper_key* is ``None``, entries are merged
     at the root dict level.  Existing keys not in *managed_entries* are preserved.
 
+    The merge is *recursive*: nested dict values are deep-merged, so writing
+    ``{"[python]": {"tabSize": 4}}`` into a file that already has
+    ``{"[python]": {"formatOnSave": true}}`` preserves ``formatOnSave``.
+    Lists and scalars are replaced wholesale.
+
     Raises :class:`CorruptJSONError` when the existing file is malformed and
     ``force`` is False.  With ``force=True`` the corrupted original is saved
     alongside as ``<path>.bak.<timestamp>`` before being replaced.
@@ -240,10 +265,12 @@ def merge_json_block(
     existing = read_json_or_fail(path, force=force)
     if wrapper_key is not None:
         block = existing.get(wrapper_key, {})
-        block.update(managed_entries)
+        if not isinstance(block, dict):
+            block = {}
+        _deep_merge(block, managed_entries)
         existing[wrapper_key] = block
     else:
-        existing.update(managed_entries)
+        _deep_merge(existing, managed_entries)
     return json.dumps(existing, indent=2) + "\n"
 
 
