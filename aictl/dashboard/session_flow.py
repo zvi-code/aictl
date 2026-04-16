@@ -8,10 +8,61 @@ events, producing an ordered list of turns for the session flow waterfall.
 
 from __future__ import annotations
 
+import json
 import re
 
 from ..storage import EventRow
 from .otel_receiver import _num
+
+
+def _truncate(s: str, limit: int = 300) -> str:
+    """Truncate string to ``limit`` chars, appending ``…`` when shortened.
+
+    Collapses runs of whitespace (including embedded newlines and tabs) to a
+    single space so previews rendered in a ``white-space:nowrap`` tooltip
+    row don't visually collapse when a Bash ``command`` contains ``\\n``.
+    """
+    if s is None:
+        return ""
+    s = re.sub(r"\s+", " ", s).strip()
+    if len(s) <= limit:
+        return s
+    return s[:limit] + "\u2026"
+
+
+def _input_preview(tool_input) -> str:
+    """Compact JSON preview of a tool_input value, truncated to 300 chars."""
+    if tool_input is None or tool_input == "":
+        return ""
+    if isinstance(tool_input, str):
+        return _truncate(tool_input, 300)
+    try:
+        return _truncate(
+            json.dumps(tool_input, default=str, ensure_ascii=False, separators=(",", ":")),
+            300,
+        )
+    except (TypeError, ValueError):
+        return _truncate(str(tool_input), 300)
+
+
+def _result_summary(detail: dict) -> str:
+    """Pull a result summary string from a PostToolUse detail dict."""
+    for key in ("result_summary", "tool_response", "result"):
+        if key not in detail:
+            continue
+        val = detail[key]
+        if val is None or val == "":
+            continue
+        if isinstance(val, str):
+            return _truncate(val, 300)
+        try:
+            return _truncate(
+                json.dumps(val, default=str, ensure_ascii=False, separators=(",", ":")),
+                300,
+            )
+        except (TypeError, ValueError):
+            return _truncate(str(val), 300)
+    return ""
 
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
@@ -246,6 +297,8 @@ def build_turns_from_hooks(all_events, api_by_session):
                 {
                     "name": tool_name,
                     "args_summary": args_summary,
+                    "input_preview": _input_preview(tool_input),
+                    "result_summary": "",
                     "ts": ev.ts,
                     "duration_ms": 0,
                 }
@@ -255,9 +308,12 @@ def build_turns_from_hooks(all_events, api_by_session):
 
         if kind == "hook:PostToolUse" and current_turn is not None:
             tool_name = detail.get("tool_name", detail.get("name", ""))
+            result_sum = _result_summary(detail)
             for t in reversed(current_turn["tools"]):
                 if t["name"] == tool_name and t["duration_ms"] == 0:
                     t["duration_ms"] = round((ev.ts - t["ts"]) * 1000)
+                    if result_sum and not t.get("result_summary"):
+                        t["result_summary"] = result_sum
                     break
             current_turn["end_ts"] = ev.ts
             continue
@@ -559,6 +615,19 @@ def build_turns_from_otel(all_events, otel_events, session_id):
                 params = params[:200] + "..."
             success = detail.get("success", "")
             result_size = detail.get("tool_result_size_bytes", "")
+            # Populate input_preview / result_summary parallel to the hooks path
+            # so the tool-tooltip's "input:"/"result:" rows render on OTel-sourced
+            # turns. OTel input lives under tool_parameters / tool_input; result
+            # under tool_response / result / output when OTEL_LOG_TOOL_DETAILS=1.
+            raw_input = detail.get("tool_parameters")
+            if raw_input in (None, ""):
+                raw_input = detail.get("tool_input", detail.get("input", detail.get("arguments", "")))
+            input_prev = _input_preview(raw_input)
+            result_sum = _result_summary(detail)
+            if not result_sum:
+                out = detail.get("output", "")
+                if out:
+                    result_sum = _input_preview(out)
             turns.append(
                 {
                     "ts": ev.ts,
@@ -572,6 +641,8 @@ def build_turns_from_otel(all_events, otel_events, session_id):
                     "result_size": result_size,
                     "prompt_id": detail.get("prompt.id", ""),
                     "duration_ms": int(_num(detail.get("duration_ms", 0))),
+                    "input_preview": input_prev,
+                    "result_summary": result_sum,
                 }
             )
         elif kind == "otel:SubagentStart" or "subagent" in kind.lower():

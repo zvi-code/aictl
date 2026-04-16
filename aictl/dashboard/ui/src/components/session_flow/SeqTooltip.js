@@ -78,6 +78,8 @@ export default function SeqTooltip({event}) {
         paramDisplay = Object.entries(parsed).filter(([, v]) => v != null && v !== '');
       }
     }
+    const inputPrev = event.input_preview || '';
+    const resultSum = event.result_summary || '';
     return html`<div class="sf-seq-tooltip">
       <div class="sf-tip-label">${esc(event.to || 'Tool')}${event.subtype === 'result' ? ' (result)' : event.subtype === 'decision' ? ' (decision)' : ''}</div>
       ${event.decision && html`<div class="sf-tip-meta" style="margin-bottom:var(--sp-2)">Decision: <strong>${esc(event.decision)}</strong></div>`}
@@ -93,6 +95,8 @@ export default function SeqTooltip({event}) {
             })}
           </div>`
         : event.params && html`<div class="sf-tip-body mono">${esc(event.params)}</div>`}
+      ${inputPrev && html`<div class="sf-tip-meta mono" style="margin-top:var(--sp-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title=${inputPrev}>input: ${esc(inputPrev.length > 200 ? inputPrev.slice(0, 200) + '\u2026' : inputPrev)}</div>`}
+      ${resultSum && html`<div class="sf-tip-meta mono" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title=${resultSum}>result: ${esc(resultSum.length > 200 ? resultSum.slice(0, 200) + '\u2026' : resultSum)}</div>`}
       ${(event.success || event.duration_ms > 0 || event.result_size) && html`<div class="sf-tip-meta" style="margin-top:var(--sp-2)">
         ${event.success ? 'Success: ' + event.success : ''}
         ${event.duration_ms > 0 ? ' \u00B7 ' + fmtDur(event.duration_ms) : ''}

@@ -509,3 +509,54 @@ class TestAttributeApiToTurns:
         _DashboardHandler._attribute_api_to_turns([turn], events)
         assert turn["tokens"]["input"] == 200
         assert turn["api_calls"] == 1
+
+
+# ── build_turns_from_otel populates input_preview / result_summary ────
+# Regression guard for the Slice 1.3 reviewer blocker: the OTel-sourced
+# tool_use turns previously carried empty input_preview/result_summary
+# so the SeqTooltip rows rendered blank in production.
+class TestBuildTurnsFromOtelToolFields:
+    def test_tool_result_populates_input_and_result_fields(self):
+        from aictl.dashboard.session_flow import build_turns_from_otel
+
+        params_json = '{"bash_command":"git","description":"log"}'
+        events = [
+            EventRow(
+                ts=100.0,
+                tool="claude-code",
+                kind="otel:user_prompt",
+                detail={"prompt": "do the thing"},
+            ),
+            EventRow(
+                ts=101.0,
+                tool="claude-code",
+                kind="otel:tool_decision",
+                detail={"tool_name": "Bash", "decision": "accept"},
+            ),
+            EventRow(
+                ts=102.0,
+                tool="claude-code",
+                kind="otel:tool_result",
+                detail={
+                    "tool_name": "Bash",
+                    "success": "true",
+                    "duration_ms": "15",
+                    "tool_parameters": params_json,
+                    "tool_response": "abc1234 initial\nline two",
+                    "tool_result_size_bytes": "42",
+                },
+            ),
+        ]
+        turns = build_turns_from_otel(events, events, "sess-otel-1")
+        tool_turns = [t for t in turns if t.get("type") == "tool_use"]
+        assert tool_turns, "expected at least one tool_use turn"
+        result = next((t for t in tool_turns if t.get("subtype") == "result"), None)
+        assert result is not None
+        # Both the input preview (from tool_parameters) and result_summary
+        # (from tool_response) must be populated so SeqTooltip's "input:"/
+        # "result:" rows render. Newlines must be collapsed for the nowrap
+        # tooltip row.
+        assert "git" in result["input_preview"]
+        assert "bash_command" in result["input_preview"]
+        assert "abc1234" in result["result_summary"]
+        assert "\n" not in result["result_summary"]
