@@ -325,7 +325,10 @@ function BarFlow({bars, tokenMode, onHover, onLeave}) {
 }
 
 // ─── Main component ───────────────────────────────────────────
-export default function TabTimelineChart() {
+// When `externalSessionId` is passed (e.g. from TabExplorer), the internal
+// tool/session pickers are hidden and the component renders only the
+// timeline for the given session.
+export default function TabTimelineChart({ externalSessionId = null } = {}) {
   const {snap: s, globalRange, enabledTools} = useContext(SnapContext);
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -337,6 +340,8 @@ export default function TabTimelineChart() {
   const [selectedEntities, setSelectedEntities] = useState(null); // null = all
   const [tokenMode, setTokenMode] = useState('all');
   const containerRef = useRef(null);
+  const embedded = externalSessionId != null;
+  const effectiveSessionId = embedded ? externalSessionId : activeSessionId;
 
   // Fetch sessions
   useEffect(() => {
@@ -370,15 +375,15 @@ export default function TabTimelineChart() {
   }, [activeTool, toolSessions.length]);
 
   useEffect(() => {
-    if (!activeSessionId) { setFlowData(null); return; }
+    if (!effectiveSessionId) { setFlowData(null); return; }
     setFlowLoading(true);
-    const sess = sessions.find(s => s.session_id === activeSessionId);
+    const sess = sessions.find(s => s.session_id === effectiveSessionId);
     const since = sess?.started_at ? sess.started_at - 60 : Date.now() / 1000 - 86400;
     const until = sess?.ended_at ? sess.ended_at + 60 : Date.now() / 1000 + 60;
-    api.getSessionFlow(activeSessionId, since, until)
+    api.getSessionFlow(effectiveSessionId, since, until)
       .then(data => { setFlowData(data); setFlowLoading(false); setSelectedEntities(null); })
       .catch(() => { setFlowData(null); setFlowLoading(false); });
-  }, [activeSessionId]);
+  }, [effectiveSessionId, sessions.length]);
 
   // All bars + all entity names (unfiltered)
   const { allBars, allEntities } = useMemo(() => {
@@ -424,9 +429,9 @@ export default function TabTimelineChart() {
   const summary = flowData?.summary || {};
 
   return html`<div class="tc-container" ref=${containerRef}>
-    <${ToolTabs} tools=${tools} activeTool=${activeTool} onSelect=${setActiveTool}/>
-    <${SessionTabs} sessions=${toolSessions} activeId=${activeSessionId}
-      onSelect=${setActiveSessionId} loading=${loading}/>
+    ${!embedded && html`<${ToolTabs} tools=${tools} activeTool=${activeTool} onSelect=${setActiveTool}/>`}
+    ${!embedded && html`<${SessionTabs} sessions=${toolSessions} activeId=${activeSessionId}
+      onSelect=${setActiveSessionId} loading=${loading}/>`}
     <${SummaryBar} summary=${summary}/>
 
     ${flowLoading
