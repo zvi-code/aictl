@@ -864,6 +864,59 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
   min-height: 200px;
 }
 
+.es-events-wrap {
+  max-height: 60vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.es-events-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.es-events-table th,
+.es-events-table td {
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.es-events-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg2);
+  color: var(--fg2);
+  text-align: left;
+  font-size: var(--fs-xs);
+}
+
+.es-events-row {
+  cursor: pointer;
+}
+
+.es-events-row:hover {
+  background: var(--bg1);
+}
+
+.es-events-row.is-alert {
+  background: color-mix(in srgb, var(--red) 10%, var(--bg));
+}
+
+.es-events-detail-row td {
+  background: var(--bg1);
+}
+
+.es-events-detail {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: var(--fs-xs);
+  line-height: 1.35;
+}
+
 /* ─── Timeline Chart (TabTimelineChart) ───────────────────────── */
 .tc-container { position: relative; }
 

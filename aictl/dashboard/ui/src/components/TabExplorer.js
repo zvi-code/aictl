@@ -26,6 +26,7 @@ import SessionDetail from './SessionDetail.js';
 import TabSessionFlow from './TabSessionFlow.js';
 import TabTranscript from './TabTranscript.js';
 import TabTimelineChart from './TabTimelineChart.js';
+import EventsPanel from './session_detail/EventsPanel.js';
 import ToolTabs from './session_flow/ToolTabs.js';
 import SessionTabs from './session_flow/SessionTabs.js';
 import { fmtDurSec } from './session_flow/helpers.js';
@@ -35,6 +36,7 @@ const VIEWS = [
   { id: 'flow',       label: 'Flow',       hint: 'Sequence of messages & tool calls' },
   { id: 'transcript', label: 'Transcript', hint: 'Readable prompts & replies' },
   { id: 'timeline',   label: 'Timeline',   hint: 'Activity bar chart over time' },
+  { id: 'events',     label: 'Events',     hint: 'Raw session event stream' },
 ];
 
 export function SessionHeader({ session }) {
@@ -176,8 +178,15 @@ export default function TabExplorer() {
             : activeView === 'transcript'
               ? html`<${TabTranscript} key=${'ex-tr-' + activeSessionId}
                   externalSessionId=${activeSessionId}/>`
-              : html`<${TabTimelineChart} key=${'ex-tl-' + activeSessionId}
-                  externalSessionId=${activeSessionId}/>`}
+              : activeView === 'timeline'
+                ? html`<${TabTimelineChart} key=${'ex-tl-' + activeSessionId}
+                    externalSessionId=${activeSessionId}/>`
+                : html`<${EventsPanel}
+                    key=${'ex-ev-' + activeSessionId}
+                    sessionId=${activeSessionId}
+                    since=${globalRange?.since}
+                    until=${globalRange?.until}
+                  />`}
     </div>
   </div>`;
 }
