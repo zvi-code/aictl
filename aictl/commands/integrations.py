@@ -276,8 +276,45 @@ def _python_cmd() -> str:
     return f'"{exe}"'
 
 
+def _sanitize_project_name(name: str) -> str:
+    """Coerce an arbitrary directory basename into a safe source-id token.
+
+    Rules: lowercase; any char not in ``[a-z0-9_-]`` becomes ``-``; runs of
+    ``-`` collapse to a single ``-``; leading/trailing ``-`` are stripped.
+    Empty → ``"unknown"``. The result is safe to embed in a shell token
+    without quoting.
+    """
+    import re
+
+    if not name:
+        return "unknown"
+    lowered = name.lower()
+    replaced = re.sub(r"[^a-z0-9_-]+", "-", lowered)
+    collapsed = re.sub(r"-{2,}", "-", replaced).strip("-")
+    return collapsed or "unknown"
+
+
+def _source_id(scope: str, tool: str) -> str:
+    """Compute the ``--source`` identifier stamped on installed hook commands.
+
+    Shape: ``<project|root>.<tool>-<scope>``. ``root`` is used for user
+    scope; project scope uses the sanitized ``cwd`` basename.
+    """
+    safe_tool = _sanitize_project_name(tool)
+    if scope == "user":
+        return f"root.{safe_tool}-user"
+    project = _sanitize_project_name(Path.cwd().name)
+    return f"{project}.{safe_tool}-project"
+
+
 def _build_hook_config(
-    port: int, events: list[str] | None, event_map: dict[str, str] | None = None, matcher: str = ""
+    port: int,
+    events: list[str] | None,
+    event_map: dict[str, str] | None = None,
+    matcher: str = "",
+    *,
+    source_tool: str = "claude",
+    scope: str = "user",
 ) -> dict:
     """Build the hooks configuration dict for AI tools.
 
@@ -290,14 +327,17 @@ def _build_hook_config(
 
     Optional event_map can translate internal HOOK_EVENTS names to tool-specific names.
     matcher: "" for Claude (default), "*" for Gemini.
+    source_tool/scope: stamp the command with a ``--source <id>`` flag so
+    events can be attributed to the exact wrapper that emitted them.
     """
     target_events = events or HOOK_EVENTS
     hooks: dict[str, list[dict]] = {}
     python = _python_cmd()
+    source_id = _source_id(scope, source_tool)
 
     for event in target_events:
         tool_event_name = event_map.get(event, event) if event_map else event
-        cmd = f"{python} -m aictl.hook_handler --event {event} --port {port}"
+        cmd = f"{python} -m aictl.hook_handler --event {event} --port {port} --source {source_id}"
         hooks[tool_event_name] = [
             {
                 "_aictl_owner": _AICTL_OWNER_MARKER,
@@ -375,7 +415,7 @@ def install(port: int | None, scope: str, events: str | None, force: bool, dry_r
         raise SystemExit(1)
 
     # Merge hooks into existing settings (per-event, preserving user hooks)
-    hook_config = _build_hook_config(port, event_list)
+    hook_config = _build_hook_config(port, event_list, source_tool="claude", scope=scope)
     for event, new_rules in hook_config.items():
         current = existing_hooks.get(event, [])
         # Remove old aictl entries, keep user hooks
@@ -1216,7 +1256,7 @@ def _install_hooks(scope: str, port: int, actions: list[str], *, force: bool = F
         else:
             existing_hooks[ev] = cleaned
 
-    hook_config = _build_hook_config(port, None)
+    hook_config = _build_hook_config(port, None, source_tool="claude", scope=scope)
     for event, new_rules in hook_config.items():
         existing_hooks.setdefault(event, []).extend(new_rules)
     existing["hooks"] = existing_hooks
@@ -1247,7 +1287,9 @@ def _install_hooks(scope: str, port: int, actions: list[str], *, force: bool = F
     # Map internal HOOK_EVENTS (PascalCase) to official Gemini CLI events
     # Use the same hook configuration logic as Claude but with Gemini names
     gemini_only_events = [e for e in HOOK_EVENTS if e in GEMINI_HOOK_MAP]
-    hook_config = _build_hook_config(port, gemini_only_events, event_map=GEMINI_HOOK_MAP, matcher="*")
+    hook_config = _build_hook_config(
+        port, gemini_only_events, event_map=GEMINI_HOOK_MAP, matcher="*", source_tool="gemini", scope=scope
+    )
 
     for tool_event, new_rules in hook_config.items():
         g_hooks.setdefault(tool_event, []).extend(new_rules)
