@@ -1,6 +1,18 @@
 # aictl - Cross-platform AI Tool Context Control + Dashboard
 # Copyright (c) 2026 Zvi Schneider. MIT License.
-"""Emit for GitHub Copilot CLI + VS Code."""
+"""Emit for GitHub Copilot CLI + VS Code.
+
+Agents are emitted to **two** sibling locations because they target different
+Copilot products:
+
+* ``.github/agents/{n}.agent.md`` — GitHub Copilot Coding Agent personas
+  (cloud PR bot).
+* ``.github/chatmodes/{n}.chatmode.md`` — VS Code Copilot Chat custom modes
+  (selectable in the chat mode picker).
+
+Both come from the same ``agent`` capability in ``.context.toml``; the
+importer dedupes them on read.
+"""
 
 from __future__ import annotations
 
@@ -23,6 +35,17 @@ NAME = "copilot"
 
 def _applyto_frontmatter(glob: str) -> str:
     return f'---\napplyTo: "{glob}"\n---\n\n'
+
+
+def _chatmode_content(name: str, body: str) -> str:
+    """Wrap agent body with VS Code chatmode frontmatter."""
+    # Strip any pre-existing frontmatter from the capability body so we don't
+    # emit two frontmatter blocks stacked on each other.
+    if body.startswith("---\n"):
+        end = body.find("\n---", 4)
+        if end > 0:
+            body = body[end + 4 :].lstrip("\n")
+    return f"---\ndescription: {name}\n---\n\n{body.rstrip()}\n"
 
 
 def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
@@ -60,6 +83,13 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
         results,
     )
 
+    # Also emit each agent as a VS Code chatmode so it appears in the chat mode
+    # picker. Same content, VS-Code-specific frontmatter.
+    for cap in resolved.capabilities:
+        if cap.kind == "agent":
+            fp = gh / "chatmodes" / f"{cap.name}.chatmode.md"
+            emit_file(fp, _chatmode_content(cap.name, cap.content), dry_run, results)
+
     emit_mcp_servers(root / ".copilot-mcp.json", "mcpServers", resolved, dry_run, results)
     emit_mcp_servers(root / ".vscode" / "mcp.json", "servers", resolved, dry_run, results)
 
@@ -83,6 +113,7 @@ GITIGNORE = [
     ".github/copilot-instructions.md",
     ".github/instructions/",
     ".github/agents/",
+    ".github/chatmodes/",
     ".github/skills/",
     ".github/prompts/",
     ".github/hooks/",
