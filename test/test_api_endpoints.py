@@ -105,6 +105,20 @@ def populated_db(tmp_path):
     db.upsert_file(path="/project/README.md", tool="claude-code", category="instructions", content="# Hello\nWorld")
     db.upsert_file(path="/project/.env", tool="copilot-cli", category="config", content="KEY=val")
 
+    # Session rows (persist files_modified for /api/session-runs file_churn enrichment)
+    from aictl.storage import SessionRow
+
+    db.upsert_session(
+        SessionRow(
+            session_id="sess-001",
+            tool="claude-code",
+            project_path="/project",
+            started_at=now - 300,
+            ended_at=now - 100,
+            files_modified=7,
+        )
+    )
+
     yield db
     db.close()
 
@@ -445,6 +459,30 @@ class TestTelemetryAPI:
             "by_model",
         ):
             assert key in r, f"Missing key: {key}"
+
+
+# ── Session Runs API ──────────────────────────────────────────────
+
+
+class TestSessionRunsAPI:
+    def test_returns_session_end_runs(self, server):
+        data = _get_json(f"{server}/api/session-runs?days=1")
+        assert isinstance(data, list)
+        assert len(data) >= 1
+        run = next(r for r in data if r["session_id"] == "sess-001")
+        assert run["duration_s"] == 200
+        assert run["tool"] == "claude-code"
+
+    def test_includes_file_churn_field(self, server):
+        """file_churn should be present on every run (0 when no session row)."""
+        data = _get_json(f"{server}/api/session-runs?days=1")
+        assert len(data) >= 1
+        for run in data:
+            assert "file_churn" in run
+            assert isinstance(run["file_churn"], int)
+        run = next(r for r in data if r["session_id"] == "sess-001")
+        # Populated session row has files_modified=7.
+        assert run["file_churn"] == 7
 
 
 # ── Events API ────────────────────────────────────────────────────

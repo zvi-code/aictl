@@ -851,6 +851,44 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
   background: var(--bg1);
   border-radius: 6px;
 }
+.run-trend-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-5);
+  padding: var(--sp-2) var(--sp-4);
+  margin-bottom: var(--sp-2);
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: var(--fs-sm);
+}
+.run-trend-header {
+  font-weight: 600;
+  color: var(--fg2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: var(--fs-xs);
+}
+.run-trend-metric {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3);
+  border-left: 1px solid var(--border);
+}
+.run-trend-metric:first-of-type { border-left: none; padding-left: 0; }
+.run-trend-label { color: var(--fg2); font-size: var(--fs-xs); }
+.run-trend-value { color: var(--fg); font-weight: 600; }
+.run-trend-delta {
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  transition: color 0.2s ease;
+}
+.run-trend-empty-msg { color: var(--fg2); font-style: italic; }
+@media (prefers-reduced-motion: reduce) {
+  .run-trend-delta { transition: none; }
+}
 .explorer-subtabs {
   display: flex; gap: var(--sp-2);
   border-bottom: 1px solid var(--border);

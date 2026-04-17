@@ -28,6 +28,7 @@ import TabTranscript from './TabTranscript.js';
 import TabTimelineChart from './TabTimelineChart.js';
 import EventsPanel from './session_detail/EventsPanel.js';
 import SessionSparklines from './SessionSparklines.js';
+import RunTrendStrip from './session_detail/RunTrendStrip.js';
 import ToolTabs from './session_flow/ToolTabs.js';
 import SessionTabs from './session_flow/SessionTabs.js';
 import { fmtDurSec } from './session_flow/helpers.js';
@@ -148,6 +149,17 @@ export default function TabExplorer() {
       <${SessionTabs} sessions=${toolSessions} activeId=${activeSessionId}
         onSelect=${setActiveSessionId} loading=${loading}/>
     </div>
+
+    ${activeSession && activeSession.project && activeSession.tool && html`<${RunTrendStrip}
+      sessionId=${activeSession.session_id}
+      project=${activeSession.project}
+      tool=${activeSession.tool}
+      currentDurationS=${activeSession.duration_s
+        || (activeSession.ended_at && activeSession.started_at
+            ? activeSession.ended_at - activeSession.started_at : 0)}
+      currentTokens=${(activeSession.exact_input_tokens || activeSession.input_tokens || 0)
+        + (activeSession.exact_output_tokens || activeSession.output_tokens || 0)}
+      currentFileChurn=${activeSession.files_modified || 0}/>`}
 
     <${SessionHeader} session=${activeSession}/>
 
