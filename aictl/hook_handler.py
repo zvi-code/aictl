@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import urllib.request
 
 
@@ -23,6 +24,7 @@ def main() -> None:
     # Minimal arg parsing — no argparse import to keep startup fast.
     event = ""
     port = 8484
+    source = "unknown"
     args = sys.argv[1:]
     i = 0
     while i < len(args):
@@ -31,6 +33,9 @@ def main() -> None:
             i += 2
         elif args[i] == "--port" and i + 1 < len(args):
             port = int(args[i + 1])
+            i += 2
+        elif args[i] == "--source" and i + 1 < len(args):
+            source = args[i + 1]
             i += 2
         else:
             i += 1
@@ -45,6 +50,19 @@ def main() -> None:
     data["event"] = event
     data.setdefault("session_id", os.environ.get("SESSION_ID", ""))
     data.setdefault("cwd", os.environ.get("CWD", ""))
+
+    # Capture wrapper identity + caller process info for observability.
+    try:
+        tid = threading.get_native_id()
+    except AttributeError:  # pragma: no cover — Python <3.8
+        tid = threading.get_ident()
+    data["aictl_hook"] = {
+        "source": source,
+        "pid": os.getpid(),
+        "ppid": os.getppid(),
+        "tid": tid,
+        "py": sys.executable,
+    }
 
     # POST to aictl server (best-effort — never crash if server is down).
     try:

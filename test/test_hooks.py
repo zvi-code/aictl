@@ -553,3 +553,161 @@ class TestPythonCmd:
         assert fake_exe in quoted
         assert quoted.startswith('"')
         assert quoted.endswith('"')
+
+
+class TestSanitizeProjectName:
+    """_sanitize_project_name coerces arbitrary dir names into safe source-id tokens."""
+
+    def test_normal_name(self):
+        from aictl.commands.integrations import _sanitize_project_name
+
+        assert _sanitize_project_name("aictl") == "aictl"
+        assert _sanitize_project_name("my_project-1") == "my_project-1"
+
+    def test_uppercase_is_lowercased(self):
+        from aictl.commands.integrations import _sanitize_project_name
+
+        assert _sanitize_project_name("MyProject") == "myproject"
+
+    def test_spaces_and_special_chars(self):
+        from aictl.commands.integrations import _sanitize_project_name
+
+        assert _sanitize_project_name("my project") == "my-project"
+        assert _sanitize_project_name("a/b\\c:d") == "a-b-c-d"
+
+    def test_collapses_repeated_dashes(self):
+        from aictl.commands.integrations import _sanitize_project_name
+
+        assert _sanitize_project_name("foo   bar") == "foo-bar"
+        assert _sanitize_project_name("foo!!!bar") == "foo-bar"
+
+    def test_unicode(self):
+        from aictl.commands.integrations import _sanitize_project_name
+
+        # Non-ASCII chars are not in [a-z0-9_-] so they become dashes.
+        result = _sanitize_project_name("café")
+        assert result
+        assert all(c.islower() or c.isdigit() or c in "_-" for c in result)
+
+    def test_empty(self):
+        from aictl.commands.integrations import _sanitize_project_name
+
+        assert _sanitize_project_name("") == "unknown"
+
+    def test_leading_trailing_dashes_and_dots(self):
+        from aictl.commands.integrations import _sanitize_project_name
+
+        assert _sanitize_project_name("...foo...") == "foo"
+        assert _sanitize_project_name("--foo--") == "foo"
+        assert _sanitize_project_name(".-.") == "unknown"
+
+
+class TestSourceId:
+    def test_user_scope_root(self):
+        from aictl.commands.integrations import _source_id
+
+        assert _source_id("user", "claude") == "root.claude-user"
+        assert _source_id("user", "gemini") == "root.gemini-user"
+        assert _source_id("user", "vscode") == "root.vscode-user"
+
+    def test_project_scope_uses_cwd_basename(self, monkeypatch, tmp_path):
+        from aictl.commands.integrations import _source_id
+
+        proj = tmp_path / "My Cool Project"
+        proj.mkdir()
+        monkeypatch.chdir(proj)
+        assert _source_id("project", "claude") == "my-cool-project.claude-project"
+        assert _source_id("project", "gemini") == "my-cool-project.gemini-project"
+
+    def test_command_carries_source_for_user_scope(self):
+        cfg = _build_hook_config(8484, ["SessionStart"], source_tool="claude", scope="user")
+        cmd = cfg["SessionStart"][0]["hooks"][0]["command"]
+        assert " --source root.claude-user" in cmd
+
+    def test_command_carries_source_for_project_scope(self, monkeypatch, tmp_path):
+        proj = tmp_path / "demo_app"
+        proj.mkdir()
+        monkeypatch.chdir(proj)
+        cfg = _build_hook_config(8484, ["SessionStart"], source_tool="claude", scope="project")
+        cmd = cfg["SessionStart"][0]["hooks"][0]["command"]
+        assert " --source demo_app.claude-project" in cmd
+
+    def test_gemini_source_for_user_scope(self):
+        cfg = _build_hook_config(
+            8484, ["SessionStart"], event_map={"SessionStart": "SessionStart"}, matcher="*",
+            source_tool="gemini", scope="user",
+        )
+        cmd = cfg["SessionStart"][0]["hooks"][0]["command"]
+        assert " --source root.gemini-user" in cmd
+
+
+class TestHookHandlerAictlHookEnrichment:
+    """hook_handler stamps the payload with aictl_hook metadata."""
+
+    def test_stamps_pid_ppid_tid_source(self, monkeypatch):
+        import io
+        from unittest.mock import MagicMock
+
+        from aictl import hook_handler as hh
+
+        monkeypatch.setattr(
+            "sys.argv",
+            ["hook_handler", "--event", "SessionStart", "--port", "8484", "--source", "root.claude-user"],
+        )
+        monkeypatch.setattr("sys.stdin", io.StringIO('{"session_id": "s1"}'))
+        captured = io.StringIO()
+        monkeypatch.setattr("sys.stdout", captured)
+
+        posted = {}
+
+        def fake_urlopen(req, timeout=2):  # noqa: ARG001
+            posted["data"] = req.data
+            return MagicMock()
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        hh.main()
+
+        body = json.loads(posted["data"].decode())
+        assert body["aictl_hook"]["source"] == "root.claude-user"
+        assert isinstance(body["aictl_hook"]["pid"], int)
+        assert isinstance(body["aictl_hook"]["ppid"], int)
+        assert isinstance(body["aictl_hook"]["tid"], int)
+        assert body["aictl_hook"]["py"]
+
+        printed = json.loads(captured.getvalue())
+        assert printed["aictl_hook"]["source"] == "root.claude-user"
+
+    def test_missing_source_defaults_to_unknown(self, monkeypatch):
+        import io
+        from unittest.mock import MagicMock
+
+        from aictl import hook_handler as hh
+
+        monkeypatch.setattr(
+            "sys.argv", ["hook_handler", "--event", "SessionStart", "--port", "8484"]
+        )
+        monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+        captured = io.StringIO()
+        monkeypatch.setattr("sys.stdout", captured)
+        monkeypatch.setattr("urllib.request.urlopen", lambda *a, **kw: MagicMock())
+        hh.main()
+        printed = json.loads(captured.getvalue())
+        assert printed["aictl_hook"]["source"] == "unknown"
+
+    def test_network_error_is_swallowed(self, monkeypatch):
+        import io
+
+        from aictl import hook_handler as hh
+
+        monkeypatch.setattr(
+            "sys.argv",
+            ["hook_handler", "--event", "SessionStart", "--port", "1", "--source", "root.claude-user"],
+        )
+        monkeypatch.setattr("sys.stdin", io.StringIO('{"session_id": "s1"}'))
+        captured = io.StringIO()
+        monkeypatch.setattr("sys.stdout", captured)
+        # No urlopen mock — real network call to port 1 will be refused; must not raise.
+        hh.main()
+        printed = json.loads(captured.getvalue())
+        assert "aictl_hook" in printed
+
