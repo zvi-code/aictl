@@ -118,6 +118,14 @@ export async function getSessionMcpUsage(sessionId) {
   return r.json();
 }
 
+/** Per-session deduced stats + enrichments (e.g. vscode_lm_usage).
+ *  Returns the SessionEntityState dict, optionally with vscode_lm_usage
+ *  when OTel language_model.usage events exist. */
+export async function getSessionStats(sessionId) {
+  const r = await fetch(url('/api/session-stats?session_id=' + encodeURIComponent(sessionId)));
+  return r.json();
+}
+
 /** Per-session git commit attribution.
  *  Returns {session_id, branch, commits: [{sha, short_sha, author_name,
  *  author_email, ts, subject, current_branch_match}]}. */

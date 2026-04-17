@@ -9,6 +9,7 @@ export default function ResourcesPanel({session}) {
   const inTok = session.exact_input_tokens || 0;
   const outTok = session.exact_output_tokens || 0;
   const [avgData, setAvgData] = useState(null);
+  const [lmUsage, setLmUsage] = useState(null);
 
   useEffect(() => {
     if (!session.tool) return;
@@ -22,6 +23,13 @@ export default function ResourcesPanel({session}) {
       })
       .catch(() => {});
   }, [session.tool]);
+
+  useEffect(() => {
+    if (!session.session_id) return;
+    api.getSessionStats(session.session_id)
+      .then(d => setLmUsage(d && d.vscode_lm_usage ? d.vscode_lm_usage : null))
+      .catch(() => setLmUsage(null));
+  }, [session.session_id]);
 
   const curDur = session.duration_s || 0;
   const ratio = avgData && avgData.avgDuration > 0 ? curDur / avgData.avgDuration : null;
@@ -47,6 +55,28 @@ export default function ResourcesPanel({session}) {
         : html`<span>similar</span>`}
     </div>`}
     ${session.entity_state && html`<${RateLimitGauge} rateLimits=${session.entity_state.rate_limits}/>`}
+    ${lmUsage && Object.keys(lmUsage.by_extension || {}).length > 0 && html`
+      <div class="lm-usage-breakdown" style="margin-top:var(--sp-3)">
+        <div class="text-xs text-muted mb-sm">VS Code Language-Model tokens by extension
+          <span class="text-muted">\u00b7 total ${fmtK(lmUsage.total_tokens || 0)}</span></div>
+        <div>
+          ${Object.entries(lmUsage.by_extension)
+            .sort((a, b) => (b[1].total_tokens || 0) - (a[1].total_tokens || 0))
+            .map(([ext, stats]) => {
+              const total = lmUsage.total_tokens || 1;
+              const pct = ((stats.total_tokens || 0) / total) * 100;
+              return html`<div key=${ext} class="lm-usage-row flex-row gap-sm"
+                style="align-items:center;padding:var(--sp-1) 0">
+                <span class="mono text-xs" style="flex:1" title=${ext}>${ext}</span>
+                <div style="width:80px;height:6px;background:var(--bg-alt);border-radius:3px;overflow:hidden">
+                  <div style=${'width:' + pct.toFixed(1) + '%;height:100%;background:var(--accent)'}></div>
+                </div>
+                <span class="text-xs mono">${fmtK(stats.total_tokens || 0)}</span>
+                <span class="text-xs text-muted mono">(${stats.calls || 0})</span>
+              </div>`;
+            })}
+        </div>
+      </div>`}
     <div style="margin-top:var(--sp-3)">
       <${SubprocessBreakdown} sessionId=${session.session_id} topN=${10}/>
     </div>
