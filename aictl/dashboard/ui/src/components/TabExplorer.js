@@ -27,6 +27,7 @@ import TabSessionFlow from './TabSessionFlow.js';
 import TabTranscript from './TabTranscript.js';
 import TabTimelineChart from './TabTimelineChart.js';
 import EventsPanel from './session_detail/EventsPanel.js';
+import SessionSparklines from './SessionSparklines.js';
 import ToolTabs from './session_flow/ToolTabs.js';
 import SessionTabs from './session_flow/SessionTabs.js';
 import { fmtDurSec } from './session_flow/helpers.js';
@@ -85,6 +86,7 @@ export function SessionHeader({ session }) {
         style="margin-left:auto;opacity:0.6"
         title=${session.session_id}>${esc(session.session_id)}</span>
     </div>
+    <${SessionSparklines} session=${session}/>
   </div>`;
 }
 

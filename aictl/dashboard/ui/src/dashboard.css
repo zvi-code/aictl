@@ -939,6 +939,44 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
   color: var(--fg);
 }
 
+.session-sparklines {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--sp-3);
+  margin-top: var(--sp-2);
+}
+
+.session-spark {
+  min-width: 0;
+  padding: var(--sp-1) var(--sp-2);
+  background: var(--bg1);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.session-spark-label {
+  font-size: var(--fs-xs);
+  color: var(--fg2);
+  margin-bottom: 2px;
+  letter-spacing: 0.02em;
+}
+
+.session-spark-chart {
+  display: flex;
+  align-items: center;
+  min-height: 30px;
+}
+
+.session-spark-chart > .chart-wrap {
+  width: 100%;
+}
+
+@media (max-width: 640px) {
+  .session-sparklines {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
 /* ─── Timeline Chart (TabTimelineChart) ───────────────────────── */
 .tc-container { position: relative; }
 

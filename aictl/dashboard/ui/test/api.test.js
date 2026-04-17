@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   getSnapshot, getHistory, getEvents, getSessions, getSessionFlow,
-  getSessionEvents, getFileAt,
+  getSessionEvents, getFileAt, getSamples,
   getBudget, getOtelStatus, getSelfStatus, getSamplesList,
   getDatapoints, resetDatapointCache, setBaseUrl, getBaseUrl, streamUrl,
 } from '../src/api.js';
@@ -125,6 +125,25 @@ describe('getFileAt', () => {
   it('builds /api/files/history URL with path and ts', async () => {
     await getFileAt('/tmp/a b.txt', 1700000000);
     expect(fetch).toHaveBeenCalledWith('/api/files/history?path=%2Ftmp%2Fa%20b.txt&ts=1700000000');
+  });
+});
+
+describe('getSamples', () => {
+  it('builds /api/samples URL with tag filters and since', async () => {
+    await getSamples('process.cpu.utilization', {
+      since: 1000,
+      limit: 200,
+      tags: { session_id: 's-1', 'aictl.tool': 'claude-code' },
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/samples?metric=process.cpu.utilization&since=1000&limit=200'
+      + '&tag.session_id=s-1&tag.aictl.tool=claude-code',
+    );
+  });
+
+  it('omits null tag values and the tags block when absent', async () => {
+    await getSamples('m');
+    expect(fetch).toHaveBeenCalledWith('/api/samples?metric=m');
   });
 });
 

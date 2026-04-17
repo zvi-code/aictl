@@ -89,6 +89,22 @@ export async function getSessionEvents(sessionId, opts = {}) {
   return r.json();
 }
 
+/** Query /api/samples with tag filters. Samples carry `tags` so the caller
+ *  can pass any combination of {'session_id': 'X', 'aictl.tool': 'Y'} etc. */
+export async function getSamples(metric, opts = {}) {
+  let path = '/api/samples?metric=' + encodeURIComponent(metric);
+  if (opts.since != null) path += '&since=' + opts.since;
+  if (opts.limit != null) path += '&limit=' + opts.limit;
+  if (opts.tags) {
+    for (const [k, v] of Object.entries(opts.tags)) {
+      if (v == null) continue;
+      path += '&tag.' + encodeURIComponent(k) + '=' + encodeURIComponent(v);
+    }
+  }
+  const r = await fetch(url(path));
+  return r.json();
+}
+
 export async function getAgentTeams(sessionId) {
   const r = await fetch(url('/api/agent-teams?session_id=' + encodeURIComponent(sessionId)));
   return r.json();
