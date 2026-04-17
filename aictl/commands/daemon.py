@@ -261,6 +261,7 @@ def doctor(root_dir, as_json, sample_seconds):
         "collectors": runtime.collector_plan().names,
         "diagnostics": snapshot.diagnostics,
         "tools": snapshot.tools,
+        "ingesters": _ingesters_status(),
     }
 
     if as_json:
@@ -290,6 +291,68 @@ def doctor(root_dir, as_json, sample_seconds):
         click.echo("Detected tools:")
         for tool in payload["tools"]:
             click.echo(f"  {tool['label']}: {tool['pid_count']} pid(s), confidence {tool['confidence']:.2f}")
+
+    ingesters = payload.get("ingesters") or []
+    if ingesters:
+        click.echo("")
+        click.echo("Ingesters:")
+        for entry in ingesters:
+            status = entry.get("status", "unknown")
+            detail = entry.get("detail", "")
+            click.echo(f"  {entry['name']}: {status} — {detail}")
+
+
+def _ingesters_status() -> list[dict[str, str]]:
+    """Return a brief health entry for each optional per-tool ingester.
+
+    Reports the Cursor ``conversations.db`` ingester (Slice 3.3) and
+    the Copilot CLI ``session-store.db`` ingester (Slice 3.2). Extend
+    this list as other ingesters land.
+    """
+    entries: list[dict[str, str]] = []
+
+    cursor_db = Path("~/.cursor/conversations.db").expanduser()
+    if cursor_db.exists():
+        cursor_status = "available"
+        cursor_detail = f"source present at {cursor_db}"
+    else:
+        cursor_status = "idle"
+        cursor_detail = f"no source at {cursor_db}"
+    entries.append(
+        {
+            "name": "cursor:conversations",
+            "status": cursor_status,
+            "detail": cursor_detail,
+        }
+    )
+
+    from ..dashboard.ingester_runner import ingester_status_for_doctor
+
+    cfg = load_config()
+    for entry in ingester_status_for_doctor(cfg.effective_db_path()):
+        last_ts = entry.get("last_poll_ts") or 0.0
+        if entry.get("enabled") and last_ts:
+            status = "available"
+            detail = (
+                f"source present at {entry['source_path']};"
+                f" last poll {last_ts:.0f} ("
+                f"{entry.get('rows_ingested_total', 0)} rows ingested)"
+            )
+        elif entry.get("enabled"):
+            status = "available"
+            detail = f"source present at {entry['source_path']}; awaiting first poll"
+        else:
+            status = "idle"
+            detail = f"no source at {entry['source_path']}"
+        entries.append(
+            {
+                "name": f"copilot:{entry['name']}",
+                "status": status,
+                "detail": detail,
+            }
+        )
+
+    return entries
 
 
 # ─── dashboard ───────────────────────────────────────────────────────────────

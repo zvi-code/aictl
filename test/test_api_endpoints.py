@@ -678,3 +678,69 @@ class TestSessionSubprocessesAPI:
     def test_missing_session_id_returns_400(self, server):
         status = _get_status(f"{server}/api/session-subprocesses")
         assert status == 400
+
+
+# ── Session Messages endpoint (Slice 3.2) ─────────────────────────
+
+
+class TestSessionMessagesAPI:
+    def test_requires_session_id(self, server):
+        status = _get_status(f"{server}/api/session-messages")
+        assert status == 400
+
+    def test_returns_copilot_store_messages(self, server, populated_db):
+        conn = populated_db._conn()
+        now = time.time()
+        conn.executemany(
+            "INSERT INTO copilot_session_messages"
+            "(session_id, source_row_id, source_table, role, content, ts, ingested_at)"
+            " VALUES(?,?,?,?,?,?,?)",
+            [
+                ("sess-msg", 1, "messages", "user", "hello", now - 10, now),
+                ("sess-msg", 2, "messages", "assistant", "hi there", now - 5, now),
+            ],
+        )
+        conn.commit()
+
+        data = _get_json(f"{server}/api/session-messages?session_id=sess-msg")
+        assert data["session_id"] == "sess-msg"
+        assert data["sources"]["copilot_store"] == 2
+        roles = [m["role"] for m in data["messages"]]
+        assert roles == ["user", "assistant"]
+        assert data["messages"][0]["content"] == "hello"
+        assert all(m["source"] == "copilot_store" for m in data["messages"])
+
+    def test_dedup_across_otel_and_copilot_store(self, server, populated_db):
+        from aictl.storage import EventRow
+
+        now = int(time.time())
+        # OTel-derived user message
+        populated_db.append_event(
+            EventRow(
+                ts=float(now),
+                tool="copilot-cli",
+                kind="otel:user_prompt",
+                session_id="sess-dedup",
+                detail={"session_id": "sess-dedup", "message": "duplicate question"},
+            )
+        )
+        # Same content & rounded ts in copilot store + one unique copilot row
+        conn = populated_db._conn()
+        conn.executemany(
+            "INSERT INTO copilot_session_messages"
+            "(session_id, source_row_id, source_table, role, content, ts, ingested_at)"
+            " VALUES(?,?,?,?,?,?,?)",
+            [
+                ("sess-dedup", 11, "messages", "user", "duplicate question", float(now), float(now)),
+                ("sess-dedup", 12, "messages", "assistant", "unique answer", float(now + 1), float(now)),
+            ],
+        )
+        conn.commit()
+
+        data = _get_json(f"{server}/api/session-messages?session_id=sess-dedup")
+        contents = [m["content"] for m in data["messages"]]
+        # Dedup collapsed the duplicate user line.
+        assert contents.count("duplicate question") == 1
+        assert "unique answer" in contents
+        assert data["sources"]["otel"] >= 1
+        assert data["sources"]["copilot_store"] == 2
