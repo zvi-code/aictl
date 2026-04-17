@@ -480,11 +480,30 @@ class _APIHandlersMixin:
                         "input_tokens": in_tok,
                         "output_tokens": out_tok,
                         "total_tokens": in_tok + out_tok,
+                        "file_churn": 0,
                     }
                 )
         # Sort by timestamp descending (most recent first), apply limit
         runs.sort(key=lambda r: r["ts"], reverse=True)
         runs = runs[:limit]
+
+        # Enrich with file_churn (distinct files touched) from sessions table.
+        # Keeps the endpoint shape stable aside from the new field.
+        if db and runs:
+            sids = [r["session_id"] for r in runs if r["session_id"]]
+            if sids:
+                try:
+                    conn = db._conn()
+                    placeholders = ",".join("?" for _ in sids)
+                    cur = conn.execute(
+                        f"SELECT session_id, files_modified FROM sessions WHERE session_id IN ({placeholders})",
+                        sids,
+                    )
+                    churn_by_sid = {row[0]: int(row[1] or 0) for row in cur.fetchall()}
+                    for r in runs:
+                        r["file_churn"] = churn_by_sid.get(r["session_id"], 0)
+                except Exception:
+                    pass
 
         self._json_response(runs)
 
