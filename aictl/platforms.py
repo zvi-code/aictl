@@ -125,6 +125,11 @@ def copilot_session_dir() -> Path:
     return _app_dir("GitHub Copilot/session-state", dot=".copilot/session-state")
 
 
+def copilot_global_dir() -> Path:
+    """User-level Copilot CLI / VS Code Copilot hooks+skills dir (``~/.copilot``)."""
+    return _app_dir("GitHub Copilot", dot=".copilot")
+
+
 # ── VS Code ──────────────────────────────────────────────────────
 
 

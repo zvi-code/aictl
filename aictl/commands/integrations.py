@@ -41,6 +41,7 @@ from ..platforms import (
     IS_WINDOWS,
     claude_global_dir,
     codex_global_dir,
+    copilot_global_dir,
     gemini_global_dir,
     vscode_user_dir,
 )
@@ -143,6 +144,27 @@ GEMINI_HOOK_MAP = {
     "PreCompact": "PreCompress",
     "Notification": "Notification",
 }
+
+
+# VS Code Copilot lifecycle events. The VS Code chat runtime loads hook
+# files from ``chat.hookFilesLocations`` (defaults: ``.github/hooks``,
+# ``~/.copilot/hooks``) and, with ``chat.useClaudeHooks=false`` (the
+# default), only parses the Copilot-native flat schema:
+#
+#     {"hooks": {"EventName": [{"type": "command", "command": "..."}]}}
+#
+# Event set is the Claude-compatible subset documented by GitHub in
+# ``docs/tool-copilot.md`` / ``docs/tools-analysis-docs/vscode.md``.
+VSCODE_HOOK_EVENTS = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "SubagentStart",
+    "SubagentStop",
+    "PreCompact",
+    "Stop",
+]
 
 
 _AICTL_ENV_BEGIN = "# >>> aictl env >>>"
@@ -481,6 +503,12 @@ def uninstall(scope: str, force: bool, dry_run: bool):
     settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
     click.echo(f"Removed aictl hooks from {settings_path}")
 
+    # Also remove the VS Code Copilot hook file (scope-symmetric).
+    vscode_actions: list[str] = []
+    _uninstall_vscode_hooks(scope, vscode_actions)
+    for action in vscode_actions:
+        click.echo(action)
+
 
 def _print_settings_diff(path: Path, before: dict, after: dict) -> None:
     """Print a unified diff of two JSON settings blobs."""
@@ -635,9 +663,33 @@ def _doctor_check_one(event: str, rule: dict) -> dict:
     }
 
 
+def _iter_installed_vscode_hooks(hook_path: Path):
+    """Yield (event, rule_dict) for every aictl-owned Copilot flat hook entry."""
+    if not hook_path.exists():
+        return
+    try:
+        data = read_json_or_fail(hook_path)
+    except CorruptJSONError:
+        return
+    hooks_cfg = data.get("hooks", {})
+    if not isinstance(hooks_cfg, dict):
+        return
+    for event, rules in hooks_cfg.items():
+        if not isinstance(rules, list):
+            continue
+        for rule in rules:
+            if isinstance(rule, dict) and _is_aictl_hook(rule):
+                yield event, rule
+
+
 def _collect_doctor_results(scope: str) -> list[dict]:
     settings_path = _settings_path(scope)
     results = [_doctor_check_one(event, rule) for event, rule in _iter_installed_aictl_hooks(settings_path)]
+    vscode_path = _vscode_hook_settings_path(scope)
+    results.extend(
+        _doctor_check_one(event, rule)
+        for event, rule in _iter_installed_vscode_hooks(vscode_path)
+    )
     return results
 
 
@@ -1235,6 +1287,112 @@ def _write_json_settings(path: Path, updates: dict, *, force: bool = False) -> s
     return status
 
 
+def _vscode_hook_settings_path(scope: str) -> Path:
+    """Return the VS Code Copilot hook file path for the given scope.
+
+    aictl owns a single file per scope so uninstall is trivial (delete
+    the file). The file is one of the default entries in VS Code's
+    ``chat.hookFilesLocations``.
+    """
+    if scope == "project":
+        return Path.cwd() / ".github" / "hooks" / "aictl.json"
+    return copilot_global_dir() / "hooks" / "aictl.json"
+
+
+def _build_vscode_hook_config(
+    port: int, events: list[str] | None, *, scope: str
+) -> dict[str, list[dict]]:
+    """Build the Copilot-native flat hook config.
+
+    Copilot loads ``{"hooks": {"EventName": [{"type":"command","command":"..."}]}}``.
+    Each command entry carries the ``_aictl_owner`` marker so doctor / diff
+    tooling can attribute it back to us. VS Code ignores unknown keys in
+    hook entries, so the marker is safe to include.
+    """
+    target_events = events or VSCODE_HOOK_EVENTS
+    python = _python_cmd()
+    source_id = _source_id(scope, "vscode")
+    hooks: dict[str, list[dict]] = {}
+    for event in target_events:
+        cmd = f"{python} -m aictl.hook_handler --event {event} --port {port} --source {source_id}"
+        hooks[event] = [
+            {
+                "type": "command",
+                "command": cmd,
+                "_aictl_owner": _AICTL_OWNER_MARKER,
+            }
+        ]
+    return hooks
+
+
+def _install_vscode_hooks(
+    scope: str, port: int, actions: list[str], *, force: bool = False  # noqa: ARG001
+) -> None:
+    """Install VS Code Copilot hooks at the given scope.
+
+    Writes a dedicated ``aictl.json`` hook file (user: ``~/.copilot/hooks/``;
+    project: ``.github/hooks/``). Because the file is aictl-owned end to end
+    the installer just replaces it; ``force`` is accepted for signature parity
+    with the Claude/Gemini installers but is not needed.
+    """
+    try:
+        hook_path = _vscode_hook_settings_path(scope)
+    except (KeyError, OSError) as exc:
+        actions.append(f"VS Code Copilot hooks FAILED ({exc})")
+        return
+
+    hook_path.parent.mkdir(parents=True, exist_ok=True)
+    hook_config = _build_vscode_hook_config(port, None, scope=scope)
+    payload = {"hooks": hook_config}
+    guard = WriteGuard.current()
+    if guard:
+        guard.confirm(hook_path, "modify" if hook_path.exists() else "create")
+    hook_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    actions.append(
+        f"VS Code Copilot hooks ({len(VSCODE_HOOK_EVENTS)} events) → {hook_path}"
+    )
+
+
+def _uninstall_vscode_hooks(scope: str, actions: list[str]) -> None:
+    """Remove the aictl-owned VS Code Copilot hook file if present.
+
+    The file is wholly owned by aictl (one file per scope, created by
+    ``_install_vscode_hooks``), so removal is a direct delete.
+    """
+    hook_path = _vscode_hook_settings_path(scope)
+    if not hook_path.exists():
+        return
+    # Defensive: only remove if the file actually looks like one of ours.
+    try:
+        data = read_json_or_fail(hook_path)
+    except CorruptJSONError:
+        return
+    if not _vscode_hook_file_is_ours(data):
+        actions.append(f"VS Code Copilot hooks left intact at {hook_path} (not aictl-owned)")
+        return
+    guard = WriteGuard.current()
+    if guard:
+        guard.confirm(hook_path, "delete")
+    hook_path.unlink()
+    actions.append(f"Removed aictl VS Code Copilot hooks → {hook_path}")
+
+
+def _vscode_hook_file_is_ours(data: dict) -> bool:
+    """True if every hook entry in a Copilot hook file carries the aictl marker."""
+    if not isinstance(data, dict):
+        return False
+    hooks_cfg = data.get("hooks", {})
+    if not isinstance(hooks_cfg, dict) or not hooks_cfg:
+        return False
+    for rules in hooks_cfg.values():
+        if not isinstance(rules, list):
+            return False
+        for rule in rules:
+            if not _is_aictl_hook(rule):
+                return False
+    return True
+
+
 def _install_hooks(scope: str, port: int, actions: list[str], *, force: bool = False) -> None:
     """Install Claude Code hooks and report actions."""
     if scope == "project":
@@ -1299,6 +1457,10 @@ def _install_hooks(scope: str, port: int, actions: list[str], *, force: bool = F
         guard.confirm(gemini_path, "modify")
     gemini_path.write_text(json.dumps(g_existing, indent=2) + "\n", encoding="utf-8")
     actions.append(f"Gemini CLI hooks ({len(GEMINI_HOOK_MAP)} events) → {gemini_path}")
+
+    # VS Code Copilot hooks — separate file under chat.hookFilesLocations
+    # defaults (``.github/hooks`` for project, ``~/.copilot/hooks`` for user).
+    _install_vscode_hooks(scope, port, actions, force=force)
 
 
 def _enable_otel(port: int, actions: list[str], *, force: bool = False) -> None:
@@ -1432,10 +1594,14 @@ def enable(scope: str, port: int | None, dry_run: bool, force: bool) -> None:
             except (KeyError, OSError):
                 vscode_path = Path("(VS Code settings not found)")
 
+        vscode_hooks_path = _vscode_hook_settings_path(scope)
+
         click.echo(f"  [hooks]  {hooks_path}")
         click.echo(f"           {len(HOOK_EVENTS)} Claude Code events → {endpoint}/api/hooks")
         click.echo(f"  [hooks]  {gemini_hooks_path}")
         click.echo(f"           {len(GEMINI_HOOK_MAP)} Gemini CLI events → {endpoint}/api/hooks")
+        click.echo(f"  [hooks]  {vscode_hooks_path}")
+        click.echo(f"           {len(VSCODE_HOOK_EVENTS)} VS Code Copilot events → {endpoint}/api/hooks")
         if IS_WINDOWS:
             click.echo(
                 f"  [otel]   Windows env vars via setx ({len(_build_env_block(port, ['claude', 'copilot', 'codex', 'gemini']))} vars)"
