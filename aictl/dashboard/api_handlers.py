@@ -351,6 +351,53 @@ class _APIHandlersMixin:
         status = self.server.otel_receiver.status()
         self._json_response(status)
 
+    def _serve_session_mcp_usage(self) -> None:
+        """Return per-session MCP server usage.
+
+        GET /api/session-mcp-usage?session_id=X
+
+        Joins ``.vscode/mcp.json`` (and friends) discovered under the
+        session's project root with OTel events that touched an MCP
+        server during the session. Returns:
+
+        ``{session_id, servers: [{server_name, call_count, first_ts,
+        last_ts, total_duration_ms, err_count}], total_calls,
+        configured_servers: [name, ...]}``.
+
+        Configured-but-unused servers appear in ``configured_servers``
+        only (not in ``servers``); the UI renders them dimmed.
+        """
+        from ..analysis.mcp_usage import configured_servers, session_mcp_calls
+
+        session_id = self._qs_get("session_id")
+        if not session_id:
+            self.send_error(400, "Missing session_id")
+            return
+        db = self._db
+        if not db:
+            self._json_response(
+                {
+                    "session_id": session_id,
+                    "servers": [],
+                    "total_calls": 0,
+                    "configured_servers": [],
+                }
+            )
+            return
+        servers = session_mcp_calls(db, session_id)
+        sess = db.get_session(session_id) or {}
+        project_path = sess.get("project_path", "") or ""
+        configured = configured_servers(project_path)
+        total_calls = sum(int(s.get("call_count", 0)) for s in servers)
+        self._json_response(
+            {
+                "session_id": session_id,
+                "servers": servers,
+                "total_calls": total_calls,
+                "configured_servers": configured,
+            }
+        )
+
     def _serve_api_calls(self) -> None:
         """Return API call data from OTel events.
 

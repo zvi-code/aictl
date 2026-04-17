@@ -10,6 +10,7 @@ import DeliverablesPanel from './session_detail/DeliverablesPanel.js';
 import ApiCallsPanel from './session_detail/ApiCallsPanel.js';
 import ProjectCostPanel from './session_detail/ProjectCostPanel.js';
 import RunHistoryPanel from './session_detail/RunHistoryPanel.js';
+import McpUsagePanel from './session_detail/McpUsagePanel.js';
 import { fmtDur } from './session_detail/helpers.js';
 
 // Thin orchestrator — just the session header + a stack of Panels.
@@ -61,6 +62,9 @@ export default function SessionDetail({session, onClose}) {
     <//>
     <${Panel} title="Resources" icon="\u2699\uFE0F" badge=${fmtK(inTok + outTok) + ' tok'}>
       <${ResourcesPanel} session=${session}/>
+    <//>
+    <${Panel} title="MCP Servers" icon="\uD83D\uDD0C" defaultOpen=${false}>
+      <${McpUsagePanel} sessionId=${session.session_id}/>
     <//>
     <${Panel} title="Deliverables" icon="\uD83D\uDCE6" badge=${filesTouched.length || null}>
       <${DeliverablesPanel} session=${session}/>

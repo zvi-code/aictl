@@ -298,12 +298,12 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._serve_session_memory_diff()
         elif path.startswith("/api/session-messages"):
             self._serve_session_messages()
+        elif path.startswith("/api/session-mcp-usage"):
+            self._serve_session_mcp_usage()
         elif path.startswith("/api/transcript/"):
             self._serve_transcript()
         elif path.startswith("/api/transcripts"):
             self._serve_transcripts()
-        elif path.startswith("/api/session-messages"):
-            self._serve_session_messages()
         elif path.startswith("/api/otel-status"):
             self._serve_otel_status()
         elif path.startswith("/api/api-calls"):
