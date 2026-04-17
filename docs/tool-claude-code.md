@@ -35,6 +35,10 @@
 
 Auto-memory is swapped on profile switch. See [memory.md](memory.md).
 
+## Hook Integration
+
+`aictl enable` writes nested Claude-format hook entries to `.claude/settings.local.json` (project) or `~/.claude/settings.json` (user). Each command invokes `python -m aictl.hook_handler --event <E> --port <P> --source <id>`, where `<id>` is `root.claude-user` for user scope or `<sanitized-cwd-basename>.claude-project` for project scope. The `<id>` lets the aictl server attribute every POST to `/api/hooks` back to the exact wrapper that emitted it — critical when both user-global and per-project hooks fire concurrently. See `docs/tool-copilot.md` for the VS Code counterpart and `docs/tool-claude-desktop.md` for the MCP side.
+
 ## VS Code Extension
 
 The Claude Code VS Code extension bundles its own `claude` binary (~188 MB) and spawns it as a child process. It reads the same files as the CLI — no separate configuration needed. Restart the session after deploy.
