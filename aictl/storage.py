@@ -107,6 +107,13 @@ CREATE TABLE IF NOT EXISTS session_processes (
     joined_at REAL DEFAULT 0, role TEXT DEFAULT 'subprocess',
     PRIMARY KEY (session_id, pid)
 );
+CREATE TABLE IF NOT EXISTS session_commits (
+    session_id TEXT NOT NULL, sha TEXT NOT NULL,
+    author_name TEXT DEFAULT '', author_email TEXT DEFAULT '',
+    ts REAL NOT NULL, subject TEXT DEFAULT '',
+    PRIMARY KEY (session_id, sha)
+);
+CREATE INDEX IF NOT EXISTS idx_session_commits_sid ON session_commits(session_id);
 CREATE TABLE IF NOT EXISTS agents (
     agent_id TEXT PRIMARY KEY, session_id TEXT DEFAULT '', tool TEXT DEFAULT '',
     task TEXT DEFAULT '', model TEXT DEFAULT '', is_sidechain INTEGER DEFAULT 0,
@@ -301,6 +308,20 @@ CREATE INDEX IF NOT EXISTS idx_metrics_tool ON metrics(tool, ts);
 CREATE INDEX IF NOT EXISTS idx_path_defs_tool ON path_defs(ai_tool);
 CREATE INDEX IF NOT EXISTS idx_process_defs_tool ON process_defs(ai_tool);
 
+-- ═══ Memory snapshots (Claude Code session start/end capture) ═══
+
+CREATE TABLE IF NOT EXISTS memory_snapshots (
+    session_id TEXT NOT NULL,
+    phase      TEXT NOT NULL CHECK(phase IN ('start','end')),
+    path       TEXT NOT NULL,
+    sha        TEXT NOT NULL,
+    content    TEXT NOT NULL DEFAULT '',
+    ts         REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (session_id, phase, path)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_snapshots_session
+    ON memory_snapshots(session_id, phase);
+
 -- ═══ UI Schema: data-driven dashboard layout (unchanged) ═══
 
 CREATE TABLE IF NOT EXISTS ui_dashboard (
@@ -411,6 +432,33 @@ CREATE TABLE IF NOT EXISTS datapoint_catalog (
 );
 
 CREATE INDEX IF NOT EXISTS idx_datapoint_catalog_tab ON datapoint_catalog(tab);
+
+-- Cursor conversations ingester (Slice 3.3).
+CREATE TABLE IF NOT EXISTS cursor_session_messages (
+    session_id    TEXT NOT NULL,
+    source_row_id INTEGER NOT NULL PRIMARY KEY,
+    role          TEXT DEFAULT '',
+    content       TEXT DEFAULT '',
+    ts            REAL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_cursor_session_messages_session
+    ON cursor_session_messages(session_id, ts);
+
+-- Copilot CLI session-store ingester (Slice 3.2).
+CREATE TABLE IF NOT EXISTS copilot_session_messages (
+    session_id     TEXT NOT NULL,
+    source_row_id  INTEGER NOT NULL,
+    source_table   TEXT NOT NULL DEFAULT '',
+    role           TEXT DEFAULT '',
+    content        TEXT DEFAULT '',
+    ts             REAL NOT NULL DEFAULT 0,
+    ingested_at    REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (source_table, source_row_id)
+);
+CREATE INDEX IF NOT EXISTS idx_copilot_session_messages_session
+    ON copilot_session_messages(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_copilot_session_messages_ts
+    ON copilot_session_messages(ts);
 """
 
 
@@ -2530,6 +2578,71 @@ class HistoryDB:
             params,
         )
         conn.commit()
+
+    # ── Session commits (git attribution) ──────────────────────────
+
+    def upsert_session_commits(self, session_id: str, commits: list[dict]) -> None:
+        """Persist attributed commits for a session. Idempotent per (sid, sha)."""
+        if not session_id or not commits:
+            return
+        conn = self._conn()
+        rows = [
+            (
+                session_id,
+                str(c.get("sha", "")),
+                str(c.get("author_name", "")),
+                str(c.get("author_email", "")),
+                float(c.get("ts", 0.0) or 0.0),
+                str(c.get("subject", ""))[:500],
+            )
+            for c in commits
+            if c.get("sha")
+        ]
+        if not rows:
+            return
+        conn.executemany(
+            "INSERT OR IGNORE INTO session_commits"
+            "(session_id, sha, author_name, author_email, ts, subject) VALUES(?,?,?,?,?,?)",
+            rows,
+        )
+        conn.commit()
+
+    def get_session_commits(self, session_id: str) -> list[dict]:
+        """Return persisted commits for a session, oldest first."""
+        if not session_id:
+            return []
+        conn = self._conn()
+        return _rows_to_dicts(
+            conn.execute(
+                "SELECT sha, author_name, author_email, ts, subject "
+                "FROM session_commits WHERE session_id = ? ORDER BY ts ASC",
+                (session_id,),
+            )
+        )
+
+    def count_session_commits(self, session_id: str) -> int:
+        """Return the number of attributed commits for a session."""
+        if not session_id:
+            return 0
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM session_commits WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def get_session(self, session_id: str) -> dict | None:
+        """Return a single session row as a dict, or None."""
+        if not session_id:
+            return None
+        conn = self._conn()
+        rows = _rows_to_dicts(
+            conn.execute(
+                "SELECT * FROM sessions WHERE session_id = ? LIMIT 1",
+                (session_id,),
+            )
+        )
+        return rows[0] if rows else None
 
     def update_tool_invocation_duration(
         self,

@@ -111,8 +111,24 @@ export async function getSessionSubprocesses(sessionId) {
   return r.json();
 }
 
+/** Per-session git commit attribution.
+ *  Returns {session_id, branch, commits: [{sha, short_sha, author_name,
+ *  author_email, ts, subject, current_branch_match}]}. */
+export async function getSessionCommits(sessionId) {
+  const r = await fetch(url('/api/session-commits?session_id=' + encodeURIComponent(sessionId)));
+  return r.json();
+}
+
 export async function getAgentTeams(sessionId) {
   const r = await fetch(url('/api/agent-teams?session_id=' + encodeURIComponent(sessionId)));
+  return r.json();
+}
+
+/** Fetch the Claude Code memory diff (start vs end snapshot) for a session.
+ *  Returns {files: [{path, change, added_lines, removed_lines, unified_diff}],
+ *  summary: {added, modified, removed}}. */
+export async function getSessionMemoryDiff(sessionId) {
+  const r = await fetch(url('/api/session-memory-diff?session_id=' + encodeURIComponent(sessionId)));
   return r.json();
 }
 
