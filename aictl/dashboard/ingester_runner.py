@@ -24,6 +24,13 @@ from ..ingesters.copilot_session_store import (
     CopilotSessionStoreIngester,
     default_db_path,
 )
+from ..ingesters.vscode_chat_logs import (
+    POLL_INTERVAL_S as VSCODE_CHAT_POLL_INTERVAL_S,
+)
+from ..ingesters.vscode_chat_logs import (
+    VSCodeChatLogsIngester,
+    default_log_dir as vscode_chat_default_log_dir,
+)
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +86,28 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
         handle.thread = thread
         thread.start()
     handles[handle.name] = handle
+
+    # ── VS Code Copilot Chat logs (Slice 3.4a) ─────────────────
+    vscode_path = vscode_chat_default_log_dir()
+    vscode_enabled = vscode_path.exists()
+    v_handle = IngesterHandle(
+        name="vscode-chat-logs",
+        enabled=vscode_enabled,
+        source_path=vscode_path,
+        source_exists=vscode_enabled,
+    )
+    if vscode_enabled:
+        v_ing = VSCodeChatLogsIngester(vscode_path, db)
+        v_handle.ingester = v_ing
+        v_thread = threading.Thread(
+            target=_poll_loop,
+            args=(v_ing, v_handle.stop_event, VSCODE_CHAT_POLL_INTERVAL_S, v_handle.name),
+            daemon=True,
+            name="ingester-vscode-chat-logs",
+        )
+        v_handle.thread = v_thread
+        v_thread.start()
+    handles[v_handle.name] = v_handle
     return handles
 
 

@@ -459,6 +459,23 @@ CREATE INDEX IF NOT EXISTS idx_copilot_session_messages_session
     ON copilot_session_messages(session_id, ts);
 CREATE INDEX IF NOT EXISTS idx_copilot_session_messages_ts
     ON copilot_session_messages(ts);
+
+-- VS Code Copilot Chat log ingester (Slice 3.4a).
+CREATE TABLE IF NOT EXISTS vscode_chat_messages (
+    session_id     TEXT NOT NULL,
+    source_file    TEXT NOT NULL,
+    source_row_id  INTEGER NOT NULL,
+    role           TEXT DEFAULT '',
+    content        TEXT DEFAULT '',
+    model          TEXT DEFAULT '',
+    ts             REAL NOT NULL DEFAULT 0,
+    ingested_at    REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (session_id, source_file, source_row_id)
+);
+CREATE INDEX IF NOT EXISTS idx_vscode_chat_messages_session
+    ON vscode_chat_messages(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_vscode_chat_messages_file
+    ON vscode_chat_messages(source_file);
 """
 
 

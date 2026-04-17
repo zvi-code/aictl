@@ -212,11 +212,16 @@ class _APIHandlersMixin:
         Merges messages derived from OTel events (``otel:user_prompt`` /
         ``otel:user_message`` / ``hook:UserPromptSubmit``) with rows
         ingested from Copilot CLI's ``session-store.db``
-        (:class:`aictl.ingesters.copilot_session_store.CopilotSessionStoreIngester`).
+        (:class:`aictl.ingesters.copilot_session_store.CopilotSessionStoreIngester`),
+        Cursor's ``conversations.db``
+        (:class:`aictl.ingesters.cursor_conversations.CursorConversationsIngester`),
+        and VS Code Copilot Chat ``chatSessions/*.jsonl`` files
+        (:class:`aictl.ingesters.vscode_chat_logs.VSCodeChatLogsIngester`).
 
         Rows are deduplicated by ``(role, content, rounded_ts)`` so the
-        two sources never produce visible duplicates. Sorted oldest
-        first. Returns ``{"messages": [...], "sources": {"otel": N, "copilot_store": M}}``.
+        sources never produce visible duplicates. Sorted oldest first.
+        Returns ``{"messages": [...], "sources": {"otel": N,
+        "copilot_store": M, "cursor": K, "vscode_chat": V}}``.
         """
         session_id = self._qs_get("session_id")
         if not session_id:
@@ -225,7 +230,12 @@ class _APIHandlersMixin:
         limit = min(int(self._qs_get("limit", "200") or "200"), 2000)
         db = self._db
         if not db:
-            self._json_response({"messages": [], "sources": {"otel": 0, "copilot_store": 0}})
+            self._json_response(
+                {
+                    "messages": [],
+                    "sources": {"otel": 0, "copilot_store": 0, "cursor": 0, "vscode_chat": 0},
+                }
+            )
             return
 
         otel_msgs: list[dict] = []
@@ -290,10 +300,30 @@ class _APIHandlersMixin:
         except Exception:
             pass
 
+        vscode_msgs: list[dict] = []
+        try:
+            conn = db._conn()
+            rows = conn.execute(
+                "SELECT role, content, ts FROM vscode_chat_messages"
+                " WHERE session_id = ? ORDER BY ts ASC, source_row_id ASC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+            for role, content, ts in rows:
+                vscode_msgs.append(
+                    {
+                        "role": str(role or ""),
+                        "content": str(content or "")[:4000],
+                        "ts": float(ts or 0),
+                        "source": "vscode_chat",
+                    }
+                )
+        except Exception:
+            pass
+
         # Dedup by (role, content, rounded_ts); prefer OTel-derived rows.
         seen: set[tuple[str, str, int]] = set()
         merged: list[dict] = []
-        for m in otel_msgs + copilot_msgs + cursor_msgs:
+        for m in otel_msgs + copilot_msgs + cursor_msgs + vscode_msgs:
             key = (m["role"], m["content"], int(m["ts"]))
             if key in seen:
                 continue
@@ -311,6 +341,7 @@ class _APIHandlersMixin:
                     "otel": len(otel_msgs),
                     "copilot_store": len(copilot_msgs),
                     "cursor": len(cursor_msgs),
+                    "vscode_chat": len(vscode_msgs),
                 },
             }
         )
