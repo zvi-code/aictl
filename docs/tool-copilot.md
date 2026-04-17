@@ -88,7 +88,7 @@ copilot --additional-mcp-config .copilot-mcp.json
 
 The file uses the Copilot-native flat schema (`{"hooks": {"EventName": [{"type":"command","command":"..."}]}}`) so it runs without enabling `chat.useClaudeHooks`. Each command invokes `python -m aictl.hook_handler --event <E> --port <P> --source <id>`; the `<id>` is how the server attributes every POST to `/api/hooks` back to the exact wrapper that emitted it.
 
-Installed events are the Claude-compatible subset Copilot supports: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `SubagentStart`, `SubagentStop`, `PreCompact`, `Stop`. Claude-only events (`SessionEnd`, `PermissionRequest`, `Notification`, `PostCompact`, `Elicitation`, etc.) have no VS Code analog and are intentionally not installed.
+Installed events track the runtime enum in `out/vs/workbench/workbench.desktop.main.js` as of VS Code 1.116: `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `SubagentStart`, `SubagentStop`, `PreCompact`, `Stop`, `ErrorOccurred`. Claude-only events without a VS Code analog (`PermissionRequest`, `Notification`, `PostCompact`, `Elicitation`, etc.) are intentionally not installed.
 
 Every entry carries `"_aictl_owner": "aictl.managed"`, and `aictl hooks doctor` / `aictl hooks uninstall` operate on this file too.
 
