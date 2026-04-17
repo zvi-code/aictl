@@ -80,6 +80,15 @@ export async function getSessionRuns(project, tool, days = 30, limit = 20) {
   return r.json();
 }
 
+export async function getSessionEvents(sessionId, opts = {}) {
+  let path = '/api/events?session_id=' + encodeURIComponent(sessionId);
+  if (opts.since != null) path += '&since=' + opts.since;
+  if (opts.until != null) path += '&until=' + opts.until;
+  if (opts.limit != null) path += '&limit=' + opts.limit;
+  const r = await fetch(url(path));
+  return r.json();
+}
+
 export async function getAgentTeams(sessionId) {
   const r = await fetch(url('/api/agent-teams?session_id=' + encodeURIComponent(sessionId)));
   return r.json();

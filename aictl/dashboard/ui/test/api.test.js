@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   getSnapshot, getHistory, getEvents, getSessions, getSessionFlow,
+  getSessionEvents,
   getBudget, getOtelStatus, getSelfStatus, getSamplesList,
   getDatapoints, resetDatapointCache, setBaseUrl, getBaseUrl, streamUrl,
 } from '../src/api.js';
@@ -110,6 +111,13 @@ describe('getSessionFlow', () => {
   it('builds correct URL', async () => {
     await getSessionFlow('sess-1', 1000, 2000);
     expect(fetch).toHaveBeenCalledWith('/api/session-flow?session_id=sess-1&since=1000&until=2000');
+  });
+});
+
+describe('getSessionEvents', () => {
+  it('builds URL with required session id and optional range filters', async () => {
+    await getSessionEvents('sess-2', { since: 111, until: 222, limit: 50 });
+    expect(fetch).toHaveBeenCalledWith('/api/events?session_id=sess-2&since=111&until=222&limit=50');
   });
 });
 
