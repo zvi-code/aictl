@@ -111,6 +111,13 @@ export async function getSessionSubprocesses(sessionId) {
   return r.json();
 }
 
+/** Per-session MCP server usage. Returns {servers: [...], total_calls,
+ *  configured_servers: [name, ...]}. */
+export async function getSessionMcpUsage(sessionId) {
+  const r = await fetch(url('/api/session-mcp-usage?session_id=' + encodeURIComponent(sessionId)));
+  return r.json();
+}
+
 /** Per-session git commit attribution.
  *  Returns {session_id, branch, commits: [{sha, short_sha, author_name,
  *  author_email, ts, subject, current_branch_match}]}. */
