@@ -62,6 +62,7 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
         {
             "command": lambda n: tool / "commands" / f"{n}.md",
             "skill": lambda n: tool / "skills" / n / "SKILL.md",
+            "agent": lambda n: tool / "agents" / f"{n}.md",
         },
         dry_run,
         results,
@@ -92,6 +93,7 @@ GITIGNORE = [
     ".claude/rules/",
     ".claude/commands/",
     ".claude/skills/",
+    ".claude/agents/",
     ".claude/settings.local.json",
     ".mcp.json",
     ".lsp.json",
