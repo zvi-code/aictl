@@ -35,7 +35,7 @@ export const GROUP_MODES = [
   {id:'host', label:'Host'},
 ];
 
-import { getFile } from './api.js';
+import { getFile, getFileAt } from './api.js';
 
 // ─── Module-level shared state ─────────────────────────────────
 export const fileCache = new Map(); // { path → { content, ts } }
@@ -176,6 +176,15 @@ export async function fetchFileContent(path) {
   const etag = res.headers.get('ETag') || null;
   fileCache.set(path, { content: text, ts: Date.now(), etag });
   return text;
+}
+
+/** Fetch historical file content at a point in time. Bypasses the live
+ *  fileCache (which is keyed by path and holds current-content). */
+export async function fetchFileContentAt(path, ts) {
+  const res = await getFileAt(path, ts);
+  if (res.status === 404) throw new Error('No content at that timestamp');
+  if (!res.ok) throw new Error(res.statusText);
+  return res.text();
 }
 
 export function fmtAgo(mtime) {

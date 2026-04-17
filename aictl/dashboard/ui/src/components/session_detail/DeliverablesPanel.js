@@ -1,7 +1,11 @@
+import { useContext } from 'preact/hooks';
 import { html } from 'htm/preact';
+import { SnapContext } from '../../context.js';
 import { fmtK, esc } from '../../utils.js';
+import FileHistoryButtons from './FileHistoryButtons.js';
 
 export default function DeliverablesPanel({session}) {
+  const ctx = useContext(SnapContext);
   const filesTouched = session.files_touched || [];
   const fileEvents = session.file_events || 0;
 
@@ -15,7 +19,11 @@ export default function DeliverablesPanel({session}) {
       <div class="es-kv-card"><div class="label">File Events</div><div class="value">${fmtK(fileEvents)}</div></div>
     </div>
     <div class="mono text-xs" style="max-height:12rem;overflow-y:auto">
-      ${filesTouched.map(f => html`<div key=${f} class="text-muted" style="padding:2px 0">${esc(f)}</div>`)}
+      ${filesTouched.map(f => html`<div key=${f} class="flex-row gap-sm text-muted"
+        style="padding:2px 0;align-items:center">
+        <span class="text-ellipsis" style="flex:1;min-width:0">${esc(f)}</span>
+        <${FileHistoryButtons} path=${f} session=${session} openViewer=${ctx.openViewer}/>
+      </div>`)}
     </div>
   </div>`;
 }

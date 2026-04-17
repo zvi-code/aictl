@@ -2,9 +2,9 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'preact/hooks'
 import { useContext } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
-import { fmtSz, fmtK, esc, fetchFileContent, PREVIEW_LINES } from '../utils.js';
+import { fmtSz, fmtK, esc, fetchFileContent, fetchFileContentAt, PREVIEW_LINES } from '../utils.js';
 
-export default function FileViewer({path, onClose}) {
+export default function FileViewer({path, at, onClose}) {
   const {snap: s} = useContext(SnapContext);
   const [text, setText] = useState(null);
   const [expanded, setExpanded] = useState(false);
@@ -72,9 +72,10 @@ export default function FileViewer({path, onClose}) {
 
   useEffect(()=>{
     if(!path) return;
-    setExpanded(false); setError(null);
-    fetchFileContent(path).then(setText).catch(e=>setError(e.message));
-  },[path]);
+    setExpanded(false); setError(null); setText(null);
+    const p = at ? fetchFileContentAt(path, at) : fetchFileContent(path);
+    p.then(setText).catch(e=>setError(e.message));
+  },[path, at]);
   if(!path) return null;
   const meta = useMemo(()=>{
     if(!s) return '';
@@ -93,6 +94,10 @@ export default function FileViewer({path, onClose}) {
     <div class="file-viewer__resize-handle" onMouseDown=${onMouseDown}/>
     <div class="fv-head">
       <span class="path">${path}</span>
+      ${at && html`<span class="badge text-xs mono" style="background:var(--bg2);color:var(--fg2);margin-left:var(--sp-2)"
+        title=${'Historical content at unix ts ' + at}>@ ${new Date(at * 1000).toLocaleString([], {
+          month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'
+        })}</span>`}
       <button onClick=${onClose} aria-label="Close file viewer">Close (Esc)</button>
     </div>
     <div class="fv-meta">${meta}</div>

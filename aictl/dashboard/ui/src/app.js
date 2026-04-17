@@ -275,7 +275,10 @@ export default function App() {
     ? globalRange.until - globalRange.since
     : RANGE_SECONDS[globalRange.id] || 3600;
 
-  const openViewer = useCallback(path => setViewerPath(path), []);
+  const openViewer = useCallback((path, opts = {}) => {
+    if (!path) return setViewerPath(null);
+    setViewerPath({ path, at: opts.at ?? null });
+  }, []);
   const filteredSnap = useMemo(
     () => filterSnap(snap, enabledTools, searchQuery),
     [snap, enabledTools, searchQuery],
@@ -361,7 +364,9 @@ export default function App() {
         </main>
       </div>
     </div>
-    <${FileViewer} path=${viewerPath} onClose=${() => setViewerPath(null)}/>
+    <${FileViewer} path=${viewerPath?.path ?? (typeof viewerPath === 'string' ? viewerPath : null)}
+      at=${typeof viewerPath === 'object' ? viewerPath?.at : null}
+      onClose=${() => setViewerPath(null)}/>
     <${DatapointTooltip}/>
     <${CommandPalette} commands=${commands}
       isOpen=${palette.isOpen} onClose=${palette.close}

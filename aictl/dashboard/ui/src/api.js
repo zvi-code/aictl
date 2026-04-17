@@ -136,6 +136,13 @@ export async function getFile(path, headers = {}) {
   return fetch(url('/api/file?path=' + encodeURIComponent(path)), { headers });
 }
 
+/** Fetch historical file content at a specific timestamp.
+ *  Returns a fetch Response; caller should check .ok and read .text().
+ *  Backed by /api/files/history?path=X&ts=Y which returns plain text. */
+export async function getFileAt(path, ts) {
+  return fetch(url('/api/files/history?path=' + encodeURIComponent(path) + '&ts=' + ts));
+}
+
 // ─── Samples ───────────────────────────────────────────────────
 
 export async function getSamplesList() {
