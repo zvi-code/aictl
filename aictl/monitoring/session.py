@@ -178,6 +178,9 @@ class SessionState:
             "exact_input_tokens": self.exact_input_tokens,
             "exact_output_tokens": self.exact_output_tokens,
             "subprocess_count": dict(self.subprocess_counter),
+            "recent_subprocesses": [
+                {"ts": ts, "name": name} for ts, name in self.recent_subprocesses
+            ],
         }
 
 

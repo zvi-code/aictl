@@ -105,6 +105,12 @@ export async function getSamples(metric, opts = {}) {
   return r.json();
 }
 
+/** Per-session subprocess breakdown. Returns {counts: [{name, count}], recent, total}. */
+export async function getSessionSubprocesses(sessionId) {
+  const r = await fetch(url('/api/session-subprocesses?session_id=' + encodeURIComponent(sessionId)));
+  return r.json();
+}
+
 export async function getAgentTeams(sessionId) {
   const r = await fetch(url('/api/agent-teams?session_id=' + encodeURIComponent(sessionId)));
   return r.json();

@@ -573,3 +573,70 @@ class TestApiCallsOtelEnrichment:
         # http.response.status_code was a string "429" — must be coerced to int
         assert err[0]["http_status"] == 429
         assert isinstance(err[0]["http_status"], int)
+
+
+# ── Session Subprocesses endpoint ─────────────────────────────────
+
+
+class TestSessionSubprocessesAPI:
+    def test_returns_sorted_counts_for_live_session(self, server):
+        data = _get_json(f"{server}/api/session-subprocesses?session_id=live-001")
+        assert data["session_id"] == "live-001"
+        assert isinstance(data["counts"], list)
+        assert isinstance(data["recent"], list)
+        # Fixture session has no subprocess_count, so counts/total are empty —
+        # this test primarily confirms the shape + that unknown keys don't crash.
+        assert data["total"] == 0
+        assert data["counts"] == []
+
+    def test_sorted_and_total_when_snapshot_has_subprocesses(self, populated_db):
+        from pathlib import Path
+
+        from aictl.dashboard.web_server import (
+            _DashboardHandler,
+            _DashboardHTTPServer,
+        )
+
+        store = SnapshotStore(db=populated_db)
+        store.update(
+            _make_snapshot(
+                sessions=[
+                    {
+                        "session_id": "live-sub",
+                        "tool": "claude-code",
+                        "duration_s": 30,
+                        "subprocess_count": {"git": 10, "rg": 3, "node": 7},
+                        "recent_subprocesses": [
+                            {"ts": 1.0, "name": "git"},
+                            {"ts": 2.0, "name": "rg"},
+                        ],
+                    },
+                ]
+            )
+        )
+
+        allowed = AllowedPaths()
+        srv = _DashboardHTTPServer(
+            ("127.0.0.1", 0), _DashboardHandler, store, allowed, Path("/tmp/test-project"),
+        )
+        port = srv.server_address[1]
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            data = _get_json(f"http://127.0.0.1:{port}/api/session-subprocesses?session_id=live-sub")
+            assert data["total"] == 20
+            # Sorted by count desc
+            names = [c["name"] for c in data["counts"]]
+            assert names == ["git", "node", "rg"]
+            assert data["counts"][0]["count"] == 10
+            assert len(data["recent"]) == 2
+        finally:
+            srv.shutdown()
+
+    def test_unknown_session_returns_empty_shape(self, server):
+        data = _get_json(f"{server}/api/session-subprocesses?session_id=does-not-exist")
+        assert data == {"session_id": "does-not-exist", "total": 0, "counts": [], "recent": []}
+
+    def test_missing_session_id_returns_400(self, server):
+        status = _get_status(f"{server}/api/session-subprocesses")
+        assert status == 400

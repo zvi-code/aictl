@@ -658,6 +658,43 @@ class _APIHandlersMixin:
             }
             self._json_response(totals)
 
+    def _serve_session_subprocesses(self) -> None:
+        """Serve the per-session subprocess breakdown.
+
+        Params: ?session_id=X (required)
+        Returns {session_id, total, counts: [{name, count}], recent:
+        [{ts, name}]}. Subprocess data lives in the live snapshot only
+        (not persisted); an unknown session yields empty arrays rather
+        than a 404 so the UI can render an empty-state.
+        """
+        session_id = self._qs_get("session_id")
+        if not session_id:
+            self.send_error(400, "Missing session_id")
+            return
+
+        snap = self.server.store.snapshot
+        sess = None
+        if snap is not None:
+            for s in snap.sessions:
+                if s.get("session_id") == session_id:
+                    sess = s
+                    break
+
+        counts_map = (sess or {}).get("subprocess_count") or {}
+        recent = (sess or {}).get("recent_subprocesses") or []
+        counts = [
+            {"name": name, "count": n}
+            for name, n in sorted(counts_map.items(), key=lambda kv: kv[1], reverse=True)
+        ]
+        self._json_response(
+            {
+                "session_id": session_id,
+                "total": sum(counts_map.values()),
+                "counts": counts,
+                "recent": list(recent),
+            }
+        )
+
     def _serve_session_timeline(self) -> None:
         """Serve enriched session profiles for the timeline bar.
 

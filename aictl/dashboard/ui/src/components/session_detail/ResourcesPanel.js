@@ -3,6 +3,7 @@ import { html } from 'htm/preact';
 import { fmtK, fmtSz, fmtPct } from '../../utils.js';
 import * as api from '../../api.js';
 import RateLimitGauge from './RateLimitGauge.js';
+import SubprocessBreakdown from './SubprocessBreakdown.js';
 
 export default function ResourcesPanel({session}) {
   const inTok = session.exact_input_tokens || 0;
@@ -46,5 +47,8 @@ export default function ResourcesPanel({session}) {
         : html`<span>similar</span>`}
     </div>`}
     ${session.entity_state && html`<${RateLimitGauge} rateLimits=${session.entity_state.rate_limits}/>`}
+    <div style="margin-top:var(--sp-3)">
+      <${SubprocessBreakdown} sessionId=${session.session_id} topN=${10}/>
+    </div>
   </div>`;
 }

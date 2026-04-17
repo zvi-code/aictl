@@ -1,0 +1,54 @@
+import { useEffect, useMemo, useState } from 'preact/hooks';
+import { html } from 'htm/preact';
+import * as api from '../../api.js';
+import { esc } from '../../utils.js';
+
+/**
+ * Horizontal bar chart showing the top-N subprocesses spawned by the
+ * session. Data lives in the live correlator snapshot only — historical
+ * sessions render an empty-state message.
+ */
+export default function SubprocessBreakdown({ sessionId, topN = 10 }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    setLoading(true);
+    api.getSessionSubprocesses(sessionId)
+      .then(d => setData(d))
+      .catch(() => setData(null))
+      .finally(() => setLoading(false));
+  }, [sessionId]);
+
+  const top = useMemo(() => {
+    if (!data || !Array.isArray(data.counts)) return [];
+    return data.counts.slice(0, topN);
+  }, [data, topN]);
+
+  if (loading) {
+    return html`<div class="text-xs text-muted">Loading subprocesses\u2026</div>`;
+  }
+  if (!top.length) {
+    return html`<div class="text-xs text-muted">No subprocess activity recorded
+      (live correlator data only; not available for ended sessions).</div>`;
+  }
+
+  const max = Math.max(1, ...top.map(c => c.count));
+  return html`<div class="subprocess-breakdown" aria-label="Top subprocesses by count">
+    <div class="text-xs text-muted mb-sm">Top ${Math.min(topN, top.length)} subprocesses
+      <span class="text-muted">\u00b7 total ${data.total}</span></div>
+    <div class="subprocess-rows">
+      ${top.map(c => {
+        const pct = (c.count / max) * 100;
+        return html`<div key=${c.name} class="subprocess-row">
+          <span class="subprocess-name mono text-xs" title=${c.name}>${esc(c.name)}</span>
+          <div class="subprocess-bar-track">
+            <div class="subprocess-bar" style=${'width:' + pct + '%'}></div>
+          </div>
+          <span class="subprocess-count text-xs mono">${c.count}</span>
+        </div>`;
+      })}
+    </div>
+  </div>`;
+}
