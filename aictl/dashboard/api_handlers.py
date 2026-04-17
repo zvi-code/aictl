@@ -888,7 +888,21 @@ class _APIHandlersMixin:
             if not sess:
                 self._json_response({"error": "session not found"})
                 return
-            self._json_response(sess.to_dict())
+            out = sess.to_dict()
+            # Enrich with VS Code Language-Model usage (Slice 3.4c): a
+            # per-extension token breakdown derived from OTel events. Empty
+            # when no LM-usage events exist for the session.
+            db = self._db
+            if db:
+                try:
+                    from ..analysis.lm_usage import session_lm_usage
+
+                    lm = session_lm_usage(db, session_id)
+                    if lm.get("total_calls", 0) or lm.get("by_extension"):
+                        out["vscode_lm_usage"] = lm
+                except Exception:
+                    pass
+            self._json_response(out)
         else:
             # All sessions with deduced metrics
             result = tracker.all_sessions()
