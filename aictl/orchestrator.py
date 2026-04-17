@@ -566,6 +566,17 @@ def start_server(
     if db is not None:
         db.add_event_listener(server.session_analyzer.ingest_event)
 
+    # Start optional per-tool ingesters (Slice 3.3: Cursor conversations.db).
+    # Self-contained background thread; no-op if the source file is missing
+    # or AICTL_CURSOR_INGESTER is set to a falsy value.
+    if db is not None:
+        try:
+            from .ingesters.cursor_conversations import start_background_poller as _start_cursor_ingester
+
+            _start_cursor_ingester(db)
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"  warning: cursor ingester unavailable ({exc})", file=sys.stderr)
+
     # Register SSE pre-serialization callback so build_sse_summary runs once
     # per update cycle (in the RefreshLoop thread) instead of per-SSE-client.
     import json as _json_mod

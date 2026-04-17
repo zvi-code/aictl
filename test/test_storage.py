@@ -487,7 +487,7 @@ class TestMigration:
         from aictl.storage import SCHEMA_VERSION
 
         assert ver == SCHEMA_VERSION
-        assert ver == 21
+        assert ver >= 21
 
         # New tables should exist
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}

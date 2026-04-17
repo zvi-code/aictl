@@ -28,7 +28,14 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable
 
-from . import m020_drop_legacy_tables, m021_sessions_add_pid
+from . import (
+    m020_drop_legacy_tables,
+    m021_sessions_add_pid,
+    m022_session_commits,
+    m023_cursor_session_messages,
+    m024_memory_snapshots,
+    m025_copilot_session_messages,
+)
 
 MigrationFn = Callable[[sqlite3.Connection], None]
 
@@ -37,6 +44,10 @@ MigrationFn = Callable[[sqlite3.Connection], None]
 MIGRATIONS: list[tuple[int, MigrationFn]] = [
     (20, m020_drop_legacy_tables.apply),
     (21, m021_sessions_add_pid.apply),
+    (22, m022_session_commits.apply),
+    (23, m023_cursor_session_messages.apply),
+    (24, m024_memory_snapshots.apply),
+    (25, m025_copilot_session_messages.apply),
 ]
 
 CURRENT_VERSION: int = MIGRATIONS[-1][0]

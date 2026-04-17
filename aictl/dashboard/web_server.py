@@ -92,6 +92,65 @@ def _asdict_list(items) -> list:
     return [dataclasses.asdict(m) if dataclasses.is_dataclass(m) else m for m in items]
 
 
+# ─── Claude memory snapshot helper ───────────────────────────────
+
+
+def _is_claude_hook(data: dict) -> bool:
+    """True when the hook payload came from a Claude Code user/project hook."""
+    sources: list[str] = []
+    src = data.get("source")
+    if isinstance(src, str):
+        sources.append(src)
+    meta = data.get("aictl_hook") or {}
+    if isinstance(meta, dict):
+        inner = meta.get("source")
+        if isinstance(inner, str):
+            sources.append(inner)
+    return any(s.endswith((".claude-user", ".claude-project")) for s in sources)
+
+
+def _derive_claude_project_hash(cwd: str) -> str | None:
+    """Locate the Claude projects/<hash> dir for ``cwd``; return the hash."""
+    if not cwd:
+        return None
+    try:
+        from ..memory import _find_project_dir
+
+        p = _find_project_dir(Path(cwd))
+        return p.name if p else None
+    except Exception:  # noqa: BLE001 — best-effort; never crash hooks
+        return None
+
+
+def _snapshot_worker(db, session_id: str, project_hash: str | None, phase: str, ts: float) -> None:
+    """Thread target: open a fresh DB connection and record the snapshot."""
+    try:
+        from ..memory_snapshot import record_snapshot
+
+        conn = db._conn()  # per-thread sqlite connection  # noqa: SLF001
+        record_snapshot(conn, session_id, project_hash, phase, ts=ts)
+    except Exception as exc:  # noqa: BLE001 — best-effort; never crash hooks
+        logger.debug("memory snapshot (%s) failed for %s: %s", phase, session_id, exc)
+
+
+def _maybe_snapshot_claude_memory(
+    db, data: dict, session_id: str, cwd: str, phase: str, ts: float
+) -> None:
+    """Spawn a background thread to snapshot Claude memory for this session.
+
+    No-op unless the hook payload came from a Claude user/project hook.
+    """
+    if db is None or not session_id or not _is_claude_hook(data):
+        return
+    project_hash = _derive_claude_project_hash(cwd)
+    threading.Thread(
+        target=_snapshot_worker,
+        args=(db, session_id, project_hash, phase, ts),
+        daemon=True,
+        name=f"mem-snap-{phase}-{session_id[:8]}",
+    ).start()
+
+
 # ─── SSE summary builder ─────────────────────────────────────────
 
 
@@ -229,14 +288,22 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._serve_session_runs()
         elif path.startswith("/api/session-subprocesses"):
             self._serve_session_subprocesses()
+        elif path.startswith("/api/session-commits"):
+            self._serve_session_commits()
         elif path.startswith("/api/session-stats"):
             self._serve_session_stats()
         elif path.startswith("/api/session-flow"):
             self._serve_session_flow()
+        elif path.startswith("/api/session-memory-diff"):
+            self._serve_session_memory_diff()
+        elif path.startswith("/api/session-messages"):
+            self._serve_session_messages()
         elif path.startswith("/api/transcript/"):
             self._serve_transcript()
         elif path.startswith("/api/transcripts"):
             self._serve_transcripts()
+        elif path.startswith("/api/session-messages"):
+            self._serve_session_messages()
         elif path.startswith("/api/otel-status"):
             self._serve_otel_status()
         elif path.startswith("/api/api-calls"):
@@ -336,6 +403,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                     )
                 )
                 db.link_session_process(session_id, hook_pid, tool=tool)
+                _maybe_snapshot_claude_memory(db, data, session_id, cwd, "start", ts)
             elif event_name in ("Stop", "SessionEnd"):
                 db.update_session_end(
                     session_id,
@@ -343,6 +411,26 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                     input_tokens=int(detail.get("input_tokens", 0) or 0),
                     output_tokens=int(detail.get("output_tokens", 0) or 0),
                 )
+                _maybe_snapshot_claude_memory(db, data, session_id, cwd, "end", ts)
+                # Best-effort git commit attribution in a background
+                # thread — never block the hook response.
+                if event_name == "SessionEnd" and session_id and cwd:
+                    _started_at = 0.0
+                    try:
+                        _sess_row = db.get_session(session_id)
+                        if _sess_row:
+                            _started_at = float(_sess_row.get("started_at", 0.0) or 0.0)
+                    except Exception:  # noqa: BLE001 — best-effort
+                        pass
+                    if _started_at > 0:
+                        from ..analysis.git_attribution import attribute_session
+
+                        threading.Thread(
+                            target=attribute_session,
+                            args=(db, session_id, cwd, _started_at, ts),
+                            daemon=True,
+                            name=f"git-attr-{session_id[:8]}",
+                        ).start()
             elif event_name in ("PreToolUse", "PostToolUse"):
                 tool_name = detail.get("tool_name", "")
                 tool_use_id = detail.get("tool_use_id", "")
@@ -743,9 +831,9 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         v = self._qs.get(key)
         return v[0] if v else default
 
-    def _json_response(self, data, indent=None) -> None:
+    def _json_response(self, data, indent=None, status: int = 200) -> None:
         """Send a JSON response."""
-        self._json_response_raw(json.dumps(data, indent=indent).encode("utf-8"))
+        self._json_response_raw(json.dumps(data, indent=indent).encode("utf-8"), status=status)
 
     def _require_db(self, empty=None):
         """Return db if available; otherwise send an empty JSON response and return None."""
@@ -764,9 +852,9 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         v = self._qs_get(key)
         return float(v) if v else None
 
-    def _json_response_raw(self, body: bytes) -> None:
+    def _json_response_raw(self, body: bytes, status: int = 200) -> None:
         """Send pre-encoded JSON bytes as a response."""
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
@@ -829,6 +917,10 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
         # Background analytics cache — no SQL on request path
         self.analytics_cache: _AnalyticsCache = _AnalyticsCache()
         self.analytics_cache.start(store)
+        # Periodic local-store ingesters (Slice 3.2 Copilot, 3.3 Cursor).
+        from .ingester_runner import start_ingesters
+
+        self.ingesters = start_ingesters(store)
         # In-memory cache for matching PreToolUse → PostToolUse by tool_use_id.
         # Maps tool_use_id → (pre_ts, dedup_key).  Entries auto-expire on access.
         self.pending_tool_use: dict[str, tuple[float, str]] = {}

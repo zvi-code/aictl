@@ -116,6 +116,34 @@ class _APIHandlersMixin:
         result = build_session_flow(db, session_id, since, until)
         self._json_response(result)
 
+    def _serve_session_memory_diff(self) -> None:
+        """Return Claude memory diff between session start and end snapshots.
+
+        GET /api/session-memory-diff?session_id=<id>
+        Response: {files: [...], summary: {added, modified, removed}}.
+        Returns an empty file list (not an error) if one/both phases
+        are missing, so the UI can render an empty-state gracefully.
+        """
+        from ..memory_snapshot import build_session_memory_diff
+
+        session_id = self._qs_get("session_id")
+        if not session_id:
+            self._json_response(
+                {"error": "session_id required", "files": [], "summary": {"added": 0, "modified": 0, "removed": 0}},
+                status=400,
+            )
+            return
+        db = self._db
+        if not db:
+            self._json_response({"files": [], "summary": {"added": 0, "modified": 0, "removed": 0}})
+            return
+        try:
+            conn = db._conn()  # noqa: SLF001 — read-only per-thread connection
+            payload = build_session_memory_diff(conn, session_id)
+        except Exception:  # noqa: BLE001 — never 500 the UI
+            payload = {"files": [], "summary": {"added": 0, "modified": 0, "removed": 0}}
+        self._json_response(payload)
+
     def _serve_transcript(self) -> None:
         """Return structured transcript for a single session.
 
@@ -173,6 +201,117 @@ class _APIHandlersMixin:
                     for t in transcripts
                 ],
                 "count": len(transcripts),
+            }
+        )
+
+    def _serve_session_messages(self) -> None:
+        """Return merged conversation messages for a session.
+
+        GET /api/session-messages?session_id=X&limit=200
+
+        Merges messages derived from OTel events (``otel:user_prompt`` /
+        ``otel:user_message`` / ``hook:UserPromptSubmit``) with rows
+        ingested from Copilot CLI's ``session-store.db``
+        (:class:`aictl.ingesters.copilot_session_store.CopilotSessionStoreIngester`).
+
+        Rows are deduplicated by ``(role, content, rounded_ts)`` so the
+        two sources never produce visible duplicates. Sorted oldest
+        first. Returns ``{"messages": [...], "sources": {"otel": N, "copilot_store": M}}``.
+        """
+        session_id = self._qs_get("session_id")
+        if not session_id:
+            self.send_error(400, "Missing session_id")
+            return
+        limit = min(int(self._qs_get("limit", "200") or "200"), 2000)
+        db = self._db
+        if not db:
+            self._json_response({"messages": [], "sources": {"otel": 0, "copilot_store": 0}})
+            return
+
+        otel_msgs: list[dict] = []
+        try:
+            events = db.query_events(session_id=session_id, limit=limit * 2)
+        except Exception:
+            events = []
+        for ev in events:
+            kind = ev.kind or ""
+            if kind not in ("otel:user_prompt", "otel:user_message", "hook:UserPromptSubmit"):
+                continue
+            detail = ev.detail if isinstance(ev.detail, dict) else {}
+            content = detail.get("message") or detail.get("content") or detail.get("prompt") or ""
+            if not content:
+                continue
+            otel_msgs.append(
+                {
+                    "role": "user",
+                    "content": str(content)[:4000],
+                    "ts": float(ev.ts or 0),
+                    "source": "otel",
+                }
+            )
+
+        copilot_msgs: list[dict] = []
+        try:
+            conn = db._conn()
+            rows = conn.execute(
+                "SELECT role, content, ts FROM copilot_session_messages"
+                " WHERE session_id = ? ORDER BY ts ASC, source_row_id ASC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+            for role, content, ts in rows:
+                copilot_msgs.append(
+                    {
+                        "role": str(role or ""),
+                        "content": str(content or "")[:4000],
+                        "ts": float(ts or 0),
+                        "source": "copilot_store",
+                    }
+                )
+        except Exception:
+            pass
+
+        cursor_msgs: list[dict] = []
+        try:
+            conn = db._conn()
+            rows = conn.execute(
+                "SELECT role, content, ts FROM cursor_session_messages"
+                " WHERE session_id = ? ORDER BY ts ASC, source_row_id ASC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+            for role, content, ts in rows:
+                cursor_msgs.append(
+                    {
+                        "role": str(role or ""),
+                        "content": str(content or "")[:4000],
+                        "ts": float(ts or 0),
+                        "source": "cursor",
+                    }
+                )
+        except Exception:
+            pass
+
+        # Dedup by (role, content, rounded_ts); prefer OTel-derived rows.
+        seen: set[tuple[str, str, int]] = set()
+        merged: list[dict] = []
+        for m in otel_msgs + copilot_msgs + cursor_msgs:
+            key = (m["role"], m["content"], int(m["ts"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(m)
+        merged.sort(key=lambda m: (m["ts"], m["role"]))
+        if len(merged) > limit:
+            merged = merged[:limit]
+
+        self._json_response(
+            {
+                "session_id": session_id,
+                "messages": merged,
+                "sources": {
+                    "otel": len(otel_msgs),
+                    "copilot_store": len(copilot_msgs),
+                    "cursor": len(cursor_msgs),
+                },
             }
         )
 
@@ -615,6 +754,10 @@ class _APIHandlersMixin:
                                 "input_tokens": s.get("input_tokens", 0),
                                 "output_tokens": s.get("output_tokens", 0),
                                 "cost_usd": s.get("cost_usd", 0),
+                                "project": s.get("project_path", ""),
+                                "git_branch": s.get("git_branch", ""),
+                                "git_commit": s.get("git_commit", ""),
+                                "commit_count": db.count_session_commits(sid),
                             }
                         )
                         active_ids.add(sid)
@@ -641,6 +784,9 @@ class _APIHandlersMixin:
         for s in sessions:
             if "active" not in s:
                 s["active"] = True
+            if "commit_count" not in s:
+                sid = s.get("session_id", "")
+                s["commit_count"] = self._db.count_session_commits(sid) if (self._db and sid) else 0
 
         self._json_response(sessions[:limit])
 
@@ -711,6 +857,63 @@ class _APIHandlersMixin:
                 "total": sum(counts_map.values()),
                 "counts": counts,
                 "recent": list(recent),
+            }
+        )
+
+    def _serve_session_commits(self) -> None:
+        """Serve the git commits attributed to a session's time window.
+
+        Params: ?session_id=X (required)
+        Returns ``{session_id, commits: [{sha, short_sha, author_name,
+        author_email, ts, subject, current_branch_match}], branch}``.
+
+        On first request for an ended session with no cached rows we
+        compute the attribution lazily and persist it.
+        """
+        from ..analysis.git_attribution import attribute_session, is_reachable
+
+        session_id = self._qs_get("session_id")
+        if not session_id:
+            self.send_error(400, "Missing session_id")
+            return
+        db = self._require_db()
+        if not db:
+            return
+
+        sess = db.get_session(session_id) or {}
+        project_dir = sess.get("project_path", "") or ""
+        branch = sess.get("git_branch", "") or ""
+        ended_at = sess.get("ended_at")
+        started_at = float(sess.get("started_at", 0.0) or 0.0)
+
+        commits = db.get_session_commits(session_id)
+        if not commits and ended_at and started_at > 0 and project_dir:
+            # Lazy attribution: compute and cache on first request.
+            commits = attribute_session(
+                db, session_id, project_dir, started_at, float(ended_at)
+            )
+
+        out = []
+        for c in commits:
+            sha = str(c.get("sha", ""))
+            out.append(
+                {
+                    "sha": sha,
+                    "short_sha": sha[:7],
+                    "author_name": c.get("author_name", ""),
+                    "author_email": c.get("author_email", ""),
+                    "ts": float(c.get("ts", 0.0) or 0.0),
+                    "subject": c.get("subject", ""),
+                    "current_branch_match": bool(
+                        branch and project_dir and is_reachable(project_dir, sha, branch)
+                    ),
+                }
+            )
+        self._json_response(
+            {
+                "session_id": session_id,
+                "branch": branch,
+                "commits": out,
             }
         )
 
@@ -816,3 +1019,4 @@ class _APIHandlersMixin:
 
         rows = db.query_telemetry(tool=tool, since=since, until=until)
         self._json_response([dataclasses.asdict(r) for r in rows])
+

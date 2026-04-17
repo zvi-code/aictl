@@ -30,6 +30,12 @@ from aictl.storage import HistoryDB
 from aictl.storage_migrations import CURRENT_VERSION
 
 
+def _expected_counts(fired_above: int) -> dict[int, int]:
+    """Expected count-map: migrations with target > ``fired_above`` fired once,
+    everything else zero. Keeps these tests robust as new migrations land."""
+    return {target: (1 if target > fired_above else 0) for target, _ in storage_migrations.MIGRATIONS}
+
+
 @pytest.fixture
 def count_calls(monkeypatch):
     """Wrap every registered migration to count how often it runs."""
@@ -123,8 +129,8 @@ def test_walk_from_v20_adds_pid_column(tmp_path, count_calls):
     finally:
         db.close()
 
-    # Only the m021 migration should have fired (target > 20).
-    assert count_calls == {20: 0, 21: 1}
+    # Only migrations with target > 20 should have fired.
+    assert count_calls == _expected_counts(20)
 
 
 def test_walk_from_pre_v20_drops_legacy_tables(tmp_path, count_calls):
@@ -144,7 +150,7 @@ def test_walk_from_pre_v20_drops_legacy_tables(tmp_path, count_calls):
     finally:
         db.close()
 
-    assert count_calls == {20: 1, 21: 1}
+    assert count_calls == _expected_counts(19)
 
 
 def test_fresh_db_skips_all_migrations(tmp_path, count_calls):
@@ -160,7 +166,7 @@ def test_fresh_db_skips_all_migrations(tmp_path, count_calls):
         db.close()
 
     # Fresh DB path bypasses the migration loop entirely.
-    assert count_calls == {20: 0, 21: 0}
+    assert count_calls == _expected_counts(CURRENT_VERSION)
 
 
 def test_reopen_current_db_is_noop(tmp_path, count_calls):
@@ -169,7 +175,7 @@ def test_reopen_current_db_is_noop(tmp_path, count_calls):
     # First open creates a fresh, already-current DB.
     db = HistoryDB(db_path=db_path, flush_interval=0)
     db.close()
-    assert count_calls == {20: 0, 21: 0}
+    assert count_calls == _expected_counts(CURRENT_VERSION)
 
     # Second open: nothing to do, no migrations fire.
     db2 = HistoryDB(db_path=db_path, flush_interval=0)
@@ -178,4 +184,4 @@ def test_reopen_current_db_is_noop(tmp_path, count_calls):
         assert _recorded_version(conn) == CURRENT_VERSION
     finally:
         db2.close()
-    assert count_calls == {20: 0, 21: 0}
+    assert count_calls == _expected_counts(CURRENT_VERSION)

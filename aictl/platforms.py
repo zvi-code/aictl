@@ -117,6 +117,11 @@ def claude_projects_dir() -> Path:
     return claude_global_dir() / "projects"
 
 
+def claude_project_memory_dir(project_hash: str) -> Path:
+    """Per-project memory directory: ``~/.claude/projects/<hash>/memory``."""
+    return claude_projects_dir() / project_hash / "memory"
+
+
 # ── GitHub Copilot ───────────────────────────────────────────────
 
 

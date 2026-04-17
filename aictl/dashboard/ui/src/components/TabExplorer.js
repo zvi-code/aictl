@@ -29,6 +29,7 @@ import TabTimelineChart from './TabTimelineChart.js';
 import EventsPanel from './session_detail/EventsPanel.js';
 import SessionSparklines from './SessionSparklines.js';
 import RunTrendStrip from './session_detail/RunTrendStrip.js';
+import SessionCommitsBadge from './session_detail/SessionCommitsBadge.js';
 import ToolTabs from './session_flow/ToolTabs.js';
 import SessionTabs from './session_flow/SessionTabs.js';
 import { fmtDurSec } from './session_flow/helpers.js';
@@ -69,6 +70,7 @@ export function SessionHeader({ session }) {
       ${session.git_commit && html`<span class="badge text-xs mono"
         style="background:var(--bg2);color:var(--fg2)"
         title=${session.git_commit}>${esc(String(session.git_commit).slice(0, 7))}</span>`}
+      <${SessionCommitsBadge} session=${session}/>
       ${started && html`<span class="text-muted text-xs">${esc(started)}</span>`}
       ${dur > 0 && html`<span class="badge"
         style="background:var(--bg2);color:var(--fg);font-size:var(--fs-xs)">${fmtDurSec(dur)}</span>`}
