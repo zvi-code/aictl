@@ -227,6 +227,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._serve_project_costs()
         elif path.startswith("/api/session-runs"):
             self._serve_session_runs()
+        elif path.startswith("/api/session-subprocesses"):
+            self._serve_session_subprocesses()
         elif path.startswith("/api/session-stats"):
             self._serve_session_stats()
         elif path.startswith("/api/session-flow"):

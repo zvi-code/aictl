@@ -977,6 +977,46 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
   }
 }
 
+.subprocess-breakdown {
+  max-width: 100%;
+}
+
+.subprocess-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.subprocess-row {
+  display: grid;
+  grid-template-columns: 1fr 2fr 40px;
+  gap: var(--sp-2);
+  align-items: center;
+}
+
+.subprocess-name {
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.subprocess-bar-track {
+  height: 10px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.subprocess-bar {
+  height: 100%;
+  background: var(--accent);
+}
+
+.subprocess-count {
+  text-align: right;
+}
+
 /* ─── Timeline Chart (TabTimelineChart) ───────────────────────── */
 .tc-container { position: relative; }
 
