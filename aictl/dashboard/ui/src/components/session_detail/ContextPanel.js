@@ -3,9 +3,11 @@ import { html } from 'htm/preact';
 import { SnapContext } from '../../context.js';
 import { fmtK, fmtPct, esc } from '../../utils.js';
 import { MODEL_WINDOWS, BASE_COMPONENTS, COMPACTION_PCT } from './helpers.js';
+import FileHistoryButtons from './FileHistoryButtons.js';
 
 export default function ContextPanel({session}) {
-  const {snap: s} = useContext(SnapContext);
+  const ctx = useContext(SnapContext);
+  const s = ctx.snap;
   const filesLoaded = session.files_loaded || [];
 
   const model = (s?.tool_configs || []).map(c => c.model).filter(Boolean)[0] || '';
@@ -58,7 +60,11 @@ export default function ContextPanel({session}) {
     </div>
 
     ${filesLoaded.length > 0 && html`<div class="mono text-xs" style="max-height:10rem;overflow-y:auto">
-      ${filesLoaded.map(f => html`<div key=${f} class="text-muted" style="padding:2px 0">${esc(f)}</div>`)}
+      ${filesLoaded.map(f => html`<div key=${f} class="flex-row gap-sm text-muted"
+        style="padding:2px 0;align-items:center">
+        <span class="text-ellipsis" style="flex:1;min-width:0">${esc(f)}</span>
+        <${FileHistoryButtons} path=${f} session=${session} openViewer=${ctx.openViewer}/>
+      </div>`)}
     </div>`}
     ${!filesLoaded.length && html`<p class="empty-state">No context file tracking available yet. Enable hook events for full context visibility.</p>`}
   </div>`;
