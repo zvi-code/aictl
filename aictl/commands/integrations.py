@@ -153,10 +153,12 @@ GEMINI_HOOK_MAP = {
 #
 #     {"hooks": {"EventName": [{"type": "command", "command": "..."}]}}
 #
-# Event set is the Claude-compatible subset documented by GitHub in
-# ``docs/tool-copilot.md`` / ``docs/tools-analysis-docs/vscode.md``.
+# Event set tracks the runtime enum in
+# ``out/vs/workbench/workbench.desktop.main.js`` (as of VS Code 1.116).
+# ``SessionEnd`` and ``ErrorOccurred`` were added in early 2026 releases.
 VSCODE_HOOK_EVENTS = [
     "SessionStart",
+    "SessionEnd",
     "UserPromptSubmit",
     "PreToolUse",
     "PostToolUse",
@@ -164,6 +166,7 @@ VSCODE_HOOK_EVENTS = [
     "SubagentStop",
     "PreCompact",
     "Stop",
+    "ErrorOccurred",
 ]
 
 
