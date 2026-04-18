@@ -171,8 +171,10 @@ export async function getProjectCosts(days = 7) {
   return r.json();
 }
 
-export async function getApiCalls(since, limit = 100) {
-  const r = await fetch(url(`/api/api-calls?since=${since}&limit=${limit}`));
+export async function getApiCalls(since, limit = 100, sessionId = null) {
+  const qs = new URLSearchParams({since: String(since), limit: String(limit)});
+  if (sessionId) qs.set('session_id', sessionId);
+  const r = await fetch(url(`/api/api-calls?${qs.toString()}`));
   return r.json();
 }
 

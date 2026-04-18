@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from ..data.token_usage import TokenUsage
 from ..tools import compute_token_budget
 from .models import _slim_agent_teams
-from .otel_receiver import _num
+from .otel_receiver import API_ERROR_EVENTS, API_REQUEST_EVENTS, _num
 from .session_flow import build_session_flow
 
 # ─── Budget cache ────────────────────────────────────────────────
@@ -401,8 +401,10 @@ class _APIHandlersMixin:
     def _serve_api_calls(self) -> None:
         """Return API call data from OTel events.
 
-        Queries events with kind 'otel:claude_code.api_request' and
-        'otel:claude_code.api_error' for latency/frequency analysis.
+        Queries events for every known api_request / api_error kind
+        (Claude Code, Copilot, Codex, and the generic
+        ``gen_ai.client.inference.operation.details`` spans) for
+        latency/frequency analysis.
         """
         db = self._db
         if not db:
@@ -412,20 +414,31 @@ class _APIHandlersMixin:
         since = self._qs_float("since", time.time() - 3600)
         until = self._qs_float("until", time.time())
         limit = min(int(self._qs_get("limit", "500")), 2000)
+        session_id = self._qs_get("session_id") or None
 
-        # Query API request events
-        api_events = db.query_events(
-            since=since,
-            until=until,
-            kind="otel:claude_code.api_request",
-            limit=limit,
-        )
-        error_events = db.query_events(
-            since=since,
-            until=until,
-            kind="otel:claude_code.api_error",
-            limit=limit,
-        )
+        # Query API request events across all known kinds
+        api_events = []
+        for name in API_REQUEST_EVENTS:
+            api_events.extend(
+                db.query_events(
+                    since=since,
+                    until=until,
+                    kind=f"otel:{name}",
+                    session_id=session_id,
+                    limit=limit,
+                )
+            )
+        error_events = []
+        for name in API_ERROR_EVENTS:
+            error_events.extend(
+                db.query_events(
+                    since=since,
+                    until=until,
+                    kind=f"otel:{name}",
+                    session_id=session_id,
+                    limit=limit,
+                )
+            )
 
         def _enrich(d: dict, is_error: bool) -> dict:
             extra: dict = {}
@@ -464,6 +477,15 @@ class _APIHandlersMixin:
                 extra["error_type"] = str(et)
             return extra
 
+        def _model(d: dict) -> str:
+            # OTel GenAI semconv uses namespaced keys; legacy emitters use `model`.
+            return str(
+                d.get("gen_ai.response.model")
+                or d.get("gen_ai.request.model")
+                or d.get("model")
+                or ""
+            )
+
         calls = []
         for ev in api_events:
             d = ev.detail if isinstance(ev.detail, dict) else {}
@@ -471,7 +493,10 @@ class _APIHandlersMixin:
             calls.append(
                 {
                     "ts": ev.ts,
-                    "model": d.get("model", ""),
+                    "tool": ev.tool or d.get("tool", ""),
+                    "session_id": ev.session_id or d.get("session_id", ""),
+                    "pid": ev.pid or int(d.get("pid", 0) or 0),
+                    "model": _model(d),
                     "duration_ms": _num(d.get("duration_ms", d.get("duration", 0))),
                     "input_tokens": usage.input,
                     "output_tokens": usage.output,
@@ -486,7 +511,10 @@ class _APIHandlersMixin:
             calls.append(
                 {
                     "ts": ev.ts,
-                    "model": d.get("model", ""),
+                    "tool": ev.tool or d.get("tool", ""),
+                    "session_id": ev.session_id or d.get("session_id", ""),
+                    "pid": ev.pid or int(d.get("pid", 0) or 0),
+                    "model": _model(d),
                     "error": d.get("error", d.get("message", "unknown")),
                     "prompt_id": d.get("prompt.id", d.get("prompt_id", "")),
                     "status": "error",

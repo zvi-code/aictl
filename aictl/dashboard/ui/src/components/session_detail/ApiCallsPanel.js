@@ -10,7 +10,7 @@ export default function ApiCallsPanel({sessionId}) {
   useEffect(() => {
     setLoading(true);
     const since = Math.floor(Date.now() / 1000) - 3600;
-    api.getApiCalls(since, 100)
+    api.getApiCalls(since, 100, sessionId)
       .then(d => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
   }, [sessionId]);
