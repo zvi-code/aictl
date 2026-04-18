@@ -569,6 +569,38 @@ def api_calls_server(tmp_path):
             },
         )
     )
+    # Current-format Claude Code kind (receiver emits "otel:api_request")
+    db.append_event(
+        EventRow(
+            ts=now - 20,
+            tool="claude-code",
+            kind="otel:api_request",
+            detail={"model": "claude-sonnet-4-5", "duration_ms": 180},
+        )
+    )
+    # Copilot / generic OTel GenAI span — uses namespaced gen_ai.* keys only
+    db.append_event(
+        EventRow(
+            ts=now - 30,
+            tool="copilot-vscode",
+            kind="otel:gen_ai.client.inference.operation.details",
+            detail={
+                "gen_ai.request.model": "gpt-4o",
+                "gen_ai.response.model": "gpt-4o-2024-08-06",
+                "gen_ai.usage.input_tokens": 1200,
+                "gen_ai.usage.output_tokens": 45,
+            },
+        )
+    )
+    # Codex
+    db.append_event(
+        EventRow(
+            ts=now - 40,
+            tool="codex-cli",
+            kind="otel:codex.api_request",
+            detail={"model": "gpt-5", "duration_ms": 300},
+        )
+    )
     db.flush()
 
     store = SnapshotStore(db=db)
@@ -593,13 +625,14 @@ def api_calls_server(tmp_path):
 class TestApiCallsOtelEnrichment:
     def test_extracts_finish_reason_from_otel_list(self, api_calls_server):
         data = _get_json(f"{api_calls_server}/api/api-calls?since=0")
-        ok = [c for c in data["calls"] if c["status"] == "ok"]
+        ok = [c for c in data["calls"] if c["status"] == "ok" and c.get("finish_reason")]
         assert len(ok) == 1
         assert ok[0]["finish_reason"] == "length"
 
     def test_extracts_http_status_from_otel_key_as_int(self, api_calls_server):
         data = _get_json(f"{api_calls_server}/api/api-calls?since=0")
-        ok = [c for c in data["calls"] if c["status"] == "ok"]
+        ok = [c for c in data["calls"] if c["status"] == "ok" and c.get("http_status")]
+        assert len(ok) == 1
         assert ok[0]["http_status"] == 200
         assert isinstance(ok[0]["http_status"], int)
 
@@ -611,6 +644,28 @@ class TestApiCallsOtelEnrichment:
         # http.response.status_code was a string "429" — must be coerced to int
         assert err[0]["http_status"] == 429
         assert isinstance(err[0]["http_status"], int)
+
+    def test_returns_calls_for_all_known_api_request_kinds(self, api_calls_server):
+        """Regression: handler must query every kind the OTel receiver emits,
+        not just the legacy `otel:claude_code.api_request`. Without this the
+        session-detail API Calls panel shows "No OTel API call data" even
+        when OTel is enabled and data is flowing."""
+        data = _get_json(f"{api_calls_server}/api/api-calls?since=0")
+        models = {c.get("model") for c in data["calls"] if c["status"] == "ok"}
+        # From the four inserted ok-request events across all tools
+        assert "claude-opus-4-6" in models       # otel:claude_code.api_request
+        assert "claude-sonnet-4-5" in models     # otel:api_request
+        assert "gpt-4o-2024-08-06" in models     # otel:gen_ai.client.inference.operation.details (gen_ai.response.model)
+        assert "gpt-5" in models                 # otel:codex.api_request
+
+    def test_resolves_model_from_gen_ai_namespaced_keys(self, api_calls_server):
+        """Regression: OTel GenAI semconv uses `gen_ai.request.model` /
+        `gen_ai.response.model`, not plain `model`. The handler must resolve
+        either or the model column shows `—` for every call."""
+        data = _get_json(f"{api_calls_server}/api/api-calls?since=0")
+        # All ok-calls should have a non-empty model string
+        ok = [c for c in data["calls"] if c["status"] == "ok"]
+        assert all(c.get("model") for c in ok), [c for c in ok if not c.get("model")]
 
 
 # ── Session Subprocesses endpoint ─────────────────────────────────
