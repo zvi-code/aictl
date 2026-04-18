@@ -548,3 +548,52 @@ def test_process_collector_sticky_pids():
     tracked3 = collector._tracked_pids(procs_cycle3, children3)
     assert 100 not in tracked3, "exited PID should be pruned"
     assert 100 not in collector._sticky_pids, "exited PID should leave sticky set"
+
+
+def test_process_collector_snapshot_tolerates_psutil_error():
+    """Regression: `_snapshot` referenced `psutil.Error` but only receives
+    `psutil_module` as a parameter (psutil is imported locally inside
+    `run()`). A single process that raised during iteration would
+    therefore trigger NameError and crash the whole monitor event loop —
+    surfacing as 'Monitor event loop exited: name psutil is not defined'
+    in the daemon log."""
+
+    class FakePsutilError(Exception):
+        pass
+
+    class FakeProc:
+        def __init__(self, raise_on_info: bool = False):
+            self._raise = raise_on_info
+            self._info = {
+                "pid": 42,
+                "ppid": 1,
+                "name": "claude",
+                "cmdline": ["claude", "-p", "x"],
+                "exe": "/usr/bin/claude",
+                "username": "dev",
+            }
+
+        @property
+        def info(self):
+            if self._raise:
+                raise FakePsutilError("NoSuchProcess")
+            return self._info
+
+    class FakePsutil:
+        Error = FakePsutilError
+
+        @staticmethod
+        def process_iter(_fields):
+            # Second proc raises — snapshot must keep going, not crash.
+            return [FakeProc(raise_on_info=True), FakeProc(raise_on_info=False)]
+
+        class Process:  # noqa: D401 - dummy
+            def __init__(self, _pid):
+                raise FakePsutilError("handle open fails")
+
+    collector = PsutilProcessCollector(
+        MonitorConfig(root=Path("/tmp"), workspace_paths=(), state_paths=())
+    )
+    # Must not raise NameError or FakePsutilError.
+    snap = collector._snapshot(FakePsutil)
+    assert snap == {}, "all handles fail, so the snapshot is empty but the loop survived"

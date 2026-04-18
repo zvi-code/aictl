@@ -189,7 +189,7 @@ class PsutilProcessCollector(BaseCollector):
                 }
                 if ppid is not None:
                     children[ppid].add(pid)
-            except (psutil.Error, OSError, KeyError, TypeError):
+            except (psutil_module.Error, OSError, KeyError, TypeError):
                 continue
 
         tracked = self._tracked_pids(all_processes, children)
@@ -202,7 +202,7 @@ class PsutilProcessCollector(BaseCollector):
                     handle = psutil_module.Process(pid)
                     handle.cpu_percent(None)
                     self._handles[pid] = handle
-                except (psutil.Error, OSError):
+                except (psutil_module.Error, OSError):
                     continue
 
             cwd = None
@@ -215,9 +215,9 @@ class PsutilProcessCollector(BaseCollector):
                     memory_rss = int(handle.memory_info().rss)
                     try:
                         cwd = str(handle.cwd())
-                    except (psutil.Error, OSError):
+                    except (psutil_module.Error, OSError):
                         cwd = None
-            except (psutil.Error, OSError):
+            except (psutil_module.Error, OSError):
                 continue
 
             snapshot[pid] = {
