@@ -318,7 +318,10 @@ export default function App() {
     config:     () => html`<${TabBoundary} tabName="config"><div class="mb-lg"><${TabToolConfig}/></div></${TabBoundary}>`,
   };
 
-  const ready = connected && snap;
+  // Once we have a snapshot we can render; SSE drops shouldn't flash a
+  // skeleton across the whole dashboard. Connection state is shown via the
+  // header badge instead.
+  const ready = snap != null;
 
   return html`<${SnapContext.Provider} value=${ctxValue}>
     <div class="main-wrap">
