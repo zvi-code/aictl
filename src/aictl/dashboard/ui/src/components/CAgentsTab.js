@@ -1,7 +1,7 @@
 import { useState, useContext, useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
-import { COLORS, fmtK, fmtPct } from '../utils.js';
+import { COLORS, fmtK } from '../utils.js';
 
 function toolColor(t) {
   return COLORS[t] || 'var(--fg2)';
@@ -86,13 +86,19 @@ function AgentDetail({ tool: t, toolConfig, onViewSessions }) {
   const version   = toolConfig?.version || null;
   const notes     = toolConfig?.notes   || null;
 
+  // Captured fields: derive from otel config
+  const otel = toolConfig?.otel || {};
+  const capturedFields = otel.enabled
+    ? ['events', 'tokens', 'timing', ...(otel.capture_content ? ['prompts', 'responses'] : [])]
+    : [];
+
   const stats = [
-    ['Sessions',     l.session_count ?? 0],
-    ['Tokens',       fmtK(l.token_estimate || 0)],
-    ['Processes',    l.pid_count ?? procs.length],
-    ['Files touched', l.files_touched ?? 0],
-    ['CPU',          fmtPct(totalCpu)],
-    ['MCP servers',  mcps.length],
+    ['Sessions',         l.session_count ?? 0],
+    ['Tokens',           fmtK(l.token_estimate || 0)],
+    ['Processes',        l.pid_count ?? procs.length],
+    ['MCP servers',      mcps.length],
+    ['Captured fields',  capturedFields.length > 0 ? capturedFields.length : '\u2014'],
+    ['OTel',             otel.enabled ? 'active' : 'off'],
   ];
 
   const perms = derivePermissions(toolConfig);
