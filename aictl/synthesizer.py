@@ -9,6 +9,7 @@ and writes .context.toml files at the appropriate directory levels.
 from __future__ import annotations
 
 import json
+import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -49,30 +50,62 @@ def synthesize(
     profile: str | None = None,
     dry_run: bool = False,
     warnings: list[str] | None = None,
+    patch: bool = False,
 ) -> list[dict]:
     """Merge import results and write .context.toml files.
 
-    Returns list of ``{"path": str, "rel_path": str}`` for each file written.
+    Returns list of ``{"path": str, "rel_path": str, "action": str}`` for each
+    file written, where ``action`` is one of ``create``, ``overwrite`` or
+    ``patch`` (patch mode only).
+
     If *warnings* is provided, conflict diagnostics (profile-name disagreements
     between importers, capability/MCP/hook/LSP ties across sources) are
     appended to it so callers can surface them to the user.
+
+    When *patch* is True, existing target files are loaded and only keys not
+    already present are added. Existing instructions text, MCP servers,
+    capabilities, hooks, LSP servers, plugin metadata, and any other top-level
+    sections are preserved verbatim. This makes ``aictl ctx import --patch``
+    safe to run against a hand-edited .context.toml.
     """
     aictx_files = _merge(imports, prefer, profile, warnings=warnings)
     results = []
 
     for af in aictx_files:
-        content = _serialize(af)
-        if not content.strip():
-            continue
-
         if af.rel_path == ".":
             fp = root / AICTX_FILENAME
         else:
             fp = root / af.rel_path / AICTX_FILENAME
 
+        new_data = _to_dict(af)
+        if not new_data:
+            continue
+
+        action = "create"
+        if patch and fp.is_file():
+            try:
+                with open(fp, "rb") as fh:
+                    existing = tomllib.load(fh)
+            except (OSError, tomllib.TOMLDecodeError):
+                existing = {}
+            merged = _additive_merge(existing, new_data)
+            if merged == existing:
+                # Nothing new to write — record skip and move on.
+                results.append({"path": str(fp), "rel_path": af.rel_path, "action": "skip"})
+                continue
+            content = tomli_w.dumps(merged)
+            action = "patch"
+        else:
+            content = tomli_w.dumps(new_data)
+            if fp.is_file():
+                action = "overwrite"
+
+        if not content.strip():
+            continue
+
         if not dry_run:
             write_safe(fp, content)
-        results.append({"path": str(fp), "rel_path": af.rel_path})
+        results.append({"path": str(fp), "rel_path": af.rel_path, "action": action})
 
     return results
 
@@ -225,8 +258,8 @@ def _pick_best(
     return best
 
 
-def _serialize(af: AictxFile) -> str:
-    """Serialize an AictxFile to .context.toml format."""
+def _to_dict(af: AictxFile) -> dict:
+    """Build the raw TOML-shaped dict for an AictxFile (no serialization)."""
     data: dict = {}
 
     if af.plugin_meta:
@@ -250,24 +283,40 @@ def _serialize(af: AictxFile) -> str:
 
     # MCP servers
     for mcp in af.mcp_servers:
-        data.setdefault("mcp", {}).setdefault("_always", {})[mcp.name] = _sanitize(
-            mcp.config,
-        )
+        data.setdefault("mcp", {}).setdefault("_always", {})[mcp.name] = _sanitize(mcp.config)
 
     # Hooks (stored as JSON strings)
     for hook in af.hooks:
-        data.setdefault("hooks", {}).setdefault("_always", {})[hook.event] = json.dumps(
-            hook.rules,
-        )
+        data.setdefault("hooks", {}).setdefault("_always", {})[hook.event] = json.dumps(hook.rules)
 
     # LSP servers
     for lsp in af.lsp_servers:
-        data.setdefault("lsp", {}).setdefault("_always", {})[lsp.name] = _sanitize(
-            lsp.config,
-        )
+        data.setdefault("lsp", {}).setdefault("_always", {})[lsp.name] = _sanitize(lsp.config)
 
+    return data
+
+
+def _serialize(af: AictxFile) -> str:
+    """Serialize an AictxFile to .context.toml format."""
+    data = _to_dict(af)
     return tomli_w.dumps(data) if data else ""
 
+
+def _additive_merge(existing: dict, new: dict) -> dict:
+    """Recursively add keys from *new* into a copy of *existing* only when
+    they are not already present. Existing leaf values always win, so the
+    user's hand edits in .context.toml are never overwritten.
+    """
+    out = {k: v for k, v in existing.items()}
+    for k, v in new.items():
+        if k not in out:
+            out[k] = v
+            continue
+        cur = out[k]
+        if isinstance(cur, dict) and isinstance(v, dict):
+            out[k] = _additive_merge(cur, v)
+        # otherwise: keep the existing value untouched
+    return out
 
 def _sanitize(obj: object) -> object:
     """Remove None values (unsupported in TOML) from nested structures."""
