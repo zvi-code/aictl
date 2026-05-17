@@ -1,4 +1,4 @@
-import { useState, useContext, useMemo, useEffect, useCallback } from 'preact/hooks';
+import { useState, useContext, useMemo, useEffect, useCallback, useRef } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS, fmtK, fmtSz } from '../utils.js';
@@ -34,6 +34,14 @@ function fmtAgo(ts) {
   const m = Math.floor(secs / 60);
   if (m < 60) return m + 'm ago';
   return Math.floor(m / 60) + 'h ago';
+}
+
+function fmtDurS(s) {
+  if (!s || s < 1) return '0s';
+  if (s < 60) return Math.round(s) + 's';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm ' + Math.round(s % 60) + 's';
+  return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
 }
 
 function fmtTs(ts) {
@@ -107,12 +115,26 @@ function turnsToEvents(turns) {
 }
 
 // ─── Stats strip cell ────────────────────────────────────────────
-function Stat({ label, value }) {
+function Stat({ label, value, sub }) {
   return html`<div class="cdb-stat">
     <div class="cdb-stat-label">${label}</div>
     <div class="cdb-stat-row">
       <span class="cdb-stat-value">${value}</span>
+      ${sub && html`<span class="cdb-stat-sub">${sub}</span>`}
     </div>
+  </div>`;
+}
+
+// ─── Agent toggle row (left pane checklist) ──────────────────────
+function AgentToggle({ tool, label, color, active, onToggle }) {
+  return html`<div class="cdb-agent-row" onClick=${onToggle} role="button" tabIndex=${0}
+    onKeyDown=${e => e.key === 'Enter' && onToggle()}
+    style="opacity:${active ? 1 : 0.45}">
+    <div class=${'cdb-agent-check' + (active ? ' is-active' : '')}
+      style="background:${active ? color : 'transparent'};border-color:${active ? color : 'var(--fg3)'}">
+      ${active ? '\u2713' : ''}
+    </div>
+    <span class="cdb-agent-label">${label}</span>
   </div>`;
 }
 
@@ -229,10 +251,51 @@ export default function CDashboardTab() {
   const [selectedEvent,   setSelectedEvent]   = useState(null);
   const [flow,            setFlow]            = useState(null);
   const [flowLoading,     setFlowLoading]     = useState(false);
+  const [activeTools,     setActiveTools]     = useState(null); // null = all active
 
-  // Aggregate stats
-  const stats = useMemo(() => {
-    if (!snap) return { sessions: 0, processes: 0, tokens: 0, tools: 0, files: 0, mcp: 0 };
+  // Collect unique tools that have sessions
+  const sessionTools = useMemo(() => {
+    const seen = new Map();
+    for (const t of (snap?.tools || [])) {
+      if ((t.live?.sessions || []).length > 0) {
+        seen.set(t.tool, { tool: t.tool, label: t.label, color: toolColor(t.tool) });
+      }
+    }
+    return [...seen.values()];
+  }, [snap]);
+
+  const toggleTool = useCallback((toolId) => {
+    setActiveTools(prev => {
+      const all = new Set(sessionTools.map(t => t.tool));
+      const cur = prev ?? all;
+      const next = new Set(cur);
+      if (next.has(toolId)) next.delete(toolId);
+      else next.add(toolId);
+      return next.size === all.size ? null : next; // null = all active (cheaper)
+    });
+  }, [sessionTools]);
+
+  // Stats — session-level when flow is loaded, global when not
+  const statsData = useMemo(() => {
+    const s = flow?.summary;
+    if (s) {
+      const totalTok = (s.total_input_tokens || 0) + (s.total_output_tokens || 0);
+      const sub = `${fmtK(s.total_input_tokens || 0)}/${fmtK(s.total_output_tokens || 0)}`;
+      return [
+        { label: 'Prompts',   value: s.total_turns       ?? 0 },
+        { label: 'API calls', value: s.total_api_calls   ?? 0 },
+        { label: 'Tools',     value: s.total_tool_uses   ?? 0 },
+        { label: 'Tokens',    value: fmtK(totalTok),        sub },
+        { label: 'Duration',  value: fmtDurS(s.duration_s) },
+        { label: 'Events',    value: s.event_count        ?? 0 },
+      ];
+    }
+    // Global fallback
+    if (!snap) return [
+      { label: 'Live sessions', value: 0 }, { label: 'Processes', value: 0 },
+      { label: 'Est. tokens',   value: 0 }, { label: 'Active tools', value: 0 },
+      { label: 'Files touched', value: 0 }, { label: 'MCP servers', value: 0 },
+    ];
     let sessions = 0, processes = 0, tokens = 0, tools = 0, files = 0, mcp = 0;
     for (const t of snap.tools || []) {
       const l = t.live || {};
@@ -243,8 +306,15 @@ export default function CDashboardTab() {
       files += l.files_touched || 0;
       mcp   += (t.mcp_servers || []).length;
     }
-    return { sessions, processes, tokens, tools, files, mcp };
-  }, [snap]);
+    return [
+      { label: 'Live sessions', value: sessions  },
+      { label: 'Processes',     value: processes },
+      { label: 'Est. tokens',   value: fmtK(tokens) },
+      { label: 'Active tools',  value: tools    },
+      { label: 'Files touched', value: files    },
+      { label: 'MCP servers',   value: mcp      },
+    ];
+  }, [snap, flow]);
 
   // Flatten all sessions from all tools
   const allSessions = useMemo(() => {
@@ -258,15 +328,17 @@ export default function CDashboardTab() {
   }, [snap]);
 
   const filteredSessions = useMemo(() => {
-    if (!sessionFilter) return allSessions;
+    let out = allSessions;
+    if (activeTools !== null) out = out.filter(s => activeTools.has(s._tool));
+    if (!sessionFilter) return out;
     const q = sessionFilter.toLowerCase();
-    return allSessions.filter(s => {
+    return out.filter(s => {
       const id = String(s.session_id || s.id || '');
       return id.toLowerCase().includes(q)
         || (s._toolLabel || '').toLowerCase().includes(q)
         || (s.workspace || s.project || '').toLowerCase().includes(q);
     });
-  }, [allSessions, sessionFilter]);
+  }, [allSessions, sessionFilter, activeTools]);
 
   const selectedId  = selectedSession ?? filteredSessions[0]?.session_id ?? filteredSessions[0]?.id ?? null;
   const selectedObj = filteredSessions.find(s => (s.session_id || s.id) === selectedId) ?? null;
@@ -313,12 +385,7 @@ export default function CDashboardTab() {
   return html`<div class="cdb-shell">
     <!-- Stats strip -->
     <div class="cdb-stats-strip">
-      <${Stat} label="Live sessions" value=${stats.sessions}/>
-      <${Stat} label="Processes"     value=${stats.processes}/>
-      <${Stat} label="Est. tokens"   value=${fmtK(stats.tokens)}/>
-      <${Stat} label="Active tools"  value=${stats.tools}/>
-      <${Stat} label="Files touched" value=${stats.files}/>
-      <${Stat} label="MCP servers"   value=${stats.mcp}/>
+      ${statsData.map(s => html`<${Stat} key=${s.label} label=${s.label} value=${s.value} sub=${s.sub}/>`)}
     </div>
 
     <!-- Body: 3-col -->
@@ -332,6 +399,21 @@ export default function CDashboardTab() {
             class=${'cdb-range-btn' + (range === r ? ' is-active' : '')}
             onClick=${() => setRange(r)}>${r}</button>`)}
         </div>
+
+        ${sessionTools.length > 0 && html`<div>
+          <div class="cdb-left-heading" style="margin-top:var(--sp-8)">
+            Agents
+            <span class="cdb-count-badge">
+              ${activeTools === null ? sessionTools.length : activeTools.size}/${sessionTools.length}
+            </span>
+          </div>
+          <div class="cdb-agents-list">
+            ${sessionTools.map(t => html`<${AgentToggle}
+              key=${t.tool} tool=${t.tool} label=${t.label} color=${t.color}
+              active=${activeTools === null || activeTools.has(t.tool)}
+              onToggle=${() => toggleTool(t.tool)}/>`)}
+          </div>
+        </div>`}
 
         <div class="cdb-left-heading" style="margin-top:var(--sp-8)">
           Sessions
@@ -363,6 +445,8 @@ export default function CDashboardTab() {
                   </div>
                   <div class="cdb-session-meta">
                     ${s._toolLabel} \u00b7 ${fmtK(s.estimated_tokens || s.tokens || 0)} tok
+                    ${s.files_modified > 0 ? ` \u00b7 ${s.files_modified}f` : ''}
+                    ${s.duration_s > 0 ? ` \u00b7 ${fmtDurS(s.duration_s)}` : ''}
                     \u00b7 ${fmtAgo(s.last_seen_at || s.started_at)}
                   </div>
                 </div>`;
