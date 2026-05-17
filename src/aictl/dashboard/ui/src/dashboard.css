@@ -3494,3 +3494,88 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   line-height: 1.55;
   max-height: 280px;
 }
+
+/* ─── CPromptsTab: prompt list rows & detail view ────────────────── */
+.cprompts-prompt-row {
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border-soft, var(--border));
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.cprompts-prompt-row:hover      { background: var(--bg-hover, #F2EDE2); }
+.cprompts-prompt-row.is-selected{
+  background: var(--accent-soft, #F6E6E0);
+  border-left: 3px solid var(--accent);
+  padding-left: 15px;
+}
+.cprompts-prompt-name {
+  font-family: var(--ff-mono);
+  font-size: var(--fs-base);
+  color: var(--fg);
+  font-weight: 500;
+}
+.cprompts-prompt-meta {
+  font-family: var(--ff-mono);
+  font-size: var(--fs-xs);
+  color: var(--fg2);
+  margin-top: 3px;
+}
+.cprompts-detail-view {
+  padding: 24px 28px;
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.cprompts-detail-overline {
+  font-family: var(--ff-mono);
+  font-size: var(--fs-xs);
+  color: var(--fg2);
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+}
+.cprompts-detail-title {
+  font-family: var(--ff-serif, Georgia, serif);
+  font-size: 22px;
+  color: var(--fg);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  margin-top: var(--sp-2);
+  line-height: 1.2;
+}
+.cprompts-detail-meta {
+  font-family: var(--ff-mono);
+  font-size: var(--fs-xs);
+  color: var(--fg2);
+  margin-top: var(--sp-2);
+}
+.cprompts-meta-tool { font-weight: 600; color: var(--fg); }
+.cprompts-detail-path {
+  font-family: var(--ff-mono);
+  font-size: var(--fs-xs);
+  color: var(--fg3, var(--fg2));
+  margin-top: var(--sp-2);
+  word-break: break-all;
+  opacity: 0.65;
+}
+.cprompts-detail-body { margin-top: var(--sp-6); flex: 1; }
+.cprompts-loading {
+  font-family: var(--ff-mono);
+  font-size: var(--fs-xs);
+  color: var(--fg2);
+  padding: var(--sp-4) 0;
+}
+.cprompts-code {
+  background: var(--bg2, var(--bg));
+  border: 1px solid var(--border);
+  padding: 14px;
+  font-family: var(--ff-mono);
+  font-size: var(--fs-xs);
+  color: var(--fg2);
+  overflow: auto;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
+  max-height: 60vh;
+}
