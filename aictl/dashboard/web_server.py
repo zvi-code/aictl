@@ -134,9 +134,7 @@ def _snapshot_worker(db, session_id: str, project_hash: str | None, phase: str, 
         logger.debug("memory snapshot (%s) failed for %s: %s", phase, session_id, exc)
 
 
-def _maybe_snapshot_claude_memory(
-    db, data: dict, session_id: str, cwd: str, phase: str, ts: float
-) -> None:
+def _maybe_snapshot_claude_memory(db, data: dict, session_id: str, cwd: str, phase: str, ts: float) -> None:
     """Spawn a background thread to snapshot Claude memory for this session.
 
     No-op unless the hook payload came from a Claude user/project hook.
@@ -469,8 +467,15 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                 db.update_session_end(
                     session_id,
                     ended_at=ts,
+                    tool=tool,
+                    project_path=cwd,
+                    model=detail.get("model", ""),
+                    source="hook",
                     input_tokens=int(detail.get("input_tokens", 0) or 0),
                     output_tokens=int(detail.get("output_tokens", 0) or 0),
+                    cache_read_tokens=int(detail.get("cache_read_tokens", 0) or 0),
+                    cache_creation_tokens=int(detail.get("cache_creation_tokens", 0) or 0),
+                    cost_usd=float(detail.get("cost_usd", 0) or 0),
                 )
                 _maybe_snapshot_claude_memory(db, data, session_id, cwd, "end", ts)
                 # Best-effort git commit attribution in a background

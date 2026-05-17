@@ -785,6 +785,8 @@ make test-docker   # Docker fresh-install integration gate
 make test-all      # everything above
 ```
 
+The Makefile uses `.venv/bin/python` when the repo virtualenv exists; override with `make PYTHON=/path/to/python test` for another environment.
+
 ### Reproducing the observability and control checks
 
 Use this sequence after changing storage, hook ingestion, local-store ingesters, Docker packaging, or `.context.toml` deployment behavior:
@@ -792,14 +794,14 @@ Use this sequence after changing storage, hook ingestion, local-store ingesters,
 ```bash
 # Sanity checks before launching longer commands
 pwd
-python3 -m pytest --version
-python3 -c "import aictl; from aictl.storage import SCHEMA_VERSION; print(aictl.__file__, SCHEMA_VERSION)"
+.venv/bin/python -m pytest --version
+.venv/bin/python -c "import aictl; from aictl.storage import SCHEMA_VERSION; print(aictl.__file__, SCHEMA_VERSION)"
 command -v docker && docker info --format '{{.ServerVersion}}'
 command -v claude && claude --version
 command -v copilot && copilot --help >/dev/null
 
 # Fast local regression pass for the observability/control substrates
-python3 -m pytest \
+.venv/bin/python -m pytest \
   test/test_storage.py \
   test/test_api_endpoints.py \
   test/test_copilot_session_store_ingester.py \
@@ -823,6 +825,7 @@ Success means all commands exit 0 and these behaviors are specifically covered:
 - `HistoryDB.stats()` reports the current `SCHEMA_VERSION`, plus `file_write_events` and `data_quality_status` row counts.
 - `PostToolUse` write-like hooks (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`) produce rows at `/api/file-writes` with session, tool, operation, path, and source event id.
 - Collector and ingester health is queryable from `/api/data-quality`; missing, unreadable, schema-drift, degraded, and ok states are persisted instead of only logged.
+- `/api/sessions` distinguishes live `active`, completed `ended`, imported historical `imported`, and unterminated `open` sessions instead of treating every row with no `ended_at` as live.
 - `aictl ctx deploy --profile <name>` fails for unknown profiles unless `--allow-empty-profile` is supplied.
 - `aictl ctx deploy --strict` fails when the selected emitter cannot represent a selected feature.
 - The Docker gate derives the expected schema from `aictl.storage.SCHEMA_VERSION` and checks current table and column names, so stale schema assumptions fail fast.
@@ -830,7 +833,7 @@ Success means all commands exit 0 and these behaviors are specifically covered:
 Optional real Claude Code check, pinned to the full Haiku model id by default:
 
 ```bash
-AICTL_CLAUDE_MODEL=claude-haiku-4-5 python3 -m pytest test/e2e_tools/test_claude_e2e.py -v --timeout=180
+AICTL_CLAUDE_MODEL=claude-haiku-4-5 .venv/bin/python -m pytest test/e2e_tools/test_claude_e2e.py -v --timeout=180
 ```
 
 Docker real-tool check, when `CLAUDE_CODE_OAUTH_TOKEN` is available:
@@ -853,8 +856,8 @@ The first Copilot command is a command-path check; the second is a manual real-s
 
 ```bash
 make test                                       # full unit suite
-python3 -m pytest test/test_dashboard.py -v     # specific module
-python test/run.py                              # legacy integration tests (deploy, import, scan)
+.venv/bin/python -m pytest test/test_dashboard.py -v  # specific module
+.venv/bin/python test/run.py                         # legacy integration tests (deploy, import, scan)
 ```
 
 Coverage includes:
@@ -873,7 +876,7 @@ Starts a real `aictl daemon serve` on a random port and posts synthetic hook/OTe
 ```bash
 make test-e2e
 # or directly:
-python3 -m pytest test/e2e/ -v --timeout=120
+.venv/bin/python -m pytest test/e2e/ -v --timeout=120
 ```
 
 Tests cover:
@@ -889,7 +892,7 @@ Runs actual AI tool CLIs in non-interactive mode and verifies hooks fire back to
 ```bash
 make test-tools
 # or directly:
-python3 -m pytest test/e2e_tools/ -v --timeout=180
+.venv/bin/python -m pytest test/e2e_tools/ -v --timeout=180
 ```
 
 **Requirements:** Claude Code (`claude`) and/or Gemini CLI (`gemini`) installed and authenticated. Tests that need a missing tool are automatically skipped.

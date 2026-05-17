@@ -2512,15 +2512,47 @@ class HistoryDB:
     # ── Sessions (new) ─────────────────────────────────────────────
 
     def upsert_session(self, row: SessionRow) -> None:
-        """Insert a session (INSERT OR IGNORE on session_id PK)."""
+        """Insert or enrich a session row.
+
+        Session data arrives in layers. An ingester may create a provisional
+        row before hooks or OTel provide model, pid, token, or end-time
+        details. Keep the earliest known start, latest known end, and refresh
+        fields only when the new row carries real values.
+        """
         conn = self._conn()
         conn.execute(
-            "INSERT OR IGNORE INTO sessions"
+            "INSERT INTO sessions"
             "(session_id, tool, pid, project_path, model, git_branch, git_commit,"
             " started_at, ended_at, source, input_tokens, output_tokens,"
             " cache_read_tokens, cache_creation_tokens, cost_usd,"
             " request_count, tool_call_count, files_modified)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(session_id) DO UPDATE SET"
+            " tool = CASE WHEN excluded.tool != '' THEN excluded.tool ELSE sessions.tool END,"
+            " pid = CASE WHEN excluded.pid != 0 THEN excluded.pid ELSE sessions.pid END,"
+            " project_path = CASE WHEN excluded.project_path != '' THEN excluded.project_path ELSE sessions.project_path END,"
+            " model = CASE WHEN excluded.model != '' THEN excluded.model ELSE sessions.model END,"
+            " git_branch = CASE WHEN excluded.git_branch != '' THEN excluded.git_branch ELSE sessions.git_branch END,"
+            " git_commit = CASE WHEN excluded.git_commit != '' THEN excluded.git_commit ELSE sessions.git_commit END,"
+            " started_at = CASE"
+            " WHEN sessions.started_at = 0 THEN excluded.started_at"
+            " WHEN excluded.started_at = 0 THEN sessions.started_at"
+            " ELSE MIN(sessions.started_at, excluded.started_at)"
+            " END,"
+            " ended_at = CASE"
+            " WHEN excluded.ended_at IS NULL THEN sessions.ended_at"
+            " WHEN sessions.ended_at IS NULL THEN excluded.ended_at"
+            " ELSE MAX(sessions.ended_at, excluded.ended_at)"
+            " END,"
+            " source = CASE WHEN excluded.source != '' THEN excluded.source ELSE sessions.source END,"
+            " input_tokens = CASE WHEN excluded.input_tokens != 0 THEN excluded.input_tokens ELSE sessions.input_tokens END,"
+            " output_tokens = CASE WHEN excluded.output_tokens != 0 THEN excluded.output_tokens ELSE sessions.output_tokens END,"
+            " cache_read_tokens = CASE WHEN excluded.cache_read_tokens != 0 THEN excluded.cache_read_tokens ELSE sessions.cache_read_tokens END,"
+            " cache_creation_tokens = CASE WHEN excluded.cache_creation_tokens != 0 THEN excluded.cache_creation_tokens ELSE sessions.cache_creation_tokens END,"
+            " cost_usd = CASE WHEN excluded.cost_usd != 0 THEN excluded.cost_usd ELSE sessions.cost_usd END,"
+            " request_count = CASE WHEN excluded.request_count != 0 THEN excluded.request_count ELSE sessions.request_count END,"
+            " tool_call_count = CASE WHEN excluded.tool_call_count != 0 THEN excluded.tool_call_count ELSE sessions.tool_call_count END,"
+            " files_modified = CASE WHEN excluded.files_modified != 0 THEN excluded.files_modified ELSE sessions.files_modified END",
             (
                 row.session_id,
                 row.tool,
@@ -2634,10 +2666,16 @@ class HistoryDB:
 
     def update_session_end(self, session_id: str, ended_at: float, **kwargs) -> None:
         """Update session end time and optional fields."""
+        if not session_id:
+            return
         conn = self._conn()
         sets = ["ended_at = ?"]
         params: list[Any] = [ended_at]
         for k in (
+            "tool",
+            "project_path",
+            "model",
+            "source",
             "input_tokens",
             "output_tokens",
             "cache_read_tokens",
@@ -2648,13 +2686,36 @@ class HistoryDB:
             "files_modified",
         ):
             if k in kwargs:
+                if k in {"tool", "project_path", "model", "source"} and not kwargs[k]:
+                    continue
                 sets.append(f"{k} = ?")
                 params.append(kwargs[k])
         params.append(session_id)
-        conn.execute(
+        cur = conn.execute(
             f"UPDATE sessions SET {', '.join(sets)} WHERE session_id = ?",
             params,
         )
+        if cur.rowcount == 0:
+            self.upsert_session(
+                SessionRow(
+                    session_id=session_id,
+                    tool=str(kwargs.get("tool", "") or ""),
+                    project_path=str(kwargs.get("project_path", "") or ""),
+                    model=str(kwargs.get("model", "") or ""),
+                    started_at=ended_at,
+                    ended_at=ended_at,
+                    source=str(kwargs.get("source", "") or ""),
+                    input_tokens=int(kwargs.get("input_tokens", 0) or 0),
+                    output_tokens=int(kwargs.get("output_tokens", 0) or 0),
+                    cache_read_tokens=int(kwargs.get("cache_read_tokens", 0) or 0),
+                    cache_creation_tokens=int(kwargs.get("cache_creation_tokens", 0) or 0),
+                    cost_usd=float(kwargs.get("cost_usd", 0.0) or 0.0),
+                    request_count=int(kwargs.get("request_count", 0) or 0),
+                    tool_call_count=int(kwargs.get("tool_call_count", 0) or 0),
+                    files_modified=int(kwargs.get("files_modified", 0) or 0),
+                )
+            )
+            return
         conn.commit()
 
     # ── Session commits (git attribution) ──────────────────────────

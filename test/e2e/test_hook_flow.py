@@ -81,12 +81,12 @@ class TestClaudeHookFlow:
         sessions = aictl_server.get_sessions(since="0")
         session = next((s for s in sessions if s["session_id"] == sid), None)
         assert session is not None
-        # Session should have ended
-        if session.get("ended_at"):
-            assert session["ended_at"] > 0
-        # Token counts from Stop event should be recorded
-        if session.get("input_tokens") is not None:
-            assert session["input_tokens"] >= 0
+        assert session["ended_at"] > 0
+        assert session["active"] is False
+        assert session["lifecycle_status"] == "ended"
+        assert session["input_tokens"] == 2500
+        assert session["output_tokens"] == 350
+        assert session["cost_usd"] == 0.0125
 
 
 class TestGeminiHookFlow:
