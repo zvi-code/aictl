@@ -34,6 +34,7 @@ import DashboardContent from './components/DashboardContent.js';
 import RangeBar from './components/RangeBar.js';
 import ToolFilterBar from './components/ToolFilterBar.js';
 import GlobalHeader from './components/shell/GlobalHeader.js';
+import CMasthead from './components/shell/CMasthead.js';
 import ActivityRail from './components/shell/ActivityRail.js';
 import CommandPalette from './components/shell/CommandPalette.js';
 import SkipLink from './components/shell/SkipLink.js';
@@ -338,6 +339,9 @@ export default function App() {
         onApplyView=${applyView} onDeleteView=${deleteView} onSaveView=${saveView}
         onOpenPalette=${palette.open}
       />
+      ${theme === 'editorial' && html`<${CMasthead}
+        activeTab=${activeTab} setActiveTab=${setActiveTab}
+      />`}
       ${alerts.length > 0 && html`<div class="alert-banner" role="alert">
         ${alerts.map((a, i) => html`<div key=${i} class="alert-item" style="color:var(--${a.level})">\u26A0 ${a.msg}</div>`)}
       </div>`}
