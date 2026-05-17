@@ -504,11 +504,11 @@ def _render_markdown(entries: list[dict]) -> str:
     lines: list[str] = []
     lines.append("# aictl Dashboard Datapoint Catalog")
     lines.append("")
-    lines.append(f"> **{len(entries)}** datapoints across **{len(tabs)}** tabs.  ")
+    lines.append(f"> **{len(entries)}** datapoints across **{len(tabs)}** tabs.")
     lines.append(
         f"> Raw: {type_counts.get('raw', 0)}"
         f" | Deduced: {type_counts.get('deduced', 0)}"
-        f" | Aggregated: {type_counts.get('aggregated', 0)}  "
+        f" | Aggregated: {type_counts.get('aggregated', 0)}"
     )
     lines.append(f"> Generated: {time.strftime('%Y-%m-%d %H:%M')}")
     lines.append("")
