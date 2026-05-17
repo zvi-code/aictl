@@ -48,12 +48,16 @@ def synthesize(
     prefer: str | None = None,
     profile: str | None = None,
     dry_run: bool = False,
+    warnings: list[str] | None = None,
 ) -> list[dict]:
     """Merge import results and write .context.toml files.
 
-    Returns list of {"path": str, "rel_path": str} for each file written.
+    Returns list of ``{"path": str, "rel_path": str}`` for each file written.
+    If *warnings* is provided, conflict diagnostics (profile-name disagreements
+    between importers, capability/MCP/hook/LSP ties across sources) are
+    appended to it so callers can surface them to the user.
     """
-    aictx_files = _merge(imports, prefer, profile)
+    aictx_files = _merge(imports, prefer, profile, warnings=warnings)
     results = []
 
     for af in aictx_files:
@@ -73,14 +77,42 @@ def synthesize(
     return results
 
 
-def _dedup(imports: list[ImportResult], attr: str, key_fn, prefer: str | None) -> list:
-    """Collect items from all imports, deduplicating by key_fn; prefer wins ties."""
+def _dedup(
+    imports: list[ImportResult],
+    attr: str,
+    key_fn,
+    prefer: str | None,
+    *,
+    warnings: list[str] | None = None,
+    label: str | None = None,
+) -> list:
+    """Collect items from all imports, deduplicating by ``key_fn``.
+
+    Tie-break: when *prefer* matches an importer's ``source``, that importer
+    wins; otherwise the first importer to define a key wins. When two or more
+    distinct importers define the same key the resolution is logged into
+    *warnings* (if provided) so the user can see which source was kept.
+    """
     result: dict = {}
+    sources: dict = {}  # key -> list of importer sources that defined it
+    chosen: dict = {}   # key -> source kept
     for imp in imports:
         for item in getattr(imp, attr):
             k = key_fn(item)
+            sources.setdefault(k, []).append(imp.source)
             if k not in result or (prefer and imp.source == prefer):
                 result[k] = item
+                chosen[k] = imp.source
+    if warnings is not None and label:
+        for k, srcs in sources.items():
+            distinct = sorted({s for s in srcs if s})
+            if len(distinct) > 1:
+                kept = chosen.get(k, distinct[0])
+                others = [s for s in distinct if s != kept]
+                warnings.append(
+                    f"{label} '{k}' defined by {', '.join(distinct)}; kept from '{kept}'"
+                    + (f" (also from: {', '.join(others)})" if others else "")
+                )
     return list(result.values())
 
 
@@ -88,6 +120,8 @@ def _merge(
     imports: list[ImportResult],
     prefer: str | None,
     profile_override: str | None,
+    *,
+    warnings: list[str] | None = None,
 ) -> list[AictxFile]:
     """Merge all import results into a list of AictxFile objects."""
     # Group scopes by rel_path
@@ -96,16 +130,29 @@ def _merge(
         for scope in imp.scopes:
             scope_groups.setdefault(scope.rel_path, []).append(scope)
 
-    # Detect profile name (from any importer, or CLI override)
+    # Detect profile name (from any importer, or CLI override). When multiple
+    # importers report different profile names, the first wins but the
+    # disagreement is recorded for the user — silent picks have caused
+    # surprises where Claude's 'debug' overrode Copilot's 'review'.
     detected_profile = profile_override
-    if not detected_profile:
-        for imp in imports:
-            for scope in imp.scopes:
-                if scope.profile_name:
+    detected_source: str | None = None
+    seen_profiles: dict[str, list[str]] = {}
+    for imp in imports:
+        for scope in imp.scopes:
+            if scope.profile_name:
+                seen_profiles.setdefault(scope.profile_name, []).append(imp.source or "<unknown>")
+                if not detected_profile:
                     detected_profile = scope.profile_name
-                    break
-            if detected_profile:
-                break
+                    detected_source = imp.source
+    if warnings is not None and not profile_override and len(seen_profiles) > 1:
+        kept = detected_profile
+        others = sorted(p for p in seen_profiles if p != kept)
+        kept_src = detected_source or seen_profiles[kept][0]
+        other_desc = "; ".join(f"'{p}' from {', '.join(sorted(set(seen_profiles[p])))}" for p in others)
+        warnings.append(
+            f"profile name conflict: kept '{kept}' (from {kept_src}); ignored {other_desc}."
+            " Pass --profile to choose explicitly."
+        )
 
     # Build AictxFile per scope
     aictx_files: list[AictxFile] = []
@@ -123,10 +170,10 @@ def _merge(
             )
         )
 
-    all_caps = _dedup(imports, "capabilities", lambda c: (c.kind, c.name), prefer)
-    all_mcp = _dedup(imports, "mcp_servers", lambda m: m.name, prefer)
-    all_hooks = _dedup(imports, "hooks", lambda h: h.event, prefer)
-    all_lsp = _dedup(imports, "lsp_servers", lambda s: s.name, prefer)
+    all_caps = _dedup(imports, "capabilities", lambda c: (c.kind, c.name), prefer, warnings=warnings, label="capability")
+    all_mcp = _dedup(imports, "mcp_servers", lambda m: m.name, prefer, warnings=warnings, label="mcp")
+    all_hooks = _dedup(imports, "hooks", lambda h: h.event, prefer, warnings=warnings, label="hook")
+    all_lsp = _dedup(imports, "lsp_servers", lambda s: s.name, prefer, warnings=warnings, label="lsp")
 
     # Attach capabilities + MCP + hooks + LSP to root scope
     root_file = next((f for f in aictx_files if f.rel_path == "."), None)

@@ -180,6 +180,78 @@ class TestResolverHooks:
             resolved = resolve(root, scanned, None)
             assert "gopls" in resolved.lsp_servers
 
+    def test_resolve_excludes_always_mcp(self):
+        """exclude = ['mcp:_always:<name>'] must drop an _always-profile MCP server."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / ".context.toml").write_text(
+                'exclude = ["mcp:_always:github"]\n\n'
+                "[instructions]\n"
+                'base = "Test project"\n\n'
+                "[mcp._always.github]\n"
+                'type = "http"\nurl = "https://example.com"\n\n'
+                "[mcp._always.local]\n"
+                'type = "stdio"\ncommand = "node"\n'
+            )
+            scanned = scan(root)
+            resolved = resolve(root, scanned, None)
+            assert "github" not in resolved.mcp_servers
+            assert "local" in resolved.mcp_servers
+
+    def test_resolve_excludes_profile_mcp(self):
+        """exclude = ['mcp:<profile>:<name>'] must drop a profile-scoped MCP server."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / ".context.toml").write_text(
+                'exclude = ["mcp:debug:github"]\n\n'
+                "[instructions]\n"
+                'base = "Test project"\n\n'
+                "[mcp.debug.github]\n"
+                'type = "http"\nurl = "https://example.com"\n\n'
+                "[mcp._always.local]\n"
+                'type = "stdio"\ncommand = "node"\n'
+            )
+            scanned = scan(root)
+            resolved = resolve(root, scanned, "debug")
+            assert "github" not in resolved.mcp_servers
+            assert "local" in resolved.mcp_servers
+
+    def test_resolve_excludes_always_lsp(self):
+        """exclude = ['lsp:_always:<name>'] must drop an _always-profile LSP server."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / ".context.toml").write_text(
+                'exclude = ["lsp:_always:gopls"]\n\n'
+                "[instructions]\n"
+                'base = "Test project"\n\n'
+                "[lsp._always.gopls]\n"
+                'command = "gopls"\n\n'
+                "[lsp._always.pyright]\n"
+                'command = "pyright"\n'
+            )
+            scanned = scan(root)
+            resolved = resolve(root, scanned, None)
+            assert "gopls" not in resolved.lsp_servers
+            assert "pyright" in resolved.lsp_servers
+
+    def test_resolve_excludes_profile_lsp(self):
+        """exclude = ['lsp:<profile>:<name>'] must drop a profile-scoped LSP server."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / ".context.toml").write_text(
+                'exclude = ["lsp:debug:gopls"]\n\n'
+                "[instructions]\n"
+                'base = "Test project"\n\n'
+                "[lsp.debug.gopls]\n"
+                'command = "gopls"\n\n'
+                "[lsp._always.pyright]\n"
+                'command = "pyright"\n'
+            )
+            scanned = scan(root)
+            resolved = resolve(root, scanned, "debug")
+            assert "gopls" not in resolved.lsp_servers
+            assert "pyright" in resolved.lsp_servers
+
 
 # ---------------------------------------------------------------------------
 # Claude emitter tests
