@@ -2,7 +2,7 @@
 
 > **181** datapoints across **10** tabs.
 > Raw: 79 | Deduced: 38 | Aggregated: 64
-> Generated: 2026-05-17 17:05
+> Generated: 2026-05-17 17:08
 
 ## Contents
 
@@ -26,7 +26,7 @@
 | `api.file_content` | RAW | File content retrieval for inline preview in the dashboard. Returns raw text content of tracked files. | `SELECT content FROM file_store WHERE path = ?` | Direct content. Truncated to 200KB. |
 | `api.file_history` | RAW * | Historical timeline of file modifications — when files were created, modified, or deleted, with content snapshots at change points. | `SELECT ts, content_hash, size_bytes, tokens, lines FROM file_history WHERE path = ? ORDER BY ts DESC LIMIT ?` | Direct rows. Each = change point snapshot. |
 | `api.project_costs` | DEDUCED * | Per-project cost breakdown — sessions, tokens, and estimated USD cost grouped by working directory / repository. | `SELECT json_extract(detail, '$.project') as project, COUNT(*) as sessions, SUM(json_extract(detail, '$.input_tokens')) as input, SUM(json_extract(detail, '$.output_tokens')) as output FROM events WHERE kind = 'session_end' AND ts >= ? GROUP BY project` | Cost apportioned from tool_telemetry by token share. |
-| `api.session_runs` | RAW * | Historical session run data — per-session tokens, duration, project, and tool. Used for session analytics and billing. | `SELECT e1.tool, e1.ts as start_ts, e2.ts as end_ts, (e2.ts - e1.ts) as duration_s, json_extract(e2.detail, '$.input_tokens') as input, json_extract(e2.detail, '$.output_tokens') as output FROM events e1 JOIN events e2 ON json_extract(e1.detail, '$.session_id') = json_extract(e2.detail, '$.session_id') AND e2.kind = 'session_end' WHERE e1.kind = 'session_start' ORDER BY e1.ts DESC LIMIT ?` | Join start + end events. Total = input + output. |
+| `api.session_runs` | RAW * | Historical session run data — per-session tokens, duration, project, and tool. Used for session analytics and billing. | `SELECT session_id, tool, project_path, started_at, ended_at, (ended_at - started_at) as duration_s, input_tokens, output_tokens, (input_tokens + output_tokens) as total_tokens, files_modified FROM sessions WHERE ended_at IS NOT NULL AND ended_at >= ? ORDER BY ended_at DESC LIMIT ?` | Completed sessions table rows. Total = input_tokens + output_tokens. Legacy event rows are fallback-only in the API. |
 
 ---
 ## budget

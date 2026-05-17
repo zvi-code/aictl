@@ -796,9 +796,41 @@ class _APIHandlersMixin:
         runs = []
         db = self._db
         if db:
+            seen_session_ids: set[str] = set()
+            rows = db.query_sessions(since=0, tool=tool or None, active=False, limit=5000)
+            for row in rows:
+                ended_at = float(row.get("ended_at", 0) or 0)
+                if ended_at < since:
+                    continue
+                ev_project = row.get("project_path") or ""
+                if project and ev_project != project:
+                    continue
+                started_at = float(row.get("started_at", 0) or 0)
+                in_tok = int(row.get("input_tokens", 0) or 0)
+                out_tok = int(row.get("output_tokens", 0) or 0)
+                sid = row.get("session_id", "")
+                runs.append(
+                    {
+                        "session_id": sid,
+                        "ts": ended_at,
+                        "project": ev_project,
+                        "tool": row.get("tool", ""),
+                        "duration_s": round(ended_at - started_at, 1) if started_at else 0,
+                        "input_tokens": in_tok,
+                        "output_tokens": out_tok,
+                        "total_tokens": in_tok + out_tok,
+                        "file_churn": int(row.get("files_modified", 0) or 0),
+                    }
+                )
+                if sid:
+                    seen_session_ids.add(sid)
+
             rows = db.query_events(since=since, kind="session_end", limit=5000)
             for ev in rows:
                 detail = ev.detail or {}
+                sid = detail.get("session_id", "")
+                if sid in seen_session_ids:
+                    continue
                 ev_project = detail.get("project") or ""
                 if project and ev_project != project:
                     continue
@@ -808,7 +840,7 @@ class _APIHandlersMixin:
                 out_tok = detail.get("output_tokens") or 0
                 runs.append(
                     {
-                        "session_id": detail.get("session_id", ""),
+                        "session_id": sid,
                         "ts": ev.ts,
                         "project": ev_project,
                         "tool": ev.tool,
@@ -823,10 +855,9 @@ class _APIHandlersMixin:
         runs.sort(key=lambda r: r["ts"], reverse=True)
         runs = runs[:limit]
 
-        # Enrich with file_churn (distinct files touched) from sessions table.
-        # Keeps the endpoint shape stable aside from the new field.
+        # Enrich legacy event-only rows with file_churn from sessions table.
         if db and runs:
-            sids = [r["session_id"] for r in runs if r["session_id"]]
+            sids = [r["session_id"] for r in runs if r["session_id"] and r["file_churn"] == 0]
             if sids:
                 try:
                     conn = db._conn()

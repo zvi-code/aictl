@@ -138,7 +138,22 @@ def populated_db(tmp_path):
             project_path="/project",
             started_at=now - 300,
             ended_at=now - 100,
+            input_tokens=1000,
+            output_tokens=500,
             files_modified=7,
+        )
+    )
+    db.upsert_session(
+        SessionRow(
+            session_id="sess-table-only",
+            tool="claude-code",
+            project_path="/project",
+            started_at=now - 90,
+            ended_at=now - 30,
+            input_tokens=321,
+            output_tokens=123,
+            files_modified=2,
+            source="hook",
         )
     )
     db.upsert_session(
@@ -522,6 +537,20 @@ class TestSessionRunsAPI:
         run = next(r for r in data if r["session_id"] == "sess-001")
         assert run["duration_s"] == 200
         assert run["tool"] == "claude-code"
+        assert run["project"] == "/project"
+        assert run["input_tokens"] == 1000
+        assert run["output_tokens"] == 500
+        assert run["total_tokens"] == 1500
+
+    def test_returns_completed_sessions_without_event_pair(self, server):
+        data = _get_json(f"{server}/api/session-runs?days=1")
+        run = next(r for r in data if r["session_id"] == "sess-table-only")
+        assert run["duration_s"] == 60
+        assert run["project"] == "/project"
+        assert run["input_tokens"] == 321
+        assert run["output_tokens"] == 123
+        assert run["total_tokens"] == 444
+        assert run["file_churn"] == 2
 
     def test_includes_file_churn_field(self, server):
         """file_churn should be present on every run (0 when no session row)."""

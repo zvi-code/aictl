@@ -2420,8 +2420,10 @@ api.session_runs:
     Historical session run data — per-session tokens, duration, project,
     and tool. Used for session analytics and billing.
   source: >
-    Query from events table for session_start/session_end event pairs.
-    Duration = end_ts - start_ts. Tokens from event detail JSON.
+    Primary data comes from completed rows in the sessions table.
+    Duration = ended_at - started_at. Tokens, project_path, tool, and
+    file churn come from normalized session columns. Legacy session_end
+    events are used only as a fallback when no session row exists.
   source_type: raw
   unit: tokens
   update_freq: on-collect
