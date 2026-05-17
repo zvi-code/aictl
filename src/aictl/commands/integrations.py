@@ -1150,7 +1150,9 @@ def verify():
         for profile in _shell_profiles():
             if profile.exists():
                 content = profile.read_text()
-                if _OTEL_MARKER in content:
+                # Recognise either the new source-block marker (current scheme)
+                # or the legacy inline-export marker (pre-migration profiles).
+                if _AICTL_ENV_BEGIN in content or _OTEL_MARKER in content:
                     click.echo(f"    {ok}  {profile}")
                 else:
                     click.echo(f"    {miss}  {profile} — no aictl OTel block")

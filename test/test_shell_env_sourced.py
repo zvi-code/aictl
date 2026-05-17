@@ -175,3 +175,48 @@ class TestUninstallRemoval:
         # Profile is back to its original empty state (plus a trailing newline)
         assert _AICTL_ENV_BEGIN not in profile.read_text(encoding="utf-8")
         assert not env_file.exists()
+
+
+class TestEnableVerifyRoundtrip:
+    """Regression: enable and verify must agree on the marker string.
+
+    Catches the original bug where enable wrote ``# >>> aictl env >>>`` but
+    verify still looked for the legacy ``# ── aictl: OTel for AI tools ──``
+    marker, causing every freshly-enabled profile to be reported MISSING.
+    """
+
+    def test_verify_recognises_marker_written_by_enable(self, fake_home, monkeypatch):
+        bashrc = fake_home / ".bashrc"
+        zshrc = fake_home / ".zshrc"
+        bashrc.write_text("")
+        zshrc.write_text("")
+        runner = CliRunner()
+        enable_result = runner.invoke(
+            otel, ["enable", "--tool", "claude"], catch_exceptions=False
+        )
+        assert enable_result.exit_code == 0
+        # Sanity: enable wrote the new-scheme marker into each profile.
+        assert _AICTL_ENV_BEGIN in bashrc.read_text(encoding="utf-8")
+        assert _AICTL_ENV_BEGIN in zshrc.read_text(encoding="utf-8")
+
+        # Verify must report OK for every profile enable just wrote — not MISSING.
+        verify_result = runner.invoke(otel, ["verify"], catch_exceptions=False)
+        assert verify_result.exit_code == 0
+        out = verify_result.output
+        # Find the Shell profiles section
+        shell_section_start = out.index("Shell profiles:")
+        # Cut at the next blank-line section break, or end of output
+        section_end_candidates = [
+            out.index(hdr, shell_section_start)
+            for hdr in ("VS Code settings:", "Codex config:", "aictl server:")
+            if hdr in out[shell_section_start:]
+        ]
+        shell_section_end = min(section_end_candidates) if section_end_candidates else len(out)
+        shell_section = out[shell_section_start:shell_section_end]
+        assert "MISSING" not in shell_section, (
+            "verify reported MISSING for a profile enable just wrote:\n" + shell_section
+        )
+        # Both profiles should be listed as OK
+        assert str(bashrc) in shell_section
+        assert str(zshrc) in shell_section
+
