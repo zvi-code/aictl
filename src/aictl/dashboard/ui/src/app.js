@@ -39,6 +39,7 @@ import ActivityRail from './components/shell/ActivityRail.js';
 import CAgentsTab from './components/CAgentsTab.js';
 import CDashboardTab from './components/CDashboardTab.js';
 import CPromptsTab from './components/CPromptsTab.js';
+import CSessionsTab from './components/CSessionsTab.js';
 import CommandPalette from './components/shell/CommandPalette.js';
 import SkipLink from './components/shell/SkipLink.js';
 import ToastProvider from './components/ui/ToastProvider.js';
@@ -320,7 +321,11 @@ export default function App() {
     budget:     () => html`<${TabBoundary} tabName="budget"><div class="mb-lg"><${TabBudget} key=${'budget-' + activeTab}/></div></${TabBoundary}>`,
     analytics:  () => html`<${TabBoundary} tabName="analytics"><div class="mb-lg"><${TabAnalytics} key=${'analytics-' + activeTab}/></div></${TabBoundary}>`,
     heatmap:    () => html`<${TabBoundary} tabName="heatmap"><div class="mb-lg"><${TabHeatmap} key=${'heatmap-' + activeTab}/></div></${TabBoundary}>`,
-    explorer:   () => html`<${TabBoundary} tabName="explorer"><div class="mb-lg"><${TabExplorer} key=${'explorer-' + activeTab}/></div></${TabBoundary}>`,
+    explorer:   () => theme === 'editorial'
+      ? html`<${TabBoundary} tabName="explorer"><${CSessionsTab}
+          onInspect=${(id, tool) => { dispatchSessionSelect(id, tool); setTheme('auto'); }}
+        /></${TabBoundary}>`
+      : html`<${TabBoundary} tabName="explorer"><div class="mb-lg"><${TabExplorer} key=${'explorer-' + activeTab}/></div></${TabBoundary}>`,
     config:     () => html`<${TabBoundary} tabName="config"><div class="mb-lg"><${TabToolConfig}/></div></${TabBoundary}>`,
     agents:     () => html`<${TabBoundary} tabName="agents"><${CAgentsTab} onViewSessions=${() => setActiveTab('explorer')}/></${TabBoundary}>`,
     prompts:    () => html`<${TabBoundary} tabName="prompts"><${CPromptsTab}/></${TabBoundary}>`,
