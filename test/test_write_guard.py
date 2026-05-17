@@ -12,6 +12,7 @@ Coverage:
 from __future__ import annotations
 
 import json
+import os
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -45,7 +46,11 @@ def _confirm_interactive(guard, path, action="modify", user_input="Y"):
     click.prompt to return a canned response — bypassing all actual I/O.
     """
     with _fake_click_ctx():
-        with patch("sys.stdin.isatty", return_value=True), patch("click.prompt", return_value=user_input):
+        with (
+            patch.dict(os.environ, {"AICTL_ASSUME_YES": "0"}),
+            patch("sys.stdin.isatty", return_value=True),
+            patch("click.prompt", return_value=user_input),
+        ):
             guard.confirm(path, action)
 
 
@@ -204,6 +209,7 @@ class TestWriteGuardConfirmInteractive:
         echoed = []
         with _fake_click_ctx():
             with (
+                patch.dict(os.environ, {"AICTL_ASSUME_YES": "0"}),
                 patch("sys.stdin.isatty", return_value=True),
                 patch("click.prompt", return_value="Y"),
                 patch("click.secho", side_effect=lambda msg, **kw: echoed.append(msg)),
@@ -223,6 +229,7 @@ class TestWriteGuardConfirmInteractive:
         echoed = []
         with _fake_click_ctx():
             with (
+                patch.dict(os.environ, {"AICTL_ASSUME_YES": "0"}),
                 patch("sys.stdin.isatty", return_value=True),
                 patch("click.prompt", return_value="Y"),
                 patch("click.secho", side_effect=lambda msg, **kw: echoed.append(msg)),
@@ -1185,3 +1192,16 @@ class TestWriteGuardNonTTYGate:
         result = runner.invoke(_cmd)
         assert result.exit_code == 0
         assert "ok" in result.output
+
+    def test_tty_approves_with_env_without_prompt(self, tmp_path, monkeypatch):
+        existing = tmp_path / "file.txt"
+        existing.write_text("data")
+
+        monkeypatch.setenv("AICTL_ASSUME_YES", "1")
+        guard = WriteGuard("deploy")
+
+        with _fake_click_ctx():
+            with patch("sys.stdin.isatty", return_value=True), patch("click.prompt") as mock_prompt:
+                guard.confirm(existing)
+
+        mock_prompt.assert_not_called()

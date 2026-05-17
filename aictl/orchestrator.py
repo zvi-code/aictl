@@ -585,7 +585,7 @@ def start_server(
 
     store._sse_builder = lambda snap: _json_mod.dumps(_build_sse(snap))
     url = f"http://{host}:{port}"
-    print(f"  aictl serve — dashboard at {url}", file=sys.stderr)
+    print(f"  aictl daemon serve — dashboard at {url}", file=sys.stderr)
     print("  press Ctrl-C to stop\n", file=sys.stderr)
 
     if open_browser:
