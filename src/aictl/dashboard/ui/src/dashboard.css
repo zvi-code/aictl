@@ -1792,6 +1792,128 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   font-family: var(--ff-mono);
 }
 
+/* ─── CMasthead — editorial newspaper masthead + tab nav ─────────
+ * Rendered only when theme === 'editorial' (app.js conditional).
+ * Provides the serif title, kicker overline, Live badge, and the
+ * 4-tab editorial navigation that replaces .tab-nav.
+ */
+.cmasthead {
+  flex-shrink: 0;
+  background: var(--bg);
+  border-bottom: 2px solid var(--rule, var(--fg));
+}
+.cmasthead-top {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp-12);
+  padding: var(--sp-8) var(--sp-12) var(--sp-6);
+}
+.cmasthead-kicker {
+  font-family: var(--ff-mono);
+  font-size: var(--fs-xs);
+  color: var(--fg2);
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  margin-bottom: var(--sp-2);
+}
+.cmasthead-headline {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-6);
+}
+.cmasthead-title {
+  font-family: var(--ff-serif);
+  font-size: 1.85rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--fg);
+  line-height: 1;
+}
+.cmasthead-subtitle {
+  font-family: var(--ff-serif);
+  font-style: italic;
+  font-size: var(--fs-lg);
+  color: var(--ink-soft, var(--fg2));
+  letter-spacing: 0;
+}
+.cmasthead-live {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-6);
+  background: var(--green-soft, color-mix(in srgb, var(--green) 12%, var(--bg)));
+  border: 1px solid var(--green);
+  color: var(--green);
+  font-family: var(--ff-mono);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  white-space: nowrap;
+}
+.cmasthead-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--green);
+  animation: cmPulse 2s infinite;
+  flex-shrink: 0;
+}
+@keyframes cmPulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.35; }
+}
+.cmasthead-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 0;
+  padding: 0 var(--sp-12);
+}
+.cmasthead-tab {
+  padding: var(--sp-5) var(--sp-8);
+  border: none;
+  background: transparent;
+  color: var(--fg2);
+  font-family: var(--ff-serif);
+  font-size: var(--fs-xl);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  border-radius: 0;
+  border-bottom: 3px solid transparent;
+  margin-bottom: -2px;
+  transition: color 0.1s;
+}
+.cmasthead-tab:hover {
+  color: var(--fg);
+}
+.cmasthead-tab.is-active {
+  color: var(--fg);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+.cmasthead-tabs-sub {
+  flex: 1;
+  text-align: right;
+  padding-bottom: var(--sp-5);
+  font-family: var(--ff-mono);
+  font-size: var(--fs-xs);
+  color: var(--fg2);
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+}
+
+/* Hide the standard .tab-nav when CMasthead provides editorial navigation. */
+[data-theme="editorial"] .tab-nav {
+  display: none;
+}
+
+/* Hide the GlobalHeader h1 — CMasthead provides the editorial title. */
+[data-theme="editorial"] header h1 {
+  display: none;
+}
+
 /* Headings inside content panels gain serif treatment. */
 [data-theme="editorial"] h2,
 [data-theme="editorial"] h3,
