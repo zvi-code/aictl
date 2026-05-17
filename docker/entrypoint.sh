@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # aictl Docker entrypoint
 # Modes:
-#   (default)    — start aictl serve (dashboard)
+#   (default)    — start aictl daemon serve (dashboard)
 #   test         — run integration test suite
 #   shell        — drop into bash
 set -euo pipefail
@@ -15,7 +15,7 @@ eval "$(aictl otel enable --print 2>/dev/null)" || true
 case "$MODE" in
     serve)
         echo "Starting aictl dashboard on port 8484..."
-        exec aictl serve --port 8484 --no-open
+        exec aictl daemon serve --port 8484 --no-open
         ;;
     test)
         echo "Running integration test suite..."

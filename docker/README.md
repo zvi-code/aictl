@@ -64,7 +64,7 @@ Container
 ├── /app                  ← aictl source (COPY from repo)
 ├── /project              ← sample .context.toml project (from test fixtures)
 ├── ~/.config/aictl/      ← fresh DB created on first launch
-└── aictl serve :8484     ← dashboard + OTel receiver
+└── aictl daemon serve :8484     ← dashboard + OTel receiver
          ↑
     Claude Code ──OTel──→ localhost:8484/v1/logs
 ```
@@ -77,8 +77,8 @@ docker compose -f docker/docker-compose.yml run --rm aictl shell
 
 # Inside the container:
 aictl --version
-aictl serve --port 8484 --no-open &
-aictl deploy --root /project --profile debug
+aictl daemon serve --port 8484 --no-open &
+aictl ctx deploy --root /project --profile debug
 aictl status --root /project
 aictl otel verify
 claude -p "What files are in /project?"

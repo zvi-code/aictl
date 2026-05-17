@@ -448,9 +448,9 @@ class WriteGuard:
         # In library mode (no Click context), return silently.
         if click.get_current_context(silent=True) is None:
             return
+        if os.environ.get("AICTL_ASSUME_YES") == "1":
+            return
         if not sys.stdin.isatty():
-            if os.environ.get("AICTL_ASSUME_YES") == "1":
-                return
             click.echo(
                 f"aictl refuses to {action} {path} in non-interactive context. Set AICTL_ASSUME_YES=1 to proceed.",
                 err=True,

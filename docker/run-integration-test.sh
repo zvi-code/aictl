@@ -3,6 +3,9 @@
 # Tests fresh install, DB creation, deploy, OTel, and Claude Code interaction
 set -euo pipefail
 
+# Integration runs are noninteractive; deploy must approve generated file writes.
+export AICTL_ASSUME_YES=1
+
 PASS=0
 FAIL=0
 TESTS=()
@@ -39,7 +42,7 @@ DB_PATH="${HOME}/.config/aictl/history.db"
 rm -f "$DB_PATH"
 
 # Start server briefly to trigger DB init
-aictl serve --port 8484 --no-open &
+aictl daemon serve --port 8484 --no-open &
 SERVER_PID=$!
 sleep 3
 
@@ -69,7 +72,7 @@ MISSING_TABLES=$(python3 -c "
 import sqlite3
 conn = sqlite3.connect('$DB_PATH')
 tables = {r[0] for r in conn.execute(
-    \"SELECT name FROM sqlite_master WHERE type='table'\").fetchall())
+    \"SELECT name FROM sqlite_master WHERE type='table'\").fetchall()}
 required = {
     'schema_version', 'tools', 'projects', 'processes', 'process_snapshots',
     'system_snapshots', 'sessions', 'session_processes', 'requests',
@@ -194,7 +197,7 @@ fi
 echo ""
 echo "--- Deploy ---"
 
-DEPLOY_OUT=$(aictl deploy --root /project --profile debug 2>&1)
+DEPLOY_OUT=$(aictl ctx deploy --root /project --profile debug 2>&1)
 if echo "$DEPLOY_OUT" | grep -q "Deploying from"; then
     pass "deploy ran successfully"
 else
