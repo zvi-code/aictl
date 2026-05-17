@@ -58,3 +58,52 @@ aictl deploy --root . --profile docs
 # memory/ stashed, memory--docs/ restored
 # CLAUDE.local.md overlay preserved
 ```
+
+## Hidden / Undocumented CLI Flags
+
+The Claude Code binary exposes a number of flags that are not in the
+public help output but are visible in the binary and used by internal
+tooling. aictl detects features driven by some of these flags; the
+table below is a quick reference.
+
+| Flag | Purpose |
+|------|---------|
+| `--sdk-url <url>` | Override the Anthropic API endpoint (used for proxies and self-hosted gateways). |
+| `--teleport` | Open a remote/SSH execution session. Generates a teleport session under `~/.claude/teleport/`. |
+| `--remote <host>` | Pair with `--teleport` to specify the remote host. |
+| `--permission-prompt-tool <tool>` | Delegate permission prompts to an external tool (e.g. a TUI wrapper). |
+| `--max-thinking-tokens <N>` | Cap extended-thinking token budget per turn. |
+| `--resume-session-at <ts>` | Resume a session at a specific timestamp/offset rather than the end. |
+| `--rewind-files` | When resuming, reset file mtimes/content to the session-che| `--rewind-files` | When resuming, resetser| `--rewind-files` | When resumi |
+
+
+ `--rewind-files` | When resuming, reset file mtimes/content to----- `--rewind-files` | When resuming, reset file mtimes/content to----- o `--rewind-files` | When resuming, reset file mtimes/content to--per-turn logs to `<dir>` (also detect `--rewind-filese). `--rewind-fiCODE_O `--rewind-files` | When resuming, reset file mtimes/content to----- `--rewind-files` | When resuming, =1 `--rewind-files` | When resuming, reset file mtimes/content to----- `--rewind-files` | When resuming, reset filwh `--rewind-files` | When resuming, reset file mtimes/content to----- `--rpa `--rewind-files` | When resuming, reset file mtimes/content to----- `--rewind-files` | When resuming, resetro `--rewind-files` | When resuming, reset file mtimes/content to----- `--rewhan  `--rewind-files` | When resuming, reset file mtimes/content to----- `--rewind-files` | When resuminfi `--rewind-files` | When resuming, reset file mtimes/content to----- `--rewind-files` | When resuming, reset file mtimes/content to----- o `--rewind-files` |sionally fail to
+clean up on parent exit. Symptoms: leftover `claude` processes whose
+parent PID is 1 after the foreground session ends. The `aictl serve`
+dashboard surfaces these as red rows under the "Processes" tab when
+their CPU and memory are zero. Manual cleanup:
+
+```bash
+pkill -f 'claude.*Task'
+```
+
+### Stream JSON format
+
+Claude Code can stream tool calls and responses as newline-delimited
+JSON when invoked with the right combination of flags (used by the VS
+Code extension for its real-time UI). aictl's hook handler does not
+parse the stream directly; observability comes from the hook events
+(`PreToolUse`, `PostToolUse`, etc.) and OTel exports.
+
+## Verification Commands
+
+```bash
+# List every hidden flag baked into the local Claude Code binary
+strings ~/.local/share/claude/versions/*/claude | grep -E '^\-\-[a-z\-]+'
+
+# Confirm Claude Code is exporting OTel
+echo "$CLAUDE_CODE_ENABLE_TELEMETRY $OTEL_EXPORTER_OTLP_ENDPOINT"
+
+# Show active hook entries from project-local settings
+cat .claude/settings.local.jsocat .q .hooks
+```
