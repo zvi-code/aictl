@@ -52,6 +52,8 @@ export const LAYOUT = {
     { id: 'analytics', label: 'Analytics',        icon: '\uD83D\uDD2C', iconName: 'bar-chart-3',      key: '8' },
     { id: 'heatmap',  label: 'Tool Heatmap',      icon: '\uD83D\uDD33', iconName: 'grid-3x3',         key: 'h' },
     { id: 'config',   label: 'Configuration',     icon: '\u2699\uFE0F', iconName: 'settings',         key: '0' },
+    { id: 'agents',   label: 'Agents',             icon: '\uD83E\uDD16', iconName: 'bot',              key: '' },
+    { id: 'prompts',  label: 'Prompts',             icon: '\u270F',       iconName: 'pen',              key: '' },
   ],
 
   eventTimeline: { maxDots: 200 },
