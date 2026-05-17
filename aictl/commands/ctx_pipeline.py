@@ -636,7 +636,75 @@ def _validate_file(path: Path, rel: str) -> FileResult:
         if kind == "hook" and name is not None and name not in KNOWN_HOOK_EVENTS:
             result.warn(f"Unknown hook event '{name}' in [{header}]", start_line)
 
+    # Cross-section profile typo detection: collect every profile name used
+    # across [instructions.<p>] keys and [<kind>.<p>.<n>] sections and warn
+    # when two distinct profile names differ by a single edit. This catches
+    # typos like instructions.debug paired with [commands.debugg.*] that the
+    # parser otherwise treats as two independent profiles.
+    _check_profile_typos(path, result)
+
     return result
+
+
+_PROFILE_RESERVED = {"_always", "base"}
+
+
+def _profiles_in_file(path: Path) -> set[str]:
+    """Return the set of non-reserved profile names referenced anywhere in
+    *path*. Reads via :func:`parse_aictx` so the same canonicalization rules
+    used by deploy apply (e.g. lowercased instruction keys).
+    """
+    parsed = parse_aictx(path)
+    if parsed is None:
+        return set()
+    names: set[str] = set()
+    names.update(parsed.instructions.keys())
+    names.update(c.profile for c in parsed.capabilities)
+    names.update(m.profile for m in parsed.mcp_servers)
+    names.update(h.profile for h in parsed.hooks)
+    names.update(s.profile for s in parsed.lsp_servers)
+    names.update(s.profile for s in parsed.settings)
+    names.update(p.profile for p in parsed.permissions)
+    names.update(e.profile for e in parsed.env_vars)
+    names.update(i.profile for i in parsed.ignores)
+    names.update(parsed.memory_hints.keys())
+    return {n for n in names if n and n not in _PROFILE_RESERVED}
+
+
+def _edit_distance_le1(a: str, b: str) -> bool:
+    """True when *a* and *b* differ by at most one insertion, deletion, or substitution."""
+    if a == b:
+        return True
+    la, lb = len(a), len(b)
+    if abs(la - lb) > 1:
+        return False
+    if la == lb:
+        return sum(1 for x, y in zip(a, b) if x != y) == 1
+    # length differs by exactly 1 — check if shorter is one deletion of longer
+    short, long = (a, b) if la < lb else (b, a)
+    i = j = 0
+    diff = 0
+    while j < len(long):
+        if i < len(short) and short[i] == long[j]:
+            i += 1
+            j += 1
+        else:
+            diff += 1
+            if diff > 1:
+                return False
+            j += 1
+    return True
+
+
+def _check_profile_typos(path: Path, result: FileResult) -> None:
+    names = sorted(_profiles_in_file(path))
+    for i, a in enumerate(names):
+        for b in names[i + 1 :]:
+            if _edit_distance_le1(a, b):
+                result.warn(
+                    f"Profile names '{a}' and '{b}' differ by one character "
+                    "— likely a typo; profiles are case- and spelling-sensitive",
+                )
 
 
 def _check_hook(
