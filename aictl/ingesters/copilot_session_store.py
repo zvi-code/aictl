@@ -110,6 +110,18 @@ class CopilotSessionStoreIngester:
         self.last_poll_ts: float = 0.0
         self.last_poll_inserted: int = 0
 
+    def _quality(self, status: str, *, severity: str = "", message: str = "", detail: dict | None = None) -> None:
+        if hasattr(self.store, "record_data_quality"):
+            self.store.record_data_quality(
+                "ingester:copilot-session-store",
+                status,
+                kind="ingester",
+                severity=severity,
+                message=message,
+                source=str(self.db_path),
+                detail=detail,
+            )
+
     # ── public API ─────────────────────────────────────────────
 
     def poll(self) -> int:
@@ -122,6 +134,11 @@ class CopilotSessionStoreIngester:
         self.last_poll_ts = time.time()
         src = _open_readonly(self.db_path)
         if src is None:
+            self._quality(
+                "source_missing" if not self.db_path.exists() else "failed",
+                severity="warning",
+                message="Copilot session-store DB is missing or unreadable",
+            )
             self.last_poll_inserted = 0
             return 0
         inserted = 0
@@ -130,6 +147,20 @@ class CopilotSessionStoreIngester:
                 tables = self._discover_tables(src)
             except sqlite3.OperationalError as exc:
                 log.debug("copilot ingester: schema discovery failed (%s)", exc)
+                self._quality(
+                    "query_failed",
+                    severity="warning",
+                    message="Copilot session-store schema discovery failed",
+                    detail={"error": str(exc)},
+                )
+                return 0
+            if not tables:
+                self._quality(
+                    "schema_unknown",
+                    severity="warning",
+                    message="Copilot session-store schema has no recognizable message tables",
+                )
+                self.last_poll_inserted = 0
                 return 0
             for table, cols in tables:
                 try:
@@ -137,10 +168,17 @@ class CopilotSessionStoreIngester:
                 except sqlite3.OperationalError as exc:
                     # locked, vacuum in progress, etc. — keep going.
                     log.debug("copilot ingester: read from %s failed (%s)", table, exc)
+                    self._quality(
+                        "query_failed",
+                        severity="warning",
+                        message=f"Copilot session-store read failed for {table}",
+                        detail={"table": table, "error": str(exc)},
+                    )
                     continue
         finally:
             src.close()
         self.last_poll_inserted = inserted
+        self._quality("ok", severity="info", message="Copilot session-store poll completed", detail={"inserted": inserted})
         return inserted
 
     # ── source read helpers ───────────────────────────────────

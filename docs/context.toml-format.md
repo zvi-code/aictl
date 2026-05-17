@@ -163,7 +163,7 @@ Always check pg_stat_activity when investigating DB issues.
 recursive = ["skills"]
 
 exclude = [
-  "commands.debug.old-investigate",
+  "command:debug:old-investigate",
 ]
 ```
 
@@ -193,17 +193,19 @@ Without `[inherit]`, only root's own capabilities are active.
 
 ## Exclusions
 
-The `exclude` top-level array blocks capabilities by their dotted key:
+The `exclude` top-level array blocks resolved entries by their colon label:
 
 ```toml
 exclude = [
-  "commands.debug.old-investigate",
-  "mcp.debug.deprecated-server",
-  "skills._always.unused-skill",
+  "command:debug:old-investigate",
+  "mcp:debug:deprecated-server",
+  "skill:_always:unused-skill",
+  "hook:_always:Stop",
+  "lsp:debug:deprecated-server",
 ]
 ```
 
-Format: `type.profile.name` matching the table path.
+Format: `type:profile:name`, where `type` is the singular resolved kind (`command`, `agent`, `skill`, `mcp`, `hook`, or `lsp`).
 
 ## Hook Events Reference
 

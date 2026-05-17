@@ -86,6 +86,8 @@ def test_poll_missing_db_returns_zero(tmp_path: Path, store: HistoryDB) -> None:
     missing = tmp_path / "nope.db"
     ingester = CursorConversationsIngester(missing, store)
     assert ingester.poll() == 0
+    rows = store.query_data_quality(component="ingester:cursor-conversations")
+    assert rows[0]["status"] == "source_missing"
 
 
 def test_poll_ingests_rows_and_creates_provisional_session(
@@ -180,6 +182,8 @@ def test_poll_tolerates_locked_source(tmp_path: Path, store: HistoryDB) -> None:
     try:
         ingester = CursorConversationsIngester(src, store)
         assert ingester.poll() == 0
+        rows = store.query_data_quality(component="ingester:cursor-conversations")
+        assert rows[0]["status"] in {"schema_unknown", "query_failed"}
     finally:
         blocker.rollback()
         blocker.close()

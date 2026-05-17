@@ -42,8 +42,11 @@ def _run_claude(
     max_turns: int = 1,
     timeout: float = 60,
     env: dict | None = None,
+    model: str | None = None,
 ) -> dict:
     """Run ``claude -p`` in non-interactive mode, return parsed JSON output."""
+    run_env = {**os.environ, **(env or {})}
+    selected_model = model if model is not None else run_env.get("AICTL_CLAUDE_MODEL", "claude-haiku-4-5")
     cmd = [
         CLAUDE_BIN,
         "-p",
@@ -53,7 +56,8 @@ def _run_claude(
         "--output-format",
         "json",
     ]
-    run_env = {**os.environ, **(env or {})}
+    if selected_model:
+        cmd.extend(["--model", selected_model])
     try:
         result = subprocess.run(
             cmd,

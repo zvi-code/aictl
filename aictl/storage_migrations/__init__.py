@@ -36,6 +36,7 @@ from . import (
     m024_memory_snapshots,
     m025_copilot_session_messages,
     m026_vscode_chat_messages,
+    m027_file_write_and_data_quality,
 )
 
 MigrationFn = Callable[[sqlite3.Connection], None]
@@ -50,6 +51,7 @@ MIGRATIONS: list[tuple[int, MigrationFn]] = [
     (24, m024_memory_snapshots.apply),
     (25, m025_copilot_session_messages.apply),
     (26, m026_vscode_chat_messages.apply),
+    (27, m027_file_write_and_data_quality.apply),
 ]
 
 CURRENT_VERSION: int = MIGRATIONS[-1][0]

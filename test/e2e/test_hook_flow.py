@@ -226,3 +226,56 @@ class TestHookEdgeCases:
             }
         )
         assert resp == {"ok": True}
+
+
+class TestFileWriteIndex:
+    """Write/Edit hook events populate the first-class file-write index."""
+
+    def test_write_tool_records_file_write(self, aictl_server):
+        sid = f"file-write-{int(time.time() * 1000)}"
+        cwd = "/tmp/aictl-e2e"
+        tool_use_id = f"{sid}-write-1"
+
+        aictl_server.post_hook(
+            {
+                "event": "SessionStart",
+                "session_id": sid,
+                "tool": "claude-code",
+                "cwd": cwd,
+                "ts": time.time(),
+            }
+        )
+        aictl_server.post_hook(
+            {
+                "event": "PreToolUse",
+                "session_id": sid,
+                "tool": "claude-code",
+                "cwd": cwd,
+                "tool_name": "Write",
+                "tool_use_id": tool_use_id,
+                "input": {"file_path": "src/new_file.py", "content": "print('ok')\n"},
+                "ts": time.time(),
+            }
+        )
+        aictl_server.post_hook(
+            {
+                "event": "PostToolUse",
+                "session_id": sid,
+                "tool": "claude-code",
+                "cwd": cwd,
+                "tool_name": "Write",
+                "tool_use_id": tool_use_id,
+                "result": "created",
+                "ts": time.time(),
+            }
+        )
+
+        result = aictl_server.poll(
+            "/api/file-writes",
+            session_id=sid,
+            check=lambda payload: payload.get("count", 0) == 1,
+        )
+        writes = result["writes"]
+        assert writes[0]["operation"] == "write"
+        assert writes[0]["path"].endswith("/tmp/aictl-e2e/src/new_file.py")
+        assert writes[0]["source_event_id"] == tool_use_id

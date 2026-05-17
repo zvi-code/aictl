@@ -167,6 +167,25 @@ CREATE TABLE IF NOT EXISTS file_history (
     size_bytes INTEGER DEFAULT 0, tokens INTEGER DEFAULT 0, lines INTEGER DEFAULT 0,
     PRIMARY KEY (path, ts)
 );
+CREATE TABLE IF NOT EXISTS file_write_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, dedup_key TEXT DEFAULT '',
+    ts REAL NOT NULL, session_id TEXT DEFAULT '', tool TEXT DEFAULT '',
+    tool_name TEXT DEFAULT '', operation TEXT DEFAULT '', path TEXT NOT NULL,
+    project_path TEXT DEFAULT '', pid INTEGER DEFAULT 0,
+    source_event_kind TEXT DEFAULT '', source_event_id TEXT DEFAULT '',
+    content_hash TEXT DEFAULT '', size_bytes INTEGER DEFAULT 0,
+    detail TEXT DEFAULT '{}'
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_file_write_dedup
+    ON file_write_events(dedup_key) WHERE dedup_key != '';
+
+CREATE TABLE IF NOT EXISTS data_quality_status (
+    component TEXT NOT NULL, source TEXT NOT NULL DEFAULT '',
+    kind TEXT DEFAULT '', status TEXT NOT NULL, severity TEXT DEFAULT '',
+    message TEXT DEFAULT '', updated_at REAL NOT NULL, last_ok_at REAL DEFAULT 0,
+    count INTEGER DEFAULT 1, detail TEXT DEFAULT '{}',
+    PRIMARY KEY (component, source)
+);
 
 -- ═══ Configuration & environment ═══
 
@@ -288,6 +307,9 @@ CREATE INDEX IF NOT EXISTS idx_tool_inv_ts ON tool_invocations(ts);
 -- files
 CREATE INDEX IF NOT EXISTS idx_files_tool ON files(tool);
 CREATE INDEX IF NOT EXISTS idx_file_history_path ON file_history(path, ts);
+CREATE INDEX IF NOT EXISTS idx_file_write_session ON file_write_events(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_file_write_path ON file_write_events(path, ts);
+CREATE INDEX IF NOT EXISTS idx_file_write_tool ON file_write_events(tool, ts);
 -- tool_config
 CREATE INDEX IF NOT EXISTS idx_tool_config_tool ON tool_config(tool, ts);
 -- environment_vars
@@ -304,6 +326,9 @@ CREATE INDEX IF NOT EXISTS idx_metrics_metric ON metrics(metric, ts);
 CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics(ts);
 CREATE INDEX IF NOT EXISTS idx_metrics_session ON metrics(session_id, ts);
 CREATE INDEX IF NOT EXISTS idx_metrics_tool ON metrics(tool, ts);
+-- data quality
+CREATE INDEX IF NOT EXISTS idx_data_quality_status ON data_quality_status(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_data_quality_kind ON data_quality_status(kind, updated_at);
 -- spec tables
 CREATE INDEX IF NOT EXISTS idx_path_defs_tool ON path_defs(ai_tool);
 CREATE INDEX IF NOT EXISTS idx_process_defs_tool ON process_defs(ai_tool);
@@ -736,6 +761,42 @@ class ToolInvocationRow:
     result_summary: str = ""
     source: str = ""
     source_ts: float = 0.0  # embedded timestamp from source data (0 = absent)
+
+
+@dataclass(slots=True)
+class FileWriteRow:
+    """One write-like file event attributed to an agent/session."""
+
+    ts: float
+    path: str
+    session_id: str = ""
+    tool: str = ""
+    tool_name: str = ""
+    operation: str = ""
+    project_path: str = ""
+    pid: int = 0
+    source_event_kind: str = ""
+    source_event_id: str = ""
+    content_hash: str = ""
+    size_bytes: int = 0
+    detail: dict[str, Any] = field(default_factory=dict)
+    dedup_key: str = ""
+
+
+@dataclass(slots=True)
+class DataQualityRow:
+    """Current health of one data source, collector, ingester, or sink."""
+
+    component: str
+    status: str
+    source: str = ""
+    kind: str = ""
+    severity: str = ""
+    message: str = ""
+    updated_at: float = 0.0
+    last_ok_at: float = 0.0
+    count: int = 1
+    detail: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -2798,6 +2859,149 @@ class HistoryDB:
             )
         )
 
+    # ── File write index ──────────────────────────────────────────
+
+    def record_file_write(self, row: FileWriteRow) -> bool:
+        """Persist a write-like file event. Returns True if inserted."""
+        if not row.path:
+            return False
+        conn = self._conn()
+        dedup = row.dedup_key or _dedup_key(
+            row.session_id,
+            row.source_event_id or str(row.ts),
+            row.operation,
+            row.path,
+            row.source_event_kind,
+        )
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO file_write_events"
+            "(dedup_key, ts, session_id, tool, tool_name, operation, path,"
+            " project_path, pid, source_event_kind, source_event_id,"
+            " content_hash, size_bytes, detail)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                dedup,
+                row.ts,
+                row.session_id,
+                row.tool,
+                row.tool_name,
+                row.operation,
+                row.path,
+                row.project_path,
+                row.pid,
+                row.source_event_kind,
+                row.source_event_id,
+                row.content_hash,
+                row.size_bytes,
+                json.dumps(row.detail),
+            ),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+    def query_file_writes(
+        self,
+        session_id: str | None = None,
+        path: str | None = None,
+        since: float | None = None,
+        until: float | None = None,
+        tool: str | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        """Query file-write events, newest first."""
+        conn = self._conn()
+        where, params = _where(
+            [
+                ("session_id = ?", session_id or None),
+                ("path = ?", path or None),
+                ("ts >= ?", since),
+                ("ts <= ?", until),
+                ("tool = ?", tool or None),
+            ]
+        )
+        params.append(limit)
+        rows = _rows_to_dicts(
+            conn.execute(
+                f"SELECT * FROM file_write_events{where} ORDER BY ts DESC LIMIT ?",
+                params,
+            )
+        )
+        for row in rows:
+            row["detail"] = _json(row.get("detail"))
+        return rows
+
+    # ── Data quality status ───────────────────────────────────────
+
+    def record_data_quality(
+        self,
+        component: str,
+        status: str,
+        *,
+        source: str = "",
+        kind: str = "",
+        severity: str = "",
+        message: str = "",
+        detail: dict[str, Any] | None = None,
+        ts: float | None = None,
+    ) -> None:
+        """Upsert the current health of a data-producing component."""
+        if not component or not status:
+            return
+        ts = time.time() if ts is None else ts
+        conn = self._conn()
+        prev = conn.execute(
+            "SELECT count, last_ok_at FROM data_quality_status WHERE component = ? AND source = ?",
+            (component, source),
+        ).fetchone()
+        count = (int(prev[0]) + 1) if prev else 1
+        last_ok_at = ts if status == "ok" else (float(prev[1] or 0) if prev else 0.0)
+        conn.execute(
+            "INSERT OR REPLACE INTO data_quality_status"
+            "(component, source, kind, status, severity, message, updated_at, last_ok_at, count, detail)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                component,
+                source,
+                kind,
+                status,
+                severity,
+                message,
+                ts,
+                last_ok_at,
+                count,
+                json.dumps(detail or {}),
+            ),
+        )
+        conn.commit()
+
+    def query_data_quality(
+        self,
+        *,
+        status: str | None = None,
+        kind: str | None = None,
+        component: str | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        """Return current data-quality statuses, newest first."""
+        conn = self._conn()
+        where, params = _where(
+            [
+                ("status = ?", status or None),
+                ("kind = ?", kind or None),
+                ("component = ?", component or None),
+            ]
+        )
+        params.append(limit)
+        rows = _rows_to_dicts(
+            conn.execute(
+                f"SELECT * FROM data_quality_status{where} ORDER BY updated_at DESC LIMIT ?",
+                params,
+            )
+        )
+        for row in rows:
+            row["detail"] = _json(row.get("detail"))
+        return rows
+
     def query_requests_analytics(
         self,
         since: float | None = None,
@@ -4145,6 +4349,8 @@ class HistoryDB:
             "events": "events",
             "files": "file_store",  # old: file_store_count
             "file_history": "file_history",
+            "file_write_events": "file_write_events",
+            "data_quality_status": "data_quality_status",
             "path_defs": "path_specs",  # old: path_specs_count
             "process_defs": "process_specs",  # old: process_specs_count
             "metrics": "samples",  # old: samples_count

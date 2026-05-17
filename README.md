@@ -778,11 +778,76 @@ aictl has a three-tier test suite: unit tests (fast, no external deps), simulate
 ### Quick reference
 
 ```bash
-make test          # unit tests only (562 tests, ~45s)
-make test-e2e      # simulated E2E — starts aictl server, posts synthetic data (40 tests)
-make test-tools    # real-tool E2E — runs Claude/Gemini CLI, verifies hooks (14 tests, skips missing tools)
+make test          # unit tests only; excludes simulated and real-tool E2E
+make test-e2e      # simulated E2E — starts aictl server, posts synthetic data
+make test-tools    # real-tool E2E — runs Claude/Gemini CLI, verifies hooks, skips missing tools
+make test-docker   # Docker fresh-install integration gate
 make test-all      # everything above
 ```
+
+### Reproducing the observability and control checks
+
+Use this sequence after changing storage, hook ingestion, local-store ingesters, Docker packaging, or `.context.toml` deployment behavior:
+
+```bash
+# Sanity checks before launching longer commands
+pwd
+python3 -m pytest --version
+python3 -c "import aictl; from aictl.storage import SCHEMA_VERSION; print(aictl.__file__, SCHEMA_VERSION)"
+command -v docker && docker info --format '{{.ServerVersion}}'
+command -v claude && claude --version
+command -v copilot && copilot --help >/dev/null
+
+# Fast local regression pass for the observability/control substrates
+python3 -m pytest \
+  test/test_storage.py \
+  test/test_api_endpoints.py \
+  test/test_copilot_session_store_ingester.py \
+  test/test_cursor_conversations_ingester.py \
+  test/test_deploy.py \
+  test/e2e/test_hook_flow.py \
+  -q --tb=short --timeout=120
+
+# Full local unit suite, excluding E2E and real-tool tests
+make test
+
+# Simulated live-server E2E
+make test-e2e
+
+# Fresh-install Docker validation
+make test-docker
+```
+
+Success means all commands exit 0 and these behaviors are specifically covered:
+
+- `HistoryDB.stats()` reports the current `SCHEMA_VERSION`, plus `file_write_events` and `data_quality_status` row counts.
+- `PostToolUse` write-like hooks (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`) produce rows at `/api/file-writes` with session, tool, operation, path, and source event id.
+- Collector and ingester health is queryable from `/api/data-quality`; missing, unreadable, schema-drift, degraded, and ok states are persisted instead of only logged.
+- `aictl ctx deploy --profile <name>` fails for unknown profiles unless `--allow-empty-profile` is supplied.
+- `aictl ctx deploy --strict` fails when the selected emitter cannot represent a selected feature.
+- The Docker gate derives the expected schema from `aictl.storage.SCHEMA_VERSION` and checks current table and column names, so stale schema assumptions fail fast.
+
+Optional real Claude Code check, pinned to the full Haiku model id by default:
+
+```bash
+AICTL_CLAUDE_MODEL=claude-haiku-4-5 python3 -m pytest test/e2e_tools/test_claude_e2e.py -v --timeout=180
+```
+
+Docker real-tool check, when `CLAUDE_CODE_OAUTH_TOKEN` is available:
+
+```bash
+CLAUDE_CODE_OAUTH_TOKEN=... AICTL_CLAUDE_MODEL=claude-haiku-4-5 \
+  docker compose -f docker/docker-compose.test.yml --profile tools run --build --rm test-claude
+```
+
+Optional Copilot CLI smoke, when GitHub Copilot CLI is installed and authenticated:
+
+```bash
+copilot --help >/dev/null
+copilot -p "Say exactly: AICTL_COPILOT_OK" --output-format json --stream off --no-custom-instructions --disable-builtin-mcps --no-ask-user --deny-tool='*'
+```
+
+The first Copilot command is a command-path check; the second is a manual real-service smoke. The automated Copilot coverage in this repo currently focuses on local session-store ingestion.
 
 ### Unit tests
 
@@ -844,20 +909,20 @@ Runs aictl in an isolated container with no pre-existing state — validates tha
 brew install --cask docker    # macOS
 # Then open Docker Desktop from Applications
 
-# Build and run the full test suite
-cd docker/
-docker compose build
-docker compose --profile test run test
+# Build and run the fresh-install integration gate
+make test-docker
+# or directly:
+docker compose -f docker/docker-compose.test.yml run --build --rm test-integration
 ```
 
-Tests: CLI boots, fresh DB created with correct schema, deploy produces native files, dashboard responds, OTel configured. With `CLAUDE_CODE_OAUTH_TOKEN` set, also runs Claude Code and verifies telemetry flows into the DB.
+Tests: CLI boots, fresh DB created with the current schema, deploy produces native files, dashboard responds, OTel is configured, and the schema gate checks the current observability tables. With `CLAUDE_CODE_OAUTH_TOKEN` set, the optional tools profile runs Claude Code with `AICTL_CLAUDE_MODEL=claude-haiku-4-5` by default and verifies telemetry flows into the DB.
 
 ```bash
 # Run just the dashboard for manual inspection
-docker compose up aictl          # → http://localhost:8484
+docker compose -f docker/docker-compose.yml up aictl          # → http://localhost:8484
 
 # Drop into a shell for manual testing
-docker compose run aictl shell
+docker compose -f docker/docker-compose.yml run --rm aictl shell
 ```
 
 See [docker/README.md](docker/README.md) for full details.

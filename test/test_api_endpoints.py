@@ -19,6 +19,7 @@ from aictl.dashboard.models import DashboardSnapshot
 from aictl.orchestrator import AllowedPaths, SnapshotStore
 from aictl.storage import (
     EventRow,
+    FileWriteRow,
     HistoryDB,
     Sample,
     TelemetryRow,
@@ -104,6 +105,28 @@ def populated_db(tmp_path):
     # Files
     db.upsert_file(path="/project/README.md", tool="claude-code", category="instructions", content="# Hello\nWorld")
     db.upsert_file(path="/project/.env", tool="copilot-cli", category="config", content="KEY=val")
+    db.record_file_write(
+        FileWriteRow(
+            ts=now - 20,
+            session_id="sess-001",
+            tool="claude-code",
+            tool_name="Write",
+            operation="write",
+            path="/project/new.py",
+            project_path="/project",
+            source_event_kind="hook:PostToolUse",
+            source_event_id="write-1",
+        )
+    )
+    db.record_data_quality(
+        "ingester:copilot-session-store",
+        "schema_unknown",
+        kind="ingester",
+        severity="warning",
+        message="schema drift",
+        source="/tmp/session-store.db",
+        ts=now - 10,
+    )
 
     # Session rows (persist files_modified for /api/session-runs file_churn enrichment)
     from aictl.storage import SessionRow
@@ -217,6 +240,19 @@ class TestSamplesAPI:
         names = [m["metric"] for m in data]
         assert "cpu.core.0" in names
         assert "mem.total" not in names
+
+
+class TestObservabilitySubstrateAPI:
+    def test_file_writes_endpoint_filters_by_session(self, server):
+        data = _get_json(f"{server}/api/file-writes?session_id=sess-001")
+        assert data["count"] == 1
+        assert data["writes"][0]["path"] == "/project/new.py"
+        assert data["writes"][0]["operation"] == "write"
+
+    def test_data_quality_endpoint_returns_summary(self, server):
+        data = _get_json(f"{server}/api/data-quality?kind=ingester")
+        assert data["summary"]["schema_unknown"] == 1
+        assert data["items"][0]["component"] == "ingester:copilot-session-store"
 
     def test_series(self, server):
         since = int(time.time()) - 3600

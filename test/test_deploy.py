@@ -70,6 +70,47 @@ def test_run_deploy_returns_false_no_files(tmp_path):
     assert result is False
 
 
+def test_deploy_unknown_profile_fails():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        with open(".context.toml", "w", encoding="utf-8") as fh:
+            fh.write('[instructions]\nbase = "Base."\ndebug = "Debug."\n')
+
+        result = runner.invoke(deploy, ["--root", ".", "--profile", "debgu", "--dry-run"])
+
+        assert result.exit_code != 0
+        assert "Unknown profile 'debgu'" in result.output
+        assert "debug" in result.output
+
+
+def test_deploy_allow_empty_profile_allows_base_only():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        with open(".context.toml", "w", encoding="utf-8") as fh:
+            fh.write('[instructions]\nbase = "Base."\n')
+
+        result = runner.invoke(
+            deploy,
+            ["--root", ".", "--profile", "debug", "--allow-empty-profile", "--dry-run"],
+        )
+
+        assert result.exit_code == 0
+        assert "Deploying from" in result.output
+
+
+def test_deploy_strict_fails_for_unsupported_selected_emitter():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        with open(".context.toml", "w", encoding="utf-8") as fh:
+            fh.write('[commands._always.demo]\ncontent = "Do the thing."\n')
+
+        result = runner.invoke(deploy, ["--root", ".", "--emit", "cursor", "--strict", "--dry-run"])
+
+        assert result.exit_code != 0
+        assert "Unsupported context features" in result.output
+        assert "command" in result.output
+
+
 def test_watch_missing_watchdog():
     """--watch should fail gracefully if watchdog is not installed."""
     runner = CliRunner()

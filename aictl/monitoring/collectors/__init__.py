@@ -89,6 +89,15 @@ class BaseCollector(ABC):
         """Report collector health to correlator + sink."""
         if self._correlator:
             self._correlator.on_collector_status(self.name, status, mode, detail)
+        if self._sink is not None and hasattr(self._sink, "record_data_quality"):
+            self._sink.record_data_quality(
+                f"collector:{self.name}",
+                "ok" if status == "active" else "degraded",
+                kind="collector",
+                severity="info" if status == "active" else "warning",
+                message=detail,
+                detail={"status": status, "mode": mode},
+            )
         self.sink_emit_if_changed(
             M("aictl.collector.status"),
             1.0 if status == "active" else 0.0,

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import dataclasses
 import email.utils
+import hashlib
 import json
 import logging
 import sys
@@ -29,7 +30,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from ..orchestrator import AllowedPaths, SnapshotStore
-from ..storage import EventRow, SessionRow, ToolInvocationRow
+from ..storage import EventRow, FileWriteRow, SessionRow, ToolInvocationRow
 from .analytics import (  # noqa: F401 — re-exports
     _AnalyticsCache,
     _compute_files,
@@ -149,6 +150,62 @@ def _maybe_snapshot_claude_memory(
         daemon=True,
         name=f"mem-snap-{phase}-{session_id[:8]}",
     ).start()
+
+
+_WRITE_TOOL_OPERATIONS = {
+    "Write": "write",
+    "Edit": "edit",
+    "MultiEdit": "multi_edit",
+    "NotebookEdit": "edit",
+}
+
+
+def _normalise_write_path(raw_path: str, cwd: str) -> str:
+    path = Path(raw_path)
+    if not path.is_absolute() and cwd:
+        path = Path(cwd) / path
+    return str(path)
+
+
+def _extract_file_write_row(
+    *,
+    ts: float,
+    session_id: str,
+    tool: str,
+    tool_name: str,
+    detail: dict,
+    tool_input: object,
+) -> FileWriteRow | None:
+    operation = _WRITE_TOOL_OPERATIONS.get(tool_name)
+    if not operation:
+        return None
+    input_data = tool_input if isinstance(tool_input, dict) else {}
+    raw_path = input_data.get("file_path") or input_data.get("path") or detail.get("file_path") or detail.get("path")
+    if not raw_path:
+        return None
+    content = input_data.get("content") or input_data.get("new_string") or input_data.get("text") or ""
+    content_hash = ""
+    size_bytes = 0
+    if isinstance(content, str) and content:
+        content_bytes = content.encode("utf-8", errors="replace")
+        content_hash = hashlib.sha256(content_bytes).hexdigest()[:16]
+        size_bytes = len(content_bytes)
+    cwd = str(detail.get("cwd", ""))
+    return FileWriteRow(
+        ts=ts,
+        session_id=session_id,
+        tool=tool,
+        tool_name=tool_name,
+        operation=operation,
+        path=_normalise_write_path(str(raw_path), cwd),
+        project_path=cwd,
+        pid=int(detail.get("pid", 0) or 0),
+        source_event_kind="hook:PostToolUse",
+        source_event_id=str(detail.get("tool_use_id", "")),
+        content_hash=content_hash,
+        size_bytes=size_bytes,
+        detail={"tool_use_id": detail.get("tool_use_id", ""), "input_keys": sorted(input_data.keys())},
+    )
 
 
 # ─── SSE summary builder ─────────────────────────────────────────
@@ -276,6 +333,10 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._serve_session_timeline()
         elif path.startswith("/api/sessions"):
             self._serve_sessions()
+        elif path.startswith("/api/file-writes"):
+            self._serve_file_writes()
+        elif path.startswith("/api/data-quality"):
+            self._serve_data_quality()
         elif path.startswith("/api/files/history"):
             self._serve_file_history()
         elif path.startswith("/api/files"):
@@ -464,22 +525,34 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                             from ..storage import _dedup_key
 
                             dk = _dedup_key(session_id, tool_name, input_sig, "0", "hook")
-                            self.server.pending_tool_use[tool_use_id] = (ts, dk)
+                            self.server.pending_tool_use[tool_use_id] = (ts, dk, input_val)
                             # Evict stale entries (older than 10 minutes)
                             cutoff = time.time() - 600
-                            stale = [k for k, (t, _) in self.server.pending_tool_use.items() if t < cutoff]
+                            stale = [k for k, (t, _, _) in self.server.pending_tool_use.items() if t < cutoff]
                             for k in stale:
                                 del self.server.pending_tool_use[k]
                     else:
                         # PostToolUse: compute duration and update existing row.
                         if tool_use_id and tool_use_id in self.server.pending_tool_use:
-                            pre_ts, dk = self.server.pending_tool_use.pop(tool_use_id)
+                            pre_ts, dk, input_val = self.server.pending_tool_use.pop(tool_use_id)
                             duration_ms = (ts - pre_ts) * 1000
                             is_err = 1 if detail.get("is_error") else 0
                             result = str(detail.get("tool_response", detail.get("result", "")))[:500]
                             db.update_tool_invocation_duration(dk, duration_ms, is_err, result)
+                            if not is_err:
+                                file_write = _extract_file_write_row(
+                                    ts=ts,
+                                    session_id=session_id,
+                                    tool=tool,
+                                    tool_name=tool_name,
+                                    detail=detail,
+                                    tool_input=input_val,
+                                )
+                                if file_write:
+                                    db.record_file_write(file_write)
                         else:
                             # No matching Pre — store as standalone invocation.
+                            input_val = detail.get("input", detail.get("tool_input", {}))
                             db.append_tool_invocation(
                                 ToolInvocationRow(
                                     ts=ts,
@@ -489,11 +562,22 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                                     tool_name=tool_name,
                                     is_error=1 if detail.get("is_error") else 0,
                                     duration_ms=0,
-                                    input=detail.get("input", detail.get("tool_input", {})),
+                                    input=input_val,
                                     result_summary=str(detail.get("tool_response", detail.get("result", "")))[:500],
                                     source="hook",
                                 )
                             )
+                            if not detail.get("is_error"):
+                                file_write = _extract_file_write_row(
+                                    ts=ts,
+                                    session_id=session_id,
+                                    tool=tool,
+                                    tool_name=tool_name,
+                                    detail=detail,
+                                    tool_input=input_val,
+                                )
+                                if file_write:
+                                    db.record_file_write(file_write)
 
         # Feed into entity state tracker
         self.server.entity_tracker.process_event(event_record)
@@ -922,8 +1006,8 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
 
         self.ingesters = start_ingesters(store)
         # In-memory cache for matching PreToolUse → PostToolUse by tool_use_id.
-        # Maps tool_use_id → (pre_ts, dedup_key).  Entries auto-expire on access.
-        self.pending_tool_use: dict[str, tuple[float, str]] = {}
+        # Maps tool_use_id → (pre_ts, dedup_key, tool_input). Entries auto-expire on access.
+        self.pending_tool_use: dict[str, tuple[float, str, object]] = {}
 
 
 # ─── Inline HTML dashboard ───────────────────────────────────────

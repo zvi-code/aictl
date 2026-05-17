@@ -32,7 +32,7 @@ services:
     command: >
       bash -c "
         pip install --quiet pytest pytest-timeout &&
-        python3 -m pytest /app/test/ -q --tb=short --ignore=/app/test/e2e -x
+        python3 -m pytest /app/test/ -q --tb=short --ignore=/app/test/e2e --ignore=/app/test/e2e_tools -x
       "
 
   # ── Simulated E2E (always runs — no external tools needed) ─────
@@ -58,6 +58,7 @@ services:
       dockerfile: docker/Dockerfile
     environment:
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
+      - AICTL_CLAUDE_MODEL=${AICTL_CLAUDE_MODEL:-claude-haiku-4-5}
     command: test
 
   # ── Claude Code E2E (optional — needs token) ───────────────────
@@ -71,10 +72,11 @@ services:
     environment:
       AICTL_TEST_URL: http://aictl-server:8484
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN}
+      AICTL_CLAUDE_MODEL: ${AICTL_CLAUDE_MODEL:-claude-haiku-4-5}
     command: >
       bash -c "
         pip install --quiet pytest pytest-timeout pexpect &&
-        python3 -m pytest /app/test/e2e_tools/test_claude_e2e.py -v --timeout=180 || true
+        python3 -m pytest /app/test/e2e_tools/test_claude_e2e.py -v --timeout=180
       "
     profiles:
       - tools
