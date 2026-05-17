@@ -33,7 +33,12 @@ from ..utils import estimate_tokens, write_safe
     help="Comma-separated importers to read from",
 )
 @click.option("--dry-run", is_flag=True, help="Show what would be written")
-def import_cmd(root_dir, profile, prefer, from_tools, dry_run):
+@click.option(
+    "--patch",
+    is_flag=True,
+    help="Non-destructive merge: add only missing keys to existing .context.toml files",
+)
+def import_cmd(root_dir, profile, prefer, from_tools, dry_run, patch):
     """Import native AI tool files and generate .context.toml files."""
     from ..utils import WriteGuard
 
@@ -66,22 +71,49 @@ def import_cmd(root_dir, profile, prefer, from_tools, dry_run):
     click.secho(f"\n   Importing into {root}", bold=True)
     if prefer:
         click.secho(f"   prefer: {prefer}", fg="magenta")
+    if patch:
+        click.secho("   mode: patch (existing files preserved; only missing keys added)", fg="cyan")
 
     # --- Phase 2: Synthesize .toml files ---
     synth_warnings: list[str] = []
     results = synthesize(
-        root, imports, prefer=prefer, profile=profile, dry_run=dry_run, warnings=synth_warnings
+        root,
+        imports,
+        prefer=prefer,
+        profile=profile,
+        dry_run=dry_run,
+        warnings=synth_warnings,
+        patch=patch,
     )
 
     for w in synth_warnings:
         click.secho(f"   \u26a0 {w}", fg="yellow")
 
+    written = 0
+    skipped = 0
     for r in results:
-        pfx = click.style("   (dry)", fg="yellow") if dry_run else click.style("   \u2713", fg="green")
+        action = r.get("action", "create")
+        if action == "skip":
+            pfx = click.style("   \u2014 skip", fg="bright_black")
+            skipped += 1
+        else:
+            label = {"create": "create", "overwrite": "overwrite", "patch": "patch"}.get(action, action)
+            pfx_color = {"create": "green", "overwrite": "yellow", "patch": "cyan"}.get(action, "green")
+            pfx = (
+                click.style("   (dry)", fg="yellow")
+                if dry_run
+                else click.style(f"   \u2713 {label}", fg=pfx_color)
+            )
+            written += 1
         fp = click.style(r["path"], fg="bright_black")
         click.echo(f"{pfx} {r['rel_path']}/ \u2192 {fp}")
 
-    click.echo(f"\n   Generated {len(results)} .context.toml file(s)")
+    if skipped:
+        click.echo(
+            f"\n   Generated {written} .context.toml file(s); skipped {skipped} (no new keys to add)"
+        )
+    else:
+        click.echo(f"\n   Generated {written} .context.toml file(s)")
     click.echo()
 
 
