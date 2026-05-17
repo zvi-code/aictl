@@ -92,18 +92,16 @@ describe('CDashboardTab — sessions list', () => {
   });
 });
 
-describe('CDashboardTab — inspector', () => {
-  it('auto-selects first session and shows inspector', () => {
-    const { container } = renderDashboard();
-    const inspTitle = container.querySelector('.cdb-inspector-title');
-    expect(inspTitle).toBeTruthy();
-    expect(inspTitle.textContent).toBe('abc');
+describe('CDashboardTab — event inspector', () => {
+  it('shows empty inspector when no event selected', () => {
+    const { getByText } = renderDashboard();
+    expect(getByText('No selection')).toBeInTheDocument();
+    expect(getByText('Choose an event in the timeline to read its payload.')).toBeInTheDocument();
   });
 
-  it('clicking a session updates the inspector', () => {
-    const { getByText, container } = renderDashboard();
-    fireEvent.click(getByText('xyz'));
-    expect(container.querySelector('.cdb-inspector-title').textContent).toBe('xyz');
+  it('renders timeline container when a session is auto-selected', () => {
+    const { container } = renderDashboard();
+    expect(container.querySelector('.cdb-timeline')).toBeTruthy();
   });
 
   it('filter input narrows the sessions list', () => {

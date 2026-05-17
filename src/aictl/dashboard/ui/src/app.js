@@ -322,7 +322,7 @@ export default function App() {
     heatmap:    () => html`<${TabBoundary} tabName="heatmap"><div class="mb-lg"><${TabHeatmap} key=${'heatmap-' + activeTab}/></div></${TabBoundary}>`,
     explorer:   () => html`<${TabBoundary} tabName="explorer"><div class="mb-lg"><${TabExplorer} key=${'explorer-' + activeTab}/></div></${TabBoundary}>`,
     config:     () => html`<${TabBoundary} tabName="config"><div class="mb-lg"><${TabToolConfig}/></div></${TabBoundary}>`,
-    agents:     () => html`<${TabBoundary} tabName="agents"><${CAgentsTab}/></${TabBoundary}>`,
+    agents:     () => html`<${TabBoundary} tabName="agents"><${CAgentsTab} onViewSessions=${() => setActiveTab('explorer')}/></${TabBoundary}>`,
     prompts:    () => html`<${TabBoundary} tabName="prompts"><${CPromptsTab}/></${TabBoundary}>`,
   };
 
