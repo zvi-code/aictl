@@ -110,7 +110,11 @@ class TestSessionLifecycle:
         time.sleep(0.5)
 
         sessions = aictl_server.get_sessions(since="0")
-        assert any(s["session_id"] == sid for s in sessions)
+        session = next((s for s in sessions if s["session_id"] == sid), None)
+        assert session is not None
+        assert session["active"] is True
+        assert session["lifecycle_status"] == "active"
+        assert session["ended_at"] is None
 
     def test_full_session_has_correct_metadata(self, aictl_server):
         sid = f"lifecycle-meta-{int(time.time() * 1000)}"
@@ -128,9 +132,7 @@ class TestSessionLifecycle:
         session = next((s for s in sessions if s["session_id"] == sid), None)
         assert session is not None
         assert session["tool"] == "claude-code"
-        # Model might be available depending on session source
-        if "model" in session and session["model"]:
-            assert "opus" in session["model"]
+        assert session["model"] == "claude-opus-4-20250514"
 
     def test_session_end_has_tokens(self, aictl_server):
         sid = f"lifecycle-tokens-{int(time.time() * 1000)}"
@@ -142,11 +144,12 @@ class TestSessionLifecycle:
         sessions = aictl_server.get_sessions(since="0")
         session = next((s for s in sessions if s["session_id"] == sid), None)
         assert session is not None
-        # Token counts from Stop event
-        if session.get("input_tokens"):
-            assert session["input_tokens"] == 7777
-        if session.get("output_tokens"):
-            assert session["output_tokens"] == 1234
+        assert session["ended_at"] is not None
+        assert session["active"] is False
+        assert session["lifecycle_status"] == "ended"
+        assert session["input_tokens"] == 7777
+        assert session["output_tokens"] == 1234
+        assert session["cost_usd"] == 0.025
 
     def test_event_count_matches(self, aictl_server):
         sid = f"lifecycle-count-{int(time.time() * 1000)}"

@@ -894,7 +894,32 @@ class TestSessions:
         db.upsert_session(SessionRow(session_id="s1", started_at=now + 10))
         sessions = db.query_sessions()
         assert len(sessions) == 1
-        assert sessions[0]["started_at"] == now  # first insert wins
+        assert sessions[0]["started_at"] == now
+
+    def test_upsert_enriches_existing_session(self, db: HistoryDB):
+        now = time.time()
+        db.upsert_session(SessionRow(session_id="s1", started_at=now + 10, source="cursor-ingester"))
+        db.upsert_session(
+            SessionRow(
+                session_id="s1",
+                tool="claude-code",
+                pid=123,
+                project_path="/repo",
+                model="claude-haiku-4-5",
+                started_at=now,
+                source="hook",
+                input_tokens=42,
+            )
+        )
+
+        session = db.query_sessions()[0]
+        assert session["started_at"] == now
+        assert session["tool"] == "claude-code"
+        assert session["pid"] == 123
+        assert session["project_path"] == "/repo"
+        assert session["model"] == "claude-haiku-4-5"
+        assert session["source"] == "hook"
+        assert session["input_tokens"] == 42
 
     def test_update_session_end(self, db: HistoryDB):
         now = time.time()
@@ -903,6 +928,28 @@ class TestSessions:
         sessions = db.query_sessions()
         assert sessions[0]["ended_at"] == now + 100
         assert sessions[0]["input_tokens"] == 500
+
+    def test_update_session_end_creates_missing_session(self, db: HistoryDB):
+        now = time.time()
+        db.update_session_end(
+            "stop-only",
+            ended_at=now,
+            tool="claude-code",
+            project_path="/repo",
+            source="hook",
+            input_tokens=500,
+            output_tokens=100,
+        )
+
+        session = db.query_sessions()[0]
+        assert session["session_id"] == "stop-only"
+        assert session["started_at"] == now
+        assert session["ended_at"] == now
+        assert session["tool"] == "claude-code"
+        assert session["project_path"] == "/repo"
+        assert session["source"] == "hook"
+        assert session["input_tokens"] == 500
+        assert session["output_tokens"] == 100
 
     def test_query_active_sessions(self, db: HistoryDB):
         now = time.time()

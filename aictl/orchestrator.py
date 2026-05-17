@@ -1034,6 +1034,9 @@ class SnapshotPersistence:
                     self._db.update_session_end(
                         sid,
                         ended_at=e.get("ts", fallback_ts),
+                        tool=e.get("tool", ""),
+                        project_path=detail.get("project", ""),
+                        source="correlator",
                         input_tokens=detail.get("input_tokens", 0),
                         output_tokens=detail.get("output_tokens", 0),
                         files_modified=detail.get("files_modified", 0),

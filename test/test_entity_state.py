@@ -40,6 +40,33 @@ def test_session_lifecycle():
     assert state.ended_at == ts + 60
 
 
+def test_stop_marks_session_inactive():
+    """Claude Code Stop hooks are terminal lifecycle events."""
+    tracker = EntityStateTracker()
+    ts = time.time()
+
+    tracker.process_event(
+        {
+            "ts": ts,
+            "tool": "claude-code",
+            "kind": "hook:SessionStart",
+            "detail": {"session_id": "sess-stop"},
+        }
+    )
+    tracker.process_event(
+        {
+            "ts": ts + 5,
+            "tool": "claude-code",
+            "kind": "hook:Stop",
+            "detail": {"session_id": "sess-stop"},
+        }
+    )
+
+    state = tracker.get_session_state("sess-stop")
+    assert state.state == "inactive"
+    assert state.ended_at == ts + 5
+
+
 def test_subagent_tracking():
     """SubagentStart/Stop creates and ends agent state."""
     tracker = EntityStateTracker()

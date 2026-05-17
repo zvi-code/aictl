@@ -14,6 +14,12 @@ import time
 from collections import Counter
 from datetime import datetime, timezone
 
+from ..data.token_usage import TokenUsage
+from ..tools import compute_token_budget
+from .models import _slim_agent_teams
+from .otel_receiver import API_ERROR_EVENTS, API_REQUEST_EVENTS, _num
+from .session_flow import build_session_flow
+
 # Synthesized process-based session_id format: "tool:pid:timestamp".
 # Used by copilot-vscode (and other tools that don't emit their own ids)
 # to synthesize a session id from the process. Such ids never appear in
@@ -22,11 +28,25 @@ from datetime import datetime, timezone
 # of these, we fall back to matching on tool + the session's time window.
 _SYNTHETIC_SESSION_RE = re.compile(r"^[a-z][a-z0-9-]*:\d+:\d+$")
 
-from ..data.token_usage import TokenUsage
-from ..tools import compute_token_budget
-from .models import _slim_agent_teams
-from .otel_receiver import API_ERROR_EVENTS, API_REQUEST_EVENTS, _num
-from .session_flow import build_session_flow
+_IMPORTED_SESSION_SOURCES = {
+    "claude-code-jsonl",
+    "copilot-session-store",
+    "cursor-ingester",
+    "vscode-chat-logs",
+}
+
+
+def _db_session_lifecycle_status(row: dict, entity_state: object | None = None) -> tuple[str, bool]:
+    """Return (lifecycle_status, active) for a persisted session row."""
+    if row.get("ended_at"):
+        return "ended", False
+    state = getattr(entity_state, "state", "") if entity_state is not None else ""
+    if state and state != "inactive":
+        return "active", True
+    if row.get("source", "") in _IMPORTED_SESSION_SOURCES:
+        return "imported", False
+    return "open", False
+
 
 # ─── Budget cache ────────────────────────────────────────────────
 
@@ -892,6 +912,9 @@ class _APIHandlersMixin:
 
         # Active sessions from live snapshot
         sessions = list(snap.sessions)
+        for s in sessions:
+            s.setdefault("active", True)
+            s.setdefault("lifecycle_status", "active")
 
         # Filter by tool
         if tool:
@@ -914,6 +937,8 @@ class _APIHandlersMixin:
                 for s in db_sessions:
                     sid = s.get("session_id", "")
                     if sid and sid not in active_ids:
+                        entity = self.server.entity_tracker.get_session_state(sid)
+                        lifecycle_status, active = _db_session_lifecycle_status(s, entity)
                         sessions.append(
                             {
                                 "session_id": sid,
@@ -926,7 +951,9 @@ class _APIHandlersMixin:
                                     if s.get("ended_at") and s.get("started_at")
                                     else None
                                 ),
-                                "active": s.get("ended_at") is None,
+                                "active": active,
+                                "lifecycle_status": lifecycle_status,
+                                "source": s.get("source", ""),
                                 "model": s.get("model", ""),
                                 "input_tokens": s.get("input_tokens", 0),
                                 "output_tokens": s.get("output_tokens", 0),
@@ -953,6 +980,7 @@ class _APIHandlersMixin:
                                 "ended_at": ev.ts,
                                 "duration_s": d.get("duration_s", 0),
                                 "active": False,
+                                "lifecycle_status": "ended",
                             }
                         )
                         active_ids.add(sid)
@@ -961,6 +989,8 @@ class _APIHandlersMixin:
         for s in sessions:
             if "active" not in s:
                 s["active"] = True
+            if "lifecycle_status" not in s:
+                s["lifecycle_status"] = "active" if s["active"] else "open"
             if "commit_count" not in s:
                 sid = s.get("session_id", "")
                 s["commit_count"] = self._db.count_session_commits(sid) if (self._db and sid) else 0
@@ -1210,4 +1240,3 @@ class _APIHandlersMixin:
 
         rows = db.query_telemetry(tool=tool, since=since, until=until)
         self._json_response([dataclasses.asdict(r) for r in rows])
-

@@ -17,6 +17,7 @@ SHELL   := /bin/bash
 PROJECT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 UI_DIR  := $(PROJECT)aictl/dashboard/ui
 DIST_DIR:= $(PROJECT)aictl/dashboard/dist
+PYTHON  ?= $(if $(wildcard $(PROJECT).venv/bin/python),$(PROJECT).venv/bin/python,python3)
 
 # Detect install method
 HAS_PIPX := $(shell command -v pipx 2>/dev/null)
@@ -55,29 +56,29 @@ $(DIST_DIR)/index.html: $(shell find $(UI_DIR)/src -type f 2>/dev/null) $(UI_DIR
 # ── Test & Lint ──────────────────────────────────────────────────────────────
 
 test:  ## Run unit tests (fast, no server needed)
-	python3 -m pytest test/ -q --tb=short --ignore=test/e2e --ignore=test/e2e_tools
+	$(PYTHON) -m pytest test/ -q --tb=short --ignore=test/e2e --ignore=test/e2e_tools
 
 test-ui:  ## Run dashboard UI tests (Vitest + jsdom)
 	cd aictl/dashboard/ui && npx vitest run
 
 test-e2e:  ## Run E2E tests (starts aictl server, posts synthetic data)
-	python3 -m pytest test/e2e/ -v --timeout=120
+	$(PYTHON) -m pytest test/e2e/ -v --timeout=120
 
 test-tools:  ## Run real-tool E2E tests (skips missing tools)
-	python3 -m pytest test/e2e_tools/ -v --timeout=180
+	$(PYTHON) -m pytest test/e2e_tools/ -v --timeout=180
 
 test-docker:  ## Run Docker integration suite (fresh install + simulated E2E)
 	docker compose -f docker/docker-compose.test.yml run --build --rm test-integration
 
 test-all:  ## Run everything (unit + E2E + tools)
-	python3 -m pytest test/ -v --timeout=180 --override-ini="addopts="
+	$(PYTHON) -m pytest test/ -v --timeout=180 --override-ini="addopts="
 
 lint:  ## Run ruff linter + format check
-	python3 -m ruff check .
-	python3 -m ruff format --check .
+	$(PYTHON) -m ruff check .
+	$(PYTHON) -m ruff format --check .
 
 typecheck:  ## Run mypy on strictly-typed modules (aictl/data + dashboard/models)
-	python3 -m mypy aictl/data aictl/dashboard/models.py
+	$(PYTHON) -m mypy aictl/data aictl/dashboard/models.py
 
 # ── Cleanup ──────────────────────────────────────────────────────────────────
 

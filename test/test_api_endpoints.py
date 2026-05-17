@@ -141,6 +141,15 @@ def populated_db(tmp_path):
             files_modified=7,
         )
     )
+    db.upsert_session(
+        SessionRow(
+            session_id="cursor:historic-chat",
+            tool="cursor",
+            project_path="/project",
+            started_at=now - 200,
+            source="cursor-ingester",
+        )
+    )
 
     yield db
     db.close()
@@ -336,7 +345,12 @@ class TestSessionsAPI:
         assert "sess-001" in ids
         ended = next(s for s in data if s["session_id"] == "sess-001")
         assert ended["active"] is False
+        assert ended["lifecycle_status"] == "ended"
         assert ended["duration_s"] == 200
+
+        imported = next(s for s in data if s["session_id"] == "cursor:historic-chat")
+        assert imported["active"] is False
+        assert imported["lifecycle_status"] == "imported"
 
     def test_filter_by_tool(self, server):
         data = _get_json(f"{server}/api/sessions?tool=claude-code")
@@ -689,10 +703,10 @@ class TestApiCallsOtelEnrichment:
         data = _get_json(f"{api_calls_server}/api/api-calls?since=0")
         models = {c.get("model") for c in data["calls"] if c["status"] == "ok"}
         # From the four inserted ok-request events across all tools
-        assert "claude-opus-4-6" in models       # otel:claude_code.api_request
-        assert "claude-sonnet-4-5" in models     # otel:api_request
-        assert "gpt-4o-2024-08-06" in models     # otel:gen_ai.client.inference.operation.details (gen_ai.response.model)
-        assert "gpt-5" in models                 # otel:codex.api_request
+        assert "claude-opus-4-6" in models  # otel:claude_code.api_request
+        assert "claude-sonnet-4-5" in models  # otel:api_request
+        assert "gpt-4o-2024-08-06" in models  # otel:gen_ai.client.inference.operation.details (gen_ai.response.model)
+        assert "gpt-5" in models  # otel:codex.api_request
 
     def test_resolves_model_from_gen_ai_namespaced_keys(self, api_calls_server):
         """Regression: OTel GenAI semconv uses `gen_ai.request.model` /
@@ -746,7 +760,11 @@ class TestSessionSubprocessesAPI:
 
         allowed = AllowedPaths()
         srv = _DashboardHTTPServer(
-            ("127.0.0.1", 0), _DashboardHandler, store, allowed, Path("/tmp/test-project"),
+            ("127.0.0.1", 0),
+            _DashboardHandler,
+            store,
+            allowed,
+            Path("/tmp/test-project"),
         )
         port = srv.server_address[1]
         t = threading.Thread(target=srv.serve_forever, daemon=True)

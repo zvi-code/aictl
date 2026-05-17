@@ -877,5 +877,5 @@ class EntityStateTracker:
         "PostToolUse": _on_post_tool_use,
         "UserPromptSubmit": _on_user_prompt_submit,
         "Notification": _on_notification,
-        "Stop": _on_notification,
+        "Stop": _on_session_end,
     }
