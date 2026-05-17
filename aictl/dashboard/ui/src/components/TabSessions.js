@@ -4,7 +4,7 @@ import { SnapContext } from '../context.js';
 import { fmtK, fmtPct, fmtSz, fmtRate, esc, fmtTime, fmtAgo, COLORS, ICONS } from '../utils.js';
 import SessionDetailView from './SessionDetail.js';
 import SessionTimeline from './SessionTimeline.js';
-import DataTable from './ui/DataTable.js';
+import SessionsListV2 from './SessionsListV2.js';
 import * as api from '../api.js';
 
 // ─── Duration formatting (Xm Ys) ───────────────────────────────
@@ -339,6 +339,27 @@ export default function TabSessions() {
     setExternalSession(sess);
   };
 
+  // Merge active + history into one feed for SessionsListV2. Active rows
+  // already carry richer per-process data; history rows carry started_at /
+  // ended_at / duration_s but rarely token counts \u2014 we keep both so the
+  // unified list can filter by status and search across everything.
+  const merged = (() => {
+    const byId = new Map();
+    for (const sess of activeSessions) {
+      byId.set(sess.session_id, { ...sess, active: true });
+    }
+    for (const sess of filteredHistory) {
+      if (byId.has(sess.session_id)) {
+        // Prefer the active-row snapshot; backfill any missing keys from history.
+        const cur = byId.get(sess.session_id);
+        byId.set(sess.session_id, { ...sess, ...cur });
+      } else {
+        byId.set(sess.session_id, { ...sess, active: !!sess.active });
+      }
+    }
+    return [...byId.values()];
+  })();
+
   return html`<div>
     <div class="mb-lg">
       <${SessionTimeline} sessions=${filteredTimeline} rangeSeconds=${rangeSeconds}
@@ -351,80 +372,18 @@ export default function TabSessions() {
       onClose=${() => setSelectedId(null)}/>`}
 
     <div class="es-section">
-      <div class="es-section-title">Active Sessions (${activeSessions.length})</div>
-      ${activeSessions.length
-        ? projects.length > 1
-          ? projects.map(proj => html`<div key=${proj} style="margin-bottom:var(--sp-5)">
-              <div class="text-muted text-sm mono" style="margin-bottom:var(--sp-3);font-weight:600">
-                ${esc(proj.replace(/\\/g,'/').split('/').pop() || proj)}
-                <span class="text-xs" style="font-weight:400"> \u2014 ${byProject[proj].length} session${byProject[proj].length > 1 ? 's' : ''}</span>
-              </div>
-              <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:var(--sp-5)">
-                ${byProject[proj].map(sess => html`<${SessionCard} key=${sess.session_id} session=${sess}
-                  onSelect=${handleSelect} isSelected=${sess.session_id === selectedId} agentTeams=${s?.agent_teams}/>`)}
-              </div>
-            </div>`)
-          : html`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:var(--sp-5)">
-              ${activeSessions.map(sess => html`<${SessionCard} key=${sess.session_id} session=${sess}
-                onSelect=${handleSelect} isSelected=${sess.session_id === selectedId}/>`)}
-            </div>`
-        : html`<div class="empty-state">
-            <p>No active sessions.</p>
-            ${filteredHistory.length > 0 && html`<div class="diag-card" style="margin-top:var(--sp-4);max-width:400px">
-              <div class="text-muted text-sm" style="margin-bottom:var(--sp-2)">Last session</div>
-              <div class="flex-row gap-sm" style="align-items:center">
-                <span style="color:${COLORS[filteredHistory[0].tool] || 'var(--fg2)'}">${ICONS[filteredHistory[0].tool] || '\u{1F539}'}</span>
-                <strong>${esc(filteredHistory[0].tool)}</strong>
-                <span class="text-muted text-xs">${fmtDur(filteredHistory[0].duration_s)}</span>
-                ${filteredHistory[0].ended_at && html`<span class="text-muted text-xs">${fmtAgo(filteredHistory[0].ended_at)}</span>`}
-              </div>
-            </div>`}
-          </div>`}
-    </div>
-
-    <div class="es-section" style="margin-top:var(--sp-8)">
-      <div class="es-section-title">Session History</div>
+      <div class="es-section-title">Sessions
+        <span class="badge">${merged.length} total</span>
+        ${activeSessions.length > 0 && html`<span class="badge" style="background:var(--green);color:var(--bg)">${activeSessions.length} live</span>`}
+      </div>
       ${loading
-        ? html`<p class="loading-state">Loading...</p>`
+        ? html`<p class="loading-state">Loading sessions...</p>`
         : histError
           ? html`<p class="error-state">Failed to load session history.</p>`
-          : html`<${DataTable}
-              ariaLabel="Session history"
-              rowKey="session_id"
-              persistKey="sessions-history"
-              data=${filteredHistory}
-              onRowClick=${(row) => { setSelectedId(row.session_id === selectedId ? null : row.session_id); setExternalSession(null); }}
-              emptyState="No past sessions recorded."
-              initialSort=${{ id: 'started_at', desc: true }}
-              columns=${[
-                {
-                  accessorKey: 'tool', header: 'Tool',
-                  cell: (v) => html`<span style="color:${COLORS[v] || 'var(--fg2)'};margin-right:var(--sp-2)">${ICONS[v] || '\u{1F539}'}</span>${esc(v)}`,
-                },
-                {
-                  accessorKey: 'session_id', header: 'Session ID',
-                  cell: (v) => html`<span class="mono" title=${v} style="font-size:var(--fs-base)">${v ? (v.length > 12 ? v.slice(0,12) + '\u2026' : v) : '\u2014'}</span>`,
-                },
-                {
-                  accessorKey: 'pid', header: 'PID', align: 'right',
-                  cell: (v) => html`<span class="mono" style="font-size:var(--fs-base)">${v || '\u2014'}</span>`,
-                },
-                { accessorKey: 'duration_s', header: 'Duration', align: 'right', cell: (v) => fmtDur(v) },
-                {
-                  accessorKey: 'active', header: 'Status',
-                  cell: (v) => v
-                    ? html`<span class="badge" style="background:var(--green);color:var(--bg);font-size:var(--fs-xs)">active</span>`
-                    : html`<span class="badge" style="font-size:var(--fs-xs)">ended</span>`,
-                },
-                {
-                  accessorKey: 'started_at', header: 'Started', align: 'right',
-                  cell: (_v, row) => row.started_at ? fmtTime(row.started_at) : '\u2014',
-                },
-                {
-                  accessorKey: 'ended_at', header: 'Time', align: 'right',
-                  cell: (v) => v ? fmtAgo(v) : '\u2014',
-                },
-              ]}
+          : html`<${SessionsListV2}
+              sessions=${merged}
+              selectedId=${selectedId}
+              onSelect=${(sess) => { setSelectedId(sess.session_id === selectedId ? null : sess.session_id); setExternalSession(sess); }}
             />`}
     </div>
   </div>`;
