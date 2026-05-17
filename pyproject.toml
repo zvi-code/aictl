@@ -29,6 +29,7 @@ dev = ["pytest>=7.0", "pytest-timeout>=2.0", "ruff>=0.5", "mypy>=1.8", "types-Py
 aictl = "aictl.cli:main"
 
 [tool.setuptools.packages.find]
+where = ["src"]
 include = ["aictl*"]
 
 [tool.setuptools.package-data]
@@ -78,31 +79,31 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Long-running daemons: broad catches intentional — must not crash on noisy input.
 # orchestrator.py: supervises child processes; a single plugin failure must not kill the daemon.
-"aictl/orchestrator.py" = ["S110", "BLE001"]
+"src/aictl/orchestrator.py" = ["S110", "BLE001"]
 # sink.py: hot path — receives untrusted JSON from every tool; swallowing parse errors is the contract.
-"aictl/sink.py" = ["S110", "BLE001"]
+"src/aictl/sink.py" = ["S110", "BLE001"]
 # storage.py: SQLite write path with retry semantics; broad catches log+retry rather than propagate.
-"aictl/storage.py" = ["S110", "BLE001", "F841"]
+"src/aictl/storage.py" = ["S110", "BLE001", "F841"]
 # tui.py / web_server.py / html_report.py / api_handlers.py: rendering paths must survive bad snapshot data.
-"aictl/dashboard/tui.py" = ["S110", "BLE001"]
-"aictl/dashboard/web_server.py" = ["S110", "BLE001"]
-"aictl/dashboard/html_report.py" = ["S110", "BLE001"]
-"aictl/dashboard/api_handlers.py" = ["S110", "BLE001"]
+"src/aictl/dashboard/tui.py" = ["S110", "BLE001"]
+"src/aictl/dashboard/web_server.py" = ["S110", "BLE001"]
+"src/aictl/dashboard/html_report.py" = ["S110", "BLE001"]
+"src/aictl/dashboard/api_handlers.py" = ["S110", "BLE001"]
 # Monitoring collectors use optional imports (psutil/watchdog) inside try-blocks
 # that ruff can't statically follow; F401/F821 are known false positives here.
-"aictl/monitoring/**" = ["S110", "BLE001", "F401", "F821", "F841"]
+"src/aictl/monitoring/**" = ["S110", "BLE001", "F401", "F821", "F841"]
 # client.py: network client — treats every outbound failure as "server unreachable"; distinguishing
 # specific errors here would mean duplicating transport-error taxonomy with no behavioural benefit.
-"aictl/client.py" = ["S110", "BLE001"]
+"src/aictl/client.py" = ["S110", "BLE001"]
 # memory.py: reads agent memory files that can be arbitrarily malformed; failure must produce empty list.
-"aictl/memory.py" = ["S110", "BLE001"]
+"src/aictl/memory.py" = ["S110", "BLE001"]
 # platforms.py / tools.py: probes external CLIs (claude, codex, gemini, cursor); any probe failure
 # must degrade gracefully, not abort command dispatch.
-"aictl/platforms.py" = ["BLE001"]
-"aictl/tools.py" = ["BLE001"]
+"src/aictl/platforms.py" = ["BLE001"]
+"src/aictl/tools.py" = ["BLE001"]
 # click commands redefine ``enable`` inside different click groups (namespaced
 # by decorator, not by module symbol); ruff's F811 flags the re-def.
-"aictl/commands/integrations.py" = ["F811", "E501"]
+"src/aictl/commands/integrations.py" = ["F811", "E501"]
 # Tests: common to bind-without-use for pytest fixture scoping; allow locally.
 "test/**" = ["F841", "BLE001", "S110", "E501"]
 

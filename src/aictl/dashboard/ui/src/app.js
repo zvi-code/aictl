@@ -207,7 +207,7 @@ function buildCommands({
     id: 'view:' + v.id, group: 'View', label: 'Apply view: ' + v.name,
     action: () => applyView(v.id),
   }));
-  ['auto', 'dark', 'light'].forEach(th => out.push({
+  ['auto', 'dark', 'light', 'editorial'].forEach(th => out.push({
     id: 'theme:' + th, group: 'Appearance', label: 'Theme: ' + th,
     action: () => setTheme(th),
   }));

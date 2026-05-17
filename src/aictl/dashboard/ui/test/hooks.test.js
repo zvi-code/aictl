@@ -135,14 +135,26 @@ describe('useTheme', () => {
     expect(localStorage.getItem('aictl-theme')).toBe('dark');
   });
 
-  it('cycleTheme walks auto→dark→light→auto', () => {
+  it('cycleTheme walks auto→dark→light→editorial→auto', () => {
     const { result } = renderHook(() => useTheme());
     act(() => { result.current.cycleTheme(); });
     expect(result.current.theme).toBe('dark');
     act(() => { result.current.cycleTheme(); });
     expect(result.current.theme).toBe('light');
     act(() => { result.current.cycleTheme(); });
+    expect(result.current.theme).toBe('editorial');
+    act(() => { result.current.cycleTheme(); });
     expect(result.current.theme).toBe('auto');
+  });
+
+  it('cycleTheme returns to starting theme after themes.length calls', () => {
+    // Invariant guard: any future theme addition only requires updating the
+    // ordered test above; this length check stays correct automatically.
+    const { result } = renderHook(() => useTheme());
+    const start = result.current.theme;
+    const n = result.current.themes.length;
+    for (let i = 0; i < n; i++) act(() => { result.current.cycleTheme(); });
+    expect(result.current.theme).toBe(start);
   });
 
   it('rejects unknown theme values', () => {

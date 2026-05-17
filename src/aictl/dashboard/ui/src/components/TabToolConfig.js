@@ -117,7 +117,19 @@ function Val({v}) {
   if (v === true)  return html`<span style="color:var(--green);font-weight:600">on</span>`;
   if (v === false) return html`<span style="color:var(--red);opacity:0.8">off</span>`;
   if (v === null || v === undefined || v === '') return html`<span class="text-muted">—</span>`;
-  if (typeof v === 'object') return html`<span class="mono" style="font-size:var(--fs-xs)">${JSON.stringify(v)}</span>`;
+  if (Array.isArray(v)) {
+    return html`<span class="mono text-muted" style="font-size:var(--fs-xs)"
+      title=${JSON.stringify(v)}>${v.length} item${v.length === 1 ? '' : 's'}</span>`;
+  }
+  if (typeof v === 'object') {
+    const n = Object.keys(v).length;
+    // Avoid dumping huge JSON blobs (e.g. chat.tools.terminal.autoApprove
+    // command rules). Show a count + first few keys; full object on hover.
+    const preview = Object.keys(v).slice(0, 3).join(', ');
+    return html`<span class="mono text-muted" style="font-size:var(--fs-xs);max-width:20ch;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+      title=${JSON.stringify(v, null, 2)}>${n} key${n === 1 ? '' : 's'}${preview ? ': ' + preview + (n > 3 ? '…' : '') : ''}</span>`;
+  }
   return html`<span class="mono">${String(v)}</span>`;
 }
 
