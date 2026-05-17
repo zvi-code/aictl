@@ -377,7 +377,7 @@ FEATURE_SUPPORT: dict[str, dict[str, bool]] = {
         "gemini": True,
     },
     "agent": {
-        "claude": False,
+        "claude": True,
         "copilot": True,
         "cursor": False,
         "windsurf": False,

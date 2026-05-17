@@ -2,8 +2,8 @@
 # Copyright (c) 2026 Zvi Schneider. MIT License.
 """Background runner for periodic local-store ingesters.
 
-Currently drives
-:class:`aictl.ingesters.copilot_session_store.CopilotSessionStoreIngester`.
+Currently drives local session/chat stores for Copilot CLI, Cursor, and
+VS Code Copilot chat logs.
 Each ingester lives on its own daemon thread and polls every
 :data:`POLL_INTERVAL_S` seconds. Failures are logged and swallowed —
 the runner never crashes the server.
@@ -24,6 +24,13 @@ from ..ingesters.copilot_session_store import (
     CopilotSessionStoreIngester,
     default_db_path,
 )
+from ..ingesters.cursor_conversations import (
+    DEFAULT_DB_PATH as CURSOR_DEFAULT_DB_PATH,
+)
+from ..ingesters.cursor_conversations import (
+    POLL_INTERVAL_S as CURSOR_POLL_INTERVAL_S,
+)
+from ..ingesters.cursor_conversations import CursorConversationsIngester
 from ..ingesters.vscode_chat_logs import (
     POLL_INTERVAL_S as VSCODE_CHAT_POLL_INTERVAL_S,
 )
@@ -87,6 +94,28 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
         thread.start()
     handles[handle.name] = handle
 
+    # ── Cursor conversations DB ─────────────────────────────────
+    cursor_path = CURSOR_DEFAULT_DB_PATH
+    cursor_enabled = cursor_path.exists()
+    c_handle = IngesterHandle(
+        name="cursor-conversations",
+        enabled=cursor_enabled,
+        source_path=cursor_path,
+        source_exists=cursor_enabled,
+    )
+    if cursor_enabled:
+        c_ing = CursorConversationsIngester(cursor_path, db)
+        c_handle.ingester = c_ing
+        c_thread = threading.Thread(
+            target=_poll_loop,
+            args=(c_ing, c_handle.stop_event, CURSOR_POLL_INTERVAL_S, c_handle.name),
+            daemon=True,
+            name="ingester-cursor-conversations",
+        )
+        c_handle.thread = c_thread
+        c_thread.start()
+    handles[c_handle.name] = c_handle
+
     # ── VS Code Copilot Chat logs (Slice 3.4a) ─────────────────
     vscode_path = vscode_chat_default_log_dir()
     vscode_enabled = vscode_path.exists()
@@ -112,7 +141,7 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
 
 
 def _poll_loop(
-    ingester: CopilotSessionStoreIngester,
+    ingester,
     stop: threading.Event,
     interval: float,
     name: str,

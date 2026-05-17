@@ -10,6 +10,7 @@ import pytest
 from aictl.storage import (
     AgentRow,
     EventRow,
+    FileWriteRow,
     HistoryDB,
     Metric,
     MetricsRow,
@@ -502,6 +503,8 @@ class TestMigration:
             "files",
             "file_blobs",
             "file_history",
+            "file_write_events",
+            "data_quality_status",
             "tool_config",
             "environment_vars",
             "tool_stats",
@@ -648,6 +651,75 @@ class TestFileStore:
         assert s["files_tracked"] == 1
         assert s["files_total_bytes"] > 0
         assert s["files_total_tokens"] > 0
+
+
+class TestFileWriteIndex:
+    def test_record_and_query_file_write(self, db: HistoryDB):
+        inserted = db.record_file_write(
+            FileWriteRow(
+                ts=123.0,
+                session_id="s1",
+                tool="claude-code",
+                tool_name="Write",
+                operation="write",
+                path="/work/app.py",
+                project_path="/work",
+                source_event_kind="hook:PostToolUse",
+                source_event_id="tool-1",
+                size_bytes=12,
+            )
+        )
+
+        assert inserted is True
+        rows = db.query_file_writes(session_id="s1")
+        assert len(rows) == 1
+        assert rows[0]["path"] == "/work/app.py"
+        assert rows[0]["operation"] == "write"
+        assert rows[0]["source_event_id"] == "tool-1"
+
+    def test_file_write_dedup(self, db: HistoryDB):
+        row = FileWriteRow(
+            ts=123.0,
+            session_id="s1",
+            tool="claude-code",
+            tool_name="Write",
+            operation="write",
+            path="/work/app.py",
+            source_event_kind="hook:PostToolUse",
+            source_event_id="tool-1",
+        )
+        assert db.record_file_write(row) is True
+        assert db.record_file_write(row) is False
+        assert len(db.query_file_writes(session_id="s1")) == 1
+
+
+class TestDataQualityStatus:
+    def test_record_and_query_data_quality(self, db: HistoryDB):
+        db.record_data_quality(
+            "ingester:copilot-session-store",
+            "schema_unknown",
+            kind="ingester",
+            severity="warning",
+            message="unrecognized schema",
+            source="/tmp/session-store.db",
+            detail={"tables": ["x"]},
+            ts=10.0,
+        )
+
+        rows = db.query_data_quality(status="schema_unknown")
+        assert len(rows) == 1
+        assert rows[0]["component"] == "ingester:copilot-session-store"
+        assert rows[0]["detail"] == {"tables": ["x"]}
+        assert rows[0]["last_ok_at"] == 0
+
+    def test_data_quality_preserves_last_ok(self, db: HistoryDB):
+        db.record_data_quality("sample-sink", "ok", kind="sink", ts=10.0)
+        db.record_data_quality("sample-sink", "degraded", kind="sink", ts=20.0)
+
+        row = db.query_data_quality(component="sample-sink")[0]
+        assert row["status"] == "degraded"
+        assert row["last_ok_at"] == 10.0
+        assert row["count"] == 2
 
 
 # ── CSV Spec Tables (renamed to path_defs/process_defs) ───────────

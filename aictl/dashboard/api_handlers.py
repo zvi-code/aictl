@@ -9,9 +9,18 @@ supply all /api/* endpoint implementations.
 from __future__ import annotations
 
 import dataclasses
+import re
 import time
 from collections import Counter
 from datetime import datetime, timezone
+
+# Synthesized process-based session_id format: "tool:pid:timestamp".
+# Used by copilot-vscode (and other tools that don't emit their own ids)
+# to synthesize a session id from the process. Such ids never appear in
+# OTel events — OTel emitters tag events with the tool's own chat/session
+# id — so strict session_id matching misses everything. When we see one
+# of these, we fall back to matching on tool + the session's time window.
+_SYNTHETIC_SESSION_RE = re.compile(r"^[a-z][a-z0-9-]*:\d+:\d+$")
 
 from ..data.token_usage import TokenUsage
 from ..tools import compute_token_budget
@@ -143,6 +152,45 @@ class _APIHandlersMixin:
         except Exception:  # noqa: BLE001 — never 500 the UI
             payload = {"files": [], "summary": {"added": 0, "modified": 0, "removed": 0}}
         self._json_response(payload)
+
+    def _serve_file_writes(self) -> None:
+        """Return write-like file events attributed to sessions/tools.
+
+        GET /api/file-writes?session_id=X&path=/tmp/a.py&since=0
+        """
+        db = self._db
+        if not db:
+            self._json_response({"writes": [], "count": 0})
+            return
+        limit = min(int(self._qs_get("limit", "500")), 2000)
+        rows = db.query_file_writes(
+            session_id=self._qs_get("session_id") or None,
+            path=self._qs_get("path") or None,
+            tool=self._qs_get("tool") or None,
+            since=self._qs_float_opt("since"),
+            until=self._qs_float_opt("until"),
+            limit=limit,
+        )
+        self._json_response({"writes": rows, "count": len(rows)})
+
+    def _serve_data_quality(self) -> None:
+        """Return current health of collectors, ingesters, and sinks.
+
+        GET /api/data-quality?status=degraded&kind=ingester
+        """
+        db = self._db
+        if not db:
+            self._json_response({"items": [], "summary": {}})
+            return
+        limit = min(int(self._qs_get("limit", "500")), 2000)
+        rows = db.query_data_quality(
+            status=self._qs_get("status") or None,
+            kind=self._qs_get("kind") or None,
+            component=self._qs_get("component") or None,
+            limit=limit,
+        )
+        summary = dict(Counter(row.get("status", "") for row in rows))
+        self._json_response({"items": rows, "summary": summary})
 
     def _serve_transcript(self) -> None:
         """Return structured transcript for a single session.
@@ -416,6 +464,27 @@ class _APIHandlersMixin:
         limit = min(int(self._qs_get("limit", "500")), 2000)
         session_id = self._qs_get("session_id") or None
 
+        # Resolve filter strategy. For synthesized process-based session
+        # ids (e.g. ``copilot-vscode:3716:1776541738``), OTel events carry
+        # the tool's own chat/session id and will never match — fall back
+        # to tool-scoped querying over the session's active time window.
+        filter_session_id: str | None = session_id
+        filter_tool: str | None = None
+        if session_id and _SYNTHETIC_SESSION_RE.match(session_id):
+            sess = db.get_session(session_id)
+            if sess:
+                filter_session_id = None
+                filter_tool = sess.get("tool") or None
+                started = float(sess.get("started_at") or 0)
+                ended = sess.get("ended_at")
+                if started and started > since:
+                    since = started
+                if ended is not None:
+                    try:
+                        until = min(until, float(ended))
+                    except (TypeError, ValueError):
+                        pass
+
         # Query API request events across all known kinds
         api_events = []
         for name in API_REQUEST_EVENTS:
@@ -424,7 +493,8 @@ class _APIHandlersMixin:
                     since=since,
                     until=until,
                     kind=f"otel:{name}",
-                    session_id=session_id,
+                    tool=filter_tool,
+                    session_id=filter_session_id,
                     limit=limit,
                 )
             )
@@ -435,7 +505,8 @@ class _APIHandlersMixin:
                     since=since,
                     until=until,
                     kind=f"otel:{name}",
-                    session_id=session_id,
+                    tool=filter_tool,
+                    session_id=filter_session_id,
                     limit=limit,
                 )
             )

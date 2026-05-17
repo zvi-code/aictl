@@ -7,6 +7,7 @@ services:
       - "8484:8484"
     environment:
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
+      - AICTL_CLAUDE_MODEL=${AICTL_CLAUDE_MODEL:-claude-haiku-4-5}
     volumes:
       # Mount a temp project for Claude Code to work on
       - aictl-project:/project
@@ -19,6 +20,7 @@ services:
       dockerfile: docker/Dockerfile
     environment:
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
+      - AICTL_CLAUDE_MODEL=${AICTL_CLAUDE_MODEL:-claude-haiku-4-5}
     command: test
     profiles:
       - test

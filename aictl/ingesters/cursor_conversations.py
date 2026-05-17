@@ -91,6 +91,20 @@ class CursorConversationsIngester:
         self.db_path = Path(db_path).expanduser()
         self.store = our_store
         self.last_cursor = int(last_cursor)
+        self.last_poll_ts: float = 0.0
+        self.last_poll_inserted: int = 0
+
+    def _quality(self, status: str, *, severity: str = "", message: str = "", detail: dict | None = None) -> None:
+        if hasattr(self.store, "record_data_quality"):
+            self.store.record_data_quality(
+                "ingester:cursor-conversations",
+                status,
+                kind="ingester",
+                severity=severity,
+                message=message,
+                source=str(self.db_path),
+                detail=detail,
+            )
 
     # ── public API ─────────────────────────────────────────────
 
@@ -100,8 +114,15 @@ class CursorConversationsIngester:
         Returns the number of rows inserted. Returns 0 if the source DB
         is missing, locked, or has no new rows.
         """
+        self.last_poll_ts = time.time()
         src = _open_readonly(self.db_path)
         if src is None:
+            self._quality(
+                "source_missing" if not self.db_path.exists() else "failed",
+                severity="warning",
+                message="Cursor conversations DB is missing or unreadable",
+            )
+            self.last_poll_inserted = 0
             return 0
         try:
             try:
@@ -109,8 +130,17 @@ class CursorConversationsIngester:
             except sqlite3.OperationalError as exc:
                 # "database is locked", "no such table", etc. — stay soft.
                 log.debug("cursor ingester: read failed (%s); skipping", exc)
+                self._quality(
+                    "schema_unknown" if "no such table" in str(exc).lower() else "query_failed",
+                    severity="warning",
+                    message="Cursor conversations read failed",
+                    detail={"error": str(exc)},
+                )
+                self.last_poll_inserted = 0
                 return 0
             if not rows:
+                self._quality("ok", severity="info", message="Cursor conversations poll completed", detail={"inserted": 0})
+                self.last_poll_inserted = 0
                 return 0
             conversations = self._fetch_conversations(src, {r["conversation_id"] for r in rows})
         finally:
@@ -135,6 +165,8 @@ class CursorConversationsIngester:
                 inserted += 1
             if int(row["id"]) > self.last_cursor:
                 self.last_cursor = int(row["id"])
+        self.last_poll_inserted = inserted
+        self._quality("ok", severity="info", message="Cursor conversations poll completed", detail={"inserted": inserted})
         return inserted
 
     # ── source read helpers ───────────────────────────────────

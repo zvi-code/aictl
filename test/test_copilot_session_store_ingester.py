@@ -123,6 +123,21 @@ def test_second_poll_with_no_new_rows_inserts_zero(tmp_path, our_db):
 def test_missing_source_db_returns_zero(tmp_path, our_db):
     ingester = CopilotSessionStoreIngester(tmp_path / "does-not-exist.db", our_db)
     assert ingester.poll() == 0
+    rows = our_db.query_data_quality(component="ingester:copilot-session-store")
+    assert rows[0]["status"] == "source_missing"
+
+
+def test_unknown_schema_records_data_quality(tmp_path, our_db):
+    src = tmp_path / "session-store.db"
+    conn = sqlite3.connect(str(src))
+    conn.execute("CREATE TABLE unrelated(id INTEGER PRIMARY KEY, payload TEXT)")
+    conn.commit()
+    conn.close()
+
+    ingester = CopilotSessionStoreIngester(src, our_db)
+    assert ingester.poll() == 0
+    rows = our_db.query_data_quality(component="ingester:copilot-session-store")
+    assert rows[0]["status"] == "schema_unknown"
 
 
 def test_locked_source_db_is_handled_gracefully(tmp_path, our_db):
@@ -166,3 +181,5 @@ def test_discover_handles_schema_without_ts(tmp_path, our_db):
 
     ingester = CopilotSessionStoreIngester(src, our_db)
     assert ingester.poll() == 1
+    rows = our_db.query_data_quality(component="ingester:copilot-session-store")
+    assert rows[0]["status"] == "ok"

@@ -21,7 +21,7 @@ DIST_DIR:= $(PROJECT)aictl/dashboard/dist
 # Detect install method
 HAS_PIPX := $(shell command -v pipx 2>/dev/null)
 
-.PHONY: install install-py install-ui test test-ui test-e2e test-tools test-all lint typecheck clean help
+.PHONY: install install-py install-ui test test-ui test-e2e test-tools test-docker test-all lint typecheck clean help
 
 # ── Primary target: full rebuild + reinstall ─────────────────────────────────
 
@@ -55,7 +55,7 @@ $(DIST_DIR)/index.html: $(shell find $(UI_DIR)/src -type f 2>/dev/null) $(UI_DIR
 # ── Test & Lint ──────────────────────────────────────────────────────────────
 
 test:  ## Run unit tests (fast, no server needed)
-	python3 -m pytest test/ -q --tb=short --ignore=test/e2e
+	python3 -m pytest test/ -q --tb=short --ignore=test/e2e --ignore=test/e2e_tools
 
 test-ui:  ## Run dashboard UI tests (Vitest + jsdom)
 	cd aictl/dashboard/ui && npx vitest run
@@ -65,6 +65,9 @@ test-e2e:  ## Run E2E tests (starts aictl server, posts synthetic data)
 
 test-tools:  ## Run real-tool E2E tests (skips missing tools)
 	python3 -m pytest test/e2e_tools/ -v --timeout=180
+
+test-docker:  ## Run Docker integration suite (fresh install + simulated E2E)
+	docker compose -f docker/docker-compose.test.yml run --build --rm test-integration
 
 test-all:  ## Run everything (unit + E2E + tools)
 	python3 -m pytest test/ -v --timeout=180 --override-ini="addopts="

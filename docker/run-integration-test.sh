@@ -49,34 +49,44 @@ else
     fail "history.db not created"
 fi
 
-# Check schema version
-SCHEMA_VER=$(python3 -c "
+read -r SCHEMA_VER EXPECTED_SCHEMA_VER < <(python3 -c "
 import sqlite3
+from aictl.storage import SCHEMA_VERSION
 conn = sqlite3.connect('$DB_PATH')
 ver = conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0]
-print(ver)
+print(ver, SCHEMA_VERSION)
 conn.close()
 ")
-if [ "$SCHEMA_VER" = "12" ]; then
-    pass "schema version is 12"
+if [ "$SCHEMA_VER" = "$EXPECTED_SCHEMA_VER" ]; then
+    pass "schema version is current ($SCHEMA_VER)"
 else
-    fail "schema version is $SCHEMA_VER (expected 12)"
+    fail "schema version is $SCHEMA_VER (expected $EXPECTED_SCHEMA_VER)"
 fi
 
-# Check all expected tables exist
-TABLES=$(python3 -c "
+# Check required baseline tables exist. Keep this as a subset so the test
+# catches missing core tables without going stale when new tables are added.
+MISSING_TABLES=$(python3 -c "
 import sqlite3
 conn = sqlite3.connect('$DB_PATH')
-tables = sorted(r[0] for r in conn.execute(
+tables = {r[0] for r in conn.execute(
     \"SELECT name FROM sqlite_master WHERE type='table'\").fetchall())
-print(' '.join(tables))
+required = {
+    'schema_version', 'tools', 'projects', 'processes', 'process_snapshots',
+    'system_snapshots', 'sessions', 'session_processes', 'requests',
+    'tool_invocations', 'files', 'file_blobs', 'file_history', 'tool_config',
+    'file_write_events', 'data_quality_status', 'environment_vars',
+    'tool_stats', 'events', 'metrics', 'path_defs', 'process_defs',
+    'memory_snapshots', 'cursor_session_messages', 'copilot_session_messages',
+    'vscode_chat_messages', 'datapoint_catalog',
+    'ui_dashboard', 'ui_tab', 'ui_widget',
+}
+print(' '.join(sorted(required - tables)))
 conn.close()
 ")
-EXPECTED_TABLES="datapoint_catalog events file_history file_store metrics path_specs process_specs samples schema_version tool_metrics tool_telemetry ui_dashboard ui_datasource ui_group_by_option ui_preference ui_section ui_tab ui_theme ui_widget ui_widget_datasource"
-if [ "$TABLES" = "$EXPECTED_TABLES" ]; then
-    pass "all 20 tables exist"
+if [ -z "$MISSING_TABLES" ]; then
+    pass "required schema tables exist"
 else
-    fail "tables mismatch: got [$TABLES]"
+    fail "missing schema tables: $MISSING_TABLES"
 fi
 
 # Check events table has structured columns
@@ -87,7 +97,7 @@ cols = sorted(r[1] for r in conn.execute('PRAGMA table_info(events)'))
 print(' '.join(cols))
 conn.close()
 ")
-for col in session_id pid model input_tokens output_tokens tool_name prompt_id seq; do
+for col in session_id pid project_path detail seq; do
     if echo "$EVENT_COLS" | grep -qw "$col"; then
         pass "events table has column: $col"
     else
@@ -95,19 +105,19 @@ for col in session_id pid model input_tokens output_tokens tool_name prompt_id s
     fi
 done
 
-# Check samples table has structured columns
-SAMPLE_COLS=$(python3 -c "
+# Check metrics table has structured columns
+METRIC_COLS=$(python3 -c "
 import sqlite3
 conn = sqlite3.connect('$DB_PATH')
-cols = sorted(r[1] for r in conn.execute('PRAGMA table_info(samples)'))
+cols = sorted(r[1] for r in conn.execute('PRAGMA table_info(metrics)'))
 print(' '.join(cols))
 conn.close()
 ")
-for col in session_id tool seq; do
-    if echo "$SAMPLE_COLS" | grep -qw "$col"; then
-        pass "samples table has column: $col"
+for col in metric value tags tool project_path session_id seq; do
+    if echo "$METRIC_COLS" | grep -qw "$col"; then
+        pass "metrics table has column: $col"
     else
-        fail "samples table missing column: $col"
+        fail "metrics table missing column: $col"
     fi
 done
 
@@ -130,8 +140,8 @@ fi
 SPEC_COUNT=$(python3 -c "
 import sqlite3
 conn = sqlite3.connect('$DB_PATH')
-paths = conn.execute('SELECT COUNT(*) FROM path_specs').fetchone()[0]
-procs = conn.execute('SELECT COUNT(*) FROM process_specs').fetchone()[0]
+paths = conn.execute('SELECT COUNT(*) FROM path_defs').fetchone()[0]
+procs = conn.execute('SELECT COUNT(*) FROM process_defs').fetchone()[0]
 print(f'{paths} {procs}')
 conn.close()
 ")
@@ -227,7 +237,8 @@ if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
     pass "CLAUDE_CODE_OAUTH_TOKEN is set"
 
     # Run a simple Claude Code command
-    CLAUDE_OUT=$(claude -p "Say exactly: INTEGRATION_TEST_OK" --max-turns 1 2>&1 || true)
+    CLAUDE_MODEL="${AICTL_CLAUDE_MODEL:-claude-haiku-4-5}"
+    CLAUDE_OUT=$(claude -p "Say exactly: INTEGRATION_TEST_OK" --model "$CLAUDE_MODEL" --max-turns 1 2>&1 || true)
     if echo "$CLAUDE_OUT" | grep -q "INTEGRATION_TEST_OK"; then
         pass "Claude Code responded correctly"
     else
@@ -265,7 +276,7 @@ sleep 1
 pip install --quiet pytest pytest-timeout 2>/dev/null
 
 # 7a. Unit tests
-PYTEST_OUTPUT=$(python3 -m pytest /app/test/ -x -q --ignore=/app/test/e2e 2>&1)
+PYTEST_OUTPUT=$(python3 -m pytest /app/test/ -x -q --ignore=/app/test/e2e --ignore=/app/test/e2e_tools 2>&1)
 PYTEST_LAST=$(echo "$PYTEST_OUTPUT" | tail -1)
 if echo "$PYTEST_LAST" | grep -q "passed"; then
     pass "pytest unit: $PYTEST_LAST"

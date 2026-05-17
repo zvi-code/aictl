@@ -146,6 +146,16 @@ class SampleSink:
 
         # Flood protection: drop if exceeding rate limit
         if ts - self._flood_window_start > self._flood_window:
+            if self._flood_drop_count:
+                self.record_data_quality(
+                    "sample-sink",
+                    "ok",
+                    kind="sink",
+                    severity="info",
+                    message="sample emission rate back under flood limit",
+                    detail={"dropped_in_previous_window": self._flood_drop_count},
+                    ts=ts,
+                )
             self._flood_window_start = ts
             self._flood_count = 0
             self._flood_drop_count = 0
@@ -160,6 +170,15 @@ class SampleSink:
                     "Flood protection: dropping samples (>%d/s). Total dropped: %d",
                     self._flood_max,
                     self._total_dropped,
+                )
+                self.record_data_quality(
+                    "sample-sink",
+                    "degraded",
+                    kind="sink",
+                    severity="warning",
+                    message="sample flood protection is dropping datapoints",
+                    detail={"flood_max_per_second": self._flood_max, "total_dropped": self._total_dropped},
+                    ts=ts,
                 )
                 self._drop_logged = True
             return
@@ -386,6 +405,35 @@ class SampleSink:
             self._handlers.remove(handler)
         except ValueError:
             pass
+
+    def record_data_quality(
+        self,
+        component: str,
+        status: str,
+        *,
+        kind: str = "",
+        severity: str = "",
+        message: str = "",
+        source: str = "",
+        detail: dict[str, Any] | None = None,
+        ts: float | None = None,
+    ) -> None:
+        """Record data-source health when a HistoryDB is attached."""
+        if self._db is None or not hasattr(self._db, "record_data_quality"):
+            return
+        try:
+            self._db.record_data_quality(
+                component,
+                status,
+                kind=kind,
+                severity=severity,
+                message=message,
+                source=source,
+                detail=detail,
+                ts=ts,
+            )
+        except Exception as exc:
+            log.debug("Data-quality write error for %s: %s", component, exc)
 
     # ── Flush (persist to SQLite) ─────────────────────────────────
 

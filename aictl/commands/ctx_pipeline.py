@@ -27,12 +27,44 @@ from .integrations import HOOK_EVENTS as _HOOK_EVENTS
 # ─── deploy ──────────────────────────────────────────────────────────────────
 
 
-def _run_deploy(root: Path, profile: str | None, emitter_names: list[str], dry_run: bool) -> bool:
+def _known_profiles(scanned) -> set[str]:
+    profiles: set[str] = set()
+    for _, parsed in scanned:
+        profiles.update(k for k in parsed.instructions if k not in {"base", "_always"})
+        profiles.update(c.profile for c in parsed.capabilities if c.profile != "_always")
+        profiles.update(m.profile for m in parsed.mcp_servers if m.profile != "_always")
+        profiles.update(h.profile for h in parsed.hooks if h.profile != "_always")
+        profiles.update(s.profile for s in parsed.lsp_servers if s.profile != "_always")
+        profiles.update(s.profile for s in parsed.settings if s.profile != "_always")
+        profiles.update(p.profile for p in parsed.permissions if p.profile != "_always")
+        profiles.update(e.profile for e in parsed.env_vars if e.profile != "_always")
+        profiles.update(i.profile for i in parsed.ignores if i.profile != "_always")
+        profiles.update(k for k in parsed.memory_hints if k != "_always")
+    return profiles
+
+
+def _run_deploy(
+    root: Path,
+    profile: str | None,
+    emitter_names: list[str],
+    dry_run: bool,
+    *,
+    strict: bool = False,
+    allow_empty_profile: bool = False,
+) -> bool:
     """Run a single deploy cycle. Returns True if files were found and deployed."""
     scanned = scan(root)
     if not scanned:
         click.secho(f"\nNo .context.toml files found under {root}\n", fg="yellow")
         return False
+
+    if profile and not allow_empty_profile:
+        known = _known_profiles(scanned)
+        if profile not in known:
+            suffix = f" Known profiles: {', '.join(sorted(known))}." if known else " No profiles are defined."
+            raise click.ClickException(
+                f"Unknown profile '{profile}'.{suffix} Use --allow-empty-profile to deploy base/_always only."
+            )
 
     click.secho(f"\n\U0001f4e6  Deploying from {root}", bold=True)
     if profile:
@@ -41,12 +73,20 @@ def _run_deploy(root: Path, profile: str | None, emitter_names: list[str], dry_r
     for rel, _ in scanned:
         click.secho(f"      {rel}/", fg="bright_black")
 
-    # --- Feature compatibility warnings (non-blocking) ---
+    # --- Feature compatibility warnings (non-blocking unless --strict) ---
+    strict_failures: list[str] = []
     for rel, parsed in scanned:
         compat_warnings = check_parsed_features(parsed)
         for kind, label, tools in compat_warnings:
-            tool_list = ", ".join(tools)
-            click.secho(f"   \u26a0 [{label}] \u2014 {kind} not supported by: {tool_list}", fg="yellow")
+            unsupported_targets = [t for t in tools if t in emitter_names]
+            if not unsupported_targets:
+                continue
+            tool_list = ", ".join(unsupported_targets)
+            msg = f"[{label}] - {kind} not supported by target emitter(s): {tool_list}"
+            click.secho(f"   \u26a0 {msg}", fg="yellow")
+            strict_failures.append(msg)
+    if strict and strict_failures:
+        raise click.ClickException("Unsupported context features in --strict mode:\n" + "\n".join(strict_failures))
 
     # --- Phase 2: Resolve ---
     resolved = resolve(root, scanned, profile)
@@ -55,8 +95,10 @@ def _run_deploy(root: Path, profile: str | None, emitter_names: list[str], dry_r
     old_manifest = None if dry_run else load_manifest(root)
     all_paths: list[str] = []
 
+    current_emitter = ""
     try:
         for ename in emitter_names:
+            current_emitter = ename
             emitter = registry.get(ename)
             results = emitter.emit(root, resolved, dry_run=dry_run)
             for r in results:
@@ -66,7 +108,8 @@ def _run_deploy(root: Path, profile: str | None, emitter_names: list[str], dry_r
                 fp = click.style(r["path"], fg="bright_black")
                 click.echo(f"{pfx} {ename} \u2192 {fp} ({tok})")
     except Exception as e:
-        click.secho(f"\n   \u2717 emitter '{ename}' failed: {e}", fg="red")
+        emitter_label = current_emitter or "<none>"
+        click.secho(f"\n   \u2717 emitter '{emitter_label}' failed: {e}", fg="red")
         click.secho("   skipping manifest save + cleanup (deploy incomplete)", fg="yellow")
         raise
 
@@ -125,7 +168,15 @@ def _collect_watch_dirs(root: Path) -> set[str]:
     return dirs
 
 
-def _watch_loop(root: Path, profile: str | None, emitter_names: list[str], dry_run: bool) -> None:
+def _watch_loop(
+    root: Path,
+    profile: str | None,
+    emitter_names: list[str],
+    dry_run: bool,
+    *,
+    strict: bool = False,
+    allow_empty_profile: bool = False,
+) -> None:
     """Watch .toml files and re-deploy on changes."""
 
     try:
@@ -137,7 +188,7 @@ def _watch_loop(root: Path, profile: str | None, emitter_names: list[str], dry_r
         )
 
     # Initial deploy
-    _run_deploy(root, profile, emitter_names, dry_run)
+    _run_deploy(root, profile, emitter_names, dry_run, strict=strict, allow_empty_profile=allow_empty_profile)
 
     # Collect directories to watch
     watch_dirs = _collect_watch_dirs(root)
@@ -167,7 +218,7 @@ def _watch_loop(root: Path, profile: str | None, emitter_names: list[str], dry_r
         rel = str(Path(changed_path).relative_to(root))
         click.secho(f"\nDetected change in {rel}, re-deploying...", fg="cyan")
         try:
-            _run_deploy(root, profile, emitter_names, dry_run)
+            _run_deploy(root, profile, emitter_names, dry_run, strict=strict, allow_empty_profile=allow_empty_profile)
         except Exception as exc:  # noqa: BLE001 — watch loop must survive redeploy errors
             click.secho(f"Deploy error: {exc}", fg="red")
         click.secho("Watching for changes...", fg="bright_black")
@@ -216,7 +267,9 @@ def _watch_loop(root: Path, profile: str | None, emitter_names: list[str], dry_r
 )
 @click.option("--dry-run", is_flag=True, help="Show what would be written")
 @click.option("--watch", is_flag=True, help="Re-deploy when .toml files change")
-def deploy(root_dir, profile, emitters, dry_run, watch):
+@click.option("--strict", is_flag=True, help="Fail when selected emitters do not support a requested feature")
+@click.option("--allow-empty-profile", is_flag=True, help="Allow an unknown profile to deploy base/_always only")
+def deploy(root_dir, profile, emitters, dry_run, watch, strict, allow_empty_profile):
     """Scan .toml files and deploy native AI context files."""
     from ..utils import WriteGuard
 
@@ -229,9 +282,16 @@ def deploy(root_dir, profile, emitters, dry_run, watch):
     emitter_names = [e.strip() for e in emitters.split(",")]
 
     if watch:
-        _watch_loop(root, profile, emitter_names, dry_run)
+        _watch_loop(
+            root,
+            profile,
+            emitter_names,
+            dry_run,
+            strict=strict,
+            allow_empty_profile=allow_empty_profile,
+        )
     else:
-        _run_deploy(root, profile, emitter_names, dry_run)
+        _run_deploy(root, profile, emitter_names, dry_run, strict=strict, allow_empty_profile=allow_empty_profile)
 
 
 # ─── scan ────────────────────────────────────────────────────────────────────
@@ -529,16 +589,17 @@ def _validate_file(path: Path, rel: str) -> FileResult:
         if m:
             if current_header is not None:
                 sections.append((current_header, current_start, current_lines))
-            current_header = m.group(1).strip()
+            header = m.group(1).strip()
+            current_header = header
             current_start = i + 1  # 1-based
             current_lines = []
-            if current_header in seen_headers:
+            if header in seen_headers:
                 result.err(
-                    f"Duplicate section [{current_header}] (first seen at line {seen_headers[current_header]})",
+                    f"Duplicate section [{header}] (first seen at line {seen_headers[header]})",
                     current_start,
                 )
             else:
-                seen_headers[current_header] = current_start
+                seen_headers[header] = current_start
         else:
             if current_header is not None:
                 current_lines.append(line)
