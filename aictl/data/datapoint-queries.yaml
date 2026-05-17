@@ -528,9 +528,9 @@ sessions.agent_teams.warmup_count:
   calc: Direct from session_end detail.
   query: SELECT json_extract(detail, '$.warmup_count') FROM events WHERE kind = 'session_end' AND json_extract(detail, '$.session_id') = ?
 sessions.history:
-  calc: Join start/end events. NULL ended = active.
-  query: SELECT e1.tool, json_extract(e1.detail, '$.session_id') as sid, e1.ts as started, e2.ts as ended, (e2.ts - e1.ts) as duration_s FROM events e1 LEFT JOIN events e2 ON json_extract(e1.detail, '$.session_id')
-    = json_extract(e2.detail, '$.session_id') AND e2.kind = 'session_end' WHERE e1.kind = 'session_start' ORDER BY e1.ts DESC LIMIT ?
+  calc: API marks ended from ended_at, imported from known ingester sources, active from live entity state, otherwise open.
+  query: SELECT session_id, tool, started_at, ended_at, CASE WHEN ended_at IS NOT NULL THEN 'ended' WHEN source IN ('claude-code-jsonl','copilot-session-store','cursor-ingester','vscode-chat-logs') THEN 'imported' ELSE 'open' END as lifecycle_status,
+    source FROM sessions WHERE started_at >= ? ORDER BY started_at DESC LIMIT ?
 sessions.timeline:
   calc: Each row = one bar. Width = end_ts - start_ts. NULL end_ts = active.
   query: SELECT tool, json_extract(detail, '$.session_id') as sid, ts as start_ts, (SELECT e2.ts FROM events e2 WHERE e2.kind = 'session_end' AND json_extract(e2.detail, '$.session_id') = json_extract(e1.detail,

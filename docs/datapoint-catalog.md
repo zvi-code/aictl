@@ -1,8 +1,8 @@
 # aictl Dashboard Datapoint Catalog
 
-> **175** datapoints across **10** tabs.  
-> Raw: 76 | Deduced: 36 | Aggregated: 63  
-> Generated: 2026-03-29 10:33
+> **181** datapoints across **10** tabs.
+> Raw: 79 | Deduced: 38 | Aggregated: 64
+> Generated: 2026-05-17 17:05
 
 ## Contents
 
@@ -12,7 +12,7 @@
 - [live](#live) (10)
 - [mcp](#mcp) (6)
 - [memory](#memory) (4)
-- [overview](#overview) (51)
+- [overview](#overview) (57)
 - [procs](#procs) (48)
 - [samples](#samples) (3)
 - [sessions](#sessions) (25)
@@ -153,6 +153,12 @@
 | `overview.total_live_sessions` | AGGREGATED * | Number of currently active AI tool sessions. A session represents a continuous interaction with an AI tool (e.g. an open Claude Code conversation, an active Copilot coding session). | `SELECT ts, live_sessions FROM metrics WHERE ts >= ? ORDER BY ts` | Direct value from latest row. |
 | `overview.csv_footprint_bar` | AGGREGATED | Stacked horizontal bar showing file count distribution per AI tool. Visualizes which tools have the largest on-disk configuration footprint. | `SELECT tool, COUNT(*) as cnt FROM file_store GROUP BY tool ORDER BY cnt DESC` | Per-tool file count. Bar width proportional to cnt / SUM(cnt). |
 | `overview.live_traffic_bar` | AGGREGATED * | Stacked horizontal bar showing network traffic distribution per tool. Visualizes which AI tools are consuming the most API bandwidth. | `SELECT tool, traffic FROM tool_metrics WHERE ts = (SELECT MAX(ts) FROM tool_metrics)` | Per-tool traffic bps. Bar width proportional to traffic / SUM(traffic). |
+| `self.cpu_percent` | RAW * | CPU utilization of the aictl monitoring service process itself. This is NOT an AI tool metric — it shows how much CPU the monitoring dashboard consumes. | `SELECT cpu_percent FROM (SELECT value as cpu_percent FROM json_each(?) WHERE key = 'cpu_percent')` | Direct from /api/self-status → psutil.Process(os.getpid()).cpu_percent(). |
+| `self.db_rows` | AGGREGATED * | Total number of rows across the main data tables in the aictl database (metrics + tool_metrics + events + samples). | `SELECT (SELECT COUNT(*) FROM metrics) + (SELECT COUNT(*) FROM tool_metrics) + (SELECT COUNT(*) FROM events) + (SELECT COUNT(*) FROM samples) as total` | SUM of row counts across main data tables. |
+| `self.db_size` | RAW * | On-disk size of the aictl SQLite history database (history.db). Grows as metrics, events, and telemetry are collected over time. Compacted automatically (24h full res, 7d 1-min avg, 30d 5-min avg). | `SELECT file_size_bytes FROM (SELECT value as file_size_bytes FROM json_each(?) WHERE key = 'file_size_bytes')` | Direct from /api/self-status → db.stats()['file_size_bytes']. Or: os.stat(db_path).st_size. |
+| `self.memory_rss` | RAW * | Resident memory (RSS) consumed by the aictl monitoring service. This is the physical RAM footprint of aictl itself, not the monitored AI tools. | `SELECT memory_rss_bytes FROM (SELECT value as memory_rss_bytes FROM json_each(?) WHERE key = 'memory_rss_bytes')` | Direct from /api/self-status → psutil.Process(os.getpid()).memory_info().rss. |
+| `self.threads` | RAW * | Number of threads in the aictl monitoring service. Includes DB flush thread, refresh loop, SSE connections, collectors. | `SELECT threads FROM (SELECT value as threads FROM json_each(?) WHERE key = 'threads')` | Direct from /api/self-status → psutil.Process(os.getpid()).num_threads(). |
+| `self.uptime` | DEDUCED * | How long the aictl monitoring service has been running since the last start of 'aictl serve'. | `SELECT uptime_s FROM (SELECT value as uptime_s FROM json_each(?) WHERE key = 'uptime_s')` | Direct from /api/self-status → time.time() - process.create_time(). |
 | `overview.cpu` | AGGREGATED | Total CPU utilization across all monitored AI tool processes, expressed as a percentage where 100% = one full CPU core. A value of 400% means four cores are fully utilized by AI tools. | `SELECT ts, cpu FROM metrics WHERE ts >= ? ORDER BY ts` | Direct value (sum of all tool process CPU %). |
 | `overview.files` | AGGREGATED | Total number of configuration, instruction, and context files discovered across all monitored AI tools on disk. Counts files matching known path patterns from paths-unix.csv (or paths-windows.csv on Windows). | `SELECT ts, files FROM metrics WHERE ts >= ? ORDER BY ts` | Direct value. Latest row = current; series = sparkline. |
 | `overview.mem_mb` | AGGREGATED | Total resident memory (RSS) consumed by all monitored AI tool processes, in megabytes. Shows physical RAM footprint of the AI tool ecosystem. | `SELECT ts, mem_mb FROM metrics WHERE ts >= ? ORDER BY ts` | Direct value in MB. UI multiplies by 1048576 for byte display. |
@@ -244,7 +250,7 @@
 | `sessions.agent_teams.agent_slug` | RAW * | Short identifier/slug for each agent in a team (e.g. "Explore", "test-runner", "Plan"). | `SELECT json_extract(detail, '$.agents') FROM events WHERE kind = 'session_end' AND json_extract(detail, '$.session_id') = ?` | Parse agents array, extract slug per agent. |
 | `sessions.agent_teams.tools_used` | AGGREGATED * | Union of all tool names called across agents in a team (e.g. Read, Edit, Bash, Grep, Agent). | `SELECT json_extract(detail, '$.tools_used') FROM events WHERE kind = 'session_end' AND json_extract(detail, '$.session_id') = ?` | Parse tools_used array. Union across agents. |
 | `sessions.agent_teams.warmup_count` | DEDUCED * | Number of warmup agents in a team — agents that were spawned but filtered out from display (e.g. initialization agents with minimal activity). | `SELECT json_extract(detail, '$.warmup_count') FROM events WHERE kind = 'session_end' AND json_extract(detail, '$.session_id') = ?` | Direct from session_end detail. |
-| `sessions.history` | RAW * | Table of past sessions with tool, session ID, duration, status, and end time. | `SELECT e1.tool, json_extract(e1.detail, '$.session_id') as sid, e1.ts as started, e2.ts as ended, (e2.ts - e1.ts) as duration_s FROM events e1 LEFT JOIN events e2 ON json_extract(e1.detail, '$.session_id') = json_extract(e2.detail, '$.session_id') AND e2.kind = 'session_end' WHERE e1.kind = 'session_start' ORDER BY e1.ts DESC LIMIT ?` | Join start/end events. NULL ended = active. |
+| `sessions.history` | DEDUCED * | Table of sessions with tool, session ID, duration, lifecycle status, source, and end time. Lifecycle status distinguishes live active sessions, completed sessions, imported historical records, and unterminated open rows. | `SELECT session_id, tool, started_at, ended_at, CASE WHEN ended_at IS NOT NULL THEN 'ended' WHEN source IN ('claude-code-jsonl','copilot-session-store','cursor-ingester','vscode-chat-logs') THEN 'imported' ELSE 'open' END as lifecycle_status, source FROM sessions WHERE started_at >= ? ORDER BY started_at DESC LIMIT ?` | API marks ended from ended_at, imported from known ingester sources, active from live entity state, otherwise open. |
 | `sessions.timeline` | RAW * | Gantt chart showing session durations on a timeline. Ended sessions appear as horizontal bars, live sessions as marker dots. | `SELECT tool, json_extract(detail, '$.session_id') as sid, ts as start_ts, (SELECT e2.ts FROM events e2 WHERE e2.kind = 'session_end' AND json_extract(e2.detail, '$.session_id') = json_extract(e1.detail, '$.session_id') LIMIT 1) as end_ts FROM events e1 WHERE e1.kind = 'session_start' AND e1.ts BETWEEN ? AND ? ORDER BY e1.ts` | Each row = one bar. Width = end_ts - start_ts. NULL end_ts = active. |
 | `sessions.timeline.bytes_written` | AGGREGATED * | Total bytes written during this session across all file modifications. | `SELECT SUM(json_extract(detail, '$.growth_bytes')) FROM events WHERE kind = 'file_modified' AND json_extract(detail, '$.session_id') = ?` | Sum growth_bytes. |
 | `sessions.timeline.conversations` | RAW * | Number of conversation JSONL files found for this session. Each file represents a distinct conversation thread. | `SELECT json_extract(detail, '$.conversations') FROM events WHERE kind = 'session_end' AND json_extract(detail, '$.session_id') = ?` | Direct from session_end detail. |

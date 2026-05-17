@@ -1500,13 +1500,17 @@ sessions.active.process_tree:
 
 sessions.history:
   explanation: >
-    Table of past sessions with tool, session ID, duration, status,
-    and end time.
+    Table of sessions with tool, session ID, duration, lifecycle status,
+    source, and end time. Lifecycle status distinguishes live active
+    sessions, completed sessions, imported historical records, and
+    unterminated open rows.
   source: >
-    events table filtered by kind="session-end" and "session-start".
-    Duration = end_time - start_time. Status: "active" if no end
-    event, "ended" otherwise.
-  source_type: raw
+    /api/sessions merges live snapshot sessions with persisted rows from
+    the sessions table. Ended rows use sessions.ended_at; active rows must
+    be confirmed by the in-memory hook entity tracker; imported rows are
+    identified by sessions.source values such as cursor-ingester,
+    copilot-session-store, vscode-chat-logs, and claude-code-jsonl.
+  source_type: deduced
   unit: seconds
   update_freq: on-collect
   tab: sessions
