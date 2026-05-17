@@ -1,8 +1,8 @@
 # aictl Dashboard Datapoint Catalog
 
-> **181** datapoints across **10** tabs.  
-> Raw: 80 | Deduced: 37 | Aggregated: 64  
-> Generated: 2026-03-29 10:55
+> **181** datapoints across **10** tabs.
+> Raw: 79 | Deduced: 38 | Aggregated: 64
+> Generated: 2026-05-17 17:08
 
 ## Contents
 
@@ -26,7 +26,7 @@
 | `api.file_content` | RAW | File content retrieval for inline preview in the dashboard. Returns raw text content of tracked files. | `SELECT content FROM file_store WHERE path = ?` | Direct content. Truncated to 200KB. |
 | `api.file_history` | RAW * | Historical timeline of file modifications — when files were created, modified, or deleted, with content snapshots at change points. | `SELECT ts, content_hash, size_bytes, tokens, lines FROM file_history WHERE path = ? ORDER BY ts DESC LIMIT ?` | Direct rows. Each = change point snapshot. |
 | `api.project_costs` | DEDUCED * | Per-project cost breakdown — sessions, tokens, and estimated USD cost grouped by working directory / repository. | `SELECT json_extract(detail, '$.project') as project, COUNT(*) as sessions, SUM(json_extract(detail, '$.input_tokens')) as input, SUM(json_extract(detail, '$.output_tokens')) as output FROM events WHERE kind = 'session_end' AND ts >= ? GROUP BY project` | Cost apportioned from tool_telemetry by token share. |
-| `api.session_runs` | RAW * | Historical session run data — per-session tokens, duration, project, and tool. Used for session analytics and billing. | `SELECT e1.tool, e1.ts as start_ts, e2.ts as end_ts, (e2.ts - e1.ts) as duration_s, json_extract(e2.detail, '$.input_tokens') as input, json_extract(e2.detail, '$.output_tokens') as output FROM events e1 JOIN events e2 ON json_extract(e1.detail, '$.session_id') = json_extract(e2.detail, '$.session_id') AND e2.kind = 'session_end' WHERE e1.kind = 'session_start' ORDER BY e1.ts DESC LIMIT ?` | Join start + end events. Total = input + output. |
+| `api.session_runs` | RAW * | Historical session run data — per-session tokens, duration, project, and tool. Used for session analytics and billing. | `SELECT session_id, tool, project_path, started_at, ended_at, (ended_at - started_at) as duration_s, input_tokens, output_tokens, (input_tokens + output_tokens) as total_tokens, files_modified FROM sessions WHERE ended_at IS NOT NULL AND ended_at >= ? ORDER BY ended_at DESC LIMIT ?` | Completed sessions table rows. Total = input_tokens + output_tokens. Legacy event rows are fallback-only in the API. |
 
 ---
 ## budget
@@ -250,7 +250,7 @@
 | `sessions.agent_teams.agent_slug` | RAW * | Short identifier/slug for each agent in a team (e.g. "Explore", "test-runner", "Plan"). | `SELECT json_extract(detail, '$.agents') FROM events WHERE kind = 'session_end' AND json_extract(detail, '$.session_id') = ?` | Parse agents array, extract slug per agent. |
 | `sessions.agent_teams.tools_used` | AGGREGATED * | Union of all tool names called across agents in a team (e.g. Read, Edit, Bash, Grep, Agent). | `SELECT json_extract(detail, '$.tools_used') FROM events WHERE kind = 'session_end' AND json_extract(detail, '$.session_id') = ?` | Parse tools_used array. Union across agents. |
 | `sessions.agent_teams.warmup_count` | DEDUCED * | Number of warmup agents in a team — agents that were spawned but filtered out from display (e.g. initialization agents with minimal activity). | `SELECT json_extract(detail, '$.warmup_count') FROM events WHERE kind = 'session_end' AND json_extract(detail, '$.session_id') = ?` | Direct from session_end detail. |
-| `sessions.history` | RAW * | Table of past sessions with tool, session ID, duration, status, and end time. | `SELECT e1.tool, json_extract(e1.detail, '$.session_id') as sid, e1.ts as started, e2.ts as ended, (e2.ts - e1.ts) as duration_s FROM events e1 LEFT JOIN events e2 ON json_extract(e1.detail, '$.session_id') = json_extract(e2.detail, '$.session_id') AND e2.kind = 'session_end' WHERE e1.kind = 'session_start' ORDER BY e1.ts DESC LIMIT ?` | Join start/end events. NULL ended = active. |
+| `sessions.history` | DEDUCED * | Table of sessions with tool, session ID, duration, lifecycle status, source, and end time. Lifecycle status distinguishes live active sessions, completed sessions, imported historical records, and unterminated open rows. | `SELECT session_id, tool, started_at, ended_at, CASE WHEN ended_at IS NOT NULL THEN 'ended' WHEN source IN ('claude-code-jsonl','copilot-session-store','cursor-ingester','vscode-chat-logs') THEN 'imported' ELSE 'open' END as lifecycle_status, source FROM sessions WHERE started_at >= ? ORDER BY started_at DESC LIMIT ?` | API marks ended from ended_at, imported from known ingester sources, active from live entity state, otherwise open. |
 | `sessions.timeline` | RAW * | Gantt chart showing session durations on a timeline. Ended sessions appear as horizontal bars, live sessions as marker dots. | `SELECT tool, json_extract(detail, '$.session_id') as sid, ts as start_ts, (SELECT e2.ts FROM events e2 WHERE e2.kind = 'session_end' AND json_extract(e2.detail, '$.session_id') = json_extract(e1.detail, '$.session_id') LIMIT 1) as end_ts FROM events e1 WHERE e1.kind = 'session_start' AND e1.ts BETWEEN ? AND ? ORDER BY e1.ts` | Each row = one bar. Width = end_ts - start_ts. NULL end_ts = active. |
 | `sessions.timeline.bytes_written` | AGGREGATED * | Total bytes written during this session across all file modifications. | `SELECT SUM(json_extract(detail, '$.growth_bytes')) FROM events WHERE kind = 'file_modified' AND json_extract(detail, '$.session_id') = ?` | Sum growth_bytes. |
 | `sessions.timeline.conversations` | RAW * | Number of conversation JSONL files found for this session. Each file represents a distinct conversation thread. | `SELECT json_extract(detail, '$.conversations') FROM events WHERE kind = 'session_end' AND json_extract(detail, '$.session_id') = ?` | Direct from session_end detail. |

@@ -24,9 +24,9 @@ api.project_costs:
   query: SELECT json_extract(detail, '$.project') as project, COUNT(*) as sessions, SUM(json_extract(detail, '$.input_tokens')) as input, SUM(json_extract(detail, '$.output_tokens')) as output FROM events
     WHERE kind = 'session_end' AND ts >= ? GROUP BY project
 api.session_runs:
-  calc: Join start + end events. Total = input + output.
-  query: SELECT e1.tool, e1.ts as start_ts, e2.ts as end_ts, (e2.ts - e1.ts) as duration_s, json_extract(e2.detail, '$.input_tokens') as input, json_extract(e2.detail, '$.output_tokens') as output FROM
-    events e1 JOIN events e2 ON json_extract(e1.detail, '$.session_id') = json_extract(e2.detail, '$.session_id') AND e2.kind = 'session_end' WHERE e1.kind = 'session_start' ORDER BY e1.ts DESC LIMIT ?
+  calc: Completed sessions table rows. Total = input_tokens + output_tokens. Legacy event rows are fallback-only in the API.
+  query: SELECT session_id, tool, project_path, started_at, ended_at, (ended_at - started_at) as duration_s, input_tokens, output_tokens, (input_tokens + output_tokens) as total_tokens, files_modified FROM sessions WHERE ended_at IS NOT NULL
+    AND ended_at >= ? ORDER BY ended_at DESC LIMIT ?
 budget.context_window.always_loaded:
   calc: Sum tokens. Realistic = global_always + largest_project_always.
   query: SELECT SUM(f.tokens) FROM file_store f JOIN path_specs p ON f.tool = p.ai_tool WHERE p.sent_to_llm = 'yes' AND p.loaded_when = 'every-call'
