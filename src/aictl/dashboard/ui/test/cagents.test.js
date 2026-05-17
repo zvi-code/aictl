@@ -15,7 +15,7 @@ const SNAP = {
       mcp_servers: [{ name: 'file-server' }],
       memory: [],
       files: [{ kind: 'config', path: '/etc/foo', tokens: 100 }],
-      live: { session_count: 2, pid_count: 1, token_estimate: 5000, files_touched: 8, cpu_percent: 12.5 },
+      live: { session_count: 2, pid_count: 1, token_estimate: { input_tokens: 4000, output_tokens: 1000 }, files_touched: 8, cpu_percent: 12.5 },
     },
     {
       tool: 'copilot-cli', label: 'GitHub Copilot CLI', vendor: 'github', host: 'cli',
@@ -33,7 +33,7 @@ const SNAP = {
       mcp_servers: [],
       memory: [],
       files: [],
-      live: { session_count: 1, pid_count: 1, token_estimate: 2000, files_touched: 3 },
+      live: { session_count: 1, pid_count: 1, token_estimate: { input_tokens: 1500, output_tokens: 500 }, files_touched: 3 },
     },
   ],
 };
@@ -95,9 +95,11 @@ describe('CAgentsTab — detail panel', () => {
     expect(values.some(v => v.match(/5k|5\.0k/i))).toBe(true);  // token_estimate
   });
 
-  it('config block shows tool id', () => {
+  it('config block shows binary and enabled', () => {
     const { container } = renderTab();
-    expect(container.querySelector('.cagents-config-block').textContent).toContain('claude-code');
+    const text = container.querySelector('.cagents-config-block').textContent;
+    expect(text).toContain('enabled');
+    expect(text).toContain('true');
   });
 });
 

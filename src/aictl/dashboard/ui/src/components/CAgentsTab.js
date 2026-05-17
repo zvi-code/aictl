@@ -1,7 +1,7 @@
 import { useState, useContext, useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
-import { COLORS, fmtK } from '../utils.js';
+import { COLORS, fmtK, liveTokenTotal } from '../utils.js';
 
 function toolColor(t) {
   return COLORS[t] || 'var(--fg2)';
@@ -94,7 +94,7 @@ function AgentDetail({ tool: t, toolConfig, onViewSessions }) {
 
   const stats = [
     ['Sessions',         l.session_count ?? 0],
-    ['Tokens',           fmtK(l.token_estimate || 0)],
+    ['Tokens',           fmtK(liveTokenTotal(l))],
     ['Processes',        l.pid_count ?? procs.length],
     ['MCP servers',      mcps.length],
     ['Captured fields',  capturedFields.length > 0 ? capturedFields.length : '\u2014'],
@@ -104,11 +104,11 @@ function AgentDetail({ tool: t, toolConfig, onViewSessions }) {
   const perms = derivePermissions(toolConfig);
 
   const configLines = [
-    ['tool',    t.tool],
     binary  ? ['binary',  binary]  : null,
     version ? ['version', version] : null,
-    ['vendor',  t.vendor || '\u2014'],
-    ['host',    t.host   || '\u2014'],
+    capturedFields.length > 0
+      ? ['capture', '[' + capturedFields.map(f => `"${f}"`).join(', ') + ']']
+      : ['capture', '\u2014'],
     ['enabled', isActive(t) ? 'true' : 'false'],
   ].filter(Boolean);
 
@@ -144,10 +144,10 @@ function AgentDetail({ tool: t, toolConfig, onViewSessions }) {
     </div>
 
     <div class="cagents-actions">
-      <button class="cagents-btn cagents-btn--primary"
-        onClick=${onViewSessions}>View sessions</button>
-      <button class="cagents-btn" disabled
+      <button class="cagents-btn cagents-btn--primary" disabled
         title="Not yet available">Edit config</button>
+      <button class="cagents-btn"
+        onClick=${onViewSessions}>View sessions</button>
       <button class="cagents-btn cagents-btn--danger" disabled
         title="Not yet available">Disable capture</button>
     </div>
@@ -172,7 +172,7 @@ function AgentRow({ tool: t, selected, onSelect }) {
       </span>
     </div>
     <div class="cagents-row-meta">
-      ${fmtK(l.token_estimate || 0)} tok \u00b7 ${l.session_count || 0} sessions
+      ${fmtK(liveTokenTotal(l))} tok \u00b7 ${l.session_count || 0} sessions
     </div>
   </div>`;
 }
