@@ -5,10 +5,10 @@ import { SnapContext } from '../../context.js';
 // Editorial tab set — each `id` maps to an existing LAYOUT tab so keyboard
 // shortcuts (1-9/h/0) and setActiveTab still work without changes to useTabs.
 export const EDITORIAL_TABS = [
-  { id: 'overview',  label: 'Dashboard', sub: 'live event stream' },
-  { id: 'explorer',  label: 'Sessions',  sub: 'history & traces' },
-  { id: 'config',    label: 'Agents',    sub: 'instrumentation' },
-  { id: 'analytics', label: 'Prompts',   sub: 'library & workflows' },
+  { id: 'overview', label: 'Dashboard', sub: 'live event stream' },
+  { id: 'explorer', label: 'Sessions',  sub: 'history & traces' },
+  { id: 'agents',   label: 'Agents',    sub: 'instrumentation' },
+  { id: 'prompts',  label: 'Prompts',   sub: 'library & workflows' },
 ];
 
 function fmtKicker() {

@@ -36,6 +36,9 @@ import ToolFilterBar from './components/ToolFilterBar.js';
 import GlobalHeader from './components/shell/GlobalHeader.js';
 import CMasthead from './components/shell/CMasthead.js';
 import ActivityRail from './components/shell/ActivityRail.js';
+import CAgentsTab from './components/CAgentsTab.js';
+import CDashboardTab from './components/CDashboardTab.js';
+import CPromptsTab from './components/CPromptsTab.js';
 import CommandPalette from './components/shell/CommandPalette.js';
 import SkipLink from './components/shell/SkipLink.js';
 import ToastProvider from './components/ui/ToastProvider.js';
@@ -304,10 +307,12 @@ export default function App() {
   const alerts = useMemo(() => computeAlerts(snap), [snap]);
 
   const TAB_RENDERERS = {
-    overview:   () => html`<${TabBoundary} tabName="overview">
-      <${DashboardContent} snap=${filteredSnap} history=${effectiveHistory}/>
-      <div class="mb-lg"><${CollectorHealth}/></div>
-    </${TabBoundary}>`,
+    overview:   () => theme === 'editorial'
+      ? html`<${TabBoundary} tabName="overview"><${CDashboardTab}/></${TabBoundary}>`
+      : html`<${TabBoundary} tabName="overview">
+          <${DashboardContent} snap=${filteredSnap} history=${effectiveHistory}/>
+          <div class="mb-lg"><${CollectorHealth}/></div>
+        </${TabBoundary}>`,
     procs:      () => html`<${TabBoundary} tabName="procs"><div class="mb-lg"><${TabOverview}/></div></${TabBoundary}>`,
     memory:     () => html`<${TabBoundary} tabName="memory"><div class="mb-lg"><${ContextMap}/></div><div class="mb-lg"><${TabMemory}/></div></${TabBoundary}>`,
     live:       () => html`<${TabBoundary} tabName="live"><div class="mb-lg"><${TabLive}/></div></${TabBoundary}>`,
@@ -317,6 +322,8 @@ export default function App() {
     heatmap:    () => html`<${TabBoundary} tabName="heatmap"><div class="mb-lg"><${TabHeatmap} key=${'heatmap-' + activeTab}/></div></${TabBoundary}>`,
     explorer:   () => html`<${TabBoundary} tabName="explorer"><div class="mb-lg"><${TabExplorer} key=${'explorer-' + activeTab}/></div></${TabBoundary}>`,
     config:     () => html`<${TabBoundary} tabName="config"><div class="mb-lg"><${TabToolConfig}/></div></${TabBoundary}>`,
+    agents:     () => html`<${TabBoundary} tabName="agents"><${CAgentsTab}/></${TabBoundary}>`,
+    prompts:    () => html`<${TabBoundary} tabName="prompts"><${CPromptsTab}/></${TabBoundary}>`,
   };
 
   // Once we have a snapshot we can render; SSE drops shouldn't flash a
