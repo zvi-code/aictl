@@ -7,8 +7,19 @@ import ToolTabs from './session_flow/ToolTabs.js';
 import SessionTabs from './session_flow/SessionTabs.js';
 import SeqArrow from './session_flow/SeqArrow.js';
 import SeqMarker from './session_flow/SeqMarker.js';
+import SeqVerticalTimeline from './session_flow/SeqVerticalTimeline.js';
+import SequenceInspector from './session_flow/SequenceInspector.js';
 import SummaryBar from './session_flow/SummaryBar.js';
 import { discoverParticipants } from './session_flow/participants.js';
+
+const RENDER_MODE_KEY = 'aictl-pref-session_flow_mode';
+function _loadMode() {
+  try {
+    const v = localStorage.getItem(RENDER_MODE_KEY);
+    return v === 'swimlane' ? 'swimlane' : 'timeline';
+  } catch { return 'timeline'; }
+}
+function _saveMode(m) { try { localStorage.setItem(RENDER_MODE_KEY, m); } catch {} }
 
 // Thin orchestrator — fetches sessions/flow data, owns tool + session
 // selection state, and composes sub-components under components/session_flow/.
@@ -25,6 +36,8 @@ export default function TabSessionFlow({ externalSessionId = null } = {}) {
   const [flowData, setFlowData] = useState(null);
   const [flowLoading, setFlowLoading] = useState(false);
   const [hoveredIdx, setHoveredIdx] = useState(null);
+  const [selectedIdx, setSelectedIdx] = useState(null);
+  const [mode, setMode] = useState(_loadMode);
   const embedded = externalSessionId != null;
   const effectiveSessionId = embedded ? externalSessionId : activeSessionId;
 
@@ -122,15 +135,30 @@ export default function TabSessionFlow({ externalSessionId = null } = {}) {
 
   const summary = flowData?.summary || {};
 
+  // Reset inspector selection whenever the session or mode changes.
+  useEffect(() => { setSelectedIdx(null); }, [effectiveSessionId, mode]);
+  const setModePersisted = (m) => { setMode(m); _saveMode(m); };
+  const selectedEvent = selectedIdx != null ? processedTurns[selectedIdx] : null;
+
   return html`<div class="sf-container">
     ${!embedded && html`<${ToolTabs} tools=${tools} activeTool=${activeTool} onSelect=${setActiveTool}/>`}
 
     ${!embedded && html`<${SessionTabs} sessions=${toolSessions} activeId=${activeSessionId}
       onSelect=${setActiveSessionId} loading=${loading}/>`}
 
-    <${SummaryBar} summary=${summary}/>
+    <div class="sf-toolbar">
+      <${SummaryBar} summary=${summary}/>
+      <div class="sf-mode-toggle" role="radiogroup" aria-label="Timeline render mode">
+        <button type="button" role="radio" aria-checked=${mode === 'timeline'}
+          class=${'sf-mode-btn' + (mode === 'timeline' ? ' sf-mode-btn--active' : '')}
+          onClick=${() => setModePersisted('timeline')}>Timeline</button>
+        <button type="button" role="radio" aria-checked=${mode === 'swimlane'}
+          class=${'sf-mode-btn' + (mode === 'swimlane' ? ' sf-mode-btn--active' : '')}
+          onClick=${() => setModePersisted('swimlane')}>Swim-lane</button>
+      </div>
+    </div>
 
-    <div class="sf-seq-container">
+    <div class=${'sf-seq-container' + (mode === 'timeline' ? ' sf-seq-container--split' : '')}>
       ${flowLoading
         ? html`<div class="loading-state" style="padding:var(--sp-8)">Loading session flow...</div>`
         : processedTurns.length === 0
@@ -140,33 +168,42 @@ export default function TabSessionFlow({ externalSessionId = null } = {}) {
                 Ensure OTel is enabled: <code>eval $(aictl otel enable)</code>
               </p>
             </div>`
-          : html`
-            <div class="sf-seq-header">
-              <div class="sf-seq-tokens">
-                <span class="sf-seq-cumtok" title="Cumulative tokens">cum</span>
-                <span class="sf-seq-rttok" title="Round-trip tokens (resets per user message)">rt</span>
+          : mode === 'timeline'
+            ? html`<div class="sv-pane">
+                <${SeqVerticalTimeline} events=${processedTurns}
+                  selectedIdx=${selectedIdx} onSelect=${setSelectedIdx}/>
               </div>
-              <div class="sf-seq-time"></div>
-              <div class="sf-seq-arrow-area">
-                ${participants.map((p, i) => {
-                  const colW = 100 / participants.length;
-                  return html`<div key=${p.id} class="sf-seq-participant"
-                    style="left:${(i + 0.5) * colW}%;color:${p.color}">
-                    <div class="sf-seq-participant-box" style="border-color:${p.color}">${esc(p.label)}</div>
-                  </div>`;
+              <aside class="sv-aside">
+                <${SequenceInspector} event=${selectedEvent}
+                  onClose=${() => setSelectedIdx(null)}/>
+              </aside>`
+            : html`
+              <div class="sf-seq-header">
+                <div class="sf-seq-tokens">
+                  <span class="sf-seq-cumtok" title="Cumulative tokens">cum</span>
+                  <span class="sf-seq-rttok" title="Round-trip tokens (resets per user message)">rt</span>
+                </div>
+                <div class="sf-seq-time"></div>
+                <div class="sf-seq-arrow-area">
+                  ${participants.map((p, i) => {
+                    const colW = 100 / participants.length;
+                    return html`<div key=${p.id} class="sf-seq-participant"
+                      style="left:${(i + 0.5) * colW}%;color:${p.color}">
+                      <div class="sf-seq-participant-box" style="border-color:${p.color}">${esc(p.label)}</div>
+                    </div>`;
+                  })}
+                </div>
+              </div>
+              <div class="sf-seq-body">
+                ${processedTurns.map((ev, idx) => {
+                  if (ev._from && ev._to) {
+                    return html`<${SeqArrow} key=${idx} event=${ev} participants=${participants}
+                      hoveredIdx=${hoveredIdx} idx=${idx} onHover=${setHoveredIdx}/>`;
+                  }
+                  return html`<${SeqMarker} key=${idx} event=${ev} participants=${participants}/>`;
                 })}
               </div>
-            </div>
-            <div class="sf-seq-body">
-              ${processedTurns.map((ev, idx) => {
-                if (ev._from && ev._to) {
-                  return html`<${SeqArrow} key=${idx} event=${ev} participants=${participants}
-                    hoveredIdx=${hoveredIdx} idx=${idx} onHover=${setHoveredIdx}/>`;
-                }
-                return html`<${SeqMarker} key=${idx} event=${ev} participants=${participants}/>`;
-              })}
-            </div>
-          `}
+            `}
     </div>
   </div>`;
 }

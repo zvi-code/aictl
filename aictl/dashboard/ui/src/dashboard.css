@@ -1520,3 +1520,578 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
     scroll-behavior: auto !important;
   }
 }
+
+/* ─── Editorial theme overrides ──────────────────────────────────
+ * Active only under [data-theme="editorial"]. Keeps every component
+ * structurally identical; swaps the look to the warm-cream / IBM
+ * Plex / brick-red editorial language from visualization/direction-c.
+ *
+ * Reads --ff-sans/--ff-serif/--ff-mono and the editorial color tokens
+ * declared above. Designed to be removable: delete this block (and the
+ * [data-theme="editorial"] color block above) to restore prior behavior.
+ */
+[data-theme="editorial"] {
+  --ff-sans:  'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --ff-serif: 'IBM Plex Serif', Georgia, 'Times New Roman', serif;
+  --ff-mono:  'IBM Plex Mono', 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+  /* Squarer corners for the editorial look. */
+  --radius-sm: 0px;
+  --radius-md: 2px;
+  --radius-lg: 3px;
+  /* Lighter shadows on warm paper. */
+  --shadow-1: 0 1px 1px rgba(26,22,20,0.04);
+  --shadow-2: 0 2px 6px rgba(26,22,20,0.06), 0 1px 2px rgba(26,22,20,0.04);
+  --shadow-ring: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+  --ring: 0 0 0 2px var(--bg), 0 0 0 4px color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+[data-theme="editorial"] body {
+  font-family: var(--ff-sans);
+  font-feature-settings: "kern", "liga", "calt";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Masthead — serif title, mono overline, brick rule below. */
+[data-theme="editorial"] header {
+  background: var(--bg);
+  border-bottom: 2px solid var(--rule);
+  padding-block: var(--sp-6) var(--sp-3);
+}
+[data-theme="editorial"] header h1 {
+  font-family: var(--ff-serif);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-size: 1.5rem;
+  line-height: 1;
+  color: var(--fg);
+}
+[data-theme="editorial"] header h1 span {
+  font-family: var(--ff-serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: 0.85rem;
+  color: var(--ink-soft, var(--fg2));
+  margin-left: var(--sp-3);
+  letter-spacing: 0;
+}
+
+/* Connection pill — squared, mono, uppercase. */
+[data-theme="editorial"] .conn {
+  border-radius: 0;
+  font-family: var(--ff-mono);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-size: var(--fs-xs);
+  padding: var(--sp-2) var(--sp-5);
+  box-shadow: none;
+  background: var(--green-soft, color-mix(in srgb, var(--green) 12%, var(--bg2)));
+  color: var(--green);
+  border: 1px solid var(--green);
+}
+[data-theme="editorial"] .conn.err {
+  background: var(--accent-soft, color-mix(in srgb, var(--accent) 12%, var(--bg2)));
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Search box — squared, no pill. */
+[data-theme="editorial"] .search-box {
+  border-radius: 0;
+  font-family: var(--ff-mono);
+  font-size: var(--fs-md);
+  background: var(--bg2);
+}
+
+/* Theme + header buttons — squared, mono. */
+[data-theme="editorial"] .theme-btn,
+[data-theme="editorial"] .hdr-btn,
+[data-theme="editorial"] .hdr-cmdk {
+  border-radius: 0;
+  font-family: var(--ff-mono);
+  font-size: var(--fs-sm);
+  letter-spacing: 0.06em;
+}
+
+/* Range bar — segmented, ink-on-cream selected state. */
+[data-theme="editorial"] .global-range-bar {
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+[data-theme="editorial"] .range-bar .range-label,
+[data-theme="editorial"] .metric-group-label {
+  font-family: var(--ff-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: var(--fs-xs);
+}
+[data-theme="editorial"] .range-btn {
+  border-radius: 0;
+  font-family: var(--ff-mono);
+  font-size: var(--fs-sm);
+  letter-spacing: 0.04em;
+  background: transparent;
+}
+[data-theme="editorial"] .range-btn:hover {
+  background: var(--bg2);
+  color: var(--fg);
+}
+[data-theme="editorial"] .range-btn.active {
+  background: var(--fg);
+  color: var(--bg);
+  border-color: var(--fg);
+  font-weight: 600;
+}
+
+/* Tab nav — serif tab labels, brick underline accent. */
+[data-theme="editorial"] .tab-btn {
+  font-family: var(--ff-serif);
+  font-size: var(--fs-xl);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  border-radius: 0;
+  text-transform: none;
+}
+[data-theme="editorial"] .tab-btn[aria-current="page"],
+[data-theme="editorial"] .tab-btn[aria-selected="true"] {
+  font-weight: 600;
+  color: var(--fg);
+}
+[data-theme="editorial"] .tab-btn::after {
+  background: var(--accent);
+  height: 3px;
+  left: 8%;
+  right: 8%;
+  border-radius: 0;
+}
+
+/* Cards — squared corners, paper background, hairline border, no shadow on hover. */
+[data-theme="editorial"] .chart-box,
+[data-theme="editorial"] .metric,
+[data-theme="editorial"] .es-kv-card,
+[data-theme="editorial"] .diag-card,
+[data-theme="editorial"] .metric-chip,
+[data-theme="editorial"] .budget-card,
+[data-theme="editorial"] .mem-group,
+[data-theme="editorial"] .tcard,
+[data-theme="editorial"] .sd-container,
+[data-theme="editorial"] .es-feed,
+[data-theme="editorial"] .es-date-input {
+  border-radius: var(--radius-md);
+  background: var(--bg2);
+  box-shadow: none;
+}
+[data-theme="editorial"] .chart-box:hover,
+[data-theme="editorial"] .metric:hover,
+[data-theme="editorial"] .diag-card:hover,
+[data-theme="editorial"] .metric-chip:hover,
+[data-theme="editorial"] .budget-card:hover,
+[data-theme="editorial"] .mem-group:hover,
+[data-theme="editorial"] .tcard:hover {
+  box-shadow: var(--shadow-1);
+  border-color: var(--accent);
+}
+
+/* Card labels — mono uppercase overline, like a newspaper rubric. */
+[data-theme="editorial"] .chart-box .chart-label,
+[data-theme="editorial"] .metric .label {
+  font-family: var(--ff-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: var(--fs-xs);
+  color: var(--fg2);
+}
+
+/* Card values — serif numerals, tabular for alignment. */
+[data-theme="editorial"] .chart-box .chart-val,
+[data-theme="editorial"] .metric .value {
+  font-family: var(--ff-serif);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+[data-theme="editorial"] .metric .value.accent {
+  color: var(--accent);
+}
+
+/* Badges — squared rectangles instead of pills, mono text. */
+[data-theme="editorial"] .badge,
+[data-theme="editorial"] .pill {
+  border-radius: 0;
+  font-family: var(--ff-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 600;
+}
+
+/* Tool filter bar — paper. */
+[data-theme="editorial"] .tool-filter-bar {
+  background: var(--bg2);
+  border-radius: 0;
+  border: 1px solid var(--border);
+}
+
+/* Explorer pill subtabs — squared per editorial. */
+[data-theme="editorial"] .explorer-subtabs {
+  border-radius: 0;
+  background: var(--bg2);
+}
+[data-theme="editorial"] .explorer-subtab-btn {
+  border-radius: 0;
+  font-family: var(--ff-mono);
+  font-size: var(--fs-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+[data-theme="editorial"] .explorer-subtab-btn[aria-current="page"],
+[data-theme="editorial"] .explorer-subtab-btn[aria-selected="true"] {
+  background: var(--accent-soft, color-mix(in srgb, var(--accent) 14%, transparent));
+  color: var(--accent);
+}
+
+/* Activity rail — paper sidebar with editorial overline. */
+[data-theme="editorial"] .activity-rail {
+  background: var(--bg);
+  border-color: var(--border);
+}
+[data-theme="editorial"] .ar-title {
+  font-family: var(--ff-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-size: var(--fs-xs);
+  color: var(--fg2);
+}
+
+/* Mono utility class — pick up Plex Mono. */
+[data-theme="editorial"] .mono,
+[data-theme="editorial"] .text-mono {
+  font-family: var(--ff-mono);
+}
+
+/* Headings inside content panels gain serif treatment. */
+[data-theme="editorial"] h2,
+[data-theme="editorial"] h3,
+[data-theme="editorial"] h4 {
+  font-family: var(--ff-serif);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+
+/* Table headers — mono editorial overline. */
+[data-theme="editorial"] th {
+  font-family: var(--ff-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--fg2);
+}
+
+/* ─── Vertical Session Timeline (SeqVerticalTimeline + SequenceInspector) ──
+ * Editorial-style alternative to the horizontal swim-lane. Two-column split
+ * inside .sf-seq-container--split: scrollable timeline on the left, sticky
+ * inspector on the right.
+ */
+.sf-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-3);
+}
+.sf-mode-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  overflow: hidden;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.sf-mode-btn {
+  font: inherit;
+  font-size: var(--fs-xs);
+  padding: var(--sp-1) var(--sp-4);
+  background: transparent;
+  color: var(--fg2);
+  border: none;
+  cursor: pointer;
+  min-height: 28px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.sf-mode-btn:hover { color: var(--fg); background: var(--bg3); }
+.sf-mode-btn--active {
+  background: var(--accent);
+  color: var(--bg);
+  font-weight: 600;
+}
+
+.sf-seq-container--split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(340px, 460px);
+  gap: 0;
+  border-top: 1px solid var(--border);
+  min-height: 0;
+}
+@media (max-width: 900px) {
+  .sf-seq-container--split { grid-template-columns: 1fr; }
+  .sv-aside { border-left: none !important; border-top: 1px solid var(--border); }
+}
+
+.sv-pane {
+  min-width: 0;
+  overflow-y: auto;
+  max-height: calc(100vh - 320px);
+}
+.sv-aside {
+  background: var(--bg2);
+  border-left: 1px solid var(--border);
+  min-width: 0;
+  overflow-y: auto;
+  max-height: calc(100vh - 320px);
+  position: sticky;
+  top: 0;
+}
+
+.sv-list { display: flex; flex-direction: column; }
+
+.sv-row {
+  display: grid;
+  grid-template-columns: 90px 28px minmax(0, 1fr) 92px;
+  column-gap: 0;
+  align-items: stretch;
+  padding: var(--sp-3) 0;
+  background: transparent;
+  border: none;
+  border-top: 1px solid var(--border);
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  width: 100%;
+  transition: background .12s ease;
+}
+.sv-row:first-child { border-top: none; }
+.sv-row:hover { background: var(--bg3); }
+.sv-row--sel {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.sv-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.sv-when {
+  padding-left: var(--sp-4);
+  padding-right: var(--sp-3);
+  text-align: right;
+  font-family: var(--ff-mono, monospace);
+  font-variant-numeric: tabular-nums;
+}
+.sv-when-time { font-size: var(--fs-sm); color: var(--fg); }
+.sv-when-tok  { font-size: var(--fs-2xs); color: var(--fg2); margin-top: 2px; }
+
+.sv-spine {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 2px;
+}
+.sv-spine-line {
+  position: absolute;
+  top: -8px;
+  bottom: -10px;
+  left: 50%;
+  width: 1px;
+  background: var(--border);
+  transform: translateX(-0.5px);
+}
+.sv-spine-line--last { bottom: 14px; }
+.sv-dot {
+  position: relative;
+  z-index: 1;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 1.5px solid currentColor;
+  background: var(--bg);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  line-height: 1;
+}
+
+.sv-body {
+  padding: 0 var(--sp-3) 0 var(--sp-3);
+  min-width: 0;
+}
+.sv-meta-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  font-family: var(--ff-mono, monospace);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: var(--fs-2xs);
+}
+.sv-lane { font-weight: 600; }
+.sv-kind { color: var(--fg2); }
+.sv-label {
+  margin-top: 2px;
+  font-size: var(--fs-md);
+  color: var(--fg);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sv-sub {
+  margin-top: 1px;
+  font-size: var(--fs-xs);
+  color: var(--fg2);
+  font-family: var(--ff-mono, monospace);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sv-size {
+  padding-right: var(--sp-4);
+  text-align: right;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+}
+.sv-size-chip {
+  display: inline-block;
+  font-family: var(--ff-mono, monospace);
+  font-size: var(--fs-2xs);
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--fg2);
+  white-space: nowrap;
+}
+
+/* Inspector */
+.sv-insp {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.sv-insp--empty {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: var(--sp-8);
+  color: var(--fg2);
+  gap: var(--sp-3);
+}
+.sv-insp-empty-tag {
+  font-family: var(--ff-mono, monospace);
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: var(--fs-2xs);
+}
+.sv-insp-empty-msg { font-size: var(--fs-sm); max-width: 30ch; }
+
+.sv-insp-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: var(--sp-5) var(--sp-6) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  gap: var(--sp-3);
+}
+.sv-insp-overline {
+  font-family: var(--ff-mono, monospace);
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-size: var(--fs-2xs);
+  color: var(--fg2);
+}
+.sv-insp-title {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  color: var(--fg);
+  word-break: break-word;
+}
+.sv-insp-close {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg2);
+  width: 24px;
+  height: 24px;
+  line-height: 1;
+  font-size: var(--fs-md);
+  cursor: pointer;
+  border-radius: var(--radius-sm, 4px);
+  flex-shrink: 0;
+}
+.sv-insp-close:hover { color: var(--fg); border-color: var(--fg2); }
+
+.sv-insp-meta {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  row-gap: var(--sp-2);
+  column-gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-6);
+  font-size: var(--fs-xs);
+}
+.sv-insp-meta-row { display: contents; }
+.sv-insp-meta-k {
+  color: var(--fg2);
+  font-family: var(--ff-mono, monospace);
+  text-transform: uppercase;
+  letter-spacing: 0.10em;
+  font-size: var(--fs-2xs);
+  padding-top: 2px;
+}
+.sv-insp-meta-v {
+  color: var(--fg);
+  font-family: var(--ff-mono, monospace);
+  word-break: break-word;
+}
+
+.sv-insp-section { padding: 0 var(--sp-6) var(--sp-5); }
+.sv-insp-rule {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  color: var(--fg2);
+  font-family: var(--ff-mono, monospace);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: var(--fs-2xs);
+  margin: var(--sp-3) 0 var(--sp-2);
+}
+.sv-insp-rule::before,
+.sv-insp-rule::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.sv-insp-pre {
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  font-family: var(--ff-mono, monospace);
+  font-size: var(--fs-xs);
+  color: var(--fg2);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow: auto;
+}
