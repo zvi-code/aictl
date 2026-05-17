@@ -7,8 +7,9 @@ export const HOST_LABELS = window.HOST_LABELS ?? {};
 export const TOOL_RELATIONSHIPS = window.TOOL_RELATIONSHIPS ?? {};
 
 export const SC = {running:'var(--green)',stopped:'var(--red)',error:'var(--orange)',unknown:'var(--fg2)'};
-export const THEMES = ['auto','dark','light'];
-export const THEME_ICONS = {auto:'\u263E',dark:'\u263E',light:'\u2600'};
+export const THEMES = ['auto','dark','light','editorial'];
+// auto/dark = crescent moon, light = sun, editorial = pen nib
+export const THEME_ICONS = {auto:'\u263E',dark:'\u263E',light:'\u2600',editorial:'\u270E'};
 export const TAIL_LINES = 5;
 export const PREVIEW_LINES = 15;
 export const MEM_LABELS = {'claude-user-memory':'Claude User Memory','claude-project-memory':'Claude Project Memory','claude-auto-memory':'Claude Auto Memory','copilot-agent-memory':'Copilot Agent Memory','copilot-session-state':'Copilot Session State','copilot-user-memory':'Copilot Instructions','codex-user-memory':'Codex Instructions','windsurf-user-memory':'Windsurf Global Rules'};

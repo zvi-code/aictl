@@ -43,22 +43,22 @@ REPO_ROOT = Path(__file__).parent.parent
 # Command / utility layer: every broad exception here is suspect.
 COMMAND_FILES = sorted(
     [
-        *Path(REPO_ROOT / "aictl" / "commands").glob("*.py"),
-        REPO_ROOT / "aictl" / "utils.py",
+        *Path(REPO_ROOT / "src" / "aictl" / "commands").glob("*.py"),
+        REPO_ROOT / "src" / "aictl" / "utils.py",
     ]
 )
 
 # Daemon / monitoring layer: intentionally broad, excluded from checks.
 EXCLUDED_PATTERNS = [
-    "aictl/orchestrator.py",
-    "aictl/sink.py",
-    "aictl/storage.py",
-    "aictl/dashboard/tui.py",
-    "aictl/dashboard/web_server.py",
-    "aictl/dashboard/html_report.py",
-    "aictl/monitoring/",
-    "aictl/client.py",
-    "aictl/memory.py",
+    "src/aictl/orchestrator.py",
+    "src/aictl/sink.py",
+    "src/aictl/storage.py",
+    "src/aictl/dashboard/tui.py",
+    "src/aictl/dashboard/web_server.py",
+    "src/aictl/dashboard/html_report.py",
+    "src/aictl/monitoring/",
+    "src/aictl/client.py",
+    "src/aictl/memory.py",
 ]
 
 
@@ -264,18 +264,18 @@ def test_enable_exits_1_on_partial_failure(tmp_path, monkeypatch):
 # see the carve-out in code review.
 EXPECTED_BLE_S110_IGNORED_FILES = frozenset(
     {
-        "aictl/orchestrator.py",
-        "aictl/sink.py",
-        "aictl/storage.py",
-        "aictl/dashboard/tui.py",
-        "aictl/dashboard/web_server.py",
-        "aictl/dashboard/html_report.py",
-        "aictl/dashboard/api_handlers.py",
-        "aictl/monitoring/**",
-        "aictl/client.py",
-        "aictl/memory.py",
-        "aictl/platforms.py",
-        "aictl/tools.py",
+        "src/aictl/orchestrator.py",
+        "src/aictl/sink.py",
+        "src/aictl/storage.py",
+        "src/aictl/dashboard/tui.py",
+        "src/aictl/dashboard/web_server.py",
+        "src/aictl/dashboard/html_report.py",
+        "src/aictl/dashboard/api_handlers.py",
+        "src/aictl/monitoring/**",
+        "src/aictl/client.py",
+        "src/aictl/memory.py",
+        "src/aictl/platforms.py",
+        "src/aictl/tools.py",
     }
 )
 

@@ -16,6 +16,24 @@
   --model-5: #e879f9; --model-7: #67e8f9; --model-8: #a78bfa;
   --model-switch: #d946ef;
 }
+/* Editorial — warm off-white, IBM Plex, brick-red accent.
+ * Adapted from visualization/direction-c.jsx ("Editorial Inspector"). */
+[data-theme="editorial"] {
+  --bg: #f7f4ee; --bg2: #fbfaf6; --bg3: #ffffff; --fg: #1a1614; --fg2: #8a7f73;
+  --accent: #a6391c; --border: #e5dfd3;
+  --green: #3f7d43; --red: #a6391c; --orange: #b26b1b; --yellow: #d97706;
+  --cat-commands: #6e4fb6; --cat-skills: #3f7d43; --cat-agent: #a6391c; --cat-memory: #2e5ba6;
+  --cat-prompt: #6e4fb6; --cat-temp: #8a7f73; --cat-runtime: #5b6e7a; --cat-extensions: #2e5ba6;
+  --model-5: #6e4fb6; --model-7: #2e5ba6; --model-8: #a6391c;
+  --model-switch: #a6391c;
+  /* Editorial-only extras (consumed by override layer at end of file). */
+  --accent-soft: #f6e6e0;
+  --green-soft: #e6efe3;
+  --border-soft: #ede7da;
+  --ink-soft: #3f3833;
+  --muted-soft: #b6ac9f;
+  --rule: #1a1614;
+}
 @media (prefers-color-scheme: light) {
   [data-theme="auto"] {
     --bg: #f8fafc; --bg2: #ffffff; --bg3: #f1f5f9; --fg: #1e293b; --fg2: #64748b;
@@ -41,6 +59,10 @@
 :root {
   /* Density multiplier — overridden by [data-density="…"] below. */
   --density: 1;
+  /* Font families — overridden per theme. */
+  --ff-sans:  -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --ff-serif: Georgia, 'Times New Roman', serif;
+  --ff-mono:  'SF Mono', Menlo, Consolas, monospace;
   /* Typography scale (8-tier, purpose-driven) */
   --fs-2xs: 0.55rem;  /* chart annotations, ref labels */
   --fs-xs:  0.6rem;   /* badges, icons, uppercase labels */

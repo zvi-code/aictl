@@ -3,11 +3,16 @@
 # The single command developers should remember:
 #   make install      — rebuilds everything and reinstalls
 #
-# Why: aictl has TWO build layers (Python + JS). pipx copies files on
-# install, so source edits aren't picked up until you reinstall. This
-# Makefile eliminates the guesswork.
+# Single canonical environment: aictl lives in the pipx venv at
+#   ~/.local/pipx/venvs/aictl/
+# which hosts BOTH the editable runtime (aictl + deps) and the dev tools
+# (pytest, ruff, mypy, type stubs). No project-local .venv is needed.
 #
-# Windows: use 'aictl reinstall' or 'pip install -e .[all]' instead.
+# Why: aictl has TWO build layers (Python + JS). pipx with `-e` makes the
+# Python side editable so source edits are live; the UI still needs an
+# explicit `npm run build` step. `make install` handles both.
+#
+# Windows: use 'aictl reinstall' or 'pip install -e .[all,dev]' instead.
 
 ifeq ($(OS),Windows_NT)
 $(error This Makefile requires Unix/macOS. On Windows use: aictl reinstall)
@@ -15,12 +20,21 @@ endif
 
 SHELL   := /bin/bash
 PROJECT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-UI_DIR  := $(PROJECT)aictl/dashboard/ui
-DIST_DIR:= $(PROJECT)aictl/dashboard/dist
-PYTHON  ?= $(if $(wildcard $(PROJECT).venv/bin/python),$(PROJECT).venv/bin/python,python3)
+UI_DIR  := $(PROJECT)src/aictl/dashboard/ui
+DIST_DIR:= $(PROJECT)src/aictl/dashboard/dist
 
 # Detect install method
-HAS_PIPX := $(shell command -v pipx 2>/dev/null)
+HAS_PIPX     := $(shell command -v pipx 2>/dev/null)
+PIPX_VENV    := $(shell pipx environment --value PIPX_LOCAL_VENVS 2>/dev/null)/aictl
+PIPX_PYTHON  := $(if $(wildcard $(PIPX_VENV)/bin/python),$(PIPX_VENV)/bin/python,)
+
+# Python resolution order:
+#   1. $PYTHON (explicit override, e.g. for CI)
+#   2. pipx aictl venv (the single canonical environment)
+#   3. system python3 (only if pipx not yet installed)
+# Intentionally NOT considered: in-project .venv/  — it caused two parallel
+# environments (pipx for `aictl`, .venv for `make test`) that drifted.
+PYTHON  ?= $(if $(PIPX_PYTHON),$(PIPX_PYTHON),python3)
 
 .PHONY: install install-py install-ui test test-ui test-e2e test-tools test-docker test-all lint typecheck clean help
 
@@ -32,13 +46,15 @@ install: install-ui install-py  ## Full rebuild: UI + Python package
 
 # ── Python package ───────────────────────────────────────────────────────────
 
-install-py:  ## Reinstall Python package (pipx or pip)
+install-py:  ## Reinstall Python package (pipx or pip) + dev tools
 ifdef HAS_PIPX
 	@echo "→ Installing via pipx (--force --editable)..."
-	pipx install --force -e "$(PROJECT)[all]"
+	cd /tmp && pipx install --force -e "$(PROJECT)[all]"
+	@echo "→ Injecting dev tools (pytest-timeout, ruff, mypy, type stubs)..."
+	cd /tmp && pipx inject aictl pytest-timeout ruff mypy types-PyYAML types-psutil
 else
 	@echo "→ Installing via pip (editable)..."
-	pip install -e "$(PROJECT)[all]"
+	pip install -e "$(PROJECT)[all,dev]"
 endif
 
 # ── Dashboard UI ─────────────────────────────────────────────────────────────
@@ -59,7 +75,7 @@ test:  ## Run unit tests (fast, no server needed)
 	$(PYTHON) -m pytest test/ -q --tb=short --ignore=test/e2e --ignore=test/e2e_tools
 
 test-ui:  ## Run dashboard UI tests (Vitest + jsdom)
-	cd aictl/dashboard/ui && npx vitest run
+	cd src/aictl/dashboard/ui && npx vitest run
 
 test-e2e:  ## Run E2E tests (starts aictl server, posts synthetic data)
 	$(PYTHON) -m pytest test/e2e/ -v --timeout=120
@@ -77,15 +93,16 @@ lint:  ## Run ruff linter + format check
 	$(PYTHON) -m ruff check .
 	$(PYTHON) -m ruff format --check .
 
-typecheck:  ## Run mypy on strictly-typed modules (aictl/data + dashboard/models)
-	$(PYTHON) -m mypy aictl/data aictl/dashboard/models.py
+typecheck:  ## Run mypy on strictly-typed modules (src/aictl/data + dashboard/models)
+	$(PYTHON) -m mypy src/aictl/data src/aictl/dashboard/models.py
 
 # ── Cleanup ──────────────────────────────────────────────────────────────────
 
-clean:  ## Remove build artifacts
+clean:  ## Remove build artifacts (incl. legacy in-project .venv)
 	rm -rf build/ *.egg-info aictl.egg-info
 	rm -rf $(DIST_DIR)
 	rm -rf $(UI_DIR)/node_modules
+	rm -rf .venv
 
 # ── Help ─────────────────────────────────────────────────────────────────────
 
