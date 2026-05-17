@@ -68,7 +68,13 @@ def import_cmd(root_dir, profile, prefer, from_tools, dry_run):
         click.secho(f"   prefer: {prefer}", fg="magenta")
 
     # --- Phase 2: Synthesize .toml files ---
-    results = synthesize(root, imports, prefer=prefer, profile=profile, dry_run=dry_run)
+    synth_warnings: list[str] = []
+    results = synthesize(
+        root, imports, prefer=prefer, profile=profile, dry_run=dry_run, warnings=synth_warnings
+    )
+
+    for w in synth_warnings:
+        click.secho(f"   \u26a0 {w}", fg="yellow")
 
     for r in results:
         pfx = click.style("   (dry)", fg="yellow") if dry_run else click.style("   \u2713", fg="green")

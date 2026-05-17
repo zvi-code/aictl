@@ -420,3 +420,108 @@ class TestCLI:
         )
         assert result.exit_code == 0
         assert "prefer: claude" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Test: synthesizer conflict warnings (profile name + cross-source dedup)
+# ---------------------------------------------------------------------------
+
+
+class TestSynthesizerConflictWarnings:
+    """Synthesizer must surface diagnostics when importers disagree, so silent
+    picks (e.g. Claude's 'debug' silently overriding Copilot's 'review') do
+    not cause invisible behavior changes."""
+
+    def _make_import(self, source, *, profile=None, base="", caps=None, mcp=None):
+        from aictl.importers import (
+            ImportedCapability,
+            ImportedMcp,
+            ImportedScope,
+            ImportResult,
+        )
+
+        scope = ImportedScope(
+            rel_path=".",
+            source=source,
+            base_text=base or f"# {source} base\n",
+            profile_name=profile,
+            profile_text=f"profile-text from {source}" if profile else "",
+        )
+        return ImportResult(
+            source=source,
+            scopes=[scope],
+            capabilities=[
+                ImportedCapability(kind="command", name=n, content=f"from {source}", source=source)
+                for n in (caps or [])
+            ],
+            mcp_servers=[ImportedMcp(name=n, config={"src": source}, source=source) for n in (mcp or [])],
+        )
+
+    def test_profile_name_conflict_is_warned(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            imports = [
+                self._make_import("claude", profile="debug"),
+                self._make_import("copilot", profile="review"),
+            ]
+            warnings: list[str] = []
+            synthesize(root, imports, warnings=warnings)
+            assert any("profile name conflict" in w for w in warnings), warnings
+            assert any("debug" in w and "review" in w for w in warnings)
+
+    def test_profile_name_agreement_no_warning(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            imports = [
+                self._make_import("claude", profile="debug"),
+                self._make_import("copilot", profile="debug"),
+            ]
+            warnings: list[str] = []
+            synthesize(root, imports, warnings=warnings)
+            assert not any("profile name conflict" in w for w in warnings), warnings
+
+    def test_profile_override_suppresses_conflict_warning(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            imports = [
+                self._make_import("claude", profile="debug"),
+                self._make_import("copilot", profile="review"),
+            ]
+            warnings: list[str] = []
+            synthesize(root, imports, profile="docs", warnings=warnings)
+            assert not any("profile name conflict" in w for w in warnings), warnings
+
+    def test_dedup_cross_source_tie_warns(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            imports = [
+                self._make_import("claude", caps=["status"], mcp=["github"]),
+                self._make_import("copilot", caps=["status"], mcp=["github"]),
+            ]
+            warnings: list[str] = []
+            synthesize(root, imports, warnings=warnings)
+            assert any("capability" in w and "status" in w for w in warnings), warnings
+            assert any("mcp" in w and "github" in w for w in warnings), warnings
+
+    def test_dedup_single_source_no_warn(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            imports = [
+                self._make_import("claude", caps=["only-claude"]),
+                self._make_import("copilot", caps=["only-copilot"]),
+            ]
+            warnings: list[str] = []
+            synthesize(root, imports, warnings=warnings)
+            assert not warnings, warnings
+
+    def test_dedup_records_kept_source_with_prefer(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            imports = [
+                self._make_import("claude", caps=["status"]),
+                self._make_import("copilot", caps=["status"]),
+            ]
+            warnings: list[str] = []
+            synthesize(root, imports, prefer="copilot", warnings=warnings)
+            cap_warn = next(w for w in warnings if "capability" in w and "status" in w)
+            assert "kept from 'copilot'" in cap_warn
