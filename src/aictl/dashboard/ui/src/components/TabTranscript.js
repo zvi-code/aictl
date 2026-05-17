@@ -139,7 +139,7 @@ export default function TabTranscript({ externalSessionId = null } = {}) {
       </div>
     </div>
 
-    <${ToolTabs} tools=${tools} activeTool=${activeTool} onSelect=${setActiveTool}/>
+    ${!embedded && tools.length > 1 && html`<${ToolTabs} tools=${tools} activeTool=${activeTool} onSelect=${setActiveTool}/>`}
 
     ${!embedded && html`<${SessionSelector} sessions=${toolSessions} activeId=${activeSessionId}
       onSelect=${setActiveSessionId} loading=${loading}/>`}
