@@ -754,7 +754,35 @@ def _parse_windsurf_config(root: Path, tool: str = "windsurf") -> ToolConfig | N
     if rules.is_file():
         cfg.settings["global_rules"] = "configured"
 
-    return _finish(cfg, bool(cfg.mcp_servers or cfg.settings))
+    # ── Cascade agent features ───────────────────────────────────
+    # Cascade is Windsurf's autonomous coding agent. Detection points:
+    #   * legacy .windsurfrules at the project root
+    #   * modern per-rule files under .windsurf/rules/
+    #   * Cascade auto-memory store at <project-root>/cascade-memories/
+    #   * Global .codeiumignore / project .codeiumignore (Cascade respects them)
+    legacy_rules = root / ".windsurfrules"
+    if legacy_rules.is_file():
+        cfg.features["cascade_legacy_rules"] = True
+    rules_dir = root / ".windsurf" / "rules"
+    if rules_dir.is_dir():
+        try:
+            rule_count = sum(1 for _ in rules_dir.glob("*.md"))
+        except OSError:
+            rule_count = 0
+        if rule_count:
+            cfg.features["cascade_rules_modern"] = True
+            cfg.settings["cascade_rules_count"] = rule_count
+    cascade_mem = root / "cascade-memories"
+    if cascade_mem.is_dir():
+        cfg.features["cascade_memories"] = True
+        try:
+            cfg.settings["cascade_memories_count"] = sum(1 for _ in cascade_mem.iterdir())
+        except OSError:
+            pass
+    if (root / ".codeiumignore").is_file() or (windsurf_global_dir() / ".." / ".codeiumignore").exists():
+        cfg.features["codeiumignore"] = True
+
+    return _finish(cfg, bool(cfg.mcp_servers or cfg.settings or cfg.features))
 
 
 # ─── Microsoft 365 Copilot (Teams Toolkit / M365 Agents) ────────
