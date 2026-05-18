@@ -2622,12 +2622,13 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   border-left-color: var(--accent);
 }
 .cagents-row--inactive {
-  opacity: 0.5;
-  cursor: default;
+  opacity: 0.62;
+  cursor: pointer;
 }
 .cagents-row--inactive:hover {
-  background: transparent;
+  background: var(--bg2);
 }
+.cagents-row--inactive.is-selected { opacity: 1; }
 .cagents-row-head {
   display: flex;
   align-items: center;
@@ -3460,6 +3461,154 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   cursor: pointer;
   border-radius: 0;
   opacity: 0.55;
+}
+.cagents-editor-dialog {
+  width: min(860px, calc(100vw - var(--sp-10)));
+  padding: 0;
+}
+.cagents-editor-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--sp-6);
+  padding: var(--sp-6);
+  border-bottom: 1px solid var(--border);
+}
+.cagents-editor-title {
+  font-family: var(--ff-serif);
+  font-size: var(--fs-2xl);
+  color: var(--fg);
+  font-weight: 600;
+}
+.cagents-editor-path {
+  margin-top: var(--sp-2);
+  font-family: var(--ff-mono);
+  font-size: var(--fs-xs);
+  color: var(--fg2);
+  word-break: break-all;
+}
+.cagents-editor-close {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg2);
+  cursor: pointer;
+  border-radius: 0;
+  font-size: var(--fs-lg);
+}
+.cagents-editor-body {
+  padding: var(--sp-6);
+  display: grid;
+  gap: var(--sp-5);
+}
+.cagents-editor-state,
+.cagents-editor-error,
+.cagents-editor-saved {
+  padding: var(--sp-4) var(--sp-6);
+  font-family: var(--ff-mono);
+  font-size: var(--fs-sm);
+}
+.cagents-editor-error {
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--red) 35%, var(--border));
+}
+.cagents-editor-saved {
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--green) 35%, var(--border));
+  word-break: break-all;
+}
+.cagents-editor-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-4);
+}
+.cagents-editor-fields label {
+  display: grid;
+  gap: var(--sp-2);
+  font-family: var(--ff-mono);
+  font-size: var(--fs-xs);
+  color: var(--fg2);
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+.cagents-editor-fields textarea {
+  min-height: 150px;
+  resize: vertical;
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--ff-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  border-radius: 0;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.cagents-editor-preview {
+  display: grid;
+  gap: var(--sp-3);
+}
+.cagents-editor-subtitle {
+  font-family: var(--ff-mono);
+  font-size: var(--fs-xs);
+  color: var(--fg2);
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+.cagents-editor-diff-row {
+  display: grid;
+  grid-template-columns: 70px 1fr;
+  gap: var(--sp-3);
+  align-items: start;
+  font-family: var(--ff-mono);
+  font-size: var(--fs-xs);
+}
+.cagents-editor-diff-row > span {
+  color: var(--fg2);
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+.cagents-editor-diff-row code {
+  display: inline-block;
+  margin: 0 var(--sp-2) var(--sp-2) 0;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  color: var(--fg2);
+  background: var(--bg);
+}
+.cagents-editor-diff-row code.is-added {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 55%, var(--border));
+}
+.cagents-editor-diff-row code.is-removed {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 55%, var(--border));
+}
+.cagents-editor-preview pre {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: var(--sp-4);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--ff-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+.cagents-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  padding: var(--sp-5) var(--sp-6);
+  border-top: 1px solid var(--border);
+}
+@media (max-width: 760px) {
+  .cagents-editor-fields { grid-template-columns: 1fr; }
 }
 
 /* ─── CDashboardTab: event timeline ─────────────────────────────── */

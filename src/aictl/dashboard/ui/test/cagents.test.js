@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, cleanup, fireEvent } from '@testing-library/preact';
+import { render, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { html } from 'htm/preact';
 import { SnapContext } from '../src/context.js';
 import CAgentsTab from '../src/components/CAgentsTab.js';
@@ -58,19 +58,19 @@ const HOOKS_STATUS = {
   subagents: { starts_24h: 2, by_tool: { 'claude-code': { starts: 1, stops: 1 } } },
 };
 
-function renderTab(snap = SNAP, hooksStatus = HOOKS_STATUS) {
+function renderTab(snap = SNAP, hooksStatus = HOOKS_STATUS, props = {}) {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: () => Promise.resolve(hooksStatus) }));
   return render(
     html`<${SnapContext.Provider} value=${{ snap }}>
-      <${CAgentsTab}/>
+      <${CAgentsTab} ...${props}/>
     </${SnapContext.Provider}>`,
   );
 }
 
 describe('CAgentsTab — agent list', () => {
-  it('renders active agents in "Instrumented" group', () => {
+  it('renders active agents in the active group', () => {
     const { getAllByText, getByText } = renderTab();
-    expect(getByText('Instrumented')).toBeInTheDocument();
+    expect(getByText('Active')).toBeInTheDocument();
     // Claude Code appears in both list row and detail panel
     expect(getAllByText('Claude Code').length).toBeGreaterThanOrEqual(1);
     expect(getAllByText('Cursor').length).toBeGreaterThanOrEqual(1);
@@ -80,6 +80,12 @@ describe('CAgentsTab — agent list', () => {
     const { getByText } = renderTab();
     expect(getByText('Detected, not active')).toBeInTheDocument();
     expect(getByText('GitHub Copilot CLI')).toBeInTheDocument();
+  });
+
+  it('lets inactive agents be selected for inspection', () => {
+    const { getByText, container } = renderTab();
+    fireEvent.click(getByText('GitHub Copilot CLI'));
+    expect(container.querySelector('.cagents-detail-title').textContent).toBe('GitHub Copilot CLI');
   });
 
   it('shows toolbar count of active vs total', () => {
@@ -121,6 +127,94 @@ describe('CAgentsTab — detail panel', () => {
     const text = container.querySelector('.cagents-config-block').textContent;
     expect(text).toContain('enabled');
     expect(text).toContain('true');
+  });
+
+  it('routes unsupported tool configuration action through the provided callback', () => {
+    const onViewConfig = vi.fn();
+    const { container, getByText } = renderTab(SNAP, HOOKS_STATUS, { onViewConfig });
+    fireEvent.click(getByText('Cursor'));
+    fireEvent.click(container.querySelector('.cagents-actions .cagents-btn--primary'));
+    expect(onViewConfig).toHaveBeenCalledOnce();
+  });
+
+  it('opens the Claude Code permissions editor', async () => {
+    vi.stubGlobal('fetch', vi.fn((request) => {
+      const target = String(request);
+      if (target.includes('/api/tool-config/claude-code')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            tool: 'claude-code',
+            path: '/proj/.claude/settings.json',
+            mtime: 10,
+            permissions: { allow: ['Read(*)'], deny: ['Bash(rm -rf *)'] },
+          }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(HOOKS_STATUS) });
+    }));
+    const { findByText, getByText, container } = render(
+      html`<${SnapContext.Provider} value=${{ snap: SNAP }}><${CAgentsTab}/></${SnapContext.Provider}>`,
+    );
+
+    fireEvent.click(getByText('Edit permissions'));
+    expect(await findByText('Claude Code permissions')).toBeInTheDocument();
+    expect(container.querySelector('.cagents-editor-path').textContent).toBe('/proj/.claude/settings.json');
+    const textareas = container.querySelectorAll('textarea');
+    expect(textareas[0].value).toBe('Read(*)');
+    expect(textareas[1].value).toBe('Bash(rm -rf *)');
+  });
+
+  it('saves Claude Code permissions through the config API', async () => {
+    const fetchMock = vi.fn((request, options = {}) => {
+      const target = String(request);
+      if (target.includes('/api/tool-config/claude-code') && options.method === 'PUT') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            tool: 'claude-code',
+            path: '/proj/.claude/settings.json',
+            mtime: 11,
+            permissions: { allow: ['Read(*)', 'Edit(src/**)'], deny: ['Bash(rm -rf *)'] },
+            backup_path: '/proj/.claude/settings.json.bak.1',
+          }),
+        });
+      }
+      if (target.includes('/api/tool-config/claude-code')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            tool: 'claude-code',
+            path: '/proj/.claude/settings.json',
+            mtime: 10,
+            permissions: { allow: ['Read(*)'], deny: ['Bash(rm -rf *)'] },
+          }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(HOOKS_STATUS) });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { findByText, getByText, container } = render(
+      html`<${SnapContext.Provider} value=${{ snap: SNAP }}><${CAgentsTab}/></${SnapContext.Provider}>`,
+    );
+
+    fireEvent.click(getByText('Edit permissions'));
+    await findByText('Claude Code permissions');
+    const textareas = container.querySelectorAll('textarea');
+    fireEvent.input(textareas[0], { target: { value: 'Read(*)\nEdit(src/**)' } });
+    expect(container.textContent).toContain('+ Edit(src/**)');
+    fireEvent.click(getByText('Save changes'));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/api/tool-config/claude-code'),
+      expect.objectContaining({ method: 'PUT' }),
+    ));
+    const putCall = fetchMock.mock.calls.find(call => call[1]?.method === 'PUT');
+    expect(JSON.parse(putCall[1].body)).toEqual({
+      expected_mtime: 10,
+      permissions: { allow: ['Read(*)', 'Edit(src/**)'], deny: ['Bash(rm -rf *)'] },
+    });
+    expect(await findByText(/Saved - backup/)).toBeInTheDocument();
   });
 
   it('shows hook counts, configured events, skills, and subagents', async () => {

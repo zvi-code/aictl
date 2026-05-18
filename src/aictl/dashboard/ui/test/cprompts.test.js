@@ -14,11 +14,14 @@ const SNAP_WITH_PROMPTS = {
       files: [
         { path: '/proj/.github/prompts/refactor.prompt.md', kind: 'command', size: 512, tokens: 64, mtime: Date.now()/1000 - 300 },
         { path: '/proj/.github/prompts/review.prompt.md',   kind: 'command', size: 256, tokens: 32, mtime: Date.now()/1000 - 600 },
+        { path: '/proj/.github/workflows/release.workflow.md', kind: 'workflow', size: 384, tokens: 48, mtime: Date.now()/1000 - 120 },
       ],
       live: { session_count: 0, pid_count: 0, token_estimate: 0, files_touched: 0, sessions: [] },
     },
   ],
 };
+
+const SNAP_EMPTY = { tools: [] };
 
 function renderTab(snap = null) {
   return render(
@@ -69,10 +72,10 @@ describe('CPromptsTab — toolbar', () => {
     expect(getByText('2 prompts')).toBeInTheDocument();
   });
 
-  it('count badge shows 0 workflows', () => {
+  it('count badge shows discovered workflows', () => {
     const { getByText } = renderTab(SNAP_WITH_PROMPTS);
     fireEvent.click(getByText('Workflows'));
-    expect(getByText('0 workflows')).toBeInTheDocument();
+    expect(getByText('1 workflows')).toBeInTheDocument();
   });
 });
 
@@ -90,7 +93,7 @@ describe('CPromptsTab — empty state', () => {
   });
 
   it('workflows empty state shows after switching', () => {
-    const { getByText } = renderTab(SNAP_WITH_PROMPTS);
+    const { getByText } = renderTab(SNAP_EMPTY);
     fireEvent.click(getByText('Workflows'));
     expect(getByText('No workflows yet')).toBeInTheDocument();
   });
@@ -129,5 +132,21 @@ describe('CPromptsTab — prompt list', () => {
     fireEvent.input(input, { target: { value: 'refactor' } });
     expect(queryByText('review')).toBeNull();
     expect(queryByText('refactor')).toBeInTheDocument();
+  });
+
+  it('shows discovered workflow names from snap', () => {
+    const { getByText } = renderTab(SNAP_WITH_PROMPTS);
+    fireEvent.click(getByText('Workflows'));
+    expect(getByText('release')).toBeInTheDocument();
+  });
+
+  it('clicking a workflow row shows workflow detail', () => {
+    const { getByText, queryByText } = renderTab(SNAP_WITH_PROMPTS);
+    fireEvent.click(getByText('Workflows'));
+    expect(queryByText('Nothing selected')).toBeInTheDocument();
+    fireEvent.click(getByText('release'));
+    expect(queryByText('Nothing selected')).toBeNull();
+    expect(getByText('Workflow')).toBeInTheDocument();
+    expect(getByText('release', { selector: '.cprompts-detail-title' })).toBeInTheDocument();
   });
 });

@@ -10,19 +10,33 @@ Living document maintained by `/ui-review`. Last updated: 2026-03-27.
 
 ### Theme Variables (dashboard.css)
 
-| Token | Dark | Light | Usage |
-|-------|------|-------|-------|
-| `--bg` | `#0f172a` | `#f8fafc` | Page background |
-| `--bg2` | `#1e293b` | `#ffffff` | Card / elevated surface |
-| `--bg3` | `#162032` | `#f1f5f9` | Hover / active state |
-| `--fg` | `#e2e8f0` | `#1e293b` | Primary text |
-| `--fg2` | `#94a3b8` | `#64748b` | Secondary / muted text |
-| `--accent` | `#38bdf8` | `#0284c7` | Links, active tab, primary action |
-| `--border` | `#334155` | `#e2e8f0` | Borders and dividers |
-| `--green` | `#34d399` | `#059669` | Success, running, positive |
-| `--red` | `#f87171` | `#dc2626` | Error, anomaly, critical |
-| `--orange` | `#fb923c` | `#ea580c` | Warning, moderate concern |
-| `--yellow` | `#fbbf24` | `#d97706` | Caution, on-demand |
+| Token | Dark | Light | Editorial | Usage |
+|-------|------|-------|-----------|-------|
+| `--bg` | `#0f172a` | `#f8fafc` | `#f7f4ee` | Page background |
+| `--bg2` | `#1e293b` | `#ffffff` | `#fbfaf6` | Card / elevated surface |
+| `--bg3` | `#162032` | `#f1f5f9` | `#ffffff` | Hover / active state |
+| `--fg` | `#e2e8f0` | `#1e293b` | `#1a1614` | Primary text |
+| `--fg2` | `#94a3b8` | `#64748b` | `#8a7f73` | Secondary / muted text |
+| `--accent` | `#38bdf8` | `#0284c7` | `#a6391c` | Links, active tab, primary action |
+| `--border` | `#334155` | `#e2e8f0` | `#e5dfd3` | Borders and dividers |
+| `--green` | `#34d399` | `#059669` | `#3f7d43` | Success, running, positive |
+| `--red` | `#f87171` | `#dc2626` | `#a6391c` | Error, anomaly, critical |
+| `--orange` | `#fb923c` | `#ea580c` | `#b26b1b` | Warning, moderate concern |
+| `--yellow` | `#fbbf24` | `#d97706` | `#d97706` | Caution, on-demand |
+
+### Editorial-only extras
+
+These vars are defined only under `[data-theme="editorial"]` and consumed by
+the editorial override layer at the end of `dashboard.css`:
+
+| Token | Value | Usage |
+|-------|-------|-------|
+| `--accent-soft` | `#f6e6e0` | Selected-row tint, accent-on-paper |
+| `--green-soft` | `#e6efe3` | Live/connected pill background |
+| `--border-soft` | `#ede7da` | Hairline dividers between rows |
+| `--ink-soft` | `#3f3833` | Body italic, secondary headlines |
+| `--muted-soft` | `#b6ac9f` | Disabled / decorative |
+| `--rule` | `#1a1614` | Masthead rule under header |
 
 ### Category Colors (added 2026-03-28, commit d22795a)
 
@@ -60,8 +74,13 @@ Living document maintained by `/ui-review`. Last updated: 2026-03-27.
 ## Typography
 
 ### Font Stack
-- **Primary**: `-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace`
-- **Monospace** (`.mono` class): `'SF Mono', Menlo, Consolas, monospace`
+- **Sans** (`var(--ff-sans)` — default body): `-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif` — overridden to `'IBM Plex Sans', …` in editorial theme
+- **Serif** (`var(--ff-serif)` — editorial-only headlines / metric values): `Georgia, 'Times New Roman', serif` → `'IBM Plex Serif', …` in editorial
+- **Monospace** (`var(--ff-mono)`, `.mono` class): `'SF Mono', Menlo, Consolas, monospace` → `'IBM Plex Mono', 'JetBrains Mono', …` in editorial
+
+The editorial theme is the only variant that pulls custom webfonts; IBM Plex
+is loaded via Google Fonts in `index.html` but only ever fetched when a
+`[data-theme="editorial"]` selector matches.
 
 ### Current Font Size Usage (14 distinct values)
 
