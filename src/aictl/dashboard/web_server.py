@@ -379,6 +379,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._serve_otel_status()
         elif path.startswith("/api/hooks-status"):
             self._serve_hooks_status()
+        elif path.startswith("/api/tool-config/"):
+            self._serve_tool_config_get()
         elif path.startswith("/api/api-calls"):
             self._serve_api_calls()
         elif path.startswith("/api/events"):
@@ -393,6 +395,13 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._serve_self_status()
         elif path.startswith("/assets/"):
             self._serve_static(path)
+        else:
+            self.send_error(404)
+
+    def do_PUT(self) -> None:
+        path = urlparse(self.path).path
+        if path.startswith("/api/tool-config/"):
+            self._serve_tool_config_put()
         else:
             self.send_error(404)
 

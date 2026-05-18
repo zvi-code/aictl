@@ -126,6 +126,13 @@ class TestDiscoverCopilot:
         res = _discover_tool(tmp_path, "copilot")
         assert any("fix.prompt.md" in f.path for f in res.files)
 
+    def test_finds_workflows(self, tmp_path):
+        workflows = tmp_path / ".github" / "workflows"
+        workflows.mkdir(parents=True)
+        (workflows / "release.workflow.md").write_text("Release workflow")
+        res = _discover_tool(tmp_path, "copilot")
+        assert any(f.kind == "workflows" and "release.workflow.md" in f.path for f in res.files)
+
 
 class TestDiscoverCursor:
     def test_finds_rules(self, tmp_path):
