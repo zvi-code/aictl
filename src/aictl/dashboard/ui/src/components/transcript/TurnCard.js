@@ -3,9 +3,25 @@ import { fmtK } from '../../utils.js';
 import { fmtDur, fmtHHMMSS, shortModel, truncate } from './helpers.js';
 import ActionRow from './ActionRow.js';
 
+function collectResponseText(turn, actions) {
+  const chunks = [];
+  const add = (value) => {
+    const text = String(value || '').trim();
+    if (text && !chunks.includes(text)) chunks.push(text);
+  };
+  add(turn.response);
+  for (const action of actions) {
+    if (action.kind !== 'api_response') continue;
+    add(action.detail?.response || action.response || action.output_summary);
+  }
+  return chunks.join('\n\n');
+}
+
 export default function TurnCard({ turn, index, expanded, onToggle }) {
   const hasPrompt = turn.prompt && turn.prompt.length > 0;
   const actions = turn.actions || [];
+  const responseText = collectResponseText(turn, actions);
+  const hasResponse = responseText.length > 0;
   const toolUses = actions.filter(a => a.kind === 'tool_use');
   const apiCalls = actions.filter(a => a.kind === 'api_call');
   const errors = actions.filter(a => a.kind === 'error');
@@ -37,6 +53,14 @@ export default function TurnCard({ turn, index, expanded, onToggle }) {
       <div class="tr-prompt-icon">\uD83D\uDC64</div>
       <div class="tr-prompt-text text-muted">(no prompt captured)</div>
     </div>`}
+
+    ${hasResponse ? html`<div class="tr-response ${expanded ? 'tr-response-full' : ''}">
+      <div class="tr-response-icon">AI</div>
+      <div class="tr-response-text">${expanded ? responseText : truncate(turn.response_preview || responseText, 160)}</div>
+    </div>` : expanded ? html`<div class="tr-response tr-response-empty">
+      <div class="tr-response-icon">AI</div>
+      <div class="tr-response-text text-muted">(no response captured)</div>
+    </div>` : null}
 
     ${expanded && actions.length > 0 ? html`<div class="tr-actions">
       ${actions.map((a, i) => html`<${ActionRow} key=${i} action=${a} turnTs=${turn.ts}/>`)}

@@ -110,6 +110,18 @@ def _is_claude_hook(data: dict) -> bool:
     return any(s.endswith((".claude-user", ".claude-project")) for s in sources)
 
 
+def _tool_from_hook_source(data: dict) -> str:
+    meta = data.get("aictl_hook") or {}
+    source = data.get("source") or (meta.get("source") if isinstance(meta, dict) else "") or ""
+    if source.endswith((".claude-user", ".claude-project")):
+        return "claude-code"
+    if source.endswith((".gemini-user", ".gemini-project")):
+        return "gemini-cli"
+    if source.endswith((".vscode-user", ".vscode-project")):
+        return "copilot-vscode"
+    return ""
+
+
 def _derive_claude_project_hash(cwd: str) -> str | None:
     """Locate the Claude projects/<hash> dir for ``cwd``; return the hash."""
     if not cwd:
@@ -365,6 +377,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._serve_transcripts()
         elif path.startswith("/api/otel-status"):
             self._serve_otel_status()
+        elif path.startswith("/api/hooks-status"):
+            self._serve_hooks_status()
         elif path.startswith("/api/api-calls"):
             self._serve_api_calls()
         elif path.startswith("/api/events"):
@@ -419,7 +433,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
 
         # Derive tool from explicit field, or session_id pattern "tool:pid:ts",
         # or fall back to "claude-code" (the most common hook source).
-        tool = data.get("tool", "")
+        tool = data.get("tool", "") or _tool_from_hook_source(data)
         if not tool and session_id and ":" in session_id:
             tool = session_id.split(":")[0]
         if not tool:

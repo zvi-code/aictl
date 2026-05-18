@@ -479,6 +479,19 @@ class TestAnalyzerOtelEvents:
         assert len(t.turns) == 1
         assert t.turns[0].prompt == "Help me debug"
 
+    def test_claude_code_user_prompt_name(self):
+        a = SessionAnalyzer()
+        a.ingest_event(_ev(kind="otel:claude_code.user_prompt", detail={"prompt": "Show captured content"}))
+        t = a.get_transcript("sess-1")
+        assert len(t.turns) == 1
+        assert t.turns[0].prompt == "Show captured content"
+
+    def test_gen_ai_prompt_attribute(self):
+        a = SessionAnalyzer()
+        a.ingest_event(_ev(kind="otel:user_prompt", detail={"gen_ai.prompt": "Prompt from GenAI attr"}))
+        t = a.get_transcript("sess-1")
+        assert t.turns[0].prompt == "Prompt from GenAI attr"
+
     def test_redacted_prompt(self):
         a = SessionAnalyzer()
         a.ingest_event(_ev(kind="otel:user_prompt", detail={"prompt": "<REDACTED>"}))
@@ -504,6 +517,25 @@ class TestAnalyzerOtelEvents:
         # Turn-level accumulation
         assert t.turns[0].input_tokens == 500
         assert t.turns[0].output_tokens == 200
+
+    def test_api_response_text_is_exposed_on_turn(self):
+        a = SessionAnalyzer()
+        a.ingest_event(_ev(kind="otel:user_prompt", detail={"prompt": "test"}))
+        a.ingest_event(
+            _ev(
+                ts=101.0,
+                kind="otel:api_request",
+                detail={
+                    "model": "gpt-4",
+                    "output_tokens": 20,
+                    "gen_ai.response": "Full assistant response\nwith a second line",
+                },
+            )
+        )
+        t = a.get_transcript("sess-1")
+        turn = t.turns[0].to_dict()
+        assert turn["response"] == "Full assistant response\nwith a second line"
+        assert turn["response_preview"] == "Full assistant response\nwith a second line"
 
     def test_copilot_embedded_user_request(self):
         """Copilot chat spans embed user_request — should synthesize turn."""

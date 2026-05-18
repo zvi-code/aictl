@@ -43,6 +43,18 @@ describe('transcript/normalize', () => {
     expect(out.turns[0].actions[0].kind).toBe('api_call');
   });
 
+  it('preserves api_response text on the current turn', () => {
+    const flow = {
+      turns: [
+        { type: 'user_message', ts: 1, message: 'hello' },
+        { type: 'api_response', ts: 2, model: 'opus', response: 'full response', response_preview: 'full response' },
+      ],
+    };
+    const out = normalizeFlowToTranscript(flow, 'sess-r');
+    expect(out.turns[0].response).toBe('full response');
+    expect(out.turns[0].actions[0].detail.response).toBe('full response');
+  });
+
   it('skips session_start/end and compaction events', () => {
     const flow = {
       turns: [

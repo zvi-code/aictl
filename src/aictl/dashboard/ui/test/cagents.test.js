@@ -5,6 +5,7 @@ import { SnapContext } from '../src/context.js';
 import CAgentsTab from '../src/components/CAgentsTab.js';
 
 afterEach(() => cleanup());
+afterEach(() => vi.restoreAllMocks());
 
 const SNAP = {
   tools: [
@@ -38,7 +39,27 @@ const SNAP = {
   ],
 };
 
-function renderTab(snap = SNAP) {
+const HOOKS_STATUS = {
+  tools: {
+    'claude-code': {
+      status: 'active', configured_count: 2, fired_24h: 7, last_fire_ts: 1779050000,
+      configured_events: ['UserPromptSubmit', 'PreToolUse'], warnings: [],
+      sources: [{ scope: 'project', path: '/repo/.claude/settings.local.json', configured_count: 2, host_enabled: true }],
+    },
+    'copilot-vscode': {
+      status: 'disabled', configured_count: 1, fired_24h: 0, last_fire_ts: null,
+      configured_events: ['UserPromptSubmit'],
+      warnings: [{ path: '/home/.copilot/hooks/aictl.json', message: "chat.hookFilesLocations['~/.copilot/hooks'] is false" }],
+      sources: [{ scope: 'user', path: '/home/.copilot/hooks/aictl.json', configured_count: 1, host_enabled: false }],
+    },
+  },
+  counts_by_tool_kind: { 'claude-code': { UserPromptSubmit: 4, PreToolUse: 3 } },
+  skill_usage: { total_calls_24h: 3, by_tool: { 'claude-code': 2 }, by_skill: [{ skill: 'review-pr', count: 2 }] },
+  subagents: { starts_24h: 2, by_tool: { 'claude-code': { starts: 1, stops: 1 } } },
+};
+
+function renderTab(snap = SNAP, hooksStatus = HOOKS_STATUS) {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: () => Promise.resolve(hooksStatus) }));
   return render(
     html`<${SnapContext.Provider} value=${{ snap }}>
       <${CAgentsTab}/>
@@ -100,6 +121,29 @@ describe('CAgentsTab — detail panel', () => {
     const text = container.querySelector('.cagents-config-block').textContent;
     expect(text).toContain('enabled');
     expect(text).toContain('true');
+  });
+
+  it('shows hook counts, configured events, skills, and subagents', async () => {
+    const { findByText, getByText } = renderTab();
+    expect(await findByText('active')).toBeInTheDocument();
+    expect(getByText('7 fired / 24h')).toBeInTheDocument();
+    expect(getByText('UserPromptSubmit')).toBeInTheDocument();
+    expect(getByText('PreToolUse 3')).toBeInTheDocument();
+    expect(getByText('review-pr 2')).toBeInTheDocument();
+    expect(getByText('2 starts / 24h')).toBeInTheDocument();
+  });
+
+  it('shows exact VS Code hookFilesLocations fix when host ignores hooks', async () => {
+    const snap = {
+      tools: [{
+        tool: 'copilot-vscode', label: 'Copilot VS Code', vendor: 'github', host: 'vscode',
+        processes: [{ pid: 9, name: 'Code Helper', cpu_pct: 1 }], mcp_servers: [], memory: [], files: [],
+        live: { session_count: 1, pid_count: 1, token_estimate: { input_tokens: 0, output_tokens: 0 } },
+      }],
+    };
+    const { findByText, getByText } = renderTab(snap);
+    expect(await findByText('host-disabled')).toBeInTheDocument();
+    expect(getByText('"chat.hookFilesLocations": { "~/.copilot/hooks": true }')).toBeInTheDocument();
   });
 });
 

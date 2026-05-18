@@ -10,6 +10,7 @@ external tools.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections import OrderedDict
@@ -58,6 +59,8 @@ def _extract_prompt(detail: dict) -> str:
         detail.get("message")
         or detail.get("content")
         or detail.get("prompt")
+        or detail.get("gen_ai.prompt")
+        or _extract_text_from_messages(detail.get("gen_ai.input.messages"))
         or detail.get("copilot_chat.user_request")
         or detail.get("body")
         or ""
@@ -68,6 +71,50 @@ def _extract_prompt(detail: dict) -> str:
     if msg in ("<REDACTED>", "REDACTED") or "REDACTED" in msg.upper():
         return ""
     return msg
+
+
+def _is_user_prompt_event(otel_name: str) -> bool:
+    return otel_name in ("user_prompt", "user_message") or otel_name.endswith((".user_prompt", ".user_message"))
+
+
+def _extract_text_from_messages(value) -> str:
+    if not value:
+        return ""
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return value
+        return _extract_text_from_messages(parsed)
+    if isinstance(value, dict):
+        for key in ("content", "text", "message"):
+            if value.get(key):
+                return str(value[key])
+        parts = value.get("parts")
+        if isinstance(parts, list):
+            text = _extract_text_from_messages(parts)
+            if text:
+                return text
+        return ""
+    if isinstance(value, list):
+        chunks: list[str] = []
+        for item in value:
+            if isinstance(item, dict) and item.get("type") not in (None, "text"):
+                continue
+            text = _extract_text_from_messages(item)
+            if text:
+                chunks.append(text)
+        return "\n\n".join(chunks)
+    return str(value)
+
+
+def _extract_response_text(detail: dict) -> str:
+    """Extract full assistant response text from common GenAI attributes."""
+    for key in ("gen_ai.response", "response", "response_text", "completion", "output"):
+        val = detail.get(key)
+        if val:
+            return str(val)
+    return _extract_text_from_messages(detail.get("gen_ai.output.messages"))
 
 
 def _extract_api_tokens(detail: dict) -> tuple[int, int, int, int]:
@@ -391,7 +438,7 @@ class SessionAnalyzer:
     # ── OTel event handlers ─────────────────────────────
 
     def _handle_otel(self, transcript: SessionTranscript, event: EventRow, otel_name: str, detail: dict) -> None:
-        if otel_name in ("user_prompt", "user_message"):
+        if _is_user_prompt_event(otel_name):
             prompt = _extract_prompt(detail)
             transcript.start_turn(event.ts, prompt)
 
@@ -428,18 +475,7 @@ class SessionAnalyzer:
                 )
             )
 
-            # Also extract response text if available
-            resp_text = ""
-            out_msgs = detail.get("gen_ai.output.messages")
-            if isinstance(out_msgs, list) and out_msgs:
-                for om in out_msgs:
-                    if isinstance(om, dict):
-                        for part in om.get("parts") or []:
-                            if isinstance(part, dict) and part.get("type") == "text":
-                                resp_text = str(part.get("content", ""))[:500]
-                                break
-                    if resp_text:
-                        break
+            resp_text = _extract_response_text(detail)
             if resp_text or out_tok > 0:
                 turn.add_action(
                     Action(
@@ -449,6 +485,7 @@ class SessionAnalyzer:
                         output_summary=resp_text[:200],
                         tokens_out=out_tok,
                         duration_ms=dur,
+                        detail={"response": resp_text} if resp_text else {},
                     )
                 )
 

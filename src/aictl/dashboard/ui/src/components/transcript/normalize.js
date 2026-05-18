@@ -13,6 +13,12 @@ export function normalizeFlowToTranscript(flow, sessionId) {
   const turns = [];
   let current = null;
 
+  const appendResponse = (turn, response) => {
+    if (!turn || !response) return;
+    turn.response = turn.response ? turn.response + '\n\n' + response : response;
+    turn.response_preview = turn.response.slice(0, 200);
+  };
+
   const kindMap = {
     api_call: 'api_call',
     api_response: 'api_response',
@@ -30,6 +36,8 @@ export function normalizeFlowToTranscript(flow, sessionId) {
         end_ts: ev.end_ts || ev.ts,
         prompt: ev.message || '',
         prompt_preview: ev.preview || (ev.message || '').slice(0, 200),
+        response: ev.response || '',
+        response_preview: ev.response_preview || (ev.response || '').slice(0, 200),
         model: ev.model || '',
         tokens: ev.tokens || { input: 0, output: 0, cache_read: 0, cache_creation: 0, total: 0 },
         api_calls: ev.api_calls || 0,
@@ -66,7 +74,9 @@ export function normalizeFlowToTranscript(flow, sessionId) {
           duration_ms: ev.duration_ms || 0,
           tokens: ev.tokens,
           success: ev.success === 'true' ? true : ev.success === 'false' ? false : undefined,
+          detail: ev.response ? { response: ev.response } : undefined,
         });
+        if (kind === 'api_response') appendResponse(current, ev.response || ev.response_preview || '');
         if (kind === 'tool_use') current.tool_use_count++;
         if (kind === 'api_call' && ev.tokens) {
           current.tokens.input += ev.tokens.input || 0;
@@ -85,6 +95,8 @@ export function normalizeFlowToTranscript(flow, sessionId) {
           end_ts: ev.ts,
           prompt: '',
           prompt_preview: '',
+          response: '',
+          response_preview: '',
           model: ev.model || '',
           tokens: { input: 0, output: 0, cache_read: 0, cache_creation: 0, total: 0 },
           api_calls: 0,
@@ -102,7 +114,9 @@ export function normalizeFlowToTranscript(flow, sessionId) {
           duration_ms: ev.duration_ms || 0,
           tokens: ev.tokens,
           success: ev.success === 'true' ? true : ev.success === 'false' ? false : undefined,
+          detail: ev.response ? { response: ev.response } : undefined,
         });
+        if (kind === 'api_response') appendResponse(current, ev.response || ev.response_preview || '');
         if (kind === 'tool_use') current.tool_use_count++;
         if (kind === 'api_call' && ev.tokens) {
           current.tokens.input += ev.tokens.input || 0;
