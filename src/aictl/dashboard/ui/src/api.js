@@ -227,6 +227,11 @@ export async function getSelfStatus() {
   return r.json();
 }
 
+export async function getHooksStatus() {
+  const r = await fetch(url('/api/hooks-status'));
+  return r.json();
+}
+
 // ─── Datapoints ────────────────────────────────────────────────
 
 let _datapointCache = null;

@@ -303,7 +303,7 @@ def test_skill_call_counting():
             "ts": ts + 2,
             "tool": "claude-code",
             "kind": "hook:PostToolUse",
-            "detail": {"session_id": "sess-sk", "tool_name": "Skill", "input": {"skill": "review-pr"}},
+            "detail": {"session_id": "sess-sk", "tool_name": "Skill", "tool_input": {"skill": "review-pr"}},
         }
     )
     tracker.process_event(

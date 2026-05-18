@@ -267,6 +267,13 @@ class TestSamplesAPI:
 
 
 class TestObservabilitySubstrateAPI:
+    def test_hooks_status_endpoint_returns_counts(self, server):
+        data = _get_json(f"{server}/api/hooks-status")
+        assert "tools" in data
+        assert "counts_by_kind" in data
+        assert "skill_usage" in data
+        assert "subagents" in data
+
     def test_file_writes_endpoint_filters_by_session(self, server):
         data = _get_json(f"{server}/api/file-writes?session_id=sess-001")
         assert data["count"] == 1

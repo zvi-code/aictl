@@ -64,6 +64,66 @@ def _result_summary(detail: dict) -> str:
             return _truncate(str(val), 300)
     return ""
 
+
+def _is_otel_user_prompt_kind(kind: str) -> bool:
+    return kind in ("otel:user_prompt", "otel:user_message") or kind.endswith((".user_prompt", ".user_message"))
+
+
+def _extract_text_from_messages(value) -> str:
+    if not value:
+        return ""
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return value
+        return _extract_text_from_messages(parsed)
+    if isinstance(value, dict):
+        for key in ("content", "text", "message"):
+            if value.get(key):
+                return str(value[key])
+        parts = value.get("parts")
+        if isinstance(parts, list):
+            text = _extract_text_from_messages(parts)
+            if text:
+                return text
+        return ""
+    if isinstance(value, list):
+        chunks = []
+        for item in value:
+            if isinstance(item, dict) and item.get("type") not in (None, "text"):
+                continue
+            text = _extract_text_from_messages(item)
+            if text:
+                chunks.append(text)
+        return "\n\n".join(chunks)
+    return str(value)
+
+
+def _extract_prompt_text(detail: dict) -> str:
+    msg = (
+        detail.get("prompt")
+        or detail.get("gen_ai.prompt")
+        or _extract_text_from_messages(detail.get("gen_ai.input.messages"))
+        or detail.get("copilot_chat.user_request")
+        or detail.get("message")
+        or detail.get("content")
+        or detail.get("body")
+        or ""
+    )
+    if isinstance(msg, dict):
+        msg = msg.get("stringValue", str(msg))
+    return str(msg).strip() if msg else ""
+
+
+def _extract_response_text(detail: dict) -> str:
+    for key in ("gen_ai.response", "response", "response_text", "completion", "output"):
+        val = detail.get(key)
+        if val:
+            return str(val)
+    return _extract_text_from_messages(detail.get("gen_ai.output.messages"))
+
+
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
 
@@ -419,20 +479,8 @@ def build_turns_from_otel(all_events, otel_events, session_id):
         detail = ev.detail if isinstance(ev.detail, dict) else {}
 
         # ── User prompt events ────────────────────────────
-        if kind in ("otel:user_prompt", "otel:user_message"):
-            # Claude Code: "prompt" key (may be <REDACTED>)
-            # Copilot: "copilot_chat.user_request" or body
-            msg = (
-                detail.get("prompt")
-                or detail.get("copilot_chat.user_request")
-                or detail.get("message")
-                or detail.get("content")
-                or detail.get("body")
-                or ""
-            )
-            if isinstance(msg, dict):
-                msg = msg.get("stringValue", str(msg))
-            msg = str(msg).strip() if msg else ""
+        if _is_otel_user_prompt_kind(kind):
+            msg = _extract_prompt_text(detail)
             redacted = not msg or msg in ("<REDACTED>", "REDACTED") or "REDACTED" in msg.upper()
             prompt_len = detail.get("prompt_length", "")
             prompt_id = detail.get("prompt.id", "")
@@ -488,18 +536,7 @@ def build_turns_from_otel(all_events, otel_events, session_id):
             agent_name = detail.get("gen_ai.agent.name", "")
             # Extract user request from chat spans (Copilot embeds it)
             user_req = detail.get("copilot_chat.user_request", "")
-            # Extract response text from output messages
-            resp_text = ""
-            out_msgs = detail.get("gen_ai.output.messages")
-            if isinstance(out_msgs, list) and out_msgs:
-                for om in out_msgs:
-                    if isinstance(om, dict):
-                        for part in om.get("parts") or []:
-                            if isinstance(part, dict) and part.get("type") == "text":
-                                resp_text = str(part.get("content", ""))[:500]
-                                break
-                    if resp_text:
-                        break
+            resp_text = _extract_response_text(detail)
             finish = detail.get("gen_ai.response.finish_reasons", [])
             is_error = "error" in finish or detail.get("error.type", "")
 
@@ -550,6 +587,7 @@ def build_turns_from_otel(all_events, otel_events, session_id):
                         "model": model,
                         "tokens": {"output": out_tok},
                         "duration_ms": dur,
+                        "response": resp_text,
                         "response_preview": resp_text[:200] if resp_text else "",
                         "finish_reason": (finish[0] if finish else ""),
                     }

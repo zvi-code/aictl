@@ -560,3 +560,32 @@ class TestBuildTurnsFromOtelToolFields:
         assert "bash_command" in result["input_preview"]
         assert "abc1234" in result["result_summary"]
         assert "\n" not in result["result_summary"]
+
+    def test_qualified_prompt_and_response_text_are_preserved(self):
+        from aictl.dashboard.session_flow import build_turns_from_otel
+
+        events = [
+            EventRow(
+                ts=100.0,
+                tool="claude-code",
+                kind="otel:claude_code.user_prompt",
+                detail={"prompt": "show the actual prompt"},
+            ),
+            EventRow(
+                ts=101.0,
+                tool="claude-code",
+                kind="otel:claude_code.api_request",
+                detail={
+                    "model": "opus",
+                    "output_tokens": "12",
+                    "duration_ms": "20",
+                    "gen_ai.response": "full response body",
+                },
+            ),
+        ]
+        turns = build_turns_from_otel(events, events, "sess-otel-2")
+        user_turn = next(t for t in turns if t.get("type") == "user_message")
+        response_turn = next(t for t in turns if t.get("type") == "api_response")
+        assert user_turn["message"] == "show the actual prompt"
+        assert response_turn["response"] == "full response body"
+        assert response_turn["response_preview"] == "full response body"

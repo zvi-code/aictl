@@ -153,7 +153,7 @@ export default function TabTranscript({ externalSessionId = null } = {}) {
           ? html`<div class="empty-state" style="padding:var(--sp-8)">
               <p>No transcript data for this session.</p>
               <p class="text-muted" style="margin-top:var(--sp-3);font-size:var(--fs-xs)">
-                Prompts require hooks enabled: set <code>AICTL_URL</code> in your tool config
+                No prompt or tool events were captured for this session.
               </p>
             </div>`
           : turns.map((turn, i) => html`<${TurnCard}

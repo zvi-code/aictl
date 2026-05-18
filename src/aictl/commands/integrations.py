@@ -77,20 +77,24 @@ def _fetch_otel_status(port: int) -> dict | None:
 # ─── hooks ───────────────────────────────────────────────────────────────────
 
 
-# All Claude Code hook events — complete list as of 2026-03.
+# Claude Code hook events aictl can observe without event-specific matcher data.
 # Grouped by category for readability.
 HOOK_EVENTS = [
     # Session lifecycle
     "SessionStart",
+    "Setup",
     "SessionEnd",
     "InstructionsLoaded",
     # User interaction
     "UserPromptSubmit",
+    "UserPromptExpansion",
     # Tool execution
     "PreToolUse",
     "PostToolUse",
     "PostToolUseFailure",
+    "PostToolBatch",
     "PermissionRequest",
+    "PermissionDenied",
     # Agent response
     "Stop",
     "StopFailure",
@@ -107,6 +111,9 @@ HOOK_EVENTS = [
     "PostCompact",
     # Configuration
     "ConfigChange",
+    "CwdChanged",
+    # FileChanged is intentionally omitted: Claude uses its matcher to build a
+    # literal watch list, so an empty catch-all hook would not observe changes.
     # Worktrees
     "WorktreeCreate",
     "WorktreeRemove",
@@ -689,10 +696,7 @@ def _collect_doctor_results(scope: str) -> list[dict]:
     settings_path = _settings_path(scope)
     results = [_doctor_check_one(event, rule) for event, rule in _iter_installed_aictl_hooks(settings_path)]
     vscode_path = _vscode_hook_settings_path(scope)
-    results.extend(
-        _doctor_check_one(event, rule)
-        for event, rule in _iter_installed_vscode_hooks(vscode_path)
-    )
+    results.extend(_doctor_check_one(event, rule) for event, rule in _iter_installed_vscode_hooks(vscode_path))
     return results
 
 
@@ -1304,9 +1308,7 @@ def _vscode_hook_settings_path(scope: str) -> Path:
     return copilot_global_dir() / "hooks" / "aictl.json"
 
 
-def _build_vscode_hook_config(
-    port: int, events: list[str] | None, *, scope: str
-) -> dict[str, list[dict]]:
+def _build_vscode_hook_config(port: int, events: list[str] | None, *, scope: str) -> dict[str, list[dict]]:
     """Build the Copilot-native flat hook config.
 
     Copilot loads ``{"hooks": {"EventName": [{"type":"command","command":"..."}]}}``.
@@ -1331,7 +1333,11 @@ def _build_vscode_hook_config(
 
 
 def _install_vscode_hooks(
-    scope: str, port: int, actions: list[str], *, force: bool = False  # noqa: ARG001
+    scope: str,
+    port: int,
+    actions: list[str],
+    *,
+    force: bool = False,  # noqa: ARG001
 ) -> None:
     """Install VS Code Copilot hooks at the given scope.
 
@@ -1353,9 +1359,7 @@ def _install_vscode_hooks(
     if guard:
         guard.confirm(hook_path, "modify" if hook_path.exists() else "create")
     hook_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    actions.append(
-        f"VS Code Copilot hooks ({len(VSCODE_HOOK_EVENTS)} events) → {hook_path}"
-    )
+    actions.append(f"VS Code Copilot hooks ({len(VSCODE_HOOK_EVENTS)} events) → {hook_path}")
 
 
 def _uninstall_vscode_hooks(scope: str, actions: list[str]) -> None:

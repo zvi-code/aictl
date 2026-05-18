@@ -721,3 +721,24 @@ def test_hook_handler_returns_200(otel_server):
     events = db.query_events(since=0, until=time.time() + 3600, kind="hook:UserPromptSubmit")
     assert len(events) >= 1
     assert events[0].session_id == "hook-test-sess"
+
+
+def test_hook_receiver_derives_tool_from_aictl_source(otel_server):
+    """Non-Claude hooks must not be attributed to claude-code by fallback."""
+    base, _srv, db = otel_server
+    status, resp = _post_json(
+        f"{base}/api/hooks",
+        {
+            "event": "UserPromptSubmit",
+            "session_id": "vscode-hook-sess",
+            "message": "hello from vscode",
+            "aictl_hook": {"source": "root.vscode-user"},
+            "ts": time.time(),
+        },
+    )
+    assert status == 200
+    assert resp["ok"] is True
+
+    events = db.query_events(since=0, until=time.time() + 3600, session_id="vscode-hook-sess")
+    assert len(events) == 1
+    assert events[0].tool == "copilot-vscode"

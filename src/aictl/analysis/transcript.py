@@ -109,13 +109,26 @@ class Turn:
             if action.name and not self.model:
                 self.model = action.name
 
+    def response_text(self) -> str:
+        chunks: list[str] = []
+        for action in self.actions:
+            if action.kind != ActionKind.API_RESPONSE:
+                continue
+            text = action.detail.get("response") or action.output_summary
+            if text:
+                chunks.append(str(text))
+        return "\n\n".join(chunks)
+
     def to_dict(self) -> dict:
         wall_ms = round((self.end_ts - self.ts) * 1000) if self.end_ts > self.ts else self.duration_ms
+        response = self.response_text()
         return {
             "ts": self.ts,
             "end_ts": self.end_ts,
             "prompt": self.prompt,
             "prompt_preview": self.prompt_preview,
+            "response": response,
+            "response_preview": response[:200] if response else "",
             "model": self.model,
             "tokens": {
                 "input": self.input_tokens,

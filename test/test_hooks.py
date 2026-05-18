@@ -634,8 +634,12 @@ class TestSourceId:
 
     def test_gemini_source_for_user_scope(self):
         cfg = _build_hook_config(
-            8484, ["SessionStart"], event_map={"SessionStart": "SessionStart"}, matcher="*",
-            source_tool="gemini", scope="user",
+            8484,
+            ["SessionStart"],
+            event_map={"SessionStart": "SessionStart"},
+            matcher="*",
+            source_tool="gemini",
+            scope="user",
         )
         cmd = cfg["SessionStart"][0]["hooks"][0]["command"]
         assert " --source root.gemini-user" in cmd
@@ -683,9 +687,7 @@ class TestHookHandlerAictlHookEnrichment:
 
         from aictl import hook_handler as hh
 
-        monkeypatch.setattr(
-            "sys.argv", ["hook_handler", "--event", "SessionStart", "--port", "8484"]
-        )
+        monkeypatch.setattr("sys.argv", ["hook_handler", "--event", "SessionStart", "--port", "8484"])
         monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
         captured = io.StringIO()
         monkeypatch.setattr("sys.stdout", captured)
@@ -710,4 +712,3 @@ class TestHookHandlerAictlHookEnrichment:
         hh.main()
         printed = json.loads(captured.getvalue())
         assert "aictl_hook" in printed
-

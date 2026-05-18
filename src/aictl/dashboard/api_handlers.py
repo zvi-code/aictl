@@ -313,10 +313,19 @@ class _APIHandlersMixin:
             events = []
         for ev in events:
             kind = ev.kind or ""
-            if kind not in ("otel:user_prompt", "otel:user_message", "hook:UserPromptSubmit"):
+            is_otel_prompt = kind in ("otel:user_prompt", "otel:user_message") or kind.endswith(
+                (".user_prompt", ".user_message")
+            )
+            if not (is_otel_prompt or kind == "hook:UserPromptSubmit"):
                 continue
             detail = ev.detail if isinstance(ev.detail, dict) else {}
-            content = detail.get("message") or detail.get("content") or detail.get("prompt") or ""
+            content = (
+                detail.get("message")
+                or detail.get("content")
+                or detail.get("prompt")
+                or detail.get("gen_ai.prompt")
+                or ""
+            )
             if not content:
                 continue
             otel_msgs.append(
@@ -418,6 +427,12 @@ class _APIHandlersMixin:
         """Return OTel receiver health status."""
         status = self.server.otel_receiver.status()
         self._json_response(status)
+
+    def _serve_hooks_status(self) -> None:
+        """Return installed hook health and recent hook activity."""
+        from .hooks_status import collect_hooks_status
+
+        self._json_response(collect_hooks_status(self._db, self.server.root))
 
     def _serve_session_mcp_usage(self) -> None:
         """Return per-session MCP server usage.
@@ -570,12 +585,7 @@ class _APIHandlersMixin:
 
         def _model(d: dict) -> str:
             # OTel GenAI semconv uses namespaced keys; legacy emitters use `model`.
-            return str(
-                d.get("gen_ai.response.model")
-                or d.get("gen_ai.request.model")
-                or d.get("model")
-                or ""
-            )
+            return str(d.get("gen_ai.response.model") or d.get("gen_ai.request.model") or d.get("model") or "")
 
         calls = []
         for ev in api_events:
@@ -1100,8 +1110,7 @@ class _APIHandlersMixin:
         counts_map = (sess or {}).get("subprocess_count") or {}
         recent = (sess or {}).get("recent_subprocesses") or []
         counts = [
-            {"name": name, "count": n}
-            for name, n in sorted(counts_map.items(), key=lambda kv: kv[1], reverse=True)
+            {"name": name, "count": n} for name, n in sorted(counts_map.items(), key=lambda kv: kv[1], reverse=True)
         ]
         self._json_response(
             {
@@ -1141,9 +1150,7 @@ class _APIHandlersMixin:
         commits = db.get_session_commits(session_id)
         if not commits and ended_at and started_at > 0 and project_dir:
             # Lazy attribution: compute and cache on first request.
-            commits = attribute_session(
-                db, session_id, project_dir, started_at, float(ended_at)
-            )
+            commits = attribute_session(db, session_id, project_dir, started_at, float(ended_at))
 
         out = []
         for c in commits:
@@ -1156,9 +1163,7 @@ class _APIHandlersMixin:
                     "author_email": c.get("author_email", ""),
                     "ts": float(c.get("ts", 0.0) or 0.0),
                     "subject": c.get("subject", ""),
-                    "current_branch_match": bool(
-                        branch and project_dir and is_reachable(project_dir, sha, branch)
-                    ),
+                    "current_branch_match": bool(branch and project_dir and is_reachable(project_dir, sha, branch)),
                 }
             )
         self._json_response(

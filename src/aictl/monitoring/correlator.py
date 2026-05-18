@@ -859,7 +859,16 @@ class EntityStateTracker:
         session.tool_call_breakdown[tool_name] += 1
         # Skill tool invocations track separately
         if tool_name == "Skill":
-            skill_name = detail.get("skill_name", "") or detail.get("input", {}).get("skill", "unknown")
+            tool_input = detail.get("tool_input") if isinstance(detail.get("tool_input"), dict) else {}
+            legacy_input = detail.get("input") if isinstance(detail.get("input"), dict) else {}
+            skill_name = (
+                detail.get("skill_name", "")
+                or tool_input.get("skill", "")
+                or tool_input.get("name", "")
+                or legacy_input.get("skill", "")
+                or legacy_input.get("name", "")
+                or "unknown"
+            )
             session.skill_calls += 1
             session.skill_call_breakdown[skill_name] += 1
 

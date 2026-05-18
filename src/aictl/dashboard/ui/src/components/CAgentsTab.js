@@ -1,7 +1,8 @@
-import { useState, useContext, useMemo } from 'preact/hooks';
+import { useState, useContext, useEffect, useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS, fmtK, liveTokenTotal } from '../utils.js';
+import * as api from '../api.js';
 
 function toolColor(t) {
   return COLORS[t] || 'var(--fg2)';
@@ -24,6 +25,93 @@ function Stat({ label, value }) {
   return html`<div class="cagents-stat">
     <div class="cagents-stat-label">${label}</div>
     <div class="cagents-stat-value">${value}</div>
+  </div>`;
+}
+
+function fmtHookTs(ts) {
+  if (!ts) return '\u2014';
+  return new Date(ts * 1000).toLocaleString();
+}
+
+function hookStatusLabel(status) {
+  return {
+    active: 'active',
+    configured: 'configured',
+    disabled: 'host-disabled',
+    observed: 'observed',
+    missing: 'missing',
+  }[status] || status || 'unknown';
+}
+
+function warningConfig(warning) {
+  if (!warning?.message) return '';
+  if (warning.message.includes('~/.copilot/hooks')) return '"chat.hookFilesLocations": { "~/.copilot/hooks": true }';
+  if (warning.message.includes('.github/hooks')) return '"chat.hookFilesLocations": { ".github/hooks": true }';
+  if (warning.message.includes('chat.useHooks')) return '"chat.useHooks": true';
+  return warning.message;
+}
+
+function HookStatusSection({ tool, hooksStatus }) {
+  const h = hooksStatus?.tools?.[tool.tool] || null;
+  const counts = hooksStatus?.counts_by_tool_kind?.[tool.tool] || {};
+  const warnings = h?.warnings || [];
+  const events = h?.configured_events || [];
+  return html`<div>
+    <div class="cagents-hook-summary">
+      <div class=${'cagents-hook-status ' + (h?.status === 'active' ? 'is-active' : h?.status === 'disabled' ? 'is-disabled' : '')}>
+        ${hookStatusLabel(h?.status)}
+      </div>
+      <div class="cagents-hook-metrics">
+        <span>${h?.configured_count || 0} configured</span>
+        <span>${h?.fired_24h || 0} fired / 24h</span>
+        <span>last ${fmtHookTs(h?.last_fire_ts)}</span>
+      </div>
+    </div>
+    ${warnings.map(w => html`<div key=${w.path + w.message} class="cagents-hook-warning">
+      ${w.message}<br/>
+      <code>${warningConfig(w)}</code>
+    </div>`)}
+    <div class="cagents-hook-events">
+      ${events.length > 0
+        ? events.slice(0, 10).map(ev => html`<span key=${ev} class="cagents-hook-chip">${ev}</span>`)
+        : html`<span class="cagents-hook-muted">no aictl-owned hooks configured</span>`}
+    </div>
+    ${Object.keys(counts).length > 0 && html`<div class="cagents-hook-counts">
+      ${Object.entries(counts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 8)
+        .map(([kind, count]) => html`<span key=${kind}>${kind} ${count}</span>`)}
+    </div>`}
+    ${h?.sources?.length > 0 && html`<div class="cagents-hook-sources">
+      ${h.sources.map(src => html`<div key=${src.path} class="cagents-hook-source">
+        <span>${src.scope}</span>
+        <span>${src.configured_count || 0} events</span>
+        <span class=${src.host_enabled ? '' : 'is-disabled'}>${src.host_enabled ? 'loaded' : 'ignored'}</span>
+      </div>`)}
+    </div>`}
+  </div>`;
+}
+
+function ActivityReport({ tool, hooksStatus }) {
+  const skillUsage = hooksStatus?.skill_usage || {};
+  const subagents = hooksStatus?.subagents || {};
+  const skillRows = skillUsage.by_skill || [];
+  const toolSkillCount = skillUsage.by_tool?.[tool.tool] || 0;
+  const toolSubagents = subagents.by_tool?.[tool.tool] || { starts: 0, stops: 0 };
+  return html`<div class="cagents-activity-report">
+    <div class="cagents-activity-row">
+      <span>Skill calls</span>
+      <strong>${toolSkillCount}</strong>
+      <span class="cagents-hook-muted">${skillUsage.total_calls_24h || 0} all tools / 24h</span>
+    </div>
+    <div class="cagents-activity-row">
+      <span>Subagents</span>
+      <strong>${toolSubagents.starts || 0}</strong>
+      <span class="cagents-hook-muted">${subagents.starts_24h || 0} starts / 24h</span>
+    </div>
+    ${skillRows.length > 0 && html`<div class="cagents-skill-list">
+      ${skillRows.slice(0, 6).map(row => html`<span key=${row.skill}>${row.skill} ${row.count}</span>`)}
+    </div>`}
   </div>`;
 }
 
@@ -75,7 +163,7 @@ function derivePermissions(toolConfig) {
 }
 
 // ─── Detail panel ────────────────────────────────────────────────
-function AgentDetail({ tool: t, toolConfig, onViewSessions }) {
+function AgentDetail({ tool: t, toolConfig, hooksStatus, onViewSessions }) {
   const l      = t.live || {};
   const procs  = t.processes || [];
   const mcps   = t.mcp_servers || [];
@@ -143,6 +231,12 @@ function AgentDetail({ tool: t, toolConfig, onViewSessions }) {
       </div>`)}
     </div>
 
+    <div class="cagents-detail-section"><${Rule} label="Hooks"/></div>
+    <${HookStatusSection} tool=${t} hooksStatus=${hooksStatus}/>
+
+    <div class="cagents-detail-section"><${Rule} label="Skills + Subagents"/></div>
+    <${ActivityReport} tool=${t} hooksStatus=${hooksStatus}/>
+
     <div class="cagents-actions">
       <button class="cagents-btn cagents-btn--primary" disabled
         title="Not yet available">Edit config</button>
@@ -193,6 +287,19 @@ function InactiveRow({ tool: t }) {
 export default function CAgentsTab({ onViewSessions }) {
   const ctx  = useContext(SnapContext);
   const snap = ctx?.snap;
+  const [hooksStatus, setHooksStatus] = useState(null);
+
+  useEffect(() => {
+    let running = true;
+    const poll = () => {
+      api.getHooksStatus()
+        .then(d => { if (running) setHooksStatus(d); })
+        .catch(() => { if (running) setHooksStatus(null); });
+    };
+    poll();
+    const id = setInterval(poll, 15000);
+    return () => { running = false; clearInterval(id); };
+  }, []);
 
   // Build a quick lookup from tool_configs (top-level key in snapshot)
   const toolConfigMap = useMemo(() => {
@@ -238,6 +345,7 @@ export default function CAgentsTab({ onViewSessions }) {
           ? html`<${AgentDetail}
               tool=${selectedTool}
               toolConfig=${selectedConfig}
+              hooksStatus=${hooksStatus}
               onViewSessions=${onViewSessions ?? (() => {})}
             />`
           : html`<div class="cagents-empty">Select an agent to view its profile.</div>`}
