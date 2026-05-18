@@ -180,18 +180,83 @@ function GroupBlock({name, items}) {
   </div>`;
 }
 
+// ─── Configurable Models block ───────────────────────────────────
+// Renders user-configurable model overrides (e.g. github.copilot.chat.askAgent.model)
+// with the exact settings.json key + the file(s) the user would edit. Read-only.
+function ConfigurableModelsBlock({models, configFiles}) {
+  if (!models || !models.length) return null;
+  const sourceColor = {
+    workspace: 'var(--accent)',
+    user:      'var(--green)',
+    default:   'var(--fg3)',
+  };
+  const sourceLabel = {
+    workspace: 'workspace',
+    user:      'user',
+    default:   'default',
+  };
+  return html`<div style="margin-bottom:var(--sp-4)">
+    <div style="font-size:var(--fs-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.06em;
+                color:var(--fg3);padding:var(--sp-2) var(--sp-4) var(--sp-1);
+                display:flex;align-items:baseline;gap:var(--sp-2)">
+      <span>Configurable Models</span>
+      <span class="text-muted" style="font-weight:400;text-transform:none;letter-spacing:normal;font-size:var(--fs-xs)">
+        — VS Code settings the user can override
+      </span>
+    </div>
+    <div style="border:1px solid var(--bg2);border-radius:4px;overflow:hidden">
+      ${models.map(m => html`<div key=${m.key} title=${m.description || ''}
+        style="display:flex;flex-direction:column;gap:2px;padding:var(--sp-2) var(--sp-4);
+               border-bottom:1px solid color-mix(in srgb,var(--bg2) 60%,transparent);
+               cursor:${m.description ? 'help' : 'default'}">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-4);font-size:var(--fs-sm)">
+          <span style="color:var(--fg2);font-weight:500">${m.label}</span>
+          <span style="display:flex;align-items:baseline;gap:var(--sp-2)">
+            ${m.source !== 'default'
+              ? html`<span class="mono" style="font-weight:600">${m.value}</span>`
+              : html`<span class="text-muted">— ${m.default_hint || 'default'}</span>`}
+            <span class="badge" style="background:${sourceColor[m.source] || 'var(--fg3)'};
+                  color:var(--bg);font-size:var(--fs-2xs)">${sourceLabel[m.source] || m.source}</span>
+          </span>
+        </div>
+        <div class="mono text-muted" style="font-size:var(--fs-2xs);overflow:hidden;
+             text-overflow:ellipsis;white-space:nowrap" title=${m.key}>${m.key}</div>
+      </div>`)}
+      ${(configFiles && configFiles.length > 0) && html`<div style="padding:var(--sp-2) var(--sp-4);
+        background:color-mix(in srgb,var(--bg2) 40%,transparent);font-size:var(--fs-2xs);color:var(--fg3)">
+        <span style="text-transform:uppercase;letter-spacing:0.06em;font-weight:600;margin-right:var(--sp-2)">
+          Edit in
+        </span>
+        ${configFiles.map((p,i) => html`<span key=${p} class="mono" title=${p}
+          style="margin-right:var(--sp-2)">${p}${i < configFiles.length - 1 ? ',' : ''}</span>`)}
+      </div>`}
+    </div>
+  </div>`;
+}
+
 // ─── Per-tool config card ────────────────────────────────────────
 function ToolConfigCard({cfg, label}) {
   const icon = ICONS[cfg.tool] || '🔹';
   const color = COLORS[cfg.tool] || 'var(--fg2)';
   const groups = Object.entries(cfg.feature_groups || {});
-  const flatSettings = Object.entries(cfg.settings || {}).filter(([k]) =>
-    !['agent_historySummarizationMode','agent_maxRequests','debug_requestLoggerMaxEntries',
-      'planModel','implementModel'].includes(k)
-  );
+  // Keys already surfaced elsewhere (grouped or in Configurable Models) — avoid double-listing.
+  const ownedShortKeys = new Set([
+    'agent_historySummarizationMode','agent_maxRequests','debug_requestLoggerMaxEntries',
+    'planModel','implementModel',
+  ]);
+  // Strip the "github.copilot." prefix from each configurable-model key to get the
+  // short form that the mass-collect step (`_parse_copilot_config`) writes into cfg.settings.
+  for (const m of (cfg.configurable_models || [])) {
+    if (typeof m?.key === 'string' && m.key.startsWith('github.copilot.')) {
+      ownedShortKeys.add(m.key.replace('github.copilot.', ''));
+    }
+  }
+  const flatSettings = Object.entries(cfg.settings || {}).filter(([k]) => !ownedShortKeys.has(k));
+  const hasSetModels = (cfg.configurable_models || []).some(m => m && m.source !== 'default');
   const hasContent = cfg.otel?.enabled || cfg.otel?.source || groups.length ||
                      flatSettings.length || (cfg.hints||[]).length ||
-                     (cfg.mcp_servers||[]).length || (cfg.extensions||[]).length;
+                     (cfg.mcp_servers||[]).length || (cfg.extensions||[]).length ||
+                     hasSetModels;
   if (!hasContent) return null;
 
   return html`<div style="background:var(--bg);border:2px solid ${color};border-radius:6px;overflow:hidden;
@@ -209,6 +274,7 @@ function ToolConfigCard({cfg, label}) {
     <div style="padding:var(--sp-4);flex:1">
       <${OTelBlock} otel=${cfg.otel}/>
       ${groups.map(([name, items]) => html`<${GroupBlock} key=${name} name=${name} items=${items}/>`)}
+      <${ConfigurableModelsBlock} models=${cfg.configurable_models} configFiles=${cfg.config_files}/>
       ${flatSettings.length > 0 && html`<${GroupBlock} name="Settings" items=${Object.fromEntries(flatSettings)}/>`}
       ${(cfg.mcp_servers||[]).length > 0 && html`<div style="margin-bottom:var(--sp-4)">
         <div style="font-size:var(--fs-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg3);padding:var(--sp-2) var(--sp-4) var(--sp-1)">MCP Servers</div>

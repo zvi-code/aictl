@@ -79,12 +79,22 @@ class ToolConfig:
     otel: OTelConfig = field(default_factory=OTelConfig)
     hints: list[str] = field(default_factory=list)  # Actionable suggestions
     feature_groups: dict[str, dict] = field(default_factory=dict)  # Grouped features by mode/category
+    # User-configurable model overrides surfaced for the dashboard. Each entry:
+    #   {"label", "key" (full setting key), "value", "source" (user|workspace|default),
+    #    "default_hint", "description"}
+    configurable_models: list[dict] = field(default_factory=list)
+    # Filesystem locations the user can edit to change these settings.
+    config_files: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)
         d["otel"] = self.otel.to_dict()  # use filtered version (omits falsy values)
         if not self.feature_groups:
             del d["feature_groups"]
+        if not self.configurable_models:
+            del d["configurable_models"]
+        if not self.config_files:
+            del d["config_files"]
         return d
 
 
@@ -546,6 +556,106 @@ _COPILOT_SETTINGS: list[tuple[str, str]] = [
 ]
 
 
+# Configurable model overrides surfaced as a dedicated dashboard section.
+# Each entry is (vscode_settings_key, short_label, default_hint, description).
+# These are the *only* model knobs Copilot exposes as VS Code settings; other
+# model selection (e.g. the gpt-4o-mini summary helper that drives
+# copilotLanguageModelWrapper) is hard-coded inside the Copilot extension and
+# cannot be reconfigured by the user.
+_COPILOT_CONFIGURABLE_MODELS: list[tuple[str, str, str, str]] = [
+    (
+        "chat.planAgent.defaultModel",
+        "Plan agent",
+        "default model",
+        "Default model used by the Plan agent for research/planning turns.",
+    ),
+    (
+        "github.copilot.chat.implementAgent.model",
+        "Implement agent (Plan handoff)",
+        "default model",
+        "Model used when the Plan agent hands off to implementation. "
+        "Format: `Model Name (vendor)` — e.g. `GPT-5 (copilot)`.",
+    ),
+    (
+        "github.copilot.chat.askAgent.model",
+        "Ask agent",
+        "default model",
+        "Override the language model used by the Ask agent.",
+    ),
+    (
+        "github.copilot.chat.exploreAgent.model",
+        "Explore subagent",
+        "fast, small model (fallback list)",
+        "Override the model used by the Explore (code-research) subagent.",
+    ),
+    (
+        "github.copilot.chat.executionSubagent.model",
+        "Execution subagent",
+        "default model",
+        "Model used by the Execution subagent (runs terminal commands).",
+    ),
+    (
+        "github.copilot.chat.searchSubagent.model",
+        "Search subagent",
+        "agentic-search-v3 if useAgenticProxy else main agent model",
+        "Model used by the Search subagent for iterative code exploration.",
+    ),
+    (
+        "github.copilot.chat.workspace.preferredEmbeddingsModel",
+        "Workspace embeddings",
+        "default embeddings model",
+        "Preferred embeddings model used by workspace semantic search.",
+    ),
+    (
+        "github.copilot.nextEditSuggestions.preferredModel",
+        "Next-edit suggestions",
+        "none",
+        "Preferred model for the inline next-edit suggestion feature.",
+    ),
+    (
+        "github.copilot.selectedCompletionModel",
+        "Inline completions",
+        "default completion model",
+        "Currently selected inline-completion model. Change via "
+        "the “Change Completions Model” command in VS Code.",
+    ),
+]
+
+
+def _collect_copilot_configurable_models(
+    user_settings: dict,
+    ws_settings: dict | None,
+) -> list[dict]:
+    """Build the list of configurable model overrides + their effective values.
+
+    For each known key, record:
+      - label / description / default_hint (static)
+      - key (the exact VS Code settings.json key)
+      - value (workspace override wins; falls back to user; "" if neither)
+      - source: "workspace" | "user" | "default"
+    """
+    out: list[dict] = []
+    ws = ws_settings or {}
+    for key, label, default_hint, description in _COPILOT_CONFIGURABLE_MODELS:
+        if key in ws:
+            value, source = ws[key], "workspace"
+        elif key in user_settings:
+            value, source = user_settings[key], "user"
+        else:
+            value, source = "", "default"
+        out.append(
+            {
+                "label": label,
+                "key": key,
+                "value": value,
+                "source": source,
+                "default_hint": default_hint,
+                "description": description,
+            }
+        )
+    return out
+
+
 def _parse_copilot_config(root: Path, tool: str = "copilot") -> ToolConfig | None:
     cfg = ToolConfig(tool=tool)
 
@@ -578,6 +688,15 @@ def _parse_copilot_config(root: Path, tool: str = "copilot") -> ToolConfig | Non
         if ws_otel.enabled and not cfg.otel.enabled:
             cfg.otel = ws_otel
             cfg.otel.source = "vscode-workspace"
+
+    # ── Configurable model overrides + locations ────────────────
+    cfg.configurable_models = _collect_copilot_configurable_models(vscode_settings, ws_settings)
+    user_settings_path = vscode_user_dir() / "settings.json"
+    ws_settings_path = root / ".vscode" / "settings.json"
+    if user_settings_path.is_file():
+        cfg.config_files.append(str(user_settings_path))
+    if ws_settings_path.is_file():
+        cfg.config_files.append(str(ws_settings_path))
 
     # ── Extensions ──────────────────────────────────────────────
     cfg.extensions = _find_extensions(Path.home() / ".vscode" / "extensions", "copilot")

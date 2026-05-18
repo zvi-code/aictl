@@ -157,3 +157,85 @@ def test_absent_settings_produce_no_groups(patch_vscode_user_dir):
     if cfg is not None:
         assert "Debug Logging" not in cfg.feature_groups
         assert "CLI Mode" not in cfg.feature_groups
+
+
+# ─── Configurable model overrides ────────────────────────────────
+
+
+def test_configurable_models_present_when_any_setting_exists(patch_vscode_user_dir):
+    """Whenever Copilot config exists, the configurable_models list is exposed."""
+    (patch_vscode_user_dir / "settings.json").write_text(
+        json.dumps({"github.copilot.chat.agent.enabled": True})
+    )
+    cfg = _parse_copilot_config(Path("."))
+    assert cfg is not None
+    keys = {m["key"] for m in cfg.configurable_models}
+    # Must include every well-known Copilot model knob.
+    assert "github.copilot.chat.askAgent.model" in keys
+    assert "github.copilot.chat.exploreAgent.model" in keys
+    assert "github.copilot.chat.executionSubagent.model" in keys
+    assert "github.copilot.chat.searchSubagent.model" in keys
+    assert "github.copilot.chat.implementAgent.model" in keys
+    assert "chat.planAgent.defaultModel" in keys
+    assert "github.copilot.chat.workspace.preferredEmbeddingsModel" in keys
+    assert "github.copilot.nextEditSuggestions.preferredModel" in keys
+    assert "github.copilot.selectedCompletionModel" in keys
+    # All entries unset → source == "default" and value == ""
+    for m in cfg.configurable_models:
+        assert m["source"] == "default"
+        assert m["value"] == ""
+        assert m["label"] and m["description"]
+    # User-level settings.json is reported as an edit location.
+    assert any(p.endswith("settings.json") for p in cfg.config_files)
+
+
+def test_configurable_models_user_override_detected(patch_vscode_user_dir):
+    """A user-level setting wins over default and is reported with source=user."""
+    (patch_vscode_user_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "github.copilot.chat.askAgent.model": "Claude Sonnet 4.6 (copilot)",
+            }
+        )
+    )
+    cfg = _parse_copilot_config(Path("."))
+    assert cfg is not None
+    ask = next(m for m in cfg.configurable_models if m["key"] == "github.copilot.chat.askAgent.model")
+    assert ask["value"] == "Claude Sonnet 4.6 (copilot)"
+    assert ask["source"] == "user"
+
+
+def test_configurable_models_workspace_override_wins(patch_vscode_user_dir, tmp_path):
+    """Workspace settings.json overrides user settings.json."""
+    (patch_vscode_user_dir / "settings.json").write_text(
+        json.dumps({"github.copilot.chat.exploreAgent.model": "user-model"})
+    )
+    project_root = tmp_path / "project"
+    (project_root / ".vscode").mkdir(parents=True)
+    (project_root / ".vscode" / "settings.json").write_text(
+        json.dumps({"github.copilot.chat.exploreAgent.model": "workspace-model"})
+    )
+    cfg = _parse_copilot_config(project_root)
+    assert cfg is not None
+    explore = next(
+        m for m in cfg.configurable_models if m["key"] == "github.copilot.chat.exploreAgent.model"
+    )
+    assert explore["value"] == "workspace-model"
+    assert explore["source"] == "workspace"
+    # Both files surfaced as edit locations.
+    assert sum(p.endswith("settings.json") for p in cfg.config_files) == 2
+
+
+def test_configurable_models_serialized_only_when_present():
+    """to_dict() omits configurable_models / config_files when empty."""
+    from aictl.monitoring.tool_config import ToolConfig
+
+    cfg = ToolConfig(tool="copilot")
+    d = cfg.to_dict()
+    assert "configurable_models" not in d
+    assert "config_files" not in d
+    cfg.configurable_models = [{"label": "x", "key": "k", "value": "", "source": "default"}]
+    cfg.config_files = ["/tmp/settings.json"]
+    d = cfg.to_dict()
+    assert d["configurable_models"][0]["label"] == "x"
+    assert d["config_files"] == ["/tmp/settings.json"]

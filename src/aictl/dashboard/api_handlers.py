@@ -9,6 +9,7 @@ supply all /api/* endpoint implementations.
 from __future__ import annotations
 
 import dataclasses
+import json
 import re
 import time
 from collections import Counter
@@ -116,6 +117,46 @@ class _APIHandlersMixin:
             except Exception:
                 result["sink"] = {}
         self._json_response(result)
+
+    def _tool_name_from_config_path(self) -> str:
+        from urllib.parse import unquote
+
+        return unquote(self.path.split("/api/tool-config/", 1)[-1].split("?", 1)[0])
+
+    def _serve_tool_config_get(self) -> None:
+        """Return an editable project-scoped tool config payload."""
+        from .tool_config_editor import ToolConfigEditError, load_editable_tool_config
+
+        try:
+            payload = load_editable_tool_config(self.server.root, self._tool_name_from_config_path())
+        except ToolConfigEditError as exc:
+            self._json_response({"error": exc.message}, status=exc.status)
+            return
+        self._json_response(payload)
+
+    def _serve_tool_config_put(self) -> None:
+        """Persist editable project-scoped tool config fields."""
+        from .tool_config_editor import ToolConfigEditError, save_editable_tool_config
+
+        content_length = int(self.headers.get("Content-Length", 0) or 0)
+        if content_length > 200_000:
+            self.send_error(413, "Payload too large")
+            return
+        try:
+            body = self.rfile.read(content_length)
+            data = json.loads(body or b"{}")
+        except (json.JSONDecodeError, OSError):
+            self._json_response({"error": "Invalid JSON"}, status=400)
+            return
+        if not isinstance(data, dict):
+            self._json_response({"error": "Request body must be a JSON object"}, status=400)
+            return
+        try:
+            payload = save_editable_tool_config(self.server.root, self._tool_name_from_config_path(), data)
+        except ToolConfigEditError as exc:
+            self._json_response({"error": exc.message}, status=exc.status)
+            return
+        self._json_response(payload)
 
     def _serve_session_flow(self) -> None:
         """Return conversation-turn-level data for a session.

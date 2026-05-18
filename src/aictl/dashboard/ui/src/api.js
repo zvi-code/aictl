@@ -232,6 +232,24 @@ export async function getHooksStatus() {
   return r.json();
 }
 
+export async function getToolConfig(tool) {
+  const r = await fetch(url('/api/tool-config/' + encodeURIComponent(tool)));
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || 'Failed to load tool config');
+  return data;
+}
+
+export async function updateToolConfig(tool, payload) {
+  const r = await fetch(url('/api/tool-config/' + encodeURIComponent(tool)), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || 'Failed to save tool config');
+  return data;
+}
+
 // ─── Datapoints ────────────────────────────────────────────────
 
 let _datapointCache = null;
