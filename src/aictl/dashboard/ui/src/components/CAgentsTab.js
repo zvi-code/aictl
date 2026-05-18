@@ -3,6 +3,8 @@ import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS, fmtK, liveTokenTotal } from '../utils.js';
 import * as api from '../api.js';
+import Dialog from './ui/Dialog.js';
+import { toast } from './ui/Toast.js';
 
 function toolColor(t) {
   return COLORS[t] || 'var(--fg2)';
@@ -49,6 +51,141 @@ function warningConfig(warning) {
   if (warning.message.includes('.github/hooks')) return '"chat.hookFilesLocations": { ".github/hooks": true }';
   if (warning.message.includes('chat.useHooks')) return '"chat.useHooks": true';
   return warning.message;
+}
+
+function listToText(items) {
+  return (items || []).join('\n');
+}
+
+function parseLines(text) {
+  return text.split('\n').map(line => line.trim()).filter(Boolean);
+}
+
+function listDiff(before, after) {
+  const beforeSet = new Set(before || []);
+  const afterSet = new Set(after || []);
+  return {
+    added: [...afterSet].filter(item => !beforeSet.has(item)),
+    removed: [...beforeSet].filter(item => !afterSet.has(item)),
+  };
+}
+
+function DiffChips({ title, diff }) {
+  const hasDiff = diff.added.length || diff.removed.length;
+  return html`<div class="cagents-editor-diff-row">
+    <span>${title}</span>
+    <div>
+      ${hasDiff
+        ? html`${diff.added.map(item => html`<code key=${'a' + item} class="is-added">+ ${item}</code>`)}
+          ${diff.removed.map(item => html`<code key=${'r' + item} class="is-removed">- ${item}</code>`)}`
+        : html`<code>no change</code>`}
+    </div>
+  </div>`;
+}
+
+function ConfigEditorModal({ tool, label, onClose }) {
+  const [config, setConfig] = useState(null);
+  const [allowText, setAllowText] = useState('');
+  const [denyText, setDenyText] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [savedBackup, setSavedBackup] = useState('');
+
+  useEffect(() => {
+    let live = true;
+    setLoading(true);
+    setError('');
+    setSavedBackup('');
+    api.getToolConfig(tool)
+      .then(data => {
+        if (!live) return;
+        setConfig(data);
+        setAllowText(listToText(data.permissions?.allow));
+        setDenyText(listToText(data.permissions?.deny));
+        setLoading(false);
+      })
+      .catch(err => {
+        if (!live) return;
+        setError(err.message || 'Failed to load config');
+        setLoading(false);
+      });
+    return () => { live = false; };
+  }, [tool]);
+
+  const nextAllow = parseLines(allowText);
+  const nextDeny = parseLines(denyText);
+  const currentAllow = config?.permissions?.allow || [];
+  const currentDeny = config?.permissions?.deny || [];
+  const allowDiff = listDiff(currentAllow, nextAllow);
+  const denyDiff = listDiff(currentDeny, nextDeny);
+  const hasChanges = JSON.stringify(currentAllow) !== JSON.stringify(nextAllow)
+    || JSON.stringify(currentDeny) !== JSON.stringify(nextDeny);
+  const preview = JSON.stringify({ permissions: { allow: nextAllow, deny: nextDeny } }, null, 2);
+
+  const save = () => {
+    setSaving(true);
+    setError('');
+    setSavedBackup('');
+    api.updateToolConfig(tool, {
+      expected_mtime: config?.mtime,
+      permissions: { allow: nextAllow, deny: nextDeny },
+    })
+      .then(data => {
+        setConfig(data);
+        setAllowText(listToText(data.permissions?.allow));
+        setDenyText(listToText(data.permissions?.deny));
+        setSavedBackup(data.backup_path || '');
+        setSaving(false);
+        toast.success('Configuration saved');
+      })
+      .catch(err => {
+        setError(err.message || 'Failed to save config');
+        setSaving(false);
+        toast.error('Configuration save failed');
+      });
+  };
+
+  return html`<${Dialog} open=${true} onClose=${onClose} ariaLabel=${'Edit ' + label + ' configuration'} class="cagents-editor-dialog">
+    <div class="cagents-editor-head">
+      <div>
+        <div class="cagents-detail-overline">Project configuration</div>
+        <div class="cagents-editor-title">${label} permissions</div>
+        ${config?.path && html`<div class="cagents-editor-path">${config.path}</div>`}
+      </div>
+      <button class="cagents-editor-close" onClick=${onClose} aria-label="Close">x</button>
+    </div>
+    ${loading
+      ? html`<div class="cagents-editor-state">Loading...</div>`
+      : error && !config
+        ? html`<div class="cagents-editor-error">${error}</div>`
+        : html`<div class="cagents-editor-body">
+          ${error && html`<div class="cagents-editor-error">${error}</div>`}
+          ${savedBackup && html`<div class="cagents-editor-saved">Saved - backup ${savedBackup}</div>`}
+          <div class="cagents-editor-fields">
+            <label>
+              <span>Allowed tools</span>
+              <textarea value=${allowText} onInput=${e => setAllowText(e.target.value)} spellcheck="false" rows="7"></textarea>
+            </label>
+            <label>
+              <span>Denied tools</span>
+              <textarea value=${denyText} onInput=${e => setDenyText(e.target.value)} spellcheck="false" rows="7"></textarea>
+            </label>
+          </div>
+          <div class="cagents-editor-preview">
+            <div class="cagents-editor-subtitle">Pending diff</div>
+            <${DiffChips} title="allow" diff=${allowDiff}/>
+            <${DiffChips} title="deny" diff=${denyDiff}/>
+            <pre>${preview}</pre>
+          </div>
+        </div>`}
+    <div class="cagents-editor-actions">
+      <button class="cagents-btn" onClick=${onClose}>Cancel</button>
+      <button class="cagents-btn cagents-btn--primary" onClick=${save} disabled=${loading || saving || !hasChanges}>
+        ${saving ? 'Saving...' : 'Save changes'}
+      </button>
+    </div>
+  </${Dialog}>`;
 }
 
 function HookStatusSection({ tool, hooksStatus }) {
@@ -163,7 +300,7 @@ function derivePermissions(toolConfig) {
 }
 
 // ─── Detail panel ────────────────────────────────────────────────
-function AgentDetail({ tool: t, toolConfig, hooksStatus, onViewSessions }) {
+function AgentDetail({ tool: t, toolConfig, hooksStatus, onViewSessions, onViewConfig, onEditConfig }) {
   const l      = t.live || {};
   const procs  = t.processes || [];
   const mcps   = t.mcp_servers || [];
@@ -238,12 +375,11 @@ function AgentDetail({ tool: t, toolConfig, hooksStatus, onViewSessions }) {
     <${ActivityReport} tool=${t} hooksStatus=${hooksStatus}/>
 
     <div class="cagents-actions">
-      <button class="cagents-btn cagents-btn--primary" disabled
-        title="Not yet available">Edit config</button>
+      ${t.tool === 'claude-code'
+        ? html`<button class="cagents-btn cagents-btn--primary" onClick=${onEditConfig}>Edit permissions</button>`
+        : html`<button class="cagents-btn cagents-btn--primary" onClick=${onViewConfig}>Open configuration</button>`}
       <button class="cagents-btn"
         onClick=${onViewSessions}>View sessions</button>
-      <button class="cagents-btn cagents-btn--danger" disabled
-        title="Not yet available">Disable capture</button>
     </div>
   </div>`;
 }
@@ -272,19 +408,22 @@ function AgentRow({ tool: t, selected, onSelect }) {
 }
 
 // ─── Inactive (detected) row ─────────────────────────────────────
-function InactiveRow({ tool: t }) {
-  return html`<div class="cagents-row cagents-row--inactive">
+function InactiveRow({ tool: t, selected, onSelect }) {
+  const isSel = selected === t.tool;
+  return html`<div class=${'cagents-row cagents-row--inactive' + (isSel ? ' is-selected' : '')}
+    onClick=${() => onSelect(t.tool)}
+    role="button" tabIndex=${0} aria-pressed=${isSel ? 'true' : 'false'}
+    onKeyDown=${e => e.key === 'Enter' && onSelect(t.tool)}>
     <div class="cagents-row-head">
       <span class="cagents-row-dot cagents-row-dot--empty"></span>
       <span class="cagents-row-label" style="color:var(--fg2)">${t.label}</span>
-      <button class="cagents-btn-enable" disabled
-        title="Not yet available">Enable</button>
+      <span class="cagents-row-status">view</span>
     </div>
   </div>`;
 }
 
 // ─── CAgentsTab ──────────────────────────────────────────────────
-export default function CAgentsTab({ onViewSessions }) {
+export default function CAgentsTab({ onViewSessions, onViewConfig }) {
   const ctx  = useContext(SnapContext);
   const snap = ctx?.snap;
   const [hooksStatus, setHooksStatus] = useState(null);
@@ -319,6 +458,7 @@ export default function CAgentsTab({ onViewSessions }) {
   }, [snap]);
 
   const [selected, setSelected] = useState(null);
+  const [editTool, setEditTool] = useState(null);
 
   const selectedId   = selected ?? active[0]?.tool ?? null;
   const selectedTool = active.find(t => t.tool === selectedId)
@@ -333,12 +473,13 @@ export default function CAgentsTab({ onViewSessions }) {
     </div>
     <div class="cagents-body">
       <div class="cagents-list" role="list">
-        ${active.length > 0 && html`<div class="cagents-list-heading">Instrumented</div>`}
+        ${active.length > 0 && html`<div class="cagents-list-heading">Active</div>`}
         ${active.map(t => html`<${AgentRow} key=${t.tool}
           tool=${t} selected=${selectedId} onSelect=${setSelected}/>`)}
 
         ${inactive.length > 0 && html`<div class="cagents-list-heading">Detected, not active</div>`}
-        ${inactive.map(t => html`<${InactiveRow} key=${t.tool} tool=${t}/>`)}
+        ${inactive.map(t => html`<${InactiveRow} key=${t.tool}
+          tool=${t} selected=${selectedId} onSelect=${setSelected}/>`)}
       </div>
       <div class="cagents-detail-pane">
         ${selectedTool
@@ -347,9 +488,15 @@ export default function CAgentsTab({ onViewSessions }) {
               toolConfig=${selectedConfig}
               hooksStatus=${hooksStatus}
               onViewSessions=${onViewSessions ?? (() => {})}
+              onViewConfig=${onViewConfig ?? (() => {})}
+              onEditConfig=${() => setEditTool({ tool: selectedTool.tool, label: selectedTool.label })}
             />`
           : html`<div class="cagents-empty">Select an agent to view its profile.</div>`}
       </div>
     </div>
+    ${editTool && html`<${ConfigEditorModal}
+      tool=${editTool.tool}
+      label=${editTool.label}
+      onClose=${() => setEditTool(null)}/>`}
   </div>`;
 }
