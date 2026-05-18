@@ -130,6 +130,22 @@ describe('EmptyState', () => {
     expect(getByText('nothing')).toBeInTheDocument();
     expect(getByText('try later')).toBeInTheDocument();
   });
+
+  it('renders a data-source caption when given a source prop', () => {
+    // Regression: a card that goes silently empty should name the snapshot
+    // path/API field that feeds it so the wiring is debuggable from the UI.
+    const { getByText, container } = render(html`<${EmptyState}
+      title="nothing"
+      description="try later"
+      source="/api/snapshot \u00b7 tools[].files"/>`);
+    const cap = getByText('/api/snapshot \u00b7 tools[].files');
+    expect(cap).toBeInTheDocument();
+    expect(cap.className).toContain('aictl-ui-empty__source');
+    // And source is absent when not given.
+    const { container: c2 } = render(html`<${EmptyState} title="x"/>`);
+    expect(c2.querySelector('.aictl-ui-empty__source')).toBeFalsy();
+    expect(container).toBeTruthy();
+  });
 });
 
 describe('Skeleton', () => {

@@ -5,7 +5,10 @@ import { SC, esc, fmtPct, fmtSz } from '../utils.js';
 
 export default function TabMcp() {
   const {snap: s} = useContext(SnapContext);
-  if(!s||!s.mcp_detail.length) return html`<p class="empty-state">No MCP servers configured.</p>`;
+  if(!s||!s.mcp_detail.length) return html`<div class="empty-state">
+    No MCP servers configured.
+    <small class="empty-state-source">/api/snapshot · mcp_detail[]</small>
+  </div>`;
   return html`<table role="table" aria-label="MCP Servers">
     <thead><tr><th></th><th>Server</th><th>Tool</th><th>Transport</th><th>Endpoint</th><th>CPU</th><th>Mem</th><th>Status</th></tr></thead>
     <tbody>${s.mcp_detail.map(m=>{const run=m.status==='running'&&m.pid,cpu=parseFloat(m.cpu_pct)||0,cpuC=cpu>80?'var(--red)':cpu>50?'var(--orange)':'inherit';return html`<tr key=${m.name+m.tool}>

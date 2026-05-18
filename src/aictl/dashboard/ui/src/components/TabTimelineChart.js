@@ -255,6 +255,7 @@ function TokenModeSelector({mode, onChange}) {
 function BarFlow({bars, tokenMode, onHover, onLeave}) {
   if (!bars.length) return html`<div class="empty-state" style="padding:var(--sp-8)">
     <p>No matching events.</p>
+    <small class="empty-state-source">/api/session-flow · turns[]</small>
   </div>`;
 
   const slots = buildSlots(bars);
@@ -442,6 +443,7 @@ export default function TabTimelineChart({ externalSessionId = null } = {}) {
             <p class="text-muted text-xs" style="margin-top:var(--sp-3)">
               Ensure OTel is enabled: <code>eval $(aictl otel enable)</code>
             </p>
+            <small class="empty-state-source">/api/session-flow · turns[] (filtered to user_message, api_call, api_response, tool_use, compaction, subagent, error, hook)</small>
           </div>`
         : html`
           <div class="tc-controls">
