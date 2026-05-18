@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import urllib.error
 import urllib.request
 
 import pytest
@@ -242,6 +243,43 @@ def _get_status(url):
         return e.code
 
 
+def _put_json(url, payload):
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        method="PUT",
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        return json.loads(resp.read())
+
+
+@pytest.fixture()
+def config_server(populated_db, tmp_path):
+    from aictl.dashboard.web_server import (
+        _DashboardHandler,
+        _DashboardHTTPServer,
+    )
+
+    root = tmp_path / "project"
+    root.mkdir()
+    store = SnapshotStore(db=populated_db)
+    store.update(_make_snapshot())
+    srv = _DashboardHTTPServer(
+        ("127.0.0.1", 0),
+        _DashboardHandler,
+        store,
+        AllowedPaths(),
+        root,
+    )
+    port = srv.server_address[1]
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{port}", root
+    srv.shutdown()
+
+
 # ── Samples API ───────────────────────────────────────────────────
 
 
@@ -284,6 +322,19 @@ class TestObservabilitySubstrateAPI:
         data = _get_json(f"{server}/api/data-quality?kind=ingester")
         assert data["summary"]["schema_unknown"] == 1
         assert data["items"][0]["component"] == "ingester:copilot-session-store"
+
+    def test_tool_config_put_updates_claude_project_permissions(self, config_server):
+        base_url, root = config_server
+        updated = _put_json(
+            f"{base_url}/api/tool-config/claude-code",
+            {"permissions": {"allow": ["Read(*)"], "deny": ["Bash(rm -rf *)"]}},
+        )
+
+        assert updated["permissions"]["allow"] == ["Read(*)"]
+        assert updated["permissions"]["deny"] == ["Bash(rm -rf *)"]
+        assert json.loads((root / ".claude" / "settings.json").read_text())["permissions"]["allow"] == [
+            "Read(*)"
+        ]
 
     def test_series(self, server):
         since = int(time.time()) - 3600
@@ -452,6 +503,143 @@ class TestFilesAPI:
             assert key in f, f"Missing key: {key}"
         assert f["lines"] == 2
         assert f["tokens"] > 0
+
+
+# ── /api/file allowlist (aictl-owned .context.toml) ─────────────────
+
+
+class TestContextTomlAllowlist:
+    """Regression: the dashboard (and the new-ui prototype) ask /api/file for
+    the project's own .context.toml. The file is aictl-owned and is not part
+    of any tool's discovered file set, so prior to this fix AllowedPaths.update
+    never included it and every request hit 403.
+
+    The hierarchical case matters too — a project can have nested .context.toml
+    files (see AGENTS.md), so a per-folder allowlist is required, not just
+    the root file."""
+
+    def test_root_context_toml_is_allowed(self, tmp_path):
+        """A root-level .context.toml must be in the allowlist after update."""
+        from pathlib import Path as _Path
+
+        ctx = tmp_path / ".context.toml"
+        ctx.write_text("# .context.toml\n[plugin]\nname = 'test'\n")
+
+        snap = DashboardSnapshot(
+            timestamp=time.time(),
+            root=str(tmp_path),
+            tools=[],
+            sessions=[],
+        )
+        allowed = AllowedPaths()
+        allowed.update(snap)
+
+        assert allowed.is_allowed(str(ctx)), (
+            f"Root .context.toml at {ctx} should be allowed after update — "
+            "AllowedPaths must include aictl-owned context files, not just "
+            "files discovered via tools[].files[]."
+        )
+        # And nothing else under the root snuck in.
+        unrelated = tmp_path / "README.md"
+        unrelated.write_text("# readme\n")
+        assert not allowed.is_allowed(str(unrelated)), (
+            "Allowlist must not over-broaden — only .context.toml files, "
+            "not arbitrary files under root."
+        )
+        # Sanity: cleanup type hint usage (silence lint)
+        assert isinstance(ctx, _Path)
+
+    def test_nested_context_toml_is_allowed(self, tmp_path):
+        """Hierarchical .context.toml files (one per folder) must all be
+        included — the project's per-folder layering is a core feature."""
+        root_ctx = tmp_path / ".context.toml"
+        root_ctx.write_text("# root\n")
+
+        sub = tmp_path / "services" / "ingestion"
+        sub.mkdir(parents=True)
+        nested_ctx = sub / ".context.toml"
+        nested_ctx.write_text("# nested\n")
+
+        snap = DashboardSnapshot(
+            timestamp=time.time(),
+            root=str(tmp_path),
+            tools=[],
+            sessions=[],
+        )
+        allowed = AllowedPaths()
+        allowed.update(snap)
+
+        assert allowed.is_allowed(str(root_ctx))
+        assert allowed.is_allowed(str(nested_ctx)), (
+            f"Nested .context.toml at {nested_ctx} must be allowed — "
+            "hierarchical project context files are first-class."
+        )
+
+    def test_missing_root_is_safe(self, tmp_path):
+        """A snapshot with a non-existent root must not crash or widen the
+        allowlist — defensive behavior matters because snapshot.root is
+        whatever the daemon was launched with."""
+        snap = DashboardSnapshot(
+            timestamp=time.time(),
+            root=str(tmp_path / "does-not-exist"),
+            tools=[],
+            sessions=[],
+        )
+        allowed = AllowedPaths()
+        allowed.update(snap)  # must not raise
+
+        # Allowlist should be empty (no tools, no memory, no readable root).
+        assert not allowed.is_allowed(str(tmp_path / "anything"))
+
+    def test_api_file_serves_context_toml_after_update(self, populated_db, tmp_path):
+        """End-to-end: GET /api/file?path=<root>/.context.toml returns 200
+        with the file body. Prior to the fix this returned 403 'Path not in
+        discovered resource set' — see new-ui/captured/SHAPES.md finding #3."""
+        from pathlib import Path
+
+        from aictl.dashboard.web_server import (
+            _DashboardHandler,
+            _DashboardHTTPServer,
+        )
+
+        ctx = tmp_path / ".context.toml"
+        ctx_body = "# project context\n[plugin]\nname = 'demo'\n"
+        ctx.write_text(ctx_body)
+
+        snap = DashboardSnapshot(
+            timestamp=time.time(),
+            root=str(tmp_path),
+            tools=[],
+            sessions=[],
+        )
+        store = SnapshotStore(db=populated_db)
+        store.update(snap)
+        allowed = AllowedPaths()
+        allowed.update(snap)
+
+        srv = _DashboardHTTPServer(
+            ("127.0.0.1", 0),
+            _DashboardHandler,
+            store,
+            allowed,
+            Path(str(tmp_path)),
+        )
+        port = srv.server_address[1]
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            import urllib.parse
+
+            url = (
+                f"http://127.0.0.1:{port}/api/file?"
+                + urllib.parse.urlencode({"path": str(ctx)})
+            )
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                assert resp.status == 200, resp.status
+                body = resp.read().decode("utf-8")
+                assert body == ctx_body, body
+        finally:
+            srv.shutdown()
 
 
 # ── File History API ──────────────────────────────────────────────

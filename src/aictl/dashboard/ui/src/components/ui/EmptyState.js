@@ -2,7 +2,7 @@ import { html } from 'htm/preact';
 import Icon from './Icon.js';
 
 export default function EmptyState({
-  icon, title, description, action,
+  icon, title, description, action, source,
   class: klass, className, ...rest
 }) {
   const cls = ['aictl-ui-empty', klass, className].filter(Boolean).join(' ');
@@ -13,5 +13,6 @@ export default function EmptyState({
     ${title ? html`<div class="aictl-ui-empty__title">${title}</div>` : null}
     ${description ? html`<div class="aictl-ui-empty__desc">${description}</div>` : null}
     ${action ? html`<div>${action}</div>` : null}
+    ${source ? html`<div class="aictl-ui-empty__source" title="Data source for this view">${source}</div>` : null}
   </div>`;
 }

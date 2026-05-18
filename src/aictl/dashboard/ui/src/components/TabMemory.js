@@ -118,7 +118,10 @@ function MemoryGrowthChart() {
 
 export default function TabMemory() {
   const {snap: s} = useContext(SnapContext);
-  if(!s||!s.agent_memory.length) return html`<p class="empty-state">No agent memory found.</p>`;
+  if(!s||!s.agent_memory.length) return html`<div class="empty-state">
+    No agent memory found.
+    <small class="empty-state-source">/api/snapshot · agent_memory[]</small>
+  </div>`;
   const groups = useMemo(()=>{
     const g={};
     s.agent_memory.forEach(m=>{(g[m.source]=g[m.source]||[]).push(m);});

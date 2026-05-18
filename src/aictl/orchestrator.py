@@ -1127,6 +1127,36 @@ class AllowedPaths:
                     paths.add(_os.path.realpath(mem.file))
                 except (OSError, ValueError):
                     pass
+        # aictl-owned .context.toml files (hierarchical, per the AGENTS.md note)
+        # are not part of any tool's discovered file set, so they would never be
+        # added by the loops above. Walk the project root and include them so
+        # the dashboard (and `aictl ctx` inspection UIs) can preview the canonical
+        # context source via /api/file.
+        root = getattr(snap, "root", None)
+        if root:
+            try:
+                from .context import AICTX_FILENAME, _walk
+
+                for aictx in _walk(Path(root)):
+                    try:
+                        paths.add(_os.path.realpath(aictx))
+                    except (OSError, ValueError):
+                        pass
+                # Also allow a bare root-level .context.toml that may have been
+                # created after the last walk filter (defensive — _walk already
+                # yields it when present, but a freshly-touched file with an
+                # iterdir race is cheap to cover explicitly).
+                root_aictx = Path(root) / AICTX_FILENAME
+                if root_aictx.is_file():
+                    try:
+                        paths.add(_os.path.realpath(root_aictx))
+                    except (OSError, ValueError):
+                        pass
+            except (OSError, ValueError, ImportError):
+                # Defensive: never let allowlist construction crash the
+                # snapshot pipeline. A missing or unreadable root simply
+                # narrows the allowlist — it does not widen it.
+                pass
         with self._lock:
             self._paths = paths
 

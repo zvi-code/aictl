@@ -197,7 +197,10 @@ export default function SessionsListV2({
           <div role="columnheader" style="text-align:right">Duration</div>
         </div>
         ${filtered.length === 0
-          ? html`<div class="sl-empty">No sessions match these filters.</div>`
+          ? html`<div class="sl-empty">
+              No sessions match these filters.
+              <small class="empty-state-source">/api/sessions</small>
+            </div>`
           : filtered.map(r => {
               const isSel = r.session_id === selectedId;
               const tool = r.tool || '\u2014';

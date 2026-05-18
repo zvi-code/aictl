@@ -38,7 +38,10 @@ export default function MemoryPanel({session}) {
   return html`<div>
     <${MemoryDiffSection} sessionId=${session.session_id}/>
     ${!relevant.length
-      ? html`<p class="empty-state">No memory entries found${project ? ' for this project' : ''}.</p>`
+      ? html`<p class="empty-state">
+          No memory entries found${project ? ' for this project' : ''}.
+          <small class="empty-state-source">/api/snapshot · agent_memory[]</small>
+        </p>`
       : html`<div class="mono text-xs" style="max-height:20rem;overflow-y:auto">
           ${relevant.map((m, i) => html`<${MemoryEntryRow} key=${i} mem=${m}/>`)}
         </div>`}
@@ -95,7 +98,10 @@ function MemoryDiffSection({sessionId}) {
       </span>` : null}
     </div>
     ${loading ? html`<p class="text-muted text-xs">Loading\u2026</p>`
-      : !files.length ? html`<p class="empty-state text-xs">No memory changes recorded for this session.</p>`
+      : !files.length ? html`<p class="empty-state text-xs">
+          No memory changes recorded for this session.
+          <small class="empty-state-source">/api/session-memory-diff · files[]</small>
+        </p>`
       : html`<div class="mono text-xs">${files.map((f, i) => html`<${MemoryDiffRow} key=${f.path + i} file=${f}/>`)}</div>`}
   </div>`;
 }

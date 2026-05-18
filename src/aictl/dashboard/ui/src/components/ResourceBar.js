@@ -40,5 +40,8 @@ export default function ResourceBar({snap: s, mode}) {
       })}
       </div>
     </div>`}
-    ${!mode && !fileTools.length && !liveTools.length && html`<div class="empty-state">No AI tool resources found yet.</div>`}`;
+    ${!mode && !fileTools.length && !liveTools.length && html`<div class="empty-state">
+      No AI tool resources found yet.
+      <small class="empty-state-source">/api/snapshot · tools[].files · tools[].live</small>
+    </div>`}`;
 }
