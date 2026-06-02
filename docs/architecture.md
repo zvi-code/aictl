@@ -10,7 +10,8 @@ Both subsystems share a CSV-driven discovery registry and a common data model.
 ```
                            ┌──────────────┐
                            │   CLI (click) │
-                           │  12 commands  │
+                           │  ctx/daemon/  │
+                           │ session +more │
                            └──────┬───────┘
                                   │
           ┌───────────────────────┼───────────────────────┐
@@ -41,7 +42,7 @@ Both subsystems share a CSV-driven discovery registry and a common data model.
 
 ```
 aictl/
-├── cli.py                  # Click entrypoint — registers 12 commands
+├── cli.py                  # Click entrypoint — registers command groups (ctx, daemon, session) + top-level commands
 ├── scanner.py              # Walk directory tree, find .context.toml files
 ├── parser.py               # Parse .context.toml TOML tables into typed dataclasses
 ├── resolver.py             # Merge scopes with inheritance/exclude rules
@@ -58,22 +59,17 @@ aictl/
 ├── store.py                # In-memory snapshot storage + ring buffers
 ├── storage.py              # SQLite time-series persistence (HistoryDB)
 ├── orchestrator.py         # Server lifecycle — wires collectors, server, storage
-├── client.py               # HTTP client for connecting to running aictl serve
+├── client.py               # HTTP client for connecting to running aictl daemon serve
 │
-├── commands/               # CLI command implementations
-│   ├── deploy.py           #   aictl deploy
-│   ├── import_cmd.py       #   aictl import
-│   ├── scan.py             #   aictl scan
-│   ├── status.py           #   aictl status
-│   ├── serve.py            #   aictl serve
-│   ├── dashboard.py        #   aictl dashboard
-│   ├── monitor.py          #   aictl monitor
-│   ├── plugin.py           #   aictl plugin build
-│   ├── diff_cmd.py         #   aictl diff
-│   ├── init_cmd.py         #   aictl init
-│   ├── validate_cmd.py     #   aictl validate
-│   ├── memory.py           #   aictl memory show/stashes
-│   └── config_cmd.py       #   aictl config
+├── commands/               # CLI command implementations (grouped by domain)
+│   ├── ctx_pipeline.py     #   aictl ctx: deploy, scan, diff, validate, init
+│   ├── daemon.py           #   aictl daemon: serve, monitor (live/doctor), dashboard
+│   ├── session.py          #   aictl session: list, kill
+│   ├── status.py           #   aictl status, aictl memory
+│   ├── import_plugin.py    #   aictl import, aictl plugin
+│   ├── integrations.py     #   aictl enable, aictl hooks, aictl otel
+│   ├── disable.py          #   aictl disable, aictl audit (tail/path)
+│   └── admin.py            #   aictl config, catalog, db, build-ui, reinstall
 │
 ├── emitters/               # Generate native tool files from Resolved
 │   ├── registry.py         #   Emitter dispatch
@@ -114,7 +110,11 @@ aictl/
 │
 ├── dashboard/              # All visualization renderers
 │   ├── models.py           #   DashboardTool + DashboardSnapshot dataclasses
-│   ├── web_server.py       #   ThreadingHTTPServer — REST API + SSE + static
+│   ├── web_server.py       #   ThreadingHTTPServer — routing, SSE, static
+│   ├── api_handlers.py     #   REST endpoint handlers (sessions, costs, kill, …)
+│   ├── analytics.py        #   Cached analytics queries + cache health reporting
+│   ├── otel_receiver.py    #   OTLP metrics/logs/traces parser (defensive)
+│   ├── tool_config_editor.py #  Read/write tool config edits (audited)
 │   ├── tui.py              #   Textual TUI app
 │   ├── html_report.py      #   Self-contained static HTML report
 │   ├── collector.py        #   One-shot snapshot (used by TUI standalone)
@@ -126,7 +126,7 @@ aictl/
 │           ├── layoutConfig.js     # Sparkline/metric/tab configuration
 │           ├── utils.js            # Formatters, constants, color maps
 │           ├── context.js          # Preact context shape
-│           └── components/         # 18 Preact components
+│           └── components/         # Preact components (incl. session_detail/ panels)
 │
 └── data/                   # CSV registries and schema files
     ├── paths-unix.csv      #   Tool file paths for Linux/macOS
@@ -451,6 +451,34 @@ A real-time interactive dashboard built with Vite + Preact + htm tagged template
 | `/api/events?tool=...&since=...` | GET | Filtered event log |
 | `/api/samples?metric=...&since=...` | GET | Prometheus-style metric samples |
 | `/api/sessions` | GET | Active and historical sessions |
+| `/api/session-timeline` | GET | Per-session activity timeline |
+| `/api/session-runs` | GET | Run history for a session |
+| `/api/session-cost-by-model` | GET | Per-session token/cost split by model |
+| `/api/session-processes` | GET | Process tree for a session |
+| `/api/session-tool-calls` | GET | Tool-call timeline for a session |
+| `/api/session-subprocesses` | GET | Subprocess breakdown for a session |
+| `/api/session-commits` | GET | Git commits attributed to a session |
+| `/api/session-stats` | GET | Aggregate stats for a session |
+| `/api/session-flow` | GET | Session conversation flow |
+| `/api/session-memory-diff` | GET | Agent-memory diff for a session |
+| `/api/session-messages` | GET | Normalized session messages (cross-source deduped) |
+| `/api/session-mcp-usage` | GET | MCP server usage for a session |
+| `/api/session-kill` | PUT | Signal a live session's process tree (TERM/KILL) |
+| `/api/file-writes` | GET | File-write index (which run wrote what, when) |
+| `/api/files`, `/api/files/history` | GET | File inventory + per-file history |
+| `/api/telemetry` | GET | Structured telemetry readings |
+| `/api/project-costs` | GET | Cost rollup by project |
+| `/api/transcript/...`, `/api/transcripts` | GET | Session transcripts |
+| `/api/otel-status` | GET | OTel receiver diagnostics |
+| `/api/hooks-status` | GET | Per-tool hook installation status |
+| `/api/hooks` | PUT | Install/repair tool hooks |
+| `/api/tool-config/...` | GET, PUT | Read/write a tool's config (PUT is audited) |
+| `/api/api-calls` | GET | Recorded API/network calls |
+| `/api/data-quality` | GET | Data-quality status feed (incl. analytics-cache health) |
+| `/api/datapoints` | GET | Datapoint catalog |
+| `/api/analytics` | GET | Cached analytics aggregates |
+| `/api/agent-teams` | GET | Agent-team rollups |
+| `/api/self-status` | GET | aictl's own runtime status |
 | `/api/layout` | GET | Widget layout configuration |
 
 **Frontend** — Preact 10 with htm/preact tagged template literals:
@@ -466,6 +494,10 @@ A real-time interactive dashboard built with Vite + Preact + htm tagged template
 | `TabMemory` | Memory | Agent memory browser with content preview |
 | `TabSessions` | Sessions | Active session cards, historical session table |
 | `TabSamples` | Metrics | Time-series metric explorer |
+| `TabToolConfig` | Config | Per-tool config viewer/editor (audited writes) |
+| `TabTranscript` | Transcript | Conversation transcript with turn cards |
+| `SessionDetail` | — | Session drill-down host for the `session_detail/` panels |
+| `session_detail/*` | — | Per-session panels: cost-by-model, process tree, tool calls, MCP usage, memory diff, run history, session control (kill) |
 | `ToolCard` | — | Expandable tool card (delegates to FileTree, ToolCardSections) |
 | `FileViewer` | — | Slide-in file content panel with focus trap |
 | `MiniChart` | — | uPlot sparkline wrapper |
@@ -476,7 +508,7 @@ A real-time interactive dashboard built with Vite + Preact + htm tagged template
 
 ### Terminal Dashboard (`dashboard/tui.py`)
 
-Textual-based TUI with live-updating stat cards, per-tool summaries, sparkline history, and tabbed views (Files, File Content, Processes, MCP Servers, Agent Memory, Live Monitor). Connects to a running `aictl serve` instance when available, falls back to local collection.
+Textual-based TUI with live-updating stat cards, per-tool summaries, sparkline history, and tabbed views (Files, File Content, Processes, MCP Servers, Agent Memory, Live Monitor). Connects to a running `aictl daemon serve` instance when available, falls back to local collection.
 
 ### HTML Report (`dashboard/html_report.py`)
 
@@ -488,7 +520,7 @@ All three rendering targets can operate in two modes:
 
 | Mode | Condition | Data source | Capabilities |
 |------|-----------|-------------|--------------|
-| **Server** | `aictl serve` running | REST + SSE from `http://127.0.0.1:{port}` | Full: history, sessions, events, samples |
+| **Server** | `aictl daemon serve` running | REST + SSE from `http://127.0.0.1:{port}` | Full: history, sessions, events, samples |
 | **Standalone** | No server | Direct `collect()` call | Degraded: one-shot snapshot only, no persistence |
 
 `ServerClient.try_connect()` probes the server with a 1s timeout. If reachable, CLI/TUI switch to client mode and get the full data set. If not, they fall back to local collection. The web dashboard always requires the server.
@@ -497,7 +529,7 @@ All three rendering targets can operate in two modes:
 
 ## 6. Server Orchestration
 
-`orchestrator.py` wires everything together for `aictl serve`:
+`orchestrator.py` wires everything together for `aictl daemon serve`:
 
 ```
 start_server(root, port, interval)
@@ -551,21 +583,51 @@ Synchronization: `SampleSink` uses `threading.Lock`, `SnapshotStore` uses `threa
 
 ## 7. CLI Commands
 
+Commands are organized into three groups plus top-level commands. All implementations live under `commands/` (grouped by domain, not one file per command).
+
+**`aictl ctx` — context management** (`commands/ctx_pipeline.py`)
+
+| Command | Description |
+|---------|-------------|
+| `ctx deploy` | Scan, parse, resolve, emit, cleanup, memory swap |
+| `ctx scan` | Find all `.context.toml` files in directory tree |
+| `ctx diff` | Compare deployed files between profiles |
+| `ctx validate` | Lint `.context.toml` files for errors |
+| `ctx init` | Scaffold starter `.context.toml` file |
+
+**`aictl daemon` — server + monitoring** (`commands/daemon.py`)
+
+| Command | Description |
+|---------|-------------|
+| `daemon serve` | Start web dashboard server with live monitoring |
+| `daemon monitor` | Raw monitoring output (`live`, `doctor` subcommands) |
+| `daemon dashboard` | Launch TUI terminal dashboard |
+
+**`aictl session` — live session control** (`commands/session.py`, requires a running daemon)
+
+| Command | Description |
+|---------|-------------|
+| `session list` | List active sessions and their PIDs |
+| `session kill` | Signal a live session's process tree (TERM/KILL) |
+
+**Top-level commands**
+
 | Command | Module | Description |
 |---------|--------|-------------|
-| `deploy` | `commands/deploy.py` | Scan, parse, resolve, emit, cleanup, memory swap |
-| `import` | `commands/import_cmd.py` | Reverse-engineer native files into `.context.toml` |
-| `scan` | `commands/scan.py` | Find all `.context.toml` files in directory tree |
+| `import` | `commands/import_plugin.py` | Reverse-engineer native files into `.context.toml` |
+| `plugin` | `commands/import_plugin.py` | Package `.context.toml` as Claude Code plugin |
 | `status` | `commands/status.py` | Show all AI tool resources (files, processes, MCP, memory) |
-| `serve` | `commands/serve.py` | Start web dashboard server with live monitoring |
-| `dashboard` | `commands/dashboard.py` | Launch TUI terminal dashboard |
-| `monitor` | `commands/monitor.py` | Raw monitoring output (live, doctor, once modes) |
-| `plugin` | `commands/plugin.py` | Package `.context.toml` as Claude Code plugin |
-| `diff` | `commands/diff_cmd.py` | Compare deployed files between profiles |
-| `init` | `commands/init_cmd.py` | Scaffold starter `.context.toml` file |
-| `validate` | `commands/validate_cmd.py` | Lint `.context.toml` files for errors |
-| `memory` | `commands/memory.py` | Show/manage per-profile memory stashes |
-| `config` | `commands/config_cmd.py` | Read/write `~/.config/aictl/config.toml` |
+| `memory` | `commands/status.py` | Show/manage per-profile memory stashes |
+| `enable` | `commands/integrations.py` | One-shot: install hooks + OTel + VS Code agent settings |
+| `hooks` | `commands/integrations.py` | Install/repair/inspect tool lifecycle hooks |
+| `otel` | `commands/integrations.py` | Enable/inspect OpenTelemetry export per tool |
+| `disable` | `commands/disable.py` | Reverse `enable` (remove hooks/OTel/settings) |
+| `audit` | `commands/disable.py` | Inspect the mutation-ledger audit log (`tail`, `path`) |
+| `config` | `commands/admin.py` | Read/write `~/.config/aictl/config.toml` |
+| `catalog` | `commands/admin.py` | Inspect/sync the datapoint catalog |
+| `db` | `commands/admin.py` | Inspect/maintain the SQLite history store |
+| `build-ui` | `commands/admin.py` | Rebuild the dashboard UI bundle |
+| `reinstall` | `commands/admin.py` | Reinstall aictl (cross-platform, no Makefile needed) |
 
 ---
 
@@ -618,3 +680,5 @@ All three platforms share the same codebase with platform-specific adapters in `
 - **File inspection whitelist**: `AllowedPaths` restricts the `/api/file` endpoint to discovered resource files only — arbitrary paths return 403
 - **Read size limit**: file content reads capped at 200KB (shows tail for larger files)
 - **No secrets in discovery**: CSV paths skip `.env`, credentials files, and private keys
+- **Audited mutations**: config-changing endpoints (`PUT /api/tool-config/...`) and session control (`PUT /api/session-kill`) record every change to the mutation ledger; `aictl audit` surfaces the log
+- **Local-bind default**: the server binds `127.0.0.1` by default so the REST API and mutation endpoints are not exposed to the network
