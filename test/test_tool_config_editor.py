@@ -65,6 +65,49 @@ def test_save_rejects_non_string_permission_entries(tmp_path):
     assert "permissions.allow" in exc.value.message
 
 
+def test_save_records_mutation_ledger_entry(tmp_path, monkeypatch):
+    import aictl.mutation_ledger as ml
+
+    calls = []
+    monkeypatch.setattr(ml, "record", lambda **kw: calls.append(kw))
+
+    save_editable_tool_config(
+        tmp_path,
+        "claude-code",
+        {"permissions": {"allow": ["Read(*)"], "deny": []}},
+        now=1_779_000_000,
+    )
+
+    assert len(calls) == 1
+    entry = calls[0]
+    assert entry["command"] == "dashboard:tool-config:claude-code"
+    assert entry["op"] == "create"  # file did not exist beforehand
+    assert entry["previous_content"] is None
+    assert b"Read(*)" in entry["new_content"]
+
+
+def test_save_records_modify_op_when_file_exists(tmp_path, monkeypatch):
+    import aictl.mutation_ledger as ml
+
+    path = tmp_path / ".claude" / "settings.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"permissions": {"allow": [], "deny": []}}))
+
+    calls = []
+    monkeypatch.setattr(ml, "record", lambda **kw: calls.append(kw))
+
+    save_editable_tool_config(
+        tmp_path,
+        "claude-code",
+        {"permissions": {"allow": ["Read(*)"], "deny": []}, "expected_mtime": path.stat().st_mtime},
+        now=1_779_000_000,
+    )
+
+    assert calls[0]["op"] == "modify"
+    assert calls[0]["previous_content"] is not None
+
+
+
 def test_save_rejects_stale_mtime(tmp_path):
     path = tmp_path / ".claude" / "settings.json"
     path.parent.mkdir()

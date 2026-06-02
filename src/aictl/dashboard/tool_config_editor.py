@@ -123,13 +123,15 @@ def save_editable_tool_config(
     backup = None
     now = time.time() if now is None else now
     path.parent.mkdir(parents=True, exist_ok=True)
+    previous_bytes = path.read_bytes() if path.exists() else None
     if path.exists():
         backup = _backup_path(path, now)
         backup.write_bytes(path.read_bytes())
 
     tmp = path.with_name(f".{path.name}.tmp")
+    new_text = json.dumps(data, indent=2, sort_keys=True) + "\n"
     try:
-        tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+        tmp.write_text(new_text)
         os.replace(tmp, path)
     except OSError as exc:
         try:
@@ -137,6 +139,18 @@ def save_editable_tool_config(
         except OSError:
             pass
         raise ToolConfigEditError(500, f"Could not write config file: {exc}") from exc
+
+    # Audit the edit in the mutation ledger so dashboard-driven config changes
+    # are recorded alongside CLI-driven ones. record() never raises.
+    from .. import mutation_ledger
+
+    mutation_ledger.record(
+        command=f"dashboard:tool-config:{tool}",
+        path=path,
+        op="create" if previous_bytes is None else "modify",
+        previous_content=previous_bytes,
+        new_content=new_text.encode("utf-8"),
+    )
 
     updated = load_editable_tool_config(root, tool)
     updated["backup_path"] = str(backup) if backup else None
