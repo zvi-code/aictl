@@ -3320,21 +3320,20 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   overflow-y: auto;
   background: var(--bg);
   display: flex;
-  align-items: flex-start;
+  flex-direction: column;
 }
 .cprompts-detail {
   overflow-y: auto;
   background: var(--bg2);
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
 }
 /* Empty states */
 .cprompts-empty {
   padding: var(--sp-12) var(--sp-8);
   text-align: center;
   max-width: 320px;
-  margin: 0 auto;
+  margin: auto;
 }
 .cprompts-empty-icon {
   font-size: 2rem;
@@ -3368,6 +3367,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   font-family: var(--ff-sans);
   color: var(--fg2);
   font-size: var(--fs-lg);
+  margin: auto;
 }
 .cprompts-detail-empty-label {
   font-family: var(--ff-mono);
@@ -3782,6 +3782,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   border-bottom: 1px solid var(--border-soft, var(--border));
   cursor: pointer;
   transition: background 0.1s;
+  flex-shrink: 0;
 }
 .cprompts-prompt-row:hover      { background: var(--bg-hover, #F2EDE2); }
 .cprompts-prompt-row.is-selected{

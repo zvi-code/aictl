@@ -97,6 +97,33 @@ def test_collect_hooks_status_reports_configured_fired_skills_and_subagents(tmp_
     )
     db.append_event(
         EventRow(
+            ts=now - 28,
+            tool="claude-code",
+            kind="hook:PostToolUse",
+            session_id="s1",
+            detail={"tool_name": "Read"},
+        )
+    )
+    db.append_event(
+        EventRow(
+            ts=now - 26,
+            tool="claude-code",
+            kind="hook:PostToolUse",
+            session_id="s1",
+            detail={"tool_name": "Read"},
+        )
+    )
+    db.append_event(
+        EventRow(
+            ts=now - 24,
+            tool="claude-code",
+            kind="hook:PostToolUse",
+            session_id="s1",
+            detail={"tool_name": "Bash"},
+        )
+    )
+    db.append_event(
+        EventRow(
             ts=now - 20,
             tool="copilot-vscode",
             kind="hook:SubagentStart",
@@ -108,16 +135,23 @@ def test_collect_hooks_status_reports_configured_fired_skills_and_subagents(tmp_
 
     status = collect_hooks_status(db, root, now=now, paths=paths)
 
-    assert status["total_fired_24h"] == 3
+    assert status["total_fired_24h"] == 6
     assert status["counts_by_kind"]["UserPromptSubmit"] == 1
     assert status["tools"]["claude-code"]["configured"] is True
-    assert status["tools"]["claude-code"]["fired_24h"] == 2
+    assert status["tools"]["claude-code"]["fired_24h"] == 5
     assert status["tools"]["gemini-cli"]["configured"] is True
     assert status["tools"]["copilot-vscode"]["status"] == "disabled"
     assert status["warnings"][0]["message"] == "chat.hookFilesLocations['~/.copilot/hooks'] is false"
     assert status["skill_usage"]["total_calls_24h"] == 1
     assert status["skill_usage"]["by_skill"] == [{"skill": "review-pr", "count": 1}]
     assert status["subagents"]["starts_24h"] == 1
+
+    # General tool calls exclude Skill and aggregate per tool + per name.
+    tool_calls = status["tool_calls"]
+    assert tool_calls["total_calls_24h"] == 3  # 2x Read + 1x Bash (Skill excluded)
+    assert tool_calls["by_tool"]["claude-code"] == 3
+    assert tool_calls["by_tool_name"]["claude-code"] == {"Read": 2, "Bash": 1}
+    assert tool_calls["by_name"][0] == {"name": "Read", "count": 2}
 
     db.close()
 
