@@ -381,10 +381,11 @@ class _APIHandlersMixin:
         and VS Code Copilot Chat ``chatSessions/*.jsonl`` files
         (:class:`aictl.ingesters.vscode_chat_logs.VSCodeChatLogsIngester`).
 
-        Rows are deduplicated by ``(role, content, rounded_ts)`` so the
-        sources never produce visible duplicates. Sorted oldest first.
-        Returns ``{"messages": [...], "sources": {"otel": N,
-        "copilot_store": M, "cursor": K, "vscode_chat": V}}``.
+        Cross-source duplicates (the same logical message captured by both
+        OTel and an ingester) are collapsed within a small time tolerance,
+        while messages legitimately repeated within a single source are kept.
+        Sorted oldest first. Returns ``{"messages": [...], "sources": {"otel":
+        N, "copilot_store": M, "cursor": K, "vscode_chat": V}}``.
         """
         session_id = self._qs_get("session_id")
         if not session_id:
@@ -492,15 +493,37 @@ class _APIHandlersMixin:
         except Exception:
             pass
 
-        # Dedup by (role, content, rounded_ts); prefer OTel-derived rows.
-        seen: set[tuple[str, str, int]] = set()
+        # Merge sources, collapsing only *cross-source* duplicates (the same
+        # logical message captured by both OTel and an ingester) while keeping
+        # legitimately-repeated messages within a single source.
+        #
+        # The previous key `(role, content, int(ts))` silently dropped distinct
+        # messages that shared role+content within the same wall-clock second
+        # (e.g. two identical "continue" turns). Instead we dedup per-source:
+        # each source's own rows are always kept; a later source's row is only
+        # dropped if an earlier source already contributed a row with the same
+        # (role, content) within a small time tolerance that hasn't been
+        # matched yet.
+        _TS_TOLERANCE = 2.0  # seconds — same message, slightly skewed clocks
         merged: list[dict] = []
-        for m in otel_msgs + copilot_msgs + cursor_msgs + vscode_msgs:
-            key = (m["role"], m["content"], int(m["ts"]))
-            if key in seen:
-                continue
-            seen.add(key)
-            merged.append(m)
+        # (role, content) -> list of [ts, matched?] from already-added sources.
+        accepted_index: dict[tuple[str, str], list[list]] = {}
+        for source_msgs in (otel_msgs, copilot_msgs, cursor_msgs, vscode_msgs):
+            for m in source_msgs:
+                key = (m["role"], m["content"])
+                candidates = accepted_index.get(key, [])
+                matched = next(
+                    (c for c in candidates if not c[1] and abs(c[0] - m["ts"]) <= _TS_TOLERANCE),
+                    None,
+                )
+                if matched is not None:
+                    matched[1] = True  # consume this cross-source duplicate
+                    continue
+                merged.append(m)
+            # Only after a source is fully processed do its rows become
+            # dedup anchors for *later* sources — never for its own siblings.
+            for m in source_msgs:
+                accepted_index.setdefault((m["role"], m["content"]), []).append([m["ts"], False])
         merged.sort(key=lambda m: (m["ts"], m["role"]))
         if len(merged) > limit:
             merged = merged[:limit]

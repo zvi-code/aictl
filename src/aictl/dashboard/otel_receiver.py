@@ -121,14 +121,14 @@ class OtelReceiver:
     def parse_metrics(self, body: dict) -> list[_Sample]:
         """Parse OTLP JSON ``/v1/metrics`` payload."""
         samples: list[_Sample] = []
-        for rm in body.get("resourceMetrics", []):
+        for rm in _iter_otel_dicts(body, "resourceMetrics"):
             resource_attrs = _parse_otel_attributes(
-                rm.get("resource", {}).get("attributes", []),
+                (rm.get("resource") or {}).get("attributes", []),
             )
             tool = _resolve_tool(resource_attrs.get("service.name", ""))
 
-            for sm in rm.get("scopeMetrics", []):
-                for metric in sm.get("metrics", []):
+            for sm in _iter_otel_dicts(rm, "scopeMetrics"):
+                for metric in _iter_otel_dicts(sm, "metrics"):
                     name = metric.get("name", "")
                     mapped = METRIC_MAP.get(name, f"otel.{name}")
 
@@ -159,14 +159,14 @@ class OtelReceiver:
     def parse_logs(self, body: dict) -> list[EventRow]:
         """Parse OTLP JSON ``/v1/logs`` payload."""
         events: list[EventRow] = []
-        for rl in body.get("resourceLogs", []):
+        for rl in _iter_otel_dicts(body, "resourceLogs"):
             resource_attrs = _parse_otel_attributes(
-                rl.get("resource", {}).get("attributes", []),
+                (rl.get("resource") or {}).get("attributes", []),
             )
             tool = _resolve_tool(resource_attrs.get("service.name", ""))
 
-            for sl in rl.get("scopeLogs", []):
-                for record in sl.get("logRecords", []):
+            for sl in _iter_otel_dicts(rl, "scopeLogs"):
+                for record in _iter_otel_dicts(sl, "logRecords"):
                     ts = _nano_to_epoch(record.get("timeUnixNano", "0"))
                     attrs = _parse_otel_attributes(
                         record.get("attributes", []),
@@ -289,14 +289,14 @@ class OtelReceiver:
         """Parse OTLP JSON ``/v1/traces`` payload."""
         samples: list[_Sample] = []
         events: list[EventRow] = []
-        for rs in body.get("resourceSpans", []):
+        for rs in _iter_otel_dicts(body, "resourceSpans"):
             resource_attrs = _parse_otel_attributes(
-                rs.get("resource", {}).get("attributes", []),
+                (rs.get("resource") or {}).get("attributes", []),
             )
             tool = _resolve_tool(resource_attrs.get("service.name", ""))
 
-            for ss in rs.get("scopeSpans", []):
-                for span in ss.get("spans", []):
+            for ss in _iter_otel_dicts(rs, "scopeSpans"):
+                for span in _iter_otel_dicts(ss, "spans"):
                     attrs = _parse_otel_attributes(span.get("attributes", []))
                     name = span.get("name", "")
                     start_ts = _nano_to_epoch(span.get("startTimeUnixNano", "0"))
@@ -407,22 +407,58 @@ class OtelReceiver:
 # ── OTLP JSON helpers ─────────────────────────────────────────────
 
 
+def _iter_otel_dicts(container, key: str):
+    """Yield dict children at ``container[key]``, tolerating malformed input.
+
+    OTLP payloads arrive from untrusted clients; a non-dict container or a
+    non-list child collection yields nothing instead of raising.
+    """
+    if not isinstance(container, dict):
+        return
+    children = container.get(key, [])
+    if not isinstance(children, list):
+        return
+    for child in children:
+        if isinstance(child, dict):
+            yield child
+
+
 def _parse_otel_attributes(attrs: list[dict]) -> dict:
-    """Convert OTLP ``KeyValue[]`` to a flat Python dict."""
+    """Convert OTLP ``KeyValue[]`` to a flat Python dict.
+
+    Defensive against malformed payloads from untrusted OTLP clients: a
+    non-list ``attrs``, a non-dict entry, or a malformed ``arrayValue`` is
+    skipped rather than raising, so one bad attribute never poisons the
+    whole batch.
+    """
     result: dict = {}
+    if not isinstance(attrs, list):
+        return result
     for kv in attrs:
+        if not isinstance(kv, dict):
+            continue
         key = kv.get("key", "")
         v = kv.get("value", {})
+        if not isinstance(v, dict):
+            continue
         if "stringValue" in v:
             result[key] = v["stringValue"]
         elif "intValue" in v:
-            result[key] = int(v["intValue"])
+            try:
+                result[key] = int(v["intValue"])
+            except (ValueError, TypeError):
+                continue
         elif "doubleValue" in v:
-            result[key] = float(v["doubleValue"])
+            try:
+                result[key] = float(v["doubleValue"])
+            except (ValueError, TypeError):
+                continue
         elif "boolValue" in v:
             result[key] = bool(v["boolValue"])
         elif "arrayValue" in v:
-            result[key] = [_extract_any_otel_value(x) for x in v["arrayValue"].get("values", [])]
+            arr = v["arrayValue"]
+            values = arr.get("values", []) if isinstance(arr, dict) else []
+            result[key] = [_extract_any_otel_value(x) for x in values if isinstance(x, dict)]
     return result
 
 
@@ -500,10 +536,18 @@ def _extract_otel_value(data_point: dict) -> float:
 
 
 def _extract_otel_data_points(metric: dict) -> list[dict]:
-    """Extract data points from any OTLP metric type (sum, gauge, etc.)."""
+    """Extract data points from any OTLP metric type (sum, gauge, etc.).
+
+    Defensive: a malformed metric body (non-dict ``sum``/``gauge``/... or a
+    non-list ``dataPoints``) yields no points instead of raising.
+    """
+    if not isinstance(metric, dict):
+        return []
     for mtype in ("sum", "gauge", "histogram", "summary"):
-        if mtype in metric:
-            return metric[mtype].get("dataPoints", [])
+        body = metric.get(mtype)
+        if isinstance(body, dict):
+            points = body.get("dataPoints", [])
+            return [p for p in points if isinstance(p, dict)] if isinstance(points, list) else []
     return []
 
 

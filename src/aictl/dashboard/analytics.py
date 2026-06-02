@@ -40,10 +40,28 @@ class _AnalyticsCache:
 
     def get(self, since: float, until: float) -> dict:
         """Return cached analytics instantly.  If the range changed, the
-        background thread will recompute within seconds."""
+        background thread will recompute within seconds.
+
+        The returned dict carries a ``_health`` block so consumers (the
+        analytics endpoint, the UI) can detect a degraded background thread
+        instead of silently rendering stale data as if it were fresh.
+        """
         self.request_range(since, until)
         with self._lock:
-            return self._result
+            result = dict(self._result)
+            result["_health"] = self.health()
+            return result
+
+    def health(self) -> dict:
+        """Current background-thread health. ``ok`` is False once recompute
+        has failed at least once without a subsequent success."""
+        with self._health_lock:
+            return {
+                "ok": self._consecutive_errors == 0,
+                "consecutive_errors": self._consecutive_errors,
+                "last_error": self._last_error,
+                "last_success_ts": self._last_success_ts,
+            }
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -54,12 +72,31 @@ class _AnalyticsCache:
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
         self._requested_range: tuple[float, float] | None = None
+        # Health tracking so the silent background-thread swallow becomes an
+        # observable signal a consumer can act on.
+        self._health_lock = threading.Lock()
+        self._consecutive_errors = 0
+        self._last_error: str | None = None
+        self._last_success_ts: float | None = None
+
+    def _mark_success(self) -> None:
+        with self._health_lock:
+            self._consecutive_errors = 0
+            self._last_error = None
+            self._last_success_ts = time.time()
+
+    def _mark_error(self, exc: BaseException) -> None:
+        with self._health_lock:
+            self._consecutive_errors += 1
+            self._last_error = f"{type(exc).__name__}: {exc}"
 
     def _loop(self) -> None:
         # Initial computation on startup
         try:
             self._recompute()
-        except Exception:
+            self._mark_success()
+        except Exception as exc:
+            self._mark_error(exc)
             logger.exception("Analytics cache initial compute error")
         while not self._stop.is_set():
             # Wait for either the interval or a wake signal
@@ -69,7 +106,9 @@ class _AnalyticsCache:
                 break
             try:
                 self._recompute()
-            except Exception:
+                self._mark_success()
+            except Exception as exc:
+                self._mark_error(exc)
                 logger.exception("Analytics cache recompute error")
 
     def _recompute(self) -> None:
