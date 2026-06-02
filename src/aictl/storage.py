@@ -877,10 +877,6 @@ def _tool_stats_tuple(r: ToolStatsRow) -> tuple:
     )
 
 
-# Backward compat aliases for old function names
-_telemetry_row = _tool_stats_row
-_telemetry_tuple = _tool_stats_tuple
-
 _TOOL_STATS_SELECT = (
     "SELECT ts, tool, source, confidence, input_tokens, output_tokens,"
     " cache_read_tokens, cache_creation_tokens,"
@@ -895,10 +891,6 @@ _TOOL_STATS_INSERT = (
     " total_sessions, total_messages, cost_usd, model, by_model, by_project)"
     " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 )
-
-# Backward compat aliases
-_TELEMETRY_SELECT = _TOOL_STATS_SELECT
-_TELEMETRY_INSERT = _TOOL_STATS_INSERT
 
 # System snapshot keys (for column-major output)
 SYSTEM_SNAPSHOT_KEYS = [
@@ -1109,10 +1101,6 @@ def _metric_row_tuple(s: Metric) -> tuple:
         tags.get("project_path", ""),
         tags.get("session_id", ""),
     )
-
-
-# Backward compat alias
-_sample_row_tuple = _metric_row_tuple
 
 
 # ─── HistoryDB ─────────────────────────────────────────────────────
