@@ -412,6 +412,42 @@ class TestAnalyticsCache:
         cache._mark_success()
         assert cache.get(0, time.time())["_health"]["ok"] is True
 
+    def test_recompute_failure_recorded_to_data_quality(self, db: HistoryDB):
+        """The analytics-thread failure must reach the operator-facing
+        /api/data-quality surface (the actor), not just get()['_health']."""
+        from unittest.mock import MagicMock
+
+        from aictl.dashboard.web_server import _AnalyticsCache
+
+        cache = _AnalyticsCache()
+        store = MagicMock()
+        store._db = db
+        cache._store = store
+
+        try:
+            raise RuntimeError("boom")
+        except RuntimeError as exc:
+            cache._mark_error(exc)
+
+        rows = db.query_data_quality(component="dashboard:analytics-cache")
+        assert len(rows) == 1
+        assert rows[0]["status"] == "failed"
+        assert rows[0]["severity"] == "warning"
+
+        # Severity escalates once failures persist.
+        for _ in range(3):
+            try:
+                raise RuntimeError("boom")
+            except RuntimeError as exc:
+                cache._mark_error(exc)
+        rows = db.query_data_quality(component="dashboard:analytics-cache")
+        assert rows[0]["severity"] == "error"
+
+        # Recovery records an ok signal.
+        cache._mark_success()
+        rows = db.query_data_quality(component="dashboard:analytics-cache")
+        assert rows[0]["status"] == "ok"
+
 
 class TestAnalyticsPerformance:
     """Ensure analytics queries complete within acceptable time bounds.
