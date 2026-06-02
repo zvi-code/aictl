@@ -68,3 +68,33 @@ def test_vscode_user_dir_uses_appdata(windows_env):
 
 def test_cursor_user_dir_uses_appdata(windows_env):
     assert _tail(platforms.cursor_user_dir()) == "C:/Users/dev/AppData/Roaming/Cursor/User"
+
+
+def test_cursor_home_dir_uses_userprofile(windows_env):
+    # ~/.cursor (conversations.db, CLI state) is a home-dotfile dir, NOT %APPDATA%.
+    assert _tail(platforms.cursor_home_dir()) == "C:/Users/dev/.cursor"
+    assert "AppData/Roaming" not in _tail(platforms.cursor_home_dir())
+
+
+def test_centralization_no_adhoc_os_detection():
+    """OS detection must live in platforms.py — modules import the central flags.
+
+    Guards against re-derivation drift (``os.name == 'nt'`` /
+    ``sys.platform == 'win32'``) creeping back into modules that should
+    consume :data:`platforms.IS_WINDOWS` / :data:`platforms.IS_MACOS`.
+    """
+    import pathlib
+
+    root = pathlib.Path(platforms.__file__).resolve().parent
+    offenders: list[str] = []
+    allow = {"platforms.py"}  # platforms.py is the one place OS detection is defined
+    patterns = ('os.name == "nt"', "sys.platform == \"win32\"", "sys.platform.startswith(\"win\")")
+    for py in root.rglob("*.py"):
+        if py.name in allow:
+            continue
+        text = py.read_text(encoding="utf-8")
+        for pat in patterns:
+            if pat in text:
+                offenders.append(f"{py.relative_to(root)}: {pat}")
+    assert not offenders, "ad-hoc OS detection found (use platforms.IS_WINDOWS/IS_MACOS):\n" + "\n".join(offenders)
+

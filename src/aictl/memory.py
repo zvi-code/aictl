@@ -18,10 +18,11 @@ import json
 import logging
 import re
 import shutil
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from .platforms import IS_WINDOWS
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ def _swap_lock(proj: Path):
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fh = open(lock_path, "w")
     try:
-        if sys.platform == "win32":
+        if IS_WINDOWS:
             import msvcrt
 
             try:
@@ -51,7 +52,7 @@ def _swap_lock(proj: Path):
         yield
     finally:
         try:
-            if sys.platform == "win32":
+            if IS_WINDOWS:
                 import msvcrt
 
                 msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)

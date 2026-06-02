@@ -47,6 +47,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..platforms import cursor_home_dir
+
 if TYPE_CHECKING:
     from ..storage import HistoryDB
 
@@ -269,7 +271,7 @@ class CursorConversationsIngester:
 __all__ = ["CursorConversationsIngester", "POLL_INTERVAL_S", "start_background_poller"]
 
 
-DEFAULT_DB_PATH = Path("~/.cursor/conversations.db").expanduser()
+DEFAULT_DB_PATH = cursor_home_dir() / "conversations.db"
 
 
 def start_background_poller(

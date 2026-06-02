@@ -210,7 +210,7 @@ def _find_project_root() -> Path:
 
 
 # On Windows, npm is a .cmd wrapper — subprocess needs shell=True to find it.
-_IS_WINDOWS = os.name == "nt"
+from ..platforms import IS_WINDOWS as _IS_WINDOWS
 
 
 @click.command("build-ui")

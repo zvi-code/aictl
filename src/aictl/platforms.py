@@ -173,8 +173,21 @@ def copilot_global_storage() -> Path:
 
 
 def cursor_user_dir() -> Path:
-    """Cursor app user settings directory."""
+    """Cursor *editor* user settings directory (Electron app data).
+
+    This is the VS Code-style ``Cursor/User`` dir under ``%APPDATA%`` /
+    ``~/Library/Application Support`` — NOT the same as :func:`cursor_home_dir`.
+    """
     return _app_dir("Cursor/User", mac="Cursor/User", xdg="Cursor/User")
+
+
+def cursor_home_dir() -> Path:
+    """Cursor home dir (``~/.cursor``) — holds conversations.db, CLI state.
+
+    Distinct from :func:`cursor_user_dir` (the editor's Electron app data).
+    Same ``~/.cursor`` on every platform (``%USERPROFILE%\\.cursor`` on Windows).
+    """
+    return _app_dir(".cursor", dot=".cursor", win_env="USERPROFILE")
 
 
 # ── Windsurf / Codeium ───────────────────────────────────────────

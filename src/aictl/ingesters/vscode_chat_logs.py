@@ -38,8 +38,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -58,15 +56,14 @@ _MAX_CONTENT_CHARS = 20_000
 
 
 def default_log_dir() -> Path:
-    """Return the default VS Code ``User`` directory (platform-aware)."""
-    if sys.platform == "darwin":
-        base = Path("~/Library/Application Support/Code/User").expanduser()
-    elif sys.platform.startswith("win"):
-        appdata = os.environ.get("APPDATA", "")
-        base = Path(appdata) / "Code" / "User" if appdata else Path.home() / "AppData/Roaming/Code/User"
-    else:
-        base = Path("~/.config/Code/User").expanduser()
-    return base / "workspaceStorage"
+    """Return the default VS Code ``workspaceStorage`` directory.
+
+    Delegates platform resolution to :func:`aictl.platforms.vscode_user_dir`
+    so the VS Code ``User`` path lives in exactly one place.
+    """
+    from ..platforms import vscode_user_dir
+
+    return vscode_user_dir() / "workspaceStorage"
 
 
 class VSCodeChatLogsIngester:
