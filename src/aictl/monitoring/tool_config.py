@@ -291,9 +291,18 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
     settings = _read_json(claude_global_dir() / "settings.json")
     if settings:
         cfg.settings["effortLevel"] = settings.get("effortLevel", "default")
-        for k in ("permissions", "env", "hooks"):
+        for k in ("env", "hooks"):
             if k in settings:
                 cfg.settings[k] = "configured"
+        # Surface the real allow/deny/ask permission rules so the dashboard can
+        # classify per-capability access — not just a "configured" marker.
+        global_perms = settings.get("permissions")
+        if isinstance(global_perms, dict):
+            cfg.settings["permissions"] = {
+                "allow": list(global_perms.get("allow") or []),
+                "deny": list(global_perms.get("deny") or []),
+                "ask": list(global_perms.get("ask") or []),
+            }
 
     # Account config (.claude.json)
     account = _read_json(Path.home() / ".claude.json")
@@ -306,8 +315,19 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
     proj_settings = _read_json(root / ".claude" / "settings.json")
     if proj_settings:
         cfg.settings["project_settings"] = "configured"
-        if "permissions" in proj_settings:
+        proj_perms = proj_settings.get("permissions")
+        if isinstance(proj_perms, dict):
             cfg.settings["project_permissions"] = "configured"
+            merged = cfg.settings.get("permissions")
+            if not isinstance(merged, dict):
+                merged = {"allow": [], "deny": [], "ask": []}
+            for bucket in ("allow", "deny", "ask"):
+                existing = list(merged.get(bucket) or [])
+                for item in proj_perms.get(bucket) or []:
+                    if item not in existing:
+                        existing.append(item)
+                merged[bucket] = existing
+            cfg.settings["permissions"] = merged
 
     # MCP servers from .mcp.json
     cfg.mcp_servers = _mcp_server_names(_read_json(root / ".mcp.json"))

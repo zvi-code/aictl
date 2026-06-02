@@ -240,6 +240,53 @@ def _subagent_usage(db, cutoff: float) -> dict[str, Any]:
     return {"starts_24h": starts, "stops_24h": stops, "by_tool": by_tool, "recent": recent[:10]}
 
 
+def _tool_call_usage(db, cutoff: float) -> dict[str, Any]:
+    """Aggregate general tool-call activity (Read/Write/Bash/…) from PostToolUse hooks.
+
+    Mirrors ``_skill_usage`` but covers every tool name *except* ``Skill`` (which has
+    its own dedicated panel). Returns global totals plus a per-agent breakdown so the
+    Agents tab can show the top tools each agent actually invoked.
+    """
+    if db is None:
+        return {"total_calls_24h": 0, "by_name": [], "by_tool": {}, "by_tool_name": {}}
+    conn = db._conn()  # noqa: SLF001 - read-only dashboard aggregation
+    rows = conn.execute(
+        """
+        SELECT tool,
+               COALESCE(json_extract(detail, '$.tool_name'), json_extract(detail, '$.name'), 'unknown') AS name,
+               COUNT(*) AS n
+          FROM events
+         WHERE kind = 'hook:PostToolUse'
+           AND ts >= ?
+           AND COALESCE(json_extract(detail, '$._aictl_verify'), 0) = 0
+           AND COALESCE(json_extract(detail, '$.tool_name'), json_extract(detail, '$.name'), '') != 'Skill'
+         GROUP BY tool, name
+         ORDER BY n DESC, name ASC
+        """,
+        (cutoff,),
+    ).fetchall()
+    by_name: dict[str, int] = {}
+    by_tool: dict[str, int] = {}
+    by_tool_name: dict[str, dict[str, int]] = {}
+    total = 0
+    for tool, name, count in rows:
+        count = int(count or 0)
+        name = str(name or "unknown")
+        tool = str(tool)
+        by_name[name] = by_name.get(name, 0) + count
+        by_tool[tool] = by_tool.get(tool, 0) + count
+        by_tool_name.setdefault(tool, {})[name] = count
+        total += count
+    return {
+        "total_calls_24h": total,
+        "by_name": [
+            {"name": k, "count": v} for k, v in sorted(by_name.items(), key=lambda item: (-item[1], item[0]))
+        ],
+        "by_tool": by_tool,
+        "by_tool_name": by_tool_name,
+    }
+
+
 def collect_hooks_status(
     db, root: Path, *, now: float | None = None, paths: dict[str, Path] | None = None
 ) -> dict[str, Any]:
@@ -363,4 +410,5 @@ def collect_hooks_status(
         },
         "skill_usage": _skill_usage(db, cutoff),
         "subagents": _subagent_usage(db, cutoff),
+        "tool_calls": _tool_call_usage(db, cutoff),
     }

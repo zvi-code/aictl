@@ -8,6 +8,18 @@ afterEach(() => cleanup());
 afterEach(() => vi.restoreAllMocks());
 
 const SNAP = {
+  tool_configs: [
+    {
+      tool: 'claude-code',
+      settings: {
+        permissions: {
+          allow: ['Read(*)', 'Edit(src/**)'],
+          deny: ['Bash(rm -rf *)'],
+          ask: ['WebFetch(*)'],
+        },
+      },
+    },
+  ],
   tools: [
     {
       tool: 'claude-code', label: 'Claude Code', vendor: 'anthropic', host: 'cli,vscode',
@@ -56,6 +68,12 @@ const HOOKS_STATUS = {
   counts_by_tool_kind: { 'claude-code': { UserPromptSubmit: 4, PreToolUse: 3 } },
   skill_usage: { total_calls_24h: 3, by_tool: { 'claude-code': 2 }, by_skill: [{ skill: 'review-pr', count: 2 }] },
   subagents: { starts_24h: 2, by_tool: { 'claude-code': { starts: 1, stops: 1 } } },
+  tool_calls: {
+    total_calls_24h: 40,
+    by_tool: { 'claude-code': 25 },
+    by_name: [{ name: 'Read', count: 18 }, { name: 'Bash', count: 7 }],
+    by_tool_name: { 'claude-code': { Read: 18, Bash: 7 } },
+  },
 };
 
 function renderTab(snap = SNAP, hooksStatus = HOOKS_STATUS, props = {}) {
@@ -225,6 +243,31 @@ describe('CAgentsTab — detail panel', () => {
     expect(getByText('PreToolUse 3')).toBeInTheDocument();
     expect(getByText('review-pr 2')).toBeInTheDocument();
     expect(getByText('2 starts / 24h')).toBeInTheDocument();
+  });
+
+  it('shows real general tool-call counts and per-tool breakdown', async () => {
+    const { findByText, getByText } = renderTab();
+    // Per-agent tool-call count + global total
+    expect(await findByText('25')).toBeInTheDocument();
+    expect(getByText('40 all tools / 24h')).toBeInTheDocument();
+    // Top tools breakdown for the selected agent
+    expect(getByText('Read 18')).toBeInTheDocument();
+    expect(getByText('Bash 7')).toBeInTheDocument();
+  });
+
+  it('classifies permissions from settings.permissions allow/deny/ask', () => {
+    const { container } = renderTab();
+    const badges = [...container.querySelectorAll('.cagents-perm-badge')].map(el => el.textContent);
+    // allow Read(*) -> File Reads auto; deny Bash -> Shell deny; ask WebFetch -> Web Fetch ask
+    expect(badges).toContain('auto');
+    expect(badges).toContain('deny');
+    expect(badges).toContain('ask');
+  });
+
+  it('shows an OTel-only hint when an agent has no hook activity', () => {
+    const hooks = { ...HOOKS_STATUS, skill_usage: {}, subagents: {}, tool_calls: {} };
+    const { getByText } = renderTab(SNAP, hooks);
+    expect(getByText(/No hook activity in the last 24h/)).toBeInTheDocument();
   });
 
   it('shows exact VS Code hookFilesLocations fix when host ignores hooks', async () => {

@@ -232,10 +232,21 @@ function HookStatusSection({ tool, hooksStatus }) {
 function ActivityReport({ tool, hooksStatus }) {
   const skillUsage = hooksStatus?.skill_usage || {};
   const subagents = hooksStatus?.subagents || {};
+  const toolCalls = hooksStatus?.tool_calls || {};
   const skillRows = skillUsage.by_skill || [];
   const toolSkillCount = skillUsage.by_tool?.[tool.tool] || 0;
   const toolSubagents = subagents.by_tool?.[tool.tool] || { starts: 0, stops: 0 };
+  const toolCallCount = toolCalls.by_tool?.[tool.tool] || 0;
+  const toolCallNames = Object.entries(toolCalls.by_tool_name?.[tool.tool] || {})
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6);
+  const noActivity = toolSkillCount === 0 && (toolSubagents.starts || 0) === 0 && toolCallCount === 0;
   return html`<div class="cagents-activity-report">
+    <div class="cagents-activity-row">
+      <span>Tool calls</span>
+      <strong>${toolCallCount}</strong>
+      <span class="cagents-hook-muted">${toolCalls.total_calls_24h || 0} all tools / 24h</span>
+    </div>
     <div class="cagents-activity-row">
       <span>Skill calls</span>
       <strong>${toolSkillCount}</strong>
@@ -246,8 +257,15 @@ function ActivityReport({ tool, hooksStatus }) {
       <strong>${toolSubagents.starts || 0}</strong>
       <span class="cagents-hook-muted">${subagents.starts_24h || 0} starts / 24h</span>
     </div>
+    ${toolCallNames.length > 0 && html`<div class="cagents-skill-list">
+      ${toolCallNames.map(([name, count]) => html`<span key=${name}>${name} ${count}</span>`)}
+    </div>`}
     ${skillRows.length > 0 && html`<div class="cagents-skill-list">
       ${skillRows.slice(0, 6).map(row => html`<span key=${row.skill}>${row.skill} ${row.count}</span>`)}
+    </div>`}
+    ${noActivity && html`<div class="cagents-hook-muted" style="margin-top:8px">
+      No hook activity in the last 24h. Tool, skill, and subagent counts require
+      aictl lifecycle hooks — agents that report only via OTel will show zero here.
     </div>`}
   </div>`;
 }
@@ -281,11 +299,13 @@ function derivePermissions(toolConfig) {
   const perms = settings.permissions || {};
   const allow = (perms.allow || []).map(s => s.toLowerCase());
   const deny  = (perms.deny  || []).map(s => s.toLowerCase());
+  const ask   = (perms.ask   || []).map(s => s.toLowerCase());
 
   const classify = (...prefixes) => {
     if (prefixes.some(p => deny.some(d  => d.startsWith(p)))) return 'deny';
     if (prefixes.some(p => allow.some(a => a.startsWith(p)))) return 'auto';
-    if (allow.length === 0 && deny.length === 0)               return 'n/a';
+    if (prefixes.some(p => ask.some(a   => a.startsWith(p)))) return 'ask';
+    if (allow.length === 0 && deny.length === 0 && ask.length === 0) return 'n/a';
     return 'ask';
   };
 
@@ -371,7 +391,7 @@ function AgentDetail({ tool: t, toolConfig, hooksStatus, onViewSessions, onViewC
     <div class="cagents-detail-section"><${Rule} label="Hooks"/></div>
     <${HookStatusSection} tool=${t} hooksStatus=${hooksStatus}/>
 
-    <div class="cagents-detail-section"><${Rule} label="Skills + Subagents"/></div>
+    <div class="cagents-detail-section"><${Rule} label="Tool & skill activity"/></div>
     <${ActivityReport} tool=${t} hooksStatus=${hooksStatus}/>
 
     <div class="cagents-actions">
