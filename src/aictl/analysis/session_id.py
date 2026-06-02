@@ -39,14 +39,6 @@ def id_type(session_id: str) -> str:
     return "unknown"
 
 
-def _parse_correlator_id(session_id: str) -> tuple[str, int, int] | None:
-    """Extract (tool, pid, timestamp) from a correlator ID, or None."""
-    m = _CORRELATOR_ID_RE.match(session_id)
-    if m:
-        return m.group(1), int(m.group(2)), int(m.group(3))
-    return None
-
-
 def fingerprint_session(tool: str, pid: int, start_ts: float, workspace: str = "") -> str:
     """Create a stable composite hash for a PID-based session.
 

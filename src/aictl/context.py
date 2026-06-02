@@ -231,10 +231,6 @@ class ParsedAictx:
                     result.append(p)
         return result
 
-    def should_inherit(self, direction: str, kind: str) -> bool:
-        """Check if this .aictx inherits a capability kind from parent/recursive."""
-        return kind in self.inherit.get(direction, [])
-
 
 def _as_tool_list(value: object) -> list[str]:
     """Normalize a tools/not_tools selector into a lowercased list of tool ids."""

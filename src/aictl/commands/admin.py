@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from collections import Counter
 from pathlib import Path

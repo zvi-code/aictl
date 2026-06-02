@@ -1095,12 +1095,6 @@ _TEMPLATE_MTIME: float = 0.0
 _DEV_MODE: bool = False
 
 
-def set_dev_mode(enabled: bool) -> None:
-    """Enable or disable dev mode (disables template caching)."""
-    global _DEV_MODE
-    _DEV_MODE = enabled
-
-
 def _load_template() -> str:
     """Load the HTML template from dist/index.html (built Vite output).
 

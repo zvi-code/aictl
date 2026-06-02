@@ -441,19 +441,3 @@ class WindowsNetworkCollector(PsutilFallbackNetworkCollector):
             mode="etw-fallback",
             detail="ETW/WFP bindings are not bundled yet; using weighted fallback sampling",
         )
-
-
-# ---------------------------------------------------------------------------
-# Factory
-# ---------------------------------------------------------------------------
-
-
-def select_network_collector(config):
-    """Return the right network collector instance for the current platform."""
-    if IS_MACOS and MacOSNetworkCollector.is_supported():
-        return MacOSNetworkCollector(config.network_interval, debug=config.debug_network)
-    if not IS_MACOS and not IS_WINDOWS and LinuxNetworkCollector.is_supported():
-        return LinuxNetworkCollector(config.network_interval)
-    if IS_WINDOWS:
-        return WindowsNetworkCollector(config.network_interval)
-    return PsutilFallbackNetworkCollector(config.network_interval)
