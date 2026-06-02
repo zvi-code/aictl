@@ -9,6 +9,7 @@ block on database queries.
 from __future__ import annotations
 
 import logging
+import sqlite3
 import threading
 import time
 
@@ -80,15 +81,46 @@ class _AnalyticsCache:
         self._last_success_ts: float | None = None
 
     def _mark_success(self) -> None:
+        recovered = False
         with self._health_lock:
+            recovered = self._consecutive_errors > 0
             self._consecutive_errors = 0
             self._last_error = None
             self._last_success_ts = time.time()
+        if recovered:
+            self._record_quality("ok", severity="info", message="Analytics background thread recovered")
 
     def _mark_error(self, exc: BaseException) -> None:
         with self._health_lock:
             self._consecutive_errors += 1
             self._last_error = f"{type(exc).__name__}: {exc}"
+            count = self._consecutive_errors
+        # Surface to the operator-facing /api/data-quality endpoint (the actor
+        # that consumes this signal) instead of only logging. Escalate severity
+        # once failures persist so a transient blip isn't treated like an outage.
+        severity = "error" if count >= 3 else "warning"
+        self._record_quality(
+            "failed",
+            severity=severity,
+            message=f"Analytics background recompute failed ({count}x): {type(exc).__name__}",
+            detail={"consecutive_errors": count, "error": str(exc)},
+        )
+
+    def _record_quality(self, status: str, *, severity: str, message: str, detail: dict | None = None) -> None:
+        db = getattr(self._store, "_db", None) if self._store else None
+        if db is None or not hasattr(db, "record_data_quality"):
+            return
+        try:
+            db.record_data_quality(
+                "dashboard:analytics-cache",
+                status,
+                kind="aggregator",
+                severity=severity,
+                message=message,
+                detail=detail,
+            )
+        except (OSError, sqlite3.Error):
+            logger.debug("analytics cache: failed to record data-quality signal", exc_info=True)
 
     def _loop(self) -> None:
         # Initial computation on startup
