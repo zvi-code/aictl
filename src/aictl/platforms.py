@@ -101,14 +101,17 @@ def _app_dir(
 
 
 def claude_global_dir() -> Path:
-    """~/.claude  (macOS/Linux)  |  %APPDATA%/Claude  (Windows)"""
-    return _app_dir("Claude", dot=".claude")
+    """~/.claude  (macOS/Linux)  |  %USERPROFILE%/.claude  (Windows)
+
+    Claude Code is the same cross-platform binary on every OS and resolves its
+    home via ``os.homedir()``/``UserHomeDir``, so the directory is ``.claude``
+    under the user profile on Windows (NOT ``%APPDATA%``).
+    """
+    return _app_dir(".claude", dot=".claude", win_env="USERPROFILE")
 
 
 def claude_account_config() -> Path:
-    """~/.claude.json  (macOS/Linux)  |  %APPDATA%/Claude/.claude.json  (Windows)"""
-    if IS_WINDOWS:
-        return claude_global_dir() / ".claude.json"
+    """~/.claude.json on every platform (sibling of the ``.claude`` dir)."""
     return Path.home() / ".claude.json"
 
 
@@ -126,13 +129,21 @@ def claude_project_memory_dir(project_hash: str) -> Path:
 
 
 def copilot_session_dir() -> Path:
-    """Directory where Copilot agent sessions are stored."""
-    return _app_dir("GitHub Copilot/session-state", dot=".copilot/session-state")
+    """Directory where Copilot agent sessions are stored (``~/.copilot/session-state``).
+
+    The Copilot CLI bundles Node.js and uses ``os.homedir()`` on every platform,
+    so this lives under ``%USERPROFILE%/.copilot`` on Windows (NOT ``%APPDATA%``).
+    """
+    return _app_dir(".copilot/session-state", dot=".copilot/session-state", win_env="USERPROFILE")
 
 
 def copilot_global_dir() -> Path:
-    """User-level Copilot CLI / VS Code Copilot hooks+skills dir (``~/.copilot``)."""
-    return _app_dir("GitHub Copilot", dot=".copilot")
+    """User-level Copilot CLI / VS Code Copilot hooks+skills dir (``~/.copilot``).
+
+    Same ``os.homedir()`` resolution as the CLI, so on Windows this is
+    ``%USERPROFILE%/.copilot`` (NOT ``%APPDATA%/GitHub Copilot``).
+    """
+    return _app_dir(".copilot", dot=".copilot", win_env="USERPROFILE")
 
 
 # ── VS Code ──────────────────────────────────────────────────────
@@ -170,8 +181,14 @@ def cursor_user_dir() -> Path:
 
 
 def windsurf_global_dir() -> Path:
-    """Windsurf / Codeium global config directory."""
-    return _app_dir("Codeium/windsurf", dot=".codeium/windsurf", xdg="Codeium/windsurf")
+    """Windsurf / Codeium global config directory (``~/.codeium/windsurf``).
+
+    Codeium stores under the home ``.codeium`` dir on every platform, so on
+    Windows this is ``%USERPROFILE%/.codeium/windsurf`` (NOT ``%APPDATA%``).
+    """
+    return _app_dir(
+        ".codeium/windsurf", dot=".codeium/windsurf", xdg="Codeium/windsurf", win_env="USERPROFILE"
+    )
 
 
 # ── GitHub CLI (gh) ─────────────────────────────────────────────

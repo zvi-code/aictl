@@ -47,7 +47,14 @@ def _kill_session_pids(pids: list[int], sig_name: str) -> dict[str, list[int]]:
     import os
     import signal as _signal
 
-    sig = _signal.SIGKILL if sig_name == "KILL" else _signal.SIGTERM
+    # SIGKILL does not exist on Windows; fall back to SIGTERM so the kill
+    # endpoint works out of the box there (os.kill on Windows terminates the
+    # process via TerminateProcess regardless of the signal value).
+    sig = (
+        getattr(_signal, "SIGKILL", _signal.SIGTERM)
+        if sig_name == "KILL"
+        else _signal.SIGTERM
+    )
     own = os.getpid()
     targets: list[int] = []
     for pid in pids:

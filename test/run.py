@@ -282,7 +282,7 @@ def test_6_memory_swap() -> None:
     section("=== TEST 6: Memory swap ===")
     # Resolve claude projects dir cross-platform (mirrors platforms.py logic)
     if _platform.system() == "Windows":
-        base = Path(os.environ.get("APPDATA", Path.home())) / "Claude"
+        base = Path(os.environ.get("USERPROFILE", str(Path.home()))) / ".claude"
     else:
         base = Path.home() / ".claude"
     proj = base / "projects" / "project"
