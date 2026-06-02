@@ -163,18 +163,18 @@ The deploy pipeline transforms `.context.toml` declarative files into tool-speci
 **Phase 2 — Parse** (`parser.py`): Parse each `.context.toml` file's TOML tables into a `ParsedAictx` dataclass. Table grammar:
 
 ```
-[instructions]                  — Instructions (profile keys → multi-line strings)
-[commands.<profile>.<name>]     — Slash command (content key)
-[agents.<profile>.<name>]       — Agent definition (content key)
-[skills.<profile>.<name>]       — Skill definition (content key)
-[mcp.<profile>.<name>]          — MCP server config (native TOML keys)
+[instructions]                  — Instructions (profile keys → multi-line strings; `key@tool` for tool overlays)
+[commands.<profile>.<name>]     — Slash command (content key; optional tools/not_tools selectors)
+[agents.<profile>.<name>]       — Agent definition (content key; optional tools/not_tools selectors)
+[skills.<profile>.<name>]       — Skill definition (content key; optional tools/not_tools selectors)
+[mcp.<profile>.<name>]          — MCP server config (native TOML keys; optional tools/not_tools selectors)
 [hooks.<profile>]               — Lifecycle hooks (EventName = 'JSON string')
-[lsp.<profile>.<name>]          — LSP server config (native TOML keys)
+[lsp.<profile>.<name>]          — LSP server config (native TOML keys; optional tools/not_tools selectors)
 [settings.<profile>]            — Setting key/value pairs
 [permissions]                   — Permission patterns
 [env.<profile>]                 — Environment variables
 [ignores]                       — Tool-specific ignore patterns
-[memory]                        — Memory hints
+[memory]                        — Memory hints (profile keys; `key@tool` for tool overlays)
 [plugin]                        — Plugin metadata
 [inherit]                       — Inheritance directives
 exclude = [...]                 — Capability exclusions (top-level array)
@@ -187,8 +187,9 @@ The `_always` profile means the section is active regardless of which profile is
 - **Capabilities**: only the root file's commands, agents, and skills are active (unless `[inherit] recursive: skills` pulls children up)
 - **MCP/Hooks/LSP/Settings/Permissions/Env**: root file only
 - **Excludes**: root's `[exclude]` filters out named capabilities
+- **Tool axis**: `resolve(root, scanned, profile, tool=...)` takes an optional `tool` argument orthogonal to the profile. When set, it applies the author-intent tool filter — `@tool` text overlays on `[instructions]`/`[memory]` and `tools`/`not_tools` selectors on named entries (see [context.toml-format.md](context.toml-format.md#tool-targeting-mode--tool)). `tool=None` disables all tool filtering and is fully backward-compatible.
 
-**Phase 4 — Emit** (`emitters/`): For each registered emitter (claude, copilot, cursor, windsurf), write native files at the root. Each emitter implements:
+**Phase 4 — Emit** (`emitters/`): Deploy calls `resolve(...)` **once per emitter** with `tool=<emitter name>`, so each tool receives its own tool-targeted `Resolved`. For each registered emitter (claude, copilot, cursor, windsurf, gemini), write native files at the root. The built-in feature-support matrix is applied here as a safety net beneath the author-intent filter. Each emitter implements:
 
 ```python
 def emit(root: Path, resolved: Resolved, dry_run: bool) -> list[dict]:
