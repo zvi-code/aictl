@@ -118,6 +118,31 @@ export async function getSessionMcpUsage(sessionId) {
   return r.json();
 }
 
+/** Per-session cost broken down by model.
+ *  Returns {session_id, models: [{model, requests, input_tokens,
+ *  output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd}],
+ *  totals: {...}}. */
+export async function getSessionCostByModel(sessionId) {
+  const r = await fetch(url('/api/session-cost-by-model?session_id=' + encodeURIComponent(sessionId)));
+  return r.json();
+}
+
+/** Per-session process genealogy (survives session end).
+ *  Returns {session_id, total, by_role: {role: count},
+ *  processes: [{pid, tool, role, joined_at}]}. */
+export async function getSessionProcesses(sessionId) {
+  const r = await fetch(url('/api/session-processes?session_id=' + encodeURIComponent(sessionId)));
+  return r.json();
+}
+
+/** Per-session tool-call timeline.
+ *  Returns {session_id, total, errors, by_tool: {tool: count},
+ *  calls: [{ts, tool_name, is_error, duration_ms, result_summary}]}. */
+export async function getSessionToolCalls(sessionId) {
+  const r = await fetch(url('/api/session-tool-calls?session_id=' + encodeURIComponent(sessionId)));
+  return r.json();
+}
+
 /** Per-session deduced stats + enrichments (e.g. vscode_lm_usage).
  *  Returns the SessionEntityState dict, optionally with vscode_lm_usage
  *  when OTel language_model.usage events exist. */
