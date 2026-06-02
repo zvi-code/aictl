@@ -2,9 +2,6 @@
 # Copyright (c) 2026 Zvi Schneider. MIT License.
 """Emitters package."""
 
-from abc import ABC, abstractmethod
-from typing import ClassVar
-
 # ── Registry (from registry.py) ──
 from . import claude, copilot, cursor, gemini, windsurf
 
@@ -19,31 +16,3 @@ def get(name: str):
 
 def all_names() -> list[str]:
     return list(_EMITTERS)
-
-
-def all_gitignore() -> list[str]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for mod in _EMITTERS.values():
-        for e in mod.GITIGNORE:
-            if e not in seen:
-                seen.add(e)
-                out.append(e)
-    return out
-
-
-# ── BaseEmitter ──
-
-
-class BaseEmitter(ABC):
-    NAME: ClassVar[str]
-    GITIGNORE: ClassVar[list[str]] = []
-
-    @abstractmethod
-    def emit(self, root, resolved, dry_run: bool = False) -> list[dict]: ...
-
-    def _combine_scope_text(self, scope) -> str:
-        combined = scope.base
-        if getattr(scope, "profile_text", None):
-            combined += "\n\n" + scope.profile_text
-        return combined

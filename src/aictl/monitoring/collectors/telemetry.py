@@ -83,11 +83,6 @@ class StructuredTelemetryCollector(BaseCollector):
             samples.extend(self._parse_file(path))
         return samples
 
-    def add_otel_file(self, path: str) -> None:
-        """Register an explicit OTel export file path for monitoring."""
-        if path and Path(path).exists():
-            self._otel_files.add(path)
-
     def _candidate_files(self) -> list[Path]:
         candidates: list[Path] = []
         # Explicit OTel files (highest priority — from tool_config detection)

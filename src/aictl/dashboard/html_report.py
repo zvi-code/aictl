@@ -601,7 +601,6 @@ def _files_html_by_dir(
     root: Path,
     home: Path,
     id_prefix: str,
-    auto_open_threshold: int = 0,
 ) -> str:
     """Render a list of ResourceFiles as a nested collapsible directory tree."""
     # Build tree: node = {"_files": [...], <subdir>: node}

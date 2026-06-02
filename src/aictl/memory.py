@@ -13,7 +13,6 @@ aictl only renames directories. Never reads/writes memory content.
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import json
 import logging
 import re
@@ -75,12 +74,6 @@ class SwapResult:
     def __getitem__(self, key: str):
         """Dict-style access for backward compatibility."""
         return getattr(self, key)
-
-
-def _memory_key(root: Path, profile: str | None) -> str:
-    """Stable key for a (root, profile) pair."""
-    root_hash = hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:12]
-    return f"{root.name}-{root_hash}" + (f"--{profile}" if profile else "--none")
 
 
 def _encode_project_path(resolved: str) -> str:

@@ -163,16 +163,6 @@ def _macos_login_items() -> set[str]:
         return set()
 
 
-def _macos_launch_agents() -> set[str]:
-    """Get names of user launch agents."""
-    if not IS_MACOS:
-        return set()
-    agents_dir = Path.home() / "Library" / "LaunchAgents"
-    if not agents_dir.is_dir():
-        return set()
-    return {f.stem for f in safe_iterdir(agents_dir) if f.suffix == ".plist"}
-
-
 def _mcp_server_names(data: dict | None) -> list[str]:
     """Extract MCP server names from a config dict with an 'mcpServers' key."""
     return list((data or {}).get("mcpServers", {}).keys())

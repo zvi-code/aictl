@@ -62,11 +62,6 @@ def metric_name(key: str, **kwargs: str) -> str:
     return key
 
 
-def validate_metric(name: str) -> bool:
-    """Check if a metric name matches a known definition."""
-    return name in load_metrics()
-
-
 # ─── Telemetry sources ───────────────────────────────────────────
 
 

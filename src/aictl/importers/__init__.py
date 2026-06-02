@@ -4,9 +4,7 @@
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import ClassVar
 
 
 @dataclass
@@ -83,13 +81,3 @@ def get(name: str):
 
 def all_names() -> list[str]:
     return list(_IMPORTERS)
-
-
-# ── BaseImporter ──
-
-
-class BaseImporter(ABC):
-    NAME: ClassVar[str]
-
-    @abstractmethod
-    def import_from(self, root) -> object | None: ...
