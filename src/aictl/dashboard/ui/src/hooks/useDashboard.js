@@ -30,7 +30,11 @@ export function useDashboard(opts = {}) {
   }, [refresh]);
 
   const handleMessage = useCallback((data) => {
-    setSnapshot(prev => (prev ? mergeSseSummary(prev, data) : data));
+    // An SSE summary is a partial payload (tools carry no files/processes
+    // arrays). It must never be adopted as the authoritative snapshot — wait
+    // for the full /snapshot fetch to seed state, otherwise consumers crash on
+    // undefined tool.files. The 30s refresh + initial fetch guarantee seeding.
+    setSnapshot(prev => (prev ? mergeSseSummary(prev, data) : prev));
     setHistory(prev => appendHistory(prev, data));
     setLastUpdateAt(Date.now());
   }, []);

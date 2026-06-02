@@ -1,0 +1,13 @@
+{
+  "name": "aictl-screenshots",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dev-only Playwright tooling to capture aictl dashboard screenshots for the README.",
+  "type": "module",
+  "scripts": {
+    "capture": "node capture.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.48.0"
+  }
+}

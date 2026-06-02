@@ -53,6 +53,12 @@ Each profile carries its own instructions, commands, MCP servers, hooks, and age
 
 *Live web dashboard (`aictl daemon serve`) — inventory stats, live monitor with active sessions and traffic rates, per-tool status with token counts and OTel diagnostics. [More screenshots below.](#screenshots)*
  
+## Session Explorer
+
+<img src="docs/screenshots/sessions.png" width="100%" alt="Session Explorer tab showing per-tool session tabs, a selected session with stats and an action timeline">
+
+*Session Explorer — browse every recorded session per tool. Pick a tool, then a session chip (with start time, duration, file and token counts) to inspect it: live CPU/memory/IO/token-rate stats, an action timeline (session start/end, file edits, tool calls), and sub-views for Overview, Flow, Transcript, Timeline, and Events.*
+
 ## Session Flow
 
 <img src="docs/screenshots/session-flow.png" width="100%" alt="Session Flow tab showing UML sequence diagram of agent sessions with API calls and token counts">

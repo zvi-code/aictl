@@ -153,8 +153,8 @@ function filterSnap(snap, enabledTools, searchQuery) {
       t.label.toLowerCase().includes(q) ||
       t.tool.toLowerCase().includes(q) ||
       (t.vendor && t.vendor.toLowerCase().includes(q)) ||
-      t.files.some(f => f.path.toLowerCase().includes(q)) ||
-      t.processes.some(p => (p.name || '').toLowerCase().includes(q) || (p.cmdline || '').toLowerCase().includes(q)) ||
+      (t.files || []).some(f => f.path.toLowerCase().includes(q)) ||
+      (t.processes || []).some(p => (p.name || '').toLowerCase().includes(q) || (p.cmdline || '').toLowerCase().includes(q)) ||
       (t.live && (
         (t.live.workspaces || []).some(w => w.toLowerCase().includes(q)) ||
         (t.live.sources || []).some(s => s.toLowerCase().includes(q))

@@ -40,7 +40,9 @@ export function reducer(state, action) {
   switch (action.type) {
     case 'SSE_UPDATE': {
       const data = action.payload;
-      const snap = state.snap ? mergeSseSummary(state.snap, data) : data;
+      // Partial SSE summary must not become the snapshot before a full one is
+      // seeded (its tools lack files/processes). Keep null until /snapshot lands.
+      const snap = state.snap ? mergeSseSummary(state.snap, data) : state.snap;
       const history = appendHistory(state.history, data);
       return { ...state, snap, history, connected: true };
     }

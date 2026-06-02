@@ -5,7 +5,7 @@ export default function ResourceBar({snap: s, mode}) {
   if(!s) return null;
   const showFiles = !mode || mode === 'files';
   const showTraffic = !mode || mode === 'traffic';
-  const fileTools = s.tools.filter(t=>t.tool!=='aictl'&&t.files.length);
+  const fileTools = s.tools.filter(t=>t.tool!=='aictl'&&t.files?.length);
   const fileTotal = fileTools.reduce((a,t)=>a+t.files.length,0)||1;
   const liveTools = s.tools.filter(t=>t.tool!=='aictl'&&t.live&&(t.live.outbound_rate_bps||t.live.inbound_rate_bps));
   const liveTotal = liveTools.reduce((a,t)=>a+(t.live.outbound_rate_bps||0)+(t.live.inbound_rate_bps||0),0)||1;
