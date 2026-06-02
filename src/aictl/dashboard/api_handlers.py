@@ -37,6 +37,44 @@ _IMPORTED_SESSION_SOURCES = {
 }
 
 
+def _kill_session_pids(pids: list[int], sig_name: str) -> dict[str, list[int]]:
+    """Send SIGTERM/SIGKILL to the given PIDs and their child trees.
+
+    Skips aictl's own process (defensive — a tracked PID should never be the
+    server itself, but a kill on ourselves would take down the very dashboard
+    issuing the command). Returns ``{signaled, failed}`` lists of PIDs.
+    """
+    import os
+    import signal as _signal
+
+    sig = _signal.SIGKILL if sig_name == "KILL" else _signal.SIGTERM
+    own = os.getpid()
+    targets: list[int] = []
+    for pid in pids:
+        if pid == own:
+            continue
+        targets.append(pid)
+        try:
+            import psutil
+
+            for child in psutil.Process(pid).children(recursive=True):
+                if child.pid != own:
+                    targets.append(child.pid)
+        except Exception:
+            # psutil missing / process gone / access denied — still attempt
+            # the parent below; child discovery is best-effort.
+            pass
+    signaled: list[int] = []
+    failed: list[int] = []
+    for pid in dict.fromkeys(targets):  # dedupe, preserve discovery order
+        try:
+            os.kill(pid, sig)
+            signaled.append(pid)
+        except OSError:
+            failed.append(pid)
+    return {"signaled": signaled, "failed": failed}
+
+
 def _cache_hit_ratio(session: dict) -> float | None:
     """Fraction of prompt tokens served from cache for a session.
 
@@ -1092,6 +1130,84 @@ class _APIHandlersMixin:
                 "calls": calls,
             }
         )
+
+    def _serve_session_kill(self) -> None:
+        """Signal a live session's tracked process tree (control action).
+
+        POST body: ``{session_id: str (required), confirm: true (required),
+        signal: "TERM"|"KILL" (default TERM)}``. Sends the signal to every PID
+        the correlator has linked to the session plus their children, refusing
+        to touch aictl's own process. The action is audited via an ``EventRow``
+        so it surfaces in the session's action timeline.
+
+        ``confirm:true`` is mandatory so an accidental/replayed request can't
+        tear down a session — the destructive intent must be explicit.
+        """
+        from ..storage import EventRow
+
+        content_length = int(self.headers.get("Content-Length", 0) or 0)
+        if content_length > 100_000:
+            self.send_error(413, "Payload too large")
+            return
+        try:
+            body = self.rfile.read(content_length)
+            data = json.loads(body or b"{}")
+        except (json.JSONDecodeError, OSError):
+            self._json_response({"error": "Invalid JSON"}, status=400)
+            return
+        if not isinstance(data, dict):
+            self._json_response({"error": "Request body must be a JSON object"}, status=400)
+            return
+
+        session_id = str(data.get("session_id", "") or "")
+        if not session_id:
+            self._json_response({"error": "Missing session_id"}, status=400)
+            return
+        if not data.get("confirm"):
+            self._json_response({"error": "Kill requires confirm:true"}, status=400)
+            return
+        sig_name = str(data.get("signal", "TERM") or "TERM").upper()
+        if sig_name.startswith("SIG"):
+            sig_name = sig_name[3:]
+        if sig_name not in ("TERM", "KILL"):
+            self._json_response({"error": "signal must be TERM or KILL"}, status=400)
+            return
+
+        snap = self.server.store.snapshot
+        if snap is None:
+            self._json_response({"error": "No live session data"}, status=503)
+            return
+        session = next((s for s in snap.sessions if s.get("session_id") == session_id), None)
+        if session is None:
+            self._json_response({"error": "Session not active"}, status=404)
+            return
+        pids = [int(p) for p in (session.get("pids") or []) if int(p) > 0]
+        if not pids:
+            self._json_response({"error": "Session has no tracked PIDs"}, status=409)
+            return
+
+        result = _kill_session_pids(pids, sig_name)
+        db = self._db
+        if db:
+            try:
+                db.append_event(
+                    EventRow(
+                        ts=time.time(),
+                        tool=str(session.get("tool", "")),
+                        kind="action:session_kill",
+                        detail={
+                            "session_id": session_id,
+                            "signal": "SIG" + sig_name,
+                            "signaled": result["signaled"],
+                            "failed": result["failed"],
+                        },
+                        session_id=session_id,
+                    )
+                )
+            except Exception:
+                # Audit logging must never block the control action itself.
+                pass
+        self._json_response({"session_id": session_id, "signal": "SIG" + sig_name, **result})
 
     def _serve_sessions(self) -> None:
         """Serve active and historical sessions.

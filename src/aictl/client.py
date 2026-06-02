@@ -130,6 +130,31 @@ class ServerClient:
         """GET /api/budget → token budget analysis."""
         return self._get_json("/api/budget")
 
+    # ── Mutating requests ─────────────────────────────────────────
+
+    def _post_json(self, path: str, payload: dict[str, Any]) -> Any:
+        """POST a JSON body to an endpoint and return the parsed response.
+
+        Raises ``urllib.error.HTTPError`` on non-2xx so callers can surface
+        the server's ``{"error": ...}`` message.
+        """
+        url = self.base_url + path
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+        resp = urllib.request.urlopen(req, timeout=10.0)
+        return json.loads(resp.read().decode("utf-8"))
+
+    def kill_session(self, session_id: str, signal: str = "TERM") -> dict:
+        """POST /api/session-kill → signal a live session's process tree."""
+        return self._post_json(
+            "/api/session-kill",
+            {"session_id": session_id, "confirm": True, "signal": signal},
+        )
+
     # ── SSE stream ────────────────────────────────────────────────
 
     def stream(self, timeout: float = 35.0) -> Iterator[dict]:
