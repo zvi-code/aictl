@@ -17,7 +17,7 @@ import click
 from ..monitoring.config import MonitorConfig
 from ..monitoring.runtime import MonitorRuntime
 from ..orchestrator import start_server
-from ..platforms import IS_WINDOWS, load_config
+from ..platforms import IS_WINDOWS, cursor_home_dir, load_config
 
 # ─── serve ───────────────────────────────────────────────────────────────────
 
@@ -311,7 +311,7 @@ def _ingesters_status() -> list[dict[str, str]]:
     """
     entries: list[dict[str, str]] = []
 
-    cursor_db = Path("~/.cursor/conversations.db").expanduser()
+    cursor_db = cursor_home_dir() / "conversations.db"
     if cursor_db.exists():
         cursor_status = "available"
         cursor_detail = f"source present at {cursor_db}"
