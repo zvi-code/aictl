@@ -618,6 +618,25 @@ class TestSessionDetailAPI:
 class TestSessionKillAPI:
     """POST /api/session-kill — control action with a confirm gate."""
 
+    def test_kill_force_falls_back_to_sigterm_without_sigkill(self, monkeypatch):
+        """On Windows ``signal.SIGKILL`` does not exist; the force-kill path must
+        degrade to SIGTERM instead of raising AttributeError (which would crash
+        the dashboard kill endpoint out of the box on Windows)."""
+        import os
+        import signal
+
+        import aictl.dashboard.api_handlers as ah
+
+        # Simulate the Windows signal module (no SIGKILL attribute).
+        monkeypatch.delattr(signal, "SIGKILL", raising=False)
+        sent: list[int] = []
+        monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append(sig))
+
+        result = ah._kill_session_pids([999999], "KILL")
+
+        assert sent == [signal.SIGTERM]
+        assert result["signaled"] == [999999]
+
     def test_kill_signals_tracked_pids(self, server, monkeypatch):
         import aictl.dashboard.api_handlers as ah
 

@@ -289,7 +289,7 @@ def _settings_path(scope: str) -> Path:
         # machine-specific and must not be committed to git.
         return Path.cwd() / ".claude" / "settings.local.json"
     # User-level: ~/.claude/settings.json (macOS/Linux) or
-    # %APPDATA%\Claude\settings.json (Windows)
+    # %USERPROFILE%\.claude\settings.json (Windows)
     return claude_global_dir() / "settings.json"
 
 
