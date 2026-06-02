@@ -76,6 +76,29 @@ def test_cursor_home_dir_uses_userprofile(windows_env):
     assert "AppData/Roaming" not in _tail(platforms.cursor_home_dir())
 
 
+def test_claude_desktop_config_uses_appdata(windows_env):
+    # Claude Desktop is a genuine Electron %APPDATA% app (unlike the CLI's ~/.claude).
+    assert _tail(platforms.claude_desktop_config()) == (
+        "C:/Users/dev/AppData/Roaming/Claude/claude_desktop_config.json"
+    )
+
+
+def test_empty_appdata_falls_back_to_home_not_relative(monkeypatch):
+    """A present-but-empty %APPDATA% must not yield a CWD-relative path.
+
+    Regression: ``os.environ.get("APPDATA", default)`` returns ``""`` when the
+    var is set-but-empty, which previously produced a relative ``Claude/...``
+    path rooted at the CWD. ``_app_dir`` must fall back to the home dir.
+    """
+    monkeypatch.setattr(platforms, "IS_WINDOWS", True)
+    monkeypatch.setattr(platforms, "IS_MACOS", False)
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\dev")
+    monkeypatch.setenv("APPDATA", "")  # present but empty
+    p = platforms.claude_desktop_config()
+    assert p.is_absolute() or _tail(p).startswith("C:/"), f"relative path leaked: {p}"
+    assert "Claude/claude_desktop_config.json" in _tail(p)
+
+
 def test_centralization_no_adhoc_os_detection():
     """OS detection must live in platforms.py — modules import the central flags.
 
