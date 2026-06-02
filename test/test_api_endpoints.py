@@ -1281,3 +1281,24 @@ class TestSessionMessagesAPI:
         assert "unique answer" in contents
         assert data["sources"]["otel"] >= 1
         assert data["sources"]["copilot_store"] == 2
+
+    def test_within_source_repeats_are_preserved(self, server, populated_db):
+        """Regression: two genuinely-distinct identical messages in the SAME
+        source within one wall-clock second must not be collapsed. The old
+        `(role, content, int(ts))` key silently dropped the second one."""
+        conn = populated_db._conn()
+        now = float(int(time.time()))
+        conn.executemany(
+            "INSERT INTO copilot_session_messages"
+            "(session_id, source_row_id, source_table, role, content, ts, ingested_at)"
+            " VALUES(?,?,?,?,?,?,?)",
+            [
+                ("sess-repeat", 21, "messages", "user", "continue", now, now),
+                ("sess-repeat", 22, "messages", "user", "continue", now + 0.1, now),
+            ],
+        )
+        conn.commit()
+
+        data = _get_json(f"{server}/api/session-messages?session_id=sess-repeat")
+        contents = [m["content"] for m in data["messages"]]
+        assert contents.count("continue") == 2

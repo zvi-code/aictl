@@ -379,6 +379,39 @@ class TestAnalyticsCache:
         assert elapsed < 0.001, f"get() took {elapsed * 1000:.1f}ms (must be <1ms)"
         assert isinstance(result, dict)
 
+    def test_health_surfaces_recompute_failures(self, db: HistoryDB):
+        """A failing background recompute must become an observable signal
+        in get()['_health'], not a silently-swallowed log line."""
+        from unittest.mock import MagicMock
+
+        from aictl.dashboard.web_server import _AnalyticsCache
+
+        cache = _AnalyticsCache()
+        store = MagicMock()
+        store._db = db
+        cache._store = store
+        cache._requested_range = (0, time.time())
+
+        # Healthy after a successful compute.
+        cache._recompute()
+        cache._mark_success()
+        assert cache.get(0, time.time())["_health"]["ok"] is True
+
+        # Simulate the loop catching a recompute error.
+        try:
+            raise RuntimeError("db exploded")
+        except RuntimeError as exc:
+            cache._mark_error(exc)
+
+        health = cache.get(0, time.time())["_health"]
+        assert health["ok"] is False
+        assert health["consecutive_errors"] == 1
+        assert "db exploded" in health["last_error"]
+
+        # Recovery clears the signal.
+        cache._mark_success()
+        assert cache.get(0, time.time())["_health"]["ok"] is True
+
 
 class TestAnalyticsPerformance:
     """Ensure analytics queries complete within acceptable time bounds.
