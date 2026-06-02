@@ -167,6 +167,84 @@ def populated_db(tmp_path):
         )
     )
 
+    # Session with rich detail: per-model requests, tool invocations,
+    # process genealogy, and cache tokens (for cost-by-model / cache-ratio /
+    # process / tool-call endpoints).
+    from aictl.storage import RequestRow, ToolInvocationRow
+
+    db.upsert_session(
+        SessionRow(
+            session_id="sess-detail",
+            tool="claude-code",
+            project_path="/project",
+            started_at=now - 400,
+            ended_at=now - 50,
+            input_tokens=1000,
+            output_tokens=600,
+            cache_read_tokens=3000,
+            cache_creation_tokens=200,
+            cost_usd=0.42,
+            source="hook",
+        )
+    )
+    db.append_request(
+        RequestRow(
+            ts=now - 390,
+            session_id="sess-detail",
+            tool="claude-code",
+            model="claude-sonnet-4",
+            input_tokens=700,
+            output_tokens=400,
+            cache_read_tokens=2000,
+            cost_usd=0.30,
+        )
+    )
+    db.append_request(
+        RequestRow(
+            ts=now - 380,
+            session_id="sess-detail",
+            tool="claude-code",
+            model="claude-sonnet-4",
+            input_tokens=200,
+            output_tokens=150,
+            cache_read_tokens=1000,
+            cost_usd=0.08,
+        )
+    )
+    db.append_request(
+        RequestRow(
+            ts=now - 370,
+            session_id="sess-detail",
+            tool="claude-code",
+            model="claude-haiku",
+            input_tokens=100,
+            output_tokens=50,
+            cost_usd=0.04,
+        )
+    )
+    db.append_tool_invocation(
+        ToolInvocationRow(
+            ts=now - 385,
+            session_id="sess-detail",
+            tool="claude-code",
+            tool_name="Read",
+            duration_ms=12.5,
+        )
+    )
+    db.append_tool_invocation(
+        ToolInvocationRow(
+            ts=now - 375,
+            session_id="sess-detail",
+            tool="claude-code",
+            tool_name="Bash",
+            is_error=1,
+            duration_ms=88.0,
+            result_summary="exit 1",
+        )
+    )
+    db.link_session_process("sess-detail", pid=4242, tool="claude-code", role="lead")
+    db.link_session_process("sess-detail", pid=4243, tool="claude-code", role="subagent")
+
     yield db
     db.close()
 
@@ -332,9 +410,7 @@ class TestObservabilitySubstrateAPI:
 
         assert updated["permissions"]["allow"] == ["Read(*)"]
         assert updated["permissions"]["deny"] == ["Bash(rm -rf *)"]
-        assert json.loads((root / ".claude" / "settings.json").read_text())["permissions"]["allow"] == [
-            "Read(*)"
-        ]
+        assert json.loads((root / ".claude" / "settings.json").read_text())["permissions"]["allow"] == ["Read(*)"]
 
     def test_series(self, server):
         since = int(time.time()) - 3600
@@ -429,6 +505,12 @@ class TestSessionsAPI:
         data = _get_json(f"{server}/api/sessions?tool=claude-code")
         assert all(s["tool"] == "claude-code" for s in data)
 
+    def test_sessions_include_cache_hit_ratio(self, server):
+        data = _get_json(f"{server}/api/sessions")
+        detail = next(s for s in data if s["session_id"] == "sess-detail")
+        # cache_read=3000, input=1000 → 3000 / (1000 + 3000) = 0.75
+        assert detail["cache_hit_ratio"] == 0.75
+
     def test_no_snapshot_returns_503(self):
         """Sessions endpoint with no snapshot returns 503."""
         from pathlib import Path
@@ -456,6 +538,62 @@ class TestSessionsAPI:
             assert status == 503
         finally:
             srv.shutdown()
+
+
+# ── Session detail API (cost-by-model, processes, tool-calls) ─────
+
+
+class TestSessionDetailAPI:
+    def test_cost_by_model_breakdown(self, server):
+        data = _get_json(f"{server}/api/session-cost-by-model?session_id=sess-detail")
+        assert data["session_id"] == "sess-detail"
+        models = {m["model"]: m for m in data["models"]}
+        assert set(models) == {"claude-sonnet-4", "claude-haiku"}
+        # Two sonnet requests aggregated.
+        sonnet = models["claude-sonnet-4"]
+        assert sonnet["requests"] == 2
+        assert sonnet["input_tokens"] == 900
+        assert sonnet["output_tokens"] == 550
+        assert sonnet["cache_read_tokens"] == 3000
+        assert round(sonnet["cost_usd"], 2) == 0.38
+        # Cost-desc ordering: sonnet (0.38) before haiku (0.04).
+        assert data["models"][0]["model"] == "claude-sonnet-4"
+        assert data["totals"]["requests"] == 3
+        assert round(data["totals"]["cost_usd"], 2) == 0.42
+
+    def test_cost_by_model_requires_session_id(self, server):
+        assert _get_status(f"{server}/api/session-cost-by-model") == 400
+
+    def test_cost_by_model_empty_for_unknown(self, server):
+        data = _get_json(f"{server}/api/session-cost-by-model?session_id=nope")
+        assert data["models"] == []
+        assert data["totals"]["requests"] == 0
+
+    def test_session_processes_genealogy(self, server):
+        data = _get_json(f"{server}/api/session-processes?session_id=sess-detail")
+        assert data["session_id"] == "sess-detail"
+        assert data["total"] == 2
+        assert data["by_role"] == {"lead": 1, "subagent": 1}
+        pids = {p["pid"] for p in data["processes"]}
+        assert pids == {4242, 4243}
+
+    def test_session_processes_requires_session_id(self, server):
+        assert _get_status(f"{server}/api/session-processes") == 400
+
+    def test_session_tool_calls_timeline(self, server):
+        data = _get_json(f"{server}/api/session-tool-calls?session_id=sess-detail")
+        assert data["session_id"] == "sess-detail"
+        assert data["total"] == 2
+        assert data["errors"] == 1
+        assert data["by_tool"] == {"Read": 1, "Bash": 1}
+        names = {c["tool_name"] for c in data["calls"]}
+        assert names == {"Read", "Bash"}
+        bash = next(c for c in data["calls"] if c["tool_name"] == "Bash")
+        assert bash["is_error"] is True
+        assert bash["result_summary"] == "exit 1"
+
+    def test_session_tool_calls_requires_session_id(self, server):
+        assert _get_status(f"{server}/api/session-tool-calls") == 400
 
 
 # ── Files API ─────────────────────────────────────────────────────
@@ -543,8 +681,7 @@ class TestContextTomlAllowlist:
         unrelated = tmp_path / "README.md"
         unrelated.write_text("# readme\n")
         assert not allowed.is_allowed(str(unrelated)), (
-            "Allowlist must not over-broaden — only .context.toml files, "
-            "not arbitrary files under root."
+            "Allowlist must not over-broaden — only .context.toml files, not arbitrary files under root."
         )
         # Sanity: cleanup type hint usage (silence lint)
         assert isinstance(ctx, _Path)
@@ -630,10 +767,7 @@ class TestContextTomlAllowlist:
         try:
             import urllib.parse
 
-            url = (
-                f"http://127.0.0.1:{port}/api/file?"
-                + urllib.parse.urlencode({"path": str(ctx)})
-            )
+            url = f"http://127.0.0.1:{port}/api/file?" + urllib.parse.urlencode({"path": str(ctx)})
             with urllib.request.urlopen(url, timeout=5) as resp:
                 assert resp.status == 200, resp.status
                 body = resp.read().decode("utf-8")

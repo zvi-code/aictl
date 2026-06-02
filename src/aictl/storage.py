@@ -2920,6 +2920,51 @@ class HistoryDB:
             )
         )
 
+    def query_session_cost_by_model(self, session_id: str) -> list[dict]:
+        """Aggregate a session's LLM requests grouped by model.
+
+        Returns one row per model: ``{model, requests, input_tokens,
+        output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd}``,
+        ordered by descending cost. Empty when the session has no persisted
+        requests. Surfaces the per-model cost breakdown that the session-level
+        ``cost_usd`` aggregate collapses.
+        """
+        if not session_id:
+            return []
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT COALESCE(NULLIF(model, ''), 'unknown') AS model,"
+            " COUNT(*) AS requests,"
+            " COALESCE(SUM(input_tokens), 0) AS input_tokens,"
+            " COALESCE(SUM(output_tokens), 0) AS output_tokens,"
+            " COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,"
+            " COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,"
+            " COALESCE(SUM(cost_usd), 0.0) AS cost_usd"
+            " FROM requests WHERE session_id = ?"
+            " GROUP BY COALESCE(NULLIF(model, ''), 'unknown')"
+            " ORDER BY cost_usd DESC, requests DESC",
+            (session_id,),
+        )
+        return _rows_to_dicts(rows)
+
+    def get_session_processes(self, session_id: str) -> list[dict]:
+        """Return the process genealogy linked to a session.
+
+        Each row is ``{pid, tool, role, joined_at}`` ordered by join time.
+        Backs ``/api/session-processes`` — the persisted process tree that
+        the live snapshot's subprocess counts do not preserve once a
+        session ends.
+        """
+        if not session_id:
+            return []
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT pid, tool, role, joined_at FROM session_processes"
+            " WHERE session_id = ? ORDER BY joined_at ASC, pid ASC",
+            (session_id,),
+        )
+        return _rows_to_dicts(rows)
+
     # ── File write index ──────────────────────────────────────────
 
     def record_file_write(self, row: FileWriteRow) -> bool:

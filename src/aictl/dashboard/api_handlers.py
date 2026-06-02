@@ -37,6 +37,22 @@ _IMPORTED_SESSION_SOURCES = {
 }
 
 
+def _cache_hit_ratio(session: dict) -> float | None:
+    """Fraction of prompt tokens served from cache for a session.
+
+    ``cache_read / (input + cache_read)``. Live snapshot dicts use the
+    ``exact_*`` token keys; persisted rows use the plain keys. Returns
+    ``None`` when no token data is present so the UI can render an
+    empty-state rather than a misleading 0.0.
+    """
+    cache_read = int(session.get("cache_read_tokens", session.get("exact_cache_read_tokens", 0)) or 0)
+    input_tokens = int(session.get("input_tokens", session.get("exact_input_tokens", 0)) or 0)
+    denom = input_tokens + cache_read
+    if denom <= 0:
+        return None
+    return round(cache_read / denom, 4)
+
+
 def _db_session_lifecycle_status(row: dict, entity_state: object | None = None) -> tuple[str, bool]:
     """Return (lifecycle_status, active) for a persisted session row."""
     if row.get("ended_at"):
@@ -919,7 +935,12 @@ class _APIHandlersMixin:
                     )
                     churn_by_sid = {row[0]: int(row[1] or 0) for row in cur.fetchall()}
                     for r in runs:
-                        r["file_churn"] = churn_by_sid.get(r["session_id"], 0)
+                        # Only fill rows that were missing churn (file_churn == 0).
+                        # Overwriting every run with ``.get(sid, 0)`` would reset
+                        # already-correct values to 0 for sessions not in the
+                        # zero-churn re-query.
+                        if r["file_churn"] == 0 and r["session_id"] in churn_by_sid:
+                            r["file_churn"] = churn_by_sid[r["session_id"]]
                 except Exception:
                     pass
 
@@ -974,6 +995,103 @@ class _APIHandlersMixin:
             entries = db.query_datapoint_catalog(tab=tab, key=key, source_type=source_type)
 
         self._json_response(entries)
+
+    def _serve_session_cost_by_model(self) -> None:
+        """Serve a session's cost/token breakdown grouped by model.
+
+        Params: ?session_id=X (required)
+        Returns ``{session_id, models: [{model, requests, input_tokens,
+        output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd}],
+        totals: {...}}``. Surfaces the per-model attribution that the
+        session-level ``cost_usd`` aggregate hides.
+        """
+        session_id = self._qs_get("session_id")
+        if not session_id:
+            self.send_error(400, "Missing session_id")
+            return
+        db = self._require_db()
+        if not db:
+            return
+
+        models = db.query_session_cost_by_model(session_id)
+        totals = {
+            "requests": sum(int(m.get("requests", 0)) for m in models),
+            "input_tokens": sum(int(m.get("input_tokens", 0)) for m in models),
+            "output_tokens": sum(int(m.get("output_tokens", 0)) for m in models),
+            "cache_read_tokens": sum(int(m.get("cache_read_tokens", 0)) for m in models),
+            "cache_creation_tokens": sum(int(m.get("cache_creation_tokens", 0)) for m in models),
+            "cost_usd": round(sum(float(m.get("cost_usd", 0.0)) for m in models), 6),
+        }
+        self._json_response({"session_id": session_id, "models": models, "totals": totals})
+
+    def _serve_session_processes(self) -> None:
+        """Serve the persisted process genealogy for a session.
+
+        Params: ?session_id=X (required)
+        Returns ``{session_id, processes: [{pid, tool, role, joined_at}]}``.
+        Unlike ``/api/session-subprocesses`` (live-snapshot counts only),
+        this reads the persisted ``session_processes`` table so the process
+        tree survives after a session ends.
+        """
+        session_id = self._qs_get("session_id")
+        if not session_id:
+            self.send_error(400, "Missing session_id")
+            return
+        db = self._require_db()
+        if not db:
+            return
+
+        processes = db.get_session_processes(session_id)
+        roles = Counter(str(p.get("role", "") or "unknown") for p in processes)
+        self._json_response(
+            {
+                "session_id": session_id,
+                "total": len(processes),
+                "by_role": dict(roles),
+                "processes": processes,
+            }
+        )
+
+    def _serve_session_tool_calls(self) -> None:
+        """Serve the per-session tool-invocation timeline.
+
+        Params: ?session_id=X (required) &limit=N
+        Returns ``{session_id, total, errors, by_tool: {name: count},
+        calls: [{ts, tool_name, duration_ms, is_error, result_summary}]}``.
+        Surfaces the ``tool_invocations`` table which was previously
+        captured but never exposed per session.
+        """
+        session_id = self._qs_get("session_id")
+        if not session_id:
+            self.send_error(400, "Missing session_id")
+            return
+        db = self._require_db()
+        if not db:
+            return
+
+        limit = min(int(self._qs_get("limit", "500")), 2000)
+        rows = db.query_tool_invocations(session_id=session_id, limit=limit)
+        calls = [
+            {
+                "ts": float(r.get("ts", 0.0) or 0.0),
+                "tool_name": r.get("tool_name", "") or r.get("tool", ""),
+                "duration_ms": float(r.get("duration_ms", 0.0) or 0.0),
+                "is_error": bool(r.get("is_error", 0)),
+                "result_summary": r.get("result_summary", ""),
+            }
+            for r in rows
+        ]
+        by_tool = Counter(c["tool_name"] or "unknown" for c in calls)
+        errors = sum(1 for c in calls if c["is_error"])
+        self._json_response(
+            {
+                "session_id": session_id,
+                "total": len(calls),
+                "errors": errors,
+                "by_tool": dict(by_tool),
+                "calls": calls,
+            }
+        )
 
     def _serve_sessions(self) -> None:
         """Serve active and historical sessions.
@@ -1039,6 +1157,8 @@ class _APIHandlersMixin:
                                 "model": s.get("model", ""),
                                 "input_tokens": s.get("input_tokens", 0),
                                 "output_tokens": s.get("output_tokens", 0),
+                                "cache_read_tokens": s.get("cache_read_tokens", 0),
+                                "cache_creation_tokens": s.get("cache_creation_tokens", 0),
                                 "cost_usd": s.get("cost_usd", 0),
                                 "project": s.get("project_path", ""),
                                 "git_branch": s.get("git_branch", ""),
@@ -1076,6 +1196,7 @@ class _APIHandlersMixin:
             if "commit_count" not in s:
                 sid = s.get("session_id", "")
                 s["commit_count"] = self._db.count_session_commits(sid) if (self._db and sid) else 0
+            s["cache_hit_ratio"] = _cache_hit_ratio(s)
 
         self._json_response(sessions[:limit])
 
