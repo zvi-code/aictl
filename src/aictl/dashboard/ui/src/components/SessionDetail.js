@@ -14,6 +14,7 @@ import McpUsagePanel from './session_detail/McpUsagePanel.js';
 import CostByModelPanel from './session_detail/CostByModelPanel.js';
 import ProcessTreePanel from './session_detail/ProcessTreePanel.js';
 import ToolCallsPanel from './session_detail/ToolCallsPanel.js';
+import SessionControl from './session_detail/SessionControl.js';
 import { fmtDur } from './session_detail/helpers.js';
 
 // Thin orchestrator — just the session header + a stack of Panels.
@@ -41,6 +42,7 @@ export default function SessionDetail({session, onClose}) {
         ${hasTeam && html`<span class="badge" style="background:var(--accent);color:var(--bg);font-size:var(--fs-xs)">
           Team (${entityState.agents.length})
         </span>`}
+        ${session.active && html`<${SessionControl} sessionId=${session.session_id}/>`}
       </div>
       <div class="text-muted text-xs mono" style="margin-top:var(--sp-2)" title=${session.session_id}>
         ${session.session_id}

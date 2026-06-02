@@ -275,6 +275,22 @@ export async function updateToolConfig(tool, payload) {
   return data;
 }
 
+// ─── Session control ───────────────────────────────────────────
+
+/** Signal a live session's tracked process tree. `signal` is "TERM" (default)
+ *  or "KILL". Requires the backend's confirm gate — we always pass confirm:true
+ *  because the UI presents its own confirmation dialog before calling this. */
+export async function killSession(sessionId, signal = 'TERM') {
+  const r = await fetch(url('/api/session-kill'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId, confirm: true, signal }),
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || 'Failed to signal session');
+  return data;
+}
+
 // ─── Datapoints ────────────────────────────────────────────────
 
 let _datapointCache = null;

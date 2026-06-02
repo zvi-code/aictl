@@ -333,6 +333,25 @@ def _put_json(url, payload):
         return json.loads(resp.read())
 
 
+def _post_json(url, payload):
+    """POST JSON, returning (status, parsed_body) even on HTTP errors."""
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = e.read()
+        try:
+            return e.code, json.loads(body)
+        except json.JSONDecodeError:
+            return e.code, {}
+
+
 @pytest.fixture()
 def config_server(populated_db, tmp_path):
     from aictl.dashboard.web_server import (
@@ -594,6 +613,57 @@ class TestSessionDetailAPI:
 
     def test_session_tool_calls_requires_session_id(self, server):
         assert _get_status(f"{server}/api/session-tool-calls") == 400
+
+
+class TestSessionKillAPI:
+    """POST /api/session-kill — control action with a confirm gate."""
+
+    def test_kill_signals_tracked_pids(self, server, monkeypatch):
+        import aictl.dashboard.api_handlers as ah
+
+        calls = {}
+
+        def fake_kill(pids, sig_name):
+            calls["pids"] = list(pids)
+            calls["sig"] = sig_name
+            return {"signaled": list(pids), "failed": []}
+
+        # Module global resolved at call time → patch is seen by server thread.
+        monkeypatch.setattr(ah, "_kill_session_pids", fake_kill)
+        status, body = _post_json(
+            f"{server}/api/session-kill",
+            {"session_id": "live-001", "confirm": True},
+        )
+        assert status == 200
+        assert calls["pids"] == [1234]
+        assert calls["sig"] == "TERM"
+        assert body["signal"] == "SIGTERM"
+        assert body["signaled"] == [1234]
+
+    def test_kill_requires_confirm(self, server, monkeypatch):
+        import aictl.dashboard.api_handlers as ah
+
+        monkeypatch.setattr(ah, "_kill_session_pids", lambda *a: pytest.fail("should not kill"))
+        status, body = _post_json(
+            f"{server}/api/session-kill",
+            {"session_id": "live-001"},
+        )
+        assert status == 400
+        assert "confirm" in body["error"].lower()
+
+    def test_kill_unknown_session_404(self, server):
+        status, body = _post_json(
+            f"{server}/api/session-kill",
+            {"session_id": "nope", "confirm": True},
+        )
+        assert status == 404
+
+    def test_kill_rejects_bad_signal(self, server):
+        status, body = _post_json(
+            f"{server}/api/session-kill",
+            {"session_id": "live-001", "confirm": True, "signal": "HUP"},
+        )
+        assert status == 400
 
 
 # ── Files API ─────────────────────────────────────────────────────

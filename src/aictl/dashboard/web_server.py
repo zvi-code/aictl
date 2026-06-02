@@ -415,6 +415,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/hooks":
             self._receive_hook()
+        elif path == "/api/session-kill":
+            self._serve_session_kill()
         elif path == "/v1/metrics":
             self._receive_otel_metrics()
         elif path == "/v1/logs":

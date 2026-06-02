@@ -13,6 +13,7 @@ from .commands.daemon import dashboard, monitor, serve
 from .commands.disable import audit, disable
 from .commands.import_plugin import import_cmd, plugin
 from .commands.integrations import enable, hooks, otel
+from .commands.session import session_group
 from .commands.status import memory, status
 
 try:
@@ -56,6 +57,10 @@ daemon_group.add_command(monitor)
 daemon_group.add_command(dashboard)
 
 main.add_command(daemon_group)
+
+# ── session subgroup ─────────────────────────────────────────────────────────
+
+main.add_command(session_group)
 
 # ── top-level commands ───────────────────────────────────────────────────────
 
