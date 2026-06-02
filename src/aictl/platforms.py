@@ -81,8 +81,11 @@ def _app_dir(
 ) -> Path:
     """Resolve a cross-platform config directory with minimal repetition."""
     if IS_WINDOWS:
-        return Path(os.environ.get(win_env, str(Path.home()))) / win
-    _xdg_base = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+        # ``or`` (not a get-default) so a present-but-empty env var still
+        # falls back to home instead of yielding a CWD-relative path.
+        base = os.environ.get(win_env) or str(Path.home())
+        return Path(base) / win
+    _xdg_base = Path(os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config"))
     if IS_MACOS:
         if mac:
             return Path.home() / "Library" / "Application Support" / mac
@@ -113,6 +116,21 @@ def claude_global_dir() -> Path:
 def claude_account_config() -> Path:
     """~/.claude.json on every platform (sibling of the ``.claude`` dir)."""
     return Path.home() / ".claude.json"
+
+
+def claude_desktop_dir() -> Path:
+    """Claude *Desktop* config dir (the Electron app — genuinely %APPDATA%).
+
+    ``~/Library/Application Support/Claude`` (macOS) |
+    ``%APPDATA%\\Claude`` (Windows) | ``~/.config/Claude`` (Linux).
+    Distinct from :func:`claude_global_dir` (the CLI's ``~/.claude``).
+    """
+    return _app_dir("Claude", mac="Claude")
+
+
+def claude_desktop_config() -> Path:
+    """Path to Claude Desktop's ``claude_desktop_config.json``."""
+    return claude_desktop_dir() / "claude_desktop_config.json"
 
 
 def claude_projects_dir() -> Path:

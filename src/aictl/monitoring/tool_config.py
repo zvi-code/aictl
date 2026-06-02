@@ -28,6 +28,7 @@ from ..fsutil import safe_iterdir
 from ..platforms import (
     IS_MACOS,
     IS_WINDOWS,
+    claude_desktop_config,
     claude_global_dir,
     codex_global_dir,
     cursor_user_dir,
@@ -349,12 +350,7 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
 def _parse_claude_desktop_config(root: Path | None = None, tool: str = "claude-desktop") -> ToolConfig | None:
     cfg = ToolConfig(tool=tool)
 
-    if IS_MACOS:
-        config_path = Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
-    elif IS_WINDOWS:
-        config_path = Path(os.environ.get("APPDATA", "")) / "Claude" / "claude_desktop_config.json"
-    else:
-        config_path = Path.home() / ".config" / "Claude" / "claude_desktop_config.json"
+    config_path = claude_desktop_config()
 
     data = _read_json(config_path)
     if not data:
