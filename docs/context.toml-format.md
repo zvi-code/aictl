@@ -25,9 +25,12 @@ my-project/
   debug = '''...'''                     # profile-specific instructions
   docs = '''...'''                      # profile-specific instructions
   any-profile-name = '''...'''          # any profile name works
+  "base@claude" = '''...'''             # tool overlay: appended for claude only
 
 [commands.<profile>.<name>]             # Slash command
   content = '''...'''
+  tools = ["claude"]                    # optional: target only these tools
+  not_tools = ["cursor"]                # optional: exclude these tools
 
 [agents.<profile>.<name>]              # Copilot agent
   content = '''...'''
@@ -38,6 +41,7 @@ my-project/
 [mcp.<profile>.<name>]                 # MCP server (native TOML keys)
   type = "http"
   url = "https://..."
+  not_tools = ["cursor"]               # optional tool selector (stripped from output)
 
 [hooks.<profile>]                      # Lifecycle hooks (EventName = 'JSON string')
   PreToolUse = '[{"matcher": "Bash", ...}]'
@@ -60,6 +64,7 @@ my-project/
 
 [memory]                               # Memory hints
   debug = '''...'''
+  "debug@claude" = '''...'''           # tool overlay: appended for claude only
 
 [plugin]                               # Plugin metadata
   name = "..."
@@ -206,6 +211,67 @@ exclude = [
 ```
 
 Format: `type:profile:name`, where `type` is the singular resolved kind (`command`, `agent`, `skill`, `mcp`, `hook`, or `lsp`).
+
+## Tool Targeting (mode × tool)
+
+The **profile** axis answers *what workstream am I in* (`debug`, `perf`, `docs`).
+A second, orthogonal axis answers *which AI tool receives this content* — so the
+same project can hand `claude`, `copilot`, `cursor`, `windsurf`, and `gemini`
+different slices of the **same** profile. The tool axis is optional: omit every
+tool selector and a config behaves exactly as before (every tool gets everything).
+
+There are two ways to target a tool, depending on the section type.
+
+### 1. `@tool` overlays on text sections
+
+For `[instructions]` and `[memory]`, append `@<tool>` to a key. The overlay is
+**additive** — it is concatenated *after* the unqualified key for that tool only:
+
+```toml
+[instructions]
+base          = "FastAPI service. Tests live in test/."
+"base@cursor" = "Prefer minimal diffs; do not refactor unrelated code."
+perf          = "Measure before you change anything; establish a baseline first."
+"perf@claude" = "Use the flame-graph skill and the benchmark MCP server."
+
+[memory]
+"perf@claude" = "Baseline numbers are saved under bench/."
+```
+
+Deploying the `perf` profile to Claude yields `perf` **+** `perf@claude`;
+deploying it to Copilot yields just `perf`. (Keys containing `@` must be quoted
+in TOML.)
+
+### 2. `tools` / `not_tools` on named entries
+
+For `[commands.*]`, `[agents.*]`, `[skills.*]`, `[mcp.*]`, and `[lsp.*]`, add an
+allow-list (`tools`) and/or a deny-list (`not_tools`). These keys are stripped
+from the emitted native config:
+
+```toml
+[skills.perf.flame-graph]
+content = "..."
+tools   = ["claude"]            # only Claude receives this skill
+
+[mcp.debug.repro]
+command   = "repro-mcp"
+not_tools = ["cursor"]          # every tool except Cursor receives this server
+```
+
+Rules:
+
+- Omit both selectors → the entry targets **all** tools.
+- `tools = [...]` → only the listed tools.
+- `not_tools = [...]` → all tools except the listed ones.
+- If a tool appears in both lists, **exclude wins** (the tool is dropped).
+
+### Relationship to the feature-support matrix
+
+Tool targeting is an explicit **author-intent** filter applied *first*. The
+built-in feature-support matrix (which auto-skips, e.g., skills for Cursor) is
+the **safety net** applied by each emitter afterward. Writing
+`tools = ["cursor"]` on a skill never forces an emitter to produce something the
+tool fundamentally cannot consume — the matrix still gates it.
 
 ## Hook Events Reference
 

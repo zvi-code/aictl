@@ -49,31 +49,40 @@ class Resolved:
     env: dict[str, str]  # merged env vars
     ignores: list[str]  # merged ignore patterns
     memory_hints: str | None  # memory hints for root+profile
+    tool: str | None = None  # target tool this output was resolved for
 
 
 def _apply_kind(
-    kind: str, parsed: ParsedAictx, profile: str | None, caps: list, mcp: dict, hooks: dict, lsp: dict
+    kind: str,
+    parsed: ParsedAictx,
+    profile: str | None,
+    caps: list,
+    mcp: dict,
+    hooks: dict,
+    lsp: dict,
+    tool: str | None = None,
 ) -> None:
     """Pull one inherited kind from *parsed* into the shared collection containers."""
     if kind in ("commands", "command"):
-        caps.extend(c for c in parsed.capabilities_for(profile) if c.kind == "command")
+        caps.extend(c for c in parsed.capabilities_for(profile, tool) if c.kind == "command")
     elif kind in ("skills", "skill"):
-        caps.extend(c for c in parsed.capabilities_for(profile) if c.kind == "skill")
+        caps.extend(c for c in parsed.capabilities_for(profile, tool) if c.kind == "skill")
     elif kind in ("agents", "agent"):
-        caps.extend(c for c in parsed.capabilities_for(profile) if c.kind == "agent")
+        caps.extend(c for c in parsed.capabilities_for(profile, tool) if c.kind == "agent")
     elif kind == "mcp":
-        mcp.update(parsed.mcp_for(profile))
+        mcp.update(parsed.mcp_for(profile, tool))
     elif kind in ("hooks", "hook"):
-        for event, rules in parsed.hooks_for(profile).items():
+        for event, rules in parsed.hooks_for(profile, tool).items():
             hooks.setdefault(event, []).extend(rules)
     elif kind == "lsp":
-        lsp.update(parsed.lsp_for(profile))
+        lsp.update(parsed.lsp_for(profile, tool))
 
 
 def resolve(
     root: Path,
     scanned: list[tuple[str, ParsedAictx]],
     profile: str | None,
+    tool: str | None = None,
 ) -> Resolved:
     """Resolve all scanned .aictx into deployable output.
 
@@ -81,9 +90,12 @@ def resolve(
         root: the deployment root directory
         scanned: list of (rel_path, parsed) from scanner
         profile: active profile name or None
+        tool: target tool id (e.g. "claude"); when given, tool-specific
+            ``@tool`` overlays and ``tools``/``not_tools`` selectors apply.
+            When None, every tool-targeted item is included (no filtering).
     """
     if not scanned:
-        return Resolved(root, profile, [], [], {}, {}, {}, {}, [], {}, [], None)
+        return Resolved(root, profile, [], [], {}, {}, {}, {}, [], {}, [], None, tool)
 
     # Build lookup
     by_path: dict[str, ParsedAictx] = {rel: p for rel, p in scanned}
@@ -92,8 +104,8 @@ def resolve(
     # --- Instructions: every scope ---
     scopes = []
     for rel, parsed in scanned:
-        base = parsed.instructions.get("base", "")
-        prof_text = parsed.instructions.get(profile, "") if profile else ""
+        base = parsed.base_instructions_for(tool)
+        prof_text = parsed.profile_instructions_for(profile, tool) if profile else ""
         if base or prof_text:
             scopes.append(ScopeOutput(rel, base, prof_text, is_root=(rel == ".")))
 
@@ -105,24 +117,24 @@ def resolve(
 
     if root_parsed:
         # Root's own capabilities
-        caps.extend(root_parsed.capabilities_for(profile))
-        mcp.update(root_parsed.mcp_for(profile))
+        caps.extend(root_parsed.capabilities_for(profile, tool))
+        mcp.update(root_parsed.mcp_for(profile, tool))
         # Root's hooks and LSP
-        for event, rules in root_parsed.hooks_for(profile).items():
+        for event, rules in root_parsed.hooks_for(profile, tool).items():
             hooks.setdefault(event, []).extend(rules)
-        lsp.update(root_parsed.lsp_for(profile))
+        lsp.update(root_parsed.lsp_for(profile, tool))
 
         # Root says recursive: pull children's capabilities up
         for kind in root_parsed.inherit.get("recursive", []):
             for rel, parsed in scanned:
                 if rel != ".":
-                    _apply_kind(kind, parsed, profile, caps, mcp, hooks, lsp)
+                    _apply_kind(kind, parsed, profile, caps, mcp, hooks, lsp, tool)
 
     # Children that say parent: inherit
     for rel, parsed in scanned:
         if rel != ".":
             for kind in parsed.inherit.get("parent", []):
-                _apply_kind(kind, parsed, profile, caps, mcp, hooks, lsp)
+                _apply_kind(kind, parsed, profile, caps, mcp, hooks, lsp, tool)
 
     # --- Apply excludes ---
     if root_parsed:
@@ -152,13 +164,13 @@ def resolve(
     caps = [caps[i] for i in sorted(seen.values())]
 
     # --- Settings, permissions, env, ignores: root only ---
-    settings: dict[str, object] = root_parsed.settings_for(profile) if root_parsed else {}
-    permissions: list[str] = root_parsed.permissions_for(profile) if root_parsed else []
-    env: dict[str, str] = root_parsed.env_for(profile) if root_parsed else {}
-    ignores: list[str] = root_parsed.ignores_for(profile) if root_parsed else []
+    settings: dict[str, object] = root_parsed.settings_for(profile, tool) if root_parsed else {}
+    permissions: list[str] = root_parsed.permissions_for(profile, tool) if root_parsed else []
+    env: dict[str, str] = root_parsed.env_for(profile, tool) if root_parsed else {}
+    ignores: list[str] = root_parsed.ignores_for(profile, tool) if root_parsed else []
 
     # --- Memory hints: root only ---
-    memory = root_parsed.memory_for(profile) if root_parsed else None
+    memory = root_parsed.memory_for(profile, tool) if root_parsed else None
 
     return Resolved(
         root=root,
@@ -173,6 +185,7 @@ def resolve(
         env=env,
         ignores=ignores,
         memory_hints=memory,
+        tool=tool,
     )
 
 
