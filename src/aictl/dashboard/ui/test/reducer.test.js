@@ -97,10 +97,18 @@ describe('reducer', () => {
     expect(result.enabledTools).toEqual(['claude-code']);
   });
 
-  it('SSE_UPDATE with no prior snap uses data as snap', () => {
-    const data = { total_tokens: 100, tools: [], timestamp: 1000 };
+  it('SSE_UPDATE with no prior snap does NOT adopt the partial summary', () => {
+    // An SSE summary is a partial payload: its tool objects omit the files and
+    // processes arrays. Adopting it as the snapshot before the full /snapshot
+    // fetch lands makes consumers (ResourceBar, ContextMap) crash on
+    // undefined tool.files. The snap must stay null until properly seeded.
+    const data = {
+      total_tokens: 100,
+      tools: [{ tool: 'claude-code', live: { cpu_percent: 5 } }], // no files/processes
+      timestamp: 1000,
+    };
     const result = reducer(baseState, { type: 'SSE_UPDATE', payload: data });
-    expect(result.snap).toBe(data);
+    expect(result.snap).toBe(null);
     expect(result.connected).toBe(true);
   });
 

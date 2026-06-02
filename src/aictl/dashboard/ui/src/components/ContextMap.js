@@ -65,7 +65,7 @@ export default function ContextMap() {
     let totalTokens = 0;
 
     for (const t of tools) {
-      for (const f of t.files) {
+      for (const f of (t.files || [])) {
         const cat = f.kind || 'other';
         const scope = f.scope || 'external';
         const policy = (f.sent_to_llm || 'no').toLowerCase();
@@ -109,13 +109,16 @@ export default function ContextMap() {
     const projList = Object.entries(byProj).sort((a, b) => b[1].tokens - a[1].tokens);
 
     const perTool = tools
-      .map(t => ({
-        tool: t.tool, label: t.label,
-        tokens: t.files.reduce((a, f) => a + f.tokens, 0),
-        files: t.files.length,
-        sentYes: t.files.filter(f => (f.sent_to_llm || '').toLowerCase() === 'yes')
-          .reduce((a, f) => a + f.tokens, 0),
-      }))
+      .map(t => {
+        const tf = t.files || [];
+        return {
+          tool: t.tool, label: t.label,
+          tokens: tf.reduce((a, f) => a + f.tokens, 0),
+          files: tf.length,
+          sentYes: tf.filter(f => (f.sent_to_llm || '').toLowerCase() === 'yes')
+            .reduce((a, f) => a + f.tokens, 0),
+        };
+      })
       .filter(t => t.tokens > 0)
       .sort((a, b) => b.tokens - a.tokens)
       .slice(0, 8);

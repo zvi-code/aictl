@@ -36,7 +36,7 @@ PIPX_PYTHON  := $(if $(wildcard $(PIPX_VENV)/bin/python),$(PIPX_VENV)/bin/python
 # environments (pipx for `aictl`, .venv for `make test`) that drifted.
 PYTHON  ?= $(if $(PIPX_PYTHON),$(PIPX_PYTHON),python3)
 
-.PHONY: install install-py install-ui test test-ui test-e2e test-tools test-docker test-all lint typecheck clean help
+.PHONY: install install-py install-ui test test-ui test-e2e test-tools test-docker test-all lint typecheck screenshots clean help
 
 # ── Primary target: full rebuild + reinstall ─────────────────────────────────
 
@@ -95,6 +95,22 @@ lint:  ## Run ruff linter + format check
 
 typecheck:  ## Run mypy on strictly-typed modules (src/aictl/data + dashboard/models)
 	$(PYTHON) -m mypy src/aictl/data src/aictl/dashboard/models.py
+
+# ── Docs / Screenshots ───────────────────────────────────────────────────────
+
+# Regenerate the README dashboard screenshots with Playwright. Drives a live
+# daemon (start one separately: `aictl daemon serve --no-open --port 8599`) and
+# writes PNGs to docs/screenshots/. Override BASE_URL / FEATURE_* as needed:
+#   make screenshots BASE_URL=http://127.0.0.1:8599 FEATURE_SESSION=b36f145e
+screenshots:  ## Regenerate README dashboard screenshots (needs a running daemon)
+	cd scripts/screenshots && npm install --no-audit --no-fund --loglevel=error
+	cd scripts/screenshots && npx playwright install chromium
+	cd scripts/screenshots && \
+		BASE_URL=$(or $(BASE_URL),http://127.0.0.1:8599) \
+		THEME=$(or $(THEME),light) RANGE=$(or $(RANGE),7d) \
+		FEATURE_TOOL=$(or $(FEATURE_TOOL),copilot-vscode) \
+		FEATURE_SESSION=$(FEATURE_SESSION) \
+		node capture.mjs
 
 # ── Cleanup ──────────────────────────────────────────────────────────────────
 
