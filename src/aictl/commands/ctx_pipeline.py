@@ -88,18 +88,19 @@ def _run_deploy(
     if strict and strict_failures:
         raise click.ClickException("Unsupported context features in --strict mode:\n" + "\n".join(strict_failures))
 
-    # --- Phase 2: Resolve ---
-    resolved = resolve(root, scanned, profile)
-
-    # --- Phase 3: Emit ---
+    # --- Phase 2 + 3: Resolve (per target tool) + Emit ---
     old_manifest = None if dry_run else load_manifest(root)
     all_paths: list[str] = []
 
+    resolved = resolve(root, scanned, profile)  # untargeted, for the summary report
     current_emitter = ""
     try:
         for ename in emitter_names:
             current_emitter = ename
             emitter = registry.get(ename)
+            # Resolve once per tool so @tool overlays and tools/not_tools
+            # selectors collapse to this emitter's slice.
+            resolved = resolve(root, scanned, profile, tool=ename)
             results = emitter.emit(root, resolved, dry_run=dry_run)
             for r in results:
                 all_paths.append(r["path"])
@@ -386,10 +387,7 @@ def diff(root_dir: str, profile: str | None, emitters: str | None) -> None:
         click.secho("No .context.toml files found.", fg="yellow")
         return
 
-    # --- Phase 2: Resolve ---
-    resolved = resolve(root, scanned, profile)
-
-    # --- Phase 3: Emit into a capture dict (no disk writes) ---
+    # --- Phase 2 + 3: Resolve (per target tool) + Emit into a capture dict ---
     # Emitters import write_safe into their own namespace, so we must patch
     # each module individually to intercept the call.
     captured: dict[str, str] = {}  # abs path → intended content
@@ -404,6 +402,7 @@ def diff(root_dir: str, profile: str | None, emitters: str | None) -> None:
             stack.enter_context(patch(f"{target}.write_safe", _capture_write))
         for ename in emitter_names:
             emitter = registry.get(ename)
+            resolved = resolve(root, scanned, profile, tool=ename)
             results = emitter.emit(root, resolved, dry_run=False)
             for r in results:
                 new_paths.add(r["path"])

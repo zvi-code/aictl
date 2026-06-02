@@ -48,6 +48,8 @@ class Capability:
     profile: str  # _always | debug | docs | ...
     name: str  # investigate, planner, flame-graph
     content: str
+    tools: list[str] = field(default_factory=list)  # allow-list of target tools
+    not_tools: list[str] = field(default_factory=list)  # deny-list of target tools
 
 
 @dataclass
@@ -55,6 +57,8 @@ class McpServer:
     profile: str
     name: str
     config: dict
+    tools: list[str] = field(default_factory=list)
+    not_tools: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -69,6 +73,8 @@ class LspServer:
     profile: str
     name: str
     config: dict
+    tools: list[str] = field(default_factory=list)
+    not_tools: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -96,9 +102,33 @@ class IgnoreRule:
     patterns: list[str]  # gitignore-style patterns (one per line)
 
 
-def _for_profile(items, profile: str | None) -> list:
-    """Filter items whose .profile is '_always' or matches the given profile."""
-    return [item for item in items if item.profile == "_always" or item.profile == profile]
+def _tool_match(item, tool: str | None) -> bool:
+    """Return True if *item* targets *tool*.
+
+    Filtering rules (omit both selectors → matches every tool):
+      - ``not_tools`` is a deny-list; a tool listed here is always excluded.
+      - ``tools`` is an allow-list; when non-empty only listed tools match.
+      - When *tool* is None (no tool axis), the item always matches.
+    Exclude wins: if a tool is in both lists, it is excluded.
+    """
+    if tool is None:
+        return True
+    if tool in (getattr(item, "not_tools", None) or []):
+        return False
+    allow = getattr(item, "tools", None) or []
+    return tool in allow if allow else True
+
+
+def _for_profile(items, profile: str | None, tool: str | None = None) -> list:
+    """Filter items whose .profile is '_always' or matches the given profile.
+
+    When *tool* is given, also apply each item's tools/not_tools selectors.
+    """
+    return [
+        item
+        for item in items
+        if (item.profile == "_always" or item.profile == profile) and _tool_match(item, tool)
+    ]
 
 
 @dataclass
@@ -122,66 +152,79 @@ class ParsedAictx:
     # inherit["recursive"] = ["skills"]
     excludes: list[str] = field(default_factory=list)
 
-    def instructions_for(self, profile: str | None) -> str:
-        """Get base + profile instructions merged."""
+    def instructions_for(self, profile: str | None, tool: str | None = None) -> str:
+        """Get base + profile instructions merged, including @tool overlays."""
+        parts = [self.base_instructions_for(tool), self.profile_instructions_for(profile, tool)]
+        return "\n\n".join(p for p in parts if p)
+
+    def base_instructions_for(self, tool: str | None = None) -> str:
+        """Base instructions plus an optional ``base@<tool>`` overlay (additive)."""
         parts = []
         if "base" in self.instructions:
             parts.append(self.instructions["base"])
-        if profile and profile in self.instructions:
-            parts.append(self.instructions[profile])
+        if tool and (key := f"base@{tool}") in self.instructions:
+            parts.append(self.instructions[key])
         return "\n\n".join(parts)
 
-    def capabilities_for(self, profile: str | None) -> list[Capability]:
-        """Get _always + profile capabilities."""
-        return _for_profile(self.capabilities, profile)
+    def profile_instructions_for(self, profile: str | None, tool: str | None = None) -> str:
+        """Profile instructions plus an optional ``<profile>@<tool>`` overlay (additive)."""
+        parts = []
+        if profile and profile in self.instructions:
+            parts.append(self.instructions[profile])
+        if profile and tool and (key := f"{profile}@{tool}") in self.instructions:
+            parts.append(self.instructions[key])
+        return "\n\n".join(parts)
 
-    def mcp_for(self, profile: str | None) -> dict[str, dict]:
+    def capabilities_for(self, profile: str | None, tool: str | None = None) -> list[Capability]:
+        """Get _always + profile capabilities, optionally filtered by tool."""
+        return _for_profile(self.capabilities, profile, tool)
+
+    def mcp_for(self, profile: str | None, tool: str | None = None) -> dict[str, dict]:
         """Get _always + profile MCP servers as merged dict."""
-        return {m.name: m.config for m in _for_profile(self.mcp_servers, profile)}
+        return {m.name: m.config for m in _for_profile(self.mcp_servers, profile, tool)}
 
-    def hooks_for(self, profile: str | None) -> dict[str, list[dict]]:
+    def hooks_for(self, profile: str | None, tool: str | None = None) -> dict[str, list[dict]]:
         """Get _always + profile hooks as merged dict of event → rules."""
         result: dict[str, list[dict]] = {}
-        for h in _for_profile(self.hooks, profile):
+        for h in _for_profile(self.hooks, profile, tool):
             result.setdefault(h.event, []).extend(h.rules)
         return result
 
-    def lsp_for(self, profile: str | None) -> dict[str, dict]:
+    def lsp_for(self, profile: str | None, tool: str | None = None) -> dict[str, dict]:
         """Get _always + profile LSP servers as merged dict."""
-        return {s.name: s.config for s in _for_profile(self.lsp_servers, profile)}
+        return {s.name: s.config for s in _for_profile(self.lsp_servers, profile, tool)}
 
-    def memory_for(self, profile: str | None) -> str | None:
-        """Get _always + profile memory hints."""
+    def memory_for(self, profile: str | None, tool: str | None = None) -> str | None:
+        """Get _always + profile memory hints, including @tool overlays."""
         parts = []
-        if "_always" in self.memory_hints:
-            parts.append(self.memory_hints["_always"])
-        if profile and profile in self.memory_hints:
-            parts.append(self.memory_hints[profile])
+        for key in ("_always", f"_always@{tool}" if tool else None, profile, f"{profile}@{tool}" if (profile and tool) else None):
+            if key and key in self.memory_hints:
+                parts.append(self.memory_hints[key])
         return "\n\n".join(parts) if parts else None
 
-    def settings_for(self, profile: str | None) -> dict[str, object]:
+    def settings_for(self, profile: str | None, tool: str | None = None) -> dict[str, object]:
         """Get _always + profile settings as merged dict of key → value."""
-        return {s.key: s.value for s in _for_profile(self.settings, profile)}
+        return {s.key: s.value for s in _for_profile(self.settings, profile, tool)}
 
-    def permissions_for(self, profile: str | None) -> list[str]:
+    def permissions_for(self, profile: str | None, tool: str | None = None) -> list[str]:
         """Get _always + profile permission patterns as merged list."""
         result: list[str] = []
-        for p in _for_profile(self.permissions, profile):
+        for p in _for_profile(self.permissions, profile, tool):
             result.extend(p.patterns)
         return result
 
-    def env_for(self, profile: str | None) -> dict[str, str]:
+    def env_for(self, profile: str | None, tool: str | None = None) -> dict[str, str]:
         """Get _always + profile env vars as merged dict."""
         result: dict[str, str] = {}
-        for e in _for_profile(self.env_vars, profile):
+        for e in _for_profile(self.env_vars, profile, tool):
             result.update(e.vars)
         return result
 
-    def ignores_for(self, profile: str | None) -> list[str]:
+    def ignores_for(self, profile: str | None, tool: str | None = None) -> list[str]:
         """Get _always + profile ignore patterns, deduplicated."""
         seen: set[str] = set()
         result: list[str] = []
-        for ig in _for_profile(self.ignores, profile):
+        for ig in _for_profile(self.ignores, profile, tool):
             for p in ig.patterns:
                 if p not in seen:
                     seen.add(p)
@@ -191,6 +234,15 @@ class ParsedAictx:
     def should_inherit(self, direction: str, kind: str) -> bool:
         """Check if this .aictx inherits a capability kind from parent/recursive."""
         return kind in self.inherit.get(direction, [])
+
+
+def _as_tool_list(value: object) -> list[str]:
+    """Normalize a tools/not_tools selector into a lowercased list of tool ids."""
+    if isinstance(value, str):
+        return [value.strip().lower()] if value.strip() else []
+    if isinstance(value, list):
+        return [str(v).strip().lower() for v in value if str(v).strip()]
+    return []
 
 
 def parse_aictx(path: Path) -> ParsedAictx | None:
@@ -217,12 +269,18 @@ def parse_aictx(path: Path) -> ParsedAictx | None:
             for name, entry in names.items():
                 if isinstance(entry, dict):
                     content = entry.get("content", "").strip()
+                    tools = _as_tool_list(entry.get("tools"))
+                    not_tools = _as_tool_list(entry.get("not_tools"))
                 elif isinstance(entry, str):
                     content = entry.strip()
+                    tools = []
+                    not_tools = []
                 else:
                     continue
                 if content:
-                    result.capabilities.append(Capability(singular, profile, name, content))
+                    result.capabilities.append(
+                        Capability(singular, profile, name, content, tools, not_tools)
+                    )
 
     # --- mcp servers (native TOML tables) ---
     for profile, servers in doc.get("mcp", {}).items():
@@ -238,7 +296,10 @@ def parse_aictx(path: Path) -> ParsedAictx | None:
         else:
             for name, cfg in servers.items():
                 if isinstance(cfg, dict):
-                    result.mcp_servers.append(McpServer(profile, name, cfg))
+                    tools = _as_tool_list(cfg.get("tools"))
+                    not_tools = _as_tool_list(cfg.get("not_tools"))
+                    clean = {k: v for k, v in cfg.items() if k not in ("tools", "not_tools")}
+                    result.mcp_servers.append(McpServer(profile, name, clean, tools, not_tools))
 
     # --- hooks (event = JSON string) ---
     for profile, events in doc.get("hooks", {}).items():
@@ -260,7 +321,10 @@ def parse_aictx(path: Path) -> ParsedAictx | None:
             continue
         for name, cfg in servers.items():
             if isinstance(cfg, dict):
-                result.lsp_servers.append(LspServer(profile, name, cfg))
+                tools = _as_tool_list(cfg.get("tools"))
+                not_tools = _as_tool_list(cfg.get("not_tools"))
+                clean = {k: v for k, v in cfg.items() if k not in ("tools", "not_tools")}
+                result.lsp_servers.append(LspServer(profile, name, clean, tools, not_tools))
 
     # --- settings ---
     for profile, kvs in doc.get("settings", {}).items():
