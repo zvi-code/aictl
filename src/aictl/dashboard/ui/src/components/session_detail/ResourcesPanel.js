@@ -51,6 +51,10 @@ export default function ResourcesPanel({session}) {
       <div class="es-kv-card"><div class="label">Outbound</div><div class="value">${fmtSz(session.outbound_bytes || 0)}</div></div>
       <div class="es-kv-card"><div class="label">State Writes</div><div class="value">${fmtSz(session.state_bytes_written || 0)}</div></div>
       <div class="es-kv-card"><div class="label">PIDs</div><div class="value">${Array.isArray(session.pids) ? session.pids.length : (session.pids || 0)}</div></div>
+      ${session.cache_hit_ratio != null && html`<div class="es-kv-card">
+        <div class="label">Cache Hit</div>
+        <div class="value" style="color:${session.cache_hit_ratio >= 0.5 ? 'var(--green)' : 'var(--fg)'}">${fmtPct(session.cache_hit_ratio * 100)}</div>
+      </div>`}
     </div>
     ${ratio != null && html`<div class="text-xs text-muted" style="margin-top:var(--sp-3)">
       vs average (${avgData.sampleCount} sessions):

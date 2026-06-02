@@ -11,6 +11,9 @@ import ApiCallsPanel from './session_detail/ApiCallsPanel.js';
 import ProjectCostPanel from './session_detail/ProjectCostPanel.js';
 import RunHistoryPanel from './session_detail/RunHistoryPanel.js';
 import McpUsagePanel from './session_detail/McpUsagePanel.js';
+import CostByModelPanel from './session_detail/CostByModelPanel.js';
+import ProcessTreePanel from './session_detail/ProcessTreePanel.js';
+import ToolCallsPanel from './session_detail/ToolCallsPanel.js';
 import { fmtDur } from './session_detail/helpers.js';
 
 // Thin orchestrator — just the session header + a stack of Panels.
@@ -62,6 +65,15 @@ export default function SessionDetail({session, onClose}) {
     <//>
     <${Panel} title="Resources" icon="\u2699\uFE0F" badge=${fmtK(inTok + outTok) + ' tok'}>
       <${ResourcesPanel} session=${session}/>
+    <//>
+    <${Panel} title="Cost by Model" icon="\uD83D\uDCB5" defaultOpen=${false}>
+      <${CostByModelPanel} sessionId=${session.session_id}/>
+    <//>
+    <${Panel} title="Tool Calls" icon="\uD83D\uDD27" defaultOpen=${false}>
+      <${ToolCallsPanel} sessionId=${session.session_id}/>
+    <//>
+    <${Panel} title="Process Tree" icon="\uD83C\uDF33" defaultOpen=${false}>
+      <${ProcessTreePanel} sessionId=${session.session_id}/>
     <//>
     <${Panel} title="MCP Servers" icon="\uD83D\uDD0C" defaultOpen=${false}>
       <${McpUsagePanel} sessionId=${session.session_id}/>
