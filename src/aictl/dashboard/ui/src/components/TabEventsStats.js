@@ -1,8 +1,9 @@
 import { useState, useMemo, useEffect, useContext } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
-import { COLORS, ICONS, VENDOR_LABELS, EVENT_COLORS, fmtK, fmtTok, fmtSz, fmtRate, fmtPct, esc, liveTokenTotal } from '../utils.js';
+import { COLORS, VENDOR_LABELS, EVENT_COLORS, fmtK, fmtTok, fmtSz, fmtRate, fmtPct, esc, liveTokenTotal } from '../utils.js';
 import ChartCard from './ChartCard.js';
+import { ToolIcon } from './ui/index.js';
 import * as api from '../api.js';
 
 export default function TabEventsStats() {
@@ -56,7 +57,7 @@ export default function TabEventsStats() {
       ${tools.map(t => html`<button key=${t.tool}
         class=${selectedTool === t.tool ? 'es-tool-btn active' : 'es-tool-btn'}
         onClick=${() => setTool(t.tool)}>
-        <span style="color:${COLORS[t.tool] || 'var(--fg2)'}">${ICONS[t.tool] || '\u{1F539}'}</span>
+        <${ToolIcon} tool=${t.tool} size="1em"/>
         ${t.label}
         ${t.live ? html`<span class="badge" style="font-size:var(--fs-2xs);margin-left:auto">live</span>` : ''}
       </button>`)}
@@ -64,7 +65,7 @@ export default function TabEventsStats() {
     <div>
       ${selectedTool && html`<Fragment>
         <h3 class="flex-row mb-sm gap-sm">
-          <span style="color:${c}">${ICONS[selectedTool] || '\u{1F539}'}</span>
+          <${ToolIcon} tool=${selectedTool} size="1em"/>
           ${tool?.label || selectedTool}
           ${tool?.vendor ? html`<span class="badge">${VENDOR_LABELS[tool.vendor] || tool.vendor}</span>` : ''}
           ${telem?.model ? html`<span class="badge mono">${telem.model}</span>` : ''}

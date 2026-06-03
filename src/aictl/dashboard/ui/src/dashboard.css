@@ -2414,6 +2414,16 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 }
 .sl-tool-dot { width: 7px; height: 7px; border-radius: 999px; flex-shrink: 0; }
 .sl-tool-icon { font-size: var(--fs-md); }
+
+/* ── Icon system: vendor silhouettes + tab Lucide icons ───────────── */
+/* ToolIcon = vendor-identity silhouette, brand-tinted via its own color */
+.tool-ico { flex-shrink: 0; vertical-align: -0.125em; }
+/* Tab buttons: emoji → Lucide line icon, aligned with the label */
+.tab-btn-icon { display: inline-flex; align-items: center; margin-right: var(--sp-2);
+  vertical-align: -0.14em; color: currentColor; }
+.tab-btn-icon svg { display: block; }
+/* Tool filter + by-tool list: nudge the inline silhouette off the text */
+.tool-filter-item .tool-ico, .sl-cell--tool .tool-ico { margin-right: 1px; }
 .sl-tool-name {
   white-space: nowrap;
   overflow: hidden;

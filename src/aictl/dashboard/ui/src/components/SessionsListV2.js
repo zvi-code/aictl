@@ -19,7 +19,8 @@
 // is intentionally deferred until row counts force it.
 import { useState, useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
-import { fmtK, esc, fmtTime, fmtAgo, COLORS, ICONS } from '../utils.js';
+import { fmtK, esc, fmtTime, fmtAgo } from '../utils.js';
+import { ToolIcon } from './ui/index.js';
 
 function _fmtDur(sec) {
   if (sec == null || isNaN(sec)) return '\u2014';
@@ -104,7 +105,7 @@ function _defaultDetail(session) {
     <div class="sl-detail-overline">Session \u00B7 ${session.started_at ? fmtTime(session.started_at) : ''}</div>
     <div class="sl-detail-title">${esc(_title(session))}</div>
     <div class="sl-detail-tool">
-      <span class="sl-detail-tool-dot" style=${'background:' + (COLORS[tool] || 'var(--fg2)')}></span>
+      <${ToolIcon} tool=${tool} size="1em"/>
       <span>${esc(tool)}</span>
       ${session.project && html`<span class="sl-detail-tool-proj text-muted">${esc(session.project)}</span>`}
     </div>
@@ -204,8 +205,6 @@ export default function SessionsListV2({
           : filtered.map(r => {
               const isSel = r.session_id === selectedId;
               const tool = r.tool || '\u2014';
-              const c = COLORS[tool] || 'var(--fg2)';
-              const ic = ICONS[tool] || '\u{1F539}';
               return html`<button
                 key=${r.session_id || (r.tool + r.started_at)}
                 type="button"
@@ -217,8 +216,7 @@ export default function SessionsListV2({
                 <div class="sl-cell">${_statusPill(_statusOf(r))}</div>
                 <div class="sl-cell sl-cell--title" title=${_title(r)}>${esc(_title(r))}</div>
                 <div class="sl-cell sl-cell--tool">
-                  <span class="sl-tool-dot" style=${'background:' + c} aria-hidden="true"></span>
-                  <span class="sl-tool-icon" aria-hidden="true">${ic}</span>
+                  <${ToolIcon} tool=${tool} size="0.95em"/>
                   <span class="sl-tool-name">${esc(tool)}</span>
                 </div>
                 <div class="sl-cell sl-cell--num">${fmtK(_tokens(r))}</div>

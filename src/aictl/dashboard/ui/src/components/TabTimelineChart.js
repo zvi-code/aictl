@@ -8,7 +8,8 @@
 import { useState, useEffect, useContext, useMemo, useRef, useCallback } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
-import { fmtK, esc, COLORS, ICONS } from '../utils.js';
+import { fmtK, esc, COLORS } from '../utils.js';
+import { ToolIcon } from './ui/index.js';
 import * as api from '../api.js';
 
 // ─── Entity colour palette ────────────────────────────────────
@@ -105,7 +106,7 @@ function ToolTabs({tools, activeTool, onSelect}) {
     ${tools.map(t => html`<button key=${t} class="sf-tool-tab ${t === activeTool ? 'active' : ''}"
       style="border-bottom-color:${t === activeTool ? (COLORS[t] || 'var(--accent)') : 'transparent'};color:${COLORS[t] || 'var(--fg)'}"
       onClick=${() => onSelect(t)}>
-      <span>${ICONS[t] || '\u{1F539}'}</span> ${esc(t)}
+      <${ToolIcon} tool=${t} size="1em"/> ${esc(t)}
     </button>`)}
   </div>`;
 }

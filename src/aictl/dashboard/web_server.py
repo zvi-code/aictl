@@ -1068,6 +1068,9 @@ from ..tools import (
 from ..tools import (
     VENDOR_LABELS as _REG_VENDOR_LABELS,
 )
+from ..tools import (
+    TOOL_VENDORS as _REG_TOOL_VENDORS,
+)
 
 
 def _make_js_colors() -> str:
@@ -1086,6 +1089,7 @@ def _make_js_taxonomy() -> str:
         f"window.VENDOR_LABELS = {_json.dumps(_REG_VENDOR_LABELS)};\n"
         f"window.VENDOR_COLORS = {_json.dumps(_REG_VENDOR_COLORS)};\n"
         f"window.HOST_LABELS = {_json.dumps(_REG_HOST_LABELS)};\n"
+        f"window.TOOL_VENDORS = {_json.dumps(_REG_TOOL_VENDORS)};\n"
         f"window.TOOL_RELATIONSHIPS = {_json.dumps(_REG_RELATIONSHIPS)};"
     )
 

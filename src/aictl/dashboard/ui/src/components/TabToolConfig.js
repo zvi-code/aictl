@@ -1,8 +1,8 @@
 import { useContext, useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
-import { COLORS, ICONS } from '../utils.js';
-import { Icon } from './ui/index.js';
+import { COLORS } from '../utils.js';
+import { Icon, ToolIcon } from './ui/index.js';
 
 // ─── Tooltip descriptions ────────────────────────────────────────
 // Keyed by the setting/feature key that appears in feature_groups or settings.
@@ -236,7 +236,6 @@ function ConfigurableModelsBlock({models, configFiles}) {
 
 // ─── Per-tool config card ────────────────────────────────────────
 function ToolConfigCard({cfg, label}) {
-  const icon = ICONS[cfg.tool] || '🔹';
   const color = COLORS[cfg.tool] || 'var(--fg2)';
   const groups = Object.entries(cfg.feature_groups || {});
   // Keys already surfaced elsewhere (grouped or in Configurable Models) — avoid double-listing.
@@ -263,7 +262,7 @@ function ToolConfigCard({cfg, label}) {
                            display:flex;flex-direction:column;height:100%">
     <div style="padding:var(--sp-4) var(--sp-5);background:color-mix(in srgb,${color} 10%,var(--bg2));
                 display:flex;align-items:center;gap:var(--sp-3);border-bottom:2px solid ${color}">
-      <span>${icon}</span>
+      <span><${ToolIcon} tool=${cfg.tool} size="1em"/></span>
       <span style="font-weight:700;font-size:var(--fs-base);color:${color}">${label || cfg.tool}</span>
       ${cfg.model && html`<span class="badge mono">${cfg.model}</span>`}
       ${cfg.auto_update===true  && html`<span class="badge">auto-update on</span>`}

@@ -1,7 +1,8 @@
 import { useState, useEffect, useContext, useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
-import { fmtK, fmtAgo, fmtPct, fmtSz, esc, COLORS, ICONS } from '../utils.js';
+import { fmtK, fmtAgo, fmtPct, fmtSz, esc, COLORS } from '../utils.js';
+import { ToolIcon } from './ui/index.js';
 import * as api from '../api.js';
 
 const STATUS_COLORS = { active: 'var(--green)', degraded: 'var(--orange)', disabled: 'var(--fg2)', unknown: 'var(--fg2)' };
@@ -184,7 +185,7 @@ export default function CollectorHealth() {
           <tbody>${toolHealth.map(t => html`<tr key=${t.tool}
             style="border-bottom:1px solid var(--bg3);opacity:${t.stale && !t.fileCount ? 0.4 : 1}">
             <td style="padding:var(--sp-1) var(--sp-2);white-space:nowrap">
-              <span style="color:${COLORS[t.tool] || 'var(--fg2)'}">${ICONS[t.tool] || '\u{1F539}'}</span>
+              <${ToolIcon} tool=${t.tool} size="1em"/>
               ${esc(t.label)}</td>
             <td style="padding:var(--sp-1) var(--sp-2)" class="text-muted mono">${t.source}</td>
             <td style="padding:var(--sp-1) var(--sp-2);text-align:center">

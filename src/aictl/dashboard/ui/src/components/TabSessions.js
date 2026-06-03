@@ -1,7 +1,8 @@
 import { useState, useEffect, useContext } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
-import { fmtK, fmtPct, fmtSz, fmtRate, esc, fmtTime, fmtAgo, COLORS, ICONS } from '../utils.js';
+import { fmtK, fmtPct, fmtSz, fmtRate, esc, fmtTime, fmtAgo, COLORS } from '../utils.js';
+import { ToolIcon } from './ui/index.js';
 import SessionDetailView from './SessionDetail.js';
 import SessionTimeline from './SessionTimeline.js';
 import SessionsListV2 from './SessionsListV2.js';
@@ -138,7 +139,6 @@ function SessionDetail({session}) {
 // ─── Session Card (active session, clickable) ───────────────────
 function SessionCard({session, onSelect, isSelected, agentTeams}) {
   const c = COLORS[session.tool] || 'var(--fg2)';
-  const icon = ICONS[session.tool] || '\u{1F539}';
   // File-based agent count (authoritative), fall back to process tree
   const teamData = (agentTeams || []).find(t => t.session_id === session.session_id);
   const agents = teamData ? teamData.agent_count : countAgents(session.process_tree || []);
@@ -147,7 +147,7 @@ function SessionCard({session, onSelect, isSelected, agentTeams}) {
   return html`<div class="diag-card" style="border-left:3px solid ${c};cursor:pointer;${isSelected ? 'outline:2px solid var(--accent);outline-offset:-2px' : ''}"
     onClick=${() => onSelect(session)}>
     <div class="flex-row gap-sm mb-sm">
-      <span style="font-size:var(--fs-2xl)">${icon}</span>
+      <${ToolIcon} tool=${session.tool} size="1.4em"/>
       <strong style="font-size:var(--fs-lg)">${esc(session.tool)}</strong>
       ${hasTeam && html`<span class="badge" style="background:var(--accent);color:var(--bg);font-size:var(--fs-xs)">Team (${agents})</span>`}
       ${session.project && html`<span class="text-muted text-xs mono text-ellipsis" style="max-width:150px"

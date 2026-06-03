@@ -2,6 +2,7 @@ import { useState, useContext, useMemo, useEffect, useCallback, useRef } from 'p
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS, fmtK, fmtSz } from '../utils.js';
+import { ToolIcon } from './ui/index.js';
 import * as api from '../api.js';
 
 // ─── Lane colors (editorial palette) ────────────────────────────
@@ -439,7 +440,7 @@ export default function CDashboardTab() {
                   role="button" tabIndex=${0}
                   onKeyDown=${e => e.key === 'Enter' && handleSelectSession(s)}>
                   <div class="cdb-session-row-head">
-                    <span class="cdb-session-dot" style="background:${color}"></span>
+                    <${ToolIcon} tool=${s._tool} size="0.85em"/>
                     <span class="cdb-session-id">${shortId}</span>
                     ${s.active !== false && html`<span class="cdb-live-badge">\u25CF Live</span>`}
                   </div>

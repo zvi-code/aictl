@@ -1,5 +1,6 @@
 import { html } from 'htm/preact';
-import { esc, COLORS, ICONS } from '../../utils.js';
+import { esc, COLORS } from '../../utils.js';
+import { ToolIcon } from '../ui/index.js';
 
 export default function ToolTabs({tools, activeTool, onSelect}) {
   if (tools.length <= 1) return null;
@@ -7,7 +8,7 @@ export default function ToolTabs({tools, activeTool, onSelect}) {
     ${tools.map(t => html`<button key=${t} class="sf-tool-tab ${t === activeTool ? 'active' : ''}"
       style="border-bottom-color:${t === activeTool ? (COLORS[t] || 'var(--accent)') : 'transparent'};color:${COLORS[t] || 'var(--fg)'}"
       onClick=${() => onSelect(t)}>
-      <span>${ICONS[t] || '\u{1F539}'}</span> ${esc(t)}
+      <${ToolIcon} tool=${t} size="1em"/> ${esc(t)}
     </button>`)}
   </div>`;
 }
