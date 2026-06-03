@@ -24,7 +24,6 @@ import TabSessionFlow from './components/TabSessionFlow.js';
 import TabTranscript from './components/TabTranscript.js';
 import TabTimelineChart from './components/TabTimelineChart.js';
 import TabExplorer from './components/TabExplorer.js';
-import TabHeatmap from './components/TabHeatmap.js';
 import TabToolConfig from './components/TabToolConfig.js';
 import ContextMap from './components/ContextMap.js';
 import CollectorHealth from './components/CollectorHealth.js';
@@ -321,7 +320,6 @@ export default function App() {
     events:     () => html`<${TabBoundary} tabName="events"><div class="mb-lg"><${TabEventsStats} key=${'events-' + activeTab}/></div></${TabBoundary}>`,
     budget:     () => html`<${TabBoundary} tabName="budget"><div class="mb-lg"><${TabBudget} key=${'budget-' + activeTab}/></div></${TabBoundary}>`,
     analytics:  () => html`<${TabBoundary} tabName="analytics"><div class="mb-lg"><${TabAnalytics} key=${'analytics-' + activeTab}/></div></${TabBoundary}>`,
-    heatmap:    () => html`<${TabBoundary} tabName="heatmap"><div class="mb-lg"><${TabHeatmap} key=${'heatmap-' + activeTab}/></div></${TabBoundary}>`,
     explorer:   () => theme === 'editorial'
       ? html`<${TabBoundary} tabName="explorer"><${CSessionsTab}
           onInspect=${(id, tool) => { dispatchSessionSelect(id, tool); setTheme('auto'); }}

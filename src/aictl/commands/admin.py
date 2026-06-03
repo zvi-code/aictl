@@ -287,6 +287,7 @@ def reinstall(skip_ui):
     """
     import shutil
     import subprocess
+    import os
 
     root = _find_project_root()
     if root is None:
@@ -332,7 +333,8 @@ def reinstall(skip_ui):
 
     click.echo(f"→ Reinstalling via {installer_label} from {root}...")
     try:
-        subprocess.run(install_cmd, check=True)
+        env = {**os.environ, "UV_VENV_CLEAR": "1"}
+        subprocess.run(install_cmd, check=True, env=env)
         click.secho("✅ aictl reinstalled", fg="green", bold=True)
     except subprocess.CalledProcessError as exc:
         raise click.ClickException(f"reinstall failed: {exc}")
@@ -359,6 +361,10 @@ def _reinstall_detached_windows(install_cmd: list[str], root: Path) -> None:
         "@echo off\r\n"
         "echo Waiting for aictl to exit so its executable can be replaced...\r\n"
         "ping -n 3 127.0.0.1 >nul\r\n"
+        # pipx reuses uv as its venv backend; on --force reinstall uv refuses to
+        # overwrite the existing venv ("A virtual environment already exists")
+        # unless told to clear it. UV_VENV_CLEAR=1 is uv's documented opt-in.
+        "set UV_VENV_CLEAR=1\r\n"
         "echo Reinstalling aictl from %s ...\r\n"
         "%s\r\n"
         "if errorlevel 1 (\r\n"
