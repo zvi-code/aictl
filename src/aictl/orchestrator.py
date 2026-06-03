@@ -481,6 +481,164 @@ def _kill_stale_server(port: int) -> None:
             sys.exit(1)
 
 
+# ─── Collection service (UI-independent) ─────────────────────────
+
+
+class CollectionService:
+    """The data-collection half of aictl, fully independent of any UI.
+
+    Owns the live collection engine — datapoint logger, SQLite history DB,
+    metric sink, persistent monitor, periodic refresh loop, and per-tool
+    ingesters — and exposes the resulting data through ``store`` / ``db``.
+
+    The web server (:func:`start_server`) and the TUI are pure *consumers*:
+    they read from ``store`` and ``db`` and never construct collectors
+    themselves. This lets collection run on its own (headless, low resource,
+    from startup) with visualization attached on demand via web or CLI.
+    """
+
+    def __init__(
+        self,
+        root: Path,
+        *,
+        interval: float = 5.0,
+        include_live_monitor: bool = True,
+        db_path: Path | str | None = None,
+    ) -> None:
+        self.root = root
+        self.interval = interval
+        self.include_live_monitor = include_live_monitor
+        self._db_path = db_path
+        # Populated by start()
+        self.db = None
+        self.sink = None
+        self.store: SnapshotStore | None = None
+        self.allowed = AllowedPaths()
+        self._dp_logger = None
+        self._monitor: PersistentMonitor | None = None
+        self._refresh: RefreshLoop | None = None
+
+    def start(self, *, quiet: bool = False) -> None:
+        """Build and start the collection engine. Non-blocking."""
+
+        def _say(msg: str) -> None:
+            if not quiet:
+                print(msg, file=sys.stderr)
+
+        # Datapoint file logger (optional)
+        try:
+            from .platforms import load_config
+
+            cfg = load_config()
+            if cfg.logging_enabled:
+                from .sink import DatapointLogger
+
+                self._dp_logger = DatapointLogger(
+                    log_dir=cfg.logging_dir,
+                    max_bytes=cfg.logging_max_file_bytes,
+                    backup_count=cfg.logging_backup_count,
+                )
+                _say(f"  datapoint log: {cfg.logging_dir}/")
+        except Exception as exc:
+            _say(f"  warning: datapoint logger unavailable ({exc})")
+
+        # SQLite persistence
+        try:
+            from .storage import HistoryDB
+
+            self.db = HistoryDB(db_path=self._db_path, datapoint_logger=self._dp_logger)
+            _say(f"  history db: {self._db_path or '~/.config/aictl/history.db'}")
+        except Exception as exc:
+            _say(f"  warning: history db unavailable ({exc})")
+
+        # Metric sink
+        from .sink import SampleSink
+
+        self.sink = SampleSink(db=self.db, buffer_size=5000, datapoint_logger=self._dp_logger)
+        self.store = SnapshotStore(db=self.db, sink=self.sink)
+
+        # Persistent live monitor (runs continuously, accumulates state)
+        if self.include_live_monitor:
+            _say("  starting persistent live monitor ...")
+            self._monitor = PersistentMonitor(self.root, sink=self.sink)
+            self._monitor.start()
+
+        # Initial collection so consumers see data immediately
+        _say("  collecting initial snapshot ...")
+        live_override = self._monitor.snapshot_dict() if self._monitor else None
+        snap = collect(
+            self.root,
+            include_processes=True,
+            _live_monitor_override=live_override or {},
+            _sink=self.sink,
+        )
+        self.store.update(snap)
+        self.allowed.update(snap)
+
+        # Background refresh (uses the persistent monitor for live data)
+        self._refresh = RefreshLoop(
+            self.root,
+            self.interval,
+            self.store,
+            self.allowed,
+            self.include_live_monitor,
+            monitor=self._monitor,
+        )
+        self._refresh.start()
+
+        # Optional per-tool ingesters (self-contained background threads;
+        # no-op when their source files are absent).
+        if self.db is not None:
+            try:
+                from .ingesters.cursor_conversations import start_background_poller as _start_cursor_ingester
+
+                _start_cursor_ingester(self.db)
+            except Exception as exc:  # pragma: no cover - defensive
+                _say(f"  warning: cursor ingester unavailable ({exc})")
+
+    def stop(self) -> None:
+        """Stop background collection. Best-effort; safe to call once."""
+        if self._refresh is not None:
+            self._refresh.stop()
+        if self._monitor is not None:
+            self._monitor.stop()
+        if self.sink is not None:
+            self.sink.close()
+        if self.db is not None:
+            self.db.close()
+
+
+def start_collector(
+    root: Path,
+    *,
+    interval: float = 5.0,
+    include_live_monitor: bool = True,
+    db_path: Path | str | None = None,
+) -> None:
+    """Run collection headless (no web server). Blocks until Ctrl-C.
+
+    This is the low-resource, always-on collection mode: it persists metrics
+    and sessions to SQLite for any consumer (web ``serve`` or the ``dashboard``
+    TUI) to read, without paying for the HTTP layer.
+    """
+    service = CollectionService(
+        root,
+        interval=interval,
+        include_live_monitor=include_live_monitor,
+        db_path=db_path,
+    )
+    service.start()
+    print("  aictl collector running (headless) — no web UI", file=sys.stderr)
+    print("  view with:  aictl dashboard   (or run 'aictl serve' for the web UI)", file=sys.stderr)
+    print("  press Ctrl-C to stop\n", file=sys.stderr)
+    try:
+        threading.Event().wait()
+    except KeyboardInterrupt:
+        print("\n  shutting down ...", file=sys.stderr)
+    finally:
+        service.stop()
+
+
 # ─── Entry point ─────────────────────────────────────────────────
 
 
@@ -493,89 +651,35 @@ def start_server(
     include_live_monitor: bool = True,
     db_path: Path | str | None = None,
 ) -> None:
-    """Start the dashboard HTTP server. Blocks until Ctrl-C."""
-    # Import HTTP classes from the web layer
+    """Start the dashboard HTTP server. Blocks until Ctrl-C.
+
+    Visualization layer only: it starts a :class:`CollectionService` for data
+    and serves it over HTTP (REST + SSE + static UI). The web server reads
+    exclusively from ``service.store`` / ``service.db`` and owns no collectors.
+    """
     from .dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
 
-    # Initialize datapoint file logger (if configured)
-    dp_logger = None
-    try:
-        from .platforms import load_config
-
-        cfg = load_config()
-        if cfg.logging_enabled:
-            from .sink import DatapointLogger
-
-            dp_logger = DatapointLogger(
-                log_dir=cfg.logging_dir,
-                max_bytes=cfg.logging_max_file_bytes,
-                backup_count=cfg.logging_backup_count,
-            )
-            print(f"  datapoint log: {cfg.logging_dir}/", file=sys.stderr)
-    except Exception as exc:
-        print(f"  warning: datapoint logger unavailable ({exc})", file=sys.stderr)
-
-    # Initialize SQLite persistence
-    db = None
-    try:
-        from .storage import HistoryDB
-
-        db = HistoryDB(db_path=db_path, datapoint_logger=dp_logger)
-        print(f"  history db: {db_path or '~/.config/aictl/history.db'}", file=sys.stderr)
-    except Exception as exc:
-        print(f"  warning: history db unavailable ({exc})", file=sys.stderr)
-
-    # Initialize SampleSink for universal metric emission
-    from .sink import SampleSink
-
-    sink = SampleSink(db=db, buffer_size=5000, datapoint_logger=dp_logger)
-
-    store = SnapshotStore(db=db, sink=sink)
-    allowed = AllowedPaths()
-
-    # Start persistent live monitor (runs continuously, accumulates state)
-    monitor = None
-    if include_live_monitor:
-        print("  starting persistent live monitor ...", file=sys.stderr)
-        monitor = PersistentMonitor(root, sink=sink)
-        monitor.start()
-
-    # Initial collection so /api/snapshot is ready immediately
-    print("  collecting initial snapshot ...", file=sys.stderr)
-    live_override = monitor.snapshot_dict() if monitor else None
-    snap = collect(
+    # Start the collection engine (UI-independent)
+    service = CollectionService(
         root,
-        include_processes=True,
-        _live_monitor_override=live_override or {},
-        _sink=sink,
+        interval=interval,
+        include_live_monitor=include_live_monitor,
+        db_path=db_path,
     )
-    store.update(snap)
-    allowed.update(snap)
-
-    # Start background refresh (uses persistent monitor for live data)
-    refresh = RefreshLoop(root, interval, store, allowed, include_live_monitor, monitor=monitor)
-    refresh.start()
+    service.start()
+    store = service.store
+    allowed = service.allowed
+    db = service.db
 
     # Kill any existing aictl on this port before binding
     _kill_stale_server(port)
 
-    # Start HTTP server
+    # Start HTTP server (presentation layer)
     server = _DashboardHTTPServer((host, port), _DashboardHandler, store, allowed, root)
 
     # Wire session analyzer as an event listener on the database
     if db is not None:
         db.add_event_listener(server.session_analyzer.ingest_event)
-
-    # Start optional per-tool ingesters (Slice 3.3: Cursor conversations.db).
-    # Self-contained background thread; no-op if the source file is missing
-    # or AICTL_CURSOR_INGESTER is set to a falsy value.
-    if db is not None:
-        try:
-            from .ingesters.cursor_conversations import start_background_poller as _start_cursor_ingester
-
-            _start_cursor_ingester(db)
-        except Exception as exc:  # pragma: no cover - defensive
-            print(f"  warning: cursor ingester unavailable ({exc})", file=sys.stderr)
 
     # Register SSE pre-serialization callback so build_sse_summary runs once
     # per update cycle (in the RefreshLoop thread) instead of per-SSE-client.
@@ -596,13 +700,8 @@ def start_server(
     except KeyboardInterrupt:
         pass
     finally:
-        refresh.stop()
-        if monitor:
-            monitor.stop()
         server.shutdown()
-        sink.close()
-        if db:
-            db.close()
+        service.stop()
 
 
 # ── SnapshotStore / AllowedPaths ────────────────────────────────────

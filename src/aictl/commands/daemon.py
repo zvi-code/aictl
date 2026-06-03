@@ -32,11 +32,24 @@ from ..platforms import IS_WINDOWS, cursor_home_dir, load_config
     "--monitor/--no-monitor", "include_live_monitor", default=None, help="Enable live runtime monitoring overlay"
 )
 @click.option("--daemon/--no-daemon", "daemon_mode", default=False, help="Run as background daemon")
+@click.option(
+    "--headless",
+    is_flag=True,
+    help="Run collection only (no web UI) — low-resource always-on monitoring",
+)
 @click.option("--db", "db_path", default=None, type=click.Path(), help="Path to SQLite history database")
 @click.option("--stop", is_flag=True, help="Stop a running daemon")
 @click.option("--status", "show_status", is_flag=True, help="Show daemon status")
-def serve(root_dir, port, host, interval, open_browser, include_live_monitor, db_path, daemon_mode, stop, show_status):
-    """Start a live web dashboard with REST + SSE API."""
+def serve(
+    root_dir, port, host, interval, open_browser, include_live_monitor, db_path, daemon_mode, headless, stop, show_status
+):
+    """Start a live web dashboard with REST + SSE API.
+
+    With ``--headless`` the web UI is skipped and only the collection engine
+    runs (persisting to SQLite), which is the low-resource, always-on
+    monitoring mode. View the collected data later with ``aictl dashboard``
+    or by starting ``aictl serve`` (web UI).
+    """
     cfg = load_config()
 
     # Apply config file defaults, CLI overrides take precedence
@@ -72,15 +85,33 @@ def serve(root_dir, port, host, interval, open_browser, include_live_monitor, db
 
     # Foreground mode
     root = Path(root_dir).resolve()
-    start_server(
-        root,
-        host=host,
-        port=port,
-        interval=interval,
-        open_browser=open_browser,
-        include_live_monitor=include_live_monitor,
-        db_path=db_path,
-    )
+    try:
+        if headless:
+            from ..orchestrator import start_collector
+
+            start_collector(
+                root,
+                interval=interval,
+                include_live_monitor=include_live_monitor,
+                db_path=db_path,
+            )
+        else:
+            start_server(
+                root,
+                host=host,
+                port=port,
+                interval=interval,
+                open_browser=open_browser,
+                include_live_monitor=include_live_monitor,
+                db_path=db_path,
+            )
+    finally:
+        # start_server/start_collector have already flushed/closed the DB and
+        # sink. The live monitor's asyncio.to_thread workers are non-daemon
+        # threads that the interpreter would join at exit, stalling Ctrl+C if
+        # one is mid-scan. Force-exit so shutdown is immediate (standard
+        # pattern for servers with background worker pools).
+        os._exit(0)
 
 
 def _start_daemon(root_dir, host, port, interval, include_live_monitor, pid_file, cfg):
