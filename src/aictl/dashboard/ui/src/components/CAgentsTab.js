@@ -2,6 +2,7 @@ import { useState, useContext, useEffect, useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS, fmtK, liveTokenTotal } from '../utils.js';
+import { ToolIcon } from './ui/index.js';
 import * as api from '../api.js';
 import Dialog from './ui/Dialog.js';
 import { toast } from './ui/Toast.js';
@@ -415,7 +416,7 @@ function AgentRow({ tool: t, selected, onSelect }) {
     role="button" tabIndex=${0} aria-pressed=${isSel ? 'true' : 'false'}
     onKeyDown=${e => e.key === 'Enter' && onSelect(t.tool)}>
     <div class="cagents-row-head">
-      <span class="cagents-row-dot" style="background:${color}"></span>
+      <${ToolIcon} tool=${t.tool} size="12px"/>
       <span class="cagents-row-label">${t.label}</span>
       <span class=${'cagents-row-status' + (active ? ' is-on' : '')}>
         ${active ? '\u25CF on' : 'off'}

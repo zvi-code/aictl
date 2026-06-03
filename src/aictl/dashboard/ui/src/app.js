@@ -33,6 +33,7 @@ import ErrorBoundary from './components/ErrorBoundary.js';
 import DashboardContent from './components/DashboardContent.js';
 import RangeBar from './components/RangeBar.js';
 import ToolFilterBar from './components/ToolFilterBar.js';
+import { Icon } from './components/ui/index.js';
 import GlobalHeader from './components/shell/GlobalHeader.js';
 import CMasthead from './components/shell/CMasthead.js';
 import ActivityRail from './components/shell/ActivityRail.js';
@@ -367,7 +368,7 @@ export default function App() {
           <nav class="tab-nav" role="navigation" aria-label="Dashboard tabs">
             ${tabs.map(t => html`<button key=${t.id} class="tab-btn"
               aria-current=${activeTab === t.id ? 'page' : null} onClick=${() => setActiveTab(t.id)}
-              title="Shortcut: ${t.key}">${t.icon ? t.icon + ' ' : ''}${t.label}</button>`)}
+              title="Shortcut: ${t.key}"><span class="tab-btn-icon"><${Icon} name=${t.iconName} size="0.95em"/></span>${t.label}</button>`)}
           </nav>
           <${ToolFilterBar} snap=${snap} enabledTools=${enabledTools}
             onToggle=${toggleTool} onSetAll=${setTools}/>

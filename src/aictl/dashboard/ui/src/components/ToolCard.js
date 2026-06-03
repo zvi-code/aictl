@@ -1,9 +1,10 @@
 import { useState, useMemo, useContext } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
-import { COLORS, ICONS, CAT_ORDER, fmtK, fmtSz, fmtRate, fmtPct, esc, liveTokenTotal, TOOL_RELATIONSHIPS } from '../utils.js';
+import { COLORS, CAT_ORDER, fmtK, fmtSz, fmtRate, fmtPct, esc, liveTokenTotal, TOOL_RELATIONSHIPS } from '../utils.js';
 import CatGroup from './FileTree.js';
 import { TinySparkline, ProcSection, ConfigSection, TelemetrySection, LiveSection } from './ToolCardSections.js';
+import { ToolIcon } from './ui/index.js';
 
 // ─── ToolCard Component ────────────────────────────────────────
 export default function ToolCard({tool: t, root}) {
@@ -12,7 +13,6 @@ export default function ToolCard({tool: t, root}) {
   const toolConfig = useMemo(()=>(snapCtx?.tool_configs||[]).find(c=>c.tool===t.tool),[snapCtx,t.tool]);
   const toolHist = useMemo(()=>hist?.by_tool?.[t.tool],[hist, t.tool]);
   const c = COLORS[t.tool]||'var(--fg2)';
-  const icon = ICONS[t.tool]||'\u{1F539}';
   const tok = t.files.reduce((a,f)=>a+f.tokens,0);
   const anom = t.processes.filter(p=>p.anomalies&&p.anomalies.length).length;
   const liveTok = liveTokenTotal(t.live);
@@ -34,7 +34,7 @@ export default function ToolCard({tool: t, root}) {
     <button class="tcard-head" onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}
       style="flex-wrap:wrap;row-gap:0.2rem">
       <span class="arrow">\u25B6</span>
-      <h2><span style="margin-right:var(--sp-2)">${icon}</span>${esc(t.label)}</h2>
+      <h2><span style="margin-right:var(--sp-2)"><${ToolIcon} tool=${t.tool} size="1em"/></span>${esc(t.label)}</h2>
       <span class="badge" data-dp="procs.tool.files">${t.files.length} files</span>
       <span class="badge" data-dp="procs.tool.tokens">${fmtK(tok)} tok</span>
       ${t.processes.length>0 && html`<span class="badge" data-dp="procs.tool.process_count">${t.processes.length} proc ${fmtPct(totalCpu)} ${fmtSz(totalMem*1048576)}</span>`}

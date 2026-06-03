@@ -11,6 +11,7 @@ export { default as Kbd } from './Kbd.js';
 export { default as EmptyState } from './EmptyState.js';
 export { default as Skeleton } from './Skeleton.js';
 export { default as Icon } from './Icon.js';
+export { default as ToolIcon, toolVendor } from './ToolIcon.js';
 export { default as DataTable } from './DataTable.js';
 export { default as ToastProvider } from './ToastProvider.js';
 export { toast, dismiss, subscribe as subscribeToasts, TOAST_MAX, TOAST_TTL_MS } from './Toast.js';

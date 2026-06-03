@@ -1,7 +1,8 @@
 import { useMemo, useContext, useState } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
-import { fmtK, esc, COLORS, ICONS, shortDir, normPath } from '../utils.js';
+import { fmtK, esc, shortDir, normPath } from '../utils.js';
+import { ToolIcon } from './ui/index.js';
 
 const CAT_COLORS = {
   instructions: 'var(--accent)', config: 'var(--yellow)', rules: 'var(--orange)',
@@ -275,7 +276,7 @@ export default function ContextMap() {
         <div class="es-section-title">By Tool</div>
         ${data.perTool.map(t => html`<div key=${t.tool} class="flex-between"
           style="padding:var(--sp-1) var(--sp-4);font-size:var(--fs-base);background:var(--bg2);border-radius:3px;margin-bottom:var(--sp-1)">
-          <span><span style="color:${COLORS[t.tool] || 'var(--fg2)'}">${ICONS[t.tool] || '\u{1F539}'}</span> ${esc(t.label)}</span>
+          <span><${ToolIcon} tool=${t.tool} size="0.95em"/> ${esc(t.label)}</span>
           <span class="text-muted">${fmtK(t.sentYes)} sent \u00B7 ${fmtK(t.tokens)} total</span>
         </div>`)}
       </div>

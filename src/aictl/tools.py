@@ -90,6 +90,10 @@ TOOL_TAXONOMY: dict[str, ToolMeta] = {
     "aictl": ToolMeta("meta", ("cli",), meta=True),
 }
 
+# Tool → vendor map, derived from the taxonomy. Single source of truth for
+# the dashboard's vendor-identity icons (injected to window.TOOL_VENDORS).
+TOOL_VENDORS: dict[str, str] = {tool: meta.vendor for tool, meta in TOOL_TAXONOMY.items()}
+
 # Vendor display labels
 VENDOR_LABELS: dict[str, str] = {
     "anthropic": "Anthropic",

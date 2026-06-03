@@ -1,6 +1,6 @@
 // ─── Tool filter bar ───────────────────────────────────────────
 import { html } from 'htm/preact';
-import { COLORS, ICONS } from '../utils.js';
+import { ToolIcon } from './ui/index.js';
 
 const VERIFIED = new Set([
   'claude-code', 'claude-desktop',
@@ -23,14 +23,12 @@ export default function ToolFilterBar({ snap, enabledTools, onToggle, onSetAll }
     ${allTools.sort((a, b) => a.label.localeCompare(b.label)).map(t => {
       const verified = VERIFIED.has(t.tool);
       const checked = enabledTools === null || enabledTools.includes(t.tool);
-      const c = COLORS[t.tool] || 'var(--fg2)';
-      const icon = ICONS[t.tool] || '\u{1F539}';
       return html`<label key=${t.tool}
         class=${'tool-filter-item' + (verified ? '' : ' tool-unverified')}
         title=${verified ? '' : 'Not yet verified — discovery only'}>
         <input type="checkbox" checked=${checked} disabled=${!verified}
           onChange=${() => verified && onToggle(t.tool)} />
-        <span style=${'color:' + c}>${icon}</span>
+        <${ToolIcon} tool=${t.tool} size="1em"/>
         <span>${t.label}</span>
       </label>`;
     })}

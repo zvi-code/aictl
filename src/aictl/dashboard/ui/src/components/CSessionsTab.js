@@ -2,6 +2,7 @@ import { useState, useEffect, useContext, useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS, fmtK } from '../utils.js';
+import { ToolIcon } from './ui/index.js';
 import * as api from '../api.js';
 
 function fmtDur(s) {
@@ -81,7 +82,7 @@ function SessionDetailPane({ session, onInspect }) {
     <div class="csessions-detail-overline">Session · ${fmtDate(session.started_at)}</div>
     <div class="csessions-detail-title">${sessionTitle(session)}</div>
     <div class="csessions-detail-agent">
-      <span class="csessions-agent-dot" style="background:${color}"></span>
+      <${ToolIcon} tool=${session.tool} size="1em"/>
       <span class="csessions-agent-label">${session.tool}</span>
       ${session.git_branch && html`<span class="csessions-git-badge">⎇ ${session.git_branch}</span>`}
     </div>
@@ -228,7 +229,7 @@ export default function CSessionsTab({ onInspect }) {
                     <div><${StatusBadge} status=${status}/></div>
                     <div class="csessions-cell-title">${sessionTitle(s)}</div>
                     <div class="csessions-col-agent">
-                      <span class="csessions-agent-dot" style="background:${color}"></span>
+                      <${ToolIcon} tool=${s.tool} size="0.85em"/>
                       <span class="csessions-cell-agent">${s.tool}</span>
                     </div>
                     <div class="csessions-cell-num">${fmtK(sessionTokens(s))}</div>
