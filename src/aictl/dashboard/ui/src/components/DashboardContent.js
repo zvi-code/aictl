@@ -73,7 +73,7 @@ export default function DashboardContent({ snap, history }) {
         return html`<${ChartCard} key=${cfg.field} label=${cfg.label} value=${fmt}
           data=${sparkFor(cfg.field)} chartColor=${cfg.color || 'var(--accent)'}
           smooth=${!!cfg.smooth} refLines=${refLines.length ? refLines : undefined}
-          yMax=${yMax} dp=${cfg.dp}/>`;
+          yMax=${yMax} dp=${cfg.dp} iconName=${cfg.iconName}/>`;
       })}
     </div>
 

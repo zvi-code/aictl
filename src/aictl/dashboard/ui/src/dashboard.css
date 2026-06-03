@@ -2424,6 +2424,10 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 .tab-btn-icon svg { display: block; }
 /* Tool filter + by-tool list: nudge the inline silhouette off the text */
 .tool-filter-item .tool-ico, .sl-cell--tool .tool-ico { margin-right: 1px; }
+/* Sparkline cards: metric icon on the label + muted directional trend delta */
+.chart-label svg { vertical-align: -0.1em; margin-right: 3px; opacity: 0.85; }
+.chart-val-group { display: inline-flex; align-items: baseline; gap: var(--sp-3); }
+.chart-trend { font-size: var(--fs-2xs); color: var(--fg2); font-family: var(--ff-mono); white-space: nowrap; }
 .sl-tool-name {
   white-space: nowrap;
   overflow: hidden;
