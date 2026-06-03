@@ -522,24 +522,30 @@ PRUNE_DIRS = frozenset(
     }
 )
 
+# Bound project-root tree scans. Discovery is meant for a *project* root;
+# pointing aictl at a huge root (a drive root, a home directory, ...) must
+# not turn it into an endless, resource-hungry full-filesystem walk. This
+# caps how many directories any single discovery walk visits, mirroring the
+# result cap that ``safe_rglob`` already applies.
+MAX_SCAN_DIRS = 50_000
+
 
 def find_in_tree(root: Path, filename: str) -> list[Path]:
     """Find every file named *filename* under root, skipping irrelevant dirs."""
     results = []
-    for dirpath_str, dirnames, filenames in os.walk(str(root)):
-        dirnames[:] = [d for d in dirnames if d not in PRUNE_DIRS]
+    for dirpath, dirnames, filenames in safe_walk(root, prune_dirs=PRUNE_DIRS, max_dirs=MAX_SCAN_DIRS):
         if filename in filenames:
-            results.append(Path(dirpath_str) / filename)
+            results.append(dirpath / filename)
     return sorted(results)
 
 
 def find_dirs_in_tree(root: Path, dirname: str) -> list[Path]:
     """Find every directory named *dirname* under root."""
     results = []
-    for dirpath_str, dirnames, _ in os.walk(str(root)):
+    for dirpath, dirnames, _ in safe_walk(root, prune_dirs=PRUNE_DIRS, max_dirs=MAX_SCAN_DIRS):
         if dirname in dirnames:
-            results.append(Path(dirpath_str) / dirname)
-        dirnames[:] = [d for d in dirnames if d not in PRUNE_DIRS and d != dirname]
+            results.append(dirpath / dirname)
+        dirnames[:] = [d for d in dirnames if d != dirname]
     return sorted(results)
 
 
@@ -551,14 +557,13 @@ def batch_find_in_tree(
     """Single tree walk that collects all matching files and directories."""
     file_matches: dict[str, list[Path]] = {f: [] for f in filenames}
     dir_matches: dict[str, list[Path]] = {d: [] for d in dirnames}
-    for dirpath_str, dirs, files in os.walk(str(root)):
-        dirs[:] = [d for d in dirs if d not in PRUNE_DIRS]
+    for dirpath, dirs, files in safe_walk(root, prune_dirs=PRUNE_DIRS, max_dirs=MAX_SCAN_DIRS):
         for f in filenames:
             if f in files:
-                file_matches[f].append(Path(dirpath_str) / f)
+                file_matches[f].append(dirpath / f)
         for d in list(dirs):
             if d in dirnames:
-                dir_matches[d].append(Path(dirpath_str) / d)
+                dir_matches[d].append(dirpath / d)
                 dirs.remove(d)  # don't recurse into found dirs
     for v in [*file_matches.values(), *dir_matches.values()]:
         v.sort()
@@ -1079,7 +1084,7 @@ def _discover_project_env(root: Path) -> ToolResources:
         ".junie",
     }
     skip = PRUNE_DIRS | known_tool_dirs
-    for dp, dirnames, _ in safe_walk(root, prune_dirs=PRUNE_DIRS):
+    for dp, dirnames, _ in safe_walk(root, prune_dirs=PRUNE_DIRS, max_dirs=MAX_SCAN_DIRS):
         for d in sorted(dirnames):
             if d.startswith(".") and d not in skip:
                 item = dp / d
