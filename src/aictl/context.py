@@ -407,7 +407,7 @@ def scan(root: Path) -> list[tuple[str, ParsedAictx]]:
     root = root.resolve()
     results: list[tuple[str, ParsedAictx]] = []
 
-    for aictx_file in _walk(root, _budget=[MAX_SCAN_DIRS]):
+    for aictx_file in _walk(root):
         rel = aictx_file.parent.relative_to(root)
         rel_str = str(rel) if str(rel) != "." else "."
         parsed = parse_aictx(aictx_file)
@@ -419,13 +419,16 @@ def scan(root: Path) -> list[tuple[str, ParsedAictx]]:
     return results
 
 
-def _walk(root: Path, _budget: list[int]):
+def _walk(root: Path, _budget: list[int] | None = None):
     """Yield .context.toml files, root first, then children.
 
     *_budget* is a single-element mutable directory budget shared across the
     recursion so that pointing aictl at a huge root (a drive root, a home
     directory, ...) can't turn the scan into an endless full-filesystem walk.
+    Callers normally omit it; it defaults to :data:`MAX_SCAN_DIRS`.
     """
+    if _budget is None:
+        _budget = [MAX_SCAN_DIRS]
     f = root / AICTX_FILENAME
     if f.is_file():
         yield f
