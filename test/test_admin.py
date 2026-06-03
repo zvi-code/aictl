@@ -373,6 +373,7 @@ class TestReinstall:
     def test_reinstall_with_pipx(self, runner, tmp_path):
         with (
             patch("aictl.commands.admin._find_project_root", return_value=tmp_path),
+            patch("aictl.commands.admin._IS_WINDOWS", False),
             patch("shutil.which", return_value="/usr/bin/pipx"),
             patch("subprocess.run") as mock_run,
         ):
@@ -387,6 +388,7 @@ class TestReinstall:
 
         with (
             patch("aictl.commands.admin._find_project_root", return_value=tmp_path),
+            patch("aictl.commands.admin._IS_WINDOWS", False),
             patch("shutil.which", side_effect=mock_which),
             patch("subprocess.run") as mock_run,
         ):
@@ -397,11 +399,35 @@ class TestReinstall:
     def test_reinstall_no_pip_no_pipx(self, runner, tmp_path):
         with (
             patch("aictl.commands.admin._find_project_root", return_value=tmp_path),
+            patch("aictl.commands.admin._IS_WINDOWS", False),
             patch("shutil.which", return_value=None),
         ):
             result = runner.invoke(reinstall, ["--skip-ui"])
         assert result.exit_code != 0
         assert "Neither pipx nor pip" in result.output
+
+    def test_reinstall_windows_uses_detached_relaunch(self, runner, tmp_path):
+        """On Windows, reinstall must NOT run pip in-process (the running
+        aictl.exe is locked). It hands off to a detached console instead."""
+        with (
+            patch("aictl.commands.admin._find_project_root", return_value=tmp_path),
+            patch("aictl.commands.admin._IS_WINDOWS", True),
+            patch("shutil.which", return_value=None) as mock_which,
+            patch("subprocess.run") as mock_run,
+            patch("aictl.commands.admin._reinstall_detached_windows") as mock_detached,
+        ):
+            # which: pipx -> None, pip3 -> pip path
+            mock_which.side_effect = lambda cmd: "C:\\Py\\Scripts\\pip.exe" if cmd in ("pip3", "pip") else None
+            result = runner.invoke(reinstall, ["--skip-ui"])
+        assert result.exit_code == 0
+        # In-process install must never be attempted on Windows.
+        mock_run.assert_not_called()
+        # The detached relaunch must be invoked with the pip install command.
+        mock_detached.assert_called_once()
+        install_cmd = mock_detached.call_args[0][0]
+        assert install_cmd[0] == "C:\\Py\\Scripts\\pip.exe"
+        assert install_cmd[1] == "install"
+        assert "-e" in install_cmd
 
 
 # ────────────────────────────────────────────────────────────────

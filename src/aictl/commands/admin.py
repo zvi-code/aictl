@@ -313,30 +313,81 @@ def reinstall(skip_ui):
     # ── Step 2: Python reinstall ────────────────────────────────────────────
     pipx = shutil.which("pipx")
     if pipx:
-        click.echo(f"→ Reinstalling via pipx (--force --editable) from {root}...")
-        try:
-            subprocess.run(
-                [pipx, "install", "--force", "-e", f"{root}[all]"],
-                check=True,
-            )
-            click.secho("✅ aictl reinstalled", fg="green", bold=True)
-        except subprocess.CalledProcessError as exc:
-            raise click.ClickException(f"pipx install failed: {exc}")
+        install_cmd = [pipx, "install", "--force", "-e", f"{root}[all]"]
+        installer_label = "pipx (--force --editable)"
     else:
         pip = shutil.which("pip3") or shutil.which("pip")
         if not pip:
             raise click.ClickException("Neither pipx nor pip found on PATH")
-        click.echo(f"→ Reinstalling via pip (editable) from {root}...")
-        try:
-            subprocess.run(
-                [pip, "install", "-e", f"{root}[all]"],
-                check=True,
-            )
-            click.secho("✅ aictl reinstalled", fg="green", bold=True)
-        except subprocess.CalledProcessError as exc:
-            raise click.ClickException(f"pip install failed: {exc}")
+        install_cmd = [pip, "install", "-e", f"{root}[all]"]
+        installer_label = "pip (editable)"
+
+    if _IS_WINDOWS:
+        # On Windows the running `aictl.exe` console-script holds its own image
+        # locked, so an in-process pip/pipx reinstall fails with WinError 32 and
+        # leaves the environment half-uninstalled. Hand the install off to a new
+        # console that waits for THIS process to exit before replacing the exe.
+        _reinstall_detached_windows(install_cmd, root)
+        return
+
+    click.echo(f"→ Reinstalling via {installer_label} from {root}...")
+    try:
+        subprocess.run(install_cmd, check=True)
+        click.secho("✅ aictl reinstalled", fg="green", bold=True)
+    except subprocess.CalledProcessError as exc:
+        raise click.ClickException(f"reinstall failed: {exc}")
 
     click.echo("\nRun 'aictl --version' to verify.")
+
+
+def _reinstall_detached_windows(install_cmd: list[str], root: Path) -> None:
+    """Relaunch the Python reinstall in a new console that waits for this
+    process to exit first.
+
+    The running ``aictl.exe`` cannot be overwritten while it is in use, so we
+    write a small batch script that pauses until this process releases its
+    image lock, runs the install, then keeps the window open so the user can
+    read the result. This process then exits immediately.
+    """
+    import os
+    import subprocess
+    import sys
+    import tempfile
+
+    quoted = " ".join(f'"{arg}"' if " " in arg or "[" in arg else arg for arg in install_cmd)
+    bat = (
+        "@echo off\r\n"
+        "echo Waiting for aictl to exit so its executable can be replaced...\r\n"
+        "ping -n 3 127.0.0.1 >nul\r\n"
+        "echo Reinstalling aictl from %s ...\r\n"
+        "%s\r\n"
+        "if errorlevel 1 (\r\n"
+        "  echo.\r\n"
+        "  echo Reinstall FAILED. Review the output above.\r\n"
+        ") else (\r\n"
+        "  echo.\r\n"
+        "  echo aictl reinstalled. Run 'aictl --version' to verify.\r\n"
+        ")\r\n"
+        "echo.\r\n"
+        "echo Press any key to close this window.\r\n"
+        "pause >nul\r\n"
+    ) % (root, quoted)
+
+    fd, bat_path = tempfile.mkstemp(suffix=".bat", prefix="aictl-reinstall-")
+    with os.fdopen(fd, "w", encoding="ascii", errors="replace") as fh:
+        fh.write(bat)
+
+    CREATE_NEW_CONSOLE = 0x00000010
+    subprocess.Popen(
+        ["cmd", "/c", bat_path],
+        creationflags=CREATE_NEW_CONSOLE,
+        close_fds=True,
+    )
+    click.secho("→ Reinstall launched in a new window.", fg="green", bold=True)
+    click.echo("  This window's aictl is exiting so its executable can be replaced.")
+    click.echo("  Watch the new console for progress, then run 'aictl --version'.")
+    # Exit hard so aictl.exe releases its image lock immediately.
+    os._exit(0)
 
 
 # ─── catalog ─────────────────────────────────────────────────────────────────
