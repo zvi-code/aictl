@@ -5,22 +5,22 @@ export const LAYOUT = {
   sparklines: [
     {
       field: 'files', label: 'Files',
-      color: 'var(--accent)', format: 'raw', dp: 'overview.files',
+      color: 'var(--accent)', format: 'raw', dp: 'overview.files', iconName: 'file-text',
     },
     {
       field: 'tokens', label: 'Tokens',
-      color: 'var(--green)', format: 'kilo', dp: 'overview.tokens',
+      color: 'var(--green)', format: 'kilo', dp: 'overview.tokens', iconName: 'coins',
     },
     {
       field: 'cpu', label: 'CPU',
-      color: 'var(--orange)', format: 'percent', smooth: true, dp: 'overview.cpu',
+      color: 'var(--orange)', format: 'percent', smooth: true, dp: 'overview.cpu', iconName: 'cpu',
       refLines: [
         { valueExpr: '100', label: '1 core' },
       ],
     },
     {
       field: 'mem_mb', label: 'Proc RAM',
-      color: 'var(--yellow)', format: 'size', smooth: true, multiply: 1048576, dp: 'overview.mem_mb',
+      color: 'var(--yellow)', format: 'size', smooth: true, multiply: 1048576, dp: 'overview.mem_mb', iconName: 'server',
     },
   ],
 
