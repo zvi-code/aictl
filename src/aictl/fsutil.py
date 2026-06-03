@@ -32,9 +32,15 @@ __all__ = [
     "safe_walk",
     "safe_stat",
     "path_basename",
+    "MAX_SCAN_DIRS",
 ]
 
 _log = logging.getLogger(__name__)
+
+# Upper bound on the number of directories any single tree scan will visit.
+# Pointing aictl at a huge root (a drive root, a home directory, ...) must
+# never turn discovery into an endless full-filesystem walk.
+MAX_SCAN_DIRS = 50_000
 
 
 # ── Safe directory listing ────────────────────────────────────────
@@ -112,16 +118,19 @@ def safe_walk(
     *,
     prune_dirs: Iterable[str] = (),
     max_depth: int = 20,
+    max_dirs: int | None = None,
 ) -> Generator[tuple[Path, list[str], list[str]], None, None]:
     """Walk a directory tree with error handling and depth limit.
 
     * Skips directories listed in *prune_dirs* (modified in-place).
     * Stops descending past *max_depth* levels.
+    * Stops entirely after visiting *max_dirs* directories (``None`` = no cap).
     * Catches per-directory OS errors instead of aborting the walk.
     * Yields ``(dirpath: Path, dirnames: list[str], filenames: list[str])``.
     """
     prune = set(prune_dirs)
     root_depth = len(root.parts)
+    visited = 0
 
     for dirpath_str, dirnames, filenames in os.walk(str(root), onerror=_walk_error):
         dp = Path(dirpath_str)
@@ -129,6 +138,11 @@ def safe_walk(
         if depth >= max_depth:
             dirnames.clear()
             continue
+        if max_dirs is not None and visited >= max_dirs:
+            _log.warning("safe_walk %s: hit %d-directory cap, stopping scan", root, max_dirs)
+            dirnames.clear()
+            break
+        visited += 1
         dirnames[:] = [d for d in dirnames if d not in prune]
         yield dp, dirnames, filenames
 

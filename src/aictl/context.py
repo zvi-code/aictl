@@ -36,6 +36,11 @@ except ModuleNotFoundError:
     import tomli as tomllib  # type: ignore[no-redef]
 
 from .fsutil import safe_iterdir
+from .fsutil import MAX_SCAN_DIRS
+
+import logging
+
+_log = logging.getLogger(__name__)
 
 # ── Parser (from parser.py) ──
 
@@ -402,7 +407,7 @@ def scan(root: Path) -> list[tuple[str, ParsedAictx]]:
     root = root.resolve()
     results: list[tuple[str, ParsedAictx]] = []
 
-    for aictx_file in _walk(root):
+    for aictx_file in _walk(root, _budget=[MAX_SCAN_DIRS]):
         rel = aictx_file.parent.relative_to(root)
         rel_str = str(rel) if str(rel) != "." else "."
         parsed = parse_aictx(aictx_file)
@@ -414,14 +419,25 @@ def scan(root: Path) -> list[tuple[str, ParsedAictx]]:
     return results
 
 
-def _walk(root: Path):
-    """Yield .context.toml files, root first, then children."""
+def _walk(root: Path, _budget: list[int]):
+    """Yield .context.toml files, root first, then children.
+
+    *_budget* is a single-element mutable directory budget shared across the
+    recursion so that pointing aictl at a huge root (a drive root, a home
+    directory, ...) can't turn the scan into an endless full-filesystem walk.
+    """
     f = root / AICTX_FILENAME
     if f.is_file():
         yield f
+    if _budget[0] <= 0:
+        return
+    _budget[0] -= 1
     for item in safe_iterdir(root):
         if item.is_dir() and item.name not in SKIP_DIRS:
-            yield from _walk(item)
+            if _budget[0] <= 0:
+                _log.warning("context.scan: hit %d-directory cap, stopping scan", MAX_SCAN_DIRS)
+                return
+            yield from _walk(item, _budget)
 
 
 # ── Feature matrix (from feature_matrix.py) ──
