@@ -2,6 +2,7 @@ import { useState, useContext, useMemo, useEffect } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import * as api from '../api.js';
+import { Icon } from './ui/index.js';
 
 const VIEWS = [
   { id: 'prompts',   label: 'Prompts' },
@@ -137,7 +138,7 @@ function PromptDetail({ prompt, view = 'prompts' }) {
 function EmptyState({ view, hasSnap }) {
   const isPrompts = view === 'prompts';
   return html`<div class="cprompts-empty">
-    <div class="cprompts-empty-icon" aria-hidden="true">${isPrompts ? '\u270F' : '\u2699\uFE0F'}</div>
+    <div class="cprompts-empty-icon" aria-hidden="true"><${Icon} name=${isPrompts ? 'pen' : 'settings'} size="1.4em"/></div>
     <div class="cprompts-empty-title">No ${isPrompts ? 'prompts' : 'workflows'} yet</div>
     <div class="cprompts-empty-body">
       ${isPrompts

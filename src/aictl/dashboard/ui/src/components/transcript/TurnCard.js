@@ -2,6 +2,7 @@ import { html } from 'htm/preact';
 import { fmtK } from '../../utils.js';
 import { fmtDur, fmtHHMMSS, shortModel, truncate } from './helpers.js';
 import ActionRow from './ActionRow.js';
+import { Icon } from '../ui/index.js';
 
 function collectResponseText(turn, actions) {
   const chunks = [];
@@ -38,19 +39,19 @@ export default function TurnCard({ turn, index, expanded, onToggle }) {
         ${wallMs > 0 ? html`<span class="tr-turn-dur">${fmtDur(wallMs)}</span>` : null}
       </div>
       <div class="tr-turn-stats">
-        ${totalTok > 0 ? html`<span class="tr-stat" title="Tokens">\uD83E\uDE99 ${fmtK(totalTok)}</span>` : null}
-        ${toolUses.length > 0 ? html`<span class="tr-stat" title="Tool uses">\uD83D\uDD27 ${toolUses.length}</span>` : null}
-        ${apiCalls.length > 0 ? html`<span class="tr-stat" title="API calls">\uD83C\uDF10 ${apiCalls.length}</span>` : null}
-        ${errors.length > 0 ? html`<span class="tr-stat tr-stat-err" title="Errors">\u274C ${errors.length}</span>` : null}
+        ${totalTok > 0 ? html`<span class="tr-stat" title="Tokens"><${Icon} name="coins" size="0.9em"/> ${fmtK(totalTok)}</span>` : null}
+        ${toolUses.length > 0 ? html`<span class="tr-stat" title="Tool uses"><${Icon} name="wrench" size="0.9em"/> ${toolUses.length}</span>` : null}
+        ${apiCalls.length > 0 ? html`<span class="tr-stat" title="API calls"><${Icon} name="globe" size="0.9em"/> ${apiCalls.length}</span>` : null}
+        ${errors.length > 0 ? html`<span class="tr-stat tr-stat-err" title="Errors"><${Icon} name="x" size="0.9em"/> ${errors.length}</span>` : null}
       </div>
       <div class="tr-turn-chevron">${expanded ? '\u25BE' : '\u25B8'}</div>
     </div>
 
     ${hasPrompt ? html`<div class="tr-prompt ${expanded ? 'tr-prompt-full' : ''}">
-      <div class="tr-prompt-icon">\uD83D\uDC64</div>
+      <div class="tr-prompt-icon"><${Icon} name="user" size="1em"/></div>
       <div class="tr-prompt-text">${expanded ? turn.prompt : truncate(turn.prompt_preview || turn.prompt, 120)}</div>
     </div>` : html`<div class="tr-prompt tr-prompt-empty">
-      <div class="tr-prompt-icon">\uD83D\uDC64</div>
+      <div class="tr-prompt-icon"><${Icon} name="user" size="1em"/></div>
       <div class="tr-prompt-text text-muted">(no prompt captured)</div>
     </div>`}
 

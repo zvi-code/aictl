@@ -6,7 +6,7 @@ import Kbd from '../ui/Kbd.js';
 import Popover from '../ui/Popover.js';
 import Segmented from '../ui/Segmented.js';
 import Dialog from '../ui/Dialog.js';
-import { THEME_ICONS } from '../../utils.js';
+import { Icon } from '../ui/index.js';
 import RangeBar from '../RangeBar.js';
 import ToolFilterBar from '../ToolFilterBar.js';
 
@@ -107,7 +107,7 @@ export default function GlobalHeader({
       <!-- Theme toggle -->
       <button class="theme-btn" type="button" onClick=${cycleTheme}
         aria-label=${'Toggle theme: ' + theme} title=${'Theme: ' + theme}>
-        ${THEME_ICONS[theme]}
+        <${Icon} name=${theme === 'light' ? 'sun' : theme === 'editorial' ? 'pen' : 'moon'} size="16"/>
       </button>
 
       ${otelActive && html`<span class="conn ok" title="OTel receiver active">OTel</span>`}

@@ -2,6 +2,7 @@ import { html } from 'htm/preact';
 import { fmtK, esc } from '../../utils.js';
 import { fmtDur, fmtHHMMSS, shortModel, extractToolArgs } from './helpers.js';
 import SeqTooltip from './SeqTooltip.js';
+import { Icon } from '../ui/index.js';
 
 export default function SeqArrow({event, participants, hoveredIdx, idx, onHover}) {
   const fromIdx = participants.findIndex(p => p.id === event._from);
@@ -29,7 +30,7 @@ export default function SeqArrow({event, participants, hoveredIdx, idx, onHover}
   let sublabel = '';
   if (event.type === 'user_message') {
     if (event.redacted) {
-      label = '\u{1F512} prompt (' + (event.prompt_length || '?') + ' chars)';
+      label = 'prompt (' + (event.prompt_length || '?') + ' chars)';
     } else {
       label = event.preview || '(prompt)';
       if (event.prompt_length) sublabel = event.prompt_length + ' chars';
@@ -96,7 +97,7 @@ export default function SeqArrow({event, participants, hoveredIdx, idx, onHover}
       <div class="sf-seq-label" style="
         left:${((arrowLeft + arrowRight) / 2)}%;
         color:${color};
-      "><span class="sf-seq-label-text" title=${label}>${esc(label)}</span>
+      "><span class="sf-seq-label-text" title=${label}>${event.type === 'user_message' && event.redacted ? html`<${Icon} name="lock" size="0.85em"/> ` : ''}${esc(label)}</span>
         ${sublabel && html`<span class="sf-seq-sublabel">${sublabel}</span>`}
       </div>
     </div>
