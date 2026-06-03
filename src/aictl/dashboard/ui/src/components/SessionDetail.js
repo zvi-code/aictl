@@ -19,6 +19,7 @@ import { fmtDur } from './session_detail/helpers.js';
 
 // Thin orchestrator — just the session header + a stack of Panels.
 // Each panel is its own file under components/session_detail/.
+// Panel `icon` values are Lucide names (see components/ui/Icon.js).
 export default function SessionDetail({session, onClose}) {
   const c = COLORS[session.tool] || 'var(--fg2)';
   const filesLoaded = session.files_loaded || [];
@@ -50,46 +51,46 @@ export default function SessionDetail({session, onClose}) {
       ${onClose && html`<button class="sd-close" onClick=${onClose} aria-label="Close session detail">\u2715</button>`}
     </div>
 
-    <${Panel} title="Actions" icon="\u26A1" badge=${null} defaultOpen=${true}>
+    <${Panel} title="Actions" icon="zap" badge=${null} defaultOpen=${true}>
       <${ActionsPanel} sessionId=${session.session_id}/>
     <//>
-    ${hasTeam && html`<${Panel} title="Team" icon="\uD83D\uDC65" badge=${entityState.agents.length + ' agents'} defaultOpen=${true}>
+    ${hasTeam && html`<${Panel} title="Team" icon="users" badge=${entityState.agents.length + ' agents'} defaultOpen=${true}>
       <${TeamTree} entityState=${entityState}/>
     <//>`}
-    ${hasTasks && html`<${Panel} title="Tasks" icon="\uD83D\uDCCB" badge=${entityState.tasks.length} defaultOpen=${true}>
+    ${hasTasks && html`<${Panel} title="Tasks" icon="clipboard-list" badge=${entityState.tasks.length} defaultOpen=${true}>
       <${TaskBoard} tasks=${entityState.tasks}/>
     <//>`}
-    <${Panel} title="Context" icon="\uD83D\uDCDA" badge=${filesLoaded.length || null}>
+    <${Panel} title="Context" icon="book-open" badge=${filesLoaded.length || null}>
       <${ContextPanel} session=${session}/>
     <//>
-    <${Panel} title="Memory" icon="\uD83E\uDDE0" defaultOpen=${false}>
+    <${Panel} title="Memory" icon="brain" defaultOpen=${false}>
       <${MemoryPanel} session=${session}/>
     <//>
-    <${Panel} title="Resources" icon="\u2699\uFE0F" badge=${fmtK(inTok + outTok) + ' tok'}>
+    <${Panel} title="Resources" icon="layers" badge=${fmtK(inTok + outTok) + ' tok'}>
       <${ResourcesPanel} session=${session}/>
     <//>
-    <${Panel} title="Cost by Model" icon="\uD83D\uDCB5" defaultOpen=${false}>
+    <${Panel} title="Cost by Model" icon="banknote" defaultOpen=${false}>
       <${CostByModelPanel} sessionId=${session.session_id}/>
     <//>
-    <${Panel} title="Tool Calls" icon="\uD83D\uDD27" defaultOpen=${false}>
+    <${Panel} title="Tool Calls" icon="wrench" defaultOpen=${false}>
       <${ToolCallsPanel} sessionId=${session.session_id}/>
     <//>
-    <${Panel} title="Process Tree" icon="\uD83C\uDF33" defaultOpen=${false}>
+    <${Panel} title="Process Tree" icon="git-branch" defaultOpen=${false}>
       <${ProcessTreePanel} sessionId=${session.session_id}/>
     <//>
-    <${Panel} title="MCP Servers" icon="\uD83D\uDD0C" defaultOpen=${false}>
+    <${Panel} title="MCP Servers" icon="server" defaultOpen=${false}>
       <${McpUsagePanel} sessionId=${session.session_id}/>
     <//>
-    <${Panel} title="Deliverables" icon="\uD83D\uDCE6" badge=${filesTouched.length || null}>
+    <${Panel} title="Deliverables" icon="package" badge=${filesTouched.length || null}>
       <${DeliverablesPanel} session=${session}/>
     <//>
-    <${Panel} title="API Calls" icon="\uD83D\uDD17" defaultOpen=${false}>
+    <${Panel} title="API Calls" icon="globe" defaultOpen=${false}>
       <${ApiCallsPanel} sessionId=${session.session_id}/>
     <//>
-    ${session.project && html`<${Panel} title="Project Costs" icon="\uD83D\uDCB0" defaultOpen=${false}>
+    ${session.project && html`<${Panel} title="Project Costs" icon="banknote" defaultOpen=${false}>
       <${ProjectCostPanel} project=${session.project}/>
     <//>`}
-    ${session.project && session.tool && html`<${Panel} title="Run History" icon="\uD83D\uDCC8" defaultOpen=${false}>
+    ${session.project && session.tool && html`<${Panel} title="Run History" icon="line-chart" defaultOpen=${false}>
       <${RunHistoryPanel} project=${session.project} tool=${session.tool}/>
     <//>`}
   </div>`;

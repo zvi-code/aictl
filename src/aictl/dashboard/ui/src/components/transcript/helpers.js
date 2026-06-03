@@ -25,14 +25,15 @@ export function truncate(s, n) {
   return s.length > n ? s.slice(0, n) + '\u2026' : s;
 }
 
+// Action-kind → Lucide icon name (rendered via components/ui/Icon.js).
 export const ACTION_ICONS = {
-  tool_use: '\uD83D\uDD27',
-  api_call: '\uD83C\uDF10',
-  api_response: '\uD83D\uDCE8',
-  file_edit: '\uD83D\uDCDD',
-  compaction: '\uD83D\uDDDC\uFE0F',
-  subagent: '\uD83E\uDD16',
-  error: '\u274C',
+  tool_use: 'wrench',
+  api_call: 'globe',
+  api_response: 'mail',
+  file_edit: 'file-pen',
+  compaction: 'archive',
+  subagent: 'bot',
+  error: 'x',
 };
 
 export const ACTION_COLORS = {

@@ -48,7 +48,7 @@ export const LAYOUT = {
     { id: 'memory',   label: 'AI Context',       icon: '\uD83D\uDCDD', iconName: 'brain',            key: '3' },
     { id: 'live',     label: 'Live Monitor',     icon: '\uD83D\uDCE1', iconName: 'radio',            key: '4' },
     { id: 'events',   label: 'Events & Stats',   icon: '\uD83D\uDCC8', iconName: 'activity',         key: '5' },
-    { id: 'budget',   label: 'Token Budget',     icon: '\uD83D\uDCB0', iconName: 'wallet',           key: '6' },
+    { id: 'budget',   label: 'Token Budget',     icon: '\uD83D\uDCB0', iconName: 'coins',           key: '6' },
     { id: 'analytics', label: 'Analytics',        icon: '\uD83D\uDD2C', iconName: 'bar-chart-3',      key: '8' },
     { id: 'config',   label: 'Configuration',     icon: '\u2699\uFE0F', iconName: 'settings',         key: '0' },
     { id: 'agents',   label: 'Agents',             icon: '\uD83E\uDD16', iconName: 'bot',              key: '' },
