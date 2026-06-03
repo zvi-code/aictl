@@ -73,6 +73,55 @@ class TestBuildHookConfig:
         assert "-m aictl.hook_handler" in cmd
 
 
+class TestWindowsCallOperator:
+    """On Windows, Claude Code runs command hooks through PowerShell, which
+    treats a leading quoted string as a literal and chokes on the following
+    ``-m`` (``Unexpected token '-m'`` / ParserError). The command must be
+    prefixed with PowerShell's call operator ``&`` to invoke the quoted
+    interpreter path. POSIX shells must NOT get the ``&`` prefix.
+    """
+
+    def _cmd(self, *, is_windows: bool, exe: str) -> str:
+        with (
+            patch("aictl.commands.integrations.IS_WINDOWS", is_windows),
+            patch("aictl.commands.integrations.sys.executable", exe),
+        ):
+            config = _build_hook_config(8484, ["SessionStart"])
+        return config["SessionStart"][0]["hooks"][0]["command"]
+
+    def test_windows_prefixes_call_operator(self):
+        cmd = self._cmd(
+            is_windows=True,
+            exe=r"C:\Users\First Last\AppData\Local\Programs\Python\Python312\python.exe",
+        )
+        # Must start with the call operator followed by the quoted path.
+        assert cmd.startswith('& "C:\\Users\\First Last')
+        assert '" -m aictl.hook_handler --event SessionStart' in cmd
+
+    def test_posix_has_no_call_operator(self):
+        cmd = self._cmd(is_windows=False, exe="/usr/bin/python3")
+        assert not cmd.startswith("&")
+        assert cmd.startswith('"/usr/bin/python3" -m aictl.hook_handler')
+
+    def test_windows_doctor_extracts_interpreter_past_operator(self):
+        """The doctor's interpreter extraction must skip the ``&`` token."""
+        from aictl.commands.integrations import _doctor_check_one
+
+        cmd = self._cmd(
+            is_windows=True,
+            exe=r"C:\Python312\python.exe",
+        )
+        rule = {
+            "_aictl_owner": _AICTL_OWNER_MARKER,
+            "matcher": "",
+            "hooks": [{"type": "command", "command": cmd}],
+        }
+        with patch("aictl.commands.integrations.IS_WINDOWS", True):
+            result = _doctor_check_one("SessionStart", rule)
+        # Interpreter must be the python path, never the bare call operator.
+        assert result["interpreter"] == r"C:\Python312\python.exe"
+
+
 class TestIsAictlHook:
     def test_detects_module_format(self):
         """Current module-based format is detected."""
@@ -520,8 +569,11 @@ class TestPythonCmd:
 
         config = _build_hook_config(8484, ["SessionStart"])
         cmd = config["SessionStart"][0]["hooks"][0]["command"]
+        # On Windows the command is prefixed with PowerShell's call operator
+        # (``& "..."``); strip it before checking the interpreter token.
+        invocation = cmd[2:] if cmd.startswith("& ") else cmd
         # Command must start with the quoted sys.executable, not bare 'python3'
-        assert cmd.startswith(f'"{sys.executable}"'), (
+        assert invocation.startswith(f'"{sys.executable}"'), (
             f"Hook command should start with quoted sys.executable, got: {cmd[:80]}"
         )
 
@@ -551,8 +603,10 @@ class TestPythonCmd:
 
             quoted = _python_cmd()
         assert fake_exe in quoted
-        assert quoted.startswith('"')
-        assert quoted.endswith('"')
+        # On Windows the call operator ``& `` precedes the quoted path.
+        invocation = quoted[2:] if quoted.startswith("& ") else quoted
+        assert invocation.startswith('"')
+        assert invocation.endswith('"')
 
 
 class TestSanitizeProjectName:

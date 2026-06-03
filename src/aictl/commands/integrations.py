@@ -297,15 +297,29 @@ _AICTL_HOOK_MARKERS = ("/api/hooks", "aictl.hook_handler")  # kept for backward-
 
 
 def _python_cmd() -> str:
-    """Return a quoted path to the current Python interpreter.
+    """Return an invokable reference to the current Python interpreter.
 
     Using sys.executable ensures we invoke the exact same Python that runs
     aictl — correct venv, correct version — on every platform including
     Windows where 'python3' is not available.
+
+    The path is always quoted in case it contains spaces (common on
+    Windows, e.g. ``C:\\Users\\First Last\\...``). On Windows, Claude Code
+    runs command hooks through PowerShell, which parses a leading quoted
+    string as a string *literal* to evaluate rather than an executable to
+    run. The trailing ``-m`` then produces ``Unexpected token '-m'`` /
+    ``ParserError``. Prefixing with the call operator ``&`` tells
+    PowerShell to execute the quoted path. The ``&`` is only emitted on
+    Windows; POSIX shells (bash/zsh) execute a leading quoted path
+    directly and have no call operator.
     """
     exe = sys.executable
     # Quote the path in case it contains spaces (common on Windows).
-    return f'"{exe}"'
+    quoted = f'"{exe}"'
+    if IS_WINDOWS:
+        # PowerShell call operator: required to invoke a quoted command path.
+        return f"& {quoted}"
+    return quoted
 
 
 def _sanitize_project_name(name: str) -> str:
@@ -609,6 +623,10 @@ def _doctor_check_one(event: str, rule: dict) -> dict:
 
     cmd = _extract_hook_command(rule)
     tokens = _shlex_split_cmd(cmd)
+    # On Windows the command is prefixed with PowerShell's call operator
+    # (``& "C:\\...\\python.exe" ...``); the interpreter is the next token.
+    if tokens and tokens[0] == "&":
+        tokens = tokens[1:]
     interp = tokens[0].strip('"') if tokens else ""
     port = _extract_port_from_cmd(cmd)
 
