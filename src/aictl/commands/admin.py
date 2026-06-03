@@ -196,16 +196,33 @@ def _find_project_root() -> Path:
 
     When installed via pipx, __file__ points into site-packages, not the
     source tree.  Walk up from cwd first, then fall back to __file__.
+
+    Supports both the src-layout (``<root>/src/aictl``) and the legacy
+    flat layout (``<root>/aictl``).
     """
     for anchor in (Path.cwd(), Path(__file__).resolve()):
         p = anchor
         for _ in range(10):
-            if (p / "pyproject.toml").is_file() and (p / "aictl").is_dir():
+            if (p / "pyproject.toml").is_file() and (
+                (p / "aictl").is_dir() or (p / "src" / "aictl").is_dir()
+            ):
                 return p
             if p.parent == p:
                 break
             p = p.parent
     return None
+
+
+def _find_package_dir(root: Path) -> Path:
+    """Return the ``aictl`` package directory under ``root``.
+
+    Handles both the src-layout (``<root>/src/aictl``) and the legacy
+    flat layout (``<root>/aictl``).
+    """
+    src_pkg = root / "src" / "aictl"
+    if src_pkg.is_dir():
+        return src_pkg
+    return root / "aictl"
 
 
 # On Windows, npm is a .cmd wrapper — subprocess needs shell=True to find it.
@@ -224,8 +241,9 @@ def build_ui():
     root = _find_project_root()
     if root is None:
         raise click.ClickException("Cannot find aictl source tree. Run this from the project directory.")
-    ui_dir = root / "aictl" / "dashboard" / "ui"
-    dist_dir = root / "aictl" / "dashboard" / "dist"
+    pkg_dir = _find_package_dir(root)
+    ui_dir = pkg_dir / "dashboard" / "ui"
+    dist_dir = pkg_dir / "dashboard" / "dist"
 
     if not ui_dir.is_dir():
         raise click.ClickException(f"UI source directory not found at {ui_dir}")
@@ -273,7 +291,7 @@ def reinstall(skip_ui):
     root = _find_project_root()
     if root is None:
         raise click.ClickException("Cannot find aictl source tree. Run this from the project directory.")
-    ui_dir = root / "aictl" / "dashboard" / "ui"
+    ui_dir = _find_package_dir(root) / "dashboard" / "ui"
 
     # ── Step 1: UI build ────────────────────────────────────────────────────
     if skip_ui:

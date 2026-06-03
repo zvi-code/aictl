@@ -64,7 +64,7 @@ class TestFindProjectRoot:
         root = _find_project_root()
         if root is not None:
             assert (root / "pyproject.toml").is_file()
-            assert (root / "aictl").is_dir()
+            assert (root / "aictl").is_dir() or (root / "src" / "aictl").is_dir()
 
     def test_returns_none_for_orphan(self, tmp_path, monkeypatch):
         """When cwd has no pyproject.toml ancestor, returns None."""

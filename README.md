@@ -701,6 +701,30 @@ Verify:
 aictl --version
 ```
 
+### Development install / reinstall on Windows
+
+The `Makefile` (and therefore `make install`) is Unix/macOS only — on Windows
+use the built-in `aictl reinstall` command instead. After editing source code
+or pulling new changes, run it from the repo root to rebuild the dashboard UI
+and reinstall the Python package so changes take effect:
+
+```powershell
+aictl reinstall              # builds UI (npm) + pipx install --force -e ".[all]"
+aictl reinstall --skip-ui    # Python only — skip the npm build (faster)
+```
+
+If you don't have a working `aictl` on PATH yet (first install or a broken
+install), reinstall manually:
+
+```powershell
+pipx install --force -e ".[all]"          # editable install from the repo root
+npm install --prefix src/aictl/dashboard/ui   # one-time, if the UI needs building
+npm run build --prefix src/aictl/dashboard/ui
+```
+
+> **Requires Node.js/npm** for the UI build step. Without it, use
+> `aictl reinstall --skip-ui` (the bundled dashboard assets are reused).
+
 ### Config file locations on Windows
 
 `aictl status` discovers config files from the standard Windows locations:
