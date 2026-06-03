@@ -50,7 +50,6 @@ export const LAYOUT = {
     { id: 'events',   label: 'Events & Stats',   icon: '\uD83D\uDCC8', iconName: 'activity',         key: '5' },
     { id: 'budget',   label: 'Token Budget',     icon: '\uD83D\uDCB0', iconName: 'wallet',           key: '6' },
     { id: 'analytics', label: 'Analytics',        icon: '\uD83D\uDD2C', iconName: 'bar-chart-3',      key: '8' },
-    { id: 'heatmap',  label: 'Tool Heatmap',      icon: '\uD83D\uDD33', iconName: 'grid-3x3',         key: 'h' },
     { id: 'config',   label: 'Configuration',     icon: '\u2699\uFE0F', iconName: 'settings',         key: '0' },
     { id: 'agents',   label: 'Agents',             icon: '\uD83E\uDD16', iconName: 'bot',              key: '' },
     { id: 'prompts',  label: 'Prompts',             icon: '\u270F',       iconName: 'pen',              key: '' },
