@@ -713,11 +713,19 @@ aictl reinstall              # builds UI (npm) + pipx install --force -e ".[all]
 aictl reinstall --skip-ui    # Python only — skip the npm build (faster)
 ```
 
+> **Windows self-reinstall:** the running `aictl.exe` cannot overwrite itself
+> while it is in use (pip would fail with `WinError 32` and leave a half-removed
+> install). On Windows `aictl reinstall` therefore hands the install off to a
+> **new console window** that waits for the current `aictl` to exit, performs
+> the install, and stays open so you can read the result. The original command
+> exits immediately — watch the new window, then run `aictl --version`.
+
 If you don't have a working `aictl` on PATH yet (first install or a broken
-install), reinstall manually:
+install), reinstall manually using `python -m pip` (never the locked
+`aictl.exe`):
 
 ```powershell
-pipx install --force -e ".[all]"          # editable install from the repo root
+python -m pip install -e ".[all]"             # editable install from the repo root
 npm install --prefix src/aictl/dashboard/ui   # one-time, if the UI needs building
 npm run build --prefix src/aictl/dashboard/ui
 ```
