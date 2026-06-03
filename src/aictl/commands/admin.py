@@ -357,27 +357,62 @@ def _reinstall_detached_windows(install_cmd: list[str], root: Path) -> None:
     import tempfile
 
     quoted = " ".join(f'"{arg}"' if " " in arg or "[" in arg else arg for arg in install_cmd)
+
+    # Locate the pipx venv so we can evict any process (running `aictl serve`
+    # daemon, a stray python.exe) that holds its directory locked — uv cannot
+    # clear the venv while it is in use (Windows os error 32).
+    import os as _os
+
+    venv_dir = _os.environ.get("PIPX_HOME")
+    venv_dir = (
+        str(Path(venv_dir) / "venvs" / "aictl")
+        if venv_dir
+        else str(Path.home() / "pipx" / "venvs" / "aictl")
+    )
+
     bat = (
         "@echo off\r\n"
+        "setlocal enabledelayedexpansion\r\n"
         "echo Waiting for aictl to exit so its executable can be replaced...\r\n"
         "ping -n 3 127.0.0.1 >nul\r\n"
+        # Kill any process whose image lives inside the pipx venv (the running
+        # `aictl serve` dashboard/daemon keeps python.exe — and the venv dir —
+        # locked, so uv's clear fails with os error 32). Best-effort. We use
+        # PowerShell .Where()/member-enumeration (no pipe) because a piped
+        # command inside a cmd `for /f` requires fragile caret escaping.
+        "for /f \"tokens=1\" %%P in ('powershell -NoProfile -Command "
+        "\"(Get-CimInstance Win32_Process).Where({{ $_.ExecutablePath -like '{venv}\\*' }}).ProcessId\"') do (\r\n"
+        "  echo Stopping process %%P running from the aictl venv...\r\n"
+        "  taskkill /PID %%P /F >nul 2>&1\r\n"
+        ")\r\n"
         # pipx reuses uv as its venv backend; on --force reinstall uv refuses to
         # overwrite the existing venv ("A virtual environment already exists")
         # unless told to clear it. UV_VENV_CLEAR=1 is uv's documented opt-in.
         "set UV_VENV_CLEAR=1\r\n"
-        "echo Reinstalling aictl from %s ...\r\n"
-        "%s\r\n"
-        "if errorlevel 1 (\r\n"
-        "  echo.\r\n"
-        "  echo Reinstall FAILED. Review the output above.\r\n"
-        ") else (\r\n"
-        "  echo.\r\n"
-        "  echo aictl reinstalled. Run 'aictl --version' to verify.\r\n"
-        ")\r\n"
+        "echo Reinstalling aictl from {root} ...\r\n"
+        # Retry a few times: the directory lock is transient and clears once the
+        # evicted process fully releases its handles.
+        "set ATTEMPT=0\r\n"
+        ":retry\r\n"
+        "set /a ATTEMPT+=1\r\n"
+        "{cmd}\r\n"
+        "if not errorlevel 1 goto success\r\n"
+        "if !ATTEMPT! geq 5 goto failed\r\n"
+        "echo Install attempt !ATTEMPT! failed (venv may still be locked); retrying...\r\n"
+        "ping -n 4 127.0.0.1 >nul\r\n"
+        "goto retry\r\n"
+        ":failed\r\n"
+        "echo.\r\n"
+        "echo Reinstall FAILED after !ATTEMPT! attempts. Review the output above.\r\n"
+        "goto done\r\n"
+        ":success\r\n"
+        "echo.\r\n"
+        "echo aictl reinstalled. Run 'aictl --version' to verify.\r\n"
+        ":done\r\n"
         "echo.\r\n"
         "echo Press any key to close this window.\r\n"
         "pause >nul\r\n"
-    ) % (root, quoted)
+    ).format(venv=venv_dir, root=root, cmd=quoted)
 
     fd, bat_path = tempfile.mkstemp(suffix=".bat", prefix="aictl-reinstall-")
     with os.fdopen(fd, "w", encoding="ascii", errors="replace") as fh:
