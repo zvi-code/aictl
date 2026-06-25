@@ -880,9 +880,14 @@ def otel():
 @click.option("--port", default=None, type=int, help="aictl server port (default: $AICTL_PORT or 8484)")
 @click.option(
     "--tool",
-    type=click.Choice(["claude", "copilot", "codex", "gemini", "all"]),
+    type=click.Choice(["claude", "copilot", "codex", "gemini", "agent-workspace", "all"]),
     default="all",
     help="Which tool(s) to configure",
+)
+@click.option(
+    "--profile",
+    default=None,
+    help="Tag agent-workspace runs with this aictl profile (sets AW_CONTEXT_PROFILE)",
 )
 @click.option(
     "--print", "print_only", is_flag=True, help="Print shell exports to stdout instead of persisting (for eval)"
@@ -894,7 +899,7 @@ def otel():
     help="Shell format for --print output (auto-detected)",
 )
 @click.option("--force", is_flag=True, help="Overwrite corrupted settings.json files instead of refusing")
-def enable(port: int | None, tool: str, print_only: bool, shell: str | None, force: bool):
+def enable(port: int | None, tool: str, profile: str | None, print_only: bool, shell: str | None, force: bool):
     """Enable OTel export for AI coding tools.
 
     \b
@@ -909,20 +914,22 @@ def enable(port: int | None, tool: str, print_only: bool, shell: str | None, for
         aictl otel enable              # persist everywhere
         aictl otel enable --tool claude # Claude Code only
         eval $(aictl otel enable --print)  # current shell only
+        aictl otel enable --tool agent-workspace --profile review
+                                       # workspace runs export, tagged 'review'
     """
     if print_only:
-        _print_exports(port, tool, shell)
+        _print_exports(port, tool, shell, profile)
         return
     guard = WriteGuard.install("otel enable")
 
     port = port if port is not None else _default_port()
     endpoint = f"http://localhost:{port}"
-    tools = ["claude", "copilot", "codex"] if tool == "all" else [tool]
+    tools = ["claude", "copilot", "codex", "agent-workspace"] if tool == "all" else [tool]
 
     actions: list[str] = []
 
     # ── Env vars for all tools ──────────────────────────────────
-    env_block = _build_env_block(port, tools)
+    env_block = _build_env_block(port, tools, profile)
 
     # ── Shell profiles ──────────────────────────────────────────
     if IS_WINDOWS:
@@ -993,6 +1000,8 @@ def enable(port: int | None, tool: str, print_only: bool, shell: str | None, for
     click.echo()
     click.echo(f"Endpoint: {endpoint}")
     click.echo(f"Tools:    {', '.join(tools)}")
+    if "agent-workspace" in tools:
+        click.echo(f"Workspace: runs export to {endpoint} (AW_OTLP_ENDPOINT)" + (f", profile '{profile}'" if profile else ""))
     click.echo()
     click.echo("Restart AI tools to pick up changes.")
     if "copilot" in tools:
@@ -1001,11 +1010,11 @@ def enable(port: int | None, tool: str, print_only: bool, shell: str | None, for
         raise SystemExit(1)
 
 
-def _print_exports(port: int | None, tool: str, shell: str | None) -> None:
+def _print_exports(port: int | None, tool: str, shell: str | None, profile: str | None = None) -> None:
     """Print env var exports to stdout for eval."""
     port = port if port is not None else _default_port()
     endpoint = f"http://localhost:{port}"
-    tools = ["claude", "copilot", "codex"] if tool == "all" else [tool]
+    tools = ["claude", "copilot", "codex", "agent-workspace"] if tool == "all" else [tool]
 
     if shell is None:
         if IS_WINDOWS:
@@ -1017,7 +1026,7 @@ def _print_exports(port: int | None, tool: str, shell: str | None) -> None:
         else:
             shell = "bash"
 
-    env_block = _build_env_block(port, tools)
+    env_block = _build_env_block(port, tools, profile)
     for key, val in env_block.items():
         if shell in ("bash", "zsh"):
             click.echo(f'export {key}="{val}"')
@@ -1031,7 +1040,7 @@ def _print_exports(port: int | None, tool: str, shell: str | None) -> None:
     print(f"# Make sure 'aictl serve --port {port}' is running", file=sys.stderr)
 
 
-def _build_env_block(port: int, tools: list[str]) -> dict[str, str]:
+def _build_env_block(port: int, tools: list[str], profile: str | None = None) -> dict[str, str]:
     """Build the full set of env vars for the given tools."""
     endpoint = f"http://localhost:{port}"
     env: dict[str, str] = {"AICTL_PORT": str(port)}
@@ -1071,6 +1080,15 @@ def _build_env_block(port: int, tools: list[str]) -> dict[str, str]:
                 "OTEL_LOGS_EXPORTER": "otlp",
             }
         )
+
+    # agent-workspace exports its run journal as OTLP traces when AW_OTLP_ENDPOINT
+    # is set (aw-otel is opt-in on that var). Pointing it at aictl makes each
+    # workspace RUN show up as a session/turn/tool trace; tagging it with the
+    # active aictl profile closes the configuration↔action loop in the dashboard.
+    if "agent-workspace" in tools:
+        env["AW_OTLP_ENDPOINT"] = endpoint
+        if profile:
+            env["AW_CONTEXT_PROFILE"] = profile
 
     env.update(
         {
@@ -1150,6 +1168,7 @@ def verify():
         ("COPILOT_OTEL_ENDPOINT", None),
         ("CODEX_OTEL_ENABLED", "1"),
         ("CODEX_OTEL_ENDPOINT", None),
+        ("AW_OTLP_ENDPOINT", None),
     ]
     for key, expected in required:
         # Check current process env, then Windows registry

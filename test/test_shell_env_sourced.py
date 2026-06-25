@@ -220,3 +220,44 @@ class TestEnableVerifyRoundtrip:
         assert str(bashrc) in shell_section
         assert str(zshrc) in shell_section
 
+
+
+class TestAgentWorkspaceProfile:
+    """agent-workspace producer: AW_OTLP_ENDPOINT + AW_CONTEXT_PROFILE (config↔action)."""
+
+    def test_enable_agent_workspace_writes_aw_endpoint_and_profile(self, fake_home, monkeypatch):
+        profile_rc = fake_home / ".zshrc"
+        profile_rc.write_text("")
+        monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [profile_rc])
+        runner = CliRunner()
+        result = runner.invoke(
+            otel,
+            ["enable", "--tool", "agent-workspace", "--profile", "review"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        content = _env_file(fake_home).read_text(encoding="utf-8")
+        assert 'export AW_OTLP_ENDPOINT="http://localhost:8484"' in content
+        assert 'export AW_CONTEXT_PROFILE="review"' in content
+
+    def test_default_all_includes_agent_workspace_endpoint(self, fake_home, monkeypatch):
+        profile_rc = fake_home / ".zshrc"
+        profile_rc.write_text("")
+        monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [profile_rc])
+        runner = CliRunner()
+        result = runner.invoke(otel, ["enable"], catch_exceptions=False)  # --tool all (default)
+        assert result.exit_code == 0
+        content = _env_file(fake_home).read_text(encoding="utf-8")
+        assert "AW_OTLP_ENDPOINT" in content  # workspace export on by default
+        assert "AW_CONTEXT_PROFILE" not in content  # but no profile unless asked
+
+    def test_print_emits_aw_vars_for_eval(self):
+        runner = CliRunner()
+        result = runner.invoke(
+            otel,
+            ["enable", "--print", "--tool", "agent-workspace", "--profile", "review", "--shell", "bash"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        assert 'export AW_OTLP_ENDPOINT="http://localhost:8484"' in result.output
+        assert 'export AW_CONTEXT_PROFILE="review"' in result.output
