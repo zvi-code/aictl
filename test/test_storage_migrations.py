@@ -226,3 +226,144 @@ def test_reopen_current_db_is_noop(tmp_path, count_calls):
     finally:
         db2.close()
     assert count_calls == _expected_counts(CURRENT_VERSION)
+
+
+# ── Failure semantics ────────────────────────────────────────────────
+#
+# A blanket `except OperationalError: pass` in migrations used to mask
+# locked-DB failures: the version was recorded while the DDL never
+# applied, so upserts against the missing column failed forever.
+
+
+@pytest.fixture
+def fast_busy_timeout(monkeypatch):
+    """Shrink sqlite's busy timeout so locked-DB tests don't stall 5s."""
+    real_connect = sqlite3.connect
+
+    def connect_fast(*args, **kwargs):
+        kwargs["timeout"] = 0.2
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(storage_mod.sqlite3, "connect", connect_fast)
+    return real_connect
+
+
+def test_locked_db_raises_and_does_not_record_version(tmp_path, fast_busy_timeout):
+    """A write lock held by another connection must abort the migration
+    walk — NOT record the version with the DDL silently skipped."""
+    real_connect = fast_busy_timeout
+    db_path = tmp_path / "locked.db"
+    _build_v20_fixture(db_path)
+
+    holder = real_connect(str(db_path))
+    holder.execute("PRAGMA journal_mode=WAL")
+    holder.execute("BEGIN IMMEDIATE")
+    holder.execute("INSERT INTO sessions(session_id, tool, started_at) VALUES('hold', 't', 2.0)")
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked|busy"):
+            HistoryDB(db_path=db_path, flush_interval=0)
+    finally:
+        holder.rollback()
+        holder.close()
+
+    check = real_connect(str(db_path))
+    try:
+        assert _recorded_version(check) == 20, "version must not advance past a failed migration"
+        assert not _column_exists(check, "sessions", "pid")
+    finally:
+        check.close()
+
+    # Once the lock clears, reopening completes the walk.
+    db = HistoryDB(db_path=db_path, flush_interval=0)
+    try:
+        conn = db._conn()
+        assert _recorded_version(conn) == CURRENT_VERSION
+        assert _column_exists(conn, "sessions", "pid")
+    finally:
+        db.close()
+
+
+def test_duplicate_column_still_swallowed(tmp_path):
+    """The idempotency case keeps working: a column added out-of-band
+    (partial prior application) must not abort the walk."""
+    db_path = tmp_path / "dup.db"
+    _build_v20_fixture(db_path)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("ALTER TABLE sessions ADD COLUMN pid INTEGER DEFAULT 0")
+    conn.commit()
+    conn.close()
+
+    db = HistoryDB(db_path=db_path, flush_interval=0)
+    try:
+        conn = db._conn()
+        assert _recorded_version(conn) == CURRENT_VERSION
+        assert _column_exists(conn, "sessions", "pid")
+    finally:
+        db.close()
+
+
+def test_version_recorded_per_migration_closes_rerun_window(tmp_path, monkeypatch):
+    """Each migration records its target version inside its own
+    transaction. A crash mid-walk therefore never re-runs the already-
+    applied steps (m020's DROP TABLEs would hit the live tables)."""
+    original = storage_migrations.MIGRATIONS
+    boom_target = 24
+
+    def _boom(conn):
+        raise sqlite3.OperationalError("simulated crash")
+
+    patched = [(t, _boom if t == boom_target else fn) for t, fn in original]
+    monkeypatch.setattr(storage_migrations, "MIGRATIONS", patched)
+    monkeypatch.setattr(storage_mod, "_apply_pending_migrations", storage_migrations.apply_pending)
+
+    db_path = tmp_path / "crash.db"
+    _build_v20_fixture(db_path)
+    with pytest.raises(sqlite3.OperationalError, match="simulated crash"):
+        HistoryDB(db_path=db_path, flush_interval=0)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        # Every migration before the crash point is recorded.
+        assert _recorded_version(conn) == boom_target - 1
+        assert _column_exists(conn, "sessions", "pid")  # m021 applied + recorded
+    finally:
+        conn.close()
+
+    # Second open resumes from the crash point: earlier steps do not
+    # re-run.
+    counts = {t: 0 for t, _ in original}
+
+    def _count(target, fn):
+        def wrapped(conn):
+            counts[target] += 1
+            return fn(conn)
+
+        return wrapped
+
+    monkeypatch.setattr(storage_migrations, "MIGRATIONS", [(t, _count(t, fn)) for t, fn in original])
+    db = HistoryDB(db_path=db_path, flush_interval=0)
+    try:
+        assert _recorded_version(db._conn()) == CURRENT_VERSION
+    finally:
+        db.close()
+    assert counts == _expected_counts(boom_target - 1)
+
+
+def test_migration_reraises_non_benign_operational_error():
+    """m021/m028 swallow only idempotency errors; anything else re-raises."""
+    from aictl.storage_migrations import m021_sessions_add_pid, m028_tool_invocations_source_event_id
+
+    class FailingConn:
+        def execute(self, sql):
+            raise sqlite3.OperationalError("database is locked")
+
+    with pytest.raises(sqlite3.OperationalError):
+        m021_sessions_add_pid.apply(FailingConn())
+    with pytest.raises(sqlite3.OperationalError):
+        m028_tool_invocations_source_event_id.apply(FailingConn())
+
+    class DuplicateColumnConn:
+        def execute(self, sql):
+            raise sqlite3.OperationalError("duplicate column name: pid")
+
+    m021_sessions_add_pid.apply(DuplicateColumnConn())  # must not raise

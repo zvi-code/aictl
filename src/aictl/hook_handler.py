@@ -32,7 +32,10 @@ def main() -> None:
             event = args[i + 1]
             i += 2
         elif args[i] == "--port" and i + 1 < len(args):
-            port = int(args[i + 1])
+            try:
+                port = int(args[i + 1])
+            except ValueError:
+                port = 8484  # bad --port must never crash the wrapper
             i += 2
         elif args[i] == "--source" and i + 1 < len(args):
             source = args[i + 1]
@@ -41,9 +44,15 @@ def main() -> None:
             i += 1
 
     # Read payload from stdin (AI tools pipe rich JSON here).
+    # Empty or malformed stdin must never crash: this wrapper runs
+    # inside the AI tool's hook pipeline and has to stay silent.
+    data: dict = {}
     if not sys.stdin.isatty():
-        data = json.load(sys.stdin)
-    else:
+        try:
+            data = json.load(sys.stdin)
+        except (json.JSONDecodeError, ValueError, OSError):
+            data = {}
+    if not isinstance(data, dict):
         data = {}
 
     # Enrich with event name and environment context.

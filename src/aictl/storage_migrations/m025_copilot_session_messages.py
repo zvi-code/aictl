@@ -41,4 +41,3 @@ def apply(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_copilot_session_messages_ts"
         " ON copilot_session_messages(ts)"
     )
-    conn.commit()

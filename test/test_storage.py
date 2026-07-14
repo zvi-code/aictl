@@ -681,6 +681,77 @@ class TestMigration:
         db.close()
 
 
+class TestFlushFailureRecovery:
+    """flush() must roll back and re-buffer on sqlite errors.
+
+    Previously the popped buffers were dropped with no rollback: a
+    transient 'database is locked' destroyed the batch, and any
+    half-applied executemany statements were committed by the NEXT
+    flush while the rest of the batch vanished.
+    """
+
+    class _FailingConn:
+        """Proxy around a real sqlite3 connection that fails writes."""
+
+        def __init__(self, conn):
+            self._conn = conn
+            self.rollback_called = False
+
+        def executemany(self, *args, **kwargs):
+            raise __import__("sqlite3").OperationalError("database is locked")
+
+        def rollback(self):
+            self.rollback_called = True
+            return self._conn.rollback()
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    def test_locked_db_rolls_back_and_rebuffers_then_persists_once(self, tmp_path, monkeypatch):
+        d = HistoryDB(db_path=tmp_path / "flush.db", flush_interval=3600)
+        try:
+            real_conn = d._conn()
+            failing = self._FailingConn(real_conn)
+
+            samples = [Metric(ts=float(i), metric=f"m{i}", value=float(i)) for i in range(5)]
+            d.append_samples(samples)
+
+            monkeypatch.setattr(d, "_conn", lambda: failing)
+            assert d.flush() == 0
+            assert failing.rollback_called, "flush must roll back on sqlite3.Error"
+            # The batch must be re-buffered, not dropped.
+            assert len(d._metrics_buf) == 5
+
+            # DB recovers: next flush persists everything exactly once.
+            monkeypatch.setattr(d, "_conn", lambda: real_conn)
+            assert d.flush() == 5
+            rows = real_conn.execute("SELECT metric, value FROM metrics ORDER BY ts").fetchall()
+            assert rows == [(f"m{i}", float(i)) for i in range(5)]
+            assert d._metrics_buf == []
+            # No duplicates on a further flush.
+            assert d.flush() == 0
+        finally:
+            d.close()
+
+    def test_rebuffer_is_bounded_drop_oldest(self, tmp_path, monkeypatch):
+        d = HistoryDB(db_path=tmp_path / "cap.db", flush_interval=3600)
+        try:
+            monkeypatch.setattr(d, "_REBUFFER_CAP", 10)
+            real_conn = d._conn()
+            failing = self._FailingConn(real_conn)
+            monkeypatch.setattr(d, "_conn", lambda: failing)
+
+            samples = [Metric(ts=float(i), metric=f"m{i}", value=float(i)) for i in range(25)]
+            d.append_samples(samples)
+            assert d.flush() == 0
+            # Oldest rows dropped beyond the cap; newest retained.
+            assert len(d._metrics_buf) == 10
+            assert d._metrics_buf[0].metric == "m15"
+            assert d._metrics_buf[-1].metric == "m24"
+        finally:
+            d.close()
+
+
 class TestFileStore:
     def test_upsert_new_file(self, db: HistoryDB):
         changed = db.upsert_file(

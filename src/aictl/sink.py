@@ -30,7 +30,7 @@ import json
 import logging
 import threading
 import time
-from collections import OrderedDict, defaultdict, deque
+from collections import OrderedDict, deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -57,6 +57,7 @@ class SampleSink:
     """
 
     LATEST_MAXSIZE: int = 10_000
+    SERIES_MAXSIZE: int = 10_000
     DEDUP_MAXSIZE: int = 10_000
     DEDUP_TTL: float = 600.0  # seconds before dedup entries expire
     _DEDUP_GC_INTERVAL: int = 1000  # run GC every N emits
@@ -75,8 +76,10 @@ class SampleSink:
         self._handlers: list[SampleHandler] = []
         # Per-metric latest value cache (LRU-bounded OrderedDict)
         self._latest: OrderedDict[str, tuple[float, float, dict]] = OrderedDict()
-        # Per-metric mini ring buffers for real-time charting (last 120 points)
-        self._series: dict[str, deque] = defaultdict(lambda: deque(maxlen=120))
+        # Per-metric mini ring buffers for real-time charting (last 120
+        # points each; LRU-bounded — metric names can embed PIDs so the
+        # key space grows without bound otherwise)
+        self._series: OrderedDict[str, deque] = OrderedDict()
         # Dedup cache for emit_if_changed (LRU-bounded OrderedDict)
         self._dedup_cache: OrderedDict[str, tuple[float, float]] = OrderedDict()
         # Stats
@@ -92,7 +95,7 @@ class SampleSink:
         self._flood_drop_count: int = 0  # drops in current window (for stats)
         self._drop_logged: bool = False  # avoid log spam
 
-    # ── LRU helpers ─────────────────────────────────────────────────
+    # ── LRU helpers (all callers must hold self._lock) ──────────────
 
     def _lru_set_latest(self, metric: str, entry: tuple[float, float, dict]) -> None:
         """Insert/update *metric* in _latest, evicting oldest if over maxsize."""
@@ -101,6 +104,18 @@ class SampleSink:
         self._latest[metric] = entry
         if len(self._latest) > self.LATEST_MAXSIZE:
             self._latest.popitem(last=False)
+
+    def _series_append(self, metric: str, point: tuple[float, float]) -> None:
+        """Append *point* to the metric's ring buffer, evicting the LRU metric."""
+        dq = self._series.get(metric)
+        if dq is None:
+            dq = deque(maxlen=120)
+            self._series[metric] = dq
+        else:
+            self._series.move_to_end(metric)
+        dq.append(point)
+        if len(self._series) > self.SERIES_MAXSIZE:
+            self._series.popitem(last=False)
 
     def _lru_set_dedup(self, cache_key: str, entry: tuple[float, float]) -> None:
         """Insert/update *cache_key* in _dedup_cache, evicting oldest if over maxsize."""
@@ -144,48 +159,86 @@ class SampleSink:
             ts = time.time()
         t = tags or {}
 
-        # Flood protection: drop if exceeding rate limit
-        if ts - self._flood_window_start > self._flood_window:
-            if self._flood_drop_count:
-                self.record_data_quality(
-                    "sample-sink",
-                    "ok",
-                    kind="sink",
-                    severity="info",
-                    message="sample emission rate back under flood limit",
-                    detail={"dropped_in_previous_window": self._flood_drop_count},
-                    ts=ts,
-                )
-            self._flood_window_start = ts
-            self._flood_count = 0
-            self._flood_drop_count = 0
-            self._drop_logged = False
-        self._flood_count += 1
-        if self._flood_count > self._flood_max:
-            self._total_dropped += 1
-            self._flood_drop_count += 1
-            log.debug("Flood drop: metric=%s total_dropped=%d", metric, self._total_dropped)
-            if not self._drop_logged:
+        # Deferred record_data_quality calls — issued after the lock is
+        # released so DB writes never happen while holding it.
+        notices: list[tuple[str, str, str, dict]] = []
+        first_drop = False
+        dropped = False
+        should_flush = False
+
+        # Single lock acquisition per emit: flood accounting, cache and
+        # buffer updates, and periodic dedup GC all share the same
+        # critical section (these structures are mutated from the monitor
+        # thread and the RefreshLoop thread concurrently).
+        with self._lock:
+            # Flood protection: drop if exceeding rate limit
+            if ts - self._flood_window_start > self._flood_window:
+                if self._flood_drop_count:
+                    notices.append(
+                        (
+                            "ok",
+                            "info",
+                            "sample emission rate back under flood limit",
+                            {"dropped_in_previous_window": self._flood_drop_count},
+                        )
+                    )
+                self._flood_window_start = ts
+                self._flood_count = 0
+                self._flood_drop_count = 0
+                self._drop_logged = False
+            self._flood_count += 1
+            if self._flood_count > self._flood_max:
+                dropped = True
+                self._total_dropped += 1
+                self._flood_drop_count += 1
+                total_dropped = self._total_dropped
+                if not self._drop_logged:
+                    first_drop = True
+                    self._drop_logged = True
+                    notices.append(
+                        (
+                            "degraded",
+                            "warning",
+                            "sample flood protection is dropping datapoints",
+                            {"flood_max_per_second": self._flood_max, "total_dropped": total_dropped},
+                        )
+                    )
+            else:
+                # Update latest + series cache (LRU-bounded)
+                self._lru_set_latest(metric, (ts, value, t))
+                self._series_append(metric, (ts, value))
+
+                # Buffer for SQLite persistence
+                self._buffer.append((ts, metric, value, t))
+                self._total_emitted += 1
+                should_flush = self._buffer_size == 0 or len(self._buffer) >= self._buffer_size
+
+                # Periodic dedup GC
+                self._emit_count_since_gc += 1
+                if self._emit_count_since_gc >= self._DEDUP_GC_INTERVAL:
+                    self._emit_count_since_gc = 0
+                    self._dedup_gc()
+
+        for status, severity, message, detail in notices:
+            self.record_data_quality(
+                "sample-sink",
+                status,
+                kind="sink",
+                severity=severity,
+                message=message,
+                detail=detail,
+                ts=ts,
+            )
+
+        if dropped:
+            log.debug("Flood drop: metric=%s total_dropped=%d", metric, total_dropped)
+            if first_drop:
                 log.warning(
                     "Flood protection: dropping samples (>%d/s). Total dropped: %d",
                     self._flood_max,
-                    self._total_dropped,
+                    total_dropped,
                 )
-                self.record_data_quality(
-                    "sample-sink",
-                    "degraded",
-                    kind="sink",
-                    severity="warning",
-                    message="sample flood protection is dropping datapoints",
-                    detail={"flood_max_per_second": self._flood_max, "total_dropped": self._total_dropped},
-                    ts=ts,
-                )
-                self._drop_logged = True
             return
-
-        # Update latest + series cache (LRU-bounded)
-        self._lru_set_latest(metric, (ts, value, t))
-        self._series[metric].append((ts, value))
 
         # Write to datapoint log file (if configured)
         if self._datapoint_logger:
@@ -200,18 +253,6 @@ class SampleSink:
                 )
             except Exception as exc:
                 log.debug("Datapoint log error: %s", exc)
-
-        # Buffer for SQLite persistence
-        with self._lock:
-            self._buffer.append((ts, metric, value, t))
-            self._total_emitted += 1
-            should_flush = self._buffer_size == 0 or len(self._buffer) >= self._buffer_size
-
-        # Periodic dedup GC
-        self._emit_count_since_gc += 1
-        if self._emit_count_since_gc >= self._DEDUP_GC_INTERVAL:
-            self._emit_count_since_gc = 0
-            self._dedup_gc()
 
         # Dispatch to handlers (outside lock)
         for handler in self._handlers:
@@ -268,20 +309,21 @@ class SampleSink:
 
         t = tags or {}
         cache_key = self._cache_key(metric, t)
-        prev = self._dedup_cache.get(cache_key)
-        if prev is not None:
-            prev_value, prev_ts = prev
-            # Skip expired dedup entries
-            if (ts - prev_ts) >= self.DEDUP_TTL:
-                prev = None
-            else:
-                stale = (ts - prev_ts) >= self.DEDUP_STALE_SECONDS
-                if prev_value == value and not stale:
-                    # Value unchanged and recent — update in-memory caches only
-                    self._lru_set_latest(metric, (ts, value, t))
-                    self._series[metric].append((ts, value))
-                    return
-        self._lru_set_dedup(cache_key, (value, ts))
+        with self._lock:
+            prev = self._dedup_cache.get(cache_key)
+            if prev is not None:
+                prev_value, prev_ts = prev
+                # Skip expired dedup entries
+                if (ts - prev_ts) >= self.DEDUP_TTL:
+                    prev = None
+                else:
+                    stale = (ts - prev_ts) >= self.DEDUP_STALE_SECONDS
+                    if prev_value == value and not stale:
+                        # Value unchanged and recent — update in-memory caches only
+                        self._lru_set_latest(metric, (ts, value, t))
+                        self._series_append(metric, (ts, value))
+                        return
+            self._lru_set_dedup(cache_key, (value, ts))
         self.emit(metric, value, tags, ts)
 
     def emit_with_sensitivity(
@@ -321,38 +363,39 @@ class SampleSink:
 
         t = tags or {}
         cache_key = self._cache_key(metric, t)
-        prev = self._dedup_cache.get(cache_key)
-        if prev is not None:
-            prev_value, prev_ts = prev
-            elapsed = ts - prev_ts
+        with self._lock:
+            prev = self._dedup_cache.get(cache_key)
+            if prev is not None:
+                prev_value, prev_ts = prev
+                elapsed = ts - prev_ts
 
-            # Skip expired dedup entries
-            if elapsed >= self.DEDUP_TTL:
-                prev = None
+                # Skip expired dedup entries
+                if elapsed >= self.DEDUP_TTL:
+                    prev = None
 
-        if prev is not None:
-            prev_value, prev_ts = prev
-            elapsed = ts - prev_ts
-            diff = abs(value - prev_value)
+            if prev is not None:
+                prev_value, prev_ts = prev
+                elapsed = ts - prev_ts
+                diff = abs(value - prev_value)
 
-            # Zero crossing always emits
-            zero_cross = (prev_value == 0) != (value == 0)
-            # Absolute threshold always emits
-            abs_hit = diff >= abs_threshold > 0
-            # Time-decaying threshold: full at t=0, zero at t=stale
-            decay = max(0.0, 1.0 - elapsed / self.DEDUP_STALE_SECONDS)
-            effective = max_threshold * decay
-            sensitivity_hit = diff > effective
-            # Staleness: re-emit after 5 min regardless
-            stale = elapsed >= self.DEDUP_STALE_SECONDS
+                # Zero crossing always emits
+                zero_cross = (prev_value == 0) != (value == 0)
+                # Absolute threshold always emits
+                abs_hit = diff >= abs_threshold > 0
+                # Time-decaying threshold: full at t=0, zero at t=stale
+                decay = max(0.0, 1.0 - elapsed / self.DEDUP_STALE_SECONDS)
+                effective = max_threshold * decay
+                sensitivity_hit = diff > effective
+                # Staleness: re-emit after 5 min regardless
+                stale = elapsed >= self.DEDUP_STALE_SECONDS
 
-            if not (zero_cross or abs_hit or sensitivity_hit or stale):
-                # Suppressed — update in-memory caches only
-                self._lru_set_latest(metric, (ts, value, t))
-                self._series[metric].append((ts, value))
-                return
+                if not (zero_cross or abs_hit or sensitivity_hit or stale):
+                    # Suppressed — update in-memory caches only
+                    self._lru_set_latest(metric, (ts, value, t))
+                    self._series_append(metric, (ts, value))
+                    return
 
-        self._lru_set_dedup(cache_key, (value, ts))
+            self._lru_set_dedup(cache_key, (value, ts))
         self.emit(metric, value, tags, ts)
 
     def emit_batch(
@@ -372,9 +415,10 @@ class SampleSink:
             for metric, value, tags in samples:
                 t = tags or {}
                 self._lru_set_latest(metric, (ts, value, t))
-                self._series[metric].append((ts, value))
+                self._series_append(metric, (ts, value))
                 self._buffer.append((ts, metric, value, t))
                 self._total_emitted += 1
+            should_flush = self._buffer_size == 0 or len(self._buffer) >= self._buffer_size
 
         # Dispatch handlers
         for metric, value, tags in samples:
@@ -385,7 +429,7 @@ class SampleSink:
                 except Exception as exc:
                     log.debug("Batch handler error on %s: %s", metric, exc)
 
-        if self._buffer_size == 0 or len(self._buffer) >= self._buffer_size:
+        if should_flush:
             self.flush()
 
     # ── Handlers ──────────────────────────────────────────────────
@@ -461,35 +505,41 @@ class SampleSink:
 
     def get_latest(self, metric: str) -> tuple[float, float, dict] | None:
         """Return (ts, value, tags) for the most recent emit of *metric*."""
-        return self._latest.get(metric)
+        with self._lock:
+            return self._latest.get(metric)
 
     def get_series(self, metric: str) -> list[tuple[float, float]]:
         """Return recent (ts, value) pairs from the in-memory ring buffer."""
-        return list(self._series.get(metric, []))
+        with self._lock:
+            dq = self._series.get(metric)
+            return list(dq) if dq is not None else []
 
     def get_latest_by_prefix(self, prefix: str) -> dict[str, tuple[float, float, dict]]:
         """Return latest values for all metrics matching *prefix*."""
-        return {k: v for k, v in self._latest.items() if k.startswith(prefix)}
+        with self._lock:
+            return {k: v for k, v in self._latest.items() if k.startswith(prefix)}
 
     def list_metrics(self) -> list[str]:
         """Return all known metric names (from cache, not DB)."""
-        return sorted(self._latest.keys())
+        with self._lock:
+            return sorted(self._latest.keys())
 
     # ── Stats ─────────────────────────────────────────────────────
 
     def stats(self) -> dict[str, Any]:
         """Return emission statistics."""
-        return {
-            "total_emitted": self._total_emitted,
-            "total_flushed": self._total_flushed,
-            "total_dropped": self._total_dropped,
-            "flood_drop_count": self._flood_drop_count,
-            "buffer_size": len(self._buffer),
-            "metrics_tracked": len(self._latest),
-            "dedup_cache_size": len(self._dedup_cache),
-            "handlers": len(self._handlers),
-            "is_flooding": self._flood_count > self._flood_max,
-        }
+        with self._lock:
+            return {
+                "total_emitted": self._total_emitted,
+                "total_flushed": self._total_flushed,
+                "total_dropped": self._total_dropped,
+                "flood_drop_count": self._flood_drop_count,
+                "buffer_size": len(self._buffer),
+                "metrics_tracked": len(self._latest),
+                "dedup_cache_size": len(self._dedup_cache),
+                "handlers": len(self._handlers),
+                "is_flooding": self._flood_count > self._flood_max,
+            }
 
     # ── Lifecycle ─────────────────────────────────────────────────
 

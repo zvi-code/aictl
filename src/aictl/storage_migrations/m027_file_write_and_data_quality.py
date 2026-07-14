@@ -79,4 +79,3 @@ def apply(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_data_quality_kind"
         " ON data_quality_status(kind, updated_at)"
     )
-    conn.commit()

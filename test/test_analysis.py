@@ -677,6 +677,40 @@ class TestAnalyzerGC:
         a.gc()
         assert len(a.get_all_transcripts()) == 2
 
+    def test_lru_eviction_removes_stalest_not_oldest_created(self):
+        """ingest_event must touch recency: the OrderedDict never called
+        move_to_end on update, so popitem(last=False) evicted by creation
+        order — throwing out the most-established LIVE session while a
+        stale one survived."""
+        a = SessionAnalyzer(max_cached=2, stale_seconds=999999)
+        a.ingest_event(_ev(ts=100.0, kind="session_start", session_id="established", pid=1))
+        a.ingest_event(_ev(ts=101.0, kind="session_start", session_id="stale", pid=2))
+        # The earliest-created session keeps receiving events (it's live).
+        a.ingest_event(_ev(ts=200.0, kind="file_modified", session_id="established", pid=1))
+        # A third session pushes the cache over max_cached.
+        a.ingest_event(_ev(ts=201.0, kind="session_start", session_id="newest", pid=3))
+        a.gc()
+        assert a.get_transcript("established") is not None, "recently-updated session must survive"
+        assert a.get_transcript("newest") is not None
+        assert a.get_transcript("stale") is None, "stalest session must be the one evicted"
+
+    def test_cleanup_maps_removes_aliases_and_pids(self):
+        """_cleanup_maps used to pop string aliases from the int-keyed
+        _pid_map (a typed no-op); aliases belong to _id_map only."""
+        a = SessionAnalyzer()
+        a.ingest_event(_ev(kind="hook:SessionStart", session_id="sess-x", pid=42))
+        t = a.get_transcript("sess-x")
+        assert t is not None
+        canonical = t.session_id
+
+        a._remove_transcript(canonical)
+
+        assert a.get_transcript("sess-x") is None
+        assert a.get_transcript_by_pid(42) is None
+        assert canonical not in a._id_map
+        assert 42 not in a._pid_map
+        assert "sess-x" not in a._id_map
+
     def test_active_transcripts_filter(self):
         a = SessionAnalyzer()
         old_time = time.time() - 600

@@ -553,6 +553,73 @@ class TestHookHandler:
         result = json.loads(captured.getvalue())
         assert result["session_id"] == "from-payload"
 
+    def test_empty_piped_stdin_does_not_crash(self, monkeypatch):
+        """A pipe with zero bytes (json.load would raise) must exit cleanly.
+
+        The handler runs inside the AI tool's hook pipeline — a crash
+        here breaks the tool, not just aictl.
+        """
+        import io
+
+        from aictl.hook_handler import main
+
+        monkeypatch.setattr("sys.argv", ["hook_handler", "--event", "SessionStart", "--port", "8484"])
+        monkeypatch.setattr("sys.stdin", io.StringIO(""))  # empty pipe, isatty() False
+        captured = io.StringIO()
+        monkeypatch.setattr("sys.stdout", captured)
+        main()  # must not raise
+        result = json.loads(captured.getvalue())
+        assert result["event"] == "SessionStart"
+
+    def test_malformed_json_stdin_does_not_crash(self, monkeypatch):
+        import io
+
+        from aictl.hook_handler import main
+
+        monkeypatch.setattr("sys.argv", ["hook_handler", "--event", "Stop", "--port", "8484"])
+        monkeypatch.setattr("sys.stdin", io.StringIO("{not json"))
+        captured = io.StringIO()
+        monkeypatch.setattr("sys.stdout", captured)
+        main()
+        result = json.loads(captured.getvalue())
+        assert result["event"] == "Stop"
+
+    def test_bad_port_falls_back_to_default(self, monkeypatch):
+        """--port garbage must not raise ValueError inside the wrapper."""
+        import io
+        import urllib.request
+        from unittest.mock import MagicMock
+
+        from aictl.hook_handler import main
+
+        seen_urls: list[str] = []
+
+        def fake_urlopen(req, timeout=0):
+            seen_urls.append(req.full_url)
+            return MagicMock()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr("sys.argv", ["hook_handler", "--event", "SessionStart", "--port", "not-a-number"])
+        monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+        captured = io.StringIO()
+        monkeypatch.setattr("sys.stdout", captured)
+        main()  # must not raise
+        assert seen_urls == ["http://localhost:8484/api/hooks"]
+
+    def test_non_dict_json_stdin_does_not_crash(self, monkeypatch):
+        """A JSON array on stdin must not crash the enrichment step."""
+        import io
+
+        from aictl.hook_handler import main
+
+        monkeypatch.setattr("sys.argv", ["hook_handler", "--event", "Stop", "--port", "8484"])
+        monkeypatch.setattr("sys.stdin", io.StringIO("[1, 2, 3]"))
+        captured = io.StringIO()
+        monkeypatch.setattr("sys.stdout", captured)
+        main()
+        result = json.loads(captured.getvalue())
+        assert result["event"] == "Stop"
+
 
 class TestPythonCmd:
     """Hook command uses sys.executable, not the hardcoded 'python3' string."""
@@ -766,3 +833,82 @@ class TestHookHandlerAictlHookEnrichment:
         hh.main()
         printed = json.loads(captured.getvalue())
         assert "aictl_hook" in printed
+
+
+class TestGeminiHooksUninstall:
+    """`hooks uninstall` must clean up the Gemini CLI hooks that
+    `_install_hooks` writes (previously only Claude + VS Code were
+    cleaned, so `aictl disable` left the Gemini wrappers installed
+    forever)."""
+
+    @pytest.fixture
+    def hook_dirs(self, tmp_path, monkeypatch):
+        """Redirect every settings location into tmp_path (both scopes)."""
+        monkeypatch.setattr(
+            "aictl.commands.integrations.claude_global_dir", lambda: tmp_path / "home" / ".claude"
+        )
+        monkeypatch.setattr(
+            "aictl.commands.integrations.gemini_global_dir", lambda: tmp_path / "home" / ".gemini"
+        )
+        monkeypatch.setattr(
+            "aictl.commands.integrations.copilot_global_dir", lambda: tmp_path / "home" / ".copilot"
+        )
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        monkeypatch.chdir(proj)
+        return tmp_path / "home", proj
+
+    @staticmethod
+    def _gemini_path(scope, home, proj):
+        return (proj if scope == "project" else home) / ".gemini" / "settings.json"
+
+    @pytest.mark.parametrize("scope", ["user", "project"])
+    def test_install_uninstall_round_trip_restores_settings(self, scope, hook_dirs):
+        from aictl.commands.integrations import _install_hooks
+
+        home, proj = hook_dirs
+        gemini_path = self._gemini_path(scope, home, proj)
+        gemini_path.parent.mkdir(parents=True, exist_ok=True)
+        before = {
+            "theme": "dark",
+            "mcpServers": {"fs": {"command": "mcp-fs"}},
+            "hooks": {
+                "PreToolUse": [
+                    {"matcher": "*", "hooks": [{"type": "command", "command": "echo user-hook"}]}
+                ]
+            },
+        }
+        gemini_path.write_text(json.dumps(before, indent=2) + "\n", encoding="utf-8")
+
+        actions: list[str] = []
+        _install_hooks(scope, 8484, actions)
+        installed = json.loads(gemini_path.read_text())
+        assert installed != before, "install must add aictl hooks"
+
+        runner = CliRunner()
+        result = runner.invoke(hooks, ["uninstall", "--scope", scope])
+        assert result.exit_code == 0, result.output
+        assert json.loads(gemini_path.read_text()) == before
+
+    @pytest.mark.parametrize("scope", ["user", "project"])
+    def test_uninstall_removes_hooks_key_when_only_aictl_hooks(self, scope, hook_dirs):
+        from aictl.commands.integrations import _install_hooks
+
+        home, proj = hook_dirs
+        gemini_path = self._gemini_path(scope, home, proj)
+
+        actions: list[str] = []
+        _install_hooks(scope, 8484, actions)  # creates the file from scratch
+        assert json.loads(gemini_path.read_text()).get("hooks")
+
+        runner = CliRunner()
+        result = runner.invoke(hooks, ["uninstall", "--scope", scope])
+        assert result.exit_code == 0, result.output
+        assert "hooks" not in json.loads(gemini_path.read_text())
+
+    def test_uninstall_missing_gemini_settings_is_noop(self, hook_dirs):
+        from aictl.commands.integrations import _uninstall_gemini_hooks
+
+        actions: list[str] = []
+        _uninstall_gemini_hooks("user", actions)  # file does not exist
+        assert actions == []

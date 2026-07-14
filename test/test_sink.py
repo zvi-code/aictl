@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from unittest.mock import MagicMock
 
 from aictl.sink import SampleSink
@@ -155,3 +156,58 @@ class TestStats:
         assert s["total_emitted"] == 2
         assert s["metrics_tracked"] == 2
         assert s["handlers"] == 0
+
+
+class TestThreadSafety:
+    """Regression tests for unlocked shared state.
+
+    _dedup_cache, _series, and the flood counters used to be mutated
+    without the lock from the monitor thread and the RefreshLoop thread;
+    _dedup_gc iterated the OrderedDict while other threads inserted,
+    raising RuntimeError that cancelled ALL collectors via
+    asyncio.gather (the live monitor died silently).
+    """
+
+    def test_concurrent_emit_with_gc_no_exception_and_all_accounted(self):
+        sink = SampleSink()
+        # Raise the flood ceiling so every sample is accounted, and force
+        # dedup GC to run constantly (small interval + zero TTL means the
+        # GC scan always finds "stale" entries to evict while other
+        # threads are inserting).
+        sink._flood_max = 10_000_000
+        sink._DEDUP_GC_INTERVAL = 5
+        sink.DEDUP_TTL = 0.0
+
+        n_threads, n_iterations = 8, 400
+        errors: list[Exception] = []
+
+        def worker(tid: int) -> None:
+            try:
+                for i in range(n_iterations):
+                    sink.emit(f"metric.{tid}.{i % 25}", 2.5)
+                    sink.emit_if_changed(f"dedup.{tid}.{i % 25}", 2.5)
+            except Exception as exc:  # noqa: BLE001 — recorded for assertion
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(t,)) for t in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        assert errors == []
+        # DEDUP_TTL=0 expires every dedup entry immediately, so every
+        # emit_if_changed call falls through to emit(): all samples land.
+        assert sink.stats()["total_emitted"] == n_threads * n_iterations * 2
+        assert sink.stats()["total_dropped"] == 0
+
+    def test_series_is_lru_capped(self):
+        """_series metric names embed PIDs — the key space must be bounded."""
+        sink = SampleSink()
+        sink.SERIES_MAXSIZE = 100
+        for i in range(250):
+            sink.emit(f"proc.{i}.cpu", 3.5)
+        assert len(sink._series) == 100
+        # Most recent metrics retained, oldest evicted.
+        assert sink.get_series("proc.249.cpu") != []
+        assert sink.get_series("proc.0.cpu") == []

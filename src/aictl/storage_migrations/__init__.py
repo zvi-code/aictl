@@ -62,14 +62,35 @@ CURRENT_VERSION: int = MIGRATIONS[-1][0]
 def apply_pending(conn: sqlite3.Connection, from_version: int) -> int:
     """Apply every migration whose target version is greater than *from_version*.
 
-    Returns the number of migrations actually applied. Caller is
-    responsible for recording the new schema version in whatever
-    bookkeeping table it uses (``schema_version`` row or PRAGMA).
+    Each migration runs inside its own explicit transaction TOGETHER with
+    the ``schema_version`` record for its target version. A crash can
+    therefore never leave a migration applied-but-unrecorded — which would
+    re-run non-idempotent DDL (e.g. m020's DROP TABLEs against what is now
+    the live ``metrics`` table) on the next open — nor recorded-but-
+    unapplied. Migration ``apply()`` callables must NOT commit themselves;
+    the runner owns the transaction boundaries.
+
+    Requires the caller's ``schema_version`` table to exist (always true
+    for the upgrade path, which only runs when a version is recorded).
+
+    Returns the number of migrations actually applied.
     """
     applied = 0
     for target, fn in MIGRATIONS:
         if target > from_version:
-            fn(conn)
+            # Explicit BEGIN: sqlite3's legacy autocommit mode does not
+            # open implicit transactions for DDL statements.
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                fn(conn)
+                conn.execute(
+                    "INSERT OR REPLACE INTO schema_version(version) VALUES(?)",
+                    (target,),
+                )
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
             applied += 1
     return applied
 

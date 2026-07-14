@@ -60,8 +60,8 @@ def serve(
     include_live_monitor = include_live_monitor if include_live_monitor is not None else cfg.serve_monitor
 
     # Warn if AICTL_PORT is set but doesn't match the effective port
-    env_port = os.environ.get("AICTL_PORT")
-    if env_port and port != int(env_port):
+    env_port = _env_port()
+    if env_port is not None and port != env_port:
         click.secho(
             f"Warning: AICTL_PORT={env_port} but serving on port {port}. OTel tools will send to port {env_port}.",
             fg="yellow",
@@ -80,7 +80,17 @@ def serve(
         return
 
     if daemon_mode:
-        _start_daemon(root_dir, host, port, interval, include_live_monitor, pid_file, cfg)
+        _start_daemon(
+            root_dir,
+            host,
+            port,
+            interval,
+            include_live_monitor,
+            pid_file,
+            cfg,
+            db_path=db_path,
+            headless=headless,
+        )
         return
 
     # Foreground mode
@@ -114,8 +124,25 @@ def serve(
         os._exit(0)
 
 
-def _start_daemon(root_dir, host, port, interval, include_live_monitor, pid_file, cfg):
-    """Fork to background and run the server."""
+def _env_port() -> int | None:
+    """Parse the AICTL_PORT env var; None when unset or not an integer.
+
+    Mirrors the guard in ``integrations._default_port``: a bad value
+    (e.g. ``AICTL_PORT=none``) must never crash ``aictl serve``.
+    """
+    raw = os.environ.get("AICTL_PORT", "")
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _start_daemon(
+    root_dir, host, port, interval, include_live_monitor, pid_file, cfg, *, db_path=None, headless=False
+):
+    """Fork to background and run the server (or headless collector)."""
 
     if IS_WINDOWS:
         click.secho(
@@ -153,7 +180,10 @@ def _start_daemon(root_dir, host, port, interval, include_live_monitor, pid_file
     if pid > 0:
         # Parent — wait briefly to confirm child started
         click.echo(f"  aictl daemon starting (PID {pid})")
-        click.echo(f"  dashboard at http://{host}:{port}")
+        if headless:
+            click.echo("  headless collection (no web UI) — view with: aictl dashboard")
+        else:
+            click.echo(f"  dashboard at http://{host}:{port}")
         click.echo(f"  log: {log_file}")
         click.echo(f"  pid: {pid_file}")
         click.echo("  stop: aictl serve --stop")
@@ -174,14 +204,30 @@ def _start_daemon(root_dir, host, port, interval, include_live_monitor, pid_file
     # Write PID
     pid_file.write_text(str(os.getpid()))
 
-    # Run server
+    # Run server (or headless collector)
     try:
-        from ..orchestrator import start_server
-
         root = Path(root_dir).resolve()
-        start_server(
-            root, host=host, port=port, interval=interval, open_browser=False, include_live_monitor=include_live_monitor
-        )
+        if headless:
+            from ..orchestrator import start_collector
+
+            start_collector(
+                root,
+                interval=interval,
+                include_live_monitor=include_live_monitor,
+                db_path=db_path,
+            )
+        else:
+            from ..orchestrator import start_server
+
+            start_server(
+                root,
+                host=host,
+                port=port,
+                interval=interval,
+                open_browser=False,
+                include_live_monitor=include_live_monitor,
+                db_path=db_path,
+            )
     finally:
         pid_file.unlink(missing_ok=True)
 

@@ -875,11 +875,17 @@ class SnapshotState:
         with self._lock:
             return self._version
 
-    def history_data(self) -> tuple[list[tuple], dict[str, collections.deque]]:
-        """Extract ring buffer data for serialization."""
+    def history_data(self) -> tuple[list[tuple], dict[str, list[tuple]]]:
+        """Extract a consistent copy of the ring buffer data for serialization.
+
+        Deep-copies under the lock so serializers never iterate deques
+        that ``update()`` (RefreshLoop thread) is concurrently appending
+        to — that raises RuntimeError and turns /api/history into a 500.
+        """
         with self._lock:
             rows = list(self._history)
-        return rows, self._tool_history
+            tool_history = {tool: list(dq) for tool, dq in self._tool_history.items()}
+        return rows, tool_history
 
 
 class SnapshotSerializer:
@@ -904,7 +910,7 @@ class SnapshotSerializer:
         return ""
 
     @staticmethod
-    def serialize_history(rows: list[tuple], tool_history: dict[str, collections.deque]) -> str:
+    def serialize_history(rows: list[tuple], tool_history: dict[str, list[tuple]]) -> str:
         """Return time-series history as column-major JSON (uPlot format)."""
         from .storage import METRICS_KEYS
 

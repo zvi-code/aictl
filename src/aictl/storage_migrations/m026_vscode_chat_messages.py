@@ -38,4 +38,3 @@ def apply(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_vscode_chat_messages_file"
         " ON vscode_chat_messages(source_file)"
     )
-    conn.commit()
