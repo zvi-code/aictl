@@ -71,7 +71,7 @@ $(DIST_DIR)/index.html: $(shell find $(UI_DIR)/src -type f 2>/dev/null) $(UI_DIR
 
 # ── Test & Lint ──────────────────────────────────────────────────────────────
 
-test:  ## Run unit tests (fast, no server needed)
+test: test-ui  ## Run unit tests (fast, no server needed; includes UI vitest)
 	$(PYTHON) -m pytest test/ -q --tb=short --ignore=test/e2e --ignore=test/e2e_tools
 
 test-ui:  ## Run dashboard UI tests (Vitest + jsdom)
@@ -86,7 +86,7 @@ test-tools:  ## Run real-tool E2E tests (skips missing tools)
 test-docker:  ## Run Docker integration suite (fresh install + simulated E2E)
 	docker compose -f docker/docker-compose.test.yml run --build --rm test-integration
 
-test-all:  ## Run everything (unit + E2E + tools)
+test-all: test-ui  ## Run everything (UI + unit + E2E + tools)
 	$(PYTHON) -m pytest test/ -v --timeout=180 --override-ini="addopts="
 
 lint:  ## Run ruff linter + format check
