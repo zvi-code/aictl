@@ -14,15 +14,18 @@ export default function ToolCallsPanel({sessionId}) {
   // Which timeline rows have their input expanded (keyed by row index).
   const [expanded, setExpanded] = useState({});
 
+  // sessionId may be an array of candidate ids (merged sessions are known
+  // by several ids); key the effect on its contents, not array identity.
+  const sessionKey = Array.isArray(sessionId) ? sessionId.join('|') : sessionId;
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionKey) return;
     setLoading(true);
     setError(false);
     setExpanded({});
     api.getSessionToolCalls(sessionId)
       .then(d => { setData(d); setLoading(false); })
       .catch(() => { setError(true); setLoading(false); });
-  }, [sessionId]);
+  }, [sessionKey]);
 
   const toggleInput = (i) => setExpanded(e => ({ ...e, [i]: !e[i] }));
 

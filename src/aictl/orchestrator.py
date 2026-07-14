@@ -1123,7 +1123,13 @@ class SnapshotPersistence:
                 # Upsert a session row for this UUID session with aggregated token totals
                 if session_id:
                     agents = team.get("agents", [])
+                    # Source timestamps only — the agents' own started_at,
+                    # falling back to their turns' embedded timestamps.
+                    # Stamping snapshot_ts here made every backfilled
+                    # session look like it started when the daemon did,
+                    # colliding with the correlator's live PID rows.
                     ts_vals = [_parse_iso_ts(a.get("started_at", "")) for a in agents]
+                    ts_vals += [t.get("source_ts", 0.0) or 0.0 for a in agents for t in a.get("turns", [])]
                     ts_vals = [t for t in ts_vals if t > 0]
                     session_started = min(ts_vals) if ts_vals else snapshot_ts
                     self._db.upsert_session(
@@ -1157,11 +1163,14 @@ class SnapshotPersistence:
                             cache_creation_tokens=agent.get("cache_creation_tokens", 0),
                         )
                     )
-                    # Write per-turn requests from this agent's JSONL
+                    # Write per-turn requests from this agent's JSONL.
+                    # ts carries the turn's OWN timestamp — all query paths
+                    # read ts, so stamping ingest time (snapshot_ts) put
+                    # every backfilled request at daemon start time.
                     for turn in agent.get("turns", []):
                         self._db.append_request(
                             RequestRow(
-                                ts=snapshot_ts,
+                                ts=turn.get("source_ts", 0.0) or snapshot_ts,
                                 source_ts=turn.get("source_ts", 0.0),
                                 session_id=session_id,
                                 agent_id=agent_id,

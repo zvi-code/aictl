@@ -84,8 +84,41 @@ export async function getSessions(opts = {}) {
   return fetchJson(path);
 }
 
+/**
+ * Fetch per-candidate-id with fallback. `idOrIds` is a session id or an
+ * ordered array of them (primary first, then alternates — see
+ * selectors.sessionIdCandidates). Returns the first response `hasData`
+ * accepts; if none qualifies, the first response; if every fetch threw,
+ * rethrows the first error. A merged session row keeps data under several
+ * ids (flow turns under the tool's UUID, process data under the correlator
+ * id), so single-id lookups can come back empty for rich sessions.
+ */
+async function fetchFirstWithData(idOrIds, fetchOne, hasData) {
+  const ids = (Array.isArray(idOrIds) ? idOrIds : [idOrIds]).filter(id => id != null && id !== '');
+  let first;
+  let hasFirst = false;
+  let firstErr = null;
+  for (const id of ids) {
+    try {
+      const data = await fetchOne(id);
+      if (hasData(data)) return data;
+      if (!hasFirst) { first = data; hasFirst = true; }
+    } catch (e) {
+      if (firstErr === null) firstErr = e;
+    }
+  }
+  if (hasFirst) return first;
+  throw firstErr ?? new Error('no session id to fetch');
+}
+
+/** `sessionId` may be a single id or an array of candidate ids (see
+ *  fetchFirstWithData) — alternates are tried until one yields turns. */
 export async function getSessionFlow(sessionId, since, until) {
-  return fetchJson(`/api/session-flow?session_id=${encodeURIComponent(sessionId)}&since=${since}&until=${until}`);
+  return fetchFirstWithData(
+    sessionId,
+    id => fetchJson(`/api/session-flow?session_id=${encodeURIComponent(id)}&since=${since}&until=${until}`),
+    d => (d?.turns?.length ?? 0) > 0,
+  );
 }
 
 let _timelineFilteredCount = 0;
@@ -176,9 +209,14 @@ export async function getSessionProcesses(sessionId) {
 
 /** Per-session tool-call timeline.
  *  Returns {session_id, total, errors, by_tool: {tool: count},
- *  calls: [{ts, tool_name, is_error, duration_ms, result_summary}]}. */
+ *  calls: [{ts, tool_name, is_error, duration_ms, result_summary}]}.
+ *  `sessionId` may be an array of candidate ids (see fetchFirstWithData). */
 export async function getSessionToolCalls(sessionId) {
-  return fetchJson('/api/session-tool-calls?session_id=' + encodeURIComponent(sessionId));
+  return fetchFirstWithData(
+    sessionId,
+    id => fetchJson('/api/session-tool-calls?session_id=' + encodeURIComponent(id)),
+    d => (d?.calls?.length ?? 0) > 0,
+  );
 }
 
 /** Per-session deduced stats + enrichments (e.g. vscode_lm_usage).
@@ -216,8 +254,13 @@ export async function getSessionMemoryDiff(sessionId) {
 
 // ─── Session Transcripts ───────────────────────────────────────
 
+/** `sessionId` may be an array of candidate ids (see fetchFirstWithData). */
 export async function getTranscript(sessionId) {
-  return fetchJson('/api/transcript/' + encodeURIComponent(sessionId));
+  return fetchFirstWithData(
+    sessionId,
+    id => fetchJson('/api/transcript/' + encodeURIComponent(id)),
+    d => (d?.turns?.length ?? 0) > 0,
+  );
 }
 
 export async function getTranscripts(cutoff = 300) {

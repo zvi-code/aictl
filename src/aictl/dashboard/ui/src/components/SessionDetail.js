@@ -1,5 +1,6 @@
 import { html } from 'htm/preact';
 import { fmtK, esc, fmtDurSec, toolColor } from '../utils.js';
+import { sessionIdCandidates } from '../selectors.js';
 import TeamTree, { TaskBoard } from './TeamTree.js';
 import Panel from './session_detail/Panel.js';
 import ActionsPanel from './session_detail/ActionsPanel.js';
@@ -76,7 +77,7 @@ export default function SessionDetail({session, onClose}) {
       <${CostByModelPanel} sessionId=${session.session_id}/>
     <//>
     <${Panel} title="Tool Calls" icon="wrench" defaultOpen=${false}>
-      <${ToolCallsPanel} sessionId=${session.session_id}/>
+      <${ToolCallsPanel} sessionId=${sessionIdCandidates(session)}/>
     <//>
     <${Panel} title="Process Tree" icon="git-branch" defaultOpen=${false}>
       <${ProcessTreePanel} sessionId=${session.session_id}/>

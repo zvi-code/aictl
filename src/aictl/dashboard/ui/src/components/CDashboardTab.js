@@ -3,7 +3,7 @@ import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { fmtK, fmtSz, liveTokenTotal, fmtAgo, fmtDurSec, toolColor } from '../utils.js';
 import { ToolIcon } from './ui/index.js';
-import { dedupeSessions } from '../selectors.js';
+import { dedupeSessions, findSessionRow, sessionIdCandidates } from '../selectors.js';
 import * as api from '../api.js';
 
 // ─── Lane colors (editorial palette) ────────────────────────────
@@ -326,9 +326,10 @@ export default function CDashboardTab() {
   }, [allSessions, sessionFilter, activeTools]);
 
   const selectedId  = selectedSession ?? filteredSessions[0]?.session_id ?? filteredSessions[0]?.id ?? null;
-  const selectedObj = filteredSessions.find(s => (s.session_id || s.id) === selectedId) ?? null;
+  const selectedObj = findSessionRow(filteredSessions, selectedId) ?? null;
 
-  // Fetch session-flow when selected session changes
+  // Fetch session-flow when selected session changes — try every id the
+  // (possibly merged) row is known by.
   useEffect(() => {
     if (!selectedId) { setFlow(null); return; }
     let live = true;
@@ -337,7 +338,8 @@ export default function CDashboardTab() {
     setSelectedEvent(null);
     const since = 0;
     const until = Math.floor(Date.now() / 1000) + 3600;
-    api.getSessionFlow(selectedId, since, until)
+    const candidates = selectedObj ? sessionIdCandidates(selectedObj) : [selectedId];
+    api.getSessionFlow(candidates, since, until)
       .then(d => { if (live) { setFlow(d); setFlowLoading(false); } })
       .catch(() => { if (live) setFlowLoading(false); });
     return () => { live = false; };

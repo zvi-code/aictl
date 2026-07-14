@@ -743,7 +743,12 @@ class SessionRow:
 class RequestRow:
     """One LLM request record.
 
-    ``ts`` is the wall-clock time we stored this row (reporting time).
+    ``ts`` is the time the request happened. Writers must set it from the
+    source data's own timestamp whenever the source embeds one (OTel
+    timeUnixNano, JSONL turn timestamps) and may only fall back to the
+    ingest/reporting time when the source carries none — every query path
+    reads ``ts``, so an ingest-time stamp dates backfilled requests to
+    daemon start.
     ``source_ts`` is the timestamp embedded in the *source data itself* (e.g.
     OTel timeUnixNano converted to epoch seconds).  It is used for dedup:
       - If source_ts > 0: dedup key = hash(session_id + source_ts_ms + model + source)
@@ -1041,6 +1046,46 @@ def _merge_session_stats(primary: dict, secondary: dict) -> None:
     primary["activity"] = sorted(bucket_map.items())
 
 
+def _profile_all_ids(p: dict) -> list[str]:
+    """Every session id a profile is known by: primary first, then alternates."""
+    ids = [p.get("session_id", "")]
+    ids += list(p.get("alt_session_ids") or [])
+    return [i for i in ids if i]
+
+
+def _merge_profile_identity(keep: dict, absorbed: dict) -> None:
+    """Union the session ids of two merged profiles onto *keep* (in-place).
+
+    A merged profile must stay reachable by EVERY id it was ever known
+    by — flow turns / transcript / requests are stored under the tool's
+    own session UUID while process-level data is stored under the
+    correlator ``tool:pid:ts`` id.  Dropping the absorbed id (the old
+    behaviour) made the dashboard query flow data with an id that has
+    none, rendering rich sessions as empty.
+
+    The primary ``session_id`` prefers a UUID-bearing id (same priority
+    as ``analysis.session_id.resolve_session_id``: UUID > correlator);
+    all other ids land in ``alt_session_ids``.
+    """
+    ids: list[str] = []
+    for sid in _profile_all_ids(keep) + _profile_all_ids(absorbed):
+        if sid not in ids:
+            ids.append(sid)
+    if len(ids) <= 1:
+        return
+    # A correlator id encodes the PID — keep it on the structured field
+    # before the id may be swapped away.
+    if not keep.get("pid"):
+        pid_str = _session_pid(keep)
+        if pid_str:
+            keep["pid"] = int(pid_str)
+    canonical = ids[0]
+    if _session_uuid(canonical) is None:
+        canonical = next((sid for sid in ids if _session_uuid(sid) is not None), canonical)
+    keep["session_id"] = canonical
+    keep["alt_session_ids"] = [s for s in ids if s != canonical]
+
+
 def _absorb_session_profile(canonical: dict, other: dict) -> None:
     """Fold *other* into *canonical* as one logical session (in-place).
 
@@ -1058,6 +1103,7 @@ def _absorb_session_profile(canonical: dict, other: dict) -> None:
         canonical["duration_s"] = None
     canonical["active"] = canonical["ended_at"] is None
     _merge_session_stats(canonical, other)
+    _merge_profile_identity(canonical, other)
 
 
 def _profiles_look_duplicate(a: dict, b: dict) -> bool:
@@ -2655,6 +2701,7 @@ class HistoryDB:
                     primary, secondary = secondary, primary
                 _merge_session_stats(primary, secondary)
                 used.add(secondary["session_id"])
+                _merge_profile_identity(primary, secondary)
             merged.append(primary)
             used.add(primary["session_id"])
 
@@ -2708,6 +2755,7 @@ class HistoryDB:
                                 canonical["ended_at"] = None
                             _merge_session_stats(canonical, other)
                             consumed.add(other["session_id"])
+                            _merge_profile_identity(canonical, other)
                         if canonical["ended_at"]:
                             canonical["duration_s"] = round(canonical["ended_at"] - canonical["started_at"], 1)
                         else:
