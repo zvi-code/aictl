@@ -634,6 +634,7 @@ class SessionEntityState:
     cwd: str = ""
     started_at: float = 0.0
     ended_at: float | None = None
+    last_stop_at: float | None = None
     agents: dict[str, AgentState] = field(default_factory=dict)
     tasks: dict[str, TaskState] = field(default_factory=dict)
     context_state: str = "empty"
@@ -659,6 +660,7 @@ class SessionEntityState:
             "cwd": self.cwd,
             "started_at": self.started_at,
             "ended_at": self.ended_at,
+            "last_stop_at": self.last_stop_at,
             "agents": [a.to_dict() for a in self.agents.values()],
             "tasks": [t.to_dict() for t in self.tasks.values()],
             "context_state": self.context_state,
@@ -692,7 +694,8 @@ class EntityStateTracker:
 
     def __init__(self) -> None:
         self.sessions: dict[str, SessionEntityState] = {}
-        self._gc_interval = 3600  # GC sessions older than 1h
+        self._gc_interval = 3600  # GC sessions ended more than 1h ago
+        self._stale_interval = 86400  # GC never-ended sessions silent for 24h
         self._last_gc = time.time()
 
     def process_event(self, event: dict) -> None:
@@ -771,13 +774,25 @@ class EntityStateTracker:
                     agent.task = parsed["task"]
 
     def _gc(self) -> None:
-        """Remove sessions that ended more than _gc_interval ago."""
+        """Remove sessions that ended more than _gc_interval ago.
+
+        Sessions without an end event (the tool crashed or was killed
+        before ``SessionEnd`` fired) are reclaimed after a much longer
+        ``_stale_interval`` of total silence, so idle-but-open sessions
+        survive while abandoned ones cannot accumulate forever.
+        """
         now = time.time()
         if now - self._last_gc < 60:
             return
         self._last_gc = now
         cutoff = now - self._gc_interval
-        stale = [sid for sid, s in self.sessions.items() if s.ended_at and s.ended_at < cutoff]
+        stale_cutoff = now - self._stale_interval
+        stale = [
+            sid
+            for sid, s in self.sessions.items()
+            if (s.ended_at and s.ended_at < cutoff)
+            or (not s.ended_at and s.last_event_at and s.last_event_at < stale_cutoff)
+        ]
         for sid in stale:
             del self.sessions[sid]
 
@@ -791,6 +806,27 @@ class EntityStateTracker:
     def _on_session_end(self, session: SessionEntityState, detail: dict, ts: float) -> None:
         session.state = "inactive"
         session.ended_at = ts
+
+    def _on_agent_stop(self, session: SessionEntityState, detail: dict, ts: float) -> None:
+        """Handle Claude Code's ``Stop`` hook.
+
+        ``Stop`` fires after *every* agent response, not when the session
+        ends — the session is idle awaiting the next prompt.  Marking it
+        inactive here (the old behavior) split one logical session into a
+        new row per prompt/response turn.  ``SessionEnd`` remains the only
+        terminal lifecycle event.
+        """
+        session.state = "idle"
+        session.last_stop_at = ts
+
+    def _reactivate(self, session: SessionEntityState) -> None:
+        """Return an idle (or prematurely ended) session to the active state.
+
+        New activity proves the session is still open, so any end time
+        recorded by a non-terminal event is cleared.
+        """
+        session.state = "active"
+        session.ended_at = None
 
     def _on_subagent_start(self, session: SessionEntityState, detail: dict, ts: float) -> None:
         agent_id = detail.get("agent_id") or detail.get("subagent_id") or f"agent-{len(session.agents)}"
@@ -842,9 +878,11 @@ class EntityStateTracker:
             session.context_state = "base_loaded"
 
     def _on_pre_tool_use(self, session: SessionEntityState, detail: dict, ts: float) -> None:
+        self._reactivate(session)
         session.context_state = "filling"
 
     def _on_user_prompt_submit(self, session: SessionEntityState, detail: dict, ts: float) -> None:
+        self._reactivate(session)
         session.context_state = "filling"
         session.prompt_count += 1
 
@@ -886,5 +924,5 @@ class EntityStateTracker:
         "PostToolUse": _on_post_tool_use,
         "UserPromptSubmit": _on_user_prompt_submit,
         "Notification": _on_notification,
-        "Stop": _on_session_end,
+        "Stop": _on_agent_stop,
     }

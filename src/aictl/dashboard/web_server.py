@@ -532,7 +532,26 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                 )
                 db.link_session_process(session_id, hook_pid, tool=tool)
                 _maybe_snapshot_claude_memory(db, data, session_id, cwd, "start", ts)
-            elif event_name in ("Stop", "SessionEnd"):
+            elif event_name == "Stop":
+                # Stop fires after EVERY agent response — record per-turn
+                # stats but never mark the session ended (only SessionEnd is
+                # terminal; a Stop-stamped ended_at made every open session
+                # look finished and spawn duplicate timeline rows).
+                db.update_session_stats(
+                    session_id,
+                    ts=ts,
+                    tool=tool,
+                    project_path=cwd,
+                    model=detail.get("model", ""),
+                    source="hook",
+                    input_tokens=int(detail.get("input_tokens", 0) or 0),
+                    output_tokens=int(detail.get("output_tokens", 0) or 0),
+                    cache_read_tokens=int(detail.get("cache_read_tokens", 0) or 0),
+                    cache_creation_tokens=int(detail.get("cache_creation_tokens", 0) or 0),
+                    cost_usd=float(detail.get("cost_usd", 0) or 0),
+                )
+                _maybe_snapshot_claude_memory(db, data, session_id, cwd, "end", ts)
+            elif event_name == "SessionEnd":
                 db.update_session_end(
                     session_id,
                     ended_at=ts,
