@@ -217,7 +217,7 @@ export default function DataTable({
     style=${virtualize ? 'overflow:auto;max-height:70vh' : ''}>
     <table role="table" aria-label=${ariaLabel || 'Data table'}>
       <thead>
-        <tr role="row">${headers.map(h => {
+        <tr role="row">${expandable && html`<th class="aictl-dt__expander-cell" aria-label="Row expander"></th>`}${headers.map(h => {
           const col = h.column;
           const meta = col.columnDef.meta || {};
           const canSort = col.getCanSort();
@@ -248,7 +248,7 @@ export default function DataTable({
         })}</tr>
       </thead>
       <tbody>
-        ${padTop > 0 && html`<tr style="height:${padTop}px" aria-hidden="true"><td colspan=${headers.length}></td></tr>`}
+        ${padTop > 0 && html`<tr style="height:${padTop}px" aria-hidden="true"><td colspan=${headers.length + (expandable ? 1 : 0)}></td></tr>`}
         ${visibleRows.map((row, i) => {
           const absIdx = windowStart + i;
           const isExpanded = row.getIsExpanded && row.getIsExpanded();
@@ -261,7 +261,7 @@ export default function DataTable({
             columnSizing=${columnSizing}
           />`;
         })}
-        ${padBottom > 0 && html`<tr style="height:${padBottom}px" aria-hidden="true"><td colspan=${headers.length}></td></tr>`}
+        ${padBottom > 0 && html`<tr style="height:${padBottom}px" aria-hidden="true"><td colspan=${headers.length + (expandable ? 1 : 0)}></td></tr>`}
       </tbody>
     </table>
   </div>`;

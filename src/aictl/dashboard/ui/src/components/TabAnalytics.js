@@ -1,3 +1,4 @@
+import { Fragment } from 'preact';
 import { useState, useEffect, useMemo, useContext } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
@@ -301,7 +302,7 @@ export default function TabAnalytics() {
   return html`<div class="analytics-grid">
     ${loading && html`<p class="loading-state">Loading analytics...</p>`}
     ${error && html`<p class="error-state">Error: ${error}</p>`}
-    ${!loading && !error && html`<Fragment>
+    ${!loading && !error && html`<${Fragment}>
       <${ResponseTimeSection} data=${data?.response_time}/>
       <${ToolUsageSection} data=${data?.tools}/>
       <${MemorySection} data=${data?.files}/>
@@ -310,6 +311,6 @@ export default function TabAnalytics() {
           Raw Metrics Explorer</summary>
         <div style="margin-top:var(--sp-4)"><${TabSamples}/></div>
       </details>
-    </Fragment>`}
+    </${Fragment}>`}
   </div>`;
 }

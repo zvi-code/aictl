@@ -125,12 +125,15 @@ export default function TabBudget() {
         }
       });
     });
-    // Build last 7 consecutive days from today
+    // Build last 7 consecutive days from today. Keys must be LOCAL dates:
+    // d.date comes from the tools' own daily stats (e.g. Claude Code
+    // stats-cache.json), which bucket by the user's local day — toISOString
+    // (UTC) would drop local "today" in UTC+ mornings. en-CA gives YYYY-MM-DD.
     const today = new Date();
     const dates = [];
     for (let i = 6; i >= 0; i--) {
       const d = new Date(today); d.setDate(d.getDate() - i);
-      dates.push(d.toISOString().slice(0, 10));
+      dates.push(d.toLocaleDateString('en-CA'));
     }
     // Only keep dates that have data, but maintain order
     const activeDates = dates.filter(d => byDate[d] && Object.values(byDate[d]).some(v => v > 0));

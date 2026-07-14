@@ -89,6 +89,23 @@ export function fmtPct(n) {
   return v.toFixed(1) + '%';
 }
 export function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+
+/**
+ * Resolve a CSS color (possibly a "var(--…)" string) to its computed value.
+ * Canvas APIs (uPlot strokes, 2d strokeStyle) cannot parse var() strings —
+ * they silently fall back to black — so resolve against :root first.
+ */
+export function resolveColor(c, fallback) {
+  if (!c) return fallback;
+  if (typeof c === 'string' && c.startsWith('var(')) {
+    const name = c.slice(4, -1).trim();
+    const v = typeof document !== 'undefined'
+      ? getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+      : '';
+    return v || fallback;
+  }
+  return c;
+}
 export function liveTokenTotal(live){const t=(live&&live.token_estimate)||{};return (t.input_tokens||0)+(t.output_tokens||0);}
 
 /**

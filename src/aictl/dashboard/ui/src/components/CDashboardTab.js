@@ -1,7 +1,7 @@
 import { useState, useContext, useMemo, useEffect, useCallback, useRef } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
-import { COLORS, fmtK, fmtSz } from '../utils.js';
+import { COLORS, fmtK, fmtSz, liveTokenTotal } from '../utils.js';
 import { ToolIcon } from './ui/index.js';
 import * as api from '../api.js';
 
@@ -302,7 +302,7 @@ export default function CDashboardTab() {
       const l = t.live || {};
       sessions  += l.session_count || 0;
       processes += l.pid_count || (t.processes || []).length || 0;
-      tokens    += l.token_estimate || 0;
+      tokens    += liveTokenTotal(l);
       if ((l.pid_count || 0) > 0) tools++;
       files += l.files_touched || 0;
       mcp   += (t.mcp_servers || []).length;

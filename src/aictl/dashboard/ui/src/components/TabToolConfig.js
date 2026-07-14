@@ -5,17 +5,42 @@ import { COLORS } from '../utils.js';
 import { Icon, ToolIcon } from './ui/index.js';
 
 // ─── Tooltip descriptions ────────────────────────────────────────
-// Keyed by the setting/feature key that appears in feature_groups or settings.
+// Group-scoped tips: outer key is the settings-group name the setting is
+// rendered under (matching feature_groups from the backend, plus "OTel" for
+// the OTel block). Short keys like `enabled`, `webSearch`, or `temperature`
+// mean different things in different groups, so group entries win over the
+// flat fallback below.
 const TIPS = {
-  // OTel
-  enabled:              'Whether OpenTelemetry export is active. Required for verified token counts and session traces.',
-  exporter:             'Export destination: otlp-http sends to an OTLP-compatible collector (e.g. aictl), console logs to stdout, file writes JSON-lines locally.',
-  endpoint:             'OTLP collector endpoint receiving telemetry data.',
-  file_path:            'Local file path for telemetry output (file exporter).',
-  capture_content:      'When enabled, full prompt and response text is included in OTel spans. Useful for debugging but exposes all LLM content to the collector.',
-  source:               'How aictl detected this OTel configuration (vscode-settings, env-var, codex-toml, claude-stats).',
+  OTel: {
+    enabled:            'Whether OpenTelemetry export is active. Required for verified token counts and session traces.',
+    exporter:           'Export destination: otlp-http sends to an OTLP-compatible collector (e.g. aictl), console logs to stdout, file writes JSON-lines locally.',
+    endpoint:           'OTLP collector endpoint receiving telemetry data.',
+    file_path:          'Local file path for telemetry output (file exporter).',
+    capture_content:    'When enabled, full prompt and response text is included in OTel spans. Useful for debugging but exposes all LLM content to the collector.',
+    source:             'How aictl detected this OTel configuration (vscode-settings, env-var, codex-toml, claude-stats).',
+  },
+  // Copilot agent mode
+  'Agent Mode': {
+    enabled:            'Whether agent/agentic mode is active.',
+  },
+  // VS Code platform agent (chat.agent.*)
+  Agent: {
+    enabled:            'Whether agent/agentic mode is active.',
+  },
+  'Claude (Anthropic)': {
+    temperature:        'Sampling temperature for Claude agent requests. 0 = deterministic; higher values increase randomness.',
+    webSearch:          'Allows Claude to perform live web searches during agent runs. Adds external network calls and potential data leakage.',
+  },
+  'Cowork (Autonomous)': {
+    webSearch:          'Allows Cowork mode to perform live web searches as part of autonomous tasks.',
+    scheduledTasks:     'Enables Cowork mode to schedule and run tasks on a timer.',
+    allowAllBrowserActions: 'Grants Cowork mode permission to take any browser action without per-action confirmation.',
+  },
+};
+
+// Flat fallback — setting keys whose meaning is unambiguous across groups.
+const TIPS_FLAT = {
   // Agent Mode
-  'enabled':            'Whether agent/agentic mode is active.',
   autoFix:              'When on, the agent automatically attempts to fix errors it detects during a run without asking.',
   editorContext:        'Ensures the agent always includes your active editor file as primary context for every request.',
   largeResultsToDisk:   'Redirects oversized tool results (e.g. large directory listings) to disk instead of sending them into the LLM context window.',
@@ -34,25 +59,28 @@ const TIPS = {
   local:                'Local in-process memory tool — agent can store and recall facts within a session.',
   github:               'GitHub-hosted Copilot memory — cross-session memory stored on GitHub servers (expires after 28 days).',
   viewImage:            'Allows the agent to read and process image files (requires a multimodal model).',
-  // Session targets
+  // Session targets / agent
   claudeTarget:         'The "Claude" session target in Copilot Chat delegates requests to the local Claude Code harness.',
-  autopilot:            'Autopilot mode allows the agent to execute tool calls without confirmation prompts. Use with caution.',
-  // VS Code platform — Agent
   autopilot:            'Autopilot mode lets the agent execute tool calls without per-action confirmation prompts.',
   autoReply:            'Auto-answers agent questions without human input — agent never pauses for confirmation. Use with extreme caution.',
-  maxRequests:          'Maximum number of agentic tool calls allowed in a single turn before the agent pauses and asks for confirmation.',
-  // VS Code platform — Safety
+  // Safety
   terminalSandbox:      'Runs terminal commands in a sandbox (macOS/Linux). Prevents agent commands from accessing files outside the workspace.',
   terminalAutoApprove:  'Org-managed master switch — disables all terminal auto-approve when off, regardless of per-command settings.',
   autoApproveNpmScripts:'Auto-approves npm scripts defined in the workspace package.json without requiring per-script confirmation.',
-  // VS Code platform — Context Files
+  globalAutoApprove:    'YOLO mode — disables ALL tool confirmation prompts across every tool and workspace. Extremely dangerous; agent acts fully autonomously with no human oversight.',
+  autoApprove:          'Auto-approves all tool calls of this type without prompting. Removes the human-in-the-loop safety check.',
+  terminal_sandbox:     'Runs terminal commands in a sandboxed environment to prevent destructive operations.',
+  // Context Files
   applyingInstructions: 'Auto-attaches instruction files whose applyTo glob matches the current file. Controls which instructions are automatically injected.',
-  // VS Code platform — File Locations
+  claudeMd:             'Controls whether CLAUDE.md files are loaded into agent context on every request. Disabling removes custom instructions from all Claude sessions.',
+  agentsMd:             'Controls whether AGENTS.md is loaded as always-on context. Disabling removes the top-level agent instruction file.',
+  nestedAgentsMd:       'When on, AGENTS.md files in sub-folders are also loaded, scoping instructions to sub-trees of the workspace.',
+  // File Locations
   instructions:         'Search locations for .instructions.md files that are automatically attached to matching requests.',
   agents:               'Search locations for .agent.md custom agent definition files.',
   skills:               'Search locations for SKILL.md agent skill files.',
   prompts:              'Search locations for .prompt.md reusable prompt files.',
-  // VS Code platform — MCP
+  // MCP
   access:               'Controls which MCP tools are accessible to agents. "all" = unrestricted; can be set to allowlist by org policy.',
   autostart:            '"newAndOutdated" starts MCP servers when config changes; "always" starts on every window open.',
   discovery:            'Auto-discovers and imports MCP server configs from other installed apps (e.g. Claude Desktop, Cursor).',
@@ -60,20 +88,9 @@ const TIPS = {
   claudeHooks:          'When on, Claude Code-format hooks in settings.json are executed at agent lifecycle events (pre/post tool use, session start/end).',
   customAgentHooks:     'When on, hooks defined in .agent.md frontmatter are parsed and executed during agent runs.',
   locations:            'File paths where hook configuration files are loaded from. Relative to workspace root.',
-  // Safety
-  globalAutoApprove:    'YOLO mode — disables ALL tool confirmation prompts across every tool and workspace. Extremely dangerous; agent acts fully autonomously with no human oversight.',
-  autoReply:            'Auto-answers agent questions without human input — agent never pauses for confirmation. Use with extreme caution.',
-  autoApprove:          'Auto-approves all tool calls of this type without prompting. Removes the human-in-the-loop safety check.',
-  terminal_sandbox:     'Runs terminal commands in a sandboxed environment to prevent destructive operations.',
-  // Context Files
-  claudeMd:             'Controls whether CLAUDE.md files are loaded into agent context on every request. Disabling removes custom instructions from all Claude sessions.',
-  agentsMd:             'Controls whether AGENTS.md is loaded as always-on context. Disabling removes the top-level agent instruction file.',
-  nestedAgentsMd:       'When on, AGENTS.md files in sub-folders are also loaded, scoping instructions to sub-trees of the workspace.',
   // Claude (Anthropic)
   thinkingBudget:       'Token budget for Claude extended thinking. Higher = more reasoning compute = higher cost per request.',
   thinkingEffort:       'Reasoning effort level for Claude. "high" uses extended thinking (expensive); "default" is standard.',
-  temperature:          'Sampling temperature for Claude agent requests. 0 = deterministic; higher values increase randomness.',
-  webSearch:            'Allows Claude to perform live web searches during agent runs. Adds external network calls and potential data leakage.',
   skipPermissions:      'Bypasses all Claude Code permission checks when running as a VS Code agent session. Equivalent to --dangerously-skip-permissions flag.',
   // Claude Code settings
   effortLevel:          'Controls how much compute Claude spends on reasoning. "high" uses extended thinking; "default" is standard.',
@@ -103,13 +120,10 @@ const TIPS = {
   sidebarMode:          'Controls whether Claude Desktop opens as a sidebar or full window.',
   trustedFolders:       'Number of directories where Claude Code (embedded in Desktop) can run without additional permission prompts.',
   livePreview:          'Enables the live preview pane that shows rendered output during Code mode tasks.',
-  webSearch:            'Allows Cowork mode to perform live web searches as part of autonomous tasks.',
-  scheduledTasks:       'Enables Cowork mode to schedule and run tasks on a timer.',
-  allowAllBrowserActions: 'Grants Cowork mode permission to take any browser action without per-action confirmation.',
 };
 
-function tip(key) {
-  return TIPS[key] || '';
+function tip(key, group) {
+  return (group && TIPS[group] && TIPS[group][key]) || TIPS_FLAT[key] || '';
 }
 
 // ─── Value rendering ─────────────────────────────────────────────
@@ -133,9 +147,9 @@ function Val({v}) {
   return html`<span class="mono">${String(v)}</span>`;
 }
 
-function Row({k, v, indent}) {
+function Row({k, v, indent, group}) {
   const label = k.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase());
-  const t = tip(k);
+  const t = tip(k, group);
   return html`<div
     title=${t}
     style="display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-4);
@@ -158,11 +172,11 @@ function OTelBlock({otel}) {
     </div>
     <div style="border:1px solid ${on?'var(--green)':'var(--bg2)'};border-radius:4px;overflow:hidden;
                 background:${on?'color-mix(in srgb,var(--green) 4%,transparent)':'transparent'}">
-      ${on && html`<${Row} k="exporter" v=${otel.exporter||'—'}/>`}
-      ${otel.endpoint && html`<${Row} k="endpoint" v=${otel.endpoint}/>`}
-      ${otel.file_path && html`<${Row} k="file_path" v=${otel.file_path}/>`}
-      ${otel.capture_content !== undefined && html`<${Row} k="capture_content" v=${!!otel.capture_content}/>`}
-      ${!on && otel.source && html`<${Row} k="source" v=${otel.source}/>`}
+      ${on && html`<${Row} group="OTel" k="exporter" v=${otel.exporter||'—'}/>`}
+      ${otel.endpoint && html`<${Row} group="OTel" k="endpoint" v=${otel.endpoint}/>`}
+      ${otel.file_path && html`<${Row} group="OTel" k="file_path" v=${otel.file_path}/>`}
+      ${otel.capture_content !== undefined && html`<${Row} group="OTel" k="capture_content" v=${!!otel.capture_content}/>`}
+      ${!on && otel.source && html`<${Row} group="OTel" k="source" v=${otel.source}/>`}
     </div>
   </div>`;
 }
@@ -175,7 +189,7 @@ function GroupBlock({name, items}) {
     <div style="font-size:var(--fs-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.06em;
                 color:var(--fg3);padding:var(--sp-2) var(--sp-4) var(--sp-1)">${name}</div>
     <div style="border:1px solid var(--bg2);border-radius:4px;overflow:hidden">
-      ${entries.map(([k,v]) => html`<${Row} key=${k} k=${k} v=${v}/>`)}
+      ${entries.map(([k,v]) => html`<${Row} key=${k} k=${k} v=${v} group=${name}/>`)}
     </div>
   </div>`;
 }

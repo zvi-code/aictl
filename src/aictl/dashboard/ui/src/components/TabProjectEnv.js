@@ -96,7 +96,8 @@ export default function TabProjectEnv() {
 
       ${Object.entries(byCategory).sort(([a],[b]) => {
         const order = ['credentials','config','runtime','database'];
-        return (order.indexOf(a)||99) - (order.indexOf(b)||99);
+        const ai = order.indexOf(a), bi = order.indexOf(b);
+        return (ai<0?99:ai) - (bi<0?99:bi);
       }).map(([cat, catFiles]) => html`<div key=${cat} style="margin-bottom:var(--sp-5)">
         <div class="es-section-title">${CATEGORY_LABELS[cat] || cat}
           <span class="badge" style="margin-left:var(--sp-3)">${catFiles.length}</span>

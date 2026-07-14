@@ -82,6 +82,9 @@
   --sp-8:  calc(0.8rem  * var(--density));
   --sp-10: calc(1rem    * var(--density));
   --sp-12: calc(1.2rem  * var(--density));
+  /* Compat aliases — shorthand names some components reference; map to canonical tokens. */
+  --blue: var(--accent); --fg3: var(--fg2); --fg-muted: var(--fg2);
+  --bg1: var(--bg3); --bg-alt: var(--bg3); --bd: var(--border); --mono: var(--ff-mono);
 }
 [data-density="compact"]  { --density: 0.85; }
 [data-density="spacious"] { --density: 1.15; }

@@ -10,6 +10,7 @@
 
 import { useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
+import { resolveColor } from '../utils.js';
 import EChart, { buildPalette } from './charts/EChart.js';
 import AnalyticsScatter from './charts/AnalyticsScatter.js';
 
@@ -21,18 +22,6 @@ function pairs(xs, ys, isTime) {
     out.push([isTime ? xs[i] * 1000 : xs[i], y]);
   }
   return out;
-}
-
-function resolveColor(c, fallback) {
-  if (!c) return fallback;
-  if (typeof c === 'string' && c.startsWith('var(')) {
-    const name = c.slice(4, -1).trim();
-    const v = typeof document !== 'undefined'
-      ? getComputedStyle(document.documentElement).getPropertyValue(name).trim()
-      : '';
-    return v || fallback;
-  }
-  return c;
 }
 
 export default function AnalyticsChart(props) {

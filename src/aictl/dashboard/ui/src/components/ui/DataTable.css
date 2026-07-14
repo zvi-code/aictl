@@ -4,13 +4,14 @@
 
 /* Header */
 .aictl-dt thead th {
+  /* sticky is a positioned state, so the absolutely-positioned resizer
+     still anchors to the th — no `position: relative` override needed. */
   position: sticky; top: 0; z-index: 3;
   background: var(--bg2); color: var(--fg2);
   text-align: left; font-weight: 600;
   padding: var(--sp-2) var(--sp-3);
   border-bottom: 1px solid var(--border);
   white-space: nowrap; user-select: none;
-  position: relative;
 }
 .aictl-dt thead th:first-child { border-top-left-radius: 4px; }
 .aictl-dt thead th:last-child  { border-top-right-radius: 4px; }

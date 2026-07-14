@@ -1,7 +1,7 @@
 import { useRef, useEffect } from 'preact/hooks';
 import { html } from 'htm/preact';
 import uPlot from 'uplot';
-import { sma3, fmtK } from '../utils.js';
+import { sma3, fmtK, resolveColor } from '../utils.js';
 
 function tooltipPlugin(fmtVal) {
   let tip;
@@ -64,7 +64,7 @@ export default function MiniChart({data, color, smooth, height, yMax, fmtVal}) {
       legend:{show:false}, select:{show:false},
       scales:{x:{time:true},y:{auto:true,range:rangeY}},
       axes:[{show:false,size:0,gap:0},{show:false,size:0,gap:0}],
-      series:[{},{stroke:color,width:1.5,fill:_resolveAlpha(color, 0.09)}],
+      series:[{},{stroke:resolveColor(color, '#94a3b8'),width:1.5,fill:_resolveAlpha(color, 0.09)}],
       plugins: [tooltipPlugin(fmtVal)],
     };
     chartRef.current = new uPlot(opts, plotData, ref.current);
