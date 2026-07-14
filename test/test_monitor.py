@@ -754,3 +754,102 @@ def test_process_collector_snapshot_tolerates_psutil_error():
     # Must not raise NameError or FakePsutilError.
     snap = collector._snapshot(FakePsutil)
     assert snap == {}, "all handles fail, so the snapshot is empty but the loop survived"
+
+
+def test_registry_load_failure_is_not_cached(monkeypatch):
+    """A failing registry load must NOT be cached as an empty pattern
+    list: that permanently disabled classification (zero sessions
+    recorded forever) while the collector kept reporting healthy."""
+    import aictl.monitoring.collectors.process as proc_mod
+
+    monkeypatch.setattr(proc_mod, "_CSV_PATTERNS", None)
+    monkeypatch.setattr(proc_mod, "_LAST_LOAD_ERROR_TS", 0.0)
+    monkeypatch.setattr(proc_mod, "_LOAD_FAILED", False)
+
+    def boom():
+        raise RuntimeError("registry unavailable")
+
+    monkeypatch.setattr("aictl.tools.get_registry", boom)
+
+    claude = ProcessInfo(
+        pid=1, ppid=0, name="claude", exe="/usr/bin/claude", cmdline=("claude",), username=None, cwd=None
+    )
+    assert proc_mod.classify_process(claude).tool is None
+    assert proc_mod.classification_degraded() is True
+    assert proc_mod._CSV_PATTERNS is None, "failure must not be cached — retry on next call"
+
+    # Cause clears → the very next call succeeds without a restart.
+    monkeypatch.undo()
+    monkeypatch.setattr(proc_mod, "_CSV_PATTERNS", None)
+    assert proc_mod.classify_process(claude).tool == "claude-code"
+    assert proc_mod.classification_degraded() is False
+
+
+def test_registry_load_failure_error_log_is_rate_limited(monkeypatch, caplog):
+    import logging
+
+    import aictl.monitoring.collectors.process as proc_mod
+
+    monkeypatch.setattr(proc_mod, "_CSV_PATTERNS", None)
+    monkeypatch.setattr(proc_mod, "_LAST_LOAD_ERROR_TS", 0.0)
+    monkeypatch.setattr(proc_mod, "_LOAD_FAILED", False)
+    monkeypatch.setattr("aictl.tools.get_registry", Mock(side_effect=RuntimeError("boom")))
+
+    with caplog.at_level(logging.ERROR, logger="aictl.monitoring.collectors.process"):
+        for _ in range(5):
+            proc_mod._load_csv_patterns()
+
+    errors = [r for r in caplog.records if "registry load failed" in r.message.lower()]
+    assert len(errors) == 1, "repeated failures within the log interval must not spam"
+
+
+def test_process_collector_reports_classification_degradation(monkeypatch):
+    """The collector must surface registry-load failures through the
+    status/diagnostics plumbing (correlator + data quality), and report
+    recovery when the registry loads again."""
+    import asyncio
+
+    import aictl.monitoring.collectors.process as proc_mod
+
+    collector = PsutilProcessCollector(MonitorConfig(root=Path("/tmp"), workspace_paths=(), state_paths=()))
+    correlator = Mock()
+    collector.set_correlator(correlator)
+
+    # Degraded: report once (not once per poll cycle).
+    monkeypatch.setattr(proc_mod, "_LOAD_FAILED", True)
+    asyncio.run(collector._report_classification_health())
+    asyncio.run(collector._report_classification_health())
+    degraded_calls = [c for c in correlator.on_collector_status.call_args_list if c.args[1] == "degraded"]
+    assert len(degraded_calls) == 1
+    assert degraded_calls[0].args[0] == "process:psutil"
+    assert degraded_calls[0].args[2] == "registry-load-failed"
+
+    # Recovered: report active again.
+    monkeypatch.setattr(proc_mod, "_LOAD_FAILED", False)
+    asyncio.run(collector._report_classification_health())
+    active_calls = [c for c in correlator.on_collector_status.call_args_list if c.args[1] == "active"]
+    assert len(active_calls) == 1
+
+
+class TestServeEnvPort:
+    """AICTL_PORT parsing in `aictl serve` — a garbage value (e.g.
+    AICTL_PORT=none) used to crash with an unguarded int()."""
+
+    def test_env_port_valid(self, monkeypatch):
+        from aictl.commands.daemon import _env_port
+
+        monkeypatch.setenv("AICTL_PORT", "9999")
+        assert _env_port() == 9999
+
+    def test_env_port_unset(self, monkeypatch):
+        from aictl.commands.daemon import _env_port
+
+        monkeypatch.delenv("AICTL_PORT", raising=False)
+        assert _env_port() is None
+
+    def test_env_port_garbage_returns_none(self, monkeypatch):
+        from aictl.commands.daemon import _env_port
+
+        for garbage in ("none", "", "84 84", "8484.5"):
+            monkeypatch.setenv("AICTL_PORT", garbage)
+            assert _env_port() is None, f"AICTL_PORT={garbage!r} must not raise"

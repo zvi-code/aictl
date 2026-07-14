@@ -35,10 +35,9 @@ try:
 except ModuleNotFoundError:
     import tomli as tomllib  # type: ignore[no-redef]
 
-from .fsutil import safe_iterdir
-from .fsutil import MAX_SCAN_DIRS
-
 import logging
+
+from .fsutil import MAX_SCAN_DIRS, safe_iterdir
 
 _log = logging.getLogger(__name__)
 
@@ -247,12 +246,22 @@ def _as_tool_list(value: object) -> list[str]:
 
 
 def parse_aictx(path: Path) -> ParsedAictx | None:
-    """Parse a .context.toml file."""
+    """Parse a .context.toml file.
+
+    Returns ``None`` (with a warning logged) when the file is missing,
+    unreadable, or contains invalid TOML. Callers treat ``None`` as
+    "skip this file" so one malformed file can't abort discovery
+    (RefreshLoop) or crash the CLI with a traceback.
+    """
     if not path.is_file():
         return None
 
-    with open(path, "rb") as f:
-        doc = tomllib.load(f)
+    try:
+        with open(path, "rb") as f:
+            doc = tomllib.load(f)
+    except (tomllib.TOMLDecodeError, OSError) as exc:
+        _log.warning("Skipping malformed context file %s: %s", path, exc)
+        return None
 
     result = ParsedAictx(path=path)
 

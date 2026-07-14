@@ -159,23 +159,18 @@ def _find_project_dir(root: Path) -> Path | None:
         if expected_lower.startswith("-") and entry.name.lower() == expected_lower[1:]:
             return entry
 
-    # ── Strategy 3: All path segments present as substrings ──────
-    # Break the resolved path into meaningful segments and check if
-    # they all appear in the directory name (order-preserving).
+    # ── Strategy 3: All path segments aligned on dash boundaries ──
+    # The candidate name must consist of exactly the resolved path's
+    # segments in order, separated by one-or-more dashes (Windows drive
+    # encodings produce doubled dashes), optionally with leading dashes.
+    # No extra leading or TRAILING segments: a lax substring match here
+    # used to select sibling projects (…-aictl-ui for …-aictl) and swap
+    # the wrong project's memory.
     segments = [s for s in re.split(r"[/\\]+", resolved) if s]
     if segments:
+        seg_pattern = re.compile("^-*" + "-+".join(re.escape(s.lower()) for s in segments) + "$")
         for entry in candidates:
-            name_lower = entry.name.lower()
-            # Check all segments appear in order
-            pos = 0
-            matched_all = True
-            for seg in segments:
-                idx = name_lower.find(seg.lower(), pos)
-                if idx == -1:
-                    matched_all = False
-                    break
-                pos = idx + len(seg)
-            if matched_all:
+            if seg_pattern.match(entry.name.lower()):
                 return entry
 
     # ── Strategy 4: Ends with project name on a dash boundary ────
@@ -204,10 +199,14 @@ def _find_project_dir(root: Path) -> Path | None:
 
     # ── Strategy 5: Structural match — any dir with memory/ ──────
     # Last resort: if the project name is common (e.g. "app") and
-    # none of the above matched, look for directories that at least
-    # contain the project name and have a memory/ subdirectory.
+    # none of the above matched, look for directories that END with the
+    # project name on a dash boundary and have a memory/ subdirectory.
+    # Plain substring containment is not enough: it selects siblings
+    # with extra trailing segments (…-aictl-ui for aictl).
+    pname = project_name.lower()
     for entry in candidates:
-        if project_name.lower() in entry.name.lower() and (entry / "memory").is_dir():
+        ename = entry.name.lower()
+        if (ename == pname or ename.endswith(f"-{pname}")) and (entry / "memory").is_dir():
             return entry
 
     return None
@@ -235,31 +234,31 @@ def swap_memory(root: Path, old_profile: str | None, new_profile: str | None) ->
         plan = {"old_profile": old_profile, "new_profile": new_profile, "timestamp": time.time()}
         marker.write_text(json.dumps(plan))
 
-        try:
-            # Stash current
-            if old_profile and mem.is_dir():
-                stash = proj / f"memory--{old_profile}"
-                if stash.exists():
-                    # shutil.move handles Windows (os.rename fails if target exists)
-                    shutil.move(str(stash), str(proj / f"memory--{old_profile}.bak.{int(time.time())}"))
-                shutil.move(str(mem), str(stash))
-                result.stashed = old_profile
+        # Stash current
+        if old_profile and mem.is_dir():
+            stash = proj / f"memory--{old_profile}"
+            if stash.exists():
+                # shutil.move handles Windows (os.rename fails if target exists)
+                shutil.move(str(stash), str(proj / f"memory--{old_profile}.bak.{int(time.time())}"))
+            shutil.move(str(mem), str(stash))
+            result.stashed = old_profile
 
-            # Restore new
-            if new_profile:
-                restore = proj / f"memory--{new_profile}"
-                if restore.is_dir():
-                    if mem.is_dir():
-                        shutil.move(str(mem), str(proj / f"memory--_unstashed.{int(time.time())}"))
-                    shutil.move(str(restore), str(mem))
-                    result.restored = new_profile
-                elif not mem.is_dir():
-                    mem.mkdir(parents=True)
-                    result.created = True
-        finally:
-            # Remove marker on completion (success or handled failure)
-            if marker.exists():
-                marker.unlink()
+        # Restore new
+        if new_profile:
+            restore = proj / f"memory--{new_profile}"
+            if restore.is_dir():
+                if mem.is_dir():
+                    shutil.move(str(mem), str(proj / f"memory--_unstashed.{int(time.time())}"))
+                shutil.move(str(restore), str(mem))
+                result.restored = new_profile
+            elif not mem.is_dir():
+                mem.mkdir(parents=True)
+                result.created = True
+
+        # Remove marker only on SUCCESS. If any rename above raised, the
+        # marker must survive so recover_swap() can finish the job on the
+        # next run — deleting it in a finally: made recovery impossible.
+        marker.unlink(missing_ok=True)
 
     return result
 

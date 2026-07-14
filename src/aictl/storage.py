@@ -1209,6 +1209,12 @@ class HistoryDB:
         on every ``append_*`` call (useful in tests).
     """
 
+    # Max rows kept per buffer when a failed flush re-buffers its batch.
+    # Beyond this, the oldest rows are dropped (and recorded as a
+    # data-quality event) so a persistently failing DB can't grow memory
+    # without bound.
+    _REBUFFER_CAP: int = 10_000
+
     def __init__(
         self,
         db_path: Path | str | None = None,
@@ -1295,7 +1301,9 @@ class HistoryDB:
             self._sync_csv_to_db(conn)
             self._seed_ui_layout(conn)
 
-        # Record new schema version for existing DBs we just migrated.
+        # Record the schema version. Migrated DBs already had each step
+        # recorded inside its migration transaction (see apply_pending);
+        # this covers fresh installs and is a no-op re-record otherwise.
         if current < SCHEMA_VERSION:
             conn.execute(
                 "INSERT OR REPLACE INTO schema_version(version) VALUES(?)",
@@ -1791,8 +1799,13 @@ class HistoryDB:
             if col_name not in existing:
                 try:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}")
-                except sqlite3.OperationalError:
-                    pass
+                except sqlite3.OperationalError as exc:
+                    # Only swallow the idempotency race (column added by a
+                    # concurrent connection). Real failures — e.g. a locked
+                    # DB — must propagate, not be silently masked.
+                    msg = str(exc).lower()
+                    if "duplicate column" not in msg and "already exists" not in msg:
+                        raise
 
     # ── File blob support ─────────────────────────────────────────
 
@@ -2172,7 +2185,51 @@ class HistoryDB:
 
             conn.commit()
         except sqlite3.Error as exc:
-            log.warning("DB flush error: %s", exc)
+            log.warning("DB flush error: %s — rolling back and re-buffering batch", exc)
+            # Roll back so a half-applied batch is never committed by the
+            # NEXT flush (executemany may have partially run).
+            try:
+                conn.rollback()
+            except sqlite3.Error as rb_exc:
+                log.debug("DB flush rollback error: %s", rb_exc)
+            # Re-prepend the popped buffers so a transient failure (e.g.
+            # 'database is locked') retries the whole batch on the next
+            # flush instead of silently dropping it. All inserts use
+            # INSERT OR REPLACE/IGNORE so the retry is idempotent.
+            dropped = 0
+            with self._lock:
+                self._system_snapshot_buf[:0] = ss_buf
+                self._process_snapshot_buf[:0] = ps_buf
+                self._events_buf[:0] = e_buf
+                self._metrics_buf[:0] = m_buf
+                self._requests_buf[:0] = req_buf
+                self._tool_invocations_buf[:0] = ti_buf
+                # Bounded retry: drop-oldest beyond the cap per buffer.
+                for buf in (
+                    self._system_snapshot_buf,
+                    self._process_snapshot_buf,
+                    self._events_buf,
+                    self._metrics_buf,
+                    self._requests_buf,
+                    self._tool_invocations_buf,
+                ):
+                    excess = len(buf) - self._REBUFFER_CAP
+                    if excess > 0:
+                        dropped += excess
+                        del buf[:excess]
+            if dropped:
+                log.warning("DB flush retry buffer overflow: dropped %d oldest rows", dropped)
+                try:
+                    self.record_data_quality(
+                        "storage-flush",
+                        "degraded",
+                        kind="storage",
+                        severity="warning",
+                        message="flush retry buffer overflow — dropped oldest rows",
+                        detail={"dropped": dropped, "error": str(exc)},
+                    )
+                except Exception as dq_exc:  # noqa: BLE001 — same DB may still be failing
+                    log.debug("Data-quality write error for storage-flush: %s", dq_exc)
             total = 0
 
         return total

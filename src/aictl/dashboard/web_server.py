@@ -619,16 +619,21 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                             from ..storage import _dedup_key
 
                             dk = _dedup_key(session_id, tool_name, tool_use_id, "hook")
-                            self.server.pending_tool_use[tool_use_id] = (ts, dk, input_val)
                             # Evict stale entries (older than 10 minutes)
                             cutoff = time.time() - 600
-                            stale = [k for k, (t, _, _) in self.server.pending_tool_use.items() if t < cutoff]
-                            for k in stale:
-                                del self.server.pending_tool_use[k]
+                            with self.server.pending_tool_use_lock:
+                                self.server.pending_tool_use[tool_use_id] = (ts, dk, input_val)
+                                stale = [k for k, (t, _, _) in self.server.pending_tool_use.items() if t < cutoff]
+                                for k in stale:
+                                    del self.server.pending_tool_use[k]
                     else:
                         # PostToolUse: compute duration and update existing row.
-                        if tool_use_id and tool_use_id in self.server.pending_tool_use:
-                            pre_ts, dk, input_val = self.server.pending_tool_use.pop(tool_use_id)
+                        pending = None
+                        if tool_use_id:
+                            with self.server.pending_tool_use_lock:
+                                pending = self.server.pending_tool_use.pop(tool_use_id, None)
+                        if pending is not None:
+                            pre_ts, dk, input_val = pending
                             duration_ms = (ts - pre_ts) * 1000
                             is_err = 1 if detail.get("is_error") else 0
                             result = str(detail.get("tool_response", detail.get("result", "")))[:500]
@@ -1153,7 +1158,11 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
         self.ingesters = start_ingesters(store)
         # In-memory cache for matching PreToolUse → PostToolUse by tool_use_id.
         # Maps tool_use_id → (pre_ts, dedup_key, tool_input). Entries auto-expire on access.
+        # Guarded by pending_tool_use_lock: hook requests are handled on
+        # concurrent per-request threads (ThreadingHTTPServer), and the
+        # stale-eviction scan must not iterate while another thread mutates.
         self.pending_tool_use: dict[str, tuple[float, str, object]] = {}
+        self.pending_tool_use_lock: threading.Lock = threading.Lock()
 
 
 # ─── Inline HTML dashboard ───────────────────────────────────────

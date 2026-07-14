@@ -547,6 +547,13 @@ def uninstall(scope: str, force: bool, dry_run: bool):
     for action in vscode_actions:
         click.echo(action)
 
+    # Also purge aictl-owned Gemini CLI hooks installed by _install_hooks
+    # (scope-symmetric — `aictl disable` inherits this via ctx.invoke).
+    gemini_actions: list[str] = []
+    _uninstall_gemini_hooks(scope, gemini_actions)
+    for action in gemini_actions:
+        click.echo(action)
+
 
 def _print_settings_diff(path: Path, before: dict, after: dict) -> None:
     """Print a unified diff of two JSON settings blobs."""
@@ -1457,6 +1464,60 @@ def _vscode_hook_file_is_ours(data: dict) -> bool:
     return True
 
 
+def _gemini_settings_path(scope: str) -> Path:
+    """Return the Gemini CLI settings path for the given scope."""
+    if scope == "project":
+        return Path.cwd() / ".gemini" / "settings.json"
+    return gemini_global_dir() / "settings.json"
+
+
+def _uninstall_gemini_hooks(scope: str, actions: list[str]) -> None:
+    """Remove aictl-owned hook entries from Gemini CLI settings.
+
+    Mirrors the Gemini half of ``_install_hooks``: only entries carrying
+    the aictl ownership marker (or matching the legacy aictl command
+    shape) are purged. User hooks and every other settings key are
+    preserved byte-for-byte in the JSON structure.
+    """
+    gemini_path = _gemini_settings_path(scope)
+    if not gemini_path.exists():
+        return
+    try:
+        existing = read_json_or_fail(gemini_path)
+    except CorruptJSONError:
+        actions.append(f"Gemini CLI hooks left intact at {gemini_path} (unreadable settings.json)")
+        return
+
+    g_hooks = existing.get("hooks", {})
+    if not isinstance(g_hooks, dict):
+        return
+
+    removed = 0
+    for ev in list(g_hooks.keys()):
+        rules = g_hooks[ev]
+        if not isinstance(rules, list):
+            continue
+        cleaned = [h for h in rules if not _is_aictl_hook(h)]
+        removed += len(rules) - len(cleaned)
+        if cleaned:
+            g_hooks[ev] = cleaned
+        else:
+            del g_hooks[ev]
+    if not removed:
+        return
+
+    if g_hooks:
+        existing["hooks"] = g_hooks
+    else:
+        existing.pop("hooks", None)
+
+    guard = WriteGuard.current()
+    if guard:
+        guard.confirm(gemini_path, "modify")
+    gemini_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+    actions.append(f"Removed aictl Gemini CLI hooks → {gemini_path}")
+
+
 def _install_hooks(scope: str, port: int, actions: list[str], *, force: bool = False) -> None:
     """Install Claude Code hooks and report actions."""
     if scope == "project":
@@ -1490,11 +1551,7 @@ def _install_hooks(scope: str, port: int, actions: list[str], *, force: bool = F
     actions.append(f"Claude Code hooks ({len(HOOK_EVENTS)} events) → {settings_path}")
 
     # Gemini CLI hooks
-    if scope == "project":
-        gemini_path = Path.cwd() / ".gemini" / "settings.json"
-    else:
-        gemini_path = gemini_global_dir() / "settings.json"
-
+    gemini_path = _gemini_settings_path(scope)
     gemini_path.parent.mkdir(parents=True, exist_ok=True)
     g_existing: dict = _read_json_strict(gemini_path, force=force)
     g_hooks = g_existing.get("hooks", {})

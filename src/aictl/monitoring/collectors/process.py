@@ -12,7 +12,9 @@ no hardcoded tool names or regex patterns in Python code.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +23,8 @@ from ...data.schema import metric_name as M
 from ..config import MonitorConfig
 from ..session import ProcessInfo
 from . import BaseCollector
+
+log = logging.getLogger(__name__)
 
 # ─── Process classification ─────────────────────────────────────────────────
 
@@ -43,11 +47,22 @@ class MatchResult:
 # ─── CSV-driven classification ─────────────────────────────────
 
 _CSV_PATTERNS: list[tuple[re.Pattern, str]] | None = None
+# True while the process registry cannot be loaded. Exposed via
+# classification_degraded() so the collector can surface the failure
+# instead of silently recording zero sessions forever.
+_LOAD_FAILED: bool = False
+_LAST_LOAD_ERROR_TS: float = 0.0
+_LOAD_ERROR_LOG_INTERVAL: float = 60.0  # seconds between repeated error logs
+
+
+def classification_degraded() -> bool:
+    """True while the process registry cannot be loaded (no classification)."""
+    return _LOAD_FAILED
 
 
 def _load_csv_patterns() -> list[tuple[re.Pattern, str]]:
     """Lazy-load compiled regex patterns from process CSV specs."""
-    global _CSV_PATTERNS
+    global _CSV_PATTERNS, _LOAD_FAILED, _LAST_LOAD_ERROR_TS
     if _CSV_PATTERNS is not None:
         return _CSV_PATTERNS
     try:
@@ -66,10 +81,18 @@ def _load_csv_patterns() -> list[tuple[re.Pattern, str]]:
                 except re.error:
                     continue
         _CSV_PATTERNS = patterns
+        _LOAD_FAILED = False
         return _CSV_PATTERNS
-    except Exception:
-        _CSV_PATTERNS = []
-        return _CSV_PATTERNS
+    except Exception as exc:
+        # Do NOT cache the failure: leave _CSV_PATTERNS unset so the next
+        # call retries. A transient error (partial install, locked file)
+        # must never permanently disable session classification.
+        _LOAD_FAILED = True
+        now = time.time()
+        if now - _LAST_LOAD_ERROR_TS >= _LOAD_ERROR_LOG_INTERVAL:
+            _LAST_LOAD_ERROR_TS = now
+            log.error("Process registry load failed — classification degraded until it recovers: %s", exc)
+        return []
 
 
 # ─── Public API ────────────────────────────────────────────────
@@ -111,6 +134,9 @@ class PsutilProcessCollector(BaseCollector):
         # long-running sessions when classify_process is inconsistent
         # across poll cycles (e.g. cmdline temporarily unavailable).
         self._sticky_pids: set[int] = set()
+        # Last classification-health state pushed via report_status, so
+        # status flips are reported once per transition (not per cycle).
+        self._classification_degraded_reported: bool = False
 
     async def run(self) -> None:
         try:
@@ -132,6 +158,10 @@ class PsutilProcessCollector(BaseCollector):
         while True:
             snapshot = await asyncio.to_thread(self._snapshot, psutil)
             current_pids = set(snapshot)
+
+            # Surface registry-load failures (classification kill-switch)
+            # through the collector status + data-quality plumbing.
+            await self._report_classification_health()
 
             # Per-core CPU (system-wide)
             try:
@@ -169,6 +199,32 @@ class PsutilProcessCollector(BaseCollector):
                     self.correlator.on_process_exit(pid)
 
             await self.sleep(self.config.process_interval)
+
+    async def _report_classification_health(self) -> None:
+        """Report registry-load degradation once per state transition.
+
+        When ``_load_csv_patterns`` cannot load the process registry,
+        ``classify_process`` matches nothing and no sessions are recorded.
+        Surface that as a degraded collector status (visible in doctor
+        diagnostics and the ``data_quality_status`` table) instead of
+        letting the collector report healthy while producing nothing.
+        """
+        degraded = classification_degraded()
+        if degraded == self._classification_degraded_reported:
+            return
+        self._classification_degraded_reported = degraded
+        if degraded:
+            await self.report_status(
+                status="degraded",
+                mode="registry-load-failed",
+                detail="Process registry failed to load — session classification disabled until it recovers",
+            )
+        else:
+            await self.report_status(
+                status="active",
+                mode="polling",
+                detail="Polling process tree, CPU, and subprocess creation via psutil",
+            )
 
     def _snapshot(self, psutil_module):
         all_processes: dict[int, dict[str, object]] = {}

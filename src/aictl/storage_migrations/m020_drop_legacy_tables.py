@@ -30,10 +30,11 @@ _LEGACY_TABLES = (
 
 
 def apply(conn: sqlite3.Connection) -> None:
+    # No error swallowing: ``IF EXISTS`` already makes each drop
+    # idempotent, so any OperationalError here (e.g. 'database is
+    # locked') is a real failure that must abort the migration instead
+    # of being masked while the schema version gets recorded anyway.
+    # The runner (apply_pending) owns the transaction — do not commit.
     for table in _LEGACY_TABLES:
-        try:
-            conn.execute(f"DROP TABLE IF EXISTS {table}")
-        except sqlite3.OperationalError:
-            pass
-    conn.commit()
+        conn.execute(f"DROP TABLE IF EXISTS {table}")
     log.info("Dropped legacy pre-v20 tables: %s", ", ".join(_LEGACY_TABLES))

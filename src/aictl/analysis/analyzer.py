@@ -216,6 +216,11 @@ class SessionAnalyzer:
             return None
 
         transcript.last_updated = event.ts
+        # Touch LRU recency: without this, popitem(last=False) in gc()
+        # evicts by creation order and throws out the most-established
+        # (still receiving events) session instead of the stalest one.
+        if transcript.session_id in self._transcripts:
+            self._transcripts.move_to_end(transcript.session_id)
 
         # Dispatch to handler
         if kind.startswith("hook:"):
@@ -337,7 +342,6 @@ class SessionAnalyzer:
         identity = self._identities.pop(canonical_id, None)
         if identity:
             for alias in identity.source_ids:
-                self._pid_map.pop(alias, None)  # type: ignore
                 self._id_map.pop(alias, None)
             for pid in identity.pids:
                 if self._pid_map.get(pid) == canonical_id:

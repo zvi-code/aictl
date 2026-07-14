@@ -14,21 +14,23 @@ from __future__ import annotations
 import sqlite3
 
 
-_DDL = """
-CREATE TABLE IF NOT EXISTS memory_snapshots (
-    session_id TEXT NOT NULL,
-    phase      TEXT NOT NULL CHECK(phase IN ('start','end')),
-    path       TEXT NOT NULL,
-    sha        TEXT NOT NULL,
-    content    TEXT NOT NULL DEFAULT '',
-    ts         REAL NOT NULL DEFAULT 0,
-    PRIMARY KEY (session_id, phase, path)
-);
-CREATE INDEX IF NOT EXISTS idx_memory_snapshots_session
-    ON memory_snapshots(session_id, phase);
-"""
-
-
 def apply(conn: sqlite3.Connection) -> None:
-    conn.executescript(_DDL)
-    conn.commit()
+    # Individual execute() calls (not executescript, which would
+    # implicitly COMMIT the runner's per-migration transaction).
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory_snapshots (
+            session_id TEXT NOT NULL,
+            phase      TEXT NOT NULL CHECK(phase IN ('start','end')),
+            path       TEXT NOT NULL,
+            sha        TEXT NOT NULL,
+            content    TEXT NOT NULL DEFAULT '',
+            ts         REAL NOT NULL DEFAULT 0,
+            PRIMARY KEY (session_id, phase, path)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_snapshots_session"
+        " ON memory_snapshots(session_id, phase)"
+    )

@@ -187,6 +187,41 @@ def test_snapshot_store_history_tracks_live_rates():
     assert history["live_out_rate"] == [88.8]
 
 
+def test_history_data_snapshot_is_independent_of_updates():
+    """history_data() must deep-copy under the lock.
+
+    It used to return the live _tool_history deques: serialize_history
+    (HTTP request thread) iterated them while update() (RefreshLoop
+    thread) appended, raising RuntimeError → /api/history 500s.
+    """
+    import collections
+
+    from aictl.orchestrator import SnapshotState
+
+    state = SnapshotState()
+    state._history.append((1.0, 1, 100, 5.0, 256.0, 0, 0, 0, 1, 100, 1.0, 2.0))
+    dq = collections.deque(maxlen=120)
+    dq.append((1.0, 5.0, 256.0, 100, 3.0))
+    state._tool_history["claude-code"] = dq
+
+    rows, tool_history = state.history_data()
+
+    # Mutating the live structures must not affect the returned copy.
+    state._history.append((2.0, 2, 200, 6.0, 300.0, 0, 0, 0, 1, 200, 1.0, 2.0))
+    state._tool_history["claude-code"].append((2.0, 6.0, 300.0, 200, 4.0))
+    state._tool_history["gemini-cli"] = collections.deque([(2.0, 1.0, 1.0, 1, 1.0)])
+
+    assert len(rows) == 1
+    assert len(tool_history["claude-code"]) == 1
+    assert "gemini-cli" not in tool_history
+
+    # And the copy serializes cleanly even while the source keeps moving.
+    from aictl.orchestrator import SnapshotSerializer
+
+    payload = json.loads(SnapshotSerializer.serialize_history(rows, tool_history))
+    assert payload["by_tool"]["claude-code"]["ts"] == [1.0]
+
+
 # ─── SSE ↔ Snapshot contract tests ──────────────────────────────
 
 

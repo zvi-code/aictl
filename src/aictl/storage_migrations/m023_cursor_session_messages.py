@@ -34,4 +34,3 @@ def apply(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_cursor_session_messages_session"
         " ON cursor_session_messages(session_id, ts)"
     )
-    conn.commit()
