@@ -14,6 +14,7 @@ Design goals:
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import logging
@@ -38,6 +39,37 @@ FLUSH_INTERVAL = 10.0  # seconds between batch writes
 # SCHEMA_VERSION is re-exported from aictl.storage_migrations so the
 # migrations package remains the single source of truth.
 LARGE_FILE_THRESHOLD = 100_000  # bytes; files larger than this use blob storage
+
+# ── File sync content policy ──────────────────────────────────────
+# Files larger than this are tracked metadata-only (no content/blob).
+# mtime IS stored for them, so they are intentionally not re-read on
+# every sync pass.
+FILE_SYNC_MAX_CONTENT_BYTES = 512 * 1024
+# Per-pass content-read budget (first-run flood control). Files beyond
+# the budget are skipped entirely — NOT upserted — so their stored mtime
+# cannot mask them; they retry on the next pass.
+FILE_SYNC_MAX_READS = 250
+# Basename patterns (case-insensitive fnmatch) whose content is never
+# stored — metadata only. The DB is local, but content rows outlive the
+# file (30d file_history retention) and /api/files serves them; secrets
+# don't belong in history.
+SENSITIVE_FILE_PATTERNS = (
+    ".env*",  # .env, .env.local, .env.production, ...
+    "*credentials*",  # credentials.json, aws_credentials, ...
+    "*secret*",  # secrets.yaml, client_secret.json, ...
+    "*.pem",  # certificates / private keys
+    "*.key",  # private keys
+    "id_rsa*",  # SSH private keys
+    "id_ed25519*",  # SSH private keys
+    "*token*",  # token stores (accepts false positives like token_usage.json)
+)
+
+
+def _is_sensitive_path(path: str) -> bool:
+    """True if the file's basename matches a sensitive pattern."""
+    basename = Path(path).name.lower()
+    return any(fnmatch.fnmatch(basename, pat) for pat in SENSITIVE_FILE_PATTERNS)
+
 
 # Retention thresholds (seconds)
 _1H = 3_600
@@ -3751,10 +3783,13 @@ class HistoryDB:
         content: str | None = None,
         mtime: float | None = None,
         meta: dict[str, Any] | None = None,
+        commit: bool = True,
     ) -> bool:
         """Insert or lazily update a tracked file.
 
         Returns True if content actually changed (new or different hash).
+        ``commit=False`` defers the commit to the caller (used by
+        ``sync_files_from_discovery`` for single-transaction sync passes).
         """
         conn = self._conn()
         now = time.time()
@@ -3838,7 +3873,8 @@ class HistoryDB:
                     (path, tool, category, scope, mtime or 0, now, meta_json),
                 )
 
-        conn.commit()
+        if commit:
+            conn.commit()
         return changed
 
     def get_file(self, path: str) -> FileEntry | None:
@@ -3944,85 +3980,128 @@ class HistoryDB:
             return None
         return self._resolve_content(conn, row[0] or "", row[1] or "")
 
-    def remove_file(self, path: str) -> bool:
+    def remove_file(self, path: str, commit: bool = True) -> bool:
         """Remove a file from the store. Returns True if it existed."""
         conn = self._conn()
         cur = conn.execute("DELETE FROM files WHERE path = ?", (path,))
-        conn.commit()
+        if commit:
+            conn.commit()
         return cur.rowcount > 0
 
     def sync_files_from_discovery(
         self,
         discovered: list[dict[str, Any]],
         read_content: bool = False,
+        max_content_bytes: int = FILE_SYNC_MAX_CONTENT_BYTES,
+        max_reads: int = FILE_SYNC_MAX_READS,
     ) -> dict[str, int]:
         """Bulk sync from discovery results.
 
         Lazy: only reads file content when mtime differs from stored mtime.
-        Returns {"added": N, "updated": N, "unchanged": N, "removed": N}.
+        Content policy:
+          * oversize files (> ``max_content_bytes``) and sensitive basenames
+            (``SENSITIVE_FILE_PATTERNS``) are upserted metadata-only — their
+            mtime IS stored, so they are not re-read every pass;
+          * at most ``max_reads`` content reads per pass — files beyond the
+            budget are skipped entirely (not upserted, so their stored mtime
+            cannot mask them) and counted as ``deferred``; they retry next
+            pass.
+
+        The whole pass runs in a single transaction (one commit).
+        Returns {"added", "updated", "unchanged", "removed", "deferred"}.
         """
         conn = self._conn()
-        now = time.time()
-        stats = {"added": 0, "updated": 0, "unchanged": 0, "removed": 0}
+        stats = {"added": 0, "updated": 0, "unchanged": 0, "removed": 0, "deferred": 0}
         seen_paths: set[str] = set()
+        reads_done = 0
 
-        for item in discovered:
-            path = item["path"]
-            seen_paths.add(path)
-            tool = item.get("tool", "")
-            category = item.get("category", "")
-            scope = item.get("scope", "")
-            mtime = item.get("mtime", 0)
+        try:
+            for item in discovered:
+                path = item["path"]
+                seen_paths.add(path)
+                tool = item.get("tool", "")
+                category = item.get("category", "")
+                scope = item.get("scope", "")
+                mtime = item.get("mtime", 0)
 
-            cur = conn.execute(
-                "SELECT mtime, content_hash FROM files WHERE path = ?",
-                (path,),
-            )
-            existing = cur.fetchone()
+                cur = conn.execute(
+                    "SELECT mtime, content_hash FROM files WHERE path = ?",
+                    (path,),
+                )
+                existing = cur.fetchone()
 
-            if existing and abs(existing[0] - mtime) < 0.01:
-                stats["unchanged"] += 1
-                continue
+                if existing and abs(existing[0] - mtime) < 0.01:
+                    stats["unchanged"] += 1
+                    continue
 
-            content = item.get("content")
-            if content is None and read_content:
-                try:
-                    content = Path(path).read_text(encoding="utf-8", errors="replace")
-                except OSError:
+                content = item.get("content")
+                if _is_sensitive_path(path):
+                    # Never store content for sensitive basenames.
+                    content = None
+                elif content is None and read_content:
+                    size = item.get("size") or 0
+                    if not size:
+                        try:
+                            size = Path(path).stat().st_size
+                        except OSError:
+                            size = 0
+                    if size > max_content_bytes:
+                        # Oversize: metadata-only upsert, no read.
+                        content = None
+                    elif reads_done >= max_reads:
+                        # Budget exhausted: skip entirely (no upsert) so the
+                        # stored mtime cannot mask this file; retries next pass.
+                        stats["deferred"] += 1
+                        continue
+                    else:
+                        reads_done += 1
+                        try:
+                            content = Path(path).read_text(encoding="utf-8", errors="replace")
+                        except OSError:
+                            content = None
+                elif content is not None and len(content.encode("utf-8", errors="replace")) > max_content_bytes:
+                    # Oversize inline content: metadata only.
                     content = None
 
-            if content is not None:
-                changed = self.upsert_file(
-                    path=path,
-                    tool=tool,
-                    category=category,
-                    scope=scope,
-                    content=content,
-                    mtime=mtime,
-                )
-                if existing:
-                    stats["updated" if changed else "unchanged"] += 1
+                if content is not None:
+                    changed = self.upsert_file(
+                        path=path,
+                        tool=tool,
+                        category=category,
+                        scope=scope,
+                        content=content,
+                        mtime=mtime,
+                        commit=False,
+                    )
+                    if existing:
+                        stats["updated" if changed else "unchanged"] += 1
+                    else:
+                        stats["added"] += 1
                 else:
-                    stats["added"] += 1
-            else:
-                self.upsert_file(
-                    path=path,
-                    tool=tool,
-                    category=category,
-                    scope=scope,
-                    mtime=mtime,
-                )
-                if existing:
-                    stats["unchanged"] += 1
-                else:
-                    stats["added"] += 1
+                    self.upsert_file(
+                        path=path,
+                        tool=tool,
+                        category=category,
+                        scope=scope,
+                        mtime=mtime,
+                        commit=False,
+                    )
+                    if existing:
+                        stats["unchanged"] += 1
+                    else:
+                        stats["added"] += 1
 
-        # Remove files no longer in discovery
-        cur = conn.execute("SELECT path FROM files")
-        for (stored_path,) in cur.fetchall():
-            if stored_path not in seen_paths:
-                self.remove_file(stored_path)
-                stats["removed"] += 1
+            # Remove files no longer in discovery
+            cur = conn.execute("SELECT path FROM files")
+            for (stored_path,) in cur.fetchall():
+                if stored_path not in seen_paths:
+                    self.remove_file(stored_path, commit=False)
+                    stats["removed"] += 1
+
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
         return stats
 
@@ -4801,6 +4880,16 @@ class HistoryDB:
         result["requests_deleted_30d"] = cur.rowcount
         cur = conn.execute("DELETE FROM tool_invocations WHERE ts < ?", (cutoff_30d,))
         result["tool_invocations_deleted_30d"] = cur.rowcount
+
+        # 11. Garbage-collect orphaned file blobs (referenced by neither
+        # files nor file_history — orphans accumulate as files change and
+        # their 30d-old history rows are deleted in step 9).
+        cur = conn.execute(
+            "DELETE FROM file_blobs WHERE hash NOT IN ("
+            " SELECT blob_hash FROM files WHERE blob_hash != ''"
+            " UNION SELECT blob_hash FROM file_history WHERE blob_hash != '')"
+        )
+        result["file_blobs_deleted"] = cur.rowcount
 
         conn.commit()
         return result
