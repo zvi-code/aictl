@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 import threading
 import time
@@ -1040,6 +1041,12 @@ def _assign_seq(rows: list[tuple], key_indices: tuple[int, ...]) -> list[tuple]:
         seen[key] = seq + 1
         result.append(row + (seq,))
     return result
+
+
+# Tag keys are interpolated into json_extract() paths (SQLite cannot
+# parameterize JSON paths), so they must be strictly validated to prevent
+# SQL injection via attacker-controlled query params.
+_TAG_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 def _where(conditions: list[tuple[str, Any]]) -> tuple[str, list]:
@@ -3803,6 +3810,9 @@ class HistoryDB:
             ]
         )
         if tag_filter:
+            for k in tag_filter:
+                if not _TAG_KEY_RE.match(k):
+                    raise ValueError(f"Invalid tag key: {k!r}")
             prefix = " AND " if where else " WHERE "
             where += prefix + " AND ".join(f"json_extract(tags, '$.{k}') = ?" for k in tag_filter)
             params.extend(tag_filter.values())

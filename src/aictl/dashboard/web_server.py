@@ -93,6 +93,38 @@ def _asdict_list(items) -> list:
     return [dataclasses.asdict(m) if dataclasses.is_dataclass(m) else m for m in items]
 
 
+def _static_dist_candidates() -> list[Path]:
+    """Directories static assets may be served from (module-level for tests)."""
+    return [
+        Path(__file__).parent / "dist",
+        Path(__file__).parent / "ui" / "dist",
+    ]
+
+
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def _loopback_origin(origin: str | None) -> str | None:
+    """Return *origin* if it is an http(s) loopback origin, else None.
+
+    The dashboard binds to loopback only, so cross-origin access is granted
+    solely to loopback origins (any port) — e.g. a Vite dev server on
+    http://localhost:5173 — never to arbitrary websites.
+    """
+    if not origin:
+        return None
+    try:
+        parsed = urlparse(origin)
+        host = (parsed.hostname or "").lower()
+    except ValueError:  # e.g. malformed IPv6 brackets
+        return None
+    if parsed.scheme not in ("http", "https"):
+        return None
+    if host in _LOOPBACK_HOSTS:
+        return origin
+    return None
+
+
 # ─── Claude memory snapshot helper ───────────────────────────────
 
 
@@ -405,6 +437,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_PUT(self) -> None:
+        if self._reject_cross_origin():
+            return
         path = urlparse(self.path).path
         if path.startswith("/api/tool-config/"):
             self._serve_tool_config_put()
@@ -412,6 +446,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self) -> None:
+        if self._reject_cross_origin():
+            return
         path = urlparse(self.path).path
         if path == "/api/hooks":
             self._receive_hook()
@@ -433,7 +469,9 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         Expected body: JSON with at minimum {event, session_id} plus
         event-specific fields from the Claude Code hook system.
         """
-        content_length = int(self.headers.get("Content-Length", 0))
+        content_length = self._content_length()
+        if content_length is None:
+            return
         if content_length > 1_000_000:
             self.send_error(413, "Payload too large")
             return
@@ -811,15 +849,16 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         import mimetypes
 
         rel = path.lstrip("/")
-        candidates = [
-            Path(__file__).parent / "dist",
-            Path(__file__).parent / "ui" / "dist",
-        ]
+        candidates = _static_dist_candidates()
         file_path = None
         for dist_dir in candidates:
-            fp = dist_dir / rel
-            if fp.is_file():
-                file_path = fp
+            # Resolve and confine to the dist dir — a path with ".." segments
+            # must never escape it (path traversal).
+            full = (dist_dir / rel).resolve()
+            if not full.is_relative_to(dist_dir.resolve()):
+                continue
+            if full.is_file():
+                file_path = full
                 break
         if file_path is None:
             checked = [str(d / rel) for d in candidates]
@@ -845,7 +884,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("ETag", etag)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._send_cors_header()
         self.end_headers()
         self.wfile.write(snap_bytes)
 
@@ -877,7 +916,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         self.send_header("ETag", etag)
         self.send_header("Last-Modified", email.utils.formatdate(mtime, usegmt=True))
         self.send_header("Cache-Control", "no-cache")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._send_cors_header()
         self.end_headers()
         self.wfile.write(body)
 
@@ -897,7 +936,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "keep-alive")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            self._send_cors_header()
             self.end_headers()
 
             version = 0
@@ -946,6 +985,56 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             return True
         return False
 
+    def _cors_origin(self) -> str | None:
+        """The request's Origin header, if (and only if) it is loopback."""
+        return _loopback_origin(self.headers.get("Origin"))
+
+    def _content_length(self) -> int | None:
+        """Parse the Content-Length header; send 400 and return None if malformed."""
+        try:
+            content_length = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            content_length = -1
+        if content_length < 0:
+            self.send_error(400, "Invalid Content-Length")
+            return None
+        return content_length
+
+    def _send_cors_header(self) -> None:
+        """Emit Access-Control-Allow-Origin for loopback origins only.
+
+        Same-origin requests carry no Origin header and need no ACAO header;
+        non-loopback origins get nothing (the browser blocks the read).
+        """
+        origin = self._cors_origin()
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+
+    def _reject_cross_origin(self) -> bool:
+        """CSRF guard for state-changing requests (POST/PUT).
+
+        Rejects any request whose Origin header is present and neither
+        loopback nor same-origin (Origin host:port matching the request's
+        Host header — covers dashboards deliberately served on a
+        non-loopback interface). Non-browser clients (aictl's own hook
+        handler, OTLP exporters) send no Origin header and pass through.
+        Returns True when rejected.
+        """
+        origin = self.headers.get("Origin")
+        if not origin:
+            return False
+        if _loopback_origin(origin):
+            return False
+        try:
+            origin_netloc = urlparse(origin).netloc.lower()
+        except ValueError:
+            origin_netloc = ""
+        if origin_netloc and origin_netloc == (self.headers.get("Host") or "").lower():
+            return False
+        self.send_error(403, "Cross-origin request rejected")
+        return True
+
     def _qs_get(self, key: str, default=None):
         """Return the first value for *key* in the query-string, or *default*."""
         v = self._qs.get(key)
@@ -976,7 +1065,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         """Send pre-encoded JSON bytes as a response."""
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._send_cors_header()
         self.end_headers()
         self.wfile.write(body)
 
