@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'preact/hooks';
+import { useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
 import * as api from '../../api.js';
 import { esc } from '../../utils.js';
+import { useAsyncResource } from '../../hooks/useAsyncResource.js';
 
 /**
  * Horizontal bar chart showing the top-N subprocesses spawned by the
@@ -9,20 +10,11 @@ import { esc } from '../../utils.js';
  * sessions render an empty-state message.
  */
 export default function SubprocessBreakdown({ sessionId, topN = 10 }) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    if (!sessionId) { setData(null); setLoading(false); setError(null); return; }
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    api.getSessionSubprocesses(sessionId)
-      .then(d => { if (!cancelled) { setData(d); setLoading(false); } })
-      .catch(e => { if (!cancelled) { setData(null); setError(e); setLoading(false); } });
-    return () => { cancelled = true; };
-  }, [sessionId]);
+  const { data, loading, error } = useAsyncResource(
+    () => api.getSessionSubprocesses(sessionId),
+    [sessionId],
+    { enabled: !!sessionId },
+  );
 
   const top = useMemo(() => {
     if (!data || !Array.isArray(data.counts)) return [];

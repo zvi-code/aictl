@@ -1,28 +1,17 @@
-import { useState, useEffect } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { fmtK } from '../../utils.js';
 import * as api from '../../api.js';
+import { useAsyncResource } from '../../hooks/useAsyncResource.js';
 
 export default function ProjectCostPanel({project}) {
-  const [costs, setCosts] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    if (!project) { setCosts(null); setLoading(false); setError(null); return; }
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    api.getProjectCosts(7)
-      .then(data => {
-        if (cancelled) return;
-        const match = Array.isArray(data) ? data.find(p => p.project === project) : null;
-        setCosts(match || null);
-        setLoading(false);
-      })
-      .catch(e => { if (!cancelled) { setCosts(null); setError(e); setLoading(false); } });
-    return () => { cancelled = true; };
-  }, [project]);
+  const { data: costs, loading, error } = useAsyncResource(
+    () => api.getProjectCosts(7).then(data => {
+      const match = Array.isArray(data) ? data.find(p => p.project === project) : null;
+      return match || null;
+    }),
+    [project],
+    { enabled: !!project },
+  );
 
   if (loading) return html`<p class="loading-state">Loading project costs...</p>`;
   if (error) return html`<p class="error-state">Failed to load project costs${error.message ? ` (${error.message})` : ''}.</p>`;

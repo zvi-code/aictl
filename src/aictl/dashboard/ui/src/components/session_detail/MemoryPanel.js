@@ -1,8 +1,9 @@
-import { useState, useContext, useEffect } from 'preact/hooks';
+import { useState, useContext } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../../context.js';
 import { fmtK, esc } from '../../utils.js';
 import { getSessionMemoryDiff } from '../../api.js';
+import { useAsyncResource } from '../../hooks/useAsyncResource.js';
 
 function MemoryEntryRow({mem: m}) {
   const [expanded, setExpanded] = useState(false);
@@ -78,20 +79,15 @@ function MemoryDiffRow({file: f}) {
 }
 
 function MemoryDiffSection({sessionId}) {
-  const [diff, setDiff] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    if (!sessionId) { setDiff(null); setLoading(false); return; }
-    let cancelled = false;
-    setLoading(true);
-    getSessionMemoryDiff(sessionId).then((d) => {
-      if (!cancelled) { setDiff(d || {files: [], summary: {}}); setLoading(false); }
-    }).catch(() => {
-      if (!cancelled) { setDiff({files: [], summary: {}}); setLoading(false); }
-    });
-    return () => { cancelled = true; };
-  }, [sessionId]);
+  // A failed fetch renders the same empty state as "no changes", so the
+  // error is swallowed inside fetchFn rather than surfaced via the hook.
+  const { data: diff, loading } = useAsyncResource(
+    () => getSessionMemoryDiff(sessionId)
+      .then((d) => d || {files: [], summary: {}})
+      .catch(() => ({files: [], summary: {}})),
+    [sessionId],
+    { enabled: !!sessionId },
+  );
 
   const files = (diff && diff.files) || [];
   const summary = (diff && diff.summary) || {added: 0, modified: 0, removed: 0};

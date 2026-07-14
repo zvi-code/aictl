@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { esc, fmtHHMMSS } from '../../utils.js';
 import * as api from '../../api.js';
+import { useAsyncResource } from '../../hooks/useAsyncResource.js';
 
 const ROLE_COLOR = {
   lead: 'var(--accent)',
@@ -13,20 +13,14 @@ const ROLE_COLOR = {
 // the session_processes table so the process tree survives after a session ends
 // — useful for post-mortem "who spawned what" inspection of agent teams.
 export default function ProcessTreePanel({sessionId}) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
+  const { data, loading, error } = useAsyncResource(
+    () => api.getSessionProcesses(sessionId),
+    [sessionId],
+    { enabled: !!sessionId },
+  );
 
-  useEffect(() => {
-    if (!sessionId) return;
-    setLoading(true);
-    setError(false);
-    api.getSessionProcesses(sessionId)
-      .then(d => { setData(d); setLoading(false); })
-      .catch(() => { setError(true); setLoading(false); });
-  }, [sessionId]);
-
-  if (loading) return html`<p class="loading-state">Loading process tree\u2026</p>`;
+  // A falsy sessionId never fetches \u2014 keep showing the loading state, as before.
+  if (loading || !sessionId) return html`<p class="loading-state">Loading process tree\u2026</p>`;
   if (error) return html`<p class="empty-state">Failed to load process data.</p>`;
   if (!data || !data.processes || !data.processes.length) {
     return html`<p class="empty-state">No persisted processes recorded for this session.</p>`;

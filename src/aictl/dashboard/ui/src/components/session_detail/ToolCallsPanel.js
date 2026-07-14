@@ -2,34 +2,33 @@ import { useState, useEffect } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { esc, fmtHHMMSS } from '../../utils.js';
 import * as api from '../../api.js';
+import { useAsyncResource } from '../../hooks/useAsyncResource.js';
 
 // Per-session tool-call timeline + a latency distribution sparkbar. Surfaces
 // the tool_invocations table (which tools the agent reached for, how long they
 // took, which ones errored, and the actual input — Bash command / file path)
 // that was captured but never shown per-session.
 export default function ToolCallsPanel({sessionId}) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
   // Which timeline rows have their input expanded (keyed by row index).
   const [expanded, setExpanded] = useState({});
 
   // sessionId may be an array of candidate ids (merged sessions are known
-  // by several ids); key the effect on its contents, not array identity.
+  // by several ids); key the fetch on its contents, not array identity.
   const sessionKey = Array.isArray(sessionId) ? sessionId.join('|') : sessionId;
-  useEffect(() => {
-    if (!sessionKey) return;
-    setLoading(true);
-    setError(false);
-    setExpanded({});
-    api.getSessionToolCalls(sessionId)
-      .then(d => { setData(d); setLoading(false); })
-      .catch(() => { setError(true); setLoading(false); });
-  }, [sessionKey]);
+  const { data, loading, error } = useAsyncResource(
+    () => api.getSessionToolCalls(sessionId),
+    [sessionKey],
+    { enabled: !!sessionKey },
+  );
+
+  // Reset row expansion when the session changes (this used to live inside
+  // the fetch effect).
+  useEffect(() => { setExpanded({}); }, [sessionKey]);
 
   const toggleInput = (i) => setExpanded(e => ({ ...e, [i]: !e[i] }));
 
-  if (loading) return html`<p class="loading-state">Loading tool calls…</p>`;
+  // A falsy sessionKey never fetches — keep showing the loading state, as before.
+  if (loading || !sessionKey) return html`<p class="loading-state">Loading tool calls…</p>`;
   if (error) return html`<p class="empty-state">Failed to load tool-call data.</p>`;
   if (!data || !data.calls || !data.calls.length) {
     return html`<p class="empty-state">No tool-call data recorded for this session.</p>`;

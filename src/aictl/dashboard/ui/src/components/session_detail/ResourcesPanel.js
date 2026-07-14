@@ -1,35 +1,38 @@
-import { useState, useEffect } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { fmtK, fmtSz, fmtPct } from '../../utils.js';
 import * as api from '../../api.js';
 import RateLimitGauge from './RateLimitGauge.js';
 import SubprocessBreakdown from './SubprocessBreakdown.js';
+import { useAsyncResource } from '../../hooks/useAsyncResource.js';
 
 export default function ResourcesPanel({session}) {
   const inTok = session.exact_input_tokens || 0;
   const outTok = session.exact_output_tokens || 0;
-  const [avgData, setAvgData] = useState(null);
-  const [sessionStats, setSessionStats] = useState(null);
 
-  useEffect(() => {
-    if (!session.tool) return;
-    api.getSessions({ tool: session.tool, active: false, limit: 20 })
+  // Neither fetch surfaces a loading/error state — a failure just leaves
+  // the optional sections out, so errors are swallowed inside fetchFn.
+  const { data: avgData } = useAsyncResource(
+    () => api.getSessions({ tool: session.tool, active: false, limit: 20 })
       .then(data => {
         if (data.length > 1) {
           const durations = data.filter(s => s.duration_s > 0).map(s => s.duration_s);
           const avgDur = durations.length ? durations.reduce((a, b) => a + b, 0) / durations.length : 0;
-          setAvgData({ avgDuration: avgDur, sampleCount: data.length });
+          return { avgDuration: avgDur, sampleCount: data.length };
         }
+        return null;
       })
-      .catch(() => {});
-  }, [session.tool]);
+      .catch(() => null),
+    [session.tool],
+    { enabled: !!session.tool },
+  );
 
-  useEffect(() => {
-    if (!session.session_id) return;
-    api.getSessionStats(session.session_id)
-      .then(d => setSessionStats(d && !d.error ? d : null))
-      .catch(() => setSessionStats(null));
-  }, [session.session_id]);
+  const { data: sessionStats } = useAsyncResource(
+    () => api.getSessionStats(session.session_id)
+      .then(d => (d && !d.error ? d : null))
+      .catch(() => null),
+    [session.session_id],
+    { enabled: !!session.session_id },
+  );
 
   const curDur = session.duration_s || 0;
   const ratio = avgData && avgData.avgDuration > 0 ? curDur / avgData.avgDuration : null;
