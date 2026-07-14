@@ -8,15 +8,19 @@ function MemoryEntryRow({mem: m}) {
   const [expanded, setExpanded] = useState(false);
   const name = m.name || (m.file || '').replace(/\\\\/g,'/').split('/').pop() || 'entry';
   const preview = (m.content || '').slice(0, 300);
-  return html`<div class="sd-memory-entry" style="cursor:pointer" onClick=${() => setExpanded(!expanded)}>
-    <div class="flex-row gap-sm" style="align-items:center">
+  return html`<div class="sd-memory-entry">
+    <button type="button" class="flex-row gap-sm"
+      aria-expanded=${expanded}
+      onClick=${() => setExpanded(!expanded)}
+      style="align-items:center;width:100%;background:none;border:none;padding:0;
+        font:inherit;color:inherit;text-align:left;cursor:pointer">
       <span class="badge text-xs">${m.type || m.source || 'file'}</span>
       <strong title=${m.file || m.path || ''}>${esc(name)}</strong>
       ${m.tokens ? html`<span class="text-muted">${fmtK(m.tokens)} tok</span>` : null}
       ${m.lines ? html`<span class="text-muted">${m.lines}ln</span>` : null}
       ${m.profile ? html`<span class="text-muted">${esc(m.profile)}</span>` : null}
-      <span class="text-muted" style="margin-left:auto;font-size:var(--fs-2xs)">${expanded ? '\u25B2' : '\u25BC'}</span>
-    </div>
+      <span class="text-muted" aria-hidden="true" style="margin-left:auto;font-size:var(--fs-2xs)">${expanded ? '\u25B2' : '\u25BC'}</span>
+    </button>
     ${expanded && preview ? html`<pre class="text-muted" style="margin:var(--sp-2) 0 0;padding:var(--sp-2) var(--sp-3);
       background:var(--bg);border-radius:3px;white-space:pre-wrap;word-break:break-word;
       max-height:10rem;overflow-y:auto;font-size:var(--fs-xs);line-height:1.4">${esc(m.content)}${m.content && m.content.length > 300 ? '' : ''}</pre>` : null}
@@ -57,14 +61,16 @@ function MemoryDiffRow({file: f}) {
   const [open, setOpen] = useState(false);
   const icon = _CHANGE_ICON[f.change] || '\u00B7';
   return html`<div class="sd-memdiff-row" data-change=${f.change}>
-    <div class="flex-row gap-sm" style="align-items:center;cursor:pointer;padding:var(--sp-1) 0"
-         onClick=${() => setOpen(!open)} role="button" aria-expanded=${open}>
+    <button type="button" class="flex-row gap-sm"
+         style="align-items:center;cursor:pointer;padding:var(--sp-1) 0;width:100%;
+           background:none;border:none;font:inherit;color:inherit;text-align:left"
+         onClick=${() => setOpen(!open)} aria-expanded=${open}>
       <span class="badge text-xs" title=${_CHANGE_LABEL[f.change] || f.change}>${icon}</span>
       <code class="text-xs" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">${esc(f.path)}</code>
       <span class="text-xs" style="color:var(--positive, #4caf50)">+${f.added_lines || 0}</span>
       <span class="text-xs" style="color:var(--negative, #f44336)">-${f.removed_lines || 0}</span>
-      <span class="text-muted" style="font-size:var(--fs-2xs)">${open ? '\u25B2' : '\u25BC'}</span>
-    </div>
+      <span class="text-muted" aria-hidden="true" style="font-size:var(--fs-2xs)">${open ? '\u25B2' : '\u25BC'}</span>
+    </button>
     ${open && f.unified_diff ? html`<pre class="diff" style="margin:var(--sp-1) 0 var(--sp-2);padding:var(--sp-2) var(--sp-3);
       background:var(--bg);border-radius:3px;white-space:pre;overflow-x:auto;max-height:20rem;overflow-y:auto;
       font-size:var(--fs-xs);line-height:1.4;font-family:var(--font-mono, monospace)">${esc(f.unified_diff)}</pre>` : null}

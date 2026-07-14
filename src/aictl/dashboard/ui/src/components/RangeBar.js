@@ -11,11 +11,13 @@ function toLocalISOString(ts) {
 
 export default function RangeBar({ globalRange, onPreset, onApplyCustom }) {
   const [showCustom, setShowCustom] = useState(false);
+  const [rangeError, setRangeError] = useState('');
   const startRef = useRef(null);
   const endRef = useRef(null);
 
   const toggleCustom = useCallback(() => {
     setShowCustom(true);
+    setRangeError('');
     requestAnimationFrame(() => {
       if (!startRef.current || !endRef.current) return;
       if (globalRange.until != null) {
@@ -33,10 +35,16 @@ export default function RangeBar({ globalRange, onPreset, onApplyCustom }) {
 
   const apply = useCallback(() => {
     const s = startRef.current?.value, e = endRef.current?.value;
-    if (!s || !e) return;
+    if (!s || !e) { setRangeError('Enter both a start and an end time.'); return; }
     const since = new Date(s).getTime() / 1000;
     const until = new Date(e).getTime() / 1000;
-    if (!Number.isFinite(since) || !Number.isFinite(until) || until <= since) return;
+    if (!Number.isFinite(since) || !Number.isFinite(until)) {
+      setRangeError('Invalid date/time value.'); return;
+    }
+    if (until <= since) {
+      setRangeError('End time must be after start time.'); return;
+    }
+    setRangeError('');
     onApplyCustom(since, until);
     setShowCustom(false);
   }, [onApplyCustom]);
@@ -46,7 +54,7 @@ export default function RangeBar({ globalRange, onPreset, onApplyCustom }) {
       <span class="range-label">Range:</span>
       ${RANGE_PRESETS.map(r => html`<button key=${r.id}
         class=${globalRange.id === r.id && !showCustom ? 'range-btn active' : 'range-btn'}
-        onClick=${() => { onPreset(r.id); setShowCustom(false); }}>${r.label}</button>`)}
+        onClick=${() => { onPreset(r.id); setShowCustom(false); setRangeError(''); }}>${r.label}</button>`)}
       <button class=${showCustom || globalRange.id === 'custom' ? 'range-btn active' : 'range-btn'}
         onClick=${toggleCustom}>Custom</button>
     </div>
@@ -56,6 +64,8 @@ export default function RangeBar({ globalRange, onPreset, onApplyCustom }) {
       <label><span class="range-label">To</span>
         <input type="datetime-local" class="es-date-input" ref=${endRef} /></label>
       <button class="range-btn active" onClick=${apply} style="font-weight:600">Apply</button>
+      <span class="error-state" aria-live="polite"
+        style="padding:0 var(--sp-2);font-size:var(--fs-xs)">${rangeError}</span>
     </div>`}
   </div>`;
 }

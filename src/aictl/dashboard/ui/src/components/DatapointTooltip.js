@@ -85,10 +85,16 @@ export default function DatapointTooltip() {
     document.addEventListener('mouseover', onOver, true);
     document.addEventListener('mouseout', onOut, true);
     document.addEventListener('click', onClick, true);
+    // Keyboard access: hosts that are (or contain) focusable elements show
+    // the tooltip on focus too. focusin/focusout bubble, unlike focus/blur.
+    document.addEventListener('focusin', onOver, true);
+    document.addEventListener('focusout', onOut, true);
     return () => {
       document.removeEventListener('mouseover', onOver, true);
       document.removeEventListener('mouseout', onOut, true);
       document.removeEventListener('click', onClick, true);
+      document.removeEventListener('focusin', onOver, true);
+      document.removeEventListener('focusout', onOut, true);
     };
   }, [show, hide, cancelHide, entry]);
 

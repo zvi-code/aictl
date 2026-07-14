@@ -31,21 +31,21 @@ export default function TurnCard({ turn, index, expanded, onToggle }) {
   const wallMs = turn.wall_ms || turn.duration_ms || 0;
 
   return html`<div class="tr-turn ${expanded ? 'tr-turn-expanded' : ''}">
-    <div class="tr-turn-header" onClick=${onToggle}>
-      <div class="tr-turn-num">${index + 1}</div>
-      <div class="tr-turn-meta">
+    <button type="button" class="tr-turn-header" onClick=${onToggle} aria-expanded=${expanded}>
+      <span class="tr-turn-num">${index + 1}</span>
+      <span class="tr-turn-meta">
         <span class="tr-turn-time">${fmtHHMMSS(turn.ts)}</span>
         ${turn.model ? html`<span class="tr-turn-model">${shortModel(turn.model)}</span>` : null}
         ${wallMs > 0 ? html`<span class="tr-turn-dur">${fmtDurMs(wallMs)}</span>` : null}
-      </div>
-      <div class="tr-turn-stats">
+      </span>
+      <span class="tr-turn-stats">
         ${totalTok > 0 ? html`<span class="tr-stat" title="Tokens"><${Icon} name="coins" size="0.9em"/> ${fmtK(totalTok)}</span>` : null}
         ${toolUses.length > 0 ? html`<span class="tr-stat" title="Tool uses"><${Icon} name="wrench" size="0.9em"/> ${toolUses.length}</span>` : null}
         ${apiCalls.length > 0 ? html`<span class="tr-stat" title="API calls"><${Icon} name="globe" size="0.9em"/> ${apiCalls.length}</span>` : null}
         ${errors.length > 0 ? html`<span class="tr-stat tr-stat-err" title="Errors"><${Icon} name="x" size="0.9em"/> ${errors.length}</span>` : null}
-      </div>
-      <div class="tr-turn-chevron">${expanded ? '\u25BE' : '\u25B8'}</div>
-    </div>
+      </span>
+      <span class="tr-turn-chevron" aria-hidden="true">${expanded ? '\u25BE' : '\u25B8'}</span>
+    </button>
 
     ${hasPrompt ? html`<div class="tr-prompt ${expanded ? 'tr-prompt-full' : ''}">
       <div class="tr-prompt-icon"><${Icon} name="user" size="1em"/></div>

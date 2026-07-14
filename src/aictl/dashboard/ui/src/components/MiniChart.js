@@ -45,7 +45,10 @@ function _resolveAlpha(color, alpha) {
   return `rgba(100,100,100,${alpha})`;
 }
 
-export default function MiniChart({data, color, smooth, height, yMax, fmtVal}) {
+// `ariaLabel` names the chart for standalone use; pass `ariaHidden` when a
+// parent (e.g. ChartCard) already exposes a single labelled img role so the
+// inner chart doesn't double-announce.
+export default function MiniChart({data, color, smooth, height, yMax, fmtVal, ariaLabel, ariaHidden}) {
   const ref = useRef(null);
   const chartRef = useRef(null);
   const h = height || 55;
@@ -78,5 +81,9 @@ export default function MiniChart({data, color, smooth, height, yMax, fmtVal}) {
     ro.observe(ref.current);
     return ()=>ro.disconnect();
   },[]);
-  return html`<div class="chart-wrap" role="img" aria-label="Sparkline chart" style=${'height:'+h+'px'} ref=${ref}></div>`;
+  return html`<div class="chart-wrap"
+    role=${ariaHidden ? null : 'img'}
+    aria-hidden=${ariaHidden ? 'true' : null}
+    aria-label=${ariaHidden ? null : (ariaLabel || 'Sparkline chart')}
+    style=${'height:'+h+'px'} ref=${ref}></div>`;
 }

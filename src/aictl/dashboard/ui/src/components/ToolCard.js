@@ -33,7 +33,7 @@ export default function ToolCard({tool: t, root}) {
   return html`<div class=${cls}>
     <button class="tcard-head" onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}
       style="flex-wrap:wrap;row-gap:0.2rem">
-      <span class="arrow">\u25B6</span>
+      <span class="arrow" aria-hidden="true">\u25B6</span>
       <h2><span style="margin-right:var(--sp-2)"><${ToolIcon} tool=${t.tool} size="1em"/></span>${esc(t.label)}</h2>
       <span class="badge" data-dp="procs.tool.files">${t.files.length} files</span>
       <span class="badge" data-dp="procs.tool.tokens">${fmtK(tok)} tok</span>

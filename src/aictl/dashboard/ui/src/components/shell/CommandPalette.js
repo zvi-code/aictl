@@ -110,6 +110,7 @@ export default function CommandPalette({ commands = [], isOpen, onClose, lru = [
           role="combobox"
           aria-expanded="true"
           aria-autocomplete="list"
+          aria-activedescendant=${filtered.length ? 'cmdk-opt-' + activeIdx : null}
         />
         <${Kbd}>Esc</${Kbd}>
       </div>
@@ -117,14 +118,15 @@ export default function CommandPalette({ commands = [], isOpen, onClose, lru = [
         ${filtered.length === 0
           ? html`<${EmptyState} icon="search" title="No commands"
               description=${query ? 'No commands match "' + query + '"' : 'Start typing…'}/>`
-          : grouped.map(g => html`<div key=${g.group} class="cmdk-group">
-              <div class="cmdk-group-label">${g.group}</div>
+          : grouped.map(g => html`<div key=${g.group} class="cmdk-group" role="group" aria-label=${g.group}>
+              <div class="cmdk-group-label" aria-hidden="true">${g.group}</div>
               ${g.items.map(c => {
                 idxCounter += 1;
                 const i = idxCounter;
                 const active = i === activeIdx;
                 return html`<button key=${c.id}
                   type="button"
+                  id=${'cmdk-opt-' + i}
                   class=${'cmdk-item' + (active ? ' cmdk-item--active' : '')}
                   role="option"
                   aria-selected=${active ? 'true' : 'false'}

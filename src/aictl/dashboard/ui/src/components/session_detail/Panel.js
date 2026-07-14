@@ -13,7 +13,7 @@ export default function Panel({title, icon, badge, defaultOpen, children}) {
       <span class="sd-panel-icon"><${Icon} name=${icon} size="1em"/></span>
       <span class="sd-panel-title">${title}</span>
       ${badge != null && html`<span class="badge text-xs" style="margin-left:var(--sp-2)">${badge}</span>`}
-      <span class="sd-panel-arrow">${open ? '\u25B2' : '\u25BC'}</span>
+      <span class="sd-panel-arrow" aria-hidden="true">${open ? '\u25B2' : '\u25BC'}</span>
     </button>
     ${open && html`<div class="sd-panel-body">${children}</div>`}
   </div>`;

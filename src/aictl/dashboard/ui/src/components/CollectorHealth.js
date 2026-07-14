@@ -140,7 +140,7 @@ export default function CollectorHealth() {
           <div class="metric-chip-value">${fmtK(selfStatus.sink.metrics_tracked || 0)}</div>
         </div>
       </div>
-      ${selfStatus.sink.is_flooding ? html`<div style="margin-top:var(--sp-2);padding:var(--sp-2) var(--sp-3);background:rgba(248,113,113,0.15);border:1px solid var(--red);border-radius:4px;color:var(--red);font-size:var(--fs-xs);font-weight:600">
+      ${selfStatus.sink.is_flooding ? html`<div role="alert" style="margin-top:var(--sp-2);padding:var(--sp-2) var(--sp-3);background:rgba(248,113,113,0.15);border:1px solid var(--red);border-radius:4px;color:var(--red);font-size:var(--fs-xs);font-weight:600">
         DATA LOSS: Flood protection active \u2014 dropping samples (>${selfStatus.sink.total_dropped} lost)
       </div>` : null}` : null}
       <div class="text-xs text-muted" style="margin-top:var(--sp-1)">

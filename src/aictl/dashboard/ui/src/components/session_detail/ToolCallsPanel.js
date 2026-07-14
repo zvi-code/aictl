@@ -57,7 +57,10 @@ export default function ToolCallsPanel({sessionId}) {
         const t = c.ts ? fmtHHMMSS(c.ts) : '\u2014';
         return html`<div key=${i} class="flex-row gap-sm" style="padding:2px 0;align-items:center">
           <span class="text-muted" style="width:60px;flex-shrink:0">${t}</span>
-          <span style="width:6px;height:6px;border-radius:50%;flex-shrink:0;background:${c.is_error ? 'var(--red)' : 'var(--green)'}"></span>
+          <span aria-hidden="true" style="width:6px;height:6px;border-radius:50%;flex-shrink:0;background:${c.is_error ? 'var(--red)' : 'var(--green)'}"></span>
+          <span style="width:14px;flex-shrink:0;text-align:center;color:${c.is_error ? 'var(--red)' : 'var(--green)'}">
+            <span aria-hidden="true">${c.is_error ? '✗' : '✓'}</span><span class="sr-only">${c.is_error ? 'error' : 'ok'}</span>
+          </span>
           <span class="text-ellipsis" style="width:110px;flex-shrink:0" title=${c.tool_name}>${esc(c.tool_name)}</span>
           <span style="width:56px;flex-shrink:0;text-align:right">${c.duration_ms ? Math.round(c.duration_ms) + 'ms' : ''}</span>
           <span class="text-muted text-ellipsis" style="flex:1;min-width:0">${esc(c.result_summary || '')}</span>

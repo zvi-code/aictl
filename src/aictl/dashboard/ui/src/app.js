@@ -30,7 +30,7 @@ import ErrorBoundary from './components/ErrorBoundary.js';
 import DashboardContent from './components/DashboardContent.js';
 import RangeBar from './components/RangeBar.js';
 import ToolFilterBar from './components/ToolFilterBar.js';
-import { Icon } from './components/ui/index.js';
+import { Icon, Dialog, Kbd } from './components/ui/index.js';
 import GlobalHeader from './components/shell/GlobalHeader.js';
 import CMasthead from './components/shell/CMasthead.js';
 import ActivityRail from './components/shell/ActivityRail.js';
@@ -178,7 +178,7 @@ function buildCommands({
   allTools, toggleTool,
   setTheme, setDensity,
   views, applyView,
-  snap,
+  snap, onShowShortcuts,
 }) {
   const out = [];
   tabs.forEach(t => out.push({
@@ -222,12 +222,29 @@ function buildCommands({
   }));
   out.push({
     id: 'help:shortcuts', group: 'Shortcuts', label: 'Keyboard shortcuts',
-    action: () => {
-      const lines = tabs.map(t => t.key + ' → ' + t.label).join('\n');
-      alert('Tab shortcuts:\n' + lines + '\n\n⌘K — Command palette\n/ — Focus filter\nEsc — Close panels');
-    },
+    action: () => { onShowShortcuts && onShowShortcuts(); },
   });
   return out;
+}
+
+// ─── Keyboard shortcuts dialog ─────────────────────────────────
+function ShortcutsDialog({ open, onClose, tabs }) {
+  if (!open) return null;
+  const rows = [
+    ...tabs.map(t => [t.label, t.key]),
+    ['Command palette', '⌘K'],
+    ['Focus filter', '/'],
+    ['Close panels', 'Esc'],
+  ];
+  return html`<${Dialog} open=${true} onClose=${onClose} ariaLabel="Keyboard shortcuts">
+    <h3 style="margin-bottom:var(--sp-5)">Keyboard shortcuts</h3>
+    <ul style="list-style:none;margin:0;padding:0;min-width:220px">
+      ${rows.map(([label, key]) => html`<li key=${label}
+        style="display:flex;justify-content:space-between;align-items:center;gap:var(--sp-6);padding:var(--sp-1) 0">
+        <span>${label}</span><${Kbd}>${key}</${Kbd}>
+      </li>`)}
+    </ul>
+  </${Dialog}>`;
 }
 
 // ─── App ───────────────────────────────────────────────────────
@@ -265,6 +282,8 @@ export default function App() {
     useSavedViews(currentViewState, applyViewState);
 
   const palette = useCommandPalette();
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const openShortcuts = useCallback(() => setShortcutsOpen(true), []);
 
   const commands = useMemo(() => buildCommands({
     tabs, setActiveTab,
@@ -272,8 +291,9 @@ export default function App() {
     allTools: verifiedTools, toggleTool,
     setTheme, setDensity,
     views, applyView, snap,
+    onShowShortcuts: openShortcuts,
   }), [tabs, setActiveTab, setPreset, verifiedTools, toggleTool,
-       setTheme, setDensity, views, applyView, snap]);
+       setTheme, setDensity, views, applyView, snap, openShortcuts]);
 
   const effectiveHistory = globalRange.id === 'live' ? history : (dbHistory || history);
   const rangeSeconds = globalRange.until
@@ -402,6 +422,8 @@ export default function App() {
     <${CommandPalette} commands=${commands}
       isOpen=${palette.isOpen} onClose=${palette.close}
       lru=${palette.lru} onRun=${c => palette.recordUse(c.id)}/>
+    <${ShortcutsDialog} open=${shortcutsOpen}
+      onClose=${() => setShortcutsOpen(false)} tabs=${tabs}/>
     <${ToastProvider}/>
   </${SnapContext.Provider}>`;
 }

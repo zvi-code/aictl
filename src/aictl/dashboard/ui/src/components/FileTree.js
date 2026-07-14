@@ -76,7 +76,7 @@ function DirGroup({dir, files}) {
   return html`<div class="cat-group" style=${{marginLeft:'var(--sp-5)'}}>
     <button class=${isOpen?'mem-profile-head open':'mem-profile-head'} onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}
       style="grid-template-columns: 0.7rem 1fr auto auto auto">
-      <span class="carrow">\u25B6</span>
+      <span class="carrow" aria-hidden="true">\u25B6</span>
       <span class="cat-label text-muted" title=${dir}>${esc(dir)}</span>
       <span class="badge">${files.length}</span>
       <span class="badge">${fmtSz(dirSz)}</span>
@@ -110,7 +110,7 @@ export default function CatGroup({label, files, root, badge, style, startOpen}) 
   };
   return html`<div class="cat-group" style=${style||''}>
     <button class=${'cat-head'+(isOpen?' open':'')} onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}>
-      <span class="carrow">\u25B6</span>
+      <span class="carrow" aria-hidden="true">\u25B6</span>
       <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${s2lColor(dominantS2l)};margin-right:var(--sp-1);flex-shrink:0" title="sent_to_llm: ${dominantS2l}"></span>
       <span class="cat-label" title=${label}>${esc(label)}</span>
       <span class="badge" style="flex-shrink:0">${badge||files.length}</span>

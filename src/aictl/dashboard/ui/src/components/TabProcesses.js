@@ -19,7 +19,7 @@ function ProcToolGroup({tool, label, procs, maxMem}) {
   return html`<div class="cat-group" style=${{marginBottom:'var(--sp-5)'}}>
     <button class=${'cat-head'+(isOpen?' open':'')} onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}
       style="padding:var(--sp-4) var(--sp-5);font-size:var(--fs-lg);display:grid;grid-template-columns:0.8rem 0.5rem 1fr auto auto auto auto auto;align-items:center;gap:var(--sp-4)">
-      <span class="carrow">\u25B6</span>
+      <span class="carrow" aria-hidden="true">\u25B6</span>
       <span class="dot" style=${'background:'+c}></span>
       <strong class="text-ellipsis">${esc(label)}</strong>
       <span class="badge">${procs.length} proc</span>
@@ -75,7 +75,7 @@ function ProcTreeGroup({tool, label, procs, maxMem}) {
   return html`<div class="cat-group" style=${{marginBottom:'var(--sp-5)'}}>
     <button class=${'cat-head'+(isOpen?' open':'')} onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}
       style="padding:var(--sp-4) var(--sp-5);font-size:var(--fs-lg);display:grid;grid-template-columns:0.8rem 0.5rem 1fr auto auto auto;align-items:center;gap:var(--sp-4)">
-      <span class="carrow">\u25B6</span>
+      <span class="carrow" aria-hidden="true">\u25B6</span>
       <span class="dot" style=${'background:'+c}></span>
       <strong class="text-ellipsis">${esc(label)}</strong>
       <span class="badge">${procs.length} proc</span>

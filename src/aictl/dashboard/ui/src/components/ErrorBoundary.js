@@ -23,12 +23,14 @@ export default class ErrorBoundary extends Component {
     if (this.state.hasError) {
       const msg = this.state.error?.message || 'Unknown error';
       const retry = () => this.setState({ hasError: false, error: null });
-      return html`<${EmptyState}
-        icon="alert-triangle"
-        title="Something went wrong"
-        description=${msg}
-        action=${html`<${Button} variant="primary" onClick=${retry}>Retry</${Button}>`}
-      />`;
+      return html`<div role="alert">
+        <${EmptyState}
+          icon="alert-triangle"
+          title="Something went wrong"
+          description=${msg}
+          action=${html`<${Button} variant="primary" onClick=${retry}>Retry</${Button}>`}
+        />
+      </div>`;
     }
     return this.props.children;
   }

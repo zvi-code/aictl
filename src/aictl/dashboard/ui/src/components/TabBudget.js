@@ -161,7 +161,8 @@ export default function TabBudget() {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-6);margin-bottom:var(--sp-6)">
       ${tokenHistData ? html`<div class="budget-card">
         <h3 class="text-accent" style="margin-bottom:var(--sp-3)">Live Token Usage</h3>
-        <${MiniChart} data=${tokenHistData} color="var(--green)" height=${60}/>
+        <${MiniChart} data=${tokenHistData} color="var(--green)" height=${60}
+          ariaLabel="Live token usage chart"/>
         <div class="text-muted" style="font-size:var(--fs-base);margin-top:var(--sp-2)">
           Current: ${fmtK(s?.total_live_estimated_tokens||0)} estimated tokens
         </div>

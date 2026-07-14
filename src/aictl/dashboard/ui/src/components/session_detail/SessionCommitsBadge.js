@@ -70,7 +70,8 @@ export default function SessionCommitsBadge({ session }) {
              cursor:pointer;padding:1px 6px;border-radius:3px">
       <span aria-hidden="true" style="margin-right:3px">⎇</span>${esc(label)}
     </button>
-    ${open && html`<div class="scb-dropdown" role="menu"
+    ${open && html`<div class="scb-dropdown" role="group"
+      aria-label="Commits attributed to this session"
       style="position:absolute;top:calc(100% + 4px);left:0;z-index:50;
              min-width:280px;max-width:480px;max-height:320px;overflow:auto;
              background:var(--bg1);border:1px solid var(--bd);
@@ -93,7 +94,7 @@ function _renderList(data) {
       No commits attributed.
     </div>`;
   }
-  return html`<ul class="scb-list" role="none"
+  return html`<ul class="scb-list" role="list"
     style="list-style:none;margin:0;padding:0">
     ${commits.map(c => _row(c, branch))}
     ${(data.commits || []).length > MAX_ROWS && html`<li class="text-muted text-xs"
@@ -111,7 +112,7 @@ function _row(c, branch) {
     : (c.author_name ? c.author_name + ' <' + c.author_email + '>' : '');
   const style = 'display:flex;gap:var(--sp-2);align-items:baseline;'
     + 'padding:3px var(--sp-2);font-size:var(--fs-xs);' + dimStyle;
-  return html`<li class="scb-row" role="menuitem"
+  return html`<li class="scb-row"
     title=${title}
     style=${style}>
     <code class="mono"
