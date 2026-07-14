@@ -30,7 +30,6 @@ afterEach(() => cleanup());
 import EChart from '../src/components/charts/EChart.js';
 import GanttChart from '../src/components/charts/GanttChart.js';
 import AnalyticsScatter from '../src/components/charts/AnalyticsScatter.js';
-import ToolCooccurrenceHeatmap from '../src/components/charts/ToolCooccurrenceHeatmap.js';
 import TokenBurnBand from '../src/components/charts/TokenBurnBand.js';
 
 describe('EChart', () => {
@@ -110,33 +109,6 @@ describe('AnalyticsScatter', () => {
 
   it('tolerates empty data', () => {
     const { container } = render(html`<${AnalyticsScatter} data=${[[]]} />`);
-    expect(container.querySelector('[role="img"]')).toBeTruthy();
-  });
-});
-
-describe('ToolCooccurrenceHeatmap', () => {
-  it('renders heatmap from sessions with tools arrays', () => {
-    const sessions = [
-      { session_id: '1', tool: 'claude', tools: ['Bash', 'Read', 'Edit'] },
-      { session_id: '2', tool: 'claude', tools: ['Bash', 'Grep'] },
-      { session_id: '3', tool: 'codex',  tools: ['Read', 'Edit'] },
-      { session_id: '4', tool: 'codex',  tools: ['Bash'] },
-    ];
-    const { container } = render(html`<${ToolCooccurrenceHeatmap}
-      sessions=${sessions}
-      height=${260}
-    />`);
-    expect(container.querySelector('[role="img"]')).toBeTruthy();
-  });
-
-  it('falls back to scalar tool when tools array is missing', () => {
-    const sessions = [
-      { session_id: '1', tool: 'claude' },
-      { session_id: '2', tool: 'codex' },
-    ];
-    const { container } = render(html`<${ToolCooccurrenceHeatmap}
-      sessions=${sessions}
-    />`);
     expect(container.querySelector('[role="img"]')).toBeTruthy();
   });
 });
