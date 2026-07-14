@@ -1,25 +1,15 @@
-import { useState, useEffect } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { fmtK, esc } from '../../utils.js';
 import * as api from '../../api.js';
+import { useAsyncResource } from '../../hooks/useAsyncResource.js';
 
 export default function ApiCallsPanel({sessionId}) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
+  const { data, loading, error } = useAsyncResource(() => {
     // When scoping to a session, don't restrict by time — older sessions
     // would otherwise appear empty because the default 1-hour window cuts
     // off their API calls. `since=0` means "whole history for this session".
     const since = sessionId ? 0 : Math.floor(Date.now() / 1000) - 3600;
-    api.getApiCalls(since, 100, sessionId)
-      .then(d => { if (!cancelled) { setData(d); setLoading(false); } })
-      .catch(e => { if (!cancelled) { setData(null); setError(e); setLoading(false); } });
-    return () => { cancelled = true; };
+    return api.getApiCalls(since, 100, sessionId);
   }, [sessionId]);
 
   if (loading) return html`<p class="loading-state">Loading API call data...</p>`;

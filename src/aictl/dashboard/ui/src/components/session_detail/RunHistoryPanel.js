@@ -1,25 +1,15 @@
-import { useState, useEffect } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { fmtK, fmtDurSec } from '../../utils.js';
 import * as api from '../../api.js';
+import { useAsyncResource } from '../../hooks/useAsyncResource.js';
 
 export default function RunHistoryPanel({project, tool}) {
-  const [runs, setRuns] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    if (!project || !tool) { setRuns(null); setLoading(false); setError(null); return; }
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    api.getSessionRuns(project, tool, 30, 20)
-      .then(data => {
-        if (!cancelled) { setRuns(Array.isArray(data) ? data : []); setLoading(false); }
-      })
-      .catch(e => { if (!cancelled) { setRuns(null); setError(e); setLoading(false); } });
-    return () => { cancelled = true; };
-  }, [project, tool]);
+  const { data: runs, loading, error } = useAsyncResource(
+    () => api.getSessionRuns(project, tool, 30, 20)
+      .then(data => (Array.isArray(data) ? data : [])),
+    [project, tool],
+    { enabled: !!(project && tool) },
+  );
 
   if (loading) return html`<p class="loading-state">Loading run history...</p>`;
   if (error) return html`<p class="error-state">Failed to load run history${error.message ? ` (${error.message})` : ''}.</p>`;

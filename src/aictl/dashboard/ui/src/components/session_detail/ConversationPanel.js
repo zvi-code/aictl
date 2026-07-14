@@ -2,6 +2,7 @@ import { useState, useEffect } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { fmtHHMMSS } from '../../utils.js';
 import * as api from '../../api.js';
+import { useAsyncResource } from '../../hooks/useAsyncResource.js';
 
 // Conversation messages merged from OTel prompts and the copilot/cursor/
 // vscode chat ingesters (/api/session-messages). Chronological, role-
@@ -15,26 +16,18 @@ const ROLE_COLOR = {
 };
 
 export default function ConversationPanel({ sessionId }) {
-  const [messages, setMessages] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
   const [expanded, setExpanded] = useState({});
+  const { data, loading, error } = useAsyncResource(
+    () => api.getSessionMessages(sessionId),
+    [sessionId],
+    { enabled: !!sessionId },
+  );
 
-  useEffect(() => {
-    if (!sessionId) { setMessages([]); setLoading(false); setError(null); return; }
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setExpanded({});
-    api.getSessionMessages(sessionId)
-      .then(d => {
-        if (cancelled) return;
-        setMessages(Array.isArray(d?.messages) ? d.messages : []);
-        setLoading(false);
-      })
-      .catch(e => { if (!cancelled) { setMessages([]); setError(e); setLoading(false); } });
-    return () => { cancelled = true; };
-  }, [sessionId]);
+  // Collapse per-message expansion when switching sessions (this used to
+  // live inside the fetch effect).
+  useEffect(() => { setExpanded({}); }, [sessionId]);
+
+  const messages = Array.isArray(data?.messages) ? data.messages : [];
 
   if (loading) return html`<p class="loading-state">Loading conversation...</p>`;
   if (error) return html`<p class="error-state">Failed to load conversation${error.message ? ` (${error.message})` : ''}.</p>`;

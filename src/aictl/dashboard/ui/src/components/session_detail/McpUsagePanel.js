@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'preact/hooks';
 import { html } from 'htm/preact';
 import * as api from '../../api.js';
 import { esc } from '../../utils.js';
+import { useAsyncResource } from '../../hooks/useAsyncResource.js';
 
 /**
  * Per-session MCP server usage. Shows servers that actually received
@@ -9,20 +9,11 @@ import { esc } from '../../utils.js';
  * dimmed list of configured-but-unused servers.
  */
 export default function McpUsagePanel({ sessionId }) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    if (!sessionId) { setData(null); setLoading(false); setError(null); return; }
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    api.getSessionMcpUsage(sessionId)
-      .then(d => { if (!cancelled) { setData(d); setLoading(false); } })
-      .catch(e => { if (!cancelled) { setData(null); setError(e); setLoading(false); } });
-    return () => { cancelled = true; };
-  }, [sessionId]);
+  const { data, loading, error } = useAsyncResource(
+    () => api.getSessionMcpUsage(sessionId),
+    [sessionId],
+    { enabled: !!sessionId },
+  );
 
   if (loading) {
     return html`<div class="text-xs text-muted loading-state" style="padding:0">Loading MCP usage\u2026</div>`;

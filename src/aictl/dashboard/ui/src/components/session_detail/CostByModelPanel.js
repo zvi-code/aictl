@@ -1,26 +1,20 @@
-import { useState, useEffect } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { fmtK, esc } from '../../utils.js';
 import * as api from '../../api.js';
+import { useAsyncResource } from '../../hooks/useAsyncResource.js';
 
 // Per-session cost broken down by model. Surfaces the per-model attribution
 // the session-level cost_usd aggregate hides — e.g. how much was spent on the
 // expensive lead model vs. the cheap subagent model.
 export default function CostByModelPanel({sessionId}) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
+  const { data, loading, error } = useAsyncResource(
+    () => api.getSessionCostByModel(sessionId),
+    [sessionId],
+    { enabled: !!sessionId },
+  );
 
-  useEffect(() => {
-    if (!sessionId) return;
-    setLoading(true);
-    setError(false);
-    api.getSessionCostByModel(sessionId)
-      .then(d => { setData(d); setLoading(false); })
-      .catch(() => { setError(true); setLoading(false); });
-  }, [sessionId]);
-
-  if (loading) return html`<p class="loading-state">Loading cost breakdown\u2026</p>`;
+  // A falsy sessionId never fetches \u2014 keep showing the loading state, as before.
+  if (loading || !sessionId) return html`<p class="loading-state">Loading cost breakdown\u2026</p>`;
   if (error) return html`<p class="empty-state">Failed to load cost data.</p>`;
   if (!data || !data.models || !data.models.length) {
     return html`<p class="empty-state">No per-model cost data recorded for this session.</p>`;

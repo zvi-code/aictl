@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'preact/hooks';
+import { useMemo, useState } from 'preact/hooks';
 import { html } from 'htm/preact';
 import * as api from '../../api.js';
 import { esc } from '../../utils.js';
+import { useAsyncResource } from '../../hooks/useAsyncResource.js';
 
 function fmtTs(ts) {
   if (!ts) return '-';
@@ -31,26 +32,20 @@ function fullDetail(detail) {
 }
 
 export default function EventsPanel({ sessionId, since, until }) {
-  const [events, setEvents] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
   const [expanded, setExpanded] = useState(() => new Set());
 
-  useEffect(() => {
-    if (!sessionId) return;
-    setLoading(true);
-    setError(null);
-    api.getSessionEvents(sessionId, { since, until, limit: 500 })
+  const { data, loading, error } = useAsyncResource(
+    () => api.getSessionEvents(sessionId, { since, until, limit: 500 })
       .then(rows => {
         const list = Array.isArray(rows) ? rows : [];
         list.sort((a, b) => (b.ts || 0) - (a.ts || 0));
-        setEvents(list);
-      })
-      .catch(e => setError(e?.message || 'Failed to load events'))
-      .finally(() => setLoading(false));
-  }, [sessionId, since, until]);
+        return list;
+      }),
+    [sessionId, since, until],
+    { enabled: !!sessionId },
+  );
 
-  const rows = useMemo(() => events.map((ev, idx) => {
+  const rows = useMemo(() => (data || []).map((ev, idx) => {
     const kind = String(ev.kind || '');
     const isWarn = /permission|error|fail/i.test(kind);
     const key = `${ev.ts || 0}:${ev.kind || ''}:${ev.tool || ''}:${idx}`;
@@ -63,7 +58,7 @@ export default function EventsPanel({ sessionId, since, until }) {
       detailText: fullDetail(ev.detail),
       isWarn,
     };
-  }), [events]);
+  }), [data]);
 
   const toggleRow = (key) => {
     setExpanded(prev => {
@@ -83,7 +78,7 @@ export default function EventsPanel({ sessionId, since, until }) {
   }
 
   if (error) {
-    return html`<p class="error-state">Error: ${error}</p>`;
+    return html`<p class="error-state">Error: ${error?.message || 'Failed to load events'}</p>`;
   }
 
   if (!rows.length) {
