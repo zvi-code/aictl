@@ -28,13 +28,8 @@ correlate by ``(project_path, time window)``:
 2. If no match, create a provisional session row with
    ``session_id = 'cursor:<conversation_id>'`` and ``tool = 'cursor'``.
 
-Parallel-work note
-------------------
-Slice 3.2 introduces a sibling ``CopilotConversationsIngester``. This
-module is written to stand alone — no shared base class — so the two
-slices can land in any order. A future refactor can extract common
-bits (read-only open, watermark plumbing, correlation helper) once both
-are on main.
+Shared infrastructure (read-only open, data-quality recording) lives in
+:mod:`aictl.ingesters._common`, used by all the per-tool ingesters.
 """
 
 from __future__ import annotations
@@ -48,6 +43,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..platforms import cursor_home_dir
+from ._common import open_readonly, record_quality
 
 if TYPE_CHECKING:
     from ..storage import HistoryDB
@@ -56,18 +52,6 @@ log = logging.getLogger(__name__)
 
 POLL_INTERVAL_S: float = 30.0
 """Default polling interval for the Cursor ingester."""
-
-
-def _open_readonly(db_path: Path) -> sqlite3.Connection | None:
-    """Open *db_path* read-only, returning ``None`` if the file is missing."""
-    if not db_path.exists():
-        return None
-    uri = f"file:{db_path}?mode=ro"
-    try:
-        return sqlite3.connect(uri, uri=True, timeout=1.0)
-    except sqlite3.Error as exc:  # pragma: no cover - defensive
-        log.warning("cursor ingester: failed to open %s read-only: %s", db_path, exc)
-        return None
 
 
 class CursorConversationsIngester:
@@ -97,16 +81,7 @@ class CursorConversationsIngester:
         self.last_poll_inserted: int = 0
 
     def _quality(self, status: str, *, severity: str = "", message: str = "", detail: dict | None = None) -> None:
-        if hasattr(self.store, "record_data_quality"):
-            self.store.record_data_quality(
-                "ingester:cursor-conversations",
-                status,
-                kind="ingester",
-                severity=severity,
-                message=message,
-                source=str(self.db_path),
-                detail=detail,
-            )
+        record_quality(self.store, "cursor-conversations", self.db_path, status, severity=severity, message=message, detail=detail)
 
     # ── public API ─────────────────────────────────────────────
 
@@ -117,7 +92,7 @@ class CursorConversationsIngester:
         is missing, locked, or has no new rows.
         """
         self.last_poll_ts = time.time()
-        src = _open_readonly(self.db_path)
+        src = open_readonly(self.db_path, "cursor ingester")
         if src is None:
             self._quality(
                 "source_missing" if not self.db_path.exists() else "failed",
