@@ -95,13 +95,13 @@ function PromptDetail({ prompt, view = 'prompts' }) {
 
   if (!prompt) {
     return html`<div class="cprompts-detail-empty">
-      <div class="cprompts-detail-empty-label">Nothing selected</div>
+      <div class="c-overline cprompts-detail-empty-label">Nothing selected</div>
       <div>Select a ${label} from the list to view its content.</div>
     </div>`;
   }
 
   return html`<div class="cprompts-detail-view">
-    <div class="cprompts-detail-overline">${view === 'workflows' ? 'Workflow' : 'Prompt'}</div>
+    <div class="c-overline c-overline--wide">${view === 'workflows' ? 'Workflow' : 'Prompt'}</div>
     <div class="cprompts-detail-title">${prompt.name}</div>
     <div class="cprompts-detail-meta">
       <span class="cprompts-meta-tool">${prompt.toolLabel}</span>
@@ -166,7 +166,7 @@ export default function CPromptsTab() {
 
   const handleViewSwitch = (v) => { setView(v); setFilter(''); setSelected(null); };
 
-  return html`<div class="cprompts-shell">
+  return html`<div class="c-shell">
     <!-- Toolbar -->
     <div class="cprompts-toolbar">
       <div class="cprompts-seg" role="group" aria-label="View selector">
@@ -177,9 +177,9 @@ export default function CPromptsTab() {
         >${v.label}</button>`)}
       </div>
 
-      <div class="cprompts-filter-wrap">
-        <span class="cprompts-filter-icon" aria-hidden="true">\u2315</span>
-        <input class="cprompts-filter-input" type="text"
+      <div class="c-filter-wrap cprompts-filter-wrap">
+        <span class="c-filter-icon" aria-hidden="true">\u2315</span>
+        <input class="c-filter-input" type="text"
           placeholder=${'Search ' + view + '\u2026'}
           aria-label=${'Filter ' + view}
           value=${filter}

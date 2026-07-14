@@ -101,9 +101,9 @@ function turnsToEvents(turns) {
 // ─── Stats strip cell ────────────────────────────────────────────
 function Stat({ label, value, sub }) {
   return html`<div class="cdb-stat">
-    <div class="cdb-stat-label">${label}</div>
+    <div class="c-overline">${label}</div>
     <div class="cdb-stat-row">
-      <span class="cdb-stat-value">${value}</span>
+      <span class="c-stat-value">${value}</span>
       ${sub && html`<span class="cdb-stat-sub">${sub}</span>`}
     </div>
   </div>`;
@@ -167,7 +167,7 @@ function TimelineEvent({ ev, selected, onClick, isLast }) {
 function EventInspector({ event }) {
   if (!event) {
     return html`<div class="cdb-inspector cdb-inspector--empty">
-      <div class="cdb-inspector-empty-label">No selection</div>
+      <div class="c-overline cdb-inspector-empty-label">No selection</div>
       <div>Choose an event in the timeline to read its payload.</div>
     </div>`;
   }
@@ -199,7 +199,7 @@ function EventInspector({ event }) {
 
   return html`<div class="cdb-inspector">
     <div class="cdb-inspector-head">
-      <div class="cdb-inspector-overline" style="color:${lc}">
+      <div class="c-overline c-overline--wide" style="color:${lc}">
         ${event.lane} \u00b7 ${event.kind}
       </div>
       <div class="cdb-inspector-title">${event.label}</div>
@@ -212,10 +212,10 @@ function EventInspector({ event }) {
         </div>`)}
       </div>`}
 
-      <div class="cdb-inspector-section-head">Input</div>
+      <div class="c-overline cdb-inspector-section-head">Input</div>
       <pre class="cdb-inspector-code">${inputText}</pre>
 
-      <div class="cdb-inspector-section-head">Output</div>
+      <div class="c-overline cdb-inspector-section-head">Output</div>
       <pre class="cdb-inspector-code">${outputText}</pre>
     </div>
   </div>`;
@@ -367,7 +367,7 @@ export default function CDashboardTab() {
     setSelectedEvent(ev.id === selectedEvent ? null : ev.id);
   }, [selectedEvent]);
 
-  return html`<div class="cdb-shell">
+  return html`<div class="c-shell">
     <!-- Stats strip -->
     <div class="cdb-stats-strip">
       ${statsData.map(s => html`<${Stat} key=${s.label} label=${s.label} value=${s.value} sub=${s.sub}/>`)}
@@ -378,7 +378,7 @@ export default function CDashboardTab() {
 
       <!-- Left: range + sessions -->
       <div class="cdb-left">
-        <div class="cdb-left-heading">Range</div>
+        <div class="c-overline cdb-left-heading">Range</div>
         <div class="cdb-range-btns">
           ${RANGES.map(r => html`<button key=${r} type="button"
             class=${'cdb-range-btn' + (range === r ? ' is-active' : '')}
@@ -386,7 +386,7 @@ export default function CDashboardTab() {
         </div>
 
         ${sessionTools.length > 0 && html`<div>
-          <div class="cdb-left-heading" style="margin-top:var(--sp-8)">
+          <div class="c-overline cdb-left-heading" style="margin-top:var(--sp-8)">
             Agents
             <span class="cdb-count-badge">
               ${activeTools === null ? sessionTools.length : activeTools.size}/${sessionTools.length}
@@ -400,13 +400,13 @@ export default function CDashboardTab() {
           </div>
         </div>`}
 
-        <div class="cdb-left-heading" style="margin-top:var(--sp-8)">
+        <div class="c-overline cdb-left-heading" style="margin-top:var(--sp-8)">
           Sessions
           <span class="cdb-count-badge">${filteredSessions.length}</span>
         </div>
-        <div class="cdb-filter-wrap cdb-filter-wrap--sm">
-          <span class="cdb-filter-icon" aria-hidden="true">\u2315</span>
-          <input class="cdb-filter-input" type="text" placeholder="Filter\u2026"
+        <div class="c-filter-wrap cdb-filter-wrap cdb-filter-wrap--sm">
+          <span class="c-filter-icon" aria-hidden="true">\u2315</span>
+          <input class="c-filter-input" type="text" placeholder="Filter\u2026"
             aria-label="Filter sessions"
             value=${sessionFilter} onInput=${e => setSessionFilter(e.target.value)}/>
         </div>
@@ -419,7 +419,7 @@ export default function CDashboardTab() {
                 const isSel   = id === selectedId;
                 const color   = toolColor(s._tool);
                 return html`<div key=${id}
-                  class=${'cdb-session-row' + (isSel ? ' is-selected' : '')}
+                  class=${'c-row c-row--list' + (isSel ? ' is-selected' : '')}
                   onClick=${() => handleSelectSession(s)}
                   role="button" tabIndex=${0}
                   onKeyDown=${e => e.key === 'Enter' && handleSelectSession(s)}>
@@ -443,7 +443,7 @@ export default function CDashboardTab() {
       <div class="cdb-center">
         <div class="cdb-center-head">
           <div>
-            <div class="cdb-center-overline">The session</div>
+            <div class="c-overline c-overline--wide">The session</div>
             ${selectedObj
               ? html`<div class="cdb-center-title">
                   <span style="color:${toolColor(selectedObj._tool)}">\u25CF</span>
@@ -455,9 +455,9 @@ export default function CDashboardTab() {
                 </div>`
               : html`<div class="cdb-center-title cdb-center-title--empty">Select a session</div>`}
           </div>
-          <div class="cdb-filter-wrap">
-            <span class="cdb-filter-icon" aria-hidden="true">\u2315</span>
-            <input class="cdb-filter-input" type="text" placeholder="Filter events\u2026"
+          <div class="c-filter-wrap cdb-filter-wrap">
+            <span class="c-filter-icon" aria-hidden="true">\u2315</span>
+            <input class="c-filter-input" type="text" placeholder="Filter events\u2026"
               aria-label="Filter events"
               value=${eventFilter} onInput=${e => setEventFilter(e.target.value)}/>
             ${allEvents.length > 0 && html`<span class="cdb-ev-count">
@@ -469,7 +469,7 @@ export default function CDashboardTab() {
         <div class="cdb-timeline">
           ${!selectedObj
             ? html`<div class="cdb-empty-center">
-                <div class="cdb-empty-center-label">No session selected</div>
+                <div class="c-overline cdb-empty-center-label">No session selected</div>
                 <div>Choose a session in the left pane.</div>
               </div>`
             : flowLoading
@@ -484,7 +484,7 @@ export default function CDashboardTab() {
                       selected=${ev.id === selectedEvent}
                       onClick=${() => handleSelectEvent(ev)}
                       isLast=${i === filteredEvents.length - 1}/>`)}
-                    <div class="cdb-timeline-end">\u00b7 end of session \u00b7</div>
+                    <div class="c-overline c-overline--wide cdb-timeline-end">\u00b7 end of session \u00b7</div>
                   </div>`}
         </div>
       </div>

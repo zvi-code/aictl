@@ -69,7 +69,7 @@ function SessionDetailPane({ session, onInspect }) {
   ];
   const shortId = String(session.session_id).split(':').slice(-1)[0] || session.session_id;
   return html`<div class="csessions-detail-view">
-    <div class="csessions-detail-overline">Session · ${fmtDate(session.started_at)}</div>
+    <div class="c-overline c-overline--wide csessions-detail-overline">Session · ${fmtDate(session.started_at)}</div>
     <div class="csessions-detail-title">${sessionTitle(session)}</div>
     <div class="csessions-detail-agent">
       <${ToolIcon} tool=${session.tool} size="1em"/>
@@ -81,13 +81,13 @@ function SessionDetailPane({ session, onInspect }) {
     </div>
     <div class="csessions-stats-grid">
       ${stats.map(([k, v]) => html`<div key=${k} class="csessions-stat">
-        <div class="csessions-stat-label">${k}</div>
-        <div class="csessions-stat-value">${v}</div>
+        <div class="c-overline csessions-stat-label">${k}</div>
+        <div class="c-stat-value csessions-stat-value">${v}</div>
       </div>`)}
     </div>
     <div class="csessions-detail-id" title=${session.session_id}>${shortId}</div>
     <div class="csessions-detail-actions">
-      <button class="csessions-btn csessions-btn--primary"
+      <button class="c-btn csessions-btn c-btn--primary"
         onClick=${() => onInspect?.(session.session_id, session.tool)}>
         Inspect session →</button>
     </div>
@@ -157,11 +157,11 @@ export default function CSessionsTab({ onInspect }) {
     if (!selectedId && filtered.length > 0) setSelectedId(filtered[0].session_id);
   }, [filtered.length, selectedId]);
 
-  return html`<div class="csessions-shell">
+  return html`<div class="c-shell csessions-shell">
     <div class="csessions-toolbar">
-      <div class="csessions-filter-wrap">
-        <span class="csessions-filter-icon" aria-hidden="true">⌕</span>
-        <input class="csessions-filter-input" type="text"
+      <div class="c-filter-wrap csessions-filter-wrap">
+        <span class="c-filter-icon csessions-filter-icon" aria-hidden="true">⌕</span>
+        <input class="c-filter-input csessions-filter-input" type="text"
           placeholder="Search sessions, titles, agents…"
           aria-label="Filter sessions"
           value=${filter}
@@ -200,13 +200,13 @@ export default function CSessionsTab({ onInspect }) {
             ? html`<div class="csessions-empty">No sessions match the current filter.</div>`
             : html`<div class="csessions-table">
                 <div class="csessions-thead">
-                  <div class="csessions-th">When</div>
-                  <div class="csessions-th">Status</div>
-                  <div class="csessions-th">Title</div>
-                  <div class="csessions-th">Agent</div>
-                  <div class="csessions-th csessions-th--r">Tokens</div>
-                  <div class="csessions-th csessions-th--r">Files</div>
-                  <div class="csessions-th csessions-th--r">Duration</div>
+                  <div class="c-overline csessions-th">When</div>
+                  <div class="c-overline csessions-th">Status</div>
+                  <div class="c-overline csessions-th">Title</div>
+                  <div class="c-overline csessions-th">Agent</div>
+                  <div class="c-overline csessions-th csessions-th--r">Tokens</div>
+                  <div class="c-overline csessions-th csessions-th--r">Files</div>
+                  <div class="c-overline csessions-th csessions-th--r">Duration</div>
                 </div>
                 ${filtered.map(s => {
                   const isSel  = s.session_id === selectedId;
@@ -215,7 +215,7 @@ export default function CSessionsTab({ onInspect }) {
                   const dur    = s.duration_s
                     || (s.ended_at && s.started_at ? s.ended_at - s.started_at : 0);
                   return html`<div key=${s.session_id}
-                    class=${'csessions-row' + (isSel ? ' is-selected' : '')}
+                    class=${'c-row csessions-row' + (isSel ? ' is-selected' : '')}
                     onClick=${() => setSelectedId(s.session_id)}
                     role="row" tabIndex=${0}
                     onKeyDown=${e => e.key === 'Enter' && setSelectedId(s.session_id)}>

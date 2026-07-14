@@ -2268,17 +2268,93 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 .chart-val-group { display: inline-flex; align-items: baseline; gap: var(--sp-3); }
 .chart-trend { font-size: var(--fs-2xs); color: var(--fg2); font-family: var(--ff-mono); white-space: nowrap; }
 
-/* ─── CAgentsTab — editorial agents directory ────────────────────
- * Two-pane layout: left list (320px) + right detail.
- * Shell sits inside .main which already scrolls; inner panes
- * use overflow:auto for their own scroll regions.
+/* ── c-tab shared base ────────────────────────────────────────────
+ * Visual patterns shared by the editorial C-tabs (CAgentsTab,
+ * CDashboardTab, CPromptsTab, CSessionsTab). Components compose these
+ * with a per-tab class that carries only tab-specific deltas.
  */
-.cagents-shell {
+/* Uppercase mono overline label (--wide = 0.18em detail overlines) */
+.c-overline {
+  font-family: var(--ff-mono);
+  font-size: var(--fs-xs);
+  color: var(--fg2);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+.c-overline--wide { letter-spacing: 0.18em; }
+/* Full-height tab shell */
+.c-shell {
   display: flex;
   flex-direction: column;
   height: calc(100vh - 220px);
   min-height: 300px;
 }
+/* Selectable row — accent bar on the left when selected */
+.c-row {
+  cursor: pointer;
+  background: transparent;
+  border-left: 3px solid transparent;
+  transition: background 0.1s;
+}
+.c-row:hover { background: var(--bg2); }
+.c-row.is-selected {
+  background: var(--accent-soft, color-mix(in srgb, var(--accent) 10%, var(--bg)));
+  border-left-color: var(--accent);
+}
+/* List-pane row spacing (agents list, live sessions list) */
+.c-row--list {
+  padding: var(--sp-5) var(--sp-6);
+  border-top: 1px solid var(--border-soft, var(--border));
+}
+/* Filter box: wrap + icon + borderless input */
+.c-filter-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-5);
+  border: 1px solid var(--border);
+}
+.c-filter-icon { color: var(--fg2); font-size: var(--fs-sm); }
+.c-filter-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--ff-mono);
+  font-size: var(--fs-sm);
+  color: var(--fg);
+}
+.c-filter-input::placeholder { color: var(--fg2); }
+/* Square editorial button (primary is double-class so it outranks
+ * per-tab background/color declarations that appear later in the file) */
+.c-btn {
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font-family: var(--ff-mono);
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: 0;
+}
+.c-btn.c-btn--primary {
+  background: var(--fg);
+  color: var(--bg);
+  border-color: var(--fg);
+}
+.c-btn.c-btn--primary:hover:not(:disabled) { opacity: 0.85; }
+/* Serif stat value (stats grids / stats strip) */
+.c-stat-value {
+  font-family: var(--ff-serif);
+  font-size: var(--fs-2xl);
+  font-weight: 500;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─── CAgentsTab — editorial agents directory ────────────────────
+ * Two-pane layout: left list (320px) + right detail.
+ * Shell sits inside .main which already scrolls; inner panes
+ * use overflow:auto for their own scroll regions.
+ */
 .cagents-toolbar {
   padding: var(--sp-5) var(--sp-8);
   border-bottom: 1px solid var(--border);
@@ -2286,13 +2362,6 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   display: flex;
   align-items: center;
   flex-shrink: 0;
-}
-.cagents-toolbar-count {
-  font-family: var(--ff-mono);
-  font-size: var(--fs-xs);
-  color: var(--fg2);
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
 }
 .cagents-body {
   flex: 1;
@@ -2307,33 +2376,9 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 }
 .cagents-list-heading {
   padding: var(--sp-5) var(--sp-6) var(--sp-3);
-  font-family: var(--ff-mono);
-  font-size: var(--fs-xs);
-  color: var(--fg2);
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
-}
-.cagents-row {
-  padding: var(--sp-5) var(--sp-6);
-  cursor: pointer;
-  border-top: 1px solid var(--border-soft, var(--border));
-  background: transparent;
-  border-left: 3px solid transparent;
-  transition: background 0.1s;
-}
-.cagents-row:hover {
-  background: var(--bg2);
-}
-.cagents-row.is-selected {
-  background: var(--accent-soft, color-mix(in srgb, var(--accent) 10%, var(--bg)));
-  border-left-color: var(--accent);
 }
 .cagents-row--inactive {
   opacity: 0.62;
-  cursor: pointer;
-}
-.cagents-row--inactive:hover {
-  background: var(--bg2);
 }
 .cagents-row--inactive.is-selected { opacity: 1; }
 .cagents-row-head {
@@ -2360,13 +2405,6 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   flex: 1;
   color: var(--fg);
 }
-.cagents-row-status {
-  font-family: var(--ff-mono);
-  font-size: var(--fs-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
-  color: var(--fg2);
-}
 .cagents-row-status.is-on {
   color: var(--green);
 }
@@ -2390,13 +2428,6 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 }
 .cagents-detail {
   padding: var(--sp-12) var(--sp-12);
-}
-.cagents-detail-overline {
-  font-family: var(--ff-mono);
-  font-size: var(--fs-xs);
-  color: var(--fg2);
-  text-transform: uppercase;
-  letter-spacing: 0.18em;
 }
 .cagents-detail-headline {
   display: flex;
@@ -2431,20 +2462,8 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   border: 1px solid var(--border);
   background: var(--bg3, var(--bg));
 }
-.cagents-stat-label {
-  font-family: var(--ff-mono);
-  font-size: var(--fs-xs);
-  color: var(--fg2);
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
-}
 .cagents-stat-value {
-  font-family: var(--ff-serif);
-  font-size: var(--fs-2xl);
-  color: var(--fg);
-  font-weight: 500;
   margin-top: var(--sp-2);
-  font-variant-numeric: tabular-nums;
 }
 /* Permissions/KV grid */
 .cagents-kv-grid {
@@ -2491,16 +2510,11 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 .cagents-config-key {
   color: var(--fg2);
 }
-/* Section divider rule */
+/* Section divider rule (composes .c-overline for the type treatment) */
 .cagents-rule {
   display: flex;
   align-items: center;
   gap: var(--sp-6);
-  color: var(--fg2);
-  font-family: var(--ff-mono);
-  font-size: var(--fs-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
 }
 .cagents-rule-line {
   flex: 1;
@@ -2614,12 +2628,6 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
  * Stats strip across the top, then left (sessions) / center (detail)
  * / right (inspector) three-column layout.
  */
-.cdb-shell {
-  display: flex;
-  flex-direction: column;
-  height: calc(100vh - 220px);
-  min-height: 300px;
-}
 /* Stats strip */
 .cdb-stats-strip {
   display: flex;
@@ -2633,25 +2641,11 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   border-right: 1px solid var(--border);
 }
 .cdb-stat:last-child { border-right: none; }
-.cdb-stat-label {
-  font-family: var(--ff-mono);
-  font-size: var(--fs-xs);
-  color: var(--fg2);
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
-}
 .cdb-stat-row {
   display: flex;
   align-items: baseline;
   gap: var(--sp-3);
   margin-top: var(--sp-2);
-}
-.cdb-stat-value {
-  font-family: var(--ff-serif);
-  font-size: var(--fs-2xl);
-  font-weight: 500;
-  color: var(--fg);
-  font-variant-numeric: tabular-nums;
 }
 .cdb-stat-sub {
   font-family: var(--ff-mono);
@@ -2675,11 +2669,6 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 }
 .cdb-left-heading {
   padding: var(--sp-6) var(--sp-6) var(--sp-3);
-  font-family: var(--ff-mono);
-  font-size: var(--fs-xs);
-  color: var(--fg2);
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
   display: flex;
   align-items: center;
   gap: var(--sp-3);
@@ -2718,19 +2707,6 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   font-family: var(--ff-mono);
   font-size: var(--fs-xs);
   color: var(--fg2);
-}
-.cdb-session-row {
-  padding: var(--sp-5) var(--sp-6);
-  border-top: 1px solid var(--border-soft, var(--border));
-  cursor: pointer;
-  border-left: 3px solid transparent;
-  background: transparent;
-  transition: background 0.1s;
-}
-.cdb-session-row:hover { background: var(--bg2); }
-.cdb-session-row.is-selected {
-  background: var(--accent-soft, color-mix(in srgb, var(--accent) 10%, var(--bg)));
-  border-left-color: var(--accent);
 }
 .cdb-session-row-head {
   display: flex;
@@ -2786,13 +2762,6 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   gap: var(--sp-8);
   flex-shrink: 0;
 }
-.cdb-center-overline {
-  font-family: var(--ff-mono);
-  font-size: var(--fs-xs);
-  color: var(--fg2);
-  text-transform: uppercase;
-  letter-spacing: 0.18em;
-}
 .cdb-center-title {
   font-family: var(--ff-serif);
   font-size: var(--fs-2xl);
@@ -2809,25 +2778,9 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   font-style: normal;
 }
 .cdb-filter-wrap {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-5);
-  border: 1px solid var(--border);
   background: var(--bg2);
   width: 200px;
 }
-.cdb-filter-icon { color: var(--fg2); font-size: var(--fs-sm); }
-.cdb-filter-input {
-  flex: 1;
-  border: none;
-  outline: none;
-  background: transparent;
-  font-family: var(--ff-mono);
-  font-size: var(--fs-sm);
-  color: var(--fg);
-}
-.cdb-filter-input::placeholder { color: var(--fg2); }
 .cdb-center-body {
   flex: 1;
   overflow-y: auto;
@@ -2869,10 +2822,6 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   color: var(--fg2);
 }
 .cdb-empty-center-label {
-  font-family: var(--ff-mono);
-  font-size: var(--fs-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
   margin-bottom: var(--sp-3);
 }
 /* ── Right pane ── */
@@ -2896,22 +2845,11 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   text-align: center;
 }
 .cdb-inspector-empty-label {
-  font-family: var(--ff-mono);
-  font-size: var(--fs-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
   margin-bottom: var(--sp-5);
 }
 .cdb-inspector-head {
   padding: var(--sp-8) var(--sp-8) var(--sp-6);
   border-bottom: 1px solid var(--border);
-}
-.cdb-inspector-overline {
-  font-family: var(--ff-mono);
-  font-size: var(--fs-xs);
-  color: var(--fg2);
-  text-transform: uppercase;
-  letter-spacing: 0.18em;
 }
 .cdb-inspector-title {
   font-family: var(--ff-serif);
@@ -2953,12 +2891,6 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 /* ─── CPromptsTab — prompts & workflows library ──────────────────
  * Placeholder: full editorial chrome with empty state.
  */
-.cprompts-shell {
-  display: flex;
-  flex-direction: column;
-  height: calc(100vh - 220px);
-  min-height: 300px;
-}
 .cprompts-toolbar {
   padding: var(--sp-5) var(--sp-8);
   border-bottom: 1px solid var(--border);
@@ -2991,25 +2923,9 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   color: var(--bg);
 }
 .cprompts-filter-wrap {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-5);
-  border: 1px solid var(--border);
   background: var(--bg3, var(--bg));
   width: 280px;
 }
-.cprompts-filter-icon { color: var(--fg2); font-size: var(--fs-sm); }
-.cprompts-filter-input {
-  flex: 1;
-  border: none;
-  outline: none;
-  background: transparent;
-  font-family: var(--ff-mono);
-  font-size: var(--fs-sm);
-  color: var(--fg);
-}
-.cprompts-filter-input::placeholder { color: var(--fg2); }
 .cprompts-toolbar-count {
   font-family: var(--ff-mono);
   font-size: var(--fs-xs);
@@ -3077,10 +2993,6 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   margin: auto;
 }
 .cprompts-detail-empty-label {
-  font-family: var(--ff-mono);
-  font-size: var(--fs-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
   margin-bottom: var(--sp-3);
 }
 
@@ -3137,24 +3049,12 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 }
 .cagents-btn {
   padding: 8px 16px;
-  border: 1px solid var(--border);
   background: var(--bg2, var(--bg));
-  color: var(--fg);
-  font-family: var(--ff-mono);
   font-size: var(--fs-xs);
-  text-transform: uppercase;
   letter-spacing: 0.15em;
-  cursor: pointer;
-  border-radius: 0;
   transition: opacity 0.12s;
 }
 .cagents-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-.cagents-btn--primary {
-  background: var(--fg);
-  color: var(--bg);
-  border-color: var(--fg);
-}
-.cagents-btn--primary:hover:not(:disabled) { opacity: 0.85; }
 .cagents-btn--danger  { color: var(--accent); }
 .cagents-btn-enable {
   padding: 2px 8px;
@@ -3448,21 +3348,11 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 .cdb-timeline-end {
   padding: 20px 24px 28px;
   text-align: center;
-  font-family: var(--ff-mono);
-  font-size: var(--fs-xs);
-  color: var(--fg2);
-  text-transform: uppercase;
-  letter-spacing: 0.18em;
 }
 
 /* ─── CDashboardTab: event inspector ────────────────────────────── */
 .cdb-inspector-meta { margin-bottom: var(--sp-6); }
 .cdb-inspector-section-head {
-  font-family: var(--ff-mono);
-  font-size: var(--fs-xs);
-  color: var(--fg2);
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
   padding: var(--sp-3) 0 var(--sp-2);
   border-top: 1px solid var(--border);
   margin-top: var(--sp-4);
@@ -3515,13 +3405,6 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-}
-.cprompts-detail-overline {
-  font-family: var(--ff-mono);
-  font-size: var(--fs-xs);
-  color: var(--fg2);
-  text-transform: uppercase;
-  letter-spacing: 0.18em;
 }
 .cprompts-detail-title {
   font-family: var(--ff-serif, Georgia, serif);
@@ -3602,8 +3485,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 
 /* ─── CSessionsTab ────────────────────────────────────────────── */
 .csessions-shell {
-  display: flex;
-  flex-direction: column;
+  /* Unlike the other c-tabs this shell fills its parent, not the viewport. */
   height: 100%;
   min-height: 0;
 }
@@ -3617,28 +3499,18 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   flex-shrink: 0;
 }
 .csessions-filter-wrap {
-  display: flex;
-  align-items: center;
   gap: 8px;
   padding: 5px 10px;
-  border: 1px solid var(--border);
   background: var(--bg);
   width: 260px;
 }
 .csessions-filter-icon {
   font-family: var(--ff-mono);
   font-size: 13px;
-  color: var(--fg2);
   flex-shrink: 0;
 }
 .csessions-filter-input {
-  flex: 1;
-  border: none;
-  outline: none;
-  background: transparent;
-  font-family: var(--ff-mono);
   font-size: var(--fs-xs);
-  color: var(--fg);
 }
 .csessions-select {
   padding: 5px 8px;
@@ -3686,24 +3558,16 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   z-index: 1;
 }
 .csessions-th {
-  font-family: var(--ff-mono);
   font-size: 10px;
-  color: var(--fg2);
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
 }
 .csessions-th--r { text-align: right; }
 .csessions-row {
   padding-top: 11px;
   padding-bottom: 11px;
-  cursor: pointer;
-  border-left: 3px solid transparent;
-  transition: background 0.1s;
 }
-.csessions-row:hover { background: var(--bg2); }
 .csessions-row.is-selected {
+  /* Non-editorial themes: warmer fallback tint than the .c-row color-mix. */
   background: var(--accent-soft, rgba(166,57,28,0.07));
-  border-left-color: var(--accent);
 }
 .csessions-cell-time {
   font-family: var(--ff-mono);
@@ -3787,11 +3651,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   color: var(--fg);
 }
 .csessions-detail-overline {
-  font-family: var(--ff-mono);
   font-size: 10px;
-  color: var(--fg2);
-  text-transform: uppercase;
-  letter-spacing: 0.18em;
 }
 .csessions-detail-title {
   font-family: var(--ff-serif, Georgia, serif);
@@ -3849,19 +3709,11 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   background: var(--bg);
 }
 .csessions-stat-label {
-  font-family: var(--ff-mono);
   font-size: 9px;
-  color: var(--fg2);
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
 }
 .csessions-stat-value {
-  font-family: var(--ff-serif, Georgia, serif);
   font-size: 16px;
-  color: var(--fg);
-  font-weight: 500;
   margin-top: 2px;
-  font-variant-numeric: tabular-nums;
 }
 .csessions-detail-id {
   font-family: var(--ff-mono);
@@ -3880,19 +3732,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 }
 .csessions-btn {
   padding: 8px 14px;
-  border: 1px solid var(--border);
   background: var(--bg);
-  color: var(--fg);
-  font-family: var(--ff-mono);
   font-size: 11px;
-  text-transform: uppercase;
   letter-spacing: 0.14em;
-  cursor: pointer;
-  border-radius: 0;
 }
-.csessions-btn--primary {
-  background: var(--fg);
-  color: var(--bg);
-  border-color: var(--fg);
-}
-.csessions-btn--primary:hover { opacity: 0.85; }
