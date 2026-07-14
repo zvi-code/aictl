@@ -2,6 +2,7 @@ import { useState, useEffect, useContext, useCallback } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import * as api from '../api.js';
+import { findSessionRow, sessionIdCandidates } from '../selectors.js';
 import useSessionPicker from '../hooks/useSessionPicker.js';
 import ToolTabs from './ToolTabs.js';
 import SessionSelector from './transcript/SessionSelector.js';
@@ -29,11 +30,14 @@ export default function TabTranscript({ externalSessionId = null } = {}) {
   const embedded = externalSessionId != null;
   const effectiveSessionId = embedded ? externalSessionId : activeSessionId;
 
-  // Fetch transcript (with session-flow fallback)
+  // Fetch transcript (with session-flow fallback) — try every id the
+  // (possibly merged) row is known by.
   const fetchTranscript = useCallback(() => {
     if (!effectiveSessionId) { setTranscript(null); return; }
     setTranscriptLoading(true);
-    api.getTranscript(effectiveSessionId)
+    const sess = findSessionRow(sessions, effectiveSessionId);
+    const candidates = sess ? sessionIdCandidates(sess) : [effectiveSessionId];
+    api.getTranscript(candidates)
       .then(data => {
         if (isSessionFlowFormat(data)) {
           setTranscript(normalizeFlowToTranscript(data, effectiveSessionId));
@@ -43,10 +47,9 @@ export default function TabTranscript({ externalSessionId = null } = {}) {
         setTranscriptLoading(false);
       })
       .catch(() => {
-        const sess = sessions.find(s => s.session_id === effectiveSessionId);
         const since = sess?.started_at ? sess.started_at - 60 : Date.now() / 1000 - 86400;
         const until = sess?.ended_at ? sess.ended_at + 60 : Date.now() / 1000 + 60;
-        api.getSessionFlow(effectiveSessionId, since, until)
+        api.getSessionFlow(candidates, since, until)
           .then(flow => {
             setTranscript(normalizeFlowToTranscript(flow, effectiveSessionId));
             setTranscriptLoading(false);

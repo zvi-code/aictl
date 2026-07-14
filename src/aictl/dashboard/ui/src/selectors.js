@@ -85,6 +85,34 @@ function sessionRowId(s) {
   return s?.session_id ?? s?.id ?? null;
 }
 
+/** UUID anywhere in a session id — hook/JSONL/OTel rows carry the tool's
+ *  own session UUID; correlator rows look like `tool:pid:started`. */
+const SESSION_UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+function sessionAltIds(s) {
+  return Array.isArray(s?.alt_session_ids) ? s.alt_session_ids : [];
+}
+
+/**
+ * Ordered lookup candidates for a session row: primary id first, then every
+ * alternate id the row was merged from (frontend near-dup merge and backend
+ * profile merge both record them). Feed these to flow/transcript/tool-call
+ * fetches so a merged session stays reachable by all of its ids.
+ */
+export function sessionIdCandidates(s) {
+  const out = [];
+  for (const id of [sessionRowId(s), ...sessionAltIds(s)]) {
+    if (id != null && id !== '' && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/** Find a session row by ANY of its ids (primary or alternate). */
+export function findSessionRow(sessions, sessionId) {
+  if (sessionId == null) return undefined;
+  return (sessions || []).find(s => sessionIdCandidates(s).includes(sessionId));
+}
+
 /** Most recent activity timestamp we can attribute to a session row. */
 function sessionActivity(s) {
   return Math.max(s?.ended_at || 0, s?.started_at || 0, s?.last_activity || 0);
@@ -99,9 +127,16 @@ function sessionDurationS(s) {
 
 /**
  * Merge two rows believed to describe the same session: keep the row with
- * the most recent activity as the identity, take the max of token/file
+ * the most recent activity for its field data, take the max of token/file
  * counters (a stale duplicate must not win on partial data), and fill any
  * fields the kept row is missing from the discarded one.
+ *
+ * Identity: the merged row retains EVERY id either row was known by. The
+ * primary id prefers a UUID-bearing id — flow/transcript/request data is
+ * stored under the tool's own session UUID, while correlator ids
+ * (`tool:pid:started`) mostly carry process-level data; keeping the PID
+ * identity made rich sessions render an empty Flow tab. All other ids go
+ * to `alt_session_ids` so lookups can fall back to them.
  */
 function mergeSessionRows(a, b) {
   const [keep, other] = sessionActivity(b) > sessionActivity(a) ? [b, a] : [a, b];
@@ -114,6 +149,18 @@ function mergeSessionRows(a, b) {
   }
   for (const k of Object.keys(other || {})) {
     if (merged[k] == null && other[k] != null) merged[k] = other[k];
+  }
+  const ids = [];
+  for (const id of [...sessionIdCandidates(keep), ...sessionIdCandidates(other)]) {
+    if (!ids.includes(id)) ids.push(id);
+  }
+  if (ids.length > 1) {
+    const primary = SESSION_UUID_RE.test(String(ids[0]))
+      ? ids[0]
+      : (ids.find(id => SESSION_UUID_RE.test(String(id))) ?? ids[0]);
+    merged.session_id = primary;
+    if (merged.id != null) merged.id = primary;
+    merged.alt_session_ids = ids.filter(id => id !== primary);
   }
   return merged;
 }

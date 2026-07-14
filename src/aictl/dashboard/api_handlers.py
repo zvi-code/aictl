@@ -1636,11 +1636,18 @@ class _APIHandlersMixin:
         """Attach ``error_count`` to each profile via one grouped query.
 
         Aggregates ``is_error`` from both ``tool_invocations`` and
-        ``requests`` for the surviving session ids in a single UNION-ALL
-        grouped query (no per-row / per-session round-trips). Sessions with
-        no errored rows get ``error_count = 0``.
+        ``requests`` for the surviving session ids — including each
+        profile's ``alt_session_ids`` (merged profiles remain reachable
+        by every id they were known by) — in a single UNION-ALL grouped
+        query (no per-row / per-session round-trips). Sessions with no
+        errored rows get ``error_count = 0``.
         """
-        sids = [p["session_id"] for p in profiles if p.get("session_id")]
+
+        def _profile_ids(p: dict) -> list[str]:
+            ids = [p.get("session_id", "")] + list(p.get("alt_session_ids") or [])
+            return [i for i in ids if i]
+
+        sids = sorted({sid for p in profiles for sid in _profile_ids(p)})
         err_by_sid: dict[str, int] = {}
         if sids:
             placeholders = ",".join("?" for _ in sids)
@@ -1658,7 +1665,7 @@ class _APIHandlersMixin:
             except Exception:
                 err_by_sid = {}
         for p in profiles:
-            p["error_count"] = err_by_sid.get(p.get("session_id", ""), 0)
+            p["error_count"] = sum(err_by_sid.get(sid, 0) for sid in _profile_ids(p))
 
     def _serve_files(self) -> None:
         """Serve tracked files from the file store.

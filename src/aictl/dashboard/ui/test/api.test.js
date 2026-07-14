@@ -118,6 +118,100 @@ describe('getSessionFlow', () => {
   });
 });
 
+// ─── alternate-id fallback (merged sessions) ───────────────────
+// A merged session row is known by several ids (flow turns live under the
+// tool's UUID, process data under the correlator id). The flow/transcript/
+// tool-call getters accept an ordered candidate array and must fall back
+// until one id yields data — querying only the primary id rendered rich
+// sessions as an empty Flow tab.
+describe('session id candidates fallback', () => {
+  const UUID = 'fb1fced0-59a8-4c9e-b6cf-1e6b1f4d9a01';
+  const PID_ID = 'claude-code:4242:1769999400';
+
+  function mockJsonSequence(...bodies) {
+    const fn = vi.fn();
+    for (const body of bodies) {
+      fn.mockResolvedValueOnce({
+        ok: true, status: 200,
+        json: () => Promise.resolve(body),
+        text: () => Promise.resolve(''),
+      });
+    }
+    globalThis.fetch = fn;
+    return fn;
+  }
+
+  it('getSessionFlow returns the first candidate with turns', async () => {
+    const rich = { turns: [{ type: 'user_message' }], summary: {} };
+    mockJsonSequence({ turns: [], summary: {} }, rich);
+    const flow = await getSessionFlow([PID_ID, UUID], 1000, 2000);
+    expect(flow).toEqual(rich);
+    expect(fetch).toHaveBeenNthCalledWith(1,
+      `/api/session-flow?session_id=${encodeURIComponent(PID_ID)}&since=1000&until=2000`);
+    expect(fetch).toHaveBeenNthCalledWith(2,
+      `/api/session-flow?session_id=${UUID}&since=1000&until=2000`);
+  });
+
+  it('getSessionFlow stops at the first candidate when it has turns', async () => {
+    const rich = { turns: [{ type: 'user_message' }], summary: {} };
+    mockJsonSequence(rich, { turns: [], summary: {} });
+    const flow = await getSessionFlow([UUID, PID_ID], 1000, 2000);
+    expect(flow).toEqual(rich);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('getSessionFlow returns the first (empty) response when no candidate has turns', async () => {
+    const empty1 = { turns: [], summary: { source: 'first' } };
+    mockJsonSequence(empty1, { turns: [], summary: { source: 'second' } });
+    const flow = await getSessionFlow([PID_ID, UUID], 1000, 2000);
+    expect(flow).toEqual(empty1);
+  });
+
+  it('getSessionFlow skips a failing candidate and uses the next', async () => {
+    const rich = { turns: [{ type: 'api_call' }], summary: {} };
+    const fn = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 404, text: () => Promise.resolve('') })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve(rich), text: () => Promise.resolve('') });
+    globalThis.fetch = fn;
+    const flow = await getSessionFlow([PID_ID, UUID], 1000, 2000);
+    expect(flow).toEqual(rich);
+  });
+
+  it('getSessionFlow rethrows the first error when every candidate fails', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false, status: 500, text: () => Promise.resolve('boom'),
+    });
+    const err = await getSessionFlow([PID_ID, UUID], 1000, 2000).catch(e => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.status).toBe(500);
+  });
+
+  it('getTranscript falls back through candidates until one has turns', async () => {
+    const { getTranscript } = await import('../src/api.js');
+    const rich = { turns: [{ prompt: 'hi' }] };
+    mockJsonSequence({ turns: [] }, rich);
+    const data = await getTranscript([PID_ID, UUID]);
+    expect(data).toEqual(rich);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('getSessionToolCalls falls back through candidates until one has calls', async () => {
+    const { getSessionToolCalls } = await import('../src/api.js');
+    const rich = { total: 1, errors: 0, by_tool: { Bash: 1 }, calls: [{ tool_name: 'Bash' }] };
+    mockJsonSequence({ total: 0, errors: 0, by_tool: {}, calls: [] }, rich);
+    const data = await getSessionToolCalls([PID_ID, UUID]);
+    expect(data).toEqual(rich);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('single string id behaves exactly as before (one fetch, result returned)', async () => {
+    mockJsonSequence({ turns: [], summary: {} });
+    const flow = await getSessionFlow(UUID, 1, 2);
+    expect(flow).toEqual({ turns: [], summary: {} });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('getSessionEvents', () => {
   it('builds URL with required session id and optional range filters', async () => {
     await getSessionEvents('sess-2', { since: 111, until: 222, limit: 50 });

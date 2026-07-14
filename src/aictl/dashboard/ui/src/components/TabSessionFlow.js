@@ -2,6 +2,7 @@ import { useState, useEffect, useContext, useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { esc } from '../utils.js';
+import { findSessionRow, sessionIdCandidates } from '../selectors.js';
 import * as api from '../api.js';
 import useSessionPicker from '../hooks/useSessionPicker.js';
 import ToolTabs from './ToolTabs.js';
@@ -42,14 +43,15 @@ export default function TabSessionFlow({ externalSessionId = null } = {}) {
   const embedded = externalSessionId != null;
   const effectiveSessionId = embedded ? externalSessionId : activeSessionId;
 
-  // Fetch flow data
+  // Fetch flow data — try every id the (possibly merged) row is known by.
   useEffect(() => {
     if (!effectiveSessionId) { setFlowData(null); return; }
     setFlowLoading(true);
-    const sess = sessions.find(s => s.session_id === effectiveSessionId);
+    const sess = findSessionRow(sessions, effectiveSessionId);
     const since = sess?.started_at ? sess.started_at - 60 : Date.now() / 1000 - 86400;
     const until = sess?.ended_at ? sess.ended_at + 60 : Date.now() / 1000 + 60;
-    api.getSessionFlow(effectiveSessionId, since, until)
+    const candidates = sess ? sessionIdCandidates(sess) : [effectiveSessionId];
+    api.getSessionFlow(candidates, since, until)
       .then(data => { setFlowData(data); setFlowLoading(false); })
       .catch(() => { setFlowData(null); setFlowLoading(false); });
   }, [effectiveSessionId, sessions.length]);

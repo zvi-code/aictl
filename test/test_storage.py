@@ -406,6 +406,52 @@ class TestSessionProfileDedup:
         assert p["files_modified"] == 5
         assert p["started_at"] == base
         assert p["ended_at"] == base + 400  # union of both intervals
+        # The merged profile stays reachable by BOTH ids it was known by.
+        assert p["session_id"] == uuid
+        assert p["alt_session_ids"] == [f"otel:{uuid}"]
+
+    def test_pid_and_uuid_rows_merge_keeping_both_ids(self, db: HistoryDB):
+        """Regression: the correlator's PID row and the hook/JSONL UUID row
+        for one live session merge into a single profile — but the merge
+        used to keep only the PID identity, so the dashboard then queried
+        flow/transcript by an id that has no turns and rendered a rich
+        session as an empty Flow tab.  The merged profile must carry the
+        UUID as its primary id (flow data lives under it) and retain the
+        correlator id in alt_session_ids."""
+        base = 1_743_000_000.0
+        end = base + 1400
+        uuid = "fb1fced0-59a8-4c9e-b6cf-1e6b1f4d9a01"
+        pid_sid = "claude-code:4242:1743000000"
+        db.upsert_session(
+            SessionRow(
+                session_id=pid_sid,
+                tool="claude-code",
+                pid=4242,
+                project_path="/repo/proj",
+                started_at=base,
+                ended_at=end,
+                source="correlator",
+            )
+        )
+        db.upsert_session(
+            SessionRow(
+                session_id=uuid,
+                tool="claude-code",
+                project_path="/repo/proj",
+                started_at=base + 5,
+                ended_at=end,
+                input_tokens=1234,
+                source="hook",
+            )
+        )
+
+        profiles = db.query_session_profiles(since=base - 1)
+        assert len(profiles) == 1, f"PID + UUID rows of one session must merge, got {len(profiles)}"
+        p = profiles[0]
+        assert p["session_id"] == uuid, "primary id must be the UUID the flow data is stored under"
+        assert p["alt_session_ids"] == [pid_sid], "the correlator id must be retained as an alternate"
+        assert p["pid"] == 4242, "the PID must survive the identity swap"
+        assert p["input_tokens"] == 1234
 
     def test_sessions_table_duplicates_keep_max_tokens(self, db: HistoryDB):
         """Sessions-table rows (the primary path) with the duplicate

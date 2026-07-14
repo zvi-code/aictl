@@ -9,6 +9,7 @@ import { useState, useEffect, useContext, useMemo, useRef, useCallback } from 'p
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { fmtK, esc, fmtHHMM, fmtDurMs, fmtDurSec, hashColor } from '../utils.js';
+import { findSessionRow, sessionIdCandidates } from '../selectors.js';
 import useSessionPicker from '../hooks/useSessionPicker.js';
 import ToolTabs from './ToolTabs.js';
 import SessionTabs from './session_flow/SessionTabs.js';
@@ -291,10 +292,11 @@ export default function TabTimelineChart({ externalSessionId = null } = {}) {
   useEffect(() => {
     if (!effectiveSessionId) { setFlowData(null); return; }
     setFlowLoading(true);
-    const sess = sessions.find(s => s.session_id === effectiveSessionId);
+    const sess = findSessionRow(sessions, effectiveSessionId);
     const since = sess?.started_at ? sess.started_at - 60 : Date.now() / 1000 - 86400;
     const until = sess?.ended_at ? sess.ended_at + 60 : Date.now() / 1000 + 60;
-    api.getSessionFlow(effectiveSessionId, since, until)
+    const candidates = sess ? sessionIdCandidates(sess) : [effectiveSessionId];
+    api.getSessionFlow(candidates, since, until)
       .then(data => { setFlowData(data); setFlowLoading(false); setSelectedEntities(null); })
       .catch(() => { setFlowData(null); setFlowLoading(false); });
   }, [effectiveSessionId, sessions.length]);

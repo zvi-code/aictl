@@ -5,7 +5,7 @@
 // selection, auto-select a tool and a session, and expose setters for the
 // pickers. This hook is the single copy of that block.
 import { useState, useEffect, useMemo } from 'preact/hooks';
-import { dedupeSessions } from '../selectors.js';
+import { dedupeSessions, findSessionRow } from '../selectors.js';
 import * as api from '../api.js';
 
 /**
@@ -91,20 +91,23 @@ export default function useSessionPicker({
     [filteredSessions, activeTool],
   );
 
-  // Auto-select first session of the active tool.
+  // Auto-select first session of the active tool. Matching by ANY known id
+  // (findSessionRow) keeps the selection stable when a refetch merges the
+  // selected session with a duplicate and its primary id changes.
   useEffect(() => {
     if (toolSessions.length > 0
-        && (!activeSessionId || !toolSessions.find(s => s.session_id === activeSessionId))) {
+        && (!activeSessionId || !findSessionRow(toolSessions, activeSessionId))) {
       setActiveSessionId(toolSessions[0].session_id);
     }
   }, [activeTool, toolSessions.length]);
 
   // Apply an externally-requested session once the list contains it (the
   // request usually fires before the fetch resolves). Declared after the
-  // auto-select effects above so an explicit request wins.
+  // auto-select effects above so an explicit request wins. The requested id
+  // may be an alternate of a merged row — match by any known id.
   useEffect(() => {
     if (!requestedSession?.sessionId) return;
-    const sess = sessions.find(s => s.session_id === requestedSession.sessionId);
+    const sess = findSessionRow(sessions, requestedSession.sessionId);
     if (!sess) return; // not loaded yet — stays pending until the next fetch
     setActiveTool(sess.tool);
     setActiveSessionId(sess.session_id);

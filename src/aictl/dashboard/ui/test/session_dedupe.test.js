@@ -4,7 +4,7 @@
 // (same tool, started_at within 15s, duration within 5s — the
 // duplicate-chip signature), while never merging distinct sessions.
 import { describe, it, expect } from 'vitest';
-import { dedupeSessions } from '../src/selectors.js';
+import { dedupeSessions, sessionIdCandidates, findSessionRow } from '../src/selectors.js';
 
 const NOW = 1_770_000_000;
 
@@ -105,6 +105,92 @@ describe('dedupeSessions — non-duplicates must NOT merge', () => {
     const live = sess({ session_id: 'l-1', started_at: NOW - 597, ended_at: null,
                         duration_s: null });
     expect(dedupeSessions([done, live])).toHaveLength(2);
+  });
+});
+
+describe('dedupeSessions — merged identity keeps every id', () => {
+  const UUID = 'fb1fced0-59a8-4c9e-b6cf-1e6b1f4d9a01';
+  const PID_ID = 'claude-code:4242:1769999400';
+
+  it('near-duplicate merge prefers the UUID id — the one flow data lives under', () => {
+    // The empty-Flow-tab regression: a hook/JSONL UUID row (rich flow
+    // data) merged with the concurrently-created correlator PID row, and
+    // the merged chip kept the PID identity — flow/transcript queries by
+    // that id find no turns. The PID row wins the field data (most
+    // recent activity) but the UUID must win the identity.
+    const pidRow  = sess({ session_id: PID_ID, started_at: NOW - 600,
+                           ended_at: null, duration_s: null, last_activity: NOW - 10 });
+    const uuidRow = sess({ session_id: UUID, started_at: NOW - 595,
+                           ended_at: null, duration_s: null, last_activity: NOW - 300 });
+    const rows = dedupeSessions([pidRow, uuidRow]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].session_id).toBe(UUID);
+    expect(rows[0].alt_session_ids).toEqual([PID_ID]);
+    // Field data still comes from the most-recently-active row.
+    expect(rows[0].started_at).toBe(NOW - 600);
+  });
+
+  it('keeps the activity-winner id when neither id carries a UUID', () => {
+    const a = sess({ session_id: 'otel:abc', started_at: NOW - 600, duration_s: 300,
+                     last_activity: NOW - 10 });
+    const b = sess({ session_id: 'log:def', started_at: NOW - 597, duration_s: 300,
+                     last_activity: NOW - 200 });
+    const [row] = dedupeSessions([a, b]);
+    expect(row.session_id).toBe('otel:abc');
+    expect(row.alt_session_ids).toEqual(['log:def']);
+  });
+
+  it('unions alt_session_ids the backend already attached to merged profiles', () => {
+    const backendMerged = sess({ session_id: UUID, alt_session_ids: [PID_ID],
+                                 started_at: NOW - 600, duration_s: 300 });
+    const extra = sess({ session_id: 'claude-code:9999:1769999401',
+                         started_at: NOW - 598, duration_s: 302, ended_at: NOW - 296 });
+    const [row] = dedupeSessions([backendMerged, extra]);
+    expect(row.session_id).toBe(UUID);
+    expect(row.alt_session_ids).toEqual(
+      expect.arrayContaining([PID_ID, 'claude-code:9999:1769999401']));
+    expect(row.alt_session_ids).toHaveLength(2);
+  });
+
+  it('accumulates ids across a chain of three merged rows', () => {
+    const a = sess({ session_id: 'claude-code:1:1769999400', started_at: NOW - 600, duration_s: 300 });
+    const b = sess({ session_id: UUID, started_at: NOW - 598, duration_s: 301, ended_at: NOW - 297 });
+    const c = sess({ session_id: 'claude-code:2:1769999401', started_at: NOW - 596, duration_s: 302,
+                     ended_at: NOW - 294 });
+    const [row] = dedupeSessions([a, b, c]);
+    expect(row.session_id).toBe(UUID);
+    expect(row.alt_session_ids).toEqual(
+      expect.arrayContaining(['claude-code:1:1769999400', 'claude-code:2:1769999401']));
+    expect(row.alt_session_ids).toHaveLength(2);
+  });
+
+  it('exact-id duplicates do not grow alt_session_ids', () => {
+    const [row] = dedupeSessions([sess(), sess()]);
+    expect(row.alt_session_ids).toBeUndefined();
+  });
+});
+
+describe('sessionIdCandidates / findSessionRow', () => {
+  const UUID = 'fb1fced0-59a8-4c9e-b6cf-1e6b1f4d9a01';
+  const PID_ID = 'claude-code:4242:1769999400';
+
+  it('candidates list the primary id first, then alternates, deduped', () => {
+    const row = { session_id: UUID, alt_session_ids: [PID_ID, UUID] };
+    expect(sessionIdCandidates(row)).toEqual([UUID, PID_ID]);
+  });
+
+  it('candidates fall back to the live-row `id` field', () => {
+    expect(sessionIdCandidates({ id: 'live-1' })).toEqual(['live-1']);
+  });
+
+  it('findSessionRow matches by primary and by alternate id', () => {
+    const rows = [{ session_id: UUID, alt_session_ids: [PID_ID] },
+                  { session_id: 'other' }];
+    expect(findSessionRow(rows, UUID)).toBe(rows[0]);
+    expect(findSessionRow(rows, PID_ID)).toBe(rows[0]);
+    expect(findSessionRow(rows, 'other')).toBe(rows[1]);
+    expect(findSessionRow(rows, 'missing')).toBeUndefined();
+    expect(findSessionRow(rows, null)).toBeUndefined();
   });
 });
 
