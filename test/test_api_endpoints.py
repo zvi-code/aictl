@@ -614,6 +614,42 @@ class TestSessionDetailAPI:
     def test_session_tool_calls_requires_session_id(self, server):
         assert _get_status(f"{server}/api/session-tool-calls") == 400
 
+    def test_session_tool_calls_includes_truncated_input(self, server, populated_db):
+        """The invocation ``input`` (Bash command / file path) must leave the
+        DB, clipped server-side to 500 chars with an ``input_truncated`` flag."""
+        from aictl.storage import ToolInvocationRow
+
+        long_cmd = "echo " + "x" * 800
+        populated_db.append_tool_invocation(
+            ToolInvocationRow(
+                ts=time.time(),
+                session_id="sess-input",
+                tool="claude-code",
+                tool_name="Bash",
+                input={"command": long_cmd},
+            )
+        )
+        populated_db.append_tool_invocation(
+            ToolInvocationRow(
+                ts=time.time() + 1,
+                session_id="sess-input",
+                tool="claude-code",
+                tool_name="Read",
+                input={"file_path": "/a/b.py"},
+            )
+        )
+        data = _get_json(f"{server}/api/session-tool-calls?session_id=sess-input")
+        by_tool = {c["tool_name"]: c for c in data["calls"]}
+        assert len(data["calls"]) == 2
+
+        bash = by_tool["Bash"]
+        assert len(bash["input"]) == 500
+        assert bash["input_truncated"] is True
+
+        read = by_tool["Read"]
+        assert "/a/b.py" in read["input"]
+        assert read["input_truncated"] is False
+
 
 class TestSessionKillAPI:
     """POST /api/session-kill — control action with a confirm gate."""
@@ -1072,7 +1108,9 @@ class TestSessionTimelineAPI:
         """Regression: a live session whose snapshot id format differs from
         the DB row id must enrich the DB row (matched by tool + overlapping
         time window + workspace), not appear as a second stale entry."""
-        data = _get_json(f"{timeline_server}/api/session-timeline?since={time.time() - 3600}")
+        resp = _get_json(f"{timeline_server}/api/session-timeline?since={time.time() - 3600}")
+        assert "filtered_count" in resp
+        data = resp["sessions"]
         assert len(data) == 1, f"expected exactly one recent profile, got {len(data)}"
         p = data[0]
         assert p["session_id"] == "e2fa11bc-1234-4abc-9def-1234567890ab"
@@ -1085,15 +1123,85 @@ class TestSessionTimelineAPI:
 
     def test_old_session_not_matched_to_live(self, timeline_server):
         """A historical session with no time overlap must stay inactive."""
-        data = _get_json(f"{timeline_server}/api/session-timeline?since={time.time() - 86400}")
+        resp = _get_json(f"{timeline_server}/api/session-timeline?since={time.time() - 86400}")
+        data = resp["sessions"]
         old = next(p for p in data if p["session_id"] == "claude-code:9999:1700000000")
         assert old["active"] is False
         assert "live_session_id" not in old
 
     def test_exact_id_match_still_enriches(self, server):
         """Exact session_id equality (the original path) keeps working."""
-        data = _get_json(f"{server}/api/session-timeline?since={time.time() - 86400}")
-        assert isinstance(data, list)
+        resp = _get_json(f"{server}/api/session-timeline?since={time.time() - 86400}")
+        assert isinstance(resp["sessions"], list)
+        assert isinstance(resp["filtered_count"], int)
+
+
+@pytest.fixture()
+def error_timeline_server(tmp_path):
+    """Server with one long/errored session and one short/no-file session."""
+    from pathlib import Path
+
+    from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
+    from aictl.storage import RequestRow, SessionRow, ToolInvocationRow
+
+    db = HistoryDB(db_path=str(tmp_path / "etl.db"), flush_interval=0)
+    now = time.time()
+
+    # Kept: long session (>60s) carrying an errored tool invocation + request.
+    db.upsert_session(
+        SessionRow(
+            session_id="sess-long",
+            tool="claude-code",
+            project_path="/p",
+            started_at=now - 500,
+            ended_at=now - 100,
+            files_modified=0,
+            source="hook",
+        )
+    )
+    db.append_tool_invocation(
+        ToolInvocationRow(ts=now - 400, session_id="sess-long", tool="claude-code", tool_name="Bash", is_error=1)
+    )
+    db.append_tool_invocation(
+        ToolInvocationRow(ts=now - 390, session_id="sess-long", tool="claude-code", tool_name="Read", is_error=0)
+    )
+    db.append_request(RequestRow(ts=now - 395, session_id="sess-long", tool="claude-code", is_error=1))
+
+    # Filtered: short session (<60s) with no file activity.
+    db.upsert_session(
+        SessionRow(
+            session_id="sess-short",
+            tool="cursor",
+            project_path="/p",
+            started_at=now - 40,
+            ended_at=now - 20,
+            files_modified=0,
+            source="hook",
+        )
+    )
+
+    store = SnapshotStore(db=db)
+    store.update(_make_snapshot())
+    srv = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, AllowedPaths(), Path("/tmp"))
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    yield f"http://127.0.0.1:{port}"
+    srv.shutdown()
+    db.close()
+
+
+class TestSessionTimelineHonesty:
+    """/api/session-timeline reports filtered_count + per-session error_count."""
+
+    def test_filtered_count_and_error_count(self, error_timeline_server):
+        resp = _get_json(f"{error_timeline_server}/api/session-timeline?since={time.time() - 86400}")
+        by_id = {p["session_id"]: p for p in resp["sessions"]}
+        # The short, no-file session is hidden but counted, not dropped silently.
+        assert "sess-short" not in by_id
+        assert resp["filtered_count"] == 1
+        # error_count aggregates is_error across tool_invocations + requests.
+        assert by_id["sess-long"]["error_count"] == 2
 
 
 # ── Hook ingest: Stop vs SessionEnd ───────────────────────────────

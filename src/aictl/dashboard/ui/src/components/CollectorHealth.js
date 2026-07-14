@@ -17,8 +17,9 @@ export default function CollectorHealth() {
   const [otel, setOtel] = useState(null);
   const [selfStatus, setSelfStatus] = useState(null);
   const [dataQuality, setDataQuality] = useState(null);
+  const [ingesters, setIngesters] = useState(null);
 
-  // Poll OTel + self status + data quality every 15s
+  // Poll OTel + self status + data quality + ingesters every 15s
   useEffect(() => {
     let running = true;
     const poll = () => {
@@ -28,6 +29,9 @@ export default function CollectorHealth() {
         .then(d => { if (running) setSelfStatus(d); }).catch(() => {});
       api.getDataQuality({ limit: DATA_QUALITY_LIMIT })
         .then(d => { if (running) setDataQuality(Array.isArray(d?.items) ? d.items : []); })
+        .catch(() => {});
+      api.getIngesters()
+        .then(d => { if (running) setIngesters(Array.isArray(d?.ingesters) ? d.ingesters : []); })
         .catch(() => {});
     };
     poll();
@@ -165,8 +169,33 @@ export default function CollectorHealth() {
         <span>API calls: <strong>${otel.api_calls_total || 0}</strong></span>
         ${otel.api_errors_total > 0 ? html`<span class="text-red">Errors: <strong>${otel.api_errors_total}</strong></span>` : null}
         ${otel.errors > 0 ? html`<span class="text-orange">Parse errors: <strong>${otel.errors}</strong></span>` : null}
+        ${otel.dropped > 0 ? html`<span class="text-orange" title="malformed attributes / data points skipped during parsing">Dropped: <strong>${otel.dropped}</strong></span>` : null}
         ${otel.last_receive_at > 0 ? html`<span class="text-muted">Last: ${fmtAgo(otel.last_receive_at)}</span>` : null}
       </div>
+    </div>` : null}
+
+    <!-- Local-store ingesters (copilot / cursor / vscode chat pollers) -->
+    ${ingesters != null ? html`<div class="mb-md" data-dp="overview.collector_health.ingesters">
+      <div class="es-section-title">Ingesters</div>
+      ${ingesters.length === 0
+        ? html`<div class="text-xs text-muted">No ingesters running</div>`
+        : ingesters.map(i => {
+            const ago = i.last_poll_ts ? fmtAgo(i.last_poll_ts) : 'never polled';
+            return html`<div key=${i.name}
+              class="flex-row gap-sm" style="align-items:center;padding:var(--sp-1) 0;font-size:var(--fs-sm)">
+              <span aria-hidden="true"
+                title=${i.source_exists ? 'source present' : 'source missing'}
+                style="width:8px;height:8px;border-radius:50%;flex-shrink:0;background:${i.source_exists ? 'var(--green)' : 'var(--fg2)'}"></span>
+              <span class="mono text-xs" style="min-width:170px" title=${i.source_path || ''}>${esc(i.name)}</span>
+              <span class="sr-only">${i.source_exists ? 'source present' : 'source missing'}</span>
+              <span class="text-xs text-muted" title="last poll" style="min-width:80px">${ago}</span>
+              <span class="text-xs" style="margin-left:auto"
+                title="rows inserted on the last poll">+${i.last_poll_inserted || 0} rows</span>
+              ${i.rows_ingested_total != null
+                ? html`<span class="text-xs text-muted" title="cumulative rows ingested">${fmtK(i.rows_ingested_total)} total</span>`
+                : null}
+            </div>`;
+          })}
     </div>` : null}
 
     <!-- Per-tool health table -->

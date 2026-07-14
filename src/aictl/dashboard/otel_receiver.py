@@ -9,6 +9,7 @@ producing Sample and EventRow objects for storage.
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -66,6 +67,17 @@ API_ERROR_EVENTS = frozenset(
     }
 )
 
+# OTel log events that represent a *completed* tool invocation — they carry
+# ``tool_name`` + ``duration_ms`` + ``tool_parameters``.  ``tool_decision`` is
+# intentionally excluded: it is the permission gate, not an execution, so it
+# has no duration/result and would double-count every real invocation.
+TOOL_INVOCATION_EVENTS = frozenset(
+    {
+        "tool_result",  # Claude Code (current format)
+        "claude_code.tool_result",  # Claude Code (legacy/qualified format)
+    }
+)
+
 # Service-name → tool label for auto-detection when service.name is
 # set but doesn't match a known tool verbatim.
 SERVICE_NAME_ALIASES: dict[str, str] = {
@@ -108,6 +120,10 @@ class OtelStats:
     errors: int = 0
     api_calls_total: int = 0
     api_errors_total: int = 0
+    # Per-item malformed attributes / data points skipped during parsing.
+    # These were previously discarded silently; the counter makes the loss
+    # visible in ``status()`` (and the Monitoring Health UI).
+    dropped: int = 0
 
 
 class OtelReceiver:
@@ -124,6 +140,7 @@ class OtelReceiver:
         for rm in _iter_otel_dicts(body, "resourceMetrics"):
             resource_attrs = _parse_otel_attributes(
                 (rm.get("resource") or {}).get("attributes", []),
+                self.stats,
             )
             tool = _resolve_tool(resource_attrs.get("service.name", ""))
 
@@ -132,10 +149,10 @@ class OtelReceiver:
                     name = metric.get("name", "")
                     mapped = METRIC_MAP.get(name, f"otel.{name}")
 
-                    for dp in _extract_otel_data_points(metric):
+                    for dp in _extract_otel_data_points(metric, self.stats):
                         ts = _nano_to_epoch(dp.get("timeUnixNano", "0"))
                         value = _extract_otel_value(dp)
-                        tags = _parse_otel_attributes(dp.get("attributes", []))
+                        tags = _parse_otel_attributes(dp.get("attributes", []), self.stats)
                         tags["tool"] = tool
                         tags["otel_metric"] = name
                         _promote_session_id(tags, resource_attrs)
@@ -162,6 +179,7 @@ class OtelReceiver:
         for rl in _iter_otel_dicts(body, "resourceLogs"):
             resource_attrs = _parse_otel_attributes(
                 (rl.get("resource") or {}).get("attributes", []),
+                self.stats,
             )
             tool = _resolve_tool(resource_attrs.get("service.name", ""))
 
@@ -170,7 +188,13 @@ class OtelReceiver:
                     ts = _nano_to_epoch(record.get("timeUnixNano", "0"))
                     attrs = _parse_otel_attributes(
                         record.get("attributes", []),
+                        self.stats,
                     )
+                    # Record-level span/trace ids (when the exporter sets them)
+                    # anchor tool-invocation dedup via source_event_id.
+                    span_id = record.get("spanId") or record.get("span_id")
+                    if span_id:
+                        attrs["otel.span_id"] = span_id
 
                     event_name = attrs.pop("event.name", "") or attrs.pop("name", "")
                     if not event_name:
@@ -252,33 +276,70 @@ class OtelReceiver:
 
     @staticmethod
     def extract_tool_invocations(events: list[EventRow]) -> list[ToolInvocationRow]:
-        """Extract ToolInvocationRow objects from hook events."""
+        """Extract ToolInvocationRow objects from hook and OTel tool events.
+
+        Two shapes feed this:
+
+        * hook events (``hook:PostToolUse`` etc.) carrying ``tool_name``.
+        * OTel ``tool_result`` log events (Claude Code telemetry): these carry
+          ``tool_name`` + ``duration_ms`` + ``tool_parameters`` and are the
+          *only* thing the OTel logs path (``parse_logs``) produces.  The old
+          ``hook:``-only filter meant every OTel-derived tool invocation was
+          silently discarded — this now persists them, populating
+          ``source_event_id`` from the record span id / ``event.sequence`` so
+          dedup treats repeated identical calls as distinct rows.
+        """
         invocations: list[ToolInvocationRow] = []
         for e in events:
-            if not e.kind.startswith("hook:"):
-                continue
             d = e.detail if isinstance(e.detail, dict) else {}
+            if e.kind.startswith("hook:"):
+                tool_name = d.get("tool_name", "")
+                if not tool_name:
+                    continue
+                # Hook events: source_ts is the timestamp embedded in the hook
+                # payload, if present.  If absent, source_ts stays 0 and dedup
+                # falls back to value-based comparison — every hook invocation
+                # is an independent event.
+                hook_ts = float(d.get("timestamp", 0) or d.get("ts", 0) or 0)
+                invocations.append(
+                    ToolInvocationRow(
+                        ts=e.ts,
+                        source_ts=hook_ts,
+                        session_id=d.get("session_id", ""),
+                        tool=e.tool,
+                        tool_name=tool_name,
+                        pid=int(d.get("pid", 0) or 0),
+                        is_error=1 if d.get("is_error") else 0,
+                        duration_ms=float(d.get("duration_ms", 0) or 0),
+                        input=d.get("input", {}) if isinstance(d.get("input"), dict) else {},
+                        result_summary=str(d.get("result", ""))[:500],
+                        source="hook",
+                    )
+                )
+                continue
+
+            if not e.kind.startswith("otel:"):
+                continue
+            event_name = e.kind[5:]  # strip "otel:" prefix
+            if event_name not in TOOL_INVOCATION_EVENTS:
+                continue
             tool_name = d.get("tool_name", "")
             if not tool_name:
                 continue
-            # Hook events: source_ts is the timestamp embedded in the hook
-            # payload, if present.  If the hook payload has no timestamp,
-            # source_ts stays 0 and dedup falls back to value-based comparison
-            # (Case B) — every hook invocation is an independent event.
-            hook_ts = float(d.get("timestamp", 0) or d.get("ts", 0) or 0)
             invocations.append(
                 ToolInvocationRow(
                     ts=e.ts,
-                    source_ts=hook_ts,  # 0 if hook payload had no embedded timestamp
-                    session_id=d.get("session_id", ""),
+                    source_ts=e.ts,  # OTel ts IS the embedded source timestamp
+                    session_id=e.session_id or d.get("session_id", ""),
                     tool=e.tool,
                     tool_name=tool_name,
-                    pid=int(d.get("pid", 0) or 0),
-                    is_error=1 if d.get("is_error") else 0,
-                    duration_ms=float(d.get("duration_ms", 0) or 0),
-                    input=d.get("input", {}),
-                    result_summary=str(d.get("result", ""))[:500],
-                    source="hook",
+                    pid=e.pid or int(d.get("pid", 0) or 0),
+                    is_error=0 if _otel_success(d.get("success")) else 1,
+                    duration_ms=_num(d.get("duration_ms", 0)),
+                    input=_otel_tool_input(d),
+                    result_summary=str(d.get("tool_response", d.get("result", "")))[:500],
+                    source="otel",
+                    source_event_id=_otel_tool_event_id(d),
                 )
             )
         return invocations
@@ -292,12 +353,13 @@ class OtelReceiver:
         for rs in _iter_otel_dicts(body, "resourceSpans"):
             resource_attrs = _parse_otel_attributes(
                 (rs.get("resource") or {}).get("attributes", []),
+                self.stats,
             )
             tool = _resolve_tool(resource_attrs.get("service.name", ""))
 
             for ss in _iter_otel_dicts(rs, "scopeSpans"):
                 for span in _iter_otel_dicts(ss, "spans"):
-                    attrs = _parse_otel_attributes(span.get("attributes", []))
+                    attrs = _parse_otel_attributes(span.get("attributes", []), self.stats)
                     name = span.get("name", "")
                     start_ts = _nano_to_epoch(span.get("startTimeUnixNano", "0"))
                     end_ts = _nano_to_epoch(span.get("endTimeUnixNano", "0"))
@@ -375,7 +437,7 @@ class OtelReceiver:
                     # Span-level events (e.g. exceptions)
                     for span_event in span.get("events", []):
                         ev_ts = _nano_to_epoch(span_event.get("timeUnixNano", "0"))
-                        ev_attrs = _parse_otel_attributes(span_event.get("attributes", []))
+                        ev_attrs = _parse_otel_attributes(span_event.get("attributes", []), self.stats)
                         ev_attrs["tool"] = tool
                         ev_attrs["parent_span"] = name
                         ev_name = span_event.get("name", "span_event")
@@ -423,23 +485,28 @@ def _iter_otel_dicts(container, key: str):
             yield child
 
 
-def _parse_otel_attributes(attrs: list[dict]) -> dict:
+def _parse_otel_attributes(attrs: list[dict], stats: OtelStats | None = None) -> dict:
     """Convert OTLP ``KeyValue[]`` to a flat Python dict.
 
     Defensive against malformed payloads from untrusted OTLP clients: a
     non-list ``attrs``, a non-dict entry, or a malformed ``arrayValue`` is
     skipped rather than raising, so one bad attribute never poisons the
-    whole batch.
+    whole batch.  When *stats* is supplied, each per-attribute skip bumps
+    ``stats.dropped`` so the silent loss is observable.
     """
     result: dict = {}
     if not isinstance(attrs, list):
         return result
     for kv in attrs:
         if not isinstance(kv, dict):
+            if stats is not None:
+                stats.dropped += 1
             continue
         key = kv.get("key", "")
         v = kv.get("value", {})
         if not isinstance(v, dict):
+            if stats is not None:
+                stats.dropped += 1
             continue
         if "stringValue" in v:
             result[key] = v["stringValue"]
@@ -447,11 +514,15 @@ def _parse_otel_attributes(attrs: list[dict]) -> dict:
             try:
                 result[key] = int(v["intValue"])
             except (ValueError, TypeError):
+                if stats is not None:
+                    stats.dropped += 1
                 continue
         elif "doubleValue" in v:
             try:
                 result[key] = float(v["doubleValue"])
             except (ValueError, TypeError):
+                if stats is not None:
+                    stats.dropped += 1
                 continue
         elif "boolValue" in v:
             result[key] = bool(v["boolValue"])
@@ -460,6 +531,55 @@ def _parse_otel_attributes(attrs: list[dict]) -> dict:
             values = arr.get("values", []) if isinstance(arr, dict) else []
             result[key] = [_extract_any_otel_value(x) for x in values if isinstance(x, dict)]
     return result
+
+
+def _otel_success(val) -> bool:
+    """Interpret an OTel ``tool_result`` ``success`` attribute as a boolean.
+
+    Claude Code sends ``"true"``/``"false"`` strings; be tolerant of bools
+    and ints. Absent/unknown is treated as success (no error).
+    """
+    if val is None:
+        return True
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in ("true", "1", "yes", "ok", "success")
+
+
+def _otel_tool_input(d: dict) -> dict:
+    """Extract the tool-input dict from an OTel ``tool_result`` event.
+
+    Claude Code carries the invocation args as a JSON string in
+    ``tool_parameters`` (e.g. the Bash command line); parse it to a dict,
+    else wrap the raw value so nothing is lost.
+    """
+    raw = d.get("tool_parameters")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw:
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            return {"tool_parameters": raw}
+        return parsed if isinstance(parsed, dict) else {"tool_parameters": raw}
+    inp = d.get("input")
+    return inp if isinstance(inp, dict) else {}
+
+
+def _otel_tool_event_id(d: dict) -> str:
+    """Best-effort stable id for a tool invocation, anchoring dedup.
+
+    Prefers a captured OTel span id; falls back to ``session:event.sequence``
+    (both present on Claude Code ``tool_result`` logs); else empty (dedup
+    falls back to value-based comparison).
+    """
+    span_id = d.get("otel.span_id") or d.get("span_id")
+    if span_id:
+        return str(span_id)
+    seq = d.get("event.sequence")
+    if seq not in (None, ""):
+        return f"{d.get('session_id', '')}:{seq}"
+    return ""
 
 
 # Well-known OTel attribute names that carry session identifiers.
@@ -535,11 +655,13 @@ def _extract_otel_value(data_point: dict) -> float:
     return 0.0
 
 
-def _extract_otel_data_points(metric: dict) -> list[dict]:
+def _extract_otel_data_points(metric: dict, stats: OtelStats | None = None) -> list[dict]:
     """Extract data points from any OTLP metric type (sum, gauge, etc.).
 
     Defensive: a malformed metric body (non-dict ``sum``/``gauge``/... or a
-    non-list ``dataPoints``) yields no points instead of raising.
+    non-list ``dataPoints``) yields no points instead of raising.  When
+    *stats* is supplied, each non-dict data point skipped bumps
+    ``stats.dropped``.
     """
     if not isinstance(metric, dict):
         return []
@@ -547,7 +669,12 @@ def _extract_otel_data_points(metric: dict) -> list[dict]:
         body = metric.get(mtype)
         if isinstance(body, dict):
             points = body.get("dataPoints", [])
-            return [p for p in points if isinstance(p, dict)] if isinstance(points, list) else []
+            if not isinstance(points, list):
+                return []
+            kept = [p for p in points if isinstance(p, dict)]
+            if stats is not None and len(kept) != len(points):
+                stats.dropped += len(points) - len(kept)
+            return kept
     return []
 
 

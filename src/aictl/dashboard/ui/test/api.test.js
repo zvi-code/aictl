@@ -7,6 +7,7 @@ import {
   getDataQuality, getSessionMessages,
   getToolConfig, updateToolConfig, killSession,
   getDatapoints, resetDatapointCache, setBaseUrl, getBaseUrl, streamUrl,
+  getSessionTimeline, sessionTimelineFilteredCount, getIngesters,
 } from '../src/api.js';
 
 // ─── Mock fetch globally ───────────────────────────────────────
@@ -168,6 +169,38 @@ describe('health endpoints', () => {
   it('fetches self-status', async () => {
     await getSelfStatus();
     expect(fetch).toHaveBeenCalledWith('/api/self-status');
+  });
+
+  it('fetches /api/ingesters', async () => {
+    await getIngesters();
+    expect(fetch).toHaveBeenCalledWith('/api/ingesters');
+  });
+});
+
+// ─── getSessionTimeline normalization ──────────────────────────
+describe('getSessionTimeline', () => {
+  it('returns the sessions array with filtered_count attached', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true, status: 200,
+      json: () => Promise.resolve({ sessions: [{ session_id: 'a' }, { session_id: 'b' }], filtered_count: 3 }),
+      text: () => Promise.resolve(''),
+    });
+    const rows = await getSessionTimeline(null, { since: 1 });
+    expect(Array.isArray(rows)).toBe(true);
+    expect(rows).toHaveLength(2);
+    expect(rows.filtered_count).toBe(3);
+    expect(sessionTimelineFilteredCount()).toBe(3);
+  });
+
+  it('tolerates the legacy bare-array response shape', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true, status: 200,
+      json: () => Promise.resolve([{ session_id: 'x' }]),
+      text: () => Promise.resolve(''),
+    });
+    const rows = await getSessionTimeline(null, {});
+    expect(rows).toHaveLength(1);
+    expect(sessionTimelineFilteredCount()).toBe(0);
   });
 });
 

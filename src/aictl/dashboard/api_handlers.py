@@ -36,6 +36,11 @@ _IMPORTED_SESSION_SOURCES = {
     "vscode-chat-logs",
 }
 
+# Server-side clamp for the tool-invocation ``input`` payload surfaced by
+# /api/session-tool-calls — a pathological command line must not bloat the
+# response; the UI expands the (clipped) text on demand.
+_INPUT_MAX_CHARS = 500
+
 
 def _match_live_session(profile: dict, live_sessions: list[dict]) -> dict | None:
     """Find the live snapshot session that corresponds to a DB profile row.
@@ -614,6 +619,21 @@ class _APIHandlersMixin:
         status = self.server.otel_receiver.status()
         self._json_response(status)
 
+    def _serve_ingesters(self) -> None:
+        """Return per-ingester poller health (copilot/cursor/vscode).
+
+        Surfaces ``ingester_runner.collect_status`` — last poll time, rows
+        inserted on the last poll, and whether the on-disk source exists —
+        which was computed but had no caller, so ingester health was
+        invisible. Returns ``{"ingesters": [ {name, enabled, source_path,
+        source_exists, last_poll_ts, last_poll_inserted}, ... ]}``; an empty
+        list when no ingesters are registered.
+        """
+        from .ingester_runner import collect_status
+
+        handles = getattr(self.server, "ingesters", None)
+        self._json_response({"ingesters": collect_status(handles)})
+
     def _serve_hooks_status(self) -> None:
         """Return installed hook health and recent hook activity."""
         from .hooks_status import collect_hooks_status
@@ -1190,9 +1210,13 @@ class _APIHandlersMixin:
 
         Params: ?session_id=X (required) &limit=N
         Returns ``{session_id, total, errors, by_tool: {name: count},
-        calls: [{ts, tool_name, duration_ms, is_error, result_summary}]}``.
-        Surfaces the ``tool_invocations`` table which was previously
-        captured but never exposed per session.
+        calls: [{ts, tool_name, duration_ms, is_error, result_summary,
+        input, input_truncated}]}``. ``input`` is the stored invocation
+        payload (the actual Bash command line / file path), truncated
+        server-side to ``_INPUT_MAX_CHARS`` with ``input_truncated: true``
+        when clipped. Surfaces the ``tool_invocations`` table (incl. its
+        ``input`` column) which was previously captured but never exposed
+        per session.
         """
         session_id = self._qs_get("session_id")
         if not session_id:
@@ -1204,16 +1228,22 @@ class _APIHandlersMixin:
 
         limit = min(int(self._qs_get("limit", "500")), 2000)
         rows = db.query_tool_invocations(session_id=session_id, limit=limit)
-        calls = [
-            {
-                "ts": float(r.get("ts", 0.0) or 0.0),
-                "tool_name": r.get("tool_name", "") or r.get("tool", ""),
-                "duration_ms": float(r.get("duration_ms", 0.0) or 0.0),
-                "is_error": bool(r.get("is_error", 0)),
-                "result_summary": r.get("result_summary", ""),
-            }
-            for r in rows
-        ]
+        calls = []
+        for r in rows:
+            raw_input = r.get("input")
+            input_str = raw_input if isinstance(raw_input, str) else (json.dumps(raw_input) if raw_input else "")
+            truncated = len(input_str) > _INPUT_MAX_CHARS
+            calls.append(
+                {
+                    "ts": float(r.get("ts", 0.0) or 0.0),
+                    "tool_name": r.get("tool_name", "") or r.get("tool", ""),
+                    "duration_ms": float(r.get("duration_ms", 0.0) or 0.0),
+                    "is_error": bool(r.get("is_error", 0)),
+                    "result_summary": r.get("result_summary", ""),
+                    "input": input_str[:_INPUT_MAX_CHARS],
+                    "input_truncated": truncated,
+                }
+            )
         by_tool = Counter(c["tool_name"] or "unknown" for c in calls)
         errors = sum(1 for c in calls if c["is_error"])
         self._json_response(
@@ -1553,19 +1583,32 @@ class _APIHandlersMixin:
         """Serve enriched session profiles for the timeline bar.
 
         Params: ?since=<unix_ts>&until=<unix_ts>
-        Returns list of session profiles with conversations, agents, file stats.
+        Returns ``{sessions: [...], filtered_count: N}`` — the profiles with
+        conversations, agents, file stats, plus per-session ``error_count``
+        (aggregated ``is_error`` across tool_invocations + requests). Short,
+        no-file sessions are still hidden from the list, but their count is
+        now reported in ``filtered_count`` rather than dropped silently.
         """
-        db = self._require_db()
+        db = self._require_db(empty={"sessions": [], "filtered_count": 0})
         if not db:
             return
 
         since = self._qs_float("since", time.time() - 86400)
         until = self._qs_float_opt("until")
 
-        profiles = db.query_session_profiles(since=since, until=until)
+        all_profiles = db.query_session_profiles(since=since, until=until)
 
-        # Filter to meaningful sessions (have file activity or >60s duration)
-        profiles = [p for p in profiles if p["files_modified"] > 0 or (p.get("duration_s") and p["duration_s"] > 60)]
+        # Filter to meaningful sessions (have file activity or >60s duration).
+        # The number dropped is reported so the UI can say "N short sessions
+        # hidden" instead of silently omitting them.
+        profiles = [
+            p for p in all_profiles if p["files_modified"] > 0 or (p.get("duration_s") and p["duration_s"] > 60)
+        ]
+        filtered_count = len(all_profiles) - len(profiles)
+
+        # Per-session error_count: one grouped query over tool_invocations +
+        # requests (not per-row), keyed by the surviving session ids.
+        self._enrich_error_counts(db, profiles)
 
         # Merge live session data for active sessions.  Matching falls
         # back to UUID/PID/time-window heuristics because live snapshot
@@ -1586,7 +1629,36 @@ class _APIHandlersMixin:
                     p["input_tokens"] = max(int(p.get("input_tokens", 0) or 0), live.get("exact_input_tokens", 0))
                     p["output_tokens"] = max(int(p.get("output_tokens", 0) or 0), live.get("exact_output_tokens", 0))
 
-        self._json_response(profiles)
+        self._json_response({"sessions": profiles, "filtered_count": filtered_count})
+
+    @staticmethod
+    def _enrich_error_counts(db, profiles: list[dict]) -> None:
+        """Attach ``error_count`` to each profile via one grouped query.
+
+        Aggregates ``is_error`` from both ``tool_invocations`` and
+        ``requests`` for the surviving session ids in a single UNION-ALL
+        grouped query (no per-row / per-session round-trips). Sessions with
+        no errored rows get ``error_count = 0``.
+        """
+        sids = [p["session_id"] for p in profiles if p.get("session_id")]
+        err_by_sid: dict[str, int] = {}
+        if sids:
+            placeholders = ",".join("?" for _ in sids)
+            sql = (
+                "SELECT session_id, SUM(errs) FROM ("
+                f"  SELECT session_id, is_error AS errs FROM tool_invocations WHERE session_id IN ({placeholders})"
+                "  UNION ALL"
+                f"  SELECT session_id, is_error AS errs FROM requests WHERE session_id IN ({placeholders})"
+                ") GROUP BY session_id"
+            )
+            try:
+                conn = db._conn()  # noqa: SLF001 — read-only per-thread connection
+                for sid, n in conn.execute(sql, sids + sids).fetchall():
+                    err_by_sid[sid] = int(n or 0)
+            except Exception:
+                err_by_sid = {}
+        for p in profiles:
+            p["error_count"] = err_by_sid.get(p.get("session_id", ""), 0)
 
     def _serve_files(self) -> None:
         """Serve tracked files from the file store.

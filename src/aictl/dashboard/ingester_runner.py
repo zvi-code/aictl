@@ -140,6 +140,30 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
     return handles
 
 
+def _record_poll_failure(ingester, name: str, exc: Exception) -> None:
+    """Record a data-quality event when an ingester poll raises.
+
+    The poll loop previously only logged, so a crashing ingester was
+    invisible in the dashboard. Surface it via the shared data-quality
+    channel (guarded — a store without ``record_data_quality`` is a no-op).
+    """
+    store = getattr(ingester, "store", None)
+    if store is None or not hasattr(store, "record_data_quality"):
+        return
+    try:
+        store.record_data_quality(
+            f"ingester:{name}",
+            "failed",
+            kind="ingester",
+            severity="error",
+            message="Ingester poll loop raised",
+            source=str(getattr(ingester, "db_path", getattr(ingester, "log_dir", ""))),
+            detail={"error": str(exc)},
+        )
+    except Exception:  # noqa: BLE001  # pragma: no cover - recording must never crash the loop
+        log.debug("%s ingester: failed to record poll-failure quality event", name)
+
+
 def _poll_loop(
     ingester,
     stop: threading.Event,
@@ -150,15 +174,17 @@ def _poll_loop(
     # Initial poll immediately so the first data point is available.
     try:
         ingester.poll()
-    except Exception:  # pragma: no cover - defensive
+    except Exception as exc:  # pragma: no cover - defensive
         log.exception("%s ingester: initial poll failed", name)
+        _record_poll_failure(ingester, name, exc)
     while not stop.wait(timeout=interval):
         try:
             inserted = ingester.poll()
             if inserted:
                 log.debug("%s ingester: poll inserted %d rows", name, inserted)
-        except Exception:  # pragma: no cover - defensive
+        except Exception as exc:  # pragma: no cover - defensive
             log.exception("%s ingester: poll loop error", name)
+            _record_poll_failure(ingester, name, exc)
 
 
 def collect_status(handles: dict[str, IngesterHandle] | None) -> list[dict]:

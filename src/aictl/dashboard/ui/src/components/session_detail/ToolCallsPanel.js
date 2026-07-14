@@ -5,22 +5,28 @@ import * as api from '../../api.js';
 
 // Per-session tool-call timeline + a latency distribution sparkbar. Surfaces
 // the tool_invocations table (which tools the agent reached for, how long they
-// took, and which ones errored) that was captured but never shown per-session.
+// took, which ones errored, and the actual input — Bash command / file path)
+// that was captured but never shown per-session.
 export default function ToolCallsPanel({sessionId}) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  // Which timeline rows have their input expanded (keyed by row index).
+  const [expanded, setExpanded] = useState({});
 
   useEffect(() => {
     if (!sessionId) return;
     setLoading(true);
     setError(false);
+    setExpanded({});
     api.getSessionToolCalls(sessionId)
       .then(d => { setData(d); setLoading(false); })
       .catch(() => { setError(true); setLoading(false); });
   }, [sessionId]);
 
-  if (loading) return html`<p class="loading-state">Loading tool calls\u2026</p>`;
+  const toggleInput = (i) => setExpanded(e => ({ ...e, [i]: !e[i] }));
+
+  if (loading) return html`<p class="loading-state">Loading tool calls…</p>`;
   if (error) return html`<p class="empty-state">Failed to load tool-call data.</p>`;
   if (!data || !data.calls || !data.calls.length) {
     return html`<p class="empty-state">No tool-call data recorded for this session.</p>`;
@@ -54,16 +60,33 @@ export default function ToolCallsPanel({sessionId}) {
     <div class="text-xs text-muted" style="margin-bottom:var(--sp-2)">Timeline</div>
     <div class="mono text-xs" style="max-height:12rem;overflow-y:auto">
       ${calls.slice(0, 60).map((c, i) => {
-        const t = c.ts ? fmtHHMMSS(c.ts) : '\u2014';
-        return html`<div key=${i} class="flex-row gap-sm" style="padding:2px 0;align-items:center">
-          <span class="text-muted" style="width:60px;flex-shrink:0">${t}</span>
-          <span aria-hidden="true" style="width:6px;height:6px;border-radius:50%;flex-shrink:0;background:${c.is_error ? 'var(--red)' : 'var(--green)'}"></span>
-          <span style="width:14px;flex-shrink:0;text-align:center;color:${c.is_error ? 'var(--red)' : 'var(--green)'}">
-            <span aria-hidden="true">${c.is_error ? '✗' : '✓'}</span><span class="sr-only">${c.is_error ? 'error' : 'ok'}</span>
-          </span>
-          <span class="text-ellipsis" style="width:110px;flex-shrink:0" title=${c.tool_name}>${esc(c.tool_name)}</span>
-          <span style="width:56px;flex-shrink:0;text-align:right">${c.duration_ms ? Math.round(c.duration_ms) + 'ms' : ''}</span>
-          <span class="text-muted text-ellipsis" style="flex:1;min-width:0">${esc(c.result_summary || '')}</span>
+        const t = c.ts ? fmtHHMMSS(c.ts) : '—';
+        const input = c.input || '';
+        const isOpen = !!expanded[i];
+        return html`<div key=${i} style="padding:2px 0">
+          <div class="flex-row gap-sm" style="align-items:center">
+            <span class="text-muted" style="width:60px;flex-shrink:0">${t}</span>
+            <span aria-hidden="true" style="width:6px;height:6px;border-radius:50%;flex-shrink:0;background:${c.is_error ? 'var(--red)' : 'var(--green)'}"></span>
+            <span style="width:14px;flex-shrink:0;text-align:center;color:${c.is_error ? 'var(--red)' : 'var(--green)'}">
+              <span aria-hidden="true">${c.is_error ? '✗' : '✓'}</span><span class="sr-only">${c.is_error ? 'error' : 'ok'}</span>
+            </span>
+            <span class="text-ellipsis" style="width:110px;flex-shrink:0" title=${c.tool_name}>${esc(c.tool_name)}</span>
+            <span style="width:56px;flex-shrink:0;text-align:right">${c.duration_ms ? Math.round(c.duration_ms) + 'ms' : ''}</span>
+            <span class="text-muted text-ellipsis" style="flex:1;min-width:0">${esc(c.result_summary || '')}</span>
+          </div>
+          ${input ? html`<button type="button"
+              class="tcp-input mono text-xs text-muted"
+              aria-expanded=${isOpen}
+              aria-label=${(isOpen ? 'Collapse' : 'Expand') + ' input for ' + c.tool_name}
+              title=${isOpen ? 'Collapse input' : 'Expand input'}
+              onClick=${() => toggleInput(i)}
+              style=${'display:block;width:100%;text-align:left;background:none;border:none;cursor:pointer;'
+                + 'padding:1px 0 3px 74px;'
+                + (isOpen
+                    ? 'white-space:pre-wrap;word-break:break-word'
+                    : 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>
+              ${esc(input)}${(c.input_truncated && isOpen) ? '…' : ''}
+            </button>` : null}
         </div>`;
       })}
     </div>

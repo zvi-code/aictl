@@ -30,6 +30,7 @@ const olderSession = {
 
 vi.mock('../src/api.js', () => ({
   getSessionTimeline:   vi.fn(() => Promise.resolve([session])),
+  sessionTimelineFilteredCount: () => 0,
   getSessionFlow:       () => Promise.resolve({ turns: [] }),
   getSessionSubprocesses: () => Promise.resolve({ counts: [], recent: [] }),
   getSessionMcpUsage:   () => Promise.resolve({ servers: [], total_calls: 0, configured_servers: 0 }),

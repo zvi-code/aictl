@@ -94,20 +94,44 @@ class VSCodeChatLogsIngester:
         self.last_poll_ts: float = 0.0
         self.last_poll_inserted: int = 0
 
+    def _quality(self, status: str, *, severity: str = "", message: str = "", detail: dict | None = None) -> None:
+        if hasattr(self.store, "record_data_quality"):
+            self.store.record_data_quality(
+                "ingester:vscode-chat-logs",
+                status,
+                kind="ingester",
+                severity=severity,
+                message=message,
+                source=str(self.log_dir),
+                detail=detail,
+            )
+
     # ── public API ─────────────────────────────────────────────
 
     def poll(self) -> int:
         """Scan for new/changed chat session files and ingest any new turns."""
         self.last_poll_ts = time.time()
         if not self.log_dir.exists() or not self.log_dir.is_dir():
+            self._quality(
+                "source_missing",
+                severity="warning",
+                message="VS Code workspaceStorage directory is missing",
+            )
             self.last_poll_inserted = 0
             return 0
 
         inserted = 0
+        failed = 0
         try:
             files = list(self.log_dir.glob("*/chatSessions/*.jsonl"))
         except OSError as exc:
             log.debug("vscode chat ingester: glob failed (%s)", exc)
+            self._quality(
+                "query_failed",
+                severity="warning",
+                message="VS Code chat-log scan failed",
+                detail={"error": str(exc)},
+            )
             self.last_poll_inserted = 0
             return 0
 
@@ -121,9 +145,18 @@ class VSCodeChatLogsIngester:
             if prev and prev == (st.st_mtime, st.st_size):
                 continue
             try:
-                inserted += self._ingest_file(path)
+                n, ok = self._ingest_file(path)
             except Exception as exc:  # pragma: no cover - defensive
                 log.debug("vscode chat ingester: %s failed (%s)", path, exc)
+                failed += 1
+                continue
+            inserted += n
+            if not ok:
+                # Parse failure — leave the per-file cursor unadvanced so the
+                # broken file is retried on the next poll instead of being
+                # skipped forever (the old code advanced it here, so a corrupt
+                # file was never re-read once its mtime/size stabilised).
+                failed += 1
                 continue
             # Refresh mtime/size after ingest — the file may have grown
             # again in between, but we'll pick that up on the next poll.
@@ -134,33 +167,58 @@ class VSCodeChatLogsIngester:
                 pass
 
         self.last_poll_inserted = inserted
+        if failed:
+            self._quality(
+                "parse_failed",
+                severity="warning",
+                message="VS Code chat-log parse failures (will retry next poll)",
+                detail={"inserted": inserted, "failed_files": failed},
+            )
+        else:
+            self._quality(
+                "ok",
+                severity="info",
+                message="VS Code chat-logs poll completed",
+                detail={"inserted": inserted},
+            )
         return inserted
 
     # ── file parsing ──────────────────────────────────────────
 
-    def _ingest_file(self, path: Path) -> int:
-        """Parse one ``.jsonl`` session file, insert any new messages."""
+    def _ingest_file(self, path: Path) -> tuple[int, bool]:
+        """Parse one ``.jsonl`` session file, insert any new messages.
+
+        Returns ``(inserted, ok)``. ``ok`` is False only when the file could
+        not be parsed (unreadable / corrupt first line / non-dict snapshot);
+        the caller uses it to decide whether to advance the per-file cursor,
+        so a broken file is retried next poll rather than skipped forever. A
+        file that parses cleanly but yields no *new* rows (all duplicates, or
+        an empty conversation) returns ``ok=True``.
+        """
         try:
             with path.open("r", encoding="utf-8", errors="replace") as fh:
                 first_line = fh.readline()
         except OSError as exc:
             log.debug("vscode chat ingester: open %s failed (%s)", path, exc)
-            return 0
+            return 0, False
         if not first_line.strip():
-            return 0
+            # Empty / not-yet-written file: nothing to parse, but a later
+            # write changes mtime/size and re-triggers ingest, so it is safe
+            # to advance past the empty snapshot.
+            return 0, True
         try:
             snap_rec = json.loads(first_line)
         except json.JSONDecodeError:
             log.debug("vscode chat ingester: corrupt first line in %s", path)
-            return 0
+            return 0, False
         snap = snap_rec.get("v") if isinstance(snap_rec, dict) else None
         if not isinstance(snap, dict):
-            return 0
+            return 0, False
         vscode_sid = str(snap.get("sessionId") or path.stem)
         creation_date = _coerce_ts(snap.get("creationDate"))
         requests = snap.get("requests")
         if not isinstance(requests, list) or not requests:
-            return 0
+            return 0, True
 
         session_id = self._correlate(vscode_sid, creation_date)
         inserted = 0
@@ -198,7 +256,7 @@ class VSCodeChatLogsIngester:
                     ingested_at=now,
                 ):
                     inserted += 1
-        return inserted
+        return inserted, True
 
     # ── storage writes ────────────────────────────────────────
 
