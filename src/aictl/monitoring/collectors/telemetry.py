@@ -31,6 +31,10 @@ class StructuredTelemetryCollector(BaseCollector):
         super().__init__()
         self.config = config
         self._offsets: dict[str, int] = {}
+        # Rewrite-in-place JSON snapshots: last-seen cumulative totals and
+        # (mtime, size) signature per file, so only positive deltas are emitted.
+        self._snapshot_totals: dict[str, tuple[int, int]] = {}
+        self._snapshot_sigs: dict[str, tuple[float, int]] = {}
         # Explicit OTel file paths added by external detection (tool_config.py)
         self._otel_files: set[str] = set()
 
@@ -114,6 +118,69 @@ class StructuredTelemetryCollector(BaseCollector):
         return candidates
 
     def _parse_file(self, path: Path) -> list[dict]:
+        """Dispatch between append-only tailing and snapshot-delta parsing.
+
+        Append-only JSONL/NDJSON/log files are tailed from a byte offset,
+        one JSON payload per line.  Plain ``.json`` files are typically
+        rewritten in place with *cumulative lifetime totals* (e.g. Claude's
+        ``stats-cache.json``) — tailing those would re-ingest the full
+        lifetime counters on every rewrite, so they go through the
+        snapshot-delta path instead.
+        """
+        key = str(path)
+        if key not in self._otel_files and path.suffix.lower() == ".json":
+            return self._parse_snapshot_file(path)
+        return self._tail_file(path)
+
+    def _parse_snapshot_file(self, path: Path) -> list[dict]:
+        """Parse a rewrite-in-place cumulative JSON file, emitting deltas only.
+
+        - First sight of a file records a baseline and emits nothing —
+          lifetime totals must never be added to a live session.
+        - Subsequent scans emit only the positive delta since the baseline.
+        - If either counter shrinks (file replaced / counters reset), the
+          file is re-baselined and nothing is emitted.
+        - An (mtime, size) guard skips unchanged files between scans.
+        """
+        key = str(path)
+        try:
+            st = path.stat()
+        except OSError:
+            return []
+        sig = (st.st_mtime, st.st_size)
+        if self._snapshot_sigs.get(key) == sig:
+            return []
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+        except (OSError, json.JSONDecodeError):
+            # Possibly caught mid-rewrite — leave the signature unset so the
+            # next scan retries.
+            return []
+        self._snapshot_sigs[key] = sig
+
+        usage = _extract_usage_tokens(payload)
+        if usage is None:
+            return []
+        previous = self._snapshot_totals.get(key)
+        self._snapshot_totals[key] = usage
+        if previous is None:
+            return []  # baseline
+        delta_in = usage[0] - previous[0]
+        delta_out = usage[1] - previous[1]
+        if delta_in < 0 or delta_out < 0:
+            return []  # counters shrank — re-baselined above
+        if not delta_in and not delta_out:
+            return []
+        return [
+            {
+                "tool_hint": _tool_hint_for_path(key),
+                "input_tokens": delta_in,
+                "output_tokens": delta_out,
+                "path": key,
+            }
+        ]
+
+    def _tail_file(self, path: Path) -> list[dict]:
         key = str(path)
         is_otel_file = key in self._otel_files
         samples: list[dict] = []

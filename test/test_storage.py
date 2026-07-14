@@ -1203,6 +1203,61 @@ class TestToolInvocations:
         assert len(rows) == 1
         assert rows[0]["tool_name"] == "bash"
 
+    def _bash_invocation(self, ts: float, tool_use_id: str) -> ToolInvocationRow:
+        """Identical Bash('git status') invocation, distinguished only by id."""
+        return ToolInvocationRow(
+            ts=ts,
+            session_id="s1",
+            tool_name="Bash",
+            input={"command": "git status"},
+            source="hook",
+            source_event_id=tool_use_id,
+        )
+
+    def test_identical_repeats_with_distinct_ids_persist_twice(self, db: HistoryDB):
+        """Regression: hooks send source_ts=0, so the value-based dedup key
+        collapsed legitimate identical repeats — Bash('git status') run
+        twice persisted once.  tool_use_id must keep them apart."""
+        now = time.time()
+        db.append_tool_invocation(self._bash_invocation(now, "toolu_01"))
+        db.append_tool_invocation(self._bash_invocation(now + 5, "toolu_02"))
+        rows = db.query_tool_invocations(session_id="s1")
+        assert len(rows) == 2
+        assert {r["source_event_id"] for r in rows} == {"toolu_01", "toolu_02"}
+
+    def test_same_id_retried_stays_one_row(self, db: HistoryDB):
+        """A retried delivery of the same tool_use_id must still dedup."""
+        now = time.time()
+        db.append_tool_invocation(self._bash_invocation(now, "toolu_01"))
+        db.append_tool_invocation(self._bash_invocation(now + 1, "toolu_01"))
+        rows = db.query_tool_invocations(session_id="s1")
+        assert len(rows) == 1
+
+    def test_duration_update_targets_own_row(self, db: HistoryDB):
+        """PostToolUse updates the row keyed by ITS tool_use_id, leaving the
+        other identical invocation untouched."""
+        now = time.time()
+        db.append_tool_invocation(self._bash_invocation(now, "toolu_01"))
+        db.append_tool_invocation(self._bash_invocation(now + 5, "toolu_02"))
+
+        dk_second = _dedup_key("s1", "Bash", "toolu_02", "hook")
+        assert db.update_tool_invocation_duration(dk_second, 1234.5, 0, "done")
+
+        rows = {r["source_event_id"]: r for r in db.query_tool_invocations(session_id="s1")}
+        assert rows["toolu_02"]["duration_ms"] == pytest.approx(1234.5)
+        assert rows["toolu_02"]["result_summary"] == "done"
+        assert rows["toolu_01"]["duration_ms"] == 0
+
+    def test_value_based_dedup_without_id_unchanged(self, db: HistoryDB):
+        """Sources with no invocation id keep the value-based fallback."""
+        now = time.time()
+        for _ in range(3):
+            db.append_tool_invocation(
+                ToolInvocationRow(ts=now, session_id="s1", tool_name="Bash", input={"command": "ls"}, source="otel")
+            )
+        rows = db.query_tool_invocations(session_id="s1")
+        assert len(rows) == 1
+
 
 # ── Processes (new) ────────────────────────────────────────────────
 

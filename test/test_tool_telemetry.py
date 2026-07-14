@@ -329,6 +329,84 @@ class TestParseCopilotEvents:
         assert report.errors[0]["type"] == "timeout"
         assert "bash" in report.errors[0]["message"]
 
+    def test_shutdown_metrics_are_sole_token_source(self, tmp_path):
+        """When shutdown modelMetrics exist they feed BOTH totals and the
+        per-model breakdown — assistant.message output must not be mixed
+        in, and input AND output totals must equal the breakdown sums."""
+        events = tmp_path / "events.jsonl"
+        events.write_text(
+            json.dumps(
+                {
+                    "type": "assistant.message",
+                    "data": {"outputTokens": 500},
+                    "timestamp": "2024-01-01T00:00:00Z",
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "session.shutdown",
+                    "data": {
+                        "shutdownType": "routine",
+                        "modelMetrics": {
+                            "gpt-4": {
+                                "usage": {
+                                    "inputTokens": 1000,
+                                    "outputTokens": 200,
+                                    "cacheReadTokens": 30,
+                                    "cacheWriteTokens": 40,
+                                },
+                                "requests": {"count": 5, "cost": 0.05},
+                            },
+                            "gpt-4o": {
+                                "usage": {"inputTokens": 100, "outputTokens": 10},
+                                "requests": {"count": 1, "cost": 0.01},
+                            },
+                        },
+                    },
+                    "timestamp": "2024-01-01T00:01:00Z",
+                }
+            )
+            + "\n"
+        )
+        report = ToolTelemetryReport(tool="copilot-cli", source="events-jsonl")
+        _parse_copilot_events(events, report)
+        assert report.input_tokens == 1100
+        assert report.output_tokens == 210, "shutdown output must not be inflated by assistant.message counts"
+        assert report.cache_read_tokens == 30
+        assert report.cache_creation_tokens == 40
+        assert sum(m["input_tokens"] for m in report.by_model.values()) == report.input_tokens
+        assert sum(m["output_tokens"] for m in report.by_model.values()) == report.output_tokens
+        assert report.cost_usd == pytest.approx(0.06)
+        assert report.total_messages == 1
+
+    def test_shutdown_without_metrics_falls_back_to_messages(self, tmp_path):
+        """No modelMetrics in the shutdown event → assistant.message output
+        accumulation is the token source."""
+        events = tmp_path / "events.jsonl"
+        events.write_text(
+            json.dumps(
+                {
+                    "type": "assistant.message",
+                    "data": {"outputTokens": 500},
+                    "timestamp": "2024-01-01T00:00:00Z",
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "session.shutdown",
+                    "data": {"shutdownType": "routine"},
+                    "timestamp": "2024-01-01T00:01:00Z",
+                }
+            )
+            + "\n"
+        )
+        report = ToolTelemetryReport(tool="copilot-cli", source="events-jsonl")
+        _parse_copilot_events(events, report)
+        assert report.output_tokens == 500
+        assert report.total_messages == 1
+
 
 # ────────────────────────────────────────────────────────────────
 # _parse_codex_session
@@ -406,6 +484,58 @@ class TestParseCodexSession:
         # Should use the LAST total (300, 150), not sum (400, 200)
         assert report.input_tokens == 300
         assert report.output_tokens == 150
+
+    def test_totals_attributed_to_last_model_only(self, tmp_path):
+        """A session that touches two models must not have its cumulative
+        totals added to EACH by_model entry — breakdown sums must equal
+        the report totals."""
+        sess = tmp_path / "session.jsonl"
+        sess.write_text(
+            json.dumps({"type": "session_meta", "payload": {"model": "o3-mini"}})
+            + "\n"
+            + json.dumps({"type": "session_meta", "payload": {"model": "gpt-5.1"}})
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "total_token_usage": {"input_tokens": 400, "output_tokens": 100},
+                    },
+                }
+            )
+            + "\n"
+        )
+        report = ToolTelemetryReport(tool="codex-cli", source="token-count")
+        _parse_codex_session(sess, report)
+        assert report.input_tokens == 400
+        assert report.output_tokens == 100
+        assert sum(m["input_tokens"] for m in report.by_model.values()) == report.input_tokens
+        assert sum(m["output_tokens"] for m in report.by_model.values()) == report.output_tokens
+        assert report.by_model == {"gpt-5.1": {"input_tokens": 400, "output_tokens": 100}}
+
+    def test_model_provider_never_seeded_as_model(self, tmp_path):
+        """model_provider names a provider (e.g. 'openai'), not a model —
+        it must not appear as a by_model row."""
+        sess = tmp_path / "session.jsonl"
+        sess.write_text(
+            json.dumps({"type": "session_meta", "payload": {"model_provider": "openai"}})
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "total_token_usage": {"input_tokens": 50, "output_tokens": 5},
+                    },
+                }
+            )
+            + "\n"
+        )
+        report = ToolTelemetryReport(tool="codex-cli", source="token-count")
+        _parse_codex_session(sess, report)
+        assert report.input_tokens == 50
+        assert "openai" not in report.by_model
 
 
 # ────────────────────────────────────────────────────────────────
@@ -500,6 +630,64 @@ class TestRecentFiles:
     def test_empty_dir(self, tmp_path):
         result = _recent_files(tmp_path, "*.jsonl")
         assert result == []
+
+    def test_vanished_file_skipped_not_raised(self, tmp_path, monkeypatch):
+        """A file deleted between glob and stat must be skipped — a raised
+        FileNotFoundError would drop the whole tool's telemetry for the
+        cycle via the per-tool catch-all."""
+        from pathlib import Path
+
+        keep = tmp_path / "keep.jsonl"
+        keep.write_text("data")
+        (tmp_path / "ghost.jsonl").write_text("data")
+
+        real_stat = Path.stat
+
+        def raising_stat(self, **kwargs):
+            if self.name == "ghost.jsonl":
+                raise FileNotFoundError(str(self))
+            return real_stat(self, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", raising_stat)
+        result = _recent_files(tmp_path, "*.jsonl")
+        assert result == [keep]
+
+
+# ────────────────────────────────────────────────────────────────
+# stat() races: vanished entries must not abort a scan
+# ────────────────────────────────────────────────────────────────
+
+
+class TestStatRaceResilience:
+    def test_copilot_scan_survives_vanished_session_dir(self, tmp_path, monkeypatch):
+        """A session directory deleted mid-scan is skipped; the remaining
+        sessions still parse instead of the whole tool erroring out."""
+        from pathlib import Path
+
+        from aictl.monitoring.tool_telemetry import parse_copilot_telemetry
+
+        session_root = tmp_path / ".copilot" / "session-state"
+        good = session_root / "good"
+        ghost = session_root / "ghost"
+        good.mkdir(parents=True)
+        ghost.mkdir()
+        (good / "events.jsonl").write_text(
+            json.dumps({"type": "assistant.message", "data": {"outputTokens": 7}}) + "\n"
+        )
+
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        real_stat = Path.stat
+
+        def raising_stat(self, **kwargs):
+            if self.name == "ghost":
+                raise FileNotFoundError(str(self))
+            return real_stat(self, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", raising_stat)
+        report = parse_copilot_telemetry()
+        assert report is not None
+        assert report.output_tokens == 7
+        assert report.total_sessions == 1
 
 
 # ────────────────────────────────────────────────────────────────

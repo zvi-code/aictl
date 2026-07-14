@@ -1169,6 +1169,72 @@ class TestStopHookIsNotTerminal:
         assert int(row.get("input_tokens") or 0) == 2000
 
 
+# ── Hook ingest: tool invocation dedup by tool_use_id ─────────────
+
+
+class TestToolInvocationHookDedup:
+    """Regression: hooks always send source_ts=0, so the value-based dedup
+    key collapsed legitimate identical repeats — Bash('git status') run
+    twice persisted once, and the second PostToolUse overwrote the first
+    row's duration.  tool_use_id must keep invocations apart end-to-end."""
+
+    SID = "1b7de111-bbbb-4abc-9def-1234567890ab"
+
+    def _hook(self, url, event, **detail):
+        status, _ = _post_json(
+            f"{url}/api/hooks",
+            {"event": event, "session_id": self.SID, "tool": "claude-code", **detail},
+        )
+        assert status == 200
+
+    def _pre_post(self, url, tool_use_id, pre_ts, post_ts):
+        """One full identical Bash('git status') invocation."""
+        self._hook(
+            url,
+            "PreToolUse",
+            ts=pre_ts,
+            tool_use_id=tool_use_id,
+            tool_name="Bash",
+            tool_input={"command": "git status"},
+        )
+        self._hook(
+            url,
+            "PostToolUse",
+            ts=post_ts,
+            tool_use_id=tool_use_id,
+            tool_name="Bash",
+            tool_input={"command": "git status"},
+            tool_response="ok",
+        )
+
+    def test_identical_repeats_persist_with_own_durations(self, hook_server):
+        url, db = hook_server
+        now = time.time()
+        self._pre_post(url, "toolu_01", now, now + 1.0)
+        self._pre_post(url, "toolu_02", now + 10.0, now + 12.0)
+
+        rows = {r["source_event_id"]: r for r in db.query_tool_invocations(session_id=self.SID)}
+        assert set(rows) == {"toolu_01", "toolu_02"}
+        assert rows["toolu_01"]["duration_ms"] == pytest.approx(1000.0, abs=1.0)
+        assert rows["toolu_02"]["duration_ms"] == pytest.approx(2000.0, abs=1.0)
+        assert all(r["result_summary"] == "ok" for r in rows.values())
+
+    def test_same_tool_use_id_retried_stays_one_row(self, hook_server):
+        url, db = hook_server
+        now = time.time()
+        for _ in range(2):
+            self._hook(
+                url,
+                "PreToolUse",
+                ts=now,
+                tool_use_id="toolu_09",
+                tool_name="Bash",
+                tool_input={"command": "git status"},
+            )
+        rows = db.query_tool_invocations(session_id=self.SID)
+        assert len(rows) == 1
+
+
 # ── Events API ────────────────────────────────────────────────────
 
 

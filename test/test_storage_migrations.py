@@ -153,6 +153,47 @@ def test_walk_from_pre_v20_drops_legacy_tables(tmp_path, count_calls):
     assert count_calls == _expected_counts(19)
 
 
+def _build_v27_fixture(path) -> None:
+    """Create a DB at schema_version=27 with the pre-v28 ``tool_invocations``
+    shape (no ``source_event_id`` column) and one existing row."""
+    conn = sqlite3.connect(str(path))
+    conn.execute("CREATE TABLE schema_version (version INTEGER PRIMARY KEY)")
+    conn.execute("INSERT INTO schema_version(version) VALUES(27)")
+    conn.execute(
+        "CREATE TABLE tool_invocations ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, dedup_key TEXT DEFAULT '', "
+        "ts REAL NOT NULL, session_id TEXT DEFAULT '', request_id INTEGER DEFAULT 0, "
+        "tool TEXT DEFAULT '', tool_name TEXT DEFAULT '', project_path TEXT DEFAULT '', "
+        "pid INTEGER DEFAULT 0, is_error INTEGER DEFAULT 0, duration_ms REAL DEFAULT 0, "
+        "input TEXT DEFAULT '{}', result_summary TEXT DEFAULT '', source TEXT DEFAULT '')"
+    )
+    conn.execute("CREATE UNIQUE INDEX idx_tool_inv_dedup ON tool_invocations(dedup_key) WHERE dedup_key != ''")
+    conn.execute(
+        "INSERT INTO tool_invocations(dedup_key, ts, session_id, tool_name, source)"
+        " VALUES('legacy-key', 1.0, 's1', 'Bash', 'hook')"
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_walk_from_v27_adds_source_event_id_column(tmp_path, count_calls):
+    db_path = tmp_path / "v27.db"
+    _build_v27_fixture(db_path)
+
+    db = HistoryDB(db_path=db_path, flush_interval=0)
+    try:
+        conn = db._conn()
+        assert _recorded_version(conn) == CURRENT_VERSION
+        assert _column_exists(conn, "tool_invocations", "source_event_id")
+        # Pre-v28 rows fall back to the empty-string default.
+        row = conn.execute("SELECT session_id, tool_name, source_event_id FROM tool_invocations").fetchone()
+        assert row == ("s1", "Bash", "")
+    finally:
+        db.close()
+
+    assert count_calls == _expected_counts(27)
+
+
 def test_fresh_db_skips_all_migrations(tmp_path, count_calls):
     db_path = tmp_path / "fresh.db"
     assert not db_path.exists()

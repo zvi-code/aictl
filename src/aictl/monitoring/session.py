@@ -178,9 +178,7 @@ class SessionState:
             "exact_input_tokens": self.exact_input_tokens,
             "exact_output_tokens": self.exact_output_tokens,
             "subprocess_count": dict(self.subprocess_counter),
-            "recent_subprocesses": [
-                {"ts": ts, "name": name} for ts, name in self.recent_subprocesses
-            ],
+            "recent_subprocesses": [{"ts": ts, "name": name} for ts, name in self.recent_subprocesses],
         }
 
 
@@ -208,6 +206,7 @@ class ToolReport:
     sources: list[str]
     last_seen_at: float
     state_bytes_written: int = 0
+    memory_rss_bytes: int = 0  # summed RSS across the tool's live PIDs
     processes: list[dict] = field(default_factory=list)  # per-PID details [{pid, name, ppid, cpu, mem}]
 
     def to_dict(self) -> dict[str, Any]:
@@ -227,6 +226,7 @@ class ToolReport:
             "inbound_rate_bps": round(self.inbound_rate_bps, 2),
             "outbound_rate_bps": round(self.outbound_rate_bps, 2),
             "state_bytes_written": self.state_bytes_written,
+            "memory_rss_bytes": self.memory_rss_bytes,
             "token_estimate": self.token_estimate.to_dict(),
             "mcp": self.mcp.to_dict(),
             "confidence": round(self.confidence, 3),

@@ -205,7 +205,7 @@ class SessionCorrelator:
                 )
                 self.sink.emit_with_sensitivity(
                     M("aictl.tool.memory"),
-                    round(float(r.peak_cpu_percent * 1048576) / 65536) * 65536,
+                    round(float(r.memory_rss_bytes) / 65536) * 65536,
                     tags,
                     abs_threshold=1_048_576,
                     max_threshold=10_485_760,
@@ -357,7 +357,7 @@ class SessionCorrelator:
                 return session
 
         if tool_hint:
-            return self._session_for_tool(tool_hint, ts, allow_ephemeral=allow_ephemeral)
+            return self._session_for_tool(tool_hint, ts, workspace=workspace, allow_ephemeral=allow_ephemeral)
 
         if workspace:
             candidates = [s for s in self.sessions.values() if workspace in s.workspaces]
@@ -446,10 +446,25 @@ class SessionCorrelator:
         tool: str,
         ts: float,
         *,
+        workspace: str | None = None,
         allow_ephemeral: bool,
     ) -> SessionState | None:
+        """Resolve a session from a bare tool hint.
+
+        When *workspace* is provided, sessions whose workspaces contain it
+        are preferred, so two concurrent same-tool sessions in different
+        projects each receive their own events.  Without a workspace hint
+        the most recently seen session wins — a known residual limitation:
+        callers that only know the tool (e.g. the structured telemetry
+        collector, whose state files carry no workspace) can still route
+        events to the wrong one of two concurrent same-tool sessions.
+        """
         sessions = [session for session in self.sessions.values() if session.tool == tool]
         if sessions:
+            if workspace:
+                matching = [session for session in sessions if workspace in session.workspaces]
+                if matching:
+                    return max(matching, key=lambda session: session.last_seen_at)
             return max(sessions, key=lambda session: session.last_seen_at)
         if not allow_ephemeral:
             return None
@@ -483,6 +498,8 @@ class SessionCorrelator:
         cpu_percent = sum(session.cpu_percent for session in session_list)
         peak_cpu_percent = max((session.peak_cpu_percent for session in session_list), default=0.0)
         pids = {pid for session in session_list for pid in session.pids}
+        # pid_mem stores MB (see on_process); the report/metric unit is bytes.
+        memory_rss_bytes = int(sum(self.pid_mem.get(pid, 0.0) for pid in pids) * 1048576)
         confidence = min(1.0, token_estimate.confidence * 0.65 + mcp.confidence * 0.35)
 
         # Collect per-PID details with parent info for tree rendering
@@ -523,6 +540,7 @@ class SessionCorrelator:
             confidence=confidence,
             sources=sorted({token_estimate.source}),
             last_seen_at=max(session.last_seen_at for session in session_list),
+            memory_rss_bytes=memory_rss_bytes,
             processes=proc_details,
         )
 

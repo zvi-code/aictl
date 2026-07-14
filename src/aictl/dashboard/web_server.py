@@ -591,7 +591,9 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                 if tool_name:
                     if event_name == "PreToolUse":
                         # Store the invocation (duration unknown yet).
-                        # Use tool_use_id in dedup key so Pre and Post don't collide.
+                        # tool_use_id anchors the dedup key so identical
+                        # repeats (same tool, same input) persist as
+                        # separate rows — see flush() in storage.py.
                         db.append_tool_invocation(
                             ToolInvocationRow(
                                 ts=ts,
@@ -604,20 +606,19 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                                 input=detail.get("input", detail.get("tool_input", {})),
                                 result_summary="",
                                 source="hook",
+                                source_event_id=tool_use_id,
                             )
                         )
                         # Cache pre-event info so PostToolUse can compute duration.
                         if tool_use_id:
                             # Compute dedup key matching what flush() will produce.
-                            # flush() uses _dedup_key(session_id, tool_name, input_sig, is_error, source)
-                            # when source_ts == 0.
+                            # flush() uses _dedup_key(session_id, tool_name,
+                            # source_event_id, source) when source_event_id is set,
+                            # so each invocation updates ITS OWN row.
                             input_val = detail.get("input", detail.get("tool_input", {}))
-                            input_sig = (
-                                json.dumps(input_val, sort_keys=True) if isinstance(input_val, dict) else str(input_val)
-                            )
                             from ..storage import _dedup_key
 
-                            dk = _dedup_key(session_id, tool_name, input_sig, "0", "hook")
+                            dk = _dedup_key(session_id, tool_name, tool_use_id, "hook")
                             self.server.pending_tool_use[tool_use_id] = (ts, dk, input_val)
                             # Evict stale entries (older than 10 minutes)
                             cutoff = time.time() - 600
@@ -658,6 +659,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                                     input=input_val,
                                     result_summary=str(detail.get("tool_response", detail.get("result", "")))[:500],
                                     source="hook",
+                                    source_event_id=tool_use_id,
                                 )
                             )
                             if not detail.get("is_error"):
@@ -1171,13 +1173,13 @@ from ..tools import (
     TOOL_RELATIONSHIPS as _REG_RELATIONSHIPS,
 )
 from ..tools import (
+    TOOL_VENDORS as _REG_TOOL_VENDORS,
+)
+from ..tools import (
     VENDOR_COLORS as _REG_VENDOR_COLORS,
 )
 from ..tools import (
     VENDOR_LABELS as _REG_VENDOR_LABELS,
-)
-from ..tools import (
-    TOOL_VENDORS as _REG_TOOL_VENDORS,
 )
 
 
