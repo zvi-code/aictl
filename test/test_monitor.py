@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -10,6 +11,7 @@ from click.testing import CliRunner
 from aictl.cli import main
 from aictl.monitoring.collectors.network import parse_nettop_line, parse_ss_snapshot
 from aictl.monitoring.collectors.process import PsutilProcessCollector, classify_process
+from aictl.monitoring.collectors.telemetry import StructuredTelemetryCollector
 from aictl.monitoring.config import MonitorConfig
 from aictl.monitoring.correlator import MonitorSnapshot, SessionCorrelator
 from aictl.monitoring.runtime import CollectorPlan
@@ -478,6 +480,163 @@ def test_session_files_loaded_from_on_file(tmp_path):
     assert len(sessions[0]["files_touched"]) == 3
 
 
+class _RecordingSink:
+    """Minimal sink stub capturing every emitted sample."""
+
+    def __init__(self):
+        self.samples: list[tuple[str, float, dict]] = []
+
+    def emit_with_sensitivity(self, metric, value, tags=None, ts=None, **_kwargs):
+        self.samples.append((metric, value, dict(tags or {})))
+
+    def emit_if_changed(self, metric, value, tags=None, ts=None):
+        self.samples.append((metric, value, dict(tags or {})))
+
+    def values(self, metric):
+        return [value for name, value, _ in self.samples if name == metric]
+
+
+def test_tool_report_memory_is_summed_rss_not_cpu(tmp_path):
+    """aictl.tool.memory must be the summed per-PID RSS in bytes.
+
+    Regression: the old emission was ``peak_cpu_percent * 1048576`` — CPU
+    dressed up as memory."""
+    config = MonitorConfig.for_root(tmp_path)
+    sink = _RecordingSink()
+    correlator = SessionCorrelator(config, sink=sink)
+
+    parent = ProcessInfo(pid=301, ppid=1, name="claude", cmdline=("claude",), cwd=str(tmp_path))
+    child = ProcessInfo(pid=302, ppid=301, name="node", cmdline=("node",))
+    correlator.on_process(parent, cpu_percent=87.0, memory_rss=100 * 1048576, child_count=1, is_new=True)
+    correlator.on_process(child, cpu_percent=3.0, memory_rss=50 * 1048576, child_count=0, is_new=True)
+
+    reports = correlator.tool_reports()
+    assert len(reports) == 1
+    report = reports[0]
+    assert report.memory_rss_bytes == 150 * 1048576
+    assert report.to_dict()["memory_rss_bytes"] == 150 * 1048576
+
+    emitted = sink.values("aictl.tool.memory")
+    assert emitted == [150 * 1048576], "metric must equal the summed RSS bytes"
+    # Guard against the old bug: the CPU-derived value must not come back.
+    cpu_derived = round(float(report.peak_cpu_percent * 1048576) / 65536) * 65536
+    assert emitted[0] != cpu_derived
+
+
+def test_session_for_tool_prefers_workspace_match(tmp_path):
+    """Two concurrent same-tool sessions in different workspaces: an event
+    carrying a workspace hint must land on the session whose workspace
+    matches, not simply on the most recently seen one."""
+    import time as _time
+
+    root = tmp_path.resolve()
+    ws_a = root / "proj-a"
+    ws_b = root / "proj-b"
+    ws_a.mkdir()
+    ws_b.mkdir()
+    config = MonitorConfig(root=root, workspace_paths=(ws_a, ws_b), state_paths=())
+    correlator = SessionCorrelator(config)
+
+    now = _time.time()
+    proc_b = ProcessInfo(pid=402, ppid=1, name="claude", cmdline=("claude",), cwd=str(ws_b))
+    proc_a = ProcessInfo(pid=401, ppid=1, name="claude", cmdline=("claude",), cwd=str(ws_a))
+    correlator.on_process(proc_b, cpu_percent=1.0, memory_rss=0, child_count=0, ts=now - 10, is_new=True)
+    # Session A is the most recently seen — the workspace hint must still win.
+    correlator.on_process(proc_a, cpu_percent=1.0, memory_rss=0, child_count=0, ts=now, is_new=True)
+
+    session_a = correlator.sessions[correlator.pid_to_session[401]]
+    session_b = correlator.sessions[correlator.pid_to_session[402]]
+    assert session_a is not session_b
+
+    correlator.on_telemetry(
+        input_tokens=500,
+        output_tokens=100,
+        tool_hint="claude-code",
+        workspace=str(ws_b),
+        ts=now + 1,
+    )
+    assert session_b.exact_input_tokens == 500
+    assert session_a.exact_input_tokens == 0
+
+    # Without a hint the most recent session still wins (documented fallback).
+    correlator.on_telemetry(input_tokens=10, output_tokens=1, tool_hint="claude-code", ts=now + 2)
+    assert session_b.exact_input_tokens == 510
+
+
+# ── Structured telemetry collector: cumulative rewrite-in-place JSON ─
+
+
+def _telemetry_collector(tmp_path):
+    config = MonitorConfig(root=tmp_path, workspace_paths=(tmp_path,), state_paths=())
+    return StructuredTelemetryCollector(config)
+
+
+def test_cumulative_json_emits_deltas_not_lifetime_totals(tmp_path):
+    """Rewrite-in-place cumulative JSON (e.g. ~/.claude/stats-cache.json)
+    must baseline on first sight and emit only positive deltas — the old
+    tail path re-ingested the full lifetime totals on every rewrite."""
+    import os as _os
+
+    collector = _telemetry_collector(tmp_path)
+    stats = tmp_path / "stats-cache.json"
+    stats.write_text(json.dumps({"input_tokens": 1000, "output_tokens": 100}))
+    _os.utime(stats, (1_000_000, 1_000_000))
+
+    # First sight: lifetime totals are a baseline, nothing is emitted.
+    assert collector._parse_file(stats) == []
+
+    # Rewrite in place with grown totals → only the delta is emitted.
+    stats.write_text(json.dumps({"input_tokens": 1500, "output_tokens": 150}))
+    _os.utime(stats, (1_000_010, 1_000_010))
+    samples = collector._parse_file(stats)
+    assert len(samples) == 1
+    assert samples[0]["input_tokens"] == 500
+    assert samples[0]["output_tokens"] == 50
+
+    # Unchanged file → nothing (mtime/size guard, no duplicate adds).
+    assert collector._parse_file(stats) == []
+
+
+def test_cumulative_json_shrink_rebaselines(tmp_path):
+    """A shrinking counter (file replaced / reset) must re-baseline without
+    emitting negative deltas or re-adding absolute totals."""
+    import os as _os
+
+    collector = _telemetry_collector(tmp_path)
+    stats = tmp_path / "usage-totals.json"
+    stats.write_text(json.dumps({"input_tokens": 1000, "output_tokens": 100}))
+    _os.utime(stats, (1_000_000, 1_000_000))
+    assert collector._parse_file(stats) == []
+
+    # Counter reset: totals shrink → re-baseline, no emission.
+    stats.write_text(json.dumps({"input_tokens": 200, "output_tokens": 20}))
+    _os.utime(stats, (1_000_010, 1_000_010))
+    assert collector._parse_file(stats) == []
+
+    # Growth from the new baseline emits only the new delta.
+    stats.write_text(json.dumps({"input_tokens": 300, "output_tokens": 25}))
+    _os.utime(stats, (1_000_020, 1_000_020))
+    samples = collector._parse_file(stats)
+    assert len(samples) == 1
+    assert samples[0]["input_tokens"] == 100
+    assert samples[0]["output_tokens"] == 5
+
+
+def test_jsonl_files_still_tail_per_line(tmp_path):
+    """Append-only JSONL keeps the offset-tail behavior: each appended line
+    is an independent per-request sample."""
+    collector = _telemetry_collector(tmp_path)
+    log = tmp_path / "usage-events.jsonl"
+    log.write_text(json.dumps({"input_tokens": 10, "output_tokens": 1}) + "\n")
+    samples = collector._parse_file(log)
+    assert [(s["input_tokens"], s["output_tokens"]) for s in samples] == [(10, 1)]
+
+    with log.open("a") as handle:
+        handle.write(json.dumps({"input_tokens": 20, "output_tokens": 2}) + "\n")
+    samples = collector._parse_file(log)
+    assert [(s["input_tokens"], s["output_tokens"]) for s in samples] == [(20, 2)]
+
+
 def test_process_collector_sticky_pids():
     """Once a PID is classified as AI-tool-related, keep tracking it
     even if classify_process is inconsistent on subsequent cycles."""
@@ -591,9 +750,7 @@ def test_process_collector_snapshot_tolerates_psutil_error():
             def __init__(self, _pid):
                 raise FakePsutilError("handle open fails")
 
-    collector = PsutilProcessCollector(
-        MonitorConfig(root=Path("/tmp"), workspace_paths=(), state_paths=())
-    )
+    collector = PsutilProcessCollector(MonitorConfig(root=Path("/tmp"), workspace_paths=(), state_paths=()))
     # Must not raise NameError or FakePsutilError.
     snap = collector._snapshot(FakePsutil)
     assert snap == {}, "all handles fail, so the snapshot is empty but the loop survived"

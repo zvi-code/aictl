@@ -144,7 +144,8 @@ CREATE TABLE IF NOT EXISTS tool_invocations (
     ts REAL NOT NULL, session_id TEXT DEFAULT '', request_id INTEGER DEFAULT 0,
     tool TEXT DEFAULT '', tool_name TEXT DEFAULT '', project_path TEXT DEFAULT '',
     pid INTEGER DEFAULT 0, is_error INTEGER DEFAULT 0, duration_ms REAL DEFAULT 0,
-    input TEXT DEFAULT '{}', result_summary TEXT DEFAULT '', source TEXT DEFAULT ''
+    input TEXT DEFAULT '{}', result_summary TEXT DEFAULT '', source TEXT DEFAULT '',
+    source_event_id TEXT DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_inv_dedup ON tool_invocations(dedup_key) WHERE dedup_key != '';
 
@@ -747,6 +748,12 @@ class ToolInvocationRow:
     ``source_ts`` follows the same convention as RequestRow: the timestamp
     embedded in the source event payload (e.g. OTel timeUnixNano or hook
     event timestamp).  0 means no embedded timestamp was present.
+
+    ``source_event_id`` is the source's own identifier for the invocation
+    (e.g. the ``tool_use_id`` carried by Claude Code hooks).  When present
+    it anchors the dedup key, so identical repeated invocations (the same
+    ``Bash("git status")`` run twice) persist as separate rows while a
+    retried delivery of the same event stays deduplicated.
     """
 
     ts: float
@@ -762,6 +769,7 @@ class ToolInvocationRow:
     result_summary: str = ""
     source: str = ""
     source_ts: float = 0.0  # embedded timestamp from source data (0 = absent)
+    source_event_id: str = ""  # source-side invocation id, e.g. hook tool_use_id
 
 
 @dataclass(slots=True)
@@ -2106,10 +2114,22 @@ class HistoryDB:
 
             if ti_buf:
                 for r in ti_buf:
-                    # Same Case A/B logic as requests.
-                    # Hook events (no embedded ts): dedup only on full value equality.
-                    # OTel events (embedded ts present): dedup on ts + identity fields.
-                    if r.source_ts > 0:
+                    # Dedup precedence:
+                    # 1. source_event_id (e.g. hook tool_use_id): unique per
+                    #    invocation, so legitimate identical repeats persist
+                    #    as separate rows and retried deliveries dedup.
+                    # 2. Embedded source timestamp (OTel events, Case A).
+                    # 3. Value-based fallback (Case B) — collapses identical
+                    #    repeats, but only when the source gave us nothing
+                    #    better to tell them apart.
+                    if r.source_event_id:
+                        dk = _dedup_key(
+                            r.session_id,
+                            r.tool_name,
+                            r.source_event_id,
+                            r.source,
+                        )
+                    elif r.source_ts > 0:
                         dk = _dedup_key(
                             r.session_id,
                             str(int(r.source_ts * 1000)),
@@ -2128,8 +2148,9 @@ class HistoryDB:
                         "INSERT OR IGNORE INTO tool_invocations"
                         "(dedup_key, ts, session_id, request_id, tool,"
                         " tool_name, project_path, pid, is_error,"
-                        " duration_ms, input, result_summary, source)"
-                        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        " duration_ms, input, result_summary, source,"
+                        " source_event_id)"
+                        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             dk,
                             r.ts,
@@ -2144,6 +2165,7 @@ class HistoryDB:
                             json.dumps(r.input) if isinstance(r.input, dict) else r.input,
                             r.result_summary,
                             r.source,
+                            r.source_event_id,
                         ),
                     )
                 total += len(ti_buf)

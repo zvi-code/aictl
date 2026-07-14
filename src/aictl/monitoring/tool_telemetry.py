@@ -394,16 +394,23 @@ def _recent_files(
     days: int = 7,
     max_files: int = 10,
 ) -> list[Path]:
-    """Return up to max_files files matching pattern, modified within days, newest first."""
+    """Return up to max_files files matching pattern, modified within days, newest first.
+
+    Stats each entry exactly once and sorts on the cached mtime — files can
+    vanish between the filter and the sort, and a second ``stat()`` on a
+    deleted file would raise mid-scan.
+    """
     cutoff = time.time() - days * 86400
-    files = []
+    files: list[tuple[float, Path]] = []
     for f in directory.glob(pattern):
         try:
-            if f.stat().st_mtime >= cutoff:
-                files.append(f)
+            mtime = f.stat().st_mtime
         except OSError:
-            continue
-    return sorted(files, key=lambda f: f.stat().st_mtime, reverse=True)[:max_files]
+            continue  # vanished mid-scan
+        if mtime >= cutoff:
+            files.append((mtime, f))
+    files.sort(key=lambda pair: pair[0], reverse=True)
+    return [f for _, f in files[:max_files]]
 
 
 def _first_int(d: dict, *keys: str) -> int:
@@ -451,18 +458,21 @@ def _parse_claude_active_session(root: Path, report: ToolTelemetryReport) -> Non
     if not proj_dir.is_dir():
         return
 
-    # Find the most recently modified JSONL
-    jsonl_files = sorted(
-        (f for f in proj_dir.glob("*.jsonl") if f.is_file()),
-        key=lambda f: f.stat().st_mtime,
-        reverse=True,
-    )
+    # Find the most recently modified JSONL.  Stat once per entry — a file
+    # deleted mid-scan must be skipped, not raise into the caller.
+    jsonl_files: list[tuple[float, Path]] = []
+    for f in proj_dir.glob("*.jsonl"):
+        try:
+            if f.is_file():
+                jsonl_files.append((f.stat().st_mtime, f))
+        except OSError:
+            continue  # vanished mid-scan
     if not jsonl_files:
         return
 
-    latest = jsonl_files[0]
+    latest_mtime, latest = max(jsonl_files, key=lambda pair: pair[0])
     # Only parse if modified recently (within 30 minutes — likely active)
-    if time.time() - latest.stat().st_mtime > 1800:
+    if time.time() - latest_mtime > 1800:
         return
 
     # Read last 500 lines (tail) to catch errors + recent tokens
@@ -551,13 +561,20 @@ def parse_copilot_telemetry(
 
     report = ToolTelemetryReport(tool=tool, source=source, confidence=confidence)
 
-    # Find recent session directories (modified in last 7 days)
+    # Find recent session directories (modified in last 7 days).
+    # Stat once per entry and sort on the cached value — directories can
+    # vanish between iterdir() and a later stat().
     cutoff = time.time() - 7 * 86400
-    sessions = sorted(
-        (d for d in session_dir.iterdir() if d.is_dir()),
-        key=lambda d: d.stat().st_mtime,
-        reverse=True,
-    )
+    candidates: list[tuple[float, Path]] = []
+    for d in safe_iterdir(session_dir):
+        try:
+            if not d.is_dir():
+                continue
+            candidates.append((d.stat().st_mtime, d))
+        except OSError:
+            continue  # vanished mid-scan
+    candidates.sort(key=lambda pair: pair[0], reverse=True)
+    sessions = [d for _, d in candidates]
 
     for sess_dir in sessions[:10]:  # Max 10 most recent sessions
         events_file = sess_dir / "events.jsonl"
@@ -578,7 +595,16 @@ def parse_copilot_telemetry(
 
 
 def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> None:
-    """Parse a single Copilot CLI events.jsonl for token data, metrics, and errors."""
+    """Parse a single Copilot CLI events.jsonl for token data, metrics, and errors.
+
+    Token accounting uses exactly one source per session: when a
+    ``session.shutdown`` event carries ``modelMetrics``, those metrics feed
+    BOTH the report totals and the per-model breakdown (so the two always
+    agree); per-message ``assistant.message`` output counts are only a
+    fallback for sessions without shutdown metrics (still live / crashed).
+    """
+    fallback_output_tokens = 0
+    shutdown_usage: dict[str, dict] = {}
     for obj in _iter_jsonl(events_file):
         event_type = obj.get("type", "")
         data = obj.get("data", {}) if isinstance(obj.get("data"), dict) else {}
@@ -586,8 +612,7 @@ def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> Non
 
         # assistant.message has outputTokens (under data)
         if event_type == "assistant.message":
-            out_tok = int(data.get("outputTokens", 0))
-            report.output_tokens += out_tok
+            fallback_output_tokens += int(data.get("outputTokens", 0))
             report.total_messages += 1
 
         # session.shutdown has comprehensive modelMetrics
@@ -626,34 +651,26 @@ def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> Non
             metrics = data.get("modelMetrics", {})
             for model, model_data in metrics.items():
                 usage = model_data.get("usage", {})
-                inp = int(usage.get("inputTokens", 0))
-                out = int(usage.get("outputTokens", 0))
-                cr = int(usage.get("cacheReadTokens", 0))
-                cw = int(usage.get("cacheWriteTokens", 0))
-                report.input_tokens += inp
-                report.cache_read_tokens += cr
-                report.cache_creation_tokens += cw
+                req_data = model_data.get("requests", {})
+                req_count = int(req_data.get("count", 0))
 
-                mb = report.by_model.setdefault(
+                mu = shutdown_usage.setdefault(
                     model,
                     {
                         "input_tokens": 0,
                         "output_tokens": 0,
                         "cache_read_tokens": 0,
+                        "cache_creation_tokens": 0,
                         "requests": 0,
                         "cost_usd": 0.0,
                     },
                 )
-                mb["input_tokens"] += inp
-                mb["output_tokens"] += out
-                mb["cache_read_tokens"] += cr
-
-                req_data = model_data.get("requests", {})
-                req_count = int(req_data.get("count", 0))
-                cost = float(req_data.get("cost", 0))
-                mb["requests"] += req_count
-                mb["cost_usd"] += cost
-                report.cost_usd += cost
+                mu["input_tokens"] += int(usage.get("inputTokens", 0))
+                mu["output_tokens"] += int(usage.get("outputTokens", 0))
+                mu["cache_read_tokens"] += int(usage.get("cacheReadTokens", 0))
+                mu["cache_creation_tokens"] += int(usage.get("cacheWriteTokens", 0))
+                mu["requests"] += req_count
+                mu["cost_usd"] += float(req_data.get("cost", 0))
 
                 # Detect potential timeouts: high latency per request
                 if req_count > 0 and api_dur > 0:
@@ -682,6 +699,34 @@ def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> Non
                     }
                 )
 
+    if shutdown_usage:
+        # Shutdown metrics are authoritative: totals and breakdown from
+        # the same source, so their sums always match.
+        for model, mu in shutdown_usage.items():
+            report.input_tokens += mu["input_tokens"]
+            report.output_tokens += mu["output_tokens"]
+            report.cache_read_tokens += mu["cache_read_tokens"]
+            report.cache_creation_tokens += mu["cache_creation_tokens"]
+            report.cost_usd += mu["cost_usd"]
+
+            mb = report.by_model.setdefault(
+                model,
+                {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "requests": 0,
+                    "cost_usd": 0.0,
+                },
+            )
+            mb["input_tokens"] += mu["input_tokens"]
+            mb["output_tokens"] += mu["output_tokens"]
+            mb["cache_read_tokens"] += mu["cache_read_tokens"]
+            mb["requests"] += mu["requests"]
+            mb["cost_usd"] += mu["cost_usd"]
+    else:
+        report.output_tokens += fallback_output_tokens
+
 
 # ─── Codex CLI ──────────────────────────────────────────────────
 
@@ -706,8 +751,15 @@ def parse_codex_telemetry(
 
 
 def _parse_codex_session(sess_file: Path, report: ToolTelemetryReport) -> None:
-    """Parse a single Codex CLI session JSONL for token_count events."""
+    """Parse a single Codex CLI session JSONL for token_count events.
+
+    ``token_count`` totals are cumulative for the whole session, so they
+    are attributed to the *last-seen* model only — adding them to every
+    model the session touched would multiply the counts.  The provider
+    name (``model_provider``) is never a model and is not recorded.
+    """
     last_total = None
+    last_model = ""
     for obj in _iter_jsonl(sess_file):
         # Codex events: {"type": "event_msg", "payload": {"type": "token_count", ...}}
         if obj.get("type") == "event_msg":
@@ -721,8 +773,8 @@ def _parse_codex_session(sess_file: Path, report: ToolTelemetryReport) -> None:
         # Also check for session_meta to get model info
         elif obj.get("type") == "session_meta":
             payload = obj.get("payload", {}) if isinstance(obj.get("payload"), dict) else {}
-            if model := payload.get("model", "") or payload.get("model_provider", ""):
-                report.by_model.setdefault(model, {"input_tokens": 0, "output_tokens": 0})
+            if model := payload.get("model", ""):
+                last_model = model
 
     # Use the last cumulative total (most accurate)
     if last_total:
@@ -732,10 +784,11 @@ def _parse_codex_session(sess_file: Path, report: ToolTelemetryReport) -> None:
         report.input_tokens += inp
         report.output_tokens += out
         report.cache_read_tokens += cached
-        # Distribute to model if known
-        for model in report.by_model:
-            report.by_model[model]["input_tokens"] += inp
-            report.by_model[model]["output_tokens"] += out
+        # Attribute the session's totals to the last-seen model only
+        if last_model:
+            mb = report.by_model.setdefault(last_model, {"input_tokens": 0, "output_tokens": 0})
+            mb["input_tokens"] += inp
+            mb["output_tokens"] += out
 
 
 # ─── Cursor (SQLite state.vscdb) ─────────────────────────────────
