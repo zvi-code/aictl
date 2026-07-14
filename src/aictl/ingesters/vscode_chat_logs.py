@@ -42,6 +42,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ._common import coerce_ts, record_quality
+
 if TYPE_CHECKING:
     from ..storage import HistoryDB
 
@@ -95,16 +97,7 @@ class VSCodeChatLogsIngester:
         self.last_poll_inserted: int = 0
 
     def _quality(self, status: str, *, severity: str = "", message: str = "", detail: dict | None = None) -> None:
-        if hasattr(self.store, "record_data_quality"):
-            self.store.record_data_quality(
-                "ingester:vscode-chat-logs",
-                status,
-                kind="ingester",
-                severity=severity,
-                message=message,
-                source=str(self.log_dir),
-                detail=detail,
-            )
+        record_quality(self.store, "vscode-chat-logs", self.log_dir, status, severity=severity, message=message, detail=detail)
 
     # ── public API ─────────────────────────────────────────────
 
@@ -215,7 +208,7 @@ class VSCodeChatLogsIngester:
         if not isinstance(snap, dict):
             return 0, False
         vscode_sid = str(snap.get("sessionId") or path.stem)
-        creation_date = _coerce_ts(snap.get("creationDate"))
+        creation_date = coerce_ts(snap.get("creationDate"))
         requests = snap.get("requests")
         if not isinstance(requests, list) or not requests:
             return 0, True
@@ -227,7 +220,7 @@ class VSCodeChatLogsIngester:
         for idx, req in enumerate(requests):
             if not isinstance(req, dict):
                 continue
-            ts = _coerce_ts(req.get("timestamp")) or creation_date
+            ts = coerce_ts(req.get("timestamp")) or creation_date
             model = str(req.get("modelId") or "")
             user_text = _extract_user_text(req.get("message"))
             if user_text:
@@ -311,22 +304,6 @@ class VSCodeChatLogsIngester:
 
 
 # ─── helpers ──────────────────────────────────────────────────────
-
-
-def _coerce_ts(raw: Any) -> float:
-    """Best-effort ms-or-s-since-epoch -> seconds."""
-    if raw is None or raw == "":
-        return 0.0
-    if isinstance(raw, (int, float)):
-        v = float(raw)
-        return v / 1000.0 if v > 1e12 else v
-    if isinstance(raw, str):
-        try:
-            v = float(raw)
-            return v / 1000.0 if v > 1e12 else v
-        except ValueError:
-            return 0.0
-    return 0.0
 
 
 def _extract_user_text(message: Any) -> str:

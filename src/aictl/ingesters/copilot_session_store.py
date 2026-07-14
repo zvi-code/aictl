@@ -39,6 +39,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ._common import coerce_ts, open_readonly, record_quality
+
 if TYPE_CHECKING:
     from ..storage import HistoryDB
 
@@ -60,17 +62,6 @@ _DEFAULT_DB_PATH = Path("~/.copilot/session-store.db").expanduser()
 def default_db_path() -> Path:
     """Return the standard Copilot CLI session-store location."""
     return _DEFAULT_DB_PATH
-
-
-def _open_readonly(db_path: Path) -> sqlite3.Connection | None:
-    """Open *db_path* read-only, returning ``None`` when missing/unreadable."""
-    if not db_path.exists():
-        return None
-    try:
-        return sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
-    except sqlite3.Error as exc:
-        log.warning("copilot ingester: failed to open %s read-only: %s", db_path, exc)
-        return None
 
 
 def _pick(columns: list[str], synonyms: tuple[str, ...]) -> str | None:
@@ -111,16 +102,7 @@ class CopilotSessionStoreIngester:
         self.last_poll_inserted: int = 0
 
     def _quality(self, status: str, *, severity: str = "", message: str = "", detail: dict | None = None) -> None:
-        if hasattr(self.store, "record_data_quality"):
-            self.store.record_data_quality(
-                "ingester:copilot-session-store",
-                status,
-                kind="ingester",
-                severity=severity,
-                message=message,
-                source=str(self.db_path),
-                detail=detail,
-            )
+        record_quality(self.store, "copilot-session-store", self.db_path, status, severity=severity, message=message, detail=detail)
 
     # ── public API ─────────────────────────────────────────────
 
@@ -132,7 +114,7 @@ class CopilotSessionStoreIngester:
         unreadable; never raises.
         """
         self.last_poll_ts = time.time()
-        src = _open_readonly(self.db_path)
+        src = open_readonly(self.db_path, "copilot ingester")
         if src is None:
             self._quality(
                 "source_missing" if not self.db_path.exists() else "failed",
@@ -244,7 +226,7 @@ class CopilotSessionStoreIngester:
             row_id = int(row_id)
             if row_id > max_rowid:
                 max_rowid = row_id
-            ts = _coerce_ts(raw_ts)
+            ts = coerce_ts(raw_ts)
             session_id = self._correlate(str(session_key or ""), ts)
             if self._insert_message(
                 session_id=session_id,
@@ -318,31 +300,6 @@ class CopilotSessionStoreIngester:
         )
         conn.commit()
         return provisional
-
-
-def _coerce_ts(raw: Any) -> float:
-    """Best-effort conversion of a source timestamp to epoch seconds."""
-    if raw is None or raw == "":
-        return 0.0
-    if isinstance(raw, (int, float)):
-        v = float(raw)
-        # Heuristic: values above ~1e12 are milliseconds since epoch.
-        return v / 1000.0 if v > 1e12 else v
-    if isinstance(raw, str):
-        # Numeric string?
-        try:
-            v = float(raw)
-            return v / 1000.0 if v > 1e12 else v
-        except ValueError:
-            pass
-        # ISO-8601 string?
-        try:
-            from datetime import datetime
-
-            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
-        except ValueError:
-            return 0.0
-    return 0.0
 
 
 def _stringify(value: Any) -> str:
