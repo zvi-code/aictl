@@ -199,7 +199,9 @@ class _APIHandlersMixin:
         """Persist editable project-scoped tool config fields."""
         from .tool_config_editor import ToolConfigEditError, save_editable_tool_config
 
-        content_length = int(self.headers.get("Content-Length", 0) or 0)
+        content_length = self._content_length()
+        if content_length is None:
+            return
         if content_length > 200_000:
             self.send_error(413, "Payload too large")
             return
@@ -838,13 +840,17 @@ class _APIHandlersMixin:
             limit = int(self._qs_get("limit", "1000"))
             # Extract tag filters from tag.X=Y params
             tag_filter = {k[4:]: v[0] for k, v in qs.items() if k.startswith("tag.")}
-            rows = db.query_samples(
-                metric=metric,
-                metric_prefix=prefix,
-                since=since,
-                tag_filter=tag_filter or None,
-                limit=limit,
-            )
+            try:
+                rows = db.query_samples(
+                    metric=metric,
+                    metric_prefix=prefix,
+                    since=since,
+                    tag_filter=tag_filter or None,
+                    limit=limit,
+                )
+            except ValueError as exc:
+                self._json_response({"error": str(exc)}, status=400)
+                return
             result = [{"ts": s.ts, "metric": s.metric, "value": s.value, "tags": s.tags} for s in rows]
 
         self._json_response(result)
@@ -1175,7 +1181,9 @@ class _APIHandlersMixin:
         """
         from ..storage import EventRow
 
-        content_length = int(self.headers.get("Content-Length", 0) or 0)
+        content_length = self._content_length()
+        if content_length is None:
+            return
         if content_length > 100_000:
             self.send_error(413, "Payload too large")
             return
@@ -1559,7 +1567,7 @@ class _APIHandlersMixin:
             body = content.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            self._send_cors_header()
             self.end_headers()
             self.wfile.write(body)
             return
