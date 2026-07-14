@@ -1,109 +1,119 @@
-# aictl — Control and Visibility for AI Coding Tools
+# aictl
 
-AI coding tools are becoming a core part of the development workflow — but as adoption grows, so does the complexity of managing them. Each tool has its own format for instructions, rules, hooks, MCP servers, and memory. Context accumulates and drifts: what was loaded for a debugging session lingers when you switch to writing specs. Across Claude Code, Copilot, Cursor, and Windsurf, there's no shared language and no unified view of what's actually running.
+**One control plane for every AI coding tool on your machine.**
 
-Context control — define your project's AI context once in a single .context.toml file: instructions, commands, MCP servers, hooks, rules, and memory. Switch profiles by mode (debug, docs, review) and deploy to every tool's native format automatically. Scope context
-by directory so a microservice gets only what's relevant to it.
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](pyproject.toml)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)](#windows-installation--troubleshooting)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Local-first](https://img.shields.io/badge/data-100%25%20local-orange)](#how-it-works)
 
-Runtime visibility — a live web dashboard and REST API give you a unified view across tools: active sessions, token usage, running processes, MCP server health, agent spawns, and OTel telemetry from Claude Code, VS Code Copilot, and Codex CLI — all in one place.
+Claude Code, Copilot, Cursor, Codex, Gemini — each with its own instruction
+files, MCP servers, hooks, memory, background processes, and token bills.
+**aictl** gives you a single place to *define* what they should know and to
+*see* what they are actually doing.
 
-Runs on macOS, Linux, and Windows. No cloud dependency. Zero config to start.
+<img src="docs/screenshots/dashboard-light.png" width="100%" alt="aictl live dashboard: per-tool inventory sparklines, CPU cores, live traffic by tool, live monitor with sessions and token estimates, and a Monitoring Health panel with OTel receiver and ingester status">
 
-**aictl** addresses both sides, it allows you to write your AI context once in human terms, scope it by directory, switch it by mode, and deploy it to every tool in its native format. It provides visibility into files, token-usage, sessions, agents, processes, and MCP servers across common tools, initially focused on claude-code, github-copilot and vscode ide.
+*The live dashboard (`aictl daemon serve`): one view across 14 supported
+tools — files and token footprint, live sessions and traffic per tool, CPU
+and memory, MCP servers, and a Monitoring Health panel that watches the
+monitor itself (ingesters, OTel receiver, dropped-sample alerts, data
+freshness).*
 
-<details>
-  <summary> Contextual Context Management</summary>
+## Two problems, one tool
 
-### Contextual Context Management
+**📝 Context control** — write your project's AI context once, in human
+terms, in a single `.context.toml`: instructions, commands, skills, MCP
+servers, hooks, rules, memory. Then:
 
-`.context.toml` is a single source of intent — what the AI should know, in human language — with multiple realizations per tool. Define instructions, commands, skills, MCP servers, LSP servers, hooks, and scoped rules once; `aictl ctx deploy` translates them into the native format of each target tool (Claude Code, GitHub Copilot, Cursor, Windsurf). Place `.context.toml` at the project root for global context, and in subdirectories for path-scoped context — not all context of a large project needs to be loaded for every task.
+- **Deploy** it to every tool's native format (`CLAUDE.md`, Copilot
+  instructions, Cursor rules, Windsurf rules, …) with one command
+- **Switch by mode** — `debug`, `docs`, `review` profiles each carry their
+  own instructions, commands, and agent memory; deploy rotates everything,
+  including a profile-aware memory swap
+- **Scope by directory** — `.context.toml` files nest; a microservice
+  loads only what is relevant to it
+- **Import** what you already have — reverse-generate `.context.toml`
+  from existing native files, so nothing is lost
+- **Package** context as a distributable Claude Code plugin
 
-Profiles switch intent by mode — the same codebase, different mental models. You define whatever modes make sense for your project; here are some **Examples**:
+**🔭 Runtime visibility** — a live local dashboard, TUI, and REST API over
+everything the tools do:
 
-| Profile | Intent | What the AI gets |
-|---------|--------|-----------------|
-| `debug` | Investigating a bug | Stack traces conventions, logging patterns, known failure modes, investigative commands |
-| `docs` | Writing documentation | API surface descriptions, style guide, doc generation commands, audience context |
-| `review` | Reviewing a PR | Coding standards, security checklist, performance anti-patterns, review commands |
-| `develop` | Building a new component | Architecture patterns, test conventions, dependency rules, scaffolding commands |
+- **Sessions** — every session across every tool: duration, tokens, cost,
+  files touched, the full conversation, tool calls with their actual
+  inputs, process trees, agent teams, and a kill switch for runaways
+- **Tokens & cost** — real telemetry (OTel + hooks + session files), daily
+  budget charts, per-model breakdowns — with double-counting bugs
+  engineered out
+- **Processes & MCP servers** — what is running right now, per tool, with
+  anomaly detection and cleanup hints
+- **Context window map** — which files are loaded into the LLM context,
+  token cost per category, sent-to-LLM vs on-demand
+- **File history** — every AI-related config/instruction file is content-
+  tracked, so you can see when context drifted (secrets are excluded by
+  a sensitive-file guard)
+- **Self-observability** — the monitor watches itself: ingester health,
+  data-quality events, snapshot staleness, dropped samples — a dead
+  collector cannot masquerade as "live"
 
-
-
-Each profile carries its own instructions, commands, MCP servers, hooks, and agent memory — switch with `aictl ctx deploy --profile docs` and the entire AI context rotates.
-
-- **Deploy** — scan the `.context.toml` tree, translate into native files for each tool, with profile-aware memory swap on every switch
-- **Import** — reverse-generate `.context.toml` from existing native files, so nothing already written is lost
-- **Package** — bundle `.context.toml` into distributable Claude Code plugins
-
-</details>
-
-
-<details>
-  <summary> Dashboard and Observability</summary>
-
-### Dashboard and Observability
-
-- **Audit** — scan a project for every AI resource across all tools: config files, hidden state directories, memory entries, MCP servers, running processes, and their resource consumption
-- **Monitor** — live observation of sessions, agents, token usage, traffic, and process health via OTel integration
-- **Visualize** — a live web dashboard, terminal TUI, and self-contained HTML report showing runtime state alongside static resources
-
-## Dashboard Overview
-
-<img src="docs/screenshots/dashboard-light.png" width="100%" alt="Dashboard overview with inventory stats, live monitor, traffic bars, and monitoring health table">
-
-*Live web dashboard (`aictl daemon serve`) — inventory stats, live monitor with active sessions and traffic rates, per-tool status with token counts and OTel diagnostics. [More screenshots below.](#screenshots)*
- 
-## Session Explorer
-
-<img src="docs/screenshots/sessions.png" width="100%" alt="Session Explorer tab showing per-tool session tabs, a selected session with stats and an action timeline">
-
-*Session Explorer — browse every recorded session per tool. Pick a tool, then a session chip (with start time, duration, file and token counts) to inspect it: live CPU/memory/IO/token-rate stats, an action timeline (session start/end, file edits, tool calls), and sub-views for Overview, Flow, Transcript, Timeline, and Events.*
-
-## Session Flow
-
-<img src="docs/screenshots/session-flow.png" width="100%" alt="Session Flow tab showing UML sequence diagram of agent sessions with API calls and token counts">
-
-*Session Flow — UML sequence diagram reconstructed from structured events. Shows user prompts, tool interactions (copilot-vscode, GitHub Copilot Chat, API), subagent spawns, and per-call token counts (input/output). Session chips at top with duration, scrollable timeline with model labels.*
-
-
-## Context Window Map
-
-<img src="docs/screenshots/context-breakdown.png" width="100%" alt="Context Window Map showing token breakdown by category and tool with stacked bars">
-
-*Context Window Map — tokens by category (commands, runtime, agent, instructions, skills, rules, memory) with per-tool stacked bars. Click any tool chip to drill down into individual files with token counts. Sent-to-LLM vs on-demand vs conditional breakdown at the top.*
-
-</details>
+Everything runs locally. No cloud dependency, no accounts, no data leaves
+your machine; the dashboard binds to loopback with CORS/CSRF protections.
 
 ## Quick Start
 
 ```bash
-# 1. Install
-pipx install ".[all]"
+# 1. Install (see Install section for pipx setup)
+pipx install "aictl[all] @ git+https://github.com/zvi-code/aictl.git"
+# …or from a clone: pipx install ".[all]"
 
-# 2. Scaffold context for your project
-cd my-project
-aictl ctx init                      # creates .context.toml
-
-# 3. Start the dashboard (opens browser automatically)
+# 2. Start the dashboard (opens your browser)
 aictl daemon serve
 
-# 4. Use any AI tool (Claude Code, Copilot, Cursor…), then reload the dashboard
-#    to see sessions, tokens, processes, and MCP servers across all tools.
+# 3. Use any AI tool — Claude Code, Copilot, Cursor, Codex, Gemini …
+#    Sessions, tokens, processes, and MCP servers appear as they happen.
 
-# 5. Deploy your context to all tools
-aictl ctx deploy --profile debug    # translates .context.toml → CLAUDE.md, Copilot rules, Cursor rules, …
+# 4. Take control of your context
+cd my-project
+aictl ctx init                      # scaffold .context.toml
+aictl ctx deploy --profile debug    # → CLAUDE.md, Copilot rules, Cursor rules, …
 ```
 
-To connect live AI telemetry (token counts, latency, session traces):
+To connect live AI telemetry (exact token counts, latency, session traces):
+
 ```bash
-aictl enable                        # one-shot: hooks + OTel + VS Code agent settings (persistent)
-aictl daemon serve                  # now receives OTel data from Claude Code, Copilot, Codex
+aictl enable                        # one-shot: hooks + OTel + VS Code agent settings
+aictl daemon serve                  # now receives OTel from Claude Code, Copilot, Codex
 ```
 
-Or just for the current shell session:
-```bash
-eval $(aictl otel enable --print)   # export OTel env vars for this shell only
-```
+Or for the current shell only: `eval $(aictl otel enable --print)`
+
+## Screenshots
+
+### Session Explorer
+
+<img src="docs/screenshots/sessions.png" width="100%" alt="Session Explorer: per-tool session chips, a live claude-code session with LIVE badge and kill control, action timeline with file modifications, and collapsible Conversation, Context, Memory, and Resources panels">
+
+*Every recorded session, per tool. Pick a session chip to inspect it: live
+stats, an action timeline, the captured conversation, loaded context, agent
+memory, and resource breakdowns — with Flow, Transcript, Timeline, and
+Events sub-views. Short noise sessions are collapsed, not hidden silently.*
+
+### Session Flow
+
+<img src="docs/screenshots/session-flow.png" width="100%" alt="Session Flow: UML-style sequence diagram of a session showing user prompts, API calls with token counts, and tool executions over time">
+
+*A sequence diagram reconstructed from structured events: user prompts,
+API calls with per-call token counts and models, tool executions, and
+subagent spawns.*
+
+### Context Window Map
+
+<img src="docs/screenshots/context-breakdown.png" width="100%" alt="Context Window Map: token breakdown by category with per-tool stacked bars and drill-down into individual files">
+
+*What is actually inside the context window: tokens by category (commands,
+instructions, skills, rules, memory, …) with per-tool stacked bars and
+per-file drill-down.*
 
 ## Install
 
@@ -571,7 +581,7 @@ The report includes expandable file previews (last 5 lines shown, click to expan
 
 You can also pipe to stdout: `aictl status --html > report.html`.
 
-## How It Works
+## Command Reference
 
 | Command | What it does |
 |---------|-------------|
@@ -988,5 +998,8 @@ GitHub Actions runs automatically on push/PR (`.github/workflows/test.yml`):
 | [docs/tool-cursor.md](docs/tool-cursor.md) | Cursor: .mdc rules, glob scoping, MCP |
 | [docs/vscode-claude-modes.md](docs/vscode-claude-modes.md) | Four VS Code session targets: Local, Cloud, Claude Code, Copilot CLI — same model, different harness |
 | [docs/memory.md](docs/memory.md) | Memory swap per (root, profile), outside-repo files |
+| [docs/storage-schema.md](docs/storage-schema.md) | SQLite schema — sessions, events, requests, samples, file history |
+| [docs/datapoint-catalog.md](docs/datapoint-catalog.md) | Every datapoint the dashboard shows: source, query, meaning |
+| [docs/dashboard-design-system.md](docs/dashboard-design-system.md) | Dashboard UI design tokens, patterns, accessibility status |
 
 
