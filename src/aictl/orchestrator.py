@@ -946,11 +946,17 @@ class SnapshotSerializer:
         return _json.dumps(result)
 
 
+# Minimum seconds between file-store sync passes. The ~5s refresh cadence
+# never pays file-sync cost more than once a minute.
+FILE_SYNC_INTERVAL = 60.0
+
+
 class SnapshotPersistence:
     """Writes snapshot data to HistoryDB (injected dependency)."""
 
     def __init__(self, db: _HistoryDB | None) -> None:
         self._db = db
+        self._last_file_sync = 0.0
 
     def persist(self, snap: _DashboardSnapshot, tool_rows: list[tuple]) -> None:
         """Persist metrics, events, telemetry, and agent teams to SQLite."""
@@ -1028,6 +1034,10 @@ class SnapshotPersistence:
             if snap.agent_teams:
                 self._persist_agent_teams(snap.agent_teams, snap.timestamp)
 
+            # Sync discovered files into the KV file store (throttled;
+            # failure-isolated inside _sync_files).
+            self._sync_files(snap)
+
             # All metric emission now happens at collection time
             # (collectors + DiscoveryCollector + collect() enrichment).
             # No snapshot-level emission needed.
@@ -1041,6 +1051,64 @@ class SnapshotPersistence:
                 log.debug("Provenance update failed: %s", exc)
         except Exception as exc:
             log.warning("DB write failed: %s", exc)
+
+    def _sync_files(self, snap: _DashboardSnapshot, now: float | None = None) -> None:
+        """Sync discovered files into the files/file_history store.
+
+        Throttled to one pass per ``FILE_SYNC_INTERVAL``. Failures are
+        logged + recorded as data-quality signals and never propagate.
+        """
+        if not self._db:
+            return
+        now = _time.time() if now is None else now
+        if now - self._last_file_sync < FILE_SYNC_INTERVAL:
+            return
+        # Set before the pass so a failing sync also waits out the interval.
+        self._last_file_sync = now
+        try:
+            # ResourceFile → discovery dict, de-duplicated by path
+            # (prefer the entry with a non-empty tool).
+            discovered: dict[str, dict] = {}
+            for tool_rec in snap.tools:
+                for f in tool_rec.files:
+                    entry = {
+                        "path": f.path,
+                        "tool": getattr(f, "tool", "") or tool_rec.tool,
+                        "category": getattr(f, "kind", ""),
+                        "scope": getattr(f, "scope", ""),
+                        "mtime": getattr(f, "mtime", 0.0),
+                        "size": getattr(f, "size", 0),
+                    }
+                    prev = discovered.get(f.path)
+                    if prev is None or (not prev.get("tool") and entry["tool"]):
+                        discovered[f.path] = entry
+            if not discovered:
+                # Empty discovery (e.g. transient failure) must not wipe
+                # the file store via removed-files handling.
+                return
+            stats = self._db.sync_files_from_discovery(list(discovered.values()), read_content=True)
+            log.debug("File sync: %s", stats)
+            if hasattr(self._db, "record_data_quality"):
+                self._db.record_data_quality(
+                    "file-sync",
+                    "ok",
+                    kind="persistence",
+                    detail=stats,
+                )
+        except Exception as exc:
+            log.warning("File sync failed: %s", exc)
+            try:
+                if hasattr(self._db, "record_data_quality"):
+                    self._db.record_data_quality(
+                        "file-sync",
+                        "failed",
+                        kind="persistence",
+                        severity="warning",
+                        message=f"File sync failed: {type(exc).__name__}",
+                        detail={"error": str(exc)},
+                    )
+            except Exception:
+                log.debug("file-sync: failed to record data-quality signal", exc_info=True)
 
     def _persist_agent_teams(self, agent_teams: list[dict], snapshot_ts: float) -> None:
         """Write agent team data to the sessions, agents, and requests tables."""
