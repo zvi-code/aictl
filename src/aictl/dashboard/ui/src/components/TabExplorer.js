@@ -21,7 +21,23 @@ import { useState, useEffect, useContext } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { esc, fmtK, COLORS } from '../utils.js';
+import { dedupeSessions } from '../selectors.js';
 import * as api from '../api.js';
+
+// ─── Session-select bus ──────────────────────────────────────────
+// ActivityRail, the command palette and CSessionsTab's "Inspect session"
+// button dispatch `aictl:select-session` on document
+// (detail = { sessionId, tool }). The dispatch usually happens in the same
+// click that switches to the explorer tab — i.e. *before* this component
+// mounts — so a module-level listener stashes the latest request and the
+// component consumes it on mount. While mounted, the component's own
+// listener reacts to further events directly.
+let pendingSelect = null;
+if (typeof document !== 'undefined') {
+  document.addEventListener('aictl:select-session', (e) => {
+    pendingSelect = e?.detail?.sessionId ? e.detail : null;
+  });
+}
 import SessionDetail from './SessionDetail.js';
 import TabSessionFlow from './TabSessionFlow.js';
 import TabTranscript from './TabTranscript.js';
@@ -103,11 +119,30 @@ export default function TabExplorer() {
     try { return localStorage.getItem('aictl-explorer-view') || 'overview'; }
     catch { return 'overview'; }
   });
+  // Session-select request (from the bus above). Consumed once sessions
+  // containing the requested id have loaded.
+  const [pending, setPending] = useState(() => {
+    const p = pendingSelect;
+    pendingSelect = null;
+    return p;
+  });
 
   const changeView = (v) => {
     setActiveView(v);
     try { localStorage.setItem('aictl-explorer-view', v); } catch { /* ignore */ }
   };
+
+  // Live select-session events while mounted.
+  useEffect(() => {
+    const handler = (e) => {
+      const d = e?.detail;
+      if (!d?.sessionId) return;
+      setPending(d);
+      pendingSelect = null; // consumed here; don't replay on a later mount
+    };
+    document.addEventListener('aictl:select-session', handler);
+    return () => document.removeEventListener('aictl:select-session', handler);
+  }, []);
 
   // Fetch sessions list (shared across sub-views)
   useEffect(() => {
@@ -118,8 +153,9 @@ export default function TabExplorer() {
     const until = globalRange?.until;
     api.getSessionTimeline(null, { since, until })
       .then(data => {
-        data.sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
-        setSessions(data);
+        const rows = dedupeSessions(data);
+        rows.sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
+        setSessions(rows);
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -142,6 +178,18 @@ export default function TabExplorer() {
       setActiveSessionId(toolSessions[0].session_id);
     }
   }, [activeTool, toolSessions.length]);
+
+  // Apply a pending select-session request once the session list contains
+  // the requested id (the event usually fires before the fetch resolves).
+  // Runs after the auto-select effects above so an explicit request wins.
+  useEffect(() => {
+    if (!pending?.sessionId) return;
+    const sess = sessions.find(s => s.session_id === pending.sessionId);
+    if (!sess) return; // not loaded yet — keep it stashed for the next fetch
+    setActiveTool(sess.tool);
+    setActiveSessionId(sess.session_id);
+    setPending(null);
+  }, [pending, sessions]);
 
   const activeSession = sessions.find(s => s.session_id === activeSessionId);
 

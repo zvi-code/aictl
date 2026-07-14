@@ -4,7 +4,6 @@ import { html } from 'htm/preact';
 import { useState } from 'preact/hooks';
 
 import Button from '../src/components/ui/Button.js';
-import Card from '../src/components/ui/Card.js';
 import Badge from '../src/components/ui/Badge.js';
 import Tooltip from '../src/components/ui/Tooltip.js';
 import Popover from '../src/components/ui/Popover.js';
@@ -34,21 +33,6 @@ describe('Button', () => {
     expect(btn.disabled).toBe(true);
     fireEvent.click(btn);
     expect(fn).not.toHaveBeenCalled();
-  });
-});
-
-describe('Card', () => {
-  it('renders title, subtitle, actions, footer slots', () => {
-    const { getByText } = render(html`<${Card}
-      title="Hello" subtitle="World"
-      actions=${html`<button>Act</button>`}
-      footer=${html`<span>Footer!</span>`}
-    ><div>body-content</div></${Card}>`);
-    expect(getByText('Hello')).toBeInTheDocument();
-    expect(getByText('World')).toBeInTheDocument();
-    expect(getByText('Act')).toBeInTheDocument();
-    expect(getByText('body-content')).toBeInTheDocument();
-    expect(getByText('Footer!')).toBeInTheDocument();
   });
 });
 

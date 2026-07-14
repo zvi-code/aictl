@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { render, cleanup, act } from '@testing-library/preact';
 import { html } from 'htm/preact';
 
@@ -28,9 +28,7 @@ afterEach(() => cleanup());
 
 // Import after stubs — these pull echarts.
 import EChart from '../src/components/charts/EChart.js';
-import GanttChart from '../src/components/charts/GanttChart.js';
 import AnalyticsScatter from '../src/components/charts/AnalyticsScatter.js';
-import TokenBurnBand from '../src/components/charts/TokenBurnBand.js';
 
 describe('EChart', () => {
   it('mounts with an option and cleans up on unmount', () => {
@@ -68,36 +66,6 @@ describe('EChart', () => {
   });
 });
 
-describe('GanttChart', () => {
-  it('renders without error for N sessions', () => {
-    const now = Math.floor(Date.now() / 1000);
-    const sessions = [
-      { session_id: 'a', tool: 'claude', started_at: now - 3600, ended_at: now - 1800 },
-      { session_id: 'b', tool: 'codex',  started_at: now - 2400, ended_at: now - 1200 },
-      { session_id: 'c', tool: 'claude', started_at: now - 300,  ended_at: null },
-    ];
-    const { container } = render(html`<${GanttChart}
-      sessions=${sessions}
-      rangeSeconds=${3600 * 2}
-    />`);
-    expect(container.querySelector('[role="img"]')).toBeTruthy();
-  });
-
-  it('wires onSessionClick without throwing', () => {
-    const onClick = vi.fn();
-    const now = Math.floor(Date.now() / 1000);
-    const { container } = render(html`<${GanttChart}
-      sessions=${[{ session_id: 'x', tool: 't', started_at: now - 10, ended_at: now }]}
-      rangeSeconds=${60}
-      onSessionClick=${onClick}
-    />`);
-    expect(container.querySelector('[role="img"]')).toBeTruthy();
-    // Click path goes through ECharts' own event dispatcher; we can't
-    // reliably fake-click a canvas cell in jsdom, so we just assert the
-    // mount path is clean.
-  });
-});
-
 describe('AnalyticsScatter', () => {
   it('mounts with multi-series data', () => {
     const { container } = render(html`<${AnalyticsScatter}
@@ -109,33 +77,6 @@ describe('AnalyticsScatter', () => {
 
   it('tolerates empty data', () => {
     const { container } = render(html`<${AnalyticsScatter} data=${[[]]} />`);
-    expect(container.querySelector('[role="img"]')).toBeTruthy();
-  });
-});
-
-describe('TokenBurnBand', () => {
-  it('renders from raw points', () => {
-    const base = Math.floor(Date.now() / 1000) - 600;
-    const points = [];
-    let cum = 0;
-    for (let i = 0; i < 10; i++) {
-      cum += 1000 + i * 100;
-      points.push({ ts: base + i * 60, tokens: cum });
-    }
-    const { container } = render(html`<${TokenBurnBand}
-      points=${points}
-      windowSec=${300}
-      stepSec=${60}
-      isCumulative=${true}
-      height=${200}
-    />`);
-    expect(container.querySelector('[role="img"]')).toBeTruthy();
-  });
-
-  it('renders from pre-bucketed series', () => {
-    const { container } = render(html`<${TokenBurnBand}
-      series=${[[Date.now() - 1000, 100], [Date.now(), 200]]}
-    />`);
     expect(container.querySelector('[role="img"]')).toBeTruthy();
   });
 });

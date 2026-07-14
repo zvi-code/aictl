@@ -3,6 +3,7 @@ import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS, fmtK } from '../utils.js';
 import { ToolIcon } from './ui/index.js';
+import { dedupeSessions } from '../selectors.js';
 import * as api from '../api.js';
 
 function fmtDur(s) {
@@ -124,8 +125,9 @@ export default function CSessionsTab({ onInspect }) {
     const until = globalRange?.until;
     api.getSessionTimeline(null, { since, until })
       .then(data => {
-        data.sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
-        setSessions(data);
+        const rows = dedupeSessions(data);
+        rows.sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
+        setSessions(rows);
         setLoading(false);
       })
       .catch(() => setLoading(false));

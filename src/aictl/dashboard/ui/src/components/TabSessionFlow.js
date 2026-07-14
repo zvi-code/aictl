@@ -2,6 +2,7 @@ import { useState, useEffect, useContext, useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { esc } from '../utils.js';
+import { dedupeSessions } from '../selectors.js';
 import * as api from '../api.js';
 import ToolTabs from './session_flow/ToolTabs.js';
 import SessionTabs from './session_flow/SessionTabs.js';
@@ -48,8 +49,9 @@ export default function TabSessionFlow({ externalSessionId = null } = {}) {
     const until = globalRange?.until;
     api.getSessionTimeline(null, { since, until })
       .then(data => {
-        data.sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
-        setSessions(data);
+        const rows = dedupeSessions(data);
+        rows.sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
+        setSessions(rows);
         setLoading(false);
       })
       .catch(() => setLoading(false));

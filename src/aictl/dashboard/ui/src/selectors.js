@@ -74,3 +74,97 @@ export function filterToolsByEnabled(tools, enabledTools) {
   if (enabledTools === null) return tools;
   return tools.filter(t => enabledTools.includes(t.tool));
 }
+
+// ─── Session dedup (defensive against backend double-reporting) ──
+
+/** Near-duplicate collapse windows (multi-source duplicate-chip signature). */
+const DEDUPE_START_WINDOW_S = 15;
+const DEDUPE_DURATION_WINDOW_S = 5;
+
+function sessionRowId(s) {
+  return s?.session_id ?? s?.id ?? null;
+}
+
+/** Most recent activity timestamp we can attribute to a session row. */
+function sessionActivity(s) {
+  return Math.max(s?.ended_at || 0, s?.started_at || 0, s?.last_activity || 0);
+}
+
+/** Duration in seconds, or null when the row is still live / unknown. */
+function sessionDurationS(s) {
+  if (s?.duration_s) return s.duration_s;
+  if (s?.ended_at && s?.started_at) return s.ended_at - s.started_at;
+  return null;
+}
+
+/**
+ * Merge two rows believed to describe the same session: keep the row with
+ * the most recent activity as the identity, take the max of token/file
+ * counters (a stale duplicate must not win on partial data), and fill any
+ * fields the kept row is missing from the discarded one.
+ */
+function mergeSessionRows(a, b) {
+  const [keep, other] = sessionActivity(b) > sessionActivity(a) ? [b, a] : [a, b];
+  const merged = { ...keep };
+  for (const k of ['input_tokens', 'output_tokens',
+                   'exact_input_tokens', 'exact_output_tokens',
+                   'files_modified']) {
+    const ov = other?.[k] || 0;
+    if (ov > (merged[k] || 0)) merged[k] = ov;
+  }
+  for (const k of Object.keys(other || {})) {
+    if (merged[k] == null && other[k] != null) merged[k] = other[k];
+  }
+  return merged;
+}
+
+/** Same tool + started_at within 15s + duration within 5s (or both live). */
+function isNearDuplicate(a, b) {
+  if (!a?.tool || a.tool !== b?.tool) return false;
+  if (a.started_at == null || b.started_at == null) return false;
+  if (Math.abs(a.started_at - b.started_at) > DEDUPE_START_WINDOW_S) return false;
+  const da = sessionDurationS(a), db = sessionDurationS(b);
+  if (da == null && db == null) return true;          // both still live
+  if (da == null || db == null) return false;         // one ended, one live → distinct
+  return Math.abs(da - db) <= DEDUPE_DURATION_WINDOW_S;
+}
+
+/**
+ * Deduplicate session rows (e.g. /api/session-timeline responses).
+ *
+ * Backend dedup is being fixed separately; the UI stays defensive:
+ *  1. Exact `session_id` duplicates collapse into one row (most recent
+ *     activity wins; token/file counters merge as maxima).
+ *  2. Near-duplicates from multiple reporting sources collapse too:
+ *     same tool, started_at within 15s and duration within 5s — the
+ *     duplicate-chip signature.
+ * Order of surviving rows follows first appearance; callers re-sort.
+ */
+export function dedupeSessions(sessions) {
+  if (!Array.isArray(sessions)) return [];
+  if (sessions.length < 2) return sessions.slice();
+
+  // Pass 1 — exact id duplicates.
+  const byId = new Map();
+  const rows = [];
+  for (const s of sessions) {
+    if (!s) continue;
+    const id = sessionRowId(s);
+    if (id != null && byId.has(id)) {
+      const idx = byId.get(id);
+      rows[idx] = mergeSessionRows(rows[idx], s);
+    } else {
+      if (id != null) byId.set(id, rows.length);
+      rows.push(s);
+    }
+  }
+
+  // Pass 2 — cross-source near-duplicates.
+  const out = [];
+  for (const s of rows) {
+    const dupIdx = out.findIndex(r => isNearDuplicate(r, s));
+    if (dupIdx >= 0) out[dupIdx] = mergeSessionRows(out[dupIdx], s);
+    else out.push(s);
+  }
+  return out;
+}

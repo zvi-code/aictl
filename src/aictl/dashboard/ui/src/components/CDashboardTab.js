@@ -3,6 +3,7 @@ import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS, fmtK, fmtSz, liveTokenTotal } from '../utils.js';
 import { ToolIcon } from './ui/index.js';
+import { dedupeSessions } from '../selectors.js';
 import * as api from '../api.js';
 
 // ─── Lane colors (editorial palette) ────────────────────────────
@@ -317,7 +318,8 @@ export default function CDashboardTab() {
     ];
   }, [snap, flow]);
 
-  // Flatten all sessions from all tools
+  // Flatten all sessions from all tools (deduped — a session reported by
+  // multiple collectors must render as a single row)
   const allSessions = useMemo(() => {
     const out = [];
     for (const t of (snap?.tools || [])) {
@@ -325,7 +327,7 @@ export default function CDashboardTab() {
         out.push({ ...s, _tool: t.tool, _toolLabel: t.label });
       }
     }
-    return out;
+    return dedupeSessions(out);
   }, [snap]);
 
   const filteredSessions = useMemo(() => {

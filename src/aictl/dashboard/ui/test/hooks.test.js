@@ -117,6 +117,20 @@ describe('useTabs', () => {
     act(() => { result.current.setActiveTab('budget'); });
     expect(result.current.activeTab).toBe('budget');
   });
+
+  it('recovers from a persisted tab id that no longer exists', () => {
+    // Regression: 'sessions' was removed from the tab registry but could
+    // still be persisted in localStorage, leaving users on "Unknown tab".
+    localStorage.setItem('aictl-pref-active_tab', JSON.stringify('sessions'));
+    const { result } = renderHook(() => useTabs());
+    expect(result.current.activeTab).toBe('overview');
+  });
+
+  it('keeps a persisted tab id that is still registered', () => {
+    localStorage.setItem('aictl-pref-active_tab', JSON.stringify('explorer'));
+    const { result } = renderHook(() => useTabs());
+    expect(result.current.activeTab).toBe('explorer');
+  });
 });
 
 // ─── useTheme ──────────────────────────────────────────────────
