@@ -32,6 +32,7 @@ const MOCK_SESSIONS = [
     tool: 'copilot-vscode',
     started_at: NOW - 900,
     ended_at: null,
+    active: true,
     input_tokens: 1000,
     output_tokens: 500,
     files_modified: 1,
@@ -110,14 +111,18 @@ describe('CSessionsTab — session list', () => {
     await findByText('Projects/myapp');
   });
 
-  it('live session shows live status badge', async () => {
-    const { findByText } = renderTab(MOCK_SESSIONS);
-    await findByText('● Live');
+  it('active session shows lifecycle pill with dot', async () => {
+    const { findByText, container } = renderTab(MOCK_SESSIONS);
+    await findByText('● active');
+    expect(container.querySelector('.csessions-status--active')).toBeTruthy();
   });
 
-  it('ended session shows Done status', async () => {
-    const { findByText } = renderTab(MOCK_SESSIONS);
-    await findByText('Done');
+  it('ended session shows ended lifecycle pill', async () => {
+    const { container, findByText } = renderTab(MOCK_SESSIONS);
+    await findByText('2 sessions');
+    const ended = container.querySelector('.csessions-status--ended');
+    expect(ended).toBeTruthy();
+    expect(ended.textContent).toBe('ended');
   });
 
   it('auto-selects first session and shows detail', async () => {
@@ -145,6 +150,47 @@ describe('CSessionsTab — session list', () => {
     await waitFor(() => expect(container.querySelectorAll('.csessions-row').length).toBe(1));
     expect(queryByText('Projects/other')).toBeNull();
     expect(container.querySelector('.csessions-cell-title')).toHaveTextContent('Projects/myapp');
+  });
+});
+
+describe('CSessionsTab — lifecycle status', () => {
+  it('renders lifecycle_status verbatim when the backend provides it', async () => {
+    const rows = [{ ...MOCK_SESSIONS[1], lifecycle_status: 'open', active: false }];
+    const { container, findByText } = renderTab(rows);
+    await findByText('1 sessions');
+    const pill = container.querySelector('.csessions-status--open');
+    expect(pill).toBeTruthy();
+    expect(pill.textContent).toBe('open');
+  });
+
+  it('derives imported status from ingester source rows', async () => {
+    const rows = [{
+      ...MOCK_SESSIONS[0], ended_at: null, duration_s: null,
+      source: 'claude-code-jsonl',
+    }];
+    const { container, findByText } = renderTab(rows);
+    await findByText('1 sessions');
+    const pill = container.querySelector('.csessions-status--imported');
+    expect(pill).toBeTruthy();
+    expect(pill.textContent).toBe('imported');
+  });
+
+  it('status filter offers only statuses that occur (never error)', async () => {
+    const { getByLabelText, findByText } = renderTab(MOCK_SESSIONS);
+    await findByText('2 sessions');
+    const select = getByLabelText('Filter by status');
+    const values = [...select.querySelectorAll('option')].map(o => o.value);
+    expect(values).toEqual(['all', 'active', 'ended']);
+    expect(values).not.toContain('error');
+  });
+
+  it('filtering by a lifecycle status narrows the list', async () => {
+    const { getByLabelText, container, findByText } = renderTab(MOCK_SESSIONS);
+    await findByText('2 sessions');
+    fireEvent.change(getByLabelText('Filter by status'), { target: { value: 'ended' } });
+    await waitFor(() => expect(container.querySelectorAll('.csessions-row').length).toBe(1));
+    expect(container.querySelector('.csessions-status--ended')).toBeTruthy();
+    expect(container.querySelector('.csessions-status--active')).toBeNull();
   });
 });
 

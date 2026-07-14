@@ -4,6 +4,7 @@ import {
   getSnapshot, getHistory, getEvents, getSessions, getSessionFlow,
   getSessionEvents, getFileAt, getSamples,
   getBudget, getOtelStatus, getSelfStatus, getSamplesList,
+  getDataQuality, getSessionMessages,
   getToolConfig, updateToolConfig, killSession,
   getDatapoints, resetDatapointCache, setBaseUrl, getBaseUrl, streamUrl,
 } from '../src/api.js';
@@ -167,6 +168,34 @@ describe('health endpoints', () => {
   it('fetches self-status', async () => {
     await getSelfStatus();
     expect(fetch).toHaveBeenCalledWith('/api/self-status');
+  });
+});
+
+// ─── getDataQuality ────────────────────────────────────────────
+describe('getDataQuality', () => {
+  it('fetches /api/data-quality without params by default', async () => {
+    await getDataQuality();
+    expect(fetch).toHaveBeenCalledWith('/api/data-quality');
+  });
+
+  it('builds URL with status, kind, component and limit filters', async () => {
+    await getDataQuality({ status: 'degraded', kind: 'sink', component: 'a b', limit: 20 });
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/data-quality?status=degraded&kind=sink&component=a%20b&limit=20',
+    );
+  });
+});
+
+// ─── getSessionMessages ────────────────────────────────────────
+describe('getSessionMessages', () => {
+  it('builds /api/session-messages URL with encoded session id and default limit', async () => {
+    await getSessionMessages('tool:12:34');
+    expect(fetch).toHaveBeenCalledWith('/api/session-messages?session_id=tool%3A12%3A34&limit=200');
+  });
+
+  it('honors a custom limit', async () => {
+    await getSessionMessages('s1', 50);
+    expect(fetch).toHaveBeenCalledWith('/api/session-messages?session_id=s1&limit=50');
   });
 });
 

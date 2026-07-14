@@ -3,6 +3,7 @@ import { fmtK, esc, fmtDurSec, toolColor } from '../utils.js';
 import TeamTree, { TaskBoard } from './TeamTree.js';
 import Panel from './session_detail/Panel.js';
 import ActionsPanel from './session_detail/ActionsPanel.js';
+import ConversationPanel from './session_detail/ConversationPanel.js';
 import ContextPanel from './session_detail/ContextPanel.js';
 import MemoryPanel from './session_detail/MemoryPanel.js';
 import ResourcesPanel from './session_detail/ResourcesPanel.js';
@@ -52,6 +53,9 @@ export default function SessionDetail({session, onClose}) {
 
     <${Panel} title="Actions" icon="zap" badge=${null} defaultOpen=${true}>
       <${ActionsPanel} sessionId=${session.session_id}/>
+    <//>
+    <${Panel} title="Conversation" icon="message-square" defaultOpen=${false}>
+      <${ConversationPanel} sessionId=${session.session_id}/>
     <//>
     ${hasTeam && html`<${Panel} title="Team" icon="users" badge=${entityState.agents.length + ' agents'} defaultOpen=${true}>
       <${TeamTree} entityState=${entityState}/>

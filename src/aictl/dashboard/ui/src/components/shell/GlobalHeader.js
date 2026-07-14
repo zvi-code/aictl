@@ -1,5 +1,5 @@
 import { html } from 'htm/preact';
-import { useState, useCallback } from 'preact/hooks';
+import { useState, useEffect, useCallback } from 'preact/hooks';
 import { Menu, Command as CommandIcon, Save, Trash2 } from 'lucide-preact';
 import Button from '../ui/Button.js';
 import Kbd from '../ui/Kbd.js';
@@ -9,6 +9,31 @@ import Dialog from '../ui/Dialog.js';
 import { Icon } from '../ui/index.js';
 import RangeBar from '../RangeBar.js';
 import ToolFilterBar from '../ToolFilterBar.js';
+
+// Data age past which the snapshot is considered stale. SSE pushes arrive
+// every few seconds and the safety-net refresh runs every 30s — anything
+// older means the refresh loop is dead even if the SSE socket looks "live".
+const STALE_AFTER_S = 30;
+
+/** Age of the last data snapshot, shown next to the connection pill.
+ *  Ticks on a 5s interval so the age keeps counting even when SSE stops
+ *  delivering messages (the exact failure this element exists to expose). */
+export function SnapshotAge({ timestamp }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 5000);
+    return () => clearInterval(id);
+  }, []);
+  if (!timestamp) return null;
+  const age = Math.max(0, Math.floor(Date.now() / 1000 - timestamp));
+  const stale = age > STALE_AFTER_S;
+  return html`<span class=${'conn ' + (stale ? 'stale' : 'ok')} role="status" aria-live="polite"
+    title=${'Last data snapshot received ' + age + 's ago'
+      + (stale ? ' — the refresh loop may be stalled' : '')}>
+    ● ${stale ? 'stale ' + age + 's' : age + 's'}
+    <span class="sr-only">${stale ? ' — data is stale' : ' — data age'}</span>
+  </span>`;
+}
 
 export default function GlobalHeader({
   // Filter/search
@@ -110,7 +135,10 @@ export default function GlobalHeader({
         <${Icon} name=${theme === 'light' ? 'sun' : theme === 'editorial' ? 'pen' : 'moon'} size="16"/>
       </button>
 
-      ${otelActive && html`<span class="conn ok" title="OTel receiver active">OTel</span>`}
+      ${otelActive
+        ? html`<span class="conn ok" title="OTel receiver active">OTel</span>`
+        : html`<span class="conn off" title="OTel receiver inactive — enable with: aictl otel enable">OTel off</span>`}
+      <${SnapshotAge} timestamp=${snap?.timestamp}/>
       <span class=${'conn ' + (connected ? 'ok' : 'err')} role="status" aria-live="polite">
         ${connected ? 'live' : 'reconnecting...'}
         <span class="sr-only">${connected ? ' — connected' : ' — connection lost, reconnecting'}</span>

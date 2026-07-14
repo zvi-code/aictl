@@ -14,8 +14,21 @@ function sessionTitle(s) {
   return String(s.session_id).split(':').slice(-1)[0] || s.session_id;
 }
 
+// Sources whose sessions were imported from another tool's on-disk store
+// (mirrors _IMPORTED_SESSION_SOURCES in dashboard/api_handlers.py).
+const IMPORTED_SOURCES = new Set([
+  'claude-code-jsonl', 'copilot-session-store', 'cursor-ingester', 'vscode-chat-logs',
+]);
+
+// Lifecycle status verbatim from the backend (active/ended/imported/open).
+// Rows from /api/session-timeline don't carry lifecycle_status yet, so we
+// derive it with the same rules as _db_session_lifecycle_status.
 function sessionStatus(s) {
-  return s.ended_at ? 'done' : 'live';
+  if (s.lifecycle_status) return s.lifecycle_status;
+  if (s.ended_at) return 'ended';
+  if (s.active) return 'active';
+  if (IMPORTED_SOURCES.has(s.source || '')) return 'imported';
+  return 'open';
 }
 
 function sessionTokens(s) {
@@ -37,12 +50,18 @@ function fmtDate(ts) {
 }
 
 // ─── Status badge ────────────────────────────────────────────────
+// One class per lifecycle_status; unknown values fall back to the muted
+// ended styling so a new backend status never renders unstyled.
+const STATUS_CLASS = {
+  active:   'csessions-status--active',
+  open:     'csessions-status--open',
+  ended:    'csessions-status--ended',
+  imported: 'csessions-status--imported',
+};
+
 function StatusBadge({ status }) {
-  if (status === 'live')
-    return html`<span class="csessions-status csessions-status--live">● Live</span>`;
-  if (status === 'error')
-    return html`<span class="csessions-status csessions-status--error">Err</span>`;
-  return html`<span class="csessions-status csessions-status--done">Done</span>`;
+  const cls = STATUS_CLASS[status] || 'csessions-status--ended';
+  return html`<span class=${'csessions-status ' + cls}>${(status === 'active' ? '● ' : '') + status}</span>`;
 }
 
 // ─── Detail pane ─────────────────────────────────────────────────
@@ -131,6 +150,20 @@ export default function CSessionsTab({ onInspect }) {
       .map(s => s.tool);
   }, [sessions, enabledTools]);
 
+  // Filter options track the lifecycle statuses that actually occur in the
+  // loaded rows — a filter that can never match is worse than none.
+  // NOTE: an 'error' option returns here once the backend ships
+  // `error_count` on session rows (separate batch); no payload field feeds
+  // an error status today.
+  const statuses = useMemo(() => {
+    const seen = new Set();
+    for (const s of sessions) {
+      if (toolMatch(s.tool)) seen.add(sessionStatus(s));
+    }
+    // Stable presentation order regardless of row order.
+    return ['active', 'open', 'ended', 'imported'].filter(st => seen.has(st));
+  }, [sessions, enabledTools]);
+
   const filtered = useMemo(() => {
     let list = sessions.filter(s => toolMatch(s.tool));
     if (statusFilter !== 'all') list = list.filter(s => sessionStatus(s) === statusFilter);
@@ -171,8 +204,7 @@ export default function CSessionsTab({ onInspect }) {
         aria-label="Filter by status"
         onChange=${e => setStatusFilter(e.target.value)}>
         <option value="all">all status</option>
-        <option value="live">live</option>
-        <option value="done">done</option>
+        ${statuses.map(st => html`<option key=${st} value=${st}>${st}</option>`)}
       </select>
       <select class="csessions-select" value=${agentFilter}
         aria-label="Filter by agent"

@@ -36,7 +36,10 @@ export default function ResourcesPanel({session}) {
   const lmUsage = sessionStats?.vscode_lm_usage || null;
   const skillBreakdown = sessionStats?.skill_call_breakdown || {};
   const skillRows = Object.entries(skillBreakdown).sort((a, b) => b[1] - a[1]);
+  const toolBreakdown = sessionStats?.tool_call_breakdown || {};
+  const toolRows = Object.entries(toolBreakdown).sort((a, b) => b[1] - a[1]);
   const agents = sessionStats?.agents || [];
+  const contextState = sessionStats?.context_state || null;
 
   return html`<div>
     <div class="es-kv mb-sm" style="gap:var(--sp-3)">
@@ -64,13 +67,27 @@ export default function ResourcesPanel({session}) {
     </div>`}
     ${session.entity_state && html`<${RateLimitGauge} rateLimits=${session.entity_state.rate_limits}/>`}
     ${sessionStats && html`<div class="session-agent-report" style="margin-top:var(--sp-3)">
-      <div class="text-xs text-muted mb-sm">Skills and subagents</div>
+      <div class="text-xs text-muted mb-sm">Skills and subagents
+        ${contextState && html`<span class="badge" style="margin-left:var(--sp-2);font-size:var(--fs-2xs)"
+          title="Deduced context-window state">context: ${contextState}</span>`}
+      </div>
       <div class="es-kv" style="gap:var(--sp-3)">
         <div class="es-kv-card"><div class="label">Skill Calls</div><div class="value">${sessionStats.skill_calls || 0}</div></div>
         <div class="es-kv-card"><div class="label">Subagents</div><div class="value">${agents.length}</div></div>
         <div class="es-kv-card"><div class="label">Tool Calls</div><div class="value">${sessionStats.tool_calls || 0}</div></div>
+        <div class="es-kv-card"><div class="label">Prompts</div><div class="value">${sessionStats.prompt_count || 0}</div></div>
+        <div class="es-kv-card"><div class="label">Tool calls/min</div><div class="value">${sessionStats.tool_call_rate != null ? sessionStats.tool_call_rate : '—'}</div></div>
       </div>
+      ${toolRows.length > 0 && html`<div class="lm-usage-breakdown" style="margin-top:var(--sp-2)">
+        <div class="text-xs text-muted">By tool</div>
+        ${toolRows.map(([toolName, count]) => html`<div key=${toolName} class="lm-usage-row flex-row gap-sm"
+          style="align-items:center;padding:var(--sp-1) 0">
+          <span class="mono text-xs" style="flex:1">${toolName}</span>
+          <span class="text-xs mono">${count}</span>
+        </div>`)}
+      </div>`}
       ${skillRows.length > 0 && html`<div class="lm-usage-breakdown" style="margin-top:var(--sp-2)">
+        <div class="text-xs text-muted">By skill</div>
         ${skillRows.map(([skill, count]) => html`<div key=${skill} class="lm-usage-row flex-row gap-sm"
           style="align-items:center;padding:var(--sp-1) 0">
           <span class="mono text-xs" style="flex:1">${skill}</span>

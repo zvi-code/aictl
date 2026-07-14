@@ -103,6 +103,10 @@ header h1 span { color: var(--fg2); font-weight: 400; }
 .conn { font-size: var(--fs-base); padding: var(--sp-1) var(--sp-5); border-radius: 4px; }
 .conn.ok { background: var(--green); color: var(--bg); }
 .conn.err { background: var(--red); color: var(--bg); }
+/* Snapshot age past the stale threshold — data is old even if SSE is "live". */
+.conn.stale { background: var(--orange); color: var(--bg); }
+/* Inactive-but-visible state (e.g. OTel receiver off). */
+.conn.off { background: var(--bg3); color: var(--fg2); border: 1px solid var(--border); }
 .search-box { background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
   padding: var(--sp-2) var(--sp-5); color: var(--fg); font-size: var(--fs-md); width: 200px; outline: none; }
 .search-box:focus { border-color: var(--accent); }
@@ -1628,6 +1632,16 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   background: var(--accent-soft, color-mix(in srgb, var(--accent) 12%, var(--bg2)));
   color: var(--accent);
   border-color: var(--accent);
+}
+[data-theme="editorial"] .conn.stale {
+  background: color-mix(in srgb, var(--orange) 12%, var(--bg2));
+  color: var(--orange);
+  border-color: var(--orange);
+}
+[data-theme="editorial"] .conn.off {
+  background: var(--bg2);
+  color: var(--fg2);
+  border-color: var(--border);
 }
 
 /* Search box — squared, no pill. */
@@ -3582,9 +3596,12 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   text-transform: uppercase;
   letter-spacing: 0.15em;
 }
-.csessions-status--live  { color: var(--green); }
-.csessions-status--done  { color: var(--fg2); }
-.csessions-status--error { color: var(--accent); }
+/* Lifecycle statuses served by the backend (active/open/ended/imported).
+ * An --error variant returns when session rows carry `error_count`. */
+.csessions-status--active   { color: var(--green); }
+.csessions-status--open     { color: var(--accent); }
+.csessions-status--ended    { color: var(--fg2); }
+.csessions-status--imported { color: var(--cat-commands); }
 .csessions-cell-title {
   font-size: var(--fs-base);
   color: var(--fg);

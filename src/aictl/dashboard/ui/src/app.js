@@ -329,7 +329,13 @@ export default function App() {
 
   const TAB_RENDERERS = {
     overview:   () => theme === 'editorial'
-      ? html`<${TabBoundary} tabName="overview"><${CDashboardTab}/></${TabBoundary}>`
+      ? html`<${TabBoundary} tabName="overview">
+          <${CDashboardTab}/>
+          <div class="mb-lg" style="margin-top:var(--sp-6)">
+            <div class="c-overline" style="margin-bottom:var(--sp-3)">Monitoring</div>
+            <${CollectorHealth}/>
+          </div>
+        </${TabBoundary}>`
       : html`<${TabBoundary} tabName="overview">
           <${DashboardContent} snap=${filteredSnap} history=${effectiveHistory}/>
           <div class="mb-lg"><${CollectorHealth}/></div>

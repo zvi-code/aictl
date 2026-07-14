@@ -7,11 +7,35 @@ import ChartCard from './ChartCard.js';
 import { ToolIcon } from './ui/index.js';
 import * as api from '../api.js';
 
+// Render one detail value for the compact k=v row. Nested objects/arrays
+// become truncated JSON instead of the useless "[object Object]".
+const DETAIL_VALUE_MAX = 60;
+function detailValue(v) {
+  if (v == null) return String(v);
+  let s;
+  if (typeof v === 'object') {
+    try { s = JSON.stringify(v); } catch { s = String(v); }
+  } else {
+    s = String(v);
+  }
+  return s.length > DETAIL_VALUE_MAX ? s.slice(0, DETAIL_VALUE_MAX) + '…' : s;
+}
+
+function detailSummary(detail) {
+  if (!detail || typeof detail !== 'object') return detail == null ? '' : String(detail);
+  return Object.entries(detail).map(([k, v]) => k + '=' + detailValue(v)).join(', ');
+}
+
+function detailPretty(detail) {
+  try { return JSON.stringify(detail, null, 2); } catch { return String(detail); }
+}
+
 export default function TabEventsStats() {
   const {snap: s, globalRange} = useContext(SnapContext);
   const [selectedTool, setTool] = useState(null);
   const [events, setEvents] = useState([]);
   const [toolHistory, setToolHistory] = useState(null);
+  const [expandedEvents, setExpandedEvents] = useState(() => new Set());
 
   const tools = useMemo(() => {
     if (!s) return [];
@@ -26,9 +50,19 @@ export default function TabEventsStats() {
   // Fetch events when tool or global range changes
   useEffect(() => {
     if (!selectedTool || !globalRange) return;
+    setExpandedEvents(new Set());
     api.getEvents({ tool: selectedTool, since: globalRange.since, limit: 500, until: globalRange.until })
       .then(setEvents).catch(() => setEvents([]));
   }, [selectedTool, globalRange]);
+
+  const toggleEvent = (key) => {
+    setExpandedEvents(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   // Fetch tool history when tool or global range changes
   useEffect(() => {
@@ -134,11 +168,26 @@ export default function TabEventsStats() {
             ${events.map((e, i) => {
               const color = EVENT_COLORS[e.kind] || 'var(--fg2)';
               const time = new Date(e.ts * 1000).toLocaleString(undefined, {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit', hourCycle:'h23'});
-              const detail = e.detail ? Object.entries(e.detail).map(([k, v]) => k + '=' + v).join(', ') : '';
-              return html`<div key=${e.ts + '-' + e.tool + '-' + i} class="es-event">
-                <span class="es-event-time">${time}</span>
-                <span class="es-event-kind" style="color:${color}">${e.kind}</span>
-                <span class="es-event-detail" title=${detail}>${detail || '-'}</span>
+              const detail = detailSummary(e.detail);
+              const hasDetail = e.detail != null
+                && (typeof e.detail !== 'object' || Object.keys(e.detail).length > 0);
+              const key = e.ts + '-' + e.tool + '-' + i;
+              const isOpen = expandedEvents.has(key);
+              return html`<div key=${key}>
+                <div class="es-event">
+                  <span class="es-event-time">${time}</span>
+                  <span class="es-event-kind" style="color:${color}">${e.kind}</span>
+                  ${hasDetail
+                    ? html`<button type="button" class="es-event-detail"
+                        aria-expanded=${isOpen ? 'true' : 'false'}
+                        title=${detail}
+                        onClick=${() => toggleEvent(key)}
+                        style="background:none;border:none;padding:0;cursor:pointer;color:var(--fg2);font-size:var(--fs-sm);text-align:left;font-family:inherit">
+                        <span style="display:inline-block;width:1em" aria-hidden="true">${isOpen ? '˅' : '›'}</span>${detail}
+                      </button>`
+                    : html`<span class="es-event-detail">-</span>`}
+                </div>
+                ${isOpen && html`<pre class="mono" style="font-size:var(--fs-xs);max-height:16rem;overflow:auto;white-space:pre-wrap;margin:0 var(--sp-5) var(--sp-2);padding:var(--sp-2);background:var(--bg);border-radius:var(--radius-sm, 4px)">${detailPretty(e.detail)}</pre>`}
               </div>`;
             })}
           </div>` : html`<p class="empty-state">No events for this tool in the selected range.</p>`}
