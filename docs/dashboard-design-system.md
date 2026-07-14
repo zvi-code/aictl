@@ -222,10 +222,23 @@ All 9 tab components use these instead of inline styles.
 - FileViewer focus trap + `aria-modal="true"` (added 2026-03-28)
 - Zero hardcoded hex colors in any JS file (verified 2026-03-28)
 
-### Known Bugs (as of 2026-07-14)
+### Known Bugs (as of 2026-07-14, post fix-campaign)
 
-Authoritative list: Open Issues Tracker in `.claude/skills/ui-review/SKILL.md`;
-full detail in `wip/reviews/2026-07-14-full-review.md`. Token-relevant summary:
+**All items below were FIXED by the 2026-07-14 fix campaign** (commits
+53aef3e..ee8d930) — kept for reference as design rules. The authoritative
+open list is the Open Issues Tracker in `.claude/skills/ui-review/SKILL.md`.
+
+Design rules distilled from these fixes:
+- **Canvas APIs can't consume `var()`** — always resolve via
+  `resolveColor()` from utils.js before handing colors to uPlot/canvas.
+- **utils.js is the only home for formatters** — `fmtDurSec`/`fmtDurMs`
+  name the unit explicitly; never define a local `fmtDur`.
+- **All fetches go through `api.js fetchJson`** (throws on !ok); panels use
+  the cancellation + loading + error-state pattern.
+- **New CSS vars must be defined in the `:root` token block** — the compat
+  aliases (--blue --fg3 --fg-muted --bg1 --bg-alt --bd --mono) exist there.
+
+Original bug list (fixed):
 
 - **Undefined CSS variables (expanded)**: `--blue`, `--fg3`, `--bg1`, `--mono`,
   `--bd`, `--bg-alt`, `--fg-muted` are referenced (components + dashboard.css
@@ -301,6 +314,7 @@ paths still reference a nonexistent `sessions` tab id (tracker #3).
 
 | Date | Change | By |
 |------|--------|-----|
+| 2026-07-14 | Fix campaign (15 commits, e33fcb4..ee8d930): security batch, session dedup, telemetry truth, monitoring robustness, dead-code purge (~1,400 lines), formatter/primitive consolidation, a11y batch, c-* shared CSS base, observability wiring (snapshot age, data-quality strip, ingesters, ConversationPanel, lifecycle pills, tool inputs), files-sync live. Known Bugs section converted to design rules; tracker rebuilt to post-campaign open set (13 items). | /ui-review fix |
 | 2026-07-14 | Full-codebase review (7 parallel passes): tracker rebuilt (33 items), undefined-var scope expanded, canvas-var rule added, layout section updated to 11-tab/theme-fork reality, a11y Missing list refreshed. Full report: wip/reviews/2026-07-14-full-review.md | /ui-review |
 | 2026-03-28 | ToolCard decomposition, ProcRow dedup, typography scale (commits 5d13edf, 49854a2) | /ui-review fix |
 | 2026-03-28 | FileViewer focus trap, last hex colors, component ARIA (commit d93cf1a) | /ui-review fix |
