@@ -246,8 +246,15 @@ function BarFlow({bars, tokenMode, onHover, onLeave}) {
       const showTime = labelSet.has(si);
 
       return html`<div key=${si} class="tc-flow-slot" style="height:${SLOT_H}px"
+        tabindex="0" role="img"
+        aria-label=${entity + ' at ' + fmtHHMM(b.ts) + ', ' + fmtK(total) + ' tokens'}
         onMouseEnter=${(e) => onHover(b, e)}
-        onMouseLeave=${onLeave}>
+        onMouseLeave=${onLeave}
+        onFocus=${(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          onHover(b, { clientX: r.left + r.width / 2, clientY: r.top });
+        }}
+        onBlur=${onLeave}>
         <div class="tc-flow-bar-area" style="height:${BAR_AREA_H}px">
           <div class="tc-flow-fill ${hasSplit ? 'tc-split' : ''}"
             style="height:${hPx}px;--bar-color:${color}">

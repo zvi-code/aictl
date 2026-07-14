@@ -184,7 +184,16 @@ export default function ContextMap() {
                   display:flex;align-items:center;justify-content:center;overflow:hidden;min-width:1px;
                   cursor:pointer;transition:opacity 0.15s"
                   title="${name}: ${fmtK(p.tokens)} tok (${p.count} files)"
-                  onClick=${() => setActiveTab(activeTab === name ? null : name)}>
+                  role="button" tabindex="0"
+                  aria-pressed=${activeTab === name ? 'true' : 'false'}
+                  aria-label="${name}: ${fmtK(p.tokens)} tokens (${p.count} files) in ${cat}"
+                  onClick=${() => setActiveTab(activeTab === name ? null : name)}
+                  onKeyDown=${(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setActiveTab(activeTab === name ? null : name);
+                    }
+                  }}>
                   ${elPct > 12 && barW > 15 ? html`<span style="font-size:var(--fs-2xs);color:var(--bg);
                     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 2px;font-weight:600">${name}</span>` : null}
                 </div>`;

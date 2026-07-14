@@ -411,7 +411,7 @@ function AgentRow({ tool: t, selected, onSelect }) {
   return html`<div class=${'cagents-row' + (isSel ? ' is-selected' : '')}
     onClick=${() => onSelect(t.tool)}
     role="button" tabIndex=${0} aria-pressed=${isSel ? 'true' : 'false'}
-    onKeyDown=${e => e.key === 'Enter' && onSelect(t.tool)}>
+    onKeyDown=${e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(t.tool); } }}>
     <div class="cagents-row-head">
       <${ToolIcon} tool=${t.tool} size="12px"/>
       <span class="cagents-row-label">${t.label}</span>
@@ -431,7 +431,7 @@ function InactiveRow({ tool: t, selected, onSelect }) {
   return html`<div class=${'cagents-row cagents-row--inactive' + (isSel ? ' is-selected' : '')}
     onClick=${() => onSelect(t.tool)}
     role="button" tabIndex=${0} aria-pressed=${isSel ? 'true' : 'false'}
-    onKeyDown=${e => e.key === 'Enter' && onSelect(t.tool)}>
+    onKeyDown=${e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(t.tool); } }}>
     <div class="cagents-row-head">
       <span class="cagents-row-dot cagents-row-dot--empty"></span>
       <span class="cagents-row-label" style="color:var(--fg2)">${t.label}</span>
@@ -490,7 +490,7 @@ export default function CAgentsTab({ onViewSessions, onViewConfig }) {
       </span>
     </div>
     <div class="cagents-body">
-      <div class="cagents-list" role="list">
+      <div class="cagents-list">
         ${active.length > 0 && html`<div class="cagents-list-heading">Active</div>`}
         ${active.map(t => html`<${AgentRow} key=${t.tool}
           tool=${t} selected=${selectedId} onSelect=${setSelected}/>`)}

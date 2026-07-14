@@ -167,7 +167,11 @@ export function TelemetrySection({telemetry}) {
   const [showErrors, setShowErrors] = useState(false);
   return html`<div class="live-section">
     <h3>Verified Token Usage <span class="badge">${t.source}</span> <span class="badge">${fmtPct(t.confidence*100)} confidence</span>
-      ${errors.length>0 && html`<span class="badge warn cursor-ptr" onClick=${(e)=>{e.stopPropagation();setShowErrors(!showErrors)}}>${errors.length} error${errors.length>1?'s':''}</span>`}
+      ${errors.length>0 && html`<button type="button" class="badge warn cursor-ptr"
+        aria-expanded=${showErrors}
+        aria-label=${'Toggle detail for ' + errors.length + ' telemetry error' + (errors.length>1?'s':'')}
+        style="border:none;font:inherit"
+        onClick=${(e)=>{e.stopPropagation();setShowErrors(!showErrors)}}>${errors.length} error${errors.length>1?'s':''}</button>`}
     </h3>
     <div class="metric-grid">
       <div class="metric-chip">

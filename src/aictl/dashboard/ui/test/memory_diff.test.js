@@ -50,7 +50,8 @@ describe('MemoryPanel — session memory diff', () => {
     expect(rowA.textContent).toContain('-1');
 
     // Click to expand inline diff
-    const toggle = rowA.querySelector('[role="button"]');
+    const toggle = rowA.querySelector('button');
+    expect(toggle.tagName).toBe('BUTTON'); // real button, keyboard operable
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     fireEvent.click(toggle);
     await waitFor(() => {

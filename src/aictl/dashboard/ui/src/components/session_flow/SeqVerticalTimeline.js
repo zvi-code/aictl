@@ -108,17 +108,15 @@ function _kindWord(kind) {
 
 export default function SeqVerticalTimeline({events, selectedIdx, onSelect}) {
   if (!events || events.length === 0) return null;
-  return html`<div class="sv-list" role="list">
+  return html`<ul class="sv-list">
     ${events.map((ev, i) => {
       const cls = LANE_KIND[ev.type] || { lane: 'tool', kind: 'call' };
       const color = LANE_COLOR[cls.lane] || 'var(--fg2)';
       const desc = _describe(ev);
       const isSel = i === selectedIdx;
       const isLast = i === events.length - 1;
-      return html`<button
-        key=${i}
+      return html`<li key=${i} class="sv-li"><button
         type="button"
-        role="listitem"
         class=${'sv-row' + (isSel ? ' sv-row--sel' : '')}
         onClick=${() => onSelect && onSelect(i)}
         aria-current=${isSel ? 'true' : 'false'}>
@@ -146,7 +144,7 @@ export default function SeqVerticalTimeline({events, selectedIdx, onSelect}) {
         <div class="sv-size">
           ${desc.size && html`<span class="sv-size-chip">${esc(desc.size)}</span>`}
         </div>
-      </button>`;
+      </button></li>`;
     })}
-  </div>`;
+  </ul>`;
 }

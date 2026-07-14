@@ -89,7 +89,8 @@ function Spark({ label, data, color, fmtVal, loading, error }) {
           ? html`<span class="text-muted text-xs" title=${error}>\u2014</span>`
           : hasData
             ? html`<${MiniChart} data=${data} color=${color}
-                height=${SPARK_HEIGHT} fmtVal=${fmtVal}/>`
+                height=${SPARK_HEIGHT} fmtVal=${fmtVal}
+                ariaLabel=${label + ' sparkline'}/>`
             : html`<span class="text-muted text-xs">no data</span>`}
     </div>
   </div>`;

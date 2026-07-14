@@ -32,7 +32,9 @@ function McpPanel({ mcpDetail }) {
 function McpMetric({ label, value, mcpDetail }) {
   const [show, setShow] = useState(false);
   return html`<div style="position:relative;cursor:default"
-    onMouseEnter=${() => setShow(true)} onMouseLeave=${() => setShow(false)}>
+    tabindex="0"
+    onMouseEnter=${() => setShow(true)} onMouseLeave=${() => setShow(false)}
+    onFocusIn=${() => setShow(true)} onFocusOut=${() => setShow(false)}>
     <${Metric} label=${label} value=${value} sm=${true}/>
     ${show && html`<div style="position:absolute;top:calc(100% + 6px);left:0;z-index:200;
         min-width:260px;background:var(--bg);border:1px solid var(--border);border-radius:6px;
@@ -111,8 +113,9 @@ export default function DashboardContent({ snap, history }) {
       </div>
       <div class="mb-sm"><${ResourceBar} snap=${snap} mode="files"/></div>
     </div>
-    <button class="header-toggle" onClick=${toggleExpanded} aria-label="Toggle details">
-      ${expanded ? '\u25B2 less' : '\u25BC more'}
+    <button class="header-toggle" onClick=${toggleExpanded} aria-label="Toggle details"
+      aria-expanded=${expanded}>
+      <span aria-hidden="true">${expanded ? '\u25B2' : '\u25BC'}</span> ${expanded ? 'less' : 'more'}
     </button>
   `;
 }

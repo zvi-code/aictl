@@ -105,7 +105,12 @@ export default function EventsPanel({ sessionId, since, until }) {
           <tr key=${r.key}
             class=${`es-events-row ${r.isWarn ? 'is-alert' : ''}`}
             onClick=${() => toggleRow(r.key)}>
-            <td class="mono text-xs">${r.time}</td>
+            <td class="mono text-xs">
+              <button type="button" class="es-events-toggle"
+                aria-expanded=${expanded.has(r.key)}
+                aria-label=${'Toggle detail for ' + (r.kind || 'event') + ' at ' + r.time}
+                onClick=${(e) => { e.stopPropagation(); toggleRow(r.key); }}>${r.time}</button>
+            </td>
             <td class="mono text-xs">${esc(r.kind)}</td>
             <td class="text-xs">${esc(r.tool)}</td>
             <td class="mono text-xs" title=${r.preview}>${esc(r.preview)}</td>

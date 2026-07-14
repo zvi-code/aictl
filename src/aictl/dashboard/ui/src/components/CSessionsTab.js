@@ -168,18 +168,21 @@ export default function CSessionsTab({ onInspect }) {
           onInput=${e => setFilter(e.target.value)}/>
       </div>
       <select class="csessions-select" value=${statusFilter}
+        aria-label="Filter by status"
         onChange=${e => setStatusFilter(e.target.value)}>
         <option value="all">all status</option>
         <option value="live">live</option>
         <option value="done">done</option>
       </select>
       <select class="csessions-select" value=${agentFilter}
+        aria-label="Filter by agent"
         onChange=${e => setAgentFilter(e.target.value)}>
         <option value="all">all agents</option>
         ${agents.map(a => html`<option key=${a} value=${a}>${a}</option>`)}
       </select>
       <span style="flex:1"></span>
       <select class="csessions-select" value=${sort}
+        aria-label="Sort sessions"
         onChange=${e => setSort(e.target.value)}>
         <option value="time-desc">newest first</option>
         <option value="time-asc">oldest first</option>

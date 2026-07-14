@@ -74,7 +74,7 @@ export default function GlobalHeader({
 
       <!-- Views dropdown -->
       <${Popover} trigger=${viewsTrigger} placement="bottom">
-        <div class="hdr-views-menu" role="menu" aria-label="Saved views">
+        <div class="hdr-views-menu" role="group" aria-label="Saved views">
           ${views.length === 0
             ? html`<div class="hdr-views-empty text-muted">No saved views</div>`
             : views.map(v => html`<div key=${v.id} class="hdr-views-row">

@@ -12,7 +12,7 @@ function ToolGroup({groupKey, groupLabel, groupColor, tools, root}) {
   return html`<div class="mb-md">
     <button onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}
       class="flex-row gap-sm cursor-ptr" style="background:none;border:none;padding:var(--sp-3) 0;font:inherit;color:var(--fg);width:100%">
-      <span style="font-size:var(--fs-xs);transition:transform 0.15s;${isOpen?'transform:rotate(90deg)':''}">\u25B6</span>
+      <span aria-hidden="true" style="font-size:var(--fs-xs);transition:transform 0.15s;${isOpen?'transform:rotate(90deg)':''}">\u25B6</span>
       <span style="width:10px;height:10px;border-radius:50%;background:${groupColor};flex-shrink:0"></span>
       <span class="text-bolder" style="font-size:var(--fs-lg)">${groupLabel}</span>
       <span class="badge">${tools.length} tools</span>

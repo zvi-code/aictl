@@ -233,15 +233,15 @@ export default function DataTable({
             aria-sort=${sortDir === 'asc' ? 'ascending' : sortDir === 'desc' ? 'descending' : 'none'}
             style=${style}
             class=${canSort ? 'aictl-dt__th aictl-dt__th--sortable' : 'aictl-dt__th'}>
-            <span class="aictl-dt__th-inner"
-              onClick=${canSort ? () => col.toggleSorting() : undefined}>
+            ${canSort ? html`<button type="button" class="aictl-dt__th-inner aictl-dt__th-btn"
+              onClick=${() => col.toggleSorting()}>
               ${meta.rawHeader}
-              ${canSort && html`<span class="aictl-dt__sort-ind" aria-hidden="true">${
+              <span class="aictl-dt__sort-ind" aria-hidden="true">${
                 sortDir === 'asc' ? '\u25B4'
                 : sortDir === 'desc' ? '\u25BE'
                 : '\u21C5'
-              }</span>`}
-            </span>
+              }</span>
+            </button>` : html`<span class="aictl-dt__th-inner">${meta.rawHeader}</span>`}
             <span class="aictl-dt__resizer" role="separator" aria-orientation="vertical"
               onMouseDown=${(e) => onResizeMouseDown(col.id, e.clientX, w || 120)(e)}></span>
           </th>`;

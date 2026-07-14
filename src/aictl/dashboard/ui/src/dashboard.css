@@ -784,7 +784,10 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
 
 /* Turn header */
 .tr-turn-header { display: flex; align-items: center; gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-4); cursor: pointer; user-select: none; }
+  padding: var(--sp-3) var(--sp-4); cursor: pointer; user-select: none;
+  /* rendered as <button> for keyboard operability */
+  width: 100%; background: none; border: none; font: inherit; color: inherit;
+  text-align: left; }
 .tr-turn-header:hover { background: var(--bg3); }
 .tr-turn-num { min-width: 22px; height: 22px; border-radius: 50%;
   background: var(--accent); color: var(--bg); font-size: var(--fs-xs);
@@ -960,6 +963,10 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
 .es-events-row {
   cursor: pointer;
 }
+
+/* Keyboard-accessible expand toggle in the first cell */
+.es-events-toggle { background: none; border: none; padding: 0; margin: 0;
+  font: inherit; color: inherit; cursor: pointer; }
 
 .es-events-row:hover {
   background: var(--bg1);
@@ -2004,7 +2011,10 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   top: 0;
 }
 
-.sv-list { display: flex; flex-direction: column; }
+.sv-list { display: flex; flex-direction: column;
+  /* real <ul> for list semantics */
+  list-style: none; margin: 0; padding: 0; }
+.sv-li { display: block; margin: 0; padding: 0; }
 
 .sv-row {
   display: grid;
@@ -2022,7 +2032,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   width: 100%;
   transition: background .12s ease;
 }
-.sv-row:first-child { border-top: none; }
+.sv-li:first-child .sv-row { border-top: none; }
 .sv-row:hover { background: var(--bg3); }
 .sv-row--sel {
   background: color-mix(in srgb, var(--accent) 14%, transparent);

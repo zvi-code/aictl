@@ -173,15 +173,13 @@ export default function TabExplorer() {
 
     <${SessionHeader} session=${activeSession}/>
 
-    <div class="explorer-subtabs" role="tablist" aria-label="Session views">
+    <nav class="explorer-subtabs" aria-label="Session views">
       ${VIEWS.map(v => html`<button key=${v.id}
         class="tab-btn explorer-subtab-btn"
-        role="tab"
         aria-current=${activeView === v.id ? 'page' : null}
-        aria-selected=${activeView === v.id}
         title=${v.hint}
         onClick=${() => changeView(v.id)}>${v.label}</button>`)}
-    </div>
+    </nav>
 
     <div class="explorer-content">
       ${!activeSessionId

@@ -65,7 +65,7 @@ function MemProfileGroup({profile, items}) {
   const profTok = items.reduce((a,m)=>a+m.tokens,0);
   return html`<div class="cat-group" style="margin:0 var(--sp-5)">
     <button class=${isOpen?'mem-profile-head open':'mem-profile-head'} onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}>
-      <span class="carrow">\u25B6</span>
+      <span class="carrow" aria-hidden="true">\u25B6</span>
       <span class="cat-label text-orange text-bold" title=${profile}>${esc(profile)}</span>
       <span class="badge">${items.length} files</span>
       <span class="badge">${fmtK(profTok)} tok</span>
@@ -83,7 +83,7 @@ function MemSourceGroup({source, entries}) {
   },[entries]);
   return html`<div class="mem-group">
     <button class=${'mem-group-head'+(isOpen?' open':'')} onClick=${()=>setOpen(!isOpen)} aria-expanded=${isOpen}>
-      <span class="carrow">\u25B6</span>
+      <span class="carrow" aria-hidden="true">\u25B6</span>
       ${esc(MEM_LABELS[source]||source)} <span class="badge">${entries.length}</span>
       <span class="badge">${fmtK(entries.reduce((a,m)=>a+m.tokens,0))} tok</span>
     </button>

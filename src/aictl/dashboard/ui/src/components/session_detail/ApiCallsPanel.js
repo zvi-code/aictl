@@ -55,7 +55,10 @@ export default function ApiCallsPanel({sessionId}) {
         const httpBad = Number.isFinite(httpNum) && httpNum >= 400;
         return html`<div key=${i} class="flex-row gap-sm" style="padding:2px 0;align-items:center">
           <span class="text-muted" style="width:60px;flex-shrink:0">${date}</span>
-          <span style="width:6px;height:6px;border-radius:50%;flex-shrink:0;background:${isErr ? 'var(--red)' : 'var(--green)'}"></span>
+          <span aria-hidden="true" style="width:6px;height:6px;border-radius:50%;flex-shrink:0;background:${isErr ? 'var(--red)' : 'var(--green)'}"></span>
+          <span style="width:14px;flex-shrink:0;text-align:center;color:${isErr ? 'var(--red)' : 'var(--green)'}">
+            <span aria-hidden="true">${isErr ? '✗' : '✓'}</span><span class="sr-only">${isErr ? 'error' : 'ok'}</span>
+          </span>
           <span style="width:120px;flex-shrink:0;text-overflow:ellipsis;overflow:hidden;white-space:nowrap">${c.model || '\u2014'}</span>
           ${!isErr && html`<span style="width:50px;flex-shrink:0;text-align:right">${c.duration_ms || 0}ms</span>`}
           ${!isErr && html`<span class="text-muted" style="width:70px;flex-shrink:0;text-align:right">${fmtK(c.input_tokens || 0)}in</span>`}

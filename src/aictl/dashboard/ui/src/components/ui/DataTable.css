@@ -16,6 +16,9 @@
 .aictl-dt thead th:first-child { border-top-left-radius: 4px; }
 .aictl-dt thead th:last-child  { border-top-right-radius: 4px; }
 .aictl-dt__th-inner { display: inline-flex; align-items: center; gap: var(--sp-1); }
+/* Sort toggle rendered as a real <button> for keyboard operability */
+.aictl-dt__th-btn { background: none; border: none; padding: 0; margin: 0;
+  font: inherit; color: inherit; text-align: inherit; }
 .aictl-dt__th--sortable .aictl-dt__th-inner { cursor: pointer; }
 .aictl-dt__th--sortable:hover { color: var(--fg); }
 .aictl-dt__sort-ind { opacity: 0.7; display: inline-flex; }
