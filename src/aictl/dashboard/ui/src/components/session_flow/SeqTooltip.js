@@ -1,6 +1,5 @@
 import { html } from 'htm/preact';
-import { fmtK, esc } from '../../utils.js';
-import { fmtDur } from './helpers.js';
+import { fmtK, esc, fmtDurMs } from '../../utils.js';
 
 export default function SeqTooltip({event}) {
   if (event.type === 'user_message') {
@@ -35,8 +34,8 @@ export default function SeqTooltip({event}) {
         ${(tok.cache_read || 0) > 0 ? ' \u00B7 Cache: ' + fmtK(tok.cache_read) : ''}
       </div>
       <div class="sf-tip-meta">
-        ${event.duration_ms > 0 ? 'Duration: ' + fmtDur(event.duration_ms) : ''}
-        ${event.ttft_ms > 0 ? ' \u00B7 TTFT: ' + fmtDur(event.ttft_ms) : ''}
+        ${event.duration_ms > 0 ? 'Duration: ' + fmtDurMs(event.duration_ms) : ''}
+        ${event.ttft_ms > 0 ? ' \u00B7 TTFT: ' + fmtDurMs(event.ttft_ms) : ''}
       </div>
       ${event.is_error && html`<div class="sf-tip-meta" style="color:var(--red)">Error: ${esc(event.error_type || 'unknown')}</div>`}
     </div>`;
@@ -49,7 +48,7 @@ export default function SeqTooltip({event}) {
       <div class="sf-tip-label">API Response${event.model ? ' \u2014 ' + event.model : ''}</div>
       <div class="sf-tip-meta">
         Output: ${fmtK(tok.output || 0)} tokens
-        ${event.duration_ms > 0 ? ' \u00B7 Latency: ' + fmtDur(event.duration_ms) : ''}
+        ${event.duration_ms > 0 ? ' \u00B7 Latency: ' + fmtDurMs(event.duration_ms) : ''}
         ${event.finish_reason ? ' \u00B7 ' + event.finish_reason : ''}
       </div>
       ${(event.error_type || event.http_status) && html`<div class="sf-tip-meta">
@@ -99,7 +98,7 @@ export default function SeqTooltip({event}) {
       ${resultSum && html`<div class="sf-tip-meta mono" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title=${resultSum}>result: ${esc(resultSum.length > 200 ? resultSum.slice(0, 200) + '\u2026' : resultSum)}</div>`}
       ${(event.success || event.duration_ms > 0 || event.result_size) && html`<div class="sf-tip-meta" style="margin-top:var(--sp-2)">
         ${event.success ? 'Success: ' + event.success : ''}
-        ${event.duration_ms > 0 ? ' \u00B7 ' + fmtDur(event.duration_ms) : ''}
+        ${event.duration_ms > 0 ? ' \u00B7 ' + fmtDurMs(event.duration_ms) : ''}
         ${event.result_size ? ' \u00B7 Result: ' + event.result_size + ' bytes' : ''}
       </div>`}
     </div>`;

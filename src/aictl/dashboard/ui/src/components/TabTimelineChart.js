@@ -8,17 +8,14 @@
 import { useState, useEffect, useContext, useMemo, useRef, useCallback } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
-import { fmtK, esc, COLORS } from '../utils.js';
-import { ToolIcon } from './ui/index.js';
-import { dedupeSessions } from '../selectors.js';
+import { fmtK, esc, fmtHHMM, fmtDurMs, fmtDurSec, hashColor } from '../utils.js';
+import useSessionPicker from '../hooks/useSessionPicker.js';
+import ToolTabs from './ToolTabs.js';
+import SessionTabs from './session_flow/SessionTabs.js';
 import * as api from '../api.js';
 
-// ─── Entity colour palette ────────────────────────────────────
-const _PALETTE = [
-  '#f97316','#a78bfa','#60a5fa','#f472b6',
-  '#34d399','#fbbf24','#06b6d4','#84cc16',
-  '#e11d48','#0ea5e9','#c084fc','#fb923c',
-];
+// ─── Entity colour: fixed overrides for well-known entities, shared
+// palette hash (utils.hashColor) for everything else. ─────────────
 const _FIXED = {
   Bash: '#6b7280', Read: '#60a5fa', Edit: '#34d399', Write: '#22d3ee',
   Grep: '#fbbf24', Glob: '#a78bfa', Agent: '#f472b6',
@@ -27,47 +24,19 @@ const _FIXED = {
 function entityColor(name) {
   if (!name) return 'var(--fg2)';
   if (_FIXED[name]) return _FIXED[name];
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffff;
-  return _PALETTE[h % _PALETTE.length];
+  return hashColor(name);
 }
 
-// ─── Helpers ───────────────────────────────────────────────────
-function fmtHHMM(ts) {
-  if (!ts) return '';
-  return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-function fmtDateHHMM(ts) {
-  if (!ts) return '';
-  return new Date(ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
+// ─── Helpers (domain-specific; generic formatters live in utils.js) ──
 function fmtDateTime(ts) {
   if (!ts) return '';
   return new Date(ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
-}
-function fmtDurMs(ms) {
-  if (!ms) return '';
-  return ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's';
-}
-function fmtDurSec(s) {
-  if (!s || s <= 0) return '0s';
-  if (s < 60) return Math.round(s) + 's';
-  const m = Math.floor(s / 60), sec = Math.round(s % 60);
-  if (s < 3600) return m + 'm' + (sec ? ' ' + sec + 's' : '');
-  const h = Math.floor(m / 60), rm = m % 60;
-  return h + 'h' + (rm ? ' ' + rm + 'm' : '');
 }
 function fmtGap(sec) {
   if (sec < 60) return Math.round(sec) + 's';
   if (sec < 3600) return Math.round(sec / 60) + 'm';
   if (sec < 86400) return (sec / 3600).toFixed(1) + 'h';
   return (sec / 86400).toFixed(1) + 'd';
-}
-function shortSid(sid) {
-  if (!sid) return '';
-  const parts = sid.split(':');
-  if (parts.length === 3 && /^\d+$/.test(parts[1])) return parts[1];
-  return sid.slice(-6);
 }
 
 // ─── Token helpers ────────────────────────────────────────────
@@ -98,40 +67,6 @@ function barEntity(t) {
   if (t.type === 'error') return 'Error';
   if (t.type === 'hook') return t.hook_name || 'Hook';
   return t.type || '?';
-}
-
-// ─── Tool/Session pickers ─────────────────────────────────────
-function ToolTabs({tools, activeTool, onSelect}) {
-  if (tools.length <= 1) return null;
-  return html`<div class="sf-tool-tabs">
-    ${tools.map(t => html`<button key=${t} class="sf-tool-tab ${t === activeTool ? 'active' : ''}"
-      style="border-bottom-color:${t === activeTool ? (COLORS[t] || 'var(--accent)') : 'transparent'};color:${COLORS[t] || 'var(--fg)'}"
-      onClick=${() => onSelect(t)}>
-      <${ToolIcon} tool=${t} size="1em"/> ${esc(t)}
-    </button>`)}
-  </div>`;
-}
-
-function SessionTabs({sessions, activeId, onSelect, loading}) {
-  if (loading) return html`<div class="sf-sess-tabs"><span class="text-muted text-xs">Loading sessions...</span></div>`;
-  if (!sessions.length) return html`<div class="sf-sess-tabs"><span class="text-muted text-xs">No sessions in range</span></div>`;
-  return html`<div class="sf-sess-tabs">
-    ${sessions.map(s => {
-      const tok = (s.exact_input_tokens || s.input_tokens || 0) + (s.exact_output_tokens || s.output_tokens || 0);
-      const dur = s.duration_s || (s.ended_at && s.started_at ? s.ended_at - s.started_at : 0);
-      const isActive = s.session_id === activeId;
-      return html`<button key=${s.session_id} title=${s.session_id}
-        class="sf-sess-tab ${isActive ? 'active' : ''}"
-        onClick=${() => onSelect(s.session_id)}>
-        <span class="sf-stab-time">${fmtHHMM(s.started_at)}</span>
-        <span class="sf-stab-sid">${shortSid(s.session_id)}</span>
-        <span class="sf-stab-dur">${fmtDurSec(dur)}</span>
-        ${tok > 0 && html`<span class="sf-stab-tok">${fmtK(tok)}t</span>`}
-        ${(s.files_modified || 0) > 0 && html`<span class="sf-stab-files">${s.files_modified}f</span>`}
-        ${!s.ended_at && html`<span class="sf-stab-live">\u25CF</span>`}
-      </button>`;
-    })}
-  </div>`;
 }
 
 // ─── Tooltip ───────────────────────────────────────────────────
@@ -332,11 +267,11 @@ function BarFlow({bars, tokenMode, onHover, onLeave}) {
 // tool/session pickers are hidden and the component renders only the
 // timeline for the given session.
 export default function TabTimelineChart({ externalSessionId = null } = {}) {
-  const {snap: s, globalRange, enabledTools} = useContext(SnapContext);
-  const [sessions, setSessions] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [activeTool, setActiveTool] = useState(null);
-  const [activeSessionId, setActiveSessionId] = useState(null);
+  const {globalRange, enabledTools} = useContext(SnapContext);
+  const {
+    sessions, loading, error, tools, toolSessions,
+    activeTool, setActiveTool, activeSessionId, setActiveSessionId,
+  } = useSessionPicker({ globalRange, enabledTools });
   const [flowData, setFlowData] = useState(null);
   const [flowLoading, setFlowLoading] = useState(false);
   const [tooltip, setTooltip] = useState(null);
@@ -345,38 +280,6 @@ export default function TabTimelineChart({ externalSessionId = null } = {}) {
   const containerRef = useRef(null);
   const embedded = externalSessionId != null;
   const effectiveSessionId = embedded ? externalSessionId : activeSessionId;
-
-  // Fetch sessions
-  useEffect(() => {
-    setLoading(true);
-    const since = globalRange ? Math.min(globalRange.since, Date.now() / 1000 - 86400) : Date.now() / 1000 - 86400;
-    const until = globalRange?.until;
-    api.getSessionTimeline(null, { since, until })
-      .then(data => {
-        const rows = dedupeSessions(data);
-        rows.sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
-        setSessions(rows);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, [globalRange]);
-
-  const toolMatch = (t) => enabledTools === null || enabledTools.includes(t);
-  const filteredSessions = sessions.filter(sess => toolMatch(sess.tool));
-  const tools = [...new Set(filteredSessions.map(s => s.tool))].sort();
-
-  useEffect(() => {
-    if (!activeTool && tools.length > 0) setActiveTool(tools[0]);
-    else if (activeTool && !tools.includes(activeTool) && tools.length > 0) setActiveTool(tools[0]);
-  }, [tools.join(',')]);
-
-  const toolSessions = filteredSessions.filter(s => s.tool === activeTool);
-
-  useEffect(() => {
-    if (toolSessions.length > 0 && (!activeSessionId || !toolSessions.find(s => s.session_id === activeSessionId))) {
-      setActiveSessionId(toolSessions[0].session_id);
-    }
-  }, [activeTool, toolSessions.length]);
 
   useEffect(() => {
     if (!effectiveSessionId) { setFlowData(null); return; }
@@ -435,7 +338,7 @@ export default function TabTimelineChart({ externalSessionId = null } = {}) {
   return html`<div class="tc-container" ref=${containerRef}>
     ${!embedded && html`<${ToolTabs} tools=${tools} activeTool=${activeTool} onSelect=${setActiveTool}/>`}
     ${!embedded && html`<${SessionTabs} sessions=${toolSessions} activeId=${activeSessionId}
-      onSelect=${setActiveSessionId} loading=${loading}/>`}
+      onSelect=${setActiveSessionId} loading=${loading} error=${error}/>`}
     <${SummaryBar} summary=${summary}/>
 
     ${flowLoading

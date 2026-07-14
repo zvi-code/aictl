@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
+  fetchJson,
   getSnapshot, getHistory, getEvents, getSessions, getSessionFlow,
   getSessionEvents, getFileAt, getSamples,
   getBudget, getOtelStatus, getSelfStatus, getSamplesList,
+  getToolConfig, updateToolConfig, killSession,
   getDatapoints, resetDatapointCache, setBaseUrl, getBaseUrl, streamUrl,
 } from '../src/api.js';
 
@@ -173,6 +175,79 @@ describe('getSamplesList', () => {
   it('fetches /api/samples?list=1', async () => {
     await getSamplesList();
     expect(fetch).toHaveBeenCalledWith('/api/samples?list=1');
+  });
+});
+
+// ─── fetchJson error handling ──────────────────────────────────
+describe('fetchJson', () => {
+  function mockErrorResponse(status, body) {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status,
+      text: () => Promise.resolve(body),
+      json: () => Promise.resolve(JSON.parse(body || '{}')),
+    });
+  }
+
+  it('returns parsed JSON on 2xx', async () => {
+    const result = await fetchJson('/api/anything');
+    expect(result).toEqual({ mocked: true });
+  });
+
+  it('throws on !ok with status and path in the message', async () => {
+    mockErrorResponse(500, 'boom');
+    const err = await fetchJson('/api/snapshot').catch(e => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.status).toBe(500);
+    expect(err.message).toContain('500');
+    expect(err.message).toContain('/api/snapshot');
+    expect(err.message).toContain('boom');
+  });
+
+  it('extracts the JSON error field from error bodies', async () => {
+    mockErrorResponse(400, JSON.stringify({ error: 'bad session id' }));
+    const err = await fetchJson('/api/session-kill').catch(e => e);
+    expect(err.message).toContain('bad session id');
+    expect(err.status).toBe(400);
+  });
+
+  it('still throws when the body is unreadable', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      text: () => Promise.reject(new Error('stream error')),
+    });
+    const err = await fetchJson('/api/x').catch(e => e);
+    expect(err.status).toBe(502);
+    expect(err.message).toContain('HTTP 502 /api/x');
+  });
+
+  it('truncates very long error bodies', async () => {
+    mockErrorResponse(500, 'x'.repeat(5000));
+    const err = await fetchJson('/api/x').catch(e => e);
+    expect(err.message.length).toBeLessThan(300);
+  });
+
+  it('getters reject on !ok instead of returning the error body', async () => {
+    mockErrorResponse(500, JSON.stringify({ error: 'db locked' }));
+    await expect(getSnapshot()).rejects.toThrow(/500/);
+    await expect(getEvents()).rejects.toThrow(/db locked/);
+    await expect(getBudget()).rejects.toThrow(/500/);
+  });
+
+  it('getToolConfig / updateToolConfig / killSession use the same error path', async () => {
+    mockErrorResponse(409, JSON.stringify({ error: 'config changed on disk' }));
+    await expect(getToolConfig('claude-code')).rejects.toThrow(/config changed on disk/);
+    await expect(updateToolConfig('claude-code', {})).rejects.toThrow(/409/);
+    await expect(killSession('s1')).rejects.toThrow(/config changed on disk/);
+  });
+
+  it('forwards request opts (method, body) to fetch', async () => {
+    await killSession('sess-9', 'KILL');
+    expect(fetch).toHaveBeenCalledWith('/api/session-kill', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ session_id: 'sess-9', confirm: true, signal: 'KILL' }),
+    }));
   });
 });
 

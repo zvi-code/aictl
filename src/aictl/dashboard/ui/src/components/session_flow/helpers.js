@@ -1,44 +1,7 @@
-// Formatting helpers shared by session-flow sub-components.
-export function fmtDur(ms) {
-  if (ms == null || isNaN(ms) || ms <= 0) return '';
-  const sec = Math.round(ms / 1000);
-  if (sec < 60) return sec + 's';
-  const m = Math.floor(sec / 60);
-  if (m < 60) return m + 'm ' + (sec % 60) + 's';
-  const h = Math.floor(m / 60);
-  return h + 'h ' + (m % 60) + 'm';
-}
-
-export function fmtDurSec(sec) {
-  if (sec == null || isNaN(sec)) return '\u2014';
-  const s = Math.round(sec);
-  if (s < 60) return s + 's';
-  const m = Math.floor(s / 60);
-  if (m < 60) return m + 'm ' + (s % 60) + 's';
-  const h = Math.floor(m / 60);
-  return h + 'h ' + (m % 60) + 'm';
-}
-
-export function fmtHHMM(ts) {
-  return new Date(ts * 1000).toLocaleTimeString([], {hourCycle:'h23', hour:'2-digit', minute:'2-digit'});
-}
-
-export function fmtHHMMSS(ts) {
-  return new Date(ts * 1000).toLocaleTimeString([], {hourCycle:'h23', hour:'2-digit', minute:'2-digit', second:'2-digit'});
-}
-
-export function shortModel(m) {
-  if (!m) return '';
-  return m.replace('claude-', '').replace(/-\d{8}$/, '');
-}
-
-// Short session label — PID for correlator IDs, last 6 chars otherwise.
-export function shortSid(sid) {
-  if (!sid) return '';
-  const parts = sid.split(':');
-  if (parts.length === 3 && /^\d+$/.test(parts[1])) return parts[1];
-  return sid.slice(-6);
-}
+// Domain-specific helpers for session-flow sub-components.
+// Generic formatters (fmtDurMs, fmtDurSec, fmtHHMM, fmtHHMMSS, shortModel,
+// shortSid) and the shared colour palette live in src/utils.js.
+import { hashColor } from '../../utils.js';
 
 // Extract the most meaningful field from tool_parameters JSON.
 export function extractToolArgs(toolName, params) {
@@ -67,16 +30,11 @@ export function extractToolArgs(toolName, params) {
   return '';
 }
 
-// Palette for tool/skill participants — consistent per name via hash.
-const _SF_PALETTE = [
-  '#f97316','#a78bfa','#60a5fa','#f472b6',
-  '#34d399','#fbbf24','#06b6d4','#84cc16',
-  '#e11d48','#0ea5e9','#c084fc','#fb923c',
-];
-const _SF_FIXED = { Bash: '#1a1a1a' };
+// Colour for tool/skill participants — fixed overrides for well-known
+// names, deterministic hash into the shared palette otherwise.
+// (Bash previously used '#1a1a1a', which is invisible on dark themes.)
+const _SF_FIXED = { Bash: '#84cc16' };
 export function sfColor(name) {
   if (_SF_FIXED[name]) return _SF_FIXED[name];
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffff;
-  return _SF_PALETTE[h % _SF_PALETTE.length];
+  return hashColor(name);
 }

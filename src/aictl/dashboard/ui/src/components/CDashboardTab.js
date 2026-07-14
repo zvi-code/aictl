@@ -1,7 +1,7 @@
 import { useState, useContext, useMemo, useEffect, useCallback, useRef } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
-import { COLORS, fmtK, fmtSz, liveTokenTotal } from '../utils.js';
+import { fmtK, fmtSz, liveTokenTotal, fmtAgo, fmtDurSec, toolColor } from '../utils.js';
 import { ToolIcon } from './ui/index.js';
 import { dedupeSessions } from '../selectors.js';
 import * as api from '../api.js';
@@ -25,26 +25,8 @@ function laneColor(lane) {
   return LANE_COLOR[l] || 'var(--fg2)';
 }
 
-function toolColor(toolId) {
-  return COLORS[toolId] || 'var(--fg2)';
-}
 
-function fmtAgo(ts) {
-  if (!ts) return '\u2014';
-  const secs = Math.floor(Date.now() / 1000 - ts);
-  if (secs < 60) return secs + 's ago';
-  const m = Math.floor(secs / 60);
-  if (m < 60) return m + 'm ago';
-  return Math.floor(m / 60) + 'h ago';
-}
 
-function fmtDurS(s) {
-  if (!s || s < 1) return '0s';
-  if (s < 60) return Math.round(s) + 's';
-  const m = Math.floor(s / 60);
-  if (m < 60) return m + 'm ' + Math.round(s % 60) + 's';
-  return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
-}
 
 function fmtTs(ts) {
   if (!ts) return '\u2014';
@@ -288,7 +270,7 @@ export default function CDashboardTab() {
         { label: 'API calls', value: s.total_api_calls   ?? 0 },
         { label: 'Tools',     value: s.total_tool_uses   ?? 0 },
         { label: 'Tokens',    value: fmtK(totalTok),        sub },
-        { label: 'Duration',  value: fmtDurS(s.duration_s) },
+        { label: 'Duration',  value: fmtDurSec(s.duration_s) },
         { label: 'Events',    value: s.event_count        ?? 0 },
       ];
     }
@@ -449,8 +431,8 @@ export default function CDashboardTab() {
                   <div class="cdb-session-meta">
                     ${s._toolLabel} \u00b7 ${fmtK(s.estimated_tokens || s.tokens || 0)} tok
                     ${s.files_modified > 0 ? ` \u00b7 ${s.files_modified}f` : ''}
-                    ${s.duration_s > 0 ? ` \u00b7 ${fmtDurS(s.duration_s)}` : ''}
-                    \u00b7 ${fmtAgo(s.last_seen_at || s.started_at)}
+                    ${s.duration_s > 0 ? ` \u00b7 ${fmtDurSec(s.duration_s)}` : ''}
+                    \u00b7 ${fmtAgo(s.last_seen_at || s.started_at) || '\u2014'}
                   </div>
                 </div>`;
               })}

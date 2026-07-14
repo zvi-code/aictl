@@ -81,11 +81,14 @@ function mergePrePostEvents(events) {
 export default function ActionsPanel({sessionId}) {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [expanded, setExpanded] = useState({});
 
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId) { setEvents([]); setLoading(false); setError(null); return; }
+    let cancelled = false;
     setLoading(true);
+    setError(null);
     setExpanded({});
     // When scoping to a session, don't restrict by time — older sessions
     // would otherwise appear empty because a 24-hour window cuts off their
@@ -93,13 +96,19 @@ export default function ActionsPanel({sessionId}) {
     // convention as ApiCallsPanel).
     const since = 0;
     api.getEvents({ sessionId, limit: 200, since })
-      .then(data => { setEvents(data.reverse()); setLoading(false); })
-      .catch(() => setLoading(false));
+      .then(data => {
+        if (cancelled) return;
+        setEvents((Array.isArray(data) ? data : []).reverse());
+        setLoading(false);
+      })
+      .catch(e => { if (!cancelled) { setEvents([]); setError(e); setLoading(false); } });
+    return () => { cancelled = true; };
   }, [sessionId]);
 
   const mergedEvents = useMemo(() => mergePrePostEvents(events), [events]);
 
   if (loading) return html`<p class="loading-state">Loading events...</p>`;
+  if (error) return html`<p class="error-state">Failed to load session actions${error.message ? ` (${error.message})` : ''}.</p>`;
   if (!mergedEvents.length) return html`<p class="empty-state">No events recorded for this session.</p>`;
 
   return html`<div class="sd-events">

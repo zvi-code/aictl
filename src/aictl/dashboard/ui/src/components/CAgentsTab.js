@@ -1,15 +1,12 @@
 import { useState, useContext, useEffect, useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
-import { COLORS, fmtK, liveTokenTotal } from '../utils.js';
+import { fmtK, liveTokenTotal, toolColor } from '../utils.js';
 import { ToolIcon } from './ui/index.js';
 import * as api from '../api.js';
 import Dialog from './ui/Dialog.js';
 import { toast } from './ui/Toast.js';
 
-function toolColor(t) {
-  return COLORS[t] || 'var(--fg2)';
-}
 
 function isActive(tool) {
   const l = tool.live || {};

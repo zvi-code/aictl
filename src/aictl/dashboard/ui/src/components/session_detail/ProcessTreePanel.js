@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'preact/hooks';
 import { html } from 'htm/preact';
-import { esc } from '../../utils.js';
-import { fmtHHMMSS } from '../session_flow/helpers.js';
+import { esc, fmtHHMMSS } from '../../utils.js';
 import * as api from '../../api.js';
 
 const ROLE_COLOR = {

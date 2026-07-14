@@ -135,6 +135,82 @@ export function fmtTime(ts) {
   return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 }
 
+// ─── Duration / time / id formatting (canonical copies) ─────────
+// These used to live as near-identical copies in session_flow/helpers.js,
+// transcript/helpers.js, session_detail/helpers.js and several components.
+// The names are explicit about units: *Sec takes seconds, *Ms milliseconds.
+
+/** Format a duration given in SECONDS: "45s", "2m 5s", "1h 2m". */
+export function fmtDurSec(sec) {
+  if (sec == null || isNaN(sec)) return '—';
+  const s = Math.round(sec);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm ' + (s % 60) + 's';
+  const h = Math.floor(m / 60);
+  return h + 'h ' + (m % 60) + 'm';
+}
+
+/** Format a duration given in MILLISECONDS: "250ms", "1.5s", "2m 5s", "1h 2m".
+ *  Returns '' for missing/zero (durations are usually omitted when absent). */
+export function fmtDurMs(ms) {
+  if (ms == null || isNaN(ms) || ms <= 0) return '';
+  if (ms < 1000) return Math.round(ms) + 'ms';
+  const sec = ms / 1000;
+  if (sec < 10) return sec.toFixed(1).replace(/\.0$/, '') + 's';
+  const s = Math.round(sec);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm ' + (s % 60) + 's';
+  const h = Math.floor(m / 60);
+  return h + 'h ' + (m % 60) + 'm';
+}
+
+/** Format a UNIX timestamp (seconds) as 24h "HH:MM". */
+export function fmtHHMM(ts) {
+  if (!ts) return '';
+  return new Date(ts * 1000).toLocaleTimeString([], {hourCycle: 'h23', hour: '2-digit', minute: '2-digit'});
+}
+
+/** Format a UNIX timestamp (seconds) as 24h "HH:MM:SS". */
+export function fmtHHMMSS(ts) {
+  if (!ts) return '';
+  return new Date(ts * 1000).toLocaleTimeString([], {hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit'});
+}
+
+/** Short session label — PID for correlator IDs ("tool:pid:ts"), last 6 chars otherwise. */
+export function shortSid(sid) {
+  if (!sid) return '';
+  const parts = String(sid).split(':');
+  if (parts.length === 3 && /^\d+$/.test(parts[1])) return parts[1];
+  return String(sid).slice(-6);
+}
+
+/** Shorten a model id: strip claude-/gpt- prefixes and -YYYYMMDD date suffixes. */
+export function shortModel(m) {
+  if (!m) return '';
+  return m.replace('claude-', '').replace('gpt-', '').replace(/-\d{8}$/, '');
+}
+
+// ─── Name → colour hashing ──────────────────────────────────────
+// 12-colour palette shared by session-flow participants and the timeline
+// chart. hashColor(name) is deterministic: same name → same colour.
+export const HASH_PALETTE = [
+  '#f97316', '#a78bfa', '#60a5fa', '#f472b6',
+  '#34d399', '#fbbf24', '#06b6d4', '#84cc16',
+  '#e11d48', '#0ea5e9', '#c084fc', '#fb923c',
+];
+
+export function hashColor(name) {
+  if (!name) return 'var(--fg2)';
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffff;
+  return HASH_PALETTE[h % HASH_PALETTE.length];
+}
+
+/** Colour for a monitored AI tool (Python-injected COLORS map with fallback). */
+export function toolColor(t) { return COLORS[t] || 'var(--fg2)'; }
+
 /** Normalise path separators to forward slashes (Windows compat). */
 export function normPath(p) { return p ? p.replace(/\\/g, '/') : p; }
 

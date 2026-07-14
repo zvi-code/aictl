@@ -4,8 +4,7 @@
 // pretty-printed Input / Output sections. Driven by SeqVerticalTimeline
 // row selection in TabSessionFlow.
 import { html } from 'htm/preact';
-import { fmtK, esc } from '../../utils.js';
-import { fmtDur, fmtHHMMSS, shortModel } from './helpers.js';
+import { fmtK, esc, fmtDurMs, fmtHHMMSS, shortModel } from '../../utils.js';
 
 function _bytes(ev) {
   // Heuristic byte-traffic line (best-effort, falls back to "—").
@@ -61,7 +60,7 @@ export default function SequenceInspector({event, onClose}) {
   const meta = [
     ['Type',       event.type || ''],
     ['Started',    fmtHHMMSS(event.ts)],
-    ['Duration',   event.duration_ms ? fmtDur(event.duration_ms) : '—'],
+    ['Duration',   event.duration_ms ? fmtDurMs(event.duration_ms) : '—'],
     ['Bytes',      _bytes(event)],
     ['Model',      shortModel(event.model || '') || '—'],
     ['Decision',   event.decision || (event.success === false ? 'failed' : event.success === true ? 'ok' : '—')],

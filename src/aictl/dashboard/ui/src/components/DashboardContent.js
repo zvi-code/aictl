@@ -5,7 +5,7 @@
 import { useState, useCallback } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { LAYOUT } from '../layoutConfig.js';
-import { fmtValue, evalExpr, COLORS, SC, esc } from '../utils.js';
+import { fmtValue, evalExpr, SC, esc, toolColor } from '../utils.js';
 import ChartCard from './ChartCard.js';
 import Metric from './Metric.js';
 import ResourceBar from './ResourceBar.js';
@@ -17,14 +17,13 @@ function McpPanel({ mcpDetail }) {
   return html`<div style="border:1px solid var(--bg2);border-radius:4px;overflow:hidden">
     ${mcpDetail.map(m => {
       const dotColor = SC[m.status] || 'var(--fg3)';
-      const toolColor = COLORS[m.tool] || 'var(--fg3)';
       return html`<div key=${m.name + m.tool}
         style="display:flex;align-items:center;gap:var(--sp-2);padding:3px var(--sp-3);
                border-bottom:1px solid color-mix(in srgb,var(--bg2) 60%,transparent)"
         title=${m.status + (m.pid ? ' PID ' + m.pid : '') + (m.transport ? ' · ' + m.transport : '')}>
         <span style="width:6px;height:6px;border-radius:50%;flex-shrink:0;background:${dotColor}"></span>
         <span class="mono" style="font-size:var(--fs-xs);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(m.name)}</span>
-        <span style="font-size:var(--fs-2xs);color:${toolColor};white-space:nowrap;flex-shrink:0">${esc(m.tool)}</span>
+        <span style="font-size:var(--fs-2xs);color:${toolColor(m.tool)};white-space:nowrap;flex-shrink:0">${esc(m.tool)}</span>
       </div>`;
     })}
   </div>`;

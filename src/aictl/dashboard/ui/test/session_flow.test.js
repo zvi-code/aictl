@@ -1,45 +1,29 @@
 import { describe, it, expect } from 'vitest';
-import {
-  fmtDur, fmtDurSec, shortModel, shortSid,
-  extractToolArgs, sfColor,
-} from '../src/components/session_flow/helpers.js';
+import { extractToolArgs, sfColor } from '../src/components/session_flow/helpers.js';
+import { hashColor, HASH_PALETTE } from '../src/utils.js';
 import { discoverParticipants } from '../src/components/session_flow/participants.js';
 
+// Generic formatters (fmtDurMs, fmtDurSec, shortModel, shortSid) moved to
+// src/utils.js — see test/formatters.test.js. This file keeps the
+// session_flow-specific helpers only.
+
 describe('session_flow/helpers', () => {
-  it('fmtDur formats ms to human string', () => {
-    expect(fmtDur(null)).toBe('');
-    expect(fmtDur(0)).toBe('');
-    expect(fmtDur(500)).toBe('1s');
-    expect(fmtDur(65_000)).toBe('1m 5s');
-    expect(fmtDur(3_725_000)).toBe('1h 2m');
-  });
-
-  it('fmtDurSec formats seconds', () => {
-    expect(fmtDurSec(null)).toBe('\u2014');
-    expect(fmtDurSec(45)).toBe('45s');
-    expect(fmtDurSec(125)).toBe('2m 5s');
-  });
-
-  it('shortModel strips prefix and date suffix', () => {
-    expect(shortModel('claude-sonnet-4-20250101')).toBe('sonnet-4');
-    expect(shortModel('')).toBe('');
-  });
-
-  it('shortSid returns pid for correlator format', () => {
-    expect(shortSid('claude:1234:1700000000')).toBe('1234');
-    expect(shortSid('abcdefghijkl')).toBe('ghijkl');
-    expect(shortSid(null)).toBe('');
-  });
-
   it('extractToolArgs picks meaningful key', () => {
     expect(extractToolArgs('Bash', { command: 'ls -la' })).toBe('ls -la');
     expect(extractToolArgs('Read', '{"file_path":"/a/b/c.py"}')).toBe('/a/b/c.py');
     expect(extractToolArgs('x', null)).toBe('');
   });
 
-  it('sfColor is stable for a given name', () => {
-    expect(sfColor('Bash')).toBe('#1a1a1a');
+  it('sfColor is stable for a given name and delegates to the shared palette', () => {
     expect(sfColor('Foo')).toBe(sfColor('Foo'));
+    expect(sfColor('Foo')).toBe(hashColor('Foo'));
+    expect(HASH_PALETTE).toContain(sfColor('Foo'));
+  });
+
+  it('sfColor gives Bash a theme-safe palette colour (not near-black)', () => {
+    // Regression: Bash used to be fixed to #1a1a1a, invisible on dark themes.
+    expect(sfColor('Bash')).not.toBe('#1a1a1a');
+    expect(HASH_PALETTE).toContain(sfColor('Bash'));
   });
 });
 

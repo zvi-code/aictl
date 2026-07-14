@@ -1,9 +1,9 @@
 import { useState, useEffect, useContext, useCallback } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
-import { dedupeSessions } from '../selectors.js';
 import * as api from '../api.js';
-import ToolTabs from './transcript/ToolTabs.js';
+import useSessionPicker from '../hooks/useSessionPicker.js';
+import ToolTabs from './ToolTabs.js';
 import SessionSelector from './transcript/SessionSelector.js';
 import TurnCard from './transcript/TurnCard.js';
 import SummaryHeader from './transcript/SummaryHeader.js';
@@ -17,10 +17,10 @@ import { isSessionFlowFormat, normalizeFlowToTranscript } from './transcript/nor
 // transcript renderer for the given session.
 export default function TabTranscript({ externalSessionId = null } = {}) {
   const { globalRange, enabledTools } = useContext(SnapContext);
-  const [sessions, setSessions] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [activeTool, setActiveTool] = useState(null);
-  const [activeSessionId, setActiveSessionId] = useState(null);
+  const {
+    sessions, loading, error, tools, toolSessions,
+    activeTool, setActiveTool, activeSessionId, setActiveSessionId,
+  } = useSessionPicker({ globalRange, enabledTools });
   const [transcript, setTranscript] = useState(null);
   const [transcriptLoading, setTranscriptLoading] = useState(false);
   const [expandedTurns, setExpandedTurns] = useState(new Set());
@@ -28,41 +28,6 @@ export default function TabTranscript({ externalSessionId = null } = {}) {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const embedded = externalSessionId != null;
   const effectiveSessionId = embedded ? externalSessionId : activeSessionId;
-
-  // Fetch session list
-  useEffect(() => {
-    setLoading(true);
-    const since = globalRange ? Math.min(globalRange.since, Date.now() / 1000 - 86400) : Date.now() / 1000 - 86400;
-    const until = globalRange?.until;
-    api.getSessionTimeline(null, { since, until })
-      .then(data => {
-        const rows = dedupeSessions(data);
-        rows.sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
-        setSessions(rows);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, [globalRange]);
-
-  // Derive tools and filtered sessions
-  const toolMatch = (t) => enabledTools === null || enabledTools.includes(t);
-  const filteredSessions = sessions.filter(sess => toolMatch(sess.tool));
-  const tools = [...new Set(filteredSessions.map(s => s.tool))].sort();
-
-  // Auto-select first tool
-  useEffect(() => {
-    if (!activeTool && tools.length > 0) setActiveTool(tools[0]);
-    else if (activeTool && !tools.includes(activeTool) && tools.length > 0) setActiveTool(tools[0]);
-  }, [tools.join(',')]);
-
-  const toolSessions = filteredSessions.filter(s => s.tool === activeTool);
-
-  // Auto-select first session
-  useEffect(() => {
-    if (toolSessions.length > 0 && (!activeSessionId || !toolSessions.find(s => s.session_id === activeSessionId))) {
-      setActiveSessionId(toolSessions[0].session_id);
-    }
-  }, [activeTool, toolSessions.length]);
 
   // Fetch transcript (with session-flow fallback)
   const fetchTranscript = useCallback(() => {
@@ -128,7 +93,7 @@ export default function TabTranscript({ externalSessionId = null } = {}) {
     <div class="tr-header">
       <h3 class="tr-title">Session Transcript</h3>
       <div class="tr-controls">
-        ${turns.length > 0 ? html`<button class="chip" onClick=${toggleAll}
+        ${turns.length > 0 ? html`<button class="tc-filter-btn" onClick=${toggleAll}
           style="font-size:var(--fs-xs)">
           ${expandAll ? '\u22A1 Collapse all' : '\u229E Expand all'}
         </button>` : null}
@@ -144,7 +109,7 @@ export default function TabTranscript({ externalSessionId = null } = {}) {
     ${!embedded && tools.length > 1 && html`<${ToolTabs} tools=${tools} activeTool=${activeTool} onSelect=${setActiveTool}/>`}
 
     ${!embedded && html`<${SessionSelector} sessions=${toolSessions} activeId=${activeSessionId}
-      onSelect=${setActiveSessionId} loading=${loading}/>`}
+      onSelect=${setActiveSessionId} loading=${loading} error=${error}/>`}
 
     <${SummaryHeader} summary=${summary} transcript=${transcript}/>
 

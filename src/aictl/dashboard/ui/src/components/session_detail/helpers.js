@@ -1,15 +1,5 @@
-// Formatting helpers + constants shared across session_detail panels.
-
-export function fmtDur(sec) {
-  if (sec == null || isNaN(sec)) return '\u2014';
-  const s = Math.round(sec);
-  if (s < 60) return s + 's';
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  if (m < 60) return m + 'm ' + r + 's';
-  const h = Math.floor(m / 60);
-  return h + 'h ' + (m % 60) + 'm';
-}
+// Domain-specific constants shared across session_detail panels.
+// Duration formatting moved to src/utils.js (fmtDurSec — takes SECONDS).
 
 // Approximate context window size per model
 export const MODEL_WINDOWS = {

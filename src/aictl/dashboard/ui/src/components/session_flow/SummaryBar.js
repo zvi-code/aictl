@@ -1,6 +1,5 @@
 import { html } from 'htm/preact';
-import { fmtK } from '../../utils.js';
-import { fmtDurSec } from './helpers.js';
+import { fmtK, fmtDurSec } from '../../utils.js';
 
 export default function SummaryBar({summary}) {
   if (!summary || !summary.event_count) return null;

@@ -6,19 +6,24 @@ import * as api from '../../api.js';
 export default function ApiCallsPanel({sessionId}) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
+    setError(null);
     // When scoping to a session, don't restrict by time — older sessions
     // would otherwise appear empty because the default 1-hour window cuts
     // off their API calls. `since=0` means "whole history for this session".
     const since = sessionId ? 0 : Math.floor(Date.now() / 1000) - 3600;
     api.getApiCalls(since, 100, sessionId)
-      .then(d => { setData(d); setLoading(false); })
-      .catch(() => setLoading(false));
+      .then(d => { if (!cancelled) { setData(d); setLoading(false); } })
+      .catch(e => { if (!cancelled) { setData(null); setError(e); setLoading(false); } });
+    return () => { cancelled = true; };
   }, [sessionId]);
 
   if (loading) return html`<p class="loading-state">Loading API call data...</p>`;
+  if (error) return html`<p class="error-state">Failed to load API calls${error.message ? ` (${error.message})` : ''}.</p>`;
   if (!data || !data.calls || !data.calls.length) {
     return html`<p class="empty-state">No OTel API call data. Enable with: <code>aictl otel enable</code></p>`;
   }

@@ -2,9 +2,9 @@ import { useState, useEffect, useContext, useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { esc } from '../utils.js';
-import { dedupeSessions } from '../selectors.js';
 import * as api from '../api.js';
-import ToolTabs from './session_flow/ToolTabs.js';
+import useSessionPicker from '../hooks/useSessionPicker.js';
+import ToolTabs from './ToolTabs.js';
 import SessionTabs from './session_flow/SessionTabs.js';
 import SeqArrow from './session_flow/SeqArrow.js';
 import SeqMarker from './session_flow/SeqMarker.js';
@@ -30,10 +30,10 @@ function _saveMode(m) { try { localStorage.setItem(RENDER_MODE_KEY, m); } catch 
 // detail renderer driven by the parent.
 export default function TabSessionFlow({ externalSessionId = null } = {}) {
   const {globalRange, enabledTools} = useContext(SnapContext);
-  const [sessions, setSessions] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [activeTool, setActiveTool] = useState(null);
-  const [activeSessionId, setActiveSessionId] = useState(null);
+  const {
+    sessions, loading, error, tools, toolSessions,
+    activeTool, setActiveTool, activeSessionId, setActiveSessionId,
+  } = useSessionPicker({ globalRange, enabledTools });
   const [flowData, setFlowData] = useState(null);
   const [flowLoading, setFlowLoading] = useState(false);
   const [hoveredIdx, setHoveredIdx] = useState(null);
@@ -41,41 +41,6 @@ export default function TabSessionFlow({ externalSessionId = null } = {}) {
   const [mode, setMode] = useState(_loadMode);
   const embedded = externalSessionId != null;
   const effectiveSessionId = embedded ? externalSessionId : activeSessionId;
-
-  // Fetch sessions
-  useEffect(() => {
-    setLoading(true);
-    const since = globalRange ? Math.min(globalRange.since, Date.now() / 1000 - 86400) : Date.now() / 1000 - 86400;
-    const until = globalRange?.until;
-    api.getSessionTimeline(null, { since, until })
-      .then(data => {
-        const rows = dedupeSessions(data);
-        rows.sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
-        setSessions(rows);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, [globalRange]);
-
-  // Derive tools and filtered sessions
-  const toolMatch = (t) => enabledTools === null || enabledTools.includes(t);
-  const filteredSessions = sessions.filter(sess => toolMatch(sess.tool));
-  const tools = [...new Set(filteredSessions.map(s => s.tool))].sort();
-
-  // Auto-select first tool
-  useEffect(() => {
-    if (!activeTool && tools.length > 0) setActiveTool(tools[0]);
-    else if (activeTool && !tools.includes(activeTool) && tools.length > 0) setActiveTool(tools[0]);
-  }, [tools.join(',')]);
-
-  const toolSessions = filteredSessions.filter(s => s.tool === activeTool);
-
-  // Auto-select first session of active tool
-  useEffect(() => {
-    if (toolSessions.length > 0 && (!activeSessionId || !toolSessions.find(s => s.session_id === activeSessionId))) {
-      setActiveSessionId(toolSessions[0].session_id);
-    }
-  }, [activeTool, toolSessions.length]);
 
   // Fetch flow data
   useEffect(() => {
@@ -146,7 +111,7 @@ export default function TabSessionFlow({ externalSessionId = null } = {}) {
     ${!embedded && html`<${ToolTabs} tools=${tools} activeTool=${activeTool} onSelect=${setActiveTool}/>`}
 
     ${!embedded && html`<${SessionTabs} sessions=${toolSessions} activeId=${activeSessionId}
-      onSelect=${setActiveSessionId} loading=${loading}/>`}
+      onSelect=${setActiveSessionId} loading=${loading} error=${error}/>`}
 
     <div class="sf-toolbar">
       <${SummaryBar} summary=${summary}/>
