@@ -5,8 +5,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { html } from 'htm/preact';
 import * as api from '../../api.js';
-import { fmtK } from '../../utils.js';
-import { fmtDur } from './helpers.js';
+import { fmtK, fmtDurSec } from '../../utils.js';
 
 function median(values) {
   if (!values.length) return 0;
@@ -98,7 +97,7 @@ export default function RunTrendStrip({
       vs last ${prior.length} runs
     </span>
     <${Metric} label="Duration" value=${currentDurationS}
-      formatted=${fmtDur(currentDurationS)} med=${medDur} fmt=${fmtDur}/>
+      formatted=${fmtDurSec(currentDurationS)} med=${medDur} fmt=${fmtDurSec}/>
     <${Metric} label="Tokens" value=${currentTokens}
       formatted=${fmtK(currentTokens) + 't'} med=${medTok}
       fmt=${v => fmtK(v) + 't'}/>

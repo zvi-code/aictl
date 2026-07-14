@@ -1,17 +1,12 @@
 import { useState, useEffect, useContext, useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
-import { fmtK, fmtAgo, fmtPct, fmtSz, esc, COLORS } from '../utils.js';
+import { fmtK, fmtAgo, fmtPct, fmtSz, esc, fmtDurSec } from '../utils.js';
 import { ToolIcon } from './ui/index.js';
 import * as api from '../api.js';
 
 const STATUS_COLORS = { active: 'var(--green)', degraded: 'var(--orange)', disabled: 'var(--fg2)', unknown: 'var(--fg2)' };
 
-function fmtDuration(s) {
-  if (!s || s < 0) return '\u2014';
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
-}
 
 export default function CollectorHealth() {
   const { snap: s } = useContext(SnapContext);
@@ -114,7 +109,7 @@ export default function CollectorHealth() {
         </div>
         <div class="metric-chip">
           <div class="metric-chip-label text-muted">Uptime</div>
-          <div class="metric-chip-value">${fmtDuration(selfStatus.uptime_s)}</div>
+          <div class="metric-chip-value">${fmtDurSec(selfStatus.uptime_s)}</div>
         </div>
         <div class="metric-chip">
           <div class="metric-chip-label text-muted">Threads</div>

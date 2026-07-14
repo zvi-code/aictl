@@ -1,9 +1,9 @@
 import { html } from 'htm/preact';
-import { fmtK } from '../../utils.js';
-import { fmtHHMM, fmtDurSec, shortSid } from './helpers.js';
+import { fmtK, fmtHHMM, fmtDurSec, shortSid } from '../../utils.js';
 
-export default function SessionTabs({sessions, activeId, onSelect, loading}) {
+export default function SessionTabs({sessions, activeId, onSelect, loading, error = null}) {
   if (loading) return html`<div class="sf-sess-tabs"><span class="text-muted text-xs">Loading sessions...</span></div>`;
+  if (error) return html`<div class="sf-sess-tabs"><span class="error-state text-xs" style="padding:0">Failed to load sessions${error.message ? ` (${error.message})` : ''}</span></div>`;
   if (!sessions.length) return html`<div class="sf-sess-tabs"><span class="text-muted text-xs">No sessions in range</span></div>`;
 
   return html`<div class="sf-sess-tabs">

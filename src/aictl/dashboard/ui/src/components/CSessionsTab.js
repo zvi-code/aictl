@@ -1,21 +1,10 @@
 import { useState, useEffect, useContext, useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
-import { COLORS, fmtK } from '../utils.js';
+import { fmtK, fmtDurSec, toolColor } from '../utils.js';
 import { ToolIcon } from './ui/index.js';
 import { dedupeSessions } from '../selectors.js';
 import * as api from '../api.js';
-
-function fmtDur(s) {
-  if (!s || s < 1) return '—';
-  if (s < 60) return Math.round(s) + 's';
-  const m = Math.floor(s / 60);
-  const rem = Math.round(s % 60);
-  if (m < 60) return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
-  const h = Math.floor(m / 60);
-  const rm = m % 60;
-  return rm > 0 ? `${h}h ${rm}m` : `${h}h`;
-}
 
 function sessionTitle(s) {
   if (s.project) {
@@ -64,7 +53,7 @@ function SessionDetailPane({ session, onInspect }) {
       <div>Click a row to view details.</div>
     </div>`;
   }
-  const color = COLORS[session.tool] || 'var(--fg2)';
+  const color = toolColor(session.tool);
   const tokens = sessionTokens(session);
   const inTok  = session.exact_input_tokens  || session.input_tokens  || 0;
   const outTok = session.exact_output_tokens || session.output_tokens || 0;
@@ -74,7 +63,7 @@ function SessionDetailPane({ session, onInspect }) {
     ['Tokens',   fmtK(tokens)],
     ['In / Out', `${fmtK(inTok)} / ${fmtK(outTok)}`],
     ['Files',    session.files_modified || '—'],
-    ['Duration', fmtDur(dur)],
+    ['Duration', dur >= 1 ? fmtDurSec(dur) : '\u2014'],
     ['Status',   sessionStatus(session)],
     ['Started',  fmtDate(session.started_at)],
   ];
@@ -218,7 +207,7 @@ export default function CSessionsTab({ onInspect }) {
                 </div>
                 ${filtered.map(s => {
                   const isSel  = s.session_id === selectedId;
-                  const color  = COLORS[s.tool] || 'var(--fg2)';
+                  const color  = toolColor(s.tool);
                   const status = sessionStatus(s);
                   const dur    = s.duration_s
                     || (s.ended_at && s.started_at ? s.ended_at - s.started_at : 0);
@@ -236,7 +225,7 @@ export default function CSessionsTab({ onInspect }) {
                     </div>
                     <div class="csessions-cell-num">${fmtK(sessionTokens(s))}</div>
                     <div class="csessions-cell-num">${s.files_modified || '—'}</div>
-                    <div class="csessions-cell-num">${fmtDur(dur)}</div>
+                    <div class="csessions-cell-num">${dur >= 1 ? fmtDurSec(dur) : '\u2014'}</div>
                   </div>`;
                 })}
               </div>`}

@@ -77,7 +77,7 @@ const HOOKS_STATUS = {
 };
 
 function renderTab(snap = SNAP, hooksStatus = HOOKS_STATUS, props = {}) {
-  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: () => Promise.resolve(hooksStatus) }));
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(hooksStatus) }));
   return render(
     html`<${SnapContext.Provider} value=${{ snap }}>
       <${CAgentsTab} ...${props}/>
@@ -177,6 +177,9 @@ describe('CAgentsTab — detail panel', () => {
 
     fireEvent.click(getByText('Edit permissions'));
     expect(await findByText('Claude Code permissions')).toBeInTheDocument();
+    // The dialog title renders while the config is still loading — wait for
+    // the loaded state before asserting on path/textareas.
+    await waitFor(() => expect(container.querySelector('.cagents-editor-path')).toBeTruthy());
     expect(container.querySelector('.cagents-editor-path').textContent).toBe('/proj/.claude/settings.json');
     const textareas = container.querySelectorAll('textarea');
     expect(textareas[0].value).toBe('Read(*)');
@@ -218,6 +221,7 @@ describe('CAgentsTab — detail panel', () => {
 
     fireEvent.click(getByText('Edit permissions'));
     await findByText('Claude Code permissions');
+    await waitFor(() => expect(container.querySelectorAll('textarea').length).toBeGreaterThan(0));
     const textareas = container.querySelectorAll('textarea');
     fireEvent.input(textareas[0], { target: { value: 'Read(*)\nEdit(src/**)' } });
     expect(container.textContent).toContain('+ Edit(src/**)');

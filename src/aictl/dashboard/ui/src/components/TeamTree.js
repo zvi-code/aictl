@@ -1,18 +1,7 @@
 import { useState } from 'preact/hooks';
 import { html } from 'htm/preact';
-import { fmtK, esc } from '../utils.js';
+import { fmtK, esc, fmtDurSec } from '../utils.js';
 
-// ─── Duration formatting ──────────────────────────────────────
-function fmtDur(sec) {
-  if(sec == null || isNaN(sec)) return '\u2014';
-  const s = Math.round(sec);
-  if(s < 60) return s + 's';
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  if(m < 60) return m + 'm ' + r + 's';
-  const h = Math.floor(m / 60);
-  return h + 'h ' + (m % 60) + 'm';
-}
 
 const STATE_STYLE = {
   active:  { bg: 'var(--green)',  label: 'Active' },
@@ -34,7 +23,7 @@ function AgentNode({agent, tasks, now}) {
     <div class="flex-row gap-sm" style="align-items:center;min-height:28px">
       <span class="badge text-xs" style="background:${ss.bg};color:var(--bg)">${ss.label}</span>
       <strong class="text-sm">${esc(agent.agent_id)}</strong>
-      <span class="text-muted text-xs">${fmtDur(elapsed)}</span>
+      <span class="text-muted text-xs">${fmtDurSec(elapsed)}</span>
       ${agent.task && html`<span class="text-xs mono text-muted">\u2014 ${esc(agent.task)}</span>`}
     </div>
     ${agentTasks.length > 0 && html`<div style="margin-left:var(--sp-4);margin-top:var(--sp-1)">

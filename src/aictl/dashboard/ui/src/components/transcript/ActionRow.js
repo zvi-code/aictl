@@ -1,6 +1,6 @@
 import { html } from 'htm/preact';
-import { fmtK, esc } from '../../utils.js';
-import { fmtDur, ACTION_ICONS, ACTION_COLORS, truncate } from './helpers.js';
+import { fmtK, esc, fmtDurMs } from '../../utils.js';
+import { ACTION_ICONS, ACTION_COLORS, truncate } from './helpers.js';
 import { Icon } from '../ui/index.js';
 
 export default function ActionRow({ action, turnTs }) {
@@ -8,7 +8,7 @@ export default function ActionRow({ action, turnTs }) {
   const color = ACTION_COLORS[action.kind] || 'var(--fg2)';
   const offset = action.ts - turnTs;
   const offsetLabel = offset > 0 ? '+' + (offset < 1 ? offset.toFixed(1) : Math.round(offset)) + 's' : '';
-  const dur = action.duration_ms > 0 ? fmtDur(action.duration_ms) : '';
+  const dur = action.duration_ms > 0 ? fmtDurMs(action.duration_ms) : '';
   const tokens = action.tokens;
   const tokLabel = tokens ? fmtK((tokens.input || 0) + (tokens.output || 0)) : '';
 

@@ -12,11 +12,41 @@ export function getBaseUrl() { return _baseUrl; }
 
 function url(path) { return _baseUrl + path; }
 
+/**
+ * Fetch `path` and parse the JSON body, throwing on any non-2xx status.
+ * Without this, 500-error JSON bodies flowed into components as if they
+ * were data and crashed later at property-access time.
+ *
+ * The thrown Error carries `.status` (HTTP status code) and a message of
+ * the form "HTTP <status> <path>: <detail>", where detail is the JSON
+ * body's `error` field when present, else the raw body text (truncated).
+ */
+export async function fetchJson(path, opts = undefined) {
+  // Only forward opts when given — keeps plain GETs as single-argument
+  // fetch(url) calls (matching prior behaviour and call-site assertions).
+  const r = await (opts === undefined ? fetch(url(path)) : fetch(url(path), opts));
+  if (!r.ok) {
+    let detail = '';
+    try {
+      const text = await r.text();
+      if (text) {
+        try { detail = JSON.parse(text).error || text; }
+        catch { detail = text; }
+      }
+    } catch { /* body unreadable — status alone will have to do */ }
+    const err = new Error(
+      `HTTP ${r.status} ${path}` + (detail ? `: ${String(detail).slice(0, 200)}` : ''),
+    );
+    err.status = r.status;
+    throw err;
+  }
+  return r.json();
+}
+
 // ─── Snapshot & History ────────────────────────────────────────
 
 export async function getSnapshot() {
-  const r = await fetch(url('/api/snapshot'));
-  return r.json();
+  return fetchJson('/api/snapshot');
 }
 
 export async function getHistory(opts = {}) {
@@ -27,8 +57,7 @@ export async function getHistory(opts = {}) {
   if (opts.until != null) params.push('until=' + opts.until);
   if (opts.tool) params.push('tool=' + encodeURIComponent(opts.tool));
   if (params.length) path += '?' + params.join('&');
-  const r = await fetch(url(path));
-  return r.json();
+  return fetchJson(path);
 }
 
 export async function getEvents(opts = {}) {
@@ -40,8 +69,7 @@ export async function getEvents(opts = {}) {
   if (opts.sessionId) params.push('session_id=' + encodeURIComponent(opts.sessionId));
   if (opts.limit) params.push('limit=' + opts.limit);
   if (params.length) path += '?' + params.join('&');
-  const r = await fetch(url(path));
-  return r.json();
+  return fetchJson(path);
 }
 
 // ─── Sessions ──────────────────────────────────────────────────
@@ -53,14 +81,11 @@ export async function getSessions(opts = {}) {
   if (opts.active != null) params.push('active=' + opts.active);
   if (opts.limit) params.push('limit=' + opts.limit);
   if (params.length) path += '?' + params.join('&');
-  const r = await fetch(url(path));
-  return r.json();
+  return fetchJson(path);
 }
 
 export async function getSessionFlow(sessionId, since, until) {
-  let path = `/api/session-flow?session_id=${encodeURIComponent(sessionId)}&since=${since}&until=${until}`;
-  const r = await fetch(url(path));
-  return r.json();
+  return fetchJson(`/api/session-flow?session_id=${encodeURIComponent(sessionId)}&since=${since}&until=${until}`);
 }
 
 export async function getSessionTimeline(sessionId, opts = {}) {
@@ -70,14 +95,11 @@ export async function getSessionTimeline(sessionId, opts = {}) {
   if (opts.since != null) params.push('since=' + opts.since);
   if (opts.until != null) params.push('until=' + opts.until);
   if (params.length) path += '?' + params.join('&');
-  const r = await fetch(url(path));
-  return r.json();
+  return fetchJson(path);
 }
 
 export async function getSessionRuns(project, tool, days = 30, limit = 20) {
-  const path = `/api/session-runs?project=${encodeURIComponent(project)}&tool=${encodeURIComponent(tool)}&days=${days}&limit=${limit}`;
-  const r = await fetch(url(path));
-  return r.json();
+  return fetchJson(`/api/session-runs?project=${encodeURIComponent(project)}&tool=${encodeURIComponent(tool)}&days=${days}&limit=${limit}`);
 }
 
 export async function getSessionEvents(sessionId, opts = {}) {
@@ -85,8 +107,7 @@ export async function getSessionEvents(sessionId, opts = {}) {
   if (opts.since != null) path += '&since=' + opts.since;
   if (opts.until != null) path += '&until=' + opts.until;
   if (opts.limit != null) path += '&limit=' + opts.limit;
-  const r = await fetch(url(path));
-  return r.json();
+  return fetchJson(path);
 }
 
 /** Query /api/samples with tag filters. Samples carry `tags` so the caller
@@ -101,21 +122,18 @@ export async function getSamples(metric, opts = {}) {
       path += '&tag.' + encodeURIComponent(k) + '=' + encodeURIComponent(v);
     }
   }
-  const r = await fetch(url(path));
-  return r.json();
+  return fetchJson(path);
 }
 
 /** Per-session subprocess breakdown. Returns {counts: [{name, count}], recent, total}. */
 export async function getSessionSubprocesses(sessionId) {
-  const r = await fetch(url('/api/session-subprocesses?session_id=' + encodeURIComponent(sessionId)));
-  return r.json();
+  return fetchJson('/api/session-subprocesses?session_id=' + encodeURIComponent(sessionId));
 }
 
 /** Per-session MCP server usage. Returns {servers: [...], total_calls,
  *  configured_servers: [name, ...]}. */
 export async function getSessionMcpUsage(sessionId) {
-  const r = await fetch(url('/api/session-mcp-usage?session_id=' + encodeURIComponent(sessionId)));
-  return r.json();
+  return fetchJson('/api/session-mcp-usage?session_id=' + encodeURIComponent(sessionId));
 }
 
 /** Per-session cost broken down by model.
@@ -123,94 +141,83 @@ export async function getSessionMcpUsage(sessionId) {
  *  output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd}],
  *  totals: {...}}. */
 export async function getSessionCostByModel(sessionId) {
-  const r = await fetch(url('/api/session-cost-by-model?session_id=' + encodeURIComponent(sessionId)));
-  return r.json();
+  return fetchJson('/api/session-cost-by-model?session_id=' + encodeURIComponent(sessionId));
 }
 
 /** Per-session process genealogy (survives session end).
  *  Returns {session_id, total, by_role: {role: count},
  *  processes: [{pid, tool, role, joined_at}]}. */
 export async function getSessionProcesses(sessionId) {
-  const r = await fetch(url('/api/session-processes?session_id=' + encodeURIComponent(sessionId)));
-  return r.json();
+  return fetchJson('/api/session-processes?session_id=' + encodeURIComponent(sessionId));
 }
 
 /** Per-session tool-call timeline.
  *  Returns {session_id, total, errors, by_tool: {tool: count},
  *  calls: [{ts, tool_name, is_error, duration_ms, result_summary}]}. */
 export async function getSessionToolCalls(sessionId) {
-  const r = await fetch(url('/api/session-tool-calls?session_id=' + encodeURIComponent(sessionId)));
-  return r.json();
+  return fetchJson('/api/session-tool-calls?session_id=' + encodeURIComponent(sessionId));
 }
 
 /** Per-session deduced stats + enrichments (e.g. vscode_lm_usage).
  *  Returns the SessionEntityState dict, optionally with vscode_lm_usage
  *  when OTel language_model.usage events exist. */
 export async function getSessionStats(sessionId) {
-  const r = await fetch(url('/api/session-stats?session_id=' + encodeURIComponent(sessionId)));
-  return r.json();
+  return fetchJson('/api/session-stats?session_id=' + encodeURIComponent(sessionId));
 }
 
 /** Per-session git commit attribution.
  *  Returns {session_id, branch, commits: [{sha, short_sha, author_name,
  *  author_email, ts, subject, current_branch_match}]}. */
 export async function getSessionCommits(sessionId) {
-  const r = await fetch(url('/api/session-commits?session_id=' + encodeURIComponent(sessionId)));
-  return r.json();
+  return fetchJson('/api/session-commits?session_id=' + encodeURIComponent(sessionId));
 }
 
 export async function getAgentTeams(sessionId) {
-  const r = await fetch(url('/api/agent-teams?session_id=' + encodeURIComponent(sessionId)));
-  return r.json();
+  return fetchJson('/api/agent-teams?session_id=' + encodeURIComponent(sessionId));
 }
 
 /** Fetch the Claude Code memory diff (start vs end snapshot) for a session.
  *  Returns {files: [{path, change, added_lines, removed_lines, unified_diff}],
  *  summary: {added, modified, removed}}. */
 export async function getSessionMemoryDiff(sessionId) {
-  const r = await fetch(url('/api/session-memory-diff?session_id=' + encodeURIComponent(sessionId)));
-  return r.json();
+  return fetchJson('/api/session-memory-diff?session_id=' + encodeURIComponent(sessionId));
 }
 
 // ─── Session Transcripts ───────────────────────────────────────
 
 export async function getTranscript(sessionId) {
-  const r = await fetch(url('/api/transcript/' + encodeURIComponent(sessionId)));
-  return r.json();
+  return fetchJson('/api/transcript/' + encodeURIComponent(sessionId));
 }
 
 export async function getTranscripts(cutoff = 300) {
-  const r = await fetch(url('/api/transcripts?cutoff=' + cutoff));
-  return r.json();
+  return fetchJson('/api/transcripts?cutoff=' + cutoff);
 }
 
 // ─── Analytics & Costs ─────────────────────────────────────────
 
 export async function getAnalytics(path, opts = {}) {
-  const r = await fetch(url(path), opts);
-  return r.json();
+  return fetchJson(path, opts);
 }
 
 export async function getProjectCosts(days = 7) {
-  const r = await fetch(url('/api/project-costs?days=' + days));
-  return r.json();
+  return fetchJson('/api/project-costs?days=' + days);
 }
 
 export async function getApiCalls(since, limit = 100, sessionId = null) {
   const qs = new URLSearchParams({since: String(since), limit: String(limit)});
   if (sessionId) qs.set('session_id', sessionId);
-  const r = await fetch(url(`/api/api-calls?${qs.toString()}`));
-  return r.json();
+  return fetchJson(`/api/api-calls?${qs.toString()}`);
 }
 
 // ─── Budget ────────────────────────────────────────────────────
 
 export async function getBudget() {
-  const r = await fetch(url('/api/budget'));
-  return r.json();
+  return fetchJson('/api/budget');
 }
 
 // ─── Files ─────────────────────────────────────────────────────
+// These return the raw Response (callers need .status / .headers for the
+// ETag & 304 handling in utils.fetchFileContent), so they stay on fetch.
 
 export async function getFile(path, headers = {}) {
   return fetch(url('/api/file?path=' + encodeURIComponent(path)), { headers });
@@ -226,53 +233,41 @@ export async function getFileAt(path, ts) {
 // ─── Samples ───────────────────────────────────────────────────
 
 export async function getSamplesList() {
-  const r = await fetch(url('/api/samples?list=1'));
-  return r.json();
+  return fetchJson('/api/samples?list=1');
 }
 
 export async function getSamplesSeries(name, since) {
-  const r = await fetch(url('/api/samples?series=' + encodeURIComponent(name) + '&since=' + since));
-  return r.json();
+  return fetchJson('/api/samples?series=' + encodeURIComponent(name) + '&since=' + since);
 }
 
 export async function getSamplesRaw(name, since) {
-  const r = await fetch(url('/api/samples?metric=' + encodeURIComponent(name) + '&since=' + since));
-  return r.json();
+  return fetchJson('/api/samples?metric=' + encodeURIComponent(name) + '&since=' + since);
 }
 
 // ─── Health ────────────────────────────────────────────────────
 
 export async function getOtelStatus() {
-  const r = await fetch(url('/api/otel-status'));
-  return r.json();
+  return fetchJson('/api/otel-status');
 }
 
 export async function getSelfStatus() {
-  const r = await fetch(url('/api/self-status'));
-  return r.json();
+  return fetchJson('/api/self-status');
 }
 
 export async function getHooksStatus() {
-  const r = await fetch(url('/api/hooks-status'));
-  return r.json();
+  return fetchJson('/api/hooks-status');
 }
 
 export async function getToolConfig(tool) {
-  const r = await fetch(url('/api/tool-config/' + encodeURIComponent(tool)));
-  const data = await r.json();
-  if (!r.ok) throw new Error(data.error || 'Failed to load tool config');
-  return data;
+  return fetchJson('/api/tool-config/' + encodeURIComponent(tool));
 }
 
 export async function updateToolConfig(tool, payload) {
-  const r = await fetch(url('/api/tool-config/' + encodeURIComponent(tool)), {
+  return fetchJson('/api/tool-config/' + encodeURIComponent(tool), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  const data = await r.json();
-  if (!r.ok) throw new Error(data.error || 'Failed to save tool config');
-  return data;
 }
 
 // ─── Session control ───────────────────────────────────────────
@@ -281,14 +276,11 @@ export async function updateToolConfig(tool, payload) {
  *  or "KILL". Requires the backend's confirm gate — we always pass confirm:true
  *  because the UI presents its own confirmation dialog before calling this. */
 export async function killSession(sessionId, signal = 'TERM') {
-  const r = await fetch(url('/api/session-kill'), {
+  return fetchJson('/api/session-kill', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId, confirm: true, signal }),
   });
-  const data = await r.json();
-  if (!r.ok) throw new Error(data.error || 'Failed to signal session');
-  return data;
 }
 
 // ─── Datapoints ────────────────────────────────────────────────
@@ -297,7 +289,7 @@ let _datapointCache = null;
 
 export async function getDatapoints() {
   if (!_datapointCache) {
-    _datapointCache = fetch(url('/api/datapoints')).then(r => r.json());
+    _datapointCache = fetchJson('/api/datapoints');
   }
   return _datapointCache;
 }

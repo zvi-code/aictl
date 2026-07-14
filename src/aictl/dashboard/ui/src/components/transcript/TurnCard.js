@@ -1,6 +1,6 @@
 import { html } from 'htm/preact';
-import { fmtK } from '../../utils.js';
-import { fmtDur, fmtHHMMSS, shortModel, truncate } from './helpers.js';
+import { fmtK, fmtDurMs, fmtHHMMSS, shortModel } from '../../utils.js';
+import { truncate } from './helpers.js';
 import ActionRow from './ActionRow.js';
 import { Icon } from '../ui/index.js';
 
@@ -36,7 +36,7 @@ export default function TurnCard({ turn, index, expanded, onToggle }) {
       <div class="tr-turn-meta">
         <span class="tr-turn-time">${fmtHHMMSS(turn.ts)}</span>
         ${turn.model ? html`<span class="tr-turn-model">${shortModel(turn.model)}</span>` : null}
-        ${wallMs > 0 ? html`<span class="tr-turn-dur">${fmtDur(wallMs)}</span>` : null}
+        ${wallMs > 0 ? html`<span class="tr-turn-dur">${fmtDurMs(wallMs)}</span>` : null}
       </div>
       <div class="tr-turn-stats">
         ${totalTok > 0 ? html`<span class="tr-stat" title="Tokens"><${Icon} name="coins" size="0.9em"/> ${fmtK(totalTok)}</span>` : null}

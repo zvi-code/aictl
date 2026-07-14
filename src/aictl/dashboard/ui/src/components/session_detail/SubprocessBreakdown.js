@@ -11,14 +11,17 @@ import { esc } from '../../utils.js';
 export default function SubprocessBreakdown({ sessionId, topN = 10 }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId) { setData(null); setLoading(false); setError(null); return; }
+    let cancelled = false;
     setLoading(true);
+    setError(null);
     api.getSessionSubprocesses(sessionId)
-      .then(d => setData(d))
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
+      .then(d => { if (!cancelled) { setData(d); setLoading(false); } })
+      .catch(e => { if (!cancelled) { setData(null); setError(e); setLoading(false); } });
+    return () => { cancelled = true; };
   }, [sessionId]);
 
   const top = useMemo(() => {
@@ -27,7 +30,10 @@ export default function SubprocessBreakdown({ sessionId, topN = 10 }) {
   }, [data, topN]);
 
   if (loading) {
-    return html`<div class="text-xs text-muted">Loading subprocesses\u2026</div>`;
+    return html`<div class="text-xs text-muted loading-state" style="padding:0">Loading subprocesses\u2026</div>`;
+  }
+  if (error) {
+    return html`<div class="error-state text-xs" style="padding:0">Failed to load subprocess breakdown${error.message ? ` (${error.message})` : ''}.</div>`;
   }
   if (!top.length) {
     return html`<div class="text-xs text-muted">No subprocess activity recorded

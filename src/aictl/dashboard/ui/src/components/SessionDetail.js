@@ -1,5 +1,5 @@
 import { html } from 'htm/preact';
-import { fmtK, esc, COLORS } from '../utils.js';
+import { fmtK, esc, fmtDurSec, toolColor } from '../utils.js';
 import TeamTree, { TaskBoard } from './TeamTree.js';
 import Panel from './session_detail/Panel.js';
 import ActionsPanel from './session_detail/ActionsPanel.js';
@@ -15,13 +15,12 @@ import CostByModelPanel from './session_detail/CostByModelPanel.js';
 import ProcessTreePanel from './session_detail/ProcessTreePanel.js';
 import ToolCallsPanel from './session_detail/ToolCallsPanel.js';
 import SessionControl from './session_detail/SessionControl.js';
-import { fmtDur } from './session_detail/helpers.js';
 
 // Thin orchestrator — just the session header + a stack of Panels.
 // Each panel is its own file under components/session_detail/.
 // Panel `icon` values are Lucide names (see components/ui/Icon.js).
 export default function SessionDetail({session, onClose}) {
-  const c = COLORS[session.tool] || 'var(--fg2)';
+  const c = toolColor(session.tool);
   const filesLoaded = session.files_loaded || [];
   const filesTouched = session.files_touched || [];
   const inTok = session.exact_input_tokens || 0;
@@ -38,7 +37,7 @@ export default function SessionDetail({session, onClose}) {
         ${session.project && html`<span class="text-muted text-xs mono text-ellipsis" style="max-width:250px"
           title=${session.project}>${esc(session.project.replace(/\\/g,'/').split('/').pop())}</span>`}
         <span class="badge" style="background:var(--green);color:var(--bg);font-size:var(--fs-xs)">
-          ${fmtDur(session.duration_s)}
+          ${fmtDurSec(session.duration_s)}
         </span>
         ${hasTeam && html`<span class="badge" style="background:var(--accent);color:var(--bg);font-size:var(--fs-xs)">
           Team (${entityState.agents.length})

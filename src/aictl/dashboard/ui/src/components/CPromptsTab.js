@@ -3,6 +3,7 @@ import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import * as api from '../api.js';
 import { Icon } from './ui/index.js';
+import { fmtSz, fmtAgo } from '../utils.js';
 
 const VIEWS = [
   { id: 'prompts',   label: 'Prompts' },
@@ -72,22 +73,7 @@ function collectWorkflows(snap) {
   return out.filter(w => { if (seen.has(w.id)) return false; seen.add(w.id); return true; });
 }
 
-function fmtSize(n) {
-  if (!n) return '';
-  if (n < 1024) return n + 'B';
-  return (n / 1024).toFixed(1) + 'K';
-}
 
-function fmtAgo(ts) {
-  if (!ts) return '';
-  const secs = Math.floor(Date.now() / 1000 - ts);
-  if (secs < 60) return secs + 's ago';
-  const m = Math.floor(secs / 60);
-  if (m < 60) return m + 'm ago';
-  const h = Math.floor(m / 60);
-  if (h < 24) return h + 'h ago';
-  return Math.floor(h / 24) + 'd ago';
-}
 
 // ─── Prompt detail ───────────────────────────────────────────────
 function PromptDetail({ prompt, view = 'prompts' }) {
@@ -119,7 +105,7 @@ function PromptDetail({ prompt, view = 'prompts' }) {
     <div class="cprompts-detail-title">${prompt.name}</div>
     <div class="cprompts-detail-meta">
       <span class="cprompts-meta-tool">${prompt.toolLabel}</span>
-      ${prompt.size > 0 && html`<span> \u00b7 ${fmtSize(prompt.size)}</span>`}
+      ${prompt.size > 0 && html`<span> \u00b7 ${fmtSz(prompt.size)}</span>`}
       ${prompt.tokens > 0 && html`<span> \u00b7 ${prompt.tokens}t</span>`}
       ${prompt.mtime > 0 && html`<span> \u00b7 ${fmtAgo(prompt.mtime)}</span>`}
     </div>
@@ -217,7 +203,7 @@ export default function CPromptsTab() {
               <div class="cprompts-prompt-name">${p.name}</div>
               <div class="cprompts-prompt-meta">
                 ${p.toolLabel}
-                ${p.size > 0 ? ` \u00b7 ${fmtSize(p.size)}` : ''}
+                ${p.size > 0 ? ` \u00b7 ${fmtSz(p.size)}` : ''}
               </div>
             </div>`)}
       </div>

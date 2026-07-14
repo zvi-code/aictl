@@ -13,6 +13,7 @@ describe('Transcript API', () => {
 
   it('getTranscript calls correct URL', async () => {
     globalThis.fetch.mockResolvedValue({
+      ok: true,
       json: () => Promise.resolve({ session_id: 'abc', turns: [] }),
     });
     const result = await api.getTranscript('abc');
@@ -22,6 +23,7 @@ describe('Transcript API', () => {
 
   it('getTranscript encodes session ID', async () => {
     globalThis.fetch.mockResolvedValue({
+      ok: true,
       json: () => Promise.resolve({}),
     });
     await api.getTranscript('tool:123:456');
@@ -30,6 +32,7 @@ describe('Transcript API', () => {
 
   it('getTranscripts calls with cutoff', async () => {
     globalThis.fetch.mockResolvedValue({
+      ok: true,
       json: () => Promise.resolve({ transcripts: [], count: 0 }),
     });
     const result = await api.getTranscripts(600);
@@ -39,6 +42,7 @@ describe('Transcript API', () => {
 
   it('getTranscripts defaults cutoff to 300', async () => {
     globalThis.fetch.mockResolvedValue({
+      ok: true,
       json: () => Promise.resolve({ transcripts: [] }),
     });
     await api.getTranscripts();

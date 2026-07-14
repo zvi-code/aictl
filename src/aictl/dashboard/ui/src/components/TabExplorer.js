@@ -20,9 +20,8 @@
 import { useState, useEffect, useContext } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
-import { esc, fmtK, COLORS } from '../utils.js';
-import { dedupeSessions } from '../selectors.js';
-import * as api from '../api.js';
+import { esc, fmtK, fmtDurSec, toolColor } from '../utils.js';
+import useSessionPicker from '../hooks/useSessionPicker.js';
 
 // ─── Session-select bus ──────────────────────────────────────────
 // ActivityRail, the command palette and CSessionsTab's "Inspect session"
@@ -46,9 +45,8 @@ import EventsPanel from './session_detail/EventsPanel.js';
 import SessionSparklines from './SessionSparklines.js';
 import RunTrendStrip from './session_detail/RunTrendStrip.js';
 import SessionCommitsBadge from './session_detail/SessionCommitsBadge.js';
-import ToolTabs from './session_flow/ToolTabs.js';
+import ToolTabs from './ToolTabs.js';
 import SessionTabs from './session_flow/SessionTabs.js';
-import { fmtDurSec } from './session_flow/helpers.js';
 
 const VIEWS = [
   { id: 'overview',   label: 'Overview',   hint: 'Metrics, actions, context, memory' },
@@ -60,7 +58,7 @@ const VIEWS = [
 
 export function SessionHeader({ session }) {
   if (!session) return null;
-  const c = COLORS[session.tool] || 'var(--fg2)';
+  const c = toolColor(session.tool);
   const inTok = session.exact_input_tokens || session.input_tokens || 0;
   const outTok = session.exact_output_tokens || session.output_tokens || 0;
   const totalTok = inTok + outTok;
@@ -111,10 +109,6 @@ export function SessionHeader({ session }) {
 
 export default function TabExplorer() {
   const { globalRange, enabledTools } = useContext(SnapContext);
-  const [sessions, setSessions] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [activeTool, setActiveTool] = useState(null);
-  const [activeSessionId, setActiveSessionId] = useState(null);
   const [activeView, setActiveView] = useState(() => {
     try { return localStorage.getItem('aictl-explorer-view') || 'overview'; }
     catch { return 'overview'; }
@@ -125,6 +119,19 @@ export default function TabExplorer() {
     const p = pendingSelect;
     pendingSelect = null;
     return p;
+  });
+
+  // Fetch + dedupe + tool/session auto-select (shared with the Flow /
+  // Transcript / Timeline tabs). The pending select-session request is
+  // handed to the hook, which applies it — overriding the auto-select —
+  // once the fetched list contains the requested id.
+  const {
+    sessions, loading, error, tools, toolSessions,
+    activeTool, setActiveTool, activeSessionId, setActiveSessionId,
+  } = useSessionPicker({
+    globalRange, enabledTools,
+    requestedSession: pending,
+    onRequestApplied: () => setPending(null),
   });
 
   const changeView = (v) => {
@@ -144,60 +151,13 @@ export default function TabExplorer() {
     return () => document.removeEventListener('aictl:select-session', handler);
   }, []);
 
-  // Fetch sessions list (shared across sub-views)
-  useEffect(() => {
-    setLoading(true);
-    const since = globalRange
-      ? Math.min(globalRange.since, Date.now() / 1000 - 86400)
-      : Date.now() / 1000 - 86400;
-    const until = globalRange?.until;
-    api.getSessionTimeline(null, { since, until })
-      .then(data => {
-        const rows = dedupeSessions(data);
-        rows.sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
-        setSessions(rows);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, [globalRange]);
-
-  const toolMatch = (t) => enabledTools === null || enabledTools.includes(t);
-  const filteredSessions = sessions.filter(sess => toolMatch(sess.tool));
-  const tools = [...new Set(filteredSessions.map(s => s.tool))].sort();
-
-  useEffect(() => {
-    if (!activeTool && tools.length > 0) setActiveTool(tools[0]);
-    else if (activeTool && !tools.includes(activeTool) && tools.length > 0) setActiveTool(tools[0]);
-  }, [tools.join(',')]);
-
-  const toolSessions = filteredSessions.filter(s => s.tool === activeTool);
-
-  useEffect(() => {
-    if (toolSessions.length > 0
-        && (!activeSessionId || !toolSessions.find(s => s.session_id === activeSessionId))) {
-      setActiveSessionId(toolSessions[0].session_id);
-    }
-  }, [activeTool, toolSessions.length]);
-
-  // Apply a pending select-session request once the session list contains
-  // the requested id (the event usually fires before the fetch resolves).
-  // Runs after the auto-select effects above so an explicit request wins.
-  useEffect(() => {
-    if (!pending?.sessionId) return;
-    const sess = sessions.find(s => s.session_id === pending.sessionId);
-    if (!sess) return; // not loaded yet — keep it stashed for the next fetch
-    setActiveTool(sess.tool);
-    setActiveSessionId(sess.session_id);
-    setPending(null);
-  }, [pending, sessions]);
-
   const activeSession = sessions.find(s => s.session_id === activeSessionId);
 
   return html`<div class="explorer-container">
     <div class="explorer-picker">
       <${ToolTabs} tools=${tools} activeTool=${activeTool} onSelect=${setActiveTool}/>
       <${SessionTabs} sessions=${toolSessions} activeId=${activeSessionId}
-        onSelect=${setActiveSessionId} loading=${loading}/>
+        onSelect=${setActiveSessionId} loading=${loading} error=${error}/>
     </div>
 
     ${activeSession && activeSession.project && activeSession.tool && html`<${RunTrendStrip}

@@ -1,6 +1,6 @@
 import { html } from 'htm/preact';
-import { fmtK, esc } from '../../utils.js';
-import { fmtDur, fmtHHMMSS, shortModel, extractToolArgs } from './helpers.js';
+import { fmtK, esc, fmtDurMs, fmtHHMMSS, shortModel } from '../../utils.js';
+import { extractToolArgs } from './helpers.js';
 import SeqTooltip from './SeqTooltip.js';
 import { Icon } from '../ui/index.js';
 
@@ -39,8 +39,8 @@ export default function SeqArrow({event, participants, hoveredIdx, idx, onHover}
     const tok = event.tokens || {};
     label = event.agent_name || shortModel(event.model) || 'API call';
     sublabel = fmtK((tok.input || 0) + (tok.output || 0)) + 't';
-    if (event.ttft_ms > 0) sublabel += ' ttft:' + fmtDur(event.ttft_ms);
-    else if (event.duration_ms > 0) sublabel += ' ' + fmtDur(event.duration_ms);
+    if (event.ttft_ms > 0) sublabel += ' ttft:' + fmtDurMs(event.ttft_ms);
+    else if (event.duration_ms > 0) sublabel += ' ' + fmtDurMs(event.duration_ms);
     if (event.is_error) sublabel += ' \u26A0';
   } else if (event.type === 'api_response') {
     const tok = event.tokens || {};
@@ -59,7 +59,7 @@ export default function SeqArrow({event, participants, hoveredIdx, idx, onHover}
     label = toolName + (argsSummary ? ': ' + argsSummary : '');
     if (event.subtype === 'result') {
       sublabel = (event.success === 'true' || event.success === true ? '\u2713' : '\u2717');
-      if (event.duration_ms > 0) sublabel += ' ' + fmtDur(event.duration_ms);
+      if (event.duration_ms > 0) sublabel += ' ' + fmtDurMs(event.duration_ms);
       if (event.result_size) sublabel += ' ' + event.result_size + 'B';
     } else if (event.subtype === 'decision') {
       sublabel = event.decision || '';

@@ -1,6 +1,5 @@
 import { html } from 'htm/preact';
-import { esc } from '../../utils.js';
-import { fmtDur, fmtHHMMSS } from './helpers.js';
+import { esc, fmtDurMs, fmtHHMMSS } from '../../utils.js';
 
 export default function SeqMarker({event}) {
   let label = '', color = 'var(--fg2)', icon = '';
@@ -20,7 +19,7 @@ export default function SeqMarker({event}) {
     <div class="sf-seq-time">${fmtHHMMSS(event.ts)}</div>
     <div class="sf-seq-marker-body" style="color:${color}">
       ${icon} ${label}
-      ${event.type === 'compaction' && event.duration_ms > 0 ? ' \u2014 ' + fmtDur(event.duration_ms) : ''}
+      ${event.type === 'compaction' && event.duration_ms > 0 ? ' \u2014 ' + fmtDurMs(event.duration_ms) : ''}
       ${event.cwd ? html` <span class="text-muted text-xs mono">${esc(event.cwd)}</span>` : ''}
     </div>
   </div>`;

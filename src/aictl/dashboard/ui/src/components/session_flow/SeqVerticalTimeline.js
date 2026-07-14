@@ -12,8 +12,8 @@
 // Selecting a row notifies the parent so the right-side inspector can show
 // the full event payload.
 import { html } from 'htm/preact';
-import { fmtK, esc } from '../../utils.js';
-import { fmtDur, fmtHHMMSS, shortModel, extractToolArgs } from './helpers.js';
+import { fmtK, esc, fmtDurMs, fmtHHMMSS, shortModel } from '../../utils.js';
+import { extractToolArgs } from './helpers.js';
 
 const LANE_KIND = {
   user_message:  { lane: 'user',      kind: 'call'   },
@@ -53,8 +53,8 @@ function _describe(ev) {
     const total = (tok.input || 0) + (tok.output || 0);
     const label = ev.agent_name || shortModel(ev.model) || 'API call';
     let meta = fmtK(total) + 't';
-    if (ev.ttft_ms > 0) meta += ' \u00B7 ttft ' + fmtDur(ev.ttft_ms);
-    else if (ev.duration_ms > 0) meta += ' \u00B7 ' + fmtDur(ev.duration_ms);
+    if (ev.ttft_ms > 0) meta += ' \u00B7 ttft ' + fmtDurMs(ev.ttft_ms);
+    else if (ev.duration_ms > 0) meta += ' \u00B7 ' + fmtDurMs(ev.duration_ms);
     if (ev.is_error) meta += ' \u26A0';
     return { label, meta, size: '' };
   }
@@ -76,7 +76,7 @@ function _describe(ev) {
     let meta = '';
     if (ev.subtype === 'result') {
       meta = (ev.success === 'true' || ev.success === true ? '\u2713' : '\u2717');
-      if (ev.duration_ms > 0) meta += ' ' + fmtDur(ev.duration_ms);
+      if (ev.duration_ms > 0) meta += ' ' + fmtDurMs(ev.duration_ms);
     } else if (ev.subtype === 'decision') {
       meta = ev.decision || '';
     }
@@ -97,7 +97,7 @@ function _describe(ev) {
   }
   if (ev.type === 'compaction') {
     const n = ev.compaction_count ? ' #' + ev.compaction_count : '';
-    return { label: '\u27F3 Compaction' + n, meta: ev.duration_ms > 0 ? fmtDur(ev.duration_ms) : '', size: '' };
+    return { label: '\u27F3 Compaction' + n, meta: ev.duration_ms > 0 ? fmtDurMs(ev.duration_ms) : '', size: '' };
   }
   return { label: ev.type || '(event)', meta: '', size: '' };
 }

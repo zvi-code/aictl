@@ -1,28 +1,9 @@
-// Formatting helpers shared by transcript sub-components.
-export function fmtDur(ms) {
-  if (ms == null || isNaN(ms) || ms <= 0) return '';
-  const sec = Math.round(ms / 1000);
-  if (sec < 60) return sec + 's';
-  const m = Math.floor(sec / 60);
-  if (m < 60) return m + 'm ' + (sec % 60) + 's';
-  const h = Math.floor(m / 60);
-  return h + 'h ' + (m % 60) + 'm';
-}
-
-export function fmtHHMMSS(ts) {
-  return new Date(ts * 1000).toLocaleTimeString([], {
-    hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit',
-  });
-}
-
-export function shortModel(m) {
-  if (!m) return '';
-  return m.replace('claude-', '').replace('gpt-', '').replace(/-\d{8}$/, '');
-}
+// Domain-specific helpers for transcript sub-components.
+// Generic formatters (fmtDurMs, fmtHHMMSS, shortModel) live in src/utils.js.
 
 export function truncate(s, n) {
   if (!s) return '';
-  return s.length > n ? s.slice(0, n) + '\u2026' : s;
+  return s.length > n ? s.slice(0, n) + '…' : s;
 }
 
 // Action-kind → Lucide icon name (rendered via components/ui/Icon.js).
