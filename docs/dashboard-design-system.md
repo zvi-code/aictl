@@ -4,7 +4,11 @@ Design tokens, component patterns, and accessibility status for the
 `aictl serve` web dashboard UI only. This does not cover the CLI, plugin
 system, collectors, or other parts of the aictl project.
 
-Living document maintained by `/ui-review`. Last updated: 2026-03-27.
+Living document maintained by `/ui-review`. Last updated: 2026-07-14.
+
+> Path note: the package root moved to `src/aictl/` — UI sources are at
+> `src/aictl/dashboard/ui/src/`. File references below use paths relative
+> to that directory unless stated otherwise.
 
 ## Color Tokens
 
@@ -218,54 +222,86 @@ All 9 tab components use these instead of inline styles.
 - FileViewer focus trap + `aria-modal="true"` (added 2026-03-28)
 - Zero hardcoded hex colors in any JS file (verified 2026-03-28)
 
-### Known Bugs (as of 2026-03-28)
-- `var(--blue)` and `var(--fg3)` referenced in `TabSessions.js:21,24`,
-  `SessionDetail.js:55,60`, `TeamTree.js:20-21,102` — never defined in CSS.
-  Badges and event dots render invisible. **Scope widened**: 3 files, not 1.
-- Floating-point in Live Traffic legend — `ResourceBar.js:35` string coercion
-  issue when API returns string-typed rate values (screenshot evidence from 2026-03-26)
-- `fmtDur` duplicated identically in `TabSessions.js:8`, `SessionDetail.js:8`,
-  `TeamTree.js:6` — should be in `utils.js`
+### Known Bugs (as of 2026-07-14)
 
-### Missing (ordered by impact)
-1. `ProcessNode` expand toggle is `<span>` not `<button>` — keyboard-inaccessible
-2. `role="alert"` on `ErrorBoundary.js` error fallback UI
-3. `aria-label` on `ProcRow.js` anomaly icon and copy button
-4. Consistent `aria-expanded` on all collapsible sections — missing on
-   `TabSessions.js` ProcessNode
-5. Screen reader text for icon-only buttons (Unicode arrows lack `aria-hidden`)
-6. Touch targets: `.range-btn` and `.header-toggle` at 32px, below WCAG 44px
-7. `aria-live` regions for more SSE-updated data elements (NOT on tabpanel — too noisy)
-8. Color-only status indicators in progress bars / memory bars (WCAG 1.4.1)
-9. `ToolCardSections.js:131` error badge click handler without button semantics
-10. `TeamTree.js` columns and items lack ARIA roles/labels
-11. `MiniChart.js:66` generic aria-label "Sparkline chart" for all charts
+Authoritative list: Open Issues Tracker in `.claude/skills/ui-review/SKILL.md`;
+full detail in `wip/reviews/2026-07-14-full-review.md`. Token-relevant summary:
 
-## Layout Structure
+- **Undefined CSS variables (expanded)**: `--blue`, `--fg3`, `--bg1`, `--mono`,
+  `--bd`, `--bg-alt`, `--fg-muted` are referenced (components + dashboard.css
+  itself at :627,746,903-1042,237) but defined nowhere → invisible dots,
+  transparent dropdowns/backgrounds. Define aliases: `--blue: var(--accent)`,
+  `--fg3/--fg-muted: var(--fg2)`, `--bg1/--bg-alt: var(--bg3)`,
+  `--bd: var(--border)`, `--mono: var(--ff-mono)`.
+- **Sparkline strokes can't consume `var()`**: uPlot/canvas `strokeStyle`
+  requires resolved colors — `MiniChart.js:67` and TinySparkline
+  (`ToolCardSections.js:20`) pass raw `var(--...)` strings → black lines on
+  dark theme. Rule: resolve CSS vars via `getComputedStyle` before handing
+  colors to canvas APIs (pattern: `AnalyticsChart.js:26-36`).
+- Floating-point in Live Traffic legend — `ResourceBar.js:10-11,29,35` still
+  lacks Number coercion.
+- `fmtDur` now exists in 11 copies with a units conflict (seconds in
+  session_detail/helpers.js vs milliseconds in session_flow//transcript/) —
+  utils.js still has no duration formatter. Add `fmtDurSec`/`fmtDurMs`.
+- `esc()` (utils.js:91) double-escapes — htm text interpolations are already
+  escaped. Only real innerHTML sinks need escaping (and MiniChart's tooltip,
+  the one such sink, doesn't escape).
+- `.badge` is styled twice (dashboard.css:279 and :1525 modernization layer).
+
+### Missing (ordered by impact, as of 2026-07-14 — see SKILL.md tracker #24-#29)
+1. Keyboard-inoperable core controls: DataTable sort (`ui/DataTable.js:236`),
+   Segmented arrow keys (`ui/Segmented.js:16`), TurnCard/EventsPanel/MemoryPanel
+   expanders, ToolCardSections error badge (`:170`), mouse-only tooltips
+   (DatapointTooltip, TabTimelineChart bars, ContextMap segments)
+2. `/` shortcut steals focus from every non-header input (`app.js:63-68` —
+   reuse `isTypingTarget` from `hooks/useTabs.js`)
+3. aria-live REGRESSION: whole LiveSection metric grid announced
+   (`ToolCardSections.js:232`) — remove; keep per-value pattern (Metric.js)
+4. ARIA structure misuse: role="menu" without menu pattern (GlobalHeader,
+   SessionCommitsBadge), role="listitem" on buttons (SeqVerticalTimeline),
+   partial tablist (TabExplorer:168), CommandPalette missing
+   aria-activedescendant, TeamTree/TaskBoard roles, MiniChart generic label +
+   nested img role under ChartCard
+5. `role="alert"` still absent on ErrorBoundary fallback (has role="status"
+   via EmptyState) and on the CollectorHealth DATA-LOSS banner
+6. Bare decorative triangles without aria-hidden (ToolCard, TabOverview,
+   TabProcesses, TabMemory, FileTree, DashboardContent)
+7. Color-only signals: TokenBar segments (TabBudget:24), ProcRow thresholds,
+   ApiCalls/ToolCalls success dots
+8. Toasts: no dismiss, 5s TTL, double SR announcement (ToastProvider + Toast)
+9. Readability floor: `--fs-2xs`/`--fs-xs` (8.8/9.6px) used for real content;
+   ContextMap `color:#111` over arbitrary palette; `_SF_FIXED` Bash `#1a1a1a`
+   invisible on dark
+10. Touch targets: 32px on `.range-btn`/`.header-toggle` (meets WCAG 2.2 AA
+    24px minimum; 44px remains the target)
+
+## Layout Structure (as of 2026-07-14)
 
 ```
-header
-  ├── title + search + theme toggle + connection status
-  ├── range selector (Live, 1h, 6h, 24h, 7d)
-  ├── sparkline row (4 charts)
-  ├── collapsible detail section
-  │   ├── inventory metrics (2-col grid)
-  │   ├── live monitor metrics (2-col grid)
-  │   ├── resource bars
-  │   └── event timeline
-  └── collapse toggle
-
+GlobalHeader (shell/GlobalHeader.js)
+  ├── title + filter + command palette (⌘K) + Views + density + theme + live pill
 main
-  ├── tab bar (9 tabs with keyboard shortcuts)
-  └── tab panel (selected tab content)
-
+  ├── RangeBar (Live, 1h, 6h, 24h, 7d, Custom)
+  ├── ActivityRail (left: active sessions)
+  ├── tab bar (11 tabs; keyboard shortcuts cover 1-8 and 0 only)
+  └── tab panel
+       ├── overview  → CDashboardTab (editorial) | DashboardContent+CollectorHealth (default)
+       ├── explorer  → CSessionsTab (editorial) | TabExplorer (default; 5 sub-views:
+       │              SessionDetail / Flow / Transcript / Timeline / Events)
+       └── procs, context, live, events, budget, analytics, heatmap, config,
+           agents, prompts
 file-viewer (overlay side panel, resizable)
 ```
+
+Caveats: the theme fork means health/observability surfaces exist only in the
+default branch (tracker #17); tab count exceeds shortcut coverage; two code
+paths still reference a nonexistent `sessions` tab id (tracker #3).
 
 ## Revision Log
 
 | Date | Change | By |
 |------|--------|-----|
+| 2026-07-14 | Full-codebase review (7 parallel passes): tracker rebuilt (33 items), undefined-var scope expanded, canvas-var rule added, layout section updated to 11-tab/theme-fork reality, a11y Missing list refreshed. Full report: wip/reviews/2026-07-14-full-review.md | /ui-review |
 | 2026-03-28 | ToolCard decomposition, ProcRow dedup, typography scale (commits 5d13edf, 49854a2) | /ui-review fix |
 | 2026-03-28 | FileViewer focus trap, last hex colors, component ARIA (commit d93cf1a) | /ui-review fix |
 | 2026-03-28 | State classes + canvas a11y (commit 550c4b7) | /ui-review fix |
