@@ -7,13 +7,18 @@ import * as api from '../api.js';
 
 const STATUS_COLORS = { active: 'var(--green)', degraded: 'var(--orange)', disabled: 'var(--fg2)', unknown: 'var(--fg2)' };
 
+// Severity → chip color for data-quality events (error red, warning orange).
+const SEVERITY_COLORS = { error: 'var(--red)', warning: 'var(--orange)' };
+const DATA_QUALITY_LIMIT = 20;
+
 
 export default function CollectorHealth() {
   const { snap: s } = useContext(SnapContext);
   const [otel, setOtel] = useState(null);
   const [selfStatus, setSelfStatus] = useState(null);
+  const [dataQuality, setDataQuality] = useState(null);
 
-  // Poll OTel + self status every 15s
+  // Poll OTel + self status + data quality every 15s
   useEffect(() => {
     let running = true;
     const poll = () => {
@@ -21,6 +26,9 @@ export default function CollectorHealth() {
         .then(d => { if (running) setOtel(d); }).catch(() => {});
       api.getSelfStatus()
         .then(d => { if (running) setSelfStatus(d); }).catch(() => {});
+      api.getDataQuality({ limit: DATA_QUALITY_LIMIT })
+        .then(d => { if (running) setDataQuality(Array.isArray(d?.items) ? d.items : []); })
+        .catch(() => {});
     };
     poll();
     const id = setInterval(poll, 15000);
@@ -202,6 +210,26 @@ export default function CollectorHealth() {
         </table>
       </div>
     </div>
+
+    <!-- Data-quality events (sink flood-protection, ingester failures, …) -->
+    ${dataQuality != null ? html`<div class="mb-md" data-dp="overview.collector_health.data_quality">
+      <div class="es-section-title">Data Quality</div>
+      ${dataQuality.length === 0
+        ? html`<div class="text-xs text-muted">No data-quality events</div>`
+        : dataQuality.slice(0, DATA_QUALITY_LIMIT).map((q, i) => {
+            const sevColor = SEVERITY_COLORS[q.severity] || 'var(--fg2)';
+            const source = [q.component, q.source].filter(Boolean).join(' · ');
+            return html`<div key=${(q.component || '') + ':' + (q.source || '') + ':' + i}
+              class="flex-row gap-sm" style="align-items:center;padding:var(--sp-1) 0;font-size:var(--fs-sm)">
+              <span class="badge" style="background:${sevColor};color:var(--bg);font-size:var(--fs-2xs)">
+                ${q.severity || q.status || 'info'}</span>
+              <span class="mono text-xs" style="white-space:nowrap" title=${'kind: ' + (q.kind || '—') + ' · status: ' + (q.status || '—') + (q.count ? ' · seen ' + q.count + 'x' : '')}>${source || '—'}</span>
+              <span class="text-xs" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                title=${q.message || ''}>${q.message || '—'}</span>
+              <span class="text-xs text-muted" style="white-space:nowrap">${fmtAgo(q.updated_at)}</span>
+            </div>`;
+          })}
+    </div>` : null}
 
     <!-- Collector pipeline status -->
     ${collectors.length > 0 ? html`<div>

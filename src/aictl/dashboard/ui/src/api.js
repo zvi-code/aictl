@@ -172,6 +172,14 @@ export async function getSessionCommits(sessionId) {
   return fetchJson('/api/session-commits?session_id=' + encodeURIComponent(sessionId));
 }
 
+/** Merged conversation messages for a session (OTel prompts + copilot/
+ *  cursor/vscode ingested chats). Returns {session_id, messages: [{role,
+ *  content, ts, source}], sources: {otel, copilot_store, cursor,
+ *  vscode_chat}}. Sorted oldest first. */
+export async function getSessionMessages(sessionId, limit = 200) {
+  return fetchJson('/api/session-messages?session_id=' + encodeURIComponent(sessionId) + '&limit=' + limit);
+}
+
 export async function getAgentTeams(sessionId) {
   return fetchJson('/api/agent-teams?session_id=' + encodeURIComponent(sessionId));
 }
@@ -256,6 +264,21 @@ export async function getSelfStatus() {
 
 export async function getHooksStatus() {
   return fetchJson('/api/hooks-status');
+}
+
+/** Recorded data-quality statuses from collectors, ingesters, and sinks.
+ *  Returns {items: [{component, source, kind, status, severity, message,
+ *  updated_at, last_ok_at, count, detail}], summary: {status: n}} —
+ *  newest first. */
+export async function getDataQuality(opts = {}) {
+  let path = '/api/data-quality';
+  const params = [];
+  if (opts.status) params.push('status=' + encodeURIComponent(opts.status));
+  if (opts.kind) params.push('kind=' + encodeURIComponent(opts.kind));
+  if (opts.component) params.push('component=' + encodeURIComponent(opts.component));
+  if (opts.limit) params.push('limit=' + opts.limit);
+  if (params.length) path += '?' + params.join('&');
+  return fetchJson(path);
 }
 
 export async function getToolConfig(tool) {

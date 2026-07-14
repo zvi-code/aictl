@@ -2,7 +2,7 @@ import { Fragment } from 'preact';
 import { useState, useEffect, useMemo, useContext } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
-import { fmtK, fmtSz, fmtTime } from '../utils.js';
+import { fmtK, fmtSz, fmtTime, fmtAgo } from '../utils.js';
 import ChartCard from './ChartCard.js';
 import AnalyticsChart from './AnalyticsChart.js';
 import TabSamples from './TabSamples.js';
@@ -272,6 +272,27 @@ function MemorySection({data}) {
   </div>`;
 }
 
+// ── Health banner ────────────────────────────────────────────────
+// /api/analytics responses carry a `_health` block from the background
+// recompute thread ({ok, consecutive_errors, last_error, last_success_ts}).
+// When the thread is failing, the cached payload is stale — say so instead
+// of rendering old numbers as if they were fresh.
+function AnalyticsHealthBanner({health}) {
+  if (!health || health.ok !== false) return null;
+  const detail = health.last_error
+    || `background refresh failing (${health.consecutive_errors || 0}x)`;
+  const updated = health.last_success_ts
+    ? ` (updated ${fmtAgo(health.last_success_ts)})`
+    : ' (no successful update yet)';
+  return html`<div class="analytics-health-warning" role="alert"
+    style="padding:var(--sp-2) var(--sp-4);margin-bottom:var(--sp-4);
+      background:color-mix(in srgb, var(--orange) 12%, var(--bg2));
+      border:1px solid var(--orange);border-radius:4px;
+      color:var(--orange);font-size:var(--fs-sm);font-weight:600">
+    Analytics data may be stale: ${detail}${updated}
+  </div>`;
+}
+
 // ── Main Tab ─────────────────────────────────────────────────────
 
 export default function TabAnalytics() {
@@ -303,6 +324,7 @@ export default function TabAnalytics() {
     ${loading && html`<p class="loading-state">Loading analytics...</p>`}
     ${error && html`<p class="error-state">Error: ${error}</p>`}
     ${!loading && !error && html`<${Fragment}>
+      <${AnalyticsHealthBanner} health=${data?._health}/>
       <${ResponseTimeSection} data=${data?.response_time}/>
       <${ToolUsageSection} data=${data?.tools}/>
       <${MemorySection} data=${data?.files}/>
