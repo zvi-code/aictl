@@ -325,6 +325,92 @@ def test_parse_logs_empty_payload():
     assert receiver.parse_logs({"resourceLogs": []}) == []
 
 
+# ── OTel tool_result → ToolInvocationRow ──────────────────────────
+
+
+def test_extract_tool_invocations_from_otel_tool_result():
+    """The OTel logs path emits ``otel:tool_result`` events — these must be
+    turned into ToolInvocationRows (the old hook-only filter dropped them)."""
+    receiver = OtelReceiver()
+    body = _make_otlp_logs(
+        "tool_result",
+        attrs={
+            "tool_name": "Bash",
+            "success": "true",
+            "duration_ms": "18",
+            "tool_parameters": json.dumps({"full_command": "git status"}),
+            "tool_response": "clean\nnothing to commit",
+            "session.id": "otel-tool-sess",
+            "event.sequence": "18",
+        },
+    )
+    events = receiver.parse_logs(body)
+    invs = receiver.extract_tool_invocations(events)
+
+    assert len(invs) == 1
+    inv = invs[0]
+    assert inv.tool_name == "Bash"
+    assert inv.session_id == "otel-tool-sess"
+    assert inv.duration_ms == 18.0
+    assert inv.is_error == 0
+    assert inv.source == "otel"
+    # tool_parameters JSON is parsed into the input dict (the Bash command).
+    assert inv.input.get("full_command") == "git status"
+    # result_summary comes from tool_response, newlines preserved but clipped.
+    assert "clean" in inv.result_summary
+    # source_event_id anchors dedup: session:event.sequence when no span id.
+    assert inv.source_event_id == "otel-tool-sess:18"
+
+
+def test_extract_tool_invocations_ignores_tool_decision():
+    """``tool_decision`` is a permission gate, not an execution — no row."""
+    receiver = OtelReceiver()
+    body = _make_otlp_logs("tool_decision", attrs={"tool_name": "Bash", "decision": "accept"})
+    events = receiver.parse_logs(body)
+    assert receiver.extract_tool_invocations(events) == []
+
+
+def test_extract_tool_invocations_marks_failure():
+    receiver = OtelReceiver()
+    body = _make_otlp_logs(
+        "tool_result",
+        attrs={"tool_name": "Bash", "success": "false", "duration_ms": "5"},
+    )
+    events = receiver.parse_logs(body)
+    invs = receiver.extract_tool_invocations(events)
+    assert len(invs) == 1
+    assert invs[0].is_error == 1
+
+
+def test_dropped_counter_increments_on_malformed_attrs():
+    """Per-item malformed attributes are skipped but now counted in stats."""
+    receiver = OtelReceiver()
+    body = {
+        "resourceLogs": [
+            {
+                "resource": {"attributes": []},
+                "scopeLogs": [
+                    {
+                        "logRecords": [
+                            {
+                                "timeUnixNano": "1700000000000000000",
+                                "attributes": [
+                                    {"key": "event.name", "value": {"stringValue": "tool_result"}},
+                                    "not-a-dict-keyvalue",  # skipped → dropped
+                                    {"key": "bad", "value": "not-a-dict-value"},  # skipped → dropped
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    receiver.parse_logs(body)
+    assert receiver.stats.dropped >= 2
+    assert receiver.status()["dropped"] >= 2
+
+
 # ── Unit tests: OtelReceiver.status ───────────────────────────────
 
 
@@ -468,6 +554,35 @@ def test_post_v1_logs(otel_server):
 
     events = db.query_events(since=0, until=time.time() + 3600, kind="otel:claude_code.api_request")
     assert len(events) == 1
+
+
+def test_tool_invocations_persisted_via_logs_endpoint(otel_server):
+    """POSTing an OTel tool_result log must persist a tool_invocations row
+    (with source_event_id), not just an event — regression for the filter
+    that only matched hook: events and dropped every OTel invocation."""
+    base, srv, db = otel_server
+    body = _make_otlp_logs(
+        "tool_result",
+        attrs={
+            "tool_name": "Read",
+            "success": "true",
+            "duration_ms": "7",
+            "tool_parameters": json.dumps({"file_path": "/tmp/x.py"}),
+            "session.id": "otel-persist-sess",
+            "event.sequence": "42",
+        },
+    )
+    status, resp = _post_json(f"{base}/v1/logs", body)
+    assert status == 200
+    assert resp["ok"] is True
+
+    rows = db.query_tool_invocations(session_id="otel-persist-sess")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["tool_name"] == "Read"
+    assert row["source"] == "otel"
+    assert row["source_event_id"] == "otel-persist-sess:42"
+    assert "/tmp/x.py" in (row["input"] or "")
 
 
 def test_otel_status_endpoint(otel_server):

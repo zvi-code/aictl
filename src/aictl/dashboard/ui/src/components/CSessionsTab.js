@@ -118,6 +118,7 @@ export default function CSessionsTab({ onInspect }) {
   const { globalRange, enabledTools } = useContext(SnapContext);
 
   const [sessions,      setSessions]      = useState([]);
+  const [filteredCount, setFilteredCount] = useState(0);
   const [loading,       setLoading]       = useState(true);
   const [filter,        setFilter]        = useState('');
   const [statusFilter,  setStatusFilter]  = useState('all');
@@ -136,6 +137,9 @@ export default function CSessionsTab({ onInspect }) {
         const rows = dedupeSessions(data);
         rows.sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
         setSessions(rows);
+        // `filtered_count` (short, no-file sessions hidden by the backend)
+        // rides along on the returned array; surface it as an honest note.
+        setFilteredCount(data.filtered_count || 0);
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -151,22 +155,27 @@ export default function CSessionsTab({ onInspect }) {
   }, [sessions, enabledTools]);
 
   // Filter options track the lifecycle statuses that actually occur in the
-  // loaded rows — a filter that can never match is worse than none.
-  // NOTE: an 'error' option returns here once the backend ships
-  // `error_count` on session rows (separate batch); no payload field feeds
-  // an error status today.
+  // loaded rows — a filter that can never match is worse than none. The
+  // 'error' option is orthogonal to lifecycle (a session can be ended *and*
+  // errored); it appears only when some visible session has error_count>0
+  // and matches on that field rather than on lifecycle_status.
   const statuses = useMemo(() => {
     const seen = new Set();
+    let hasError = false;
     for (const s of sessions) {
-      if (toolMatch(s.tool)) seen.add(sessionStatus(s));
+      if (!toolMatch(s.tool)) continue;
+      seen.add(sessionStatus(s));
+      if ((s.error_count || 0) > 0) hasError = true;
     }
     // Stable presentation order regardless of row order.
-    return ['active', 'open', 'ended', 'imported'].filter(st => seen.has(st));
+    const base = ['active', 'open', 'ended', 'imported'].filter(st => seen.has(st));
+    return hasError ? [...base, 'error'] : base;
   }, [sessions, enabledTools]);
 
   const filtered = useMemo(() => {
     let list = sessions.filter(s => toolMatch(s.tool));
-    if (statusFilter !== 'all') list = list.filter(s => sessionStatus(s) === statusFilter);
+    if (statusFilter === 'error') list = list.filter(s => (s.error_count || 0) > 0);
+    else if (statusFilter !== 'all') list = list.filter(s => sessionStatus(s) === statusFilter);
     if (agentFilter  !== 'all') list = list.filter(s => s.tool === agentFilter);
     if (filter) {
       const q = filter.toLowerCase();
@@ -222,6 +231,9 @@ export default function CSessionsTab({ onInspect }) {
         <option value="files-desc">most files</option>
       </select>
       <span class="csessions-toolbar-count">${filtered.length} sessions</span>
+      ${filteredCount > 0 ? html`<span class="text-muted text-xs" style="margin-left:var(--sp-2)"
+        title="Short sessions with no file activity and under 60s are hidden">
+        ${filteredCount} short session${filteredCount === 1 ? '' : 's'} hidden</span>` : null}
     </div>
 
     <div class="csessions-body">
@@ -252,7 +264,13 @@ export default function CSessionsTab({ onInspect }) {
                     role="row" tabIndex=${0}
                     onKeyDown=${e => e.key === 'Enter' && setSelectedId(s.session_id)}>
                     <div class="csessions-cell-time">${fmtDate(s.started_at)}</div>
-                    <div><${StatusBadge} status=${status}/></div>
+                    <div class="flex-row gap-sm" style="align-items:center">
+                      <${StatusBadge} status=${status}/>
+                      ${(s.error_count || 0) > 0 ? html`<span
+                        title=${s.error_count + ' error' + (s.error_count === 1 ? '' : 's')}
+                        style="background:var(--red);color:var(--bg);border-radius:8px;padding:0 6px;font-size:var(--fs-2xs);font-weight:600">
+                        ${s.error_count}</span>` : null}
+                    </div>
                     <div class="csessions-cell-title">${sessionTitle(s)}</div>
                     <div class="csessions-col-agent">
                       <${ToolIcon} tool=${s.tool} size="0.85em"/>

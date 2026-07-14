@@ -415,6 +415,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._serve_transcripts()
         elif path.startswith("/api/otel-status"):
             self._serve_otel_status()
+        elif path.startswith("/api/ingesters"):
+            self._serve_ingesters()
         elif path.startswith("/api/hooks-status"):
             self._serve_hooks_status()
         elif path.startswith("/api/tool-config/"):

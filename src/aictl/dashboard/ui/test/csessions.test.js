@@ -194,6 +194,48 @@ describe('CSessionsTab — lifecycle status', () => {
   });
 });
 
+describe('CSessionsTab — error_count + hidden note', () => {
+  it('adds an "error" status option only when a session has error_count>0', async () => {
+    const rows = [{ ...MOCK_SESSIONS[0], error_count: 2 }, MOCK_SESSIONS[1]];
+    const { getByLabelText, findByText } = renderTab(rows);
+    await findByText('2 sessions');
+    const values = [...getByLabelText('Filter by status').querySelectorAll('option')].map(o => o.value);
+    expect(values).toContain('error');
+  });
+
+  it('filtering by error status shows only errored sessions', async () => {
+    const rows = [{ ...MOCK_SESSIONS[0], error_count: 3 }, { ...MOCK_SESSIONS[1], error_count: 0 }];
+    const { getByLabelText, container, findByText } = renderTab(rows);
+    await findByText('2 sessions');
+    fireEvent.change(getByLabelText('Filter by status'), { target: { value: 'error' } });
+    await waitFor(() => expect(container.querySelectorAll('.csessions-row').length).toBe(1));
+  });
+
+  it('renders a red error_count badge in the row', async () => {
+    const rows = [{ ...MOCK_SESSIONS[0], error_count: 5 }];
+    const { container, findByText } = renderTab(rows);
+    await findByText('1 sessions');
+    const badge = [...container.querySelectorAll('[title]')]
+      .find(el => (el.getAttribute('title') || '').includes('5 errors'));
+    expect(badge).toBeTruthy();
+    expect(badge.textContent.trim()).toBe('5');
+  });
+
+  it('shows an "N short sessions hidden" note when filtered_count>0', async () => {
+    const rows = MOCK_SESSIONS.slice();
+    rows.filtered_count = 4;  // rides on the array, mirroring api.getSessionTimeline
+    const { findByText, container } = renderTab(rows);
+    await findByText('2 sessions');
+    await waitFor(() => expect(container.textContent).toContain('4 short sessions hidden'));
+  });
+
+  it('omits the hidden note when nothing was filtered', async () => {
+    const { findByText, container } = renderTab(MOCK_SESSIONS);
+    await findByText('2 sessions');
+    expect(container.textContent).not.toContain('short sessions hidden');
+  });
+});
+
 describe('CSessionsTab — detail pane', () => {
   it('shows token count in detail stats', async () => {
     const { findAllByText } = renderTab(MOCK_SESSIONS);

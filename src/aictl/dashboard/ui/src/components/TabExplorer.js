@@ -22,6 +22,7 @@ import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { esc, fmtK, fmtDurSec, toolColor } from '../utils.js';
 import useSessionPicker from '../hooks/useSessionPicker.js';
+import * as api from '../api.js';
 
 // ─── Session-select bus ──────────────────────────────────────────
 // ActivityRail, the command palette and CSessionsTab's "Inspect session"
@@ -153,11 +154,21 @@ export default function TabExplorer() {
 
   const activeSession = sessions.find(s => s.session_id === activeSessionId);
 
+  // Short, no-file sessions are hidden by the backend but counted. The count
+  // rides on the module (the shared useSessionPicker hook re-derives a fresh
+  // array and can't forward it); read it once loading settles. Optional call
+  // keeps partial api mocks in tests from throwing.
+  const filteredCount = (!loading && api.sessionTimelineFilteredCount)
+    ? api.sessionTimelineFilteredCount() : 0;
+
   return html`<div class="explorer-container">
     <div class="explorer-picker">
       <${ToolTabs} tools=${tools} activeTool=${activeTool} onSelect=${setActiveTool}/>
       <${SessionTabs} sessions=${toolSessions} activeId=${activeSessionId}
         onSelect=${setActiveSessionId} loading=${loading} error=${error}/>
+      ${filteredCount > 0 ? html`<div class="text-muted text-xs" style="margin-top:var(--sp-1)"
+        title="Short sessions with no file activity and under 60s are hidden">
+        ${filteredCount} short session${filteredCount === 1 ? '' : 's'} hidden</div>` : null}
     </div>
 
     ${activeSession && activeSession.project && activeSession.tool && html`<${RunTrendStrip}

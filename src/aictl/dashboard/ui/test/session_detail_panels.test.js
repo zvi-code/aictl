@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, cleanup, waitFor } from '@testing-library/preact';
+import { render, cleanup, waitFor, fireEvent } from '@testing-library/preact';
 import { html } from 'htm/preact';
 
 vi.mock('../src/api.js', () => ({
@@ -98,5 +98,29 @@ describe('ToolCallsPanel', () => {
     await waitFor(() => {
       expect(container.querySelector('.empty-state')).toBeTruthy();
     });
+  });
+
+  it('renders the invocation input and toggles expansion on click', async () => {
+    api.getSessionToolCalls.mockResolvedValue({
+      session_id: 's1',
+      total: 1,
+      errors: 0,
+      by_tool: { Bash: 1 },
+      calls: [
+        {
+          ts: 1_700_000_000, tool_name: 'Bash', duration_ms: 12, is_error: false,
+          result_summary: 'ok', input: '{"command":"git status"}', input_truncated: false,
+        },
+      ],
+    });
+    const { container, findByLabelText } = render(html`<${ToolCallsPanel} sessionId="s1"/>`);
+    // The input line (the actual command) renders under the tool name.
+    await waitFor(() => expect(container.textContent).toContain('git status'));
+
+    const btn = await findByLabelText('Expand input for Bash');
+    expect(btn.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(btn);
+    await waitFor(() =>
+      expect(container.querySelector('.tcp-input').getAttribute('aria-expanded')).toBe('true'));
   });
 });

@@ -88,6 +88,18 @@ export async function getSessionFlow(sessionId, since, until) {
   return fetchJson(`/api/session-flow?session_id=${encodeURIComponent(sessionId)}&since=${since}&until=${until}`);
 }
 
+let _timelineFilteredCount = 0;
+
+/** Session profiles for the timeline / sessions views.
+ *
+ * The endpoint returns `{sessions: [...], filtered_count: N}` — short,
+ * no-file sessions are hidden but their count is reported rather than
+ * dropped silently. We return the sessions ARRAY (so existing consumers
+ * that treat the result as a list keep working) with `filtered_count`
+ * attached as a property for callers that want the hidden count. The count
+ * is also cached module-side (see `sessionTimelineFilteredCount`) for
+ * consumers that reach the list through a shared hook which can't forward
+ * the extra field. Tolerant of the legacy bare-array shape too. */
 export async function getSessionTimeline(sessionId, opts = {}) {
   let path = '/api/session-timeline';
   const params = [];
@@ -95,8 +107,19 @@ export async function getSessionTimeline(sessionId, opts = {}) {
   if (opts.since != null) params.push('since=' + opts.since);
   if (opts.until != null) params.push('until=' + opts.until);
   if (params.length) path += '?' + params.join('&');
-  return fetchJson(path);
+  const data = await fetchJson(path);
+  const rows = Array.isArray(data) ? data : (Array.isArray(data?.sessions) ? data.sessions : []);
+  const filteredCount = Array.isArray(data) ? 0 : (Number(data?.filtered_count) || 0);
+  _timelineFilteredCount = filteredCount;
+  try { rows.filtered_count = filteredCount; } catch { /* frozen array — ignore */ }
+  return rows;
 }
+
+/** `filtered_count` from the most recent getSessionTimeline() response — the
+ *  number of short / no-file sessions hidden from the list. Consumers that
+ *  receive the session list through the shared useSessionPicker hook (which
+ *  re-derives a fresh array and drops array-level props) read this. */
+export function sessionTimelineFilteredCount() { return _timelineFilteredCount; }
 
 export async function getSessionRuns(project, tool, days = 30, limit = 20) {
   return fetchJson(`/api/session-runs?project=${encodeURIComponent(project)}&tool=${encodeURIComponent(tool)}&days=${days}&limit=${limit}`);
@@ -256,6 +279,13 @@ export async function getSamplesRaw(name, since) {
 
 export async function getOtelStatus() {
   return fetchJson('/api/otel-status');
+}
+
+/** Per-ingester poller health (copilot/cursor/vscode local-store pollers).
+ *  Returns {ingesters: [{name, enabled, source_path, source_exists,
+ *  last_poll_ts, last_poll_inserted}, ...]}. */
+export async function getIngesters() {
+  return fetchJson('/api/ingesters');
 }
 
 export async function getSelfStatus() {
