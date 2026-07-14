@@ -982,6 +982,193 @@ class TestSessionRunsAPI:
         assert run["file_churn"] == 7
 
 
+# ── Session Timeline API ──────────────────────────────────────────
+
+
+@pytest.fixture()
+def timeline_server(tmp_path):
+    """Server whose DB rows and live snapshot describe the SAME logical
+    session under different id formats (uuid row vs correlator live id)."""
+    from pathlib import Path
+
+    from aictl.dashboard.web_server import (
+        _DashboardHandler,
+        _DashboardHTTPServer,
+    )
+    from aictl.storage import SessionRow
+
+    db = HistoryDB(db_path=str(tmp_path / "timeline.db"), flush_interval=0)
+    now = time.time()
+
+    # DB row for the live session: uuid id, prematurely closed 60s ago
+    # (the Stop-hook bug), still running per the live snapshot.
+    db.upsert_session(
+        SessionRow(
+            session_id="e2fa11bc-1234-4abc-9def-1234567890ab",
+            tool="claude-code",
+            pid=0,
+            project_path="/tmp/test-project",
+            started_at=now - 1500,
+            ended_at=now - 60,
+            input_tokens=15590,
+            output_tokens=800,
+            files_modified=5,
+            source="hook",
+        )
+    )
+    # Genuinely finished historical session, hours earlier — must NOT be
+    # marked live by the fallback matching.
+    db.upsert_session(
+        SessionRow(
+            session_id="claude-code:9999:1700000000",
+            tool="claude-code",
+            pid=9999,
+            project_path="/tmp/test-project",
+            started_at=now - 30000,
+            ended_at=now - 20000,
+            files_modified=3,
+            source="correlator",
+        )
+    )
+
+    store = SnapshotStore(db=db)
+    store.update(
+        _make_snapshot(
+            sessions=[
+                {
+                    "session_id": f"claude-code:4242:{int(now - 1500)}",
+                    "tool": "claude-code",
+                    "root_pid": 4242,
+                    "pids": [4242],
+                    "project": "/tmp/test-project",
+                    "workspaces": ["/tmp/test-project"],
+                    "started_at": now - 1500,
+                    "last_seen_at": now,
+                    "cpu_percent": 12.5,
+                    "exact_input_tokens": 18664,
+                    "exact_output_tokens": 500,
+                },
+            ]
+        )
+    )
+
+    srv = _DashboardHTTPServer(
+        ("127.0.0.1", 0),
+        _DashboardHandler,
+        store,
+        AllowedPaths(),
+        Path("/tmp/test-project"),
+    )
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    yield f"http://127.0.0.1:{port}"
+    srv.shutdown()
+    db.close()
+
+
+class TestSessionTimelineAPI:
+    def test_live_session_with_different_id_format_yields_single_live_row(self, timeline_server):
+        """Regression: a live session whose snapshot id format differs from
+        the DB row id must enrich the DB row (matched by tool + overlapping
+        time window + workspace), not appear as a second stale entry."""
+        data = _get_json(f"{timeline_server}/api/session-timeline?since={time.time() - 3600}")
+        assert len(data) == 1, f"expected exactly one recent profile, got {len(data)}"
+        p = data[0]
+        assert p["session_id"] == "e2fa11bc-1234-4abc-9def-1234567890ab"
+        assert p["active"] is True, "DB row matched to the live session must be flagged live"
+        assert p["live_session_id"].startswith("claude-code:4242:")
+        assert p["cpu_percent"] == 12.5
+        # Same tokens counted from two vantage points: keep max, never sum
+        assert p["input_tokens"] == 18664
+        assert p["output_tokens"] == 800
+
+    def test_old_session_not_matched_to_live(self, timeline_server):
+        """A historical session with no time overlap must stay inactive."""
+        data = _get_json(f"{timeline_server}/api/session-timeline?since={time.time() - 86400}")
+        old = next(p for p in data if p["session_id"] == "claude-code:9999:1700000000")
+        assert old["active"] is False
+        assert "live_session_id" not in old
+
+    def test_exact_id_match_still_enriches(self, server):
+        """Exact session_id equality (the original path) keeps working."""
+        data = _get_json(f"{server}/api/session-timeline?since={time.time() - 86400}")
+        assert isinstance(data, list)
+
+
+# ── Hook ingest: Stop vs SessionEnd ───────────────────────────────
+
+
+@pytest.fixture()
+def hook_server(tmp_path):
+    """Fresh server + DB pair so tests can inspect session rows after hooks."""
+    from aictl.dashboard.web_server import (
+        _DashboardHandler,
+        _DashboardHTTPServer,
+    )
+
+    db = HistoryDB(db_path=str(tmp_path / "hooks.db"), flush_interval=0)
+    store = SnapshotStore(db=db)
+    store.update(_make_snapshot())
+    srv = _DashboardHTTPServer(
+        ("127.0.0.1", 0),
+        _DashboardHandler,
+        store,
+        AllowedPaths(),
+        tmp_path,
+    )
+    port = srv.server_address[1]
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{port}", db
+    srv.shutdown()
+
+
+class TestStopHookIsNotTerminal:
+    """Regression: Stop fires after EVERY response — it must record per-turn
+    stats without stamping ended_at (which made every open session look
+    finished and spawn duplicate timeline rows)."""
+
+    SID = "e2fa11bc-aaaa-4abc-9def-1234567890ab"
+
+    def _hook(self, url, event, **detail):
+        status, _ = _post_json(
+            f"{url}/api/hooks",
+            {"event": event, "session_id": self.SID, "tool": "claude-code", **detail},
+        )
+        assert status == 200
+
+    def test_stop_records_stats_without_ending(self, hook_server):
+        url, db = hook_server
+        self._hook(url, "SessionStart")
+        self._hook(url, "Stop", input_tokens=1200, output_tokens=300)
+        row = db.get_session(self.SID)
+        assert row is not None
+        assert row.get("ended_at") in (None, 0), "Stop must not stamp ended_at"
+        assert int(row.get("input_tokens") or 0) == 1200
+        assert int(row.get("output_tokens") or 0) == 300
+
+    def test_session_end_is_terminal(self, hook_server):
+        url, db = hook_server
+        self._hook(url, "SessionStart")
+        self._hook(url, "Stop")
+        self._hook(url, "SessionEnd", input_tokens=1500)
+        row = db.get_session(self.SID)
+        assert row is not None
+        assert float(row.get("ended_at") or 0) > 0
+
+    def test_stop_clears_stale_ended_at(self, hook_server):
+        """Activity on a session marked ended proves it is not over (resume)."""
+        url, db = hook_server
+        self._hook(url, "SessionStart")
+        self._hook(url, "SessionEnd")
+        assert float(db.get_session(self.SID).get("ended_at") or 0) > 0
+        self._hook(url, "Stop", input_tokens=2000)
+        row = db.get_session(self.SID)
+        assert row.get("ended_at") in (None, 0)
+        assert int(row.get("input_tokens") or 0) == 2000
+
+
 # ── Events API ────────────────────────────────────────────────────
 
 

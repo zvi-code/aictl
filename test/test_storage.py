@@ -26,6 +26,7 @@ from aictl.storage import (
     _dedup_key,
     _merge_session_stats,
     _session_pid,
+    _session_uuid,
 )
 
 
@@ -182,6 +183,20 @@ class TestSessionHelpers:
         assert _session_pid("claude-code:abc:123") is None
         assert _session_pid("tool:123") is None
 
+    def test_session_uuid_plain(self):
+        assert _session_uuid("936cb849-05e0-4b48-a1c4-9a1edc8f9e12") == "936cb849-05e0-4b48-a1c4-9a1edc8f9e12"
+
+    def test_session_uuid_embedded_and_case(self):
+        assert _session_uuid("otel:936CB849-05E0-4B48-A1C4-9A1EDC8F9E12") == "936cb849-05e0-4b48-a1c4-9a1edc8f9e12"
+        assert _session_uuid({"session_id": "x-936cb849-05e0-4b48-a1c4-9a1edc8f9e12"}) == (
+            "936cb849-05e0-4b48-a1c4-9a1edc8f9e12"
+        )
+
+    def test_session_uuid_absent(self):
+        assert _session_uuid("claude-code:49719:1743450000") is None
+        assert _session_uuid("") is None
+        assert _session_uuid({"session_id": ""}) is None
+
     def test_merge_session_stats_sums_files(self):
         primary = {
             "files_modified": 10,
@@ -235,13 +250,16 @@ class TestSessionHelpers:
 class TestSessionProfileDedup:
     """query_session_profiles should collapse same-PID sessions into one tab."""
 
-    def _emit_session(self, db, session_id, tool, start_ts, end_ts=None, files=0):
+    def _emit_session(self, db, session_id, tool, start_ts, end_ts=None, files=0, project=""):
+        detail = {"session_id": session_id}
+        if project:
+            detail["project"] = project
         db.append_event(
             EventRow(
                 ts=start_ts,
                 tool=tool,
                 kind="session_start",
-                detail={"session_id": session_id},
+                detail=detail,
             )
         )
         if end_ts is not None:
@@ -306,15 +324,32 @@ class TestSessionProfileDedup:
         assert len(profiles) == 1, f"Same session with 4 PIDs should merge into 1, got {len(profiles)}"
         assert profiles[0]["files_modified"] == 1505
 
-    def test_different_pids_different_start_not_merged(self, db: HistoryDB):
-        """Two truly separate sessions (different PIDs, >10s apart) must stay
-        separate even if same tool."""
+    def test_different_pids_different_workspaces_not_merged(self, db: HistoryDB):
+        """Two truly separate concurrent sessions (different PIDs, different
+        workspaces) must stay separate even with overlapping equal-length
+        intervals — the workspace conflict vetoes the duplicate heuristic."""
         base = 1_743_000_000.0
-        self._emit_session(db, "claude-code:11111:1743000000", "claude-code", base, end_ts=base + 3600, files=10)
-        self._emit_session(db, "claude-code:22222:1743000060", "claude-code", base + 60, end_ts=base + 3660, files=5)
+        self._emit_session(
+            db,
+            "claude-code:11111:1743000000",
+            "claude-code",
+            base,
+            end_ts=base + 3600,
+            files=10,
+            project="/repo/alpha",
+        )
+        self._emit_session(
+            db,
+            "claude-code:22222:1743000060",
+            "claude-code",
+            base + 60,
+            end_ts=base + 3660,
+            files=5,
+            project="/repo/beta",
+        )
 
         profiles = db.query_session_profiles(since=base - 1)
-        assert len(profiles) == 2, "Separate sessions 60s apart with different PIDs must stay separate"
+        assert len(profiles) == 2, "Concurrent sessions in different workspaces must stay separate"
 
     def test_same_pid_far_apart_not_merged(self, db: HistoryDB):
         """PID reuse hours later must NOT merge into a single session."""
@@ -328,6 +363,120 @@ class TestSessionProfileDedup:
 
         profiles = db.query_session_profiles(since=base - 1)
         assert len(profiles) == 2, "Same PID sessions 12h apart must remain separate"
+
+    def test_multi_pid_overlapping_equal_durations_merged(self, db: HistoryDB):
+        """Regression: rows for one logical session under different correlator
+        PIDs starting 10-60s apart used to stay separate, showing one session
+        as 3 dashboard chips with identical durations.  Near-identical
+        overlapping intervals are the duplicate signature — merge them."""
+        base = 1_743_000_000.0
+        end = base + 1426  # rows end together (~23m46s, the screenshot case)
+        self._emit_session(db, "claude-code:15590:1743000000", "claude-code", base, end_ts=end, files=10)
+        self._emit_session(db, "claude-code:17323:1743000015", "claude-code", base + 15, end_ts=end + 1, files=4)
+        self._emit_session(db, "claude-code:18664:1743000045", "claude-code", base + 45, end_ts=end + 2, files=2)
+
+        profiles = db.query_session_profiles(since=base - 1)
+        assert len(profiles) == 1, f"Duplicate multi-PID rows must merge into 1 profile, got {len(profiles)}"
+        assert profiles[0]["files_modified"] == 16
+
+    def test_same_tool_ten_minutes_apart_not_merged(self, db: HistoryDB):
+        """Two genuinely different sequential sessions (non-overlapping,
+        10 minutes apart) must remain separate."""
+        base = 1_743_000_000.0
+        self._emit_session(db, "claude-code:11111:1743000000", "claude-code", base, end_ts=base + 300, files=5)
+        self._emit_session(db, "claude-code:22222:1743000600", "claude-code", base + 600, end_ts=base + 900, files=3)
+
+        profiles = db.query_session_profiles(since=base - 1)
+        assert len(profiles) == 2, "Sequential sessions 10min apart must remain separate"
+
+    def test_uuid_sharing_rows_merged_across_sources(self, db: HistoryDB):
+        """Rows from different sources that share a stable session UUID are
+        the same logical session and must merge regardless of timing."""
+        base = 1_743_000_000.0
+        uuid = "936cb849-05e0-4b48-a1c4-9a1edc8f9e12"
+        # JSONL/hook row: plain uuid id
+        self._emit_session(db, uuid, "claude-code", base, end_ts=base + 100, files=3)
+        # Another source's row embedding the same uuid, outside every
+        # time-window heuristic (5 min later, non-overlapping)
+        self._emit_session(db, f"otel:{uuid}", "claude-code", base + 300, end_ts=base + 400, files=2)
+
+        profiles = db.query_session_profiles(since=base - 1)
+        assert len(profiles) == 1, f"UUID-sharing rows must merge into 1 profile, got {len(profiles)}"
+        p = profiles[0]
+        assert p["files_modified"] == 5
+        assert p["started_at"] == base
+        assert p["ended_at"] == base + 400  # union of both intervals
+
+    def test_sessions_table_duplicates_keep_max_tokens(self, db: HistoryDB):
+        """Sessions-table rows (the primary path) with the duplicate
+        signature merge into one profile keeping MAX token counts — the
+        rows are the same tokens counted from different vantage points,
+        so summing would double-count."""
+        base = 1_743_000_000.0
+        end = base + 1426
+        db.upsert_session(
+            SessionRow(
+                session_id="claude-code:15590:1743000000",
+                tool="claude-code",
+                pid=15590,
+                project_path="/repo/proj",
+                started_at=base,
+                ended_at=end,
+                input_tokens=15590,
+                output_tokens=1000,
+                source="correlator",
+            )
+        )
+        db.upsert_session(
+            SessionRow(
+                session_id="claude-code:18664:1743000030",
+                tool="claude-code",
+                pid=18664,
+                project_path="/repo/proj",
+                started_at=base + 30,
+                ended_at=end,
+                input_tokens=18664,
+                output_tokens=900,
+                source="correlator",
+            )
+        )
+
+        profiles = db.query_session_profiles(since=base - 1)
+        assert len(profiles) == 1, f"Duplicate sessions-table rows must merge, got {len(profiles)}"
+        p = profiles[0]
+        assert p["input_tokens"] == 18664, "token counts must be max-merged, not summed"
+        assert p["output_tokens"] == 1000
+
+    def test_sessions_table_different_workspaces_stay_separate(self, db: HistoryDB):
+        """Concurrent same-tool sessions-table rows in different workspaces
+        must never merge, even with near-identical intervals."""
+        base = 1_743_000_000.0
+        end = base + 1426
+        db.upsert_session(
+            SessionRow(
+                session_id="claude-code:15590:1743000000",
+                tool="claude-code",
+                pid=15590,
+                project_path="/repo/alpha",
+                started_at=base,
+                ended_at=end,
+                source="correlator",
+            )
+        )
+        db.upsert_session(
+            SessionRow(
+                session_id="claude-code:18664:1743000030",
+                tool="claude-code",
+                pid=18664,
+                project_path="/repo/beta",
+                started_at=base + 30,
+                ended_at=end,
+                source="correlator",
+            )
+        )
+
+        profiles = db.query_session_profiles(since=base - 1)
+        assert len(profiles) == 2, "Different-workspace concurrent sessions must stay separate"
 
 
 # ── Stats ──────────────────────────────────────────────────────────

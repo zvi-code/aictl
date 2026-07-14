@@ -960,18 +960,92 @@ def _session_pid(session_or_id) -> str | None:
     return None
 
 
+_UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
+def _session_uuid(session_or_id) -> str | None:
+    """Return the stable UUID component of a session id, if any.
+
+    Hook/JSONL/OTel sources identify a session by the tool's own UUID
+    while the correlator synthesizes ``tool:pid:started`` ids.  Rows
+    whose ids share a UUID are the same logical session regardless of
+    the surrounding id format.
+    """
+    if isinstance(session_or_id, dict):
+        session_or_id = session_or_id.get("session_id", "") or ""
+    m = _UUID_RE.search(session_or_id or "")
+    return m.group(0).lower() if m else None
+
+
 def _merge_session_stats(primary: dict, secondary: dict) -> None:
-    """Add secondary's file/activity stats into primary in-place."""
+    """Add secondary's file/activity stats into primary in-place.
+
+    Token counts are combined with ``max`` — duplicate rows for one
+    logical session are the *same* tokens counted from different
+    vantage points (hooks, JSONL, OTel), so summing would double-count.
+    """
     primary["files_modified"] += secondary["files_modified"]
     primary["unique_files"] += secondary["unique_files"]
     primary["bytes_written"] += secondary["bytes_written"]
     primary["source_files"] += secondary["source_files"]
     primary["conversations"] = max(primary["conversations"], secondary["conversations"])
     primary["subagents"] = max(primary["subagents"], secondary["subagents"])
+    for token_key in ("input_tokens", "output_tokens"):
+        if token_key in primary or token_key in secondary:
+            primary[token_key] = max(primary.get(token_key, 0) or 0, secondary.get(token_key, 0) or 0)
+    if not primary.get("project_path") and secondary.get("project_path"):
+        primary["project_path"] = secondary["project_path"]
     bucket_map: dict[int, int] = {b: c for b, c in primary["activity"]}
     for b, c in secondary["activity"]:
         bucket_map[b] = bucket_map.get(b, 0) + c
     primary["activity"] = sorted(bucket_map.items())
+
+
+def _absorb_session_profile(canonical: dict, other: dict) -> None:
+    """Fold *other* into *canonical* as one logical session (in-place).
+
+    Union of the two activity intervals; a still-open row wins over an
+    ended one (same convention as the (tool, pid) merge pass).
+    """
+    canonical["started_at"] = min(canonical["started_at"], other["started_at"])
+    if canonical["ended_at"] is not None and other["ended_at"] is not None:
+        canonical["ended_at"] = max(canonical["ended_at"], other["ended_at"])
+    else:
+        canonical["ended_at"] = None
+    if canonical["ended_at"]:
+        canonical["duration_s"] = round(canonical["ended_at"] - canonical["started_at"], 1)
+    else:
+        canonical["duration_s"] = None
+    canonical["active"] = canonical["ended_at"] is None
+    _merge_session_stats(canonical, other)
+
+
+def _profiles_look_duplicate(a: dict, b: dict) -> bool:
+    """True when two same-tool profiles look like duplicate observations
+    of one logical session recorded under different PIDs/ids.
+
+    The duplicate signature: both activity intervals overlap for >= 80%
+    of the shorter one AND the durations are within 20% of each other.
+    Genuinely concurrent sessions in different workspaces never merge —
+    a workspace conflict (both known, different) vetoes the match.
+    """
+    ws_a = a.get("project_path") or ""
+    ws_b = b.get("project_path") or ""
+    if ws_a and ws_b and ws_a != ws_b:
+        return False
+    end_a, end_b = a.get("ended_at"), b.get("ended_at")
+    if not end_a or not end_b:
+        return False
+    dur_a = end_a - a["started_at"]
+    dur_b = end_b - b["started_at"]
+    shorter = min(dur_a, dur_b)
+    longer = max(dur_a, dur_b)
+    if shorter <= 0 or longer <= 0:
+        return False
+    if shorter / longer < 0.8:
+        return False
+    overlap = min(end_a, end_b) - max(a["started_at"], b["started_at"])
+    return overlap / shorter >= 0.8
 
 
 def _estimate_tokens(content: str) -> int:
@@ -2230,6 +2304,10 @@ class HistoryDB:
                     "activity": [],
                     "git_branch": s.get("git_branch", "") or "",
                     "git_commit": s.get("git_commit", "") or "",
+                    "project_path": s.get("project_path", "") or "",
+                    "source": s.get("source", "") or "",
+                    "input_tokens": s.get("input_tokens", 0) or 0,
+                    "output_tokens": s.get("output_tokens", 0) or 0,
                 }
                 profiles[s["session_id"]] = p
                 result.append(p)
@@ -2303,6 +2381,10 @@ class HistoryDB:
                 "activity": [],
                 "git_branch": "",
                 "git_commit": "",
+                "project_path": detail.get("project", "")
+                or detail.get("project_path", "")
+                or detail.get("cwd", "")
+                or "",
             }
 
         if not sessions:
@@ -2403,12 +2485,36 @@ class HistoryDB:
     def _merge_session_profiles(profiles: list[dict]) -> list[dict]:
         """Merge duplicate session profiles.
 
+        Pass 0: merge rows whose session ids share a stable UUID — the
+                same logical session recorded by different sources
+                (hooks/JSONL/OTel) under different id formats.
         Pass A: merge sessions from the same tool within 60s of each other
                 (same PID) or 10s (different PIDs — same process tree).
+                Different-PID rows further apart still merge when they
+                carry the duplicate signature: near-identical overlapping
+                activity intervals without a workspace conflict.
         Pass B: merge all sessions sharing the same (tool, pid) pair
                 when temporally adjacent.
         """
         profiles.sort(key=lambda s: s["started_at"])
+
+        # Pass 0: merge rows sharing a stable session UUID regardless of
+        # timing — UUIDs are globally unique, so a shared UUID can only
+        # mean two records of the same logical session.
+        by_uuid: dict[str, dict] = {}
+        uuid_merged: list[dict] = []
+        for p in profiles:
+            sid_uuid = _session_uuid(p)
+            if sid_uuid is None:
+                uuid_merged.append(p)
+                continue
+            canonical = by_uuid.get(sid_uuid)
+            if canonical is None:
+                by_uuid[sid_uuid] = p
+                uuid_merged.append(p)
+                continue
+            _absorb_session_profile(canonical, p)
+        profiles = uuid_merged
 
         # Pass A: merge close-in-time sessions
         merged: list[dict] = []
@@ -2426,10 +2532,13 @@ class HistoryDB:
                     break
                 p_pid = _session_pid(primary)
                 s_pid = _session_pid(secondary)
-                # Different PIDs: only merge if start times are very close
-                # (same process tree spawned by the same session).
+                # Different PIDs: merge if start times are very close
+                # (same process tree spawned by the same session), or if
+                # the rows look like duplicate observations of the same
+                # logical session (near-identical overlapping intervals,
+                # no workspace conflict).
                 if p_pid is not None and s_pid is not None and p_pid != s_pid:
-                    if gap > 10:
+                    if gap > 10 and not _profiles_look_duplicate(primary, secondary):
                         continue
                 if secondary["ended_at"] and not primary["ended_at"]:
                     primary, secondary = secondary, primary
@@ -2657,6 +2766,59 @@ class HistoryDB:
                     "INSERT OR IGNORE INTO session_processes(session_id, pid, tool, joined_at, role) VALUES(?,?,?,?,?)",
                     (session_id, pid, tool, now, "lead"),
                 )
+        conn.commit()
+
+    def update_session_stats(self, session_id: str, **kwargs) -> None:
+        """Update session stat fields without marking the session ended.
+
+        Used for per-turn events (the Claude Code ``Stop`` hook fires after
+        every response): records token/cost counters and clears a stale
+        ``ended_at`` — activity on a session proves it is not over. Only
+        ``SessionEnd`` (via :meth:`update_session_end`) is terminal.
+        """
+        if not session_id:
+            return
+        conn = self._conn()
+        sets = ["ended_at = NULL"]
+        params: list[Any] = []
+        for k in (
+            "tool",
+            "project_path",
+            "model",
+            "source",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+            "cost_usd",
+        ):
+            if k in kwargs:
+                if k in {"tool", "project_path", "model", "source"} and not kwargs[k]:
+                    continue
+                sets.append(f"{k} = ?")
+                params.append(kwargs[k])
+        params.append(session_id)
+        cur = conn.execute(
+            f"UPDATE sessions SET {', '.join(sets)} WHERE session_id = ?",
+            params,
+        )
+        if cur.rowcount == 0:
+            self.upsert_session(
+                SessionRow(
+                    session_id=session_id,
+                    tool=str(kwargs.get("tool", "") or ""),
+                    project_path=str(kwargs.get("project_path", "") or ""),
+                    model=str(kwargs.get("model", "") or ""),
+                    started_at=float(kwargs.get("ts", 0.0) or 0.0),
+                    source=str(kwargs.get("source", "") or ""),
+                    input_tokens=int(kwargs.get("input_tokens", 0) or 0),
+                    output_tokens=int(kwargs.get("output_tokens", 0) or 0),
+                    cache_read_tokens=int(kwargs.get("cache_read_tokens", 0) or 0),
+                    cache_creation_tokens=int(kwargs.get("cache_creation_tokens", 0) or 0),
+                    cost_usd=float(kwargs.get("cost_usd", 0.0) or 0.0),
+                )
+            )
+            return
         conn.commit()
 
     def update_session_end(self, session_id: str, ended_at: float, **kwargs) -> None:

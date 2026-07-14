@@ -40,8 +40,13 @@ def test_session_lifecycle():
     assert state.ended_at == ts + 60
 
 
-def test_stop_marks_session_inactive():
-    """Claude Code Stop hooks are terminal lifecycle events."""
+def test_stop_marks_session_idle_not_ended():
+    """Claude Code fires Stop after EVERY agent response — it must mark the
+    session idle, not end it (SessionEnd is the terminal event).
+
+    Regression: Stop used to set state="inactive" + ended_at, splitting one
+    logical session into a new dashboard row per prompt/response turn.
+    """
     tracker = EntityStateTracker()
     ts = time.time()
 
@@ -63,8 +68,197 @@ def test_stop_marks_session_inactive():
     )
 
     state = tracker.get_session_state("sess-stop")
+    assert state.state == "idle"
+    assert state.ended_at is None
+    assert state.last_stop_at == ts + 5
+
+
+def test_stop_then_prompt_reactivates_session():
+    """Stop → UserPromptSubmit is a normal turn boundary: the session
+    returns to active with ended_at unset and counters preserved."""
+    tracker = EntityStateTracker()
+    ts = time.time()
+
+    tracker.process_event(
+        {
+            "ts": ts,
+            "tool": "claude-code",
+            "kind": "hook:SessionStart",
+            "detail": {"session_id": "sess-turns"},
+        }
+    )
+    tracker.process_event(
+        {
+            "ts": ts + 1,
+            "tool": "claude-code",
+            "kind": "hook:UserPromptSubmit",
+            "detail": {"session_id": "sess-turns", "prompt": "first"},
+        }
+    )
+    tracker.process_event(
+        {
+            "ts": ts + 2,
+            "tool": "claude-code",
+            "kind": "hook:PostToolUse",
+            "detail": {"session_id": "sess-turns", "tool_name": "Read"},
+        }
+    )
+    tracker.process_event(
+        {
+            "ts": ts + 10,
+            "tool": "claude-code",
+            "kind": "hook:Stop",
+            "detail": {"session_id": "sess-turns"},
+        }
+    )
+
+    state = tracker.get_session_state("sess-turns")
+    assert state.state == "idle"
+
+    # Next turn: prompt reactivates the same session object
+    tracker.process_event(
+        {
+            "ts": ts + 60,
+            "tool": "claude-code",
+            "kind": "hook:UserPromptSubmit",
+            "detail": {"session_id": "sess-turns", "prompt": "second"},
+        }
+    )
+
+    state = tracker.get_session_state("sess-turns")
+    assert state.state == "active"
+    assert state.ended_at is None
+    assert state.prompt_count == 2  # counters preserved across the turn
+    assert state.tool_calls == 1
+    assert state.started_at == ts  # still the same session, not a new one
+
+
+def test_pre_tool_use_reactivates_idle_session():
+    """Tool activity after a Stop proves the session is still running."""
+    tracker = EntityStateTracker()
+    ts = time.time()
+
+    tracker.process_event(
+        {
+            "ts": ts,
+            "tool": "claude-code",
+            "kind": "hook:SessionStart",
+            "detail": {"session_id": "sess-ptu"},
+        }
+    )
+    tracker.process_event(
+        {
+            "ts": ts + 5,
+            "tool": "claude-code",
+            "kind": "hook:Stop",
+            "detail": {"session_id": "sess-ptu"},
+        }
+    )
+    tracker.process_event(
+        {
+            "ts": ts + 20,
+            "tool": "claude-code",
+            "kind": "hook:PreToolUse",
+            "detail": {"session_id": "sess-ptu", "tool_name": "Bash"},
+        }
+    )
+
+    state = tracker.get_session_state("sess-ptu")
+    assert state.state == "active"
+    assert state.ended_at is None
+
+
+def test_session_end_still_terminal_after_stops():
+    """SessionEnd remains the terminal lifecycle event, even after Stops."""
+    tracker = EntityStateTracker()
+    ts = time.time()
+
+    tracker.process_event(
+        {
+            "ts": ts,
+            "tool": "claude-code",
+            "kind": "hook:SessionStart",
+            "detail": {"session_id": "sess-final"},
+        }
+    )
+    tracker.process_event(
+        {
+            "ts": ts + 5,
+            "tool": "claude-code",
+            "kind": "hook:Stop",
+            "detail": {"session_id": "sess-final"},
+        }
+    )
+    tracker.process_event(
+        {
+            "ts": ts + 30,
+            "tool": "claude-code",
+            "kind": "hook:SessionEnd",
+            "detail": {"session_id": "sess-final"},
+        }
+    )
+
+    state = tracker.get_session_state("sess-final")
     assert state.state == "inactive"
-    assert state.ended_at == ts + 5
+    assert state.ended_at == ts + 30
+
+
+def test_gc_keeps_idle_sessions_and_reclaims_stale_ones():
+    """A session that only saw Stop (no SessionEnd) must survive the
+    ended-session GC window, but abandoned sessions (no events at all for
+    _stale_interval) are still reclaimed so memory cannot grow forever."""
+    tracker = EntityStateTracker()
+    now = time.time()
+
+    # Idle session: last Stop 2h ago, no SessionEnd — must survive
+    tracker.process_event(
+        {
+            "ts": now - 7200,
+            "tool": "claude-code",
+            "kind": "hook:SessionStart",
+            "detail": {"session_id": "sess-idle"},
+        }
+    )
+    tracker.process_event(
+        {
+            "ts": now - 7200 + 10,
+            "tool": "claude-code",
+            "kind": "hook:Stop",
+            "detail": {"session_id": "sess-idle"},
+        }
+    )
+    # Ended session: SessionEnd 2h ago — must be reclaimed (gc window 1h)
+    tracker.process_event(
+        {
+            "ts": now - 7300,
+            "tool": "claude-code",
+            "kind": "hook:SessionStart",
+            "detail": {"session_id": "sess-ended"},
+        }
+    )
+    tracker.process_event(
+        {
+            "ts": now - 7200,
+            "tool": "claude-code",
+            "kind": "hook:SessionEnd",
+            "detail": {"session_id": "sess-ended"},
+        }
+    )
+    # Abandoned session: silent for >24h, never ended — must be reclaimed
+    tracker.process_event(
+        {
+            "ts": now - 100000,
+            "tool": "claude-code",
+            "kind": "hook:SessionStart",
+            "detail": {"session_id": "sess-abandoned"},
+        }
+    )
+
+    tracker._last_gc = 0  # force the GC to run
+    ids = {s["session_id"] for s in tracker.all_sessions()}
+    assert "sess-idle" in ids, "idle (Stop-only) session must not be GC'd"
+    assert "sess-ended" not in ids, "SessionEnd'd session past the window must be GC'd"
+    assert "sess-abandoned" not in ids, "abandoned session must be reclaimed after _stale_interval"
 
 
 def test_subagent_tracking():

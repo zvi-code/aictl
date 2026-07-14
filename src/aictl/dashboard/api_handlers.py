@@ -37,6 +37,69 @@ _IMPORTED_SESSION_SOURCES = {
 }
 
 
+def _match_live_session(profile: dict, live_sessions: list[dict]) -> dict | None:
+    """Find the live snapshot session that corresponds to a DB profile row.
+
+    Live snapshot ids (``tool:pid:started``) and persisted row ids (tool
+    UUIDs, correlator composites) come from different sources, so exact
+    id equality misses and the same session shows up twice — one "live"
+    row plus a stale historical row.  Match, in order of confidence, by:
+
+    1. exact session_id
+    2. shared UUID component in the ids
+    3. same tool + the profile's PID appearing in the live session's PIDs
+    4. same tool + near-total time overlap + no workspace conflict
+    """
+    from ..storage import _session_uuid
+
+    # 1. Exact id
+    for live in live_sessions:
+        if live.get("session_id") == profile.get("session_id"):
+            return live
+
+    # 2. Shared UUID component
+    p_uuid = _session_uuid(profile.get("session_id", ""))
+    if p_uuid:
+        for live in live_sessions:
+            if _session_uuid(live.get("session_id", "")) == p_uuid:
+                return live
+
+    # 3. PID linkage
+    p_pid = int(profile.get("pid", 0) or 0)
+    if p_pid:
+        for live in live_sessions:
+            if live.get("tool") != profile.get("tool"):
+                continue
+            if p_pid == (live.get("root_pid") or 0) or p_pid in (live.get("pids") or []):
+                return live
+
+    # 4. Time-window overlap (workspace-compatible)
+    now = time.time()
+    p_start = float(profile.get("started_at", 0) or 0)
+    p_end = float(profile.get("ended_at") or now)
+    p_duration = max(p_end - p_start, 1.0)
+    p_workspace = profile.get("project_path") or profile.get("project") or ""
+    for live in live_sessions:
+        if live.get("tool") != profile.get("tool"):
+            continue
+        l_start = float(live.get("started_at", 0) or 0)
+        if l_start <= 0:
+            continue  # no reliable window to compare against
+        l_end = float(live.get("last_seen_at") or now)
+        l_workspace = live.get("project") or ""
+        if (
+            p_workspace
+            and l_workspace
+            and p_workspace != l_workspace
+            and p_workspace not in (live.get("workspaces") or [])
+        ):
+            continue
+        overlap = min(p_end, l_end) - max(p_start, l_start)
+        if overlap / p_duration >= 0.8:
+            return live
+    return None
+
+
 def _kill_session_pids(pids: list[int], sig_name: str) -> dict[str, list[int]]:
     """Send SIGTERM/SIGKILL to the given PIDs and their child trees.
 
@@ -50,11 +113,7 @@ def _kill_session_pids(pids: list[int], sig_name: str) -> dict[str, list[int]]:
     # SIGKILL does not exist on Windows; fall back to SIGTERM so the kill
     # endpoint works out of the box there (os.kill on Windows terminates the
     # process via TerminateProcess regardless of the signal value).
-    sig = (
-        getattr(_signal, "SIGKILL", _signal.SIGTERM)
-        if sig_name == "KILL"
-        else _signal.SIGTERM
-    )
+    sig = getattr(_signal, "SIGKILL", _signal.SIGTERM) if sig_name == "KILL" else _signal.SIGTERM
     own = os.getpid()
     targets: list[int] = []
     for pid in pids:
@@ -1508,18 +1567,24 @@ class _APIHandlersMixin:
         # Filter to meaningful sessions (have file activity or >60s duration)
         profiles = [p for p in profiles if p["files_modified"] > 0 or (p.get("duration_s") and p["duration_s"] > 60)]
 
-        # Merge live session data for active sessions
+        # Merge live session data for active sessions.  Matching falls
+        # back to UUID/PID/time-window heuristics because live snapshot
+        # ids and persisted row ids use different formats — the DB row is
+        # marked as the live one rather than surfacing a stale duplicate.
         snap = self.server.store.snapshot
         if snap:
-            active_map = {s.get("session_id"): s for s in snap.sessions}
+            live_sessions = list(snap.sessions)
             for p in profiles:
-                live = active_map.get(p["session_id"])
+                live = _match_live_session(p, live_sessions)
                 if live:
                     p["active"] = True
+                    p["live_session_id"] = live.get("session_id", "")
                     p["project"] = p.get("project") or live.get("project", "")
                     p["cpu_percent"] = live.get("cpu_percent", 0)
-                    p["input_tokens"] = live.get("exact_input_tokens", 0)
-                    p["output_tokens"] = live.get("exact_output_tokens", 0)
+                    # Same tokens observed from different vantage points —
+                    # keep the larger count, never sum.
+                    p["input_tokens"] = max(int(p.get("input_tokens", 0) or 0), live.get("exact_input_tokens", 0))
+                    p["output_tokens"] = max(int(p.get("output_tokens", 0) or 0), live.get("exact_output_tokens", 0))
 
         self._json_response(profiles)
 
