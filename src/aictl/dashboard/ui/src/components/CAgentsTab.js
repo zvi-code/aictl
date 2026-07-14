@@ -14,7 +14,7 @@ function isActive(tool) {
 }
 
 function Rule({ label }) {
-  return html`<div class="cagents-rule">
+  return html`<div class="c-overline cagents-rule">
     <div class="cagents-rule-line"></div>
     <div class="cagents-rule-label">${label}</div>
     <div class="cagents-rule-line"></div>
@@ -23,8 +23,8 @@ function Rule({ label }) {
 
 function Stat({ label, value }) {
   return html`<div class="cagents-stat">
-    <div class="cagents-stat-label">${label}</div>
-    <div class="cagents-stat-value">${value}</div>
+    <div class="c-overline">${label}</div>
+    <div class="c-stat-value cagents-stat-value">${value}</div>
   </div>`;
 }
 
@@ -147,7 +147,7 @@ function ConfigEditorModal({ tool, label, onClose }) {
   return html`<${Dialog} open=${true} onClose=${onClose} ariaLabel=${'Edit ' + label + ' configuration'} class="cagents-editor-dialog">
     <div class="cagents-editor-head">
       <div>
-        <div class="cagents-detail-overline">Project configuration</div>
+        <div class="c-overline c-overline--wide">Project configuration</div>
         <div class="cagents-editor-title">${label} permissions</div>
         ${config?.path && html`<div class="cagents-editor-path">${config.path}</div>`}
       </div>
@@ -178,8 +178,8 @@ function ConfigEditorModal({ tool, label, onClose }) {
           </div>
         </div>`}
     <div class="cagents-editor-actions">
-      <button class="cagents-btn" onClick=${onClose}>Cancel</button>
-      <button class="cagents-btn cagents-btn--primary" onClick=${save} disabled=${loading || saving || !hasChanges}>
+      <button class="c-btn cagents-btn" onClick=${onClose}>Cancel</button>
+      <button class="c-btn cagents-btn c-btn--primary" onClick=${save} disabled=${loading || saving || !hasChanges}>
         ${saving ? 'Saving...' : 'Save changes'}
       </button>
     </div>
@@ -356,7 +356,7 @@ function AgentDetail({ tool: t, toolConfig, hooksStatus, onViewSessions, onViewC
   ].filter(Boolean);
 
   return html`<div class="cagents-detail">
-    <div class="cagents-detail-overline">Agent profile</div>
+    <div class="c-overline c-overline--wide">Agent profile</div>
     <div class="cagents-detail-headline">
       <span class="cagents-detail-title">${t.label}</span>
       ${version && html`<span class="cagents-detail-version">v${version}</span>`}
@@ -394,9 +394,9 @@ function AgentDetail({ tool: t, toolConfig, hooksStatus, onViewSessions, onViewC
 
     <div class="cagents-actions">
       ${t.tool === 'claude-code'
-        ? html`<button class="cagents-btn cagents-btn--primary" onClick=${onEditConfig}>Edit permissions</button>`
-        : html`<button class="cagents-btn cagents-btn--primary" onClick=${onViewConfig}>Open configuration</button>`}
-      <button class="cagents-btn"
+        ? html`<button class="c-btn cagents-btn c-btn--primary" onClick=${onEditConfig}>Edit permissions</button>`
+        : html`<button class="c-btn cagents-btn c-btn--primary" onClick=${onViewConfig}>Open configuration</button>`}
+      <button class="c-btn cagents-btn"
         onClick=${onViewSessions}>View sessions</button>
     </div>
   </div>`;
@@ -408,14 +408,14 @@ function AgentRow({ tool: t, selected, onSelect }) {
   const color  = toolColor(t.tool);
   const active = isActive(t);
   const isSel  = selected === t.tool;
-  return html`<div class=${'cagents-row' + (isSel ? ' is-selected' : '')}
+  return html`<div class=${'c-row c-row--list' + (isSel ? ' is-selected' : '')}
     onClick=${() => onSelect(t.tool)}
     role="button" tabIndex=${0} aria-pressed=${isSel ? 'true' : 'false'}
     onKeyDown=${e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(t.tool); } }}>
     <div class="cagents-row-head">
       <${ToolIcon} tool=${t.tool} size="12px"/>
       <span class="cagents-row-label">${t.label}</span>
-      <span class=${'cagents-row-status' + (active ? ' is-on' : '')}>
+      <span class=${'c-overline cagents-row-status' + (active ? ' is-on' : '')}>
         ${active ? '\u25CF on' : 'off'}
       </span>
     </div>
@@ -428,14 +428,14 @@ function AgentRow({ tool: t, selected, onSelect }) {
 // ─── Inactive (detected) row ─────────────────────────────────────
 function InactiveRow({ tool: t, selected, onSelect }) {
   const isSel = selected === t.tool;
-  return html`<div class=${'cagents-row cagents-row--inactive' + (isSel ? ' is-selected' : '')}
+  return html`<div class=${'c-row c-row--list cagents-row--inactive' + (isSel ? ' is-selected' : '')}
     onClick=${() => onSelect(t.tool)}
     role="button" tabIndex=${0} aria-pressed=${isSel ? 'true' : 'false'}
     onKeyDown=${e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(t.tool); } }}>
     <div class="cagents-row-head">
       <span class="cagents-row-dot cagents-row-dot--empty"></span>
       <span class="cagents-row-label" style="color:var(--fg2)">${t.label}</span>
-      <span class="cagents-row-status">view</span>
+      <span class="c-overline">view</span>
     </div>
   </div>`;
 }
@@ -483,19 +483,19 @@ export default function CAgentsTab({ onViewSessions, onViewConfig }) {
                     ?? inactive.find(t => t.tool === selectedId);
   const selectedConfig = selectedId ? toolConfigMap[selectedId] : null;
 
-  return html`<div class="cagents-shell">
+  return html`<div class="c-shell">
     <div class="cagents-toolbar">
-      <span class="cagents-toolbar-count">
+      <span class="c-overline">
         ${active.length} of ${active.length + inactive.length} agents active
       </span>
     </div>
     <div class="cagents-body">
       <div class="cagents-list">
-        ${active.length > 0 && html`<div class="cagents-list-heading">Active</div>`}
+        ${active.length > 0 && html`<div class="c-overline cagents-list-heading">Active</div>`}
         ${active.map(t => html`<${AgentRow} key=${t.tool}
           tool=${t} selected=${selectedId} onSelect=${setSelected}/>`)}
 
-        ${inactive.length > 0 && html`<div class="cagents-list-heading">Detected, not active</div>`}
+        ${inactive.length > 0 && html`<div class="c-overline cagents-list-heading">Detected, not active</div>`}
         ${inactive.map(t => html`<${InactiveRow} key=${t.tool}
           tool=${t} selected=${selectedId} onSelect=${setSelected}/>`)}
       </div>

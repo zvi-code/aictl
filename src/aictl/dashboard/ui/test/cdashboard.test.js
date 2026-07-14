@@ -52,7 +52,7 @@ describe('CDashboardTab — stats strip', () => {
 
   it('shows aggregated session count from snap', () => {
     const { container } = renderDashboard();
-    const vals = [...container.querySelectorAll('.cdb-stat-value')].map(el => el.textContent);
+    const vals = [...container.querySelectorAll('.cdb-stat .c-stat-value')].map(el => el.textContent);
     expect(vals[0]).toBe('2');  // session_count
   });
 
@@ -60,7 +60,7 @@ describe('CDashboardTab — stats strip', () => {
     const { container } = render(
       html`<${SnapContext.Provider} value=${null}><${CDashboardTab}/></${SnapContext.Provider}>`,
     );
-    const vals = [...container.querySelectorAll('.cdb-stat-value')].map(el => el.textContent);
+    const vals = [...container.querySelectorAll('.cdb-stat .c-stat-value')].map(el => el.textContent);
     expect(vals.every(v => v === '0' || v === '0k' || v.startsWith('0'))).toBe(true);
   });
 });

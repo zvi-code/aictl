@@ -108,7 +108,7 @@ describe('CAgentsTab — agent list', () => {
 
   it('shows toolbar count of active vs total', () => {
     const { container } = renderTab();
-    const count = container.querySelector('.cagents-toolbar-count');
+    const count = container.querySelector('.cagents-toolbar .c-overline');
     expect(count.textContent).toMatch(/2 of 3 agents active/);
   });
 });
@@ -151,7 +151,7 @@ describe('CAgentsTab — detail panel', () => {
     const onViewConfig = vi.fn();
     const { container, getByText } = renderTab(SNAP, HOOKS_STATUS, { onViewConfig });
     fireEvent.click(getByText('Cursor'));
-    fireEvent.click(container.querySelector('.cagents-actions .cagents-btn--primary'));
+    fireEvent.click(container.querySelector('.cagents-actions .c-btn--primary'));
     expect(onViewConfig).toHaveBeenCalledOnce();
   });
 
