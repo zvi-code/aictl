@@ -1,6 +1,7 @@
 import { useState, useEffect, useContext, useCallback } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
+import { dedupeSessions } from '../selectors.js';
 import * as api from '../api.js';
 import ToolTabs from './transcript/ToolTabs.js';
 import SessionSelector from './transcript/SessionSelector.js';
@@ -35,8 +36,9 @@ export default function TabTranscript({ externalSessionId = null } = {}) {
     const until = globalRange?.until;
     api.getSessionTimeline(null, { since, until })
       .then(data => {
-        data.sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
-        setSessions(data);
+        const rows = dedupeSessions(data);
+        rows.sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
+        setSessions(rows);
         setLoading(false);
       })
       .catch(() => setLoading(false));

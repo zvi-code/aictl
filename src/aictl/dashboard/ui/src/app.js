@@ -20,11 +20,9 @@ import TabLive from './components/TabLive.js';
 import TabEventsStats from './components/TabEventsStats.js';
 import TabBudget from './components/TabBudget.js';
 import TabAnalytics from './components/TabAnalytics.js';
-import TabSessionFlow from './components/TabSessionFlow.js';
-import TabTranscript from './components/TabTranscript.js';
-import TabTimelineChart from './components/TabTimelineChart.js';
 import TabExplorer from './components/TabExplorer.js';
 import TabToolConfig from './components/TabToolConfig.js';
+import TabProjectEnv from './components/TabProjectEnv.js';
 import ContextMap from './components/ContextMap.js';
 import CollectorHealth from './components/CollectorHealth.js';
 import DatapointTooltip from './components/DatapointTooltip.js';
@@ -205,7 +203,7 @@ function buildCommands({
         out.push({
           id: 'session:' + sid, group: 'Session',
           label: 'Open session ' + String(sid).split(':').slice(-1)[0] + ' (' + (t.label || t.tool) + ')',
-          action: () => { setActiveTab('sessions'); dispatchSessionSelect(sid, t.tool); },
+          action: () => { setActiveTab('explorer'); dispatchSessionSelect(sid, t.tool); },
         });
       }
     }
@@ -324,10 +322,21 @@ export default function App() {
     analytics:  () => html`<${TabBoundary} tabName="analytics"><div class="mb-lg"><${TabAnalytics} key=${'analytics-' + activeTab}/></div></${TabBoundary}>`,
     explorer:   () => theme === 'editorial'
       ? html`<${TabBoundary} tabName="explorer"><${CSessionsTab}
-          onInspect=${(id, tool) => { dispatchSessionSelect(id, tool); setTheme('auto'); }}
+          onInspect=${(id, tool) => {
+            // Coherent inspect flow: stay on the explorer tab, hand the
+            // session id to TabExplorer (it stashes the event if it isn't
+            // mounted yet), then leave the editorial theme so TabExplorer
+            // renders and picks the session up.
+            setActiveTab('explorer');
+            dispatchSessionSelect(id, tool);
+            setTheme('auto');
+          }}
         /></${TabBoundary}>`
       : html`<${TabBoundary} tabName="explorer"><div class="mb-lg"><${TabExplorer} key=${'explorer-' + activeTab}/></div></${TabBoundary}>`,
-    config:     () => html`<${TabBoundary} tabName="config"><div class="mb-lg"><${TabToolConfig}/></div></${TabBoundary}>`,
+    config:     () => html`<${TabBoundary} tabName="config">
+      <div class="mb-lg"><${TabToolConfig}/></div>
+      <div class="mb-lg"><${TabProjectEnv} snap=${snap}/></div>
+    </${TabBoundary}>`,
     agents:     () => html`<${TabBoundary} tabName="agents"><${CAgentsTab}
       onViewSessions=${() => setActiveTab('explorer')}
       onViewConfig=${() => setActiveTab('config')}/></${TabBoundary}>`,
@@ -363,7 +372,7 @@ export default function App() {
       <${RangeBar} globalRange=${globalRange} onPreset=${setPreset} onApplyCustom=${setCustom}/>
       <div class="shell-body">
         <${ActivityRail} snap=${snap}
-          onSelectSession=${() => setActiveTab('sessions')}/>
+          onSelectSession=${() => setActiveTab('explorer')}/>
         <main class="main" id="main-content" role="main">
           <nav class="tab-nav" role="navigation" aria-label="Dashboard tabs">
             ${tabs.map(t => html`<button key=${t.id} class="tab-btn"

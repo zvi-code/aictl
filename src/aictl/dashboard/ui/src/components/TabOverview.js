@@ -41,7 +41,7 @@ export default function TabOverview() {
     return s.tools.filter(t=>!t.meta && hasData(t)).sort(sortScore);
   },[s]);
 
-  // project-env has its own dedicated tab — exclude it from Overview entirely
+  // project-env renders in the Configuration tab (TabProjectEnv) — exclude it here
   const metaTools = useMemo(()=>{
     if(!s) return [];
     return s.tools.filter(t=>t.meta && t.tool!=='project-env' && hasData(t)).sort(sortScore);

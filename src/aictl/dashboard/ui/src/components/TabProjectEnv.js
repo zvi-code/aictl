@@ -38,8 +38,13 @@ function FileRow({f}) {
   </div>`;
 }
 
-export default function TabProjectEnv() {
-  const {snap: s} = useContext(SnapContext);
+// Accepts an optional `snap` prop with the *unfiltered* snapshot: the
+// SnapContext snapshot is filtered to verified tools in app.js, which
+// strips the `project-env` pseudo-tool this component renders. app.js
+// passes the raw snapshot when mounting this inside the config tab.
+export default function TabProjectEnv({ snap = null } = {}) {
+  const ctx = useContext(SnapContext);
+  const s = snap ?? ctx?.snap;
 
   const envTool = useMemo(() => s?.tools?.find(t => t.tool === 'project-env'), [s]);
   const files   = envTool?.files ?? [];
