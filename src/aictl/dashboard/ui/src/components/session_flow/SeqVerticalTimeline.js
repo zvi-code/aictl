@@ -125,8 +125,8 @@ export default function SeqVerticalTimeline({events, selectedIdx, onSelect}) {
         <div class="sv-when">
           <div class="sv-when-time">${fmtHHMMSS(ev.ts)}</div>
           ${(ev._cumTok > 0 || ev._rtTok > 0) && html`<div class="sv-when-tok">
-            ${ev._cumTok > 0 ? fmtK(ev._cumTok) + 'K cum' : ''}
-            ${ev._rtTok > 0 ? ' \u00B7 ' + fmtK(ev._rtTok) + 'K rt' : ''}
+            ${ev._cumTok > 0 ? fmtK(ev._cumTok) + ' cum' : ''}
+            ${ev._rtTok > 0 ? ' \u00B7 ' + fmtK(ev._rtTok) + ' rt' : ''}
           </div>`}
         </div>
         <div class="sv-spine">

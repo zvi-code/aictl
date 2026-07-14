@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useContext } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
-import { fmtK, fmtSz, fmtAgo, esc, fileCache, fetchFileContent, MEM_LABELS, TAIL_LINES } from '../utils.js';
+import { fmtK, fmtSz, fmtAgo, esc, fetchFileContent, MEM_LABELS, TAIL_LINES } from '../utils.js';
 import ChartCard from './ChartCard.js';
 import * as api from '../api.js';
 
@@ -16,7 +16,6 @@ function MemItem({mem}) {
   const toggle = useCallback(async ()=>{
     if(showPreview) { setShowPreview(false); return; }
     setShowPreview(true);
-    if(fileCache.has(mem.file)) { setText(fileCache.get(mem.file)); return; }
     setLoading(true); setError(null);
     try { const t=await fetchFileContent(mem.file); setText(t); }
     catch(e) { setError(e.message); }

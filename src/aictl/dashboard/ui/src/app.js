@@ -6,7 +6,7 @@ import * as api from './api.js';
 import { useDashboard } from './hooks/useDashboard.js';
 import { useRange, RANGE_SECONDS, RANGE_PRESETS } from './hooks/useRange.js';
 import { useTools } from './hooks/useTools.js';
-import { useTabs } from './hooks/useTabs.js';
+import { useTabs, isTypingTarget } from './hooks/useTabs.js';
 import { useTheme } from './hooks/useTheme.js';
 import { useDensity } from './hooks/useDensity.js';
 import { useSavedViews } from './hooks/useSavedViews.js';
@@ -62,7 +62,9 @@ function useSearchShortcut(searchRef, setViewerPath) {
   useEffect(() => {
     const handler = (e) => {
       if (e.key === 'Escape') setViewerPath(null);
-      if (e.key === '/' && document.activeElement !== searchRef.current) {
+      // Don't steal focus while the user is typing in any input/textarea/
+      // select/contenteditable (covers the header search too).
+      if (e.key === '/' && !isTypingTarget(e.target)) {
         e.preventDefault();
         searchRef.current?.focus();
       }

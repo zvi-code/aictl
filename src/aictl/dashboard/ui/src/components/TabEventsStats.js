@@ -1,3 +1,4 @@
+import { Fragment } from 'preact';
 import { useState, useMemo, useEffect, useContext } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
@@ -63,7 +64,7 @@ export default function TabEventsStats() {
       </button>`)}
     </div>
     <div>
-      ${selectedTool && html`<Fragment>
+      ${selectedTool && html`<${Fragment}>
         <h3 class="flex-row mb-sm gap-sm">
           <${ToolIcon} tool=${selectedTool} size="1em"/>
           ${tool?.label || selectedTool}
@@ -142,7 +143,7 @@ export default function TabEventsStats() {
             })}
           </div>` : html`<p class="empty-state">No events for this tool in the selected range.</p>`}
         </div>
-      </Fragment>`}
+      </${Fragment}>`}
     </div>
   </div>`;
 }

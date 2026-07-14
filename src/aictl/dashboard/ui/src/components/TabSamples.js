@@ -1,3 +1,4 @@
+import { Fragment } from 'preact';
 import { useState, useEffect, useCallback, useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { fmtK, fmtTime, esc } from '../utils.js';
@@ -90,7 +91,7 @@ export default function TabSamples() {
         <p class="text-muted">Select a metric from the sidebar to view its time series.</p>
       </div>`}
 
-      ${selected && html`<Fragment>
+      ${selected && html`<${Fragment}>
         <h3 class="mb-sm">${selected}</h3>
 
         ${loading && html`<p class="loading-state">Loading...</p>`}
@@ -144,7 +145,7 @@ export default function TabSamples() {
           <div class="es-section-title">Recent Samples</div>
           <p class="empty-state">No raw samples in the last 30 minutes.</p>
         </div>`}
-      </Fragment>`}
+      </${Fragment}>`}
     </div>
   </div>`;
 }

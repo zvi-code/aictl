@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'preact/hooks';
 import { html } from 'htm/preact';
-import { fmtK, fmtTok, fmtSz, fmtRate, fmtPct, esc, liveTokenTotal } from '../utils.js';
+import { fmtK, fmtTok, fmtSz, fmtRate, fmtPct, esc, liveTokenTotal, resolveColor } from '../utils.js';
 import ProcRow from './ProcRow.js';
 
 // ─── TinySparkline ─────────────────────────────────────────────
@@ -17,7 +17,7 @@ export function TinySparkline({label, data, color}) {
     const max = Math.max(...vals) * 1.1 || 1;
     const step = w / (vals.length - 1);
     ctx.beginPath();
-    ctx.strokeStyle = color;
+    ctx.strokeStyle = resolveColor(color, '#94a3b8');
     ctx.lineWidth = 1.5 * (window.devicePixelRatio||1);
     vals.forEach((v,i)=>{
       const x = i * step, y = h - (v / max) * h * 0.85;
@@ -229,7 +229,7 @@ export function LiveSection({live}) {
       <span class="badge">${fmtPct((live.confidence||0)*100)} conf</span>
       ${mcp.detected && html`<span class="badge warn">${mcp.loops||0} MCP loop${(mcp.loops||0)===1?'':'s'}</span>`}
     </h3>
-    <div class="metric-grid" aria-live="polite" aria-relevant="text" aria-atomic="false">
+    <div class="metric-grid">
       <div class="metric-chip">
         <span class="mlabel">Traffic</span>
         <span class="mvalue">\u2191 ${fmtRate(live.outbound_rate_bps||0)}</span>

@@ -14,7 +14,9 @@ export const EDITORIAL_TABS = [
 function fmtKicker() {
   const d = new Date();
   const vol = String(d.getMonth() + 1).padStart(2, '0');
-  const date = d.toISOString().slice(0, 10);
+  // Local date, not toISOString (UTC) \u2014 avoids showing yesterday/tomorrow
+  // near midnight. en-CA locale yields the same YYYY-MM-DD shape.
+  const date = d.toLocaleDateString('en-CA');
   return `The aictl daily \u00b7 vol.\u00a0${vol} \u00b7 ${date}`;
 }
 

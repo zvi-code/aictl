@@ -33,17 +33,20 @@ function fullDetail(detail) {
 export default function EventsPanel({ sessionId, since, until }) {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [expanded, setExpanded] = useState(() => new Set());
 
   useEffect(() => {
     if (!sessionId) return;
     setLoading(true);
+    setError(null);
     api.getSessionEvents(sessionId, { since, until, limit: 500 })
       .then(rows => {
         const list = Array.isArray(rows) ? rows : [];
         list.sort((a, b) => (b.ts || 0) - (a.ts || 0));
         setEvents(list);
       })
+      .catch(e => setError(e?.message || 'Failed to load events'))
       .finally(() => setLoading(false));
   }, [sessionId, since, until]);
 
@@ -77,6 +80,10 @@ export default function EventsPanel({ sessionId, since, until }) {
 
   if (loading) {
     return html`<p class="empty-state">Loading events...</p>`;
+  }
+
+  if (error) {
+    return html`<p class="error-state">Error: ${error}</p>`;
   }
 
   if (!rows.length) {

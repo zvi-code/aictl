@@ -87,7 +87,11 @@ export default function ActionsPanel({sessionId}) {
     if (!sessionId) return;
     setLoading(true);
     setExpanded({});
-    const since = Math.floor(Date.now() / 1000) - 86400;
+    // When scoping to a session, don't restrict by time — older sessions
+    // would otherwise appear empty because a 24-hour window cuts off their
+    // events. `since=0` means "whole history for this session" (same
+    // convention as ApiCallsPanel).
+    const since = 0;
     api.getEvents({ sessionId, limit: 200, since })
       .then(data => { setEvents(data.reverse()); setLoading(false); })
       .catch(() => setLoading(false));

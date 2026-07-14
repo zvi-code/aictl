@@ -1,3 +1,4 @@
+import { Fragment } from 'preact';
 import { html } from 'htm/preact';
 import { useMemo } from 'preact/hooks';
 import MiniChart from './MiniChart.js';
@@ -45,10 +46,10 @@ export default function ChartCard({label, value, valColor, data, chartColor, smo
       </span>
     </div>
     <div style="position:relative">
-      ${refPositions.map(r => html`<Fragment>
+      ${refPositions.map((r, i) => html`<${Fragment} key=${r.label ?? i}>
           <div class="chart-ref-line" style=${'top:'+r.pct+'%'} />
           <div class="chart-ref-label" style=${'top:calc('+r.pct+'% - 8px)'}>${r.label}</div>
-        </Fragment>`)}
+        </${Fragment}>`)}
       ${data && data[0].length>=2 ? html`<${MiniChart} data=${data} color=${chartColor||'var(--accent)'} smooth=${smooth} yMax=${yMax}/>` :
         html`<div class="chart-wrap text-muted" style="display:flex;align-items:center;justify-content:center;font-size:var(--fs-base)">collecting...</div>`}
     </div>
