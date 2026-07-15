@@ -5,6 +5,7 @@ import { COLORS, CAT_ORDER, fmtK, fmtSz, fmtRate, fmtPct, esc, liveTokenTotal, T
 import CatGroup from './FileTree.js';
 import { TinySparkline, ProcSection, ConfigSection, TelemetrySection, LiveSection } from './ToolCardSections.js';
 import { ToolIcon } from './ui/index.js';
+import { describeAnomaly } from '../anomalyMeta.js';
 
 // ─── ToolCard Component ────────────────────────────────────────
 export default function ToolCard({tool: t, root}) {
@@ -15,6 +16,11 @@ export default function ToolCard({tool: t, root}) {
   const c = COLORS[t.tool]||'var(--fg2)';
   const tok = t.files.reduce((a,f)=>a+f.tokens,0);
   const anom = t.processes.filter(p=>p.anomalies&&p.anomalies.length).length;
+  // Distinct human-readable anomaly labels across this tool's processes — the
+  // badge tooltip answers "anomalous HOW?" without expanding the card.
+  const anomLabels = useMemo(()=>[...new Set(
+    t.processes.flatMap(p=>(p.anomalies||[]).map(a=>describeAnomaly(a, p).label))
+  )],[t.processes]);
   const liveTok = liveTokenTotal(t.live);
   const liveTraffic = (t.live?.outbound_rate_bps||0) + (t.live?.inbound_rate_bps||0);
   const totalCpu = t.processes.reduce((a,p)=>a+(parseFloat(p.cpu_pct)||0),0);
@@ -39,7 +45,8 @@ export default function ToolCard({tool: t, root}) {
       <span class="badge" data-dp="procs.tool.tokens">${fmtK(tok)} tok</span>
       ${t.processes.length>0 && html`<span class="badge" data-dp="procs.tool.process_count">${t.processes.length} proc ${fmtPct(totalCpu)} ${fmtSz(totalMem*1048576)}</span>`}
       ${t.mcp_servers.length>0 && html`<span class="badge" data-dp="procs.tool.mcp_server_count">${t.mcp_servers.length} MCP</span>`}
-      ${anom>0 && html`<span class="badge warn" data-dp="procs.tool.anomaly">${anom} anomaly</span>`}
+      ${anom>0 && html`<span class="badge warn" data-dp="procs.tool.anomaly"
+        title=${anomLabels.join(' · ')}>${anom} ${anom===1?'anomaly':'anomalies'}</span>`}
       ${telErrors>0 && html`<span class="badge" style="background:var(--red);color:var(--bg)">${telErrors} error${telErrors>1?'s':''}</span>`}
       ${t.live && html`<span class="badge" style="background:var(--accent);color:var(--bg)">${t.live.session_count||0} live \u00B7 ${fmtRate(liveTraffic)}${liveTok>0?' \u00B7 '+fmtK(liveTok)+'tok':''}</span>`}
       <div style="width:100%;display:flex;flex-wrap:wrap;gap:var(--sp-1);margin-top:0.1rem">
