@@ -131,6 +131,12 @@ export default function ContextMap() {
   if (!data.totalTokens) return html`<p class="empty-state">No token data collected yet.</p>`;
 
   const maxCatTok = Math.max(...data.cats.map(([, v]) => v.tokens), 1);
+  // Log-width row bars: category totals span 6-7 orders of magnitude (a 23M
+  // transcript next to a 67-token hooks file), so linear widths render every
+  // non-dominant row as an invisible sliver. log10 preserves ordering while
+  // giving small rows readable, comparable bars; the row's text still carries
+  // the exact values (the "log scale" note by the heading flags the encoding).
+  const logW = (tok, max) => (tok > 0 ? Math.max(2, (Math.log10(tok + 1) / Math.log10(max + 1)) * 100) : 0);
 
   return html`<div class="diag-card" role="region" aria-label="Context window map">
     <h3 style=${{marginBottom:'var(--sp-5)'}}>Context Window Map</h3>
@@ -166,9 +172,10 @@ export default function ContextMap() {
 
     <!-- Per-category bars with project sub-segments -->
     <div class="mb-md">
+      <div class="text-muted" style="font-size:var(--fs-2xs);margin-bottom:var(--sp-1)">bar length: log scale</div>
       ${data.cats.map(([cat, v]) => {
         const projs = Object.entries(v.projects).sort((a, b) => b[1].tokens - a[1].tokens);
-        const barW = (v.tokens / maxCatTok) * 100;
+        const barW = logW(v.tokens, maxCatTok);
         return html`<div key=${cat} class="flex-row gap-sm" style="margin-bottom:var(--sp-1);font-size:var(--fs-base)">
           <span class="text-bold text-right" style="width:80px;color:${CAT_COLORS[cat] || 'var(--fg2)'};flex-shrink:0">${cat}</span>
           <div class="flex-1 overflow-hidden" style="height:16px;background:var(--bg);border-radius:2px">
@@ -234,7 +241,7 @@ export default function ContextMap() {
           const top = allItems.slice(0, 15);
           const restTok = allItems.slice(15).reduce((a, [, t]) => a + t, 0);
           if (restTok > 0) top.push(['(other)', restTok]);
-          const barW = (cd.tokens / maxCT) * 100;
+          const barW = logW(cd.tokens, maxCT);
           return html`<div key=${cat} style="margin-bottom:var(--sp-3)">
             <div class="flex-row gap-sm" style="font-size:var(--fs-base)">
               <span class="text-bold text-right" style="width:80px;color:${CAT_COLORS[cat] || 'var(--fg2)'};flex-shrink:0">${cat}</span>

@@ -29,6 +29,19 @@ function TokenBar({always, onDemand, conditional, never, total}) {
   </div>`;
 }
 
+// The color key for TokenBar's segments — without it the split/distribution
+// bars read as decoration (nothing on the tab said what green/yellow/orange/
+// gray mean). Rendered beside both tables that embed TokenBar.
+function TokenBarLegend() {
+  const sw = (c, extra) => `display:inline-block;width:8px;height:8px;border-radius:2px;background:${c};${extra||''}`;
+  return html`<span class="text-muted" style="display:inline-flex;gap:var(--sp-3);align-items:center;font-size:var(--fs-xs);font-weight:400">
+    <span><span style=${sw('var(--green)')}></span> always</span>
+    <span><span style=${sw('var(--yellow)')}></span> on-demand</span>
+    <span><span style=${sw('var(--orange)')}></span> conditional</span>
+    <span><span style=${sw('var(--fg2)', 'opacity:0.3')}></span> never sent</span>
+  </span>`;
+}
+
 export default function TabBudget() {
   const {snap: s, history: hist, enabledTools} = useContext(SnapContext);
   const [budget, setBudget] = useState(null);
@@ -254,7 +267,7 @@ export default function TabBudget() {
 
     <!-- Verified token usage (main table) -->
     ${telemetry.length>0 && html`<div class="budget-card mb-md">
-      <h3 class="text-accent" style="margin-bottom:var(--sp-4)">Token Usage by Tool</h3>
+      <h3 class="text-accent" style="margin-bottom:var(--sp-4);display:flex;justify-content:space-between;align-items:baseline;gap:var(--sp-4);flex-wrap:wrap">Token Usage by Tool <${TokenBarLegend}/></h3>
       <div style="overflow-x:auto">
         <table role="table" aria-label="Tool telemetry" style="width:100%">
           <thead><tr>
@@ -294,7 +307,7 @@ export default function TabBudget() {
 
     <!-- By category -->
     ${catBreakdown.length>0 && html`<div class="budget-card budget-full">
-      <h3 class="text-accent" style="margin-bottom:var(--sp-4)">By Category</h3>
+      <h3 class="text-accent" style="margin-bottom:var(--sp-4);display:flex;justify-content:space-between;align-items:baseline;gap:var(--sp-4);flex-wrap:wrap">By Category <${TokenBarLegend}/></h3>
       <${DataTable}
         ariaLabel="Per-category tokens"
         rowKey="kind"
