@@ -78,6 +78,38 @@ function mergePrePostEvents(events) {
   return out;
 }
 
+// Collapse runs of consecutive events that would render as identical rows
+// (same kind, same description, no expandable input/result detail) into a
+// single row carrying a repeat count. Six back-to-back `file_modified`
+// events on the same path become one "file_modified path ×6" row spanning
+// first-to-last timestamp instead of six lines of noise.
+function coalesceRepeatedEvents(events) {
+  const descOf = (ev) => {
+    const d = ev.detail || {};
+    return String(d.path || d.name || d.tool_name || ev.kind);
+  };
+  const hasDetail = (ev) => {
+    const d = ev.detail || {};
+    const input = d.tool_input != null ? d.tool_input : d.input;
+    const result = d.result_summary != null
+      ? d.result_summary
+      : (d.tool_response != null ? d.tool_response : d.result);
+    return toDisplay(input) !== '' || toDisplay(result) !== '';
+  };
+  const out = [];
+  for (const ev of events) {
+    const prev = out[out.length - 1];
+    if (prev && prev.kind === ev.kind && descOf(prev) === descOf(ev)
+        && !hasDetail(prev) && !hasDetail(ev)) {
+      const count = (prev.repeat_count || 1) + 1;
+      out[out.length - 1] = { ...prev, repeat_count: count, last_ts: ev.ts };
+      continue;
+    }
+    out.push(ev);
+  }
+  return out;
+}
+
 export default function ActionsPanel({sessionId}) {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -105,7 +137,8 @@ export default function ActionsPanel({sessionId}) {
     return () => { cancelled = true; };
   }, [sessionId]);
 
-  const mergedEvents = useMemo(() => mergePrePostEvents(events), [events]);
+  const mergedEvents = useMemo(
+    () => coalesceRepeatedEvents(mergePrePostEvents(events)), [events]);
 
   if (loading) return html`<p class="loading-state">Loading events...</p>`;
   if (error) return html`<p class="error-state">Failed to load session actions${error.message ? ` (${error.message})` : ''}.</p>`;
@@ -132,10 +165,11 @@ export default function ActionsPanel({sessionId}) {
       const collapsedText = inputPrev || resultPrev;
       return html`<div key=${key} class="sd-event-row-wrap">
         <div class="sd-event-row">
-          <span class="sd-event-time">${fmtAgo(ev.ts)}</span>
+          <span class="sd-event-time" title=${ev.repeat_count > 1 ? `${fmtAgo(ev.ts)} → ${fmtAgo(ev.last_ts)}` : null}>${fmtAgo(ev.ts)}</span>
           <span class="sd-event-dot" style="background:${c}"></span>
           <span class="sd-event-kind">${ev.kind}</span>
           <span class="sd-event-desc mono text-muted">${esc(String(desc))}</span>
+          ${ev.repeat_count > 1 && html`<span class="badge" title=${`${ev.repeat_count} consecutive identical events`}>×${ev.repeat_count}</span>`}
         </div>
         ${hasDetail && html`<div class="sd-event-detail">
           <button type="button"
