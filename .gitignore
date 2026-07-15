@@ -61,6 +61,7 @@ _temp/
 .DS_Store
 *.png
 !docs/screenshots/*.png
+!docs/screenshots/changes/*.png
 session-investigation.md
 
 # scratch / temp files

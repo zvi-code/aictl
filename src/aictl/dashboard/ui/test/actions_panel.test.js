@@ -57,6 +57,37 @@ describe('ActionsPanel — tool input/result expansion', () => {
     expect(container.querySelector('.sd-event-toggle')).toBeNull();
   });
 
+  it('coalesces consecutive identical detail-less events into one row with ×N badge', async () => {
+    // Newest-first (API order): six file_modified events on the same path,
+    // then a session_start. The panel should show 2 rows, not 7.
+    const runs = Array.from({ length: 6 }, (_, i) => ({
+      ts: 1_700_000_010 + (5 - i),
+      kind: 'file_modified',
+      detail: { path: '/Users/x/.claude/projects/p/session.jsonl' },
+    }));
+    api.getEvents.mockResolvedValue([...runs,
+      { ts: 1_700_000_001, kind: 'session_start', detail: { cwd: '/tmp' } },
+    ]);
+    const { container } = render(html`<${ActionsPanel} sessionId="s4"/>`);
+    await waitFor(() => {
+      expect(container.querySelectorAll('.sd-event-row').length).toBe(2);
+    });
+    expect(container.textContent).toContain('×6');
+    // Distinct events (different path) must NOT be coalesced.
+  });
+
+  it('does not coalesce consecutive events with different descriptions', async () => {
+    api.getEvents.mockResolvedValue([
+      { ts: 1_700_000_011, kind: 'file_modified', detail: { path: '/b' } },
+      { ts: 1_700_000_010, kind: 'file_modified', detail: { path: '/a' } },
+    ]);
+    const { container } = render(html`<${ActionsPanel} sessionId="s5"/>`);
+    await waitFor(() => {
+      expect(container.querySelectorAll('.sd-event-row').length).toBe(2);
+    });
+    expect(container.textContent).not.toContain('×2');
+  });
+
   it('merges adjacent hook:PreToolUse + hook:PostToolUse for same tool into one row', async () => {
     // Real-session-shaped pair: Pre carries tool_input, Post carries result.
     // The panel reverses the API response, so supply newest-first here so
