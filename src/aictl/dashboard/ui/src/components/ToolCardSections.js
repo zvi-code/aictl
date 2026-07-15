@@ -25,9 +25,11 @@ export function TinySparkline({label, data, color}) {
     });
     ctx.stroke();
   },[data, color]);
-  return html`<div style="position:relative;height:25px">
-    <span class="text-muted" style="position:absolute;top:0;left:0;font-size:var(--fs-2xs);z-index:1">${label}</span>
-    <canvas ref=${ref} aria-hidden="true" style="width:100%;height:100%;display:block"/>
+  // Label gets its own slot LEFT of the plot — overlaying it on the canvas made
+  // any flat series (drawn at ~23% height) strike through the label text.
+  return html`<div style="display:flex;align-items:center;gap:var(--sp-2);height:25px">
+    <span class="text-muted" style="font-size:var(--fs-2xs);flex:0 0 34px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${label}</span>
+    <canvas ref=${ref} aria-hidden="true" style="flex:1;min-width:0;height:100%;display:block"/>
   </div>`;
 }
 
