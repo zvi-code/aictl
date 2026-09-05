@@ -624,3 +624,35 @@ class TestBuildTurnsFromOtelToolFields:
         assert user_turn["message"] == "show the actual prompt"
         assert response_turn["response"] == "full response body"
         assert response_turn["response_preview"] == "full response body"
+
+
+class TestBuildTurnsFromHooksPrompt:
+    """Claude Code / Gemini / Copilot UserPromptSubmit hooks put the text in
+    ``prompt``. build_turns_from_hooks read ``message``/``content`` only, so
+    every hook-sourced user turn rendered as the '(prompt)' placeholder."""
+
+    def test_prompt_field_populates_user_turn(self):
+        from aictl.dashboard.session_flow import build_turns_from_hooks
+
+        events = [
+            EventRow(
+                ts=100.0,
+                tool="claude-code",
+                kind="hook:UserPromptSubmit",
+                detail={"session_id": "s1", "prompt": "fix the failing test"},
+            ),
+        ]
+        turns = build_turns_from_hooks(events, {})
+        user = [t for t in turns if t["type"] == "user_message"]
+        assert len(user) == 1
+        assert user[0]["message"] == "fix the failing test"
+        assert user[0]["preview"] == "fix the failing test"
+
+    def test_legacy_message_field_still_works(self):
+        from aictl.dashboard.session_flow import build_turns_from_hooks
+
+        events = [
+            EventRow(ts=100.0, tool="claude-code", kind="hook:UserPromptSubmit", detail={"message": "hello"}),
+        ]
+        turns = build_turns_from_hooks(events, {})
+        assert [t["message"] for t in turns if t["type"] == "user_message"] == ["hello"]

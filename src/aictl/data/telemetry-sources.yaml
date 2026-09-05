@@ -25,23 +25,22 @@ claude-code:
   source_id: stats-cache
   confidence: 0.95
   state_dir_fn: claude_global_dir  # function in platforms.py
+  # Claude Code's local usage cache (rewritten in place; cumulative totals).
+  # Parsed by tool_telemetry._parse_claude_code; the field paths below
+  # document that parser's contract.
   files:
-    - pattern: "statsig_cache.json"
-      format: json
-    - pattern: "projects/*/session_tokens.json"
-      format: json
-    - pattern: "projects/*/conversations/*/token_usage.json"
+    - pattern: "stats-cache.json"
       format: json
   fields:
-    input_tokens: "costTracker.totalInputTokens"
-    output_tokens: "costTracker.totalOutputTokens"
-    cache_read: "costTracker.totalCacheReadTokens"
-    cache_creation: "costTracker.totalCacheCreationTokens"
-    sessions: "costTracker.totalSessions"
-    messages: "costTracker.totalMessages"
-    cost_usd: "costTracker.totalCostUSD"
-    model: "costTracker.model"
-  by_model_path: "costTracker.byModel"
+    sessions: "totalSessions"
+    messages: "totalMessages"
+    by_model: "modelUsage"                 # {model: {inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens, costUSD}}
+    input_tokens: "modelUsage.*.inputTokens"
+    output_tokens: "modelUsage.*.outputTokens"
+    cache_read: "modelUsage.*.cacheReadInputTokens"
+    cache_creation: "modelUsage.*.cacheCreationInputTokens"
+    cost_usd: "modelUsage.*.costUSD"
+    daily: "dailyModelTokens"              # [{date, tokensByModel}]
 
 copilot-cli:
   source_id: events-jsonl
@@ -62,16 +61,20 @@ copilot-cli:
 codex-cli:
   source_id: token-count
   confidence: 0.85
-  state_dir_fn: codex_global_dir  # function in platforms.py (if exists)
+  state_dir_fn: codex_global_dir  # function in platforms.py
+  # Rollout JSONL per session; token_count events carry CUMULATIVE totals
+  # for the session, so only the last one per file counts (see
+  # tool_telemetry._parse_codex_session).
   files:
-    - pattern: "sessions/*/session.json"
-      format: json
+    - pattern: "sessions/*/*/*/rollout-*.jsonl"
+      format: jsonl
   fields:
-    input_tokens: "usage.input_tokens"
-    output_tokens: "usage.output_tokens"
-    model: "model"
-    cost_usd: "usage.cost_usd"
-  aggregation: sum
+    event_filter: "type == 'event_msg' and payload.type == 'token_count'"
+    input_tokens: "payload.total_token_usage.input_tokens"
+    output_tokens: "payload.total_token_usage.output_tokens"
+    cache_read: "payload.total_token_usage.cached_input_tokens"
+    model: "payload.model"                 # also session_meta.payload.model
+  aggregation: last-per-session
 
 cursor:
   source_id: state-vscdb

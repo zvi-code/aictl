@@ -347,8 +347,11 @@ class TestCopilotEmitterHooks:
             assert hooks_path.is_file()
             data = json.loads(hooks_path.read_text("utf-8"))
             assert "hooks" in data
-            assert "preToolUse" in data["hooks"]
-            assert data["hooks"]["preToolUse"][0]["type"] == "command"
+            # Event keys are canonicalised to the tools' PascalCase enum names:
+            # a camelCase key from .context.toml deployed verbatim never fires.
+            assert "PreToolUse" in data["hooks"]
+            assert "preToolUse" not in data["hooks"]
+            assert data["hooks"]["PreToolUse"][0]["type"] == "command"
 
     def test_emit_hooks_preserves_existing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -376,7 +379,7 @@ class TestCopilotEmitterHooks:
 
             data = json.loads((hooks_dir / "hooks.json").read_text("utf-8"))
             # New hook should be there
-            assert "preToolUse" in data["hooks"]
+            assert "PreToolUse" in data["hooks"]
             # Existing hook should be preserved (merged)
             assert "postToolUse" in data["hooks"]
             # Non-hook keys should be preserved
@@ -414,7 +417,7 @@ class TestCopilotImporterHooks:
             assert result is not None
             assert len(result.hooks) == 2
             events = {h.event for h in result.hooks}
-            assert events == {"preToolUse", "postToolUse"}
+            assert events == {"PreToolUse", "PostToolUse"}  # canonicalised on deploy
 
 
 class TestCopilotHookRoundtrip:
@@ -443,7 +446,7 @@ class TestCopilotHookRoundtrip:
             assert result is not None
             assert len(result.hooks) == 2
             events = {h.event for h in result.hooks}
-            assert events == {"preToolUse", "postToolUse"}
+            assert events == {"PreToolUse", "PostToolUse"}  # canonicalised on deploy
 
 
 # ---------------------------------------------------------------------------

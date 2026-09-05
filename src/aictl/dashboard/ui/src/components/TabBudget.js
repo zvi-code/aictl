@@ -5,18 +5,9 @@ import { COLORS, fmtK, fmtSz, fmtPct, esc } from '../utils.js';
 import MiniChart from './MiniChart.js';
 import DataTable from './ui/DataTable.js';
 import * as api from '../api.js';
+import { contextWindowFor, isKnownModel } from '../models.js';
 
 const MODEL_PALETTE = ['var(--green)','var(--model-7)','var(--orange)','var(--red)','var(--model-5)','var(--yellow)','var(--accent)','var(--model-8)'];
-
-// Common model context windows — falls back to 200K for unknown models
-const MODEL_WINDOWS = {
-  'claude-opus-4-6':1000000, 'claude-opus-4-5':1000000,
-  'claude-sonnet-4-6':1000000, 'claude-sonnet-4-5':1000000, 'claude-sonnet-4':200000,
-  'claude-haiku-4-5':200000, 'claude-3-5-sonnet':200000,
-  'gpt-4.1':1000000, 'gpt-4.1-mini':1000000, 'gpt-4o':128000, 'gpt-4o-mini':128000,
-  'o3':200000, 'o4-mini':200000,
-  'gemini-2.5-pro':1000000, 'gemini-2.5-flash':1000000,
-};
 
 function TokenBar({always, onDemand, conditional, never, total}) {
   if(!total) return null;
@@ -65,11 +56,11 @@ export default function TabBudget() {
     }
     // Fall back to any config whose model is in our known window map
     for (const c of configs) {
-      if (c.model && MODEL_WINDOWS[c.model]) return c.model;
+      if (c.model && isKnownModel(c.model)) return c.model;
     }
     return '';
   }, [s]);
-  const contextWindow = MODEL_WINDOWS[detectedModel] || 200000;
+  const contextWindow = contextWindowFor(detectedModel);
   const alwaysLoaded = budget.always_loaded_tokens || 0;
   const totalPotential = budget.total_potential_tokens || 0;
   const pctAlways = alwaysLoaded/contextWindow*100;

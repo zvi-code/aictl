@@ -14,7 +14,6 @@ from pathlib import Path
 
 import pytest
 
-from aictl.emitters._helpers import _load_settings
 from aictl.utils import (
     CorruptJSONError,
     merge_json_block,
@@ -156,7 +155,9 @@ def test_merge_json_block_corrupt_with_force_writes_backup_and_merges(
     assert baks[0].read_text("utf-8") == original
 
 
-# ── _load_settings (thin wrapper) ──────────────────────────────────
+# ── read_json_or_fail as used by the settings emitters ─────────────────
+# (the former ``_load_settings`` pass-through wrapper was removed)
+_load_settings = read_json_or_fail
 
 
 def test_load_settings_corrupt_raises_without_force(tmp_path: Path) -> None:

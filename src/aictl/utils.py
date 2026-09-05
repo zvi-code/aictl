@@ -189,6 +189,24 @@ class CorruptJSONError(Exception):
     """Raised when an existing JSON file can't be parsed and the caller has not opted into --force overwrite."""
 
 
+def read_json_lenient(path: Path) -> dict:
+    """Best-effort JSON read for read-only dashboard views: ``{}`` on any problem.
+
+    Missing, unreadable, malformed, or non-object JSON all yield an empty
+    dict — the caller is only *displaying* state and must never fail or
+    prompt because a user's settings file is mid-edit. Writers must use
+    :func:`read_json_or_fail` instead so corruption is surfaced, not
+    clobbered.
+    """
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def read_json_or_fail(path: Path, *, force: bool = False) -> dict:
     """Read and parse a JSON file, with strict safety on corruption.
 

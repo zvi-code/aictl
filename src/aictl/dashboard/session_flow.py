@@ -292,7 +292,10 @@ def build_turns_from_hooks(all_events, api_by_session):
         if kind == "hook:UserPromptSubmit":
             if current_turn:
                 turns.append(current_turn)
-            msg = detail.get("message", detail.get("content", ""))
+            # Claude Code, Gemini (BeforeAgent) and Copilot all put the user
+            # text in ``prompt``; ``message``/``content`` cover synthetic and
+            # imported payloads.
+            msg = str(detail.get("prompt") or detail.get("message") or detail.get("content") or "")
             preview = msg[:200] if msg else ""
             current_turn = {
                 "ts": ev.ts,
@@ -330,11 +333,14 @@ def build_turns_from_hooks(all_events, api_by_session):
 
         if kind == "hook:SubagentStart" and current_turn is not None:
             agent_id = detail.get("agent_id", detail.get("subagent_id", ""))
+            agent_type = detail.get("agent_type", "")
             task = detail.get("task", detail.get("description", ""))
             current_turn["tools"].append(
                 {
                     "name": "Agent",
-                    "args_summary": task or agent_id,
+                    # Prefer the human label (agent_type) over a bare UUID.
+                    "args_summary": task or agent_type or agent_id,
+                    "agent_type": agent_type,
                     "ts": ev.ts,
                     "duration_ms": 0,
                     "is_agent": True,

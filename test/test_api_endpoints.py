@@ -1682,3 +1682,97 @@ class TestSessionMessagesAPI:
         data = _get_json(f"{server}/api/session-messages?session_id=sess-repeat")
         contents = [m["content"] for m in data["messages"]]
         assert contents.count("continue") == 2
+
+
+class TestHookVerifyPingIsNotPersisted:
+    """`aictl hooks verify` POSTs synthetic payloads flagged _aictl_verify for
+    every event. They must be acknowledged (HTTP 200) but never stored — the
+    SessionStart ping used to upsert a phantom 'aictl-verify' session that
+    showed up in every session list."""
+
+    def test_verify_ping_returns_ok_without_writing(self, hook_server):
+        url, db = hook_server
+        for event in ("SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"):
+            status, body = _post_json(
+                f"{url}/api/hooks",
+                {"event": event, "session_id": "aictl-verify", "_aictl_verify": True},
+            )
+            assert status == 200
+            assert body.get("ok") is True
+        db.flush()
+        assert db.get_session("aictl-verify") is None
+        assert db.query_events(limit=50) == []
+
+
+class TestPostToolUseFailureMarksError:
+    """Claude Code fires PostToolUse only on success; failures arrive as
+    PostToolUseFailure with an ``error`` field. The receiver used to ignore
+    that event, so hook-sourced tool error rate was structurally 0%."""
+
+    SID = "c3d4e5f6-cccc-4abc-9def-1234567890ab"
+
+    def _hook(self, url, event, **detail):
+        status, _ = _post_json(
+            f"{url}/api/hooks",
+            {"event": event, "session_id": self.SID, "tool": "claude-code", **detail},
+        )
+        assert status == 200
+
+    def test_failure_closes_pending_invocation_with_error(self, hook_server):
+        url, db = hook_server
+        now = time.time()
+        self._hook(url, "PreToolUse", ts=now, tool_use_id="toolu_f1", tool_name="Bash", tool_input={"command": "false"})
+        self._hook(
+            url,
+            "PostToolUseFailure",
+            ts=now + 0.5,
+            tool_use_id="toolu_f1",
+            tool_name="Bash",
+            tool_input={"command": "false"},
+            error="exit status 1",
+        )
+        db.flush()
+        rows = db.query_tool_invocations(session_id=self.SID)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["is_error"] == 1
+        assert row["duration_ms"] == pytest.approx(500.0, abs=1.0)
+        assert "exit status 1" in row["result_summary"]
+
+    def test_failure_without_pre_is_stored_as_error(self, hook_server):
+        url, db = hook_server
+        self._hook(url, "PostToolUseFailure", tool_use_id="toolu_f2", tool_name="Read", error="ENOENT")
+        db.flush()
+        rows = db.query_tool_invocations(session_id=self.SID)
+        assert [r["is_error"] for r in rows] == [1]
+
+
+class TestProjectCostsPerModelPricing:
+    """/api/project-costs prices each session at its own model's list rate
+    (it used to apply a fixed $3/$15 to everything)."""
+
+    def test_costs_follow_model_and_label_rate(self, hook_server):
+        url, db = hook_server
+        now = time.time()
+        db.append_event(
+            EventRow(
+                ts=now - 60,
+                tool="claude-code",
+                kind="session_end",
+                detail={"project": "p1", "model": "claude-fable-5-1", "input_tokens": 1_000_000, "output_tokens": 0},
+            )
+        )
+        db.append_event(
+            EventRow(
+                ts=now - 30,  # distinct ts: events dedupe on (ts, tool, kind)
+                tool="claude-code",
+                kind="session_end",
+                detail={"project": "p2", "model": "claude-sonnet-5", "input_tokens": 1_000_000, "output_tokens": 0},
+            )
+        )
+        db.flush()
+        rows = {r["project"]: r for r in _get_json(f"{url}/api/project-costs?days=1")}
+        assert rows["p1"]["cost_usd"] == pytest.approx(10.0)
+        assert rows["p1"]["pricing_models"] == ["claude-fable-5-1"]
+        assert rows["p2"]["cost_usd"] == pytest.approx(2.0)
+        assert rows["p2"]["pricing_models"] == ["claude-sonnet-5"]

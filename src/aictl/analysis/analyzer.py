@@ -402,9 +402,15 @@ class SessionAnalyzer:
                 for action in reversed(turn.actions):
                     if action.kind == ActionKind.TOOL_USE and action.name == tool_name and action.duration_ms == 0:
                         action.duration_ms = round((event.ts - action.ts) * 1000)
-                        result = detail.get("result", detail.get("output", ""))
-                        if isinstance(result, str):
-                            action.output_summary = result[:200]
+                        # Claude Code sends the tool output as ``tool_response``
+                        # (structured or string); ``result``/``output`` are
+                        # legacy/synthetic spellings.
+                        result = detail.get("tool_response")
+                        if result is None:
+                            result = detail.get("result", detail.get("output", ""))
+                        if not isinstance(result, str):
+                            result = json.dumps(result, default=str)
+                        action.output_summary = result[:200]
                         break
 
         elif hook_name == "PreCompact":

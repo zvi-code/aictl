@@ -19,12 +19,14 @@ from __future__ import annotations
 
 import dataclasses
 import email.utils
+import gzip
 import hashlib
 import json
 import logging
 import sys
 import threading
 import time
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -488,6 +490,15 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         session_id = data.get("session_id", "")
         cwd = data.get("cwd", "")
 
+        if data.get("_aictl_verify"):
+            # `aictl hooks verify` pings every event with a synthetic payload
+            # (session_id "aictl-verify"). It only needs the HTTP round-trip;
+            # persisting it would create a phantom session in every session
+            # list and skew analytics.
+            logger.debug("Hook verify ping received: %s", event_name)
+            self._json_response_raw(b'{"ok":true,"verify":true}')
+            return
+
         # Derive tool from explicit field, or session_id pattern "tool:pid:ts",
         # or fall back to "claude-code" (the most common hook source).
         tool = data.get("tool", "") or _tool_from_hook_source(data)
@@ -587,9 +598,12 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                             daemon=True,
                             name=f"git-attr-{session_id[:8]}",
                         ).start()
-            elif event_name in ("PreToolUse", "PostToolUse"):
+            elif event_name in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
+                # Claude Code fires PostToolUse only on success; failures
+                # arrive as PostToolUseFailure with an ``error`` field.
                 tool_name = detail.get("tool_name", "")
                 tool_use_id = detail.get("tool_use_id", "")
+                failed = event_name == "PostToolUseFailure" or bool(detail.get("is_error"))
                 if tool_name:
                     if event_name == "PreToolUse":
                         # Store the invocation (duration unknown yet).
@@ -629,7 +643,11 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                                 for k in stale:
                                     del self.server.pending_tool_use[k]
                     else:
-                        # PostToolUse: compute duration and update existing row.
+                        # PostToolUse / PostToolUseFailure: compute duration
+                        # and update the existing row.
+                        is_err = 1 if failed else 0
+                        raw_result = detail.get("tool_response") or detail.get("result") or detail.get("error") or ""
+                        result = str(raw_result)[:500]
                         pending = None
                         if tool_use_id:
                             with self.server.pending_tool_use_lock:
@@ -637,8 +655,6 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                         if pending is not None:
                             pre_ts, dk, input_val = pending
                             duration_ms = (ts - pre_ts) * 1000
-                            is_err = 1 if detail.get("is_error") else 0
-                            result = str(detail.get("tool_response", detail.get("result", "")))[:500]
                             db.update_tool_invocation_duration(dk, duration_ms, is_err, result)
                             if not is_err:
                                 file_write = _extract_file_write_row(
@@ -661,15 +677,15 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                                     session_id=session_id,
                                     tool=tool,
                                     tool_name=tool_name,
-                                    is_error=1 if detail.get("is_error") else 0,
+                                    is_error=is_err,
                                     duration_ms=0,
                                     input=input_val,
-                                    result_summary=str(detail.get("tool_response", detail.get("result", "")))[:500],
+                                    result_summary=result,
                                     source="hook",
                                     source_event_id=tool_use_id,
                                 )
                             )
-                            if not detail.get("is_error"):
+                            if not is_err:
                                 file_write = _extract_file_write_row(
                                     ts=ts,
                                     session_id=session_id,
@@ -709,12 +725,15 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
     def _read_post_otlp(self, signal: str, max_size: int = 2_000_000) -> dict | None:
         """Read OTLP POST body, auto-detecting JSON vs protobuf."""
         transfer_encoding = self.headers.get("Transfer-Encoding", "")
-        content_length = 0
         try:
             if "chunked" in transfer_encoding.lower():
                 body = self._read_chunked_body(max_size)
             else:
-                content_length = int(self.headers.get("Content-Length", 0))
+                # Shared validator: a negative/garbage Content-Length is a 400,
+                # not an rfile.read(-N) that blocks until the socket timeout.
+                content_length = self._content_length()
+                if content_length is None:
+                    return None
                 if content_length > max_size:
                     self.send_error(413, "Payload too large")
                     return None
@@ -726,6 +745,22 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self.server.otel_receiver.stats.errors += 1
             self.send_error(400, "Read error")
             return None
+
+        # OTLP exporters honour OTEL_EXPORTER_OTLP_COMPRESSION=gzip (often set
+        # org-wide); a compressed body used to fail json.loads and be dropped
+        # as a 400, or worse decode as an empty protobuf and return 200.
+        encoding = self.headers.get("Content-Encoding", "").lower()
+        if "gzip" in encoding or "deflate" in encoding:
+            try:
+                decoder = gzip.decompress if "gzip" in encoding else zlib.decompress
+                body = decoder(body)
+            except (OSError, EOFError, zlib.error):
+                self.server.otel_receiver.stats.errors += 1
+                self.send_error(400, "Bad Content-Encoding payload")
+                return None
+            if len(body) > max_size:
+                self.send_error(413, "Payload too large")
+                return None
 
         content_type = self.headers.get("Content-Type", "")
 
@@ -805,6 +840,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             receiver = self.server.otel_receiver
             events = receiver.parse_logs(data)
             db = self._db
+            requests: list = []
+            invocations: list = []
             if db and events:
                 db.append_events(events)
                 # Extract and persist structured request/invocation data
@@ -821,8 +858,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             logger.debug(
                 "OTel logs received: %d events, %d requests, %d invocations",
                 len(events),
-                len(requests) if events else 0,
-                len(invocations) if events else 0,
+                len(requests),
+                len(invocations),
             )
         except Exception:
             logger.exception("Error processing OTel logs")

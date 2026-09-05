@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from ...data.schema import metric_name as M
+from ...fsutil import MAX_SCAN_DIRS, safe_walk
+from ...platforms import tool_hint_for_path as _tool_hint_for_path
 from ..config import MonitorConfig
 from . import BaseCollector
 
@@ -98,14 +100,12 @@ class StructuredTelemetryCollector(BaseCollector):
         for root in self.config.state_paths:
             if not root.exists():
                 continue
-            root_depth = len(root.parts)
-            for current_root, dir_names, file_names in os.walk(root):
-                current_path = Path(current_root)
-                depth = len(current_path.parts) - root_depth
-                if depth >= 4:
-                    dir_names[:] = []
-                else:
-                    dir_names[:] = [name for name in dir_names if name not in self.config.ignored_dir_names]
+            # safe_walk: per-directory error handling (one unreadable
+            # subdirectory no longer aborts the whole root every interval),
+            # depth cap, pruned dirs and the global MAX_SCAN_DIRS guard.
+            for current_path, _dir_names, file_names in safe_walk(
+                root, prune_dirs=self.config.ignored_dir_names, max_depth=4, max_dirs=MAX_SCAN_DIRS
+            ):
                 for filename in file_names:
                     lowered = filename.lower()
                     if not lowered.endswith(_INTERESTING_SUFFIXES):
@@ -318,6 +318,3 @@ def _extract_otel_span_tokens(payload: Any) -> tuple[int, int] | None:
                     return (int(ev_attrs.get(in_key, 0) or 0), int(ev_attrs.get(out_key, 0) or 0))
 
     return None
-
-
-from ...platforms import tool_hint_for_path as _tool_hint_for_path

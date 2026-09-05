@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'preact/hooks';
 import { html } from 'htm/preact';
-import { fmtK, fmtTok, fmtSz, fmtRate, fmtPct, esc, liveTokenTotal, resolveColor } from '../utils.js';
+import { fmtK, fmtTok, fmtSz, fmtRate, fmtPct, esc, liveTokenTotal, resolveColorOrMuted } from '../utils.js';
 import ProcRow from './ProcRow.js';
 
 // ─── TinySparkline ─────────────────────────────────────────────
@@ -17,7 +17,7 @@ export function TinySparkline({label, data, color}) {
     const max = Math.max(...vals) * 1.1 || 1;
     const step = w / (vals.length - 1);
     ctx.beginPath();
-    ctx.strokeStyle = resolveColor(color, '#94a3b8');
+    ctx.strokeStyle = resolveColorOrMuted(color);
     ctx.lineWidth = 1.5 * (window.devicePixelRatio||1);
     vals.forEach((v,i)=>{
       const x = i * step, y = h - (v / max) * h * 0.85;

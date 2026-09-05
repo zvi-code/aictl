@@ -19,10 +19,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .._hook_owner import _tag_hooks
+from .._hook_owner import merge_aictl_hooks
 from ..resolver import Resolved
-from ..utils import emit_file, merge_json_block
+from ..utils import emit_file, read_json_or_fail
 from ._helpers import (
+    canonical_hook_rules,
     emit_capabilities,
     emit_ignores,
     emit_mcp_servers,
@@ -94,15 +95,20 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
     emit_mcp_servers(root / ".vscode" / "mcp.json", "servers", resolved, dry_run, results)
 
     # --- Hooks → .github/hooks/hooks.json (copilot-only) ---
+    # Same per-event merge as the Claude/Gemini settings emitters: prior
+    # aictl rules stripped from every event, user rules under the same event
+    # kept, ours appended. (merge_json_block replaced whole lists, which
+    # clobbered user entries and never cleaned up removed events.)
     if resolved.hooks:
         fp = gh / "hooks" / "hooks.json"
-        tagged = _tag_hooks({e: list(rules) for e, rules in resolved.hooks.items()})
-        emit_file(
-            fp,
-            merge_json_block(fp, "hooks", tagged) if not dry_run else json.dumps({"hooks": tagged}, indent=2) + "\n",
-            dry_run,
-            results,
-        )
+        new_rules = canonical_hook_rules(resolved.hooks)
+        if dry_run:
+            content = json.dumps({"hooks": merge_aictl_hooks({}, new_rules)}, indent=2) + "\n"
+        else:
+            existing = read_json_or_fail(fp)
+            existing["hooks"] = merge_aictl_hooks(existing.get("hooks", {}), new_rules)
+            content = json.dumps(existing, indent=2) + "\n"
+        emit_file(fp, content, dry_run, results)
 
     emit_ignores(gh / "copilot-ignore", resolved, dry_run, results)
 

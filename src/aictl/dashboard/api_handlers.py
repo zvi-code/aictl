@@ -15,6 +15,7 @@ import time
 from collections import Counter
 from datetime import datetime, timezone
 
+from ..data.model_pricing import resolve_pricing
 from ..data.token_usage import TokenUsage
 from ..tools import compute_token_budget
 from .models import _slim_agent_teams
@@ -638,7 +639,13 @@ class _APIHandlersMixin:
         """Return installed hook health and recent hook activity."""
         from .hooks_status import collect_hooks_status
 
-        self._json_response(collect_hooks_status(self._db, self.server.root))
+        # Pass the serving port so hooks installed against another port are
+        # flagged instead of showing as "configured" with 0 events forever.
+        try:
+            server_port = int(self.server.server_address[1])
+        except (AttributeError, IndexError, TypeError, ValueError):
+            server_port = None
+        self._json_response(collect_hooks_status(self._db, self.server.root, server_port=server_port))
 
     def _serve_session_mcp_usage(self) -> None:
         """Return per-session MCP server usage.
@@ -944,18 +951,38 @@ class _APIHandlersMixin:
         days = int(self._qs_get("days", "7"))
         since = self._qs_float("since", time.time() - days * 86400)
 
-        _empty = lambda: {"sessions": 0, "input_tokens": 0, "output_tokens": 0, "daily": {}}
+        _empty = lambda: {
+            "sessions": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0.0,
+            "models": set(),
+            "daily": {},
+        }
         projects: dict[str, dict] = {}  # project -> aggregate
 
+        def _add_cost(p: dict, model: str | None, in_tok: int, out_tok: int) -> None:
+            # Price each session at ITS model's rate; unknown/missing models
+            # use the documented default and are labelled so in the response.
+            key, pricing = resolve_pricing(model)
+            p["cost_usd"] += pricing.cost_usd(in_tok, out_tok)
+            p["models"].add(key)
+
         # 1. Active sessions from correlator
-        snap = self.server.store.latest_snapshot()
-        if snap:
-            for s in snap.get("sessions") or []:
+        # ``store.snapshot`` is a property holding a DashboardSnapshot (this
+        # used to call a nonexistent ``latest_snapshot()`` and 500 on every
+        # request — nothing exercised the endpoint end-to-end).
+        snap = self.server.store.snapshot
+        if snap is not None:
+            for s in snap.sessions or []:
                 proj = s.get("project") or "(unknown)"
                 p = projects.setdefault(proj, _empty())
                 p["sessions"] += 1
-                p["input_tokens"] += s.get("exact_input_tokens") or 0
-                p["output_tokens"] += s.get("exact_output_tokens") or 0
+                in_tok = s.get("exact_input_tokens") or 0
+                out_tok = s.get("exact_output_tokens") or 0
+                p["input_tokens"] += in_tok
+                p["output_tokens"] += out_tok
+                _add_cost(p, s.get("model"), in_tok, out_tok)
 
         # 2. Historical session_end events from SQLite
         db = self._db
@@ -970,6 +997,7 @@ class _APIHandlersMixin:
                 out_tok = detail.get("output_tokens") or 0
                 p["input_tokens"] += in_tok
                 p["output_tokens"] += out_tok
+                _add_cost(p, detail.get("model"), in_tok, out_tok)
                 # Daily bucketing
                 day = datetime.fromtimestamp(ev.ts, tz=timezone.utc).strftime("%Y-%m-%d")
                 daily = p["daily"].setdefault(day, {"input_tokens": 0, "output_tokens": 0})
@@ -982,8 +1010,6 @@ class _APIHandlersMixin:
             projects.items(), key=lambda x: x[1]["input_tokens"] + x[1]["output_tokens"], reverse=True
         ):
             total = data["input_tokens"] + data["output_tokens"]
-            # Rough cost estimate: $3/Mtok input, $15/Mtok output (Opus-class)
-            cost_usd = data["input_tokens"] / 1e6 * 3.0 + data["output_tokens"] / 1e6 * 15.0
             daily = [{"date": d, **v} for d, v in sorted(data["daily"].items())]
             result.append(
                 {
@@ -992,7 +1018,11 @@ class _APIHandlersMixin:
                     "input_tokens": data["input_tokens"],
                     "output_tokens": data["output_tokens"],
                     "total_tokens": total,
-                    "cost_usd": round(cost_usd, 2),
+                    "cost_usd": round(data["cost_usd"], 2),
+                    # Which list-price rates produced cost_usd (model ids from
+                    # aictl.data.model_pricing). Sessions with no model are
+                    # priced at the default and show up as that id.
+                    "pricing_models": sorted(data["models"]),
                     "daily": daily,
                 }
             )

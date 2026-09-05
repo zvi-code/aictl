@@ -2,7 +2,8 @@ import { useContext } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../../context.js';
 import { fmtK, fmtPct, esc } from '../../utils.js';
-import { MODEL_WINDOWS, BASE_COMPONENTS, COMPACTION_PCT } from './helpers.js';
+import { BASE_COMPONENTS, COMPACTION_PCT } from './helpers.js';
+import { contextWindowFor } from '../../models.js';
 import FileHistoryButtons from './FileHistoryButtons.js';
 
 export default function ContextPanel({session}) {
@@ -11,7 +12,7 @@ export default function ContextPanel({session}) {
   const filesLoaded = session.files_loaded || [];
 
   const model = (s?.tool_configs || []).map(c => c.model).filter(Boolean)[0] || '';
-  const capacity = MODEL_WINDOWS[model] || 200000;
+  const capacity = contextWindowFor(model);
 
   const memEntries = (s && s.agent_memory) || [];
   const memTokens = memEntries.reduce((a, m) => a + (m.tokens || 0), 0);

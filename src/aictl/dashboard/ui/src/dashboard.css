@@ -6,6 +6,7 @@
   --cat-prompt: #c084fc; --cat-temp: #6b7280; --cat-runtime: #64748b; --cat-extensions: #818cf8;
   --model-5: #e879f9; --model-7: #67e8f9; --model-8: #a78bfa;
   --model-switch: #e879f9;
+  --vscode: #3794ff; /* VS Code brand blue, lightened for dark ground */
 }
 [data-theme="light"] {
   --bg: #f8fafc; --bg2: #ffffff; --bg3: #f1f5f9; --fg: #1e293b; --fg2: #64748b;
@@ -15,6 +16,7 @@
   --cat-prompt: #c084fc; --cat-temp: #6b7280; --cat-runtime: #64748b; --cat-extensions: #818cf8;
   --model-5: #e879f9; --model-7: #67e8f9; --model-8: #a78bfa;
   --model-switch: #d946ef;
+  --vscode: #007acc; /* VS Code brand blue */
 }
 /* Editorial — warm off-white, IBM Plex, brick-red accent.
  * Adapted from visualization/direction-c.jsx ("Editorial Inspector"). */
@@ -26,6 +28,7 @@
   --cat-prompt: #6e4fb6; --cat-temp: #8a7f73; --cat-runtime: #5b6e7a; --cat-extensions: #2e5ba6;
   --model-5: #6e4fb6; --model-7: #2e5ba6; --model-8: #a6391c;
   --model-switch: #a6391c;
+  --vscode: #2e5ba6;
   /* Editorial-only extras (consumed by override layer at end of file). */
   --accent-soft: #f6e6e0;
   --green-soft: #e6efe3;
@@ -43,6 +46,7 @@
     --cat-prompt: #c084fc; --cat-temp: #6b7280; --cat-runtime: #64748b; --cat-extensions: #818cf8;
     --model-5: #e879f9; --model-7: #67e8f9; --model-8: #a78bfa;
     --model-switch: #d946ef;
+    --vscode: #007acc;
   }
 }
 /* ─── Typography + spacing design tokens ─────────────────────── */

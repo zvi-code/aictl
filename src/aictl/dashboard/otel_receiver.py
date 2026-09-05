@@ -14,6 +14,7 @@ import logging
 import time
 from dataclasses import dataclass
 
+from ..data.token_usage import TokenUsage
 from ..storage import EventRow, RequestRow, ToolInvocationRow
 from ..storage import Sample as _Sample
 
@@ -61,11 +62,17 @@ API_REQUEST_EVENTS = frozenset(
 
 API_ERROR_EVENTS = frozenset(
     {
-        "claude_code.api_error",
+        "api_error",  # Claude Code (current format — unqualified, like api_request)
+        "claude_code.api_error",  # Claude Code (legacy/qualified format)
         "copilot_chat.api_error",
         "codex.api_error",
     }
 )
+
+# OTLP AggregationTemporality enum: 1 = DELTA, 2 = CUMULATIVE. JSON encodes
+# it either as the int or the enum name depending on the exporter.
+_CUMULATIVE_TEMPORALITY = frozenset({2, "2", "AGGREGATION_TEMPORALITY_CUMULATIVE"})
+_MAX_CUMULATIVE_SERIES = 20_000
 
 # OTel log events that represent a *completed* tool invocation — they carry
 # ``tool_name`` + ``duration_ms`` + ``tool_parameters``.  ``tool_decision`` is
@@ -131,8 +138,33 @@ class OtelReceiver:
 
     def __init__(self) -> None:
         self.stats = OtelStats()
+        # Last seen value per cumulative-Sum series, for delta conversion.
+        self._cumulative_last: dict[tuple, float] = {}
 
     # ── Metrics ───────────────────────────────────────────────
+
+    def _cumulative_to_delta(self, tool: str, name: str, tags: dict, value: float) -> float:
+        """Convert a CUMULATIVE Sum point to the increment since its previous point.
+
+        Stored samples are summed downstream (per-session token totals, cost
+        charts), which is only correct for DELTA temporality. Claude Code
+        exports delta by default, but Copilot, Gemini and Codex SDKs default
+        to cumulative, and ``OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE
+        =cumulative`` flips Claude Code too — a 10k-token session alive for an
+        hour used to be stored as ~60 growing rows summing to ~300k.
+
+        The first point of a series is stored as-is (it is the total since the
+        process started); a value below the previous one means the process
+        restarted, so the new value is again a fresh total.
+        """
+        key = (tool, name, tuple(sorted((k, str(v)) for k, v in tags.items() if k != "otel_metric")))
+        last = self._cumulative_last.get(key)
+        if len(self._cumulative_last) >= _MAX_CUMULATIVE_SERIES and key not in self._cumulative_last:
+            self._cumulative_last.clear()  # pathological cardinality; start over
+        self._cumulative_last[key] = value
+        if last is None or value < last:
+            return value
+        return value - last
 
     def parse_metrics(self, body: dict) -> list[_Sample]:
         """Parse OTLP JSON ``/v1/metrics`` payload."""
@@ -148,6 +180,10 @@ class OtelReceiver:
                 for metric in _iter_otel_dicts(sm, "metrics"):
                     name = metric.get("name", "")
                     mapped = METRIC_MAP.get(name, f"otel.{name}")
+                    sum_body = metric.get("sum")
+                    cumulative = (
+                        isinstance(sum_body, dict) and sum_body.get("aggregationTemporality") in _CUMULATIVE_TEMPORALITY
+                    )
 
                     for dp in _extract_otel_data_points(metric, self.stats):
                         ts = _nano_to_epoch(dp.get("timeUnixNano", "0"))
@@ -157,6 +193,9 @@ class OtelReceiver:
                         tags["otel_metric"] = name
                         _promote_session_id(tags, resource_attrs)
                         _promote_pid(tags, resource_attrs)
+                        if cumulative:
+                            value = self._cumulative_to_delta(tool, name, tags, value)
+                            tags["otel_temporality"] = "cumulative"
                         samples.append(
                             _Sample(
                                 ts=ts,
@@ -245,6 +284,7 @@ class OtelReceiver:
             if event_name not in API_REQUEST_EVENTS:
                 continue
             d = e.detail if isinstance(e.detail, dict) else {}
+            usage = TokenUsage.from_dict(d)
             # e.ts is derived from OTel timeUnixNano — it IS the embedded
             # source timestamp, so pass it as source_ts for correct dedup.
             requests.append(
@@ -255,15 +295,10 @@ class OtelReceiver:
                     pid=e.pid or int(d.get("pid", 0) or 0),
                     tool=e.tool,
                     model=(d.get("gen_ai.request.model") or d.get("gen_ai.response.model") or d.get("model", "")),
-                    # TODO(#token-usage): migrate to TokenUsage.from_dict
-                    input_tokens=int(d.get("gen_ai.usage.input_tokens", d.get("input_tokens", 0)) or 0),
-                    output_tokens=int(d.get("gen_ai.usage.output_tokens", d.get("output_tokens", 0)) or 0),
-                    cache_read_tokens=int(
-                        d.get("gen_ai.usage.cache_read_input_tokens", d.get("cache_read_tokens", 0)) or 0
-                    ),
-                    cache_creation_tokens=int(
-                        d.get("gen_ai.usage.cache_creation_input_tokens", d.get("cache_creation_tokens", 0)) or 0
-                    ),
+                    input_tokens=usage.input,
+                    output_tokens=usage.output,
+                    cache_read_tokens=usage.cache_read,
+                    cache_creation_tokens=usage.cache_write,
                     cost_usd=float(d.get("cost_usd", 0) or 0),
                     duration_ms=float(d.get("duration_ms", 0) or 0),
                     finish_reason=_coerce_str(d.get("gen_ai.response.finish_reasons", "")),
@@ -645,13 +680,29 @@ def _nano_to_epoch(nano_str: str | int) -> float:
 
 
 def _extract_otel_value(data_point: dict) -> float:
-    """Extract numeric value from an OTLP data point."""
+    """Extract a numeric value from an OTLP data point.
+
+    Sum/gauge points carry ``asInt``/``asDouble`` (``asInt`` is a string in
+    OTLP JSON). Histogram/summary points carry ``sum`` + ``count`` instead;
+    for those the stored scalar is the mean over the export interval, which
+    is the meaningful per-sample value for duration histograms such as
+    ``gen_ai.client.operation.duration``. Storing 0.0 for them (the old
+    behavior) made every Copilot duration metric read as zero while the
+    receiver's health counters stayed green.
+    """
     for key in ("asInt", "asDouble"):
         if key in data_point:
             try:
                 return float(data_point[key])
             except (ValueError, TypeError):
                 pass
+    if "sum" in data_point and "count" in data_point:
+        try:
+            total = float(data_point["sum"])
+            count = float(data_point["count"])
+        except (ValueError, TypeError):
+            return 0.0
+        return total / count if count > 0 else 0.0
     return 0.0
 
 

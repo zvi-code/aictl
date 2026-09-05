@@ -610,6 +610,7 @@ class AgentState:
     session_id: str
     state: str = "active"
     task: str = ""
+    agent_type: str = ""  # Claude Code SubagentStart ``agent_type`` (Explore, Plan, general-purpose, ...)
     started_at: float = 0.0
     ended_at: float | None = None
     parent_agent_id: str = ""  # stub: populated when Claude Code emits parent_conversation_id
@@ -850,10 +851,15 @@ class EntityStateTracker:
         agent_id = detail.get("agent_id") or detail.get("subagent_id") or f"agent-{len(session.agents)}"
         # Future-proof: capture parent_conversation_id when Claude Code adds it
         parent_id = detail.get("parent_conversation_id", "")
+        # agent_type is the useful human label ("Explore", "Plan",
+        # "general-purpose"); it used to be dropped so agents showed as UUIDs.
+        agent_type = str(detail.get("agent_type") or "")
         session.agents[agent_id] = AgentState(
             agent_id=agent_id,
             session_id=session.session_id,
             state="active",
+            task=str(detail.get("task") or detail.get("description") or agent_type),
+            agent_type=agent_type,
             started_at=ts,
             parent_agent_id=parent_id,
         )
