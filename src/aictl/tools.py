@@ -63,8 +63,8 @@ class ToolMeta:
 
 TOOL_TAXONOMY: dict[str, ToolMeta] = {
     # ── Anthropic ──
-    "claude-code": ToolMeta("anthropic", ("cli", "vscode"), "claude-sonnet-4"),
-    "claude-desktop": ToolMeta("anthropic", ("desktop",), "claude-sonnet-4"),
+    "claude-code": ToolMeta("anthropic", ("cli", "vscode"), "claude-opus-5"),
+    "claude-desktop": ToolMeta("anthropic", ("desktop",), "claude-opus-5"),
     # ── GitHub / Microsoft ──
     "copilot": ToolMeta("github", ("vscode", "jetbrains", "cli")),
     "copilot-vscode": ToolMeta("github", ("vscode",)),

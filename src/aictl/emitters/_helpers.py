@@ -13,7 +13,7 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
-from .._hook_owner import _is_aictl_hook, _tag_hooks
+from .._hook_owner import canonicalize_hook_events, merge_aictl_hooks
 from ..resolver import Resolved
 from ..utils import (
     compose_with_overlay,
@@ -142,36 +142,16 @@ def emit_settings(
     has_data = resolved.hooks or resolved.settings or resolved.permissions or resolved.env
     if not has_data:
         return
-    existing = _load_settings(fp, force=force) if not dry_run else {}
-    # Per-event hook merge: always strip prior aictl-managed entries from
-    # *every* event (so a hook removed from .context.toml is cleaned up on
-    # redeploy), then append our freshly-tagged rules per event. User hooks
-    # (without the marker) are preserved.
-    existing_hooks = existing.get("hooks", {})
-    if not isinstance(existing_hooks, dict):
-        existing_hooks = {}
-    tagged = _tag_hooks({e: list(rules) for e, rules in (resolved.hooks or {}).items()})
-    touched = False
-    for event, current in list(existing_hooks.items()):
-        if not isinstance(current, list):
-            continue
-        cleaned = [h for h in current if not _is_aictl_hook(h)]
-        if cleaned != current:
-            touched = True
-        if cleaned:
-            existing_hooks[event] = cleaned
-        else:
-            del existing_hooks[event]
-    for event, new_rules in tagged.items():
-        current = existing_hooks.get(event, [])
-        if not isinstance(current, list):
-            current = []
-        current.extend(new_rules)
-        existing_hooks[event] = current
-        touched = True
-    if existing_hooks:
-        existing["hooks"] = existing_hooks
-    elif touched and "hooks" in existing:
+    existing = read_json_or_fail(fp, force=force) if not dry_run else {}
+    # Per-event hook merge (shared with `aictl hooks install`): strip prior
+    # aictl-managed entries from *every* event (so a hook removed from
+    # .context.toml is cleaned up on redeploy), keep user hooks, append our
+    # freshly-tagged rules. Event keys are canonicalised so a ``preToolUse``
+    # typo in .context.toml deploys as ``PreToolUse`` and actually fires.
+    merged = merge_aictl_hooks(existing.get("hooks", {}), canonical_hook_rules(resolved.hooks or {}))
+    if merged:
+        existing["hooks"] = merged
+    elif "hooks" in existing:
         del existing["hooks"]
     if resolved.permissions:
         existing.setdefault("permissions", {})["allow"] = resolved.permissions
@@ -182,15 +162,14 @@ def emit_settings(
     emit_file(fp, json.dumps(existing, indent=2) + "\n", dry_run, results)
 
 
-def _load_settings(path: Path, *, force: bool = False) -> dict:
-    """Load existing settings JSON, preserving unmanaged keys.
+def canonical_hook_rules(hooks: dict[str, list]) -> dict[str, list]:
+    """Copy *hooks* with event keys mapped to the tools' PascalCase enum names."""
+    # Lazy import: commands.integrations owns the event catalogues and pulls
+    # in click; emitters must stay importable without it at module load.
+    from ..commands.integrations import GEMINI_HOOK_EVENTS, HOOK_EVENTS, VSCODE_HOOK_EVENTS
 
-    Raises :class:`aictl.utils.CorruptJSONError` when the file exists but is
-    malformed and *force* is False.  When *force* is True a timestamped
-    ``.bak`` of the corrupted original is written and an empty dict is
-    returned so the caller can proceed with a clean write.
-    """
-    return read_json_or_fail(path, force=force)
+    known = [*HOOK_EVENTS, *GEMINI_HOOK_EVENTS, *VSCODE_HOOK_EVENTS]
+    return canonicalize_hook_events({e: list(rules) for e, rules in hooks.items()}, known)
 
 
 def emit_ignores(

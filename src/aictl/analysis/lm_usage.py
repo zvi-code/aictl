@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from ..data.token_usage import TokenUsage
+
 if TYPE_CHECKING:
     from ..storage import HistoryDB
 
@@ -58,7 +60,7 @@ def _extension_id(detail: dict) -> str:
     return ""
 
 
-def session_lm_usage(db: "HistoryDB", session_id: str, limit: int = 2000) -> dict:
+def session_lm_usage(db: HistoryDB, session_id: str, limit: int = 2000) -> dict:
     """Return per-extension LM token usage for *session_id*.
 
     Output shape:
@@ -82,24 +84,10 @@ def session_lm_usage(db: "HistoryDB", session_id: str, limit: int = 2000) -> dic
             continue
         detail = ev.detail if isinstance(ev.detail, dict) else {}
         ext = _extension_id(detail) or "(unknown)"
-        in_tok = _num(
-            detail.get("gen_ai.usage.input_tokens")
-            or detail.get("gen_ai.usage.prompt_tokens")
-            or detail.get("input_tokens")
-            or detail.get("prompt_tokens")
-        )
-        out_tok = _num(
-            detail.get("gen_ai.usage.output_tokens")
-            or detail.get("gen_ai.usage.completion_tokens")
-            or detail.get("output_tokens")
-            or detail.get("completion_tokens")
-        )
-        model = (
-            detail.get("gen_ai.request.model")
-            or detail.get("model")
-            or detail.get("language_model.model")
-            or ""
-        )
+        usage = TokenUsage.from_dict(detail)  # one alias table for every spelling
+        in_tok = usage.input
+        out_tok = usage.output
+        model = detail.get("gen_ai.request.model") or detail.get("model") or detail.get("language_model.model") or ""
         entry = by_ext.setdefault(
             ext,
             {

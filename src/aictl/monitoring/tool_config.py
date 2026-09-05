@@ -17,6 +17,7 @@ import dataclasses
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -201,34 +202,83 @@ def _detect_otel_from_vscode_settings(settings: dict) -> OTelConfig:
 
 
 def _detect_otel_from_codex_toml(data: dict) -> OTelConfig:
-    """Extract OTel config from Codex config.toml."""
+    """Extract OTel config from Codex config.toml.
+
+    Codex's schema is ``[otel] exporter = none | { otlp-http = { endpoint,
+    protocol } } | { otlp-grpc = { endpoint } }`` (plus ``metrics_exporter``
+    and ``trace_exporter`` in the same shape). There are no ``enabled`` /
+    ``endpoint`` keys — an earlier aictl wrote and then "detected" those,
+    reporting OTel active while Codex exported nothing.
+    """
     otel_section = data.get("otel", {})
-    if not otel_section:
-        return OTelConfig(source="codex-toml")
-    return OTelConfig(
-        enabled=bool(otel_section.get("enabled", False)),
-        exporter=str(otel_section.get("exporter", "")),
-        endpoint=str(otel_section.get("endpoint", "")),
-        file_path=str(otel_section.get("outfile", "")),
-        source="codex-toml",
-    )
+    otel = OTelConfig(source="codex-toml")
+    if not isinstance(otel_section, dict) or not otel_section:
+        return otel
+    exporter = otel_section.get("exporter") or otel_section.get("metrics_exporter")
+    if isinstance(exporter, dict) and exporter:
+        kind, spec = next(iter(exporter.items()))
+        otel.enabled = True
+        otel.exporter = str(kind)
+        if isinstance(spec, dict):
+            otel.endpoint = str(spec.get("endpoint", ""))
+    elif isinstance(exporter, str) and exporter and exporter != "none":
+        otel.enabled = True
+        otel.exporter = exporter
+    otel.capture_content = bool(otel_section.get("log_user_prompt", False))
+    return otel
+
+
+def _read_aictl_env_file() -> dict[str, str]:
+    """Env vars from ``~/.config/aictl/env.sh`` (``export K=V`` lines).
+
+    The dashboard daemon is often launched from a GUI/service context whose
+    environment never sourced the shell profile, so the process env alone
+    can't tell whether ``aictl enable`` configured Claude Code's exporter.
+    """
+    path = Path.home() / ".config" / "aictl" / "env.sh"
+    if not path.is_file():
+        return {}
+    out: dict[str, str] = {}
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            m = re.match(r"^export\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line.strip())
+            if m:
+                out[m.group(1)] = m.group(2).strip().strip("'\"")
+    except OSError:
+        return {}
+    return out
 
 
 def _detect_otel_from_claude() -> OTelConfig:
-    """Detect Claude Code telemetry availability."""
-    otel = OTelConfig(source="claude-stats")
-    # Claude Code exposes stats-cache.json as built-in telemetry
+    """Detect whether Claude Code is configured to export OpenTelemetry.
+
+    Claude Code exports only when ``CLAUDE_CODE_ENABLE_TELEMETRY=1`` and an
+    ``OTEL_*_EXPORTER`` is set; the endpoint/protocol come from the standard
+    ``OTEL_EXPORTER_OTLP_*`` variables. The mere presence of
+    ``~/.claude/stats-cache.json`` (Claude's local usage cache, written on
+    every install) used to count as "OTel enabled, built-in" — a green badge
+    on every machine regardless of export configuration. The cache path is
+    still reported as ``file_path`` so the Tool Config card can show it.
+    """
+    env = {**_read_aictl_env_file(), **os.environ}
+    otel = OTelConfig(source="claude-env")
     stats = claude_global_dir() / "stats-cache.json"
     if stats.is_file():
-        otel.enabled = True
-        otel.exporter = "built-in"
         otel.file_path = str(stats)
-    # Check for ANTHROPIC_LOG_DIR env var
-    log_dir = os.environ.get("ANTHROPIC_LOG_DIR", "")
-    if log_dir:
+    telemetry_on = env.get("CLAUDE_CODE_ENABLE_TELEMETRY", "").strip().lower() in ("1", "true")
+    metrics_exp = env.get("OTEL_METRICS_EXPORTER", "").strip().lower()
+    logs_exp = env.get("OTEL_LOGS_EXPORTER", "").strip().lower()
+    active_exporters = [e for e in (metrics_exp, logs_exp) if e and e != "none"]
+    if telemetry_on and active_exporters:
         otel.enabled = True
-        otel.source = "env-var"
-        otel.file_path = log_dir
+        protocol = env.get("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc").strip().lower()
+        if "otlp" in active_exporters:
+            otel.exporter = "otlp-grpc" if protocol == "grpc" else "otlp-http"
+        else:
+            otel.exporter = active_exporters[0]  # console / prometheus
+        otel.endpoint = env.get("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+        otel.capture_content = env.get("OTEL_LOG_USER_PROMPTS", "").strip() in ("1", "true")
+        otel.source = "env-var" if "CLAUDE_CODE_ENABLE_TELEMETRY" in os.environ else "aictl-env-file"
     return otel
 
 
@@ -238,7 +288,12 @@ def _generate_hints(cfg: ToolConfig) -> list[str]:
 
     # OTel hints
     if not cfg.otel.enabled:
-        if cfg.tool == "copilot":
+        if cfg.tool == "claude-code":
+            hints.append(
+                "OTel export not configured — run `aictl enable` (sets CLAUDE_CODE_ENABLE_TELEMETRY "
+                "+ OTEL_*_EXPORTER=otlp) and restart Claude Code"
+            )
+        elif cfg.tool == "copilot":
             hints.append(
                 "OTel disabled — enable for verified token counts: "
                 'set "github.copilot.chat.otel.enabled": true in VS Code settings'
@@ -281,6 +336,9 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
     # Global settings
     settings = _read_json(claude_global_dir() / "settings.json")
     if settings:
+        # ``model`` is the documented settings key (/model saves here);
+        # ANTHROPIC_MODEL in the environment overrides any file.
+        cfg.model = str(os.environ.get("ANTHROPIC_MODEL") or settings.get("model") or "")
         cfg.settings["effortLevel"] = settings.get("effortLevel", "default")
         for k in ("env", "hooks"):
             if k in settings:
@@ -306,6 +364,8 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
     proj_settings = _read_json(root / ".claude" / "settings.json")
     if proj_settings:
         cfg.settings["project_settings"] = "configured"
+        if not os.environ.get("ANTHROPIC_MODEL") and proj_settings.get("model"):
+            cfg.model = str(proj_settings["model"])  # shared project file overrides user file
         proj_perms = proj_settings.get("permissions")
         if isinstance(proj_perms, dict):
             cfg.settings["project_permissions"] = "configured"
@@ -622,8 +682,7 @@ _COPILOT_CONFIGURABLE_MODELS: list[tuple[str, str, str, str]] = [
         "github.copilot.selectedCompletionModel",
         "Inline completions",
         "default completion model",
-        "Currently selected inline-completion model. Change via "
-        "the “Change Completions Model” command in VS Code.",
+        "Currently selected inline-completion model. Change via the “Change Completions Model” command in VS Code.",
     ),
 ]
 

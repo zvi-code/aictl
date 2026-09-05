@@ -105,9 +105,6 @@ def disable(dry_run: bool, since_ts: str | None, force: bool) -> None:
     ctx = click.get_current_context()
     for scope in ("user", "project"):
         try:
-            sub_args = ["--scope", scope]
-            if force:
-                sub_args.append("--force")
             ctx.invoke(hooks_uninstall, scope=scope, force=force, dry_run=False)
             actions.append(f"hooks uninstall --scope {scope}")
         except SystemExit:

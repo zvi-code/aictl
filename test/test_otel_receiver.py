@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import urllib.error
 import urllib.request
 
 import pytest
@@ -857,3 +858,199 @@ def test_hook_receiver_derives_tool_from_aictl_source(otel_server):
     events = db.query_events(since=0, until=time.time() + 3600, session_id="vscode-hook-sess")
     assert len(events) == 1
     assert events[0].tool == "copilot-vscode"
+
+
+def test_extract_value_histogram_uses_mean():
+    """Histogram/summary points carry sum+count, not asInt/asDouble. They used
+    to be stored as 0.0, so every Copilot duration metric read as zero."""
+    assert _extract_value({"sum": 300.0, "count": "3", "bucketCounts": ["1", "2"]}) == 100.0
+    assert _extract_value({"sum": "12", "count": 4}) == 3.0
+    assert _extract_value({"sum": 5.0, "count": 0}) == 0.0
+    assert _extract_value({"sum": "bad", "count": 1}) == 0.0
+    # asDouble still wins when both shapes are present
+    assert _extract_value({"asDouble": 7.0, "sum": 1.0, "count": 1}) == 7.0
+
+
+def test_extract_data_points_histogram_returned():
+    metric = {"name": "gen_ai.client.operation.duration", "histogram": {"dataPoints": [{"sum": 2.0, "count": "2"}]}}
+    pts = _extract_data_points(metric)
+    assert len(pts) == 1
+    assert _extract_value(pts[0]) == 1.0
+
+
+# ── Aggregation temporality ───────────────────────────────────────
+
+
+def _cumulative_sum_body(name: str, points: list[tuple[int, int]], service: str = "github-copilot-chat") -> dict:
+    """OTLP JSON metrics payload with a CUMULATIVE monotonic Sum."""
+    return {
+        "resourceMetrics": [
+            {
+                "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": service}}]},
+                "scopeMetrics": [
+                    {
+                        "metrics": [
+                            {
+                                "name": name,
+                                "sum": {
+                                    "aggregationTemporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                                    "isMonotonic": True,
+                                    "dataPoints": [
+                                        {
+                                            "timeUnixNano": str(ts * 1_000_000_000),
+                                            "asInt": str(val),
+                                            "attributes": [
+                                                {"key": "gen_ai.token.type", "value": {"stringValue": "input"}}
+                                            ],
+                                        }
+                                        for ts, val in points
+                                    ],
+                                },
+                            }
+                        ]
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def test_cumulative_sum_is_converted_to_delta_per_series():
+    """Copilot/Gemini/Codex SDKs export CUMULATIVE sums (running totals every
+    interval). Storing them verbatim over-counted by the export count: a
+    10k-token session alive for an hour summed to ~300k."""
+    r = OtelReceiver()
+    first = r.parse_metrics(_cumulative_sum_body("gen_ai.client.token.usage", [(100, 1000)]))
+    second = r.parse_metrics(_cumulative_sum_body("gen_ai.client.token.usage", [(160, 1500)]))
+    third = r.parse_metrics(_cumulative_sum_body("gen_ai.client.token.usage", [(220, 1500)]))
+    assert [s.value for s in first + second + third] == [1000.0, 500.0, 0.0]
+    assert first[0].tags["otel_temporality"] == "cumulative"
+    assert sum(s.value for s in first + second + third) == 1500.0  # equals the true total
+
+
+def test_cumulative_reset_starts_fresh_total():
+    r = OtelReceiver()
+    r.parse_metrics(_cumulative_sum_body("gen_ai.client.token.usage", [(100, 5000)]))
+    after_restart = r.parse_metrics(_cumulative_sum_body("gen_ai.client.token.usage", [(200, 300)]))
+    assert after_restart[0].value == 300.0  # counter went backwards → process restarted
+
+
+def test_delta_sum_is_stored_verbatim():
+    body = _cumulative_sum_body("claude_code.token.usage", [(100, 1000)], service="claude-code")
+    body["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]["sum"]["aggregationTemporality"] = 1  # DELTA
+    r = OtelReceiver()
+    a = r.parse_metrics(body)
+    b = r.parse_metrics(body)
+    assert [s.value for s in a + b] == [1000.0, 1000.0]
+    assert "otel_temporality" not in a[0].tags
+
+
+# ── Unqualified api_error ─────────────────────────────────────────
+
+
+def test_unqualified_api_error_is_recognised():
+    """Current Claude Code emits event names unqualified (api_request,
+    tool_result, api_error); only the legacy claude_code.api_error was listed."""
+    from aictl.dashboard.otel_receiver import API_ERROR_EVENTS
+
+    assert "api_error" in API_ERROR_EVENTS and "claude_code.api_error" in API_ERROR_EVENTS
+
+
+# ── Shared token alias table ──────────────────────────────────────
+
+
+def test_extract_requests_uses_shared_alias_table():
+    """extract_requests used to carry its own partial alias list; prompt/
+    completion spellings and camelCase never populated the request row."""
+    r = OtelReceiver()
+    ev = EventRow(
+        ts=100.0,
+        tool="copilot-vscode",
+        kind="otel:gen_ai.client.inference.operation.details",
+        detail={
+            "gen_ai.usage.prompt_tokens": "120",
+            "gen_ai.usage.completion_tokens": 30,
+            "gen_ai.usage.cache_read_input_tokens": 7,
+            "gen_ai.request.model": "gpt-5.4",
+        },
+        session_id="s1",
+    )
+    (req,) = r.extract_requests([ev])
+    assert (req.input_tokens, req.output_tokens, req.cache_read_tokens) == (120, 30, 7)
+
+
+# ── Content-Encoding: gzip ────────────────────────────────────────
+
+
+def test_gzip_encoded_metrics_body_is_accepted(otel_server):
+    """OTEL_EXPORTER_OTLP_COMPRESSION=gzip is common org-wide; a compressed
+    body used to fail json.loads and be dropped with a 400."""
+    import gzip
+
+    url = otel_server[0]
+    body = gzip.compress(json.dumps(_make_otlp_metrics("claude_code.token.usage", 77)).encode())
+    req = urllib.request.Request(
+        f"{url}/v1/metrics",
+        data=body,
+        headers={"Content-Type": "application/json", "Content-Encoding": "gzip"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+    status = json.loads(urllib.request.urlopen(f"{url}/api/otel-status", timeout=5).read())
+    assert status["metrics_received"] >= 1
+
+
+def test_negative_content_length_is_rejected_fast(otel_server):
+    url = otel_server[0]
+    req = urllib.request.Request(
+        f"{url}/v1/logs", data=b"{}", headers={"Content-Type": "application/json"}, method="POST"
+    )
+    req.add_unredirected_header("Content-Length", "-5")
+    try:
+        urllib.request.urlopen(req, timeout=5)
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 400
+    else:  # pragma: no cover
+        raise AssertionError("expected HTTP 400 for negative Content-Length")
+
+
+# ── Protobuf content-type end-to-end ──────────────────────────────
+
+
+def test_protobuf_metrics_body_is_decoded(otel_server):
+    """OTLP/HTTP protobuf is the default wire format for every OTel SDK; only
+    the JSON path had an end-to-end test, so the MessageToDict path (int64 →
+    string, enum names for temporality) was unguarded."""
+    pytest.importorskip("opentelemetry.proto")
+    from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportMetricsServiceRequest
+    from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
+    from opentelemetry.proto.metrics.v1.metrics_pb2 import AggregationTemporality, Metric, NumberDataPoint
+
+    req_msg = ExportMetricsServiceRequest()
+    rm = req_msg.resource_metrics.add()
+    rm.resource.attributes.append(KeyValue(key="service.name", value=AnyValue(string_value="claude-code")))
+    sm = rm.scope_metrics.add()
+    metric = Metric(name="claude_code.token.usage")
+    metric.sum.aggregation_temporality = AggregationTemporality.AGGREGATION_TEMPORALITY_DELTA
+    metric.sum.is_monotonic = True
+    dp = NumberDataPoint(time_unix_nano=1_700_000_000_000_000_000, as_int=321)
+    dp.attributes.append(KeyValue(key="type", value=AnyValue(string_value="input")))
+    metric.sum.data_points.append(dp)
+    sm.metrics.append(metric)
+
+    url, _srv, db = otel_server
+    req = urllib.request.Request(
+        f"{url}/v1/metrics",
+        data=req_msg.SerializeToString(),
+        headers={"Content-Type": "application/x-protobuf"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+    db.flush()
+    rows = db.query_samples(metric_prefix="otel.token", limit=10) if hasattr(db, "query_samples") else []
+    status = json.loads(urllib.request.urlopen(f"{url}/api/otel-status", timeout=5).read())
+    assert status["metrics_received"] >= 1
+    if rows:
+        assert rows[0].value == 321.0 and rows[0].tags.get("type") == "input"

@@ -81,27 +81,57 @@ class TestWindowsCallOperator:
     interpreter path. POSIX shells must NOT get the ``&`` prefix.
     """
 
-    def _cmd(self, *, is_windows: bool, exe: str) -> str:
+    def _rule(self, *, is_windows: bool, exe: str, **kw) -> dict:
         with (
             patch("aictl.commands.integrations.IS_WINDOWS", is_windows),
             patch("aictl.commands.integrations.sys.executable", exe),
         ):
-            config = _build_hook_config(8484, ["SessionStart"])
-        return config["SessionStart"][0]["hooks"][0]["command"]
+            config = _build_hook_config(8484, ["SessionStart"], **kw)
+        return config["SessionStart"][0]["hooks"][0]
 
-    def test_windows_prefixes_call_operator(self):
-        cmd = self._cmd(
+    def _cmd(self, *, is_windows: bool, exe: str, **kw) -> str:
+        return self._rule(is_windows=is_windows, exe=exe, **kw)["command"]
+
+    def test_windows_prefixes_call_operator_and_pins_powershell(self):
+        """The `&` only works in PowerShell, so the rule must also say
+        shell=powershell — Claude's default hook shell is bash (Git Bash)
+        even on Windows, where a leading `&` is a syntax error."""
+        rule = self._rule(
             is_windows=True,
             exe=r"C:\Users\First Last\AppData\Local\Programs\Python\Python312\python.exe",
         )
-        # Must start with the call operator followed by the quoted path.
+        cmd = rule["command"]
         assert cmd.startswith('& "C:\\Users\\First Last')
         assert '" -m aictl.hook_handler --event SessionStart' in cmd
+        assert rule["shell"] == "powershell"
+
+    def test_gemini_windows_has_no_call_operator(self):
+        """Gemini runs hooks through Node's shell (cmd.exe): plain quoted path."""
+        rule = self._rule(
+            is_windows=True,
+            exe=r"C:\Python312\python.exe",
+            event_map={"SessionStart": "SessionStart"},
+            matcher="*",
+            source_tool="gemini",
+        )
+        assert rule["command"].startswith('"C:\\Python312\\python.exe" -m aictl.hook_handler')
+        assert "shell" not in rule
+
+    def test_vscode_windows_has_no_call_operator(self):
+        from aictl.commands.integrations import _build_vscode_hook_config
+
+        with (
+            patch("aictl.commands.integrations.IS_WINDOWS", True),
+            patch("aictl.commands.integrations.sys.executable", r"C:\Python312\python.exe"),
+        ):
+            cfg = _build_vscode_hook_config(8484, ["SessionStart"], scope="user")
+        assert cfg["SessionStart"][0]["command"].startswith('"C:\\Python312\\python.exe" -m')
 
     def test_posix_has_no_call_operator(self):
-        cmd = self._cmd(is_windows=False, exe="/usr/bin/python3")
-        assert not cmd.startswith("&")
-        assert cmd.startswith('"/usr/bin/python3" -m aictl.hook_handler')
+        rule = self._rule(is_windows=False, exe="/usr/bin/python3")
+        assert not rule["command"].startswith("&")
+        assert rule["command"].startswith('"/usr/bin/python3" -m aictl.hook_handler')
+        assert "shell" not in rule
 
     def test_windows_doctor_extracts_interpreter_past_operator(self):
         """The doctor's interpreter extraction must skip the ``&`` token."""
@@ -497,8 +527,30 @@ class TestCorruptSettingsGuard:
         assert tmp_settings.read_text(encoding="utf-8") == garbage
 
 
+def _capture_posts(monkeypatch) -> list[dict]:
+    """Monkeypatch urlopen so tests can inspect what hook_handler POSTs."""
+    import urllib.request
+    from unittest.mock import MagicMock
+
+    posts: list[dict] = []
+
+    def fake_urlopen(req, timeout=0):  # noqa: ARG001
+        posts.append(json.loads(req.data.decode()))
+        return MagicMock()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    return posts
+
+
 class TestHookHandler:
-    """Tests for the aictl.hook_handler module."""
+    """Tests for the aictl.hook_handler module.
+
+    The handler must write NOTHING to stdout: Claude Code parses hook stdout
+    (decision JSON for PreToolUse & co., the worktree path for
+    WorktreeCreate), so an echoed payload produced "hook error" notices in
+    the transcript. Every test therefore asserts on the POSTed body and on an
+    empty stdout.
+    """
 
     def test_enriches_event_and_env(self, monkeypatch):
         import io
@@ -511,9 +563,10 @@ class TestHookHandler:
         monkeypatch.setenv("CWD", "/tmp")
         captured = io.StringIO()
         monkeypatch.setattr("sys.stdout", captured)
-        # urlopen will fail (no server) but should not raise
+        posts = _capture_posts(monkeypatch)
         main()
-        result = json.loads(captured.getvalue())
+        assert captured.getvalue() == "", "hook_handler must not write to stdout"
+        result = posts[-1]
         assert result["event"] == "PreToolUse"
         assert result["tool"] == "Bash"
         assert result["session_id"] == "test-session"
@@ -534,8 +587,10 @@ class TestHookHandler:
         monkeypatch.setattr("sys.stdin", FakeTTY())
         captured = io.StringIO()
         monkeypatch.setattr("sys.stdout", captured)
+        posts = _capture_posts(monkeypatch)
         main()
-        result = json.loads(captured.getvalue())
+        assert captured.getvalue() == ""
+        result = posts[-1]
         assert result["event"] == "SessionStart"
 
     def test_does_not_overwrite_existing_session_id(self, monkeypatch):
@@ -549,8 +604,10 @@ class TestHookHandler:
         monkeypatch.setenv("SESSION_ID", "from-env")
         captured = io.StringIO()
         monkeypatch.setattr("sys.stdout", captured)
+        posts = _capture_posts(monkeypatch)
         main()
-        result = json.loads(captured.getvalue())
+        assert captured.getvalue() == ""
+        result = posts[-1]
         assert result["session_id"] == "from-payload"
 
     def test_empty_piped_stdin_does_not_crash(self, monkeypatch):
@@ -567,8 +624,10 @@ class TestHookHandler:
         monkeypatch.setattr("sys.stdin", io.StringIO(""))  # empty pipe, isatty() False
         captured = io.StringIO()
         monkeypatch.setattr("sys.stdout", captured)
+        posts = _capture_posts(monkeypatch)
         main()  # must not raise
-        result = json.loads(captured.getvalue())
+        assert captured.getvalue() == ""
+        result = posts[-1]
         assert result["event"] == "SessionStart"
 
     def test_malformed_json_stdin_does_not_crash(self, monkeypatch):
@@ -580,8 +639,10 @@ class TestHookHandler:
         monkeypatch.setattr("sys.stdin", io.StringIO("{not json"))
         captured = io.StringIO()
         monkeypatch.setattr("sys.stdout", captured)
+        posts = _capture_posts(monkeypatch)
         main()
-        result = json.loads(captured.getvalue())
+        assert captured.getvalue() == ""
+        result = posts[-1]
         assert result["event"] == "Stop"
 
     def test_bad_port_falls_back_to_default(self, monkeypatch):
@@ -616,8 +677,10 @@ class TestHookHandler:
         monkeypatch.setattr("sys.stdin", io.StringIO("[1, 2, 3]"))
         captured = io.StringIO()
         monkeypatch.setattr("sys.stdout", captured)
+        posts = _capture_posts(monkeypatch)
         main()
-        result = json.loads(captured.getvalue())
+        assert captured.getvalue() == ""
+        result = posts[-1]
         assert result["event"] == "Stop"
 
 
@@ -799,12 +862,11 @@ class TestHookHandlerAictlHookEnrichment:
         assert isinstance(body["aictl_hook"]["tid"], int)
         assert body["aictl_hook"]["py"]
 
-        printed = json.loads(captured.getvalue())
-        assert printed["aictl_hook"]["source"] == "root.claude-user"
+        assert captured.getvalue() == ""
+        assert isinstance(body["pid"], int) and body["pid"] > 0  # tool pid resolved from the parent chain
 
     def test_missing_source_defaults_to_unknown(self, monkeypatch):
         import io
-        from unittest.mock import MagicMock
 
         from aictl import hook_handler as hh
 
@@ -812,10 +874,10 @@ class TestHookHandlerAictlHookEnrichment:
         monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
         captured = io.StringIO()
         monkeypatch.setattr("sys.stdout", captured)
-        monkeypatch.setattr("urllib.request.urlopen", lambda *a, **kw: MagicMock())
+        posts = _capture_posts(monkeypatch)
         hh.main()
-        printed = json.loads(captured.getvalue())
-        assert printed["aictl_hook"]["source"] == "unknown"
+        assert captured.getvalue() == ""
+        assert posts[-1]["aictl_hook"]["source"] == "unknown"
 
     def test_network_error_is_swallowed(self, monkeypatch):
         import io
@@ -831,8 +893,7 @@ class TestHookHandlerAictlHookEnrichment:
         monkeypatch.setattr("sys.stdout", captured)
         # No urlopen mock — real network call to port 1 will be refused; must not raise.
         hh.main()
-        printed = json.loads(captured.getvalue())
-        assert "aictl_hook" in printed
+        assert captured.getvalue() == ""
 
 
 class TestGeminiHooksUninstall:
@@ -912,3 +973,214 @@ class TestGeminiHooksUninstall:
         actions: list[str] = []
         _uninstall_gemini_hooks("user", actions)  # file does not exist
         assert actions == []
+
+
+class TestHookEventCatalog:
+    """Guards on WHICH events aictl registers and how they map per tool."""
+
+    def test_worktree_create_is_not_observed(self):
+        # Configuring any WorktreeCreate hook replaces Claude's default git
+        # worktree creation and Claude reads the hook's stdout as the new
+        # path; an echo hook would break `claude --worktree`.
+        assert "WorktreeCreate" not in HOOK_EVENTS
+        assert "WorktreeRemove" in HOOK_EVENTS  # plain side-effect event, safe
+
+    def test_gemini_map_values_are_unique(self):
+        from aictl.commands.integrations import GEMINI_HOOK_MAP
+
+        values = list(GEMINI_HOOK_MAP.values())
+        assert len(values) == len(set(values)), f"duplicate Gemini targets: {values}"
+
+    def test_gemini_after_tool_records_success_event(self):
+        """AfterTool must carry --event PostToolUse (it used to be shadowed by
+        PostToolUseFailure, so every Gemini tool call was stored as a failure)."""
+        from aictl.commands.integrations import GEMINI_HOOK_MAP
+
+        events = [e for e in HOOK_EVENTS if e in GEMINI_HOOK_MAP]
+        cfg = _build_hook_config(8484, events, event_map=GEMINI_HOOK_MAP, matcher="*", source_tool="gemini")
+        assert len(cfg) == len(events)
+        assert " --event PostToolUse " in cfg["AfterTool"][0]["hooks"][0]["command"]
+        assert " --event Stop " in cfg["AfterAgent"][0]["hooks"][0]["command"]
+
+    def test_build_hook_config_rejects_event_map_collision(self):
+        with pytest.raises(ValueError, match="collision"):
+            _build_hook_config(
+                8484,
+                ["PostToolUse", "PostToolUseFailure"],
+                event_map={"PostToolUse": "AfterTool", "PostToolUseFailure": "AfterTool"},
+            )
+
+
+class TestUninstallRemovesStaleEvents:
+    """uninstall must purge aictl rules under events no longer in HOOK_EVENTS
+    (a previously-installed WorktreeCreate rule would otherwise survive and
+    keep breaking `claude --worktree`)."""
+
+    def test_stale_worktree_create_rule_is_removed(self, tmp_settings):
+        stale_rule = {
+            "_aictl_owner": _AICTL_OWNER_MARKER,
+            "matcher": "",
+            "hooks": [{"type": "command", "command": "python -m aictl.hook_handler --event WorktreeCreate --port 8484"}],
+        }
+        user_rule = {"matcher": "", "hooks": [{"type": "command", "command": "./my-worktree.sh"}]}
+        tmp_settings.parent.mkdir(parents=True, exist_ok=True)
+        tmp_settings.write_text(json.dumps({"hooks": {"WorktreeCreate": [stale_rule, user_rule]}}))
+
+        result = CliRunner().invoke(hooks, ["uninstall", "--scope", "user"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(tmp_settings.read_text())
+        assert data["hooks"]["WorktreeCreate"] == [user_rule]
+
+
+class TestHookMergeAndUninstallResilience:
+    """Cross-tool install/uninstall invariants that used to be hand-rolled
+    (and diverging) per tool; now one merge in aictl._hook_owner."""
+
+    @pytest.fixture
+    def hook_dirs(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("aictl.commands.integrations.claude_global_dir", lambda: tmp_path / "home" / ".claude")
+        monkeypatch.setattr("aictl.commands.integrations.gemini_global_dir", lambda: tmp_path / "home" / ".gemini")
+        monkeypatch.setattr("aictl.commands.integrations.copilot_global_dir", lambda: tmp_path / "home" / ".copilot")
+        monkeypatch.setattr("aictl.commands.integrations.vscode_user_dir", lambda: tmp_path / "home" / "Code" / "User")
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        monkeypatch.chdir(proj)
+        return tmp_path / "home", proj
+
+    def test_install_twice_is_idempotent(self, hook_dirs):
+        from aictl.commands.integrations import _install_hooks
+
+        home, _ = hook_dirs
+        _install_hooks("user", 8484, [])
+        first = {p: p.read_text() for p in home.rglob("*.json")}
+        _install_hooks("user", 8484, [])
+        second = {p: p.read_text() for p in home.rglob("*.json")}
+        assert first == second
+        data = json.loads((home / ".claude" / "settings.json").read_text())
+        assert all(len(rules) == 1 for rules in data["hooks"].values())
+
+    def test_uninstall_continues_when_claude_settings_missing(self, hook_dirs):
+        """A missing/corrupt Claude settings.json must not leave Gemini and
+        Copilot hooks installed forever."""
+        from aictl.commands.integrations import _install_hooks
+
+        home, _ = hook_dirs
+        _install_hooks("user", 8484, [])
+        (home / ".claude" / "settings.json").unlink()
+        result = CliRunner().invoke(hooks, ["uninstall", "--scope", "user"])
+        assert result.exit_code == 0, result.output
+        gemini = json.loads((home / ".gemini" / "settings.json").read_text())
+        assert "hooks" not in gemini
+        assert not (home / ".copilot" / "hooks" / "aictl.json").exists()
+
+    def test_uninstall_continues_when_claude_settings_corrupt(self, hook_dirs):
+        from aictl.commands.integrations import _install_hooks
+
+        home, _ = hook_dirs
+        _install_hooks("user", 8484, [])
+        (home / ".claude" / "settings.json").write_text("{not json")
+        result = CliRunner().invoke(hooks, ["uninstall", "--scope", "user"])
+        assert result.exit_code == 1  # corrupt file is reported...
+        assert "hooks" not in json.loads((home / ".gemini" / "settings.json").read_text())  # ...others cleaned
+
+    def test_malformed_event_value_is_preserved_not_iterated(self, hook_dirs):
+        """A hand-edited `"PreToolUse": {...}` (dict, not list) used to be
+        iterated key by key and written back as a list of strings."""
+        from aictl.commands.integrations import _install_hooks
+
+        home, _ = hook_dirs
+        settings = home / ".claude" / "settings.json"
+        settings.parent.mkdir(parents=True)
+        bad = {"matcher": "Bash", "hooks": [{"type": "command", "command": "./mine.sh"}]}
+        settings.write_text(json.dumps({"hooks": {"Notification": bad}}))
+        _install_hooks("user", 8484, [])
+        data = json.loads(settings.read_text())
+        rules = data["hooks"]["Notification"]
+        # Our rule is appended; the malformed dict is dropped from that
+        # event (it was unusable anyway) rather than exploded into strings.
+        assert all(isinstance(r, dict) and "hooks" in r for r in rules)
+        assert "matcher" not in rules  # the old bug wrote bare key strings
+
+    def test_copilot_hook_file_keeps_user_entries_on_install_and_uninstall(self, hook_dirs):
+        from aictl.commands.integrations import _install_hooks
+
+        home, _ = hook_dirs
+        hook_file = home / ".copilot" / "hooks" / "aictl.json"
+        hook_file.parent.mkdir(parents=True)
+        user_entry = {"type": "command", "command": "./my-hook.sh"}
+        hook_file.write_text(json.dumps({"hooks": {"SessionStart": [user_entry]}}))
+
+        _install_hooks("user", 8484, [])
+        data = json.loads(hook_file.read_text())
+        assert user_entry in data["hooks"]["SessionStart"]
+        assert any(_is_aictl_hook(r) for r in data["hooks"]["SessionStart"])
+
+        result = CliRunner().invoke(hooks, ["uninstall", "--scope", "user"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(hook_file.read_text())
+        assert data["hooks"] == {"SessionStart": [user_entry]}
+
+    def test_hook_files_locations_merged_not_replaced(self, hook_dirs):
+        from aictl.commands.integrations import _enable_vscode
+
+        home, _ = hook_dirs
+        settings = home / "Code" / "User" / "settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({"chat.hookFilesLocations": {"tools/hooks": True}}))
+        _enable_vscode("user", 8484, [])
+        locs = json.loads(settings.read_text())["chat.hookFilesLocations"]
+        assert locs["tools/hooks"] is True  # user entry kept
+        assert locs["~/.copilot/hooks"] is True  # where the user-scope aictl file lives
+        assert locs[".github/hooks"] is True
+
+
+class TestCodexOtelBlock:
+    """Codex reads ``[otel] exporter = { otlp-http = {...} }`` — not the
+    ``enabled``/``endpoint`` keys an earlier aictl wrote (silently ignored)."""
+
+    def test_block_uses_codex_schema(self):
+        from aictl.commands.integrations import _codex_otel_block
+
+        block = _codex_otel_block("http://localhost:8484")
+        assert "enabled = true" not in block
+        assert 'exporter = { otlp-http = { endpoint = "http://localhost:8484/v1/logs", protocol = "json" } }' in block
+        assert "metrics_exporter = { otlp-http" in block
+
+    def test_upsert_replaces_legacy_block_and_respects_user_exporter(self, tmp_path):
+        from aictl.commands.integrations import _codex_otel_exporter_configured, _upsert_codex_otel
+
+        toml = tmp_path / "config.toml"
+        toml.write_text('model = "gpt-5.4"\n\n[otel]\nenabled = true\nendpoint = "http://localhost:8484"\n\n[features]\nx = true\n')
+        assert _upsert_codex_otel(toml, "http://localhost:8484") == "replaced legacy [otel] table"
+        text = toml.read_text()
+        assert "enabled = true" not in text
+        assert 'model = "gpt-5.4"' in text and "[features]\nx = true" in text
+        assert _codex_otel_exporter_configured(text)
+        # Second run: already configured, untouched.
+        assert _upsert_codex_otel(toml, "http://localhost:8484") == "already configured"
+        # A user's own exporter is never overwritten.
+        user = tmp_path / "user.toml"
+        user.write_text('[otel]\nexporter = { otlp-grpc = { endpoint = "http://collector:4317" } }\n')
+        assert _upsert_codex_otel(user, "http://localhost:8484") == "already configured"
+        assert "collector:4317" in user.read_text()
+
+    def test_upsert_creates_and_appends(self, tmp_path):
+        from aictl.commands.integrations import _upsert_codex_otel
+
+        toml = tmp_path / "config.toml"
+        assert _upsert_codex_otel(toml, "http://localhost:1") == "created"
+        toml.write_text('model = "x"\n')
+        assert _upsert_codex_otel(toml, "http://localhost:1") == "appended"
+        assert toml.read_text().startswith('model = "x"\n')
+
+
+class TestBuildEnvBlockToolVars:
+    def test_gemini_uses_gemini_telemetry_vars_and_codex_has_none(self):
+        from aictl.commands.integrations import _build_env_block
+
+        env = _build_env_block(8484, ["gemini", "codex"])
+        assert env["GEMINI_TELEMETRY_ENABLED"] == "true"
+        assert env["GEMINI_TELEMETRY_OTLP_ENDPOINT"] == "http://localhost:8484"
+        assert env["GEMINI_TELEMETRY_OTLP_PROTOCOL"] == "http"
+        assert env["GEMINI_TELEMETRY_USE_COLLECTOR"] == "true"
+        assert not any(k.startswith(("GEMINI_OTEL", "CODEX_OTEL")) for k in env)

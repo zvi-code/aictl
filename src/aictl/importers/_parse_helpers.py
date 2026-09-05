@@ -190,39 +190,56 @@ def read_skills_dir(skills_dir: Path, name: str) -> list:
     return caps
 
 
+def _canonical_hooks(hooks_by_event: dict) -> dict:
+    """Map case-variant event keys (``preToolUse``) to the tools' PascalCase names.
+
+    Every tool's hook enum is PascalCase; a camelCase key in an existing file
+    is a rule that never fires. Importing it canonically means the next
+    ``ctx deploy`` writes a working key.
+    """
+    from .._hook_owner import canonicalize_hook_events
+    from ..commands.integrations import GEMINI_HOOK_EVENTS, HOOK_EVENTS, VSCODE_HOOK_EVENTS
+
+    if not isinstance(hooks_by_event, dict):
+        return {}
+    return canonicalize_hook_events(hooks_by_event, [*HOOK_EVENTS, *GEMINI_HOOK_EVENTS, *VSCODE_HOOK_EVENTS])
+
+
+def _imported_hooks(data: dict, name: str) -> list:
+    from . import ImportedHook
+
+    return [
+        ImportedHook(event, rules, name)
+        for event, rules in _canonical_hooks(data.get("hooks", {})).items()
+        if isinstance(rules, list) and rules
+    ]
+
+
 def read_hooks_from_settings(settings_files: list[Path], name: str) -> list:
     """Read hook rules from one or more JSON settings files.
 
-    Returns a list of ImportedHook.
+    Returns a list of ImportedHook (event names canonicalised).
     """
-    from . import ImportedHook
-
     hooks = []
     for path in settings_files:
         data = safe_json_load(path)
         if data:
-            for event, rules in data.get("hooks", {}).items():
-                if isinstance(rules, list) and rules:
-                    hooks.append(ImportedHook(event, rules, name))
+            hooks.extend(_imported_hooks(data, name))
     return hooks
 
 
 def read_hooks_from_dir(hooks_dir: Path, name: str) -> list:
     """Read hook rules from ``*.json`` files inside a directory.
 
-    Returns a list of ImportedHook.
+    Returns a list of ImportedHook (event names canonicalised).
     """
-    from . import ImportedHook
-
     hooks = []
     if not hooks_dir.is_dir():
         return hooks
     for f in sorted(hooks_dir.glob("*.json")):
         data = safe_json_load(f)
         if data:
-            for event, rules in data.get("hooks", {}).items():
-                if isinstance(rules, list) and rules:
-                    hooks.append(ImportedHook(event, rules, name))
+            hooks.extend(_imported_hooks(data, name))
     return hooks
 
 

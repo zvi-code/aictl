@@ -27,6 +27,17 @@ def _aictl_assume_yes(monkeypatch):
     monkeypatch.setenv("AICTL_ASSUME_YES", "1")
 
 
+@pytest.fixture(autouse=True)
+def _isolated_mutation_ledger(monkeypatch, tmp_path):
+    """Keep every ledger write the suite triggers out of the developer's real
+    ~/.config/aictl/mutation-log.jsonl. Every settings/hook/env write now
+    records an entry, so without this the test run would append hundreds of
+    tmp-path entries to the user's audit trail."""
+    from aictl import mutation_ledger
+
+    monkeypatch.setattr(mutation_ledger, "_ledger_path", lambda: tmp_path / "mutation-log.jsonl")
+
+
 _PYTHON = sys.executable
 
 

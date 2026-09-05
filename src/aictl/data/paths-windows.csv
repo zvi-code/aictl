@@ -81,7 +81,7 @@ tmpclaude-{hex}-cwd,claude-code,anthropic,"cli,vscode",all,no,session,temp,no,0,
 %APPDATA%\ChatGPT\,chatgpt-desktop,openai,desktop,windows,no,global,app-data,no,0,rw,n/a,n/a,app-start,,ChatGPT desktop app data,literal,none
 ~/.openai/.env,project-env,openai,any,all,yes,global,credentials,no,0,read,n/a,n/a,runtime,,OPENAI_API_KEY,literal,none
 ~/.openai/config.json,project-env,openai,any,all,yes,global,config,no,0,rw,n/a,n/a,runtime,,OpenAI API settings,literal,none
-~/.codex/config.json,codex-cli,openai,cli,all,yes,global,config,no,0,rw,n/a,n/a,session-start,,Codex CLI configuration,literal,git-root
+~/.codex/config.toml,codex-cli,openai,cli,all,yes,global,config,no,0,rw,n/a,n/a,session-start,,Codex CLI configuration (TOML),literal,git-root
 ~/.codex/instructions.md,codex-cli,openai,cli,all,yes,global,instructions,yes,100-2000,rw,yes,yes,every-call,,Codex CLI custom instructions (now uses AGENTS.md),literal,git-root
 %USERPROFILE%\.gemini\GEMINI.md,gemini-cli,google,cli,windows,no,global,instructions,yes,100-2000,rw,yes,yes,every-call,,Global context/instructions,literal,git-root
 {project-root}/GEMINI.md,gemini-cli,google,cli,all,no,project,instructions,yes,100-5000+,rw,yes,yes,every-call,,Project-specific context (primary),recursive,git-root

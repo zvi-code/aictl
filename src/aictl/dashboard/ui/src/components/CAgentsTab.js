@@ -38,6 +38,7 @@ function hookStatusLabel(status) {
     active: 'active',
     configured: 'configured',
     disabled: 'host-disabled',
+    misconfigured: 'wrong port',
     observed: 'observed',
     missing: 'missing',
   }[status] || status || 'unknown';
@@ -191,13 +192,16 @@ function HookStatusSection({ tool, hooksStatus }) {
   const counts = hooksStatus?.counts_by_tool_kind?.[tool.tool] || {};
   const warnings = h?.warnings || [];
   const events = h?.configured_events || [];
+  const missing = h?.missing_events || [];
+  const statusClass = h?.status === 'active' ? 'is-active'
+    : (h?.status === 'disabled' || h?.status === 'misconfigured') ? 'is-disabled' : '';
   return html`<div>
     <div class="cagents-hook-summary">
-      <div class=${'cagents-hook-status ' + (h?.status === 'active' ? 'is-active' : h?.status === 'disabled' ? 'is-disabled' : '')}>
+      <div class=${'cagents-hook-status ' + statusClass} title=${h?.status === 'misconfigured' ? 'hook commands post to a different port than this dashboard' : ''}>
         ${hookStatusLabel(h?.status)}
       </div>
       <div class="cagents-hook-metrics">
-        <span>${h?.configured_count || 0} configured</span>
+        <span title=${missing.length ? 'missing: ' + missing.join(', ') : 'all expected events registered'}>${h?.configured_count || 0} configured${missing.length ? ` (${missing.length} missing)` : ''}</span>
         <span>${h?.fired_24h || 0} fired / 24h</span>
         <span>last ${fmtHookTs(h?.last_fire_ts)}</span>
       </div>

@@ -83,12 +83,13 @@ class TestEnvFileWritten:
         runner = CliRunner()
         runner.invoke(otel, ["enable", "--tool", "gemini"], catch_exceptions=False)
         first = _env_file(fake_home).read_text(encoding="utf-8")
-        assert "GEMINI_OTEL_ENABLED" in first
+        assert "GEMINI_TELEMETRY_ENABLED" in first
+        assert "GEMINI_TELEMETRY_OTLP_PROTOCOL=http" in first
 
         runner.invoke(otel, ["enable", "--tool", "claude"], catch_exceptions=False)
         second = _env_file(fake_home).read_text(encoding="utf-8")
         # Claude-only run must not carry forward Gemini-specific keys
-        assert "GEMINI_OTEL_ENABLED" not in second
+        assert "GEMINI_TELEMETRY_ENABLED" not in second
 
     def test_writes_to_both_bashrc_and_zshrc_when_present(self, fake_home, monkeypatch):
         bashrc = fake_home / ".bashrc"

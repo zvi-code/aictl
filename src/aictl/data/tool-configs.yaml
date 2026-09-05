@@ -17,7 +17,7 @@ claude-code:
       file: "settings.json"
       format: json
       extract:
-        model: "selectedModel"
+        model: "model"          # documented settings.json key; /model saves here
         effort: "effortLevel"
     - path: "{project-root}/.claude/settings.local.json"
       format: json
@@ -55,7 +55,8 @@ copilot:
       format: json
       extract:
         enabled: "github.copilot.enable"
-        model: "claudeCode.selectedModel"
+        # No model key: Copilot's picker state is not persisted in settings.json
+        # (claudeCode.selectedModel belongs to the Claude Code VS Code extension).
   otel:
     detection_key: "github.copilot.advanced.debug.useElectron"
     enable_instructions: "Set github.copilot.advanced.debug.useElectron to true in VS Code settings"
@@ -95,7 +96,7 @@ gemini-cli:
       file: "settings.json"
       format: json
       extract:
-        model: "model"
+        model: "model.name"     # settings v2 nests it: {"model": {"name": "gemini-..."}}
         vim_mode: "general.vimMode"
         approval_mode: "general.defaultApprovalMode"
         auto_update: "general.enableAutoUpdate"

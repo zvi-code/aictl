@@ -106,6 +106,12 @@ export function resolveColor(c, fallback) {
   }
   return c;
 }
+// Resolve a colour for a canvas/uPlot context (which cannot read CSS vars):
+// the requested colour, else the theme's --fg2, else the browser default.
+// Replaces the '#94a3b8' literal fallbacks the design system had purged.
+export function resolveColorOrMuted(c) {
+  return resolveColor(c, '') || resolveColor('var(--fg2)', '') || undefined;
+}
 export function liveTokenTotal(live){const t=(live&&live.token_estimate)||{};return (t.input_tokens||0)+(t.output_tokens||0);}
 
 /**

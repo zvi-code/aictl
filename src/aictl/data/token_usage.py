@@ -9,29 +9,40 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Ordered alias lists: first non-None value wins.
+# Ordered alias lists: first non-None value wins. Every spelling seen in the
+# wild is here (Anthropic API, Copilot CLI camelCase, OpenAI prompt/completion,
+# GenAI semconv current + pre-1.27 prompt/completion, Claude Code OTel) so
+# the receiver, analytics and ingesters share ONE table instead of each
+# carrying a partial copy.
 _INPUT_ALIASES = (
     "input_tokens",
     "inputTokens",
     "prompt_tokens",
+    "promptTokens",
     "gen_ai.usage.input_tokens",
+    "gen_ai.usage.prompt_tokens",
 )
 _OUTPUT_ALIASES = (
     "output_tokens",
     "outputTokens",
     "completion_tokens",
+    "completionTokens",
     "gen_ai.usage.output_tokens",
+    "gen_ai.usage.completion_tokens",
 )
 _CACHE_READ_ALIASES = (
     "cache_read_input_tokens",
     "cacheReadInputTokens",
     "cache_read_tokens",
+    "gen_ai.usage.cache_read_input_tokens",
     "gen_ai.usage.cache_read.input_tokens",
 )
 _CACHE_WRITE_ALIASES = (
     "cache_creation_input_tokens",
     "cacheCreationInputTokens",
+    "cache_creation_tokens",
     "cache_write_tokens",
+    "gen_ai.usage.cache_creation_input_tokens",
     "gen_ai.usage.cache_write.input_tokens",
 )
 

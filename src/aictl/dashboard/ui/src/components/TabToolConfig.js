@@ -322,11 +322,11 @@ function VsCodeCard({cfg}) {
   const yolo    = safety.globalAutoApprove === true;
   const noReply = (cfg.feature_groups?.Agent || {}).autoReply === true;
 
-  return html`<div style="background:var(--bg);border:2px solid #007acc;border-radius:6px;overflow:hidden;grid-column:span 2">
-    <div style="padding:var(--sp-4) var(--sp-5);background:color-mix(in srgb,#007acc 12%,var(--bg2));
-                display:flex;align-items:center;gap:var(--sp-3);border-bottom:2px solid #007acc">
+  return html`<div style="background:var(--bg);border:2px solid var(--vscode);border-radius:6px;overflow:hidden;grid-column:span 2">
+    <div style="padding:var(--sp-4) var(--sp-5);background:color-mix(in srgb,var(--vscode) 12%,var(--bg2));
+                display:flex;align-items:center;gap:var(--sp-3);border-bottom:2px solid var(--vscode)">
       <span>🔷</span>
-      <span style="font-weight:700;font-size:var(--fs-base);color:#007acc">VS Code — AI Platform Settings</span>
+      <span style="font-weight:700;font-size:var(--fs-base);color:var(--vscode)">VS Code — AI Platform Settings</span>
       <span class="text-muted" style="font-size:var(--fs-sm)">chat.* — applies to all AI tools</span>
       ${yolo && html`<span class="badge" style="margin-left:auto;background:var(--red);color:#fff;font-weight:700"><${Icon} name="alert-triangle" size="0.9em"/> YOLO MODE ON</span>`}
       ${!yolo && noReply && html`<span class="badge" style="margin-left:auto;background:var(--orange);color:#fff"><${Icon} name="alert-triangle" size="0.9em"/> auto-reply on</span>`}
@@ -340,7 +340,7 @@ function VsCodeCard({cfg}) {
 
 // ─── aictl collector health card ────────────────────────────────
 function AictlCard({snap}) {
-  const color = COLORS['aictl'] || '#94a3b8';
+  const color = COLORS['aictl'] || 'var(--fg2)';
   const diag = Object.entries((snap?.live_monitor?.diagnostics) || {});
   const paths = [...(snap?.live_monitor?.workspace_paths||[]), ...(snap?.live_monitor?.state_paths||[])];
   if (!diag.length && !paths.length) return null;
