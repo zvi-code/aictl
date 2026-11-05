@@ -1,4 +1,4 @@
-import{x as y,d as m,T as v,m as r,y as g}from"./index-BTCnpwvT.js";import{L as S,q as w,W as $,aa as L,B as C}from"./useSse-CGriGT3A.js";import{S as z,a as W,I as P}from"./app-D6pbvQ4J.js";const T=[{id:"prompts",label:"Prompts"},{id:"workflows",label:"Workflows"}];function I(t){const a=[];for(const o of(t==null?void 0:t.tools)||[])for(const l of o.files||[]){const i=l.path||"",n=l.kind||"";if(i.endsWith(".prompt.md")||n==="prompt"||n==="command"&&i.replace(/\\/g,"/").toLowerCase().includes("/prompts/")){const d=$(i).replace(/\.prompt\.md$/,"").replace(/\.md$/,"");a.push({id:i,name:d,path:i,kind:n,tool:o.tool,toolLabel:o.label,size:l.size||0,tokens:l.tokens||0,mtime:l.mtime||0})}}const s=new Set;return a.filter(o=>s.has(o.id)?!1:(s.add(o.id),!0))}function N(t){const a=[];for(const o of(t==null?void 0:t.tools)||[])for(const l of o.files||[]){const i=l.path||"",n=l.kind||"";if(i.endsWith(".workflow.md")||n==="workflow"||n==="workflows"||n==="command"&&i.toLowerCase().includes("/workflows/")){const d=$(i).replace(/\.workflow\.md$/,"").replace(/\.md$/,"");a.push({id:i,name:d,path:i,kind:n,tool:o.tool,toolLabel:o.label,size:l.size||0,tokens:l.tokens||0,mtime:l.mtime||0})}}const s=new Set;return a.filter(o=>s.has(o.id)?!1:(s.add(o.id),!0))}function x({prompt:t,view:a="prompts"}){const[s,o]=m(null),[l,i]=m(!1),n=a==="workflows"?"workflow":"prompt";return g(()=>{if(!t){o(null);return}let c=!0;return i(!0),o(null),L(t.path).then(d=>d.text()).then(d=>{c&&(o(d),i(!1))}).catch(()=>{c&&i(!1)}),()=>{c=!1}},[t==null?void 0:t.path]),t?r`<div class="cprompts-detail-view">
+import{x as y,d as m,T as v,m as r,y as g}from"./index-BV-8y5V6.js";import{L as S,q as w,V as $,a9 as L,B as C}from"./useSse-ssp_fAkB.js";import{S as z,a as P,I as W}from"./app-C9JBBtAo.js";const T=[{id:"prompts",label:"Prompts"},{id:"workflows",label:"Workflows"}];function I(t){const a=[];for(const o of(t==null?void 0:t.tools)||[])for(const l of o.files||[]){const i=l.path||"",n=l.kind||"";if(i.endsWith(".prompt.md")||n==="prompt"||n==="command"&&i.replace(/\\/g,"/").toLowerCase().includes("/prompts/")){const d=$(i).replace(/\.prompt\.md$/,"").replace(/\.md$/,"");a.push({id:i,name:d,path:i,kind:n,tool:o.tool,toolLabel:o.label,size:l.size||0,tokens:l.tokens||0,mtime:l.mtime||0})}}const s=new Set;return a.filter(o=>s.has(o.id)?!1:(s.add(o.id),!0))}function N(t){const a=[];for(const o of(t==null?void 0:t.tools)||[])for(const l of o.files||[]){const i=l.path||"",n=l.kind||"";if(i.endsWith(".workflow.md")||n==="workflow"||n==="workflows"||n==="command"&&i.toLowerCase().includes("/workflows/")){const d=$(i).replace(/\.workflow\.md$/,"").replace(/\.md$/,"");a.push({id:i,name:d,path:i,kind:n,tool:o.tool,toolLabel:o.label,size:l.size||0,tokens:l.tokens||0,mtime:l.mtime||0})}}const s=new Set;return a.filter(o=>s.has(o.id)?!1:(s.add(o.id),!0))}function V({prompt:t,view:a="prompts"}){const[s,o]=m(null),[l,i]=m(!1),n=a==="workflows"?"workflow":"prompt";return g(()=>{if(!t){o(null);return}let c=!0;return i(!0),o(null),L(t.path).then(d=>d.text()).then(d=>{c&&(o(d),i(!1))}).catch(()=>{c&&i(!1)}),()=>{c=!1}},[t==null?void 0:t.path]),t?r`<div class="cprompts-detail-view">
     <div class="c-overline c-overline--wide">${a==="workflows"?"Workflow":"Prompt"}</div>
     <div class="cprompts-detail-title">${t.name}</div>
     <div class="cprompts-detail-meta">
@@ -14,8 +14,8 @@ import{x as y,d as m,T as v,m as r,y as g}from"./index-BTCnpwvT.js";import{L as 
   </div>`:r`<div class="cprompts-detail-empty">
       <div class="c-overline cprompts-detail-empty-label">Nothing selected</div>
       <div>Select a ${n} from the list to view its content.</div>
-    </div>`}function E({view:t,hasSnap:a}){const s=t==="prompts";return r`<div class="cprompts-empty">
-    <div class="cprompts-empty-icon" aria-hidden="true"><${P} name=${s?"pen":"settings"} size="1.4em"/></div>
+    </div>`}function x({view:t,hasSnap:a}){const s=t==="prompts";return r`<div class="cprompts-empty">
+    <div class="cprompts-empty-icon" aria-hidden="true"><${W} name=${s?"pen":"settings"} size="1.4em"/></div>
     <div class="cprompts-empty-title">No ${s?"prompts":"workflows"} yet</div>
     <div class="cprompts-empty-body">
       ${s?"Save frequently-used prompts here for one-click re-use across any agent.":"Workflows chain multiple agent steps into a single automated run."}
@@ -50,7 +50,7 @@ import{x as y,d as m,T as v,m as r,y as g}from"./index-BTCnpwvT.js";import{L as 
     <!-- Split pane: list + detail -->
     <div class="cprompts-body">
       <div class="cprompts-list">
-        ${f.length===0?S(t==null?void 0:t.enabledTools)&&!l?r`<${W} enabledTools=${t.enabledTools} snap=${a} what=${"the "+s+" list"}/>`:r`<${E} view=${s} hasSnap=${!!a}/>`:f.map(e=>r`<div key=${e.id}
+        ${f.length===0?S(t==null?void 0:t.enabledTools)&&!l?r`<${P} enabledTools=${t.enabledTools} snap=${a} what=${"the "+s+" list"}/>`:r`<${x} view=${s} hasSnap=${!!a}/>`:f.map(e=>r`<div key=${e.id}
               class=${"cprompts-prompt-row"+(e.id===n?" is-selected":"")}
               onClick=${()=>c(e.id===n?null:e.id)}
               role="button" tabIndex=${0}
@@ -63,7 +63,7 @@ import{x as y,d as m,T as v,m as r,y as g}from"./index-BTCnpwvT.js";import{L as 
             </div>`)}
       </div>
       <div class="cprompts-detail">
-        <${x} prompt=${k} view=${s}/>
+        <${V} prompt=${k} view=${s}/>
       </div>
     </div>
   </div>`}export{D as default};

@@ -442,6 +442,16 @@ export async function boardAction(action, args = {}) {
   });
 }
 
-export async function getContextAudit(refresh = false) {
-  return fetchJson(refresh ? '/api/context-audit?refresh=1' : '/api/context-audit');
+/** The hidden-context scan. It runs on the server's own thread, so this asks how far it is. */
+export async function getContextAudit(refresh = false, onProgress = null, { pollMs = 2000, maxMs = 600000 } = {}) {
+  const started = Date.now();
+  let r = await fetchJson('/api/context-audit?nowait=1' + (refresh ? '&refresh=1' : ''));
+  while (r?.status === 'scanning') {
+    onProgress?.(r);
+    if (Date.now() - started > maxMs) throw new Error('The scan has not finished. It is at: ' + r.step);
+    await new Promise(done => setTimeout(done, pollMs));
+    r = await fetchJson('/api/context-audit?nowait=1');
+  }
+  if (r?.error) throw new Error(r.error);
+  return r;
 }

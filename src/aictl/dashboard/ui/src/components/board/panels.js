@@ -551,9 +551,10 @@ function panelFindings(ctx) {
     sub: 'Settings and text that change what the model gets, and that no prompt shows',
     table: {
       cols: [{ k: 'what', l: 'Finding', w: '330px' }, { k: 'tool', l: 'Tool', w: '130px' }, { k: 'where', l: 'Where', w: '240px' }, { k: 'effect', l: 'What it does' }, { k: 'act', l: 'Action', w: '124px' }],
-      rows, none: ctx.findings.loading ? 'Reading the settings...' : (ctx.findings.error ? 'Could not read the settings: ' + ctx.findings.error : 'No open findings.'),
+      rows, none: ctx.findings.loading ? 'Reading the settings...' + (ctx.findings.scan ? ' ' + ctx.findings.scan.step + ', ' + Math.round(ctx.findings.scan.elapsed_s) + ' s' : '') : (ctx.findings.error ? 'Could not read the settings: ' + ctx.findings.error : 'No open findings.'),
     },
-    actions: [{ label: 'Open the hidden context screen', href: '?tab=hidden' }],
+    note: ctx.findings.incomplete?.length ? 'The scan reached its time limit and skipped: ' + ctx.findings.incomplete.join(', ') + '.' : null,
+    actions: ctx.findings.loading ? null : [{ label: 'See every source on the hidden context screen', href: '?tab=hidden' }],
   };
 }
 
@@ -571,8 +572,8 @@ function panelSettings(ctx) {
   });
   return {
     sub: 'Value in force for each tool, and where it comes from',
-    table: { cols: [{ k: 'k', l: 'Setting', w: '180px' }].concat(shown.map(id => ({ k: id, l: ctx.toolName(id), minw: 112 }))), rows, none: 'No settings read yet.' },
-    actions: [{ label: 'Open the configuration screen', href: '?tab=config' }],
+    table: { cols: [{ k: 'k', l: 'Setting', w: '180px' }].concat(shown.map(id => ({ k: id, l: ctx.toolName(id), minw: 112 }))), rows, none: ctx.findings.loading ? 'Reading the settings...' : 'No settings read yet.' },
+    actions: ctx.findings.settings.length ? [{ label: 'See all settings on the configuration screen', href: '?tab=config' }] : null,
     note: ctx.findings.note || '',
   };
 }

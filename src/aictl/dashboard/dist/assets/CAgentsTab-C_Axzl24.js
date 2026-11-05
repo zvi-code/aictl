@@ -1,4 +1,4 @@
-import{x as N,d as S,y as q,T as M,m as a}from"./index-BTCnpwvT.js";import{f as X,ap as Z,L as U,M as ee,r as Y,af as G,ah as O,b0 as se,b1 as I,b2 as te}from"./useSse-CGriGT3A.js";import{S as P,a as ne,T as ae,c as oe,D as W,k as B}from"./app-D6pbvQ4J.js";function E(e){const n=e.live||{};return n.pid_count>0||n.session_count>0||(e.processes||[]).length>0}function L({label:e}){return a`<div class="c-overline cagents-rule">
+import{x as N,d as S,y as q,T as M,m as a}from"./index-BV-8y5V6.js";import{e as X,ao as Z,L as U,M as ee,r as Y,ae as G,ag as O,b0 as se,b1 as I,b2 as te}from"./useSse-ssp_fAkB.js";import{S as P,a as ne,T as ae,c as oe,D as W,k as B}from"./app-C9JBBtAo.js";function E(e){const n=e.live||{};return n.pid_count>0||n.session_count>0||(e.processes||[]).length>0}function L({label:e}){return a`<div class="c-overline cagents-rule">
     <div class="cagents-rule-line"></div>
     <div class="cagents-rule-label">${e}</div>
     <div class="cagents-rule-line"></div>
@@ -13,7 +13,7 @@ import{x as N,d as S,y as q,T as M,m as a}from"./index-BTCnpwvT.js";import{f as 
       ${s?a`${n.added.map(t=>a`<code key=${"a"+t} class="is-added">+ ${t}</code>`)}
           ${n.removed.map(t=>a`<code key=${"r"+t} class="is-removed">- ${t}</code>`)}`:a`<code>no change</code>`}
     </div>
-  </div>`}function de({tool:e,label:n,onClose:s}){var R,j;const[t,c]=S(null),[u,r]=S(""),[d,l]=S(""),[g,$]=S(!0),[i,f]=S(!1),[w,m]=S(""),[h,T]=S("");q(()=>{let k=!0;return $(!0),m(""),T(""),se(e).then(D=>{var F,H;k&&(c(D),r(A((F=D.permissions)==null?void 0:F.allow)),l(A((H=D.permissions)==null?void 0:H.deny)),$(!1))}).catch(D=>{k&&(m(D.message||"Failed to load config"),$(!1))}),()=>{k=!1}},[e]);const _=J(u),o=J(d),b=((R=t==null?void 0:t.permissions)==null?void 0:R.allow)||[],p=((j=t==null?void 0:t.permissions)==null?void 0:j.deny)||[],y=K(b,_),x=K(p,o),v=JSON.stringify(b)!==JSON.stringify(_)||JSON.stringify(p)!==JSON.stringify(o),C=JSON.stringify({permissions:{allow:_,deny:o}},null,2),Q=()=>{f(!0),m(""),T(""),te(e,{expected_mtime:t==null?void 0:t.mtime,permissions:{allow:_,deny:o}}).then(k=>{var D,F;c(k),r(A((D=k.permissions)==null?void 0:D.allow)),l(A((F=k.permissions)==null?void 0:F.deny)),T(k.backup_path||""),f(!1),B.success("Configuration saved")}).catch(k=>{m(k.message||"Failed to save config"),f(!1),B.error("Configuration save failed")})};return a`<${W} open=${!0} onClose=${s} ariaLabel=${"Edit "+n+" configuration"} class="cagents-editor-dialog">
+  </div>`}function de({tool:e,label:n,onClose:s}){var R,j;const[t,c]=S(null),[u,r]=S(""),[d,l]=S(""),[g,$]=S(!0),[i,f]=S(!1),[w,m]=S(""),[y,T]=S("");q(()=>{let k=!0;return $(!0),m(""),T(""),se(e).then(D=>{var F,H;k&&(c(D),r(A((F=D.permissions)==null?void 0:F.allow)),l(A((H=D.permissions)==null?void 0:H.deny)),$(!1))}).catch(D=>{k&&(m(D.message||"Failed to load config"),$(!1))}),()=>{k=!1}},[e]);const _=J(u),o=J(d),b=((R=t==null?void 0:t.permissions)==null?void 0:R.allow)||[],p=((j=t==null?void 0:t.permissions)==null?void 0:j.deny)||[],h=K(b,_),x=K(p,o),v=JSON.stringify(b)!==JSON.stringify(_)||JSON.stringify(p)!==JSON.stringify(o),C=JSON.stringify({permissions:{allow:_,deny:o}},null,2),Q=()=>{f(!0),m(""),T(""),te(e,{expected_mtime:t==null?void 0:t.mtime,permissions:{allow:_,deny:o}}).then(k=>{var D,F;c(k),r(A((D=k.permissions)==null?void 0:D.allow)),l(A((F=k.permissions)==null?void 0:F.deny)),T(k.backup_path||""),f(!1),B.success("Configuration saved")}).catch(k=>{m(k.message||"Failed to save config"),f(!1),B.error("Configuration save failed")})};return a`<${W} open=${!0} onClose=${s} ariaLabel=${"Edit "+n+" configuration"} class="cagents-editor-dialog">
     <div class="cagents-editor-head">
       <div>
         <div class="c-overline c-overline--wide">Project configuration</div>
@@ -24,7 +24,7 @@ import{x as N,d as S,y as q,T as M,m as a}from"./index-BTCnpwvT.js";import{f as 
     </div>
     ${g?a`<div class="cagents-editor-state">Loading...</div>`:w&&!t?a`<div class="cagents-editor-error">${w}</div>`:a`<div class="cagents-editor-body">
           ${w&&a`<div class="cagents-editor-error">${w}</div>`}
-          ${h&&a`<div class="cagents-editor-saved">Saved - backup ${h}</div>`}
+          ${y&&a`<div class="cagents-editor-saved">Saved - backup ${y}</div>`}
           <div class="cagents-editor-fields">
             <label>
               <span>Allowed tools</span>
@@ -37,7 +37,7 @@ import{x as N,d as S,y as q,T as M,m as a}from"./index-BTCnpwvT.js";import{f as 
           </div>
           <div class="cagents-editor-preview">
             <div class="cagents-editor-subtitle">Pending diff</div>
-            <${V} title="allow" diff=${y}/>
+            <${V} title="allow" diff=${h}/>
             <${V} title="deny" diff=${x}/>
             <pre>${C}</pre>
           </div>
@@ -76,10 +76,10 @@ import{x as N,d as S,y as q,T as M,m as a}from"./index-BTCnpwvT.js";import{f as 
         <span class=${i.host_enabled?"":"is-disabled"}>${i.host_enabled?"loaded":"ignored"}</span>
       </div>`)}
     </div>`}
-  </div>`}function ue({tool:e,hooksStatus:n}){var o,b,p,y,x;const s=((o=N(P))==null?void 0:o.enabledTools)??null,t=U(s),c=(n==null?void 0:n.skill_usage)||{},u=(n==null?void 0:n.subagents)||{},r=(n==null?void 0:n.tool_calls)||{},d=t?I(r.by_tool,s):null,l=t?I(c.by_tool,s):null,g=t?I(u.by_tool,s,v=>v==null?void 0:v.starts):null,$=t?"selected tools":"all tools",i=v=>v&&v.hidden?`${v.hidden} from tools that could not be identified are not counted`:void 0,f=c.by_tool_skill?Object.entries(c.by_tool_skill[e.tool]||{}).map(([v,C])=>({skill:v,count:C})).sort((v,C)=>C.count-v.count||v.skill.localeCompare(C.skill)):c.by_skill||[],w=((b=c.by_tool)==null?void 0:b[e.tool])||0,m=((p=u.by_tool)==null?void 0:p[e.tool])||{starts:0},h=((y=r.by_tool)==null?void 0:y[e.tool])||0,T=Object.entries(((x=r.by_tool_name)==null?void 0:x[e.tool])||{}).sort((v,C)=>C[1]-v[1]).slice(0,6),_=w===0&&(m.starts||0)===0&&h===0;return a`<div class="cagents-activity-report">
+  </div>`}function ue({tool:e,hooksStatus:n}){var o,b,p,h,x;const s=((o=N(P))==null?void 0:o.enabledTools)??null,t=U(s),c=(n==null?void 0:n.skill_usage)||{},u=(n==null?void 0:n.subagents)||{},r=(n==null?void 0:n.tool_calls)||{},d=t?I(r.by_tool,s):null,l=t?I(c.by_tool,s):null,g=t?I(u.by_tool,s,v=>v==null?void 0:v.starts):null,$=t?"selected tools":"all tools",i=v=>v&&v.hidden?`${v.hidden} from tools that could not be identified are not counted`:void 0,f=c.by_tool_skill?Object.entries(c.by_tool_skill[e.tool]||{}).map(([v,C])=>({skill:v,count:C})).sort((v,C)=>C.count-v.count||v.skill.localeCompare(C.skill)):c.by_skill||[],w=((b=c.by_tool)==null?void 0:b[e.tool])||0,m=((p=u.by_tool)==null?void 0:p[e.tool])||{starts:0},y=((h=r.by_tool)==null?void 0:h[e.tool])||0,T=Object.entries(((x=r.by_tool_name)==null?void 0:x[e.tool])||{}).sort((v,C)=>C[1]-v[1]).slice(0,6),_=w===0&&(m.starts||0)===0&&y===0;return a`<div class="cagents-activity-report">
     <div class="cagents-activity-row">
       <span>Tool calls</span>
-      <strong>${h}</strong>
+      <strong>${y}</strong>
       <span class="cagents-hook-muted" title=${i(d)} data-testid="agents-calls-total">${t?d.total:r.total_calls_24h||0} ${$} / 24h</span>
     </div>
     <div class="cagents-activity-row">
@@ -103,7 +103,7 @@ import{x as N,d as S,y as q,T as M,m as a}from"./index-BTCnpwvT.js";import{f as 
       aictl lifecycle hooks — agents that report only via OTel will show zero here.
     </div>`}
   </div>`}const z={auto:{color:"var(--green)",bg:"var(--green-soft, #E6EFE3)",border:"var(--green)"},ask:{color:"var(--orange)",bg:"transparent",border:"var(--orange)"},deny:{color:"var(--accent)",bg:"var(--accent-soft)",border:"var(--accent)"},"n/a":{color:"var(--fg3)",bg:"transparent",border:"var(--border)"}};function ge({val:e}){const n=z[e]||z["n/a"];return a`<span class="cagents-perm-badge"
-    style="color:${n.color};background:${n.bg};border-color:${n.border}">${e}</span>`}function pe(e){if(((e==null?void 0:e.features)||{}).global_autoApprove)return[["MCP Servers","auto"],["File Reads","auto"],["File Writes","auto"],["Shell","auto"],["Web Fetch","auto"],["Network","auto"]];const t=((e==null?void 0:e.settings)||{}).permissions||{},c=(t.allow||[]).map(l=>l.toLowerCase()),u=(t.deny||[]).map(l=>l.toLowerCase()),r=(t.ask||[]).map(l=>l.toLowerCase()),d=(...l)=>l.some(g=>u.some($=>$.startsWith(g)))?"deny":l.some(g=>c.some($=>$.startsWith(g)))?"auto":l.some(g=>r.some($=>$.startsWith(g)))?"ask":c.length===0&&u.length===0&&r.length===0?"n/a":"ask";return[["MCP Servers",d("mcp")],["File Reads",d("read","glob","grep","ls")],["File Writes",d("write","edit","create","multiedit")],["Shell",d("bash","execute")],["Web Fetch",d("webfetch","fetch")],["Network","n/a"]]}function $e({tool:e,toolConfig:n,hooksStatus:s,onViewSessions:t,onViewConfig:c,onEditConfig:u}){var b;const r=(b=N(P))==null?void 0:b.snap,d=e.live||{},l=e.processes||[],g=e.mcp_servers||[];l.reduce((p,y)=>p+(parseFloat(y.cpu_pct)||0),0);const i=(l.length>0&&(l[0].cmdline||l[0].name)||"").split(" ")[0]||null,f=(n==null?void 0:n.version)||null,w=(n==null?void 0:n.notes)||null,m=(n==null?void 0:n.otel)||{},h=m.enabled?["events","tokens","timing",...m.capture_content?["prompts","responses"]:[]]:[],T=[["Sessions",d.session_count??0],["Tokens",Y(G(d))],["Processes",d.pid_count??l.length],["MCP servers",g.length],["Captured fields",h.length>0?h.length:"—"],["OTel",m.enabled?"active":"off"]],_=pe(n),o=[i?["binary",i]:null,f?["version",f]:null,h.length>0?["capture","["+h.map(p=>`"${p}"`).join(", ")+"]"]:["capture","—"],["enabled",E(e)?"true":"false"]].filter(Boolean);return a`<div class="cagents-detail">
+    style="color:${n.color};background:${n.bg};border-color:${n.border}">${e}</span>`}function pe(e){if(((e==null?void 0:e.features)||{}).global_autoApprove)return[["MCP Servers","auto"],["File Reads","auto"],["File Writes","auto"],["Shell","auto"],["Web Fetch","auto"],["Network","auto"]];const t=((e==null?void 0:e.settings)||{}).permissions||{},c=(t.allow||[]).map(l=>l.toLowerCase()),u=(t.deny||[]).map(l=>l.toLowerCase()),r=(t.ask||[]).map(l=>l.toLowerCase()),d=(...l)=>l.some(g=>u.some($=>$.startsWith(g)))?"deny":l.some(g=>c.some($=>$.startsWith(g)))?"auto":l.some(g=>r.some($=>$.startsWith(g)))?"ask":c.length===0&&u.length===0&&r.length===0?"n/a":"ask";return[["MCP Servers",d("mcp")],["File Reads",d("read","glob","grep","ls")],["File Writes",d("write","edit","create","multiedit")],["Shell",d("bash","execute")],["Web Fetch",d("webfetch","fetch")],["Network","n/a"]]}function $e({tool:e,toolConfig:n,hooksStatus:s,onViewSessions:t,onViewConfig:c,onEditConfig:u}){var b;const r=(b=N(P))==null?void 0:b.snap,d=e.live||{},l=e.processes||[],g=e.mcp_servers||[];l.reduce((p,h)=>p+(parseFloat(h.cpu_pct)||0),0);const i=(l.length>0&&(l[0].cmdline||l[0].name)||"").split(" ")[0]||null,f=(n==null?void 0:n.version)||null,w=(n==null?void 0:n.notes)||null,m=(n==null?void 0:n.otel)||{},y=m.enabled?["events","tokens","timing",...m.capture_content?["prompts","responses"]:[]]:[],T=[["Sessions",d.session_count??0],["Tokens",Y(G(d))],["Processes",d.pid_count??l.length],["MCP servers",g.length],["Captured fields",y.length>0?y.length:"—"],["OTel",m.enabled?"active":"off"]],_=pe(n),o=[i?["binary",i]:null,f?["version",f]:null,y.length>0?["capture","["+y.map(p=>`"${p}"`).join(", ")+"]"]:["capture","—"],["enabled",E(e)?"true":"false"]].filter(Boolean);return a`<div class="cagents-detail">
     <div class="c-overline c-overline--wide">Agent profile</div>
     <div class="cagents-detail-headline">
       <span class="cagents-detail-title">${e.label}</span>
@@ -115,22 +115,22 @@ import{x as N,d as S,y as q,T as M,m as a}from"./index-BTCnpwvT.js";import{f as 
     ${O(e,r)&&a`<${oe} tool=${e}/>`}
     <div class="cagents-detail-section" hidden=${O(e,r)}><${L} label="Stats"/></div>
     <div class="cagents-stats-grid" hidden=${O(e,r)}>
-      ${T.map(([p,y])=>a`<${le} key=${p} label=${p} value=${y}/>`)}
+      ${T.map(([p,h])=>a`<${le} key=${p} label=${p} value=${h}/>`)}
     </div>
 
     <div class="cagents-detail-section"><${L} label="Permissions"/></div>
     <div class="cagents-perms-grid">
-      ${_.map(([p,y],x)=>a`<div key=${p}
+      ${_.map(([p,h],x)=>a`<div key=${p}
         class=${"cagents-perm-row"+(x>=2?" cagents-perm-row--top":"")+(x%2===0?" cagents-perm-row--left":"")}>
         <span class="cagents-perm-key">${p}</span>
-        <${ge} val=${y}/>
+        <${ge} val=${h}/>
       </div>`)}
     </div>
 
     <div class="cagents-detail-section"><${L} label="Configuration"/></div>
     <div class="cagents-config-block">
-      ${o.map(([p,y])=>a`<div key=${p}>
-        <span class="cagents-config-key">${p}</span> = ${y}
+      ${o.map(([p,h])=>a`<div key=${p}>
+        <span class="cagents-config-key">${p}</span> = ${h}
       </div>`)}
     </div>
 
@@ -168,7 +168,7 @@ import{x as N,d as S,y as q,T as M,m as a}from"./index-BTCnpwvT.js";import{f as 
       <span class="cagents-row-label" style="color:var(--fg2)">${e.label}</span>
       <span class="c-overline">view</span>
     </div>
-  </div>`}function ke({onViewSessions:e,onViewConfig:n}){const s=N(P),t=s==null?void 0:s.snap,[c,u]=S(null);q(()=>{let o=!0;const b=()=>{X().then(y=>{o&&u(y)}).catch(()=>{o&&u(null)})};b();const p=setInterval(b,15e3);return()=>{o=!1,clearInterval(p)}},[]);const r=M(()=>{const o={};for(const b of(t==null?void 0:t.tool_configs)||[])b.tool&&(o[b.tool]=b);return o},[t]),{active:d,inactive:l}=M(()=>{const o=((t==null?void 0:t.tools)||[]).filter(b=>b.tool!=="aictl");return{active:o.filter(E),inactive:o.filter(b=>!E(b))}},[t]),[g,$]=S(null),[i,f]=S(null),w=[...d,...l].map(o=>o.tool),m=g&&w.includes(g)?g:Z(d.map(o=>o.tool),null)??w[0]??null,h=d.find(o=>o.tool===m)??l.find(o=>o.tool===m),T=m?r[m]:null,_=(s==null?void 0:s.enabledTools)??null;return!d.length&&!l.length&&U(_)?a`<div class="c-shell"><${ne} enabledTools=${_} snap=${t} what="agents"/></div>`:a`<div class="c-shell">
+  </div>`}function ke({onViewSessions:e,onViewConfig:n}){const s=N(P),t=s==null?void 0:s.snap,[c,u]=S(null);q(()=>{let o=!0;const b=()=>{X().then(h=>{o&&u(h)}).catch(()=>{o&&u(null)})};b();const p=setInterval(b,15e3);return()=>{o=!1,clearInterval(p)}},[]);const r=M(()=>{const o={};for(const b of(t==null?void 0:t.tool_configs)||[])b.tool&&(o[b.tool]=b);return o},[t]),{active:d,inactive:l}=M(()=>{const o=((t==null?void 0:t.tools)||[]).filter(b=>b.tool!=="aictl");return{active:o.filter(E),inactive:o.filter(b=>!E(b))}},[t]),[g,$]=S(null),[i,f]=S(null),w=[...d,...l].map(o=>o.tool),m=g&&w.includes(g)?g:Z(d.map(o=>o.tool),null)??w[0]??null,y=d.find(o=>o.tool===m)??l.find(o=>o.tool===m),T=m?r[m]:null,_=(s==null?void 0:s.enabledTools)??null;return!d.length&&!l.length&&U(_)?a`<div class="c-shell"><${ne} enabledTools=${_} snap=${t} what="agents"/></div>`:a`<div class="c-shell">
     <div class="cagents-toolbar">
       <span class="c-overline">
         ${d.length} of ${d.length+l.length} agents active
@@ -185,13 +185,13 @@ import{x as N,d as S,y as q,T as M,m as a}from"./index-BTCnpwvT.js";import{f as 
           tool=${o} selected=${m} onSelect=${$}/>`)}
       </div>
       <div class="cagents-detail-pane">
-        ${h?a`<${$e}
-              tool=${h}
+        ${y?a`<${$e}
+              tool=${y}
               toolConfig=${T}
               hooksStatus=${c}
               onViewSessions=${e??(()=>{})}
               onViewConfig=${n??(()=>{})}
-              onEditConfig=${()=>f({tool:h.tool,label:h.label})}
+              onEditConfig=${()=>f({tool:y.tool,label:y.label})}
             />`:a`<div class="cagents-empty">Select an agent to view its profile.</div>`}
       </div>
     </div>
