@@ -19,6 +19,7 @@ import { VERIFIED_TOOLS, orderToolsByActivity, scopeIsCloudOnly, toolLabel } fro
 import { baseName } from './utils/paths.js';
 import { commandKeyLabel } from './utils/platform.js';
 import CloudOnlyNotice from './components/ui/CloudOnlyNotice.js';
+import AllToolsNote from './components/ui/AllToolsNote.js';
 import { gateContext } from './utils/gateContext.js';
 
 import FileViewer from './components/FileViewer.js';
@@ -414,7 +415,7 @@ export default function App() {
           <${OverviewNow} snap=${filteredSnap} enabledTools=${enabledTools}
             connected=${connected} otelActive=${otelActive} alerts=${alerts} selfStatus=${selfStatus}
             onOpenSession=${openSession} onOpenTab=${setActiveTab}/>
-          ${!scopeIsCloudOnly(snap, enabledTools) && html`<${DashboardContent} snap=${filteredSnap} history=${effectiveHistory}/>`}
+          ${!scopeIsCloudOnly(snap, enabledTools) && html`<${AllToolsNote} enabledTools=${enabledTools} what="The charts and totals below"/><${DashboardContent} snap=${filteredSnap} history=${effectiveHistory}/>`}
           <div class="mb-lg"><${CollectorHealth}/></div>
         </${TabBoundary}>`,
     hidden:     () => html`<${TabBoundary} tabName="hidden"><${HiddenContextSlot}/></${TabBoundary}>`,

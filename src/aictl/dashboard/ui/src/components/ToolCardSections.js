@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'preact/hooks';
+import { CostValue } from '../utils/cost.js';
 import { html } from 'htm/preact';
 import { fmtK, fmtTok, fmtSz, fmtRate, fmtPct, esc, liveTokenTotal, resolveColorOrMuted } from '../utils.js';
 import ProcRow from './ProcRow.js';
@@ -186,10 +187,10 @@ export function TelemetrySection({telemetry}) {
         <span class="mvalue">${fmtTok(t.output_tokens||0)} tok</span>
         <span class="msub">${fmtK(t.total_sessions||0)} sessions \u00B7 ${fmtK(t.total_messages||0)} messages</span>
       </div>
-      ${t.cost_usd > 0 ? html`<div class="metric-chip">
-        <span class="mlabel">Estimated Cost</span>
-        <span class="mvalue">$${t.cost_usd.toFixed(2)}</span>
-      </div>` : null}
+      <div class="metric-chip">
+        <span class="mlabel">${t.billing_unit ? 'Billed' : 'Estimated cost'}</span>
+        <span class="mvalue"><${CostValue} row=${t} showSub=${false}/></span>
+      </div>
       ${(quota.premium_requests_used>0 || quota.total_api_duration_ms>0) && html`<div class="metric-chip">
         <span class="mlabel">Operational</span>
         ${quota.premium_requests_used>0 && html`<div style="font-size:var(--fs-base)">Premium requests: <span class="mono">${quota.premium_requests_used}</span></div>`}

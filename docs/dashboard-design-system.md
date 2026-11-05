@@ -120,8 +120,8 @@ Paths render with their own separator (`utils/paths.js`). Drive letters and UNC
 shares are kept, and `~` is used for POSIX paths only.
 
 A cloud-hosted tool with no local data shows `CloudOnlyNotice` ("Not available from
-this machine", with the reason), never a zero or an empty chart. Cost figures are
-labelled as estimates and carry `COST_ESTIMATE_NOTE`; they are not billed amounts.
+this machine", with the reason), never a zero or an empty chart; a `local_data` config with every flag false declares this. `cost_usd` may be null, shown as "n/a" with `cost_reason` on hover (`utils/cost.js`). Billing units lead; dollar figures are
+list-price estimates and are labelled so. Panels with no per-tool split show `AllToolsNote` under a tool filter.
 
 ## Panel states
 
@@ -302,12 +302,12 @@ Below 900px the rail becomes a scrolling strip. At 640px and under, wide tables 
 panels scroll inside themselves, and the page never scrolls sideways.
 
 The Overview opens with `OverviewNow`: Running now (sessions with age, CPU, RAM,
-tokens), Estimated cost for the last 24 h, and Needs attention (`utils/health.js`, each issue
+tokens), Cost for the last 24 h, and Needs attention (`utils/health.js`, each issue
 with its exact fix, capture mode and disk use against budget, unseen context).
 
 `components/HiddenContextSlot.js` reserves the Hidden context view. It finds
 `HiddenContextPanel.js` by glob and works with or without it. That module may export
-`getHiddenContextSummary(): Promise<{count, detail?}>` to feed Needs attention.
+`getHiddenContextSummary(): Promise<{count, detail?}>`; otherwise Needs attention reads `/api/context-audit`.
 
 Every view except the Overview is a lazy chunk; ECharts is reachable only through
 them. SSE ticks are coalesced to one update per second and paused while the page is
