@@ -13,6 +13,7 @@ from .commands.daemon import dashboard, monitor, serve
 from .commands.disable import audit, disable
 from .commands.import_plugin import import_cmd, plugin
 from .commands.integrations import enable, hooks, otel
+from .commands.observe import ps, top
 from .commands.session import session_group
 from .commands.status import memory, status
 
@@ -67,6 +68,8 @@ main.add_command(session_group)
 main.add_command(memory)
 main.add_command(import_cmd, name="import")
 main.add_command(status)
+main.add_command(ps)
+main.add_command(top)
 main.add_command(plugin)
 main.add_command(hooks)
 main.add_command(otel)

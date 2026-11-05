@@ -600,6 +600,10 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 | `aictl status --budget` | Show token cost analysis (always-loaded, on-demand, cacheable) |
 | `aictl status --html -o report.html` | Generate self-contained HTML report |
 | `aictl status --backtrace PID` | Sample a process stack trace |
+| `aictl ps` | Tree of running AI tools, sessions, sub-agents and processes (no daemon; read-only) |
+| `aictl ps <session-or-pid>` | Full detail for one session: memory, tools, prompts, files, activity |
+| `aictl ps --tool NAME --all --json` | Filter by tool, include recently ended sessions, stable JSON output |
+| `aictl top` | Live `ps`: j/k or arrows move, Enter expands, `/` filters, `a` toggles ended, `q` quits |
 | `aictl daemon serve` | Launch live web dashboard with REST API at localhost:8484 |
 | `aictl daemon dashboard --root .` | Launch live terminal dashboard (TUI) |
 | `aictl enable` | One-shot: install hooks + OTel + VS Code agent settings (all tools, persistent) |
@@ -618,6 +622,22 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 | `aictl build-ui` | Build the dashboard frontend (npm install + Vite build) |
 | `aictl reinstall` | Rebuild UI + reinstall Python package so code changes take effect |
 | `aictl reinstall --skip-ui` | Reinstall Python package only (faster, skips npm build) |
+
+### Watching agents: `aictl ps` and `aictl top`
+
+Works with no daemon and writes nothing: it reads the tools' own stores and psutil. Sessions come first, ordered by real activity. A figure with no data shows `n/a` with the reason. With `[storage] capture` set to `metadata` or `off`, prompts show length only. Output from synthetic data:
+
+```text
+GitHub Copilot CLI [copilot-cli]  1 session  rss 240MB
+└─ 7f3a9c1e running up 1m45s last 5s ago  m1  ~/proj (main)
+   ├─ turns 1  tools 5 (fail 1)  prompts 1  tok input 100 output 7  reqs 1  premium n/a (logged only at usage checkpoints and shutdown; none yet)  rss 240MB  ctx n/a
+   ├─ agent Outer running up 1m24s last 5s ago turns 0 tools 1 fail 0 tok n/a
+   │  └─ agent Inner running up 1m14s last 5s ago turns 0 tools 1 fail 1 tok n/a
+   └─ pid 100 copilot running up 3m12s rss 240MB 100%
+      └─ pid 101 mcp mcp-server-git idle up 3m10s rss 40MB 17%
+```
+
+File access is inferred from tool-call arguments, so files touched by shell commands are not listed. `--json` output carries `schema_version`. Tree characters fall back to ASCII on consoles that can't encode them, and colour is off when piped or with `NO_COLOR`.
 
 ### Import options
 
