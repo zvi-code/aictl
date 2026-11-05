@@ -422,9 +422,8 @@ class TestUninstall:
         runner = CliRunner()
         runner.invoke(hooks, ["install"], catch_exceptions=False)
         runner.invoke(hooks, ["uninstall"], catch_exceptions=False)
-        data = json.loads(tmp_settings.read_text())
-        # hooks key should be gone (all were aictl)
-        assert "hooks" not in data or not data.get("hooks")
+        # Every rule was aictl's, so nothing is left: the file and its empty folder go.
+        assert not tmp_settings.exists()
 
     def test_preserves_user_hooks(self, tmp_settings):
         tmp_settings.parent.mkdir(parents=True, exist_ok=True)
@@ -944,13 +943,15 @@ class TestGeminiHooksUninstall:
         gemini_path = self._gemini_path(scope, home, proj)
 
         actions: list[str] = []
+        gemini_path.parent.mkdir(parents=True, exist_ok=True)  # the tool is installed
         _install_hooks(scope, 8484, actions)  # creates the file from scratch
         assert json.loads(gemini_path.read_text()).get("hooks")
 
         runner = CliRunner()
         result = runner.invoke(hooks, ["uninstall", "--scope", scope])
         assert result.exit_code == 0, result.output
-        assert "hooks" not in json.loads(gemini_path.read_text())
+        assert not gemini_path.exists(), "a file left holding nothing is removed"
+        assert not gemini_path.parent.exists()
 
     def test_uninstall_missing_gemini_settings_is_noop(self, hook_dirs):
         from aictl.commands.integrations import _uninstall_gemini_hooks
@@ -1028,6 +1029,9 @@ class TestHookMergeAndUninstallResilience:
         monkeypatch.setattr("aictl.commands.integrations.gemini_global_dir", lambda: tmp_path / "home" / ".gemini")
         monkeypatch.setattr("aictl.commands.integrations.copilot_global_dir", lambda: tmp_path / "home" / ".copilot")
         monkeypatch.setattr("aictl.commands.integrations.vscode_user_dir", lambda: tmp_path / "home" / "Code" / "User")
+        # Both tools are installed: registration skips a tool whose folder is absent.
+        (tmp_path / "home" / ".claude").mkdir(parents=True)
+        (tmp_path / "home" / ".gemini").mkdir(parents=True)
         proj = tmp_path / "proj"
         proj.mkdir()
         monkeypatch.chdir(proj)
@@ -1055,8 +1059,7 @@ class TestHookMergeAndUninstallResilience:
         (home / ".claude" / "settings.json").unlink()
         result = CliRunner().invoke(hooks, ["uninstall", "--scope", "user"])
         assert result.exit_code == 0, result.output
-        gemini = json.loads((home / ".gemini" / "settings.json").read_text())
-        assert "hooks" not in gemini
+        assert not (home / ".gemini" / "settings.json").exists()
         assert not (home / ".copilot" / "hooks" / "aictl.json").exists()
 
     def test_uninstall_continues_when_claude_settings_corrupt(self, hook_dirs):
@@ -1067,7 +1070,7 @@ class TestHookMergeAndUninstallResilience:
         (home / ".claude" / "settings.json").write_text("{not json")
         result = CliRunner().invoke(hooks, ["uninstall", "--scope", "user"])
         assert result.exit_code == 1  # corrupt file is reported...
-        assert "hooks" not in json.loads((home / ".gemini" / "settings.json").read_text())  # ...others cleaned
+        assert not (home / ".gemini" / "settings.json").exists()  # ...others cleaned
 
     def test_malformed_event_value_is_preserved_not_iterated(self, hook_dirs):
         """A hand-edited `"PreToolUse": {...}` (dict, not list) used to be
@@ -1076,7 +1079,7 @@ class TestHookMergeAndUninstallResilience:
 
         home, _ = hook_dirs
         settings = home / ".claude" / "settings.json"
-        settings.parent.mkdir(parents=True)
+        settings.parent.mkdir(parents=True, exist_ok=True)
         bad = {"matcher": "Bash", "hooks": [{"type": "command", "command": "./mine.sh"}]}
         settings.write_text(json.dumps({"hooks": {"Notification": bad}}))
         _install_hooks("user", 8484, [])

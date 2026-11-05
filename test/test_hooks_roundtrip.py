@@ -260,6 +260,7 @@ def test_corrupt_file_is_never_rewritten_and_others_still_run(env):
 
 def test_enable_with_one_corrupt_tool_registers_the_others(env):
     _seed(_gemini_path(env), "{broken")
+    _claude_path(env).parent.mkdir()
     actions: list[str] = []
     ig._install_hooks("user", 8484, actions)
     assert any("Gemini" in a and "FAILED" in a for a in actions)
@@ -311,13 +312,119 @@ def test_full_enable_disable_restores_machine_byte_for_byte(env):
     disabled = runner.invoke(disable, [], catch_exceptions=False)
     assert disabled.exit_code == 0, disabled.output
     after = _tree(env)
-    # Settings aictl created stay as an empty object: semantically the original.
-    assert json.loads(after.pop(".gemini/settings.json")) == {}
+    assert ".gemini/settings.json" not in during, "enable created a folder for a tool that is not installed"
     after.pop(".claude/settings.json")
     expected = dict(before)
     expected.pop(".claude/settings.json")
     assert after == expected
     assert json.loads(_claude_path(env).read_text()) == {"model": "x", "hooks": {"PreToolUse": [USER_RULE]}}
+
+
+def _entries(home: Path) -> set[str]:
+    """Every file and folder under *home*, relative."""
+    return {str(p.relative_to(home)) for p in home.rglob("*")}
+
+
+def _seed_copilot_and_vscode(home: Path) -> None:
+    (home / ".copilot").mkdir()
+    _seed(home / ".copilot" / "config.json", '{"theme": "dark"}\n')
+    _seed(
+        hook_removal.vscode_settings_paths(home)[0],
+        '{\n  // editor\n  "editor.fontSize": 13,\n}\n',
+    )
+    _seed(home / ".zshrc", "# mine\n")
+
+
+def test_enable_disable_adds_nothing_for_tools_that_are_not_installed(env):
+    """Copilot and VS Code only: no ~/.claude, no ~/.gemini, before, during or after."""
+    _seed_copilot_and_vscode(env)
+    before = _tree(env)
+    folders_before = _entries(env)
+    runner = CliRunner()
+    enabled = runner.invoke(ig.enable, ["--scope", "user"], catch_exceptions=False)
+    assert enabled.exit_code == 0, enabled.output
+    assert "Claude Code hooks skipped" in enabled.output and str(env / ".claude") in enabled.output
+    assert "Gemini CLI hooks skipped" in enabled.output
+    assert not (env / ".claude").exists() and not (env / ".gemini").exists()
+    assert (env / ".copilot" / "hooks" / "aictl.json").exists()
+
+    status = runner.invoke(ig.hooks_status_cmd, ["--json"], catch_exceptions=False)
+    assert status.exit_code == 0, status.output
+    states = {t["tool"]: t["state"] for t in json.loads(status.output)["tools"]}
+    assert states["claude-code"] == states["gemini-cli"] == "not-installed"
+    assert states["copilot"] == "registered"
+
+    dry = runner.invoke(disable, ["--dry-run"], catch_exceptions=False)
+    assert dry.exit_code == 0
+    assert "aictl.json" in dry.output
+
+    disabled = runner.invoke(disable, [], catch_exceptions=False)
+    assert disabled.exit_code == 0, disabled.output
+    after = _tree(env)
+    # aictl's own config folder holds only its own files, and none are left.
+    assert {k: v for k, v in after.items() if not k.startswith(".config/aictl/")} == before
+    assert _entries(env) - folders_before <= {".config", ".config/aictl"}
+
+
+def test_disable_deletes_a_settings_file_left_holding_nothing(env):
+    claude = _claude_path(env)
+    _install_claude()
+    assert claude.exists()
+    sink = hook_removal._Sink(True)
+    hook_removal.remove_from_hook_file(claude, sink, delete_if_only=("version",))
+    assert claude.exists(), "dry run wrote"
+    assert any("remove empty folder" in c for c in sink.result.changes)
+    sink = hook_removal._Sink(False)
+    hook_removal.remove_from_hook_file(claude, sink, delete_if_only=("version",))
+    assert not claude.exists() and not claude.parent.exists()
+
+
+@pytest.mark.parametrize("extra", [{"model": "x"}, {"permissions": {}}], ids=["other-key", "empty-nested-value"])
+def test_disable_keeps_a_settings_file_with_any_other_key(env, extra):
+    _seed(_claude_path(env), _dump(extra))
+    _install_claude()
+    _uninstall(_claude_path(env))
+    assert json.loads(_claude_path(env).read_text()) == extra
+
+
+def test_disable_keeps_a_folder_that_holds_anything_else(env):
+    _install_claude()
+    other = _claude_path(env).parent / "projects.txt"
+    other.write_text("x")
+    _uninstall(_claude_path(env))
+    assert not _claude_path(env).exists()
+    assert other.read_text() == "x"
+
+
+def test_disable_keeps_a_settings_file_that_still_has_comments(env):
+    _seed(_claude_path(env), "{\n  // keep me\n}\n")
+    _install_claude()
+    _uninstall(_claude_path(env))
+    assert "// keep me" in _claude_path(env).read_text()
+
+
+def test_an_installed_tool_folder_still_gets_hooks_and_keeps_its_keys(env):
+    _seed(_claude_path(env), _dump({"model": "x"}))
+    (env / ".gemini").mkdir()
+    actions: list[str] = []
+    ig._install_hooks("user", 8484, actions)
+    assert not any("skipped" in a and ("Claude" in a or "Gemini" in a) for a in actions), actions
+    claude = json.loads(_claude_path(env).read_text())
+    assert claude["model"] == "x" and claude["hooks"]
+    assert json.loads(_gemini_path(env).read_text())["hooks"]
+    _uninstall(_claude_path(env))
+    _uninstall(_gemini_path(env))
+    assert json.loads(_claude_path(env).read_text()) == {"model": "x"}
+    assert not _gemini_path(env).exists()
+
+
+def test_otel_enable_for_a_named_tool_may_create_vscode_settings(env):
+    vs = hook_removal.vscode_settings_paths(env)[0]
+    skipped: list[str] = []
+    ig._enable_otel(8484, skipped, tools=["copilot"])
+    assert not vs.exists() and any("Copilot OTel skipped" in a for a in skipped)
+    ig._enable_otel(8484, [], tools=["copilot"], create_missing=True)
+    assert vs.exists()
 
 
 def test_disable_dry_run_changes_nothing(env):

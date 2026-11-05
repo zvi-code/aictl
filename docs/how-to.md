@@ -132,6 +132,12 @@ aictl otel status           # what the receiver has seen; needs a running server
 aictl status --tool copilot
 ```
 
+`aictl enable` registers hooks only for tools that are installed. If `~/.claude`, `~/.gemini` or the VS Code
+user folder does not exist, that step is listed as skipped, with the folder it checked, and nothing is
+created there. The Copilot hook folder `~/.copilot/hooks` is the exception, because VS Code reads it
+without the CLI. `aictl hooks status` shows a skipped tool as `not-installed`, which is not a failure.
+`aictl otel enable --tool copilot` names the tool, so it may create the VS Code settings file.
+
 aictl tracks three separate tools: `copilot-cli`, `copilot-desktop` and `copilot-vscode`.
 
 - **Shared hook file:** all three read `~/.copilot/hooks/aictl.json`
@@ -177,6 +183,8 @@ aictl disable
 ```
 
 This removes hooks, the OTel environment and its shell-profile blocks. Your own hook rules stay.
+A settings file that holds nothing once the rules are gone (`{}`) is deleted, and its folder too if that
+is now empty. A file with any other key, or with comments, is kept. `--dry-run` lists these deletions.
 
 - **Another repository:** add `--project PATH`. The current directory is always cleaned.
 - **VS Code toggles from an older aictl:** add `--include-vscode-toggles`.
