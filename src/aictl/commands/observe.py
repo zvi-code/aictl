@@ -11,6 +11,7 @@ import time
 
 import click
 
+MODEL_PIN_REFRESH_S = 30.0
 MIN_INTERVAL_S = 1.0
 
 
@@ -129,6 +130,7 @@ def filter_doc(doc: dict, text: str) -> dict:
 @click.option("--iterations", default=0, hidden=True, help="Stop after N refreshes")
 def top(tool, include_ended, interval, iterations):
     """Live view of ps. Keys: j/k or arrows move, Enter expands, / filters, a toggles ended, q quits."""
+    from ..effective_config import annotate_models
     from ..observe.collect import Collector
     from ..observe.render import build_nodes, charset_for, enable_vt, flatten, paint, safe_text, use_color
 
@@ -146,11 +148,20 @@ def top(tool, include_ended, interval, iterations):
     typing = False
     count = 0
     next_at = 0.0
+    pins_at = 0.0
+    pins: dict[str, dict] = {}
     doc = None
     try:
         while True:
             if time.monotonic() >= next_at:
                 doc = collector.collect(tool=tool, include_ended=include_ended)
+                if time.monotonic() >= pins_at:
+                    annotate_models(doc)
+                    pins = {t["tool"]: t["model_in_force"] for t in doc["tools"] if "model_in_force" in t}
+                    pins_at = time.monotonic() + MODEL_PIN_REFRESH_S
+                for row in doc["tools"]:
+                    if row["tool"] in pins:
+                        row["model_in_force"] = pins[row["tool"]]
                 next_at = time.monotonic() + interval
                 count += 1
             shown = filter_doc(doc, needle)

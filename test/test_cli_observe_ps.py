@@ -249,3 +249,14 @@ def test_top_one_refresh_when_not_a_tty(home):
     _write_cli_session(home)
     result = CliRunner().invoke(main, ["top", "--iterations", "1"])
     assert result.exit_code == 0 and "aictl top" in result.output and "aaaa1111" in result.output
+
+
+def test_ps_and_top_name_the_pinned_model(home, monkeypatch):
+    _write_cli_session(home)
+    (home / ".copilot").mkdir(exist_ok=True)
+    (home / ".copilot" / "settings.json").write_text('{\n  "model": "model-pinned"\n}\n', encoding="utf-8")
+    monkeypatch.setenv("COPILOT_HOME", str(home / ".copilot"))
+    for args in (["ps"], ["top", "--iterations", "1"]):
+        result = CliRunner().invoke(main, args)
+        assert result.exit_code == 0
+        assert "model pinned model-pinned" in result.output and "settings.json:2" in result.output
