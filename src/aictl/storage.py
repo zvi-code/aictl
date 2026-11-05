@@ -15,6 +15,7 @@ Design goals:
 from __future__ import annotations
 
 import fnmatch
+import functools
 import hashlib
 import json
 import logging
@@ -22,6 +23,7 @@ import re
 import sqlite3
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -79,7 +81,14 @@ WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024
 # Rows removed per transaction by compact(); keeps WAL growth and writer lock
 # holds small on a DB of any size.
 COMPACT_CHUNK_ROWS = 5000
-COMPACT_CHUNK_PAUSE_S = 0.01
+# Long enough for SQLite's busy wait, which sleeps up to 100 ms, to see the gap. With a
+# shorter pause, a long cleanup can keep the other writers out until they time out.
+COMPACT_CHUNK_PAUSE_S = 0.15
+# How long a write waits for the lock, and the time after which a write is logged.
+BUSY_TIMEOUT_S = 15.0
+SLOW_WRITE_S = 3.0
+# A health row that does not change is written again after this time, not on each poll.
+QUALITY_REWRITE_S = 60.0
 # Pages returned to the OS per automatic maintenance pass (64 MB).
 INCREMENTAL_VACUUM_PAGES = 16384
 
@@ -1792,6 +1801,28 @@ def _table_bytes(conn: sqlite3.Connection, table: str, sizes: dict[str, int]) ->
     return sum(sizes.get(n, 0) for n in names)
 
 
+def _named_write(name: str) -> Callable:
+    """Record a write while it runs, and log it when it holds the database for long."""
+
+    def wrap(method: Callable) -> Callable:
+        @functools.wraps(method)
+        def run(self: HistoryDB, *args: Any, **kwargs: Any) -> Any:
+            stack = self._writers.setdefault(threading.get_ident(), [])
+            started = time.monotonic()
+            stack.append((name, started))
+            try:
+                return method(self, *args, **kwargs)
+            finally:
+                stack.pop()
+                took = time.monotonic() - started
+                if took >= SLOW_WRITE_S:
+                    log.warning("Database write %s took %.1f s", name, took)
+
+        return run
+
+    return wrap
+
+
 class HistoryDB:
     """Thread-safe SQLite store for metrics, per-tool metrics, and events.
 
@@ -1857,6 +1888,8 @@ class HistoryDB:
 
         # Connection pool: one connection per thread
         self._local = threading.local()
+        self._writers: dict[int, list[tuple[str, float]]] = {}
+        self._quality_seen: dict[tuple[str, str], tuple[str, str, float]] = {}
         self._closed = False
 
         # Last stored ts per (tool, kind) for rate-limited heartbeat events
@@ -1897,7 +1930,7 @@ class HistoryDB:
         conn = getattr(self._local, "conn", None)
         if conn is None:
             path = str(self._path) if isinstance(self._path, Path) else self._path
-            conn = sqlite3.connect(path, timeout=5.0)
+            conn = sqlite3.connect(path, timeout=BUSY_TIMEOUT_S)
             # New databases return pages to the OS through incremental vacuum.
             # Must precede journal_mode, which writes the header; no effect on
             # an existing DB until ``aictl db compact`` runs VACUUM.
@@ -2696,6 +2729,12 @@ class HistoryDB:
 
     # ── Flush ──────────────────────────────────────────────────────
 
+    def active_writes(self) -> list[str]:
+        """Named writes that run now in this process, each with its age. Empty when none does."""
+        now = time.monotonic()
+        return [f"{name} ({now - started:.0f} s)" for stack in list(self._writers.values()) for name, started in list(stack)]
+
+    @_named_write("flush")
     def flush(self) -> int:
         """Write all buffered rows to SQLite.  Returns rows written."""
         with self._lock:
@@ -4196,7 +4235,13 @@ class HistoryDB:
         """Upsert the current health of a data-producing component."""
         if not component or not status:
             return
-        ts = time.time() if ts is None else ts
+        seen_key = (component, source)
+        if ts is None:
+            seen = self._quality_seen.get(seen_key)
+            ts = time.time()
+            if seen and seen[:2] == (status, message) and ts - seen[2] < QUALITY_REWRITE_S:
+                return
+        self._quality_seen[seen_key] = (status, message, ts)
         conn = self._conn()
         prev = conn.execute(
             "SELECT count, last_ok_at FROM data_quality_status WHERE component = ? AND source = ?",
@@ -4605,6 +4650,7 @@ class HistoryDB:
 
     # ── Per-call facts read from session files ────────────────────
 
+    @_named_write("write_call_facts")
     def write_call_facts(self, facts: CallFacts) -> int:
         """Write rows read from tools' session files, in one transaction.
 
@@ -5881,6 +5927,7 @@ class HistoryDB:
 
     # ── Compaction ─────────────────────────────────────────────────
 
+    @_named_write("compact")
     def compact(self, *, retention_days: int | None = None, floor: float = 0.0) -> dict[str, int]:
         """Downsample old data and delete expired rows, in small transactions.
 
@@ -5987,6 +6034,7 @@ class HistoryDB:
             armed_at = row[0]
         return armed_at if now < armed_at + self._retention_days * _24H else 0.0
 
+    @_named_write("auto_maintain")
     def auto_maintain(self) -> dict[str, int]:
         """Scheduled maintenance: retention, downsampling, WAL and page reclaim."""
         conn = self._conn()
@@ -6008,6 +6056,7 @@ class HistoryDB:
             log.debug("Checkpoint deferred: %s", exc)
         return result
 
+    @_named_write("trim_text")
     def trim_text(self, *, before: float | None = None, since: float = 0.0) -> int:
         """Blank conversation text older than ``before`` (default: all), in chunks.
 
@@ -6143,6 +6192,7 @@ class HistoryDB:
             "storage_degraded_reason": self.degraded_reason,
         }
 
+    @_named_write("enforce_budget")
     def enforce_budget(self) -> int:
         """Evict oldest data until under budget: text first, then time series.
 
@@ -6194,6 +6244,7 @@ class HistoryDB:
             total += cur.rowcount
             if cur.rowcount == 0:
                 break
+            time.sleep(COMPACT_CHUNK_PAUSE_S)
         if total:
             self._set_state("content_trimmed_before", time.time())
         return total
@@ -6210,6 +6261,7 @@ class HistoryDB:
             total += cur.rowcount
             if cur.rowcount == 0:
                 break
+            time.sleep(COMPACT_CHUNK_PAUSE_S)
         return total
 
     @property

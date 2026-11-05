@@ -181,3 +181,20 @@ def test_vscode_ingester_retries_broken_file_and_records_quality(tmp_path):
     assert _quality_status(db, "ingester:vscode-chat-logs") == "ok"
 
     db.close()
+
+
+def test_a_locked_database_does_not_stop_the_ingester(caplog):
+    """A health row failed with "database is locked", and that aborted each poll."""
+    import sqlite3
+
+    from aictl.ingesters._common import record_quality
+
+    class LockedStore:
+        def record_data_quality(self, *_a, **_k):
+            raise sqlite3.OperationalError("database is locked")
+
+        def active_writes(self):
+            return ["compact (12 s)"]
+
+    record_quality(LockedStore(), "copilot-session-store", "x.db", "not_applicable")
+    assert "compact (12 s)" in caplog.text

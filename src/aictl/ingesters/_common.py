@@ -51,15 +51,20 @@ def record_quality(
     """Record a data-quality event under ``ingester:<ingester_id>`` when the
     store supports it (in-memory test stores may not)."""
     if hasattr(store, "record_data_quality"):
-        store.record_data_quality(
-            f"ingester:{ingester_id}",
-            status,
-            kind="ingester",
-            severity=severity,
-            message=message,
-            source=str(source),
-            detail=detail,
-        )
+        try:
+            store.record_data_quality(
+                f"ingester:{ingester_id}",
+                status,
+                kind="ingester",
+                severity=severity,
+                message=message,
+                source=str(source),
+                detail=detail,
+            )
+        except sqlite3.OperationalError as exc:
+            # A health row must never stop the ingester that reports it.
+            writes = store.active_writes() if hasattr(store, "active_writes") else []
+            log.warning("Cannot record health of %s: %s. Writes running in this process: %s", ingester_id, exc, ", ".join(writes) or "none")
 
 
 def decode_file_uri(value: str) -> str:
