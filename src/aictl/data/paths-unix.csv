@@ -221,11 +221,11 @@ $HOME/.copilot/copilot-instructions.md,copilot-cli,github,cli,all,yes,global,ins
 {project-root}/.azure/,project-env,microsoft,any,all,yes,project,runtime,no,0,rw,n/a,n/a,runtime,,Azure Developer CLI local state directory,rooted,cwd
 {project-root}/m365agents.yml,copilot365,microsoft,m365,all,no,project,config,no,0,rw,n/a,n/a,runtime,,M365 Agents Toolkit project manifest (ATK v5.12+ — replaces teamsapp.yml),recursive,cwd
 {project-root}/m365agents.local.yml,copilot365,microsoft,m365,all,no,project,config,no,0,rw,n/a,n/a,runtime,,Local dev overrides for M365 agents manifest,recursive,cwd
-{project-root}/teamsapp.yml,copilot365,microsoft,m365,all,no,project,config,no,0,rw,n/a,n/a,runtime,,Legacy Teams Toolkit manifest (deprecated — sunset July 2026),recursive,cwd
+{project-root}/teamsapp.yml,copilot365,microsoft,m365,all,no,project,config,no,0,rw,n/a,n/a,runtime,,Legacy Teams Toolkit manifest (toolkit renamed Microsoft 365 Agents Toolkit; m365agents.yml is the current name per learn.microsoft.com/microsoftteams/platform/toolkit/create-new-project; the July 2026 sunset date is unsourced),recursive,cwd
 {project-root}/teamsapp.local.yml,copilot365,microsoft,m365,all,no,project,config,no,0,rw,n/a,n/a,runtime,,Local dev overrides for legacy Teams app manifest,recursive,cwd
 {project-root}/aad.manifest.json,copilot365,microsoft,m365,all,no,project,config,no,0,rw,n/a,n/a,runtime,,Azure AD / Entra ID app registration manifest,recursive,cwd
 {project-root}/appPackage/manifest.json,copilot365,microsoft,m365,all,no,project,config,no,0,rw,n/a,n/a,runtime,,M365 app manifest (schema v1.18+; defines copilotAgents node),recursive,cwd
-{project-root}/appPackage/declarativeAgent.json,copilot365,microsoft,m365,all,no,project,agent,yes,200-2000,rw,yes,yes,runtime,,Declarative agent manifest (schema v1.6; instructions up to 8000 chars),recursive,cwd
+{project-root}/appPackage/declarativeAgent.json,copilot365,microsoft,m365,all,no,project,agent,yes,200-2000,rw,yes,yes,runtime,,Declarative agent manifest (schema v1.6 to v1.9 valid; latest v1.9; instructions up to 8000 chars; see learn.microsoft.com/microsoft-365/copilot/extensibility/declarative-agent-manifest-1.9),recursive,cwd
 {project-root}/appPackage/apiPlugin.json,copilot365,microsoft,m365,all,no,project,config,no,0,rw,n/a,n/a,runtime,,API plugin manifest for Copilot extensibility,recursive,cwd
 {project-root}/appPackage/color.png,copilot365,microsoft,m365,all,no,project,runtime,no,0,read,n/a,n/a,runtime,,192x192 full-color app icon,recursive,cwd
 {project-root}/appPackage/outline.png,copilot365,microsoft,m365,all,no,project,runtime,no,0,read,n/a,n/a,runtime,,32x32 outline app icon (transparent bg),recursive,cwd
