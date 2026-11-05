@@ -104,8 +104,8 @@ def test_vscode_otel_tokens_visible_on_session(aictl_server):
 
 @pytest.mark.xfail(
     strict=True,
-    reason="OTel receiver maps every copilot service.name to copilot-vscode (SERVICE_NAME_ALIASES); "
-    "copilot-cli and copilot-desktop need their own service names",
+    reason="Service names now map to their own surface, but metrics alone still create no session row, "
+    "so there is nothing yet to read the tool from",
 )
 @pytest.mark.parametrize(
     "service,tool", [("github-copilot-cli", "copilot-cli"), ("github-copilot-desktop", "copilot-desktop")]
