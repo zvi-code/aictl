@@ -80,8 +80,8 @@ test-ui:  ## Run dashboard UI tests (Vitest + jsdom)
 test-e2e:  ## Run E2E tests (starts aictl server, posts synthetic data)
 	$(PYTHON) -m pytest test/e2e/ -v --timeout=120
 
-test-tools:  ## Run real-tool E2E tests (skips missing tools)
-	$(PYTHON) -m pytest test/e2e_tools/ -v --timeout=180
+test-tools:  ## Run real-tool E2E tests (skips missing tools); real CLIs need the real HOME
+	AICTL_TEST_REAL_HOME=1 $(PYTHON) -m pytest test/e2e_tools/ -v --timeout=180
 
 test-docker:  ## Run Docker integration suite (fresh install + simulated E2E)
 	docker compose -f docker/docker-compose.test.yml run --build --rm test-integration
