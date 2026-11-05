@@ -1,4 +1,5 @@
 import { html } from 'htm/preact';
+import { CostValue } from '../../utils/cost.js';
 import { fmtK } from '../../utils.js';
 import * as api from '../../api.js';
 import { useAsyncResource } from '../../hooks/useAsyncResource.js';
@@ -22,7 +23,7 @@ export default function ProjectCostPanel({project}) {
       <div class="es-kv-card"><div class="label">Sessions (7d)</div><div class="value">${costs.sessions}</div></div>
       <div class="es-kv-card"><div class="label">Input Tokens</div><div class="value">${fmtK(costs.input_tokens)}</div></div>
       <div class="es-kv-card"><div class="label">Output Tokens</div><div class="value">${fmtK(costs.output_tokens)}</div></div>
-      <div class="es-kv-card"><div class="label">Est. Cost</div><div class="value">$${costs.cost_usd.toFixed(2)}</div></div>
+      <div class="es-kv-card"><div class="label">Est. Cost</div><div class="value"><${CostValue} row=${costs}/></div></div>
     </div>
     ${costs.daily && costs.daily.length > 0 && html`<div style="margin-top:var(--sp-3)">
       <div class="text-xs text-muted" style="margin-bottom:var(--sp-2)">Daily breakdown</div>

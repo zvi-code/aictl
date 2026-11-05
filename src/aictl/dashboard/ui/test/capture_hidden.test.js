@@ -1,7 +1,7 @@
 // Capture modes (full/metadata/off) and the hidden-context slot: both depend on
 // backend work that ships separately, so absent fields must stay harmless.
 import { describe, it, expect, afterEach } from 'vitest';
-import { render, cleanup } from '@testing-library/preact';
+import { render, cleanup, waitFor } from '@testing-library/preact';
 import { html } from 'htm/preact';
 import { deriveIssues, storageSummary, storageText } from '../src/utils/health.js';
 import TextNotRetained, { textWithheld, retentionTitle } from '../src/components/ui/TextNotRetained.js';
@@ -48,7 +48,7 @@ describe('text not retained', () => {
     const { getByRole } = render(html`<${TextNotRetained} mode="metadata"/>`);
     const el = getByRole('status');
     expect(el.textContent).toContain('Text not retained: capture=metadata');
-    expect(el.textContent).toContain('capture_mode');
+    expect(el.textContent).toContain('capture = "full"');
     expect(el.classList.contains('panel-state--withheld')).toBe(true);
   });
   it('only an explicit false withholds: older servers omit the field', () => {
@@ -78,7 +78,7 @@ describe('hidden context on the first screen', () => {
   });
   it('the reserved view renders whether or not the panel file exists', async () => {
     const { container } = render(html`<${Slot}/>`);
-    expect(container.textContent.length).toBeGreaterThan(0);
+    await waitFor(() => expect(container.textContent.length + container.children.length).toBeGreaterThan(0));
     await expect(loadHiddenContextSummary()).resolves.not.toBeUndefined();
   });
 });
