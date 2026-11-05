@@ -198,6 +198,52 @@ aictl db compact --dry-run
 session rows stay. On a database whose last data is older than the window, that means all of those
 rows. Check `--dry-run` and pick the window on purpose. The default is 30 days.
 
+## See which model and settings are really in force
+
+A model can be pinned far from the project, and stay pinned after everyone has forgotten it. This
+command shows the value in force, its file and line, its scope, and what it overrode. A source that
+is outside the project root says so: "not in this project, still in effect".
+
+```bash
+aictl ctx effective
+aictl ctx effective --tool copilot-cli
+aictl ctx effective --json
+aictl ctx effective --search-path   # also every location checked, including absent ones
+```
+
+It is read-only: it runs no tool and writes nothing. `aictl ctx audit` and the dashboard's hidden
+context panel show the same model findings:
+
+| Finding | Severity | Meaning |
+|---------|----------|---------|
+| `model.pin-conflicts-request` | high | A pin differs from a model asked for in agent frontmatter, an instruction, `--model` or a subagent call. Both sides are shown |
+| `model.request-failed` | high | A session log has a model error. It shows the session id, the model and the error category, never prompt text |
+| `model.ran-differently` | medium | The model in a session's replies differs from the one selected |
+| `model.outside-project` | medium | A pin in force comes from outside the project root |
+| `model.unrecognized` | medium | A pinned id is not in aictl's table. This does not mean the model is retired |
+| `model.pin-agrees` | info | A request and the pin name the same model |
+| `source.user-level-outside-root` | low, or medium when it differs from a repo file | A user-level source changes behaviour here |
+
+The Copilot CLI order is: custom agent `model`, `--model`, `COPILOT_MODEL`, `model` in `settings.json`,
+then the CLI default. An agent's model that is not available falls back to the current model with a
+warning. `subagents.agents.<name>.model` applies to that subagent.
+
+What could not be confirmed is marked `unverified` in the output:
+
+- A `model` key in `.github/copilot/settings.json` or `settings.local.json`. The config reference
+  puts these above user settings in general. The model reference and the CLI's startup resolver name
+  only the user file.
+- The order in the Copilot desktop app, and `planModel`, which has no reader in the CLI package.
+- MDM managed settings, whose location is not published.
+
+The current choice in VS Code's model picker is not in a settings file, so it is not shown. An
+organization's allow-list is held by the service, so it shows only as an error in a session log.
+
+On Windows, `--search-path` shows raw and expanded forms for `%APPDATA%`, `%LOCALAPPDATA%`,
+`%USERPROFILE%`, `%PROGRAMDATA%`, `COPILOT_HOME`, MSIX `LocalCache` copies of AppData, OneDrive
+`Documents`, VS Code profiles, Insiders and portable data, policy registry keys, and parent folders
+up to the drive root. These were tested by simulation, not on a Windows machine.
+
 ## Find hidden context
 
 Lists every source that can reach the model, including ones you never open: parent-directory files,
