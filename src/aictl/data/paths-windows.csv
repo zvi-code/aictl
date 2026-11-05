@@ -167,6 +167,7 @@ $HOME/.copilot/copilot-instructions.md,copilot-cli,github,cli,all,yes,global,ins
 {project-root}/.vscode/tasks.json,copilot-vscode,github,vscode,all,yes,project,config,no,0,rw,n/a,n/a,app-start,,Task runner definitions (build/test/lint),recursive,workspace
 {project-root}/.devcontainer/devcontainer.json,copilot-vscode,github,vscode,all,yes,project,config,no,0,rw,n/a,n/a,app-start,,Dev Container config (can embed AI settings and Copilot extensions),recursive,workspace
 %APPDATA%\Code\User\settings.json,copilot-vscode,github,vscode,windows,no,global,config,no,0,rw,n/a,n/a,app-start,,VS Code global user settings (Copilot/OTel preferences),literal,workspace
+%APPDATA%\Code\User\profiles\*\settings.json,copilot-vscode,github,vscode,windows,no,global,config,no,0,rw,n/a,n/a,app-start,,VS Code profile settings; apply while that profile is active,literal,none
 %APPDATA%\Code\User\mcp.json,copilot-vscode,github,vscode,windows,no,global,config,no,0,rw,n/a,n/a,app-start,,VS Code user-level MCP config (separate from .mcp.json),literal,workspace
 %APPDATA%\Code\User\chatLanguageModels.json,copilot-vscode,github,vscode,windows,no,global,config,no,0,rw,n/a,n/a,app-start,,Custom language model registrations,literal,workspace
 %USERPROFILE%\.vscode\extensions\github.copilot*\package.json,copilot-vscode,github,vscode,windows,no,global,extensions,no,0,read,n/a,n/a,app-start,,Copilot extension manifest (Windows),literal,workspace

@@ -640,6 +640,7 @@ Details: [how-to](docs/how-to.md#find-hidden-context).
 | `aictl session kill <session_id>` | Stop a live session |
 | `aictl ctx audit` | Hidden context: every source that can reach the model, drift, concealment, visibility gaps |
 | `aictl ctx audit --fail-on high --json` | The same for CI: exit 1 on a finding of that severity |
+| `aictl ctx effective` | Which model and settings are in force, where each comes from, and what each overrode |
 | `aictl daemon serve` | Launch live web dashboard with REST API at localhost:8484 |
 | `aictl daemon serve --capture metadata` | Run without storing conversation text; `off` stores nothing on disk |
 | `aictl daemon dashboard --root .` | Launch live terminal dashboard (TUI) |
