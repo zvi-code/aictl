@@ -1,9 +1,11 @@
-import { useState, useEffect, useMemo, useContext } from 'preact/hooks';
+import { useMemo, useContext } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS, fmtK, fmtSz, fmtPct, esc } from '../utils.js';
 import MiniChart from './MiniChart.js';
 import DataTable from './ui/DataTable.js';
+import PanelState, { panelStatus } from './ui/PanelState.js';
+import { usePolledResource } from '../hooks/usePolledResource.js';
 import * as api from '../api.js';
 import { contextWindowFor, isKnownModel } from '../models.js';
 
@@ -35,14 +37,11 @@ function TokenBarLegend() {
 
 export default function TabBudget() {
   const {snap: s, history: hist, enabledTools} = useContext(SnapContext);
-  const [budget, setBudget] = useState(null);
-  const [error, setError] = useState(false);
-  useEffect(()=>{
-    setBudget(null); setError(false);
-    api.getBudget().then(setBudget).catch(()=>setError(true));
-  },[]);
-  if(error) return html`<p class="error-state">Failed to load budget.</p>`;
-  if(!budget) return html`<p class="loading-state">Loading...</p>`;
+  const res = usePolledResource(() => api.getBudget(), [], { pollMs: 60000 });
+  const budget = res.data;
+  if(!budget) return html`<${PanelState} status=${panelStatus(res)} error=${res.error} onRetry=${res.reload}
+    label="token budget" skeletonHeight="240px" emptyTitle="No budget data"
+    emptyHint="The server returned nothing for /api/budget. It fills after the first scan of AI context files."/>`;
 
   const toolMatch = (t) => enabledTools === null || enabledTools.includes(t);
 

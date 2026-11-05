@@ -60,7 +60,7 @@ const CDashboardTab = lazy(() => import('./components/CDashboardTab.js'));
 const CPromptsTab = lazy(() => import('./components/CPromptsTab.js'));
 const CSessionsTab = lazy(() => import('./components/CSessionsTab.js'));
 
-const TabFallback = () => html`<div class="tab-skeleton" aria-busy="true" aria-label="Loading view">
+const TabFallback = () => html`<div class="tab-skeleton" role="status" aria-busy="true" aria-label="Loading view">
   <${Skeleton} height="120px" radius="var(--radius-sm)"/>
   <${Skeleton} height="200px" radius="var(--radius-sm)"/>
 </div>`;
@@ -472,7 +472,7 @@ export default function App() {
         <main class="main" id="main-content" tabindex="0" ref=${mainRef}>
           <div class="main-view" aria-label=${tabs.find(t => t.id === activeTab)?.label}>
             ${!ready
-              ? html`<div class="tab-skeleton" aria-busy="true" aria-label="Loading dashboard">
+              ? html`<div class="tab-skeleton" role="status" aria-busy="true" aria-label="Loading dashboard">
                   <${Skeleton} height="120px" radius="var(--radius-sm)"/>
                   <${Skeleton} height="60px"  radius="var(--radius-sm)"/>
                   <${Skeleton} height="200px" radius="var(--radius-sm)"/>

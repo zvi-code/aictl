@@ -191,10 +191,10 @@ describe('GlobalHeader', () => {
 
   it('renders banner with product name and opens palette trigger', () => {
     const openFn = vi.fn();
-    const { getByRole, getByLabelText } = render(html`<${GlobalHeader}
+    const { getByRole } = render(html`<${GlobalHeader}
       ...${defaults} onOpenPalette=${openFn}/>`);
     expect(getByRole('banner')).toBeInTheDocument();
-    fireEvent.click(getByLabelText(/open command palette/));
+    fireEvent.click(getByRole('button', { name: /open command palette/ }));
     expect(openFn).toHaveBeenCalledOnce();
   });
 

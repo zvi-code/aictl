@@ -74,3 +74,5 @@
 
 /* Virtual */
 .aictl-dt--virtual { position: relative; }
+.aictl-dt__filter { display: flex; align-items: center; gap: var(--sp-4); margin-bottom: var(--sp-3); }
+.aictl-dt__count { font-size: var(--fs-xs); color: var(--fg2); }

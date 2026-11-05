@@ -1,6 +1,7 @@
 import { Fragment } from 'preact';
 import { useState, useEffect, useMemo, useContext } from 'preact/hooks';
 import { html } from 'htm/preact';
+import PanelState from './ui/PanelState.js';
 import { SnapContext } from '../context.js';
 import { fmtK, fmtSz, fmtTime, fmtAgo } from '../utils.js';
 import ChartCard from './ChartCard.js';
@@ -23,7 +24,9 @@ function ResponseTimeSection({data}) {
   if (!data || !data.requests || !data.requests.length)
     return html`<div class="analytics-section">
       <div class="analytics-section-title">Response Time Analysis</div>
-      <p class="empty-state">No request data in this time range.</p>
+      <${PanelState} status="empty" emptyTitle="No request data in this time range"
+        emptyHint="Widen the time range. Response times need OTel telemetry from the tool."
+        emptyFix="aictl otel enable"/>
     </div>`;
 
   const reqs = data.requests;
@@ -143,9 +146,11 @@ function ToolUsageSection({data}) {
   if (!data || !data.invocations || !data.invocations.length)
     return html`<div class="analytics-section">
       <div class="analytics-section-title">Tool Usage</div>
-      <p class="empty-state">${data?.total_all_time
-        ? 'No tool invocation data in this time range. Try a wider range (' + data.total_all_time + ' invocations exist).'
-        : 'No tool invocation data yet. Configure Claude Code hooks to capture tool usage.'}</p>
+      ${data?.total_all_time
+        ? html`<${PanelState} status="empty" emptyTitle="No tool invocation data in this time range"
+            emptyHint=${'Try a wider range (' + data.total_all_time + ' invocations exist).'}/>`
+        : html`<${PanelState} status="empty" emptyTitle="No tool invocation data yet"
+            emptyHint="Tool usage comes from hooks. Install them, then run a session." emptyFix="aictl hooks install"/>`}
     </div>`;
 
   const invocations = data.invocations;
@@ -210,7 +215,8 @@ function MemorySection({data}) {
   if (!paths.length && !events.length)
     return html`<div class="analytics-section">
       <div class="analytics-section-title">File Write Activity</div>
-      <p class="empty-state">No file write data in this time range.</p>
+      <${PanelState} status="empty" emptyTitle="No file write data in this time range"
+        emptyHint="Widen the time range. Writes are recorded while the dashboard or the collector is running."/>
     </div>`;
 
   const displayPaths = showAll ? paths : paths.slice(0, 6);
@@ -301,6 +307,8 @@ export default function TabAnalytics() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [updatedAt, setUpdatedAt] = useState(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     setLoading(true);
@@ -311,19 +319,20 @@ export default function TabAnalytics() {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 15000);
     api.getAnalytics(analyticsUrl, { signal: ctrl.signal })
-      .then(d => { setData(d); setError(null); })
-      .catch(e => {
-        if (e.name === 'AbortError') setError('Request timed out');
-        else setData(null), setError(e.message);
-      })
+      .then(d => { setData(d); setError(null); setUpdatedAt(Date.now()); })
+      // Data for the previous range stays visible, marked stale by PanelState.
+      .catch(e => { setError(e.name === 'AbortError' ? 'The request timed out after 15 s.' : e.message); })
       .finally(() => { clearTimeout(timer); setLoading(false); });
     return () => { clearTimeout(timer); ctrl.abort(); };
-  }, [globalRange?.since, globalRange?.until]);
+  }, [globalRange?.since, globalRange?.until, attempt]);
+
+  const retry = () => setAttempt(n => n + 1);
 
   return html`<div class="analytics-grid">
-    ${loading && html`<p class="loading-state">Loading analytics...</p>`}
-    ${error && html`<p class="error-state">Error: ${error}</p>`}
-    ${!loading && !error && html`<${Fragment}>
+    ${loading && !data && html`<${PanelState} status="loading" label="analytics" skeletonHeight="240px"/>`}
+    ${error && !data && html`<${PanelState} status="error" error=${error} label="analytics" onRetry=${retry}/>`}
+    ${error && data && html`<${PanelState} status="stale" error=${error} updatedAt=${updatedAt} onRetry=${retry}/>`}
+    ${data && html`<${Fragment}>
       <${AnalyticsHealthBanner} health=${data?._health}/>
       <${ResponseTimeSection} data=${data?.response_time}/>
       <${ToolUsageSection} data=${data?.tools}/>

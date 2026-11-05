@@ -109,10 +109,11 @@ export default function GlobalHeader({
 
       <!-- Command palette trigger -->
       <button class="hdr-cmdk" type="button"
-        onClick=${onOpenPalette} aria-label="Commands: open command palette (⌘K)">
+        onClick=${onOpenPalette}>
         <${CommandIcon} size="14" aria-hidden="true"/>
         <span class="hdr-desktop-only">Commands</span>
-        <${Kbd} class="hdr-desktop-only">⌘K</${Kbd}>
+        <${Kbd} class="hdr-desktop-only" aria-hidden="true">⌘K</${Kbd}>
+        <span class="sr-only">open command palette</span>
       </button>
 
       <!-- Views dropdown -->
