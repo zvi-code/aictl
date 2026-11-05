@@ -121,6 +121,16 @@ describe('HiddenContextPanel', () => {
     expect(screen.getByTestId('unattributed').textContent).toContain('about 9000 of 40000');
   });
 
+  it('asks the server for a new audit only when Rescan is pressed', async () => {
+    mockFetch(report());
+    const { container } = render(html`<${HiddenContextPanel} />`);
+    await waitFor(() => expect(container.querySelector('[data-state="ready"]')).toBeTruthy());
+    expect(globalThis.fetch.mock.calls[0][0]).not.toContain('refresh');
+    fireEvent.click(screen.getByText('Rescan'));
+    await waitFor(() => expect(globalThis.fetch.mock.calls.length).toBeGreaterThan(1));
+    expect(globalThis.fetch.mock.calls[1][0]).toContain('/api/context-audit?refresh=1');
+  });
+
   it('keeps info findings collapsed, and shows the count', async () => {
     mockFetch(report());
     const { container } = render(html`<${HiddenContextPanel} />`);

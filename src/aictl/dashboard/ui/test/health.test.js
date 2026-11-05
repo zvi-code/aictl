@@ -94,6 +94,11 @@ describe('runningSessions', () => {
   it('sums memory across the whole process tree', () => {
     expect(sessionMemMb({ process_tree: [{ mem_mb: 2, children: [{ mem_mb: 3, children: [] }] }] })).toBe(5);
   });
+  it('uses the total a live update carries when the tree is not sent', () => {
+    expect(sessionMemMb({ mem_mb: 7.5 })).toBe(7.5);
+    expect(sessionMemMb({ process_tree: [], mem_mb: 7.5 })).toBe(7.5);
+    expect(sessionMemMb({})).toBe(0);
+  });
 });
 
 describe('summarizeCosts', () => {

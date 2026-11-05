@@ -242,4 +242,88 @@ describe('useDashboard', () => {
     expect(result.current.history.ts).toContain(2);
     expect(result.current.lastUpdateAt).toBeGreaterThan(0);
   });
+
+  const tick = (n, extra = {}) => ({
+    timestamp: n, total_files: 5, total_tokens: 100, total_cpu: 0, total_mem_mb: 0, total_mcp_servers: 0,
+    total_memory_tokens: 0, total_live_sessions: 0, total_live_estimated_tokens: 0,
+    tools: [{ tool: 'claude-code', live: { cpu_percent: n } }], ...extra,
+  });
+  const wait = ms => act(async () => { await new Promise(r => setTimeout(r, ms)); });
+
+  it('does not fetch the snapshot again on a timer while the stream is healthy', async () => {
+    const api = await import('../src/api.js');
+    const { useDashboard } = await import('../src/hooks/useDashboard.js');
+    api.getSnapshot.mockClear();
+    renderHook(() => useDashboard({ EventSourceClass: FakeEventSource, refreshMs: 15, stallMs: 400, applyMs: 0 }));
+    await wait(10);
+    for (let n = 1; n <= 8; n++) { await act(async () => { FakeEventSource.last.emit(tick(n)); }); await wait(20); }
+    expect(api.getSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('fetches the snapshot again when the stream has stalled', async () => {
+    const api = await import('../src/api.js');
+    const { useDashboard } = await import('../src/hooks/useDashboard.js');
+    api.getSnapshot.mockClear();
+    renderHook(() => useDashboard({ EventSourceClass: FakeEventSource, refreshMs: 15, stallMs: 40 }));
+    await wait(150);
+    expect(api.getSnapshot.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it('fetches the snapshot again when the stream reports other file lists', async () => {
+    const api = await import('../src/api.js');
+    const { useDashboard } = await import('../src/hooks/useDashboard.js');
+    api.getSnapshot.mockClear();
+    api.getSnapshot.mockResolvedValueOnce({ total_tokens: 1, tools: [{ tool: 'claude-code' }], tools_rev: 'r1' });
+    renderHook(() => useDashboard({ EventSourceClass: FakeEventSource, refreshMs: 0, applyMs: 0, minRefetchGapMs: 0 }));
+    await wait(10);
+    await act(async () => { FakeEventSource.last.emit(tick(1, { tools_rev: 'r1' })); });
+    await wait(20);
+    expect(api.getSnapshot).toHaveBeenCalledTimes(1);
+    await act(async () => { FakeEventSource.last.emit(tick(2, { tools_rev: 'r2' })); });
+    await wait(30);
+    expect(api.getSnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it('fetches the snapshot again when a hidden tab lost queued messages', async () => {
+    const api = await import('../src/api.js');
+    const { useDashboard } = await import('../src/hooks/useDashboard.js');
+    api.getSnapshot.mockClear();
+    renderHook(() => useDashboard({ EventSourceClass: FakeEventSource, refreshMs: 0, applyMs: 0, maxQueued: 2 }));
+    await wait(10);
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+    await act(async () => { for (let n = 1; n <= 3; n++) FakeEventSource.last.emit(tick(n)); });
+    hidden.mockReturnValue(false);
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+    await wait(10);
+    expect(api.getSnapshot).toHaveBeenCalledTimes(2);
+    hidden.mockRestore();
+  });
+
+  it('does not fetch again when a hidden tab kept all its messages', async () => {
+    const api = await import('../src/api.js');
+    const { useDashboard } = await import('../src/hooks/useDashboard.js');
+    api.getSnapshot.mockClear();
+    renderHook(() => useDashboard({ EventSourceClass: FakeEventSource, refreshMs: 0, applyMs: 0, maxQueued: 5 }));
+    await wait(10);
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+    await act(async () => { for (let n = 1; n <= 3; n++) FakeEventSource.last.emit(tick(n)); });
+    hidden.mockReturnValue(false);
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+    await wait(10);
+    expect(api.getSnapshot).toHaveBeenCalledTimes(1);
+    hidden.mockRestore();
+  });
+
+  it('merges every message of a batch, so an omitted key does not hide an earlier change', async () => {
+    const { useDashboard } = await import('../src/hooks/useDashboard.js');
+    const { result } = renderHook(() => useDashboard({ EventSourceClass: FakeEventSource, refreshMs: 0, applyMs: 200 }));
+    await wait(10);
+    await act(async () => {
+      FakeEventSource.last.emit(tick(1, { events: [{ kind: 'new' }], sessions: [{ session_id: 'a' }] }));
+      FakeEventSource.last.emit(tick(2, { sessions_delta: { upsert: [{ session_id: 'b' }], remove: [] } }));
+    });
+    await wait(300);
+    expect(result.current.snapshot.events).toEqual([{ kind: 'new' }]);
+    expect(result.current.snapshot.sessions.map(s => s.session_id)).toEqual(['a', 'b']);
+  });
 });

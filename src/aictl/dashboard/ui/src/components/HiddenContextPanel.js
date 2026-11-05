@@ -155,7 +155,9 @@ export function HiddenContextPanel() {
   const [showInfo, setShowInfo] = useState(false);
   const ctx = useContext(SnapContext);
   const enabledTools = ctx?.enabledTools ?? null;
-  const { data: audit, loading, error } = useAsyncResource(() => fetchJson('/api/context-audit'), [generation]);
+  const { data: audit, loading, error } = useAsyncResource(
+    // The server keeps the audit for a few minutes; Rescan asks for a new one.
+    () => fetchJson(generation ? '/api/context-audit?refresh=1' : '/api/context-audit'), [generation]);
   // The audit comes from the server for all tools; the filter scopes it here.
   const data = useMemo(() => scopeAudit(audit, enabledTools), [audit, enabledTools]);
   const refresh = () => setGeneration(g => g + 1);

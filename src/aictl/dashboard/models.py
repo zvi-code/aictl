@@ -9,6 +9,7 @@ for all dashboard renderers (web, TUI, static HTML report).
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import os
 from dataclasses import dataclass, field
@@ -36,6 +37,31 @@ _TEAM_SUMMARY_KEYS = frozenset(
 def _slim_agent_teams(teams: list[dict]) -> list[dict]:
     """Strip per-agent detail from agent_teams, keeping team-level summaries."""
     return [{k: v for k, v in t.items() if k in _TEAM_SUMMARY_KEYS} for t in teams]
+
+
+def tools_revision(tools: list) -> str:
+    """A short digest of the per-tool lists a client only learns from /api/snapshot.
+
+    It covers which files, processes and MCP servers each tool has, not their
+    changing numbers (CPU, memory), so it moves only when a client's copy of
+    those lists is out of date. Live updates carry it; a client that sees it
+    differ from the one in its snapshot fetches the snapshot again.
+    """
+    digest = hashlib.blake2b(digest_size=8)
+    for t in tools:
+        digest.update(f"{t.tool}\x00".encode())
+        for f in t.files:
+            digest.update(f"{f.path}\x01{f.size}\x01{f.tokens}\x01{f.mtime}\x02".encode())
+        for p in t.processes:
+            pid, name = (
+                (p.get("pid"), p.get("name"))
+                if isinstance(p, dict)
+                else (getattr(p, "pid", ""), getattr(p, "name", ""))
+            )
+            digest.update(f"p{pid}\x01{name}\x02".encode())
+        for m in t.mcp_servers:
+            digest.update(f"m{m.get('name', '') if isinstance(m, dict) else m}\x02".encode())
+    return digest.hexdigest()
 
 
 STATUS_COLOURS: dict[str, str] = {
@@ -211,6 +237,7 @@ class DashboardSnapshot:
         """
         d = self.to_dict()
         d["agent_teams"] = _slim_agent_teams(d.get("agent_teams", []))
+        d["tools_rev"] = tools_revision(self.tools)
         return d
 
     def to_json(self, indent: int | None = None) -> str:

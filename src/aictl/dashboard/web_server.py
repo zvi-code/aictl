@@ -24,6 +24,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import re
 import sys
 import threading
 import time
@@ -43,7 +44,7 @@ from .analytics import (  # noqa: F401 — re-exports
     _compute_tools,
 )
 from .api_handlers import _APIHandlersMixin
-from .models import DashboardSnapshot, _slim_agent_teams
+from .models import DashboardSnapshot, _slim_agent_teams, tools_revision
 
 # ── Re-exports for backward compatibility ────────────────────────
 # Other modules (tests, orchestrator) import these from web_server.
@@ -106,6 +107,62 @@ def _static_dist_candidates() -> list[Path]:
         Path(__file__).parent / "dist",
         Path(__file__).parent / "ui" / "dist",
     ]
+
+
+# ─── Response compression ────────────────────────────────────────
+
+# Bodies at or below this size are sent as they are: gzip saves nothing there.
+_GZIP_MIN_BYTES = 1024
+# File names that carry a content hash (Vite writes name-HASH.ext), so a cached
+# copy can never be stale and may be kept for a year.
+_HASHED_ASSET = re.compile(r"-[A-Za-z0-9_-]{8}\.(?:js|css|woff2?|png|svg|jpg|webp)$")
+_COMPRESSIBLE_TYPES = ("text/", "application/json", "application/javascript", "image/svg+xml")
+
+
+def _accepts_gzip(header: str | None) -> bool:
+    """True when an Accept-Encoding value allows gzip (a ``gzip;q=0`` refuses it)."""
+    for part in (header or "").split(","):
+        name, _, params = part.strip().partition(";")
+        if name.strip().lower() in ("gzip", "x-gzip"):
+            q = re.search(r"q\s*=\s*([0-9.]+)", params)
+            try:
+                return float(q.group(1)) > 0 if q else True
+            except ValueError:
+                return False
+    return False
+
+
+def _gzip_bytes(body: bytes, level: int = 6) -> bytes:
+    # mtime=0 keeps the output identical for identical input.
+    return gzip.compress(body, compresslevel=level, mtime=0)
+
+
+class _GzipMemo:
+    """The compressed form of the last body seen for each key.
+
+    The snapshot and the static files are served many times unchanged; this
+    keeps them from being compressed again on every request.
+    """
+
+    def __init__(self, max_keys: int = 64) -> None:
+        self._lock = threading.Lock()
+        self._items: dict[str, tuple[object, bytes]] = {}
+        self._max_keys = max_keys
+
+    def get(self, key: str, token: object, body: bytes) -> bytes:
+        with self._lock:
+            hit = self._items.get(key)
+            if hit and hit[0] == token:
+                return hit[1]
+        packed = _gzip_bytes(body)
+        with self._lock:
+            if len(self._items) >= self._max_keys and key not in self._items:
+                self._items.pop(next(iter(self._items)))
+            self._items[key] = (token, packed)
+        return packed
+
+
+_GZIP_MEMO = _GzipMemo()
 
 
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
@@ -324,12 +381,45 @@ def _extract_file_write_row(
 # ─── SSE summary builder ─────────────────────────────────────────
 
 
-def build_sse_summary(snap: DashboardSnapshot) -> dict:
-    """Build lightweight SSE summary from a full snapshot.
+# Parts of the live monitor the UI never reads from a live update. ``tools``,
+# ``events`` and ``sessions`` repeat what the top-level keys already carry (and
+# ``sessions`` brings every process tree), so they stay in /api/snapshot only.
+_SSE_LIVE_MONITOR_HEAVY = frozenset({"tools", "events", "sessions"})
 
-    Keeps SSE messages small (~2-5KB) while covering all top-level keys
-    from DashboardSnapshot.to_dict().  Per-tool detail (files, processes)
-    is omitted — the frontend re-fetches the full snapshot periodically.
+
+def _tree_mem_mb(nodes: list) -> float:
+    return sum(float(n.get("mem_mb") or 0) + _tree_mem_mb(n.get("children") or []) for n in nodes or [])
+
+
+def _compact_session(s: dict) -> dict:
+    return {
+        "session_id": s.get("session_id", ""),
+        "tool": s.get("tool", ""),
+        "label": s.get("label", ""),
+        "project": s.get("project", ""),
+        "started_at": s.get("started_at", 0),
+        "last_seen_at": s.get("last_seen_at", 0),
+        "duration_s": s.get("duration_s", 0),
+        "cpu_percent": s.get("cpu_percent", 0),
+        "mem_mb": round(_tree_mem_mb(s.get("process_tree") or []), 1),
+        "exact_input_tokens": s.get("exact_input_tokens", 0),
+        "exact_output_tokens": s.get("exact_output_tokens", 0),
+        "file_events": s.get("file_events", 0),
+        "pids": len(s.get("pids", [])),
+    }
+
+
+def build_sse_summary(snap: DashboardSnapshot) -> dict:
+    """Build the live-update message from a full snapshot.
+
+    Per-tool detail (files, processes) is left out; ``tools_rev`` tells the
+    client when its copy from /api/snapshot is out of date. Process trees and
+    recent subprocesses are left out too (``live_monitor`` keeps only its
+    diagnostics and paths, ``sessions`` is one compact row per session).
+    The size of a message grows with the number of live sessions; the server
+    sends large keys only when they change, and sessions as row changes
+    (see ``_omit_unchanged_sse_keys``). A tick with a few hundred sessions of
+    which a few are active is a few KB.
     """
     return {
         "timestamp": snap.timestamp,
@@ -353,6 +443,7 @@ def build_sse_summary(snap: DashboardSnapshot) -> dict:
         "total_live_outbound_rate_bps": snap.total_live_outbound_rate_bps,
         "total_live_estimated_tokens": snap.total_live_estimated_tokens,
         "total_live_files_touched": snap.total_live_files_touched,
+        "tools_rev": tools_revision(snap.tools),
         # Per-tool summary (no files, just aggregates + live)
         "tools": [
             {
@@ -369,29 +460,13 @@ def build_sse_summary(snap: DashboardSnapshot) -> dict:
             for t in snap.tools
             if t.tool != "aictl"
         ],
-        # Enrichment data (small enough for SSE)
         "agent_memory": _asdict_list(snap.agent_memory),
         "mcp_detail": _asdict_list(snap.mcp_detail),
-        "live_monitor": snap.live_monitor or {},
+        "live_monitor": {k: v for k, v in (snap.live_monitor or {}).items() if k not in _SSE_LIVE_MONITOR_HEAVY},
         "tool_telemetry": snap.tool_telemetry,
         "tool_configs": snap.tool_configs,
-        # Events (lightweight)
         "events": snap.events[-50:] if snap.events else [],
-        # Active sessions (compact: id, tool, duration, tokens)
-        "sessions": [
-            {
-                "session_id": s.get("session_id", ""),
-                "tool": s.get("tool", ""),
-                "project": s.get("project", ""),
-                "duration_s": s.get("duration_s", 0),
-                "cpu_percent": s.get("cpu_percent", 0),
-                "exact_input_tokens": s.get("exact_input_tokens", 0),
-                "exact_output_tokens": s.get("exact_output_tokens", 0),
-                "file_events": s.get("file_events", 0),
-                "pids": len(s.get("pids", [])),
-            }
-            for s in (snap.sessions or [])
-        ],
+        "sessions": [_compact_session(s) for s in (snap.sessions or [])],
         "agent_teams": _slim_agent_teams(snap.agent_teams or []),
         "_sse_summary": True,
     }
@@ -401,12 +476,59 @@ def build_sse_summary(snap: DashboardSnapshot) -> dict:
 # message over the previous state, so a missing key keeps its last value.
 # Totals and ``tools`` are always sent: the UI appends them to its history.
 _SSE_OMITTABLE_KEYS = frozenset(
-    {"agent_memory", "mcp_detail", "live_monitor", "tool_telemetry", "tool_configs", "events", "sessions", "agent_teams"}
+    {"agent_memory", "mcp_detail", "live_monitor", "tool_telemetry", "tool_configs", "events", "agent_teams"}
 )
 
 
-def _omit_unchanged_sse_keys(data: str, sent: dict[str, int]) -> str:
-    """Drop omittable keys equal to what this client received last."""
+def _sessions_delta(summary: dict, sent: dict) -> None:
+    """Turn ``summary["sessions"]`` into row changes after the first message.
+
+    The first message of a connection carries every row. Later ones carry
+    ``sessions_delta = {"upsert": [rows], "patch": [fields], "remove": [ids]}``
+    or nothing when no row changed: ``upsert`` holds rows the client has not
+    seen, ``patch`` holds the session_id and only the fields that changed in a
+    row it has. A client merges the changes over the rows it already holds.
+    """
+    rows = summary.get("sessions")
+    if rows is None:
+        return
+    ids = [r.get("session_id") for r in rows]
+    mine = {r["session_id"]: r for r in rows}
+    before = sent.get("sessions_rows")
+    sent["sessions_rows"] = mine
+    if before is None or len(set(ids)) != len(ids) or "" in mine:
+        return  # first message, or ids a client could not key on: send the whole list
+    upsert, patch = [], []
+    for sid, row in mine.items():
+        old = before.get(sid)
+        if old is None:
+            upsert.append(row)
+        elif old != row:
+            patch.append({"session_id": sid, **{k: v for k, v in row.items() if old.get(k) != v}})
+    remove = [sid for sid in before if sid not in mine]
+    del summary["sessions"]
+    if upsert or patch or remove:
+        summary["sessions_delta"] = {"upsert": upsert, "patch": patch, "remove": remove}
+
+
+def _omit_unchanged_tool_live(summary: dict, sent: dict) -> None:
+    """Leave out a tool's ``live`` block when it equals what this client holds.
+
+    The client keeps the last ``live`` of each tool and puts it back when the
+    key is missing (``fillToolLive`` in selectors.js), so an idle tool costs
+    a few bytes per tick and the history still gets a point for it.
+    """
+    held = sent.setdefault("tool_live", {})
+    for tool in summary.get("tools") or []:
+        digest = hash(json.dumps(tool.get("live"), sort_keys=True))
+        if held.get(tool["tool"]) == digest:
+            tool.pop("live", None)
+        else:
+            held[tool["tool"]] = digest
+
+
+def _omit_unchanged_sse_keys(data: str, sent: dict) -> str:
+    """Drop what this client already holds: unchanged large keys, unchanged session rows."""
     summary = json.loads(data)
     for key in _SSE_OMITTABLE_KEYS & summary.keys():
         digest = hash(json.dumps(summary[key], sort_keys=True))
@@ -414,7 +536,9 @@ def _omit_unchanged_sse_keys(data: str, sent: dict[str, int]) -> str:
             del summary[key]
         else:
             sent[key] = digest
-    return json.dumps(summary)
+    _omit_unchanged_tool_live(summary, sent)
+    _sessions_delta(summary, sent)
+    return json.dumps(summary, separators=(",", ":"))
 
 
 # ─── HTTP handler ────────────────────────────────────────────────
@@ -1005,12 +1129,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         html = html.replace("%%TOOL_COLORS_JS%%", _make_js_colors())
         html = html.replace("%%TOOL_ICONS_JS%%", _make_js_icons())
         html = html.replace("%%TAXONOMY_JS%%", _make_js_taxonomy())
-        body = html.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        self.wfile.write(body)
+        self._send_body(html.encode("utf-8"), "text/html; charset=utf-8", cache_control="no-cache", cors=False)
 
     def _serve_static(self, path: str) -> None:
         """Serve static assets from the dist/ directory."""
@@ -1034,27 +1153,58 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self.send_error(404, "Not found")
             return
         mime, _ = mimetypes.guess_type(str(file_path))
+        mime = mime or "application/octet-stream"
+        stat = file_path.stat()
+        # A hashed name never changes content, so browsers keep it for a year.
+        # Any other file is revalidated with its ETag.
+        hashed = bool(_HASHED_ASSET.search(file_path.name))
+        compressible = mime.startswith(_COMPRESSIBLE_TYPES)
+        gz = compressible and stat.st_size > _GZIP_MIN_BYTES and self._wants_gzip()
+        etag = None
+        if hashed:
+            cache_control = "public, max-age=31536000, immutable"
+        else:
+            cache_control = "no-cache"
+            etag = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}{"-gz" if gz else ""}"'
+            if self._check_etag(etag):
+                return
         body = file_path.read_bytes()
-        self.send_response(200)
-        self.send_header("Content-Type", mime or "application/octet-stream")
-        self.send_header("Cache-Control", "public, max-age=31536000, immutable")
-        self.end_headers()
-        self.wfile.write(body)
+        if not compressible:
+            # Images and fonts are already compressed: send them as they are.
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Cache-Control", cache_control)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self._send_body(
+            body,
+            mime,
+            cache_control=cache_control,
+            etag=etag,
+            memo_key=str(file_path),
+            memo_token=(stat.st_mtime_ns, stat.st_size),
+            cors=False,
+        )
 
     def _serve_snapshot(self) -> None:
         snap_bytes = self.server.store.snapshot_json_bytes
         if not snap_bytes:
             self.send_error(503, "No data yet")
             return
-        etag = f'"{self.server.store.version}"'
+        version = self.server.store.version
+        gz = len(snap_bytes) > _GZIP_MIN_BYTES and self._wants_gzip()
+        etag = f'"{version}-gz"' if gz else f'"{version}"'
         if self._check_etag(etag):
             return
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("ETag", etag)
-        self._send_cors_header()
-        self.end_headers()
-        self.wfile.write(snap_bytes)
+        self._send_body(
+            snap_bytes,
+            "application/json",
+            etag=etag,
+            memo_key="snapshot",
+            memo_token=(version, len(snap_bytes)),
+        )
 
     def _serve_file(self) -> None:
         qs = self._qs
@@ -1109,7 +1259,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self.end_headers()
 
             version = 0
-            self._sse_sent: dict[str, int] = {}
+            self._sse_sent: dict = {}
             # Send current snapshot immediately
             snap = self.server.store.snapshot
             if snap:
@@ -1153,6 +1303,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         """Send 304 if client ETag matches. Returns True when 304 was sent."""
         if self.headers.get("If-None-Match") == etag:
             self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Vary", "Accept-Encoding")
             self.end_headers()
             return True
         return False
@@ -1213,13 +1365,17 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         return v[0] if v else default
 
     def _serve_context_audit(self) -> None:
-        """Hidden-context audit of the served project, or of ?project= when given."""
-        from ..context_audit import run_audit
+        """Hidden-context audit of the served project, or of ?project= when given.
+
+        The answer is kept for a few minutes; ``?refresh=1`` runs it again.
+        """
+        from .audit_cache import AUDIT_CACHE
 
         wanted = self._qs_get("project")
         project = wanted if wanted and not _names_another_machine(wanted) and Path(wanted).is_dir() else self.server.root
         try:
-            self._json_response(run_audit(project, self._qs_get("tool") or None))
+            refresh = self._qs_get("refresh") in ("1", "true")
+            self._json_response(AUDIT_CACHE.get(project, self._qs_get("tool") or None, refresh=refresh))
         except Exception as exc:  # any failure must reach the panel's error state
             self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
 
@@ -1262,12 +1418,59 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         return float(v) if v else None
 
     def _json_response_raw(self, body: bytes, status: int = 200) -> None:
-        """Send pre-encoded JSON bytes as a response."""
+        """Send pre-encoded JSON bytes as a response, gzipped when the client allows it."""
+        self._send_body(body, "application/json", status=status)
+
+    def _wants_gzip(self) -> bool:
+        return _accepts_gzip(self.headers.get("Accept-Encoding"))
+
+    def _send_body(
+        self,
+        body: bytes,
+        content_type: str,
+        *,
+        status: int = 200,
+        cache_control: str | None = None,
+        etag: str | None = None,
+        memo_key: str | None = None,
+        memo_token: object = None,
+        cors: bool = True,
+    ) -> None:
+        """Write a whole body with Content-Length, gzipped for clients that accept it.
+
+        With *memo_key* the compressed form is reused until *memo_token* changes.
+        """
+        gz = len(body) > _GZIP_MIN_BYTES and self._wants_gzip()
+        if (
+            etag is None
+            and status == 200
+            and content_type == "application/json"
+            and len(body) > _GZIP_MIN_BYTES
+            and getattr(self, "command", "") == "GET"
+        ):
+            # A polled endpoint whose answer did not change costs a 304, not the body.
+            etag = '"' + hashlib.blake2b(body, digest_size=12).hexdigest() + ("-gz" if gz else "") + '"'
+            if self._check_etag(etag):
+                return
+        packed = None
+        if gz:
+            packed = _GZIP_MEMO.get(memo_key, memo_token, body) if memo_key else _gzip_bytes(body, 5)
+        payload = packed if packed is not None else body
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self._send_cors_header()
+        self.send_header("Content-Type", content_type)
+        if packed is not None:
+            self.send_header("Content-Encoding", "gzip")
+        origin = self._cors_origin() if cors else None
+        self.send_header("Vary", "Origin, Accept-Encoding" if origin else "Accept-Encoding")
+        self.send_header("Content-Length", str(len(payload)))
+        if etag:
+            self.send_header("ETag", etag)
+        if cache_control:
+            self.send_header("Cache-Control", cache_control)
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
         self.end_headers()
-        self.wfile.write(body)
+        self.wfile.write(payload)
 
     def _receive_otel_signal(
         self,
