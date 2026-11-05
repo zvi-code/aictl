@@ -231,4 +231,18 @@ CLI: `aictl serve --db /path/to/custom.db`
 | 7d–30d | 5-minute averages | `GROUP BY 5-min bucket` |
 | >30d | Deleted | `DELETE WHERE ts < cutoff` |
 
-Compaction runs on startup and can be triggered via `db.compact()`.
+The daemon runs maintenance 10 minutes after start and then every 30 minutes, in small transactions. It leaves rows older than its first run alone for one retention period; `aictl db compact` removes them on request (`--dry-run` prints the expected size).
+
+## Bounds and capture modes
+
+Storage is a disposable cache. Losing history is acceptable; hurting the host is not.
+
+| `[storage]` key | Default | Effect |
+|---|---|---|
+| `capture` | `full` | `full`: text kept, bounded. `metadata`: no prompt, response or tool payload text, and no file content (hashes and sizes stay). `off`: 64 MB in-memory store, no DB, WAL or log files. Also `aictl daemon serve --capture`. |
+| `max_total_mb` | 1024 | Budget for live DB pages, WAL and logs. Eviction order: rotated logs, text, message rows, then time series. Sessions, requests, agents, files and any table not listed for eviction stay. |
+| `content_retention_days` | 14 | With `full`: blank conversation text older than this. |
+
+Free pages do not count against the budget. Only `aictl db compact` (VACUUM) shrinks a file created before incremental vacuum. `aictl db trim-text` removes stored text from an existing DB.
+
+If the DB file is corrupt, full or stays locked, the daemon continues on the in-memory store and `/api/self-status` reports `storage_degraded`.

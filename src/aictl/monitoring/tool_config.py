@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -149,8 +150,22 @@ def _count_md_agents(root: Path, tool_dir: Path | None = None) -> int:
     return count
 
 
+_login_items_cache: tuple[float, set[str]] | None = None
+_LOGIN_ITEMS_TTL_S = 3600.0
+
+
 def _macos_login_items() -> set[str]:
-    """Get macOS login items (app names)."""
+    """Get macOS login items (app names); spawns osascript at most once per TTL."""
+    global _login_items_cache
+    now = time.monotonic()
+    if _login_items_cache is not None and now - _login_items_cache[0] < _LOGIN_ITEMS_TTL_S:
+        return _login_items_cache[1]
+    items = _read_macos_login_items()
+    _login_items_cache = (now, items)
+    return items
+
+
+def _read_macos_login_items() -> set[str]:
     if not IS_MACOS:
         return set()
     try:

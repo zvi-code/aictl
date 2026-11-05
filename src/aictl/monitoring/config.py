@@ -66,6 +66,9 @@ class MonitorConfig:
     once: bool = False
     duration_seconds: float | None = None
     debug_network: bool = False
+    # Path prefixes never reported as file activity: aictl's own logs and DB.
+    # Watching them is a feedback loop (log line -> file event -> log line).
+    ignored_paths: tuple[str, ...] = ()
     ignored_dir_names: tuple[str, ...] = (
         ".git",
         ".hg",

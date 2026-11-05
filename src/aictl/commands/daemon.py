@@ -40,8 +40,25 @@ from ..platforms import IS_WINDOWS, cursor_home_dir, load_config
 @click.option("--db", "db_path", default=None, type=click.Path(), help="Path to SQLite history database")
 @click.option("--stop", is_flag=True, help="Stop a running daemon")
 @click.option("--status", "show_status", is_flag=True, help="Show daemon status")
+@click.option(
+    "--capture",
+    type=click.Choice(["full", "metadata", "off"]),
+    default=None,
+    help="What to store: full (bounded text), metadata (no text), off (memory only, no files)",
+)
 def serve(
-    root_dir, port, host, interval, open_browser, include_live_monitor, db_path, daemon_mode, headless, stop, show_status
+    root_dir,
+    port,
+    host,
+    interval,
+    open_browser,
+    include_live_monitor,
+    db_path,
+    daemon_mode,
+    headless,
+    stop,
+    show_status,
+    capture,
 ):
     """Start a live web dashboard with REST + SSE API.
 
@@ -50,6 +67,8 @@ def serve(
     monitoring mode. View the collected data later with ``aictl dashboard``
     or by starting ``aictl serve`` (web UI).
     """
+    if capture:
+        os.environ["AICTL_CAPTURE"] = capture
     cfg = load_config()
 
     # Apply config file defaults, CLI overrides take precedence
@@ -197,7 +216,8 @@ def _start_daemon(
 
     # Grandchild — daemon process
     sys.stdin.close()
-    log_fd = open(log_file, "a")
+    # capture=off keeps nothing on disk, including the daemon's log.
+    log_fd = open(os.devnull if cfg.capture == "off" else log_file, "a")
     os.dup2(log_fd.fileno(), sys.stdout.fileno())
     os.dup2(log_fd.fileno(), sys.stderr.fileno())
 
@@ -257,7 +277,11 @@ def _show_daemon_status(pid_file: Path, host: str, port: int):
         return
     try:
         pid = int(pid_file.read_text().strip())
-        os.kill(pid, 0)  # Check if alive
+        # Not os.kill(pid, 0): on Windows that terminates the process.
+        import psutil
+
+        if not psutil.pid_exists(pid):
+            raise ProcessLookupError(pid)
         click.secho(f"Daemon running (PID {pid})", fg="green")
         click.echo(f"  dashboard: http://{host}:{port}")
         click.echo(f"  pid file:  {pid_file}")

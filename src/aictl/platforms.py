@@ -8,6 +8,7 @@ Supports macOS, Windows, and Linux for every tool.
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 from dataclasses import dataclass, field
@@ -330,11 +331,13 @@ open_browser = true
 monitor = true
 
 [monitor]
-sample_interval = 1.0
-refresh_interval = 1.0
-process_interval = 1.0
-network_interval = 1.0
-telemetry_interval = 5.0
+# Seconds at full pace. With no dashboard client and no tool activity, polling
+# slows down by a factor of 6. Uncomment to override the built-in values.
+# sample_interval = 5.0
+# refresh_interval = 5.0
+# process_interval = 5.0
+# network_interval = 5.0
+# telemetry_interval = 30.0
 filesystem_enabled = true
 telemetry_enabled = true
 
@@ -350,6 +353,9 @@ log_file = ""  # Empty = auto (~/.config/aictl/aictl.log)
 db_path = ""  # Empty = auto (~/.config/aictl/history.db)
 flush_interval = 10.0  # Seconds between batch writes to SQLite
 retention_days = 30  # Delete data older than this
+capture = "full"  # full: text kept but bounded | metadata: no text | off: memory only, no files
+max_total_mb = 1024  # Budget for DB + WAL + logs; oldest data is evicted first
+content_retention_days = 14  # capture = "full": blank conversation text older than this
 
 [logging]
 enabled = false         # Set true to log every datapoint to file
@@ -371,11 +377,11 @@ class AictlConfig:
     serve_monitor: bool = True
 
     # monitor
-    sample_interval: float = 1.0
-    refresh_interval: float = 1.0
-    process_interval: float = 1.0
-    network_interval: float = 1.0
-    telemetry_interval: float = 5.0
+    sample_interval: float = 5.0
+    refresh_interval: float = 5.0
+    process_interval: float = 5.0
+    network_interval: float = 5.0
+    telemetry_interval: float = 30.0
     filesystem_enabled: bool = True
     telemetry_enabled: bool = True
     ignored_dirs: list[str] = field(
@@ -401,6 +407,9 @@ class AictlConfig:
     db_path: str = ""
     flush_interval: float = 10.0
     retention_days: int = 30
+    capture: str = "full"
+    max_total_mb: int = 1024
+    content_retention_days: int = 14
 
     # logging
     logging_enabled: bool = False
@@ -450,6 +459,9 @@ _CONFIG_MAP: dict[str, list[tuple[str, str, type]]] = {
         ("db_path", "db_path", str),
         ("flush_interval", "flush_interval", float),
         ("retention_days", "retention_days", int),
+        ("capture", "capture", str),
+        ("max_total_mb", "max_total_mb", int),
+        ("content_retention_days", "content_retention_days", int),
     ],
     "logging": [
         ("enabled", "logging_enabled", bool),
@@ -460,8 +472,64 @@ _CONFIG_MAP: dict[str, list[tuple[str, str, type]]] = {
 }
 
 
+CAPTURE_MODES = ("full", "metadata", "off")
+
+
+def cap_log_file(path: Path, max_bytes: int) -> None:
+    """Keep the daemon's log under ``max_bytes``: one old copy, then start over.
+
+    The daemon holds this file open in append mode as stdout, so truncating in
+    place is safe and renaming would not stop the writes.
+    """
+    try:
+        if path.stat().st_size <= max_bytes:
+            return
+        old = path.with_name(path.name + ".1")
+        with open(path, "rb") as src, open(old, "wb") as dst:
+            src.seek(-max_bytes // 2, os.SEEK_END)
+            dst.write(src.read())
+        os.truncate(path, 0)
+    except OSError:
+        pass  # a log problem must never affect collection
+
+# What older ``aictl config init`` wrote into [monitor]. These were template
+# defaults, not choices, and they pin the daemon to 1 s polling.
+_LEGACY_MONITOR_DEFAULTS = {
+    "sample_interval": 1.0,
+    "refresh_interval": 1.0,
+    "process_interval": 1.0,
+    "network_interval": 1.0,
+    "telemetry_interval": 5.0,
+}
+
+
+def _drop_legacy_monitor_defaults(data: dict) -> None:
+    """Treat a [monitor] block equal to the old template as unset.
+
+    All five values must match, so a deliberate setting of any of them keeps the
+    whole block in force. To really poll at those rates, change one value slightly.
+    """
+    sec = data.get("monitor", {})
+    if all(sec.get(k) == v for k, v in _LEGACY_MONITOR_DEFAULTS.items()):
+        for key in _LEGACY_MONITOR_DEFAULTS:
+            del sec[key]
+        logging.getLogger(__name__).info(
+            "Ignoring old default [monitor] intervals in config.toml; using the built-in values"
+        )
+
+
 def load_config() -> AictlConfig:
-    """Load config from TOML file, falling back to defaults."""
+    """Load config from TOML file and environment, falling back to defaults."""
+    cfg = _load_config_file()
+    # ``aictl daemon serve --capture`` passes its choice down this way.
+    cfg.capture = os.environ.get("AICTL_CAPTURE") or cfg.capture
+    if cfg.capture not in CAPTURE_MODES:
+        logging.getLogger(__name__).warning("Unknown capture mode %r; using 'full'", cfg.capture)
+        cfg.capture = "full"
+    return cfg
+
+
+def _load_config_file() -> AictlConfig:
     cfg = AictlConfig()
     path = config_path()
     if not path.is_file() or not _TOML_AVAILABLE:
@@ -479,6 +547,8 @@ def load_config() -> AictlConfig:
             cfg.serve_port = int(env_port)
         except ValueError:
             pass
+
+    _drop_legacy_monitor_defaults(data)
 
     for section, fields in _CONFIG_MAP.items():
         sec = data.get(section, {})
@@ -530,5 +600,8 @@ def show_config() -> str:
         f"  db_path         = {cfg.effective_db_path()}",
         f"  flush_interval  = {cfg.flush_interval}",
         f"  retention_days  = {cfg.retention_days}",
+        f"  capture         = {cfg.capture}",
+        f"  max_total_mb    = {cfg.max_total_mb}",
+        f"  content_retention_days = {cfg.content_retention_days}",
     ]
     return "\n".join(lines)
