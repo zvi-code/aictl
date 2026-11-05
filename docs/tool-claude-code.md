@@ -107,3 +107,20 @@ echo "$CLAUDE_CODE_ENABLE_TELEMETRY $OTEL_EXPORTER_OTLP_ENDPOINT"
 # Show active hook entries from project-local settings
 cat .claude/settings.local.jsocat .q .hooks
 ```
+
+## Local state and processes (checked 2026-11-05)
+
+Claude Code CLI 2.1.299 (`~/.local/share/claude/versions/`), VS Code extension 2.1.175, Desktop-bundled 2.1.317.
+`CLAUDE_CONFIG_DIR` relocates `~/.claude` (`platforms.claude_global_dir()` honours it).
+
+New or renamed under `~/.claude/` in 2.1.x: `daemon/` and `daemon.log` (background daemon),
+`jobs/<id>/{state.json,timeline.jsonl}`, `sessions/<pid>.json` (live session registry),
+`remote-settings.json` and `policy-limits.json` (account-synced), `state/`, `uploads/`, `downloads/`
+(replaces `download/`), `plugins/{installed_plugins.json,marketplaces,cache,data}`, and transcripts at
+`projects/<project>/<session-uuid>.jsonl`. Absent in 2.1.x: `statsig/`, `todos/`, `tasks/`, `image-cache/`, `telemetry/`.
+
+Three binaries exist with different parents: the CLI (`.../claude/versions/<ver>`), the VS Code extension
+(`~/.vscode/extensions/anthropic.claude-code-*/resources/native-binary/claude`) and Claude Desktop's copy
+(`~/Library/Application Support/Claude/claude-code/<ver>/<hash>/claude.app/Contents/MacOS/claude`, started
+through `Claude.app/Contents/Helpers/disclaimer`). The Desktop-bundled one must classify as `claude-code`,
+so its row precedes the Claude Desktop row.

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +21,134 @@ from urllib.request import Request, urlopen
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# ── Real-machine isolation ────────────────────────────────────────
+# The suite runs real install/uninstall/enable code, and that code resolves its
+# targets through Path.home(). Without this, a plain `pytest` rewrites the
+# developer's ~/.gemini/settings.json and ~/.config/aictl/env.sh, and CLI
+# subprocesses append to their real mutation ledger. So: HOME is replaced before
+# anything imports aictl (subprocesses inherit it), and an audit hook rejects any
+# write that still reaches a real tool config location.
+# `make test-tools` opts out, because real CLIs need the real login state.
+
+REAL_HOME_ALLOWED = os.environ.get("AICTL_TEST_REAL_HOME") == "1"
+
+_PROTECTED_RELATIVE = (
+    ".agents",
+    ".bash_profile",
+    ".bashrc",
+    ".claude",
+    ".claude.json",
+    ".codeium",
+    ".codex",
+    ".config/Code",
+    ".config/Cursor",
+    ".config/aictl",
+    ".copilot",
+    ".cursor",
+    ".gemini",
+    ".profile",
+    ".windsurf",
+    ".zprofile",
+    ".zshenv",
+    ".zshrc",
+    "AppData/Roaming/Claude",
+    "AppData/Roaming/Code",
+    "AppData/Roaming/Code - Insiders",
+    "AppData/Roaming/Cursor",
+    "AppData/Roaming/Windsurf",
+    "AppData/Roaming/aictl",
+    "Documents/PowerShell",
+    "Documents/WindowsPowerShell",
+    "Library/Application Support/Claude",
+    "Library/Application Support/Code",
+    "Library/Application Support/Cursor",
+    "Library/Application Support/Windsurf",
+)
+
+
+def _real_home() -> Path:
+    try:
+        import pwd
+    except ImportError:  # Windows
+        return Path.home()
+    return Path(pwd.getpwuid(os.getuid()).pw_dir)
+
+
+REAL_HOME = _real_home()
+_PROTECTED = tuple(os.path.normcase(str(REAL_HOME / relative)) for relative in _PROTECTED_RELATIVE)
+_WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+_real_home_violations: list[str] = []
+
+
+def _is_protected(path: object) -> bool:
+    if isinstance(path, bytes):
+        path = os.fsdecode(path)
+    if not isinstance(path, (str, os.PathLike)):
+        return False  # a file descriptor, or an unnamed database
+    resolved = os.path.normcase(os.path.abspath(os.fspath(path)))
+    return any(resolved == root or resolved.startswith(root + os.sep) for root in _PROTECTED)
+
+
+def _guard_real_home(event: str, args: tuple) -> None:
+    if event == "open":
+        path, mode, flags = args
+        writing = (isinstance(mode, str) and any(c in mode for c in "wax+")) or (
+            isinstance(flags, int) and bool(flags & _WRITE_FLAGS)
+        )
+        targets = (path,) if writing else ()
+    elif event == "os.rename":
+        targets = args[:2]
+    elif event in ("os.remove", "os.mkdir", "os.rmdir", "os.truncate", "sqlite3.connect"):
+        targets = args[:1]
+    else:
+        return
+    for target in targets:
+        if _is_protected(target):
+            message = f"test tried to touch real config ({event}): {os.fsdecode(target)}"
+            # Recorded as well as raised: production code that swallows the
+            # exception must not turn this back into a silent pass.
+            _real_home_violations.append(message)
+            raise PermissionError(message)
+
+
+if not REAL_HOME_ALLOWED:
+    _test_home = tempfile.mkdtemp(prefix="aictl-test-home-")
+    atexit.register(shutil.rmtree, _test_home, ignore_errors=True)
+    os.environ["HOME"] = _test_home
+    os.environ["USERPROFILE"] = _test_home
+    os.environ["XDG_CONFIG_HOME"] = os.path.join(_test_home, ".config")
+    # On Windows, aictl and VS Code resolve their config through these, not HOME.
+    os.environ["APPDATA"] = os.path.join(_test_home, "AppData", "Roaming")
+    os.environ["LOCALAPPDATA"] = os.path.join(_test_home, "AppData", "Local")
+    os.environ.pop("HOMEDRIVE", None)
+    os.environ.pop("HOMEPATH", None)
+    # These would point tool paths straight back at the real directories.
+    for _variable in ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "COPILOT_HOME"):
+        os.environ.pop(_variable, None)
+    # Temp-repo commits in tests have no global git identity under this HOME.
+    for _role in ("AUTHOR", "COMMITTER"):
+        os.environ.setdefault(f"GIT_{_role}_NAME", "aictl tests")
+        os.environ.setdefault(f"GIT_{_role}_EMAIL", "tests@aictl.invalid")
+    sys.addaudithook(_guard_real_home)
+
+
+def pytest_sessionfinish(session) -> None:
+    if _real_home_violations:
+        session.exitstatus = 1
+
+
+def pytest_terminal_summary(terminalreporter) -> None:
+    if _real_home_violations:
+        terminalreporter.section("writes to real config were blocked", red=True)
+        for line in sorted(set(_real_home_violations)):
+            terminalreporter.line(line)
+
+
+@pytest.fixture()
+def real_home_violations() -> list[str]:
+    """The guard's record, for tests that trigger it on purpose and clear it."""
+    return _real_home_violations
 
 
 @pytest.fixture(autouse=True)

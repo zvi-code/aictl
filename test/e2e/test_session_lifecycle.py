@@ -139,6 +139,10 @@ class TestSessionLifecycle:
         events = _make_session(sid, input_tokens=7777, output_tokens=1234)
         for ev in events:
             aictl_server.post_hook(ev)
+        # Stop is per-turn; SessionEnd is the terminal event and carries no tokens.
+        aictl_server.post_hook(
+            {"event": "SessionEnd", "session_id": sid, "tool": events[-1]["tool"], "ts": events[-1]["ts"] + 1}
+        )
         time.sleep(0.5)
 
         sessions = aictl_server.get_sessions(since="0")

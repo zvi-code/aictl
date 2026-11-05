@@ -32,6 +32,7 @@ from ..platforms import (
     claude_desktop_config,
     claude_global_dir,
     codex_global_dir,
+    copilot_global_dir,
     cursor_user_dir,
     vscode_user_dir,
     windsurf_global_dir,
@@ -1402,6 +1403,157 @@ def _parse_gemini_config(root: Path, tool: str = "gemini-cli") -> ToolConfig | N
     return _parse_generic_config(root, tool, spec)
 
 
+
+def _copilot_cli_version() -> str:
+    """Version of the npm-installed Copilot CLI, read from its package.json (never launches the binary)."""
+    exe = shutil.which("copilot")
+    if not exe:
+        return ""
+    try:
+        resolved = Path(exe).resolve()
+    except OSError:
+        return ""
+    candidates = [resolved.parent / "package.json", resolved.parent.parent / "package.json"]
+    node_modules = resolved.parent.parent / "node_modules" / "@github" / "copilot" / "package.json"
+    for pkg in (*candidates, node_modules):
+        data = _read_json(pkg)
+        if data and data.get("name") == "@github/copilot":
+            return str(data.get("version", ""))
+    return ""
+
+
+def _copilot_desktop_version() -> str:
+    """Version of the GitHub Copilot desktop app from its macOS bundle metadata."""
+    import plistlib
+
+    plist = Path("/Applications/GitHub Copilot.app/Contents/Info.plist")
+    try:
+        return str(plistlib.loads(plist.read_bytes()).get("CFBundleShortVersionString", ""))
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return ""
+
+
+def _parse_copilot_home_config(root: Path, tool: str = "copilot-cli") -> ToolConfig | None:
+    """Copilot CLI and the Copilot desktop app: both read ``~/.copilot`` (``COPILOT_HOME``).
+
+    Only files that exist are parsed; absent facts are reported as ``not configured``.
+    """
+    home = copilot_global_dir()
+    cfg = ToolConfig(tool=tool)
+    settings_path = home / "settings.json"
+    settings = _read_json(settings_path) or {}
+    if settings_path.is_file():
+        cfg.config_files.append(str(settings_path))
+    cfg.model = str(settings.get("model", ""))
+    if settings.get("effortLevel"):
+        cfg.settings["effort"] = settings["effortLevel"]
+
+    plugins = settings.get("enabledPlugins", {})
+    cfg.extensions = sorted(plugins) if isinstance(plugins, (dict, list)) else []
+    disabled = settings.get("disabledMcpServers", [])
+    cfg.settings["disabled_mcp_servers"] = list(disabled) if isinstance(disabled, (list, dict)) else []
+
+    for mcp_path in (home / "mcp-config.json", root / ".copilot" / "mcp-config.json", root / ".copilot-mcp.json"):
+        if mcp_path.is_file():
+            cfg.config_files.append(str(mcp_path))
+        for name in _mcp_server_names(_read_json(mcp_path)):
+            if name not in cfg.mcp_servers:
+                cfg.mcp_servers.append(name)
+
+    instr = home / "copilot-instructions.md"
+    cfg.settings["global_instructions"] = "configured" if instr.is_file() else "not configured"
+    if instr.is_file():
+        cfg.config_files.append(str(instr))
+
+    version = _copilot_desktop_version() if tool == "copilot-desktop" else _copilot_cli_version()
+    cfg.settings["version"] = version or "not detected"
+    cfg.settings["telemetry"] = "not configured"  # no documented Copilot CLI/desktop OTel setting is read
+    present = (
+        settings_path.is_file()
+        or bool(version)
+        or (tool == "copilot-desktop" and (home / "data.db").is_file())
+        or (tool == "copilot-cli" and (home / "session-state").is_dir())
+    )
+    return _finish(cfg, present)
+
+
+
+def _copilot_cli_version() -> str:
+    """Version of the npm-installed Copilot CLI, read from its package.json (never launches the binary)."""
+    exe = shutil.which("copilot")
+    if not exe:
+        return ""
+    try:
+        resolved = Path(exe).resolve()
+    except OSError:
+        return ""
+    for pkg in (
+        resolved.parent / "package.json",
+        resolved.parent.parent / "package.json",
+        resolved.parent.parent / "node_modules" / "@github" / "copilot" / "package.json",
+        resolved.parent / "node_modules" / "@github" / "copilot" / "package.json",  # Windows npm prefix layout
+    ):
+        data = _read_json(pkg)
+        if data and data.get("name") == "@github/copilot":
+            return str(data.get("version", ""))
+    return ""
+
+
+def _copilot_desktop_version() -> str:
+    """Version of the GitHub Copilot desktop app from its macOS bundle metadata."""
+    import plistlib
+
+    plist = Path("/Applications/GitHub Copilot.app/Contents/Info.plist")
+    try:
+        return str(plistlib.loads(plist.read_bytes()).get("CFBundleShortVersionString", ""))
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return ""
+
+
+def _parse_copilot_home_config(root: Path, tool: str = "copilot-cli") -> ToolConfig | None:
+    """Copilot CLI and the Copilot desktop app: both read ``~/.copilot`` (``COPILOT_HOME``).
+
+    Only files that exist are parsed; absent facts are reported as ``not configured``.
+    """
+    home = copilot_global_dir()
+    cfg = ToolConfig(tool=tool)
+    settings_path = home / "settings.json"
+    settings = _read_json(settings_path) or {}
+    if settings_path.is_file():
+        cfg.config_files.append(str(settings_path))
+    cfg.model = str(settings.get("model", ""))
+    if settings.get("effortLevel"):
+        cfg.settings["effort"] = settings["effortLevel"]
+
+    plugins = settings.get("enabledPlugins", {})
+    cfg.extensions = sorted(plugins) if isinstance(plugins, (dict, list)) else []
+    disabled = settings.get("disabledMcpServers", [])
+    cfg.settings["disabled_mcp_servers"] = list(disabled) if isinstance(disabled, (list, dict)) else []
+
+    for mcp_path in (home / "mcp-config.json", root / ".copilot" / "mcp-config.json", root / ".copilot-mcp.json"):
+        if mcp_path.is_file():
+            cfg.config_files.append(str(mcp_path))
+        for name in _mcp_server_names(_read_json(mcp_path)):
+            if name not in cfg.mcp_servers:
+                cfg.mcp_servers.append(name)
+
+    instr = home / "copilot-instructions.md"
+    cfg.settings["global_instructions"] = "configured" if instr.is_file() else "not configured"
+    if instr.is_file():
+        cfg.config_files.append(str(instr))
+
+    version = _copilot_desktop_version() if tool == "copilot-desktop" else _copilot_cli_version()
+    cfg.settings["version"] = version or "not detected"
+    cfg.settings["telemetry"] = "not configured"  # no documented Copilot CLI/desktop OTel setting is read
+    present = (
+        settings_path.is_file()
+        or bool(version)
+        or (tool == "copilot-desktop" and (home / "data.db").is_file())
+        or (tool == "copilot-cli" and (home / "session-state").is_dir())
+    )
+    return _finish(cfg, present)
+
+
 # ─── Config parser registry (tool name → parser function) ────────
 _CONFIG_PARSER_REGISTRY: dict[str, Callable] = {
     "vscode": _parse_vscode_config,
@@ -1409,6 +1561,10 @@ _CONFIG_PARSER_REGISTRY: dict[str, Callable] = {
     "claude-desktop": _parse_claude_desktop_config,
     "copilot": _parse_copilot_config,
     "copilot365": _parse_copilot365_config,
+    "copilot-cli": _parse_copilot_home_config,
+    "copilot-desktop": _parse_copilot_home_config,
+    "copilot-cli": _parse_copilot_home_config,
+    "copilot-desktop": _parse_copilot_home_config,
     "cursor": _parse_cursor_config,
     "codex-cli": _parse_codex_config,
     "windsurf": _parse_windsurf_config,

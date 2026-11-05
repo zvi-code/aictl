@@ -686,6 +686,52 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 | `--root DIR` | Root directory to monitor (default: `.`) |
 | `--interval SECS` | Refresh interval in seconds (default: `5`) |
 
+## GitHub Copilot: CLI, desktop app, VS Code
+
+aictl tracks three Copilot surfaces as separate tools: `copilot-cli`, `copilot-desktop`, `copilot-vscode`.
+Copilot CLI and the desktop app both keep state in `~/.copilot` (`%USERPROFILE%\.copilot` on Windows;
+`COPILOT_HOME` relocates it). VS Code Copilot Chat stores data under the VS Code user directory.
+
+**Enable** (the commands exist; their `--help` was checked, see "Not verified" below):
+
+```powershell
+aictl enable --dry-run     # preview what would be written
+aictl enable               # hooks + OTel + VS Code Copilot agent settings
+aictl daemon serve         # start the receiver (default port 8484, or $env:AICTL_PORT)
+```
+
+```bash
+aictl enable --dry-run && aictl enable && aictl daemon serve
+```
+
+**Verify:**
+
+```powershell
+aictl hooks verify         # POSTs a synthetic event through every installed hook
+aictl otel status          # receiver counters on the running server
+aictl status --tool copilot --json
+```
+
+`aictl status` reports, per surface, only what exists on disk: model, MCP servers, plugins, global
+instructions, version, and `not configured` / `not detected` where a fact is absent. Copilot CLI and
+desktop read `~/.copilot/settings.json` and `mcp-config.json`; the CLI version comes from its npm
+`package.json`, the desktop version from the macOS app bundle.
+
+**Remove:**
+
+```powershell
+aictl disable --dry-run
+aictl disable
+```
+
+**Not verified**
+- No command in this section was run on Windows.
+- `aictl enable` is documented to register hooks for Claude Code and VS Code Copilot; registration for
+  Copilot CLI and the desktop app has not been confirmed.
+- OTLP metrics for all three service names are accepted by the receiver, but token metrics alone do not
+  create a session row (see `test/e2e/test_copilot_flow.py`, strict xfail).
+- Desktop app version detection is macOS-only; on Windows it reports `not detected`.
+
 ## Windows Installation & Troubleshooting
 
 ### Prerequisites
@@ -833,7 +879,7 @@ make test-docker   # Docker fresh-install integration gate
 make test-all      # everything above
 ```
 
-The Makefile uses `.venv/bin/python` when the repo virtualenv exists; override with `make PYTHON=/path/to/python test` for another environment.
+The Makefile uses the pipx venv interpreter (`~/.local/pipx/venvs/aictl/bin/python`), the one environment `make install` sets up; override with `make PYTHON=/path/to/python test` for another environment.
 
 ### Reproducing the observability and control checks
 
@@ -842,14 +888,14 @@ Use this sequence after changing storage, hook ingestion, local-store ingesters,
 ```bash
 # Sanity checks before launching longer commands
 pwd
-.venv/bin/python -m pytest --version
-.venv/bin/python -c "import aictl; from aictl.storage import SCHEMA_VERSION; print(aictl.__file__, SCHEMA_VERSION)"
+~/.local/pipx/venvs/aictl/bin/python -m pytest --version
+~/.local/pipx/venvs/aictl/bin/python -c "import aictl; from aictl.storage import SCHEMA_VERSION; print(aictl.__file__, SCHEMA_VERSION)"
 command -v docker && docker info --format '{{.ServerVersion}}'
 command -v claude && claude --version
 command -v copilot && copilot --help >/dev/null
 
 # Fast local regression pass for the observability/control substrates
-.venv/bin/python -m pytest \
+~/.local/pipx/venvs/aictl/bin/python -m pytest \
   test/test_storage.py \
   test/test_api_endpoints.py \
   test/test_copilot_session_store_ingester.py \
@@ -881,7 +927,7 @@ Success means all commands exit 0 and these behaviors are specifically covered:
 Optional real Claude Code check, pinned to the full Haiku model id by default:
 
 ```bash
-AICTL_CLAUDE_MODEL=claude-haiku-4-5 .venv/bin/python -m pytest test/e2e_tools/test_claude_e2e.py -v --timeout=180
+AICTL_CLAUDE_MODEL=claude-haiku-4-5 ~/.local/pipx/venvs/aictl/bin/python -m pytest test/e2e_tools/test_claude_e2e.py -v --timeout=180
 ```
 
 Docker real-tool check, when `CLAUDE_CODE_OAUTH_TOKEN` is available:
@@ -904,8 +950,8 @@ The first Copilot command is a command-path check; the second is a manual real-s
 
 ```bash
 make test                                       # full unit suite
-.venv/bin/python -m pytest test/test_dashboard.py -v  # specific module
-.venv/bin/python test/run.py                         # legacy integration tests (deploy, import, scan)
+~/.local/pipx/venvs/aictl/bin/python -m pytest test/test_dashboard.py -v  # specific module
+~/.local/pipx/venvs/aictl/bin/python test/run.py                         # legacy integration tests (deploy, import, scan)
 ```
 
 Coverage includes:
@@ -924,7 +970,7 @@ Starts a real `aictl daemon serve` on a random port and posts synthetic hook/OTe
 ```bash
 make test-e2e
 # or directly:
-.venv/bin/python -m pytest test/e2e/ -v --timeout=120
+~/.local/pipx/venvs/aictl/bin/python -m pytest test/e2e/ -v --timeout=120
 ```
 
 Tests cover:
@@ -940,7 +986,7 @@ Runs actual AI tool CLIs in non-interactive mode and verifies hooks fire back to
 ```bash
 make test-tools
 # or directly:
-.venv/bin/python -m pytest test/e2e_tools/ -v --timeout=180
+~/.local/pipx/venvs/aictl/bin/python -m pytest test/e2e_tools/ -v --timeout=180
 ```
 
 **Requirements:** Claude Code (`claude`) and/or Gemini CLI (`gemini`) installed and authenticated. Tests that need a missing tool are automatically skipped.

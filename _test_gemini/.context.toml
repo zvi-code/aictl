@@ -1,9 +1,0 @@
-[instructions]
-base = '''
-Base instructions for Gemini
-'''
-
-[commands._always.test]
-content = '''
-Test command
-'''
