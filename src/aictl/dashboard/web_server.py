@@ -167,7 +167,7 @@ _GZIP_MEMO = _GzipMemo()
 
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 # These read whole conversations or any project, so they answer this machine only.
-_LOCAL_ONLY_ROUTES = ("/api/copilot-sessions", "/api/context-audit", "/api/effective-models")
+_LOCAL_ONLY_ROUTES = ("/api/copilot-sessions", "/api/context-audit", "/api/effective-models", "/api/board")
 
 
 def _local_request(client_host: str, host_header: str | None) -> bool:
@@ -594,6 +594,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._json_response(payload, status=status)
         elif path == "/api/effective-models":
             self._serve_effective_models()
+        elif path == "/api/board" or path.startswith("/api/board/"):
+            self._serve_board(path)
         elif path.startswith("/api/samples"):
             self._serve_samples()
         elif path == "/api/session-timeline":
@@ -684,6 +686,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._receive_hook()
         elif path == "/api/session-kill":
             self._serve_session_kill()
+        elif path == "/api/board/action":
+            self._serve_board_action()
         elif path == "/v1/metrics":
             self._receive_otel_metrics()
         elif path == "/v1/logs":
@@ -1387,6 +1391,42 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._json_response({tool: model_summary(self.server.root, tool) for tool in COPILOT_TOOLS})
         except Exception as exc:  # any failure must reach the panel's error state
             self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
+
+    def _serve_board(self, path: str) -> None:
+        """The panel dashboard and its detail routes."""
+        from .board_api import BoardRequestError, handle_get
+
+        try:
+            status, body = handle_get(path, urlparse(self.path).query, self._db, self.server.store)
+        except BoardRequestError as exc:
+            self._json_response({"error": str(exc)}, status=400)
+            return
+        except Exception as exc:  # any failure must reach the panel's error state
+            logger.exception("Board route failed")
+            self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
+            return
+        self._json_response_raw(body, status=status)
+
+    def _serve_board_action(self) -> None:
+        """Run one maintenance action of the panel dashboard. This machine only."""
+        from .board_api import run_action
+
+        if not _local_request(self.client_address[0], self.headers.get("Host")):
+            self._json_response({"error": "This route answers requests from this machine only."}, status=403)
+            return
+        content_length = self._content_length()
+        if content_length is None:
+            return
+        if content_length > 100_000:
+            self.send_error(413, "Payload too large")
+            return
+        try:
+            data = json.loads(self.rfile.read(content_length) or b"{}")
+        except (json.JSONDecodeError, OSError):
+            self._json_response({"error": "Invalid JSON"}, status=400)
+            return
+        status, payload = run_action(self._db, self.server.root, data, self.server.server_address[1])
+        self._json_response(payload, status=status)
 
     def _json_response(self, data, indent=None, status: int = 200) -> None:
         """Send a JSON response."""
