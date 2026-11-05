@@ -5,6 +5,8 @@ import { SnapContext } from '../context.js';
 import { COLORS, VENDOR_LABELS, EVENT_COLORS, fmtK, fmtTok, fmtSz, fmtRate, fmtPct, esc, liveTokenTotal } from '../utils.js';
 import ChartCard from './ChartCard.js';
 import PanelState from './ui/PanelState.js';
+import { COST_ESTIMATE_NOTE, cloudOnly } from '../utils/tools.js';
+import CloudOnlyNotice from './ui/CloudOnlyNotice.js';
 import { ToolIcon } from './ui/index.js';
 import * as api from '../api.js';
 
@@ -78,6 +80,7 @@ export default function TabEventsStats() {
   if (!s) return html`<p class="loading-state">Loading...</p>`;
 
   const tool = tools.find(t => t.tool === selectedTool);
+  if (cloudOnly(tool)) return html`<${CloudOnlyNotice} tool=${tool}/>`;
   const telem = s.tool_telemetry?.find(t => t.tool === selectedTool);
   const live = tool?.live;
   const c = COLORS[selectedTool] || 'var(--fg2)';
@@ -141,7 +144,7 @@ export default function TabEventsStats() {
             <div class="es-kv-card"><div class="label">Cache Write (tok)</div><div class="value">${fmtTok(telem.cache_creation_tokens || 0)}</div></div>
             <div class="es-kv-card"><div class="label">Sessions</div><div class="value">${fmtK(telem.total_sessions || 0)}</div></div>
             <div class="es-kv-card"><div class="label">Messages</div><div class="value">${fmtK(telem.total_messages || 0)}</div></div>
-            <div class="es-kv-card"><div class="label">Cost</div><div class="value">${telem.cost_usd ? '$' + telem.cost_usd.toFixed(2) : '-'}</div></div>
+            <div class="es-kv-card" title=${COST_ESTIMATE_NOTE}><div class="label">Est. cost</div><div class="value">${telem.cost_usd ? '$' + telem.cost_usd.toFixed(2) : '-'}</div></div>
           </div>
           ${Object.keys(telem.by_model || {}).length > 0 && html`<div style="margin-top:var(--sp-3)">
             <div class="es-section-title">By Model</div>

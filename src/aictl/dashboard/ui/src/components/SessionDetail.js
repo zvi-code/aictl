@@ -73,7 +73,7 @@ export default function SessionDetail({session, onClose}) {
     <${Panel} title="Resources" icon="layers" badge=${fmtK(inTok + outTok) + ' tok'}>
       <${ResourcesPanel} session=${session}/>
     <//>
-    <${Panel} title="Cost by Model" icon="banknote" defaultOpen=${false}>
+    <${Panel} title="Estimated cost by model" icon="banknote" defaultOpen=${false}>
       <${CostByModelPanel} sessionId=${session.session_id}/>
     <//>
     <${Panel} title="Tool Calls" icon="wrench" defaultOpen=${false}>
@@ -91,7 +91,7 @@ export default function SessionDetail({session, onClose}) {
     <${Panel} title="API Calls" icon="globe" defaultOpen=${false}>
       <${ApiCallsPanel} sessionId=${session.session_id}/>
     <//>
-    ${session.project && html`<${Panel} title="Project Costs" icon="banknote" defaultOpen=${false}>
+    ${session.project && html`<${Panel} title="Estimated project costs" icon="banknote" defaultOpen=${false}>
       <${ProjectCostPanel} project=${session.project}/>
     <//>`}
     ${session.project && session.tool && html`<${Panel} title="Run History" icon="line-chart" defaultOpen=${false}>

@@ -5,6 +5,13 @@ import { fmtSz } from '../utils.js';
 
 const RANK = { error: 0, warn: 1, info: 2 };
 
+/** `aictl enable --tool` takes a family name, not a tool id. */
+function enableCommand(tool, port) {
+  if (tool === 'claude-code') return `aictl hooks install --port ${port}`;
+  const family = ['copilot', 'gemini', 'codex'].find(f => String(tool).startsWith(f));
+  return `aictl enable${family ? ' --tool ' + family : ''} --port ${port}`;
+}
+
 function hookIssues(hooks) {
   if (!hooks?.tools) return [];
   const out = [];
@@ -12,9 +19,7 @@ function hookIssues(hooks) {
   for (const t of Object.values(hooks.tools)) {
     if (t.status === 'missing') {
       // `hooks install` configures Claude Code only; `enable` covers the rest.
-      const fix = t.tool === 'claude-code'
-        ? `aictl hooks install --port ${port}`
-        : `aictl enable --port ${port}`;
+      const fix = enableCommand(t.tool, port);
       out.push({
         id: 'hooks:' + t.tool, level: 'warn',
         title: `${t.tool}: hooks not installed`,
@@ -39,7 +44,7 @@ function hookIssues(hooks) {
         id: 'hooks:' + t.tool, level: 'error',
         title: `${t.tool}: hooks misconfigured`,
         detail: first ? `${first.message} (${first.path}${more})` : 'Hook checks failed.',
-        fix: `aictl enable --port ${port}`,
+        fix: enableCommand(t.tool, port),
       });
     }
   }

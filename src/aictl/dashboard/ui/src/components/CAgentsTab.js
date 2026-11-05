@@ -1,4 +1,6 @@
 import { useState, useContext, useEffect, useMemo } from 'preact/hooks';
+import { cloudOnly } from '../utils/tools.js';
+import CloudOnlyNotice from './ui/CloudOnlyNotice.js';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { fmtK, liveTokenTotal, toolColor } from '../utils.js';
@@ -368,8 +370,9 @@ function AgentDetail({ tool: t, toolConfig, hooksStatus, onViewSessions, onViewC
     </div>
     ${notes && html`<div class="cagents-detail-notes">${notes}</div>`}
 
-    <div class="cagents-detail-section"><${Rule} label="Stats"/></div>
-    <div class="cagents-stats-grid">
+    ${cloudOnly(t) && html`<${CloudOnlyNotice} tool=${t}/>`}
+    <div class="cagents-detail-section" hidden=${cloudOnly(t)}><${Rule} label="Stats"/></div>
+    <div class="cagents-stats-grid" hidden=${cloudOnly(t)}>
       ${stats.map(([k, v]) => html`<${Stat} key=${k} label=${k} value=${v}/>`)}
     </div>
 

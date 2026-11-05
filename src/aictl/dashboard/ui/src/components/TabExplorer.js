@@ -26,6 +26,7 @@ import * as api from '../api.js';
 
 import { takePendingSelect, clearPendingSelect, rememberSession } from '../utils/sessionBus.js';
 import { writeUrl } from '../hooks/urlState.js';
+import { shortPath } from '../utils/paths.js';
 import SessionDetail from './SessionDetail.js';
 import TabSessionFlow from './TabSessionFlow.js';
 import TabTranscript from './TabTranscript.js';
@@ -55,7 +56,7 @@ export function SessionHeader({ session }) {
     || (session.ended_at && session.started_at ? session.ended_at - session.started_at : 0);
   const isLive = !session.ended_at;
   const projShort = session.project
-    ? session.project.replace(/\\/g, '/').split('/').filter(Boolean).slice(-2).join('/')
+    ? shortPath(session.project)
     : '';
   const started = session.started_at
     ? new Date(session.started_at * 1000).toLocaleString([], {

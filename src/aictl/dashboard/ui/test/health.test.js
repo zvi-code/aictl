@@ -40,7 +40,7 @@ describe('deriveIssues', () => {
     } } });
     expect(i.level).toBe('error');
     expect(i.detail).toContain('+1 more');
-    expect(i.fix).toBe('aictl enable --port 8599');
+    expect(i.fix).toBe('aictl enable --tool gemini --port 8599');
   });
   it('warns when configured hooks never fired', () => {
     const [i] = deriveIssues({ ...base, hooks: { tools: {}, total_configured: 18, total_fired_24h: 0 } });

@@ -11,6 +11,7 @@ import RangeBar from '../RangeBar.js';
 import ToolFilterBar from '../ToolFilterBar.js';
 import { storageSummary, storageText } from '../../utils/health.js';
 import { fmtSz } from '../../utils.js';
+import { commandKeyLabel } from '../../utils/platform.js';
 
 // Data age past which the snapshot is considered stale. SSE pushes arrive
 // every few seconds and the safety-net refresh runs every 30s — anything
@@ -112,7 +113,7 @@ export default function GlobalHeader({
         onClick=${onOpenPalette}>
         <${CommandIcon} size="14" aria-hidden="true"/>
         <span class="hdr-desktop-only">Commands</span>
-        <${Kbd} class="hdr-desktop-only" aria-hidden="true">⌘K</${Kbd}>
+        <${Kbd} class="hdr-desktop-only" aria-hidden="true">${commandKeyLabel()}</${Kbd}>
         <span class="sr-only">open command palette</span>
       </button>
 
