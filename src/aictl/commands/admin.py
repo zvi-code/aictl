@@ -390,6 +390,19 @@ def _install_env(index_url: str | None) -> dict[str, str]:
     return env
 
 
+def _package_source(env: dict[str, str]) -> str:
+    """Where the install gets Python packages. Only the host: the URL can hold credentials."""
+    from urllib.parse import urlsplit
+
+    url = env.get("UV_DEFAULT_INDEX") or env.get("UV_INDEX_URL")
+    if not url:
+        return "public PyPI, unless a uv.toml sets another index"
+    try:
+        return urlsplit(url).hostname or "a local index"
+    except ValueError:
+        return "a custom index"
+
+
 @click.command("reinstall")
 @click.option("--skip-ui", is_flag=True, help="Skip dashboard UI build")
 @click.option(
@@ -411,7 +424,6 @@ def reinstall(skip_ui, index_url):
     """
     import shutil
     import subprocess
-    from urllib.parse import urlsplit
 
     if index_url and not _is_index_url(index_url):
         raise click.BadParameter("must be an http, https or file URL", param_hint="--index-url")
@@ -423,7 +435,6 @@ def reinstall(skip_ui, index_url):
 
     # ── Step 1: UI build ────────────────────────────────────────────────────
     if index_url:
-        click.echo(f"→ Python packages come only from {urlsplit(index_url).hostname or 'a local index'}")
         click.echo("⏭  Skipping UI build, which would use npm's registry. The packaged dashboard stays in place.")
     elif skip_ui:
         click.echo("⏭  Skipping UI build (--skip-ui)")
@@ -453,17 +464,20 @@ def reinstall(skip_ui, index_url):
         install_cmd = [pip, "install", "-e", f"{root}[all]"]
         installer_label = "pip (editable)"
 
+    install_env = _install_env(index_url)
+    click.echo(f"→ Python packages: {_package_source(install_env)}")
+
     if _IS_WINDOWS:
         # On Windows the running `aictl.exe` console-script holds its own image
         # locked, so an in-process pip/pipx reinstall fails with WinError 32 and
         # leaves the environment half-uninstalled. Hand the install off to a new
         # console that waits for THIS process to exit before replacing the exe.
-        _reinstall_detached_windows(install_cmd, root, _install_env(index_url))
+        _reinstall_detached_windows(install_cmd, root, install_env)
         return
 
     click.echo(f"→ Reinstalling via {installer_label} from {root}...")
     try:
-        subprocess.run(install_cmd, check=True, env=_install_env(index_url))
+        subprocess.run(install_cmd, check=True, env=install_env)
         click.secho("✅ aictl reinstalled", fg="green", bold=True)
     except subprocess.CalledProcessError as exc:
         raise click.ClickException(f"reinstall failed: {exc}")
@@ -487,6 +501,9 @@ def _pipx_venv_dir() -> Path:
         return Path(sys.prefix)
     legacy = Path.home() / ".local" / "pipx" / "venvs" / "aictl"
     return legacy if legacy.is_dir() else Path.home() / "pipx" / "venvs" / "aictl"
+
+
+_REINSTALL_ATTEMPTS = 5
 
 
 def _batch_quote(arg: str) -> str:
@@ -514,12 +531,26 @@ def _reinstall_detached_windows(install_cmd: list[str], root: Path, env: dict[st
     # clear the venv while it is in use (Windows os error 32).
     venv_dir = str(_pipx_venv_dir()).replace("%", "%%")
 
+    # Text that varies is read from the environment with !NAME!, which cmd expands after
+    # parsing, so a path holding "&" prints as text instead of running as a command.
+    base = dict(os.environ) if env is None else env
+    env = {**base, "AICTL_REINSTALL_FROM": str(root), "AICTL_PACKAGE_SOURCE": _package_source(base)}
+
     bat = (
         "@echo off\r\n"
         # The file is UTF-8, so a non-ASCII profile path survives.
         "chcp 65001 >nul\r\n"
         "setlocal enabledelayedexpansion\r\n"
-        "echo Waiting for aictl to exit so its executable can be replaced...\r\n"
+        "title aictl reinstall\r\n"
+        "echo aictl reinstall\r\n"
+        "echo   From:            !AICTL_REINSTALL_FROM!\r\n"
+        "echo   Python packages: !AICTL_PACKAGE_SOURCE!\r\n"
+        f"echo   Attempts:        up to {_REINSTALL_ATTEMPTS}\r\n"
+        "echo.\r\n"
+        "echo The last message in this window gives the result.\r\n"
+        "echo An error along the way is fine if a later attempt succeeds.\r\n"
+        "echo.\r\n"
+        "echo Waiting for aictl to exit...\r\n"
         "ping -n 3 127.0.0.1 >nul\r\n"
         # Kill any process whose image lives inside the pipx venv (the running
         # `aictl serve` dashboard/daemon keeps python.exe — and the venv dir —
@@ -527,38 +558,50 @@ def _reinstall_detached_windows(install_cmd: list[str], root: Path, env: dict[st
         # PowerShell .Where()/member-enumeration (no pipe) because a piped
         # command inside a cmd `for /f` requires fragile caret escaping.
         "for /f \"tokens=1\" %%P in ('powershell -NoProfile -Command "
-        "\"(Get-CimInstance Win32_Process).Where({{ $_.ExecutablePath -like '{venv}\\*' }}).ProcessId\"') do (\r\n"
-        "  echo Stopping process %%P running from the aictl venv...\r\n"
+        f"\"(Get-CimInstance Win32_Process).Where({{ $_.ExecutablePath -like '{venv_dir}\\*' }}).ProcessId\"') do (\r\n"
+        "  echo Stopping process %%P, which runs from the aictl environment...\r\n"
         "  taskkill /PID %%P /F >nul 2>&1\r\n"
         ")\r\n"
         # pipx reuses uv as its venv backend; on --force reinstall uv refuses to
         # overwrite the existing venv ("A virtual environment already exists")
         # unless told to clear it. UV_VENV_CLEAR=1 is uv's documented opt-in.
         "set UV_VENV_CLEAR=1\r\n"
-        "echo Reinstalling aictl from {root} ...\r\n"
         # Retry a few times: the directory lock is transient and clears once the
         # evicted process fully releases its handles.
         "set ATTEMPT=0\r\n"
         ":retry\r\n"
         "set /a ATTEMPT+=1\r\n"
-        "{cmd}\r\n"
+        f"title aictl reinstall - attempt !ATTEMPT! of {_REINSTALL_ATTEMPTS}\r\n"
+        "echo.\r\n"
+        f"echo --- Attempt !ATTEMPT! of {_REINSTALL_ATTEMPTS} ---\r\n"
+        f"{quoted}\r\n"
         "if not errorlevel 1 goto success\r\n"
-        "if !ATTEMPT! geq 5 goto failed\r\n"
-        "echo Install attempt !ATTEMPT! failed (venv may still be locked); retrying...\r\n"
+        f"if !ATTEMPT! geq {_REINSTALL_ATTEMPTS} goto failed\r\n"
+        "echo.\r\n"
+        f"echo Attempt !ATTEMPT! of {_REINSTALL_ATTEMPTS} did not finish. The aictl folder may still be in use.\r\n"
+        "echo This usually clears within seconds. Trying again. You do not need to do anything.\r\n"
         "ping -n 4 127.0.0.1 >nul\r\n"
         "goto retry\r\n"
         ":failed\r\n"
+        "title aictl reinstall - FAILED\r\n"
         "echo.\r\n"
-        "echo Reinstall FAILED after !ATTEMPT! attempts. Review the output above.\r\n"
+        "echo ============================================================\r\n"
+        f"echo FAILED: aictl was not reinstalled after {_REINSTALL_ATTEMPTS} attempts.\r\n"
+        "echo The last error is above. aictl may not start until it is installed again.\r\n"
+        "echo To install it again, see Troubleshooting in README.md.\r\n"
+        "echo ============================================================\r\n"
         "goto done\r\n"
         ":success\r\n"
+        "title aictl reinstall - done\r\n"
         "echo.\r\n"
-        "echo aictl reinstalled. Run 'aictl --version' to verify.\r\n"
+        "echo ============================================================\r\n"
+        "echo DONE: aictl is reinstalled. Check it with: aictl --version\r\n"
+        "echo ============================================================\r\n"
         ":done\r\n"
         "echo.\r\n"
         "echo Press any key to close this window.\r\n"
         "pause >nul\r\n"
-    ).format(venv=venv_dir, root=str(root).replace("%", "%%"), cmd=quoted)
+    )
 
     fd, bat_path = tempfile.mkstemp(suffix=".bat", prefix="aictl-reinstall-")
     # Binary: the script already has CRLF endings, and text mode would turn them into CR CR LF.
@@ -572,9 +615,8 @@ def _reinstall_detached_windows(install_cmd: list[str], root: Path, env: dict[st
         close_fds=True,
         env=env,
     )
-    click.secho("→ Reinstall launched in a new window.", fg="green", bold=True)
-    click.echo("  This window's aictl is exiting so its executable can be replaced.")
-    click.echo("  Watch the new console for progress, then run 'aictl --version'.")
+    click.secho("→ The install continues in a new window.", fg="green", bold=True)
+    click.echo("  Its last message gives the result.")
     # Exit hard so aictl.exe releases its image lock immediately.
     os._exit(0)
 

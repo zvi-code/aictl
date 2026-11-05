@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -12,7 +13,9 @@ import pytest
 from click.testing import CliRunner
 
 from aictl.commands.admin import (
+    _REINSTALL_ATTEMPTS,
     _find_project_root,
+    _package_source,
     _render_markdown,
     _resolve_db_path,
     build_ui,
@@ -550,6 +553,7 @@ class TestReinstallPackageSource:
         assert env["PIP_INDEX_URL"] == url and env["UV_DEFAULT_INDEX"] == url
         assert "UV_INDEX_URL" not in env
         assert "s3cret" not in result.output and "s3cret" not in " ".join(installs[-1].args[0])
+        assert "Python packages: feed.example" in result.output
 
     def test_supplied_url_never_runs_npm(self, runner, tmp_path, monkeypatch):
         _, _, mock_run = self._run(runner, tmp_path, monkeypatch, ["--index-url", "https://feed.example/simple"])
@@ -572,8 +576,9 @@ class TestReinstallPackageSource:
         assert installs[-1].kwargs["env"]["UV_DEFAULT_INDEX"] == "https://uv.example/simple"
 
     def test_nothing_configured_adds_nothing(self, runner, tmp_path, monkeypatch):
-        _, installs, _ = self._run(runner, tmp_path, monkeypatch, ["--skip-ui"])
+        result, installs, _ = self._run(runner, tmp_path, monkeypatch, ["--skip-ui"])
         assert "UV_DEFAULT_INDEX" not in installs[-1].kwargs["env"]
+        assert "Python packages: public PyPI" in result.output
 
     @pytest.mark.parametrize("bad", ["feed.example/simple", "C:\\\\wheels", "ftp://feed.example"])
     def test_other_values_are_refused(self, runner, tmp_path, monkeypatch, bad):
@@ -597,3 +602,82 @@ class TestReinstallPackageSource:
         assert popen.call_args.kwargs["env"]["UV_DEFAULT_INDEX"] == url
         batch = next(tmp_path.glob("aictl-reinstall-*.bat")).read_bytes()
         assert b"s3cret" not in batch and b"feed.example" not in batch
+
+    @pytest.mark.parametrize(
+        "env, expected",
+        [
+            ({"UV_DEFAULT_INDEX": "https://me:s3cret@feed.example/simple"}, "feed.example"),
+            ({"UV_INDEX_URL": "https://old.example/simple"}, "old.example"),
+            ({"UV_DEFAULT_INDEX": "file:///C:/wheels"}, "a local index"),
+            ({"UV_DEFAULT_INDEX": "C:\\wheels"}, "a local index"),
+            ({"UV_DEFAULT_INDEX": "http://[broken/simple"}, "a custom index"),
+            ({}, "public PyPI, unless a uv.toml sets another index"),
+        ],
+    )
+    def test_source_is_described_without_the_url(self, env, expected):
+        assert _package_source(env) == expected
+
+
+class TestReinstallWindow:
+    """People read the Windows install window on its own, and cmd runs on no test machine here."""
+
+    def _launch(self, runner, tmp_path, monkeypatch, args=("--skip-ui",), root=None):
+        for key in ("PIP_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX_URL", "AICTL_INDEX_URL"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+        with (
+            patch("aictl.commands.admin._find_project_root", return_value=root or tmp_path),
+            patch("aictl.commands.admin._IS_WINDOWS", True),
+            patch("aictl.commands.admin._pip_configured_index", return_value=None),
+            patch("shutil.which", return_value="C:\\px\\pipx.exe"),
+            patch("subprocess.Popen") as popen,
+            patch("os._exit"),
+        ):
+            result = runner.invoke(reinstall, list(args))
+        assert result.exit_code == 0
+        batch = next(tmp_path.glob("aictl-reinstall-*.bat")).read_bytes().decode("utf-8")
+        return result, batch, popen.call_args.kwargs["env"]
+
+    def test_says_which_attempt_it_is_out_of_how_many(self, runner, tmp_path, monkeypatch):
+        _, batch, _ = self._launch(runner, tmp_path, monkeypatch)
+        total = _REINSTALL_ATTEMPTS
+        assert f"echo   Attempts:        up to {total}" in batch
+        assert f"echo --- Attempt !ATTEMPT! of {total} ---" in batch
+        assert f"echo Attempt !ATTEMPT! of {total} did not finish." in batch
+        assert f"if !ATTEMPT! geq {total} goto failed" in batch
+
+    def test_says_an_early_error_is_fine_before_any_attempt_runs(self, runner, tmp_path, monkeypatch):
+        _, batch, _ = self._launch(runner, tmp_path, monkeypatch)
+        assert batch.index("An error along the way is fine") < batch.index(":retry")
+
+    def test_ends_with_the_result(self, runner, tmp_path, monkeypatch):
+        _, batch, _ = self._launch(runner, tmp_path, monkeypatch)
+        rule = "echo " + "=" * 60
+        for result_line in ("echo DONE: aictl is reinstalled.", f"echo FAILED: aictl was not reinstalled after {_REINSTALL_ATTEMPTS} attempts."):
+            assert result_line in batch
+        said_after_done = [line for line in batch.split("echo DONE:")[1].split("\r\n") if line.startswith("echo ")]
+        assert said_after_done == [rule, "echo Press any key to close this window."]
+
+    def test_shows_the_source_host_but_keeps_the_url_out(self, runner, tmp_path, monkeypatch):
+        url = "https://me:s3cret@feed.example/simple"
+        result, batch, env = self._launch(runner, tmp_path, monkeypatch, ["--skip-ui", "--index-url", url])
+        assert "echo   Python packages: !AICTL_PACKAGE_SOURCE!" in batch
+        assert env["AICTL_PACKAGE_SOURCE"] == "feed.example"
+        assert "Python packages: feed.example" in result.output
+        assert "s3cret" not in result.output and "s3cret" not in env["AICTL_PACKAGE_SOURCE"]
+
+    def test_everything_it_prints_is_plain_text_to_cmd(self, runner, tmp_path, monkeypatch):
+        """A stray & or ( in an echo runs a command or breaks the script, and only on Windows."""
+        root = tmp_path / "a&b"
+        root.mkdir()
+        _, batch, env = self._launch(runner, tmp_path, monkeypatch, root=root)
+        assert env["AICTL_REINSTALL_FROM"] == str(root)
+        for name in re.findall(r"!(AICTL_[A-Z_]+)!", batch):
+            assert name in env
+        for target in re.findall(r"goto (\w+)", batch):
+            assert f":{target}\r\n" in batch
+        printed = [line.strip() for line in batch.split("\r\n") if line.strip().startswith("echo ")]
+        assert len(printed) > 10
+        for line in printed:
+            text = re.sub(r"%%P", "", re.sub(r"![A-Z_]+!", "", line))
+            assert line.isascii() and not set(text) & set("&|<>^()!%"), line
