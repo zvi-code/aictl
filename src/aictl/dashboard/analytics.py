@@ -12,6 +12,11 @@ import logging
 import sqlite3
 import threading
 import time
+from datetime import datetime
+
+from ..data.model_pricing import PRICING_AS_OF, PRICING_SOURCES, context_window_for
+from ..data.provenance import COPILOT_COST_REASON, USD_PER_AI_CREDIT, combine_cost_quality, combine_tokens_quality
+from ..ingesters.transcript_usage import local_day
 
 logger = logging.getLogger(__name__)
 
@@ -377,3 +382,190 @@ def _compute_files(db, since: float, until: float) -> dict:
                 break
 
     return {"memory_timeline": memory_timeline, "memory_events": memory_events}
+
+
+CLOUD_ONLY_TOOLS = ("copilot365",)
+_TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens")
+
+
+def window_sessions(db, since: float, until: float | None = None) -> tuple[list[dict], int]:
+    """Every session with usage in the window, each logical session exactly once.
+
+    Returns ``(sessions, ignored_rows)``. A session's token classes, cost and
+    ``daily`` splits cover only the local days inside the window (a day is the
+    smallest unit; a session running across midnight lands on both days).
+
+    Double counting is prevented here for every caller: a transcript row wins
+    over any ``sessions`` row with the same UUID, and a row with no UUID (a
+    correlator ``tool:pid:start`` id) is ignored for a tool that has transcript
+    coverage, since it can only be another view of the same tokens.
+    """
+    from ..storage import _session_uuid
+
+    until = until or time.time()
+    first, last = local_day(since), local_day(until)
+    out: list[dict] = []
+    covered_ids: set[str] = set()
+    covered_tools: set[str] = set()
+    for u in db.query_session_usage(active_since=since, active_until=until):
+        covered_ids.add(u["session_id"].lower())
+        covered_tools.add(u["tool"])
+        days = {d: v for d, v in u["daily"].items() if first <= d <= last}
+        if not days:
+            continue
+        entry = {
+            "session_id": u["session_id"],
+            "tool": u["tool"],
+            "project": u["project_path"],
+            "model": u["model"],
+            "daily": days,
+            "tool_calls": u["tool_call_count"],
+            "turns": u["turn_count"],
+            "tokens_source": u["source"],
+            "tokens_quality": u["quality"],
+            "cost_quality": u["cost_quality"],
+            "cost_reason": u["cost_reason"],
+            "unpriced_models": u["unpriced_models"],
+            "billing_unit": u["billing_unit"],
+            "billing_amount": (sum(d.get("billing_amount", 0.0) for d in days.values()) or None) if u["billing_unit"] else None,
+            "premium_requests": u["premium_requests"] or None,
+            "estimated_list_usd": (round(sum(d.get("estimated_list_usd", 0.0) for d in days.values()), 6) or None) if u["billing_unit"] else None,
+            "requests": sum(m.get("requests", 0) for d in days.values() for m in d.get("models", {}).values()),
+        }
+        for key in _TOKEN_KEYS:
+            entry[key] = sum(d.get(key, 0) for d in days.values())
+        entry["cost_usd"] = None if u["cost_usd"] is None else round(sum(d.get("cost_usd", 0.0) for d in days.values()), 6)
+        out.append(entry)
+
+    ignored = 0
+    for p in db.query_session_profiles(since=since, until=until):
+        if p.get("tokens_source") == "transcript" or not any(p.get(k) for k in _TOKEN_KEYS):
+            continue
+        ids = [p.get("session_id", ""), *(p.get("alt_session_ids") or [])]
+        uuids = {(_session_uuid(i) or "") for i in ids} - {""}
+        if uuids & covered_ids:
+            continue
+        if not uuids and p.get("tool") in covered_tools:
+            ignored += 1
+            continue
+        day = local_day(p.get("started_at") or since)
+        out.append(
+            {
+                "session_id": p.get("session_id", ""),
+                "tool": p.get("tool", ""),
+                "project": p.get("project_path", ""),
+                "model": p.get("model", ""),
+                "daily": {day: {**{k: p.get(k, 0) or 0 for k in _TOKEN_KEYS}, "cost_usd": p.get("cost_usd") or 0.0}},
+                "tool_calls": p.get("tool_call_count", 0) or 0,
+                "turns": 0,
+                "requests": p.get("request_count", 0) or 0,
+                "tokens_source": p.get("tokens_source", "none"),
+                "tokens_quality": p.get("tokens_quality", "unknown"),
+                "cost_usd": p.get("cost_usd"),
+                "cost_quality": p.get("cost_quality", "unknown"),
+                "cost_reason": p.get("cost_reason", ""),
+                "unpriced_models": p.get("unpriced_models") or [],
+                "billing_unit": p.get("billing_unit") or "",
+                "billing_amount": p.get("billing_amount"),
+                "premium_requests": p.get("premium_requests"),
+                "estimated_list_usd": p.get("estimated_list_usd"),
+                **{k: p.get(k, 0) or 0 for k in _TOKEN_KEYS},
+            }
+        )
+    return out, ignored
+
+
+def _rollup(sessions: list[dict]) -> dict:
+    tokens = {k: sum(s[k] for s in sessions) for k in _TOKEN_KEYS}
+    priced = [s["cost_usd"] for s in sessions if s["cost_usd"] is not None]
+    unpriced = sorted({m for s in sessions for m in s["unpriced_models"]})
+    cost_quality = combine_cost_quality({s["cost_quality"] for s in sessions})
+    credits_rows = [s for s in sessions if s.get("billing_unit")]
+    credit_amounts = [s["billing_amount"] for s in credits_rows if s.get("billing_amount") is not None]
+    premium = [s["premium_requests"] for s in credits_rows if s.get("premium_requests") is not None]
+    estimates = [s["estimated_list_usd"] for s in credits_rows if s.get("estimated_list_usd") is not None]
+    billing = {
+        # ai_credits as Copilot reports them. billing_usd_value is credits x $0.01:
+        # consumption value, which a plan allowance may cover, so not an invoice.
+        "billing_unit": "ai_credits" if credits_rows else "",
+        "billing_amount": round(sum(credit_amounts), 4) if credit_amounts else None,
+        "billing_usd_value": round(sum(credit_amounts) * USD_PER_AI_CREDIT, 4) if credit_amounts else None,
+        "premium_requests": round(sum(premium), 2) if premium else None,
+        "estimated_list_usd": round(sum(estimates), 4) if estimates else None,
+    }
+    return {
+        **billing,
+        "sessions": len(sessions),
+        "requests": sum(s["requests"] for s in sessions),
+        "turns": sum(s["turns"] for s in sessions),
+        "tool_calls": sum(s["tool_calls"] for s in sessions),
+        **tokens,
+        "total_tokens": sum(tokens.values()),
+        "cost_usd": round(sum(priced), 4) if priced else None,
+        "cost_quality": cost_quality,
+        "cost_source": "list_price" if priced else "none",
+        "cost_reason": (
+            "no list price for: " + ", ".join(unpriced)
+            if unpriced
+            else (
+                COPILOT_COST_REASON
+                if credits_rows
+                else "list price x tokens; plan or partner billing may differ"
+            )
+        ),
+        "unpriced_models": unpriced,
+        "tokens_source": sorted({s["tokens_source"] for s in sessions}),
+        "tokens_quality": combine_tokens_quality({s["tokens_quality"] for s in sessions}),
+    }
+
+
+def compute_usage_summary(db, since: float, until: float | None = None) -> dict:
+    """Headline usage per tool and per local day, with provenance on each figure."""
+    until = until or time.time()
+    sessions, ignored = window_sessions(db, since, until)
+    tools = []
+    for tool in sorted({s["tool"] for s in sessions}):
+        group = [s for s in sessions if s["tool"] == tool]
+        by_model: dict[str, dict] = {}
+        for s in group:
+            for day in s["daily"].values():
+                for model, v in day.get("models", {}).items():
+                    m = by_model.setdefault(model, {"model": model, "requests": 0, **dict.fromkeys(_TOKEN_KEYS, 0), "cost_usd": 0.0})
+                    m["requests"] += v.get("requests", 0)
+                    for k in _TOKEN_KEYS:
+                        m[k] += v.get(k, 0)
+                    m["cost_usd"] += v.get("cost_usd", 0.0)
+                    m["billing_amount"] = (m.get("billing_amount") or 0.0) + v.get("billing_amount", 0.0)
+        unpriced = {m for s in group for m in s["unpriced_models"]}
+        bills_credits = any(s.get("billing_unit") for s in group)
+        for m in by_model.values():
+            m["cost_usd"] = None if bills_credits or m["model"] in unpriced else round(m["cost_usd"], 4)
+            m["billing_amount"] = round(m["billing_amount"], 4) if m.get("billing_amount") else None
+            m["context_window"] = context_window_for(m["model"])
+        tools.append(
+            {"tool": tool, **_rollup(group), "by_model": sorted(by_model.values(), key=lambda m: -m["requests"])}
+        )
+    daily: dict[tuple[str, str], dict] = {}
+    for s in sessions:
+        for date, v in s["daily"].items():
+            d = daily.setdefault((date, s["tool"]), {"date": date, "tool": s["tool"], **dict.fromkeys(_TOKEN_KEYS, 0), "cost_usd": 0.0})
+            for k in _TOKEN_KEYS:
+                d[k] += v.get(k, 0)
+            d["cost_usd"] = round(d["cost_usd"] + v.get("cost_usd", 0.0), 4)
+    return {
+        "since": since,
+        "until": until,
+        "day_boundary": "local",
+        "timezone": datetime.now().astimezone().tzname() or "",
+        "tools": tools,
+        "totals": _rollup(sessions) if sessions else None,
+        "daily": [daily[k] for k in sorted(daily)],
+        "ignored_rows": ignored,
+        # Cloud-only tools leave nothing local to count: not available, never 0.
+        "not_available": [
+            {"tool": t, "reason": "cloud-only tool with no local usage data"}
+            for t in CLOUD_ONLY_TOOLS
+            if t not in {x["tool"] for x in tools}
+        ],
+        "pricing": {"as_of": PRICING_AS_OF, "sources": list(PRICING_SOURCES)},
+    }

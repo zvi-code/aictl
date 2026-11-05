@@ -23,6 +23,8 @@ from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from ..data.model_pricing import cost_usd as usd_cost_of
+from ..data.provenance import COPILOT_COST_REASON
 from ..data.schema import load_telemetry_sources
 from ..fsutil import safe_glob, safe_iterdir
 from ..platforms import (
@@ -76,6 +78,14 @@ class ToolTelemetryReport:
     quota_state: dict = field(default_factory=dict)
     # {"premium_requests_used": int, "total_api_duration_ms": int,
     #  "code_changes": {"lines_added": int, "lines_removed": int, "files_modified": int}}
+
+    # Provenance of the headline numbers above (see aictl.data.provenance).
+    # token_quality: "exact" | "partial". cost_quality: "reported" | "unknown"
+    # | "estimated". as_of: last date a cached source was computed, if any.
+    token_quality: str = "exact"
+    cost_quality: str = "unknown"
+    cost_reason: str = ""
+    as_of: str = ""
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -367,9 +377,13 @@ def parse_claude_telemetry(
     stats_file = claude_global_dir() / "stats-cache.json"
     if stats_file.is_file():
         try:
-            data = json.loads(stats_file.read_text(errors="replace"))
+            data = json.loads(stats_file.read_text(encoding="utf-8", errors="replace"))
             report.total_sessions = int(data.get("totalSessions", 0))
             report.total_messages = int(data.get("totalMessages", 0))
+            # Claude Code refreshes this cache rarely, so it can lag by months.
+            report.as_of = str(data.get("lastComputedDate", "") or "")
+            report.token_quality = "partial"
+            report.cost_reason = "stats-cache records no cost for this plan"
 
             model_usage = data.get("modelUsage", {})
             for model, usage in model_usage.items():
@@ -385,6 +399,9 @@ def parse_claude_telemetry(
                 report.cache_read_tokens += m["cache_read_tokens"]
                 report.cache_creation_tokens += m["cache_creation_tokens"]
                 report.cost_usd += m["cost_usd"]
+                if m["cost_usd"]:
+                    report.cost_quality = "reported"
+                    report.cost_reason = "stats-cache costUSD"
                 report.by_model[model] = m
 
             # Daily token data
@@ -447,7 +464,7 @@ def _first_int(d: dict, *keys: str) -> int:
 def _iter_jsonl(path: Path) -> Iterator[dict]:
     """Yield parsed JSON objects from a JSONL file. Never raises."""
     try:
-        for line in path.read_text(errors="replace").splitlines():
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             if line.strip():
                 try:
                     yield json.loads(line)
@@ -500,9 +517,12 @@ def _parse_claude_active_session(root: Path, report: ToolTelemetryReport) -> Non
 
     # Read last 500 lines (tail) to catch errors + recent tokens
     try:
-        text = latest.read_text(errors="replace")
+        text = latest.read_text(encoding="utf-8", errors="replace")
         lines = text.splitlines()
         tail = lines[-500:] if len(lines) > 500 else lines
+        # Streaming writes one line per content block, each repeating the
+        # message's usage. Keep the last per request; summing tripled output.
+        requests: dict[tuple[str, str], dict] = {}
         for line in tail:
             if not line.strip():
                 continue
@@ -517,12 +537,16 @@ def _parse_claude_active_session(root: Path, report: ToolTelemetryReport) -> Non
             msg = obj.get("message", {})
             usage = msg.get("usage") if isinstance(msg, dict) else None
             if usage and isinstance(usage, dict):
-                report.active_session_input += int(usage.get("input_tokens", 0))
-                report.active_session_output += int(usage.get("output_tokens", 0))
-                report.active_session_messages += 1
+                key = (str(msg.get("id") or obj.get("uuid") or ""), str(obj.get("requestId") or ""))
+                requests[key] = usage
 
             # Error detection: check for API errors in system messages and error responses
             _detect_claude_errors(obj, obj_type, report)
+
+        for usage in requests.values():
+            report.active_session_input += int(usage.get("input_tokens", 0) or 0)
+            report.active_session_output += int(usage.get("output_tokens", 0) or 0)
+            report.active_session_messages += 1
 
     except OSError:
         pass
@@ -586,6 +610,8 @@ def parse_copilot_telemetry(
         return None
 
     report = ToolTelemetryReport(tool=tool, source=source, confidence=confidence)
+    # At most 10 sessions from 7 days: a sample, not a total. /api/usage has totals.
+    report.token_quality = "partial"
 
     # Find recent session directories (modified in last 7 days).
     # Stat once per entry and sort on the cached value — directories can
@@ -631,6 +657,11 @@ def parse_copilot_telemetry(
     return result
 
 
+def usd_cost(model: str, classes: tuple[int, int, int, int]) -> float | None:
+    """List-price USD for (input, output, cache_read, cache_write), or None if unknown."""
+    return usd_cost_of(model, *classes)
+
+
 def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> None:
     """Parse a single Copilot CLI events.jsonl for token data, metrics, and errors.
 
@@ -642,6 +673,7 @@ def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> Non
     """
     fallback_output_tokens = 0
     shutdown_usage: dict[str, dict] = {}
+    record_usage: dict[str, dict] = {}
     for obj in _iter_jsonl(events_file):
         event_type = obj.get("type", "")
         data = obj.get("data", {}) if isinstance(obj.get("data"), dict) else {}
@@ -651,6 +683,24 @@ def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> Non
         if event_type == "assistant.message":
             fallback_output_tokens += int(data.get("outputTokens", 0))
             report.total_messages += 1
+
+        # Per-request usage; the only numbers a still-running session has.
+        elif event_type == "session.usage_record":
+            usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+            model = str(usage.get("model") or data.get("model") or "")
+            read = int(usage.get("cacheReadTokens", 0) or 0)
+            write = int(usage.get("cacheWriteTokens", 0) or 0)
+            rec = record_usage.setdefault(
+                model,
+                {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_creation_tokens": 0, "requests": 0, "cost_usd": 0.0, "premium_requests": 0.0},
+            )
+            rec["input_tokens"] += max(0, int(usage.get("inputTokens", 0) or 0) - read - write)
+            rec["output_tokens"] += int(usage.get("outputTokens", 0) or 0)
+            rec["cache_read_tokens"] += read
+            rec["cache_creation_tokens"] += write
+            rec["requests"] += 1
+            rec["premium_requests"] += float(usage.get("cost", 0) or 0)
+            report.cost_reason = COPILOT_COST_REASON
 
         # session.shutdown has comprehensive modelMetrics
         elif event_type == "session.shutdown":
@@ -700,14 +750,21 @@ def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> Non
                         "cache_creation_tokens": 0,
                         "requests": 0,
                         "cost_usd": 0.0,
+                        "premium_requests": 0.0,
                     },
                 )
-                mu["input_tokens"] += int(usage.get("inputTokens", 0))
+                # Copilot's inputTokens INCLUDES cache reads and writes; classes
+                # are disjoint everywhere in aictl, so take the uncached part.
+                read = int(usage.get("cacheReadTokens", 0))
+                write = int(usage.get("cacheWriteTokens", 0))
+                mu["input_tokens"] += max(0, int(usage.get("inputTokens", 0)) - read - write)
                 mu["output_tokens"] += int(usage.get("outputTokens", 0))
-                mu["cache_read_tokens"] += int(usage.get("cacheReadTokens", 0))
-                mu["cache_creation_tokens"] += int(usage.get("cacheWriteTokens", 0))
+                mu["cache_read_tokens"] += read
+                mu["cache_creation_tokens"] += write
                 mu["requests"] += req_count
-                mu["cost_usd"] += float(req_data.get("cost", 0))
+                # requests.cost is premium requests (a count), not dollars.
+                mu["premium_requests"] += float(req_data.get("cost", 0))
+                report.cost_reason = COPILOT_COST_REASON
 
                 # Detect potential timeouts: high latency per request
                 if req_count > 0 and api_dur > 0:
@@ -736,6 +793,9 @@ def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> Non
                     }
                 )
 
+    # A session with a shutdown reports the same totals as its records, so one
+    # source is used for each session and they are never added together.
+    shutdown_usage = shutdown_usage or record_usage
     if shutdown_usage:
         # Shutdown metrics are authoritative: totals and breakdown from
         # the same source, so their sums always match.
@@ -761,8 +821,10 @@ def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> Non
             mb["cache_read_tokens"] += mu["cache_read_tokens"]
             mb["requests"] += mu["requests"]
             mb["cost_usd"] += mu["cost_usd"]
+            mb["premium_requests"] = mb.get("premium_requests", 0.0) + mu["premium_requests"]
     else:
         report.output_tokens += fallback_output_tokens
+        report.token_quality = "partial"
 
 
 # ─── Codex CLI ──────────────────────────────────────────────────
@@ -798,34 +860,48 @@ def _parse_codex_session(sess_file: Path, report: ToolTelemetryReport) -> None:
     last_total = None
     last_model = ""
     for obj in _iter_jsonl(sess_file):
-        # Codex events: {"type": "event_msg", "payload": {"type": "token_count", ...}}
-        if obj.get("type") == "event_msg":
-            payload = obj.get("payload", {})
-            if payload.get("type") == "token_count":
-                total_usage = payload.get("total_token_usage", {})
-                if total_usage:
-                    last_total = total_usage
-                    report.total_messages += 1
-
-        # Also check for session_meta to get model info
-        elif obj.get("type") == "session_meta":
-            payload = obj.get("payload", {}) if isinstance(obj.get("payload"), dict) else {}
+        payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
+        # {"type": "event_msg", "payload": {"type": "token_count",
+        #  "info": {"total_token_usage": {...}}}}; older rollouts had no "info".
+        if obj.get("type") == "event_msg" and payload.get("type") == "token_count":
+            info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
+            total_usage = info.get("total_token_usage") or payload.get("total_token_usage")
+            if total_usage:
+                last_total = total_usage
+                report.total_messages += 1
+        # turn_context names the model in use; session_meta only in old rollouts.
+        elif obj.get("type") in ("session_meta", "turn_context"):
             if model := payload.get("model", ""):
                 last_model = model
 
     # Use the last cumulative total (most accurate)
     if last_total:
-        inp = int(last_total.get("input_tokens", 0))
-        out = int(last_total.get("output_tokens", 0))
-        cached = int(last_total.get("cached_input_tokens", 0))
+        cached = int(last_total.get("cached_input_tokens", 0) or 0)
+        write = int(last_total.get("cache_write_input_tokens", 0) or 0)
+        # OpenAI's input_tokens includes cached tokens; aictl's classes are disjoint.
+        inp = max(0, int(last_total.get("input_tokens", 0) or 0) - cached - write)
+        out = int(last_total.get("output_tokens", 0) or 0)
         report.input_tokens += inp
         report.output_tokens += out
         report.cache_read_tokens += cached
+        report.cache_creation_tokens += write
         # Attribute the session's totals to the last-seen model only
         if last_model:
             mb = report.by_model.setdefault(last_model, {"input_tokens": 0, "output_tokens": 0})
             mb["input_tokens"] += inp
             mb["output_tokens"] += out
+            cost = usd_cost(last_model, (inp, out, cached, write))
+            if cost is None:
+                report.cost_quality = "unknown"
+                report.cost_reason = f"no list price for: {last_model}"
+            else:
+                report.cost_usd += cost
+                if report.cost_quality != "unknown":
+                    report.cost_quality = "estimated"
+                    report.cost_reason = "list price x last model; see /api/usage for per-request pricing"
+        else:
+            report.cost_quality = "unknown"
+            report.cost_reason = "rollout names no model"
 
 
 # ─── Cursor (SQLite state.vscdb) ─────────────────────────────────
@@ -948,7 +1024,7 @@ def parse_continue_telemetry(
 def _parse_continue_session(sess_file: Path, report: ToolTelemetryReport) -> None:
     """Parse a single Continue session JSON for token data."""
     try:
-        data = json.loads(sess_file.read_text(errors="replace"))
+        data = json.loads(sess_file.read_text(encoding="utf-8", errors="replace"))
     except (json.JSONDecodeError, OSError):
         return
 

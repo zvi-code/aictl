@@ -85,6 +85,8 @@ class Turn:
     cost_usd: float = 0.0
     api_calls: int = 0
     duration_ms: float = 0.0
+    # True when a prompt event opened this turn, whether or not its text is kept.
+    prompt_event: bool = False
 
     @property
     def total_tokens(self) -> int:
@@ -209,13 +211,14 @@ class SessionTranscript:
     def current_turn(self) -> Turn | None:
         return self.turns[-1] if self.turns else None
 
-    def start_turn(self, ts: float, prompt: str = "") -> Turn:
+    def start_turn(self, ts: float, prompt: str = "", *, prompt_event: bool = False) -> Turn:
         """Begin a new conversation turn."""
         turn = Turn(
             ts=ts,
             end_ts=ts,
             prompt=prompt,
             prompt_preview=prompt[:200] if prompt else "",
+            prompt_event=prompt_event,
         )
         self.turns.append(turn)
         self.last_updated = ts
@@ -237,7 +240,7 @@ class SessionTranscript:
         first_ts = self.turns[0].ts if self.turns else self.started_at
         last_ts = max(t.end_ts for t in self.turns) if self.turns else (self.ended_at or self.started_at)
         # Determine source
-        has_prompts = any(t.prompt for t in self.turns)
+        has_prompts = any(t.prompt or t.prompt_event for t in self.turns)
         sources = set()
         for e in self.lifecycle_events:
             s = e.get("source", "")

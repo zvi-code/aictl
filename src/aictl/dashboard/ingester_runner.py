@@ -38,6 +38,10 @@ from ..ingesters.vscode_chat_logs import (
     VSCodeChatLogsIngester,
     default_log_dir as vscode_chat_default_log_dir,
 )
+from ..ingesters.transcript_usage import (
+    POLL_INTERVAL_S as TRANSCRIPT_USAGE_POLL_INTERVAL_S,
+)
+from ..ingesters.transcript_usage import TranscriptUsageIngester
 
 log = logging.getLogger(__name__)
 
@@ -137,6 +141,27 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
         v_handle.thread = v_thread
         v_thread.start()
     handles[v_handle.name] = v_handle
+
+    # ── Transcript usage: exact tokens for Claude Code, Codex, Copilot CLI ──
+    t_ing = TranscriptUsageIngester(db)
+    t_enabled = t_ing.source_exists()
+    t_handle = IngesterHandle(
+        name="transcript-usage",
+        enabled=t_enabled,
+        source_path=t_ing.claude_projects,
+        source_exists=t_enabled,
+    )
+    if t_enabled:
+        t_handle.ingester = t_ing
+        t_thread = threading.Thread(
+            target=_poll_loop,
+            args=(t_ing, t_handle.stop_event, TRANSCRIPT_USAGE_POLL_INTERVAL_S, t_handle.name),
+            daemon=True,
+            name="ingester-transcript-usage",
+        )
+        t_handle.thread = t_thread
+        t_thread.start()
+    handles[t_handle.name] = t_handle
     return handles
 
 

@@ -292,7 +292,11 @@ class TestParseCopilotEvents:
         _parse_copilot_events(events, report)
         assert report.input_tokens == 1000
         assert report.by_model["gpt-4"]["input_tokens"] == 1000
-        assert report.cost_usd == pytest.approx(0.05)
+        # requests.cost counts premium requests. It is not dollars, and gpt-4
+        # has no list price here, so the cost is unknown rather than 0.05.
+        assert report.by_model["gpt-4"]["premium_requests"] == pytest.approx(0.05)
+        assert report.cost_usd == 0
+        assert report.cost_quality == "unknown"
 
     def test_non_routine_shutdown_records_error(self, tmp_path):
         events = tmp_path / "events.jsonl"
@@ -371,13 +375,14 @@ class TestParseCopilotEvents:
         )
         report = ToolTelemetryReport(tool="copilot-cli", source="events-jsonl")
         _parse_copilot_events(events, report)
-        assert report.input_tokens == 1100
+        # inputTokens includes cache reads and writes in Copilot's metrics.
+        assert report.input_tokens == 1030
         assert report.output_tokens == 210, "shutdown output must not be inflated by assistant.message counts"
         assert report.cache_read_tokens == 30
         assert report.cache_creation_tokens == 40
         assert sum(m["input_tokens"] for m in report.by_model.values()) == report.input_tokens
         assert sum(m["output_tokens"] for m in report.by_model.values()) == report.output_tokens
-        assert report.cost_usd == pytest.approx(0.06)
+        assert sum(m["premium_requests"] for m in report.by_model.values()) == pytest.approx(0.06)
         assert report.total_messages == 1
 
     def test_shutdown_without_metrics_falls_back_to_messages(self, tmp_path):
@@ -430,7 +435,8 @@ class TestParseCodexSession:
         )
         report = ToolTelemetryReport(tool="codex-cli", source="token-count")
         _parse_codex_session(sess, report)
-        assert report.input_tokens == 5000
+        # input_tokens includes cached tokens in OpenAI's usage; classes are disjoint.
+        assert report.input_tokens == 4800
         assert report.output_tokens == 1000
         assert report.cache_read_tokens == 200
 
