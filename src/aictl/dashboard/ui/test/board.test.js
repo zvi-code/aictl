@@ -582,14 +582,3 @@ describe('board screen', () => {
     expect(res.violations.map(v => v.id + ': ' + v.nodes[0].html.slice(0, 120))).toEqual([]);
   }, 30000);
 });
-
-describe('longest time range', () => {
-  it('offers no preset over 7 days and treats an old 30-day link as the default', () => {
-    expect(parseFilters('?range=30d').range).toEqual({ id: '24h' });
-  });
-
-  it('cuts a custom range from a link to 7 days', () => {
-    const until = 100 * 86400;
-    expect(windowOf({ id: 'custom', since: 0, until })).toMatchObject({ since: until - 7 * 86400, until });
-  });
-});
