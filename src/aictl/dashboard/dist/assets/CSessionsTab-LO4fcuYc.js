@@ -1,4 +1,4 @@
-import{x as U,S as q,d as r,y as L,a4 as R,a5 as W,T as C,m as n,ap as I,p as j,b as h,a8 as A}from"./index-DA8PvNXQ.js";function T(e){return e.project?e.project.replace(/\\/g,"/").split("/").filter(Boolean).slice(-2).join("/"):String(e.session_id).split(":").slice(-1)[0]||e.session_id}const Y=new Set(["claude-code-jsonl","copilot-session-store","cursor-ingester","vscode-chat-logs"]);function S(e){return e.lifecycle_status?e.lifecycle_status:e.ended_at?"ended":e.active?"active":Y.has(e.source||"")?"imported":"open"}function w(e){return(e.exact_input_tokens||e.input_tokens||0)+(e.exact_output_tokens||e.output_tokens||0)}function F(e){if(!e)return"—";const i=new Date(e*1e3),a=new Date;if(i.toDateString()===a.toDateString())return i.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});const l=new Date(a);return l.setDate(a.getDate()-1),(i.toDateString()===l.toDateString()?"Yesterday ":"")+i.toLocaleDateString([],{month:"short",day:"numeric"})+" "+i.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}const G={active:"csessions-status--active",open:"csessions-status--open",ended:"csessions-status--ended",imported:"csessions-status--imported"};function H({status:e}){const i=G[e]||"csessions-status--ended";return n`<span class=${"csessions-status "+i}>${(e==="active"?"● ":"")+e}</span>`}function J({session:e,onInspect:i}){if(!e)return n`<div class="csessions-detail-empty">
+import{x as P,S as U,d as r,y as L,a4 as R,a5 as W,T as C,m as n,aq as I,p as j,b as h,a8 as A}from"./index-bTWi6ueq.js";function T(e){return e.project?e.project.replace(/\\/g,"/").split("/").filter(Boolean).slice(-2).join("/"):String(e.session_id).split(":").slice(-1)[0]||e.session_id}const Y=new Set(["claude-code-jsonl","copilot-session-store","cursor-ingester","vscode-chat-logs"]);function S(e){return e.lifecycle_status?e.lifecycle_status:e.ended_at?"ended":e.active?"active":Y.has(e.source||"")?"imported":"open"}function w(e){return(e.exact_input_tokens||e.input_tokens||0)+(e.exact_output_tokens||e.output_tokens||0)}function F(e){if(!e)return"—";const i=new Date(e*1e3),a=new Date;if(i.toDateString()===a.toDateString())return i.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});const l=new Date(a);return l.setDate(a.getDate()-1),(i.toDateString()===l.toDateString()?"Yesterday ":"")+i.toLocaleDateString([],{month:"short",day:"numeric"})+" "+i.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}const G={active:"csessions-status--active",open:"csessions-status--open",ended:"csessions-status--ended",imported:"csessions-status--imported"};function H({status:e}){const i=G[e]||"csessions-status--ended";return n`<span class=${"csessions-status "+i}>${(e==="active"?"● ":"")+e}</span>`}function J({session:e,onInspect:i}){if(!e)return n`<div class="csessions-detail-empty">
       <div class="csessions-detail-empty-label">No session selected</div>
       <div>Click a row to view details.</div>
     </div>`;I(e.tool);const a=w(e),l=e.exact_input_tokens||e.input_tokens||0,g=e.exact_output_tokens||e.output_tokens||0,u=e.duration_s||(e.ended_at&&e.started_at?e.ended_at-e.started_at:0),b=[["Tokens",h(a)],["In / Out",`${h(l)} / ${h(g)}`],["Files",e.files_modified||"—"],["Duration",u>=1?A(u):"—"],["Status",S(e)],["Started",F(e.started_at)]],y=String(e.session_id).split(":").slice(-1)[0]||e.session_id;return n`<div class="csessions-detail-view">
@@ -24,7 +24,7 @@ import{x as U,S as q,d as r,y as L,a4 as R,a5 as W,T as C,m as n,ap as I,p as j,
         onClick=${()=>i==null?void 0:i(e.session_id,e.tool)}>
         Inspect session →</button>
     </div>
-  </div>`}function V({onInspect:e}){const{globalRange:i,enabledTools:a}=U(q),[l,g]=r([]),[u,b]=r(0),[y,v]=r(!0),[p,E]=r(""),[f,z]=r("all"),[m,M]=r("all"),[$,O]=r("time-desc"),[_,k]=r(null);L(()=>{v(!0);const s=i?Math.min(i.since,Date.now()/1e3-86400):Date.now()/1e3-86400,t=i==null?void 0:i.until;R(null,{since:s,until:t}).then(o=>{const c=W(o);c.sort((D,P)=>(P.started_at||0)-(D.started_at||0)),g(c),b(o.filtered_count||0),v(!1)}).catch(()=>v(!1))},[i]);const x=s=>a===null||a.includes(s),B=C(()=>{const s=new Set;return l.filter(t=>x(t.tool)&&!s.has(t.tool)&&s.add(t.tool)).map(t=>t.tool)},[l,a]),K=C(()=>{const s=new Set;let t=!1;for(const c of l)x(c.tool)&&(s.add(S(c)),(c.error_count||0)>0&&(t=!0));const o=["active","open","ended","imported"].filter(c=>s.has(c));return t?[...o,"error"]:o},[l,a]),d=C(()=>{let s=l.filter(t=>x(t.tool));if(f==="error"?s=s.filter(t=>(t.error_count||0)>0):f!=="all"&&(s=s.filter(t=>S(t)===f)),m!=="all"&&(s=s.filter(t=>t.tool===m)),p){const t=p.toLowerCase();s=s.filter(o=>T(o).toLowerCase().includes(t)||o.tool.toLowerCase().includes(t)||String(o.session_id).toLowerCase().includes(t))}return $==="time-asc"?[...s].sort((t,o)=>(t.started_at||0)-(o.started_at||0)):$==="tokens-desc"?[...s].sort((t,o)=>w(o)-w(t)):$==="files-desc"?[...s].sort((t,o)=>(o.files_modified||0)-(t.files_modified||0)):s},[l,p,f,m,$,a]),N=_?d.find(s=>s.session_id===_)??null:null;return L(()=>{!_&&d.length>0&&k(d[0].session_id)},[d.length,_]),n`<div class="c-shell csessions-shell">
+  </div>`}function V({onInspect:e}){const{globalRange:i,enabledTools:a}=P(U),[l,g]=r([]),[u,b]=r(0),[y,v]=r(!0),[p,E]=r(""),[f,z]=r("all"),[m,M]=r("all"),[$,O]=r("time-desc"),[_,k]=r(null);L(()=>{v(!0);const s=i?Math.min(i.since,Date.now()/1e3-86400):Date.now()/1e3-86400,t=i==null?void 0:i.until;R(null,{since:s,until:t}).then(o=>{const c=W(o);c.sort((D,N)=>(N.started_at||0)-(D.started_at||0)),g(c),b(o.filtered_count||0),v(!1)}).catch(()=>v(!1))},[i]);const x=s=>a===null||a.includes(s),q=C(()=>{const s=new Set;return l.filter(t=>x(t.tool)&&!s.has(t.tool)&&s.add(t.tool)).map(t=>t.tool)},[l,a]),B=C(()=>{const s=new Set;let t=!1;for(const c of l)x(c.tool)&&(s.add(S(c)),(c.error_count||0)>0&&(t=!0));const o=["active","open","ended","imported"].filter(c=>s.has(c));return t?[...o,"error"]:o},[l,a]),d=C(()=>{let s=l.filter(t=>x(t.tool));if(f==="error"?s=s.filter(t=>(t.error_count||0)>0):f!=="all"&&(s=s.filter(t=>S(t)===f)),m!=="all"&&(s=s.filter(t=>t.tool===m)),p){const t=p.toLowerCase();s=s.filter(o=>T(o).toLowerCase().includes(t)||o.tool.toLowerCase().includes(t)||String(o.session_id).toLowerCase().includes(t))}return $==="time-asc"?[...s].sort((t,o)=>(t.started_at||0)-(o.started_at||0)):$==="tokens-desc"?[...s].sort((t,o)=>w(o)-w(t)):$==="files-desc"?[...s].sort((t,o)=>(o.files_modified||0)-(t.files_modified||0)):s},[l,p,f,m,$,a]),K=_?d.find(s=>s.session_id===_)??null:null;return L(()=>{!_&&d.length>0&&k(d[0].session_id)},[d.length,_]),n`<div class="c-shell csessions-shell">
     <div class="csessions-toolbar">
       <div class="c-filter-wrap csessions-filter-wrap">
         <span class="c-filter-icon csessions-filter-icon" aria-hidden="true">⌕</span>
@@ -38,13 +38,13 @@ import{x as U,S as q,d as r,y as L,a4 as R,a5 as W,T as C,m as n,ap as I,p as j,
         aria-label="Filter by status"
         onChange=${s=>z(s.target.value)}>
         <option value="all">all status</option>
-        ${K.map(s=>n`<option key=${s} value=${s}>${s}</option>`)}
+        ${B.map(s=>n`<option key=${s} value=${s}>${s}</option>`)}
       </select>
       <select class="csessions-select" value=${m}
         aria-label="Filter by agent"
         onChange=${s=>M(s.target.value)}>
         <option value="all">all agents</option>
-        ${B.map(s=>n`<option key=${s} value=${s}>${s}</option>`)}
+        ${q.map(s=>n`<option key=${s} value=${s}>${s}</option>`)}
       </select>
       <span style="flex:1"></span>
       <select class="csessions-select" value=${$}
@@ -99,7 +99,7 @@ import{x as U,S as q,d as r,y as L,a4 as R,a5 as W,T as C,m as n,ap as I,p as j,
       </div>
 
       <div class="csessions-detail-pane">
-        <${J} session=${N} onInspect=${e}/>
+        <${J} session=${K} onInspect=${e}/>
       </div>
     </div>
   </div>`}export{V as default};

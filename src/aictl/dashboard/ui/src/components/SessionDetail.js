@@ -18,6 +18,7 @@ import CostByModelPanel from './session_detail/CostByModelPanel.js';
 import ProcessTreePanel from './session_detail/ProcessTreePanel.js';
 import ToolCallsPanel from './session_detail/ToolCallsPanel.js';
 import SessionControl from './session_detail/SessionControl.js';
+import SessionArtifactsPanel from './SessionArtifactsPanel.js';
 
 // Thin orchestrator — just the session header + a stack of Panels.
 // Each panel is its own file under components/session_detail/.
@@ -77,6 +78,9 @@ export default function SessionDetail({session, onClose}) {
     <${Panel} title="Estimated cost by model" icon="banknote" defaultOpen=${false}>
       <${CostByModelPanel} sessionId=${session.session_id}/>
     <//>
+    ${String(session.tool || '').startsWith('copilot') && html`<${Panel} title="Session files" icon="folder" defaultOpen=${false}>
+      <${SessionArtifactsPanel} sessionId=${session.session_id}/>
+    <//>`}
     <${Panel} title="Tool Calls" icon="wrench" defaultOpen=${false}>
       <${ToolCallsPanel} sessionId=${sessionIdCandidates(session)}/>
     <//>
