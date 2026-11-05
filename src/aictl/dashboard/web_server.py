@@ -63,6 +63,8 @@ _log = logger  # alias used by _serve_static
 # ─── SSE client limit ────────────────────────────────────────────
 
 _MAX_SSE_CLIENTS = 10
+from ..monitoring.pace import PACE  # noqa: E402
+
 _sse_client_count = 0
 _sse_client_lock = threading.Lock()
 
@@ -326,6 +328,26 @@ def build_sse_summary(snap: DashboardSnapshot) -> dict:
         "agent_teams": _slim_agent_teams(snap.agent_teams or []),
         "_sse_summary": True,
     }
+
+
+# Large summary keys sent only when their value changed. Clients merge each
+# message over the previous state, so a missing key keeps its last value.
+# Totals and ``tools`` are always sent: the UI appends them to its history.
+_SSE_OMITTABLE_KEYS = frozenset(
+    {"agent_memory", "mcp_detail", "live_monitor", "tool_telemetry", "tool_configs", "events", "sessions", "agent_teams"}
+)
+
+
+def _omit_unchanged_sse_keys(data: str, sent: dict[str, int]) -> str:
+    """Drop omittable keys equal to what this client received last."""
+    summary = json.loads(data)
+    for key in _SSE_OMITTABLE_KEYS & summary.keys():
+        digest = hash(json.dumps(summary[key], sort_keys=True))
+        if sent.get(key) == digest:
+            del summary[key]
+        else:
+            sent[key] = digest
+    return json.dumps(summary)
 
 
 # ─── HTTP handler ────────────────────────────────────────────────
@@ -995,6 +1017,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                 self.send_error(503, "Too many SSE clients")
                 return
             _sse_client_count += 1
+        PACE.client_connected()
 
         try:
             self.send_response(200)
@@ -1005,6 +1028,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self.end_headers()
 
             version = 0
+            self._sse_sent: dict[str, int] = {}
             # Send current snapshot immediately
             snap = self.server.store.snapshot
             if snap:
@@ -1022,6 +1046,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     break
         finally:
+            PACE.client_disconnected()
             with _sse_client_lock:
                 _sse_client_count -= 1
 
@@ -1032,6 +1057,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             # Fallback: serialize now (first push before store has SSE cached)
             summary = build_sse_summary(snap)
             data = json.dumps(summary)
+        data = _omit_unchanged_sse_keys(data, self._sse_sent)
         self.wfile.write(f"data: {data}\n\n".encode())
         self.wfile.flush()
 

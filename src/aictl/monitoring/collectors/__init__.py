@@ -17,6 +17,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from ...data.schema import metric_name as M
+from ..pace import PACE
 
 if TYPE_CHECKING:
     from ..config import MonitorConfig
@@ -50,10 +51,12 @@ class BaseCollector(ABC):
         if self._sink is not None:
             self._sink.emit(metric, value, tags)
 
-    def sink_emit_if_changed(self, metric: str, value: float, tags: dict[str, Any] | None = None) -> None:
+    def sink_emit_if_changed(
+        self, metric: str, value: float, tags: dict[str, Any] | None = None, *, gauge: bool = False
+    ) -> None:
         """Emit only if value changed (skip DB write for unchanged)."""
         if self._sink is not None:
-            self._sink.emit_if_changed(metric, value, tags)
+            self._sink.emit_if_changed(metric, value, tags, gauge=gauge)
 
     def sink_emit_cpu(self, metric: str, value: float, tags: dict[str, Any] | None = None) -> None:
         """Emit CPU metric with sensitivity (ratio 0-1, rounded to 0.1%)."""
@@ -107,6 +110,18 @@ class BaseCollector(ABC):
     async def sleep(self, seconds: float) -> None:
         await asyncio.sleep(seconds)
 
+    async def sleep_paced(self, seconds: float) -> None:
+        """Sleep for ``seconds`` times the current pace; ends early when a client attaches."""
+        waited = 0.0
+        while waited < seconds * PACE.factor():
+            step = min(1.0, max(seconds, 0.01))
+            await asyncio.sleep(step)
+            waited += step
+
+
+# Seconds between full discovery scans at full pace.
+DISCOVERY_INTERVAL_S = 30.0
+
 
 # ── Collector registry ───────────────────────────────────────────────────────
 
@@ -147,7 +162,7 @@ def _register_builtins() -> None:
     def _discovery_factory(config: MonitorConfig) -> BaseCollector:
         from ..runtime import DiscoveryCollector
 
-        return DiscoveryCollector(config, interval=10.0, include_processes=True)
+        return DiscoveryCollector(config, interval=DISCOVERY_INTERVAL_S, include_processes=True)
 
     register_collector("process", PsutilProcessCollector)
     register_collector("network", _network_factory)

@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,9 @@ _INTERESTING_NAMES = ("otel", "trace", "span", "telemetry", "usage", "session", 
 _INTERESTING_SUFFIXES = (".json", ".jsonl", ".ndjson", ".log")
 
 
+CANDIDATE_WALK_INTERVAL_S = 120.0
+
+
 class StructuredTelemetryCollector(BaseCollector):
     """Tail structured logs for token counts when tools expose them.
 
@@ -30,6 +34,8 @@ class StructuredTelemetryCollector(BaseCollector):
     name = "telemetry:structured"
 
     def __init__(self, config: MonitorConfig) -> None:
+        self._candidates: list[Path] | None = None
+        self._candidates_at = 0.0
         super().__init__()
         self.config = config
         self._offsets: dict[str, int] = {}
@@ -81,11 +87,17 @@ class StructuredTelemetryCollector(BaseCollector):
                     )
                 if conf:
                     self.sink_emit_if_changed(M("gen_ai.client.confidence"), float(conf), ttags)
-            await self.sleep(self.config.telemetry_interval)
+            await self.sleep_paced(self.config.telemetry_interval)
 
     def _poll(self) -> list[dict]:
         samples: list[dict] = []
-        for path in self._candidate_files():
+        # Walking the state dirs was 56% of daemon CPU at a 5 s interval. Parsing
+        # is incremental, so new files only need to be found within a minute or two.
+        now = time.monotonic()
+        if self._candidates is None or now - self._candidates_at >= CANDIDATE_WALK_INTERVAL_S:
+            self._candidates = self._candidate_files()
+            self._candidates_at = now
+        for path in self._candidates:
             samples.extend(self._parse_file(path))
         return samples
 

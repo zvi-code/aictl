@@ -364,7 +364,7 @@ class _MockSink:
     def emit(self, metric, value, tags, ts=None):
         self.emitted.append((metric, value, dict(tags)))
 
-    def emit_if_changed(self, metric, value, tags, ts=None):
+    def emit_if_changed(self, metric, value, tags, ts=None, gauge=False):
         self.changed.append((metric, value, dict(tags)))
 
 
@@ -461,7 +461,7 @@ def test_collect_emits_telemetry_tokens_through_sink(monkeypatch, tmp_path):
     sink = _MockSink()
     collect(tmp_path, _sink=sink)
 
-    token_metrics = [(metric, val, tags) for metric, val, tags in sink.emitted if "token.usage.verified" in metric]
+    token_metrics = [(metric, val, tags) for metric, val, tags in sink.changed if "token.usage.verified" in metric]
     assert len(token_metrics) == 2  # one input, one output
     types = {tags["gen_ai.token.type"]: val for _m, val, tags in token_metrics}
     assert types["input"] == 1000.0

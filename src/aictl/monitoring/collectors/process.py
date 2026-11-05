@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import time
 from collections import defaultdict
@@ -20,7 +21,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ...data.schema import metric_name as M
+from ...platforms import IS_WINDOWS
 from ..config import MonitorConfig
+from ..pace import PACE
 from ..session import ProcessInfo
 from . import BaseCollector
 
@@ -129,6 +132,7 @@ class PsutilProcessCollector(BaseCollector):
         super().__init__(config=config)
         self._known_pids: set[int] = set()
         self._handles: dict[int, object] = {}
+        self._identity: dict[tuple[int, str], tuple[tuple[str, ...], str | None]] = {}
         # Sticky set: once a PID is classified as AI-tool-related, keep
         # tracking it until the process actually exits.  Prevents losing
         # long-running sessions when classify_process is inconsistent
@@ -198,7 +202,7 @@ class PsutilProcessCollector(BaseCollector):
                 if self.correlator:
                     self.correlator.on_process_exit(pid)
 
-            await self.sleep(self.config.process_interval)
+            await self.sleep_paced(self.config.process_interval)
 
     async def _report_classification_health(self) -> None:
         """Report registry-load degradation once per state transition.
@@ -230,23 +234,40 @@ class PsutilProcessCollector(BaseCollector):
         all_processes: dict[int, dict[str, object]] = {}
         children: dict[int, set[int]] = defaultdict(set)
 
-        for process in psutil_module.process_iter(["pid", "ppid", "name", "cmdline", "exe", "username"]):
+        # cmdline and exe need a syscall per process and change only on exec,
+        # which also changes the name, so they are cached per (pid, name).
+        # username is not read anywhere and takes a user lookup per process.
+        identity: dict[tuple[int, str], tuple[tuple[str, ...], str | None]] = {}
+        for process in psutil_module.process_iter(["pid", "ppid", "name"]):
             try:
                 info = process.info
                 pid = int(info["pid"])
                 ppid = int(info["ppid"]) if info["ppid"] is not None else None
+                name = str(info.get("name") or "")
+                cached = self._identity.get((pid, name))
+                if cached is None:
+                    extra = process.as_dict(["cmdline", "exe"])
+                    cached = (
+                        tuple(str(part) for part in (extra.get("cmdline") or ())),
+                        str(extra["exe"]) if extra.get("exe") else None,
+                    )
+                # An empty cmdline can be a race during exec: read it again. Windows
+                # has no exec, and protected processes would be denied every time.
+                if cached[0] or IS_WINDOWS:
+                    identity[(pid, name)] = cached
                 all_processes[pid] = {
                     "pid": pid,
                     "ppid": ppid,
-                    "name": str(info.get("name") or ""),
-                    "cmdline": tuple(str(part) for part in (info.get("cmdline") or ())),
-                    "exe": str(info["exe"]) if info.get("exe") else None,
-                    "username": str(info["username"]) if info.get("username") else None,
+                    "name": name,
+                    "cmdline": cached[0],
+                    "exe": cached[1],
+                    "username": None,
                 }
                 if ppid is not None:
                     children[ppid].add(pid)
             except (psutil_module.Error, OSError, KeyError, TypeError):
                 continue
+        self._identity = identity
 
         tracked = self._tracked_pids(all_processes, children)
         snapshot: dict[int, dict[str, object]] = {}
@@ -327,6 +348,16 @@ class PsutilProcessCollector(BaseCollector):
 # ── Filesystem collector ────────────────────────────────
 
 
+def _is_under(path: str, roots: tuple[str, ...]) -> bool:
+    """True when ``path`` is one of ``roots`` or below it, as this OS compares paths."""
+    candidate = os.path.normcase(path)
+    for root in roots:
+        norm = os.path.normcase(root)
+        if candidate == norm or candidate.startswith(norm.rstrip(os.sep) + os.sep):
+            return True
+    return False
+
+
 class WatchdogFileCollector(BaseCollector):
     """Watch project and state directories for file activity."""
 
@@ -374,6 +405,7 @@ class WatchdogFileCollector(BaseCollector):
         try:
             while True:
                 fe = await queue.get()  # dict with path, growth, size, tool_hint, workspace, event_type
+                PACE.note_activity()
                 path = fe.get("path", "")
                 growth = fe.get("growth_bytes", 0)
                 size = fe.get("size_bytes", 0)
@@ -430,6 +462,8 @@ class _WatchHandler:  # pragma: no cover - exercised through watchdog integratio
         if event.is_directory:
             return
         path = str(Path(path_override or event.src_path).expanduser())
+        if _is_under(path, self._config.ignored_paths):
+            return
         workspace = self._config.workspace_for_path(path)
         growth_bytes = 0
         size_bytes = 0
