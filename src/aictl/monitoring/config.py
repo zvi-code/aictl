@@ -79,6 +79,9 @@ class MonitorConfig:
         "venv",
         "build",
         "dist",
+        "target",
+        "bin",
+        "obj",
         ".next",
     )
     _workspace_roots: tuple[str, ...] = field(init=False, repr=False)

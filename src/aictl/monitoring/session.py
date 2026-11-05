@@ -27,6 +27,10 @@ from typing import Any
 
 from ..tools import TOOL_LABELS
 
+# Paths kept per session. A build under the workspace can change tens of thousands of
+# files, and every path would travel in every snapshot. ``file_events`` still counts them all.
+MAX_FILES_TOUCHED = 1_000
+
 
 @dataclass(slots=True, frozen=True)
 class ProcessInfo:
@@ -141,7 +145,8 @@ class SessionState:
         growth_bytes: int,
     ) -> None:
         self.file_events += 1
-        self.files_touched.add(path)
+        if path in self.files_touched or len(self.files_touched) < MAX_FILES_TOUCHED:
+            self.files_touched.add(path)
         if workspace:
             self.workspaces.add(workspace)
         if state_root:
@@ -168,6 +173,7 @@ class SessionState:
             "pids": sorted(self.pids),
             "workspaces": sorted(self.workspaces),
             "files_touched": sorted(self.files_touched),
+            "files_touched_limited": len(self.files_touched) >= MAX_FILES_TOUCHED,
             "files_loaded": sorted(self.files_loaded),
             "file_events": self.file_events,
             "cpu_percent": round(self.cpu_percent, 2),

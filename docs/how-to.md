@@ -191,6 +191,19 @@ aictl daemon serve --status
 aictl daemon serve --stop
 ```
 
+The dashboard scans and watches the folder where you start it. Start it in one project, or name the project:
+
+```bash
+aictl daemon serve --root ~/Projects/my-project
+```
+
+A parent folder of many projects works, but costs more:
+
+- Above 50,000 folders, aictl scans only part of the folder and says so once.
+- A scan that takes 1 second or more waits 20 times its own duration before it repeats, so a new file can take longer to appear.
+- aictl lists the first 2,000 config files from hidden folders, and keeps samples for the 500 largest files of each tool. Totals per tool still count every file it found.
+- Changes under `.git`, `node_modules`, `target`, `bin`, `obj`, `build` and `dist` do not count as file activity.
+
 ## Connect Copilot CLI, the desktop app and VS Code
 
 Preview first. `--dry-run` writes nothing.
@@ -548,4 +561,7 @@ Run these on a real Windows machine, in PowerShell, and note anything that diffe
 | `Python packages:` shows the wrong source | See [Install from a private package index](../README.md#install-from-a-private-package-index) |
 | `No such option: --index-url` | The `aictl` that ran is older than the option. Run `git pull`, then [Find a leftover copy](#find-a-leftover-copy) |
 | An old version is still there after `pipx uninstall` | [Find a leftover copy](#find-a-leftover-copy) |
+| `has more than 50000 folders` | aictl scans only part of that folder. Start the dashboard in one project, or use `--root` |
+| `Too many samples: dropping those over 5000 per second` | Many samples arrived at once, so some data for that moment is missing. The message names the first metric dropped. If it repeats, start the dashboard in one project |
+| The top bar shows `stale` | The refresh is behind, which a very large folder can cause. Start the dashboard in one project |
 | The dashboard still shows the old version | Run `aictl daemon serve --stop`, start the dashboard again, then press Ctrl+F5 in the browser |

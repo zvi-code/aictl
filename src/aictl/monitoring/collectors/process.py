@@ -358,6 +358,47 @@ def _is_under(path: str, roots: tuple[str, ...]) -> bool:
     return False
 
 
+# Samples per second for files that no AI tool owns. A build or a checkout changes thousands
+# of files per second, and each sample would crowd out the data people opened the dashboard for.
+MAX_FILE_EVENT_SAMPLES_PER_S = 200
+# Stands in for the files over that limit, so totals stay right.
+OTHER_FILES_PATH = "(other files)"
+# Paths whose last size is kept, so a long build cannot grow this without limit.
+MAX_TRACKED_FILE_SIZES = 50_000
+
+
+class _FileEventSampler:
+    """Turn file events into samples, within a limit per second for files that no AI tool owns."""
+
+    def __init__(self, collector: BaseCollector, clock=time.monotonic) -> None:
+        self._collector = collector
+        self._clock = clock
+        self._window_start = 0.0
+        self._sampled = 0
+        self._other_bytes = 0.0
+
+    def record(self, path: str, growth: int, size: int, tool_hint: str | None) -> None:
+        if tool_hint:
+            # A tool is at work. A build in the same folder must not keep polling at full speed.
+            PACE.note_activity()
+        now = self._clock()
+        if now - self._window_start >= 1.0:
+            if self._other_bytes:
+                self._collector.sink_emit(M("process.disk.io"), self._other_bytes, {"path": OTHER_FILES_PATH})
+            self._window_start, self._sampled, self._other_bytes = now, 0, 0.0
+        if not tool_hint:
+            if self._sampled >= MAX_FILE_EVENT_SAMPLES_PER_S:
+                self._other_bytes += abs(growth) or 1
+                return
+            self._sampled += 1
+        ftags = {"path": path}
+        if tool_hint:
+            ftags["tool"] = tool_hint
+        self._collector.sink_emit(M("process.disk.io"), float(abs(growth) or 1), ftags)
+        if size:
+            self._collector.sink_emit_if_changed(M("aictl.file.size"), float(size), ftags)
+
+
 class WatchdogFileCollector(BaseCollector):
     """Watch project and state directories for file activity."""
 
@@ -402,10 +443,10 @@ class WatchdogFileCollector(BaseCollector):
             detail=f"Watching {len(watch_paths)} paths for edits and growth",
         )
 
+        sampler = _FileEventSampler(self)
         try:
             while True:
                 fe = await queue.get()  # dict with path, growth, size, tool_hint, workspace, event_type
-                PACE.note_activity()
                 path = fe.get("path", "")
                 growth = fe.get("growth_bytes", 0)
                 size = fe.get("size_bytes", 0)
@@ -419,12 +460,7 @@ class WatchdogFileCollector(BaseCollector):
 
                 # Sink: per-file metrics
                 if path:
-                    ftags = {"path": path}
-                    if tool_hint:
-                        ftags["tool"] = tool_hint
-                    self.sink_emit(M("process.disk.io"), float(abs(growth) or 1), ftags)
-                    if size:
-                        self.sink_emit_if_changed(M("aictl.file.size"), float(size), ftags)
+                    sampler.record(path, growth, size, tool_hint)
         except asyncio.CancelledError:
             raise
         finally:
@@ -454,6 +490,7 @@ class _WatchHandler:  # pragma: no cover - exercised through watchdog integratio
         self._queue = queue
         self._config = config
         self._size_cache: dict[str, int] = {}
+        self._ignored_names = frozenset(config.ignored_dir_names)
 
     def dispatch(self, event) -> None:
         self._delegate.dispatch(event)
@@ -463,6 +500,11 @@ class _WatchHandler:  # pragma: no cover - exercised through watchdog integratio
             return
         path = str(Path(path_override or event.src_path).expanduser())
         if _is_under(path, self._config.ignored_paths):
+            return
+        tool_hint = _tool_hint_for_path(path)
+        # Files under .git or build output say nothing about AI tools. A tool's own state stays
+        # in, even under a folder named like one of these.
+        if not tool_hint and not self._ignored_names.isdisjoint(Path(path).parts):
             return
         workspace = self._config.workspace_for_path(path)
         growth_bytes = 0
@@ -474,6 +516,8 @@ class _WatchHandler:  # pragma: no cover - exercised through watchdog integratio
                 size_bytes = 0
             previous = self._size_cache.get(path, 0)
             growth_bytes = max(0, size_bytes - previous)
+            if len(self._size_cache) >= MAX_TRACKED_FILE_SIZES:
+                self._size_cache.clear()
             self._size_cache[path] = size_bytes
 
         self._loop.call_soon_threadsafe(
@@ -481,7 +525,7 @@ class _WatchHandler:  # pragma: no cover - exercised through watchdog integratio
             {
                 "path": path,
                 "event_type": event_type,
-                "tool_hint": _tool_hint_for_path(path),
+                "tool_hint": tool_hint,
                 "workspace": workspace,
                 "growth_bytes": growth_bytes,
                 "size_bytes": size_bytes,

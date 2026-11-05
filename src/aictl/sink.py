@@ -234,8 +234,9 @@ class SampleSink:
             log.debug("Flood drop: metric=%s total_dropped=%d", metric, total_dropped)
             if first_drop:
                 log.warning(
-                    "Flood protection: dropping samples (>%d/s). Total dropped: %d",
+                    "Too many samples: dropping those over %d per second, starting with %s. Dropped so far: %d",
                     self._flood_max,
+                    metric,
                     total_dropped,
                 )
             return

@@ -9,13 +9,18 @@ discovery engine that resolves them against the project tree.
 from __future__ import annotations
 
 import csv
+import heapq
 import json
+import logging
 import os
 import re
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 # ─── Tool naming ──────────────────────────────────────────────────
 
@@ -552,6 +557,29 @@ PRUNE_DIRS = frozenset(
 MAX_SCAN_DIRS = 50_000
 
 
+# A walk shorter than this repeats on every discovery, so a normal project always shows current files.
+SLOW_WALK_S = 1.0
+# A slower walk waits this many times its own duration before it repeats. A 5 s walk repeats
+# after 100 s, so walking stays near 5% of one core however large the tree is.
+WALK_PAUSE_FACTOR = 20
+_slow_walks: dict[tuple, tuple[float, object]] = {}
+
+
+def _paced_walk(key: tuple, walk: Callable[[], object]):
+    """Return ``walk()``, reusing the result of a slow walk until its pause ends. Callers must not change it."""
+    started = time.monotonic()
+    hit = _slow_walks.get(key)
+    if hit is not None and started < hit[0]:
+        return hit[1]
+    result = walk()
+    elapsed = time.monotonic() - started
+    if elapsed >= SLOW_WALK_S:
+        _slow_walks[key] = (started + elapsed * WALK_PAUSE_FACTOR, result)
+    else:
+        _slow_walks.pop(key, None)
+    return result
+
+
 def find_in_tree(root: Path, filename: str) -> list[Path]:
     """Find every file named *filename* under root, skipping irrelevant dirs."""
     results = []
@@ -823,7 +851,10 @@ def batch_resolve_paths(
     # Single tree walk
     cache: dict[str, dict[str, list[Path]]] = {"files": {}, "dirs": {}}
     if need_files or need_dirs:
-        file_matches, dir_matches = batch_find_in_tree(root, need_files, need_dirs)
+        file_matches, dir_matches = _paced_walk(
+            ("resolve", str(root), frozenset(need_files), frozenset(need_dirs)),
+            lambda: batch_find_in_tree(root, need_files, need_dirs),
+        )
         cache["files"] = file_matches
         cache["dirs"] = dir_matches
 
@@ -838,7 +869,7 @@ def batch_resolve_paths(
 
 # ─── Discovery ─────────────────────────────────────────────────────────────
 
-from .fsutil import safe_glob, safe_iterdir, safe_rglob, safe_stat, safe_walk
+from .fsutil import safe_glob, safe_iterdir, safe_rglob, safe_stat, safe_walk, warn_once
 from .platforms import CURRENT_PLATFORM, IS_MACOS, IS_WINDOWS
 from .utils import estimate_tokens, norm_path
 
@@ -931,6 +962,37 @@ class ToolResources:
 # ─── File helpers ────────────────────────────────────────────────
 
 
+# Files whose token estimate is kept, so an unchanged file is not read again on every discovery.
+MAX_TOKEN_CACHE = 20_000
+_token_cache: dict[str, tuple[int, int, int]] = {}
+# Files that get their own samples per tool. Totals per tool still count every file.
+MAX_FILE_SAMPLES_PER_TOOL = 500
+
+
+def _file_tokens(path: Path, st: os.stat_result) -> int:
+    key = str(path)
+    hit = _token_cache.get(key)
+    if hit is not None and hit[:2] == (st.st_mtime_ns, st.st_size):
+        return hit[2]
+    if st.st_size >= 1_000_000:
+        return 0
+    try:
+        tokens = estimate_tokens(path.read_text(errors="replace", encoding="utf-8"))
+    except OSError:
+        return 0
+    if len(_token_cache) >= MAX_TOKEN_CACHE:
+        _token_cache.clear()
+    _token_cache[key] = (st.st_mtime_ns, st.st_size, tokens)
+    return tokens
+
+
+def files_to_sample(files: list[ResourceFile]) -> list[ResourceFile]:
+    """The files that get their own samples: all of them up to the limit, then the largest by tokens."""
+    if len(files) <= MAX_FILE_SAMPLES_PER_TOOL:
+        return files
+    return heapq.nlargest(MAX_FILE_SAMPLES_PER_TOOL, files, key=lambda f: f.tokens)
+
+
 def _file_resource(path: Path, kind: str) -> ResourceFile | None:
     """Create a ResourceFile if path exists, else None."""
     if not path.is_file():
@@ -941,14 +1003,7 @@ def _file_resource(path: Path, kind: str) -> ResourceFile | None:
         mtime = st.st_mtime
     except OSError:
         return None
-    tokens = 0
-    if size < 1_000_000:
-        try:
-            text = path.read_text(errors="replace", encoding="utf-8")
-            tokens = estimate_tokens(text)
-        except OSError:
-            pass
-    rf = ResourceFile(str(path), kind, size, tokens)
+    rf = ResourceFile(str(path), kind, size, _file_tokens(path, st))
     rf.mtime = mtime
     return rf
 
@@ -1085,10 +1140,23 @@ def _enrich_claude_memory(root: Path, results: dict[str, ToolResources]) -> None
 # ─── Project environment / hidden config ─────────────────────────
 
 
+# Files listed from hidden folders. A folder of many projects can hold far more than anyone can read.
+MAX_PROJECT_ENV_FILES = 2_000
+
+
 def _discover_project_env(root: Path) -> ToolResources:
     """Discover unknown hidden dirs that may contain AI-relevant config."""
     res = ToolResources("project-env", "Project Environment")
+    for path, kind in _paced_walk(("project-env", str(root)), lambda: _project_env_paths(root)):
+        rf = _file_resource(path, kind)
+        if rf:
+            res.files.append(rf)
+    return res
 
+
+def _project_env_paths(root: Path) -> list[tuple[Path, str]]:
+    """Config files in unknown hidden folders under root, each with its kind."""
+    found: list[tuple[Path, str]] = []
     known_tool_dirs = {
         ".claude",
         ".cursor",
@@ -1110,20 +1178,21 @@ def _discover_project_env(root: Path) -> ToolResources:
         for d in sorted(dirnames):
             if d.startswith(".") and d not in skip:
                 item = dp / d
-                for pat, kind in [
-                    ("*.json", "config"),
-                    ("*.yaml", "config"),
-                    ("*.yml", "config"),
-                    ("*.md", "instructions"),
-                ]:
+                for pat in ("*.json", "*.yaml", "*.yml", "*.md"):
                     for f in safe_glob(item, pat):
                         st = safe_stat(f)
                         if f.is_file() and st and st.st_size < 500_000:
-                            rf = _file_resource(f, f"hidden ({d})")
-                            if rf:
-                                res.files.append(rf)
-
-    return res
+                            found.append((f, f"hidden ({d})"))
+                            if len(found) >= MAX_PROJECT_ENV_FILES:
+                                warn_once(
+                                    log,
+                                    "%s has more than %d config files in hidden folders. aictl lists the first %d.",
+                                    root,
+                                    MAX_PROJECT_ENV_FILES,
+                                    MAX_PROJECT_ENV_FILES,
+                                )
+                                return found
+    return found
 
 
 # ─── aictl itself ────────────────────────────────────────────────
@@ -1134,8 +1203,8 @@ def _discover_aictl(root: Path) -> ToolResources:
     res = ToolResources("aictl", "aictl")
     from .context import scan
 
-    for _rel, parsed in scan(root):
-        r = _file_resource(parsed.path, "context")
+    for path in _paced_walk(("aictl", str(root)), lambda: [parsed.path for _rel, parsed in scan(root)]):
+        r = _file_resource(path, "context")
         if r:
             res.files.append(r)
     r = _file_resource(root / ".ai-deployed" / "manifest.json", "manifest")

@@ -37,7 +37,7 @@ except ModuleNotFoundError:
 
 import logging
 
-from .fsutil import MAX_SCAN_DIRS, safe_iterdir
+from .fsutil import MAX_SCAN_DIRS, safe_iterdir, warn_scan_cap
 
 _log = logging.getLogger(__name__)
 
@@ -434,8 +434,10 @@ def _walk(root: Path, _budget: list[int] | None = None):
     *_budget* is a single-element mutable directory budget shared across the
     recursion so that pointing aictl at a huge root (a drive root, a home
     directory, ...) can't turn the scan into an endless full-filesystem walk.
-    Callers normally omit it; it defaults to :data:`MAX_SCAN_DIRS`.
+    Callers normally omit it; it defaults to :data:`MAX_SCAN_DIRS`. A negative
+    value means that the scan stopped with folders left to visit.
     """
+    outermost = _budget is None
     if _budget is None:
         _budget = [MAX_SCAN_DIRS]
     f = root / AICTX_FILENAME
@@ -447,9 +449,11 @@ def _walk(root: Path, _budget: list[int] | None = None):
     for item in safe_iterdir(root):
         if item.is_dir() and item.name not in SKIP_DIRS:
             if _budget[0] <= 0:
-                _log.warning("context.scan: hit %d-directory cap, stopping scan", MAX_SCAN_DIRS)
-                return
+                _budget[0] = -1
+                break
             yield from _walk(item, _budget)
+    if outermost and _budget[0] < 0:
+        warn_scan_cap(root, MAX_SCAN_DIRS)
 
 
 # ── Feature matrix (from feature_matrix.py) ──

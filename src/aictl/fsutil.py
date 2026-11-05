@@ -33,6 +33,8 @@ __all__ = [
     "safe_stat",
     "path_basename",
     "MAX_SCAN_DIRS",
+    "warn_once",
+    "warn_scan_cap",
 ]
 
 _log = logging.getLogger(__name__)
@@ -41,6 +43,27 @@ _log = logging.getLogger(__name__)
 # Pointing aictl at a huge root (a drive root, a home directory, ...) must
 # never turn discovery into an endless full-filesystem walk.
 MAX_SCAN_DIRS = 50_000
+
+_warned: set[tuple[str, ...]] = set()
+
+
+def warn_once(logger: logging.Logger, message: str, *args: object) -> None:
+    """Log a warning the first time only. Discovery repeats every few seconds, so a warning would too."""
+    key = (message, *(str(arg) for arg in args))
+    if key not in _warned:
+        _warned.add(key)
+        logger.warning(message, *args)
+
+
+def warn_scan_cap(root: Path, max_dirs: int) -> None:
+    """Say that a scan of ``root`` stopped at the cap, and what the reader can do about it."""
+    warn_once(
+        _log,
+        "%s has more than %d folders, so aictl scans only part of it. "
+        "To scan one project, start aictl in that project or use --root.",
+        root,
+        max_dirs,
+    )
 
 
 # ── Safe directory listing ────────────────────────────────────────
@@ -139,7 +162,7 @@ def safe_walk(
             dirnames.clear()
             continue
         if max_dirs is not None and visited >= max_dirs:
-            _log.warning("safe_walk %s: hit %d-directory cap, stopping scan", root, max_dirs)
+            warn_scan_cap(root, max_dirs)
             dirnames.clear()
             break
         visited += 1

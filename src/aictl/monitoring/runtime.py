@@ -56,7 +56,7 @@ class DiscoveryCollector(BaseCollector):
 
     async def run(self) -> None:
         from ..data.schema import metric_name as _M
-        from ..tools import discover_all
+        from ..tools import discover_all, files_to_sample
 
         await self.report_status(
             status="active",
@@ -79,7 +79,7 @@ class DiscoveryCollector(BaseCollector):
                 self.sink_emit_if_changed(_M("aictl.discovery.processes"), float(len(tool_res.processes)), tags, gauge=True)
                 self.sink_emit_if_changed(_M("aictl.discovery.mcp_servers"), float(len(tool_res.mcp_servers)), tags, gauge=True)
 
-                for f in tool_res.files:
+                for f in files_to_sample(tool_res.files):
                     ftags = {
                         "aictl.tool": tool,
                         "file.path": f.path,
@@ -232,7 +232,7 @@ def render_text_snapshot(snapshot: MonitorSnapshot) -> str:
                 f"    detected: {'YES' if tool['mcp']['detected'] else 'NO'}",
                 f"    loops: {tool['mcp']['loops']}  confidence: {tool['mcp']['confidence']:.2f}",
                 "  Context:",
-                f"    repo: {tool['workspace_size_mb']:.1f} MB",
+                f"    repo: {tool['workspace_size_mb']:.1f} MB" if tool["workspace_size_mb"] else "    repo: n/a",
                 f"    files touched: {tool['files_touched']}  events: {tool['file_events']}",
                 f"    cpu: {tool['cpu_percent']:.1f}%  peak: {tool['peak_cpu_percent']:.1f}%",
                 f"    sources: {', '.join(tool['sources']) if tool['sources'] else 'none'}",
@@ -260,11 +260,19 @@ def _select_network_collector(config: MonitorConfig):
     return PsutilFallbackNetworkCollector(config.network_interval)
 
 
+# This runs before the monitor starts, so a very large folder must not hold up the start.
+DIR_SIZE_BUDGET_S = 2.0
+
+
 def _dir_size(path: Path, ignored_dir_names: tuple[str, ...]) -> int:
+    """Total size of a folder, or 0 if it takes too long: a partial total would read as the real size."""
     total = 0
     if not path.exists():
         return 0
+    deadline = time.monotonic() + DIR_SIZE_BUDGET_S
     for current_root, dir_names, file_names in os.walk(path):
+        if time.monotonic() > deadline:
+            return 0
         dir_names[:] = [name for name in dir_names if name not in ignored_dir_names]
         for filename in file_names:
             try:

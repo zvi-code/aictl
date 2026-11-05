@@ -15,7 +15,7 @@ export default function DeliverablesPanel({session}) {
 
   return html`<div>
     <div class="es-kv mb-sm" style="gap:var(--sp-3)">
-      <div class="es-kv-card"><div class="label">Files Modified</div><div class="value">${filesTouched.length}</div></div>
+      <div class="es-kv-card"><div class="label">Files Modified</div><div class="value">${filesTouched.length}${session.files_touched_limited ? '+' : ''}</div></div>
       <div class="es-kv-card"><div class="label">File Events</div><div class="value">${fmtK(fileEvents)}</div></div>
     </div>
     <div class="mono text-xs" style="max-height:12rem;overflow-y:auto">
