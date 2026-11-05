@@ -568,21 +568,41 @@ def remove_from_hook_file(path: Path, sink: _Sink, *, delete_if_only: tuple[str,
     return removed
 
 
-def _remove_disabled_copies(directory: Path, sink: _Sink) -> None:
-    """Delete hand-disabled copies such as ``aictl.json.disabled`` if they hold only aictl rules."""
+def _holds_only_marked_rules(path: Path) -> bool:
+    """True when the file is a hook file and every rule carries the aictl ownership marker."""
+    try:
+        data = jsonc_loads(read_text_exact(path))
+    except (OSError, UnicodeDecodeError, JsoncError):
+        return False
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict) or not hooks or set(data) - {"hooks", "version"}:
+        return False
+    for rules in hooks.values():
+        if not isinstance(rules, list) or not rules:
+            return False
+        if not all(isinstance(r, dict) and r.get("_aictl_owner") == OWNER_MARKER for r in rules):
+            return False
+    return True
+
+
+def renamed_aictl_files(directory: Path) -> list[Path]:
+    """Renamed copies of an aictl hook file (``*.disabled``, ``*.bak``), provably aictl's by marker."""
     if not directory.is_dir():
-        return
-    for path in sorted(directory.glob("aictl.json?*")):
-        try:
-            data = jsonc_loads(read_text_exact(path))
-        except (OSError, UnicodeDecodeError, JsoncError):
-            sink.result.notes.append(f"left alone, unreadable: {path}")
-            continue
-        remaining, removed = strip_rules(data.get("hooks"))
-        if removed and not remaining and not (set(data) - {"hooks", "version"}):
-            sink.delete(path, "delete disabled aictl hook file")
-        elif removed:
-            sink.result.notes.append(f"left alone, holds non-aictl content: {path}")
+        return []
+    found: set[Path] = set()
+    for pattern in ("*.disabled", "*.bak", "*.bak.*", "aictl.json?*"):
+        found.update(directory.glob(pattern))
+    return sorted(p for p in found if p.is_file() and _holds_only_marked_rules(p))
+
+
+def disabled_by_rename(directory: Path) -> list[Path]:
+    """The renamed copies that mean someone switched these hooks off by hand."""
+    return [p for p in renamed_aictl_files(directory) if p.name.endswith(".disabled")]
+
+
+def _remove_disabled_copies(directory: Path, sink: _Sink) -> None:
+    for path in renamed_aictl_files(directory):
+        sink.delete(path, "delete renamed aictl hook file")
 
 
 def strip_profile_text(content: str) -> str:
