@@ -49,6 +49,51 @@ A figure with no data shows `n/a` with the reason, never 0.
 In `aictl top`: `j`/`k` or the arrow keys move, Enter expands, `/` filters, `a` toggles ended
 sessions, `q` quits.
 
+## Find a Copilot session and its files
+
+`aictl session` reads Copilot's session folders and stores directly. It needs no
+daemon and no database, and it writes nothing.
+
+```bash
+aictl session list --limit 20         # newest sessions, with folder size and project
+aictl session list --all --json       # every session, including ones with no folder left
+aictl session find "billing"          # by id, alias, project path, repository, branch or title
+aictl session show 1a2b3c4d           # everything about one session; the folder comes first
+aictl session path 1a2b3c4d           # only the folder, for scripts
+aictl session artifacts 1a2b3c4d --type checkpoint
+aictl session cat 1a2b3c4d checkpoints/index.md
+```
+
+A session can be named by its full id, an id prefix, a live PID, a folder or
+transcript path, an aictl `tool:pid:timestamp` id, or a VS Code chat session id.
+If more than one session matches, aictl lists them. If none does, it lists each
+location it searched, expanded.
+
+The index searches:
+
+| Surface | Location |
+|---------|----------|
+| CLI and desktop app | `~/.copilot/session-state/<id>/`, `session-store.db`, `data.db` (`COPILOT_HOME` moves them; `%USERPROFILE%\.copilot` on Windows) |
+| VS Code, stable and Insiders | `Code/User/workspaceStorage/<hash>/` and `Code/User/globalStorage/` of each profile (under `%APPDATA%` on Windows) |
+
+`surface_source` in the output says how a session's surface was decided. A session
+known only from `session-store.db` has surface `unknown`, since that store does not
+record the client. A VS Code session's project comes from `workspace.json`.
+
+Artifact types are `event_log`, `plan`, `checkpoint`, `file_snapshot`, `snapshot_index`,
+`tool_output`, `attachment`, `research`, `metadata`, `database`, `lock` and `unknown`.
+A file of a new kind is listed as `unknown`, not hidden.
+
+`aictl session cat` reads only inside that session's folders, stops at 256 KiB unless
+`--max-bytes` is given, and refuses binary files unless `--binary` is given. It never
+reads `data.db` or credential files. The same limits apply to
+`GET /api/copilot-sessions/<id>/artifact?path=`. Stores opened read-only do not show rows
+still in a tool's write-ahead log until that tool checkpoints. Titles are hidden when
+`[storage] capture` is not `full`.
+
+Plain `aictl session list` shows the daemon's live sessions when a daemon is running;
+any of `--all`, `--project` or `--limit` reads the index instead.
+
 ## Open the dashboard
 
 ```bash
