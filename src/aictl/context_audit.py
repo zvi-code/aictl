@@ -2423,11 +2423,13 @@ def run_audit(
     ``ps`` call. Tests pass their own. ``baseline_file`` replaces the default
     baseline location, which also makes it persist when capture is off.
     ``progress`` is told the name of each step. A step that would start after
-    AUDIT_BUDGET_S is skipped and listed in ``incomplete``.
+    AUDIT_BUDGET_S is skipped and listed in ``incomplete``. A step that raises is
+    listed in ``failed_steps`` and the other steps still run.
     """
     started = time.perf_counter()
     timings: dict[str, int] = {}
     skipped: list[str] = []
+    failed: list[dict[str, str]] = []
 
     def step(name: str, run: Callable[[], Any], default: Any = None) -> Any:
         if time.perf_counter() - started > AUDIT_BUDGET_S:
@@ -2436,9 +2438,13 @@ def run_audit(
         if progress:
             progress(name)
         begun = time.perf_counter()
-        result = run()
-        timings[f"step:{name}"] = int((time.perf_counter() - begun) * 1000)
-        return result
+        try:
+            return run()
+        except Exception as exc:  # noqa: BLE001 - one unreadable place must not lose the other results
+            failed.append({"step": name, "error": f"{type(exc).__name__}: {exc}"})
+            return default
+        finally:
+            timings[f"step:{name}"] = int((time.perf_counter() - begun) * 1000)
 
     def lap(name: str, mark: float) -> float:
         current = time.perf_counter()
@@ -2483,7 +2489,7 @@ def run_audit(
 
     effective_models, found = step("models in force", lambda: model_findings(root, env=env, ps_output=ps_output), ({}, []))
     findings.extend(found)
-    annotate_sources(sources, root, findings, env)
+    step("settings in force", lambda: annotate_sources(sources, root, findings, env))
     mark = lap("effective", mark)
 
     baseline = _load_baseline(mode, baseline_file)
@@ -2528,6 +2534,7 @@ def run_audit(
         "duration_ms": int((time.perf_counter() - started) * 1000),
         "timings_ms": timings,
         "incomplete": skipped,
+        "failed_steps": failed,
         "capture_mode": mode,
         "sources": [asdict(s) for s in sorted(kept_sources, key=lambda s: (s.tool, _RANK.get(s.loading, 9), s.path))],
         "findings": [asdict(f) for f in kept_findings],

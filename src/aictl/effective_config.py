@@ -278,7 +278,8 @@ def _glob_files(patterns: list[str]) -> list[str]:
 def _vscode_user_trees(env: dict[str, str]) -> list[Path]:
     trees = [vscode_user_dir(), vscode_insiders_user_dir()]
     if IS_WINDOWS:
-        trees += [Path(row["expanded"]).parents[0] for row in windows_locations(env) if row["id"].endswith("msix-vscode-settings") or row["id"] == "vscode-portable-settings"]
+        # An unset variable leaves ``expanded`` empty, and Path("") has no parent folder.
+        trees += [Path(row["expanded"]).parent for row in windows_locations(env) if row["expanded"] and (row["id"].endswith("msix-vscode-settings") or row["id"] == "vscode-portable-settings")]
     return trees
 
 

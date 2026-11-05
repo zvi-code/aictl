@@ -2617,6 +2617,9 @@ def _options(board: _Board) -> dict:
         keys = {sid, *agents}
         tool_agents[board.session_tool.get(sid, "")].update(keys)
         project_agents[board.session_project.get(sid, "")].update(keys)
+    # A running tool with no session in this time is still a choice in the Tool menu.
+    for group in board.placeholders:
+        tool_agents[group["tool"]].update(())
     tool_agents.pop("", None)
     project_agents.pop("", None)
 

@@ -15,10 +15,13 @@ const LOADERS = {
   detail: () => import('./app.js'),
 };
 
+/** Screens the board shows itself. `?tab=hidden` opens the same view in its drawer. */
+const ON_BOARD = new Set(['overview', 'hidden']);
+
 /** "detail" when the URL names a screen the board does not replace, else "board". */
 export function routeOf(search) {
   const id = resolveTabId(new URLSearchParams(search || '').get('tab'), TAB_IDS);
-  return id && id !== 'overview' ? 'detail' : 'board';
+  return id && !ON_BOARD.has(id) ? 'detail' : 'board';
 }
 
 export default function Root() {

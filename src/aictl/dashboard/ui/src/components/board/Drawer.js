@@ -1,14 +1,16 @@
 // ─── Board drawer — beside the dashboard, with a back stack ───────
 // Loads on first use. Agent, tool, error, file and prompt details come from the
-// /api/board/* routes when opened.
+// /api/board/* routes when opened. The hidden context view uses the scan that the
+// board already holds.
 import { html } from 'htm/preact';
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import * as api from '../../api.js';
-import { NA, colorFor, projectName, fmtCpu, fmtDur, fmtLines, fmtMem, fmtMs, fmtN, fmtShare, fmtUsd, isLive, stamp, statusMeta } from './format.js';
+import { NA, colorFor, projectName, fmtBytes, fmtCpu, fmtDur, fmtLines, fmtMem, fmtMs, fmtN, fmtShare, fmtUsd, isLive, stamp, statusMeta } from './format.js';
 import { Ico, PATHS } from './icons.js';
 import { Actions, Stats } from './Panel.js';
 import { statusCell } from './panels.js';
 import Table from './Table.js';
+import { scopeAudit } from '../../utils/auditScope.js';
 
 /** Fetch on open. A new `tick` fetches again and keeps the old data on screen meanwhile. */
 function useDetail(load, key, tick = 0) {
@@ -262,7 +264,101 @@ function PromptDrawer({ d, ctx, frame, act }) {
   </${Frame}>`;
 }
 
-const VIEWS = { agent: AgentDrawer, tool: ToolDrawer, error: ErrorDrawer, file: FileDrawer, prompt: PromptDrawer };
+const SEVERITY_RANK = { high: 0, medium: 1, low: 2, info: 3 };
+const whereText = (path, line) => (line ? path + ':' + line : path || NA);
+
+function HiddenDrawer({ ctx, frame, act }) {
+  const { audit: raw, loading, error, scan, incomplete, failed } = ctx.findings;
+  const audit = useMemo(() => scopeAudit(raw, ctx.tools), [raw, ctx.tools]);
+  const openFile = (path, line) => (path ? () => act.openDrawer({ type: 'file', path, line }) : null);
+  const findings = audit?.findings || [];
+  const sources = audit?.sources || [];
+  const findingDef = useMemo(() => ({
+    cols: [{ k: 'sev', l: 'Severity', w: '84px' }, { k: 'rule', l: 'Finding', w: '220px' }, { k: 'where', l: 'Where', w: '260px' }, { k: 'why', l: 'Why it matters' }, { k: 'todo', l: 'What to do' }, { k: 'for', l: 'Applies to', w: '170px' }],
+    rows: findings.map((f, i) => ({
+      id: i, go: openFile(f.path, f.line),
+      sort: { sev: SEVERITY_RANK[f.severity] ?? 9, rule: f.rule, where: f.path },
+      cells: { sev: { v: f.severity, warn: f.severity === 'high' || f.severity === 'medium' }, rule: { v: f.rule + (f.count > 1 ? ' x' + f.count : ''), cls: 'm' }, where: { v: whereText(f.path, f.line), cls: 'm', title: whereText(f.path, f.line) }, why: { v: f.why, cls: 'dim', title: f.why }, todo: { v: f.action || NA, cls: 'dim', title: f.action || '' }, for: (txt => ({ v: txt || NA, cls: 'dim', title: txt }))([(f.tools || []).map(ctx.toolName).join(', '), f.session_id ? 'session ' + f.session_id : ''].filter(Boolean).join(', ')) },
+    })),
+    sort: { k: 'sev', dir: 'asc' }, none: 'No findings for the selected tools.', primary: 'rule',
+  }), [findings]);
+  const sourceDef = useMemo(() => ({
+    cols: [{ k: 'tool', l: 'Tool', w: '130px' }, { k: 'scope', l: 'Scope', w: '80px' }, { k: 'load', l: 'Loading', w: '120px' }, { k: 'size', l: 'Size', n: true, w: '80px' }, { k: 'tok', l: 'Tokens', n: true, w: '70px' }, { k: 'git', l: 'Git', w: '80px' }, { k: 'path', l: 'Path' }],
+    rows: sources.map(s => ({
+      id: s.tool + '|' + s.path, go: openFile(s.path),
+      sort: { tool: s.tool, scope: s.scope, load: s.loading, size: s.bytes, tok: s.est_tokens, git: s.git_state, path: s.path },
+      cells: { tool: { v: ctx.toolName(s.tool), sw: colorFor('tool', s.tool) }, scope: { v: s.scope }, load: { v: s.readable ? s.loading : s.loading + ' (no file shows this)' }, size: { v: fmtBytes(s.bytes) }, tok: { v: s.est_tokens ? fmtN(s.est_tokens) : '0' }, git: { v: s.git_state || NA, cls: 'dim' }, path: { v: s.path + (s.symlink_target ? ' -> ' + s.symlink_target : ''), sub: [s.note, s.in_project ? '' : s.why_in_effect].filter(Boolean).join(' '), cls: 'm', title: [s.path, s.symlink_target, s.note, s.why_in_effect, s.origin].filter(Boolean).join('\n') } },
+    })),
+    sort: { k: 'tok', dir: 'desc' }, none: 'No sources for the selected tools.', primary: 'path',
+  }), [sources]);
+  const modelDef = useMemo(() => ({
+    cols: [{ k: 'tool', l: 'Tool', w: '130px' }, { k: 'val', l: 'Model', w: '160px' }, { k: 'where', l: 'Set in', w: '280px' }, { k: 'why', l: 'Why it is in force' }],
+    rows: Object.entries(audit?.effective_models || {}).map(([id, m]) => ({
+      id, go: openFile(m.source, m.line),
+      sort: { tool: m.tool || id, val: m.value },
+      cells: { tool: { v: ctx.toolName(m.tool || id), sw: colorFor('tool', m.tool || id) }, val: { v: m.value || 'No pin', warn: (m.conflicts || []).length > 0 }, where: { v: m.value ? whereText(m.source, m.line) : NA, cls: 'm', title: m.source || '' }, why: { v: m.why_in_effect || NA, cls: 'dim', title: m.why_in_effect || '' } },
+    })),
+    none: 'No model settings found.', primary: 'tool',
+  }), [audit]);
+  const pinDef = useMemo(() => ({
+    cols: [{ k: 'kind', l: 'Kind', w: '110px' }, { k: 'tool', l: 'Tool', w: '130px' }, { k: 'val', l: 'Value', w: '220px' }, { k: 'where', l: 'Where', w: '280px' }, { k: 'note', l: 'Detail' }],
+    rows: Object.entries(audit?.effective_models || {}).flatMap(([id, m]) => {
+      const tool = m.tool || id;
+      const row = (kind, val, path, line, note, warn) => ({
+        id: [kind, tool, path, line, val].join('|'), go: openFile(path, line),
+        sort: { kind, tool, val, where: path },
+        cells: { kind: { v: kind, warn }, tool: { v: ctx.toolName(tool) }, val: { v: val || NA, title: val || '' }, where: { v: whereText(path, line), cls: 'm', title: whereText(path, line) }, note: { v: note || NA, cls: 'dim', title: note || '' } },
+      });
+      return [
+        ...(m.conflicts || []).map(c => row('Conflict', (c.request?.values || []).join(', '), c.request?.path, c.request?.line, c.pin ? c.pin.value + ' is pinned at ' + whereText(c.pin.path, c.pin.line) : '', true)),
+        ...(m.overrides || []).map(o => row('Overridden', o.value, o.path, o.line, o.scope)),
+        ...(m.limited || []).map(p => row('Limited', p.value, p.path, p.line, [p.applies, p.in_project ? 'in this project' : 'not in this project', p.why_in_effect].filter(Boolean).join(', '))),
+      ];
+    }),
+    none: 'No conflicts, overridden values or limited pins.', primary: 'val',
+  }), [audit]);
+  const unattributedDef = useMemo(() => ({
+    cols: [{ k: 'tool', l: 'Tool', w: '130px' }, { k: 'left', l: 'Not explained', n: true, w: '100px' }, { k: 'first', l: 'First request', n: true, w: '100px' }, { k: 'inv', l: 'Files', n: true, w: '80px' }, { k: 'dyn', l: 'Dynamic', n: true, w: '80px' }, { k: 'built', l: 'Built-in', n: true, w: '80px' }, { k: 'n', l: 'Sessions', n: true, w: '76px' }, { k: 'how', l: 'Method' }],
+    rows: (audit?.unattributed || []).map(r => ({
+      id: r.tool, sort: { tool: r.tool, left: r.residual_tokens, first: r.first_request_tokens_median },
+      cells: { tool: { v: ctx.toolName(r.tool) }, left: { v: fmtN(r.residual_tokens) }, first: { v: fmtN(r.first_request_tokens_median) }, inv: { v: fmtN(r.inventory_always_tokens) }, dyn: { v: fmtN(r.dynamic_tokens) }, built: { v: fmtN(r.builtin_allowance_tokens) }, n: { v: fmtN(r.sessions_sampled) }, how: { v: r.method || NA, cls: 'dim', title: r.method || '' } },
+    })),
+    none: 'Nothing to explain.', primary: 'tool',
+  }), [audit]);
+  const drift = audit?.drift;
+  const driftRows = drift && !drift.baseline_created ? [
+    ...['new', 'changed', 'removed'].flatMap(kind => (drift[kind] || []).map(r => ({ kind, ...r }))),
+    ...(drift.agent_writes || []).map(w => ({ kind: 'agent write', path: w.path, note: 'Session ' + w.session_id + ', via ' + w.via })),
+  ] : [];
+  const driftDef = useMemo(() => ({
+    cols: [{ k: 'kind', l: 'Change', w: '84px' }, { k: 'tool', l: 'Tool', w: '130px' }, { k: 'path', l: 'Path' }, { k: 'note', l: 'Detail', w: '260px' }],
+    rows: driftRows.map(r => ({ id: r.kind + r.path + (r.note || ''), go: r.kind === 'removed' ? null : openFile(r.path), sort: { kind: r.kind, tool: r.tool, path: r.path }, cells: { kind: { v: r.kind }, tool: { v: r.tool ? ctx.toolName(r.tool) : NA }, path: { v: r.path, cls: 'm', title: r.path }, note: { v: r.note || NA, cls: 'dim', title: r.note || '' } } })),
+    none: 'No changes since the last scan.', primary: 'path',
+  }), [audit]);
+  const counts = audit?.counts || {};
+  const always = sources.filter(s => s.loading === 'always').reduce((n, s) => n + (s.est_tokens || 0), 0);
+  const scanText = loading ? 'Reading the settings...' + (scan ? ' ' + scan.step + ', ' + Math.round(scan.elapsed_s) + ' s' : '')
+    : audit ? 'Scanned ' + stamp(audit.scanned_at, true) + ' in ' + fmtMs(audit.duration_ms) : '';
+  return html`<${Frame} ...${frame} title="Hidden context" sub=${scanText} actions=${[{ label: 'Rescan', go: act.rescan }]}>
+    ${error ? html`<div class="bd-empty" role="alert">Could not read the settings: ${error}</div>` : null}
+    ${!audit && !error ? html`<div class="bd-empty" role="status">${scanText || 'Loading...'}</div>` : null}
+    ${audit ? html`
+      <${FixedPanel} id="hsum" title="Summary">
+        <${Stats} stats=${[{ label: 'High', value: fmtN(counts.high || 0) }, { label: 'Medium', value: fmtN(counts.medium || 0) }, { label: 'Low', value: fmtN(counts.low || 0) }, { label: 'Info', value: fmtN(counts.info || 0) }, { label: 'Sources', value: fmtN(sources.length) }, { label: 'Tokens sent each call', value: '~' + fmtN(always) }]}/>
+        ${incomplete.length ? html`<div class="bd-note">The scan reached its time limit and skipped: ${incomplete.join(', ')}.</div>` : null}
+        ${failed.map(f => html`<div class="bd-note" key=${f.step}>The scan could not read ${f.step}: ${f.error}</div>`)}
+      </${FixedPanel}>
+      <${FixedPanel} id="hmod" title="Model in force"><${Table} def=${modelDef} label="Model in force"/></${FixedPanel}>
+      <${FixedPanel} id="hpin" title="Other model settings" sub="Conflicts, overridden values and pins limited to one agent, prompt or setting"><${Table} def=${pinDef} label="Other model settings"/></${FixedPanel}>
+      <${FixedPanel} id="hfind" title="Findings" sub=${findings.length + ' for the selected tools'}><${Table} def=${findingDef} label="Findings"/></${FixedPanel}>
+      <${FixedPanel} id="hsrc" title="Every source" sub=${sources.length + ' files and settings that reach the model'}><${Table} def=${sourceDef} label="Every source"/></${FixedPanel}>
+      ${(audit.unattributed || []).length ? html`<${FixedPanel} id="hun" title="Tokens not explained" sub="Estimate: the median first request less the files, dynamic text and built-in allowance"><${Table} def=${unattributedDef} label="Tokens not explained"/></${FixedPanel}>` : null}
+      ${drift?.baseline_created ? html`<div class="bd-note">Baseline created now. Later changes will show here.</div>` : null}
+      ${drift && !drift.baseline_created ? html`<${FixedPanel} id="hdrift" title="Changes since the last scan" sub=${driftRows.length + ' changed'}><${Table} def=${driftDef} label="Changes since the last scan"/></${FixedPanel}>` : null}` : null}
+  </${Frame}>`;
+}
+
+const VIEWS = { agent: AgentDrawer, tool: ToolDrawer, error: ErrorDrawer, file: FileDrawer, prompt: PromptDrawer, hidden: HiddenDrawer };
 
 export default function Drawer({ stack, ctx, act }) {
   const d = stack[stack.length - 1];

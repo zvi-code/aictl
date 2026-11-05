@@ -13,7 +13,8 @@ const search = () => (typeof window !== 'undefined' ? window.location.search : '
 export function nextTools(prev, id, all) {
   const cur = prev === null || prev === undefined ? all : prev;
   const next = cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id];
-  return next.length >= all.length ? null : next;
+  // A saved choice can name tools that this time range does not list: count only the listed ones.
+  return next.filter(x => all.includes(x)).length >= all.length ? null : next;
 }
 
 export function useBoardFilters() {

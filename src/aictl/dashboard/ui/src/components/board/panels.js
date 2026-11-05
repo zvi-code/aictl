@@ -553,13 +553,16 @@ function panelFindings(ctx) {
       cols: [{ k: 'what', l: 'Finding', w: '330px' }, { k: 'tool', l: 'Tool', w: '130px' }, { k: 'where', l: 'Where', w: '240px' }, { k: 'effect', l: 'What it does' }, { k: 'act', l: 'Action', w: '124px' }],
       rows, none: ctx.findings.loading ? 'Reading the settings...' + (ctx.findings.scan ? ' ' + ctx.findings.scan.step + ', ' + Math.round(ctx.findings.scan.elapsed_s) + ' s' : '') : (ctx.findings.error ? 'Could not read the settings: ' + ctx.findings.error : 'No open findings.'),
     },
-    note: ctx.findings.incomplete?.length ? 'The scan reached its time limit and skipped: ' + ctx.findings.incomplete.join(', ') + '.' : null,
-    actions: ctx.findings.loading ? null : [{ label: 'See every source on the hidden context screen', href: '?tab=hidden' }],
+    note: [
+      ctx.findings.incomplete?.length ? 'The scan reached its time limit and skipped: ' + ctx.findings.incomplete.join(', ') + '.' : '',
+      ctx.findings.failed?.length ? 'The scan could not read: ' + ctx.findings.failed.map(f => f.step + ' (' + f.error + ')').join(', ') + '.' : '',
+    ].filter(Boolean).join(' ') || null,
+    actions: ctx.findings.loading ? null : [{ label: 'See every source', go: () => ctx.actions.openDrawer({ type: 'hidden' }, true) }],
   };
 }
 
 function panelSettings(ctx) {
-  const shown = ctx.toolIds.filter(id => !ctx.tools || ctx.tools.includes(id));
+  const shown = ctx.settingToolIds.filter(id => !ctx.tools || ctx.tools.includes(id));
   const rows = ctx.findings.settings.map(s => {
     const cells = { k: { v: s.label } };
     const sort = { k: s.label };
