@@ -19,7 +19,7 @@ aictl swaps the memory directory on profile switch. Each profile has its own mem
 ## What Happens on Switch
 
 ```bash
-aictl deploy --root . --profile docs   # switching from debug
+aictl ctx deploy --root . --profile docs   # switching from debug
 
 # 1. mv memory/ memory--debug/        stash current
 # 2. mv memory--docs/ memory/         restore target

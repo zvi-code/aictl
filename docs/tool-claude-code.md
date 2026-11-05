@@ -48,10 +48,10 @@ For the full VS Code integration breakdown — process architecture, extension f
 ## Profile Switch Example
 
 ```bash
-aictl deploy --root . --profile debug
+aictl ctx deploy --root . --profile debug
 # Creates: investigate.md, trace.md, flame-graph/, azure-monitor in .mcp.json
 
-aictl deploy --root . --profile docs
+aictl ctx deploy --root . --profile docs
 # REMOVES: investigate.md, trace.md, flame-graph/
 # CREATES: gen-diagram.md, gen-adr.md, diagramming/
 # .mcp.json: azure-devops replaces azure-monitor
@@ -79,7 +79,7 @@ table below is a quick reference.
 
  `--rewind-files` | When resuming, reset file mtimes/content to----- `--rewind-files` | When resuming, reset file mtimes/content to----- o `--rewind-files` | When resuming, reset file mtimes/content to--per-turn logs to `<dir>` (also detect `--rewind-filese). `--rewind-fiCODE_O `--rewind-files` | When resuming, reset file mtimes/content to----- `--rewind-files` | When resuming, =1 `--rewind-files` | When resuming, reset file mtimes/content to----- `--rewind-files` | When resuming, reset filwh `--rewind-files` | When resuming, reset file mtimes/content to----- `--rpa `--rewind-files` | When resuming, reset file mtimes/content to----- `--rewind-files` | When resuming, resetro `--rewind-files` | When resuming, reset file mtimes/content to----- `--rewhan  `--rewind-files` | When resuming, reset file mtimes/content to----- `--rewind-files` | When resuminfi `--rewind-files` | When resuming, reset file mtimes/content to----- `--rewind-files` | When resuming, reset file mtimes/content to----- o `--rewind-files` |sionally fail to
 clean up on parent exit. Symptoms: leftover `claude` processes whose
-parent PID is 1 after the foreground session ends. The `aictl serve`
+parent PID is 1 after the foreground session ends. The `aictl daemon serve`
 dashboard surfaces these as red rows under the "Processes" tab when
 their CPU and memory are zero. Manual cleanup:
 

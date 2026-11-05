@@ -1,7 +1,7 @@
 # aictl Web Dashboard — Design System
 
 Design tokens, component patterns, and accessibility status for the
-`aictl serve` web dashboard UI only. This does not cover the CLI, plugin
+`aictl daemon serve` web dashboard UI only. This does not cover the CLI, plugin
 system, collectors, or other parts of the aictl project.
 
 Living document maintained by `/ui-review`. Last updated: 2026-11-05.

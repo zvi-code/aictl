@@ -188,7 +188,7 @@ Search order for plugin directories:
 
 ## 5. Shared Utilities
 
-### `aictl/utils.py` — Common Functions
+### `src/aictl/utils.py` — Common Functions
 
 | Function | Purpose | Usage |
 |----------|---------|-------|
@@ -210,7 +210,7 @@ from ..utils import estimate_tokens, human_size
 
 ### Registration Pattern
 
-Commands live in `aictl/commands/`, imported and registered in `cli.py`:
+Commands live in `src/aictl/commands/`, imported and registered in `cli.py`:
 
 ```python
 # cli.py
@@ -250,7 +250,7 @@ Current groups: `plugin`, `memory`, `hooks`, `config`, `otel`, `monitor`,
 
 ## 7. Data File Conventions
 
-### CSV Files (`aictl/data/`)
+### CSV Files (`src/aictl/data/`)
 
 Discovery data consumed at runtime:
 

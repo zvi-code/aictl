@@ -718,3 +718,25 @@ baseline is `context-baseline.json` in aictl's config dir, capped at 2 MB, with
 hashes and metadata only; `--baseline PATH` moves it. With `[storage] capture = off`
 it stays in memory. Hooks and MCP servers are parsed and never run. Files are
 statted first and read again only when mtime or size changes.
+
+## Live CLI view
+
+`aictl ps` and `aictl top` (`src/aictl/observe/`) read the tools' own stores and psutil directly. They need
+no daemon, open stores read-only and write nothing. Sessions are selected by recency and liveness, not by
+parsing every store. `--json` output carries a `schema_version`.
+
+## Storage bounds
+
+`[storage] capture` selects `full`, `metadata` or `off`, and `max_total_mb` caps the database, journal and
+logs. Storage failures never stop collection: on a corrupt, full or locked database the daemon falls back
+to a bounded in-memory store and reports `storage_degraded` in `/api/self-status`. Collection is adaptive
+and writes on change. See [storage-schema.md](storage-schema.md#bounds-and-capture-modes).
+
+## Hooks fail open
+
+A registered hook must never break or slow the host tool. The handler is a stdlib-only script that exits 0
+silently when the interpreter is gone, the daemon is down or the payload is malformed. It prints nothing,
+because hosts parse hook stdout. Events that replace or block host behaviour are never registered.
+`src/aictl/hook_removal.py` is also standalone, so removal works even when aictl cannot start. Config writers
+refuse to replace a file with content that does not parse.
+

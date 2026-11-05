@@ -2724,7 +2724,7 @@ self.db_size:
 self.uptime:
   explanation: >
     How long the aictl monitoring service has been running since
-    the last start of 'aictl serve'.
+    the last start of 'aictl daemon serve'.
   source: >
     time.time() - psutil.Process(os.getpid()).create_time().
   source_type: deduced

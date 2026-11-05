@@ -2,7 +2,7 @@
 
 ## Overview
 
-`.context.toml` is a single source of intent — what the AI should know, in human language — with multiple realizations per tool. Define your context once; `aictl deploy` translates it into native files for each target tool. Files are committed to git and reviewed in PRs. The format is standard TOML (RFC 9200 / TOML v1.0).
+`.context.toml` is a single source of intent — what the AI should know, in human language — with multiple realizations per tool. Define your context once; `aictl ctx deploy` translates it into native files for each target tool. Files are committed to git and reviewed in PRs. The format is standard TOML (RFC 9200 / TOML v1.0).
 
 ## Location
 
@@ -178,7 +178,7 @@ exclude = [
 
 **Capabilities** (`[commands.*]`, `[agents.*]`, `[skills.*]`, `[mcp.*]`) — only the **root** `.context.toml` contributes these. Sub-directory capabilities exist in the file but are dormant unless that directory becomes root.
 
-**Root shifts with context.** If you run `aictl deploy --root services/api/`, then `services/api/.context.toml` is root and its capabilities are active. The parent `my-project/.context.toml` capabilities are invisible.
+**Root shifts with context.** If you run `aictl ctx deploy --root services/api/`, then `services/api/.context.toml` is root and its capabilities are active. The parent `my-project/.context.toml` capabilities are invisible.
 
 ## Inheritance
 

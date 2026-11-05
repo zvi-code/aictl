@@ -36,7 +36,7 @@ Cursor reads `AGENTS.md` at repo root. aictl writes the active profile there (sa
 ## Enable
 
 ```bash
-aictl deploy --root . --profile debug --emit claude,copilot,cursor
+aictl ctx deploy --root . --profile debug --emit claude,copilot,cursor
 ```
 
 All three emitters are enabled by default.
