@@ -73,6 +73,7 @@ function SourcesTable({ sources }) {
         <td style=${{ ...cell, ...mono }}>
           ${s.path}${s.symlink_target ? ` -> ${s.symlink_target}` : ''}
           ${s.note ? html`<div style=${{ color: 'var(--fg2)' }}>${s.note}</div>` : null}
+          ${s.why_in_effect && !s.in_project ? html`<div data-testid="outside-project" style=${{ color: 'var(--orange)' }}>${s.why_in_effect}</div>` : null}
         </td>
       </tr>`)}
     </tbody>
@@ -105,6 +106,46 @@ function UnattributedRow({ row }) {
   </div>`;
 }
 
+function fmtWhere(path, line) {
+  return line ? `${path}:${line}` : path;
+}
+
+function EffectiveModelRow({ eff }) {
+  const conflicts = eff.conflicts || [];
+  const limited = eff.limited || [];
+  return html`<div data-testid="effective-model" data-tool=${eff.tool} data-conflict=${conflicts.length ? 'yes' : 'no'}
+    style=${{ borderBottom: '1px solid var(--border)', padding: '4px 0' }}>
+    ${conflicts.map(c => html`<div key=${fmtWhere(c.request.path, c.request.line)} data-testid="effective-conflict"
+      style=${{ color: 'var(--red)', fontWeight: 600 }}>
+      Conflict: ${c.request.values.join(', ')} requested at <span style=${mono}>${fmtWhere(c.request.path, c.request.line)}</span>,
+      ${' '}but ${c.pin.value} is pinned at <span style=${mono}>${fmtWhere(c.pin.path, c.pin.line)}</span>
+    </div>`)}
+    <div><b>${eff.tool}:</b> <span style=${mono}>${eff.value || 'no pin'}</span>
+      ${eff.value && !eff.verified ? html` <span style=${{ color: 'var(--orange)' }}>(order unverified)</span>` : null}
+    </div>
+    ${eff.value ? html`<div style=${{ ...mono, color: 'var(--fg2)' }}>${fmtWhere(eff.source, eff.line)} (${eff.scope})</div>` : null}
+    <div style=${{ color: eff.in_project ? 'var(--fg2)' : 'var(--orange)' }}>${eff.why_in_effect}</div>
+    ${(eff.overrides || []).map(o => html`<div key=${fmtWhere(o.path, o.line)} style=${mono}>
+      overrides ${o.value} at ${fmtWhere(o.path, o.line)} (${o.scope})
+    </div>`)}
+    ${limited.length ? html`<details>
+      <summary style=${{ cursor: 'pointer' }}>${limited.length} pins limited to one agent, prompt or setting</summary>
+      ${limited.map(p => html`<div key=${`${p.path}|${p.setting}|${p.line}`} style=${mono}
+        title=${p.why_in_effect}>${p.applies}: ${p.value} at ${fmtWhere(p.path, p.line)} (${p.in_project ? 'in this project' : 'not in this project'})</div>`)}
+    </details>` : null}
+  </div>`;
+}
+
+function EffectiveModels({ models }) {
+  const rows = Object.values(models || {});
+  if (!rows.length) return null;
+  const ordered = [...rows].sort((a, b) => (b.conflicts || []).length - (a.conflicts || []).length);
+  return html`<section data-testid="effective-models" style=${{ marginBottom: '8px' }}>
+    <h4 style=${{ margin: '0 0 4px' }}>Effective model</h4>
+    ${ordered.map(eff => html`<${EffectiveModelRow} key=${eff.tool} eff=${eff} />`)}
+  </section>`;
+}
+
 export function HiddenContextPanel() {
   const [generation, setGeneration] = useState(0);
   const [showInfo, setShowInfo] = useState(false);
@@ -135,6 +176,7 @@ export function HiddenContextPanel() {
   const tools = Object.entries(data.sources_per_tool || {});
 
   return html`<div data-state=${stale ? 'stale' : 'ready'}>
+    <${EffectiveModels} models=${data.effective_models} />
     <div style=${{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'baseline' }}>
       ${['high', 'medium', 'low', 'info'].map(s => html`<${SeverityBadge} key=${s} severity=${s} count=${counts[s] || 0} />`)}
       <span title=${tools.map(([t, n]) => `${t}: ${n}`).join('\n')}>${sources.length} sources</span>

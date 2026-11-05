@@ -48,6 +48,61 @@ function mockFetch(body, ok = true, status = 200) {
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
+const pin = {
+  tool: 'copilot-cli', value: 'gpt-x', verified: true, source: '/home/.copilot/settings.json', line: 7, scope: 'user',
+  in_project: false, why_in_effect: 'Not in this project, still in effect.', overrides: [], limited: [], conflicts: [],
+};
+
+describe('HiddenContextPanel effective model', () => {
+  it('shows the value, source path and what it overrides', async () => {
+    mockFetch(report({ effective_models: { 'copilot-cli': {
+      ...pin,
+      overrides: [{ value: 'gpt-old', path: '/repo/.github/copilot/settings.json', line: 2, scope: 'repo' }],
+      limited: [{ applies: 'subagent:builder', setting: 's', value: 'gpt-y', path: '/home/.copilot/settings.json', line: 9, in_project: false, why_in_effect: 'w' }],
+    } } }));
+    render(html`<${HiddenContextPanel} />`);
+    const section = await screen.findByTestId('effective-models');
+    expect(section.textContent).toContain('gpt-x');
+    expect(section.textContent).toContain('/home/.copilot/settings.json:7');
+    expect(section.textContent).toContain('Not in this project, still in effect.');
+    expect(section.textContent).toContain('overrides gpt-old at /repo/.github/copilot/settings.json:2');
+    expect(section.textContent).toContain('subagent:builder: gpt-y');
+    expect(section.querySelector('[data-testid="effective-conflict"]')).toBeNull();
+  });
+
+  it('puts a conflict first, above every other tool and the counts', async () => {
+    const conflict = { request: { values: ['gpt-z'], path: '/repo/.github/agents/a.agent.md', line: 3 }, pin: { value: 'gpt-x', path: '/home/s.json', line: 7 } };
+    mockFetch(report({ effective_models: { 'copilot-cli': pin, 'copilot-desktop': { ...pin, tool: 'copilot-desktop', conflicts: [conflict] } } }));
+    const { container } = render(html`<${HiddenContextPanel} />`);
+    const section = await screen.findByTestId('effective-models');
+    expect(container.querySelector('[data-state]').firstElementChild).toBe(section);
+    expect(section.querySelector('[data-testid="effective-model"]').dataset.tool).toBe('copilot-desktop');
+    const text = screen.getByTestId('effective-conflict').textContent;
+    expect(text).toContain('gpt-z');
+    expect(text).toContain('/repo/.github/agents/a.agent.md:3');
+    expect(text).toContain('/home/s.json:7');
+  });
+
+  it('marks an unverified order and states when nothing is pinned', async () => {
+    mockFetch(report({ effective_models: {
+      'copilot-cli': { ...pin, verified: false },
+      'copilot-vscode': { ...pin, tool: 'copilot-vscode', value: '', source: '', why_in_effect: 'No file pins a model.' },
+    } }));
+    render(html`<${HiddenContextPanel} />`);
+    const section = await screen.findByTestId('effective-models');
+    expect(section.textContent).toContain('order unverified');
+    expect(section.textContent).toContain('no pin');
+    expect(section.textContent).toContain('No file pins a model.');
+  });
+
+  it('renders no section for a report without models', async () => {
+    mockFetch(report());
+    const { container } = render(html`<${HiddenContextPanel} />`);
+    await waitFor(() => expect(container.querySelector('[data-state="ready"]')).toBeTruthy());
+    expect(screen.queryByTestId('effective-models')).toBeNull();
+  });
+});
+
 describe('HiddenContextPanel', () => {
   it('shows a loading state, then concrete values', async () => {
     mockFetch(report());

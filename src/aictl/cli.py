@@ -93,6 +93,7 @@ ctx_group = LazyGroup(
     help="Context pipeline — deploy, scan, diff, validate, init.",
     lazy={
         "audit": ".commands.ctx_audit:audit_cmd",
+        "effective": ".commands.ctx_effective:effective_cmd",
         "deploy": ".commands.ctx_pipeline:deploy",
         "scan": ".commands.ctx_pipeline:scan_cmd",
         "diff": ".commands.ctx_pipeline:diff",
