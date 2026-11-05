@@ -21,8 +21,8 @@ from pathlib import Path
 
 TOOL_GROUPS: dict[str, list[str]] = {
     "claude": ["claude-code", "claude-desktop"],
-    "copilot": ["copilot", "copilot-vscode", "copilot-cli", "copilot-jetbrains", "copilot-vs"],
-    "codex": ["codex-cli"],
+    "copilot": ["copilot", "copilot-vscode", "copilot-cli", "copilot-desktop", "copilot-jetbrains", "copilot-vs"],
+    "codex": ["codex-cli", "codex-desktop"],
     "cursor": ["cursor"],
     "windsurf": ["windsurf"],
     "copilot365": ["copilot365"],
@@ -69,11 +69,13 @@ TOOL_TAXONOMY: dict[str, ToolMeta] = {
     "copilot": ToolMeta("github", ("vscode", "jetbrains", "cli")),
     "copilot-vscode": ToolMeta("github", ("vscode",)),
     "copilot-cli": ToolMeta("github", ("cli",)),
+    "copilot-desktop": ToolMeta("github", ("desktop",)),
     "copilot-jetbrains": ToolMeta("github", ("jetbrains",)),
     "copilot-vs": ToolMeta("github", ("vscode",)),  # Visual Studio
     "copilot365": ToolMeta("microsoft", ("m365",)),
     # ── OpenAI ──
-    "codex-cli": ToolMeta("openai", ("cli",), "gpt-5.4"),
+    "codex-cli": ToolMeta("openai", ("cli", "vscode"), "gpt-5.4"),
+    "codex-desktop": ToolMeta("openai", ("desktop",), "gpt-5.4"),  # ChatGPT.app (com.openai.codex)
     "chatgpt-desktop": ToolMeta("openai", ("desktop",)),
     "chatgpt-lencx": ToolMeta("openai", ("desktop",)),
     # ── Google ──
@@ -164,6 +166,7 @@ TOOL_LABELS: dict[str, str] = {
     "copilot": "GitHub Copilot",
     "copilot-vscode": "Copilot VS Code",
     "copilot-cli": "Copilot CLI",
+    "copilot-desktop": "Copilot Desktop",
     "copilot-jetbrains": "Copilot (JetBrains)",
     "copilot-vs": "Copilot (Visual Studio)",
     "copilot365": "Microsoft 365 Copilot",
@@ -174,6 +177,7 @@ TOOL_LABELS: dict[str, str] = {
     "gemini": "Gemini",
     "gemini-cli": "Gemini CLI",
     "codex-cli": "Codex CLI",
+    "codex-desktop": "Codex Desktop",
     "chatgpt-desktop": "ChatGPT Desktop",
     "chatgpt-lencx": "ChatGPT (lencx)",
     "openclaw": "OpenClaw",
@@ -192,10 +196,12 @@ TOOL_COLORS: dict[str, str] = {
     "copilot": "#60a5fa",
     "copilot-vscode": "#93c5fd",
     "copilot-cli": "#3b82f6",
+    "copilot-desktop": "#2563eb",
     "copilot-jetbrains": "#60a5fa",
     "copilot-vs": "#60a5fa",
     "copilot365": "#60a5fa",
     "codex-cli": "#f97316",
+    "codex-desktop": "#fb923c",
     "cursor": "#34d399",
     "windsurf": "#2dd4bf",
     "project-env": "#fbbf24",
@@ -219,10 +225,12 @@ TOOL_ICONS: dict[str, str] = {
     "copilot": "🤖",
     "copilot-vscode": "🤖",
     "copilot-cli": "🤖",
+    "copilot-desktop": "🤖",
     "copilot-jetbrains": "🤖",
     "copilot-vs": "🤖",
     "copilot365": "🤖",
     "codex-cli": "🟠",
+    "codex-desktop": "🟠",
     "cursor": "🟢",
     "windsurf": "🌊",
     "gemini": "💎",
@@ -268,6 +276,20 @@ TOOL_RELATIONSHIPS: dict[str, list[dict[str, str]]] = {
             "tool": "copilot-vscode",
             "label": "CLI\u2194VS Code bridge via copilotCli/ and /ide command",
         },
+    ],
+    "copilot-desktop": [
+        {"type": "shares-billing", "tool": "copilot-cli", "label": "Same GitHub Copilot subscription"},
+        {
+            "type": "bundles",
+            "tool": "copilot-cli",
+            "label": "Runs copilot-runtime and shares ~/.copilot (skills, plugins, settings) with the CLI",
+        },
+    ],
+    "codex-desktop": [
+        {"type": "bundles", "tool": "codex-cli", "label": "ChatGPT.app bundles its own codex binary (may differ from the CLI)"},
+    ],
+    "codex-cli": [
+        {"type": "bundled-by", "tool": "codex-desktop", "label": "Desktop app bundles a separate codex binary"},
     ],
     "copilot365": [
         {

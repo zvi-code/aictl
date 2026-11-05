@@ -51,6 +51,12 @@ def tool_hint_for_path(path: str) -> str | None:
     to tool sessions without process information.
     """
     lowered = path.lower().replace("\\", "/")
+    if "/application support/codex/" in lowered or "/chatgpt.app/" in lowered:
+        return "codex-desktop"
+    if "/github-copilot-sdk/" in lowered or "/library/application support/com.github.githubapp/" in lowered:
+        return "copilot-desktop"
+    if "/library/application support/claude/" in lowered or "/library/application support/claude-3p/" in lowered:
+        return "claude-desktop"
     if "/.vscode/" in lowered:
         return "copilot-vscode"
     if "/.copilot/" in lowered or "github/copilot" in lowered:
@@ -100,6 +106,12 @@ def _app_dir(
     return _xdg_base / win
 
 
+def _env_dir(var: str) -> Path | None:
+    """Directory named by an environment override (CLAUDE_CONFIG_DIR, CODEX_HOME, COPILOT_HOME), if set."""
+    raw = os.environ.get(var, "").strip()
+    return Path(raw).expanduser() if raw else None
+
+
 # ── Claude Code ──────────────────────────────────────────────────
 
 
@@ -108,9 +120,10 @@ def claude_global_dir() -> Path:
 
     Claude Code is the same cross-platform binary on every OS and resolves its
     home via ``os.homedir()``/``UserHomeDir``, so the directory is ``.claude``
-    under the user profile on Windows (NOT ``%APPDATA%``).
+    under the user profile on Windows (NOT ``%APPDATA%``).  ``CLAUDE_CONFIG_DIR``
+    overrides the location.
     """
-    return _app_dir(".claude", dot=".claude", win_env="USERPROFILE")
+    return _env_dir("CLAUDE_CONFIG_DIR") or _app_dir(".claude", dot=".claude", win_env="USERPROFILE")
 
 
 def claude_account_config() -> Path:
@@ -151,7 +164,11 @@ def copilot_session_dir() -> Path:
 
     The Copilot CLI bundles Node.js and uses ``os.homedir()`` on every platform,
     so this lives under ``%USERPROFILE%/.copilot`` on Windows (NOT ``%APPDATA%``).
+    ``COPILOT_HOME`` relocates the whole ``.copilot`` directory.
     """
+    home = _env_dir("COPILOT_HOME")
+    if home:
+        return home / "session-state"
     return _app_dir(".copilot/session-state", dot=".copilot/session-state", win_env="USERPROFILE")
 
 
@@ -159,9 +176,10 @@ def copilot_global_dir() -> Path:
     """User-level Copilot CLI / VS Code Copilot hooks+skills dir (``~/.copilot``).
 
     Same ``os.homedir()`` resolution as the CLI, so on Windows this is
-    ``%USERPROFILE%/.copilot`` (NOT ``%APPDATA%/GitHub Copilot``).
+    ``%USERPROFILE%/.copilot`` (NOT ``%APPDATA%/GitHub Copilot``).  ``COPILOT_HOME``
+    overrides the location.
     """
-    return _app_dir(".copilot", dot=".copilot", win_env="USERPROFILE")
+    return _env_dir("COPILOT_HOME") or _app_dir(".copilot", dot=".copilot", win_env="USERPROFILE")
 
 
 # ── VS Code ──────────────────────────────────────────────────────
@@ -234,8 +252,8 @@ def gh_config_dir() -> Path:
 
 
 def codex_global_dir() -> Path:
-    """Codex CLI global config directory."""
-    return Path.home() / ".codex"
+    """Codex global state directory: ``$CODEX_HOME`` or ``~/.codex`` (CLI and desktop app share it)."""
+    return _env_dir("CODEX_HOME") or Path.home() / ".codex"
 
 
 # ── Microsoft 365 / Teams Toolkit ───────────────────────────────
