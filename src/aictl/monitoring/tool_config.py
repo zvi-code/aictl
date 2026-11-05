@@ -1225,7 +1225,7 @@ def _parse_copilot365_config(root: Path, tool: str = "copilot365") -> ToolConfig
             cfg.settings["agent_packages"] = packages
 
     # ── Windows app install (user-readable package data folder only) ──
-    lad = os.environ.get("LOCALAPPDATA") if os.name == "nt" else None
+    lad = os.environ.get("LOCALAPPDATA") if IS_WINDOWS else None
     evidence = detect_copilot365_install(Path(lad) if lad else None)
     cfg.features["installed"] = bool(evidence)
     if evidence:
