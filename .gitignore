@@ -49,7 +49,7 @@ wip
 build/
 dist/
 # but track the dashboard dist (needed for pip/pipx installs)
-!aictl/dashboard/dist/
+!src/aictl/dashboard/dist/
 
 # reports
 report.html
