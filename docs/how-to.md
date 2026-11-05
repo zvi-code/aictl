@@ -17,6 +17,9 @@ aictl --version
 The built dashboard ships with the package, so Node.js is only needed to change the UI. No `pipx`
 yet? See [Install](../README.md#install), or [Windows prerequisites](../README.md#prerequisites).
 
+If packages must come from a private index, read
+[Install from a private package index](../README.md#install-from-a-private-package-index) first: this command may reach PyPI.
+
 ## See what is running
 
 No daemon is needed, and these commands write nothing.
