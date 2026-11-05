@@ -100,7 +100,9 @@ def test_parent_directories_walk_to_the_drive_root():
 def test_policy_registry_and_programdata_are_listed_and_unknowns_marked():
     rows = locations()
     assert by_raw(rows, r"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\VSCode")["scope"] == "machine-policy"
-    assert by_raw(rows, r"%PROGRAMDATA%\GitHub Copilot\settings.json")["verified"] is False
+    mdm = by_raw(rows, r"%ProgramFiles%\GitHubCopilot\managed-settings.json")
+    assert mdm["verified"] is True and mdm["exists"] is False
+    assert by_raw(rows, r"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\GitHubCopilot")["scope"] == "machine-policy"
 
 
 def test_portable_install_is_listed():

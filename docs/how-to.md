@@ -278,16 +278,26 @@ The Copilot CLI order is: custom agent `model`, `--model`, `COPILOT_MODEL`, `mod
 then the CLI default. An agent's model that is not available falls back to the current model with a
 warning. `subagents.agents.<name>.model` applies to that subagent.
 
+A `model` key in `.github/copilot/settings.json` or `settings.local.json` is confirmed: the Copilot CLI
+config directory reference lists `model` as repo-overridable (repository replaces user, local replaces
+repository). The `basis` field cites this.
+
 What could not be confirmed is marked `unverified` in the output:
 
-- A `model` key in `.github/copilot/settings.json` or `settings.local.json`. The config reference
-  puts these above user settings in general. The model reference and the CLI's startup resolver name
-  only the user file.
-- The order in the Copilot desktop app, and `planModel`, which has no reader in the CLI package.
-- MDM managed settings, whose location is not published.
+- The order in the Copilot desktop app, and `planModel`, which no reference or CLI reader mentions.
+- MDM managed settings. The documented files are `managed-settings.json` under
+  `/Library/Application Support/GitHubCopilot`, `%ProgramFiles%\GitHubCopilot` and
+  `/etc/github-copilot` (Windows registry: `HKLM\SOFTWARE\Policies\GitHubCopilot`). They are listed
+  under `--search-path` but not read.
 
-The current choice in VS Code's model picker is not in a settings file, so it is not shown. An
-organization's allow-list is held by the service, so it shows only as an error in a session log.
+For `copilot-vscode`, the output adds "picker selects", read from `chat.currentLanguageModel.<location>`
+keys in `state.vscdb` (global: `globalStorage`; workspace: `workspaceStorage/<hash>`, matched to the
+project through `workspace.json`). Only those keys are queried and `secret://` keys are never read.
+The picker is shown apart from pinned settings, and `model.differs-from-picker` (medium) fires when a
+setting or agent file asks for a different model. The key names are not documented. A corrupt or
+locked database shows as "not readable". Models that can be selected or added come from
+`chatLanguageModels.json` (names only, never keys). An organization's allow-list is held by the
+service, so it shows only as an error in a session log.
 
 On Windows, `--search-path` shows raw and expanded forms for `%APPDATA%`, `%LOCALAPPDATA%`,
 `%USERPROFILE%`, `%PROGRAMDATA%`, `COPILOT_HOME`, MSIX `LocalCache` copies of AppData, OneDrive
