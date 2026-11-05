@@ -44,7 +44,7 @@ describe('SessionHeader git badges', () => {
       .map(el => el.getAttribute('title'));
     expect(titles).not.toContain('git branch');
     // Header must render (tool label present) but no "undefined" leaked.
-    expect(container.textContent).toContain('claude-code');
+    expect(container.textContent).toContain('Claude Code');
     expect(container.textContent).not.toContain('undefined');
   });
 });

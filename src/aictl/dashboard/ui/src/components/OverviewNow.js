@@ -26,8 +26,8 @@ function RunningPanel({ snap, enabledTools, onOpenSession, onShowAll }) {
   return html`<section class="now-panel now-panel--running" aria-labelledby="now-running">
     <header class="now-panel__head">
       <h2 id="now-running">Running now</h2>
-      <span class="now-panel__figure">${rows.length}</span>
-      <span class="now-panel__sub">session${rows.length === 1 ? '' : 's'} in ${toolCount} tool${toolCount === 1 ? '' : 's'}</span>
+      ${!scopeIsCloudOnly(snap, enabledTools) && html`<span class="now-panel__figure">${rows.length}</span>
+      <span class="now-panel__sub">session${rows.length === 1 ? '' : 's'} in ${toolCount} tool${toolCount === 1 ? '' : 's'}</span>`}
     </header>
     ${rows.length === 0
       ? html`<${PanelState} status="empty" label="running sessions"
@@ -64,10 +64,17 @@ function RunningPanel({ snap, enabledTools, onOpenSession, onShowAll }) {
   </section>`;
 }
 
-function CostPanel({ onOpenBudget }) {
+function CostPanel({ onOpenBudget, cloudScope }) {
   const res = usePolledResource(() => api.getProjectCosts(1), [], { pollMs: 60000 });
   const summary = useMemo(() => summarizeCosts(res.data), [res.data]);
   const status = panelStatus({ ...res, isEmpty: rows => !rows?.length });
+  if (cloudScope) {
+    return html`<section class="now-panel" aria-labelledby="now-cost">
+      <header class="now-panel__head"><h2 id="now-cost">Estimated cost, last 24 h</h2></header>
+      <${PanelState} status="empty" emptyTitle="Not available from this machine"
+        emptyHint="The selected tool is billed and metered in the vendor's cloud, so no local token counts exist to estimate from."/>
+    </section>`;
+  }
   return html`<section class="now-panel" aria-labelledby="now-cost">
     <header class="now-panel__head">
       <h2 id="now-cost">Estimated cost, last 24 h</h2>
@@ -173,7 +180,7 @@ export default function OverviewNow({
   return html`<div class="now-grid">
     <${RunningPanel} snap=${snap} enabledTools=${enabledTools}
       onOpenSession=${onOpenSession} onShowAll=${() => onOpenTab('live')}/>
-    <${CostPanel} onOpenBudget=${() => onOpenTab('budget')}/>
+    <${CostPanel} onOpenBudget=${() => onOpenTab('budget')} cloudScope=${scopeIsCloudOnly(snap, enabledTools)}/>
     <${HealthPanel} snap=${snap} connected=${connected} otelActive=${otelActive}
       alerts=${alerts} selfStatus=${selfStatus} onOpenTab=${onOpenTab}/>
   </div>`;

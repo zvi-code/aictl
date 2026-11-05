@@ -49,6 +49,21 @@ describe('shortcut labels', () => {
   });
 });
 
+describe('first screen under a cloud-only filter', () => {
+  it('shows the reason instead of zero sessions or an all-tools cost', async () => {
+    const { default: OverviewNow } = await import('../src/components/OverviewNow.js');
+    const snap = { tools: [{ tool: 'copilot365', label: 'Microsoft 365 Copilot', files: [], processes: [] }], sessions: [] };
+    const { container } = render(html`<${OverviewNow} snap=${snap} enabledTools=${['copilot365']}
+      connected=${true} otelActive=${true} alerts=${[]} onOpenSession=${() => {}} onOpenTab=${() => {}}/>`);
+    const running = container.querySelector('.now-panel--running').textContent;
+    expect(running).toContain('Not available from this machine');
+    expect(running).not.toMatch(/\b0\b/);
+    const cost = container.querySelector('[aria-labelledby="now-cost"]').textContent;
+    expect(cost).toContain('Not available from this machine');
+    expect(cost).not.toContain('$');
+  });
+});
+
 describe('cloud-hosted tools', () => {
   const m365 = { tool: 'copilot365', label: 'Microsoft 365 Copilot', files: [], processes: [], live: null };
   it('copilot365 has a vendor and a label without backend help', () => {

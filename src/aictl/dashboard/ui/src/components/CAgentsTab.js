@@ -277,7 +277,7 @@ function ActivityReport({ tool, hooksStatus }) {
 // Color-coded permission badge (auto=green, ask=orange, deny=red, n/a=muted)
 const PERM_STYLE = {
   auto: { color: 'var(--green)',  bg: 'var(--green-soft, #E6EFE3)', border: 'var(--green)' },
-  ask:  { color: '#B26B1B',       bg: '#FBEFD9',                    border: '#B26B1B'       },
+  ask:  { color: 'var(--orange)', bg: 'color-mix(in srgb, var(--orange) 14%, var(--bg2))', border: 'var(--orange)' },
   deny: { color: 'var(--accent)', bg: 'var(--accent-soft)',          border: 'var(--accent)' },
   'n/a':{ color: 'var(--fg3)',    bg: 'transparent',                 border: 'var(--border)' },
 };

@@ -18,6 +18,7 @@
  * so there is a single source of truth for each rendering.
  */
 import { useState, useEffect, useContext } from 'preact/hooks';
+import { toolLabel } from '../utils/tools.js';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { esc, fmtK, fmtDurSec, toolColor } from '../utils.js';
@@ -65,7 +66,7 @@ export function SessionHeader({ session }) {
     : '';
   return html`<div class="explorer-session-header" style="border-left:3px solid ${c}">
     <div class="flex-row gap-md" style="align-items:baseline;flex-wrap:wrap">
-      <strong style="font-size:var(--fs-lg);color:${c}">${esc(session.tool)}</strong>
+      <strong style="font-size:var(--fs-lg)" title=${session.tool}><span style=${'color:' + c} aria-hidden="true">\u25CF </span>${esc(toolLabel(session.tool))}</strong>
       ${projShort && html`<span class="text-muted text-xs mono text-ellipsis"
         style="max-width:360px" title=${session.project}>${esc(projShort)}</span>`}
       ${session.git_branch && html`<span class="badge text-xs"

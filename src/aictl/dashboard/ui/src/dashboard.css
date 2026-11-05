@@ -3699,3 +3699,6 @@ header[role="banner"] h1 { font-size: var(--fs-lg); font-weight: 650; letter-spa
 /* Classic, always-visible scrollbars must not eat a strip's height or a panel's width. */
 .tab-nav, .now-table-wrap, .aictl-dt, .diag-card, .hdr-mobile-overflow { scrollbar-width: thin; }
 .main { scrollbar-gutter: stable; }
+
+/* Panel titles do not compete with the data for the accent. */
+.budget-card h3, .mem-group h3, .budget-section h3, .analytics-section-title { color: var(--fg); font-size: var(--fs-lg); font-weight: 600; }
