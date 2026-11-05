@@ -62,8 +62,9 @@ clone.
 Run `aictl reinstall` in the clone if the update adds a dependency, or if you installed without `-e`:
 
 ```bash
-aictl reinstall                # builds the UI with npm, then reinstalls
-aictl reinstall --skip-ui      # reinstalls without the npm build
+aictl reinstall                # reinstalls, and builds the UI only if its source has local changes
+aictl reinstall --build-ui     # also builds the UI with no local changes
+aictl reinstall --skip-ui      # never builds the UI
 aictl reinstall --index-url https://packages.example/simple    # uses only this package index, with no npm build
 ```
 

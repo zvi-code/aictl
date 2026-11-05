@@ -403,20 +403,42 @@ def _package_source(env: dict[str, str]) -> str:
         return "a custom index"
 
 
+def _ui_has_local_edits(root: Path, ui_dir: Path) -> bool:
+    """Whether a build is needed: no built dashboard, or uncommitted changes to its source.
+
+    The built dashboard is tracked in git, so a pull already brings the matching build.
+    """
+    import subprocess
+
+    if not (ui_dir.parent / "dist" / "index.html").is_file():
+        return True
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain", "--", str(ui_dir)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0 and bool(done.stdout.strip())
+
+
 @click.command("reinstall")
-@click.option("--skip-ui", is_flag=True, help="Skip dashboard UI build")
+@click.option("--skip-ui", is_flag=True, help="Never build the dashboard UI")
+@click.option("--build-ui", "force_ui", is_flag=True, help="Build the dashboard UI even with no local UI changes")
 @click.option(
     "--index-url",
     envvar="AICTL_INDEX_URL",
     default=None,
     help="Install Python packages only from this index (http, https or file URL). Also skips the npm UI build.",
 )
-def reinstall(skip_ui, index_url):
+def reinstall(skip_ui, force_ui, index_url):
     """Rebuild and reinstall aictl so code changes take effect.
 
     \b
     This runs:
-      1. npm install + build (dashboard UI)    — skip with --skip-ui
+      1. npm install + build (dashboard UI)    — only with local UI changes or --build-ui
       2. pipx install --force -e ".[all]"      — reinstalls the CLI
 
     Use this after pulling changes or editing source code. Without it,
@@ -440,6 +462,8 @@ def reinstall(skip_ui, index_url):
         click.echo("⏭  Skipping UI build (--skip-ui)")
     elif not ui_dir.is_dir():
         click.echo("⏭  UI source not found, skipping")
+    elif not force_ui and not _ui_has_local_edits(root, ui_dir):
+        click.echo("⏭  No local UI changes. The dashboard from git stays in place.")
     else:
         click.echo("→ Building dashboard UI...")
         try:
