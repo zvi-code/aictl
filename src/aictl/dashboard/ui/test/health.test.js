@@ -3,7 +3,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { html } from 'htm/preact';
-import { deriveIssues, runningSessions, sessionMemMb, summarizeCosts } from '../src/utils/health.js';
+import { runningSummary, deriveIssues, runningSessions, sessionMemMb, summarizeCosts } from '../src/utils/health.js';
 import PanelState, { panelStatus, errorText } from '../src/components/ui/PanelState.js';
 import { gateContext, STATIC_REFRESH_MS } from '../src/utils/gateContext.js';
 import { toolFilterLabel } from '../src/components/ToolFilterBar.js';
@@ -23,6 +23,18 @@ describe('deriveIssues', () => {
     } } });
     expect(i.level).toBe('warn');
     expect(i.fix).toBe('aictl hooks install --port 8484');
+  });
+  it('does not warn about missing hooks for a tool that is not running', () => {
+    const hooks = { server_port: 8484, tools: {
+      'gemini-cli': { tool: 'gemini-cli', status: 'missing' },
+      'copilot-vscode': { tool: 'copilot-vscode', status: 'missing' },
+    } };
+    const issues = deriveIssues({ ...base, hooks, runningTools: new Set(['copilot-desktop']) });
+    expect(issues.map(i => i.id)).toEqual(['hooks:copilot-vscode']);
+  });
+  it('does not treat a store the machine does not have as a problem', () => {
+    const quality = { items: [{ component: 'ingester:cursor', status: 'source_missing', severity: 'warning', message: 'x' }] };
+    expect(deriveIssues({ ...base, quality })).toEqual([]);
   });
   it('quotes the host setting when VS Code disabled the hook file', () => {
     const [i] = deriveIssues({ ...base, hooks: { server_port: 8484, tools: {
@@ -216,5 +228,16 @@ describe('tool filter', () => {
     expect(out.tool_telemetry).toEqual([]);
     expect(out.mcp_detail).toHaveLength(1);
     expect(out.events).toEqual([{ kind: 'global' }]);
+  });
+});
+
+describe('runningSummary', () => {
+  const tree = { tool: 'codex-desktop', session_id: 'codex-desktop:82697:1793871614' };
+  const session = { tool: 'copilot-cli', session_id: 'f2cf44a6-8ea0-4999-bb13-1dd7ccb7c44d' };
+  it('does not call helper processes sessions', () => {
+    expect(runningSummary([tree, tree])).toBe('process trees in 1 tool');
+    expect(runningSummary([session, tree])).toBe('1 session and 1 process tree in 2 tools');
+    expect(runningSummary([session])).toBe('session in 1 tool');
+    expect(runningSummary([])).toBe('sessions in 0 tools');
   });
 });
