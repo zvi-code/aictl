@@ -255,16 +255,19 @@ export default function BoardScreen() {
   // Hidden findings: the existing audit routes, after the first paint of the board.
   const [settingsRaw, setSettingsRaw] = useState({ loading: true });
   const loadFindings = useCallback((fresh) => {
-    Promise.allSettled([api.getContextAudit(fresh), api.getEffectiveModels(), api.getHooksStatus(), api.getOtelStatus()]).then(([a, e, h, o]) => {
-      setSettingsRaw({
-        loading: false,
-        audit: a.status === 'fulfilled' ? a.value : null,
-        effective: e.status === 'fulfilled' ? e.value : null,
-        hooks: h.status === 'fulfilled' ? h.value : null,
-        otel: o.status === 'fulfilled' ? o.value : null,
-        error: a.status === 'rejected' ? a.reason?.message : null,
-      });
-    });
+    // Each answer shows when it arrives, so a slow scan holds up nothing else.
+    const put = (key, promise) => promise.then(
+      value => setSettingsRaw(s => ({ ...s, [key]: value })),
+      () => setSettingsRaw(s => ({ ...s, [key]: null })),
+    );
+    setSettingsRaw(s => ({ ...s, loading: true, error: null }));
+    put('effective', api.getEffectiveModels());
+    put('hooks', api.getHooksStatus());
+    put('otel', api.getOtelStatus());
+    api.getContextAudit(fresh, scan => setSettingsRaw(s => ({ ...s, scan }))).then(
+      audit => setSettingsRaw(s => ({ ...s, audit, scan: null, loading: false })),
+      e => setSettingsRaw(s => ({ ...s, audit: null, scan: null, loading: false, error: e?.message })),
+    );
   }, []);
   useEffect(() => {
     if (!loaded) return undefined;
@@ -278,7 +281,7 @@ export default function BoardScreen() {
   const findings = useMemo(() => {
     const list = buildFindings({ ...settingsRaw, tools });
     const { rows, note } = buildSettings({ ...settingsRaw, toolIds });
-    return { list, settings: rows, note, loading: settingsRaw.loading, error: settingsRaw.error };
+    return { list, settings: rows, note, loading: settingsRaw.loading, error: settingsRaw.error, scan: settingsRaw.scan, incomplete: settingsRaw.audit?.incomplete || [] };
   }, [settingsRaw, tools, toolIds]);
 
   // Latest values for handlers that keep one identity, so panels do not re-render for them.

@@ -6,7 +6,7 @@ import { SnapContext } from '../context.js';
 import { scopeAudit } from '../utils/auditScope.js';
 import { isFiltered } from '../utils/toolScope.js';
 import ToolScopeEmpty from './ui/ToolScopeEmpty.js';
-import { fetchJson } from '../api.js';
+import { getContextAudit } from '../api.js';
 import { useAsyncResource } from '../hooks/useAsyncResource.js';
 
 export const STALE_AFTER_S = 600;
@@ -155,16 +155,17 @@ export function HiddenContextPanel() {
   const [showInfo, setShowInfo] = useState(false);
   const ctx = useContext(SnapContext);
   const enabledTools = ctx?.enabledTools ?? null;
+  const [scan, setScan] = useState(null);
   const { data: audit, loading, error } = useAsyncResource(
     // The server keeps the audit for a few minutes; Rescan asks for a new one.
-    () => fetchJson(generation ? '/api/context-audit?refresh=1' : '/api/context-audit'), [generation]);
+    () => getContextAudit(generation > 0, setScan), [generation]);
   // The audit comes from the server for all tools; the filter scopes it here.
   const data = useMemo(() => scopeAudit(audit, enabledTools), [audit, enabledTools]);
   const refresh = () => setGeneration(g => g + 1);
   const refreshButton = html`<button type="button" onClick=${refresh}>Rescan</button>`;
 
   if (loading && !data) {
-    return html`<div data-state="loading" style=${{ color: 'var(--fg2)' }}>Scanning context sources...</div>`;
+    return html`<div data-state="loading" style=${{ color: 'var(--fg2)' }}>Scanning context sources...${scan ? ' ' + scan.step + ', ' + Math.round(scan.elapsed_s) + ' s' : ''}</div>`;
   }
   if (error) {
     return html`<div data-state="error" style=${{ color: 'var(--red)' }}>

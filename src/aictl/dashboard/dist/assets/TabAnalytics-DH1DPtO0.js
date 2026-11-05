@@ -1,7 +1,7 @@
-import{m as r,A as W,y as P,T as A,d as _,q as lt,k as C,x as it}from"./index-BTCnpwvT.js";import{I as rt,b as et,S as ot,a as K,P as M,F as R}from"./app-D6pbvQ4J.js";import{av as ct,aw as dt,ax as ut,ay as pt,v as vt,r as L,az as st,H as mt,at as ht,ar as ft,aA as yt,au as $t,L as Q,B as gt,aB as B,q as j}from"./useSse-CGriGT3A.js";import{i as bt,u as xt,a as _t,b as St,c as wt,d as Tt,e as kt,f as At,g as zt,h as Mt,j as Lt,k as Rt,l as Ot,m as Ct,n as Et,o as qt}from"./echarts-BbyLWlSf.js";function Nt({enabledTools:t,what:e}){return t==null?null:r`<div class="panel-state panel-state--note" role="note">
+import{m as r,A as W,y as P,T as A,d as _,q as lt,k as C,x as it}from"./index-BV-8y5V6.js";import{I as rt,b as et,S as ot,a as K,P as M,F as R}from"./app-C9JBBtAo.js";import{au as ct,av as dt,aw as ut,ax as pt,v as vt,r as L,ay as st,H as mt,as as ht,aq as ft,az as yt,at as $t,L as Q,B as gt,aA as H,q as j}from"./useSse-ssp_fAkB.js";import{i as bt,u as xt,a as _t,b as St,c as wt,d as Tt,e as kt,f as At,g as zt,h as Mt,j as Lt,k as Rt,l as Ot,m as Ct,n as qt,o as Et}from"./echarts-BbyLWlSf.js";function Nt({enabledTools:t,what:e}){return t==null?null:r`<div class="panel-state panel-state--note" role="note">
     <${rt} name="filter" size="12"/>
     <span>${e} cover all tools: the tool filter does not apply, because these figures have no per-tool split.</span>
-  </div>`}xt([_t,St,wt,Tt,kt,At,zt,Mt,Lt,Rt,Ot,Ct,Et,qt]);function S(t,e){if(typeof document>"u")return e;const a=getComputedStyle(document.documentElement).getPropertyValue(t);return a&&a.trim()||e}function U(){return[S("--accent","#60a5fa"),S("--green","#34d399"),S("--orange","#f97316"),S("--yellow","#fbbf24"),S("--red","#ef4444"),S("--model-switch","#a78bfa"),"#06b6d4","#f472b6","#84cc16","#c084fc"]}function Ft(){const t=S("--bg","#0b0e14"),e=S("--fg","#e6e6e6"),a=S("--fg2","#9aa0a6"),i=S("--border","#2a2f3a");return{bg:t,fg:e,fg2:a,border:i}}function Y(t){const e=Ft();return{color:U(),backgroundColor:"transparent",textStyle:{color:e.fg,fontFamily:"inherit",fontSize:11},...t,tooltip:{backgroundColor:e.bg,borderColor:e.border,textStyle:{color:e.fg,fontSize:11},...(t==null?void 0:t.tooltip)||{}},xAxis:Z(t==null?void 0:t.xAxis,e),yAxis:Z(t==null?void 0:t.yAxis,e)}}function Z(t,e){if(!t)return t;const a=i=>i&&{axisLine:{lineStyle:{color:e.border},...i.axisLine||{}},axisTick:{lineStyle:{color:e.border},...i.axisTick||{}},axisLabel:{color:e.fg2,...i.axisLabel||{}},splitLine:{lineStyle:{color:e.border,opacity:.35},...i.splitLine||{}},...i};return Array.isArray(t)?t.map(a):a(t)}function at(t){const{option:e,style:a,className:i,onReady:n,onEvent:s,notMerge:d}=t,c=t["aria-label"],l=W(null),m=W(null),y=W({});return P(()=>{const v=l.current;if(!v)return;const h=bt(v,null,{renderer:"canvas"});m.current=h;const u=()=>{try{h.resize()}catch{}},f=typeof ResizeObserver<"u"?new ResizeObserver(u):null;f&&f.observe(v);const $=typeof MutationObserver<"u"?new MutationObserver(()=>{const p=m.current;if(p)try{p.setOption(Y(e||{}),{notMerge:!0})}catch{}}):null;if($&&typeof document<"u"&&$.observe(document.documentElement,{attributes:!0,attributeFilter:["data-theme","class"]}),n)try{n(h)}catch{}return()=>{f&&f.disconnect(),$&&$.disconnect();try{h.dispose()}catch{}m.current=null}},[]),P(()=>{const v=m.current;if(!(!v||!e))try{v.setOption(Y(e),{notMerge:!!d})}catch{}},[e,d]),P(()=>{const v=m.current;if(v){for(const[h,u]of Object.entries(y.current))try{v.off(h,u)}catch{}if(y.current={},s)for(const[h,u]of Object.entries(s))typeof u=="function"&&(v.on(h,u),y.current[h]=u)}},[s]),r`<div
+  </div>`}xt([_t,St,wt,Tt,kt,At,zt,Mt,Lt,Rt,Ot,Ct,qt,Et]);function S(t,e){if(typeof document>"u")return e;const a=getComputedStyle(document.documentElement).getPropertyValue(t);return a&&a.trim()||e}function U(){return[S("--accent","#60a5fa"),S("--green","#34d399"),S("--orange","#f97316"),S("--yellow","#fbbf24"),S("--red","#ef4444"),S("--model-switch","#a78bfa"),"#06b6d4","#f472b6","#84cc16","#c084fc"]}function Ft(){const t=S("--bg","#0b0e14"),e=S("--fg","#e6e6e6"),a=S("--fg2","#9aa0a6"),i=S("--border","#2a2f3a");return{bg:t,fg:e,fg2:a,border:i}}function Y(t){const e=Ft();return{color:U(),backgroundColor:"transparent",textStyle:{color:e.fg,fontFamily:"inherit",fontSize:11},...t,tooltip:{backgroundColor:e.bg,borderColor:e.border,textStyle:{color:e.fg,fontSize:11},...(t==null?void 0:t.tooltip)||{}},xAxis:Z(t==null?void 0:t.xAxis,e),yAxis:Z(t==null?void 0:t.yAxis,e)}}function Z(t,e){if(!t)return t;const a=i=>i&&{axisLine:{lineStyle:{color:e.border},...i.axisLine||{}},axisTick:{lineStyle:{color:e.border},...i.axisTick||{}},axisLabel:{color:e.fg2,...i.axisLabel||{}},splitLine:{lineStyle:{color:e.border,opacity:.35},...i.splitLine||{}},...i};return Array.isArray(t)?t.map(a):a(t)}function at(t){const{option:e,style:a,className:i,onReady:n,onEvent:s,notMerge:d}=t,c=t["aria-label"],l=W(null),m=W(null),y=W({});return P(()=>{const v=l.current;if(!v)return;const h=bt(v,null,{renderer:"canvas"});m.current=h;const u=()=>{try{h.resize()}catch{}},f=typeof ResizeObserver<"u"?new ResizeObserver(u):null;f&&f.observe(v);const $=typeof MutationObserver<"u"?new MutationObserver(()=>{const p=m.current;if(p)try{p.setOption(Y(e||{}),{notMerge:!0})}catch{}}):null;if($&&typeof document<"u"&&$.observe(document.documentElement,{attributes:!0,attributeFilter:["data-theme","class"]}),n)try{n(h)}catch{}return()=>{f&&f.disconnect(),$&&$.disconnect();try{h.dispose()}catch{}m.current=null}},[]),P(()=>{const v=m.current;if(!(!v||!e))try{v.setOption(Y(e),{notMerge:!!d})}catch{}},[e,d]),P(()=>{const v=m.current;if(v){for(const[h,u]of Object.entries(y.current))try{v.off(h,u)}catch{}if(y.current={},s)for(const[h,u]of Object.entries(s))typeof u=="function"&&(v.on(h,u),y.current[h]=u)}},[s]),r`<div
     ref=${l}
     class=${i||"echart-container"}
     style=${a||"width:100%;height:260px"}
@@ -11,7 +11,7 @@ import{m as r,A as W,y as P,T as A,d as _,q as lt,k as C,x as it}from"./index-BT
     option=${y}
     style=${"width:100%;height:"+m+"px"}
     aria-label="scatter chart"
-  />`}function Dt(t,e,a){const i=[];for(let n=0;n<t.length;n++){const s=e[n];s!=null&&i.push([a?t[n]*1e3:t[n],s])}return i}function H(t){const{mode:e,data:a,labels:i,colors:n,height:s,isTime:d,fmtX:c,fmtY:l,xLabel:m,yLabel:y,logX:v}=t,h=s||200,u=A(()=>{const f=U();if(!a||a.length<2||!a[0]||a[0].length===0)return{series:[]};const[$,...p]=a,g=p.map((o,b)=>{const x=ct(n==null?void 0:n[b],f[b%f.length]);return{name:(i==null?void 0:i[b])||`Series ${b+1}`,type:"line",smooth:!1,showSymbol:!1,data:Dt($,o,!!d),lineStyle:{width:1.5,color:x},areaStyle:{opacity:.08,color:x},connectNulls:!1}});return{grid:{left:48,right:12,top:16,bottom:32},legend:{top:0,type:"scroll",textStyle:{fontSize:10},show:((i==null?void 0:i.length)||0)>1},tooltip:{trigger:"axis",formatter:o=>{var q,O;const b=Array.isArray(o)?o:[o],x=(O=(q=b[0])==null?void 0:q.value)==null?void 0:O[0],I=d?new Date(x).toLocaleTimeString([],{hour12:!1}):c?c(x):String(x),D=b.map(z=>{var F;const w=(F=z.value)==null?void 0:F[1],N=w==null?"—":l?l(w):String(w);return`<span style="color:${z.color}">●</span> ${z.seriesName}: <b>${N}</b>`}).join("<br/>");return`${I}<br/>${D}`}},xAxis:{type:d?"time":v?"log":"value",axisLabel:{fontSize:10,hideOverlap:!0,formatter:d?void 0:c}},yAxis:{type:"value",axisLabel:{fontSize:10,formatter:l}},dataZoom:[{type:"inside",xAxisIndex:0}],series:g}},[a,i,n,d,v,c,l]);return e==="scatter"?r`<${It}
+  />`}function Dt(t,e,a){const i=[];for(let n=0;n<t.length;n++){const s=e[n];s!=null&&i.push([a?t[n]*1e3:t[n],s])}return i}function B(t){const{mode:e,data:a,labels:i,colors:n,height:s,isTime:d,fmtX:c,fmtY:l,xLabel:m,yLabel:y,logX:v}=t,h=s||200,u=A(()=>{const f=U();if(!a||a.length<2||!a[0]||a[0].length===0)return{series:[]};const[$,...p]=a,g=p.map((o,b)=>{const x=ct(n==null?void 0:n[b],f[b%f.length]);return{name:(i==null?void 0:i[b])||`Series ${b+1}`,type:"line",smooth:!1,showSymbol:!1,data:Dt($,o,!!d),lineStyle:{width:1.5,color:x},areaStyle:{opacity:.08,color:x},connectNulls:!1}});return{grid:{left:48,right:12,top:16,bottom:32},legend:{top:0,type:"scroll",textStyle:{fontSize:10},show:((i==null?void 0:i.length)||0)>1},tooltip:{trigger:"axis",formatter:o=>{var E,O;const b=Array.isArray(o)?o:[o],x=(O=(E=b[0])==null?void 0:E.value)==null?void 0:O[0],I=d?new Date(x).toLocaleTimeString([],{hour12:!1}):c?c(x):String(x),D=b.map(z=>{var F;const w=(F=z.value)==null?void 0:F[1],N=w==null?"—":l?l(w):String(w);return`<span style="color:${z.color}">●</span> ${z.seriesName}: <b>${N}</b>`}).join("<br/>");return`${I}<br/>${D}`}},xAxis:{type:d?"time":v?"log":"value",axisLabel:{fontSize:10,hideOverlap:!0,formatter:d?void 0:c}},yAxis:{type:"value",axisLabel:{fontSize:10,formatter:l}},dataZoom:[{type:"inside",xAxisIndex:0}],series:g}},[a,i,n,d,v,c,l]);return e==="scatter"?r`<${It}
       data=${a}
       labels=${i}
       height=${s}
@@ -100,25 +100,25 @@ import{m as r,A as W,y as P,T as A,d as _,q as lt,k as C,x as it}from"./index-BT
         </div>`}
       </${C}>`}
     </div>
-  </div>`}const E=["var(--green)","var(--orange)","var(--accent)","var(--red)","var(--yellow)","#8b5cf6","#06b6d4","#f472b6"];function k(t){return t>=1e3?L(t/1e3)+"s":Math.round(t)+"ms"}function Bt(t){return"#"+Math.round(t)}function Ht({data:t}){if(!t||!t.requests||!t.requests.length)return r`<div class="analytics-section">
+  </div>`}const q=["var(--green)","var(--orange)","var(--accent)","var(--red)","var(--yellow)","#8b5cf6","#06b6d4","#f472b6"];function k(t){return t>=1e3?L(t/1e3)+"s":Math.round(t)+"ms"}function Ht(t){return"#"+Math.round(t)}function Bt({data:t}){if(!t||!t.requests||!t.requests.length)return r`<div class="analytics-section">
       <div class="analytics-section-title">Response Time Analysis</div>
       <${R} count=${t==null?void 0:t.unattributed_hidden}/>
       <${M} status="empty" emptyTitle="No request data in this time range"
         emptyHint="Widen the time range. Response times need OTel telemetry from the tool."
         emptyFix="aictl otel enable"/>
-    </div>`;const e=t.requests,a=A(()=>{const l=e.map(y=>y.ts),m=e.map(y=>y.duration_ms);return[l,m]},[e]),i=A(()=>{const l=[...new Set(e.map(u=>u.model||"(unknown)"))],m=l.map(()=>[]),v=[...e.filter(u=>u.input_tokens>0)].sort((u,f)=>u.input_tokens-f.input_tokens),h=v.map(u=>u.input_tokens);for(const u of l)m[l.indexOf(u)]=v.map(f=>(f.model||"(unknown)")===u?f.duration_ms:null);return{data:[h,...m],labels:l,colors:E.slice(0,l.length)}},[e]),n=t.by_model||[],s=Math.max(1,...n.map(l=>l.p95_ms)),d=A(()=>{const l=[...new Set(e.map(u=>u.model||"(unknown)"))],y=[...e.filter(u=>u.seq>0)].sort((u,f)=>u.seq-f.seq),v=y.map(u=>u.seq),h=l.map(u=>y.map(f=>(f.model||"(unknown)")===u?f.duration_ms:null));return{data:[v,...h],labels:l,colors:E.slice(0,l.length)}},[e]),c=e.length?e[e.length-1].duration_ms:0;return r`<div class="analytics-section">
+    </div>`;const e=t.requests,a=A(()=>{const l=e.map(y=>y.ts),m=e.map(y=>y.duration_ms);return[l,m]},[e]),i=A(()=>{const l=[...new Set(e.map(u=>u.model||"(unknown)"))],m=l.map(()=>[]),v=[...e.filter(u=>u.input_tokens>0)].sort((u,f)=>u.input_tokens-f.input_tokens),h=v.map(u=>u.input_tokens);for(const u of l)m[l.indexOf(u)]=v.map(f=>(f.model||"(unknown)")===u?f.duration_ms:null);return{data:[h,...m],labels:l,colors:q.slice(0,l.length)}},[e]),n=t.by_model||[],s=Math.max(1,...n.map(l=>l.p95_ms)),d=A(()=>{const l=[...new Set(e.map(u=>u.model||"(unknown)"))],y=[...e.filter(u=>u.seq>0)].sort((u,f)=>u.seq-f.seq),v=y.map(u=>u.seq),h=l.map(u=>y.map(f=>(f.model||"(unknown)")===u?f.duration_ms:null));return{data:[v,...h],labels:l,colors:q.slice(0,l.length)}},[e]),c=e.length?e[e.length-1].duration_ms:0;return r`<div class="analytics-section">
     <div class="analytics-section-title">Response Time Analysis</div>
     <${R} count=${t.unattributed_hidden}/>
     <div class="analytics-charts">
       <div class="diag-card">
         <div class="chart-hdr"><span class="chart-label">Response Time Over Time</span>
           <span class="chart-val" style="color:var(--accent)">${k(c)}</span></div>
-        <${H} mode="line" data=${a} isTime=${!0} fmtY=${k} height=${200}/>
+        <${B} mode="line" data=${a} isTime=${!0} fmtY=${k} height=${200}/>
       </div>
       <div class="diag-card">
         <div class="chart-hdr"><span class="chart-label">Response Time vs Input Size</span>
           <span class="chart-val text-muted" style="font-size:var(--fs-sm)">${e.length} requests</span></div>
-        <${H} mode="scatter" data=${i.data} labels=${i.labels}
+        <${B} mode="scatter" data=${i.data} labels=${i.labels}
           colors=${i.colors} fmtX=${L} fmtY=${k} logX=${!0} height=${200}/>
       </div>
       <div class="diag-card">
@@ -127,7 +127,7 @@ import{m as r,A as W,y as P,T as A,d as _,q as lt,k as C,x as it}from"./index-BT
           ${n.map((l,m)=>r`<div key=${l.model} class="hbar-row">
             <span class="hbar-label" title=${l.model}>${l.model.replace(/^claude-/,"")||l.model}</span>
             <div class="hbar-track">
-              <div class="hbar-fill" style=${"width:"+Math.round(l.avg_ms/s*100)+"%;background:"+E[m%E.length]}></div>
+              <div class="hbar-fill" style=${"width:"+Math.round(l.avg_ms/s*100)+"%;background:"+q[m%q.length]}></div>
               <div class="hbar-p95" style=${"left:"+Math.round(l.p95_ms/s*100)+"%"} title=${"p95: "+k(l.p95_ms)}></div>
             </div>
             <span class="hbar-value">${k(l.avg_ms)}</span>
@@ -140,11 +140,11 @@ import{m as r,A as W,y as P,T as A,d as _,q as lt,k as C,x as it}from"./index-BT
       <div class="diag-card">
         <div class="chart-hdr"><span class="chart-label">Session Lifecycle (seq vs latency)</span>
           <span class="chart-val text-muted" style="font-size:var(--fs-sm)">degradation?</span></div>
-        <${H} mode="scatter" data=${d.data} labels=${d.labels}
-          colors=${d.colors} fmtX=${Bt} fmtY=${k} logX=${!0} height=${200}/>
+        <${B} mode="scatter" data=${d.data} labels=${d.labels}
+          colors=${d.colors} fmtX=${Ht} fmtY=${k} logX=${!0} height=${200}/>
       </div>
     </div>
-  </div>`}const Ut={"claude-code":"#8b5cf6",codex:"#f97316",aider:"#06b6d4",cursor:"#f472b6"};function nt(t,e){return Ut[t]||E[e%E.length]}function J({by_cli:t,total:e,barWidth:a,cliTools:i}){return!t||!t.length?r`<div class="hbar-fill" style=${"width:"+a+"%;background:var(--accent)"}></div>`:t.map((n,s)=>{const d=n.count/e*a,c=nt(n.cli_tool,i.indexOf(n.cli_tool));return r`<div key=${n.cli_tool}
+  </div>`}const Ut={"claude-code":"#8b5cf6",codex:"#f97316",aider:"#06b6d4",cursor:"#f472b6"};function nt(t,e){return Ut[t]||q[e%q.length]}function J({by_cli:t,total:e,barWidth:a,cliTools:i}){return!t||!t.length?r`<div class="hbar-fill" style=${"width:"+a+"%;background:var(--accent)"}></div>`:t.map((n,s)=>{const d=n.count/e*a,c=nt(n.cli_tool,i.indexOf(n.cli_tool));return r`<div key=${n.cli_tool}
       style=${"width:"+d.toFixed(1)+"%;background:"+c+";height:100%;display:inline-block"}
       title=${n.cli_tool+": "+n.count}></div>`})}function Vt({data:t}){if(!t||!t.invocations||!t.invocations.length)return r`<div class="analytics-section">
       <div class="analytics-section-title">Tool Usage</div>
@@ -207,11 +207,11 @@ import{m as r,A as W,y as P,T as A,d as _,q as lt,k as C,x as it}from"./index-BT
         Cumulative Bytes Written (${s.length} files)</div>
       <div class="analytics-charts">
         ${d.map(c=>{const l=i[c];if(!l||l.ts.length<2)return r`<div key=${c} class="diag-card">
-            <div class="chart-hdr"><span class="chart-label" title=${c}>${B(c)}</span>
+            <div class="chart-hdr"><span class="chart-label" title=${c}>${H(c)}</span>
               <span class="chart-val text-muted">${l&&l.size_bytes.length?j(l.size_bytes[l.size_bytes.length-1]):"-"}</span></div>
             <div class="empty-state" style="font-size:var(--fs-sm)">Single snapshot</div>
           </div>`;const m=l.size_bytes[l.size_bytes.length-1];return r`<div key=${c} class="diag-card">
-            <${et} label=${B(c)} value=${j(m)}
+            <${et} label=${H(c)} value=${j(m)}
               data=${[l.ts,l.size_bytes]} chartColor="var(--accent)"/>
           </div>`})}
       </div>
@@ -237,7 +237,7 @@ import{m as r,A as W,y as P,T as A,d as _,q as lt,k as C,x as it}from"./index-BT
             ${n.slice(0,30).map((c,l)=>r`<tr key=${l}
               style="border-bottom:1px solid var(--border);${l%2?"background:var(--bg2)":""}">
               <td class="mono text-nowrap" style="padding:var(--sp-2) var(--sp-4)">${st(c.ts)}</td>
-              <td style="padding:var(--sp-2) var(--sp-4)" title=${c.path}>${B(c.path)}</td>
+              <td style="padding:var(--sp-2) var(--sp-4)" title=${c.path}>${H(c.path)}</td>
               <td class="mono" style="padding:var(--sp-2) var(--sp-4)">${j(c.size_bytes)}</td>
               <td class="mono" style="padding:var(--sp-2) var(--sp-4);color:${c.delta>0?"var(--green)":c.delta<0?"var(--red)":"var(--fg2)"}">
                 ${c.delta>0?"+":""}${j(Math.abs(c.delta))}${c.delta<0?" ↓":c.delta>0?" ↑":""}
@@ -254,7 +254,7 @@ import{m as r,A as W,y as P,T as A,d as _,q as lt,k as C,x as it}from"./index-BT
       border:1px solid var(--orange);border-radius:4px;
       color:var(--orange);font-size:var(--fs-sm);font-weight:600">
     Analytics data may be stale: ${e}${a}
-  </div>`}const Kt=800,Qt=15e3;function tt(t){var e,a,i,n,s,d,c;return!((a=(e=t.response_time)==null?void 0:e.requests)!=null&&a.length)&&!((n=(i=t.tools)==null?void 0:i.invocations)!=null&&n.length)&&!Object.keys(((s=t.files)==null?void 0:s.memory_timeline)||{}).length&&!((c=(d=t.files)==null?void 0:d.memory_events)!=null&&c.length)}function ee(){var I,D,q;const t=it(ot),e=t==null?void 0:t.globalRange,a=(t==null?void 0:t.enabledTools)??null,i=mt(a),n=ht(a),s=(e==null?void 0:e.since)||Date.now()/1e3-86400,d=(e==null?void 0:e.until)||"",c=`${s}|${d}|${ft(a)}`,[l,m]=_(null),[y,v]=_(!0),[h,u]=_(null),[f,$]=_(null),[p,g]=_(0),o=l&&l.key===c?l.data:null;P(()=>{if(i){v(!1),u(null);return}v(!0),u(null);const O=`/api/analytics?since=${s}${d?"&until="+d:""}${n?"&"+n:""}`,z=new AbortController;let w=!1,N=null;const F=()=>{w=!0,clearTimeout(G),clearTimeout(N),v(!1)},V=T=>{w||(u(T.name==="AbortError"?"The request timed out after 15 s.":T.message),F())},G=setTimeout(()=>{z.abort(),V({name:"AbortError"})},Qt),X=()=>yt(O,{signal:z.signal}).then(T=>{if(!w){if(T!=null&&T.pending){N=setTimeout(X,Kt);return}if(!$t(T,a))throw new Error("The server answered for a different tool selection. Restart the aictl server so it applies the tool filter.");m({key:c,data:T}),$(Date.now()),F()}}).catch(V);return X(),()=>{w=!0,clearTimeout(G),clearTimeout(N),z.abort()}},[c,i,p]);const b=()=>g(O=>O+1);if(i)return r`<div class="analytics-grid"><${K} enabledTools=${a} snap=${t==null?void 0:t.snap} what="analytics"/></div>`;const x=o?(((I=o.response_time)==null?void 0:I.unattributed_hidden)||0)+(((D=o.tools)==null?void 0:D.unattributed_hidden)||0)+(((q=o.files)==null?void 0:q.unattributed_hidden)||0):0;return r`<div class="analytics-grid">
+  </div>`}const Kt=800,Qt=15e3;function tt(t){var e,a,i,n,s,d,c;return!((a=(e=t.response_time)==null?void 0:e.requests)!=null&&a.length)&&!((n=(i=t.tools)==null?void 0:i.invocations)!=null&&n.length)&&!Object.keys(((s=t.files)==null?void 0:s.memory_timeline)||{}).length&&!((c=(d=t.files)==null?void 0:d.memory_events)!=null&&c.length)}function ee(){var I,D,E;const t=it(ot),e=t==null?void 0:t.globalRange,a=(t==null?void 0:t.enabledTools)??null,i=mt(a),n=ht(a),s=(e==null?void 0:e.since)||Date.now()/1e3-86400,d=(e==null?void 0:e.until)||"",c=`${s}|${d}|${ft(a)}`,[l,m]=_(null),[y,v]=_(!0),[h,u]=_(null),[f,$]=_(null),[p,g]=_(0),o=l&&l.key===c?l.data:null;P(()=>{if(i){v(!1),u(null);return}v(!0),u(null);const O=`/api/analytics?since=${s}${d?"&until="+d:""}${n?"&"+n:""}`,z=new AbortController;let w=!1,N=null;const F=()=>{w=!0,clearTimeout(G),clearTimeout(N),v(!1)},V=T=>{w||(u(T.name==="AbortError"?"The request timed out after 15 s.":T.message),F())},G=setTimeout(()=>{z.abort(),V({name:"AbortError"})},Qt),X=()=>yt(O,{signal:z.signal}).then(T=>{if(!w){if(T!=null&&T.pending){N=setTimeout(X,Kt);return}if(!$t(T,a))throw new Error("The server answered for a different tool selection. Restart the aictl server so it applies the tool filter.");m({key:c,data:T}),$(Date.now()),F()}}).catch(V);return X(),()=>{w=!0,clearTimeout(G),clearTimeout(N),z.abort()}},[c,i,p]);const b=()=>g(O=>O+1);if(i)return r`<div class="analytics-grid"><${K} enabledTools=${a} snap=${t==null?void 0:t.snap} what="analytics"/></div>`;const x=o?(((I=o.response_time)==null?void 0:I.unattributed_hidden)||0)+(((D=o.tools)==null?void 0:D.unattributed_hidden)||0)+(((E=o.files)==null?void 0:E.unattributed_hidden)||0):0;return r`<div class="analytics-grid">
     ${y&&!o&&r`<${M} status="loading" label="analytics" skeletonHeight="240px"/>`}
     ${h&&!o&&r`<${M} status="error" error=${h} label="analytics" onRetry=${b}/>`}
     ${h&&o&&r`<${M} status="stale" error=${h} updatedAt=${f} onRetry=${b}/>`}
@@ -264,7 +264,7 @@ import{m as r,A as W,y as P,T as A,d as _,q as lt,k as C,x as it}from"./index-BT
     </${C}>`}
     ${o&&!(Q(a)&&tt(o))&&r`<${C}>
       <${Xt} health=${o==null?void 0:o._health}/>
-      <${Ht} data=${o==null?void 0:o.response_time}/>
+      <${Bt} data=${o==null?void 0:o.response_time}/>
       <${Vt} data=${o==null?void 0:o.tools}/>
       <${Gt} data=${o==null?void 0:o.files}/>
       <details class="analytics-section">

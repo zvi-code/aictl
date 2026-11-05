@@ -2957,7 +2957,7 @@ def compute_board(
         "memory_files": _memory_files(board),
         "processes": _processes(board),
         # Names for tools that have processes but no activity in this range.
-        "tool_labels": {t["tool"]: _label(t["tool"]) for t in _processes(board)},
+        "tool_labels": {tool: _label(tool) for tool in {p["tool"] for p in _processes(board)} | set(cpu)},
         "sources": _sources(_source_rows(conn, memo_key), tool_order or option_tools, selected),
         "coverage": {"rows": coverage_rows(facts, option_tools)},
         "self": _self_section(db),

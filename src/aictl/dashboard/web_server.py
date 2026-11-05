@@ -1372,6 +1372,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         """Hidden-context audit of the served project, or of ?project= when given.
 
         The answer is kept for a few minutes; ``?refresh=1`` runs it again.
+        With ``?nowait=1`` a scan runs in the background and the answer says how far it is.
         """
         from .audit_cache import AUDIT_CACHE
 
@@ -1379,7 +1380,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         project = wanted if wanted and not _names_another_machine(wanted) and Path(wanted).is_dir() else self.server.root
         try:
             refresh = self._qs_get("refresh") in ("1", "true")
-            self._json_response(AUDIT_CACHE.get(project, self._qs_get("tool") or None, refresh=refresh))
+            lookup = AUDIT_CACHE.poll if self._qs_get("nowait") == "1" else AUDIT_CACHE.get
+            self._json_response(lookup(project, self._qs_get("tool") or None, refresh=refresh))
         except Exception as exc:  # any failure must reach the panel's error state
             self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
 

@@ -267,9 +267,11 @@ def _env_pins(tool: str, env: dict[str, str]) -> list[ModelPin]:
 
 
 def _glob_files(patterns: list[str]) -> list[str]:
+    from .context_audit import _bounded_glob
+
     out: list[str] = []
     for pattern in patterns:
-        out.extend(sorted(glob.glob(pattern, recursive=True)))
+        out.extend(sorted(_bounded_glob(pattern)))
     return out[:MAX_MODEL_FILES]
 
 

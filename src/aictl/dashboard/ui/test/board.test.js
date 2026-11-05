@@ -602,3 +602,26 @@ describe('rows with no session data', () => {
     expect(p.table.rows[0].go).toBeNull();
   });
 });
+
+describe('hidden-context scan', () => {
+  it('keeps asking while the scan runs, and reports each step', async () => {
+    const { getContextAudit } = await import('../src/api.js');
+    const answers = [{ status: 'scanning', step: 'project tree', elapsed_s: 1 }, { status: 'scanning', step: 'models in force', elapsed_s: 2 }, { findings: [] }];
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(answers.shift()), { headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const seen = [];
+    const result = await getContextAudit(true, s => seen.push(s.step), { pollMs: 1 });
+    vi.unstubAllGlobals();
+    expect(result).toEqual({ findings: [] });
+    expect(seen).toEqual(['project tree', 'models in force']);
+    expect(fetchMock.mock.calls[0][0]).toContain('nowait=1&refresh=1');
+    expect(fetchMock.mock.calls[1][0]).not.toContain('refresh=1');
+  });
+
+  it('turns a failed scan into an error', async () => {
+    const { getContextAudit } = await import('../src/api.js');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'OSError: disk gone' }), { headers: { 'Content-Type': 'application/json' } })));
+    await expect(getContextAudit()).rejects.toThrow('disk gone');
+    vi.unstubAllGlobals();
+  });
+});

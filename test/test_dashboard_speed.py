@@ -467,3 +467,88 @@ def test_audit_route_passes_refresh_through(monkeypatch, tmp_path):
         _DashboardHandler._serve_context_audit(stub)
     assert len(runs) == 2
     AUDIT_CACHE.clear()
+
+
+def _wait_for(check, seconds=5.0):
+    import time
+
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        value = check()
+        if value:
+            return value
+        time.sleep(0.01)
+    raise AssertionError("condition not met in time")
+
+
+def test_poll_answers_at_once_and_says_which_step_runs(tmp_path, monkeypatch):
+    import threading
+
+    from aictl import context_audit
+    from aictl.dashboard.audit_cache import AuditCache
+
+    release = threading.Event()
+
+    def slow(project, tool=None, progress=None):
+        progress("project tree")
+        release.wait(5)
+        return {"n": 1}
+
+    monkeypatch.setattr(context_audit, "run_audit", slow)
+    cache = AuditCache()
+    first = cache.poll(tmp_path)
+    assert first["status"] == "scanning"
+    during = _wait_for(lambda: (r := cache.poll(tmp_path))["step"] == "project tree" and r)
+    assert during["status"] == "scanning"
+    release.set()
+    assert _wait_for(lambda: (r := cache.poll(tmp_path)).get("n") and r) == {"n": 1}
+
+
+def test_poll_reports_a_failed_scan_once_and_can_run_again(tmp_path, monkeypatch):
+    from aictl import context_audit
+    from aictl.dashboard.audit_cache import AuditCache
+
+    def broken(project, tool=None, progress=None):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(context_audit, "run_audit", broken)
+    cache = AuditCache()
+    cache.poll(tmp_path)
+    answer = _wait_for(lambda: (r := cache.poll(tmp_path)).get("error") and r)
+    assert "disk gone" in answer["error"]
+    monkeypatch.setattr(context_audit, "run_audit", lambda project, tool=None, progress=None: {"n": 2})
+    assert _wait_for(lambda: (r := cache.poll(tmp_path)).get("n") and r) == {"n": 2}
+
+
+def test_bounded_glob_matches_like_a_recursive_glob_and_skips_large_folders(tmp_path):
+    from aictl.context_audit import _bounded_glob
+
+    for rel in ["a.md", "x/b.md", "x/y/c.md", "x/y/c.txt", "node_modules/z/d.md", ".hidden/e.md", "x/rules/f.md"]:
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("t")
+    names = {Path(p).name for p in _bounded_glob(str(tmp_path / "**" / "*.md"))}
+    assert names == {"a.md", "b.md", "c.md", "f.md"}
+    assert {Path(p).name for p in _bounded_glob(str(tmp_path / "**" / "rules" / "*.md"))} == {"f.md"}
+    assert {Path(p).name for p in _bounded_glob(str(tmp_path / "x" / "*.md"))} == {"b.md"}
+
+
+def test_bounded_glob_stops_at_the_folder_limit(tmp_path, monkeypatch):
+    from aictl import context_audit
+
+    for i in range(20):
+        (tmp_path / f"d{i}").mkdir()
+        (tmp_path / f"d{i}" / "a.md").write_text("t")
+    monkeypatch.setattr(context_audit, "MAX_WALK_DIRS", 5)
+    assert len(list(context_audit._bounded_glob(str(tmp_path / "**" / "*.md")))) < 5
+
+
+def test_an_audit_past_its_time_budget_returns_and_lists_what_it_skipped(tmp_path, monkeypatch):
+    from aictl import context_audit
+
+    monkeypatch.setattr(context_audit, "AUDIT_BUDGET_S", -1.0)
+    steps = []
+    result = context_audit.run_audit(tmp_path, baseline_file=tmp_path / "base.json", progress=steps.append)
+    assert steps == []
+    assert "project tree" in result["incomplete"]
+    assert "models in force" in result["incomplete"]

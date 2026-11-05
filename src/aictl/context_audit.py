@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import fnmatch
 import glob
 import hashlib
 import json
@@ -29,9 +30,11 @@ import subprocess
 import tempfile
 import time
 import unicodedata
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from urllib.parse import unquote, urlparse
 
 from .platforms import IS_WINDOWS, claude_global_dir, config_dir, vscode_user_dir
@@ -52,6 +55,9 @@ MAX_SNIPPET = 160
 MAX_RULE_HITS_PER_FILE = 5
 MAX_WALK_DIRS = 5000
 MAX_GLOB_HITS = 300
+# A scan starts no further step after this long. A large or slow disk gets a partial
+# answer that says what it skipped, not a screen that never finishes.
+AUDIT_BUDGET_S = 60.0
 TRANSCRIPT_FILES = 8
 TRANSCRIPT_MAX_BYTES = 30_000_000
 BASELINE_FILENAME = "context-baseline.json"
@@ -193,6 +199,35 @@ def _decode(raw: bytes) -> str | None:
     if b"\0" in raw[:4096]:
         return None
     return raw.decode("utf-8-sig", errors="replace")
+
+
+def _bounded_glob(pattern: str) -> Iterator[str]:
+    """Like ``glob.iglob`` with ``recursive=True``, but a ``**`` search has limits.
+
+    It skips PRUNE_DIRS and hidden folders, and stops after MAX_WALK_DIRS folders.
+    A plain recursive glob reads a whole tree before it can answer, which on a large
+    project or home folder takes minutes.
+    """
+    if "**" not in pattern:
+        yield from glob.iglob(pattern)
+        return
+    head, _, tail = pattern.partition("**")
+    parts = [p for p in re.split(r"[/\\\\]+", tail) if p and p != "**"] or ["*"]
+    root = head.rstrip("/\\") or head
+    roots = glob.glob(root) if glob.has_magic(root) else [root]
+    seen = 0
+    for base in roots:
+        for dirpath, dirnames, filenames in os.walk(base):
+            seen += 1
+            if seen > MAX_WALK_DIRS:
+                return
+            dirnames[:] = [d for d in dirnames if d not in PRUNE_DIRS and not d.startswith(".")]
+            folders = Path(dirpath).parts[-(len(parts) - 1) :] if len(parts) > 1 else ()
+            if len(folders) != len(parts) - 1 or not all(map(fnmatch.fnmatch, folders, parts)):
+                continue
+            for name in filenames:
+                if not name.startswith(".") and fnmatch.fnmatch(name, parts[-1]):
+                    yield os.path.join(dirpath, name)
 
 
 def _read_text(path: Path) -> str:
@@ -708,7 +743,7 @@ def _collect_registry(inv: _Inventory) -> None:
         if template.endswith("/"):
             pattern = pattern + "**/*.md"
         hits = 0
-        for hit in glob.iglob(pattern, recursive=True):
+        for hit in _bounded_glob(pattern):
             inv.add(spec.ai_tool, scope, hit, kind, effective, origin="registry")
             hits += 1
             if hits >= MAX_GLOB_HITS:
@@ -981,7 +1016,7 @@ def _vscode_locations(inv: _Inventory, findings: list[Finding], path: Path, leve
             if not base.is_absolute():
                 base = project / base
             outside = not _path_key(base).startswith(_path_key(project))
-            found = glob.glob(str(base / pattern), recursive=True)[:MAX_GLOB_HITS]
+            found = list(_bounded_glob(str(base / pattern)))[:MAX_GLOB_HITS]
             for hit in found:
                 inv.add(tool, "project" if not outside else "user", hit, kind, loading, origin=key)
                 if kind == "hooks":
@@ -1406,7 +1441,7 @@ def _collect_copilot365(inv: _Inventory, findings: list[Finding]) -> None:
     """Agent packages in the repository, the only Microsoft 365 Copilot text a disk scan can see."""
     tool = "copilot365"
     project = inv.project
-    packages = {Path(p).parent for p in glob.glob(str(project / "**" / "declarativeAgent*.json"), recursive=True) if not _pruned(Path(p), project)}
+    packages = {Path(p).parent for p in _bounded_glob(str(project / "**" / "declarativeAgent*.json")) if not _pruned(Path(p), project)}
     packages |= {project / "appPackage"} if (project / "appPackage").is_dir() else set()
     for package in sorted(packages):
         inv.add_glob(tool, "project", str(package / "manifest.json"), "manifest", "config")
@@ -2380,15 +2415,30 @@ def run_audit(
     ps_output: str | None = None,
     now: float | None = None,
     baseline_file: str | Path | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> dict:
     """Run every layer and return ``{sources, findings, drift, unattributed, ...}``.
 
     ``env`` and ``ps_output`` default to this process's environment and a live
     ``ps`` call. Tests pass their own. ``baseline_file`` replaces the default
     baseline location, which also makes it persist when capture is off.
+    ``progress`` is told the name of each step. A step that would start after
+    AUDIT_BUDGET_S is skipped and listed in ``incomplete``.
     """
     started = time.perf_counter()
     timings: dict[str, int] = {}
+    skipped: list[str] = []
+
+    def step(name: str, run: Callable[[], Any], default: Any = None) -> Any:
+        if time.perf_counter() - started > AUDIT_BUDGET_S:
+            skipped.append(name)
+            return default
+        if progress:
+            progress(name)
+        begun = time.perf_counter()
+        result = run()
+        timings[f"step:{name}"] = int((time.perf_counter() - begun) * 1000)
+        return result
 
     def lap(name: str, mark: float) -> float:
         current = time.perf_counter()
@@ -2403,35 +2453,35 @@ def run_audit(
     inv = _Inventory(root)
 
     mark = time.perf_counter()
-    _collect_registry(inv)
-    _collect_static(inv)
-    _collect_claude_memory(inv)
-    _collect_walks(inv)
-    plugins = _collect_plugins(inv)
-    persistent = _persistent_env(findings)
+    step("registry paths", lambda: _collect_registry(inv))
+    step("known paths", lambda: _collect_static(inv))
+    step("Claude memory", lambda: _collect_claude_memory(inv))
+    step("project tree", lambda: _collect_walks(inv))
+    plugins = step("plugins", lambda: _collect_plugins(inv), [])
+    persistent = step("environment", lambda: _persistent_env(findings), {})
     effective_env = {k: v for values in persistent.values() for k, v in values.items()} | env
-    _collect_vscode(inv, findings)
-    _collect_copilot(inv, findings, effective_env)
-    _collect_copilot365(inv, findings)
-    _collect_vscode_extensions(inv, findings)
-    _collect_vscode_policy(inv, findings)
-    _collect_imports(inv, findings)
-    _collect_dynamic(inv, findings, env, plugins, ps_output)
+    step("VS Code settings", lambda: _collect_vscode(inv, findings))
+    step("Copilot settings", lambda: _collect_copilot(inv, findings, effective_env))
+    step("Microsoft 365 Copilot packages", lambda: _collect_copilot365(inv, findings))
+    step("VS Code extensions", lambda: _collect_vscode_extensions(inv, findings))
+    step("VS Code policy", lambda: _collect_vscode_policy(inv, findings))
+    step("imports", lambda: _collect_imports(inv, findings))
+    step("running processes", lambda: _collect_dynamic(inv, findings, env, plugins, ps_output))
     for origin, values in persistent.items():
         _collect_env(inv, findings, values, origin)
     mark = lap("inventory", mark)
 
-    sources = _enrich_files(inv, findings)
+    sources = step("file contents", lambda: _enrich_files(inv, findings), list(inv.rows.values()))
     mark = lap("scan", mark)
 
-    transcripts = _claude_transcripts(root)
+    transcripts = step("session files", lambda: _claude_transcripts(root), [])
     dynamic_tokens = _collect_transcript_signals(inv, findings, transcripts)
     sources = list(inv.rows.values())
     mark = lap("transcripts", mark)
 
     from .effective_config import annotate_sources, model_findings  # needs this module's helpers
 
-    effective_models, found = model_findings(root, env=env, ps_output=ps_output)
+    effective_models, found = step("models in force", lambda: model_findings(root, env=env, ps_output=ps_output), ({}, []))
     findings.extend(found)
     annotate_sources(sources, root, findings, env)
     mark = lap("effective", mark)
@@ -2477,6 +2527,7 @@ def run_audit(
         "scanned_at": now,
         "duration_ms": int((time.perf_counter() - started) * 1000),
         "timings_ms": timings,
+        "incomplete": skipped,
         "capture_mode": mode,
         "sources": [asdict(s) for s in sorted(kept_sources, key=lambda s: (s.tool, _RANK.get(s.loading, 9), s.path))],
         "findings": [asdict(f) for f in kept_findings],
