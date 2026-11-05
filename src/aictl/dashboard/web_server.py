@@ -437,6 +437,11 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._serve_budget()
         elif path == "/api/history":
             self._serve_history()
+        elif path == "/api/copilot-sessions" or path.startswith("/api/copilot-sessions/"):
+            from .copilot_sessions_api import handle
+
+            status, payload = handle(path, self._qs)
+            self._json_response(payload, status=status)
         elif path.startswith("/api/samples"):
             self._serve_samples()
         elif path == "/api/session-timeline":

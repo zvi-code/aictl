@@ -637,7 +637,6 @@ Details: [how-to](docs/how-to.md#find-hidden-context).
 | `aictl ps <session-or-pid>` | Full detail for one session: memory, tools, prompts, files, activity |
 | `aictl ps --tool NAME --all --json` | Filter by tool, include recently ended sessions, stable JSON output |
 | `aictl top` | Live `ps`: j/k or arrows move, Enter expands, `/` filters, `a` toggles ended, `q` quits |
-| `aictl session list` | Live sessions with their ids |
 | `aictl session kill <session_id>` | Stop a live session |
 | `aictl ctx audit` | Hidden context: every source that can reach the model, drift, concealment, visibility gaps |
 | `aictl ctx audit --fail-on high --json` | The same for CI: exit 1 on a finding of that severity |
@@ -901,6 +900,12 @@ The full list, including rows marked unverified, is in `src/aictl/data/paths-win
 | Live TUI dashboard | Requires `textual`, included in `[all]` |
 | `aictl daemon serve --daemon` | Respawns detached, because there is no `fork`. Simulated only |
 | `aictl top` keys | Use `msvcrt`. Not yet exercised on a real console |
+| `aictl session list` | List Copilot sessions on disk, with folder size and project |
+| `aictl session find` | Search sessions by id, project path or title |
+| `aictl session show` | One session: its folder, ids, state and artifacts |
+| `aictl session path` | Print only a session's folder |
+| `aictl session artifacts` | List and classify the files in a session |
+| `aictl session cat` | Print one file from a session's folder, with a size limit |
 | Persisted environment | `setx` values under `HKCU\Environment` and PowerShell profile lines. Running processes keep old values |
 | Shell and dev-server process patterns | Disabled: names cannot tie them to a tool ([zvi-code/aictl#3](https://github.com/zvi-code/aictl/issues/3)) |
 | `--backtrace PID` | Not available (uses macOS `sample` / Linux `eu-stack`) |

@@ -158,6 +158,8 @@ def _summary(s: dict[str, Any]) -> str:
 
 def _detail_nodes(s: dict[str, Any]) -> list[Node]:
     out: list[Node] = []
+    if s.get("folder"):
+        out.append(Node(f"folder {s['folder']} ({s.get('artifact_count', 0)} files, {fmt_bytes(s.get('artifact_bytes'))})"))
     ctx = s["memory"]["context"]
     mem = [Node(f"process rss {fmt_bytes(s['rss_bytes'])}" + (f" ({s['na']['process']})" if "process" in s["na"] else ""))]
     usage = f"context in use {fmt_num(ctx['current_tokens'])} of {fmt_num(ctx['token_limit'])} tokens"

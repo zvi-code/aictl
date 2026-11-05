@@ -34,6 +34,10 @@ def ps(target, tool, include_ended, as_json):
     doc = Collector().collect(tool=tool, include_ended=include_ended, target=target)
     if target and not doc["tools"]:
         raise click.ClickException(f"No session or AI tool process matches {target!r}")
+    if target:
+        from ..observe.sessions import annotate_observed
+
+        annotate_observed(doc)
     if as_json:
         click.echo(json.dumps(doc, indent=2))
         return
