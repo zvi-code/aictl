@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 
 from ..data.model_pricing import context_window_for, resolve_pricing
 from ..data.provenance import combine_cost_quality, combine_tokens_quality, row_provenance
+from ..ingesters._common import decode_file_uri, project_key
 from ..ingesters.transcript_usage import local_day
 from .analytics import compute_usage_summary, window_sessions
 from ..data.token_usage import TokenUsage
@@ -102,8 +103,8 @@ def _match_live_session(profile: dict, live_sessions: list[dict]) -> dict | None
         if (
             p_workspace
             and l_workspace
-            and p_workspace != l_workspace
-            and p_workspace not in (live.get("workspaces") or [])
+            and project_key(p_workspace) != project_key(l_workspace)
+            and project_key(p_workspace) not in {project_key(w) for w in (live.get("workspaces") or [])}
         ):
             continue
         overlap = min(p_end, l_end) - max(p_start, l_start)
@@ -1037,6 +1038,7 @@ class _APIHandlersMixin:
                     "tool": row.get("tool", ""),
                     "project": row.get("project_path") or "",
                     "model": row.get("model") or "",
+                    "billing_unit": prov["billing_unit"],
                     "cost_usd": prov["cost_usd"],
                     "cost_quality": prov["cost_quality"],
                     "cost_reason": prov["cost_reason"],
@@ -1091,12 +1093,14 @@ class _APIHandlersMixin:
                     ev.ts,
                 )
 
+        # Grouped by comparison key so spellings of one path stay one row.
         by_project: dict[str, list[dict]] = {}
         for s in sessions:
-            by_project.setdefault(s["project"] or "(unknown)", []).append(s)
+            by_project.setdefault(project_key(s["project"]) or "(unknown)", []).append(s)
 
         result = []
-        for proj, group in by_project.items():
+        for key, group in by_project.items():
+            proj = decode_file_uri(next((s["project"] for s in group if s["project"]), "")) or key
             tokens = {k: sum(s[k] for s in group) for k in _USAGE_TOKEN_KEYS}
             priced = [s["cost_usd"] for s in group if s["cost_usd"] is not None]
             daily: dict[str, dict] = {}
@@ -1118,6 +1122,10 @@ class _APIHandlersMixin:
                     "unpriced_models": sorted({m for s in group for m in s["unpriced_models"]}),
                     "tokens_source": sorted({s["tokens_source"] for s in group}),
                     "tokens_quality": combine_tokens_quality({s["tokens_quality"] for s in group}),
+                    "billing_unit": "ai_credits" if any(s.get("billing_unit") for s in group) else "",
+                    "billing_amount": (sum(s.get("billing_amount") or 0.0 for s in group) or None),
+                    "premium_requests": (sum(s.get("premium_requests") or 0.0 for s in group) or None),
+                    "estimated_list_usd": (sum(s.get("estimated_list_usd") or 0.0 for s in group) or None),
                     "pricing_models": sorted(pricing_models),
                     "daily": [{"date": d, **v} for d, v in sorted(daily.items())],
                 }
@@ -1540,6 +1548,10 @@ class _APIHandlersMixin:
                                 "cost_quality": s.get("cost_quality"),
                                 "cost_reason": s.get("cost_reason"),
                                 "unpriced_models": s.get("unpriced_models") or [],
+                                "billing_unit": s.get("billing_unit") or "",
+                                "billing_amount": s.get("billing_amount"),
+                                "premium_requests": s.get("premium_requests"),
+                                "estimated_list_usd": s.get("estimated_list_usd"),
                                 "tokens_source": s.get("tokens_source"),
                                 "tokens_quality": s.get("tokens_quality"),
                                 "tokens_reason": s.get("tokens_reason"),

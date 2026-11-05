@@ -15,7 +15,7 @@ import time
 from datetime import datetime
 
 from ..data.model_pricing import PRICING_AS_OF, PRICING_SOURCES, context_window_for
-from ..data.provenance import combine_cost_quality, combine_tokens_quality
+from ..data.provenance import COPILOT_COST_REASON, USD_PER_AI_CREDIT, combine_cost_quality, combine_tokens_quality
 from ..ingesters.transcript_usage import local_day
 
 logger = logging.getLogger(__name__)
@@ -384,6 +384,7 @@ def _compute_files(db, since: float, until: float) -> dict:
     return {"memory_timeline": memory_timeline, "memory_events": memory_events}
 
 
+CLOUD_ONLY_TOOLS = ("copilot365",)
 _TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens")
 
 
@@ -425,6 +426,10 @@ def window_sessions(db, since: float, until: float | None = None) -> tuple[list[
             "cost_quality": u["cost_quality"],
             "cost_reason": u["cost_reason"],
             "unpriced_models": u["unpriced_models"],
+            "billing_unit": u["billing_unit"],
+            "billing_amount": (sum(d.get("billing_amount", 0.0) for d in days.values()) or None) if u["billing_unit"] else None,
+            "premium_requests": u["premium_requests"] or None,
+            "estimated_list_usd": (round(sum(d.get("estimated_list_usd", 0.0) for d in days.values()), 6) or None) if u["billing_unit"] else None,
             "requests": sum(m.get("requests", 0) for d in days.values() for m in d.get("models", {}).values()),
         }
         for key in _TOKEN_KEYS:
@@ -460,6 +465,10 @@ def window_sessions(db, since: float, until: float | None = None) -> tuple[list[
                 "cost_quality": p.get("cost_quality", "unknown"),
                 "cost_reason": p.get("cost_reason", ""),
                 "unpriced_models": p.get("unpriced_models") or [],
+                "billing_unit": p.get("billing_unit") or "",
+                "billing_amount": p.get("billing_amount"),
+                "premium_requests": p.get("premium_requests"),
+                "estimated_list_usd": p.get("estimated_list_usd"),
                 **{k: p.get(k, 0) or 0 for k in _TOKEN_KEYS},
             }
         )
@@ -471,7 +480,21 @@ def _rollup(sessions: list[dict]) -> dict:
     priced = [s["cost_usd"] for s in sessions if s["cost_usd"] is not None]
     unpriced = sorted({m for s in sessions for m in s["unpriced_models"]})
     cost_quality = combine_cost_quality({s["cost_quality"] for s in sessions})
+    credits_rows = [s for s in sessions if s.get("billing_unit")]
+    credit_amounts = [s["billing_amount"] for s in credits_rows if s.get("billing_amount") is not None]
+    premium = [s["premium_requests"] for s in credits_rows if s.get("premium_requests") is not None]
+    estimates = [s["estimated_list_usd"] for s in credits_rows if s.get("estimated_list_usd") is not None]
+    billing = {
+        # ai_credits as Copilot reports them. billing_usd_value is credits x $0.01:
+        # consumption value, which a plan allowance may cover, so not an invoice.
+        "billing_unit": "ai_credits" if credits_rows else "",
+        "billing_amount": round(sum(credit_amounts), 4) if credit_amounts else None,
+        "billing_usd_value": round(sum(credit_amounts) * USD_PER_AI_CREDIT, 4) if credit_amounts else None,
+        "premium_requests": round(sum(premium), 2) if premium else None,
+        "estimated_list_usd": round(sum(estimates), 4) if estimates else None,
+    }
     return {
+        **billing,
         "sessions": len(sessions),
         "requests": sum(s["requests"] for s in sessions),
         "turns": sum(s["turns"] for s in sessions),
@@ -484,7 +507,11 @@ def _rollup(sessions: list[dict]) -> dict:
         "cost_reason": (
             "no list price for: " + ", ".join(unpriced)
             if unpriced
-            else "list price x tokens; plan or partner billing may differ"
+            else (
+                COPILOT_COST_REASON
+                if credits_rows
+                else "list price x tokens; plan or partner billing may differ"
+            )
         ),
         "unpriced_models": unpriced,
         "tokens_source": sorted({s["tokens_source"] for s in sessions}),
@@ -508,9 +535,12 @@ def compute_usage_summary(db, since: float, until: float | None = None) -> dict:
                     for k in _TOKEN_KEYS:
                         m[k] += v.get(k, 0)
                     m["cost_usd"] += v.get("cost_usd", 0.0)
+                    m["billing_amount"] = (m.get("billing_amount") or 0.0) + v.get("billing_amount", 0.0)
         unpriced = {m for s in group for m in s["unpriced_models"]}
+        bills_credits = any(s.get("billing_unit") for s in group)
         for m in by_model.values():
-            m["cost_usd"] = None if m["model"] in unpriced else round(m["cost_usd"], 4)
+            m["cost_usd"] = None if bills_credits or m["model"] in unpriced else round(m["cost_usd"], 4)
+            m["billing_amount"] = round(m["billing_amount"], 4) if m.get("billing_amount") else None
             m["context_window"] = context_window_for(m["model"])
         tools.append(
             {"tool": tool, **_rollup(group), "by_model": sorted(by_model.values(), key=lambda m: -m["requests"])}
@@ -531,5 +561,11 @@ def compute_usage_summary(db, since: float, until: float | None = None) -> dict:
         "totals": _rollup(sessions) if sessions else None,
         "daily": [daily[k] for k in sorted(daily)],
         "ignored_rows": ignored,
+        # Cloud-only tools leave nothing local to count: not available, never 0.
+        "not_available": [
+            {"tool": t, "reason": "cloud-only tool with no local usage data"}
+            for t in CLOUD_ONLY_TOOLS
+            if t not in {x["tool"] for x in tools}
+        ],
         "pricing": {"as_of": PRICING_AS_OF, "sources": list(PRICING_SOURCES)},
     }

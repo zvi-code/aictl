@@ -401,7 +401,7 @@ class TestMergeAcrossSources:
         assert sorted(r["output_tokens"] for r in rows) == [30, 100]
 
     def test_session_without_a_transcript_is_labelled_partial(self, db):
-        db.upsert_session(SessionRow(session_id=COPILOT_SID, tool="copilot-vscode", source="hook", started_at=NOW - 100, model="gpt-6.1-sol", input_tokens=1000))
+        db.upsert_session(SessionRow(session_id=COPILOT_SID, tool="codex-cli", source="hook", started_at=NOW - 100, model="gpt-6.1-sol", input_tokens=1000))
         row = db.get_session(COPILOT_SID)
         assert (row["tokens_source"], row["tokens_quality"]) == ("hook", "partial")
         assert row["cost_quality"] == "estimated"

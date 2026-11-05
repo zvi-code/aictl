@@ -24,6 +24,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from ..data.model_pricing import cost_usd as usd_cost_of
+from ..data.provenance import COPILOT_COST_REASON
 from ..data.schema import load_telemetry_sources
 from ..fsutil import safe_glob, safe_iterdir
 from ..platforms import (
@@ -353,7 +354,7 @@ def parse_claude_telemetry(
     stats_file = claude_global_dir() / "stats-cache.json"
     if stats_file.is_file():
         try:
-            data = json.loads(stats_file.read_text(errors="replace"))
+            data = json.loads(stats_file.read_text(encoding="utf-8", errors="replace"))
             report.total_sessions = int(data.get("totalSessions", 0))
             report.total_messages = int(data.get("totalMessages", 0))
             # Claude Code refreshes this cache rarely, so it can lag by months.
@@ -440,7 +441,7 @@ def _first_int(d: dict, *keys: str) -> int:
 def _iter_jsonl(path: Path) -> Iterator[dict]:
     """Yield parsed JSON objects from a JSONL file. Never raises."""
     try:
-        for line in path.read_text(errors="replace").splitlines():
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             if line.strip():
                 try:
                     yield json.loads(line)
@@ -493,7 +494,7 @@ def _parse_claude_active_session(root: Path, report: ToolTelemetryReport) -> Non
 
     # Read last 500 lines (tail) to catch errors + recent tokens
     try:
-        text = latest.read_text(errors="replace")
+        text = latest.read_text(encoding="utf-8", errors="replace")
         lines = text.splitlines()
         tail = lines[-500:] if len(lines) > 500 else lines
         # Streaming writes one line per content block, each repeating the
@@ -583,6 +584,8 @@ def parse_copilot_telemetry(
         return None
 
     report = ToolTelemetryReport(tool=tool, source=source, confidence=confidence)
+    # At most 10 sessions from 7 days: a sample, not a total. /api/usage has totals.
+    report.token_quality = "partial"
 
     # Find recent session directories (modified in last 7 days).
     # Stat once per entry and sort on the cached value — directories can
@@ -620,10 +623,6 @@ def parse_copilot_telemetry(
 def usd_cost(model: str, classes: tuple[int, int, int, int]) -> float | None:
     """List-price USD for (input, output, cache_read, cache_write), or None if unknown."""
     return usd_cost_of(model, *classes)
-
-
-def mu_delta(usage: dict, read: int, write: int) -> tuple[int, int, int, int]:
-    return (max(0, int(usage.get("inputTokens", 0)) - read - write), int(usage.get("outputTokens", 0)), read, write)
 
 
 def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> None:
@@ -664,12 +663,7 @@ def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> Non
             rec["cache_creation_tokens"] += write
             rec["requests"] += 1
             rec["premium_requests"] += float(usage.get("cost", 0) or 0)
-            cost = usd_cost(model, mu_delta(usage, read, write))
-            if cost is None:
-                report.cost_quality = "unknown"
-                report.cost_reason = f"no list price for: {model}"
-            else:
-                rec["cost_usd"] += cost
+            report.cost_reason = COPILOT_COST_REASON
 
         # session.shutdown has comprehensive modelMetrics
         elif event_type == "session.shutdown":
@@ -733,12 +727,7 @@ def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> Non
                 mu["requests"] += req_count
                 # requests.cost is premium requests (a count), not dollars.
                 mu["premium_requests"] += float(req_data.get("cost", 0))
-                cost = usd_cost(model, mu_delta(usage, read, write))
-                if cost is None:
-                    report.cost_quality = "unknown"
-                    report.cost_reason = f"no list price for: {model}"
-                else:
-                    mu["cost_usd"] += cost
+                report.cost_reason = COPILOT_COST_REASON
 
                 # Detect potential timeouts: high latency per request
                 if req_count > 0 and api_dur > 0:
@@ -796,9 +785,6 @@ def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> Non
             mb["requests"] += mu["requests"]
             mb["cost_usd"] += mu["cost_usd"]
             mb["premium_requests"] = mb.get("premium_requests", 0.0) + mu["premium_requests"]
-        if report.cost_usd and report.cost_quality != "unknown":
-            report.cost_quality = "estimated"
-            report.cost_reason = "list price x session metrics; Copilot bills premium requests"
     else:
         report.output_tokens += fallback_output_tokens
         report.token_quality = "partial"
@@ -1001,7 +987,7 @@ def parse_continue_telemetry(
 def _parse_continue_session(sess_file: Path, report: ToolTelemetryReport) -> None:
     """Parse a single Continue session JSON for token data."""
     try:
-        data = json.loads(sess_file.read_text(errors="replace"))
+        data = json.loads(sess_file.read_text(encoding="utf-8", errors="replace"))
     except (json.JSONDecodeError, OSError):
         return
 
