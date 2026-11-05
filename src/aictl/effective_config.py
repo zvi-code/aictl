@@ -62,8 +62,8 @@ _FAMILY_WORDS = {key.split("-")[1] for key in MODEL_PRICING if key.startswith("c
 _SECRET_KEY_RE = re.compile(r"token|secret|password|passwd|credential|cookie|api.?key|auth(?!or)", re.I)
 
 _REPO_UNVERIFIED = (
-    "The config reference puts repository settings above user settings in general. The model reference names "
-    "only the user file, and the installed CLI's startup resolver reads the user file."
+    "GitHub Copilot CLI config directory reference: the settings table lists model as repo-overridable, "
+    "repository replaces user, and local replaces repository."
 )
 _DESKTOP_UNVERIFIED = "No published order for the desktop app. It shares this directory with the CLI, so the CLI order is assumed."
 
@@ -351,6 +351,93 @@ def _vscode_setting_pins(project: Path, env: dict[str, str]) -> tuple[list[Model
     return pins, restrictions
 
 
+_PICKER_KEY_PREFIX = "chat.currentLanguageModel."
+_PICKER_BASIS = "Key names and values seen in a VS Code state.vscdb. Not documented, so a later VS Code can rename them."
+
+
+def _picker_rows(db: Path, scope: str) -> tuple[list[dict], str]:
+    """The picker's choice per chat location in one ``state.vscdb``, and its state.
+
+    Only ``chat.currentLanguageModel.*`` keys are queried; ``secret://`` keys are never touched.
+    State is ``ok``, ``absent`` (no file) or ``not readable`` (corrupt, locked or not a VS Code database).
+    """
+    if not db.is_file():
+        return [], "absent"
+    conn = None
+    try:
+        from .ingesters._common import open_readonly
+
+        conn = open_readonly(db, "effective-model")
+        if conn is None:
+            return [], "not readable"
+        raw = conn.execute("SELECT key, value FROM ItemTable WHERE key LIKE ? AND key NOT LIKE 'secret://%'", (_PICKER_KEY_PREFIX + "%",)).fetchall()
+    except Exception:  # sqlite3.Error, but also a bad row type; a locked or corrupt file must never raise
+        return [], "not readable"
+    finally:
+        if conn is not None:
+            with contextlib.suppress(Exception):
+                conn.close()
+    values = {k: (v.decode("utf-8", "replace") if isinstance(v, bytes) else str(v)) for k, v in raw}
+    rows = []
+    for key, value in sorted(values.items()):
+        location = key[len(_PICKER_KEY_PREFIX):]
+        if location.endswith(".isDefault") or not value:
+            continue
+        vendor, _, model = value.partition("/")
+        rows.append({"location": location, "value": model or value, "vendor": vendor if model else "", "key": key, "path": str(db), "scope": scope, "is_default": values.get(key + ".isDefault") == "true", "basis": _PICKER_BASIS})
+    return rows, "ok"
+
+
+def _vscode_picker(project: Path, env: dict[str, str]) -> tuple[list[dict], list[str]]:
+    """What the model picker selects, global and for this project's workspace. Not a pinned setting."""
+    from urllib.parse import unquote, urlparse
+
+    rows: list[dict] = []
+    notes: list[str] = []
+    for tree in _vscode_user_trees(env):
+        db = tree / "globalStorage" / "state.vscdb"
+        found, state = _picker_rows(db, "global")
+        rows += found
+        if state == "not readable":
+            notes.append(f"{db} is not readable.")
+        for meta in sorted(glob.glob(str(tree / "workspaceStorage" / "*" / "workspace.json"))):
+            folder = _read_json(Path(meta)).get("folder")
+            if not isinstance(folder, str) or not folder.startswith("file://"):
+                continue
+            target = unquote(urlparse(folder).path)
+            if IS_WINDOWS:
+                target = target.lstrip("/")
+            if Path(target).resolve() != project:
+                continue
+            wdb = Path(meta).parent / "state.vscdb"
+            found, state = _picker_rows(wdb, "workspace")
+            rows += found
+            if state == "not readable":
+                notes.append(f"{wdb} is not readable.")
+    return rows, notes
+
+
+def _vscode_custom_models(env: dict[str, str]) -> list[dict]:
+    """Providers and models in ``chatLanguageModels.json``: models that can be selected or added. Names only."""
+    out = []
+    for tree in _vscode_user_trees(env):
+        path = tree / "chatLanguageModels.json"
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(_read_text(path))
+        except ValueError:
+            continue
+        for entry in data if isinstance(data, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            ids = list(entry["settings"]) if isinstance(entry.get("settings"), dict) else []
+            if isinstance(entry.get("models"), list):
+                ids += [m.get("id") or m.get("name") for m in entry["models"] if isinstance(m, dict)]
+            out.append({"provider": str(entry.get("name", "")), "vendor": str(entry.get("vendor", "")), "models": [str(i) for i in ids if i], "path": str(path)})
+    return out
+
+
 # ─── Session logs ─────────────────────────────────────────────────
 
 # The wording comes from the Copilot CLI package: 'Model "x" is not available.',
@@ -495,10 +582,17 @@ def _collect_model(tool: str, project: Path, env: dict[str, str], ps_output: str
     limited: list[ModelPin] = []
     restrictions: list[dict] = []
     unverified: list[str] = []
+    extra: dict = {}
     if tool == "copilot-vscode":
         settings, restrictions = _vscode_setting_pins(project, env)
         limited.extend(settings)
-        unverified.append("The model picker's current choice is kept in VS Code state, not in a settings file, so it is not shown.")
+        picker, picker_notes = _vscode_picker(project, env)
+        extra["picker"] = picker
+        extra["custom_models"] = _vscode_custom_models(env)
+        extra["picker_notes"] = picker_notes
+        if not picker:
+            unverified.append("The model picker's choice was not found in VS Code state, so it is not shown.")
+        unverified.append("Picker keys come from the state.vscdb of one installed VS Code. They are not documented.")
     else:
         desktop = tool == "copilot-desktop"
         if not desktop:
@@ -506,13 +600,13 @@ def _collect_model(tool: str, project: Path, env: dict[str, str], ps_output: str
                 session.append(ModelPin(tool, "--model", model, "flag", f"process:{pid}", 0, 10, False, why_in_effect(tool, "flag", False)))
             session.extend(_env_pins(tool, env))
         for rel, scope, rank in ((".github/copilot/settings.local.json", "repo-local", 30), (".github/copilot/settings.json", "repo", 31)):
-            found, per_agent = _settings_pins(tool, project, project / rel, scope, rank, verified=False, basis=_REPO_UNVERIFIED)
+            found, per_agent = _settings_pins(tool, project, project / rel, scope, rank, verified=True, basis=_REPO_UNVERIFIED)
             session.extend(found)
             limited.extend(per_agent)
         found, per_agent = _settings_pins(tool, project, home / "settings.json", "user", 40, verified=not desktop, basis=_DESKTOP_UNVERIFIED if desktop else "CLI model reference.")
         session.extend(found)
         limited.extend(per_agent)
-        unverified.append("MDM managed settings are a documented baseline below user settings. Their location is not published, so they are not read.")
+        unverified.append("MDM managed settings are a documented baseline below user settings. The documented files are managed-settings.json under /Library/Application Support/GitHubCopilot, %ProgramFiles%\\GitHubCopilot and /etc/github-copilot. They are not read. planModel is in no reference.")
     unverified.append("An organization's model allow-list is held by the service. It shows here only as an error in session logs.")
 
     requests: list[dict] = []
@@ -532,7 +626,7 @@ def _collect_model(tool: str, project: Path, env: dict[str, str], ps_output: str
             requests.append({"kind": "instruction", "name": Path(path).name, "value": value, "values": [value], "path": path, "line": number, "in_project": inside})
 
     session.sort(key=lambda p: p.rank)
-    return {"session": session, "limited": limited, "requests": requests, "restrictions": restrictions, "unverified": unverified}
+    return {"session": session, "limited": limited, "requests": requests, "restrictions": restrictions, "unverified": unverified, **extra}
 
 
 def _overrides_of(winner: ModelPin | None, others: list[ModelPin]) -> list[dict]:
@@ -577,6 +671,9 @@ def effective_model(project: str | Path | None = None, tool: str = "copilot-cli"
         "conflicts": conflicts,
         "restrictions": found["restrictions"],
         "unverified": found["unverified"],
+        "picker": found.get("picker", []),
+        "picker_notes": found.get("picker_notes", []),
+        "custom_models": found.get("custom_models", []),
     }
 
 
@@ -644,6 +741,23 @@ def _model_findings_for(tool: str, eff: dict, sessions: list[SessionFacts]) -> l
     candidates = eff["candidates"]
     pin = candidates[0] if candidates else None
     limited = eff["limited"]
+    panel = next((r for r in eff.get("picker", []) if r["location"] == "panel"), None)
+    if panel and is_pin(panel["value"]):
+        for row in limited:
+            if is_pin(row["value"]) and not same_model(row["value"], panel["value"]):
+                out.append(
+                    Finding(
+                        rule="model.differs-from-picker",
+                        severity="medium",
+                        tool=tool,
+                        path=row["path"],
+                        line=row["line"],
+                        snippet=f"{row['setting']} = {row['value']} at {_at(row['path'], row['line'])}; picker selects {panel['value']} ({panel['scope']}, {panel['path']})",
+                        why="The picker's selection and this setting or agent file ask for different models. A setting applies to its own feature or agent, the picker to the chat panel.",
+                        action="Align the two, or confirm the difference is intended.",
+                        tools=[tool],
+                    )
+                )
     if pin and is_pin(pin["value"]):
         if pin["scope"] != "flag" and not pin["in_project"]:
             out.append(
@@ -674,7 +788,7 @@ def _model_findings_for(tool: str, eff: dict, sessions: list[SessionFacts]) -> l
         for user in user_pins[:1]:
             if is_pin(repo["value"]) and is_pin(user["value"]) and not same_model(repo["value"], user["value"]):
                 request = {"values": [repo["value"]], "path": repo["path"], "line": repo["line"]}
-                out.append(_conflict_finding(tool, request, user["value"], user["path"], user["line"], f"The repository and the user file pin different models. {_REPO_UNVERIFIED} So which one runs is not confirmed.", "Remove one of the two pins."))
+                out.append(_conflict_finding(tool, request, user["value"], user["path"], user["line"], f"The repository and the user file pin different models. {_REPO_UNVERIFIED}", "Remove one of the two pins."))
     by_agent = {p["applies"].split(":", 1)[1]: p for p in limited if p["applies"].startswith("subagent:")}
     for request in eff["requests"]:
         pin_for = by_agent.get(request["name"]) if request["kind"] == "agent-frontmatter" else None
@@ -882,7 +996,7 @@ def inside_windows(path: str, root: str) -> bool:
     return left == right or left.startswith(right.rstrip("\\") + "\\")
 
 
-_VSCODE_TREE_FILES = ("settings.json", "mcp.json", "chatLanguageModels.json", r"prompts\*.prompt.md", r"globalStorage\github.copilot-chat\*-agent\*.agent.md", r"profiles\<id>\settings.json")
+_VSCODE_TREE_FILES = ("settings.json", "mcp.json", "chatLanguageModels.json", r"globalStorage\state.vscdb", r"workspaceStorage\<hash>\state.vscdb", r"prompts\*.prompt.md", r"globalStorage\github.copilot-chat\*-agent\*.agent.md", r"profiles\<id>\settings.json")
 _COPILOT_HOME_FILES = ("settings.json", "config.json", "copilot-instructions.md", "mcp-config.json", "permissions-config.json", r"agents\*.md", r"instructions\**\*.instructions.md", "session-state")
 _PS_PROFILE = r"PowerShell\Microsoft.PowerShell_profile.ps1"
 _PS5_PROFILE = r"WindowsPowerShell\Microsoft.PowerShell_profile.ps1"
@@ -969,7 +1083,8 @@ def windows_locations(env: dict[str, str], project: str = "", *, list_dir: Calla
     for name in _COPILOT_HOME_FILES:
         note = "Ignored while COPILOT_HOME is set." if get("COPILOT_HOME") else ""
         add(f"copilot-{name}", rf"%USERPROFILE%\.copilot\{name}", "user", "copilot-cli", True, note)
-    add("programdata-copilot", r"%PROGRAMDATA%\GitHub Copilot\settings.json", "machine", "copilot-cli", False, "MDM settings are documented, but no path is published. This is a place to look, not a known location.")
+    add("mdm-copilot-managed-settings", r"%ProgramFiles%\GitHubCopilot\managed-settings.json", "machine", "copilot-cli", True, "Documented MDM file in the Copilot CLI config reference. Registry alternative: HKLM\\SOFTWARE\\Policies\\GitHubCopilot.")
+    add("registry-copilot-policy", r"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\GitHubCopilot", "machine-policy", "copilot-cli", True, "Documented MDM registry key. Registry keys are not files.", expanded=r"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\GitHubCopilot")
     add("programdata-vscode", r"%PROGRAMDATA%\Microsoft\VSCode\policy.json", "machine", "copilot-vscode", False)
     for base in (r"%USERPROFILE%\Documents", r"%OneDrive%\Documents", r"%OneDriveCommercial%\Documents", r"%OneDriveConsumer%\Documents", r"%USERPROFILE%\OneDrive\Documents"):
         for profile in (_PS_PROFILE, _PS5_PROFILE):
