@@ -4,6 +4,8 @@ import { SnapContext } from '../context.js';
 import { COLORS, fmtPct, fmtSz, esc } from '../utils.js';
 import ProcRow from './ProcRow.js';
 import PanelState from './ui/PanelState.js';
+import ToolScopeEmpty from './ui/ToolScopeEmpty.js';
+import { isFiltered } from '../utils/toolScope.js';
 
 function ProcToolGroup({tool, label, procs, maxMem}) {
   const [isOpen, setOpen] = useState(false);
@@ -103,7 +105,7 @@ function CoreBars({perCore}) {
 }
 
 export default function TabProcesses() {
-  const {snap: s} = useContext(SnapContext);
+  const {snap: s, enabledTools = null} = useContext(SnapContext);
   if(!s) return null;
   const byTool = [];
   s.tools.forEach(t=>{
@@ -111,6 +113,7 @@ export default function TabProcesses() {
     const procs = liveProcs.length > 0 ? liveProcs : t.processes;
     if(procs.length) byTool.push({tool:t.tool, label:t.label, procs, hasTree: liveProcs.length > 0});
   });
+  if(!byTool.length && isFiltered(enabledTools)) return html`<${ToolScopeEmpty} enabledTools=${enabledTools} snap=${s} what="processes"/>`;
   if(!byTool.length) return html`<${PanelState} status="empty" emptyTitle="No AI tool processes detected"
     emptyHint="Start a tool, or widen the tool filter in the header. Check the collector if tools are running."
     emptyFix="aictl doctor"/>`;

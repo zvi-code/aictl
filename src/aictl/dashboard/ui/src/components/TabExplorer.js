@@ -36,6 +36,8 @@ import EventsPanel from './session_detail/EventsPanel.js';
 import SessionSparklines from './SessionSparklines.js';
 import RunTrendStrip from './session_detail/RunTrendStrip.js';
 import SessionCommitsBadge from './session_detail/SessionCommitsBadge.js';
+import ToolScopeEmpty from './ui/ToolScopeEmpty.js';
+import { isFiltered } from '../utils/toolScope.js';
 import ToolTabs from './ToolTabs.js';
 import SessionTabs from './session_flow/SessionTabs.js';
 
@@ -99,7 +101,7 @@ export function SessionHeader({ session }) {
 }
 
 export default function TabExplorer() {
-  const { globalRange, enabledTools } = useContext(SnapContext);
+  const { globalRange, enabledTools, snap: snapForNames } = useContext(SnapContext);
   const [activeView, setActiveView] = useState(() => {
     try { return localStorage.getItem('aictl-explorer-view') || 'overview'; }
     catch { return 'overview'; }
@@ -157,6 +159,12 @@ export default function TabExplorer() {
   // keeps partial api mocks in tests from throwing.
   const filteredCount = (!loading && api.sessionTimelineFilteredCount)
     ? api.sessionTimelineFilteredCount() : 0;
+
+  if (!loading && !error && tools.length === 0 && isFiltered(enabledTools)) {
+    return html`<div class="explorer-container">
+      <${ToolScopeEmpty} enabledTools=${enabledTools} snap=${snapForNames} what="sessions in this time range"/>
+    </div>`;
+  }
 
   return html`<div class="explorer-container">
     <div class="explorer-picker">

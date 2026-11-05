@@ -3,6 +3,8 @@ import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS } from '../utils.js';
 import { Icon, ToolIcon } from './ui/index.js';
+import ToolScopeEmpty from './ui/ToolScopeEmpty.js';
+import { isFiltered } from '../utils/toolScope.js';
 
 // ─── Tooltip descriptions ────────────────────────────────────────
 // Group-scoped tips: outer key is the settings-group name the setting is
@@ -381,7 +383,7 @@ function AictlCard({snap}) {
 
 // ─── Tab ─────────────────────────────────────────────────────────
 export default function TabToolConfig() {
-  const {snap: s} = useContext(SnapContext);
+  const {snap: s, enabledTools = null} = useContext(SnapContext);
 
   const configs = useMemo(() => {
     if (!s?.tool_configs) return [];
@@ -396,12 +398,19 @@ export default function TabToolConfig() {
   }, [s]);
 
   if (!s) return html`<p class="loading-state">Loading...</p>`;
-  if (!configs.length) return html`<p class="empty-state">No tool configuration detected. Are AI tools installed?</p>`;
-
   const vscodeCfg = configs.find(c => c.tool === 'vscode');
   const toolCfgs  = configs.filter(c => c.tool !== 'vscode');
 
+  // The VS Code settings panel ("all AI tools") and the aictl card belong to no
+  // single tool, so they stay under any filter. Only the per-tool cards go.
+  if (!toolCfgs.length && !vscodeCfg && !isFiltered(enabledTools)) {
+    return html`<p class="empty-state">No tool configuration detected. Are AI tools installed?</p>`;
+  }
+
   return html`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:var(--sp-5)">
+    ${!toolCfgs.length && isFiltered(enabledTools) && html`<div style="grid-column:1/-1">
+      <${ToolScopeEmpty} enabledTools=${enabledTools} snap=${s} what="tool configuration cards"/>
+    </div>`}
     ${vscodeCfg && html`<${VsCodeCard} cfg=${vscodeCfg}/>`}
     ${toolCfgs.map(cfg => html`<${ToolConfigCard} key=${cfg.tool} cfg=${cfg} label=${labelMap[cfg.tool]||cfg.tool}/>`)}
     <${AictlCard} snap=${s}/>

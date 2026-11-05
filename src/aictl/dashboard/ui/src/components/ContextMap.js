@@ -3,6 +3,8 @@ import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { fmtK, esc, shortDir, normPath } from '../utils.js';
 import { ToolIcon } from './ui/index.js';
+import ToolScopeEmpty from './ui/ToolScopeEmpty.js';
+import { isFiltered } from '../utils/toolScope.js';
 
 const CAT_COLORS = {
   instructions: 'var(--accent)', config: 'var(--yellow)', rules: 'var(--orange)',
@@ -50,7 +52,7 @@ function shortName(path) {
 }
 
 export default function ContextMap() {
-  const { snap: s } = useContext(SnapContext);
+  const { snap: s, enabledTools = null } = useContext(SnapContext);
   const [activeTab, setActiveTab] = useState(null);
 
   const data = useMemo(() => {
@@ -127,8 +129,9 @@ export default function ContextMap() {
     return { cats, scopes, byPolicy, totalTokens, perTool, byCat, byProj, projList };
   }, [s]);
 
-  if (!data) return html`<p class="empty-state">No file data available.</p>`;
-  if (!data.totalTokens) return html`<p class="empty-state">No token data collected yet.</p>`;
+  const scopedEmpty = html`<${ToolScopeEmpty} enabledTools=${enabledTools} snap=${s} what="the context map"/>`;
+  if (!data) return isFiltered(enabledTools) ? scopedEmpty : html`<p class="empty-state">No file data available.</p>`;
+  if (!data.totalTokens) return isFiltered(enabledTools) ? scopedEmpty : html`<p class="empty-state">No token data collected yet.</p>`;
 
   const maxCatTok = Math.max(...data.cats.map(([, v]) => v.tokens), 1);
   // Log-width row bars: category totals span 6-7 orders of magnitude (a 23M

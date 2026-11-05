@@ -215,3 +215,56 @@ export function dedupeSessions(sessions) {
   }
   return out;
 }
+
+// ─── Totals recomputed for the tools the filter keeps ───────────
+// The server sends machine-wide `total_*` figures with no per-tool split. Under
+// a filter they would read as the selected tools' numbers, so the Overview
+// recomputes them from the already-filtered snapshot, with the server's own
+// formulas (DashboardSnapshot in models.py).
+
+const num = v => Number(v) || 0;
+
+/** `total_*` fields for exactly the tools in `snap.tools` (the filtered snapshot). */
+export function scopeTotals(snap) {
+  const tools = (snap?.tools || []).filter(t => t.tool !== 'aictl');
+  const files = t => (Array.isArray(t.files) ? t.files : []);
+  const sum = fn => tools.reduce((a, t) => a + fn(t), 0);
+  const liveOf = t => t.live || {};
+  const mem = snap?.agent_memory || [];
+  const tokenEst = t => num(liveOf(t).token_estimate?.input_tokens) + num(liveOf(t).token_estimate?.output_tokens);
+  return {
+    total_files: sum(t => (Array.isArray(t.files) ? t.files.length : num(t.files_count))),
+    total_tokens: sum(t => files(t).reduce((a, f) => a + num(f.tokens), 0)),
+    total_size: sum(t => files(t).reduce((a, f) => a + num(f.size), 0)),
+    total_processes: sum(t => Math.max(
+      Array.isArray(t.processes) ? t.processes.length : num(t.processes_count),
+      num(liveOf(t).pid_count))),
+    total_cpu: Math.round(sum(t => (liveOf(t).cpu_percent
+      ? num(liveOf(t).cpu_percent)
+      : (t.processes || []).reduce((a, p) => a + num(p.cpu_pct), 0))) * 10) / 10,
+    total_mem_mb: Math.round(sum(t => (t.processes || []).reduce((a, p) => a + num(p.mem_mb), 0)) * 10) / 10,
+    total_mcp_servers: (snap?.mcp_detail || []).length,
+    total_memory_tokens: mem.reduce((a, m) => a + num(m.tokens), 0),
+    total_live_sessions: sum(t => num(liveOf(t).session_count)),
+    total_live_estimated_tokens: sum(tokenEst),
+    total_live_outbound_rate_bps: Math.round(sum(t => num(liveOf(t).outbound_rate_bps)) * 100) / 100,
+    total_live_inbound_rate_bps: Math.round(sum(t => num(liveOf(t).inbound_rate_bps)) * 100) / 100,
+  };
+}
+
+/**
+ * History series summed over the selected tools, from `history.by_tool`.
+ * Only cpu, mem_mb and tokens have a per-tool series; every other key is null,
+ * meaning "no per-tool trend", never a made-up flat line.
+ */
+export function scopeHistory(history, enabledTools) {
+  if (!history || !Array.isArray(enabledTools)) return history;
+  const by = history.by_tool || {};
+  const ids = enabledTools.filter(id => by[id]?.ts?.length);
+  const stamps = [...new Set(ids.flatMap(id => by[id].ts))].sort((a, b) => a - b);
+  const series = key => stamps.map(ts => ids.reduce((acc, id) => {
+    const i = by[id].ts.indexOf(ts);
+    return acc + (i >= 0 ? num(by[id][key]?.[i]) : 0);
+  }, 0));
+  return { ts: stamps, cpu: series('cpu'), mem_mb: series('mem_mb'), tokens: series('tokens'), by_tool: by };
+}

@@ -150,19 +150,19 @@ export function ModelPinsRows({ models }) {
   </div>`;
 }
 
-function HealthPanel({ snap, connected, otelActive, alerts, selfStatus, onOpenTab }) {
+function HealthPanel({ snap, enabledTools, connected, otelActive, alerts, selfStatus, onOpenTab }) {
   const models = usePolledResource(() => api.getEffectiveModels(), [], { pollMs: 60000 });
   const hooks = usePolledResource(() => api.getHooksStatus(), [], { pollMs: 60000 });
   const quality = usePolledResource(() => api.getDataQuality(), [], { pollMs: 60000 });
-  const hidden = usePolledResource(loadHiddenContextSummary, [], { pollMs: 60000 });
+  const hidden = usePolledResource(() => loadHiddenContextSummary(enabledTools), [enabledTools], { pollMs: 60000 });
   const snapAgeS = snap?.timestamp ? Date.now() / 1000 - snap.timestamp : null;
   const storage = useMemo(() => storageSummary(selfStatus), [selfStatus]);
   // undefined until the first check settles, so nothing flashes "not checked".
   const hiddenContext = hidden.updatedAt ? hidden.data : undefined;
   const runningTools = useMemo(() => new Set((snap?.sessions || []).map(row => row.tool)), [snap]);
   const issues = useMemo(() => deriveIssues({
-    connected, snapAgeS, hooks: hooks.data, quality: quality.data, otelActive, alerts, storage, runningTools, hiddenContext,
-  }), [connected, snapAgeS, hooks.data, quality.data, otelActive, alerts, storage, runningTools, hiddenContext]);
+    connected, snapAgeS, hooks: hooks.data, quality: quality.data, otelActive, alerts, storage, runningTools, hiddenContext, enabledTools,
+  }), [connected, snapAgeS, hooks.data, quality.data, otelActive, alerts, storage, runningTools, hiddenContext, enabledTools]);
   const errors = issues.filter(i => i.level === 'error').length;
   const warns = issues.filter(i => i.level === 'warn').length;
   const loading = hooks.loading && !hooks.data && quality.loading && !quality.data;
@@ -203,7 +203,7 @@ export default function OverviewNow({
     <${RunningPanel} snap=${snap} enabledTools=${enabledTools}
       onOpenSession=${onOpenSession} onShowAll=${() => onOpenTab('live')}/>
     <${CostPanel} onOpenBudget=${() => onOpenTab('budget')} cloudScope=${scopeIsCloudOnly(snap, enabledTools)} enabledTools=${enabledTools} snap=${snap}/>
-    <${HealthPanel} snap=${snap} connected=${connected} otelActive=${otelActive}
+    <${HealthPanel} snap=${snap} enabledTools=${enabledTools} connected=${connected} otelActive=${otelActive}
       alerts=${alerts} selfStatus=${selfStatus} onOpenTab=${onOpenTab}/>
   </div>`;
 }

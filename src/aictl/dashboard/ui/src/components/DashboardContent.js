@@ -2,7 +2,7 @@
 // Extracted from app.js in the hooks refactor — pure presentation driven
 // by {snap, history}; no cross-cutting state. Layout configuration comes
 // from layoutConfig.js.
-import { useState, useCallback } from 'preact/hooks';
+import { useState, useCallback, useMemo } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { LAYOUT } from '../layoutConfig.js';
 import { fmtValue, evalExpr, SC, esc, toolColor } from '../utils.js';
@@ -10,6 +10,9 @@ import ChartCard from './ChartCard.js';
 import Metric from './Metric.js';
 import ResourceBar from './ResourceBar.js';
 import { CoreBars } from './TabProcesses.js';
+import ToolScopeEmpty from './ui/ToolScopeEmpty.js';
+import { scopeHistory, scopeTotals } from '../selectors.js';
+import { isFiltered } from '../utils/toolScope.js';
 
 function McpPanel({ mcpDetail }) {
   if (!mcpDetail?.length)
@@ -45,7 +48,21 @@ function McpMetric({ label, value, mcpDetail }) {
   </div>`;
 }
 
-export default function DashboardContent({ snap, history }) {
+// Series that exist per tool (history.by_tool). Others have no per-tool trend.
+const PER_TOOL_SERIES = new Set(['cpu', 'mem_mb', 'tokens']);
+
+/**
+ * `snap` is already filtered to the selected tools. Its `total_*` fields are
+ * still the server's machine-wide sums, so under a filter they are recomputed
+ * from the kept tools. CPU core bars are the machine's hardware and say so.
+ */
+export default function DashboardContent({ snap: rawSnap, history: rawHistory, enabledTools = null }) {
+  const filtered = isFiltered(enabledTools);
+  const snap = useMemo(
+    () => (filtered && rawSnap ? { ...rawSnap, ...scopeTotals(rawSnap) } : rawSnap),
+    [filtered, rawSnap],
+  );
+  const history = useMemo(() => scopeHistory(rawHistory, enabledTools), [rawHistory, enabledTools]);
   const [expanded, setExpanded] = useState(() => {
     try { return localStorage.getItem('aictl-header-expanded') !== 'false'; } catch { return true; }
   });
@@ -57,9 +74,14 @@ export default function DashboardContent({ snap, history }) {
     });
   }, []);
 
-  const sparkFor = (key) => (history?.ts && history.ts.length >= 2 ? [history.ts, history[key]] : null);
+  const sparkFor = (key) => (history?.ts && history.ts.length >= 2 && (!filtered || PER_TOOL_SERIES.has(key))
+    ? [history.ts, history[key]] : null);
   const cores = snap?.cpu_cores || 1;
   const exprVars = { cores };
+
+  if (filtered && !(snap?.tools || []).some(t => t.tool !== 'aictl')) {
+    return html`<${ToolScopeEmpty} enabledTools=${enabledTools} snap=${snap} what="the overview totals"/>`;
+  }
 
   return html`
     <div class="grid-sparklines">
@@ -81,7 +103,7 @@ export default function DashboardContent({ snap, history }) {
     <div class=${expanded ? 'header-sections header-sections--expanded' : 'header-sections header-sections--collapsed'}>
       <div class="mb-sm header-top-row">
         <div>
-          <div class="metric-group-label">CPU Cores</div>
+          <div class="metric-group-label">CPU Cores${filtered ? ' (whole machine, all tools)' : ''}</div>
           <${CoreBars} perCore=${snap?.cpu_per_core || []}/>
           <div style="margin-top:var(--sp-3)"><${ResourceBar} snap=${snap} mode="traffic"/></div>
         </div>

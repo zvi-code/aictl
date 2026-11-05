@@ -204,6 +204,15 @@ A parent folder of many projects works, but costs more:
 - aictl lists the first 2,000 config files from hidden folders, and keeps samples for the 500 largest files of each tool. Totals per tool still count every file it found.
 - Changes under `.git`, `node_modules`, `target`, `bin`, `obj`, `build` and `dist` do not count as file activity.
 
+### Filter by tool
+
+The tool filter in the top bar applies to every screen. `Copilot VS Code` also keeps the `copilot` settings card,
+because that card holds the VS Code settings. These stay visible because they belong to no single tool: the
+VS Code settings panel, the aictl monitoring card, Project Environment, Collector Health and the monitored folders.
+
+Analytics and the context-window figures on Budget have no per-tool data yet, so aictl labels them as covering all
+tools. A note on the screen counts rows that are hidden because their tool is not in the filter list.
+
 ## Connect Copilot CLI, the desktop app and VS Code
 
 Preview first. `--dry-run` writes nothing.

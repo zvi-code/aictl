@@ -3,6 +3,8 @@ import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { fmtRate, fmtK, fmtPct, fmtSz, esc, liveTokenTotal } from '../utils.js';
 import DataTable from './ui/DataTable.js';
+import ToolScopeEmpty from './ui/ToolScopeEmpty.js';
+import { isFiltered } from '../utils/toolScope.js';
 
 function num(v) { return typeof v === 'number' && !isNaN(v) ? v : 0; }
 
@@ -62,7 +64,7 @@ function renderProcesses(row) {
 }
 
 export default function TabLive() {
-  const { snap: s } = useContext(SnapContext);
+  const { snap: s, enabledTools = null } = useContext(SnapContext);
   if (!s) return html`<p class="loading-state" role="status">Loading live data...</p>`;
 
   const liveTools = s.tools.filter(t => t.live).map(t => {
@@ -84,7 +86,7 @@ export default function TabLive() {
 
   return html`<div class="live-stack">
     ${diagnostics.length > 0 && html`<div class="diag-card">
-      <h3>Collector Health</h3>
+      <h3>Collector Health <span class="text-muted" style="font-weight:400">(all collectors, not per tool)</span></h3>
       <table role="table" aria-label="Collector diagnostics">
         <thead><tr><th>Collector</th><th>Status</th><th>Mode</th><th>Detail</th></tr></thead>
         <tbody>${diagnostics.map(([name, detail]) => html`<tr key=${name}>
@@ -98,7 +100,9 @@ export default function TabLive() {
 
     <div class="diag-card">
       <h3>Tool Sessions</h3>
-      <${DataTable}
+      ${liveTools.length === 0 && isFiltered(enabledTools)
+        ? html`<${ToolScopeEmpty} enabledTools=${enabledTools} snap=${s} what="live sessions"/>`
+        : html`<${DataTable}
         ariaLabel="Live tool sessions"
         data=${liveTools}
         columns=${LIVE_COLUMNS}
@@ -107,7 +111,7 @@ export default function TabLive() {
         initialSort=${{ id: 'traffic_total', desc: true }}
         emptyState="No active AI-tool sessions detected yet."
         expandable=${{ renderSubRow: renderProcesses }}
-      />
+      />`}
     </div>
 
     <div class="diag-card">

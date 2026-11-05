@@ -9,17 +9,18 @@ import { html } from 'htm/preact';
 import { lazy, Suspense } from 'preact/compat';
 import PanelState from './ui/PanelState.js';
 import { fetchJson } from '../api.js';
+import { scopeAudit } from '../utils/auditScope.js';
 
 const loader = import.meta.glob('./HiddenContextPanel.js')['./HiddenContextPanel.js'];
 const Panel = loader ? lazy(loader) : null;
 
 /** Resolves to the summary, or null when no detector is available yet. */
-export async function loadHiddenContextSummary() {
+export async function loadHiddenContextSummary(enabledTools = null) {
   if (!loader) return null;
   const mod = await loader();
-  if (mod.getHiddenContextSummary) return mod.getHiddenContextSummary();
+  if (mod.getHiddenContextSummary) return mod.getHiddenContextSummary(enabledTools);
   try {
-    return summaryFromAudit(await fetchJson('/api/context-audit'));
+    return summaryFromAudit(scopeAudit(await fetchJson('/api/context-audit'), enabledTools));
   } catch {
     return null;
   }

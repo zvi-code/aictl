@@ -1,7 +1,11 @@
 // HiddenContextPanel — what can reach each tool's model, and what conceals itself there.
 // Self-contained: it fetches /api/context-audit and needs no props.
 import { html } from 'htm/preact';
-import { useState } from 'preact/hooks';
+import { useState, useContext, useMemo } from 'preact/hooks';
+import { SnapContext } from '../context.js';
+import { scopeAudit } from '../utils/auditScope.js';
+import { isFiltered } from '../utils/toolScope.js';
+import ToolScopeEmpty from './ui/ToolScopeEmpty.js';
 import { fetchJson } from '../api.js';
 import { useAsyncResource } from '../hooks/useAsyncResource.js';
 
@@ -149,7 +153,11 @@ function EffectiveModels({ models }) {
 export function HiddenContextPanel() {
   const [generation, setGeneration] = useState(0);
   const [showInfo, setShowInfo] = useState(false);
-  const { data, loading, error } = useAsyncResource(() => fetchJson('/api/context-audit'), [generation]);
+  const ctx = useContext(SnapContext);
+  const enabledTools = ctx?.enabledTools ?? null;
+  const { data: audit, loading, error } = useAsyncResource(() => fetchJson('/api/context-audit'), [generation]);
+  // The audit comes from the server for all tools; the filter scopes it here.
+  const data = useMemo(() => scopeAudit(audit, enabledTools), [audit, enabledTools]);
   const refresh = () => setGeneration(g => g + 1);
   const refreshButton = html`<button type="button" onClick=${refresh}>Rescan</button>`;
 
@@ -163,6 +171,10 @@ export function HiddenContextPanel() {
   }
   const sources = (data && data.sources) || [];
   const findings = (data && data.findings) || [];
+  const hadRows = !!audit && ((audit.sources || []).length || (audit.findings || []).length);
+  if (!sources.length && !findings.length && isFiltered(enabledTools) && hadRows) {
+    return html`<${ToolScopeEmpty} enabledTools=${enabledTools} snap=${ctx?.snap} what="hidden context"/>`;
+  }
   if (!sources.length && !findings.length) {
     return html`<div data-state="empty" style=${{ color: 'var(--fg2)' }}>
       No context sources found for ${(data && data.project) || 'this project'}. ${refreshButton}

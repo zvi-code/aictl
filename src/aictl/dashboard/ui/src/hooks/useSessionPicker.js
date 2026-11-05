@@ -7,6 +7,7 @@
 import { useState, useEffect, useMemo, useContext } from 'preact/hooks';
 import { SnapContext } from '../context.js';
 import { orderIdsBySessionCount } from '../utils/tools.js';
+import { isToolSelected } from '../utils/toolScope.js';
 import { dedupeSessions, findSessionRow } from '../selectors.js';
 import * as api from '../api.js';
 
@@ -25,7 +26,7 @@ import * as api from '../api.js';
  *   clear its pending stash.
  *
  * @returns {{
- *   sessions: object[],           // deduped, newest-first (all tools)
+ *   sessions: object[],           // deduped, newest-first, selected tools only
  *   loading: boolean,
  *   error: Error|null,
  *   tools: string[],              // unique tools after enabledTools filter
@@ -92,7 +93,7 @@ export default function useSessionPicker({
   }, [globalRange]);
 
   // Derive tools and per-tool sessions from the enabled-tools filter.
-  const toolMatch = (t) => enabledTools === null || enabledTools.includes(t);
+  const toolMatch = (t) => isToolSelected(t, enabledTools);
   const filteredSessions = useMemo(
     () => sessions.filter(s => toolMatch(s.tool)),
     [sessions, enabledTools],
@@ -102,10 +103,14 @@ export default function useSessionPicker({
     [filteredSessions],
   );
 
-  // Auto-select first tool (also when the active one drops out of range).
+  // Auto-select first tool (also when the active one drops out of range or out
+  // of the filter). With no tool left, nothing stays selected: a stale tool or
+  // session would keep showing data for a tool the filter excludes.
   useEffect(() => {
-    if (!activeTool && tools.length > 0) setActiveTool(tools[0]);
-    else if (activeTool && !tools.includes(activeTool) && tools.length > 0) setActiveTool(tools[0]);
+    if (tools.length === 0) {
+      if (activeTool) setActiveTool(null);
+      if (activeSessionId) setActiveSessionId(null);
+    } else if (!activeTool || !tools.includes(activeTool)) setActiveTool(tools[0]);
   }, [tools.join(',')]);
 
   const toolSessions = useMemo(
@@ -131,13 +136,15 @@ export default function useSessionPicker({
     if (!requestedSession?.sessionId) return;
     const sess = findSessionRow(sessions, requestedSession.sessionId);
     if (!sess) return; // not loaded yet — stays pending until the next fetch
+    // A session of a tool the filter excludes is not shown: drop the request.
+    if (!toolMatch(sess.tool)) { onRequestApplied?.(); return; }
     setActiveTool(sess.tool);
     setActiveSessionId(sess.session_id);
     onRequestApplied?.();
   }, [requestedSession, sessions]);
 
   return {
-    sessions, loading, error,
+    sessions: filteredSessions, loading, error,
     tools, toolSessions,
     activeTool, setActiveTool,
     activeSessionId, setActiveSessionId,

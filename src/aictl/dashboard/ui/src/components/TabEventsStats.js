@@ -9,6 +9,8 @@ import PanelState from './ui/PanelState.js';
 import { COST_ESTIMATE_NOTE, cloudOnly } from '../utils/tools.js';
 import CloudOnlyNotice from './ui/CloudOnlyNotice.js';
 import { ToolIcon } from './ui/index.js';
+import ToolScopeEmpty from './ui/ToolScopeEmpty.js';
+import { isFiltered, resolveActiveTool } from '../utils/toolScope.js';
 import * as api from '../api.js';
 
 // Render one detail value for the compact k=v row. Nested objects/arrays
@@ -35,8 +37,8 @@ function detailPretty(detail) {
 }
 
 export default function TabEventsStats() {
-  const {snap: s, globalRange} = useContext(SnapContext);
-  const [selectedTool, setTool] = useState(null);
+  const {snap: s, globalRange, enabledTools = null} = useContext(SnapContext);
+  const [pickedTool, setTool] = useState(null);
   const [events, setEvents] = useState([]);
   const [toolHistory, setToolHistory] = useState(null);
   const [expandedEvents, setExpandedEvents] = useState(() => new Set());
@@ -47,9 +49,12 @@ export default function TabEventsStats() {
       .sort((a, b) => a.label.localeCompare(b.label));
   }, [s]);
 
-  useEffect(() => {
-    if (!selectedTool && tools.length) setTool(tools[0].tool);
-  }, [tools, selectedTool]);
+  // The picked tool only counts while it is still on offer; otherwise the first
+  // selected tool shows, and no events are fetched for an unselected one.
+  const selectedTool = useMemo(
+    () => resolveActiveTool(tools.map(t => t.tool), pickedTool),
+    [tools, pickedTool],
+  );
 
   const [eventsError, setEventsError] = useState(null);
   // Fetch events when tool or global range changes
@@ -79,6 +84,7 @@ export default function TabEventsStats() {
   }, [selectedTool, globalRange]);
 
   if (!s) return html`<p class="loading-state">Loading...</p>`;
+  if (!tools.length && isFiltered(enabledTools)) return html`<${ToolScopeEmpty} enabledTools=${enabledTools} snap=${s} what="events"/>`;
 
   const tool = tools.find(t => t.tool === selectedTool);
   if (cloudOnly(tool, s)) return html`<${CloudOnlyNotice} tool=${tool}/>`;

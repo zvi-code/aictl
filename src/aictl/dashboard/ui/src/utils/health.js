@@ -2,6 +2,7 @@
 // Pure, so every issue kind and its exact fix is pinned in test/health.test.js.
 
 import { fmtSz } from '../utils.js';
+import { isFiltered, isToolSelected } from './toolScope.js';
 
 const RANK = { error: 0, warn: 1, info: 2 };
 
@@ -17,12 +18,13 @@ function toolFamily(tool) {
   return String(tool || '').split('-')[0];
 }
 
-function hookIssues(hooks, runningTools) {
+function hookIssues(hooks, runningTools, enabledTools = null) {
   if (!hooks?.tools) return [];
   const out = [];
   const port = hooks.server_port;
   const runningFamilies = runningTools ? new Set([...runningTools].map(toolFamily)) : null;
   for (const t of Object.values(hooks.tools)) {
+    if (!isToolSelected(t.tool, enabledTools)) continue;
     if (t.status === 'missing') {
       // No hooks for a tool that is not running is not a problem to act on now.
       if (runningFamilies && !runningFamilies.has(toolFamily(t.tool))) continue;
@@ -56,7 +58,8 @@ function hookIssues(hooks, runningTools) {
       });
     }
   }
-  if (hooks.total_configured > 0 && hooks.total_fired_24h === 0 && out.length === 0) {
+  // The configured/fired totals have no per-tool split, so they only speak for all tools.
+  if (!isFiltered(enabledTools) && hooks.total_configured > 0 && hooks.total_fired_24h === 0 && out.length === 0) {
     out.push({
       id: 'hooks:silent', level: 'warn',
       title: `${hooks.total_configured} hooks configured, 0 fired in 24 h`,
@@ -94,7 +97,7 @@ function qualityIssues(quality) {
  * @param {Array} h.alerts  process alerts ({level, msg})
  */
 export function deriveIssues({
-  connected, snapAgeS, hooks, quality, otelActive, alerts = [], storage = null, hiddenContext, runningTools = null,
+  connected, snapAgeS, hooks, quality, otelActive, alerts = [], storage = null, hiddenContext, runningTools = null, enabledTools = null,
 }) {
   const out = [];
   // Unseen context is listed ahead of other warnings, and the answer stays
@@ -145,7 +148,7 @@ export function deriveIssues({
       title: a.msg, detail: 'The Processes tab lists the affected PIDs.', fix: null, tab: 'procs',
     });
   }
-  out.push(...hookIssues(hooks, runningTools), ...qualityIssues(quality));
+  out.push(...hookIssues(hooks, runningTools, enabledTools), ...qualityIssues(quality));
   if (otelActive === false) {
     out.push({
       id: 'otel', level: 'info', title: 'OTel receiver has no data',
@@ -178,8 +181,7 @@ export function storageText(s) {
 
 /** Live sessions for the "running now" panel, honouring the tool filter. */
 export function runningSessions(snap, enabledTools) {
-  const rows = (snap?.sessions || []).filter(s =>
-    s.tool && (enabledTools === null || enabledTools === undefined || enabledTools.includes(s.tool)));
+  const rows = (snap?.sessions || []).filter(s => s.tool && isToolSelected(s.tool, enabledTools));
   return rows.sort((a, b) =>
     (b.cpu_percent || 0) - (a.cpu_percent || 0) || (b.last_seen_at || 0) - (a.last_seen_at || 0));
 }
