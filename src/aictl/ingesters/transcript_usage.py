@@ -23,6 +23,8 @@ Code session has no real numbers at all. Three stores are read, read-only:
     no records fall back to ``session.shutdown`` metrics, and are marked
     ``partial`` if they have neither (only assistant messages).
 
+The same pass also fills the per-call fact tables through :mod:`.call_facts`.
+
 Every token class on a :class:`SessionUsage` is disjoint: total = input + output
 + cache_read + cache_write. Cost is priced per request, because prompt-length
 tiers and dated rates apply per request. A model with no known rate makes the
@@ -43,7 +45,19 @@ from typing import Any
 
 from ..data.model_pricing import is_billable_model, request_cost_usd
 from ..data.provenance import COPILOT_COST_REASON
+from ..storage import AgentRow, RequestRow, SessionRow
 from ._common import coerce_ts, decode_file_uri, open_readonly, record_quality
+from .call_facts import (
+    ClaudeFacts,
+    CopilotFacts,
+    FactBuffer,
+    VSCodeChatFacts,
+    VSCodeDebugFacts,
+    copilot_call_key,
+    copilot_model,
+    list_price,
+    read_claude_agent_role,
+)
 from .vscode_chat_logs import default_log_dir as vscode_chat_default_log_dir
 
 log = logging.getLogger(__name__)
@@ -53,6 +67,8 @@ BACKFILL_DAYS = 30
 # A session idle this long gets ended_at = its last activity; a transcript has
 # no explicit end event, and an open row would show as live forever.
 IDLE_END_S = 900.0
+# A permission prompt older than this is shown as abandoned, not as waiting.
+PENDING_CONFIRM_MAX_AGE_S = 6 * 3600.0
 
 
 def local_day(ts: float) -> str:
@@ -366,6 +382,10 @@ class ClaudeAccumulator:
     def _is_human_turn(obj: dict, msg: dict) -> bool:
         if obj.get("isSidechain") or obj.get("isMeta") or "toolUseResult" in obj:
             return False
+        # A background task reporting back arrives as a user line, but no person sent it.
+        origin = obj.get("origin")
+        if isinstance(origin, dict) and origin.get("kind") not in (None, "", "human"):
+            return False
         content = msg.get("content")
         if isinstance(content, str):
             return True
@@ -530,8 +550,9 @@ def _is_subagent_source(source: Any) -> bool:
 class CopilotAccumulator:
     """Folds one ``events.jsonl``; a session is exactly one file."""
 
-    def __init__(self, session_id: str, tool: str = "copilot-cli") -> None:
+    def __init__(self, session_id: str, tool: str = "copilot-cli", facts: CopilotFacts | None = None) -> None:
         self.s = SessionUsage(session_id=session_id, tool=tool)
+        self.facts = facts
         self.has_records = False
         self.shutdowns: list[dict] = []
         self.assistant_messages = 0
@@ -540,6 +561,8 @@ class CopilotAccumulator:
         self._compactions: list[tuple[dict, float]] = []
 
     def feed(self, obj: dict) -> None:
+        if self.facts is not None:
+            self.facts.feed(obj)
         kind = obj.get("type")
         data = obj.get("data") if isinstance(obj.get("data"), dict) else {}
         ts = coerce_ts(obj.get("timestamp"))
@@ -627,7 +650,14 @@ class CopilotStoreReader:
     anything else in this store is a CLI session.
     """
 
-    def __init__(self, copilot_home: Path) -> None:
+    # Columns read for the per-call rows. Older stores may lack some.
+    _CALL_COLUMNS = ("agent_id", "duration_ms", "time_to_first_token_ms", "output_ttft_ms", "finish_reason")
+
+    def __init__(self, copilot_home: Path, facts: FactBuffer | None = None) -> None:
+        self.facts = facts
+        self._occurrence: dict[tuple[str, tuple[int, int, int, int]], int] = {}
+        self._cwd: dict[str, str] = {}
+        self._agents_seen: set[str] = set()
         self.store_path = copilot_home / "session-store.db"
         self.data_path = copilot_home / "data.db"
         self.sessions: dict[str, SessionUsage] = {}
@@ -648,18 +678,21 @@ class CopilotStoreReader:
         if conn is None:
             return touched
         try:
+            present = {r[1] for r in conn.execute("PRAGMA table_info(assistant_usage_events)")}
+            extra = ", ".join(c if c in present else f"NULL AS {c}" for c in self._CALL_COLUMNS)
             rows = conn.execute(
                 "SELECT id, session_id, model, input_tokens, output_tokens, cache_read_tokens,"
-                " cache_write_tokens, total_nano_aiu, created_at"
+                f" cache_write_tokens, total_nano_aiu, created_at, {extra}"
                 " FROM assistant_usage_events WHERE id > ? ORDER BY id",
                 (self._last_id,),
             )
-            for row_id, sid, model, inp, out, read, write, nano, created in rows:
+            for row_id, sid, model, inp, out, read, write, nano, created, *call in rows:
                 self._last_id = row_id
                 s = self.sessions.setdefault(sid, SessionUsage(session_id=sid, tool="copilot-cli"))
                 ts = coerce_ts(created)
                 s.touch(ts)
                 read_i, write_i = _i(read), _i(write)
+                self._add_call_fact(conn, sid, model, (_i(inp), _i(out), read_i, write_i), ts, call)
                 s.add(
                     _copilot_model(model),
                     ts,
@@ -678,6 +711,52 @@ class CopilotStoreReader:
             conn.close()
         return touched
 
+    def _add_call_fact(self, conn: sqlite3.Connection, sid: str, model: Any, tokens: tuple, ts: float, call: list) -> None:
+        """One row per call. The key matches the events file's, so a call in both stays one row."""
+        if self.facts is None:
+            return
+        if not self._cwd:
+            self._cwd = {str(i): str(c or "") for i, c in conn.execute("SELECT id, cwd FROM sessions")}
+        occurrence = self._occurrence.get((sid, tokens), 0)
+        self._occurrence[(sid, tokens)] = occurrence + 1
+        agent_id, duration, ttft, output_ttft, finish = call
+        raw, out, read, write = tokens
+        billable = max(0, raw - read - write)
+        name = copilot_model(model)
+        self.facts.add_request(
+            RequestRow(
+                dedup_key=copilot_call_key(sid, tokens, occurrence),
+                ts=ts,
+                session_id=sid,
+                agent_id=str(agent_id or ""),
+                tool="copilot-cli",
+                project_path=self._cwd.get(sid, ""),
+                model=name,
+                input_tokens=billable,
+                output_tokens=out,
+                cache_read_tokens=read,
+                cache_creation_tokens=write,
+                cost_usd=list_price(name, billable, out, read, write, 0, ts),
+                duration_ms=float(duration or 0),
+                ttft_ms=float(ttft or output_ttft or 0),
+                finish_reason=str(finish or ""),
+            )
+        )
+        if agent_id and agent_id not in self._agents_seen:
+            self._agents_seen.add(agent_id)
+            self.facts.add_agent(
+                AgentRow(
+                    agent_id=str(agent_id),
+                    session_id=sid,
+                    tool="copilot-cli",
+                    # Where the model belongs, this store sometimes has the subagent's name.
+                    task=str(model or "") if name == "unknown" else "",
+                    model="" if name == "unknown" else name,
+                    is_sidechain=1,
+                    started_at=ts,
+                )
+            )
+
     def _read_session_details(self, conn: sqlite3.Connection, touched: set[str]) -> None:
         turns = dict(conn.execute("SELECT session_id, COUNT(*) FROM turns GROUP BY session_id"))
         for sid, cwd, branch in conn.execute("SELECT id, cwd, branch FROM sessions"):
@@ -687,6 +766,10 @@ class CopilotStoreReader:
             s.project_path = s.project_path or str(cwd or "")
             s.git_branch = s.git_branch or str(branch or "")
             s.turns = max(s.turns, _i(turns.get(sid)))
+
+    def refresh_app_sessions(self, touched: set[str]) -> None:
+        """Learn which sessions are the app's, before their rows are attributed."""
+        self._read_app_sessions(touched)
 
     def _read_app_sessions(self, touched: set[str]) -> None:
         try:
@@ -746,10 +829,7 @@ def _adopt_billing(target: SessionUsage, source: SessionUsage) -> None:
             slot["billing_amount"] = values["billing_amount"]
 
 
-def _copilot_model(model: Any) -> str:
-    """The store sometimes records a sub-agent's name where the model belongs."""
-    m = str(model or "")
-    return m if m.startswith(("claude", "gpt", "gemini", "o1", "o3", "o4")) else "unknown"
+_copilot_model = copilot_model
 
 
 class VSCodeDebugLogAccumulator:
@@ -877,7 +957,13 @@ class TranscriptUsageIngester:
         self.codex_sessions = codex_sessions or home / ".codex" / "sessions"
         self.copilot_state = copilot_state or home / ".copilot" / "session-state"
         self.vscode_workspaces = vscode_workspaces or vscode_chat_default_log_dir()
-        self._store = CopilotStoreReader(self.copilot_state.parent)
+        self.facts = FactBuffer(our_store, time.time() - backfill_days * 86400)
+        self._store = CopilotStoreReader(self.copilot_state.parent, self.facts)
+        self.facts.surface = self._store.surface
+        self._claude_facts = ClaudeFacts(self.facts)
+        self._vscode_debug_facts: dict[Path, VSCodeDebugFacts] = {}
+        self._vscode_chat_facts: dict[Path, VSCodeChatFacts] = {}
+        self._desktop_marked: set[str] = set()
         self._debug_logs = VSCodeDebugLogAccumulator()
         self._chat_logs = VSCodeChatSessionAccumulator()
         self._copilot_finished: dict[str, SessionUsage] = {}
@@ -916,6 +1002,10 @@ class TranscriptUsageIngester:
         cutoff = now - self.backfill_days * 86400
         touched: dict[str, SessionUsage] = {}
         errors = 0
+        self.facts.cutoff = cutoff
+        app_ids: set[str] = set()
+        self._store.refresh_app_sessions(app_ids)
+        self._mark_desktop_sessions()
 
         def read(path: Path) -> Iterator[dict]:
             """Yield parsed lines after the file's offset, one at a time: holding
@@ -943,8 +1033,10 @@ class TranscriptUsageIngester:
 
         for path in self._changed(iter_claude_files(self.claude_projects), cutoff):
             sid = _claude_session_id(path)
+            agent_id, role = self._claude_agent(path)
             for obj in read(path):
                 self._claude.feed(sid, obj)
+                self._claude_facts.feed(sid, obj, agent_id=agent_id, role=role)
             if sid in self._claude.sessions:
                 touched[sid] = self._claude.sessions[sid]
 
@@ -959,9 +1051,13 @@ class TranscriptUsageIngester:
         copilot_ids: set[str] = set()
         for path in self._changed(self.copilot_state.glob("*/events.jsonl"), cutoff):
             sid = path.parent.name
-            cop = self._copilot.setdefault(path, CopilotAccumulator(sid))
+            cop = self._copilot.setdefault(path, CopilotAccumulator(sid, facts=CopilotFacts(sid, self.facts)))
+            if self._offsets.get(path, 0) == 0 and cop.facts is not None:
+                cop.facts.reset()
             for obj in read(path):
                 cop.feed(obj)
+            if cop.facts is not None:
+                cop.facts.finish_poll(now, PENDING_CONFIRM_MAX_AGE_S)
             # Shutdown metrics are added by finish(), which must therefore run
             # once per accumulator: a shutdown-only file starts over each time.
             if not cop.has_records and cop.shutdowns:
@@ -970,7 +1066,7 @@ class TranscriptUsageIngester:
             self._copilot_finished[sid] = cop.finish()
             copilot_ids.add(sid)
 
-        copilot_ids |= self._store.read()
+        copilot_ids |= self._store.read() | app_ids
         for sid in copilot_ids:
             touched[sid] = self._pick_copilot_source(sid)
 
@@ -978,24 +1074,38 @@ class TranscriptUsageIngester:
         for path in self._changed(self.vscode_workspaces.glob("*/GitHub.copilot-chat/debug-logs/*/*.jsonl"), cutoff):
             sid = path.parent.name
             debug_ids.add(sid)
+            debug_facts = self._debug_facts_for(path, sid)
             for obj in read(path):
                 self._debug_logs.feed(sid, path.name == "main.jsonl", obj)
+                debug_facts.feed(obj)
             usage = self._debug_logs.sessions.get(sid)
             if usage is not None:
                 usage.project_path = usage.project_path or _workspace_folder(path.parents[3])
                 touched[sid] = usage
         for path in self._changed(self.vscode_workspaces.glob("*/chatSessions/*.jsonl"), cutoff):
             sid = path.stem
-            if sid in self._debug_logs.sessions:
-                continue  # the debug log has per-request numbers for this session
+            chat_facts = self._chat_facts_for(path, sid)
+            # The debug log has per-request numbers for such a session, so the
+            # chat file only adds its prompts.
+            has_debug_usage = sid in self._debug_logs.sessions
             for obj in read(path):
-                self._chat_logs.feed(sid, obj)
+                chat_facts.feed(obj)
+                if not has_debug_usage:
+                    self._chat_logs.feed(sid, obj)
+            if has_debug_usage:
+                continue
             usage = self._chat_logs.sessions.get(sid)
             if usage is not None:
                 usage.project_path = usage.project_path or _workspace_folder(path.parents[1])
                 usage.touch(path.stat().st_mtime)
                 touched[sid] = usage
 
+        self._claude_facts.close_idle_agents(now - IDLE_END_S)
+        self._claude_facts.flush_open_agents()
+        self.facts.flush()
+        clear_stale = getattr(self.store, "clear_stale_pending_confirms", None)
+        if clear_stale is not None:
+            clear_stale(now - PENDING_CONFIRM_MAX_AGE_S)
         written = self._persist(touched.values(), now)
         self.last_poll_ts = now
         self.last_poll_inserted = written
@@ -1008,6 +1118,40 @@ class TranscriptUsageIngester:
             message=f"{errors} transcript file(s) unreadable" if errors else f"{written} session(s) updated",
         )
         return written
+
+    def _claude_agent(self, path: Path) -> tuple[str, str]:
+        """(agent id, role) of a file under ``subagents/``, or empty for a main session."""
+        if "subagents" not in path.parts:
+            return "", ""
+        return path.stem.removeprefix("agent-"), read_claude_agent_role(path)
+
+    def _debug_facts_for(self, path: Path, sid: str) -> VSCodeDebugFacts:
+        facts = self._vscode_debug_facts.get(path)
+        if facts is None:
+            workspace = path.parents[3]
+            has_chat_file = (workspace / "chatSessions" / f"{sid}.jsonl").exists()
+            facts = VSCodeDebugFacts(
+                sid, path.name == "main.jsonl", self.facts, _workspace_folder(workspace), log_prompts=not has_chat_file
+            )
+            self._vscode_debug_facts[path] = facts
+        return facts
+
+    def _chat_facts_for(self, path: Path, sid: str) -> VSCodeChatFacts:
+        facts = self._vscode_chat_facts.get(path)
+        if facts is None:
+            workspace = path.parents[1]
+            has_debug_log = (workspace / "GitHub.copilot-chat" / "debug-logs" / sid).is_dir()
+            facts = VSCodeChatFacts(sid, self.facts, _workspace_folder(workspace), has_debug_log=has_debug_log)
+            self._vscode_chat_facts[path] = facts
+        return facts
+
+    def _mark_desktop_sessions(self) -> None:
+        """A session's rows may predate the app's listing of it, so correct them once."""
+        setter = getattr(self.store, "set_sessions_tool", None)
+        new = [s for s in self._store.app_types if s not in self._desktop_marked and self._store.surface(s) == "copilot-desktop"]
+        if setter is not None and new:
+            setter(new, "copilot-desktop")
+            self._desktop_marked.update(new)
 
     def _pick_copilot_source(self, sid: str) -> SessionUsage:
         """One source per session, never a sum. The store lags until its next
@@ -1039,8 +1183,6 @@ class TranscriptUsageIngester:
         return chosen
 
     def _persist(self, sessions: Iterable[SessionUsage], now: float) -> int:
-        from ..storage import SessionRow
-
         written = 0
         for s in sessions:
             if not s.models and not s.turns:

@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import sqlite3
 import time
 from collections import Counter
 from collections.abc import Callable, Iterator
@@ -27,6 +29,7 @@ from ..data.model_pricing import cost_usd as usd_cost_of
 from ..data.provenance import COPILOT_COST_REASON
 from ..data.schema import load_telemetry_sources
 from ..fsutil import safe_glob, safe_iterdir
+from ..ingesters._common import open_readonly
 from ..platforms import (
     IS_WINDOWS,
     claude_global_dir,
@@ -474,16 +477,60 @@ def _iter_jsonl(path: Path) -> Iterator[dict]:
         pass
 
 
+# Whole words only: "429" also occurs inside ids and timestamps.
 _ERROR_PATTERNS = {
-    "overloaded": "overloaded",
-    "rate_limit": "rate_limit",
-    "rate limit": "rate_limit",
-    "429": "rate_limit",
-    "capacity": "overloaded",
-    "quota": "quota",
-    "timeout": "timeout",
-    "timed out": "timeout",
+    re.compile(pattern, re.IGNORECASE): error_type
+    for pattern, error_type in (
+        (r"\boverloaded\b", "overloaded"),
+        (r"\brate[_ ]limit", "rate_limit"),
+        (r"\b429\b", "rate_limit"),
+        (r"\bcapacity\b", "overloaded"),
+        (r"\bquota\b", "quota"),
+        (r"\btimeout\b", "timeout"),
+        (r"\btimed out\b", "timeout"),
+    )
 }
+
+# How much of a session file's end is read, and how many other recent sessions
+# are checked for errors. A live session can be hundreds of megabytes.
+_CLAUDE_TAIL_BYTES = 4 * 1024 * 1024
+_CLAUDE_RECENT_S = 1800
+_CLAUDE_ERROR_SESSIONS = 10
+_claude_error_cache: dict[Path, tuple[tuple[int, int], list[dict]]] = {}
+
+
+def _tail_objects(path: Path) -> Iterator[dict]:
+    """Parsed JSON lines from the end of a file, without reading the whole file."""
+    try:
+        with open(path, "rb") as fh:
+            size = fh.seek(0, 2)
+            start = max(0, size - _CLAUDE_TAIL_BYTES)
+            fh.seek(start)
+            if start:
+                fh.readline()  # the first line read is cut short
+            for line in fh:
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(obj, dict):
+                    yield obj
+    except OSError:
+        return
+
+
+def _claude_session_errors(path: Path, st_key: tuple[int, int]) -> list[dict]:
+    """API errors in one session file. Cached, since a finished session does not change."""
+    cached = _claude_error_cache.get(path)
+    if cached is not None and cached[0] == st_key:
+        return cached[1]
+    holder = ToolTelemetryReport(tool="", source="")
+    for obj in _tail_objects(path):
+        _detect_claude_errors(obj, str(obj.get("type", "")), holder)
+    if len(_claude_error_cache) > 200:
+        _claude_error_cache.clear()
+    _claude_error_cache[path] = (st_key, holder.errors)
+    return holder.errors
 
 
 def _parse_claude_active_session(root: Path, report: ToolTelemetryReport) -> None:
@@ -511,45 +558,34 @@ def _parse_claude_active_session(root: Path, report: ToolTelemetryReport) -> Non
         return
 
     latest_mtime, latest = max(jsonl_files, key=lambda pair: pair[0])
+    now = time.time()
     # Only parse if modified recently (within 30 minutes — likely active)
-    if time.time() - latest_mtime > 1800:
+    if now - latest_mtime > _CLAUDE_RECENT_S:
         return
 
-    # Read last 500 lines (tail) to catch errors + recent tokens
-    try:
-        text = latest.read_text(encoding="utf-8", errors="replace")
-        lines = text.splitlines()
-        tail = lines[-500:] if len(lines) > 500 else lines
-        # Streaming writes one line per content block, each repeating the
-        # message's usage. Keep the last per request; summing tripled output.
-        requests: dict[tuple[str, str], dict] = {}
-        for line in tail:
-            if not line.strip():
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+    # Several sessions can run at once, and an error in any of them matters.
+    recent = sorted((pair for pair in jsonl_files if now - pair[0] <= _CLAUDE_RECENT_S), key=lambda pair: pair[0], reverse=True)
+    for mtime, path in recent[:_CLAUDE_ERROR_SESSIONS]:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        report.errors.extend(_claude_session_errors(path, (int(mtime * 1000), size)))
 
-            obj_type = obj.get("type", "")
+    # Streaming writes one line per content block, each repeating the
+    # message's usage. Keep the last per request; summing tripled output.
+    requests: dict[tuple[str, str], dict] = {}
+    for obj in _tail_objects(latest):
+        msg = obj.get("message", {})
+        usage = msg.get("usage") if isinstance(msg, dict) else None
+        if usage and isinstance(usage, dict):
+            key = (str(msg.get("id") or obj.get("uuid") or ""), str(obj.get("requestId") or ""))
+            requests[key] = usage
 
-            # Claude JSONL: assistant messages have .message.usage
-            msg = obj.get("message", {})
-            usage = msg.get("usage") if isinstance(msg, dict) else None
-            if usage and isinstance(usage, dict):
-                key = (str(msg.get("id") or obj.get("uuid") or ""), str(obj.get("requestId") or ""))
-                requests[key] = usage
-
-            # Error detection: check for API errors in system messages and error responses
-            _detect_claude_errors(obj, obj_type, report)
-
-        for usage in requests.values():
-            report.active_session_input += int(usage.get("input_tokens", 0) or 0)
-            report.active_session_output += int(usage.get("output_tokens", 0) or 0)
-            report.active_session_messages += 1
-
-    except OSError:
-        pass
+    for usage in requests.values():
+        report.active_session_input += int(usage.get("input_tokens", 0) or 0)
+        report.active_session_output += int(usage.get("output_tokens", 0) or 0)
+        report.active_session_messages += 1
 
 
 def _detect_claude_errors(obj: dict, obj_type: str, report: ToolTelemetryReport) -> None:
@@ -561,6 +597,17 @@ def _detect_claude_errors(obj: dict, obj_type: str, report: ToolTelemetryReport)
     msg = obj.get("message", {})
     if isinstance(msg, dict):
         model = msg.get("model", "")
+        # The form this tool writes now: a placeholder assistant line marked as an API error.
+        if obj.get("isApiErrorMessage"):
+            report.errors.append(
+                {
+                    "type": str(obj.get("error") or "api_error"),
+                    "message": _claude_text(msg.get("content"))[:200],
+                    "timestamp": timestamp,
+                    "model": model,
+                }
+            )
+            return
         error_obj = msg.get("error", {})
         if isinstance(error_obj, dict) and error_obj.get("type"):
             report.errors.append(
@@ -579,15 +626,16 @@ def _detect_claude_errors(obj: dict, obj_type: str, report: ToolTelemetryReport)
         # Tool errors are common and not API issues — skip
         pass
 
-    # Scan serialized content for API-level error patterns
+    # Scan what the event says for API-level error patterns. Not the whole event:
+    # its ids and timestamps can contain "429", and tool output can say anything.
     if obj_type in ("system", "progress"):
-        content = json.dumps(obj).lower()
+        said = " ".join(str(obj[key]) for key in ("content", "message", "error", "subtype") if isinstance(obj.get(key), (str, dict)))
         for pattern, error_type in _ERROR_PATTERNS.items():
-            if pattern in content:
+            if pattern.search(said):
                 report.errors.append(
                     {
                         "type": error_type,
-                        "message": f"Detected '{pattern}' in {obj_type} event",
+                        "message": f"Detected '{error_type}' in {obj_type} event",
                         "timestamp": timestamp,
                         "model": model,
                     }
@@ -595,19 +643,64 @@ def _detect_claude_errors(obj: dict, obj_type: str, report: ToolTelemetryReport)
                 break  # One error per entry
 
 
+def _claude_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(str(b.get("text") or "") for b in content if isinstance(b, dict))
+    return ""
+
+
 # ─── Copilot CLI ────────────────────────────────────────────────
 
 
-_copilot_report_cache: tuple[tuple, ToolTelemetryReport | None] | None = None
+_copilot_report_cache: dict[str, tuple[tuple, ToolTelemetryReport | None]] | None = None
+_copilot_app_sessions_cache: tuple[tuple, set[str]] | None = None
+
+
+def _copilot_app_session_ids(copilot_home: Path) -> set[str]:
+    """Sessions the desktop app owns: rows of its ``data.db`` other than ``cli_session``.
+
+    The same rule as the transcript usage reader, so both report one attribution.
+    Only the two named columns are read: this file also holds a credential.
+    """
+    global _copilot_app_sessions_cache
+    db_path = copilot_home / "data.db"
+    try:
+        st = db_path.stat()
+    except OSError:
+        return set()
+    key = (str(db_path), st.st_mtime_ns, st.st_size)
+    if _copilot_app_sessions_cache is not None and _copilot_app_sessions_cache[0] == key:
+        return _copilot_app_sessions_cache[1]
+    conn = open_readonly(db_path, "copilot telemetry")
+    if conn is None:
+        return set()
+    try:
+        ids = {str(r[0]) for r in conn.execute("SELECT id FROM sessions WHERE session_type != 'cli_session'")}
+    except sqlite3.Error as exc:
+        log.debug("copilot telemetry: cannot read app sessions: %s", exc)
+        return set()
+    finally:
+        conn.close()
+    _copilot_app_sessions_cache = (key, ids)
+    return ids
 
 
 def parse_copilot_telemetry(
     root: Path | None = None, tool: str = "copilot-cli", source: str = "events-jsonl", confidence: float = 0.90
 ) -> ToolTelemetryReport | None:
-    """Parse GitHub Copilot CLI telemetry from session-state events.jsonl files."""
-    session_dir = Path.home() / ".copilot" / "session-state"
+    """Parse Copilot telemetry from session-state events.jsonl files.
+
+    The CLI and the desktop app share this directory. *tool* selects which of the
+    two sessions to read, ``copilot-cli`` or ``copilot-desktop``.
+    """
+    copilot_home = Path.home() / ".copilot"
+    session_dir = copilot_home / "session-state"
     if not session_dir.is_dir():
         return None
+    app_ids = _copilot_app_session_ids(copilot_home)
+    want_app = tool == "copilot-desktop"
 
     report = ToolTelemetryReport(tool=tool, source=source, confidence=confidence)
     # At most 10 sessions from 7 days: a sample, not a total. /api/usage has totals.
@@ -619,6 +712,8 @@ def parse_copilot_telemetry(
     cutoff = time.time() - 7 * 86400
     candidates: list[tuple[float, Path]] = []
     for d in safe_iterdir(session_dir):
+        if (d.name in app_ids) != want_app:
+            continue
         try:
             if not d.is_dir():
                 continue
@@ -645,15 +740,18 @@ def parse_copilot_telemetry(
     # to read. Rescanning whole logs each cycle cost 40 ms of CPU every time.
     global _copilot_report_cache
     key = tuple(signature)
-    if _copilot_report_cache is not None and _copilot_report_cache[0] == key:
-        return _copilot_report_cache[1]
+    if _copilot_report_cache is None:
+        _copilot_report_cache = {}
+    cached = _copilot_report_cache.get(tool)
+    if cached is not None and cached[0] == key:
+        return cached[1]
 
     for events_file in selected:
         report.total_sessions += 1
         _parse_copilot_events(events_file, report)
 
     result = report if report.input_tokens or report.output_tokens else None
-    _copilot_report_cache = (key, result)
+    _copilot_report_cache[tool] = (key, result)
     return result
 
 
@@ -674,6 +772,7 @@ def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> Non
     fallback_output_tokens = 0
     shutdown_usage: dict[str, dict] = {}
     record_usage: dict[str, dict] = {}
+    tools_started: dict[str, tuple[str, float]] = {}
     for obj in _iter_jsonl(events_file):
         event_type = obj.get("type", "")
         data = obj.get("data", {}) if isinstance(obj.get("data"), dict) else {}
@@ -779,15 +878,18 @@ def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> Non
                             }
                         )
 
-        # tool.execution_complete: track tool usage
+        # The name is only on the start event and the duration on neither, so
+        # both come from pairing start and complete by their call id.
+        elif event_type == "tool.execution_start":
+            tools_started[str(data.get("toolCallId", ""))] = (str(data.get("toolName", "")), _parse_iso_ts(timestamp))
         elif event_type == "tool.execution_complete":
-            tool_name = data.get("toolName", "")
-            duration = int(data.get("durationMs", 0))
-            if tool_name and duration > 60000:  # >60s tool execution
+            tool_name, started = tools_started.pop(str(data.get("toolCallId", "")), ("", 0.0))
+            duration_s = _parse_iso_ts(timestamp) - started if started else 0.0
+            if tool_name and duration_s > 60:  # >60s tool execution
                 report.errors.append(
                     {
                         "type": "timeout",
-                        "message": f"Slow tool: {tool_name} ({duration / 1000:.1f}s)",
+                        "message": f"Slow tool: {tool_name} ({duration_s:.1f}s)",
                         "timestamp": timestamp,
                         "model": "",
                     }
@@ -1070,6 +1172,7 @@ def _parse_continue_session(sess_file: Path, report: ToolTelemetryReport) -> Non
 _PARSER_REGISTRY: dict[str, Callable] = {
     "claude-code": parse_claude_telemetry,
     "copilot-cli": parse_copilot_telemetry,
+    "copilot-desktop": parse_copilot_telemetry,
     "codex-cli": parse_codex_telemetry,
     "cursor": parse_cursor_telemetry,
     "continue": parse_continue_telemetry,
