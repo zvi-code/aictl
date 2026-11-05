@@ -98,7 +98,7 @@ class TestInstallVscodeHooks:
             assert rule["type"] == "command"
             assert rule["_aictl_owner"] == _AICTL_OWNER_MARKER
             assert " --source root.vscode-user" in rule["command"]
-            assert f"--event {event}" in rule["command"]
+            assert f"--event {event}".lower() in rule["command"].lower()
         assert any("VS Code Copilot hooks" in a for a in actions)
 
     def test_project_install_uses_project_source(self, monkeypatch, tmp_path):

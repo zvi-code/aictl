@@ -10,11 +10,14 @@ from .._hook_owner import _AICTL_OWNER_MARKER, _is_legacy_aictl_hook
 from ..commands.integrations import (
     GEMINI_HOOK_MAP,
     HOOK_EVENTS,
+    NEVER_REGISTER_EVENTS,
     VSCODE_HOOK_EVENTS,
     _extract_hook_command,
     _extract_port_from_cmd,
     _hook_cmd_summary,
+    _hook_script_from_tokens,
     _iter_aictl_hook_rules,
+    _shlex_split_cmd,
 )
 from ..platforms import claude_global_dir, copilot_global_dir, gemini_global_dir, vscode_user_dir
 from ..utils import read_json_lenient
@@ -135,6 +138,16 @@ def _summarize_hook(event: str, rule: dict, server_port: int | None = None) -> d
     port = _extract_port_from_cmd(cmd)
     status = "WARN" if legacy else "OK"
     reasons = ["legacy aictl version (missing current owner marker)"] if legacy else []
+    # Two stat calls, no spawn: fine on every dashboard poll. A rule whose
+    # interpreter or script is gone never fires.
+    tokens = [t.strip('"') for t in _shlex_split_cmd(cmd) if t != "&"]
+    for label, target in (("interpreter", tokens[0] if tokens else ""), ("script", _hook_script_from_tokens(tokens))):
+        if ("/" in target or "\\" in target) and not Path(target).exists():
+            status = "FAIL"
+            reasons.append(f"{label} not found: {target} — run `aictl hooks install`")
+    if event in NEVER_REGISTER_EVENTS:
+        status = "FAIL"
+        reasons.append(f"{event} changes host behaviour when hooked — run `aictl hooks install`")
     if server_port is not None and port is not None and port != server_port:
         status = "FAIL"
         reasons.append(f"hook posts to port {port} but this dashboard serves on {server_port}")

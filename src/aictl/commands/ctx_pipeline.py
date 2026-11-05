@@ -22,7 +22,7 @@ from .. import emitters as registry
 from ..context import AICTX_FILENAME, SKIP_DIRS, check_parsed_features, parse_aictx, scan
 from ..memory import swap_memory
 from ..resolver import cleanup_stale, load_manifest, resolve, save_manifest
-from .integrations import HOOK_EVENTS as _HOOK_EVENTS
+from .integrations import CLAUDE_KNOWN_EVENTS, GEMINI_HOOK_EVENTS, VSCODE_HOOK_EVENTS
 
 # ─── deploy ──────────────────────────────────────────────────────────────────
 
@@ -511,7 +511,7 @@ KNOWN_TYPES = {
     "exclude",
 }
 
-KNOWN_HOOK_EVENTS = set(_HOOK_EVENTS)
+KNOWN_HOOK_EVENTS = {*CLAUDE_KNOWN_EVENTS, *GEMINI_HOOK_EVENTS, *VSCODE_HOOK_EVENTS}
 
 # Types whose content must be valid JSON.
 JSON_TYPES = {"mcp", "hook", "lsp"}

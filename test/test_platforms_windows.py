@@ -110,7 +110,9 @@ def test_centralization_no_adhoc_os_detection():
 
     root = pathlib.Path(platforms.__file__).resolve().parent
     offenders: list[str] = []
-    allow = {"platforms.py"}  # platforms.py is the one place OS detection is defined
+    # platforms.py is the one place OS detection is defined; hook_removal.py must run
+    # with no aictl importable, and a test pins its answers to platforms.config_dir().
+    allow = {"platforms.py", "hook_removal.py"}
     patterns = ('os.name == "nt"', "sys.platform == \"win32\"", "sys.platform.startswith(\"win\")")
     for py in root.rglob("*.py"):
         if py.name in allow:

@@ -606,7 +606,10 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 | `aictl enable --scope project` | Same, scoped to current project (`.claude/settings.local.json`, `.vscode/settings.json`) |
 | `aictl enable --dry-run` | Preview what `aictl enable` would write without writing anything |
 | `aictl hooks install` | Configure Claude Code to push hook events to aictl |
-| `aictl hooks uninstall` | Remove aictl hook configuration from Claude Code settings |
+| `aictl hooks uninstall` | Remove aictl hook rules from Claude Code, Gemini CLI and Copilot at one scope |
+| `aictl hooks status` | Each tool's real hook state, the command that fixes it, and any leftovers |
+| `aictl hooks repair` | Repair a Codex `config.toml` an older `aictl enable` made invalid |
+| `aictl disable [--dry-run]` | Remove every trace of `aictl enable`. If aictl will not start: `python3 ~/.config/aictl/remove-hooks.py --dry-run` |
 | `aictl otel enable` | Persist OTel config: shell profiles, VS Code, Codex, launchctl |
 | `aictl otel enable --print` | Print env var exports for eval (current shell only) |
 | `aictl otel status` | Check OTel receiver health |

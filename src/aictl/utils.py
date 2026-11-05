@@ -93,6 +93,9 @@ def write_safe(path: Path, content: str, *, command: str | None = None) -> None:
         raise
     except Exception:  # noqa: BLE001, S110 — guard infra errors must not block writes; Abort is re-raised above
         pass
+    from .hook_removal import validate_config_text
+
+    validate_config_text(path, content)
     tmp = path.with_suffix(path.suffix + ".aictl-tmp")
     existing_bytes: bytes | None = None
     pre_existed = path.exists()

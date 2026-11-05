@@ -2,39 +2,51 @@
 # Copyright (c) 2026 Zvi Schneider. MIT License.
 """Hook handler for AI coding tool integration.
 
-Invoked by AI tools (Claude Code, Gemini CLI, VS Code Copilot) as a hook
-command. Reads the JSON payload from stdin, enriches it with event
-metadata, the calling tool's process id and environment context, and
-POSTs it to the aictl server.
+Invoked by AI tools (Claude Code, Gemini CLI, Copilot) as a hook command.
+Reads the JSON payload from stdin, adds event metadata, and POSTs it to the
+aictl server.
 
-It writes NOTHING to stdout. Claude Code parses a hook's stdout: for
-decision-model events (PreToolUse, PermissionRequest, ...) a JSON object
-with unknown keys fails schema validation and surfaces a "hook error"
-notice in the transcript, and for WorktreeCreate stdout is the worktree
-path. Silence is the only output that is safe on every event.
+Contract, which every registered hook relies on:
+
+* It writes NOTHING to stdout. Claude Code parses a hook's stdout: for
+  decision-model events a JSON object with unknown keys surfaces a "hook
+  error" notice, and Gemini and Copilot parse stdout as a decision too.
+* It always exits 0. A dead daemon, a bad port or a malformed payload is not
+  the host tool's problem.
+* It is stdlib-only and imports nothing from the aictl package. It is run by
+  file path under ``python -I -S`` so one invocation costs interpreter start
+  plus a socket write, not the aictl package import. Keep it that way: the
+  guard test runs it from a directory holding only this file.
 
 Usage:
-    python -m aictl.hook_handler --event SessionStart --port 8484
+    python -I -S /path/to/aictl/hook_handler.py --event SessionStart --port 8484
 """
 
 from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
-import threading
-import urllib.request
 
 # Process names that are just the shell the tool used to run this hook. The
 # tool's own process sits above them.
 _SHELL_NAMES = frozenset({"sh", "bash", "zsh", "dash", "fish", "powershell", "pwsh", "cmd", "cmd.exe"})
+
+# Events that open a session: only these join a hook session to a process, so
+# only these pay for the ``ps`` walk.
+_PID_EVENTS = frozenset({"Init", "SessionStart"})
+
+_CONNECT_TIMEOUT = 0.2
+_RESPONSE_TIMEOUT = 0.3
+_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024
 
 
 def _parent_of(pid: int) -> tuple[int, str] | None:
     """Return ``(ppid, comm)`` for *pid* via ``ps`` (POSIX only); None on failure."""
     if os.name != "posix":
         return None
+    import subprocess  # costs ~10 ms: only events in _PID_EVENTS get here
+
     try:
         out = subprocess.run(
             ["ps", "-o", "ppid=,comm=", "-p", str(pid)],
@@ -79,8 +91,50 @@ def tool_pid(start_ppid: int, max_hops: int = 3) -> int:
     return pid
 
 
+def _post(port: int, body: bytes) -> None:
+    """POST *body* to the local aictl server. Raises OSError when unreachable.
+
+    Raw socket on the C module: ``urllib.request`` pulls in http.client, ssl
+    and email, which is most of what this process would otherwise spend. The
+    wait for the first response byte is bounded and only keeps the server from
+    logging a broken pipe; a slow server cannot hold the hook.
+    """
+    try:
+        import _socket as socket_mod
+    except ImportError:  # pragma: no cover: other Python implementations
+        import socket as socket_mod  # type: ignore[no-redef]
+
+    sock = socket_mod.socket(socket_mod.AF_INET, socket_mod.SOCK_STREAM)
+    try:
+        sock.settimeout(_CONNECT_TIMEOUT)
+        sock.connect(("127.0.0.1", port))
+        head = (
+            f"POST /api/hooks HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
+        )
+        sock.sendall(head.encode("ascii") + body)
+        sock.settimeout(_RESPONSE_TIMEOUT)
+        sock.recv(1)
+    finally:
+        sock.close()
+
+
+def _read_payload() -> dict:
+    """Parse stdin as a JSON object; anything else (including no stdin) is ``{}``."""
+    try:
+        if sys.stdin.isatty():
+            return {}
+        raw = getattr(sys.stdin, "buffer", sys.stdin).read(_MAX_PAYLOAD_BYTES + 1)
+        if len(raw) > _MAX_PAYLOAD_BYTES:
+            return {"_aictl_truncated": True}
+        data = json.loads(raw)
+    except (ValueError, OSError, AttributeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def main() -> None:
-    # Minimal arg parsing — no argparse import to keep startup fast.
+    # Minimal arg parsing: no argparse import, to keep startup fast.
     event = ""
     port = 8484
     source = "unknown"
@@ -102,52 +156,37 @@ def main() -> None:
         else:
             i += 1
 
-    # Read payload from stdin (AI tools pipe rich JSON here).
-    # Empty or malformed stdin must never crash: this wrapper runs
-    # inside the AI tool's hook pipeline and has to stay silent.
-    data: dict = {}
-    if not sys.stdin.isatty():
-        try:
-            data = json.load(sys.stdin)
-        except (json.JSONDecodeError, ValueError, OSError):
-            data = {}
-    if not isinstance(data, dict):
-        data = {}
+    data = _read_payload()
 
     # Enrich with event name and environment context.
     data["event"] = event
-    data.setdefault("session_id", os.environ.get("SESSION_ID", ""))
+    # Copilot's camelCase events send sessionId, not session_id.
+    data.setdefault("session_id", data.get("sessionId") or os.environ.get("SESSION_ID", ""))
     data.setdefault("cwd", os.environ.get("CWD", ""))
 
     # Capture wrapper identity + caller process info for observability.
-    try:
-        tid = threading.get_native_id()
-    except AttributeError:  # pragma: no cover — Python <3.8
-        tid = threading.get_ident()
     ppid = os.getppid()
     data["aictl_hook"] = {
         "source": source,
         "pid": os.getpid(),
         "ppid": ppid,
-        "tid": tid,
         "py": sys.executable,
     }
     # The tool's pid lets the server join this hook session onto the
     # process-derived session the correlator already tracks.
-    if not data.get("pid"):
+    if not data.get("pid") and event in _PID_EVENTS:
         data["pid"] = tool_pid(ppid)
 
-    # POST to aictl server (best-effort — never crash if server is down).
+    # Best-effort: the daemon being down is a normal state.
     try:
-        req = urllib.request.Request(
-            f"http://localhost:{port}/api/hooks",
-            json.dumps(data).encode(),
-            {"Content-Type": "application/json"},
-        )
-        urllib.request.urlopen(req, timeout=2)  # noqa: S310 — localhost only
-    except Exception:  # noqa: BLE001, S110 — must not crash if aictl unreachable
+        _post(port, json.dumps(data).encode())
+    except Exception:  # noqa: BLE001, S110 - must not crash if aictl unreachable
         pass
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except BaseException:  # noqa: BLE001, S110 - fail-open contract, see module docstring
+        pass
+    os._exit(0)  # no interpreter teardown; the exit code cannot be anything else
