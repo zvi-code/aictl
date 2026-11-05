@@ -8,7 +8,7 @@ import { writeUrl } from '../../hooks/urlState.js';
 import { LAYOUT } from '../../layoutConfig.js';
 import { focusTrap } from '../../utils/a11y.js';
 import { parseCustomRange, toLocalISOString } from '../../utils/customRange.js';
-import { canClear, clearedFilters, MAX_RANGE_S, RANGES, STATUSES, windowOf, boardQuery } from './filters.js';
+import { canClear, clearedFilters, RANGES, STATUSES, windowOf, boardQuery } from './filters.js';
 import { buildFindings, buildSettings } from './findings.js';
 import { colorFor, projectName, stamp } from './format.js';
 import { Ico, PATHS } from './icons.js';
@@ -79,7 +79,6 @@ function CustomRange({ range, onApply, onClose }) {
   const apply = (e) => {
     e.preventDefault();
     const r = parseCustomRange(start, end);
-    if (!r.error && r.until - r.since > MAX_RANGE_S) r.error = 'The longest range is 7 days.';
     if (r.error) { setErr(r.error); return; }
     onApply(r.since, r.until);
     onClose();
