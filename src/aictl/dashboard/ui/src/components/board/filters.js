@@ -10,10 +10,11 @@ export const RANGES = [
   { id: '6h', buckets: 12, bucket_s: 1800, label: '6 h' },
   { id: '24h', buckets: 24, bucket_s: 3600, label: '24 h' },
   { id: '7d', buckets: 14, bucket_s: 43200, label: '7 d' },
-  { id: '30d', buckets: 30, bucket_s: 86400, label: '30 d' },
 ];
 export const RANGE_BY_ID = Object.fromEntries(RANGES.map(r => [r.id, r]));
 export const DEFAULT_RANGE = '24h';
+/** The longest time the board shows. A custom range or an old link is cut to this. */
+export const MAX_RANGE_S = 7 * 86400;
 export const STATUSES = [
   ['all', 'All'], ['active', 'Active now'], ['running', 'Running'], ['looping', 'Looping'],
   ['waiting', 'Waiting for you'], ['ended', 'Ended'], ['failed', 'Failed'],
@@ -55,7 +56,8 @@ export function filtersToParams(f) {
 export function windowOf(range, nowS = Date.now() / 1000) {
   if (range.id === 'custom') {
     const buckets = 24;
-    return { since: Math.floor(range.since), until: Math.floor(range.until), buckets };
+    const until = Math.floor(range.until);
+    return { since: Math.max(Math.floor(range.since), until - MAX_RANGE_S), until, buckets };
   }
   const r = RANGE_BY_ID[range.id] || RANGE_BY_ID[DEFAULT_RANGE];
   const until = Math.ceil(nowS / r.bucket_s) * r.bucket_s;
