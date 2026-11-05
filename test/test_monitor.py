@@ -738,6 +738,9 @@ def test_process_collector_snapshot_tolerates_psutil_error():
                 raise FakePsutilError("NoSuchProcess")
             return self._info
 
+        def as_dict(self, _attrs):
+            return self._info
+
     class FakePsutil:
         Error = FakePsutilError
 

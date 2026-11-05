@@ -119,7 +119,7 @@ def scan_agent_teams(root: Path) -> list[dict]:
 
             agents: list[dict] = []
             for jf in safe_glob(subagents_dir, "agent-*.jsonl"):
-                agent = _parse_agent_file(jf)
+                agent = _parse_agent_file_cached(jf)
                 if agent:
                     agents.append(agent)
 
@@ -144,6 +144,29 @@ def scan_agent_teams(root: Path) -> list[dict]:
                 )
 
     return results
+
+
+# path -> (mtime_ns, size, parsed). The scan runs every refresh and re-reading
+# every transcript was 39% of daemon CPU; these files only grow.
+_agent_file_cache: dict[str, tuple[int, int, dict | None]] = {}
+_AGENT_FILE_CACHE_MAX = 5000
+
+
+def _parse_agent_file_cached(path: Path) -> dict | None:
+    """``_parse_agent_file`` with a stat-validated cache; returns a private copy."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    key = str(path)
+    hit = _agent_file_cache.get(key)
+    if hit is None or hit[0] != st.st_mtime_ns or hit[1] != st.st_size:
+        if len(_agent_file_cache) >= _AGENT_FILE_CACHE_MAX:
+            _agent_file_cache.clear()
+        hit = (st.st_mtime_ns, st.st_size, _parse_agent_file(path))
+        _agent_file_cache[key] = hit
+    # Callers set per-scan keys on the dict (conversation disambiguation).
+    return dict(hit[2]) if hit[2] is not None else None
 
 
 def _parse_agent_file(path: Path) -> dict | None:
@@ -551,6 +574,9 @@ def _detect_claude_errors(obj: dict, obj_type: str, report: ToolTelemetryReport)
 # ─── Copilot CLI ────────────────────────────────────────────────
 
 
+_copilot_report_cache: tuple[tuple, ToolTelemetryReport | None] | None = None
+
+
 def parse_copilot_telemetry(
     root: Path | None = None, tool: str = "copilot-cli", source: str = "events-jsonl", confidence: float = 0.90
 ) -> ToolTelemetryReport | None:
@@ -576,22 +602,33 @@ def parse_copilot_telemetry(
     candidates.sort(key=lambda pair: pair[0], reverse=True)
     sessions = [d for _, d in candidates]
 
+    selected: list[Path] = []
+    signature: list[tuple[str, int, int]] = [(tool, 0, 0)]
     for sess_dir in sessions[:10]:  # Max 10 most recent sessions
         events_file = sess_dir / "events.jsonl"
-        if not events_file.is_file():
-            continue
         try:
-            if events_file.stat().st_mtime < cutoff:
-                continue
+            st = events_file.stat()
         except OSError:
             continue
+        if st.st_mtime < cutoff:
+            continue
+        selected.append(events_file)
+        signature.append((str(events_file), st.st_mtime_ns, st.st_size))
 
+    # The result only depends on these files, so with no change there is nothing
+    # to read. Rescanning whole logs each cycle cost 40 ms of CPU every time.
+    global _copilot_report_cache
+    key = tuple(signature)
+    if _copilot_report_cache is not None and _copilot_report_cache[0] == key:
+        return _copilot_report_cache[1]
+
+    for events_file in selected:
         report.total_sessions += 1
         _parse_copilot_events(events_file, report)
 
-    if report.input_tokens or report.output_tokens:
-        return report
-    return None
+    result = report if report.input_tokens or report.output_tokens else None
+    _copilot_report_cache = (key, result)
+    return result
 
 
 def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> None:

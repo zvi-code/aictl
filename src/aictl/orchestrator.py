@@ -22,6 +22,8 @@ import time
 import webbrowser
 from pathlib import Path
 
+from .monitoring.pace import PACE  # noqa: E402
+
 log = logging.getLogger(__name__)
 
 from .dashboard.models import DashboardSnapshot, DashboardTool
@@ -71,15 +73,19 @@ class PersistentMonitor:
         from .monitoring.config import MonitorConfig
         from .monitoring.runtime import MonitorRuntime
 
+        from .platforms import config_dir, load_config
+
+        cfg = load_config()
         config = MonitorConfig.for_root(
             self._root,
-            sample_interval=1.0,
-            refresh_interval=1.0,
-            process_interval=1.0,
-            network_interval=1.0,
-            telemetry_interval=5.0,
-            filesystem_enabled=True,
-            telemetry_enabled=True,
+            sample_interval=cfg.sample_interval,
+            refresh_interval=cfg.refresh_interval,
+            process_interval=cfg.process_interval,
+            network_interval=cfg.network_interval,
+            telemetry_interval=cfg.telemetry_interval,
+            filesystem_enabled=cfg.filesystem_enabled,
+            telemetry_enabled=cfg.telemetry_enabled,
+            ignored_paths=(str(Path(cfg.logging_dir).resolve()), str(config_dir())),
         )
         self._runtime = MonitorRuntime(config, sink=self._sink)
 
@@ -158,8 +164,17 @@ class RefreshLoop(threading.Thread):
         self._monitor = monitor
         self._stop = threading.Event()
 
+    def _wait_paced(self) -> None:
+        """Wait one interval times the pace; ends early when a client attaches."""
+        waited = 0.0
+        while waited < self._interval * PACE.factor():
+            step = min(1.0, max(self._interval, 0.01))
+            if self._stop.wait(step):
+                return
+            waited += step
+
     def run(self) -> None:
-        self._cycle = 0
+        enrichment: dict = {}
         while not self._stop.is_set():
             try:
                 # Get live monitor data from persistent runtime (instant)
@@ -178,20 +193,13 @@ class RefreshLoop(threading.Thread):
                     _live_monitor_override=live_monitor,
                     _discovered_override=discovered_cache,
                     _sink=self._store._sink,
+                    _enrichment_cache=enrichment,
                 )
                 self._store.update(snap)
                 self._allowed.update(snap)
-
-                # Auto-compact every ~10 minutes (100 cycles at 6s)
-                self._cycle += 1
-                if self._cycle % 100 == 0 and self._store._db:
-                    try:
-                        self._store._db.compact()
-                    except Exception as exc:
-                        log.debug("DB compact failed: %s", exc)
             except Exception as exc:
                 log.warning("Refresh loop error: %s", exc)
-            self._stop.wait(self._interval)
+            self._wait_paced()
 
     def _get_discovery_cache(self):
         """Read cached discover_all() result from the DiscoveryCollector."""
@@ -211,6 +219,18 @@ class RefreshLoop(threading.Thread):
 # ─── Snapshot collection ─────────────────────────────────────────
 
 
+def _cached(cache: dict | None, key: str, ttl: float, produce):
+    """Return ``produce()``, reusing the value in ``cache`` for ``ttl`` seconds."""
+    if cache is None:
+        return produce()
+    now = time.monotonic()
+    hit = cache.get(key)
+    if hit is None or now - hit[0] >= ttl:
+        hit = (now, produce())
+        cache[key] = hit
+    return hit[1]
+
+
 def collect(
     root: Path,
     include_processes: bool = True,
@@ -218,6 +238,7 @@ def collect(
     _live_monitor_override: dict | None = None,
     _discovered_override: list | None = None,
     _sink=None,
+    _enrichment_cache: dict | None = None,
 ) -> DashboardSnapshot:
     """Take a single snapshot combining discovery, live, and enrichment.
 
@@ -267,12 +288,14 @@ def collect(
 
     live_monitor = _live_monitor_override if _live_monitor_override is not None else {}
     tools = _merge_dashboard_tools(discovered, live_monitor)
-    agent_memory = collect_agent_memory(root_path)
+    cache = _enrichment_cache
+
+    agent_memory = _cached(cache, "agent_memory", 30.0, lambda: collect_agent_memory(root_path))
     mcp_detail = collect_mcp_status(discovered)
-    telemetry_reports = collect_tool_telemetry(root_path)
+    telemetry_reports = _cached(cache, "telemetry", 15.0, lambda: collect_tool_telemetry(root_path))
     tool_telemetry = [r.to_dict() for r in telemetry_reports]
     agent_teams = scan_agent_teams(root_path)
-    tool_configs = [c.to_dict() for c in collect_tool_configs(root_path)]
+    tool_configs = _cached(cache, "tool_configs", 300.0, lambda: [c.to_dict() for c in collect_tool_configs(root_path)])
     _merge_telemetry_into_tools(tools, telemetry_reports)
 
     # Emit enrichment data through sink
@@ -294,22 +317,26 @@ def collect(
         for r in telemetry_reports:
             if r.tool:
                 rtags = {"tool": r.tool, "source": r.source}
-                _sink.emit(
+                # Cumulative counters: an unchanged value carries no news, and
+                # the 5 min re-emit keeps the series continuous.
+                _sink.emit_if_changed(
                     M("gen_ai.client.token.usage.verified"),
                     float(r.input_tokens),
                     {**rtags, "gen_ai.token.type": "input"},
                     ts=ts,
+                    gauge=True,
                 )
-                _sink.emit(
+                _sink.emit_if_changed(
                     M("gen_ai.client.token.usage.verified"),
                     float(r.output_tokens),
                     {**rtags, "gen_ai.token.type": "output"},
                     ts=ts,
+                    gauge=True,
                 )
-                _sink.emit(M("aictl.telemetry.sessions"), float(r.total_sessions), rtags, ts=ts)
-                _sink.emit(M("aictl.telemetry.messages"), float(r.total_messages), rtags, ts=ts)
+                _sink.emit_if_changed(M("aictl.telemetry.sessions"), float(r.total_sessions), rtags, ts=ts, gauge=True)
+                _sink.emit_if_changed(M("aictl.telemetry.messages"), float(r.total_messages), rtags, ts=ts, gauge=True)
                 if r.cost_usd:
-                    _sink.emit(M("aictl.telemetry.cost"), float(r.cost_usd), rtags, ts=ts)
+                    _sink.emit_if_changed(M("aictl.telemetry.cost"), float(r.cost_usd), rtags, ts=ts, gauge=True)
         for c in tool_configs:
             if c.get("tool") and c.get("model"):
                 _sink.emit_if_changed(
@@ -484,6 +511,36 @@ def _kill_stale_server(port: int) -> None:
 # ─── Collection service (UI-independent) ─────────────────────────
 
 
+class MaintenanceLoop(threading.Thread):
+    """Runs retention and WAL upkeep on its own thread, away from collection."""
+
+    FIRST_RUN_DELAY_S = 600.0
+    INTERVAL_S = 1800.0
+    # In memory the ceiling is close and nothing else makes room.
+    MEMORY_INTERVAL_S = 60.0
+    LOG_MAX_BYTES = 5 * 1024 * 1024
+
+    def __init__(self, db) -> None:
+        super().__init__(daemon=True, name="aictl-db-maintenance")
+        self._db = db
+        self._stop_event = threading.Event()
+
+    def run(self) -> None:
+        delay = self.MEMORY_INTERVAL_S if self._db.in_memory else self.FIRST_RUN_DELAY_S
+        while not self._stop_event.wait(delay):
+            delay = self.MEMORY_INTERVAL_S if self._db.in_memory else self.INTERVAL_S
+            try:
+                self._db.auto_maintain()
+                from .platforms import cap_log_file, load_config
+
+                cap_log_file(load_config().effective_log_file(), self.LOG_MAX_BYTES)
+            except Exception as exc:
+                log.warning("DB maintenance failed: %s", exc)
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+
 class CollectionService:
     """The data-collection half of aictl, fully independent of any UI.
 
@@ -517,6 +574,7 @@ class CollectionService:
         self._dp_logger = None
         self._monitor: PersistentMonitor | None = None
         self._refresh: RefreshLoop | None = None
+        self._maintenance: MaintenanceLoop | None = None
 
     def start(self, *, quiet: bool = False) -> None:
         """Build and start the collection engine. Non-blocking."""
@@ -530,7 +588,7 @@ class CollectionService:
             from .platforms import load_config
 
             cfg = load_config()
-            if cfg.logging_enabled:
+            if cfg.logging_enabled and cfg.capture != "off":
                 from .sink import DatapointLogger
 
                 self._dp_logger = DatapointLogger(
@@ -546,7 +604,22 @@ class CollectionService:
         try:
             from .storage import HistoryDB
 
-            self.db = HistoryDB(db_path=self._db_path, datapoint_logger=self._dp_logger)
+            from .platforms import load_config as _load_config
+
+            store_cfg = _load_config()
+            log_paths = [store_cfg.effective_log_file()]
+            if store_cfg.logging_enabled:
+                log_paths.append(Path(store_cfg.logging_dir).resolve())
+            self.db = HistoryDB(
+                db_path=self._db_path,
+                datapoint_logger=self._dp_logger,
+                retention_days=store_cfg.retention_days,
+                capture=store_cfg.capture,
+                max_total_mb=store_cfg.max_total_mb,
+                content_retention_days=store_cfg.content_retention_days,
+                log_paths=tuple(log_paths),
+                memory_fallback=True,
+            )
             _say(f"  history db: {self._db_path or '~/.config/aictl/history.db'}")
         except Exception as exc:
             _say(f"  warning: history db unavailable ({exc})")
@@ -586,6 +659,10 @@ class CollectionService:
         )
         self._refresh.start()
 
+        if self.db is not None:
+            self._maintenance = MaintenanceLoop(self.db)
+            self._maintenance.start()
+
         # Optional per-tool ingesters (self-contained background threads;
         # no-op when their source files are absent).
         if self.db is not None:
@@ -598,6 +675,8 @@ class CollectionService:
 
     def stop(self) -> None:
         """Stop background collection. Best-effort; safe to call once."""
+        if self._maintenance is not None:
+            self._maintenance.stop()
         if self._refresh is not None:
             self._refresh.stop()
         if self._monitor is not None:
@@ -749,11 +828,12 @@ class SnapshotState:
 
     def __init__(self) -> None:
         self._snap: _DashboardSnapshot | None = None
-        self._snap_json_bytes: bytes = b""
+        self._snap_json_bytes: bytes | None = b""
+        self._serializer: SnapshotSerializer | None = None
         self._version: int = 0
         self._lock = _threading.Lock()
         self._condition = _threading.Condition(self._lock)
-        self._sse_json: str = ""
+        self._sse_json: str | None = ""
         self._sse_builder: callable | None = None
         # Ring buffer for global time-series sparklines.
         # At ~5.86s/tick, 360 entries ≈ 35 min.
@@ -837,10 +917,11 @@ class SnapshotState:
                 self._tool_history[t.tool].append((ts, cpu, mem, tok, traffic))
                 tool_rows.append((t.tool, cpu, mem, tok, traffic))
 
-            # Pre-serialize snapshot + SSE BEFORE notifying clients.
-            # This ensures readers see data matching the version they woke for.
-            self._snap_json_bytes = serializer.serialize_snapshot(snap)
-            self._sse_json = serializer.serialize_sse(snap, self._sse_builder)
+            # Serialize on first read, once per version: with no client attached
+            # the 2.7 MB snapshot JSON is never built at all.
+            self._serializer = serializer
+            self._snap_json_bytes = None
+            self._sse_json = None
 
             self._condition.notify_all()
         return tool_rows
@@ -858,13 +939,19 @@ class SnapshotState:
 
     @property
     def snapshot_json_bytes(self) -> bytes:
-        """Pre-serialized compact JSON snapshot (slim agent_teams)."""
-        return self._snap_json_bytes
+        """Compact JSON snapshot (slim agent_teams), built once per version."""
+        with self._lock:
+            if self._snap_json_bytes is None:
+                self._snap_json_bytes = self._serializer.serialize_snapshot(self._snap)
+            return self._snap_json_bytes
 
     @property
     def sse_json(self) -> str:
-        """Pre-serialized SSE summary JSON."""
-        return self._sse_json
+        """SSE summary JSON, built once per version."""
+        with self._lock:
+            if self._sse_json is None:
+                self._sse_json = self._serializer.serialize_sse(self._snap, self._sse_builder)
+            return self._sse_json
 
     @sse_json.setter
     def sse_json(self, value: str) -> None:
@@ -951,12 +1038,18 @@ class SnapshotSerializer:
 FILE_SYNC_INTERVAL = 60.0
 
 
+TELEMETRY_HEARTBEAT_S = 300.0
+
+
 class SnapshotPersistence:
     """Writes snapshot data to HistoryDB (injected dependency)."""
 
     def __init__(self, db: _HistoryDB | None) -> None:
         self._db = db
         self._last_file_sync = 0.0
+        # Unchanged data is not written again (see _changed_telemetry, persist).
+        self._telemetry_last: dict[tuple[str, str], tuple[tuple, float]] = {}
+        self._team_signatures: dict[str, tuple] = {}
 
     def persist(self, snap: _DashboardSnapshot, tool_rows: list[tuple]) -> None:
         """Persist metrics, events, telemetry, and agent teams to SQLite."""
@@ -1026,8 +1119,7 @@ class SnapshotPersistence:
                             model=t.get("model", ""),
                             by_model=t.get("by_model", {}),
                         )
-                        for t in snap.tool_telemetry
-                        if t.get("tool")
+                        for t in self._changed_telemetry(snap.tool_telemetry, snap.timestamp)
                     ]
                 )
             # Persist agent teams (agents + per-turn requests)
@@ -1051,6 +1143,25 @@ class SnapshotPersistence:
                 log.debug("Provenance update failed: %s", exc)
         except Exception as exc:
             log.warning("DB write failed: %s", exc)
+
+    def _changed_telemetry(self, reports: list[dict], ts: float) -> list[dict]:
+        """Reports whose totals changed, plus one per tool every TELEMETRY_HEARTBEAT_S.
+
+        These are cumulative totals; storing an identical row every 5 s made
+        tool_stats 89k rows of mostly repeats.
+        """
+        changed = []
+        for t in reports:
+            tool = t.get("tool")
+            if not tool:
+                continue
+            key = (tool, t.get("source", ""))
+            value = tuple(sorted((k, repr(v)) for k, v in t.items()))
+            last = self._telemetry_last.get(key)
+            if last is None or last[0] != value or ts - last[1] >= TELEMETRY_HEARTBEAT_S:
+                self._telemetry_last[key] = (value, ts)
+                changed.append(t)
+        return changed
 
     def _sync_files(self, snap: _DashboardSnapshot, now: float | None = None) -> None:
         """Sync discovered files into the files/file_history store.
@@ -1120,6 +1231,23 @@ class SnapshotPersistence:
 
             for team in agent_teams:
                 session_id = team.get("session_id", "")
+                # A team writes dozens of rows with one commit each: 22 MB/s of
+                # WAL when repeated every refresh. Skip it while nothing changed.
+                signature = tuple(
+                    sorted(
+                        (
+                            str(a.get("agent_id", "")),
+                            a.get("input_tokens", 0),
+                            a.get("output_tokens", 0),
+                            len(a.get("turns", [])),
+                            str(a.get("ended_at", "")),
+                        )
+                        for a in team.get("agents", [])
+                    )
+                )
+                if session_id and self._team_signatures.get(session_id) == signature:
+                    continue
+                self._team_signatures[session_id] = signature
                 # Upsert a session row for this UUID session with aggregated token totals
                 if session_id:
                     agents = team.get("agents", [])

@@ -73,13 +73,11 @@ class DiscoveryCollector(BaseCollector):
                 if tool == "aictl":
                     continue
                 tags = {"tool": tool}
-                self.sink_emit_if_changed(_M("aictl.discovery.files"), float(len(tool_res.files)), tags)
-                self.sink_emit_if_changed(
-                    _M("aictl.discovery.tokens"), float(sum(f.tokens for f in tool_res.files)), tags
-                )
-                self.sink_emit_if_changed(_M("aictl.discovery.size"), float(sum(f.size for f in tool_res.files)), tags)
-                self.sink_emit_if_changed(_M("aictl.discovery.processes"), float(len(tool_res.processes)), tags)
-                self.sink_emit_if_changed(_M("aictl.discovery.mcp_servers"), float(len(tool_res.mcp_servers)), tags)
+                self.sink_emit_if_changed(_M("aictl.discovery.files"), float(len(tool_res.files)), tags, gauge=True)
+                self.sink_emit_if_changed(_M("aictl.discovery.tokens"), float(sum(f.tokens for f in tool_res.files)), tags, gauge=True)
+                self.sink_emit_if_changed(_M("aictl.discovery.size"), float(sum(f.size for f in tool_res.files)), tags, gauge=True)
+                self.sink_emit_if_changed(_M("aictl.discovery.processes"), float(len(tool_res.processes)), tags, gauge=True)
+                self.sink_emit_if_changed(_M("aictl.discovery.mcp_servers"), float(len(tool_res.mcp_servers)), tags, gauge=True)
 
                 for f in tool_res.files:
                     ftags = {
@@ -89,19 +87,15 @@ class DiscoveryCollector(BaseCollector):
                         "aictl.file.scope": f.scope,
                         "aictl.file.sent_to_llm": f.sent_to_llm,
                     }
-                    self.sink_emit_if_changed(_M("aictl.file.tokens"), float(f.tokens), ftags)
-                    self.sink_emit_if_changed(_M("aictl.file.bytes"), float(f.size), ftags)
+                    self.sink_emit_if_changed(_M("aictl.file.tokens"), float(f.tokens), ftags, gauge=True)
+                    self.sink_emit_if_changed(_M("aictl.file.bytes"), float(f.size), ftags, gauge=True)
 
                 for m in tool_res.mcp_servers:
                     mname = m.get("name", "")
                     if mname:
-                        self.sink_emit_if_changed(
-                            _M("aictl.mcp.status"),
-                            1.0 if m.get("status") == "running" else 0.0,
-                            {"aictl.tool": tool, "aictl.mcp.server": mname},
-                        )
+                        self.sink_emit_if_changed(_M("aictl.mcp.status"), 1.0 if m.get("status") == "running" else 0.0, {"aictl.tool": tool, "aictl.mcp.server": mname}, gauge=True)
 
-            await self.sleep(self._interval)
+            await self.sleep_paced(self._interval)
 
 
 @dataclass(slots=True)

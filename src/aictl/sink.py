@@ -58,7 +58,7 @@ class SampleSink:
 
     LATEST_MAXSIZE: int = 10_000
     SERIES_MAXSIZE: int = 10_000
-    DEDUP_MAXSIZE: int = 10_000
+    DEDUP_MAXSIZE: int = 100_000
     DEDUP_TTL: float = 600.0  # seconds before dedup entries expire
     _DEDUP_GC_INTERVAL: int = 1000  # run GC every N emits
 
@@ -287,11 +287,14 @@ class SampleSink:
         value: float,
         tags: dict[str, Any] | None = None,
         ts: float | None = None,
+        *,
+        gauge: bool = False,
     ) -> None:
         """Emit only if the value changed or >5 min since last emission.
 
         Event-like datapoints (value is 0 or 1, i.e. boolean markers
-        where uniqueness is in the timestamp) are never suppressed.
+        where uniqueness is in the timestamp) are never suppressed, unless
+        ``gauge`` says that 0 and 1 are ordinary levels of this metric.
 
         Uses a composite key of metric + ALL tag values to detect
         duplicates. Unchanged values are still updated in the in-memory
@@ -303,7 +306,7 @@ class SampleSink:
             ts = time.time()
 
         # Event-like datapoints: never suppress
-        if self._is_event_like(value):
+        if not gauge and self._is_event_like(value):
             self.emit(metric, value, tags, ts)
             return
 
