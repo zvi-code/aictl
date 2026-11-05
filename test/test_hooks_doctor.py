@@ -39,7 +39,7 @@ def _current_rule(port=8484, interp=None):
         "hooks": [
             {
                 "type": "command",
-                "command": f'"{interp}" -m aictl.hook_handler --event SessionStart --port {port}',
+                "command": f'"{interp}" -m aictl.hook_handler --event SessionStart --port {port} || true',
             }
         ],
     }
@@ -53,7 +53,7 @@ def _legacy_rule(port=8484, interp=None):
         "hooks": [
             {
                 "type": "command",
-                "command": f'"{interp}" -m aictl.hook_handler --event SessionStart --port {port}',
+                "command": f'"{interp}" -m aictl.hook_handler --event SessionStart --port {port} || true',
             }
         ],
     }
@@ -98,7 +98,7 @@ class TestHooksDoctor:
         assert "legacy aictl version" in result.output
 
     def test_json_output(self, tmp_settings):
-        _write_settings(tmp_settings, {"SessionStart": [_current_rule(port=9999)]})
+        _write_settings(tmp_settings, {"SessionStart": [_current_rule(port=8484)]})
         result = CliRunner().invoke(hooks, ["doctor", "--json"])
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
@@ -107,7 +107,7 @@ class TestHooksDoctor:
         entry = payload["results"][0]
         assert entry["status"] == "OK"
         assert entry["event"] == "SessionStart"
-        assert entry["port"] == 9999
+        assert entry["port"] == 8484
 
     def test_no_hooks_installed(self, tmp_settings):
         # File absent — no crash, exit 0.

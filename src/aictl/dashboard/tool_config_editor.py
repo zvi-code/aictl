@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ..hook_removal import validate_config_text
+
 
 class ToolConfigEditError(Exception):
     """Error that can be returned directly as an HTTP JSON response."""
@@ -131,6 +133,7 @@ def save_editable_tool_config(
     tmp = path.with_name(f".{path.name}.tmp")
     new_text = json.dumps(data, indent=2, sort_keys=True) + "\n"
     try:
+        validate_config_text(path, new_text)
         tmp.write_text(new_text)
         os.replace(tmp, path)
     except OSError as exc:

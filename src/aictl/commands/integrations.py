@@ -33,14 +33,14 @@ def _run_env_persist(argv: list[str]) -> None:
         click.echo(f"warning: {argv[0]} failed: {stderr}", err=True)
 
 
-from .. import mutation_ledger
+from .. import hook_removal, mutation_ledger
 from .._hook_owner import (  # re-exported for tests
     _AICTL_OWNER_MARKER,
     _is_aictl_hook,
     _is_legacy_aictl_hook,
     merge_aictl_hooks,
-    strip_aictl_hooks,
 )
+from ..hook_removal import jsonc_loads
 from ..platforms import (
     IS_MACOS,
     IS_WINDOWS,
@@ -67,25 +67,19 @@ def _write_text_atomic(path: Path, content: str) -> None:
     left a truncated ``~/.claude/settings.json``, and ``aictl disable`` —
     which plans its reverts from the ledger — never saw any of these files.
     No ``.bak`` sibling is dropped next to the user's settings; the ledger
-    keeps the previous bytes instead.
+    keeps the previous bytes instead. A symlinked file is written at its
+    target, so a dotfile-managed link stays a link.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
     previous: bytes | None = None
     if path.exists():
         try:
             previous = path.read_bytes()
         except OSError:
             previous = None
-    tmp = path.with_name(path.name + ".aictl-tmp")
     try:
-        tmp.write_text(content, encoding="utf-8")
-        os.replace(tmp, path)
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+        hook_removal.write_atomic(path, content)
+    except (hook_removal.InvalidConfigError, hook_removal.ConfigBusyError) as exc:
+        raise click.ClickException(str(exc)) from exc
     mutation_ledger.record(
         command=_ledger_command(),
         path=path,
@@ -117,7 +111,13 @@ def _read_json_strict(path: Path, *, force: bool = False) -> dict:
     surfaces a clean actionable message (and non-zero exit) rather than a
     traceback. On ``force=True`` the underlying helper quarantines the
     corrupted original to a ``.bak.<timestamp>`` sibling before returning {}.
+    JSONC (comments, trailing commas) is valid input, not corruption: treating
+    it as corrupt made ``--force`` replace a commented VS Code settings file.
     """
+    try:
+        return jsonc_loads(path.read_text("utf-8"))
+    except (OSError, ValueError):
+        pass  # falls through to the strict reader's corrupt-file policy
     try:
         return read_json_or_fail(path, force=force)
     except CorruptJSONError as exc:
@@ -175,8 +175,7 @@ HOOK_EVENTS = [
     "ConfigChange",
     "CwdChanged",
     "DirectoryAdded",
-    # Model switches (/model, fallback)
-    "PreModelSwitch",
+    # Model switches (/model, fallback). PreModelSwitch is a gate, see below.
     "PostModelSwitch",
     # FileChanged is intentionally omitted: Claude uses its matcher to build a
     # literal watch list, so an empty catch-all hook would not observe changes.
@@ -187,10 +186,36 @@ HOOK_EVENTS = [
     # Agent(isolation="worktree") fail. WorktreeRemove is a plain
     # side-effect event and safe to observe.
     "WorktreeRemove",
-    # MCP elicitation
-    "Elicitation",
-    "ElicitationResult",
 ]
+
+# Every Claude Code hook event, from https://code.claude.com/docs/en/hooks.
+# A key outside this set is reported as a "Settings Warning" by Claude Code,
+# so nothing outside it is ever written.
+CLAUDE_KNOWN_EVENTS = frozenset(
+    {
+        *HOOK_EVENTS,
+        "FileChanged",
+        "WorktreeCreate",
+        "Elicitation",
+        "ElicitationResult",
+        "PreModelSwitch",
+        "MessageDisplay",
+    }
+)
+
+# Events where having a hook, or what it prints, changes what the host does:
+# WorktreeCreate replaces `git worktree` and reads stdout as the path;
+# Elicitation/ElicitationResult read stdout as the elicitation answer; PreModelSwitch
+# exists to gate the switch and PostModelSwitch observes the same thing. An
+# observer has no business on any of them, whatever its current output.
+NEVER_REGISTER_EVENTS = frozenset({"WorktreeCreate", "Elicitation", "ElicitationResult", "PreModelSwitch"})
+
+# Short limits: the handler needs ~20 ms and a hung hook must not hold the host.
+_CLAUDE_HOOK_TIMEOUT_SEC = 5
+_GEMINI_HOOK_TIMEOUT_MS = 2000
+_COPILOT_HOOK_TIMEOUT_SEC = 5
+# Claude may tear down async hooks as the session exits, so this one stays sync.
+_CLAUDE_SYNC_EVENTS = frozenset({"SessionEnd"})
 
 
 # Gemini CLI specific hook events (from official documentation)
@@ -234,21 +259,26 @@ GEMINI_HOOK_MAP = {
 #
 #     {"hooks": {"EventName": [{"type": "command", "command": "..."}]}}
 #
-# Event set tracks the runtime enum in
-# ``out/vs/workbench/workbench.desktop.main.js`` (as of VS Code 1.116).
-# ``SessionEnd`` and ``ErrorOccurred`` were added in early 2026 releases.
+# The file needs ``"version": 1``: Copilot rejects a whole file with a bad or
+# missing version. PascalCase names are documented aliases of the camelCase
+# events and select the snake_case payload the receiver reads; the two events
+# with no documented alias use the camelCase name.
+# https://docs.github.com/en/copilot/reference/hooks-configuration
 VSCODE_HOOK_EVENTS = [
     "SessionStart",
     "SessionEnd",
     "UserPromptSubmit",
     "PreToolUse",
     "PostToolUse",
-    "SubagentStart",
+    "subagentStart",
     "SubagentStop",
     "PreCompact",
     "Stop",
-    "ErrorOccurred",
+    "errorOccurred",
 ]
+_COPILOT_HOOK_FILE_VERSION = 1
+# The name reported to the receiver, which keys on PascalCase event names.
+_COPILOT_EVENT_LABELS = {"subagentStart": "SubagentStart", "errorOccurred": "ErrorOccurred"}
 
 
 _AICTL_ENV_BEGIN = "# >>> aictl env >>>"
@@ -397,6 +427,25 @@ def _python_cmd(*, powershell: bool = False) -> str:
     return f"& {quoted}" if powershell else quoted
 
 
+def _handler_command(event: str, port: int, source_id: str, *, shell: str = "posix") -> str:
+    """The one command line every registered hook runs.
+
+    * ``-I -S`` with a file path: no site-packages scan and no aictl package
+      import, so one invocation costs ~20 ms instead of ~60 ms.
+    * The trailing guard is what makes the hook fail-open when the interpreter
+      or script is gone (pipx removed or moved): without it the shell exits 127
+      and the host shows a hook error on every event.
+    """
+    python = _python_cmd(powershell=shell == "powershell")
+    script = str(Path(__file__).resolve().parent.parent / "hook_handler.py")
+    base = f'{python} -I -S "{script}" --event {event} --port {port} --source {source_id}'
+    if shell == "powershell":
+        return f"{base} 2>$null; exit 0"
+    if shell == "cmd":
+        return f"{base} 2>nul & exit /b 0"
+    return f"{base} 2>/dev/null || true"
+
+
 def _sanitize_project_name(name: str) -> str:
     """Coerce an arbitrary directory basename into a safe source-id token.
 
@@ -439,12 +488,9 @@ def _build_hook_config(
 ) -> dict:
     """Build the hooks configuration dict for AI tools.
 
-    Each hook invokes ``python -m aictl.hook_handler`` which reads the
-    rich JSON payload from stdin, merges environment variables, POSTs
-    everything to aictl, and passes the payload through to stdout.
-
-    Using a module invocation instead of an inline ``-c`` one-liner
-    avoids shell-escaping issues on Windows and complex quoting.
+    Each hook runs :func:`_handler_command`, which reads the JSON payload from
+    stdin, POSTs it to aictl and prints nothing. Refuses any event the tool does
+    not define and any event in :data:`NEVER_REGISTER_EVENTS`.
 
     Optional event_map can translate internal HOOK_EVENTS names to tool-specific names.
     matcher: "" for Claude (default), "*" for Gemini.
@@ -459,20 +505,31 @@ def _build_hook_config(
     """
     target_events = events or HOOK_EVENTS
     hooks: dict[str, list[dict]] = {}
-    use_powershell = IS_WINDOWS and source_tool == "claude"
-    python = _python_cmd(powershell=use_powershell)
+    is_claude = source_tool == "claude"
+    use_powershell = IS_WINDOWS and is_claude
+    shell = "powershell" if use_powershell else ("cmd" if IS_WINDOWS else "posix")
     source_id = _source_id(scope, source_tool)
+    known = CLAUDE_KNOWN_EVENTS if is_claude else frozenset(GEMINI_HOOK_EVENTS)
 
     for event in target_events:
         tool_event_name = event_map.get(event, event) if event_map else event
+        if event in NEVER_REGISTER_EVENTS or tool_event_name in NEVER_REGISTER_EVENTS:
+            raise ValueError(f"refusing to register {event!r}: a hook there changes host behaviour")
+        if tool_event_name not in known:
+            raise ValueError(f"refusing to register {tool_event_name!r}: not a {source_tool} hook event")
         if tool_event_name in hooks:
             # Two internal events mapped to one tool event: the second would
             # silently replace the first rule (and its --event label).
             raise ValueError(
                 f"hook event map collision: {event!r} and an earlier event both map to {tool_event_name!r}"
             )
-        cmd = f"{python} -m aictl.hook_handler --event {event} --port {port} --source {source_id}"
-        inner: dict = {"type": "command", "command": cmd}
+        inner: dict = {"type": "command", "command": _handler_command(event, port, source_id, shell=shell)}
+        if is_claude:
+            inner["timeout"] = _CLAUDE_HOOK_TIMEOUT_SEC
+            if event not in _CLAUDE_SYNC_EVENTS:
+                inner["async"] = True
+        else:
+            inner["timeout"] = _GEMINI_HOOK_TIMEOUT_MS
         if use_powershell:
             inner["shell"] = "powershell"
         hooks[tool_event_name] = [
@@ -483,6 +540,59 @@ def _build_hook_config(
             }
         ]
     return hooks
+
+
+def _would_be_committed(path: Path) -> bool:
+    """True when *path* sits in a git work tree and is not ignored.
+
+    Hook rules carry this machine's interpreter path and port, so they must not
+    land in a file the repository shares. Outside a repository (or without git)
+    the answer is False.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(path.parent if path.parent.exists() else Path.cwd()), "check-ignore", "-q", str(path)],
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 1  # 0 ignored, 128 not a repository
+
+
+def _update_json_file(path: Path, updates: dict, *, force: bool = False) -> bool:
+    """Apply top-level *updates* to a JSON(C) file, preserving every other byte.
+
+    Returns False, with no write, when nothing changes (a second install leaves
+    the file and its mtime alone).
+    """
+    existing = _read_json_strict(path, force=force) if path.exists() else {}
+    try:
+        text = hook_removal.read_text_exact(path) if path.exists() else ""
+        jsonc_loads(text)
+    except (OSError, ValueError):
+        text = ""  # force quarantined a corrupt file above
+    new_text = hook_removal.update_json_text(text, updates)
+    if text and json.dumps(existing, sort_keys=True) == json.dumps(jsonc_loads(new_text), sort_keys=True):
+        return False
+    guard = WriteGuard.current()
+    if guard:
+        guard.confirm(path, "modify" if path.exists() else "create")
+    if not new_text.endswith("\n") and not text:
+        new_text += "\n"
+    _write_text_atomic(path, new_text)
+    return True
+
+
+def _register_hook_file(path: Path, rules: dict[str, list[dict]], *, force: bool = False, **top_level: object) -> bool:
+    """The single merge-and-write used for every tool's hook file."""
+    existing = _read_json_strict(path, force=force) if path.exists() else {}
+    current = existing.get("hooks", {})
+    if not isinstance(current, dict):
+        raise click.ClickException(f'{path}: "hooks" is not an object; fix it by hand, then re-run')
+    updates: dict = {"hooks": merge_aictl_hooks(current, rules), **top_level}
+    return _update_json_file(path, updates, force=force)
 
 
 @click.group()
@@ -514,7 +624,7 @@ def install(port: int | None, scope: str, events: str | None, force: bool, dry_r
     is rejected unless --force is passed.
     """
     if not dry_run:
-        guard = WriteGuard.install("hooks install")
+        WriteGuard.install("hooks install")
     if port is None:
         port = _default_port()
     event_list = [e.strip() for e in events.split(",")] if events else None
@@ -556,19 +666,17 @@ def install(port: int | None, scope: str, events: str | None, force: bool, dry_r
     # Merge hooks into existing settings: strip every prior aictl rule (from
     # all events, so stale ones go too), keep user hooks, append ours.
     hook_config = _build_hook_config(port, event_list, source_tool="claude", scope=scope)
-    existing["hooks"] = merge_aictl_hooks(existing_hooks, hook_config)
-
     if dry_run:
+        existing["hooks"] = merge_aictl_hooks(existing_hooks, hook_config)
         _print_settings_diff(settings_path, before_snapshot, existing)
         click.echo(f"\n[dry-run] Would install {len(target_events)} hook events → localhost:{port}/api/hooks")
         return
 
-    guard.confirm(settings_path, "modify")
-    _write_json_atomic(settings_path, existing)
+    _register_hook_file(settings_path, hook_config, force=force)
 
     click.echo(f"Installed {len(target_events)} hook events → localhost:{port}/api/hooks")
     click.echo(f"  Scope: {scope} ({settings_path})")
-    click.echo("  Mode: stdin passthrough (reads full event payload)")
+    click.echo("  Mode: async, fail-open (reads full event payload, prints nothing)")
     if conflicts:
         click.echo(f"  Note: {len(conflicts)} event(s) have additional non-aictl hooks (preserved)")
 
@@ -586,54 +694,53 @@ def uninstall(scope: str, force: bool, dry_run: bool):
     settings.json must not leave Gemini / Copilot hooks firing forever.
     """
     if not dry_run:
-        guard = WriteGuard.install("hooks uninstall")
+        WriteGuard.install("hooks uninstall")
     settings_path = _settings_path(scope)
-    failures: list[str] = []
-
+    if force and settings_path.exists():
+        _read_json_strict(settings_path, force=True)  # quarantine a corrupt file first
     if not settings_path.exists():
         click.echo(f"No settings file found for Claude Code at {settings_path}.")
-    else:
-        try:
-            existing = _read_json_strict(settings_path, force=force)
-        except click.ClickException as exc:
-            # Keep going: the other tools' files are independent of this one.
-            click.echo(f"Claude Code hooks left intact at {settings_path}: {exc.message}", err=True)
-            failures.append(str(settings_path))
-            existing = None
-        if existing is not None:
-            before_snapshot = json.loads(json.dumps(existing))
-            # Walk every event present in the file, not just the current
-            # HOOK_EVENTS: rules aictl installed under an event that was later
-            # dropped from the list (e.g. WorktreeCreate) must still go.
-            hooks_config, removed = strip_aictl_hooks(existing.get("hooks", {}))
-            if hooks_config:
-                existing["hooks"] = hooks_config
-            elif "hooks" in existing:
-                del existing["hooks"]
-
-            if dry_run:
-                _print_settings_diff(settings_path, before_snapshot, existing)
-                click.echo(f"\n[dry-run] Would remove {removed} aictl hook rule(s) from {settings_path}")
-            else:
-                guard.confirm(settings_path, "modify")
-                _write_json_atomic(settings_path, existing)
-                click.echo(f"Removed {removed} aictl hook rule(s) from {settings_path}")
-
-    if dry_run:
-        click.echo(f"[dry-run] Would also purge aictl hooks from {_vscode_hook_settings_path(scope)}")
-        click.echo(f"[dry-run] Would also purge aictl hooks from {_gemini_settings_path(scope)}")
-        return
-
-    # Also purge the VS Code Copilot hook file and Gemini CLI settings
-    # (scope-symmetric — `aictl disable` inherits this via ctx.invoke).
-    other_actions: list[str] = []
-    _uninstall_vscode_hooks(scope, other_actions)
-    _uninstall_gemini_hooks(scope, other_actions)
-    for action in other_actions:
-        click.echo(action)
-
-    if failures:
+    sink = _removal_sink(dry_run)
+    for path in (settings_path, _vscode_hook_settings_path(scope), _gemini_settings_path(scope)):
+        hook_removal.remove_from_hook_file(path, sink, delete_if_only=("version",))
+    hook_removal.print_result(sink.result, dry_run=dry_run, echo=click.echo)
+    if sink.result.failures:
+        click.echo(f"Hooks left intact in: {', '.join(sink.result.failures)}", err=True)
         raise SystemExit(1)
+
+
+def _removal_sink(dry_run: bool) -> hook_removal._Sink:
+    """A removal sink wired to this CLI's write guard and mutation ledger."""
+
+    def before(path: Path, op: str) -> None:
+        guard = WriteGuard.current()
+        if guard:
+            guard.confirm(path, op)
+
+    def after(path: Path, op: str, previous: bytes | None, new: bytes | None) -> None:
+        mutation_ledger.record(_ledger_command(), path, op, previous, new)
+
+    return hook_removal._Sink(dry_run, after, before)
+
+
+def _uninstall_from(path: Path, label: str, actions: list[str]) -> None:
+    """Remove aictl rules from one hook file, describing the outcome in *actions*."""
+    sink = _removal_sink(dry_run=False)
+    removed = hook_removal.remove_from_hook_file(path, sink, delete_if_only=("version",))
+    if removed:
+        actions.append(f"Removed {removed} aictl {label} hook(s) → {path}")
+    elif sink.result.failures:
+        actions.append(f"{label} hooks left intact at {path} (unreadable JSON)")
+    elif path.exists():
+        actions.append(f"{label} hooks left intact at {path} (not aictl-owned)")
+
+
+def _uninstall_vscode_hooks(scope: str, actions: list[str]) -> None:
+    _uninstall_from(_vscode_hook_settings_path(scope), "VS Code Copilot", actions)
+
+
+def _uninstall_gemini_hooks(scope: str, actions: list[str]) -> None:
+    _uninstall_from(_gemini_settings_path(scope), "Gemini CLI", actions)
 
 
 def _print_settings_diff(path: Path, before: dict, after: dict) -> None:
@@ -652,7 +759,7 @@ def _print_settings_diff(path: Path, before: dict, after: dict) -> None:
     click.echo("".join(diff), nl=False)
 
 
-# ─── hooks doctor / verify ──────────────────────────────────────────────────
+# ─── hooks status / doctor / verify ──────────────────────────────────────────────────
 
 
 def _rules_list(hooks_cfg: dict, event: str) -> list:
@@ -684,11 +791,9 @@ def _iter_aictl_hook_rules(settings: object):
 
 def _iter_installed_aictl_hooks(settings_path: Path):
     """Yield (event, rule_dict) for every aictl-owned hook in the file at *settings_path*."""
-    if not settings_path.exists():
-        return
     try:
-        settings = read_json_or_fail(settings_path)
-    except CorruptJSONError:
+        settings = jsonc_loads(settings_path.read_text("utf-8"))
+    except (OSError, ValueError):
         return
     yield from _iter_aictl_hook_rules(settings)
 
@@ -761,8 +866,29 @@ def _probe_import(interp: str, cache: dict[str, str | None] | None = None) -> st
     return result
 
 
-def _doctor_check_one(event: str, rule: dict, probe_cache: dict[str, str | None] | None = None) -> dict:
-    """Run static checks against a single hook rule. Returns a result dict."""
+def _hook_script_from_tokens(tokens: list[str]) -> str:
+    """The handler script a command runs, or "" for the older ``-m`` form."""
+    for tok in tokens:
+        if tok.strip('"').endswith("hook_handler.py"):
+            return tok.strip('"')
+    return ""
+
+
+def _doctor_check_one(
+    event: str,
+    rule: dict,
+    probe_cache: dict[str, str | None] | None = None,
+    *,
+    known_events: frozenset[str] | None = None,
+    expected_port: int | None = None,
+    scope: str = "user",
+) -> dict:
+    """Run static checks against a single hook rule. Returns a result dict.
+
+    ``state`` names what is wrong in words a user can act on, and ``fix`` is the
+    exact command that repairs it. `hooks install` purges every old aictl rule
+    from every event, so it cures all of these.
+    """
     import shutil
 
     cmd = _extract_hook_command(rule)
@@ -778,7 +904,9 @@ def _doctor_check_one(event: str, rule: dict, probe_cache: dict[str, str | None]
     legacy = owner != _AICTL_OWNER_MARKER and _is_legacy_aictl_hook(rule)
 
     status = "OK"
+    state = "registered"
     reasons: list[str] = []
+    script = _hook_script_from_tokens(tokens)
 
     if not tokens:
         status = "FAIL"
@@ -790,38 +918,77 @@ def _doctor_check_one(event: str, rule: dict, probe_cache: dict[str, str | None]
             p = Path(interp)
             if not p.exists():
                 status = "FAIL"
+                state = "missing-interpreter"
                 reasons.append(f"interpreter not found: {interp}")
             elif not os.access(str(p), os.X_OK) and not IS_WINDOWS:
                 status = "FAIL"
+                state = "missing-interpreter"
                 reasons.append(f"interpreter not executable: {interp}")
         else:
             if shutil.which(interp) is None:
                 status = "FAIL"
+                state = "missing-interpreter"
                 reasons.append(f"command not on PATH: {interp}")
+        if status != "FAIL" and script and not Path(script).exists():
+            status = "FAIL"
+            state = "stale-path"
+            reasons.append(f"handler script not found: {script}")
 
         # Check 2: aictl importable from this interpreter (only when -m aictl.hook_handler)
         if status != "FAIL" and "-m aictl.hook_handler" in cmd:
             probe_error = _probe_import(interp, probe_cache)
             if probe_error:
                 status = "FAIL"
+                state = "stale-path"
                 reasons.append(probe_error)
+
+    if event in NEVER_REGISTER_EVENTS or (known_events is not None and event not in known_events):
+        status = "FAIL"
+        state = "invalid-event"
+        reasons.append(
+            f"{event} changes host behaviour when hooked"
+            if event in NEVER_REGISTER_EVENTS
+            else f"{event} is not an event of this tool"
+        )
+
+    if expected_port is not None and port is not None and port != expected_port:
+        if status == "OK":
+            status = "WARN"
+            state = "port-mismatch"
+        reasons.append(f"hook posts to port {port}, aictl is configured for {expected_port}")
 
     if legacy:
         # Legacy takes WARN unless something else already FAILed.
         if status == "OK":
             status = "WARN"
         reasons.append("legacy aictl version (missing current owner marker)")
+    if tokens and "|| true" not in cmd and "exit" not in cmd:
+        reasons.append("old command form: not fail-open, slow")
+        if status == "OK":
+            status = "WARN"
+            state = "old-form"
+
+    fix = ""
+    if status != "OK":
+        port_arg = f" --port {expected_port}" if state == "port-mismatch" else ""
+        fix = f"aictl hooks install --scope {scope}{port_arg}"
+        if state in ("missing-interpreter", "stale-path"):
+            remover = hook_removal.aictl_config_dir(Path.home()) / "remove-hooks.py"
+            fix += f'   (if aictl itself is gone: python "{remover}")'
 
     return {
         "event": event,
         "command": cmd,
         "command_summary": _hook_cmd_summary(cmd),
         "interpreter": interp,
+        "script": script,
         "port": port,
         "owner": owner,
         "legacy": legacy,
         "status": status,
+        "state": state,
         "reasons": reasons,
+        "fix": fix,
     }
 
 
@@ -830,17 +997,127 @@ def _doctor_check_one(event: str, rule: dict, probe_cache: dict[str, str | None]
 _iter_installed_vscode_hooks = _iter_installed_aictl_hooks
 
 
+def _hook_targets(scope: str) -> list[tuple[str, Path, frozenset[str], int]]:
+    """``(tool, file, valid events, expected rule count)`` for each tool aictl registers.
+
+    This is the one list of where hooks go; status, doctor and verify read it.
+    """
+    return [
+        ("claude-code", _settings_path(scope), CLAUDE_KNOWN_EVENTS, len(HOOK_EVENTS)),
+        ("gemini-cli", _gemini_settings_path(scope), frozenset(GEMINI_HOOK_EVENTS), len(GEMINI_HOOK_MAP)),
+        ("copilot", _vscode_hook_settings_path(scope), frozenset(VSCODE_HOOK_EVENTS), len(VSCODE_HOOK_EVENTS)),
+    ]
+
+
 def _collect_doctor_results(scope: str) -> list[dict]:
     probe_cache: dict[str, str | None] = {}
-    settings_path = _settings_path(scope)
-    results = [
-        _doctor_check_one(event, rule, probe_cache) for event, rule in _iter_installed_aictl_hooks(settings_path)
-    ]
-    vscode_path = _vscode_hook_settings_path(scope)
-    results.extend(
-        _doctor_check_one(event, rule, probe_cache) for event, rule in _iter_installed_aictl_hooks(vscode_path)
-    )
+    results: list[dict] = []
+    expected_port = _default_port()
+    for tool, path, known, _count in _hook_targets(scope):
+        for event, rule in _iter_installed_aictl_hooks(path):
+            entry = _doctor_check_one(
+                event, rule, probe_cache, known_events=known, expected_port=expected_port, scope=scope
+            )
+            entry["tool"] = tool
+            entry["path"] = str(path)
+            results.append(entry)
     return results
+
+
+def _invalid_tool_configs(scope: str) -> list[dict]:
+    """Every tool config that does not parse, each with the exact fix.
+
+    A tool cannot read these, so they fail the check whether or not aictl caused it.
+    """
+    paths = [path for _tool, path, _known, _count in _hook_targets(scope)]
+    paths.extend([copilot_global_dir() / "config.json", copilot_global_dir() / "settings.json"])
+    paths.extend(hook_removal.vscode_settings_paths(Path.home()))
+    paths.append(codex_global_dir() / "config.toml")
+    out: list[dict] = []
+    for path in dict.fromkeys(paths):
+        try:
+            text = hook_removal.read_text_exact(path)
+        except (OSError, UnicodeDecodeError):
+            continue
+        error = hook_removal.config_error(path, text)
+        if not error:
+            continue
+        repairable = path.suffix == ".toml" and not hook_removal.toml_error(hook_removal.repair_codex_text(text))
+        fix = (
+            "aictl hooks repair"
+            if repairable
+            else f"fix the syntax in {path} by hand ({error}), then re-run this check"
+        )
+        out.append({"path": str(path), "error": error, "fix": fix})
+    return out
+
+
+def _file_state(path: Path) -> str:
+    """``absent``, ``corrupt`` or ``ok``, so a broken file is reported rather than read as empty."""
+    if not path.exists():
+        return "absent"
+    try:
+        jsonc_loads(path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return "corrupt"
+    return "ok"
+
+
+def _disabled_files(tool: str, path: Path) -> list[Path]:
+    """aictl hook files switched off by renaming, next to this tool's hook file."""
+    return hook_removal.disabled_by_rename(path.parent) if tool == "copilot" else []
+
+
+def _collect_hook_status(scope: str) -> dict:
+    """Per-tool truth: what is registered, what is wrong, and the command that fixes it."""
+    results = _collect_doctor_results(scope)
+    tools: list[dict] = []
+    for tool, path, _known, expected in _hook_targets(scope):
+        rules = [r for r in results if r["tool"] == tool]
+        file_state = _file_state(path)
+        problems = sorted({r["state"] for r in rules if r["status"] != "OK"})
+        renamed = _disabled_files(tool, path)
+        if file_state == "corrupt":
+            state, fix = "corrupt", f"fix the JSON in {path}, then: aictl hooks install --scope {scope}"
+        elif not rules and renamed:
+            state = "disabled-by-rename"
+            fix = "to remove it: aictl disable; to turn hooks back on: aictl enable --replace-disabled"
+        elif not rules:
+            state, fix = "not-registered", ""
+        elif problems:
+            state = problems[0]
+            fix = next(r["fix"] for r in rules if r["state"] == state)
+        elif len(rules) < expected:
+            state, fix = "partial", f"aictl hooks install --scope {scope}"
+        else:
+            state, fix = "registered", ""
+        tools.append(
+            {
+                "tool": tool,
+                "scope": scope,
+                "path": str(path),
+                "symlink": path.is_symlink(),
+                "state": state,
+                "problems": problems,
+                "rules": len(rules),
+                "expected_rules": expected,
+                "ports": sorted({r["port"] for r in rules if r["port"] is not None}),
+                "disabled_files": [str(p) for p in renamed],
+                "fix": fix,
+            }
+        )
+    leftovers = hook_removal.remove_everything(Path.home(), projects=[Path.cwd()], dry_run=True)
+    invalid = _invalid_tool_configs(scope)
+    return {
+        "scope": scope,
+        "port": _default_port(),
+        "tools": tools,
+        "invalid_configs": invalid,
+        "leftovers": leftovers.changes,
+        "notes": leftovers.notes,
+        "ok": not invalid
+        and not any(t["state"] not in ("registered", "not-registered", "disabled-by-rename") for t in tools),
+    }
 
 
 def _emit_doctor_text(results: list[dict], settings_path: Path) -> None:
@@ -857,6 +1134,74 @@ def _emit_doctor_text(results: list[dict], settings_path: Path) -> None:
         if r["port"] is not None:
             line += f"   port={r['port']}"
         click.echo(line)
+    fixes = sorted({r["fix"] for r in results if r.get("fix")})
+    for fix in fixes:
+        click.echo(f"  fix: {fix}")
+
+
+@hooks.command(name="status")
+@click.option("--scope", type=click.Choice(["project", "user"]), default="user", help="Which hook files to report")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON")
+def hooks_status_cmd(scope: str, as_json: bool):
+    """Report each tool's real hook state and the exact command that fixes it.
+
+    Also lists every leftover `aictl disable` would remove. Reads only; exits 1
+    when a tool's hooks need attention.
+    """
+    report = _collect_hook_status(scope)
+    if as_json:
+        click.echo(json.dumps(report, indent=2))
+    else:
+        for t in report["tools"]:
+            link = " (symlink)" if t["symlink"] else ""
+            ports = f" port {','.join(map(str, t['ports']))}" if t["ports"] else ""
+            click.echo(
+                f"{t['tool']:<12} {t['state']:<20} {t['rules']}/{t['expected_rules']} rules{ports}  {t['path']}{link}"
+            )
+            for renamed in t["disabled_files"]:
+                click.echo(f"  disabled by rename: {renamed}")
+            if t["fix"]:
+                click.echo(f"  fix: {t['fix']}")
+        for bad in report["invalid_configs"]:
+            click.echo(f"[FAIL] invalid config: {bad['path']}: {bad['error']}")
+            click.echo(f"  fix: {bad['fix']}")
+        if report["leftovers"]:
+            click.echo("\nLeftovers. To remove them: aictl disable")
+            for line in report["leftovers"]:
+                click.echo(f"  {line}")
+        for line in report["notes"]:
+            click.echo(f"  note: {line}")
+    if not report["ok"]:
+        raise SystemExit(1)
+
+
+@hooks.command(name="repair")
+@click.option("--dry-run", is_flag=True, help="Say what would change and write nothing")
+def repair(dry_run: bool):
+    """Repair a Codex config.toml that an older `aictl enable` made invalid.
+
+    Removes only aictl's inline exporter keys that collide with an
+    ``[otel.exporter.*]`` subtable. Anything else invalid is left for you to fix.
+    """
+    path = codex_global_dir() / "config.toml"
+    try:
+        text = hook_removal.read_text_exact(path)
+    except OSError:
+        click.echo(f"Nothing to repair: {path} does not exist")
+        return
+    if not hook_removal.toml_error(text):
+        click.echo(f"Nothing to repair: {path} is valid")
+        return
+    fixed = hook_removal.repair_codex_text(text)
+    error = hook_removal.toml_error(fixed)
+    if error:
+        raise click.ClickException(f"cannot repair {path} automatically ({error}); fix it by hand")
+    if dry_run:
+        click.echo(f"[dry-run] would remove the colliding inline exporter keys from {path}")
+        return
+    WriteGuard.install("hooks repair")
+    _write_text_atomic(path, fixed)
+    click.echo(f"Repaired {path}")
 
 
 @hooks.command(name="doctor")
@@ -873,19 +1218,28 @@ def doctor(scope: str, as_json: bool):
     """
     settings_path = _settings_path(scope)
     results = _collect_doctor_results(scope)
+    invalid = _invalid_tool_configs(scope)
+    renamed = [str(p) for tool, path, _k, _c in _hook_targets(scope) for p in _disabled_files(tool, path)]
     if as_json:
         click.echo(
             json.dumps(
                 {
                     "settings_path": str(settings_path),
                     "results": results,
+                    "invalid_configs": invalid,
+                    "disabled_by_rename": renamed,
                 },
                 indent=2,
             )
         )
     else:
         _emit_doctor_text(results, settings_path)
-    if any(r["status"] == "FAIL" for r in results):
+        for path in renamed:
+            click.echo(f"  disabled by rename: {path}")
+        for bad in invalid:
+            click.echo(f"  [FAIL] invalid config: {bad['path']}: {bad['error']}")
+            click.echo(f"  fix: {bad['fix']}")
+    if invalid or any(r["status"] == "FAIL" for r in results):
         raise SystemExit(1)
 
 
@@ -1145,46 +1499,22 @@ def _codex_otel_block(endpoint: str) -> str:
 
 
 _CODEX_OTEL_SECTION_RE = re.compile(r"(?ms)^\[otel\][^\n]*\n.*?(?=^\[|\Z)")
+_CODEX_EXPORTER_TABLE_RE = re.compile(r"(?m)^\s*\[otel\.(exporter|metrics_exporter|trace_exporter)\b")
 
 
 def _codex_otel_exporter_configured(content: str) -> bool:
-    """True when the ``[otel]`` table already names a real exporter."""
+    """True when an exporter exists in either TOML form.
+
+    ``exporter = {...}`` inside ``[otel]`` and an ``[otel.exporter.otlp-http]``
+    subtable declare the same key. Adding the first next to the second makes the
+    file invalid TOML, so both count.
+    """
+    if _CODEX_EXPORTER_TABLE_RE.search(content):
+        return True
     m = _CODEX_OTEL_SECTION_RE.search(content)
     if not m:
         return False
-    section = m.group(0)
-    return bool(re.search(r"^\s*exporter\s*=\s*(?!\"none\")", section, re.M))
-
-
-def _upsert_codex_otel(codex_toml: Path, endpoint: str) -> str:
-    """Write/replace the aictl ``[otel]`` table in *codex_toml*. Returns an action label.
-
-    * No file → create it with the block.
-    * No ``[otel]`` → append the block.
-    * ``[otel]`` with a real ``exporter`` → leave the user's config alone.
-    * ``[otel]`` without an exporter (the legacy aictl ``enabled = true``
-      shape, which Codex ignores) → replace that table with the block.
-    """
-    block = _codex_otel_block(endpoint)
-    guard = WriteGuard.current()
-    if not codex_toml.exists():
-        if guard:
-            guard.confirm(codex_toml, "create")
-        _write_text_atomic(codex_toml, block)
-        return "created"
-    content = codex_toml.read_text(encoding="utf-8")
-    if "[otel]" not in content:
-        if guard:
-            guard.confirm(codex_toml, "modify")
-        sep = "" if content.endswith("\n") or not content else "\n"
-        _write_text_atomic(codex_toml, content + sep + "\n" + block)
-        return "appended"
-    if _codex_otel_exporter_configured(content):
-        return "already configured"
-    if guard:
-        guard.confirm(codex_toml, "modify")
-    _write_text_atomic(codex_toml, _CODEX_OTEL_SECTION_RE.sub(lambda _m: block, content, count=1))
-    return "replaced legacy [otel] table"
+    return bool(re.search(r"^\s*(metrics_exporter\s*=|exporter\s*=\s*(?!\"none\"))", m.group(0), re.M))
 
 
 def _build_env_block(port: int, tools: list[str], profile: str | None = None) -> dict[str, str]:
@@ -1447,19 +1777,10 @@ _VSCODE_AGENT_SETTINGS: dict[str, object] = {
     # Agents
     "chat.agent.enabled": True,
     # Hooks
+    # chat.useClaudeHooks stays off: with it VS Code runs every Claude hook of
+    # other Claude hook too, and aictl's own Claude rules fire a second time.
     "chat.useHooks": True,
-    "chat.useClaudeHooks": True,
     "chat.useCustomAgentHooks": True,
-    # Hook discovery locations. VS Code's defaults are ``.github/hooks`` and
-    # ``~/.copilot/hooks``; a user-set map REPLACES the defaults, so the
-    # user-scope aictl file must be listed explicitly. Merged into any
-    # existing map by _enable_vscode (never overwrites user entries).
-    "chat.hookFilesLocations": {
-        ".github/hooks": True,
-        "~/.copilot/hooks": True,
-        ".claude/settings.json": True,
-        ".claude/settings.local.json": True,
-    },
     # Instructions & context files
     "chat.useAgentsMdFile": True,
     "chat.includeApplyingInstructions": True,
@@ -1472,30 +1793,41 @@ _VSCODE_AGENT_SETTINGS: dict[str, object] = {
 
 
 def _write_json_settings(path: Path, updates: dict, *, force: bool = False) -> str:
-    """Merge updates into an existing JSON settings file. Returns status string.
+    """Merge updates into a JSON(C) settings file, recording how to undo them.
 
-    Top-level keys are replaced, except that a dict value is merged one
-    level deep into an existing dict (so ``chat.hookFilesLocations`` adds
-    aictl's locations without dropping the user's own entries).
+    Top-level keys are replaced, except that a dict value is merged one level
+    deep into an existing dict. Comments and formatting survive. Each changed
+    key's previous value goes into a manifest so ``aictl disable`` restores
+    exactly what was there. Returns a status string.
     """
-    if path.exists():
-        existing = _read_json_strict(path, force=force)
-        status = "updated"
-    else:
-        existing = {}
-        path.parent.mkdir(parents=True, exist_ok=True)
-        status = "created"
+    status = "updated" if path.exists() else "created"
+    existing = _read_json_strict(path, force=force) if path.exists() else {}
+    merged: dict = {}
     for key, value in updates.items():
         current = existing.get(key)
-        if isinstance(value, dict) and isinstance(current, dict):
-            existing[key] = {**current, **value}
-        else:
-            existing[key] = value
-    guard = WriteGuard.current()
-    if guard:
-        guard.confirm(path, "modify")
-    _write_json_atomic(path, existing, indent=4)
+        merged[key] = {**current, **value} if isinstance(value, dict) and isinstance(current, dict) else value
+    _record_vscode_manifest(path, existing, merged)
+    if not _update_json_file(path, merged, force=force):
+        return "unchanged"
     return status
+
+
+def _record_vscode_manifest(path: Path, existing: dict, merged: dict) -> None:
+    """Remember the pre-aictl value of each key (first write wins across re-runs)."""
+    home = Path.home()
+    manifest = hook_removal.load_manifest(home)
+    entries = manifest.setdefault(str(path), {})
+    changed = False
+    for key, value in merged.items():
+        if key in entries:
+            if entries[key].get("wrote") != value:
+                entries[key]["wrote"] = value
+                changed = True
+        elif existing.get(key, hook_removal.DELETE) != value:
+            entries[key] = {"had": key in existing, "prev": existing.get(key), "wrote": value}
+            changed = True
+    if changed:
+        _write_json_atomic(hook_removal.manifest_path(home), manifest)
 
 
 def _vscode_hook_settings_path(scope: str) -> Path:
@@ -1513,24 +1845,28 @@ def _vscode_hook_settings_path(scope: str) -> Path:
 def _build_vscode_hook_config(port: int, events: list[str] | None, *, scope: str) -> dict[str, list[dict]]:
     """Build the Copilot-native flat hook config.
 
-    Copilot loads ``{"hooks": {"EventName": [{"type":"command","command":"..."}]}}``.
+    Copilot loads ``{"version": 1, "hooks": {"EventName": [{"type":"command","command":"..."}]}}``.
     Each command entry carries the ``_aictl_owner`` marker so doctor / diff
     tooling can attribute it back to us. VS Code ignores unknown keys in
     hook entries, so the marker is safe to include.
     """
     target_events = events or VSCODE_HOOK_EVENTS
-    python = _python_cmd()  # Node shell (cmd.exe on Windows): plain quoted path, no PowerShell `&`
     source_id = _source_id(scope, "vscode")
+    shell = "cmd" if IS_WINDOWS else "posix"  # Node shell: plain quoted path, no PowerShell `&`
     hooks: dict[str, list[dict]] = {}
     for event in target_events:
-        cmd = f"{python} -m aictl.hook_handler --event {event} --port {port} --source {source_id}"
-        hooks[event] = [
-            {
-                "type": "command",
-                "command": cmd,
-                "_aictl_owner": _AICTL_OWNER_MARKER,
-            }
-        ]
+        if event not in VSCODE_HOOK_EVENTS:
+            raise ValueError(f"refusing to register {event!r}: not a Copilot hook event")
+        label = _COPILOT_EVENT_LABELS.get(event, event)
+        entry: dict = {"type": "command", "command": _handler_command(label, port, source_id, shell=shell)}
+        if IS_WINDOWS:
+            # Copilot copies `command` into `powershell` when that is absent, and
+            # the cmd.exe guard is a syntax error there. Each shell gets its own line.
+            entry["bash"] = _handler_command(label, port, source_id, shell="posix")
+            entry["powershell"] = _handler_command(label, port, source_id, shell="powershell")
+        entry["timeoutSec"] = _COPILOT_HOOK_TIMEOUT_SEC
+        entry["_aictl_owner"] = _AICTL_OWNER_MARKER
+        hooks[event] = [entry]
     return hooks
 
 
@@ -1555,50 +1891,12 @@ def _install_vscode_hooks(
         actions.append(f"VS Code Copilot hooks FAILED ({exc})")
         return
 
-    hook_path.parent.mkdir(parents=True, exist_ok=True)
-    existing = _read_json_strict(hook_path, force=force) if hook_path.exists() else {}
+    if scope == "project" and _would_be_committed(hook_path):
+        actions.append(f"VS Code Copilot hooks skipped: {hook_path} is not gitignored and holds machine paths")
+        return
     hook_config = _build_vscode_hook_config(port, None, scope=scope)
-    existing["hooks"] = merge_aictl_hooks(existing.get("hooks", {}), hook_config)
-    guard = WriteGuard.current()
-    if guard:
-        guard.confirm(hook_path, "modify" if hook_path.exists() else "create")
-    _write_json_atomic(hook_path, existing)
+    _register_hook_file(hook_path, hook_config, force=force, version=_COPILOT_HOOK_FILE_VERSION)
     actions.append(f"VS Code Copilot hooks ({len(VSCODE_HOOK_EVENTS)} events) → {hook_path}")
-
-
-def _uninstall_vscode_hooks(scope: str, actions: list[str]) -> None:
-    """Remove aictl-owned entries from the VS Code Copilot hook file.
-
-    Deletes the file when nothing else is left in it; otherwise rewrites it
-    with only the user's entries (a mixed file used to be left untouched, so
-    aictl hooks kept firing after uninstall).
-    """
-    hook_path = _vscode_hook_settings_path(scope)
-    if not hook_path.exists():
-        return
-    try:
-        data = read_json_or_fail(hook_path)
-    except CorruptJSONError:
-        actions.append(f"VS Code Copilot hooks left intact at {hook_path} (unreadable JSON)")
-        return
-    remaining, removed = strip_aictl_hooks(data.get("hooks", {}))
-    if not removed:
-        actions.append(f"VS Code Copilot hooks left intact at {hook_path} (not aictl-owned)")
-        return
-    guard = WriteGuard.current()
-    other_keys = {k: v for k, v in data.items() if k != "hooks"}
-    if not remaining and not other_keys:
-        if guard:
-            guard.confirm(hook_path, "delete")
-        _delete_with_ledger(hook_path)
-        actions.append(f"Removed aictl VS Code Copilot hooks → {hook_path}")
-        return
-    if remaining:
-        other_keys["hooks"] = remaining
-    if guard:
-        guard.confirm(hook_path, "modify")
-    _write_json_atomic(hook_path, other_keys)
-    actions.append(f"Removed {removed} aictl VS Code Copilot hook(s) → {hook_path} (user entries kept)")
 
 
 def _gemini_settings_path(scope: str) -> Path:
@@ -1608,82 +1906,44 @@ def _gemini_settings_path(scope: str) -> Path:
     return gemini_global_dir() / "settings.json"
 
 
-def _uninstall_gemini_hooks(scope: str, actions: list[str]) -> None:
-    """Remove aictl-owned hook entries from Gemini CLI settings.
-
-    Mirrors the Gemini half of ``_install_hooks``: only entries carrying
-    the aictl ownership marker (or matching the legacy aictl command
-    shape) are purged. User hooks and every other settings key are
-    preserved byte-for-byte in the JSON structure.
-    """
-    gemini_path = _gemini_settings_path(scope)
-    if not gemini_path.exists():
-        return
-    try:
-        existing = read_json_or_fail(gemini_path)
-    except CorruptJSONError:
-        actions.append(f"Gemini CLI hooks left intact at {gemini_path} (unreadable settings.json)")
-        return
-
-    g_hooks, removed = strip_aictl_hooks(existing.get("hooks", {}))
-    if not removed:
-        return
-
-    if g_hooks:
-        existing["hooks"] = g_hooks
-    else:
-        existing.pop("hooks", None)
-
-    guard = WriteGuard.current()
-    if guard:
-        guard.confirm(gemini_path, "modify")
-    _write_json_atomic(gemini_path, existing)
-    actions.append(f"Removed aictl Gemini CLI hooks → {gemini_path}")
-
-
 def _install_hooks(scope: str, port: int, actions: list[str], *, force: bool = False) -> None:
-    """Install Claude Code hooks and report actions."""
-    if scope == "project":
-        settings_path = Path.cwd() / ".claude" / "settings.local.json"
-    else:
-        settings_path = claude_global_dir() / "settings.json"
+    """Register hooks for every supported tool, one file and one rule builder per tool.
 
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    A tool whose file cannot be used is reported as FAILED and the others still
+    get registered.
+    """
 
-    existing: dict = _read_json_strict(settings_path, force=force)
+    def register(label: str, path: Path, rules: dict, count: int, **top_level: object) -> None:
+        try:
+            _register_hook_file(path, rules, force=force, **top_level)
+            actions.append(f"{label} hooks ({count} events) → {path}")
+        except click.ClickException as exc:
+            actions.append(f"{label} hooks FAILED: {exc.message}")
 
-    # merge_aictl_hooks purges ALL old aictl rules from ALL event keys first
-    # (cleans up renamed/removed events), keeps user rules, appends ours.
-    hook_config = _build_hook_config(port, None, source_tool="claude", scope=scope)
-    existing["hooks"] = merge_aictl_hooks(existing.get("hooks", {}), hook_config)
-
-    guard = WriteGuard.current()
-    if guard:
-        guard.confirm(settings_path, "modify")
-    _write_json_atomic(settings_path, existing)
-    actions.append(f"Claude Code hooks ({len(HOOK_EVENTS)} events) → {settings_path}")
-
-    # Gemini CLI hooks
-    gemini_path = _gemini_settings_path(scope)
-    gemini_path.parent.mkdir(parents=True, exist_ok=True)
-    g_existing: dict = _read_json_strict(gemini_path, force=force)
-
-    # Map internal HOOK_EVENTS (PascalCase) to official Gemini CLI events
-    # Use the same hook configuration logic as Claude but with Gemini names
-    gemini_only_events = [e for e in HOOK_EVENTS if e in GEMINI_HOOK_MAP]
-    hook_config = _build_hook_config(
-        port, gemini_only_events, event_map=GEMINI_HOOK_MAP, matcher="*", source_tool="gemini", scope=scope
+    register(
+        "Claude Code",
+        _settings_path(scope),
+        _build_hook_config(port, None, source_tool="claude", scope=scope),
+        len(HOOK_EVENTS),
     )
-    g_existing["hooks"] = merge_aictl_hooks(g_existing.get("hooks", {}), hook_config)
 
-    if guard:
-        guard.confirm(gemini_path, "modify")
-    _write_json_atomic(gemini_path, g_existing)
-    actions.append(f"Gemini CLI hooks ({len(hook_config)} events) → {gemini_path}")
+    # Map internal HOOK_EVENTS (PascalCase) to official Gemini CLI events.
+    gemini_path = _gemini_settings_path(scope)
+    if scope == "project" and _would_be_committed(gemini_path):
+        actions.append(f"Gemini CLI hooks skipped: {gemini_path} is not gitignored and holds machine paths")
+    else:
+        gemini_only_events = [e for e in HOOK_EVENTS if e in GEMINI_HOOK_MAP]
+        gemini_rules = _build_hook_config(
+            port, gemini_only_events, event_map=GEMINI_HOOK_MAP, matcher="*", source_tool="gemini", scope=scope
+        )
+        register("Gemini CLI", gemini_path, gemini_rules, len(gemini_rules))
 
-    # VS Code Copilot hooks — separate file under chat.hookFilesLocations
-    # defaults (``.github/hooks`` for project, ``~/.copilot/hooks`` for user).
-    _install_vscode_hooks(scope, port, actions, force=force)
+    # Copilot: a separate file in chat.hookFilesLocations' default directories
+    # (``.github/hooks`` for project, ``~/.copilot/hooks`` for user).
+    try:
+        _install_vscode_hooks(scope, port, actions, force=force)
+    except click.ClickException as exc:
+        actions.append(f"VS Code Copilot hooks FAILED: {exc.message}")
 
 
 def _enable_otel(
@@ -1718,7 +1978,8 @@ def _enable_otel(
             create_label="OTel env vars → {profile} (created)",
         )
 
-    if IS_MACOS:
+    # launchd state is per user, not per $HOME: a redirected HOME must not leak out.
+    if IS_MACOS and hook_removal.is_real_home(Path.home()):
         for key, val in env_block.items():
             _run_env_persist(["launchctl", "setenv", key, val])
         actions.append(f"OTel env vars → macOS launchctl ({len(env_block)} vars)")
@@ -1732,14 +1993,14 @@ def _enable_otel(
         except Exception as exc:  # noqa: BLE001 — best-effort integration; FAILED is reported and exits 1
             actions.append(f"Copilot OTel → VS Code settings.json FAILED ({exc})")
 
-    # Codex config.toml
+    # Codex config.toml is read for status but never written: a config using
+    # [otel.exporter.*] subtables cannot safely gain the inline form, and the
+    # result would stop Codex from starting.
     if "codex" in tools:
-        codex_toml = codex_global_dir() / "config.toml"
-        try:
-            status = _upsert_codex_otel(codex_toml, endpoint)
-            actions.append(f"Codex OTel → {codex_toml} ({status})")
-        except Exception as exc:  # noqa: BLE001 — best-effort integration; FAILED is reported and exits 1
-            actions.append(f"Codex OTel → {codex_toml} FAILED ({exc})")
+        actions.append(
+            f"Codex OTel not configured, {codex_global_dir() / 'config.toml'} left untouched: "
+            "aictl no longer writes this file, so add an [otel] exporter there yourself"
+        )
 
 
 def _enable_vscode(scope: str, port: int, actions: list[str], *, force: bool = False) -> None:
@@ -1753,12 +2014,35 @@ def _enable_vscode(scope: str, port: int, actions: list[str], *, force: bool = F
             actions.append(f"VS Code agent settings FAILED ({exc})")
             return
 
+    if scope == "project" and _would_be_committed(settings_path):
+        actions.append(f"VS Code agent settings skipped: {settings_path} is not gitignored")
+        return
     try:
-        status = _write_json_settings(settings_path, _VSCODE_AGENT_SETTINGS, force=force)
-        n = len(_VSCODE_AGENT_SETTINGS)
+        updates = dict(_VSCODE_AGENT_SETTINGS)
+        # A user-set map REPLACES VS Code's defaults, so only then does our hook
+        # location need listing. Without a map the defaults already include it.
+        current = _read_json_strict(settings_path, force=force) if settings_path.exists() else {}
+        locations = current.get("chat.hookFilesLocations")
+        if isinstance(locations, dict) and scope == "user" and "~/.copilot/hooks" not in locations:
+            updates["chat.hookFilesLocations"] = {"~/.copilot/hooks": True}
+        status = _write_json_settings(settings_path, updates, force=force)
+        n = len(updates)
         actions.append(f"VS Code agent/hooks/context ({n} settings) → {settings_path} ({status})")
     except Exception as exc:  # noqa: BLE001 — best-effort integration; FAILED is reported and exits 1
         actions.append(f"VS Code agent settings → {settings_path} FAILED ({exc})")
+
+
+def _leave_removal_script(actions: list[str]) -> None:
+    """Copy the standalone remover where it survives `pipx uninstall aictl`."""
+    target = hook_removal.aictl_config_dir(Path.home()) / "remove-hooks.py"
+    source = Path(hook_removal.__file__)
+    try:
+        if not target.exists() or target.read_bytes() != source.read_bytes():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            hook_removal.write_atomic(target, source.read_text("utf-8"))
+        actions.append(f"Removal script → {target} (needs only python3, works without aictl)")
+    except OSError as exc:
+        actions.append(f"Removal script not written: {exc}")
 
 
 @click.command("enable")
@@ -1771,7 +2055,12 @@ def _enable_vscode(scope: str, port: int, actions: list[str], *, force: bool = F
 @click.option("--port", default=None, type=int, help="aictl server port (default: $AICTL_PORT or 8484)")
 @click.option("--dry-run", is_flag=True, help="Show what would be done without writing anything")
 @click.option("--force", is_flag=True, help="Overwrite corrupted settings.json files instead of refusing")
-def enable(scope: str, port: int | None, dry_run: bool, force: bool) -> None:
+@click.option(
+    "--replace-disabled",
+    is_flag=True,
+    help="Register Copilot hooks even though a renamed aictl.json*.disabled file is present",
+)
+def enable(scope: str, port: int | None, dry_run: bool, force: bool, replace_disabled: bool) -> None:
     """Enable all aictl integrations: hooks, OTel, and VS Code agent features.
 
     \b
@@ -1783,7 +2072,10 @@ def enable(scope: str, port: int | None, dry_run: bool, force: bool) -> None:
     \b
     Scope:
       --scope user     global — applies to all projects (default)
-      --scope project  local  — writes to .claude/settings.local.json and .vscode/settings.json
+      --scope project  local  — writes hooks to .claude/settings.local.json; never to a file
+                       the repository would commit; OTel is not touched
+
+    Undo with `aictl disable`, or without aictl: run remove-hooks.py from aictl's config directory
 
     \b
     Examples:
@@ -1792,6 +2084,13 @@ def enable(scope: str, port: int | None, dry_run: bool, force: bool) -> None:
         aictl enable --dry-run           # preview without writing
     """
     port = port if port is not None else _default_port()
+    renamed = hook_removal.disabled_by_rename(_vscode_hook_settings_path(scope).parent)
+    if renamed and not replace_disabled:
+        names = ", ".join(str(p) for p in renamed)
+        raise click.ClickException(
+            f"Copilot hooks were disabled by renaming: {names}. Nothing was changed. "
+            "To turn them back on: aictl enable --replace-disabled. To remove them: aictl disable."
+        )
     if not dry_run:
         WriteGuard.install("enable")
 
@@ -1824,19 +2123,25 @@ def enable(scope: str, port: int | None, dry_run: bool, force: bool) -> None:
                 f"  [otel]   Windows env vars via setx ({len(_build_env_block(port, list(_ALL_OTEL_TOOLS)))} vars)"
             )
         else:
-            for p in _shell_profiles():
-                click.echo(f"  [otel]   {p}")
-            if IS_MACOS:
-                click.echo("  [otel]   macOS launchctl")
-        click.echo(f"  [otel]   {vscode_path} (Copilot OTel keys)")
+            if scope == "user":
+                for p in _shell_profiles():
+                    click.echo(f"  [otel]   {p}")
+                if IS_MACOS:
+                    click.echo("  [otel]   macOS launchctl")
+        if scope == "user":
+            click.echo(f"  [otel]   {vscode_path} (Copilot OTel keys)")
         click.echo(f"  [vscode] {vscode_path} ({len(_VSCODE_AGENT_SETTINGS)} agent/hooks/context keys)")
         return
 
     actions: list[str] = []
 
     _install_hooks(scope, port, actions, force=force)
-    _enable_otel(port, actions, force=force)
+    if scope == "user":
+        _enable_otel(port, actions, force=force)
+    else:
+        actions.append("OTel not touched: it is machine-wide, enable it with `aictl otel enable`")
     _enable_vscode(scope, port, actions, force=force)
+    _leave_removal_script(actions)
 
     failures = [a for a in actions if "FAILED" in a]
     click.secho("\naictl integrations enabled:", fg="green", bold=True)

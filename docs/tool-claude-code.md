@@ -37,7 +37,7 @@ Auto-memory is swapped on profile switch. See [memory.md](memory.md).
 
 ## Hook Integration
 
-`aictl enable` writes nested Claude-format hook entries to `.claude/settings.local.json` (project) or `~/.claude/settings.json` (user). Each command invokes `python -m aictl.hook_handler --event <E> --port <P> --source <id>`, where `<id>` is `root.claude-user` for user scope or `<sanitized-cwd-basename>.claude-project` for project scope. The `<id>` lets the aictl server attribute every POST to `/api/hooks` back to the exact wrapper that emitted it — critical when both user-global and per-project hooks fire concurrently. See `docs/tool-copilot.md` for the VS Code counterpart and `docs/tool-claude-desktop.md` for the MCP side.
+`aictl enable` and `aictl hooks install` write nested Claude-format hook entries to `.claude/settings.local.json` (project) or `~/.claude/settings.json` (user). Nothing else registers hooks: not `serve`, not the dashboard, and `ctx deploy` only writes rules present in `.context.toml`. Each command is `"<python>" -I -S "<path>/aictl/hook_handler.py" --event <E> --port <P> --source <S> 2>/dev/null || true`, with `"async": true` and `"timeout": 5` (`SessionEnd` stays synchronous). The stdlib-only handler takes about 18 ms, prints nothing and always exits 0; the `|| true` covers an interpreter that is gone. `WorktreeCreate`, `Elicitation`, `ElicitationResult` and `PreModelSwitch` are never registered, because a hook there changes what Claude does.
 
 ## VS Code Extension
 

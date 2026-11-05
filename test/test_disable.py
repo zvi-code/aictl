@@ -34,7 +34,6 @@ def patched_env(tmp_path, monkeypatch):
         "# trailing user content\n"
     )
     monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [profile])
-    monkeypatch.setattr("aictl.commands.disable._shell_profiles", lambda: [profile])
     # Pre-populate an env.sh so disable has something to delete.
     env_sh = tmp_path / ".config" / "aictl" / "env.sh"
     env_sh.parent.mkdir(parents=True)
@@ -72,7 +71,7 @@ class TestDisableDryRun:
         result = runner.invoke(disable, ["--dry-run"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
         assert "Dry run" in result.output
-        assert "hooks uninstall" in result.output
+        assert "env.sh" in result.output
         # env.sh still there
         assert patched_env["env_sh"].exists()
         # profile untouched
@@ -104,14 +103,14 @@ class TestDisable:
         assert "user-script" in cmds
         assert "x" not in cmds
 
-    def test_disable_force_tolerates_corrupt_settings(self, patched_env):
+    def test_disable_continues_past_corrupt_settings(self, patched_env):
         settings = patched_env["home"] / "claude" / "settings.json"
         _seed_settings(settings, corrupt=True)
         runner = CliRunner()
-        result = runner.invoke(disable, ["--force"], catch_exceptions=False)
-        assert result.exit_code == 0, result.output
-        # No CorruptJSONError surfaced.
-        assert "CorruptJSONError" not in result.output
+        result = runner.invoke(disable, [], catch_exceptions=False)
+        assert result.exit_code == 1, result.output  # says so, does not pretend
+        assert settings.read_text() == "{not-valid-json"  # never rewritten
+        assert not patched_env["env_sh"].exists()  # the rest still ran
 
 
 class TestAudit:
