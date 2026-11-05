@@ -88,6 +88,14 @@ def project_key(path: str | None) -> str:
     return p.rstrip("/") or p
 
 
+_AGENT_WORKTREE = re.compile(r"[/\\\\](?:\.claude[/\\\\]worktrees|\.worktrees)[/\\\\][^/\\\\]+[/\\\\]?$")
+
+
+def project_root(path: str | None) -> str:
+    """The project of a working folder: an agent's worktree belongs to the project that holds it."""
+    return _AGENT_WORKTREE.sub("", path or "")
+
+
 def coerce_ts(raw: Any) -> float:
     """Best-effort conversion of a source timestamp to epoch seconds.
 

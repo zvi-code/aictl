@@ -1017,7 +1017,7 @@ class TestLiveProcessSessions:
         assert row["status"] == "running"
         assert row["input"] == 100
         assert row["pids"] == [101, 102, 103, 104]
-        assert row["cpu_percent"] == 6.0
+        assert row["cpu_percent"] == 4.0
         assert row["mem_mb"] == 40.0
         assert payload["kpis"]["running"] == 1
         assert payload["scope"] == {"shown_agents": 1, "all_agents": 1, "listed_agents": 1}
@@ -1032,6 +1032,38 @@ class TestLiveProcessSessions:
         payload = _board(db, snapshot=snapshot)
         assert [a["id"] for a in payload["agents"]] == ["real"]
         assert payload["agents"][0]["pids"] == [555]
+
+    def test_a_process_first_seen_just_now_merges_into_a_session_active_minutes_ago(self, db):
+        # The monitor dates a process from when it first saw it, so after a restart
+        # every process looks newer than the last request of an idle session.
+        conn = db._conn()
+        _request(conn, NOW - 300, "idle", "claude-code", "/p/two", "m", i=10, o=5)
+        conn.commit()
+        snapshot = SimpleNamespace(sessions=[_live("claude-code:8:1", "claude-code", "/p/two", [8], 30.0, 3.0)], tools=[])
+        row = _agent(_board(db, snapshot=snapshot), "idle")
+        assert row["status"] == "running"
+        assert row["cpu_percent"] == 3.0
+        assert row["pids"] == [8]
+
+    def test_cpu_comes_from_the_current_process_samples(self, db):
+        conn = db._conn()
+        _request(conn, NOW - 300, "busy", "claude-code", "/p/two", "m", i=10, o=5)
+        conn.commit()
+        procs = [{"pid": 8, "name": "n", "cpu_pct": 1.5, "mem_mb": 10.0}, {"pid": 9, "name": "n", "cpu_pct": 2.0, "mem_mb": 20.0}]
+        snapshot = SimpleNamespace(
+            sessions=[_live("claude-code:8:1", "claude-code", "/p/two", [8, 9], 30.0, 0.0)],
+            tools=[SimpleNamespace(tool="claude-code", meta=False, processes=procs)],
+        )
+        row = _agent(_board(db, snapshot=snapshot), "busy")
+        assert (row["cpu_percent"], row["mem_mb"]) == (3.5, 30.0)
+
+    def test_an_agent_worktree_counts_as_its_project(self, db):
+        conn = db._conn()
+        _request(conn, NOW - 300, "wt", "claude-code", "/p/repo/.claude/worktrees/agent-1", "m", i=10, o=5)
+        conn.commit()
+        payload = _board(db)
+        assert _agent(payload, "wt")["project"] == "/p/repo"
+        assert "/p/repo" in [p["project"] for p in payload["projects"]]
 
     def test_a_process_that_started_after_the_session_stopped_does_not_merge(self, db):
         self._real_only(db)
@@ -2175,3 +2207,21 @@ class TestBudget:
         assert len(payload["agents"]) == 200
         assert payload["kpis"]["tokens"] == sum(m["tokens"] for m in payload["by_model"])
         store.close()
+
+
+@pytest.mark.parametrize(
+    ("path", "root"),
+    [
+        ("/p/repo/.claude/worktrees/agent-1", "/p/repo"),
+        ("/p/repo/.claude/worktrees/agent-1/", "/p/repo"),
+        ("C:\\p\\repo\\.claude\\worktrees\\agent-1", "C:\\p\\repo"),
+        ("/p/repo/.worktrees/x", "/p/repo"),
+        ("/p/repo", "/p/repo"),
+        ("/p/worktrees/x", "/p/worktrees/x"),
+        ("", ""),
+    ],
+)
+def test_project_root(path, root):
+    from aictl.ingesters._common import project_root
+
+    assert project_root(path) == root

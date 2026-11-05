@@ -40,7 +40,7 @@ from urllib.parse import parse_qs
 
 from ..context_audit import _redact
 from ..data.model_pricing import request_cost_usd, resolve_pricing
-from ..ingesters._common import project_key
+from ..ingesters._common import project_key, project_root
 from ..storage import EventRow, _session_uuid
 from ..tool_scope import is_unattributed, normalize_selection, stored_ids_for
 from ..tools import TOOL_LABELS
@@ -543,6 +543,7 @@ _BASE_ATTRS = (
     "session_project",
     "live_by_sid",
     "placeholders",
+    "pid_cpu",
     "test_rows",
     "failure_rows",
     "confirm_rows",
@@ -587,6 +588,7 @@ class _Board:
         self.session_project: dict[str, str] = {}
         self.live_by_sid: dict[str, dict] = {}
         self.placeholders: list[dict] = []
+        self.pid_cpu: dict[int, float] = {}
         self.pid_memory: dict[int, float] | None = None
         self.test_rows: list[tuple] = []
         self.loops: list[dict] = []
@@ -796,14 +798,13 @@ class _Board:
             meta = self.meta.get(sid) or {}
             meta_tool = meta.get("tool") or ""
             self.session_tool[sid] = meta_tool if not is_unattributed(meta_tool) else tool_seen.get(sid, meta_tool)
-            self.session_project[sid] = meta.get("project_path") or project_seen.get(sid, "")
+            self.session_project[sid] = project_root(meta.get("project_path") or project_seen.get(sid, ""))
         for c in self.cells:
             self.session_tool.setdefault(c.sid, c.tool)
             self.session_project.setdefault(c.sid, c.project)
             if is_unattributed(c.tool):
                 c.tool = self.session_tool[c.sid]
-            if not c.project:
-                c.project = self.session_project[c.sid]
+            c.project = project_root(c.project) or self.session_project[c.sid]
 
     def _price_cells(self) -> None:
         tiered: dict[str, int] = {}
@@ -877,9 +878,11 @@ class _Board:
                 newest_first[(self.session_tool.get(sid, ""), key_of(project))].append(sid)
 
         def overlaps(sid: str, live: dict) -> bool:
+            # started_at is when the monitor first saw the process, not when it began, so
+            # a session active just before the monitor started still belongs to it.
             start = float(live.get("started_at") or 0.0)
             end = float(live.get("last_seen_at") or self.now)
-            return last_seen[sid] >= start and first_seen[sid] <= end
+            return last_seen[sid] >= min(start, self.now - ACTIVE_WINDOW_S) and first_seen[sid] <= end
 
         def owner(live: dict) -> str | None:
             live_id = str(live.get("session_id") or "")
@@ -1359,19 +1362,25 @@ class _Board:
             row["estimated"] = True
         if live is not None:
             pids = sorted(live["pids"])
-            row["cpu_percent"] = live["cpu_percent"]
             row["mem_mb"] = _mem_of(self._pid_memory(), pids)
+            # The per-process sample is current; the session figure lags and often reads 0.
+            sampled = _mem_of(self.pid_cpu, pids)
+            row["cpu_percent"] = sampled if sampled is not None else live["cpu_percent"]
             row["pids"] = pids
         return row
 
     def _pid_memory(self) -> dict[int, float]:
         if self.pid_memory is None:
             self.pid_memory = {}
+            self.pid_cpu = {}
             for tool in getattr(self.snapshot, "tools", None) or []:
                 for proc in getattr(tool, "processes", None) or []:
                     value = _as_number(_proc_field(proc, "mem_mb"))
                     if value is not None:
                         self.pid_memory[_proc_field(proc, "pid")] = value
+                    cpu = _as_number(_proc_field(proc, "cpu_pct"))
+                    if cpu is not None:
+                        self.pid_cpu[_proc_field(proc, "pid")] = cpu
         return self.pid_memory
 
     def _placeholder_rows(self, room: int) -> list[dict]:
