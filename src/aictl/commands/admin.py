@@ -280,6 +280,16 @@ def _find_package_dir(root: Path) -> Path:
 from ..platforms import IS_WINDOWS as _IS_WINDOWS
 
 
+def _npm() -> str:
+    """Path of npm. With shell=True a missing command is only a non-zero exit, so check first."""
+    import shutil
+
+    npm = shutil.which("npm")
+    if not npm:
+        raise FileNotFoundError("npm")
+    return npm
+
+
 @click.command("build-ui")
 def build_ui():
     """Build the dashboard frontend (npm run build).
@@ -304,15 +314,15 @@ def build_ui():
     # 1. npm install
     click.echo("Running npm install...")
     try:
-        subprocess.run(["npm", "install"], cwd=ui_dir, check=True, shell=_IS_WINDOWS)
+        subprocess.run([_npm(), "install"], cwd=ui_dir, check=True, shell=_IS_WINDOWS)
     except (subprocess.CalledProcessError, FileNotFoundError) as exc:
         raise click.ClickException(f"npm install failed. Make sure Node.js/npm is installed. ({exc})")
 
     # 2. npm run build
     click.echo("Running npm run build...")
     try:
-        subprocess.run(["npm", "run", "build"], cwd=ui_dir, check=True, shell=_IS_WINDOWS)
-    except subprocess.CalledProcessError as exc:
+        subprocess.run([_npm(), "run", "build"], cwd=ui_dir, check=True, shell=_IS_WINDOWS)
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
         raise click.ClickException(f"npm build failed ({exc})")
 
     # 3. Verify
@@ -354,8 +364,8 @@ def reinstall(skip_ui):
         click.echo("→ Building dashboard UI...")
         try:
             if not (ui_dir / "node_modules").is_dir():
-                subprocess.run(["npm", "install"], cwd=ui_dir, check=True, capture_output=True, shell=_IS_WINDOWS)
-            subprocess.run(["npm", "run", "build"], cwd=ui_dir, check=True, capture_output=True, shell=_IS_WINDOWS)
+                subprocess.run([_npm(), "install"], cwd=ui_dir, check=True, capture_output=True, shell=_IS_WINDOWS)
+            subprocess.run([_npm(), "run", "build"], cwd=ui_dir, check=True, capture_output=True, shell=_IS_WINDOWS)
             click.secho("  ✅ UI built", fg="green")
         except FileNotFoundError:
             click.secho("  ⚠ npm not found — skipping UI build", fg="yellow")
@@ -393,6 +403,29 @@ def reinstall(skip_ui):
     click.echo("\nRun 'aictl --version' to verify.")
 
 
+def _pipx_venv_dir() -> Path:
+    """Directory of aictl's pipx venv on Windows.
+
+    ``PIPX_HOME`` wins, then the venv this process runs from. Otherwise the pipx
+    defaults: ``~/pipx``, or ``~/.local/pipx`` for installs made by older pipx.
+    """
+    import os
+    import sys
+
+    pipx_home = os.environ.get("PIPX_HOME")
+    if pipx_home:
+        return Path(pipx_home) / "venvs" / "aictl"
+    if sys.prefix != sys.base_prefix and Path(sys.prefix).parent.name == "venvs":
+        return Path(sys.prefix)
+    legacy = Path.home() / ".local" / "pipx" / "venvs" / "aictl"
+    return legacy if legacy.is_dir() else Path.home() / "pipx" / "venvs" / "aictl"
+
+
+def _batch_quote(arg: str) -> str:
+    """Quote one argument for a batch file line; ``%`` is special even inside quotes."""
+    return '"' + arg.replace("%", "%%") + '"'
+
+
 def _reinstall_detached_windows(install_cmd: list[str], root: Path) -> None:
     """Relaunch the Python reinstall in a new console that waits for this
     process to exit first.
@@ -407,22 +440,17 @@ def _reinstall_detached_windows(install_cmd: list[str], root: Path) -> None:
     import sys
     import tempfile
 
-    quoted = " ".join(f'"{arg}"' if " " in arg or "[" in arg else arg for arg in install_cmd)
+    quoted = " ".join(_batch_quote(arg) for arg in install_cmd)
 
     # Locate the pipx venv so we can evict any process (running `aictl serve`
     # daemon, a stray python.exe) that holds its directory locked — uv cannot
     # clear the venv while it is in use (Windows os error 32).
-    import os as _os
-
-    venv_dir = _os.environ.get("PIPX_HOME")
-    venv_dir = (
-        str(Path(venv_dir) / "venvs" / "aictl")
-        if venv_dir
-        else str(Path.home() / "pipx" / "venvs" / "aictl")
-    )
+    venv_dir = str(_pipx_venv_dir()).replace("%", "%%")
 
     bat = (
         "@echo off\r\n"
+        # The file is UTF-8, so a non-ASCII profile path survives.
+        "chcp 65001 >nul\r\n"
         "setlocal enabledelayedexpansion\r\n"
         "echo Waiting for aictl to exit so its executable can be replaced...\r\n"
         "ping -n 3 127.0.0.1 >nul\r\n"
@@ -463,11 +491,12 @@ def _reinstall_detached_windows(install_cmd: list[str], root: Path) -> None:
         "echo.\r\n"
         "echo Press any key to close this window.\r\n"
         "pause >nul\r\n"
-    ).format(venv=venv_dir, root=root, cmd=quoted)
+    ).format(venv=venv_dir, root=str(root).replace("%", "%%"), cmd=quoted)
 
     fd, bat_path = tempfile.mkstemp(suffix=".bat", prefix="aictl-reinstall-")
-    with os.fdopen(fd, "w", encoding="ascii", errors="replace") as fh:
-        fh.write(bat)
+    # Binary: the script already has CRLF endings, and text mode would turn them into CR CR LF.
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(bat.encode("utf-8"))
 
     CREATE_NEW_CONSOLE = 0x00000010
     subprocess.Popen(
@@ -600,7 +629,7 @@ def validate(ctx, fix):
 
     yaml_path = Path(__file__).parent.parent / "data" / "datapoint-catalog.yaml"
     if yaml_path.exists():
-        with open(yaml_path) as f:
+        with open(yaml_path, encoding="utf-8") as f:
             yaml_catalog = yaml.safe_load(f) or {}
         db_keys = {e["key"] for e in entries}
         yaml_keys = set(yaml_catalog.keys())
@@ -614,7 +643,7 @@ def validate(ctx, fix):
     # Check queries YAML
     q_path = Path(__file__).parent.parent / "data" / "datapoint-queries.yaml"
     if q_path.exists():
-        with open(q_path) as f:
+        with open(q_path, encoding="utf-8") as f:
             yaml_queries = yaml.safe_load(f) or {}
         missing_queries = yaml_keys - set(yaml_queries.keys())
         if missing_queries:

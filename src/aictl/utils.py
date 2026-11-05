@@ -8,10 +8,25 @@ import json
 import logging
 import os
 import re
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+
+from .platforms import IS_WINDOWS
+
+
+def _replace_file(src: Path, dst: Path, *, attempts: int = 6) -> None:
+    """``os.replace`` that retries on Windows, where a reader holding *dst* open blocks the rename."""
+    for attempt in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if not IS_WINDOWS or attempt == attempts - 1:
+                raise
+            time.sleep(0.05 * 2**attempt)
 
 
 @contextmanager
@@ -113,8 +128,9 @@ def write_safe(path: Path, content: str, *, command: str | None = None) -> None:
                 if "AI-CONTEXT:DEPLOYED" not in existing_text and "AI-CONTEXT:OVERLAY" not in existing_text:
                     bak = path.with_suffix(path.suffix + ".aictl.bak")
                     bak.write_bytes(existing_bytes)
-        tmp.write_text(content, encoding="utf-8")
-        os.replace(tmp, path)
+        # newline="": deployed files are byte-identical on every platform.
+        tmp.write_text(content, encoding="utf-8", newline="")
+        _replace_file(tmp, path)
     finally:
         try:
             if tmp.exists():
@@ -204,7 +220,7 @@ def read_json_lenient(path: Path) -> dict:
     if not path.is_file():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        data = json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -230,7 +246,8 @@ def read_json_or_fail(path: Path, *, force: bool = False) -> dict:
     if not path.is_file():
         return {}
     try:
-        raw = path.read_text("utf-8")
+        # utf-8-sig: Windows editors and PowerShell write a BOM, which json.loads rejects.
+        raw = path.read_text("utf-8-sig")
     except OSError:
         return {}
     if not raw.strip():

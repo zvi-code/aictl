@@ -87,6 +87,21 @@ tmpclaude-{hex}-cwd,claude-code,anthropic,"cli,vscode",all,no,session,temp,no,0,
 {project-root}/GEMINI.md,gemini-cli,google,cli,all,no,project,instructions,yes,100-5000+,rw,yes,yes,every-call,,Project-specific context (primary),recursive,git-root
 {project-root}/.geminiignore,gemini-cli,google,cli,all,yes,project,ignore,no,0,read,n/a,n/a,session-start,,Project-level ignore patterns,recursive,git-root
 {subdirectory}/GEMINI.md,gemini-cli,google,cli,all,no,project,instructions,yes,100-2000,rw,yes,yes,on-file-access,{subdirectory},Component-specific instructions (recursive),recursive,git-root
+%USERPROFILE%\.copilot\data.db,copilot-desktop,github,desktop,windows,yes,global,database,no,0,rw,n/a,n/a,runtime,,"Desktop app database: projects, worktrees, workspaces, sessions, diff snapshots",literal,none
+%USERPROFILE%\.copilot\workspaces\{workspace}\,copilot-desktop,github,desktop,windows,yes,global,runtime,no,0,rw,n/a,n/a,runtime,{workspace}=uuid,Desktop app workspace directories,literal,none
+%USERPROFILE%\.copilot\chats\{date}\{chat}\,copilot-desktop,github,desktop,windows,yes,global,transcript,no,0,rw,n/a,n/a,runtime,{date}=YYYY-MM-DD,Desktop app chat working directories,literal,none
+%USERPROFILE%\.copilot\open-sessions-state.json,copilot-desktop,github,desktop,windows,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Sessions open in the desktop app,literal,none
+%USERPROFILE%\.copilot\sidebar-sessions-state\,copilot-desktop,github,desktop,windows,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Desktop sidebar state,literal,none
+%USERPROFILE%\.copilot\run\,copilot-desktop,github,desktop,windows,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Single-instance lock and websocket port/token files,literal,none
+%USERPROFILE%\.copilot\repo-metadata-cache.db,copilot-desktop,github,desktop,windows,yes,global,cache,no,0,rw,n/a,n/a,runtime,,Repository metadata cache,literal,none
+%LOCALAPPDATA%\Programs\GitHub Copilot\,copilot-desktop,github,desktop,windows,no,global,runtime,no,0,read,n/a,n/a,runtime,,Desktop app per-user install (location unverified on Windows),literal,none
+%LOCALAPPDATA%\GitHub Copilot\,copilot-desktop,github,desktop,windows,no,global,runtime,no,0,read,n/a,n/a,runtime,,"Desktop app per-user install, alternative (location unverified on Windows)",literal,none
+%PROGRAMFILES%\GitHub Copilot\,copilot-desktop,github,desktop,windows,no,global,runtime,no,0,read,n/a,n/a,runtime,,Desktop app per-machine MSI install (location unverified on Windows),literal,none
+%APPDATA%\com.github.githubapp\,copilot-desktop,github,desktop,windows,no,global,app-data,no,0,rw,n/a,n/a,runtime,,Desktop app window state and app skills (location unverified on Windows),literal,none
+%LOCALAPPDATA%\com.github.githubapp\,copilot-desktop,github,desktop,windows,no,global,app-data,no,0,rw,n/a,n/a,runtime,,Desktop app local state (location unverified on Windows),literal,none
+%LOCALAPPDATA%\github-copilot-sdk\cli\,copilot-desktop,github,desktop,windows,no,global,runtime,no,0,rw,n/a,n/a,runtime,,Copilot SDK runtime the desktop app downloads (location unverified on Windows),literal,none
+%USERPROFILE%\.copilot\settings.json,copilot-cli,github,cli,windows,no,global,config,no,0,rw,n/a,n/a,runtime,,"User settings (model, plugins); shared with the desktop app",literal,none
+%LOCALAPPDATA%\copilot\,copilot-cli,github,cli,windows,no,global,cache,no,0,rw,n/a,n/a,runtime,,"CLI cache; COPILOT_CACHE_HOME overrides it, COPILOT_HOME does not",literal,none
 %USERPROFILE%\.copilot\config.json,copilot-cli,github,cli,windows,no,global,config,no,0,rw,n/a,n/a,session-start,,"Core CLI settings (model, theme, experimental flags)",literal,git-root
 %USERPROFILE%\.copilot\mcp-config.json,copilot-cli,github,cli,windows,no,global,config,no,0,rw,n/a,n/a,session-start,,User-level MCP server configurations,literal,git-root
 %USERPROFILE%\.copilot\copilot-instructions.md,copilot-cli,github,cli,windows,yes,global,instructions,yes,100-2000,rw,yes,yes,every-call,,Global user-level instructions,literal,git-root
@@ -159,6 +174,14 @@ $HOME/.copilot/copilot-instructions.md,copilot-cli,github,cli,all,yes,global,ins
 %APPDATA%\Code\User\globalStorage\github.copilot-chat\*-agent\*.agent.md,copilot-vscode,github,vscode,windows,no,global,agent,on-demand,100-500,read,n/a,n/a,runtime,,Built-in agent definitions (Ask/Explore/Plan),literal,workspace
 %APPDATA%\Code\User\globalStorage\github.copilot-chat\copilotCli\,copilot-vscode,github,vscode,windows,no,global,runtime,no,0,rw,n/a,n/a,runtime,,CLI↔VS Code bridge (session metadata; shell integration),literal,workspace
 %APPDATA%\Code\User\globalStorage\github.copilot-chat\copilot.cli.workspaceSessions.*,copilot-vscode,github,vscode,windows,no,global,runtime,no,0,rw,n/a,n/a,runtime,,Per-workspace CLI session state,literal,workspace
+%APPDATA%\Code\User\prompts\*.prompt.md,copilot-vscode,github,vscode,windows,no,global,commands,no,0,rw,n/a,n/a,on-invoke,,User-level prompt files,literal,none
+%APPDATA%\Code\User\workspaceStorage\,copilot-vscode,github,vscode,windows,no,global,runtime,no,0,rw,n/a,n/a,runtime,,"Per-workspace extension state, including Copilot Chat sessions",literal,none
+%APPDATA%\Code - Insiders\User\settings.json,copilot-vscode,github,vscode,windows,no,global,config,no,0,rw,n/a,n/a,app-start,,VS Code Insiders user settings,literal,none
+%APPDATA%\Code - Insiders\User\mcp.json,copilot-vscode,github,vscode,windows,no,global,config,no,0,rw,n/a,n/a,app-start,,VS Code Insiders user-level MCP config,literal,none
+%APPDATA%\Code - Insiders\User\prompts\*.prompt.md,copilot-vscode,github,vscode,windows,no,global,commands,no,0,rw,n/a,n/a,on-invoke,,VS Code Insiders user-level prompt files,literal,none
+%APPDATA%\Code - Insiders\User\globalStorage\github.copilot-chat\,copilot-vscode,github,vscode,windows,no,global,memory,no,0,rw,n/a,n/a,runtime,,VS Code Insiders Copilot Chat globalStorage,literal,none
+%APPDATA%\Code - Insiders\User\workspaceStorage\,copilot-vscode,github,vscode,windows,no,global,runtime,no,0,rw,n/a,n/a,runtime,,VS Code Insiders per-workspace extension state,literal,none
+%USERPROFILE%\.vscode-insiders\extensions\github.copilot*\package.json,copilot-vscode,github,vscode,windows,no,global,extensions,no,0,read,n/a,n/a,app-start,,VS Code Insiders Copilot extension manifest,literal,none
 %TEMP%\VSGitHubCopilotLogs\,copilot-vscode,github,vscode,windows,no,global,logs,no,0,write,n/a,n/a,runtime,,Extension debug logs,literal,none
 %TEMP%\vscode-azure-github-copilot\,copilot-vscode,github,vscode,windows,no,global,temp,no,0,rw,n/a,n/a,runtime,,Azure Copilot temp files,literal,none
 %USERPROFILE%\.vscode\extensions\ms-azuretools.vscode-azure-github-copilot-*\,copilot-vscode,github,vscode,windows,no,global,extensions,no,0,read,n/a,n/a,app-start,,Azure Copilot extension,literal,workspace

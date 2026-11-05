@@ -30,6 +30,11 @@ class LazyGroup(click.Group):
         return cmd
 
 
+from .platforms import harden_stdio
+
+harden_stdio()
+
+
 def _version() -> str:
     from importlib.metadata import PackageNotFoundError, version
 

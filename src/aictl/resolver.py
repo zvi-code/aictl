@@ -198,7 +198,7 @@ def load_manifest(root: Path) -> dict | None:
     p = root / MANIFEST_DIR / "manifest.json"
     if p.is_file():
         try:
-            return json.loads(p.read_text())
+            return json.loads(p.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             pass
     return None
@@ -218,7 +218,7 @@ def save_manifest(root: Path, profile: str | None, paths: list[str]) -> None:
             indent=2,
         )
         + "\n"
-    )
+    , encoding="utf-8")
 
 
 def cleanup_stale(root: Path, old: dict | None, new_paths: set[str]) -> list[str]:
