@@ -52,6 +52,14 @@ _PROTECTED_RELATIVE = (
     ".zprofile",
     ".zshenv",
     ".zshrc",
+    "AppData/Roaming/Claude",
+    "AppData/Roaming/Code",
+    "AppData/Roaming/Code - Insiders",
+    "AppData/Roaming/Cursor",
+    "AppData/Roaming/Windsurf",
+    "AppData/Roaming/aictl",
+    "Documents/PowerShell",
+    "Documents/WindowsPowerShell",
     "Library/Application Support/Claude",
     "Library/Application Support/Code",
     "Library/Application Support/Cursor",
@@ -68,7 +76,7 @@ def _real_home() -> Path:
 
 
 REAL_HOME = _real_home()
-_PROTECTED = tuple(str(REAL_HOME / relative) for relative in _PROTECTED_RELATIVE)
+_PROTECTED = tuple(os.path.normcase(str(REAL_HOME / relative)) for relative in _PROTECTED_RELATIVE)
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
 _real_home_violations: list[str] = []
 
@@ -78,7 +86,7 @@ def _is_protected(path: object) -> bool:
         path = os.fsdecode(path)
     if not isinstance(path, (str, os.PathLike)):
         return False  # a file descriptor, or an unnamed database
-    resolved = os.path.abspath(os.fspath(path))
+    resolved = os.path.normcase(os.path.abspath(os.fspath(path)))
     return any(resolved == root or resolved.startswith(root + os.sep) for root in _PROTECTED)
 
 
@@ -110,6 +118,11 @@ if not REAL_HOME_ALLOWED:
     os.environ["HOME"] = _test_home
     os.environ["USERPROFILE"] = _test_home
     os.environ["XDG_CONFIG_HOME"] = os.path.join(_test_home, ".config")
+    # On Windows, aictl and VS Code resolve their config through these, not HOME.
+    os.environ["APPDATA"] = os.path.join(_test_home, "AppData", "Roaming")
+    os.environ["LOCALAPPDATA"] = os.path.join(_test_home, "AppData", "Local")
+    os.environ.pop("HOMEDRIVE", None)
+    os.environ.pop("HOMEPATH", None)
     # These would point tool paths straight back at the real directories.
     for _variable in ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "COPILOT_HOME"):
         os.environ.pop(_variable, None)
