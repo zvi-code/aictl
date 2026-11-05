@@ -152,3 +152,23 @@ User Prompt (Word/Teams/Outlook/Chat)
 | `aad.manifest.json` | Azure AD / Entra ID app registration |
 | `env/.env.dev`, `env/.env.local` | Environment config (credentials) |
 | `.fx/` | Teams Toolkit v4 state (legacy) |
+
+## Local state and processes (checked 2026-11-05)
+
+Copilot CLI 1.0.106 (`/opt/homebrew/bin/copilot`, npm `@github/copilot`), GitHub Copilot desktop app 1.1.34
+(`/Applications/GitHub Copilot.app`, bundle `com.github.githubapp`), VS Code 1.144.0. `COPILOT_HOME`
+relocates `~/.copilot`. Per GitHub Docs, user settings live in `~/.copilot/settings.json`; `config.json`
+keeps login/trusted-folder state (settings found there are migrated).
+
+The desktop app (`copilot-desktop`) shares `~/.copilot` with the CLI and adds `data.db` (projects,
+worktrees, workspaces, sessions), `workspaces/`, `chats/<date>/`, `open-sessions-state.json`, `run/`
+(lock and websocket port), plus `~/Library/Application Support/com.github.githubapp/` and the runtime in
+`~/Library/Caches/github-copilot-sdk/cli/copilot-sdk-runtime-<ver>/copilot-runtime --server --stdio`.
+`~/.copilot/installed-plugins/<marketplace>/<plugin>/` holds plugins (also MCP scripts run by `node`).
+`~/Library/Caches/copilot/` holds managed-settings, marketplaces, mcp-tools and `pkg/`.
+`~/.copilot/session-store.db` and `session-state/<uuid>/` remain the CLI's session stores.
+
+VS Code Copilot Chat (`globalStorage/github.copilot-chat/`): `session-store.db`,
+`copilot.cli.workspaceSessions.<uuid>.json`, `memory-tool/memories/`, `plan-agent/`, `explore-agent/`.
+VS Code starts `.../@github/copilot-sdk-darwin-arm64/prebuilds/darwin-arm64/copilot-runtime --headless --stdio`
+(`copilot-vscode`). The old `copilotCli/` directory is absent in current builds.

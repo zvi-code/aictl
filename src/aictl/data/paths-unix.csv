@@ -19,7 +19,7 @@ path,ai_tool,vendor,host,platform,hidden,scope,category,sent_to_llm,approx_token
 ~/.claude/settings.json,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,config,no,0,rw,n/a,n/a,session-start,,"Global user settings (permissions, tools, env)",literal,cwd
 ~/.claude/settings.local.json,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,config,no,0,rw,n/a,n/a,session-start,,Local user settings (not synced),literal,cwd
 ~/.claude/.credentials.json,claude-code,anthropic,"cli,vscode",linux,yes,global,credentials,no,0,read,n/a,n/a,session-start,,API credentials (Linux/Windows; macOS uses Keychain),literal,cwd
-~/.claude/statsig/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,cache,no,0,rw,n/a,n/a,runtime,,Analytics cache directory,literal,cwd
+~/.claude/statsig/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,cache,no,0,rw,n/a,n/a,runtime,,Analytics cache directory [absent on Claude Code 2.1.x],literal,cwd
 ~/.claude/commands/*.md,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,commands,on-demand,50-500,rw,n/a,n/a,on-invoke,,Personal slash commands (all projects),literal,cwd
 ~/.claude/skills/{skill}/SKILL.md,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,skills,partial,50-100,rw,yes,yes,description-always;body-on-demand,{skill},Personal skills (all projects),literal,cwd
 ~/.claude/hooks/*.sh,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,hooks,no,0,rw,n/a,n/a,on-hook-trigger,,"Lifecycle hooks (PreToolUse, SessionEnd, etc.)",literal,cwd
@@ -36,22 +36,21 @@ path,ai_tool,vendor,host,platform,hidden,scope,category,sent_to_llm,approx_token
 ~/.claude/rules/*.md,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,rules,conditional,50-500,rw,yes,yes,on-file-match,,User-level rules files (all projects),literal,cwd
 ~/.claude/agents/*.md,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,agent,yes,200-500,rw,yes,yes,every-call,,User-level custom agent definitions,literal,cwd
 ~/.claude/file-history/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,File change history (UUID subdirs),literal,cwd
-~/.claude/image-cache/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,cache,no,0,rw,n/a,n/a,runtime,,Cached images from sessions,literal,cwd
+~/.claude/image-cache/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,cache,no,0,rw,n/a,n/a,runtime,,Cached images from sessions [absent on Claude Code 2.1.x],literal,cwd
 ~/.claude/debug/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,logs,no,0,write,n/a,n/a,runtime,,Debug log files (UUID-named),literal,cwd
-~/.claude/todos/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Agent todo JSON files,literal,cwd
-~/.claude/tasks/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Structured task JSON files,literal,cwd
+~/.claude/todos/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Agent todo JSON files [absent on Claude Code 2.1.x],literal,cwd
+~/.claude/tasks/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Structured task JSON files [absent on Claude Code 2.1.x],literal,cwd
 ~/.claude/sessions/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Session JSON files (keyed by port number),literal,cwd
 ~/.claude/paste-cache/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,cache,no,0,rw,n/a,n/a,runtime,,Clipboard/paste history,literal,cwd
 ~/.claude/cache/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,cache,no,0,rw,n/a,n/a,runtime,,General cache (changelog etc.),literal,cwd
 ~/.claude/backups/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Timestamped .claude.json backups,literal,cwd
-~/.claude/download/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Downloads directory,literal,cwd
-~/.claude/telemetry/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Telemetry data,literal,cwd
+~/.claude/download/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Downloads directory [legacy; 2.1.x uses downloads/],literal,cwd
+~/.claude/telemetry/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Telemetry data [absent on Claude Code 2.1.x],literal,cwd
 ~/.claude/plugins/install-counts-cache.json,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,cache,no,0,rw,n/a,n/a,runtime,,Plugin install count cache,literal,cwd
 ~/.claude/*,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Any file directly under ~/.claude/ (catch-all),literal,cwd
 ~/.claude/*/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Any subdirectory under ~/.claude/ (catch-all),literal,cwd
 ~/.claude/projects/{project}/memory/MEMORY.md,claude-code,anthropic,"cli,vscode",macos/linux,yes,project,memory,yes,100-3000,rw,yes,yes,every-call,{project}=path-with-slashes-to-hyphens,Auto-memory entrypoint (first 200 lines loaded),shadow,cwd
 ~/.claude/projects/{project}/memory/{topic}.md,claude-code,anthropic,"cli,vscode",macos/linux,yes,project,memory,on-demand,100-1000,rw,yes,yes,on-demand,"{project};{topic}=e.g. debugging,api-conventions",Topic-specific auto-memory files,shadow,cwd
-~/.claude/projects/{project}/session-{timestamp}.jsonl,claude-code,anthropic,"cli,vscode",macos/linux,yes,session,transcript,no,0,rw,n/a,n/a,runtime,{project};{timestamp}=ISO-datetime,Full session transcript (JSON Lines),shadow,cwd
 ~/.claude/projects/{project}/{session}/subagents/agent-{hex}.jsonl,claude-code,anthropic,"cli,vscode",macos/linux,yes,session,transcript,no,0,write,n/a,n/a,runtime,{project};{session}=uuid;{hex}=7-char-hex,Subagent task transcript,shadow,cwd
 ~/.claude/projects/{project}/{session}/plans/*.md,claude-code,anthropic,"cli,vscode",macos/linux,yes,project,memory,on-demand,100-2000,rw,yes,yes,on-demand,{project};{session}=uuid,Session-specific plan files,shadow,cwd
 ~/.claude/projects/{project}/{session}/todos/*.json,claude-code,anthropic,"cli,vscode",macos/linux,yes,session,runtime,no,0,rw,n/a,n/a,runtime,{project};{session}=uuid,Todo list state per session,shadow,cwd
@@ -96,23 +95,23 @@ tmpclaude-{hex}-cwd,claude-code,anthropic,"cli,vscode",all,no,session,temp,no,0,
 ~/Library/HTTPStorages/com.anthropic.claudefordesktop/,claude-desktop,anthropic,desktop,macos,no,global,runtime,no,0,rw,n/a,n/a,runtime,,HTTP storage/cookies,literal,none
 ~/.vscode/extensions/anthropic.claude-code-*/,claude-code,anthropic,vscode,macos/linux,no,global,extensions,no,0,read,n/a,n/a,app-start,,VS Code extension installation,literal,none
 ~/.claude-memory/memory.db,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,database,no,0,rw,n/a,n/a,runtime,,SQLite memory database (community MCP server),literal,none
-~/Library/Application Support/ChatGPT/,chatgpt-desktop,openai,desktop,macos,no,global,app-data,no,0,rw,n/a,n/a,app-start,,ChatGPT desktop app data,literal,none
+~/Library/Application Support/ChatGPT/,chatgpt-desktop,openai,desktop,macos,no,global,app-data,no,0,rw,n/a,n/a,app-start,,Legacy standalone ChatGPT app data (current ChatGPT.app is the Codex app; see Codex/),literal,none
 ~/.chatgpt/*.json,chatgpt-lencx,openai,desktop,macos/linux,yes,global,config,no,0,rw,n/a,n/a,app-start,,lencx/ChatGPT community desktop config,literal,none
 ~/.chatgpt/prompts.json,chatgpt-lencx,openai,desktop,macos/linux,yes,global,config,no,0,rw,n/a,n/a,app-start,,Saved slash commands/prompts,literal,none
 ~/.openai/.env,project-env,openai,any,all,yes,global,credentials,no,0,read,n/a,n/a,runtime,,OPENAI_API_KEY,literal,none
 ~/.openai/config.json,project-env,openai,any,all,yes,global,config,no,0,rw,n/a,n/a,runtime,,OpenAI API settings,literal,none
 ~/.codex/config.toml,codex-cli,openai,cli,all,yes,global,config,no,0,rw,n/a,n/a,session-start,,Codex CLI configuration (TOML),literal,git-root
-~/.codex/instructions.md,codex-cli,openai,cli,all,yes,global,instructions,yes,100-2000,rw,yes,yes,every-call,,Codex CLI custom instructions (now uses AGENTS.md),literal,git-root
-~/.codex/*,codex-cli,openai,cli,all,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Any file under ~/.codex/ (catch-all),literal,git-root
+~/.codex/instructions.md,codex-cli,openai,cli,all,yes,global,instructions,yes,100-2000,rw,yes,yes,every-call,,Legacy Codex custom instructions (current Codex reads ~/.codex/AGENTS.md),literal,git-root
+~/.codex/*,codex-cli,openai,cli,all,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Any file under ~/.codex/ (catch-all; shared by the CLI and the desktop app),literal,git-root
 ~/.gemini/GEMINI.md,gemini-cli,google,cli,macos/linux,yes,global,instructions,yes,100-2000,rw,yes,yes,every-call,,Global context/instructions for all projects,literal,git-root
 ~/.gemini/settings.json,gemini-cli,google,cli,macos/linux,yes,global,config,no,0,rw,n/a,n/a,session-start,,"CLI settings (model, MCP servers, context config)",literal,git-root
-~/.gemini/memory/,gemini-cli,google,cli,macos/linux,yes,global,memory,on-demand,varies,rw,n/a,n/a,on-demand,,Persistent memory (via save_memory tool),literal,git-root
+~/.gemini/memory/,gemini-cli,google,cli,macos/linux,yes,global,memory,on-demand,varies,rw,n/a,n/a,on-demand,,Persistent memory directory [absent on 0.36; save_memory appends to ~/.gemini/GEMINI.md],literal,git-root
 ~/.gemini/extensions/{extension}/,gemini-cli,google,cli,macos/linux,yes,global,extensions,no,0,rw,n/a,n/a,session-start,{extension},Installed extension data,literal,git-root
 ~/.gemini/.geminiignore,gemini-cli,google,cli,macos/linux,yes,global,ignore,no,0,read,n/a,n/a,session-start,,Global ignore patterns,literal,git-root
 {project-root}/GEMINI.md,gemini-cli,google,cli,all,no,project,instructions,yes,100-5000+,rw,yes,yes,every-call,,Project-specific context (primary),recursive,git-root
 {project-root}/.geminiignore,gemini-cli,google,cli,all,yes,project,ignore,no,0,read,n/a,n/a,session-start,,Project-level ignore patterns,recursive,git-root
 {subdirectory}/GEMINI.md,gemini-cli,google,cli,all,no,project,instructions,yes,100-2000,rw,yes,yes,on-file-access,{subdirectory},Component-specific instructions (recursive),recursive,git-root
-~/.copilot/config.json,copilot-cli,github,cli,macos/linux,yes,global,config,no,0,rw,n/a,n/a,session-start,,"Core CLI settings (trusted folders, permissions)",literal,git-root
+~/.copilot/config.json,copilot-cli,github,cli,macos/linux,yes,global,config,no,0,rw,n/a,n/a,session-start,,"CLI state (login, trusted folders); user settings moved to settings.json",literal,git-root
 ~/.copilot/mcp-config.json,copilot-cli,github,cli,macos/linux,yes,global,config,no,0,rw,n/a,n/a,session-start,,User-level MCP server configurations,literal,git-root
 ~/.copilot/copilot-instructions.md,copilot-cli,github,cli,macos/linux,yes,global,instructions,yes,100-2000,rw,yes,yes,every-call,,Global personal instructions,literal,git-root
 $HOME/.copilot/copilot-instructions.md,copilot-cli,github,cli,all,yes,global,instructions,yes,100-2000,rw,yes,yes,every-call,,Global personal instructions (env var path),literal,git-root
@@ -198,7 +197,7 @@ $HOME/.copilot/copilot-instructions.md,copilot-cli,github,cli,all,yes,global,ins
 ~/.vscode/extensions/github.copilot*/package.json,copilot-vscode,github,vscode,macos/linux,yes,global,extensions,no,0,read,n/a,n/a,app-start,,Copilot extension manifest (version detection),literal,workspace
 ~/Library/Application Support/Code/User/globalStorage/github.copilot-chat/,copilot-vscode,github,vscode,macos,no,global,memory,no,0,rw,n/a,n/a,runtime,,Copilot Chat globalStorage (embeddings; session state; agent workspaces),literal,workspace
 ~/Library/Application Support/Code/User/globalStorage/github.copilot-chat/*-agent/*.agent.md,copilot-vscode,github,vscode,macos,no,global,agent,on-demand,100-500,read,n/a,n/a,runtime,,Built-in agent definitions (Ask/Explore/Plan),literal,workspace
-~/Library/Application Support/Code/User/globalStorage/github.copilot-chat/copilotCli/,copilot-vscode,github,vscode,macos,no,global,runtime,no,0,rw,n/a,n/a,runtime,,CLI↔VS Code bridge (session metadata; shell integration),literal,workspace
+~/Library/Application Support/Code/User/globalStorage/github.copilot-chat/copilotCli/,copilot-vscode,github,vscode,macos,no,global,runtime,no,0,rw,n/a,n/a,runtime,,CLI↔VS Code bridge (session metadata; shell integration) [older builds; current: copilot.cli.workspaceSessions.*.json],literal,workspace
 ~/.config/Code/User/globalStorage/github.copilot-chat/,copilot-vscode,github,vscode,linux,yes,global,memory,no,0,rw,n/a,n/a,runtime,,Copilot Chat globalStorage (Linux),literal,workspace
 ~/.copilot/skills/{skill}/SKILL.md,copilot-cli,github,cli,macos/linux,yes,global,skills,on-demand,50-500,rw,n/a,n/a,on-invoke,{skill},User-profile skill definitions,literal,git-root
 ~/.config/gh/config.yml,copilot-cli,github,cli,macos/linux,yes,global,config,no,0,read,n/a,n/a,session-start,,GitHub CLI config (auth method preferences; companion to hosts.yml),literal,git-root
@@ -240,3 +239,103 @@ $HOME/.copilot/copilot-instructions.md,copilot-cli,github,cli,all,yes,global,ins
 {vscode-user}/memories/*.md,copilot-vscode,github,vscode,all,yes,global,memory,yes,50-500,rw,n/a,n/a,every-call,,VS Code user-scoped memory files (auto-loaded first 200 lines),literal,workspace
 {vscode-user}/memories/repo/*.md,copilot-vscode,github,vscode,all,yes,session,memory,yes,50-500,rw,n/a,n/a,every-call,,VS Code repository-scoped memory files,literal,workspace
 {vscode-user}/memories/session/*.md,copilot-vscode,github,vscode,all,no,session,memory,partial,50-500,rw,n/a,no,session-start,,VS Code session-scoped memory (cleared at end),literal,workspace
+~/.claude/daemon/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,"Background daemon state (roster, attach journal, dispatch queue, control key)",literal,git-root
+~/.claude/daemon.log,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,logs,no,0,rw,n/a,n/a,runtime,,Background daemon log,literal,git-root
+~/.claude/jobs/{job}/state.json,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,{job}=hex-id,Background job state; sibling timeline.jsonl holds the job event log,literal,git-root
+~/.claude/jobs/{job}/timeline.jsonl,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,transcript,no,0,rw,n/a,n/a,runtime,{job}=hex-id,Background job event timeline,literal,git-root
+~/.claude/remote-settings.json,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,config,no,0,read,n/a,n/a,session-start,,Server-managed settings synced from the account (read-only for users),literal,git-root
+~/.claude/policy-limits.json,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,config,no,0,read,n/a,n/a,session-start,,Organization policy limits synced from the account (with .signature/.stamp companions),literal,git-root
+~/.claude/state/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Internal state files (for example MCP discovery verdicts),literal,git-root
+~/.claude/uploads/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,temp,no,0,rw,n/a,n/a,runtime,,Files attached to prompts,literal,git-root
+~/.claude/downloads/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,temp,no,0,rw,n/a,n/a,runtime,,Downloaded files (replaces the older download/ directory),literal,git-root
+~/.claude/mcp-needs-auth-cache.json,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,cache,no,0,rw,n/a,n/a,runtime,,MCP servers that returned 401 and need OAuth,literal,git-root
+~/.claude/launch.json,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,config,no,0,rw,n/a,n/a,runtime,,User-level preview/launch configurations,literal,git-root
+~/.claude/plugins/installed_plugins.json,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,extensions,no,0,rw,n/a,n/a,runtime,,"Installed plugin registry (name, marketplace, version, install path)",literal,git-root
+~/.claude/plugins/marketplaces/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,extensions,no,0,rw,n/a,n/a,runtime,,Cloned plugin marketplaces,literal,git-root
+~/.claude/plugins/cache/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,extensions,no,0,rw,n/a,n/a,runtime,,"Versioned plugin payloads (plugin code, skills, agents, commands, hooks)",literal,git-root
+~/.claude/plugins/data/,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,extensions,no,0,rw,n/a,n/a,runtime,,Per-plugin persistent data directories,literal,git-root
+~/.claude/sessions/{pid}.json,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,{pid}=process id,"Live session registry: pid, sessionId, cwd, startedAt, version, entrypoint (one file per running process)",literal,git-root
+~/.claude/projects/{project}/{session}.jsonl,claude-code,anthropic,"cli,vscode",macos/linux,yes,global,transcript,no,0,rw,n/a,n/a,runtime,{project}=cwd-with-slashes-as-dashes;{session}=uuid,"Session transcript, one JSONL per session id",shadow,cwd
+~/Library/Application Support/Claude/claude-code/{version}/{hash}/claude.app,claude-desktop,anthropic,desktop,macos,no,global,runtime,no,0,rw,n/a,n/a,runtime,{version}=semver;{hash}=build hash,Claude Code binary bundled by the desktop app (Code tab); version can differ from the CLI,literal,none
+~/Library/Application Support/Claude/claude-code-vm/,claude-desktop,anthropic,desktop,macos,no,global,runtime,no,0,rw,n/a,n/a,runtime,,VM image and SDK version marker for sandboxed Code sessions,literal,none
+~/Library/Application Support/Claude/claude-code-sessions/{account}/{org}/,claude-desktop,anthropic,desktop,macos,no,global,runtime,no,0,rw,n/a,n/a,runtime,{account}=uuid;{org}=uuid,"Code-tab session index per account and org (archived-sessions.idx, deleted_* markers)",literal,none
+~/Library/Application Support/Claude/local-agent-mode-sessions/{account}/{org}/,claude-desktop,anthropic,desktop,macos,no,global,runtime,no,0,rw,n/a,n/a,runtime,{account}=uuid;{org}=uuid,"Cowork per-session sandboxes (agent/, .claude.json, local_* session dirs)",literal,none
+~/Library/Application Support/Claude/local-agent-mode-sessions/skills-plugin/,claude-desktop,anthropic,desktop,macos,no,global,skills,no,0,rw,n/a,n/a,runtime,,Skills plugin synced into Cowork sessions,literal,none
+~/Library/Application Support/Claude/git-shadow/,claude-desktop,anthropic,desktop,macos,no,global,runtime,no,0,rw,n/a,n/a,runtime,,Shadow git repositories used to snapshot and diff session worktrees,literal,none
+~/Library/Application Support/Claude/scratch-workspaces/,claude-desktop,anthropic,desktop,macos,no,global,temp,no,0,rw,n/a,n/a,runtime,,Scratch workspaces for sessions without a project folder,literal,none
+~/Library/Application Support/Claude/side-session-notes/,claude-desktop,anthropic,desktop,macos,no,global,memory,no,0,rw,n/a,n/a,runtime,,Notes written by side sessions,literal,none
+~/Library/Application Support/Claude/plan-usage-history.json,claude-desktop,anthropic,desktop,macos,no,global,runtime,no,0,rw,n/a,n/a,runtime,,Plan usage history samples,literal,none
+~/Library/Application Support/Claude/remote-control-state.json,claude-desktop,anthropic,desktop,macos,no,global,runtime,no,0,rw,n/a,n/a,runtime,,Remote-control (phone to desktop) state,literal,none
+~/Library/Application Support/Claude/ssh-remote-server-state.json,claude-desktop,anthropic,desktop,macos,no,global,runtime,no,0,rw,n/a,n/a,runtime,,SSH remote server state for remote Code sessions,literal,none
+~/Library/Application Support/Claude/ccd-session-presets.json,claude-desktop,anthropic,desktop,macos,no,global,config,no,0,rw,n/a,n/a,runtime,,Code-tab session presets,literal,none
+~/Library/Application Support/Claude/mcp-user-tool-toggles.json,claude-desktop,anthropic,desktop,macos,no,global,config,no,0,rw,n/a,n/a,runtime,,Per-tool enable toggles for MCP servers,literal,none
+~/Library/Application Support/Claude/developer_settings.json,claude-desktop,anthropic,desktop,macos,no,global,config,no,0,rw,n/a,n/a,runtime,,Developer-mode settings,literal,none
+~/Library/Application Support/Claude/sim-recordings/,claude-desktop,anthropic,desktop,macos,no,global,temp,no,0,rw,n/a,n/a,runtime,,iOS simulator recordings,literal,none
+~/Library/Application Support/Claude/terminal-shell-integration/,claude-desktop,anthropic,desktop,macos,no,global,runtime,no,0,rw,n/a,n/a,runtime,,Shell-integration scripts for the embedded terminal,literal,none
+~/Library/Application Support/Claude-3p/claude_desktop_config.json,claude-desktop,anthropic,desktop,macos,no,global,config,no,0,rw,n/a,n/a,runtime,,Third-party-inference build of Claude Desktop: MCP server configuration,literal,none
+~/Library/Application Support/Claude-3p/claude-code-sessions/,claude-desktop,anthropic,desktop,macos,no,global,runtime,no,0,rw,n/a,n/a,runtime,,Third-party-inference build: Code-tab session index,literal,none
+~/Library/Application Support/Claude-3p/local-agent-mode-sessions/,claude-desktop,anthropic,desktop,macos,no,global,runtime,no,0,rw,n/a,n/a,runtime,,Third-party-inference build: Cowork sessions,literal,none
+~/Library/Application Support/Claude-3p/git-worktrees.json,claude-desktop,anthropic,desktop,macos,no,global,config,no,0,rw,n/a,n/a,runtime,,Third-party-inference build: worktree registry,literal,none
+~/Library/Application Support/Claude-3p/configLibrary/,claude-desktop,anthropic,desktop,macos,no,global,config,no,0,rw,n/a,n/a,runtime,,Third-party-inference build: provider configuration library,literal,none
+~/.codex/AGENTS.md,codex-cli,openai,cli,all,yes,global,instructions,yes,100-2000,rw,yes,yes,every-call,,Global Codex instructions (replaces instructions.md),literal,git-root
+~/.codex/auth.json,codex-cli,openai,cli,all,yes,global,credentials,no,0,read,n/a,n/a,session-start,,ChatGPT login or API key (do not read values),literal,git-root
+~/.codex/sessions/{year}/{month}/{day}/rollout-{timestamp}-{session}.jsonl,codex-cli,openai,cli,all,yes,global,transcript,no,0,rw,n/a,n/a,runtime,{session}=uuid,Session rollout log; token_count events carry cumulative usage,literal,git-root
+~/.codex/archived_sessions/,codex-cli,openai,cli,all,yes,global,transcript,no,0,rw,n/a,n/a,runtime,,Archived rollout logs,literal,git-root
+~/.codex/session_index.jsonl,codex-cli,openai,cli,all,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Index of sessions with thread names,literal,git-root
+~/.codex/state_5.sqlite,codex-cli,openai,cli,all,yes,global,database,no,0,rw,n/a,n/a,runtime,,"Thread, spawn-edge and dynamic-tool state (schema version in file name)",literal,git-root
+~/.codex/logs_2.sqlite,codex-cli,openai,cli,all,yes,global,logs,no,0,rw,n/a,n/a,runtime,,Structured log database (schema version in file name),literal,git-root
+~/.codex/skills/{skill}/SKILL.md,codex-cli,openai,cli,all,yes,global,skills,on-demand,varies,rw,n/a,n/a,description-always;body-on-demand,{skill}=name,User skills (and bundled .system skills),literal,git-root
+~/.codex/memories_v2/,codex-cli,openai,cli,all,yes,global,memory,on-demand,varies,rw,n/a,n/a,session-start,,Memory store (git-tracked): memory_summary.md and rollout_summaries/,literal,git-root
+~/.codex/memories/,codex-cli,openai,cli,all,yes,global,memory,no,0,rw,n/a,n/a,runtime,,Earlier-generation memory store,literal,git-root
+~/.codex/plugins/cache/{marketplace}/{plugin}/{version}/,codex-cli,openai,cli,all,yes,global,extensions,no,0,rw,n/a,n/a,runtime,{marketplace};{plugin};{version},"Installed plugin payloads (openai-bundled, openai-curated, openai-primary-runtime)",literal,git-root
+~/.codex/shell_snapshots/,codex-cli,openai,cli,all,yes,global,temp,no,0,rw,n/a,n/a,runtime,,Shell environment snapshots,literal,git-root
+~/.codex/worktrees/,codex-cli,openai,cli,all,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Git worktrees created for app threads and handovers,literal,git-root
+~/.codex/models_cache.json,codex-cli,openai,cli,all,yes,global,cache,no,0,rw,n/a,n/a,runtime,,Cached model catalog,literal,git-root
+{project-root}/.codex/config.toml,codex-cli,openai,cli,all,yes,project,config,no,0,rw,n/a,n/a,session-start,,Project-level Codex configuration (applies to trusted projects),recursive,git-root
+{project-root}/.agents/skills/{skill}/SKILL.md,codex-cli,openai,cli,all,yes,project,skills,on-demand,varies,rw,n/a,n/a,description-always;body-on-demand,{skill}=name,Repository skills in the open agent-skills layout,recursive,git-root
+~/.agents/skills/{skill}/SKILL.md,codex-cli,openai,cli,all,yes,global,skills,on-demand,varies,rw,n/a,n/a,description-always;body-on-demand,{skill}=name,User skills in the shared open agent-skills layout (also written by skill installers),literal,git-root
+~/.agents/.skill-lock.json,codex-cli,openai,cli,all,yes,global,config,no,0,rw,n/a,n/a,runtime,,"Installed-skills lock file (version, skills, dismissed)",literal,git-root
+~/.vscode/extensions/openai.chatgpt-*/,codex-cli,openai,vscode,all,yes,global,extensions,no,0,rw,n/a,n/a,runtime,,Codex VS Code extension (openai.chatgpt),literal,none
+/Applications/ChatGPT.app/Contents/Resources/codex-cli/,codex-desktop,openai,desktop,macos,no,global,runtime,no,0,rw,n/a,n/a,runtime,,"Codex CLI binary bundled in the desktop app (app-server, exec-server, code-mode-host)",literal,none
+~/Library/Application Support/Codex/,codex-desktop,openai,desktop,macos,no,global,app-data,no,0,rw,n/a,n/a,runtime,,Electron user data of the Codex desktop app,literal,none
+~/Library/Application Support/Codex/artifact-sessions/,codex-desktop,openai,desktop,macos,no,global,runtime,no,0,rw,n/a,n/a,runtime,,Artifact runtime generations (bundled node runtime),literal,none
+~/Library/Application Support/Codex/executor-plugins/,codex-desktop,openai,desktop,macos,no,global,extensions,no,0,rw,n/a,n/a,runtime,,Executor plugin payloads,literal,none
+~/Library/Application Support/com.openai.codex/,codex-desktop,openai,desktop,macos,no,global,app-data,no,0,rw,n/a,n/a,runtime,,Updater appcast bootstrap and web assets,literal,none
+~/Library/Caches/com.openai.codex/,codex-desktop,openai,desktop,macos,no,global,cache,no,0,rw,n/a,n/a,runtime,,Sparkle updater cache,literal,none
+~/.codex/sqlite/codex.db,codex-desktop,openai,desktop,macos,yes,global,database,no,0,rw,n/a,n/a,runtime,,"Desktop app database: inbox, automations, thread catalog, timeline ledger",literal,none
+~/.codex/automations/,codex-desktop,openai,desktop,macos,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Desktop app automations,literal,none
+~/.codex/computer-use/,codex-desktop,openai,desktop,macos,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Computer Use helper app and state,literal,none
+~/.codex/.codex-global-state.json,codex-desktop,openai,desktop,macos,yes,global,config,no,0,rw,n/a,n/a,runtime,,Desktop app global UI state,literal,none
+~/.copilot/settings.json,copilot-cli,github,cli,macos/linux,yes,global,config,no,0,rw,n/a,n/a,runtime,,"User settings: model, effortLevel, enabledPlugins, disabledMcpServers, subagents, extraKnownMarketplaces",literal,git-root
+~/.copilot/installed-plugins/{marketplace}/{plugin}/,copilot-cli,github,cli,macos/linux,yes,global,extensions,no,0,rw,n/a,n/a,runtime,{marketplace};{plugin},Installed plugins (shared by CLI and desktop app),literal,git-root
+~/.copilot/extensions/,copilot-cli,github,cli,macos/linux,yes,global,extensions,no,0,rw,n/a,n/a,runtime,,Copilot extensions,literal,git-root
+~/.copilot/plugin-data/,copilot-cli,github,cli,macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Per-plugin data,literal,git-root
+~/Library/Caches/copilot/,copilot-cli,github,cli,macos,no,global,cache,no,0,rw,n/a,n/a,runtime,,"User cache, experiments, managed-settings, marketplaces, mcp-tools, pkg",literal,git-root
+~/.copilot/data.db,copilot-desktop,github,desktop,macos/linux,yes,global,database,no,0,rw,n/a,n/a,runtime,,"Desktop app database: projects, worktrees, workspaces, sessions, diff snapshots",literal,none
+~/.copilot/workspaces/{workspace}/,copilot-desktop,github,desktop,macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,{workspace}=uuid,Desktop app workspace directories,literal,none
+~/.copilot/chats/{date}/{chat}/,copilot-desktop,github,desktop,macos/linux,yes,global,transcript,no,0,rw,n/a,n/a,runtime,{date}=YYYY-MM-DD,Desktop app chat working directories,literal,none
+~/.copilot/open-sessions-state.json,copilot-desktop,github,desktop,macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Sessions open in the desktop app,literal,none
+~/.copilot/sidebar-sessions-state/,copilot-desktop,github,desktop,macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Desktop sidebar state,literal,none
+~/.copilot/run/,copilot-desktop,github,desktop,macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Single-instance lock and websocket port/token files,literal,none
+~/.copilot/repo-metadata-cache.db,copilot-desktop,github,desktop,macos/linux,yes,global,cache,no,0,rw,n/a,n/a,runtime,,Repository metadata cache,literal,none
+~/Library/Application Support/com.github.githubapp/,copilot-desktop,github,desktop,macos,no,global,app-data,no,0,rw,n/a,n/a,runtime,,Desktop app window state and app-skills,literal,none
+~/Library/Caches/github-copilot-sdk/cli/{runtime}/,copilot-desktop,github,desktop,macos,no,global,runtime,no,0,rw,n/a,n/a,runtime,{runtime}=copilot-sdk-runtime-<version>,Copilot runtime binary (copilot-runtime) downloaded for the desktop app,literal,none
+~/Library/Application Support/Code/User/globalStorage/github.copilot-chat/session-store.db,copilot-vscode,github,vscode,macos,no,global,database,no,0,rw,n/a,n/a,runtime,,"SQLite store of chat sessions, turns, checkpoints and search index",literal,none
+~/Library/Application Support/Code/User/globalStorage/github.copilot-chat/copilot.cli.workspaceSessions.{workspace}.json,copilot-vscode,github,vscode,macos,no,global,runtime,no,0,rw,n/a,n/a,runtime,{workspace}=uuid,Copilot CLI sessions attached to a VS Code workspace,literal,none
+~/Library/Application Support/Code/User/globalStorage/github.copilot-chat/memory-tool/memories/,copilot-vscode,github,vscode,macos,no,global,memory,on-demand,varies,rw,n/a,n/a,runtime,,Memory-tool files,literal,none
+~/.vscode/agent-plugins/,copilot-vscode,github,vscode,all,yes,global,extensions,no,0,rw,n/a,n/a,runtime,,Agent plugins cloned from marketplaces,literal,none
+~/.vscode/extensions/google.gemini-cli-vscode-ide-companion-*/,gemini-cli,google,vscode,all,yes,global,extensions,no,0,rw,n/a,n/a,runtime,,Gemini CLI VS Code IDE companion,literal,none
+~/.gemini/tmp/{project}/chats/session-{timestamp}-{id}.json,gemini-cli,google,cli,macos/linux,yes,global,transcript,no,0,rw,n/a,n/a,runtime,{project}=project name or hash,Chat session recordings per project,literal,git-root
+~/.gemini/tmp/{project}/logs.json,gemini-cli,google,cli,macos/linux,yes,global,logs,no,0,rw,n/a,n/a,runtime,{project}=project name or hash,Per-project prompt log,literal,git-root
+~/.gemini/tmp/{project}/.project_root,gemini-cli,google,cli,macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,{project}=project name or hash,Marker holding the project root this tmp directory belongs to,literal,git-root
+~/.gemini/history/,gemini-cli,google,cli,macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Shadow git history for checkpointing,literal,git-root
+~/.gemini/oauth_creds.json,gemini-cli,google,cli,macos/linux,yes,global,credentials,no,0,read,n/a,n/a,session-start,,Google OAuth credentials (do not read values),literal,git-root
+~/.gemini/google_accounts.json,gemini-cli,google,cli,macos/linux,yes,global,credentials,no,0,read,n/a,n/a,session-start,,Active and previous Google accounts,literal,git-root
+~/.gemini/trustedFolders.json,gemini-cli,google,cli,macos/linux,yes,global,config,no,0,rw,n/a,n/a,session-start,,Trusted folders,literal,git-root
+~/.gemini/trusted_hooks.json,gemini-cli,google,cli,macos/linux,yes,global,hooks,no,0,rw,n/a,n/a,session-start,,Trusted hook definitions,literal,git-root
+~/.gemini/projects.json,gemini-cli,google,cli,macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Project path to short-id registry,literal,git-root
+~/.gemini/state.json,gemini-cli,google,cli,macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,CLI UI state,literal,git-root
+~/.cursor/cli-config.json,cursor,cursor-inc,cli,all,yes,global,config,no,0,rw,n/a,n/a,session-start,,Cursor CLI (cursor-agent) permissions and settings,literal,git-root
+~/.cursor/mcp.json,cursor,cursor-inc,standalone,all,yes,global,config,no,0,rw,n/a,n/a,app-start,,User-level MCP server configuration,literal,none
+~/.local/share/cursor-agent/versions/,cursor,cursor-inc,cli,macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,Installed cursor-agent builds (date-hash directories),literal,git-root
+~/.local/bin/cursor-agent,cursor,cursor-inc,cli,macos/linux,yes,global,runtime,no,0,rw,n/a,n/a,runtime,,cursor-agent launcher symlink (also installed as agent),literal,git-root
