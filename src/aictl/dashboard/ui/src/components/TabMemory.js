@@ -4,6 +4,8 @@ import { SnapContext } from '../context.js';
 import { fmtK, fmtSz, fmtAgo, esc, fetchFileContent, MEM_LABELS, TAIL_LINES } from '../utils.js';
 import ChartCard from './ChartCard.js';
 import * as api from '../api.js';
+import ToolScopeEmpty from './ui/ToolScopeEmpty.js';
+import { isFiltered } from '../utils/toolScope.js';
 
 function MemItem({mem}) {
   const [showPreview, setShowPreview] = useState(false);
@@ -93,7 +95,7 @@ function MemSourceGroup({source, entries}) {
 }
 
 // ─── 5.3 Memory Growth Chart ───────────────────────────────────
-function MemoryGrowthChart() {
+function MemoryGrowthChart({ allToolsOnly = false }) {
   const [hist, setHist] = useState(null);
   useEffect(() => {
     api.getHistory()
@@ -105,7 +107,7 @@ function MemoryGrowthChart() {
   if (!hist) return null;
   const hasME = hist.memory_entries && hist.memory_entries.some(v => v > 0);
   return html`<div class="es-section" style="margin-bottom:var(--sp-6)">
-    <div class="es-section-title">Memory Growth</div>
+    <div class="es-section-title">Memory Growth${allToolsOnly ? ' (all tools: the history has no per-tool split)' : ''}</div>
     <div class="es-charts">
       <${ChartCard} label="Memory Tokens" value=${fmtK(hist.mem_tokens[hist.mem_tokens.length - 1] || 0)}
         data=${[hist.ts, hist.mem_tokens]} chartColor="var(--accent)" smooth />
@@ -116,7 +118,8 @@ function MemoryGrowthChart() {
 }
 
 export default function TabMemory() {
-  const {snap: s} = useContext(SnapContext);
+  const {snap: s, enabledTools = null} = useContext(SnapContext);
+  if(s && !s.agent_memory.length && isFiltered(enabledTools)) return html`<${ToolScopeEmpty} enabledTools=${enabledTools} snap=${s} what="agent memory"/>`;
   if(!s||!s.agent_memory.length) return html`<div class="empty-state">
     No agent memory found.
     <small class="empty-state-source">/api/snapshot · agent_memory[]</small>
@@ -126,7 +129,7 @@ export default function TabMemory() {
     s.agent_memory.forEach(m=>{(g[m.source]=g[m.source]||[]).push(m);});
     return Object.entries(g);
   },[s.agent_memory]);
-  return html`<${MemoryGrowthChart}/>
+  return html`<${MemoryGrowthChart} allToolsOnly=${isFiltered(enabledTools)}/>
     ${groups.map(([src,entries])=>
     html`<${MemSourceGroup} key=${src} source=${src} entries=${entries}/>`)}`;
 }

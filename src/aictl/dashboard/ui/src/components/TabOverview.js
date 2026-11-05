@@ -4,6 +4,8 @@ import { SnapContext } from '../context.js';
 import { COLORS, VENDOR_LABELS, VENDOR_COLORS, HOST_LABELS, GROUP_MODES, fmtK, esc } from '../utils.js';
 import ToolCard from './ToolCard.js';
 import PanelState from './ui/PanelState.js';
+import ToolScopeEmpty from './ui/ToolScopeEmpty.js';
+import { isFiltered } from '../utils/toolScope.js';
 import { Icon } from './ui/index.js';
 
 function ToolGroup({groupKey, groupLabel, groupColor, tools, root}) {
@@ -27,7 +29,7 @@ function ToolGroup({groupKey, groupLabel, groupColor, tools, root}) {
 }
 
 export default function TabOverview() {
-  const {snap: s} = useContext(SnapContext);
+  const {snap: s, enabledTools = null} = useContext(SnapContext);
   const [groupBy, setGroupBy] = useState('product');
 
   const hasData = t => t.files.length || t.processes.length || t.mcp_servers.length || t.live;
@@ -77,7 +79,8 @@ export default function TabOverview() {
   },[tools, groupBy]);
 
   if(!s) return html`<${PanelState} status="loading" label="processes"/>`;
-  if(!tools.length && !metaTools.length) return html`<p class="empty-state">No AI tool resources found for this tool filter. Widen it in the header, or run aictl doctor.</p>`;
+  if(!tools.length && !metaTools.length && isFiltered(enabledTools)) return html`<${ToolScopeEmpty} enabledTools=${enabledTools} snap=${s} what="tool resources"/>`;
+  if(!tools.length && !metaTools.length) return html`<p class="empty-state">No AI tool resources found. Run aictl doctor.</p>`;
 
   return html`<div>
     <div class="range-bar" style="margin-bottom:var(--sp-5)">

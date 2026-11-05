@@ -2,7 +2,7 @@ import { useMemo, useContext } from 'preact/hooks';
 import { CostValue, sumKnownCost } from '../utils/cost.js';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
-import { COLORS, fmtK, fmtSz, fmtPct, esc } from '../utils.js';
+import { COLORS, fmtK, fmtSz, fmtPct, esc, liveTokenTotal } from '../utils.js';
 import MiniChart from './MiniChart.js';
 import DataTable from './ui/DataTable.js';
 import PanelState, { panelStatus } from './ui/PanelState.js';
@@ -10,6 +10,8 @@ import { COST_ESTIMATE_NOTE, toolLabel } from '../utils/tools.js';
 import { usePolledResource } from '../hooks/usePolledResource.js';
 import * as api from '../api.js';
 import { contextWindowFor, isKnownModel } from '../models.js';
+import ToolScopeEmpty from './ui/ToolScopeEmpty.js';
+import { isFiltered, isToolSelected } from '../utils/toolScope.js';
 
 const MODEL_PALETTE = ['var(--green)','var(--model-7)','var(--orange)','var(--red)','var(--model-5)','var(--yellow)','var(--accent)','var(--model-8)'];
 
@@ -45,7 +47,8 @@ export default function TabBudget() {
     label="token budget" skeletonHeight="240px" emptyTitle="No budget data"
     emptyHint="The server returned nothing for /api/budget. It fills after the first scan of AI context files."/>`;
 
-  const toolMatch = (t) => enabledTools === null || enabledTools.includes(t);
+  const filtered = isFiltered(enabledTools);
+  const toolMatch = (t) => isToolSelected(t, enabledTools);
 
   // Context window: the model of the most active tool in scope that reports one.
   const detectedModel = useMemo(() => {
@@ -148,9 +151,15 @@ export default function TabBudget() {
     return {dates: activeDates, models, byDate, byDateModel, maxTotal, hasDetail};
   },[s, enabledTools]);
 
-  const tokenHistData = hist && hist.ts && hist.ts.length >= 2
+  // The live-token history is one machine-wide series with no per-tool split,
+  // so under a filter the chart is dropped and the figure is summed from the
+  // selected tools' live data.
+  const tokenHistData = !filtered && hist && hist.ts && hist.ts.length >= 2
     ? [hist.ts, hist.live_tokens || hist.ts.map(()=>0)]
     : null;
+  const liveTokens = filtered
+    ? (s?.tools||[]).filter(t => t.tool!=='aictl').reduce((a,t)=>a+liveTokenTotal(t.live),0)
+    : (s?.total_live_estimated_tokens||0);
 
   // Totals for telemetry
   const totIn = telemetry.reduce((s,t)=>s+(t.input_tokens||0),0);
@@ -163,16 +172,19 @@ export default function TabBudget() {
   return html`<div class="budget-grid">
     <!-- Live sparkline + context window side by side -->
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-6);margin-bottom:var(--sp-6)">
-      ${tokenHistData ? html`<div class="budget-card">
+      ${tokenHistData || filtered ? html`<div class="budget-card">
         <h3 class="text-accent" style="margin-bottom:var(--sp-3)">Live Token Usage</h3>
-        <${MiniChart} data=${tokenHistData} color="var(--green)" height=${60}
-          ariaLabel="Live token usage chart"/>
+        ${tokenHistData && html`<${MiniChart} data=${tokenHistData} color="var(--green)" height=${60}
+          ariaLabel="Live token usage chart"/>`}
         <div class="text-muted" style="font-size:var(--fs-base);margin-top:var(--sp-2)">
-          Current: ${fmtK(s?.total_live_estimated_tokens||0)} estimated tokens
+          Current: ${fmtK(liveTokens)} estimated tokens${filtered ? ' (selected tools; the trend chart has no per-tool split, so it shows with All tools)' : ''}
         </div>
       </div>` : html`<div></div>`}
       <div class="budget-card">
         <h3 class="text-accent" style="margin-bottom:var(--sp-3)">Context Window${detectedModel ? html` <span class="badge">${detectedModel}</span>` : ''}</h3>
+        ${filtered && html`<div class="panel-state panel-state--note" role="note" data-testid="budget-all-tools-note">
+          <span>The token figures in this card cover all tools and all projects: the budget scan has no per-tool split, so the tool filter does not apply to them.</span>
+        </div>`}
         <div style="margin-bottom:var(--sp-3)">
           <div class="flex-between text-sm" style="margin-bottom:2px">
             <span>Always loaded: ${fmtK(alwaysLoaded)} of ${fmtK(contextWindow)}</span>
@@ -205,6 +217,9 @@ export default function TabBudget() {
         </div>` : null}
       </div>
     </div>
+
+    ${filtered && !telemetry.length && !catBreakdown.length && !dailyChart
+      && html`<${ToolScopeEmpty} enabledTools=${enabledTools} snap=${s} what="token usage and categories"/>`}
 
     <!-- Daily token usage -->
     ${dailyChart && html`<div class="budget-card mb-md">

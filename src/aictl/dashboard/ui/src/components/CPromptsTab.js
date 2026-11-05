@@ -5,6 +5,8 @@ import { SnapContext } from '../context.js';
 import * as api from '../api.js';
 import { Icon } from './ui/index.js';
 import { fmtSz, fmtAgo } from '../utils.js';
+import ToolScopeEmpty from './ui/ToolScopeEmpty.js';
+import { isFiltered } from '../utils/toolScope.js';
 
 const VIEWS = [
   { id: 'prompts',   label: 'Prompts' },
@@ -195,7 +197,9 @@ export default function CPromptsTab() {
     <div class="cprompts-body">
       <div class="cprompts-list">
         ${filtered.length === 0
-          ? html`<${EmptyState} view=${view} hasSnap=${!!snap}/>`
+          ? (isFiltered(ctx?.enabledTools) && !filter
+            ? html`<${ToolScopeEmpty} enabledTools=${ctx.enabledTools} snap=${snap} what=${'the ' + view + ' list'}/>`
+            : html`<${EmptyState} view=${view} hasSnap=${!!snap}/>`)
           : filtered.map(p => html`<div key=${p.id}
               class=${'cprompts-prompt-row' + (p.id === selected ? ' is-selected' : '')}
               onClick=${() => setSelected(p.id === selected ? null : p.id)}

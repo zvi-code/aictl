@@ -5,6 +5,8 @@ import { fmtK, fmtDurSec, toolColor } from '../utils.js';
 import { ToolIcon } from './ui/index.js';
 import { dedupeSessions } from '../selectors.js';
 import * as api from '../api.js';
+import ToolScopeEmpty from './ui/ToolScopeEmpty.js';
+import { isFiltered, isToolSelected } from '../utils/toolScope.js';
 
 function sessionTitle(s) {
   if (s.project) {
@@ -115,7 +117,7 @@ function SessionDetailPane({ session, onInspect }) {
 
 // ─── CSessionsTab ────────────────────────────────────────────────
 export default function CSessionsTab({ onInspect }) {
-  const { globalRange, enabledTools } = useContext(SnapContext);
+  const { globalRange, enabledTools, snap } = useContext(SnapContext);
 
   const [sessions,      setSessions]      = useState([]);
   const [filteredCount, setFilteredCount] = useState(0);
@@ -145,7 +147,7 @@ export default function CSessionsTab({ onInspect }) {
       .catch(() => setLoading(false));
   }, [globalRange]);
 
-  const toolMatch = t => enabledTools === null || enabledTools.includes(t);
+  const toolMatch = t => isToolSelected(t, enabledTools);
 
   const agents = useMemo(() => {
     const seen = new Set();
@@ -176,7 +178,8 @@ export default function CSessionsTab({ onInspect }) {
     let list = sessions.filter(s => toolMatch(s.tool));
     if (statusFilter === 'error') list = list.filter(s => (s.error_count || 0) > 0);
     else if (statusFilter !== 'all') list = list.filter(s => sessionStatus(s) === statusFilter);
-    if (agentFilter  !== 'all') list = list.filter(s => s.tool === agentFilter);
+    // A picked agent only counts while the tool filter still offers it.
+    if (agentFilter  !== 'all' && toolMatch(agentFilter)) list = list.filter(s => s.tool === agentFilter);
     if (filter) {
       const q = filter.toLowerCase();
       list = list.filter(s =>
@@ -241,7 +244,9 @@ export default function CSessionsTab({ onInspect }) {
         ${loading
           ? html`<div class="csessions-loading">Loading sessions…</div>`
           : filtered.length === 0
-            ? html`<div class="csessions-empty">No sessions match the current filter.</div>`
+            ? (isFiltered(enabledTools) && !filter && statusFilter === 'all'
+              ? html`<${ToolScopeEmpty} enabledTools=${enabledTools} snap=${snap} what="sessions"/>`
+              : html`<div class="csessions-empty">No sessions match the current filter.</div>`)
             : html`<div class="csessions-table">
                 <div class="csessions-thead">
                   <div class="c-overline csessions-th">When</div>

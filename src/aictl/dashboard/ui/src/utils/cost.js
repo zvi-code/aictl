@@ -3,6 +3,7 @@
 // units (credits, premium requests) are what the vendor counts, so they lead;
 // list-price figures are estimates and say so.
 import { html } from 'htm/preact';
+import { isToolSelected } from './toolScope.js';
 
 export const NO_COST_REASON = 'No price is known for this usage.';
 
@@ -56,7 +57,7 @@ export function CostValue({ row, digits = 2, showSub = true }) {
 /** Scope /api/usage to the tool filter and split what is billed from what is estimated. */
 export function summarizeUsage(usage, enabledTools) {
   const rows = (usage?.tools || [])
-    .filter(r => enabledTools === null || enabledTools === undefined || enabledTools.includes(r.tool))
+    .filter(r => isToolSelected(r.tool, enabledTools))
     .filter(r => r.counted_in_totals !== false);
   const billed = new Map();
   let premium = 0;

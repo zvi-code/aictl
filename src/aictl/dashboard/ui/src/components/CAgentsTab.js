@@ -8,6 +8,8 @@ import { ToolIcon } from './ui/index.js';
 import * as api from '../api.js';
 import Dialog from './ui/Dialog.js';
 import { toast } from './ui/Toast.js';
+import ToolScopeEmpty from './ui/ToolScopeEmpty.js';
+import { isFiltered, resolveActiveTool } from '../utils/toolScope.js';
 
 
 function isActive(tool) {
@@ -486,10 +488,20 @@ export default function CAgentsTab({ onViewSessions, onViewConfig }) {
   const [selected, setSelected] = useState(null);
   const [editTool, setEditTool] = useState(null);
 
-  const selectedId   = selected ?? active[0]?.tool ?? null;
-  const selectedTool = active.find(t => t.tool === selectedId)
-                    ?? inactive.find(t => t.tool === selectedId);
-  const selectedConfig = selectedId ? toolConfigMap[selectedId] : null;
+  // The picked agent only counts while the filter still offers it; otherwise the
+  // first active agent shows.
+  const allIds  = [...active, ...inactive].map(t => t.tool);
+  const shownId = selected && allIds.includes(selected)
+    ? selected
+    : resolveActiveTool(active.map(t => t.tool), null) ?? allIds[0] ?? null;
+  const selectedTool = active.find(t => t.tool === shownId)
+                    ?? inactive.find(t => t.tool === shownId);
+  const selectedConfig = shownId ? toolConfigMap[shownId] : null;
+  const enabledTools = ctx?.enabledTools ?? null;
+
+  if (!active.length && !inactive.length && isFiltered(enabledTools)) {
+    return html`<div class="c-shell"><${ToolScopeEmpty} enabledTools=${enabledTools} snap=${snap} what="agents"/></div>`;
+  }
 
   return html`<div class="c-shell">
     <div class="cagents-toolbar">
@@ -501,11 +513,11 @@ export default function CAgentsTab({ onViewSessions, onViewConfig }) {
       <div class="cagents-list">
         ${active.length > 0 && html`<div class="c-overline cagents-list-heading">Active</div>`}
         ${active.map(t => html`<${AgentRow} key=${t.tool}
-          tool=${t} selected=${selectedId} onSelect=${setSelected}/>`)}
+          tool=${t} selected=${shownId} onSelect=${setSelected}/>`)}
 
         ${inactive.length > 0 && html`<div class="c-overline cagents-list-heading">Detected, not active</div>`}
         ${inactive.map(t => html`<${InactiveRow} key=${t.tool}
-          tool=${t} selected=${selectedId} onSelect=${setSelected}/>`)}
+          tool=${t} selected=${shownId} onSelect=${setSelected}/>`)}
       </div>
       <div class="cagents-detail-pane">
         ${selectedTool

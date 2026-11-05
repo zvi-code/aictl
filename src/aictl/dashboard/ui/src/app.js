@@ -19,8 +19,11 @@ import { VERIFIED_TOOLS, orderToolsByActivity, scopeIsCloudOnly, toolLabel } fro
 import { baseName } from './utils/paths.js';
 import { commandKeyLabel } from './utils/platform.js';
 import CloudOnlyNotice from './components/ui/CloudOnlyNotice.js';
-import AllToolsNote from './components/ui/AllToolsNote.js';
 import { gateContext } from './utils/gateContext.js';
+import {
+  countUnlisted, filterByTool, isConfigSelected, isFiltered, isMemorySelected, isToolSelected,
+} from './utils/toolScope.js';
+import FilterHiddenNote from './components/ui/FilterHiddenNote.js';
 
 import FileViewer from './components/FileViewer.js';
 import CollectorHealth from './components/CollectorHealth.js';
@@ -187,14 +190,13 @@ function computeAlerts(snap) {
 
 /** Scope a per-tool list to the filter. Rows with no tool are global: keep them. */
 function byTool(list, enabledTools) {
-  if (!Array.isArray(list) || enabledTools === null) return list;
-  return list.filter(r => !r.tool || enabledTools.includes(r.tool));
+  return filterByTool(list, enabledTools);
 }
 
 export function filterSnap(snap, enabledTools, searchQuery) {
   if (!snap) return snap;
   let tools = snap.tools.filter(t => VERIFIED_TOOLS.has(t.tool) || t.tool === 'aictl');
-  if (enabledTools !== null) tools = tools.filter(t => enabledTools.includes(t.tool) || t.tool === 'aictl');
+  tools = tools.filter(t => isToolSelected(t.tool, enabledTools));
   if (searchQuery) {
     const q = searchQuery.toLowerCase();
     tools = tools.filter(t =>
@@ -210,15 +212,28 @@ export function filterSnap(snap, enabledTools, searchQuery) {
     );
   }
   // Root cause of "the tool filter applies only sometimes": only snap.tools
-  // was filtered, while panels also read these flat per-tool lists.
+  // was filtered, while panels also read these flat per-tool lists. Any list
+  // added to the snapshot with a per-tool id belongs here too (test/tool_filter.test.js
+  // fails when a snapshot list is neither scoped nor declared global).
   return {
     ...snap,
     tools: orderToolsByActivity(tools),
     sessions: byTool(snap.sessions, enabledTools),
     tool_telemetry: byTool(snap.tool_telemetry, enabledTools),
+    tool_configs: Array.isArray(snap.tool_configs)
+      ? snap.tool_configs.filter(c => isConfigSelected(c, enabledTools))
+      : snap.tool_configs,
     mcp_detail: byTool(snap.mcp_detail, enabledTools),
     events: byTool(snap.events, enabledTools),
-    agent_memory: byTool(snap.agent_memory, enabledTools),
+    // Memory rows name a source, not a tool: see memoryOwners.
+    agent_memory: Array.isArray(snap.agent_memory) && isFiltered(enabledTools)
+      ? snap.agent_memory.filter(m => isMemorySelected(m, enabledTools))
+      : snap.agent_memory,
+    // Rows a filter hides only because their tool id is not in the filter list.
+    filter_hidden_unlisted: isFiltered(enabledTools)
+      ? countUnlisted(snap.sessions) + countUnlisted(snap.tool_telemetry)
+        + countUnlisted(snap.tool_configs) + countUnlisted(snap.mcp_detail) + countUnlisted(snap.events)
+      : 0,
   };
 }
 
@@ -302,6 +317,62 @@ function ShortcutsDialog({ open, onClose, tabs }) {
       </li>`)}
     </ul>
   </${Dialog}>`;
+}
+
+/**
+ * One renderer per nav tab. Exported so test/tool_filter.test.js can render every
+ * real screen under a tool filter, and fail when a tab has no entry in its table.
+ */
+export function tabRenderers({
+  theme, snap, filteredSnap, enabledTools, effectiveHistory, activeTab,
+  connected, otelActive, alerts, selfStatus,
+  openSession, setActiveTab, setTheme,
+}) {
+  return {
+    overview:   () => theme === 'editorial'
+      ? html`<${TabBoundary} tabName="overview">
+          <${CDashboardTab}/>
+          <div class="mb-lg" style="margin-top:var(--sp-6)">
+            <div class="c-overline" style="margin-bottom:var(--sp-3)">Monitoring</div>
+            <${CollectorHealth}/>
+          </div>
+        </${TabBoundary}>`
+      : html`<${TabBoundary} tabName="overview">
+          <${OverviewNow} snap=${filteredSnap} enabledTools=${enabledTools}
+            connected=${connected} otelActive=${otelActive} alerts=${alerts} selfStatus=${selfStatus}
+            onOpenSession=${openSession} onOpenTab=${setActiveTab}/>
+          ${!scopeIsCloudOnly(snap, enabledTools) && html`<${DashboardContent} snap=${filteredSnap} history=${effectiveHistory} enabledTools=${enabledTools}/>`}
+          <div class="mb-lg"><${CollectorHealth}/></div>
+        </${TabBoundary}>`,
+    hidden:     () => html`<${TabBoundary} tabName="hidden"><${HiddenContextSlot}/></${TabBoundary}>`,
+    procs:      () => html`<${TabBoundary} tabName="procs"><div class="mb-lg"><${TabOverview}/></div></${TabBoundary}>`,
+    memory:     () => html`<${TabBoundary} tabName="memory"><div class="mb-lg"><${ContextMap}/></div><div class="mb-lg"><${TabMemory}/></div></${TabBoundary}>`,
+    live:       () => html`<${TabBoundary} tabName="live"><div class="mb-lg"><${TabLive}/></div></${TabBoundary}>`,
+    events:     () => html`<${TabBoundary} tabName="events"><div class="mb-lg"><${TabEventsStats} key=${'events-' + activeTab}/></div></${TabBoundary}>`,
+    budget:     () => html`<${TabBoundary} tabName="budget"><div class="mb-lg"><${TabBudget} key=${'budget-' + activeTab}/></div></${TabBoundary}>`,
+    analytics:  () => html`<${TabBoundary} tabName="analytics"><div class="mb-lg"><${TabAnalytics} key=${'analytics-' + activeTab}/></div></${TabBoundary}>`,
+    explorer:   () => theme === 'editorial'
+      ? html`<${TabBoundary} tabName="explorer"><${CSessionsTab}
+          onInspect=${(id, tool) => {
+            // Coherent inspect flow: stay on the explorer tab, hand the
+            // session id to TabExplorer (it stashes the event if it isn't
+            // mounted yet), then leave the editorial theme so TabExplorer
+            // renders and picks the session up.
+            setActiveTab('explorer');
+            dispatchSessionSelect(id, tool);
+            setTheme('auto');
+          }}
+        /></${TabBoundary}>`
+      : html`<${TabBoundary} tabName="explorer"><div class="mb-lg"><${TabExplorer} key=${'explorer-' + activeTab}/></div></${TabBoundary}>`,
+    config:     () => html`<${TabBoundary} tabName="config">
+      <div class="mb-lg"><${TabToolConfig}/></div>
+      <div class="mb-lg"><${TabProjectEnv} snap=${snap}/></div>
+    </${TabBoundary}>`,
+    agents:     () => html`<${TabBoundary} tabName="agents"><${CAgentsTab}
+      onViewSessions=${() => setActiveTab('explorer')}
+      onViewConfig=${() => setActiveTab('config')}/></${TabBoundary}>`,
+    prompts:    () => html`<${TabBoundary} tabName="prompts"><${CPromptsTab}/></${TabBoundary}>`,
+  };
 }
 
 // ─── App ───────────────────────────────────────────────────────
@@ -402,51 +473,11 @@ export default function App() {
   gateRef.current = gateContext(gateRef.current, ctxValue, { activeTab });
   const treeCtx = gateRef.current.value;
 
-  const TAB_RENDERERS = {
-    overview:   () => theme === 'editorial'
-      ? html`<${TabBoundary} tabName="overview">
-          <${CDashboardTab}/>
-          <div class="mb-lg" style="margin-top:var(--sp-6)">
-            <div class="c-overline" style="margin-bottom:var(--sp-3)">Monitoring</div>
-            <${CollectorHealth}/>
-          </div>
-        </${TabBoundary}>`
-      : html`<${TabBoundary} tabName="overview">
-          <${OverviewNow} snap=${filteredSnap} enabledTools=${enabledTools}
-            connected=${connected} otelActive=${otelActive} alerts=${alerts} selfStatus=${selfStatus}
-            onOpenSession=${openSession} onOpenTab=${setActiveTab}/>
-          ${!scopeIsCloudOnly(snap, enabledTools) && html`<${AllToolsNote} enabledTools=${enabledTools} what="The charts and totals below"/><${DashboardContent} snap=${filteredSnap} history=${effectiveHistory}/>`}
-          <div class="mb-lg"><${CollectorHealth}/></div>
-        </${TabBoundary}>`,
-    hidden:     () => html`<${TabBoundary} tabName="hidden"><${HiddenContextSlot}/></${TabBoundary}>`,
-    procs:      () => html`<${TabBoundary} tabName="procs"><div class="mb-lg"><${TabOverview}/></div></${TabBoundary}>`,
-    memory:     () => html`<${TabBoundary} tabName="memory"><div class="mb-lg"><${ContextMap}/></div><div class="mb-lg"><${TabMemory}/></div></${TabBoundary}>`,
-    live:       () => html`<${TabBoundary} tabName="live"><div class="mb-lg"><${TabLive}/></div></${TabBoundary}>`,
-    events:     () => html`<${TabBoundary} tabName="events"><div class="mb-lg"><${TabEventsStats} key=${'events-' + activeTab}/></div></${TabBoundary}>`,
-    budget:     () => html`<${TabBoundary} tabName="budget"><div class="mb-lg"><${TabBudget} key=${'budget-' + activeTab}/></div></${TabBoundary}>`,
-    analytics:  () => html`<${TabBoundary} tabName="analytics"><div class="mb-lg"><${TabAnalytics} key=${'analytics-' + activeTab}/></div></${TabBoundary}>`,
-    explorer:   () => theme === 'editorial'
-      ? html`<${TabBoundary} tabName="explorer"><${CSessionsTab}
-          onInspect=${(id, tool) => {
-            // Coherent inspect flow: stay on the explorer tab, hand the
-            // session id to TabExplorer (it stashes the event if it isn't
-            // mounted yet), then leave the editorial theme so TabExplorer
-            // renders and picks the session up.
-            setActiveTab('explorer');
-            dispatchSessionSelect(id, tool);
-            setTheme('auto');
-          }}
-        /></${TabBoundary}>`
-      : html`<${TabBoundary} tabName="explorer"><div class="mb-lg"><${TabExplorer} key=${'explorer-' + activeTab}/></div></${TabBoundary}>`,
-    config:     () => html`<${TabBoundary} tabName="config">
-      <div class="mb-lg"><${TabToolConfig}/></div>
-      <div class="mb-lg"><${TabProjectEnv} snap=${snap}/></div>
-    </${TabBoundary}>`,
-    agents:     () => html`<${TabBoundary} tabName="agents"><${CAgentsTab}
-      onViewSessions=${() => setActiveTab('explorer')}
-      onViewConfig=${() => setActiveTab('config')}/></${TabBoundary}>`,
-    prompts:    () => html`<${TabBoundary} tabName="prompts"><${CPromptsTab}/></${TabBoundary}>`,
-  };
+  const TAB_RENDERERS = tabRenderers({
+    theme, snap, filteredSnap, enabledTools, effectiveHistory, activeTab,
+    connected, otelActive, alerts, selfStatus,
+    openSession, setActiveTab, setTheme,
+  });
 
   // Once we have a snapshot we can render; SSE drops shouldn't flash a
   // skeleton across the whole dashboard. Connection state is shown via the
@@ -475,6 +506,7 @@ export default function App() {
         <${NavRail} tabs=${tabs} activeTab=${activeTab} setActiveTab=${setActiveTab}/>
         <main class="main" id="main-content" tabindex="0" ref=${mainRef}>
           <div class="main-view" aria-label=${tabs.find(t => t.id === activeTab)?.label}>
+            ${ready && html`<${FilterHiddenNote} count=${filteredSnap?.filter_hidden_unlisted || 0}/>`}
             ${!ready
               ? html`<div class="tab-skeleton" role="status" aria-busy="true" aria-label="Loading dashboard">
                   <${Skeleton} height="120px" radius="var(--radius-sm)"/>

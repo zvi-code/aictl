@@ -5,6 +5,8 @@ import { fmtK, fmtSz, liveTokenTotal, fmtAgo, fmtDurSec, toolColor } from '../ut
 import { ToolIcon } from './ui/index.js';
 import { dedupeSessions, findSessionRow, sessionIdCandidates } from '../selectors.js';
 import * as api from '../api.js';
+import ToolScopeEmpty from './ui/ToolScopeEmpty.js';
+import { isFiltered } from '../utils/toolScope.js';
 
 // ─── Lane colors (editorial palette) ────────────────────────────
 const LANE_COLOR = {
@@ -325,7 +327,9 @@ export default function CDashboardTab() {
     });
   }, [allSessions, sessionFilter, activeTools]);
 
-  const selectedId  = selectedSession ?? filteredSessions[0]?.session_id ?? filteredSessions[0]?.id ?? null;
+  // A picked session only counts while the tool filter still shows it.
+  const pickedStillShown = selectedSession && !!findSessionRow(filteredSessions, selectedSession);
+  const selectedId  = (pickedStillShown ? selectedSession : null) ?? filteredSessions[0]?.session_id ?? filteredSessions[0]?.id ?? null;
   const selectedObj = findSessionRow(filteredSessions, selectedId) ?? null;
 
   // Fetch session-flow when selected session changes — try every id the
@@ -368,6 +372,10 @@ export default function CDashboardTab() {
   const handleSelectEvent = useCallback(ev => {
     setSelectedEvent(ev.id === selectedEvent ? null : ev.id);
   }, [selectedEvent]);
+
+  if (isFiltered(ctx?.enabledTools) && !(snap?.tools || []).some(t => t.tool !== 'aictl')) {
+    return html`<div class="c-shell"><${ToolScopeEmpty} enabledTools=${ctx.enabledTools} snap=${snap} what="the overview"/></div>`;
+  }
 
   return html`<div class="c-shell">
     <!-- Stats strip -->
