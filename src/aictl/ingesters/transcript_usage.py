@@ -566,7 +566,8 @@ class CopilotAccumulator:
             self.shutdowns.append({"ts": ts, "metrics": data.get("modelMetrics") or {}})
             # The session's own count. Summing per-call multipliers overstates it,
             # because a call the agent starts within a turn is not a new request.
-            s.premium_requests += float(data.get("totalPremiumRequests") or 0)
+            # Each shutdown restates the running total, so a resumed session repeats it.
+            s.premium_requests = max(s.premium_requests, float(data.get("totalPremiumRequests") or 0))
         elif kind == "user.message":
             s.turns += 1
         elif kind == "assistant.message":

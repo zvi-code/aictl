@@ -163,6 +163,16 @@ class TestBilling:
         ing.poll()
         assert row(db, CLI_SID)["premium_requests"] == pytest.approx(2.0)
 
+    @pytest.mark.parametrize("totals, expected", [((22, 22), 22.0), ((5, 9), 9.0)])
+    def test_a_repeated_shutdown_restates_the_premium_count(self, tmp_path, db, ing, totals, expected):
+        events = tmp_path / "copilot" / "session-state" / CLI_SID / "events.jsonl"
+        events.parent.mkdir(parents=True)
+        lines = [{"type": "session.usage_record", "timestamp": iso(10), "data": {"usage": {"model": "gpt-6.1-sol", "inputTokens": 5, "outputTokens": 5, "cost": 27.0}}}]
+        lines += [{"type": "session.shutdown", "timestamp": iso(9), "data": {"totalPremiumRequests": n, "modelMetrics": {}}} for n in totals]
+        events.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+        ing.poll()
+        assert row(db, CLI_SID)["premium_requests"] == pytest.approx(expected)
+
     def test_events_ahead_of_the_store_keep_the_store_credits(self, tmp_path, db, ing):
         build_store(tmp_path / "copilot")
         events = tmp_path / "copilot" / "session-state" / CLI_SID / "events.jsonl"
