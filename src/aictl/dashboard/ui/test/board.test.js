@@ -9,7 +9,7 @@ import BoardScreen from '../src/components/board/BoardScreen.js';
 import Chart from '../src/components/board/Chart.js';
 import Table from '../src/components/board/Table.js';
 import { bucketTotals, chartModel, indexToSel, selToIndex } from '../src/components/board/chartModel.js';
-import { boardQuery, canClear, filtersToParams, parseFilters, windowOf } from '../src/components/board/filters.js';
+import { boardQuery, canClear, filtersToParams, listedTools, parseFilters, toolFilterLabel, windowOf } from '../src/components/board/filters.js';
 import { buildFindings, buildSettings, tailPath } from '../src/components/board/findings.js';
 import { fmtDur, fmtLines, fmtMs, fmtN, fmtRate, fmtShare, fmtUsd, sparkPath } from '../src/components/board/format.js';
 import {
@@ -324,7 +324,7 @@ describe('null display', () => {
   });
   it('builds every panel from an empty response', () => {
     const data = normalizeBoard({});
-    const ctx = { data, series: {}, range: data.range, chartRange: data.range, sel: null, filters: parseFilters(''), tools: null, toolIds: [], toolName: id => id, nowS: NOW, stopped: {}, findings: { list: [], settings: [] }, actions: {}, query: '' };
+    const ctx = { data, series: {}, range: data.range, chartRange: data.range, sel: null, filters: parseFilters(''), tools: null, toolIds: [], settingToolIds: [], toolName: id => id, nowS: NOW, stopped: {}, findings: { list: [], settings: [] }, actions: {}, query: '' };
     const local = { mode: (k, d) => d, tableView: false, folded: {}, setFold() {} };
     for (const id of PANEL_IDS) expect(() => buildPanel(id, ctx, local, { id })).not.toThrow();
     expect(sectionSummary('usage', data, {}, 0)).toContain('n/a');
@@ -449,6 +449,18 @@ describe('guards', () => {
   it('keeps old links resolving', () => {
     expect(routeOf('?tab=configuration')).toBe('detail');
     expect(routeOf('?tab=events-stats')).toBe('detail');
+  });
+  it('shows hidden context on the board, not on an old screen', () => {
+    expect(routeOf('?tab=hidden')).toBe('board');
+  });
+  it('counts only listed tools when a saved choice names more', () => {
+    const six = ['a', 'b', 'c', 'd', 'e', 'f'];
+    expect(toolFilterLabel(six, ['a'], x => x)).toBe('All 1');
+    expect(listedTools(six, ['a'])).toBe(null);
+    expect(toolFilterLabel(['a', 'd'], ['a', 'b'], x => x)).toBe('a');
+    expect(toolFilterLabel(['z'], ['a', 'b'], x => x)).toBe('None');
+    expect(toolFilterLabel(null, ['a', 'b'], x => x)).toBe('All 2');
+    expect(nextTools(['a', 'z'], 'b', ['a', 'b'])).toBe(null);
   });
 });
 

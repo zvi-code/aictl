@@ -576,3 +576,25 @@ def test_process_flags_are_found_in_windows_command_lines(repo):
     assert "dynamic.cli-system-prompt" in rules(report, "high")
     blob = json.dumps(report)
     assert "secret-windows-value" not in blob and "not-an-ai-tool" not in blob
+
+
+def test_an_unset_portable_path_does_not_stop_the_model_scan(repo, monkeypatch):
+    """An unset variable expands to an empty path, and Path("") has no parent folder."""
+    import aictl.effective_config as ec
+
+    monkeypatch.setattr(ec, "IS_WINDOWS", True)
+    env = {"LOCALAPPDATA": r"C:\Users\sample\AppData\Local", "APPDATA": r"C:\Users\sample\AppData\Roaming"}
+    assert any(row["id"] == "vscode-portable-settings" and not row["expanded"] for row in ec.windows_locations(env))
+    assert all(str(tree) for tree in ec._vscode_user_trees(env))
+    ec.model_summary(repo, "copilot-vscode", env=env)
+
+
+def test_a_failed_step_is_reported_and_the_other_steps_still_run(repo, monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise IndexError(0)
+
+    monkeypatch.setattr(ca, "_collect_vscode", fail)
+    (repo / "CLAUDE.md").write_text("project rules\n")
+    result = audit(repo)
+    assert result["failed_steps"] == [{"step": "VS Code settings", "error": "IndexError: 0"}]
+    assert any(s["path"].endswith("CLAUDE.md") for s in result["sources"])

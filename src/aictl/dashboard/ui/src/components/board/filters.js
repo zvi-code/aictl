@@ -20,6 +20,21 @@ export const STATUSES = [
 ];
 const STATUS_IDS = new Set(STATUSES.map(s => s[0]));
 
+/** The tools a saved choice selects from those this time range lists. Null means all of them. */
+export function listedTools(tools, toolIds) {
+  if (!tools) return null;
+  const listed = tools.filter(id => toolIds.includes(id));
+  return listed.length >= toolIds.length ? null : listed;
+}
+
+/** Text of the Tool filter. */
+export function toolFilterLabel(tools, toolIds, name) {
+  const listed = listedTools(tools, toolIds);
+  if (!listed) return 'All ' + toolIds.length;
+  if (listed.length <= 2) return listed.map(name).join(', ') || 'None';
+  return listed.length + ' of ' + toolIds.length;
+}
+
 export function parseFilters(search) {
   const base = parseUrlState(search);
   const q = new URLSearchParams(search || '');

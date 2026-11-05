@@ -8,7 +8,7 @@ import { writeUrl } from '../../hooks/urlState.js';
 import { LAYOUT } from '../../layoutConfig.js';
 import { focusTrap } from '../../utils/a11y.js';
 import { parseCustomRange, toLocalISOString } from '../../utils/customRange.js';
-import { canClear, clearedFilters, RANGES, STATUSES, windowOf, boardQuery } from './filters.js';
+import { listedTools, toolFilterLabel, canClear, clearedFilters, RANGES, STATUSES, windowOf, boardQuery } from './filters.js';
 import { buildFindings, buildSettings } from './findings.js';
 import { colorFor, projectName, stamp } from './format.js';
 import { Ico, PATHS } from './icons.js';
@@ -148,7 +148,7 @@ function FilterRow({ board, data, ctx, menu, act }) {
   const { filters, tools } = board;
   const opts = data.options;
   const toolIds = opts.tools.map(t => t.id);
-  const toolValue = !tools ? 'All ' + toolIds.length : tools.length <= 2 ? (tools.map(ctx.toolName).join(', ') || 'None') : tools.length + ' of ' + toolIds.length;
+  const toolValue = toolFilterLabel(tools, toolIds, ctx.toolName);
   const allAgents = data.scope.all_agents;
   const statusCounts = {};
   if (filters.status === 'all') {
@@ -160,7 +160,7 @@ function FilterRow({ board, data, ctx, menu, act }) {
   const shown = data.scope.shown_agents;
   const scope = shown === allAgents ? 'Showing all ' + allAgents + ' agents in this time' : 'Showing ' + shown + ' of ' + allAgents + ' agents in this time';
   return html`<div class="bd-bar" role="region" aria-label="Filters">
-    <${FilterMenu} fkey="tools" label="Tool" value=${toolValue} active=${!!tools} menu=${menu} act=${act}
+    <${FilterMenu} fkey="tools" label="Tool" value=${toolValue} active=${!!listedTools(tools, toolIds)} menu=${menu} act=${act}
       items=${opts.tools.map(t => ({ id: t.id, label: t.label || t.id, sw: colorFor('tool', t.id), on: !tools || tools.includes(t.id), count: agentsLabel(t.agents), pick: () => act.toggleTool(t.id, toolIds) }))}/>
     <${FilterMenu} fkey="project" label="Project" value=${filters.project === 'all' ? 'All' : projectName(filters.project)} active=${filters.project !== 'all'} menu=${menu} act=${act}
       items=${[{ id: 'all', label: 'All projects', on: filters.project === 'all', count: agentsLabel(allAgents), pick: () => act.setFilter('project', 'all') }].concat(opts.projects.map(p => ({ id: p.id, label: projectName(p.id), title: p.id, sw: colorFor('project', p.id), on: filters.project === p.id, count: agentsLabel(p.agents), pick: () => act.setFilter('project', p.id) })))}/>
@@ -219,7 +219,9 @@ export default function BoardScreen() {
   const [menu, setMenu] = useState(null);
   const [drawer, setDrawer] = useState(() => {
     try {
-      const id = new URLSearchParams(window.location.search).get('agent');
+      const q = new URLSearchParams(window.location.search);
+      if (q.get('tab') === 'hidden') return [{ type: 'hidden' }];
+      const id = q.get('agent');
       return id ? [{ type: 'agent', id, tab: 'overview' }] : [];
     } catch { return []; }
   });
@@ -276,13 +278,15 @@ export default function BoardScreen() {
   }, [loaded, loadFindings]);
 
   const toolIds = useMemo(() => data.options.tools.map(t => t.id), [data.options]);
+  // Settings apply whether or not a tool ran in this time, so its data sources count too.
+  const settingToolIds = useMemo(() => [...new Set([...toolIds, ...data.sources.map(s => s.tool)])], [toolIds, data.sources]);
   const toolLabels = useMemo(() => ({ ...(data.tool_labels || {}), ...Object.fromEntries(data.options.tools.map(t => [t.id, t.label || t.id])) }), [data.options, data.tool_labels]);
   const toolName = useCallback(id => toolLabels[id] || id || 'n/a', [toolLabels]);
   const findings = useMemo(() => {
     const list = buildFindings({ ...settingsRaw, tools });
-    const { rows, note } = buildSettings({ ...settingsRaw, toolIds });
-    return { list, settings: rows, note, loading: settingsRaw.loading, error: settingsRaw.error, scan: settingsRaw.scan, incomplete: settingsRaw.audit?.incomplete || [] };
-  }, [settingsRaw, tools, toolIds]);
+    const { rows, note } = buildSettings({ ...settingsRaw, toolIds: settingToolIds });
+    return { list, settings: rows, note, loading: settingsRaw.loading, error: settingsRaw.error, scan: settingsRaw.scan, audit: settingsRaw.audit, incomplete: settingsRaw.audit?.incomplete || [], failed: settingsRaw.audit?.failed_steps || [] };
+  }, [settingsRaw, tools, settingToolIds]);
 
   // Latest values for handlers that keep one identity, so panels do not re-render for them.
   const latest = useRef({});
@@ -425,7 +429,8 @@ export default function BoardScreen() {
       openDrawer: (d, reset) => { setDrawer(s => (reset ? [d] : [...s, d])); closeMenu(); },
       setDrawerTab: tab => setDrawer(s => s.map((d, i) => (i === s.length - 1 ? { ...d, tab } : d))),
       drawerBack: () => setDrawer(s => s.slice(0, -1)),
-      drawerClose: () => { setDrawer([]); writeUrl({ agent: null }); },
+      drawerClose: () => { setDrawer([]); writeUrl({ agent: null, tab: null }); },
+      rescan: () => loadFindings(true),
       copy: (text, done) => {
         try { navigator.clipboard?.writeText(text); notice(done); } catch { notice('Could not copy. ' + text); }
       },
@@ -508,8 +513,8 @@ export default function BoardScreen() {
   }, [applied.range, applied.sel, applied.project, applied.model, applied.status, applied.q, tools]);
 
   const ctx = useMemo(() => ({
-    data, series: chartSeries, range: chartRange, chartRange, sel: applied.sel, filters: applied, tools, toolIds, toolName, nowS, stopped, findings, actions: act, query, refreshKey: data.generated_at,
-  }), [data, chartSeries, chartRange, applied, tools, toolIds, toolName, nowS, stopped, findings, query]);
+    data, series: chartSeries, range: chartRange, chartRange, sel: applied.sel, filters: applied, tools, toolIds, settingToolIds, toolName, nowS, stopped, findings, actions: act, query, refreshKey: data.generated_at,
+  }), [data, chartSeries, chartRange, applied, tools, toolIds, settingToolIds, toolName, nowS, stopped, findings, query]);
 
   const hiddenIds = useMemo(() => new Set(ui.hidden), [ui.hidden]);
   const attention = data.attention.filter(i => !stopped[i.agent_id]).length;

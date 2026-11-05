@@ -1101,6 +1101,7 @@ class TestLiveProcessSessions:
         assert [a["id"] for a in payload["agents"]] == ["real", "live:codex-cli:/p/eight"]
         row = payload["agents"][1]
         assert row["title"] == "Codex CLI, no session data yet"
+        assert "codex-cli" in [t["id"] for t in payload["options"]["tools"]]
         assert row["status"] == "running"
         assert row["placeholder"] is True
         assert row["pids"] == pids
