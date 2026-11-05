@@ -289,6 +289,27 @@ class TestCopilot:
         assert (u["cache_read_tokens"], u["cache_creation_tokens"], u["output_tokens"]) == (700, 200, 20)
         assert (u["turn_count"], u["tool_call_count"], u["request_count"]) == (1, 1, 1)
 
+    def test_compaction_calls_are_counted_once(self, db, stores):
+        path = stores["copilot_state"] / COPILOT_SID / "events.jsonl"
+        compaction = {
+            "type": "session.compaction_complete",
+            "timestamp": iso(700),
+            "data": {
+                "requestId": "c1",
+                "compactionTokensUsed": {"inputTokens": 500, "outputTokens": 50, "cacheReadTokens": 0, "cacheWriteTokens": 400, "model": "gpt-6.1-sol"},
+            },
+        }
+        write_jsonl(path, [copilot_record(800, "gpt-6.1-sol", 1000, 20, 700, 200), compaction])
+        ing = ingest(db, stores)
+        with path.open("a") as fh:
+            fh.write(json.dumps(copilot_record(600, "gpt-6.1-sol", 10, 1, 0, 0)) + "\n")
+        ing.poll()  # a later poll must not add the compaction again
+        u = usage_of(db, COPILOT_SID)
+        assert u["output_tokens"] == 20 + 50 + 1
+        assert u["input_tokens"] == 100 + 100 + 10
+        assert u["cache_creation_tokens"] == 200 + 400
+        assert u["request_count"] == 3
+
     def test_shutdown_and_records_are_one_source_not_two(self, db, stores):
         write_jsonl(
             stores["copilot_state"] / COPILOT_SID / "events.jsonl",
