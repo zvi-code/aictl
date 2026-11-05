@@ -387,6 +387,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._serve_files()
         elif path.startswith("/api/telemetry"):
             self._serve_telemetry()
+        elif path == "/api/usage":
+            self._serve_usage()
         elif path.startswith("/api/project-costs"):
             self._serve_project_costs()
         elif path.startswith("/api/session-runs"):
