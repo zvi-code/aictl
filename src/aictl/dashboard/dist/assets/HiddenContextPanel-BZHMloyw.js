@@ -1,7 +1,7 @@
-import{d as w,x as B,T as E,m as o,w as R,z as q,S as C,ax as A,aY as F}from"./index-DsPuVcci.js";import{u as M}from"./useAsyncResource-BR7i4AIx.js";const W=600,I={high:"var(--red)",medium:"var(--orange)",low:"var(--yellow)",info:"var(--fg2)"},$={padding:"2px 8px",borderBottom:"1px solid var(--border)",textAlign:"left"},l={fontFamily:"var(--font-mono, monospace)",wordBreak:"break-all"};function L(t){return t?t<1024?`${t} B`:t<1024*1024?`${(t/1024).toFixed(1)} KB`:`${(t/1024/1024).toFixed(1)} MB`:"0 B"}function O(t){return t<90?`${Math.round(t)} s ago`:t<5400?`${Math.round(t/60)} min ago`:`${Math.round(t/3600)} h ago`}function x({severity:t,count:e}){return o`<span
+import{d as w,x as B,T as E,m as o}from"./index-dIry8dud.js";import{S as R,a as q}from"./app-B2MyVrfP.js";import{s as C,L as A,T as F}from"./useSse-BQ6ZdC23.js";import{u as M}from"./useAsyncResource-D8I-RQaN.js";const W=600,L={high:"var(--red)",medium:"var(--orange)",low:"var(--yellow)",info:"var(--fg2)"},$={padding:"2px 8px",borderBottom:"1px solid var(--border)",textAlign:"left"},l={fontFamily:"var(--font-mono, monospace)",wordBreak:"break-all"};function I(t){return t?t<1024?`${t} B`:t<1024*1024?`${(t/1024).toFixed(1)} KB`:`${(t/1024/1024).toFixed(1)} MB`:"0 B"}function O(t){return t<90?`${Math.round(t)} s ago`:t<5400?`${Math.round(t/60)} min ago`:`${Math.round(t/3600)} h ago`}function x({severity:t,count:e}){return o`<span
     data-severity=${t}
     title=${`${t} severity`}
-    style=${{color:I[t],fontWeight:600,marginRight:"10px"}}
+    style=${{color:L[t],fontWeight:600,marginRight:"10px"}}
   >${e===void 0?t:`${e} ${t}`}</span>`}function D({finding:t}){const e=t.path+(t.line?`:${t.line}`:"");return o`<details data-rule=${t.rule} style=${{borderBottom:"1px solid var(--border)",padding:"4px 0"}}>
     <summary style=${{cursor:"pointer"}} title=${t.why}>
       <${x} severity=${t.severity} />
@@ -16,7 +16,7 @@ import{d as w,x as B,T as E,m as o,w as R,z as q,S as C,ax as A,aY as F}from"./i
       ${t.session_id?o`<div><b>Session:</b> <span style=${l}>${t.session_id}</span></div>`:null}
       ${t.tools&&t.tools.length?o`<div><b>Tools:</b> ${t.tools.join(", ")}</div>`:null}
     </div>
-  </details>`}function z({sources:t}){return o`<table style=${{width:"100%",borderCollapse:"collapse"}}>
+  </details>`}function G({sources:t}){return o`<table style=${{width:"100%",borderCollapse:"collapse"}}>
     <thead><tr>
       ${["Tool","Scope","Loading","Size","Tokens","Git","Path"].map(e=>o`<th key=${e} style=${$}>${e}</th>`)}
     </tr></thead>
@@ -25,7 +25,7 @@ import{d as w,x as B,T as E,m as o,w as R,z as q,S as C,ax as A,aY as F}from"./i
         <td style=${$}>${e.tool}</td>
         <td style=${$}>${e.scope}</td>
         <td style=${$}>${e.readable?e.loading:`${e.loading} (no file shows this)`}</td>
-        <td style=${$}>${L(e.bytes)}</td>
+        <td style=${$}>${I(e.bytes)}</td>
         <td style=${$}>${e.est_tokens?`~${e.est_tokens}`:"0"}</td>
         <td style=${$}>${e.git_state||"n/a"}</td>
         <td style=${{...$,...l}}>
@@ -35,7 +35,7 @@ import{d as w,x as B,T as E,m as o,w as R,z as q,S as C,ax as A,aY as F}from"./i
         </td>
       </tr>`)}
     </tbody>
-  </table>`}function G({drift:t}){if(!t)return null;if(t.baseline_created)return o`<div data-testid="drift">Baseline created now. Later changes will show here.</div>`;const e=[...t.new.map(s=>["new",s]),...t.changed.map(s=>["changed",s]),...t.removed.map(s=>["removed",s])];return o`<details data-testid="drift">
+  </table>`}function H({drift:t}){if(!t)return null;if(t.baseline_created)return o`<div data-testid="drift">Baseline created now. Later changes will show here.</div>`;const e=[...t.new.map(s=>["new",s]),...t.changed.map(s=>["changed",s]),...t.removed.map(s=>["removed",s])];return o`<details data-testid="drift">
     <summary style=${{cursor:"pointer"}}>
       Drift: ${t.new.length} new, ${t.changed.length} changed, ${t.removed.length} removed,
       ${" "}${t.agent_writes.length} agent writes
@@ -44,11 +44,11 @@ import{d as w,x as B,T as E,m as o,w as R,z as q,S as C,ax as A,aY as F}from"./i
     ${t.agent_writes.map(s=>o`<div key=${`w|${s.path}|${s.session_id}`} style=${l}>
       agent write: ${s.path} (session ${s.session_id}, via ${s.via})
     </div>`)}
-  </details>`}function H({row:t}){return o`<div data-testid="unattributed" title=${t.method}>
+  </details>`}function N({row:t}){return o`<div data-testid="unattributed" title=${t.method}>
     ${t.tool}: about ${t.residual_tokens} of ${t.first_request_tokens_median} first-request tokens are not
     explained, after ~${t.inventory_always_tokens} inventory, ~${t.dynamic_tokens} dynamic and a
     ${" "}${t.builtin_allowance_tokens} built-in allowance. Estimate from ${t.sessions_sampled} sessions.
-  </div>`}function d(t,e){return e?`${t}:${e}`:t}function N({eff:t}){const e=t.conflicts||[],s=t.limited||[];return o`<div data-testid="effective-model" data-tool=${t.tool} data-conflict=${e.length?"yes":"no"}
+  </div>`}function d(t,e){return e?`${t}:${e}`:t}function P({eff:t}){const e=t.conflicts||[],s=t.limited||[];return o`<div data-testid="effective-model" data-tool=${t.tool} data-conflict=${e.length?"yes":"no"}
     style=${{borderBottom:"1px solid var(--border)",padding:"4px 0"}}>
     ${e.map(n=>o`<div key=${d(n.request.path,n.request.line)} data-testid="effective-conflict"
       style=${{color:"var(--red)",fontWeight:600}}>
@@ -68,15 +68,15 @@ import{d as w,x as B,T as E,m as o,w as R,z as q,S as C,ax as A,aY as F}from"./i
       ${s.map(n=>o`<div key=${`${n.path}|${n.setting}|${n.line}`} style=${l}
         title=${n.why_in_effect}>${n.applies}: ${n.value} at ${d(n.path,n.line)} (${n.in_project?"in this project":"not in this project"})</div>`)}
     </details>`:null}
-  </div>`}function P({models:t}){const e=Object.values(t||{});if(!e.length)return null;const s=[...e].sort((n,r)=>(r.conflicts||[]).length-(n.conflicts||[]).length);return o`<section data-testid="effective-models" style=${{marginBottom:"8px"}}>
+  </div>`}function z({models:t}){const e=Object.values(t||{});if(!e.length)return null;const s=[...e].sort((n,r)=>(r.conflicts||[]).length-(n.conflicts||[]).length);return o`<section data-testid="effective-models" style=${{marginBottom:"8px"}}>
     <h4 style=${{margin:"0 0 4px"}}>Effective model</h4>
-    ${s.map(n=>o`<${N} key=${n.tool} eff=${n} />`)}
-  </section>`}function U(){const[t,e]=w(0),[s,n]=w(!1),r=B(C),p=(r==null?void 0:r.enabledTools)??null,{data:c,loading:k,error:y}=M(()=>A(t?"/api/context-audit?refresh=1":"/api/context-audit"),[t]),i=E(()=>F(c,p),[c,p]),m=o`<button type="button" onClick=${()=>e(a=>a+1)}>Rescan</button>`;if(k&&!i)return o`<div data-state="loading" style=${{color:"var(--fg2)"}}>Scanning context sources...</div>`;if(y)return o`<div data-state="error" style=${{color:"var(--red)"}}>
+    ${s.map(n=>o`<${P} key=${n.tool} eff=${n} />`)}
+  </section>`}function Q(){const[t,e]=w(0),[s,n]=w(!1),r=B(R),p=(r==null?void 0:r.enabledTools)??null,{data:c,loading:k,error:y}=M(()=>F(t?"/api/context-audit?refresh=1":"/api/context-audit"),[t]),i=E(()=>C(c,p),[c,p]),m=o`<button type="button" onClick=${()=>e(a=>a+1)}>Rescan</button>`;if(k&&!i)return o`<div data-state="loading" style=${{color:"var(--fg2)"}}>Scanning context sources...</div>`;if(y)return o`<div data-state="error" style=${{color:"var(--red)"}}>
       Context audit failed: ${String(y.message||y)} ${m}
-    </div>`;const u=i&&i.sources||[],v=i&&i.findings||[],S=!!c&&((c.sources||[]).length||(c.findings||[]).length);if(!u.length&&!v.length&&R(p)&&S)return o`<${q} enabledTools=${p} snap=${r==null?void 0:r.snap} what="hidden context"/>`;if(!u.length&&!v.length)return o`<div data-state="empty" style=${{color:"var(--fg2)"}}>
+    </div>`;const u=i&&i.sources||[],v=i&&i.findings||[],S=!!c&&((c.sources||[]).length||(c.findings||[]).length);if(!u.length&&!v.length&&A(p)&&S)return o`<${q} enabledTools=${p} snap=${r==null?void 0:r.snap} what="hidden context"/>`;if(!u.length&&!v.length)return o`<div data-state="empty" style=${{color:"var(--fg2)"}}>
       No context sources found for ${i&&i.project||"this project"}. ${m}
     </div>`;const b=Date.now()/1e3-(i.scanned_at||0),h=b>W,g=i.counts||{},_=s?v:v.filter(a=>a.severity!=="info"),T=u.filter(a=>a.loading==="always").reduce((a,f)=>a+(f.est_tokens||0),0),j=Object.entries(i.sources_per_tool||{});return o`<div data-state=${h?"stale":"ready"}>
-    <${P} models=${i.effective_models} />
+    <${z} models=${i.effective_models} />
     <div style=${{display:"flex",flexWrap:"wrap",gap:"8px",alignItems:"baseline"}}>
       ${["high","medium","low","info"].map(a=>o`<${x} key=${a} severity=${a} count=${g[a]||0} />`)}
       <span title=${j.map(([a,f])=>`${a}: ${f}`).join(`
@@ -87,8 +87,8 @@ import{d as w,x as B,T as E,m as o,w as R,z as q,S as C,ax as A,aY as F}from"./i
       </span>
       ${m}
     </div>
-    <${G} drift=${i.drift} />
-    ${(i.unattributed||[]).map(a=>o`<${H} key=${a.tool} row=${a} />`)}
+    <${H} drift=${i.drift} />
+    ${(i.unattributed||[]).map(a=>o`<${N} key=${a.tool} row=${a} />`)}
     <div style=${{marginTop:"8px"}}>
       ${_.length?_.map(a=>o`<${D} key=${`${a.rule}|${a.path}|${a.line}|${a.session_id}`} finding=${a} />`):o`<div data-testid="no-findings" style=${{color:"var(--fg2)"}}>No findings above info level.</div>`}
       ${g.info?o`<button type="button" onClick=${()=>n(a=>!a)}>
@@ -97,6 +97,6 @@ import{d as w,x as B,T as E,m as o,w as R,z as q,S as C,ax as A,aY as F}from"./i
     </div>
     <details style=${{marginTop:"8px"}}>
       <summary style=${{cursor:"pointer"}}>All ${u.length} sources</summary>
-      <${z} sources=${u} />
+      <${G} sources=${u} />
     </details>
-  </div>`}export{U as HiddenContextPanel,W as STALE_AFTER_S,U as default};
+  </div>`}export{Q as HiddenContextPanel,W as STALE_AFTER_S,Q as default};

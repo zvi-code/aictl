@@ -409,3 +409,39 @@ export function resetDatapointCache() { _datapointCache = null; }
 // ─── SSE stream URL ────────────────────────────────────────────
 
 export function streamUrl() { return url('/api/stream'); }
+
+// ─── Board ─────────────────────────────────────────────────────
+
+/** GET /api/board. Returns {status: 304} when the etag still matches. */
+export async function getBoard(query, { signal, etag } = {}) {
+  const opts = {};
+  if (signal) opts.signal = signal;
+  if (etag) opts.headers = { 'If-None-Match': etag };
+  const r = await fetch(url('/api/board?' + query), opts);
+  if (r.status === 304) return { status: 304 };
+  if (!r.ok) {
+    const err = new Error(`HTTP ${r.status} /api/board`);
+    err.status = r.status;
+    throw err;
+  }
+  return { status: r.status, etag: r.headers.get('ETag'), data: await r.json() };
+}
+
+export const getBoardAgent = (id, opts) => fetchJson('/api/board/agent?id=' + encodeURIComponent(id), opts);
+export const getBoardTool = (name, query = '', opts) => fetchJson('/api/board/tool?name=' + encodeURIComponent(name) + (query ? '&' + query : ''), opts);
+export const getBoardError = (key, query = '', opts) => fetchJson('/api/board/error?key=' + encodeURIComponent(key) + (query ? '&' + query : ''), opts);
+export const getBoardFile = (path, query = '', opts) => fetchJson('/api/board/file?path=' + encodeURIComponent(path) + (query ? '&' + query : ''), opts);
+export const getBoardPrompt = (ts, sessionId, opts) => fetchJson('/api/board/prompt?ts=' + encodeURIComponent(ts) + '&session_id=' + encodeURIComponent(sessionId), opts);
+
+/** Run one command the dialog has shown to the user. */
+export async function boardAction(action, args = {}) {
+  return fetchJson('/api/board/action', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, args, confirm: true }),
+  });
+}
+
+export async function getContextAudit(refresh = false) {
+  return fetchJson(refresh ? '/api/context-audit?refresh=1' : '/api/context-audit');
+}

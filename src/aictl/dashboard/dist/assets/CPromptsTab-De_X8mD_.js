@@ -1,11 +1,11 @@
-import{x as y,S as g,d as m,T as v,m as r,w as S,z as L,a as w,aW as $,y as C,aX as z,h as W,I as P}from"./index-DsPuVcci.js";const T=[{id:"prompts",label:"Prompts"},{id:"workflows",label:"Workflows"}];function I(t){const a=[];for(const o of(t==null?void 0:t.tools)||[])for(const l of o.files||[]){const i=l.path||"",n=l.kind||"";if(i.endsWith(".prompt.md")||n==="prompt"||n==="command"&&i.replace(/\\/g,"/").toLowerCase().includes("/prompts/")){const d=$(i).replace(/\.prompt\.md$/,"").replace(/\.md$/,"");a.push({id:i,name:d,path:i,kind:n,tool:o.tool,toolLabel:o.label,size:l.size||0,tokens:l.tokens||0,mtime:l.mtime||0})}}const s=new Set;return a.filter(o=>s.has(o.id)?!1:(s.add(o.id),!0))}function N(t){const a=[];for(const o of(t==null?void 0:t.tools)||[])for(const l of o.files||[]){const i=l.path||"",n=l.kind||"";if(i.endsWith(".workflow.md")||n==="workflow"||n==="workflows"||n==="command"&&i.toLowerCase().includes("/workflows/")){const d=$(i).replace(/\.workflow\.md$/,"").replace(/\.md$/,"");a.push({id:i,name:d,path:i,kind:n,tool:o.tool,toolLabel:o.label,size:l.size||0,tokens:l.tokens||0,mtime:l.mtime||0})}}const s=new Set;return a.filter(o=>s.has(o.id)?!1:(s.add(o.id),!0))}function x({prompt:t,view:a="prompts"}){const[s,o]=m(null),[l,i]=m(!1),n=a==="workflows"?"workflow":"prompt";return C(()=>{if(!t){o(null);return}let c=!0;return i(!0),o(null),z(t.path).then(d=>d.text()).then(d=>{c&&(o(d),i(!1))}).catch(()=>{c&&i(!1)}),()=>{c=!1}},[t==null?void 0:t.path]),t?r`<div class="cprompts-detail-view">
+import{x as y,d as m,T as v,m as r,y as g}from"./index-dIry8dud.js";import{L as S,q as w,W as $,aa as L,B as C}from"./useSse-BQ6ZdC23.js";import{S as z,a as W,I as P}from"./app-B2MyVrfP.js";const T=[{id:"prompts",label:"Prompts"},{id:"workflows",label:"Workflows"}];function I(t){const a=[];for(const o of(t==null?void 0:t.tools)||[])for(const l of o.files||[]){const i=l.path||"",n=l.kind||"";if(i.endsWith(".prompt.md")||n==="prompt"||n==="command"&&i.replace(/\\/g,"/").toLowerCase().includes("/prompts/")){const d=$(i).replace(/\.prompt\.md$/,"").replace(/\.md$/,"");a.push({id:i,name:d,path:i,kind:n,tool:o.tool,toolLabel:o.label,size:l.size||0,tokens:l.tokens||0,mtime:l.mtime||0})}}const s=new Set;return a.filter(o=>s.has(o.id)?!1:(s.add(o.id),!0))}function N(t){const a=[];for(const o of(t==null?void 0:t.tools)||[])for(const l of o.files||[]){const i=l.path||"",n=l.kind||"";if(i.endsWith(".workflow.md")||n==="workflow"||n==="workflows"||n==="command"&&i.toLowerCase().includes("/workflows/")){const d=$(i).replace(/\.workflow\.md$/,"").replace(/\.md$/,"");a.push({id:i,name:d,path:i,kind:n,tool:o.tool,toolLabel:o.label,size:l.size||0,tokens:l.tokens||0,mtime:l.mtime||0})}}const s=new Set;return a.filter(o=>s.has(o.id)?!1:(s.add(o.id),!0))}function x({prompt:t,view:a="prompts"}){const[s,o]=m(null),[l,i]=m(!1),n=a==="workflows"?"workflow":"prompt";return g(()=>{if(!t){o(null);return}let c=!0;return i(!0),o(null),L(t.path).then(d=>d.text()).then(d=>{c&&(o(d),i(!1))}).catch(()=>{c&&i(!1)}),()=>{c=!1}},[t==null?void 0:t.path]),t?r`<div class="cprompts-detail-view">
     <div class="c-overline c-overline--wide">${a==="workflows"?"Workflow":"Prompt"}</div>
     <div class="cprompts-detail-title">${t.name}</div>
     <div class="cprompts-detail-meta">
       <span class="cprompts-meta-tool">${t.toolLabel}</span>
       ${t.size>0&&r`<span> \u00b7 ${w(t.size)}</span>`}
       ${t.tokens>0&&r`<span> \u00b7 ${t.tokens}t</span>`}
-      ${t.mtime>0&&r`<span> \u00b7 ${W(t.mtime)}</span>`}
+      ${t.mtime>0&&r`<span> \u00b7 ${C(t.mtime)}</span>`}
     </div>
     <div class="cprompts-detail-path">${t.path}</div>
     <div class="cprompts-detail-body">
@@ -23,7 +23,7 @@ import{x as y,S as g,d as m,T as v,m as r,w as S,z as L,a as w,aW as $,y as C,aX
     <div class="cprompts-empty-note">
       ${a?`No ${s?".prompt.md":".workflow.md"} files found in tracked tool workspaces. Create one in your project's ${s?".github/prompts/":".github/workflows/"} directory.`:`This tab lists ${s?".prompt.md":".workflow.md"} files from your workspace.`}
     </div>
-  </div>`}function V(){const t=y(g),a=t==null?void 0:t.snap,[s,o]=m("prompts"),[l,i]=m(""),[n,c]=m(null),d=v(()=>I(a),[a]),b=v(()=>N(a),[a]),u=s==="prompts"?d:b,f=v(()=>{if(!l)return u;const e=l.toLowerCase();return u.filter(p=>p.name.toLowerCase().includes(e)||p.path.toLowerCase().includes(e)||p.toolLabel.toLowerCase().includes(e))},[u,l]),k=f.find(e=>e.id===n)??null,h=e=>{o(e),i(""),c(null)};return r`<div class="c-shell">
+  </div>`}function D(){const t=y(z),a=t==null?void 0:t.snap,[s,o]=m("prompts"),[l,i]=m(""),[n,c]=m(null),d=v(()=>I(a),[a]),b=v(()=>N(a),[a]),u=s==="prompts"?d:b,f=v(()=>{if(!l)return u;const e=l.toLowerCase();return u.filter(p=>p.name.toLowerCase().includes(e)||p.path.toLowerCase().includes(e)||p.toolLabel.toLowerCase().includes(e))},[u,l]),k=f.find(e=>e.id===n)??null,h=e=>{o(e),i(""),c(null)};return r`<div class="c-shell">
     <!-- Toolbar -->
     <div class="cprompts-toolbar">
       <div class="cprompts-seg" role="group" aria-label="View selector">
@@ -50,7 +50,7 @@ import{x as y,S as g,d as m,T as v,m as r,w as S,z as L,a as w,aW as $,y as C,aX
     <!-- Split pane: list + detail -->
     <div class="cprompts-body">
       <div class="cprompts-list">
-        ${f.length===0?S(t==null?void 0:t.enabledTools)&&!l?r`<${L} enabledTools=${t.enabledTools} snap=${a} what=${"the "+s+" list"}/>`:r`<${E} view=${s} hasSnap=${!!a}/>`:f.map(e=>r`<div key=${e.id}
+        ${f.length===0?S(t==null?void 0:t.enabledTools)&&!l?r`<${W} enabledTools=${t.enabledTools} snap=${a} what=${"the "+s+" list"}/>`:r`<${E} view=${s} hasSnap=${!!a}/>`:f.map(e=>r`<div key=${e.id}
               class=${"cprompts-prompt-row"+(e.id===n?" is-selected":"")}
               onClick=${()=>c(e.id===n?null:e.id)}
               role="button" tabIndex=${0}
@@ -66,4 +66,4 @@ import{x as y,S as g,d as m,T as v,m as r,w as S,z as L,a as w,aW as $,y as C,aX
         <${x} prompt=${k} view=${s}/>
       </div>
     </div>
-  </div>`}export{V as default};
+  </div>`}export{D as default};

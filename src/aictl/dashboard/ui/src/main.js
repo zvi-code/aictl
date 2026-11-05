@@ -1,8 +1,5 @@
 import { render } from 'preact';
 import { html } from 'htm/preact';
-import './dashboard.css';
-import './components/ui/ui.css';
-import 'uplot/dist/uPlot.min.css';
-import App from './app.js';
+import Root from './root.js';
 
-render(html`<${App}/>`, document.getElementById('app'));
+render(html`<${Root}/>`, document.getElementById('app'));

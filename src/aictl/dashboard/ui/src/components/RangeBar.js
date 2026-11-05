@@ -2,12 +2,7 @@
 import { useState, useRef, useCallback } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { RANGE_PRESETS } from '../hooks/useRange.js';
-
-function toLocalISOString(ts) {
-  const d = new Date(ts * 1000);
-  const off = d.getTimezoneOffset();
-  return new Date(d.getTime() - off * 60000).toISOString().slice(0, 16);
-}
+import { parseCustomRange, toLocalISOString } from '../utils/customRange.js';
 
 export default function RangeBar({ globalRange, onPreset, onApplyCustom }) {
   const [showCustom, setShowCustom] = useState(false);
@@ -34,16 +29,8 @@ export default function RangeBar({ globalRange, onPreset, onApplyCustom }) {
   }, [globalRange]);
 
   const apply = useCallback(() => {
-    const s = startRef.current?.value, e = endRef.current?.value;
-    if (!s || !e) { setRangeError('Enter both a start and an end time.'); return; }
-    const since = new Date(s).getTime() / 1000;
-    const until = new Date(e).getTime() / 1000;
-    if (!Number.isFinite(since) || !Number.isFinite(until)) {
-      setRangeError('Invalid date/time value.'); return;
-    }
-    if (until <= since) {
-      setRangeError('End time must be after start time.'); return;
-    }
+    const { since, until, error } = parseCustomRange(startRef.current?.value, endRef.current?.value);
+    if (error) { setRangeError(error); return; }
     setRangeError('');
     onApplyCustom(since, until);
     setShowCustom(false);

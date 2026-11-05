@@ -1,4 +1,4 @@
-import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0 as Jt,m as s,e as $,ag as U,I as O,J as cs,h as ft,ah as ps,ai as us,aj as Y,b as h,f as et,ak as vs,al as ms,am as fs,an as $s,a as $t,ao as gs,ap as hs,C as xt,aq as Kt,ar as ys,as as _s,at as xs,au as bs,av as ks,aw as ws,ax as Xt,ay as Yt,$ as Tt,az as pt,n as Qt,p as Ts,aA as bt,aB as Ss,ab as Zt,aC as ts,aD as F,aE as tt,aF as St,q as Q,aG as Cs,Q as As,aH as Es,A as ss,aI as es,aJ as Pt,_ as Ms,aK as Ps,aL as Ls,aM as Lt,w as Os,z as zs,aN as Is,aO as Fs,aP as Ot}from"./index-DsPuVcci.js";import{u as R}from"./useAsyncResource-BR7i4AIx.js";import{c as Ns}from"./models-DHnW0Za4.js";function Ds(t,e){if(!(e!=null&&e.length))return t;const l=e.filter(n=>n.session_id&&n.tool&&!st(t,n.session_id)).map(n=>({...n,active:!0,live:!0}));return l.length?[...t,...l].sort((n,a)=>(a.started_at||0)-(n.started_at||0)):t}function ut({globalRange:t=null,enabledTools:e=null,requestedSession:l=null,onRequestApplied:n=null}={}){var k,L;const a=(L=(k=K(X))==null?void 0:k.snap)==null?void 0:L.sessions,[o,r]=b([]),i=H(()=>Ds(o,a),[o,a]),[d,v]=b(!0),[u,g]=b(null),[c,_]=b(null),[p,m]=b(null);z(()=>{let E=!1;v(!0),g(null);const P=t?Math.min(t.since,Date.now()/1e3-86400):Date.now()/1e3-86400,M=t==null?void 0:t.until;return ls(null,{since:P,until:M}).then(I=>{if(E)return;const V=rs(I);V.sort((W,G)=>(G.started_at||0)-(W.started_at||0)),r(V),v(!1)}).catch(I=>{E||(g(I),v(!1))}),()=>{E=!0}},[t]);const y=E=>Jt(E,e),f=H(()=>i.filter(E=>y(E.tool)),[i,e]),S=H(()=>ds(f),[f]);z(()=>{S.length===0?(c&&_(null),p&&m(null)):(!c||!S.includes(c))&&_(S[0])},[S.join(",")]);const x=H(()=>f.filter(E=>E.tool===c),[f,c]);return z(()=>{x.length>0&&(!p||!st(x,p))&&m(x[0].session_id)},[c,x.length]),z(()=>{if(!(l!=null&&l.sessionId))return;const E=st(i,l.sessionId);if(E){if(!y(E.tool)){n==null||n();return}_(E.tool),m(E.session_id),n==null||n()}},[l,i]),{sessions:f,loading:d,error:u,tools:S,toolSessions:x,activeTool:c,setActiveTool:_,activeSessionId:p,setActiveSessionId:m}}const at={active:{bg:"var(--green)",label:"Active"},idle:{bg:"var(--yellow)",label:"Idle"},ended:{bg:"var(--fg3)",label:"Ended"},pending:{bg:"var(--fg3)",label:"Pending"},done:{bg:"var(--green)",label:"Done"}};function zt({agent:t,tasks:e,now:l}){const n=at[t.state]||at.active,a=t.ended_at?t.ended_at-t.started_at:l-t.started_at,o=e.filter(r=>r.agent_id===t.agent_id);return s`<div class="tt-agent">
+import{x as J,d as b,T as H,y as z,m as s,q as Q,A as Kt,w as Pt}from"./index-dIry8dud.js";import{aC as ls,aD as rs,O as Jt,v as $,A as U,a0 as ds,B as ft,aE as cs,aF as X,r as h,z as et,aG as ps,aH as us,aI as vs,aJ as ms,q as $t,aK as fs,aL as $s,aM as Xt,aN as gs,aO as hs,aP as ys,aQ as _s,k as xs,T as Yt,M as Qt,V as Tt,C as Zt,aR as xt,aS as bs,aB as ts,aT as ss,aU as F,aV as tt,aW as St,aX as ks,w as ws,aY as es,aZ as Lt,a_ as Ts,L as Ss,a$ as Ot}from"./useSse-BQ6ZdC23.js";import{S as Y,e as Cs,f as st,I as O,i as As,C as bt,g as Es,h as pt,T as Ms,u as Ps,M as Ls,a as Os,t as zs,j as Is,r as Fs}from"./app-B2MyVrfP.js";import{u as R}from"./useAsyncResource-D8I-RQaN.js";import{c as Ns}from"./models-DHnW0Za4.js";function Bs(t,e){if(!(e!=null&&e.length))return t;const l=e.filter(n=>n.session_id&&n.tool&&!st(t,n.session_id)).map(n=>({...n,active:!0,live:!0}));return l.length?[...t,...l].sort((n,a)=>(a.started_at||0)-(n.started_at||0)):t}function ut({globalRange:t=null,enabledTools:e=null,requestedSession:l=null,onRequestApplied:n=null}={}){var k,L;const a=(L=(k=J(Y))==null?void 0:k.snap)==null?void 0:L.sessions,[o,r]=b([]),i=H(()=>Bs(o,a),[o,a]),[d,v]=b(!0),[u,g]=b(null),[c,_]=b(null),[p,m]=b(null);z(()=>{let E=!1;v(!0),g(null);const P=t?Math.min(t.since,Date.now()/1e3-86400):Date.now()/1e3-86400,M=t==null?void 0:t.until;return ls(null,{since:P,until:M}).then(I=>{if(E)return;const V=Cs(I);V.sort((W,G)=>(G.started_at||0)-(W.started_at||0)),r(V),v(!1)}).catch(I=>{E||(g(I),v(!1))}),()=>{E=!0}},[t]);const y=E=>Jt(E,e),f=H(()=>i.filter(E=>y(E.tool)),[i,e]),S=H(()=>rs(f),[f]);z(()=>{S.length===0?(c&&_(null),p&&m(null)):(!c||!S.includes(c))&&_(S[0])},[S.join(",")]);const x=H(()=>f.filter(E=>E.tool===c),[f,c]);return z(()=>{x.length>0&&(!p||!st(x,p))&&m(x[0].session_id)},[c,x.length]),z(()=>{if(!(l!=null&&l.sessionId))return;const E=st(i,l.sessionId);if(E){if(!y(E.tool)){n==null||n();return}_(E.tool),m(E.session_id),n==null||n()}},[l,i]),{sessions:f,loading:d,error:u,tools:S,toolSessions:x,activeTool:c,setActiveTool:_,activeSessionId:p,setActiveSessionId:m}}const at={active:{bg:"var(--green)",label:"Active"},idle:{bg:"var(--yellow)",label:"Idle"},ended:{bg:"var(--fg3)",label:"Ended"},pending:{bg:"var(--fg3)",label:"Pending"},done:{bg:"var(--green)",label:"Done"}};function zt({agent:t,tasks:e,now:l}){const n=at[t.state]||at.active,a=t.ended_at?t.ended_at-t.started_at:l-t.started_at,o=e.filter(r=>r.agent_id===t.agent_id);return s`<div class="tt-agent">
     <div class="flex-row gap-sm" style="align-items:center;min-height:28px">
       <span class="badge text-xs" style="background:${n.bg};color:var(--on-status)">${n.label}</span>
       <strong class="text-sm">${$(t.agent_id)}</strong>
@@ -11,7 +11,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
           <span class="mono">${$(r.name||r.task_id)}</span>
         </div>`})}
     </div>`}
-  </div>`}function Bs({entityState:t}){if(!t||!t.agents||!t.agents.length)return null;const e=t.agents,l=t.tasks||[],n=Date.now()/1e3,a=e.filter(r=>r.state==="active"),o=e.filter(r=>r.state!=="active");return s`<div class="tt-container">
+  </div>`}function Ds({entityState:t}){if(!t||!t.agents||!t.agents.length)return null;const e=t.agents,l=t.tasks||[],n=Date.now()/1e3,a=e.filter(r=>r.state==="active"),o=e.filter(r=>r.state!=="active");return s`<div class="tt-container">
     <div class="flex-row gap-sm" style="align-items:center;margin-bottom:var(--sp-3)">
       <strong class="text-sm">Team</strong>
       <span class="text-muted text-xs">${e.length} agent${e.length>1?"s":""}</span>
@@ -36,7 +36,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
     <${a} title="Pending" items=${e} color="var(--fg3)"/>
     <${a} title="Active" items=${l} color="var(--accent)"/>
     <${a} title="Done" items=${n} color="var(--green)"/>
-  </div>`}function B({title:t,icon:e,badge:l,defaultOpen:n,children:a}){const[o,r]=b(n||!1);return s`<div class="sd-panel">
+  </div>`}function D({title:t,icon:e,badge:l,defaultOpen:n,children:a}){const[o,r]=b(n||!1);return s`<div class="sd-panel">
     <button class="sd-panel-head" onClick=${()=>r(i=>!i)}
       aria-expanded=${o}>
       <span class="sd-panel-icon"><${O} name=${e} size="1em"/></span>
@@ -45,7 +45,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
       <span class="sd-panel-arrow" aria-hidden="true">${o?"▲":"▼"}</span>
     </button>
     ${o&&s`<div class="sd-panel-body">${a}</div>`}
-  </div>`}const js={tool_call:"var(--accent)",file_modified:"var(--green)",error:"var(--red)",anomaly:"var(--orange)",session_start:"var(--blue)",session_end:"var(--fg3)","hook:PreToolUse":"var(--accent)","hook:PostToolUse":"var(--accent)","hook:tool_use":"var(--accent)"};function it(t){if(t==null||t==="")return"";if(typeof t=="string")return t;try{return JSON.stringify(t)}catch{return String(t)}}function qs(t){const e=[],l=new Set,n=6;for(let a=0;a<t.length;a++){if(l.has(a))continue;const o=t[a];if(o.kind==="hook:PreToolUse"){const r=o.detail&&o.detail.tool_name||"";let i=-1;for(let d=a+1;d<Math.min(t.length,a+1+n);d++){const v=t[d];if(l.has(d)||v.kind!=="hook:PostToolUse")continue;const u=v.detail&&v.detail.tool_name||"";if(!(r&&u&&r!==u)){i=d;break}}if(i>=0){const d=t[i];l.add(i);const v=o.detail||{},u=d.detail||{};e.push({...o,kind:"hook:tool_use",ts:o.ts,end_ts:d.ts,detail:{...v,tool_name:v.tool_name||u.tool_name||"",tool_input:v.tool_input!=null?v.tool_input:v.input,result_summary:u.result_summary!=null?u.result_summary:u.tool_response!=null?u.tool_response:u.result}});continue}}e.push(o)}return e}function Hs(t){const e=a=>{const o=a.detail||{};return String(o.path||o.name||o.tool_name||a.kind)},l=a=>{const o=a.detail||{},r=o.tool_input!=null?o.tool_input:o.input,i=o.result_summary!=null?o.result_summary:o.tool_response!=null?o.tool_response:o.result;return it(r)!==""||it(i)!==""},n=[];for(const a of t){const o=n[n.length-1];if(o&&o.kind===a.kind&&e(o)===e(a)&&!l(o)&&!l(a)){const r=(o.repeat_count||1)+1;n[n.length-1]={...o,repeat_count:r,last_ts:a.ts};continue}n.push(a)}return n}function Vs({sessionId:t}){const[e,l]=b([]),[n,a]=b(!0),[o,r]=b(null),[i,d]=b({});z(()=>{if(!t){l([]),a(!1),r(null);return}let u=!1;return a(!0),r(null),d({}),cs({sessionId:t,limit:200,since:0}).then(c=>{u||(l((Array.isArray(c)?c:[]).reverse()),a(!1))}).catch(c=>{u||(l([]),r(c),a(!1))}),()=>{u=!0}},[t]);const v=H(()=>Hs(qs(e)),[e]);return n?s`<p class="loading-state">Loading events...</p>`:o?s`<p class="error-state">Failed to load session actions${o.message?` (${o.message})`:""}.</p>`:v.length?s`<div class="sd-events">
+  </div>`}const js={tool_call:"var(--accent)",file_modified:"var(--green)",error:"var(--red)",anomaly:"var(--orange)",session_start:"var(--blue)",session_end:"var(--fg3)","hook:PreToolUse":"var(--accent)","hook:PostToolUse":"var(--accent)","hook:tool_use":"var(--accent)"};function it(t){if(t==null||t==="")return"";if(typeof t=="string")return t;try{return JSON.stringify(t)}catch{return String(t)}}function qs(t){const e=[],l=new Set,n=6;for(let a=0;a<t.length;a++){if(l.has(a))continue;const o=t[a];if(o.kind==="hook:PreToolUse"){const r=o.detail&&o.detail.tool_name||"";let i=-1;for(let d=a+1;d<Math.min(t.length,a+1+n);d++){const v=t[d];if(l.has(d)||v.kind!=="hook:PostToolUse")continue;const u=v.detail&&v.detail.tool_name||"";if(!(r&&u&&r!==u)){i=d;break}}if(i>=0){const d=t[i];l.add(i);const v=o.detail||{},u=d.detail||{};e.push({...o,kind:"hook:tool_use",ts:o.ts,end_ts:d.ts,detail:{...v,tool_name:v.tool_name||u.tool_name||"",tool_input:v.tool_input!=null?v.tool_input:v.input,result_summary:u.result_summary!=null?u.result_summary:u.tool_response!=null?u.tool_response:u.result}});continue}}e.push(o)}return e}function Hs(t){const e=a=>{const o=a.detail||{};return String(o.path||o.name||o.tool_name||a.kind)},l=a=>{const o=a.detail||{},r=o.tool_input!=null?o.tool_input:o.input,i=o.result_summary!=null?o.result_summary:o.tool_response!=null?o.tool_response:o.result;return it(r)!==""||it(i)!==""},n=[];for(const a of t){const o=n[n.length-1];if(o&&o.kind===a.kind&&e(o)===e(a)&&!l(o)&&!l(a)){const r=(o.repeat_count||1)+1;n[n.length-1]={...o,repeat_count:r,last_ts:a.ts};continue}n.push(a)}return n}function Vs({sessionId:t}){const[e,l]=b([]),[n,a]=b(!0),[o,r]=b(null),[i,d]=b({});z(()=>{if(!t){l([]),a(!1),r(null);return}let u=!1;return a(!0),r(null),d({}),ds({sessionId:t,limit:200,since:0}).then(c=>{u||(l((Array.isArray(c)?c:[]).reverse()),a(!1))}).catch(c=>{u||(l([]),r(c),a(!1))}),()=>{u=!0}},[t]);const v=H(()=>Hs(qs(e)),[e]);return n?s`<p class="loading-state">Loading events...</p>`:o?s`<p class="error-state">Failed to load session actions${o.message?` (${o.message})`:""}.</p>`:v.length?s`<div class="sd-events">
     ${v.map(u=>{const g=js[u.kind]||"var(--fg3)",c=u.detail||{},_=c.path||c.name||c.tool_name||u.kind,p=c.tool_input!=null?c.tool_input:c.input,m=c.result_summary!=null?c.result_summary:c.tool_response!=null?c.tool_response:c.result,y=it(p),f=it(m),S=y!==""||f!=="",x=`${u.ts}-${u.kind}`,k=!!i[x],L=y?y.slice(0,80)+(y.length>80?"…":""):"",E=f?f.slice(0,80)+(f.length>80?"…":""):"",P=L||E;return s`<div key=${x} class="sd-event-row-wrap">
         <div class="sd-event-row">
           <span class="sd-event-time" title=${u.repeat_count>1?`${ft(u.ts)} → ${ft(u.last_ts)}`:null}>${ft(u.ts)}</span>
@@ -68,19 +68,19 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
 `:"")+(f?"result: "+f:""))}</pre>`}
         </div>`}
       </div>`})}
-  </div>`:s`<p class="empty-state">No events recorded for this session.</p>`}function Us(){return`Set capture = "full" under [storage] in ${ps()?"%APPDATA%\\aictl\\config.toml":"~/.config/aictl/config.toml"}. It applies to new sessions.`}function It(t){return(t==null?void 0:t.content_retained)===!1}function Ws(t){return t&&t!=="full"?`Text not retained: capture=${t}`:t==="full"?"Text not retained for this session":"Text not retained: capture mode is not full"}function as({mode:t}){return s`<div class="panel-state panel-state--withheld" role="status">
+  </div>`:s`<p class="empty-state">No events recorded for this session.</p>`}function Us(){return`Set capture = "full" under [storage] in ${As()?"%APPDATA%\\aictl\\config.toml":"~/.config/aictl/config.toml"}. It applies to new sessions.`}function It(t){return(t==null?void 0:t.content_retained)===!1}function Ws(t){return t&&t!=="full"?`Text not retained: capture=${t}`:t==="full"?"Text not retained for this session":"Text not retained: capture mode is not full"}function as({mode:t}){return s`<div class="panel-state panel-state--withheld" role="status">
     <${O} name="file-text" size="14"/>
     <div>
       <div class="panel-state__title">${Ws(t)}</div>
       <div class="panel-state__hint">Prompts and replies for this session were not stored. Counts, timing, models and tool calls are still shown.</div>
       <code class="panel-state__fix">${Us()}</code>
     </div>
-  </div>`}const Ft=240,Gs={user:"var(--accent)",assistant:"var(--green)"};function Js({sessionId:t,withheld:e=!1,captureMode:l=null}){const[n,a]=b({}),{data:o,loading:r,error:i}=R(()=>us(t),[t],{enabled:!!t});z(()=>{a({})},[t]);const d=Array.isArray(o==null?void 0:o.messages)?o.messages:[];return r?s`<p class="loading-state">Loading conversation...</p>`:i?s`<p class="error-state">Failed to load conversation${i.message?` (${i.message})`:""}.</p>`:d.length?s`<div class="sd-conversation">
+  </div>`}const Ft=240,Gs={user:"var(--accent)",assistant:"var(--green)"};function Ks({sessionId:t,withheld:e=!1,captureMode:l=null}){const[n,a]=b({}),{data:o,loading:r,error:i}=R(()=>cs(t),[t],{enabled:!!t});z(()=>{a({})},[t]);const d=Array.isArray(o==null?void 0:o.messages)?o.messages:[];return r?s`<p class="loading-state">Loading conversation...</p>`:i?s`<p class="error-state">Failed to load conversation${i.message?` (${i.message})`:""}.</p>`:d.length?s`<div class="sd-conversation">
     ${d.map((v,u)=>{const g=v.role||"unknown",c=Gs[g]||"var(--fg2)",_=String(v.content||""),p=_.length>Ft,m=`${v.ts}-${g}-${u}`,y=!!n[m];return s`<div key=${m} style="padding:var(--sp-2) 0;border-bottom:1px solid var(--bg3)">
         <div class="flex-row gap-sm" style="align-items:center">
           <span class="badge text-xs" style="background:${c};color:var(--on-status)">${g}</span>
           <span class="badge--muted badge text-xs" title=${"Captured via "+(v.source||"unknown")}>${v.source||"?"}</span>
-          <span class="text-xs text-muted mono" style="margin-left:auto">${Y(v.ts)}</span>
+          <span class="text-xs text-muted mono" style="margin-left:auto">${X(v.ts)}</span>
         </div>
         <div class="mono" style="font-size:var(--fs-sm);margin-top:var(--sp-1);white-space:pre-wrap;word-break:break-word">
           ${y||!p?_:_.slice(0,Ft)+"…"}
@@ -92,7 +92,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
           ${y?"Show less":`Show all ${_.length} chars`}
         </button>`}
       </div>`})}
-  </div>`:e?s`<${as} mode=${l}/>`:s`<p class="empty-state">No conversation captured for this session.</p>`}const Nt=[{name:"System prompt",tokens:4200,color:"var(--accent)"},{name:"Environment info",tokens:280,color:"var(--fg2)"}],Ks=95;function ns({path:t,session:e,openViewer:l}){if(!t||!e||typeof l!="function")return null;const n=e.started_at,a=e.ended_at;if(!n&&!a)return null;const o=r=>i=>{i.preventDefault(),i.stopPropagation(),l(t,{at:r})};return s`<span class="file-history-btns" aria-label="View file at session start or end">
+  </div>`:e?s`<${as} mode=${l}/>`:s`<p class="empty-state">No conversation captured for this session.</p>`}const Nt=[{name:"System prompt",tokens:4200,color:"var(--accent)"},{name:"Environment info",tokens:280,color:"var(--fg2)"}],Js=95;function ns({path:t,session:e,openViewer:l}){if(!t||!e||typeof l!="function")return null;const n=e.started_at,a=e.ended_at;if(!n&&!a)return null;const o=r=>i=>{i.preventDefault(),i.stopPropagation(),l(t,{at:r})};return s`<span class="file-history-btns" aria-label="View file at session start or end">
     ${n&&s`<button type="button" class="file-history-btn"
       title="View at session start"
       aria-label=${"View "+t+" at session start"}
@@ -101,7 +101,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
       title="View at session end"
       aria-label=${"View "+t+" at session end"}
       onClick=${o(a)}>\u25F8 end</button>`}
-  </span>`}function Xs({session:t}){const e=K(X),l=e.snap,n=t.files_loaded||[],a=((l==null?void 0:l.tool_configs)||[]).map(p=>p.model).filter(Boolean)[0]||"",o=Ns(a),i=(l&&l.agent_memory||[]).reduce((p,m)=>p+(m.tokens||0),0),d=n.length*150,u=Nt.reduce((p,m)=>p+m.tokens,0)+i+d,g=Math.min(u/o*100,100),c=Ks,_=[...Nt,{name:"Memory",tokens:i,color:"var(--cat-memory, var(--orange))"},{name:"Loaded files",tokens:d,color:"var(--green)"}].filter(p=>p.tokens>0);return s`<div>
+  </span>`}function Xs({session:t}){const e=J(Y),l=e.snap,n=t.files_loaded||[],a=((l==null?void 0:l.tool_configs)||[]).map(p=>p.model).filter(Boolean)[0]||"",o=Ns(a),i=(l&&l.agent_memory||[]).reduce((p,m)=>p+(m.tokens||0),0),d=n.length*150,u=Nt.reduce((p,m)=>p+m.tokens,0)+i+d,g=Math.min(u/o*100,100),c=Js,_=[...Nt,{name:"Memory",tokens:i,color:"var(--cat-memory, var(--orange))"},{name:"Loaded files",tokens:d,color:"var(--green)"}].filter(p=>p.tokens>0);return s`<div>
     <div class="es-kv mb-sm" style="gap:var(--sp-3)">
       <div class="es-kv-card"><div class="label">Files in Context</div><div class="value">${n.length}</div></div>
       <div class="es-kv-card"><div class="label">Est. Tokens Used</div><div class="value">${h(u)}</div></div>
@@ -152,7 +152,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
     ${e&&a?s`<pre class="text-muted" style="margin:var(--sp-2) 0 0;padding:var(--sp-2) var(--sp-3);
       background:var(--bg);border-radius:3px;white-space:pre-wrap;word-break:break-word;
       max-height:10rem;overflow-y:auto;font-size:var(--fs-xs);line-height:1.4">${$(t.content)}${t.content&&t.content.length>300,""}</pre>`:null}
-  </div>`}function Qs({session:t}){const{snap:e}=K(X),l=e&&e.agent_memory||[],n=t.project||"",a=n?l.filter(o=>{const r=o.project||o.tool||"";return!n||r.includes(n.replace(/\\/g,"/").split("/").pop())}):l;return s`<div>
+  </div>`}function Qs({session:t}){const{snap:e}=J(Y),l=e&&e.agent_memory||[],n=t.project||"",a=n?l.filter(o=>{const r=o.project||o.tool||"";return!n||r.includes(n.replace(/\\/g,"/").split("/").pop())}):l;return s`<div>
     <${ee} sessionId=${t.session_id}/>
     ${a.length?s`<div class="mono text-xs" style="max-height:20rem;overflow-y:auto">
           ${a.map((o,r)=>s`<${Ys} key=${r} mem=${o}/>`)}
@@ -174,7 +174,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
     ${e&&t.unified_diff?s`<pre class="diff" style="margin:var(--sp-1) 0 var(--sp-2);padding:var(--sp-2) var(--sp-3);
       background:var(--bg);border-radius:3px;white-space:pre;overflow-x:auto;max-height:20rem;overflow-y:auto;
       font-size:var(--fs-xs);line-height:1.4;font-family:var(--font-mono, monospace)">${$(t.unified_diff)}</pre>`:null}
-  </div>`}function ee({sessionId:t}){const{data:e,loading:l}=R(()=>vs(t).then(o=>o||{files:[],summary:{}}).catch(()=>({files:[],summary:{}})),[t],{enabled:!!t}),n=e&&e.files||[],a=e&&e.summary||{added:0,modified:0,removed:0};return s`<div class="sd-memdiff" style="margin-bottom:var(--sp-3)">
+  </div>`}function ee({sessionId:t}){const{data:e,loading:l}=R(()=>ps(t).then(o=>o||{files:[],summary:{}}).catch(()=>({files:[],summary:{}})),[t],{enabled:!!t}),n=e&&e.files||[],a=e&&e.summary||{added:0,modified:0,removed:0};return s`<div class="sd-memdiff" style="margin-bottom:var(--sp-3)">
     <div class="flex-row gap-sm" style="align-items:center;margin-bottom:var(--sp-2)">
       <strong class="text-sm">Memory changes this session</strong>
       ${!l&&n.length?s`<span class="text-muted text-xs">
@@ -199,7 +199,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
           ${o&&s`<div class="text-xs text-muted" style="margin-top:2px">resets ${o}</div>`}
         </div>`})}
     </div>
-  </div>`}function ne({sessionId:t,topN:e=10}){const{data:l,loading:n,error:a}=R(()=>ms(t),[t],{enabled:!!t}),o=H(()=>!l||!Array.isArray(l.counts)?[]:l.counts.slice(0,e),[l,e]);if(n)return s`<div class="text-xs text-muted loading-state" style="padding:0">Loading subprocesses\u2026</div>`;if(a)return s`<div class="error-state text-xs" style="padding:0">Failed to load subprocess breakdown${a.message?` (${a.message})`:""}.</div>`;if(!o.length)return s`<div class="text-xs text-muted">No subprocess activity recorded
+  </div>`}function ne({sessionId:t,topN:e=10}){const{data:l,loading:n,error:a}=R(()=>us(t),[t],{enabled:!!t}),o=H(()=>!l||!Array.isArray(l.counts)?[]:l.counts.slice(0,e),[l,e]);if(n)return s`<div class="text-xs text-muted loading-state" style="padding:0">Loading subprocesses\u2026</div>`;if(a)return s`<div class="error-state text-xs" style="padding:0">Failed to load subprocess breakdown${a.message?` (${a.message})`:""}.</div>`;if(!o.length)return s`<div class="text-xs text-muted">No subprocess activity recorded
       (live correlator data only; not available for ended sessions).</div>`;const r=Math.max(1,...o.map(i=>i.count));return s`<div class="subprocess-breakdown" aria-label="Top subprocesses by count">
     <div class="text-xs text-muted mb-sm">Top ${Math.min(e,o.length)} subprocesses
       <span class="text-muted">\u00b7 total ${l.total}</span></div>
@@ -212,7 +212,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
           <span class="subprocess-count text-xs mono">${i.count}</span>
         </div>`})}
     </div>
-  </div>`}function oe({session:t}){const e=t.exact_input_tokens||0,l=t.exact_output_tokens||0,{data:n}=R(()=>fs({tool:t.tool,active:!1,limit:20}).then(p=>{if(p.length>1){const m=p.filter(f=>f.duration_s>0).map(f=>f.duration_s);return{avgDuration:m.length?m.reduce((f,S)=>f+S,0)/m.length:0,sampleCount:p.length}}return null}).catch(()=>null),[t.tool],{enabled:!!t.tool}),{data:a}=R(()=>$s(t.session_id).then(p=>p&&!p.error?p:null).catch(()=>null),[t.session_id],{enabled:!!t.session_id}),o=t.duration_s||0,r=n&&n.avgDuration>0?o/n.avgDuration:null,i=(a==null?void 0:a.vscode_lm_usage)||null,d=(a==null?void 0:a.skill_call_breakdown)||{},v=Object.entries(d).sort((p,m)=>m[1]-p[1]),u=(a==null?void 0:a.tool_call_breakdown)||{},g=Object.entries(u).sort((p,m)=>m[1]-p[1]),c=(a==null?void 0:a.agents)||[],_=(a==null?void 0:a.context_state)||null;return s`<div>
+  </div>`}function oe({session:t}){const e=t.exact_input_tokens||0,l=t.exact_output_tokens||0,{data:n}=R(()=>vs({tool:t.tool,active:!1,limit:20}).then(p=>{if(p.length>1){const m=p.filter(f=>f.duration_s>0).map(f=>f.duration_s);return{avgDuration:m.length?m.reduce((f,S)=>f+S,0)/m.length:0,sampleCount:p.length}}return null}).catch(()=>null),[t.tool],{enabled:!!t.tool}),{data:a}=R(()=>ms(t.session_id).then(p=>p&&!p.error?p:null).catch(()=>null),[t.session_id],{enabled:!!t.session_id}),o=t.duration_s||0,r=n&&n.avgDuration>0?o/n.avgDuration:null,i=(a==null?void 0:a.vscode_lm_usage)||null,d=(a==null?void 0:a.skill_call_breakdown)||{},v=Object.entries(d).sort((p,m)=>m[1]-p[1]),u=(a==null?void 0:a.tool_call_breakdown)||{},g=Object.entries(u).sort((p,m)=>m[1]-p[1]),c=(a==null?void 0:a.agents)||[],_=(a==null?void 0:a.context_state)||null;return s`<div>
     <div class="es-kv mb-sm" style="gap:var(--sp-3)">
       <div class="es-kv-card"><div class="label">Input Tokens</div><div class="value">${h(e)}</div></div>
       <div class="es-kv-card"><div class="label">Output Tokens</div><div class="value">${h(l)}</div></div>
@@ -290,7 +290,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
     <div style="margin-top:var(--sp-3)">
       <${ne} sessionId=${t.session_id} topN=${10}/>
     </div>
-  </div>`}function ie({session:t}){const e=K(X),l=t.files_touched||[],n=t.file_events||0;return l.length?s`<div>
+  </div>`}function ie({session:t}){const e=J(Y),l=t.files_touched||[],n=t.file_events||0;return l.length?s`<div>
     <div class="es-kv mb-sm" style="gap:var(--sp-3)">
       <div class="es-kv-card"><div class="label">Files Modified</div><div class="value">${l.length}${t.files_touched_limited?"+":""}</div></div>
       <div class="es-kv-card"><div class="label">File Events</div><div class="value">${h(n)}</div></div>
@@ -302,7 +302,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
         <${ns} path=${a} session=${t} openViewer=${e.openViewer}/>
       </div>`)}
     </div>
-  </div>`:s`<p class="empty-state">No file changes recorded.</p>`}function le({sessionId:t}){const{data:e,loading:l,error:n}=R(()=>{const r=t?0:Math.floor(Date.now()/1e3)-3600;return gs(r,100,t)},[t]);if(l)return s`<p class="loading-state">Loading API call data...</p>`;if(n)return s`<p class="error-state">Failed to load API calls${n.message?` (${n.message})`:""}.</p>`;if(!e||!e.calls||!e.calls.length)return s`<p class="empty-state">No OTel API call data. Enable with: <code>aictl otel enable</code></p>`;const{calls:a,summary:o}=e;return s`<div>
+  </div>`:s`<p class="empty-state">No file changes recorded.</p>`}function le({sessionId:t}){const{data:e,loading:l,error:n}=R(()=>{const r=t?0:Math.floor(Date.now()/1e3)-3600;return fs(r,100,t)},[t]);if(l)return s`<p class="loading-state">Loading API call data...</p>`;if(n)return s`<p class="error-state">Failed to load API calls${n.message?` (${n.message})`:""}.</p>`;if(!e||!e.calls||!e.calls.length)return s`<p class="empty-state">No OTel API call data. Enable with: <code>aictl otel enable</code></p>`;const{calls:a,summary:o}=e;return s`<div>
     <div class="es-kv mb-sm" style="gap:var(--sp-3)">
       <div class="es-kv-card"><div class="label">API Calls</div><div class="value">${o.total_calls}</div></div>
       <div class="es-kv-card"><div class="label">Errors</div>
@@ -335,12 +335,12 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
           ${r.http_status&&s`<span class="badge" style="font-size:var(--fs-xs);color:${g?"var(--red)":"var(--fg-muted)"}">${$(String(r.http_status))}</span>`}
         </div>`})}
     </div>
-  </div>`}function re({project:t}){const{data:e,loading:l,error:n}=R(()=>hs(7).then(a=>(Array.isArray(a)?a.find(r=>r.project===t):null)||null),[t],{enabled:!!t});return l?s`<p class="loading-state">Loading project costs...</p>`:n?s`<p class="error-state">Failed to load project costs${n.message?` (${n.message})`:""}.</p>`:e?s`<div>
+  </div>`}function re({project:t}){const{data:e,loading:l,error:n}=R(()=>$s(7).then(a=>(Array.isArray(a)?a.find(r=>r.project===t):null)||null),[t],{enabled:!!t});return l?s`<p class="loading-state">Loading project costs...</p>`:n?s`<p class="error-state">Failed to load project costs${n.message?` (${n.message})`:""}.</p>`:e?s`<div>
     <div class="es-kv mb-sm" style="gap:var(--sp-3)">
       <div class="es-kv-card"><div class="label">Sessions (7d)</div><div class="value">${e.sessions}</div></div>
       <div class="es-kv-card"><div class="label">Input Tokens</div><div class="value">${h(e.input_tokens)}</div></div>
       <div class="es-kv-card"><div class="label">Output Tokens</div><div class="value">${h(e.output_tokens)}</div></div>
-      <div class="es-kv-card"><div class="label">Est. Cost</div><div class="value"><${xt} row=${e}/></div></div>
+      <div class="es-kv-card"><div class="label">Est. Cost</div><div class="value"><${bt} row=${e}/></div></div>
     </div>
     ${e.daily&&e.daily.length>0&&s`<div style="margin-top:var(--sp-3)">
       <div class="text-xs text-muted" style="margin-bottom:var(--sp-2)">Daily breakdown</div>
@@ -353,7 +353,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
           <span class="text-muted" style="width:40px;font-size:var(--fs-xs);flex-shrink:0">${h(o)}</span>
         </div>`})}
     </div>`}
-  </div>`:s`<p class="empty-state">No cost data available for this project.</p>`}function de({project:t,tool:e}){const{data:l,loading:n,error:a}=R(()=>Kt(t,e,30,20).then(d=>Array.isArray(d)?d:[]),[t,e],{enabled:!!(t&&e)});if(n)return s`<p class="loading-state">Loading run history...</p>`;if(a)return s`<p class="error-state">Failed to load run history${a.message?` (${a.message})`:""}.</p>`;if(!l||l.length<2)return s`<p class="empty-state">Not enough session history for trend analysis.</p>`;const o=Math.max(...l.map(d=>d.total_tokens),1),r=l.reduce((d,v)=>d+v.duration_s,0)/l.length,i=l.reduce((d,v)=>d+v.total_tokens,0)/l.length;return s`<div>
+  </div>`:s`<p class="empty-state">No cost data available for this project.</p>`}function de({project:t,tool:e}){const{data:l,loading:n,error:a}=R(()=>Xt(t,e,30,20).then(d=>Array.isArray(d)?d:[]),[t,e],{enabled:!!(t&&e)});if(n)return s`<p class="loading-state">Loading run history...</p>`;if(a)return s`<p class="error-state">Failed to load run history${a.message?` (${a.message})`:""}.</p>`;if(!l||l.length<2)return s`<p class="empty-state">Not enough session history for trend analysis.</p>`;const o=Math.max(...l.map(d=>d.total_tokens),1),r=l.reduce((d,v)=>d+v.duration_s,0)/l.length,i=l.reduce((d,v)=>d+v.total_tokens,0)/l.length;return s`<div>
     <div class="es-kv mb-sm" style="gap:var(--sp-3)">
       <div class="es-kv-card"><div class="label">Runs (30d)</div><div class="value">${l.length}</div></div>
       <div class="es-kv-card"><div class="label">Avg Duration</div><div class="value">${U(r)}</div></div>
@@ -369,7 +369,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
           <span class="text-muted" style="width:40px;flex-shrink:0;text-align:right">${U(d.duration_s)}</span>
         </div>`})}
     </div>
-  </div>`}function ce({sessionId:t}){const{data:e,loading:l,error:n}=R(()=>ys(t),[t],{enabled:!!t});if(l)return s`<div class="text-xs text-muted loading-state" style="padding:0">Loading MCP usage\u2026</div>`;if(n)return s`<div class="error-state text-xs" style="padding:0">Failed to load MCP usage${n.message?` (${n.message})`:""}.</div>`;const a=e&&Array.isArray(e.servers)?e.servers:[],o=e&&Array.isArray(e.configured_servers)?e.configured_servers:[],r=new Set(a.map(d=>d.server_name)),i=o.filter(d=>!r.has(d));return!a.length&&!o.length?s`<div class="text-xs text-muted">No MCP servers called in this session.</div>`:s`<div class="mcp-usage-panel" aria-label="MCP server usage for session">
+  </div>`}function ce({sessionId:t}){const{data:e,loading:l,error:n}=R(()=>gs(t),[t],{enabled:!!t});if(l)return s`<div class="text-xs text-muted loading-state" style="padding:0">Loading MCP usage\u2026</div>`;if(n)return s`<div class="error-state text-xs" style="padding:0">Failed to load MCP usage${n.message?` (${n.message})`:""}.</div>`;const a=e&&Array.isArray(e.servers)?e.servers:[],o=e&&Array.isArray(e.configured_servers)?e.configured_servers:[],r=new Set(a.map(d=>d.server_name)),i=o.filter(d=>!r.has(d));return!a.length&&!o.length?s`<div class="text-xs text-muted">No MCP servers called in this session.</div>`:s`<div class="mcp-usage-panel" aria-label="MCP server usage for session">
     ${a.length>0&&s`
       <div class="text-xs text-muted mb-sm">
         ${a.length} server${a.length===1?"":"s"} called \u00b7
@@ -396,22 +396,22 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
         </div>
       </div>
     `}
-  </div>`}function pe({sessionId:t}){const{data:e,loading:l,error:n}=R(()=>_s(t),[t],{enabled:!!t});if(l||!t)return s`<p class="loading-state">Loading cost breakdown\u2026</p>`;if(n)return s`<p class="empty-state">Failed to load cost data.</p>`;if(!e||!e.models||!e.models.length)return s`<p class="empty-state">No per-model cost data recorded for this session.</p>`;const{models:a,totals:o}=e,r=Math.max(...a.map(i=>i.cost_usd||0),1e-9);return s`<div>
+  </div>`}function pe({sessionId:t}){const{data:e,loading:l,error:n}=R(()=>hs(t),[t],{enabled:!!t});if(l||!t)return s`<p class="loading-state">Loading cost breakdown\u2026</p>`;if(n)return s`<p class="empty-state">Failed to load cost data.</p>`;if(!e||!e.models||!e.models.length)return s`<p class="empty-state">No per-model cost data recorded for this session.</p>`;const{models:a,totals:o}=e,r=Math.max(...a.map(i=>i.cost_usd||0),1e-9);return s`<div>
     <div class="es-kv mb-sm" style="gap:var(--sp-3)">
       <div class="es-kv-card"><div class="label">Models</div><div class="value">${a.length}</div></div>
       <div class="es-kv-card"><div class="label">Requests</div><div class="value">${o.requests}</div></div>
-      <div class="es-kv-card" title="Estimated from token counts and list prices. Not a billed amount."><div class="label">Estimated total</div><div class="value"><${xt} row=${o} digits=${4}/></div></div>
+      <div class="es-kv-card" title="Estimated from token counts and list prices. Not a billed amount."><div class="label">Estimated total</div><div class="value"><${bt} row=${o} digits=${4}/></div></div>
     </div>
     <div style="margin-top:var(--sp-2)">
       ${a.map((i,d)=>{const v=((i.cost_usd||0)/r*100).toFixed(1),u=(i.input_tokens||0)+(i.output_tokens||0);return s`<div key=${d} style="margin-bottom:var(--sp-2)">
           <div class="flex-row gap-sm" style="align-items:baseline;margin-bottom:2px">
             <span class="mono text-xs text-ellipsis" style="flex:1;min-width:0" title=${i.model}>${$(i.model)}</span>
             <span class="text-xs text-muted" style="flex-shrink:0">${i.requests} req \u00b7 ${h(u)} tok</span>
-            <span class="text-xs mono" style="flex-shrink:0;width:64px;text-align:right"><${xt} row=${i} digits=${4} showSub=${!1}/></span>
+            <span class="text-xs mono" style="flex-shrink:0;width:64px;text-align:right"><${bt} row=${i} digits=${4} showSub=${!1}/></span>
           </div>
           <div class="overflow-hidden" style="height:8px;border-radius:3px;background:var(--border)">
             <div style="height:100%;width:${v}%;background:var(--accent);border-radius:3px"
-              title=${xs(i,4).main}></div>
+              title=${Es(i,4).main}></div>
           </div>
           <div class="text-muted" style="font-size:var(--fs-xs);margin-top:2px">
             ${h(i.input_tokens||0)} in \u00b7 ${h(i.output_tokens||0)} out
@@ -419,16 +419,16 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
           </div>
         </div>`})}
     </div>
-  </div>`}const Dt={lead:"var(--accent)",subagent:"var(--green)",unknown:"var(--fg-muted)"};function ue({sessionId:t}){const{data:e,loading:l,error:n}=R(()=>bs(t),[t],{enabled:!!t});if(l||!t)return s`<p class="loading-state">Loading process tree\u2026</p>`;if(n)return s`<p class="empty-state">Failed to load process data.</p>`;if(!e||!e.processes||!e.processes.length)return s`<p class="empty-state">No persisted processes recorded for this session.</p>`;const{processes:a,by_role:o,total:r}=e;return s`<div>
+  </div>`}const Bt={lead:"var(--accent)",subagent:"var(--green)",unknown:"var(--fg-muted)"};function ue({sessionId:t}){const{data:e,loading:l,error:n}=R(()=>ys(t),[t],{enabled:!!t});if(l||!t)return s`<p class="loading-state">Loading process tree\u2026</p>`;if(n)return s`<p class="empty-state">Failed to load process data.</p>`;if(!e||!e.processes||!e.processes.length)return s`<p class="empty-state">No persisted processes recorded for this session.</p>`;const{processes:a,by_role:o,total:r}=e;return s`<div>
     <div class="flex-row gap-sm flex-wrap mb-sm">
       <span class="badge text-xs">${r} process${r===1?"":"es"}</span>
       ${Object.entries(o).map(([i,d])=>s`
-        <span key=${i} class="badge text-xs" style="color:${Dt[i]||"var(--fg-muted)"}">
+        <span key=${i} class="badge text-xs" style="color:${Bt[i]||"var(--fg-muted)"}">
           ${$(i)}: ${d}
         </span>`)}
     </div>
     <div class="mono text-xs">
-      ${a.map((i,d)=>{const v=Dt[i.role]||"var(--fg-muted)",u=i.joined_at?Y(i.joined_at):"—";return s`<div key=${d} class="flex-row gap-sm" style="padding:2px 0;align-items:center">
+      ${a.map((i,d)=>{const v=Bt[i.role]||"var(--fg-muted)",u=i.joined_at?X(i.joined_at):"—";return s`<div key=${d} class="flex-row gap-sm" style="padding:2px 0;align-items:center">
           <span style="width:8px;height:8px;border-radius:50%;flex-shrink:0;background:${v}"></span>
           <span style="width:64px;flex-shrink:0;text-align:right">${i.pid}</span>
           <span style="width:80px;flex-shrink:0;color:${v}">${$(i.role||"unknown")}</span>
@@ -436,7 +436,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
           <span class="text-muted" style="flex-shrink:0">${u}</span>
         </div>`})}
     </div>
-  </div>`}function ve({sessionId:t}){const[e,l]=b({}),n=Array.isArray(t)?t.join("|"):t,{data:a,loading:o,error:r}=R(()=>ks(t),[n],{enabled:!!n});z(()=>{l({})},[n]);const i=p=>l(m=>({...m,[p]:!m[p]}));if(o||!n)return s`<p class="loading-state">Loading tool calls…</p>`;if(r)return s`<p class="empty-state">Failed to load tool-call data.</p>`;if(!a||!a.calls||!a.calls.length)return s`<p class="empty-state">No tool-call data recorded for this session.</p>`;const{calls:d,by_tool:v,total:u,errors:g}=a,c=Object.entries(v).sort((p,m)=>m[1]-p[1]),_=Math.max(...c.map(([,p])=>p),1);return s`<div>
+  </div>`}function ve({sessionId:t}){const[e,l]=b({}),n=Array.isArray(t)?t.join("|"):t,{data:a,loading:o,error:r}=R(()=>_s(t),[n],{enabled:!!n});z(()=>{l({})},[n]);const i=p=>l(m=>({...m,[p]:!m[p]}));if(o||!n)return s`<p class="loading-state">Loading tool calls…</p>`;if(r)return s`<p class="empty-state">Failed to load tool-call data.</p>`;if(!a||!a.calls||!a.calls.length)return s`<p class="empty-state">No tool-call data recorded for this session.</p>`;const{calls:d,by_tool:v,total:u,errors:g}=a,c=Object.entries(v).sort((p,m)=>m[1]-p[1]),_=Math.max(...c.map(([,p])=>p),1);return s`<div>
     <div class="es-kv mb-sm" style="gap:var(--sp-3)">
       <div class="es-kv-card"><div class="label">Tool Calls</div><div class="value">${u}</div></div>
       <div class="es-kv-card"><div class="label">Errors</div>
@@ -456,7 +456,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
     </div>
     <div class="text-xs text-muted" style="margin-bottom:var(--sp-2)">Timeline</div>
     <div class="mono text-xs" style="max-height:12rem;overflow-y:auto">
-      ${d.slice(0,60).map((p,m)=>{const y=p.ts?Y(p.ts):"—",f=p.input||"",S=!!e[m];return s`<div key=${m} style="padding:2px 0">
+      ${d.slice(0,60).map((p,m)=>{const y=p.ts?X(p.ts):"—",f=p.input||"",S=!!e[m];return s`<div key=${m} style="padding:2px 0">
           <div class="flex-row gap-sm" style="align-items:center">
             <span class="text-muted" style="width:60px;flex-shrink:0">${y}</span>
             <span aria-hidden="true" style="width:6px;height:6px;border-radius:50%;flex-shrink:0;background:${p.is_error?"var(--red)":"var(--green)"}"></span>
@@ -478,7 +478,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
             </button>`:null}
         </div>`})}
     </div>
-  </div>`}function me({sessionId:t,onKilled:e}){const[l,n]=b(!1),[a,o]=b(!1),[r,i]=b(null),[d,v]=b(null);async function u(){o(!0),v(null);try{const g=await ws(t,"TERM");i(g),n(!1),e&&e(g)}catch(g){v(g.message||"Failed to signal session")}finally{o(!1)}}return r?s`<span class="text-xs" style="color:var(--green)" title=${JSON.stringify(r)}>
+  </div>`}function me({sessionId:t,onKilled:e}){const[l,n]=b(!1),[a,o]=b(!1),[r,i]=b(null),[d,v]=b(null);async function u(){o(!0),v(null);try{const g=await xs(t,"TERM");i(g),n(!1),e&&e(g)}catch(g){v(g.message||"Failed to signal session")}finally{o(!1)}}return r?s`<span class="text-xs" style="color:var(--green)" title=${JSON.stringify(r)}>
       Signaled ${r.signaled.length} pid${r.signaled.length===1?"":"s"}
       ${r.failed.length?s` \u00b7 ${r.failed.length} failed`:""}
     </span>`:l?s`<span class="flex-row gap-sm" style="align-items:center">
@@ -490,7 +490,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
   </span>`:s`<button class="badge" style="background:transparent;border:1px solid var(--red);color:var(--red);cursor:pointer;font-size:var(--fs-xs)"
       onClick=${()=>n(!0)} title="Send SIGTERM to this session's process tree">
       Kill
-    </button>`}const kt=t=>t==null?"n/a":t<1024?`${t} B`:t<1048576?`${(t/1024).toFixed(1)} KB`:`${(t/1048576).toFixed(1)} MB`,fe=t=>t?new Date(t*1e3).toLocaleString():"n/a",$e=t=>t&&(t.status===404||/\b404\b/.test(t.message||"")),lt="white-space:pre-wrap;overflow-wrap:anywhere";function ge({sessionId:t,artifact:e}){const{data:l,loading:n,error:a}=R(()=>Xt(`/api/copilot-sessions/${encodeURIComponent(t)}/artifact?path=${encodeURIComponent(e.path)}`),[t,e.path]);return n?s`<div class="text-xs text-muted loading-state" style="padding:0">Loading file…</div>`:a?s`<div class="error-state text-xs" style="padding:0">Could not read this file${a.message?` (${a.message})`:""}.</div>`:l.binary?s`<div class="text-xs text-muted">Binary file, ${kt(l.size)}. Not shown.</div>`:s`<div>
+    </button>`}const kt=t=>t==null?"n/a":t<1024?`${t} B`:t<1048576?`${(t/1024).toFixed(1)} KB`:`${(t/1048576).toFixed(1)} MB`,fe=t=>t?new Date(t*1e3).toLocaleString():"n/a",$e=t=>t&&(t.status===404||/\b404\b/.test(t.message||"")),lt="white-space:pre-wrap;overflow-wrap:anywhere";function ge({sessionId:t,artifact:e}){const{data:l,loading:n,error:a}=R(()=>Yt(`/api/copilot-sessions/${encodeURIComponent(t)}/artifact?path=${encodeURIComponent(e.path)}`),[t,e.path]);return n?s`<div class="text-xs text-muted loading-state" style="padding:0">Loading file…</div>`:a?s`<div class="error-state text-xs" style="padding:0">Could not read this file${a.message?` (${a.message})`:""}.</div>`:l.binary?s`<div class="text-xs text-muted">Binary file, ${kt(l.size)}. Not shown.</div>`:s`<div>
     ${l.truncated&&s`<div class="text-xs text-muted">First part of ${kt(l.size)} shown.</div>`}
     <pre class="mono text-xs" style="max-height:320px;overflow:auto;background:var(--bg3);padding:var(--sp-2);${lt}">${l.content}</pre>
   </div>`}function he({sessionId:t,artifact:e}){const[l,n]=b(!1),a=e.readable&&e.path;return s`<li style="padding:var(--sp-1) 0;border-bottom:1px solid var(--border-subtle)">
@@ -502,12 +502,12 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
       ${e.checkpoint!==void 0&&s`<span class="text-muted">checkpoint ${e.checkpoint}</span>`}
     </div>
     ${l&&s`<${ge} sessionId=${t} artifact=${e}/>`}
-  </li>`}function ye({sessionId:t}){const{data:e,loading:l,error:n}=R(()=>Xt(`/api/copilot-sessions/${encodeURIComponent(t)}/artifacts`),[t],{enabled:!!t});if(l)return s`<div class="text-xs text-muted loading-state" style="padding:0">Loading session files…</div>`;if($e(n))return s`<div class="text-xs text-muted">No session folder found for ${t}.</div>`;if(n)return s`<div class="error-state text-xs" style="padding:0">Failed to load session files${n.message?` (${n.message})`:""}.</div>`;const a=e&&Array.isArray(e.artifacts)?e.artifacts:[];return s`<div>
+  </li>`}function ye({sessionId:t}){const{data:e,loading:l,error:n}=R(()=>Yt(`/api/copilot-sessions/${encodeURIComponent(t)}/artifacts`),[t],{enabled:!!t});if(l)return s`<div class="text-xs text-muted loading-state" style="padding:0">Loading session files…</div>`;if($e(n))return s`<div class="text-xs text-muted">No session folder found for ${t}.</div>`;if(n)return s`<div class="error-state text-xs" style="padding:0">Failed to load session files${n.message?` (${n.message})`:""}.</div>`;const a=e&&Array.isArray(e.artifacts)?e.artifacts:[];return s`<div>
     <div class="mono text-xs" style=${lt} title="Session folder">${e&&e.folder?e.folder:"No folder on disk"}</div>
     ${a.length===0?s`<div class="text-xs text-muted">No files in this session.</div>`:s`<ul style="list-style:none;margin:var(--sp-2) 0 0;padding:0">
           ${a.map(o=>s`<${he} key=${o.name} sessionId=${t} artifact=${o}/>`)}
         </ul>`}
-  </div>`}function _e({session:t,onClose:e}){const l=Yt(t.tool),n=t.files_loaded||[],a=t.files_touched||[],o=t.exact_input_tokens||0,r=t.exact_output_tokens||0,i=t.entity_state||null,d=i&&i.agents&&i.agents.length>0,v=i&&i.tasks&&i.tasks.length>0;return s`<div class="sd-container" style="border-left:3px solid ${l}">
+  </div>`}function _e({session:t,onClose:e}){const l=Qt(t.tool),n=t.files_loaded||[],a=t.files_touched||[],o=t.exact_input_tokens||0,r=t.exact_output_tokens||0,i=t.entity_state||null,d=i&&i.agents&&i.agents.length>0,v=i&&i.tasks&&i.tasks.length>0;return s`<div class="sd-container" style="border-left:3px solid ${l}">
     <div class="sd-header">
       <div class="flex-row gap-sm" style="align-items:center">
         <strong style="font-size:var(--fs-lg)" title=${t.tool}>${$(Tt(t.tool))}</strong>
@@ -527,73 +527,73 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
       ${e&&s`<button class="sd-close" onClick=${e} aria-label="Close session detail">\u2715</button>`}
     </div>
 
-    <${B} title="Actions" icon="zap" badge=${null} defaultOpen=${!0}>
+    <${D} title="Actions" icon="zap" badge=${null} defaultOpen=${!0}>
       <${Vs} sessionId=${t.session_id}/>
     <//>
-    <${B} title="Conversation" icon="message-square" defaultOpen=${!1}>
-      <${Js} sessionId=${t.session_id} withheld=${t.content_retained===!1}/>
+    <${D} title="Conversation" icon="message-square" defaultOpen=${!1}>
+      <${Ks} sessionId=${t.session_id} withheld=${t.content_retained===!1}/>
     <//>
-    ${d&&s`<${B} title="Team" icon="users" badge=${i.agents.length+" agents"} defaultOpen=${!0}>
-      <${Bs} entityState=${i}/>
+    ${d&&s`<${D} title="Team" icon="users" badge=${i.agents.length+" agents"} defaultOpen=${!0}>
+      <${Ds} entityState=${i}/>
     <//>`}
-    ${v&&s`<${B} title="Tasks" icon="clipboard-list" badge=${i.tasks.length} defaultOpen=${!0}>
+    ${v&&s`<${D} title="Tasks" icon="clipboard-list" badge=${i.tasks.length} defaultOpen=${!0}>
       <${Rs} tasks=${i.tasks}/>
     <//>`}
-    <${B} title="Context" icon="book-open" badge=${n.length||null}>
+    <${D} title="Context" icon="book-open" badge=${n.length||null}>
       <${Xs} session=${t}/>
     <//>
-    <${B} title="Memory" icon="brain" defaultOpen=${!1}>
+    <${D} title="Memory" icon="brain" defaultOpen=${!1}>
       <${Qs} session=${t}/>
     <//>
-    <${B} title="Resources" icon="layers" badge=${h(o+r)+" tok"}>
+    <${D} title="Resources" icon="layers" badge=${h(o+r)+" tok"}>
       <${oe} session=${t}/>
     <//>
-    <${B} title="Estimated cost by model" icon="banknote" defaultOpen=${!1}>
+    <${D} title="Estimated cost by model" icon="banknote" defaultOpen=${!1}>
       <${pe} sessionId=${t.session_id}/>
     <//>
-    ${String(t.tool||"").startsWith("copilot")&&s`<${B} title="Session files" icon="folder" defaultOpen=${!1}>
+    ${String(t.tool||"").startsWith("copilot")&&s`<${D} title="Session files" icon="folder" defaultOpen=${!1}>
       <${ye} sessionId=${t.session_id}/>
     <//>`}
-    <${B} title="Tool Calls" icon="wrench" defaultOpen=${!1}>
+    <${D} title="Tool Calls" icon="wrench" defaultOpen=${!1}>
       <${ve} sessionId=${pt(t)}/>
     <//>
-    <${B} title="Process Tree" icon="git-branch" defaultOpen=${!1}>
+    <${D} title="Process Tree" icon="git-branch" defaultOpen=${!1}>
       <${ue} sessionId=${t.session_id}/>
     <//>
-    <${B} title="MCP Servers" icon="server" defaultOpen=${!1}>
+    <${D} title="MCP Servers" icon="server" defaultOpen=${!1}>
       <${ce} sessionId=${t.session_id}/>
     <//>
-    <${B} title="Deliverables" icon="package" badge=${a.length||null}>
+    <${D} title="Deliverables" icon="package" badge=${a.length||null}>
       <${ie} session=${t}/>
     <//>
-    <${B} title="API Calls" icon="globe" defaultOpen=${!1}>
+    <${D} title="API Calls" icon="globe" defaultOpen=${!1}>
       <${le} sessionId=${t.session_id}/>
     <//>
-    ${t.project&&s`<${B} title="Estimated project costs" icon="banknote" defaultOpen=${!1}>
+    ${t.project&&s`<${D} title="Estimated project costs" icon="banknote" defaultOpen=${!1}>
       <${re} project=${t.project}/>
     <//>`}
-    ${t.project&&t.tool&&s`<${B} title="Run History" icon="line-chart" defaultOpen=${!1}>
+    ${t.project&&t.tool&&s`<${D} title="Run History" icon="line-chart" defaultOpen=${!1}>
       <${de} project=${t.project} tool=${t.tool}/>
     <//>`}
-  </div>`}function vt({tools:t,activeTool:e,onSelect:l}){const n=K(X),a=n==null?void 0:n.snap,o=(n==null?void 0:n.enabledTools)??null,r=t.filter(i=>Jt(i,o));return z(()=>{r.length>0&&!r.includes(e)&&l(r[0])},[r.join(","),e]),r.length<=1?null:s`<div class="sf-tool-tabs">
+  </div>`}function vt({tools:t,activeTool:e,onSelect:l}){const n=J(Y),a=n==null?void 0:n.snap,o=(n==null?void 0:n.enabledTools)??null,r=t.filter(i=>Jt(i,o));return z(()=>{r.length>0&&!r.includes(e)&&l(r[0])},[r.join(","),e]),r.length<=1?null:s`<div class="sf-tool-tabs">
     ${r.map(i=>s`<button key=${i} class="sf-tool-tab ${i===e?"active":""}"
-      style="border-bottom-color:${i===e?Qt[i]||"var(--accent)":"transparent"}"
+      style="border-bottom-color:${i===e?Zt[i]||"var(--accent)":"transparent"}"
       onClick=${()=>l(i)}>
-      <${Ts} tool=${i} size="1em"/> ${$(Tt(i,a))}
+      <${Ms} tool=${i} size="1em"/> ${$(Tt(i,a))}
     </button>`)}
   </div>`}function Ct({sessions:t,activeId:e,onSelect:l,loading:n,error:a=null}){return n?s`<div class="sf-sess-tabs"><span class="text-muted text-xs">Loading sessions...</span></div>`:a?s`<div class="sf-sess-tabs"><span class="error-state text-xs" style="padding:0">Failed to load sessions${a.message?` (${a.message})`:""}</span></div>`:t.length?s`<div class="sf-sess-tabs">
     ${t.map(o=>{const r=o.exact_input_tokens||o.input_tokens||0,i=o.exact_output_tokens||o.output_tokens||0,d=r+i,v=o.duration_s||(o.ended_at&&o.started_at?o.ended_at-o.started_at:0),u=o.session_id===e,g=!o.ended_at;return s`<button key=${o.session_id}
         title=${o.session_id}
         class="sf-sess-tab ${u?"active":""}"
         onClick=${()=>l(o.session_id)}>
-        <span class="sf-stab-time">${bt(o.started_at)}</span>
-        <span class="sf-stab-sid">${Ss(o.session_id)}</span>
+        <span class="sf-stab-time">${xt(o.started_at)}</span>
+        <span class="sf-stab-sid">${bs(o.session_id)}</span>
         <span class="sf-stab-dur">${U(v)}</span>
         ${d>0&&s`<span class="sf-stab-tok">${h(d)}t</span>`}
         ${(o.files_modified||0)>0&&s`<span class="sf-stab-files">${o.files_modified}f</span>`}
         ${g&&s`<span class="sf-stab-live">\u25CF</span>`}
       </button>`})}
-  </div>`:s`<div class="sf-sess-tabs"><span class="text-muted text-xs">No sessions in range</span></div>`}function os(t,e){if(!e)return"";let l=e;if(typeof e=="string")try{l=JSON.parse(e)}catch{return e.slice(0,80)}if(typeof l!="object"||l===null)return String(e).slice(0,80);const n=["command","file_path","pattern","query","path","url","prompt","description","old_string","content","skill"];for(const o of n)if(l[o]){let r=String(l[o]);return(o==="file_path"||o==="path")&&r.length>60&&(r=Zt(r)),r.slice(0,100)}const a=Object.keys(l);return a.length>0?String(l[a[0]]).slice(0,80):""}const Bt={Bash:"#84cc16"};function Rt(t){return Bt[t]?Bt[t]:ts(t)}function xe({event:t}){if(t.type==="user_message")return t.redacted?s`<div class="sf-seq-tooltip">
+  </div>`:s`<div class="sf-sess-tabs"><span class="text-muted text-xs">No sessions in range</span></div>`}function os(t,e){if(!e)return"";let l=e;if(typeof e=="string")try{l=JSON.parse(e)}catch{return e.slice(0,80)}if(typeof l!="object"||l===null)return String(e).slice(0,80);const n=["command","file_path","pattern","query","path","url","prompt","description","old_string","content","skill"];for(const o of n)if(l[o]){let r=String(l[o]);return(o==="file_path"||o==="path")&&r.length>60&&(r=ts(r)),r.slice(0,100)}const a=Object.keys(l);return a.length>0?String(l[a[0]]).slice(0,80):""}const Dt={Bash:"#84cc16"};function Rt(t){return Dt[t]?Dt[t]:ss(t)}function xe({event:t}){if(t.type==="user_message")return t.redacted?s`<div class="sf-seq-tooltip">
         <div class="sf-tip-label">User Prompt <span style="color:var(--orange)">(redacted)</span></div>
         <div class="sf-tip-meta" style="margin-bottom:var(--sp-2)">
           Claude Code redacts prompts by default in OTel telemetry.
@@ -663,7 +663,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
       <span class="sf-seq-cumtok">${t._cumTok>0?h(t._cumTok):""}</span>
       <span class="sf-seq-rttok">${t._rtTok>0?h(t._rtTok):""}</span>
     </div>
-    <div class="sf-seq-time">${Y(t.ts)}</div>
+    <div class="sf-seq-time">${X(t.ts)}</div>
     <div class="sf-seq-arrow-area">
       ${e.map((x,k)=>s`<div key=${k} class="sf-seq-lane"
         style="left:${(k+.5)*y}%"></div>`)}
@@ -689,7 +689,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
     <div class="sf-seq-tokens">
       <span class="sf-seq-cumtok"></span><span class="sf-seq-rttok"></span>
     </div>
-    <div class="sf-seq-time">${Y(t.ts)}</div>
+    <div class="sf-seq-time">${X(t.ts)}</div>
     <div class="sf-seq-marker-body" style="color:${l}">
       ${n} ${e}
       ${t.type==="compaction"&&t.duration_ms>0?" — "+F(t.duration_ms):""}
@@ -702,7 +702,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
         onClick=${()=>l&&l(a)}
         aria-current=${d?"true":"false"}>
         <div class="sv-when">
-          <div class="sv-when-time">${Y(n.ts)}</div>
+          <div class="sv-when-time">${X(n.ts)}</div>
           ${(n._cumTok>0||n._rtTok>0)&&s`<div class="sv-when-tok">
             ${n._cumTok>0?h(n._cumTok)+" cum":""}
             ${n._rtTok>0?" · "+h(n._rtTok)+" rt":""}
@@ -731,7 +731,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
       <div class="sv-insp-empty-msg">
         Choose any event in the timeline to read its full payload.
       </div>
-    </div>`;const l=[["Type",t.type||""],["Started",Y(t.ts)],["Duration",t.duration_ms?F(t.duration_ms):"—"],["Bytes",Ee(t)],["Model",tt(t.model||"")||"—"],["Decision",t.decision||(t.success===!1?"failed":t.success===!0?"ok":"—")]],n=qt(Me(t)),a=qt(Pe(t)),o=t.agent_name||t.to||t.hook_name||t.preview||t.type||"Event";return s`<div class="sv-insp" role="complementary" aria-label="Event details">
+    </div>`;const l=[["Type",t.type||""],["Started",X(t.ts)],["Duration",t.duration_ms?F(t.duration_ms):"—"],["Bytes",Ee(t)],["Model",tt(t.model||"")||"—"],["Decision",t.decision||(t.success===!1?"failed":t.success===!0?"ok":"—")]],n=qt(Me(t)),a=qt(Pe(t)),o=t.agent_name||t.to||t.hook_name||t.preview||t.type||"Event";return s`<div class="sv-insp" role="complementary" aria-label="Event details">
     <div class="sv-insp-head">
       <div>
         <div class="sv-insp-overline">Event \u00B7 ${t.type||""}</div>
@@ -765,7 +765,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
     ${t.compactions>0&&s`<div class="sf-summary-stat"><div class="label">Compactions</div><div class="value" style="color:var(--orange)">${t.compactions}</div></div>`}
     <div class="sf-summary-stat"><div class="label">Duration</div><div class="value">${U(t.duration_s)}</div></div>
     <div class="sf-summary-stat"><div class="label">Events</div><div class="value">${t.event_count}</div></div>
-  </div>`}function ze(t,e){const l=new Set,n=[],a=(o,r,i)=>{l.has(o)||(l.add(o),n.push({id:o,label:r||o,color:i||"var(--fg2)"}))};a("user","User","var(--green)"),a("tool",e||"AI Tool",Qt[e]||"var(--accent)");for(const o of t){if((o.type==="api_call"||o.type==="api_response"||o.type==="error")&&a("api","API","var(--accent)"),o.type==="tool_use"){const r=o.to||"tool";a("skill:"+r,r,Rt(r))}if(o.type==="subagent"){const r=o.to||"Subagent";a("subagent:"+r,r,Rt(r))}o.type==="hook"&&a("hook","Hooks","var(--orange)")}return n}const is="aictl-pref-session_flow_mode";function Ie(){try{return localStorage.getItem(is)==="swimlane"?"swimlane":"timeline"}catch{return"timeline"}}function Fe(t){try{localStorage.setItem(is,t)}catch{}}function Ne({externalSessionId:t=null}={}){const{globalRange:e,enabledTools:l}=K(X),{sessions:n,loading:a,error:o,tools:r,toolSessions:i,activeTool:d,setActiveTool:v,activeSessionId:u,setActiveSessionId:g}=ut({globalRange:e,enabledTools:l}),[c,_]=b(null),[p,m]=b(!1),[y,f]=b(null),[S,x]=b(null),[k,L]=b(Ie),E=t!=null,P=E?t:u;z(()=>{if(!P){_(null);return}m(!0);const C=st(n,P),N=C!=null&&C.started_at?C.started_at-60:Date.now()/1e3-86400,J=C!=null&&C.ended_at?C.ended_at+60:Date.now()/1e3+60,w=C?pt(C):[P];St(w,N,J).then(D=>{_(D),m(!1)}).catch(()=>{_(null),m(!1)})},[P,n.length]);const{processedTurns:M,participants:I}=H(()=>{const C=(c==null?void 0:c.turns)||[];if(!C.length)return{processedTurns:[],participants:[]};const N=C.map(A=>{const T={...A};return A.type==="user_message"?(T._from="user",T._to="tool"):A.type==="api_call"?(T._from=A.from||"tool",T._to="api"):A.type==="api_response"||A.type==="error"?(T._from="api",T._to="tool"):A.type==="tool_use"?(T._from="tool",T._to="skill:"+(A.to||"tool")):A.type==="subagent"?(T._from="tool",T._to="subagent:"+(A.to||"agent")):A.type==="hook"&&(T._from="tool",T._to="hook"),T});let J=0,w=0;for(const A of N){const T=A.tokens||{},j=(T.input||0)+(T.output||0);A.type==="user_message"&&(w=0),A.type==="api_call"&&(J+=j,w+=j),A._cumTok=J,A._rtTok=w}const D=ze(N,d);return{processedTurns:N,participants:D}},[c,d]),V=(c==null?void 0:c.summary)||{};z(()=>{x(null)},[P,k]);const W=C=>{L(C),Fe(C)},G=S!=null?M[S]:null;return s`<div class="sf-container">
+  </div>`}function ze(t,e){const l=new Set,n=[],a=(o,r,i)=>{l.has(o)||(l.add(o),n.push({id:o,label:r||o,color:i||"var(--fg2)"}))};a("user","User","var(--green)"),a("tool",e||"AI Tool",Zt[e]||"var(--accent)");for(const o of t){if((o.type==="api_call"||o.type==="api_response"||o.type==="error")&&a("api","API","var(--accent)"),o.type==="tool_use"){const r=o.to||"tool";a("skill:"+r,r,Rt(r))}if(o.type==="subagent"){const r=o.to||"Subagent";a("subagent:"+r,r,Rt(r))}o.type==="hook"&&a("hook","Hooks","var(--orange)")}return n}const is="aictl-pref-session_flow_mode";function Ie(){try{return localStorage.getItem(is)==="swimlane"?"swimlane":"timeline"}catch{return"timeline"}}function Fe(t){try{localStorage.setItem(is,t)}catch{}}function Ne({externalSessionId:t=null}={}){const{globalRange:e,enabledTools:l}=J(Y),{sessions:n,loading:a,error:o,tools:r,toolSessions:i,activeTool:d,setActiveTool:v,activeSessionId:u,setActiveSessionId:g}=ut({globalRange:e,enabledTools:l}),[c,_]=b(null),[p,m]=b(!1),[y,f]=b(null),[S,x]=b(null),[k,L]=b(Ie),E=t!=null,P=E?t:u;z(()=>{if(!P){_(null);return}m(!0);const C=st(n,P),N=C!=null&&C.started_at?C.started_at-60:Date.now()/1e3-86400,K=C!=null&&C.ended_at?C.ended_at+60:Date.now()/1e3+60,w=C?pt(C):[P];St(w,N,K).then(B=>{_(B),m(!1)}).catch(()=>{_(null),m(!1)})},[P,n.length]);const{processedTurns:M,participants:I}=H(()=>{const C=(c==null?void 0:c.turns)||[];if(!C.length)return{processedTurns:[],participants:[]};const N=C.map(A=>{const T={...A};return A.type==="user_message"?(T._from="user",T._to="tool"):A.type==="api_call"?(T._from=A.from||"tool",T._to="api"):A.type==="api_response"||A.type==="error"?(T._from="api",T._to="tool"):A.type==="tool_use"?(T._from="tool",T._to="skill:"+(A.to||"tool")):A.type==="subagent"?(T._from="tool",T._to="subagent:"+(A.to||"agent")):A.type==="hook"&&(T._from="tool",T._to="hook"),T});let K=0,w=0;for(const A of N){const T=A.tokens||{},j=(T.input||0)+(T.output||0);A.type==="user_message"&&(w=0),A.type==="api_call"&&(K+=j,w+=j),A._cumTok=K,A._rtTok=w}const B=ze(N,d);return{processedTurns:N,participants:B}},[c,d]),V=(c==null?void 0:c.summary)||{};z(()=>{x(null)},[P,k]);const W=C=>{L(C),Fe(C)},G=S!=null?M[S]:null;return s`<div class="sf-container">
     ${!E&&s`<${vt} tools=${r} activeTool=${d} onSelect=${v}/>`}
 
     ${!E&&s`<${Ct} sessions=${i} activeId=${u}
@@ -804,8 +804,8 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
                 </div>
                 <div class="sf-seq-time"></div>
                 <div class="sf-seq-arrow-area">
-                  ${I.map((C,N)=>{const J=100/I.length;return s`<div key=${C.id} class="sf-seq-participant"
-                      style="left:${(N+.5)*J}%;color:${C.color}">
+                  ${I.map((C,N)=>{const K=100/I.length;return s`<div key=${C.id} class="sf-seq-participant"
+                      style="left:${(N+.5)*K}%;color:${C.color}">
                       <div class="sf-seq-participant-box" style="border-color:${C.color}">${$(C.label)}</div>
                     </div>`})}
                 </div>
@@ -816,9 +816,9 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
               </div>
             `}
     </div>
-  </div>`}function De({sessions:t,activeId:e,onSelect:l,loading:n,error:a=null}){return n?s`<div class="text-muted" style="padding:var(--sp-3);font-size:var(--fs-sm)">Loading sessions\u2026</div>`:a?s`<div class="error-state" style="padding:var(--sp-3);font-size:var(--fs-sm)">Failed to load sessions${a.message?` (${a.message})`:""}</div>`:t.length?s`<div class="tr-session-list"
+  </div>`}function Be({sessions:t,activeId:e,onSelect:l,loading:n,error:a=null}){return n?s`<div class="text-muted" style="padding:var(--sp-3);font-size:var(--fs-sm)">Loading sessions\u2026</div>`:a?s`<div class="error-state" style="padding:var(--sp-3);font-size:var(--fs-sm)">Failed to load sessions${a.message?` (${a.message})`:""}</div>`:t.length?s`<div class="tr-session-list"
     style="display:flex;gap:var(--sp-2);overflow-x:auto;padding-bottom:var(--sp-3);margin-bottom:var(--sp-4)">
-    ${t.slice(0,20).map(o=>{const r=o.session_id===e,i=o.ended_at?Math.round(o.ended_at-o.started_at):0,d=i>0?F(i*1e3):"⏳ live",v=Y(o.started_at);return s`<button key=${o.session_id}
+    ${t.slice(0,20).map(o=>{const r=o.session_id===e,i=o.ended_at?Math.round(o.ended_at-o.started_at):0,d=i>0?F(i*1e3):"⏳ live",v=X(o.started_at);return s`<button key=${o.session_id}
         class="tr-sess-btn ${r?"tr-sess-active":""}"
         onClick=${()=>l(o.session_id)}
         title=${o.session_id}>
@@ -826,7 +826,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
         <span class="tr-sess-dur">${d}</span>
         ${o.is_live?s`<span class="tr-sess-live">\u25CF</span>`:null}
       </button>`})}
-  </div>`:s`<div class="text-muted" style="padding:var(--sp-3);font-size:var(--fs-sm)">No sessions in range</div>`}function rt(t,e){return t?t.length>e?t.slice(0,e)+"…":t:""}const Be={tool_use:"wrench",api_call:"globe",api_response:"mail",file_edit:"file-pen",compaction:"archive",subagent:"bot",error:"x"},Re={tool_use:"var(--accent)",api_call:"var(--green)",api_response:"var(--fg2)",file_edit:"var(--orange)",compaction:"var(--yellow)",subagent:"var(--accent)",error:"var(--red)"};function je({action:t,turnTs:e}){const l=Be[t.kind],n=Re[t.kind]||"var(--fg2)",a=t.ts-e,o=a>0?"+"+(a<1?a.toFixed(1):Math.round(a))+"s":"",r=t.duration_ms>0?F(t.duration_ms):"",i=t.tokens,d=i?h((i.input||0)+(i.output||0)):"";return s`<div class="tr-action-row">
+  </div>`:s`<div class="text-muted" style="padding:var(--sp-3);font-size:var(--fs-sm)">No sessions in range</div>`}function rt(t,e){return t?t.length>e?t.slice(0,e)+"…":t:""}const De={tool_use:"wrench",api_call:"globe",api_response:"mail",file_edit:"file-pen",compaction:"archive",subagent:"bot",error:"x"},Re={tool_use:"var(--accent)",api_call:"var(--green)",api_response:"var(--fg2)",file_edit:"var(--orange)",compaction:"var(--yellow)",subagent:"var(--accent)",error:"var(--red)"};function je({action:t,turnTs:e}){const l=De[t.kind],n=Re[t.kind]||"var(--fg2)",a=t.ts-e,o=a>0?"+"+(a<1?a.toFixed(1):Math.round(a))+"s":"",r=t.duration_ms>0?F(t.duration_ms):"",i=t.tokens,d=i?h((i.input||0)+(i.output||0)):"";return s`<div class="tr-action-row">
     <span class="tr-action-icon" style="color:${n}">${l?s`<${O} name=${l} size="0.95em"/>`:"•"}</span>
     <span class="tr-action-name" style="color:${n}">${$(t.name||t.kind)}</span>
     ${t.input_summary?s`<span class="tr-action-args">${$(rt(t.input_summary,80))}</span>`:null}
@@ -844,7 +844,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
     <button type="button" class="tr-turn-header" onClick=${n} aria-expanded=${l}>
       <span class="tr-turn-num">${e+1}</span>
       <span class="tr-turn-meta">
-        <span class="tr-turn-time">${Y(t.ts)}</span>
+        <span class="tr-turn-time">${X(t.ts)}</span>
         ${t.model?s`<span class="tr-turn-model">${tt(t.model)}</span>`:null}
         ${p>0?s`<span class="tr-turn-dur">${F(p)}</span>`:null}
       </span>
@@ -905,7 +905,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
     <span class="tr-summary-source">${t.source||""}</span>
   </div>`:null}function Ue(t){if(!t||!t.turns||t.turns.length===0)return!1;const e=t.turns[0];return e.type!=null&&e.actions==null}function Ht(t,e){if(!t||!t.turns)return null;const l=t.turns||[],n=[];let a=null;const o=(i,d)=>{!i||!d||(i.response=i.response?i.response+`
 
-`+d:d,i.response_preview=i.response.slice(0,200))},r={api_call:"api_call",api_response:"api_response",tool_use:"tool_use",subagent:"subagent",error:"error",hook:"tool_use"};for(const i of l)if(i.type==="user_message"){if(a&&n.push(a),a={ts:i.ts,end_ts:i.end_ts||i.ts,prompt:i.message||"",prompt_preview:i.preview||(i.message||"").slice(0,200),response:i.response||"",response_preview:i.response_preview||(i.response||"").slice(0,200),model:i.model||"",tokens:i.tokens||{input:0,output:0,cache_read:0,cache_creation:0,total:0},api_calls:i.api_calls||0,duration_ms:i.duration_ms||0,wall_ms:i.wall_ms||0,actions:[],tool_use_count:0},i.tools&&i.tools.length>0){for(const d of i.tools)a.actions.push({ts:d.ts||i.ts,kind:d.is_agent?"subagent":"tool_use",name:d.name||"",input_summary:d.args_summary||"",duration_ms:d.duration_ms||0});a.tool_use_count=i.tools.length}}else{if(i.type==="session_start"||i.type==="session_end")continue;if(i.type==="compaction")continue;if(a){const d=r[i.type];d&&(a.actions.push({ts:i.ts,kind:d,name:i.model||i.to||i.tool_name||i.hook_name||"",input_summary:i.params||i.decision||"",output_summary:i.response_preview||i.error_message||"",duration_ms:i.duration_ms||0,tokens:i.tokens,success:i.success==="true"?!0:i.success==="false"?!1:void 0,detail:i.response?{response:i.response}:void 0}),d==="api_response"&&o(a,i.response||i.response_preview||""),d==="tool_use"&&a.tool_use_count++,d==="api_call"&&i.tokens&&(a.tokens.input+=i.tokens.input||0,a.tokens.output+=i.tokens.output||0,a.tokens.cache_read+=i.tokens.cache_read||0,a.api_calls++))}else{const d=r[i.type];d&&d!=="api_response"&&(a={ts:i.ts,end_ts:i.ts,prompt:"",prompt_preview:"",response:"",response_preview:"",model:i.model||"",tokens:{input:0,output:0,cache_read:0,cache_creation:0,total:0},api_calls:0,duration_ms:0,wall_ms:0,actions:[],tool_use_count:0},a.actions.push({ts:i.ts,kind:d,name:i.model||i.to||i.tool_name||"",input_summary:i.params||i.decision||"",output_summary:i.response_preview||i.error_message||"",duration_ms:i.duration_ms||0,tokens:i.tokens,success:i.success==="true"?!0:i.success==="false"?!1:void 0,detail:i.response?{response:i.response}:void 0}),d==="api_response"&&o(a,i.response||i.response_preview||""),d==="tool_use"&&a.tool_use_count++,d==="api_call"&&i.tokens&&(a.tokens.input+=i.tokens.input||0,a.tokens.output+=i.tokens.output||0,a.tokens.cache_read+=i.tokens.cache_read||0,a.api_calls++))}}a&&n.push(a);for(const i of n)if(i.tokens.total=(i.tokens.input||0)+(i.tokens.output||0),i.actions.length>0){const d=i.actions[i.actions.length-1];i.end_ts=Math.max(i.end_ts||0,d.ts+(d.duration_ms||0)/1e3)}return{session_id:e,turns:n,summary:t.summary||{},is_live:!1}}function We({externalSessionId:t=null}={}){const{globalRange:e,enabledTools:l}=K(X),{sessions:n,loading:a,error:o,tools:r,toolSessions:i,activeTool:d,setActiveTool:v,activeSessionId:u,setActiveSessionId:g}=ut({globalRange:e,enabledTools:l}),[c,_]=b(null),[p,m]=b(!1),[y,f]=b(new Set),[S,x]=b(!1),[k,L]=b(!0),E=t!=null,P=E?t:u,M=Q(()=>{if(!P){_(null);return}m(!0);const w=st(n,P),D=w?pt(w):[P];Cs(D).then(A=>{Ue(A)?_(Ht(A,P)):_(A),m(!1)}).catch(()=>{const A=w!=null&&w.started_at?w.started_at-60:Date.now()/1e3-86400,T=w!=null&&w.ended_at?w.ended_at+60:Date.now()/1e3+60;St(D,A,T).then(j=>{_(Ht(j,P)),m(!1)}).catch(()=>{_(null),m(!1)})})},[P,n]);z(M,[M]),z(()=>{if(!k||!(c!=null&&c.is_live))return;const w=setInterval(M,5e3);return()=>clearInterval(w)},[k,c==null?void 0:c.is_live,M]);const I=Q(w=>{f(D=>{const A=new Set(D);return A.has(w)?A.delete(w):A.add(w),A})},[]),V=Q(()=>{const w=(c==null?void 0:c.turns)||[];S?(f(new Set),x(!1)):(f(new Set(w.map((D,A)=>A))),x(!0))},[S,c]),W=n.find(w=>w.session_id===P),G=It(W)||It(c),{data:C}=As(()=>Es(),[]),N=((c==null?void 0:c.turns)||[]).filter(w=>w.prompt&&w.prompt.length>0||w.actions&&w.actions.length>0||w.tool_use_count>0||G&&(w.ts||w.tokens)),J=(c==null?void 0:c.summary)||null;return s`<div class="tr-container">
+`+d:d,i.response_preview=i.response.slice(0,200))},r={api_call:"api_call",api_response:"api_response",tool_use:"tool_use",subagent:"subagent",error:"error",hook:"tool_use"};for(const i of l)if(i.type==="user_message"){if(a&&n.push(a),a={ts:i.ts,end_ts:i.end_ts||i.ts,prompt:i.message||"",prompt_preview:i.preview||(i.message||"").slice(0,200),response:i.response||"",response_preview:i.response_preview||(i.response||"").slice(0,200),model:i.model||"",tokens:i.tokens||{input:0,output:0,cache_read:0,cache_creation:0,total:0},api_calls:i.api_calls||0,duration_ms:i.duration_ms||0,wall_ms:i.wall_ms||0,actions:[],tool_use_count:0},i.tools&&i.tools.length>0){for(const d of i.tools)a.actions.push({ts:d.ts||i.ts,kind:d.is_agent?"subagent":"tool_use",name:d.name||"",input_summary:d.args_summary||"",duration_ms:d.duration_ms||0});a.tool_use_count=i.tools.length}}else{if(i.type==="session_start"||i.type==="session_end")continue;if(i.type==="compaction")continue;if(a){const d=r[i.type];d&&(a.actions.push({ts:i.ts,kind:d,name:i.model||i.to||i.tool_name||i.hook_name||"",input_summary:i.params||i.decision||"",output_summary:i.response_preview||i.error_message||"",duration_ms:i.duration_ms||0,tokens:i.tokens,success:i.success==="true"?!0:i.success==="false"?!1:void 0,detail:i.response?{response:i.response}:void 0}),d==="api_response"&&o(a,i.response||i.response_preview||""),d==="tool_use"&&a.tool_use_count++,d==="api_call"&&i.tokens&&(a.tokens.input+=i.tokens.input||0,a.tokens.output+=i.tokens.output||0,a.tokens.cache_read+=i.tokens.cache_read||0,a.api_calls++))}else{const d=r[i.type];d&&d!=="api_response"&&(a={ts:i.ts,end_ts:i.ts,prompt:"",prompt_preview:"",response:"",response_preview:"",model:i.model||"",tokens:{input:0,output:0,cache_read:0,cache_creation:0,total:0},api_calls:0,duration_ms:0,wall_ms:0,actions:[],tool_use_count:0},a.actions.push({ts:i.ts,kind:d,name:i.model||i.to||i.tool_name||"",input_summary:i.params||i.decision||"",output_summary:i.response_preview||i.error_message||"",duration_ms:i.duration_ms||0,tokens:i.tokens,success:i.success==="true"?!0:i.success==="false"?!1:void 0,detail:i.response?{response:i.response}:void 0}),d==="api_response"&&o(a,i.response||i.response_preview||""),d==="tool_use"&&a.tool_use_count++,d==="api_call"&&i.tokens&&(a.tokens.input+=i.tokens.input||0,a.tokens.output+=i.tokens.output||0,a.tokens.cache_read+=i.tokens.cache_read||0,a.api_calls++))}}a&&n.push(a);for(const i of n)if(i.tokens.total=(i.tokens.input||0)+(i.tokens.output||0),i.actions.length>0){const d=i.actions[i.actions.length-1];i.end_ts=Math.max(i.end_ts||0,d.ts+(d.duration_ms||0)/1e3)}return{session_id:e,turns:n,summary:t.summary||{},is_live:!1}}function We({externalSessionId:t=null}={}){const{globalRange:e,enabledTools:l}=J(Y),{sessions:n,loading:a,error:o,tools:r,toolSessions:i,activeTool:d,setActiveTool:v,activeSessionId:u,setActiveSessionId:g}=ut({globalRange:e,enabledTools:l}),[c,_]=b(null),[p,m]=b(!1),[y,f]=b(new Set),[S,x]=b(!1),[k,L]=b(!0),E=t!=null,P=E?t:u,M=Q(()=>{if(!P){_(null);return}m(!0);const w=st(n,P),B=w?pt(w):[P];ks(B).then(A=>{Ue(A)?_(Ht(A,P)):_(A),m(!1)}).catch(()=>{const A=w!=null&&w.started_at?w.started_at-60:Date.now()/1e3-86400,T=w!=null&&w.ended_at?w.ended_at+60:Date.now()/1e3+60;St(B,A,T).then(j=>{_(Ht(j,P)),m(!1)}).catch(()=>{_(null),m(!1)})})},[P,n]);z(M,[M]),z(()=>{if(!k||!(c!=null&&c.is_live))return;const w=setInterval(M,5e3);return()=>clearInterval(w)},[k,c==null?void 0:c.is_live,M]);const I=Q(w=>{f(B=>{const A=new Set(B);return A.has(w)?A.delete(w):A.add(w),A})},[]),V=Q(()=>{const w=(c==null?void 0:c.turns)||[];S?(f(new Set),x(!1)):(f(new Set(w.map((B,A)=>A))),x(!0))},[S,c]),W=n.find(w=>w.session_id===P),G=It(W)||It(c),{data:C}=Ps(()=>ws(),[]),N=((c==null?void 0:c.turns)||[]).filter(w=>w.prompt&&w.prompt.length>0||w.actions&&w.actions.length>0||w.tool_use_count>0||G&&(w.ts||w.tokens)),K=(c==null?void 0:c.summary)||null;return s`<div class="tr-container">
     <div class="tr-header">
       <h3 class="tr-title">Session Transcript</h3>
       <div class="tr-controls">
@@ -924,10 +924,10 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
 
     ${!E&&r.length>1&&s`<${vt} tools=${r} activeTool=${d} onSelect=${v}/>`}
 
-    ${!E&&s`<${De} sessions=${i} activeId=${u}
+    ${!E&&s`<${Be} sessions=${i} activeId=${u}
       onSelect=${g} loading=${a} error=${o}/>`}
 
-    <${Ve} summary=${J} transcript=${c}/>
+    <${Ve} summary=${K} transcript=${c}/>
 
     ${G&&s`<${as} mode=${C==null?void 0:C.capture_mode}/>`}
 
@@ -937,12 +937,12 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
               <p class="text-muted" style="margin-top:var(--sp-3);font-size:var(--fs-xs)">
                 No prompt or tool events were captured for this session.
               </p>
-            </div>`:N.map((w,D)=>s`<${He}
-              key=${D} turn=${w} index=${D} withheld=${G}
-              expanded=${y.has(D)}
-              onToggle=${()=>I(D)}/>`)}
+            </div>`:N.map((w,B)=>s`<${He}
+              key=${B} turn=${w} index=${B} withheld=${G}
+              expanded=${y.has(B)}
+              onToggle=${()=>I(B)}/>`)}
     </div>
-  </div>`}const Vt={Bash:"#6b7280",Read:"#60a5fa",Edit:"#34d399",Write:"#22d3ee",Grep:"#fbbf24",Glob:"#a78bfa",Agent:"#f472b6",Prompt:"var(--green)",Compaction:"var(--yellow)",Error:"var(--red)"};function dt(t){return t?Vt[t]?Vt[t]:ts(t):"var(--fg2)"}function wt(t){return t?new Date(t*1e3).toLocaleString([],{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",second:"2-digit"}):""}function Ut(t){return t<60?Math.round(t)+"s":t<3600?Math.round(t/60)+"m":t<86400?(t/3600).toFixed(1)+"h":(t/86400).toFixed(1)+"d"}function At(t){const e=t.tokens||{};return(e.input||0)+(e.output||0)}function Et(t){const e=t.tokens||{};return(e.cache_read||0)+(e.cache_creation||0)}function Ge(t){return At(t)+Et(t)}function Wt(t,e){return e==="fresh"?At(t):e==="cached"?Et(t):Ge(t)}function ct(t){return t.type==="user_message"?"Prompt":t.type==="api_call"||t.type==="api_response"?t.model||"API":t.type==="tool_use"?t.to||t.name||"Tool":t.type==="subagent"?t.to||"Agent":t.type==="compaction"?"Compaction":t.type==="error"?"Error":t.type==="hook"?t.hook_name||"Hook":t.type||"?"}function Je({bar:t,x:e,y:l}){if(!t)return null;const n=t,a=n.tokens||{},o=ct(n);return s`<div class="tc-tooltip" style="left:${e}px;top:${l}px">
+  </div>`}const Vt={Bash:"#6b7280",Read:"#60a5fa",Edit:"#34d399",Write:"#22d3ee",Grep:"#fbbf24",Glob:"#a78bfa",Agent:"#f472b6",Prompt:"var(--green)",Compaction:"var(--yellow)",Error:"var(--red)"};function dt(t){return t?Vt[t]?Vt[t]:ss(t):"var(--fg2)"}function wt(t){return t?new Date(t*1e3).toLocaleString([],{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",second:"2-digit"}):""}function Ut(t){return t<60?Math.round(t)+"s":t<3600?Math.round(t/60)+"m":t<86400?(t/3600).toFixed(1)+"h":(t/86400).toFixed(1)+"d"}function At(t){const e=t.tokens||{};return(e.input||0)+(e.output||0)}function Et(t){const e=t.tokens||{};return(e.cache_read||0)+(e.cache_creation||0)}function Ge(t){return At(t)+Et(t)}function Wt(t,e){return e==="fresh"?At(t):e==="cached"?Et(t):Ge(t)}function ct(t){return t.type==="user_message"?"Prompt":t.type==="api_call"||t.type==="api_response"?t.model||"API":t.type==="tool_use"?t.to||t.name||"Tool":t.type==="subagent"?t.to||"Agent":t.type==="compaction"?"Compaction":t.type==="error"?"Error":t.type==="hook"?t.hook_name||"Hook":t.type||"?"}function Ke({bar:t,x:e,y:l}){if(!t)return null;const n=t,a=n.tokens||{},o=ct(n);return s`<div class="tc-tooltip" style="left:${e}px;top:${l}px">
     <div style="font-weight:600;margin-bottom:4px;display:flex;align-items:center;gap:6px">
       <span class="tc-legend-swatch" style="background:${dt(o)}"></span>
       ${$(o)}
@@ -975,7 +975,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
       <div class="tc-tip-row"><span class="tc-tip-label">Count</span><span>#${n.compaction_count||""}</span></div>`}
     ${n.agent_name&&s`
       <div class="tc-tip-row"><span class="tc-tip-label">Agent</span><span>${n.agent_name}</span></div>`}
-  </div>`}function Ke({summary:t}){if(!t||!t.total_tokens)return null;const e=[["Prompts",t.total_turns],["API Calls",t.total_api_calls],["Tools",t.total_tool_uses],["Tokens",h(t.total_tokens)],["Duration",U(t.duration_s)]].filter(([,l])=>l);return s`<div class="tc-summary">
+  </div>`}function Je({summary:t}){if(!t||!t.total_tokens)return null;const e=[["Prompts",t.total_turns],["API Calls",t.total_api_calls],["Tools",t.total_tool_uses],["Tokens",h(t.total_tokens)],["Duration",U(t.duration_s)]].filter(([,l])=>l);return s`<div class="tc-summary">
     ${e.map(([l,n])=>s`<div class="tc-summary-item">
       <div class="tc-summary-val">${n}</div>
       <div class="tc-summary-label">${l}</div>
@@ -1008,7 +1008,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
           <div class="tc-flow-time">${Ut(v.gap)}</div>
         </div>`}const g=v.bar,c=Wt(g,e),_=o>0?Math.max(.08,Math.log1p(c)/Math.log1p(o)):.08,p=Math.max(6,_*ot),m=ct(g),y=dt(m),f=At(g),S=Et(g),x=f+S;let k,L;e==="cached"?(k=0,L=100):e==="fresh"?(k=100,L=0):x>0?(k=Math.round(f/x*100),L=100-k):(k=100,L=0);const E=L>0,P=d.has(u);return s`<div key=${u} class="tc-flow-slot" style="height:${Gt}px"
         tabindex="0" role="img"
-        aria-label=${m+" at "+bt(g.ts)+", "+h(c)+" tokens"}
+        aria-label=${m+" at "+xt(g.ts)+", "+h(c)+" tokens"}
         onMouseEnter=${M=>l(g,M)}
         onMouseLeave=${n}
         onFocus=${M=>{const I=M.currentTarget.getBoundingClientRect();l(g,{clientX:I.left+I.width/2,clientY:I.top})}}
@@ -1021,13 +1021,13 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
               <div class="tc-fill-cached" style="height:${k>0?L:100}%"></div>`}
           </div>
         </div>
-        <div class="tc-flow-time">${P?bt(g.ts):""}</div>
+        <div class="tc-flow-time">${P?xt(g.ts):""}</div>
       </div>`})}
-  </div>`}function ea({externalSessionId:t=null}={}){const{globalRange:e,enabledTools:l}=K(X),{sessions:n,loading:a,error:o,tools:r,toolSessions:i,activeTool:d,setActiveTool:v,activeSessionId:u,setActiveSessionId:g}=ut({globalRange:e,enabledTools:l}),[c,_]=b(null),[p,m]=b(!1),[y,f]=b(null),[S,x]=b(null),[k,L]=b("all"),E=ss(null),P=t!=null,M=P?t:u;z(()=>{if(!M){_(null);return}m(!0);const T=st(n,M),j=T!=null&&T.started_at?T.started_at-60:Date.now()/1e3-86400,q=T!=null&&T.ended_at?T.ended_at+60:Date.now()/1e3+60,Z=T?pt(T):[M];St(Z,j,q).then(mt=>{_(mt),m(!1),x(null)}).catch(()=>{_(null),m(!1)})},[M,n.length]);const{allBars:I,allEntities:V}=H(()=>{const j=((c==null?void 0:c.turns)||[]).filter(Z=>["user_message","api_call","api_response","tool_use","compaction","subagent","error","hook"].includes(Z.type)),q=new Set;for(const Z of j)q.add(ct(Z));return{allBars:j,allEntities:[...q].sort()}},[c]),W=S||new Set(V),G=H(()=>I.filter(T=>W.has(ct(T))),[I,W]),C=Q(T=>{x(j=>{const q=new Set(j||V);return q.has(T)?q.delete(T):q.add(T),q})},[V]),N=Q(()=>x(null),[]),J=Q(()=>x(new Set),[]),w=Q((T,j)=>{var Mt;const q=(Mt=E.current)==null?void 0:Mt.getBoundingClientRect();if(!q)return;const Z=Math.min(j.clientX-q.left+12,q.width-320),mt=j.clientY-q.top+12;f({bar:T,x:Z,y:mt})},[]),D=Q(()=>f(null),[]),A=(c==null?void 0:c.summary)||{};return s`<div class="tc-container" ref=${E}>
+  </div>`}function ea({externalSessionId:t=null}={}){const{globalRange:e,enabledTools:l}=J(Y),{sessions:n,loading:a,error:o,tools:r,toolSessions:i,activeTool:d,setActiveTool:v,activeSessionId:u,setActiveSessionId:g}=ut({globalRange:e,enabledTools:l}),[c,_]=b(null),[p,m]=b(!1),[y,f]=b(null),[S,x]=b(null),[k,L]=b("all"),E=Kt(null),P=t!=null,M=P?t:u;z(()=>{if(!M){_(null);return}m(!0);const T=st(n,M),j=T!=null&&T.started_at?T.started_at-60:Date.now()/1e3-86400,q=T!=null&&T.ended_at?T.ended_at+60:Date.now()/1e3+60,Z=T?pt(T):[M];St(Z,j,q).then(mt=>{_(mt),m(!1),x(null)}).catch(()=>{_(null),m(!1)})},[M,n.length]);const{allBars:I,allEntities:V}=H(()=>{const j=((c==null?void 0:c.turns)||[]).filter(Z=>["user_message","api_call","api_response","tool_use","compaction","subagent","error","hook"].includes(Z.type)),q=new Set;for(const Z of j)q.add(ct(Z));return{allBars:j,allEntities:[...q].sort()}},[c]),W=S||new Set(V),G=H(()=>I.filter(T=>W.has(ct(T))),[I,W]),C=Q(T=>{x(j=>{const q=new Set(j||V);return q.has(T)?q.delete(T):q.add(T),q})},[V]),N=Q(()=>x(null),[]),K=Q(()=>x(new Set),[]),w=Q((T,j)=>{var Mt;const q=(Mt=E.current)==null?void 0:Mt.getBoundingClientRect();if(!q)return;const Z=Math.min(j.clientX-q.left+12,q.width-320),mt=j.clientY-q.top+12;f({bar:T,x:Z,y:mt})},[]),B=Q(()=>f(null),[]),A=(c==null?void 0:c.summary)||{};return s`<div class="tc-container" ref=${E}>
     ${!P&&s`<${vt} tools=${r} activeTool=${d} onSelect=${v}/>`}
     ${!P&&s`<${Ct} sessions=${i} activeId=${u}
       onSelect=${g} loading=${a} error=${o}/>`}
-    <${Ke} summary=${A}/>
+    <${Je} summary=${A}/>
 
     ${p?s`<div class="loading-state" style="padding:var(--sp-8)">Loading timeline...</div>`:I.length===0?s`<div class="empty-state" style="padding:var(--sp-8)">
             <p>No timeline data for this session.</p>
@@ -1038,12 +1038,12 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
           </div>`:s`
           <div class="tc-controls">
             <${Ze} entities=${V} selected=${W}
-              onToggle=${C} onAll=${N} onNone=${J}/>
+              onToggle=${C} onAll=${N} onNone=${K}/>
             <${ta} mode=${k} onChange=${L}/>
           </div>
           <${sa} bars=${G} tokenMode=${k}
-            onHover=${w} onLeave=${D}/>
-          ${y&&s`<${Je} bar=${y.bar} x=${y.x} y=${y.y}/>`}
+            onHover=${w} onLeave=${B}/>
+          ${y&&s`<${Ke} bar=${y.bar} x=${y.x} y=${y.y}/>`}
         `}
   </div>`}function aa(t){return t?new Date(t*1e3).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"}):"-"}function na(t,e=140){if(t==null)return"";let l;try{l=typeof t=="string"?t:JSON.stringify(t)}catch{l=String(t)}return l.length<=e?l:l.slice(0,e)+"..."}function oa(t){try{return JSON.stringify(t??{},null,2)}catch{return String(t??"")}}function ia({sessionId:t,since:e,until:l}){const[n,a]=b(()=>new Set),{data:o,loading:r,error:i}=R(()=>es(t,{since:e,until:l,limit:500}).then(u=>{const g=Array.isArray(u)?u:[];return g.sort((c,_)=>(_.ts||0)-(c.ts||0)),g}),[t,e,l],{enabled:!!t}),d=H(()=>(o||[]).map((u,g)=>{const c=String(u.kind||""),_=/permission|error|fail/i.test(c);return{key:`${u.ts||0}:${u.kind||""}:${u.tool||""}:${g}`,time:aa(u.ts),kind:c,tool:u.tool||"-",preview:na(u.detail),detailText:oa(u.detail),isWarn:_}}),[o]),v=u=>{a(g=>{const c=new Set(g);return c.has(u)?c.delete(u):c.add(u),c})};return t?r?s`<p class="empty-state">Loading events...</p>`:i?s`<p class="error-state">Error: ${(i==null?void 0:i.message)||"Failed to load events"}</p>`:d.length?s`<div class="es-events-wrap">
     <table class="es-events-table" aria-label="Session events">
@@ -1080,10 +1080,10 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
         `)}
       </tbody>
     </table>
-  </div>`:s`<p class="empty-state">No events for this session in the selected range.</p>`:s`<p class="empty-state">Select a session to view events.</p>`}const la=28;function ra(t,e=60){if(!t||!t.length)return[[],[]];const l=new Map;for(const o of t){if(!o||o.ts==null)continue;const r=Math.floor(o.ts/e)*e;l.set(r,(l.get(r)||0)+(o.value??0))}const n=[...l.keys()].sort((o,r)=>o-r),a=n.map(o=>l.get(o));return[n,a]}async function gt(t,e){const l=e.started_at;if(!l)return[[],[]];const n=e.ended_at,a=await Pt(t,{since:l,limit:500,tags:{session_id:e.session_id}});let o=Array.isArray(a)?a:[];if(!o.length&&e.tool){const d=await Pt(t,{since:l,limit:500,tags:{"aictl.tool":e.tool}});o=Array.isArray(d)?d:[]}n&&(o=o.filter(d=>d.ts!=null&&d.ts<=n));const r=o.map(d=>d.ts),i=o.map(d=>d.value??0);return[r,i]}async function da(t){if(!t.started_at)return[[],[]];const e=await es(t.session_id,{since:t.started_at,until:t.ended_at??void 0,limit:1e3}),l=Array.isArray(e)?e:[],n=[];for(const a of l){if(!a||a.ts==null||!String(a.kind||"").includes("api_request"))continue;const r=a.detail&&typeof a.detail=="object"?a.detail:{},i=Number(r.input_tokens??r["gen_ai.usage.input_tokens"]??0)||0,d=Number(r.output_tokens??r["gen_ai.usage.output_tokens"]??0)||0;n.push({ts:a.ts,value:i+d})}return ra(n,60)}function nt({label:t,data:e,color:l,fmtVal:n,loading:a,error:o}){const r=e&&e[0]&&e[0].length>=2;return s`<div class="session-spark" title=${t}>
+  </div>`:s`<p class="empty-state">No events for this session in the selected range.</p>`:s`<p class="empty-state">Select a session to view events.</p>`}const la=28;function ra(t,e=60){if(!t||!t.length)return[[],[]];const l=new Map;for(const o of t){if(!o||o.ts==null)continue;const r=Math.floor(o.ts/e)*e;l.set(r,(l.get(r)||0)+(o.value??0))}const n=[...l.keys()].sort((o,r)=>o-r),a=n.map(o=>l.get(o));return[n,a]}async function gt(t,e){const l=e.started_at;if(!l)return[[],[]];const n=e.ended_at,a=await Lt(t,{since:l,limit:500,tags:{session_id:e.session_id}});let o=Array.isArray(a)?a:[];if(!o.length&&e.tool){const d=await Lt(t,{since:l,limit:500,tags:{"aictl.tool":e.tool}});o=Array.isArray(d)?d:[]}n&&(o=o.filter(d=>d.ts!=null&&d.ts<=n));const r=o.map(d=>d.ts),i=o.map(d=>d.value??0);return[r,i]}async function da(t){if(!t.started_at)return[[],[]];const e=await es(t.session_id,{since:t.started_at,until:t.ended_at??void 0,limit:1e3}),l=Array.isArray(e)?e:[],n=[];for(const a of l){if(!a||a.ts==null||!String(a.kind||"").includes("api_request"))continue;const r=a.detail&&typeof a.detail=="object"?a.detail:{},i=Number(r.input_tokens??r["gen_ai.usage.input_tokens"]??0)||0,d=Number(r.output_tokens??r["gen_ai.usage.output_tokens"]??0)||0;n.push({ts:a.ts,value:i+d})}return ra(n,60)}function nt({label:t,data:e,color:l,fmtVal:n,loading:a,error:o}){const r=e&&e[0]&&e[0].length>=2;return s`<div class="session-spark" title=${t}>
     <div class="session-spark-label">${t}</div>
     <div class="session-spark-chart">
-      ${a?s`<span class="text-muted text-xs">\u2026</span>`:o?s`<span class="text-muted text-xs" title=${o}>\u2014</span>`:r?s`<${Ms} data=${e} color=${l}
+      ${a?s`<span class="text-muted text-xs">\u2026</span>`:o?s`<span class="text-muted text-xs" title=${o}>\u2014</span>`:r?s`<${Ls} data=${e} color=${l}
                 height=${la} fmtVal=${n}
                 ariaLabel=${t+" sparkline"}/>`:s`<span class="text-muted text-xs">no data</span>`}
     </div>
@@ -1105,7 +1105,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
         aria-label=${t+" "+(o.dir==="flat"?"unchanged":o.dir==="up"?"up":"down")+" "+d}>
       ${i} ${d}
     </span>
-  </div>`}function ua({sessionId:t,project:e,tool:l,currentDurationS:n=0,currentTokens:a=0,currentFileChurn:o=0}){const[r,i]=b(null);if(z(()=>{if(!e||!l){i(null);return}let c=!1;return Kt(e,l,30,20).then(_=>{c||i(Array.isArray(_)?_:[])}).catch(()=>{c||i([])}),()=>{c=!0}},[e,l]),!e||!l||r===null)return null;const d=r.filter(c=>c.session_id!==t).slice(0,5);if(d.length<2)return s`<div class="run-trend-strip run-trend-empty"
+  </div>`}function ua({sessionId:t,project:e,tool:l,currentDurationS:n=0,currentTokens:a=0,currentFileChurn:o=0}){const[r,i]=b(null);if(z(()=>{if(!e||!l){i(null);return}let c=!1;return Xt(e,l,30,20).then(_=>{c||i(Array.isArray(_)?_:[])}).catch(()=>{c||i([])}),()=>{c=!0}},[e,l]),!e||!l||r===null)return null;const d=r.filter(c=>c.session_id!==t).slice(0,5);if(d.length<2)return s`<div class="run-trend-strip run-trend-empty"
         role="group" aria-label="Run trend (not enough history)">
       <span class="run-trend-label">Run trend</span>
       <span class="run-trend-empty-msg">Not enough prior runs for comparison (need ≥2).</span>
@@ -1123,7 +1123,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
     <${yt} label="Files" value=${o}
       formatted=${String(o)} med=${g}
       fmt=${c=>String(Math.round(c))}/>
-  </div>`}const _t=20;function va({session:t}){const[e,l]=b(!1),[n,a]=b(null),[o,r]=b(!1),[i,d]=b(null),v=ss(null),u=t&&t.commit_count?t.commit_count:n?n.commits.length:0;if(z(()=>{if(!e)return;const c=p=>{v.current&&!v.current.contains(p.target)&&l(!1)},_=p=>{p.key==="Escape"&&l(!1)};return document.addEventListener("mousedown",c),document.addEventListener("keydown",_),()=>{document.removeEventListener("mousedown",c),document.removeEventListener("keydown",_)}},[e]),z(()=>{!e||n||o||!t||!t.session_id||(r(!0),Ps(t.session_id).then(c=>{a(c&&c.commits?c:{commits:[],branch:""}),r(!1)}).catch(c=>{d(String(c)),r(!1)}))},[e,n,o,t]),!t||!u||!t.project)return null;const g=u===1?"1 commit":u+" commits";return s`<span ref=${v} class="scb-root" style="position:relative">
+  </div>`}const _t=20;function va({session:t}){const[e,l]=b(!1),[n,a]=b(null),[o,r]=b(!1),[i,d]=b(null),v=Kt(null),u=t&&t.commit_count?t.commit_count:n?n.commits.length:0;if(z(()=>{if(!e)return;const c=p=>{v.current&&!v.current.contains(p.target)&&l(!1)},_=p=>{p.key==="Escape"&&l(!1)};return document.addEventListener("mousedown",c),document.addEventListener("keydown",_),()=>{document.removeEventListener("mousedown",c),document.removeEventListener("keydown",_)}},[e]),z(()=>{!e||n||o||!t||!t.session_id||(r(!0),Ts(t.session_id).then(c=>{a(c&&c.commits?c:{commits:[],branch:""}),r(!1)}).catch(c=>{d(String(c)),r(!1)}))},[e,n,o,t]),!t||!u||!t.project)return null;const g=u===1?"1 commit":u+" commits";return s`<span ref=${v} class="scb-root" style="position:relative">
     <button type="button"
       class="badge text-xs"
       aria-expanded=${e}
@@ -1164,7 +1164,7 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
       style="flex:1 1 auto;min-width:0">${$(t.subject||"(no subject)")}</span>
     ${l&&s`<span class="text-muted text-xs"
       style="flex:0 0 auto;font-style:italic">not on ${$(e)}</span>`}
-  </li>`}const $a=[{id:"overview",label:"Overview",hint:"Metrics, actions, context, memory"},{id:"flow",label:"Flow",hint:"Sequence of messages & tool calls"},{id:"transcript",label:"Transcript",hint:"Readable prompts & replies"},{id:"timeline",label:"Timeline",hint:"Activity bar chart over time"},{id:"events",label:"Events",hint:"Raw session event stream"}];function ga({session:t}){if(!t)return null;const e=Yt(t.tool),l=t.exact_input_tokens||t.input_tokens||0,n=t.exact_output_tokens||t.output_tokens||0,a=l+n,o=t.duration_s||(t.ended_at&&t.started_at?t.ended_at-t.started_at:0),r=!t.ended_at,i=t.project?Zt(t.project):"",d=t.started_at?new Date(t.started_at*1e3).toLocaleString([],{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}):"";return s`<div class="explorer-session-header" style="border-left:3px solid ${e}">
+  </li>`}const $a=[{id:"overview",label:"Overview",hint:"Metrics, actions, context, memory"},{id:"flow",label:"Flow",hint:"Sequence of messages & tool calls"},{id:"transcript",label:"Transcript",hint:"Readable prompts & replies"},{id:"timeline",label:"Timeline",hint:"Activity bar chart over time"},{id:"events",label:"Events",hint:"Raw session event stream"}];function ga({session:t}){if(!t)return null;const e=Qt(t.tool),l=t.exact_input_tokens||t.input_tokens||0,n=t.exact_output_tokens||t.output_tokens||0,a=l+n,o=t.duration_s||(t.ended_at&&t.started_at?t.ended_at-t.started_at:0),r=!t.ended_at,i=t.project?ts(t.project):"",d=t.started_at?new Date(t.started_at*1e3).toLocaleString([],{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}):"";return s`<div class="explorer-session-header" style="border-left:3px solid ${e}">
     <div class="flex-row gap-md" style="align-items:baseline;flex-wrap:wrap">
       <strong style="font-size:var(--fs-lg)" title=${t.tool}><span style=${"color:"+e} aria-hidden="true">\u25CF </span>${$(Tt(t.tool))}</strong>
       ${i&&s`<span class="text-muted text-xs mono text-ellipsis"
@@ -1195,8 +1195,8 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
         title=${t.session_id}>${$(t.session_id)}</span>
     </div>
     <${ca} session=${t}/>
-  </div>`}function xa(){const{globalRange:t,enabledTools:e,snap:l}=K(X),[n,a]=b(()=>{try{return localStorage.getItem("aictl-explorer-view")||"overview"}catch{return"overview"}}),[o,r]=b(()=>Ls()),{sessions:i,loading:d,error:v,tools:u,toolSessions:g,activeTool:c,setActiveTool:_,activeSessionId:p,setActiveSessionId:m}=ut({globalRange:t,enabledTools:e,requestedSession:o,onRequestApplied:()=>r(null)}),y=x=>{a(x);try{localStorage.setItem("aictl-explorer-view",x)}catch{}};z(()=>{const x=k=>{const L=k==null?void 0:k.detail;L!=null&&L.sessionId&&(r(L),Is())};return document.addEventListener("aictl:select-session",x),()=>document.removeEventListener("aictl:select-session",x)},[]),z(()=>{p&&(Fs(p,c),Lt({session:p}))},[p,c]),z(()=>()=>Lt({session:null}),[]);const f=i.find(x=>x.session_id===p),S=!d&&Ot?Ot():0;return!d&&!v&&u.length===0&&Os(e)?s`<div class="explorer-container">
-      <${zs} enabledTools=${e} snap=${l} what="sessions in this time range"/>
+  </div>`}function ka(){const{globalRange:t,enabledTools:e,snap:l}=J(Y),[n,a]=b(()=>{try{return localStorage.getItem("aictl-explorer-view")||"overview"}catch{return"overview"}}),[o,r]=b(()=>zs()),{sessions:i,loading:d,error:v,tools:u,toolSessions:g,activeTool:c,setActiveTool:_,activeSessionId:p,setActiveSessionId:m}=ut({globalRange:t,enabledTools:e,requestedSession:o,onRequestApplied:()=>r(null)}),y=x=>{a(x);try{localStorage.setItem("aictl-explorer-view",x)}catch{}};z(()=>{const x=k=>{const L=k==null?void 0:k.detail;L!=null&&L.sessionId&&(r(L),Is())};return document.addEventListener("aictl:select-session",x),()=>document.removeEventListener("aictl:select-session",x)},[]),z(()=>{p&&(Fs(p,c),Pt({session:p}))},[p,c]),z(()=>()=>Pt({session:null}),[]);const f=i.find(x=>x.session_id===p),S=!d&&Ot?Ot():0;return!d&&!v&&u.length===0&&Ss(e)?s`<div class="explorer-container">
+      <${Os} enabledTools=${e} snap=${l} what="sessions in this time range"/>
     </div>`:s`<div class="explorer-container">
     <div class="explorer-picker">
       <${vt} tools=${u} activeTool=${c} onSelect=${_}/>
@@ -1242,4 +1242,4 @@ import{x as K,S as X,d as b,T as H,y as z,ac as ls,ad as rs,ae as ds,af as st,a0
             </p>`}
           </div>`}
     </div>
-  </div>`}export{ga as SessionHeader,xa as default};
+  </div>`}export{ga as SessionHeader,ka as default};

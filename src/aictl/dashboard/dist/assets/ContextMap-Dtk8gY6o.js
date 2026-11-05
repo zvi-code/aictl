@@ -1,4 +1,4 @@
-import{x as O,S,d as I,T as A,z as D,m as c,w as L,b as p,p as W,e as B,E as _}from"./index-DsPuVcci.js";const j={instructions:"var(--accent)",config:"var(--yellow)",rules:"var(--orange)",commands:"var(--cat-commands)",skills:"var(--cat-skills)",agent:"var(--cat-agent)",memory:"var(--cat-memory)",prompt:"var(--cat-prompt)",transcript:"var(--fg2)",temp:"var(--cat-temp)",runtime:"var(--cat-runtime)",credentials:"var(--red)",extensions:"var(--cat-extensions)"},N=["project","global","shadow","session","external"],P=["#4dc9f6","#f67019","#f53794","#537bc4","#acc236","#166a8f","#00a950","#8549ba","#e6194b","#3cb44b","#ffe119","#4363d8","#f58231","#42d4f4","#fabed4"];function R(b,k){const n=_(b),g=_(k);if(!n)return"(unknown)";if(g&&n.startsWith(g+"/")){const r=n.slice(g.length+1).split("/")[0];return r.startsWith(".")?"(root)":r}return n.includes("/.claude/projects/")?"(shadow)":n.includes("/.claude/")||n.includes("/.config/")||n.includes("/Library/")||n.includes("/AppData/")?"(global)":"(other)"}function K(b){if(!b)return"unknown";const k=_(b).split("/"),n=k.pop()||"unknown",g=n.lastIndexOf("."),r=g>0?n.slice(0,g):n;if(/^(SKILL|skill|index|INDEX|README|readme)$/.test(r)){const T=k.pop();if(T)return T}return r}function F(){const{snap:b,enabledTools:k=null}=O(S),[n,g]=I(null),r=A(()=>{if(!b)return null;const t=b.tools.filter(s=>s.tool!=="aictl"&&s.tool!=="any");if(!t.length)return null;const i=b.root||"",o={},d={},e={},v={yes:0,"on-demand":0,conditional:0,no:0};let y=0;for(const s of t)for(const l of s.files||[]){const a=l.kind||"other",$=l.scope||"external",z=(l.sent_to_llm||"no").toLowerCase(),x=l.tokens||0,u=R(l.path,i),C=K(l.path);o[a]||(o[a]={tokens:0,files:0,projects:{}}),o[a].tokens+=x,o[a].files+=1,o[a].projects[u]||(o[a].projects[u]={tokens:0,count:0}),o[a].projects[u].tokens+=x,o[a].projects[u].count+=1,e[u]||(e[u]={tokens:0,count:0,cats:{}}),e[u].tokens+=x,e[u].count+=1,e[u].cats[a]||(e[u].cats[a]={tokens:0,count:0,items:{}}),e[u].cats[a].tokens+=x,e[u].cats[a].count+=1,e[u].cats[a].items[C]||(e[u].cats[a].items[C]=0),e[u].cats[a].items[C]+=x,d[$]||(d[$]={tokens:0,files:0}),d[$].tokens+=x,d[$].files+=1,v[z]!==void 0?v[z]+=x:v.no+=x,y+=x}const h=Object.entries(o).sort((s,l)=>l[1].tokens-s[1].tokens),w=N.filter(s=>d[s]).map(s=>[s,d[s]]),f=Object.entries(e).sort((s,l)=>l[1].tokens-s[1].tokens),m=t.map(s=>{const l=s.files||[];return{tool:s.tool,label:s.label,tokens:l.reduce((a,$)=>a+$.tokens,0),files:l.length,sentYes:l.filter(a=>(a.sent_to_llm||"").toLowerCase()==="yes").reduce((a,$)=>a+$.tokens,0)}}).filter(s=>s.tokens>0).sort((s,l)=>l.tokens-s.tokens).slice(0,8);return{cats:h,scopes:w,byPolicy:v,totalTokens:y,perTool:m,byCat:o,byProj:e,projList:f}},[b]),T=c`<${D} enabledTools=${k} snap=${b} what="the context map"/>`;if(!r)return L(k)?T:c`<p class="empty-state">No file data available.</p>`;if(!r.totalTokens)return L(k)?T:c`<p class="empty-state">No token data collected yet.</p>`;const M=Math.max(...r.cats.map(([,t])=>t.tokens),1),E=(t,i)=>t>0?Math.max(2,Math.log10(t+1)/Math.log10(i+1)*100):0;return c`<div class="diag-card" role="region" aria-label="Context window map">
+import{x as O,d as S,T as I,m as c}from"./index-dIry8dud.js";import{S as A,a as D,T as W}from"./app-B2MyVrfP.js";import{L as z,r as p,v as B,ao as _}from"./useSse-BQ6ZdC23.js";const j={instructions:"var(--accent)",config:"var(--yellow)",rules:"var(--orange)",commands:"var(--cat-commands)",skills:"var(--cat-skills)",agent:"var(--cat-agent)",memory:"var(--cat-memory)",prompt:"var(--cat-prompt)",transcript:"var(--fg2)",temp:"var(--cat-temp)",runtime:"var(--cat-runtime)",credentials:"var(--red)",extensions:"var(--cat-extensions)"},N=["project","global","shadow","session","external"],P=["#4dc9f6","#f67019","#f53794","#537bc4","#acc236","#166a8f","#00a950","#8549ba","#e6194b","#3cb44b","#ffe119","#4363d8","#f58231","#42d4f4","#fabed4"];function R(b,k){const n=_(b),m=_(k);if(!n)return"(unknown)";if(m&&n.startsWith(m+"/")){const r=n.slice(m.length+1).split("/")[0];return r.startsWith(".")?"(root)":r}return n.includes("/.claude/projects/")?"(shadow)":n.includes("/.claude/")||n.includes("/.config/")||n.includes("/Library/")||n.includes("/AppData/")?"(global)":"(other)"}function K(b){if(!b)return"unknown";const k=_(b).split("/"),n=k.pop()||"unknown",m=n.lastIndexOf("."),r=m>0?n.slice(0,m):n;if(/^(SKILL|skill|index|INDEX|README|readme)$/.test(r)){const T=k.pop();if(T)return T}return r}function q(){const{snap:b,enabledTools:k=null}=O(A),[n,m]=S(null),r=I(()=>{if(!b)return null;const t=b.tools.filter(s=>s.tool!=="aictl"&&s.tool!=="any");if(!t.length)return null;const i=b.root||"",o={},d={},e={},v={yes:0,"on-demand":0,conditional:0,no:0};let y=0;for(const s of t)for(const l of s.files||[]){const a=l.kind||"other",$=l.scope||"external",L=(l.sent_to_llm||"no").toLowerCase(),x=l.tokens||0,u=R(l.path,i),C=K(l.path);o[a]||(o[a]={tokens:0,files:0,projects:{}}),o[a].tokens+=x,o[a].files+=1,o[a].projects[u]||(o[a].projects[u]={tokens:0,count:0}),o[a].projects[u].tokens+=x,o[a].projects[u].count+=1,e[u]||(e[u]={tokens:0,count:0,cats:{}}),e[u].tokens+=x,e[u].count+=1,e[u].cats[a]||(e[u].cats[a]={tokens:0,count:0,items:{}}),e[u].cats[a].tokens+=x,e[u].cats[a].count+=1,e[u].cats[a].items[C]||(e[u].cats[a].items[C]=0),e[u].cats[a].items[C]+=x,d[$]||(d[$]={tokens:0,files:0}),d[$].tokens+=x,d[$].files+=1,v[L]!==void 0?v[L]+=x:v.no+=x,y+=x}const h=Object.entries(o).sort((s,l)=>l[1].tokens-s[1].tokens),w=N.filter(s=>d[s]).map(s=>[s,d[s]]),f=Object.entries(e).sort((s,l)=>l[1].tokens-s[1].tokens),g=t.map(s=>{const l=s.files||[];return{tool:s.tool,label:s.label,tokens:l.reduce((a,$)=>a+$.tokens,0),files:l.length,sentYes:l.filter(a=>(a.sent_to_llm||"").toLowerCase()==="yes").reduce((a,$)=>a+$.tokens,0)}}).filter(s=>s.tokens>0).sort((s,l)=>l.tokens-s.tokens).slice(0,8);return{cats:h,scopes:w,byPolicy:v,totalTokens:y,perTool:g,byCat:o,byProj:e,projList:f}},[b]),T=c`<${D} enabledTools=${k} snap=${b} what="the context map"/>`;if(!r)return z(k)?T:c`<p class="empty-state">No file data available.</p>`;if(!r.totalTokens)return z(k)?T:c`<p class="empty-state">No token data collected yet.</p>`;const M=Math.max(...r.cats.map(([,t])=>t.tokens),1),E=(t,i)=>t>0?Math.max(2,Math.log10(t+1)/Math.log10(i+1)*100):0;return c`<div class="diag-card" role="region" aria-label="Context window map">
     <h3 style=${{marginBottom:"var(--sp-5)"}}>Context Window Map</h3>
 
     <!-- Policy summary -->
@@ -43,8 +43,8 @@ import{x as O,S,d as I,T as A,z as D,m as c,w as L,b as p,p as W,e as B,E as _}f
                   role="button" tabindex="0"
                   aria-pressed=${n===e?"true":"false"}
                   aria-label="${e}: ${p(v.tokens)} tokens (${v.count} files) in ${t}"
-                  onClick=${()=>g(n===e?null:e)}
-                  onKeyDown=${f=>{(f.key==="Enter"||f.key===" ")&&(f.preventDefault(),g(n===e?null:e))}}>
+                  onClick=${()=>m(n===e?null:e)}
+                  onKeyDown=${f=>{(f.key==="Enter"||f.key===" ")&&(f.preventDefault(),m(n===e?null:e))}}>
                   ${h>12&&d>15?c`<span style="font-size:var(--fs-2xs);color:var(--on-status);
                     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 2px;font-weight:600">${e}</span>`:null}
                 </div>`})}
@@ -63,7 +63,7 @@ import{x as O,S,d as I,T as A,z as D,m as c,w as L,b as p,p as W,e as B,E as _}f
             color:${o?"var(--bg)":"var(--fg2)"};
             border:1px solid ${o?"var(--accent)":"var(--border)"};
             border-radius:4px 4px 0 0;font-weight:${o?600:400};border-bottom:none"
-          onClick=${()=>g(o?null:t)}>
+          onClick=${()=>m(o?null:t)}>
           ${t} (${p(i.tokens)})
         </button>`})}
     </div>
@@ -71,15 +71,15 @@ import{x as O,S,d as I,T as A,z as D,m as c,w as L,b as p,p as W,e as B,E as _}f
     <!-- Tab content: per-category bars with item sub-segments -->
     ${n&&r.byProj[n]?(()=>{const t=r.byProj[n],i=Object.entries(t.cats).sort((d,e)=>e[1].tokens-d[1].tokens),o=Math.max(...i.map(([,d])=>d.tokens),1);return c`<div class="mb-md" style="background:var(--bg2);border-radius:6px;padding:var(--sp-4)">
         <div class="es-section-title">${n} \u2014 ${p(t.tokens)} tokens across ${t.count} files</div>
-        ${i.map(([d,e])=>{const v=Object.entries(e.items).sort((f,m)=>m[1]-f[1]),y=v.slice(0,15),h=v.slice(15).reduce((f,[,m])=>f+m,0);h>0&&y.push(["(other)",h]);const w=E(e.tokens,o);return c`<div key=${d} style="margin-bottom:var(--sp-3)">
+        ${i.map(([d,e])=>{const v=Object.entries(e.items).sort((f,g)=>g[1]-f[1]),y=v.slice(0,15),h=v.slice(15).reduce((f,[,g])=>f+g,0);h>0&&y.push(["(other)",h]);const w=E(e.tokens,o);return c`<div key=${d} style="margin-bottom:var(--sp-3)">
             <div class="flex-row gap-sm" style="font-size:var(--fs-base)">
               <span class="text-bold text-right" style="width:80px;color:${j[d]||"var(--fg2)"};flex-shrink:0">${d}</span>
               <div class="flex-1 overflow-hidden" style="height:18px;background:var(--bg);border-radius:2px">
                 <div style="width:${w}%;height:100%;display:flex;border-radius:2px;overflow:hidden">
-                  ${y.map(([f,m],s)=>{const l=e.tokens>0?m/e.tokens*100:0;if(l<.3)return null;const a=P[s%P.length];return c`<div key=${f} style="width:${l}%;height:100%;background:${a};
+                  ${y.map(([f,g],s)=>{const l=e.tokens>0?g/e.tokens*100:0;if(l<.3)return null;const a=P[s%P.length];return c`<div key=${f} style="width:${l}%;height:100%;background:${a};
                       border-right:1px solid var(--bg);
                       display:flex;align-items:center;justify-content:center;overflow:hidden;min-width:1px"
-                      title="${f}: ${p(m)} tok">
+                      title="${f}: ${p(g)} tok">
                       ${l>10&&w>20?c`<span style="font-size:var(--fs-2xs);color:#111;
                         white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 2px;font-weight:700">${f}</span>`:null}
                     </div>`})}
@@ -90,11 +90,11 @@ import{x as O,S,d as I,T as A,z as D,m as c,w as L,b as p,p as W,e as B,E as _}f
             </div>
             <!-- Item legend -->
             <div style="padding-left:88px;display:flex;flex-wrap:wrap;gap:var(--sp-1) var(--sp-3);margin-top:3px">
-              ${y.map(([f,m],s)=>c`<span key=${f}
+              ${y.map(([f,g],s)=>c`<span key=${f}
                 style="font-size:var(--fs-xs);display:inline-flex;align-items:center;gap:3px">
                 <span style="display:inline-block;width:8px;height:8px;border-radius:2px;
                   background:${P[s%P.length]};flex-shrink:0"></span>
-                <span class="text-muted">${f} ${p(m)}</span>
+                <span class="text-muted">${f} ${p(g)}</span>
               </span>`)}
             </div>
           </div>`})}
@@ -119,4 +119,4 @@ import{x as O,S,d as I,T as A,z as D,m as c,w as L,b as p,p as W,e as B,E as _}f
         </div>`)}
       </div>
     </div>
-  </div>`}export{F as default};
+  </div>`}export{q as default};
