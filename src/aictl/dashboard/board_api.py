@@ -38,7 +38,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import parse_qs
 
-from ..context_audit import _redact
+from ..context_audit import _git_states, _redact, skill_description, skill_locations
 from ..data.model_pricing import request_cost_usd, resolve_pricing
 from ..ingesters._common import project_key, project_root
 from ..storage import EventRow, _session_uuid
@@ -2239,7 +2239,117 @@ def _skill_rows(board: _Board) -> list[tuple]:
     return board.conn.execute(f"SELECT name, session_id, ts FROM skill_uses WHERE {where}", params).fetchall()
 
 
-def _skills_section(skill_rows: list[tuple], turns: _Turns) -> list[dict]:
+SKILL_FILE_TTL_S = 300.0
+_SKILL_HEAD_CHARS = 4000
+_SKILL_TEXT_CHARS = 100_000
+_skill_file_memo: dict[tuple[str, tuple[str, ...]], tuple[float, dict]] = {}
+
+
+def _read_text(path: str, limit: int) -> str | None:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return handle.read(limit)
+    except OSError:
+        return None
+
+
+def _skill_file(name: str, projects: Iterable[str]) -> dict:
+    """Scope, path and description for the Skills panel, kept a few minutes to spare the disk."""
+    key = (name, tuple(sorted(p for p in projects if p)))
+    now = time.monotonic()
+    hit = _skill_file_memo.get(key)
+    if hit and now - hit[0] < SKILL_FILE_TTL_S:
+        return hit[1]
+    rows = skill_locations(name, key[1])
+    head = _read_text(rows[0]["path"], _SKILL_HEAD_CHARS) if rows else None
+    value = {
+        "scope": ", ".join(dict.fromkeys(r["scope"] for r in rows)) or None,
+        "path": rows[0]["path"] if rows else None,
+        "description": mask_secrets(skill_description(head or "")) or None,
+    }
+    if len(_skill_file_memo) >= 500:
+        _skill_file_memo.clear()
+    _skill_file_memo[key] = (now, value)
+    return value
+
+
+def _skill_reach(row: dict, git_state: str) -> str:
+    """Who can see this skill file, in words."""
+    if row["scope"] == "user":
+        return "Only this user on this machine, in every project."
+    if row["scope"] == "plugin":
+        return f"Anyone who installs the plugin {row['owner']}, in every project."
+    if git_state == "tracked":
+        return f"Everyone with the repository at {row['owner']}, because the file is in git."
+    if git_state in ("untracked", "ignored"):
+        return f"Only people who work in {row['owner']} on this machine, because the file is not in git."
+    return f"Anyone who works in {row['owner']}."
+
+
+def skill_detail(db: Any, name: str, now: float | None = None, since: float | None = None, until: float | None = None) -> tuple[int, dict]:
+    """Who can see a skill, each use of it, and the text of its files."""
+    now = time.time() if now is None else now
+    conn = db._conn()
+    range_sql, range_params = "", []
+    if since is not None and until is not None:
+        range_sql, range_params = " AND ts >= ? AND ts < ?", [since, until]
+    rows = conn.execute(
+        f"SELECT ts, session_id, agent_id, tool, project_path, trigger FROM skill_uses WHERE name = ?{range_sql} ORDER BY ts DESC LIMIT {MAX_DETAIL_ROWS}",
+        [name, *range_params],
+    ).fetchall()
+    in_range = conn.execute(f"SELECT COUNT(*), COUNT(DISTINCT session_id) FROM skill_uses WHERE name = ?{range_sql}", [name, *range_params]).fetchone()
+    total, first, last = conn.execute("SELECT COUNT(*), MIN(ts), MAX(ts) FROM skill_uses WHERE name = ?", (name,)).fetchone()
+    raw_projects = [r[0] for r in conn.execute("SELECT DISTINCT project_path FROM skill_uses WHERE name = ? AND project_path != '' LIMIT 50", (name,))]
+    projects = list(dict.fromkeys(p for raw in raw_projects for p in (project_root(raw), raw) if p))
+    pairs = {(sid, _agent_key(sid, aid)) for _ts, sid, aid, *_ in rows}
+    titles = _titles_for(conn, pairs, now)
+
+    locations = []
+    seen_text: dict[str, str] = {}
+    for row in skill_locations(name, projects):
+        git_state = ""
+        if row["scope"] == "project":
+            git_state = _git_states(Path(row["owner"]), [row["path"]]).get(row["path"], "outside-repo")
+        text = _read_text(row["path"], _SKILL_TEXT_CHARS + 1)
+        truncated = text is not None and len(text) > _SKILL_TEXT_CHARS
+        content = mask_secrets(text[:_SKILL_TEXT_CHARS]) if text is not None else None
+        same_as = seen_text.get(content) if content is not None else None
+        if content is not None:
+            seen_text.setdefault(content, row["path"])
+        locations.append(
+            {
+                **row,
+                "git_state": git_state or None,
+                "reach": _skill_reach(row, git_state),
+                "description": skill_description(content or "") or None,
+                "content": None if same_as else content,
+                "same_as": same_as,
+                "truncated": truncated,
+            }
+        )
+    return 200, {
+        "name": name,
+        "uses": in_range[0],
+        "agents": in_range[1],
+        "total_uses": total,
+        "first_ts": first,
+        "last_ts": last,
+        "locations": locations,
+        "calls": [
+            {
+                "ts": ts,
+                "agent_id": _agent_key(sid, aid),
+                "title": titles.get((sid, _agent_key(sid, aid)), ""),
+                "tool": tool,
+                "project": project_root(project or ""),
+                "trigger": trigger or None,
+            }
+            for ts, sid, aid, tool, project, trigger in rows
+        ],
+    }
+
+
+def _skills_section(board: _Board, skill_rows: list[tuple], turns: _Turns) -> list[dict]:
     """A skill's tokens are those of the turns it ran in, each turn counted once per skill."""
     skills: dict[str, dict] = {}
     charged: set[tuple[str, str, float]] = set()
@@ -2247,6 +2357,7 @@ def _skills_section(skill_rows: list[tuple], turns: _Turns) -> list[dict]:
         row = skills.setdefault(name, {"name": name, "uses": 0, "tokens": None, "agents": set()})
         row["uses"] += 1
         row["agents"].add(sid)
+        row.setdefault("projects", set()).add(board.session_project.get(sid, ""))
         line = turns.starts.get(sid, [])
         i = bisect.bisect_right(line, ts) - 1
         if i < 0 or (name, sid, line[i]) in charged:
@@ -2256,7 +2367,8 @@ def _skills_section(skill_rows: list[tuple], turns: _Turns) -> list[dict]:
         if value is not None:
             row["tokens"] = (row["tokens"] or 0) + value
     out = [{**row, "agents": len(row["agents"])} for row in skills.values()]
-    return sorted(out, key=lambda r: (-r["uses"], r["name"]))[:MAX_LIST_ROWS]
+    out = sorted(out, key=lambda r: (-r["uses"], r["name"]))[:MAX_LIST_ROWS]
+    return [{**{k: v for k, v in row.items() if k != "projects"}, **_skill_file(row["name"], row["projects"])} for row in out]
 
 
 def _memory_files(board: _Board) -> list[dict]:
@@ -2949,7 +3061,7 @@ def compute_board(
         "projects": projects[:MAX_LIST_ROWS],
         "prompts": _prompts_section(board, turns.tokens),
         "project_prompts": _project_prompts(board, project_list),
-        "skills": _skills_section(skill_rows, turns),
+        "skills": _skills_section(board, skill_rows, turns),
         "tools": tool_section["rows"],
         "confirms": _confirms_section(board),
         "errors": errors,
@@ -3616,6 +3728,11 @@ def handle_get(path: str, query: str, db: Any, store: Any, now: float | None = N
             status, payload = tool_detail(db, one("name"), now) if one("name") else (400, {"error": "Missing name"})
         elif path == "/api/board/error":
             status, payload = error_detail(db, one("key"), now) if one("key") else (400, {"error": "Missing key"})
+        elif path == "/api/board/skill":
+            if one("name"):
+                status, payload = skill_detail(db, one("name"), now, _as_number(one("since")), _as_number(one("until")))
+            else:
+                status, payload = 400, {"error": "Missing name"}
         elif path == "/api/board/file":
             status, payload = file_detail(db, one("path"), now) if one("path") else (400, {"error": "Missing path"})
         elif path == "/api/board/prompt":

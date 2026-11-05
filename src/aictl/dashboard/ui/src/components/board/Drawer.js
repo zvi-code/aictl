@@ -264,6 +264,48 @@ function PromptDrawer({ d, ctx, frame, act }) {
   </${Frame}>`;
 }
 
+function SkillDrawer({ d, ctx, frame, act }) {
+  const { data, error } = useDetail(opts => api.getBoardSkill(d.name, ctx.query, opts), 'skill:' + d.name + ':' + ctx.query);
+  const locations = data?.locations || [];
+  const whereDef = useMemo(() => ({
+    cols: [{ k: 'sc', l: 'Scope', w: '74px' }, { k: 'who', l: 'Who can see it' }, { k: 'tools', l: 'Tools that read it', w: '220px' }, { k: 'path', l: 'File', w: '320px' }],
+    rows: locations.map(l => ({
+      id: l.path, sort: { sc: l.scope, path: l.path },
+      cells: { sc: { v: l.scope }, who: { v: l.reach, title: l.reach }, tools: (txt => ({ v: txt, cls: 'dim', title: txt }))(l.tools.map(ctx.toolName).join(', ')), path: { v: l.path, cls: 'm', title: l.path } },
+    })),
+    none: 'aictl found no file with this name. The skill can be built in, or its file can be in a folder that this machine does not have.', primary: 'who',
+  }), [data]);
+  const useDef = useMemo(() => ({
+    cols: [{ k: 'at', l: 'Time', w: '110px' }, { k: 'ag', l: 'Agent' }, { k: 'tool', l: 'Tool', w: '130px' }, { k: 'proj', l: 'Project', w: '150px' }, { k: 'how', l: 'Started by', w: '110px' }],
+    rows: (data?.calls || []).map((c, i) => ({
+      id: i, go: c.agent_id ? () => act.openDrawer({ type: 'agent', id: c.agent_id, tab: 'overview' }) : null,
+      sort: { at: c.ts, tool: c.tool, proj: c.project, how: c.trigger },
+      cells: { at: { v: stamp(c.ts, true), cls: 'dim' }, ag: { v: c.title || c.agent_id, title: c.title || c.agent_id }, tool: { v: ctx.toolName(c.tool) }, proj: { v: projectName(c.project), cls: 'dim', title: c.project || '' }, how: { v: c.trigger || NA, cls: 'dim' } },
+    })),
+    sort: { k: 'at', dir: 'desc' }, limit: 80, none: 'No uses in this time.', primary: 'ag',
+  }), [data]);
+  const tokens = d.summary?.tokens;
+  const description = locations.find(l => l.description)?.description || d.summary?.description;
+  const sub = data ? [locations.length ? [...new Set(locations.map(l => l.scope))].join(', ') : 'No file found', data.uses + ' uses in this time'].join(', ') : 'Loading...';
+  return html`<${Frame} ...${frame} title=${d.name} sub=${sub}>
+    ${data ? html`
+      <${FixedPanel} id="skwhere" title="Who can see it" sub=${description || ''}>
+        ${description ? html`<div class="bd-note">${description}</div>` : null}
+        <${Table} def=${whereDef} label="Who can see it"/>
+      </${FixedPanel}>
+      <${FixedPanel} id="skuse" title="Usage">
+        <${Stats} stats=${[{ label: 'Uses in this time', value: fmtN(data.uses) }, { label: 'Agents in this time', value: fmtN(data.agents) }, { label: 'Tokens in those turns', value: fmtN(tokens) }, { label: 'All uses', value: fmtN(data.total_uses) }, { label: 'First use', value: data.first_ts ? stamp(data.first_ts, true) : NA }, { label: 'Last use', value: data.last_ts ? stamp(data.last_ts, true) : NA }]}/>
+        <${Table} def=${useDef} label="Usage"/>
+      </${FixedPanel}>
+      ${locations.map((l, i) => html`<${FixedPanel} key=${l.path} id=${'sktext' + i} title="Content" sub=${l.path}>
+        ${l.same_as ? html`<div class="bd-note">Same text as ${l.same_as}.</div>` : l.content == null ? html`<div class="bd-empty">This file is not readable.</div>` : html`<div class="bd-ptext">${l.content}</div>`}
+        ${l.truncated ? html`<div class="bd-note">The first 100,000 characters are shown.</div>` : null}
+        ${l.content != null ? html`<div class="bd-note">Values under names that look like secrets are masked.</div>` : null}
+      </${FixedPanel}>`)}`
+      : html`<${Pending} error=${error}/>`}
+  </${Frame}>`;
+}
+
 const SEVERITY_RANK = { high: 0, medium: 1, low: 2, info: 3 };
 const whereText = (path, line) => (line ? path + ':' + line : path || NA);
 
@@ -285,7 +327,7 @@ function HiddenDrawer({ ctx, frame, act }) {
   const sourceDef = useMemo(() => ({
     cols: [{ k: 'tool', l: 'Tool', w: '130px' }, { k: 'scope', l: 'Scope', w: '80px' }, { k: 'load', l: 'Loading', w: '120px' }, { k: 'size', l: 'Size', n: true, w: '80px' }, { k: 'tok', l: 'Tokens', n: true, w: '70px' }, { k: 'git', l: 'Git', w: '80px' }, { k: 'path', l: 'Path' }],
     rows: sources.map(s => ({
-      id: s.tool + '|' + s.path, go: openFile(s.path),
+      id: s.tool + '|' + s.path, go: s.kind === 'skill' ? () => act.openDrawer({ type: 'skill', name: s.path.split(/[\\/]/).slice(-2)[0] }) : openFile(s.path),
       sort: { tool: s.tool, scope: s.scope, load: s.loading, size: s.bytes, tok: s.est_tokens, git: s.git_state, path: s.path },
       cells: { tool: { v: ctx.toolName(s.tool), sw: colorFor('tool', s.tool) }, scope: { v: s.scope }, load: { v: s.readable ? s.loading : s.loading + ' (no file shows this)' }, size: { v: fmtBytes(s.bytes) }, tok: { v: s.est_tokens ? fmtN(s.est_tokens) : '0' }, git: { v: s.git_state || NA, cls: 'dim' }, path: { v: s.path + (s.symlink_target ? ' -> ' + s.symlink_target : ''), sub: [s.note, s.in_project ? '' : s.why_in_effect].filter(Boolean).join(' '), cls: 'm', title: [s.path, s.symlink_target, s.note, s.why_in_effect, s.origin].filter(Boolean).join('\n') } },
     })),
@@ -358,7 +400,7 @@ function HiddenDrawer({ ctx, frame, act }) {
   </${Frame}>`;
 }
 
-const VIEWS = { agent: AgentDrawer, tool: ToolDrawer, error: ErrorDrawer, file: FileDrawer, prompt: PromptDrawer, hidden: HiddenDrawer };
+const VIEWS = { agent: AgentDrawer, tool: ToolDrawer, error: ErrorDrawer, file: FileDrawer, prompt: PromptDrawer, hidden: HiddenDrawer, skill: SkillDrawer };
 
 export default function Drawer({ stack, ctx, act }) {
   const d = stack[stack.length - 1];

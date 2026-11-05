@@ -450,6 +450,18 @@ describe('guards', () => {
     expect(routeOf('?tab=configuration')).toBe('detail');
     expect(routeOf('?tab=events-stats')).toBe('detail');
   });
+  it('opens a skill from its row and shows its scope', () => {
+    const opened = [];
+    const data = boardFixture();
+    data.skills = [{ name: 'run-tests', uses: 4, tokens: 7000, agents: 2, scope: 'user', path: '/home/me/.claude/skills/run-tests/SKILL.md', description: 'Runs tests' }, { name: 'gone', uses: 1, tokens: null, agents: 1, scope: null, path: null, description: null }];
+    const ctx = { data, series: {}, range: data.range, chartRange: data.range, sel: null, filters: parseFilters(''), tools: null, toolIds: [], settingToolIds: [], toolName: x => x, nowS: NOW, stopped: {}, findings: { list: [], settings: [] }, actions: { openDrawer: d => opened.push(d) } };
+    const { table } = buildPanel('skills', ctx);
+    table.rows[0].go();
+    expect(opened[0]).toMatchObject({ type: 'skill', name: 'run-tests' });
+    expect(table.rows[0].cells.sc.v).toBe('user');
+    expect(table.rows[0].cells.s.title).toContain('Runs tests');
+    expect(table.rows[1].cells.sc.v).toBe('No file');
+  });
   it('shows hidden context on the board, not on an old screen', () => {
     expect(routeOf('?tab=hidden')).toBe('board');
   });

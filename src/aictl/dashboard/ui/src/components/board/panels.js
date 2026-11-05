@@ -356,10 +356,11 @@ function panelSkills(ctx) {
   const list = ctx.data.skills;
   const mx = Math.max(1, ...list.map(s => s.uses || 0));
   const rows = list.map(s => ({
-    id: s.name, sort: { s: s.name, n: s.uses, tokens: s.tokens },
-    cells: { s: { v: s.name, title: s.name + (s.agents != null ? ', ' + s.agents + ' agents' : '') }, n: { barOn: true, bar: pctBar(s.uses, mx), barC: 'var(--s1)', v: s.uses ?? NA }, tokens: { v: fmtN(s.tokens) } },
+    id: s.name, go: () => ctx.actions.openDrawer({ type: 'skill', name: s.name, summary: s }, true),
+    sort: { s: s.name, sc: s.scope, n: s.uses, tokens: s.tokens },
+    cells: { s: { v: s.name, title: [s.name, s.description, s.path, s.agents != null ? s.agents + ' agents' : ''].filter(Boolean).join('\n') }, sc: { v: s.scope || 'No file', cls: 'dim', title: s.path || 'aictl found no file with this name for this skill' }, n: { barOn: true, bar: pctBar(s.uses, mx), barC: 'var(--s1)', v: s.uses ?? NA }, tokens: { v: fmtN(s.tokens) } },
   }));
-  return { sub: list.length + ' skills used', table: { cols: [{ k: 's', l: 'Skill' }, { k: 'n', l: 'Uses', n: true, w: '76px' }, { k: 'tokens', l: 'Tokens', n: true, w: '54px' }], rows, sort: { k: 'n', dir: 'desc' }, none: 'No skill was used in this time.' } };
+  return { sub: 'Click a skill to see who can see it, its uses and its text', table: { cols: [{ k: 's', l: 'Skill' }, { k: 'sc', l: 'Scope', w: '70px' }, { k: 'n', l: 'Uses', n: true, w: '76px' }, { k: 'tokens', l: 'Tokens', n: true, w: '68px' }], rows, sort: { k: 'n', dir: 'desc' }, none: 'No skill was used in this time.' } };
 }
 
 function panelToolCalls(ctx) {

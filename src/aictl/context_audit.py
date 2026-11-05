@@ -30,7 +30,7 @@ import subprocess
 import tempfile
 import time
 import unicodedata
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -1293,6 +1293,80 @@ def _copilot_plugin_roots(home: Path) -> list[tuple[str, Path]]:
         if Path(found).is_dir() and _path_key(found) not in known:
             out.append((Path(found).name, Path(found)))
     return out
+
+
+_COPILOT_APPS = ("copilot-cli", "copilot-desktop", "copilot-vscode")
+_PROJECT_SKILL_FOLDERS = (
+    (".github/skills", _COPILOT_APPS),
+    (".claude/skills", ("claude-code", *_COPILOT_APPS)),
+    (".agents/skills", ("codex-cli", *_COPILOT_APPS)),
+)
+_USER_SKILL_FOLDERS = (
+    ("~/.claude/skills", ("claude-code", *_COPILOT_APPS)),
+    ("~/.agents/skills", ("codex-cli", *_COPILOT_APPS)),
+    ("~/.codex/skills", ("codex-cli",)),
+)
+
+
+def skill_locations(name: str, projects: Iterable[str], env: dict[str, str] | None = None) -> list[dict]:
+    """Every SKILL.md with this name: its path, scope, the tools that read it and its owner.
+
+    ``owner`` is the project folder for a project skill and the plugin name for a
+    plugin skill. The name selects a folder, so a name with a path separator finds nothing.
+    """
+    namespace, _, base = name.rpartition(":")
+    if not re.fullmatch(r"[\w.\- ]+", base) or not base.strip(". "):
+        return []
+    env = dict(os.environ) if env is None else env
+    copilot_home = _copilot_home(env)
+    found: dict[str, dict] = {}
+
+    def add(folder: Path, scope: str, tools: tuple[str, ...], owner: str = "") -> None:
+        path = folder / base / "SKILL.md"
+        try:
+            if not path.is_file():
+                return
+        except OSError:
+            return
+        row = found.setdefault(_path_key(path), {"path": str(path), "scope": scope, "tools": [], "owner": owner})
+        row["tools"] += [tool for tool in tools if tool not in row["tools"]]
+
+    for project in projects:
+        if project:
+            for relative, tools in _PROJECT_SKILL_FOLDERS:
+                add(Path(project) / relative, "project", tools, project)
+    for folder, tools in _USER_SKILL_FOLDERS:
+        add(Path(_expand_home(folder)), "user", tools)
+    add(copilot_home / "skills", "user", _COPILOT_APPS)
+    wanted = namespace.lower()
+    for plugin, root in _enabled_plugin_paths():
+        if not wanted or plugin.lower().startswith(wanted):
+            add(root / "skills", "plugin", ("claude-code",), plugin)
+    for plugin, root in _copilot_plugin_roots(copilot_home):
+        if not wanted or plugin.lower().startswith(wanted):
+            add(root / "skills", "plugin", _COPILOT_APPS, plugin)
+    return list(found.values())
+
+
+def skill_description(text: str) -> str:
+    """The ``description`` value of a skill's front matter, or an empty string."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return ""
+    for i, line in enumerate(lines[1:], 1):
+        if line.strip() == "---":
+            return ""
+        if line.startswith("description:"):
+            value = line.split(":", 1)[1].strip()
+            if value in (">", ">-", "|", "|-"):
+                more = []
+                for follow in lines[i + 1 :]:
+                    if follow.strip() and not follow.startswith((" ", "\t")):
+                        break
+                    more.append(follow.strip())
+                value = " ".join(part for part in more if part)
+            return value.strip("\"'")
+    return ""
 
 
 def _collect_copilot_plugins(inv: _Inventory, findings: list[Finding], tool: str, home: Path) -> None:
