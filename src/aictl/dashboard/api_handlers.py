@@ -34,6 +34,59 @@ from .session_flow import build_session_flow
 # of these, we fall back to matching on tool + the session's time window.
 _SYNTHETIC_SESSION_RE = re.compile(r"^[a-z][a-z0-9-]*:\d+:\d+$")
 
+# psutil measures CPU between two calls on the same Process object, so the
+# objects must outlive one request. Keyed by pid; dead pids are dropped.
+_SELF_PROCS: dict[int, object] = {}
+
+
+def self_usage(pid: int | None = None) -> dict:
+    """CPU and memory of this process plus its child processes.
+
+    ``cpu_percent`` and ``memory_rss_bytes`` are the totals. The daemon share is
+    ``daemon_*`` and every child is listed in ``children`` so a costly helper
+    is visible instead of hidden behind a quiet parent.
+    """
+    import os
+
+    import psutil
+
+    pid = os.getpid() if pid is None else pid
+    parent = _SELF_PROCS.get(pid) or psutil.Process(pid)
+    _SELF_PROCS[pid] = parent
+    procs = [parent]
+    try:
+        procs += parent.children(recursive=True)
+    except psutil.Error:
+        pass
+    live = {p.pid for p in procs}
+    for stale in [k for k in _SELF_PROCS if k not in live]:
+        del _SELF_PROCS[stale]
+
+    rows = []
+    for proc in procs:
+        proc = _SELF_PROCS.setdefault(proc.pid, proc)
+        try:
+            rows.append(
+                {
+                    "pid": proc.pid,
+                    "name": proc.name(),
+                    "cpu_percent": round(proc.cpu_percent(interval=0), 1),
+                    "memory_rss_bytes": proc.memory_info().rss,
+                }
+            )
+        except psutil.Error:
+            continue
+    daemon = rows[0] if rows and rows[0]["pid"] == pid else {"cpu_percent": 0.0, "memory_rss_bytes": 0}
+    children = [r for r in rows if r["pid"] != pid]
+    return {
+        "cpu_percent": round(sum(r["cpu_percent"] for r in rows), 1),
+        "memory_rss_bytes": sum(r["memory_rss_bytes"] for r in rows),
+        "daemon_cpu_percent": daemon["cpu_percent"],
+        "daemon_memory_rss_bytes": daemon["memory_rss_bytes"],
+        "children": children,
+    }
+
+
 _IMPORTED_SESSION_SOURCES = {
     "claude-code-jsonl",
     "copilot-session-store",
@@ -266,10 +319,8 @@ class _APIHandlersMixin:
             mem = proc.memory_info()
             # interval=0 returns since last call — non-blocking.
             # CollectorHealth polls every 15s so the measurement window is fine.
-            cpu = proc.cpu_percent(interval=0)
             result["pid"] = os.getpid()
-            result["cpu_percent"] = round(cpu, 1)
-            result["memory_rss_bytes"] = mem.rss
+            result.update(self_usage(os.getpid()))
             result["memory_vms_bytes"] = mem.vms
             result["threads"] = proc.num_threads()
             result["uptime_s"] = round(time.time() - proc.create_time(), 1)

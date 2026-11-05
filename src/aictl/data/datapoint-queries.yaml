@@ -456,7 +456,7 @@ samples.metric_table:
   calc: Direct rows. Parse tags JSON into columns.
   query: SELECT ts, metric, value, tags FROM samples WHERE metric = ? ORDER BY ts DESC LIMIT 50
 self.cpu_percent:
-  calc: Direct from /api/self-status → psutil.Process(os.getpid()).cpu_percent().
+  calc: Direct from /api/self-status → cpu_percent() of the aictl process plus its child processes (daemon_cpu_percent and children give the split).
   query: SELECT cpu_percent FROM (SELECT value as cpu_percent FROM json_each(?) WHERE key = 'cpu_percent')
 self.db_rows:
   calc: SUM of row counts across main data tables.
@@ -465,7 +465,7 @@ self.db_size:
   calc: 'Direct from /api/self-status → db.stats()[''file_size_bytes'']. Or: os.stat(db_path).st_size.'
   query: SELECT file_size_bytes FROM (SELECT value as file_size_bytes FROM json_each(?) WHERE key = 'file_size_bytes')
 self.memory_rss:
-  calc: Direct from /api/self-status → psutil.Process(os.getpid()).memory_info().rss.
+  calc: Direct from /api/self-status → memory_info().rss of the aictl process plus its child processes (daemon_memory_rss_bytes and children give the split).
   query: SELECT memory_rss_bytes FROM (SELECT value as memory_rss_bytes FROM json_each(?) WHERE key = 'memory_rss_bytes')
 self.threads:
   calc: Direct from /api/self-status → psutil.Process(os.getpid()).num_threads().

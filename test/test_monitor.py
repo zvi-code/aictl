@@ -856,3 +856,115 @@ class TestServeEnvPort:
         for garbage in ("none", "", "84 84", "8484.5"):
             monkeypatch.setenv("AICTL_PORT", garbage)
             assert _env_port() is None, f"AICTL_PORT={garbage!r} must not raise"
+
+
+# ---------------------------------------------------------------------------
+# nettop cost: one-shot samples, paced, no spin on failure
+# ---------------------------------------------------------------------------
+
+
+def test_nettop_sample_runs_one_shot_without_tty_stdin(monkeypatch):
+    import subprocess
+
+    from aictl.monitoring.collectors.network import MacOSNetworkCollector
+
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"], seen["kwargs"] = cmd, kwargs
+        return Mock(stdout="time,,interface\n10:00:00.0,Code Helper.7,,,1500,2800,0\n")
+
+    monkeypatch.setattr("aictl.monitoring.collectors.network.subprocess.run", fake_run)
+    collector = MacOSNetworkCollector(interval=5)
+    previous = {7: (1000, 2000)}
+
+    samples = collector._sample_once(previous)
+
+    assert [(s.pid, s.bytes_in, s.bytes_out) for s in samples] == [(7, 500, 800)]
+    cmd = seen["cmd"]
+    assert cmd[cmd.index("-L") + 1] == "1"  # one snapshot, then nettop exits
+    assert "-s" not in cmd  # no long-lived, self-spacing form
+    assert seen["kwargs"]["stdin"] == subprocess.DEVNULL  # an unusable stdin makes nettop spin
+    assert seen["kwargs"]["timeout"]
+
+
+def test_nettop_first_sample_is_baseline_not_traffic(monkeypatch):
+    from aictl.monitoring.collectors.network import MacOSNetworkCollector
+
+    out = "10:00:00.0,Code Helper.7,,,1500,2800,0\n"
+    monkeypatch.setattr("aictl.monitoring.collectors.network.subprocess.run", lambda *a, **k: Mock(stdout=out))
+    collector = MacOSNetworkCollector(interval=5)
+    previous: dict = {}
+
+    assert collector._sample_once(previous) == []  # cumulative totals are not growth
+    assert previous == {7: (1500, 2800)}
+
+
+def _loop_waits(collector, monkeypatch, sample_once, rounds=2):
+    import threading
+
+    stop = threading.Event()
+    waits = []
+
+    def fake_wait(timeout=None):
+        waits.append(timeout)
+        if len(waits) >= rounds:
+            stop.set()
+        return stop.is_set()
+
+    monkeypatch.setattr(stop, "wait", fake_wait)
+    monkeypatch.setattr(collector, "_sample_once", sample_once)
+    collector._read_loop(stop, {}, lambda sample: None)
+    return waits
+
+
+def test_nettop_loop_waits_paced_interval(monkeypatch):
+    from aictl.monitoring.collectors import network
+    from aictl.monitoring.collectors.network import MacOSNetworkCollector
+
+    monkeypatch.setattr(network.PACE, "factor", lambda *a: 6)
+    collector = MacOSNetworkCollector(interval=5)
+
+    waits = _loop_waits(collector, monkeypatch, lambda previous: [])
+
+    assert all(28 < w <= 30 for w in waits)
+
+
+def test_nettop_failure_backs_off_instead_of_spinning(monkeypatch):
+    from aictl.monitoring.collectors import network
+    from aictl.monitoring.collectors.network import MacOSNetworkCollector
+
+    monkeypatch.setattr(network.PACE, "factor", lambda *a: 1)
+    collector = MacOSNetworkCollector(interval=0.5)
+
+    def boom(previous):
+        raise FileNotFoundError("nettop")
+
+    waits = _loop_waits(collector, monkeypatch, boom)
+
+    assert all(w >= network.FAILURE_BACKOFF_S for w in waits)
+
+
+def test_self_usage_counts_child_processes():
+    import os
+    import subprocess
+    import sys
+    import time
+
+    from aictl.dashboard.api_handlers import self_usage
+
+    child = subprocess.Popen([sys.executable, "-c", "while True: pass"])
+    try:
+        self_usage()
+        time.sleep(1.0)
+        usage = self_usage()
+    finally:
+        child.kill()
+        child.wait()
+
+    kids = {c["pid"]: c for c in usage["children"]}
+    assert child.pid in kids
+    assert kids[child.pid]["cpu_percent"] > 20  # the busy helper is visible
+    assert usage["cpu_percent"] >= usage["daemon_cpu_percent"] + kids[child.pid]["cpu_percent"] - 0.2
+    assert usage["memory_rss_bytes"] >= usage["daemon_memory_rss_bytes"] + kids[child.pid]["memory_rss_bytes"]
+    assert os.getpid() not in kids
