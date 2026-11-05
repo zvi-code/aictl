@@ -171,6 +171,8 @@ class ServerClient:
             return
 
         buffer = ""
+        # The server omits large keys that did not change; keep their last value.
+        state: dict = {}
         while True:
             try:
                 chunk = resp.read(4096)
@@ -188,7 +190,8 @@ class ServerClient:
                             data_lines.append(line[5:])
                     if data_lines:
                         try:
-                            yield json.loads("".join(data_lines))
+                            state = {**state, **json.loads("".join(data_lines))}
+                            yield state
                         except json.JSONDecodeError:
                             continue
             except (OSError, TimeoutError):

@@ -56,6 +56,9 @@ _ROLE_COLS = ("role", "sender", "author", "speaker", "type")
 _CONTENT_COLS = ("content", "text", "message", "body", "data")
 _TS_COLS = ("created_at", "createdAt", "timestamp", "ts", "time", "updated_at")
 
+# Rows read per table per poll, so a large store is taken in small steps.
+POLL_BATCH_ROWS = 2000
+
 _DEFAULT_DB_PATH = Path("~/.copilot/session-store.db").expanduser()
 
 
@@ -201,8 +204,11 @@ class CopilotSessionStoreIngester:
         cols: dict[str, str],
     ) -> int:
         """Pull new rows from *table* and insert them into our store."""
-        last_rowid = int(self.last_cursor.get(table, 0))
-        select_cols = [f"rowid AS _row_id", f'"{cols["role"]}" AS _role', f'"{cols["content"]}" AS _content']
+        last_rowid = int(self.last_cursor.get(table, self._stored_cursor(table)))
+        # Do not even read text this store would not keep.
+        keeps_text = getattr(self.store, "_keeps_text", lambda: True)() is True
+        content_col = f'"{cols["content"]}"' if keeps_text else "''"
+        select_cols = [f"rowid AS _row_id", f'"{cols["role"]}" AS _role', f"{content_col} AS _content"]
         if cols["session"]:
             select_cols.append(f'"{cols["session"]}" AS _session')
         else:
@@ -213,7 +219,7 @@ class CopilotSessionStoreIngester:
             select_cols.append("0 AS _ts")
         sql = (
             f"SELECT {', '.join(select_cols)} FROM \"{table}\""
-            f" WHERE rowid > ? ORDER BY rowid ASC"
+            f" WHERE rowid > ? ORDER BY rowid ASC LIMIT {POLL_BATCH_ROWS}"
         )
         rows = src.execute(sql, (last_rowid,)).fetchall()
         if not rows:
@@ -239,7 +245,23 @@ class CopilotSessionStoreIngester:
             ):
                 inserted += 1
         self.last_cursor[table] = max_rowid
+        self._save_cursor(table, max_rowid)
         return inserted
+
+    def _stored_cursor(self, table: str) -> int:
+        """Watermark from the previous run, so a restart does not read the store again."""
+        row = self.store._conn().execute(
+            "SELECT value FROM maintenance_state WHERE key = ?", (f"copilot_store_cursor:{table}",)
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def _save_cursor(self, table: str, rowid: int) -> None:
+        conn = self.store._conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO maintenance_state(key, value) VALUES(?,?)",
+            (f"copilot_store_cursor:{table}", rowid),
+        )
+        conn.commit()
 
     # ── our storage writes ────────────────────────────────────
 

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from ...data.schema import metric_name as M
 from ...platforms import IS_MACOS, IS_WINDOWS
+from ..pace import PACE
 from ..session import ProcessInfo
 from . import BaseCollector
 
@@ -109,7 +110,7 @@ class PsutilFallbackNetworkCollector(NetworkCollector):
                         {"process.pid": str(pid), "process.name": proc.name, "network.io.direction": "transmit"},
                     )
 
-            await self.sleep(self.interval)
+            await self.sleep_paced(self.interval)
 
     def _sample(self, psutil_module):
         grouped: dict[int, dict[str, object]] = defaultdict(lambda: {"weight": 0, "remotes": set(), "name": "unknown"})
@@ -188,7 +189,9 @@ class MacOSNetworkCollector(NetworkCollector):
             while not stop_event.is_set():
                 try:
                     proc = subprocess.Popen(
-                        ["nettop", "-P", "-L", "6", "-n"],
+                        # Deltas survive a restart through ``previous``, so
+                        # totals stay exact at any sample spacing.
+                        ["nettop", "-P", "-L", "3", "-n", "-s", str(max(1, round(self.interval * PACE.factor())))],
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         text=True,
@@ -369,7 +372,7 @@ class LinuxNetworkCollector(NetworkCollector):
                     {"process.pid": str(pid), "process.name": proc.name, "network.io.direction": "transmit"},
                 )
             previous = snapshot
-            await self.sleep(self.interval)
+            await self.sleep_paced(self.interval)
 
 
 def parse_ss_snapshot() -> dict[tuple[int, str, str], tuple[int, int, str]]:
