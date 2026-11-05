@@ -171,7 +171,7 @@ pipx inject aictl textual
 pipx inject aictl watchdog
 ```
 
-> **Without `psutil`:** process detection falls back to `ps` on macOS/Linux and is silently skipped on Windows.
+> **Without `psutil`:** process detection falls back to `ps` on macOS/Linux and is unavailable on Windows, where `psutil` is therefore always installed.
 
 ### Development install
 

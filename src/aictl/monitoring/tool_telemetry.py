@@ -344,7 +344,7 @@ def parse_claude_telemetry(
     stats_file = claude_global_dir() / "stats-cache.json"
     if stats_file.is_file():
         try:
-            data = json.loads(stats_file.read_text(errors="replace"))
+            data = json.loads(stats_file.read_text(errors="replace", encoding="utf-8"))
             report.total_sessions = int(data.get("totalSessions", 0))
             report.total_messages = int(data.get("totalMessages", 0))
 
@@ -424,7 +424,7 @@ def _first_int(d: dict, *keys: str) -> int:
 def _iter_jsonl(path: Path) -> Iterator[dict]:
     """Yield parsed JSON objects from a JSONL file. Never raises."""
     try:
-        for line in path.read_text(errors="replace").splitlines():
+        for line in path.read_text(errors="replace", encoding="utf-8").splitlines():
             if line.strip():
                 try:
                     yield json.loads(line)
@@ -477,7 +477,7 @@ def _parse_claude_active_session(root: Path, report: ToolTelemetryReport) -> Non
 
     # Read last 500 lines (tail) to catch errors + recent tokens
     try:
-        text = latest.read_text(errors="replace")
+        text = latest.read_text(errors="replace", encoding="utf-8")
         lines = text.splitlines()
         tail = lines[-500:] if len(lines) > 500 else lines
         for line in tail:
@@ -911,7 +911,7 @@ def parse_continue_telemetry(
 def _parse_continue_session(sess_file: Path, report: ToolTelemetryReport) -> None:
     """Parse a single Continue session JSON for token data."""
     try:
-        data = json.loads(sess_file.read_text(errors="replace"))
+        data = json.loads(sess_file.read_text(errors="replace", encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return
 

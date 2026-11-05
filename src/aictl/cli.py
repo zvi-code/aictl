@@ -22,6 +22,11 @@ except PackageNotFoundError:  # editable dev install without metadata
     __version__ = "0.0.0-dev"
 
 
+from .platforms import harden_stdio
+
+harden_stdio()
+
+
 @click.group()
 @click.version_option(__version__)
 def main():

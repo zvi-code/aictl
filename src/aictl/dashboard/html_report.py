@@ -347,12 +347,12 @@ def _read_file_tail(path_str: str, max_size: int = 50_000) -> str | None:
         size = p.stat().st_size
         if size > max_size:
             # Read only the tail for large files
-            with open(p, errors="replace") as f:
+            with open(p, errors="replace", encoding="utf-8") as f:
                 f.seek(max(0, size - max_size))
                 if size > max_size:
                     f.readline()  # skip partial first line
                 return f.read()
-        return p.read_text(errors="replace")
+        return p.read_text(errors="replace", encoding="utf-8")
     except OSError:
         return None
 

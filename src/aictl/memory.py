@@ -32,7 +32,7 @@ SWAP_MARKER = ".aictl-swap-in-progress"
 def _swap_lock(proj: Path):
     lock_path = proj / ".aictl-swap.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fh = open(lock_path, "w")
+    fh = open(lock_path, "w", encoding="utf-8")
     try:
         if IS_WINDOWS:
             import msvcrt
@@ -232,7 +232,7 @@ def swap_memory(root: Path, old_profile: str | None, new_profile: str | None) ->
         # Write WAL marker before any filesystem mutations
         marker = proj / SWAP_MARKER
         plan = {"old_profile": old_profile, "new_profile": new_profile, "timestamp": time.time()}
-        marker.write_text(json.dumps(plan))
+        marker.write_text(json.dumps(plan), encoding="utf-8")
 
         # Stash current
         if old_profile and mem.is_dir():
@@ -274,7 +274,7 @@ def recover_swap(root: Path) -> bool:
         return False
 
     try:
-        plan = json.loads(marker.read_text())
+        plan = json.loads(marker.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         log.warning("Corrupt swap marker at %s — removing", marker)
         marker.unlink(missing_ok=True)
@@ -335,7 +335,7 @@ def get_summary(root: Path) -> dict | None:
     files = []
     for f in sorted(mem.iterdir()):
         if f.suffix == ".md":
-            c = f.read_text(errors="replace")
+            c = f.read_text(errors="replace", encoding="utf-8")
             files.append(
                 {
                     "file": f.name,
@@ -349,5 +349,5 @@ def get_summary(root: Path) -> dict | None:
 
 def _summarize(d: Path, label: str) -> dict:
     mds = [f for f in d.iterdir() if f.suffix == ".md"] if d.is_dir() else []
-    lines = sum(len([l for l in f.read_text(errors="replace").splitlines() if l.strip()]) for f in mds)
+    lines = sum(len([l for l in f.read_text(errors="replace", encoding="utf-8").splitlines() if l.strip()]) for f in mds)
     return {"profile": label, "dir": str(d), "files": len(mds), "lines": lines}

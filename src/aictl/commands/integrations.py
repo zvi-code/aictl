@@ -1339,7 +1339,7 @@ def verify():
         click.echo("\n  Shell profiles:")
         for profile in _shell_profiles():
             if profile.exists():
-                content = profile.read_text()
+                content = profile.read_text(encoding="utf-8")
                 # Recognise either the new source-block marker (current scheme)
                 # or the legacy inline-export marker (pre-migration profiles).
                 if _AICTL_ENV_BEGIN in content or _OTEL_MARKER in content:
@@ -1354,7 +1354,7 @@ def verify():
     try:
         settings_path = vscode_user_dir() / "settings.json"
         if settings_path.exists():
-            settings = json.loads(settings_path.read_text())
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
             copilot_keys = {
                 k: (None if k == "github.copilot.chat.otel.otlpEndpoint" else v)
                 for k, v in _copilot_otel_settings("").items()

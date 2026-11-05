@@ -31,6 +31,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from ..platforms import IS_WINDOWS
 from ..orchestrator import AllowedPaths, SnapshotStore
 from ..storage import EventRow, FileWriteRow, SessionRow, ToolInvocationRow
 from .analytics import (  # noqa: F401 — re-exports
@@ -80,12 +81,12 @@ def _read_file_safe(path_str: str) -> str | None:
             return None
         size = p.stat().st_size
         if size > _MAX_FILE_SIZE:
-            with open(p, errors="replace") as f:
+            with open(p, errors="replace", encoding="utf-8") as f:
                 f.seek(max(0, size - _MAX_FILE_SIZE))
                 f.readline()  # skip partial line
                 tail = f.read()
             return f"[... truncated, showing last {len(tail)} chars of {size} ...]\n{tail}"
-        return p.read_text(errors="replace")
+        return p.read_text(errors="replace", encoding="utf-8")
     except OSError:
         return None
 
@@ -1171,7 +1172,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
 
 class _DashboardHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # On Windows SO_REUSEADDR lets a second server share a port in use, with no bind error.
+    allow_reuse_address = not IS_WINDOWS
 
     def __init__(self, addr, handler, store, allowed, root):
         super().__init__(addr, handler)
@@ -1291,8 +1293,8 @@ def _load_template() -> str:
 
         try:
             if not (ui_dir / "node_modules").exists():
-                subprocess.run(["npm", "install"], cwd=ui_dir, check=True, capture_output=True, timeout=120)
-            subprocess.run(["npm", "run", "build"], cwd=ui_dir, check=True, capture_output=True, timeout=60)
+                subprocess.run(["npm", "install"], cwd=ui_dir, check=True, capture_output=True, timeout=120, shell=IS_WINDOWS)
+            subprocess.run(["npm", "run", "build"], cwd=ui_dir, check=True, capture_output=True, timeout=60, shell=IS_WINDOWS)
         except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
             logger.warning("npm build failed (dashboard UI may be stale): %s", exc)
         # Re-check after build
