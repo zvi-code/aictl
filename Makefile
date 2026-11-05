@@ -87,7 +87,8 @@ test-docker:  ## Run Docker integration suite (fresh install + simulated E2E)
 	docker compose -f docker/docker-compose.test.yml run --build --rm test-integration
 
 test-all: test-ui  ## Run everything (UI + unit + E2E + tools)
-	$(PYTHON) -m pytest test/ -v --timeout=180 --override-ini="addopts="
+	$(PYTHON) -m pytest test/ --ignore=test/e2e_tools -v --timeout=180 --override-ini="addopts="
+	AICTL_TEST_REAL_HOME=1 $(PYTHON) -m pytest test/e2e_tools/ -v --timeout=180 --override-ini="addopts="
 
 lint:  ## Run ruff linter + format check
 	$(PYTHON) -m ruff check .

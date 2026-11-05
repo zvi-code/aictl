@@ -20,6 +20,9 @@ and memory, MCP servers, and a Monitoring Health panel that watches the
 monitor itself (ingesters, OTel receiver, dropped-sample alerts, data
 freshness).*
 
+> Screenshots on this page show an earlier version of the dashboard. For step-by-step tasks, see
+> **[docs/how-to.md](docs/how-to.md)**.
+
 ## Two problems, one tool
 
 **📝 Context control** — write your project's AI context once, in human
@@ -70,10 +73,14 @@ pipx install "aictl[all] @ git+https://github.com/zvi-code/aictl.git"
 # 2. Start the dashboard (opens your browser)
 aictl daemon serve
 
-# 3. Use any AI tool — Claude Code, Copilot, Cursor, Codex, Gemini …
+# 3. Use any AI tool — Copilot, Claude Code, Cursor, Codex, Gemini …
 #    Sessions, tokens, processes, and MCP servers appear as they happen.
 
-# 4. Take control of your context
+# 4. See what is running from the terminal (no daemon needed, writes nothing)
+aictl ps
+aictl top
+
+# 5. Take control of your context
 cd my-project
 aictl ctx init                      # scaffold .context.toml
 aictl ctx deploy --profile debug    # → CLAUDE.md, Copilot rules, Cursor rules, …
@@ -86,7 +93,10 @@ aictl enable                        # one-shot: hooks + OTel + VS Code agent set
 aictl daemon serve                  # now receives OTel from Claude Code, Copilot, Codex
 ```
 
-Or for the current shell only: `eval $(aictl otel enable --print)`
+Or for the current shell only: `eval $(aictl otel enable --print)`. In PowerShell:
+`aictl otel enable --print --shell powershell | Invoke-Expression`.
+
+To undo all of it: `aictl disable --dry-run`, then `aictl disable`.
 
 ## Screenshots
 
@@ -185,7 +195,7 @@ aictl reinstall --skip-ui  # skip the npm build
 
 # Or manually:
 pipx install --force -e ".[all]"   # Python only
-npm run build --prefix aictl/dashboard/ui  # UI only
+npm run build --prefix src/aictl/dashboard/ui  # UI only
 ```
 
 > **Why is this needed?** `pipx install` copies files into an isolated
@@ -581,6 +591,29 @@ The report includes expandable file previews (last 5 lines shown, click to expan
 
 You can also pipe to stdout: `aictl status --html > report.html`.
 
+### Storage: bounded and optional
+
+aictl is an observability layer, so its storage is a disposable cache. Losing history is acceptable;
+hurting the machine is not.
+
+| `[storage] capture` | What is kept |
+|---|---|
+| `full` (default) | Conversation text, capped by age and size; the session's metadata outlives its text |
+| `metadata` | Sessions, tokens, cost, timings, tool names and sizes, with no prompt or response text |
+| `off` | Nothing on disk: no database, journal or log files; history resets on restart |
+
+`max_total_mb` (default 1024) caps the database, journal and logs together, evicting the oldest data
+first. If the database is corrupt, full or locked, the daemon continues in memory and reports it.
+Details: [how-to](docs/how-to.md#control-how-much-is-stored), [storage schema](docs/storage-schema.md).
+
+### Hidden context: `aictl ctx audit`
+
+Inventories every source that can reach the model, per tool, including ones you never open. It flags
+concealment, what changed since the last baseline, agents writing to their own future context, and
+sources that loaded but are not in the inventory. It reads files and never runs a hook or MCP server,
+and it works in every capture mode. The dashboard shows the same report.
+Details: [how-to](docs/how-to.md#find-hidden-context).
+
 ## Command Reference
 
 | Command | What it does |
@@ -604,7 +637,12 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 | `aictl ps <session-or-pid>` | Full detail for one session: memory, tools, prompts, files, activity |
 | `aictl ps --tool NAME --all --json` | Filter by tool, include recently ended sessions, stable JSON output |
 | `aictl top` | Live `ps`: j/k or arrows move, Enter expands, `/` filters, `a` toggles ended, `q` quits |
+| `aictl session list` | Live sessions with their ids |
+| `aictl session kill <session_id>` | Stop a live session |
+| `aictl ctx audit` | Hidden context: every source that can reach the model, drift, concealment, visibility gaps |
+| `aictl ctx audit --fail-on high --json` | The same for CI: exit 1 on a finding of that severity |
 | `aictl daemon serve` | Launch live web dashboard with REST API at localhost:8484 |
+| `aictl daemon serve --capture metadata` | Run without storing conversation text; `off` stores nothing on disk |
 | `aictl daemon dashboard --root .` | Launch live terminal dashboard (TUI) |
 | `aictl enable` | One-shot: install hooks + OTel + VS Code agent settings (all tools, persistent) |
 | `aictl enable --scope project` | Same, scoped to current project (`.claude/settings.local.json`, `.vscode/settings.json`) |
@@ -612,15 +650,20 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 | `aictl hooks install` | Configure Claude Code to push hook events to aictl |
 | `aictl hooks uninstall` | Remove aictl hook rules from Claude Code, Gemini CLI and Copilot at one scope |
 | `aictl hooks status` | Each tool's real hook state, the command that fixes it, and any leftovers |
+| `aictl hooks doctor` | Run hook checks and report what is wrong |
+| `aictl hooks verify` | Send a test event through each installed hook |
 | `aictl hooks repair` | Repair a Codex `config.toml` an older `aictl enable` made invalid |
 | `aictl disable [--dry-run]` | Remove every trace of `aictl enable`. If aictl will not start: `python3 ~/.config/aictl/remove-hooks.py --dry-run` |
 | `aictl otel enable` | Persist OTel config: shell profiles, VS Code, Codex, launchctl |
 | `aictl otel enable --print` | Print env var exports for eval (current shell only) |
 | `aictl otel status` | Check OTel receiver health |
+| `aictl audit tail` | Show recent entries in aictl's own record of files it changed |
 | `aictl memory show --root .` | Show Claude Code auto-memory content |
 | `aictl memory stashes --root .` | List per-profile memory stashes |
 | `aictl db stats` | Show database size, table row counts, and time range |
+| `aictl db compact --dry-run` | Show what compaction would remove and the expected size |
 | `aictl db compact` | Downsample old data, delete expired rows, reclaim space |
+| `aictl db trim-text` | Remove stored conversation text and tool payloads, keep all metadata |
 | `aictl db reset` | Delete the history database and initialise a fresh empty one |
 | `aictl build-ui` | Build the dashboard frontend (npm install + Vite build) |
 | `aictl reinstall` | Rebuild UI + reinstall Python package so code changes take effect |
@@ -629,6 +672,8 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 ### Watching agents: `aictl ps` and `aictl top`
 
 Works with no daemon and writes nothing: it reads the tools' own stores and psutil. Sessions come first, ordered by real activity. A figure with no data shows `n/a` with the reason. With `[storage] capture` set to `metadata` or `off`, prompts show length only. Output from synthetic data:
+
+Example, with illustrative values:
 
 ```text
 GitHub Copilot CLI [copilot-cli]  1 session  rss 240MB
@@ -685,6 +730,10 @@ File access is inferred from tool-call arguments, so files touched by shell comm
 | `--interval SECS` | Refresh interval in seconds (default: `5`) |
 | `--no-open` | Don't auto-open the browser |
 | `--no-monitor` | Disable live runtime overlay (process/network/filesystem collectors) |
+| `--capture full\|metadata\|off` | What to store: bounded text, no text, or nothing on disk. See [storage](#storage-bounded-and-optional) |
+| `--db PATH` | Path to the SQLite history database |
+| `--daemon` | Run in the background; `--status` and `--stop` manage it |
+| `--headless` | Collection only, no web UI |
 
 ### Enable options
 
@@ -702,6 +751,10 @@ File access is inferred from tool-call arguments, so files touched by shell comm
 
 `aictl db reset` accepts `-y` / `--yes` to skip the confirmation prompt.
 
+`aictl db compact` takes `--dry-run`, `--retention-days N` and `--no-vacuum`.
+`aictl db trim-text` takes `--dry-run` and `--older-than-days N`. Compact deletes rows older than the
+retention window, so check `--dry-run` first: [how to shrink a database](docs/how-to.md#shrink-an-existing-database).
+
 ### Dashboard options (`aictl daemon dashboard`)
 
 | Option | Description |
@@ -709,53 +762,54 @@ File access is inferred from tool-call arguments, so files touched by shell comm
 | `--root DIR` | Root directory to monitor (default: `.`) |
 | `--interval SECS` | Refresh interval in seconds (default: `5`) |
 
-## GitHub Copilot: CLI, desktop app, VS Code
+## GitHub Copilot and Microsoft 365 Copilot
 
-aictl tracks three Copilot surfaces as separate tools: `copilot-cli`, `copilot-desktop`, `copilot-vscode`.
-Copilot CLI and the desktop app both keep state in `~/.copilot` (`%USERPROFILE%\.copilot` on Windows;
-`COPILOT_HOME` relocates it). VS Code Copilot Chat stores data under the VS Code user directory.
+aictl tracks `copilot-cli`, `copilot-desktop`, `copilot-vscode` and `copilot365` as separate tools.
 
-**Enable** (the commands exist; their `--help` was checked, see "Not verified" below):
+| Tool | State it reads | What you get |
+|---|---|---|
+| `copilot-cli` | `~/.copilot` (`%USERPROFILE%\.copilot`; `COPILOT_HOME` relocates it) | Sessions, sub-agents, tools, prompts, tokens, premium requests |
+| `copilot-desktop` | The same `~/.copilot`, plus its bundled runtime processes | Sessions, AI credits, config, processes |
+| `copilot-vscode` | The VS Code user directory, Copilot Chat stores and OTel settings | Sessions, tokens, config, processes |
+| `copilot365` | Agent packages in a project; the app, where detected | Local detection only: conversations stay in the tenant |
 
-```powershell
-aictl enable --dry-run     # preview what would be written
-aictl enable               # hooks + OTel + VS Code Copilot agent settings
-aictl daemon serve         # start the receiver (default port 8484, or $env:AICTL_PORT)
-```
+**Enable, verify, remove.** These are the same in PowerShell:
 
 ```bash
-aictl enable --dry-run && aictl enable && aictl daemon serve
-```
-
-**Verify:**
-
-```powershell
-aictl hooks verify         # POSTs a synthetic event through every installed hook
-aictl otel status          # receiver counters on the running server
-aictl status --tool copilot --json
-```
-
-`aictl status` reports, per surface, only what exists on disk: model, MCP servers, plugins, global
-instructions, version, and `not configured` / `not detected` where a fact is absent. Copilot CLI and
-desktop read `~/.copilot/settings.json` and `mcp-config.json`; the CLI version comes from its npm
-`package.json`, the desktop version from the macOS app bundle.
-
-**Remove:**
-
-```powershell
+aictl enable --dry-run
+aictl enable
+aictl daemon serve
+aictl hooks status
+aictl hooks verify
+aictl otel status
+aictl status --tool copilot
 aictl disable --dry-run
 aictl disable
 ```
 
-**Not verified**
-- No command in this section was run on Windows.
-- `aictl enable` is documented to register hooks for Claude Code and VS Code Copilot; registration for
-  Copilot CLI and the desktop app has not been confirmed.
-- OTLP metrics for all three service names are accepted by the receiver, but token metrics alone do not
-  create a session row (see `test/e2e/test_copilot_flow.py`, strict xfail).
-- Desktop app version detection is macOS-only; on Windows it reports `not detected`.
+`aictl status` reports only what exists on disk: model, MCP servers, plugins, global instructions and
+version, with `not configured` or `not detected` where a fact is absent. Version numbers come from
+package and app metadata, never from launching the tool.
+
+Copilot figures use Copilot's own billing units. Dollar figures are list-price estimates and labelled
+as such. Microsoft 365 Copilot shows "not available from this machine" rather than 0.
+
+**Limits**
+
+- Hook events from the shared `~/.copilot/hooks` file are attributed by transcript path and process
+  ancestry. Registration for the desktop app is not documented by GitHub and is not confirmed.
+- OTLP token metrics alone do not create a session row ([zvi-code/aictl#4](https://github.com/zvi-code/aictl/issues/4)).
+  The strict xfails in `test/e2e/test_copilot_flow.py` track this.
+- OTel service names for the CLI and desktop app are mapped but not verified against those tools.
+
+Step by step: [docs/how-to.md](docs/how-to.md#connect-copilot-cli-the-desktop-app-and-vs-code).
+Per-tool facts: [docs/tool-copilot.md](docs/tool-copilot.md), [docs/tool-copilot365.md](docs/tool-copilot365.md).
 
 ## Windows Installation & Troubleshooting
+
+Recent changes to hooks, the daemon, process tables, `aictl ps` and storage were tested by simulating
+Windows on macOS. They have not been run on a real Windows machine yet. To confirm them, follow
+[Check a Windows install](docs/how-to.md#check-a-windows-install).
 
 ### Prerequisites
 
@@ -771,8 +825,12 @@ aictl disable
 ### Install aictl
 
 ```powershell
+pipx install "aictl[all] @ git+https://github.com/zvi-code/aictl.git"
+# or, from a clone:
 pipx install --force ".[all]"
 ```
+
+The built dashboard ships with the package, so Node.js is only needed to change the UI.
 
 Verify:
 
@@ -818,29 +876,34 @@ npm run build --prefix src/aictl/dashboard/ui
 
 | Tool | Location |
 |------|----------|
-| Claude Code | `%APPDATA%\Claude\` |
-| Claude account | `%APPDATA%\Claude\.claude.json` |
-| VS Code settings | `%APPDATA%\Code\User\settings.json` |
+| aictl config, history, removal script | `%APPDATA%\aictl\` |
+| Copilot CLI and desktop app | `%USERPROFILE%\.copilot\` (`COPILOT_HOME` relocates it) |
+| Copilot hook file | `%USERPROFILE%\.copilot\hooks\aictl.json` |
+| VS Code settings and MCP | `%APPDATA%\Code\User\settings.json`, `mcp.json` |
+| VS Code Copilot Chat | `%APPDATA%\Code\User\globalStorage\github.copilot-chat\` |
 | VS Code extensions | `%USERPROFILE%\.vscode\extensions\` |
+| Microsoft 365 Copilot app | `%LOCALAPPDATA%\Packages\Microsoft.Copilot_8wekyb3d8bbwe\` (unverified) |
+| Claude Code | `%USERPROFILE%\.claude\` |
+| Claude Desktop | `%APPDATA%\Claude\` |
 | Cursor settings | `%APPDATA%\Cursor\User\settings.json` |
 | Windsurf / Codeium | `%APPDATA%\Codeium\windsurf\` |
-| Copilot sessions | `%APPDATA%\GitHub Copilot\session-state\` |
 | GitHub CLI | `%APPDATA%\GitHub CLI\` |
 | Azure Developer CLI | `%USERPROFILE%\.azd\` |
 | PromptFlow | `%USERPROFILE%\.promptflow\` |
+
+The full list, including rows marked unverified, is in `src/aictl/data/paths-windows.csv`.
 
 ### Known limitations on Windows
 
 | Feature | Status |
 |---------|--------|
-| File discovery (`status`, `daemon serve`, `daemon dashboard`) | ✅ Full support |
-| Deploy (`aictl ctx deploy`) / import / scan | ✅ Full support |
-| Web dashboard (`aictl daemon serve`) | ✅ Full support (no extra deps) |
-| Process detection | ✅ Requires `psutil` (`pipx inject aictl psutil`) |
-| Live TUI dashboard | ✅ Requires `textual` (`pipx inject aictl textual`) |
-| HTML report | ✅ Full support |
-| `--backtrace PID` | ❌ Not available (uses macOS `sample` / Linux `eu-stack`) |
-| `ps` fallback (no psutil) | ❌ Skipped silently — install `psutil` instead |
+| Process detection, `aictl ps`, `aictl top` | Require `psutil`, included in `[all]`. Without it there is no process data |
+| Live TUI dashboard | Requires `textual`, included in `[all]` |
+| `aictl daemon serve --daemon` | Respawns detached, because there is no `fork`. Simulated only |
+| `aictl top` keys | Use `msvcrt`. Not yet exercised on a real console |
+| Persisted environment | `setx` values under `HKCU\Environment` and PowerShell profile lines. Running processes keep old values |
+| Shell and dev-server process patterns | Disabled: names cannot tie them to a tool ([zvi-code/aictl#3](https://github.com/zvi-code/aictl/issues/3)) |
+| `--backtrace PID` | Not available (uses macOS `sample` / Linux `eu-stack`) |
 
 ### Common errors
 
@@ -884,7 +947,7 @@ Or via Group Policy: *Computer Configuration → Administrative Templates → Sy
 ```powershell
 python -m pytest test\ -v --ignore=test\e2e --ignore=test\e2e_tools   # unit tests
 python -m pytest test\e2e\ -v --timeout=120                            # simulated E2E
-python -m pytest test\e2e_tools\ -v --timeout=180                      # real-tool E2E
+$env:AICTL_TEST_REAL_HOME = "1"; python -m pytest test\e2e_tools\ -v --timeout=180  # real-tool E2E, uses your real profile
 python test\run.py -v                                                   # legacy integration
 ```
 
@@ -901,6 +964,11 @@ make test-tools    # real-tool E2E — runs Claude/Gemini CLI, verifies hooks, s
 make test-docker   # Docker fresh-install integration gate
 make test-all      # everything above
 ```
+
+The suite cannot touch your real config. `test/conftest.py` replaces `HOME`, `XDG_CONFIG_HOME`, `APPDATA`
+and `LOCALAPPDATA` before aictl is imported, and fails the run if a write still reaches a real tool config
+location. `make test-tools` opts out with `AICTL_TEST_REAL_HOME=1`, because real CLIs need your real login
+state. A plain `pytest test/` skips `test/e2e` and `test/e2e_tools` through `addopts`; name the directory to run them.
 
 The Makefile uses the pipx venv interpreter (`~/.local/pipx/venvs/aictl/bin/python`), the one environment `make install` sets up; override with `make PYTHON=/path/to/python test` for another environment.
 
@@ -1049,21 +1117,22 @@ See [docker/README.md](docker/README.md) for full details.
 
 ### CI
 
-GitHub Actions runs automatically on push/PR (`.github/workflows/test.yml`):
-- **Unit tests** — Python 3.11/3.12/3.13 matrix
-- **Simulated E2E** — starts server, runs all 40 synthetic tests
-- **Docker** — fresh-install validation
-- **Nightly** — real-tool E2E with Claude + Gemini (scheduled, opt-in)
+No CI workflow is configured in this repository, so run `make test-all` before merging.
 
 ## Documentation
 
 | Doc | Contents |
 |-----|----------|
+| [docs/how-to.md](docs/how-to.md) | Step-by-step tasks: watch agents, connect tools, remove aictl, control storage, audit context, check a Windows install |
 | [docs/context.toml-format.md](docs/context.toml-format.md) | Complete `.context.toml` format reference with examples |
 | [docs/architecture.md](docs/architecture.md) | Full system architecture — pipeline, monitoring, dashboard, storage, threading |
 | [docs/tool-claude-code.md](docs/tool-claude-code.md) | Claude Code: all generated and external files |
 | [docs/tool-claude-desktop.md](docs/tool-claude-desktop.md) | Claude Desktop: three modes (Chat, Code, Cowork), extensions, VM, disk usage |
 | [docs/tool-copilot.md](docs/tool-copilot.md) | Copilot CLI + VS Code + M365 Copilot: instructions, agents, prompts, architecture |
+| [docs/tool-copilot365.md](docs/tool-copilot365.md) | Microsoft 365 Copilot: what is observable locally, with sources |
+| [docs/tool-codex.md](docs/tool-codex.md) | OpenAI Codex CLI and desktop app: state, processes, config |
+| [docs/tool-gemini.md](docs/tool-gemini.md) | Gemini CLI: files, hooks, telemetry |
+| [docs/tool-windsurf.md](docs/tool-windsurf.md) | Windsurf: rules and memories |
 | [docs/tool-cursor.md](docs/tool-cursor.md) | Cursor: .mdc rules, glob scoping, MCP |
 | [docs/vscode-claude-modes.md](docs/vscode-claude-modes.md) | Four VS Code session targets: Local, Cloud, Claude Code, Copilot CLI — same model, different harness |
 | [docs/memory.md](docs/memory.md) | Memory swap per (root, profile), outside-repo files |

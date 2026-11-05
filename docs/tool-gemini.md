@@ -19,7 +19,7 @@ commands, skills, MCP, hooks, and settings.
 
 ## Imported Files
 
-`aictl ctx import --from gemini` reads:
+`aictl import --from gemini` reads:
 
 - `GEMINI.md`, `GEMINI.local.md`
 - `.gemini/rules/*.md` (with `paths:` glob in frontmatter)
@@ -87,7 +87,7 @@ this doc will cover ingestion of those export files.
 ## Import
 
 ```bash
-aictl ctx import --from gemini --root . [--patch]
+aictl import --from gemini --root . [--patch]
 ```
 
 ## Deploy

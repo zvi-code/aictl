@@ -66,7 +66,7 @@ Global signals:
 ## Import
 
 ```bash
-aictl ctx import --from windsurf --root . [--patch]
+aictl import --from windsurf --root . [--patch]
 ```
 
 Reads `.windsurfrules` + `.windsurf/rules/*.md` + `.windsurf/mcp.json`

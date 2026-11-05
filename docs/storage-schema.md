@@ -242,9 +242,14 @@ sources' counts and is never added to them. All token columns are disjoint class
 db_path = ""          # Empty = auto (~/.config/aictl/history.db)
 flush_interval = 10.0 # Seconds between batch writes
 retention_days = 30   # Delete data older than this
+capture = "full"      # full, metadata or off; see "Bounds and capture modes"
+max_total_mb = 1024   # Budget for the database, journal and logs
+content_retention_days = 14  # With full: blank conversation text older than this
 ```
 
-CLI: `aictl serve --db /path/to/custom.db`
+On Windows the file is `%APPDATA%\aictl\config.toml`.
+
+CLI: `aictl daemon serve --db /path/to/custom.db`
 
 ## Compaction Policy
 
