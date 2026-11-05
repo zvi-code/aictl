@@ -30,7 +30,7 @@ def _read_json_object(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(errors="replace"))
+        data = json.loads(path.read_text(errors="replace", encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ToolConfigEditError(409, f"Config file contains invalid JSON: {exc.msg}") from exc
     except OSError as exc:
@@ -134,7 +134,7 @@ def save_editable_tool_config(
     new_text = json.dumps(data, indent=2, sort_keys=True) + "\n"
     try:
         validate_config_text(path, new_text)
-        tmp.write_text(new_text)
+        tmp.write_text(new_text, encoding="utf-8")
         os.replace(tmp, path)
     except OSError as exc:
         try:

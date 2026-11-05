@@ -8,7 +8,6 @@ import asyncio
 import json
 import logging
 import os
-import signal
 import sys
 from pathlib import Path
 
@@ -17,7 +16,16 @@ import click
 from ..monitoring.config import MonitorConfig
 from ..monitoring.runtime import MonitorRuntime
 from ..orchestrator import start_server
-from ..platforms import IS_WINDOWS, cursor_home_dir, load_config
+from ..platforms import (
+    DAEMON_PID_ENV,
+    IS_WINDOWS,
+    cursor_home_dir,
+    is_aictl_process,
+    load_config,
+    pid_alive,
+    spawn_detached_windows,
+    terminate_pid,
+)
 
 # ─── serve ───────────────────────────────────────────────────────────────────
 
@@ -114,6 +122,9 @@ def serve(
 
     # Foreground mode
     root = Path(root_dir).resolve()
+    own_pid_file = os.environ.pop(DAEMON_PID_ENV, "")
+    if own_pid_file:
+        Path(own_pid_file).write_text(str(os.getpid()), encoding="utf-8")
     try:
         if headless:
             from ..orchestrator import start_collector
@@ -163,29 +174,20 @@ def _start_daemon(
 ):
     """Fork to background and run the server (or headless collector)."""
 
-    if IS_WINDOWS:
-        click.secho(
-            "Daemon mode is not supported on Windows. Use 'aictl serve' in a terminal or as a Windows Service.",
-            fg="red",
-        )
-        return
-
     # Kill existing daemon on the same port before starting
     if pid_file.is_file():
         try:
-            old_pid = int(pid_file.read_text().strip())
-            os.kill(old_pid, 0)  # Check if alive
-            click.echo(f"  killing old daemon (PID {old_pid})")
-            os.kill(old_pid, signal.SIGTERM)
-            # Wait briefly for clean shutdown
-            import time
+            old_pid = int(pid_file.read_text(encoding="utf-8").strip())
+            if pid_alive(old_pid) and is_aictl_process(old_pid):
+                click.echo(f"  killing old daemon (PID {old_pid})")
+                terminate_pid(old_pid)
+                # Wait briefly for clean shutdown
+                import time
 
-            for _ in range(50):
-                try:
-                    os.kill(old_pid, 0)
+                for _ in range(50):
+                    if not pid_alive(old_pid):
+                        break
                     time.sleep(0.1)
-                except OSError:
-                    break
         except (OSError, ValueError):
             pass
         pid_file.unlink(missing_ok=True)
@@ -193,6 +195,12 @@ def _start_daemon(
     log_file = cfg.effective_log_file()
     pid_file.parent.mkdir(parents=True, exist_ok=True)
     log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    if IS_WINDOWS:
+        _start_daemon_windows(
+            root_dir, host, port, interval, include_live_monitor, pid_file, log_file, db_path=db_path, headless=headless
+        )
+        return
 
     # Double-fork to detach from terminal
     pid = os.fork()
@@ -217,12 +225,12 @@ def _start_daemon(
     # Grandchild — daemon process
     sys.stdin.close()
     # capture=off keeps nothing on disk, including the daemon's log.
-    log_fd = open(os.devnull if cfg.capture == "off" else log_file, "a")
+    log_fd = open(os.devnull if cfg.capture == "off" else log_file, "a", encoding="utf-8")
     os.dup2(log_fd.fileno(), sys.stdout.fileno())
     os.dup2(log_fd.fileno(), sys.stderr.fileno())
 
     # Write PID
-    pid_file.write_text(str(os.getpid()))
+    pid_file.write_text(str(os.getpid()), encoding="utf-8")
 
     # Run server (or headless collector)
     try:
@@ -252,18 +260,48 @@ def _start_daemon(
         pid_file.unlink(missing_ok=True)
 
 
+def _start_daemon_windows(
+    root_dir, host, port, interval, include_live_monitor, pid_file, log_file, *, db_path=None, headless=False
+):
+    """Windows has no fork: start ``aictl serve`` again as a background process."""
+    import time
+
+    argv = [sys.executable, "-m", "aictl.cli", "serve", "--root", str(Path(root_dir).resolve())]
+    argv += ["--port", str(port), "--host", host, "--interval", str(interval), "--no-open"]
+    argv.append("--monitor" if include_live_monitor else "--no-monitor")
+    if db_path:
+        argv += ["--db", str(db_path)]
+    if headless:
+        argv.append("--headless")
+    proc = spawn_detached_windows(argv, log_file, pid_file)
+    for _ in range(100):
+        if pid_file.is_file() or proc.poll() is not None:
+            break
+        time.sleep(0.1)
+    if not pid_file.is_file():
+        click.secho(f"  aictl daemon did not start; see {log_file}", fg="red")
+        return
+    click.echo(f"  aictl daemon starting (PID {pid_file.read_text(encoding='utf-8').strip()})")
+    if headless:
+        click.echo("  headless collection (no web UI) — view with: aictl dashboard")
+    else:
+        click.echo(f"  dashboard at http://{host}:{port}")
+    click.echo(f"  log: {log_file}")
+    click.echo(f"  pid: {pid_file}")
+    click.echo("  stop: aictl serve --stop")
+
+
 def _stop_daemon(pid_file: Path):
     """Stop a running daemon by PID file."""
     if not pid_file.is_file():
         click.echo("No daemon running (no PID file).")
         return
     try:
-        pid = int(pid_file.read_text().strip())
-        os.kill(pid, signal.SIGTERM)
-        click.echo(f"Stopped daemon (PID {pid}).")
-        pid_file.unlink(missing_ok=True)
-    except ProcessLookupError:
-        click.echo("Daemon not running (stale PID file removed).")
+        pid = int(pid_file.read_text(encoding="utf-8").strip())
+        if pid_alive(pid) and is_aictl_process(pid) and terminate_pid(pid):
+            click.echo(f"Stopped daemon (PID {pid}).")
+        else:
+            click.echo("Daemon not running (stale PID file removed).")
         pid_file.unlink(missing_ok=True)
     except ValueError:
         click.echo("Invalid PID file.")
@@ -276,18 +314,14 @@ def _show_daemon_status(pid_file: Path, host: str, port: int):
         click.echo("No daemon running.")
         return
     try:
-        pid = int(pid_file.read_text().strip())
-        # Not os.kill(pid, 0): on Windows that terminates the process.
-        import psutil
-
-        if not psutil.pid_exists(pid):
-            raise ProcessLookupError(pid)
-        click.secho(f"Daemon running (PID {pid})", fg="green")
-        click.echo(f"  dashboard: http://{host}:{port}")
-        click.echo(f"  pid file:  {pid_file}")
-    except ProcessLookupError:
-        click.echo("Daemon not running (stale PID file).")
-        pid_file.unlink(missing_ok=True)
+        pid = int(pid_file.read_text(encoding="utf-8").strip())
+        if pid_alive(pid) and is_aictl_process(pid):
+            click.secho(f"Daemon running (PID {pid})", fg="green")
+            click.echo(f"  dashboard: http://{host}:{port}")
+            click.echo(f"  pid file:  {pid_file}")
+        else:
+            click.echo("Daemon not running (stale PID file).")
+            pid_file.unlink(missing_ok=True)
     except ValueError:
         click.echo("Invalid PID file.")
 

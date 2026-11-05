@@ -847,13 +847,13 @@ class DashboardApp(App):
                 content = f"[dim]File not found: {path_str}[/dim]"
             elif p.stat().st_size > 200_000:
                 # Read tail for large files
-                with open(p, errors="replace") as fh:
+                with open(p, errors="replace", encoding="utf-8") as fh:
                     fh.seek(max(0, p.stat().st_size - 50_000))
                     fh.readline()  # skip partial
                     tail = fh.read()
                 content = f"[dim]... truncated (showing last {len(tail)} chars) ...[/dim]\n\n{tail}"
             else:
-                content = p.read_text(errors="replace")
+                content = p.read_text(errors="replace", encoding="utf-8")
         except OSError as e:
             content = f"[dim]Cannot read: {e}[/dim]"
 
