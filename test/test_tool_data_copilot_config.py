@@ -46,3 +46,11 @@ def test_parsers_registered_with_yaml_entries():
     names = set(load_tool_configs())
     for t in ("copilot-cli", "copilot-desktop"):
         assert t in names and t in tc._CONFIG_PARSER_REGISTRY
+
+
+def test_desktop_version_uses_file_metadata_on_windows(monkeypatch):
+    from aictl.monitoring import tool_config
+
+    monkeypatch.setattr(tool_config, "IS_WINDOWS", True)
+    monkeypatch.setattr(tool_config, "copilot_desktop_windows_version", lambda: "1.2.3")
+    assert tool_config._copilot_desktop_version() == "1.2.3"
