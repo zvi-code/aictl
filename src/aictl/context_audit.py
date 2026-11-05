@@ -115,6 +115,8 @@ class Source:
     readable: bool = True  # False names a source no file shows in full
     transient: bool = False  # True is left out of drift, e.g. a live process flag
     note: str = ""
+    in_project: bool = False
+    why_in_effect: str = ""
 
 
 @dataclass
@@ -1193,6 +1195,7 @@ def _collect_copilot(inv: _Inventory, findings: list[Finding], env: dict[str, st
             ("agents/*.md", "agent", "on-demand"),
             ("skills/*/SKILL.md", "skill", "on-demand"),
             ("hooks/*.json", "hooks", "config"),
+            ("settings.json", "settings", "config"),
             ("config.json", "settings", "config"),
             ("permissions-config.json", "settings", "config"),
             ("extensions/*/extension.*", "extension", "config"),
@@ -2347,7 +2350,7 @@ def _dedupe_findings(findings: list[Finding]) -> list[Finding]:
     seen: set[tuple] = set()
     out = []
     for f in sorted(findings, key=lambda x: (_SEV_RANK.get(x.severity, 9), x.rule, x.path, x.line)):
-        key = (f.rule, f.path, f.line, f.session_id)
+        key = (f.rule, f.path, f.line, f.session_id, f.snippet if f.rule.startswith("model.") else "")
         if key not in seen:
             seen.add(key)
             out.append(f)
@@ -2418,6 +2421,13 @@ def run_audit(
     sources = list(inv.rows.values())
     mark = lap("transcripts", mark)
 
+    from .effective_config import annotate_sources, model_findings  # needs this module's helpers
+
+    effective_models, found = model_findings(root, env=env, ps_output=ps_output)
+    findings.extend(found)
+    annotate_sources(sources, root, findings, env)
+    mark = lap("effective", mark)
+
     baseline = _load_baseline(mode, baseline_file)
     project_key = str(root)
     entry = baseline["projects"].get(project_key)
@@ -2475,6 +2485,7 @@ def run_audit(
             "agent_writes": agent_writes,
             "events": recent_events,
         },
+        "effective_models": {t: e for t, e in effective_models.items() if _tool_matches(t, tool)},
         "unattributed": unattributed,
         "unknown_loaded": unknown,
     }
