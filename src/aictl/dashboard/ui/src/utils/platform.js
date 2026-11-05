@@ -8,6 +8,12 @@ export function isMacPlatform() {
   return /mac|iphone|ipad/i.test(id);
 }
 
+export function isWindowsPlatform() {
+  if (typeof navigator === 'undefined') return false;
+  const id = navigator.userAgentData?.platform || navigator.platform || navigator.userAgent || '';
+  return /win/i.test(id) && !/darwin/i.test(id);
+}
+
 export function commandKeyLabel() {
   return isMacPlatform() ? '⌘K' : 'Ctrl+K';
 }

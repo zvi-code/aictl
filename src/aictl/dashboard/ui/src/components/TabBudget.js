@@ -1,4 +1,5 @@
 import { useMemo, useContext } from 'preact/hooks';
+import { CostValue, sumKnownCost } from '../utils/cost.js';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS, fmtK, fmtSz, fmtPct, esc } from '../utils.js';
@@ -157,7 +158,7 @@ export default function TabBudget() {
   const totCR = telemetry.reduce((s,t)=>s+(t.cache_read_tokens||0),0);
   const totCW = telemetry.reduce((s,t)=>s+(t.cache_creation_tokens||0),0);
   const totSess = telemetry.reduce((s,t)=>s+(t.total_sessions||0),0);
-  const totCost = telemetry.reduce((s,t)=>s+(t.cost_usd||0),0);
+  const totCost = sumKnownCost(telemetry);
 
   return html`<div class="budget-grid">
     <!-- Live sparkline + context window side by side -->
@@ -277,7 +278,7 @@ export default function TabBudget() {
               <td style="text-align:right" class="text-muted">${fmtK(t.cache_read_tokens||0)}</td>
               <td style="text-align:right" class="text-muted">${fmtK(t.cache_creation_tokens||0)}</td>
               <td style="text-align:right">${fmtK(t.total_sessions||0)}</td>
-              <td style="text-align:right">${t.cost_usd > 0 ? '$'+t.cost_usd.toFixed(2) : '\u2014'}</td>
+              <td style="text-align:right"><${CostValue} row=${t}/></td>
               <td>${tb ? html`<${TokenBar} always=${tb.always_loaded||0} onDemand=${tb.on_demand||0}
                 conditional=${tb.conditional||0} never=${tb.never_sent||0} total=${tb.total||1}/>` : null}</td>
             </tr>`;})}
@@ -288,7 +289,7 @@ export default function TabBudget() {
             <td style="text-align:right" class="text-muted">${fmtK(totCR)}</td>
             <td style="text-align:right" class="text-muted">${fmtK(totCW)}</td>
             <td style="text-align:right">${fmtK(totSess)}</td>
-            <td style="text-align:right">${totCost>0?'$'+totCost.toFixed(2):'\u2014'}</td>
+            <td style="text-align:right"><${CostValue} row=${totCost}/></td>
             <td></td>
           </tr>`}</tbody>
         </table>

@@ -6,7 +6,8 @@ import { useMemo, useState } from 'preact/hooks';
 import * as api from '../api.js';
 import { fmtDurSec, fmtK, fmtPct, fmtSz } from '../utils.js';
 import { usePolledResource } from '../hooks/usePolledResource.js';
-import { deriveIssues, runningSessions, sessionMemMb, storageSummary, storageText, summarizeCosts } from '../utils/health.js';
+import { deriveIssues, runningSessions, sessionMemMb, storageSummary, storageText } from '../utils/health.js';
+import { CostValue, NO_COST_REASON, billingUnitLabel, fmtUsd, summarizeUsage } from '../utils/cost.js';
 import { loadHiddenContextSummary } from './HiddenContextSlot.js';
 import { COST_ESTIMATE_NOTE, scopeIsCloudOnly, toolLabel } from '../utils/tools.js';
 import { baseName } from '../utils/paths.js';
@@ -14,11 +15,6 @@ import PanelState, { panelStatus } from './ui/PanelState.js';
 import { ToolIcon } from './ui/index.js';
 
 const SESSION_ROWS = 8;
-
-function fmtUsd(n) {
-  if (!n) return '$0.00';
-  return '$' + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
 
 function RunningPanel({ snap, enabledTools, onOpenSession, onShowAll }) {
   const rows = useMemo(() => runningSessions(snap, enabledTools), [snap, enabledTools]);
@@ -64,36 +60,37 @@ function RunningPanel({ snap, enabledTools, onOpenSession, onShowAll }) {
   </section>`;
 }
 
-function CostPanel({ onOpenBudget, cloudScope }) {
-  const res = usePolledResource(() => api.getProjectCosts(1), [], { pollMs: 60000 });
-  const summary = useMemo(() => summarizeCosts(res.data), [res.data]);
-  const status = panelStatus({ ...res, isEmpty: rows => !rows?.length });
+function CostPanel({ onOpenBudget, cloudScope, enabledTools, snap }) {
+  const res = usePolledResource(() => api.getUsage({ since: Date.now() / 1000 - 86400 }), [], { pollMs: 60000 });
+  const summary = useMemo(() => summarizeUsage(res.data, enabledTools), [res.data, enabledTools]);
+  const status = panelStatus({ ...res, data: res.data ? summary.rows : null, isEmpty: rows => !rows.length });
   if (cloudScope) {
     return html`<section class="now-panel" aria-labelledby="now-cost">
-      <header class="now-panel__head"><h2 id="now-cost">Estimated cost, last 24 h</h2></header>
+      <header class="now-panel__head"><h2 id="now-cost">Cost, last 24 h</h2></header>
       <${PanelState} status="empty" emptyTitle="Not available from this machine"
         emptyHint="The selected tool is billed and metered in the vendor's cloud, so no local token counts exist to estimate from."/>
     </section>`;
   }
+  const hasFigure = summary.billed.length > 0 || summary.listUsd !== null;
   return html`<section class="now-panel" aria-labelledby="now-cost">
     <header class="now-panel__head">
-      <h2 id="now-cost">Estimated cost, last 24 h</h2>
-      ${res.data && html`<span class="now-panel__figure" title=${COST_ESTIMATE_NOTE}>${fmtUsd(summary.cost)}</span>`}
+      <h2 id="now-cost">Cost, last 24 h</h2>
+      ${res.data && summary.billed.map(b => html`<span key=${b.unit} class="now-panel__figure">${b.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}<small class="now-panel__unit"> ${billingUnitLabel(b.unit)}</small></span>`)}
+      ${res.data && summary.listUsd !== null && html`<span class="now-panel__figure" title=${COST_ESTIMATE_NOTE}>${fmtUsd(summary.listUsd)}<small class="now-panel__unit"> est.</small></span>`}
+      ${res.data && !hasFigure && summary.rows.length > 0 && html`<span class="now-panel__figure" title=${summary.unpricedReason || NO_COST_REASON}>n/a</span>`}
     </header>
     <${PanelState} status=${status} error=${res.error} updatedAt=${res.updatedAt} onRetry=${res.reload}
-      label="cost" emptyTitle="No token usage recorded in the last 24 h"
-      emptyHint="Cost comes from per-request telemetry. Turn on the OTel receiver if a tool is running but nothing shows."
+      label="cost" emptyTitle=${enabledTools ? 'No recorded usage for the selected tools in the last 24 h' : 'No recorded usage in the last 24 h'}
+      emptyHint="Usage comes from per-request telemetry. Turn on the OTel receiver if a tool is running but nothing shows."
       emptyFix="aictl otel enable">
-      <div class="now-panel__sub">${fmtK(summary.tokens)} tokens, ${summary.sessions} sessions, all tools. Not a billed amount.</div>
-      ${summary.top.length > 0
-        ? html`<table class="now-table now-table--plain">
-            <tbody>${summary.top.map(r => html`<tr key=${r.project}>
-              <td class="now-table__project" title=${r.project + (r.pricing_models?.length ? '\nPriced as ' + r.pricing_models.join(', ') : '')}>${baseName(r.project)}</td>
-              <td class="num">${fmtK(r.total_tokens)}</td>
-              <td class="num">${fmtUsd(r.cost_usd)}</td>
-            </tr>`)}</tbody>
-          </table>`
-        : html`<div class="now-panel__sub">No priced usage. Sessions without token counts are not estimated.</div>`}
+      <div class="now-panel__sub">${fmtK(summary.tokens)} tokens, ${summary.sessions} sessions${summary.listUsd !== null ? '. Dollar figures are list-price estimates, not billed amounts.' : ''}${summary.unpriced ? ` ${summary.unpriced} tool${summary.unpriced === 1 ? ' has' : 's have'} no known price.` : ''}</div>
+      <table class="now-table now-table--plain">
+        <tbody>${summary.rows.slice(0, 5).map(r => html`<tr key=${r.tool}>
+          <td class="now-table__project" title=${(r.tokens_source || []).length ? 'Tokens from ' + r.tokens_source.join(', ') + (r.tokens_quality ? ' (' + r.tokens_quality + ')' : '') : (r.tokens_reason || '')}><${ToolIcon} tool=${r.tool} size="1em"/> ${toolLabel(r.tool, snap)}</td>
+          <td class="num">${fmtK(r.total_tokens || 0)}</td>
+          <td class="num"><${CostValue} row=${r}/></td>
+        </tr>`)}</tbody>
+      </table>
       <button type="button" class="now-link now-panel__more" onClick=${onOpenBudget}>Open budget</button>
     </${PanelState}>
   </section>`;
@@ -180,7 +177,7 @@ export default function OverviewNow({
   return html`<div class="now-grid">
     <${RunningPanel} snap=${snap} enabledTools=${enabledTools}
       onOpenSession=${onOpenSession} onShowAll=${() => onOpenTab('live')}/>
-    <${CostPanel} onOpenBudget=${() => onOpenTab('budget')} cloudScope=${scopeIsCloudOnly(snap, enabledTools)}/>
+    <${CostPanel} onOpenBudget=${() => onOpenTab('budget')} cloudScope=${scopeIsCloudOnly(snap, enabledTools)} enabledTools=${enabledTools} snap=${snap}/>
     <${HealthPanel} snap=${snap} connected=${connected} otelActive=${otelActive}
       alerts=${alerts} selfStatus=${selfStatus} onOpenTab=${onOpenTab}/>
   </div>`;

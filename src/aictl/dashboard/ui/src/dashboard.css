@@ -3702,3 +3702,9 @@ header[role="banner"] h1 { font-size: var(--fs-lg); font-weight: 650; letter-spa
 
 /* Panel titles do not compete with the data for the accent. */
 .budget-card h3, .mem-group h3, .budget-section h3, .analytics-section-title { color: var(--fg); font-size: var(--fs-lg); font-weight: 600; }
+
+.now-panel__unit { font-size: var(--fs-sm); font-weight: 500; color: var(--fg2); letter-spacing: 0; }
+.now-panel__head .now-panel__figure + .now-panel__figure { margin-left: var(--sp-6); }
+.cost-value__sub { font-size: var(--fs-xs); color: var(--fg2); }
+.cost-value--none { color: var(--fg2); }
+.panel-state--note { display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-5); font-size: var(--fs-sm); color: var(--fg2); }

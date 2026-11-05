@@ -273,6 +273,15 @@ export async function getAnalytics(path, opts = {}) {
   return fetchJson(path, opts);
 }
 
+/** Per-tool usage with provenance. cost_usd may be null; see cost_reason. */
+export async function getUsage({ since, until } = {}) {
+  const qs = new URLSearchParams();
+  if (since != null) qs.set('since', String(since));
+  if (until != null) qs.set('until', String(until));
+  const q = qs.toString();
+  return fetchJson('/api/usage' + (q ? '?' + q : ''));
+}
+
 export async function getProjectCosts(days = 7) {
   return fetchJson('/api/project-costs?days=' + days);
 }

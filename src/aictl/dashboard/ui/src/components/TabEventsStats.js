@@ -1,4 +1,5 @@
 import { Fragment } from 'preact';
+import { CostValue } from '../utils/cost.js';
 import { useState, useMemo, useEffect, useContext } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
@@ -80,7 +81,7 @@ export default function TabEventsStats() {
   if (!s) return html`<p class="loading-state">Loading...</p>`;
 
   const tool = tools.find(t => t.tool === selectedTool);
-  if (cloudOnly(tool)) return html`<${CloudOnlyNotice} tool=${tool}/>`;
+  if (cloudOnly(tool, s)) return html`<${CloudOnlyNotice} tool=${tool}/>`;
   const telem = s.tool_telemetry?.find(t => t.tool === selectedTool);
   const live = tool?.live;
   const c = COLORS[selectedTool] || 'var(--fg2)';
@@ -144,7 +145,7 @@ export default function TabEventsStats() {
             <div class="es-kv-card"><div class="label">Cache Write (tok)</div><div class="value">${fmtTok(telem.cache_creation_tokens || 0)}</div></div>
             <div class="es-kv-card"><div class="label">Sessions</div><div class="value">${fmtK(telem.total_sessions || 0)}</div></div>
             <div class="es-kv-card"><div class="label">Messages</div><div class="value">${fmtK(telem.total_messages || 0)}</div></div>
-            <div class="es-kv-card" title=${COST_ESTIMATE_NOTE}><div class="label">Est. cost</div><div class="value">${telem.cost_usd ? '$' + telem.cost_usd.toFixed(2) : '-'}</div></div>
+            <div class="es-kv-card" title=${COST_ESTIMATE_NOTE}><div class="label">Est. cost</div><div class="value"><${CostValue} row=${telem}/></div></div>
           </div>
           ${Object.keys(telem.by_model || {}).length > 0 && html`<div style="margin-top:var(--sp-3)">
             <div class="es-section-title">By Model</div>

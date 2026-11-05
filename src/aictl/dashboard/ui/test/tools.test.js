@@ -73,12 +73,12 @@ describe('fix commands name the right family', () => {
   });
 });
 
-describe('cost is labelled as an estimate', () => {
-  it('the first screen never presents a figure as a charge', () => {
+describe('cost panel', () => {
+  it('the first screen has a cost panel and the estimate note exists', () => {
     expect(COST_ESTIMATE_NOTE).toContain('Not a billed amount');
     const { container } = render(html`<${OverviewNow} snap=${{ tools: [], sessions: [] }}
       enabledTools=${null} connected=${true} otelActive=${true} alerts=${[]}
       onOpenSession=${() => {}} onOpenTab=${() => {}}/>`);
-    expect(container.querySelector('#now-cost').textContent).toBe('Estimated cost, last 24 h');
+    expect(container.querySelector('#now-cost').textContent).toBe('Cost, last 24 h');
   });
 });

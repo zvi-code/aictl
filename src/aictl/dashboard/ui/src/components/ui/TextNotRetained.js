@@ -3,9 +3,13 @@
 // happened, its metadata is here, its text was not stored by policy.
 import { html } from 'htm/preact';
 import Icon from './Icon.js';
+import { isWindowsPlatform } from '../../utils/platform.js';
 
-/** How to change it. Single source, so it tracks the real config key. */
-export const CAPTURE_HOWTO = 'Set capture_mode = "full" under [storage] in ~/.config/aictl/config.toml. It applies to new sessions.';
+/** How to change it. The file lives in the platform's config directory. */
+export function captureHowto() {
+  const file = isWindowsPlatform() ? '%APPDATA%\\aictl\\config.toml' : '~/.config/aictl/config.toml';
+  return `Set capture = "full" under [storage] in ${file}. It applies to new sessions.`;
+}
 
 /** True only on an explicit false: older servers omit the field and keep text. */
 export function textWithheld(row) {
@@ -25,7 +29,7 @@ export default function TextNotRetained({ mode }) {
     <div>
       <div class="panel-state__title">${retentionTitle(mode)}</div>
       <div class="panel-state__hint">Prompts and replies for this session were not stored. Counts, timing, models and tool calls are still shown.</div>
-      <code class="panel-state__fix">${CAPTURE_HOWTO}</code>
+      <code class="panel-state__fix">${captureHowto()}</code>
     </div>
   </div>`;
 }
