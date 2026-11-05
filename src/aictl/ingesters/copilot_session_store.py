@@ -136,6 +136,16 @@ class CopilotSessionStoreIngester:
                     detail={"error": str(exc)},
                 )
                 return 0
+            if not tables and self._is_usage_schema(src):
+                # This schema keeps turns without role-tagged messages, and its
+                # token usage is read by the transcript-usage ingester.
+                self._quality(
+                    "not_applicable",
+                    severity="info",
+                    message="Copilot session-store has no role-tagged messages; usage comes from transcript-usage",
+                )
+                self.last_poll_inserted = 0
+                return 0
             if not tables:
                 self._quality(
                     "schema_unknown",
@@ -164,6 +174,11 @@ class CopilotSessionStoreIngester:
         return inserted
 
     # ── source read helpers ───────────────────────────────────
+
+    @staticmethod
+    def _is_usage_schema(src: sqlite3.Connection) -> bool:
+        names = {r[0] for r in src.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        return {"turns", "assistant_usage_events"} <= names
 
     def _discover_tables(self, src: sqlite3.Connection) -> list[tuple[str, dict[str, str]]]:
         """Return [(table_name, {role:..., session:..., content:..., ts:...}), ...]."""

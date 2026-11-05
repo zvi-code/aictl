@@ -20,6 +20,13 @@ from typing import Any
 
 from .model_pricing import resolve_pricing
 
+COPILOT_COST_REASON = (
+    "Copilot bills AI credits or premium requests, not vendor list prices; "
+    "see billing_amount. estimated_list_usd is an estimate, not a charge"
+)
+# 1 AI credit = $0.01 (GitHub billing docs); plan allowances may cover credits.
+USD_PER_AI_CREDIT = 0.01
+
 # Higher wins whenever two sources describe the same session. Sources are never
 # added together: they are views of the same tokens.
 SOURCE_RANK = {"transcript": 3, "otel": 2, "hook": 1}
@@ -59,7 +66,11 @@ def row_provenance(row: dict[str, Any]) -> dict[str, Any]:
             "tokens_reason": "totals from a hook or import payload; not checked against a transcript",
         }
     reported = float(row.get("cost_usd") or 0)
-    if reported > 0:
+    fields.update(billing_unit="", billing_amount=None, premium_requests=None, estimated_list_usd=None)
+    if str(row.get("tool") or "").startswith("copilot"):
+        fields.update(cost_usd=None, cost_source="none", cost_quality="unknown", cost_reason=COPILOT_COST_REASON)
+        fields["billing_unit"] = "ai_credits"
+    elif reported > 0:
         fields.update(cost_usd=reported, cost_source="reported", cost_quality="reported", cost_reason="reported by the tool")
     elif not has_tokens:
         fields.update(cost_usd=None, cost_source="none", cost_quality="unknown", cost_reason="no token data to price")
@@ -91,6 +102,10 @@ def usage_provenance(usage: dict[str, Any]) -> dict[str, Any]:
         "cost_quality": usage.get("cost_quality") or "unknown",
         "cost_reason": usage.get("cost_reason") or "",
         "unpriced_models": list(usage.get("unpriced_models") or []),
+        "billing_unit": usage.get("billing_unit") or "",
+        "billing_amount": usage.get("billing_amount"),
+        "premium_requests": usage.get("premium_requests"),
+        "estimated_list_usd": usage.get("estimated_list_usd"),
     }
 
 

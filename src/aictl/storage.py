@@ -28,6 +28,7 @@ from typing import Any
 
 from .platforms import config_dir
 from .data.provenance import SOURCE_RANK, row_provenance, usage_provenance
+from .ingesters._common import project_key
 from .storage_migrations import CURRENT_VERSION as SCHEMA_VERSION
 from .storage_migrations import apply_pending as _apply_pending_migrations
 
@@ -531,7 +532,9 @@ CREATE TABLE IF NOT EXISTS session_usage (
     request_count INTEGER NOT NULL DEFAULT 0, tool_call_count INTEGER NOT NULL DEFAULT 0,
     turn_count INTEGER NOT NULL DEFAULT 0, cost_usd REAL,
     cost_quality TEXT NOT NULL DEFAULT 'unknown', cost_reason TEXT NOT NULL DEFAULT '',
-    unpriced_models TEXT NOT NULL DEFAULT '[]', started_at REAL NOT NULL DEFAULT 0,
+    unpriced_models TEXT NOT NULL DEFAULT '[]', billing_unit TEXT NOT NULL DEFAULT '',
+    billing_amount REAL, premium_requests REAL, estimated_list_usd REAL,
+    started_at REAL NOT NULL DEFAULT 0,
     last_activity_at REAL NOT NULL DEFAULT 0, project_path TEXT NOT NULL DEFAULT '',
     updated_at REAL NOT NULL DEFAULT 0
 );
@@ -1053,6 +1056,10 @@ _USAGE_PROFILE_KEYS = (
     "cost_quality",
     "cost_reason",
     "unpriced_models",
+    "billing_unit",
+    "billing_amount",
+    "premium_requests",
+    "estimated_list_usd",
 )
 
 
@@ -1158,8 +1165,8 @@ def _profiles_look_duplicate(a: dict, b: dict) -> bool:
     Genuinely concurrent sessions in different workspaces never merge —
     a workspace conflict (both known, different) vetoes the match.
     """
-    ws_a = a.get("project_path") or ""
-    ws_b = b.get("project_path") or ""
+    ws_a = project_key(a.get("project_path"))
+    ws_b = project_key(b.get("project_path"))
     if ws_a and ws_b and ws_a != ws_b:
         return False
     end_a, end_b = a.get("ended_at"), b.get("ended_at")
@@ -3237,8 +3244,9 @@ class HistoryDB:
             "INSERT OR REPLACE INTO session_usage(session_id, tool, source, quality, quality_reason,"
             " model, models_json, daily_json, input_tokens, output_tokens, cache_read_tokens,"
             " cache_creation_tokens, request_count, tool_call_count, turn_count, cost_usd,"
-            " cost_quality, cost_reason, unpriced_models, started_at, last_activity_at,"
-            " project_path, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " cost_quality, cost_reason, unpriced_models, billing_unit, billing_amount,"
+            " premium_requests, estimated_list_usd, started_at, last_activity_at,"
+            " project_path, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 row["session_id"],
                 row.get("tool", ""),
@@ -3259,6 +3267,10 @@ class HistoryDB:
                 row.get("cost_quality", "unknown"),
                 row.get("cost_reason", ""),
                 json.dumps(row.get("unpriced_models") or []),
+                row.get("billing_unit", ""),
+                row.get("billing_amount"),
+                row.get("premium_requests"),
+                row.get("estimated_list_usd"),
                 float(row.get("started_at", 0) or 0),
                 float(row.get("last_activity_at", 0) or 0),
                 row.get("project_path", ""),

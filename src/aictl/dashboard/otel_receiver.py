@@ -91,6 +91,10 @@ SERVICE_NAME_ALIASES: dict[str, str] = {
     "claude-code": "claude-code",
     "claude_code": "claude-code",
     "anthropic-claude": "claude-code",
+    "github-copilot-cli": "copilot-cli",
+    "copilot-cli": "copilot-cli",
+    "github-copilot-desktop": "copilot-desktop",
+    "copilot-desktop": "copilot-desktop",
     "github-copilot-chat": "copilot-vscode",
     "github-copilot": "copilot-vscode",
     "copilot": "copilot-vscode",
@@ -109,6 +113,10 @@ def _resolve_tool(service_name: str) -> str:
         return SERVICE_NAME_ALIASES[lower]
     # Heuristic fallback
     if "copilot" in lower:
+        if "cli" in lower.split("-"):
+            return "copilot-cli"
+        if "desktop" in lower.split("-"):
+            return "copilot-desktop"
         return "copilot-vscode"
     if "claude" in lower:
         return "claude-code"

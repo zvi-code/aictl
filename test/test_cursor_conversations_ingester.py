@@ -172,13 +172,11 @@ def test_poll_tolerates_locked_source(tmp_path: Path, store: HistoryDB) -> None:
     ts = time.time()
     _insert_message(src, "conv-3", "user", "x", ts)
 
-    # Hold an exclusive write transaction in another connection to force
-    # a lock. Since we open read-only this typically still reads, so we
-    # also simulate the "no such table" path by dropping the table under
-    # a transaction — exercising the sqlite3.OperationalError branch.
+    # Readers are immutable and take no lock, so a lock cannot block them. A
+    # committed drop exercises the same missing-table path.
     blocker = sqlite3.connect(str(src))
-    blocker.execute("BEGIN EXCLUSIVE")
     blocker.execute("DROP TABLE messages")
+    blocker.commit()
     try:
         ingester = CursorConversationsIngester(src, store)
         assert ingester.poll() == 0
