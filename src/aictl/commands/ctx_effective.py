@@ -37,6 +37,13 @@ def _print_model(eff: dict) -> None:
         click.echo(f"    from: {_where(row['path'], row['line'])} (scope {row['scope']})")
         if not row["in_project"]:
             click.echo(f"    {row['why_in_effect']}")
+    for row in eff.get("picker", []):
+        click.echo(f"  picker selects ({row['scope']}, {row['location']}): {row['value']}{'  (default)' if row['is_default'] else ''}  [not a pinned setting]")
+        click.echo(f"    from: {escape_invisible(row['path'])} key {row['key']}")
+    for note in eff.get("picker_notes", []):
+        click.echo(f"  picker: {escape_invisible(note)}")
+    for row in eff.get("custom_models", []):
+        click.echo(f"  selectable via {escape_invisible(row['path'])}: {row['provider'] or row['vendor']}: {', '.join(row['models'])}")
     for row in eff["restrictions"]:
         click.echo(f"  restriction: {row['name']} = {row['value']} at {escape_invisible(row['path'])}")
     for note in eff["unverified"]:

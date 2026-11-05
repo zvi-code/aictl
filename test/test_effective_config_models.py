@@ -89,12 +89,13 @@ def test_other_processes_are_not_read_as_a_flag(world):
     assert eff["value"] == ""
 
 
-def test_repo_pin_over_user_pin_is_marked_unverified(world):
+def test_repo_pin_over_user_pin_is_verified_by_the_config_reference(world):
     home, project, env = world
     settings(home, model="claude-sonnet-5")
     write(project / ".github/copilot/settings.json", json.dumps({"model": "gpt-6.1-terra"}))
     eff = effective_model(project, "copilot-cli", env=env, ps_output="")
-    assert (eff["value"], eff["scope"], eff["verified"], eff["in_project"]) == ("gpt-6.1-terra", "repo", False, True)
+    assert (eff["value"], eff["scope"], eff["verified"], eff["in_project"]) == ("gpt-6.1-terra", "repo", True, True)
+    assert "repo-overridable" in eff["basis"]
     assert eff["why_in_effect"] == "In this project."
 
 
@@ -254,7 +255,7 @@ def test_repo_and_user_pins_that_differ_conflict(world):
     write(project / ".github/copilot/settings.json", json.dumps({"model": "gpt-6.1-terra"}))
     _eff, findings = model_findings(project, env=env, ps_output="", tools=("copilot-cli",))
     hit = rules(findings, "model.pin-conflicts-request")
-    assert hit and "not confirmed" in hit[0].why
+    assert hit and "not confirmed" not in hit[0].why
 
 
 def test_repo_and_user_pins_that_agree_do_not_conflict(world):
