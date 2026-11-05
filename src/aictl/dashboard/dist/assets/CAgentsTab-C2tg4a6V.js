@@ -1,4 +1,4 @@
-import{x as J,S as B,d as w,y as K,aI as G,T as N,m as a,aq as Q,p as X,b as V,l as q,t as L,E as Z,aJ as ee,aK as P,aL as se,aM as R}from"./index-DZ1nb8NJ.js";function F(e){const t=e.live||{};return t.pid_count>0||t.session_count>0||(e.processes||[]).length>0}function S({label:e}){return a`<div class="c-overline cagents-rule">
+import{x as J,S as B,d as w,y as K,aI as G,T as N,m as a,aq as Q,p as X,b as V,l as q,t as L,E as Z,aJ as ee,aK as P,aL as se,aM as R}from"./index-D-7_bwBz.js";function F(e){const t=e.live||{};return t.pid_count>0||t.session_count>0||(e.processes||[]).length>0}function S({label:e}){return a`<div class="c-overline cagents-rule">
     <div class="cagents-rule-line"></div>
     <div class="cagents-rule-label">${e}</div>
     <div class="cagents-rule-line"></div>
