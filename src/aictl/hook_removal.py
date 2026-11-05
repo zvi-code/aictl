@@ -670,6 +670,9 @@ def is_real_home(home: Path) -> bool:
 
 def _launchctl(*args: str) -> str | None:
     """Run ``launchctl``; output or None. Separate so tests can replace it."""
+    if sys.platform != "darwin":
+        return None
+
     import subprocess
 
     try:

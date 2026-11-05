@@ -563,3 +563,16 @@ def test_cli_update_baseline_and_explicit_baseline(repo, home, tmp_path):
     assert "1 changed" in out.output
     again = runner.invoke(cli_main, ["ctx", "audit", "--project", str(repo), "--baseline", str(chosen)])
     assert "0 new, 0 changed, 0 removed" in again.output
+
+
+def test_process_flags_are_found_in_windows_command_lines(repo):
+    ps = (
+        r"201 C:\Users\Dev\AppData\Roaming\npm\node_modules\@github\copilot-win32-x64\copilot.exe"
+        " --system-prompt secret-windows-value\n"
+        r"202 C:\Python\python.exe server.py --system-prompt not-an-ai-tool"
+        "\n"
+    )
+    report = audit(repo, ps_output=ps)
+    assert "dynamic.cli-system-prompt" in rules(report, "high")
+    blob = json.dumps(report)
+    assert "secret-windows-value" not in blob and "not-an-ai-tool" not in blob

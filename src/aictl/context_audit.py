@@ -1684,17 +1684,32 @@ def _collect_codex_overrides(inv: _Inventory, findings: list[Finding], path: Pat
             _url_finding(inv, findings, "codex-cli", label, value)
 
 
-_PROCESS_TOOLS = re.compile(r"(^|/)(claude|codex|gemini|copilot|cursor-agent|windsurf)(\s|$)|claude-code/cli|@anthropic-ai/claude|@openai/codex|@google/gemini-cli|@github/copilot")
+_PROCESS_TOOLS = re.compile(
+    r"(^|[\s/\\])(claude|codex|gemini|copilot|cursor-agent|windsurf)(\.exe|\.cmd)?(\s|$)"
+    r"|claude-code[/\\]cli|@anthropic-ai[/\\]claude|@openai[/\\]codex|@google[/\\]gemini-cli|@github[/\\]copilot",
+    re.IGNORECASE,
+)
 _PROCESS_FLAG_RE = re.compile(r"(?:^|\s)(--(?:append-)?system-prompt(?:-file)?)(?:[ =])(\S*)")
+
+
+def _live_command_lines() -> str:
+    """One "pid command line" per line, or empty when psutil is not installed."""
+    try:
+        import psutil
+    except ImportError:
+        return ""
+    lines = []
+    for process in psutil.process_iter(["pid", "cmdline"]):
+        command = process.info.get("cmdline")
+        if command:
+            lines.append(f"{process.info['pid']} {' '.join(command)}")
+    return "\n".join(lines)
 
 
 def _collect_processes(inv: _Inventory, findings: list[Finding], ps_output: str | None) -> None:
     """Read flags from live command lines. Flag names and sizes only, never the values."""
     if ps_output is None:
-        try:
-            ps_output = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True, timeout=3, check=False).stdout  # noqa: S607
-        except (OSError, subprocess.SubprocessError):
-            return
+        ps_output = _live_command_lines()
     seen: set[str] = set()
     for line in ps_output.splitlines():
         if "system-prompt" not in line or not _PROCESS_TOOLS.search(line):
