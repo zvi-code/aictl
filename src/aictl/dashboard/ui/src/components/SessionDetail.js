@@ -1,4 +1,5 @@
 import { html } from 'htm/preact';
+import { toolLabel } from '../utils/tools.js';
 import { fmtK, esc, fmtDurSec, toolColor } from '../utils.js';
 import { sessionIdCandidates } from '../selectors.js';
 import TeamTree, { TaskBoard } from './TeamTree.js';
@@ -35,7 +36,7 @@ export default function SessionDetail({session, onClose}) {
   return html`<div class="sd-container" style="border-left:3px solid ${c}">
     <div class="sd-header">
       <div class="flex-row gap-sm" style="align-items:center">
-        <strong style="font-size:var(--fs-lg)">${esc(session.tool)}</strong>
+        <strong style="font-size:var(--fs-lg)" title=${session.tool}>${esc(toolLabel(session.tool))}</strong>
         ${session.project && html`<span class="text-muted text-xs mono text-ellipsis" style="max-width:250px"
           title=${session.project}>${esc(session.project.replace(/\\/g,'/').split('/').pop())}</span>`}
         <span class="badge" style="background:var(--green);color:var(--on-status);font-size:var(--fs-xs)">

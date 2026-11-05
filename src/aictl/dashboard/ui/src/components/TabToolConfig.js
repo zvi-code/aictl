@@ -277,7 +277,7 @@ function ToolConfigCard({cfg, label}) {
     <div style="padding:var(--sp-4) var(--sp-5);background:color-mix(in srgb,${color} 10%,var(--bg2));
                 display:flex;align-items:center;gap:var(--sp-3);border-bottom:2px solid ${color}">
       <span><${ToolIcon} tool=${cfg.tool} size="1em"/></span>
-      <span style="font-weight:700;font-size:var(--fs-base);color:${color}">${label || cfg.tool}</span>
+      <span style="font-weight:700;font-size:var(--fs-base);color:var(--fg)">${label || cfg.tool}</span>
       ${cfg.model && html`<span class="badge mono">${cfg.model}</span>`}
       ${cfg.auto_update===true  && html`<span class="badge">auto-update on</span>`}
       ${cfg.auto_update===false && html`<span class="badge badge--muted">auto-update off</span>`}
@@ -349,7 +349,7 @@ function AictlCard({snap}) {
     <div style="padding:var(--sp-4) var(--sp-5);background:color-mix(in srgb,${color} 10%,var(--bg2));
                 display:flex;align-items:center;gap:var(--sp-3);border-bottom:2px solid ${color}">
       <span><${Icon} name="settings" size="1em"/></span>
-      <span style="font-weight:700;font-size:var(--fs-base);color:${color}">aictl</span>
+      <span style="font-weight:700;font-size:var(--fs-base);color:var(--fg)">aictl</span>
       <span class="text-muted" style="font-size:var(--fs-sm)">monitoring engine</span>
     </div>
     <div style="padding:var(--sp-4);flex:1">

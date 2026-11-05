@@ -414,7 +414,7 @@ export default function App() {
           <${OverviewNow} snap=${filteredSnap} enabledTools=${enabledTools}
             connected=${connected} otelActive=${otelActive} alerts=${alerts} selfStatus=${selfStatus}
             onOpenSession=${openSession} onOpenTab=${setActiveTab}/>
-          <${DashboardContent} snap=${filteredSnap} history=${effectiveHistory}/>
+          ${!scopeIsCloudOnly(snap, enabledTools) && html`<${DashboardContent} snap=${filteredSnap} history=${effectiveHistory}/>`}
           <div class="mb-lg"><${CollectorHealth}/></div>
         </${TabBoundary}>`,
     hidden:     () => html`<${TabBoundary} tabName="hidden"><${HiddenContextSlot}/></${TabBoundary}>`,
