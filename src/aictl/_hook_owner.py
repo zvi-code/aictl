@@ -11,74 +11,27 @@ Legacy entries (installed before the marker existed) are still
 recognized via substring heuristics as a one-time migration path.
 Once the marker is present, it is authoritative — a rule tagged with
 a *different* owner is treated as not-ours, even if its command
-contains ``/api/hooks``.
+contains ``/api/hooks``. The identification itself lives in the stdlib-only
+``hook_removal`` so removal works when aictl is broken; it is re-exported here.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 
-_AICTL_OWNER_MARKER = "aictl.managed"
+from .hook_removal import OWNER_MARKER as _AICTL_OWNER_MARKER
+from .hook_removal import is_aictl_rule as _is_aictl_hook
+from .hook_removal import is_legacy_rule as _is_legacy_aictl_hook
+from .hook_removal import strip_rules as strip_aictl_hooks
 
-# Legacy substring markers used for pre-marker hook entries.
-_LEGACY_AICTL_HOOK_MARKERS = ("/api/hooks", "aictl.hook_handler")
-
-
-def _is_legacy_aictl_hook(hook: dict) -> bool:
-    """Substring heuristic covering hook entries installed before the marker existed.
-
-    Detects three generations of hook format:
-    - Current command shape: ``python -m aictl.hook_handler --event ...``
-    - Previous inline: ``python -c "... /api/hooks ..."``
-    - Legacy flat: ``curl ... /api/hooks ...``
-    """
-    # Current nested format: {"matcher": ..., "hooks": [{"type": "command", "command": "..."}]}
-    if "hooks" in hook and isinstance(hook["hooks"], list):
-        return any(any(m in str(h.get("command", "")) for m in _LEGACY_AICTL_HOOK_MARKERS) for h in hook["hooks"])
-    # Old flat format: {"type": "command", "command": "..."}
-    cmd = str(hook.get("command", ""))
-    return any(m in cmd for m in _LEGACY_AICTL_HOOK_MARKERS)
-
-
-def _is_aictl_hook(hook: dict) -> bool:
-    """Return True if the hook entry is owned by aictl.
-
-    The ``_aictl_owner`` marker is authoritative when present: a rule
-    tagged with a different value is *not* ours, even if its command
-    string happens to contain an aictl-looking substring. Only when
-    the marker is absent do we fall back to legacy substring matching
-    for migration of pre-marker installs.
-    """
-    if not isinstance(hook, dict):
-        return False
-    if "_aictl_owner" in hook:
-        return hook.get("_aictl_owner") == _AICTL_OWNER_MARKER
-    return _is_legacy_aictl_hook(hook)
-
-
-def strip_aictl_hooks(hooks_by_event: object) -> tuple[dict[str, list], int]:
-    """Return ``(hooks, removed)`` with every aictl-owned rule removed.
-
-    Walks *every* event key present (not just a caller-supplied list) so
-    rules installed under an event that has since been dropped from the
-    catalogue are cleaned up too. Non-dict input yields ``{}``; a non-list
-    event value (a hand-edited ``"PreToolUse": {...}``) is preserved
-    untouched rather than iterated character by character. Events whose
-    list becomes empty are deleted.
-    """
-    if not isinstance(hooks_by_event, dict):
-        return {}, 0
-    out: dict[str, list] = {}
-    removed = 0
-    for event, rules in hooks_by_event.items():
-        if not isinstance(rules, list):
-            out[event] = rules  # leave malformed shapes alone
-            continue
-        kept = [h for h in rules if not _is_aictl_hook(h)]
-        removed += len(rules) - len(kept)
-        if kept:
-            out[event] = kept
-    return out, removed
+__all__ = [
+    "_AICTL_OWNER_MARKER",
+    "_is_aictl_hook",
+    "_is_legacy_aictl_hook",
+    "canonicalize_hook_events",
+    "merge_aictl_hooks",
+    "strip_aictl_hooks",
+]
 
 
 def merge_aictl_hooks(existing_hooks: object, new_rules_by_event: dict[str, list[dict]]) -> dict[str, list]:
@@ -88,18 +41,14 @@ def merge_aictl_hooks(existing_hooks: object, new_rules_by_event: dict[str, list
     rules are preserved per event, stale aictl rules are purged from all
     events, and the new rules are stamped with the owner marker so the next
     merge recognises them. A malformed (non-list) existing value under an
-    event we need to write is replaced by a list — the malformed value is
-    unusable by the tool anyway and would otherwise be corrupted by
-    ``extend``.
+    event stays as it is, and that one event gets no rule from us. Replacing it would lose it for good on uninstall.
     """
     hooks, _ = strip_aictl_hooks(existing_hooks)
     tagged = _tag_hooks({e: [dict(r) for r in rules] for e, rules in new_rules_by_event.items()})
     for event, rules in tagged.items():
-        current = hooks.get(event)
-        if not isinstance(current, list):
-            current = []
-        current.extend(rules)
-        hooks[event] = current
+        current = hooks.get(event, [])
+        if isinstance(current, list):
+            hooks[event] = [*current, *rules]
     return hooks
 
 

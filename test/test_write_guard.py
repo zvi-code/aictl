@@ -1055,7 +1055,8 @@ class TestCodexPathPlatformAbstraction:
         runner = CliRunner()
         result = runner.invoke(otel, ["enable", "--tool", "codex"], catch_exceptions=False)
         assert result.exit_code == 0
-        assert (custom_codex / "config.toml").exists()
+        assert not (custom_codex / "config.toml").exists()  # this file is never written
+        assert str(custom_codex) in result.output  # the path reported comes from codex_global_dir
 
     def test_enable_cmd_uses_codex_global_dir(self, tmp_path, monkeypatch):
         """enable must write codex config to codex_global_dir(), not ~/.codex."""
@@ -1072,7 +1073,8 @@ class TestCodexPathPlatformAbstraction:
         runner = CliRunner()
         result = runner.invoke(enable, ["--scope", "user"], catch_exceptions=False)
         assert result.exit_code == 0
-        assert (custom_codex / "config.toml").exists()
+        assert not (custom_codex / "config.toml").exists()  # this file is never written
+        assert str(custom_codex) in result.output  # the path reported comes from codex_global_dir
 
 
 # ---------------------------------------------------------------------------

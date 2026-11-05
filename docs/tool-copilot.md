@@ -86,11 +86,11 @@ copilot --additional-mcp-config .copilot-mcp.json
 | user | `~/.copilot/hooks/aictl.json` | `root.vscode-user` |
 | project | `.github/hooks/aictl.json` | `<sanitized-cwd-basename>.vscode-project` |
 
-The file uses the Copilot-native flat schema (`{"hooks": {"EventName": [{"type":"command","command":"..."}]}}`) so it runs without enabling `chat.useClaudeHooks`. Each command invokes `python -m aictl.hook_handler --event <E> --port <P> --source <id>`; the `<id>` is how the server attributes every POST to `/api/hooks` back to the exact wrapper that emitted it.
+The file uses the Copilot-native flat schema (`{"version": 1, "hooks": {"EventName": [{"type":"command","command":"...","timeoutSec":5}]}}`) so it runs without enabling `chat.useClaudeHooks`, which aictl leaves off because it makes VS Code run Claude hook files too, so aictl's Claude rules fire twice. `"version": 1` is required; Copilot rejects a whole file without it.
 
-Installed events track the runtime enum in `out/vs/workbench/workbench.desktop.main.js` as of VS Code 1.116: `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `SubagentStart`, `SubagentStop`, `PreCompact`, `Stop`, `ErrorOccurred`. Claude-only events without a VS Code analog (`PermissionRequest`, `Notification`, `PostCompact`, `Elicitation`, etc.) are intentionally not installed.
+Installed events, using the documented PascalCase aliases (https://docs.github.com/en/copilot/reference/hooks-configuration): `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `subagentStart`, `SubagentStop`, `PreCompact`, `Stop`, `errorOccurred` (the two camelCase names have no documented alias). On Windows each entry also has `bash` and `powershell` lines, because Copilot would otherwise run `command` under PowerShell.
 
-Every entry carries `"_aictl_owner": "aictl.managed"`, and `aictl hooks doctor` / `aictl hooks uninstall` operate on this file too.
+Every entry carries `"_aictl_owner": "aictl.managed"`, and `aictl hooks status`, `aictl hooks doctor`, `aictl hooks uninstall` and `aictl disable` operate on this file too.
 
 ---
 

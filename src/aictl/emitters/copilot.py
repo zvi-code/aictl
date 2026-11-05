@@ -101,7 +101,7 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
     # clobbered user entries and never cleaned up removed events.)
     if resolved.hooks:
         fp = gh / "hooks" / "hooks.json"
-        new_rules = canonical_hook_rules(resolved.hooks)
+        new_rules = canonical_hook_rules(resolved.hooks, "copilot")
         if dry_run:
             content = json.dumps({"hooks": merge_aictl_hooks({}, new_rules)}, indent=2) + "\n"
         else:

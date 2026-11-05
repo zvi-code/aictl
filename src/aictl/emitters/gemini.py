@@ -67,7 +67,7 @@ def emit(root: Path, resolved: Resolved, dry_run: bool = False) -> list[dict]:
 
     emit_mcp_servers(root / ".mcp.json", "mcpServers", resolved, dry_run, results)
 
-    emit_settings(tool / "settings.json", resolved, dry_run, results)
+    emit_settings(tool / "settings.json", resolved, dry_run, results, tool="gemini")
 
     emit_ignores(root / ".geminiignore", resolved, dry_run, results)
 

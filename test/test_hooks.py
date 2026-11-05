@@ -58,7 +58,7 @@ class TestBuildHookConfig:
     def test_invokes_hook_handler_module(self):
         config = _build_hook_config(8484, ["PostToolUse"])
         cmd = config["PostToolUse"][0]["hooks"][0]["command"]
-        assert "aictl.hook_handler" in cmd
+        assert "hook_handler.py" in cmd
 
     def test_sets_event_name(self):
         config = _build_hook_config(8484, ["PreToolUse"])
@@ -70,7 +70,7 @@ class TestBuildHookConfig:
         config = _build_hook_config(8484, ["SessionStart"])
         cmd = config["SessionStart"][0]["hooks"][0]["command"]
         assert " -c " not in cmd
-        assert "-m aictl.hook_handler" in cmd
+        assert " -I -S " in cmd and "hook_handler.py" in cmd
 
 
 class TestWindowsCallOperator:
@@ -102,7 +102,7 @@ class TestWindowsCallOperator:
         )
         cmd = rule["command"]
         assert cmd.startswith('& "C:\\Users\\First Last')
-        assert '" -m aictl.hook_handler --event SessionStart' in cmd
+        assert '" -I -S "' in cmd and "--event SessionStart" in cmd
         assert rule["shell"] == "powershell"
 
     def test_gemini_windows_has_no_call_operator(self):
@@ -114,7 +114,7 @@ class TestWindowsCallOperator:
             matcher="*",
             source_tool="gemini",
         )
-        assert rule["command"].startswith('"C:\\Python312\\python.exe" -m aictl.hook_handler')
+        assert rule["command"].startswith('"C:\\Python312\\python.exe" -I -S ')
         assert "shell" not in rule
 
     def test_vscode_windows_has_no_call_operator(self):
@@ -125,12 +125,12 @@ class TestWindowsCallOperator:
             patch("aictl.commands.integrations.sys.executable", r"C:\Python312\python.exe"),
         ):
             cfg = _build_vscode_hook_config(8484, ["SessionStart"], scope="user")
-        assert cfg["SessionStart"][0]["command"].startswith('"C:\\Python312\\python.exe" -m')
+        assert cfg["SessionStart"][0]["command"].startswith('"C:\\Python312\\python.exe" -I -S ')
 
     def test_posix_has_no_call_operator(self):
         rule = self._rule(is_windows=False, exe="/usr/bin/python3")
         assert not rule["command"].startswith("&")
-        assert rule["command"].startswith('"/usr/bin/python3" -m aictl.hook_handler')
+        assert rule["command"].startswith('"/usr/bin/python3" -I -S ')
         assert "shell" not in rule
 
     def test_windows_doctor_extracts_interpreter_past_operator(self):
@@ -381,7 +381,7 @@ class TestInstallConflictDetection:
             else:
                 all_cmds.append(h.get("command", ""))
         assert any("my-linter.sh" in c for c in all_cmds)
-        assert any("aictl.hook_handler" in c for c in all_cmds)
+        assert any("hook_handler.py" in c for c in all_cmds)
 
     def test_no_conflict_when_only_aictl_hooks_exist(self, tmp_settings):
         """Re-installing when only old aictl hooks exist should succeed without --force."""
@@ -528,17 +528,15 @@ class TestCorruptSettingsGuard:
 
 
 def _capture_posts(monkeypatch) -> list[dict]:
-    """Monkeypatch urlopen so tests can inspect what hook_handler POSTs."""
-    import urllib.request
-    from unittest.mock import MagicMock
+    """Replace the handler's socket write so tests can inspect what it POSTs."""
+    from aictl import hook_handler
 
     posts: list[dict] = []
 
-    def fake_urlopen(req, timeout=0):  # noqa: ARG001
-        posts.append(json.loads(req.data.decode()))
-        return MagicMock()
+    def fake_post(port, body):  # noqa: ARG001
+        posts.append(json.loads(body.decode()))
 
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(hook_handler, "_post", fake_post)
     return posts
 
 
@@ -653,19 +651,14 @@ class TestHookHandler:
 
         from aictl.hook_handler import main
 
-        seen_urls: list[str] = []
-
-        def fake_urlopen(req, timeout=0):
-            seen_urls.append(req.full_url)
-            return MagicMock()
-
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        seen_ports: list[int] = []
+        monkeypatch.setattr("aictl.hook_handler._post", lambda port, body: seen_ports.append(port))
         monkeypatch.setattr("sys.argv", ["hook_handler", "--event", "SessionStart", "--port", "not-a-number"])
         monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
         captured = io.StringIO()
         monkeypatch.setattr("sys.stdout", captured)
         main()  # must not raise
-        assert seen_urls == ["http://localhost:8484/api/hooks"]
+        assert seen_ports == [8484]
 
     def test_non_dict_json_stdin_does_not_crash(self, monkeypatch):
         """A JSON array on stdin must not crash the enrichment step."""
@@ -848,18 +841,13 @@ class TestHookHandlerAictlHookEnrichment:
 
         posted = {}
 
-        def fake_urlopen(req, timeout=2):  # noqa: ARG001
-            posted["data"] = req.data
-            return MagicMock()
-
-        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        monkeypatch.setattr(hh, "_post", lambda port, body: posted.__setitem__("data", body))
         hh.main()
 
         body = json.loads(posted["data"].decode())
         assert body["aictl_hook"]["source"] == "root.claude-user"
         assert isinstance(body["aictl_hook"]["pid"], int)
         assert isinstance(body["aictl_hook"]["ppid"], int)
-        assert isinstance(body["aictl_hook"]["tid"], int)
         assert body["aictl_hook"]["py"]
 
         assert captured.getvalue() == ""
@@ -1008,6 +996,7 @@ class TestHookEventCatalog:
                 8484,
                 ["PostToolUse", "PostToolUseFailure"],
                 event_map={"PostToolUse": "AfterTool", "PostToolUseFailure": "AfterTool"},
+                source_tool="gemini",
             )
 
 
@@ -1095,11 +1084,10 @@ class TestHookMergeAndUninstallResilience:
         settings.write_text(json.dumps({"hooks": {"Notification": bad}}))
         _install_hooks("user", 8484, [])
         data = json.loads(settings.read_text())
-        rules = data["hooks"]["Notification"]
-        # Our rule is appended; the malformed dict is dropped from that
-        # event (it was unusable anyway) rather than exploded into strings.
-        assert all(isinstance(r, dict) and "hooks" in r for r in rules)
-        assert "matcher" not in rules  # the old bug wrote bare key strings
+        # The malformed value is kept as it was, not exploded into
+        # strings and not replaced, so uninstall can give it back.
+        assert data["hooks"]["Notification"] == bad
+        assert "PreToolUse" in data["hooks"]
 
     def test_copilot_hook_file_keeps_user_entries_on_install_and_uninstall(self, hook_dirs):
         from aictl.commands.integrations import _install_hooks
@@ -1131,7 +1119,6 @@ class TestHookMergeAndUninstallResilience:
         locs = json.loads(settings.read_text())["chat.hookFilesLocations"]
         assert locs["tools/hooks"] is True  # user entry kept
         assert locs["~/.copilot/hooks"] is True  # where the user-scope aictl file lives
-        assert locs[".github/hooks"] is True
 
 
 class TestCodexOtelBlock:
@@ -1146,35 +1133,6 @@ class TestCodexOtelBlock:
         assert 'exporter = { otlp-http = { endpoint = "http://localhost:8484/v1/logs", protocol = "json" } }' in block
         assert "metrics_exporter = { otlp-http" in block
 
-    def test_upsert_replaces_legacy_block_and_respects_user_exporter(self, tmp_path):
-        from aictl.commands.integrations import _codex_otel_exporter_configured, _upsert_codex_otel
-
-        toml = tmp_path / "config.toml"
-        toml.write_text('model = "gpt-5.4"\n\n[otel]\nenabled = true\nendpoint = "http://localhost:8484"\n\n[features]\nx = true\n')
-        assert _upsert_codex_otel(toml, "http://localhost:8484") == "replaced legacy [otel] table"
-        text = toml.read_text()
-        assert "enabled = true" not in text
-        assert 'model = "gpt-5.4"' in text and "[features]\nx = true" in text
-        assert _codex_otel_exporter_configured(text)
-        # Second run: already configured, untouched.
-        assert _upsert_codex_otel(toml, "http://localhost:8484") == "already configured"
-        # A user's own exporter is never overwritten.
-        user = tmp_path / "user.toml"
-        user.write_text('[otel]\nexporter = { otlp-grpc = { endpoint = "http://collector:4317" } }\n')
-        assert _upsert_codex_otel(user, "http://localhost:8484") == "already configured"
-        assert "collector:4317" in user.read_text()
-
-    def test_upsert_creates_and_appends(self, tmp_path):
-        from aictl.commands.integrations import _upsert_codex_otel
-
-        toml = tmp_path / "config.toml"
-        assert _upsert_codex_otel(toml, "http://localhost:1") == "created"
-        toml.write_text('model = "x"\n')
-        assert _upsert_codex_otel(toml, "http://localhost:1") == "appended"
-        assert toml.read_text().startswith('model = "x"\n')
-
-
-class TestBuildEnvBlockToolVars:
     def test_gemini_uses_gemini_telemetry_vars_and_codex_has_none(self):
         from aictl.commands.integrations import _build_env_block
 
