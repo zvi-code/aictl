@@ -20,7 +20,7 @@ pipx install --force ".[all]"          # install with all extras
 pipx install --force -e ".[all]"       # editable dev install
 python3 -m pytest test/ -v             # full test suite
 python3 -m pytest test/ -x -q          # quick: stop on first failure
-cd aictl/dashboard/ui && npm run build  # rebuild frontend (after JS changes)
+cd src/aictl/dashboard/ui && npm run build  # rebuild frontend (after JS changes)
 ```
 
 ## Architecture
@@ -29,12 +29,12 @@ Pipeline: Scan (.aictx) → Parse (YAML→Python) → Resolve (scope merge) → 
 Monitoring: Collectors (process/network/FS) → Correlator (session→PID) → Storage (SQLite) → Dashboard/API
 
 Key directories:
-- `aictl/emitters/` — 6 emitters (claude, copilot, cursor, windsurf, copilot365, generic)
-- `aictl/importers/` — 8 importers (reverse-generate .aictx from native files)
-- `aictl/monitoring/` — process, network, filesystem collectors + correlator
-- `aictl/dashboard/` — web server (stdlib HTTP), TUI (textual), HTML report
-- `aictl/dashboard/ui/` — Vite+Preact SPA (20+ components)
-- `aictl/data/` — CSV path/process registries, tool metadata YAML
+- `src/aictl/emitters/` — 6 emitters (claude, copilot, cursor, windsurf, copilot365, generic)
+- `src/aictl/importers/` — 8 importers (reverse-generate .aictx from native files)
+- `src/aictl/monitoring/` — process, network, filesystem collectors + correlator
+- `src/aictl/dashboard/` — web server (stdlib HTTP), TUI (textual), HTML report
+- `src/aictl/dashboard/ui/` — Vite+Preact SPA (20+ components)
+- `src/aictl/data/` — CSV path/process registries, tool metadata YAML
 - `docs/` — architecture, format spec, design system, tool research
 - `test/` — pytest suite
 
@@ -230,7 +230,7 @@ For WIP numbered sections:
 
 After all batches:
 - Full test suite
-- `aictl serve --no-open --port 8599` briefly if UI changed (kill after)
+- `aictl daemon serve --no-open --port 8599` briefly if UI changed (kill after)
 - Update all source files with final status
 - Write checkpoint
 - Commit everything
@@ -258,10 +258,10 @@ If exists, process like WIP files.
 
 ## Integration Verification
 
-- Web dashboard changes: `aictl serve --no-open --port 8599`, verify starts, kill
+- Web dashboard changes: `aictl daemon serve --no-open --port 8599`, verify starts, kill
 - CLI changes: `aictl --help` still works
 - Data file changes: import the module to verify parsing
-- Vite build: `cd aictl/dashboard/ui && npm run build` if frontend changed
+- Vite build: `cd src/aictl/dashboard/ui && npm run build` if frontend changed
 
 ## Safety Rails
 
@@ -345,8 +345,8 @@ Both must stay in sync. When you add, change, or deprecate a path in the Markdow
 
 Read both current versions:
 @docs/tools-analysis-docs/ai-tools-config-paths.md
-@aictl/data/paths-unix.csv
-@aictl/data/paths-windows.csv
+@src/aictl/data/paths-unix.csv
+@src/aictl/data/paths-windows.csv
 
 ## Your task
 
@@ -459,8 +459,8 @@ Both must stay in sync. When you add, change, or deprecate a process in the Mark
 
 Read both current versions:
 @docs/tools-analysis-docs/ai-tools-runtime-processes.md
-@aictl/data/processes-unix.csv
-@aictl/data/processes-windows.csv
+@src/aictl/data/processes-unix.csv
+@src/aictl/data/processes-windows.csv
 
 ## Your task
 
@@ -566,7 +566,7 @@ Read the **entity model** in `.claude/skills/ai-tools-scraper/SKILL.md` first �
 ## The document to update
 
 Read the current version:
-@ai-tools-traffic-monitoring.md
+@docs/tools-analysis-docs/ai-tools-traffic-monitoring.md
 
 ## Your task
 
@@ -841,7 +841,7 @@ For WIP numbered sections:
 
 After all batches:
 - Full test suite
-- `aictl serve --no-open --port 8599` briefly if UI changed (kill after)
+- `aictl daemon serve --no-open --port 8599` briefly if UI changed (kill after)
 - Update all source files with final status
 - Write checkpoint
 - Commit everything
@@ -874,10 +874,10 @@ If exists, process like WIP files.
 
 ## Integration Verification
 
-- Web dashboard changes: `aictl serve --no-open --port 8599`, verify starts, kill
+- Web dashboard changes: `aictl daemon serve --no-open --port 8599`, verify starts, kill
 - CLI changes: `aictl --help` still works
 - Data file changes: import the module to verify parsing
-- Vite build: `cd aictl/dashboard/ui && npm run build` if frontend changed
+- Vite build: `cd src/aictl/dashboard/ui && npm run build` if frontend changed
 
 ## Safety Rails
 
@@ -1009,7 +1009,7 @@ actionable**, not vague:
   **Found during**: Implementing TabLive auto-refresh (TODO item #12)
 
   **Fix approach**: Add connection ID to generator, check before write.
-  Affected file: `aictl/dashboard/web_server.py:145-160`
+  Affected file: `src/aictl/dashboard/web_server.py:145-160`
 
   **Test**: `test/test_web_server.py` — add reconnect-race test case
 ```
@@ -1475,7 +1475,7 @@ Every finding is one of these types. Each type has a mandatory landing:
 | **Processes** | `docs/tools-analysis-docs/ai-tools-runtime-processes.md` | Process entities, trees, lifecycle, failure modes |
 | **Traffic** | `docs/tools-analysis-docs/ai-tools-traffic-monitoring.md` | Network entities, API patterns, interception methods |
 | **Per-tool deep-dive** | `docs/tools-analysis-docs/<tool-name>.md` | Tool-specific detailed research |
-| **CSVs** | `docs/tools-analysis-docs/*.csv` + `aictl/data/*.csv` | Structured companion data (MUST sync with markdown) |
+| **CSVs** | `docs/tools-analysis-docs/*.csv` + `src/aictl/data/*.csv` | Structured companion data (MUST sync with markdown) |
 | **TODO** | `TODO.md` | Actionable items for aictl implementation |
 | **WIP** | `wip/open-items/` | Unresolved questions, items needing user input |
 | **Entity model** | This file (SKILL.md) | New entity types or relationship changes |
@@ -1594,11 +1594,11 @@ estimate review effort. Components are listed from largest to smallest.
 
 | File | Lines | Role |
 |------|-------|------|
-| `aictl/dashboard/ui/src/app.js` | ~460 | App shell, tabs, SSE, global header, search, theme |
-| `aictl/dashboard/ui/src/dashboard.css` | large | Design tokens, all component styles |
-| `aictl/dashboard/ui/src/utils.js` | ~215 | Formatters (fmtK/fmtSz/fmtPct/fmtRate), constants, color maps |
-| `aictl/dashboard/ui/src/layoutConfig.js` | ~60 | Sparkline/metric/tab config arrays |
-| `aictl/dashboard/ui/src/context.js` | ~3 | SnapContext Preact context |
+| `src/aictl/dashboard/ui/src/app.js` | ~460 | App shell, tabs, SSE, global header, search, theme |
+| `src/aictl/dashboard/ui/src/dashboard.css` | large | Design tokens, all component styles |
+| `src/aictl/dashboard/ui/src/utils.js` | ~215 | Formatters (fmtK/fmtSz/fmtPct/fmtRate), constants, color maps |
+| `src/aictl/dashboard/ui/src/layoutConfig.js` | ~60 | Sparkline/metric/tab config arrays |
+| `src/aictl/dashboard/ui/src/context.js` | ~3 | SnapContext Preact context |
 
 ### Components (by size, descending)
 
@@ -1647,10 +1647,10 @@ this target state, not just polish the current inventory-oriented layout.
 ALWAYS read these before producing findings:
 
 1. `docs/dashboard-design-system.md` — current design tokens and known status
-2. `aictl/dashboard/ui/src/dashboard.css` — all styles and tokens
-3. `aictl/dashboard/ui/src/app.js` — app shell
-4. `aictl/dashboard/ui/src/utils.js` — formatters and constants
-5. All files in `aictl/dashboard/ui/src/components/`
+2. `src/aictl/dashboard/ui/src/dashboard.css` — all styles and tokens
+3. `src/aictl/dashboard/ui/src/app.js` — app shell
+4. `src/aictl/dashboard/ui/src/utils.js` — formatters and constants
+5. All files in `src/aictl/dashboard/ui/src/components/`
 
 Use the Explore agent with thoroughness "very thorough" to read all
 component files in parallel. This is mandatory — do not skip components.
@@ -1918,13 +1918,13 @@ After EVERY batch of changes:
 
 ```bash
 # 1. Build the frontend
-cd aictl/dashboard/ui && npm run build
+cd src/aictl/dashboard/ui && npm run build
 
 # 2. Run Python tests (from project root!)
 cd /path/to/aictl && python3 -m pytest test/ -x -q
 
 # 3. Verify the server starts (optional, for visual changes)
-aictl serve --no-open --port 8599 &
+aictl daemon serve --no-open --port 8599 &
 sleep 2 && kill %1
 ```
 
@@ -2062,8 +2062,8 @@ When triggered, perform these steps in order:
 ## 1. Discover current datapoints
 
 Launch parallel agents to scan:
-- **UI agent**: Read all JS components in `aictl/dashboard/ui/src/components/` and
-  `aictl/dashboard/ui/src/app.js`. Extract every field path accessed from
+- **UI agent**: Read all JS components in `src/aictl/dashboard/ui/src/components/` and
+  `src/aictl/dashboard/ui/src/app.js`. Extract every field path accessed from
   `snap`, `tool`, `live`, `telemetry`, `events`, `sessions`, `agent_teams`.
 - **Backend agent**: Read all Python files that produce data: `orchestrator.py`,
   `monitoring/correlator.py`, `monitoring/session.py`, `monitoring/tool_telemetry.py`,
@@ -2086,7 +2086,7 @@ print(f'Existing: {len(existing)} entries')
 
 ## 3. For each missing datapoint
 
-Add to `aictl/data/datapoint-catalog.yaml`:
+Add to `src/aictl/data/datapoint-catalog.yaml`:
 ```yaml
 key.name:
   explanation: >
@@ -2102,7 +2102,7 @@ key.name:
   dynamic_source: true | false
 ```
 
-Add to `aictl/data/datapoint-queries.yaml`:
+Add to `src/aictl/data/datapoint-queries.yaml`:
 ```yaml
 key.name:
   query: "SELECT ... FROM table WHERE ..."
@@ -2118,7 +2118,7 @@ Rules for queries:
 ## 4. Update provenance builder
 
 If any new datapoints have `dynamic_source: true`, add provenance
-builders in `aictl/datapoint_provenance.py` inside `_build_provenance()`.
+builders in `src/aictl/datapoint_provenance.py` inside `_build_provenance()`.
 
 ## 5. Sync and validate
 

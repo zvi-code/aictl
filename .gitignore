@@ -77,3 +77,6 @@ package-lock.json
 # aictl atomic-write sidecars
 *.aictl.bak
 *.aictl-tmp
+
+# npm dependencies (any depth)
+node_modules/
