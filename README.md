@@ -686,6 +686,52 @@ You can also pipe to stdout: `aictl status --html > report.html`.
 | `--root DIR` | Root directory to monitor (default: `.`) |
 | `--interval SECS` | Refresh interval in seconds (default: `5`) |
 
+## GitHub Copilot: CLI, desktop app, VS Code
+
+aictl tracks three Copilot surfaces as separate tools: `copilot-cli`, `copilot-desktop`, `copilot-vscode`.
+Copilot CLI and the desktop app both keep state in `~/.copilot` (`%USERPROFILE%\.copilot` on Windows;
+`COPILOT_HOME` relocates it). VS Code Copilot Chat stores data under the VS Code user directory.
+
+**Enable** (the commands exist; their `--help` was checked, see "Not verified" below):
+
+```powershell
+aictl enable --dry-run     # preview what would be written
+aictl enable               # hooks + OTel + VS Code Copilot agent settings
+aictl daemon serve         # start the receiver (default port 8484, or $env:AICTL_PORT)
+```
+
+```bash
+aictl enable --dry-run && aictl enable && aictl daemon serve
+```
+
+**Verify:**
+
+```powershell
+aictl hooks verify         # POSTs a synthetic event through every installed hook
+aictl otel status          # receiver counters on the running server
+aictl status --tool copilot --json
+```
+
+`aictl status` reports, per surface, only what exists on disk: model, MCP servers, plugins, global
+instructions, version, and `not configured` / `not detected` where a fact is absent. Copilot CLI and
+desktop read `~/.copilot/settings.json` and `mcp-config.json`; the CLI version comes from its npm
+`package.json`, the desktop version from the macOS app bundle.
+
+**Remove:**
+
+```powershell
+aictl disable --dry-run
+aictl disable
+```
+
+**Not verified**
+- No command in this section was run on Windows.
+- `aictl enable` is documented to register hooks for Claude Code and VS Code Copilot; registration for
+  Copilot CLI and the desktop app has not been confirmed.
+- OTLP metrics for all three service names are accepted by the receiver, but token metrics alone do not
+  create a session row (see `test/e2e/test_copilot_flow.py`, strict xfail).
+- Desktop app version detection is macOS-only; on Windows it reports `not detected`.
+
 ## Windows Installation & Troubleshooting
 
 ### Prerequisites
