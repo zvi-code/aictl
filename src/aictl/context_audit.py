@@ -493,6 +493,13 @@ def scan_text(text: str, *, config: bool = False) -> list[dict]:
 _FILE_CACHE: dict[str, tuple[int, int, dict]] = {}
 
 
+def _text_models(text: str) -> dict:
+    from .effective_config import frontmatter_model, instruction_requests  # imports this module
+
+    values, line = frontmatter_model(text)
+    return {"frontmatter": values, "line": line, "requests": instruction_requests(text)}
+
+
 def _file_facts(path: Path, *, config: bool) -> dict | None:
     """Stat first; read, hash and scan only when mtime or size changed."""
     try:
@@ -523,6 +530,7 @@ def _file_facts(path: Path, *, config: bool) -> dict | None:
         "always_apply": bool(re.search(r"(?m)^alwaysApply:\s*true\s*$", text[:2000])),
         "apply_to": apply_to.group(1).strip() if apply_to else "",
         "imports": _parse_imports(text) if path.name.endswith(".md") and not binary else [],
+        "text_models": _text_models(text) if path.name.endswith(".md") and not binary else None,
     }
     _FILE_CACHE[key] = (st.st_mtime_ns, st.st_size, facts)
     return facts

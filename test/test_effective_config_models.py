@@ -381,6 +381,20 @@ def test_outside_project_pin_is_medium(world):
     assert "Not in this project, still in effect" in hit[0].why
 
 
+def test_variable_in_this_shell_is_low_and_says_where_it_is(world):
+    _home, project, env = world
+    _eff, findings = model_findings(project, env={**env, "COPILOT_MODEL": "gpt-6.1-terra"}, ps_output="", tools=("copilot-cli",))
+    hit = rules(findings, "model.outside-project")
+    assert [(f.severity, f.path) for f in hit] == [("low", "env:COPILOT_MODEL")]
+
+
+def test_variable_set_by_a_shell_profile_is_medium(world, monkeypatch):
+    _home, project, env = world
+    monkeypatch.setattr("aictl.effective_config._persistent_env", lambda _f: {"/profile.ps1": {"COPILOT_MODEL": "gpt-6.1-terra", "OTHER": "x"}})
+    _eff, findings = model_findings(project, env=env, ps_output="", tools=("copilot-cli",))
+    assert [(f.severity, f.path) for f in rules(findings, "model.outside-project")] == [("medium", "/profile.ps1")]
+
+
 def test_pin_in_project_is_not_outside_project(world):
     _home, project, env = world
     write(project / ".github/copilot/settings.json", json.dumps({"model": "gpt-6.1-terra"}))
