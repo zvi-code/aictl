@@ -284,7 +284,7 @@ aictl ctx effective --json
 aictl ctx effective --search-path   # also every location checked, including absent ones
 ```
 
-It is read-only: it runs no tool and writes nothing. `aictl ps` and the dashboard's first screen show
+It is read-only: it runs no tool and writes nothing. `aictl ps`, `aictl top` and the first dashboard screen show
 the pinned model with its file and line. `aictl ctx audit` and the dashboard's hidden context panel show
 the same model findings:
 

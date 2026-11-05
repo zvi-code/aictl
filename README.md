@@ -401,7 +401,7 @@ launchctl setenv COPILOT_OTEL_ENDPOINT http://localhost:8484
 Or use `aictl enable` (recommended) to set up everything at once:
 
 ```bash
-aictl enable                   # hooks + OTel + VS Code agent settings — all tools, all persistent
+aictl enable                   # hooks + OTel + VS Code agent settings, persistent; tools whose folder is missing are skipped
 aictl enable --scope project   # same, but scoped to the current project only
 aictl enable --dry-run         # preview what would be written without writing anything
 ```
@@ -413,8 +413,8 @@ aictl enable --dry-run         # preview what would be written without writing a
 Or use `aictl otel enable` for OTel-only setup:
 
 ```bash
-aictl otel enable              # all tools — writes shell profiles, VS Code
-                               # settings, Codex config, macOS launchctl
+aictl otel enable              # writes shell profiles, VS Code settings, macOS launchctl
+                               # Codex is left alone for now (zvi-code/aictl#2)
 aictl otel enable --tool claude  # Claude Code only
 ```
 
@@ -614,6 +614,26 @@ sources that loaded but are not in the inventory. It reads files and never runs 
 and it works in every capture mode. The dashboard shows the same report.
 Details: [how-to](docs/how-to.md#find-hidden-context).
 
+### Effective model and settings: `aictl ctx effective`
+
+A model can be pinned far from the project and stay pinned after everyone has forgotten it. This command
+shows the value in force, its file and line, its scope, what it overrode, and any request it contradicts,
+such as an agent file asking for a different model. Sources outside the project say so: "not in this
+project, still in effect". For VS Code it also shows the model selected in the picker.
+
+`--search-path` lists every location checked, including absent ones. On Windows that covers `%APPDATA%`
+and `%LOCALAPPDATA%`, VS Code profiles, packaged-app folders, OneDrive `Documents`, parent folders up to the
+drive root and policy keys. `aictl ps`, `aictl top` and the dashboard's first screen show the pin as well.
+Details: [how-to](docs/how-to.md#see-which-model-and-settings-are-really-in-force).
+
+### Copilot sessions: `aictl session`
+
+Finds Copilot's session folders and stores for the CLI, the desktop app and VS Code, with no daemon or
+database. A session can be named by its full id, an id prefix, a PID, a path or a VS Code chat id. Files in a
+session are listed by type and can be opened from the CLI, from session detail in the dashboard, or through
+`/api/copilot-sessions`, which answers requests from this machine only.
+Details: [how-to](docs/how-to.md#find-a-copilot-session-and-its-files).
+
 ## Command Reference
 
 | Command | What it does |
@@ -638,13 +658,19 @@ Details: [how-to](docs/how-to.md#find-hidden-context).
 | `aictl ps --tool NAME --all --json` | Filter by tool, include recently ended sessions, stable JSON output |
 | `aictl top` | Live `ps`: j/k or arrows move, Enter expands, `/` filters, `a` toggles ended, `q` quits |
 | `aictl session kill <session_id>` | Stop a live session |
+| `aictl session list` | List Copilot sessions on disk, with folder size and project |
+| `aictl session find` | Search sessions by id, project path or title |
+| `aictl session show` | One session: its folder, ids, state and artifacts |
+| `aictl session path` | Print only a session's folder |
+| `aictl session artifacts` | List and classify the files in a session |
+| `aictl session cat` | Print one file from a session's folder, with a size limit |
 | `aictl ctx audit` | Hidden context: every source that can reach the model, drift, concealment, visibility gaps |
 | `aictl ctx audit --fail-on high --json` | The same for CI: exit 1 on a finding of that severity |
 | `aictl ctx effective` | Which model and settings are in force, where each comes from, and what each overrode |
 | `aictl daemon serve` | Launch live web dashboard with REST API at localhost:8484 |
 | `aictl daemon serve --capture metadata` | Run without storing conversation text; `off` stores nothing on disk |
 | `aictl daemon dashboard --root .` | Launch live terminal dashboard (TUI) |
-| `aictl enable` | One-shot: install hooks + OTel + VS Code agent settings (all tools, persistent) |
+| `aictl enable` | One-shot, persistent: install hooks + OTel + VS Code agent settings. A tool whose folder is missing is skipped and listed |
 | `aictl enable --scope project` | Same, scoped to current project (`.claude/settings.local.json`, `.vscode/settings.json`) |
 | `aictl enable --dry-run` | Preview what `aictl enable` would write without writing anything |
 | `aictl hooks install` | Configure Claude Code to push hook events to aictl |
@@ -654,10 +680,11 @@ Details: [how-to](docs/how-to.md#find-hidden-context).
 | `aictl hooks verify` | Send a test event through each installed hook |
 | `aictl hooks repair` | Repair a Codex `config.toml` an older `aictl enable` made invalid |
 | `aictl disable [--dry-run]` | Remove every trace of `aictl enable`. If aictl will not start: `python3 ~/.config/aictl/remove-hooks.py --dry-run` |
-| `aictl otel enable` | Persist OTel config: shell profiles, VS Code, Codex, launchctl |
+| `aictl otel enable` | Persist OTel config: shell profiles, VS Code, launchctl. Codex is left alone for now ([zvi-code/aictl#2](https://github.com/zvi-code/aictl/issues/2)) |
 | `aictl otel enable --print` | Print env var exports for eval (current shell only) |
 | `aictl otel status` | Check OTel receiver health |
 | `aictl audit tail` | Show recent entries in aictl's own record of files it changed |
+| `aictl catalog` | Explain any dashboard metric: its source and query |
 | `aictl memory show --root .` | Show Claude Code auto-memory content |
 | `aictl memory stashes --root .` | List per-profile memory stashes |
 | `aictl db stats` | Show database size, table row counts, and time range |
@@ -770,7 +797,7 @@ aictl tracks `copilot-cli`, `copilot-desktop`, `copilot-vscode` and `copilot365`
 |---|---|---|
 | `copilot-cli` | `~/.copilot` (`%USERPROFILE%\.copilot`; `COPILOT_HOME` relocates it) | Sessions, sub-agents, tools, prompts, tokens, premium requests |
 | `copilot-desktop` | The same `~/.copilot`, plus its bundled runtime processes | Sessions, AI credits, config, processes |
-| `copilot-vscode` | The VS Code user directory, Copilot Chat stores and OTel settings | Sessions, tokens, config, processes |
+| `copilot-vscode` | The VS Code user directory (`%APPDATA%\Code\User` on Windows), Copilot Chat stores and OTel settings | Sessions, tokens, config, processes |
 | `copilot365` | Agent packages in a project; the app, where detected | Local detection only: conversations stay in the tenant |
 
 **Enable, verify, remove.** These are the same in PowerShell:
@@ -901,12 +928,6 @@ The full list, including rows marked unverified, is in `src/aictl/data/paths-win
 | Live TUI dashboard | Requires `textual`, included in `[all]` |
 | `aictl daemon serve --daemon` | Respawns detached, because there is no `fork`. Simulated only |
 | `aictl top` keys | Use `msvcrt`. Not yet exercised on a real console |
-| `aictl session list` | List Copilot sessions on disk, with folder size and project |
-| `aictl session find` | Search sessions by id, project path or title |
-| `aictl session show` | One session: its folder, ids, state and artifacts |
-| `aictl session path` | Print only a session's folder |
-| `aictl session artifacts` | List and classify the files in a session |
-| `aictl session cat` | Print one file from a session's folder, with a size limit |
 | Persisted environment | `setx` values under `HKCU\Environment` and PowerShell profile lines. Running processes keep old values |
 | Shell and dev-server process patterns | Disabled: names cannot tie them to a tool ([zvi-code/aictl#3](https://github.com/zvi-code/aictl/issues/3)) |
 | `--backtrace PID` | Not available (uses macOS `sample` / Linux `eu-stack`) |
