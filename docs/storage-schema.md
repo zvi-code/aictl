@@ -210,6 +210,30 @@ PK: `(process_name, ai_tool)`
 
 ---
 
+## Version 29 (added transcript usage)
+
+### `session_usage` — Per-session usage read from tool transcripts
+
+One row per logical session, written whole by the transcript usage ingester from
+Claude Code, Codex and Copilot CLI transcripts. Holds numbers only, no prompt or
+response text. Reads overlay it on `sessions`, so a transcript count replaces other
+sources' counts and is never added to them. All token columns are disjoint classes.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `session_id` | TEXT PK | Tool's session UUID (a sub-agent rolls up to its root session) |
+| `tool`, `model`, `project_path` | TEXT | Tool id, most-used model, working directory |
+| `source`, `quality`, `quality_reason` | TEXT | Provenance: `transcript`; `exact` or `partial`; why |
+| `input_tokens`, `output_tokens` | INTEGER | Uncached input; output |
+| `cache_read_tokens`, `cache_creation_tokens` | INTEGER | Cache reads; cache writes |
+| `request_count`, `tool_call_count`, `turn_count` | INTEGER | Deduplicated counts |
+| `cost_usd` | REAL NULL | List-price estimate; NULL when no model could be priced |
+| `cost_quality`, `cost_reason`, `unpriced_models` | TEXT | `estimated`, `partial` or `unknown`; why; JSON list |
+| `models_json`, `daily_json` | TEXT | Per-model and per-local-day splits |
+| `started_at`, `last_activity_at`, `updated_at` | REAL | Epoch seconds |
+
+---
+
 ## Configuration
 
 ```toml

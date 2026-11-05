@@ -501,6 +501,8 @@ class CopilotAccumulator:
         self.shutdowns: list[dict] = []
         self.assistant_messages = 0
         self.model = ""
+        self._record_ids: set[str] = set()
+        self._compactions: list[tuple[dict, float]] = []
 
     def feed(self, obj: dict) -> None:
         kind = obj.get("type")
@@ -515,7 +517,16 @@ class CopilotAccumulator:
         elif kind == "session.usage_record":
             usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
             self.has_records = True
+            for key in ("requestId", "apiCallId"):
+                if usage.get(key):
+                    self._record_ids.add(str(usage[key]))
             self._add(usage.get("model") or self.model, usage, ts, requests=1)
+        elif kind == "session.compaction_complete":
+            # A compaction is a real model call that usage_record does not
+            # report: 16 of 16 in real sessions had no matching record.
+            used = data.get("compactionTokensUsed")
+            if isinstance(used, dict) and str(data.get("requestId") or "") not in self._record_ids:
+                self._compactions.append((used, ts))
         elif kind == "session.shutdown":
             self.shutdowns.append({"ts": ts, "metrics": data.get("modelMetrics") or {}})
         elif kind == "user.message":
@@ -546,6 +557,9 @@ class CopilotAccumulator:
     def finish(self) -> SessionUsage:
         s = self.s
         if self.has_records:
+            for used, ts in self._compactions:
+                self._add(used.get("model") or self.model, used, ts, requests=1)
+            self._compactions.clear()
             if not self.shutdowns:
                 s.quality_reason = "session has no shutdown event yet; counted per request"
             return s
