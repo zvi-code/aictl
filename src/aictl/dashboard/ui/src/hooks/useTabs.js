@@ -34,6 +34,8 @@ export function useTabs() {
     setActiveTabState(id);
     writeUrl(tabToParams(id, DEFAULT_TAB), { push: true });
     try { localStorage.setItem(KEY, JSON.stringify(id)); } catch { /* storage disabled */ }
+    // The default tab has no `tab=` in the URL, and that URL is the board.
+    if (id === DEFAULT_TAB) window.dispatchEvent(new Event('aictl:route'));
   }, []);
 
   useEffect(() => {

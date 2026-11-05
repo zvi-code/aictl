@@ -331,3 +331,20 @@ also swaps views.
 | 2026-03-28 | Full review: --blue/--fg3 scope widened (3 files), ProcessNode a11y, fmtDur duplication, 15 findings total | /ui-review |
 | 2026-03-27 | Full review: found undefined --blue/--fg3, float bug, updated typography/spacing sections, expanded a11y gaps list | /ui-review |
 | 2026-03-27 | Initial creation from codebase audit | /ui-review skill |
+
+## Board (default screen)
+
+The default screen lives in `components/board/` with its own stylesheet `board.css`; every class is
+prefixed `bd-`, and every color is a token on `.bd-app` (`--page`, `--surface`, `--ink`, `--ink2`, `--ink3`,
+`--line`, `--s1` to `--s5`, and so on) with a light set under `[data-theme=light]`. Components never name a
+color. Old screens load through `?tab=` with `dashboard.css`; `root.js` loads one or the other and reloads the
+page when the route crosses between them, so the two stylesheets are never active together.
+
+- Layout: one 12-column grid per section, stored under `aictl-board-layout-v1`. `layout.js` adds new panels to
+  a stored layout and drops removed ones.
+- Tables: `Table.js` with `tableModel.js` for every panel and the drawer. Charts: `Chart.js`, plain SVG, with
+  one shared tooltip (`tip.js`) written straight to the DOM, so hover renders no component.
+- Null from the API shows as `n/a` through `format.js`. A share or rate from the API is a ratio from 0 to 1.
+- Filters and time live in the URL (`filters.js`, `hooks/useBoardFilters.js`). Each choice is one history entry.
+- Every drag has a keyboard route: panel menu for move and size, section buttons for order, arrow keys on a
+  chart for the time selection.

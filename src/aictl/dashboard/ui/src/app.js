@@ -1,3 +1,6 @@
+import './dashboard.css';
+import './components/ui/ui.css';
+import 'uplot/dist/uPlot.min.css';
 import { useState, useEffect, useRef, useCallback, useMemo } from 'preact/hooks';
 import { lazy, Suspense } from 'preact/compat';
 import { html } from 'htm/preact';
