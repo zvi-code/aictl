@@ -373,3 +373,12 @@ def test_cp1252_console_output_does_not_raise():
     stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
     text = safe_text("project \u2192 \u65e5\u672c\u8a9e", stream)
     text.encode("cp1252")
+
+
+def test_ps_document_gains_folder_and_artifact_count(stores):
+    doc = {"tools": [{"sessions": [{"id": CLI_ID}, {"id": "not-indexed"}]}]}
+    mod.annotate_observed(doc)
+    first, second = doc["tools"][0]["sessions"]
+    assert first["folder"] == str(stores["cli"])
+    assert first["artifact_count"] >= 5 and first["artifact_bytes"] > 0
+    assert "folder" not in second
