@@ -22,6 +22,7 @@ from ..platforms import (
     cursor_home_dir,
     is_aictl_process,
     load_config,
+    listening_pids,
     pid_alive,
     spawn_detached_windows,
     terminate_pid,
@@ -103,7 +104,7 @@ def serve(
         return
 
     if stop:
-        _stop_daemon(pid_file)
+        _stop_daemon(pid_file, port)
         return
 
     if daemon_mode:
@@ -291,39 +292,63 @@ def _start_daemon_windows(
     click.echo("  stop: aictl serve --stop")
 
 
-def _stop_daemon(pid_file: Path):
-    """Stop a running daemon by PID file."""
-    if not pid_file.is_file():
-        click.echo("No daemon running (no PID file).")
-        return
-    try:
-        pid = int(pid_file.read_text(encoding="utf-8").strip())
-        if pid_alive(pid) and is_aictl_process(pid) and terminate_pid(pid):
-            click.echo(f"Stopped daemon (PID {pid}).")
+def _port_servers(port: int | None) -> list[int]:
+    """aictl processes that listen on *port*. A server in the foreground has no PID file."""
+    if port is None:
+        return []
+    return [pid for pid in listening_pids(port) if pid != os.getpid() and is_aictl_process(pid)]
+
+
+def _stop_daemon(pid_file: Path, port: int | None = None):
+    """Stop the daemon in the PID file and any aictl server that listens on *port*."""
+    stopped: list[int] = []
+    if pid_file.is_file():
+        try:
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+        except ValueError:
+            click.echo("Invalid PID file.")
         else:
-            click.echo("Daemon not running (stale PID file removed).")
+            if pid_alive(pid) and is_aictl_process(pid) and terminate_pid(pid):
+                stopped.append(pid)
+            else:
+                click.echo("Daemon not running (stale PID file removed).")
         pid_file.unlink(missing_ok=True)
-    except ValueError:
-        click.echo("Invalid PID file.")
-        pid_file.unlink(missing_ok=True)
+    elif port is None:
+        click.echo("No daemon running (no PID file).")
+    for pid in _port_servers(port):
+        if pid not in stopped and terminate_pid(pid):
+            stopped.append(pid)
+    for pid in stopped:
+        click.echo(f"Stopped daemon (PID {pid}).")
+    if not stopped and port is not None:
+        click.echo(f"No aictl server is running on port {port}.")
 
 
 def _show_daemon_status(pid_file: Path, host: str, port: int):
-    """Show whether daemon is running."""
-    if not pid_file.is_file():
-        click.echo("No daemon running.")
-        return
-    try:
-        pid = int(pid_file.read_text(encoding="utf-8").strip())
+    """Show whether a daemon or a server in the foreground is running."""
+    running = None
+    if pid_file.is_file():
+        try:
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+        except ValueError:
+            click.echo("Invalid PID file.")
+            return
         if pid_alive(pid) and is_aictl_process(pid):
-            click.secho(f"Daemon running (PID {pid})", fg="green")
-            click.echo(f"  dashboard: http://{host}:{port}")
-            click.echo(f"  pid file:  {pid_file}")
+            running = pid
         else:
             click.echo("Daemon not running (stale PID file).")
             pid_file.unlink(missing_ok=True)
-    except ValueError:
-        click.echo("Invalid PID file.")
+    if running is not None:
+        click.secho(f"Daemon running (PID {running})", fg="green")
+        click.echo(f"  dashboard: http://{host}:{port}")
+        click.echo(f"  pid file:  {pid_file}")
+        return
+    found = _port_servers(port)
+    if found:
+        click.secho(f"Server running in the foreground (PID {found[0]})", fg="green")
+        click.echo(f"  dashboard: http://{host}:{port}")
+    elif not pid_file.exists():
+        click.echo("No daemon running.")
 
 
 # ─── monitor ─────────────────────────────────────────────────────────────────
