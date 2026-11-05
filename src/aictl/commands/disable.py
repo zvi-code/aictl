@@ -2,9 +2,8 @@
 # Copyright (c) 2026 Zvi Schneider. MIT License.
 """``aictl disable`` — symmetric teardown for ``aictl enable``.
 
-Uses the mutation ledger (``aictl.mutation_ledger``) to plan reverts, and
-delegates structured teardown to the existing ``hooks uninstall`` /
-``otel disable`` commands via Click's programmatic invocation.
+The work is in the stdlib-only ``aictl.hook_removal``, which also runs without
+aictl. The mutation ledger records what it changes.
 
 Also exposes a small ``aictl audit`` command group for reading the ledger.
 """
@@ -12,145 +11,77 @@ Also exposes a small ``aictl audit`` command group for reading the ledger.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 import click
 
-from aictl import mutation_ledger
+from aictl import hook_removal, mutation_ledger
 from aictl.commands.integrations import (
-    _AICTL_ENV_BEGIN,
-    _AICTL_ENV_END,
-    _aictl_env_file,
-    _shell_profiles,
+    _gemini_settings_path,
+    _removal_sink,
+    _settings_path,
+    _vscode_hook_settings_path,
 )
-from aictl.commands.integrations import (
-    uninstall as hooks_uninstall,
-)
+from aictl.platforms import vscode_user_dir
 from aictl.utils import WriteGuard
 
 
-def _iter_reverts(since_ts: str | None) -> list[dict]:
-    """Ledger entries since *since_ts* (or all), deduped newest-first by path."""
-    entries = mutation_ledger.all_entries()
-    if since_ts:
-        entries = [e for e in entries if e.get("ts", "") > since_ts]
-    seen: set[str] = set()
-    out: list[dict] = []
-    for e in reversed(entries):
-        p = e.get("path", "")
-        if p in seen:
-            continue
-        seen.add(p)
-        out.append(e)
-    return out
-
-
-def _strip_env_source_block(profile: Path) -> bool:
-    """Remove the aictl env source block from *profile*. Returns True if changed."""
-    if not profile.exists():
-        return False
-    try:
-        content = profile.read_text(encoding="utf-8")
-    except OSError:
-        return False
-    pattern = re.compile(
-        re.escape(_AICTL_ENV_BEGIN) + r".*?" + re.escape(_AICTL_ENV_END) + r"\n?",
-        re.DOTALL,
-    )
-    new_content = pattern.sub("", content)
-    if new_content == content:
-        return False
-    try:
-        profile.write_text(new_content, encoding="utf-8")
-    except OSError:
-        return False
-    return True
-
-
 @click.command("disable")
-@click.option("--dry-run", is_flag=True, help="Print the planned revert actions without mutating anything.")
-@click.option("--since", "since_ts", default=None, help="Only revert ledger entries after this ISO8601 timestamp.")
-@click.option("--force", is_flag=True, help="Pass --force through to subcommands (tolerate corrupt settings.json).")
-def disable(dry_run: bool, since_ts: str | None, force: bool) -> None:
-    """Revert what ``aictl enable`` installed: hooks, env source-block, env.sh.
+@click.option("--dry-run", is_flag=True, help="Print what would change without writing anything.")
+@click.option(
+    "--project",
+    "projects",
+    multiple=True,
+    type=click.Path(path_type=Path),
+    help="Also clean this project directory (repeatable). The current directory is always cleaned.",
+)
+@click.option(
+    "--include-vscode-toggles",
+    is_flag=True,
+    help="Also remove VS Code feature toggles an older aictl set, which it did not record.",
+)
+def disable(dry_run: bool, projects: tuple[Path, ...], include_vscode_toggles: bool) -> None:
+    """Remove every trace of `aictl enable`, across every tool.
 
-    Best-effort symmetric teardown. Structured reverts go through the
-    existing ``hooks uninstall`` command; filesystem artifacts (env.sh
-    and shell profile source-block) are cleaned up directly.
+    Hook rules (any aictl version, any event, in every tool's user and project
+    files), shell profile lines, env.sh, launchctl variables, the Codex [otel]
+    table and the VS Code settings aictl changed. User rules stay. A corrupt file
+    is reported and skipped; the rest still runs. Exits 1 if any file was skipped.
+
+    Works with the daemon down. If aictl itself will not start:
+    python3 ~/.config/aictl/remove-hooks.py --dry-run
     """
-    planned = _iter_reverts(since_ts)
-
-    if dry_run:
-        click.secho("Dry run — nothing will be reverted.\n", fg="yellow")
-        click.echo("Planned reverts:")
-        click.echo("  [hooks uninstall] --scope user (+ project if present)")
-        click.echo("  [env]             remove source-block from shell profiles")
-        env_file = _aictl_env_file()
-        click.echo(f"  [env]             delete {env_file}")
-        if planned:
-            click.echo(f"\nLedger entries that would be surfaced ({len(planned)}):")
-            for e in planned[:20]:
-                click.echo(f"  {e['ts']}  {e['op']:<6}  {e['path']}")
-            if len(planned) > 20:
-                click.echo(f"  ... and {len(planned) - 20} more")
-        else:
-            click.echo("\nNo ledger entries to surface.")
-        return
-
-    WriteGuard.install("disable")
-    actions: list[str] = []
-
-    # 1. hooks uninstall — user scope, then project scope if that file exists.
-    ctx = click.get_current_context()
-    for scope in ("user", "project"):
-        try:
-            ctx.invoke(hooks_uninstall, scope=scope, force=force, dry_run=False)
-            actions.append(f"hooks uninstall --scope {scope}")
-        except SystemExit:
-            actions.append(f"hooks uninstall --scope {scope}: FAILED")
-        except click.Abort:
-            actions.append(f"hooks uninstall --scope {scope}: aborted")
-            raise
-        except Exception as exc:  # noqa: BLE001 — best-effort teardown
-            actions.append(f"hooks uninstall --scope {scope}: FAILED ({exc})")
-
-    # 2. Remove source-block from shell profiles.
-    for profile in _shell_profiles():
-        if _strip_env_source_block(profile):
-            actions.append(f"Removed aictl source-block from {profile}")
-
-    # 3. Delete the env.sh file.
-    env_file = _aictl_env_file()
-    if env_file.exists():
-        try:
-            env_file.unlink()
-            actions.append(f"Deleted {env_file}")
-            # Record the delete in the ledger.
-            mutation_ledger.record(
-                command="disable",
-                path=env_file,
-                op="delete",
-                previous_content=None,
-                new_content=None,
-            )
-        except OSError as exc:
-            actions.append(f"Delete {env_file}: FAILED ({exc})")
-
-    # 4. Log the disable invocation itself.
-    mutation_ledger.record(
-        command="disable",
-        path=Path("<summary>"),
-        op="modify",
-        previous_content=None,
-        new_content=None,
+    if not dry_run:
+        WriteGuard.install("disable")
+    home = Path.home()
+    cwd = Path.cwd()
+    extra_hook_files = [
+        _settings_path("user"),
+        _settings_path("project"),
+        _vscode_hook_settings_path("user"),
+        _vscode_hook_settings_path("project"),
+        _gemini_settings_path("user"),
+        _gemini_settings_path("project"),
+    ]
+    try:
+        extra_vscode = [vscode_user_dir() / "settings.json"]
+    except (KeyError, OSError):
+        extra_vscode = []
+    sink = _removal_sink(dry_run)
+    result = hook_removal.remove_everything(
+        home,
+        projects=[cwd, *projects],
+        extra_hook_files=extra_hook_files,
+        extra_vscode_settings=extra_vscode,
+        dry_run=dry_run,
+        include_vscode_toggles=include_vscode_toggles,
+        on_change=sink.on_change,
+        before_change=sink.before_change,
     )
-
-    click.secho("aictl disable:", fg="green", bold=True)
-    for a in actions:
-        click.echo(f"  {a}")
-    if planned:
-        click.echo(f"\nLedger: {len(planned)} mutation(s) since last enable.")
+    click.secho("Dry run, nothing changed:" if dry_run else "aictl disable:", fg="yellow" if dry_run else "green")
+    hook_removal.print_result(result, dry_run=dry_run, echo=click.echo)
+    if result.failures:
+        raise SystemExit(1)
 
 
 # ── audit ────────────────────────────────────────────────────────────────────

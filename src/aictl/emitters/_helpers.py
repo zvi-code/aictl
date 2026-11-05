@@ -10,6 +10,7 @@ needs to supply its file paths and formatting details.
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -137,6 +138,7 @@ def emit_settings(
     results: list,
     *,
     force: bool = False,
+    tool: str = "claude",
 ) -> None:
     """Emit hooks + settings + permissions + env to a settings JSON file."""
     has_data = resolved.hooks or resolved.settings or resolved.permissions or resolved.env
@@ -148,7 +150,7 @@ def emit_settings(
     # .context.toml is cleaned up on redeploy), keep user hooks, append our
     # freshly-tagged rules. Event keys are canonicalised so a ``preToolUse``
     # typo in .context.toml deploys as ``PreToolUse`` and actually fires.
-    merged = merge_aictl_hooks(existing.get("hooks", {}), canonical_hook_rules(resolved.hooks or {}))
+    merged = merge_aictl_hooks(existing.get("hooks", {}), canonical_hook_rules(resolved.hooks or {}, tool))
     if merged:
         existing["hooks"] = merged
     elif "hooks" in existing:
@@ -162,14 +164,26 @@ def emit_settings(
     emit_file(fp, json.dumps(existing, indent=2) + "\n", dry_run, results)
 
 
-def canonical_hook_rules(hooks: dict[str, list]) -> dict[str, list]:
-    """Copy *hooks* with event keys mapped to the tools' PascalCase enum names."""
+def canonical_hook_rules(hooks: dict[str, list], tool: str = "claude") -> dict[str, list]:
+    """Copy *hooks* for one tool: PascalCase enum names, unknown events dropped.
+
+    An event the tool does not define is never written: Claude Code warns about
+    the key on every start and the rule cannot fire. ``.context.toml`` hook
+    tables are shared across tools, so a Gemini event is skipped for Claude and
+    the reverse, with a warning on stderr.
+    """
     # Lazy import: commands.integrations owns the event catalogues and pulls
     # in click; emitters must stay importable without it at module load.
-    from ..commands.integrations import GEMINI_HOOK_EVENTS, HOOK_EVENTS, VSCODE_HOOK_EVENTS
+    from ..commands.integrations import CLAUDE_KNOWN_EVENTS, GEMINI_HOOK_EVENTS, VSCODE_HOOK_EVENTS
 
-    known = [*HOOK_EVENTS, *GEMINI_HOOK_EVENTS, *VSCODE_HOOK_EVENTS]
-    return canonicalize_hook_events({e: list(rules) for e, rules in hooks.items()}, known)
+    catalogue = {"claude": CLAUDE_KNOWN_EVENTS, "gemini": GEMINI_HOOK_EVENTS, "copilot": VSCODE_HOOK_EVENTS}[tool]
+    canonical = canonicalize_hook_events(
+        {e: list(rules) for e, rules in hooks.items()}, [*CLAUDE_KNOWN_EVENTS, *GEMINI_HOOK_EVENTS, *VSCODE_HOOK_EVENTS]
+    )
+    allowed = set(catalogue)
+    for event in sorted(set(canonical) - allowed):
+        print(f"warning: hook event {event!r} skipped: not a {tool} hook event", file=sys.stderr)
+    return {e: rules for e, rules in canonical.items() if e in allowed}
 
 
 def emit_ignores(
