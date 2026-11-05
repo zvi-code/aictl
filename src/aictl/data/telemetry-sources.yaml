@@ -58,6 +58,21 @@ copilot-cli:
   # Copilot events are per-request; sum across all lines
   aggregation: sum
 
+# The desktop app shares the CLI's session-state directory. Its sessions are the
+# rows of data.db whose session_type is not cli_session.
+copilot-desktop:
+  source_id: events-jsonl
+  confidence: 0.90
+  state_dir_fn: copilot_global_storage
+  files:
+    - pattern: "**/*events*.jsonl"
+      format: jsonl
+  fields:
+    input_tokens: "prompt_tokens"
+    output_tokens: "completion_tokens"
+    model: "model"
+  aggregation: sum
+
 codex-cli:
   source_id: token-count
   confidence: 0.85

@@ -316,13 +316,22 @@ class TestParseCopilotEvents:
         assert report.errors[0]["type"] == "shutdown_error"
 
     def test_slow_tool_execution(self, tmp_path):
+        # The real events: the name is on the start and neither has a duration.
         events = tmp_path / "events.jsonl"
         events.write_text(
             json.dumps(
                 {
-                    "type": "tool.execution_complete",
-                    "data": {"toolName": "bash", "durationMs": 120000},
+                    "type": "tool.execution_start",
+                    "data": {"toolCallId": "call-1", "toolName": "bash"},
                     "timestamp": "2024-01-01T00:00:00Z",
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "tool.execution_complete",
+                    "data": {"toolCallId": "call-1", "success": True},
+                    "timestamp": "2024-01-01T00:02:00Z",
                 }
             )
             + "\n"
@@ -703,7 +712,7 @@ class TestStatRaceResilience:
 
 class TestParserRegistry:
     def test_all_tools_registered(self):
-        expected = {"claude-code", "copilot-cli", "codex-cli", "cursor", "continue"}
+        expected = {"claude-code", "copilot-cli", "copilot-desktop", "codex-cli", "cursor", "continue"}
         assert set(_PARSER_REGISTRY.keys()) == expected
 
     def test_parsers_are_callable(self):

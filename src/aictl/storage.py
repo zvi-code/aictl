@@ -179,7 +179,8 @@ CREATE TABLE IF NOT EXISTS requests (
     cache_creation_tokens INTEGER DEFAULT 0, cost_usd REAL DEFAULT 0,
     duration_ms REAL DEFAULT 0, finish_reason TEXT DEFAULT '',
     is_error INTEGER DEFAULT 0, error_type TEXT DEFAULT '',
-    http_status INTEGER DEFAULT 0, source TEXT DEFAULT '', prompt_id TEXT DEFAULT ''
+    http_status INTEGER DEFAULT 0, source TEXT DEFAULT '', prompt_id TEXT DEFAULT '',
+    ttft_ms REAL DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_requests_dedup ON requests(dedup_key) WHERE dedup_key != '';
 
@@ -189,9 +190,27 @@ CREATE TABLE IF NOT EXISTS tool_invocations (
     tool TEXT DEFAULT '', tool_name TEXT DEFAULT '', project_path TEXT DEFAULT '',
     pid INTEGER DEFAULT 0, is_error INTEGER DEFAULT 0, duration_ms REAL DEFAULT 0,
     input TEXT DEFAULT '{}', result_summary TEXT DEFAULT '', source TEXT DEFAULT '',
-    source_event_id TEXT DEFAULT ''
+    source_event_id TEXT DEFAULT '', agent_id TEXT DEFAULT '', confirm TEXT DEFAULT '',
+    confirm_wait_ms REAL DEFAULT 0, target TEXT DEFAULT '', exit_code INTEGER
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_inv_dedup ON tool_invocations(dedup_key) WHERE dedup_key != '';
+
+-- ═══ Prompts and skills, one row per use ═══
+
+CREATE TABLE IF NOT EXISTS session_prompts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, dedup_key TEXT DEFAULT '', ts REAL, session_id TEXT,
+    agent_id TEXT DEFAULT '', tool TEXT, project_path TEXT, text TEXT DEFAULT '', prompt_file TEXT DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_session_prompts_dedup ON session_prompts(dedup_key) WHERE dedup_key != '';
+CREATE INDEX IF NOT EXISTS idx_session_prompts_ts ON session_prompts(ts);
+CREATE INDEX IF NOT EXISTS idx_session_prompts_session ON session_prompts(session_id, ts);
+CREATE TABLE IF NOT EXISTS skill_uses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, dedup_key TEXT DEFAULT '', ts REAL, session_id TEXT,
+    agent_id TEXT DEFAULT '', tool TEXT, project_path TEXT, name TEXT, trigger TEXT DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_uses_dedup ON skill_uses(dedup_key) WHERE dedup_key != '';
+CREATE INDEX IF NOT EXISTS idx_skill_uses_ts ON skill_uses(ts);
+CREATE INDEX IF NOT EXISTS idx_skill_uses_session ON skill_uses(session_id, ts);
 
 -- ═══ File tracking ═══
 
@@ -810,6 +829,8 @@ class RequestRow:
     source: str = ""
     prompt_id: str = ""
     source_ts: float = 0.0  # embedded timestamp from source data (0 = absent)
+    ttft_ms: float = 0.0
+    dedup_key: str = ""  # set by a writer whose source names the call; otherwise computed at flush
 
 
 @dataclass(slots=True)
@@ -841,6 +862,40 @@ class ToolInvocationRow:
     source: str = ""
     source_ts: float = 0.0  # embedded timestamp from source data (0 = absent)
     source_event_id: str = ""  # source-side invocation id, e.g. hook tool_use_id
+    agent_id: str = ""  # subagent id, '' for the main agent
+    confirm: str = ""  # '', 'auto', 'approved', 'denied' or 'pending'
+    confirm_wait_ms: float = 0.0
+    target: str = ""  # short display text: command, file path or query
+    exit_code: int | None = None
+    dedup_key: str = ""
+
+
+@dataclass(slots=True)
+class SessionPromptRow:
+    """One prompt given to an agent. ``agent_id`` '' is a person's prompt to the main agent."""
+
+    dedup_key: str
+    ts: float
+    session_id: str
+    tool: str = ""
+    project_path: str = ""
+    agent_id: str = ""
+    text: str = ""
+    prompt_file: str = ""
+
+
+@dataclass(slots=True)
+class SkillUseRow:
+    """One use of a skill."""
+
+    dedup_key: str
+    ts: float
+    session_id: str
+    name: str
+    tool: str = ""
+    project_path: str = ""
+    agent_id: str = ""
+    trigger: str = ""
 
 
 @dataclass(slots=True)
@@ -914,6 +969,28 @@ class AgentRow:
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
     cost_usd: float = 0.0
+
+
+@dataclass(slots=True)
+class CallFacts:
+    """Rows read from a tool's own session files, written in one transaction."""
+
+    requests: list[RequestRow] = field(default_factory=list)
+    tools: list[ToolInvocationRow] = field(default_factory=list)
+    prompts: list[SessionPromptRow] = field(default_factory=list)
+    skills: list[SkillUseRow] = field(default_factory=list)
+    agents: list[AgentRow] = field(default_factory=list)
+    file_writes: list[FileWriteRow] = field(default_factory=list)
+
+    def __len__(self) -> int:
+        return (
+            len(self.requests)
+            + len(self.tools)
+            + len(self.prompts)
+            + len(self.skills)
+            + len(self.agents)
+            + len(self.file_writes)
+        )
 
 
 # ─── Tool stats SQL helpers ───────────────────────────────────────
@@ -1023,6 +1100,129 @@ def _dedup_key(*parts: str) -> str:
     """Compute a 16-char hex dedup key from string parts."""
     combined = "".join(parts)
     return hashlib.sha256(combined.encode("utf-8")).hexdigest()[:16]
+
+
+# ``source`` of rows read from a tool's own session files. These are the complete
+# record of a session, so they replace other writers' rows for the same calls.
+TRANSCRIPT_SOURCE = "transcript"
+_SUPERSEDED_SOURCES = {
+    "requests": ("otel", "claude-code-jsonl"),
+    "tool_invocations": ("otel", "hook"),
+}
+# Re-sent in full on every change of a team, so it must not return after removal.
+_SUPERSEDED_REQUEST_SOURCES_ALWAYS = frozenset({"claude-code-jsonl"})
+
+
+def _sessions_read_from_transcripts(conn: sqlite3.Connection, rows: list[RequestRow]) -> set[str]:
+    candidates = {r.session_id for r in rows if r.source in _SUPERSEDED_REQUEST_SOURCES_ALWAYS and r.session_id}
+    return {
+        sid
+        for sid in candidates
+        if conn.execute(
+            "SELECT 1 FROM requests WHERE session_id = ? AND source = ? LIMIT 1", (sid, TRANSCRIPT_SOURCE)
+        ).fetchone()
+    }
+
+
+_REQUEST_UPSERT = (
+    "INSERT INTO requests(dedup_key, ts, session_id, agent_id, tool, project_path, model, input_tokens,"
+    " output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, duration_ms, finish_reason,"
+    " is_error, error_type, http_status, source, ttft_ms)"
+    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    " ON CONFLICT(dedup_key) WHERE dedup_key != '' DO UPDATE SET"
+    " input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens,"
+    " cache_read_tokens=excluded.cache_read_tokens, cache_creation_tokens=excluded.cache_creation_tokens,"
+    " cost_usd=excluded.cost_usd, tool=excluded.tool,"
+    " model=CASE WHEN excluded.model NOT IN ('', 'unknown') THEN excluded.model ELSE requests.model END,"
+    " agent_id=CASE WHEN excluded.agent_id != '' THEN excluded.agent_id ELSE requests.agent_id END,"
+    " project_path=CASE WHEN excluded.project_path != '' THEN excluded.project_path ELSE requests.project_path END,"
+    " duration_ms=CASE WHEN excluded.duration_ms > 0 THEN excluded.duration_ms ELSE requests.duration_ms END,"
+    " ttft_ms=CASE WHEN excluded.ttft_ms > 0 THEN excluded.ttft_ms ELSE requests.ttft_ms END,"
+    " finish_reason=CASE WHEN excluded.finish_reason != '' THEN excluded.finish_reason ELSE requests.finish_reason END"
+)
+
+
+def _request_params(r: RequestRow) -> tuple:
+    return (
+        r.dedup_key,
+        r.ts,
+        r.session_id,
+        r.agent_id,
+        r.tool,
+        r.project_path,
+        r.model,
+        r.input_tokens,
+        r.output_tokens,
+        r.cache_read_tokens,
+        r.cache_creation_tokens,
+        round(r.cost_usd, 6),
+        round(r.duration_ms, 1),
+        r.finish_reason,
+        r.is_error,
+        r.error_type,
+        r.http_status,
+        TRANSCRIPT_SOURCE,
+        round(r.ttft_ms, 1),
+    )
+
+
+_TOOL_UPSERT = (
+    "INSERT INTO tool_invocations(dedup_key, ts, session_id, tool, tool_name, project_path, is_error, duration_ms,"
+    " input, result_summary, source, source_event_id, agent_id, confirm, confirm_wait_ms, target, exit_code)"
+    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    " ON CONFLICT(dedup_key) WHERE dedup_key != '' DO UPDATE SET tool=excluded.tool,"
+    " is_error=MAX(tool_invocations.is_error, excluded.is_error),"
+    " duration_ms=CASE WHEN excluded.duration_ms > 0 THEN excluded.duration_ms ELSE tool_invocations.duration_ms END,"
+    " input=CASE WHEN excluded.input != '{}' THEN excluded.input ELSE tool_invocations.input END,"
+    " result_summary=CASE WHEN excluded.result_summary != '' THEN excluded.result_summary"
+    " ELSE tool_invocations.result_summary END,"
+    " agent_id=CASE WHEN excluded.agent_id != '' THEN excluded.agent_id ELSE tool_invocations.agent_id END,"
+    " project_path=CASE WHEN excluded.project_path != '' THEN excluded.project_path ELSE tool_invocations.project_path END,"
+    " confirm=CASE WHEN excluded.confirm != '' THEN excluded.confirm ELSE tool_invocations.confirm END,"
+    " confirm_wait_ms=CASE WHEN excluded.confirm_wait_ms > 0 THEN excluded.confirm_wait_ms"
+    " ELSE tool_invocations.confirm_wait_ms END,"
+    " target=CASE WHEN excluded.target != '' THEN excluded.target ELSE tool_invocations.target END,"
+    " exit_code=COALESCE(excluded.exit_code, tool_invocations.exit_code)"
+)
+
+
+def _tool_params(r: ToolInvocationRow) -> tuple:
+    return (
+        r.dedup_key,
+        r.ts,
+        r.session_id,
+        r.tool,
+        r.tool_name,
+        r.project_path,
+        r.is_error,
+        round(r.duration_ms, 1),
+        json.dumps(r.input) if isinstance(r.input, dict) else r.input,
+        r.result_summary,
+        TRANSCRIPT_SOURCE,
+        r.source_event_id,
+        r.agent_id,
+        r.confirm,
+        round(r.confirm_wait_ms, 1),
+        r.target,
+        r.exit_code,
+    )
+
+
+_SUBAGENT_UPSERT = (
+    "INSERT INTO agents(agent_id, session_id, tool, task, model, is_sidechain, started_at, ended_at, completed)"
+    " VALUES(?,?,?,?,?,1,?,?,?)"
+    " ON CONFLICT(agent_id) DO UPDATE SET session_id=excluded.session_id, tool=excluded.tool, is_sidechain=1,"
+    " task=CASE WHEN excluded.task != '' THEN excluded.task ELSE agents.task END,"
+    " model=CASE WHEN excluded.model != '' THEN excluded.model ELSE agents.model END,"
+    " started_at=CASE WHEN agents.started_at > 0 AND (excluded.started_at <= 0 OR agents.started_at < excluded.started_at)"
+    " THEN agents.started_at ELSE excluded.started_at END,"
+    " ended_at=COALESCE(excluded.ended_at, agents.ended_at),"
+    " completed=MAX(agents.completed, excluded.completed)"
+)
+
+
+def _subagent_params(r: AgentRow) -> tuple:
+    return (r.agent_id, r.session_id, r.tool, r.task, r.model, r.started_at, r.ended_at, r.completed)
 
 
 def _session_pid(session_or_id) -> str | None:
@@ -1416,12 +1616,17 @@ _TEXT_COLUMNS: tuple[tuple[str, str, dict[str, str]], ...] = (
     ("vscode_chat_messages", "ts", {"content": ""}),
     ("cursor_session_messages", "ts", {"content": ""}),
     ("copilot_session_messages", "ts", {"content": ""}),
-    ("tool_invocations", "ts", {"input": "{}", "result_summary": ""}),
+    ("session_prompts", "ts", {"text": ""}),
+    ("tool_invocations", "ts", {"input": "{}", "result_summary": "", "target": ""}),
     ("file_history", "ts", {"content": ""}),
     ("agents", "started_at", {"task": ""}),
     ("files", "last_read", {"content": ""}),
     ("file_blobs", "created_at", {"content": ""}),
 )
+# Columns a trim blanks but a write guard must not, because each writer already
+# stores only what the mode allows: a subagent role, or a command reduced to its
+# program name. The board needs these to group subagents and find test runs.
+_WRITER_GUARDED_COLUMNS = frozenset({("agents", "task"), ("tool_invocations", "target")})
 # event.detail keys that carry text or payloads. Numeric keys such as
 # input_tokens are different keys and stay, so token totals are not affected.
 _EVENT_TEXT_KEYS = frozenset(
@@ -1576,6 +1781,8 @@ _RETENTION_TABLES = (
     "file_history",
     "requests",
     "tool_invocations",
+    "session_prompts",
+    "skill_uses",
 )
 
 
@@ -1755,6 +1962,8 @@ class HistoryDB:
             return
         for table, _ts, columns in _TEXT_COLUMNS:
             for column, blank in columns.items():
+                if (table, column) in _WRITER_GUARDED_COLUMNS:
+                    continue
                 when = f"new.{column} != '{blank}'"
                 action = f"UPDATE main.{table} SET {column}='{blank}' WHERE rowid=new.rowid"
                 for op, spec in (("insert", "INSERT"), ("update", f"UPDATE OF {column}")):
@@ -2604,11 +2813,17 @@ class HistoryDB:
                 total += len(m_buf)
 
             if req_buf:
+                covered = _sessions_read_from_transcripts(conn, req_buf)
                 for r in req_buf:
+                    # The transcript row for the same call is already stored.
+                    if r.source in _SUPERSEDED_REQUEST_SOURCES_ALWAYS and r.session_id in covered:
+                        continue
                     # Use embedded source timestamp when present (Case A).
                     # Fall back to value-based dedup when absent (Case B) —
                     # never use our reporting time (r.ts) as a dedup factor.
-                    if r.source_ts > 0:
+                    if r.dedup_key:
+                        dk = r.dedup_key
+                    elif r.source_ts > 0:
                         dk = _dedup_key(
                             r.session_id,
                             str(int(r.source_ts * 1000)),
@@ -2630,8 +2845,8 @@ class HistoryDB:
                         " output_tokens, cache_read_tokens,"
                         " cache_creation_tokens, cost_usd, duration_ms,"
                         " finish_reason, is_error, error_type,"
-                        " http_status, source, prompt_id)"
-                        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        " http_status, source, prompt_id, ttft_ms)"
+                        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             dk,
                             r.ts,
@@ -2653,6 +2868,7 @@ class HistoryDB:
                             r.http_status,
                             r.source,
                             r.prompt_id,
+                            round(r.ttft_ms, 1),
                         ),
                     )
                 total += len(req_buf)
@@ -2667,7 +2883,9 @@ class HistoryDB:
                     # 3. Value-based fallback (Case B) — collapses identical
                     #    repeats, but only when the source gave us nothing
                     #    better to tell them apart.
-                    if r.source_event_id:
+                    if r.dedup_key:
+                        dk = r.dedup_key
+                    elif r.source_event_id:
                         dk = _dedup_key(
                             r.session_id,
                             r.tool_name,
@@ -2694,8 +2912,9 @@ class HistoryDB:
                         "(dedup_key, ts, session_id, request_id, tool,"
                         " tool_name, project_path, pid, is_error,"
                         " duration_ms, input, result_summary, source,"
-                        " source_event_id)"
-                        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        " source_event_id, agent_id, confirm, confirm_wait_ms,"
+                        " target, exit_code)"
+                        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             dk,
                             r.ts,
@@ -2711,6 +2930,11 @@ class HistoryDB:
                             r.result_summary,
                             r.source,
                             r.source_event_id,
+                            r.agent_id,
+                            r.confirm,
+                            round(r.confirm_wait_ms, 1),
+                            r.target,
+                            r.exit_code,
                         ),
                     )
                 total += len(ti_buf)
@@ -3883,6 +4107,14 @@ class HistoryDB:
         if not row.path:
             return False
         conn = self._conn()
+        if row.source_event_id and row.source_event_kind != TRANSCRIPT_SOURCE:
+            known = conn.execute(
+                "SELECT 1 FROM file_write_events WHERE session_id = ? AND source_event_id = ?"
+                " AND source_event_kind = ? LIMIT 1",
+                (row.session_id, row.source_event_id, TRANSCRIPT_SOURCE),
+            ).fetchone()
+            if known:
+                return False  # the session file already gave this edit, with line counts
         dedup = row.dedup_key or _dedup_key(
             row.session_id,
             row.source_event_id or str(row.ts),
@@ -4337,19 +4569,26 @@ class HistoryDB:
     # ── Agents (new) ───────────────────────────────────────────────
 
     def upsert_agent(self, row: AgentRow) -> None:
-        """Insert or replace an agent."""
+        """Insert or update an agent. A role already stored in ``task`` stays."""
         conn = self._conn()
         conn.execute(
-            "INSERT OR REPLACE INTO agents"
+            "INSERT INTO agents"
             "(agent_id, session_id, tool, task, model, is_sidechain,"
             " started_at, ended_at, completed, input_tokens, output_tokens,"
             " cache_read_tokens, cache_creation_tokens, cost_usd)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(agent_id) DO UPDATE SET session_id=excluded.session_id, tool=excluded.tool,"
+            " task=CASE WHEN agents.task != '' THEN agents.task ELSE excluded.task END,"
+            " model=excluded.model, is_sidechain=excluded.is_sidechain, started_at=excluded.started_at,"
+            " ended_at=excluded.ended_at, completed=excluded.completed, input_tokens=excluded.input_tokens,"
+            " output_tokens=excluded.output_tokens, cache_read_tokens=excluded.cache_read_tokens,"
+            " cache_creation_tokens=excluded.cache_creation_tokens, cost_usd=excluded.cost_usd",
             (
                 row.agent_id,
                 row.session_id,
                 row.tool,
-                row.task,
+                # This writer's task can be a prompt, so it follows the capture mode.
+                row.task if self._keeps_text() else "",
                 row.model,
                 row.is_sidechain,
                 row.started_at,
@@ -4363,6 +4602,140 @@ class HistoryDB:
             ),
         )
         conn.commit()
+
+    # ── Per-call facts read from session files ────────────────────
+
+    def write_call_facts(self, facts: CallFacts) -> int:
+        """Write rows read from tools' session files, in one transaction.
+
+        A second write of the same call merges into its row, so a re-read adds
+        nothing and a later line can complete an earlier one. For each session
+        written, rows of the same calls from hooks, OTel and the agent-team scan
+        are folded in or removed, so ``requests`` holds one row per model call
+        and ``tool_invocations`` one row per tool call.
+        """
+        if not len(facts):
+            return 0
+        conn = self._conn()
+        try:
+            self._promote_hook_tool_rows(conn, facts.tools)
+            conn.executemany(_REQUEST_UPSERT, [_request_params(r) for r in facts.requests])
+            conn.executemany(_TOOL_UPSERT, [_tool_params(r) for r in facts.tools])
+            conn.executemany(
+                "INSERT OR IGNORE INTO session_prompts"
+                "(dedup_key, ts, session_id, agent_id, tool, project_path, text, prompt_file)"
+                " VALUES(?,?,?,?,?,?,?,?)",
+                [
+                    (r.dedup_key, r.ts, r.session_id, r.agent_id, r.tool, r.project_path, r.text, r.prompt_file)
+                    for r in facts.prompts
+                ],
+            )
+            conn.executemany(
+                "INSERT OR IGNORE INTO skill_uses"
+                "(dedup_key, ts, session_id, agent_id, tool, project_path, name, trigger)"
+                " VALUES(?,?,?,?,?,?,?,?)",
+                [(r.dedup_key, r.ts, r.session_id, r.agent_id, r.tool, r.project_path, r.name, r.trigger) for r in facts.skills],
+            )
+            conn.executemany(_SUBAGENT_UPSERT, [_subagent_params(r) for r in facts.agents])
+            self._write_transcript_file_edits(conn, facts.file_writes)
+            self._drop_superseded_rows(conn, facts)
+            conn.commit()
+        except sqlite3.Error:
+            conn.rollback()
+            raise
+        return len(facts)
+
+    @staticmethod
+    def _promote_hook_tool_rows(conn: sqlite3.Connection, tools: list[ToolInvocationRow]) -> None:
+        """Give a hook's row for a call the transcript key, so the upsert merges into it.
+
+        The hook row keeps what only it has, such as the full input and result text.
+        """
+        by_session: dict[str, dict[str, str]] = {}
+        for r in tools:
+            if r.source_event_id:
+                by_session.setdefault(r.session_id, {})[r.source_event_id] = r.dedup_key
+        for session_id, keys in by_session.items():
+            hook_ids = conn.execute(
+                "SELECT source_event_id FROM tool_invocations WHERE session_id = ? AND source = 'hook' AND source_event_id != ''",
+                (session_id,),
+            ).fetchall()
+            for (event_id,) in hook_ids:
+                if event_id in keys:
+                    conn.execute(
+                        "UPDATE OR IGNORE tool_invocations SET dedup_key = ?, source = ?"
+                        " WHERE session_id = ? AND source = 'hook' AND source_event_id = ?",
+                        (keys[event_id], TRANSCRIPT_SOURCE, session_id, event_id),
+                    )
+
+    @staticmethod
+    def _write_transcript_file_edits(conn: sqlite3.Connection, rows: list[FileWriteRow]) -> None:
+        for r in rows:
+            if r.source_event_id:
+                conn.execute(
+                    "DELETE FROM file_write_events WHERE session_id = ? AND source_event_id = ? AND source_event_kind != ?",
+                    (r.session_id, r.source_event_id, TRANSCRIPT_SOURCE),
+                )
+            conn.execute(
+                "INSERT INTO file_write_events"
+                "(dedup_key, ts, session_id, tool, tool_name, operation, path, project_path, pid,"
+                " source_event_kind, source_event_id, content_hash, size_bytes, detail)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT(dedup_key) WHERE dedup_key != '' DO UPDATE SET detail=excluded.detail, tool=excluded.tool",
+                (
+                    r.dedup_key,
+                    r.ts,
+                    r.session_id,
+                    r.tool,
+                    r.tool_name,
+                    r.operation,
+                    r.path,
+                    r.project_path,
+                    r.pid,
+                    TRANSCRIPT_SOURCE,
+                    r.source_event_id,
+                    r.content_hash,
+                    r.size_bytes,
+                    json.dumps(r.detail),
+                ),
+            )
+
+    @staticmethod
+    def _drop_superseded_rows(conn: sqlite3.Connection, facts: CallFacts) -> None:
+        """Remove other writers' rows for calls the session file now covers.
+
+        Only up to the newest call read: a live hook or OTel row for a later call
+        stays until the file catches up.
+        """
+        newest: dict[tuple[str, str], float] = {}
+        for table, rows in (("requests", facts.requests), ("tool_invocations", facts.tools)):
+            for r in rows:
+                key = (table, r.session_id)
+                newest[key] = max(newest.get(key, 0.0), r.ts)
+        for (table, session_id), ts in newest.items():
+            sources = _SUPERSEDED_SOURCES[table]
+            marks = ",".join("?" for _ in sources)
+            conn.execute(
+                f"DELETE FROM {table} WHERE session_id = ? AND ts <= ? AND source IN ({marks})",
+                (session_id, ts, *sources),
+            )
+
+    def set_sessions_tool(self, session_ids: list[str], tool: str) -> None:
+        """Re-attribute sessions' fact rows, when their surface becomes known after they were written."""
+        conn = self._conn()
+        for table in ("requests", "tool_invocations", "session_prompts", "skill_uses", "agents", "file_write_events"):
+            conn.executemany(
+                f"UPDATE {table} SET tool = ? WHERE session_id = ? AND tool != ?",
+                [(tool, session_id, tool) for session_id in session_ids],
+            )
+        conn.commit()
+
+    def clear_stale_pending_confirms(self, before: float) -> int:
+        """A prompt left open this long belongs to a session that is gone, not one still waiting."""
+        conn = self._conn()
+        cur = conn.execute("UPDATE tool_invocations SET confirm = '' WHERE confirm = 'pending' AND ts < ?", (before,))
+        conn.commit()
+        return cur.rowcount
 
     def query_agents(self, session_id: str) -> list[dict]:
         """Query agents for a session."""
@@ -5565,6 +5938,8 @@ class HistoryDB:
         result["file_history_deleted_30d"] = self._delete_range(conn, "file_history", floor, cutoff_retention)
         result["requests_deleted_30d"] = self._delete_range(conn, "requests", floor, cutoff_retention)
         result["tool_invocations_deleted_30d"] = self._delete_range(conn, "tool_invocations", floor, cutoff_retention)
+        result["session_prompts_deleted_30d"] = self._delete_range(conn, "session_prompts", floor, cutoff_retention)
+        result["skill_uses_deleted_30d"] = self._delete_range(conn, "skill_uses", floor, cutoff_retention)
 
         # 11. Garbage-collect orphaned file blobs (referenced by neither
         # files nor file_history — orphans accumulate as files change and
