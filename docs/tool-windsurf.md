@@ -88,3 +88,8 @@ aictl ctx deploy --root . --profile debug --emit claude,copilot,cursor,windsurf
   for enterprise installs) for what it can read or modify.
 - The `codeium_language_server` process is shared with the rest of the
   Codeium ecosystem and may persist after Windsurf exits.
+
+## Local state (checked 2026-11-05)
+
+Windsurf is not installed on this machine (no app, no `~/.codeium`, no `windsurf` binary), so paths and process
+names in `paths-*.csv` / `processes-*.csv` are unverified against a current build.

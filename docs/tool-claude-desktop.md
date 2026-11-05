@@ -95,3 +95,17 @@ Extensions install as `.mcpb` bundles (one-click). Examples: Filesystem, Word, P
 | **Total** | **~12.2 GB** |
 
 The VM bundle (`claudevm.bundle` at ~10 GB) is the sandboxed execution environment for Cowork/local agent mode — by far the largest component.
+
+## Local state and processes (checked 2026-11-05)
+
+Claude Desktop 4.16336.0, bundled Claude Code 2.1.317, `~/Library/Application Support/Claude/`.
+Code tab: `claude-code-sessions/<account>/<org>/` (index only), bundled binaries in `claude-code/<ver>/<hash>/`,
+`claude-code-vm/`, `git-shadow/` (shadow repos for worktree diffs), `git-worktrees.json` (`worktrees`,
+`originUrls`), `scratch-workspaces/`, `side-session-notes/`. Cowork: `local-agent-mode-sessions/<account>/<org>/`.
+Also `plan-usage-history.json`, `remote-control-state.json`, `ssh-remote-server-state.json`,
+`ccd-session-presets.json`, `mcp-user-tool-toggles.json`, `developer_settings.json`.
+`Claude-3p/` is a sibling data directory with the same layout (third-party-inference build).
+`Claude Science.app` (bundle `com.anthropic.operon`, 0.1.48) is installed; its data location was not found
+and it has no aictl tool yet.
+Processes: see `docs/tool-claude-code.md` for the bundled `claude` and the `disclaimer` wrapper; they are
+`claude-code`, not `claude-desktop`.
