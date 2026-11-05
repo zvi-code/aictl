@@ -71,6 +71,15 @@ def _is_sensitive_path(path: str) -> bool:
     return any(fnmatch.fnmatch(basename, pat) for pat in SENSITIVE_FILE_PATTERNS)
 
 
+# Largest WAL file SQLite keeps on disk after a checkpoint resets it.
+WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024
+# Rows removed per transaction by compact(); keeps WAL growth and writer lock
+# holds small on a DB of any size.
+COMPACT_CHUNK_ROWS = 5000
+COMPACT_CHUNK_PAUSE_S = 0.01
+# Pages returned to the OS per automatic maintenance pass (64 MB).
+INCREMENTAL_VACUUM_PAGES = 16384
+
 # Retention thresholds (seconds)
 _1H = 3_600
 _24H = 86_400
@@ -212,6 +221,10 @@ CREATE TABLE IF NOT EXISTS file_write_events (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_file_write_dedup
     ON file_write_events(dedup_key) WHERE dedup_key != '';
+
+CREATE TABLE IF NOT EXISTS maintenance_state (
+    key TEXT PRIMARY KEY, value REAL NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS data_quality_status (
     component TEXT NOT NULL, source TEXT NOT NULL DEFAULT '',
@@ -1273,6 +1286,193 @@ def _metric_row_tuple(s: Metric) -> tuple:
 # ─── HistoryDB ─────────────────────────────────────────────────────
 
 
+CAPTURE_FULL = "full"
+CAPTURE_METADATA = "metadata"
+CAPTURE_OFF = "off"
+
+# Hard ceiling and budget for the in-memory store (capture=off, or fallback).
+MEMORY_BUDGET_BYTES = 64 * 1024 * 1024
+# Budget eviction stops at this share of the budget, so it does not run again
+# for every few new rows.
+BUDGET_TARGET_RATIO = 0.9
+# Consecutive flushes that may hit a locked DB before giving up on the file.
+LOCKED_FLUSHES_BEFORE_FALLBACK = 6
+
+# Conversation text and tool payloads: (table, time column, {column: blank value}).
+# Everything else in these rows (tokens, cost, timings, names, sizes) stays.
+_TEXT_COLUMNS: tuple[tuple[str, str, dict[str, str]], ...] = (
+    ("vscode_chat_messages", "ts", {"content": ""}),
+    ("cursor_session_messages", "ts", {"content": ""}),
+    ("copilot_session_messages", "ts", {"content": ""}),
+    ("tool_invocations", "ts", {"input": "{}", "result_summary": ""}),
+    ("file_history", "ts", {"content": ""}),
+    ("agents", "started_at", {"task": ""}),
+    ("files", "last_read", {"content": ""}),
+    ("file_blobs", "created_at", {"content": ""}),
+)
+# event.detail keys that carry text or payloads. Numeric keys such as
+# input_tokens are different keys and stay, so token totals are not affected.
+_EVENT_TEXT_KEYS = frozenset(
+    {
+        "prompt",
+        "user_prompt",
+        "system_prompt",
+        "prompt.text",
+        "gen_ai.prompt",
+        "gen_ai.completion",
+        "gen_ai.input.messages",
+        "gen_ai.output.messages",
+        "response",
+        "completion",
+        "content",
+        "text",
+        "message",
+        "messages",
+        "body",
+        "input",
+        "output",
+        "tool_input",
+        "tool_output",
+        "tool_parameters",
+        "tool_response",
+        "tool_result",
+        "arguments",
+        "result",
+        "result_summary",
+        "command",
+        "full_command",
+        "new_string",
+        "old_string",
+    }
+)
+_EVENT_TEXT_MAX_CHARS = 256
+# Removed oldest-first, after text, when the disk budget is still exceeded.
+# Sessions, requests, agents and files stay: they hold the totals, and context
+# inventories live in their own tables that eviction never lists.
+_EVICTION_ORDER = (
+    # Blanking text inside a small row frees no page, so these rows go first.
+    "vscode_chat_messages",
+    "cursor_session_messages",
+    "copilot_session_messages",
+    "metrics",
+    "events",
+    "process_snapshots",
+    "system_snapshots",
+    "tool_stats",
+    "file_history",
+)
+
+
+class _BufferedCursor:
+    """Result of one statement, already read, so no statement stays open."""
+
+    def __init__(self, cur: sqlite3.Cursor) -> None:
+        self.description = cur.description
+        self.rowcount = cur.rowcount
+        self.lastrowid = cur.lastrowid
+        self._rows = cur.fetchall() if cur.description else []
+        self._next = 0
+
+    def fetchone(self) -> Any:
+        if self._next >= len(self._rows):
+            return None
+        self._next += 1
+        return self._rows[self._next - 1]
+
+    def fetchall(self) -> list:
+        rows = self._rows[self._next :]
+        self._next = len(self._rows)
+        return rows
+
+    def __iter__(self) -> Any:
+        return iter(self.fetchall())
+
+
+class _SharedConnection:
+    """One in-memory connection used by all threads, one call at a time.
+
+    A memory DB exists per connection, so threads must share it. Transactions of
+    different threads can interleave; this store is disposable, so that is fine.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        self._lock = threading.RLock()
+
+    def execute(self, sql: str, params: Any = ()) -> _BufferedCursor:
+        with self._lock:
+            return _BufferedCursor(self._conn.execute(sql, params))
+
+    def executemany(self, sql: str, rows: Any) -> _BufferedCursor:
+        with self._lock:
+            return _BufferedCursor(self._conn.executemany(sql, rows))
+
+    def executescript(self, sql: str) -> None:
+        with self._lock:
+            self._conn.executescript(sql)
+
+    def commit(self) -> None:
+        with self._lock:
+            self._conn.commit()
+
+    def rollback(self) -> None:
+        with self._lock:
+            self._conn.rollback()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+    def __enter__(self) -> _SharedConnection:
+        return self
+
+    def __exit__(self, exc_type: Any, *_args: Any) -> None:
+        if exc_type is None:
+            self.commit()
+        else:
+            self.rollback()
+
+
+def strip_event_text(detail: Any) -> Any:
+    """Remove text and payloads from an event detail; keep numbers, names, sizes."""
+    if not isinstance(detail, dict):
+        return detail
+    out: dict[str, Any] = {}
+    for key, value in detail.items():
+        if key in _EVENT_TEXT_KEYS:
+            if isinstance(value, str):
+                out[f"{key}_chars"] = len(value)
+            continue
+        if isinstance(value, dict):
+            out[key] = strip_event_text(value)
+        elif isinstance(value, str) and len(value) > _EVENT_TEXT_MAX_CHARS:
+            out[f"{key}_chars"] = len(value)
+        else:
+            out[key] = value
+    return out
+
+
+# Liveness heartbeats carry no usage data; one per minute is enough to show that
+# the emitter is alive. They can otherwise make up half of all stored events.
+_HEARTBEAT_EVENT_MIN_GAP_S = {"otel:health": 60.0, "otel:proc_stats": 60.0}
+
+_RETENTION_TABLES = (
+    "system_snapshots",
+    "process_snapshots",
+    "events",
+    "metrics",
+    "tool_stats",
+    "file_history",
+    "requests",
+    "tool_invocations",
+)
+
+
+def _table_bytes(conn: sqlite3.Connection, table: str, sizes: dict[str, int]) -> int:
+    """Bytes of ``table`` and its indexes from a dbstat result (0 when absent)."""
+    names = [table, *(r[1] for r in conn.execute(f"PRAGMA index_list({table})"))]
+    return sum(sizes.get(n, 0) for n in names)
+
+
 class HistoryDB:
     """Thread-safe SQLite store for metrics, per-tool metrics, and events.
 
@@ -1298,9 +1498,28 @@ class HistoryDB:
         db_path: Path | str | None = None,
         flush_interval: float = FLUSH_INTERVAL,
         datapoint_logger: Any | None = None,
+        retention_days: int = 30,
+        capture: str = CAPTURE_FULL,
+        max_total_mb: int = 1024,
+        content_retention_days: int = 14,
+        log_paths: tuple[Path, ...] = (),
+        memory_fallback: bool = False,
     ) -> None:
         if db_path is None:
             db_path = DEFAULT_DB_PATH
+        self._retention_days = retention_days
+        self.capture = capture
+        self._budget_bytes = max_total_mb * 1024 * 1024
+        self._content_retention_days = content_retention_days
+        self._log_paths = log_paths
+        # The daemon survives on memory. A CLI command must see the error instead:
+        # compacting an empty memory store would report success on a broken DB.
+        self._memory_fallback = memory_fallback
+        # In-memory mode shares one connection across threads. None: file DB.
+        self._shared_conn: sqlite3.Connection | None = None
+        self._schema_ready = False
+        self.degraded_reason = ""
+        self._locked_flushes = 0
         self._path = Path(db_path) if db_path != ":memory:" else db_path
         self._flush_interval = flush_interval
         self._datapoint_logger = datapoint_logger
@@ -1321,15 +1540,27 @@ class HistoryDB:
         self._local = threading.local()
         self._closed = False
 
+        # Last stored ts per (tool, kind) for rate-limited heartbeat events
+        self._heartbeat_last: dict[tuple[str, str], float] = {}
+        self._flush_failed_with: sqlite3.Error | None = None
+
         # Event listeners — callables receiving EventRow on append
         self._event_listeners: list = []
 
-        # Ensure parent dir exists
-        if isinstance(self._path, Path):
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Create schema
-        self._init_schema()
+        # Create schema. Storage is a disposable cache: when the file cannot be
+        # used the daemon keeps running on memory and reports it in health.
+        if capture == CAPTURE_OFF:
+            self._open_memory_store()
+        else:
+            try:
+                if isinstance(self._path, Path):
+                    self._path.parent.mkdir(parents=True, exist_ok=True)
+                self._init_schema()
+                self._mark_text_gap_if_not_full()
+            except (sqlite3.Error, OSError) as exc:
+                if not memory_fallback:
+                    raise
+                self._fall_back_to_memory(f"cannot open {self._path}: {exc}")
 
         # Background flush thread
         self._flush_stop = threading.Event()
@@ -1341,16 +1572,104 @@ class HistoryDB:
     # ── Connection management ──────────────────────────────────────
 
     def _conn(self) -> sqlite3.Connection:
-        """Return a per-thread connection with WAL mode."""
+        """Return a per-thread connection with WAL mode (or the shared memory one)."""
+        if self._shared_conn is not None:
+            return self._shared_conn
         conn = getattr(self._local, "conn", None)
         if conn is None:
             path = str(self._path) if isinstance(self._path, Path) else self._path
             conn = sqlite3.connect(path, timeout=5.0)
+            # New databases return pages to the OS through incremental vacuum.
+            # Must precede journal_mode, which writes the header; no effect on
+            # an existing DB until ``aictl db compact`` runs VACUUM.
+            conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA cache_size=-8000")  # 8 MB
+            # Bound the WAL: checkpoint every ~4 MB and truncate the file back
+            # to the limit on reset, so one big transaction cannot leave a
+            # WAL of hundreds of MB behind for good.
+            conn.execute("PRAGMA wal_autocheckpoint=1000")
+            conn.execute(f"PRAGMA journal_size_limit={WAL_SIZE_LIMIT_BYTES}")
             self._local.conn = conn
+            if self._schema_ready:
+                self._install_capture_guards(conn)
         return conn
+
+    def _open_memory_store(self) -> None:
+        """One bounded in-memory DB. No file, WAL or journal touches the disk."""
+        conn = _SharedConnection(sqlite3.connect(":memory:", check_same_thread=False, timeout=5.0))
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+        conn.execute(f"PRAGMA max_page_count={MEMORY_BUDGET_BYTES // page_size}")
+        self._shared_conn = conn
+        self._schema_ready = False
+        self._budget_bytes = min(self._budget_bytes, MEMORY_BUDGET_BYTES)
+        self._init_schema()
+
+    def _fall_back_to_memory(self, reason: str) -> None:
+        log.warning("Storage degraded, continuing in memory: %s", reason)
+        self.degraded_reason = reason
+        self._open_memory_store()
+
+    def _note_flush_error(self, exc: sqlite3.Error) -> None:
+        """Move to memory when the file is full, corrupt or stays locked."""
+        if not self._memory_fallback:
+            return
+        if self._shared_conn is not None:
+            # Memory store at its ceiling: make room; the batch retries or drops.
+            try:
+                self.enforce_budget()
+            except sqlite3.Error as evict_exc:
+                log.debug("Memory eviction failed: %s", evict_exc)
+            return
+        text = str(exc).lower()
+        if "locked" in text or "busy" in text:
+            self._locked_flushes += 1
+            if self._locked_flushes >= LOCKED_FLUSHES_BEFORE_FALLBACK:
+                self._fall_back_to_memory(f"database stayed locked: {exc}")
+        elif any(k in text for k in ("disk", "full", "malformed", "not a database", "i/o", "readonly")):
+            self._fall_back_to_memory(f"write failed: {exc}")
+
+    def _keeps_text(self) -> bool:
+        return self.capture == CAPTURE_FULL and self._shared_conn is None
+
+    def _install_capture_guards(self, conn: sqlite3.Connection) -> None:
+        """Blank text columns on this connection's writes unless text is kept.
+
+        TEMP triggers cover every writer that goes through ``_conn()``, including
+        ingesters and code added later, and need no schema change.
+        """
+        if self._keeps_text():
+            return
+        for table, _ts, columns in _TEXT_COLUMNS:
+            for column, blank in columns.items():
+                when = f"new.{column} != '{blank}'"
+                action = f"UPDATE main.{table} SET {column}='{blank}' WHERE rowid=new.rowid"
+                for op, spec in (("insert", "INSERT"), ("update", f"UPDATE OF {column}")):
+                    conn.execute(
+                        f"CREATE TEMP TRIGGER IF NOT EXISTS strip_{table}_{column}_{op} AFTER {spec}"
+                        f" ON main.{table} WHEN {when} BEGIN {action}; END"
+                    )
+
+    def _set_state(self, key: str, value: float) -> None:
+        conn = self._conn()
+        conn.execute("INSERT OR REPLACE INTO maintenance_state(key, value) VALUES(?,?)", (key, value))
+        conn.commit()
+
+    def _mark_text_gap_if_not_full(self) -> None:
+        if self.capture != CAPTURE_FULL:
+            self._set_state("content_trimmed_before", time.time())
+
+    def content_retained(self, session: dict) -> bool:
+        """Whether conversation text for this session row may still be stored."""
+        if not self._keeps_text():
+            return False
+        row = self._conn().execute("SELECT value FROM maintenance_state WHERE key='content_trimmed_before'").fetchone()
+        if row is None:
+            return True
+        last = session.get("ended_at") or session.get("started_at") or session.get("last_seen") or 0
+        # A live session has no end yet, so it counts as recent.
+        return session.get("active", False) or last >= row[0]
 
     def _init_schema(self) -> None:
         conn = self._conn()
@@ -1394,6 +1713,8 @@ class HistoryDB:
             self._sync_datapoint_catalog(conn)
         except Exception as exc:
             log.warning("Datapoint catalog sync failed: %s", exc)
+        self._schema_ready = True
+        self._install_capture_guards(conn)
 
     @staticmethod
     def _sync_datapoint_catalog(conn: sqlite3.Connection) -> None:
@@ -1954,6 +2275,9 @@ class HistoryDB:
 
     def append_event(self, event: EventRow) -> None:
         """Buffer an event for batch insert."""
+        if self._throttled(event):
+            return
+        self._guard_event(event)
         self._log_event(event)
         self._notify_listeners(event)
         with self._lock:
@@ -1961,8 +2285,26 @@ class HistoryDB:
         if self._flush_interval <= 0:
             self.flush()
 
+    def _guard_event(self, event: EventRow) -> EventRow:
+        """Remove text from an event unless this mode keeps it."""
+        if not self._keeps_text():
+            event.detail = strip_event_text(event.detail)
+        return event
+
+    def _throttled(self, event: EventRow) -> bool:
+        """True for a heartbeat event that arrived within its minimum gap."""
+        gap = _HEARTBEAT_EVENT_MIN_GAP_S.get(event.kind)
+        if gap is None:
+            return False
+        key = (event.tool, event.kind)
+        if event.ts - self._heartbeat_last.get(key, 0.0) < gap:
+            return True
+        self._heartbeat_last[key] = event.ts
+        return False
+
     def append_events(self, events: list[EventRow]) -> None:
         """Buffer multiple events."""
+        events = [self._guard_event(e) for e in events if not self._throttled(e)]
         for e in events:
             self._log_event(e)
             self._notify_listeners(e)
@@ -2264,6 +2606,7 @@ class HistoryDB:
             conn.commit()
         except sqlite3.Error as exc:
             log.warning("DB flush error: %s — rolling back and re-buffering batch", exc)
+            self._flush_failed_with = exc
             # Roll back so a half-applied batch is never committed by the
             # NEXT flush (executemany may have partially run).
             try:
@@ -2315,8 +2658,13 @@ class HistoryDB:
     def _flush_loop(self) -> None:
         """Background loop: flush buffers periodically."""
         while not self._flush_stop.wait(self._flush_interval):
+            self._flush_failed_with = None
             try:
                 self.flush()
+                if self._flush_failed_with is not None:
+                    self._note_flush_error(self._flush_failed_with)
+                else:
+                    self._locked_flushes = 0
             except Exception as exc:
                 log.warning("DB flush loop error: %s", exc)
 
@@ -4852,86 +5200,67 @@ class HistoryDB:
 
     # ── Compaction ─────────────────────────────────────────────────
 
-    def compact(self) -> dict[str, int]:
-        """Downsample old data and delete expired rows.
+    def compact(self, *, retention_days: int | None = None, floor: float = 0.0) -> dict[str, int]:
+        """Downsample old data and delete expired rows, in small transactions.
+
+        ``retention_days`` overrides the configured retention. Rows with
+        ``ts < floor`` are left alone (see :meth:`auto_maintain`). The work is
+        split into chunks that commit separately, so writers keep running and
+        the WAL stays small. Repeated calls rewrite only buckets that still
+        hold more than one row.
 
         Returns dict of {action: rows_affected}.
         """
         now = time.time()
         conn = self._conn()
         result: dict[str, int] = {}
+        days = self._retention_days if retention_days is None else retention_days
+        cutoff_retention = now - days * _24H
 
-        # 1. Delete system_snapshots older than 30 days
-        cutoff_30d = now - _30D
-        cur = conn.execute("DELETE FROM system_snapshots WHERE ts < ?", (cutoff_30d,))
-        result["metrics_deleted_30d"] = cur.rowcount
-        cur = conn.execute("DELETE FROM process_snapshots WHERE ts < ?", (cutoff_30d,))
-        result["tool_metrics_deleted_30d"] = cur.rowcount
+        # 1. Delete snapshots older than retention
+        result["metrics_deleted_30d"] = self._delete_range(conn, "system_snapshots", floor, cutoff_retention)
+        result["tool_metrics_deleted_30d"] = self._delete_range(conn, "process_snapshots", floor, cutoff_retention)
 
-        # 2. Downsample system_snapshots 7d-30d to 5-minute buckets
+        # 2. Downsample system_snapshots 7d-retention to 5-minute buckets
         cutoff_7d = now - _7D
-        result["metrics_compacted_7d"] = self._downsample(
-            conn,
-            "system_snapshots",
-            cutoff_30d,
-            cutoff_7d,
-            bucket_secs=300,
-        )
+        since = max(cutoff_retention, floor)
+        result["metrics_compacted_7d"] = self._downsample(conn, "system_snapshots", since, cutoff_7d, bucket_secs=300)
         result["tool_metrics_compacted_7d"] = self._downsample_process_snapshots(
-            conn,
-            cutoff_30d,
-            cutoff_7d,
-            bucket_secs=300,
+            conn, since, cutoff_7d, bucket_secs=300
         )
 
         # 3. Downsample 24h-7d to 1-minute buckets
         cutoff_24h = now - _24H
+        since_7d = max(cutoff_7d, floor)
         result["metrics_compacted_24h"] = self._downsample(
-            conn,
-            "system_snapshots",
-            cutoff_7d,
-            cutoff_24h,
-            bucket_secs=60,
+            conn, "system_snapshots", since_7d, cutoff_24h, bucket_secs=60
         )
         result["tool_metrics_compacted_24h"] = self._downsample_process_snapshots(
-            conn,
-            cutoff_7d,
-            cutoff_24h,
-            bucket_secs=60,
+            conn, since_7d, cutoff_24h, bucket_secs=60
         )
 
-        # 4. Delete events older than 30 days
-        cur = conn.execute("DELETE FROM events WHERE ts < ?", (cutoff_30d,))
-        result["events_deleted_30d"] = cur.rowcount
+        # 4. Delete events older than retention
+        result["events_deleted_30d"] = self._delete_range(conn, "events", floor, cutoff_retention)
 
         # 5. Delete metrics (was samples) older than 7 days
-        cur = conn.execute("DELETE FROM metrics WHERE ts < ?", (cutoff_7d,))
-        result["samples_deleted_7d"] = cur.rowcount
+        result["samples_deleted_7d"] = self._delete_range(conn, "metrics", floor, cutoff_7d)
 
         # 6. Downsample metrics 24h-7d
-        self._downsample_metrics(conn, cutoff_7d, cutoff_24h, bucket_secs=300)
+        self._downsample_metrics(conn, since_7d, cutoff_24h, bucket_secs=300)
 
         # 7. Downsample metrics 1h-24h
         cutoff_1h = now - _1H
-        self._downsample_metrics(conn, cutoff_24h, cutoff_1h, bucket_secs=60)
+        self._downsample_metrics(conn, max(cutoff_24h, floor), cutoff_1h, bucket_secs=60)
 
-        # 8. Delete tool_stats older than 30 days
-        cur = conn.execute("DELETE FROM tool_stats WHERE ts < ?", (cutoff_30d,))
-        result["telemetry_deleted_30d"] = cur.rowcount
-
-        # 9. Delete file_history older than 30 days
-        cur = conn.execute("DELETE FROM file_history WHERE ts < ?", (cutoff_30d,))
-        result["file_history_deleted_30d"] = cur.rowcount
-
-        # 10. Delete old requests/tool_invocations older than 30 days
-        cur = conn.execute("DELETE FROM requests WHERE ts < ?", (cutoff_30d,))
-        result["requests_deleted_30d"] = cur.rowcount
-        cur = conn.execute("DELETE FROM tool_invocations WHERE ts < ?", (cutoff_30d,))
-        result["tool_invocations_deleted_30d"] = cur.rowcount
+        # 8-10. Delete remaining time-series tables older than retention
+        result["telemetry_deleted_30d"] = self._delete_range(conn, "tool_stats", floor, cutoff_retention)
+        result["file_history_deleted_30d"] = self._delete_range(conn, "file_history", floor, cutoff_retention)
+        result["requests_deleted_30d"] = self._delete_range(conn, "requests", floor, cutoff_retention)
+        result["tool_invocations_deleted_30d"] = self._delete_range(conn, "tool_invocations", floor, cutoff_retention)
 
         # 11. Garbage-collect orphaned file blobs (referenced by neither
         # files nor file_history — orphans accumulate as files change and
-        # their 30d-old history rows are deleted in step 9).
+        # their 30d-old history rows are deleted in steps 8-10).
         cur = conn.execute(
             "DELETE FROM file_blobs WHERE hash NOT IN ("
             " SELECT blob_hash FROM files WHERE blob_hash != ''"
@@ -4942,6 +5271,312 @@ class HistoryDB:
         conn.commit()
         return result
 
+    def _delete_range(self, conn: sqlite3.Connection, table: str, since: float, until: float) -> int:
+        """Delete ``since <= ts < until`` in chunks that commit separately."""
+        total = 0
+        while True:
+            cur = conn.execute(
+                f"DELETE FROM {table} WHERE rowid IN"
+                f" (SELECT rowid FROM {table} WHERE ts >= ? AND ts < ? LIMIT {COMPACT_CHUNK_ROWS})",
+                (since, until),
+            )
+            conn.commit()
+            total += cur.rowcount
+            if cur.rowcount < COMPACT_CHUNK_ROWS:
+                return total
+            time.sleep(COMPACT_CHUNK_PAUSE_S)
+
+    def _retention_floor(self, now: float) -> float:
+        """Oldest ``ts`` automatic maintenance may touch.
+
+        The first daemon run on a DB records when automatic retention was
+        armed. Until one full retention period has passed, older rows stay:
+        after months of downtime all history looks expired, and the daemon
+        must not erase it on start. ``aictl db compact`` removes it on request.
+        """
+        conn = self._conn()
+        row = conn.execute("SELECT value FROM maintenance_state WHERE key='retention_armed_at'").fetchone()
+        if row is None:
+            conn.execute("INSERT OR IGNORE INTO maintenance_state(key, value) VALUES('retention_armed_at', ?)", (now,))
+            conn.commit()
+            armed_at = now
+        else:
+            armed_at = row[0]
+        return armed_at if now < armed_at + self._retention_days * _24H else 0.0
+
+    def auto_maintain(self) -> dict[str, int]:
+        """Scheduled maintenance: retention, downsampling, WAL and page reclaim."""
+        conn = self._conn()
+        now = time.time()
+        floor = self._retention_floor(now)
+        result = self.compact(floor=floor)
+        cutoff = now - self._content_retention_days * _24H
+        result["text_trimmed"] = self.trim_text(before=cutoff, since=floor)
+        # The size budget outranks the grace period: host stability first.
+        result["budget_evicted"] = self.enforce_budget()
+        # Hand free pages back when the DB was created with auto_vacuum.
+        if conn.execute("PRAGMA auto_vacuum").fetchone()[0] == 2:
+            conn.execute(f"PRAGMA incremental_vacuum({INCREMENTAL_VACUUM_PAGES})").fetchall()
+            conn.commit()
+        # PASSIVE never blocks writers; journal_size_limit trims the file.
+        try:
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchall()
+        except sqlite3.Error as exc:
+            log.debug("Checkpoint deferred: %s", exc)
+        return result
+
+    def trim_text(self, *, before: float | None = None, since: float = 0.0) -> int:
+        """Blank conversation text older than ``before`` (default: all), in chunks.
+
+        Metadata in the same rows stays. Returns the number of rows changed.
+        """
+        before = time.time() if before is None else before
+        total = sum(self._trim_table_text(t, c, cols, since, before) for t, c, cols in _TEXT_COLUMNS)
+        total += self._trim_event_text(since, before)
+        if total:
+            self._set_state("content_trimmed_before", before)
+        return total
+
+    def _trim_table_text(self, table: str, ts_col: str, columns: dict[str, str], since: float, before: float) -> int:
+        conn = self._conn()
+        total = 0
+        sets = ", ".join(f"{c}='{b}'" for c, b in columns.items())
+        has_text = " OR ".join(f"{c}!='{b}'" for c, b in columns.items())
+        while True:
+            cur = conn.execute(
+                f"UPDATE {table} SET {sets} WHERE rowid IN (SELECT rowid FROM {table}"
+                f" WHERE {ts_col} >= ? AND {ts_col} < ? AND ({has_text}) LIMIT {COMPACT_CHUNK_ROWS})",
+                (since, before),
+            )
+            conn.commit()
+            total += cur.rowcount
+            if cur.rowcount < COMPACT_CHUNK_ROWS:
+                return total
+            time.sleep(COMPACT_CHUNK_PAUSE_S)
+
+    def _trim_event_text(self, since: float, before: float) -> int:
+        conn = self._conn()
+        total = 0
+        last_rowid = 0
+        while True:
+            rows = conn.execute(
+                "SELECT rowid, detail FROM events WHERE rowid > ? AND ts >= ? AND ts < ?"
+                " ORDER BY rowid LIMIT ?",
+                (last_rowid, since, before, COMPACT_CHUNK_ROWS),
+            ).fetchall()
+            if not rows:
+                return total
+            last_rowid = rows[-1][0]
+            updates = []
+            for rowid, detail in rows:
+                try:
+                    parsed = json.loads(detail)
+                except (TypeError, ValueError):
+                    continue
+                stripped = strip_event_text(parsed)
+                if stripped != parsed:
+                    updates.append((json.dumps(stripped), rowid))
+            if updates:
+                conn.executemany("UPDATE events SET detail=? WHERE rowid=?", updates)
+                conn.commit()
+                total += len(updates)
+            time.sleep(COMPACT_CHUNK_PAUSE_S)
+
+    def trim_text_estimate(self) -> dict[str, int]:
+        """Rows and characters of text ``trim_text`` would remove, per table."""
+        conn = self._conn()
+        out: dict[str, int] = {}
+        for table, _ts, columns in _TEXT_COLUMNS:
+            for column, blank in columns.items():
+                out[f"{table}.{column}"] = conn.execute(
+                    f"SELECT COALESCE(SUM(length({column})), 0) FROM {table} WHERE {column} != ?", (blank,)
+                ).fetchone()[0]
+        return out
+
+    def storage_bytes(self) -> int:
+        """Bytes this store takes now: DB, WAL and logs, or memory pages."""
+        if self._shared_conn is not None:
+            return self._page_bytes()
+        return sum(self._file_size(p) for p in self._storage_files())
+
+    def _storage_files(self) -> list[Path]:
+        files: list[Path] = []
+        if isinstance(self._path, Path):
+            files += [self._path, self._path.with_name(self._path.name + "-wal")]
+        for p in self._log_paths:
+            try:
+                files += sorted(p.iterdir()) if p.is_dir() else [p]
+            except OSError as exc:
+                log.debug("Cannot list %s: %s", p, exc)
+        return files
+
+    @staticmethod
+    def _file_size(path: Path) -> int:
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
+
+    def _page_bytes(self, live_only: bool = False) -> int:
+        conn = self._conn()
+        pages = conn.execute("PRAGMA page_count").fetchone()[0]
+        if live_only:
+            pages -= conn.execute("PRAGMA freelist_count").fetchone()[0]
+        return pages * conn.execute("PRAGMA page_size").fetchone()[0]
+
+    def _evictable_bytes(self) -> int:
+        """Live data and logs. Eviction lowers this; the WAL it cannot lower."""
+        logs = 0
+        if self._shared_conn is None:
+            logs = sum(self._file_size(p) for p in self._storage_files() if p.name[-4:] != "-wal" and p != self._path)
+        return self._page_bytes(live_only=True) + logs
+
+    def _budget_used(self) -> int:
+        """Bytes counted against the budget: live data, WAL and logs.
+
+        Free pages do not count: eviction frees pages, and only VACUUM shrinks
+        an old file. Counting them would evict all history without gaining disk.
+        """
+        if self._shared_conn is not None or not isinstance(self._path, Path):
+            return self._evictable_bytes()
+        return self._evictable_bytes() + self._file_size(self._path.with_name(self._path.name + "-wal"))
+
+    def _truncate_wal(self) -> None:
+        """Best effort: another process may hold the file; the next pass retries."""
+        if self._shared_conn is not None:
+            return
+        try:
+            self._conn().execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+        except sqlite3.Error as exc:
+            log.debug("WAL truncate deferred: %s", exc)
+
+    def storage_status(self) -> dict[str, Any]:
+        """Fields for /api/self-status."""
+        return {
+            "capture_mode": self.capture,
+            "storage_bytes": self.storage_bytes(),
+            "storage_budget_bytes": self._budget_bytes,
+            "storage_degraded": bool(self.degraded_reason),
+            "storage_degraded_reason": self.degraded_reason,
+        }
+
+    def enforce_budget(self) -> int:
+        """Evict oldest data until under budget: text first, then time series.
+
+        Returns the number of rows changed.
+        """
+        target = int(self._budget_bytes * BUDGET_TARGET_RATIO)
+        if self._budget_used() <= self._budget_bytes:
+            return 0
+        # A large WAL alone must not cost history: try to empty it first.
+        self._truncate_wal()
+        if self._budget_used() <= self._budget_bytes:
+            return 0
+        self._drop_rotated_logs()
+        total = 0
+        for table, ts_col, columns in _TEXT_COLUMNS:
+            if self._evictable_bytes() <= target:
+                break
+            total += self._evict_text(table, ts_col, columns, target)
+        for table in _EVICTION_ORDER:
+            if self._evictable_bytes() <= target:
+                break
+            total += self._evict_oldest(table, target)
+        self._truncate_wal()
+        return total
+
+    def _drop_rotated_logs(self) -> None:
+        for directory in self._log_paths:
+            if not directory.is_dir():
+                continue
+            for path in directory.iterdir():
+                # samples.log.3: a rotated file, not the one being written.
+                if path.suffix[1:].isdigit():
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError as exc:  # held open elsewhere; retried next pass
+                        log.debug("Cannot remove %s: %s", path, exc)
+
+    def _evict_text(self, table: str, ts_col: str, columns: dict[str, str], target: int) -> int:
+        conn = self._conn()
+        total = 0
+        sets = ", ".join(f"{c}='{b}'" for c, b in columns.items())
+        has_text = " OR ".join(f"{c}!='{b}'" for c, b in columns.items())
+        while self._evictable_bytes() > target:
+            cur = conn.execute(
+                f"UPDATE {table} SET {sets} WHERE rowid IN (SELECT rowid FROM {table}"
+                f" WHERE {has_text} ORDER BY {ts_col} LIMIT {COMPACT_CHUNK_ROWS})"
+            )
+            conn.commit()
+            total += cur.rowcount
+            if cur.rowcount == 0:
+                break
+        if total:
+            self._set_state("content_trimmed_before", time.time())
+        return total
+
+    def _evict_oldest(self, table: str, target: int) -> int:
+        conn = self._conn()
+        total = 0
+        while self._evictable_bytes() > target:
+            cur = conn.execute(
+                f"DELETE FROM {table} WHERE rowid IN"
+                f" (SELECT rowid FROM {table} ORDER BY ts LIMIT {COMPACT_CHUNK_ROWS})"
+            )
+            conn.commit()
+            total += cur.rowcount
+            if cur.rowcount == 0:
+                break
+        return total
+
+    @property
+    def in_memory(self) -> bool:
+        return self._shared_conn is not None
+
+    def compact_estimate(self, *, retention_days: int | None = None) -> dict[str, Any]:
+        """Read-only forecast for ``aictl db compact --dry-run``."""
+        conn = self._conn()
+        days = self._retention_days if retention_days is None else retention_days
+        now = time.time()
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+        page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+        free_pages = conn.execute("PRAGMA freelist_count").fetchone()[0]
+        expired: dict[str, int] = {}
+        total: dict[str, int] = {}
+        windows = {t: now - days * _24H for t in _RETENTION_TABLES}
+        windows["metrics"] = now - _7D
+        for table, cutoff in windows.items():
+            total[table] = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            expired[table] = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE ts < ?", (cutoff,)).fetchone()[0]
+        size_by_table: dict[str, int] = {}
+        try:
+            for name, size in conn.execute("SELECT name, SUM(pgsize) FROM dbstat GROUP BY name"):
+                size_by_table[name] = size
+        except sqlite3.Error:
+            pass  # dbstat is optional at SQLite build time
+        reclaim = 0
+        for table, n in expired.items():
+            if total[table]:
+                reclaim += int(_table_bytes(conn, table, size_by_table) * n / total[table])
+        file_bytes = page_count * page_size
+        return {
+            "file_bytes": file_bytes,
+            "free_bytes": free_pages * page_size,
+            "expired_rows": expired,
+            "total_rows": total,
+            "expired_bytes_estimate": reclaim,
+            "estimated_after_bytes": max(file_bytes - free_pages * page_size - reclaim, 0),
+            "retention_days": days,
+        }
+
+    def vacuum(self) -> None:
+        """Rewrite the DB file, switch it to incremental vacuum, truncate the WAL."""
+        conn = self._conn()
+        conn.commit()
+        conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+        conn.execute("VACUUM")
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+
     def _downsample_metrics(
         self,
         conn: sqlite3.Connection,
@@ -4950,16 +5585,24 @@ class HistoryDB:
         bucket_secs: int,
     ) -> None:
         """Keep only one metric row per metric per time bucket in the given range."""
-        conn.execute(
-            """
-            DELETE FROM metrics WHERE rowid NOT IN (
-                SELECT MAX(rowid) FROM metrics
-                WHERE ts >= ? AND ts < ?
-                GROUP BY metric, CAST(ts / ? AS INTEGER)
-            ) AND ts >= ? AND ts < ?
-        """,
-            (since, until, bucket_secs, since, until),
-        )
+        # One transaction per stretch of data, so no single commit touches a
+        # whole day of rows and writers get a turn in between.
+        step = max(bucket_secs * 12, _1H)
+        start = since
+        while start < until:
+            end = min(start + step, until)
+            conn.execute(
+                """
+                DELETE FROM metrics WHERE ts >= ? AND ts < ? AND rowid NOT IN (
+                    SELECT MAX(rowid) FROM metrics
+                    WHERE ts >= ? AND ts < ?
+                    GROUP BY metric, CAST(ts / ? AS INTEGER)
+                )
+            """,
+                (start, end, start, end, bucket_secs),
+            )
+            conn.commit()
+            start = end
 
     # Backward compat alias
     _downsample_samples = _downsample_metrics
@@ -4998,27 +5641,34 @@ class HistoryDB:
             FROM {table}
             WHERE ts >= ? AND ts < ?
             GROUP BY {bucket_expr}
+            HAVING COUNT(*) > 1
         """
+        # Buckets with one row are already downsampled. Rewriting them on every
+        # pass, as this used to, is what grew the WAL by hundreds of MB.
         buckets = conn.execute(sql, (since, until)).fetchall()
         if not buckets:
             return 0
 
-        conn.execute(
-            f"DELETE FROM {table} WHERE ts >= ? AND ts < ?",
-            (since, until),
-        )
-        conn.executemany(
-            f"INSERT OR REPLACE INTO {table}"
-            f"(ts, cpu_percent, cpu_per_core,"
-            f" memory_used_mb, memory_total_mb,"
-            f" active_sessions, active_processes, ai_token_rate,"
-            f" files, tokens, mcp, mem_tokens,"
-            f" memory_entries, live_sessions, live_tokens,"
-            f" live_in_rate, live_out_rate)"
-            f" VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            buckets,
-        )
-        return count - len(buckets)
+        removed = 0
+        for i in range(0, len(buckets), COMPACT_CHUNK_ROWS):
+            chunk = buckets[i : i + COMPACT_CHUNK_ROWS]
+            for b in chunk:
+                removed += conn.execute(
+                    f"DELETE FROM {table} WHERE ts >= ? AND ts < ?", (b[0], b[0] + bucket_secs)
+                ).rowcount
+            conn.executemany(
+                f"INSERT OR REPLACE INTO {table}"
+                f"(ts, cpu_percent, cpu_per_core,"
+                f" memory_used_mb, memory_total_mb,"
+                f" active_sessions, active_processes, ai_token_rate,"
+                f" files, tokens, mcp, mem_tokens,"
+                f" memory_entries, live_sessions, live_tokens,"
+                f" live_in_rate, live_out_rate)"
+                f" VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                chunk,
+            )
+            conn.commit()
+        return removed - len(buckets)
 
     def _downsample_process_snapshots(
         self,
@@ -5046,23 +5696,29 @@ class HistoryDB:
             FROM process_snapshots
             WHERE ts >= ? AND ts < ?
             GROUP BY {bucket_expr}, pid
+            HAVING COUNT(*) > 1
         """
         buckets = conn.execute(sql, (since, until)).fetchall()
         if not buckets:
             return 0
 
-        conn.execute(
-            "DELETE FROM process_snapshots WHERE ts >= ? AND ts < ?",
-            (since, until),
-        )
-        conn.executemany(
-            "INSERT OR REPLACE INTO process_snapshots"
-            "(ts, pid, tool, cpu_percent, memory_rss_mb,"
-            " memory_vms_mb, open_files, threads)"
-            " VALUES(?,?,?,?,?,?,?,?)",
-            buckets,
-        )
-        return count - len(buckets)
+        removed = 0
+        for i in range(0, len(buckets), COMPACT_CHUNK_ROWS):
+            chunk = buckets[i : i + COMPACT_CHUNK_ROWS]
+            for b in chunk:
+                removed += conn.execute(
+                    "DELETE FROM process_snapshots WHERE ts >= ? AND ts < ? AND pid = ?",
+                    (b[0], b[0] + bucket_secs, b[1]),
+                ).rowcount
+            conn.executemany(
+                "INSERT OR REPLACE INTO process_snapshots"
+                "(ts, pid, tool, cpu_percent, memory_rss_mb,"
+                " memory_vms_mb, open_files, threads)"
+                " VALUES(?,?,?,?,?,?,?,?)",
+                chunk,
+            )
+            conn.commit()
+        return removed - len(buckets)
 
     # Backward compat alias
     _downsample_tool = _downsample_process_snapshots
@@ -5076,6 +5732,9 @@ class HistoryDB:
             self._flush_stop.set()
             self._flush_thread.join(timeout=5.0)
         self.flush()
+        if self._shared_conn is not None:
+            self._shared_conn.close()
+            return
         conn = getattr(self._local, "conn", None)
         if conn:
             conn.close()

@@ -242,6 +242,16 @@ class _APIHandlersMixin:
                 result["sink"] = sink.stats()
             except Exception:
                 result["sink"] = {}
+        try:
+            result.update(db.storage_status())
+        except Exception as exc:  # no DB at all still answers the contract
+            result.update(
+                capture_mode="off",
+                storage_bytes=0,
+                storage_budget_bytes=0,
+                storage_degraded=True,
+                storage_degraded_reason=str(exc),
+            )
         self._json_response(result)
 
     def _tool_name_from_config_path(self) -> str:
@@ -1471,7 +1481,11 @@ class _APIHandlersMixin:
                 s["commit_count"] = self._db.count_session_commits(sid) if (self._db and sid) else 0
             s["cache_hit_ratio"] = _cache_hit_ratio(s)
 
-        self._json_response(sessions[:limit])
+        sessions = sessions[:limit]
+        retention_db = self._db
+        for s in sessions:
+            s["content_retained"] = bool(retention_db and retention_db.content_retained(s))
+        self._json_response(sessions)
 
     def _serve_session_stats(self) -> None:
         """Serve deduced session metrics from entity state + JSONL enrichment.
