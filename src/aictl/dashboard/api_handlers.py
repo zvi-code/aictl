@@ -19,7 +19,8 @@ from ..data.provenance import combine_cost_quality, combine_tokens_quality, row_
 from ..data.token_usage import TokenUsage
 from ..ingesters._common import decode_file_uri, project_key
 from ..ingesters.transcript_usage import local_day
-from ..tools import compute_token_budget
+from ..tool_scope import selection_block
+from ..tools import budget_tools, compute_token_budget
 from .analytics import compute_usage_summary, window_sessions
 from .models import _slim_agent_teams
 from .otel_receiver import API_ERROR_EVENTS, API_REQUEST_EVENTS, _num
@@ -222,7 +223,7 @@ _USAGE_TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cach
 
 # ─── Budget cache ────────────────────────────────────────────────
 
-_budget_cache: tuple[int, dict] | None = None
+_budget_cache: tuple[tuple[int, tuple[str, ...] | None], dict] | None = None
 
 
 class _APIHandlersMixin:
@@ -914,9 +915,11 @@ class _APIHandlersMixin:
             self.send_error(503, "No data yet")
             return
         version = self.server.store.version
-        if _budget_cache is None or _budget_cache[0] != version:
-            _budget_cache = (version, compute_token_budget(snap.tools, snap.root))
-        budget = _budget_cache[1]
+        selection = self._qs_tools()
+        key = (version, selection)
+        if _budget_cache is None or _budget_cache[0] != key:
+            _budget_cache = (key, compute_token_budget(budget_tools(snap.tools, selection), snap.root))
+        budget = {**_budget_cache[1], "selection": selection_block(selection)}
         self._json_response(budget, indent=2)
 
     def _serve_history(self) -> None:
@@ -1256,11 +1259,14 @@ class _APIHandlersMixin:
         Zero SQL on the request path — the background thread recomputes
         every 15 seconds.  Response time: <1ms.
 
-        Params: ?since=<ts>&until=<ts>
+        Params: ?since=<ts>&until=<ts>&tools=<id>,<id>
+        ``tools`` absent is every tool, ``tools=`` is none. The response names the
+        selection it covers (``selection``), and is ``{"pending": true}`` until
+        that exact range and selection has been computed.
         """
-        since = self._qs_float("since", time.time() - 86400)
-        until = self._qs_float("until", time.time())
-        result = self.server.analytics_cache.get(since, until)
+        result = self.server.analytics_cache.get(
+            self._qs_float_opt("since"), self._qs_float_opt("until"), self._qs_tools()
+        )
         self._json_response(result)
 
     def _serve_events(self) -> None:

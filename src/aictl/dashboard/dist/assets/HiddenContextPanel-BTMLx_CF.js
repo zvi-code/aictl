@@ -1,10 +1,10 @@
-import{d as w,x as B,T as E,m as o,w as R,z as q,S as C,as as A,aS as F}from"./index-cRmfUh63.js";import{u as M}from"./useAsyncResource-DDP0JkIM.js";const W=600,I={high:"var(--red)",medium:"var(--orange)",low:"var(--yellow)",info:"var(--fg2)"},$={padding:"2px 8px",borderBottom:"1px solid var(--border)",textAlign:"left"},l={fontFamily:"var(--font-mono, monospace)",wordBreak:"break-all"};function L(t){return t?t<1024?`${t} B`:t<1024*1024?`${(t/1024).toFixed(1)} KB`:`${(t/1024/1024).toFixed(1)} MB`:"0 B"}function O(t){return t<90?`${Math.round(t)} s ago`:t<5400?`${Math.round(t/60)} min ago`:`${Math.round(t/3600)} h ago`}function k({severity:t,count:e}){return o`<span
+import{d as w,x as B,T as E,m as o,w as R,z as q,S as C,ax as A,aY as F}from"./index-Br-2tUvY.js";import{u as M}from"./useAsyncResource-BM297V9F.js";const W=600,I={high:"var(--red)",medium:"var(--orange)",low:"var(--yellow)",info:"var(--fg2)"},$={padding:"2px 8px",borderBottom:"1px solid var(--border)",textAlign:"left"},l={fontFamily:"var(--font-mono, monospace)",wordBreak:"break-all"};function L(t){return t?t<1024?`${t} B`:t<1024*1024?`${(t/1024).toFixed(1)} KB`:`${(t/1024/1024).toFixed(1)} MB`:"0 B"}function O(t){return t<90?`${Math.round(t)} s ago`:t<5400?`${Math.round(t/60)} min ago`:`${Math.round(t/3600)} h ago`}function x({severity:t,count:e}){return o`<span
     data-severity=${t}
     title=${`${t} severity`}
     style=${{color:I[t],fontWeight:600,marginRight:"10px"}}
   >${e===void 0?t:`${e} ${t}`}</span>`}function D({finding:t}){const e=t.path+(t.line?`:${t.line}`:"");return o`<details data-rule=${t.rule} style=${{borderBottom:"1px solid var(--border)",padding:"4px 0"}}>
     <summary style=${{cursor:"pointer"}} title=${t.why}>
-      <${k} severity=${t.severity} />
+      <${x} severity=${t.severity} />
       <span style=${l}>${t.rule}</span>
       ${t.count>1?o` <span style=${{color:"var(--fg2)"}}>x${t.count}</span>`:null}
       <div style=${{...l,color:"var(--fg2)"}}>${e}</div>
@@ -71,14 +71,14 @@ import{d as w,x as B,T as E,m as o,w as R,z as q,S as C,as as A,aS as F}from"./i
   </div>`}function P({models:t}){const e=Object.values(t||{});if(!e.length)return null;const s=[...e].sort((n,r)=>(r.conflicts||[]).length-(n.conflicts||[]).length);return o`<section data-testid="effective-models" style=${{marginBottom:"8px"}}>
     <h4 style=${{margin:"0 0 4px"}}>Effective model</h4>
     ${s.map(n=>o`<${N} key=${n.tool} eff=${n} />`)}
-  </section>`}function V(){const[t,e]=w(0),[s,n]=w(!1),r=B(C),p=(r==null?void 0:r.enabledTools)??null,{data:c,loading:x,error:y}=M(()=>A("/api/context-audit"),[t]),i=E(()=>F(c,p),[c,p]),m=o`<button type="button" onClick=${()=>e(a=>a+1)}>Rescan</button>`;if(x&&!i)return o`<div data-state="loading" style=${{color:"var(--fg2)"}}>Scanning context sources...</div>`;if(y)return o`<div data-state="error" style=${{color:"var(--red)"}}>
+  </section>`}function U(){const[t,e]=w(0),[s,n]=w(!1),r=B(C),p=(r==null?void 0:r.enabledTools)??null,{data:c,loading:k,error:y}=M(()=>A("/api/context-audit"),[t]),i=E(()=>F(c,p),[c,p]),m=o`<button type="button" onClick=${()=>e(a=>a+1)}>Rescan</button>`;if(k&&!i)return o`<div data-state="loading" style=${{color:"var(--fg2)"}}>Scanning context sources...</div>`;if(y)return o`<div data-state="error" style=${{color:"var(--red)"}}>
       Context audit failed: ${String(y.message||y)} ${m}
     </div>`;const u=i&&i.sources||[],v=i&&i.findings||[],S=!!c&&((c.sources||[]).length||(c.findings||[]).length);if(!u.length&&!v.length&&R(p)&&S)return o`<${q} enabledTools=${p} snap=${r==null?void 0:r.snap} what="hidden context"/>`;if(!u.length&&!v.length)return o`<div data-state="empty" style=${{color:"var(--fg2)"}}>
       No context sources found for ${i&&i.project||"this project"}. ${m}
     </div>`;const b=Date.now()/1e3-(i.scanned_at||0),h=b>W,g=i.counts||{},_=s?v:v.filter(a=>a.severity!=="info"),T=u.filter(a=>a.loading==="always").reduce((a,f)=>a+(f.est_tokens||0),0),j=Object.entries(i.sources_per_tool||{});return o`<div data-state=${h?"stale":"ready"}>
     <${P} models=${i.effective_models} />
     <div style=${{display:"flex",flexWrap:"wrap",gap:"8px",alignItems:"baseline"}}>
-      ${["high","medium","low","info"].map(a=>o`<${k} key=${a} severity=${a} count=${g[a]||0} />`)}
+      ${["high","medium","low","info"].map(a=>o`<${x} key=${a} severity=${a} count=${g[a]||0} />`)}
       <span title=${j.map(([a,f])=>`${a}: ${f}`).join(`
 `)}>${u.length} sources</span>
       <span title="Estimated at four characters per token">~${T} always-loaded tokens</span>
@@ -99,4 +99,4 @@ import{d as w,x as B,T as E,m as o,w as R,z as q,S as C,as as A,aS as F}from"./i
       <summary style=${{cursor:"pointer"}}>All ${u.length} sources</summary>
       <${z} sources=${u} />
     </details>
-  </div>`}export{V as HiddenContextPanel,W as STALE_AFTER_S,V as default};
+  </div>`}export{U as HiddenContextPanel,W as STALE_AFTER_S,U as default};

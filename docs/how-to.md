@@ -210,8 +210,17 @@ The tool filter in the top bar applies to every screen. `Copilot VS Code` also k
 because that card holds the VS Code settings. These stay visible because they belong to no single tool: the
 VS Code settings panel, the aictl monitoring card, Project Environment, Collector Health and the monitored folders.
 
-Analytics and the context-window figures on Budget have no per-tool data yet, so aictl labels them as covering all
-tools. A note on the screen counts rows that are hidden because their tool is not in the filter list.
+Analytics and the context-window figures on Budget are computed by the server for the tools you ticked
+(`/api/analytics?tools=a,b` and `/api/budget?tools=a,b`; no parameter is all tools, and an empty `tools=` is none).
+After you change the filter, these screens show the loading state until the server has the figures for the new
+selection. They never show the figures of the previous selection. Totals, averages and percentiles come from the
+selected tools' own rows. A row that stored no tool takes the tool of its session. A note counts the rows that no
+tool can be found for, because no selection includes them, and rows whose tool is not in the filter list. Ids match
+exactly: `copilot` and `copilot-vscode` are different tools, except that settings stored under `copilot` belong to
+Copilot in VS Code.
+
+Two things still cover all tools, and say so on the screen: the raw metrics explorer on Analytics, and the memory
+growth chart on Memory (aictl records those series for the whole machine, with no tool).
 
 ## Connect Copilot CLI, the desktop app and VS Code
 

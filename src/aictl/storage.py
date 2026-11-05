@@ -31,6 +31,7 @@ from .ingesters._common import project_key
 from .platforms import config_dir
 from .storage_migrations import CURRENT_VERSION as SCHEMA_VERSION
 from .storage_migrations import apply_pending as _apply_pending_migrations
+from .tool_scope import UNATTRIBUTED_IDS, stored_ids_for
 
 log = logging.getLogger(__name__)
 
@@ -1285,6 +1286,53 @@ def _where(conditions: list[tuple[str, Any]]) -> tuple[str, list]:
 def _placeholders(ids: list) -> str:
     """Return a SQL placeholder string for IN clauses: '?,?,?'."""
     return ",".join("?" * len(ids))
+
+
+def _effective_tool_sql(alias: str, session_alias: str) -> str:
+    """SQL for the tool of a row: its own, or its session's when it stored none."""
+    return (
+        f"(CASE WHEN {alias}.tool IN ({_placeholders(list(UNATTRIBUTED_IDS))})"
+        f" THEN COALESCE({session_alias}.tool, '') ELSE {alias}.tool END)"
+    )
+
+
+def _session_join(alias: str, session_alias: str) -> str:
+    return (
+        f" LEFT JOIN sessions {session_alias} ON {session_alias}.session_id = {alias}.session_id"
+        f" AND {alias}.session_id != ''"
+    )
+
+
+def _tool_scope(alias: str, session_alias: str, tools: tuple[str, ...] | list[str] | None) -> tuple[str, str, list]:
+    """Restrict rows of `alias` (events, requests, tool_invocations) to the selected tools.
+
+    Returns ``(join_sql, condition_sql, params)``; all three are empty when `tools`
+    is None (all tools) and the condition is ``1 = 0`` for an empty selection. A row
+    that stored no tool takes the tool of its session, the only other place that
+    holds one. Values travel as ``?`` placeholders only. The condition has no
+    leading AND, and its params follow the caller's own WHERE params.
+    """
+    if tools is None:
+        return "", "", []
+    join = _session_join(alias, session_alias)
+    stored = stored_ids_for(tools)
+    if not stored:
+        return join, "1 = 0", []
+    cond = f"{_effective_tool_sql(alias, session_alias)} IN ({_placeholders(stored)})"
+    return join, cond, [*UNATTRIBUTED_IDS, *stored]
+
+
+def _unattributed_scope(alias: str, session_alias: str) -> tuple[str, str, list]:
+    """Join, condition and params that match rows with no tool, even after the session lookup."""
+    cond = f"{_effective_tool_sql(alias, session_alias)} IN ({_placeholders(list(UNATTRIBUTED_IDS))})"
+    return _session_join(alias, session_alias), cond, [*UNATTRIBUTED_IDS, *UNATTRIBUTED_IDS]
+
+
+def _and(where: str, cond: str) -> str:
+    """Add a condition to a WHERE string built by _where (which may be empty)."""
+    if not cond:
+        return where
+    return f"{where} AND {cond}" if where else f" WHERE {cond}"
 
 
 def _last_id(conn: sqlite3.Connection) -> int:
@@ -3976,46 +4024,75 @@ class HistoryDB:
         since: float | None = None,
         until: float | None = None,
         limit: int = 2000,
+        tools: tuple[str, ...] | list[str] | None = None,
     ) -> list[dict]:
-        """Return lightweight request rows for analytics (no large text fields)."""
+        """Return lightweight request rows for analytics (no large text fields).
+
+        `tools` is the dashboard tool selection: None is every tool, an empty
+        list is none. The filter runs before the LIMIT, so the rows returned are
+        the selected tools' own newest rows.
+        """
         conn = self._conn()
-        where, params = _where([("ts >= ?", since), ("ts <= ?", until)])
-        params.append(limit)
+        join, cond, tparams = _tool_scope("r", "rs", tools)
+        where, params = _where([("r.ts >= ?", since), ("r.ts <= ?", until)])
+        where = _and(where, cond)
+        params = [*params, *tparams, limit]
         return _rows_to_dicts(
             conn.execute(
-                "SELECT ts, session_id, agent_id, model, input_tokens, output_tokens,"
-                " cache_read_tokens, cost_usd, duration_ms, finish_reason, is_error"
-                f" FROM requests{where} ORDER BY ts DESC LIMIT ?",
+                "SELECT r.ts, r.session_id, r.agent_id, r.model, r.input_tokens, r.output_tokens,"
+                " r.cache_read_tokens, r.cost_usd, r.duration_ms, r.finish_reason, r.is_error"
+                f" FROM requests r{join}{where} ORDER BY r.ts DESC LIMIT ?",
                 params,
             )
         )
+
+    def count_requests_unattributed(self, since: float | None = None, until: float | None = None) -> int:
+        """Requests in the window whose tool is unknown, even through their session."""
+        join, cond, tparams = _unattributed_scope("r", "rs")
+        where, params = _where([("r.ts >= ?", since), ("r.ts <= ?", until)])
+        row = self._conn().execute(
+            f"SELECT COUNT(*) FROM requests r{join}{_and(where, cond)}", [*params, *tparams]
+        ).fetchone()
+        return int(row[0] or 0)
 
     def query_tool_invocations_agg(
         self,
         since: float | None = None,
         until: float | None = None,
+        tools: tuple[str, ...] | list[str] | None = None,
     ) -> list[dict]:
         """Aggregate tool invocations by tool_name in SQL.
 
         Returns [{tool_name, count, total_ms, error_count}] — no per-row transfer.
         """
         conn = self._conn()
-        where, params = _where([("ts >= ?", since), ("ts <= ?", until)])
+        join, cond, tparams = _tool_scope("ti", "tis", tools)
+        where, params = _where([("ti.ts >= ?", since), ("ti.ts <= ?", until)])
         return _rows_to_dicts(
             conn.execute(
-                "SELECT tool_name, COUNT(*) as count,"
-                " SUM(duration_ms) as total_ms,"
-                " SUM(CASE WHEN is_error THEN 1 ELSE 0 END) as error_count"
-                f" FROM tool_invocations{where}"
-                " GROUP BY tool_name ORDER BY count DESC",
-                params,
+                "SELECT ti.tool_name, COUNT(*) as count,"
+                " SUM(ti.duration_ms) as total_ms,"
+                " SUM(CASE WHEN ti.is_error THEN 1 ELSE 0 END) as error_count"
+                f" FROM tool_invocations ti{join}{_and(where, cond)}"
+                " GROUP BY ti.tool_name ORDER BY count DESC",
+                [*params, *tparams],
             )
         )
+
+    def count_tool_invocations_unattributed(self, since: float | None = None, until: float | None = None) -> int:
+        """Tool invocations in the window whose tool is unknown, even through their session."""
+        join, cond, tparams = _unattributed_scope("ti", "tis")
+        where, params = _where([("ti.ts >= ?", since), ("ti.ts <= ?", until)])
+        row = self._conn().execute(
+            f"SELECT COUNT(*) FROM tool_invocations ti{join}{_and(where, cond)}", [*params, *tparams]
+        ).fetchone()
+        return int(row[0] or 0)
 
     def query_tool_analytics_from_events(
         self,
         since: float | None = None,
         until: float | None = None,
+        tools: tuple[str, ...] | list[str] | None = None,
     ) -> list[dict]:
         """Compute tool usage analytics by matching Pre/PostToolUse events.
 
@@ -4026,16 +4103,10 @@ class HistoryDB:
         Returns [{tool_name, count, avg_ms, total_ms, error_count, durations}].
         """
         conn = self._conn()
+        join, cond, tparams = _tool_scope("pre", "pres", tools)
         # Build WHERE clause for the pre-event timestamp range
-        clauses = []
-        params: list = []
-        if since is not None:
-            clauses.append("pre.ts >= ?")
-            params.append(since)
-        if until is not None:
-            clauses.append("pre.ts <= ?")
-            params.append(until)
-        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        where, params = _where([("pre.ts >= ?", since), ("pre.ts <= ?", until)])
+        where = _and(where, cond)
 
         rows = _rows_to_dicts(
             conn.execute(
@@ -4050,32 +4121,42 @@ class HistoryDB:
                 "  ON json_extract(pre.detail, '$.tool_use_id') = json_extract(post.detail, '$.tool_use_id')"
                 "  AND pre.kind = 'hook:PreToolUse'"
                 "  AND post.kind = 'hook:PostToolUse'"
-                f"{where}"
+                f"{join}{where}"
                 " GROUP BY tool_name ORDER BY count DESC",
-                params,
+                [*params, *tparams],
             )
         )
         return rows
+
+    def count_tool_events_unattributed(self, since: float | None = None, until: float | None = None) -> int:
+        """Matched Pre/PostToolUse pairs in the window whose tool is unknown, even through their session."""
+        join, cond, tparams = _unattributed_scope("pre", "pres")
+        where, params = _where([("pre.ts >= ?", since), ("pre.ts <= ?", until)])
+        row = self._conn().execute(
+            "SELECT COUNT(*) FROM events pre"
+            " JOIN events post"
+            "  ON json_extract(pre.detail, '$.tool_use_id') = json_extract(post.detail, '$.tool_use_id')"
+            "  AND pre.kind = 'hook:PreToolUse'"
+            "  AND post.kind = 'hook:PostToolUse'"
+            f"{join}{_and(where, cond)}",
+            [*params, *tparams],
+        ).fetchone()
+        return int(row[0] or 0)
 
     def query_tool_breakdown_from_events(
         self,
         since: float | None = None,
         until: float | None = None,
+        tools: tuple[str, ...] | list[str] | None = None,
     ) -> dict[str, list[dict]]:
         """Per tool_name, return count breakdown by CLI tool (claude-code, codex, …).
 
         Returns {tool_name: [{cli_tool, count}, …], …}.
         """
         conn = self._conn()
-        clauses: list[str] = []
-        params: list = []
-        if since is not None:
-            clauses.append("pre.ts >= ?")
-            params.append(since)
-        if until is not None:
-            clauses.append("pre.ts <= ?")
-            params.append(until)
-        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        join, cond, tparams = _tool_scope("pre", "pres", tools)
+        where, params = _where([("pre.ts >= ?", since), ("pre.ts <= ?", until)])
+        where = _and(where, cond)
         rows = conn.execute(
             "SELECT"
             " json_extract(pre.detail, '$.tool_name') as tool_name,"
@@ -4086,9 +4167,9 @@ class HistoryDB:
             "  ON json_extract(pre.detail, '$.tool_use_id') = json_extract(post.detail, '$.tool_use_id')"
             "  AND pre.kind = 'hook:PreToolUse'"
             "  AND post.kind = 'hook:PostToolUse'"
-            f"{where}"
+            f"{join}{where}"
             " GROUP BY tool_name, cli_tool ORDER BY tool_name, count DESC",
-            params,
+            [*params, *tparams],
         ).fetchall()
         result: dict[str, list[dict]] = {}
         for r in rows:
@@ -4102,19 +4183,19 @@ class HistoryDB:
         since: float | None = None,
         until: float | None = None,
         limit: int = 500,
+        tools: tuple[str, ...] | list[str] | None = None,
     ) -> list[float]:
         """Return raw duration_ms values for a tool from Pre/Post event matching."""
         conn = self._conn()
-        clauses = ["json_extract(pre.detail, '$.tool_name') = ?"]
-        params: list = [tool_name]
-        if since is not None:
-            clauses.append("pre.ts >= ?")
-            params.append(since)
-        if until is not None:
-            clauses.append("pre.ts <= ?")
-            params.append(until)
-        where = " WHERE " + " AND ".join(clauses)
-        params.append(limit)
+        join, cond, tparams = _tool_scope("pre", "pres", tools)
+        where, params = _where(
+            [
+                ("json_extract(pre.detail, '$.tool_name') = ?", tool_name),
+                ("pre.ts >= ?", since),
+                ("pre.ts <= ?", until),
+            ]
+        )
+        where = _and(where, cond)
         return [
             r[0]
             for r in conn.execute(
@@ -4124,9 +4205,9 @@ class HistoryDB:
                 "  ON json_extract(pre.detail, '$.tool_use_id') = json_extract(post.detail, '$.tool_use_id')"
                 "  AND pre.kind = 'hook:PreToolUse'"
                 "  AND post.kind = 'hook:PostToolUse'"
-                f"{where}"
+                f"{join}{where}"
                 " ORDER BY pre.ts DESC LIMIT ?",
-                params,
+                [*params, *tparams, limit],
             ).fetchall()
         ]
 
@@ -4136,24 +4217,52 @@ class HistoryDB:
         since: float | None = None,
         until: float | None = None,
         limit: int = 500,
+        tools: tuple[str, ...] | list[str] | None = None,
     ) -> list[float]:
         """Return raw duration_ms values for a single tool (for percentile calc)."""
         conn = self._conn()
+        join, cond, tparams = _tool_scope("ti", "tis", tools)
         where, params = _where(
             [
-                ("tool_name = ?", tool_name),
-                ("ts >= ?", since),
-                ("ts <= ?", until),
+                ("ti.tool_name = ?", tool_name),
+                ("ti.ts >= ?", since),
+                ("ti.ts <= ?", until),
             ]
         )
-        params.append(limit)
+        where = _and(where, cond)
         return [
             row[0]
             for row in conn.execute(
-                f"SELECT duration_ms FROM tool_invocations{where} ORDER BY ts DESC LIMIT ?",
-                params,
+                f"SELECT ti.duration_ms FROM tool_invocations ti{join}{where} ORDER BY ti.ts DESC LIMIT ?",
+                [*params, *tparams, limit],
             )
         ]
+
+    def query_file_modified_events(
+        self,
+        since: float | None = None,
+        until: float | None = None,
+        tools: tuple[str, ...] | list[str] | None = None,
+        limit: int = 5000,
+    ) -> list[tuple]:
+        """``file_modified`` events as (ts, path, growth_bytes), oldest first."""
+        join, cond, tparams = _tool_scope("e", "es", tools)
+        where, params = _where([("e.kind = ?", "file_modified"), ("e.ts >= ?", since), ("e.ts <= ?", until)])
+        return self._conn().execute(
+            "SELECT e.ts, json_extract(e.detail, '$.path'),"
+            " CAST(json_extract(e.detail, '$.growth_bytes') AS INTEGER)"
+            f" FROM events e{join}{_and(where, cond)} ORDER BY e.ts LIMIT ?",
+            [*params, *tparams, limit],
+        ).fetchall()
+
+    def count_file_modified_unattributed(self, since: float | None = None, until: float | None = None) -> int:
+        """``file_modified`` events in the window whose tool is unknown, even through their session."""
+        join, cond, tparams = _unattributed_scope("e", "es")
+        where, params = _where([("e.kind = ?", "file_modified"), ("e.ts >= ?", since), ("e.ts <= ?", until)])
+        row = self._conn().execute(
+            f"SELECT COUNT(*) FROM events e{join}{_and(where, cond)}", [*params, *tparams]
+        ).fetchone()
+        return int(row[0] or 0)
 
     # ── Processes (new) ────────────────────────────────────────────
 

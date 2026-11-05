@@ -871,6 +871,7 @@ def batch_resolve_paths(
 
 from .fsutil import safe_glob, safe_iterdir, safe_rglob, safe_stat, safe_walk, warn_once
 from .platforms import CURRENT_PLATFORM, IS_MACOS, IS_WINDOWS
+from .tool_scope import is_selected
 from .utils import estimate_tokens, norm_path
 
 # ─── Data classes ─────────────────────────────────────────────────
@@ -1467,6 +1468,21 @@ def _find_mcp_processes(
 
 
 # ─── Token cost aggregation ──────────────────────────────────────
+
+
+def budget_tools(tools: list[ToolResources], selection: tuple[str, ...] | None) -> list[ToolResources]:
+    """The resources a tool selection loads into a context window.
+
+    None is every tool. An empty selection is none. Otherwise the selected tools
+    (ids compared exactly, see ``tool_scope``) plus ``project-env``, which names
+    no single tool and stays on every filtered screen. aictl's own files are
+    never sent to a model, so a selection leaves them out.
+    """
+    if selection is None:
+        return tools
+    if not selection:
+        return []
+    return [t for t in tools if t.tool == "project-env" or is_selected(t.tool, selection)]
 
 
 def compute_token_budget(tools: list[ToolResources], root: str = "") -> dict:

@@ -294,8 +294,9 @@ export async function getApiCalls(since, limit = 100, sessionId = null) {
 
 // ─── Budget ────────────────────────────────────────────────────
 
-export async function getBudget() {
-  return fetchJson('/api/budget');
+/** Context-window budget. `toolsQuery` is toolsParam(enabledTools): '' for all tools. */
+export async function getBudget(toolsQuery = '') {
+  return fetchJson('/api/budget' + (toolsQuery ? '?' + toolsQuery : ''));
 }
 
 // ─── Files ─────────────────────────────────────────────────────

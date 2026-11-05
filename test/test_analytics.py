@@ -353,7 +353,7 @@ class TestAnalyticsCache:
         store = MagicMock()
         store._db = db
         cache._store = store
-        cache._requested_range = (base - 1, base + 100)
+        cache.request_range(base - 1, base + 100)
 
         # Directly call _recompute (simulating background thread)
         cache._recompute()
@@ -373,7 +373,7 @@ class TestAnalyticsCache:
         cache = _AnalyticsCache()
 
         start = time.monotonic()
-        result = cache.get(0, time.time())
+        result = cache.get(0, None)
         elapsed = time.monotonic() - start
 
         assert elapsed < 0.001, f"get() took {elapsed * 1000:.1f}ms (must be <1ms)"
@@ -390,12 +390,12 @@ class TestAnalyticsCache:
         store = MagicMock()
         store._db = db
         cache._store = store
-        cache._requested_range = (0, time.time())
+        cache.request_range(0, None)
 
         # Healthy after a successful compute.
         cache._recompute()
         cache._mark_success()
-        assert cache.get(0, time.time())["_health"]["ok"] is True
+        assert cache.get(0, None)["_health"]["ok"] is True
 
         # Simulate the loop catching a recompute error.
         try:
@@ -403,14 +403,14 @@ class TestAnalyticsCache:
         except RuntimeError as exc:
             cache._mark_error(exc)
 
-        health = cache.get(0, time.time())["_health"]
+        health = cache.get(0, None)["_health"]
         assert health["ok"] is False
         assert health["consecutive_errors"] == 1
         assert "db exploded" in health["last_error"]
 
         # Recovery clears the signal.
         cache._mark_success()
-        assert cache.get(0, time.time())["_health"]["ok"] is True
+        assert cache.get(0, None)["_health"]["ok"] is True
 
     def test_recompute_failure_recorded_to_data_quality(self, db: HistoryDB):
         """The analytics-thread failure must reach the operator-facing

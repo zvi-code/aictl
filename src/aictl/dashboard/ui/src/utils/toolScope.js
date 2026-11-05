@@ -47,10 +47,59 @@ export function isConfigSelected(row, enabledTools) {
   return owners.some(id => enabledTools.includes(id));
 }
 
+/**
+ * The `tools=` query parameter for a server request, without a leading `&`.
+ * No filter sends nothing (the server reads that as all tools); an empty
+ * selection sends `tools=` (the server reads that as none).
+ */
+export function toolsParam(enabledTools) {
+  if (!Array.isArray(enabledTools)) return '';
+  return 'tools=' + [...new Set(enabledTools)].sort().map(encodeURIComponent).join(',');
+}
+
+/** A string that changes exactly when the selection changes, for effect dependencies. */
+export function selectionKey(enabledTools) {
+  return Array.isArray(enabledTools) ? 'only:' + [...new Set(enabledTools)].sort().join(',') : 'all';
+}
+
+/**
+ * Does a server answer cover exactly the current selection? Answers state the
+ * selection they were computed for (`selection: {all_tools, tools}`). Under a
+ * filter an answer that does not state the same list is never shown as filtered
+ * (an older server ignores the parameter and answers for all tools). With no
+ * filter an answer that states nothing is accepted.
+ */
+export function answerCoversSelection(answer, enabledTools) {
+  const sel = answer?.selection;
+  if (!Array.isArray(enabledTools)) return !sel || sel.all_tools === true;
+  if (!sel || sel.all_tools || !Array.isArray(sel.tools)) return false;
+  return selectionKey(sel.tools) === selectionKey(enabledTools);
+}
+
 /** Rows whose `key` field names a selected tool (or no tool at all). */
 export function filterByTool(list, enabledTools, key = 'tool') {
   if (!Array.isArray(list) || !Array.isArray(enabledTools)) return list;
   return list.filter(r => isToolSelected(r?.[key], enabledTools));
+}
+
+const UNATTRIBUTED_KEYS = new Set(['', 'unknown', 'any']);
+
+/**
+ * Sum a `{toolId: count}` map from the server over the selected tools.
+ * `total` counts the selected tools' entries; `hidden` counts entries with no
+ * recoverable tool, which no selection includes. With no filter, every entry
+ * is in `total`.
+ */
+export function sumByTool(byTool, enabledTools, value = v => v) {
+  let total = 0;
+  let hidden = 0;
+  for (const [id, v] of Object.entries(byTool || {})) {
+    const n = Number(value(v)) || 0;
+    if (!Array.isArray(enabledTools)) total += n;
+    else if (UNATTRIBUTED_KEYS.has(id)) hidden += n;
+    else if (isToolSelected(id, enabledTools)) total += n;
+  }
+  return { total, hidden };
 }
 
 /** A tool id the filter list never offers: it cannot be selected, only hidden. */

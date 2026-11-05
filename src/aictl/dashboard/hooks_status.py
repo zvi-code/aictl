@@ -202,7 +202,7 @@ def _post_tool_use_usage(db, cutoff: float) -> tuple[dict[str, Any], dict[str, A
     ``tool_name = 'Skill'`` vs ``!= 'Skill'``. One GROUP BY and a split in
     Python halves the JSON decoding on every dashboard poll.
     """
-    skills: dict[str, Any] = {"total_calls_24h": 0, "by_skill": [], "by_tool": {}}
+    skills: dict[str, Any] = {"total_calls_24h": 0, "by_skill": [], "by_tool": {}, "by_tool_skill": {}}
     tools: dict[str, Any] = {"total_calls_24h": 0, "by_name": [], "by_tool": {}, "by_tool_name": {}}
     if db is None:
         return skills, tools
@@ -238,6 +238,8 @@ def _post_tool_use_usage(db, cutoff: float) -> tuple[dict[str, Any], dict[str, A
             skill = str(skill or "unknown")
             by_skill[skill] = by_skill.get(skill, 0) + count
             skills["by_tool"][tool] = skills["by_tool"].get(tool, 0) + count
+            per_tool_skill = skills["by_tool_skill"].setdefault(tool, {})
+            per_tool_skill[skill] = per_tool_skill.get(skill, 0) + count
             skills["total_calls_24h"] += count
         else:
             by_name[name] = by_name.get(name, 0) + count

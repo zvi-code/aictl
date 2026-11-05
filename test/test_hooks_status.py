@@ -160,6 +160,8 @@ def test_collect_hooks_status_reports_configured_fired_skills_and_subagents(tmp_
     assert status["warnings"][0]["message"] == "chat.hookFilesLocations['~/.copilot/hooks'] is false"
     assert status["skill_usage"]["total_calls_24h"] == 1
     assert status["skill_usage"]["by_skill"] == [{"skill": "review-pr", "count": 1}]
+    # The skill names are also split per tool, so a tool filter can scope them.
+    assert status["skill_usage"]["by_tool_skill"] == {"claude-code": {"review-pr": 1}}
     assert status["subagents"]["starts_24h"] == 1
 
     # General tool calls exclude Skill and aggregate per tool + per name.
