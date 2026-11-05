@@ -154,8 +154,51 @@ def _tool_from_hook_source(data: dict) -> str:
         return "claude-code"
     if source.endswith((".gemini-user", ".gemini-project")):
         return "gemini-cli"
-    if source.endswith((".vscode-user", ".vscode-project")):
+    if source.endswith((".vscode-user", ".vscode-project", ".copilot-user", ".copilot-project")):
+        return _copilot_surface(data) or "copilot-vscode"
+    return ""
+
+
+_COPILOT_SURFACES = frozenset({"copilot-cli", "copilot-desktop", "copilot-vscode"})
+
+
+def _copilot_surface(data: dict) -> str:
+    """Which Copilot surface sent a hook. They share one hook file, so the file's
+    location says nothing: read the transcript path, then the calling processes."""
+    transcript = str(data.get("transcript_path") or data.get("transcriptPath") or "")
+    transcript = transcript.replace("\\", "/").lower()
+    if "github.copilot-chat" in transcript or "/workspacestorage/" in transcript:
         return "copilot-vscode"
+    pid = data.get("pid")
+    return _copilot_surface_of_process(int(pid)) if pid else ""
+
+
+def _copilot_surface_of_process(pid: int, max_depth: int = 6) -> str:
+    """Nearest Copilot surface among a process and its ancestors; "" when unknown."""
+    try:
+        import psutil
+
+        from ..monitoring.collectors.process import classify_process
+        from ..monitoring.session import ProcessInfo
+
+        process = psutil.Process(pid)
+        for _ in range(max_depth):
+            if process is None:
+                break
+            with process.oneshot():
+                info = ProcessInfo(
+                    pid=process.pid,
+                    ppid=process.ppid(),
+                    name=process.name(),
+                    exe=process.exe(),
+                    cmdline=tuple(process.cmdline()),
+                )
+            tool = classify_process(info).tool
+            if tool in _COPILOT_SURFACES:
+                return tool
+            process = process.parent()
+    except Exception:  # noqa: BLE001 — attribution is best-effort; never fail a hook
+        logger.debug("Could not classify hook process %s", pid, exc_info=True)
     return ""
 
 
