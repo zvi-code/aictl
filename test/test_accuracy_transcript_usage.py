@@ -443,6 +443,120 @@ class TestLocalDays:
         assert summary["day_boundary"] == "local"
 
 
+@pytest.fixture
+def api(tmp_path, db):
+    """A real HTTP server over the test DB. Under suite isolation HOME is empty,
+    so its own background ingester finds nothing and only the fixtures count."""
+    import threading
+
+    from test_api_endpoints import _make_snapshot
+
+    from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
+    from aictl.orchestrator import AllowedPaths, SnapshotStore
+
+    store = SnapshotStore(db=db)
+    store.update(_make_snapshot())
+    srv = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, AllowedPaths(), tmp_path)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{srv.server_address[1]}"
+    srv.shutdown()
+
+
+def get_json(url):
+    import urllib.request
+
+    with urllib.request.urlopen(url, timeout=5) as r:
+        return json.loads(r.read())
+
+
+class TestApiLayer:
+    """The classic failure sits above ingestion: each endpoint sums what it finds."""
+
+    def seed(self, db, stores):
+        claude_fixture(stores)
+        started = NOW - 3000
+        db.upsert_session(SessionRow(session_id=CLAUDE_SID, tool="claude-code", source="hook", started_at=started))
+        db.upsert_session(SessionRow(session_id=f"claude-code:4242:{CLAUDE_SID}", tool="claude-code", source="otel", pid=4242, started_at=started + 5, input_tokens=500, output_tokens=500))
+        db.upsert_session(SessionRow(session_id="claude-code:4242:1700000000", tool="claude-code", source="correlator", pid=4242, started_at=started + 8, input_tokens=700, output_tokens=700))
+        ingest(db, stores)
+
+    def test_usage_endpoint_counts_one_session_once(self, api, db, stores):
+        self.seed(db, stores)
+        data = get_json(f"{api}/api/usage?days=2")
+        assert data["totals"]["output_tokens"] == 340
+        assert data["totals"]["sessions"] == 1
+        assert data["totals"]["tokens_quality"] == "exact"
+        assert data["pricing"]["as_of"]
+
+    def test_project_costs_count_one_session_once(self, api, db, stores):
+        self.seed(db, stores)
+        rows = get_json(f"{api}/api/project-costs?days=2")
+        assert sum(r["output_tokens"] for r in rows) == 340
+        assert sum(r["cache_read_tokens"] for r in rows) == 3050
+        assert sum(r["total_tokens"] for r in rows) == 60 + 340 + 3050 + 100
+
+    def test_sessions_endpoint_has_one_transcript_row_and_marks_the_rest(self, api, db, stores):
+        self.seed(db, stores)
+        rows = get_json(f"{api}/api/sessions?since={NOW - 86400}&limit=100")
+        same = [r for r in rows if CLAUDE_SID in r["session_id"]]
+        assert len(same) == 1
+        assert same[0]["output_tokens"] == 340
+        assert same[0]["tokens_source"] == "transcript"
+        assert same[0]["counted_in_totals"] is True
+        other = [r for r in rows if r["session_id"] == "claude-code:4242:1700000000"]
+        assert other and other[0]["counted_in_totals"] is False
+        counted = [r for r in rows if r["counted_in_totals"] and r.get("tool") == "claude-code"]
+        assert sum(int(r.get("output_tokens") or 0) for r in counted) == 340
+
+    def test_cost_by_model_uses_the_transcript_split(self, api, db, stores):
+        self.seed(db, stores)
+        data = get_json(f"{api}/api/session-cost-by-model?session_id={CLAUDE_SID}")
+        by = {m["model"]: m for m in data["models"]}
+        assert by["claude-haiku-5-5"]["output_tokens"] == 40
+        assert data["totals"]["output_tokens"] == 340
+        assert data["totals"]["unpriced_models"] == []
+
+    def test_project_costs_null_cost_for_an_unknown_model(self, api, db, stores):
+        write_jsonl(
+            stores["claude_projects"] / "p" / f"{CLAUDE_SID}.jsonl",
+            [assistant("m", "r", "claude-future-9", 100, out=1000)],
+        )
+        ingest(db, stores)
+        rows = get_json(f"{api}/api/project-costs?days=1")
+        assert rows[0]["cost_usd"] is None
+        assert rows[0]["unpriced_models"] == ["claude-future-9"]
+
+
+def test_totals_do_not_depend_on_stored_text(db, stores):
+    """Capture modes may trim text, so nothing is derived from it at query time."""
+    claude_fixture(stores)
+    ingest(db, stores)
+    assert db._conn().execute("SELECT COUNT(*) FROM session_usage WHERE models_json LIKE '%hello%'").fetchone()[0] == 0
+    columns = [r[1] for r in db._conn().execute("PRAGMA table_info(session_usage)")]
+    assert not {"prompt", "response", "content", "text"} & set(columns)
+    assert usage_of(db, CLAUDE_SID)["turn_count"] == 1
+
+
+def test_summary_source_survives_trimmed_prompt_text():
+    from aictl.analysis.transcript import SessionTranscript
+
+    t = SessionTranscript(session_id="s")
+    t.start_turn(1.0, "", prompt_event=True)
+    summary = t.build_summary()
+    assert summary.source == "hooks"
+    assert summary.total_turns == 1
+
+
+def test_a_large_transcript_is_read_line_by_line(db, stores, monkeypatch):
+    """The first poll must not hold whole files: real backfill peaked at 570 MB."""
+    path = stores["claude_projects"] / "p" / f"{CLAUDE_SID}.jsonl"
+    write_jsonl(path, [assistant(f"m{i}", f"r{i}", "claude-sonnet-5-5", 100, out=1) for i in range(50)])
+    ing = TranscriptUsageIngester(db, **stores)
+    assert ing.poll() == 1
+    assert usage_of(db, CLAUDE_SID)["request_count"] == 50
+    assert ing._offsets[path] == path.stat().st_size
+
+
 def test_phantom_verify_row_never_reaches_a_read(db):
     db.upsert_session(SessionRow(session_id="aictl-verify", tool="claude-code", source="hook", started_at=NOW - 10))
     assert db.get_session("aictl-verify") is None

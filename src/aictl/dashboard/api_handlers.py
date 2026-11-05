@@ -112,6 +112,42 @@ def _match_live_session(profile: dict, live_sessions: list[dict]) -> dict | None
     return None
 
 
+def _one_row_per_session(rows: list[dict]) -> list[dict]:
+    """Drop extra rows for a session recorded under several ids (in place order).
+
+    A hook row and a correlator ``tool:pid:<uuid>`` row share a UUID, so both
+    resolve to one transcript and would each report its full totals. The first
+    row stays (a live row keeps its live fields) and takes the transcript's
+    numbers if another row has them.
+    """
+    from ..storage import _USAGE_PROFILE_KEYS, _session_uuid
+
+    kept: dict[str, dict] = {}
+    out: list[dict] = []
+    for row in rows:
+        uuid = _session_uuid(row.get("session_id", ""))
+        if uuid is None:
+            out.append(row)
+            continue
+        first = kept.get(uuid)
+        if first is None:
+            kept[uuid] = row
+            out.append(row)
+        elif row.get("tokens_source") == "transcript" and first.get("tokens_source") != "transcript":
+            first.update({k: row[k] for k in _USAGE_PROFILE_KEYS if k in row})
+    return out
+
+
+def _mark_counted(rows: list[dict], covered_tools: set[str]) -> None:
+    """Set ``counted_in_totals`` on rows, so a client summing them can skip views.
+
+    For a tool with transcript coverage only transcript rows count: any other
+    row, such as a live ``tool:pid:start`` row, shows the same tokens again.
+    """
+    for row in rows:
+        row["counted_in_totals"] = row.get("tokens_source") == "transcript" or row.get("tool") not in covered_tools
+
+
 def _kill_session_pids(pids: list[int], sig_name: str) -> dict[str, list[int]]:
     """Send SIGTERM/SIGKILL to the given PIDs and their child trees.
 
@@ -1107,7 +1143,7 @@ class _APIHandlersMixin:
         db = self._db
         if db:
             seen_session_ids: set[str] = set()
-            rows = db.query_sessions(since=0, tool=tool or None, active=False, limit=5000)
+            rows = _one_row_per_session(db.query_sessions(since=0, tool=tool or None, active=False, limit=5000))
             for row in rows:
                 ended_at = float(row.get("ended_at", 0) or 0)
                 if ended_at < since:
@@ -1549,6 +1585,11 @@ class _APIHandlersMixin:
                 s["commit_count"] = self._db.count_session_commits(sid) if (self._db and sid) else 0
             s["cache_hit_ratio"] = _cache_hit_ratio(s)
 
+        sessions = _one_row_per_session(sessions)
+        covered: set[str] = set()
+        if self._db:
+            covered = {u["tool"] for u in self._db.query_session_usage(active_since=self._qs_float("since", time.time() - 86400))}
+        _mark_counted(sessions, covered)
         self._json_response(sessions[:limit])
 
     def _serve_session_stats(self) -> None:
