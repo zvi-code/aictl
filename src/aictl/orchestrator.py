@@ -36,6 +36,7 @@ from .tools import (
     collect_agent_memory,
     collect_mcp_status,
     discover_all,
+    files_to_sample,
     get_registry,
     tool_hosts,
     tool_is_meta,
@@ -264,7 +265,7 @@ def collect(
             _sink.emit_if_changed(M("aictl.discovery.mcp_servers"), float(len(tool_res.mcp_servers)), tags, ts=ts)
             # Per-file metrics: only emit on change (not every cycle).
             # The sink's dedup handles this — we just need a stable cache key.
-            for f in tool_res.files:
+            for f in files_to_sample(tool_res.files):
                 ftags = {
                     "aictl.tool": tool,
                     "file.path": f.path,
