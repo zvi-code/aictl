@@ -104,3 +104,14 @@ aictl ctx deploy --root . --profile debug --emit claude,copilot,gemini
   text the user did not commit.
 - Skills must be a directory with a `SKILL.md` file; flat files in
   `.gemini/skills/` are ignored.
+
+## Local state and processes (checked 2026-11-05)
+
+Gemini CLI 0.36.0 (`/opt/homebrew/bin/gemini` -> `@google/gemini-cli/bundle/gemini.js`). It runs as
+`node`, so the process name is not `gemini`; the matcher uses `@google/gemini-cli` and `/bin/gemini`.
+`~/.gemini/`: `settings.json` (keys `security`, `ui`, `general`, `experimental`, `tools`, `model`, `hooks`),
+`oauth_creds.json` and `google_accounts.json` (credentials, never read values), `trustedFolders.json`,
+`trusted_hooks.json`, `projects.json`, `state.json`, `history/`, and per-project
+`tmp/<project>/{chats/session-<ts>-<id>.json,logs.json,.project_root}`. `~/.gemini/memory/` is absent;
+`GEMINI.md` is not present on this machine. The VS Code companion is
+`~/.vscode/extensions/google.gemini-cli-vscode-ide-companion-*`.
