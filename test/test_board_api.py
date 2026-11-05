@@ -825,7 +825,7 @@ class TestSections:
 
     def test_skills(self, db):
         skills = _board(db)["skills"]
-        assert skills == [{"name": "review", "uses": 1, "tokens": 2000, "agents": 1}]
+        assert skills == [{"name": "review", "uses": 1, "tokens": 2000, "agents": 1, "scope": None, "path": None, "description": None}]
 
     def test_project_prompts_combine_disk_and_use(self, db, tmp_path):
         project = tmp_path / "proj"
@@ -2226,3 +2226,53 @@ def test_project_root(path, root):
     from aictl.ingesters._common import project_root
 
     assert project_root(path) == root
+
+
+class TestSkillDetail:
+    def _project_skill(self, tmp_path, name="checker", text="---\nname: checker\ndescription: Checks a change\n---\napi_key = abc123secretvalue\nBody text\n"):
+        folder = tmp_path / "proj" / ".github" / "skills" / name
+        folder.mkdir(parents=True)
+        (folder / "SKILL.md").write_text(text)
+        return tmp_path / "proj"
+
+    def _use(self, db, project, name="checker", ts=1000.0):
+        conn = db._conn()
+        conn.execute(
+            "INSERT INTO skill_uses(ts, session_id, tool, project_path, name, trigger) VALUES (?,?,?,?,?,?)",
+            (ts, "s1", "copilot-cli", str(project), name, "agent-invoked"),
+        )
+        conn.commit()
+
+    def test_shows_scope_usage_and_masked_text(self, db, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+        project = self._project_skill(tmp_path)
+        self._use(db, project)
+        status, payload = board_api.skill_detail(db, "checker", now=2000.0)
+        assert status == 200
+        assert payload["uses"] == 1 and payload["total_uses"] == 1
+        assert payload["calls"][0]["trigger"] == "agent-invoked"
+        place = payload["locations"][0]
+        assert place["scope"] == "project"
+        assert "copilot-vscode" in place["tools"]
+        assert place["description"] == "Checks a change"
+        assert "Body text" in place["content"]
+        assert "abc123secretvalue" not in place["content"]
+        assert str(project) in place["reach"]
+
+    def test_the_time_range_limits_uses_but_not_the_total(self, db, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        self._use(db, tmp_path, ts=1000.0)
+        status, payload = board_api.skill_detail(db, "checker", now=2000.0, since=1500.0, until=2000.0)
+        assert status == 200
+        assert (payload["uses"], payload["total_uses"], payload["calls"]) == (0, 1, [])
+
+    def test_a_skill_with_no_file_still_reports_its_uses(self, db, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        self._use(db, tmp_path, name="gone")
+        _status, payload = board_api.skill_detail(db, "gone", now=2000.0)
+        assert payload["locations"] == [] and payload["uses"] == 1
+
+    @pytest.mark.parametrize("name", ["../../etc/passwd", "..", "a/b", "a\\b", "plugin:../x"])
+    def test_a_name_cannot_leave_the_skill_folders(self, name):
+        assert board_api.skill_locations(name, ["/tmp"]) == []
