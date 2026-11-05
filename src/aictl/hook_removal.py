@@ -535,9 +535,28 @@ class _Sink:
         if self.on_change:
             self.on_change(path, "delete", previous, None)
 
+    def remove_dir_if_empty(self, directory: Path, *, without: Path) -> None:
+        """Remove *directory* when *without* was its only content. Never removes a folder holding anything else."""
+        try:
+            if without.is_symlink():
+                return
+            others = [p for p in directory.iterdir() if p != without]
+            if others or directory.is_symlink():
+                return
+            self.result.changes.append(f"remove empty folder: {directory}")
+            if not self.dry_run:
+                directory.rmdir()
+        except OSError:
+            pass
 
-# Files that exist only to hold hooks. A settings file is kept even when empty.
+
+# Files that exist only to hold hooks.
 _HOOK_ONLY_NAMES = frozenset({"aictl.json", "hooks.json"})
+
+
+def _is_empty_object(text: str) -> bool:
+    """True for ``{}`` with only whitespace (and a BOM) around it. A file with comments is kept."""
+    return "".join(text.lstrip("\ufeff").split()) == "{}"
 
 
 def remove_from_hook_file(path: Path, sink: _Sink, *, delete_if_only: tuple[str, ...] = ()) -> int:
@@ -562,8 +581,14 @@ def remove_from_hook_file(path: Path, sink: _Sink, *, delete_if_only: tuple[str,
     label = f"remove {removed} aictl hook rule(s)"
     if not remaining and not others and path.name in _HOOK_ONLY_NAMES:
         sink.delete(path, label + ", file now empty")
+        sink.remove_dir_if_empty(path.parent, without=path)
         return removed
     new_text = update_json_text(text, {"hooks": remaining if remaining else _DELETE})
+    if not remaining and not others and _is_empty_object(new_text):
+        # A settings file holding nothing is no use to its tool; aictl made it.
+        sink.delete(path, label + ", file now an empty object")
+        sink.remove_dir_if_empty(path.parent, without=path)
+        return removed
     sink.write(path, new_text, label)
     return removed
 
