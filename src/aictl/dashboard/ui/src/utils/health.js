@@ -203,6 +203,8 @@ export function runningSummary(rows) {
 }
 
 export function sessionMemMb(s) {
+  // Live updates carry the total (mem_mb); the first snapshot carries the tree.
+  if (!(s.process_tree || []).length) return s.mem_mb || 0;
   let total = 0;
   const walk = (nodes) => { for (const n of nodes || []) { total += n.mem_mb || 0; walk(n.children); } };
   walk(s.process_tree);

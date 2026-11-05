@@ -8,21 +8,60 @@ export const GLOBAL_KEYS = ['ts','files','tokens','cpu','mem_mb','mcp','mem_toke
                      'live_sessions','live_tokens','live_in_rate','live_out_rate'];
 
 /**
+ * Apply a `sessions_delta` ({upsert: rows, patch: partial rows, remove: ids}) to the session rows held.
+ * Rows keep their place; new rows go at the end.
+ */
+export function applySessionsDelta(rows, delta) {
+  const out = Array.isArray(rows) ? rows.slice() : [];
+  const at = new Map(out.map((r, i) => [r.session_id, i]));
+  for(const row of (delta.upsert || [])) {
+    if(at.has(row.session_id)) out[at.get(row.session_id)] = row;
+    else { at.set(row.session_id, out.length); out.push(row); }
+  }
+  // A patch holds the session_id and only the fields that changed.
+  for(const fields of (delta.patch || [])) {
+    if(at.has(fields.session_id)) out[at.get(fields.session_id)] = { ...out[at.get(fields.session_id)], ...fields };
+  }
+  const gone = new Set(delta.remove || []);
+  return gone.size ? out.filter(r => !gone.has(r.session_id)) : out;
+}
+
+/**
+ * Put back the `live` block of tools the server left out because it did not
+ * change. `held` maps tool id to its last live block and is updated in place.
+ */
+export function fillToolLive(data, held) {
+  if(!Array.isArray(data?.tools)) return data;
+  return {
+    ...data,
+    tools: data.tools.map(t => {
+      if('live' in t) { held[t.tool] = t.live; return t; }
+      return t.tool in held ? { ...t, live: held[t.tool] } : t;
+    }),
+  };
+}
+
+/**
  * Merge an SSE summary update into the existing snapshot.
  * Tool-level fields (live, vendor, host) are updated; everything else is spread.
+ * `sessions_delta` is applied to the held rows. `tools_rev` is not merged: it
+ * stays the revision of the fetched snapshot, which useDashboard compares with.
  */
 export function mergeSseSummary(prev, data) {
   if(!prev) return data;
+  const { sessions_delta, tools_rev, ...rest } = data;
   const toolMap = Object.fromEntries((data.tools || []).map(t => [t.tool, t]));
-  return {
+  const merged = {
     ...prev,
-    ...data,
+    ...rest,
     tools: prev.tools.map(t => {
       const update = toolMap[t.tool];
       if(!update) return t;
       return { ...t, live: update.live, vendor: update.vendor || t.vendor, host: update.host || t.host };
     }),
   };
+  if(sessions_delta) merged.sessions = applySessionsDelta(prev.sessions, sessions_delta);
+  return merged;
 }
 
 /**

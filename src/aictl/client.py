@@ -31,6 +31,30 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8484
 
 
+def _merge_stream_message(state: dict, message: dict) -> dict:
+    """Merge one stream message over the state held; apply ``sessions_delta`` row changes."""
+    message = dict(message)
+    delta = message.pop("sessions_delta", None)
+    if message.get("tools"):
+        # A tool whose live block did not change comes without one; keep the held block.
+        held = {t.get("tool"): t["live"] for t in state.get("tools") or [] if "live" in t}
+        message["tools"] = [
+            t if "live" in t or t.get("tool") not in held else {**t, "live": held[t["tool"]]} for t in message["tools"]
+        ]
+    merged = {**state, **message}
+    if delta:
+        rows = {r.get("session_id"): r for r in merged.get("sessions") or []}
+        for row in delta.get("upsert", []):
+            rows[row.get("session_id")] = row
+        for fields in delta.get("patch", []):
+            if fields.get("session_id") in rows:
+                rows[fields["session_id"]] = {**rows[fields["session_id"]], **fields}
+        for sid in delta.get("remove", []):
+            rows.pop(sid, None)
+        merged["sessions"] = list(rows.values())
+    return merged
+
+
 class ServerClient:
     """HTTP client for a running aictl server."""
 
@@ -171,7 +195,8 @@ class ServerClient:
             return
 
         buffer = ""
-        # The server omits large keys that did not change; keep their last value.
+        # The server omits large keys that did not change and sends session
+        # rows as changes; keep the last value and apply the changes.
         state: dict = {}
         while True:
             try:
@@ -190,10 +215,11 @@ class ServerClient:
                             data_lines.append(line[5:])
                     if data_lines:
                         try:
-                            state = {**state, **json.loads("".join(data_lines))}
-                            yield state
+                            message = json.loads("".join(data_lines))
                         except json.JSONDecodeError:
                             continue
+                        state = _merge_stream_message(state, message)
+                        yield state
             except (OSError, TimeoutError):
                 break
 

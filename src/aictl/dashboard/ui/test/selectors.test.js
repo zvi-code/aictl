@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mergeSseSummary, appendHistory, filterToolsByEnabled, GLOBAL_KEYS } from '../src/selectors.js';
+import { mergeSseSummary, applySessionsDelta, fillToolLive, appendHistory, filterToolsByEnabled, GLOBAL_KEYS } from '../src/selectors.js';
 
 // ─── mergeSseSummary ───────────────────────────────────────────
 describe('mergeSseSummary', () => {
@@ -43,6 +43,62 @@ describe('mergeSseSummary', () => {
     };
     const result = mergeSseSummary(prev, data);
     expect(result.tools[1].live.cpu_percent).toBe(3); // unchanged
+  });
+});
+
+describe('fillToolLive', () => {
+  it('puts back the live block of a tool the server left out, and remembers new ones', () => {
+    const held = {};
+    fillToolLive({ tools: [{ tool: 'a', live: { cpu_percent: 3 } }, { tool: 'b', live: null }] }, held);
+    const out = fillToolLive({ tools: [{ tool: 'a' }, { tool: 'b' }, { tool: 'c' }] }, held);
+    expect(out.tools[0].live).toEqual({ cpu_percent: 3 });
+    expect(out.tools[1].live).toBeNull();
+    expect('live' in out.tools[2]).toBe(false);
+    const next = fillToolLive({ tools: [{ tool: 'a', live: { cpu_percent: 8 } }] }, held);
+    expect(fillToolLive({ tools: [{ tool: 'a' }] }, held).tools[0].live).toEqual({ cpu_percent: 8 });
+    expect(next.tools[0].live.cpu_percent).toBe(8);
+  });
+});
+
+describe('mergeSseSummary session rows and revision', () => {
+  const rows = [{ session_id: 'a', cpu_percent: 1 }, { session_id: 'b', cpu_percent: 2 }];
+
+  it('applies a sessions_delta over the held rows', () => {
+    const prev = { tools: [], sessions: rows };
+    const out = mergeSseSummary(prev, {
+      tools: [],
+      sessions_delta: { upsert: [{ session_id: 'b', cpu_percent: 9 }, { session_id: 'c', cpu_percent: 3 }], remove: ['a'] },
+    });
+    expect(out.sessions).toEqual([{ session_id: 'b', cpu_percent: 9 }, { session_id: 'c', cpu_percent: 3 }]);
+    expect(out.sessions_delta).toBeUndefined();
+  });
+
+  it('patches only the fields that changed and ignores a patch for an unknown row', () => {
+    const prev = { tools: [], sessions: [{ session_id: 'a', cpu_percent: 1, project: '/p' }] };
+    const out = mergeSseSummary(prev, {
+      tools: [],
+      sessions_delta: { upsert: [], patch: [{ session_id: 'a', cpu_percent: 5 }, { session_id: 'zz', cpu_percent: 1 }], remove: [] },
+    });
+    expect(out.sessions).toEqual([{ session_id: 'a', cpu_percent: 5, project: '/p' }]);
+  });
+
+  it('keeps the held rows when the message has no session change', () => {
+    expect(mergeSseSummary({ tools: [], sessions: rows }, { tools: [] }).sessions).toBe(rows);
+  });
+
+  it('replaces the rows when a message carries the whole list', () => {
+    const out = mergeSseSummary({ tools: [], sessions: rows }, { tools: [], sessions: [{ session_id: 'z' }] });
+    expect(out.sessions).toEqual([{ session_id: 'z' }]);
+  });
+
+  it('does not overwrite the revision of the fetched snapshot', () => {
+    const out = mergeSseSummary({ tools: [], tools_rev: 'old' }, { tools: [], tools_rev: 'new' });
+    expect(out.tools_rev).toBe('old');
+  });
+
+  it('applySessionsDelta leaves its input alone', () => {
+    applySessionsDelta(rows, { upsert: [{ session_id: 'a', cpu_percent: 7 }], remove: [] });
+    expect(rows[0].cpu_percent).toBe(1);
   });
 });
 
