@@ -346,9 +346,9 @@ def reinstall(skip_ui):
     Use this after pulling changes or editing source code. Without it,
     the installed 'aictl' command runs stale copies from site-packages.
     """
+    import os
     import shutil
     import subprocess
-    import os
 
     root = _find_project_root()
     if root is None:
@@ -437,7 +437,6 @@ def _reinstall_detached_windows(install_cmd: list[str], root: Path) -> None:
     """
     import os
     import subprocess
-    import sys
     import tempfile
 
     quoted = " ".join(_batch_quote(arg) for arg in install_cmd)

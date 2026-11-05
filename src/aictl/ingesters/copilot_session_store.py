@@ -95,7 +95,7 @@ class CopilotSessionStoreIngester:
     def __init__(
         self,
         db_path: Path | str | None,
-        our_store: "HistoryDB",
+        our_store: HistoryDB,
         last_cursor: dict[str, int] | None = None,
     ) -> None:
         self.db_path = Path(db_path).expanduser() if db_path else default_db_path()
@@ -223,7 +223,7 @@ class CopilotSessionStoreIngester:
         # Do not even read text this store would not keep.
         keeps_text = getattr(self.store, "_keeps_text", lambda: True)() is True
         content_col = f'"{cols["content"]}"' if keeps_text else "''"
-        select_cols = [f"rowid AS _row_id", f'"{cols["role"]}" AS _role', f"{content_col} AS _content"]
+        select_cols = ["rowid AS _row_id", f'"{cols["role"]}" AS _role', f"{content_col} AS _content"]
         if cols["session"]:
             select_cols.append(f'"{cols["session"]}" AS _session')
         else:

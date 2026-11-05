@@ -53,7 +53,7 @@ def capture_mode() -> str:
             import tomli as tomllib  # type: ignore[no-redef]
         with open(path, "rb") as fh:
             data = tomllib.load(fh)
-    except Exception:
+    except (OSError, ValueError):  # unreadable or invalid TOML: assume text must stay hidden
         return "metadata"
     storage = data.get("storage")
     mode = storage.get("capture") if isinstance(storage, dict) else None

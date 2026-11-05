@@ -31,17 +31,19 @@ from ..ingesters.cursor_conversations import (
     POLL_INTERVAL_S as CURSOR_POLL_INTERVAL_S,
 )
 from ..ingesters.cursor_conversations import CursorConversationsIngester
+from ..ingesters.transcript_usage import (
+    POLL_INTERVAL_S as TRANSCRIPT_USAGE_POLL_INTERVAL_S,
+)
+from ..ingesters.transcript_usage import TranscriptUsageIngester
 from ..ingesters.vscode_chat_logs import (
     POLL_INTERVAL_S as VSCODE_CHAT_POLL_INTERVAL_S,
 )
 from ..ingesters.vscode_chat_logs import (
     VSCodeChatLogsIngester,
+)
+from ..ingesters.vscode_chat_logs import (
     default_log_dir as vscode_chat_default_log_dir,
 )
-from ..ingesters.transcript_usage import (
-    POLL_INTERVAL_S as TRANSCRIPT_USAGE_POLL_INTERVAL_S,
-)
-from ..ingesters.transcript_usage import TranscriptUsageIngester
 
 log = logging.getLogger(__name__)
 

@@ -26,9 +26,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .platforms import config_dir
 from .data.provenance import SOURCE_RANK, row_provenance, usage_provenance
 from .ingesters._common import project_key
+from .platforms import config_dir
 from .storage_migrations import CURRENT_VERSION as SCHEMA_VERSION
 from .storage_migrations import apply_pending as _apply_pending_migrations
 

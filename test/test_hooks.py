@@ -646,8 +646,6 @@ class TestHookHandler:
     def test_bad_port_falls_back_to_default(self, monkeypatch):
         """--port garbage must not raise ValueError inside the wrapper."""
         import io
-        import urllib.request
-        from unittest.mock import MagicMock
 
         from aictl.hook_handler import main
 
@@ -827,7 +825,6 @@ class TestHookHandlerAictlHookEnrichment:
 
     def test_stamps_pid_ppid_tid_source(self, monkeypatch):
         import io
-        from unittest.mock import MagicMock
 
         from aictl import hook_handler as hh
 

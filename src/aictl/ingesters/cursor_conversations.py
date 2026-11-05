@@ -71,7 +71,7 @@ class CursorConversationsIngester:
     def __init__(
         self,
         db_path: Path | str,
-        our_store: "HistoryDB",
+        our_store: HistoryDB,
         last_cursor: int = 0,
     ) -> None:
         self.db_path = Path(db_path).expanduser()
@@ -250,7 +250,7 @@ DEFAULT_DB_PATH = cursor_home_dir() / "conversations.db"
 
 
 def start_background_poller(
-    our_store: "HistoryDB",
+    our_store: HistoryDB,
     db_path: Path | str = DEFAULT_DB_PATH,
     interval: float = POLL_INTERVAL_S,
 ) -> threading.Thread | None:
