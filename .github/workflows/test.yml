@@ -1,0 +1,33 @@
+name: test
+
+on:
+  push:
+    branches: [main, revive-2026-11]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[all,test]"
+      - name: Unit tests
+        run: python -m pytest test/ -q --timeout=180
+      - name: End-to-end tests
+        run: python -m pytest test/e2e/ --override-ini="addopts=" -q --timeout=180
+      - name: Commands on an empty home
+        run: |
+          aictl --version
+          aictl ps
+          aictl ctx effective --search-path
+          aictl session list --limit 5
