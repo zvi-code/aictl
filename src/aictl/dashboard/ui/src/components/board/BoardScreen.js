@@ -273,7 +273,7 @@ export default function BoardScreen() {
   }, [loaded, loadFindings]);
 
   const toolIds = useMemo(() => data.options.tools.map(t => t.id), [data.options]);
-  const toolLabels = useMemo(() => Object.fromEntries(data.options.tools.map(t => [t.id, t.label || t.id])), [data.options]);
+  const toolLabels = useMemo(() => ({ ...(data.tool_labels || {}), ...Object.fromEntries(data.options.tools.map(t => [t.id, t.label || t.id])) }), [data.options, data.tool_labels]);
   const toolName = useCallback(id => toolLabels[id] || id || 'n/a', [toolLabels]);
   const findings = useMemo(() => {
     const list = buildFindings({ ...settingsRaw, tools });
