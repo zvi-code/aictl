@@ -27,8 +27,9 @@ import re
 import sqlite3
 import stat as stat_module
 import time
+from collections.abc import Iterable
 from pathlib import Path, PurePath, PureWindowsPath
-from typing import Any, Iterable
+from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from .. import platforms
@@ -897,16 +898,21 @@ def confine(rec: dict[str, Any], requested: str) -> Path:
         raise ArtifactRefused("this session has no files on disk", 404)
     if _is_denied(requested):
         raise ArtifactRefused("this file is never served", 403)
+    resolved_roots = [os.path.realpath(r) for r in roots]
     candidates: list[Path] = []
     as_path = Path(requested)
-    if as_path.is_absolute() or PureWindowsPath(requested).is_absolute():
+    windows_form = PureWindowsPath(requested)
+    if as_path.is_absolute() or windows_form.drive or windows_form.is_absolute():
+        # Settled from the text alone: touching a UNC path would open a network connection.
+        folded = _fold(requested)
+        if not any(folded == _fold(r) or _inside(folded, _fold(r)) for r in [*roots, *resolved_roots]):
+            raise ArtifactRefused("path is outside this session's folder", 403)
         candidates.append(as_path)
     else:
         folder = rec["folder"]
         for base in [folder, *roots, *[str(Path(r).parent) for r in roots]]:
             if base:
                 candidates.append(Path(base) / requested)
-    resolved_roots = [os.path.realpath(r) for r in roots]
     for candidate in candidates:
         try:
             exists = os.path.lexists(candidate)

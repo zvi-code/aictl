@@ -470,3 +470,36 @@ def test_cli_does_not_read_vscode_only_locations(world):
     _home, project, env = world
     write(project / ".github/prompts/a.prompt.md", "---\nmodel: gpt-6.1-terra\n---\n")
     assert effective_model(project, "copilot-cli", env=env, ps_output="")["limited"] == []
+
+
+def test_live_view_names_the_pin_its_file_and_a_conflict(world, monkeypatch):
+    from aictl.effective_config import annotate_models
+    from aictl.observe.render import ASCII, build_nodes, flatten
+
+    home, project, env = world
+    settings(home, model="model-a")
+    agent(project, "worker", "model: model-b")
+    monkeypatch.chdir(project)
+    empty = {"sessions": [], "unattributed_processes": [], "notes": [], "rss_bytes": 0, "state": "running"}
+    doc = {
+        "notes": [],
+        "tools": [
+            {"tool": "copilot-cli", "label": "CLI", **empty},
+            {"tool": "claude-code", "label": "Other", **empty},
+        ],
+    }
+    annotate_models(doc, env=env)
+    pin = doc["tools"][0]["model_in_force"]
+    assert pin["value"] == "model-a" and pin["line"] > 0 and pin["in_project"] is False
+    assert "model_in_force" not in doc["tools"][1]
+    text = "\n".join(line for line, _ in flatten(build_nodes(doc), ASCII))
+    assert f"model pinned model-a  {home / 'settings.json'}:" in text
+    assert "not in this project, still in effect" in text
+    assert "CONFLICT model-b requested at" in text
+
+
+def test_vscode_setting_pin_says_what_it_is_limited_to(world, tmp_path, monkeypatch):
+    home, project, env = world
+    write(project / ".vscode" / "settings.json", json.dumps({"inlineChat.defaultModel": "Some Model (copilot)"}))
+    rows = effective_model(project, "copilot-vscode", env=env)["limited"]
+    assert [r["applies"] for r in rows if r["setting"] == "inlineChat.defaultModel"] == ["inlineChat"]

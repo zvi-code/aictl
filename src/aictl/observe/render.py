@@ -156,8 +156,24 @@ def _summary(s: dict[str, Any]) -> str:
     )
 
 
+def _model_nodes(pin: dict[str, Any] | None) -> list[Node]:
+    """The pinned model, its file and line, and any request it contradicts."""
+    if not pin or not (pin["value"] or pin["narrower_pins"] or pin["conflicts"]):
+        return []
+    where = f"{pin['source']}:{pin['line']}" if pin["line"] else pin["source"]
+    text = f"model pinned {pin['value']}  {where}" if pin["value"] else "no model pin for the whole tool"
+    if pin["value"] and not pin["in_project"]:
+        text += "  (not in this project, still in effect)"
+    if pin["narrower_pins"]:
+        text += f"  +{pin['narrower_pins']} narrower"
+    out = [Node(text)]
+    for c in pin["conflicts"]:
+        out.append(Node(f"CONFLICT {', '.join(c['requested'])} requested at {c['requested_at']}, {c['pinned']} is pinned"))
+    return out
+
+
 def _detail_nodes(s: dict[str, Any]) -> list[Node]:
-    out: list[Node] = []
+    out: list[Node] = _model_nodes(s.get("model_in_force"))
     if s.get("folder"):
         out.append(Node(f"folder {s['folder']} ({s.get('artifact_count', 0)} files, {fmt_bytes(s.get('artifact_bytes'))})"))
     ctx = s["memory"]["context"]
@@ -208,7 +224,7 @@ def build_nodes(doc: dict[str, Any], expanded: set[str] | None = None, full: boo
     """Tool -> session -> agents -> processes. ``expanded`` adds detail to the named sessions."""
     out = []
     for t in doc["tools"]:
-        children = []
+        children = _model_nodes(t.get("model_in_force"))
         for s in t["sessions"]:
             title = f"  {s['title']}" if s["title"] else ""
             where = f"  {s['cwd']}" + (f" ({s['branch']})" if s["branch"] else "") if s["cwd"] else ""

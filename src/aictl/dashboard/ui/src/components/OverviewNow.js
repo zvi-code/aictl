@@ -127,7 +127,31 @@ export function StorageRow({ selfStatus }) {
   </div>`;
 }
 
+export function ModelPinsRows({ models }) {
+  const pinned = Object.values(models && !models.error ? models : {}).filter(row => row.value || row.conflicts?.length);
+  if (!pinned.length) return null;
+  // Tools that share one settings file show as one row.
+  const groups = new Map();
+  for (const row of pinned) {
+    const key = JSON.stringify([row.value, row.source, row.line, row.conflicts]);
+    if (groups.has(key)) groups.get(key).labels.push(toolLabel(row.tool));
+    else groups.set(key, { ...row, labels: [toolLabel(row.tool)] });
+  }
+  return html`<div class="now-models" data-testid="now-models">
+    ${[...groups.values()].map(row => html`<div key=${row.tool} class="now-models__row">
+      <span>${row.labels.join(', ')} model <strong>${row.value || 'no pin'}</strong></span>
+      ${row.source && html`<span class="now-models__source" title=${row.why_in_effect}>
+        ${row.line ? `${row.source}:${row.line}` : row.source}${row.in_project ? '' : ' (not in this project, still in effect)'}
+      </span>`}
+      ${(row.conflicts || []).map(c => html`<span key=${c.requested_at} class="now-models__conflict" data-testid="now-model-conflict">
+        Conflict: ${c.requested.join(', ')} requested at ${c.requested_at}, ${c.pinned} is pinned
+      </span>`)}
+    </div>`)}
+  </div>`;
+}
+
 function HealthPanel({ snap, connected, otelActive, alerts, selfStatus, onOpenTab }) {
+  const models = usePolledResource(() => api.getEffectiveModels(), [], { pollMs: 60000 });
   const hooks = usePolledResource(() => api.getHooksStatus(), [], { pollMs: 60000 });
   const quality = usePolledResource(() => api.getDataQuality(), [], { pollMs: 60000 });
   const hidden = usePolledResource(loadHiddenContextSummary, [], { pollMs: 60000 });
@@ -150,6 +174,7 @@ function HealthPanel({ snap, connected, otelActive, alerts, selfStatus, onOpenTa
       <span class="now-panel__sub">${errors} error${errors === 1 ? '' : 's'}, ${warns} warning${warns === 1 ? '' : 's'}</span>
     </header>
     <${StorageRow} selfStatus=${selfStatus}/>
+    <${ModelPinsRows} models=${models.data}/>
     ${hooks.error && !hooks.data && html`<${PanelState} status="error" error=${hooks.error}
       onRetry=${hooks.reload} label="hook status"/>`}
     ${issues.length === 0 && !loading && !hooks.error

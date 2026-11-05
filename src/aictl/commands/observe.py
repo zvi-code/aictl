@@ -38,6 +38,9 @@ def ps(target, tool, include_ended, as_json):
         from ..observe.sessions import annotate_observed
 
         annotate_observed(doc)
+    from ..effective_config import annotate_models
+
+    annotate_models(doc, full=bool(target))
     if as_json:
         click.echo(json.dumps(doc, indent=2))
         return
