@@ -12,6 +12,14 @@ const SEVERITY_COLORS = { error: 'var(--red)', warning: 'var(--orange)' };
 const DATA_QUALITY_LIMIT = 20;
 
 
+// Hover text that splits a self figure into the daemon and each child process.
+function selfUsageTitle(self, key, fmt) {
+  const daemonKey = key === 'cpu_percent' ? 'daemon_cpu_percent' : 'daemon_' + key;
+  const parts = ['daemon ' + fmt(self[daemonKey] || 0)];
+  for (const c of self.children || []) parts.push(c.name + ' (' + c.pid + ') ' + fmt(c[key] || 0));
+  return parts.join(' + ');
+}
+
 export default function CollectorHealth() {
   const { snap: s } = useContext(SnapContext);
   const [otel, setOtel] = useState(null);
@@ -109,11 +117,11 @@ export default function CollectorHealth() {
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:var(--sp-2)">
         <div class="metric-chip">
           <div class="metric-chip-label text-muted">CPU</div>
-          <div class="metric-chip-value">${fmtPct(selfStatus.cpu_percent || 0)}</div>
+          <div class="metric-chip-value" title=${selfUsageTitle(selfStatus, 'cpu_percent', fmtPct)}>${fmtPct(selfStatus.cpu_percent || 0)}</div>
         </div>
         <div class="metric-chip">
           <div class="metric-chip-label text-muted">Memory (RSS)</div>
-          <div class="metric-chip-value">${fmtSz(selfStatus.memory_rss_bytes || 0)}</div>
+          <div class="metric-chip-value" title=${selfUsageTitle(selfStatus, 'memory_rss_bytes', fmtSz)}>${fmtSz(selfStatus.memory_rss_bytes || 0)}</div>
         </div>
         <div class="metric-chip">
           <div class="metric-chip-label text-muted">DB Size</div>

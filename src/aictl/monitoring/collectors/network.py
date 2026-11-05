@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -142,6 +143,10 @@ class PsutilFallbackNetworkCollector(NetworkCollector):
 
 _PROCESS_RE = re.compile(r"^(?P<name>.+)\.(?P<pid>\d+)$")
 
+NETTOP_TIMEOUT_S = 20.0
+MIN_WAIT_S = 1.0
+FAILURE_BACKOFF_S = 30.0
+
 
 class MacOSNetworkCollector(NetworkCollector):
     """Use `nettop` CSV output as the macOS network adapter."""
@@ -156,6 +161,40 @@ class MacOSNetworkCollector(NetworkCollector):
     @staticmethod
     def is_supported() -> bool:
         return shutil.which("nettop") is not None
+
+    def _sample_once(self, previous: dict[int, tuple[int, int]]) -> list[NetSample]:
+        """Run one ``nettop`` snapshot and return the per-process deltas."""
+        result = subprocess.run(
+            # One snapshot, then exit. Never a long-lived form (-L N with -s).
+            ["nettop", "-P", "-L", "1", "-n"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=NETTOP_TIMEOUT_S,
+            check=True,
+        )
+        samples = []
+        for line in result.stdout.splitlines():
+            sample = parse_nettop_line(line.strip(), previous)
+            if sample is not None:
+                samples.append(sample)
+        return samples
+
+    def _read_loop(self, stop_event: threading.Event, previous: dict[int, tuple[int, int]], emit) -> None:
+        """Sample once per paced interval; back off after a failure."""
+        while not stop_event.is_set():
+            started = time.monotonic()
+            failed = False
+            try:
+                for sample in self._sample_once(previous):
+                    emit(sample)
+            except Exception as exc:
+                failed = True
+                log.warning("nettop reader error: %s", exc)
+            wait = max(MIN_WAIT_S, self.interval * PACE.factor() - (time.monotonic() - started))
+            if failed:
+                wait = max(wait, FAILURE_BACKOFF_S)
+            stop_event.wait(wait)
 
     async def run(self) -> None:
         if not self.is_supported():
@@ -172,51 +211,25 @@ class MacOSNetworkCollector(NetworkCollector):
             detail="Streaming per-process network samples via nettop",
         )
 
-        # nettop block-buffers when stdout is not a tty. asyncio PIPE
-        # never receives data. Work around: run Popen in a thread, push
-        # parsed samples into a thread-safe queue, drain from async side.
-        #
-        # nettop -L N exits after N snapshots (~N seconds). We restart it
-        # in a loop to get continuous monitoring. Between restarts, the
-        # `previous` dict is preserved so we maintain delta baselines.
+        # Each sample is a one-shot ``nettop -L 1``: no nettop process lives
+        # between samples. A long-lived ``nettop -s N`` spins a CPU core while
+        # it waits when its stdin is not an open terminal or pipe, which is
+        # the case for a daemon. ``previous`` keeps the delta baselines, so
+        # totals stay exact at any sample spacing.
         loop = asyncio.get_running_loop()
         stop_event = threading.Event()
         queue: asyncio.Queue = asyncio.Queue()
         previous: dict[int, tuple[int, int]] = {}
 
-        def _reader():
-            """Sync thread: run nettop repeatedly, push samples to queue."""
-            while not stop_event.is_set():
-                try:
-                    proc = subprocess.Popen(
-                        # Deltas survive a restart through ``previous``, so
-                        # totals stay exact at any sample spacing.
-                        ["nettop", "-P", "-L", "3", "-n", "-s", str(max(1, round(self.interval * PACE.factor())))],
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        bufsize=1,
-                    )
-                    for line in proc.stdout:
-                        if stop_event.is_set():
-                            break
-                        sample = parse_nettop_line(line.strip(), previous)
-                        if sample is not None:
-                            try:
-                                loop.call_soon_threadsafe(queue.put_nowait, sample)
-                            except (asyncio.QueueFull, RuntimeError):
-                                pass
-                    proc.terminate()
-                    proc.wait()
-                except Exception as exc:
-                    log.warning("nettop reader error: %s", exc)
-                # Brief pause between restarts (nettop already took ~6s)
-                stop_event.wait(0.5)
-            # Signal done
+        def _emit(sample: NetSample | None) -> None:
             try:
-                loop.call_soon_threadsafe(queue.put_nowait, None)
-            except RuntimeError:
+                loop.call_soon_threadsafe(queue.put_nowait, sample)
+            except (asyncio.QueueFull, RuntimeError):
                 pass
+
+        def _reader():
+            self._read_loop(stop_event, previous, _emit)
+            _emit(None)
 
         reader_thread = threading.Thread(target=_reader, daemon=True)
         reader_thread.start()
