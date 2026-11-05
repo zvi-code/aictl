@@ -34,7 +34,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -50,7 +50,6 @@ BACKFILL_DAYS = 30
 # A session idle this long gets ended_at = its last activity; a transcript has
 # no explicit end event, and an open row would show as live forever.
 IDLE_END_S = 900.0
-_CHUNK = 1 << 20
 
 
 def local_day(ts: float) -> str:
@@ -566,29 +565,6 @@ class CopilotAccumulator:
 # ── Whole-tree scan, and the periodic ingester ─────────────────────────
 
 
-def _read_new_lines(path: Path, offset: int) -> tuple[list[dict], int]:
-    """Parse complete lines after *offset*; a half-written last line waits."""
-    out: list[dict] = []
-    with open(path, "rb") as fh:
-        fh.seek(offset)
-        buf = b""
-        while chunk := fh.read(_CHUNK):
-            buf += chunk
-            nl = buf.rfind(b"\n")
-            if nl < 0:
-                continue
-            complete, buf = buf[: nl + 1], buf[nl + 1 :]
-            offset += len(complete)
-            for line in complete.splitlines():
-                try:
-                    obj = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(obj, dict):
-                    out.append(obj)
-    return out, offset
-
-
 class TranscriptUsageIngester:
     """Tails the three transcript stores and writes one row per session.
 
@@ -647,15 +623,29 @@ class TranscriptUsageIngester:
         touched: dict[str, SessionUsage] = {}
         errors = 0
 
-        def read(path: Path) -> list[dict]:
+        def read(path: Path) -> Iterator[dict]:
+            """Yield parsed lines after the file's offset, one at a time: holding
+            a whole transcript in memory cost 570 MB on the first poll. A
+            half-written last line stays unread until it ends with a newline."""
             nonlocal errors
+            offset = self._offsets.get(path, 0)
             try:
-                lines, self._offsets[path] = _read_new_lines(path, self._offsets.get(path, 0))
-                return lines
+                with open(path, "rb") as fh:
+                    fh.seek(offset)
+                    for line in fh:
+                        if not line.endswith(b"\n"):
+                            break
+                        offset += len(line)
+                        self._offsets[path] = offset
+                        try:
+                            obj = json.loads(line)
+                        except ValueError:
+                            continue
+                        if isinstance(obj, dict):
+                            yield obj
             except OSError as exc:
                 errors += 1
                 log.debug("transcript-usage: cannot read %s: %s", path.name, exc)
-                return []
 
         for path in self._changed(iter_claude_files(self.claude_projects), cutoff):
             sid = _claude_session_id(path)
