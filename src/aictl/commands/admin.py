@@ -333,9 +333,72 @@ def build_ui():
     click.echo(f"Assets located in: {dist_dir}")
 
 
+def _is_index_url(value: str) -> bool:
+    """True for a URL a package installer can use as its index."""
+    from urllib.parse import urlsplit
+
+    try:
+        return urlsplit(value).scheme in ("http", "https", "file")
+    except ValueError:
+        return False
+
+
+def _pip_configured_index() -> str | None:
+    """The index pip is set up to use: ``PIP_INDEX_URL``, then pip's own config files."""
+    import os
+    import shutil
+    import subprocess
+
+    from_env = os.environ.get("PIP_INDEX_URL")
+    if from_env:
+        return from_env
+    pip = shutil.which("pip3") or shutil.which("pip")
+    if not pip:
+        return None
+    try:
+        proc = subprocess.run([pip, "config", "list"], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    # Lines look like: global.index-url='https://packages.example/simple'
+    for line in str(proc.stdout or "").splitlines():
+        key, _, value = line.partition("=")
+        value = value.strip().strip("'\"")
+        if key.strip().endswith(".index-url") and _is_index_url(value):
+            return value
+    return None
+
+
+def _install_env(index_url: str | None) -> dict[str, str]:
+    """Environment for the install, so packages come from the same place under pip and uv.
+
+    pipx may create environments with uv, and uv ignores ``pip.ini`` and ``PIP_INDEX_URL``,
+    so a machine set up only for pip would otherwise download from PyPI. The URL goes
+    through the environment because it can hold credentials: it must not reach a command
+    line or the batch file used on Windows.
+    """
+    import os
+
+    env = {**os.environ, "UV_VENV_CLEAR": "1"}
+    if index_url:
+        env["PIP_INDEX_URL"] = index_url
+        env["UV_DEFAULT_INDEX"] = index_url
+        env.pop("UV_INDEX_URL", None)
+    elif not (env.get("UV_DEFAULT_INDEX") or env.get("UV_INDEX_URL")):
+        configured = _pip_configured_index()
+        if configured:
+            env["UV_DEFAULT_INDEX"] = configured
+    return env
+
+
 @click.command("reinstall")
 @click.option("--skip-ui", is_flag=True, help="Skip dashboard UI build")
-def reinstall(skip_ui):
+@click.option(
+    "--index-url",
+    envvar="AICTL_INDEX_URL",
+    default=None,
+    help="Install Python packages only from this index (http, https or file URL). Also skips the npm UI build.",
+)
+def reinstall(skip_ui, index_url):
     """Rebuild and reinstall aictl so code changes take effect.
 
     \b
@@ -346,9 +409,12 @@ def reinstall(skip_ui):
     Use this after pulling changes or editing source code. Without it,
     the installed 'aictl' command runs stale copies from site-packages.
     """
-    import os
     import shutil
     import subprocess
+    from urllib.parse import urlsplit
+
+    if index_url and not _is_index_url(index_url):
+        raise click.BadParameter("must be an http, https or file URL", param_hint="--index-url")
 
     root = _find_project_root()
     if root is None:
@@ -356,7 +422,10 @@ def reinstall(skip_ui):
     ui_dir = _find_package_dir(root) / "dashboard" / "ui"
 
     # ── Step 1: UI build ────────────────────────────────────────────────────
-    if skip_ui:
+    if index_url:
+        click.echo(f"→ Python packages come only from {urlsplit(index_url).hostname or 'a local index'}")
+        click.echo("⏭  Skipping UI build, which would use npm's registry. The packaged dashboard stays in place.")
+    elif skip_ui:
         click.echo("⏭  Skipping UI build (--skip-ui)")
     elif not ui_dir.is_dir():
         click.echo("⏭  UI source not found, skipping")
@@ -389,13 +458,12 @@ def reinstall(skip_ui):
         # locked, so an in-process pip/pipx reinstall fails with WinError 32 and
         # leaves the environment half-uninstalled. Hand the install off to a new
         # console that waits for THIS process to exit before replacing the exe.
-        _reinstall_detached_windows(install_cmd, root)
+        _reinstall_detached_windows(install_cmd, root, _install_env(index_url))
         return
 
     click.echo(f"→ Reinstalling via {installer_label} from {root}...")
     try:
-        env = {**os.environ, "UV_VENV_CLEAR": "1"}
-        subprocess.run(install_cmd, check=True, env=env)
+        subprocess.run(install_cmd, check=True, env=_install_env(index_url))
         click.secho("✅ aictl reinstalled", fg="green", bold=True)
     except subprocess.CalledProcessError as exc:
         raise click.ClickException(f"reinstall failed: {exc}")
@@ -426,7 +494,7 @@ def _batch_quote(arg: str) -> str:
     return '"' + arg.replace("%", "%%") + '"'
 
 
-def _reinstall_detached_windows(install_cmd: list[str], root: Path) -> None:
+def _reinstall_detached_windows(install_cmd: list[str], root: Path, env: dict[str, str] | None = None) -> None:
     """Relaunch the Python reinstall in a new console that waits for this
     process to exit first.
 
@@ -502,6 +570,7 @@ def _reinstall_detached_windows(install_cmd: list[str], root: Path) -> None:
         ["cmd", "/c", bat_path],
         creationflags=CREATE_NEW_CONSOLE,
         close_fds=True,
+        env=env,
     )
     click.secho("→ Reinstall launched in a new window.", fg="green", bold=True)
     click.echo("  This window's aictl is exiting so its executable can be replaced.")

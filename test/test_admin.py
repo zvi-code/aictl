@@ -415,6 +415,7 @@ class TestReinstall:
             patch("shutil.which", return_value=None) as mock_which,
             patch("subprocess.run") as mock_run,
             patch("aictl.commands.admin._reinstall_detached_windows") as mock_detached,
+            patch("aictl.commands.admin._pip_configured_index", return_value=None),
         ):
             # which: pipx -> None, pip3 -> pip path
             mock_which.side_effect = lambda cmd: "C:\\Py\\Scripts\\pip.exe" if cmd in ("pip3", "pip") else None
@@ -512,3 +513,87 @@ class TestCatalog:
             result = runner.invoke(catalog, ["sync"])
         assert result.exit_code == 0
         assert "42" in result.output
+
+
+
+class TestReinstallPackageSource:
+    """pip and uv read different settings, so one source must reach both."""
+
+    def _run(self, runner, tmp_path, monkeypatch, args=(), env=None, pip_config=None):
+        for key in ("PIP_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX_URL", "AICTL_INDEX_URL"):
+            monkeypatch.delenv(key, raising=False)
+        for key, value in (env or {}).items():
+            monkeypatch.setenv(key, value)
+        (tmp_path / "src" / "aictl" / "dashboard" / "ui").mkdir(parents=True)
+
+        def fake_run(cmd, **kwargs):
+            if cmd[1:3] == ["config", "list"]:
+                return MagicMock(returncode=0, stdout=f"global.index-url='{pip_config}'\n" if pip_config else "")
+            return MagicMock(returncode=0)
+
+        with (
+            patch("aictl.commands.admin._find_project_root", return_value=tmp_path),
+            patch("aictl.commands.admin._find_package_dir", return_value=tmp_path / "src" / "aictl"),
+            patch("aictl.commands.admin._IS_WINDOWS", False),
+            patch("shutil.which", return_value="/usr/bin/tool"),
+            patch("subprocess.run", side_effect=fake_run) as mock_run,
+        ):
+            result = runner.invoke(reinstall, list(args))
+        installs = [c for c in mock_run.call_args_list if "install" in c.args[0]]
+        return result, installs, mock_run
+
+    def test_supplied_url_reaches_pip_and_uv_and_stays_private(self, runner, tmp_path, monkeypatch):
+        url = "https://me:s3cret@feed.example/simple"
+        result, installs, _ = self._run(runner, tmp_path, monkeypatch, ["--skip-ui", "--index-url", url], {"UV_INDEX_URL": "https://old"})
+        assert result.exit_code == 0
+        env = installs[-1].kwargs["env"]
+        assert env["PIP_INDEX_URL"] == url and env["UV_DEFAULT_INDEX"] == url
+        assert "UV_INDEX_URL" not in env
+        assert "s3cret" not in result.output and "s3cret" not in " ".join(installs[-1].args[0])
+
+    def test_supplied_url_never_runs_npm(self, runner, tmp_path, monkeypatch):
+        _, _, mock_run = self._run(runner, tmp_path, monkeypatch, ["--index-url", "https://feed.example/simple"])
+        assert not any("npm" in str(c.args[0]) or "run" in c.args[0] for c in mock_run.call_args_list)
+
+    def test_url_can_come_from_the_environment(self, runner, tmp_path, monkeypatch):
+        _, installs, _ = self._run(runner, tmp_path, monkeypatch, ["--skip-ui"], {"AICTL_INDEX_URL": "https://feed.example/simple"})
+        assert installs[-1].kwargs["env"]["UV_DEFAULT_INDEX"] == "https://feed.example/simple"
+
+    def test_pip_environment_setting_is_copied_for_uv(self, runner, tmp_path, monkeypatch):
+        _, installs, _ = self._run(runner, tmp_path, monkeypatch, ["--skip-ui"], {"PIP_INDEX_URL": "https://feed.example/simple"})
+        assert installs[-1].kwargs["env"]["UV_DEFAULT_INDEX"] == "https://feed.example/simple"
+
+    def test_pip_config_file_setting_is_copied_for_uv(self, runner, tmp_path, monkeypatch):
+        _, installs, _ = self._run(runner, tmp_path, monkeypatch, ["--skip-ui"], pip_config="https://feed.example/simple")
+        assert installs[-1].kwargs["env"]["UV_DEFAULT_INDEX"] == "https://feed.example/simple"
+
+    def test_uv_settings_of_its_own_are_left_alone(self, runner, tmp_path, monkeypatch):
+        _, installs, _ = self._run(runner, tmp_path, monkeypatch, ["--skip-ui"], {"UV_DEFAULT_INDEX": "https://uv.example/simple"}, pip_config="https://pip.example/simple")
+        assert installs[-1].kwargs["env"]["UV_DEFAULT_INDEX"] == "https://uv.example/simple"
+
+    def test_nothing_configured_adds_nothing(self, runner, tmp_path, monkeypatch):
+        _, installs, _ = self._run(runner, tmp_path, monkeypatch, ["--skip-ui"])
+        assert "UV_DEFAULT_INDEX" not in installs[-1].kwargs["env"]
+
+    @pytest.mark.parametrize("bad", ["feed.example/simple", "C:\\\\wheels", "ftp://feed.example"])
+    def test_other_values_are_refused(self, runner, tmp_path, monkeypatch, bad):
+        result, installs, _ = self._run(runner, tmp_path, monkeypatch, ["--skip-ui", "--index-url", bad])
+        assert result.exit_code != 0 and not installs
+
+    def test_windows_batch_file_never_holds_the_url(self, runner, tmp_path, monkeypatch):
+        monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+        monkeypatch.delenv("UV_DEFAULT_INDEX", raising=False)
+        url = "https://me:s3cret@feed.example/simple"
+        with (
+            patch("aictl.commands.admin._find_project_root", return_value=tmp_path),
+            patch("aictl.commands.admin._IS_WINDOWS", True),
+            patch("shutil.which", return_value="C:\\px\\pipx.exe"),
+            patch("subprocess.Popen") as popen,
+            patch("os._exit"),
+            patch("subprocess.CREATE_NEW_CONSOLE", 16, create=True),
+        ):
+            result = runner.invoke(reinstall, ["--skip-ui", "--index-url", url])
+        assert result.exit_code == 0
+        assert popen.call_args.kwargs["env"]["UV_DEFAULT_INDEX"] == url
+        batch = next(tmp_path.glob("aictl-reinstall-*.bat")).read_bytes()
+        assert b"s3cret" not in batch and b"feed.example" not in batch

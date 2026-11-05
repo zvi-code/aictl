@@ -163,6 +163,39 @@ python -m pipx ensurepath
 pip install --user pipx && pipx ensurepath
 ```
 
+### Install from a private package index
+
+`pip` and `uv` read different settings. pipx uses `uv` when it is on `PATH`, and `uv` ignores `pip.ini`, `pip.conf`
+and `PIP_INDEX_URL`, so an install can reach PyPI even though `pip` is set up for a private index. Check first:
+
+```bash
+python -m pip config list
+```
+
+To keep pipx on pip, set `PIPX_DEFAULT_BACKEND=pip`, which needs pipx 1.12 or later. It changes pipx only, not `uv`.
+An environment already made with `uv` has to be removed first:
+
+```powershell
+[Environment]::SetEnvironmentVariable("PIPX_DEFAULT_BACKEND", "pip", "User")
+$env:PIPX_DEFAULT_BACKEND = "pip"
+pipx uninstall aictl
+pipx install -e ".[all]"
+```
+
+`--backend pip` on one command is not enough: a later `pipx install --force` without it still runs `uv` to read the
+package name, even for an environment made with pip.
+
+After that, name the source when you update:
+
+```bash
+aictl reinstall --index-url https://packages.example/simple
+```
+
+`--index-url`, or `AICTL_INDEX_URL`, applies to both `pip` and `uv`. The URL is not printed or written to a file, so
+it can hold credentials, and the npm UI build is skipped because the package already includes the dashboard. With no
+URL, `aictl reinstall` copies `pip`'s configured index for `uv`, unless `UV_DEFAULT_INDEX` or `UV_INDEX_URL` is set.
+`make install`, `aictl build-ui` and an install from the Git URL do not do any of this.
+
 ### Optional extras
 
 The web dashboard (`aictl daemon serve`) works with zero extra dependencies. For the TUI and process detection:
@@ -695,6 +728,7 @@ Details: [how-to](docs/how-to.md#find-a-copilot-session-and-its-files).
 | `aictl build-ui` | Build the dashboard frontend (npm install + Vite build) |
 | `aictl reinstall` | Rebuild UI + reinstall Python package so code changes take effect |
 | `aictl reinstall --skip-ui` | Reinstall Python package only (faster, skips npm build) |
+| `aictl reinstall --index-url URL` | Reinstall using only this Python package index, under `pip` and `uv` |
 
 ### Watching agents: `aictl ps` and `aictl top`
 
@@ -949,6 +983,17 @@ python -m pipx ensurepath
 pipx inject aictl textual
 # or reinstall with all extras:
 pipx install --force ".[all]"
+```
+
+**`A virtual environment already exists` from `pipx install --force`**
+
+Recent pipx creates environments with `uv` when `uv` is on `PATH`, and recent `uv` will not replace one unless
+told to. pipx has no `--clear` flag. Setting `UV_VENV_CLEAR=1` gets past the error, but check where packages will
+come from first: see [Install from a private package index](#install-from-a-private-package-index). Or reinstall with pip:
+
+```powershell
+pipx uninstall aictl
+pipx install -e ".[all]" --backend pip
 ```
 
 **`pipx install` silently skips (already installed)**
