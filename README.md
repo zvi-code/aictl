@@ -833,7 +833,7 @@ make test-docker   # Docker fresh-install integration gate
 make test-all      # everything above
 ```
 
-The Makefile uses `.venv/bin/python` when the repo virtualenv exists; override with `make PYTHON=/path/to/python test` for another environment.
+The Makefile uses the pipx venv interpreter (`~/.local/pipx/venvs/aictl/bin/python`), the one environment `make install` sets up; override with `make PYTHON=/path/to/python test` for another environment.
 
 ### Reproducing the observability and control checks
 
@@ -842,14 +842,14 @@ Use this sequence after changing storage, hook ingestion, local-store ingesters,
 ```bash
 # Sanity checks before launching longer commands
 pwd
-.venv/bin/python -m pytest --version
-.venv/bin/python -c "import aictl; from aictl.storage import SCHEMA_VERSION; print(aictl.__file__, SCHEMA_VERSION)"
+~/.local/pipx/venvs/aictl/bin/python -m pytest --version
+~/.local/pipx/venvs/aictl/bin/python -c "import aictl; from aictl.storage import SCHEMA_VERSION; print(aictl.__file__, SCHEMA_VERSION)"
 command -v docker && docker info --format '{{.ServerVersion}}'
 command -v claude && claude --version
 command -v copilot && copilot --help >/dev/null
 
 # Fast local regression pass for the observability/control substrates
-.venv/bin/python -m pytest \
+~/.local/pipx/venvs/aictl/bin/python -m pytest \
   test/test_storage.py \
   test/test_api_endpoints.py \
   test/test_copilot_session_store_ingester.py \
@@ -881,7 +881,7 @@ Success means all commands exit 0 and these behaviors are specifically covered:
 Optional real Claude Code check, pinned to the full Haiku model id by default:
 
 ```bash
-AICTL_CLAUDE_MODEL=claude-haiku-4-5 .venv/bin/python -m pytest test/e2e_tools/test_claude_e2e.py -v --timeout=180
+AICTL_CLAUDE_MODEL=claude-haiku-4-5 ~/.local/pipx/venvs/aictl/bin/python -m pytest test/e2e_tools/test_claude_e2e.py -v --timeout=180
 ```
 
 Docker real-tool check, when `CLAUDE_CODE_OAUTH_TOKEN` is available:
@@ -904,8 +904,8 @@ The first Copilot command is a command-path check; the second is a manual real-s
 
 ```bash
 make test                                       # full unit suite
-.venv/bin/python -m pytest test/test_dashboard.py -v  # specific module
-.venv/bin/python test/run.py                         # legacy integration tests (deploy, import, scan)
+~/.local/pipx/venvs/aictl/bin/python -m pytest test/test_dashboard.py -v  # specific module
+~/.local/pipx/venvs/aictl/bin/python test/run.py                         # legacy integration tests (deploy, import, scan)
 ```
 
 Coverage includes:
@@ -924,7 +924,7 @@ Starts a real `aictl daemon serve` on a random port and posts synthetic hook/OTe
 ```bash
 make test-e2e
 # or directly:
-.venv/bin/python -m pytest test/e2e/ -v --timeout=120
+~/.local/pipx/venvs/aictl/bin/python -m pytest test/e2e/ -v --timeout=120
 ```
 
 Tests cover:
@@ -940,7 +940,7 @@ Runs actual AI tool CLIs in non-interactive mode and verifies hooks fire back to
 ```bash
 make test-tools
 # or directly:
-.venv/bin/python -m pytest test/e2e_tools/ -v --timeout=180
+~/.local/pipx/venvs/aictl/bin/python -m pytest test/e2e_tools/ -v --timeout=180
 ```
 
 **Requirements:** Claude Code (`claude`) and/or Gemini CLI (`gemini`) installed and authenticated. Tests that need a missing tool are automatically skipped.
