@@ -31,7 +31,6 @@ import json
 import ntpath
 import os
 import re
-import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -40,6 +39,7 @@ from .context_audit import (
     COPILOT_SESSIONS_SCANNED,
     Finding,
     _copilot_home,
+    _file_facts,
     _path_key,
     _persistent_env,
     _read_json,
@@ -48,7 +48,7 @@ from .context_audit import (
     _registry_values,
 )
 from .data.model_pricing import MODEL_PRICING, normalize_model_id, resolve_pricing
-from .platforms import vscode_insiders_user_dir, vscode_user_dir
+from .platforms import IS_WINDOWS, vscode_insiders_user_dir, vscode_user_dir
 
 COPILOT_TOOLS = ("copilot-cli", "copilot-desktop", "copilot-vscode")
 MAX_FRONTMATTER_LINES = 200
@@ -275,7 +275,7 @@ def _glob_files(patterns: list[str]) -> list[str]:
 
 def _vscode_user_trees(env: dict[str, str]) -> list[Path]:
     trees = [vscode_user_dir(), vscode_insiders_user_dir()]
-    if sys.platform == "win32":
+    if IS_WINDOWS:
         trees += [Path(row["expanded"]).parents[0] for row in windows_locations(env) if row["id"].endswith("msix-vscode-settings") or row["id"] == "vscode-portable-settings"]
     return trees
 
@@ -483,6 +483,12 @@ def _pin_row(pin: ModelPin) -> dict:
     return asdict(pin)
 
 
+def _models_in(path: str) -> dict:
+    """Model facts for one file, through the audit's cache, so an unchanged file is not read again."""
+    facts = _file_facts(Path(path), config=False)
+    return (facts or {}).get("text_models") or {"frontmatter": [], "line": 0, "requests": []}
+
+
 def _collect_model(tool: str, project: Path, env: dict[str, str], ps_output: str | None) -> dict:
     home = _copilot_home(env)
     session: list[ModelPin] = []
@@ -511,18 +517,18 @@ def _collect_model(tool: str, project: Path, env: dict[str, str], ps_output: str
 
     requests: list[dict] = []
     for path, kind, scope in _conditional_files(tool, project, env):
-        text = _read_text(Path(path))
-        values, line = frontmatter_model(text)
+        facts = _models_in(path)
+        values, line = facts["frontmatter"], facts["line"]
         inside = _in_project(path, project)
         name = Path(path).name.split(".")[0]
         if values:
             limited.append(ModelPin(tool, "model", values[0], kind, path, line, 5, inside, why_in_effect(tool, scope, inside, path), True, "Custom agent and prompt file references.", f"{kind.split('-')[0]}:{name}", values))
             requests.append({"kind": kind, "name": name, "value": values[0], "values": values, "path": path, "line": line, "in_project": inside})
-        for value, number in instruction_requests(text):
+        for value, number in facts["requests"]:
             requests.append({"kind": "instruction", "name": name, "value": value, "values": [value], "path": path, "line": number, "in_project": inside})
     for path in _instruction_files(project, env):
         inside = _in_project(path, project)
-        for value, number in instruction_requests(_read_text(Path(path))):
+        for value, number in _models_in(path)["requests"]:
             requests.append({"kind": "instruction", "name": Path(path).name, "value": value, "values": [value], "path": path, "line": number, "in_project": inside})
 
     session.sort(key=lambda p: p.rank)
@@ -607,7 +613,8 @@ def _model_findings_for(tool: str, eff: dict, sessions: list[SessionFacts]) -> l
             out.append(
                 Finding(
                     rule="model.outside-project",
-                    severity="medium",
+                    # A variable in this shell ends with the shell. A profile, a registry key or a file stays.
+                    severity="low" if pin["path"].startswith("env:") else "medium",
                     tool=tool,
                     path=pin["path"],
                     line=pin["line"],
@@ -977,7 +984,7 @@ def posix_locations(project: Path, env: dict[str, str]) -> list[dict]:
 
 
 def search_path(project: Path, env: dict[str, str]) -> list[dict]:
-    if os.name == "nt":
+    if IS_WINDOWS:
         return windows_locations(env, str(project))
     return posix_locations(project, env)
 
