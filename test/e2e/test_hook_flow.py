@@ -72,12 +72,25 @@ class TestClaudeHookFlow:
         assert "Bash" in tool_names
 
     def test_session_end_recorded(self, aictl_server, claude_hook_sequence):
-        """Stop event ends the session with token counts."""
+        """Stop records per-turn tokens; only SessionEnd ends the session, and it
+        must keep the totals even though Claude sends no token fields on it."""
         for ev in claude_hook_sequence:
             aictl_server.post_hook(ev)
         time.sleep(0.5)
 
         sid = claude_hook_sequence[0]["session_id"]
+        sessions = aictl_server.get_sessions(since="0")
+        session = next((s for s in sessions if s["session_id"] == sid), None)
+        assert session is not None
+        assert session["ended_at"] is None, "Stop fires after every response and must not end the session"
+        assert session["active"] is True
+
+        last = claude_hook_sequence[-1]
+        aictl_server.post_hook(
+            {"event": "SessionEnd", "session_id": sid, "tool": last["tool"], "cwd": last["cwd"], "ts": last["ts"] + 1}
+        )
+        time.sleep(0.5)
+
         sessions = aictl_server.get_sessions(since="0")
         session = next((s for s in sessions if s["session_id"] == sid), None)
         assert session is not None
