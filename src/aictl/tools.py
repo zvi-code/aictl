@@ -295,7 +295,7 @@ TOOL_RELATIONSHIPS: dict[str, list[dict[str, str]]] = {
         {
             "type": "cloud-only",
             "tool": "copilot365",
-            "label": "Thin WebView2 client \u2014 all AI is cloud-only via Azure OpenAI",
+            "label": "Cloud-hosted service \u2014 sessions, tokens and cost are not available from this machine",
         },
     ],
 }

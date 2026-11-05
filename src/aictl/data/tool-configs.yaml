@@ -137,3 +137,18 @@ gemini-cli:
       type: count_events
     agents:
       type: md_agent_discovery
+
+# Microsoft 365 Copilot is cloud-hosted: the conversation, model calls and
+# usage live in the tenant. The parser (_parse_copilot365_config) reads only
+# project files (appPackage/, m365agents.yml) and the Windows package folder.
+# local_data states what aictl can read from this machine; false means
+# "not available from this machine", not zero.
+copilot365:
+  config_files: []
+  features: {}
+  local_data:
+    sessions: false
+    tokens: false
+    cost: false
+    prompts: false
+    responses: false
