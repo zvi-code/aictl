@@ -194,6 +194,7 @@ aictl reinstall --index-url https://packages.example/simple
 `--index-url`, or `AICTL_INDEX_URL`, applies to both `pip` and `uv`. The URL is not printed or written to a file, so
 it can hold credentials, and the npm UI build is skipped because the package already includes the dashboard. With no
 URL, `aictl reinstall` copies `pip`'s configured index for `uv`, unless `UV_DEFAULT_INDEX` or `UV_INDEX_URL` is set.
+Either way it prints the host name of the source it will use, so you can check it.
 `make install`, `aictl build-ui` and an install from the Git URL do not do any of this.
 
 ### Optional extras
@@ -916,7 +917,9 @@ aictl reinstall --skip-ui    # Python only — skip the npm build (faster)
 > install). On Windows `aictl reinstall` therefore hands the install off to a
 > **new console window** that waits for the current `aictl` to exit, performs
 > the install, and stays open so you can read the result. The original command
-> exits immediately — watch the new window, then run `aictl --version`.
+> exits immediately — watch the new window, then run `aictl --version`. The window
+> tries up to five times, because the folder can stay in use for a few seconds, so an
+> error along the way is fine if it ends with `DONE`.
 
 If you don't have a working `aictl` on PATH yet (first install or a broken
 install), reinstall manually using `python -m pip` (never the locked
@@ -983,6 +986,17 @@ python -m pipx ensurepath
 pipx inject aictl textual
 # or reinstall with all extras:
 pipx install --force ".[all]"
+```
+
+**`FAILED: aictl was not reinstalled` in the install window**
+
+A failed attempt can leave aictl's environment empty, so `aictl` may not start. Stop anything that runs from it, such
+as the dashboard or `aictl top`. If you use a private package index, follow
+[Install from a private package index](#install-from-a-private-package-index). Otherwise, from the clone:
+
+```powershell
+pipx uninstall aictl
+pipx install -e ".[all]"
 ```
 
 **`A virtual environment already exists` from `pipx install --force`**
