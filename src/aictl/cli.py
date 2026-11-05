@@ -9,7 +9,6 @@ import click
 
 from .commands.admin import build_ui, catalog, config, db, reinstall
 from .commands.ctx_audit import audit_cmd
-from .commands.ctx_audit import audit_cmd
 from .commands.ctx_pipeline import deploy, diff, init, scan_cmd, validate_cmd
 from .commands.daemon import dashboard, monitor, serve
 from .commands.disable import audit, disable
@@ -43,7 +42,6 @@ ctx_group.add_command(scan_cmd, name="scan")
 ctx_group.add_command(diff)
 ctx_group.add_command(validate_cmd, name="validate")
 ctx_group.add_command(init)
-ctx_group.add_command(audit_cmd, name="audit")
 ctx_group.add_command(audit_cmd, name="audit")
 
 main.add_command(ctx_group)

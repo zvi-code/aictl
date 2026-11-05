@@ -379,8 +379,6 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._serve_sessions()
         elif path == "/api/context-audit":
             self._serve_context_audit()
-        elif path == "/api/context-audit":
-            self._serve_context_audit()
         elif path.startswith("/api/file-writes"):
             self._serve_file_writes()
         elif path.startswith("/api/data-quality"):
@@ -1108,13 +1106,6 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         """Return the first value for *key* in the query-string, or *default*."""
         v = self._qs.get(key)
         return v[0] if v else default
-
-    def _serve_context_audit(self) -> None:
-        """Hidden-context audit of the served project, or of ?project= when given."""
-        from ..context_audit import run_audit
-
-        project = self._qs_get("project") or str(getattr(self.server, "root", "") or "") or None
-        self._json_response(run_audit(project, self._qs_get("tool") or None))
 
     def _serve_context_audit(self) -> None:
         """Hidden-context audit of the served project, or of ?project= when given."""

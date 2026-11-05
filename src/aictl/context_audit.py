@@ -34,7 +34,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from .platforms import claude_global_dir, config_dir, vscode_user_dir
+from .platforms import IS_WINDOWS, claude_global_dir, config_dir, vscode_user_dir
 from .tools import PRUNE_DIRS, _expand_home, _params_to_glob, get_registry
 
 try:
@@ -205,7 +205,7 @@ def _read_text(path: Path) -> str:
 def _path_key(path: str | Path) -> str:
     """Comparison key for a path: forward slashes, and no case on Windows-style paths."""
     text = str(path)
-    windows = os.name == "nt" or "\\" in text or re.match(r"^[A-Za-z]:", text) is not None
+    windows = IS_WINDOWS or "\\" in text or re.match(r"^[A-Za-z]:", text) is not None
     text = text.replace("\\", "/")
     return text.lower() if windows else text
 
@@ -789,7 +789,7 @@ def _collect_walks(inv: _Inventory) -> None:
 
 def _present_names(filenames: list[str], wanted: tuple[str, ...]) -> set[str]:
     """Which wanted names exist here. Windows file names carry no case, so agents.md counts as AGENTS.md."""
-    if os.name != "nt":
+    if not IS_WINDOWS:
         return set(filenames)
     present = {n.upper() for n in filenames}
     return {n for n in wanted if n.upper() in present}
