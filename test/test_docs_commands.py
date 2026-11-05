@@ -73,17 +73,26 @@ def test_documented_commands_exist(path: Path) -> None:
     assert problems == []
 
 
+def _anchors(markdown: str) -> set[str]:
+    headings = re.findall(r"^#+ (.+)$", markdown, flags=re.M)
+    return {re.sub(r"[^\w\- ]", "", h.strip().lower()).replace(" ", "-") for h in headings}
+
+
 def test_how_to_links_resolve() -> None:
     how_to = (ROOT / "docs" / "how-to.md").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-
-    def slug(heading: str) -> str:
-        return re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
-
-    anchors = {slug(h) for h in re.findall(r"^#+ (.+)$", how_to, flags=re.M)}
     linked = re.findall(r"docs/how-to\.md#([\w-]+)", readme) + re.findall(r"\]\(#([\w-]+)\)", how_to)
     assert linked
-    assert [anchor for anchor in linked if anchor not in anchors] == []
+    assert [anchor for anchor in linked if anchor not in _anchors(how_to)] == []
+
+
+def test_readme_links_resolve() -> None:
+    """A troubleshooting step that links to a missing heading leaves the reader with nothing."""
+    how_to = (ROOT / "docs" / "how-to.md").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    linked = re.findall(r"\.\./README\.md#([\w-]+)", how_to) + re.findall(r"\]\(#([\w-]+)\)", readme)
+    assert linked
+    assert [anchor for anchor in linked if anchor not in _anchors(readme)] == []
 
 
 def test_the_check_rejects_a_removed_command_and_flag() -> None:

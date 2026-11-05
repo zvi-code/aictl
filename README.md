@@ -144,6 +144,9 @@ pipx install .
 > # or: pipx install --force -e ".[all]"  # manual
 > ```
 
+To run, update or remove aictl, see [Run aictl](docs/how-to.md#run-aictl), [Update aictl](docs/how-to.md#update-aictl)
+and [Remove the aictl program](docs/how-to.md#remove-the-aictl-program).
+
 ### Get pipx
 
 **macOS**
@@ -172,18 +175,43 @@ and `PIP_INDEX_URL`, so an install can reach PyPI even though `pip` is set up fo
 python -m pip config list
 ```
 
+`uv` can have a source of its own. In PowerShell, check its environment settings and its settings file. On macOS and
+Linux, the file is `~/.config/uv/uv.toml`:
+
+```powershell
+$env:UV_DEFAULT_INDEX; $env:UV_INDEX_URL
+Test-Path "$env:APPDATA\uv\uv.toml"
+```
+
 To keep pipx on pip, set `PIPX_DEFAULT_BACKEND=pip`, which needs pipx 1.12 or later. It changes pipx only, not `uv`.
-An environment already made with `uv` has to be removed first:
+An environment already made with `uv` has to be removed first. Run these from the clone. If the dashboard runs, stop
+it first with `aictl daemon serve --stop`:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("PIPX_DEFAULT_BACKEND", "pip", "User")
 $env:PIPX_DEFAULT_BACKEND = "pip"
+Remove-Item Env:UV_VENV_CLEAR -ErrorAction SilentlyContinue
 pipx uninstall aictl
 pipx install -e ".[all]"
 ```
 
+To confirm which tool installed the packages, run this command. It prints `pip` or `uv`:
+
+```powershell
+Get-Content "$(pipx environment --value PIPX_HOME)\venvs\aictl\Lib\site-packages\click-*.dist-info\INSTALLER"
+```
+
 `--backend pip` on one command is not enough: a later `pipx install --force` without it still runs `uv` to read the
-package name, even for an environment made with pip.
+package name, even for an environment made with pip. A failed `pipx install` can also reach PyPI, because `uv` needs
+`setuptools` to read the package name. If an install ran before you set this up, `pipx uninstall aictl` removes those
+packages from the aictl environment.
+
+These steps change only the aictl environment and its launcher. They do not change `uv`, the Python installation or the
+`.venv` of another project.
+
+**Warning:** do not set `UV_VENV_CLEAR` by hand. With only `pip` set up, `uv` then downloads from PyPI. In the same
+shell, `uv venv` also replaces the existing `.venv` of any project without asking. `aictl reinstall` sets this variable
+only for its own install, and also gives `uv` the package source when one is configured.
 
 After that, name the source when you update:
 
@@ -194,7 +222,8 @@ aictl reinstall --index-url https://packages.example/simple
 `--index-url`, or `AICTL_INDEX_URL`, applies to both `pip` and `uv`. The URL is not printed or written to a file, so
 it can hold credentials, and the npm UI build is skipped because the package already includes the dashboard. With no
 URL, `aictl reinstall` copies `pip`'s configured index for `uv`, unless `UV_DEFAULT_INDEX` or `UV_INDEX_URL` is set.
-Either way it prints the host name of the source it will use, so you can check it.
+Either way it prints the host name of the source it will use, so you can check it. The value must be the URL of a
+package index (`http`, `https` or `file`). `--index-url` refuses a plain folder path.
 `make install`, `aictl build-ui` and an install from the Git URL do not do any of this.
 
 ### Optional extras
@@ -918,15 +947,25 @@ aictl reinstall --skip-ui    # Python only — skip the npm build (faster)
 > **new console window** that waits for the current `aictl` to exit, performs
 > the install, and stays open so you can read the result. The original command
 > exits immediately — watch the new window, then run `aictl --version`. The window
-> tries up to five times, because the folder can stay in use for a few seconds, so an
+> tries up to 5 times, because the folder can stay in use for a few seconds, so an
 > error along the way is fine if it ends with `DONE`.
 
-If you don't have a working `aictl` on PATH yet (first install or a broken
-install), reinstall manually using `python -m pip` (never the locked
-`aictl.exe`):
+If `aictl` does not start (a first install or a broken install), install with pipx from
+the repo root. If you use a private package index, first read
+[Install from a private package index](#install-from-a-private-package-index):
 
 ```powershell
-python -m pip install -e ".[all]"             # editable install from the repo root
+pipx uninstall aictl
+pipx install -e ".[all]"
+```
+
+Do not run `python -m pip install` outside a virtual environment here. That command puts a
+second `aictl.exe` in the `Scripts` folder of Python, and that copy can run instead of the
+pipx copy. See [Find a leftover copy](docs/how-to.md#find-a-leftover-copy).
+
+To rebuild the UI:
+
+```powershell
 npm install --prefix src/aictl/dashboard/ui   # one-time, if the UI needs building
 npm run build --prefix src/aictl/dashboard/ui
 ```
@@ -988,6 +1027,13 @@ pipx inject aictl textual
 pipx install --force ".[all]"
 ```
 
+**`os error 32`, `Attempt 1 of 5 did not finish` or `Install attempt 1 failed` in the install window**
+
+This is not the final result. Another process has the aictl folder open, and this usually clears within seconds. The
+window tries up to 5 times, so wait for its last message: `DONE` or `FAILED`. You do not need to end a process. The same
+attempt can also print `Failed to create virtual environment`, `failed to remove directory` and
+`Not removing existing venv`.
+
 **`FAILED: aictl was not reinstalled` in the install window**
 
 A failed attempt can leave aictl's environment empty, so `aictl` may not start. Stop anything that runs from it, such
@@ -999,16 +1045,31 @@ pipx uninstall aictl
 pipx install -e ".[all]"
 ```
 
-**`A virtual environment already exists` from `pipx install --force`**
+**`A virtual environment already exists` from `pipx install --force` or `make install`**
 
-Recent pipx creates environments with `uv` when `uv` is on `PATH`, and recent `uv` will not replace one unless
-told to. pipx has no `--clear` flag. Setting `UV_VENV_CLEAR=1` gets past the error, but check where packages will
-come from first: see [Install from a private package index](#install-from-a-private-package-index). Or reinstall with pip:
+Recent pipx creates environments with `uv` when `uv` is on `PATH`, and `uv` 0.10 and later will not replace one unless
+told to. pipx has no `--clear` flag, and `--force --backend pip` fails with the same error. Setting `UV_VENV_CLEAR=1`
+gets past the error, but read the warning in
+[Install from a private package index](#install-from-a-private-package-index) first. Or reinstall with pip:
 
 ```powershell
 pipx uninstall aictl
 pipx install -e ".[all]" --backend pip
 ```
+
+**`No such option: --index-url`**
+
+The `aictl` that ran is older than this option, and the command installed nothing. Run `git pull` in the clone. If the
+error stays, a second copy is running: see [Find a leftover copy](docs/how-to.md#find-a-leftover-copy).
+
+**An old version is still there after `pipx uninstall`**
+
+`pipx uninstall` cleans only the location that `pipx` uses now. See [Find a leftover copy](docs/how-to.md#find-a-leftover-copy).
+
+**The dashboard still shows the old version**
+
+The process that started before the update keeps running the old code. Run `aictl daemon serve --stop`, start the
+dashboard again, then press Ctrl+F5 in the browser.
 
 **`pipx install` silently skips (already installed)**
 

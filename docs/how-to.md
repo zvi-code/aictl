@@ -9,6 +9,21 @@ were tested by simulating Windows on macOS. They have not been run on a real Win
 
 ## Install
 
+If packages must come from a private index, read
+[Install from a private package index](../README.md#install-from-a-private-package-index) first. The commands
+below can reach PyPI.
+
+From a clone, which you can update with `git pull`:
+
+```bash
+git clone https://github.com/zvi-code/aictl.git
+cd aictl
+pipx install -e ".[all]"
+aictl --version
+```
+
+Without a clone:
+
 ```bash
 pipx install "aictl[all] @ git+https://github.com/zvi-code/aictl.git"
 aictl --version
@@ -17,8 +32,52 @@ aictl --version
 The built dashboard ships with the package, so Node.js is only needed to change the UI. No `pipx`
 yet? See [Install](../README.md#install), or [Windows prerequisites](../README.md#prerequisites).
 
-If packages must come from a private index, read
-[Install from a private package index](../README.md#install-from-a-private-package-index) first: this command may reach PyPI.
+## Run aictl
+
+| To | Run |
+|---|---|
+| Check the install | `aictl --version` |
+| See running tools and sessions | `aictl ps` |
+| Watch the same view live (`q` quits) | `aictl top` |
+| Open the dashboard (Ctrl+C stops it) | `aictl daemon serve` |
+| List recent Copilot sessions | `aictl session list --limit 20` |
+| See the settings and model pins in effect | `aictl ctx effective --search-path` |
+| See the state of the hooks | `aictl hooks status` |
+
+The sections below explain each command. These commands do not change your tool settings. `aictl enable` does:
+see [Connect Copilot CLI, the desktop app and VS Code](#connect-copilot-cli-the-desktop-app-and-vs-code).
+
+## Update aictl
+
+After an install from a clone with `-e`, the `aictl` command runs the code in the clone. For most updates, pull
+the changes in the clone:
+
+```bash
+git pull
+```
+
+The version number does not change with each commit. To see which code you have, run `git log -1 --oneline` in the
+clone.
+
+Run `aictl reinstall` in the clone if the update adds a dependency, or if you installed without `-e`:
+
+```bash
+aictl reinstall                # builds the UI with npm, then reinstalls
+aictl reinstall --skip-ui      # reinstalls without the npm build
+aictl reinstall --index-url https://packages.example/simple    # uses only this package index, with no npm build
+```
+
+The command prints `Python packages:` and the host name of the package source. Check this line.
+
+On Windows, the install continues in a new window, because a running `aictl.exe` cannot replace itself. That
+window tries up to 5 times. An error along the way is fine if a later attempt succeeds. The last message
+gives the result:
+
+| The window shows | Meaning | Do this |
+|---|---|---|
+| `Attempt 1 of 5 did not finish` after `os error 32` | Another process has the aictl folder open. This usually clears within seconds | Wait. The window tries again |
+| `DONE: aictl is reinstalled.` | The install finished | Run `aictl --version` |
+| `FAILED: aictl was not reinstalled after 5 attempts.` | The last error is above this message, and `aictl` may not start | See [Common errors](../README.md#common-errors) |
 
 ## See what is running
 
@@ -222,6 +281,70 @@ python "$env:APPDATA\aictl\remove-hooks.py" --dry-run
 **A hook file you renamed by hand:** `aictl enable` will not overwrite `aictl.json.disabled`. Run
 `aictl disable` to remove it, or `aictl enable --replace-disabled` to turn hooks back on.
 
+## Remove the aictl program
+
+**Warning:** if you do not plan to install aictl again, first do
+[Remove aictl from your tools](#remove-aictl-from-your-tools). If you skip it, your tools keep hooks that point
+to a program that is gone.
+
+1. Stop the dashboard:
+
+   ```bash
+   aictl daemon serve --stop
+   ```
+
+2. Remove the program. If `pipx` says that there is nothing to uninstall, go to step 3:
+
+   ```bash
+   pipx uninstall aictl
+   ```
+
+3. Do [Find a leftover copy](#find-a-leftover-copy).
+
+These steps remove the program only. Your settings and history stay in `%APPDATA%\aictl` on Windows and in
+`~/.config/aictl` on macOS and Linux. Registered hooks also stay. To replace the program, go to [Install](#install).
+
+## Find a leftover copy
+
+`pipx uninstall` cleans only the location that `pipx` uses now. A copy in another location stays. A process that
+started before an update keeps running the old code.
+
+This check changes nothing. On Windows, in PowerShell:
+
+```powershell
+"--- on PATH"
+Get-Command aictl -All -ErrorAction SilentlyContinue | ForEach-Object Source
+"--- pipx location in use"
+pipx environment --value PIPX_HOME
+"--- install folders"
+"$env:USERPROFILE\pipx\venvs\aictl", "$env:USERPROFILE\.local\pipx\venvs\aictl", "$env:LOCALAPPDATA\pipx\pipx\venvs\aictl", "$env:APPDATA\uv\tools\aictl" | ForEach-Object { "$(Test-Path $_)  $_" }
+"--- pip"
+python -m pip show aictl 2>$null | Select-String "^(Version|Location|Editable project location):"
+"--- running"
+aictl daemon serve --status
+Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='aictl.exe'" | Where-Object CommandLine -match 'aictl' | Select-Object ProcessId, CommandLine | Format-List
+```
+
+On macOS and Linux:
+
+```bash
+which -a aictl
+pipx environment --value PIPX_HOME
+python3 -m pip show aictl
+aictl daemon serve --status
+pgrep -fl aictl
+```
+
+The current install is 1 launcher, normally in `.local\bin` (`.local/bin` on macOS and Linux), and 1 folder in the
+`pipx` location. Anything else can be a leftover:
+
+| You see | Meaning | Do this |
+|---|---|---|
+| A path in the `Scripts` or `bin` folder of Python, or a version under `pip` | A separate `pip` install | Run `python -m pip uninstall aictl` |
+| `True` for a folder outside the `pipx` location | An old install in another location | Stop what runs from the folder, then delete the folder |
+| `True` for `uv\tools\aictl` | A `uv` tool install | Run `uv tool uninstall aictl` |
+| A dashboard or another aictl process | The process can be older than the update | Run `aictl daemon serve --stop`. If the process stays, end it |
+
 ## Control how much is stored
 
 aictl treats storage as a disposable cache. Set `[storage]` in `aictl config path`:
@@ -420,3 +543,9 @@ Run these on a real Windows machine, in PowerShell, and note anything that diffe
 | The port is in use | `aictl daemon serve --status`, or pick another with `--port` |
 | Telemetry to a dead port after removing aictl | Open a new terminal and restart GUI apps |
 | `aictl` not found after install | `python -m pipx ensurepath`, then open a new terminal |
+| The install window shows `os error 32` or `Attempt 1 of 5 did not finish` | Wait for the last message. See [Update aictl](#update-aictl) |
+| `FAILED: aictl was not reinstalled`, or `A virtual environment already exists` | See [Common errors](../README.md#common-errors) |
+| `Python packages:` shows the wrong source | See [Install from a private package index](../README.md#install-from-a-private-package-index) |
+| `No such option: --index-url` | The `aictl` that ran is older than the option. Run `git pull`, then [Find a leftover copy](#find-a-leftover-copy) |
+| An old version is still there after `pipx uninstall` | [Find a leftover copy](#find-a-leftover-copy) |
+| The dashboard still shows the old version | Run `aictl daemon serve --stop`, start the dashboard again, then press Ctrl+F5 in the browser |
