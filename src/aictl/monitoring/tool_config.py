@@ -89,6 +89,11 @@ class ToolConfig:
     configurable_models: list[dict] = field(default_factory=list)
     # Filesystem locations the user can edit to change these settings.
     config_files: list[str] = field(default_factory=list)
+    # What aictl can read from this machine for the tool, as explicit booleans,
+    # e.g. {"sessions": False, "tokens": False}. False means "not available from
+    # this machine" (cloud-hosted data), which is different from "zero". Empty
+    # for tools that do not declare it; consumers must tolerate a missing key.
+    local_data: dict[str, bool] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)
@@ -99,6 +104,8 @@ class ToolConfig:
             del d["configurable_models"]
         if not self.config_files:
             del d["config_files"]
+        if not self.local_data:
+            del d["local_data"]
         return d
 
 
@@ -998,12 +1005,100 @@ _CAP_FEATURE_FLAGS: dict[str, str] = {
 }
 
 
+# ── Microsoft 365 Copilot: install detection and declarative-agent validation ──
+#
+# Sources (Microsoft Learn, checked 2026-11-05):
+#   declarative agent schema 1.9 (latest) / 1.6 limits:
+#     https://learn.microsoft.com/microsoft-365/copilot/extensibility/declarative-agent-manifest-1.9
+#   Windows package name MICROSOFT.COPILOT (AppLocker policy):
+#     https://learn.microsoft.com/windows/client-management/manage-windows-copilot
+COPILOT365_LATEST_SCHEMA = (1, 9)
+# Package family folders under %LOCALAPPDATA%\Packages. The first is the
+# documented package name (publisher id 8wekyb3d8bbwe is the Microsoft Store
+# publisher id seen in documented paths). The second is carried over from the
+# path tables and is UNVERIFIED as a Copilot package.
+COPILOT365_PACKAGE_FAMILIES = (
+    "Microsoft.Copilot_8wekyb3d8bbwe",
+    "Microsoft.MicrosoftOfficeHub_8wekyb3d8bbwe",
+)
+_DA_LIMITS = {"name": 100, "description": 1000, "instructions": 8000}
+
+
+def detect_copilot365_install(local_app_data: Path | None) -> list[str]:
+    """Return package folders that show the Windows Copilot app is installed.
+
+    Looks only at ``%LOCALAPPDATA%\\Packages`` (readable by the user). The
+    ``Program Files\\WindowsApps`` folder is not read: it is access-restricted.
+    Pass None where there is no such folder (non-Windows): returns [].
+    """
+    if not local_app_data:
+        return []
+    pkgs = local_app_data / "Packages"
+    return [fam for fam in COPILOT365_PACKAGE_FAMILIES if (pkgs / fam).is_dir()]
+
+
+def validate_declarative_agent(data: object) -> list[str]:
+    """Check a declarative agent manifest against the documented required fields and limits.
+
+    Returns human-readable issues; empty list means no documented rule is broken.
+    """
+    if not isinstance(data, dict):
+        return ["manifest is not a JSON object"]
+    issues: list[str] = []
+    ver = data.get("version")
+    if not isinstance(ver, str) or not re.fullmatch(r"v\d+\.\d+", ver):
+        issues.append("version missing or not of the form vN.M")
+    for key, limit in _DA_LIMITS.items():
+        val = data.get(key)
+        if not isinstance(val, str) or not val.strip():
+            issues.append(f"{key} is required and must not be blank")
+        elif len(val) > limit:
+            issues.append(f"{key} is {len(val)} characters (limit {limit})")
+    caps = data.get("capabilities")
+    if isinstance(caps, list):
+        names = [c.get("name") for c in caps if isinstance(c, dict)]
+        dupes = sorted({n for n in names if names.count(n) > 1 and n})
+        if dupes:
+            issues.append(f"capabilities repeat: {', '.join(dupes)} (one of each allowed)")
+    starters = data.get("conversation_starters")
+    if isinstance(starters, list) and len(starters) > 12:
+        issues.append(f"{len(starters)} conversation_starters (limit 12)")
+    actions = data.get("actions")
+    if isinstance(actions, list) and not 1 <= len(actions) <= 10:
+        issues.append(f"{len(actions)} actions (allowed 1-10)")
+    return issues
+
+
+def _schema_tuple(version: object) -> tuple[int, int] | None:
+    m = re.fullmatch(r"v(\d+)\.(\d+)", version) if isinstance(version, str) else None
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _declarative_agent_files(app_pkg: Path) -> list[Path]:
+    """Declarative agent manifests of an app package.
+
+    Follows ``copilotAgents.declarativeAgents[].file`` in manifest.json when it
+    resolves to a file; falls back to ``declarativeAgent*.json`` (environment
+    placeholders such as ``${{VAR}}`` in the file name cannot be resolved here).
+    """
+    found: list[Path] = []
+    app = _read_json(app_pkg / "manifest.json") or {}
+    agents = (app.get("copilotAgents") or {}).get("declarativeAgents") if isinstance(app, dict) else None
+    for ent in agents if isinstance(agents, list) else []:
+        f = ent.get("file") if isinstance(ent, dict) else None
+        if isinstance(f, str) and "${{" not in f and (app_pkg / f).is_file():
+            found.append(app_pkg / f)
+    if not found:
+        found = sorted(p for p in app_pkg.glob("declarativeAgent*.json") if p.is_file())
+    return found
+
+
 def _parse_copilot365_config(root: Path, tool: str = "copilot365") -> ToolConfig | None:
     """Parse M365 Copilot / M365 Agents Toolkit config from project files.
 
     Handles both the new ``m365agents.yml`` format (ATK v5.12+) and the
-    legacy ``teamsapp.yml`` (deprecated, sunset July 2026).  New format
-    takes precedence when both exist.
+    legacy ``teamsapp.yml`` (Teams Toolkit name).  New format takes
+    precedence when both exist.
 
     Also parses ``appPackage/`` manifests including declarative agent
     capabilities and ``ai-plugin.json`` function definitions.
@@ -1044,7 +1139,7 @@ def _parse_copilot365_config(root: Path, tool: str = "copilot365") -> ToolConfig
     if "teamsapp" in cfg.features and (root / "m365agents.yml").is_file():
         cfg.hints.append("teamsapp.yml is deprecated — m365agents.yml also exists, consider removing the legacy file")
     elif "teamsapp" in cfg.features and not (root / "m365agents.yml").is_file():
-        cfg.hints.append("teamsapp.yml is deprecated (sunset July 2026) — migrate to m365agents.yml with ATK v5.12+")
+        cfg.hints.append("teamsapp.yml is the legacy Teams Toolkit name — Microsoft 365 Agents Toolkit uses m365agents.yml")
 
     # ── appPackage/ manifests ──────────────────────────────────
     app_pkg = root / "appPackage"
@@ -1116,6 +1211,45 @@ def _parse_copilot365_config(root: Path, tool: str = "copilot365") -> ToolConfig
             ):
                 cfg.settings["auth_types"] = auth_types
 
+        # Every declarative agent in the package: schema version, size, rule check
+        packages = []
+        for f in _declarative_agent_files(app_pkg):
+            data = _read_json(f)
+            if data is None:
+                packages.append({"file": f.name, "issues": ["not readable as JSON"]})
+                continue
+            issues = validate_declarative_agent(data)
+            sv = _schema_tuple(data.get("version") if isinstance(data, dict) else None)
+            if sv and sv < COPILOT365_LATEST_SCHEMA:
+                cfg.hints.append(
+                    f"{f.name} uses declarative agent schema v{sv[0]}.{sv[1]}; "
+                    f"latest documented is v{COPILOT365_LATEST_SCHEMA[0]}.{COPILOT365_LATEST_SCHEMA[1]}"
+                )
+            for i in issues:
+                cfg.hints.append(f"{f.name}: {i}")
+            packages.append(
+                {
+                    "file": f.name,
+                    "name": str(data.get("name", "")) if isinstance(data, dict) else "",
+                    "schema_version": data.get("version", "") if isinstance(data, dict) else "",
+                    "instructions_chars": len(data.get("instructions", "") or "") if isinstance(data, dict) else 0,
+                    "issues": issues,
+                }
+            )
+        if packages:
+            cfg.settings["agent_packages"] = packages
+
+    # ── Windows app install (user-readable package data folder only) ──
+    lad = os.environ.get("LOCALAPPDATA") if IS_WINDOWS else None
+    evidence = detect_copilot365_install(Path(lad) if lad else None)
+    cfg.features["installed"] = bool(evidence)
+    if evidence:
+        cfg.settings["install_evidence"] = evidence
+    cfg.hints.append(
+        "Microsoft 365 Copilot is cloud-hosted: sessions, tokens, cost, prompts and responses "
+        "are not available from this machine"
+    )
+
     # ── Environment files ──────────────────────────────────────
     if (env_dir := root / "env").is_dir():
         if envs := sorted(f.name.replace(".env.", "") for f in safe_iterdir(env_dir) if f.name.startswith(".env.")):
@@ -1126,7 +1260,7 @@ def _parse_copilot365_config(root: Path, tool: str = "copilot365") -> ToolConfig
         cfg.features["legacy_fx"] = True
 
     cfg.hints.extend(_generate_hints(cfg))
-    return cfg if (cfg.settings or cfg.features) else None
+    return cfg
 
 
 # ─── Public API ─────────────────────────────────────────────────
@@ -1468,6 +1602,10 @@ def collect_tool_configs(root: Path) -> list[ToolConfig]:
             continue
         try:
             result = parser(root, tool=tool_name)
+            declared = tool_configs_yaml[tool_name].get("local_data") if isinstance(tool_configs_yaml[tool_name], dict) else None
+            if declared:
+                result = result or ToolConfig(tool=tool_name)
+                result.local_data = {str(k): bool(v) for k, v in declared.items()}
             if result:
                 configs.append(result)
         except Exception as exc:

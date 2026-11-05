@@ -147,7 +147,7 @@ User Prompt (Word/Teams/Outlook/Chat)
 | `m365agents.yml` | M365 Agents Toolkit project manifest (ATK v5.12+) |
 | `teamsapp.yml` | Legacy Teams Toolkit manifest |
 | `appPackage/manifest.json` | M365 app manifest (schema v1.18+; defines copilotAgents) |
-| `appPackage/declarativeAgent.json` | Declarative agent manifest (schema v1.6; up to 8000 chars instructions) |
+| `appPackage/declarativeAgent.json` | Declarative agent manifest (latest schema v1.9; up to 8000 chars instructions) |
 | `appPackage/apiPlugin.json` | API plugin manifest for Copilot extensibility |
 | `aad.manifest.json` | Azure AD / Entra ID app registration |
 | `env/.env.dev`, `env/.env.local` | Environment config (credentials) |
