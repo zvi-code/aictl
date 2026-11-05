@@ -12,12 +12,20 @@ function enableCommand(tool, port) {
   return `aictl enable${family ? ' --tool ' + family : ''} --port ${port}`;
 }
 
-function hookIssues(hooks) {
+/** Same product family: copilot-cli and copilot-vscode share one hook file. */
+function toolFamily(tool) {
+  return String(tool || '').split('-')[0];
+}
+
+function hookIssues(hooks, runningTools) {
   if (!hooks?.tools) return [];
   const out = [];
   const port = hooks.server_port;
+  const runningFamilies = runningTools ? new Set([...runningTools].map(toolFamily)) : null;
   for (const t of Object.values(hooks.tools)) {
     if (t.status === 'missing') {
+      // No hooks for a tool that is not running is not a problem to act on now.
+      if (runningFamilies && !runningFamilies.has(toolFamily(t.tool))) continue;
       // `hooks install` configures Claude Code only; `enable` covers the rest.
       const fix = enableCommand(t.tool, port);
       out.push({
@@ -63,6 +71,8 @@ function qualityIssues(quality) {
   const out = [];
   for (const q of quality?.items || []) {
     if (q.status === 'ok' || q.severity === 'info') continue;
+    // The tool keeps no store on this machine, usually because it is not installed.
+    if (q.status === 'source_missing') continue;
     out.push({
       id: 'quality:' + q.component,
       level: q.severity === 'error' ? 'error' : 'warn',
@@ -84,7 +94,7 @@ function qualityIssues(quality) {
  * @param {Array} h.alerts  process alerts ({level, msg})
  */
 export function deriveIssues({
-  connected, snapAgeS, hooks, quality, otelActive, alerts = [], storage = null, hiddenContext,
+  connected, snapAgeS, hooks, quality, otelActive, alerts = [], storage = null, hiddenContext, runningTools = null,
 }) {
   const out = [];
   // Unseen context is listed ahead of other warnings, and the answer stays
@@ -135,7 +145,7 @@ export function deriveIssues({
       title: a.msg, detail: 'The Processes tab lists the affected PIDs.', fix: null, tab: 'procs',
     });
   }
-  out.push(...hookIssues(hooks), ...qualityIssues(quality));
+  out.push(...hookIssues(hooks, runningTools), ...qualityIssues(quality));
   if (otelActive === false) {
     out.push({
       id: 'otel', level: 'info', title: 'OTel receiver has no data',
@@ -172,6 +182,22 @@ export function runningSessions(snap, enabledTools) {
     s.tool && (enabledTools === null || enabledTools === undefined || enabledTools.includes(s.tool)));
   return rows.sort((a, b) =>
     (b.cpu_percent || 0) - (a.cpu_percent || 0) || (b.last_seen_at || 0) - (a.last_seen_at || 0));
+}
+
+/** The process collector's rows have ids like tool:pid:ts: one process tree, not a conversation. */
+export function isProcessDerived(row) {
+  return /^[^:]+:\d+:\d+$/.test(row?.session_id || '');
+}
+
+/** "3 sessions, 50 process trees in 6 tools": never calls a helper process a session. */
+export function runningSummary(rows) {
+  const trees = rows.filter(isProcessDerived).length;
+  const sessions = rows.length - trees;
+  const tools = new Set(rows.map(r => r.tool)).size;
+  const treeWord = `process tree${trees === 1 ? '' : 's'}`;
+  const sessionWord = `session${sessions === 1 ? '' : 's'}`;
+  const what = trees && sessions ? `${sessions} ${sessionWord} and ${trees} ${treeWord}` : trees ? treeWord : sessionWord;
+  return `${what} in ${tools} tool${tools === 1 ? '' : 's'}`;
 }
 
 export function sessionMemMb(s) {

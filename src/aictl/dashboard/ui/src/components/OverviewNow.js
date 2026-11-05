@@ -6,7 +6,7 @@ import { useMemo, useState } from 'preact/hooks';
 import * as api from '../api.js';
 import { fmtDurSec, fmtK, fmtPct, fmtSz } from '../utils.js';
 import { usePolledResource } from '../hooks/usePolledResource.js';
-import { deriveIssues, runningSessions, sessionMemMb, storageSummary, storageText } from '../utils/health.js';
+import { deriveIssues, runningSessions, runningSummary, sessionMemMb, storageSummary, storageText } from '../utils/health.js';
 import { CostValue, NO_COST_REASON, billingUnitLabel, fmtUsd, summarizeUsage } from '../utils/cost.js';
 import { loadHiddenContextSummary } from './HiddenContextSlot.js';
 import { COST_ESTIMATE_NOTE, scopeIsCloudOnly, toolLabel } from '../utils/tools.js';
@@ -18,12 +18,11 @@ const SESSION_ROWS = 8;
 
 function RunningPanel({ snap, enabledTools, onOpenSession, onShowAll }) {
   const rows = useMemo(() => runningSessions(snap, enabledTools), [snap, enabledTools]);
-  const toolCount = new Set(rows.map(r => r.tool)).size;
   return html`<section class="now-panel now-panel--running" aria-labelledby="now-running">
     <header class="now-panel__head">
       <h2 id="now-running">Running now</h2>
       ${!scopeIsCloudOnly(snap, enabledTools) && html`<span class="now-panel__figure">${rows.length}</span>
-      <span class="now-panel__sub">session${rows.length === 1 ? '' : 's'} in ${toolCount} tool${toolCount === 1 ? '' : 's'}</span>`}
+      <span class="now-panel__sub">${runningSummary(rows)}</span>`}
     </header>
     ${rows.length === 0
       ? html`<${PanelState} status="empty" label="running sessions"
@@ -136,9 +135,10 @@ function HealthPanel({ snap, connected, otelActive, alerts, selfStatus, onOpenTa
   const storage = useMemo(() => storageSummary(selfStatus), [selfStatus]);
   // undefined until the first check settles, so nothing flashes "not checked".
   const hiddenContext = hidden.updatedAt ? hidden.data : undefined;
+  const runningTools = useMemo(() => new Set((snap?.sessions || []).map(row => row.tool)), [snap]);
   const issues = useMemo(() => deriveIssues({
-    connected, snapAgeS, hooks: hooks.data, quality: quality.data, otelActive, alerts, storage, hiddenContext,
-  }), [connected, snapAgeS, hooks.data, quality.data, otelActive, alerts, storage, hiddenContext]);
+    connected, snapAgeS, hooks: hooks.data, quality: quality.data, otelActive, alerts, storage, runningTools, hiddenContext,
+  }), [connected, snapAgeS, hooks.data, quality.data, otelActive, alerts, storage, runningTools, hiddenContext]);
   const errors = issues.filter(i => i.level === 'error').length;
   const warns = issues.filter(i => i.level === 'warn').length;
   const loading = hooks.loading && !hooks.data && quality.loading && !quality.data;
