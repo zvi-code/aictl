@@ -56,10 +56,17 @@ export function orderIdsBySessionCount(sessions) {
 // Hosted by the vendor: nothing runs or is stored on this machine.
 const CLOUD_HOSTED_TOOLS = new Set(['copilot365']);
 
-/** A cloud-hosted tool with no local data at all. */
-export function cloudOnly(t) {
-  if (!t || !CLOUD_HOSTED_TOOLS.has(t.tool)) return false;
-  return !t.live?.session_count && !(t.files || []).length && !(t.processes || []).length;
+/**
+ * A tool with nothing local to read. Its config declares `local_data` when known;
+ * every flag false means sessions, tokens, cost and text cannot exist here, even
+ * if config files do. Live activity always outranks the declaration.
+ */
+export function cloudOnly(t, snap) {
+  if (!t) return false;
+  if (t.live?.session_count) return false;
+  const declared = snap?.tool_configs?.find(c => c.tool === t.tool)?.local_data;
+  if (declared && Object.keys(declared).length) return Object.values(declared).every(v => !v);
+  return CLOUD_HOSTED_TOOLS.has(t.tool) && !(t.files || []).length && !(t.processes || []).length;
 }
 
 /** True when the filter selects only tools with nothing local to show. */
@@ -67,7 +74,7 @@ export function scopeIsCloudOnly(snap, enabledTools) {
   if (!enabledTools?.length) return false;
   return enabledTools.every(id => {
     const row = snap?.tools?.find(t => t.tool === id);
-    return row ? cloudOnly(row) : CLOUD_HOSTED_TOOLS.has(id);
+    return row ? cloudOnly(row, snap) : CLOUD_HOSTED_TOOLS.has(id);
   });
 }
 

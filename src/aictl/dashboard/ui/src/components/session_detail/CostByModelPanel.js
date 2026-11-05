@@ -1,4 +1,5 @@
 import { html } from 'htm/preact';
+import { CostValue, costFigure } from '../../utils/cost.js';
 import { fmtK, esc } from '../../utils.js';
 import * as api from '../../api.js';
 import { useAsyncResource } from '../../hooks/useAsyncResource.js';
@@ -27,7 +28,7 @@ export default function CostByModelPanel({sessionId}) {
     <div class="es-kv mb-sm" style="gap:var(--sp-3)">
       <div class="es-kv-card"><div class="label">Models</div><div class="value">${models.length}</div></div>
       <div class="es-kv-card"><div class="label">Requests</div><div class="value">${totals.requests}</div></div>
-      <div class="es-kv-card" title="Estimated from token counts and list prices. Not a billed amount."><div class="label">Estimated total</div><div class="value">$${(totals.cost_usd || 0).toFixed(4)}</div></div>
+      <div class="es-kv-card" title="Estimated from token counts and list prices. Not a billed amount."><div class="label">Estimated total</div><div class="value"><${CostValue} row=${totals} digits=${4}/></div></div>
     </div>
     <div style="margin-top:var(--sp-2)">
       ${models.map((m, i) => {
@@ -37,11 +38,11 @@ export default function CostByModelPanel({sessionId}) {
           <div class="flex-row gap-sm" style="align-items:baseline;margin-bottom:2px">
             <span class="mono text-xs text-ellipsis" style="flex:1;min-width:0" title=${m.model}>${esc(m.model)}</span>
             <span class="text-xs text-muted" style="flex-shrink:0">${m.requests} req \u00b7 ${fmtK(tot)} tok</span>
-            <span class="text-xs mono" style="flex-shrink:0;width:64px;text-align:right">$${(m.cost_usd || 0).toFixed(4)}</span>
+            <span class="text-xs mono" style="flex-shrink:0;width:64px;text-align:right"><${CostValue} row=${m} digits=${4} showSub=${false}/></span>
           </div>
           <div class="overflow-hidden" style="height:8px;border-radius:3px;background:var(--border)">
             <div style="height:100%;width:${pct}%;background:var(--accent);border-radius:3px"
-              title="$${(m.cost_usd || 0).toFixed(4)}"></div>
+              title=${costFigure(m, 4).main}></div>
           </div>
           <div class="text-muted" style="font-size:var(--fs-xs);margin-top:2px">
             ${fmtK(m.input_tokens || 0)} in \u00b7 ${fmtK(m.output_tokens || 0)} out

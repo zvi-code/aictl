@@ -42,7 +42,7 @@ export default function ToolCard({tool: t, root}) {
       style="flex-wrap:wrap;row-gap:0.2rem">
       <span class="arrow" aria-hidden="true">\u25B6</span>
       <h2><span style="margin-right:var(--sp-2)"><${ToolIcon} tool=${t.tool} size="1em"/></span>${esc(t.label)}</h2>
-      ${cloudOnly(t)
+      ${cloudOnly(t, snapCtx)
         ? html`<span class="badge badge--muted">Not available from this machine</span>`
         : html`<span class="badge" data-dp="procs.tool.files">${t.files.length} files</span>
       <span class="badge" data-dp="procs.tool.tokens">${fmtK(tok)} tok</span>`}

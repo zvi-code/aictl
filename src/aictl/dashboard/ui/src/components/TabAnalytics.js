@@ -2,6 +2,7 @@ import { Fragment } from 'preact';
 import { useState, useEffect, useMemo, useContext } from 'preact/hooks';
 import { html } from 'htm/preact';
 import PanelState from './ui/PanelState.js';
+import AllToolsNote from './ui/AllToolsNote.js';
 import { shortPath } from '../utils/paths.js';
 import { SnapContext } from '../context.js';
 import { fmtK, fmtSz, fmtTime, fmtAgo } from '../utils.js';
@@ -329,6 +330,7 @@ export default function TabAnalytics() {
   const retry = () => setAttempt(n => n + 1);
 
   return html`<div class="analytics-grid">
+    <${AllToolsNote} enabledTools=${ctx?.enabledTools} what="Analytics"/>
     ${loading && !data && html`<${PanelState} status="loading" label="analytics" skeletonHeight="240px"/>`}
     ${error && !data && html`<${PanelState} status="error" error=${error} label="analytics" onRetry=${retry}/>`}
     ${error && data && html`<${PanelState} status="stale" error=${error} updatedAt=${updatedAt} onRetry=${retry}/>`}

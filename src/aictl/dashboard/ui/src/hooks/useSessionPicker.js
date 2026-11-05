@@ -4,7 +4,8 @@
 // dedupe the rows (cross-source duplicates), filter by the enabled-tools
 // selection, auto-select a tool and a session, and expose setters for the
 // pickers. This hook is the single copy of that block.
-import { useState, useEffect, useMemo } from 'preact/hooks';
+import { useState, useEffect, useMemo, useContext } from 'preact/hooks';
+import { SnapContext } from '../context.js';
 import { orderIdsBySessionCount } from '../utils/tools.js';
 import { dedupeSessions, findSessionRow } from '../selectors.js';
 import * as api from '../api.js';
@@ -33,13 +34,33 @@ import * as api from '../api.js';
  *   activeSessionId: string|null, setActiveSessionId: Function,
  * }}
  */
+/**
+ * Add live sessions to the timeline rows. The timeline endpoint reads history and
+ * hides short sessions with no file activity, so a session that just started can
+ * be running, and listed by the Overview, without any timeline row. A running
+ * session is never "short": it stays selectable until it ends.
+ */
+export function mergeLiveSessions(rows, live) {
+  if (!live?.length) return rows;
+  const extra = live
+    .filter(s => s.session_id && s.tool && !findSessionRow(rows, s.session_id))
+    .map(s => ({ ...s, active: true, live: true }));
+  if (!extra.length) return rows;
+  return [...rows, ...extra].sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
+}
+
 export default function useSessionPicker({
   globalRange = null,
   enabledTools = null,
   requestedSession = null,
   onRequestApplied = null,
 } = {}) {
-  const [sessions, setSessions] = useState([]);
+  const liveSessions = useContext(SnapContext)?.snap?.sessions;
+  const [timelineSessions, setSessions] = useState([]);
+  const sessions = useMemo(
+    () => mergeLiveSessions(timelineSessions, liveSessions),
+    [timelineSessions, liveSessions],
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [activeTool, setActiveTool] = useState(null);

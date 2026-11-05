@@ -277,7 +277,7 @@ function ActivityReport({ tool, hooksStatus }) {
 // Color-coded permission badge (auto=green, ask=orange, deny=red, n/a=muted)
 const PERM_STYLE = {
   auto: { color: 'var(--green)',  bg: 'var(--green-soft, #E6EFE3)', border: 'var(--green)' },
-  ask:  { color: 'var(--orange)', bg: 'color-mix(in srgb, var(--orange) 14%, var(--bg2))', border: 'var(--orange)' },
+  ask:  { color: 'var(--orange)', bg: 'transparent', border: 'var(--orange)' },
   deny: { color: 'var(--accent)', bg: 'var(--accent-soft)',          border: 'var(--accent)' },
   'n/a':{ color: 'var(--fg3)',    bg: 'transparent',                 border: 'var(--border)' },
 };
@@ -325,6 +325,7 @@ function derivePermissions(toolConfig) {
 
 // ─── Detail panel ────────────────────────────────────────────────
 function AgentDetail({ tool: t, toolConfig, hooksStatus, onViewSessions, onViewConfig, onEditConfig }) {
+  const snap   = useContext(SnapContext)?.snap;
   const l      = t.live || {};
   const procs  = t.processes || [];
   const mcps   = t.mcp_servers || [];
@@ -370,9 +371,9 @@ function AgentDetail({ tool: t, toolConfig, hooksStatus, onViewSessions, onViewC
     </div>
     ${notes && html`<div class="cagents-detail-notes">${notes}</div>`}
 
-    ${cloudOnly(t) && html`<${CloudOnlyNotice} tool=${t}/>`}
-    <div class="cagents-detail-section" hidden=${cloudOnly(t)}><${Rule} label="Stats"/></div>
-    <div class="cagents-stats-grid" hidden=${cloudOnly(t)}>
+    ${cloudOnly(t, snap) && html`<${CloudOnlyNotice} tool=${t}/>`}
+    <div class="cagents-detail-section" hidden=${cloudOnly(t, snap)}><${Rule} label="Stats"/></div>
+    <div class="cagents-stats-grid" hidden=${cloudOnly(t, snap)}>
       ${stats.map(([k, v]) => html`<${Stat} key=${k} label=${k} value=${v}/>`)}
     </div>
 

@@ -58,7 +58,7 @@ export default function CollectorHealth() {
           // Tokens
           inputTokens: telem?.input_tokens || 0,
           outputTokens: telem?.output_tokens || 0,
-          cost: telem?.cost_usd || 0,
+          cost: telem?.cost_usd ?? null,
           sessions: telem?.total_sessions || live.session_count || 0,
           // Health
           errors: telem?.errors?.length || 0,
