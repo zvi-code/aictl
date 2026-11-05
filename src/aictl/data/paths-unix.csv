@@ -240,3 +240,4 @@ $HOME/.copilot/copilot-instructions.md,copilot-cli,github,cli,all,yes,global,ins
 {vscode-user}/memories/*.md,copilot-vscode,github,vscode,all,yes,global,memory,yes,50-500,rw,n/a,n/a,every-call,,VS Code user-scoped memory files (auto-loaded first 200 lines),literal,workspace
 {vscode-user}/memories/repo/*.md,copilot-vscode,github,vscode,all,yes,session,memory,yes,50-500,rw,n/a,n/a,every-call,,VS Code repository-scoped memory files,literal,workspace
 {vscode-user}/memories/session/*.md,copilot-vscode,github,vscode,all,no,session,memory,partial,50-500,rw,n/a,no,session-start,,VS Code session-scoped memory (cleared at end),literal,workspace
+{project-root}/appPackage/instruction.txt,copilot365,microsoft,m365,all,no,project,agent,yes,200-2000,rw,yes,yes,runtime,,UNVERIFIED: separate instructions file some Agents Toolkit templates reference from declarativeAgent.json (not in the schema docs; the schema holds instructions inline up to 8000 chars),literal,cwd
