@@ -1956,3 +1956,27 @@ class TestSessionFlowPidCorrelation:
         # Scoped to the old window returns only the old session
         scoped_old = db.find_session_ids_by_pid(5555, since=ts_old - 60, until=ts_old + 7200)
         assert set(scoped_old) == {"old-session"}
+
+
+def test_an_unchanged_health_row_is_not_written_on_each_poll(tmp_path):
+    db = HistoryDB(tmp_path / "h.db")
+    for _ in range(3):
+        db.record_data_quality("ingester:x", "not_applicable", source="s")
+    assert db.query_data_quality(component="ingester:x")[0]["count"] == 1
+    db.record_data_quality("ingester:x", "failed", source="s")
+    assert db.query_data_quality(component="ingester:x")[0]["count"] == 2
+
+
+def test_a_write_in_progress_can_be_named(tmp_path):
+    db = HistoryDB(tmp_path / "h.db")
+    seen = []
+    original = db._conn
+
+    def spy():
+        seen.append(db.active_writes())
+        return original()
+
+    db._conn = spy
+    db.compact()
+    assert any("compact" in text for found in seen for text in found)
+    assert db.active_writes() == []
