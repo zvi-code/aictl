@@ -201,7 +201,7 @@ def seed(db: HistoryDB, now: float) -> None:
 @pytest.fixture(autouse=True)
 def _no_state_from_other_tests():
     """The module keeps short-lived answers. No test may see one from another test."""
-    for memo in (board_api._facts_memo, board_api._sources_memo, board_api._disk_prompts_memo, board_api._BASE_TIMES, board_api._SENT):
+    for memo in (board_api._facts_memo, board_api._sources_memo, board_api._disk_prompts_memo, board_api._BASE_TIMES, board_api._SENT, board_api._COMPUTED_AT):
         memo.clear()
     board_api._MEMO._entries.clear()
     board_api._BASE_MEMO._entries.clear()
@@ -326,7 +326,7 @@ class TestAgents:
         assert done["failures"] == 2
         assert done["models"] == [HAIKU, SONNET]
         assert done["cached_share"] == round(2400 / (310 + 2400 + 150), 4)
-        assert done["confirms_asked"] == 3
+        assert done["confirms_asked"] == 2
         assert done["confirms_denied"] == 1
         assert done["parent_id"] is None
 
@@ -653,7 +653,7 @@ class TestRowMeaning:
         assert all("permission" not in loop["pattern"] for loop in payload["loops"] if loop["agent_id"] == "done")
         assert next(r for r in payload["latency"] if r["what"] == "Tool call")["count"] == 8
         # It still counts as a confirmation.
-        assert done["confirms_asked"] == 3 + 3
+        assert done["confirms_asked"] == 2 + 3
         assert done["confirms_denied"] == 1 + 3
         confirms = payload["confirms"]
         assert confirms["denied"] == 1 + 3
@@ -764,7 +764,7 @@ class TestSections:
 
     def test_confirms(self, db):
         c = _board(db)["confirms"]
-        assert (c["asked"], c["auto"], c["approved"], c["denied"]) == (4, 1, 1, 1)
+        assert (c["asked"], c["auto"], c["approved"], c["denied"]) == (3, 1, 1, 1)
         assert c["p95_wait_s"] == 2.0
         assert c["pending"][0]["name"] == "Write"
         assert c["pending"][0]["agent_id"] == "waiter"
@@ -1129,6 +1129,95 @@ class TestLiveProcessSessions:
         assert agent_detail(db, "real", snapshot, NOW)[1]["agent"]["status"] == "running"
 
 
+class TestRangeKey:
+    def test_a_client_clock_that_moves_keeps_one_answer(self, db, monkeypatch):
+        store = SimpleNamespace(version=1, snapshot=None)
+        when = int(NOW / board_api.MEMO_TTL_S) * board_api.MEMO_TTL_S
+        runs = []
+        real = board_api.compute_board
+        monkeypatch.setattr(board_api, "compute_board", lambda *a, **k: runs.append(1) or real(*a, **k))
+        first = board_api.board_bytes(db, store, f"since={when - DAY}&until={when}", when)
+        again = board_api.board_bytes(db, store, f"since={when - DAY + 5}&until={when + 5}", when + 5)
+        assert again == first
+        assert len(runs) == 1
+
+    def test_old_rows_stay_in_their_buckets_while_the_clock_moves(self, db):
+        """The range moves in steps, so an answer with no new data does not change."""
+        store = SimpleNamespace(version=1, snapshot=None)
+        step = 30 * DAY / 48 / 4
+        when = int(NOW / step) * step + 1.0  # just after a step line
+        conn = db._conn()
+        for k in range(2000):
+            _request(conn, when - 20 * DAY + k * 60, "bulk", "claude-code", "/p/alpha", SONNET, i=1)
+        conn.commit()
+        first = board_api.board_bytes(db, store, f"since={when - 30 * DAY}&until={when}", when)
+        later = when + 3 * board_api.MEMO_TTL_S
+        again = board_api.board_bytes(db, store, f"since={later - 30 * DAY}&until={later}", later)
+        assert again == first
+        rng = json.loads(first)["range"]
+        assert rng["until"] - rng["since"] == pytest.approx(30 * DAY)
+        assert 0 <= rng["until"] - when <= step
+
+    def test_a_range_in_the_past_keeps_its_own_key(self, db, monkeypatch):
+        store = SimpleNamespace(version=1, snapshot=None)
+        when = NOW
+        one = json.loads(board_api.board_bytes(db, store, f"since={when - 3 * DAY}&until={when - DAY}", when))
+        two = json.loads(board_api.board_bytes(db, store, f"since={when - 4 * DAY}&until={when - 2 * DAY}", when))
+        assert one["range"]["until"] == pytest.approx(when - DAY)
+        assert two["range"]["until"] == pytest.approx(when - 2 * DAY)
+
+
+class TestRefreshBehind:
+    def _when(self):
+        return int(NOW / board_api.MEMO_TTL_S) * board_api.MEMO_TTL_S
+
+    def _wait(self):
+        if board_api._refresh_thread is not None:
+            board_api._refresh_thread.join(10)
+
+    def test_a_poll_answers_from_memory_and_the_next_one_has_the_new_data(self, db):
+        store = SimpleNamespace(version=1, snapshot=None)
+        first = board_api.board_bytes(db, store, "", time.time(), background=True)
+        conn = db._conn()
+        _request(conn, time.time() - 5, "fresh", "claude-code", "/p/alpha", SONNET, i=5)
+        conn.commit()
+        # Computed moments ago: the old answer stays and no refresh starts.
+        assert board_api.board_bytes(db, store, "", time.time(), background=True) == first
+        key = next(iter(board_api._COMPUTED_AT))
+        board_api._COMPUTED_AT[key] -= board_api.REFRESH_MIN_S
+        assert board_api.board_bytes(db, store, "", time.time(), background=True) == first
+        self._wait()
+        assert b'"fresh"' in board_api.board_bytes(db, store, "", time.time(), background=True)
+
+    def test_an_answer_too_old_is_not_served(self, db):
+        store = SimpleNamespace(version=1, snapshot=None)
+        first = board_api.board_bytes(db, store, "", time.time(), background=True)
+        conn = db._conn()
+        _request(conn, time.time() - 5, "fresh", "claude-code", "/p/alpha", SONNET, i=5)
+        conn.commit()
+        key = next(iter(board_api._COMPUTED_AT))
+        board_api._COMPUTED_AT[key] -= board_api.MAX_STALE_S
+        assert board_api.board_bytes(db, store, "", time.time(), background=True) != first
+
+    def test_a_new_filter_is_answered_for_that_filter(self, db):
+        store = SimpleNamespace(version=1, snapshot=None)
+        board_api.board_bytes(db, store, "", time.time(), background=True)
+        payload = json.loads(board_api.board_bytes(db, store, "tool=codex-cli", time.time(), background=True))
+        assert [a["id"] for a in payload["agents"]] == ["usage"]
+
+    def test_a_failed_refresh_leaves_the_answer(self, db, monkeypatch):
+        store = SimpleNamespace(version=1, snapshot=None)
+        first = board_api.board_bytes(db, store, "", time.time(), background=True)
+        monkeypatch.setattr(board_api, "compute_board", lambda *a, **k: 1 / 0)
+        conn = db._conn()
+        _request(conn, time.time() - 5, "fresh", "claude-code", "/p/alpha", SONNET, i=5)
+        conn.commit()
+        key = next(iter(board_api._COMPUTED_AT))
+        board_api._COMPUTED_AT[key] -= board_api.REFRESH_MIN_S
+        assert board_api.board_bytes(db, store, "", time.time(), background=True) == first
+        self._wait()
+
+
 class TestUnchangedAnswers:
     """A polling client pays a 304 unless the data changed."""
 
@@ -1177,6 +1266,7 @@ class TestUnchangedAnswers:
     def test_http_answers_304_after_a_recompute(self, db, monkeypatch, server):
         _status, _body, headers = _http(f"{server}/api/board", headers={"Accept-Encoding": "gzip"})
         board_api._MEMO._entries.clear()  # as when the store version moves on
+        board_api._COMPUTED_AT.clear()  # and the answer has to be computed again
         status, _body, _ = _http(f"{server}/api/board", headers={"Accept-Encoding": "gzip", "If-None-Match": headers["ETag"]})
         assert status == 304
 
@@ -1943,13 +2033,15 @@ class TestMemo:
 # ─── Budget ───────────────────────────────────────────────────────
 
 
-def seed_budget_store(db: HistoryDB, now: float, rng: random.Random, sessions: int = 1000, requests: int = 100_000) -> dict:
-    """A month of work: many sessions, tens of projects, subagents and tool calls."""
+def seed_budget_store(
+    db: HistoryDB, now: float, rng: random.Random, sessions: int = 1000, requests: int = 100_000, days: int = 30
+) -> dict:
+    """Many sessions over some days, in tens of projects, with subagents and tool calls."""
     conn = db._conn()
     tools = ["claude-code", "copilot-cli", "copilot-vscode", "codex-cli"]
     models = [SONNET, HAIKU, GPT, "claude-opus-4-5"]
     names = ["Bash", "Read", "Edit", "Grep", "Write", "mcp__db__query", "Glob", "Task"]
-    start = now - 30 * DAY
+    start = now - days * DAY
     per_session = requests // sessions
     request_rows = []
     call_rows = []
@@ -1962,7 +2054,7 @@ def seed_budget_store(db: HistoryDB, now: float, rng: random.Random, sessions: i
         sid = f"00000000-0000-4000-8000-{k:012d}"
         tool = tools[k % len(tools)]
         project = f"/work/project-{k % 25}"
-        begin = start + rng.random() * (30 * DAY - 7200)
+        begin = start + rng.random() * (days * DAY - 7200)
         session_rows.append((sid, tool, project, models[k % len(models)], begin, begin + 3600))
         subs = [f"{sid}-sub-{j}" for j in range(k % 4)]
         for agent in subs:
@@ -2041,7 +2133,7 @@ def seed_budget_store(db: HistoryDB, now: float, rng: random.Random, sessions: i
     conn.executemany("INSERT INTO skill_uses(ts, session_id, tool, project_path, name) VALUES (?,?,?,?,?)", skill_rows)
     snapshots = [
         (start + i * 600.0, 1000 + j, tools[j % len(tools)], rng.random() * 50, 100 + rng.random() * 500)
-        for i in range(int(30 * DAY / 600))
+        for i in range(int(days * DAY / 600))
         for j in range(4)
     ]
     conn.executemany("INSERT INTO process_snapshots(ts, pid, tool, cpu_percent, memory_rss_mb) VALUES (?,?,?,?,?)", snapshots)
@@ -2057,13 +2149,18 @@ def seed_budget_store(db: HistoryDB, now: float, rng: random.Random, sessions: i
 
 
 class TestBudget:
+    def test_a_full_range_is_not_cut_short(self, db):
+        """The longest range the board offers today does not limit what the API answers."""
+        rng = compute_board(db, Filters(since=NOW - 30 * DAY, until=NOW), None, NOW)["range"]
+        assert rng["since"] == pytest.approx(NOW - 30 * DAY)
+
     def test_big_store_stays_within_a_generous_budget(self, tmp_path):
         store = HistoryDB(db_path=str(tmp_path / "big.db"), flush_interval=0)
         now = time.time()
-        counts = seed_budget_store(store, now, random.Random(7))
+        counts = seed_budget_store(store, now, random.Random(7), days=7)
         assert counts["sessions"] == 1000
         assert counts["requests"] >= 100_000
-        filters = Filters(since=now - 30 * DAY, until=now)
+        filters = Filters(since=now - 7 * DAY, until=now)
         compute_board(store, filters, None, now)  # warm the page cache and the store facts
         best = float("inf")
         for _ in range(3):

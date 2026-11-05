@@ -72,6 +72,10 @@ MAX_TURN_SAMPLE = 500
 SELF_TTL_S = 10.0
 # An answer that differs only in clock-driven or live load numbers is served again for this long.
 RESEND_AFTER_S = 60.0
+# A polled answer comes from memory: a newer one is computed behind it, this often at most.
+REFRESH_MIN_S = 10.0
+MAX_STALE_S = 60.0
+CLOCK_RANGE_SLACK_S = 120.0
 MEMO_TTL_S = 15.0
 MEMO_MAX_KEYS = 8
 FACTS_TTL_S = 60.0
@@ -725,7 +729,7 @@ class _Board:
         where, params = self._window()
         rows = self.conn.execute(
             f"SELECT session_id, agent_id, SUM({_IS_CALL_SQL}), SUM(is_error AND {_IS_CALL_SQL}),"
-            " SUM(confirm <> ''), SUM(confirm = 'denied'), SUM(confirm = 'pending'),"
+            " SUM(confirm IN ('approved', 'denied', 'pending')), SUM(confirm = 'denied'), SUM(confirm = 'pending'),"
             f" MIN(ts), MAX(ts), MAX(CASE WHEN is_error AND {_IS_CALL_SQL} THEN ts END), tool, project_path"
             f" FROM {self._source('tool_invocations')} WHERE {where} GROUP BY session_id, agent_id",
             params,
@@ -1892,7 +1896,8 @@ def _confirms_section(board: _Board) -> dict:
     ]
     p95 = _percentile(all_waits, 0.95)
     return {
-        "asked": sum(counts.values()) if reported else None,
+        # A call the tool let through on its own was not asked.
+        "asked": sum(n for kind, n in counts.items() if kind != "auto") if reported else None,
         "auto": counts["auto"] if reported else None,
         "approved": counts["approved"] if reported else None,
         "denied": counts["denied"] if reported else None,
@@ -2942,6 +2947,8 @@ def compute_board(
         "tests": tests,
         "memory_files": _memory_files(board),
         "processes": _processes(board),
+        # Names for tools that have processes but no activity in this range.
+        "tool_labels": {t["tool"]: _label(t["tool"]) for t in _processes(board)},
         "sources": _sources(_source_rows(conn, memo_key), tool_order or option_tools, selected),
         "coverage": {"rows": coverage_rows(facts, option_tools)},
         "self": _self_section(db),
@@ -3447,6 +3454,9 @@ _MEMO = _Memo()
 _BASE_MEMO = _BaseMemo()
 _BASE_TIMES: dict[tuple, tuple[float, float, float]] = {}
 _SENT: dict[tuple, tuple[str, float, bytes]] = {}
+_COMPUTED_AT: dict[tuple, float] = {}
+_refresh_lock = threading.Lock()
+_refresh_thread: threading.Thread | None = None
 _COMPUTE_LOCK = threading.Lock()
 
 
@@ -3472,56 +3482,107 @@ def _store_version(db: Any, now: float) -> tuple:
 
 def _change_digest(payload: dict) -> str:
     """A digest that ignores what moves with the clock or with live load alone."""
-    stable = {k: v for k, v in payload.items() if k not in ("generated_at", "range", "self", "processes", "series", "agents")}
+    stable = {k: v for k, v in payload.items() if k not in ("generated_at", "range", "self", "processes", "tool_labels", "series", "agents")}
     stable["series"] = {k: v for k, v in payload["series"].items() if k not in ("cpu", "mem")}
     stable["agents"] = [{k: v for k, v in row.items() if k not in ("cpu_percent", "mem_mb")} for row in payload["agents"]]
     return hashlib.blake2b(json.dumps(stable).encode("utf-8"), digest_size=16).hexdigest()
 
 
-def board_bytes(db: Any, store: Any, query: str, now: float | None = None) -> bytes:
+def board_bytes(db: Any, store: Any, query: str, now: float | None = None, background: bool = False) -> bytes:
     """The answer for ``/api/board``, reused while the store and the filters stay the same.
 
     A recomputed answer with no change in its data returns the earlier bytes, so a
     polling client gets a 304. It is sent anew after RESEND_AFTER_S for the clock and
     the live load numbers.
+
+    With *background*, a filter key that was answered recently answers from memory
+    at once and a newer answer is computed behind it, as the analytics cache does.
     """
     now = time.time() if now is None else now
     filters = parse_filters(query, now)
-    # A range that follows the clock keeps one key.
-    qs = parse_qs(query, keep_blank_values=True)
+    # A range that ends about now follows the clock, whether the client says so or sends
+    # its own clock: it keeps one key, by the range's length.
     key_filters = filters
-    if "until" not in qs:
-        key_filters = replace(filters, until=0.0, since=filters.since if "since" in qs else DEFAULT_RANGE_S)
+    if abs(now - filters.until) <= CLOCK_RANGE_SLACK_S:
+        key_filters = replace(filters, until=0.0, since=float(round((filters.until - filters.since) / 60.0)))
     version = _store_version(db, now)
     path = str(getattr(db, "_path", ""))
-    key = (path, key_filters, version)
-    body = _MEMO.get(key)
+    body = _MEMO.get((path, key_filters, version))
     if body is not None:
         return body
+    if background:
+        sent = _SENT.get((path, key_filters))
+        computed = _COMPUTED_AT.get((path, key_filters))
+        if sent is not None and computed is not None and now - computed < MAX_STALE_S:
+            if now - computed >= REFRESH_MIN_S:
+                _refresh_behind(db, store, query, key_filters, version)
+            return sent[2]
+    return _compute_bytes(db, store, query, key_filters, version, now)
+
+
+def _clock_range(filters: Filters) -> Filters:
+    """A range that follows the clock, moved in steps of a quarter bucket.
+
+    Moved every second, old rows would cross bucket lines on every read, and an
+    answer with no new data would still differ from the last one.
+    """
+    span = 60.0 * round((filters.until - filters.since) / 60.0)
+    step = max(MEMO_TTL_S, span / filters.buckets / 4)
+    until = math.ceil(filters.until / step) * step
+    return replace(filters, since=until - span, until=until)
+
+
+def _compute_bytes(db: Any, store: Any, query: str, key_filters: Filters, version: tuple, now: float) -> bytes:
+    path = str(getattr(db, "_path", ""))
+    key = (path, key_filters, version)
+    filters = parse_filters(query, now)
+    if key_filters.until == 0.0:
+        filters = _clock_range(filters)
     with _COMPUTE_LOCK:
         body = _MEMO.get(key)
-        if body is None:
-            base_key = (path, key_filters.since, key_filters.until, filters.buckets, version)
-            stamp = _BASE_TIMES.get(base_key)
-            if stamp is not None:
-                # One read of the window means one grid, so the filters take its exact range.
-                filters = replace(filters, since=stamp[0], until=stamp[1])
-                now = stamp[2]
-            else:
-                _BASE_TIMES.clear()
-                _BASE_TIMES[base_key] = (filters.since, filters.until, now)
-            payload = compute_board(db, filters, getattr(store, "snapshot", None), now, _BASE_MEMO, base_key)
-            digest = _change_digest(payload)
-            sent = _SENT.get((path, key_filters))
-            if sent is not None and sent[0] == digest and now - sent[1] < RESEND_AFTER_S:
-                body = sent[2]
-            else:
-                body = json.dumps(payload).encode("utf-8")
-                _SENT[(path, key_filters)] = (digest, now, body)
-                while len(_SENT) > MEMO_MAX_KEYS:
-                    _SENT.pop(next(iter(_SENT)))
-            _MEMO.put(key, body)
+        if body is not None:
+            return body
+        base_key = (path, key_filters.since, key_filters.until, filters.buckets, version)
+        stamp = _BASE_TIMES.get(base_key)
+        if stamp is not None:
+            # One read of the window means one grid, so the filters take its exact range.
+            filters = replace(filters, since=stamp[0], until=stamp[1])
+            now = stamp[2]
+        else:
+            _BASE_TIMES.clear()
+            _BASE_TIMES[base_key] = (filters.since, filters.until, now)
+        payload = compute_board(db, filters, getattr(store, "snapshot", None), now, _BASE_MEMO, base_key)
+        digest = _change_digest(payload)
+        sent = _SENT.get((path, key_filters))
+        if sent is not None and sent[0] == digest and now - sent[1] < RESEND_AFTER_S:
+            body = sent[2]
+        else:
+            body = json.dumps(payload).encode("utf-8")
+            _SENT[(path, key_filters)] = (digest, now, body)
+            while len(_SENT) > MEMO_MAX_KEYS:
+                _SENT.pop(next(iter(_SENT)))
+        _COMPUTED_AT[(path, key_filters)] = now
+        while len(_COMPUTED_AT) > MEMO_MAX_KEYS:
+            _COMPUTED_AT.pop(next(iter(_COMPUTED_AT)))
+        _MEMO.put(key, body)
     return body
+
+
+def _refresh_behind(db: Any, store: Any, query: str, key_filters: Filters, version: tuple) -> None:
+    """Compute a newer answer on one background thread. A running refresh is not doubled."""
+    global _refresh_thread
+
+    def run() -> None:
+        try:
+            _compute_bytes(db, store, query, key_filters, version, time.time())
+        except Exception:  # noqa: BLE001 - the next request reports a failure; this thread has no client
+            logger.debug("Board refresh failed", exc_info=True)
+
+    with _refresh_lock:
+        if _refresh_thread is not None and _refresh_thread.is_alive():
+            return
+        _refresh_thread = threading.Thread(target=run, daemon=True, name="board-refresh")
+        _refresh_thread.start()
 
 
 def handle_get(path: str, query: str, db: Any, store: Any, now: float | None = None) -> tuple[int, bytes]:
@@ -3535,7 +3596,7 @@ def handle_get(path: str, query: str, db: Any, store: Any, now: float | None = N
 
     try:
         if path == "/api/board":
-            return 200, board_bytes(db, store, query, now)
+            return 200, board_bytes(db, store, query, now, background=True)
         snapshot = getattr(store, "snapshot", None)
         if path == "/api/board/agent":
             status, payload = agent_detail(db, one("id"), snapshot, now) if one("id") else (400, {"error": "Missing id"})

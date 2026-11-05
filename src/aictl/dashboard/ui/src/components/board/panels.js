@@ -15,6 +15,9 @@ const pctBar = (v, mx) => (v && mx ? (v / mx) * 100 : 0);
 const lastVal = vals => { for (let i = vals.length - 1; i >= 0; i--) if (vals[i] !== null && vals[i] !== undefined) return vals[i]; return null; };
 const OVER_SERIES = 5;
 
+/** A model name without its vendor prefix; the full name stays in the hover text. */
+export const shortModel = m => String(m || '').replace(/^claude-/, '');
+
 export const openAgent = (ctx, id, tab = 'overview', reset = true) => () => ctx.actions.openDrawer({ type: 'agent', id, tab }, reset);
 
 function agentCell(ctx, a, level, foldOn, foldOpen, onFold) {
@@ -63,7 +66,9 @@ function panelAttention(ctx) {
 
 function panelAgents(ctx, local, pid) {
   const group = local.mode('group', 'none');
-  const { agents } = ctx.data;
+  // A tool process with no session data is listed under Processes, not as an agent.
+  const noData = ctx.data.agents.filter(a => a.placeholder).length;
+  const agents = ctx.data.agents.filter(a => !a.placeholder);
   const folded = local.folded;
   const setFold = local.setFold;
   const nowS = ctx.nowS;
@@ -82,7 +87,7 @@ function panelAgents(ctx, local, pid) {
     const pendingOn = a.pending && st === 'waiting';
     const models = (a.models || []).join(', ');
     return {
-      id: a.id, parentId: a.parent_id, level, go: openAgent(ctx, a.id), groupKey: key,
+      id: a.id, parentId: a.parent_id, level, go: a.placeholder ? null : openAgent(ctx, a.id), groupKey: key,
       sort: {
         _cr: a.cache_read, _in: num(a.cache_read) + num(a.input) + num(a.cache_write),
         name: a.title, st: meta.rank + (a.started_at ? (nowS - a.started_at) / 1e9 : 0), tool: a.tool, project: a.project, model: models,
@@ -94,7 +99,7 @@ function panelAgents(ctx, local, pid) {
         st: statusCell(a, ctx.stopped),
         tool: { v: ctx.toolName(a.tool), cls: 'dim' },
         project: { v: projectName(a.project), cls: 'dim', title: a.project || NA },
-        model: { v: models || NA, title: models },
+        model: { v: (a.models || []).map(shortModel).join(', ') || NA, title: models },
         msgs: { v: a.msgs ? fmtN(a.msgs.user + a.msgs.assistant + a.msgs.tool) : NA, title: a.msgs ? a.msgs.user + ' user, ' + a.msgs.assistant + ' assistant, ' + a.msgs.tool + ' tool' : NA },
         input: { v: fmtN(a.input), title: 'Input without cache' },
         output: { v: fmtN(a.output) },
@@ -116,7 +121,7 @@ function panelAgents(ctx, local, pid) {
     if (!folded[a.id]) (kids.get(a.id) || []).forEach(k => rows.push(makeRow(k, 1)));
   });
   const cols = [
-    { k: 'name', l: 'Agent', w: '236px', fixed: true }, { k: 'st', l: 'Status', w: '84px' }, { k: 'tool', l: 'Tool', w: '104px' }, { k: 'project', l: 'Project', w: '92px' }, { k: 'model', l: 'Model', w: '92px' },
+    { k: 'name', l: 'Agent', w: '226px', fixed: true }, { k: 'st', l: 'Status', w: '84px' }, { k: 'tool', l: 'Tool', w: '104px' }, { k: 'project', l: 'Project', w: '92px' }, { k: 'model', l: 'Model', w: '92px' },
     { k: 'msgs', l: 'Msgs', n: true, w: '48px', t: 'User, assistant and tool messages' }, { k: 'input', l: 'Input', n: true, w: '56px', t: 'Input tokens without cache' }, { k: 'output', l: 'Output', n: true, w: '56px' },
     { k: 'cr', l: 'Cached', n: true, w: '54px', t: 'Cache read as a share of all input' }, { k: 'cost', l: 'Cost', n: true, w: '58px' }, { k: 'calls', l: 'Tools', n: true, w: '46px', t: 'Tool calls' },
     { k: 'fails', l: 'Fail', n: true, w: '38px', t: 'Failed tool calls' }, { k: 'asked', l: 'Asked', n: true, w: '46px', t: 'Confirmations asked' }, { k: 'cpu', l: 'CPU', n: true, w: '44px' }, { k: 'mem', l: 'RAM', n: true, w: '62px' }, { k: 'dur', l: 'Time', n: true, w: '70px', t: 'Duration' }, { k: 'spark', l: 'Activity', w: '56px' },
@@ -141,7 +146,7 @@ function panelAgents(ctx, local, pid) {
   const liveN = roots.filter(a => isLive(ctx.stopped[a.id] ? 'stopped' : a.status)).length;
   const kidCount = agents.length - roots.length;
   return {
-    sub: liveN + ' running, ' + (roots.length - liveN) + ' ended, ' + kidCount + ' subagents',
+    sub: liveN + ' running, ' + (roots.length - liveN) + ' ended, ' + kidCount + ' subagents' + (noData ? ', ' + noData + ' with processes only' : ''),
     modes: [{ key: 'group', label: 'Group agents by', def: 'none', items: [['none', 'No groups'], ['project', 'Project'], ['tool', 'Tool'], ['model', 'Model']] }],
     hasCols: true,
     table: { cols, rows, tree: true, sort: { k: 'st', dir: 'asc' }, columns: true, limit: 60, groupRow, none: 'No agents match these filters.', pid },
@@ -165,7 +170,7 @@ function panelByModel(ctx, local) {
     const open = !!local.folded['m:' + m.model];
     const c = colorFor('model', m.model);
     const r = line(m, c);
-    r.cells.m = { v: m.model, sw: c, foldOn: true, foldOpen: open, foldLabel: open ? 'Fold the agents' : 'Unfold the agents', fold: () => local.setFold('m:' + m.model, !open), title: 'Click to filter by ' + m.model };
+    r.cells.m = { v: shortModel(m.model), sw: c, foldOn: true, foldOpen: open, foldLabel: open ? 'Fold the agents' : 'Unfold the agents', fold: () => local.setFold('m:' + m.model, !open), title: 'Click to filter by ' + m.model };
     r.sort.m = m.model;
     rows.push({ ...r, id: m.model, go: () => ctx.actions.toggleFilter('model', m.model) });
     if (open) {
@@ -187,7 +192,7 @@ function panelByModel(ctx, local) {
   return {
     sub: list.length + ' models. Click a row to filter, or unfold it for the agents',
     table: {
-      cols: [{ k: 'm', l: 'Model' }, { k: 'ag', l: 'Agents', n: true, w: '48px' }, { k: 'msgs', l: 'Msgs', n: true, w: '48px' }, { k: 'tokens', l: 'Tokens', n: true, w: '110px' }, { k: 'input', l: 'Input', n: true, w: '56px' }, { k: 'output', l: 'Output', n: true, w: '56px' }, { k: 'cr', l: 'Cache read', n: true, w: '68px' }, { k: 'cw', l: 'Cache write', n: true, w: '72px' }, { k: 'sh', l: 'Cached', n: true, w: '52px' }, { k: 'cost', l: 'Cost', n: true, w: '58px' }, { k: 'p95', l: 'p95 reply', n: true, w: '62px' }],
+      cols: [{ k: 'm', l: 'Model' }, { k: 'ag', l: 'Agents', n: true, w: '48px' }, { k: 'msgs', l: 'Msgs', n: true, w: '48px' }, { k: 'tokens', l: 'Tokens', n: true, w: '104px' }, { k: 'input', l: 'Input', n: true, w: '56px' }, { k: 'output', l: 'Output', n: true, w: '56px' }, { k: 'cr', l: 'Cache read', n: true, w: '68px' }, { k: 'cw', l: 'Cache write', n: true, w: '72px' }, { k: 'sh', l: 'Cached', n: true, w: '52px' }, { k: 'cost', l: 'Cost', n: true, w: '58px' }, { k: 'p95', l: 'p95 reply', n: true, w: '62px' }],
       rows, tree: true, sort: { k: 'tokens', dir: 'desc' },
     },
   };
@@ -518,8 +523,10 @@ const LAST_MEM = s => fmtMem(lastVal(s.vals));
 
 function panelProcs(ctx) {
   const list = ctx.data.processes;
+  // A process with no session data has no detail to open.
+  const noDetail = new Set(ctx.data.agents.filter(a => a.placeholder).map(a => a.id));
   const rows = list.map((p, i) => ({
-    id: p.pid + ':' + i, go: p.agent_id ? openAgent(ctx, p.agent_id) : null,
+    id: p.pid + ':' + i, go: p.agent_id && !noDetail.has(p.agent_id) ? openAgent(ctx, p.agent_id) : null,
     sort: { name: p.name, cpu: p.cpu_percent, mem: p.mem_mb, a: p.title, pid: p.pid },
     cells: { name: { v: p.name, cls: 'm' }, pid: { v: p.pid ?? NA, cls: 'dim' }, tool: { v: ctx.toolName(p.tool), sw: colorFor('tool', p.tool) }, a: { v: p.title || NA, cls: 'dim' }, cpu: { v: fmtCpu(p.cpu_percent) }, mem: { v: fmtMem(p.mem_mb) } },
   }));

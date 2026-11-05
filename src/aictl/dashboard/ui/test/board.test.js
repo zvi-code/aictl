@@ -582,3 +582,23 @@ describe('board screen', () => {
     expect(res.violations.map(v => v.id + ': ' + v.nodes[0].html.slice(0, 120))).toEqual([]);
   }, 30000);
 });
+
+describe('rows with no session data', () => {
+  const placeholder = { id: 'live:t:/p', title: 't, no session data yet', status: 'running', tool: 't', project: '/p', placeholder: true };
+  const ctxWith = (agents, processes = []) => ({
+    data: { agents, processes }, stopped: {}, nowS: 1000, toolName: id => id, actions: { openDrawer: () => {} }, filters: {},
+  });
+  const local = { mode: (_k, d) => d, folded: {}, setFold: () => {} };
+
+  it('stay out of the agents table and are counted in its subtitle', () => {
+    const p = buildPanel('agentsT', ctxWith([placeholder]), local, { id: 'agentsT' });
+    expect(p.table.rows).toHaveLength(0);
+    expect(p.sub).toContain('1 with processes only');
+  });
+
+  it('have no detail to open from the processes table', () => {
+    const proc = { name: 'node', pid: 1, tool: 't', agent_id: placeholder.id, title: placeholder.title, cpu_percent: 1, mem_mb: 1 };
+    const p = buildPanel('procs', ctxWith([placeholder], [proc]), local, { id: 'procs' });
+    expect(p.table.rows[0].go).toBeNull();
+  });
+});
