@@ -31,8 +31,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from ..platforms import IS_WINDOWS
 from ..orchestrator import AllowedPaths, SnapshotStore
+from ..platforms import IS_WINDOWS
 from ..storage import EventRow, FileWriteRow, SessionRow, ToolInvocationRow
 from .analytics import (  # noqa: F401 — re-exports
     _AnalyticsCache,

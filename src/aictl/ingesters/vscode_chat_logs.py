@@ -87,7 +87,7 @@ class VSCodeChatLogsIngester:
     def __init__(
         self,
         log_dir: Path | str | None,
-        our_store: "HistoryDB",
+        our_store: HistoryDB,
         last_cursor: dict[str, tuple[float, int]] | None = None,
     ) -> None:
         self.log_dir = Path(log_dir).expanduser() if log_dir else default_log_dir()

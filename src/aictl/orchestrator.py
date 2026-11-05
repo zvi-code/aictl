@@ -71,7 +71,6 @@ class PersistentMonitor:
     def _run(self) -> None:
         from .monitoring.config import MonitorConfig
         from .monitoring.runtime import MonitorRuntime
-
         from .platforms import config_dir, load_config
 
         cfg = load_config()
@@ -588,9 +587,8 @@ class CollectionService:
 
         # SQLite persistence
         try:
-            from .storage import HistoryDB
-
             from .platforms import load_config as _load_config
+            from .storage import HistoryDB
 
             store_cfg = _load_config()
             log_paths = [store_cfg.effective_log_file()]

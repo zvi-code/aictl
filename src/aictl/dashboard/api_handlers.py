@@ -13,15 +13,14 @@ import json
 import re
 import time
 from collections import Counter
-from datetime import datetime, timezone
 
 from ..data.model_pricing import context_window_for, resolve_pricing
 from ..data.provenance import combine_cost_quality, combine_tokens_quality, row_provenance
+from ..data.token_usage import TokenUsage
 from ..ingesters._common import decode_file_uri, project_key
 from ..ingesters.transcript_usage import local_day
-from .analytics import compute_usage_summary, window_sessions
-from ..data.token_usage import TokenUsage
 from ..tools import compute_token_budget
+from .analytics import compute_usage_summary, window_sessions
 from .models import _slim_agent_teams
 from .otel_receiver import API_ERROR_EVENTS, API_REQUEST_EVENTS, _num
 from .session_flow import build_session_flow

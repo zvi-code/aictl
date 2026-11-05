@@ -9,12 +9,12 @@ and writes .context.toml files at the appropriate directory levels.
 from __future__ import annotations
 
 import json
-import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import tomli_w
+import tomllib
 
 from .context import AICTX_FILENAME
 from .importers import (

@@ -97,7 +97,7 @@ def _extract_server_name(ev: Any) -> str:
     return ""
 
 
-def session_mcp_calls(db: "HistoryDB", session_id: str, limit: int = 2000) -> list[dict]:
+def session_mcp_calls(db: HistoryDB, session_id: str, limit: int = 2000) -> list[dict]:
     """Aggregate MCP server calls observed during *session_id*.
 
     Returns one dict per distinct server:
