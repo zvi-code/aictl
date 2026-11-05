@@ -59,7 +59,7 @@ class AuditCache:
 
         try:
             self.get(project, tool, refresh=True, progress=progress)
-        except Exception as exc:  # the panel shows this instead of waiting for ever
+        except Exception as exc:  # noqa: BLE001 - the panel shows this instead of waiting for ever
             with self._lock:
                 self._errors[key] = f"{type(exc).__name__}: {exc}"
         finally:
