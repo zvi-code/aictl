@@ -1082,6 +1082,8 @@ def _collect_hook_status(scope: str) -> dict:
         elif not rules and renamed:
             state = "disabled-by-rename"
             fix = "to remove it: aictl disable; to turn hooks back on: aictl enable --replace-disabled"
+        elif not rules and tool != "copilot" and not path.exists() and _tool_folder_missing(path, scope):
+            state, fix = "not-installed", ""
         elif not rules:
             state, fix = "not-registered", ""
         elif problems:
@@ -1116,7 +1118,7 @@ def _collect_hook_status(scope: str) -> dict:
         "leftovers": leftovers.changes,
         "notes": leftovers.notes,
         "ok": not invalid
-        and not any(t["state"] not in ("registered", "not-registered", "disabled-by-rename") for t in tools),
+        and not any(t["state"] not in ("registered", "not-registered", "not-installed", "disabled-by-rename") for t in tools),
     }
 
 
@@ -1405,7 +1407,7 @@ def enable(port: int | None, tool: str, profile: str | None, print_only: bool, s
     tools = list(_ALL_OTEL_TOOLS) if tool == "all" else [tool]
 
     actions: list[str] = []
-    _enable_otel(port, actions, tools=tools, profile=profile, force=force)
+    _enable_otel(port, actions, tools=tools, profile=profile, force=force, create_missing=tool != "all")
 
     # ── Summary ────────────────────────────────────────────────
     failures = [a for a in actions if "FAILED" in a]
@@ -1906,14 +1908,28 @@ def _gemini_settings_path(scope: str) -> Path:
     return gemini_global_dir() / "settings.json"
 
 
+def _tool_folder_missing(path: Path, scope: str) -> bool:
+    """True when a user-scope config file's folder is absent, so the tool is not installed.
+
+    Registering must not create a tool's folder: that would leave a stray
+    ``~/.gemini`` or ``~/.claude`` behind for a tool the machine does not have.
+    Project scope keeps creating its folders.
+    """
+    return scope == "user" and not path.parent.is_dir()
+
+
 def _install_hooks(scope: str, port: int, actions: list[str], *, force: bool = False) -> None:
     """Register hooks for every supported tool, one file and one rule builder per tool.
 
     A tool whose file cannot be used is reported as FAILED and the others still
-    get registered.
+    get registered. At user scope a tool whose folder does not exist is skipped
+    (Copilot's ``~/.copilot/hooks`` is exempt: VS Code reads it without a CLI).
     """
 
     def register(label: str, path: Path, rules: dict, count: int, **top_level: object) -> None:
+        if _tool_folder_missing(path, scope):
+            actions.append(f"{label} hooks skipped: {path.parent} does not exist (tool not installed)")
+            return
         try:
             _register_hook_file(path, rules, force=force, **top_level)
             actions.append(f"{label} hooks ({count} events) → {path}")
@@ -1953,8 +1969,12 @@ def _enable_otel(
     tools: list[str] | tuple[str, ...] | None = None,
     profile: str | None = None,
     force: bool = False,
+    create_missing: bool = False,
 ) -> None:
     """Enable OTel export for *tools* (default: all) and report actions.
+
+    VS Code's settings file is created only when *create_missing* is set, which
+    ``aictl otel enable --tool copilot`` does because the tool was named.
 
     The single implementation behind both ``aictl otel enable`` and
     ``aictl enable``: env vars (shell profiles / setx / launchctl), Copilot's
@@ -1988,8 +2008,11 @@ def _enable_otel(
     if "copilot" in tools:
         try:
             settings_path = vscode_user_dir() / "settings.json"
-            status = _write_json_settings(settings_path, _copilot_otel_settings(endpoint), force=force)
-            actions.append(f"Copilot OTel → VS Code settings.json ({status})")
+            if not create_missing and not settings_path.parent.is_dir():
+                actions.append(f"Copilot OTel skipped: {settings_path.parent} does not exist (VS Code not installed)")
+            else:
+                status = _write_json_settings(settings_path, _copilot_otel_settings(endpoint), force=force)
+                actions.append(f"Copilot OTel → VS Code settings.json ({status})")
         except Exception as exc:  # noqa: BLE001 — best-effort integration; FAILED is reported and exits 1
             actions.append(f"Copilot OTel → VS Code settings.json FAILED ({exc})")
 
@@ -2016,6 +2039,9 @@ def _enable_vscode(scope: str, port: int, actions: list[str], *, force: bool = F
 
     if scope == "project" and _would_be_committed(settings_path):
         actions.append(f"VS Code agent settings skipped: {settings_path} is not gitignored")
+        return
+    if _tool_folder_missing(settings_path, scope):
+        actions.append(f"VS Code agent settings skipped: {settings_path.parent} does not exist (VS Code not installed)")
         return
     try:
         updates = dict(_VSCODE_AGENT_SETTINGS)
