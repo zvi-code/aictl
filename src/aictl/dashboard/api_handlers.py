@@ -15,7 +15,10 @@ import time
 from collections import Counter
 from datetime import datetime, timezone
 
-from ..data.model_pricing import resolve_pricing
+from ..data.model_pricing import context_window_for, resolve_pricing
+from ..data.provenance import combine_cost_quality, combine_tokens_quality, row_provenance
+from ..ingesters.transcript_usage import local_day
+from .analytics import compute_usage_summary, window_sessions
 from ..data.token_usage import TokenUsage
 from ..tools import compute_token_budget
 from .models import _slim_agent_teams
@@ -88,6 +91,9 @@ def _match_live_session(profile: dict, live_sessions: list[dict]) -> dict | None
     for live in live_sessions:
         if live.get("tool") != profile.get("tool"):
             continue
+        l_uuid = _session_uuid(live.get("session_id", ""))
+        if p_uuid and l_uuid and p_uuid != l_uuid:
+            continue  # a sibling in the same cwd, not this session
         l_start = float(live.get("started_at", 0) or 0)
         if l_start <= 0:
             continue  # no reliable window to compare against
@@ -173,6 +179,9 @@ def _db_session_lifecycle_status(row: dict, entity_state: object | None = None) 
     if row.get("source", "") in _IMPORTED_SESSION_SOURCES:
         return "imported", False
     return "open", False
+
+
+_USAGE_TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens")
 
 
 # ─── Budget cache ────────────────────────────────────────────────
@@ -941,92 +950,143 @@ class _APIHandlersMixin:
 
         self._json_response(result)
 
+    def _serve_usage(self) -> None:
+        """Headline usage per tool and local day, with provenance.
+
+        Params: ?since=<unix_ts>&until=<unix_ts>, or ?days=<N> (default 7).
+        See :func:`aictl.dashboard.analytics.compute_usage_summary`.
+        """
+        db = self._require_db()
+        if not db:
+            return
+        days = self._qs_float("days", 7.0)
+        since = self._qs_float("since", time.time() - days * 86400)
+        self._json_response(compute_usage_summary(db, since, self._qs_float_opt("until")))
+
     def _serve_project_costs(self) -> None:
         """Serve per-project cumulative token/cost data.
 
         Params: ?since=<unix_ts>&days=<N>
-        Returns: [{project, sessions, input_tokens, output_tokens, total_tokens,
-                   cost_usd, daily: [{date, input_tokens, output_tokens}]}]
+        Returns: [{project, sessions, input_tokens, output_tokens,
+                   cache_read_tokens, cache_creation_tokens, total_tokens,
+                   cost_usd, cost_quality, cost_reason, unpriced_models,
+                   tokens_source, tokens_quality, pricing_models,
+                   daily: [{date, input_tokens, output_tokens, ...}]}]
+
+        ``daily`` buckets by the local day. ``cost_usd`` is ``None`` when no
+        session in the project could be priced. ``total_tokens`` counts every
+        class; it used to leave out cache reads and writes, which are most of
+        the tokens a coding agent uses.
         """
         days = int(self._qs_get("days", "7"))
         since = self._qs_float("since", time.time() - days * 86400)
 
-        _empty = lambda: {
-            "sessions": 0,
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "cost_usd": 0.0,
-            "models": set(),
-            "daily": {},
-        }
-        projects: dict[str, dict] = {}  # project -> aggregate
-
-        def _add_cost(p: dict, model: str | None, in_tok: int, out_tok: int) -> None:
-            # Price each session at ITS model's rate; unknown/missing models
-            # use the documented default and are labelled so in the response.
-            key, pricing = resolve_pricing(model)
-            p["cost_usd"] += pricing.cost_usd(in_tok, out_tok)
-            p["models"].add(key)
-
-        # 1. Active sessions from correlator
-        # ``store.snapshot`` is a property holding a DashboardSnapshot (this
-        # used to call a nonexistent ``latest_snapshot()`` and 500 on every
-        # request — nothing exercised the endpoint end-to-end).
-        snap = self.server.store.snapshot
-        if snap is not None:
-            for s in snap.sessions or []:
-                proj = s.get("project") or "(unknown)"
-                p = projects.setdefault(proj, _empty())
-                p["sessions"] += 1
-                in_tok = s.get("exact_input_tokens") or 0
-                out_tok = s.get("exact_output_tokens") or 0
-                p["input_tokens"] += in_tok
-                p["output_tokens"] += out_tok
-                _add_cost(p, s.get("model"), in_tok, out_tok)
-
-        # 2. Historical session_end events from SQLite
+        sessions: list[dict] = []
         db = self._db
+        seen: set[str] = set()
+        covered_tools: set[str] = set()
         if db:
-            rows = db.query_events(since=since, kind="session_end", limit=5000)
-            for ev in rows:
-                detail = ev.detail or {}
-                proj = detail.get("project") or "(unknown)"
-                p = projects.setdefault(proj, _empty())
-                p["sessions"] += 1
-                in_tok = detail.get("input_tokens") or 0
-                out_tok = detail.get("output_tokens") or 0
-                p["input_tokens"] += in_tok
-                p["output_tokens"] += out_tok
-                _add_cost(p, detail.get("model"), in_tok, out_tok)
-                # Daily bucketing
-                day = datetime.fromtimestamp(ev.ts, tz=timezone.utc).strftime("%Y-%m-%d")
-                daily = p["daily"].setdefault(day, {"input_tokens": 0, "output_tokens": 0})
-                daily["input_tokens"] += in_tok
-                daily["output_tokens"] += out_tok
+            sessions, _ = window_sessions(db, since)
+            for s in sessions:
+                seen.add(s["session_id"])
+                if s["tokens_source"] == "transcript":
+                    covered_tools.add(s["tool"])
 
-        # Build response
-        result = []
-        for proj, data in sorted(
-            projects.items(), key=lambda x: x[1]["input_tokens"] + x[1]["output_tokens"], reverse=True
-        ):
-            total = data["input_tokens"] + data["output_tokens"]
-            daily = [{"date": d, **v} for d, v in sorted(data["daily"].items())]
-            result.append(
+        def add_unmatched(row: dict, ts: float) -> None:
+            prov = row_provenance(row)
+            tokens = {k: int(row.get(k) or 0) for k in _USAGE_TOKEN_KEYS}
+            sessions.append(
                 {
-                    "project": proj,
-                    "sessions": data["sessions"],
-                    "input_tokens": data["input_tokens"],
-                    "output_tokens": data["output_tokens"],
-                    "total_tokens": total,
-                    "cost_usd": round(data["cost_usd"], 2),
-                    # Which list-price rates produced cost_usd (model ids from
-                    # aictl.data.model_pricing). Sessions with no model are
-                    # priced at the default and show up as that id.
-                    "pricing_models": sorted(data["models"]),
-                    "daily": daily,
+                    **tokens,
+                    "tool": row.get("tool", ""),
+                    "project": row.get("project_path") or "",
+                    "model": row.get("model") or "",
+                    "cost_usd": prov["cost_usd"],
+                    "cost_quality": prov["cost_quality"],
+                    "cost_reason": prov["cost_reason"],
+                    "unpriced_models": prov["unpriced_models"],
+                    "tokens_source": prov["tokens_source"],
+                    "tokens_quality": prov["tokens_quality"],
+                    "daily": {local_day(ts): {**tokens}},
                 }
             )
 
+        # Live sessions no stored row accounts for yet. A tool with transcript
+        # coverage is skipped: its live row is a view of the same tokens.
+        snap = self.server.store.snapshot
+        for s in (snap.sessions if snap is not None else None) or []:
+            if s.get("tool") in covered_tools or s.get("session_id") in seen:
+                continue
+            if not (s.get("exact_input_tokens") or s.get("exact_output_tokens")):
+                continue
+            add_unmatched(
+                {
+                    "tool": s.get("tool", ""),
+                    "project_path": s.get("project"),
+                    "model": s.get("model"),
+                    "source": "otel",
+                    "input_tokens": s.get("exact_input_tokens"),
+                    "output_tokens": s.get("exact_output_tokens"),
+                    "cache_read_tokens": s.get("exact_cache_read_tokens"),
+                },
+                time.time(),
+            )
+
+        # Older sessions that only ever produced a session_end event.
+        if db:
+            for ev in db.query_events(since=since, kind="session_end", limit=5000):
+                detail = ev.detail or {}
+                if detail.get("session_id") and detail["session_id"] in seen:
+                    continue
+                if ev.tool in covered_tools:
+                    continue
+                add_unmatched(
+                    {
+                        "tool": ev.tool,
+                        "project_path": detail.get("project"),
+                        "model": detail.get("model"),
+                        "source": "event",
+                        "input_tokens": detail.get("input_tokens"),
+                        "output_tokens": detail.get("output_tokens"),
+                        "cache_read_tokens": detail.get("cache_read_tokens"),
+                        "cache_creation_tokens": detail.get("cache_creation_tokens"),
+                        "cost_usd": detail.get("cost_usd"),
+                    },
+                    ev.ts,
+                )
+
+        by_project: dict[str, list[dict]] = {}
+        for s in sessions:
+            by_project.setdefault(s["project"] or "(unknown)", []).append(s)
+
+        result = []
+        for proj, group in by_project.items():
+            tokens = {k: sum(s[k] for s in group) for k in _USAGE_TOKEN_KEYS}
+            priced = [s["cost_usd"] for s in group if s["cost_usd"] is not None]
+            daily: dict[str, dict] = {}
+            for s in group:
+                for date, v in s["daily"].items():
+                    d = daily.setdefault(date, dict.fromkeys(_USAGE_TOKEN_KEYS, 0))
+                    for k in _USAGE_TOKEN_KEYS:
+                        d[k] += int(v.get(k) or 0)
+            pricing_models = {resolve_pricing(s["model"])[0] for s in group} - {None}
+            result.append(
+                {
+                    "project": proj,
+                    "sessions": len(group),
+                    **tokens,
+                    "total_tokens": sum(tokens.values()),
+                    "cost_usd": round(sum(priced), 2) if priced else None,
+                    "cost_quality": combine_cost_quality({s["cost_quality"] for s in group}),
+                    "cost_reason": next((s["cost_reason"] for s in group if s["unpriced_models"]), group[0]["cost_reason"]),
+                    "unpriced_models": sorted({m for s in group for m in s["unpriced_models"]}),
+                    "tokens_source": sorted({s["tokens_source"] for s in group}),
+                    "tokens_quality": combine_tokens_quality({s["tokens_quality"] for s in group}),
+                    "pricing_models": sorted(pricing_models),
+                    "daily": [{"date": d, **v} for d, v in sorted(daily.items())],
+                }
+            )
+        result.sort(key=lambda r: r["total_tokens"], reverse=True)
         self._json_response(result)
 
     def _serve_session_runs(self) -> None:
@@ -1068,7 +1128,13 @@ class _APIHandlersMixin:
                         "duration_s": round(ended_at - started_at, 1) if started_at else 0,
                         "input_tokens": in_tok,
                         "output_tokens": out_tok,
+                        "cache_read_tokens": int(row.get("cache_read_tokens", 0) or 0),
+                        "cache_creation_tokens": int(row.get("cache_creation_tokens", 0) or 0),
                         "total_tokens": in_tok + out_tok,
+                        "cost_usd": row.get("cost_usd"),
+                        "cost_quality": row.get("cost_quality"),
+                        "tokens_source": row.get("tokens_source"),
+                        "tokens_quality": row.get("tokens_quality"),
                         "file_churn": int(row.get("files_modified", 0) or 0),
                     }
                 )
@@ -1203,7 +1269,8 @@ class _APIHandlersMixin:
             "output_tokens": sum(int(m.get("output_tokens", 0)) for m in models),
             "cache_read_tokens": sum(int(m.get("cache_read_tokens", 0)) for m in models),
             "cache_creation_tokens": sum(int(m.get("cache_creation_tokens", 0)) for m in models),
-            "cost_usd": round(sum(float(m.get("cost_usd", 0.0)) for m in models), 6),
+            "cost_usd": round(sum(float(m.get("cost_usd") or 0.0) for m in models), 6),
+            "unpriced_models": sorted(m["model"] for m in models if m.get("cost_usd") is None),
         }
         self._json_response({"session_id": session_id, "models": models, "totals": totals})
 
@@ -1432,7 +1499,18 @@ class _APIHandlersMixin:
                                 "output_tokens": s.get("output_tokens", 0),
                                 "cache_read_tokens": s.get("cache_read_tokens", 0),
                                 "cache_creation_tokens": s.get("cache_creation_tokens", 0),
-                                "cost_usd": s.get("cost_usd", 0),
+                                "cost_usd": s.get("cost_usd"),
+                                "cost_source": s.get("cost_source"),
+                                "cost_quality": s.get("cost_quality"),
+                                "cost_reason": s.get("cost_reason"),
+                                "unpriced_models": s.get("unpriced_models") or [],
+                                "tokens_source": s.get("tokens_source"),
+                                "tokens_quality": s.get("tokens_quality"),
+                                "tokens_reason": s.get("tokens_reason"),
+                                "request_count": s.get("request_count", 0),
+                                "tool_call_count": s.get("tool_call_count", 0),
+                                "turn_count": s.get("turn_count", 0),
+                                "context_window": context_window_for(s.get("model")),
                                 "project": s.get("project_path", ""),
                                 "git_branch": s.get("git_branch", ""),
                                 "git_commit": s.get("git_commit", ""),
@@ -1632,7 +1710,11 @@ class _APIHandlersMixin:
         # The number dropped is reported so the UI can say "N short sessions
         # hidden" instead of silently omitting them.
         profiles = [
-            p for p in all_profiles if p["files_modified"] > 0 or (p.get("duration_s") and p["duration_s"] > 60)
+            p
+            for p in all_profiles
+            if p["files_modified"] > 0
+            or (p.get("duration_s") and p["duration_s"] > 60)
+            or p.get("tokens_source") == "transcript"
         ]
         filtered_count = len(all_profiles) - len(profiles)
 
@@ -1656,8 +1738,9 @@ class _APIHandlersMixin:
                     p["cpu_percent"] = live.get("cpu_percent", 0)
                     # Same tokens observed from different vantage points —
                     # keep the larger count, never sum.
-                    p["input_tokens"] = max(int(p.get("input_tokens", 0) or 0), live.get("exact_input_tokens", 0))
-                    p["output_tokens"] = max(int(p.get("output_tokens", 0) or 0), live.get("exact_output_tokens", 0))
+                    if p.get("tokens_source") != "transcript":
+                        p["input_tokens"] = max(int(p.get("input_tokens", 0) or 0), live.get("exact_input_tokens", 0))
+                        p["output_tokens"] = max(int(p.get("output_tokens", 0) or 0), live.get("exact_output_tokens", 0))
 
         self._json_response({"sessions": profiles, "filtered_count": filtered_count})
 
