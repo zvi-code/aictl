@@ -246,6 +246,7 @@ def test_daemon_status_does_not_signal_the_process(tmp_path, monkeypatch):
     def fail(*_a):
         raise AssertionError("os.kill must not be used to check liveness")
 
+    monkeypatch.setattr("aictl.platforms.IS_WINDOWS", True)
     monkeypatch.setattr(daemon.os, "kill", fail)
     monkeypatch.setattr("psutil.pid_exists", lambda _pid: True)
     pid_file = tmp_path / "aictl.pid"

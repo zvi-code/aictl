@@ -38,6 +38,7 @@ CASES = [
     ("copilot language server", NODE, [r"C:\Users\Dev\.vscode\extensions\github.copilot-1.0\dist\copilot-language-server.js"], "copilot-vscode"),
     # Microsoft 365 Copilot stays its own tool
     ("m365 app", r"C:\Program Files\WindowsApps\Microsoft.MicrosoftOfficeHub_19.2\M365Copilot.exe", [], "copilot365"),
+    ("renamed Microsoft Copilot app", r"C:\Program Files\WindowsApps\Microsoft.Copilot_1.0_x64__8wekyb3d8bbwe\Copilot.exe", [], "copilot365"),
     # False positives
     ("file explorer", r"C:\Windows\explorer.exe", [], None),
     ("task manager", r"C:\Windows\System32\Taskmgr.exe", [], None),
@@ -48,7 +49,6 @@ CASES = [
     ("notes in a Copilot folder", r"C:\Windows\notepad.exe", [r"C:\Users\Dev\Documents\GitHub Copilot\notes.txt"], None),
     ("file named copilot", r"C:\Windows\notepad.exe", [r"C:\Users\Dev\copilot-notes.txt"], None),
     ("gh earlier in another word", r"C:\Tools\highlight.exe", [r"C:\src\copilot.md"], None),
-    ("consumer Copilot app", r"C:\Program Files\WindowsApps\Microsoft.Copilot_1.0_x64__8wekyb3d8bbwe\Copilot.exe", [], None),
     ("dev server", NODE, [r"C:\src\app\node_modules\vite\bin\vite.js"], None),
 ]
 

@@ -62,6 +62,7 @@ class _Keys:
             import termios
             import tty
 
+            self._termios = termios
             self._fd = sys.stdin.fileno()
             self._saved = termios.tcgetattr(self._fd)
             tty.setcbreak(self._fd)
@@ -71,9 +72,7 @@ class _Keys:
 
     def close(self) -> None:
         if self._saved is not None:
-            import termios
-
-            termios.tcsetattr(self._fd, termios.TCSADRAIN, self._saved)
+            self._termios.tcsetattr(self._fd, self._termios.TCSADRAIN, self._saved)
 
     def read(self, timeout: float) -> str | None:
         if not self.enabled:
