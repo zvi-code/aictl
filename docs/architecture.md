@@ -703,6 +703,15 @@ conceals itself there, in five layers:
 5. **Content scan**: invisible and tag characters, hidden blocks, encoded blobs,
    override and concealment phrasing, and exfiltration patterns.
 
+Copilot coverage includes plugin content from `installed-plugins`, settings that move
+instruction, prompt, agent, skill and hook locations (user, profile, workspace and
+`.code-workspace`), extension contributions, the Copilot Chat memory-tool store and text in
+the desktop app's `data.db`. That database opens in SQLite immutable mode with named
+columns only, so nothing still in its write-ahead log is seen. Windows adds policy under
+`SOFTWARE\\Policies\\Microsoft\\VSCode`, persistent registry environment variables and
+PowerShell profiles read as text. For Microsoft 365 Copilot only repository agent packages
+are visible; the deployed agent, tenant policy, connectors and memory live in the service.
+
 The audit does not use `history.db`. When that database exists it adds
 `file_write_events` and `InstructionsLoaded` as extra evidence, read-only. The
 baseline is `context-baseline.json` in aictl's config dir, capped at 2 MB, with
