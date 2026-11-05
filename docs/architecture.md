@@ -683,3 +683,29 @@ All three platforms share the same codebase with platform-specific adapters in `
 - **No secrets in discovery**: CSV paths skip `.env`, credentials files, and private keys
 - **Audited mutations**: config-changing endpoints (`PUT /api/tool-config/...`) and session control (`PUT /api/session-kill`) record every change to the mutation ledger; `aictl audit` surfaces the log
 - **Local-bind default**: the server binds `127.0.0.1` by default so the REST API and mutation endpoints are not exposed to the network
+
+## Hidden-context audit
+
+`aictl ctx audit`, `GET /api/context-audit` and `HiddenContextPanel` all use
+`src/aictl/context_audit.py`. It answers what can reach a tool's model and what
+conceals itself there, in five layers:
+
+1. **Inventory**: every source per tool, with scope, loading, bytes, estimated
+   tokens, sha256, mtime and git state. Names come from `data/paths-*.csv` plus
+   locations the tables do not model, such as walk-up, `@imports` and plugins.
+2. **Dynamic injection**: hook stdout, MCP instructions, CLI flags in live process
+   command lines, environment and settings overrides. No file shows this text,
+   so these rows have `readable: false`.
+3. **Drift**: new, changed and removed sources against a baseline, and tool-call
+   writes to a source. A write after the baseline to an always-loaded source is high.
+4. **Visibility gap**: a loaded path the inventory does not know, and first-request
+   tokens the inventory cannot explain. The second is an estimate from numbers only.
+5. **Content scan**: invisible and tag characters, hidden blocks, encoded blobs,
+   override and concealment phrasing, and exfiltration patterns.
+
+The audit does not use `history.db`. When that database exists it adds
+`file_write_events` and `InstructionsLoaded` as extra evidence, read-only. The
+baseline is `context-baseline.json` in aictl's config dir, capped at 2 MB, with
+hashes and metadata only; `--baseline PATH` moves it. With `[storage] capture = off`
+it stays in memory. Hooks and MCP servers are parsed and never run. Files are
+statted first and read again only when mtime or size changes.
