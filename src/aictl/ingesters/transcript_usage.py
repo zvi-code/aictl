@@ -46,7 +46,7 @@ from typing import Any
 from ..data.model_pricing import is_billable_model, request_cost_usd
 from ..data.provenance import COPILOT_COST_REASON
 from ..storage import AgentRow, RequestRow, SessionRow
-from ._common import coerce_ts, decode_file_uri, open_readonly, record_quality
+from ._common import coerce_ts, decode_file_uri, open_readonly, project_root, record_quality
 from .call_facts import (
     ClaudeFacts,
     CopilotFacts,
@@ -358,7 +358,7 @@ class ClaudeAccumulator:
         ts = coerce_ts(obj.get("timestamp"))
         s.touch(ts)
         if not s.project_path and obj.get("cwd"):
-            s.project_path = str(obj["cwd"])
+            s.project_path = project_root(str(obj["cwd"]))
         if obj.get("gitBranch"):
             s.git_branch = str(obj["gitBranch"])
         msg = obj.get("message") if isinstance(obj.get("message"), dict) else {}
