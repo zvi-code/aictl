@@ -32,10 +32,15 @@ import unicodedata
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from .platforms import claude_global_dir, config_dir, vscode_user_dir
 from .tools import PRUNE_DIRS, _expand_home, _params_to_glob, get_registry
+
+try:
+    import winreg
+except ImportError:  # every platform but Windows
+    winreg = None  # type: ignore[assignment]
 
 SEVERITIES = ("high", "medium", "low", "info")
 _SEV_RANK = {s: i for i, s in enumerate(SEVERITIES)}
@@ -56,7 +61,9 @@ AUDITED_TOOLS = (
     "codex-cli",
     "copilot",
     "copilot-cli",
+    "copilot-desktop",
     "copilot-jetbrains",
+    "copilot365",
     "copilot-vscode",
     "cursor",
     "gemini-cli",
@@ -177,11 +184,36 @@ def _strip_jsonc(text: str) -> str:
     return re.sub(r",(\s*[}\]])", r"\1", text)
 
 
+def _decode(raw: bytes) -> str | None:
+    """Decode by BOM, then as UTF-8. None means the bytes are binary."""
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16", errors="replace")
+    if b"\0" in raw[:4096]:
+        return None
+    return raw.decode("utf-8-sig", errors="replace")
+
+
+def _read_text(path: Path) -> str:
+    """Read up to the cap with BOM handling. Unreadable or binary gives an empty string."""
+    try:
+        with path.open("rb") as fh:
+            return _decode(fh.read(MAX_READ_BYTES)) or ""
+    except OSError:
+        return ""
+
+
+def _path_key(path: str | Path) -> str:
+    """Comparison key for a path: forward slashes, and no case on Windows-style paths."""
+    text = str(path)
+    windows = os.name == "nt" or "\\" in text or re.match(r"^[A-Za-z]:", text) is not None
+    text = text.replace("\\", "/")
+    return text.lower() if windows else text
+
+
 def _read_json(path: Path) -> dict:
     """Parse JSON or JSONC tolerantly. A malformed or unreadable file gives {}."""
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")[:MAX_READ_BYTES]
-    except OSError:
+    text = _read_text(path)
+    if not text:
         return {}
     for candidate in (text, _strip_jsonc(text)):
         try:
@@ -199,10 +231,7 @@ def _read_toml_flat(path: Path) -> dict[str, str]:
     tomllib rejects, and the audit must still see the keys in such a file.
     """
     out: dict[str, str] = {}
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")[:MAX_READ_BYTES]
-    except OSError:
-        return out
+    text = _read_text(path)
     section = ""
     for raw in text.splitlines():
         line = raw.strip()
@@ -477,8 +506,10 @@ def _file_facts(path: Path, *, config: bool) -> dict | None:
             raw = fh.read(MAX_READ_BYTES)
     except OSError:
         return None
-    binary = b"\0" in raw[:4096]
-    text = "" if binary else raw.decode("utf-8", errors="replace")
+    decoded = _decode(raw)
+    binary = decoded is None
+    text = decoded or ""
+    apply_to = re.search(r"(?m)^applyTo:\s*[\"']?([^\"'\n]*)[\"']?\s*$", text[:2000])
     facts = {
         "bytes": st.st_size,
         "mtime": st.st_mtime,
@@ -488,6 +519,7 @@ def _file_facts(path: Path, *, config: bool) -> dict | None:
         "binary": binary,
         "hits": [] if binary else scan_text(text, config=config),
         "always_apply": bool(re.search(r"(?m)^alwaysApply:\s*true\s*$", text[:2000])),
+        "apply_to": apply_to.group(1).strip() if apply_to else "",
         "imports": _parse_imports(text) if path.name.endswith(".md") and not binary else [],
     }
     _FILE_CACHE[key] = (st.st_mtime_ns, st.st_size, facts)
@@ -603,14 +635,6 @@ _USER_PATTERNS = [
     ("gemini-cli", "user", "~/.gemini/settings.json", "settings", "config"),
     ("gemini-cli", "user", "~/.gemini/commands/**/*.toml", "command", "on-demand"),
     ("gemini-cli", "plugin", "~/.gemini/extensions/*/GEMINI.md", "extension", "always"),
-    ("copilot-cli", "user", "~/.copilot/copilot-instructions.md", "instructions", "always"),
-    ("copilot-cli", "user", "~/.copilot/instructions/**/*.md", "instructions", "conditional"),
-    ("copilot-cli", "user", "~/.copilot/agents/*.md", "agent", "on-demand"),
-    ("copilot-cli", "user", "~/.copilot/skills/*/SKILL.md", "skill", "on-demand"),
-    ("copilot-cli", "plugin", "~/.copilot/installed-plugins/**/SKILL.md", "skill", "on-demand"),
-    ("copilot-cli", "plugin", "~/.copilot/installed-plugins/**/agents/*.md", "agent", "on-demand"),
-    ("copilot-cli", "user", "~/.copilot/config.json", "settings", "config"),
-    ("copilot-cli", "user", "~/.copilot/hooks/*.json", "hooks", "config"),
     ("cursor", "user", "~/.cursor/rules/**/*.mdc", "rules", "conditional"),
     ("cursor", "user", "~/.cursor/rules/**/*.md", "rules", "conditional"),
     ("cursor", "user", "~/.cursor/memories/**/*.md", "memory", "on-demand"),
@@ -642,7 +666,6 @@ _PROJECT_PATTERNS = [
     ("copilot", "project", ".github/agents/**/*.md", "agent", "on-demand"),
     ("copilot-cli", "project", ".github/skills/*/SKILL.md", "skill", "on-demand"),
     ("copilot-cli", "project", ".github/hooks/*.json", "hooks", "config"),
-    ("copilot-vscode", "project", ".vscode/settings.json", "settings", "config"),
     ("cursor", "project", ".cursorrules", "instructions", "always"),
     ("cursor", "project", ".cursor/rules/**/*.mdc", "rules", "conditional"),
     ("cursor", "project", ".cursor/rules/**/*.md", "rules", "conditional"),
@@ -764,13 +787,21 @@ def _collect_walks(inv: _Inventory) -> None:
     _walk_down(inv, gemini_names, codex_names)
 
 
+def _present_names(filenames: list[str], wanted: tuple[str, ...]) -> set[str]:
+    """Which wanted names exist here. Windows file names carry no case, so agents.md counts as AGENTS.md."""
+    if os.name != "nt":
+        return set(filenames)
+    present = {n.upper() for n in filenames}
+    return {n for n in wanted if n.upper() in present}
+
+
 def _walk_down(inv: _Inventory, gemini_names: list[str], codex_names: list[str]) -> None:
     seen = 0
     for dirpath, dirnames, filenames in os.walk(inv.project):
         seen += 1
         here = Path(dirpath)
         if here != inv.project:
-            names = set(filenames)
+            names = _present_names(filenames, ("CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", *codex_names, *gemini_names))
             if "CLAUDE.md" in names:
                 inv.add("claude-code", "project", here / "CLAUDE.md", "instructions", "conditional")
             if "CLAUDE.local.md" in names:
@@ -839,44 +870,577 @@ def _collect_plugins(inv: _Inventory) -> list[tuple[str, Path]]:
     return plugins
 
 
+_VSCODE_LOCATION_KEYS = {
+    "chat.instructionsFilesLocations": ("instructions", "conditional", "**/*.md"),
+    "chat.promptFilesLocations": ("command", "on-demand", "**/*.md"),
+    "chat.modeFilesLocations": ("agent", "on-demand", "**/*.md"),
+    "chat.agentFilesLocations": ("agent", "on-demand", "**/*.md"),
+    "chat.agentSkillsLocations": ("skill", "on-demand", "*/SKILL.md"),
+    "chat.hookFilesLocations": ("hooks", "config", "**/*.json"),
+}
+_VSCODE_AUTO_APPROVE_KEYS = (
+    "chat.tools.autoApprove",
+    "chat.tools.global.autoApprove",
+    "chat.tools.terminal.autoApprove",
+    "chat.tools.edits.autoApprove",
+    "chat.tools.urls.autoApprove",
+)
+
+
+def _vscode_settings_files(project: Path) -> list[tuple[Path, str, dict]]:
+    """Every settings file that can change Copilot here, as (path, level, settings)."""
+    user = vscode_user_dir()
+    out = [(user / "settings.json", "user")]
+    out += [(Path(p), "user") for p in sorted(glob.glob(str(user / "profiles" / "*" / "settings.json")))]
+    out.append((project / ".vscode" / "settings.json", "workspace"))
+    rows = [(path, level, _read_json(path)) for path, level in out if path.is_file()]
+    for path in sorted(glob.glob(str(project / "*.code-workspace"))):
+        settings = _read_json(Path(path)).get("settings")
+        rows.append((Path(path), "workspace", settings if isinstance(settings, dict) else {}))
+    return rows
+
+
 def _collect_vscode(inv: _Inventory, findings: list[Finding]) -> None:
-    settings_path = vscode_user_dir() / "settings.json"
-    inv.add("copilot-vscode", "user", settings_path, "settings", "config")
-    inv.add_glob("copilot-vscode", "user", str(vscode_user_dir() / "prompts" / "*.md"), "command", "on-demand")
-    for path, scope in ((settings_path, "user"), (inv.project / ".vscode" / "settings.json", "project")):
-        cfg = _read_json(path)
-        if not cfg:
-            continue
-        for key in ("chat.instructionsFilesLocations", "chat.promptFilesLocations", "chat.modeFilesLocations", "chat.agentFilesLocations"):
-            locations = cfg.get(key)
-            if not isinstance(locations, dict):
-                continue
-            for loc, on in locations.items():
-                if on is False:
-                    continue
-                base = Path(_expand_home(str(loc)))
-                if not base.is_absolute():
-                    base = inv.project / base
-                inv.add_glob("copilot-vscode", scope, str(base / "**" / "*.md"), "instructions", "conditional", origin=key)
-        for key, value in cfg.items():
-            if not (key.startswith("github.copilot.chat.") and key.endswith("instructions")) or not isinstance(value, list):
-                continue
-            for item in value:
-                if not isinstance(item, dict):
-                    continue
-                if item.get("file"):
-                    target = Path(str(item["file"]))
-                    inv.add("copilot-vscode", scope, target if target.is_absolute() else inv.project / target, "instructions", "always", origin=key)
-                elif item.get("text"):
-                    text = str(item["text"])
-                    label = f"{path}#{key}"
-                    inv.dynamic("copilot-vscode", label, "inline-instructions", "Inline instruction text in settings", text=text)
-                    _emit_hits(findings, "copilot-vscode", label, scan_text(text))
+    tool = "copilot-vscode"
+    project = inv.project
+    user = vscode_user_dir()
+    for base in [user, *[Path(p) for p in sorted(glob.glob(str(user / "profiles" / "*")))]]:
+        inv.add_glob(tool, "user", str(base / "prompts" / "**" / "*.md"), "command", "on-demand")
+        _collect_mcp(inv, findings, tool, base / "mcp.json", "user")
+    _collect_mcp(inv, findings, tool, project / ".vscode" / "mcp.json", "project")
+    _collect_mcp(inv, findings, tool, project / ".mcp.json", "project")
+    # VS Code also reads these Claude-format and agent-format files.
+    for name in ("AGENTS.md", "CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"):
+        inv.add(tool, "project", project / name, "instructions", "always")
+    inv.add(tool, "user", Path.home() / ".claude" / "CLAUDE.md", "instructions", "always")
+    inv.add_glob(tool, "project", str(project / ".claude" / "rules" / "**" / "*.md"), "rules", "conditional")
+    inv.add_glob(tool, "project", str(project / ".claude" / "agents" / "*.md"), "agent", "on-demand")
+    for hooks_path in sorted(glob.glob(str(project / ".github" / "hooks" / "*.json"))):
+        inv.add(tool, "project", hooks_path, "hooks", "config")
+        _collect_hooks_from(inv, findings, tool, Path(hooks_path), "project")
+    # The memory tool's store: global notes, then this workspace's notes.
+    global_memory = user / "globalStorage" / "github.copilot-chat" / "memory-tool" / "memories"
+    inv.add_glob(tool, "memory", str(global_memory / "*"), "memory", "always")
+    inv.add_glob(tool, "memory", str(global_memory / "**" / "*"), "memory", "on-demand")
+    for storage in glob.glob(str(user / "workspaceStorage" / "*")):
+        folder = str(_read_json(Path(storage) / "workspace.json").get("folder") or "")
+        if folder and _path_key(unquote(urlparse(folder).path)).rstrip("/").endswith(_path_key(project).rstrip("/")):
+            for chat_dir in ("GitHub.copilot-chat", "github.copilot-chat"):
+                inv.add_glob(tool, "memory", str(Path(storage) / chat_dir / "memory-tool" / "memories" / "**" / "*"), "memory", "on-demand")
+    for path, level, cfg in _vscode_settings_files(project):
+        scope = "project" if level == "workspace" else "user"
+        inv.add(tool, scope, path, "settings", "config")
+        _vscode_locations(inv, findings, path, level, cfg)
+        _vscode_inline(inv, findings, path, scope, cfg)
+        _collect_mcp_block(inv, findings, tool, path, scope, cfg.get("mcp"))
+        for key in _VSCODE_AUTO_APPROVE_KEYS:
+            if cfg.get(key) and level == "workspace":
+                findings.append(
+                    Finding(
+                        rule="dynamic.auto-approve",
+                        severity="medium",
+                        tool=tool,
+                        path=f"{path}#{key}",
+                        snippet=f"{key}=<set>",
+                        why="A workspace setting lets Copilot run tools without asking. It arrives with the repository.",
+                        action="Remove the setting unless you added it on purpose.",
+                    )
+                )
         advanced = cfg.get("github.copilot.advanced")
         if isinstance(advanced, dict):
             for key in ("debug.overrideProxyUrl", "debug.overrideCAPIUrl", "authProvider"):
                 if advanced.get(key):
-                    _url_finding(inv, findings, "copilot-vscode", f"{path}#github.copilot.advanced.{key}", str(advanced[key]))
+                    _url_finding(inv, findings, tool, f"{path}#github.copilot.advanced.{key}", str(advanced[key]))
+
+
+def _vscode_locations(inv: _Inventory, findings: list[Finding], path: Path, level: str, cfg: dict) -> None:
+    tool = "copilot-vscode"
+    project = inv.project
+    for key, (kind, loading, pattern) in _VSCODE_LOCATION_KEYS.items():
+        locations = cfg.get(key)
+        if isinstance(locations, str):
+            locations = {locations: True}
+        elif isinstance(locations, list):
+            locations = dict.fromkeys(locations, True)
+        if not isinstance(locations, dict):
+            continue
+        for loc, on in locations.items():
+            if on is False:
+                continue
+            base = Path(_expand_home(str(loc)))
+            if not base.is_absolute():
+                base = project / base
+            outside = not _path_key(base).startswith(_path_key(project))
+            found = glob.glob(str(base / pattern), recursive=True)[:MAX_GLOB_HITS]
+            for hit in found:
+                inv.add(tool, "project" if not outside else "user", hit, kind, loading, origin=key)
+                if kind == "hooks":
+                    _collect_hooks_from(inv, findings, tool, Path(hit), "project" if level == "workspace" else "user")
+            severity = "medium" if level == "workspace" and outside else "low"
+            findings.append(
+                Finding(
+                    rule="dynamic.location-override",
+                    severity=severity,
+                    tool=tool,
+                    path=f"{path}#{key}",
+                    snippet=_snippet(f"{loc} ({len(found)} files)"),
+                    why=f"This {level} setting loads {kind} files from a location a person rarely opens",
+                    action="Read the files there, and remove the setting if you did not add it.",
+                )
+            )
+
+
+def _vscode_inline(inv: _Inventory, findings: list[Finding], path: Path, scope: str, cfg: dict) -> None:
+    tool = "copilot-vscode"
+    for key, value in cfg.items():
+        if not (key.startswith("github.copilot.chat.") and key.lower().endswith("instructions")) or not isinstance(value, list):
+            continue
+        for index, item in enumerate(value):
+            if not isinstance(item, dict):
+                continue
+            if item.get("file"):
+                target = Path(_expand_home(str(item["file"])))
+                inv.add(tool, scope, target if target.is_absolute() else inv.project / target, "instructions", "always", origin=key)
+            elif item.get("text"):
+                text = str(item["text"])
+                label = f"{path}#{key}[{index}]"
+                inv.dynamic(tool, label, "inline-instructions", "Inline instruction text in settings", text=text)
+                _emit_hits(findings, tool, label, scan_text(text))
+
+
+def _collect_mcp_block(inv: _Inventory, findings: list[Finding], tool: str, path: Path, scope: str, block: object) -> None:
+    """Name each MCP server. Its instructions and tool text arrive at runtime; it is never started."""
+    if not isinstance(block, dict):
+        return
+    servers = block.get("servers") or block.get("mcpServers")
+    if not isinstance(servers, dict):
+        return
+    for name, spec in servers.items():
+        if not isinstance(spec, dict):
+            continue
+        target = f"host {_host_of(str(spec['url']))}" if spec.get("url") else f"command {Path(str(spec.get('command', '?'))).name}"
+        label = f"{path}#mcp.{name}"
+        inv.dynamic(tool, label, "mcp-server", f"MCP server {name} ({target}): its instructions and tool descriptions arrive at runtime, and no file shows them")
+        findings.append(
+            Finding(
+                rule="dynamic.mcp-server",
+                severity="low" if scope == "project" else "info",
+                tool=tool,
+                path=label,
+                snippet=_snippet(target),
+                why="This server's instructions and tool descriptions reach the model at runtime",
+                action="Confirm you trust this server.",
+            )
+        )
+
+
+def _collect_mcp(inv: _Inventory, findings: list[Finding], tool: str, path: Path, scope: str) -> None:
+    if path.is_file():
+        inv.add(tool, scope, path, "settings", "config")
+        _collect_mcp_block(inv, findings, tool, path, scope, _read_json(path))
+
+
+_EXTENSION_PROMPT_KEYS = {
+    "chatInstructions": ("instructions", "conditional"),
+    "chatPromptFiles": ("command", "on-demand"),
+    "chatAgents": ("agent", "on-demand"),
+    "chatModes": ("agent", "on-demand"),
+    "chatSkills": ("skill", "on-demand"),
+}
+
+
+def _collect_vscode_extensions(inv: _Inventory, findings: list[Finding]) -> None:
+    """Extensions contribute prompt files and tool descriptions no settings file lists."""
+    tool = "copilot-vscode"
+    for package in sorted(glob.glob(str(Path.home() / ".vscode" / "extensions" / "*" / "package.json")))[:MAX_GLOB_HITS]:
+        root = Path(package).parent
+        contributes = _read_json(Path(package)).get("contributes")
+        if not isinstance(contributes, dict):
+            continue
+        origin = f"extension:{root.name}"
+        for key, (kind, loading) in _EXTENSION_PROMPT_KEYS.items():
+            entries = contributes.get(key)
+            for entry in entries if isinstance(entries, list) else []:
+                if isinstance(entry, dict) and entry.get("path"):
+                    target = (root / str(entry["path"])).resolve()
+                    if target.is_relative_to(root.resolve()):
+                        inv.add(tool, "plugin", target, kind, loading, origin=origin)
+        tools = contributes.get("languageModelTools")
+        if isinstance(tools, list) and tools:
+            text = "\n".join(str(t.get("modelDescription") or "") for t in tools if isinstance(t, dict))
+            label = f"{package}#languageModelTools"
+            inv.dynamic(tool, label, "extension-tools", f"{len(tools)} tool descriptions from {root.name} reach the model when enabled", text=text)
+            _emit_hits(findings, tool, label, scan_text(text))
+
+
+_POLICY_SUBKEYS = (r"SOFTWARE\Policies\Microsoft\VSCode",)
+_POLICY_SENSITIVE_RE = re.compile(r"url|mcp|chat|agent|prompt|plugin|allowed|gallery|copilot", re.I)
+_ENV_REGISTRY_KEYS = (
+    ("HKEY_CURRENT_USER", "Environment"),
+    ("HKEY_LOCAL_MACHINE", r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+)
+
+
+def _registry_values(hive_name: str, subkey: str, depth: int = 2) -> dict[str, object]:
+    """Read a registry key and its subkeys. Read access only; a missing key gives {}."""
+    if winreg is None:
+        return {}
+    out: dict[str, object] = {}
+    try:
+        with winreg.OpenKey(getattr(winreg, hive_name), subkey, 0, winreg.KEY_READ) as key:
+            index = 0
+            while True:
+                try:
+                    name, value, _kind = winreg.EnumValue(key, index)
+                except OSError:
+                    break
+                out[name] = value
+                index += 1
+            index = 0
+            while depth > 0:
+                try:
+                    child = winreg.EnumKey(key, index)
+                except OSError:
+                    break
+                for name, value in _registry_values(hive_name, f"{subkey}\\{child}", depth - 1).items():
+                    out[f"{child}\\{name}"] = value
+                index += 1
+    except OSError:
+        return {}
+    return out
+
+
+def _collect_vscode_policy(inv: _Inventory, findings: list[Finding]) -> None:
+    """Machine and user policy silently overrides VS Code and Copilot settings."""
+    tool = "copilot-vscode"
+    rows: list[tuple[str, dict]] = []
+    for hive in ("HKEY_LOCAL_MACHINE", "HKEY_CURRENT_USER"):
+        for subkey in _POLICY_SUBKEYS:
+            values = _registry_values(hive, subkey)
+            if values:
+                rows.append((f"registry:{hive}\\{subkey}", values))
+    policy_file = Path("/etc/vscode/policy.json")
+    if policy_file.is_file():
+        rows.append((str(policy_file), _read_json(policy_file)))
+    for origin, values in rows:
+        for name, value in values.items():
+            label = f"{origin}#{name}"
+            text = str(value)
+            if text.startswith(("http://", "https://")):
+                _url_finding(inv, findings, tool, label, text)
+                continue
+            inv.dynamic(tool, label, "policy", f"Policy {name} overrides settings, and the settings UI does not list it as a file")
+            findings.append(
+                Finding(
+                    rule="dynamic.policy-override",
+                    severity="medium" if _POLICY_SENSITIVE_RE.search(name) else "info",
+                    tool=tool,
+                    path=label,
+                    snippet=_snippet(f"{name}={text[:60]}"),
+                    why="A policy sets this value above every settings file",
+                    action="Confirm with whoever manages this machine.",
+                )
+            )
+
+
+_PROFILE_ENV_RES = (
+    re.compile(r"\$env:([A-Za-z_][\w]*)\s*=\s*[\"']?([^\"'\r\n]*)", re.I),
+    re.compile(r"SetEnvironmentVariable\(\s*[\"']([\w]+)[\"']\s*,\s*[\"']([^\"']*)", re.I),
+    re.compile(r"^\s*setx\s+([\w]+)\s+[\"']?([^\"'\r\n]*)", re.I | re.M),
+)
+_PROFILE_GLOBS = (
+    "~/Documents/PowerShell/*rofile*.ps1",
+    "~/Documents/WindowsPowerShell/*rofile*.ps1",
+    "~/OneDrive/Documents/PowerShell/*rofile*.ps1",
+    "~/OneDrive/Documents/WindowsPowerShell/*rofile*.ps1",
+    "~/.config/powershell/*rofile*.ps1",
+)
+
+
+def _persistent_env(findings: list[Finding]) -> dict[str, dict[str, str]]:
+    """Environment other sessions inherit: the registry, and profile files read as text, never run."""
+    out: dict[str, dict[str, str]] = {}
+    for hive, subkey in _ENV_REGISTRY_KEYS:
+        values = _registry_values(hive, subkey, depth=0)
+        if values:
+            out[f"registry:{hive}\\{subkey}"] = {str(k): str(v) for k, v in values.items()}
+    bases = [str(Path(_expand_home(g))) for g in _PROFILE_GLOBS]
+    program_files = os.environ.get("ProgramFiles")
+    if program_files:
+        bases.append(str(Path(program_files) / "PowerShell" / "7" / "*rofile*.ps1"))
+    for pattern in bases:
+        for hit in glob.glob(pattern):
+            text = _read_text(Path(hit))
+            values = {m.group(1): m.group(2).strip() for regex in _PROFILE_ENV_RES for m in regex.finditer(text)}
+            if values:
+                out[hit] = values
+    return out
+
+
+def _copilot_home(env: dict[str, str]) -> Path:
+    return Path(_expand_home(env.get("COPILOT_HOME") or "~/.copilot"))
+
+
+def _collect_copilot(inv: _Inventory, findings: list[Finding], env: dict[str, str]) -> None:
+    home = _copilot_home(env)
+    project = inv.project
+    desktop = (home / "data.db").is_file()
+    tools = ["copilot-cli", "copilot-desktop"] if desktop else ["copilot-cli"]
+    for tool in tools:
+        for pattern, kind, loading in (
+            ("copilot-instructions.md", "instructions", "always"),
+            ("instructions/**/*.instructions.md", "instructions", "conditional"),
+            ("agents/*.md", "agent", "on-demand"),
+            ("skills/*/SKILL.md", "skill", "on-demand"),
+            ("hooks/*.json", "hooks", "config"),
+            ("config.json", "settings", "config"),
+            ("permissions-config.json", "settings", "config"),
+            ("extensions/*/extension.*", "extension", "config"),
+        ):
+            inv.add_glob(tool, "user", str(home / pattern), kind, loading)
+        _collect_mcp(inv, findings, tool, home / "mcp-config.json", "user")
+        _collect_mcp(inv, findings, tool, project / ".mcp.json", "project")
+        _collect_mcp(inv, findings, tool, project / ".github" / "mcp.json", "project")
+        for path in sorted(glob.glob(str(home / "hooks" / "*.json"))):
+            _collect_hooks_from(inv, findings, tool, Path(path), "user")
+        _collect_hooks_from(inv, findings, tool, home / "config.json", "user")
+        for name in ("AGENTS.md", "CLAUDE.md", "GEMINI.md"):
+            inv.add(tool, "project", project / name, "instructions", "always")
+        for pattern in (".claude/skills/*/SKILL.md", ".agents/skills/*/SKILL.md"):
+            inv.add_glob(tool, "project", str(project / pattern), "skill", "on-demand")
+        for pattern in ("~/.claude/skills/*/SKILL.md", "~/.agents/skills/*/SKILL.md"):
+            inv.add_glob(tool, "user", pattern, "skill", "on-demand")
+        _collect_copilot_plugins(inv, findings, tool, home)
+        _collect_copilot_dirs(inv, tool, env)
+    if desktop:
+        _collect_copilot_desktop(inv, findings, home / "data.db")
+
+
+def _collect_copilot_dirs(inv: _Inventory, tool: str, env: dict[str, str]) -> None:
+    raw = env.get("COPILOT_CUSTOM_INSTRUCTIONS_DIRS") or ""
+    for entry in re.split(r"[,;]", raw):
+        if not entry.strip():
+            continue
+        base = Path(_expand_home(entry.strip()))
+        origin = "COPILOT_CUSTOM_INSTRUCTIONS_DIRS"
+        inv.add(tool, "user", base / "AGENTS.md", "instructions", "always", origin=origin)
+        inv.add(tool, "user", base / "copilot-instructions.md", "instructions", "always", origin=origin)
+        inv.add_glob(tool, "user", str(base / ".github" / "instructions" / "**" / "*.instructions.md"), "instructions", "conditional", origin)
+        inv.add_glob(tool, "user", str(base / "**" / "*.instructions.md"), "instructions", "conditional", origin)
+
+
+def _copilot_plugin_roots(home: Path) -> list[tuple[str, Path]]:
+    """Enabled plugins from config, then any folder config does not mention."""
+    plugins = _read_json(home / "config.json").get("installedPlugins")
+    disabled: set[str] = set()
+    out: list[tuple[str, Path]] = []
+    for row in plugins if isinstance(plugins, list) else []:
+        if not isinstance(row, dict) or not row.get("cache_path"):
+            continue
+        root = Path(str(row["cache_path"]))
+        if row.get("enabled") is False:
+            disabled.add(_path_key(root))
+        else:
+            out.append((str(row.get("name") or root.name), root))
+    known = {_path_key(root) for _name, root in out} | disabled
+    for found in glob.glob(str(home / "installed-plugins" / "*" / "*")):
+        if Path(found).is_dir() and _path_key(found) not in known:
+            out.append((Path(found).name, Path(found)))
+    return out
+
+
+def _collect_copilot_plugins(inv: _Inventory, findings: list[Finding], tool: str, home: Path) -> None:
+    for name, root in _copilot_plugin_roots(home):
+        origin = f"plugin:{name}"
+        for pattern, kind, loading in (
+            ("AGENTS.md", "instructions", "conditional"),
+            ("CLAUDE.md", "instructions", "conditional"),
+            ("GEMINI.md", "instructions", "conditional"),
+            ("copilot-instructions.md", "instructions", "conditional"),
+            ("instructions/**/*.md", "instructions", "conditional"),
+            ("skills/*/SKILL.md", "skill", "on-demand"),
+            ("agents/*.md", "agent", "on-demand"),
+            ("com.github.copilot/agents/*", "agent", "on-demand"),
+            ("commands/**/*.md", "command", "on-demand"),
+            ("shared/*.md", "instructions", "on-demand"),
+            ("extension.*", "extension", "config"),
+            ("extensions/*/extension.*", "extension", "config"),
+        ):
+            inv.add_glob(tool, "plugin", str(root / pattern), kind, loading, origin)
+        for hooks_file in ("hooks.json", "hooks/hooks.json"):
+            path = root / hooks_file
+            if path.is_file():
+                inv.add(tool, "plugin", path, "hooks", "config", origin)
+                _collect_hooks_from(inv, findings, tool, path, "plugin")
+        for mcp_file in (".mcp.json", "mcp.json"):
+            _collect_mcp(inv, findings, tool, root / mcp_file, "plugin")
+
+
+_DESKTOP_TEXT_QUERIES = (
+    ("settings.instructions", "SELECT instructions FROM settings"),
+    ("workflows.prompt", "SELECT prompt FROM workflows"),
+    ("my_copilot_scheduled_tasks.prompt", "SELECT prompt FROM my_copilot_scheduled_tasks WHERE archived_at IS NULL"),
+    ("session_automations.prompt", "SELECT prompt FROM session_automations"),
+    ("persistent_project_subscriptions.instructions", "SELECT instructions FROM persistent_project_subscriptions"),
+)
+
+
+def _collect_copilot_desktop(inv: _Inventory, findings: list[Finding], path: Path) -> None:
+    """Read the desktop app's stored instructions and prompts.
+
+    Queries name their columns, because other columns of these tables hold access
+    tokens. Immutable mode never touches the database or its -wal and -shm files,
+    so text still sitting only in the write-ahead log is not seen.
+    """
+    tool = "copilot-desktop"
+    try:
+        conn = sqlite3.connect(f"file:{path}?immutable=1", uri=True, timeout=0.5)
+    except sqlite3.Error:
+        inv.dynamic(tool, f"{path}#unreadable", "app-store", "The app's database could not be opened read-only", transient=True)
+        return
+    try:
+        for column, sql in _DESKTOP_TEXT_QUERIES:
+            try:
+                rows = conn.execute(sql).fetchmany(200)
+            except sqlite3.Error:
+                continue  # the app's schema changes between versions
+            for index, (text,) in enumerate(rows):
+                if not text:
+                    continue
+                label = f"{path}#{column}[{index}]"
+                inv.dynamic(tool, label, "app-store-text", f"Text from the app's database, column {column}. No plain file shows it.", text=str(text))
+                _emit_hits(findings, tool, label, scan_text(str(text)))
+        try:
+            providers = conn.execute("SELECT id, settings_json FROM model_providers").fetchmany(50)
+        except sqlite3.Error:
+            providers = []
+        for provider_id, raw in providers:
+            try:
+                settings = json.loads(raw or "{}")
+            except ValueError:
+                continue
+            for key, value in settings.items() if isinstance(settings, dict) else ():
+                if "url" in key.lower() and isinstance(value, str) and value:
+                    _url_finding(inv, findings, tool, f"{path}#model_providers[{provider_id}].{key}", value)
+    finally:
+        conn.close()
+
+
+COPILOT_SESSIONS_SCANNED = 40
+_COPILOT_WRITE_TOOLS = {"create", "edit", "str_replace", "str_replace_editor", "write", "write_file", "insert"}
+
+
+def _copilot_session_writes(project: Path) -> list[dict]:
+    """Tool-call writes from recent Copilot CLI sessions that ran in this project."""
+    base = _copilot_home(dict(os.environ)) / "session-state"
+    if not base.is_dir():
+        return []
+    candidates = []
+    with os.scandir(base) as entries:
+        for entry in entries:
+            events = Path(entry.path) / "events.jsonl"
+            with contextlib.suppress(OSError):
+                candidates.append((events.stat().st_mtime, events))
+    candidates.sort(reverse=True)
+    out: list[dict] = []
+    wanted = _path_key(project)
+    for _mtime, events in candidates[:COPILOT_SESSIONS_SCANNED]:
+        with contextlib.suppress(OSError):
+            out.extend(_copilot_writes_in(events, wanted))
+    return out
+
+
+def _copilot_writes_in(events: Path, wanted: str) -> list[dict]:
+    out: list[dict] = []
+    session = events.parent.name
+    with events.open("rb") as fh:
+        first = fh.readline(200_000)
+        try:
+            start = json.loads(first)
+        except ValueError:
+            return out
+        cwd = str(((start.get("data") or {}).get("context") or {}).get("cwd") or "")
+        if _path_key(cwd) != wanted:
+            return out
+        for raw in fh:
+            if b'"tool.execution_start"' not in raw:
+                continue
+            try:
+                obj = json.loads(raw)
+            except ValueError:
+                continue
+            data = obj.get("data") or {}
+            args = data.get("arguments") or {}
+            name = str(data.get("toolName") or "")
+            ts = _epoch(obj.get("timestamp"))
+            if name in _COPILOT_WRITE_TOOLS and args.get("path"):
+                target = str(args["path"])
+                target = target if Path(target).is_absolute() else str(Path(cwd) / target)
+                out.append({"path": target, "ts": ts, "session_id": session, "via": name})
+            elif name in ("bash", "powershell") and isinstance(args.get("command"), str):
+                for target in _BASH_WRITE_RE.findall(args["command"]):
+                    target = target if Path(target).is_absolute() else str(Path(cwd) / target)
+                    out.append({"path": target, "ts": ts, "session_id": session, "via": name})
+    return out
+
+
+_M365_FILE_REF_RE = re.compile(r"\$\[file\(['\"]([^'\"]+)['\"]\)\]")
+M365_CLOUD_NOTE = (
+    "Text kept by Microsoft 365 is not visible here: the deployed agent, tenant policy, "
+    "connectors and Copilot memory live in the service"
+)
+
+
+def _collect_copilot365(inv: _Inventory, findings: list[Finding]) -> None:
+    """Agent packages in the repository, the only Microsoft 365 Copilot text a disk scan can see."""
+    tool = "copilot365"
+    project = inv.project
+    packages = {Path(p).parent for p in glob.glob(str(project / "**" / "declarativeAgent*.json"), recursive=True) if not _pruned(Path(p), project)}
+    packages |= {project / "appPackage"} if (project / "appPackage").is_dir() else set()
+    for package in sorted(packages):
+        inv.add_glob(tool, "project", str(package / "manifest.json"), "manifest", "config")
+        inv.add_glob(tool, "project", str(package / "*plugin*.json"), "plugin-manifest", "config")
+        for agent_path in glob.glob(str(package / "declarativeAgent*.json")):
+            agent_file = Path(agent_path)
+            inv.add(tool, "project", agent_file, "agent", "always")
+            agent = _read_json(agent_file)
+            instructions = str(agent.get("instructions") or "")
+            ref = _M365_FILE_REF_RE.search(instructions)
+            if ref:
+                inv.add(tool, "project", package / ref.group(1), "instructions", "always", origin=str(agent_file))
+            elif instructions:
+                label = f"{agent_file}#instructions"
+                inv.dynamic(tool, label, "inline-instructions", "Inline instructions in the agent package", text=instructions)
+                _emit_hits(findings, tool, label, scan_text(instructions))
+            actions = agent.get("actions")
+            for action in actions if isinstance(actions, list) else []:
+                if isinstance(action, dict) and action.get("file"):
+                    plugin_file = package / str(action["file"])
+                    inv.add(tool, "project", plugin_file, "plugin-manifest", "config", origin=str(agent_file))
+                    _scan_m365_plugin(inv, findings, plugin_file)
+        for plugin_path in glob.glob(str(package / "*plugin*.json")):
+            _scan_m365_plugin(inv, findings, Path(plugin_path))
+        inv.dynamic(tool, f"{package}#service-side", "cloud-side", M365_CLOUD_NOTE, transient=True)
+
+
+def _pruned(path: Path, project: Path) -> bool:
+    return any(part in PRUNE_DIRS or part.startswith(".") for part in path.relative_to(project).parts)
+
+
+def _scan_m365_plugin(inv: _Inventory, findings: list[Finding], path: Path) -> None:
+    plugin = _read_json(path)
+    text = "\n".join(str(plugin.get(k) or "") for k in ("description_for_model", "description_for_human"))
+    if text.strip():
+        label = f"{path}#description_for_model"
+        inv.dynamic("copilot365", label, "plugin-description", "Plugin description text that reaches the model", text=text)
+        _emit_hits(findings, "copilot365", label, scan_text(text))
+    runtimes = plugin.get("runtimes")
+    for index, runtime in enumerate(runtimes if isinstance(runtimes, list) else []):
+        spec = runtime.get("spec") if isinstance(runtime, dict) else None
+        url = spec.get("url") if isinstance(spec, dict) else None
+        if isinstance(url, str) and url.startswith("http"):
+            host = _host_of(url)
+            inv.dynamic("copilot365", f"{path}#runtimes[{index}]", "plugin-endpoint", f"Plugin calls host {host}; its responses reach the model")
 
 
 def _collect_imports(inv: _Inventory, findings: list[Finding]) -> None:
@@ -953,6 +1517,9 @@ _ENV_RULES = {
     "CODEX_HOME": ("dynamic.config-dir-override", "medium", "Moves where Codex reads its settings and instructions"),
     "GEMINI_CLI_SYSTEM_SETTINGS_PATH": ("dynamic.config-dir-override", "medium", "Replaces Gemini's system settings file"),
     "GEMINI_CLI_SYSTEM_DEFAULTS_PATH": ("dynamic.config-dir-override", "medium", "Replaces Gemini's system defaults file"),
+    "COPILOT_HOME": ("dynamic.config-dir-override", "medium", "Moves where Copilot reads its settings and instructions"),
+    "COPILOT_CUSTOM_INSTRUCTIONS_DIRS": ("dynamic.instruction-dir-override", "medium", "Loads instructions from more directories, which no settings file lists"),
+    "COPILOT_ALLOW_ALL": ("dynamic.auto-approve", "medium", "Lets Copilot run tools without asking"),
     "ANTHROPIC_CUSTOM_HEADERS": ("dynamic.custom-headers", "medium", "Adds headers to every API request"),
     "CLAUDE_CODE_EXTRA_BODY": ("dynamic.custom-headers", "medium", "Adds fields to every API request body"),
 }
@@ -987,7 +1554,7 @@ def _collect_env(inv: _Inventory, findings: list[Finding], env: dict[str, str], 
             rule, severity, why = _ENV_RULES[name]
             inv.dynamic(tool, label, "env", why)
             findings.append(Finding(rule=rule, severity=severity, tool=tool, path=label, snippet=f"{name}=<set>", why=why, action="Confirm you set this on purpose."))
-        elif name.startswith("ANTHROPIC_") and value:
+        elif name.startswith(("ANTHROPIC_", "COPILOT_")) and value:
             inv.dynamic(tool, label, "env", "Set; value not shown")
 
 
@@ -1511,20 +2078,21 @@ def _agent_writes(writes: list[dict], sources: list[Source], baseline_at: float 
     for s in sources:
         if s.scope == "dynamic":
             continue
-        current = by_path.get(s.path)
+        key = _path_key(s.path)
+        current = by_path.get(key)
         if current is None or _RANK.get(s.loading, 9) < _RANK.get(current.loading, 9):
-            by_path[s.path] = s
+            by_path[key] = s
     since = baseline_at if baseline_at is not None else now - 7 * 86400
     latest: dict[tuple[str, str], dict] = {}
     for write in writes:
         if not write["ts"] or write["ts"] < since:
             continue
-        source = by_path.get(write["path"])
+        source = by_path.get(_path_key(write["path"]))
         if source is None:
             continue
-        key = (write["path"], write["session_id"])
+        key = (source.path, write["session_id"])
         if key not in latest or latest[key]["ts"] < write["ts"]:
-            latest[key] = {**write, "tool": source.tool, "loading": source.loading, "scope": source.scope}
+            latest[key] = {**write, "path": source.path, "tool": source.tool, "loading": source.loading, "scope": source.scope}
     rows = sorted(latest.values(), key=lambda w: w["ts"], reverse=True)[:100]
     for row in rows:
         forceful = row["loading"] in ("always", "config")
@@ -1550,17 +2118,17 @@ def _agent_writes(writes: list[dict], sources: list[Source], baseline_at: float 
 
 def _unknown_sources(loaded: list[str], sources: list[Source], project: Path, findings: list[Finding]) -> list[str]:
     known = {s.path for s in sources}
-    with_real = set(known)
+    with_real = {_path_key(path) for path in known}
     for path in known:
         with contextlib.suppress(OSError):
-            with_real.add(str(Path(path).resolve()))
+            with_real.add(_path_key(Path(path).resolve()))
     unknown = []
     home_cfg = Path.home() / ".claude"
     for raw in sorted(set(loaded)):
         p = Path(raw)
         if not (p.is_relative_to(project) or project.is_relative_to(p.parent) or p.is_relative_to(home_cfg)):
             continue  # a load in another project's session says nothing about this one
-        if raw in with_real or str(p.resolve()) in with_real or not p.is_file():
+        if _path_key(raw) in with_real or _path_key(p.resolve()) in with_real or not p.is_file():
             continue
         unknown.append(raw)
         findings.append(
@@ -1677,6 +2245,10 @@ def _enrich_files(inv: _Inventory, findings: list[Finding]) -> list[Source]:
         # A nested rule directory applies only to its own subtree, so alwaysApply there stays conditional.
         if row.tool == "cursor" and row.kind == "rules" and facts["always_apply"] and _is_top_cursor_rule(path, project):
             row.loading = "always"
+        if row.path.endswith(".instructions.md") and facts["apply_to"]:
+            row.note = f"applyTo: {_snippet(facts['apply_to'])}"
+            if facts["apply_to"] in ("**", "**/*", "*"):
+                row.loading = "always"
         _note_symlink(row, project, findings)
         if row.path in scanned:
             scanned[row.path][1].append(row.tool)
@@ -1810,9 +2382,17 @@ def run_audit(
     _collect_claude_memory(inv)
     _collect_walks(inv)
     plugins = _collect_plugins(inv)
+    persistent = _persistent_env(findings)
+    effective_env = {k: v for values in persistent.values() for k, v in values.items()} | env
     _collect_vscode(inv, findings)
+    _collect_copilot(inv, findings, effective_env)
+    _collect_copilot365(inv, findings)
+    _collect_vscode_extensions(inv, findings)
+    _collect_vscode_policy(inv, findings)
     _collect_imports(inv, findings)
     _collect_dynamic(inv, findings, env, plugins, ps_output)
+    for origin, values in persistent.items():
+        _collect_env(inv, findings, values, origin)
     mark = lap("inventory", mark)
 
     sources = _enrich_files(inv, findings)
@@ -1829,7 +2409,7 @@ def run_audit(
     current = _baseline_entries(sources)
     drift = _drift(entry, current)
     _drift_findings(drift, findings)
-    writes = [w for t in transcripts for w in t["writes"]]
+    writes = [w for t in transcripts for w in t["writes"]] + _copilot_session_writes(root)
     baseline_at = entry.get("scanned_at") if entry else None
     writes += _db_writes(baseline_at if baseline_at is not None else now - 7 * 86400)
     agent_writes = _agent_writes(writes, sources, baseline_at, findings, now)
