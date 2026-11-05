@@ -80,6 +80,22 @@ The index searches:
 known only from `session-store.db` has surface `unknown`, since that store does not
 record the client. A VS Code session's project comes from `workspace.json`.
 
+VS Code's `state.vscdb` files add links, read by named key only:
+
+| Evidence | Effect |
+|----------|--------|
+| `agent-host-copilotcli:/<id>` in `agentSessions.model.cache` | Surface `copilot-vscode`: the session ran in VS Code's agent host |
+| `copilotcli:/<id>` in `chat.ChatSessionStore.index` | Alias, title, timing; surface `copilot-vscode` only if it was unknown |
+| `copilotcli:/<id>` in `agentSessions.model.cache` | Alias, title, timing; no surface, since VS Code lists sessions from any client |
+| `chatEditingSessions/<SHA-1 of the resource>/` | Alias and artifacts for that CLI session; surface `copilot-vscode` only if it was unknown |
+
+`vscode.metadata.json` with `origin: other` shows that VS Code listed a session, not that
+it started it, so the surface stays as `workspace.yaml` says. Text in a chat that mentions
+a session id creates no link. Any of these aliases works as a session name. A chat's
+`chatEditingSessions`, `transcripts`, `debug-logs` and `chat-session-resources` entries are
+its artifacts. Title and creation time of a chat file come from a bounded head and tail, at
+any file size.
+
 Artifact types are `event_log`, `plan`, `checkpoint`, `file_snapshot`, `snapshot_index`,
 `tool_output`, `attachment`, `research`, `metadata`, `database`, `lock` and `unknown`.
 A file of a new kind is listed as `unknown`, not hidden.

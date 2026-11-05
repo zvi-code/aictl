@@ -18,8 +18,11 @@ Sources:
 
 from __future__ import annotations
 
+import base64
+import binascii
 import csv
 import fnmatch
+import hashlib
 import json
 import ntpath
 import os
@@ -33,7 +36,7 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from .. import platforms
-from ..ingesters._common import coerce_ts
+from ..ingesters._common import coerce_ts, open_readonly
 from .collect import FRESH_S, Collector, _query, _workspace_yaml, capture_mode
 from .copilot_events import EventsFile, clean
 from .procs import snapshot
@@ -48,6 +51,12 @@ _TOOL_PID_TS = re.compile(r"^([A-Za-z][\w.-]*):(\d+):(\d+(?:\.\d+)?)$")
 _ENV_VAR = re.compile(r"%([^%\\/]+)%")
 _USER_DIR_ROW = re.compile(r"^(.*[\\/]User)[\\/](?:workspaceStorage|globalStorage[\\/]github\.copilot-chat)[\\/]?$")
 _CHECKPOINT_FILE = re.compile(r"^(\d+)-")
+_CLI_RESOURCE = re.compile(rf"^(agent-host-copilotcli|copilotcli):/+({_UUID})$")
+_LOCAL_CHAT_RESOURCE = re.compile(r"^vscode-chat-session://local/([A-Za-z0-9_=-]+)$")
+_SHA1_NAME = re.compile(r"^[0-9a-f]{40}$")
+_CHAT_FIELD = re.compile(r'"(sessionId|creationDate|customTitle)":\s*("(?:[^"\\]|\\.)*"|\d+)')
+_CHAT_TITLE_PATCH = re.compile(r'^\{"kind":\s*1,\s*"k":\s*\["customTitle"\]')
+CHAT_HEAD_TAIL_BYTES = 64 * 1024
 MIN_PREFIX = 4
 LOCK_TS_TOLERANCE_S = 86400.0
 
@@ -63,6 +72,10 @@ _DENIED_NAMES = (
     "auth.json",
     ".env",
     ".env.*",
+    # VS Code's state store keeps secret:// entries.
+    "*.vscdb",
+    "*.vscdb-*",
+    "*.vscdb.*",
 )
 
 
@@ -225,18 +238,94 @@ def _add_alias(rec: dict[str, Any], alias: Any) -> None:
         rec["aliases"].append(alias)
 
 
+def _state_text(db: Path, key: str) -> str | None:
+    """One named key of a ``state.vscdb``. Only named keys are read: the table also holds ``secret://`` rows."""
+    conn = open_readonly(db, "copilot session index")
+    if conn is None:
+        return None
+    try:
+        row = conn.execute("select value from ItemTable where key = ?", (key,)).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    if not row or row[0] is None:
+        return None
+    return row[0].decode("utf-8", "replace") if isinstance(row[0], bytes) else str(row[0])
+
+
+def _state_json(db: Path, key: str) -> Any:
+    text = _state_text(db, key)
+    if text is None:
+        return None
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
+
+
 def _chat_index(db: Path) -> dict[str, dict[str, Any]]:
     """Entries of VS Code's ``chat.ChatSessionStore.index`` in one ``state.vscdb``."""
-    rows = _query(db, "select value from ItemTable where key = 'chat.ChatSessionStore.index'")
-    if not rows:
-        return {}
-    raw = rows[0][0]
-    try:
-        data = json.loads(raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw)
-    except (TypeError, ValueError):
-        return {}
+    data = _state_json(db, "chat.ChatSessionStore.index")
     entries = data.get("entries") if isinstance(data, dict) else None
     return {k: v for k, v in entries.items() if isinstance(v, dict)} if isinstance(entries, dict) else {}
+
+
+def _local_chat_id(resource: str) -> str | None:
+    """``vscode-chat-session://local/<base64 of id>`` names a chat session file."""
+    match = _LOCAL_CHAT_RESOURCE.match(resource)
+    if not match:
+        return None
+    encoded = match.group(1)
+    try:
+        decoded = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode("ascii")
+    except (binascii.Error, ValueError):
+        return None
+    return decoded if _UUID_RE.fullmatch(decoded) else None
+
+
+def _chat_file_fields(path: Path, size: int) -> dict[str, Any]:
+    """Title and creation time from a bounded head and tail of a chat file, of any size.
+
+    The session header comes first in a ``.jsonl`` file and may be followed by a very
+    large ``requests`` value, so only the part before ``requests`` is searched. Keys
+    inside prompt text have their quotes escaped and do not match. A later
+    ``customTitle`` patch line wins. A header naming another session is ignored.
+    """
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(CHAT_HEAD_TAIL_BYTES)
+            tail = b""
+            if size > CHAT_HEAD_TAIL_BYTES:
+                fh.seek(max(CHAT_HEAD_TAIL_BYTES, size - CHAT_HEAD_TAIL_BYTES))
+                tail = fh.read(CHAT_HEAD_TAIL_BYTES)
+    except OSError:
+        return {}
+    head_text = head.decode("utf-8", "replace")
+    tail_text = tail.decode("utf-8", "replace")
+    header = head_text.split('"requests":', 1)[0]
+    if path.suffix == ".json":  # The older whole-file form writes these keys after ``requests``.
+        header += "\n" + tail_text.rsplit('"requests":', 1)[-1]
+    fields: dict[str, Any] = {}
+    for key, value in _CHAT_FIELD.findall(header):
+        if key not in fields:
+            try:
+                fields[key] = json.loads(value)
+            except ValueError:
+                continue
+    if fields.get("sessionId", path.stem) != path.stem:
+        return {}
+    lines = head_text.split("\n")[:-1] if size > CHAT_HEAD_TAIL_BYTES else head_text.split("\n")
+    lines += tail_text.split("\n")[1:]
+    for line in lines:
+        if _CHAT_TITLE_PATCH.match(line):
+            try:
+                value = json.loads(line).get("v")
+            except ValueError:
+                continue
+            if isinstance(value, str):
+                fields["customTitle"] = value
+    return fields
 
 
 class SessionIndex:
@@ -249,6 +338,7 @@ class SessionIndex:
         self._alias_map: dict[str, str] = {}
         self._locks: dict[str, list[tuple[int, float]]] = {}
         self._head_cache: dict[str, bool] = {}
+        self._hashed_edits: list[str] = []
         self._scan()
 
     # ── scan ─────────────────────────────────────────────────────────
@@ -295,6 +385,9 @@ class SessionIndex:
         rec["folder"] = str(folder)
         rec["roots"] = [str(folder)]
         rec["sources"].append("session-state")
+        if "vscode.metadata.json" in names:
+            # VS Code writes this file when it lists a session; origin says who started it.
+            rec["sources"].append("vscode.metadata.json")
         rec["project"] = clean(meta.get("cwd") or "", 240) or None
         rec["git_root"] = clean(meta.get("git_root") or "", 240) or None
         rec["branch"] = clean(meta.get("branch") or "", 80) or None
@@ -434,22 +527,99 @@ class SessionIndex:
         for ws in ws_dirs:
             if ws.is_dir(follow_symlinks=False):
                 self._scan_workspace(Path(ws.path), edition)
+                self._apply_vscode_state(Path(ws.path) / "state.vscdb")
         for gs in _global_storages(user):
             self._scan_chat_files(gs / "emptyWindowChatSessions", gs.parent, None, gs / "state.vscdb", edition)
             self._apply_workspace_sessions(gs / "github.copilot-chat", edition)
             self._apply_agent_session_refs(gs / "state.vscdb")
+            self._apply_vscode_state(gs / "state.vscdb")
 
     def _apply_agent_session_refs(self, state_db: Path) -> None:
         """VS Code names CLI sessions it has shown as ``agent-host-copilotcli:/<id>``: keep that as an alias."""
         if not state_db.exists():
             return
-        rows = _query(state_db, "select value from ItemTable where key = 'agentSessions.providerReadMigration'")
-        for (raw,) in rows:
-            text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
-            for scheme, sid in re.findall(rf"([a-z-]+copilotcli:/+)({_UUID})", text):
-                rec = self.records.get(sid)
+        text = _state_text(state_db, "agentSessions.providerReadMigration") or ""
+        for scheme, sid in re.findall(rf"([a-z-]+copilotcli:/+)({_UUID})", text):
+            rec = self.records.get(sid)
+            if rec is not None:
+                _add_alias(rec, f"{scheme}{sid}")
+
+    def _apply_vscode_state(self, db: Path) -> None:
+        """Link CLI sessions named by exact resource in a ``state.vscdb``, and add titles and timing.
+
+        ``agent-host-copilotcli:`` sessions ran in VS Code's agent host. A ``copilotcli:``
+        chat index entry means VS Code opened the session, so it decides only an unknown
+        surface. The ``agentSessions.model.cache`` list holds sessions from any client,
+        so a ``copilotcli:`` row there gives an alias and no surface.
+        """
+        if not db.exists():
+            return
+        cache = _state_json(db, "agentSessions.model.cache")
+        for entry in cache if isinstance(cache, list) else ():
+            resource = entry.get("resource") if isinstance(entry, dict) else None
+            if not isinstance(resource, str):
+                continue
+            match = _CLI_RESOURCE.match(resource)
+            if match:
+                self._apply_cli_resource(match.group(1), match.group(2), resource, entry, "agentSessions.model.cache")
+            else:
+                rec = self.records.get(_local_chat_id(resource) or "")
                 if rec is not None:
-                    _add_alias(rec, f"{scheme}{sid}")
+                    _add_alias(rec, resource)
+                    self._apply_entry_fields(rec, entry, "label")
+        for key, entry in _chat_index(db).items():
+            match = _CLI_RESOURCE.match(key)
+            if match:
+                rec = self._apply_cli_resource(match.group(1), match.group(2), key, entry, "chat.ChatSessionStore.index")
+                if rec["surface"] == "unknown":
+                    rec["surface"], rec["surface_source"] = "copilot-vscode", f"VS Code chat index entry {match.group(1)}:"
+
+    def _apply_cli_resource(self, scheme: str, sid: str, resource: str, entry: dict[str, Any], source: str) -> dict[str, Any]:
+        rec = self.records.get(sid)
+        if rec is None:
+            rec = self.records[sid] = _new_record(sid, "unknown", f"named in {source}, which does not record the client")
+            rec["partial"] = True
+        _add_alias(rec, resource)
+        rec["sources"].append(source)
+        self._apply_entry_fields(rec, entry, "label" if source == "agentSessions.model.cache" else "title")
+        metadata = entry.get("metadata")
+        cwd = metadata.get("workingDirectoryPath") if isinstance(metadata, dict) else None
+        if isinstance(cwd, str) and cwd and not rec["project"]:
+            rec["project"] = clean(cwd, 240)
+        if scheme == "agent-host-copilotcli" and rec["surface"] != "copilot-desktop":
+            rec["surface"], rec["surface_source"] = "copilot-vscode", f"{source} provider {scheme}"
+        return rec
+
+    @staticmethod
+    def _apply_entry_fields(rec: dict[str, Any], entry: dict[str, Any], title_key: str) -> None:
+        title = entry.get(title_key)
+        if isinstance(title, str) and title and not rec["title"]:
+            rec["title"] = clean(title, 120)
+        timing = entry.get("timing")
+        if isinstance(timing, dict):
+            rec["started_at"] = rec["started_at"] or coerce_ts(timing.get("created")) or None
+            ended = timing.get("lastRequestEnded") or timing.get("lastRequestStarted")
+            rec["last_activity_at"] = rec["last_activity_at"] or coerce_ts(ended) or None
+
+    def _link_hashed_edits(self) -> None:
+        """A CLI session's ``chatEditingSessions`` folder is named by the SHA-1 of its resource."""
+        if not self._hashed_edits:
+            return
+        owners: dict[str, tuple[str, str]] = {}
+        for sid in self.records:
+            for scheme in ("copilotcli", "agent-host-copilotcli"):
+                resource = f"{scheme}:/{sid}"
+                owners[hashlib.sha1(resource.encode("utf-8"), usedforsecurity=False).hexdigest()] = (sid, resource)
+        for path in self._hashed_edits:
+            owner = owners.get(PurePath(path).name)
+            if owner is None:
+                continue
+            rec = self.records[owner[0]]
+            _add_alias(rec, owner[1])
+            rec["roots"].append(path)
+            rec["sources"].append("chatEditingSessions")
+            if rec["surface"] == "unknown":
+                rec["surface"], rec["surface_source"] = "copilot-vscode", "chatEditingSessions folder named by its resource"
 
     def _scan_workspace(self, ws: Path, edition: str) -> None:
         names = {"chatSessions", "chatEditingSessions", "GitHub.copilot-chat"}
@@ -473,6 +643,8 @@ class SessionIndex:
                 sid = item.name.split(".")[0] if by_stem else item.name
                 rec = self.records.get(sid)
                 if rec is None:
+                    if label == "chatEditingSessions" and _SHA1_NAME.match(sid):
+                        self._hashed_edits.append(item.path)
                     if not _UUID_RE.fullmatch(sid):
                         continue
                     rec = self.records[sid] = self._vscode_record(sid, ws, project, edition, label)
@@ -509,6 +681,11 @@ class SessionIndex:
             timing = entry.get("timing")
             created = timing.get("created") if isinstance(timing, dict) else None
             rec["started_at"] = coerce_ts(created or entry.get("creationDate")) or rec["started_at"]
+            if not rec["title"] or not rec["started_at"]:
+                fields = _chat_file_fields(Path(item.path), st.st_size)
+                if isinstance(fields.get("customTitle"), str) and not rec["title"]:
+                    rec["title"] = clean(fields["customTitle"], 120)
+                rec["started_at"] = rec["started_at"] or coerce_ts(fields.get("creationDate")) or None
 
     def _apply_workspace_sessions(self, gs: Path, edition: str) -> None:
         """``copilot.cli.workspaceSessions.<id>.json``: CLI sessions VS Code lists for a workspace."""
@@ -531,6 +708,7 @@ class SessionIndex:
                 rec["sources"].append(f"{edition}:{path.name}")
 
     def _finish(self) -> None:
+        self._link_hashed_edits()
         for sid, rec in self.records.items():
             if rec["state"] == "unknown":
                 last = rec["last_activity_at"]
