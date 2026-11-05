@@ -62,6 +62,18 @@ copilot:
     enable_instructions: "Set github.copilot.advanced.debug.useElectron to true in VS Code settings"
     export_path_pattern: "**/otel*export*.jsonl"
 
+copilot-cli:
+  config_files: []   # parsed by _parse_copilot_home_config (~/.copilot, COPILOT_HOME)
+
+copilot-desktop:
+  config_files: []   # parsed by _parse_copilot_home_config (~/.copilot, COPILOT_HOME)
+
+copilot-cli:
+  config_files: []   # parsed by _parse_copilot_home_config (~/.copilot, COPILOT_HOME)
+
+copilot-desktop:
+  config_files: []   # parsed by _parse_copilot_home_config (~/.copilot, COPILOT_HOME)
+
 cursor:
   config_files:
     - path_fn: cursor_user_dir
