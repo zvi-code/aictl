@@ -18,7 +18,7 @@ function collectResponseText(turn, actions) {
   return chunks.join('\n\n');
 }
 
-export default function TurnCard({ turn, index, expanded, onToggle }) {
+export default function TurnCard({ turn, index, expanded, onToggle, withheld }) {
   const hasPrompt = turn.prompt && turn.prompt.length > 0;
   const actions = turn.actions || [];
   const responseText = collectResponseText(turn, actions);
@@ -52,7 +52,7 @@ export default function TurnCard({ turn, index, expanded, onToggle }) {
       <div class="tr-prompt-text">${expanded ? turn.prompt : truncate(turn.prompt_preview || turn.prompt, 120)}</div>
     </div>` : html`<div class="tr-prompt tr-prompt-empty">
       <div class="tr-prompt-icon"><${Icon} name="user" size="1em"/></div>
-      <div class="tr-prompt-text text-muted">(no prompt captured)</div>
+      <div class="tr-prompt-text text-muted">${withheld ? '(text not retained)' : '(no prompt captured)'}</div>
     </div>`}
 
     ${hasResponse ? html`<div class="tr-response ${expanded ? 'tr-response-full' : ''}">

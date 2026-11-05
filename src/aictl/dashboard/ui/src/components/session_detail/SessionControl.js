@@ -42,7 +42,7 @@ export default function SessionControl({sessionId, onKilled}) {
 
   return html`<span class="flex-row gap-sm" style="align-items:center">
     <span class="text-xs" style="color:var(--red)">Confirm kill?</span>
-    <button class="badge" style="background:var(--red);color:var(--bg);cursor:pointer;font-size:var(--fs-xs)"
+    <button class="badge" style="background:var(--red);color:var(--on-status);cursor:pointer;font-size:var(--fs-xs)"
       disabled=${busy} onClick=${doKill}>${busy ? '\u2026' : 'Yes, SIGTERM'}</button>
     <button class="badge" style="cursor:pointer;font-size:var(--fs-xs)" onClick=${() => setArmed(false)}>Cancel</button>
     ${error && html`<span class="text-xs" style="color:var(--red)">${error}</span>`}

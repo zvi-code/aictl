@@ -99,12 +99,12 @@ export function ConfigSection({config}) {
   if(!entries.length && !features.length && !hasMcp && !hasExt && !otel.enabled && !hints.length && config.model==null && config.launch_at_startup==null) return null;
   return html`<div class="live-section">
     <h3>Configuration
-      ${config.launch_at_startup===true && html`<span class="badge" style="background:var(--green);color:var(--bg)">auto-start</span>`}
+      ${config.launch_at_startup===true && html`<span class="badge" style="background:var(--green);color:var(--on-status)">auto-start</span>`}
       ${config.launch_at_startup===false && html`<span class="badge">no auto-start</span>`}
       ${config.auto_update===true && html`<span class="badge">auto-update</span>`}
       ${config.model && html`<span class="badge">${config.model}</span>`}
-      ${otel.enabled && html`<span class="badge" style="background:var(--green);color:var(--bg)">OTel ${otel.exporter||'on'}</span>`}
-      ${!otel.enabled && otel.source && html`<span class="badge" style="background:var(--orange);color:var(--bg)">OTel off</span>`}
+      ${otel.enabled && html`<span class="badge" style="background:var(--green);color:var(--on-status)">OTel ${otel.exporter||'on'}</span>`}
+      ${!otel.enabled && otel.source && html`<span class="badge" style="background:var(--orange);color:var(--on-status)">OTel off</span>`}
     </h3>
     <div class="metric-grid">
       ${otel.enabled && html`<div class="metric-chip" style="border-color:var(--green)">
@@ -214,7 +214,7 @@ export function TelemetrySection({telemetry}) {
       <div class="text-red text-bold" style="font-size:var(--fs-base);margin-bottom:0.2rem">Recent Errors</div>
       ${errors.map(e=>html`<div class="flex-row gap-sm" style="font-size:var(--fs-sm);padding:0.1rem 0">
         <span class="mono text-muted text-nowrap">${(e.timestamp||'').slice(11,19)}</span>
-        <span class="badge" style="font-size:var(--fs-xs);background:var(--red);color:var(--bg);padding:0.05rem var(--sp-2)">${e.type}</span>
+        <span class="badge" style="font-size:var(--fs-xs);background:var(--red);color:var(--on-status);padding:0.05rem var(--sp-2)">${e.type}</span>
         <span class="text-muted">${e.message}</span>
         ${e.model && html`<span class="mono text-muted">${e.model}</span>`}
       </div>`)}
@@ -268,7 +268,7 @@ export function LiveSection({live}) {
       <div class="metric-chip">
         <span class="mlabel">Workspaces</span>
         <span class="mvalue">${(live.workspaces||[]).length || 0}</span>
-        <span class="msub mono">${(live.workspaces||[]).slice(0,2).join(' | ') || '(unknown)'}</span>
+        <span class="msub mono">${(live.workspaces||[]).slice(0,2).join(' | ') || 'no workspace reported'}</span>
       </div>
     </div>
   </div>`;

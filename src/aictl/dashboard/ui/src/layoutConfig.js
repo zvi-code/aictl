@@ -38,21 +38,28 @@ export const LAYOUT = {
     { field: 'total_live_inbound_rate_bps', label: '\u2193 Inbound', format: 'rate', dp: 'overview.total_live_inbound_rate_bps' },
   ],
 
+  // Navigation groups answer four questions: what is happening, what ran, what
+  // did it cost, how is it set up. Ids are stable deep-link values; retired ids
+  // resolve through TAB_ALIASES in hooks/urlState.js.
+  navGroups: [
+    { id: 'monitor', label: 'Monitor' },
+    { id: 'work',    label: 'Sessions' },
+    { id: 'spend',   label: 'Spend' },
+    { id: 'setup',   label: 'Setup' },
+  ],
   tabs: [
-    // iconName: Lucide icon for use with <Icon name=/>. Emoji `icon` kept for
-    // backward-compat until app.js migrates tab buttons to the Icon primitive.
-    // TODO(agent-J): migrate tab icons to <Icon name={t.iconName}/> and drop `icon`.
-    { id: 'overview', label: 'Dashboard',        icon: '\uD83D\uDCCA', iconName: 'layout-dashboard', key: '1' },
-    { id: 'explorer', label: 'Session Explorer', icon: '\uD83D\uDD0D', iconName: 'search',           key: '7' },
-    { id: 'procs',    label: 'Processes',        icon: '\u2699\uFE0F', iconName: 'cpu',              key: '2' },
-    { id: 'memory',   label: 'AI Context',       icon: '\uD83D\uDCDD', iconName: 'brain',            key: '3' },
-    { id: 'live',     label: 'Live Monitor',     icon: '\uD83D\uDCE1', iconName: 'radio',            key: '4' },
-    { id: 'events',   label: 'Events & Stats',   icon: '\uD83D\uDCC8', iconName: 'activity',         key: '5' },
-    { id: 'budget',   label: 'Token Budget',     icon: '\uD83D\uDCB0', iconName: 'coins',           key: '6' },
-    { id: 'analytics', label: 'Analytics',        icon: '\uD83D\uDD2C', iconName: 'bar-chart-3',      key: '8' },
-    { id: 'config',   label: 'Configuration',     icon: '\u2699\uFE0F', iconName: 'settings',         key: '0' },
-    { id: 'agents',   label: 'Agents',             icon: '\uD83E\uDD16', iconName: 'bot',              key: '' },
-    { id: 'prompts',  label: 'Prompts',             icon: '\u270F',       iconName: 'pen',              key: '' },
+    { id: 'overview',  group: 'monitor', label: 'Overview',      iconName: 'layout-dashboard', key: '1' },
+    { id: 'hidden',    group: 'monitor', label: 'Hidden context', iconName: 'eye-off',       key: 'h' },
+    { id: 'live',      group: 'monitor', label: 'Live',          iconName: 'radio',            key: '2' },
+    { id: 'procs',     group: 'monitor', label: 'Processes',     iconName: 'cpu',              key: '3' },
+    { id: 'events',    group: 'monitor', label: 'Events',        iconName: 'activity',         key: '4' },
+    { id: 'explorer',  group: 'work',    label: 'Explorer',      iconName: 'search',           key: '5' },
+    { id: 'agents',    group: 'work',    label: 'Agents',        iconName: 'bot',              key: '6' },
+    { id: 'prompts',   group: 'work',    label: 'Prompts',       iconName: 'pen',              key: '7' },
+    { id: 'budget',    group: 'spend',   label: 'Budget',        iconName: 'coins',            key: '8' },
+    { id: 'analytics', group: 'spend',   label: 'Analytics',     iconName: 'bar-chart-3',      key: '9' },
+    { id: 'memory',    group: 'setup',   label: 'AI context',    iconName: 'brain',            key: '0' },
+    { id: 'config',    group: 'setup',   label: 'Configuration', iconName: 'settings',         key: '-' },
   ],
 
   eventTimeline: { maxDots: 200 },

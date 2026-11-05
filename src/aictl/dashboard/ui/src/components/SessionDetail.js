@@ -1,4 +1,5 @@
 import { html } from 'htm/preact';
+import { toolLabel } from '../utils/tools.js';
 import { fmtK, esc, fmtDurSec, toolColor } from '../utils.js';
 import { sessionIdCandidates } from '../selectors.js';
 import TeamTree, { TaskBoard } from './TeamTree.js';
@@ -35,13 +36,13 @@ export default function SessionDetail({session, onClose}) {
   return html`<div class="sd-container" style="border-left:3px solid ${c}">
     <div class="sd-header">
       <div class="flex-row gap-sm" style="align-items:center">
-        <strong style="font-size:var(--fs-lg)">${esc(session.tool)}</strong>
+        <strong style="font-size:var(--fs-lg)" title=${session.tool}>${esc(toolLabel(session.tool))}</strong>
         ${session.project && html`<span class="text-muted text-xs mono text-ellipsis" style="max-width:250px"
           title=${session.project}>${esc(session.project.replace(/\\/g,'/').split('/').pop())}</span>`}
-        <span class="badge" style="background:var(--green);color:var(--bg);font-size:var(--fs-xs)">
+        <span class="badge" style="background:var(--green);color:var(--on-status);font-size:var(--fs-xs)">
           ${fmtDurSec(session.duration_s)}
         </span>
-        ${hasTeam && html`<span class="badge" style="background:var(--accent);color:var(--bg);font-size:var(--fs-xs)">
+        ${hasTeam && html`<span class="badge" style="background:var(--accent);color:var(--on-status);font-size:var(--fs-xs)">
           Team (${entityState.agents.length})
         </span>`}
         ${session.active && html`<${SessionControl} sessionId=${session.session_id}/>`}
@@ -56,7 +57,7 @@ export default function SessionDetail({session, onClose}) {
       <${ActionsPanel} sessionId=${session.session_id}/>
     <//>
     <${Panel} title="Conversation" icon="message-square" defaultOpen=${false}>
-      <${ConversationPanel} sessionId=${session.session_id}/>
+      <${ConversationPanel} sessionId=${session.session_id} withheld=${session.content_retained === false}/>
     <//>
     ${hasTeam && html`<${Panel} title="Team" icon="users" badge=${entityState.agents.length + ' agents'} defaultOpen=${true}>
       <${TeamTree} entityState=${entityState}/>
@@ -73,7 +74,7 @@ export default function SessionDetail({session, onClose}) {
     <${Panel} title="Resources" icon="layers" badge=${fmtK(inTok + outTok) + ' tok'}>
       <${ResourcesPanel} session=${session}/>
     <//>
-    <${Panel} title="Cost by Model" icon="banknote" defaultOpen=${false}>
+    <${Panel} title="Estimated cost by model" icon="banknote" defaultOpen=${false}>
       <${CostByModelPanel} sessionId=${session.session_id}/>
     <//>
     <${Panel} title="Tool Calls" icon="wrench" defaultOpen=${false}>
@@ -91,7 +92,7 @@ export default function SessionDetail({session, onClose}) {
     <${Panel} title="API Calls" icon="globe" defaultOpen=${false}>
       <${ApiCallsPanel} sessionId=${session.session_id}/>
     <//>
-    ${session.project && html`<${Panel} title="Project Costs" icon="banknote" defaultOpen=${false}>
+    ${session.project && html`<${Panel} title="Estimated project costs" icon="banknote" defaultOpen=${false}>
       <${ProjectCostPanel} project=${session.project}/>
     <//>`}
     ${session.project && session.tool && html`<${Panel} title="Run History" icon="line-chart" defaultOpen=${false}>

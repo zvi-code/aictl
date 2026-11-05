@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach, beforeAll } from 'vitest';
-import { render, cleanup, fireEvent } from '@testing-library/preact';
+import { render, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { html } from 'htm/preact';
 
 import DataTable from '../src/components/ui/DataTable.js';
@@ -160,5 +160,33 @@ describe('DataTable — column resize persistence', () => {
     const widths = Object.values(persisted.columnSizing);
     expect(widths.length).toBeGreaterThan(0);
     expect(widths[0]).toBeGreaterThan(40);
+  });
+});
+
+describe('DataTable quick filter', () => {
+  const columns = [{ accessorKey: 'name', header: 'Name' }, { accessorKey: 'n', header: 'N' }];
+  const many = Array.from({ length: 12 }, (_, i) => ({ id: i, name: 'row-' + i, n: i * 10 }));
+
+  it('filterRows matches any accessor, case-insensitively, and an empty query keeps all', async () => {
+    const { filterRows } = await import('../src/components/ui/DataTable.js');
+    expect(filterRows(many, columns, 'ROW-1').map(r => r.id)).toEqual([1, 10, 11]);
+    expect(filterRows(many, columns, '110').map(r => r.id)).toEqual([11]);
+    expect(filterRows(many, columns, '  ')).toHaveLength(12);
+  });
+  it('appears on long tables, narrows rows, and keeps its input when nothing matches', async () => {
+    const { default: DataTable } = await import('../src/components/ui/DataTable.js');
+    const { getByLabelText, getByText, container } = render(html`<${DataTable} data=${many} columns=${columns} ariaLabel="things"/>`);
+    const box = getByLabelText('Filter things');
+    fireEvent.input(box, { target: { value: 'row-11' } });
+    await waitFor(() => expect(getByText('1 of 12 rows')).toBeTruthy());
+    expect(container.querySelectorAll('tbody tr')).toHaveLength(1);
+    fireEvent.input(box, { target: { value: 'zzz' } });
+    await waitFor(() => expect(getByText('No rows match "zzz"')).toBeTruthy());
+    expect(getByLabelText('Filter things')).toBeTruthy();
+  });
+  it('stays out of the way on short tables', async () => {
+    const { default: DataTable } = await import('../src/components/ui/DataTable.js');
+    const { queryByLabelText } = render(html`<${DataTable} data=${many.slice(0, 3)} columns=${columns} ariaLabel="things"/>`);
+    expect(queryByLabelText('Filter things')).toBeNull();
   });
 });

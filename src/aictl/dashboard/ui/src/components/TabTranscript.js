@@ -8,6 +8,8 @@ import ToolTabs from './ToolTabs.js';
 import SessionSelector from './transcript/SessionSelector.js';
 import TurnCard from './transcript/TurnCard.js';
 import SummaryHeader from './transcript/SummaryHeader.js';
+import TextNotRetained, { textWithheld } from './ui/TextNotRetained.js';
+import { usePolledResource } from '../hooks/usePolledResource.js';
 import { isSessionFlowFormat, normalizeFlowToTranscript } from './transcript/normalize.js';
 
 // Thin orchestrator — owns session/transcript fetch state and composes
@@ -86,9 +88,14 @@ export default function TabTranscript({ externalSessionId = null } = {}) {
     }
   }, [expandAll, transcript]);
 
+  const sessionRow = sessions.find(s => s.session_id === effectiveSessionId);
+  const withheld = textWithheld(sessionRow) || textWithheld(transcript);
+  const { data: selfStatus } = usePolledResource(() => api.getSelfStatus(), []);
   const turns = (transcript?.turns || []).filter(t =>
     (t.prompt && t.prompt.length > 0) || (t.actions && t.actions.length > 0)
     || (t.tool_use_count > 0)
+    // With text withheld a turn may carry only timing and token counts.
+    || (withheld && (t.ts || t.tokens))
   );
   const summary = transcript?.summary || null;
 
@@ -116,18 +123,20 @@ export default function TabTranscript({ externalSessionId = null } = {}) {
 
     <${SummaryHeader} summary=${summary} transcript=${transcript}/>
 
+    ${withheld && html`<${TextNotRetained} mode=${selfStatus?.capture_mode}/>`}
+
     <div class="tr-turns">
       ${transcriptLoading
         ? html`<div class="loading-state" style="padding:var(--sp-8)">Loading transcript\u2026</div>`
         : turns.length === 0
-          ? html`<div class="empty-state" style="padding:var(--sp-8)">
+          ? withheld ? null : html`<div class="empty-state" style="padding:var(--sp-8)">
               <p>No transcript data for this session.</p>
               <p class="text-muted" style="margin-top:var(--sp-3);font-size:var(--fs-xs)">
                 No prompt or tool events were captured for this session.
               </p>
             </div>`
           : turns.map((turn, i) => html`<${TurnCard}
-              key=${i} turn=${turn} index=${i}
+              key=${i} turn=${turn} index=${i} withheld=${withheld}
               expanded=${expandedTurns.has(i)}
               onToggle=${() => toggleTurn(i)}/>`)}
     </div>

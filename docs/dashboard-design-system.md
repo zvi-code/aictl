@@ -4,7 +4,7 @@ Design tokens, component patterns, and accessibility status for the
 `aictl serve` web dashboard UI only. This does not cover the CLI, plugin
 system, collectors, or other parts of the aictl project.
 
-Living document maintained by `/ui-review`. Last updated: 2026-07-14.
+Living document maintained by `/ui-review`. Last updated: 2026-11-05.
 
 > Path note: the package root moved to `src/aictl/` — UI sources are at
 > `src/aictl/dashboard/ui/src/`. File references below use paths relative
@@ -14,19 +14,30 @@ Living document maintained by `/ui-review`. Last updated: 2026-07-14.
 
 ### Theme Variables (dashboard.css)
 
-| Token | Dark | Light | Editorial | Usage |
-|-------|------|-------|-----------|-------|
-| `--bg` | `#0f172a` | `#f8fafc` | `#f7f4ee` | Page background |
-| `--bg2` | `#1e293b` | `#ffffff` | `#fbfaf6` | Card / elevated surface |
-| `--bg3` | `#162032` | `#f1f5f9` | `#ffffff` | Hover / active state |
-| `--fg` | `#e2e8f0` | `#1e293b` | `#1a1614` | Primary text |
-| `--fg2` | `#94a3b8` | `#64748b` | `#8a7f73` | Secondary / muted text |
-| `--accent` | `#38bdf8` | `#0284c7` | `#a6391c` | Links, active tab, primary action |
-| `--border` | `#334155` | `#e2e8f0` | `#e5dfd3` | Borders and dividers |
-| `--green` | `#34d399` | `#059669` | `#3f7d43` | Success, running, positive |
-| `--red` | `#f87171` | `#dc2626` | `#a6391c` | Error, anomaly, critical |
-| `--orange` | `#fb923c` | `#ea580c` | `#b26b1b` | Warning, moderate concern |
-| `--yellow` | `#fbbf24` | `#d97706` | `#d97706` | Caution, on-demand |
+Dark is its own graphite palette, not an inversion of light. Elevation comes
+from lighter surfaces and borders. Shadows are reserved for overlays
+(`--shadow-2`); `--shadow-1` is `none` in both themes.
+
+| Token | Dark | Light | Use |
+|-------|------|-------|-----|
+| `--surface-0` / `--bg` | `#15171a` | `#f5f6f7` | Page, nav rail |
+| `--surface-1` / `--bg2` | `#1c1f23` | `#ffffff` | Panels, header |
+| `--surface-2` | `#23272c` | `#eef0f2` | Hover, notices |
+| `--surface-3` | `#2b3036` | `#e4e7ea` | Selected control, inline code |
+| `--fg` | `#e7e9ec` | `#1a1d21` | Primary text and figures |
+| `--fg2` | `#a9b0ba` | `#555d67` | Secondary text, labels (AA on every surface) |
+| `--border` | `#2f343a` | `#d9dde1` | Panel and control edges |
+| `--border-subtle` | `#25292e` | `#e8eaed` | Row separators |
+| `--accent` | `#a3b5ff` | `#3a4fc2` | Links and the active-view marker only |
+| `--green` | `#5bc48f` | `#0a6d43` | OK |
+| `--red` | `#f28b88` | `#bf2f2d` | Error |
+| `--orange` | `#eda75f` | `#a5540a` | Warning |
+| `--yellow` | `#dcc065` | `#806000` | Chart series |
+| `--on-status` | `#15171a` | `#ffffff` | Text on a status fill |
+
+Rules: never dim text with `opacity` (use `--fg2`; opacity is for disabled
+controls). Headings use `--fg`, not the accent. Chart hero figures use `--fg`:
+the line carries the series color.
 
 ### Editorial-only extras
 
@@ -77,75 +88,57 @@ the editorial override layer at the end of `dashboard.css`:
 
 ## Typography
 
-### Font Stack
-- **Sans** (`var(--ff-sans)` — default body): `-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif` — overridden to `'IBM Plex Sans', …` in editorial theme
-- **Serif** (`var(--ff-serif)` — editorial-only headlines / metric values): `Georgia, 'Times New Roman', serif` → `'IBM Plex Serif', …` in editorial
-- **Monospace** (`var(--ff-mono)`, `.mono` class): `'SF Mono', Menlo, Consolas, monospace` → `'IBM Plex Mono', 'JetBrains Mono', …` in editorial
+System stacks only: a local dashboard makes no font request. `--ff-sans` resolves to
+San Francisco or Segoe UI Variable, `--ff-mono` to SF Mono or Cascadia Mono. The Google Fonts link loads only
+when the editorial theme is chosen (`useTheme`). `body` sets
+`font-variant-numeric: tabular-nums`, so every figure aligns. Labels use sentence
+case; the uppercase tracked treatment is gone outside the editorial theme.
 
-The editorial theme is the only variant that pulls custom webfonts; IBM Plex
-is loaded via Google Fonts in `index.html` but only ever fetched when a
-`[data-theme="editorial"]` selector matches.
-
-### Current Font Size Usage (14 distinct values)
-
-| Value | Occurrences | Used for |
-|-------|-------------|----------|
-| 0.55rem | ~5 | Tiny badges, sparkline labels |
-| 0.6rem | ~10 | Category labels, small badges |
-| 0.62rem | ~3 | Group headers |
-| 0.65rem | ~5 | Metric labels |
-| 0.68rem | ~2 | Small body text |
-| 0.7rem | ~3 | Card metadata |
-| 0.72rem | ~8 | Table cells, body text |
-| 0.75rem | ~12 | Standard body text |
-| 0.78rem | ~3 | Medium text |
-| 0.8rem | ~5 | Section headers |
-| 0.85rem | ~5 | Tool names, card headers |
-| 0.9rem | ~2 | Large labels |
-| 0.95rem | ~2 | Metric values |
-| 1.1rem | ~3 | Chart values, page title |
-
-### Typography Scale (CSS variables defined, migration in progress)
-
-8-tier purpose-driven scale. CSS custom properties in `dashboard.css:32-40`:
-
-| Tier | Variable | Value | CSS class | Usage |
-|------|----------|-------|-----------|-------|
-| 2xs | `--fs-2xs` | 0.55rem | — | Chart annotations, ref labels |
-| xs | `--fs-xs` | 0.6rem | `.text-xs` | Badges, icons, uppercase labels |
-| sm | `--fs-sm` | 0.65rem | `.text-sm` | Tooltips, event details, small controls |
-| base | `--fs-base` | 0.72rem | — | Section titles, meta text, legends |
-| md | `--fs-md` | 0.78rem | `.text-md` | Tables, file items, code, search |
-| lg | `--fs-lg` | 0.85rem | — | Body text, tab buttons, interactive |
-| xl | `--fs-xl` | 0.95rem | — | Card titles, metric values |
-| 2xl | `--fs-2xl` | 1.1rem | — | Page heading, chart hero values |
-
-**Migration status**: Variables defined and consumed by **CSS rules** (dashboard.css
-uses them throughout). However, **inline styles in component JS files** still use
-14+ distinct hardcoded rem values. Worst offender: `TabSessions.js` (8 sizes).
-Next step: replace hardcoded inline font-sizes with `var(--fs-*)` references.
+| Token | Size | Use |
+|-------|------|-----|
+| `--fs-2xs`, `--fs-xs` | 11px | Labels, badges, chart annotations (the floor) |
+| `--fs-sm` | 12px | Dense tables, controls, secondary text |
+| `--fs-base`, `--fs-md` | 13px | Body, tables, nav |
+| `--fs-lg` | 14px | Emphasis, panel titles |
+| `--fs-xl` | 16px | Metric values |
+| `--fs-2xl` | 20px | Chart hero values |
+| `--fs-3xl` | 24px | First-screen figures |
 
 ## Spacing
 
-### Spacing Scale (CSS variables defined, partially consumed)
+`--sp-1 2px`, `--sp-2 4px`, `--sp-3 6px`, `--sp-4 8px`, `--sp-5 10px`, `--sp-6 12px`,
+`--sp-8 16px`, `--sp-10 20px`, `--sp-12 24px`, all multiplied by `--density`
+(`data-density` compact 0.85, normal 1, spacious 1.15). Radius: `--radius-sm 4px`
+for controls, `--radius-md 6px` for panels, `--radius-lg 8px` for overlays.
 
-11-tier scale defined in `dashboard.css:42-51`:
+## Tools and paths
 
-| Token | Value | Usage |
-|-------|-------|-------|
-| `--sp-1` | 0.15rem | Tight: badge/process-row padding |
-| `--sp-2` | 0.25rem | Compact: small padding, legend gap |
-| `--sp-3` | 0.3rem | Small: range gap, metrics gap |
-| `--sp-4` | 0.4rem | Medium: chart gap, standard gap |
-| `--sp-5` | 0.5rem | Standard: cell padding, header gap |
-| `--sp-6` | 0.6rem | Section: card padding, layout gap |
-| `--sp-8` | 0.8rem | Large: tab margin, card padding |
-| `--sp-10` | 1rem | XLarge: column gap |
-| `--sp-12` | 1.2rem | Header: page padding |
+Tool lists are ordered by activity (`utils/tools.js`): live sessions, then processes,
+then tokens, then name. No tool name decides the order. Lists show labels, not ids.
 
-**Migration status**: CSS rules fully consume `--sp-*` variables. Inline styles
-in component JS files still use some hardcoded values (0.1rem, 0.2rem, etc.),
-particularly in `TabSessions.js`, `ProcRow.js`, and `TabBudget.js`.
+Paths render with their own separator (`utils/paths.js`). Drive letters and UNC
+shares are kept, and `~` is used for POSIX paths only.
+
+A cloud-hosted tool with no local data shows `CloudOnlyNotice` ("Not available from
+this machine", with the reason), never a zero or an empty chart. Cost figures are
+labelled as estimates and carry `COST_ESTIMATE_NOTE`; they are not billed amounts.
+
+## Panel states
+
+Every data panel has four distinct states, through `components/ui/PanelState.js`
+and `panelStatus()`:
+
+| State | Shown when | Must say |
+|-------|-----------|----------|
+| loading | first fetch, no data yet | a skeleton, `aria-busy` |
+| empty | fetch succeeded, nothing to show | why it is empty and what to do, with the command if there is one |
+| error | fetch failed, no data | the message and a Retry button |
+| stale | refresh failed or data is old, data kept | the data plus its age and Retry |
+
+`usePolledResource` keeps the last good data across a failed refresh and pauses
+polling while the page is hidden. A session with `content_retained: false` uses
+`components/ui/TextNotRetained.js`: a fifth, deliberate state naming the capture
+mode and how to change it. It is neither empty nor an error.
 
 ## Component Patterns
 
@@ -191,11 +184,17 @@ All 9 tab components use these instead of inline styles.
 - Animation: CSS `max-height` transition
 
 ### Keyboard Shortcuts
-| Key | Action |
-|-----|--------|
-| 1-9 | Switch tabs |
-| / | Focus search |
-| Escape | Close file viewer |
+
+`1`-`9`, `0`, `-`, `h`: views, printed beside each nav entry. `[` and `]`: previous
+and next view. `/`: focus the filter. Ctrl+K or ⌘K, labelled per platform: command palette (views, range, tools,
+live sessions, themes, density). `?`: shortcut list. `Esc`: close panels. All are
+ignored while typing in a field.
+
+### URL state
+
+`?tab=&range=&since=&until=&tools=&session=` is the view's state and wins over
+localStorage on load (`hooks/urlState.js`). Tab changes push history, so Back
+works; filter changes replace it. Retired tab names resolve through `TAB_ALIASES`.
 
 ### Focus Management
 - `focus-visible` outline on buttons (dashboard.css)
@@ -288,29 +287,38 @@ Original bug list (fixed):
 10. Touch targets: 32px on `.range-btn`/`.header-toggle` (meets WCAG 2.2 AA
     24px minimum; 44px remains the target)
 
-## Layout Structure (as of 2026-07-14)
+## Layout Structure (as of 2026-11-05)
 
 ```
-GlobalHeader (shell/GlobalHeader.js)
-  ├── title + filter + command palette (⌘K) + Views + density + theme + live pill
-main
-  ├── RangeBar (Live, 1h, 6h, 24h, 7d, Custom)
-  ├── ActivityRail (left: active sessions)
-  ├── tab bar (11 tabs; keyboard shortcuts cover 1-8 and 0 only)
-  └── tab panel
-       ├── overview  → CDashboardTab (editorial) | DashboardContent+CollectorHealth (default)
-       ├── explorer  → CSessionsTab (editorial) | TabExplorer (default; 5 sub-views:
-       │              SessionDetail / Flow / Transcript / Timeline / Events)
-       └── procs, context, live, events, budget, analytics, heatmap, config,
-           agents, prompts
-file-viewer (overlay side panel, resizable)
+header   aictl | range, tool filter (scope for every panel) | filter, commands, views, theme, status
+nav      Monitor: Overview, Hidden context, Live, Processes, Events
+         Sessions: Explorer, Agents, Prompts
+         Spend: Budget, Analytics
+         Setup: AI context, Configuration
+main     the active view; scroll position is kept per view
 ```
 
-Caveats: the theme fork means health/observability surfaces exist only in the
-default branch (tracker #17); tab count exceeds shortcut coverage; two code
-paths still reference a nonexistent `sessions` tab id (tracker #3).
+Below 900px the rail becomes a scrolling strip. At 640px and under, wide tables and
+panels scroll inside themselves, and the page never scrolls sideways.
+
+The Overview opens with `OverviewNow`: Running now (sessions with age, CPU, RAM,
+tokens), Estimated cost for the last 24 h, and Needs attention (`utils/health.js`, each issue
+with its exact fix, capture mode and disk use against budget, unseen context).
+
+`components/HiddenContextSlot.js` reserves the Hidden context view. It finds
+`HiddenContextPanel.js` by glob and works with or without it. That module may export
+`getHiddenContextSummary(): Promise<{count, detail?}>` to feed Needs attention.
+
+Every view except the Overview is a lazy chunk; ECharts is reachable only through
+them. SSE ticks are coalesced to one update per second and paused while the page is
+hidden. Views outside `LIVE_TABS` refresh every 30 s (`utils/gateContext.js`).
+
+The editorial theme remains, reachable from the command palette only, because it
+also swaps views.
 
 ## Revision Log
+
+- 2026-11-05: grouped navigation, first screen, URL state, panel states, new tokens and scales, lazy tabs, capture-mode and hidden-context surfaces. Activity rail removed: it read a session list the backend does not send and always showed none.
 
 | Date | Change | By |
 |------|--------|-----|

@@ -42,7 +42,7 @@ export default function ChartCard({label, value, valColor, data, chartColor, smo
       <span class="chart-label">${iconName ? html`<${Icon} name=${iconName} size="0.85em"/> ` : ''}${label}</span>
       <span class="chart-val-group">
         ${trend ? html`<span class="chart-trend" aria-hidden="true">${trend.dir}${trend.pct != null ? ' ' + trend.pct + '%' : ''}</span>` : ''}
-        <span class="chart-val" style=${'color:'+(valColor||chartColor||'var(--accent)')} aria-live="polite" aria-atomic="true">${value}</span>
+        <span class="chart-val" style=${valColor ? 'color:' + valColor : null} aria-live="polite" aria-atomic="true">${value}</span>
       </span>
     </div>
     <div style="position:relative">

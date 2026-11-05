@@ -3,6 +3,7 @@ import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS, fmtPct, fmtSz, esc } from '../utils.js';
 import ProcRow from './ProcRow.js';
+import PanelState from './ui/PanelState.js';
 
 function ProcToolGroup({tool, label, procs, maxMem}) {
   const [isOpen, setOpen] = useState(false);
@@ -110,7 +111,9 @@ export default function TabProcesses() {
     const procs = liveProcs.length > 0 ? liveProcs : t.processes;
     if(procs.length) byTool.push({tool:t.tool, label:t.label, procs, hasTree: liveProcs.length > 0});
   });
-  if(!byTool.length) return html`<p class="empty-state">No processes detected.</p>`;
+  if(!byTool.length) return html`<${PanelState} status="empty" emptyTitle="No AI tool processes detected"
+    emptyHint="Start a tool, or widen the tool filter in the header. Check the collector if tools are running."
+    emptyFix="aictl doctor"/>`;
   const allProcs = byTool.flatMap(g=>g.procs);
   const maxMem = Math.max(...allProcs.map(p=>parseFloat(p.mem_mb)||0),100);
   return html`<div>

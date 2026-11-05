@@ -21,7 +21,7 @@ const TOOL_VENDORS = window.TOOL_VENDORS ?? {};
 // Only used when window.TOOL_VENDORS is unavailable.
 const FALLBACK_VENDOR = {
   'claude-code': 'anthropic', 'claude-desktop': 'anthropic', 'claude-mcp-memory': 'anthropic',
-  'copilot': 'github', 'copilot-vscode': 'github', 'copilot-cli': 'github',
+  'copilot': 'github', 'copilot-vscode': 'github', 'copilot-cli': 'github', 'copilot-desktop': 'github',
   'copilot-jetbrains': 'github', 'copilot-vs': 'github', 'copilot365': 'microsoft',
   'codex-cli': 'openai', 'chatgpt-desktop': 'openai', 'chatgpt-lencx': 'openai',
   'gemini': 'google', 'gemini-cli': 'google',

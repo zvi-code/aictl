@@ -268,7 +268,7 @@ export default function CSessionsTab({ onInspect }) {
                       <${StatusBadge} status=${status}/>
                       ${(s.error_count || 0) > 0 ? html`<span
                         title=${s.error_count + ' error' + (s.error_count === 1 ? '' : 's')}
-                        style="background:var(--red);color:var(--bg);border-radius:8px;padding:0 6px;font-size:var(--fs-2xs);font-weight:600">
+                        style="background:var(--red);color:var(--on-status);border-radius:8px;padding:0 6px;font-size:var(--fs-2xs);font-weight:600">
                         ${s.error_count}</span>` : null}
                     </div>
                     <div class="csessions-cell-title">${sessionTitle(s)}</div>

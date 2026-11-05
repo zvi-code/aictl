@@ -56,6 +56,30 @@ describe('axe a11y ratchet', () => {
     }
     expect(serious).toEqual([]);
   }, 15000);
+
+  // Contrast cannot be checked in jsdom; that part runs in a real browser.
+  it('every nav view has no serious/critical violations, with a snapshot or without', async () => {
+    const { LAYOUT } = await import('../src/layoutConfig.js');
+    const { default: App } = await import('../src/app.js');
+    for (const tab of LAYOUT.tabs) {
+      window.history.replaceState(null, '', '/?tab=' + tab.id);
+      const { container } = render(html`<${App}/>`);
+      await waitFor(() => {
+        expect(container.querySelector('.tab-btn[aria-current="page"]')?.textContent).toContain(tab.label);
+      });
+      // Let lazy chunks and their fetches settle.
+      await act(async () => { await new Promise(r => setTimeout(r, 60)); });
+      const results = await axe.run(container, {
+        rules: { 'color-contrast': { enabled: false }, region: { enabled: false } },
+      });
+      const serious = results.violations
+        .filter(v => v.impact === 'serious' || v.impact === 'critical')
+        .map(v => `${tab.id}: ${v.id} ${v.nodes.map(n => n.html).join(' ')}`);
+      expect(serious).toEqual([]);
+      cleanup();
+    }
+    window.history.replaceState(null, '', '/');
+  }, 30000);
 });
 
 // ─── Keyboard operability regression tests ─────────────────────

@@ -5,6 +5,7 @@
 // selection, auto-select a tool and a session, and expose setters for the
 // pickers. This hook is the single copy of that block.
 import { useState, useEffect, useMemo } from 'preact/hooks';
+import { orderIdsBySessionCount } from '../utils/tools.js';
 import { dedupeSessions, findSessionRow } from '../selectors.js';
 import * as api from '../api.js';
 
@@ -76,7 +77,7 @@ export default function useSessionPicker({
     [sessions, enabledTools],
   );
   const tools = useMemo(
-    () => [...new Set(filteredSessions.map(s => s.tool))].sort(),
+    () => orderIdsBySessionCount(filteredSessions),
     [filteredSessions],
   );
 

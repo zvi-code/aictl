@@ -9,6 +9,9 @@ import Dialog from '../ui/Dialog.js';
 import { Icon } from '../ui/index.js';
 import RangeBar from '../RangeBar.js';
 import ToolFilterBar from '../ToolFilterBar.js';
+import { storageSummary, storageText } from '../../utils/health.js';
+import { fmtSz } from '../../utils.js';
+import { commandKeyLabel } from '../../utils/platform.js';
 
 // Data age past which the snapshot is considered stale. SSE pushes arrive
 // every few seconds and the safety-net refresh runs every 30s — anything
@@ -35,6 +38,16 @@ export function SnapshotAge({ timestamp }) {
   </span>`;
 }
 
+/** Capture mode and disk use, visible from every view. */
+function StoragePill({ selfStatus }) {
+  const s = storageSummary(selfStatus);
+  if (!s || (s.used == null && !s.mode)) return null;
+  const level = s.degraded ? 'err' : s.pct >= 90 ? 'stale' : 'off';
+  return html`<span class=${'conn hdr-desktop-only ' + level} title=${'Disk: ' + storageText(s)}>
+    ${s.mode ? 'capture=' + s.mode + ' ' : ''}${s.used != null ? fmtSz(s.used) : ''}${s.budget ? ' / ' + fmtSz(s.budget) : ''}
+  </span>`;
+}
+
 export default function GlobalHeader({
   // Filter/search
   searchRef, searchQuery, onSearchChange,
@@ -42,7 +55,7 @@ export default function GlobalHeader({
   theme, cycleTheme,
   density, setDensity,
   // Connection
-  otelActive, connected,
+  otelActive, connected, selfStatus,
   // Range
   globalRange, onPreset, onApplyCustom,
   // Tool filter (for mobile overflow)
@@ -76,7 +89,13 @@ export default function GlobalHeader({
   </button>`;
 
   return html`<header role="banner">
-    <h1>aictl <span>live dashboard</span></h1>
+    <h1>aictl</h1>
+    <div class="hdr-scope" role="group" aria-label="Scope for every panel">
+      <${RangeBar} globalRange=${globalRange}
+        onPreset=${onPreset} onApplyCustom=${onApplyCustom}/>
+      <${ToolFilterBar} snap=${snap} enabledTools=${enabledTools}
+        onToggle=${onToggleTool} onSetAll=${onSetAllTools}/>
+    </div>
     <div class="hdr-right">
       <!-- Mobile overflow toggle -->
       <button class="hdr-btn hdr-mobile-only" type="button" aria-label="Menu"
@@ -91,14 +110,15 @@ export default function GlobalHeader({
 
       <!-- Command palette trigger -->
       <button class="hdr-cmdk" type="button"
-        onClick=${onOpenPalette} aria-label="Open command palette">
+        onClick=${onOpenPalette}>
         <${CommandIcon} size="14" aria-hidden="true"/>
-        <span class="hdr-desktop-only">Search</span>
-        <${Kbd}>⌘K</${Kbd}>
+        <span class="hdr-desktop-only">Commands</span>
+        <${Kbd} class="hdr-desktop-only" aria-hidden="true">${commandKeyLabel()}</${Kbd}>
+        <span class="sr-only">open command palette</span>
       </button>
 
       <!-- Views dropdown -->
-      <${Popover} trigger=${viewsTrigger} placement="bottom">
+      <${Popover} trigger=${viewsTrigger} placement="bottom" class="hdr-desktop-only">
         <div class="hdr-views-menu" role="group" aria-label="Saved views">
           ${views.length === 0
             ? html`<div class="hdr-views-empty text-muted">No saved views</div>`
@@ -121,14 +141,6 @@ export default function GlobalHeader({
         </div>
       </${Popover}>
 
-      <!-- Density picker -->
-      <${Segmented}
-        ariaLabel="Density"
-        value=${density}
-        options=${densityOptions}
-        onChange=${setDensity}
-        class="hdr-desktop-only"/>
-
       <!-- Theme toggle -->
       <button class="theme-btn" type="button" onClick=${cycleTheme}
         aria-label=${'Toggle theme: ' + theme} title=${'Theme: ' + theme}>
@@ -138,6 +150,7 @@ export default function GlobalHeader({
       ${otelActive
         ? html`<span class="conn ok" title="OTel receiver active">OTel</span>`
         : html`<span class="conn off" title="OTel receiver inactive — enable with: aictl otel enable">OTel off</span>`}
+      <${StoragePill} selfStatus=${selfStatus}/>
       <${SnapshotAge} timestamp=${snap?.timestamp}/>
       <span class=${'conn ' + (connected ? 'ok' : 'err')} role="status" aria-live="polite">
         ${connected ? 'live' : 'reconnecting...'}
@@ -149,10 +162,11 @@ export default function GlobalHeader({
       <input type="text" class="search-box" placeholder="Filter..."
         aria-label="Filter tools"
         value=${searchQuery} onInput=${e => onSearchChange(e.target.value)}/>
-      <${RangeBar} globalRange=${globalRange}
-        onPreset=${onPreset} onApplyCustom=${onApplyCustom}/>
-      <${ToolFilterBar} snap=${snap} enabledTools=${enabledTools}
-        onToggle=${onToggleTool} onSetAll=${onSetAllTools}/>
+      <${Segmented}
+        ariaLabel="Density"
+        value=${density}
+        options=${densityOptions}
+        onChange=${setDensity}/>
     </div>`}
 
     ${saveDialogOpen && html`<${Dialog} open=${true}
