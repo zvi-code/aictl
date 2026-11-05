@@ -164,13 +164,15 @@ def listening_pids(port: int) -> list[int]:
     if IS_WINDOWS:
         try:
             import psutil
-
+        except ImportError:
+            return []
+        try:
             conns = psutil.net_connections(kind="tcp")
-        except (ImportError, OSError, RuntimeError):
+        except (psutil.Error, OSError, RuntimeError):
             return []
         return sorted({c.pid for c in conns if c.pid and c.status == "LISTEN" and c.laddr and c.laddr.port == port})
     try:
-        result = subprocess.run(["lsof", "-ti", f"tcp:{port}"], capture_output=True, text=True, timeout=5)
+        result = subprocess.run(["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"], capture_output=True, text=True, timeout=5)
     except (FileNotFoundError, subprocess.SubprocessError, OSError):
         return []  # lsof unavailable, let the bind fail naturally
     if result.returncode != 0:

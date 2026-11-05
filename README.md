@@ -823,7 +823,8 @@ File access is inferred from tool-call arguments, so files touched by shell comm
 | `--no-monitor` | Disable live runtime overlay (process/network/filesystem collectors) |
 | `--capture full\|metadata\|off` | What to store: bounded text, no text, or nothing on disk. See [storage](#storage-bounded-and-optional) |
 | `--db PATH` | Path to the SQLite history database |
-| `--daemon` | Run in the background; `--status` and `--stop` manage it |
+| `--daemon` | Run in the background |
+| `--stop`, `--status` | Stop or report the server on this port, started with or without `--daemon` |
 | `--headless` | Collection only, no web UI |
 
 ### Enable options

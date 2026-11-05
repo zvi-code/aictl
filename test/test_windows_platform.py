@@ -284,3 +284,31 @@ def test_npm_lookup_reports_missing_npm(monkeypatch):
         admin._npm()
     monkeypatch.setattr("shutil.which", lambda name: r"C:\Program Files\nodejs\npm.CMD")
     assert admin._npm().endswith("npm.CMD")
+
+
+def test_stop_finds_a_foreground_server_on_its_port(tmp_path, monkeypatch, capsys):
+    """A server in the foreground writes no PID file, and --stop must still stop it."""
+    killed = []
+    monkeypatch.setattr(daemon, "listening_pids", lambda port: [4321] if port == 8484 else [])
+    monkeypatch.setattr(daemon, "is_aictl_process", lambda pid: True)
+    monkeypatch.setattr(daemon, "terminate_pid", lambda pid: killed.append(pid) or True)
+    daemon._stop_daemon(tmp_path / "none.pid", 8484)
+    assert killed == [4321]
+    assert "Stopped daemon (PID 4321)" in capsys.readouterr().out
+
+
+def test_stop_leaves_another_program_on_the_port(tmp_path, monkeypatch, capsys):
+    killed = []
+    monkeypatch.setattr(daemon, "listening_pids", lambda port: [4321])
+    monkeypatch.setattr(daemon, "is_aictl_process", lambda pid: False)
+    monkeypatch.setattr(daemon, "terminate_pid", lambda pid: killed.append(pid) or True)
+    daemon._stop_daemon(tmp_path / "none.pid", 8484)
+    assert killed == []
+    assert "No aictl server is running on port 8484" in capsys.readouterr().out
+
+
+def test_status_reports_a_foreground_server(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(daemon, "listening_pids", lambda port: [4321])
+    monkeypatch.setattr(daemon, "is_aictl_process", lambda pid: True)
+    daemon._show_daemon_status(tmp_path / "none.pid", "127.0.0.1", 8484)
+    assert "foreground (PID 4321)" in capsys.readouterr().out
