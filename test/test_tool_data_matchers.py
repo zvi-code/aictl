@@ -19,7 +19,7 @@ from aictl.tools import get_registry
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="unix process table")
 
 APPS = "/Applications"
-HOME = "/Users/zvi"
+HOME = "/Users/dev"
 CD_CLAUDE = f"{HOME}/Library/Application Support/Claude/claude-code/2.1.317/91184d3d9ba3/claude.app/Contents/MacOS/claude"
 CHATGPT = f"{APPS}/ChatGPT.app/Contents"
 COPILOT_RT = f"{HOME}/Library/Caches/github-copilot-sdk/cli/copilot-sdk-runtime-1.0.102-0.unstable.rabc/copilot-runtime"
