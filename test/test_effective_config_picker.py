@@ -93,6 +93,19 @@ def test_chat_language_models_json_lists_selectable_models_without_keys(vs):
     assert SECRET not in json.dumps(eff)
 
 
+def test_ctx_effective_prints_the_picker_and_never_the_secret(vs):
+    from click.testing import CliRunner
+
+    from aictl.commands.ctx_effective import effective_cmd
+
+    tree, project, env = vs
+    make_db(tree / "globalStorage" / "state.vscdb", {"chat.currentLanguageModel.panel": "copilot/model-a", "secret://k": SECRET})
+    result = CliRunner().invoke(effective_cmd, ["--project", str(project), "--tool", "copilot-vscode"], env=env)
+    assert result.exit_code == 0, result.output
+    assert "picker selects (global, panel): model-a" in result.output
+    assert SECRET not in result.output
+
+
 def test_windows_locations_list_state_databases_through_simulated_appdata():
     env = {"APPDATA": r"C:\Users\x\AppData\Roaming", "USERPROFILE": r"C:\Users\x"}
     rows = windows_locations(env, r"C:\work\repo", exists=lambda p: False)
