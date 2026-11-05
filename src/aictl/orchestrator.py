@@ -15,7 +15,6 @@ import asyncio
 import logging
 import os
 import signal
-import subprocess
 import sys
 import threading
 import time
@@ -441,23 +440,10 @@ def _merge_telemetry_into_tools(tools: list[DashboardTool], telemetry_reports) -
 
 def _kill_stale_server(port: int) -> None:
     """Kill a previous aictl on *port*, or abort if the port is taken by something else."""
-    try:
-        result = subprocess.run(
-            ["lsof", "-ti", f"tcp:{port}"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (FileNotFoundError, subprocess.SubprocessError, OSError):
-        return  # lsof unavailable, let the bind fail naturally
-    if result.returncode != 0 or not result.stdout.strip():
-        return  # port is free
+    from .platforms import listening_pids
+
     my_pid = os.getpid()
-    for line in result.stdout.strip().splitlines():
-        try:
-            pid = int(line.strip())
-        except ValueError:
-            continue
+    for pid in listening_pids(port):
         if pid == my_pid:
             continue
         try:

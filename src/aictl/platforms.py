@@ -8,8 +8,13 @@ Supports macOS, Windows, and Linux for every tool.
 
 from __future__ import annotations
 
+import ntpath
 import os
 import platform
+import signal
+import struct
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -25,16 +30,27 @@ CURRENT_PLATFORM: str = "macos" if IS_MACOS else ("windows" if IS_WINDOWS else "
 
 def process_basename(comm: str) -> str:
     """Extract short process name from command path, cross-platform."""
-    return Path(comm).name
+    return ntpath.basename(comm) if IS_WINDOWS else Path(comm).name
 
 
 def is_path_under(child: str, parent: str) -> bool:
-    """Check if child path is under parent, cross-platform."""
+    """Check if child path is under parent, cross-platform (case-insensitive on Windows)."""
+    if IS_WINDOWS:
+        c, p = path_key(child), path_key(parent)
+        return c == p or c.startswith(p.rstrip("\\") + "\\")
     try:
         Path(child).relative_to(Path(parent))
         return True
     except ValueError:
         return False
+
+
+def path_key(path: str) -> str:
+    """Form of *path* for equality and prefix comparison on the current platform.
+
+    Windows paths compare case-insensitively and with either separator.
+    """
+    return ntpath.normcase(ntpath.normpath(path)) if IS_WINDOWS else os.path.normpath(path)
 
 
 def path_contains_component(path: str, component: str) -> bool:
@@ -53,11 +69,17 @@ def tool_hint_for_path(path: str) -> str | None:
     lowered = path.lower().replace("\\", "/")
     if "/application support/codex/" in lowered or "/chatgpt.app/" in lowered:
         return "codex-desktop"
-    if "/github-copilot-sdk/" in lowered or "/library/application support/com.github.githubapp/" in lowered:
+    if "/github-copilot-sdk/" in lowered or "/com.github.githubapp/" in lowered:
+        return "copilot-desktop"
+    if "/appdata/local/github copilot/" in lowered or "/appdata/local/programs/github copilot/" in lowered:
         return "copilot-desktop"
     if "/library/application support/claude/" in lowered or "/library/application support/claude-3p/" in lowered:
         return "claude-desktop"
-    if "/.vscode/" in lowered:
+    if "/appdata/roaming/claude/" in lowered:
+        return "claude-desktop"
+    if "/.vscode/" in lowered or "/.vscode-insiders/" in lowered:
+        return "copilot-vscode"
+    if "/code/user/" in lowered or "/code - insiders/user/" in lowered:
         return "copilot-vscode"
     if "/.copilot/" in lowered or "github/copilot" in lowered:
         return "copilot-cli"
@@ -72,6 +94,123 @@ def tool_hint_for_path(path: str) -> str | None:
     if "/.gemini/" in lowered or lowered.endswith("gemini.md"):
         return "gemini-cli"
     return None
+
+
+# ── Process control ─────────────────────────────────────────────
+
+# Set on a detached ``aictl serve``: the file where the process records its own pid.
+DAEMON_PID_ENV = "AICTL_DAEMON_PID_FILE"
+
+
+def pid_alive(pid: int) -> bool:
+    """Whether *pid* is a running process.
+
+    ``os.kill(pid, 0)`` is not a probe on Windows: 0 is ``CTRL_C_EVENT``, which
+    is delivered to a console process group instead of testing for existence.
+    """
+    if pid <= 0:
+        return False
+    if IS_WINDOWS:
+        try:
+            import psutil
+        except ImportError:
+            return False
+        return psutil.pid_exists(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def terminate_pid(pid: int) -> bool:
+    """Stop *pid*; False when it was already gone.
+
+    On Windows this ends the process tree with ``taskkill``: there is no SIGTERM
+    delivery, and ``os.kill`` raises a plain ``OSError`` for a missing pid.
+    """
+    if IS_WINDOWS:
+        result = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, check=False)
+        return result.returncode == 0
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def is_aictl_process(pid: int) -> bool:
+    """Whether *pid* looks like aictl, so a reused pid in a stale pid file is never killed.
+
+    Without psutil the answer is True on POSIX (the previous behaviour).
+    """
+    try:
+        import psutil
+    except ImportError:
+        return not IS_WINDOWS
+    try:
+        return "aictl" in " ".join(psutil.Process(pid).cmdline()).lower()
+    except (psutil.Error, OSError):
+        return False
+
+
+def listening_pids(port: int) -> list[int]:
+    """Pids bound to TCP *port*; empty when free or when the owner cannot be determined."""
+    if IS_WINDOWS:
+        try:
+            import psutil
+
+            conns = psutil.net_connections(kind="tcp")
+        except (ImportError, OSError, RuntimeError):
+            return []
+        return sorted({c.pid for c in conns if c.pid and c.status == "LISTEN" and c.laddr and c.laddr.port == port})
+    try:
+        result = subprocess.run(["lsof", "-ti", f"tcp:{port}"], capture_output=True, text=True, timeout=5)
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return []  # lsof unavailable, let the bind fail naturally
+    if result.returncode != 0:
+        return []
+    return [int(line) for line in result.stdout.split() if line.isdigit()]
+
+
+def spawn_detached_windows(argv: list[str], log_file: Path, pid_file: Path) -> subprocess.Popen:
+    """Start *argv* in the background on Windows, with output in *log_file*.
+
+    ``CREATE_NO_WINDOW`` rather than ``DETACHED_PROCESS``: a venv ``python.exe``
+    is a launcher that starts the real interpreter, and a console-less launcher
+    would open a new console window for it. For the same reason the returned pid
+    is the launcher's, so the child records its own pid in *pid_file*.
+    """
+    create_new_process_group = 0x00000200
+    create_no_window = 0x08000000
+    env = {**os.environ, DAEMON_PID_ENV: str(pid_file), "PYTHONUTF8": "1"}
+    with open(log_file, "ab") as log:
+        return subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            env=env,
+            close_fds=True,
+            creationflags=create_new_process_group | create_no_window,
+        )
+
+
+def harden_stdio() -> None:
+    """Stop non-ASCII output from raising on Windows when stdout is piped to a legacy code page."""
+    if not IS_WINDOWS:
+        return
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(errors="backslashreplace")
+            except (OSError, ValueError):
+                continue
 
 
 # ── Cross-platform app directory helper ─────────────────────────
@@ -190,6 +329,16 @@ def vscode_user_dir() -> Path:
     return _app_dir("Code/User", mac="Code/User", xdg="Code/User")
 
 
+def vscode_insiders_user_dir() -> Path:
+    """VS Code Insiders user settings directory (``%APPDATA%\\Code - Insiders\\User`` on Windows)."""
+    return _app_dir("Code - Insiders/User", mac="Code - Insiders/User", xdg="Code - Insiders/User")
+
+
+def vscode_insiders_extensions_dir() -> Path:
+    """VS Code Insiders extensions directory (same on all platforms)."""
+    return Path.home() / ".vscode-insiders" / "extensions"
+
+
 def vscode_extensions_dir() -> Path:
     """VS Code extensions directory (same on all platforms)."""
     return Path.home() / ".vscode" / "extensions"
@@ -203,6 +352,80 @@ def vscode_global_storage(extension_id: str) -> Path:
 def copilot_global_storage() -> Path:
     """Copilot Chat globalStorage directory."""
     return vscode_global_storage("github.copilot-chat")
+
+
+# ── GitHub Copilot desktop app (Windows install) ────────────────
+
+
+def copilot_desktop_install_dirs() -> list[Path]:
+    """Candidate install directories of the Copilot desktop app on Windows.
+
+    Unverified: the published installers are a per-user NSIS ``.exe`` and a
+    per-machine WiX ``.msi`` (winget ``GitHub.CopilotApp``), but no vendor
+    document states the directories, so these are the conventional locations.
+    """
+    dirs: list[Path] = []
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        dirs += [Path(local) / "Programs" / "GitHub Copilot", Path(local) / "GitHub Copilot"]
+    program_files = os.environ.get("ProgramFiles")
+    if program_files:
+        dirs.append(Path(program_files) / "GitHub Copilot")
+    return dirs
+
+
+def _parse_fixed_file_info(fixed: bytes) -> str:
+    """Version string from the bytes of a Windows ``VS_FIXEDFILEINFO`` structure."""
+    if len(fixed) < 16:
+        return ""
+    signature, _struct_version, ms, ls = struct.unpack("<4L", fixed[:16])
+    if signature != 0xFEEF04BD:
+        return ""
+    parts = [ms >> 16, ms & 0xFFFF, ls >> 16, ls & 0xFFFF]
+    return ".".join(str(n) for n in (parts if parts[3] else parts[:3]))
+
+
+def windows_file_version(exe: Path) -> str:
+    """File version from a Windows executable's metadata; "" when absent. Never runs the file."""
+    if not IS_WINDOWS:
+        return ""
+    try:
+        import ctypes
+
+        api = ctypes.WinDLL("version.dll")
+        size = api.GetFileVersionInfoSizeW(str(exe), None)
+        if not size:
+            return ""
+        buf = ctypes.create_string_buffer(size)
+        if not api.GetFileVersionInfoW(str(exe), 0, size, buf):
+            return ""
+        ptr, length = ctypes.c_void_p(), ctypes.c_uint()
+        if not api.VerQueryValueW(buf, "\\", ctypes.byref(ptr), ctypes.byref(length)):
+            return ""
+        return _parse_fixed_file_info(ctypes.string_at(ptr.value, length.value))
+    except (OSError, AttributeError, ValueError):
+        return ""
+
+
+def copilot_desktop_windows_version() -> str:
+    """Copilot desktop app version from executable metadata in its install directory.
+
+    Reads file metadata only. The executable name is unverified on Windows, so
+    the known names are tried first, then any top-level ``.exe`` except uninstallers.
+    """
+    for install_dir in copilot_desktop_install_dirs():
+        if not install_dir.is_dir():
+            continue
+        known = [install_dir / "GitHub Copilot.exe", install_dir / "github.exe"]
+        try:
+            others = sorted(p for p in install_dir.glob("*.exe") if not p.name.lower().startswith("unins"))
+        except OSError:
+            others = []
+        for exe in [*known, *others]:
+            version = windows_file_version(exe) if exe.is_file() else ""
+            if version:
+                return version
+    return ""
 
 
 # ── Cursor ───────────────────────────────────────────────────────
@@ -309,7 +532,8 @@ except ModuleNotFoundError:
 def config_dir() -> Path:
     """Platform-appropriate config directory for aictl."""
     if IS_WINDOWS:
-        return Path(os.environ.get("APPDATA", Path.home())) / "aictl"
+        # ``or``: a present-but-empty APPDATA must not yield a CWD-relative path.
+        return Path(os.environ.get("APPDATA") or Path.home()) / "aictl"
     xdg = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
     return Path(xdg) / "aictl"
 
@@ -343,11 +567,11 @@ telemetry_enabled = true
 names = [".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", "build", "dist", ".next"]
 
 [daemon]
-pid_file = ""  # Empty = auto (~/.config/aictl/aictl.pid)
-log_file = ""  # Empty = auto (~/.config/aictl/aictl.log)
+pid_file = ""  # Empty = auto (aictl.pid next to this file)
+log_file = ""  # Empty = auto (aictl.log next to this file)
 
 [storage]
-db_path = ""  # Empty = auto (~/.config/aictl/history.db)
+db_path = ""  # Empty = auto (history.db next to this file)
 flush_interval = 10.0  # Seconds between batch writes to SQLite
 retention_days = 30  # Delete data older than this
 

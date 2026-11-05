@@ -104,7 +104,7 @@ def _read_json(path: Path) -> dict | None:
     if not path.is_file():
         return None
     try:
-        return json.loads(path.read_text(errors="replace"))
+        return json.loads(path.read_text(errors="replace", encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
 
@@ -1009,7 +1009,7 @@ def _parse_copilot365_config(root: Path, tool: str = "copilot365") -> ToolConfig
             try:
                 import yaml
 
-                data = yaml.safe_load(manifest.read_text(errors="replace")) or {}
+                data = yaml.safe_load(manifest.read_text(errors="replace", encoding="utf-8")) or {}
                 if name == main_name:
                     cfg.settings["version"] = data.get("version", "")
                     for _feat in ("provision", "deploy", "publish"):
