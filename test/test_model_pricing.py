@@ -1,4 +1,4 @@
-"""aictl.data.model_pricing — per-model list prices with a labelled fallback.
+"""aictl.data.model_pricing — per-model list prices, with no fallback.
 
 Regression guard for /api/project-costs, which used to price every model at a
 fixed $3/$15 (legacy Sonnet rates mislabelled "Opus-class"), under-reporting
@@ -10,8 +10,6 @@ from __future__ import annotations
 import pytest
 
 from aictl.data.model_pricing import (
-    DEFAULT_PRICING_MODEL,
-    MODEL_PRICING,
     cost_usd,
     normalize_model_id,
     resolve_pricing,
@@ -49,18 +47,16 @@ def test_date_suffix_and_dotted_versions_resolve():
 
 
 def test_prefix_match_is_hyphen_bounded():
-    # A longer variant sharing a known prefix uses that prefix's rate...
+    # A longer non-version variant sharing a known prefix uses that prefix's rate...
     assert resolve_pricing("claude-sonnet-5-preview")[0] == "claude-sonnet-5"
-    # ...but "claude-opus-50" must not match "claude-opus-5".
-    assert resolve_pricing("claude-opus-50")[0] == DEFAULT_PRICING_MODEL
+    # ...but "claude-opus-50" must not match "claude-opus-5", and neither may a
+    # new version: claude-opus-5-5 costs less than claude-opus-5.
+    assert resolve_pricing("claude-opus-50") == (None, None)
+    assert resolve_pricing("claude-opus-5-9") == (None, None)
 
 
-def test_unknown_or_missing_model_uses_labelled_default():
-    for model in ("", None, "gpt-5.6-sol", "totally-made-up"):
-        key, pricing = resolve_pricing(model)
-        assert key == DEFAULT_PRICING_MODEL
-        assert pricing == MODEL_PRICING[DEFAULT_PRICING_MODEL]
-
-
-def test_default_model_is_in_table():
-    assert DEFAULT_PRICING_MODEL in MODEL_PRICING
+def test_unknown_or_missing_model_has_no_price():
+    # A guessed rate looks exactly like a real one, so there is none.
+    for model in ("", None, "totally-made-up", "<synthetic>"):
+        assert resolve_pricing(model) == (None, None)
+    assert cost_usd("totally-made-up", 1_000_000, 1_000_000) is None

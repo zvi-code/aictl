@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Any
 
 from .platforms import config_dir
+from .data.provenance import SOURCE_RANK, row_provenance, usage_provenance
+from .ingesters._common import project_key
 from .storage_migrations import CURRENT_VERSION as SCHEMA_VERSION
 from .storage_migrations import apply_pending as _apply_pending_migrations
 
@@ -533,6 +535,24 @@ CREATE INDEX IF NOT EXISTS idx_copilot_session_messages_ts
     ON copilot_session_messages(ts);
 
 -- VS Code Copilot Chat log ingester (Slice 3.4a).
+CREATE TABLE IF NOT EXISTS session_usage (
+    session_id TEXT PRIMARY KEY, tool TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'transcript', quality TEXT NOT NULL DEFAULT 'exact',
+    quality_reason TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '',
+    models_json TEXT NOT NULL DEFAULT '{}', daily_json TEXT NOT NULL DEFAULT '{}',
+    input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+    request_count INTEGER NOT NULL DEFAULT 0, tool_call_count INTEGER NOT NULL DEFAULT 0,
+    turn_count INTEGER NOT NULL DEFAULT 0, cost_usd REAL,
+    cost_quality TEXT NOT NULL DEFAULT 'unknown', cost_reason TEXT NOT NULL DEFAULT '',
+    unpriced_models TEXT NOT NULL DEFAULT '[]', billing_unit TEXT NOT NULL DEFAULT '',
+    billing_amount REAL, premium_requests REAL, estimated_list_usd REAL,
+    started_at REAL NOT NULL DEFAULT 0,
+    last_activity_at REAL NOT NULL DEFAULT 0, project_path TEXT NOT NULL DEFAULT '',
+    updated_at REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_session_usage_last ON session_usage(last_activity_at);
+
 CREATE TABLE IF NOT EXISTS vscode_chat_messages (
     session_id     TEXT NOT NULL,
     source_file    TEXT NOT NULL,
@@ -1035,6 +1055,27 @@ def _session_uuid(session_or_id) -> str | None:
     return m.group(0).lower() if m else None
 
 
+# ``aictl hooks verify`` pings use this id. New pings no longer create a row,
+# but rows from before that fix are still on disk and must not count as sessions.
+_VERIFY_SESSION_ID = "aictl-verify"
+_TOKEN_PROFILE_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens")
+_USAGE_PROFILE_KEYS = (
+    *_TOKEN_PROFILE_KEYS,
+    "cost_usd",
+    "tokens_source",
+    "tokens_quality",
+    "tokens_reason",
+    "cost_source",
+    "cost_quality",
+    "cost_reason",
+    "unpriced_models",
+    "billing_unit",
+    "billing_amount",
+    "premium_requests",
+    "estimated_list_usd",
+)
+
+
 def _merge_session_stats(primary: dict, secondary: dict) -> None:
     """Add secondary's file/activity stats into primary in-place.
 
@@ -1048,9 +1089,18 @@ def _merge_session_stats(primary: dict, secondary: dict) -> None:
     primary["source_files"] += secondary["source_files"]
     primary["conversations"] = max(primary["conversations"], secondary["conversations"])
     primary["subagents"] = max(primary["subagents"], secondary["subagents"])
-    for token_key in ("input_tokens", "output_tokens"):
-        if token_key in primary or token_key in secondary:
-            primary[token_key] = max(primary.get(token_key, 0) or 0, secondary.get(token_key, 0) or 0)
+    p_rank = SOURCE_RANK.get(primary.get("tokens_source", ""), 0)
+    s_rank = SOURCE_RANK.get(secondary.get("tokens_source", ""), 0)
+    if s_rank > p_rank:
+        # A better source describes the same tokens: take its numbers whole,
+        # because a max per field could mix two sources into a figure neither saw.
+        for key in _USAGE_PROFILE_KEYS:
+            if key in secondary:
+                primary[key] = secondary[key]
+    elif s_rank == p_rank:
+        for token_key in _TOKEN_PROFILE_KEYS:
+            if token_key in primary or token_key in secondary:
+                primary[token_key] = max(primary.get(token_key, 0) or 0, secondary.get(token_key, 0) or 0)
     if not primary.get("project_path") and secondary.get("project_path"):
         primary["project_path"] = secondary["project_path"]
     bucket_map: dict[int, int] = {b: c for b, c in primary["activity"]}
@@ -1128,8 +1178,8 @@ def _profiles_look_duplicate(a: dict, b: dict) -> bool:
     Genuinely concurrent sessions in different workspaces never merge —
     a workspace conflict (both known, different) vetoes the match.
     """
-    ws_a = a.get("project_path") or ""
-    ws_b = b.get("project_path") or ""
+    ws_a = project_key(a.get("project_path"))
+    ws_b = project_key(b.get("project_path"))
     if ws_a and ws_b and ws_a != ws_b:
         return False
     end_a, end_b = a.get("ended_at"), b.get("ended_at")
@@ -2800,6 +2850,8 @@ class HistoryDB:
                 params,
             )
         )
+        session_rows = [s for s in session_rows if s["session_id"] != _VERIFY_SESSION_ID]
+        self._overlay_session_usage(session_rows)
 
         if session_rows:
             # Convert sessions table rows to profile format
@@ -2827,6 +2879,13 @@ class HistoryDB:
                     "source": s.get("source", "") or "",
                     "input_tokens": s.get("input_tokens", 0) or 0,
                     "output_tokens": s.get("output_tokens", 0) or 0,
+                    "cache_read_tokens": s.get("cache_read_tokens", 0) or 0,
+                    "cache_creation_tokens": s.get("cache_creation_tokens", 0) or 0,
+                    "model": s.get("model", "") or "",
+                    "request_count": s.get("request_count", 0) or 0,
+                    "tool_call_count": s.get("tool_call_count", 0) or 0,
+                    **{k: s[k] for k in _USAGE_PROFILE_KEYS[4:]},
+                    "cost_usd": s.get("cost_usd"),
                 }
                 profiles[s["session_id"]] = p
                 result.append(p)
@@ -3049,6 +3108,12 @@ class HistoryDB:
                 gap = abs(secondary["started_at"] - primary["started_at"])
                 if gap > 60:
                     break
+                # Two different tool UUIDs are two sessions, even when they
+                # start together in one cwd (parallel agents do). Merging them
+                # would keep only the larger token count and lose the other.
+                p_uuid, s_uuid = _session_uuid(primary), _session_uuid(secondary)
+                if p_uuid and s_uuid and p_uuid != s_uuid:
+                    continue
                 p_pid = _session_pid(primary)
                 s_pid = _session_pid(secondary)
                 # Different PIDs: merge if start times are very close
@@ -3473,6 +3538,8 @@ class HistoryDB:
                 (session_id,),
             )
         )
+        rows = [r for r in rows if r["session_id"] != _VERIFY_SESSION_ID]
+        self._overlay_session_usage(rows)
         return rows[0] if rows else None
 
     def update_tool_invocation_duration(
@@ -3534,12 +3601,111 @@ class HistoryDB:
                 where_parts.append(expr)
         where = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
         params.append(limit)
-        return _rows_to_dicts(
+        rows = _rows_to_dicts(
             conn.execute(
                 f"SELECT * FROM sessions{where} ORDER BY started_at DESC LIMIT ?",
                 params,
             )
         )
+        rows = [r for r in rows if r["session_id"] != _VERIFY_SESSION_ID]
+        self._overlay_session_usage(rows)
+        return rows
+
+    # ── Transcript usage (authoritative when present) ──────────────
+
+    def upsert_session_usage(self, row: dict) -> None:
+        """Replace one session's transcript-derived usage. Totals are absolute."""
+        conn = self._conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO session_usage(session_id, tool, source, quality, quality_reason,"
+            " model, models_json, daily_json, input_tokens, output_tokens, cache_read_tokens,"
+            " cache_creation_tokens, request_count, tool_call_count, turn_count, cost_usd,"
+            " cost_quality, cost_reason, unpriced_models, billing_unit, billing_amount,"
+            " premium_requests, estimated_list_usd, started_at, last_activity_at,"
+            " project_path, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                row["session_id"],
+                row.get("tool", ""),
+                row.get("source", "transcript"),
+                row.get("quality", "exact"),
+                row.get("quality_reason", ""),
+                row.get("model", ""),
+                json.dumps(row.get("models") or {}),
+                json.dumps(row.get("daily") or {}),
+                int(row.get("input_tokens", 0)),
+                int(row.get("output_tokens", 0)),
+                int(row.get("cache_read_tokens", 0)),
+                int(row.get("cache_creation_tokens", 0)),
+                int(row.get("request_count", 0)),
+                int(row.get("tool_call_count", 0)),
+                int(row.get("turn_count", 0)),
+                row.get("cost_usd"),
+                row.get("cost_quality", "unknown"),
+                row.get("cost_reason", ""),
+                json.dumps(row.get("unpriced_models") or []),
+                row.get("billing_unit", ""),
+                row.get("billing_amount"),
+                row.get("premium_requests"),
+                row.get("estimated_list_usd"),
+                float(row.get("started_at", 0) or 0),
+                float(row.get("last_activity_at", 0) or 0),
+                row.get("project_path", ""),
+                time.time(),
+            ),
+        )
+        conn.commit()
+
+    def query_session_usage(
+        self,
+        *,
+        session_ids: list[str] | None = None,
+        active_since: float | None = None,
+        active_until: float | None = None,
+    ) -> list[dict]:
+        """Transcript usage rows, by ids or by overlap with an activity window."""
+        conn = self._conn()
+        rows: list[dict] = []
+        if session_ids is not None:
+            ids = [i for i in session_ids if i]
+            for start in range(0, len(ids), 500):
+                chunk = ids[start : start + 500]
+                marks = ",".join("?" * len(chunk))
+                rows += _rows_to_dicts(conn.execute(f"SELECT * FROM session_usage WHERE session_id IN ({marks})", chunk))
+        else:
+            where, params = _where(
+                [("last_activity_at >= ?", active_since), ("started_at <= ?", active_until)]
+            )
+            rows = _rows_to_dicts(conn.execute(f"SELECT * FROM session_usage{where}", params))
+        for r in rows:
+            r["models"] = _json(r.pop("models_json", None))
+            r["daily"] = _json(r.pop("daily_json", None))
+            try:
+                r["unpriced_models"] = json.loads(r.get("unpriced_models") or "[]")
+            except ValueError:
+                r["unpriced_models"] = []
+        return rows
+
+    def _overlay_session_usage(self, rows: list[dict]) -> None:
+        """Put transcript numbers and provenance on ``sessions`` rows, in place.
+
+        Lookup is by the UUID inside the id too, so a correlator composite id
+        such as ``tool:pid:<uuid>`` resolves to the same transcript.
+        """
+        if not rows:
+            return
+        keys = {r.get("session_id", ""): (_session_uuid(r) or r.get("session_id", "")) for r in rows}
+        usage = {u["session_id"].lower(): u for u in self.query_session_usage(session_ids=sorted(set(keys.values())))}
+        for row in rows:
+            u = usage.get(keys.get(row.get("session_id", ""), "").lower())
+            if u is None:
+                row.update(row_provenance(row))
+                continue
+            for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "request_count", "tool_call_count"):
+                row[key] = u[key]
+            row["turn_count"] = u["turn_count"]
+            row["model"] = u["model"] or row.get("model", "")
+            row.update(usage_provenance(u))
+            row["models"] = u["models"]
 
     def query_session_flow(self, session_id: str) -> dict:
         """Return requests and tool_invocations for a session."""
@@ -3623,6 +3789,11 @@ class HistoryDB:
         """
         if not session_id:
             return []
+        usage = self.query_session_usage(session_ids=[_session_uuid(session_id) or session_id])
+        if usage and usage[0]["models"]:
+            # Transcripts see every request; ``requests`` may hold only part.
+            models = [{"model": m, **v} for m, v in usage[0]["models"].items()]
+            return sorted(models, key=lambda m: (-(m.get("cost_usd") or 0), -m.get("requests", 0)))
         conn = self._conn()
         rows = conn.execute(
             "SELECT COALESCE(NULLIF(model, ''), 'unknown') AS model,"

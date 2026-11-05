@@ -353,7 +353,7 @@ class SessionAnalyzer:
     def _handle_hook(self, transcript: SessionTranscript, event: EventRow, hook_name: str, detail: dict) -> None:
         if hook_name == "UserPromptSubmit":
             prompt = _extract_prompt(detail)
-            transcript.start_turn(event.ts, prompt)
+            transcript.start_turn(event.ts, prompt, prompt_event=True)
 
         elif hook_name in ("Init", "SessionStart"):
             transcript.add_lifecycle_event(

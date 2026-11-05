@@ -10,20 +10,29 @@ arguments.
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 log = logging.getLogger(__name__)
 
 
 def open_readonly(db_path: Path, log_prefix: str) -> sqlite3.Connection | None:
-    """Open *db_path* read-only, returning ``None`` when missing/unreadable."""
+    """Open another tool's SQLite file without writing anything beside it.
+
+    ``mode=ro`` alone still updates the WAL index in ``-shm``, so the connection
+    is ``immutable``. It therefore sees the main file only: rows still in the
+    WAL appear after that tool's next checkpoint. A read that races a checkpoint
+    raises ``sqlite3.Error``, which pollers treat as "try again next poll".
+    Returns ``None`` when the file is missing or unreadable.
+    """
     if not db_path.exists():
         return None
     try:
-        return sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
+        return sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro&immutable=1", uri=True, timeout=1.0)
     except sqlite3.Error as exc:
         log.warning("%s: failed to open %s read-only: %s", log_prefix, db_path, exc)
         return None
@@ -51,6 +60,32 @@ def record_quality(
             source=str(source),
             detail=detail,
         )
+
+
+def decode_file_uri(value: str) -> str:
+    """``file:///c%3A/Users/me/proj`` -> ``c:/Users/me/proj``; other text is unchanged."""
+    if not value.lower().startswith("file:"):
+        return value
+    path = unquote(urlsplit(value).path)
+    # /c:/x -> c:/x; a POSIX path keeps its leading slash.
+    return path[1:] if len(path) > 2 and path[0] == "/" and path[2] == ":" else path
+
+
+_WINDOWS_DRIVE = re.compile(r"^[a-zA-Z]:[\\/]")
+
+
+def project_key(path: str | None) -> str:
+    """Comparison key under which spellings of one project compare equal.
+
+    Windows paths are case-insensitive and may use either separator, or arrive
+    as ``file:`` URIs, so they fold; POSIX paths stay case-sensitive.
+    """
+    if not path:
+        return ""
+    p = decode_file_uri(path.strip())
+    if _WINDOWS_DRIVE.match(p) or p.startswith("\\\\"):
+        p = p.replace("\\", "/").lower()
+    return p.rstrip("/") or p
 
 
 def coerce_ts(raw: Any) -> float:
