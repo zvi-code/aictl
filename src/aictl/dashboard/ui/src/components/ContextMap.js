@@ -143,11 +143,11 @@ export default function ContextMap() {
 
     <!-- Policy summary -->
     <div class="flex-row flex-wrap gap-md mb-md">
-      <span class="badge--accent badge" data-dp="overview.context_map.sent_to_llm" style="background:var(--green);color:var(--bg)">
+      <span class="badge--accent badge" data-dp="overview.context_map.sent_to_llm" style="background:var(--green);color:var(--on-status)">
         Sent to LLM: ${fmtK(data.byPolicy.yes)} tok</span>
-      <span class="badge" data-dp="overview.context_map.on_demand" style="background:var(--yellow);color:var(--bg)">
+      <span class="badge" data-dp="overview.context_map.on_demand" style="background:var(--yellow);color:var(--on-status)">
         On-demand: ${fmtK(data.byPolicy['on-demand'])} tok</span>
-      <span class="badge" data-dp="overview.context_map.conditional" style="background:var(--orange);color:var(--bg)">
+      <span class="badge" data-dp="overview.context_map.conditional" style="background:var(--orange);color:var(--on-status)">
         Conditional: ${fmtK(data.byPolicy.conditional)} tok</span>
       <span class="badge--muted badge" data-dp="overview.context_map.not_sent">
         Not sent: ${fmtK(data.byPolicy.no)} tok</span>
@@ -164,7 +164,7 @@ export default function ContextMap() {
             position:relative;min-width:2px"
             title="${cat}: ${fmtK(v.tokens)} tokens (${v.files} files)">
             ${pct > 8 ? html`<span class="text-ellipsis text-bold" style="position:absolute;inset:0;display:flex;align-items:center;
-              justify-content:center;font-size:var(--fs-2xs);color:var(--bg);padding:0 2px">${cat}</span>` : null}
+              justify-content:center;font-size:var(--fs-2xs);color:var(--on-status);padding:0 2px">${cat}</span>` : null}
           </div>`;
         })}
       </div>
@@ -201,7 +201,7 @@ export default function ContextMap() {
                       setActiveTab(activeTab === name ? null : name);
                     }
                   }}>
-                  ${elPct > 12 && barW > 15 ? html`<span style="font-size:var(--fs-2xs);color:var(--bg);
+                  ${elPct > 12 && barW > 15 ? html`<span style="font-size:var(--fs-2xs);color:var(--on-status);
                     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 2px;font-weight:600">${name}</span>` : null}
                 </div>`;
               })}

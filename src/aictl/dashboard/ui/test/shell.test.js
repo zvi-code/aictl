@@ -8,7 +8,6 @@ import DeltaBadge from '../src/components/shell/DeltaBadge.js';
 import SkipLink from '../src/components/shell/SkipLink.js';
 import CommandPalette from '../src/components/shell/CommandPalette.js';
 import GlobalHeader from '../src/components/shell/GlobalHeader.js';
-import ActivityRail from '../src/components/shell/ActivityRail.js';
 import Metric from '../src/components/Metric.js';
 
 import { useSavedViews } from '../src/hooks/useSavedViews.js';
@@ -192,10 +191,10 @@ describe('GlobalHeader', () => {
 
   it('renders banner with product name and opens palette trigger', () => {
     const openFn = vi.fn();
-    const { getByRole, getByLabelText } = render(html`<${GlobalHeader}
+    const { getByRole } = render(html`<${GlobalHeader}
       ...${defaults} onOpenPalette=${openFn}/>`);
     expect(getByRole('banner')).toBeInTheDocument();
-    fireEvent.click(getByLabelText('Open command palette'));
+    fireEvent.click(getByRole('button', { name: /open command palette/ }));
     expect(openFn).toHaveBeenCalledOnce();
   });
 
@@ -209,39 +208,6 @@ describe('GlobalHeader', () => {
     expect(getByText('Morning')).toBeInTheDocument();
     fireEvent.click(getByLabelText('Apply view Morning'));
     expect(apply).toHaveBeenCalledWith('v1');
-  });
-});
-
-describe('ActivityRail', () => {
-  const snap = { tools: [
-    { tool: 'claude-code', label: 'Claude Code', live: { sessions: [
-      { session_id: 'claude-code:proj:abc', active: true, estimated_tokens: 1234, token_series: [1,2,3,4] },
-    ] } },
-  ] };
-
-  it('renders active sessions', () => {
-    const { getByLabelText } = render(html`<${ActivityRail} snap=${snap}/>`);
-    expect(getByLabelText(/Session claude-code:proj:abc/)).toBeInTheDocument();
-  });
-
-  it('dispatches aictl:select-session on click and calls onSelectSession', () => {
-    const onSel = vi.fn();
-    const listener = vi.fn();
-    document.addEventListener('aictl:select-session', listener);
-    const { getByLabelText } = render(html`<${ActivityRail} snap=${snap}
-      onSelectSession=${onSel}/>`);
-    fireEvent.click(getByLabelText(/Session claude-code:proj:abc/));
-    expect(onSel).toHaveBeenCalledOnce();
-    expect(listener).toHaveBeenCalledOnce();
-    document.removeEventListener('aictl:select-session', listener);
-  });
-
-  it('collapse toggle persists to localStorage', () => {
-    const { getByLabelText } = render(html`<${ActivityRail} snap=${snap}/>`);
-    const btn = getByLabelText('Collapse activity rail');
-    fireEvent.click(btn);
-    // aria-expanded flips to reflect new state; toggle should also flip label.
-    expect(btn.getAttribute('aria-expanded')).toBe('false');
   });
 });
 

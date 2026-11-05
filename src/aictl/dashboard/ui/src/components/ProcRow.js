@@ -19,7 +19,7 @@ export default function ProcRow({proc: p, maxMem}) {
     <div class="prow">
       <span class="pid">${p.pid}</span>
       <span class="pname" title=${p.cmdline}>${esc(p.name)}</span>
-      ${zr && html`<span class="badge" style=${'font-size:var(--fs-sm);padding:0.05rem var(--sp-2);background:'+zrColor+';color:var(--bg)'}>zombie:${zr}</span>`}
+      ${zr && html`<span class="badge" style=${'font-size:var(--fs-sm);padding:0.05rem var(--sp-2);background:'+zrColor+';color:var(--on-status)'}>zombie:${zr}</span>`}
       <span class="pcpu" style=${'color:'+cpuColor}>${fmtPct(cpuVal)}</span>
       <div class="mem-bar"><div class="mem-bar-fill" style=${'width:'+pct.toFixed(0)+'%;background:'+barColor}></div></div>
       <span class="pmem">${fmtSz(mem*1048576)}</span>

@@ -1,4 +1,5 @@
 import { useState, useMemo, useContext } from 'preact/hooks';
+import { cloudOnly } from '../utils/tools.js';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS, CAT_ORDER, fmtK, fmtSz, fmtRate, fmtPct, esc, liveTokenTotal, TOOL_RELATIONSHIPS } from '../utils.js';
@@ -41,14 +42,16 @@ export default function ToolCard({tool: t, root}) {
       style="flex-wrap:wrap;row-gap:0.2rem">
       <span class="arrow" aria-hidden="true">\u25B6</span>
       <h2><span style="margin-right:var(--sp-2)"><${ToolIcon} tool=${t.tool} size="1em"/></span>${esc(t.label)}</h2>
-      <span class="badge" data-dp="procs.tool.files">${t.files.length} files</span>
-      <span class="badge" data-dp="procs.tool.tokens">${fmtK(tok)} tok</span>
+      ${cloudOnly(t)
+        ? html`<span class="badge badge--muted">Not available from this machine</span>`
+        : html`<span class="badge" data-dp="procs.tool.files">${t.files.length} files</span>
+      <span class="badge" data-dp="procs.tool.tokens">${fmtK(tok)} tok</span>`}
       ${t.processes.length>0 && html`<span class="badge" data-dp="procs.tool.process_count">${t.processes.length} proc ${fmtPct(totalCpu)} ${fmtSz(totalMem*1048576)}</span>`}
       ${t.mcp_servers.length>0 && html`<span class="badge" data-dp="procs.tool.mcp_server_count">${t.mcp_servers.length} MCP</span>`}
       ${anom>0 && html`<span class="badge warn" data-dp="procs.tool.anomaly"
         title=${anomLabels.join(' · ')}>${anom} ${anom===1?'anomaly':'anomalies'}</span>`}
-      ${telErrors>0 && html`<span class="badge" style="background:var(--red);color:var(--bg)">${telErrors} error${telErrors>1?'s':''}</span>`}
-      ${t.live && html`<span class="badge" style="background:var(--accent);color:var(--bg)">${t.live.session_count||0} live \u00B7 ${fmtRate(liveTraffic)}${liveTok>0?' \u00B7 '+fmtK(liveTok)+'tok':''}</span>`}
+      ${telErrors>0 && html`<span class="badge" style="background:var(--red);color:var(--on-status)">${telErrors} error${telErrors>1?'s':''}</span>`}
+      ${t.live && html`<span class="badge" style="background:var(--accent);color:var(--on-status)">${t.live.session_count||0} live \u00B7 ${fmtRate(liveTraffic)}${liveTok>0?' \u00B7 '+fmtK(liveTok)+'tok':''}</span>`}
       <div style="width:100%;display:flex;flex-wrap:wrap;gap:var(--sp-1);margin-top:0.1rem">
         ${cats.map(({kind,files:cf})=>html`<span class="text-muted" style="font-size:var(--fs-xs)">${kind}:${cf.length}</span>`)}
       </div>

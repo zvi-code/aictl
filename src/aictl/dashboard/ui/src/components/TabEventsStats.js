@@ -4,6 +4,9 @@ import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS, VENDOR_LABELS, EVENT_COLORS, fmtK, fmtTok, fmtSz, fmtRate, fmtPct, esc, liveTokenTotal } from '../utils.js';
 import ChartCard from './ChartCard.js';
+import PanelState from './ui/PanelState.js';
+import { COST_ESTIMATE_NOTE, cloudOnly } from '../utils/tools.js';
+import CloudOnlyNotice from './ui/CloudOnlyNotice.js';
 import { ToolIcon } from './ui/index.js';
 import * as api from '../api.js';
 
@@ -47,12 +50,14 @@ export default function TabEventsStats() {
     if (!selectedTool && tools.length) setTool(tools[0].tool);
   }, [tools, selectedTool]);
 
+  const [eventsError, setEventsError] = useState(null);
   // Fetch events when tool or global range changes
   useEffect(() => {
     if (!selectedTool || !globalRange) return;
     setExpandedEvents(new Set());
     api.getEvents({ tool: selectedTool, since: globalRange.since, limit: 500, until: globalRange.until })
-      .then(setEvents).catch(() => setEvents([]));
+      .then(d => { setEvents(d); setEventsError(null); })
+      .catch(e => { setEvents([]); setEventsError(e); });
   }, [selectedTool, globalRange]);
 
   const toggleEvent = (key) => {
@@ -75,6 +80,7 @@ export default function TabEventsStats() {
   if (!s) return html`<p class="loading-state">Loading...</p>`;
 
   const tool = tools.find(t => t.tool === selectedTool);
+  if (cloudOnly(tool)) return html`<${CloudOnlyNotice} tool=${tool}/>`;
   const telem = s.tool_telemetry?.find(t => t.tool === selectedTool);
   const live = tool?.live;
   const c = COLORS[selectedTool] || 'var(--fg2)';
@@ -122,7 +128,8 @@ export default function TabEventsStats() {
           </div>
         </div>` : html`<div class="es-section">
           <div class="es-section-title">Time Series</div>
-          <p class="loading-state">No data for this range.</p>
+          <${PanelState} status="empty" emptyTitle="No samples in this range"
+            emptyHint="Widen the time range in the header. Live mode shows samples since this page opened."/>
         </div>`}
 
         ${telem ? html`<div class="es-section">
@@ -137,7 +144,7 @@ export default function TabEventsStats() {
             <div class="es-kv-card"><div class="label">Cache Write (tok)</div><div class="value">${fmtTok(telem.cache_creation_tokens || 0)}</div></div>
             <div class="es-kv-card"><div class="label">Sessions</div><div class="value">${fmtK(telem.total_sessions || 0)}</div></div>
             <div class="es-kv-card"><div class="label">Messages</div><div class="value">${fmtK(telem.total_messages || 0)}</div></div>
-            <div class="es-kv-card"><div class="label">Cost</div><div class="value">${telem.cost_usd ? '$' + telem.cost_usd.toFixed(2) : '-'}</div></div>
+            <div class="es-kv-card" title=${COST_ESTIMATE_NOTE}><div class="label">Est. cost</div><div class="value">${telem.cost_usd ? '$' + telem.cost_usd.toFixed(2) : '-'}</div></div>
           </div>
           ${Object.keys(telem.by_model || {}).length > 0 && html`<div style="margin-top:var(--sp-3)">
             <div class="es-section-title">By Model</div>
@@ -190,7 +197,10 @@ export default function TabEventsStats() {
                 ${isOpen && html`<pre class="mono" style="font-size:var(--fs-xs);max-height:16rem;overflow:auto;white-space:pre-wrap;margin:0 var(--sp-5) var(--sp-2);padding:var(--sp-2);background:var(--bg);border-radius:var(--radius-sm, 4px)">${detailPretty(e.detail)}</pre>`}
               </div>`;
             })}
-          </div>` : html`<p class="empty-state">No events for this tool in the selected range.</p>`}
+          </div>` : eventsError
+          ? html`<${PanelState} status="error" error=${eventsError} label="events"/>`
+          : html`<${PanelState} status="empty" emptyTitle="No events for this tool in the selected range"
+              emptyHint="Widen the time range in the header, or pick another tool."/>`}
         </div>
       </${Fragment}>`}
     </div>

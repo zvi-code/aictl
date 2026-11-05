@@ -1,16 +1,21 @@
 // ─── useTools — tool filter state ──────────────────────────────
 // enabledTools === null means "all verified tools enabled" (no filter).
-// An array means "only these tools enabled".
+// An array means "only these tools enabled". The URL wins on load and is kept
+// in sync so a filtered view can be shared.
 import { useState, useCallback } from 'preact/hooks';
+import { readUrl, toolsToParams, writeUrl } from './urlState.js';
 
 const KEY = 'aictl-pref-tool_filter';
 
 function load() {
+  const fromUrl = readUrl().tools;
+  if (fromUrl !== undefined) return fromUrl;
   try { const v = localStorage.getItem(KEY); return v != null ? JSON.parse(v) : null; }
   catch { return null; }
 }
 function persist(v) {
   try { localStorage.setItem(KEY, JSON.stringify(v)); } catch { /* storage disabled */ }
+  writeUrl(toolsToParams(v));
 }
 
 export function useTools(verifiedTools = []) {

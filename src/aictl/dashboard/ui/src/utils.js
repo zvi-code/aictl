@@ -1,3 +1,4 @@
+import { pathSeparator } from './utils/paths.js';
 // ─── Constants (injected by Python into window at serve-time) ───
 export const COLORS = window.COLORS ?? {};
 export const ICONS = window.ICONS ?? {};
@@ -231,16 +232,19 @@ export function scopeLabel(path, root) {
 
 export function shortDir(path, root) {
   const p=normPath(path), r=normPath(root);
+  const sep=pathSeparator(path);
   if(p.startsWith(r+'/')) {
     const rel=p.slice(r.length+1), parts=rel.split('/'); parts.pop();
-    return parts.length ? parts.join('/') : '(root)';
+    return parts.length ? parts.join(sep) : '(root)';
   }
   const parts=p.split('/'); parts.pop();
+  // `~` is a POSIX shell convention: a Windows path keeps its own form.
+  const home=sep==='/' ? '~/' : '';
   for(let i=parts.length-1;i>=0;i--) {
-    if(parts[i].startsWith('.')&&parts[i].length>1&&parts[i]!=='..') return '~/'+parts.slice(i).join('/');
-    if(parts[i]==='Library'||parts[i]==='AppData') return '~/'+parts.slice(i).join('/');
+    if(parts[i].startsWith('.')&&parts[i].length>1&&parts[i]!=='..') return home+parts.slice(i).join(sep);
+    if(parts[i]==='Library'||parts[i]==='AppData') return home+parts.slice(i).join(sep);
   }
-  return parts.slice(-2).join('/');
+  return parts.slice(-2).join(sep);
 }
 
 export function groupByDir(files, root) {

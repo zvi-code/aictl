@@ -3,6 +3,7 @@ import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS, VENDOR_LABELS, VENDOR_COLORS, HOST_LABELS, GROUP_MODES, fmtK, esc } from '../utils.js';
 import ToolCard from './ToolCard.js';
+import PanelState from './ui/PanelState.js';
 import { Icon } from './ui/index.js';
 
 function ToolGroup({groupKey, groupLabel, groupColor, tools, root}) {
@@ -75,8 +76,8 @@ export default function TabOverview() {
     });
   },[tools, groupBy]);
 
-  if(!s) return html`<p class="loading-state">Loading...</p>`;
-  if(!tools.length && !metaTools.length) return html`<p class="empty-state">No AI tool resources found.</p>`;
+  if(!s) return html`<${PanelState} status="loading" label="processes"/>`;
+  if(!tools.length && !metaTools.length) return html`<p class="empty-state">No AI tool resources found for this tool filter. Widen it in the header, or run aictl doctor.</p>`;
 
   return html`<div>
     <div class="range-bar" style="margin-bottom:var(--sp-5)">

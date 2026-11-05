@@ -129,7 +129,7 @@ function tip(key, group) {
 // ─── Value rendering ─────────────────────────────────────────────
 function Val({v}) {
   if (v === true)  return html`<span style="color:var(--green);font-weight:600">on</span>`;
-  if (v === false) return html`<span style="color:var(--red);opacity:0.8">off</span>`;
+  if (v === false) return html`<span style="color:var(--red)">off</span>`;
   if (v === null || v === undefined || v === '') return html`<span class="text-muted">—</span>`;
   if (Array.isArray(v)) {
     return html`<span class="mono text-muted" style="font-size:var(--fs-xs)"
@@ -230,7 +230,7 @@ function ConfigurableModelsBlock({models, configFiles}) {
               ? html`<span class="mono" style="font-weight:600">${m.value}</span>`
               : html`<span class="text-muted">— ${m.default_hint || 'default'}</span>`}
             <span class="badge" style="background:${sourceColor[m.source] || 'var(--fg3)'};
-                  color:var(--bg);font-size:var(--fs-2xs)">${sourceLabel[m.source] || m.source}</span>
+                  color:var(--on-status);font-size:var(--fs-2xs)">${sourceLabel[m.source] || m.source}</span>
           </span>
         </div>
         <div class="mono text-muted" style="font-size:var(--fs-2xs);overflow:hidden;
@@ -277,12 +277,12 @@ function ToolConfigCard({cfg, label}) {
     <div style="padding:var(--sp-4) var(--sp-5);background:color-mix(in srgb,${color} 10%,var(--bg2));
                 display:flex;align-items:center;gap:var(--sp-3);border-bottom:2px solid ${color}">
       <span><${ToolIcon} tool=${cfg.tool} size="1em"/></span>
-      <span style="font-weight:700;font-size:var(--fs-base);color:${color}">${label || cfg.tool}</span>
+      <span style="font-weight:700;font-size:var(--fs-base);color:var(--fg)">${label || cfg.tool}</span>
       ${cfg.model && html`<span class="badge mono">${cfg.model}</span>`}
       ${cfg.auto_update===true  && html`<span class="badge">auto-update on</span>`}
-      ${cfg.auto_update===false && html`<span class="badge" style="opacity:0.6">auto-update off</span>`}
-      ${cfg.launch_at_startup===true  && html`<span class="badge" style="background:var(--green);color:var(--bg)">auto-start</span>`}
-      ${cfg.launch_at_startup===false && html`<span class="badge" style="opacity:0.6">no auto-start</span>`}
+      ${cfg.auto_update===false && html`<span class="badge badge--muted">auto-update off</span>`}
+      ${cfg.launch_at_startup===true  && html`<span class="badge" style="background:var(--green);color:var(--on-status)">auto-start</span>`}
+      ${cfg.launch_at_startup===false && html`<span class="badge badge--muted">no auto-start</span>`}
     </div>
     <div style="padding:var(--sp-4);flex:1">
       <${OTelBlock} otel=${cfg.otel}/>
@@ -328,8 +328,8 @@ function VsCodeCard({cfg}) {
       <span>🔷</span>
       <span style="font-weight:700;font-size:var(--fs-base);color:var(--vscode)">VS Code — AI Platform Settings</span>
       <span class="text-muted" style="font-size:var(--fs-sm)">chat.* — applies to all AI tools</span>
-      ${yolo && html`<span class="badge" style="margin-left:auto;background:var(--red);color:#fff;font-weight:700"><${Icon} name="alert-triangle" size="0.9em"/> YOLO MODE ON</span>`}
-      ${!yolo && noReply && html`<span class="badge" style="margin-left:auto;background:var(--orange);color:#fff"><${Icon} name="alert-triangle" size="0.9em"/> auto-reply on</span>`}
+      ${yolo && html`<span class="badge" style="margin-left:auto;background:var(--red);color:var(--on-status);font-weight:700"><${Icon} name="alert-triangle" size="0.9em"/> YOLO MODE ON</span>`}
+      ${!yolo && noReply && html`<span class="badge" style="margin-left:auto;background:var(--orange);color:var(--on-status)"><${Icon} name="alert-triangle" size="0.9em"/> auto-reply on</span>`}
     </div>
     <div style="padding:var(--sp-4);display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:var(--sp-4)">
       <${OTelBlock} otel=${cfg.otel}/>
@@ -349,7 +349,7 @@ function AictlCard({snap}) {
     <div style="padding:var(--sp-4) var(--sp-5);background:color-mix(in srgb,${color} 10%,var(--bg2));
                 display:flex;align-items:center;gap:var(--sp-3);border-bottom:2px solid ${color}">
       <span><${Icon} name="settings" size="1em"/></span>
-      <span style="font-weight:700;font-size:var(--fs-base);color:${color}">aictl</span>
+      <span style="font-weight:700;font-size:var(--fs-base);color:var(--fg)">aictl</span>
       <span class="text-muted" style="font-size:var(--fs-sm)">monitoring engine</span>
     </div>
     <div style="padding:var(--sp-4);flex:1">

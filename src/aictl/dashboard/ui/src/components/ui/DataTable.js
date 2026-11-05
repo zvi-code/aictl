@@ -45,8 +45,19 @@ function buildColumns(cols) {
   }));
 }
 
+/** Rows that contain `query` in any column with an accessor. */
+export function filterRows(rows, columns, query) {
+  const q = (query || '').trim().toLowerCase();
+  if (!q) return rows;
+  const keys = columns.map(c => c.accessorKey).filter(Boolean);
+  return rows.filter(r => keys.some(k => String(r[k] ?? '').toLowerCase().includes(q)));
+}
+
+// Long tables get a quick filter without each caller asking for one.
+const FILTER_MIN_ROWS = 10;
+
 export default function DataTable({
-  data = [],
+  data: allRows = [],
   columns = [],
   onRowClick,
   rowKey,
@@ -60,7 +71,11 @@ export default function DataTable({
   striped = false,
   virtualScroll = false,
   ariaLabel,
+  filterable,
 }) {
+  const [query, setQuery] = useState('');
+  const showFilter = filterable ?? allRows.length >= FILTER_MIN_ROWS;
+  const data = useMemo(() => filterRows(allRows, columns, query), [allRows, columns, query]);
   const persisted = useMemo(() => loadPersist(persistKey), [persistKey]);
   const [sorting, setSorting] = useState(() => persisted.sorting || (initialSort ? [initialSort] : []));
   const [expanded, setExpanded] = useState({});
@@ -199,6 +214,19 @@ export default function DataTable({
     </div>`;
   }
 
+  const filterBox = showFilter ? html`<div class="aictl-dt__filter">
+    <input type="search" class="search-box" placeholder="Filter rows" value=${query}
+      aria-label=${'Filter ' + (ariaLabel || 'table')}
+      onInput=${e => setQuery(e.target.value)}/>
+    <span class="aictl-dt__count">${query ? rows.length + ' of ' + allRows.length : allRows.length} rows</span>
+  </div>` : null;
+
+  // A filter that matched nothing keeps its input, and says so.
+  if (!rows.length && query) {
+    return html`<div>${filterBox}<div class="aictl-dt aictl-dt--empty">
+      <${EmptyState} title=${'No rows match "' + query + '"'}/></div></div>`;
+  }
+
   // Empty state
   if (!rows.length) {
     if (emptyState) {
@@ -213,7 +241,7 @@ export default function DataTable({
 
   const cls = ['aictl-dt', striped && 'aictl-dt--striped', virtualize && 'aictl-dt--virtual'].filter(Boolean).join(' ');
 
-  return html`<div class=${cls} data-density=${density || ''} ref=${containerRef}
+  return html`${filterBox}<div class=${cls} data-density=${density || ''} ref=${containerRef}
     style=${virtualize ? 'overflow:auto;max-height:70vh' : ''}>
     <table role="table" aria-label=${ariaLabel || 'Data table'}>
       <thead>

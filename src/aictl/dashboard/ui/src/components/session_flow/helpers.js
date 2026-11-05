@@ -1,3 +1,4 @@
+import { shortPath } from '../../utils/paths.js';
 // Domain-specific helpers for session-flow sub-components.
 // Generic formatters (fmtDurMs, fmtDurSec, fmtHHMM, fmtHHMMSS, shortModel,
 // shortSid) and the shared colour palette live in src/utils.js.
@@ -19,8 +20,7 @@ export function extractToolArgs(toolName, params) {
     if (parsed[key]) {
       let val = String(parsed[key]);
       if ((key === 'file_path' || key === 'path') && val.length > 60) {
-        const parts = val.replace(/\\/g, '/').split('/');
-        val = '.../' + parts.slice(-2).join('/');
+        val = shortPath(val);
       }
       return val.slice(0, 100);
     }

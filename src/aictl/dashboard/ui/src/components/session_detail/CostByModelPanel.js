@@ -27,7 +27,7 @@ export default function CostByModelPanel({sessionId}) {
     <div class="es-kv mb-sm" style="gap:var(--sp-3)">
       <div class="es-kv-card"><div class="label">Models</div><div class="value">${models.length}</div></div>
       <div class="es-kv-card"><div class="label">Requests</div><div class="value">${totals.requests}</div></div>
-      <div class="es-kv-card"><div class="label">Total Cost</div><div class="value">$${(totals.cost_usd || 0).toFixed(4)}</div></div>
+      <div class="es-kv-card" title="Estimated from token counts and list prices. Not a billed amount."><div class="label">Estimated total</div><div class="value">$${(totals.cost_usd || 0).toFixed(4)}</div></div>
     </div>
     <div style="margin-top:var(--sp-2)">
       ${models.map((m, i) => {

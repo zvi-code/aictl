@@ -1,4 +1,6 @@
 import { useState, useContext, useEffect, useMemo } from 'preact/hooks';
+import { cloudOnly } from '../utils/tools.js';
+import CloudOnlyNotice from './ui/CloudOnlyNotice.js';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { fmtK, liveTokenTotal, toolColor } from '../utils.js';
@@ -275,7 +277,7 @@ function ActivityReport({ tool, hooksStatus }) {
 // Color-coded permission badge (auto=green, ask=orange, deny=red, n/a=muted)
 const PERM_STYLE = {
   auto: { color: 'var(--green)',  bg: 'var(--green-soft, #E6EFE3)', border: 'var(--green)' },
-  ask:  { color: '#B26B1B',       bg: '#FBEFD9',                    border: '#B26B1B'       },
+  ask:  { color: 'var(--orange)', bg: 'color-mix(in srgb, var(--orange) 14%, var(--bg2))', border: 'var(--orange)' },
   deny: { color: 'var(--accent)', bg: 'var(--accent-soft)',          border: 'var(--accent)' },
   'n/a':{ color: 'var(--fg3)',    bg: 'transparent',                 border: 'var(--border)' },
 };
@@ -368,8 +370,9 @@ function AgentDetail({ tool: t, toolConfig, hooksStatus, onViewSessions, onViewC
     </div>
     ${notes && html`<div class="cagents-detail-notes">${notes}</div>`}
 
-    <div class="cagents-detail-section"><${Rule} label="Stats"/></div>
-    <div class="cagents-stats-grid">
+    ${cloudOnly(t) && html`<${CloudOnlyNotice} tool=${t}/>`}
+    <div class="cagents-detail-section" hidden=${cloudOnly(t)}><${Rule} label="Stats"/></div>
+    <div class="cagents-stats-grid" hidden=${cloudOnly(t)}>
       ${stats.map(([k, v]) => html`<${Stat} key=${k} label=${k} value=${v}/>`)}
     </div>
 

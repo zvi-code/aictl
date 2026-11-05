@@ -1,9 +1,12 @@
-import { useState, useEffect, useMemo, useContext } from 'preact/hooks';
+import { useMemo, useContext } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS, fmtK, fmtSz, fmtPct, esc } from '../utils.js';
 import MiniChart from './MiniChart.js';
 import DataTable from './ui/DataTable.js';
+import PanelState, { panelStatus } from './ui/PanelState.js';
+import { COST_ESTIMATE_NOTE, toolLabel } from '../utils/tools.js';
+import { usePolledResource } from '../hooks/usePolledResource.js';
 import * as api from '../api.js';
 import { contextWindowFor, isKnownModel } from '../models.js';
 
@@ -35,23 +38,19 @@ function TokenBarLegend() {
 
 export default function TabBudget() {
   const {snap: s, history: hist, enabledTools} = useContext(SnapContext);
-  const [budget, setBudget] = useState(null);
-  const [error, setError] = useState(false);
-  useEffect(()=>{
-    setBudget(null); setError(false);
-    api.getBudget().then(setBudget).catch(()=>setError(true));
-  },[]);
-  if(error) return html`<p class="error-state">Failed to load budget.</p>`;
-  if(!budget) return html`<p class="loading-state">Loading...</p>`;
+  const res = usePolledResource(() => api.getBudget(), [], { pollMs: 60000 });
+  const budget = res.data;
+  if(!budget) return html`<${PanelState} status=${panelStatus(res)} error=${res.error} onRetry=${res.reload}
+    label="token budget" skeletonHeight="240px" emptyTitle="No budget data"
+    emptyHint="The server returned nothing for /api/budget. It fills after the first scan of AI context files."/>`;
 
   const toolMatch = (t) => enabledTools === null || enabledTools.includes(t);
 
-  // Detect model — prefer Claude Code or Copilot (the tools that define the context window)
+  // Context window: the model of the most active tool in scope that reports one.
   const detectedModel = useMemo(() => {
     const configs = s?.tool_configs || [];
-    // Prefer claude-code, then copilot, then any tool with a known model
-    for (const pref of ['claude-code', 'copilot', 'copilot-vscode']) {
-      const c = configs.find(cfg => cfg.tool === pref && cfg.model);
+    for (const t of s?.tools || []) {
+      const c = configs.find(cfg => cfg.tool === t.tool && cfg.model);
       if (c) return c.model;
     }
     // Fall back to any config whose model is in our known window map
@@ -265,13 +264,13 @@ export default function TabBudget() {
             <th>Tool</th><th>Source</th>
             <th style="text-align:right">Input</th><th style="text-align:right">Output</th>
             <th style="text-align:right">Cache R</th><th style="text-align:right">Cache W</th>
-            <th style="text-align:right">Sessions</th><th style="text-align:right">Cost</th>
+            <th style="text-align:right">Sessions</th><th style="text-align:right" title=${COST_ESTIMATE_NOTE}>Est. cost</th>
             <th style="width:100px">Context Split</th>
           </tr></thead>
           <tbody>${telemetry.map(t=>{
             const tb = toolBreakdowns[t.tool];
             return html`<tr key=${t.tool}>
-              <td style="white-space:nowrap"><span class="dot" style=${'background:'+(COLORS[t.tool]||'var(--fg2)')+';margin-right:var(--sp-2)'}></span>${esc(t.tool)}</td>
+              <td style="white-space:nowrap"><span class="dot" style=${'background:'+(COLORS[t.tool]||'var(--fg2)')+';margin-right:var(--sp-2)'}></span>${toolLabel(t.tool, s)}</td>
               <td><span class="badge" style="font-size:var(--fs-2xs)">${t.source}</span> <span class="text-muted">${fmtPct(t.confidence*100)}</span></td>
               <td style="text-align:right" class="text-bold">${fmtK(t.input_tokens||0)}</td>
               <td style="text-align:right" class="text-bold">${fmtK(t.output_tokens||0)}</td>
