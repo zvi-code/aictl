@@ -31,6 +31,11 @@ def test_aictl_config_dir_is_inside_the_test_home() -> None:
     assert config_dir().is_relative_to(Path.home())
 
 
+def test_windows_config_dir_is_inside_the_test_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("aictl.platforms.IS_WINDOWS", True)
+    assert config_dir().is_relative_to(Path.home())
+
+
 def test_cli_subprocesses_inherit_the_test_home() -> None:
     out = subprocess.run(
         [sys.executable, "-c", "from pathlib import Path; print(Path.home())"],
