@@ -5,6 +5,7 @@ import { COLORS, fmtK, fmtSz, fmtPct, esc } from '../utils.js';
 import MiniChart from './MiniChart.js';
 import DataTable from './ui/DataTable.js';
 import PanelState, { panelStatus } from './ui/PanelState.js';
+import { COST_ESTIMATE_NOTE } from '../utils/tools.js';
 import { usePolledResource } from '../hooks/usePolledResource.js';
 import * as api from '../api.js';
 import { contextWindowFor, isKnownModel } from '../models.js';
@@ -45,12 +46,11 @@ export default function TabBudget() {
 
   const toolMatch = (t) => enabledTools === null || enabledTools.includes(t);
 
-  // Detect model — prefer Claude Code or Copilot (the tools that define the context window)
+  // Context window: the model of the most active tool in scope that reports one.
   const detectedModel = useMemo(() => {
     const configs = s?.tool_configs || [];
-    // Prefer claude-code, then copilot, then any tool with a known model
-    for (const pref of ['claude-code', 'copilot', 'copilot-vscode']) {
-      const c = configs.find(cfg => cfg.tool === pref && cfg.model);
+    for (const t of s?.tools || []) {
+      const c = configs.find(cfg => cfg.tool === t.tool && cfg.model);
       if (c) return c.model;
     }
     // Fall back to any config whose model is in our known window map
@@ -264,7 +264,7 @@ export default function TabBudget() {
             <th>Tool</th><th>Source</th>
             <th style="text-align:right">Input</th><th style="text-align:right">Output</th>
             <th style="text-align:right">Cache R</th><th style="text-align:right">Cache W</th>
-            <th style="text-align:right">Sessions</th><th style="text-align:right">Cost</th>
+            <th style="text-align:right">Sessions</th><th style="text-align:right" title=${COST_ESTIMATE_NOTE}>Est. cost</th>
             <th style="width:100px">Context Split</th>
           </tr></thead>
           <tbody>${telemetry.map(t=>{

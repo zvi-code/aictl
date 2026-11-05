@@ -1,4 +1,5 @@
 import { useState, useContext, useMemo, useEffect } from 'preact/hooks';
+import { baseName } from '../utils/paths.js';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import * as api from '../api.js';
@@ -20,9 +21,9 @@ function collectPrompts(snap) {
       const isPrompt =
         path.endsWith('.prompt.md') ||
         kind === 'prompt' ||
-        (kind === 'command' && path.toLowerCase().includes('/prompts/'));
+        (kind === 'command' && path.replace(/\\/g, '/').toLowerCase().includes('/prompts/'));
       if (isPrompt) {
-        const name = path.split('/').pop().replace(/\.prompt\.md$/, '').replace(/\.md$/, '');
+        const name = baseName(path).replace(/\.prompt\.md$/, '').replace(/\.md$/, '');
         out.push({
           id: path,
           name,
@@ -54,7 +55,7 @@ function collectWorkflows(snap) {
         kind === 'workflows' ||
         (kind === 'command' && path.toLowerCase().includes('/workflows/'));
       if (isWorkflow) {
-        const name = path.split('/').pop().replace(/\.workflow\.md$/, '').replace(/\.md$/, '');
+        const name = baseName(path).replace(/\.workflow\.md$/, '').replace(/\.md$/, '');
         out.push({
           id: path,
           name,

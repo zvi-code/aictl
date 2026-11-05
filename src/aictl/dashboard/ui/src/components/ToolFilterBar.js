@@ -3,12 +3,8 @@
 // tools every panel is scoped to. The selection lives in the URL (useTools).
 import { html } from 'htm/preact';
 import { Icon, Popover, ToolIcon } from './ui/index.js';
+import { VERIFIED_TOOLS as VERIFIED, orderToolsByActivity } from '../utils/tools.js';
 
-const VERIFIED = new Set([
-  'claude-code', 'claude-desktop',
-  'copilot', 'copilot-vscode', 'copilot-cli', 'copilot-jetbrains', 'copilot-vs', 'copilot365',
-  'codex-cli', 'gemini', 'gemini-cli',
-]);
 
 /** Trigger text: concrete names up to two, then a count. */
 export function toolFilterLabel(tools, enabledTools) {
@@ -22,7 +18,7 @@ export function toolFilterLabel(tools, enabledTools) {
 
 export default function ToolFilterBar({ snap, enabledTools, onToggle, onSetAll }) {
   if (!snap) return null;
-  const allTools = snap.tools.filter(t => !t.meta).sort((a, b) => a.label.localeCompare(b.label));
+  const allTools = orderToolsByActivity(snap.tools.filter(t => !t.meta));
   if (!allTools.length) return null;
   const allEnabled = enabledTools === null;
   const label = toolFilterLabel(allTools, enabledTools);

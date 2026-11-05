@@ -2,6 +2,7 @@ import { Fragment } from 'preact';
 import { useState, useEffect, useMemo, useContext } from 'preact/hooks';
 import { html } from 'htm/preact';
 import PanelState from './ui/PanelState.js';
+import { shortPath } from '../utils/paths.js';
 import { SnapContext } from '../context.js';
 import { fmtK, fmtSz, fmtTime, fmtAgo } from '../utils.js';
 import ChartCard from './ChartCard.js';
@@ -16,7 +17,6 @@ const MODEL_COLORS = [
 
 function fmtMs(v) { return v >= 1000 ? fmtK(v / 1000) + 's' : Math.round(v) + 'ms'; }
 function fmtSeq(v) { return '#' + Math.round(v); }
-function shortPath(p) { const parts = (p || '').split('/'); return parts.slice(-2).join('/'); }
 
 // ── Section: Response Time Analysis ──────────────────────────────
 
@@ -150,7 +150,7 @@ function ToolUsageSection({data}) {
         ? html`<${PanelState} status="empty" emptyTitle="No tool invocation data in this time range"
             emptyHint=${'Try a wider range (' + data.total_all_time + ' invocations exist).'}/>`
         : html`<${PanelState} status="empty" emptyTitle="No tool invocation data yet"
-            emptyHint="Tool usage comes from hooks. Install them, then run a session." emptyFix="aictl hooks install"/>`}
+            emptyHint="Tool usage comes from hooks. Install them, then run a session." emptyFix="aictl enable"/>`}
     </div>`;
 
   const invocations = data.invocations;

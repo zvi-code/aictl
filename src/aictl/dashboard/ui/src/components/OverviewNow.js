@@ -8,6 +8,8 @@ import { fmtDurSec, fmtK, fmtPct, fmtSz } from '../utils.js';
 import { usePolledResource } from '../hooks/usePolledResource.js';
 import { deriveIssues, runningSessions, sessionMemMb, storageSummary, storageText, summarizeCosts } from '../utils/health.js';
 import { loadHiddenContextSummary } from './HiddenContextSlot.js';
+import { COST_ESTIMATE_NOTE, scopeIsCloudOnly, toolLabel } from '../utils/tools.js';
+import { baseName } from '../utils/paths.js';
 import PanelState, { panelStatus } from './ui/PanelState.js';
 import { ToolIcon } from './ui/index.js';
 
@@ -16,12 +18,6 @@ const SESSION_ROWS = 8;
 function fmtUsd(n) {
   if (!n) return '$0.00';
   return '$' + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-function baseName(p) {
-  if (!p) return '';
-  const parts = String(p).split('/').filter(Boolean);
-  return parts[parts.length - 1] || p;
 }
 
 function RunningPanel({ snap, enabledTools, onOpenSession, onShowAll }) {
@@ -35,8 +31,9 @@ function RunningPanel({ snap, enabledTools, onOpenSession, onShowAll }) {
     </header>
     ${rows.length === 0
       ? html`<${PanelState} status="empty" label="running sessions"
-          emptyTitle=${enabledTools ? 'No sessions for the selected tools' : 'No live sessions'}
-          emptyHint=${enabledTools ? 'Widen the tool filter, or start a session in one of the selected tools.'
+          emptyTitle=${scopeIsCloudOnly(snap, enabledTools) ? 'Not available from this machine' : enabledTools ? 'No sessions for the selected tools' : 'No live sessions'}
+          emptyHint=${scopeIsCloudOnly(snap, enabledTools) ? 'The selected tool runs in the vendor\'s cloud and has no local sessions.'
+            : enabledTools ? 'Widen the tool filter, or start a session in one of the selected tools.'
             : 'Start an AI coding tool. Sessions appear here within one sample interval.'}/>`
       : html`<div class="now-table-wrap"><table class="now-table">
           <thead><tr>
@@ -49,7 +46,7 @@ function RunningPanel({ snap, enabledTools, onOpenSession, onShowAll }) {
               const tokens = (s.exact_input_tokens || 0) + (s.exact_output_tokens || 0);
               const mem = sessionMemMb(s);
               return html`<tr key=${s.session_id}>
-                <td class="now-table__tool"><${ToolIcon} tool=${s.tool} size="1em"/> ${s.label || s.tool}</td>
+                <td class="now-table__tool"><${ToolIcon} tool=${s.tool} size="1em"/> ${s.label || toolLabel(s.tool, snap)}</td>
                 <td class="now-table__project">
                   <button type="button" class="now-link" title=${(s.project || 'no project') + '\n' + s.session_id}
                     onClick=${() => onOpenSession(s.session_id, s.tool)}>${baseName(s.project) || 'no project'}</button>
@@ -73,14 +70,14 @@ function CostPanel({ onOpenBudget }) {
   const status = panelStatus({ ...res, isEmpty: rows => !rows?.length });
   return html`<section class="now-panel" aria-labelledby="now-cost">
     <header class="now-panel__head">
-      <h2 id="now-cost">Cost, last 24 h</h2>
-      ${res.data && html`<span class="now-panel__figure" title="Estimated from token counts and the pricing table, all tools">${fmtUsd(summary.cost)}</span>`}
+      <h2 id="now-cost">Estimated cost, last 24 h</h2>
+      ${res.data && html`<span class="now-panel__figure" title=${COST_ESTIMATE_NOTE}>${fmtUsd(summary.cost)}</span>`}
     </header>
     <${PanelState} status=${status} error=${res.error} updatedAt=${res.updatedAt} onRetry=${res.reload}
       label="cost" emptyTitle="No token usage recorded in the last 24 h"
       emptyHint="Cost comes from per-request telemetry. Turn on the OTel receiver if a tool is running but nothing shows."
       emptyFix="aictl otel enable">
-      <div class="now-panel__sub">${fmtK(summary.tokens)} tokens, ${summary.sessions} sessions, all tools (estimated)</div>
+      <div class="now-panel__sub">${fmtK(summary.tokens)} tokens, ${summary.sessions} sessions, all tools. Not a billed amount.</div>
       ${summary.top.length > 0
         ? html`<table class="now-table now-table--plain">
             <tbody>${summary.top.map(r => html`<tr key=${r.project}>
@@ -89,7 +86,7 @@ function CostPanel({ onOpenBudget }) {
               <td class="num">${fmtUsd(r.cost_usd)}</td>
             </tr>`)}</tbody>
           </table>`
-        : html`<div class="now-panel__sub">No priced usage. Sessions without token counts cost $0 here.</div>`}
+        : html`<div class="now-panel__sub">No priced usage. Sessions without token counts are not estimated.</div>`}
       <button type="button" class="now-link now-panel__more" onClick=${onOpenBudget}>Open budget</button>
     </${PanelState}>
   </section>`;

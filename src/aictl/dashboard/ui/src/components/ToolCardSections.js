@@ -268,7 +268,7 @@ export function LiveSection({live}) {
       <div class="metric-chip">
         <span class="mlabel">Workspaces</span>
         <span class="mvalue">${(live.workspaces||[]).length || 0}</span>
-        <span class="msub mono">${(live.workspaces||[]).slice(0,2).join(' | ') || '(unknown)'}</span>
+        <span class="msub mono">${(live.workspaces||[]).slice(0,2).join(' | ') || 'no workspace reported'}</span>
       </div>
     </div>
   </div>`;

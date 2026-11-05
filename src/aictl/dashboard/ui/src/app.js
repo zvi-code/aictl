@@ -15,6 +15,10 @@ import { useSavedViews } from './hooks/useSavedViews.js';
 import { useCommandPalette } from './hooks/useCommandPalette.js';
 import { announce } from './utils/a11y.js';
 import './utils/sessionBus.js';
+import { VERIFIED_TOOLS, orderToolsByActivity, scopeIsCloudOnly, toolLabel } from './utils/tools.js';
+import { baseName } from './utils/paths.js';
+import { commandKeyLabel } from './utils/platform.js';
+import CloudOnlyNotice from './components/ui/CloudOnlyNotice.js';
 import { gateContext } from './utils/gateContext.js';
 
 import FileViewer from './components/FileViewer.js';
@@ -37,12 +41,6 @@ import { toast } from './components/ui/Toast.js';
 // Re-export reducer + initialState so test/reducer.test.js keeps working.
 export { reducer, initialState } from './reducer.js';
 
-const VERIFIED_TOOLS = new Set([
-  'claude-code', 'claude-desktop',
-  'copilot', 'copilot-vscode', 'copilot-cli', 'copilot-jetbrains', 'copilot-vs', 'copilot365',
-  'codex-cli', 'gemini', 'gemini-cli',
-]);
-
 // Everything but the first screen loads on demand. ECharts is reachable only
 // through these chunks, so the Overview never pays for it.
 const TabOverview = lazy(() => import('./components/TabOverview.js'));
@@ -59,6 +57,9 @@ const CAgentsTab = lazy(() => import('./components/CAgentsTab.js'));
 const CDashboardTab = lazy(() => import('./components/CDashboardTab.js'));
 const CPromptsTab = lazy(() => import('./components/CPromptsTab.js'));
 const CSessionsTab = lazy(() => import('./components/CSessionsTab.js'));
+
+// Views made entirely of data read from the local machine.
+const LOCAL_DATA_TABS = new Set(['live', 'procs', 'events', 'explorer', 'budget', 'analytics', 'memory']);
 
 const TabFallback = () => html`<div class="tab-skeleton" role="status" aria-busy="true" aria-label="Loading view">
   <${Skeleton} height="120px" radius="var(--radius-sm)"/>
@@ -210,11 +211,13 @@ export function filterSnap(snap, enabledTools, searchQuery) {
   // Root cause of "the tool filter applies only sometimes": only snap.tools
   // was filtered, while panels also read these flat per-tool lists.
   return {
-    ...snap, tools,
+    ...snap,
+    tools: orderToolsByActivity(tools),
     sessions: byTool(snap.sessions, enabledTools),
     tool_telemetry: byTool(snap.tool_telemetry, enabledTools),
     mcp_detail: byTool(snap.mcp_detail, enabledTools),
     events: byTool(snap.events, enabledTools),
+    agent_memory: byTool(snap.agent_memory, enabledTools),
   };
 }
 
@@ -252,7 +255,7 @@ function buildCommands({
   // the live list.
   for (const s of (snap?.sessions || []).slice(0, 40)) {
     if (!s.session_id) continue;
-    const project = String(s.project || '').split('/').filter(Boolean).pop() || 'no project';
+    const project = baseName(s.project) || 'no project';
     out.push({
       id: 'session:' + s.session_id, group: 'Session',
       label: 'Open session: ' + project + ' (' + (s.label || s.tool) + ')',
@@ -284,7 +287,7 @@ function ShortcutsDialog({ open, onClose, tabs }) {
   const rows = [
     ...tabs.map(t => [t.label, t.key]),
     ['Previous / next view', '[ ]'],
-    ['Command palette', '⌘K'],
+    ['Command palette', commandKeyLabel()],
     ['Focus filter', '/'],
     ['This list', '?'],
     ['Close panels', 'Esc'],
@@ -477,6 +480,10 @@ export default function App() {
                   <${Skeleton} height="60px"  radius="var(--radius-sm)"/>
                   <${Skeleton} height="200px" radius="var(--radius-sm)"/>
                 </div>`
+              : LOCAL_DATA_TABS.has(activeTab) && scopeIsCloudOnly(snap, enabledTools)
+                ? html`<${CloudOnlyNotice} tools=${enabledTools.map(id => ({
+                    tool: id, label: toolLabel(id, snap),
+                  }))}/>`
               : TAB_RENDERERS[activeTab]
                 ? TAB_RENDERERS[activeTab]()
                 : html`<p class="text-muted">Unknown tab "${activeTab}"</p>`}

@@ -43,7 +43,7 @@ const LIVE_COLUMNS = [
   },
   {
     accessorKey: 'workspace_size_mb', header: 'Workspace', align: 'right',
-    cell: (v, row) => html`${fmtSz((v || 0) * 1048576)}<br/><span class="mono text-muted text-xs">${esc((row.live?.workspaces || []).slice(0, 2).join(' | ') || '(unknown)')}</span>`,
+    cell: (v, row) => html`${fmtSz((v || 0) * 1048576)}<br/><span class="mono text-muted text-xs">${esc((row.live?.workspaces || []).slice(0, 2).join(' | ') || 'no workspace reported')}</span>`,
   },
 ];
 

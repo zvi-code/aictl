@@ -88,8 +88,8 @@ the editorial override layer at the end of `dashboard.css`:
 
 ## Typography
 
-System stacks only: a local dashboard makes no font request. `--ff-sans` is
-`ui-sans-serif`, `--ff-mono` is `ui-monospace`. The Google Fonts link loads only
+System stacks only: a local dashboard makes no font request. `--ff-sans` resolves to
+San Francisco or Segoe UI Variable, `--ff-mono` to SF Mono or Cascadia Mono. The Google Fonts link loads only
 when the editorial theme is chosen (`useTheme`). `body` sets
 `font-variant-numeric: tabular-nums`, so every figure aligns. Labels use sentence
 case; the uppercase tracked treatment is gone outside the editorial theme.
@@ -110,6 +110,18 @@ case; the uppercase tracked treatment is gone outside the editorial theme.
 `--sp-8 16px`, `--sp-10 20px`, `--sp-12 24px`, all multiplied by `--density`
 (`data-density` compact 0.85, normal 1, spacious 1.15). Radius: `--radius-sm 4px`
 for controls, `--radius-md 6px` for panels, `--radius-lg 8px` for overlays.
+
+## Tools and paths
+
+Tool lists are ordered by activity (`utils/tools.js`): live sessions, then processes,
+then tokens, then name. No tool name decides the order. Lists show labels, not ids.
+
+Paths render with their own separator (`utils/paths.js`). Drive letters and UNC
+shares are kept, and `~` is used for POSIX paths only.
+
+A cloud-hosted tool with no local data shows `CloudOnlyNotice` ("Not available from
+this machine", with the reason), never a zero or an empty chart. Cost figures are
+labelled as estimates and carry `COST_ESTIMATE_NOTE`; they are not billed amounts.
 
 ## Panel states
 
@@ -174,7 +186,7 @@ All 9 tab components use these instead of inline styles.
 ### Keyboard Shortcuts
 
 `1`-`9`, `0`, `-`, `h`: views, printed beside each nav entry. `[` and `]`: previous
-and next view. `/`: focus the filter. `⌘K`: command palette (views, range, tools,
+and next view. `/`: focus the filter. Ctrl+K or ⌘K, labelled per platform: command palette (views, range, tools,
 live sessions, themes, density). `?`: shortcut list. `Esc`: close panels. All are
 ignored while typing in a field.
 
@@ -290,7 +302,7 @@ Below 900px the rail becomes a scrolling strip. At 640px and under, wide tables 
 panels scroll inside themselves, and the page never scrolls sideways.
 
 The Overview opens with `OverviewNow`: Running now (sessions with age, CPU, RAM,
-tokens), Cost for the last 24 h, and Needs attention (`utils/health.js`, each issue
+tokens), Estimated cost for the last 24 h, and Needs attention (`utils/health.js`, each issue
 with its exact fix, capture mode and disk use against budget, unseen context).
 
 `components/HiddenContextSlot.js` reserves the Hidden context view. It finds
