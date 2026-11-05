@@ -32,6 +32,8 @@ def fake_home(tmp_path, monkeypatch):
     monkeypatch.setattr("aictl.commands.integrations.claude_global_dir", lambda: tmp_path / "claude")
     monkeypatch.setattr("aictl.commands.integrations.gemini_global_dir", lambda: tmp_path / "gemini")
     monkeypatch.setattr("aictl.commands.integrations.copilot_global_dir", lambda: tmp_path / "copilot")
+    (tmp_path / "claude").mkdir()  # installed tools; registration skips an absent folder
+    (tmp_path / "gemini").mkdir()
     return tmp_path
 
 

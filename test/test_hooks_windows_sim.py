@@ -128,6 +128,36 @@ class TestHookCommands:
         assert result["state"] == "registered", result["reasons"]
 
 
+class TestNoStrayFiles:
+    def test_enable_disable_with_only_copilot_and_vscode_adds_nothing(self, win, monkeypatch):
+        """No .claude or .gemini under the profile appears; every seeded file comes back byte-exact."""
+        monkeypatch.setattr(hook_removal, "_reg", FakeRegistry({}))
+        monkeypatch.setattr(ig, "_run_env_persist", lambda argv: None)
+        vs = hook_removal.vscode_settings_paths(win)[0]
+        vs.parent.mkdir(parents=True)
+        seeded = {
+            vs: b'\xef\xbb\xbf{\r\n  // editor\r\n  "editor.fontSize": 13\r\n}\r\n',
+            win / ".copilot" / "config.json": b'{"theme": "dark"}\r\n',
+        }
+        (win / ".copilot").mkdir()
+        for path, data in seeded.items():
+            path.write_bytes(data)
+        before = set(win.rglob("*"))
+        runner = CliRunner()
+        enabled = runner.invoke(ig.enable, [], catch_exceptions=False)
+        assert enabled.exit_code == 0, enabled.output
+        assert not (win / ".claude").exists() and not (win / ".gemini").exists()
+        assert "Claude Code hooks skipped" in enabled.output
+        assert (win / ".copilot" / "hooks" / "aictl.json").exists()
+        disabled = runner.invoke(disable, [], catch_exceptions=False)
+        assert disabled.exit_code == 0, disabled.output
+        for path, data in seeded.items():
+            assert path.read_bytes() == data
+        added = set(win.rglob("*")) - before
+        own = Path(os.environ["APPDATA"]) / "aictl"
+        assert all(p == own or own in p.parents for p in added), added
+
+
 class TestRoundTrip:
     def _seed_settings(self, win) -> tuple[Path, bytes]:
         vs = hook_removal.vscode_settings_paths(win)[0]
@@ -243,6 +273,7 @@ class TestLockedFile:
             real_write(path, content)
 
         monkeypatch.setattr(hook_removal, "write_atomic", locked_gemini)
+        (win / ".gemini").mkdir()
         actions: list[str] = []
         ig._install_hooks("user", 8484, actions)
         assert any("Gemini" in a and "FAILED" in a and "locked" in a for a in actions)
@@ -253,7 +284,7 @@ class TestLockedFile:
         settings = win / ".claude" / "settings.json"
         settings.parent.mkdir(parents=True)
         rule = {"type": "command", "command": "py -m aictl.hook_handler --event Stop"}
-        original = json.dumps({"hooks": {"Stop": [rule]}})
+        original = json.dumps({"model": "x", "hooks": {"Stop": [rule]}})
         settings.write_text(original)
         env_dir = win / ".config" / "aictl"
         env_dir.mkdir(parents=True)

@@ -96,12 +96,14 @@ def machine(tmp_path, monkeypatch):
     proj.mkdir()
     monkeypatch.chdir(proj)
     (home / ".zshrc").write_text("# mine\n")
+    (home / ".claude").mkdir()  # installed tools; registration skips an absent folder
+    (home / ".gemini").mkdir()
     return home
 
 
 def _assert_clean(home: Path) -> None:
     for rel in (".claude/settings.json", ".gemini/settings.json"):
-        assert "hooks" not in json.loads((home / rel).read_text())
+        assert not (home / rel).exists() or "hooks" not in json.loads((home / rel).read_text())
     assert not (home / ".copilot" / "hooks" / "aictl.json").exists()
     assert not (home / ".config" / "aictl" / "env.sh").exists()
     assert (home / ".zshrc").read_text() == "# mine\n"

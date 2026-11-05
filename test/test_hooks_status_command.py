@@ -26,6 +26,8 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setattr(ig, "copilot_global_dir", lambda: home / ".copilot")
     monkeypatch.setattr(hook_removal, "_launchctl", lambda *a: None)
     monkeypatch.chdir(tmp_path)
+    (home / ".claude").mkdir()  # installed tools; a tool with no folder reports not-installed
+    (home / ".gemini").mkdir()
     return home
 
 
@@ -120,7 +122,7 @@ def test_old_command_form_is_not_called_healthy(home):
 
 def test_corrupt_file_is_reported_not_read_as_empty(home):
     path = home / ".claude" / "settings.json"
-    path.parent.mkdir(parents=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{broken")
     code, report = _status()
     assert code == 1

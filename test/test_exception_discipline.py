@@ -243,10 +243,9 @@ def test_enable_exits_1_on_partial_failure(tmp_path, monkeypatch):
     monkeypatch.setattr("aictl.commands.integrations.claude_global_dir", lambda: tmp_path / "claude")
     monkeypatch.setenv("AICTL_PORT", "8484")
 
-    # Force VS Code to fail
-    bad_vscode = tmp_path / "bad_vscode_file"
-    bad_vscode.write_text("not a directory")
-    monkeypatch.setattr("aictl.commands.integrations.vscode_user_dir", lambda: bad_vscode)
+    # Force VS Code to fail: its folder exists, but settings.json is a directory
+    bad_vscode = tmp_path / "bad_vscode"
+    (bad_vscode / "settings.json").mkdir(parents=True)
     monkeypatch.setattr("aictl.commands.integrations.vscode_user_dir", lambda: bad_vscode)
 
     runner = CliRunner()
