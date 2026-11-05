@@ -4,6 +4,8 @@ import { html } from 'htm/preact';
 import {
   Activity,
   AlertTriangle,
+  Filter,
+  EyeOff,
   Archive,
   Banknote,
   BarChart3,
@@ -50,6 +52,8 @@ import {
 const REGISTRY = {
   'activity':         Activity,
   'alert-triangle':   AlertTriangle,
+  'filter':           Filter,
+  'eye-off':          EyeOff,
   'archive':          Archive,
   'banknote':         Banknote,
   'bar-chart-3':      BarChart3,

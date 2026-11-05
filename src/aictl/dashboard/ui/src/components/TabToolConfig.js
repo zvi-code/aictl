@@ -129,7 +129,7 @@ function tip(key, group) {
 // ─── Value rendering ─────────────────────────────────────────────
 function Val({v}) {
   if (v === true)  return html`<span style="color:var(--green);font-weight:600">on</span>`;
-  if (v === false) return html`<span style="color:var(--red);opacity:0.8">off</span>`;
+  if (v === false) return html`<span style="color:var(--red)">off</span>`;
   if (v === null || v === undefined || v === '') return html`<span class="text-muted">—</span>`;
   if (Array.isArray(v)) {
     return html`<span class="mono text-muted" style="font-size:var(--fs-xs)"
@@ -230,7 +230,7 @@ function ConfigurableModelsBlock({models, configFiles}) {
               ? html`<span class="mono" style="font-weight:600">${m.value}</span>`
               : html`<span class="text-muted">— ${m.default_hint || 'default'}</span>`}
             <span class="badge" style="background:${sourceColor[m.source] || 'var(--fg3)'};
-                  color:var(--bg);font-size:var(--fs-2xs)">${sourceLabel[m.source] || m.source}</span>
+                  color:var(--on-status);font-size:var(--fs-2xs)">${sourceLabel[m.source] || m.source}</span>
           </span>
         </div>
         <div class="mono text-muted" style="font-size:var(--fs-2xs);overflow:hidden;
@@ -280,9 +280,9 @@ function ToolConfigCard({cfg, label}) {
       <span style="font-weight:700;font-size:var(--fs-base);color:${color}">${label || cfg.tool}</span>
       ${cfg.model && html`<span class="badge mono">${cfg.model}</span>`}
       ${cfg.auto_update===true  && html`<span class="badge">auto-update on</span>`}
-      ${cfg.auto_update===false && html`<span class="badge" style="opacity:0.6">auto-update off</span>`}
-      ${cfg.launch_at_startup===true  && html`<span class="badge" style="background:var(--green);color:var(--bg)">auto-start</span>`}
-      ${cfg.launch_at_startup===false && html`<span class="badge" style="opacity:0.6">no auto-start</span>`}
+      ${cfg.auto_update===false && html`<span class="badge badge--muted">auto-update off</span>`}
+      ${cfg.launch_at_startup===true  && html`<span class="badge" style="background:var(--green);color:var(--on-status)">auto-start</span>`}
+      ${cfg.launch_at_startup===false && html`<span class="badge badge--muted">no auto-start</span>`}
     </div>
     <div style="padding:var(--sp-4);flex:1">
       <${OTelBlock} otel=${cfg.otel}/>

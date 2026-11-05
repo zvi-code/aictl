@@ -47,8 +47,8 @@ export default function ToolCard({tool: t, root}) {
       ${t.mcp_servers.length>0 && html`<span class="badge" data-dp="procs.tool.mcp_server_count">${t.mcp_servers.length} MCP</span>`}
       ${anom>0 && html`<span class="badge warn" data-dp="procs.tool.anomaly"
         title=${anomLabels.join(' · ')}>${anom} ${anom===1?'anomaly':'anomalies'}</span>`}
-      ${telErrors>0 && html`<span class="badge" style="background:var(--red);color:var(--bg)">${telErrors} error${telErrors>1?'s':''}</span>`}
-      ${t.live && html`<span class="badge" style="background:var(--accent);color:var(--bg)">${t.live.session_count||0} live \u00B7 ${fmtRate(liveTraffic)}${liveTok>0?' \u00B7 '+fmtK(liveTok)+'tok':''}</span>`}
+      ${telErrors>0 && html`<span class="badge" style="background:var(--red);color:var(--on-status)">${telErrors} error${telErrors>1?'s':''}</span>`}
+      ${t.live && html`<span class="badge" style="background:var(--accent);color:var(--on-status)">${t.live.session_count||0} live \u00B7 ${fmtRate(liveTraffic)}${liveTok>0?' \u00B7 '+fmtK(liveTok)+'tok':''}</span>`}
       <div style="width:100%;display:flex;flex-wrap:wrap;gap:var(--sp-1);margin-top:0.1rem">
         ${cats.map(({kind,files:cf})=>html`<span class="text-muted" style="font-size:var(--fs-xs)">${kind}:${cf.length}</span>`)}
       </div>

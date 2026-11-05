@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'preact/hooks';
+import TextNotRetained from '../ui/TextNotRetained.js';
 import { html } from 'htm/preact';
 import { fmtHHMMSS } from '../../utils.js';
 import * as api from '../../api.js';
@@ -15,7 +16,7 @@ const ROLE_COLOR = {
   assistant: 'var(--green)',
 };
 
-export default function ConversationPanel({ sessionId }) {
+export default function ConversationPanel({ sessionId, withheld = false, captureMode = null }) {
   const [expanded, setExpanded] = useState({});
   const { data, loading, error } = useAsyncResource(
     () => api.getSessionMessages(sessionId),
@@ -31,7 +32,10 @@ export default function ConversationPanel({ sessionId }) {
 
   if (loading) return html`<p class="loading-state">Loading conversation...</p>`;
   if (error) return html`<p class="error-state">Failed to load conversation${error.message ? ` (${error.message})` : ''}.</p>`;
-  if (!messages.length) return html`<p class="empty-state">No conversation captured for this session.</p>`;
+  if (!messages.length) {
+    if (withheld) return html`<${TextNotRetained} mode=${captureMode}/>`;
+    return html`<p class="empty-state">No conversation captured for this session.</p>`;
+  }
 
   return html`<div class="sd-conversation">
     ${messages.map((m, i) => {
@@ -44,7 +48,7 @@ export default function ConversationPanel({ sessionId }) {
       const isOpen = !!expanded[key];
       return html`<div key=${key} style="padding:var(--sp-2) 0;border-bottom:1px solid var(--bg3)">
         <div class="flex-row gap-sm" style="align-items:center">
-          <span class="badge text-xs" style="background:${roleColor};color:var(--bg)">${role}</span>
+          <span class="badge text-xs" style="background:${roleColor};color:var(--on-status)">${role}</span>
           <span class="badge--muted badge text-xs" title=${'Captured via ' + (m.source || 'unknown')}>${m.source || '?'}</span>
           <span class="text-xs text-muted mono" style="margin-left:auto">${fmtHHMMSS(m.ts)}</span>
         </div>
