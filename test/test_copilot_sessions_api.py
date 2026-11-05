@@ -5,8 +5,9 @@ from __future__ import annotations
 import os
 from urllib.parse import quote
 
-from aictl.dashboard.copilot_sessions_api import PREFIX, handle
 from test_copilot_sessions_index import CHAT_ID, CLI_ID, DESK_ID, stores  # noqa: F401
+
+from aictl.dashboard.copilot_sessions_api import PREFIX, handle
 
 
 def _artifact(path: str, sid: str = CLI_ID):

@@ -91,6 +91,10 @@ reads `data.db` or credential files. The same limits apply to
 still in a tool's write-ahead log until that tool checkpoints. Titles are hidden when
 `[storage] capture` is not `full`.
 
+`capture` decides what aictl stores. Reading a file on request stores nothing, so `aictl session cat`
+and the dashboard's file view work under every mode. The `/api/copilot-sessions` routes answer
+requests from this machine only, even when the dashboard is bound to another interface.
+
 Plain `aictl session list` shows the daemon's live sessions when a daemon is running;
 any of `--all`, `--project` or `--limit` reads the index instead.
 
@@ -256,8 +260,9 @@ aictl ctx effective --json
 aictl ctx effective --search-path   # also every location checked, including absent ones
 ```
 
-It is read-only: it runs no tool and writes nothing. `aictl ctx audit` and the dashboard's hidden
-context panel show the same model findings:
+It is read-only: it runs no tool and writes nothing. `aictl ps` and the dashboard's first screen show
+the pinned model with its file and line. `aictl ctx audit` and the dashboard's hidden context panel show
+the same model findings:
 
 | Finding | Severity | Meaning |
 |---------|----------|---------|

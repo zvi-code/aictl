@@ -31,9 +31,9 @@ import json
 import ntpath
 import os
 import re
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable
 
 from .context_audit import (
     COPILOT_SESSIONS_SCANNED,
@@ -338,7 +338,7 @@ def _vscode_setting_pins(project: Path, env: dict[str, str]) -> tuple[list[Model
         inside = _in_project(str(path), project)
         for key, value in _read_json(path).items():
             if isinstance(value, str) and value and _VSCODE_MODEL_KEY_RE.search(key):
-                pins.append(ModelPin(tool, key, value, scope, str(path), _key_line(text, key), rank, inside, why_in_effect(tool, scope, inside, str(path)), True, "VS Code settings order: workspace, profile, user.", applies))
+                pins.append(ModelPin(tool, key, value, scope, str(path), _key_line(text, key), rank, inside, why_in_effect(tool, scope, inside, str(path)), True, "VS Code settings order: workspace, profile, user.", key.rsplit(".", 1)[0] if applies == "session" else applies))
     restrictions = []
     for hive in ("HKEY_LOCAL_MACHINE", "HKEY_CURRENT_USER"):
         for key, value in _registry_values(hive, r"SOFTWARE\Policies\Microsoft\VSCode").items():
@@ -578,6 +578,42 @@ def effective_model(project: str | Path | None = None, tool: str = "copilot-cli"
         "restrictions": found["restrictions"],
         "unverified": found["unverified"],
     }
+
+
+def model_summary(project: str | Path | None = None, tool: str = "copilot-cli", *, env: dict[str, str] | None = None) -> dict:
+    """The fields a one-line display needs from ``effective_model``."""
+    eff = effective_model(project, tool, env=env)
+    return {
+        "tool": tool,
+        "value": eff["value"],
+        "source": eff["source"],
+        "line": eff["line"],
+        "scope": eff["scope"],
+        "in_project": eff["in_project"],
+        "why_in_effect": eff["why_in_effect"],
+        "verified": eff["verified"],
+        "narrower_pins": len(eff["limited"]),
+        "conflicts": [
+            {
+                "requested": c["request"]["values"],
+                "requested_at": _at(c["request"]["path"], c["request"]["line"]),
+                "pinned": c["pin"]["value"],
+            }
+            for c in eff["conflicts"]
+        ],
+    }
+
+
+def annotate_models(doc: dict, *, full: bool = False, env: dict[str, str] | None = None) -> None:
+    """Add ``model_in_force`` to the Copilot rows of an ``aictl ps`` document, and to sessions when ``full``."""
+    for row in doc.get("tools", []):
+        if row.get("tool") not in COPILOT_TOOLS:
+            continue
+        row["model_in_force"] = model_summary(None, row["tool"], env=env)
+        if full:
+            for session in row.get("sessions", []):
+                if session.get("cwd") and Path(session["cwd"]).is_dir():
+                    session["model_in_force"] = model_summary(session["cwd"], row["tool"], env=env)
 
 
 # ─── Findings ─────────────────────────────────────────────────────

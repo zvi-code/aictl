@@ -344,6 +344,10 @@ export async function getSelfStatus() {
   return fetchJson('/api/self-status');
 }
 
+export async function getEffectiveModels() {
+  return fetchJson('/api/effective-models');
+}
+
 export async function getHooksStatus() {
   return fetchJson('/api/hooks-status');
 }

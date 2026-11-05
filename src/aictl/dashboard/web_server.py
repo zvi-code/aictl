@@ -21,6 +21,7 @@ import dataclasses
 import email.utils
 import gzip
 import hashlib
+import ipaddress
 import json
 import logging
 import sys
@@ -28,7 +29,7 @@ import threading
 import time
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from urllib.parse import parse_qs, urlparse
 
 from ..orchestrator import AllowedPaths, SnapshotStore
@@ -107,6 +108,27 @@ def _static_dist_candidates() -> list[Path]:
 
 
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+# These read whole conversations or any project, so they answer this machine only.
+_LOCAL_ONLY_ROUTES = ("/api/copilot-sessions", "/api/context-audit", "/api/effective-models")
+
+
+def _local_request(client_host: str, host_header: str | None) -> bool:
+    """True for a request from this machine that is addressed to a loopback name.
+
+    The client check holds when the dashboard is bound to another interface. The
+    Host check stops a web page that rebinds its own name to 127.0.0.1.
+    """
+    try:
+        client = ipaddress.ip_address(client_host)
+    except ValueError:
+        return False
+    client = getattr(client, "ipv4_mapped", None) or client
+    return client.is_loopback and _loopback_origin(f"http://{host_header or ''}") is not None
+
+
+def _names_another_machine(path: str) -> bool:
+    """True for a UNC path. Testing one for existence opens a network connection."""
+    return PureWindowsPath(path).drive.startswith("\\\\")
 
 
 def _loopback_origin(origin: str | None) -> str | None:
@@ -425,6 +447,9 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
+        if path.startswith(_LOCAL_ONLY_ROUTES) and not _local_request(self.client_address[0], self.headers.get("Host")):
+            self._json_response({"error": "This route answers requests from this machine only."}, status=403)
+            return
         if path == "/":
             self._serve_html()
         elif path == "/api/snapshot":
@@ -442,6 +467,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
 
             status, payload = handle(path, self._qs)
             self._json_response(payload, status=status)
+        elif path == "/api/effective-models":
+            self._serve_effective_models()
         elif path.startswith("/api/samples"):
             self._serve_samples()
         elif path == "/api/session-timeline":
@@ -1189,9 +1216,18 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         from ..context_audit import run_audit
 
         wanted = self._qs_get("project")
-        project = wanted if wanted and Path(wanted).is_dir() else self.server.root
+        project = wanted if wanted and not _names_another_machine(wanted) and Path(wanted).is_dir() else self.server.root
         try:
             self._json_response(run_audit(project, self._qs_get("tool") or None))
+        except Exception as exc:  # any failure must reach the panel's error state
+            self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
+
+    def _serve_effective_models(self) -> None:
+        """The model in force for each Copilot tool in the served project."""
+        from ..effective_config import COPILOT_TOOLS, model_summary
+
+        try:
+            self._json_response({tool: model_summary(self.server.root, tool) for tool in COPILOT_TOOLS})
         except Exception as exc:  # any failure must reach the panel's error state
             self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
 
