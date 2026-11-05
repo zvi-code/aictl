@@ -38,10 +38,10 @@ export default function SessionDetail({session, onClose}) {
         <strong style="font-size:var(--fs-lg)">${esc(session.tool)}</strong>
         ${session.project && html`<span class="text-muted text-xs mono text-ellipsis" style="max-width:250px"
           title=${session.project}>${esc(session.project.replace(/\\/g,'/').split('/').pop())}</span>`}
-        <span class="badge" style="background:var(--green);color:var(--bg);font-size:var(--fs-xs)">
+        <span class="badge" style="background:var(--green);color:var(--on-status);font-size:var(--fs-xs)">
           ${fmtDurSec(session.duration_s)}
         </span>
-        ${hasTeam && html`<span class="badge" style="background:var(--accent);color:var(--bg);font-size:var(--fs-xs)">
+        ${hasTeam && html`<span class="badge" style="background:var(--accent);color:var(--on-status);font-size:var(--fs-xs)">
           Team (${entityState.agents.length})
         </span>`}
         ${session.active && html`<${SessionControl} sessionId=${session.session_id}/>`}
@@ -56,7 +56,7 @@ export default function SessionDetail({session, onClose}) {
       <${ActionsPanel} sessionId=${session.session_id}/>
     <//>
     <${Panel} title="Conversation" icon="message-square" defaultOpen=${false}>
-      <${ConversationPanel} sessionId=${session.session_id}/>
+      <${ConversationPanel} sessionId=${session.session_id} withheld=${session.content_retained === false}/>
     <//>
     ${hasTeam && html`<${Panel} title="Team" icon="users" badge=${entityState.agents.length + ' agents'} defaultOpen=${true}>
       <${TeamTree} entityState=${entityState}/>

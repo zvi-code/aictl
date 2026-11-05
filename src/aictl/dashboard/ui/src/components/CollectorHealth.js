@@ -95,11 +95,11 @@ export default function CollectorHealth() {
 
     <!-- Summary badges -->
     <div class="flex-row flex-wrap gap-sm mb-md">
-      <span class="badge" data-dp="overview.collector_health.tools_with_telemetry" style="background:var(--green);color:var(--bg)">${withData}/${totalTools} tools with telemetry</span>
-      <span class="badge" data-dp="overview.collector_health.live_tools" style="background:var(--accent);color:var(--bg)">${withLive} live</span>
-      ${staleCount > 0 ? html`<span class="badge" data-dp="overview.collector_health.stale_tools" style="background:var(--orange);color:var(--bg)">${staleCount} stale</span>` : null}
-      ${totalErrors > 0 ? html`<span class="badge" data-dp="overview.collector_health.errors" style="background:var(--red);color:var(--bg)">${totalErrors} errors</span>` : null}
-      ${otel?.active ? html`<span class="badge" data-dp="overview.collector_health.otel_status" style="background:var(--green);color:var(--bg)">OTel active</span>`
+      <span class="badge" data-dp="overview.collector_health.tools_with_telemetry" style="background:var(--green);color:var(--on-status)">${withData}/${totalTools} tools with telemetry</span>
+      <span class="badge" data-dp="overview.collector_health.live_tools" style="background:var(--accent);color:var(--on-status)">${withLive} live</span>
+      ${staleCount > 0 ? html`<span class="badge" data-dp="overview.collector_health.stale_tools" style="background:var(--orange);color:var(--on-status)">${staleCount} stale</span>` : null}
+      ${totalErrors > 0 ? html`<span class="badge" data-dp="overview.collector_health.errors" style="background:var(--red);color:var(--on-status)">${totalErrors} errors</span>` : null}
+      ${otel?.active ? html`<span class="badge" data-dp="overview.collector_health.otel_status" style="background:var(--green);color:var(--on-status)">OTel active</span>`
         : html`<span class="badge--muted badge" data-dp="overview.collector_health.otel_status">OTel inactive</span>`}
     </div>
 
@@ -250,7 +250,7 @@ export default function CollectorHealth() {
             const source = [q.component, q.source].filter(Boolean).join(' · ');
             return html`<div key=${(q.component || '') + ':' + (q.source || '') + ':' + i}
               class="flex-row gap-sm" style="align-items:center;padding:var(--sp-1) 0;font-size:var(--fs-sm)">
-              <span class="badge" style="background:${sevColor};color:var(--bg);font-size:var(--fs-2xs)">
+              <span class="badge" style="background:${sevColor};color:var(--on-status);font-size:var(--fs-2xs)">
                 ${q.severity || q.status || 'info'}</span>
               <span class="mono text-xs" style="white-space:nowrap" title=${'kind: ' + (q.kind || '—') + ' · status: ' + (q.status || '—') + (q.count ? ' · seen ' + q.count + 'x' : '')}>${source || '—'}</span>
               <span class="text-xs" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"

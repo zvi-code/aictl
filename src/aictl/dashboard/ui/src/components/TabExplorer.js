@@ -24,20 +24,8 @@ import { esc, fmtK, fmtDurSec, toolColor } from '../utils.js';
 import useSessionPicker from '../hooks/useSessionPicker.js';
 import * as api from '../api.js';
 
-// ─── Session-select bus ──────────────────────────────────────────
-// ActivityRail, the command palette and CSessionsTab's "Inspect session"
-// button dispatch `aictl:select-session` on document
-// (detail = { sessionId, tool }). The dispatch usually happens in the same
-// click that switches to the explorer tab — i.e. *before* this component
-// mounts — so a module-level listener stashes the latest request and the
-// component consumes it on mount. While mounted, the component's own
-// listener reacts to further events directly.
-let pendingSelect = null;
-if (typeof document !== 'undefined') {
-  document.addEventListener('aictl:select-session', (e) => {
-    pendingSelect = e?.detail?.sessionId ? e.detail : null;
-  });
-}
+import { takePendingSelect, clearPendingSelect, rememberSession } from '../utils/sessionBus.js';
+import { writeUrl } from '../hooks/urlState.js';
 import SessionDetail from './SessionDetail.js';
 import TabSessionFlow from './TabSessionFlow.js';
 import TabTranscript from './TabTranscript.js';
@@ -99,9 +87,9 @@ export function SessionHeader({ session }) {
         ${session.files_modified} files
       </span>`}
       ${isLive && html`<span class="badge"
-        style="background:var(--red);color:var(--bg);font-size:var(--fs-xs)">● LIVE</span>`}
+        style="background:var(--red);color:var(--on-status);font-size:var(--fs-xs)">● LIVE</span>`}
       <span class="text-muted text-xs mono"
-        style="margin-left:auto;opacity:0.6"
+        style="margin-left:auto"
         title=${session.session_id}>${esc(session.session_id)}</span>
     </div>
     <${SessionSparklines} session=${session}/>
@@ -117,9 +105,7 @@ export default function TabExplorer() {
   // Session-select request (from the bus above). Consumed once sessions
   // containing the requested id have loaded.
   const [pending, setPending] = useState(() => {
-    const p = pendingSelect;
-    pendingSelect = null;
-    return p;
+    return takePendingSelect();
   });
 
   // Fetch + dedupe + tool/session auto-select (shared with the Flow /
@@ -146,11 +132,20 @@ export default function TabExplorer() {
       const d = e?.detail;
       if (!d?.sessionId) return;
       setPending(d);
-      pendingSelect = null; // consumed here; don't replay on a later mount
+      clearPendingSelect(); // consumed here; don't replay on a later mount
     };
     document.addEventListener('aictl:select-session', handler);
     return () => document.removeEventListener('aictl:select-session', handler);
   }, []);
+
+  // The drill-down is part of the view: keep it in the URL and restore it when
+  // this tab is opened again.
+  useEffect(() => {
+    if (!activeSessionId) return;
+    rememberSession(activeSessionId, activeTool);
+    writeUrl({ session: activeSessionId });
+  }, [activeSessionId, activeTool]);
+  useEffect(() => () => writeUrl({ session: null }), []);
 
   const activeSession = sessions.find(s => s.session_id === activeSessionId);
 

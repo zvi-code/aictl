@@ -50,10 +50,10 @@ export default function RangeBar({ globalRange, onPreset, onApplyCustom }) {
   }, [onApplyCustom]);
 
   return html`<div class="global-range-bar">
-    <div class="range-bar">
-      <span class="range-label">Range:</span>
+    <div class="range-bar" role="group" aria-label="Time range">
       ${RANGE_PRESETS.map(r => html`<button key=${r.id}
         class=${globalRange.id === r.id && !showCustom ? 'range-btn active' : 'range-btn'}
+        aria-pressed=${globalRange.id === r.id && !showCustom ? 'true' : 'false'}
         onClick=${() => { onPreset(r.id); setShowCustom(false); setRangeError(''); }}>${r.label}</button>`)}
       <button class=${showCustom || globalRange.id === 'custom' ? 'range-btn active' : 'range-btn'}
         onClick=${toggleCustom}>Custom</button>

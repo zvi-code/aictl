@@ -17,7 +17,7 @@ import { renderHook, act } from '@testing-library/preact';
     get length() { return store.size; },
   };
 })();
-beforeEach(() => { localStorage.clear(); });
+beforeEach(() => { localStorage.clear(); window.history.replaceState(null, '', '/'); });
 
 import { useRange, RANGE_SECONDS } from '../src/hooks/useRange.js';
 import { useTools } from '../src/hooks/useTools.js';
@@ -91,10 +91,10 @@ describe('useTabs', () => {
     expect(result.current.activeTab).toBe('overview');
   });
 
-  it('responds to keyboard shortcut "2"', () => {
+  it('responds to keyboard shortcut "3"', () => {
     const { result } = renderHook(() => useTabs());
     act(() => {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: '2' }));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: '3' }));
     });
     expect(result.current.activeTab).toBe('procs');
     expect(JSON.parse(localStorage.getItem('aictl-pref-active_tab'))).toBe('procs');
@@ -119,9 +119,9 @@ describe('useTabs', () => {
   });
 
   it('recovers from a persisted tab id that no longer exists', () => {
-    // Regression: 'sessions' was removed from the tab registry but could
+    // Regression: 'retired-tab' was removed from the tab registry but could
     // still be persisted in localStorage, leaving users on "Unknown tab".
-    localStorage.setItem('aictl-pref-active_tab', JSON.stringify('sessions'));
+    localStorage.setItem('aictl-pref-active_tab', JSON.stringify('retired-tab'));
     const { result } = renderHook(() => useTabs());
     expect(result.current.activeTab).toBe('overview');
   });
@@ -149,26 +149,21 @@ describe('useTheme', () => {
     expect(localStorage.getItem('aictl-theme')).toBe('dark');
   });
 
-  it('cycleTheme walks auto→dark→light→editorial→auto', () => {
+  it('cycleTheme walks auto→dark→light→auto, editorial stays palette-only', () => {
     const { result } = renderHook(() => useTheme());
     act(() => { result.current.cycleTheme(); });
     expect(result.current.theme).toBe('dark');
     act(() => { result.current.cycleTheme(); });
     expect(result.current.theme).toBe('light');
     act(() => { result.current.cycleTheme(); });
-    expect(result.current.theme).toBe('editorial');
-    act(() => { result.current.cycleTheme(); });
     expect(result.current.theme).toBe('auto');
   });
 
-  it('cycleTheme returns to starting theme after themes.length calls', () => {
-    // Invariant guard: any future theme addition only requires updating the
-    // ordered test above; this length check stays correct automatically.
+  it('cycleTheme leaves editorial for the first cycle entry', () => {
     const { result } = renderHook(() => useTheme());
-    const start = result.current.theme;
-    const n = result.current.themes.length;
-    for (let i = 0; i < n; i++) act(() => { result.current.cycleTheme(); });
-    expect(result.current.theme).toBe(start);
+    act(() => { result.current.setTheme('editorial'); });
+    act(() => { result.current.cycleTheme(); });
+    expect(result.current.theme).toBe('auto');
   });
 
   it('rejects unknown theme values', () => {
