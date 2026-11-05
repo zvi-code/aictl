@@ -1063,6 +1063,11 @@ def _file_state(path: Path) -> str:
     return "ok"
 
 
+def _disabled_files(tool: str, path: Path) -> list[Path]:
+    """aictl hook files switched off by renaming, next to this tool's hook file."""
+    return hook_removal.disabled_by_rename(path.parent) if tool == "copilot" else []
+
+
 def _collect_hook_status(scope: str) -> dict:
     """Per-tool truth: what is registered, what is wrong, and the command that fixes it."""
     results = _collect_doctor_results(scope)
@@ -1071,8 +1076,12 @@ def _collect_hook_status(scope: str) -> dict:
         rules = [r for r in results if r["tool"] == tool]
         file_state = _file_state(path)
         problems = sorted({r["state"] for r in rules if r["status"] != "OK"})
+        renamed = _disabled_files(tool, path)
         if file_state == "corrupt":
             state, fix = "corrupt", f"fix the JSON in {path}, then: aictl hooks install --scope {scope}"
+        elif not rules and renamed:
+            state = "disabled-by-rename"
+            fix = "to remove it: aictl disable; to turn hooks back on: aictl enable --replace-disabled"
         elif not rules:
             state, fix = "not-registered", ""
         elif problems:
@@ -1093,6 +1102,7 @@ def _collect_hook_status(scope: str) -> dict:
                 "rules": len(rules),
                 "expected_rules": expected,
                 "ports": sorted({r["port"] for r in rules if r["port"] is not None}),
+                "disabled_files": [str(p) for p in renamed],
                 "fix": fix,
             }
         )
@@ -1105,7 +1115,8 @@ def _collect_hook_status(scope: str) -> dict:
         "invalid_configs": invalid,
         "leftovers": leftovers.changes,
         "notes": leftovers.notes,
-        "ok": not invalid and not any(t["state"] not in ("registered", "not-registered") for t in tools),
+        "ok": not invalid
+        and not any(t["state"] not in ("registered", "not-registered", "disabled-by-rename") for t in tools),
     }
 
 
@@ -1147,6 +1158,8 @@ def hooks_status_cmd(scope: str, as_json: bool):
             click.echo(
                 f"{t['tool']:<12} {t['state']:<20} {t['rules']}/{t['expected_rules']} rules{ports}  {t['path']}{link}"
             )
+            for renamed in t["disabled_files"]:
+                click.echo(f"  disabled by rename: {renamed}")
             if t["fix"]:
                 click.echo(f"  fix: {t['fix']}")
         for bad in report["invalid_configs"]:
@@ -1206,6 +1219,7 @@ def doctor(scope: str, as_json: bool):
     settings_path = _settings_path(scope)
     results = _collect_doctor_results(scope)
     invalid = _invalid_tool_configs(scope)
+    renamed = [str(p) for tool, path, _k, _c in _hook_targets(scope) for p in _disabled_files(tool, path)]
     if as_json:
         click.echo(
             json.dumps(
@@ -1213,12 +1227,15 @@ def doctor(scope: str, as_json: bool):
                     "settings_path": str(settings_path),
                     "results": results,
                     "invalid_configs": invalid,
+                    "disabled_by_rename": renamed,
                 },
                 indent=2,
             )
         )
     else:
         _emit_doctor_text(results, settings_path)
+        for path in renamed:
+            click.echo(f"  disabled by rename: {path}")
         for bad in invalid:
             click.echo(f"  [FAIL] invalid config: {bad['path']}: {bad['error']}")
             click.echo(f"  fix: {bad['fix']}")
@@ -2038,7 +2055,12 @@ def _leave_removal_script(actions: list[str]) -> None:
 @click.option("--port", default=None, type=int, help="aictl server port (default: $AICTL_PORT or 8484)")
 @click.option("--dry-run", is_flag=True, help="Show what would be done without writing anything")
 @click.option("--force", is_flag=True, help="Overwrite corrupted settings.json files instead of refusing")
-def enable(scope: str, port: int | None, dry_run: bool, force: bool) -> None:
+@click.option(
+    "--replace-disabled",
+    is_flag=True,
+    help="Register Copilot hooks even though a renamed aictl.json*.disabled file is present",
+)
+def enable(scope: str, port: int | None, dry_run: bool, force: bool, replace_disabled: bool) -> None:
     """Enable all aictl integrations: hooks, OTel, and VS Code agent features.
 
     \b
@@ -2062,6 +2084,13 @@ def enable(scope: str, port: int | None, dry_run: bool, force: bool) -> None:
         aictl enable --dry-run           # preview without writing
     """
     port = port if port is not None else _default_port()
+    renamed = hook_removal.disabled_by_rename(_vscode_hook_settings_path(scope).parent)
+    if renamed and not replace_disabled:
+        names = ", ".join(str(p) for p in renamed)
+        raise click.ClickException(
+            f"Copilot hooks were disabled by renaming: {names}. Nothing was changed. "
+            "To turn them back on: aictl enable --replace-disabled. To remove them: aictl disable."
+        )
     if not dry_run:
         WriteGuard.install("enable")
 

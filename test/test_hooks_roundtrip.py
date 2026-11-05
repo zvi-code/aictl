@@ -337,7 +337,19 @@ def test_disable_cleans_what_an_older_aictl_left(env):
     disabled_file = env / ".copilot" / "hooks" / "aictl.json.disabled"
     _seed(
         disabled_file,
-        _dump({"hooks": {"Stop": [{"type": "command", "command": "py -m aictl.hook_handler --event Stop"}]}}),
+        _dump(
+            {
+                "hooks": {
+                    "Stop": [
+                        {
+                            "type": "command",
+                            "command": "py -m aictl.hook_handler --event Stop",
+                            "_aictl_owner": "aictl.managed",
+                        }
+                    ]
+                }
+            }
+        ),
     )
     vs = hook_removal.vscode_settings_paths(env)[0]
     _seed(
