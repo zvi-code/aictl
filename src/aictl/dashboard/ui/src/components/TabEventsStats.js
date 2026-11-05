@@ -4,6 +4,7 @@ import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS, VENDOR_LABELS, EVENT_COLORS, fmtK, fmtTok, fmtSz, fmtRate, fmtPct, esc, liveTokenTotal } from '../utils.js';
 import ChartCard from './ChartCard.js';
+import PanelState from './ui/PanelState.js';
 import { ToolIcon } from './ui/index.js';
 import * as api from '../api.js';
 
@@ -47,12 +48,14 @@ export default function TabEventsStats() {
     if (!selectedTool && tools.length) setTool(tools[0].tool);
   }, [tools, selectedTool]);
 
+  const [eventsError, setEventsError] = useState(null);
   // Fetch events when tool or global range changes
   useEffect(() => {
     if (!selectedTool || !globalRange) return;
     setExpandedEvents(new Set());
     api.getEvents({ tool: selectedTool, since: globalRange.since, limit: 500, until: globalRange.until })
-      .then(setEvents).catch(() => setEvents([]));
+      .then(d => { setEvents(d); setEventsError(null); })
+      .catch(e => { setEvents([]); setEventsError(e); });
   }, [selectedTool, globalRange]);
 
   const toggleEvent = (key) => {
@@ -122,7 +125,8 @@ export default function TabEventsStats() {
           </div>
         </div>` : html`<div class="es-section">
           <div class="es-section-title">Time Series</div>
-          <p class="loading-state">No data for this range.</p>
+          <${PanelState} status="empty" emptyTitle="No samples in this range"
+            emptyHint="Widen the time range in the header. Live mode shows samples since this page opened."/>
         </div>`}
 
         ${telem ? html`<div class="es-section">
@@ -190,7 +194,10 @@ export default function TabEventsStats() {
                 ${isOpen && html`<pre class="mono" style="font-size:var(--fs-xs);max-height:16rem;overflow:auto;white-space:pre-wrap;margin:0 var(--sp-5) var(--sp-2);padding:var(--sp-2);background:var(--bg);border-radius:var(--radius-sm, 4px)">${detailPretty(e.detail)}</pre>`}
               </div>`;
             })}
-          </div>` : html`<p class="empty-state">No events for this tool in the selected range.</p>`}
+          </div>` : eventsError
+          ? html`<${PanelState} status="error" error=${eventsError} label="events"/>`
+          : html`<${PanelState} status="empty" emptyTitle="No events for this tool in the selected range"
+              emptyHint="Widen the time range in the header, or pick another tool."/>`}
         </div>
       </${Fragment}>`}
     </div>
