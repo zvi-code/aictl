@@ -839,7 +839,7 @@ def batch_resolve_paths(
 # ─── Discovery ─────────────────────────────────────────────────────────────
 
 from .fsutil import safe_glob, safe_iterdir, safe_rglob, safe_stat, safe_walk
-from .platforms import CURRENT_PLATFORM, IS_MACOS
+from .platforms import CURRENT_PLATFORM, IS_MACOS, IS_WINDOWS
 from .utils import estimate_tokens, norm_path
 
 # ─── Data classes ─────────────────────────────────────────────────
@@ -944,7 +944,7 @@ def _file_resource(path: Path, kind: str) -> ResourceFile | None:
     tokens = 0
     if size < 1_000_000:
         try:
-            text = path.read_text(errors="replace")
+            text = path.read_text(errors="replace", encoding="utf-8")
             tokens = estimate_tokens(text)
         except OSError:
             pass
@@ -1187,6 +1187,9 @@ def _parse_ps_output() -> list[tuple[str, str, str, str, str]]:
     except ImportError:
         pass
 
+    if IS_WINDOWS:
+        return []  # psutil is a Windows dependency; there is no ps to fall back to
+
     # Fallback: POSIX ps
     try:
         result = subprocess.run(
@@ -1236,7 +1239,8 @@ def _discover_processes_csv(
     for spec in specs:
         if spec.ps_grep_pattern:
             try:
-                compiled.append((spec, re.compile(spec.ps_grep_pattern)))
+                # Windows executable names and paths are case-insensitive.
+                compiled.append((spec, re.compile(spec.ps_grep_pattern, re.IGNORECASE if IS_WINDOWS else 0)))
             except re.error:
                 pass
     if not compiled:
@@ -1247,7 +1251,7 @@ def _discover_processes_csv(
 
     for pid_s, cpu, rss, comm, args in rows:
         basename = Path(comm).name
-        if basename in _SKIP_COMMS:
+        if basename in _SKIP_COMMS or (IS_WINDOWS and basename.lower().removesuffix(".exe") in _SKIP_COMMS):
             continue
         pid = int(pid_s)
         if pid in matched_pids:
@@ -1525,7 +1529,7 @@ def compute_token_budget(tools: list[ToolResources], root: str = "") -> dict:
 def _read_memory_file(path: Path, source: str, profile: str) -> MemoryEntry | None:
     """Read a memory file and return a MemoryEntry with mtime, or None."""
     try:
-        content = path.read_text(errors="replace")
+        content = path.read_text(errors="replace", encoding="utf-8")
         if not content.strip():
             return None
         mtime = 0.0
