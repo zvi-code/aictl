@@ -38,8 +38,10 @@ def db(ctx, db_path):
 
 @db.command()
 @click.option("--vacuum/--no-vacuum", default=True, help="Run VACUUM after compaction to reclaim disk space")
+@click.option("--dry-run", is_flag=True, help="Print what would be removed and the expected size; change nothing")
+@click.option("--retention-days", type=int, default=None, help="Override [storage] retention_days for this run")
 @click.pass_context
-def compact(ctx, vacuum):
+def compact(ctx, vacuum, dry_run, retention_days):
     """Compact the database — downsample old data, delete expired rows, reclaim space.
 
     \b
@@ -48,17 +50,42 @@ def compact(ctx, vacuum):
       Metrics:  full res 24h → 1-min buckets 7d → 5-min buckets 30d → delete
       Events:   30 days → delete
       Telemetry: 30 days → delete
+
+    The running daemon never removes history from before its first run until
+    one retention period has passed; this command does so on request. Stop the
+    daemon first: VACUUM needs exclusive access and free disk equal to the
+    size of the live data.
     """
+    from ..platforms import load_config
     from ..storage import HistoryDB
 
     db_path = ctx.obj.db_path
     path = _resolve_db_path(db_path)
+    if retention_days is None:
+        retention_days = load_config().retention_days
 
     size_before = path.stat().st_size
+    wal = path.with_name(path.name + "-wal")
+    wal_size = wal.stat().st_size if wal.exists() else 0
     click.echo(f"Database: {path}")
-    click.echo(f"Size before: {size_before / 1024**2:.1f} MB")
+    click.echo(f"Size before: {size_before / 1024**2:.1f} MB (+ {wal_size / 1024**2:.1f} MB WAL)")
 
-    hist_db = HistoryDB(db_path=db_path)
+    if dry_run:
+        # flush_interval=0: no background writer for a read-only forecast.
+        with HistoryDB(db_path=db_path, flush_interval=0, retention_days=retention_days) as est_db:
+            est = est_db.compact_estimate()
+        mb = 1024**2
+        click.echo(f"Free pages inside the file: {est['free_bytes'] / mb:.1f} MB")
+        click.echo(f"Retention: {est['retention_days']} days (metrics: 7 days)")
+        for table, n in sorted(est["expired_rows"].items()):
+            if n:
+                click.echo(f"  {table}: {n:,} of {est['total_rows'][table]:,} rows expired")
+        click.echo(f"Expired data: about {est['expired_bytes_estimate'] / mb:.1f} MB")
+        click.echo(f"Expected size after compact: about {est['estimated_after_bytes'] / mb:.1f} MB")
+        click.echo("Dry run: nothing was changed.")
+        return
+
+    hist_db = HistoryDB(db_path=db_path, retention_days=retention_days)
 
     click.echo("Compacting...")
     t0 = time.time()
@@ -73,8 +100,7 @@ def compact(ctx, vacuum):
     if vacuum:
         click.echo("Running VACUUM (reclaiming disk space)...")
         t0 = time.time()
-        conn = hist_db._conn()
-        conn.execute("VACUUM")
+        hist_db.vacuum()
         click.echo(f"VACUUM done in {time.time() - t0:.1f}s")
 
     hist_db.close()
@@ -84,6 +110,31 @@ def compact(ctx, vacuum):
     click.echo(f"\nSize after:  {size_after / 1024**2:.1f} MB")
     if saved > 0:
         click.echo(f"Reclaimed:   {saved / 1024**2:.1f} MB ({saved / size_before * 100:.0f}%)")
+
+
+@db.command("trim-text")
+@click.option("--dry-run", is_flag=True, help="Print how much text would go; change nothing")
+@click.option("--older-than-days", type=float, default=0, help="Only text older than this (default: all text)")
+@click.pass_context
+def trim_text(ctx, dry_run, older_than_days):
+    """Remove stored conversation text and tool payloads, keep all metadata.
+
+    Tokens, cost, timings, tool names and sizes stay. Run this when moving an
+    existing DB to capture = "metadata", then `aictl db compact` to shrink the file.
+    """
+    from ..storage import HistoryDB
+
+    db_path = ctx.obj.db_path
+    _resolve_db_path(db_path)
+    with HistoryDB(db_path=db_path, flush_interval=0) as hist_db:
+        if dry_run:
+            for name, chars in sorted(hist_db.trim_text_estimate().items()):
+                if chars:
+                    click.echo(f"  {name}: {chars / 1024**2:.1f} MB of text")
+            click.echo("Event details are stripped as well. Dry run: nothing was changed.")
+            return
+        changed = hist_db.trim_text(before=time.time() - older_than_days * 86400)
+    click.echo(f"Trimmed text in {changed:,} rows. Run `aictl db compact` to shrink the file.")
 
 
 @db.command()

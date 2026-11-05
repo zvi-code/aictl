@@ -257,7 +257,7 @@ class TestDbCompact:
         assert result.exit_code == 0
         assert "Compacting" in result.output
         mock_db.compact.assert_called_once()
-        mock_conn.execute.assert_called_once_with("VACUUM")
+        mock_db.vacuum.assert_called_once()
 
     def test_compact_no_vacuum(self, runner, tmp_path):
         db_file = tmp_path / "test.db"
