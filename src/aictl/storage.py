@@ -1273,6 +1273,21 @@ def _metric_row_tuple(s: Metric) -> tuple:
 # ─── HistoryDB ─────────────────────────────────────────────────────
 
 
+# Session totals that only ever grow; see update_session_stats / update_session_end.
+_SESSION_COUNTER_FIELDS = frozenset(
+    {
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_creation_tokens",
+        "cost_usd",
+        "request_count",
+        "tool_call_count",
+        "files_modified",
+    }
+)
+
+
 class HistoryDB:
     """Thread-safe SQLite store for metrics, per-tool metrics, and events.
 
@@ -2954,7 +2969,14 @@ class HistoryDB:
             if k in kwargs:
                 if k in {"tool", "project_path", "model", "source"} and not kwargs[k]:
                     continue
-                sets.append(f"{k} = ?")
+                if k in _SESSION_COUNTER_FIELDS:
+                    # Hooks omit counters and the receiver defaults them to 0:
+                    # absent is not zero, and a running total never decreases.
+                    if not kwargs[k]:
+                        continue
+                    sets.append(f"{k} = MAX(COALESCE({k}, 0), ?)")
+                else:
+                    sets.append(f"{k} = ?")
                 params.append(kwargs[k])
         params.append(session_id)
         cur = conn.execute(
@@ -3004,7 +3026,14 @@ class HistoryDB:
             if k in kwargs:
                 if k in {"tool", "project_path", "model", "source"} and not kwargs[k]:
                     continue
-                sets.append(f"{k} = ?")
+                if k in _SESSION_COUNTER_FIELDS:
+                    # Hooks omit counters and the receiver defaults them to 0:
+                    # absent is not zero, and a running total never decreases.
+                    if not kwargs[k]:
+                        continue
+                    sets.append(f"{k} = MAX(COALESCE({k}, 0), ?)")
+                else:
+                    sets.append(f"{k} = ?")
                 params.append(kwargs[k])
         params.append(session_id)
         cur = conn.execute(
