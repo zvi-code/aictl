@@ -1,0 +1,4 @@
+# The dashboard source keeps LF on every platform, so a build gives the same files.
+src/aictl/dashboard/ui/** text=auto eol=lf
+# The built dashboard is stored as built.
+src/aictl/dashboard/dist/** -text

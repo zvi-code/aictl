@@ -254,7 +254,7 @@ make install          # builds UI + reinstalls Python package
 
 # Or use the CLI command (works even with a stale install):
 aictl reinstall       # builds UI + pipx install --force -e ".[all]"
-aictl reinstall --skip-ui  # skip the npm build
+aictl reinstall --build-ui  # build the dashboard even with no local UI changes
 
 # Or manually:
 pipx install --force -e ".[all]"   # Python only
@@ -757,7 +757,8 @@ Details: [how-to](docs/how-to.md#find-a-copilot-session-and-its-files).
 | `aictl db reset` | Delete the history database and initialise a fresh empty one |
 | `aictl build-ui` | Build the dashboard frontend (npm install + Vite build) |
 | `aictl reinstall` | Rebuild UI + reinstall Python package so code changes take effect |
-| `aictl reinstall --skip-ui` | Reinstall Python package only (faster, skips npm build) |
+| `aictl reinstall --build-ui` | Also build the dashboard when its source has no local changes |
+| `aictl reinstall --skip-ui` | Never build the dashboard, even with local UI changes |
 | `aictl reinstall --index-url URL` | Reinstall using only this Python package index, under `pip` and `uv` |
 
 ### Watching agents: `aictl ps` and `aictl top`
@@ -939,7 +940,7 @@ and reinstall the Python package so changes take effect:
 
 ```powershell
 aictl reinstall              # builds UI (npm) + pipx install --force -e ".[all]"
-aictl reinstall --skip-ui    # Python only — skip the npm build (faster)
+aictl reinstall --build-ui   # also build the dashboard with no local UI changes
 ```
 
 > **Windows self-reinstall:** the running `aictl.exe` cannot overwrite itself
@@ -971,8 +972,8 @@ npm install --prefix src/aictl/dashboard/ui   # one-time, if the UI needs buildi
 npm run build --prefix src/aictl/dashboard/ui
 ```
 
-> **Requires Node.js/npm** for the UI build step. Without it, use
-> `aictl reinstall --skip-ui` (the bundled dashboard assets are reused).
+> **Requires Node.js/npm** only to build the UI. `aictl reinstall` builds it only when its source
+> has local changes. Otherwise it uses the dashboard from git, and the server never builds it.
 
 ### Config file locations on Windows
 

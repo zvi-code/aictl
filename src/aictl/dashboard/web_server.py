@@ -1658,33 +1658,10 @@ def _load_template() -> str:
     else:
         tpl_path = None
 
-    # Auto-build if dist is missing or any source file is newer than the build output
-    ui_dir = Path(__file__).parent / "ui"
-    needs_build = tpl_path is None
-    if not needs_build and ui_dir.exists():
-        src_dir = ui_dir / "src"
-        if src_dir.is_dir():
-            build_mtime = tpl_path.stat().st_mtime
-            needs_build = any(f.stat().st_mtime > build_mtime for f in src_dir.rglob("*") if f.is_file())
-
-    if needs_build and (ui_dir / "package.json").exists():
-        import subprocess
-
-        try:
-            if not (ui_dir / "node_modules").exists():
-                subprocess.run(["npm", "install"], cwd=ui_dir, check=True, capture_output=True, timeout=120, shell=IS_WINDOWS)
-            subprocess.run(["npm", "run", "build"], cwd=ui_dir, check=True, capture_output=True, timeout=60, shell=IS_WINDOWS)
-        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
-            logger.warning("npm build failed (dashboard UI may be stale): %s", exc)
-        # Re-check after build
-        if dist_path.exists():
-            tpl_path = dist_path
-        elif ui_dist_path.exists():
-            tpl_path = ui_dist_path
-
+    # The server never builds: a build rewrites tracked files and blocks the request.
     if tpl_path is None:
         raise FileNotFoundError(
-            f"Dashboard not found. Run 'npm install && npm run build' in {Path(__file__).parent / 'ui'}"
+            "Dashboard not found. Run 'aictl build-ui'."
         )
 
     # Reload if file changed on disk (one stat() call — negligible cost)

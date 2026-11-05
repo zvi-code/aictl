@@ -681,3 +681,56 @@ class TestReinstallWindow:
         for line in printed:
             text = re.sub(r"%%P", "", re.sub(r"![A-Z_]+!", "", line))
             assert line.isascii() and not set(text) & set("&|<>^()!%"), line
+
+
+class TestReinstallLeavesTrackedFilesAlone:
+    def _project(self, tmp_path):
+        import subprocess
+
+        ui = tmp_path / "src" / "aictl" / "dashboard" / "ui"
+        (ui / "src").mkdir(parents=True)
+        (ui / "src" / "a.js").write_text("1\n")
+        dist = ui.parent / "dist"
+        dist.mkdir()
+        (dist / "index.html").write_text("<html>\n")
+        for args in (["init", "-q"], ["add", "."], ["-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "-qm", "x"]):
+            subprocess.run(["git", "-C", str(tmp_path), *args], check=True)
+        return ui
+
+    def test_no_build_without_local_ui_changes(self, tmp_path):
+        from aictl.commands.admin import _ui_has_local_edits
+
+        ui = self._project(tmp_path)
+        assert _ui_has_local_edits(tmp_path, ui) is False
+
+    def test_a_local_ui_change_needs_a_build(self, tmp_path):
+        from aictl.commands.admin import _ui_has_local_edits
+
+        ui = self._project(tmp_path)
+        (ui / "src" / "a.js").write_text("2\n")
+        assert _ui_has_local_edits(tmp_path, ui) is True
+
+    def test_a_missing_build_needs_a_build(self, tmp_path):
+        from aictl.commands.admin import _ui_has_local_edits
+
+        ui = self._project(tmp_path)
+        (ui.parent / "dist" / "index.html").unlink()
+        assert _ui_has_local_edits(tmp_path, ui) is True
+
+    def test_the_server_never_builds_the_dashboard(self):
+        """A page load ran npm when a pull made a source file look newer, and rewrote tracked files."""
+        source = (Path(__file__).parent.parent / "src" / "aictl" / "dashboard" / "web_server.py").read_text(encoding="utf-8")
+        assert '"npm"' not in source
+
+    def test_git_keeps_line_endings_of_the_dashboard_fixed(self):
+        import subprocess
+
+        root = Path(__file__).parent.parent
+        out = subprocess.run(
+            ["git", "-C", str(root), "check-attr", "text", "eol", "--", "src/aictl/dashboard/dist/index.html", "src/aictl/dashboard/ui/src/root.js"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert "dist/index.html: text: unset" in out
+        assert "root.js: eol: lf" in out
