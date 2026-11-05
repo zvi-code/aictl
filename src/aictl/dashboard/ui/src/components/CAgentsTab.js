@@ -9,7 +9,7 @@ import * as api from '../api.js';
 import Dialog from './ui/Dialog.js';
 import { toast } from './ui/Toast.js';
 import ToolScopeEmpty from './ui/ToolScopeEmpty.js';
-import { isFiltered, resolveActiveTool } from '../utils/toolScope.js';
+import { isFiltered, resolveActiveTool, sumByTool } from '../utils/toolScope.js';
 
 
 function isActive(tool) {
@@ -236,10 +236,25 @@ function HookStatusSection({ tool, hooksStatus }) {
 }
 
 function ActivityReport({ tool, hooksStatus }) {
+  const enabledTools = useContext(SnapContext)?.enabledTools ?? null;
+  const filtered = isFiltered(enabledTools);
   const skillUsage = hooksStatus?.skill_usage || {};
   const subagents = hooksStatus?.subagents || {};
   const toolCalls = hooksStatus?.tool_calls || {};
-  const skillRows = skillUsage.by_skill || [];
+  // The server counts per tool as well as in total, so under a filter the "all tools"
+  // figure becomes the selected tools' own sum. Calls with no recoverable tool are not
+  // in any selection; the tooltip counts them.
+  const callTotal = filtered ? sumByTool(toolCalls.by_tool, enabledTools) : null;
+  const skillTotal = filtered ? sumByTool(skillUsage.by_tool, enabledTools) : null;
+  const startTotal = filtered ? sumByTool(subagents.by_tool, enabledTools, v => v?.starts) : null;
+  const scopeLabel = filtered ? 'selected tools' : 'all tools';
+  const hiddenTip = (t) => (t && t.hidden ? `${t.hidden} from tools that could not be identified are not counted` : undefined);
+  // Skill names for this tool alone; an older server without the split sends the all-tools list.
+  const skillRows = skillUsage.by_tool_skill
+    ? Object.entries(skillUsage.by_tool_skill[tool.tool] || {})
+        .map(([skill, count]) => ({ skill, count }))
+        .sort((a, b) => b.count - a.count || a.skill.localeCompare(b.skill))
+    : (skillUsage.by_skill || []);
   const toolSkillCount = skillUsage.by_tool?.[tool.tool] || 0;
   const toolSubagents = subagents.by_tool?.[tool.tool] || { starts: 0, stops: 0 };
   const toolCallCount = toolCalls.by_tool?.[tool.tool] || 0;
@@ -251,17 +266,17 @@ function ActivityReport({ tool, hooksStatus }) {
     <div class="cagents-activity-row">
       <span>Tool calls</span>
       <strong>${toolCallCount}</strong>
-      <span class="cagents-hook-muted">${toolCalls.total_calls_24h || 0} all tools / 24h</span>
+      <span class="cagents-hook-muted" title=${hiddenTip(callTotal)} data-testid="agents-calls-total">${filtered ? callTotal.total : (toolCalls.total_calls_24h || 0)} ${scopeLabel} / 24h</span>
     </div>
     <div class="cagents-activity-row">
       <span>Skill calls</span>
       <strong>${toolSkillCount}</strong>
-      <span class="cagents-hook-muted">${skillUsage.total_calls_24h || 0} all tools / 24h</span>
+      <span class="cagents-hook-muted" title=${hiddenTip(skillTotal)}>${filtered ? skillTotal.total : (skillUsage.total_calls_24h || 0)} ${scopeLabel} / 24h</span>
     </div>
     <div class="cagents-activity-row">
       <span>Subagents</span>
       <strong>${toolSubagents.starts || 0}</strong>
-      <span class="cagents-hook-muted">${subagents.starts_24h || 0} starts / 24h</span>
+      <span class="cagents-hook-muted" title=${hiddenTip(startTotal)}>${filtered ? startTotal.total : (subagents.starts_24h || 0)} starts${filtered ? ', selected tools' : ''} / 24h</span>
     </div>
     ${toolCallNames.length > 0 && html`<div class="cagents-skill-list">
       ${toolCallNames.map(([name, count]) => html`<span key=${name}>${name} ${count}</span>`)}

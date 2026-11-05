@@ -11,7 +11,9 @@ import { usePolledResource } from '../hooks/usePolledResource.js';
 import * as api from '../api.js';
 import { contextWindowFor, isKnownModel } from '../models.js';
 import ToolScopeEmpty from './ui/ToolScopeEmpty.js';
-import { isFiltered, isToolSelected } from '../utils/toolScope.js';
+import { isFiltered, isToolSelected, toolsParam, selectionKey, answerCoversSelection } from '../utils/toolScope.js';
+
+const SELECTION_MISMATCH = 'The server answered for a different tool selection. Restart the aictl server so it applies the tool filter.';
 
 const MODEL_PALETTE = ['var(--green)','var(--model-7)','var(--orange)','var(--red)','var(--model-5)','var(--yellow)','var(--accent)','var(--model-8)'];
 
@@ -41,11 +43,18 @@ function TokenBarLegend() {
 
 export default function TabBudget() {
   const {snap: s, history: hist, enabledTools} = useContext(SnapContext);
-  const res = usePolledResource(() => api.getBudget(), [], { pollMs: 60000 });
-  const budget = res.data;
-  if(!budget) return html`<${PanelState} status=${panelStatus(res)} error=${res.error} onRetry=${res.reload}
-    label="token budget" skeletonHeight="240px" emptyTitle="No budget data"
-    emptyHint="The server returned nothing for /api/budget. It fills after the first scan of AI context files."/>`;
+  // The server computes the context-window figures for the selected tools. An answer
+  // for another selection (the previous one, or an older server that ignores the
+  // parameter) is never shown as this selection's: the loading state stays until it arrives.
+  const res = usePolledResource(() => api.getBudget(toolsParam(enabledTools)), [selectionKey(enabledTools)], { pollMs: 60000 });
+  const budget = res.data && answerCoversSelection(res.data, enabledTools) ? res.data : null;
+  if(!budget) {
+    const otherSelection = !!res.data;
+    return html`<${PanelState} status=${otherSelection ? (res.loading ? 'loading' : 'error') : panelStatus(res)}
+      error=${otherSelection && !res.error ? SELECTION_MISMATCH : res.error} onRetry=${res.reload}
+      label="token budget" skeletonHeight="240px" emptyTitle="No budget data"
+      emptyHint="The server returned nothing for /api/budget. It fills after the first scan of AI context files."/>`;
+  }
 
   const filtered = isFiltered(enabledTools);
   const toolMatch = (t) => isToolSelected(t, enabledTools);
@@ -182,8 +191,8 @@ export default function TabBudget() {
       </div>` : html`<div></div>`}
       <div class="budget-card">
         <h3 class="text-accent" style="margin-bottom:var(--sp-3)">Context Window${detectedModel ? html` <span class="badge">${detectedModel}</span>` : ''}</h3>
-        ${filtered && html`<div class="panel-state panel-state--note" role="note" data-testid="budget-all-tools-note">
-          <span>The token figures in this card cover all tools and all projects: the budget scan has no per-tool split, so the tool filter does not apply to them.</span>
+        ${filtered && html`<div class="text-muted" style="font-size:var(--fs-xs);margin-bottom:var(--sp-2)" data-testid="budget-selection">
+          Context files of the selected tools only.
         </div>`}
         <div style="margin-bottom:var(--sp-3)">
           <div class="flex-between text-sm" style="margin-bottom:2px">

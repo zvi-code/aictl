@@ -35,6 +35,7 @@ from urllib.parse import parse_qs, urlparse
 from ..orchestrator import AllowedPaths, SnapshotStore
 from ..platforms import IS_WINDOWS
 from ..storage import EventRow, FileWriteRow, SessionRow, ToolInvocationRow
+from ..tool_scope import parse_tools_param
 from .analytics import (  # noqa: F401 — re-exports
     _AnalyticsCache,
     _compute_files,
@@ -1246,6 +1247,14 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         """Parse a float from query string, returning default if absent."""
         v = self._qs_get(key)
         return float(v) if v else default
+
+    def _qs_tools(self) -> tuple[str, ...] | None:
+        """The dashboard tool selection from ``?tools=a,b``.
+
+        None when the parameter is absent (every tool); an empty tuple for an
+        empty ``tools=`` (no tool).
+        """
+        return parse_tools_param(urlparse(self.path).query)
 
     def _qs_float_opt(self, key: str) -> float | None:
         """Parse an optional float from query string, returning None if absent."""

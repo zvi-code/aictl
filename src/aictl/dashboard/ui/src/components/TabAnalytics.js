@@ -3,6 +3,9 @@ import { useState, useEffect, useMemo, useContext } from 'preact/hooks';
 import { html } from 'htm/preact';
 import PanelState from './ui/PanelState.js';
 import AllToolsNote from './ui/AllToolsNote.js';
+import FilterHiddenNote from './ui/FilterHiddenNote.js';
+import ToolScopeEmpty from './ui/ToolScopeEmpty.js';
+import { toolsParam, selectionKey, answerCoversSelection, isFiltered, isNoneSelected } from '../utils/toolScope.js';
 import { shortPath } from '../utils/paths.js';
 import { SnapContext } from '../context.js';
 import { fmtK, fmtSz, fmtTime, fmtAgo } from '../utils.js';
@@ -25,6 +28,7 @@ function ResponseTimeSection({data}) {
   if (!data || !data.requests || !data.requests.length)
     return html`<div class="analytics-section">
       <div class="analytics-section-title">Response Time Analysis</div>
+      <${FilterHiddenNote} count=${data?.unattributed_hidden}/>
       <${PanelState} status="empty" emptyTitle="No request data in this time range"
         emptyHint="Widen the time range. Response times need OTel telemetry from the tool."
         emptyFix="aictl otel enable"/>
@@ -76,6 +80,7 @@ function ResponseTimeSection({data}) {
 
   return html`<div class="analytics-section">
     <div class="analytics-section-title">Response Time Analysis</div>
+    <${FilterHiddenNote} count=${data.unattributed_hidden}/>
     <div class="analytics-charts">
       <div class="diag-card">
         <div class="chart-hdr"><span class="chart-label">Response Time Over Time</span>
@@ -147,6 +152,7 @@ function ToolUsageSection({data}) {
   if (!data || !data.invocations || !data.invocations.length)
     return html`<div class="analytics-section">
       <div class="analytics-section-title">Tool Usage</div>
+      <${FilterHiddenNote} count=${data?.unattributed_hidden}/>
       ${data?.total_all_time
         ? html`<${PanelState} status="empty" emptyTitle="No tool invocation data in this time range"
             emptyHint=${'Try a wider range (' + data.total_all_time + ' invocations exist).'}/>`
@@ -161,6 +167,7 @@ function ToolUsageSection({data}) {
 
   return html`<div class="analytics-section">
     <div class="analytics-section-title">Tool Usage</div>
+    <${FilterHiddenNote} count=${data.unattributed_hidden}/>
     ${cliTools.length > 1 && html`<div style="display:flex;gap:var(--sp-4);margin-bottom:var(--sp-3);flex-wrap:wrap">
       ${cliTools.map((ct, i) => html`<span key=${ct} style="display:flex;align-items:center;gap:var(--sp-2);font-size:var(--fs-sm)">
         <span style=${'width:10px;height:10px;border-radius:2px;background:'+_cliColor(ct, i)}></span>
@@ -216,6 +223,7 @@ function MemorySection({data}) {
   if (!paths.length && !events.length)
     return html`<div class="analytics-section">
       <div class="analytics-section-title">File Write Activity</div>
+      <${FilterHiddenNote} count=${data.unattributed_hidden}/>
       <${PanelState} status="empty" emptyTitle="No file write data in this time range"
         emptyHint="Widen the time range. Writes are recorded while the dashboard or the collector is running."/>
     </div>`;
@@ -224,6 +232,7 @@ function MemorySection({data}) {
 
   return html`<div class="analytics-section">
     <div class="analytics-section-title">File Write Activity</div>
+    <${FilterHiddenNote} count=${data.unattributed_hidden}/>
 
     ${paths.length > 0 && html`<div style="margin-bottom:var(--sp-6)">
       <div class="text-muted" style="font-size:var(--fs-sm);margin-bottom:var(--sp-3)">
@@ -302,39 +311,84 @@ function AnalyticsHealthBanner({health}) {
 
 // ── Main Tab ─────────────────────────────────────────────────────
 
+const POLL_PENDING_MS = 800;
+const REQUEST_TIMEOUT_MS = 15000;
+
+function nothingToShow(data) {
+  return !data.response_time?.requests?.length
+    && !data.tools?.invocations?.length
+    && !Object.keys(data.files?.memory_timeline || {}).length
+    && !data.files?.memory_events?.length;
+}
+
 export default function TabAnalytics() {
   const ctx = useContext(SnapContext);
   const globalRange = ctx?.globalRange;
-  const [data, setData] = useState(null);
+  const enabledTools = ctx?.enabledTools ?? null;
+  const none = isNoneSelected(enabledTools);
+  const toolsQs = toolsParam(enabledTools);
+  const since = globalRange?.since || (Date.now() / 1000 - 86400);
+  const until = globalRange?.until || '';
+  // What a result is for. A result is shown only under the key it was fetched for,
+  // so a new range or a new tool selection never shows the previous figures.
+  const key = `${since}|${until}|${selectionKey(enabledTools)}`;
+  const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [updatedAt, setUpdatedAt] = useState(null);
   const [attempt, setAttempt] = useState(0);
+  const data = result && result.key === key ? result.data : null;
 
   useEffect(() => {
+    if (none) { setLoading(false); setError(null); return undefined; }
     setLoading(true);
     setError(null);
-    const since = globalRange?.since || (Date.now() / 1000 - 86400);
-    const until = globalRange?.until || '';
-    const analyticsUrl = `/api/analytics?since=${since}${until ? '&until=' + until : ''}`;
+    const analyticsUrl = `/api/analytics?since=${since}${until ? '&until=' + until : ''}${toolsQs ? '&' + toolsQs : ''}`;
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 15000);
-    api.getAnalytics(analyticsUrl, { signal: ctrl.signal })
-      .then(d => { setData(d); setError(null); setUpdatedAt(Date.now()); })
-      // Data for the previous range stays visible, marked stale by PanelState.
-      .catch(e => { setError(e.name === 'AbortError' ? 'The request timed out after 15 s.' : e.message); })
-      .finally(() => { clearTimeout(timer); setLoading(false); });
-    return () => { clearTimeout(timer); ctrl.abort(); };
-  }, [globalRange?.since, globalRange?.until, attempt]);
+    let done = false;
+    let retry = null;
+    const finish = () => { done = true; clearTimeout(timer); clearTimeout(retry); setLoading(false); };
+    const fail = (e) => {
+      if (done) return;
+      // A result for the previous key is not shown; only this key's own data stays visible, marked stale.
+      setError(e.name === 'AbortError' ? 'The request timed out after 15 s.' : e.message);
+      finish();
+    };
+    const timer = setTimeout(() => { ctrl.abort(); fail({ name: 'AbortError' }); }, REQUEST_TIMEOUT_MS);
+    const load = () => api.getAnalytics(analyticsUrl, { signal: ctrl.signal })
+      .then(d => {
+        if (done) return;
+        // The server computes a new range or selection in the background; ask again until it has.
+        if (d?.pending) { retry = setTimeout(load, POLL_PENDING_MS); return; }
+        if (!answerCoversSelection(d, enabledTools)) {
+          throw new Error('The server answered for a different tool selection. Restart the aictl server so it applies the tool filter.');
+        }
+        setResult({ key, data: d });
+        setUpdatedAt(Date.now());
+        finish();
+      })
+      .catch(fail);
+    load();
+    return () => { done = true; clearTimeout(timer); clearTimeout(retry); ctrl.abort(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `key` names every fetch input
+  }, [key, none, attempt]);
 
-  const retry = () => setAttempt(n => n + 1);
+  const retryNow = () => setAttempt(n => n + 1);
+
+  if (none) return html`<div class="analytics-grid"><${ToolScopeEmpty} enabledTools=${enabledTools} snap=${ctx?.snap} what="analytics"/></div>`;
+  const hiddenTotal = data
+    ? (data.response_time?.unattributed_hidden || 0) + (data.tools?.unattributed_hidden || 0) + (data.files?.unattributed_hidden || 0)
+    : 0;
 
   return html`<div class="analytics-grid">
-    <${AllToolsNote} enabledTools=${ctx?.enabledTools} what="Analytics"/>
     ${loading && !data && html`<${PanelState} status="loading" label="analytics" skeletonHeight="240px"/>`}
-    ${error && !data && html`<${PanelState} status="error" error=${error} label="analytics" onRetry=${retry}/>`}
-    ${error && data && html`<${PanelState} status="stale" error=${error} updatedAt=${updatedAt} onRetry=${retry}/>`}
-    ${data && html`<${Fragment}>
+    ${error && !data && html`<${PanelState} status="error" error=${error} label="analytics" onRetry=${retryNow}/>`}
+    ${error && data && html`<${PanelState} status="stale" error=${error} updatedAt=${updatedAt} onRetry=${retryNow}/>`}
+    ${data && isFiltered(enabledTools) && nothingToShow(data) && html`<${Fragment}>
+      <${ToolScopeEmpty} enabledTools=${enabledTools} snap=${ctx?.snap} what="analytics"/>
+      <${FilterHiddenNote} count=${hiddenTotal}/>
+    </${Fragment}>`}
+    ${data && !(isFiltered(enabledTools) && nothingToShow(data)) && html`<${Fragment}>
       <${AnalyticsHealthBanner} health=${data?._health}/>
       <${ResponseTimeSection} data=${data?.response_time}/>
       <${ToolUsageSection} data=${data?.tools}/>
@@ -342,6 +396,7 @@ export default function TabAnalytics() {
       <details class="analytics-section">
         <summary class="analytics-section-title" style="cursor:pointer;user-select:none">
           Raw Metrics Explorer</summary>
+        <${AllToolsNote} enabledTools=${enabledTools} what="Raw metrics"/>
         <div style="margin-top:var(--sp-4)"><${TabSamples}/></div>
       </details>
     </${Fragment}>`}

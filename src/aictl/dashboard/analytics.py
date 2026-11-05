@@ -17,16 +17,34 @@ from datetime import datetime
 from ..data.model_pricing import PRICING_AS_OF, PRICING_SOURCES, context_window_for
 from ..data.provenance import COPILOT_COST_REASON, USD_PER_AI_CREDIT, combine_cost_quality, combine_tokens_quality
 from ..ingesters.transcript_usage import local_day
+from ..tool_scope import is_selected, is_unattributed, normalize_selection, selection_block
 
 logger = logging.getLogger(__name__)
+
+
+# One cached result is keyed by everything that shapes it: the time range and
+# the tool selection. ``None`` for since/until means "the default window at
+# compute time" and ``None`` for tools means every tool.
+AnalyticsKey = tuple[float | None, float | None, tuple[str, ...] | None]
+
+
+def analytics_key(since: float | None, until: float | None, tools=None) -> AnalyticsKey:
+    return (since, until, normalize_selection(tools))
 
 
 class _AnalyticsCache:
     """Pre-computes analytics in a background thread so the HTTP endpoint
     never blocks on database queries.  Follows the same pattern as the
-    SSE snapshot system: compute in background, serve from memory."""
+    SSE snapshot system: compute in background, serve from memory.
+
+    A result is only ever served for the exact (range, tool selection) it was
+    computed for. A request for another key gets a ``pending`` answer until the
+    background thread has computed that key, so a new filter never shows the
+    previous selection's numbers."""
 
     _INTERVAL = 15  # seconds between recomputes
+    _MAX_KEYS = 6  # distinct (range, selection) pairs kept warm
+    _KEY_TTL = 120.0  # seconds a key stays warm after its last request
 
     def start(self, store) -> None:
         self._store = store
@@ -37,26 +55,46 @@ class _AnalyticsCache:
         self._stop.set()
         self._wake.set()
 
-    def request_range(self, since: float, until: float) -> None:
-        """Update the time range; wake the background thread if it changed."""
-        old = self._requested_range
-        self._requested_range = (since, until)
-        if old != (since, until):
+    def request_range(self, since: float | None, until: float | None, tools=None) -> AnalyticsKey:
+        """Mark a (range, selection) as wanted; wake the background thread if it is new."""
+        key = analytics_key(since, until, tools)
+        with self._lock:
+            is_new = key not in self._results and key not in self._wanted
+            self._wanted[key] = time.monotonic()
+            while len(self._wanted) > self._MAX_KEYS:
+                oldest = min(self._wanted, key=self._wanted.__getitem__)
+                self._wanted.pop(oldest)
+                self._results.pop(oldest, None)
+        if is_new:
             self._wake.set()
+        return key
 
-    def get(self, since: float, until: float) -> dict:
-        """Return cached analytics instantly.  If the range changed, the
-        background thread will recompute within seconds.
+    def get(self, since: float | None, until: float | None, tools=None) -> dict:
+        """Return cached analytics instantly.
+
+        The answer always names the selection it covers. When that exact
+        (range, selection) has not been computed yet the answer is
+        ``{"pending": True, ...}`` with no figures, and the background thread
+        computes it within seconds.
 
         The returned dict carries a ``_health`` block so consumers (the
         analytics endpoint, the UI) can detect a degraded background thread
         instead of silently rendering stale data as if it were fresh.
         """
-        self.request_range(since, until)
+        key = self.request_range(since, until, tools)
         with self._lock:
-            result = dict(self._result)
-            result["_health"] = self.health()
-            return result
+            cached = self._results.get(key)
+            if cached is None:
+                result: dict = {
+                    "pending": True,
+                    "selection": selection_block(key[2]),
+                    "range": {"since": since, "until": until},
+                }
+            else:
+                result = dict(cached)
+                result["pending"] = False
+        result["_health"] = self.health()
+        return result
 
     def health(self) -> dict:
         """Current background-thread health. ``ok`` is False once recompute
@@ -71,13 +109,12 @@ class _AnalyticsCache:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._result: dict = {}
-        self._range_key: tuple[float, float] = (0.0, 0.0)
+        self._results: dict[AnalyticsKey, dict] = {}
+        self._wanted: dict[AnalyticsKey, float] = {}
         self._store = None
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
-        self._requested_range: tuple[float, float] | None = None
         # Health tracking so the silent background-thread swallow becomes an
         # observable signal a consumer can act on.
         self._health_lock = threading.Lock()
@@ -152,28 +189,57 @@ class _AnalyticsCache:
         db = getattr(self._store, "_db", None) if self._store else None
         if not db:
             return
-        rng = self._requested_range
-        if not rng:
-            rng = (time.time() - 86400, time.time())
-        since, until = rng
-        if until <= 0:
-            until = time.time()
-
-        result = {}
-        result["response_time"] = _compute_response_time(db, since, until)
-        result["tools"] = _compute_tools(db, since, until)
-        result["files"] = _compute_files(db, since, until)
-
+        now = time.monotonic()
         with self._lock:
-            self._result = result
-            self._range_key = (since, until)
+            for key in [k for k, seen in self._wanted.items() if now - seen > self._KEY_TTL]:
+                self._wanted.pop(key)
+                self._results.pop(key, None)
+            keys = list(self._wanted) or [analytics_key(None, None)]
+        failure: Exception | None = None
+        for key in keys:
+            try:
+                result = compute_analytics(db, *key)
+            except Exception as exc:
+                logger.exception("Analytics compute error for key %s", key)
+                failure = failure or exc
+                continue
+            with self._lock:
+                if key in self._wanted or not self._wanted:
+                    self._results[key] = result
+        if failure is not None:
+            raise failure
 
 
-def _compute_response_time(db, since: float, until: float, limit: int = 2000) -> dict:
-    """Build response-time analytics (runs in background thread)."""
-    rows = db.query_requests_analytics(since=since, until=until, limit=limit)
+def compute_analytics(db, since: float | None, until: float | None, tools: tuple[str, ...] | None) -> dict:
+    """Every analytics section for one (range, tool selection), stating both."""
+    now = time.time()
+    since = since if since is not None else now - 86400
+    until = until if until and until > 0 else now
+    return {
+        "selection": selection_block(tools),
+        "range": {"since": since, "until": until},
+        "response_time": _compute_response_time(db, since, until, tools=tools),
+        "tools": _compute_tools(db, since, until, tools=tools),
+        "files": _compute_files(db, since, until, tools=tools),
+    }
+
+
+def _unattributed_hidden(count_fn, since: float, until: float, tools) -> int:
+    """Rows a selection hides because no tool can be recovered for them (0 with All tools)."""
+    return count_fn(since=since, until=until) if tools is not None else 0
+
+
+def _compute_response_time(db, since: float, until: float, limit: int = 2000, tools=None) -> dict:
+    """Build response-time analytics (runs in background thread).
+
+    `tools` is the tool selection (None is every tool). Percentiles and per-model
+    groups are computed from the selected tools' own rows. ``unattributed_hidden``
+    counts rows with no recoverable tool, which no selection includes.
+    """
+    hidden = _unattributed_hidden(db.count_requests_unattributed, since, until, tools)
+    rows = db.query_requests_analytics(since=since, until=until, limit=limit, tools=tools)
     if not rows:
-        return {"requests": [], "by_model": []}
+        return {"requests": [], "by_model": [], "unattributed_hidden": hidden}
 
     by_session: dict[str, list] = {}
     for r in rows:
@@ -224,39 +290,47 @@ def _compute_response_time(db, since: float, until: float, limit: int = 2000) ->
         )
 
     requests_out.sort(key=lambda r: r["ts"])
-    return {"requests": requests_out, "by_model": by_model}
+    return {"requests": requests_out, "by_model": by_model, "unattributed_hidden": hidden}
 
 
-def _compute_tools(db, since: float, until: float) -> dict:
+def _compute_tools(db, since: float, until: float, tools=None) -> dict:
     """Build tool-usage analytics (runs in background thread).
 
     Primary source: Pre/PostToolUse event pairs in the events table (joined
     by tool_use_id).  This gives accurate counts and real durations.
     Fallback: tool_invocations table (for OTel-sourced invocations that
     don't go through hooks).
+
+    `tools` is the tool selection (None is every tool); every count, average and
+    percentile comes from the selected tools' rows only.
     """
     # Try event-based analytics first (accurate durations from Pre/Post matching)
-    agg = db.query_tool_analytics_from_events(since=since, until=until)
+    agg = db.query_tool_analytics_from_events(since=since, until=until, tools=tools)
+    use_events = bool(agg)
+    count_hidden = db.count_tool_events_unattributed
 
-    if not agg:
+    # The source does not depend on the selection: when hook pairs exist for other
+    # tools, a selection with none has no usage, rather than switching source.
+    if not agg and tools is not None and db.query_tool_analytics_from_events(since=since, until=until):
+        use_events = True
+    elif not agg:
         # Fallback to tool_invocations table
-        agg = db.query_tool_invocations_agg(since=since, until=until)
+        agg = db.query_tool_invocations_agg(since=since, until=until, tools=tools)
+        count_hidden = db.count_tool_invocations_unattributed
+    hidden = _unattributed_hidden(count_hidden, since, until, tools)
 
     if not agg:
         # Check if there's data outside this range
-        all_time = db.query_tool_analytics_from_events()
+        all_time = db.query_tool_analytics_from_events(tools=tools)
         if not all_time:
-            all_time = db.query_tool_invocations_agg()
+            all_time = db.query_tool_invocations_agg(tools=tools)
         total_all_time = sum(r["count"] for r in all_time) if all_time else 0
-        return {"invocations": [], "total_all_time": total_all_time}
-
-    # Determine which query path we used (events have avg_ms pre-computed)
-    use_events = "avg_ms" in agg[0]
+        return {"invocations": [], "total_all_time": total_all_time, "unattributed_hidden": hidden}
 
     # Get per-tool breakdown by CLI tool (e.g. claude-code vs codex)
     breakdown: dict[str, list[dict]] = {}
     if use_events:
-        breakdown = db.query_tool_breakdown_from_events(since=since, until=until)
+        breakdown = db.query_tool_breakdown_from_events(since=since, until=until, tools=tools)
 
     invocations = []
     for row in agg[:30]:
@@ -267,9 +341,13 @@ def _compute_tools(db, since: float, until: float) -> dict:
 
         # Get per-invocation durations for percentile calculation
         if use_events:
-            durations = sorted(db.query_tool_durations_from_events(name, since=since, until=until, limit=500))
+            durations = sorted(
+                db.query_tool_durations_from_events(name, since=since, until=until, limit=500, tools=tools)
+            )
         else:
-            durations = sorted(db.query_tool_invocations_durations(name, since=since, until=until, limit=500))
+            durations = sorted(
+                db.query_tool_invocations_durations(name, since=since, until=until, limit=500, tools=tools)
+            )
         n = len(durations)
         p95 = round(durations[min(int(n * 0.95), n - 1)], 1) if n else 0
 
@@ -286,14 +364,25 @@ def _compute_tools(db, since: float, until: float) -> dict:
 
     # Collect all unique CLI tools across all invocations for consistent coloring
     cli_tools = sorted({s["cli_tool"] for segs in breakdown.values() for s in segs})
-    return {"invocations": invocations, "cli_tools": cli_tools}
+    return {"invocations": invocations, "cli_tools": cli_tools, "unattributed_hidden": hidden}
 
 
-def _compute_files(db, since: float, until: float) -> dict:
-    """Build file-write analytics (runs in background thread)."""
+def _compute_files(db, since: float, until: float, tools=None) -> dict:
+    """Build file-write analytics (runs in background thread).
+
+    `tools` is the tool selection (None is every tool). Memory files carry the
+    tool that owns them; ``unattributed_hidden`` counts files and write events
+    with no recoverable tool, which no selection includes.
+    """
     # Try structured file_history first
     memory_files = db.list_files(category="memory")
     if memory_files:
+        hidden = 0
+        if tools is not None:
+            # Files with no recoverable owner and some change in the window.
+            orphans = [f.path for f in memory_files if is_unattributed(f.tool)]
+            hidden = sum(1 for entries in db.file_history_bulk(orphans, since=since, until=until).values() if entries)
+            memory_files = [f for f in memory_files if is_selected(f.tool, tools)]
         memory_files.sort(key=lambda f: f.last_changed or 0, reverse=True)
         paths = [f.path for f in memory_files[:20]]
         bulk = db.file_history_bulk(paths, since=since, until=until)
@@ -322,19 +411,13 @@ def _compute_files(db, since: float, until: float) -> dict:
                 )
                 prev_size = sz
         memory_events.sort(key=lambda e: e["ts"], reverse=True)
-        return {"memory_timeline": memory_timeline, "memory_events": memory_events[:50]}
+        return {"memory_timeline": memory_timeline, "memory_events": memory_events[:50], "unattributed_hidden": hidden}
 
     # Fallback: single-scan file_modified events
-    conn = db._conn()
-    rows = conn.execute(
-        "SELECT ts, json_extract(detail, '$.path'),"
-        " CAST(json_extract(detail, '$.growth_bytes') AS INTEGER)"
-        " FROM events WHERE kind = 'file_modified' AND ts >= ? AND ts <= ?"
-        " ORDER BY ts LIMIT 5000",
-        (since, until),
-    ).fetchall()
+    hidden = _unattributed_hidden(db.count_file_modified_unattributed, since, until, tools)
+    rows = db.query_file_modified_events(since=since, until=until, tools=tools)
     if not rows:
-        return {"memory_timeline": {}, "memory_events": []}
+        return {"memory_timeline": {}, "memory_events": [], "unattributed_hidden": hidden}
 
     path_growth: dict[str, int] = {}
     path_events: dict[str, list] = {}
@@ -381,7 +464,7 @@ def _compute_files(db, since: float, until: float) -> dict:
             if len(memory_events) >= 50:
                 break
 
-    return {"memory_timeline": memory_timeline, "memory_events": memory_events}
+    return {"memory_timeline": memory_timeline, "memory_events": memory_events, "unattributed_hidden": hidden}
 
 
 CLOUD_ONLY_TOOLS = ("copilot365",)

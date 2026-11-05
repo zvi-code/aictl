@@ -15,6 +15,7 @@ import { filterSnap, tabRenderers } from '../src/app.js';
 import ToolTabs from '../src/components/ToolTabs.js';
 import {
   isToolSelected, isNoneSelected, filterByTool, memoryOwners, resolveActiveTool,
+  toolsParam, selectionKey, answerCoversSelection, sumByTool,
 } from '../src/utils/toolScope.js';
 import { scopeTotals, scopeHistory } from '../src/selectors.js';
 import { scopeAudit } from '../src/utils/auditScope.js';
@@ -99,7 +100,7 @@ function route(path) {
   const p = u.pathname;
   if (p === '/api/context-audit') return AUDIT;
   if (p === '/api/usage') return { tools: [KEEP, SENTINEL].map(id => ({ tool: id, total_tokens: 1500, sessions: 1, cost_usd: null })) };
-  if (p === '/api/budget') return { always_loaded_tokens: 100, on_demand_tokens: 10, conditional_tokens: 0, cacheable_tokens: 0, total_potential_tokens: 110, project_count: 1 };
+  if (p === '/api/budget') return budgetFor(u);
   if (p === '/api/session-timeline') {
     return [KEEP, SENTINEL].map(id => ({
       session_id: `${id}-session`, tool: id, project: `/work/${id === KEEP ? 'keep' : 'sentinel'}-proj`,
@@ -115,8 +116,38 @@ function route(path) {
   if (p === '/api/data-quality') return { items: [] };
   if (p === '/api/effective-models') return {};
   if (p === '/api/ingesters') return { ingesters: [] };
-  if (p === '/api/analytics') return { response_time: { requests: [], by_model: [] }, tools: { invocations: [] }, files: {} };
+  if (p === '/api/analytics') return analyticsFor(u);
+  if (p === '/api/samples') return [];
   return {};
+}
+
+// The server computes Analytics and Budget per selection and states which one it
+// answered for (`selection`). These stubs do the same, so a screen cannot pass by
+// filtering on its own: it has to ask for the selection and show what comes back.
+function selectionOf(u) {
+  const raw = u.searchParams.get('tools');
+  const tools = raw === null ? null : raw.split(',').filter(Boolean).sort();
+  return { tools, block: { all_tools: tools === null, tools } };
+}
+const budgetTokens = { [KEEP]: 100, [SENTINEL]: 9000 };
+function budgetFor(u) {
+  const { tools, block } = selectionOf(u);
+  const always = Object.entries(budgetTokens).reduce((n, [id, v]) => n + (tools === null || tools.includes(id) ? v : 0), 0);
+  return { selection: block, always_loaded_tokens: always, on_demand_tokens: 10, conditional_tokens: 0, cacheable_tokens: 0, total_potential_tokens: always + 10, project_count: 1 };
+}
+function analyticsFor(u) {
+  const { tools, block } = selectionOf(u);
+  const has = id => tools === null || tools.includes(id);
+  const invocations = [];
+  if (has(KEEP)) invocations.push({ tool_name: 'keep-read', count: 3, avg_ms: 10, p95_ms: 20, error_count: 0 });
+  if (has(SENTINEL)) invocations.push({ tool_name: 'sentinel-read', count: 4, avg_ms: 10, p95_ms: 20, error_count: 0 });
+  const hidden = tools === null ? 0 : 2;
+  return {
+    pending: false, selection: block,
+    response_time: { requests: [], by_model: [], unattributed_hidden: hidden },
+    tools: { invocations, cli_tools: [], unattributed_hidden: 0 },
+    files: { memory_timeline: {}, memory_events: [], unattributed_hidden: 0 },
+  };
 }
 
 // jsdom has no canvas or ResizeObserver; the charts only need them not to throw.
@@ -149,8 +180,7 @@ function Screen({ tab, enabledTools, theme = 'auto' }) {
 }
 
 // What each screen must show for the kept tool, and whether an empty selection
-// shows the shared empty state. `allTools` marks a screen whose data the server
-// sends as one all-tools total: it must say so instead.
+// shows the shared empty state.
 const SCREENS = {
   overview:  { keep: 'Keep Tool', empty: true },
   hidden:    { keep: 'keep-instructions.md', empty: true },
@@ -161,7 +191,7 @@ const SCREENS = {
   agents:    { keep: 'Keep Tool', empty: true },
   prompts:   { keep: 'Keep Tool', empty: true },
   budget:    { keep: 'Keep Tool', empty: true },
-  analytics: { keep: 'cover all tools', allTools: true },
+  analytics: { keep: 'keep-read', empty: true },
   memory:    { keep: 'Copilot Instructions', empty: true },
   config:    { keep: 'Keep Tool', empty: true },
 };
@@ -196,7 +226,6 @@ describe.each(Object.entries(SCREENS))('screen %s under the tool filter', (tab, 
   });
 
   it('with All tools shows the sentinel too (the filter is what removes it)', async () => {
-    if (spec.allTools) return;
     const { container } = render(html`<${Screen} tab=${tab} enabledTools=${null}/>`);
     await waitFor(() => expect(container.textContent).toContain(spec.keep), { timeout: 4000 });
     await waitFor(() => expect(/sentinel|Gemini/i.test(container.textContent)).toBe(true), { timeout: 4000 });
@@ -204,17 +233,12 @@ describe.each(Object.entries(SCREENS))('screen %s under the tool filter', (tab, 
 
   it('with an explicit empty selection shows the empty state, not other tools', async () => {
     const { container } = render(html`<${Screen} tab=${tab} enabledTools=${[]}/>`);
-    if (spec.allTools) {
-      await waitFor(() => expect(container.textContent).toContain(spec.keep), { timeout: 4000 });
-      return;
-    }
     await waitFor(() => expect(container.querySelector('[data-testid="tool-scope-empty"]')).toBeTruthy(), { timeout: 4000 });
     expect(container.textContent).not.toContain('Keep Tool');
     expectNoSentinel(container.textContent);
   });
 
   it('with a selected tool that has no data here, names the selection', async () => {
-    if (spec.allTools) return;
     const { container } = render(html`<${Screen} tab=${tab} enabledTools=${['codex-cli']}/>`);
     await waitFor(() => expect(container.querySelector('[data-testid="tool-scope-empty"]')).toBeTruthy(), { timeout: 4000 });
     const note = container.querySelector('[data-testid="tool-scope-empty"]').textContent;
@@ -250,9 +274,196 @@ describe('screens that name a screen-wide limit, not a tool', () => {
     expect(container.textContent).toContain('Keep Tool');
   });
 
-  it('budget labels the all-tools context-window figures', async () => {
+});
+
+const fetchedUrls = () => fetchSpy.mock.calls.map(([p]) => String(p));
+
+describe('Analytics follows the tool filter through the server', () => {
+  it('asks for the selection, shows only its figures, and drops the all-tools note', async () => {
+    const { container } = render(html`<${Screen} tab="analytics" enabledTools=${[KEEP]}/>`);
+    await waitFor(() => expect(container.textContent).toContain('keep-read'), { timeout: 4000 });
+    expect(fetchedUrls().some(u => u.startsWith('/api/analytics') && u.includes('tools=' + KEEP))).toBe(true);
+    expectNoSentinel(container.textContent);
+    expect(container.textContent).not.toContain('Analytics cover all tools');
+    // The only note left is the raw metrics explorer, which has no per-tool data.
+    for (const note of container.querySelectorAll('[role="note"]')) {
+      expect(note.closest('details') || note.dataset.testid === 'filter-hidden-note').toBeTruthy();
+    }
+  });
+
+  it('counts rows with no recoverable tool instead of dropping them silently', async () => {
+    const { container } = render(html`<${Screen} tab="analytics" enabledTools=${[KEEP]}/>`);
+    await waitFor(() => expect(container.querySelector('[data-testid="filter-hidden-note"]')).toBeTruthy(), { timeout: 4000 });
+    expect(container.querySelector('[data-testid="filter-hidden-note"]').textContent).toContain('2 rows');
+  });
+
+  it('sends no tools parameter for All tools, and fetches nothing for an empty selection', async () => {
+    const all = render(html`<${Screen} tab="analytics" enabledTools=${null}/>`);
+    await waitFor(() => expect(all.container.textContent).toContain('sentinel-read'), { timeout: 4000 });
+    expect(fetchedUrls().filter(u => u.startsWith('/api/analytics')).every(u => !u.includes('tools='))).toBe(true);
+    cleanup();
+    fetchSpy.mockClear();
+    const none = render(html`<${Screen} tab="analytics" enabledTools=${[]}/>`);
+    await waitFor(() => expect(none.container.querySelector('[data-testid="tool-scope-empty"]')).toBeTruthy());
+    expect(fetchedUrls().some(u => u.startsWith('/api/analytics'))).toBe(false);
+  });
+
+  it('refetches when the selection changes, without a reload', async () => {
+    const view = render(html`<${Screen} tab="analytics" enabledTools=${[KEEP]}/>`);
+    await waitFor(() => expect(view.container.textContent).toContain('keep-read'), { timeout: 4000 });
+    view.rerender(html`<${Screen} tab="analytics" enabledTools=${[SENTINEL]}/>`);
+    await waitFor(() => expect(view.container.textContent).toContain('sentinel-read'), { timeout: 4000 });
+    expect(view.container.textContent).not.toContain('keep-read');
+    expect(fetchedUrls().some(u => u.includes('tools=' + SENTINEL))).toBe(true);
+  });
+
+  it('shows the loading state, not the previous selection, while the new one is computed', async () => {
+    let release;
+    const gate = new Promise(r => { release = r; });
+    const view = render(html`<${Screen} tab="analytics" enabledTools=${[KEEP]}/>`);
+    await waitFor(() => expect(view.container.textContent).toContain('keep-read'), { timeout: 4000 });
+    globalThis.fetch = vi.fn(async (path) => {
+      const u = new URL(String(path), 'http://x');
+      if (u.pathname === '/api/analytics') await gate;
+      return { ok: true, status: 200, json: async () => route(String(path)), text: async () => '' };
+    });
+    view.rerender(html`<${Screen} tab="analytics" enabledTools=${[SENTINEL]}/>`);
+    await waitFor(() => expect(view.container.querySelector('[aria-busy="true"]')).toBeTruthy());
+    expect(view.container.textContent).not.toContain('keep-read');
+    expect(view.container.textContent).not.toContain('sentinel-read');
+    release();
+    await waitFor(() => expect(view.container.textContent).toContain('sentinel-read'), { timeout: 4000 });
+  });
+
+  it('keeps asking while the server says pending, and shows nothing for it', async () => {
+    let calls = 0;
+    globalThis.fetch = vi.fn(async (path) => {
+      const u = new URL(String(path), 'http://x');
+      const body = u.pathname === '/api/analytics' && ++calls < 3
+        ? { pending: true, selection: selectionOf(u).block }
+        : route(String(path));
+      return { ok: true, status: 200, json: async () => body, text: async () => '' };
+    });
+    const { container } = render(html`<${Screen} tab="analytics" enabledTools=${[KEEP]}/>`);
+    await waitFor(() => expect(container.textContent).toContain('keep-read'), { timeout: 6000 });
+    expect(calls).toBeGreaterThanOrEqual(3);
+  });
+
+  it('does not show an answer for another selection as filtered', async () => {
+    // An older server ignores `tools` and answers for all tools.
+    globalThis.fetch = vi.fn(async (path) => {
+      const u = new URL(String(path), 'http://x');
+      const body = u.pathname === '/api/analytics'
+        ? analyticsFor(new URL('/api/analytics', 'http://x'))
+        : route(String(path));
+      return { ok: true, status: 200, json: async () => body, text: async () => '' };
+    });
+    const { container } = render(html`<${Screen} tab="analytics" enabledTools=${[KEEP]}/>`);
+    await waitFor(() => expect(container.textContent).toContain('different tool selection'), { timeout: 4000 });
+    expect(container.textContent).not.toContain('keep-read');
+    expect(container.textContent).not.toContain('sentinel-read');
+  });
+});
+
+describe('Budget follows the tool filter through the server', () => {
+  it('asks for the selection and shows the selected tools context-window figures, with no all-tools note', async () => {
     const { container } = render(html`<${Screen} tab="budget" enabledTools=${[KEEP]}/>`);
-    await waitFor(() => expect(container.querySelector('[data-testid="budget-all-tools-note"]')).toBeTruthy(), { timeout: 4000 });
+    await waitFor(() => expect(container.textContent).toContain('Always: 100'), { timeout: 4000 });
+    expect(fetchedUrls().some(u => u.startsWith('/api/budget') && u.includes('tools=' + KEEP))).toBe(true);
+    expect(container.querySelector('[data-testid="budget-all-tools-note"]')).toBeNull();
+    expect(container.textContent).not.toContain('cover all tools');
+    expect(container.textContent).not.toMatch(/Always: 9/);
+  });
+
+  it('sends no parameter for All tools and shows the machine figure', async () => {
+    const { container } = render(html`<${Screen} tab="budget" enabledTools=${null}/>`);
+    await waitFor(() => expect(container.textContent).toContain('Always: 9.1K'), { timeout: 4000 });
+    expect(fetchedUrls().filter(u => u.startsWith('/api/budget')).every(u => !u.includes('tools='))).toBe(true);
+  });
+
+  it('refetches when the selection changes and never shows the previous selection meanwhile', async () => {
+    const view = render(html`<${Screen} tab="budget" enabledTools=${[KEEP]}/>`);
+    await waitFor(() => expect(view.container.textContent).toContain('Always: 100'), { timeout: 4000 });
+    let release;
+    const gate = new Promise(r => { release = r; });
+    globalThis.fetch = vi.fn(async (path) => {
+      const u = new URL(String(path), 'http://x');
+      if (u.pathname === '/api/budget') await gate;
+      return { ok: true, status: 200, json: async () => route(String(path)), text: async () => '' };
+    });
+    view.rerender(html`<${Screen} tab="budget" enabledTools=${[SENTINEL]}/>`);
+    await waitFor(() => expect(view.container.querySelector('[aria-busy="true"]')).toBeTruthy());
+    expect(view.container.textContent).not.toContain('Always: 100');
+    release();
+    await waitFor(() => expect(view.container.textContent).toContain('Always: 9K'), { timeout: 4000 });
+  });
+
+  it('does not show an answer for another selection as filtered', async () => {
+    globalThis.fetch = vi.fn(async (path) => {
+      const u = new URL(String(path), 'http://x');
+      const body = u.pathname === '/api/budget' ? budgetFor(new URL('/api/budget', 'http://x')) : route(String(path));
+      return { ok: true, status: 200, json: async () => body, text: async () => '' };
+    });
+    const { container } = render(html`<${Screen} tab="budget" enabledTools=${[KEEP]}/>`);
+    await waitFor(() => expect(container.textContent).toContain('different tool selection'), { timeout: 4000 });
+    expect(container.textContent).not.toContain('Always: ');
+  });
+});
+
+describe('Agents 24h counters follow the selection', () => {
+  const hooks = { tools: {}, total_configured: 0, total_fired_24h: 0,
+    tool_calls: { total_calls_24h: 20, by_tool: { [KEEP]: 3, [SENTINEL]: 5, 'claude-code': 4, unknown: 8 }, by_tool_name: {} },
+    skill_usage: { total_calls_24h: 0, by_tool: {}, by_skill: [], by_tool_skill: {} },
+    subagents: { starts_24h: 0, by_tool: {} } };
+  const withHooks = () => {
+    globalThis.fetch = vi.fn(async (path) => {
+      const body = new URL(String(path), 'http://x').pathname === '/api/hooks-status' ? hooks : route(String(path));
+      return { ok: true, status: 200, json: async () => body, text: async () => '' };
+    });
+  };
+
+  it('shows the machine total with All tools and the selected sum under a filter', async () => {
+    withHooks();
+    const all = render(html`<${Screen} tab="agents" enabledTools=${null}/>`);
+    await waitFor(() => expect(all.container.querySelector('[data-testid="agents-calls-total"]')?.textContent).toContain('20 all tools / 24h'), { timeout: 4000 });
+    cleanup();
+    withHooks();
+    const one = render(html`<${Screen} tab="agents" enabledTools=${[KEEP]}/>`);
+    await waitFor(() => expect(one.container.querySelector('[data-testid="agents-calls-total"]')?.textContent).toContain('3 selected tools / 24h'), { timeout: 4000 });
+    const el = one.container.querySelector('[data-testid="agents-calls-total"]');
+    expect(one.container.textContent).not.toContain('all tools / 24h');
+    expect(el.getAttribute('title')).toContain('8 from tools that could not be identified');
+  });
+});
+
+describe('the server selection helpers', () => {
+  it('toolsParam sends nothing for all tools, an empty value for none, sorted exact ids otherwise', () => {
+    expect(toolsParam(null)).toBe('');
+    expect(toolsParam(undefined)).toBe('');
+    expect(toolsParam([])).toBe('tools=');
+    expect(toolsParam(['codex-cli', 'claude-code', 'codex-cli'])).toBe('tools=claude-code,codex-cli');
+    expect(toolsParam(['copilot'])).not.toBe(toolsParam(['copilot-vscode']));
+  });
+  it('an answer covers a selection only when it states exactly that selection', () => {
+    const all = { selection: { all_tools: true, tools: null } };
+    const some = ids => ({ selection: { all_tools: false, tools: ids } });
+    expect(answerCoversSelection(all, null)).toBe(true);
+    expect(answerCoversSelection({}, null)).toBe(true);
+    expect(answerCoversSelection(all, ['a'])).toBe(false);
+    expect(answerCoversSelection({}, ['a'])).toBe(false);
+    expect(answerCoversSelection(some(['a']), null)).toBe(false);
+    expect(answerCoversSelection(some(['b', 'a']), ['a', 'b'])).toBe(true);
+    expect(answerCoversSelection(some(['a']), ['a', 'b'])).toBe(false);
+    expect(answerCoversSelection(some([]), [])).toBe(true);
+    expect(answerCoversSelection(some(['copilot']), ['copilot-vscode'])).toBe(false);
+    expect(selectionKey([])).not.toBe(selectionKey(null));
+  });
+  it('sumByTool adds the selected tools and counts the unattributed apart', () => {
+    const by = { a: 1, b: 2, unknown: 5, '': 1 };
+    expect(sumByTool(by, null)).toEqual({ total: 9, hidden: 0 });
+    expect(sumByTool(by, ['a'])).toEqual({ total: 1, hidden: 6 });
+    expect(sumByTool(by, [])).toEqual({ total: 0, hidden: 6 });
+    expect(sumByTool({ x: { starts: 2 } }, ['x'], v => v.starts)).toEqual({ total: 2, hidden: 0 });
   });
 });
 

@@ -236,14 +236,16 @@ class TestConcurrentAccess:
         store = MagicMock()
         store._db = large_db
         cache._store = store
-        cache._requested_range = (time.time() - 3600, time.time())
+        since, until = time.time() - 3600, time.time()
+        cache.request_range(since, until)
         cache._recompute()  # pre-fill
 
         results = []
 
         def read_cache():
             start = time.monotonic()
-            data = cache.get(time.time() - 3600, time.time())
+            data = cache.get(since, until)
+            assert data["pending"] is False
             elapsed = time.monotonic() - start
             return elapsed, len(json.dumps(data))
 
@@ -267,7 +269,8 @@ class TestConcurrentAccess:
         store = MagicMock()
         store._db = large_db
         cache._store = store
-        cache._requested_range = (time.time() - 86400, time.time())
+        since, until = time.time() - 86400, time.time()
+        cache.request_range(since, until)
         cache._recompute()  # pre-fill with data
 
         read_times = []
@@ -276,7 +279,7 @@ class TestConcurrentAccess:
         def reader():
             while not stop.is_set():
                 start = time.monotonic()
-                cache.get(time.time() - 86400, time.time())
+                cache.get(since, until)
                 read_times.append(time.monotonic() - start)
                 time.sleep(0.001)
 
