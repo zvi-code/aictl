@@ -604,11 +604,12 @@ function panelSelf(ctx) {
     sub: 'What this monitoring costs',
     stats: [
       { label: 'CPU, with helpers', value: fmtCpu(s.cpu_percent) }, { label: 'RAM', value: fmtBytes(s.memory_rss_bytes) },
-      { label: 'History on disk', value: fmtBytes(s.history_bytes), sub: s.history_limit_bytes ? 'Limit ' + fmtBytes(s.history_limit_bytes) : '' },
+      { label: 'History data', value: fmtBytes(s.history_live_bytes ?? s.history_bytes), sub: s.history_limit_bytes ? 'Limit ' + fmtBytes(s.history_limit_bytes) : '' },
+      { label: 'File on disk', value: fmtBytes(s.history_bytes), sub: s.history_live_bytes != null && s.history_bytes > s.history_live_bytes ? fmtBytes(s.history_bytes - s.history_live_bytes) + ' can be freed' : '' },
       { label: 'Kept for', value: s.retention_days == null ? NA : s.retention_days + ' d' },
     ],
     table: { cols: [{ k: 'n', l: 'Process' }, { k: 'c', l: 'CPU', n: true, w: '56px' }, { k: 'm', l: 'RAM', n: true, w: '64px' }], rows, sort: { k: 'c', dir: 'desc' } },
-    actions: [{ label: 'Compact the history', go: () => ctx.actions.runCommand({ title: 'Compact the history', lead: 'This removes free space from the history file. It keeps all the records.', command: 'aictl db compact', applyLabel: 'Run this command', action: 'db-compact', done: 'Compacted the history' }) }],
+    actions: [{ label: 'Compact the history', go: () => ctx.actions.runCommand({ title: 'Compact the history', lead: 'This removes records older than the retention time, then rewrites the history file to free its empty space. On a large file this can take minutes, and new data waits until it ends.', command: 'aictl db compact', applyLabel: 'Run this command', action: 'db-compact', done: 'Compacted the history' }) }],
   };
 }
 

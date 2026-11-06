@@ -19,6 +19,7 @@ import functools
 import hashlib
 import json
 import logging
+import math
 import re
 import sqlite3
 import threading
@@ -1686,7 +1687,17 @@ _EVICTION_ORDER = (
     "system_snapshots",
     "tool_stats",
     "file_history",
+    # Usage records go last: they are what the dashboard reports.
+    "session_prompts",
+    "skill_uses",
+    "file_write_events",
+    "tool_invocations",
+    "requests",
 )
+# A row of these tables stays this long, even over the limit. Other data can use the
+# space, and removing the recent record of what happened would not make room for it.
+_EVICT_ONLY_OLDER = frozenset({"session_prompts", "skill_uses", "file_write_events", "tool_invocations", "requests"})
+EVICT_KEEP_DAYS = 7
 
 
 class _BufferedCursor:
@@ -1889,6 +1900,7 @@ class HistoryDB:
         # Connection pool: one connection per thread
         self._local = threading.local()
         self._writers: dict[int, list[tuple[str, float]]] = {}
+        self._rewriting_file = False  # a lock during VACUUM is expected and ends
         self._quality_seen: dict[tuple[str, str], tuple[str, str, float]] = {}
         self._closed = False
 
@@ -1965,7 +1977,7 @@ class HistoryDB:
 
     def _note_flush_error(self, exc: sqlite3.Error) -> None:
         """Move to memory when the file is full, corrupt or stays locked."""
-        if not self._memory_fallback:
+        if not self._memory_fallback or self._rewriting_file:
             return
         if self._shared_conn is not None:
             # Memory store at its ceiling: make room; the batch retries or drops.
@@ -6187,6 +6199,7 @@ class HistoryDB:
         return {
             "capture_mode": self.capture,
             "storage_bytes": self.storage_bytes(),
+            "storage_live_bytes": self._budget_used(),
             "storage_budget_bytes": self._budget_bytes,
             "storage_degraded": bool(self.degraded_reason),
             "storage_degraded_reason": self.degraded_reason,
@@ -6253,9 +6266,11 @@ class HistoryDB:
         conn = self._conn()
         total = 0
         while self._evictable_bytes() > target:
+            before = time.time() - EVICT_KEEP_DAYS * _24H if table in _EVICT_ONLY_OLDER else math.inf
             cur = conn.execute(
                 f"DELETE FROM {table} WHERE rowid IN"
-                f" (SELECT rowid FROM {table} ORDER BY ts LIMIT {COMPACT_CHUNK_ROWS})"
+                f" (SELECT rowid FROM {table} WHERE ts < ? ORDER BY ts LIMIT {COMPACT_CHUNK_ROWS})",
+                (before,),
             )
             conn.commit()
             total += cur.rowcount
@@ -6304,13 +6319,25 @@ class HistoryDB:
             "retention_days": days,
         }
 
+    @_named_write("vacuum")
     def vacuum(self) -> None:
-        """Rewrite the DB file, switch it to incremental vacuum, truncate the WAL."""
+        """Rewrite the DB file, switch it to incremental vacuum, truncate the WAL.
+
+        Other writers wait while this runs, so their lock errors do not count as a failed disk.
+        """
         conn = self._conn()
         conn.commit()
-        conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
-        conn.execute("VACUUM")
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+        self._rewriting_file = True
+        try:
+            conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+            conn.execute("VACUUM")
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+        finally:
+            self._rewriting_file = False
+
+    def vacuum_room_needed(self) -> int:
+        """Free disk that a rewrite needs: a temporary copy of the live data, plus a margin."""
+        return int(self._page_bytes(live_only=True) * 1.2)
 
     def _downsample_metrics(
         self,
