@@ -49,7 +49,7 @@ export function bucketTotals(kind, series, n) {
   return out;
 }
 
-export function chartModel({ kind, series, unit, h, starts, bucketS, max, sel, width, legendFmt }) {
+export function chartModel({ kind, series, unit, h, starts, bucketS, max, sel, width, legendFmt, partial }) {
   const n = starts?.length || 0;
   const fmt = UNIT[unit] || fmtN;
   const totals = bucketTotals(kind, series, n);
@@ -79,7 +79,7 @@ export function chartModel({ kind, series, unit, h, starts, bucketS, max, sel, w
         segs.push({ x, y, w: barW, h: sh, c: s.c });
         y -= 2;
       }
-      if (segs.length) bars.push({ i, on: isOn(i), segs });
+      if (segs.length) bars.push({ i, on: isOn(i), partial: i === partial, segs });
     }
   } else {
     for (const s of series) {
@@ -110,10 +110,11 @@ export function chartModel({ kind, series, unit, h, starts, bucketS, max, sel, w
   return { n, yt, xt, bars, lines, legend, totals, fmt, top };
 }
 
-export function tipFor(i, kind, series, starts, bucketS, fmt, totals) {
+export function tipFor(i, kind, series, starts, bucketS, fmt, totals, partial) {
   const rows = series.map(s => ({ c: s.c, label: s.label, value: isNil(s.vals[i]) ? 'No data' : fmt(s.vals[i]) }));
   if (kind === 'stack' && series.length > 1) {
     rows.push({ c: 'transparent', label: 'Total', value: isNil(totals[i]) ? NA : fmt(totals[i]) });
   }
-  return { title: bucketLabel(i, starts, bucketS) + ' to ' + bucketLabel(i + 1, starts, bucketS), rows };
+  const title = bucketLabel(i, starts, bucketS) + ' to ' + bucketLabel(i + 1, starts, bucketS);
+  return { title: i === partial ? title + ' (not over yet)' : title, rows };
 }

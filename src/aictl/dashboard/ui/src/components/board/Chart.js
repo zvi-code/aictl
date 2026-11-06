@@ -40,6 +40,7 @@ export default function Chart({ kind, series, unit, h, range, sel, onSelect, ari
   const starts = range?.bucket_starts || NO_STARTS;
   const bucketS = range?.bucket_s || 0;
   const n = starts.length;
+  const partial = range?.partial_bucket ?? null;
 
   useLayoutEffect(() => {
     const el = plotRef.current;
@@ -52,13 +53,13 @@ export default function Chart({ kind, series, unit, h, range, sel, onSelect, ari
   const selIdx = useMemo(() => selToIndex(sel, starts, bucketS), [sel, starts, bucketS]);
   const shown = brush ? { a: Math.min(brush.a, brush.b), b: Math.max(brush.a, brush.b) } : selIdx;
   const m = useMemo(
-    () => chartModel({ kind, series, unit, h, starts, bucketS, max, sel: shown, width, legendFmt }),
-    [kind, series, unit, h, starts, bucketS, max, shown?.a, shown?.b, width, legendFmt],
+    () => chartModel({ kind, series, unit, h, starts, bucketS, max, sel: shown, width, legendFmt, partial }),
+    [kind, series, unit, h, starts, bucketS, max, shown?.a, shown?.b, width, legendFmt, partial],
   );
   const mRef = useRef(m);
   mRef.current = m;
   const argsRef = useRef(null);
-  argsRef.current = { kind, series, starts, bucketS };
+  argsRef.current = { kind, series, starts, bucketS, partial };
 
   const idxAt = clientX => {
     const r = plotRef.current.getBoundingClientRect();
@@ -71,7 +72,7 @@ export default function Chart({ kind, series, unit, h, range, sel, onSelect, ari
       crossRef.current.style.left = ((i + 0.5) / n) * 100 + '%';
       crossRef.current.hidden = false;
     }
-    showTip(x, y, tipFor(i, a.kind, a.series, a.starts, a.bucketS, mm.fmt, mm.totals));
+    showTip(x, y, tipFor(i, a.kind, a.series, a.starts, a.bucketS, mm.fmt, mm.totals, a.partial));
   };
   const clearHover = () => {
     if (crossRef.current) crossRef.current.hidden = true;
@@ -142,7 +143,7 @@ export default function Chart({ kind, series, unit, h, range, sel, onSelect, ari
       onMouseDown=${onDown} onMouseMove=${onMove} onMouseLeave=${onLeave} onKeyDown=${onKey} onBlur=${clearHover}>
       ${m.yt.map(y => html`<div key=${y.b} class="bd-gl" style=${{ bottom: y.b + '%' }}></div>`)}
       <svg width=${width} height=${h} viewBox=${`0 0 ${width} ${h}`} aria-hidden="true">
-        ${m.bars.map(b => html`<g key=${b.i} opacity=${b.on ? null : 0.35}>
+        ${m.bars.map(b => html`<g key=${b.i} class=${b.partial ? 'bd-partial' : null} opacity=${b.on ? null : 0.35}>
           ${b.segs.map((s, j) => (j === b.segs.length - 1
             ? html`<path key=${j} d=${barPath(s)} fill=${s.c}/>`
             : html`<rect key=${j} x=${s.x} y=${s.y} width=${s.w} height=${s.h} fill=${s.c}/>`))}

@@ -4390,6 +4390,40 @@ class HistoryDB:
             )
         )
 
+    def query_response_time_by_model(
+        self,
+        since: float | None = None,
+        until: float | None = None,
+        tools: tuple[str, ...] | list[str] | None = None,
+    ) -> list[dict]:
+        """Reply-time figures per model over every request in the window, in SQL.
+
+        Returns ``[{model, count, avg_ms, p50_ms, p95_ms, total_tokens}]``. The
+        percentile is the value at rank ``n // 2`` and ``min(int(n * 0.95), n - 1)``
+        of the sorted durations, so it uses no row limit.
+        """
+        join, cond, tparams = _tool_scope("r", "rs", tools)
+        where, params = _where([("r.ts >= ?", since), ("r.ts <= ?", until)])
+        where = _and(where, cond)
+        rows = self._conn().execute(
+            "WITH ranked AS (SELECT COALESCE(NULLIF(r.model, ''), '(unknown)') AS m,"
+            " COALESCE(r.duration_ms, 0) AS d,"
+            " COALESCE(r.input_tokens, 0) + COALESCE(r.output_tokens, 0) AS t,"
+            " ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(r.model, ''), '(unknown)')"
+            " ORDER BY COALESCE(r.duration_ms, 0)) AS rn,"
+            " COUNT(*) OVER (PARTITION BY COALESCE(NULLIF(r.model, ''), '(unknown)')) AS n"
+            f" FROM requests r{join}{where})"
+            " SELECT m, MAX(n), AVG(d), SUM(t),"
+            " MAX(CASE WHEN rn = n / 2 + 1 THEN d END),"
+            " MAX(CASE WHEN rn = MIN(CAST(n * 0.95 AS INTEGER), n - 1) + 1 THEN d END)"
+            " FROM ranked GROUP BY m ORDER BY m",
+            [*params, *tparams],
+        ).fetchall()
+        return [
+            {"model": m, "count": n, "avg_ms": round(avg, 1), "p50_ms": round(p50, 1), "p95_ms": round(p95, 1), "total_tokens": tokens}
+            for m, n, avg, tokens, p50, p95 in rows
+        ]
+
     def count_requests_unattributed(self, since: float | None = None, until: float | None = None) -> int:
         """Requests in the window whose tool is unknown, even through their session."""
         join, cond, tparams = _unattributed_scope("r", "rs")

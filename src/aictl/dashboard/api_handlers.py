@@ -21,7 +21,7 @@ from ..ingesters._common import decode_file_uri, project_key
 from ..ingesters.transcript_usage import local_day
 from ..tool_scope import selection_block
 from ..tools import budget_tools, compute_token_budget
-from .analytics import compute_usage_summary, window_sessions
+from .analytics import _day_is_partial, compute_usage_summary, window_sessions
 from .models import _slim_agent_teams
 from .otel_receiver import API_ERROR_EVENTS, API_REQUEST_EVENTS, _num
 from .session_flow import build_session_flow
@@ -1066,27 +1066,31 @@ class _APIHandlersMixin:
     def _serve_project_costs(self) -> None:
         """Serve per-project cumulative token/cost data.
 
-        Params: ?since=<unix_ts>&days=<N>
+        Params: ?since=<unix_ts>&until=<unix_ts>&days=<N>
         Returns: [{project, sessions, input_tokens, output_tokens,
                    cache_read_tokens, cache_creation_tokens, total_tokens,
                    cost_usd, cost_quality, cost_reason, unpriced_models,
                    tokens_source, tokens_quality, pricing_models,
                    daily: [{date, input_tokens, output_tokens, ...}]}]
 
-        ``daily`` buckets by the local day. ``cost_usd`` is ``None`` when no
+        ``daily`` buckets by the local day. ``window`` says how the range was
+        applied: figures are stored per local day, so a session day wholly outside
+        ``since``..``until`` is left out and one the edge cuts through counts
+        whole (``approximate``). ``cost_usd`` is ``None`` when no
         session in the project could be priced. ``total_tokens`` counts every
         class; it used to leave out cache reads and writes, which are most of
         the tokens a coding agent uses.
         """
         days = int(self._qs_get("days", "7"))
         since = self._qs_float("since", time.time() - days * 86400)
+        until = self._qs_float_opt("until")
 
         sessions: list[dict] = []
         db = self._db
         seen: set[str] = set()
         covered_tools: set[str] = set()
         if db:
-            sessions, _ = window_sessions(db, since)
+            sessions, _ = window_sessions(db, since, until)
             for s in sessions:
                 seen.add(s["session_id"])
                 if s["tokens_source"] == "transcript":
@@ -1118,6 +1122,8 @@ class _APIHandlersMixin:
         for s in (snap.sessions if snap is not None else None) or []:
             if s.get("tool") in covered_tools or s.get("session_id") in seen:
                 continue
+            if until is not None and (s.get("started_at") or 0) > until:
+                continue
             if not (s.get("exact_input_tokens") or s.get("exact_output_tokens")):
                 continue
             add_unmatched(
@@ -1135,7 +1141,7 @@ class _APIHandlersMixin:
 
         # Older sessions that only ever produced a session_end event.
         if db:
-            for ev in db.query_events(since=since, kind="session_end", limit=5000):
+            for ev in db.query_events(since=since, until=until, kind="session_end", limit=5000):
                 detail = ev.detail or {}
                 if detail.get("session_id") and detail["session_id"] in seen:
                     continue
@@ -1173,9 +1179,11 @@ class _APIHandlersMixin:
                     for k in _USAGE_TOKEN_KEYS:
                         d[k] += int(v.get(k) or 0)
             pricing_models = {resolve_pricing(s["model"])[0] for s in group} - {None}
+            approximate = sum(len(s.get("approximate_days") or ()) for s in group)
             result.append(
                 {
                     "project": proj,
+                    "window": {"granularity": "day", "approximate": approximate > 0, "approximate_session_days": approximate},
                     "sessions": len(group),
                     **tokens,
                     "total_tokens": sum(tokens.values()),
@@ -1190,7 +1198,10 @@ class _APIHandlersMixin:
                     "premium_requests": (sum(s.get("premium_requests") or 0.0 for s in group) or None),
                     "estimated_list_usd": (sum(s.get("estimated_list_usd") or 0.0 for s in group) or None),
                     "pricing_models": sorted(pricing_models),
-                    "daily": [{"date": d, **v} for d, v in sorted(daily.items())],
+                    "daily": [
+                        {"date": d, **v, "partial": _day_is_partial(d, since, until or time.time(), time.time())}
+                        for d, v in sorted(daily.items())
+                    ],
                 }
             )
         result.sort(key=lambda r: r["total_tokens"], reverse=True)
@@ -1558,7 +1569,10 @@ class _APIHandlersMixin:
     def _serve_sessions(self) -> None:
         """Serve active and historical sessions.
 
-        Params: ?tool=X&active=true&since=<ts>&limit=N
+        Params: ?tool=X&active=true&since=<ts>&until=<ts>&limit=N
+
+        ``since``/``until`` select sessions by their start time. Each row carries
+        the session's own totals, which are not cut to the window.
 
         Queries both the live snapshot (for active sessions) and the sessions
         table (for historical/ended sessions).
@@ -1566,6 +1580,7 @@ class _APIHandlersMixin:
         tool = self._qs_get("tool")
         active_only = (self._qs_get("active", "")).lower() == "true"
         limit = int(self._qs_get("limit", "100"))
+        until = self._qs_float_opt("until")
 
         snap = self.server.store.snapshot
         if snap is None:
@@ -1574,6 +1589,8 @@ class _APIHandlersMixin:
 
         # Active sessions from live snapshot
         sessions = list(snap.sessions)
+        if until is not None:
+            sessions = [s for s in sessions if (s.get("started_at") or 0) <= until]
         for s in sessions:
             s.setdefault("active", True)
             s.setdefault("lifecycle_status", "active")
@@ -1592,6 +1609,7 @@ class _APIHandlersMixin:
                 # Query sessions table (v20)
                 db_sessions = db.query_sessions(
                     since=since,
+                    until=until,
                     tool=tool or None,
                     active=None,
                     limit=limit,
@@ -1647,7 +1665,7 @@ class _APIHandlersMixin:
 
                 # Also fall back to event-based reconstruction for sessions
                 # not yet in the sessions table
-                ended = db.query_events(since=since, kind="session_end", limit=limit)
+                ended = db.query_events(since=since, until=until, kind="session_end", limit=limit)
                 for ev in ended:
                     d = ev.detail if isinstance(ev.detail, dict) else {}
                     sid = d.get("session_id", "")
@@ -1678,7 +1696,10 @@ class _APIHandlersMixin:
         sessions = _one_row_per_session(sessions)
         covered: set[str] = set()
         if self._db:
-            covered = {u["tool"] for u in self._db.query_session_usage(active_since=self._qs_float("since", time.time() - 86400))}
+            covered = {
+                u["tool"]
+                for u in self._db.query_session_usage(active_since=self._qs_float("since", time.time() - 86400), active_until=until)
+            }
         _mark_counted(sessions, covered)
         sessions = sessions[:limit]
         retention_db = self._db

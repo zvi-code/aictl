@@ -5,7 +5,7 @@
 import { GROWS } from './layout.js';
 import {
   NA, OTHER_COLOR, UNIT, ago, baseName, colorFor, fmtBytes, fmtCpu, fmtDur, fmtLines, fmtMem, fmtMs, fmtN, fmtRate,
-  fmtShare, fmtUsd, isLive, projectName, sparkPath, stamp, statusMeta,
+  fmtCredits, fmtShare, fmtUsd, isLive, projectName, sparkPath, stamp, statusMeta,
 } from './format.js';
 import { bucketLabel } from './chartModel.js';
 
@@ -216,7 +216,7 @@ function chartTable(ctx, ch) {
   const { bucket_starts: starts = [], bucket_s: bucketS } = ctx.range;
   const fmt = UNIT[ch.unit] || fmtN;
   const rows = starts.map((_, i) => {
-    const cells = { b: { v: bucketLabel(i, starts, bucketS) } };
+    const cells = { b: { v: bucketLabel(i, starts, bucketS) + (i === ctx.range.partial_bucket ? ' (not over yet)' : '') } };
     const sort = { b: i };
     ch.series.forEach((s, j) => {
       cells['s' + j] = { v: s.vals[i] == null ? 'No data' : fmt(s.vals[i]) };
@@ -281,7 +281,26 @@ function panelCost(ctx, local, pid, pn) {
   const series = by === 'tool' ? splitSeries(cost.by_tool, 'tool', ctx.toolName)
     : by === 'project' ? splitSeries(cost.by_project, 'project', projectName)
       : splitSeries(cost.by_model, 'model', id => id);
-  const out = chartPanel(ctx, local, pid, pn, { kind: 'stack', series, unit: 'usd', h: 130, aria: 'Cost' }, fmtUsd(ctx.data.kpis.cost_usd) + ' at list price. Not a bill.');
+  const un = ctx.data.unpriced;
+  const cr = ctx.data.credits;
+  const noPrice = un && un.tokens > 0;
+  const sub = fmtUsd(ctx.data.kpis.cost_usd) + ' at list price. Not a bill.' + (noPrice ? ' Leaves out ' + fmtN(un.tokens) + ' tokens that have no price.' : '');
+  const out = chartPanel(ctx, local, pid, pn, { kind: 'stack', series, unit: 'usd', h: 130, aria: 'Cost' }, sub);
+  const stats = [];
+  if (noPrice) {
+    stats.push({
+      label: 'No price', value: fmtN(un.tokens),
+      sub: un.models.length === 1 ? un.models[0].model : un.models.length + ' models',
+      title: 'Tokens of models with no known price. The cost leaves them out: ' + un.models.map(m => m.model + ' ' + fmtN(m.tokens)).join(', '),
+    });
+  }
+  if (cr) {
+    stats.push({
+      label: 'Copilot credits', value: fmtCredits(cr.amount), sub: cr.approximate ? 'whole days' : null,
+      title: 'AI credits GitHub Copilot reports. Credits, not dollars, and not part of the cost above.' + (cr.approximate ? ' The time cuts through a day, and that day counts whole.' : ''),
+    });
+  }
+  if (stats.length) out.stats = stats;
   out.modes = [{ key: 'by', label: 'Split by', def: 'tool', items: [['tool', 'Tool'], ['project', 'Project'], ['model', 'Model']] }];
   return out;
 }

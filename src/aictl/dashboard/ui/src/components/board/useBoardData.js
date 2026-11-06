@@ -17,7 +17,7 @@ const EMPTY = {
   options: { tools: [], projects: [], models: [] },
   scope: { shown_agents: 0, all_agents: 0 },
   kpis: { prev: {}, spark: {} },
-  attention: [], agents: [], by_model: [], by_role: [], series: {}, saved_usd: null, projects: [], prompts: [], project_prompts: [],
+  attention: [], agents: [], by_model: [], by_role: [], series: {}, saved_usd: null, unpriced: null, credits: null, projects: [], prompts: [], project_prompts: [],
   skills: [], tools: [], confirms: { pending: [], by_tool: [] }, errors: [], latency: [], loops: [],
   changes: { files: [], totals: {} }, tests: [], memory_files: [], processes: [], sources: [], coverage: { rows: [] }, self: {},
 };
