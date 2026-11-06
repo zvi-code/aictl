@@ -1386,11 +1386,11 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
 
     def _serve_effective_models(self) -> None:
-        """The model in force for each Copilot tool in the served project."""
-        from ..effective_config import COPILOT_TOOLS, model_summary
+        """The model in force for each Copilot tool and for Claude Code in the served project."""
+        from ..effective_config import CLAUDE_TOOL, COPILOT_TOOLS, model_summary
 
         try:
-            self._json_response({tool: model_summary(self.server.root, tool) for tool in COPILOT_TOOLS})
+            self._json_response({tool: model_summary(self.server.root, tool) for tool in (*COPILOT_TOOLS, CLAUDE_TOOL)})
         except Exception as exc:  # any failure must reach the panel's error state
             self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
 

@@ -92,11 +92,19 @@ FACTS_TTL_S = 60.0
 DISK_TTL_S = 60.0
 MAX_PROMPT_PROJECTS = 50
 MAX_PROMPT_DIR_ENTRIES = 200
+MAX_PROMPT_DEPTH = 4
+MAX_PROMPT_FILES_PER_ROOT = 500
+# Folders below a project or a parent folder of it: (folder, file suffix, tool). Copilot reads
+# .github/prompts; Claude Code merged its commands into skills but still reads .claude/commands.
 PROMPT_DIRS = (
-    (".github/prompts", ".prompt.md"),
+    (".github/prompts", ".prompt.md", "copilot-vscode"),
+    (".claude/commands", ".md", "claude-code"),
+    (".cursor/commands", ".md", "cursor"),
+    (".windsurf/workflows", ".md", "windsurf"),
+)
+# Folders in the home folder that hold prompt files for every project.
+USER_PROMPT_DIRS = (
     (".claude/commands", ".md"),
-    (".cursor/commands", ".md"),
-    (".windsurf/workflows", ".md"),
 )
 
 # Which requests fields a tool does not report at all, so that a 0 means unknown.
@@ -330,7 +338,11 @@ _WRAPPERS = {"time", "sudo", "env", "command", "npx", "bunx", "exec", "nice", "d
 _ASSIGN_FROM_COMMAND_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*=\$\([^)]*\)")
 _PIPED_TO_FILTER_RE = re.compile(r"\|\s*(?:tail|head|grep|tee|sed|awk|cut|sort|uniq|wc|less|cat)\b")
 _RUNNER_WRAPPERS = {("uv", "run"), ("poetry", "run"), ("pipenv", "run"), ("pnpm", "exec"), ("yarn", "exec"), ("pdm", "run")}
-_TEST_ONE_WORD = {"pytest", "vitest", "jest", "tox", "ctest"}
+# unittest is only reached as python -m unittest.
+_TEST_ONE_WORD = {"pytest", "vitest", "jest", "tox", "ctest", "unittest"}
+# Wrappers that take a duration before the command: timeout 300 cargo test.
+_TIMEOUT_WRAPPERS = {"timeout", "gtimeout"}
+_DURATION_RE = re.compile(r"^\d+(\.\d+)?[smhd]?$")
 _TEST_TWO_WORDS = {
     ("npm", "test"),
     ("pnpm", "test"),
@@ -360,8 +372,20 @@ def is_test_command(target: str | None) -> bool:
     if not target:
         return False
     for segment in _SEGMENT_SPLIT_RE.split(_ASSIGN_FROM_COMMAND_RE.sub(" ", target)):
-        words = segment.replace("(", " ").split()
-        while words and (_ENV_ASSIGN_RE.match(words[0]) or _program(words[0]) in _WRAPPERS):
+        # A line continuation leaves a backslash on the last word of the line.
+        words = [w for w in (word.rstrip("\\") for word in segment.replace("(", " ").split()) if w]
+        while words and (_ENV_ASSIGN_RE.match(words[0]) or _program(words[0]) in _WRAPPERS or _program(words[0]) in _TIMEOUT_WRAPPERS):
+            if _program(words[0]) in _TIMEOUT_WRAPPERS:
+                words.pop(0)
+                while words and words[0].startswith("-"):
+                    # -k and -s take a value: timeout -k 5 1m cmd.
+                    takes_value = words[0] in ("-k", "-s", "--kill-after", "--signal")
+                    words.pop(0)
+                    if takes_value and words:
+                        words.pop(0)
+                if words and _DURATION_RE.match(words[0]):
+                    words.pop(0)
+                continue
             words.pop(0)
         if len(words) >= 2 and (_program(words[0]), words[1]) in _RUNNER_WRAPPERS:
             words = words[2:]
@@ -2421,52 +2445,169 @@ def _prompts_section(board: _Board, turn_tokens: dict[tuple[str, float], int | N
     return out
 
 
-_disk_prompts_memo: dict[tuple[str, ...], tuple[float, list[tuple[str, str]]]] = {}
+_disk_prompts_memo: dict[tuple[str, ...], tuple[float, tuple[list[tuple[str, str]], list[str]]]] = {}
+USER_PROMPT_PROJECT = ""
 
 
-def _prompt_files_on_disk(projects: list[str]) -> list[tuple[str, str]]:
-    """(project, relative file) for prompt files in the project folders. Bounded and cached."""
+def _setting_prompt_folders(settings_file: Path, base: Path) -> list[Path]:
+    """Folders that chat.promptFilesLocations turns on, relative to ``base`` unless absolute or under ~."""
+    from ..hook_removal import jsonc_loads
+
+    try:
+        data = jsonc_loads(settings_file.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return []
+    locations = data.get("chat.promptFilesLocations") if isinstance(data, dict) else None
+    if not isinstance(locations, dict):
+        return []
+    folders = []
+    for raw, enabled in locations.items():
+        if enabled is not True or not isinstance(raw, str) or any(c in raw for c in "*?[{"):
+            continue
+        path = Path(raw).expanduser()
+        folders.append(path if path.is_absolute() else base / path)
+    return folders
+
+
+def _parent_folders(project: Path) -> list[Path]:
+    """The project folder, then each parent up to the one with a .git folder (VS Code parent repository discovery).
+
+    A project that holds its own .git folder is the repository root. With no .git folder in any
+    parent, the project folder stands alone.
+    """
+    if (project / ".git").exists():
+        return [project]
+    chain = [project]
+    for parent in project.parents:
+        if parent == Path.home() or parent == parent.parent:
+            break
+        chain.append(parent)
+        if (parent / ".git").exists():
+            return chain
+    return [project]
+
+
+def _collect_prompt_files(folder: Path, suffix: str, root: Path | None) -> list[str]:
+    """Files below ``folder`` with the suffix, relative to ``root``, or absolute when outside it or with no root. Bounded."""
+    out: list[str] = []
+    stack = [(folder, 0)]
+    while stack and len(out) < MAX_PROMPT_FILES_PER_ROOT:
+        current, depth = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for count, entry in enumerate(entries):
+                    if count >= MAX_PROMPT_DIR_ENTRIES:
+                        break
+                    if entry.is_dir(follow_symlinks=False):
+                        if depth < MAX_PROMPT_DEPTH:
+                            stack.append((Path(entry.path), depth + 1))
+                    elif entry.name.endswith(suffix) and entry.name != "SKILL.md":
+                        try:
+                            out.append(Path(entry.path).relative_to(root).as_posix() if root else entry.path)
+                        except ValueError:
+                            out.append(entry.path)
+        except OSError:
+            continue
+    return sorted(out)
+
+
+def _display_folder(folder: Path) -> str:
+    home = str(Path.home())
+    text = str(folder)
+    return "~" + text[len(home):] if text == home or text.startswith(home + os.sep) else text
+
+
+def _prompt_files_on_disk(projects: list[str]) -> tuple[list[tuple[str, str]], list[str]]:
+    """((project, file), searched folders) for prompt files. Bounded and cached.
+
+    Searched: each project folder and its parents up to the repository root, the folders that
+    chat.promptFilesLocations adds (workspace and user settings), the VS Code user prompts
+    folders, and the user commands folder. A file under the user folders has the project "".
+    """
+    from ..platforms import vscode_insiders_user_dir, vscode_user_dir
+
     key = tuple(sorted(p for p in projects if p))[:MAX_PROMPT_PROJECTS]
     cached = _disk_prompts_memo.get(key)
     if cached and time.monotonic() - cached[0] < DISK_TTL_S:
         return cached[1]
     found: list[tuple[str, str]] = []
+    searched: list[str] = []
+    seen: set[tuple[str, str]] = set()
+
+    def look(folder: Path, suffix: str, project: str, root: Path | None) -> None:
+        marker = (project, str(folder))
+        if marker in seen:
+            return
+        seen.add(marker)
+        label = _display_folder(folder)
+        if label not in searched:
+            searched.append(label)
+        for file in _collect_prompt_files(folder, suffix, root):
+            found.append((project, file))
+
+    user_trees = [vscode_user_dir(), vscode_insiders_user_dir()]
+    user_settings = [tree / "settings.json" for tree in user_trees]
+    for tree in user_trees:
+        look(tree / "prompts", ".prompt.md", USER_PROMPT_PROJECT, None)
+        try:
+            profiles = sorted((tree / "profiles").iterdir())[:MAX_PROMPT_DIR_ENTRIES]
+        except OSError:
+            profiles = []
+        for profile in profiles:
+            user_settings.append(profile / "settings.json")
+            look(profile / "prompts", ".prompt.md", USER_PROMPT_PROJECT, None)
+    home = Path.home()
+    for folder, suffix in USER_PROMPT_DIRS:
+        look(home / folder, suffix, USER_PROMPT_PROJECT, None)
+    for settings_file in user_settings:
+        for folder in _setting_prompt_folders(settings_file, home):
+            look(folder, ".prompt.md", USER_PROMPT_PROJECT, None)
     for project in key:
         if _names_another_machine(project):
             continue
-        for folder, suffix in PROMPT_DIRS:
-            try:
-                with os.scandir(os.path.join(project, *folder.split("/"))) as entries:
-                    for count, entry in enumerate(entries):
-                        if count >= MAX_PROMPT_DIR_ENTRIES:
-                            break
-                        if entry.name.endswith(suffix):
-                            found.append((project, f"{folder}/{entry.name}"))
-            except OSError:
-                continue
+        root = Path(project)
+        for base in _parent_folders(root):
+            for folder, suffix, _tool in PROMPT_DIRS:
+                look(base / folder, suffix, project, root)
+        for folder in _setting_prompt_folders(root / ".vscode" / "settings.json", root):
+            look(folder, ".prompt.md", project, root)
     _disk_prompts_memo.clear()
-    _disk_prompts_memo[key] = (time.monotonic(), found)
-    return found
+    _disk_prompts_memo[key] = (time.monotonic(), (found, searched))
+    return found, searched
 
 
-def _project_prompts(board: _Board, project_ids: list[str]) -> list[dict]:
+def _project_prompts(board: _Board, project_ids: list[str]) -> tuple[list[dict], list[str]]:
     where, params = board._scoped()
     used: dict[tuple[str, str], dict] = {}
     for prompt_file, project, sid, n, last_ts in board.conn.execute(
         "SELECT prompt_file, project_path, MAX(session_id), COUNT(*), MAX(ts) FROM session_prompts"
-        f" WHERE {where} AND agent_id = '' AND prompt_file <> '' GROUP BY prompt_file, project_path",
+        f" WHERE {where} AND agent_id = '' AND prompt_file <> '' AND prompt_file NOT LIKE '%SKILL.md' GROUP BY prompt_file, project_path",  # a skill file has its own panel
         params,
     ):
         project = project or board.session_project.get(sid, "")
         used[(project, _basename(prompt_file))] = {"file": prompt_file, "project": project, "uses": n, "last_ts": last_ts}
-    for project, file in _prompt_files_on_disk(project_ids):
+    files, searched = _prompt_files_on_disk(project_ids)
+    for project, file in files:
+        if project == USER_PROMPT_PROJECT:
+            continue
         key = (project, _basename(file))
         if key in used:
             used[key]["file"] = file
         else:
             used[key] = {"file": file, "project": project, "uses": 0, "last_ts": None}
+    # A user-level file has no project: the projects that used it by name carry its path,
+    # and one that no project used is listed once with no use.
+    for project, file in files:
+        if project != USER_PROMPT_PROJECT:
+            continue
+        name = _basename(file)
+        users = [row for (proj, base), row in used.items() if base == name and row["uses"] and row["file"] == base]
+        for row in users:
+            row["file"] = file
+        if not users and not any(row["file"] == file for row in used.values()):
+            used[(project, file)] = {"file": file, "project": project, "uses": 0, "last_ts": None}
     rows = sorted(used.values(), key=lambda r: (-r["uses"], r["project"], r["file"]))
-    return rows[:MAX_LIST_ROWS]
+    return rows[:MAX_LIST_ROWS], searched
 
 
 def _skill_rows(board: _Board) -> list[tuple]:
@@ -2559,6 +2700,8 @@ def _skill_reach(row: dict, git_state: str) -> str:
     """Who can see this skill file, in words."""
     if row["scope"] == "user":
         return "Only this user on this machine, in every project."
+    if row["scope"] == "plugin" and row.get("install_project"):
+        return f"Anyone who installs the plugin {row['owner']} for the project {row['install_project']}, and only in that project."
     if row["scope"] == "plugin":
         return f"Anyone who installs the plugin {row['owner']}, in every project."
     if row["scope"] == "custom":
@@ -2568,6 +2711,52 @@ def _skill_reach(row: dict, git_state: str) -> str:
     if git_state in ("untracked", "ignored"):
         return f"Only people who work in {row['owner']} on this machine, because the file is not in git."
     return f"Anyone who works in {row['owner']}."
+
+
+_READ_TOOL_NAMES = ("read", "view", "read_file", "readfile", "view_file", "open_file")
+
+
+def _skill_file_reads(conn: Any, name: str, uses: list[tuple], range_sql: str, range_params: list) -> list[dict]:
+    """Calls that read ``<skill>/SKILL.md`` with a file-read tool. A real way to use a skill, apart from starting it.
+
+    A read in a turn that also started this skill is the skill's own load, so it is left out.
+    """
+    base = name.rsplit(":", 1)[-1]
+    if not base:
+        return []
+    escaped = base.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+    marks = ",".join("?" * len(_READ_TOOL_NAMES))
+    found = conn.execute(
+        "SELECT ts, session_id, agent_id, tool, project_path, target FROM tool_invocations"
+        f" WHERE lower(tool_name) IN ({marks}) AND (target LIKE ? ESCAPE '!' OR target LIKE ? ESCAPE '!'){range_sql}"
+        " ORDER BY ts DESC LIMIT 2000",
+        [*_READ_TOOL_NAMES, f"%/{escaped}/SKILL.md", "%\\" + escaped + "\\SKILL.md", *range_params],
+    ).fetchall()
+    reads = [r for r in found if [part.lower() for part in re.split(r"[\\/]", r[5])[-2:]] == [base.lower(), "skill.md"]]
+    if not reads:
+        return []
+    sessions = sorted({r[1] for r in reads})
+    starts: dict[str, list[float]] = defaultdict(list)
+    for chunk in range(0, len(sessions), 500):
+        part = sessions[chunk : chunk + 500]
+        for sid, ts in conn.execute(f"SELECT session_id, ts FROM session_prompts WHERE agent_id = '' AND session_id IN ({','.join('?' * len(part))}) ORDER BY ts", part):
+            starts[sid].append(ts)
+    started: dict[str, list[float]] = defaultdict(list)
+    for sid, ts in uses:
+        started[sid].append(ts)
+
+    def same_turn_started(sid: str, ts: float) -> bool:
+        line = starts.get(sid, [])
+        i = bisect.bisect_right(line, ts) - 1
+        begin = line[i] if i >= 0 else float("-inf")
+        end = line[i + 1] if i + 1 < len(line) else float("inf")
+        return any(begin <= used < end for used in started.get(sid, []))
+
+    return [
+        {"ts": ts, "session_id": sid, "agent_id": aid, "tool": tool, "project": project_root(project or "")}
+        for ts, sid, aid, tool, project, _target in reads
+        if not same_turn_started(sid, ts)
+    ]
 
 
 def skill_detail(
@@ -2592,10 +2781,13 @@ def skill_detail(
     ).fetchall()
     counted = conn.execute(f"SELECT session_id, agent_id FROM skill_uses WHERE {named}{range_sql}", [*names, *range_params]).fetchall()
     in_range = (len(counted), len({(sid, _agent_key(sid, aid)) for sid, aid in counted}))
+    started_all = [(r[0], r[1]) for r in conn.execute(f"SELECT session_id, ts FROM skill_uses WHERE {named}", names)]
+    file_reads = _skill_file_reads(conn, name, started_all, range_sql, range_params)
+    read_pairs = {(r["session_id"], _agent_key(r["session_id"], r["agent_id"])) for r in file_reads[:MAX_DETAIL_ROWS]}
     total, first, last = conn.execute(f"SELECT COUNT(*), MIN(ts), MAX(ts) FROM skill_uses WHERE {named}", names).fetchone()
     raw_projects = [r[0] for r in conn.execute(f"SELECT DISTINCT project_path FROM skill_uses WHERE {named} AND project_path != '' LIMIT 50", names)]
     projects = list(dict.fromkeys(p for raw in raw_projects for p in (project_root(raw), raw) if p))
-    pairs = {(sid, _agent_key(sid, aid)) for _ts, sid, aid, *_ in rows}
+    pairs = {(sid, _agent_key(sid, aid)) for _ts, sid, aid, *_ in rows} | read_pairs
     titles = _titles_for(conn, pairs, now)
 
     locations = []
@@ -2628,6 +2820,18 @@ def skill_detail(
         "uses": in_range[0],
         "agents": in_range[1],
         "total_uses": total,
+        # Reads of the skill file: a way to use the skill that is counted apart from the uses.
+        "file_reads": len(file_reads),
+        "reads": [
+            {
+                "ts": r["ts"],
+                "agent_id": _agent_key(r["session_id"], r["agent_id"]),
+                "title": titles.get((r["session_id"], _agent_key(r["session_id"], r["agent_id"])), ""),
+                "tool": r["tool"],
+                "project": r["project"],
+            }
+            for r in file_reads[:MAX_DETAIL_ROWS]
+        ],
         "first_ts": first,
         "last_ts": last,
         "locations": locations,
@@ -2889,8 +3093,9 @@ _COVERAGE_TABLE: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     ("prompt_files", "Prompt files, usage", "prompt_files", (U, E, E, N, E, U)),
     ("skills", "Skills used", "skills", (E, S, E, N, H, S)),
     ("confirms", "Confirmations", "confirms", (E, H, E, N, H, U)),
-    ("cpu", "CPU", "processes", (E, E, E, U, E, E)),
-    ("ram", "RAM", "processes", (E, E, E, U, E, E)),
+    # Microsoft 365 Copilot runs in the cloud: no process on this machine belongs to it.
+    ("cpu", "CPU", "processes", (E, E, E, N, E, E)),
+    ("ram", "RAM", "processes", (E, E, E, N, E, E)),
     ("memory_files", "AI memory files", "memory_files", (U, E, U, N, E, E)),
     ("file_changes", "File changes, diffs", "file_lines", (T, E, E, N, H, S)),
     ("test_runs", "Test runs", "tool_calls", (E, E, E, N, H, E)),
@@ -2955,6 +3160,26 @@ def _store_facts(conn: sqlite3.Connection, memo_key: str) -> dict[str, set[str]]
     with _facts_lock:
         _facts_memo[memo_key] = (time.monotonic(), result)
     return result
+
+
+# Tools whose usage aictl reads from session files on disk. Only files changed in the last
+# BACKFILL_DAYS days are read, so older usage that the store does not already hold is missing.
+_FILE_HISTORY_TOOLS = ("copilot-vscode", "copilot-cli", "copilot-desktop", "claude-code", "codex-cli")
+
+
+def coverage_notes(tool_ids: list[str]) -> list[dict]:
+    """Limits of the data that the table cannot show in a cell."""
+    from ..ingesters.transcript_usage import BACKFILL_DAYS
+
+    days = int(BACKFILL_DAYS)
+    return [
+        {
+            "tool": tool,
+            "text": f"{_label(tool)}: usage from files older than {days} days is not in the store, unless aictl recorded it earlier. aictl reads session files changed in the last {days} days.",
+        }
+        for tool in _FILE_HISTORY_TOOLS
+        if tool in tool_ids
+    ]
 
 
 def coverage_rows(facts: dict[str, set[str]], tool_ids: list[str]) -> list[dict]:
@@ -3346,6 +3571,7 @@ def compute_board(
     option_tools = [o["id"] for o in options["tools"]]
     selected = set(stored_ids_for(f.tools)) if f.tools is not None else None
     project_list = sorted(project_ids - {""})
+    project_prompts, prompts_searched = _project_prompts(board, project_list)
 
     return {
         "generated_at": now,
@@ -3376,7 +3602,8 @@ def compute_board(
         "credits": _credits_section(db, board),
         "projects": projects[:MAX_LIST_ROWS],
         "prompts": _prompts_section(board, turns.tokens),
-        "project_prompts": _project_prompts(board, project_list),
+        "project_prompts": project_prompts,
+        "project_prompts_searched": prompts_searched,
         "skills": _skills_section(board, skill_rows, turns),
         "tests_piped": tests_piped,
         "prompts_total": board.conn.execute(f"SELECT COUNT(*) FROM session_prompts WHERE {_scoped_prompts[0]} AND agent_id = ''", _scoped_prompts[1]).fetchone()[0],
@@ -3392,7 +3619,7 @@ def compute_board(
         # Names for tools that have processes but no activity in this range.
         "tool_labels": {tool: _label(tool) for tool in {p["tool"] for p in _processes(board)} | set(cpu)},
         "sources": _sources(_source_rows(conn, memo_key), tool_order or option_tools, selected),
-        "coverage": {"rows": coverage_rows(facts, option_tools)},
+        "coverage": {"rows": coverage_rows(facts, option_tools), "notes": coverage_notes([*option_tools, *_COVERAGE_TOOLS])},
         "self": _self_section(db),
     }
 

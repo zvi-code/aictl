@@ -432,6 +432,54 @@ describe('findings', () => {
     expect(rows[1].values['tool-a'].v).toBe('1 file, ~2.1 k tokens');
     expect(note).toContain('r.md:3');
   });
+  it('counts instructions registered under the generic copilot tool for every Copilot tool', () => {
+    const sources = [
+      { tool: 'copilot', path: '/p/.github/copilot-instructions.md', loading: 'always', est_tokens: 2227, in_project: true },
+      { tool: 'copilot-cli', path: '/h/.copilot/copilot-instructions.md', loading: 'always', est_tokens: 253, in_project: false },
+      { tool: 'copilot', path: '/p/.github/instructions/a.instructions.md', loading: 'conditional', est_tokens: 300, in_project: true },
+    ];
+    const { rows } = buildSettings({ audit: { sources }, toolIds: ['copilot-cli', 'copilot-vscode', 'claude-code'] });
+    const row = rows.find(r => r.label === 'Instructions sent each call');
+    expect(row.values['copilot-cli'].v).toBe('2 files, ~2.5 k tokens');
+    expect(row.values['copilot-vscode'].v).toBe('1 file, ~2.2 k tokens');
+    expect(row.values['claude-code']).toBeUndefined();
+    expect(row.values['copilot-cli'].v).toMatch(/~.*tokens$/);
+  });
+  it('shows the Claude model with the Copilot models, and a missing pin as no pin', () => {
+    const eff = {
+      'claude-code': { tool: 'claude-code', value: 'opus', source: '/h/.claude/settings.json', line: 4, conflicts: [] },
+      'copilot-cli': { tool: 'copilot-cli', value: '', source: '', line: 0, why_in_effect: 'No file pins a model', conflicts: [] },
+    };
+    const { rows } = buildSettings({ effective: eff, toolIds: [] });
+    const model = rows.find(r => r.label === 'Model').values;
+    expect(model['claude-code'].v).toBe('opus');
+    expect(model['copilot-cli'].v).toBe('No pin');
+  });
+});
+
+describe('prompt files and coverage notes', () => {
+  const ctxFor = (data) => ({ data, series: {}, range: data.range, chartRange: data.range, sel: null, filters: parseFilters(''), tools: null, toolIds: ['copilot-vscode', 'copilot365'], settingToolIds: [], toolName: x => x, nowS: NOW, stopped: {}, findings: { list: [], settings: [] }, actions: {} });
+  it('names the folders it searched when it finds no prompt file', () => {
+    const data = boardFixture();
+    data.project_prompts = [];
+    data.project_prompts_searched = ['/p/.github/prompts', '~/.claude/commands'];
+    const { table } = buildPanel('pprompts', ctxFor(data));
+    expect(table.none).toContain('/p/.github/prompts');
+    expect(table.none).toContain('~/.claude/commands');
+  });
+  it('says plainly when there is no folder to search', () => {
+    const data = boardFixture();
+    data.project_prompts = [];
+    data.project_prompts_searched = [];
+    expect(buildPanel('pprompts', ctxFor(data)).table.none).toContain('No project folder');
+  });
+  it('shows the history limit of the tools on screen in the coverage note', () => {
+    const data = boardFixture();
+    data.coverage = { rows: [], notes: [{ tool: 'copilot-vscode', text: 'VS Code limit text.' }, { tool: 'claude-code', text: 'Not shown.' }] };
+    const { note } = buildPanel('coverage', ctxFor(data));
+    expect(note).toContain('VS Code limit text.');
+    expect(note).not.toContain('Not shown.');
+  });
 });
 
 describe('guards', () => {

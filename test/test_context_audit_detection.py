@@ -598,3 +598,58 @@ def test_a_failed_step_is_reported_and_the_other_steps_still_run(repo, monkeypat
     result = audit(repo)
     assert result["failed_steps"] == [{"step": "VS Code settings", "error": "IndexError: 0"}]
     assert any(s["path"].endswith("CLAUDE.md") for s in result["sources"])
+
+
+def _install_plugins(home, repo, tmp_path):
+    here = home / "plugins" / "here"
+    elsewhere = home / "plugins" / "elsewhere"
+    everywhere = home / "plugins" / "everywhere"
+    skills = {name: write(root / "skills" / "s" / "SKILL.md", "---\nname: s\n---\nbody\n") for name, root in (("here", here), ("elsewhere", elsewhere), ("everywhere", everywhere))}
+    write(
+        home / ".claude" / "plugins" / "installed_plugins.json",
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {
+                    "here@m": [{"scope": "project", "projectPath": str(repo), "installPath": str(here)}],
+                    "elsewhere@m": [{"scope": "project", "projectPath": str(tmp_path / "other-project"), "installPath": str(elsewhere)}],
+                    "everywhere@m": [{"scope": "user", "installPath": str(everywhere)}],
+                },
+            }
+        ),
+    )
+    return skills
+
+
+def test_a_project_scoped_plugin_loads_only_in_its_project(repo, home, tmp_path):
+    skills = _install_plugins(home, repo, tmp_path)
+    paths = {s["path"] for s in audit(repo)["sources"]}
+    assert str(skills["here"]) in paths
+    assert str(skills["everywhere"]) in paths
+    assert str(skills["elsewhere"]) not in paths
+
+
+def test_a_project_scoped_plugin_without_a_project_path_loads_nowhere(repo, home, tmp_path):
+    plugin = home / "plugins" / "orphan"
+    skill = write(plugin / "skills" / "s" / "SKILL.md", "body\n")
+    write(home / ".claude" / "plugins" / "installed_plugins.json", json.dumps({"version": 2, "plugins": {"orphan@m": [{"scope": "local", "installPath": str(plugin)}]}}))
+    assert str(skill) not in {s["path"] for s in audit(repo)["sources"]}
+
+
+def test_skill_locations_follow_the_plugin_install_scope(repo, home, tmp_path):
+    _install_plugins(home, repo, tmp_path)
+    mine = ca.skill_locations("s", [str(repo)])
+    assert sorted(r["owner"] for r in mine if r["scope"] == "plugin") == ["everywhere@m", "here@m"]
+    here = next(r for r in mine if r["owner"] == "here@m")
+    assert here["install_project"] == str(repo)
+    other = ca.skill_locations("s", [str(tmp_path / "unrelated")])
+    assert sorted(r["owner"] for r in other if r["scope"] == "plugin") == ["everywhere@m"]
+
+
+def test_a_plugin_installed_for_the_user_and_a_project_is_not_tagged_to_the_project(repo, home, tmp_path):
+    plugin = home / "plugins" / "both"
+    write(plugin / "skills" / "s" / "SKILL.md", "body\n")
+    entries = [{"scope": "user", "installPath": str(plugin)}, {"scope": "project", "projectPath": str(repo), "installPath": str(plugin)}]
+    write(home / ".claude" / "plugins" / "installed_plugins.json", json.dumps({"version": 2, "plugins": {"both@m": entries}}))
+    row = next(r for r in ca.skill_locations("s", [str(repo)]) if r["scope"] == "plugin")
+    assert "install_project" not in row

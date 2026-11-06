@@ -579,6 +579,46 @@ class TestCopilot:
         detail = json.loads(rows(db, "SELECT detail FROM file_write_events")[0]["detail"])
         assert (detail["lines_added"], detail["lines_removed"]) == (4, 2)
 
+    def test_a_multi_file_apply_patch_gets_line_counts_per_file(self, db, tmp_path):
+        """The runtime passes the patch as one string, not as an object. Counts come from its text."""
+        patch = "*** Begin Patch\n*** Update File: /work/a.py\n@@\n-old\n+new\n+more\n*** Add File: /work/b.py\n+one\n+two\n+three\n*** End Patch"
+        long_body = "\n".join(f"+line {i}" for i in range(900))
+        big = f"*** Begin Patch\n*** Add File: /work/big.py\n{long_body}\n*** Update File: /work/late.py\n-x\n+y\n*** End Patch"
+        write_lines(
+            copilot_events(tmp_path),
+            [
+                ev("tool.execution_start", 430, {"toolCallId": "m1", "toolName": "apply_patch", "arguments": patch}),
+                ev(
+                    "tool.execution_complete",
+                    429,
+                    {
+                        "toolCallId": "m1",
+                        "success": True,
+                        "fileEdits": [{"path": "/work/a.py", "kind": "edit"}, {"path": "/work/b.py", "kind": "create"}],
+                        "toolTelemetry": {"metrics": {"linesAdded": 5, "linesRemoved": 1}},
+                    },
+                ),
+                ev("tool.execution_start", 420, {"toolCallId": "m2", "toolName": "apply_patch", "arguments": big}),
+                ev(
+                    "tool.execution_complete",
+                    419,
+                    {
+                        "toolCallId": "m2",
+                        "success": True,
+                        "fileEdits": [{"path": "/work/big.py", "kind": "create"}, {"path": "/work/late.py", "kind": "edit"}],
+                        "toolTelemetry": {"metrics": {"linesAdded": 901, "linesRemoved": 1}},
+                    },
+                ),
+            ],
+        )
+        make_ingester(db, tmp_path).poll()
+        got = {r["path"]: json.loads(r["detail"]) for r in rows(db, "SELECT path, detail FROM file_write_events")}
+        assert got["/work/a.py"] == {"lines_added": 2, "lines_removed": 1}
+        assert got["/work/b.py"] == {"lines_added": 3, "lines_removed": 0}
+        # The patch is longer than the text that is stored, and the last file is still counted.
+        assert got["/work/big.py"]["lines_added"] == 900
+        assert got["/work/late.py"] == {"lines_added": 1, "lines_removed": 1}
+
     def test_compaction_is_a_call_unless_it_has_a_record(self, db, tmp_path):
         used = {"inputTokens": 500, "outputTokens": 50, "cacheReadTokens": 0, "cacheWriteTokens": 0, "model": MODEL}
         write_lines(
@@ -952,6 +992,10 @@ class TestTextHelpers:
     def test_patch_files(self):
         patch = "*** Begin Patch\n*** Update File: a.py\n@@\n-x\n+y\n+z\n*** Add File: b.py\n+1\n*** End Patch\n"
         assert apply_patch_files(patch) == [("a.py", 2, 1), ("b.py", 1, 0)]
+
+    def test_a_moved_file_is_counted_under_its_new_path_too(self):
+        patch = "*** Begin Patch\n*** Update File: old/a.py\n*** Move to: new/a.py\n@@\n-x\n+y\n*** End Patch\n"
+        assert apply_patch_files(patch) == [("old/a.py", 1, 1), ("new/a.py", 1, 1)]
 
 
 # ── Migration ──────────────────────────────────────────────────────────

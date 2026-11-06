@@ -1484,6 +1484,10 @@ class TestTestClassification:
             "for t in a b; do cargo test $t; done",
             'V=$(mktemp -d) && python -m pytest -q',
             "if true; then npm test; fi",
+            "python3 -m unittest discover -s test",
+            "timeout 300 cargo test -p core",
+            "gtimeout -k 5 1.5m pytest -q",
+            "cd x && pytest -q \\",
             "cd /x && " + "A=1 " * 200 + "pytest",
         ],
     )
@@ -1492,7 +1496,22 @@ class TestTestClassification:
 
     @pytest.mark.parametrize(
         "command",
-        ["", "grep pytest log.txt", "cat pytest.ini", "echo npm test", "ls test/", "git commit -m 'make test'x", "testing", "go build", "npm install"],
+        [
+            "",
+            "grep pytest log.txt",
+            "cat pytest.ini",
+            "echo npm test",
+            "ls test/",
+            "git commit -m 'make test'x",
+            "testing",
+            "go build",
+            "npm install",
+            # Waiting for a test run, or writing a test file, is not a test run.
+            'until ! pgrep -f "python -m pytest -q" >/dev/null; do sleep 5; done; tail -15 run.log',
+            "cat >> tools/tests/test_a.py <<'EOF'",
+            "timeout 30 sleep 5",
+            "grep unittest setup.py",
+        ],
     )
     def test_not_runner(self, command):
         assert not is_test_command(command)
@@ -2616,3 +2635,147 @@ class TestAgentToolTotals:
         assert len(detail["tool_calls"]) == board_api.MAX_DETAIL_ROWS
         assert detail["tool_totals"][0] == {"name": "Bash", "calls": extra, "failed": 0, "total_ms": extra * 10.0}
         assert detail["tool_totals"][1]["failed"] == 1
+
+
+class TestPromptFilesSearch:
+    """Prompt files are looked for in the project, its parents up to the repository, the settings and the user folders."""
+
+    @pytest.fixture()
+    def home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+        (tmp_path / "home").mkdir()
+        return tmp_path / "home"
+
+    def _files(self, db, project):
+        return {r["file"]: r for r in _board(db)["project_prompts"] if r["project"] in (str(project), "")}
+
+    def _seed_project(self, db, project):
+        conn = db._conn()
+        _request(conn, NOW - DAY, "pp", "copilot-vscode", str(project), SONNET, i=1)
+        _prompt(conn, NOW - DAY, "pp", "copilot-vscode", str(project), text="x")
+        conn.commit()
+
+    def test_parent_folders_up_to_the_repository_and_nested_files(self, db, tmp_path, home):
+        repo = tmp_path / "repo"
+        project = repo / "packages" / "app"
+        project.mkdir(parents=True)
+        (repo / ".git").mkdir()
+        (repo / ".github" / "prompts" / "team").mkdir(parents=True)
+        (repo / ".github" / "prompts" / "team" / "deep.prompt.md").write_text("x")
+        (repo / ".github" / "prompts" / "top.prompt.md").write_text("x")
+        (project / ".claude" / "commands" / "sub").mkdir(parents=True)
+        (project / ".claude" / "commands" / "sub" / "run.md").write_text("x")
+        files, _searched = board_api._prompt_files_on_disk([str(project)])
+        assert {(p, Path(f).name) for p, f in files} >= {(str(project), "deep.prompt.md"), (str(project), "top.prompt.md"), (str(project), "run.md")}
+
+    def test_no_parent_folder_above_the_repository_is_searched(self, db, tmp_path, home):
+        (tmp_path / "outer" / ".github" / "prompts").mkdir(parents=True)
+        (tmp_path / "outer" / ".github" / "prompts" / "outer.prompt.md").write_text("x")
+        project = tmp_path / "outer" / "inner"
+        (project / ".git").mkdir(parents=True)
+        files, _searched = board_api._prompt_files_on_disk([str(project)])
+        assert "outer.prompt.md" not in {Path(f).name for _p, f in files}
+
+    def test_skill_files_are_not_prompt_files(self, db, tmp_path, home):
+        project = tmp_path / "proj"
+        (project / ".claude" / "commands" / "pack").mkdir(parents=True)
+        (project / ".claude" / "commands" / "pack" / "SKILL.md").write_text("x")
+        (project / ".claude" / "commands" / "real.md").write_text("x")
+        self._seed_project(db, project)
+        assert {Path(f).name for f in self._files(db, project)} == {"real.md"}
+
+    def test_user_folders_and_the_setting_are_searched(self, db, tmp_path, home):
+        from aictl.platforms import vscode_user_dir
+
+        project = tmp_path / "proj"
+        (project / ".vscode").mkdir(parents=True)
+        (project / "extra-prompts").mkdir()
+        (project / "extra-prompts" / "custom.prompt.md").write_text("x")
+        (project / ".vscode" / "settings.json").write_text('{\n // comment\n "chat.promptFilesLocations": {"extra-prompts": true, "off-prompts": false},\n}')
+        (home / ".claude" / "commands").mkdir(parents=True)
+        (home / ".claude" / "commands" / "mine.md").write_text("x")
+        (vscode_user_dir() / "prompts").mkdir(parents=True)
+        (vscode_user_dir() / "prompts" / "user.prompt.md").write_text("x")
+        self._seed_project(db, project)
+        names = {Path(f).name for f in self._files(db, project)}
+        assert {"custom.prompt.md", "mine.md", "user.prompt.md"} <= names
+
+    def test_a_used_prompt_file_keeps_its_uses(self, db, tmp_path, home):
+        project = tmp_path / "proj"
+        (project / ".github" / "prompts").mkdir(parents=True)
+        (project / ".github" / "prompts" / "used.prompt.md").write_text("x")
+        conn = db._conn()
+        _request(conn, NOW - DAY, "pu", "copilot-vscode", str(project), SONNET, i=1)
+        _prompt(conn, NOW - DAY, "pu", "copilot-vscode", str(project), text="x", prompt_file="used.prompt.md")
+        conn.commit()
+        assert self._files(db, project)[".github/prompts/used.prompt.md"]["uses"] == 1
+
+    def test_a_skill_started_from_a_prompt_is_not_listed_as_a_prompt_file(self, db, tmp_path, home):
+        project = tmp_path / "proj"
+        project.mkdir()
+        conn = db._conn()
+        _request(conn, NOW - DAY, "sk", "claude-code", str(project), SONNET, i=1)
+        skill = str(project / ".claude" / "skills" / "review" / "SKILL.md")
+        _prompt(conn, NOW - DAY, "sk", "claude-code", str(project), text="/review", prompt_file=skill)
+        conn.commit()
+        assert not [r for r in _board(db)["project_prompts"] if r["file"].endswith("SKILL.md")]
+
+    def test_the_payload_names_the_folders_it_searched(self, db, tmp_path, home):
+        project = tmp_path / "bare"
+        project.mkdir()
+        self._seed_project(db, project)
+        searched = _board(db)["project_prompts_searched"]
+        assert str(project / ".github" / "prompts") in searched
+        assert str(project / ".claude" / "commands") in searched
+        assert "~/.claude/commands" in searched
+
+
+class TestSkillFileReads:
+    def _seed(self, db, tmp_path):
+        folder = tmp_path / "proj" / ".claude" / "skills" / "checker"
+        folder.mkdir(parents=True)
+        path = folder / "SKILL.md"
+        path.write_text("---\nname: checker\n---\nbody\n")
+        conn = db._conn()
+        for ts in (100.0, 500.0):
+            _prompt(conn, ts, "s1", "claude-code", "/p", text="go")
+        _insert(conn, "skill_uses", ts=110.0, session_id="s1", tool="claude-code", project_path="/p", name="checker", trigger="agent-invoked")
+        # Turn one started the skill and also read its file. Turn two only read the file.
+        _call(conn, 120.0, "s1", "claude-code", "/p", "Read", str(path))
+        _call(conn, 520.0, "s1", "claude-code", "/p", "Read", str(path))
+        _call(conn, 530.0, "s1", "claude-code", "/p", "Read", str(folder / "other.md"))
+        _call(conn, 540.0, "s1", "claude-code", "/p", "Bash", f"cat {path}")
+        conn.commit()
+
+    def test_a_read_is_counted_apart_from_the_uses(self, db, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        self._seed(db, tmp_path)
+        _status, payload = board_api.skill_detail(db, "checker", now=1000.0)
+        assert payload["uses"] == 1
+        assert payload["file_reads"] == 1
+        assert [r["ts"] for r in payload["reads"]] == [520.0]
+
+    def test_the_time_range_limits_reads(self, db, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        self._seed(db, tmp_path)
+        _status, payload = board_api.skill_detail(db, "checker", now=1000.0, since=0.0, until=300.0)
+        assert payload["file_reads"] == 0 and payload["uses"] == 1
+
+    def test_a_plugin_skill_name_finds_the_file_read(self, db, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        self._seed(db, tmp_path)
+        _status, payload = board_api.skill_detail(db, "plug:checker", now=1000.0)
+        assert payload["file_reads"] == 2  # no use is stored under this name, so no read is the start of one
+
+
+class TestCoverageLimits:
+    def test_the_cloud_tool_has_no_process_to_measure(self):
+        rows = coverage_rows({}, ["copilot365"])
+        for key in ("cpu", "ram"):
+            assert next(r for r in rows if r["key"] == key)["cells"]["copilot365"]["state"] == "Not reported"
+
+    def test_a_note_says_how_far_back_the_files_are_read(self, db):
+        notes = _board(db)["coverage"]["notes"]
+        vscode = next(n for n in notes if n["tool"] == "copilot-vscode")
+        assert "older than 30 days" in vscode["text"]

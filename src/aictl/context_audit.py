@@ -882,7 +882,32 @@ def _walk_down(inv: _Inventory, gemini_names: list[str], codex_names: list[str])
             break
 
 
-def _enabled_plugin_paths() -> list[tuple[str, Path]]:
+def _plugin_applies(entry: dict, projects: Iterable[str | Path]) -> bool:
+    """A project or local install loads only in its own project folder. Any other install loads everywhere."""
+    if entry.get("scope") not in ("project", "local"):
+        return True
+    owner = entry.get("projectPath")
+    if not isinstance(owner, str) or not owner:
+        return False  # the install does not say which project it belongs to
+    root = _path_key(owner).rstrip("/")
+    for project in projects:
+        key = _path_key(project).rstrip("/")
+        if key == root or key.startswith(root + "/"):
+            return True
+    return False
+
+
+def _enabled_plugin_paths(projects: Iterable[str | Path] = ()) -> list[tuple[str, Path]]:
+    return [(name, path) for name, path, _entry in _enabled_plugin_entries(projects)]
+
+
+def _enabled_plugin_entries(projects: Iterable[str | Path] = ()) -> list[tuple[str, Path, dict]]:
+    """``(name, install folder, install record)`` of each plugin that is on for at least one of ``projects``.
+
+    A plugin installed with project or local scope belongs to ``projectPath``: it is left out
+    unless one of ``projects`` is that folder or inside it.
+    """
+    projects = list(projects)
     installed = _read_json(claude_global_dir() / "plugins" / "installed_plugins.json")
     enabled = _read_json(claude_global_dir() / "settings.json").get("enabledPlugins") or {}
     out = []
@@ -894,13 +919,13 @@ def _enabled_plugin_paths() -> list[tuple[str, Path]]:
             continue
         for entry in entries if isinstance(entries, list) else []:
             install = entry.get("installPath") if isinstance(entry, dict) else None
-            if install:
-                out.append((name, Path(install)))
+            if install and _plugin_applies(entry, projects):
+                out.append((name, Path(install), entry))
     return out
 
 
 def _collect_plugins(inv: _Inventory) -> list[tuple[str, Path]]:
-    plugins = _enabled_plugin_paths()
+    plugins = _enabled_plugin_paths([inv.project])
     for name, root in plugins:
         origin = f"plugin:{name}"
         for pattern, kind, loading in (
@@ -1400,9 +1425,16 @@ def skill_locations(name: str, projects: Iterable[str], env: dict[str, str] | No
     for plugin, root in _copilot_plugin_roots(copilot_home):
         if not wanted or plugin.lower().startswith(wanted):
             add(root / "skills", "plugin", _COPILOT_APPS, plugin)
-    for plugin, root in _enabled_plugin_paths():
+    entries = _enabled_plugin_entries(projects)
+    everywhere = {_path_key(root) for _plugin, root, entry in entries if entry.get("scope") not in ("project", "local")}
+    for plugin, root, entry in entries:
         if not wanted or plugin.lower().startswith(wanted):
             add(root / "skills", "plugin", ("claude-code",), plugin)
+            installed = found.get(_path_key(root / "skills" / base / "SKILL.md"))
+            # A copy that is also installed for the user loads everywhere, so it is not tagged to one project.
+            if installed is not None and entry.get("scope") in ("project", "local") and _path_key(root) not in everywhere:
+                installed["install_scope"] = entry["scope"]
+                installed["install_project"] = entry.get("projectPath") or ""
     for folder in (env.get("COPILOT_SKILLS_DIRS") or "").split(","):
         if folder.strip():
             add(Path(_expand_home(folder.strip())), "custom", _COPILOT_TERMINAL_TOOLS, "COPILOT_SKILLS_DIRS")
@@ -2663,9 +2695,14 @@ def run_audit(
     sources = list(inv.rows.values())
     mark = lap("transcripts", mark)
 
-    from .effective_config import annotate_sources, model_findings  # needs this module's helpers
+    from .effective_config import (  # needs this module's helpers
+        CLAUDE_TOOL,
+        COPILOT_TOOLS,
+        annotate_sources,
+        model_findings,
+    )
 
-    effective_models, found = step("models in force", lambda: model_findings(root, env=env, ps_output=ps_output), ({}, []))
+    effective_models, found = step("models in force", lambda: model_findings(root, env=env, ps_output=ps_output, tools=(*COPILOT_TOOLS, CLAUDE_TOOL)), ({}, []))
     findings.extend(found)
     step("settings in force", lambda: annotate_sources(sources, root, findings, env))
     mark = lap("effective", mark)
