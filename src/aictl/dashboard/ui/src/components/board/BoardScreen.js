@@ -259,7 +259,12 @@ export default function BoardScreen() {
 
   // Hidden findings: the existing audit routes, after the first paint of the board.
   const [settingsRaw, setSettingsRaw] = useState({ loading: true });
+  // The scan follows the Project filter. A later scan replaces an answer still on its way.
+  const scanProject = applied.project === 'all' ? null : applied.project;
+  const scanGeneration = useRef(0);
   const loadFindings = useCallback((fresh) => {
+    const generation = ++scanGeneration.current;
+    const current = () => generation === scanGeneration.current;
     // Each answer shows when it arrives, so a slow scan holds up nothing else.
     const put = (key, promise) => promise.then(
       value => setSettingsRaw(s => ({ ...s, [key]: value })),
@@ -269,11 +274,11 @@ export default function BoardScreen() {
     put('effective', api.getEffectiveModels());
     put('hooks', api.getHooksStatus());
     put('otel', api.getOtelStatus());
-    api.getContextAudit(fresh, scan => setSettingsRaw(s => ({ ...s, scan }))).then(
-      audit => setSettingsRaw(s => ({ ...s, audit, scan: null, loading: false })),
-      e => setSettingsRaw(s => ({ ...s, audit: null, scan: null, loading: false, error: e?.message })),
+    api.getContextAudit(fresh, scan => { if (current()) setSettingsRaw(s => ({ ...s, scan })); }, { project: scanProject }).then(
+      audit => { if (current()) setSettingsRaw(s => ({ ...s, audit, scan: null, loading: false })); },
+      e => { if (current()) setSettingsRaw(s => ({ ...s, audit: null, scan: null, loading: false, error: e?.message })); },
     );
-  }, []);
+  }, [scanProject]);
   useEffect(() => {
     if (!loaded) return undefined;
     const t = setTimeout(() => loadFindings(false), 300);

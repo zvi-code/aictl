@@ -40,6 +40,7 @@ from . import (
     m028_tool_invocations_source_event_id,
     m029_session_usage,
     m030_board_facts,
+    m031_context_facts,
 )
 
 MigrationFn = Callable[[sqlite3.Connection], None]
@@ -58,6 +59,7 @@ MIGRATIONS: list[tuple[int, MigrationFn]] = [
     (28, m028_tool_invocations_source_event_id.apply),
     (29, m029_session_usage.apply),
     (30, m030_board_facts.apply),
+    (31, m031_context_facts.apply),
 ]
 
 CURRENT_VERSION: int = MIGRATIONS[-1][0]

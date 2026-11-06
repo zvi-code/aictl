@@ -11,6 +11,7 @@ import { Actions, Stats } from './Panel.js';
 import { statusCell } from './panels.js';
 import Table from './Table.js';
 import { scopeAudit } from '../../utils/auditScope.js';
+import { instructionsByTool } from './findings.js';
 
 /** Fetch on open. A new `tick` fetches again and keeps the old data on screen meanwhile. */
 function useDetail(load, key, tick = 0) {
@@ -55,6 +56,7 @@ const Frame = ({ title, sub, canBack, back, close, actions, tabs, children }) =>
   <div class="bd-grid">${children}</div>
 </aside>`;
 
+const fmtTokens = n => (n == null ? NA : fmtN(n) + ' tokens');
 const Pending = ({ error }) => html`<div class="bd-empty" role="status">${error ? 'Could not load this: ' + error.message : 'Loading...'}</div>`;
 const titleOf = a => (a.parent_id ? (a.role || a.title) + ' (subagent)' : a.title);
 const toolListText = t => (Array.isArray(t) ? t.join(', ') : (t == null ? '' : String(t)));
@@ -124,13 +126,31 @@ function OverviewTab({ a, data, st, ctx, act, pending }) {
     sort: { k: 'u', dir: 'desc' }, none: 'This agent used no skill.',
   }), [data]);
   const context = data.context;
+  const compactionDef = useMemo(() => ({
+    cols: [{ k: 'at', l: 'Time', w: '110px' }, { k: 'why', l: 'Trigger', w: '80px' }, { k: 'b', l: 'Before', n: true, t: 'Tokens before it, as the tool reports them' }, { k: 'a', l: 'After', n: true, t: 'Tokens after it, as the tool reports them' }, { k: 'f', l: 'Freed', n: true }, { k: 'd', l: 'Took', n: true, w: '70px' }],
+    rows: (context?.compactions || []).map(c => ({
+      id: c.ts, sort: { at: c.ts, b: c.before, a: c.after, f: c.freed, d: c.duration_ms },
+      cells: { at: { v: stamp(c.ts, true), cls: 'dim' }, why: { v: c.trigger || NA, cls: 'dim' }, b: { v: fmtTokens(c.before) }, a: { v: fmtTokens(c.after) }, f: { v: fmtTokens(c.freed) }, d: { v: fmtMs(c.duration_ms) } },
+    })),
+    sort: { k: 'at', dir: 'asc' }, none: 'No compaction is stored for this agent.', primary: 'at',
+  }), [data]);
+  const copilot = (a.tool || '').startsWith('copilot');
+  const split = context?.split;
   const copyLink = window.location.origin + window.location.pathname + '?agent=' + encodeURIComponent(a.id);
   return html`
     ${pending ? html`<${FixedPanel} id="ap" title="Waiting for your confirmation"><div class="bd-ptext">${pending.name + ': ' + pending.target + '\nWaiting for ' + fmtDur(Date.now() / 1000 - pending.since_ts) + '. Answer in the tool that asks.'}</div></${FixedPanel}>` : null}
     ${context ? html`<${FixedPanel} id="actx" title="Context size" sub=${a.parent_id ? 'What this subagent sent with each model call' : 'What the main agent sent with each model call. Each subagent has its own.'}>
-      <${Stats} stats=${[{ label: 'First call', value: fmtN(context.first), title: 'Everything loaded before work began: system prompt, tools, instructions and the first prompt' }, { label: 'Last call', value: fmtN(context.last) }, { label: 'Peak', value: fmtN(context.peak) }, { label: 'Calls', value: fmtN(context.calls) }, { label: 'Times it shrank', value: fmtN(context.drops), title: 'The size fell by more than half, as compaction does' }]}/>
+      <${Stats} stats=${[{ label: 'First call', value: fmtTokens(context.first), title: 'Everything loaded before work began: system prompt, tools, instructions and the first prompt' }, { label: 'Last call', value: fmtTokens(context.last) }, { label: 'Peak', value: fmtTokens(context.peak) }, { label: 'Calls', value: fmtN(context.calls) }, { label: 'Times it shrank', value: fmtN(context.drops), title: 'The size fell by more than half, as compaction does' }, { label: 'Compactions', value: context.compactions?.length ? fmtN(context.compactions.length) : NA, sub: context.compactions?.length ? '' : 'none stored', title: 'Compaction records in the session file. Only the time that aictl reads from these files is stored, so no record does not prove that none happened.' }]}/>
       <svg class="bd-ctxspark" viewBox="0 0 600 60" preserveAspectRatio="none" role="img" aria-label=${'Context size per call, from ' + fmtN(context.first) + ' to ' + fmtN(context.last) + ', peak ' + fmtN(context.peak)}><path d=${sparkPath(context.series, 600, 60)} fill="none" stroke="var(--s1)" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>
-      <div class="bd-note">Input, cache read and cache write of each call. The tools report the total, not how it splits into instructions, tools and conversation.</div>
+      ${copilot ? html`
+        <${Stats} stats=${[{ label: 'Tool definitions', value: fmtTokens(context.tool_tokens), title: 'toolTokenCount of the last model call that reports it' }, { label: 'Tools available', value: fmtN(context.available_tools), title: 'availableToolCount of the last model call that reports it' }, { label: 'Prompt limit', value: fmtTokens(context.prompt_limit), title: 'maxPromptTokens of the last model call that reports it' }, { label: 'Share of limit', value: fmtShare(context.limit_share), title: 'Last call, as a share of the prompt limit' }, { label: 'Request size', value: fmtBytes(context.request_bytes_last), sub: context.request_bytes_peak == null ? '' : 'peak ' + fmtBytes(context.request_bytes_peak), title: 'requestBodyBytes of the last model call that reports it, before compression' }]}/>
+        ${a.parent_id ? null : html`<div class="bd-note">${split ? 'Split at the last shutdown, ' + stamp(split.ts, true) + '.' : 'Split at shutdown: not known. The session wrote no shutdown record that aictl holds.'}</div>
+        <${Stats} stats=${[{ label: 'Total at shutdown', value: fmtTokens(split?.current), title: 'currentTokens of the last shutdown record' }, { label: 'System', value: fmtTokens(split?.system), title: 'systemTokens of the last shutdown record' }, { label: 'Conversation', value: fmtTokens(split?.conversation), title: 'conversationTokens of the last shutdown record' }, { label: 'Tool definitions', value: fmtTokens(split?.tools), title: 'toolDefinitionsTokens of the last shutdown record' }]}/>`}
+      ` : null}
+      <div class="bd-note">${copilot
+        ? 'First, last and peak are input, cache read and cache write of each call. Copilot compaction figures count the conversation only, without the system prompt and tools.'
+        : 'Input, cache read and cache write of each call. This tool reports the total, not how it splits into instructions, tools and conversation.'}</div>
+      ${context.compactions?.length ? html`<${Table} def=${compactionDef} label="Compactions"/>` : null}
     </${FixedPanel}>` : null}
     ${(data.skills || []).length ? html`<${FixedPanel} id="askill" title="Skills used" sub=${data.skills.reduce((n, x) => n + x.uses, 0) + ' uses of ' + data.skills.length + ' skills' + (a.parent_id ? '' : ', with its subagents')}><${Table} def=${skills} label="Skills used"/></${FixedPanel}>` : null}
     <${FixedPanel} id="ast" title="Totals"><${Stats} stats=${stats}/></${FixedPanel}>
@@ -345,11 +365,11 @@ function HiddenDrawer({ ctx, frame, act }) {
     sort: { k: 'sev', dir: 'asc' }, none: 'No findings for the selected tools.', primary: 'rule',
   }), [findings]);
   const sourceDef = useMemo(() => ({
-    cols: [{ k: 'tool', l: 'Tool', w: '130px' }, { k: 'scope', l: 'Scope', w: '80px' }, { k: 'load', l: 'Loading', w: '120px' }, { k: 'size', l: 'Size', n: true, w: '80px' }, { k: 'tok', l: 'Tokens', n: true, w: '70px' }, { k: 'git', l: 'Git', w: '80px' }, { k: 'path', l: 'Path' }],
+    cols: [{ k: 'tool', l: 'Tool', w: '130px' }, { k: 'scope', l: 'Scope', w: '80px' }, { k: 'load', l: 'Loading', w: '120px' }, { k: 'size', l: 'Size', n: true, w: '80px' }, { k: 'tok', l: 'Tokens', n: true, w: '70px', t: 'Estimate at four characters per token' }, { k: 'seen', l: 'Seen loaded', n: true, w: '90px', t: 'Session files read that show this file loaded. n/a: this tool has no such record.' }, { k: 'git', l: 'Git', w: '80px' }, { k: 'path', l: 'Path' }],
     rows: sources.map(s => ({
       id: s.tool + '|' + s.path, go: s.kind === 'skill' ? () => act.openDrawer({ type: 'skill', name: s.path.split(/[\\/]/).slice(-2)[0] }) : openFile(s.path),
-      sort: { tool: s.tool, scope: s.scope, load: s.loading, size: s.bytes, tok: s.est_tokens, git: s.git_state, path: s.path },
-      cells: { tool: { v: ctx.toolName(s.tool), sw: colorFor('tool', s.tool) }, scope: { v: s.scope }, load: { v: s.readable ? s.loading : s.loading + ' (no file shows this)' }, size: { v: fmtBytes(s.bytes) }, tok: { v: s.est_tokens ? fmtN(s.est_tokens) : '0' }, git: { v: s.git_state || NA, cls: 'dim' }, path: { v: s.path + (s.symlink_target ? ' -> ' + s.symlink_target : ''), sub: [s.note, s.in_project ? '' : s.why_in_effect].filter(Boolean).join(' '), cls: 'm', title: [s.path, s.symlink_target, s.note, s.why_in_effect, s.origin].filter(Boolean).join('\n') } },
+      sort: { tool: s.tool, scope: s.scope, load: s.loading, size: s.bytes, tok: s.est_tokens, seen: s.loaded_sessions, git: s.git_state, path: s.path },
+      cells: { tool: { v: ctx.toolName(s.tool), sw: colorFor('tool', s.tool) }, scope: { v: s.scope }, load: { v: s.readable ? s.loading : s.loading + ' (no file shows this)' }, size: { v: s.readable === false && !s.bytes ? NA : fmtBytes(s.bytes) }, tok: { v: s.readable === false && !s.est_tokens ? NA : '~' + fmtN(s.est_tokens) }, seen: { v: s.loaded_sessions == null ? NA : s.loaded_sessions + ' of ' + audit.transcripts_read }, git: { v: s.git_state || NA, cls: 'dim' }, path: { v: s.path + (s.symlink_target ? ' -> ' + s.symlink_target : ''), sub: [s.note, s.in_project ? '' : s.why_in_effect].filter(Boolean).join(' '), cls: 'm', title: [s.path, s.symlink_target, s.note, s.why_in_effect, s.origin].filter(Boolean).join('\n') } },
     })),
     sort: { k: 'tok', dir: 'desc' }, none: 'No sources for the selected tools.', primary: 'path',
   }), [sources]);
@@ -398,18 +418,28 @@ function HiddenDrawer({ ctx, frame, act }) {
     none: 'No changes since the last scan.', primary: 'path',
   }), [audit]);
   const counts = audit?.counts || {};
-  const always = sources.filter(s => s.loading === 'always').reduce((n, s) => n + (s.est_tokens || 0), 0);
-  const scanText = loading ? 'Reading the settings...' + (scan ? ' ' + scan.step + ', ' + Math.round(scan.elapsed_s) + ' s' : '')
-    : audit ? 'Scanned ' + stamp(audit.scanned_at, true) + ' in ' + fmtMs(audit.duration_ms) : '';
+  const perToolDef = useMemo(() => ({
+    cols: [{ k: 'tool', l: 'Tool' }, { k: 'tok', l: 'Tokens each call, estimate', n: true, w: '170px' }, { k: 'size', l: 'Size', n: true, w: '80px' }, { k: 'n', l: 'Files', n: true, w: '60px' }],
+    rows: instructionsByTool(sources, ctx.settingToolIds || []).map(r => ({
+      id: r.tool, sort: { tool: r.tool, tok: r.tokens, size: r.bytes, n: r.files },
+      cells: { tool: { v: ctx.toolName(r.tool), sw: colorFor('tool', r.tool) }, tok: { v: r.tokens == null ? NA : '~' + fmtN(r.tokens) + ' tokens' }, size: { v: fmtBytes(r.bytes) }, n: { v: r.files, sub: r.unread ? r.unread + ' not readable' : '' } },
+    })),
+    sort: { k: 'tok', dir: 'desc' }, none: 'No instruction file is always sent for the selected tools.', primary: 'tool',
+  }), [sources]);
+  const wanted = ctx.filters?.project && ctx.filters.project !== 'all' ? ctx.filters.project : null;
+  const scanText = [audit?.project ? 'Project ' + audit.project : '', loading ? 'Reading the settings...' + (scan ? ' ' + scan.step + ', ' + Math.round(scan.elapsed_s) + ' s' : '')
+    : audit ? 'Scanned ' + stamp(audit.scanned_at, true) + ' in ' + fmtMs(audit.duration_ms) : ''].filter(Boolean).join(', ');
   return html`<${Frame} ...${frame} title="Hidden context" sub=${scanText} actions=${[{ label: 'Rescan', go: act.rescan }]}>
     ${error ? html`<div class="bd-empty" role="alert">Could not read the settings: ${error}</div>` : null}
     ${!audit && !error ? html`<div class="bd-empty" role="status">${scanText || 'Loading...'}</div>` : null}
     ${audit ? html`
       <${FixedPanel} id="hsum" title="Summary">
-        <${Stats} stats=${[{ label: 'High', value: fmtN(counts.high || 0) }, { label: 'Medium', value: fmtN(counts.medium || 0) }, { label: 'Low', value: fmtN(counts.low || 0) }, { label: 'Info', value: fmtN(counts.info || 0) }, { label: 'Sources', value: fmtN(sources.length) }, { label: 'Tokens sent each call', value: '~' + fmtN(always) }]}/>
+        <${Stats} stats=${[{ label: 'High', value: fmtN(counts.high || 0) }, { label: 'Medium', value: fmtN(counts.medium || 0) }, { label: 'Low', value: fmtN(counts.low || 0) }, { label: 'Info', value: fmtN(counts.info || 0) }, { label: 'Sources', value: fmtN(sources.length) }, { label: 'Project scanned', value: projectName(audit.project) || NA, title: audit.project }]}/>
+        ${!loading && wanted && audit.project && wanted !== audit.project ? html`<div class="bd-note">The Project filter is ${wanted}, which is not a folder on this machine. This scan is of ${audit.project}.</div>` : null}
         ${incomplete.length ? html`<div class="bd-note">The scan reached its time limit and skipped: ${incomplete.join(', ')}.</div>` : null}
         ${failed.map(f => html`<div class="bd-note" key=${f.step}>The scan could not read ${f.step}: ${f.error}</div>`)}
       </${FixedPanel}>
+      <${FixedPanel} id="hsent" title="Instruction files sent each call" sub="Estimate from instruction files, at four characters per token"><${Table} def=${perToolDef} label="Instruction files sent each call"/><div class="bd-note">Each tool has its own context, so these do not add up. The system prompt, tool definitions and conversation are not in this estimate.</div></${FixedPanel}>
       <${FixedPanel} id="hmod" title="Model in force"><${Table} def=${modelDef} label="Model in force"/></${FixedPanel}>
       <${FixedPanel} id="hpin" title="Other model settings" sub="Conflicts, overridden values and pins limited to one agent, prompt or setting"><${Table} def=${pinDef} label="Other model settings"/></${FixedPanel}>
       <${FixedPanel} id="hfind" title="Findings" sub=${findings.length + ' for the selected tools'}><${Table} def=${findingDef} label="Findings"/></${FixedPanel}>
