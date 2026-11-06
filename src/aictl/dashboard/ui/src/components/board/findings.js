@@ -113,6 +113,30 @@ export function buildFindings({ audit, effective, hooks, otel, tools }) {
 }
 
 /** The rows of "Values in force". A value with no source is left out. */
+// A file registered for 'copilot' is read by each Copilot tool.
+const alwaysSources = (sources, id) => sources.filter(s => (s.tool === id || (s.tool === 'copilot' && id.startsWith('copilot'))) && s.loading === 'always');
+
+/**
+ * What each tool sends with every call from its instruction files: one row per tool, biggest
+ * first. Tools do not share a context, so the rows do not add up to anything. `tokens` is null
+ * when no file of the tool could be read.
+ */
+export function instructionsByTool(sources, toolIds) {
+  const ids = [...new Set([...toolIds, ...sources.map(s => s.tool)])];
+  const shown = ids.filter(id => id !== 'copilot' || !ids.some(x => x.startsWith('copilot-')));
+  return shown.map((tool) => {
+    const list = alwaysSources(sources, tool);
+    const read = list.filter(s => s.readable !== false);
+    return {
+      tool,
+      files: list.length,
+      unread: list.length - read.length,
+      bytes: read.length ? read.reduce((n, s) => n + (s.bytes || 0), 0) : null,
+      tokens: read.length ? read.reduce((n, s) => n + (s.est_tokens || 0), 0) : null,
+    };
+  }).filter(r => r.files).sort((a, b) => (b.tokens ?? -1) - (a.tokens ?? -1));
+}
+
 export function buildSettings({ audit, effective, hooks, otel, toolIds }) {
   const rows = [];
   const eff = effective && !effective.error ? effective : {};
@@ -135,8 +159,7 @@ export function buildSettings({ audit, effective, hooks, otel, toolIds }) {
   if (sources.length) {
     const inst = {};
     for (const id of toolIds) {
-      // A file registered for 'copilot' is read by each Copilot tool.
-      const list = sources.filter(s => (s.tool === id || (s.tool === 'copilot' && id.startsWith('copilot'))) && s.loading === 'always');
+      const list = alwaysSources(sources, id);
       if (!list.length) continue;
       const tokens = list.reduce((a, s) => a + (s.est_tokens || 0), 0);
       const outside = list.filter(s => s.in_project === false).length;

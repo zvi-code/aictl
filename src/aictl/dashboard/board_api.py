@@ -3505,22 +3505,61 @@ def _agent_context(conn: sqlite3.Connection, sid: str, agent: str, root: bool) -
 
     A subagent has its own context, so a main agent's figure leaves its subagents out. A drop
     of more than half means that the tool made the context smaller, as compaction does.
+    A value that the tool did not report is None. A split belongs to the whole session, so
+    only its main agent has one.
     """
     agent_sql, params = (" AND agent_id = ''", [sid]) if root else (" AND agent_id = ?", [sid, agent])
     sizes = [
-        (ts, size)
-        for ts, size in conn.execute(
-            "SELECT ts, input_tokens + cache_read_tokens + cache_creation_tokens FROM requests"
-            f" WHERE session_id = ?{agent_sql} AND NOT is_error ORDER BY ts",
+        row
+        for row in conn.execute(
+            "SELECT input_tokens + cache_read_tokens + cache_creation_tokens, tool_tokens, max_prompt_tokens,"
+            f" request_bytes, available_tools FROM requests WHERE session_id = ?{agent_sql} AND NOT is_error ORDER BY ts",
             params,
         )
-        if size
+        if row[0]
     ]
     if not sizes:
         return None
-    values = [size for _ts, size in sizes]
+    values = [row[0] for row in sizes]
     step = max(1, len(values) // _CONTEXT_POINTS)
+
+    def newest(index: int) -> int | None:
+        return next((row[index] for row in reversed(sizes) if row[index] is not None), None)
+
+    limit = newest(2)
+    body_sizes = [row[3] for row in sizes if row[3] is not None]
+    events = conn.execute(
+        "SELECT ts, tool, trigger, before_tokens, after_tokens, duration_ms FROM context_events"
+        f" WHERE session_id = ?{agent_sql} AND kind = 'compaction' ORDER BY ts",
+        params,
+    ).fetchall()
+    split = None
+    if root:
+        split = conn.execute(
+            "SELECT ts, current_tokens, system_tokens, conversation_tokens, tool_tokens FROM context_events"
+            " WHERE session_id = ? AND kind = 'split' ORDER BY ts DESC LIMIT 1",
+            (sid,),
+        ).fetchone()
     return {
+        "tool_tokens": newest(1),
+        "prompt_limit": limit,
+        "limit_share": values[-1] / limit if limit else None,
+        "request_bytes_last": body_sizes[-1] if body_sizes else None,
+        "request_bytes_peak": max(body_sizes) if body_sizes else None,
+        "available_tools": newest(4),
+        "compactions": [
+            {
+                "ts": ts,
+                "tool": tool,
+                "trigger": trigger or None,
+                "before": before,
+                "after": after,
+                "freed": before - after if before is not None and after is not None else None,
+                "duration_ms": took,
+            }
+            for ts, tool, trigger, before, after, took in events
+        ],
+        "split": dict(zip(("ts", "current", "system", "conversation", "tools"), split)) if split else None,
         "calls": len(values),
         "first": values[0],
         "last": values[-1],

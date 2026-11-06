@@ -193,9 +193,20 @@ CREATE TABLE IF NOT EXISTS requests (
     duration_ms REAL DEFAULT 0, finish_reason TEXT DEFAULT '',
     is_error INTEGER DEFAULT 0, error_type TEXT DEFAULT '',
     http_status INTEGER DEFAULT 0, source TEXT DEFAULT '', prompt_id TEXT DEFAULT '',
-    ttft_ms REAL DEFAULT 0
+    ttft_ms REAL DEFAULT 0, tool_tokens INTEGER, max_prompt_tokens INTEGER,
+    request_bytes INTEGER, available_tools INTEGER
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_requests_dedup ON requests(dedup_key) WHERE dedup_key != '';
+
+-- Compactions and context splits that a tool records. A NULL is a value it did not report.
+CREATE TABLE IF NOT EXISTS context_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, dedup_key TEXT DEFAULT '', ts REAL, session_id TEXT,
+    agent_id TEXT DEFAULT '', tool TEXT, kind TEXT, trigger TEXT DEFAULT '',
+    before_tokens INTEGER, after_tokens INTEGER, duration_ms REAL,
+    current_tokens INTEGER, system_tokens INTEGER, conversation_tokens INTEGER, tool_tokens INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_context_events_dedup ON context_events(dedup_key) WHERE dedup_key != '';
+CREATE INDEX IF NOT EXISTS idx_context_events_session ON context_events(session_id, ts);
 
 CREATE TABLE IF NOT EXISTS tool_invocations (
     id INTEGER PRIMARY KEY AUTOINCREMENT, dedup_key TEXT DEFAULT '',
@@ -844,6 +855,11 @@ class RequestRow:
     source_ts: float = 0.0  # embedded timestamp from source data (0 = absent)
     ttft_ms: float = 0.0
     dedup_key: str = ""  # set by a writer whose source names the call; otherwise computed at flush
+    # None means the source did not report the value.
+    tool_tokens: int | None = None
+    max_prompt_tokens: int | None = None
+    request_bytes: int | None = None
+    available_tools: int | None = None
 
 
 @dataclass(slots=True)
@@ -985,6 +1001,29 @@ class AgentRow:
 
 
 @dataclass(slots=True)
+class ContextEventRow:
+    """A compaction, or a split of the context by kind, as a tool's session file records it.
+
+    None means that the tool did not report the value.
+    """
+
+    dedup_key: str
+    ts: float
+    session_id: str
+    kind: str  # compaction | split
+    agent_id: str = ""
+    tool: str = ""
+    trigger: str = ""
+    before_tokens: int | None = None
+    after_tokens: int | None = None
+    duration_ms: float | None = None
+    current_tokens: int | None = None
+    system_tokens: int | None = None
+    conversation_tokens: int | None = None
+    tool_tokens: int | None = None
+
+
+@dataclass(slots=True)
 class CallFacts:
     """Rows read from a tool's own session files, written in one transaction."""
 
@@ -994,10 +1033,12 @@ class CallFacts:
     skills: list[SkillUseRow] = field(default_factory=list)
     agents: list[AgentRow] = field(default_factory=list)
     file_writes: list[FileWriteRow] = field(default_factory=list)
+    context_events: list[ContextEventRow] = field(default_factory=list)
 
     def __len__(self) -> int:
         return (
-            len(self.requests)
+            len(self.context_events)
+            + len(self.requests)
             + len(self.tools)
             + len(self.prompts)
             + len(self.skills)
@@ -1140,12 +1181,17 @@ def _sessions_read_from_transcripts(conn: sqlite3.Connection, rows: list[Request
 _REQUEST_UPSERT = (
     "INSERT INTO requests(dedup_key, ts, session_id, agent_id, tool, project_path, model, input_tokens,"
     " output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, duration_ms, finish_reason,"
-    " is_error, error_type, http_status, source, ttft_ms)"
-    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    " is_error, error_type, http_status, source, ttft_ms, tool_tokens, max_prompt_tokens, request_bytes,"
+    " available_tools)"
+    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
     " ON CONFLICT(dedup_key) WHERE dedup_key != '' DO UPDATE SET"
     " input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens,"
     " cache_read_tokens=excluded.cache_read_tokens, cache_creation_tokens=excluded.cache_creation_tokens,"
     " cost_usd=excluded.cost_usd, tool=excluded.tool,"
+    " tool_tokens=COALESCE(excluded.tool_tokens, requests.tool_tokens),"
+    " max_prompt_tokens=COALESCE(excluded.max_prompt_tokens, requests.max_prompt_tokens),"
+    " request_bytes=COALESCE(excluded.request_bytes, requests.request_bytes),"
+    " available_tools=COALESCE(excluded.available_tools, requests.available_tools),"
     " model=CASE WHEN excluded.model NOT IN ('', 'unknown') THEN excluded.model ELSE requests.model END,"
     " agent_id=CASE WHEN excluded.agent_id != '' THEN excluded.agent_id ELSE requests.agent_id END,"
     " project_path=CASE WHEN excluded.project_path != '' THEN excluded.project_path ELSE requests.project_path END,"
@@ -1176,6 +1222,10 @@ def _request_params(r: RequestRow) -> tuple:
         r.http_status,
         TRANSCRIPT_SOURCE,
         round(r.ttft_ms, 1),
+        r.tool_tokens,
+        r.max_prompt_tokens,
+        r.request_bytes,
+        r.available_tools,
     )
 
 
@@ -1691,6 +1741,7 @@ _EVICTION_ORDER = (
     "tool_stats",
     "file_history",
     # Usage records go last: they are what the dashboard reports.
+    "context_events",
     "session_prompts",
     "skill_uses",
     "file_write_events",
@@ -1699,7 +1750,7 @@ _EVICTION_ORDER = (
 )
 # A row of these tables stays this long, even over the limit. Other data can use the
 # space, and removing the recent record of what happened would not make room for it.
-_EVICT_ONLY_OLDER = frozenset({"session_prompts", "skill_uses", "file_write_events", "tool_invocations", "requests"})
+_EVICT_ONLY_OLDER = frozenset({"context_events", "session_prompts", "skill_uses", "file_write_events", "tool_invocations", "requests"})
 EVICT_KEEP_DAYS = 7
 
 
@@ -1806,6 +1857,7 @@ _RETENTION_TABLES = (
     "tool_invocations",
     "session_prompts",
     "skill_uses",
+    "context_events",
 )
 
 
@@ -4697,6 +4749,19 @@ class HistoryDB:
                 " VALUES(?,?,?,?,?,?,?,?)",
                 [(r.dedup_key, r.ts, r.session_id, r.agent_id, r.tool, r.project_path, r.name, r.trigger) for r in facts.skills],
             )
+            conn.executemany(
+                "INSERT OR IGNORE INTO context_events"
+                "(dedup_key, ts, session_id, agent_id, tool, kind, trigger, before_tokens, after_tokens, duration_ms,"
+                " current_tokens, system_tokens, conversation_tokens, tool_tokens)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [
+                    (
+                        r.dedup_key, r.ts, r.session_id, r.agent_id, r.tool, r.kind, r.trigger, r.before_tokens, r.after_tokens,
+                        r.duration_ms, r.current_tokens, r.system_tokens, r.conversation_tokens, r.tool_tokens,
+                    )
+                    for r in facts.context_events
+                ],
+            )
             conn.executemany(_SUBAGENT_UPSERT, [_subagent_params(r) for r in facts.agents])
             self._write_transcript_file_edits(conn, facts.file_writes)
             self._drop_superseded_rows(conn, facts)
@@ -4784,7 +4849,7 @@ class HistoryDB:
     def set_sessions_tool(self, session_ids: list[str], tool: str) -> None:
         """Re-attribute sessions' fact rows, when their surface becomes known after they were written."""
         conn = self._conn()
-        for table in ("requests", "tool_invocations", "session_prompts", "skill_uses", "agents", "file_write_events"):
+        for table in ("requests", "tool_invocations", "session_prompts", "skill_uses", "agents", "file_write_events", "context_events"):
             conn.executemany(
                 f"UPDATE {table} SET tool = ? WHERE session_id = ? AND tool != ?",
                 [(tool, session_id, tool) for session_id in session_ids],
@@ -6002,6 +6067,7 @@ class HistoryDB:
         result["tool_invocations_deleted_30d"] = self._delete_range(conn, "tool_invocations", floor, cutoff_retention)
         result["session_prompts_deleted_30d"] = self._delete_range(conn, "session_prompts", floor, cutoff_retention)
         result["skill_uses_deleted_30d"] = self._delete_range(conn, "skill_uses", floor, cutoff_retention)
+        result["context_events_deleted_30d"] = self._delete_range(conn, "context_events", floor, cutoff_retention)
 
         # 11. Garbage-collect orphaned file blobs (referenced by neither
         # files nor file_history — orphans accumulate as files change and

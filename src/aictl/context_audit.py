@@ -119,6 +119,7 @@ class Source:
     symlink_target: str = ""
     truncated: bool = False
     readable: bool = True  # False names a source no file shows in full
+    loaded_sessions: int | None = None  # Session files that show this file loaded. None: no such record.
     transient: bool = False  # True is left out of drift, e.g. a live process flag
     note: str = ""
     in_project: bool = False
@@ -1987,12 +1988,27 @@ def _parse_transcript(path: Path) -> dict:
     facts: dict = {"session_id": path.stem, "first_tokens": 0, "loaded": [], "blocks": {}, "writes": []}
     with path.open("rb") as fh:
         if st.st_size > TRANSCRIPT_MAX_BYTES:
-            fh.seek(st.st_size - TRANSCRIPT_MAX_BYTES)
-            fh.readline()
+            _read_transcript_start(fh, st.st_size - TRANSCRIPT_MAX_BYTES, facts)
         for raw in fh:
             _parse_transcript_line(raw, facts)
     _TRANSCRIPT_CACHE[str(path)] = (st.st_mtime_ns, st.st_size, facts)
     return facts
+
+
+def _read_transcript_start(fh: Any, tail_start: int, facts: dict) -> None:
+    """Read a large file up to its first request, then move to where the tail starts.
+
+    The first request and the files loaded for it are at the start of the file, so a read of
+    the tail alone takes a request from the middle of the session as the first one.
+    """
+    while not facts["first_tokens"] and fh.tell() < tail_start:
+        raw = fh.readline()
+        if not raw:
+            return
+        _parse_transcript_line(raw, facts)
+    if fh.tell() < tail_start:
+        fh.seek(tail_start)
+        fh.readline()
 
 
 def _parse_transcript_line(raw: bytes, facts: dict) -> None:
@@ -2022,6 +2038,11 @@ def _parse_attachment(att: dict, facts: dict) -> None:
     kind = att.get("type")
     if kind in ("nested_memory", "memory", "claude_md") and att.get("path"):
         facts["loaded"].append(str(att["path"]))
+    elif kind == "instructions":
+        files = att.get("files")
+        for entry in files if isinstance(files, list) else []:
+            if isinstance(entry, dict) and entry.get("path"):
+                facts["loaded"].append(str(entry["path"]))
     elif kind == "mcp_instructions_delta":
         names = att.get("addedNames") or []
         blocks = att.get("addedBlocks") or []
@@ -2348,6 +2369,20 @@ def _unknown_sources(loaded: list[str], sources: list[Source], project: Path, fi
     return unknown
 
 
+def _mark_loaded_sessions(sources: list[Source], transcripts: list[dict]) -> None:
+    """Say on each Claude Code file source how many of the session files read show it loaded."""
+    if not transcripts:
+        return
+    counts: dict[str, int] = {}
+    for transcript in transcripts:
+        for key in {_path_key(raw) for raw in transcript["loaded"]}:
+            counts[key] = counts.get(key, 0) + 1
+    for source in sources:
+        if source.tool == "claude-code" and source.loading != "dynamic":
+            real = _path_key(Path(source.path).resolve())
+            source.loaded_sessions = max(counts.get(_path_key(source.path), 0), counts.get(real, 0))
+
+
 def _unattributed(transcripts: list[dict], sources: list[Source], dynamic_tokens: int, findings: list[Finding]) -> list[dict]:
     firsts = [t["first_tokens"] for t in transcripts if t.get("first_tokens")]
     if not firsts:
@@ -2657,6 +2692,7 @@ def run_audit(
 
     loaded = [p for t in transcripts for p in t["loaded"]] + _db_loaded_paths()
     unknown = _unknown_sources(loaded, sources, root, findings)
+    _mark_loaded_sessions(sources, transcripts)
     unattributed = _unattributed(transcripts, sources, dynamic_tokens, findings)
     lap("visibility", mark)
 
@@ -2697,4 +2733,5 @@ def run_audit(
         "effective_models": {t: e for t, e in effective_models.items() if _tool_matches(t, tool)},
         "unattributed": unattributed,
         "unknown_loaded": unknown,
+        "transcripts_read": len(transcripts),
     }

@@ -32,6 +32,7 @@ from ..data.model_pricing import is_billable_model, normalize_model_id, request_
 from ..storage import (
     AgentRow,
     CallFacts,
+    ContextEventRow,
     FileWriteRow,
     RequestRow,
     SessionPromptRow,
@@ -68,6 +69,11 @@ def to_float(value: Any) -> float:
         return float(value or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def to_count(value: Any) -> int | None:
+    """A number the source reported, or None when it reported none."""
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
 def list_price(model: str, input_tokens: int, output_tokens: int, read: int, write: int, write_1h: int, ts: float) -> float:
@@ -234,6 +240,7 @@ class FactBuffer:
         self.skills: dict[str, SkillUseRow] = {}
         self.agents: dict[str, AgentRow] = {}
         self.file_writes: dict[str, FileWriteRow] = {}
+        self.context_events: dict[str, ContextEventRow] = {}
         self.surface: Callable[[str], str] | None = None
         self.written = 0
 
@@ -273,9 +280,15 @@ class FactBuffer:
         if self._in_window(row.ts):
             self.file_writes[row.dedup_key] = row
 
+    def add_context_event(self, row: ContextEventRow) -> None:
+        if self._in_window(row.ts):
+            # Files are read oldest first, so the first line of a replayed event is the original.
+            self.context_events.setdefault(row.dedup_key, row)
+
     def __len__(self) -> int:
         return (
-            len(self.requests)
+            len(self.context_events)
+            + len(self.requests)
             + len(self.tools)
             + len(self.prompts)
             + len(self.skills)
@@ -295,7 +308,7 @@ class FactBuffer:
             self._clear()
             return
         rows = [*self.requests.values(), *self.tools.values(), *self.prompts.values(), *self.skills.values()]
-        rows += [*self.agents.values(), *self.file_writes.values()]
+        rows += [*self.agents.values(), *self.file_writes.values(), *self.context_events.values()]
         if self.surface is not None:
             for row in rows:
                 if row.tool == "copilot-cli":
@@ -307,6 +320,7 @@ class FactBuffer:
             skills=list(self.skills.values()),
             agents=list(self.agents.values()),
             file_writes=list(self.file_writes.values()),
+            context_events=list(self.context_events.values()),
         )
         try:
             self.written += writer(facts)
@@ -318,6 +332,7 @@ class FactBuffer:
     def _clear(self) -> None:
         self.requests, self.tools, self.prompts = {}, {}, {}
         self.skills, self.agents, self.file_writes = {}, {}, {}
+        self.context_events = {}
 
 
 def _keep_text(store: Any) -> bool:
@@ -516,7 +531,28 @@ class ClaudeFacts:
             )
         )
 
+    def _compaction(self, sid: str, obj: dict, ts: float, agent_id: str) -> None:
+        meta = obj.get("compactMetadata") if isinstance(obj.get("compactMetadata"), dict) else {}
+        # A resumed session replays the line with the same id, so the key leaves the session out.
+        self.buffer.add_context_event(
+            ContextEventRow(
+                dedup_key=_dedup_key("claude-compact", str(obj.get("uuid") or f"{sid}{ts}")),
+                ts=ts,
+                session_id=sid,
+                agent_id=agent_id or (str(obj.get("agentId") or "") if obj.get("isSidechain") else ""),
+                tool="claude-code",
+                kind="compaction",
+                trigger=str(meta.get("trigger") or ""),
+                before_tokens=to_count(meta.get("preTokens")),
+                after_tokens=to_count(meta.get("postTokens")),
+                duration_ms=to_count(meta.get("durationMs")),
+            )
+        )
+
     def _system_line(self, sid: str, obj: dict, ts: float, agent_id: str) -> None:
+        if obj.get("subtype") == "compact_boundary":
+            self._compaction(sid, obj, ts, agent_id)
+            return
         if obj.get("subtype") != "api_error":
             return
         error = obj.get("error") if isinstance(obj.get("error"), dict) else {}
@@ -797,6 +833,9 @@ class CopilotFacts:
             used = data.get("compactionTokensUsed")
             if isinstance(used, dict):
                 self._compactions.append((used, ts, str(data.get("requestId") or "")))
+            self._compaction(data, ts, agent_id, event_id)
+        elif kind == "session.shutdown":
+            self._split(data, ts, agent_id, event_id)
         elif kind == "session.error":
             self._api_error(data, ts, agent_id, event_id)
         elif kind == "user.message":
@@ -852,6 +891,46 @@ class CopilotFacts:
                 duration_ms=to_float(usage.get("duration")),
                 ttft_ms=to_float(usage.get("timeToFirstTokenMs") or usage.get("outputTtftMs")),
                 finish_reason=str(usage.get("finishReason") or ""),
+                tool_tokens=to_count(usage.get("toolTokenCount")),
+                max_prompt_tokens=to_count(usage.get("maxPromptTokens")),
+                request_bytes=to_count(usage.get("requestBodyBytes")),
+                available_tools=to_count(usage.get("availableToolCount")),
+            )
+        )
+
+    def _compaction(self, data: dict, ts: float, agent_id: str, event_id: str) -> None:
+        if data.get("success") is False:
+            return
+        self.buffer.add_context_event(
+            ContextEventRow(
+                dedup_key=_dedup_key("copilot-compact", self.sid, event_id or str(ts)),
+                ts=ts,
+                session_id=self.sid,
+                agent_id=agent_id,
+                tool="copilot-cli",
+                kind="compaction",
+                trigger=str(data.get("trigger") or ""),
+                before_tokens=to_count(data.get("preCompactionTokens")),
+                after_tokens=to_count(data.get("postCompactionTokens")),
+            )
+        )
+
+    def _split(self, data: dict, ts: float, agent_id: str, event_id: str) -> None:
+        """The session's own split of its context when it shut down."""
+        if not to_count(data.get("currentTokens")):
+            return
+        self.buffer.add_context_event(
+            ContextEventRow(
+                dedup_key=_dedup_key("copilot-split", self.sid, event_id or str(ts)),
+                ts=ts,
+                session_id=self.sid,
+                agent_id=agent_id,
+                tool="copilot-cli",
+                kind="split",
+                current_tokens=to_count(data.get("currentTokens")),
+                system_tokens=to_count(data.get("systemTokens")),
+                conversation_tokens=to_count(data.get("conversationTokens")),
+                tool_tokens=to_count(data.get("toolDefinitionsTokens")),
             )
         )
 
