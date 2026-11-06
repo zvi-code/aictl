@@ -502,7 +502,7 @@ class TestFilters:
         payload = _board(db, tools=("codex-cli",), project="/p/gamma")
         assert {t["id"] for t in payload["options"]["tools"]} == {"claude-code", "copilot-vscode", "codex-cli"}
         assert {p["id"] for p in payload["options"]["projects"]} == {"/p/alpha", "/p/beta", "/p/gamma"}
-        assert payload["scope"] == {"shown_agents": 1, "all_agents": 6, "listed_agents": 1}
+        assert payload["scope"] == {"shown_agents": 1, "shown_sessions": 1, "all_agents": 6, "listed_agents": 1}
 
     def test_cpu_and_memory_follow_only_tool_and_time(self, db):
         unfiltered = _board(db)["series"]
@@ -1020,7 +1020,7 @@ class TestLiveProcessSessions:
         assert row["cpu_percent"] == 4.0
         assert row["mem_mb"] == 40.0
         assert payload["kpis"]["running"] == 1
-        assert payload["scope"] == {"shown_agents": 1, "all_agents": 1, "listed_agents": 1}
+        assert payload["scope"] == {"shown_agents": 1, "shown_sessions": 1, "all_agents": 1, "listed_agents": 1}
         assert {p["agent_id"] for p in payload["processes"]} == {"real"}
 
     def test_a_known_pid_link_merges_whatever_the_project_says(self, db):
@@ -2336,3 +2336,25 @@ def test_a_slow_board_refreshes_less_often(db, monkeypatch):
     assert refreshes == []
     board_api.board_bytes(db, None, query, 5021.0, background=True)
     assert len(refreshes) == 1
+
+
+class TestLoopInputs:
+    def test_failures_with_different_inputs_and_no_target_are_not_a_loop(self):
+        calls = [board_api._Call(float(i), "start_session", "", 1, None, f'{{"n": {i}}}') for i in range(8)]
+        assert board_api.find_loops(calls) == []
+
+    def test_the_same_failing_input_is_a_loop(self):
+        calls = [board_api._Call(float(i), "start_session", "", 1, None, '{"n": 1}') for i in range(4)]
+        assert board_api.find_loops(calls)[0]["repeats"] == 4
+
+
+def test_the_tool_drawer_keeps_to_the_time_range(db):
+    conn = db._conn()
+    conn.executemany(
+        "INSERT INTO tool_invocations(ts, session_id, tool, tool_name, dedup_key) VALUES(?,?,?,?,?)",
+        [(100.0 + i, "w", "copilot-cli", "windowed", f"w{i}") for i in range(5)],
+    )
+    conn.commit()
+    _status, inside = board_api.tool_detail(db, "windowed", 1000.0, 100.0, 103.0)
+    assert inside["total"] == 3 and len(inside["calls"]) == 3
+    assert board_api.tool_detail(db, "windowed", 1000.0, 500.0, 600.0)[1]["total"] == 0

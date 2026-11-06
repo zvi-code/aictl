@@ -368,6 +368,8 @@ class ClaudeFacts:
         self._api_starts: dict[str, float] = {}
         self._last_user_ts: dict[str, float] = {}
         self._tools_seen: set[str] = set()
+        self._tool_message: dict[str, str] = {}
+        self._message_last_block: dict[str, float] = {}
         self._pending: dict[str, tuple[ToolInvocationRow, str, dict]] = {}
         self._open_agents: dict[str, AgentRow] = {}
 
@@ -592,6 +594,9 @@ class ClaudeFacts:
                 target=target_of(args, self.keep_text),
             )
             self._pending[tool_id] = (row, cwd, args)
+            message_id = str(msg.get("id") or "")
+            self._tool_message[tool_id] = message_id
+            self._message_last_block[message_id] = max(self._message_last_block.get(message_id, 0.0), ts)
             self.buffer.add_tool(row)
             if name == "Skill" and isinstance(args.get("skill"), str):
                 self._skill(tool_id, sid, args["skill"], "agent-invoked", ts, agent_id, cwd)
@@ -601,12 +606,7 @@ class ClaudeFacts:
         if not isinstance(content, list):
             return
         decision = obj.get("permissionDecision") if isinstance(obj.get("permissionDecision"), dict) else {}
-        confirm = ""
-        if decision.get("decision") == "accept":
-            # user_temporary, user_permanent: a person answered. Otherwise a rule decided.
-            confirm = "approved" if str(decision.get("source") or "").startswith("user") else "auto"
-        elif decision.get("decision") == "reject" or obj.get("toolDenialKind"):
-            confirm = "denied"
+        confirm = _claude_confirm(decision, obj.get("toolDenialKind"))
         for block in content:
             if not isinstance(block, dict) or block.get("type") != "tool_result":
                 continue
@@ -616,7 +616,12 @@ class ClaudeFacts:
             row, cwd, args = pending
             failed = bool(block.get("is_error"))
             text = _text_of(block.get("content")) if not isinstance(block.get("content"), str) else block["content"]
-            row.duration_ms = max(0.0, (ts - row.ts) * 1000)
+            # A message's calls run when its last block is written, not when each block is.
+            started = max(row.ts, self._message_last_block.get(self._tool_message.pop(row.source_event_id, ""), 0.0))
+            row.duration_ms = max(0.0, (ts - started) * 1000)
+            if confirm in _PERSON_DECIDED or row.tool_name in _PERSON_TOOLS:
+                # This time holds a person's wait, and the file does not say how much of it.
+                row.duration_ms = 0.0
             row.is_error = 1 if failed else 0
             row.confirm = confirm
             if failed:
@@ -697,8 +702,24 @@ def confirm_from_permission(result: Any, decision_source: Any) -> str:
     if not kind:
         return ""
     if kind.startswith("denied"):
-        return "denied"
+        # Only an interactive denial is a person's answer. A rule, or no way to ask, is not.
+        return "denied" if "interactively" in kind else "blocked"
     return "auto" if decision_source == "host_policy" else "approved"
+
+
+# ``confirm`` values. approved and denied: a person answered now. auto: a rule, or an earlier
+# "always", let the call through. blocked: a rule or hook stopped it and nobody was asked.
+_PERSON_DECIDED = frozenset({"approved", "denied"})
+_PERSON_TOOLS = frozenset({"AskUserQuestion", "ask_user"})
+
+
+def _claude_confirm(decision: dict, denial_kind: Any) -> str:
+    source = str(decision.get("source") or "")
+    if decision.get("decision") == "accept":
+        return "approved" if source == "user_temporary" else "auto"
+    if decision.get("decision") == "reject" or denial_kind:
+        return "denied" if source.startswith("user") else "blocked"
+    return ""
 
 
 class CopilotFacts:
@@ -928,16 +949,21 @@ class CopilotFacts:
             )
         else:
             row.duration_ms = max(0.0, (ts - row.ts) * 1000)
-        failed = data.get("success") is False
+        shell = data.get("shellExecution") if isinstance(data.get("shellExecution"), dict) else {}
+        # A shell command that ran and exited with an error can still report success.
+        failed = data.get("success") is False or (isinstance(shell.get("exitCode"), int) and shell["exitCode"] != 0)
         row.is_error = 1 if failed else 0
         error = data.get("error") if isinstance(data.get("error"), dict) else {}
         if failed and self.keep_text:
             row.result_summary = _redact(str(error.get("message") or error.get("code") or "")[:RESULT_MAX_CHARS])
-        shell = data.get("shellExecution") if isinstance(data.get("shellExecution"), dict) else {}
         if isinstance(shell.get("exitCode"), int):
             row.exit_code = shell["exitCode"]
         # The runtime records a permission event whenever it asks, so no event means nobody was asked.
         row.confirm, row.confirm_wait_ms = self._confirms.pop(call_id, ("auto", 0.0))
+        if row.confirm_wait_ms:
+            row.duration_ms = max(0.0, row.duration_ms - row.confirm_wait_ms)
+        if row.tool_name in _PERSON_TOOLS:
+            row.duration_ms = 0.0
         self.buffer.add_tool(row)
         self._file_edits(row, data)
 

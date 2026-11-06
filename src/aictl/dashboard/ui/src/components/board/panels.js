@@ -144,7 +144,9 @@ function panelAgents(ctx, local, pid) {
     };
   };
   const liveN = roots.filter(a => isLive(ctx.stopped[a.id] ? 'stopped' : a.status)).length;
-  const kidCount = agents.length - roots.length;
+  // The list is capped, so the count comes from the totals when the server gives them.
+  const scope = ctx.data.scope || {};
+  const kidCount = scope.shown_sessions != null ? scope.shown_agents - scope.shown_sessions : agents.length - roots.length;
   return {
     sub: liveN + ' running, ' + (roots.length - liveN) + ' ended, ' + kidCount + ' subagents' + (noData ? ', ' + noData + ' with processes only' : ''),
     modes: [{ key: 'group', label: 'Group agents by', def: 'none', items: [['none', 'No groups'], ['project', 'Project'], ['tool', 'Tool'], ['model', 'Model']] }],
@@ -383,25 +385,26 @@ function panelToolCalls(ctx) {
 function panelConfirms(ctx) {
   const c = ctx.data.confirms;
   const pend = c.pending || [];
-  const total = (c.auto || 0) + (c.approved || 0) + (c.denied || 0);
+  const total = (c.auto || 0) + (c.approved || 0) + (c.denied || 0) + (c.blocked || 0);
   const share = v => (total && v ? Math.round((v / total) * 100) + '%' : '');
   const rows = pend.map((p, i) => ({
     id: 'p' + i, go: openAgent(ctx, p.agent_id, 'tools'), sort: { k: 'zz', auto: 1e9 },
     cells: { k: { v: p.name, warn: true, title: p.target }, auto: { v: '' }, approved: { v: '' }, denied: { v: '' }, w: { v: 'waiting ' + fmtDur(ctx.nowS - p.since_ts), cls: 'warn' } },
   })).concat((c.by_tool || []).map(t => ({
     id: t.name, go: () => ctx.actions.openDrawer({ type: 'tool', name: t.name }, true),
-    sort: { k: t.name, auto: t.auto, approved: t.approved, denied: t.denied, w: t.median_wait_s },
-    cells: { k: { v: t.name }, auto: { v: t.auto ?? NA }, approved: { v: t.approved ?? NA }, denied: { v: t.denied ?? NA, cls: t.denied ? 'crit' : 'dim' }, w: { v: t.median_wait_s == null ? NA : Math.round(t.median_wait_s) + ' s', cls: 'dim' } },
+    sort: { k: t.name, auto: t.auto, approved: t.approved, denied: t.denied, blocked: t.blocked, w: t.median_wait_s },
+    cells: { k: { v: t.name }, auto: { v: t.auto ?? NA }, approved: { v: t.approved ?? NA }, denied: { v: t.denied ?? NA, cls: t.denied ? 'crit' : 'dim' }, blocked: { v: t.blocked ?? NA, cls: 'dim', title: 'A rule or hook stopped the call, and nobody was asked' }, w: { v: t.median_wait_s == null ? NA : Math.round(t.median_wait_s) + ' s', cls: 'dim' } },
   })));
   return {
     sub: pend.length ? pend.length + ' waiting now' : 'None waiting',
-    stats: [{ label: 'Asked you', value: c.asked ?? NA }, { label: 'Auto approved', value: c.auto ?? NA }, { label: 'Denied', value: c.denied ?? NA }, { label: 'p95 wait', value: c.p95_wait_s == null ? NA : Math.round(c.p95_wait_s) + ' s' }],
+    stats: [{ label: 'Asked you', value: c.asked ?? NA, title: 'A person answered these, or still has to' }, { label: 'Auto approved', value: c.auto ?? NA, title: 'A rule or an earlier "always" let these through' }, { label: 'You denied', value: c.denied ?? NA }, { label: 'Blocked by a rule', value: c.blocked ?? NA, title: 'A rule or hook stopped these, and nobody was asked' }, { label: 'p95 wait', value: c.p95_wait_s == null ? NA : Math.round(c.p95_wait_s) + ' s', title: 'Only tools that record the wait report this' }],
     segbar: total ? { parts: [
       { label: 'Auto approved', w: c.auto || 0, c: 'var(--s1)', text: share(c.auto), title: c.auto + ' auto approved' },
       { label: 'You approved', w: c.approved || 0, c: 'var(--s3)', text: share(c.approved), title: c.approved + ' approved' },
       { label: 'You denied', w: Math.max(c.denied || 0, 0.001), c: 'var(--s2)', text: '', title: c.denied + ' denied' },
+      { label: 'Blocked by a rule', w: c.blocked || 0, c: 'var(--s4)', text: '', title: (c.blocked || 0) + ' blocked by a rule' },
     ] } : null,
-    table: { cols: [{ k: 'k', l: 'Tool' }, { k: 'auto', l: 'Auto', n: true, w: '44px' }, { k: 'approved', l: 'Yes', n: true, w: '40px' }, { k: 'denied', l: 'No', n: true, w: '36px' }, { k: 'w', l: 'Median wait', n: true, w: '100px' }], rows, sort: { k: 'auto', dir: 'desc' }, none: 'No confirmations in this time.' },
+    table: { cols: [{ k: 'k', l: 'Tool' }, { k: 'auto', l: 'Auto', n: true, w: '44px' }, { k: 'approved', l: 'Yes', n: true, w: '40px' }, { k: 'denied', l: 'No', n: true, w: '36px' }, { k: 'blocked', l: 'Rule', n: true, w: '40px' }, { k: 'w', l: 'Median wait', n: true, w: '100px' }], rows, sort: { k: 'auto', dir: 'desc' }, none: 'No confirmations in this time.' },
   };
 }
 

@@ -19,8 +19,8 @@ export function kpiList(data) {
     { label: 'Tokens', value: fmtN(k.tokens), delta: delta(k.tokens, p.tokens), spark: sp(s.tokens), href: '#sec-usage', title: 'Go to Usage and cost' },
     { label: 'Cached', value: fmtShare(k.cached_share), delta: read == null ? 'n/a' : fmtN(read) + ' read', spark: sp(s.cached), href: '#sec-usage', title: 'Share of input served from cache' },
     { label: 'Cost', value: fmtUsd(k.cost_usd), delta: delta(k.cost_usd, p.cost_usd), spark: sp(s.cost), href: '#sec-usage', title: 'List price, not a bill' },
-    { label: 'Tool calls', value: fmtN(k.tool_calls), delta: delta(k.tool_calls, p.tool_calls), spark: sp(s.tool_calls), href: '#sec-tools', title: 'Go to Tools' },
-    { label: 'Failures', value: fmtN(k.failures), delta: fmtRate(k.fail_rate) + ' of calls', spark: sp(s.failures), href: '#sec-tools', title: 'Failed tool calls and API errors' },
+    { label: 'Tool calls', value: fmtN(k.tool_calls), delta: delta(k.tool_calls, p.tool_calls), spark: sp(s.tool_calls), href: '#sec-tools', title: 'Includes calls that a tool reports only as a total, so this can be above the sum of the Tools panel' },
+    { label: 'Failures', value: fmtN(k.failures), delta: fmtRate(k.fail_rate) + ' of calls', spark: sp(s.failures), href: '#sec-tools', title: 'Failed tool calls. API errors are in the Failures panel.' },
     { label: 'p95 reply', value: fmtMs(k.p95_ms), delta: 'p50 ' + fmtMs(k.p50_ms), spark: sp(s.p95), href: '#sec-tools', title: 'Model reply time' },
     { label: 'Loops', value: k.loops ?? 'n/a', delta: k.loops ? 'Needs a look' : 'None', spark: sp(s.loops), href: '#sec-tools', title: 'Repeated failing work' },
   ];

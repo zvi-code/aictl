@@ -68,7 +68,7 @@ function AgentDrawer({ d, ctx, frame, act }) {
   const tabs = [
     ['overview', 'Overview'],
     ['turns', 'Turns' + (data ? ' (' + (data.turns || []).length + ')' : '')],
-    ['tools', 'Tool calls' + (data ? ' (' + (data.tool_calls || []).length + ')' : a.tool_calls != null ? ' (' + a.tool_calls + ')' : '')],
+    ['tools', 'Tool calls' + (a.tool_calls != null ? ' (' + a.tool_calls + ')' : data ? ' (' + (data.tool_calls || []).length + ')' : '')],
     ['changes', 'Changes'],
     ['errors', 'Failures and loops'],
   ].map(([id, label]) => ({ id, label, on: d.tab === id, pick: () => act.setDrawerTab(id) }));
@@ -146,7 +146,7 @@ function ToolsTab({ data, pending }) {
     sort: { k: 'at', dir: 'desc' }, limit: 120, none: 'No tool calls recorded.',
   }), [data]);
   return html`${pending ? html`<${FixedPanel} id="ap2" title="Waiting for your confirmation"><div class="bd-ptext">${pending.name + ': ' + pending.target}</div></${FixedPanel}>` : null}
-    <${FixedPanel} id="atc" title="Tool calls"><${Table} def=${def} label="Tool calls"/></${FixedPanel}>`;
+    <${FixedPanel} id="atc" title="Tool calls" sub=${data.agent?.tool_calls > (data.tool_calls || []).length ? 'Newest ' + (data.tool_calls || []).length + ' of ' + data.agent.tool_calls + ', with calls of its subagents' : ''}><${Table} def=${def} label="Tool calls"/></${FixedPanel}>`;
 }
 
 function ChangesTab({ data, act }) {
@@ -182,7 +182,7 @@ function ToolDrawer({ d, ctx, frame, act }) {
     rows: (data?.calls || []).map((c, i) => ({ id: i, go: c.agent_id ? () => act.openDrawer({ type: 'agent', id: c.agent_id, tab: 'tools' }) : null, sort: { at: c.ts, ms: c.duration_ms, ok: c.failed ? 1 : 0 }, cells: { at: { v: stamp(c.ts), cls: 'dim' }, target: { v: c.target || NA, cls: 'm' }, ag: { v: (c.agent_id || '').slice(0, 8) || NA, cls: 'dim', title: c.title || '' }, ms: { v: fmtMs(c.duration_ms) }, ok: { v: c.failed ? 'Failed' : 'OK', cls: c.failed ? 'crit' : 'dim' }, conf: { v: c.confirm || NA, cls: 'dim' } } })),
     sort: { k: 'at', dir: 'desc' }, limit: 80, none: 'No calls in this time.', primary: 'target',
   }), [data]);
-  return html`<${Frame} ...${frame} title=${d.name} sub=${data ? (data.calls || []).length + ' calls in this time' : 'Loading...'}>
+  return html`<${Frame} ...${frame} title=${d.name} sub=${data ? (data.total ?? (data.calls || []).length) + ' calls in this time' + ((data.total ?? 0) > (data.calls || []).length ? ', newest ' + data.calls.length + ' listed' : '') : 'Loading...'}>
     ${data ? html`<${FixedPanel} id="tc" title="Calls"><${Table} def=${def} label="Calls"/></${FixedPanel}>` : html`<${Pending} error=${error}/>`}
   </${Frame}>`;
 }
