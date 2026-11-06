@@ -695,6 +695,24 @@ class TestSessionKillAPI:
         assert body["signal"] == "SIGTERM"
         assert body["signaled"] == [1234]
 
+    def test_kill_that_reaches_no_process_is_an_error(self, server, monkeypatch):
+        import aictl.dashboard.api_handlers as ah
+
+        monkeypatch.setattr(ah, "_kill_session_pids", lambda pids, sig: {"signaled": [], "failed": list(pids)})
+        status, body = _post_json(f"{server}/api/session-kill", {"session_id": "live-001", "confirm": True})
+        assert status == 409
+        assert "could be stopped" in body["error"]
+
+    def test_kill_of_an_agent_with_no_process_is_not_found(self, server, monkeypatch):
+        import aictl.dashboard.api_handlers as ah
+        import aictl.dashboard.board_api as board_api
+
+        monkeypatch.setattr(board_api, "live_pids_of", lambda *a: [])
+        monkeypatch.setattr(ah, "_kill_session_pids", lambda *a: pytest.fail("should not signal"))
+        status, body = _post_json(f"{server}/api/session-kill", {"session_id": "stored-id", "confirm": True})
+        assert status == 404
+        assert "no running process" in body["error"]
+
     def test_kill_requires_confirm(self, server, monkeypatch):
         import aictl.dashboard.api_handlers as ah
 

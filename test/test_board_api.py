@@ -208,6 +208,12 @@ def _no_state_from_other_tests():
     board_api._self_memo[:] = [0.0, None]
 
 
+@pytest.fixture(autouse=True)
+def _no_real_process_times(monkeypatch):
+    """The process ids in these tests may be real processes of this machine."""
+    monkeypatch.setattr(board_api, "_process_start", lambda pid: 0.0)
+
+
 @pytest.fixture()
 def db(tmp_path):
     # Routes that read the clock must see this seed as recent, however long the run has taken.
@@ -870,7 +876,7 @@ class TestSections:
         )
         conn.commit()
         rows = _board(db)["memory_files"]
-        assert [r["path"] for r in rows] == ["/p/alpha/CLAUDE.md"]
+        assert [r["path"] for r in rows] == ["/p/alpha/CLAUDE.md", "/p/alpha/other.md"]
         assert rows[0]["tokens"] == 120
         assert rows[0]["read_by"] == "claude-code"
         assert rows[0]["changed_by"] == "claude-code"
@@ -932,9 +938,9 @@ class TestLive:
             tools=[tool],
         )
 
-    def test_live_session_is_running_with_process_numbers(self, db):
+    def test_a_quiet_session_with_a_process_is_idle_with_process_numbers(self, db):
         row = _agent(_board(db, snapshot=self._snapshot()), "done")
-        assert row["status"] == "running"
+        assert row["status"] == "idle"
         assert row["cpu_percent"] == 12.5
         assert row["mem_mb"] == 80.5
         assert row["pids"] == [501]
@@ -965,7 +971,7 @@ class TestLive:
         conn.commit()
         snapshot = SimpleNamespace(sessions=[_live("aider:1:1", "aider", "/p/x", [1], 3000.0)], tools=[])
         payload = _board(db, snapshot=snapshot)
-        assert _agent(payload, "old-b")["status"] == "running"
+        assert _agent(payload, "old-b")["status"] == "idle"
         assert _agent(payload, "old-a")["status"] == "ended"
 
 
@@ -1014,12 +1020,13 @@ class TestLiveProcessSessions:
         payload = _board(db, snapshot=snapshot)
         assert [a["id"] for a in payload["agents"]] == ["real"]
         row = payload["agents"][0]
-        assert row["status"] == "running"
+        assert row["status"] == "idle"
         assert row["input"] == 100
         assert row["pids"] == [101, 102, 103, 104]
         assert row["cpu_percent"] == 4.0
         assert row["mem_mb"] == 40.0
-        assert payload["kpis"]["running"] == 1
+        assert payload["kpis"]["running"] == 0
+        assert payload["kpis"]["idle"] == 1
         assert payload["scope"] == {"shown_agents": 1, "shown_sessions": 1, "all_agents": 1, "listed_agents": 1}
         assert {p["agent_id"] for p in payload["processes"]} == {"real"}
 
@@ -1129,8 +1136,10 @@ class TestLiveProcessSessions:
         payload = _board(db, snapshot=snapshot)
         # looper is the newest claude-code session in /p/alpha, and it was already active.
         assert payload["kpis"]["running"] == 2
-        assert _agent(payload, "looper")["pids"] == [1, 2]
-        assert _agent(payload, "done")["status"] == "failed"
+        # Two processes and two sessions: each session owns one process.
+        assert _agent(payload, "looper")["pids"] == [1]
+        assert _agent(payload, "done")["pids"] == [2]
+        assert _agent(payload, "done")["status"] == "idle"
         rows = [a["id"] for a in payload["agents"]]
         assert rows[-1] == "live:codex-cli:/p/only"
         assert len(rows) == 6 + 1
@@ -1159,7 +1168,7 @@ class TestLiveProcessSessions:
         conn.commit()
         snapshot = SimpleNamespace(sessions=[_live("claude-code:9:1", "claude-code", "/p/one", [9], 7400.0)], tools=[])
         assert agent_detail(db, "older", snapshot, NOW)[1]["agent"]["status"] == "ended"
-        assert agent_detail(db, "real", snapshot, NOW)[1]["agent"]["status"] == "running"
+        assert agent_detail(db, "real", snapshot, NOW)[1]["agent"]["status"] == "idle"
 
 
 class TestRangeKey:
@@ -1471,6 +1480,11 @@ class TestTestClassification:
             "FOO=1 pytest",
             "uv run pytest",
             "pytest | tail -5",
+            "$PY -m pytest test/ -q",
+            "for t in a b; do cargo test $t; done",
+            'V=$(mktemp -d) && python -m pytest -q',
+            "if true; then npm test; fi",
+            "cd /x && " + "A=1 " * 200 + "pytest",
         ],
     )
     def test_runner(self, command):
@@ -2452,3 +2466,125 @@ class TestAgentSkillsAndContext:
         conn.execute("INSERT INTO skill_uses(dedup_key, ts, session_id, tool, name) VALUES('p', 1.0, 's', 'claude-code', 'plug:deep')")
         conn.commit()
         assert board_api.skill_detail(db, "deep", 2.0)[1]["uses"] == 1
+
+
+class TestAgentStatus:
+    def _session_with(self, db, reason, age):
+        conn = db._conn()
+        _session(conn, "s", "claude-code", "/p/idle", NOW - 3000)
+        _request(conn, NOW - age, "s", "claude-code", "/p/idle", SONNET, i=1, finish_reason=reason)
+        conn.commit()
+
+    def test_a_finished_turn_is_idle_after_a_quiet_time(self, db):
+        self._session_with(db, "end_turn", 300)
+        assert _agent(_board(db), "s")["status"] == "idle"
+
+    def test_a_finished_turn_just_now_is_still_running(self, db):
+        self._session_with(db, "end_turn", 30)
+        assert _agent(_board(db), "s")["status"] == "running"
+
+    def test_a_turn_that_called_a_tool_is_running(self, db):
+        self._session_with(db, "tool_use", 300)
+        assert _agent(_board(db), "s")["status"] == "running"
+
+    def test_an_idle_session_with_no_process_ends_after_the_active_window(self, db):
+        self._session_with(db, "end_turn", board_api.ACTIVE_WINDOW_S + 60)
+        assert _agent(_board(db), "s")["status"] == "ended"
+
+    def test_idle_is_a_live_row_but_not_a_running_one(self, db):
+        self._session_with(db, "end_turn", 300)
+        payload = _board(db, project="/p/idle")
+        assert payload["kpis"]["running"] == 0
+        assert payload["kpis"]["idle"] == 1
+        assert _agent(payload, "s")["ended_at"] is None
+
+
+class TestProcessOwnership:
+    def _two_sessions(self, db):
+        conn = db._conn()
+        for sid, ts in (("older", NOW - 200), ("newer", NOW - 100)):
+            _session(conn, sid, "aider", "/p/two", NOW - 3000)
+            _request(conn, ts, sid, "aider", "/p/two", SONNET, i=1)
+        conn.commit()
+
+    def test_each_session_takes_one_process_of_its_project(self, db):
+        self._two_sessions(db)
+        snapshot = SimpleNamespace(
+            sessions=[_live("aider:1:1", "aider", "/p/two", [1], 2500.0), _live("aider:2:1", "aider", "/p/two", [2], 2000.0)],
+            tools=[],
+        )
+        payload = _board(db, snapshot=snapshot)
+        # The process that started last belongs to the session that started last.
+        assert _agent(payload, "newer")["pids"] == [2]
+        assert _agent(payload, "older")["pids"] == [1]
+
+    def test_more_processes_than_sessions_stay_on_the_newest(self, db):
+        self._two_sessions(db)
+        snapshot = SimpleNamespace(
+            sessions=[_live(f"aider:{p}:1", "aider", "/p/two", [p], 2500.0 - p) for p in (1, 2, 3)],
+            tools=[],
+        )
+        payload = _board(db, snapshot=snapshot)
+        got = sorted(_agent(payload, "newer")["pids"] + _agent(payload, "older")["pids"])
+        assert got == [1, 2, 3]
+
+    def test_an_mcp_server_process_does_not_make_a_session_live(self, db):
+        self._two_sessions(db)
+        snapshot = SimpleNamespace(
+            sessions=[_live("aider:1:1", "aider", "/p/two", [1], 2500.0), _live("aider:2:1", "aider", "/p/two", [2], 2400.0)],
+            tools=[SimpleNamespace(tool="aider", meta=False, processes=[_proc(1, kind="cli"), _proc(2, kind="child")])],
+        )
+        payload = _board(db, snapshot=snapshot, project="/p/two")
+        assert _agent(payload, "newer")["pids"] == [1]
+        assert _agent(payload, "older")["pids"] == []
+        assert not [a for a in payload["agents"] if a["id"].startswith("live:")]
+
+    def test_a_process_is_as_old_as_the_operating_system_says(self, monkeypatch):
+        monkeypatch.setattr(board_api, "_process_start", lambda pid: 500.0)
+        assert board_api._earlier_start(900.0, 7) == 500.0
+        monkeypatch.setattr(board_api, "_process_start", lambda pid: 0.0)
+        assert board_api._earlier_start(900.0, 7) == 900.0
+
+    def test_no_row_for_a_process_in_the_home_folder(self, db):
+        snapshot = SimpleNamespace(sessions=[_live("codex-cli:4:1", "codex-cli", str(Path.home()), [4])], tools=[])
+        assert not [a for a in _board(db, snapshot=snapshot)["agents"] if a["id"].startswith("live:")]
+
+    def test_no_row_for_a_process_the_tool_does_not_list(self, db):
+        snapshot = SimpleNamespace(
+            sessions=[_live("codex-cli:4:1", "codex-cli", "/p/shell", [4])],
+            tools=[SimpleNamespace(tool="codex-cli", meta=False, processes=[_proc(5)])],
+        )
+        assert not [a for a in _board(db, snapshot=snapshot)["agents"] if a["id"].startswith("live:")]
+
+
+class TestStopTargets:
+    def test_a_session_gives_its_processes(self, db):
+        conn = db._conn()
+        _session(conn, "s", "aider", "/p/stop", NOW - 3000)
+        _request(conn, NOW - 100, "s", "aider", "/p/stop", SONNET, i=1)
+        conn.commit()
+        snapshot = SimpleNamespace(sessions=[_live("aider:8:1", "aider", "/p/stop", [8, 9], 2000.0)], tools=[])
+        assert board_api.live_pids_of(db, snapshot, "s", NOW) == [8, 9]
+
+    def test_a_placeholder_row_gives_its_processes(self, db):
+        snapshot = SimpleNamespace(sessions=[_live("codex-cli:4:1", "codex-cli", "/p/only", [4])], tools=[])
+        assert board_api.live_pids_of(db, snapshot, "live:codex-cli:/p/only", NOW) == [4]
+
+    def test_an_ended_session_gives_none(self, db):
+        conn = db._conn()
+        _session(conn, "gone", "aider", "/p/stop", NOW - 3000)
+        _request(conn, NOW - 100, "gone", "aider", "/p/stop", SONNET, i=1)
+        conn.commit()
+        assert board_api.live_pids_of(db, SimpleNamespace(sessions=[], tools=[]), "gone", NOW) == []
+
+
+class TestPipedTests:
+    def test_a_pass_behind_a_pipe_is_counted_as_unsure(self, db):
+        conn = db._conn()
+        _session(conn, "t", "aider", "/p/t", NOW - 3000)
+        _request(conn, NOW - 100, "t", "aider", "/p/t", SONNET, i=1)
+        _call(conn, NOW - 90, "t", "aider", "/p/t", "Bash", "pytest -q | tail -5")
+        _call(conn, NOW - 80, "t", "aider", "/p/t", "Bash", "set -o pipefail; pytest -q | tail -5")
+        _call(conn, NOW - 70, "t", "aider", "/p/t", "Bash", "pytest -q")
+        conn.commit()
+        assert _board(db)["tests_piped"] == 1

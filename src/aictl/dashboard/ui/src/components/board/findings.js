@@ -152,7 +152,7 @@ export function buildSettings({ audit, effective, hooks, otel, toolIds }) {
       const label = b.status === 'active' ? b.configured_count + ' active'
         : b.status === 'configured' ? b.configured_count + ' set, none fired'
           : b.status === 'observed' ? 'Fired, not in settings'
-            : b.status === 'missing' ? 'Not installed' : b.status;
+            : b.status === 'missing' ? "aictl's hooks not installed" : b.status;
       h[b.tool] = { v: label, sub: warn ? b.warnings[0] : '', warn };
     }
     rows.push({ label: 'Hooks', values: h });
@@ -161,7 +161,7 @@ export function buildSettings({ audit, effective, hooks, otel, toolIds }) {
     const t = {};
     const on = !!otel.active || !!otel.last_receive_at;
     for (const id of toolIds) t[id] = { v: on ? 'On' : 'Off', sub: on ? '' : 'Tokens are estimates', warn: !on };
-    rows.push({ label: 'Telemetry', values: t });
+    rows.push({ label: 'Telemetry receiver', values: t });
   }
   return { rows, note };
 }

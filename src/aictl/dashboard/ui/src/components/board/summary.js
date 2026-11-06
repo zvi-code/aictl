@@ -14,7 +14,7 @@ export function kpiList(data) {
   const sp = v => sparkPath(v, 54, 16);
   const read = data.by_model.length ? data.by_model.reduce((a, m) => a + (m.cache_read || 0), 0) : null;
   return [
-    { label: 'Agents running', value: k.running ?? 'n/a', delta: k.subagents_running == null ? 'n/a' : '+' + k.subagents_running + ' subagents', spark: sp(s.running), href: '#sec-agents', title: 'Go to Agents' },
+    { label: 'Agents running', value: k.running ?? 'n/a', delta: k.subagents_running == null ? 'n/a' : '+' + k.subagents_running + ' subagents' + (k.idle ? ', ' + k.idle + ' idle' : ''), spark: sp(s.running), href: '#sec-agents', title: 'Go to Agents' },
     { label: 'Messages', value: fmtN(k.messages), delta: delta(k.messages, p.messages), spark: sp(s.messages), href: '#sec-usage', title: 'Go to Usage and cost' },
     { label: 'Tokens', value: fmtN(k.tokens), delta: delta(k.tokens, p.tokens), spark: sp(s.tokens), href: '#sec-usage', title: 'Go to Usage and cost' },
     { label: 'Cached', value: fmtShare(k.cached_share), delta: read == null ? 'n/a' : fmtN(read) + ' read', spark: sp(s.cached), href: '#sec-usage', title: 'Share of input served from cache' },
@@ -36,7 +36,7 @@ const sumLast = map => {
 export function sectionSummary(id, data, series, findingsCount) {
   const k = data.kpis;
   switch (id) {
-    case 'agents': return (k.running ?? 'n/a') + ' running, ' + (k.subagents_running ?? 'n/a') + ' subagents';
+    case 'agents': return (k.running ?? 'n/a') + ' running, ' + (k.idle ? k.idle + ' idle, ' : '') + (k.subagents_running ?? 'n/a') + ' subagents';
     case 'usage': return fmtUsd(k.cost_usd) + ', ' + fmtN(k.tokens) + ', ' + fmtShare(k.cached_share) + ' cached';
     case 'prompts': return data.prompts.length + ' prompts, ' + data.skills.length + ' skills';
     case 'tools': return fmtN(k.tool_calls) + ' calls, ' + fmtRate(k.fail_rate) + ' failed';

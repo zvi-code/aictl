@@ -16,7 +16,7 @@ export const RANGE_BY_ID = Object.fromEntries(RANGES.map(r => [r.id, r]));
 export const DEFAULT_RANGE = '24h';
 export const STATUSES = [
   ['all', 'All'], ['active', 'Active now'], ['running', 'Running'], ['looping', 'Looping'],
-  ['waiting', 'Waiting for you'], ['ended', 'Ended'], ['failed', 'Failed'],
+  ['waiting', 'Waiting for you'], ['idle', 'Idle'], ['ended', 'Ended'], ['failed', 'Failed'],
 ];
 const STATUS_IDS = new Set(STATUSES.map(s => s[0]));
 

@@ -455,15 +455,16 @@ export default function BoardScreen() {
       },
       stopAgent: (ag) => setModal({
         title: 'Stop this agent?',
-        lead: 'This stops ' + ag.title + '. Its files stay as they are, and the session can be resumed in its tool.',
+        lead: 'This stops ' + ag.title + ((ag.pids || []).length ? ' (processes ' + ag.pids.join(', ') + ')' : '') + '. Its files stay as they are, and the session can be resumed in its tool.',
         command: 'aictl session kill ' + ag.id,
         applyLabel: 'Stop agent',
         apply: async () => {
           try {
-            await api.killSession(ag.id);
+            const r = await api.killSession(ag.id);
             setModal(null);
             setStopped(s => ({ ...s, [ag.id]: 1 }));
-            notice('Stopped ' + ag.title);
+            const failed = (r.failed || []).length;
+            notice('Stopped ' + ag.title + ': ' + (r.signaled || []).length + ' processes' + (failed ? ', ' + failed + ' could not be stopped' : ''));
             refresh();
           } catch (e) {
             setModal(null);

@@ -475,9 +475,11 @@ function panelTests(ctx, local, pid, pn) {
   const t = ctx.series.tests || {};
   const series = [{ label: 'Runs passed', c: 'var(--s1)', vals: t.passed || [] }, { label: 'Runs failed', c: 'var(--s2)', vals: t.failed || [] }];
   const list = ctx.data.tests;
-  const runs = sumOf(list.map(x => x.runs));
-  const failed = sumOf(list.map(x => x.failed));
-  const out = chartPanel(ctx, local, pid, pn, { kind: 'stack', series, unit: 'n', h: 74, aria: 'Testing' }, (runs - failed) + ' of ' + runs + ' runs passed');
+  // The list below is capped, so the totals come from the series.
+  const passedRuns = sumOf(t.passed || []);
+  const failedRuns = sumOf(t.failed || []);
+  const out = chartPanel(ctx, local, pid, pn, { kind: 'stack', series, unit: 'n', h: 74, aria: 'Testing' }, passedRuns + ' of ' + (passedRuns + failedRuns) + ' runs passed');
+  if (ctx.data.tests_piped) out.note = ctx.data.tests_piped + ' passed runs end in a pipe with no pipefail, so the exit code is that of the last command. A failed test can count as passed.';
   const stateCls = { Failing: 'crit', Flaky: 'warn', Passing: 'dim' };
   const rows = list.map(x => ({
     id: x.command, sort: { k: x.command, n: x.runs, f: x.failed, d: x.median_ms },
