@@ -85,6 +85,9 @@ COMPACT_CHUNK_ROWS = 5000
 # Long enough for SQLite's busy wait, which sleeps up to 100 ms, to see the gap. With a
 # shorter pause, a long cleanup can keep the other writers out until they time out.
 COMPACT_CHUNK_PAUSE_S = 0.15
+# A cleanup loop rests this many times as long as its last chunk took, so on a big
+# database it uses about a fifth of one core and leaves room for other writers.
+COMPACT_REST_RATIO = 4.0
 # How long a write waits for the lock, and the time after which a write is logged.
 BUSY_TIMEOUT_S = 15.0
 SLOW_WRITE_S = 3.0
@@ -6013,10 +6016,16 @@ class HistoryDB:
         conn.commit()
         return result
 
+    @staticmethod
+    def _rest_after(started: float) -> None:
+        """Pause a cleanup loop after one chunk that began at *started*."""
+        time.sleep(max(COMPACT_CHUNK_PAUSE_S, (time.monotonic() - started) * COMPACT_REST_RATIO))
+
     def _delete_range(self, conn: sqlite3.Connection, table: str, since: float, until: float) -> int:
         """Delete ``since <= ts < until`` in chunks that commit separately."""
         total = 0
         while True:
+            started = time.monotonic()
             cur = conn.execute(
                 f"DELETE FROM {table} WHERE rowid IN"
                 f" (SELECT rowid FROM {table} WHERE ts >= ? AND ts < ? LIMIT {COMPACT_CHUNK_ROWS})",
@@ -6026,7 +6035,7 @@ class HistoryDB:
             total += cur.rowcount
             if cur.rowcount < COMPACT_CHUNK_ROWS:
                 return total
-            time.sleep(COMPACT_CHUNK_PAUSE_S)
+            self._rest_after(started)
 
     def _retention_floor(self, now: float) -> float:
         """Oldest ``ts`` automatic maintenance may touch.
@@ -6087,6 +6096,7 @@ class HistoryDB:
         sets = ", ".join(f"{c}='{b}'" for c, b in columns.items())
         has_text = " OR ".join(f"{c}!='{b}'" for c, b in columns.items())
         while True:
+            started = time.monotonic()
             cur = conn.execute(
                 f"UPDATE {table} SET {sets} WHERE rowid IN (SELECT rowid FROM {table}"
                 f" WHERE {ts_col} >= ? AND {ts_col} < ? AND ({has_text}) LIMIT {COMPACT_CHUNK_ROWS})",
@@ -6096,7 +6106,7 @@ class HistoryDB:
             total += cur.rowcount
             if cur.rowcount < COMPACT_CHUNK_ROWS:
                 return total
-            time.sleep(COMPACT_CHUNK_PAUSE_S)
+            self._rest_after(started)
 
     def _trim_event_text(self, since: float, before: float) -> int:
         conn = self._conn()
@@ -6249,6 +6259,7 @@ class HistoryDB:
         sets = ", ".join(f"{c}='{b}'" for c, b in columns.items())
         has_text = " OR ".join(f"{c}!='{b}'" for c, b in columns.items())
         while self._evictable_bytes() > target:
+            started = time.monotonic()
             cur = conn.execute(
                 f"UPDATE {table} SET {sets} WHERE rowid IN (SELECT rowid FROM {table}"
                 f" WHERE {has_text} ORDER BY {ts_col} LIMIT {COMPACT_CHUNK_ROWS})"
@@ -6257,7 +6268,7 @@ class HistoryDB:
             total += cur.rowcount
             if cur.rowcount == 0:
                 break
-            time.sleep(COMPACT_CHUNK_PAUSE_S)
+            self._rest_after(started)
         if total:
             self._set_state("content_trimmed_before", time.time())
         return total
@@ -6266,6 +6277,7 @@ class HistoryDB:
         conn = self._conn()
         total = 0
         while self._evictable_bytes() > target:
+            started = time.monotonic()
             before = time.time() - EVICT_KEEP_DAYS * _24H if table in _EVICT_ONLY_OLDER else math.inf
             cur = conn.execute(
                 f"DELETE FROM {table} WHERE rowid IN"
@@ -6276,7 +6288,7 @@ class HistoryDB:
             total += cur.rowcount
             if cur.rowcount == 0:
                 break
-            time.sleep(COMPACT_CHUNK_PAUSE_S)
+            self._rest_after(started)
         return total
 
     @property

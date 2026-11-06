@@ -75,6 +75,9 @@ SELF_TTL_S = 10.0
 RESEND_AFTER_S = 60.0
 # A polled answer comes from memory: a newer one is computed behind it, this often at most.
 REFRESH_MIN_S = 10.0
+# A background refresh waits this many times as long as the last one took, so a slow
+# range on a big database uses at most about a tenth of one core while the page polls.
+REFRESH_REST_RATIO = 10.0
 MAX_STALE_S = 60.0
 CLOCK_RANGE_SLACK_S = 120.0
 MEMO_TTL_S = 15.0
@@ -3623,6 +3626,7 @@ _BASE_MEMO = _BaseMemo()
 _BASE_TIMES: dict[tuple, tuple[float, float, float]] = {}
 _SENT: dict[tuple, tuple[str, float, bytes]] = {}
 _COMPUTED_AT: dict[tuple, float] = {}
+_COMPUTE_TOOK: dict[tuple, float] = {}
 _refresh_lock = threading.Lock()
 _refresh_thread: threading.Thread | None = None
 _COMPUTE_LOCK = threading.Lock()
@@ -3682,7 +3686,8 @@ def board_bytes(db: Any, store: Any, query: str, now: float | None = None, backg
         sent = _SENT.get((path, key_filters))
         computed = _COMPUTED_AT.get((path, key_filters))
         if sent is not None and computed is not None and now - computed < MAX_STALE_S:
-            if now - computed >= REFRESH_MIN_S:
+            rest = max(REFRESH_MIN_S, _COMPUTE_TOOK.get((path, key_filters), 0.0) * REFRESH_REST_RATIO)
+            if now - computed >= min(rest, MAX_STALE_S / 2):
                 _refresh_behind(db, store, query, key_filters, version)
             return sent[2]
     return _compute_bytes(db, store, query, key_filters, version, now)
@@ -3710,6 +3715,7 @@ def _compute_bytes(db: Any, store: Any, query: str, key_filters: Filters, versio
         body = _MEMO.get(key)
         if body is not None:
             return body
+        started = time.monotonic()
         base_key = (path, key_filters.since, key_filters.until, filters.buckets, version)
         stamp = _BASE_TIMES.get(base_key)
         if stamp is not None:
@@ -3730,8 +3736,11 @@ def _compute_bytes(db: Any, store: Any, query: str, key_filters: Filters, versio
             while len(_SENT) > MEMO_MAX_KEYS:
                 _SENT.pop(next(iter(_SENT)))
         _COMPUTED_AT[(path, key_filters)] = now
+        _COMPUTE_TOOK[(path, key_filters)] = time.monotonic() - started
         while len(_COMPUTED_AT) > MEMO_MAX_KEYS:
-            _COMPUTED_AT.pop(next(iter(_COMPUTED_AT)))
+            oldest = next(iter(_COMPUTED_AT))
+            _COMPUTED_AT.pop(oldest)
+            _COMPUTE_TOOK.pop(oldest, None)
         _MEMO.put(key, body)
     return body
 

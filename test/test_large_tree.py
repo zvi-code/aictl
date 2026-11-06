@@ -300,3 +300,25 @@ def test_a_session_keeps_a_limited_list_of_touched_files(monkeypatch):
     data = state.to_dict()
     assert len(data["files_touched"]) == 3 and data["files_touched_limited"] is True
     assert state.file_events == 11
+
+
+def test_a_tool_file_written_many_times_gets_one_sample_per_second(monkeypatch):
+    """Each write of a busy tool file made a sample, which reached thousands per second."""
+    sampler, emitted, clock, _ = _sampler(monkeypatch)
+    for _ in range(1000):
+        sampler.record("/home/.copilot/session.jsonl", 10, 10, "copilot-cli")
+    assert len(emitted) == 1
+    clock[0] += 1.1
+    sampler.record("/home/.copilot/session.jsonl", 10, 10, "copilot-cli")
+    assert sum(value for _, value, _ in emitted) == 1001 * 10
+    assert all(tags["tool"] == "copilot-cli" for _, _, tags in emitted)
+
+
+def test_many_tool_files_stay_within_the_limit_and_the_total(monkeypatch):
+    sampler, emitted, clock, _ = _sampler(monkeypatch)
+    for i in range(process.MAX_TOOL_FILE_SAMPLES_PER_S + 100):
+        sampler.record(f"/home/.copilot/f{i}", 1, 1, "copilot-cli")
+    assert len(emitted) == process.MAX_TOOL_FILE_SAMPLES_PER_S
+    clock[0] += 1.1
+    sampler.record("/w/next.o", 1, 1, None)
+    assert sum(value for _, value, _ in emitted) == process.MAX_TOOL_FILE_SAMPLES_PER_S + 101
