@@ -285,8 +285,8 @@ function ActivityReport({ tool, hooksStatus }) {
       ${skillRows.slice(0, 6).map(row => html`<span key=${row.skill}>${row.skill} ${row.count}</span>`)}
     </div>`}
     ${noActivity && html`<div class="cagents-hook-muted" style="margin-top:8px">
-      No hook activity in the last 24h. Tool, skill, and subagent counts require
-      aictl lifecycle hooks — agents that report only via OTel will show zero here.
+      No tool calls, skill uses or subagents stored for this tool in the last 24h.
+      Counts come from the aictl store (hooks, OTel and transcripts), not from hooks alone.
     </div>`}
   </div>`;
 }

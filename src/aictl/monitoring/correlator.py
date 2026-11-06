@@ -71,14 +71,16 @@ class SessionCorrelator:
     def on_process(
         self,
         process: ProcessInfo,
-        cpu_percent: float,
+        cpu_percent: float | None,
         memory_rss: int,
         child_count: int,
         ts: float | None = None,
         is_new: bool = False,
     ) -> None:
+        """Record one process sample. ``cpu_percent`` is None when not yet measured."""
         ts = ts or time.time()
-        self.pid_cpu[process.pid] = cpu_percent
+        if cpu_percent is not None:
+            self.pid_cpu[process.pid] = cpu_percent
         self.pid_mem[process.pid] = memory_rss / 1048576 if memory_rss else 0
         self._handle_process_event_typed(process, cpu_percent, ts, is_new)
 
@@ -91,6 +93,7 @@ class SessionCorrelator:
         self.pid_mem.pop(pid, None)
         if session_id and session_id in self.sessions:
             self.sessions[session_id].pids.discard(pid)
+            self.sessions[session_id].cpu_percent = sum(self.pid_cpu.get(p, 0.0) for p in self.sessions[session_id].pids)
             self.sessions[session_id].last_seen_at = max(self.sessions[session_id].last_seen_at, ts)
 
     def on_network(
@@ -320,7 +323,9 @@ class SessionCorrelator:
 
     # ── Internal typed handlers ────────────────────────────────────
 
-    def _handle_process_event_typed(self, process: ProcessInfo, cpu_percent: float, ts: float, is_new: bool) -> None:
+    def _handle_process_event_typed(
+        self, process: ProcessInfo, cpu_percent: float | None, ts: float, is_new: bool
+    ) -> None:
         self.pid_to_process[process.pid] = process
         self.pid_parent[process.pid] = process.ppid
 
@@ -334,7 +339,12 @@ class SessionCorrelator:
             if workspace:
                 session.workspaces.add(workspace)
 
-        session.add_cpu(ts, cpu_percent)
+        if cpu_percent is None:
+            session.last_seen_at = max(session.last_seen_at, ts)
+        else:
+            # The session's CPU is the sum over the processes it owns (each sample is
+            # one process), not the last sample of whichever process reported last.
+            session.add_cpu(ts, sum(self.pid_cpu.get(pid, 0.0) for pid in session.pids))
         if is_new:
             session.add_subprocess(ts, process.name)
 
@@ -495,9 +505,12 @@ class SessionCorrelator:
         files_touched = len({path for session in session_list for path in session.files_touched})
         file_events = sum(session.file_events for session in session_list)
         state_bytes_written = sum(session.state_bytes_written for session in session_list)
-        cpu_percent = sum(session.cpu_percent for session in session_list)
         peak_cpu_percent = max((session.peak_cpu_percent for session in session_list), default=0.0)
         pids = {pid for session in session_list for pid in session.pids}
+        # Same basis as memory: the latest sample of each live process, summed. A
+        # session's own figure is only refreshed when one of its processes reports.
+        cpu_percent = sum(self.pid_cpu.get(pid, 0.0) for pid in pids)
+        peak_cpu_percent = max(peak_cpu_percent, cpu_percent)  # the peak is never below the present value
         # pid_mem stores MB (see on_process); the report/metric unit is bytes.
         memory_rss_bytes = int(sum(self.pid_mem.get(pid, 0.0) for pid in pids) * 1048576)
         confidence = min(1.0, token_estimate.confidence * 0.65 + mcp.confidence * 0.35)

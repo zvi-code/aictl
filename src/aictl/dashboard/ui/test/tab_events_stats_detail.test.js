@@ -7,6 +7,7 @@ import { html } from 'htm/preact';
 vi.mock('../src/api.js', () => ({
   getEvents: vi.fn(),
   getHistory: vi.fn(),
+  getEventsCount: vi.fn(),
 }));
 
 import * as api from '../src/api.js';
@@ -33,6 +34,7 @@ const CTX = {
 function renderTab(events) {
   api.getEvents.mockResolvedValue(events);
   api.getHistory.mockResolvedValue({ by_tool: {} });
+  api.getEventsCount.mockResolvedValue({ count: events.length });
   return render(html`
     <${SnapContext.Provider} value=${CTX}>
       <${TabEventsStats}/>

@@ -72,6 +72,16 @@ export async function getEvents(opts = {}) {
   return fetchJson(path);
 }
 
+/** True number of events for the same filters as getEvents (no limit). Returns {count}. */
+export async function getEventsCount(opts = {}) {
+  const params = [];
+  if (opts.tool) params.push('tool=' + encodeURIComponent(opts.tool));
+  if (opts.since != null) params.push('since=' + opts.since);
+  if (opts.until != null) params.push('until=' + opts.until);
+  if (opts.sessionId) params.push('session_id=' + encodeURIComponent(opts.sessionId));
+  return fetchJson('/api/events/count' + (params.length ? '?' + params.join('&') : ''));
+}
+
 // ─── Sessions ──────────────────────────────────────────────────
 
 export async function getSessions(opts = {}) {

@@ -654,6 +654,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._serve_tool_config_get()
         elif path.startswith("/api/api-calls"):
             self._serve_api_calls()
+        elif path.startswith("/api/events/count"):
+            self._serve_events_count()
         elif path.startswith("/api/events"):
             self._serve_events()
         elif path.startswith("/api/datapoints"):

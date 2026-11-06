@@ -4,6 +4,15 @@
 const MAX_GLOBAL = 200;
 const MAX_TOOL = 80;
 
+/**
+ * Resident memory of a tool's live processes in MB, or null when not known.
+ * The live record carries `memory_rss_bytes` (summed over the tool's PIDs).
+ */
+export function liveMemMb(live) {
+  const bytes = live?.memory_rss_bytes;
+  return typeof bytes === 'number' && isFinite(bytes) ? bytes / 1048576 : null;
+}
+
 export const GLOBAL_KEYS = ['ts','files','tokens','cpu','mem_mb','mcp','mem_tokens',
                      'live_sessions','live_tokens','live_in_rate','live_out_rate'];
 
@@ -88,7 +97,7 @@ export function appendHistory(prev, data) {
   for(const t of (data.tools || [])) {
     if(t.tool === 'aictl') continue;
     const cpu = t.live?.cpu_percent || 0;
-    const mem = t.live?.mem_mb || 0;
+    const mem = liveMemMb(t.live) || 0;
     const tok = t.tokens || 0;
     const tr = (t.live?.outbound_rate_bps || 0) + (t.live?.inbound_rate_bps || 0);
     if(!bt[t.tool]) bt[t.tool] = { ts: [], cpu: [], mem_mb: [], tokens: [], traffic: [] };

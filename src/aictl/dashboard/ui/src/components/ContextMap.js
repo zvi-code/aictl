@@ -142,7 +142,10 @@ export default function ContextMap() {
   const logW = (tok, max) => (tok > 0 ? Math.max(2, (Math.log10(tok + 1) / Math.log10(max + 1)) * 100) : 0);
 
   return html`<div class="diag-card" role="region" aria-label="Context window map">
-    <h3 style=${{marginBottom:'var(--sp-5)'}}>Context Window Map</h3>
+    <h3 style=${{marginBottom:'var(--sp-2)'}}>Context Window Map</h3>
+    <p class="text-muted text-xs" style=${{marginBottom:'var(--sp-4)'}} data-testid="context-map-basis">
+      Token figures estimate file size at about 4 bytes per token. Files marked "Not sent" (transcripts, logs, config) are counted
+      in the category totals but are not context.</p>
 
     <!-- Policy summary -->
     <div class="flex-row flex-wrap gap-md mb-md">

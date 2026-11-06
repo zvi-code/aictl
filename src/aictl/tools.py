@@ -970,20 +970,31 @@ _token_cache: dict[str, tuple[int, int, int]] = {}
 MAX_FILE_SAMPLES_PER_TOOL = 500
 
 
+_TOKEN_READ_LIMIT = 1_000_000
+
+
+def _token_cache_put(key: str, st: os.stat_result, tokens: int) -> None:
+    if len(_token_cache) >= MAX_TOKEN_CACHE:
+        _token_cache.clear()
+    _token_cache[key] = (st.st_mtime_ns, st.st_size, tokens)
+
+
 def _file_tokens(path: Path, st: os.stat_result) -> int:
     key = str(path)
     hit = _token_cache.get(key)
     if hit is not None and hit[:2] == (st.st_mtime_ns, st.st_size):
         return hit[2]
-    if st.st_size >= 1_000_000:
-        return 0
+    if st.st_size >= _TOKEN_READ_LIMIT:
+        # Too large to read on every discovery: the same estimate as for text
+        # (UTF-8 bytes / 4) taken from the size.
+        tokens = -(-st.st_size // 4)
+        _token_cache_put(key, st, tokens)
+        return tokens
     try:
         tokens = estimate_tokens(path.read_text(errors="replace", encoding="utf-8"))
     except OSError:
         return 0
-    if len(_token_cache) >= MAX_TOKEN_CACHE:
-        _token_cache.clear()
-    _token_cache[key] = (st.st_mtime_ns, st.st_size, tokens)
+    _token_cache_put(key, st, tokens)
     return tokens
 
 

@@ -41,6 +41,7 @@ vi.mock('../src/api.js', () => ({
   getSessionCommits:    () => Promise.resolve({ commits: [] }),
   getSessionMemoryDiff: () => Promise.resolve({ before: '', after: '' }),
   getEvents:            () => Promise.resolve([]),
+  getEventsCount: () => Promise.resolve({ count: 0 }),
   getHistory:           () => Promise.resolve({ timestamps: [], series: {} }),
   getFile:              () => Promise.resolve({ content: '' }),
 }));

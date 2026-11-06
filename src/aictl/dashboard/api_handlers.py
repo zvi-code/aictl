@@ -100,6 +100,16 @@ _IMPORTED_SESSION_SOURCES = {
 _INPUT_MAX_CHARS = 500
 
 
+def tool_history_for_api(tool_data: dict[str, dict[str, list]]) -> dict[str, dict[str, list]]:
+    """Per-tool history series for ``/api/history``, without the series the store does not keep.
+
+    The store samples CPU and memory per process; it keeps no per-tool token or
+    traffic series over time. Those keys are left out, so the page shows them as
+    not available instead of a flat line of zeros.
+    """
+    return {t: {k: v for k, v in series.items() if k not in ("tokens", "traffic")} for t, series in tool_data.items()}
+
+
 def _match_live_session(profile: dict, live_sessions: list[dict]) -> dict | None:
     """Find the live snapshot session that corresponds to a DB profile row.
 
@@ -999,7 +1009,7 @@ class _APIHandlersMixin:
             until = self._qs_float_opt("until")
             data = self._db.query_metrics(since=since, until=until)
             tool_data = self._db.query_tool_metrics(tool=tool_filter, since=since, until=until)
-            data["by_tool"] = tool_data
+            data["by_tool"] = tool_history_for_api(tool_data)
             body = json.dumps(data).encode("utf-8")
         else:
             body = self.server.store.history_json().encode("utf-8")
@@ -1350,6 +1360,25 @@ class _APIHandlersMixin:
 
         self._json_response(events_list)
 
+    def _serve_events_count(self) -> None:
+        """Serve the true number of events for the filters of ``/api/events`` (no limit).
+
+        Params: ?since=<unix_ts>&until=<unix_ts>&tool=<name>&kind=<type>&session_id=<id>
+        Returns ``{count: int}``; ``count`` is ``null`` when there is no store.
+        """
+        db = self._db
+        if not db:
+            self._json_response({"count": None})
+            return
+        count = db.count_events(
+            since=self._qs_float("since", time.time() - 3600),
+            until=self._qs_float_opt("until"),
+            tool=self._qs_get("tool"),
+            kind=self._qs_get("kind"),
+            session_id=self._qs_get("session_id"),
+        )
+        self._json_response({"count": count})
+
     def _serve_datapoint_catalog(self) -> None:
         """Serve the datapoint catalog.
 
@@ -1462,14 +1491,14 @@ class _APIHandlersMixin:
                     "input_truncated": truncated,
                 }
             )
-        by_tool = Counter(c["tool_name"] or "unknown" for c in calls)
-        errors = sum(1 for c in calls if c["is_error"])
+        totals = db.session_tool_invocation_totals(session_id)
         self._json_response(
             {
                 "session_id": session_id,
-                "total": len(calls),
-                "errors": errors,
-                "by_tool": dict(by_tool),
+                "total": totals["total"],
+                "errors": totals["errors"],
+                "by_tool": totals["by_tool"],
+                "returned": len(calls),
                 "calls": calls,
             }
         )

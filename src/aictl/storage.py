@@ -40,6 +40,10 @@ log = logging.getLogger(__name__)
 
 # ─── Defaults ──────────────────────────────────────────────────────
 
+_SOURCE_FILE_EXTS = (
+    ".py", ".js", ".ts", ".jsx", ".tsx", ".css", ".html", ".go", ".rs", ".java", ".rb", ".sh",
+    ".md", ".toml", ".yaml", ".yml", ".json",
+)
 DEFAULT_DB_PATH = config_dir() / "history.db"
 FLUSH_INTERVAL = 10.0  # seconds between batch writes
 # SCHEMA_VERSION is re-exported from aictl.storage_migrations so the
@@ -3164,6 +3168,8 @@ class HistoryDB:
             d["ts"].append(ts)
             d["cpu"].append(cpu)
             d["mem_mb"].append(mem)
+            # Not stored per tool over time; the API leaves these series out
+            # instead of presenting zeros (see api_handlers.tool_history_for_api).
             d["tokens"].append(0)
             d["traffic"].append(0)
         return result
@@ -3202,6 +3208,29 @@ class HistoryDB:
             EventRow(ts=r[0], tool=r[1], kind=r[2], detail=_json(r[3]), session_id=r[4] or "", pid=r[5] or 0)
             for r in rows
         ]
+
+    def count_events(
+        self,
+        since: float | None = None,
+        until: float | None = None,
+        tool: str | None = None,
+        kind: str | None = None,
+        session_id: str | None = None,
+    ) -> int:
+        """Number of events matching the same filters as :meth:`query_events` (no limit)."""
+        where, params = _where(
+            [
+                ("ts >= ?", since),
+                ("ts <= ?", until),
+                ("tool = ?", tool or None),
+                ("kind = ?", kind or None),
+            ]
+        )
+        if session_id:
+            sep = " AND " if where else " WHERE "
+            where += sep + "(session_id = ? OR json_extract(detail, '$.session_id') = ?)"
+            params.extend([session_id, session_id])
+        return int(self._conn().execute(f"SELECT COUNT(*) FROM events{where}", params).fetchone()[0])
 
     def query_session_profiles(
         self,
@@ -3254,6 +3283,7 @@ class HistoryDB:
                     "git_branch": s.get("git_branch", "") or "",
                     "git_commit": s.get("git_commit", "") or "",
                     "project_path": s.get("project_path", "") or "",
+                    "project": s.get("project_path", "") or "",
                     "source": s.get("source", "") or "",
                     "input_tokens": s.get("input_tokens", 0) or 0,
                     "output_tokens": s.get("output_tokens", 0) or 0,
@@ -3268,22 +3298,9 @@ class HistoryDB:
                 profiles[s["session_id"]] = p
                 result.append(p)
 
-            # Enrich with file_modified event counts (sessions table may
-            # not have these populated — the events table is authoritative).
-            file_where = " AND ts <= ?" if until is not None else ""
-            file_params: list[Any] = [since]
-            if until is not None:
-                file_params.append(until)
-            file_rows = conn.execute(
-                "SELECT session_id, COUNT(*) as cnt"
-                " FROM events"
-                " WHERE kind = 'file_modified' AND ts >= ?" + file_where + " AND session_id != ''"
-                " GROUP BY session_id",
-                file_params,
-            ).fetchall()
-            for sid, cnt in file_rows:
-                if sid in profiles and profiles[sid]["files_modified"] < cnt:
-                    profiles[sid]["files_modified"] = cnt
+            # The sessions table rarely holds file/subagent counts; the stored
+            # event, file-write and agent rows are authoritative.
+            self._enrich_profiles_from_store(profiles, since, until)
 
             # Apply the same merge logic used by the event-based path:
             # merge sessions with the same (tool, pid).
@@ -3381,43 +3398,7 @@ class HistoryDB:
             file_params,
         ).fetchall()
 
-        for sid, path, cnt, growth in file_rows:
-            if sid not in sessions:
-                continue
-            s = sessions[sid]
-            s["files_modified"] += cnt
-            s["unique_files"] += 1
-            s["bytes_written"] += growth or 0
-            if path:
-                npath = path.replace("\\", "/")
-                if "/subagents/" in npath:
-                    s["subagents"] += 1
-                elif npath.endswith(".jsonl") and "/projects/" in npath and "/subagents/" not in npath:
-                    s["conversations"] += 1
-                elif any(
-                    npath.endswith(ext)
-                    for ext in (
-                        ".py",
-                        ".js",
-                        ".ts",
-                        ".jsx",
-                        ".tsx",
-                        ".css",
-                        ".html",
-                        ".go",
-                        ".rs",
-                        ".java",
-                        ".rb",
-                        ".sh",
-                        ".md",
-                        ".toml",
-                        ".yaml",
-                        ".yml",
-                        ".json",
-                    )
-                ):
-                    if "/.claude/" not in npath and "/__pycache__/" not in npath:
-                        s["source_files"] += 1
+        self._apply_file_event_rows(sessions, file_rows)
 
         # Activity buckets
         bucket_rows = conn.execute(
@@ -3436,6 +3417,74 @@ class HistoryDB:
                 sessions[sid]["activity"].append([bucket, cnt])
 
         return self._merge_session_profiles(list(sessions.values()))
+
+    @staticmethod
+    def _apply_file_event_rows(sessions: dict[str, dict], file_rows: list) -> None:
+        """Fold ``(sid, path, count, growth_bytes)`` file_modified groups into profiles.
+
+        Sets ``files_modified``, ``unique_files``, ``bytes_written`` and
+        classifies each path as a subagent transcript, a conversation
+        transcript or a source file.
+        """
+        for sid, path, cnt, growth in file_rows:
+            if sid not in sessions:
+                continue
+            s = sessions[sid]
+            s["files_modified"] += cnt
+            s["unique_files"] += 1
+            s["bytes_written"] += growth or 0
+            if path:
+                npath = path.replace("\\", "/")
+                if "/subagents/" in npath:
+                    s["subagents"] += 1
+                elif npath.endswith(".jsonl") and "/projects/" in npath and "/subagents/" not in npath:
+                    s["conversations"] += 1
+                elif npath.endswith(_SOURCE_FILE_EXTS):
+                    if "/.claude/" not in npath and "/__pycache__/" not in npath:
+                        s["source_files"] += 1
+
+    def _enrich_profiles_from_store(self, profiles: dict[str, dict], since: float, until: float | None) -> None:
+        """Fill file and subagent counts of table-backed profiles from stored rows.
+
+        The ``sessions`` row carries a ``files_modified`` counter that ingesters
+        rarely fill; the counts come from ``file_modified`` events (grouped by
+        path), ``file_write_events`` and ``agents``, whichever holds the most.
+        """
+        conn = self._conn()
+        ts_where = " AND ts <= ?" if until is not None else ""
+        ts_params: list[Any] = [since] + ([until] if until is not None else [])
+        ev_rows = conn.execute(
+            "SELECT session_id, json_extract(detail, '$.path'), COUNT(*),"
+            " SUM(json_extract(detail, '$.growth_bytes'))"
+            " FROM events WHERE kind = 'file_modified' AND ts >= ?" + ts_where + " AND session_id != ''"
+            " GROUP BY session_id, json_extract(detail, '$.path')",
+            ts_params,
+        ).fetchall()
+        fresh = {
+            sid: {"files_modified": 0, "unique_files": 0, "bytes_written": 0, "subagents": 0,
+                  "conversations": 0, "source_files": 0}
+            for sid in profiles
+        }
+        self._apply_file_event_rows(fresh, ev_rows)
+        fw_rows = conn.execute(
+            "SELECT session_id, COUNT(*), COUNT(DISTINCT path) FROM file_write_events"
+            " WHERE ts >= ?" + ts_where + " AND session_id != '' GROUP BY session_id",
+            ts_params,
+        ).fetchall()
+        for sid, cnt, uniq in fw_rows:
+            if sid in fresh:
+                fresh[sid]["files_modified"] = max(fresh[sid]["files_modified"], cnt)
+                fresh[sid]["unique_files"] = max(fresh[sid]["unique_files"], uniq)
+        ag_rows = conn.execute(
+            "SELECT session_id, COUNT(DISTINCT agent_id) FROM agents WHERE session_id != '' GROUP BY session_id"
+        ).fetchall()
+        for sid, cnt in ag_rows:
+            if sid in fresh:
+                fresh[sid]["subagents"] = max(fresh[sid]["subagents"], cnt)
+        for sid, f in fresh.items():
+            prof = profiles[sid]
+            for key, val in f.items():
+                prof[key] = max(prof.get(key) or 0, val)
 
     @staticmethod
     def _merge_session_profiles(profiles: list[dict]) -> list[dict]:
@@ -4155,6 +4204,24 @@ class HistoryDB:
                 params,
             )
         )
+
+    def session_tool_invocation_totals(self, session_id: str) -> dict:
+        """True per-session totals of stored tool calls (not limited to a page).
+
+        Returns ``{total, errors, by_tool: {tool_name: count}}``.
+        """
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT COALESCE(NULLIF(tool_name, ''), NULLIF(tool, ''), 'unknown') AS n,"
+            " COUNT(*), SUM(CASE WHEN is_error THEN 1 ELSE 0 END)"
+            " FROM tool_invocations WHERE session_id = ? GROUP BY n",
+            (session_id,),
+        ).fetchall()
+        return {
+            "total": sum(int(r[1] or 0) for r in rows),
+            "errors": sum(int(r[2] or 0) for r in rows),
+            "by_tool": {r[0]: int(r[1] or 0) for r in rows},
+        }
 
     def query_session_cost_by_model(self, session_id: str) -> list[dict]:
         """Aggregate a session's LLM requests grouped by model.

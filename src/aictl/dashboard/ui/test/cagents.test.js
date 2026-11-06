@@ -271,7 +271,7 @@ describe('CAgentsTab — detail panel', () => {
   it('shows an OTel-only hint when an agent has no hook activity', () => {
     const hooks = { ...HOOKS_STATUS, skill_usage: {}, subagents: {}, tool_calls: {} };
     const { getByText } = renderTab(SNAP, hooks);
-    expect(getByText(/No hook activity in the last 24h/)).toBeInTheDocument();
+    expect(getByText(/No tool calls, skill uses or subagents stored/)).toBeInTheDocument();
   });
 
   it('shows exact VS Code hookFilesLocations fix when host ignores hooks', async () => {

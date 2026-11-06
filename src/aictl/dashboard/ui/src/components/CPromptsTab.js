@@ -13,6 +13,15 @@ const VIEWS = [
   { id: 'workflows', label: 'Workflows' },
 ];
 
+// The scan reports slash-command files as kind "commands"; "command" is the older spelling.
+const isCommandKind = (kind) => kind === 'command' || kind === 'commands';
+
+// Files under a test or fixture folder are samples for tests, not the user's prompts.
+export function isTestFixturePath(path) {
+  const p = '/' + String(path || '').replace(/\\/g, '/').toLowerCase();
+  return /\/(fixtures?|__fixtures__|__tests__)\//.test(p);
+}
+
 // Collect prompt files from snap.tools[*].files
 function collectPrompts(snap) {
   const out = [];
@@ -20,11 +29,12 @@ function collectPrompts(snap) {
     for (const f of (t.files || [])) {
       const path = f.path || '';
       const kind = f.kind || '';
+      const lower = path.replace(/\\/g, '/').toLowerCase();
       const isPrompt =
         path.endsWith('.prompt.md') ||
         kind === 'prompt' ||
-        (kind === 'command' && path.replace(/\\/g, '/').toLowerCase().includes('/prompts/'));
-      if (isPrompt) {
+        (isCommandKind(kind) && (lower.includes('/prompts/') || lower.includes('/commands/')));
+      if (isPrompt && !isTestFixturePath(path)) {
         const name = baseName(path).replace(/\.prompt\.md$/, '').replace(/\.md$/, '');
         out.push({
           id: path,
@@ -55,8 +65,8 @@ function collectWorkflows(snap) {
         path.endsWith('.workflow.md') ||
         kind === 'workflow' ||
         kind === 'workflows' ||
-        (kind === 'command' && path.toLowerCase().includes('/workflows/'));
-      if (isWorkflow) {
+        (isCommandKind(kind) && path.toLowerCase().includes('/workflows/'));
+      if (isWorkflow && !isTestFixturePath(path)) {
         const name = baseName(path).replace(/\.workflow\.md$/, '').replace(/\.md$/, '');
         out.push({
           id: path,
