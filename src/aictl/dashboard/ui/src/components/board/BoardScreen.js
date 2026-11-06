@@ -159,6 +159,9 @@ function FilterRow({ board, data, ctx, menu, act }) {
   const clearable = canClear(filters, tools);
   const shown = data.scope.shown_agents;
   const scope = shown === allAgents ? 'Showing all ' + allAgents + ' agents in this time' : 'Showing ' + shown + ' of ' + allAgents + ' agents in this time';
+  // Tool calls, tests and errors belong to a session, not to one model or project.
+  const narrowed = filters.model !== 'all' || filters.project !== 'all';
+  const scopeNote = narrowed ? ' Tokens and cost follow this filter. Tool calls, tests and errors count the whole session.' : '';
   return html`<div class="bd-bar" role="region" aria-label="Filters">
     <${FilterMenu} fkey="tools" label="Tool" value=${toolValue} active=${!!listedTools(tools, toolIds)} menu=${menu} act=${act}
       items=${opts.tools.map(t => ({ id: t.id, label: t.label || t.id, sw: colorFor('tool', t.id), on: !tools || tools.includes(t.id), count: agentsLabel(t.agents), pick: () => act.toggleTool(t.id, toolIds) }))}/>
@@ -170,7 +173,7 @@ function FilterRow({ board, data, ctx, menu, act }) {
       items=${STATUSES.map(([id, label]) => ({ id, label, on: filters.status === id, count: filters.status === 'all' && id !== 'all' ? (statusCounts[id] || 0) : '', pick: () => act.setFilter('status', id) }))}/>
     ${filters.sel ? html`<span class="bd-chip">Time selected: ${selValue}<button type="button" aria-label="Clear the time selection" onClick=${() => act.select(null)}><${Ico} d=${PATHS.close}/></button></span>` : null}
     <span class="bd-sp"></span>
-    <span class="bd-muted">${scope}</span>
+    <span class="bd-muted">${scope}${scopeNote}</span>
     ${clearable ? html`<button type="button" class="bd-link" onClick=${act.clearAll}>Clear filters</button>` : null}
   </div>`;
 }

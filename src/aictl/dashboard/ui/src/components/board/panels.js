@@ -83,7 +83,7 @@ function panelAgents(ctx, local, pid) {
     const meta = statusMeta(st);
     const live = isLive(st);
     const age = (a.ended_at || nowS) - (a.started_at || nowS);
-    const key = group === 'tool' ? ctx.toolName(a.tool) : group === 'project' ? projectName(a.project) : group === 'model' ? ((level ? rootOf(a.parent_id) : a)?.models?.[0] || NA) : null;
+    const key = group === 'tool' ? ctx.toolName(a.tool) : group === 'project' ? projectName(a.project) : group === 'model' ? ((a2 => a2?.primary_model || a2?.models?.[0] || NA)(level ? rootOf(a.parent_id) : a)) : null;
     const pendingOn = a.pending && st === 'waiting';
     const models = (a.models || []).join(', ');
     return {
@@ -152,7 +152,7 @@ function panelAgents(ctx, local, pid) {
     modes: [{ key: 'group', label: 'Group agents by', def: 'none', items: [['none', 'No groups'], ['project', 'Project'], ['tool', 'Tool'], ['model', 'Model']] }],
     hasCols: true,
     table: { cols, rows, tree: true, sort: { k: 'st', dir: 'asc' }, columns: true, limit: 60, groupRow, none: 'No agents match these filters.', pid },
-    note: 'Click a row for the full detail. CPU and RAM are live values, so ended agents show n/a. An agent row includes its subagents.',
+    note: 'Click a row for the full detail. CPU and RAM are live values, so ended agents show n/a. 100% CPU is one full core. An agent row includes its subagents.',
   };
 }
 
@@ -376,8 +376,10 @@ function panelToolCalls(ctx) {
       p50: { v: fmtMs(t.p50_ms) }, p95: { v: fmtMs(t.p95_ms) }, max: { v: fmtMs(t.max_ms) }, spark: { spark: sparkPath(t.trend, 60, 16), sparkC: 'var(--ink2)', title: 'Calls in this range' },
     },
   }));
+  // Some tools report a count with no tool names, so those calls have no row here.
+  const unnamed = (ctx.data.kpis.tool_calls || 0) - list.reduce((a, t) => a + (t.calls || 0), 0);
   return {
-    sub: 'Click a tool to see its calls',
+    sub: 'Click a tool to see its calls' + (unnamed > 0 ? '. ' + fmtN(unnamed) + ' more calls come from tools that report only a total' : ''),
     table: { cols: [{ k: 'k', l: 'Tool', w: '170px' }, { k: 'n', l: 'Calls', n: true, w: '112px' }, { k: 'f', l: 'Failed', n: true, w: '50px' }, { k: 'fp', l: 'Rate', n: true, w: '50px' }, { k: 'p50', l: 'p50', n: true, w: '58px' }, { k: 'p95', l: 'p95', n: true, w: '58px' }, { k: 'max', l: 'Max', n: true, w: '60px' }, { k: 'spark', l: 'Trend', w: '70px' }], rows, sort: { k: 'n', dir: 'desc' }, none: 'No tool calls in this time.' },
   };
 }
@@ -539,7 +541,7 @@ function panelProcs(ctx) {
   const cpu = sumOf(list.map(p => p.cpu_percent));
   const mem = sumOf(list.map(p => p.mem_mb));
   return {
-    sub: 'Live now: ' + rows.length + ' processes, ' + fmtCpu(cpu) + ' CPU, ' + fmtMem(mem) + '. The time range does not apply',
+    sub: 'Live now: ' + rows.length + ' processes, ' + fmtCpu(cpu) + ' CPU (100% is one full core), ' + fmtMem(mem) + '. The time range does not apply',
     table: { cols: [{ k: 'name', l: 'Process', w: '170px' }, { k: 'pid', l: 'PID', n: true, w: '60px' }, { k: 'tool', l: 'Tool', w: '140px' }, { k: 'a', l: 'Agent' }, { k: 'cpu', l: 'CPU', n: true, w: '60px' }, { k: 'mem', l: 'RAM', n: true, w: '76px' }], rows, sort: { k: 'cpu', dir: 'desc' }, none: 'No live processes.' },
   };
 }

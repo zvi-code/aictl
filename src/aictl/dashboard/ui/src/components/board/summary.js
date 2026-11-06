@@ -46,7 +46,12 @@ export function sectionSummary(id, data, series, findingsCount) {
       const failed = data.tests.reduce((a, x) => a + (x.failed || 0), 0);
       return fmtLines(t.lines_added, t.lines_removed) + ', tests ' + (runs - failed) + ' of ' + runs;
     }
-    case 'resources': return fmtCpu(sumLast(series.cpu)) + ' CPU, ' + fmtMem(sumLast(series.mem));
+    case 'resources': {
+      // The live processes, as the chart lines may end at different times.
+      const procs = data.processes || [];
+      if (!procs.length) return fmtCpu(sumLast(series.cpu)) + ' CPU, ' + fmtMem(sumLast(series.mem));
+      return fmtCpu(procs.reduce((a, p) => a + (p.cpu_percent || 0), 0)) + ' CPU, ' + fmtMem(procs.reduce((a, p) => a + (p.mem_mb || 0), 0));
+    }
     case 'effect': return findingsCount + (findingsCount === 1 ? ' finding' : ' findings');
     case 'sources': {
       const all = data.sources.length;

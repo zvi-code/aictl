@@ -160,7 +160,13 @@ function ToolsTab({ data, pending }) {
     rows: (data.tool_calls || []).map((c, i) => ({ id: i, sort: { at: c.ts, ms: c.duration_ms, n: c.name }, cells: { at: { v: stamp(c.ts), cls: 'dim' }, n: { v: c.name, cls: 'm' }, tg: { v: c.target || NA, cls: 'm dim' }, ms: { v: fmtMs(c.duration_ms) }, ok: { v: c.failed ? 'Failed' : 'OK', cls: c.failed ? 'crit' : 'dim' }, conf: { v: c.confirm || NA, cls: 'dim' } } })),
     sort: { k: 'at', dir: 'desc' }, limit: 120, none: 'No tool calls recorded.',
   }), [data]);
+  const totals = useMemo(() => ({
+    cols: [{ k: 'n', l: 'Tool' }, { k: 'c', l: 'Calls', n: true, w: '58px' }, { k: 'f', l: 'Failed', n: true, w: '52px' }, { k: 'ms', l: 'Total time', n: true, w: '76px' }],
+    rows: (data.tool_totals || []).map(t => ({ id: t.name, sort: { n: t.name, c: t.calls, f: t.failed, ms: t.total_ms }, cells: { n: { v: t.name, cls: 'm' }, c: { v: fmtN(t.calls) }, f: { v: t.failed, cls: t.failed ? '' : 'dim' }, ms: { v: fmtMs(t.total_ms), cls: 'dim' } } })),
+    sort: { k: 'c', dir: 'desc' }, limit: 40, none: 'No tool calls recorded.',
+  }), [data]);
   return html`${pending ? html`<${FixedPanel} id="ap2" title="Waiting for your confirmation"><div class="bd-ptext">${pending.name + ': ' + pending.target}</div></${FixedPanel}>` : null}
+    <${FixedPanel} id="att" title="Tools used" sub=${'All ' + fmtN((data.tool_totals || []).reduce((a, t) => a + t.calls, 0)) + ' calls' + (data.agent?.parent_id ? '' : ', with its subagents')}><${Table} def=${totals}/></${FixedPanel}>
     <${FixedPanel} id="atc" title="Tool calls" sub=${data.agent?.tool_calls > (data.tool_calls || []).length ? 'Newest ' + (data.tool_calls || []).length + ' of ' + data.agent.tool_calls + ', with calls of its subagents' : ''}><${Table} def=${def} label="Tool calls"/></${FixedPanel}>`;
 }
 

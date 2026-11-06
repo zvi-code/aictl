@@ -2588,3 +2588,31 @@ class TestPipedTests:
         _call(conn, NOW - 70, "t", "aider", "/p/t", "Bash", "pytest -q")
         conn.commit()
         assert _board(db)["tests_piped"] == 1
+
+
+class TestPrimaryModel:
+    def test_the_model_with_the_most_tokens_is_primary(self, db):
+        conn = db._conn()
+        _session(conn, "m", "aider", "/p/m", NOW - 3000)
+        _request(conn, NOW - 200, "m", "aider", "/p/m", "a-small", i=10)
+        _request(conn, NOW - 100, "m", "aider", "/p/m", "z-large", i=1000)
+        _request(conn, NOW - 90, "m", "aider", "/p/m", "", i=5000)
+        conn.commit()
+        row = _agent(_board(db), "m")
+        assert row["primary_model"] == "z-large"
+
+
+class TestAgentToolTotals:
+    def test_totals_count_every_call_past_the_row_cap(self, db):
+        conn = db._conn()
+        _session(conn, "tt", "aider", "/p/tt", NOW - 3000)
+        _request(conn, NOW - 2900, "tt", "aider", "/p/tt", SONNET, i=1)
+        extra = board_api.MAX_DETAIL_ROWS + 5
+        for k in range(extra):
+            _call(conn, NOW - 2000 + k, "tt", "aider", "/p/tt", "Bash", f"echo {k}", duration=10.0)
+        _call(conn, NOW - 100, "tt", "aider", "/p/tt", "Read", "a.py", is_error=1)
+        conn.commit()
+        detail = agent_detail(db, "tt", None, NOW)[1]
+        assert len(detail["tool_calls"]) == board_api.MAX_DETAIL_ROWS
+        assert detail["tool_totals"][0] == {"name": "Bash", "calls": extra, "failed": 0, "total_ms": extra * 10.0}
+        assert detail["tool_totals"][1]["failed"] == 1
