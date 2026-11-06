@@ -35,6 +35,7 @@ import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import parse_qs
@@ -45,6 +46,7 @@ from ..ingesters._common import project_key, project_root
 from ..storage import EventRow, _session_uuid
 from ..tool_scope import is_unattributed, normalize_selection, stored_ids_for
 from ..tools import TOOL_LABELS
+from .analytics import _day_span
 from .api_handlers import self_usage
 
 logger = logging.getLogger(__name__)
@@ -741,35 +743,36 @@ class _Board:
     def _load_fallback_cells(self) -> None:
         grid_s = (self.f.until - self.f.since) / self.f.grid
         for row in _fallback_rows(self.conn, self.f.since, self.f.until, self.only_session):
-            ts = row["last_activity_at"]
-            g = max(0, min(self.f.grid - 1, int((ts - self.f.since) / grid_s)))
-            first = True
-            for model, usage in _fallback_models(row).items():
-                self.cells.append(
-                    _Cell(
-                        row["session_id"],
-                        "",
-                        model,
-                        g,
-                        row["tool"],
-                        row["project_path"],
-                        usage["requests"],
-                        usage["input"],
-                        usage["output"],
-                        usage["cache_read"],
-                        usage["cache_write"],
-                        0,
-                        row["started_at"] or ts,
-                        ts,
-                        None,
-                        estimated=True,
-                        user=row["turn_count"] if first else 0,
-                        tools_fallback=row["tool_call_count"] if first else 0,
-                        b=self.b_of[g],
-                        s=self.s_of[g],
+            for piece in _fallback_pieces(row, self.f.since, self.f.until):
+                ts = piece["ts"]
+                g = max(0, min(self.f.grid - 1, int((ts - self.f.since) / grid_s)))
+                first = True
+                for model, usage in piece["models"].items():
+                    self.cells.append(
+                        _Cell(
+                            row["session_id"],
+                            "",
+                            model,
+                            g,
+                            row["tool"],
+                            row["project_path"],
+                            usage["requests"],
+                            usage["input"],
+                            usage["output"],
+                            usage["cache_read"],
+                            usage["cache_write"],
+                            0,
+                            row["started_at"] or ts,
+                            ts,
+                            None,
+                            estimated=True,
+                            user=row["turn_count"] if first and piece["last"] else 0,
+                            tools_fallback=row["tool_call_count"] if first and piece["last"] else 0,
+                            b=self.b_of[g],
+                            s=self.s_of[g],
+                        )
                     )
-                )
-                first = False
+                    first = False
 
     def _load_tool_agg(self) -> None:
         where, params = self._window()
@@ -1302,6 +1305,7 @@ class _Board:
         self.cost_by_project: dict[str, list] = defaultdict(lambda: [None] * n)
         self.cost_by_model: dict[str, list] = defaultdict(lambda: [None] * n)
         self.estimated: set[str] = set()
+        self.unpriced: dict[str, int] = {}
         self.fallback_user: dict[str, int] = {}
         self.fallback_tools: dict[str, int] = {}
         self.fallback_tool_buckets = [0] * n
@@ -1328,6 +1332,9 @@ class _Board:
                 self.first_ts[key] = c.min_ts
             if c.max_ts > self.last_ts.get(key, 0.0):
                 self.last_ts[key] = c.max_ts
+            if c.cost is None and (c.i or c.o or c.cr or c.cw):
+                # No stored cost and no list rate for the model: the cost total leaves these tokens out.
+                self.unpriced[c.model] = self.unpriced.get(c.model, 0) + c.i + c.o + c.cr + c.cw
             if c.cost is not None:
                 for series, name in (
                     (self.cost_by_tool, c.tool),
@@ -1647,11 +1654,15 @@ def _as_number(value: Any) -> float | None:
 
 
 def _fallback_rows(conn: sqlite3.Connection, since: float, until: float, only_session: str | None = None) -> list[dict]:
-    """Sessions with usage in session_usage and no requests row at all."""
+    """Sessions with usage in session_usage and no requests row at all, active in the window.
+
+    A session that spans the window is included: ``_fallback_pieces`` places each
+    of its days in the window or leaves it out.
+    """
     sql = (
         "SELECT session_id, tool, project_path, model, models_json, input_tokens, output_tokens, cache_read_tokens,"
-        " cache_creation_tokens, request_count, tool_call_count, turn_count, started_at, last_activity_at"
-        " FROM session_usage su WHERE last_activity_at >= ? AND last_activity_at <= ?"
+        " cache_creation_tokens, request_count, tool_call_count, turn_count, started_at, last_activity_at, daily_json"
+        " FROM session_usage su WHERE last_activity_at >= ? AND started_at <= ?"
         " AND NOT EXISTS (SELECT 1 FROM requests r WHERE r.session_id = su.session_id)"
     )
     params: list[Any] = [since, until]
@@ -1673,6 +1684,7 @@ def _fallback_rows(conn: sqlite3.Connection, since: float, until: float, only_se
         "turn_count",
         "started_at",
         "last_activity_at",
+        "daily_json",
     )
     return [dict(zip(names, row)) for row in conn.execute(sql, params)]
 
@@ -1706,6 +1718,120 @@ def _fallback_models(row: dict) -> dict[str, dict]:
         if sum(u[name] for u in split.values()) != total[name]:
             return {row["model"] or "unknown": total}
     return split or {row["model"] or "unknown": total}
+
+
+def _credits_section(db: Any, board: _Board) -> dict | None:
+    """AI credits GitHub Copilot reports for the sessions in view, or None when none is in view.
+
+    Credits are stored per session and local day, as the tool reports them: not
+    dollars, and no list price is applied. A day counts when the session was active
+    on it inside the window; ``approximate`` is true when the window edge cuts
+    through such a day, which is counted whole. ``amount`` is None when a
+    session in view has no credits recorded.
+    """
+    f = board.f
+    selected = set(stored_ids_for(f.tools)) if f.tools is not None else None
+    amount: float | None = None
+    by_tool: dict[str, float] = {}
+    approximate = False
+    seen = False
+    for u in db.query_session_usage(active_since=f.since, active_until=f.until):
+        if not u.get("billing_unit"):
+            continue
+        if selected is not None and u["tool"] not in selected:
+            continue
+        if f.project and u["project_path"] != f.project:
+            continue
+        if (f.status != "all" or f.q) and u["session_id"] not in board.scope:
+            continue
+        seen = True
+        for day, values in u["daily"].items():
+            span = _day_span(day, u["started_at"] or 0.0, u["last_activity_at"] or 0.0)
+            if span is None or span[1] < f.since or span[0] > f.until:
+                continue
+            credits = (values.get("models", {}).get(f.model) or {}).get("billing_amount") if f.model else values.get("billing_amount")
+            if credits is None:
+                continue
+            amount = (amount or 0.0) + credits
+            by_tool[u["tool"]] = by_tool.get(u["tool"], 0.0) + credits
+            approximate = approximate or span[0] < f.since or span[1] > f.until
+    if not seen:
+        return None
+    return {
+        "amount": None if amount is None else round(amount, 2),
+        "unit": "ai_credits",
+        "by_tool": {t: round(v, 2) for t, v in sorted(by_tool.items())},
+        "approximate": approximate,
+    }
+
+
+def _unpriced_section(board: _Board) -> dict:
+    """Tokens that carry no cost in the cost figures, because the model has no known price."""
+    total = board.total.tokens
+    tokens = sum(board.unpriced.values())
+    return {
+        "tokens": tokens,
+        "share": _ratio(tokens, total),
+        "models": [{"model": m, "tokens": t} for m, t in sorted(board.unpriced.items(), key=lambda kv: (-kv[1], kv[0]))],
+    }
+
+
+def _model_usage(usage: dict) -> dict:
+    return {
+        "requests": int(usage.get("requests") or 0),
+        "input": int(usage.get("input_tokens") or 0),
+        "output": int(usage.get("output_tokens") or 0),
+        "cache_read": int(usage.get("cache_read_tokens") or 0),
+        "cache_write": int(usage.get("cache_creation_tokens") or 0),
+    }
+
+
+def _fallback_pieces(row: dict, since: float, until: float) -> list[dict]:
+    """A fallback session's usage in the window, one piece per local day it was active.
+
+    Stored totals are for the whole life of the session. ``daily_json`` splits
+    them by local day (and by model within a day), so each day lands where the
+    session was active on that day: at the middle of its activity that day. A day
+    with no activity in the window is left out. When the days do not add up to
+    the totals, or there are none, the whole session is one piece at its last
+    activity. ``last`` marks the piece that holds the turn and tool counts, which
+    are stored for the session only.
+    """
+    last_ts = row["last_activity_at"]
+    whole = [{"ts": last_ts, "models": _fallback_models(row), "last": True}]
+    try:
+        daily = json.loads(row.get("daily_json") or "{}")
+    except ValueError:
+        return whole if since <= last_ts <= until else []
+    pieces: list[dict] = []
+    totals = dict.fromkeys(("input", "output", "cache_read", "cache_write"), 0)
+    last_day = datetime.fromtimestamp(last_ts).strftime("%Y-%m-%d")
+    for day, values in daily.items() if isinstance(daily, dict) else ():
+        try:
+            lo = datetime.strptime(day, "%Y-%m-%d")
+        except ValueError:
+            return whole if since <= last_ts <= until else []
+        models = {m: _model_usage(u) for m, u in (values.get("models") or {}).items() if isinstance(u, dict)}
+        day_total = _model_usage(values)
+        day_total["requests"] = sum(u["requests"] for u in models.values())
+        for name in totals:
+            totals[name] += day_total[name]
+            if sum(u[name] for u in models.values()) != day_total[name]:
+                models = {}
+        if not models:
+            models = {row["model"] or "unknown": day_total}
+        start = max(lo.timestamp(), row["started_at"] or 0.0)
+        end = min((lo + timedelta(days=1)).timestamp(), last_ts)
+        mid = (start + end) / 2 if start <= end else lo.timestamp()
+        pieces.append({"ts": mid, "models": models, "last": day == last_day})
+    if not pieces or totals != {k: row[v] for k, v in _TOTAL_COLUMNS.items()}:
+        return whole if since <= last_ts <= until else []
+    if not any(p["last"] for p in pieces):
+        pieces[-1]["last"] = True
+    return [p for p in pieces if since <= p["ts"] <= until]
+
+
+_TOTAL_COLUMNS = {"input": "input_tokens", "output": "output_tokens", "cache_read": "cache_read_tokens", "cache_write": "cache_creation_tokens"}
 
 
 # ─── The whole board ──────────────────────────────────────────────
@@ -2695,19 +2821,19 @@ def _previous(board: _Board) -> dict:
             continue
         if (f.status != "all" or f.q) and row["session_id"] not in board.scope:
             continue
-        for model, usage in _fallback_models(row).items():
-            if f.model and model != f.model:
-                continue
-            seen = True
-            calls += usage["requests"]
-            tokens += usage["input"] + usage["output"] + usage["cache_read"] + usage["cache_write"]
-            value, _ = _list_cost(
-                model, usage["input"], usage["output"], usage["cache_read"], usage["cache_write"], row["last_activity_at"]
-            )
-            if value is not None:
-                cost = (cost or 0.0) + value
-        tool_fallback += row["tool_call_count"]
-        user_fallback += row["turn_count"]
+        for piece in _fallback_pieces(row, since, until - 1e-6):
+            for model, usage in piece["models"].items():
+                if f.model and model != f.model:
+                    continue
+                seen = True
+                calls += usage["requests"]
+                tokens += usage["input"] + usage["output"] + usage["cache_read"] + usage["cache_write"]
+                value, _ = _list_cost(model, usage["input"], usage["output"], usage["cache_read"], usage["cache_write"], piece["ts"])
+                if value is not None:
+                    cost = (cost or 0.0) + value
+            if piece["last"]:
+                tool_fallback += row["tool_call_count"]
+                user_fallback += row["turn_count"]
     tool_calls = board.conn.execute(
         f"SELECT COUNT(*) FROM tool_invocations WHERE {where} AND {_IS_CALL_SQL}", params
     ).fetchone()[0]
@@ -3229,6 +3355,8 @@ def compute_board(
             "until": f.until,
             "bucket_s": f.bucket_s,
             "bucket_starts": [f.since + i * f.bucket_s for i in range(n)],
+            # The last bucket ends after now, so its figures are not complete yet.
+            "partial_bucket": n - 1 if f.until > now and n else None,
         },
         "options": options,
         "scope": {
@@ -3244,6 +3372,8 @@ def compute_board(
         "by_role": by_role,
         "series": series,
         "saved_usd": _usd(board.total.saved),
+        "unpriced": _unpriced_section(board),
+        "credits": _credits_section(db, board),
         "projects": projects[:MAX_LIST_ROWS],
         "prompts": _prompts_section(board, turns.tokens),
         "project_prompts": _project_prompts(board, project_list),

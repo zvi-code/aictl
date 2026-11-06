@@ -150,6 +150,7 @@ html,body{margin:0;height:100%}
 .bd-col.bd-dim i{opacity:.35}
 .bd-plot svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
 .bd-plot polyline{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}
+.bd-partial path,.bd-partial rect{fill-opacity:.55}
 .bd-sel{position:absolute;top:0;bottom:0;background:var(--ink);opacity:.09;pointer-events:none}
 .bd-cross{position:absolute;top:0;bottom:0;width:1px;background:var(--ink3);pointer-events:none}
 .bd-xax{grid-column:2;position:relative;height:18px;font-size:10.5px;color:var(--ink3)}

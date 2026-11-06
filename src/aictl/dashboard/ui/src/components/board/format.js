@@ -18,6 +18,8 @@ export const fmtUsd = n => {
   if (isNil(n)) return NA;
   return n >= 100 ? '$' + Math.round(n) : '$' + n.toFixed(2);
 };
+/** Copilot AI credits: the tool's own unit, never dollars. */
+export const fmtCredits = n => (isNil(n) ? NA : n.toLocaleString('en-US', { maximumFractionDigits: 2 }));
 export const fmtMs = n => {
   if (isNil(n)) return NA;
   if (n >= 60000) return (n / 60000).toFixed(1) + ' min';

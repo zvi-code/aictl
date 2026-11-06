@@ -12,7 +12,7 @@ import logging
 import sqlite3
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from ..data.model_pricing import PRICING_AS_OF, PRICING_SOURCES, context_window_for
 from ..data.provenance import COPILOT_COST_REASON, USD_PER_AI_CREDIT, combine_cost_quality, combine_tokens_quality
@@ -232,14 +232,26 @@ def _unattributed_hidden(count_fn, since: float, until: float, tools) -> int:
 def _compute_response_time(db, since: float, until: float, limit: int = 2000, tools=None) -> dict:
     """Build response-time analytics (runs in background thread).
 
-    `tools` is the tool selection (None is every tool). Percentiles and per-model
-    groups are computed from the selected tools' own rows. ``unattributed_hidden``
-    counts rows with no recoverable tool, which no selection includes.
+    `tools` is the tool selection (None is every tool). ``by_model`` (count,
+    average, percentiles, tokens) covers every request of the selected tools in
+    the range. ``requests`` is the chart's point list and holds only the newest
+    `limit` of them; ``requests_listed`` says how many exist and how many are
+    listed, so a reader knows the list is not the whole range.
+    ``unattributed_hidden`` counts rows with no recoverable tool, which no
+    selection includes.
     """
     hidden = _unattributed_hidden(db.count_requests_unattributed, since, until, tools)
+    by_model = db.query_response_time_by_model(since=since, until=until, tools=tools)
+    available = sum(g["count"] for g in by_model)
     rows = db.query_requests_analytics(since=since, until=until, limit=limit, tools=tools)
+    listed = {
+        "available": available,
+        "listed": len(rows),
+        "limit": limit,
+        "newest_only": available > len(rows),
+    }
     if not rows:
-        return {"requests": [], "by_model": [], "unattributed_hidden": hidden}
+        return {"requests": [], "requests_listed": listed, "by_model": by_model, "unattributed_hidden": hidden}
 
     by_session: dict[str, list] = {}
     for r in rows:
@@ -267,30 +279,8 @@ def _compute_response_time(db, since: float, until: float, limit: int = 2000, to
                 }
             )
 
-    model_groups: dict[str, list[float]] = {}
-    model_tokens: dict[str, int] = {}
-    for req in requests_out:
-        m = req["model"] or "(unknown)"
-        model_groups.setdefault(m, []).append(req["duration_ms"])
-        model_tokens[m] = model_tokens.get(m, 0) + req["input_tokens"] + req["output_tokens"]
-
-    by_model = []
-    for m, durations in sorted(model_groups.items()):
-        ds = sorted(durations)
-        n = len(ds)
-        by_model.append(
-            {
-                "model": m,
-                "count": n,
-                "avg_ms": round(sum(ds) / n, 1) if n else 0,
-                "p50_ms": round(ds[n // 2], 1) if n else 0,
-                "p95_ms": round(ds[min(int(n * 0.95), n - 1)], 1) if n else 0,
-                "total_tokens": model_tokens.get(m, 0),
-            }
-        )
-
     requests_out.sort(key=lambda r: r["ts"])
-    return {"requests": requests_out, "by_model": by_model, "unattributed_hidden": hidden}
+    return {"requests": requests_out, "requests_listed": listed, "by_model": by_model, "unattributed_hidden": hidden}
 
 
 def _compute_tools(db, since: float, until: float, tools=None) -> dict:
@@ -471,12 +461,32 @@ CLOUD_ONLY_TOOLS = ("copilot365",)
 _TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens")
 
 
+def _day_span(day: str, started_at: float, last_activity_at: float) -> tuple[float, float] | None:
+    """The part of a local day in which a session was active, or None for a key that is no day.
+
+    A session's activity inside one day lies between its start and its last
+    activity, cut to that day. The stored figures are whole-day totals, so this
+    is the only way to tell that a day of a session lies outside a window.
+    """
+    try:
+        lo = datetime.strptime(day, "%Y-%m-%d").timestamp()
+    except ValueError:
+        return None
+    hi = (datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).timestamp()
+    start = max(lo, started_at) if started_at else lo
+    end = min(hi, last_activity_at) if last_activity_at else hi
+    return (start, end) if start <= end else (lo, hi)
+
+
 def window_sessions(db, since: float, until: float | None = None) -> tuple[list[dict], int]:
     """Every session with usage in the window, each logical session exactly once.
 
-    Returns ``(sessions, ignored_rows)``. A session's token classes, cost and
-    ``daily`` splits cover only the local days inside the window (a day is the
-    smallest unit; a session running across midnight lands on both days).
+    Returns ``(sessions, ignored_rows)``. The stored figures are per local day, so
+    a day of a session is kept when the session was active inside the window on
+    that day, and left out when its activity that day lies wholly outside the
+    window. A kept day is counted whole: when the window edge cuts through the
+    activity of a session on that day, the entry lists the day in
+    ``approximate_days``, because its figures reach past the window.
 
     Double counting is prevented here for every caller: a transcript row wins
     over any ``sessions`` row with the same UUID, and a row with no UUID (a
@@ -486,14 +496,21 @@ def window_sessions(db, since: float, until: float | None = None) -> tuple[list[
     from ..storage import _session_uuid
 
     until = until or time.time()
-    first, last = local_day(since), local_day(until)
     out: list[dict] = []
     covered_ids: set[str] = set()
     covered_tools: set[str] = set()
     for u in db.query_session_usage(active_since=since, active_until=until):
         covered_ids.add(u["session_id"].lower())
         covered_tools.add(u["tool"])
-        days = {d: v for d, v in u["daily"].items() if first <= d <= last}
+        days: dict[str, dict] = {}
+        approximate: list[str] = []
+        for d, v in u["daily"].items():
+            span = _day_span(d, u["started_at"] or 0.0, u["last_activity_at"] or 0.0)
+            if span is None or span[1] < since or span[0] > until:
+                continue
+            days[d] = v
+            if span[0] < since or span[1] > until:
+                approximate.append(d)
         if not days:
             continue
         entry = {
@@ -502,6 +519,7 @@ def window_sessions(db, since: float, until: float | None = None) -> tuple[list[
             "project": u["project_path"],
             "model": u["model"],
             "daily": days,
+            "approximate_days": sorted(approximate),
             "tool_calls": u["tool_call_count"],
             "turns": u["turn_count"],
             "tokens_source": u["source"],
@@ -552,6 +570,7 @@ def window_sessions(db, since: float, until: float | None = None) -> tuple[list[
                 "billing_amount": p.get("billing_amount"),
                 "premium_requests": p.get("premium_requests"),
                 "estimated_list_usd": p.get("estimated_list_usd"),
+                "approximate_days": [],
                 **{k: p.get(k, 0) or 0 for k in _TOKEN_KEYS},
             }
         )
@@ -602,6 +621,16 @@ def _rollup(sessions: list[dict]) -> dict:
     }
 
 
+def _day_is_partial(day: str, since: float, until: float, now: float) -> bool:
+    """True when the day is not whole in the figures: still running, or cut by the window."""
+    try:
+        lo = datetime.strptime(day, "%Y-%m-%d")
+    except ValueError:
+        return False
+    start, end = lo.timestamp(), (lo + timedelta(days=1)).timestamp()
+    return end > now or start < since or end > until
+
+
 def compute_usage_summary(db, since: float, until: float | None = None) -> dict:
     """Headline usage per tool and per local day, with provenance on each figure."""
     until = until or time.time()
@@ -635,10 +664,21 @@ def compute_usage_summary(db, since: float, until: float | None = None) -> dict:
             for k in _TOKEN_KEYS:
                 d[k] += v.get(k, 0)
             d["cost_usd"] = round(d["cost_usd"] + v.get("cost_usd", 0.0), 4)
+    now = time.time()
+    for row in daily.values():
+        row["partial"] = _day_is_partial(row["date"], since, until, now)
+    approximate = sum(len(s.get("approximate_days") or ()) for s in sessions)
     return {
         "since": since,
         "until": until,
         "day_boundary": "local",
+        # Figures are stored per local day. A session day that lies wholly outside
+        # the window is left out; one the window edge cuts through is counted whole.
+        "window": {
+            "granularity": "day",
+            "approximate": approximate > 0,
+            "approximate_session_days": approximate,
+        },
         "timezone": datetime.now().astimezone().tzname() or "",
         "tools": tools,
         "totals": _rollup(sessions) if sessions else None,

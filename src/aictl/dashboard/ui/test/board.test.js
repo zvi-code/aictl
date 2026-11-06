@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import BoardScreen from '../src/components/board/BoardScreen.js';
 import Chart from '../src/components/board/Chart.js';
 import Table from '../src/components/board/Table.js';
-import { bucketTotals, chartModel, indexToSel, selToIndex } from '../src/components/board/chartModel.js';
+import { bucketTotals, chartModel, indexToSel, selToIndex, tipFor } from '../src/components/board/chartModel.js';
 import { boardQuery, canClear, filtersToParams, listedTools, parseFilters, toolFilterLabel, windowOf } from '../src/components/board/filters.js';
 import { buildFindings, buildSettings, tailPath } from '../src/components/board/findings.js';
 import { fmtDur, fmtLines, fmtMs, fmtN, fmtRate, fmtShare, fmtUsd, sparkPath } from '../src/components/board/format.js';
@@ -647,5 +647,54 @@ describe('hidden-context scan', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'OSError: disk gone' }), { headers: { 'Content-Type': 'application/json' } })));
     await expect(getContextAudit()).rejects.toThrow('disk gone');
     vi.unstubAllGlobals();
+  });
+});
+
+describe('cost panel and partial bucket', () => {
+  const ctxFor = (extra) => {
+    const data = normalizeBoard({ kpis: { cost_usd: 12.5 }, ...extra });
+    return { data, series: { cost: { by_tool: {} } }, range: data.range, chartRange: data.range, sel: null, filters: parseFilters(''), tools: null, toolIds: [], settingToolIds: [], toolName: id => id, nowS: NOW, stopped: {}, findings: { list: [], settings: [] }, actions: {}, query: '' };
+  };
+  const local = { mode: (k, d) => d, tableView: false, folded: {}, setFold() {} };
+
+  it('shows the tokens that have no price next to the cost, with the model names on hover', () => {
+    const p = buildPanel('cost', ctxFor({ unpriced: { tokens: 105000, share: 0.1, models: [{ model: 'no-such-model', tokens: 100000 }, { model: 'other', tokens: 5000 }] } }), local, { id: 'cost' });
+    expect(p.sub).toContain('105 k tokens that have no price');
+    const stat = p.stats.find(s => s.label === 'No price');
+    expect(stat.value).toBe('105 k');
+    expect(stat.sub).toBe('2 models');
+    expect(stat.title).toContain('no-such-model 100 k');
+  });
+  it('says nothing about prices when every token has one', () => {
+    const p = buildPanel('cost', ctxFor({ unpriced: { tokens: 0, share: 0, models: [] } }), local, { id: 'cost' });
+    expect(p.sub).not.toContain('no price');
+    expect(p.stats).toBeUndefined();
+  });
+  it('shows Copilot credits as credits, not dollars, and n/a when they are not known', () => {
+    const shown = buildPanel('cost', ctxFor({ credits: { amount: 5423.85, unit: 'ai_credits', by_tool: {}, approximate: false } }), local, { id: 'cost' });
+    const stat = shown.stats.find(s => s.label === 'Copilot credits');
+    expect(stat.value).toBe('5,423.85');
+    expect(stat.value).not.toContain('$');
+    const unknown = buildPanel('cost', ctxFor({ credits: { amount: null, unit: 'ai_credits', by_tool: {}, approximate: false } }), local, { id: 'cost' });
+    expect(unknown.stats.find(s => s.label === 'Copilot credits').value).toBe('n/a');
+    expect(buildPanel('cost', ctxFor({ credits: null }), local, { id: 'cost' }).stats).toBeUndefined();
+  });
+  it('marks the last bucket as not over yet in the bars, the tooltip and the table view', () => {
+    const starts = [100, 200, 300];
+    const series = [{ label: 'a', c: 'var(--s1)', vals: [1, 2, 3] }];
+    const m = chartModel({ starts, bucketS: 100, h: 100, width: 300, kind: 'stack', unit: 'n', series, partial: 2 });
+    expect(m.bars.map(b => b.partial)).toEqual([false, false, true]);
+    expect(tipFor(2, 'stack', series, starts, 100, m.fmt, m.totals, 2).title).toContain('(not over yet)');
+    expect(tipFor(1, 'stack', series, starts, 100, m.fmt, m.totals, 2).title).not.toContain('not over yet');
+    const ctx = ctxFor({ range: { since: 100, until: 400, bucket_s: 100, bucket_starts: starts, partial_bucket: 2 } });
+    ctx.series = { tokens: { cache_read: [1, 2, 3], input: [1, 2, 3], cache_write: [1, 2, 3], output: [1, 2, 3] } };
+    const table = buildPanel('tokens', ctx, { ...local, tableView: true }, { id: 'tokens' }).table;
+    expect(table.rows.map(r => r.cells.b.v.endsWith('(not over yet)'))).toEqual([false, false, true]);
+  });
+  it('draws the partial bar with the partial class', () => {
+    const starts = [100, 200];
+    const series = [{ label: 'a', c: 'var(--s1)', vals: [1, 2] }];
+    const { container } = render(html`<${Chart} kind="stack" series=${series} unit="n" h=${80} range=${{ bucket_starts: starts, bucket_s: 100, partial_bucket: 1 }} sel=${null} aria="Tokens"/>`);
+    expect(container.querySelectorAll('g.bd-partial')).toHaveLength(1);
   });
 });
