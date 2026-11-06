@@ -1,1 +1,0 @@
-import{d as u,y as d}from"./index-Do8Es_0L.js";function h(a,o,{enabled:s=!0}={}){const[c,t]=u(null),[f,e]=u(!0),[i,r]=u(null);return d(()=>{if(!s){t(null),e(!1),r(null);return}let l=!1;return e(!0),r(null),a().then(n=>{l||(t(n),e(!1))}).catch(n=>{l||(t(null),r(n),e(!1))}),()=>{l=!0}},[s,...o]),{data:c,loading:f,error:i}}export{h as u};

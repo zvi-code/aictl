@@ -26,6 +26,7 @@ import logging
 import math
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -2792,6 +2793,7 @@ def _self_section(db: Any) -> dict:
         "memory_rss_bytes": usage.get("memory_rss_bytes"),
         "children": usage.get("children", []),
         "history_bytes": status["storage_bytes"],
+        "history_live_bytes": status.get("storage_live_bytes"),
         "history_limit_bytes": status["storage_budget_bytes"],
         "retention_days": getattr(db, "_retention_days", None),
     }
@@ -3814,10 +3816,16 @@ def _action_baseline_update(_db: Any, root: Any, args: dict, _port: int | None) 
 
 
 def _action_db_compact(db: Any, _root: Any, _args: dict, _port: int | None) -> dict:
-    # The running server keeps the file open, so this leaves out the CLI's VACUUM step.
     if db is None:
         return {"ok": False, "error": "History is not available"}
-    return {"ok": True, "removed": db.compact()}
+    removed = db.compact()
+    if db.in_memory:
+        return {"ok": True, "removed": removed}
+    room = db.vacuum_room_needed()
+    if shutil.disk_usage(Path(db._path).parent).free < room:
+        return {"ok": False, "error": f"Old records are removed, but the file was not made smaller: this needs {room // 1_000_000} MB of free disk."}
+    db.vacuum()
+    return {"ok": True, "removed": removed}
 
 
 _ACTIONS = {

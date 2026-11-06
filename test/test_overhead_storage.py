@@ -450,3 +450,46 @@ def test_trim_text_command(tmp_path):
     check = _db(path)
     assert check._conn().execute("SELECT content FROM cursor_session_messages").fetchone()[0] == ""
     check.close()
+
+
+def test_old_usage_records_are_evicted_and_recent_ones_stay(tmp_path):
+    """requests had no eviction, so its rows alone could keep the history over its limit."""
+    db = HistoryDB(tmp_path / "h.db", max_total_mb=1)
+    conn = db._conn()
+    now = time.time()
+    old = [(now - 10 * 86400 - i, "s", "copilot-cli", f"old{i}", "m" * 200) for i in range(30000)]
+    recent = [(now - i, "s", "copilot-cli", f"new{i}", "m") for i in range(100)]
+    conn.executemany("INSERT INTO requests(ts, session_id, tool, dedup_key, model) VALUES(?,?,?,?,?)", old + recent)
+    conn.commit()
+    before = db._budget_used()
+    assert before > db._budget_bytes
+    assert db.enforce_budget() > 0
+    assert db._budget_used() < before / 2
+    kept = conn.execute("SELECT COUNT(*) FROM requests WHERE dedup_key LIKE 'new%'").fetchone()[0]
+    assert kept == 100
+
+
+def test_a_lock_during_a_file_rewrite_does_not_move_storage_to_memory(tmp_path):
+    db = HistoryDB(tmp_path / "h.db")
+    db._memory_fallback = True
+    db._rewriting_file = True
+    for _ in range(20):
+        db._note_flush_error(sqlite3.OperationalError("database is locked"))
+    assert not db.degraded_reason
+
+
+def test_compact_action_makes_an_old_file_smaller(tmp_path):
+    from aictl.dashboard.board_api import _action_db_compact
+
+    path = tmp_path / "h.db"
+    db = HistoryDB(path)
+    conn = db._conn()
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+    conn.executemany("INSERT INTO file_blobs(hash, content) VALUES(?,?)", [(f"h{i}", "x" * 2000) for i in range(3000)])
+    conn.commit()
+    conn.execute("DELETE FROM file_blobs")
+    conn.commit()
+    before = db.storage_bytes()
+    result = _action_db_compact(db, None, {}, None)
+    assert result["ok"] is True
+    assert db.storage_bytes() < before / 2
