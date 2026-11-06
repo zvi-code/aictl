@@ -32,13 +32,13 @@ import sys
 import threading
 import time
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import parse_qs
 
-from ..context_audit import _git_states, _redact, skill_description, skill_locations
+from ..context_audit import _git_states, _path_key, _redact, skill_description, skill_locations
 from ..data.model_pricing import request_cost_usd, resolve_pricing
 from ..ingesters._common import project_key, project_root
 from ..storage import EventRow, _session_uuid
@@ -2273,6 +2273,31 @@ def _skill_file(name: str, projects: Iterable[str]) -> dict:
     return value
 
 
+_EXCERPT_SUFFIXES = frozenset({".md", ".mdc", ".json", ".jsonc", ".toml", ".yaml", ".yml", ".txt"})
+_EXCERPT_MAX_CHARS = 2_000_000
+_EXCERPT_LINES_AROUND = 3
+
+
+def file_excerpt(path: str, line: int, is_allowed: Callable[[str], bool] | None = None) -> tuple[int, dict]:
+    """A few masked lines of a text file that a scan or the file list found. No other file is read."""
+    from .audit_cache import AUDIT_CACHE
+
+    if Path(path).suffix.lower() not in _EXCERPT_SUFFIXES:
+        return 403, {"error": "aictl shows only text settings and instruction files."}
+    if _path_key(path) not in AUDIT_CACHE.source_paths() and not (is_allowed and is_allowed(path)):
+        return 403, {"error": "aictl has not found this file in a scan."}
+    text = _read_text(path, _EXCERPT_MAX_CHARS)
+    if text is None:
+        return 404, {"error": "The file cannot be read."}
+    lines = mask_secrets(text).splitlines()
+    first = max(0, line - 1 - _EXCERPT_LINES_AROUND)
+    return 200, {
+        "path": path,
+        "line": line,
+        "lines": [{"n": first + i + 1, "text": value} for i, value in enumerate(lines[first : line + _EXCERPT_LINES_AROUND])],
+    }
+
+
 def _skill_reach(row: dict, git_state: str) -> str:
     """Who can see this skill file, in words."""
     if row["scope"] == "user":
@@ -3709,7 +3734,9 @@ def _refresh_behind(db: Any, store: Any, query: str, key_filters: Filters, versi
         _refresh_thread.start()
 
 
-def handle_get(path: str, query: str, db: Any, store: Any, now: float | None = None) -> tuple[int, bytes]:
+def handle_get(
+    path: str, query: str, db: Any, store: Any, now: float | None = None, is_allowed: Callable[[str], bool] | None = None
+) -> tuple[int, bytes]:
     """Route a GET under /api/board. Returns the status and the JSON body."""
     if db is None:
         return 503, json.dumps({"error": "History is not available"}).encode("utf-8")
@@ -3733,6 +3760,9 @@ def handle_get(path: str, query: str, db: Any, store: Any, now: float | None = N
                 status, payload = skill_detail(db, one("name"), now, _as_number(one("since")), _as_number(one("until")))
             else:
                 status, payload = 400, {"error": "Missing name"}
+        elif path == "/api/board/excerpt":
+            at = _as_number(one("line"))
+            status, payload = file_excerpt(one("path"), max(1, int(at or 1)), is_allowed) if one("path") else (400, {"error": "Missing path"})
         elif path == "/api/board/file":
             status, payload = file_detail(db, one("path"), now) if one("path") else (400, {"error": "Missing path"})
         elif path == "/api/board/prompt":
