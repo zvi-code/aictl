@@ -2319,3 +2319,20 @@ class TestFileExcerpt:
 )
 def test_who_can_start_a_skill(front, expected):
     assert board_api._skill_starter(f"---\nname: x\n{front}---\nBody\n").startswith(expected)
+
+
+def test_a_slow_board_refreshes_less_often(db, monkeypatch):
+    """A 3.5 s range refreshed every 10 s while the page polled: a third of one core."""
+    refreshes = []
+    monkeypatch.setattr(board_api, "_refresh_behind", lambda *a: refreshes.append(a))
+    query = "since=1000&until=2000&buckets=10"
+    filters = board_api.parse_filters(query, 5000.0)
+    board_api.board_bytes(db, None, query, 5000.0, background=True)
+    key = (str(db._path), filters)
+    board_api._COMPUTE_TOOK[key] = 2.0
+    board_api._COMPUTED_AT[key] = 5000.0
+    monkeypatch.setattr(board_api, "_store_version", lambda *_a: ("changed",))
+    board_api.board_bytes(db, None, query, 5015.0, background=True)
+    assert refreshes == []
+    board_api.board_bytes(db, None, query, 5021.0, background=True)
+    assert len(refreshes) == 1

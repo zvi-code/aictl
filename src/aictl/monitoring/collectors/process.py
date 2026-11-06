@@ -361,6 +361,12 @@ def _is_under(path: str, roots: tuple[str, ...]) -> bool:
 # Samples per second for files that no AI tool owns. A build or a checkout changes thousands
 # of files per second, and each sample would crowd out the data people opened the dashboard for.
 MAX_FILE_EVENT_SAMPLES_PER_S = 200
+# A tool that writes one file many times per second gets one sample per second for it,
+# and only this many files per second get a sample of their own.
+MAX_TOOL_FILE_SAMPLES_PER_S = 500
+# Repeated change events for a file inside this time are dropped before the size lookup.
+# The next event still adds the growth, because growth comes from the last known size.
+FILE_EVENT_MIN_GAP_S = 0.25
 # Stands in for the files over that limit, so totals stay right.
 OTHER_FILES_PATH = "(other files)"
 # Paths whose last size is kept, so a long build cannot grow this without limit.
@@ -376,6 +382,7 @@ class _FileEventSampler:
         self._window_start = 0.0
         self._sampled = 0
         self._other_bytes = 0.0
+        self._tool_pending: dict[str, tuple[str, float, int]] = {}
 
     def record(self, path: str, growth: int, size: int, tool_hint: str | None) -> None:
         if tool_hint:
@@ -385,16 +392,32 @@ class _FileEventSampler:
         if now - self._window_start >= 1.0:
             if self._other_bytes:
                 self._collector.sink_emit(M("process.disk.io"), self._other_bytes, {"path": OTHER_FILES_PATH})
+            for tool_path, (hint, held, latest) in self._tool_pending.items():
+                if held:
+                    self._sample(tool_path, held, latest, hint)
             self._window_start, self._sampled, self._other_bytes = now, 0, 0.0
+            self._tool_pending = {}
         if not tool_hint:
             if self._sampled >= MAX_FILE_EVENT_SAMPLES_PER_S:
                 self._other_bytes += abs(growth) or 1
                 return
             self._sampled += 1
+        else:
+            pending = self._tool_pending.get(path)
+            if pending is not None:
+                self._tool_pending[path] = (tool_hint, pending[1] + (abs(growth) or 1), size or pending[2])
+                return
+            if len(self._tool_pending) >= MAX_TOOL_FILE_SAMPLES_PER_S:
+                self._other_bytes += abs(growth) or 1
+                return
+            self._tool_pending[path] = (tool_hint, 0.0, size)
+        self._sample(path, float(abs(growth) or 1), size, tool_hint)
+
+    def _sample(self, path: str, value: float, size: int, tool_hint: str | None) -> None:
         ftags = {"path": path}
         if tool_hint:
             ftags["tool"] = tool_hint
-        self._collector.sink_emit(M("process.disk.io"), float(abs(growth) or 1), ftags)
+        self._collector.sink_emit(M("process.disk.io"), value, ftags)
         if size:
             self._collector.sink_emit_if_changed(M("aictl.file.size"), float(size), ftags)
 
@@ -490,6 +513,7 @@ class _WatchHandler:  # pragma: no cover - exercised through watchdog integratio
         self._queue = queue
         self._config = config
         self._size_cache: dict[str, int] = {}
+        self._last_change: dict[str, float] = {}
         self._ignored_names = frozenset(config.ignored_dir_names)
 
     def dispatch(self, event) -> None:
@@ -506,6 +530,13 @@ class _WatchHandler:  # pragma: no cover - exercised through watchdog integratio
         # in, even under a folder named like one of these.
         if not tool_hint and not self._ignored_names.isdisjoint(Path(path).parts):
             return
+        if event_type == "modified":
+            now = time.monotonic()
+            if now - self._last_change.get(path, -FILE_EVENT_MIN_GAP_S) < FILE_EVENT_MIN_GAP_S:
+                return
+            if len(self._last_change) >= MAX_TRACKED_FILE_SIZES:
+                self._last_change.clear()
+            self._last_change[path] = now
         workspace = self._config.workspace_for_path(path)
         growth_bytes = 0
         size_bytes = 0
