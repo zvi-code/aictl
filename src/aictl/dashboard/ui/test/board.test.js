@@ -429,7 +429,7 @@ describe('findings', () => {
     const { rows, note } = buildSettings({ audit, effective, hooks: null, otel: null, toolIds: ['tool-a', 'tool-b'] });
     expect(rows.map(r => r.label)).toEqual(['Model', 'Instructions sent each call']);
     expect(rows[0].values['tool-a'].warn).toBe(true);
-    expect(rows[1].values['tool-a'].v).toBe('1 file, 2.1 k');
+    expect(rows[1].values['tool-a'].v).toBe('1 file, ~2.1 k tokens');
     expect(note).toContain('r.md:3');
   });
 });

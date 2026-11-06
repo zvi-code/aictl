@@ -764,6 +764,12 @@ class _Board:
         for sid, aid, _b, _s, n, _tool, _project in self.prompt_rows:
             key = (sid, _agent_key(sid, aid))
             self.prompt_agg[key] = self.prompt_agg.get(key, 0) + n
+        # A subagent's own prompts count on its row, not on its parent's or in the totals.
+        for sid, aid, n in self.conn.execute(
+            f"SELECT session_id, agent_id, COUNT(*) FROM session_prompts WHERE {where} AND agent_id != '' GROUP BY session_id, agent_id",
+            params,
+        ):
+            self.prompt_agg[(sid, _agent_key(sid, aid))] = n
 
     def _load_meta(self) -> None:
         ids = {c.sid for c in self.cells}
@@ -1279,8 +1285,7 @@ class _Board:
         return sum(a.asked for a in aggs), sum(a.denied for a in aggs)
 
     def _agent_user_msgs(self, sid: str, agent: str | None) -> int | None:
-        keys = self.agents_by_root.get(sid, ()) if agent is None else (agent,)
-        total = sum(self.prompt_agg.get((sid, a), 0) for a in keys)
+        total = self.prompt_agg.get((sid, sid if agent is None else agent), 0)
         if total:
             return total
         fallback = self.fallback_user.get(sid) if agent in (None, sid) else None
@@ -1785,7 +1790,7 @@ def _turns(board: _Board, skill_rows: list[tuple]) -> _Turns:
     sampled = {rows[i] for i in range(0, len(rows), every)}
     wanted = set(sampled)
     wanted.update(sorted(rows, key=lambda r: r[1], reverse=True)[:MAX_PROMPTS])
-    for _name, sid, ts in skill_rows:
+    for _name, sid, ts, _agent in skill_rows:
         i = bisect.bisect_right(starts.get(sid, []), ts) - 1
         if i >= 0:
             wanted.add((sid, starts[sid][i]))
@@ -2252,7 +2257,7 @@ def _project_prompts(board: _Board, project_ids: list[str]) -> list[dict]:
 
 def _skill_rows(board: _Board) -> list[tuple]:
     where, params = board._scoped()
-    return board.conn.execute(f"SELECT name, session_id, ts FROM skill_uses WHERE {where}", params).fetchall()
+    return board.conn.execute(f"SELECT name, session_id, ts, agent_id FROM skill_uses WHERE {where}", params).fetchall()
 
 
 SKILL_FILE_TTL_S = 300.0
@@ -2265,6 +2270,14 @@ def _read_text(path: str, limit: int) -> str | None:
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:
             return handle.read(limit)
+    except OSError:
+        return None
+
+
+def _skill_file_tokens(path: str) -> int | None:
+    """An estimate at four characters per token. The tools do not report a skill's size."""
+    try:
+        return Path(path).stat().st_size // 4
     except OSError:
         return None
 
@@ -2282,6 +2295,7 @@ def _skill_file(name: str, projects: Iterable[str]) -> dict:
         "scope": ", ".join(dict.fromkeys(r["scope"] for r in rows)) or None,
         "path": rows[0]["path"] if rows else None,
         "description": mask_secrets(skill_description(head or "")) or None,
+        "file_tokens": _skill_file_tokens(rows[0]["path"]) if rows else None,
     }
     if len(_skill_file_memo) >= 500:
         _skill_file_memo.clear()
@@ -2342,20 +2356,30 @@ def _skill_reach(row: dict, git_state: str) -> str:
     return f"Anyone who works in {row['owner']}."
 
 
-def skill_detail(db: Any, name: str, now: float | None = None, since: float | None = None, until: float | None = None) -> tuple[int, dict]:
+def skill_detail(
+    db: Any, name: str, now: float | None = None, since: float | None = None, until: float | None = None, tools: tuple[str, ...] | None = None
+) -> tuple[int, dict]:
     """Who can see a skill, each use of it, and the text of its files."""
     now = time.time() if now is None else now
     conn = db._conn()
+    # A plugin skill is stored as plugin:name, and a skill file knows only its name.
+    named = "(name = ? OR name LIKE ?)"
+    names = [name, f"%:{name}"]
     range_sql, range_params = "", []
     if since is not None and until is not None:
         range_sql, range_params = " AND ts >= ? AND ts < ?", [since, until]
+    if tools is not None:
+        stored = stored_ids_for(tools)
+        range_sql += f" AND tool IN ({','.join('?' * len(stored))})" if stored else " AND 0"
+        range_params += list(stored)
     rows = conn.execute(
-        f"SELECT ts, session_id, agent_id, tool, project_path, trigger FROM skill_uses WHERE name = ?{range_sql} ORDER BY ts DESC LIMIT {MAX_DETAIL_ROWS}",
-        [name, *range_params],
+        f"SELECT ts, session_id, agent_id, tool, project_path, trigger FROM skill_uses WHERE {named}{range_sql} ORDER BY ts DESC LIMIT {MAX_DETAIL_ROWS}",
+        [*names, *range_params],
     ).fetchall()
-    in_range = conn.execute(f"SELECT COUNT(*), COUNT(DISTINCT session_id) FROM skill_uses WHERE name = ?{range_sql}", [name, *range_params]).fetchone()
-    total, first, last = conn.execute("SELECT COUNT(*), MIN(ts), MAX(ts) FROM skill_uses WHERE name = ?", (name,)).fetchone()
-    raw_projects = [r[0] for r in conn.execute("SELECT DISTINCT project_path FROM skill_uses WHERE name = ? AND project_path != '' LIMIT 50", (name,))]
+    counted = conn.execute(f"SELECT session_id, agent_id FROM skill_uses WHERE {named}{range_sql}", [*names, *range_params]).fetchall()
+    in_range = (len(counted), len({(sid, _agent_key(sid, aid)) for sid, aid in counted}))
+    total, first, last = conn.execute(f"SELECT COUNT(*), MIN(ts), MAX(ts) FROM skill_uses WHERE {named}", names).fetchone()
+    raw_projects = [r[0] for r in conn.execute(f"SELECT DISTINCT project_path FROM skill_uses WHERE {named} AND project_path != '' LIMIT 50", names)]
     projects = list(dict.fromkeys(p for raw in raw_projects for p in (project_root(raw), raw) if p))
     pairs = {(sid, _agent_key(sid, aid)) for _ts, sid, aid, *_ in rows}
     titles = _titles_for(conn, pairs, now)
@@ -2408,13 +2432,16 @@ def skill_detail(db: Any, name: str, now: float | None = None, since: float | No
 
 
 def _skills_section(board: _Board, skill_rows: list[tuple], turns: _Turns) -> list[dict]:
-    """A skill's tokens are those of the turns it ran in, each turn counted once per skill."""
+    """A skill's tokens are all tokens of the turns it ran in, each turn counted once per skill.
+
+    Skills used in one turn each show that turn, so these figures must not be added up.
+    """
     skills: dict[str, dict] = {}
     charged: set[tuple[str, str, float]] = set()
-    for name, sid, ts in skill_rows:
+    for name, sid, ts, agent in skill_rows:
         row = skills.setdefault(name, {"name": name, "uses": 0, "tokens": None, "agents": set()})
         row["uses"] += 1
-        row["agents"].add(sid)
+        row["agents"].add((sid, _agent_key(sid, agent)))
         row.setdefault("projects", set()).add(board.session_project.get(sid, ""))
         line = turns.starts.get(sid, [])
         i = bisect.bisect_right(line, ts) - 1
@@ -3090,6 +3117,7 @@ def compute_board(
         _latency_row("Agent run", sorted(runs)),
     ]
 
+    _scoped_prompts = board._scoped()
     tool_order = list(board.tool_order)
     options = _options(board)
     option_tools = [o["id"] for o in options["tools"]]
@@ -3123,6 +3151,7 @@ def compute_board(
         "prompts": _prompts_section(board, turns.tokens),
         "project_prompts": _project_prompts(board, project_list),
         "skills": _skills_section(board, skill_rows, turns),
+        "prompts_total": board.conn.execute(f"SELECT COUNT(*) FROM session_prompts WHERE {_scoped_prompts[0]} AND agent_id = ''", _scoped_prompts[1]).fetchone()[0],
         "tools": tool_section["rows"],
         "confirms": _confirms_section(board),
         "errors": errors,
@@ -3164,8 +3193,9 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
     sid, agent = _resolve_agent(conn, agent_id)
     first = conn.execute(
         "SELECT MIN(t) FROM (SELECT MIN(ts) t FROM requests WHERE session_id = ?"
-        " UNION ALL SELECT MIN(ts) FROM tool_invocations WHERE session_id = ?)",
-        (sid, sid),
+        " UNION ALL SELECT MIN(ts) FROM tool_invocations WHERE session_id = ?"
+        " UNION ALL SELECT MIN(ts) FROM session_prompts WHERE session_id = ?)",
+        (sid, sid, sid),
     ).fetchone()[0]
     filters = _detail_filters(now)
     if first and first < filters.until:
@@ -3314,6 +3344,8 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
         "by_model": by_model,
         "subagents": subagents,
         "process": process,
+        "skills": _agent_skills(conn, sid, agent, root),
+        "context": _agent_context(conn, sid, agent, root),
         "turns": turns,
         "tool_calls": tool_calls,
         "files": files,
@@ -3327,6 +3359,52 @@ def _maybe_int(value: Any) -> int | None:
     return None if value is None else int(value)
 
 
+def _agent_skills(conn: sqlite3.Connection, sid: str, agent: str, root: bool) -> list[dict]:
+    """The skills that one agent used. A main agent's list also holds its subagents' uses."""
+    agent_sql, params = ("", [sid]) if root else (" AND agent_id = ?", [sid, agent])
+    return [
+        {"name": name, "uses": uses, "agents": agents, "started_by": by, "first_ts": first, "last_ts": last}
+        for name, uses, agents, by, first, last in conn.execute(
+            "SELECT name, COUNT(*), COUNT(DISTINCT agent_id), GROUP_CONCAT(DISTINCT trigger), MIN(ts), MAX(ts) FROM skill_uses"
+            f" WHERE session_id = ?{agent_sql} GROUP BY name ORDER BY COUNT(*) DESC, name",
+            params,
+        )
+    ]
+
+
+_CONTEXT_POINTS = 200
+
+
+def _agent_context(conn: sqlite3.Connection, sid: str, agent: str, root: bool) -> dict | None:
+    """Context size per model call of one agent: input, cache read and cache write together.
+
+    A subagent has its own context, so a main agent's figure leaves its subagents out. A drop
+    of more than half means that the tool made the context smaller, as compaction does.
+    """
+    agent_sql, params = (" AND agent_id = ''", [sid]) if root else (" AND agent_id = ?", [sid, agent])
+    sizes = [
+        (ts, size)
+        for ts, size in conn.execute(
+            "SELECT ts, input_tokens + cache_read_tokens + cache_creation_tokens FROM requests"
+            f" WHERE session_id = ?{agent_sql} AND NOT is_error ORDER BY ts",
+            params,
+        )
+        if size
+    ]
+    if not sizes:
+        return None
+    values = [size for _ts, size in sizes]
+    step = max(1, len(values) // _CONTEXT_POINTS)
+    return {
+        "calls": len(values),
+        "first": values[0],
+        "last": values[-1],
+        "peak": max(values),
+        "drops": sum(1 for before, after in zip(values, values[1:]) if after < before / 2),
+        "series": values[::step][:_CONTEXT_POINTS + 1],
+    }
+
+
 def _agent_turns(conn: sqlite3.Connection, sid: str, agent_sql: str, agent_params: list) -> list[dict]:
     """One row per prompt, or per model call for a session with no stored prompt."""
     # The main agent's turns start at a person's prompts, a subagent's at its own task prompts.
@@ -3336,7 +3414,7 @@ def _agent_turns(conn: sqlite3.Connection, sid: str, agent_sql: str, agent_param
         [sid, *agent_params],
     ).fetchall()
     calls = conn.execute(
-        "SELECT ts, model, input_tokens, output_tokens, cache_read_tokens, duration_ms FROM requests"
+        "SELECT ts, model, input_tokens, output_tokens, cache_read_tokens, duration_ms, cache_creation_tokens, cost_usd, agent_id FROM requests"
         f" WHERE session_id = ?{agent_sql} ORDER BY ts",
         [sid, *agent_params],
     ).fetchall()
@@ -3354,9 +3432,12 @@ def _agent_turns(conn: sqlite3.Connection, sid: str, agent_sql: str, agent_param
                 "input": i_tok,
                 "output": o_tok,
                 "cache_read": cr_tok,
+                "cache_write": cw_tok,
+                "cost_usd": _usd(cost) if cost else None,
+                "subagent_calls": 0,
                 "reply_ms": duration or None,
             }
-            for i, (ts, model, i_tok, o_tok, cr_tok, duration) in enumerate(calls)
+            for i, (ts, model, i_tok, o_tok, cr_tok, duration, cw_tok, cost, _aid) in enumerate(calls)
         ]
     else:
         turns = []
@@ -3376,6 +3457,9 @@ def _agent_turns(conn: sqlite3.Connection, sid: str, agent_sql: str, agent_param
                     "input": sum(c[2] for c in inside) if inside else None,
                     "output": sum(c[3] for c in inside) if inside else None,
                     "cache_read": sum(c[4] for c in inside) if inside else None,
+                    "cache_write": sum(c[6] for c in inside) if inside else None,
+                    "cost_usd": _usd(sum(c[7] or 0 for c in inside)) if any(c[7] for c in inside) else None,
+                    "subagent_calls": sum(1 for c in inside if c[8] and not agent_sql),
                     "reply_ms": sum(durations) if durations else None,
                 }
             )
@@ -3597,8 +3681,9 @@ def prompt_detail(db: Any, ts: float, session_id: str, now: float | None = None)
         "SELECT MIN(ts) FROM session_prompts WHERE session_id = ? AND ts > ? AND agent_id = ''", (session_id, start)
     ).fetchone()[0]
     end = following if following is not None else math.inf
-    i, o, cr, reply = conn.execute(
-        "SELECT SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(NULLIF(duration_ms, 0))"
+    i, o, cr, reply, cw, cost, calls, sub_calls = conn.execute(
+        "SELECT SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(NULLIF(duration_ms, 0)),"
+        " SUM(cache_creation_tokens), SUM(cost_usd), COUNT(*), SUM(agent_id != '')"
         " FROM requests WHERE session_id = ? AND ts >= ? AND ts < ?",
         (session_id, start, end if end != math.inf else now + 60.0),
     ).fetchone()
@@ -3615,6 +3700,10 @@ def prompt_detail(db: Any, ts: float, session_id: str, now: float | None = None)
         "input": i,
         "output": o,
         "cache_read": cr,
+        "cache_write": cw,
+        "cost_usd": _usd(cost) if cost else None,
+        "calls": calls,
+        "subagent_calls": sub_calls,
         "reply_ms": _ms(reply),
         "tool_calls": tool_calls,
     }
@@ -3809,7 +3898,8 @@ def handle_get(
             status, payload = error_detail(db, one("key"), now) if one("key") else (400, {"error": "Missing key"})
         elif path == "/api/board/skill":
             if one("name"):
-                status, payload = skill_detail(db, one("name"), now, _as_number(one("since")), _as_number(one("until")))
+                tools = normalize_selection(part for raw in qs["tool"] for part in raw.split(",")) if "tool" in qs else None
+                status, payload = skill_detail(db, one("name"), now, _as_number(one("since")), _as_number(one("until")), tools)
             else:
                 status, payload = 400, {"error": "Missing name"}
         elif path == "/api/board/excerpt":
