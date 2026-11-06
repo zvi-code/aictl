@@ -1399,7 +1399,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         from .board_api import BoardRequestError, handle_get
 
         try:
-            status, body = handle_get(path, urlparse(self.path).query, self._db, self.server.store)
+            status, body = handle_get(path, urlparse(self.path).query, self._db, self.server.store, is_allowed=self.server.allowed.is_allowed)
         except BoardRequestError as exc:
             self._json_response({"error": str(exc)}, status=400)
             return

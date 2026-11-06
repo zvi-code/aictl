@@ -2276,3 +2276,33 @@ class TestSkillDetail:
     @pytest.mark.parametrize("name", ["../../etc/passwd", "..", "a/b", "a\\b", "plugin:../x"])
     def test_a_name_cannot_leave_the_skill_folders(self, name):
         assert board_api.skill_locations(name, ["/tmp"]) == []
+
+
+class TestFileExcerpt:
+    def _found(self, monkeypatch, *paths):
+        from aictl.context_audit import _path_key
+        from aictl.dashboard.audit_cache import AUDIT_CACHE
+
+        monkeypatch.setattr(AUDIT_CACHE, "source_paths", lambda: {_path_key(p) for p in paths})
+
+    def test_a_file_from_a_scan_shows_masked_lines_around_the_line(self, tmp_path, monkeypatch):
+        path = tmp_path / "settings.json"
+        path.write_text('{\n"a": 1,\n"b": 2,\n"token": "ghp_abcdefghijklmnopqrstuvwxyz123456",\n"model": "x",\n"c": 3,\n"d": 4,\n"e": 5,\n"f": 6\n}\n')
+        self._found(monkeypatch, path)
+        status, payload = board_api.file_excerpt(str(path), 5)
+        assert status == 200
+        assert [row["n"] for row in payload["lines"]] == [2, 3, 4, 5, 6, 7, 8]
+        assert 'ghp_abcdefghijklmnopqrstuvwxyz123456' not in json.dumps(payload)
+
+    def test_a_file_no_scan_found_is_refused(self, tmp_path, monkeypatch):
+        path = tmp_path / "secret.md"
+        path.write_text("x")
+        self._found(monkeypatch)
+        assert board_api.file_excerpt(str(path), 1)[0] == 403
+
+    @pytest.mark.parametrize("name", ["data.db", "state.vscdb", "key.pem", "noext"])
+    def test_a_database_or_other_file_is_refused_even_if_found(self, tmp_path, monkeypatch, name):
+        path = tmp_path / name
+        path.write_text("x")
+        self._found(monkeypatch, path)
+        assert board_api.file_excerpt(str(path), 1)[0] == 403

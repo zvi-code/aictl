@@ -431,6 +431,7 @@ export const getBoardAgent = (id, opts) => fetchJson('/api/board/agent?id=' + en
 export const getBoardTool = (name, query = '', opts) => fetchJson('/api/board/tool?name=' + encodeURIComponent(name) + (query ? '&' + query : ''), opts);
 export const getBoardError = (key, query = '', opts) => fetchJson('/api/board/error?key=' + encodeURIComponent(key) + (query ? '&' + query : ''), opts);
 export const getBoardSkill = (name, query = '', opts) => fetchJson('/api/board/skill?name=' + encodeURIComponent(name) + (query ? '&' + query : ''), opts);
+export const getBoardExcerpt = (path, line, opts) => fetchJson('/api/board/excerpt?path=' + encodeURIComponent(path) + '&line=' + encodeURIComponent(line), opts);
 export const getBoardFile = (path, query = '', opts) => fetchJson('/api/board/file?path=' + encodeURIComponent(path) + (query ? '&' + query : ''), opts);
 export const getBoardPrompt = (ts, sessionId, opts) => fetchJson('/api/board/prompt?ts=' + encodeURIComponent(ts) + '&session_id=' + encodeURIComponent(sessionId), opts);
 

@@ -217,12 +217,9 @@ function useExcerpt(path, line) {
   useEffect(() => {
     if (!path || !line) { setState(null); return undefined; }
     let live = true;
-    api.getFile(path).then(r => (r.ok ? r.text() : null)).then((text) => {
-      if (!live || typeof text !== 'string') return;
-      const all = text.split('\n');
-      const from = Math.max(0, line - 4);
-      setState(all.slice(from, line + 3).map((t, i) => ({ n: from + i + 1, text: t, kind: from + i + 1 === line ? 'hit' : 'same' })));
-    }).catch(() => { /* the file is not readable here: the panel says so */ });
+    api.getBoardExcerpt(path, line).then((r) => {
+      if (live) setState({ lines: r.lines.map(x => ({ n: x.n, text: x.text, kind: x.n === line ? 'hit' : 'same' })) });
+    }).catch((e) => { if (live) setState({ error: e?.message || 'The file cannot be read.' }); });
     return () => { live = false; };
   }, [path, line]);
   return state;
@@ -238,7 +235,8 @@ function FileDrawer({ d, ctx, frame, act }) {
   }), [data]);
   const sub = d.line ? 'Line ' + d.line : (data?.diff ? 'Diff of the last edit' : '');
   return html`<${Frame} ...${frame} title=${d.path} sub=${sub}>
-    ${excerpt ? html`<${FixedPanel} id="code" title="File"><${CodeLines} lines=${excerpt}/><div class="bd-note">Values under names that look like secrets are never shown.</div></${FixedPanel}>` : null}
+    ${excerpt?.error ? html`<${FixedPanel} id="code" title="File"><div class="bd-empty" role="status">${excerpt.error}</div></${FixedPanel}>` : null}
+    ${excerpt?.lines ? html`<${FixedPanel} id="code" title="File"><${CodeLines} lines=${excerpt.lines}/><div class="bd-note">Values under names that look like secrets are never shown.</div></${FixedPanel}>` : null}
     ${data ? html`
       ${!d.line || data.diff ? html`<${FixedPanel} id="diff" title="Diff">
         ${data.diff ? html`<${CodeLines} lines=${data.diff}/><div class="bd-note">Values under names that look like secrets are masked.</div>` : html`<div class="bd-empty">n/a. No diff is stored for this file.</div>`}

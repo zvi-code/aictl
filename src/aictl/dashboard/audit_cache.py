@@ -33,6 +33,14 @@ class AuditCache:
         self._jobs: dict[tuple, dict] = {}
         self._errors: dict[tuple, str] = {}
 
+    def source_paths(self) -> set[str]:
+        """Comparison keys of the files that the kept scans found."""
+        from ..context_audit import _path_key
+
+        with self._lock:
+            results = [result for _stored, result in self._items.values()]
+        return {_path_key(source["path"]) for result in results for source in result.get("sources", []) if source.get("path")}
+
     def poll(self, project: str | Path, tool: str | None = None, *, refresh: bool = False) -> dict:
         """The audit if it is ready, otherwise what is running now. Never waits for a scan.
 
