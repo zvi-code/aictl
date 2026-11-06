@@ -275,10 +275,11 @@ class TestClaude:
         assert got["t1"]["exit_code"] == 2
         assert got["t1"]["is_error"] == 1
         assert got["t1"]["confirm"] == "approved"
-        assert got["t1"]["duration_ms"] == pytest.approx(10_000, abs=50)
+        assert got["t1"]["duration_ms"] == 0, "a person answered, so this time holds the wait"
+        assert got["t2"]["duration_ms"] == pytest.approx(1000, abs=50)
         assert got["t2"]["confirm"] == "auto"
         assert got["t2"]["exit_code"] is None
-        assert got["t3"]["confirm"] == "denied"
+        assert got["t3"]["confirm"] == "blocked"
         assert got["t4"]["duration_ms"] == 0  # no result yet
         assert [r["name"] for r in rows(db, "SELECT name FROM skill_uses")] == ["ui-review"]
 
@@ -524,7 +525,7 @@ class TestCopilot:
         got = {r["source_event_id"]: r for r in rows(db, "SELECT * FROM tool_invocations")}
         assert got["c1"]["confirm"] == "approved"
         assert got["c1"]["confirm_wait_ms"] == pytest.approx(5000, abs=50)
-        assert (got["p2"]["confirm"], got["p2"]["tool_name"]) == ("denied", "permission:extension-permission-access")
+        assert (got["p2"]["confirm"], got["p2"]["tool_name"]) == ("blocked", "permission:extension-permission-access")
         assert got["p3"]["confirm"] == "auto"
         assert got["p4"]["confirm"] == "pending"
 
@@ -1117,3 +1118,46 @@ class TestCopilotTelemetry:
         # Each keeps its own cached result rather than evicting the other's.
         assert tt.parse_copilot_telemetry(tool="copilot-cli") is cli
         assert tt.parse_copilot_telemetry(tool="copilot-desktop") is desktop
+
+
+class TestConfirmationKinds:
+    @pytest.mark.parametrize(
+        ("decision", "denial", "expected"),
+        [
+            ({"decision": "accept", "source": "user_temporary"}, None, "approved"),
+            ({"decision": "accept", "source": "user_permanent"}, None, "auto"),
+            ({"decision": "accept", "source": "config"}, None, "auto"),
+            ({"decision": "reject", "source": "user_reject"}, None, "denied"),
+            ({"decision": "reject", "source": "hook"}, None, "blocked"),
+            ({"decision": "reject", "source": "config"}, None, "blocked"),
+            ({}, "some-kind", "blocked"),
+            ({}, None, ""),
+        ],
+    )
+    def test_claude_says_who_decided(self, decision, denial, expected):
+        from aictl.ingesters.call_facts import _claude_confirm
+
+        assert _claude_confirm(decision, denial) == expected
+
+    def test_copilot_denial_without_a_person_is_blocked(self):
+        from aictl.ingesters.call_facts import confirm_from_permission
+
+        assert confirm_from_permission({"kind": "denied-no-approval-rule-and-could-not-request-from-user"}, "") == "blocked"
+        assert confirm_from_permission({"kind": "denied-interactively-by-user"}, "") == "denied"
+
+
+def test_a_tool_duration_starts_at_the_last_block_of_its_message(db, tmp_path):
+    """One Edit showed 181 s for a 0.9 s call, because each block's time holds the model's streaming."""
+    write_lines(
+        claude_path(tmp_path),
+        [
+            c_assistant("m1", "r1", 100, blocks=[c_tool_use("a", "Edit", {"file_path": "/w/a"})]),
+            c_assistant("m1", "r1", 50, blocks=[c_tool_use("b", "Edit", {"file_path": "/w/b"})]),
+            c_tool_result("a", 49, decision={"decision": "accept", "source": "config"}),
+            c_tool_result("b", 48, decision={"decision": "accept", "source": "config"}),
+        ],
+    )
+    make_ingester(db, tmp_path).poll()
+    got = {r["source_event_id"]: r for r in rows(db, "SELECT * FROM tool_invocations")}
+    assert got["a"]["duration_ms"] == pytest.approx(1000, abs=50)
+    assert got["b"]["duration_ms"] == pytest.approx(2000, abs=50)

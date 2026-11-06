@@ -362,6 +362,7 @@ class _Call:
     target: str
     is_error: int
     exit_code: int | None
+    input: str = ""
 
 
 def find_loops(calls: list[_Call]) -> list[dict]:
@@ -399,7 +400,7 @@ def find_loops(calls: list[_Call]) -> list[dict]:
             i += 1
             continue
         j = i
-        while j < last and fails(calls[j + 1]) and (calls[j + 1].name, calls[j + 1].target) == (call.name, call.target):
+        while j < last and fails(calls[j + 1]) and (calls[j + 1].name, calls[j + 1].target, calls[j + 1].input) == (call.name, call.target, call.input):
             j += 1
         close(i, j, j - i + 1, f"{call.name} {_one_line(call.target, 120)} fails".replace("  ", " "))
         i = j + 1
@@ -1026,12 +1027,12 @@ class _Board:
         if not candidates:
             return
         streams: dict[tuple[str, str], list[_Call]] = defaultdict(list)
-        for sid, aid, ts, name, target, is_error, exit_code in self.conn.execute(
-            "SELECT session_id, agent_id, ts, tool_name, target, is_error, exit_code FROM tool_invocations"
+        for sid, aid, ts, name, target, is_error, exit_code, call_input in self.conn.execute(
+            "SELECT session_id, agent_id, ts, tool_name, target, is_error, exit_code, input FROM tool_invocations"
             f" WHERE {where} AND {_IS_CALL_SQL} AND session_id IN (SELECT value FROM json_each(?)) ORDER BY ts, id",
             [*params, json.dumps(sorted(candidates))],
         ):
-            streams[(sid, _agent_key(sid, aid))].append(_Call(ts, name, target or "", is_error, exit_code))
+            streams[(sid, _agent_key(sid, aid))].append(_Call(ts, name, target or "", is_error, exit_code, call_input or ""))
         for (sid, agent), calls in streams.items():
             for loop in find_loops(calls):
                 self.loops.append({**loop, "session_id": sid, "agent_id": agent})
@@ -1097,7 +1098,8 @@ class _Board:
                     continue
                 sub = self.sub_rows.get(agent) or {}
                 when = last_call.get((sid, agent), sub.get("started_at") or 0.0)
-                finished = bool(sub.get("ended_at") or sub.get("completed"))
+                # ended_at is only the time of the last line while a subagent still runs.
+                finished = bool(sub.get("completed"))
                 sub_active = active and not finished and self.now - when < ACTIVE_WINDOW_S
                 agg = self.tool_agg.get((sid, agent))
                 if sub_active and agg is not None and agg.pending:
@@ -1886,8 +1888,8 @@ def _tools_section(board: _Board) -> dict:
 
 
 def _confirms_section(board: _Board) -> dict:
-    counts = {"auto": 0, "approved": 0, "denied": 0, "pending": 0}
-    by_tool: dict[str, dict[str, int]] = defaultdict(lambda: {"auto": 0, "approved": 0, "denied": 0})
+    counts = {"auto": 0, "approved": 0, "denied": 0, "blocked": 0, "pending": 0}
+    by_tool: dict[str, dict[str, int]] = defaultdict(lambda: {"auto": 0, "approved": 0, "denied": 0, "blocked": 0})
     waits: dict[str, list[float]] = defaultdict(list)
     all_waits: list[float] = []
     for sid, _aid, name, _target, _ts, confirm, wait in board.confirm_rows:
@@ -1896,7 +1898,7 @@ def _confirms_section(board: _Board) -> dict:
         counts[confirm] = counts.get(confirm, 0) + 1
         if confirm in by_tool[name]:
             by_tool[name][confirm] += 1
-        if wait and wait > 0:
+        if wait and wait > 0 and confirm in ("approved", "denied"):
             waits[name].append(wait)
             all_waits.append(wait)
     for group in (all_waits, *waits.values()):
@@ -1909,8 +1911,9 @@ def _confirms_section(board: _Board) -> dict:
     ]
     p95 = _percentile(all_waits, 0.95)
     return {
-        # A call the tool let through on its own was not asked.
-        "asked": sum(n for kind, n in counts.items() if kind != "auto") if reported else None,
+        # Nobody was asked about a call that a rule let through or stopped.
+        "asked": counts["approved"] + counts["denied"] + counts["pending"] if reported else None,
+        "blocked": counts["blocked"] if reported else None,
         "auto": counts["auto"] if reported else None,
         "approved": counts["approved"] if reported else None,
         "denied": counts["denied"] if reported else None,
@@ -3095,6 +3098,7 @@ def compute_board(
         "options": options,
         "scope": {
             "shown_agents": _count_agents(board, board.scope),
+            "shown_sessions": sum(1 for sid in board.scope if sid in board.agents_by_root),
             "all_agents": _count_agents(board, (sid for sid in board.agents_by_root if sid)),
             "listed_agents": len(agents),
         },
@@ -3292,6 +3296,8 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
             "repeats": newest["repeats"],
             "since_ts": newest["since_ts"],
             "at_end": newest["at_end"],
+            "tokens": newest.get("tokens"),
+            "cost_usd": newest.get("cost_usd"),
         }
     return 200, {
         "agent": row,
@@ -3387,18 +3393,23 @@ def _titles_for(conn: sqlite3.Connection, pairs: set[tuple[str, str]], now: floa
     return board._titles(pairs)
 
 
-def tool_detail(db: Any, name: str, now: float | None = None) -> tuple[int, dict]:
+def tool_detail(db: Any, name: str, now: float | None = None, since: float | None = None, until: float | None = None) -> tuple[int, dict]:
     now = time.time() if now is None else now
     conn = db._conn()
+    window, window_params = "", []
+    if since is not None and until is not None:
+        window, window_params = " AND ts >= ? AND ts < ?", [since, until]
     rows = conn.execute(
         "SELECT ts, target, session_id, agent_id, duration_ms, is_error, confirm FROM tool_invocations"
-        f" WHERE tool_name = ? ORDER BY ts DESC LIMIT {MAX_DETAIL_ROWS}",
-        (name,),
+        f" WHERE tool_name = ?{window} ORDER BY ts DESC LIMIT {MAX_DETAIL_ROWS}",
+        [name, *window_params],
     ).fetchall()
+    total = conn.execute(f"SELECT COUNT(*) FROM tool_invocations WHERE tool_name = ?{window}", [name, *window_params]).fetchone()[0]
     pairs = {(sid, _agent_key(sid, aid)) for _ts, _t, sid, aid, *_ in rows}
     titles = _titles_for(conn, pairs, now)
     return 200, {
         "name": name,
+        "total": total,
         "calls": [
             {
                 "ts": ts,
@@ -3780,7 +3791,10 @@ def handle_get(
         if path == "/api/board/agent":
             status, payload = agent_detail(db, one("id"), snapshot, now) if one("id") else (400, {"error": "Missing id"})
         elif path == "/api/board/tool":
-            status, payload = tool_detail(db, one("name"), now) if one("name") else (400, {"error": "Missing name"})
+            if one("name"):
+                status, payload = tool_detail(db, one("name"), now, _as_number(one("since")), _as_number(one("until")))
+            else:
+                status, payload = 400, {"error": "Missing name"}
         elif path == "/api/board/error":
             status, payload = error_detail(db, one("key"), now) if one("key") else (400, {"error": "Missing key"})
         elif path == "/api/board/skill":
