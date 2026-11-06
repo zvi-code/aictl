@@ -968,3 +968,30 @@ def test_self_usage_counts_child_processes():
     assert usage["cpu_percent"] >= usage["daemon_cpu_percent"] + kids[child.pid]["cpu_percent"] - 0.2
     assert usage["memory_rss_bytes"] >= usage["daemon_memory_rss_bytes"] + kids[child.pid]["memory_rss_bytes"]
     assert os.getpid() not in kids
+
+
+def _usage_line(tokens: int) -> str:
+    return json.dumps({"input_tokens": tokens, "output_tokens": 1}) + "\n"
+
+
+def test_tail_treats_a_file_from_before_the_start_as_history(tmp_path):
+    log = tmp_path / "telemetry.jsonl"
+    log.write_text(_usage_line(2_000_000_000), encoding="utf-8")
+    collector = _telemetry_collector(tmp_path)
+    collector._started_at = log.stat().st_mtime + 10
+
+    assert collector._parse_file(log) == []
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write(_usage_line(50))
+    samples = collector._parse_file(log)
+    assert [s["input_tokens"] for s in samples] == [50]
+
+
+def test_tail_reads_a_file_created_after_the_start_from_its_first_line(tmp_path):
+    collector = _telemetry_collector(tmp_path)
+    log = tmp_path / "telemetry.jsonl"
+    log.write_text(_usage_line(70), encoding="utf-8")
+    collector._started_at = log.stat().st_mtime - 10
+    collector._found_at_start = set()
+
+    assert [s["input_tokens"] for s in collector._parse_file(log)] == [70]
