@@ -2779,3 +2779,24 @@ class TestCoverageLimits:
         notes = _board(db)["coverage"]["notes"]
         vscode = next(n for n in notes if n["tool"] == "copilot-vscode")
         assert "older than 30 days" in vscode["text"]
+
+
+class TestSubagentsInTheWindow:
+    def _session_with_subagents(self, db):
+        conn = db._conn()
+        _session(conn, "long", "aider", "/p/long", NOW - 10 * DAY)
+        _request(conn, NOW - 100, "long", "aider", "/p/long", SONNET, i=1)
+        for aid, start, end in (("old-sub", NOW - 9 * DAY, NOW - 9 * DAY + 60), ("new-sub", NOW - 200, NOW - 100)):
+            _insert(conn, "agents", agent_id=aid, session_id="long", tool="aider", task=aid, started_at=start, ended_at=end, completed=1)
+        conn.commit()
+
+    def test_a_subagent_that_ended_before_the_window_has_no_row(self, db):
+        self._session_with_subagents(db)
+        ids = [a["id"] for a in _board(db)["agents"]]
+        assert "new-sub" in ids
+        assert "old-sub" not in ids
+
+    def test_the_agent_detail_still_lists_every_subagent(self, db):
+        self._session_with_subagents(db)
+        subs = [s["id"] for s in agent_detail(db, "long", None, NOW)[1]["subagents"]]
+        assert sorted(subs) == ["new-sub", "old-sub"]
