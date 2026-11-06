@@ -1512,10 +1512,17 @@ class _APIHandlersMixin:
             self._json_response({"error": "No live session data"}, status=503)
             return
         session = next((s for s in snap.sessions if s.get("session_id") == session_id), None)
-        if session is None:
-            self._json_response({"error": "Session not active"}, status=404)
-            return
-        pids = [int(p) for p in (session.get("pids") or []) if int(p) > 0]
+        if session is not None:
+            pids = [int(p) for p in (session.get("pids") or []) if int(p) > 0]
+        else:
+            # The dashboard names an agent by its stored id, not by the monitor's.
+            from .board_api import live_pids_of
+
+            pids = live_pids_of(self._db, snap, session_id) if self._db else []
+            session = {"tool": ""}
+            if not pids:
+                self._json_response({"error": "This agent has no running process"}, status=404)
+                return
         if not pids:
             self._json_response({"error": "Session has no tracked PIDs"}, status=409)
             return
@@ -1541,7 +1548,12 @@ class _APIHandlersMixin:
             except Exception:
                 # Audit logging must never block the control action itself.
                 pass
-        self._json_response({"session_id": session_id, "signal": "SIG" + sig_name, **result})
+        # A stop that reached no process is a failure, whatever the reason.
+        status = 200 if result["signaled"] else 409
+        payload = {"session_id": session_id, "signal": "SIG" + sig_name, **result}
+        if not result["signaled"]:
+            payload["error"] = f"No process could be stopped. Tried {len(result['failed'])}."
+        self._json_response(payload, status=status)
 
     def _serve_sessions(self) -> None:
         """Serve active and historical sessions.

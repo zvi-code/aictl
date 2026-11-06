@@ -63,8 +63,12 @@ MAX_AGENT_IDS = 50
 MAX_DIFF_LINES = 500
 PROMPT_PREVIEW_CHARS = 240
 TITLE_CHARS = 80
-STATUSES = ("all", "active", "running", "looping", "waiting", "ended", "failed")
+STATUSES = ("all", "active", "running", "looping", "waiting", "idle", "ended", "failed")
 ACTIVE_STATUSES = ("running", "looping", "waiting")
+# Idle: the process is alive or the session is recent, but its turn ended and nothing runs.
+LIVE_STATUSES = (*ACTIVE_STATUSES, "idle")
+_TURN_ENDED_REASONS = ("end_turn", "stop", "stop_sequence")
+IDLE_AFTER_S = 120.0
 # Percentiles look at no more than about this many values. The sample is every
 # k-th row by id, and a group the sample leaves thin is read in full.
 MAX_LATENCY_VALUES = 10_000
@@ -98,6 +102,8 @@ _NO_CACHE_WRITE = frozenset({"copilot-vscode"})
 _NO_TTFT = frozenset({"claude-code"})
 # Processes that serve an app or a tool, and are never an agent at work by themselves.
 _SUPPORT_PROCESS_TYPES = frozenset({"helper", "mcp-server", "daemon", "app"})
+# A process that an agent started, such as an MCP server. It belongs to that agent and is never one.
+_STARTED_BY_AGENT_TYPES = frozenset({"child", "browser", "mcp-server"})
 # A row with this name is a confirmation with no tool call, such as an extension asking for access.
 _IS_CALL_SQL = "substr(tool_name, 1, 11) <> 'permission:'"
 
@@ -277,6 +283,24 @@ def _list_cost(model: str, i: float, o: float, cr: float, cw: float, ts: float) 
     return rates.cost_usd(i, o, cr, cw), cr * (rates.input_per_m - read_rate) / 1e6
 
 
+def _process_start(pid: int) -> float:
+    """When a process began, or zero when that is not known."""
+    try:
+        import psutil
+    except ImportError:
+        return 0.0
+    try:
+        return float(psutil.Process(pid).create_time())
+    except (psutil.Error, OSError, ValueError):
+        return 0.0
+
+
+def _earlier_start(first_seen: float, pid: Any) -> float:
+    """The monitor first sees a process when it starts itself, so ask when the process began."""
+    began = _process_start(pid) if isinstance(pid, int) and pid > 0 else 0.0
+    return min(first_seen, began) if began and first_seen else (began or first_seen)
+
+
 def _cost_of(stored: float | None, model: str, i: float, o: float, cr: float, cw: float, ts: float) -> float | None:
     """The cost stored per call, which knows the cache tier and speed, or else list price."""
     return stored if stored else _list_cost(model, i, o, cr, cw, ts)[0]
@@ -294,7 +318,9 @@ _EDIT_TOOL_RE = re.compile(r"(?i)edit|write|patch|replace|create_?file|insert")
 _MCP_TOOL_RE = re.compile(r"^mcp(__|_|\.|:)|^[\w.-]+/[\w.-]+$")
 _ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||[;|&\n]")
-_WRAPPERS = {"time", "sudo", "env", "command", "npx", "bunx", "exec", "nice"}
+_WRAPPERS = {"time", "sudo", "env", "command", "npx", "bunx", "exec", "nice", "do", "then", "else", "{"}
+_ASSIGN_FROM_COMMAND_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*=\$\([^)]*\)")
+_PIPED_TO_FILTER_RE = re.compile(r"\|\s*(?:tail|head|grep|tee|sed|awk|cut|sort|uniq|wc|less|cat)\b")
 _RUNNER_WRAPPERS = {("uv", "run"), ("poetry", "run"), ("pipenv", "run"), ("pnpm", "exec"), ("yarn", "exec"), ("pdm", "run")}
 _TEST_ONE_WORD = {"pytest", "vitest", "jest", "tox", "ctest"}
 _TEST_TWO_WORDS = {
@@ -325,13 +351,14 @@ def is_test_command(target: str | None) -> bool:
     """
     if not target:
         return False
-    for segment in _SEGMENT_SPLIT_RE.split(target):
+    for segment in _SEGMENT_SPLIT_RE.split(_ASSIGN_FROM_COMMAND_RE.sub(" ", target)):
         words = segment.replace("(", " ").split()
         while words and (_ENV_ASSIGN_RE.match(words[0]) or _program(words[0]) in _WRAPPERS):
             words.pop(0)
         if len(words) >= 2 and (_program(words[0]), words[1]) in _RUNNER_WRAPPERS:
             words = words[2:]
-        if len(words) >= 3 and _program(words[0]).startswith("python") and words[1] == "-m":
+        # A variable that holds an interpreter: $PY -m pytest.
+        if len(words) >= 3 and (_program(words[0]).startswith("python") or words[0].startswith("$")) and words[1] == "-m":
             words = words[2:]
         if not words:
             continue
@@ -897,14 +924,20 @@ class _Board:
             if project:
                 newest_first[(self.session_tool.get(sid, ""), key_of(project))].append(sid)
 
+        kinds = self._process_kinds()
+        # started_at is when the monitor first saw the process, not when it began, so
+        # a session active just before the monitor started still belongs to it.
+        began = {
+            id(live): _earlier_start(float(live.get("started_at") or 0.0), live.get("root_pid"))
+            for live in self.live_sessions
+        }
+
         def overlaps(sid: str, live: dict) -> bool:
-            # started_at is when the monitor first saw the process, not when it began, so
-            # a session active just before the monitor started still belongs to it.
-            start = float(live.get("started_at") or 0.0)
+            start = began[id(live)]
             end = float(live.get("last_seen_at") or self.now)
             return last_seen[sid] >= min(start, self.now - ACTIVE_WINDOW_S) and first_seen[sid] <= end
 
-        def owner(live: dict) -> str | None:
+        def known_owner(live: dict) -> str | None:
             live_id = str(live.get("session_id") or "")
             if live_id in last_seen:
                 return live_id
@@ -915,22 +948,41 @@ class _Board:
                 sid = pid_owner.get(pid)
                 if sid and overlaps(sid, live):
                     return sid
+            return None
+
+        claimed: set[str] = set()
+
+        def owner_by_project(live: dict) -> str | None:
+            """The newest session here that has no process yet, or else the newest one."""
             tool = str(live.get("tool") or "")
+            fallback = None
+            pids = [int(p) for p in live.get("pids") or []]
+            if pids and all(kinds.get(pid, "") in _STARTED_BY_AGENT_TYPES for pid in pids):
+                return None
             for path in [live.get("project"), *(live.get("workspaces") or [])]:
                 if not path:
                     continue
                 for tool_id in stored_ids_for([tool]) or [tool]:
                     for sid in newest_first.get((tool_id, key_of(path)), ()):
-                        if overlaps(sid, live):
-                            return sid if self._takes_live(sid, tool_id, path) else None
-            return None
+                        if not overlaps(sid, live):
+                            continue
+                        if not self._takes_live(sid, tool_id, path):
+                            return None
+                        if sid not in claimed:
+                            return sid
+                        fallback = fallback or sid
+            return fallback
 
         unmatched: list[dict] = []
-        for live in self.live_sessions:
-            sid = owner(live)
+        matches = [(live, known_owner(live)) for live in self.live_sessions]
+        claimed.update(sid for _live, sid in matches if sid)
+        # The processes that started last go first, as the newest session belongs to the newest.
+        for live, known in sorted(matches, key=lambda m: began[id(m[0])], reverse=True):
+            sid = known or owner_by_project(live)
             if sid is None:
                 unmatched.append(live)
                 continue
+            claimed.add(sid)
             merged = self.live_by_sid.setdefault(sid, {"pids": set(), "cpu_percent": None, "started_at": None})
             merged["pids"].update(int(p) for p in live.get("pids") or [])
             if live.get("cpu_percent") is not None:
@@ -966,20 +1018,27 @@ class _Board:
                 owners[pid] = sid
         return owners
 
-    def _add_placeholders(self, unmatched: list[dict]) -> None:
-        """At most one row per tool and project for a tool process with no session data yet."""
+    def _process_kinds(self) -> dict[int, str]:
         kinds: dict[int, str] = {}
         for tool in getattr(self.snapshot, "tools", None) or []:
             for proc in getattr(tool, "processes", None) or []:
                 kinds[_proc_field(proc, "pid")] = _proc_field(proc, "process_type") or ""
+        return kinds
+
+    def _add_placeholders(self, unmatched: list[dict]) -> None:
+        """At most one row per tool and project for a tool process with no session data yet."""
+        kinds = self._process_kinds()
+        not_agents = _SUPPORT_PROCESS_TYPES | _STARTED_BY_AGENT_TYPES
         groups: dict[tuple[str, str], dict] = {}
+        no_project = {"", project_key("/"), project_key(str(Path.home()))}
         for live in unmatched:
             project = str(live.get("project") or "")
             tool = str(live.get("tool") or "")
             pids = [int(p) for p in live.get("pids") or []]
-            if not project or not tool:
+            if not tool or project_key(project) in no_project:
                 continue  # a desktop app and its helpers have no project
-            if pids and all(kinds.get(pid, "") in _SUPPORT_PROCESS_TYPES for pid in pids):
+            # A shell or a helper is not an agent. Only a process that the snapshot knows as the tool is.
+            if pids and all(kinds.get(pid, "") in not_agents or (kinds and pid not in kinds) for pid in pids):
                 continue
             row = groups.setdefault(
                 (tool, project_key(project)),
@@ -1053,6 +1112,23 @@ class _Board:
                 self.loops.append({**loop, "session_id": sid, "agent_id": agent})
         self.loops.sort(key=lambda loop: loop["since_ts"], reverse=True)
 
+    def _sessions_with_ended_turn(self, last_activity: dict[str, float]) -> set[str]:
+        """Sessions quiet for a while whose main agent last finished its turn."""
+        quiet = [
+            sid for sid, ts in last_activity.items() if IDLE_AFTER_S <= self.now - ts < ACTIVE_WINDOW_S
+        ]
+        if not quiet:
+            return set()
+        return {
+            sid
+            for sid, _ts, reason in self.conn.execute(
+                "SELECT session_id, MAX(ts), finish_reason FROM requests WHERE agent_id = ''"
+                " AND session_id IN (SELECT value FROM json_each(?)) GROUP BY session_id",
+                (json.dumps(quiet),),
+            )
+            if reason in _TURN_ENDED_REASONS
+        }
+
     def _assign_status(self) -> None:
         last_activity: dict[str, float] = {}
         last_call: dict[tuple[str, str], float] = {}
@@ -1093,6 +1169,7 @@ class _Board:
         looping_at_end = {(loop["session_id"], loop["agent_id"]) for loop in self.loops if loop["at_end"]}
         roots_looping = {sid for sid, _ in looping_at_end}
 
+        turn_ended = self._sessions_with_ended_turn(last_activity)
         for sid, agents in agents_by_root.items():
             if not sid:
                 continue
@@ -1102,6 +1179,8 @@ class _Board:
                 self.status[sid] = "waiting"
             elif active and sid in roots_looping:
                 self.status[sid] = "looping"
+            elif active and (not recent or sid in turn_ended):
+                self.status[sid] = "idle"
             elif active:
                 self.status[sid] = "running"
             elif last_failed(sid, agents):
@@ -1331,7 +1410,7 @@ class _Board:
         meta = self.meta.get(sid) or {}
         sub = self.sub_rows.get(agent) or {}
         live = self.live_by_sid.get(sid) if root else None
-        active = status in ACTIVE_STATUSES
+        active = status in LIVE_STATUSES
         keys = self.agents_by_root.get(sid, ()) if root else (agent,)
         firsts = [self.first_ts[(sid, a)] for a in keys if (sid, a) in self.first_ts]
         firsts += [self.tool_agg[(sid, a)].min_ts for a in keys if (sid, a) in self.tool_agg]
@@ -1459,7 +1538,7 @@ class _Board:
         agg_rows = self.pending_rows.get(sid, [])
         for row in agg_rows:
             if agent is None or row["agent_key"] == agent:
-                return {"name": row["name"], "target": row["target"], "since_ts": row["since_ts"]}
+                return {"name": row["name"], "target": _one_line(row["target"], 300), "since_ts": row["since_ts"]}
         return None
 
     def _index_pending(self) -> None:
@@ -2459,7 +2538,7 @@ def _skills_section(board: _Board, skill_rows: list[tuple], turns: _Turns) -> li
 def _memory_files(board: _Board) -> list[dict]:
     selected = set(stored_ids_for(board.f.tools)) if board.f.tools is not None else None
     rows = board.conn.execute(
-        "SELECT path, tool, scope, tokens, last_changed FROM files WHERE category LIKE '%memory%'"
+        "SELECT path, tool, scope, tokens, last_changed FROM files WHERE (category LIKE '%memory%' OR category LIKE '%instruction%')"
         f" ORDER BY last_changed DESC LIMIT {MAX_LIST_ROWS}"
     ).fetchall()
     rows = [
@@ -2888,6 +2967,14 @@ def compute_board(
     errors, api_bucket, api_by_project = _errors_section(board)
     changes, lines_by_project = _changes_section(board)
     tests, tests_passed, tests_failed, tests_by_project = _tests_section(board)
+    tests_piped = sum(
+        1
+        for sid, _aid, _ts, _name, target, is_error, exit_code, _duration in board.test_rows
+        if sid in board.scope
+        and not _test_failed(is_error, exit_code)
+        and _PIPED_TO_FILTER_RE.search(target or "")
+        and "pipefail" not in (target or "")
+    )
     loops = _loop_rows(board)
     prev = _previous(board)
     cpu, mem = _resource_series(board)
@@ -2965,6 +3052,7 @@ def compute_board(
         loop_spark[board._spark_of(loop["since_ts"])] += 1
     kpis = {
         "running": sum(1 for sid in board.scope if board.status.get(sid) in ACTIVE_STATUSES),
+        "idle": sum(1 for sid in board.scope if board.status.get(sid) == "idle"),
         "subagents_running": sum(
             1
             for sid in board.scope
@@ -3151,6 +3239,7 @@ def compute_board(
         "prompts": _prompts_section(board, turns.tokens),
         "project_prompts": _project_prompts(board, project_list),
         "skills": _skills_section(board, skill_rows, turns),
+        "tests_piped": tests_piped,
         "prompts_total": board.conn.execute(f"SELECT COUNT(*) FROM session_prompts WHERE {_scoped_prompts[0]} AND agent_id = ''", _scoped_prompts[1]).fetchone()[0],
         "tools": tool_section["rows"],
         "confirms": _confirms_section(board),
@@ -3185,6 +3274,23 @@ def _resolve_agent(conn: sqlite3.Connection, agent_id: str) -> tuple[str, str] |
 
 def _detail_filters(now: float) -> Filters:
     return Filters(since=0.0, until=now + 60.0, buckets=1)
+
+
+def live_pids_of(db: Any, snapshot: Any, agent_id: str, now: float | None = None) -> list[int]:
+    """The processes of a board agent, for Stop. A subagent has none of its own."""
+    now = time.time() if now is None else now
+    conn = db._conn()
+    if agent_id.startswith("live:"):
+        board = _Board(conn, _detail_filters(now), now, snapshot).load()
+        for group in board.placeholders:
+            if f"live:{group['tool']}:{group['project']}" == agent_id:
+                return sorted(group["pids"])
+        return []
+    sid, agent = _resolve_agent(conn, agent_id)
+    if agent != sid:
+        return []
+    board = _Board(conn, _detail_filters(now), now, snapshot, only_session=sid).load()
+    return sorted((board.live_by_sid.get(sid) or {}).get("pids", ()))
 
 
 def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None = None) -> tuple[int, dict]:

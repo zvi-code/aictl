@@ -118,12 +118,13 @@ export const STATUS = {
   running: { label: 'Running', dot: 'var(--good)', rank: 0 },
   looping: { label: 'Looping', dot: 'var(--crit)', rank: 0 },
   waiting: { label: 'Waiting', dot: 'var(--warn)', rank: 0 },
+  idle: { label: 'Idle', dot: 'var(--ink2)', rank: 1 },
   ended: { label: 'Ended', dot: 'var(--ink3)', rank: 2 },
   failed: { label: 'Failed', dot: 'var(--crit)', rank: 2 },
   stopped: { label: 'Stopped', dot: 'var(--ink3)', rank: 2 },
 };
 export const statusMeta = s => STATUS[s] || { label: s ? String(s) : NA, dot: 'var(--ink3)', rank: 3 };
-export const isLive = s => s === 'running' || s === 'looping' || s === 'waiting';
+export const isLive = s => s === 'running' || s === 'looping' || s === 'waiting' || s === 'idle';
 
 // A color stays with its tool, project or model while the page is open. The first
 // id seen takes the first free slot, so nothing about the order ranks a tool.

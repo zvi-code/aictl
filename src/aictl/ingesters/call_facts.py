@@ -43,7 +43,8 @@ from ._common import coerce_ts, decode_file_uri
 
 log = logging.getLogger(__name__)
 
-TARGET_MAX_CHARS = 300
+# Long enough to hold most shell commands, so a test runner late in one is still found.
+TARGET_MAX_CHARS = 4000
 PROMPT_MAX_CHARS = 8000
 INPUT_VALUE_MAX_CHARS = 500
 EDIT_VALUE_MAX_CHARS = 4000
@@ -176,6 +177,16 @@ def patch_line_counts(hunks: Any) -> tuple[int, int] | None:
 
 
 _PATCH_FILE = re.compile(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$")
+
+
+def _patch_counts(stored_input: str, cwd: str) -> dict[str, tuple[int, int]]:
+    """Lines per file of a stored apply_patch call, or nothing when the text is not there."""
+    try:
+        data = json.loads(stored_input or "{}")
+    except ValueError:
+        return {}
+    patch = next((v for v in (data.get("input"), data.get("patch")) if isinstance(v, str)), "") if isinstance(data, dict) else ""
+    return {absolute_path(path, cwd): (added, removed) for path, added, removed in apply_patch_files(patch)}
 
 
 def apply_patch_files(patch: str) -> list[tuple[str, int, int]]:
@@ -995,9 +1006,13 @@ class CopilotFacts:
         paths = [e for e in edits if isinstance(e, dict) and e.get("path")]
         telemetry = data.get("toolTelemetry") if isinstance(data.get("toolTelemetry"), dict) else {}
         metrics = telemetry.get("metrics") if isinstance(telemetry.get("metrics"), dict) else {}
+        path_counts = _patch_counts(row.input, self.cwd) if len(paths) > 1 else {}
         for edit in paths:
             detail: dict[str, Any] = {}
-            # The tool reports one total per call, so it only belongs to a single file.
+            # The tool reports one total per call, so a patch of many files is counted from its text.
+            counted = path_counts.get(absolute_path(str(edit["path"]), self.cwd))
+            if counted:
+                detail = {"lines_added": counted[0], "lines_removed": counted[1]}
             if len(paths) == 1 and "linesAdded" in metrics:
                 detail = {"lines_added": to_int(metrics.get("linesAdded")), "lines_removed": to_int(metrics.get("linesRemoved"))}
             path = str(edit["path"])

@@ -926,9 +926,9 @@ class TestMetadataCapture:
 
 class TestTextHelpers:
     def test_targets_hide_secrets_and_are_short(self):
-        got = target_of({"command": "curl -H 'token: abcdef123456' " + "x" * 500}, True)
+        got = target_of({"command": "curl -H 'token: abcdef123456' " + "x" * 9000}, True)
         assert "abcdef123456" not in got
-        assert len(got) <= 300
+        assert len(got) <= 4000
 
     def test_target_prefers_the_command(self):
         assert target_of({"description": "d", "command": "ls -la"}, True) == "ls -la"
@@ -1204,3 +1204,18 @@ class TestClaudePromptRules:
         write_lines(claude_path(tmp_path), [self._user(10, "<command-name>/not-a-skill</command-name>"), self._user(9, "Caveat: other text", isMeta=True)])
         make_ingester(db, tmp_path).poll()
         assert rows(db, "SELECT name FROM skill_uses") == []
+
+
+class TestPatchLines:
+    def test_a_patch_of_two_files_counts_each_file(self):
+        from aictl.ingesters.call_facts import _patch_counts
+
+        stored = json.dumps({"input": "*** Update File: a.py\n-old\n+new\n+more\n*** Add File: /x/b.py\n+one\n"})
+        got = _patch_counts(stored, "/x")
+        assert got == {"/x/a.py": (2, 1), "/x/b.py": (1, 0)}
+
+    def test_input_that_is_not_a_patch_counts_nothing(self):
+        from aictl.ingesters.call_facts import _patch_counts
+
+        assert _patch_counts("not json", "/x") == {}
+        assert _patch_counts(json.dumps({"other": 1}), "/x") == {}
