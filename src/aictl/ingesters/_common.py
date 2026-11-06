@@ -9,6 +9,7 @@ arguments.
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
 import sqlite3
@@ -96,9 +97,40 @@ def project_key(path: str | None) -> str:
 _AGENT_WORKTREE = re.compile(r"[/\\\\](?:\.claude[/\\\\]worktrees|\.worktrees)[/\\\\][^/\\\\]+[/\\\\]?$")
 
 
+_MAX_PROJECT_DEPTH = 16
+
+
+@functools.lru_cache(maxsize=4096)
+def _git_root(path: str) -> str:
+    """The repository that holds a folder, or an empty string. A home folder is never a project root."""
+    folder = Path(path)
+    if not folder.is_absolute():
+        return ""
+    home = Path.home()
+    for candidate in [folder, *list(folder.parents)[:_MAX_PROJECT_DEPTH]]:
+        if candidate == home or candidate in home.parents:
+            return ""
+        marker = candidate / ".git"
+        try:
+            if marker.is_dir():
+                return str(candidate)
+            if marker.is_file():
+                # A linked worktree points at <repository>/.git/worktrees/<name>.
+                text = marker.read_text(encoding="utf-8", errors="replace")
+                main = re.match(r"gitdir:\s*(.+?)[/\\]\.git[/\\]worktrees[/\\]", text)
+                return main.group(1) if main else str(candidate)
+        except OSError:
+            return ""
+    return ""
+
+
 def project_root(path: str | None) -> str:
-    """The project of a working folder: an agent's worktree belongs to the project that holds it."""
-    return _AGENT_WORKTREE.sub("", path or "")
+    """The project of a working folder: the repository that holds it, or the folder itself.
+
+    An agent's worktree belongs to the project that holds it, also after it is deleted.
+    """
+    folder = _AGENT_WORKTREE.sub("", path or "")
+    return (_git_root(folder) or folder) if folder else ""
 
 
 def coerce_ts(raw: Any) -> float:

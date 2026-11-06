@@ -1161,3 +1161,14 @@ def test_a_tool_duration_starts_at_the_last_block_of_its_message(db, tmp_path):
     got = {r["source_event_id"]: r for r in rows(db, "SELECT * FROM tool_invocations")}
     assert got["a"]["duration_ms"] == pytest.approx(1000, abs=50)
     assert got["b"]["duration_ms"] == pytest.approx(2000, abs=50)
+
+
+def test_a_forked_replay_with_zero_usage_keeps_the_real_row(db, tmp_path):
+    """A fork replays messages with zero usage, and the row lost 568,600 tokens."""
+    real = claude_path(tmp_path)
+    write_lines(real, [c_assistant("m1", "r1", 100, inp=5, out=7, read=100, write=0)])
+    fork = real.with_name("fork-session.jsonl")
+    write_lines(fork, [{**c_assistant("m1", "r1", 90, inp=0, out=0, read=0, write=0), "sessionId": "fork-session"}])
+    make_ingester(db, tmp_path).poll()
+    row = rows(db, "SELECT * FROM requests")[0]
+    assert (row["input_tokens"], row["output_tokens"], row["cache_read_tokens"]) == (5, 7, 100)

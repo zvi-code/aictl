@@ -194,7 +194,7 @@ function panelByModel(ctx, local) {
   return {
     sub: list.length + ' models. Click a row to filter, or unfold it for the agents',
     table: {
-      cols: [{ k: 'm', l: 'Model' }, { k: 'ag', l: 'Agents', n: true, w: '48px' }, { k: 'msgs', l: 'Msgs', n: true, w: '48px' }, { k: 'tokens', l: 'Tokens', n: true, w: '104px' }, { k: 'input', l: 'Input', n: true, w: '56px' }, { k: 'output', l: 'Output', n: true, w: '56px' }, { k: 'cr', l: 'Cache read', n: true, w: '68px' }, { k: 'cw', l: 'Cache write', n: true, w: '72px' }, { k: 'sh', l: 'Cached', n: true, w: '52px' }, { k: 'cost', l: 'Cost', n: true, w: '58px' }, { k: 'p95', l: 'p95 reply', n: true, w: '62px' }],
+      cols: [{ k: 'm', l: 'Model' }, { k: 'ag', l: 'Agents', n: true, w: '48px' }, { k: 'msgs', l: 'Calls', n: true, w: '48px', t: 'Calls to this model' }, { k: 'tokens', l: 'Tokens', n: true, w: '104px' }, { k: 'input', l: 'Input', n: true, w: '56px' }, { k: 'output', l: 'Output', n: true, w: '56px' }, { k: 'cr', l: 'Cache read', n: true, w: '68px' }, { k: 'cw', l: 'Cache write', n: true, w: '72px' }, { k: 'sh', l: 'Cached', n: true, w: '52px' }, { k: 'cost', l: 'Cost', n: true, w: '58px' }, { k: 'p95', l: 'p95 reply', n: true, w: '62px' }],
       rows, tree: true, sort: { k: 'tokens', dir: 'desc' },
     },
   };
@@ -249,8 +249,8 @@ function panelCacheRate(ctx, local, pid, pn) {
   const vals = (ctx.series.cached_share || []).map(v => (v == null ? null : v * 100));
   const out = chartPanel(ctx, local, pid, pn, { kind: 'line', series: [{ label: 'Cached share of input', c: 'var(--s1)', vals }], unit: 'pct', h: 118, max: 100, aria: 'Cache hit rate' }, 'Share of input served from cache');
   out.stats = [
-    { label: 'Cached now', value: fmtShare(ctx.data.kpis.cached_share), title: 'Cache read as a share of all input' },
-    { label: 'Saved by cache', value: fmtUsd(ctx.data.saved_usd), title: 'List price of the same input without cache, minus what was charged' },
+    { label: 'Cached', value: fmtShare(ctx.data.kpis.cached_share), title: 'Cache read as a share of all input' },
+    { label: 'Saved by cache', value: fmtUsd(ctx.data.saved_usd), title: 'Cache reads at the full input rate, minus the same reads at the cache rate. The extra cost of cache writes is not taken off.' },
   ];
   return out;
 }

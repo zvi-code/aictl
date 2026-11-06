@@ -277,6 +277,11 @@ def _list_cost(model: str, i: float, o: float, cr: float, cw: float, ts: float) 
     return rates.cost_usd(i, o, cr, cw), cr * (rates.input_per_m - read_rate) / 1e6
 
 
+def _cost_of(stored: float | None, model: str, i: float, o: float, cr: float, cw: float, ts: float) -> float | None:
+    """The cost stored per call, which knows the cache tier and speed, or else list price."""
+    return stored if stored else _list_cost(model, i, o, cr, cw, ts)[0]
+
+
 def _long_threshold(model: str) -> int:
     pricing = _rates_for(model)
     return pricing.long_threshold if pricing is not None else 0
@@ -492,6 +497,7 @@ class _Cell:
     longest: float = 0.0
     timed_first: int = 0
     longest_first: float = 0.0
+    stored_cost: float = 0.0
     estimated: bool = False
     user: int = 0
     tools_fallback: int = 0
@@ -689,7 +695,7 @@ class _Board:
             f"SELECT session_id, agent_id, model, {step} g, tool, project_path, COUNT(*),"
             " SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_creation_tokens),"
             " SUM(is_error), MIN(ts), MAX(ts), MAX(CASE WHEN is_error THEN ts END),"
-            " SUM(duration_ms > 0), MAX(duration_ms), SUM(ttft_ms > 0), MAX(ttft_ms)"
+            " SUM(duration_ms > 0), MAX(duration_ms), SUM(ttft_ms > 0), MAX(ttft_ms), SUM(cost_usd)"
             f" FROM {self._source('requests')} WHERE {where} GROUP BY session_id, agent_id, model, g",
             idx + params,
         ).fetchall()
@@ -815,6 +821,9 @@ class _Board:
         tiered: dict[str, int] = {}
         for c in self.cells:
             c.cost, c.saved = _list_cost(c.model, c.i, c.o, c.cr, c.cw, c.max_ts)
+            if c.stored_cost:
+                c.cost = c.stored_cost
+                continue
             threshold = _long_threshold(c.model)
             if threshold:
                 tiered[c.model] = threshold
@@ -834,7 +843,7 @@ class _Board:
         ).fetchall()
         if not rows:
             return
-        cells = {(c.sid, c.aid, c.model, c.g): c for c in self.cells if not c.estimated}
+        cells = {(c.sid, c.aid, c.model, c.g): c for c in self.cells if not c.estimated and not c.stored_cost}
         for sid, aid, model, g, i, o, cr, cw, ts in rows:
             if i + cr + cw <= tiered[model]:
                 continue
@@ -1330,7 +1339,7 @@ class _Board:
             lasts = [self.last_ts.get((sid, a), 0.0) for a in keys]
             lasts += [self.tool_agg[(sid, a)].max_ts for a in keys if (sid, a) in self.tool_agg]
             ended = (meta.get("ended_at") if root else sub.get("ended_at")) or (max(lasts) if lasts else None)
-        models = sorted({m for a in keys for m in self.agent_models.get(a, ())})
+        models = sorted({m for a in keys for m in self.agent_models.get(a, ()) if m})
         pending = self._pending_of(sid, None if root else agent) if active else None
         cache_write: int | None = usage.cache_write if usage else None
         if tool in _NO_CACHE_WRITE and not cache_write:
@@ -2100,16 +2109,16 @@ def _loop_rows(board: _Board) -> list[dict]:
         tokens = None
         cost = None
         sql = (
-            "SELECT model, SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_creation_tokens), MAX(ts)"
+            "SELECT model, SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_creation_tokens), MAX(ts), SUM(cost_usd)"
             " FROM requests WHERE session_id = ? AND ts >= ? AND ts <= ?"
         )
         params: list[Any] = [sid, loop["since_ts"], loop["until_ts"]]
         if agent != sid:
             sql += " AND agent_id = ?"
             params.append(agent)
-        for model, i, o, cr, cw, ts in board.conn.execute(sql + " GROUP BY model", params):
+        for model, i, o, cr, cw, ts, stored in board.conn.execute(sql + " GROUP BY model", params):
             tokens = (tokens or 0) + i + o + cr + cw
-            cell_cost, _ = _list_cost(model, i, o, cr, cw, ts)
+            cell_cost = _cost_of(stored, model, i, o, cr, cw, ts)
             if cell_cost is not None:
                 cost = (cost or 0.0) + cell_cost
         status = board.status.get(sid) if agent == sid else board.sub_status.get(agent)
@@ -2550,15 +2559,15 @@ def _previous(board: _Board) -> dict:
     tokens = 0
     cost: float | None = None
     seen = False
-    for model, n, i, o, cr, cw, ts in board.conn.execute(
+    for model, n, i, o, cr, cw, ts, stored in board.conn.execute(
         "SELECT model, COUNT(*), SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),"
-        f" SUM(cache_creation_tokens), MAX(ts) FROM requests WHERE {req_where} GROUP BY model",
+        f" SUM(cache_creation_tokens), MAX(ts), SUM(cost_usd) FROM requests WHERE {req_where} GROUP BY model",
         req_params,
     ):
         seen = True
         calls += n
         tokens += i + o + cr + cw
-        value, _ = _list_cost(model, i, o, cr, cw, ts)
+        value = _cost_of(stored, model, i, o, cr, cw, ts)
         if value is not None:
             cost = (cost or 0.0) + value
     selected = set(stored_ids_for(f.tools)) if f.tools is not None else None
@@ -2783,6 +2792,7 @@ def _options(board: _Board) -> dict:
         tool_agents[group["tool"]].update(())
     tool_agents.pop("", None)
     project_agents.pop("", None)
+    model_agents.pop("", None)
 
     def ordered(groups: dict[str, set[str]]) -> list[dict]:
         return [{"id": k, "agents": len(v)} for k, v in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))]
@@ -3176,12 +3186,12 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
 
     agent_sql, agent_params = ("", []) if root else (" AND agent_id = ?", [agent])
     by_model = []
-    for model, n, i, o, cr, cw, ts in conn.execute(
-        "SELECT model, COUNT(*), SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_creation_tokens), MAX(ts)"
+    for model, n, i, o, cr, cw, ts, stored in conn.execute(
+        "SELECT model, COUNT(*), SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_creation_tokens), MAX(ts), SUM(cost_usd)"
         f" FROM requests WHERE session_id = ?{agent_sql} GROUP BY model",
         [sid, *agent_params],
     ):
-        cost, _ = _list_cost(model, i, o, cr, cw, ts)
+        cost = _cost_of(stored, model, i, o, cr, cw, ts)
         by_model.append(
             {
                 "model": model,

@@ -9,6 +9,7 @@ export const fmtN = n => {
   if (isNil(n)) return NA;
   const a = Math.abs(n);
   if (a >= 1e6) return (n / 1e6).toFixed(a >= 1e7 ? 1 : 2) + ' M';
+  if (a >= 999500) return (n / 1e6).toFixed(2) + ' M';
   if (a >= 1e4) return Math.round(n / 1e3) + ' k';
   if (a >= 1000) return (n / 1e3).toFixed(1) + ' k';
   return String(Math.round(n));
@@ -56,7 +57,7 @@ export const fmtBytes = b => {
 };
 export const fmtLines = (add, del) => {
   if (isNil(add) && isNil(del)) return NA;
-  return '+' + fmtN(add || 0) + ' −' + fmtN(del || 0);
+  return '+' + (isNil(add) ? NA : fmtN(add)) + ' −' + (isNil(del) ? NA : fmtN(del));
 };
 export const UNIT = { usd: fmtUsd, pct: v => (isNil(v) ? NA : Math.round(v) + '%'), ms: fmtMs, n: fmtN, cpu: fmtCpu, mem: fmtMem };
 
