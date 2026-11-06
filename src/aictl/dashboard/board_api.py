@@ -283,6 +283,12 @@ def _list_cost(model: str, i: float, o: float, cr: float, cw: float, ts: float) 
     return rates.cost_usd(i, o, cr, cw), cr * (rates.input_per_m - read_rate) / 1e6
 
 
+def _largest_key(values: dict[str, int] | None) -> str | None:
+    """The named key with the largest value."""
+    named = [(value, key) for key, value in (values or {}).items() if key]
+    return max(named)[1] if named else None
+
+
 def _process_start(pid: int) -> float:
     """When a process began, or zero when that is not known."""
     try:
@@ -1284,6 +1290,7 @@ class _Board:
         self.by_tool: dict[str, _Usage] = defaultdict(_Usage)
         self.model_agents: dict[str, set[str]] = defaultdict(set)
         self.agent_models: dict[str, set[str]] = defaultdict(set)
+        self.agent_model_tokens: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         self.model_tools: dict[str, set[str]] = defaultdict(set)
         self.first_ts: dict[tuple[str, str], float] = {}
         self.last_ts: dict[tuple[str, str], float] = {}
@@ -1315,6 +1322,7 @@ class _Board:
             self.model_agents[c.model].add(agent)
             self.model_tools[c.model].add(c.tool)
             self.agent_models[agent].add(c.model)
+            self.agent_model_tokens[agent][c.model] += c.i + c.o + c.cr + c.cw
             self.activity[key][c.s] += c.n
             if key not in self.first_ts or c.min_ts < self.first_ts[key]:
                 self.first_ts[key] = c.min_ts
@@ -1438,6 +1446,7 @@ class _Board:
             "tool": tool,
             "project": self.session_project.get(sid, ""),
             "models": models,
+            "primary_model": _largest_key(self.agent_model_tokens.get(agent)),
             "msgs": {"user": user, "assistant": (usage.calls or None) if root and sid in self.estimated else usage.calls if usage else None, "tool": calls},
             "input": usage.input if usage else None,
             "output": usage.output if usage else None,
@@ -3388,6 +3397,15 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
             [sid, *agent_params],
         )
     ]
+    # The call list above is capped, so the count per tool comes from all calls.
+    tool_totals = [
+        {"name": name, "calls": calls, "failed": failed or 0, "total_ms": total_ms or None}
+        for name, calls, failed, total_ms in conn.execute(
+            "SELECT tool_name, COUNT(*), SUM(is_error <> 0), SUM(duration_ms) FROM tool_invocations"
+            f" WHERE session_id = ?{agent_sql} AND {_IS_CALL_SQL} GROUP BY tool_name ORDER BY COUNT(*) DESC, tool_name",
+            [sid, *agent_params],
+        )
+    ]
     files = [
         {"path": path, "lines_added": _maybe_int(added), "lines_removed": _maybe_int(removed), "edits": edits}
         for path, added, removed, edits in conn.execute(
@@ -3453,6 +3471,7 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
         "skills": _agent_skills(conn, sid, agent, root),
         "context": _agent_context(conn, sid, agent, root),
         "turns": turns,
+        "tool_totals": tool_totals,
         "tool_calls": tool_calls,
         "files": files,
         "tests": tests,
