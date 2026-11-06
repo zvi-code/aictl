@@ -7,9 +7,8 @@ Copilot model resolution, as far as it could be confirmed:
 * CLI reference: custom agent ``model`` > ``--model`` > ``COPILOT_MODEL`` >
   ``model`` in ``settings.json`` > the CLI default.
 * Config directory reference: built-in < MDM < user < repository < local <
-  environment < flags, for settings in general. The model reference names the
-  user file only, and the installed CLI's startup resolver reads the user file,
-  so a ``model`` key in a repository settings file is marked unverified.
+  environment < flags, for settings in general. Its repository table lists
+  ``model`` as replaced by the repository file.
 * ``subagents.agents.<name>.model`` is read from the settings file by the CLI.
   ``planModel`` has no reader in the CLI package, so it is marked unverified.
 * VS Code: an agent's or prompt file's ``model`` replaces the picker. For a
@@ -61,7 +60,7 @@ _NOT_A_PIN = {"", "auto", "inherit", "default"}
 _FAMILY_WORDS = {key.split("-")[1] for key in MODEL_PRICING if key.startswith("claude-")}
 _SECRET_KEY_RE = re.compile(r"token|secret|password|passwd|credential|cookie|api.?key|auth(?!or)", re.I)
 
-_REPO_UNVERIFIED = (
+_REPO_ORDER_BASIS = (
     "GitHub Copilot CLI config directory reference: the settings table lists model as repo-overridable, "
     "repository replaces user, and local replaces repository."
 )
@@ -603,7 +602,7 @@ def _collect_model(tool: str, project: Path, env: dict[str, str], ps_output: str
                 session.append(ModelPin(tool, "--model", model, "flag", f"process:{pid}", 0, 10, False, why_in_effect(tool, "flag", False)))
             session.extend(_env_pins(tool, env))
         for rel, scope, rank in ((".github/copilot/settings.local.json", "repo-local", 30), (".github/copilot/settings.json", "repo", 31)):
-            found, per_agent = _settings_pins(tool, project, project / rel, scope, rank, verified=True, basis=_REPO_UNVERIFIED)
+            found, per_agent = _settings_pins(tool, project, project / rel, scope, rank, verified=True, basis=_REPO_ORDER_BASIS)
             session.extend(found)
             limited.extend(per_agent)
         found, per_agent = _settings_pins(tool, project, home / "settings.json", "user", 40, verified=not desktop, basis=_DESKTOP_UNVERIFIED if desktop else "CLI model reference.")
@@ -791,7 +790,7 @@ def _model_findings_for(tool: str, eff: dict, sessions: list[SessionFacts]) -> l
         for user in user_pins[:1]:
             if is_pin(repo["value"]) and is_pin(user["value"]) and not same_model(repo["value"], user["value"]):
                 request = {"values": [repo["value"]], "path": repo["path"], "line": repo["line"]}
-                out.append(_conflict_finding(tool, request, user["value"], user["path"], user["line"], f"The repository and the user file pin different models. {_REPO_UNVERIFIED}", "Remove one of the two pins."))
+                out.append(_conflict_finding(tool, request, user["value"], user["path"], user["line"], f"The repository and the user file pin different models. {_REPO_ORDER_BASIS}", "Remove one of the two pins."))
     by_agent = {p["applies"].split(":", 1)[1]: p for p in limited if p["applies"].startswith("subagent:")}
     for request in eff["requests"]:
         pin_for = by_agent.get(request["name"]) if request["kind"] == "agent-frontmatter" else None

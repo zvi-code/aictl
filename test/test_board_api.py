@@ -2306,3 +2306,16 @@ class TestFileExcerpt:
         path.write_text("x")
         self._found(monkeypatch, path)
         assert board_api.file_excerpt(str(path), 1)[0] == 403
+
+
+@pytest.mark.parametrize(
+    ("front", "expected"),
+    [
+        ("", "You and the model"),
+        ("disable-model-invocation: true\n", "Only you"),
+        ("user-invocable: false\n", "Only the model"),
+        ("user-invocable: false\ndisable-model-invocation: true\n", "Nobody"),
+    ],
+)
+def test_who_can_start_a_skill(front, expected):
+    assert board_api._skill_starter(f"---\nname: x\n{front}---\nBody\n").startswith(expected)
