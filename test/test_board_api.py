@@ -2358,3 +2358,53 @@ def test_the_tool_drawer_keeps_to_the_time_range(db):
     _status, inside = board_api.tool_detail(db, "windowed", 1000.0, 100.0, 103.0)
     assert inside["total"] == 3 and len(inside["calls"]) == 3
     assert board_api.tool_detail(db, "windowed", 1000.0, 500.0, 600.0)[1]["total"] == 0
+
+
+def test_cost_uses_the_stored_per_call_figure(db):
+    """Repricing the summed tokens lost the cache tier: Claude read $765 against $821."""
+    conn = db._conn()
+    conn.execute(
+        "INSERT INTO requests(ts, session_id, tool, dedup_key, model, input_tokens, cache_creation_tokens, cost_usd) VALUES(?,?,?,?,?,?,?,?)",
+        (1500.0, "priced", "claude-code", "priced1", "claude-opus-5-5", 10, 1000, 7.5),
+    )
+    conn.commit()
+    payload = board_api.compute_board(db, board_api.parse_filters("since=1000&until=2000&buckets=10&tool=claude-code", 2500.0), None, 2500.0)
+    assert payload["kpis"]["cost_usd"] == 7.5
+    assert board_api.agent_detail(db, "priced", None, 2500.0)[1]["by_model"][0]["cost_usd"] == 7.5
+
+
+class TestProjectRoot:
+    def setup_method(self):
+        from aictl.ingesters import _common
+
+        _common._git_root.cache_clear()
+
+    def test_a_subfolder_belongs_to_its_repository(self, tmp_path, monkeypatch):
+        from aictl.ingesters._common import project_root
+
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        (tmp_path / "repo" / ".git").mkdir(parents=True)
+        (tmp_path / "repo" / "src" / "ui").mkdir(parents=True)
+        assert project_root(str(tmp_path / "repo" / "src" / "ui")) == str(tmp_path / "repo")
+
+    def test_a_linked_worktree_belongs_to_its_repository(self, tmp_path, monkeypatch):
+        from aictl.ingesters._common import project_root
+
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        (tmp_path / "wt").mkdir()
+        (tmp_path / "wt" / ".git").write_text(f"gitdir: {tmp_path}/repo/.git/worktrees/wt\n")
+        assert project_root(str(tmp_path / "wt")) == f"{tmp_path}/repo"
+
+    def test_a_repository_at_home_does_not_swallow_every_project(self, tmp_path, monkeypatch):
+        from aictl.ingesters._common import project_root
+
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        (home / ".git").mkdir(parents=True)
+        (home / "work").mkdir()
+        assert project_root(str(home / "work")) == str(home / "work")
+
+    def test_a_folder_that_is_gone_stays_as_it_was(self):
+        from aictl.ingesters._common import project_root
+
+        assert project_root("/gone/proj/.claude/worktrees/x") == "/gone/proj"

@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from ..context_audit import _redact
-from ..data.model_pricing import is_billable_model, request_cost_usd
+from ..data.model_pricing import is_billable_model, normalize_model_id, request_cost_usd
 from ..storage import (
     AgentRow,
     CallFacts,
@@ -460,6 +460,9 @@ class ClaudeFacts:
             # The same numbers again: a replay in another session, or no newer line.
             if prior[1] == vals and (first[0] != sid or ts <= prior[2]):
                 return
+            # A fork replays earlier messages, some with zero usage. It must not lower the real row.
+            if first[0] != sid and sum(vals[:4]) <= sum(prior[1][:4]):
+                return
         self._calls[call] = (first, vals, ts)
         first_sid, first_agent, first_ts, start, first_cwd = first
         reply_ms = (ts - start) * 1000 if start and ts > start else 0.0
@@ -471,7 +474,7 @@ class ClaudeFacts:
                 agent_id=first_agent,
                 tool="claude-code",
                 project_path=first_cwd,
-                model=model,
+                model=normalize_model_id(model) or model,
                 input_tokens=vals[0],
                 output_tokens=vals[1],
                 cache_read_tokens=vals[2],
@@ -832,7 +835,7 @@ class CopilotFacts:
                 agent_id=agent_id,
                 tool="copilot-cli",
                 project_path=self.cwd,
-                model=self.model,
+                model=normalize_model_id(self.model) or self.model,
                 is_error=1,
                 error_type=str(data.get("errorType") or "error")[:80],
                 http_status=to_int(data.get("statusCode")),

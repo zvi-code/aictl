@@ -104,7 +104,7 @@ function OverviewTab({ a, data, st, ctx, act, pending }) {
     { label: 'Lines', value: (data.files || []).length ? '+' + fmtN(addLines) : NA, sub: (data.files || []).length ? '−' + fmtN(delLines) : '' },
   ];
   const models = useMemo(() => ({
-    cols: [{ k: 'm', l: 'Model' }, { k: 'msgs', l: 'Msgs', n: true, w: '50px' }, { k: 'input', l: 'Input', n: true, w: '60px' }, { k: 'output', l: 'Output', n: true, w: '60px' }, { k: 'cr', l: 'Cache read', n: true, w: '76px' }, { k: 'cw', l: 'Cache write', n: true, w: '80px' }, { k: 'cost', l: 'Cost', n: true, w: '60px' }],
+    cols: [{ k: 'm', l: 'Model' }, { k: 'msgs', l: 'Calls', n: true, w: '50px', t: 'Calls to this model' }, { k: 'input', l: 'Input', n: true, w: '60px' }, { k: 'output', l: 'Output', n: true, w: '60px' }, { k: 'cr', l: 'Cache read', n: true, w: '76px' }, { k: 'cw', l: 'Cache write', n: true, w: '80px' }, { k: 'cost', l: 'Cost', n: true, w: '60px' }],
     rows: (data.by_model || []).map(x => ({ id: x.model, sort: { m: x.model, msgs: x.msgs, input: x.input, output: x.output, cr: x.cache_read, cw: x.cache_write, cost: x.cost_usd }, cells: { m: { v: x.model, sw: colorFor('model', x.model) }, msgs: { v: fmtN(x.msgs) }, input: { v: fmtN(x.input) }, output: { v: fmtN(x.output) }, cr: { v: fmtN(x.cache_read) }, cw: { v: fmtN(x.cache_write) }, cost: { v: fmtUsd(x.cost_usd) } } })),
   }), [data]);
   const kids = useMemo(() => ({
