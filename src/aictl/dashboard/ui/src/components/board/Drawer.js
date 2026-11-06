@@ -5,7 +5,7 @@
 import { html } from 'htm/preact';
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import * as api from '../../api.js';
-import { NA, colorFor, projectName, fmtBytes, fmtCpu, fmtDur, fmtLines, fmtMem, fmtMs, fmtN, fmtShare, fmtUsd, isLive, stamp, statusMeta } from './format.js';
+import { NA, colorFor, projectName, fmtBytes, fmtCpu, fmtDur, fmtLines, fmtMem, fmtMs, fmtN, fmtShare, fmtUsd, isLive, sparkPath, stamp, statusMeta } from './format.js';
 import { Ico, PATHS } from './icons.js';
 import { Actions, Stats } from './Panel.js';
 import { statusCell } from './panels.js';
@@ -95,7 +95,7 @@ function OverviewTab({ a, data, st, ctx, act, pending }) {
   const addLines = (data.files || []).reduce((s, f) => s + (f.lines_added || 0), 0);
   const delLines = (data.files || []).reduce((s, f) => s + (f.lines_removed || 0), 0);
   const stats = [
-    { label: 'Messages', value: fmtN(msgs), sub: a.msgs ? a.msgs.user + ' prompts' : '' },
+    { label: 'Messages', value: fmtN(msgs), sub: a.msgs ? a.msgs.user + (a.parent_id ? ' task prompts' : ' prompts') : '' },
     { label: 'Tokens', value: fmtN(tokens) },
     { label: 'Cached', value: fmtShare(a.cached_share), sub: a.cache_read == null ? '' : fmtN(a.cache_read) + ' read' },
     { label: 'Cost', value: fmtUsd(a.cost_usd) },
@@ -115,9 +115,24 @@ function OverviewTab({ a, data, st, ctx, act, pending }) {
     }),
     sort: { k: 't', dir: 'desc' },
   }), [data, ctx.stopped]);
+  const skills = useMemo(() => ({
+    cols: [{ k: 'n', l: 'Skill' }, { k: 'u', l: 'Uses', n: true, w: '46px' }, { k: 'b', l: 'Started by', w: '130px' }, { k: 'l', l: 'Last use', w: '110px' }],
+    rows: (data.skills || []).map(x => ({
+      id: x.name, go: () => act.openDrawer({ type: 'skill', name: x.name }), sort: { n: x.name, u: x.uses, l: x.last_ts },
+      cells: { n: { v: x.name, title: x.name }, u: { v: x.uses }, b: { v: (x.started_by || '').split(',').filter(Boolean).join(', ') || NA, cls: 'dim' }, l: { v: stamp(x.last_ts, true), cls: 'dim' } },
+    })),
+    sort: { k: 'u', dir: 'desc' }, none: 'This agent used no skill.',
+  }), [data]);
+  const context = data.context;
   const copyLink = window.location.origin + window.location.pathname + '?agent=' + encodeURIComponent(a.id);
   return html`
     ${pending ? html`<${FixedPanel} id="ap" title="Waiting for your confirmation"><div class="bd-ptext">${pending.name + ': ' + pending.target + '\nWaiting for ' + fmtDur(Date.now() / 1000 - pending.since_ts) + '. Answer in the tool that asks.'}</div></${FixedPanel}>` : null}
+    ${context ? html`<${FixedPanel} id="actx" title="Context size" sub=${a.parent_id ? 'What this subagent sent with each model call' : 'What the main agent sent with each model call. Each subagent has its own.'}>
+      <${Stats} stats=${[{ label: 'First call', value: fmtN(context.first), title: 'Everything loaded before work began: system prompt, tools, instructions and the first prompt' }, { label: 'Last call', value: fmtN(context.last) }, { label: 'Peak', value: fmtN(context.peak) }, { label: 'Calls', value: fmtN(context.calls) }, { label: 'Times it shrank', value: fmtN(context.drops), title: 'The size fell by more than half, as compaction does' }]}/>
+      <svg class="bd-ctxspark" viewBox="0 0 600 60" preserveAspectRatio="none" role="img" aria-label=${'Context size per call, from ' + fmtN(context.first) + ' to ' + fmtN(context.last) + ', peak ' + fmtN(context.peak)}><path d=${sparkPath(context.series, 600, 60)} fill="none" stroke="var(--s1)" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>
+      <div class="bd-note">Input, cache read and cache write of each call. The tools report the total, not how it splits into instructions, tools and conversation.</div>
+    </${FixedPanel}>` : null}
+    ${(data.skills || []).length ? html`<${FixedPanel} id="askill" title="Skills used" sub=${data.skills.reduce((n, x) => n + x.uses, 0) + ' uses of ' + data.skills.length + ' skills' + (a.parent_id ? '' : ', with its subagents')}><${Table} def=${skills} label="Skills used"/></${FixedPanel}>` : null}
     <${FixedPanel} id="ast" title="Totals"><${Stats} stats=${stats}/></${FixedPanel}>
     <${FixedPanel} id="am" title="Usage by model"><${Table} def=${models} label="Usage by model"/></${FixedPanel}>
     ${(data.subagents || []).length ? html`<${FixedPanel} id="ak" title="Subagents"><${Table} def=${kids} label="Subagents"/></${FixedPanel}>` : null}
@@ -131,7 +146,7 @@ function TurnsTab({ data }) {
   const def = useMemo(() => ({
     cols: [{ k: 'at', l: 'Time', w: '58px' }, { k: 'text', l: 'Prompt or tools' }, { k: 'm', l: 'Model', w: '62px' }, { k: 'i', l: 'In', n: true, w: '50px' }, { k: 'o', l: 'Out', n: true, w: '50px' }, { k: 'c', l: 'Cached', n: true, w: '54px' }, { k: 'l', l: 'Reply', n: true, w: '56px' }],
     rows: (data.turns || []).map((t, i) => {
-      const tools = toolListText(t.tools);
+      const tools = t.tools ? toolListText(t.tools) + ' tool calls' : '';
       return { id: i, sort: { at: t.ts, i: t.input, o: t.output, c: t.cache_read, l: t.reply_ms }, cells: { at: { v: stamp(t.ts), cls: 'dim' }, text: { v: t.text || tools || 'Reply only', cls: t.text ? '' : 'dim' }, m: { v: t.model || NA, cls: 'dim' }, i: { v: fmtN(t.input) }, o: { v: fmtN(t.output) }, c: { v: fmtN(t.cache_read) }, l: { v: fmtMs(t.reply_ms) } } };
     }),
     sort: { k: 'at', dir: 'asc' }, limit: 120, none: 'No turns recorded.',
@@ -256,7 +271,7 @@ function PromptDrawer({ d, ctx, frame, act }) {
   return html`<${Frame} ...${frame} title="Prompt" sub=${sub}>
     ${data ? html`<${FixedPanel} id="ptxt" title="Full text"><div class="bd-ptext">${text}${data.prompt_file ? '\n\nUses the prompt file ' + data.prompt_file : ''}</div></${FixedPanel}>
       <${FixedPanel} id="pst" title="What it cost">
-        <${Stats} stats=${[{ label: 'Input', value: fmtN(data.input) }, { label: 'Output', value: fmtN(data.output) }, { label: 'Cache read', value: fmtN(data.cache_read) }, { label: 'Reply', value: fmtMs(data.reply_ms) }, { label: 'Tool calls', value: data.tool_calls ?? NA }]}/>
+        <${Stats} stats=${[{ label: 'Cost', value: fmtUsd(data.cost_usd) }, { label: 'Input', value: fmtN(data.input) }, { label: 'Output', value: fmtN(data.output) }, { label: 'Cache read', value: fmtN(data.cache_read) }, { label: 'Cache write', value: fmtN(data.cache_write) }, { label: 'Model calls', value: fmtN(data.calls), sub: data.subagent_calls ? data.subagent_calls + ' by subagents' : '' }, { label: 'Model time', value: fmtMs(data.reply_ms), title: 'The time of all model calls added up. Calls can overlap.' }, { label: 'Tool calls', value: data.tool_calls ?? NA }]}/>
         ${d.agent_id ? html`<${Actions} actions=${[{ label: 'Open agent', go: () => act.openDrawer({ type: 'agent', id: d.agent_id, tab: 'overview' }) }]}/>` : null}
       </${FixedPanel}>` : html`<${Pending} error=${error}/>`}
   </${Frame}>`;
@@ -283,6 +298,7 @@ function SkillDrawer({ d, ctx, frame, act }) {
     sort: { k: 'at', dir: 'desc' }, limit: 80, none: 'No uses in this time.', primary: 'ag',
   }), [data]);
   const tokens = d.summary?.tokens;
+  const fileTokens = d.summary?.file_tokens ?? (locations[0]?.content ? Math.round(locations[0].content.length / 4) : null);
   const description = locations.find(l => l.description)?.description || d.summary?.description;
   const sub = data ? [locations.length ? [...new Set(locations.map(l => l.scope))].join(', ') : 'No file found', data.uses + ' uses in this time'].join(', ') : 'Loading...';
   return html`<${Frame} ...${frame} title=${d.name} sub=${sub}>
@@ -292,7 +308,7 @@ function SkillDrawer({ d, ctx, frame, act }) {
         <${Table} def=${whereDef} label="Who can see it"/>
       </${FixedPanel}>
       <${FixedPanel} id="skuse" title="Usage">
-        <${Stats} stats=${[{ label: 'Uses in this time', value: fmtN(data.uses) }, { label: 'Agents in this time', value: fmtN(data.agents) }, { label: 'Tokens in those turns', value: fmtN(tokens) }, { label: 'All uses', value: fmtN(data.total_uses) }, { label: 'First use', value: data.first_ts ? stamp(data.first_ts, true) : NA }, { label: 'Last use', value: data.last_ts ? stamp(data.last_ts, true) : NA }]}/>
+        <${Stats} stats=${[{ label: 'Uses in this time', value: fmtN(data.uses) }, { label: 'Agents in this time', value: fmtN(data.agents) }, { label: 'Tokens in those turns', value: fmtN(tokens), title: 'All tokens of every agent in those turns, not only the skill' }, { label: 'Skill file', value: fileTokens != null ? '~' + fmtN(fileTokens) : NA, title: 'Estimate at four characters per token' }, { label: 'Uses kept', value: fmtN(data.total_uses), title: 'All uses in the history that aictl keeps' }, { label: 'First use', value: data.first_ts ? stamp(data.first_ts, true) : NA }, { label: 'Last use', value: data.last_ts ? stamp(data.last_ts, true) : NA }]}/>
         <${Table} def=${useDef} label="Usage"/>
       </${FixedPanel}>
       ${locations.map((l, i) => html`<${FixedPanel} key=${l.path} id=${'sktext' + i} title="Content" sub=${l.path}>

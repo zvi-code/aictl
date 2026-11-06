@@ -625,7 +625,7 @@ class TestRowMeaning:
         assert payload["kpis"]["messages"] == 12 + 3 + 2 + 15
         done = _agent(payload, "done")
         assert done["msgs"]["user"] == 2
-        assert _agent(payload, "sub-1")["msgs"]["user"] == 0
+        assert _agent(payload, "sub-1")["msgs"]["user"] == 1, "its own task prompt, on its own row only"
         assert _agent(payload, "sub-1")["title"].startswith("Look around")
         assert all(p["text"] != "Look around" for p in payload["prompts"])
         assert next(p for p in payload["projects"] if p["project"] == "/p/alpha")["prompts"] == 3
@@ -825,7 +825,7 @@ class TestSections:
 
     def test_skills(self, db):
         skills = _board(db)["skills"]
-        assert skills == [{"name": "review", "uses": 1, "tokens": 2000, "agents": 1, "scope": None, "path": None, "description": None}]
+        assert skills == [{"name": "review", "uses": 1, "tokens": 2000, "agents": 1, "scope": None, "path": None, "description": None, "file_tokens": None}]
 
     def test_project_prompts_combine_disk_and_use(self, db, tmp_path):
         project = tmp_path / "proj"
@@ -2408,3 +2408,47 @@ class TestProjectRoot:
         from aictl.ingesters._common import project_root
 
         assert project_root("/gone/proj/.claude/worktrees/x") == "/gone/proj"
+
+
+class TestAgentSkillsAndContext:
+    def _seed(self, db):
+        conn = db._conn()
+        for i, size in enumerate((1000, 5000, 9000, 2000)):
+            conn.execute(
+                "INSERT INTO requests(ts, session_id, tool, dedup_key, model, input_tokens, cache_read_tokens) VALUES(?,?,?,?,?,?,?)",
+                (1000.0 + i, "ctx", "copilot-cli", f"c{i}", "m", 10, size - 10),
+            )
+        conn.execute(
+            "INSERT INTO requests(ts, session_id, agent_id, tool, dedup_key, model, input_tokens) VALUES(?,?,?,?,?,?,?)",
+            (1001.5, "ctx", "kid", "copilot-cli", "k1", "m", 77777),
+        )
+        conn.executemany(
+            "INSERT INTO skill_uses(dedup_key, ts, session_id, agent_id, tool, project_path, name, trigger) VALUES(?,?,?,?,?,?,?,?)",
+            [("s1", 1000.0, "ctx", "", "copilot-cli", "/p", "alpha", "user"), ("s2", 1001.0, "ctx", "kid", "copilot-cli", "/p", "alpha", "agent-invoked"), ("s3", 1002.0, "ctx", "kid", "copilot-cli", "/p", "beta", "agent-invoked")],
+        )
+        conn.commit()
+
+    def test_a_main_agent_lists_its_and_its_subagents_skills(self, db):
+        self._seed(db)
+        assert {s["name"]: s["uses"] for s in board_api._agent_skills(db._conn(), "ctx", "ctx", True)} == {"alpha": 2, "beta": 1}
+
+    def test_a_subagent_lists_only_its_own_skills(self, db):
+        self._seed(db)
+        assert {s["name"]: s["uses"] for s in board_api._agent_skills(db._conn(), "ctx", "kid", False)} == {"alpha": 1, "beta": 1}
+
+    def test_context_is_per_call_and_leaves_out_subagents(self, db):
+        self._seed(db)
+        ctx = board_api._agent_context(db._conn(), "ctx", "ctx", True)
+        assert (ctx["first"], ctx["last"], ctx["peak"], ctx["calls"], ctx["drops"]) == (1000, 2000, 9000, 4, 1)
+
+    def test_skill_agents_count_subagents_not_sessions(self, db):
+        self._seed(db)
+        conn = db._conn()
+        skill = board_api.skill_detail(db, "alpha", 2000.0)[1]
+        assert skill["agents"] == 2 and conn is not None
+
+    def test_a_plugin_skill_is_found_by_its_short_name(self, db):
+        conn = db._conn()
+        conn.execute("INSERT INTO skill_uses(dedup_key, ts, session_id, tool, name) VALUES('p', 1.0, 's', 'claude-code', 'plug:deep')")
+        conn.commit()
+        assert board_api.skill_detail(db, "deep", 2.0)[1]["uses"] == 1

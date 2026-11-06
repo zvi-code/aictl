@@ -135,11 +135,12 @@ export function buildSettings({ audit, effective, hooks, otel, toolIds }) {
   if (sources.length) {
     const inst = {};
     for (const id of toolIds) {
-      const list = sources.filter(s => s.tool === id && s.loading === 'always');
+      // A file registered for 'copilot' is read by each Copilot tool.
+      const list = sources.filter(s => (s.tool === id || (s.tool === 'copilot' && id.startsWith('copilot'))) && s.loading === 'always');
       if (!list.length) continue;
       const tokens = list.reduce((a, s) => a + (s.est_tokens || 0), 0);
       const outside = list.filter(s => s.in_project === false).length;
-      inst[id] = { v: list.length + (list.length === 1 ? ' file, ' : ' files, ') + (tokens >= 1000 ? (tokens / 1000).toFixed(1) + ' k' : tokens), sub: outside ? outside + ' from the user folder' : '' };
+      inst[id] = { v: list.length + (list.length === 1 ? ' file, ' : ' files, ') + '~' + (tokens >= 1000 ? (tokens / 1000).toFixed(1) + ' k' : tokens) + ' tokens', title: 'Estimate at four characters per token, for these instruction files only', sub: outside ? outside + ' from the user folder' : '' };
     }
     if (Object.keys(inst).length) rows.push({ label: 'Instructions sent each call', values: inst });
   }

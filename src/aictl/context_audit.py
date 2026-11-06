@@ -1392,6 +1392,9 @@ def skill_locations(name: str, projects: Iterable[str], env: dict[str, str] | No
     add(copilot_home / "skills", "user", _COPILOT_APPS)
     for folder, tools in _USER_SKILL_FOLDERS:
         add(Path(_expand_home(folder)), "user", tools)
+    # Skills that an account makes available arrive in synced/<account id>/<name>.
+    for synced in glob.glob(_expand_home("~/.claude/skills/synced/*")):
+        add(Path(synced), "user", ("claude-code",))
     wanted = namespace.lower()
     for plugin, root in _copilot_plugin_roots(copilot_home):
         if not wanted or plugin.lower().startswith(wanted):

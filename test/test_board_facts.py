@@ -1172,3 +1172,35 @@ def test_a_forked_replay_with_zero_usage_keeps_the_real_row(db, tmp_path):
     make_ingester(db, tmp_path).poll()
     row = rows(db, "SELECT * FROM requests")[0]
     assert (row["input_tokens"], row["output_tokens"], row["cache_read_tokens"]) == (5, 7, 100)
+
+
+class TestClaudePromptRules:
+    def _user(self, ago, content, **extra):
+        return {"type": "user", "uuid": f"u-{ago}", "timestamp": iso(ago), "sessionId": SESSION, "cwd": "/work/proj", "message": {"role": "user", "content": content}, **extra}
+
+    def test_an_image_only_prompt_counts(self, db, tmp_path):
+        write_lines(claude_path(tmp_path), [self._user(10, [{"type": "image", "source": {}}])])
+        make_ingester(db, tmp_path).poll()
+        assert [r["text"] for r in rows(db, "SELECT text FROM session_prompts")] == ["[Image]"]
+
+    @pytest.mark.parametrize("text", ["<cross-session-message>x</cross-session-message>", "<side-sessions-event>x</side-sessions-event>", "[Request interrupted by user]"])
+    def test_machine_text_is_not_a_prompt(self, db, tmp_path, text):
+        write_lines(claude_path(tmp_path), [self._user(10, text)])
+        make_ingester(db, tmp_path).poll()
+        assert rows(db, "SELECT text FROM session_prompts") == []
+
+    def test_a_skill_with_no_file_is_seen_from_its_body(self, db, tmp_path):
+        write_lines(
+            claude_path(tmp_path),
+            [
+                self._user(10, "<command-name>/builtin-skill</command-name>"),
+                self._user(9, "Base directory for this skill: /somewhere/builtin-skill", isMeta=True),
+            ],
+        )
+        make_ingester(db, tmp_path).poll()
+        assert [r["name"] for r in rows(db, "SELECT name FROM skill_uses")] == ["builtin-skill"]
+
+    def test_a_plain_command_is_not_a_skill(self, db, tmp_path):
+        write_lines(claude_path(tmp_path), [self._user(10, "<command-name>/not-a-skill</command-name>"), self._user(9, "Caveat: other text", isMeta=True)])
+        make_ingester(db, tmp_path).poll()
+        assert rows(db, "SELECT name FROM skill_uses") == []

@@ -317,14 +317,18 @@ def _keep_text(store: Any) -> bool:
 
 # Slash commands that act locally and never reach a model.
 _LOCAL_COMMANDS = frozenset(
-    {"clear", "compact", "config", "context", "cost", "exit", "help", "login", "logout", "mcp", "model", "quit", "resume", "status"}
+    {"clear", "compact", "config", "context", "cost", "exit", "help", "agents", "login", "logout", "mcp", "model", "quit", "resume", "status"}
 )
-_NON_PROMPT_PREFIXES = ("<local-command", "<task-notification", "<system-reminder", "<bash-input", "<bash-stdout", "<bash-stderr")
+_NON_PROMPT_PREFIXES = ("<cross-session-message", "<side-sessions-event", "[Request interrupted by user", "<local-command", "<task-notification", "<system-reminder", "<bash-input", "<bash-stdout", "<bash-stderr")
 _LEADING_REMINDERS = re.compile(r"^(?:\s*<system-reminder>.*?</system-reminder>)+", re.DOTALL)
 _COMMAND_NAME = re.compile(r"<command-name>\s*(.*?)\s*</command-name>", re.DOTALL)
 _COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
 _EXIT_CODE = re.compile(r"^Exit code (-?\d+)")
 _CLAUDE_WRITE_TOOLS = {"Write": "write", "Edit": "edit", "MultiEdit": "edit", "NotebookEdit": "edit"}
+
+
+def _has_image(content: Any) -> bool:
+    return isinstance(content, list) and any(isinstance(b, dict) and b.get("type") == "image" for b in content)
 
 
 def _text_of(content: Any) -> str:
@@ -369,6 +373,7 @@ class ClaudeFacts:
         self._last_user_ts: dict[str, float] = {}
         self._tools_seen: set[str] = set()
         self._tool_message: dict[str, str] = {}
+        self._last_command: dict[str, tuple[str, str]] = {}
         self._message_last_block: dict[str, float] = {}
         self._pending: dict[str, tuple[ToolInvocationRow, str, dict]] = {}
         self._open_agents: dict[str, AgentRow] = {}
@@ -520,7 +525,10 @@ class ClaudeFacts:
         )
 
     def _prompt(self, sid: str, obj: dict, msg: dict, ts: float, agent_id: str, cwd: str) -> None:
-        if "toolUseResult" in obj or obj.get("isMeta") or obj.get("isCompactSummary"):
+        if obj.get("isMeta"):
+            self._note_skill_body(sid, msg, ts, agent_id, cwd)
+            return
+        if "toolUseResult" in obj or obj.get("isCompactSummary"):
             return
         if obj.get("isSidechain") and not agent_id:
             return
@@ -528,6 +536,8 @@ class ClaudeFacts:
         if origin.get("kind") not in (None, "human", "") and not agent_id:
             return
         text = _LEADING_REMINDERS.sub("", _text_of(msg.get("content"))).strip()
+        if not text and _has_image(msg.get("content")):
+            text = "[Image]"
         if not text or text.startswith(_NON_PROMPT_PREFIXES):
             return
         prompt_file = ""
@@ -541,6 +551,9 @@ class ClaudeFacts:
             prompt_file, is_skill = resolve_command_file(name, cwd)
             if is_skill or ":" in name:
                 self._skill(f"{sid}/{obj.get('uuid')}", sid, name.lstrip("/"), "user", ts, agent_id, cwd)
+            else:
+                # A skill with no file here, such as a built-in one, shows itself in the next line.
+                self._last_command[sid] = (f"{sid}/{obj.get('uuid')}", name.lstrip("/"))
         elif text.startswith("<command-message>"):
             return  # the expanded body of a slash command; its name is on its own line
         uuid = str(obj.get("uuid") or "")
@@ -556,6 +569,11 @@ class ClaudeFacts:
                 prompt_file=prompt_file,
             )
         )
+
+    def _note_skill_body(self, sid: str, msg: dict, ts: float, agent_id: str, cwd: str) -> None:
+        command = self._last_command.pop(sid, None)
+        if command is not None and _text_of(msg.get("content")).lstrip().startswith("Base directory for this skill:"):
+            self._skill(command[0], sid, command[1], "user", ts, agent_id, cwd)
 
     def _skill(self, key: str, sid: str, name: str, trigger: str, ts: float, agent_id: str, cwd: str) -> None:
         self.buffer.add_skill(

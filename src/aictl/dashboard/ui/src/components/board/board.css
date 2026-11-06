@@ -241,3 +241,4 @@ a.bd-btn{color:inherit;text-decoration:none}
 .bd-sect{color:inherit}
 html:has(.bd-app[data-theme=dark]){background:#0d0d0d}
 html:has(.bd-app[data-theme=light]){background:#f4f4f1}
+.bd-ctxspark{display:block;width:100%;height:60px;margin:6px 0}
