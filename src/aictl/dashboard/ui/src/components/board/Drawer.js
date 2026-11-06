@@ -323,6 +323,15 @@ function SkillDrawer({ d, ctx, frame, act }) {
     })),
     sort: { k: 'at', dir: 'desc' }, limit: 80, none: 'No uses in this time.', primary: 'ag',
   }), [data]);
+  const readDef = useMemo(() => ({
+    cols: [{ k: 'at', l: 'Time', w: '110px' }, { k: 'ag', l: 'Agent' }, { k: 'tool', l: 'Tool', w: '130px' }, { k: 'proj', l: 'Project', w: '150px' }],
+    rows: (data?.reads || []).map((c, i) => ({
+      id: i, go: c.agent_id ? () => act.openDrawer({ type: 'agent', id: c.agent_id, tab: 'overview' }) : null,
+      sort: { at: c.ts, tool: c.tool, proj: c.project },
+      cells: { at: { v: stamp(c.ts, true), cls: 'dim' }, ag: { v: c.title || c.agent_id, title: c.title || c.agent_id }, tool: { v: ctx.toolName(c.tool) }, proj: { v: projectName(c.project), cls: 'dim', title: c.project || '' } },
+    })),
+    sort: { k: 'at', dir: 'desc' }, limit: 80, none: 'No reads of the skill file in this time.', primary: 'ag',
+  }), [data]);
   const tokens = d.summary?.tokens;
   const fileTokens = d.summary?.file_tokens ?? (locations[0]?.content ? Math.round(locations[0].content.length / 4) : null);
   const description = locations.find(l => l.description)?.description || d.summary?.description;
@@ -334,8 +343,9 @@ function SkillDrawer({ d, ctx, frame, act }) {
         <${Table} def=${whereDef} label="Who can see it"/>
       </${FixedPanel}>
       <${FixedPanel} id="skuse" title="Usage">
-        <${Stats} stats=${[{ label: 'Uses in this time', value: fmtN(data.uses) }, { label: 'Agents in this time', value: fmtN(data.agents) }, { label: 'Tokens in those turns', value: fmtN(tokens), title: 'All tokens of every agent in those turns, not only the skill' }, { label: 'Skill file', value: fileTokens != null ? '~' + fmtN(fileTokens) : NA, title: 'Estimate at four characters per token' }, { label: 'Uses kept', value: fmtN(data.total_uses), title: 'All uses in the history that aictl keeps' }, { label: 'First use', value: data.first_ts ? stamp(data.first_ts, true) : NA }, { label: 'Last use', value: data.last_ts ? stamp(data.last_ts, true) : NA }]}/>
+        <${Stats} stats=${[{ label: 'Uses in this time', value: fmtN(data.uses) }, { label: 'Agents in this time', value: fmtN(data.agents) }, { label: 'File reads in this time', value: data.file_reads == null ? NA : fmtN(data.file_reads), title: 'Reads of SKILL.md with a file-read tool. Counted apart from the uses, and not counted when the same turn started the skill' }, { label: 'Tokens in those turns', value: fmtN(tokens), title: 'All tokens of every agent in those turns, not only the skill' }, { label: 'Skill file', value: fileTokens != null ? '~' + fmtN(fileTokens) : NA, title: 'Estimate at four characters per token' }, { label: 'Uses kept', value: fmtN(data.total_uses), title: 'All uses in the history that aictl keeps' }, { label: 'First use', value: data.first_ts ? stamp(data.first_ts, true) : NA }, { label: 'Last use', value: data.last_ts ? stamp(data.last_ts, true) : NA }]}/>
         <${Table} def=${useDef} label="Usage"/>
+        ${data.file_reads ? html`<${Table} def=${readDef} label="File reads"/>` : null}
       </${FixedPanel}>
       ${locations.map((l, i) => html`<${FixedPanel} key=${l.path} id=${'sktext' + i} title="Content" sub=${l.path}>
         ${l.same_as ? html`<div class="bd-note">Same text as ${l.same_as}.</div>` : l.content == null ? html`<div class="bd-empty">This file is not readable.</div>` : html`<div class="bd-ptext">${l.content}</div>`}

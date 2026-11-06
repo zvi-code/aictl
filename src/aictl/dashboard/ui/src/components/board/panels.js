@@ -368,9 +368,13 @@ function panelPrompts(ctx) {
 function panelProjectPrompts(ctx) {
   const rows = ctx.data.project_prompts.map(f => ({
     id: f.project + '|' + f.file, sort: { f: f.file, n: f.uses, p: f.project },
-    cells: { f: { v: baseName(f.file), title: f.project + ': ' + f.file }, p: { v: projectName(f.project), cls: 'dim', title: f.project || NA }, n: { v: f.uses ?? NA, cls: f.uses ? '' : 'dim', title: f.uses ? 'Last used ' + stamp(f.last_ts, true) : 'Not used in this time' } },
+    cells: { f: { v: baseName(f.file), title: f.project + ': ' + f.file }, p: { v: f.project ? projectName(f.project) : 'User', cls: 'dim', title: f.project || 'User folder' }, n: { v: f.uses ?? NA, cls: f.uses ? '' : 'dim', title: f.uses ? 'Last used ' + stamp(f.last_ts, true) : 'Not used in this time' } },
   }));
-  return { sub: 'Files in each project', table: { cols: [{ k: 'f', l: 'Prompt file' }, { k: 'p', l: 'Project', w: '92px' }, { k: 'n', l: 'Uses', n: true, w: '44px' }], rows, sort: { k: 'n', dir: 'desc' }, none: 'No prompt files found.' } };
+  const searched = ctx.data.project_prompts_searched || [];
+  const none = searched.length
+    ? 'No prompt files found. Searched ' + searched.slice(0, 6).join(', ') + (searched.length > 6 ? ' and ' + (searched.length - 6) + ' more folders' : '')
+    : 'No prompt files found. No project folder is known to search.';
+  return { sub: 'Files in each project, its parent folders and the user folders', table: { cols: [{ k: 'f', l: 'Prompt file' }, { k: 'p', l: 'Project', w: '92px' }, { k: 'n', l: 'Uses', n: true, w: '44px' }], rows, sort: { k: 'n', dir: 'desc' }, none } };
 }
 
 function panelSkills(ctx) {
@@ -656,7 +660,8 @@ function panelCoverage(ctx) {
   return {
     sub: 'What aictl can collect for each tool, and how exact it is',
     table: { cols: [{ k: 'k', l: 'Data', w: '260px' }].concat(shown.map(id => ({ k: id, l: ctx.toolName(id), minw: 112 }))), rows },
-    note: 'Some Exact items still need new collection work. Cost is always an estimate from list prices.',
+    note: ['Some Exact items still need new collection work. Cost is always an estimate from list prices.']
+      .concat((ctx.data.coverage?.notes || []).filter(n => shown.includes(n.tool)).map(n => n.text)).join(' '),
   };
 }
 

@@ -50,6 +50,9 @@ from .data.model_pricing import MODEL_PRICING, normalize_model_id, resolve_prici
 from .platforms import IS_WINDOWS, vscode_insiders_user_dir, vscode_user_dir
 
 COPILOT_TOOLS = ("copilot-cli", "copilot-desktop", "copilot-vscode")
+CLAUDE_TOOL = "claude-code"
+_CLAUDE_MANAGED_DIRS = ("/Library/Application Support/ClaudeCode", "/etc/claude-code")
+_CLAUDE_ORDER_BASIS = "Claude Code model configuration: managed settings, --model, ANTHROPIC_MODEL, then the model field of local, project and user settings, then ANTHROPIC_DEFAULT_MODEL."
 MAX_FRONTMATTER_LINES = 200
 MAX_MODEL_FILES = 300
 MAX_SESSION_BYTES = 8_000_000
@@ -578,7 +581,28 @@ def _models_in(path: str) -> dict:
     return (facts or {}).get("text_models") or {"frontmatter": [], "line": 0, "requests": []}
 
 
+def _claude_model_pins(project: Path, env: dict[str, str]) -> list[ModelPin]:
+    """Where Claude Code gets its model. A /model choice made in a running session is not on disk."""
+    tool = CLAUDE_TOOL
+    pins: list[ModelPin] = []
+    for base in _CLAUDE_MANAGED_DIRS:
+        found, _ = _settings_pins(tool, project, Path(base) / "managed-settings.json", "machine-policy", 10, basis=_CLAUDE_ORDER_BASIS)
+        pins.extend(found)
+    sources = [(name, env.get(name), "env", f"env:{name}", rank) for name, rank in (("ANTHROPIC_MODEL", 20), ("ANTHROPIC_DEFAULT_MODEL", 50))]
+    for name, value, scope, origin, rank in sources:
+        if value:
+            pins.append(ModelPin(tool, name, value, scope, origin, 0, rank, False, why_in_effect(tool, "env", False), True, _CLAUDE_ORDER_BASIS))
+    files = ((project / ".claude" / "settings.local.json", "repo-local", 30), (project / ".claude" / "settings.json", "repo", 31), (Path.home() / ".claude" / "settings.json", "user", 40))
+    for path, scope, rank in files:
+        found, _ = _settings_pins(tool, project, path, scope, rank, basis=_CLAUDE_ORDER_BASIS)
+        pins.extend(found)
+    pins.sort(key=lambda p: p.rank)
+    return pins
+
+
 def _collect_model(tool: str, project: Path, env: dict[str, str], ps_output: str | None) -> dict:
+    if tool == CLAUDE_TOOL:
+        return {"session": _claude_model_pins(project, env), "limited": [], "requests": [], "restrictions": [], "unverified": ["A model chosen with /model inside a running session is not stored in a settings file, so it is not shown."]}
     home = _copilot_home(env)
     session: list[ModelPin] = []
     limited: list[ModelPin] = []
@@ -865,6 +889,8 @@ def model_findings(project: str | Path, *, env: dict[str, str] | None = None, ps
         if tool == "copilot-desktop" and not (_copilot_home(env) / "data.db").is_file():
             continue
         effective[tool] = eff
+        if tool == CLAUDE_TOOL:
+            continue  # shown as a value; the Copilot checks do not apply
         for finding in _model_findings_for(tool, eff, sessions if tool != "copilot-desktop" else []):
             key = (finding.rule, finding.path, finding.line, finding.session_id, finding.snippet)
             if key in merged:
@@ -1146,7 +1172,7 @@ def effective_report(project: str | Path | None = None, tool: str | None = None,
     """Everything ``aictl ctx effective`` prints. Read-only: it writes no baseline and runs nothing."""
     root = Path(project).expanduser().resolve() if project else Path.cwd().resolve()
     env = dict(os.environ) if env is None else env
-    wanted = tuple(t for t in COPILOT_TOOLS if not tool or t == tool or t.startswith(f"{tool}-") or t.split("-")[0] == tool)
+    wanted = tuple(t for t in (*COPILOT_TOOLS, CLAUDE_TOOL) if not tool or t == tool or t.startswith(f"{tool}-") or t.split("-")[0] == tool)
     effective, findings = model_findings(root, env=env, ps_output=ps_output, tools=wanted) if wanted else ({}, [])
     setting_tools = [t for t in SETTING_TOOLS if not tool or t == tool or t.startswith(f"{tool}-") or t.split("-")[0] == tool]
     report = {

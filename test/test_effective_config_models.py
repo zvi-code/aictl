@@ -504,3 +504,57 @@ def test_vscode_setting_pin_says_what_it_is_limited_to(world, tmp_path, monkeypa
     write(project / ".vscode" / "settings.json", json.dumps({"inlineChat.defaultModel": "Some Model (copilot)"}))
     rows = effective_model(project, "copilot-vscode", env=env)["limited"]
     assert [r["applies"] for r in rows if r["setting"] == "inlineChat.defaultModel"] == ["inlineChat"]
+
+
+# ─── Claude Code ──────────────────────────────────────────────────
+
+
+@pytest.fixture
+def claude_world(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    project = tmp_path / "repo"
+    home.mkdir()
+    project.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("aictl.effective_config._CLAUDE_MANAGED_DIRS", ())
+    return home, project
+
+
+def test_claude_model_comes_from_user_settings(claude_world):
+    home, project = claude_world
+    write(home / ".claude" / "settings.json", json.dumps({"model": "opus"}))
+    eff = effective_model(project, "claude-code", env={})
+    assert (eff["value"], eff["scope"], eff["in_project"]) == ("opus", "user", False)
+    assert eff["source"].endswith("settings.json") and eff["line"] == 1
+
+
+def test_claude_project_settings_beat_user_settings_and_local_beats_project(claude_world):
+    home, project = claude_world
+    write(home / ".claude" / "settings.json", json.dumps({"model": "opus"}))
+    write(project / ".claude" / "settings.json", json.dumps({"model": "sonnet"}))
+    assert effective_model(project, "claude-code", env={})["value"] == "sonnet"
+    write(project / ".claude" / "settings.local.json", json.dumps({"model": "haiku"}))
+    eff = effective_model(project, "claude-code", env={})
+    assert eff["value"] == "haiku"
+    assert [c["value"] for c in eff["candidates"]] == ["haiku", "sonnet", "opus"]
+
+
+def test_claude_environment_variable_beats_settings(claude_world):
+    home, project = claude_world
+    write(home / ".claude" / "settings.json", json.dumps({"model": "opus"}))
+    eff = effective_model(project, "claude-code", env={"ANTHROPIC_MODEL": "claude-sonnet-5"})
+    assert (eff["value"], eff["setting"]) == ("claude-sonnet-5", "ANTHROPIC_MODEL")
+
+
+def test_claude_with_no_pin_says_so_and_is_not_a_value(claude_world):
+    _home, project = claude_world
+    eff = effective_model(project, "claude-code", env={})
+    assert eff["value"] == "" and "default" in eff["why_in_effect"]
+
+
+def test_the_audit_reports_claude_beside_copilot(claude_world):
+    home, project = claude_world
+    write(home / ".claude" / "settings.json", json.dumps({"model": "opus"}))
+    effective, findings = model_findings(project, env={}, ps_output="", tools=("copilot-cli", "claude-code"))
+    assert effective["claude-code"]["value"] == "opus"
+    assert not [f for f in findings if f.tool == "claude-code"]

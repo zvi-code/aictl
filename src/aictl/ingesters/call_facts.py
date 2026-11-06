@@ -183,6 +183,7 @@ def patch_line_counts(hunks: Any) -> tuple[int, int] | None:
 
 
 _PATCH_FILE = re.compile(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$")
+_PATCH_MOVE = re.compile(r"^\*\*\* Move to: (.+)$")
 
 
 def _patch_counts(stored_input: str, cwd: str) -> dict[str, tuple[int, int]]:
@@ -196,22 +197,32 @@ def _patch_counts(stored_input: str, cwd: str) -> dict[str, tuple[int, int]]:
 
 
 def apply_patch_files(patch: str) -> list[tuple[str, int, int]]:
-    """(path, added, removed) for each file of an ``*** Update File:`` style patch."""
+    """(path, added, removed) for each file of an ``*** Update File:`` style patch.
+
+    A file that the patch moves is listed under its new path as well, because the tool reports the new path.
+    """
     files: list[tuple[str, int, int]] = []
-    path = ""
+    path = moved = ""
     added = removed = 0
+
+    def close() -> None:
+        if path:
+            files.append((path, added, removed))
+            if moved:
+                files.append((moved, added, removed))
+
     for line in patch.splitlines():
         match = _PATCH_FILE.match(line)
         if match:
-            if path:
-                files.append((path, added, removed))
-            path, added, removed = match.group(1).strip(), 0, 0
+            close()
+            path, moved, added, removed = match.group(1).strip(), "", 0, 0
+        elif _PATCH_MOVE.match(line):
+            moved = _PATCH_MOVE.match(line).group(1).strip()
         elif line.startswith("+"):
             added += 1
         elif line.startswith("-"):
             removed += 1
-    if path:
-        files.append((path, added, removed))
+    close()
     return files
 
 
@@ -803,6 +814,8 @@ class CopilotFacts:
         self._record_ids: set[str] = set()
         self._compactions: list[tuple[dict, float, str]] = []
         self._running: dict[str, ToolInvocationRow] = {}
+        # The whole text of an apply_patch call until it completes. The stored input is cut short.
+        self._patches: dict[str, str] = {}
         self._confirms: dict[str, tuple[str, float]] = {}
         self._permissions: dict[str, tuple[float, str, str, str, str]] = {}
 
@@ -1028,6 +1041,11 @@ class CopilotFacts:
         if data.get("mcpServerName"):
             name = f"mcp__{data['mcpServerName']}__{data.get('mcpToolName') or name}"
         args = data.get("arguments") if isinstance(data.get("arguments"), dict) else {}
+        # apply_patch passes the patch as the whole argument, a string and not an object.
+        raw_args = data.get("arguments")
+        if name == "apply_patch" and isinstance(raw_args, str) and raw_args.lstrip().startswith("*** Begin Patch"):
+            args = {"input": raw_args}
+            self._patches[call_id] = raw_args
         row = ToolInvocationRow(
             dedup_key=self._tool_key(call_id),
             ts=ts,
@@ -1048,6 +1066,7 @@ class CopilotFacts:
         if not call_id:
             return
         row = self._running.pop(call_id, None)
+        patch = self._patches.pop(call_id, "")
         if row is None:
             row = ToolInvocationRow(
                 dedup_key=self._tool_key(call_id),
@@ -1076,16 +1095,16 @@ class CopilotFacts:
         if row.tool_name in _PERSON_TOOLS:
             row.duration_ms = 0.0
         self.buffer.add_tool(row)
-        self._file_edits(row, data)
+        self._file_edits(row, data, patch)
 
-    def _file_edits(self, row: ToolInvocationRow, data: dict) -> None:
+    def _file_edits(self, row: ToolInvocationRow, data: dict, patch: str = "") -> None:
         edits = data.get("fileEdits")
         if row.is_error or not isinstance(edits, list):
             return
         paths = [e for e in edits if isinstance(e, dict) and e.get("path")]
         telemetry = data.get("toolTelemetry") if isinstance(data.get("toolTelemetry"), dict) else {}
         metrics = telemetry.get("metrics") if isinstance(telemetry.get("metrics"), dict) else {}
-        path_counts = _patch_counts(row.input, self.cwd) if len(paths) > 1 else {}
+        path_counts = _patch_counts(json.dumps({"input": patch}) if patch else row.input, self.cwd) if len(paths) > 1 else {}
         for edit in paths:
             detail: dict[str, Any] = {}
             # The tool reports one total per call, so a patch of many files is counted from its text.
