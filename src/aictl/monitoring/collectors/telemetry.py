@@ -39,6 +39,9 @@ class StructuredTelemetryCollector(BaseCollector):
         super().__init__()
         self.config = config
         self._offsets: dict[str, int] = {}
+        # Files from before this collector started hold history, not live use.
+        self._started_at = time.time()
+        self._found_at_start: set[str] | None = None
         # Rewrite-in-place JSON snapshots: last-seen cumulative totals and
         # (mtime, size) signature per file, so only positive deltas are emitted.
         self._snapshot_totals: dict[str, tuple[int, int]] = {}
@@ -97,6 +100,8 @@ class StructuredTelemetryCollector(BaseCollector):
         if self._candidates is None or now - self._candidates_at >= CANDIDATE_WALK_INTERVAL_S:
             self._candidates = self._candidate_files()
             self._candidates_at = now
+            if self._found_at_start is None:
+                self._found_at_start = {str(path) for path in self._candidates}
         for path in self._candidates:
             samples.extend(self._parse_file(path))
         return samples
@@ -197,8 +202,14 @@ class StructuredTelemetryCollector(BaseCollector):
         is_otel_file = key in self._otel_files
         samples: list[dict] = []
         try:
-            size = path.stat().st_size
+            stat = path.stat()
         except OSError:
+            return samples
+        size = stat.st_size
+
+        # First sight of an old file only records where it ends: its lines are not live use.
+        if key not in self._offsets and (key in (self._found_at_start or ()) or stat.st_mtime < self._started_at):
+            self._offsets[key] = size
             return samples
 
         offset = self._offsets.get(key, 0)
