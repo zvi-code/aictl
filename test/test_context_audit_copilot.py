@@ -475,3 +475,59 @@ def test_benign_copilot_setup_stays_quiet(repo, home):
     write(vscode_user(home) / "settings.json", json.dumps({"chat.agent.enabled": True, "chat.tools.terminal.autoApprove": {"ls": True}}))
     report = audit(repo, env={"COPILOT_MODEL": "gpt-5"})
     assert report["counts"]["high"] == 0 and report["counts"]["medium"] == 0
+
+
+def _skill_file(folder, name="checker", text="---\nname: checker\n---\n"):
+    target = folder / name
+    target.mkdir(parents=True)
+    (target / "SKILL.md").write_text(text)
+
+
+def test_skill_locations_follow_the_documented_folders(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    project = tmp_path / "mono" / "proj"
+    project.mkdir(parents=True)
+    env = {"COPILOT_SKILLS_DIRS": str(tmp_path / "custom")}
+    _skill_file(project / ".github" / "skills")
+    _skill_file(tmp_path / "mono" / ".github" / "skills")
+    _skill_file(home / ".claude" / "skills")
+    _skill_file(tmp_path / "custom")
+    rows = {r["scope"] + ":" + r["owner"]: r for r in ca.skill_locations("checker", [str(project)], env)}
+    claude_user = rows["user:"]
+    assert "copilot-cli" not in claude_user["tools"]
+    assert "copilot-vscode" in claude_user["tools"] and "claude-code" in claude_user["tools"]
+    assert f"project:{tmp_path / 'mono'}" in rows
+    assert "custom:COPILOT_SKILLS_DIRS" in rows
+    assert str(project) in rows[f"project:{project}"]["path"]
+    assert "comes first" in rows[f"project:{tmp_path / 'mono'}"]["note"]
+
+
+def test_skill_settings_that_stop_loading_are_reported(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    (home / ".copilot").mkdir(parents=True)
+    (home / ".copilot" / "settings.json").write_text('{"disabledSkills": ["checker"], "ignoredSkillsLocations": ["' + (tmp_path / "off").as_posix() + '"]}')
+    project = tmp_path / "proj"
+    _skill_file(project / ".github" / "skills")
+    assert "disabledSkills" in ca.skill_locations("checker", [str(project)], {})[0]["blocked"]
+    (home / ".copilot" / "settings.json").write_text('{"ignoredSkillsLocations": ["' + project.as_posix() + '"]}')
+    assert "ignoredSkillsLocations" in ca.skill_locations("checker", [str(project)], {})[0]["blocked"]
+
+
+def test_copilot_does_not_claim_the_claude_user_skill_folder(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    _skill_file(home / ".claude" / "skills")
+    project = tmp_path / "proj"
+    project.mkdir()
+    (home / ".claude" / "agents").mkdir(parents=True)
+    (home / ".claude" / "agents" / "helper.md").write_text("x")
+    sources = ca.run_audit(project, env={}, ps_output="")["sources"]
+    for tool in ("copilot-cli",):
+        rows = [s for s in sources if s["tool"] == tool]
+        assert not any(s["path"].endswith("checker/SKILL.md") for s in rows)
+        assert any(s["path"].endswith("agents/helper.md") for s in rows)

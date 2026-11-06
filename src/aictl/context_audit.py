@@ -1254,8 +1254,13 @@ def _collect_copilot(inv: _Inventory, findings: list[Finding], env: dict[str, st
             inv.add(tool, "project", project / name, "instructions", "always")
         for pattern in (".claude/skills/*/SKILL.md", ".agents/skills/*/SKILL.md"):
             inv.add_glob(tool, "project", str(project / pattern), "skill", "on-demand")
-        for pattern in ("~/.claude/skills/*/SKILL.md", "~/.agents/skills/*/SKILL.md"):
-            inv.add_glob(tool, "user", pattern, "skill", "on-demand")
+        inv.add_glob(tool, "user", "~/.agents/skills/*/SKILL.md", "skill", "on-demand")
+        inv.add_glob(tool, "project", str(project / ".claude" / "agents" / "*.md"), "agent", "on-demand")
+        inv.add_glob(tool, "user", "~/.claude/agents/*.md", "agent", "on-demand")
+        inv.add_glob(tool, "project", str(project / ".claude" / "rules" / "**" / "*.md"), "rules", "conditional")
+        for folder in [*(env.get("COPILOT_SKILLS_DIRS") or "").split(","), *_copilot_skill_settings(home, [str(project)])[0]]:
+            if folder.strip():
+                inv.add_glob(tool, "user", str(Path(_expand_home(folder.strip())) / "*" / "SKILL.md"), "skill", "on-demand")
         _collect_copilot_plugins(inv, findings, tool, home)
         _collect_copilot_dirs(inv, tool, env)
     if desktop:
@@ -1295,30 +1300,71 @@ def _copilot_plugin_roots(home: Path) -> list[tuple[str, Path]]:
     return out
 
 
-_COPILOT_APPS = ("copilot-cli", "copilot-desktop", "copilot-vscode")
+_COPILOT_TERMINAL_TOOLS = ("copilot-cli", "copilot-desktop")
+_COPILOT_APPS = (*_COPILOT_TERMINAL_TOOLS, "copilot-vscode")
+# In the order of the Copilot CLI reference, where the first copy of a name wins.
 _PROJECT_SKILL_FOLDERS = (
     (".github/skills", _COPILOT_APPS),
-    (".claude/skills", ("claude-code", *_COPILOT_APPS)),
     (".agents/skills", ("codex-cli", *_COPILOT_APPS)),
+    (".claude/skills", ("claude-code", *_COPILOT_APPS)),
 )
 _USER_SKILL_FOLDERS = (
-    ("~/.claude/skills", ("claude-code", *_COPILOT_APPS)),
     ("~/.agents/skills", ("codex-cli", *_COPILOT_APPS)),
+    ("~/.claude/skills", ("claude-code", "copilot-vscode")),
     ("~/.codex/skills", ("codex-cli",)),
 )
+_MAX_PARENT_FOLDERS = 8
+
+
+def _copilot_skill_settings(home: Path, projects: Iterable[str]) -> tuple[list[str], set[str], list[str]]:
+    """``skillDirectories``, ``disabledSkills`` and ``ignoredSkillsLocations`` from the settings files."""
+    files = [home / "settings.json"]
+    for project in projects:
+        files += [Path(project) / ".github" / "copilot" / name for name in ("settings.json", "settings.local.json")]
+    extra: list[str] = []
+    disabled: set[str] = set()
+    ignored: list[str] = []
+    for file in files:
+        data = _read_json(file)
+        for key, target in (("skillDirectories", extra), ("ignoredSkillsLocations", ignored)):
+            values = data.get(key)
+            target += [str(v) for v in values] if isinstance(values, list) else []
+        names = data.get("disabledSkills")
+        disabled |= {str(n) for n in names} if isinstance(names, list) else set()
+    return extra, disabled, ignored
+
+
+def _mark_later_copies(rows: list[dict]) -> None:
+    """Say which copy comes first for the Copilot CLI, the one tool that documents an order."""
+    for i, row in enumerate(rows):
+        if "copilot-cli" not in row["tools"]:
+            continue
+        for earlier in rows[:i]:
+            if "copilot-cli" not in earlier["tools"]:
+                continue
+            both_projects = earlier["scope"] == "project" and row["scope"] == "project"
+            under_owner = _path_key(earlier["owner"]).startswith(_path_key(row["owner"]).rstrip("/") + "/")
+            if not both_projects or earlier["owner"] == row["owner"] or under_owner:
+                where = f" in {earlier['owner']}" if earlier["scope"] == "project" and row["scope"] != "project" else ""
+                row["note"] = f"For the Copilot CLI, {earlier['path']} comes first{where}."
+                break
 
 
 def skill_locations(name: str, projects: Iterable[str], env: dict[str, str] | None = None) -> list[dict]:
-    """Every SKILL.md with this name: its path, scope, the tools that read it and its owner.
+    """Every SKILL.md with this name: its path, scope, the tools that read it, its owner and notes.
 
-    ``owner`` is the project folder for a project skill and the plugin name for a
-    plugin skill. The name selects a folder, so a name with a path separator finds nothing.
+    ``owner`` is the project folder for a project skill, the plugin name for a plugin
+    skill and the setting for a custom folder. The name selects a folder, so a name
+    with a path separator finds nothing.
     """
     namespace, _, base = name.rpartition(":")
     if not re.fullmatch(r"[\w.\- ]+", base) or not base.strip(". "):
         return []
     env = dict(os.environ) if env is None else env
+    projects = list(projects)
     copilot_home = _copilot_home(env)
+    extra, disabled, ignored = _copilot_skill_settings(copilot_home, projects)
+    ignored_keys = [_path_key(_expand_home(p)).rstrip("/") + "/" for p in ignored]
     found: dict[str, dict] = {}
 
     def add(folder: Path, scope: str, tools: tuple[str, ...], owner: str = "") -> None:
@@ -1328,35 +1374,50 @@ def skill_locations(name: str, projects: Iterable[str], env: dict[str, str] | No
                 return
         except OSError:
             return
-        row = found.setdefault(_path_key(path), {"path": str(path), "scope": scope, "tools": [], "owner": owner})
+        key = _path_key(path)
+        row = found.setdefault(key, {"path": str(path), "scope": scope, "tools": [], "owner": owner, "note": ""})
         row["tools"] += [tool for tool in tools if tool not in row["tools"]]
+        if any(key.startswith(prefix) for prefix in ignored_keys):
+            row["blocked"] = "Copilot does not look here, because of ignoredSkillsLocations."
+        elif name in disabled or base in disabled:
+            row["blocked"] = "Copilot finds this skill but does not load it, because of disabledSkills."
 
     for project in projects:
-        if project:
-            for relative, tools in _PROJECT_SKILL_FOLDERS:
-                add(Path(project) / relative, "project", tools, project)
+        if not project:
+            continue
+        for relative, tools in _PROJECT_SKILL_FOLDERS:
+            add(Path(project) / relative, "project", tools, project)
+        for parent in list(Path(project).parents)[:_MAX_PARENT_FOLDERS]:
+            add(parent / ".github" / "skills", "project", _COPILOT_TERMINAL_TOOLS, str(parent))
+    add(copilot_home / "skills", "user", _COPILOT_APPS)
     for folder, tools in _USER_SKILL_FOLDERS:
         add(Path(_expand_home(folder)), "user", tools)
-    add(copilot_home / "skills", "user", _COPILOT_APPS)
     wanted = namespace.lower()
-    for plugin, root in _enabled_plugin_paths():
-        if not wanted or plugin.lower().startswith(wanted):
-            add(root / "skills", "plugin", ("claude-code",), plugin)
     for plugin, root in _copilot_plugin_roots(copilot_home):
         if not wanted or plugin.lower().startswith(wanted):
             add(root / "skills", "plugin", _COPILOT_APPS, plugin)
-    return list(found.values())
+    for plugin, root in _enabled_plugin_paths():
+        if not wanted or plugin.lower().startswith(wanted):
+            add(root / "skills", "plugin", ("claude-code",), plugin)
+    for folder in (env.get("COPILOT_SKILLS_DIRS") or "").split(","):
+        if folder.strip():
+            add(Path(_expand_home(folder.strip())), "custom", _COPILOT_TERMINAL_TOOLS, "COPILOT_SKILLS_DIRS")
+    for folder in extra:
+        add(Path(_expand_home(folder)), "custom", _COPILOT_TERMINAL_TOOLS, "skillDirectories")
+    rows = list(found.values())
+    _mark_later_copies(rows)
+    return rows
 
 
-def skill_description(text: str) -> str:
-    """The ``description`` value of a skill's front matter, or an empty string."""
+def skill_field(text: str, field: str) -> str:
+    """The value of one field in a skill's front matter, or an empty string."""
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         return ""
     for i, line in enumerate(lines[1:], 1):
         if line.strip() == "---":
             return ""
-        if line.startswith("description:"):
+        if line.startswith(f"{field}:"):
             value = line.split(":", 1)[1].strip()
             if value in (">", ">-", "|", "|-"):
                 more = []
@@ -1367,6 +1428,11 @@ def skill_description(text: str) -> str:
                 value = " ".join(part for part in more if part)
             return value.strip("\"'")
     return ""
+
+
+def skill_description(text: str) -> str:
+    """The ``description`` value of a skill's front matter, or an empty string."""
+    return skill_field(text, "description")
 
 
 def _collect_copilot_plugins(inv: _Inventory, findings: list[Finding], tool: str, home: Path) -> None:

@@ -266,12 +266,12 @@ function SkillDrawer({ d, ctx, frame, act }) {
   const { data, error } = useDetail(opts => api.getBoardSkill(d.name, ctx.query, opts), 'skill:' + d.name + ':' + ctx.query);
   const locations = data?.locations || [];
   const whereDef = useMemo(() => ({
-    cols: [{ k: 'sc', l: 'Scope', w: '74px' }, { k: 'who', l: 'Who can see it' }, { k: 'tools', l: 'Tools that read it', w: '220px' }, { k: 'path', l: 'File', w: '320px' }],
+    cols: [{ k: 'sc', l: 'Scope', w: '74px' }, { k: 'who', l: 'Who can see it' }, { k: 'start', l: 'Who can start it', w: '170px' }, { k: 'tools', l: 'Tools that read it', w: '200px' }, { k: 'path', l: 'File', w: '280px' }],
     rows: locations.map(l => ({
       id: l.path, sort: { sc: l.scope, path: l.path },
-      cells: { sc: { v: l.scope }, who: { v: l.reach, title: l.reach }, tools: (txt => ({ v: txt, cls: 'dim', title: txt }))(l.tools.map(ctx.toolName).join(', ')), path: { v: l.path, cls: 'm', title: l.path } },
+      cells: { sc: { v: l.scope }, who: (extra => ({ v: l.reach, sub: extra, warn: !!l.blocked, title: [l.reach, extra].filter(Boolean).join('\n') }))([l.blocked, l.note].filter(Boolean).join(' ')), start: { v: l.starter, title: [l.starter, l.allowed_tools ? 'Tools allowed without asking: ' + l.allowed_tools : ''].filter(Boolean).join('\n'), sub: l.allowed_tools ? 'Allowed tools: ' + l.allowed_tools : '' }, tools: (txt => ({ v: txt, cls: 'dim', title: txt }))(l.tools.map(ctx.toolName).join(', ')), path: { v: l.path, cls: 'm', title: l.path } },
     })),
-    none: 'aictl found no file with this name. The skill can be built in, or its file can be in a folder that this machine does not have.', primary: 'who',
+    none: 'aictl found no file with this name. The tool can include the skill, your organization can host it, or its file can be in a folder that this machine does not have.', primary: 'who',
   }), [data]);
   const useDef = useMemo(() => ({
     cols: [{ k: 'at', l: 'Time', w: '110px' }, { k: 'ag', l: 'Agent' }, { k: 'tool', l: 'Tool', w: '130px' }, { k: 'proj', l: 'Project', w: '150px' }, { k: 'how', l: 'Started by', w: '110px' }],

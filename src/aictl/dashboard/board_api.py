@@ -39,7 +39,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import parse_qs
 
-from ..context_audit import _git_states, _path_key, _redact, skill_description, skill_locations
+from ..context_audit import _git_states, _path_key, _redact, skill_description, skill_field, skill_locations
 from ..data.model_pricing import request_cost_usd, resolve_pricing
 from ..ingesters._common import project_key, project_root
 from ..storage import EventRow, _session_uuid
@@ -2299,12 +2299,27 @@ def file_excerpt(path: str, line: int, is_allowed: Callable[[str], bool] | None 
     }
 
 
+def _skill_starter(text: str) -> str:
+    """Who can start a skill, from its front matter. Both can by default."""
+    person = skill_field(text, "user-invocable").lower() != "false"
+    model = skill_field(text, "disable-model-invocation").lower() != "true"
+    if person and model:
+        return "You and the model"
+    if person:
+        return "Only you, because of disable-model-invocation"
+    if model:
+        return "Only the model, because of user-invocable"
+    return "Nobody, because of both settings"
+
+
 def _skill_reach(row: dict, git_state: str) -> str:
     """Who can see this skill file, in words."""
     if row["scope"] == "user":
         return "Only this user on this machine, in every project."
     if row["scope"] == "plugin":
         return f"Anyone who installs the plugin {row['owner']}, in every project."
+    if row["scope"] == "custom":
+        return f"Only sessions on this machine that have this folder in {row['owner']}."
     if git_state == "tracked":
         return f"Everyone with the repository at {row['owner']}, because the file is in git."
     if git_state in ("untracked", "ignored"):
@@ -2348,6 +2363,8 @@ def skill_detail(db: Any, name: str, now: float | None = None, since: float | No
                 "git_state": git_state or None,
                 "reach": _skill_reach(row, git_state),
                 "description": skill_description(content or "") or None,
+                "starter": _skill_starter(content or ""),
+                "allowed_tools": skill_field(content or "", "allowed-tools") or None,
                 "content": None if same_as else content,
                 "same_as": same_as,
                 "truncated": truncated,
