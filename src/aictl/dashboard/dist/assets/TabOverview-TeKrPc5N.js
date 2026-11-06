@@ -1,38 +1,38 @@
-import{d as k,T as _,m as e,x as U,q as X,A as ss,y as es}from"./index-pAYO6Exu.js";import{S as V,C as as,T as ts,P as ns,a as os,I as ls}from"./app-CpR1BSrN.js";import{z as C,q as x,ab as rs,ac as Z,v as O,r as S,o as is,B as q,ad as I,F as cs,ae as w,af as Q,G as D,C as ps,ag as J,ah as ds,ai as Y,aj as us,ak as ms,al as $s,L as vs,am as gs}from"./useSse-DQLBdxds.js";const bs={high_memory:{label:"High memory",detail:s=>{const a=s.actual_mb!=null?x(s.actual_mb*1048576):null,o=s.expected_mb!=null?x(s.expected_mb*1048576):null;return a&&o?`${a} >> expected ${o}`:a},severity:"orange"},cpu_spike:{label:"CPU spike",detail:(s,a)=>a.cpu_pct!=null?C(parseFloat(a.cpu_pct)):null,severity:"orange"},zombie:{label:"Zombie process",detail:s=>`ppid=${s.ppid}, risk=${s.risk}`,severity:"red"},known_leak:{label:"Known leak",detail:s=>s.pattern,severity:"red"},high_file_count:{label:"High file count",detail:(s,a)=>a.file_count?`${a.file_count} open files`:null,severity:"yellow"},long_running:{label:"Long running",detail:(s,a)=>a.uptime_s?`${Math.round(a.uptime_s/60)}min`:null,severity:"yellow"}};function fs(s,a){const o=bs[s.type];return o?{label:o.label,detail:o.detail(s,a||{}),severity:o.severity}:{label:s.type,detail:null,severity:"orange"}}function G({file:s,dirPrefix:a}){var P;const[o,m]=k(!1),[r,l]=k(!1),[i,n]=k(null),[c,t]=k(null),[d,g]=k(!1),$=U(V),u=(s.path||"").replace(/\\/g,"/").split("/").pop(),v=(s.sent_to_llm||"").toLowerCase(),f=s.mtime&&Date.now()/1e3-s.mtime<300,h=(P=$.recentFiles)==null?void 0:P.get(s.path),z=!!h,M=X(async()=>{if(o){m(!1);return}m(!0),g(!0),t(null);try{const y=await is(s.path);n(y)}catch(y){t(y.message)}finally{g(!1)}},[o,s.path]),A=(y,T)=>y.map((B,E)=>e`<span class="pline"><span class="ln">${T+E}</span>${O(B)||" "}</span>`),j=()=>{if(d)return e`<span class="text-muted">loading...</span>`;if(c)return e`<span class="text-red">${c}</span>`;if(!i)return null;const y=i.split(`
-`),T=y.length;if(T<=I*3||r)return e`${A(y,1)}
+import{d as k,T as _,m as e,x as U,q as X,A as ss,y as es}from"./index-Dnzi7PMf.js";import{S as V,C as as,T as ts,P as ns,a as os,I as ls}from"./app-DvY9Tbml.js";import{z as C,q as x,ab as rs,ac as Z,v as z,r as S,o as is,B as I,ad as q,F as cs,ae as w,af as Q,G as D,C as ps,ag as J,ah as ds,ai as Y,aj as us,ak as ms,al as $s,L as vs,am as gs}from"./useSse-NYtt3cbk.js";const bs={high_memory:{label:"High memory",detail:s=>{const a=s.actual_mb!=null?x(s.actual_mb*1048576):null,o=s.expected_mb!=null?x(s.expected_mb*1048576):null;return a&&o?`${a} >> expected ${o}`:a},severity:"orange"},cpu_spike:{label:"CPU spike",detail:(s,a)=>a.cpu_pct!=null?C(parseFloat(a.cpu_pct)):null,severity:"orange"},zombie:{label:"Zombie process",detail:s=>`ppid=${s.ppid}, risk=${s.risk}`,severity:"red"},known_leak:{label:"Known leak",detail:s=>s.pattern,severity:"red"},high_file_count:{label:"High file count",detail:(s,a)=>a.file_count?`${a.file_count} open files`:null,severity:"yellow"},long_running:{label:"Long running",detail:(s,a)=>a.uptime_s?`${Math.round(a.uptime_s/60)}min`:null,severity:"yellow"}};function hs(s,a){const o=bs[s.type];return o?{label:o.label,detail:o.detail(s,a||{}),severity:o.severity}:{label:s.type,detail:null,severity:"orange"}}function G({file:s,dirPrefix:a}){var P;const[o,m]=k(!1),[r,l]=k(!1),[i,n]=k(null),[c,t]=k(null),[d,g]=k(!1),$=U(V),u=(s.path||"").replace(/\\/g,"/").split("/").pop(),v=(s.sent_to_llm||"").toLowerCase(),h=s.mtime&&Date.now()/1e3-s.mtime<300,f=(P=$.recentFiles)==null?void 0:P.get(s.path),O=!!f,M=X(async()=>{if(o){m(!1);return}m(!0),g(!0),t(null);try{const y=await is(s.path);n(y)}catch(y){t(y.message)}finally{g(!1)}},[o,s.path]),A=(y,T)=>y.map((B,E)=>e`<span class="pline"><span class="ln">${T+E}</span>${z(B)||" "}</span>`),j=()=>{if(d)return e`<span class="text-muted">loading...</span>`;if(c)return e`<span class="text-red">${c}</span>`;if(!i)return null;const y=i.split(`
+`),T=y.length;if(T<=q*3||r)return e`${A(y,1)}
         <div class="prev-actions">
           ${r&&e`<button class="prev-btn" onClick=${()=>l(!1)}>collapse</button>`}
           <button class="prev-btn" onClick=${()=>$.openViewer(s.path)}>open in viewer</button>
-        </div>`;const E=y.slice(-I),F=T-I+1;return e`${A(E,F)}
+        </div>`;const E=y.slice(-q),F=T-q+1;return e`${A(E,F)}
       <div class="prev-actions">
         <button class="prev-btn" onClick=${()=>l(!0)}>show all (${T} lines)</button>
         <button class="prev-btn" onClick=${()=>$.openViewer(s.path)}>open in viewer</button>
       </div>`},L=s.size>0?Math.round(s.size/60):0;return e`<div>
     <button class="fitem" onClick=${M} aria-expanded=${o} title=${s.path}>
-      ${z?e`<span class="text-green" style="font-size:var(--fs-xs);animation:pulse 1s infinite" title="Active — last change ${q(h.ts)}${h.growth>0?" +"+x(h.growth):""}">●</span>`:f?e`<span class="text-orange" style="font-size:var(--fs-xs)" title="Modified ${q(s.mtime)}">●</span>`:e`<span class="text-muted" style="font-size:var(--fs-xs)">○</span>`}
-      <span class="fpath">${a?e`<span class="text-muted">${a}/</span>`:""}${O(u)}</span>
+      ${O?e`<span class="text-green" style="font-size:var(--fs-xs);animation:pulse 1s infinite" title="Active — last change ${I(f.ts)}${f.growth>0?" +"+x(f.growth):""}">●</span>`:h?e`<span class="text-orange" style="font-size:var(--fs-xs)" title="Modified ${I(s.mtime)}">●</span>`:e`<span class="text-muted" style="font-size:var(--fs-xs)">○</span>`}
+      <span class="fpath">${a?e`<span class="text-muted">${a}/</span>`:""}${z(u)}</span>
       <span class="fmeta">
         ${v&&v!=="no"&&e`<span style="color:${Z(v)};font-size:var(--fs-xs);margin-right:var(--sp-1)" title="sent_to_llm: ${v}">${v==="yes"?"◆":v==="on-demand"?"◇":"○"}</span>`}
         ${x(s.size)}${L?e` <span class="text-muted">${L}ln</span>`:""}${s.tokens?e` <span class="text-muted">${S(s.tokens)}t</span>`:""}
-        ${s.mtime&&f?e` <span class="text-orange text-xs">${q(s.mtime)}</span>`:""}
+        ${s.mtime&&h?e` <span class="text-orange text-xs">${I(s.mtime)}</span>`:""}
       </span>
     </button>
     ${o&&e`<div class="inline-preview">${j()}</div>`}
-  </div>`}function hs({dir:s,files:a}){const[o,m]=k(!1),r=a.reduce((i,n)=>i+n.tokens,0),l=a.reduce((i,n)=>i+n.size,0);return e`<div class="cat-group" style=${{marginLeft:"var(--sp-5)"}}>
+  </div>`}function fs({dir:s,files:a}){const[o,m]=k(!1),r=a.reduce((i,n)=>i+n.tokens,0),l=a.reduce((i,n)=>i+n.size,0);return e`<div class="cat-group" style=${{marginLeft:"var(--sp-5)"}}>
     <button class=${o?"mem-profile-head open":"mem-profile-head"} onClick=${()=>m(!o)} aria-expanded=${o}
       style="grid-template-columns: 0.7rem 1fr auto auto auto">
       <span class="carrow" aria-hidden="true">\u25B6</span>
-      <span class="cat-label text-muted" title=${s}>${O(s)}</span>
+      <span class="cat-label text-muted" title=${s}>${z(s)}</span>
       <span class="badge">${a.length}</span>
       <span class="badge">${x(l)}</span>
       <span class="badge">${S(r)}t</span>
     </button>
     ${o&&e`<div style=${{paddingLeft:"var(--sp-8)"}}>${a.map(i=>e`<${G} key=${i.path} file=${i}/>`)}</div>`}
-  </div>`}function ys({label:s,files:a,root:o,badge:m,style:r,startOpen:l}){const[i,n]=k(!!l),c=_(()=>rs(a,o),[a,o]),t=_(()=>a.reduce((u,v)=>u+v.tokens,0),[a]),d=_(()=>a.reduce((u,v)=>u+v.size,0),[a]),g=_(()=>{var v;const u={};return a.forEach(f=>{const h=(f.sent_to_llm||"no").toLowerCase();u[h]=(u[h]||0)+1}),((v=Object.entries(u).sort((f,h)=>h[1]-f[1])[0])==null?void 0:v[0])||"no"},[a]),$=()=>c.length===1&&c[0][1].length<=3?c[0][1].map(u=>e`<${G} key=${u.path} file=${u}/>`):c.map(([u,v])=>v.length===1?e`<div style=${{marginLeft:"var(--sp-5)"}}><${G} key=${v[0].path} file=${v[0]} dirPrefix=${u}/></div>`:e`<${hs} key=${u} dir=${u} files=${v}/>`);return e`<div class="cat-group" style=${r||""}>
+  </div>`}function ys({label:s,files:a,root:o,badge:m,style:r,startOpen:l}){const[i,n]=k(!!l),c=_(()=>rs(a,o),[a,o]),t=_(()=>a.reduce((u,v)=>u+v.tokens,0),[a]),d=_(()=>a.reduce((u,v)=>u+v.size,0),[a]),g=_(()=>{var v;const u={};return a.forEach(h=>{const f=(h.sent_to_llm||"no").toLowerCase();u[f]=(u[f]||0)+1}),((v=Object.entries(u).sort((h,f)=>f[1]-h[1])[0])==null?void 0:v[0])||"no"},[a]),$=()=>c.length===1&&c[0][1].length<=3?c[0][1].map(u=>e`<${G} key=${u.path} file=${u}/>`):c.map(([u,v])=>v.length===1?e`<div style=${{marginLeft:"var(--sp-5)"}}><${G} key=${v[0].path} file=${v[0]} dirPrefix=${u}/></div>`:e`<${fs} key=${u} dir=${u} files=${v}/>`);return e`<div class="cat-group" style=${r||""}>
     <button class=${"cat-head"+(i?" open":"")} onClick=${()=>n(!i)} aria-expanded=${i}>
       <span class="carrow" aria-hidden="true">\u25B6</span>
       <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${Z(g)};margin-right:var(--sp-1);flex-shrink:0" title="sent_to_llm: ${g}"></span>
-      <span class="cat-label" title=${s}>${O(s)}</span>
+      <span class="cat-label" title=${s}>${z(s)}</span>
       <span class="badge" style="flex-shrink:0">${m||a.length}</span>
       <span class="badge">${x(d)}</span>
       <span class="badge">${S(t)}t</span>
@@ -46,25 +46,25 @@ import{d as k,T as _,m as e,x as U,q as X,A as ss,y as es}from"./index-pAYO6Exu.
       <span class="badge">CPU ${C(m)}</span>
       <span class="badge">MEM ${x(o*1048576)}</span></h3>
     ${Object.entries(r).map(([i,n])=>{const c={};return n.forEach(t=>(c[t.name||"unknown"]=c[t.name||"unknown"]||[]).push(t)),e`<div style="margin-bottom:var(--sp-2)">
-        ${l?e`<div class="text-muted" style="font-size:var(--fs-base);text-transform:uppercase;letter-spacing:0.03em;margin-bottom:var(--sp-1)">${O(i)}</div>`:null}
+        ${l?e`<div class="text-muted" style="font-size:var(--fs-base);text-transform:uppercase;letter-spacing:0.03em;margin-bottom:var(--sp-1)">${z(i)}</div>`:null}
         ${Object.entries(c).map(([t,d])=>{const g=d.sort(($,u)=>(parseFloat(u.mem_mb)||0)-(parseFloat($.mem_mb)||0));return e`<div key=${t} style="margin-bottom:var(--sp-2)">
             <div class="text-muted" style="font-size:var(--fs-sm);margin-bottom:2px">
-              ${l?"":e`<span style="text-transform:uppercase;letter-spacing:0.03em">${O(i)}</span>${" · "}`}${O(t)} <span style="opacity:0.6">(${d.length})</span></div>
+              ${l?"":e`<span style="text-transform:uppercase;letter-spacing:0.03em">${z(i)}</span>${" · "}`}${z(t)} <span style="opacity:0.6">(${d.length})</span></div>
             <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(68px,1fr));gap:var(--sp-1)">
-              ${g.map($=>{const u=parseFloat($.cpu_pct)||0,v=parseFloat($.mem_mb)||0,f=Math.max(2,Math.min(u,100)),h=u>80?"var(--red)":u>50?"var(--orange)":u>5?"var(--green)":"var(--fg2)",z=$.anomalies&&$.anomalies.length,M=$.zombie_risk&&$.zombie_risk!=="none";return e`<div key=${$.pid}
+              ${g.map($=>{const u=parseFloat($.cpu_pct)||0,v=parseFloat($.mem_mb)||0,h=Math.max(2,Math.min(u,100)),f=u>80?"var(--red)":u>50?"var(--orange)":u>5?"var(--green)":"var(--fg2)",O=$.anomalies&&$.anomalies.length,M=$.zombie_risk&&$.zombie_risk!=="none";return e`<div key=${$.pid}
                   style="padding:3px var(--sp-2);background:var(--bg);border-radius:3px;
                     font-size:var(--fs-xs);line-height:1.3;
-                    ${z?"border-left:2px solid var(--red);":""}${M?"border-left:2px solid var(--orange);":""}"
+                    ${O?"border-left:2px solid var(--red);":""}${M?"border-left:2px solid var(--orange);":""}"
                   title=${$.cmdline||$.name}>
                   <div style="display:flex;align-items:center;gap:4px">
                     <div style="flex:1;height:4px;background:var(--bg2);border-radius:2px;overflow:hidden">
-                      <div style="width:${f}%;height:100%;background:${h};border-radius:2px"></div>
+                      <div style="width:${h}%;height:100%;background:${f};border-radius:2px"></div>
                     </div>
-                    <span style="color:${h};min-width:3ch;text-align:right">${C(u)}</span>
+                    <span style="color:${f};min-width:3ch;text-align:right">${C(u)}</span>
                   </div>
                   <div class="mono text-muted">${$.pid}</div>
                   <div>${x(v*1048576)}</div>
-                  ${z?e`<div class="text-red">\u26A0${$.anomalies.length}</div>`:null}
+                  ${O?e`<div class="text-red">\u26A0${$.anomalies.length}</div>`:null}
                 </div>`})}
             </div>
           </div>`})}
@@ -222,18 +222,19 @@ import{d as k,T as _,m as e,x as U,q as X,A as ss,y as es}from"./index-pAYO6Exu.
         <span class="msub mono">${(s.workspaces||[]).slice(0,2).join(" | ")||"no workspace reported"}</span>
       </div>
     </div>
-  </div>`}function H({tool:s,root:a}){var j,L,P,y,T,B,E,F;const[o,m]=k(!1),{snap:r,history:l}=U(V),i=_(()=>((r==null?void 0:r.tool_configs)||[]).find(p=>p.tool===s.tool),[r,s.tool]),n=_(()=>{var p;return(p=l==null?void 0:l.by_tool)==null?void 0:p[s.tool]},[l,s.tool]),c=ps[s.tool]||"var(--fg2)",t=s.files.reduce((p,b)=>p+b.tokens,0),d=s.processes.filter(p=>p.anomalies&&p.anomalies.length).length,g=_(()=>[...new Set(s.processes.flatMap(p=>(p.anomalies||[]).map(b=>fs(b,p).label)))],[s.processes]),$=Q(s.live),u=(((j=s.live)==null?void 0:j.outbound_rate_bps)||0)+(((L=s.live)==null?void 0:L.inbound_rate_bps)||0),v=s.processes.reduce((p,b)=>p+(parseFloat(b.cpu_pct)||0),0),f=s.processes.reduce((p,b)=>p+(parseFloat(b.mem_mb)||0),0),h=_(()=>Math.max(...s.processes.map(p=>parseFloat(p.mem_mb)||0),100),[s.processes]),z=(((y=(P=s.token_breakdown)==null?void 0:P.telemetry)==null?void 0:y.errors)||[]).length,M=_(()=>{const p={};return s.files.forEach(b=>{const R=b.kind||"other";(p[R]=p[R]||[]).push(b)}),Object.keys(p).sort((b,R)=>{const W=J.indexOf(b),K=J.indexOf(R);return(W<0?99:W)-(K<0?99:K)}).map(b=>({kind:b,files:p[b]}))},[s.files]),A="tcard"+(o?" open":"")+(d||z?" has-anomaly":"");return e`<div class=${A}>
+  </div>`}function H({tool:s,root:a}){var j,L,P,y,T,B,E,F;const[o,m]=k(!1),{snap:r,history:l}=U(V),i=_(()=>((r==null?void 0:r.tool_configs)||[]).find(p=>p.tool===s.tool),[r,s.tool]),n=_(()=>{var p;return(p=l==null?void 0:l.by_tool)==null?void 0:p[s.tool]},[l,s.tool]),c=ps[s.tool]||"var(--fg2)",t=s.files.reduce((p,b)=>p+b.tokens,0),d=s.processes.filter(p=>p.anomalies&&p.anomalies.length).length,g=_(()=>[...new Set(s.processes.flatMap(p=>(p.anomalies||[]).map(b=>hs(b,p).label)))],[s.processes]),$=Q(s.live),u=(((j=s.live)==null?void 0:j.outbound_rate_bps)||0)+(((L=s.live)==null?void 0:L.inbound_rate_bps)||0),v=s.processes.reduce((p,b)=>p+(parseFloat(b.cpu_pct)||0),0),h=s.processes.reduce((p,b)=>p+(parseFloat(b.mem_mb)||0),0),f=_(()=>Math.max(...s.processes.map(p=>parseFloat(p.mem_mb)||0),100),[s.processes]),O=(((y=(P=s.token_breakdown)==null?void 0:P.telemetry)==null?void 0:y.errors)||[]).length,M=_(()=>{const p={};return s.files.forEach(b=>{const R=b.kind||"other";(p[R]=p[R]||[]).push(b)}),Object.keys(p).sort((b,R)=>{const W=J.indexOf(b),K=J.indexOf(R);return(W<0?99:W)-(K<0?99:K)}).map(b=>({kind:b,files:p[b]}))},[s.files]),A="tcard"+(o?" open":"")+(d||O?" has-anomaly":"");return e`<div class=${A}>
     <button class="tcard-head" onClick=${()=>m(!o)} aria-expanded=${o}
       style="flex-wrap:wrap;row-gap:0.2rem">
       <span class="arrow" aria-hidden="true">\u25B6</span>
-      <h2><span style="margin-right:var(--sp-2)"><${ts} tool=${s.tool} size="1em"/></span>${O(s.label)}</h2>
+      <h2><span style="margin-right:var(--sp-2)"><${ts} tool=${s.tool} size="1em"/></span>${z(s.label)}</h2>
       ${ds(s,r)?e`<span class="badge badge--muted">Not available from this machine</span>`:e`<span class="badge" data-dp="procs.tool.files">${s.files.length} files</span>
-      <span class="badge" data-dp="procs.tool.tokens">${S(t)} tok</span>`}
-      ${s.processes.length>0&&e`<span class="badge" data-dp="procs.tool.process_count">${s.processes.length} proc ${C(v)} ${x(f*1048576)}</span>`}
+      <span class="badge" data-dp="procs.tool.tokens"
+        title="Estimated size of this tool's files at about 4 bytes per token. It includes files that are never sent to the model, such as transcripts and logs; it is not the context window.">${S(t)} file tok</span>`}
+      ${s.processes.length>0&&e`<span class="badge" data-dp="procs.tool.process_count">${s.processes.length} proc ${C(v)} ${x(h*1048576)}</span>`}
       ${s.mcp_servers.length>0&&e`<span class="badge" data-dp="procs.tool.mcp_server_count">${s.mcp_servers.length} MCP</span>`}
       ${d>0&&e`<span class="badge warn" data-dp="procs.tool.anomaly"
         title=${g.join(" · ")}>${d} ${d===1?"anomaly":"anomalies"}</span>`}
-      ${z>0&&e`<span class="badge" style="background:var(--red);color:var(--on-status)">${z} error${z>1?"s":""}</span>`}
+      ${O>0&&e`<span class="badge" style="background:var(--red);color:var(--on-status)">${O} error${O>1?"s":""}</span>`}
       ${s.live&&e`<span class="badge" style="background:var(--accent);color:var(--on-status)">${s.live.session_count||0} live \u00B7 ${D(u)}${$>0?" · "+S($)+"tok":""}</span>`}
       <div style="width:100%;display:flex;flex-wrap:wrap;gap:var(--sp-1);margin-top:0.1rem">
         ${M.map(({kind:p,files:b})=>e`<span class="text-muted" style="font-size:var(--fs-xs)">${p}:${b.length}</span>`)}
@@ -253,11 +254,11 @@ import{d as k,T as _,m as e,x as U,q as X,A as ss,y as es}from"./index-pAYO6Exu.
       <${ks} telemetry=${(B=s.token_breakdown)==null?void 0:B.telemetry}/>
       <${ws} live=${s.live}/>
       ${M.map(({kind:p,files:b})=>e`<${ys} key=${p} label=${p} files=${b} root=${a}/>`)}
-      <${_s} processes=${(F=(E=s.live)==null?void 0:E.processes)!=null&&F.length?s.live.processes:s.processes} maxMem=${h}/>
+      <${_s} processes=${(F=(E=s.live)==null?void 0:E.processes)!=null&&F.length?s.live.processes:s.processes} maxMem=${f}/>
       ${s.mcp_servers.length>0&&e`<div class="proc-section"><h3>MCP Servers</h3>
         ${s.mcp_servers.map(p=>e`<div key=${p.name||p.pid||""} class="fitem" style="cursor:default">
-          <span class="fpath text-green">${O(p.name)}</span>
-          <span class="fmeta">${O((p.config||{}).command||"")} ${((p.config||{}).args||[]).join(" ").slice(0,60)}</span>
+          <span class="fpath text-green">${z(p.name)}</span>
+          <span class="fmeta">${z((p.config||{}).command||"")} ${((p.config||{}).args||[]).join(" ").slice(0,60)}</span>
         </div>`)}</div>`}
     </div>`}
   </div>`}function Cs({groupKey:s,groupLabel:a,groupColor:o,tools:m,root:r}){const[l,i]=k(!0),n=m.reduce((t,d)=>t+d.files.length,0),c=m.reduce((t,d)=>t+d.files.reduce((g,$)=>g+$.tokens,0),0);return e`<div class="mb-md">
@@ -273,7 +274,7 @@ import{d as k,T as _,m as e,x as U,q as X,A as ss,y as es}from"./index-pAYO6Exu.
     ${l&&e`<div class="tool-grid" style="margin-top:var(--sp-3)">
       ${m.map(t=>e`<${H} key=${t.tool} tool=${t} root=${r}/>`)}
     </div>`}
-  </div>`}function Ts(){const{snap:s,enabledTools:a=null}=U(V),[o,m]=k("product"),r=t=>t.files.length||t.processes.length||t.mcp_servers.length||t.live,l=(t,d)=>{const g=t.files.length*2+t.processes.length+t.mcp_servers.length;return d.files.length*2+d.processes.length+d.mcp_servers.length-g||t.tool.localeCompare(d.tool)},i=_(()=>s?s.tools.filter(t=>!t.meta&&r(t)).sort(l):[],[s]),n=_(()=>s?s.tools.filter(t=>t.meta&&t.tool!=="project-env"&&r(t)).sort(l):[],[s]),c=_(()=>{if(o==="product"||!i.length)return null;const t={};return i.forEach(d=>{if(o==="vendor"){const g=d.vendor||"community",$=us[g]||g,u=ms[g]||"var(--fg2)";t[g]||(t[g]={label:$,color:u,tools:[]}),t[g].tools.push(d)}else{const g=(d.host||"any").split(",");for(const $ of g){const u=$.trim(),v=$s[u]||u,f="var(--fg2)";t[u]||(t[u]={label:v,color:f,tools:[]}),t[u].tools.push(d)}}}),Object.entries(t).sort((d,g)=>{const $=d[1].tools.reduce((v,f)=>v+f.files.length,0);return g[1].tools.reduce((v,f)=>v+f.files.length,0)-$})},[i,o]);return s?!i.length&&!n.length&&vs(a)?e`<${os} enabledTools=${a} snap=${s} what="tool resources"/>`:!i.length&&!n.length?e`<p class="empty-state">No AI tool resources found. Run aictl doctor.</p>`:e`<div>
+  </div>`}function Ts(){const{snap:s,enabledTools:a=null}=U(V),[o,m]=k("product"),r=t=>t.files.length||t.processes.length||t.mcp_servers.length||t.live,l=(t,d)=>{const g=t.files.length*2+t.processes.length+t.mcp_servers.length;return d.files.length*2+d.processes.length+d.mcp_servers.length-g||t.tool.localeCompare(d.tool)},i=_(()=>s?s.tools.filter(t=>!t.meta&&r(t)).sort(l):[],[s]),n=_(()=>s?s.tools.filter(t=>t.meta&&t.tool!=="project-env"&&r(t)).sort(l):[],[s]),c=_(()=>{if(o==="product"||!i.length)return null;const t={};return i.forEach(d=>{if(o==="vendor"){const g=d.vendor||"community",$=us[g]||g,u=ms[g]||"var(--fg2)";t[g]||(t[g]={label:$,color:u,tools:[]}),t[g].tools.push(d)}else{const g=(d.host||"any").split(",");for(const $ of g){const u=$.trim(),v=$s[u]||u,h="var(--fg2)";t[u]||(t[u]={label:v,color:h,tools:[]}),t[u].tools.push(d)}}}),Object.entries(t).sort((d,g)=>{const $=d[1].tools.reduce((v,h)=>v+h.files.length,0);return g[1].tools.reduce((v,h)=>v+h.files.length,0)-$})},[i,o]);return s?!i.length&&!n.length&&vs(a)?e`<${os} enabledTools=${a} snap=${s} what="tool resources"/>`:!i.length&&!n.length?e`<p class="empty-state">No AI tool resources found. Run aictl doctor.</p>`:e`<div>
     <div class="range-bar" style="margin-bottom:var(--sp-5)">
       <span class="range-label">Group by:</span>
       ${gs.map(t=>e`<button key=${t.id}

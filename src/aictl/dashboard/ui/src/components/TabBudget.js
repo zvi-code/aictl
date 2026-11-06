@@ -296,7 +296,7 @@ export default function TabBudget() {
             const tb = toolBreakdowns[t.tool];
             return html`<tr key=${t.tool}>
               <td style="white-space:nowrap"><span class="dot" style=${'background:'+(COLORS[t.tool]||'var(--fg2)')+';margin-right:var(--sp-2)'}></span>${toolLabel(t.tool, s)}</td>
-              <td><span class="badge" style="font-size:var(--fs-2xs)">${t.source}</span> <span class="text-muted">${fmtPct(t.confidence*100)}</span></td>
+              <td><span class="badge" style="font-size:var(--fs-2xs)">${t.source}</span> <span class="text-muted">${fmtPct(t.confidence*100)}</span>${t.as_of ? html` <span class="text-muted" data-testid="telemetry-as-of" title="This source is a cache; it was last computed on this date, so later usage is not in these totals.">as of ${t.as_of}</span>` : ''}</td>
               <td style="text-align:right" class="text-bold">${fmtK(t.input_tokens||0)}</td>
               <td style="text-align:right" class="text-bold">${fmtK(t.output_tokens||0)}</td>
               <td style="text-align:right" class="text-muted">${fmtK(t.cache_read_tokens||0)}</td>
@@ -323,6 +323,8 @@ export default function TabBudget() {
     <!-- By category -->
     ${catBreakdown.length>0 && html`<div class="budget-card budget-full">
       <h3 class="text-accent" style="margin-bottom:var(--sp-4);display:flex;justify-content:space-between;align-items:baseline;gap:var(--sp-4);flex-wrap:wrap">By Category <${TokenBarLegend}/></h3>
+      <p class="text-muted text-xs" style="margin-bottom:var(--sp-3)" data-testid="budget-category-basis">
+        Token figures estimate file size at about 4 bytes per token. The "Never" column holds files that are not sent to the model, such as transcripts.</p>
       <${DataTable}
         ariaLabel="Per-category tokens"
         rowKey="kind"

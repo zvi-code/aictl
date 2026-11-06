@@ -3,9 +3,13 @@ import { fmtK, fmtDurSec } from '../../utils.js';
 import * as api from '../../api.js';
 import { useAsyncResource } from '../../hooks/useAsyncResource.js';
 
+// The "Runs (30d)" figure and the averages cover every run of the window, so the
+// request is not cut to a page (it used to ask for 20 and call that the count).
+export const RUN_HISTORY_LIMIT = 1000;
+
 export default function RunHistoryPanel({project, tool}) {
   const { data: runs, loading, error } = useAsyncResource(
-    () => api.getSessionRuns(project, tool, 30, 20)
+    () => api.getSessionRuns(project, tool, 30, RUN_HISTORY_LIMIT)
       .then(data => (Array.isArray(data) ? data : [])),
     [project, tool],
     { enabled: !!(project && tool) },

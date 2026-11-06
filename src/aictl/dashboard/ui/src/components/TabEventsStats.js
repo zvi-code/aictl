@@ -5,6 +5,7 @@ import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS, VENDOR_LABELS, EVENT_COLORS, fmtK, fmtTok, fmtSz, fmtRate, fmtPct, esc, liveTokenTotal } from '../utils.js';
 import ChartCard from './ChartCard.js';
+import { liveMemMb } from '../selectors.js';
 import PanelState from './ui/PanelState.js';
 import { COST_ESTIMATE_NOTE, cloudOnly } from '../utils/tools.js';
 import CloudOnlyNotice from './ui/CloudOnlyNotice.js';
@@ -36,6 +37,14 @@ function detailPretty(detail) {
   try { return JSON.stringify(detail, null, 2); } catch { return String(detail); }
 }
 
+const EVENTS_LIMIT = 500;
+
+// "Events (N)" used to show the request limit as if it were the count.
+export function eventsHeading(shown, total, limit = EVENTS_LIMIT) {
+  if (total != null) return total > shown ? `Events (newest ${shown} of ${total})` : `Events (${total})`;
+  return shown >= limit ? `Events (newest ${shown}; total not known)` : `Events (${shown})`;
+}
+
 export default function TabEventsStats() {
   const {snap: s, globalRange, enabledTools = null} = useContext(SnapContext);
   const [pickedTool, setTool] = useState(null);
@@ -57,13 +66,18 @@ export default function TabEventsStats() {
   );
 
   const [eventsError, setEventsError] = useState(null);
+  const [eventsTotal, setEventsTotal] = useState(null);
   // Fetch events when tool or global range changes
   useEffect(() => {
     if (!selectedTool || !globalRange) return;
     setExpandedEvents(new Set());
-    api.getEvents({ tool: selectedTool, since: globalRange.since, limit: 500, until: globalRange.until })
+    setEventsTotal(null);
+    api.getEvents({ tool: selectedTool, since: globalRange.since, limit: EVENTS_LIMIT, until: globalRange.until })
       .then(d => { setEvents(d); setEventsError(null); })
       .catch(e => { setEvents([]); setEventsError(e); });
+    api.getEventsCount({ tool: selectedTool, since: globalRange.since, until: globalRange.until })
+      .then(d => setEventsTotal(typeof d?.count === 'number' ? d.count : null))
+      .catch(() => setEventsTotal(null));
   }, [selectedTool, globalRange]);
 
   const toggleEvent = (key) => {
@@ -124,14 +138,14 @@ export default function TabEventsStats() {
           <div class="es-charts">
             <${ChartCard} label="CPU %" value=${tool?.live?.cpu_percent != null ? fmtPct(tool.live.cpu_percent || 0) : '-'}
               data=${[toolHistory.ts, toolHistory.cpu]} chartColor=${c} smooth />
-            <${ChartCard} label="Memory (MB)" value=${tool?.live?.mem_mb != null ? fmtSz((tool.live.mem_mb || 0) * 1048576) : '-'}
+            <${ChartCard} label="Memory (MB)" value=${liveMemMb(tool?.live) != null ? fmtSz(liveMemMb(tool.live) * 1048576) : '-'}
               data=${[toolHistory.ts, toolHistory.mem_mb]} chartColor="var(--green)" smooth />
-            <${ChartCard} label="Context (tok)" value=${fmtTok(toolHistory.tokens[toolHistory.tokens.length - 1] || 0)}
-              data=${[toolHistory.ts, toolHistory.tokens]} chartColor="var(--accent)" />
-            <${ChartCard} label="Network (B/s)"
+            ${Array.isArray(toolHistory.tokens) && html`<${ChartCard} label="Context (tok)" value=${fmtTok(toolHistory.tokens[toolHistory.tokens.length - 1] || 0)}
+              data=${[toolHistory.ts, toolHistory.tokens]} chartColor="var(--accent)" />`}
+            ${(live || Array.isArray(toolHistory.traffic)) && html`<${ChartCard} label="Network (B/s)"
               value=${fmtRate(live ? (live.outbound_rate_bps||0)+(live.inbound_rate_bps||0) : (toolHistory.traffic[toolHistory.traffic.length-1]||0))}
               valColor=${live ? 'var(--orange)' : undefined}
-              data=${[toolHistory.ts, toolHistory.traffic]} chartColor="var(--orange)" />
+              data=${Array.isArray(toolHistory.traffic) ? [toolHistory.ts, toolHistory.traffic] : null} chartColor="var(--orange)" />`}
           </div>
         </div>` : html`<div class="es-section">
           <div class="es-section-title">Time Series</div>
@@ -143,6 +157,7 @@ export default function TabEventsStats() {
           <div class="es-section-title">Telemetry
             <span class="badge" style="margin-left:var(--sp-3)">${telem.source}</span>
             <span class="badge">${fmtPct(telem.confidence * 100)}</span>
+            ${telem.as_of ? html`<span class="badge" data-testid="telemetry-as-of" title="This source is a cache; it was last computed on this date, so later usage is not in these totals.">as of ${telem.as_of}</span>` : ''}
           </div>
           <div class="es-kv">
             <div class="es-kv-card"><div class="label">Input Tokens</div><div class="value">${fmtTok(telem.input_tokens)}</div></div>
@@ -170,14 +185,14 @@ export default function TabEventsStats() {
             <div class="es-kv-card"><div class="label">Sessions</div><div class="value">${live.session_count || 0}</div></div>
             <div class="es-kv-card"><div class="label">PIDs</div><div class="value">${live.pid_count || 0}</div></div>
             <div class="es-kv-card"><div class="label">CPU</div><div class="value">${fmtPct(live.cpu_percent || 0)}</div></div>
-            <div class="es-kv-card"><div class="label">Memory</div><div class="value">${fmtSz((live.mem_mb || 0) * 1048576)}</div></div>
+            <div class="es-kv-card"><div class="label">Memory</div><div class="value">${liveMemMb(live) != null ? fmtSz(liveMemMb(live) * 1048576) : 'n/a'}</div></div>
             <div class="es-kv-card"><div class="label">\u2191 Out</div><div class="value">${fmtRate(live.outbound_rate_bps || 0)}</div></div>
             <div class="es-kv-card"><div class="label">\u2193 In</div><div class="value">${fmtRate(live.inbound_rate_bps || 0)}</div></div>
           </div>
         </div>` : ''}
 
         <div class="es-section">
-          <div class="es-section-title">Events (${events.length})</div>
+          <div class="es-section-title">${eventsHeading(events.length, eventsTotal)}</div>
           ${events.length ? html`<div class="es-feed">
             ${events.map((e, i) => {
               const color = EVENT_COLORS[e.kind] || 'var(--fg2)';

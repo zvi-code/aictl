@@ -59,7 +59,7 @@ export default function ToolCallsPanel({sessionId}) {
         </div>`;
       })}
     </div>
-    <div class="text-xs text-muted" style="margin-bottom:var(--sp-2)">Timeline</div>
+    <div class="text-xs text-muted" style="margin-bottom:var(--sp-2)">Timeline (newest ${Math.min(60, calls.length)} of ${total})</div>
     <div class="mono text-xs" style="max-height:12rem;overflow-y:auto">
       ${calls.slice(0, 60).map((c, i) => {
         const t = c.ts ? fmtHHMMSS(c.ts) : '—';

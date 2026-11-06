@@ -1,4 +1,4 @@
-import{x as U,m as n,T as w}from"./index-pAYO6Exu.js";import{S as V,u as X,P as q,p as G,s as J,M as Q,a as Y,C as j}from"./app-CpR1BSrN.js";import{ar as Z,as as tt,at as et,au as at,af as st,r as s,z as M,X as ot,C as nt,U as lt,v as rt,L as it,O as dt}from"./useSse-DQLBdxds.js";import{D as ct}from"./DataTable-C8ffSU8_.js";import{i as pt,c as ht}from"./models-DHnW0Za4.js";const gt="The server answered for a different tool selection. Restart the aictl server so it applies the tool filter.",f=["var(--green)","var(--model-7)","var(--orange)","var(--red)","var(--model-5)","var(--yellow)","var(--accent)","var(--model-8)"];function z({always:a,onDemand:y,conditional:p,never:h,total:d}){if(!d)return null;const v=$=>($/d*100).toFixed(1)+"%";return n`<div class="overflow-hidden" style="display:flex;height:10px;border-radius:5px;background:var(--border)">
+import{x as U,m as n,T as w}from"./index-Dnzi7PMf.js";import{S as V,u as X,P as q,p as G,s as J,M as Q,a as Y,C as j}from"./app-DvY9Tbml.js";import{as as Z,at as tt,au as et,av as at,af as st,r as s,z as M,X as ot,C as nt,U as lt,v as rt,L as it,O as dt}from"./useSse-NYtt3cbk.js";import{D as ct}from"./DataTable-BNtqecHZ.js";import{i as pt,c as ht}from"./models-DHnW0Za4.js";const gt="The server answered for a different tool selection. Restart the aictl server so it applies the tool filter.",f=["var(--green)","var(--model-7)","var(--orange)","var(--red)","var(--model-5)","var(--yellow)","var(--accent)","var(--model-8)"];function z({always:a,onDemand:y,conditional:p,never:h,total:d}){if(!d)return null;const v=$=>($/d*100).toFixed(1)+"%";return n`<div class="overflow-hidden" style="display:flex;height:10px;border-radius:5px;background:var(--border)">
     ${a>0&&n`<div style="width:${v(a)};height:100%;background:var(--green)" title="Always loaded: ${s(a)}"></div>`}
     ${y>0&&n`<div style="width:${v(y)};height:100%;background:var(--yellow)" title="On-demand: ${s(y)}"></div>`}
     ${p>0&&n`<div style="width:${v(p)};height:100%;background:var(--orange)" title="Conditional: ${s(p)}"></div>`}
@@ -107,7 +107,7 @@ import{x as U,m as n,T as w}from"./index-pAYO6Exu.js";import{S as V,u as X,P as 
           </tr></thead>
           <tbody>${m.map(t=>{const e=A[t.tool];return n`<tr key=${t.tool}>
               <td style="white-space:nowrap"><span class="dot" style=${"background:"+(nt[t.tool]||"var(--fg2)")+";margin-right:var(--sp-2)"}></span>${lt(t.tool,a)}</td>
-              <td><span class="badge" style="font-size:var(--fs-2xs)">${t.source}</span> <span class="text-muted">${M(t.confidence*100)}</span></td>
+              <td><span class="badge" style="font-size:var(--fs-2xs)">${t.source}</span> <span class="text-muted">${M(t.confidence*100)}</span>${t.as_of?n` <span class="text-muted" data-testid="telemetry-as-of" title="This source is a cache; it was last computed on this date, so later usage is not in these totals.">as of ${t.as_of}</span>`:""}</td>
               <td style="text-align:right" class="text-bold">${s(t.input_tokens||0)}</td>
               <td style="text-align:right" class="text-bold">${s(t.output_tokens||0)}</td>
               <td style="text-align:right" class="text-muted">${s(t.cache_read_tokens||0)}</td>
@@ -134,6 +134,8 @@ import{x as U,m as n,T as w}from"./index-pAYO6Exu.js";import{S as V,u as X,P as 
     <!-- By category -->
     ${D.length>0&&n`<div class="budget-card budget-full">
       <h3 class="text-accent" style="margin-bottom:var(--sp-4);display:flex;justify-content:space-between;align-items:baseline;gap:var(--sp-4);flex-wrap:wrap">By Category <${K}/></h3>
+      <p class="text-muted text-xs" style="margin-bottom:var(--sp-3)" data-testid="budget-category-basis">
+        Token figures estimate file size at about 4 bytes per token. The "Never" column holds files that are not sent to the model, such as transcripts.</p>
       <${ct}
         ariaLabel="Per-category tokens"
         rowKey="kind"

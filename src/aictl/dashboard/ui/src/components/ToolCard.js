@@ -45,7 +45,8 @@ export default function ToolCard({tool: t, root}) {
       ${cloudOnly(t, snapCtx)
         ? html`<span class="badge badge--muted">Not available from this machine</span>`
         : html`<span class="badge" data-dp="procs.tool.files">${t.files.length} files</span>
-      <span class="badge" data-dp="procs.tool.tokens">${fmtK(tok)} tok</span>`}
+      <span class="badge" data-dp="procs.tool.tokens"
+        title="Estimated size of this tool's files at about 4 bytes per token. It includes files that are never sent to the model, such as transcripts and logs; it is not the context window.">${fmtK(tok)} file tok</span>`}
       ${t.processes.length>0 && html`<span class="badge" data-dp="procs.tool.process_count">${t.processes.length} proc ${fmtPct(totalCpu)} ${fmtSz(totalMem*1048576)}</span>`}
       ${t.mcp_servers.length>0 && html`<span class="badge" data-dp="procs.tool.mcp_server_count">${t.mcp_servers.length} MCP</span>`}
       ${anom>0 && html`<span class="badge warn" data-dp="procs.tool.anomaly"

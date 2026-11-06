@@ -191,7 +191,8 @@ class PsutilProcessCollector(BaseCollector):
                 match = classify_process(proc)
                 if match.tool:
                     ptags["aictl.tool"] = match.tool
-                self.sink_emit_cpu(M("process.cpu.utilization"), cpu_pct / 100, ptags)
+                if cpu_pct is not None:
+                    self.sink_emit_cpu(M("process.cpu.utilization"), cpu_pct / 100, ptags)
                 self.sink_emit_memory(M("process.memory.usage"), float(mem_rss or 0), ptags)
                 self.sink_emit_if_changed(M("process.thread.count"), float(sample["child_count"]), ptags)
 
@@ -274,6 +275,7 @@ class PsutilProcessCollector(BaseCollector):
         for pid in tracked:
             base = all_processes[pid]
             handle = self._handles.get(pid)
+            primed_now = handle is None
             if handle is None:
                 try:
                     handle = psutil_module.Process(pid)
@@ -283,12 +285,20 @@ class PsutilProcessCollector(BaseCollector):
                     continue
 
             cwd = None
-            cpu_percent = 0.0
+            cpu_percent: float | None = 0.0
             memory_rss = 0
             child_count = len(children.get(pid, set()))
             try:
                 with handle.oneshot():
                     cpu_percent = float(handle.cpu_percent(None))
+                    if primed_now:
+                        # psutil measures CPU between two calls. Right after the priming
+                        # call the interval is a few milliseconds, so this value is noise
+                        # (it can exceed what the cores can give). It is not known yet.
+                        cpu_percent = None
+                    else:
+                        # One process cannot use more than all cores.
+                        cpu_percent = min(cpu_percent, 100.0 * (os.cpu_count() or 1))
                     memory_rss = int(handle.memory_info().rss)
                     try:
                         cwd = str(handle.cwd())

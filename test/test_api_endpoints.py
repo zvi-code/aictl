@@ -611,6 +611,14 @@ class TestSessionDetailAPI:
         assert bash["is_error"] is True
         assert bash["result_summary"] == "exit 1"
 
+    def test_session_tool_calls_totals_are_not_the_page(self, server):
+        data = _get_json(f"{server}/api/session-tool-calls?session_id=sess-detail&limit=1")
+        assert len(data["calls"]) == 1  # the page is cut ...
+        assert data["returned"] == 1
+        assert data["total"] == 2  # ... the totals are not
+        assert data["errors"] == 1
+        assert data["by_tool"] == {"Read": 1, "Bash": 1}
+
     def test_session_tool_calls_requires_session_id(self, server):
         assert _get_status(f"{server}/api/session-tool-calls") == 400
 
@@ -1365,6 +1373,14 @@ class TestToolInvocationHookDedup:
 
 
 class TestEventsAPI:
+    def test_count_is_not_limited_by_the_page(self, server):
+        since = int(time.time()) - 3600
+        page = _get_json(f"{server}/api/events?since={since}&limit=1")
+        count = _get_json(f"{server}/api/events/count?since={since}")["count"]
+        assert len(page) == 1
+        assert count == len(_get_json(f"{server}/api/events?since={since}&limit=2000"))
+        assert count > 1
+
     def test_query_all(self, server):
         since = int(time.time()) - 3600
         data = _get_json(f"{server}/api/events?since={since}")

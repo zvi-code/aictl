@@ -194,13 +194,52 @@ def _hook_event_counts(db, cutoff: float) -> dict[str, Any]:
     return out
 
 
-def _post_tool_use_usage(db, cutoff: float) -> tuple[dict[str, Any], dict[str, Any]]:
-    """One scan of PostToolUse hooks → ``(skill_usage, tool_calls)``.
+def _store_tool_usage(db, cutoff: float) -> tuple[dict[str, dict[str, int]], dict[str, dict[str, int]]]:
+    """Counts of stored tool calls and skill uses since *cutoff*.
 
-    Skill invocations and general tool calls used to be two full window
-    scans with five ``json_extract`` calls each, differing only by
-    ``tool_name = 'Skill'`` vs ``!= 'Skill'``. One GROUP BY and a split in
-    Python halves the JSON decoding on every dashboard poll.
+    Returns ``(skills, tool_calls)``, each ``{tool: {name: count}}``. These come
+    from ``tool_invocations`` and ``skill_uses``, which every source writes
+    (hooks, OTel and transcripts), so an agent that never fires an aictl hook is
+    still counted. A row that stored no tool takes the tool of its session.
+    """
+    from ..storage import _VERIFY_SESSION_ID, UNATTRIBUTED_IDS, _effective_tool_sql, _placeholders, _session_join
+
+    skills: dict[str, dict[str, int]] = {}
+    calls: dict[str, dict[str, int]] = {}
+    conn = db._conn()  # noqa: SLF001 - read-only dashboard aggregation
+    unattributed = list(UNATTRIBUTED_IDS)
+    for table, name_col, target in (("tool_invocations", "tool_name", calls), ("skill_uses", "name", skills)):
+        rows = conn.execute(
+            f"SELECT {_effective_tool_sql('t', 's')} AS etool, COALESCE(NULLIF(t.{name_col}, ''), 'unknown') AS ename,"
+            f" COUNT(*) FROM {table} t{_session_join('t', 's')}"
+            f" WHERE t.ts >= ? AND t.session_id != ? GROUP BY etool, ename",
+            [*unattributed, cutoff, _VERIFY_SESSION_ID],
+        ).fetchall()
+        for tool, name, count in rows:
+            if name == "Skill" and table == "tool_invocations":
+                continue  # counted as a skill use below, not as a general tool call
+            bucket = target.setdefault(str(tool or "unknown"), {})
+            bucket[str(name)] = bucket.get(str(name), 0) + int(count or 0)
+    return skills, calls
+
+
+def _merge_max(into: dict[str, dict[str, int]], other: dict[str, dict[str, int]]) -> None:
+    """Merge ``{tool: {name: count}}`` maps keeping the larger count per key.
+
+    The same call can sit in both the hook events and the stored facts, so the
+    counts are never added.
+    """
+    for tool, names in other.items():
+        bucket = into.setdefault(tool, {})
+        for name, count in names.items():
+            bucket[name] = max(bucket.get(name, 0), count)
+
+
+def _post_tool_use_usage(db, cutoff: float) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Skill uses and general tool calls in the window → ``(skill_usage, tool_calls)``.
+
+    Read from the stored facts (``tool_invocations``, ``skill_uses``) and from the
+    ``hook:PostToolUse`` events, keeping the larger count per tool and name.
     """
     skills: dict[str, Any] = {"total_calls_24h": 0, "by_skill": [], "by_tool": {}, "by_tool_skill": {}}
     tools: dict[str, Any] = {"total_calls_24h": 0, "by_name": [], "by_tool": {}, "by_tool_name": {}}
@@ -228,24 +267,36 @@ def _post_tool_use_usage(db, cutoff: float) -> tuple[dict[str, Any], dict[str, A
         """,
         (cutoff,),
     ).fetchall()
-    by_skill: dict[str, int] = {}
-    by_name: dict[str, int] = {}
+    tool_skill: dict[str, dict[str, int]] = {}
+    tool_name: dict[str, dict[str, int]] = {}
     for tool, name, skill, count in rows:
         count = int(count or 0)
         tool = str(tool)
         name = str(name or "unknown")
         if name == "Skill":
             skill = str(skill or "unknown")
+            bucket = tool_skill.setdefault(tool, {})
+            bucket[skill] = bucket.get(skill, 0) + count
+        else:
+            bucket = tool_name.setdefault(tool, {})
+            bucket[name] = bucket.get(name, 0) + count
+    store_skills, store_calls = _store_tool_usage(db, cutoff)
+    _merge_max(tool_skill, store_skills)
+    _merge_max(tool_name, store_calls)
+
+    by_skill: dict[str, int] = {}
+    by_name: dict[str, int] = {}
+    for tool, names in tool_skill.items():
+        skills["by_tool_skill"][tool] = dict(names)
+        for skill, count in names.items():
             by_skill[skill] = by_skill.get(skill, 0) + count
             skills["by_tool"][tool] = skills["by_tool"].get(tool, 0) + count
-            per_tool_skill = skills["by_tool_skill"].setdefault(tool, {})
-            per_tool_skill[skill] = per_tool_skill.get(skill, 0) + count
             skills["total_calls_24h"] += count
-        else:
+    for tool, names in tool_name.items():
+        tools["by_tool_name"][tool] = dict(names)
+        for name, count in names.items():
             by_name[name] = by_name.get(name, 0) + count
             tools["by_tool"][tool] = tools["by_tool"].get(tool, 0) + count
-            per_tool = tools["by_tool_name"].setdefault(tool, {})
-            per_tool[name] = per_tool.get(name, 0) + count
             tools["total_calls_24h"] += count
     skills["by_skill"] = [
         {"skill": k, "count": v} for k, v in sorted(by_skill.items(), key=lambda item: (-item[1], item[0]))
@@ -260,32 +311,29 @@ def _subagent_usage(db, cutoff: float) -> dict[str, Any]:
     if db is None:
         return {"starts_24h": 0, "stops_24h": 0, "by_tool": {}, "recent": []}
     conn = db._conn()  # noqa: SLF001 - read-only dashboard aggregation
-    rows = conn.execute(
-        """
-        SELECT ts, tool, kind,
-               COALESCE(json_extract(detail, '$.agent_id'), json_extract(detail, '$.subagent_id'), '') AS agent_id,
-               COALESCE(json_extract(detail, '$.agent_type'), '') AS agent_type
-          FROM events
+    where = """
          WHERE ts >= ?
            AND COALESCE(json_extract(detail, '$._aictl_verify'), 0) = 0
            AND (kind IN ('hook:SubagentStart', 'hook:SubagentStop') OR lower(kind) LIKE '%subagent%')
+    """
+    by_tool: dict[str, dict[str, int]] = {}
+    for tool, kind, count in conn.execute(f"SELECT tool, kind, COUNT(*) FROM events{where} GROUP BY tool, kind", (cutoff,)):
+        bucket = by_tool.setdefault(str(tool), {"starts": 0, "stops": 0})
+        bucket["stops" if "stop" in str(kind).lower() else "starts"] += int(count or 0)
+    rows = conn.execute(
+        f"""
+        SELECT ts, tool, kind,
+               COALESCE(json_extract(detail, '$.agent_id'), json_extract(detail, '$.subagent_id'), '') AS agent_id,
+               COALESCE(json_extract(detail, '$.agent_type'), '') AS agent_type
+          FROM events{where}
          ORDER BY ts DESC
-         LIMIT 50
+         LIMIT 10
         """,
         (cutoff,),
     ).fetchall()
-    by_tool: dict[str, dict[str, int]] = {}
-    starts = stops = 0
     recent = []
     for ts, tool, kind, agent_id, agent_type in rows:
         event = str(kind)[5:] if str(kind).startswith("hook:") else str(kind)
-        bucket = by_tool.setdefault(str(tool), {"starts": 0, "stops": 0})
-        if "stop" in event.lower():
-            stops += 1
-            bucket["stops"] += 1
-        else:
-            starts += 1
-            bucket["starts"] += 1
         recent.append(
             {
                 "ts": float(ts),
@@ -295,6 +343,18 @@ def _subagent_usage(db, cutoff: float) -> dict[str, Any]:
                 "agent_type": str(agent_type or ""),
             }
         )
+    # Stored agent rows (transcripts, OTel and hooks alike): per tool, keep the
+    # larger of the hook-event count and the stored count.
+    for tool, started, stopped in conn.execute(
+        "SELECT tool, SUM(started_at >= ?), SUM(ended_at IS NOT NULL AND ended_at >= ?)"
+        " FROM agents WHERE is_sidechain = 1 AND (started_at >= ? OR COALESCE(ended_at, 0) >= ?) GROUP BY tool",
+        (cutoff, cutoff, cutoff, cutoff),
+    ).fetchall():
+        bucket = by_tool.setdefault(str(tool or "unknown"), {"starts": 0, "stops": 0})
+        bucket["starts"] = max(bucket["starts"], int(started or 0))
+        bucket["stops"] = max(bucket["stops"], int(stopped or 0))
+    starts = sum(b["starts"] for b in by_tool.values())
+    stops = sum(b["stops"] for b in by_tool.values())
     return {"starts_24h": starts, "stops_24h": stops, "by_tool": by_tool, "recent": recent[:10]}
 
 

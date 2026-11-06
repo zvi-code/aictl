@@ -18,6 +18,7 @@ vi.mock('../src/api.js', () => {
     getSnapshot: () => Promise.resolve(empty),
     getHistory:  () => Promise.resolve({ timestamps: [], series: {} }),
     getEvents:   () => Promise.resolve([]),
+    getEventsCount: () => Promise.resolve({ count: 0 }),
     getOtelStatus: () => Promise.resolve({ active: false }),
     streamUrl:   () => 'about:blank',
     getFile:     () => Promise.resolve({ content: '' }),
