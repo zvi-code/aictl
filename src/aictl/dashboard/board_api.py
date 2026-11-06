@@ -849,7 +849,12 @@ class _Board:
             (payload,),
         ):
             agent = dict(zip(("agent_id", "session_id", "task", "model", "started_at", "ended_at", "completed"), row))
-            if agent["agent_id"] != agent["session_id"]:
+            # A long session stays in view, but a subagent that ran outside this time does not.
+            last = agent["ended_at"] or (agent["started_at"] if agent["completed"] else None)
+            ran_outside = self.only_session is None and (
+                (last is not None and last < self.f.since) or (agent["started_at"] or 0.0) > self.f.until
+            )
+            if agent["agent_id"] != agent["session_id"] and not ran_outside:
                 self.sub_rows[agent["agent_id"]] = agent
 
     def _resolve_sessions(self) -> None:
