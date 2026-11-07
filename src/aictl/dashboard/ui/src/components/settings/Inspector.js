@@ -1,5 +1,6 @@
 // The inspector: what the selected setting, file or finding is, where it is
 // set, what wins and what can be done with it.
+import { useState } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { fmtAgo, fmtSz } from '../../utils.js';
 import { baseName } from '../../utils/paths.js';
@@ -11,6 +12,8 @@ import { Value, ScopeChip, LockGlyph } from './Value.js';
 import { ToolChip, SetIn, UndocumentedChip } from './parts.js';
 import { AgentModel, AgentTools } from './Agents.js';
 import { whereText } from './FindingsView.js';
+import { NOT_SUPPORTED, permissionEdit } from './permissions.js';
+import PermissionsEditor from './PermissionsEditor.js';
 
 function Sec({ title, children }) {
   return html`<section class="st-insp__sec"><h4 class="st-insp__h">${title}</h4>${children}</section>`;
@@ -37,13 +40,11 @@ function History({ w, path }) {
   return html`<div class="st-hint" data-testid="st-history">${lines.length ? lines.join(' · ') + ' · no aictl change recorded' : 'No aictl change recorded'}</div>`;
 }
 
-const PHASE2 = 'phase 2: diff preview, backup, change log';
-
 /** The hint next to the disabled change button: the locking layer when the winner is locked. */
 function changeHint(row, scopes) {
   const win = row.chain?.[row.wins];
   if (row.locked || isLockedEntry(win, scopes)) return 'Locked by ' + scopeLabel(row.locked ? row.scope : win.scope, scopes);
-  return PHASE2;
+  return NOT_SUPPORTED;
 }
 
 /** For a knob no file sets: its default and the file a person would set it in. */
@@ -54,7 +55,6 @@ export function unsetText(row, scopes) {
 }
 
 function RowInspector({ w, row }) {
-  if (isAgentRow(row)) return html`<${AgentInspector} w=${w} row=${row}/>`;
   const scopes = w.scopesOf(row.tool);
   const others = w.entries
     .filter(e => e.id !== row.tool && row.source && (e.files.some(f => samePath(f, row.source))))
@@ -66,6 +66,8 @@ function RowInspector({ w, row }) {
   }
   const found = findingsAt(w, row.source);
   const { chain, wins } = row;
+  const edit = permissionEdit(row, scopes);
+  const [editing, setEditing] = useState(false);
   return html`<div class="st-insp__body" data-testid="st-inspector-row">
     <h3 class="st-insp__title">${row.label}</h3>
     <div class="st-insp__key st-mono">${row.key}</div>
@@ -101,10 +103,16 @@ function RowInspector({ w, row }) {
         ${found.length > 0 && html`<button type="button" class="st-btn" onClick=${() => showFinding(w, found[0])}>Show finding</button>`}
       </div>
       <div class="st-actions">
-        <button type="button" class="st-btn st-btn--primary" disabled>Change value…</button>
-        <span class="st-hint" data-testid="st-change-hint">${changeHint(row, scopes)}</span>
+        <button type="button" class="st-btn st-btn--primary" disabled=${!edit.ok || editing}
+          aria-expanded=${edit.ok ? (editing ? 'true' : 'false') : undefined}
+          onClick=${() => setEditing(true)}>Change value…</button>
+        <span class="st-hint" data-testid="st-change-hint">${edit.ok
+          ? `Edits ${tildePath(edit.path) || 'the ' + edit.label + ' file'} (${edit.label})`
+          : edit.hint}</span>
       </div>
     </${Sec}>
+    ${editing && html`<${PermissionsEditor} tool=${row.tool} target=${edit} refresh=${w.refresh}
+      onClose=${() => setEditing(false)}/>`}
   </div>`;
 }
 
@@ -236,7 +244,11 @@ function FindingInspector({ w, f }) {
 export default function Inspector({ w }) {
   const { view } = w.st;
   let body = null;
-  if ((view === 'tool' || view === 'topic') && w.selected) body = html`<${RowInspector} w=${w} row=${w.selected}/>`;
+  if ((view === 'tool' || view === 'topic') && w.selected) {
+    body = isAgentRow(w.selected)
+      ? html`<${AgentInspector} key=${w.selected.uid} w=${w} row=${w.selected}/>`
+      : html`<${RowInspector} key=${w.selected.uid} w=${w} row=${w.selected}/>`;
+  }
   else if (view === 'files' && w.selectedFile) body = html`<${FileInspector} w=${w} file=${w.selectedFile}/>`;
   else if (view === 'findings' && w.selectedFinding) body = html`<${FindingInspector} w=${w} f=${w.selectedFinding}/>`;
   return html`<aside class=${'st-insp' + (w.drawer ? ' is-open' : '')} aria-label="Inspector">

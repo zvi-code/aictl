@@ -5,7 +5,8 @@
 // The data comes in a `source` prop, so the board and the older Configuration
 // screen can each give it their own records, file opener and audit:
 //   { toolConfigs, tools, monitor, root, enabledTools, toolName(id), openFile(path, line),
-//     recentFiles, findings: { audit, loading, error, scan, rescan } }
+//     recentFiles, findings: { audit, loading, error, scan, rescan },
+//     refresh() (reads the settings again after an edit), hooks (GET /api/hooks-status) }
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { getSettingsFiles } from '../../api.js';
@@ -87,7 +88,7 @@ export function auditState(findings) {
 }
 
 export default function SettingsWorkspace({ source = {}, note = '' }) {
-  const { toolConfigs, tools, monitor, root, enabledTools = null, recentFiles, toolName, openFile, findings: sourceFindings } = source;
+  const { toolConfigs, tools, monitor, root, enabledTools = null, recentFiles, toolName, openFile, findings: sourceFindings, refresh, hooks } = source;
   const snap = useMemo(() => snapOf({ toolConfigs, tools, monitor, root, enabledTools }), [toolConfigs, tools, monitor, root, enabledTools]);
   const [st, set] = useSettingsState();
   const [q, setQ] = useState('');
@@ -161,7 +162,7 @@ export default function SettingsWorkspace({ source = {}, note = '' }) {
     st, set, select, q, pass, passAll, passTool, showUnset: st.unset, scopesOf, managedAbsent, entries, aictl, toolId, files, filesStatus: filesRes.status,
     findings, audit: scoped, auditStatus: audit.status, auditError: audit.error, scan: audit.scan, rescan,
     selected, selectedFile, selectedFinding, openAt, labelOf: labelFor, mtimeOf, recentFiles,
-    drawer, closeDrawer,
+    drawer, closeDrawer, refresh, hooks,
   };
 
   // The unset toggle and count appear once the server says, per row, whether a file sets it.

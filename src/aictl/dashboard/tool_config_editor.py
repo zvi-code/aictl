@@ -20,10 +20,23 @@ class ToolConfigEditError(Exception):
         self.message = message
 
 
-def _settings_path(root: Path, tool: str) -> Path:
+# Editable files per scope, relative to the project root.
+_CLAUDE_SCOPE_FILES: dict[str, tuple[str, str]] = {
+    "project": (".claude", "settings.json"),
+    "project-local": (".claude", "settings.local.json"),
+}
+
+PERMISSION_BUCKETS = ("allow", "deny", "ask")
+
+
+def _settings_path(root: Path, tool: str, scope: str | None = None) -> Path:
     if tool != "claude-code":
         raise ToolConfigEditError(404, f"Tool config editing is not supported for {tool}")
-    return root / ".claude" / "settings.json"
+    scope = scope or "project"
+    if scope not in _CLAUDE_SCOPE_FILES:
+        raise ToolConfigEditError(400, f"Scope {scope!r} cannot be edited; use one of: {', '.join(_CLAUDE_SCOPE_FILES)}")
+    folder, name = _CLAUDE_SCOPE_FILES[scope]
+    return root / folder / name
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
@@ -54,24 +67,21 @@ def _permissions_from_config(data: dict[str, Any]) -> dict[str, list[str]]:
         permissions = {}
     if not isinstance(permissions, dict):
         raise ToolConfigEditError(409, "permissions must be a JSON object")
-    return {
-        "allow": _string_list(permissions.get("allow"), "permissions.allow"),
-        "deny": _string_list(permissions.get("deny"), "permissions.deny"),
-    }
+    return {b: _string_list(permissions.get(b), f"permissions.{b}") for b in PERMISSION_BUCKETS}
 
 
-def load_editable_tool_config(root: Path, tool: str) -> dict[str, Any]:
-    """Return the editable project-scoped config payload for a tool."""
-    path = _settings_path(root, tool)
+def load_editable_tool_config(root: Path, tool: str, scope: str | None = None) -> dict[str, Any]:
+    """Return the editable config payload for a tool at a scope (``project`` or ``project-local``)."""
+    path = _settings_path(root, tool, scope)
     data = _read_json_object(path)
     stat = path.stat() if path.exists() else None
     return {
         "tool": tool,
-        "scope": "project",
+        "scope": scope or "project",
         "path": str(path),
         "exists": path.exists(),
         "mtime": stat.st_mtime if stat else None,
-        "editable_fields": ["permissions.allow", "permissions.deny"],
+        "editable_fields": [f"permissions.{b}" for b in PERMISSION_BUCKETS],
         "permissions": _permissions_from_config(data),
         "raw": data,
     }
@@ -94,8 +104,16 @@ def save_editable_tool_config(
     *,
     now: float | None = None,
 ) -> dict[str, Any]:
-    """Persist editable config fields and return the updated payload."""
-    path = _settings_path(root, tool)
+    """Persist editable config fields and return the updated payload.
+
+    ``payload["scope"]`` picks the file (``project``, the default, or ``project-local``).
+    ``allow`` and ``deny`` are always written; ``ask`` is written only when the payload
+    has it, and an empty ``ask`` is not added to a file that has no ``ask`` list.
+    """
+    scope = payload.get("scope")
+    if scope is not None and not isinstance(scope, str):
+        raise ToolConfigEditError(400, "scope must be a string")
+    path = _settings_path(root, tool, scope)
     data = _read_json_object(path)
     permissions_payload = payload.get("permissions")
     if not isinstance(permissions_payload, dict):
@@ -104,6 +122,8 @@ def save_editable_tool_config(
         "allow": _string_list(permissions_payload.get("allow"), "permissions.allow"),
         "deny": _string_list(permissions_payload.get("deny"), "permissions.deny"),
     }
+    has_ask = "ask" in permissions_payload
+    next_ask = _string_list(permissions_payload.get("ask"), "permissions.ask") if has_ask else []
 
     expected_mtime = payload.get("expected_mtime")
     if expected_mtime is not None and path.exists():
@@ -120,6 +140,8 @@ def save_editable_tool_config(
         raise ToolConfigEditError(409, "permissions must be a JSON object")
     permissions["allow"] = next_permissions["allow"]
     permissions["deny"] = next_permissions["deny"]
+    if has_ask and (next_ask or "ask" in permissions):
+        permissions["ask"] = next_ask
     data["permissions"] = permissions
 
     backup = None
@@ -155,6 +177,6 @@ def save_editable_tool_config(
         new_content=new_text.encode("utf-8"),
     )
 
-    updated = load_editable_tool_config(root, tool)
+    updated = load_editable_tool_config(root, tool, scope)
     updated["backup_path"] = str(backup) if backup else None
     return updated

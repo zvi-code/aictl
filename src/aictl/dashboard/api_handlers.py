@@ -605,18 +605,21 @@ class _APIHandlersMixin:
         return unquote(self.path.split("/api/tool-config/", 1)[-1].split("?", 1)[0])
 
     def _serve_tool_config_get(self) -> None:
-        """Return an editable project-scoped tool config payload."""
+        """Return an editable tool config payload; ``?scope=project-local`` picks the local file."""
+        from urllib.parse import parse_qs, urlparse
+
         from .tool_config_editor import ToolConfigEditError, load_editable_tool_config
 
+        scope = (parse_qs(urlparse(self.path).query).get("scope") or [None])[0]
         try:
-            payload = load_editable_tool_config(self.server.root, self._tool_name_from_config_path())
+            payload = load_editable_tool_config(self.server.root, self._tool_name_from_config_path(), scope)
         except ToolConfigEditError as exc:
             self._json_response({"error": exc.message}, status=exc.status)
             return
         self._json_response(payload)
 
     def _serve_tool_config_put(self) -> None:
-        """Persist editable project-scoped tool config fields."""
+        """Persist editable tool config fields at the payload's ``scope`` (project by default)."""
         from .tool_config_editor import ToolConfigEditError, save_editable_tool_config
 
         content_length = self._content_length()

@@ -5,6 +5,8 @@ import { SECTION_ORDER, SECTION_TITLES, agentInherits, isAgentRow, plainValue, t
 import { Value } from './Value.js';
 import { Swatch, RiskDot, NavHead } from './parts.js';
 import { TopicAgentsTable } from './Agents.js';
+import { permissionMatrices } from './permissions.js';
+import { TopicPermissionMatrix } from './PermissionMatrix.js';
 
 /** The section a topic view shows: the one in the URL, else autonomy, else the first one any tool has. */
 export function topicSection(w) {
@@ -57,11 +59,13 @@ export function TopicMain({ w }) {
   if (sec === 'agents') return html`<${AgentsTopic} w=${w}/>`;
   const { tools, rows } = topicMatrix(w.entries, sec, w.pass);
   const risky = rows.reduce((n, g) => n + Object.values(g.cells).filter(r => r.risky).length, 0);
+  const mats = sec === 'autonomy' ? permissionMatrices(w.entries) : [];
   return html`<section class="st-main" aria-labelledby="st-main-title">
     <div class="st-bar">
       <h2 class="st-bar__title" id="st-main-title">${SECTION_TITLES[sec]}</h2>
       <span class="st-bar__sub">every tool, side by side${risky ? html` · <span class="st-red">${risky} risky ${risky === 1 ? 'value' : 'values'}</span>` : ''}</span>
     </div>
+    <${TopicPermissionMatrix} w=${w} mats=${mats}/>
     ${rows.length ? html`<div class="st-scroll"><table class="st-table st-matrix">
       <thead><tr>
         <th scope="col" class="st-c-set">Setting</th>

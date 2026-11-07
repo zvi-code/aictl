@@ -378,8 +378,9 @@ export async function getDataQuality(opts = {}) {
   return fetchJson(path);
 }
 
-export async function getToolConfig(tool) {
-  return fetchJson('/api/tool-config/' + encodeURIComponent(tool));
+/** The editable settings file of a tool; `scope` picks it (project by default, or project-local). */
+export async function getToolConfig(tool, scope = '') {
+  return fetchJson('/api/tool-config/' + encodeURIComponent(tool) + (scope ? '?scope=' + encodeURIComponent(scope) : ''));
 }
 
 export async function updateToolConfig(tool, payload) {
