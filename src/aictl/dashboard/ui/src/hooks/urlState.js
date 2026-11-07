@@ -1,33 +1,12 @@
 // ─── urlState — the view's shareable state lives in the query string ─
-// `?tab=budget&range=24h&tools=claude-code,codex-cli`, or for a custom window
+// `?range=24h&tools=claude-code,codex-cli`, or for a custom window
 // `?range=custom&since=1700000000&until=1700003600`. The URL wins over
 // localStorage on load, so a pasted link shows the view it was copied from.
-// The owning hooks are useTabs, useRange and useTools.
-
-/** Tab ids and names from older links; they must keep resolving. */
-export const TAB_ALIASES = {
-  dashboard: 'overview',
-  sessions: 'explorer',
-  'session-explorer': 'explorer',
-  processes: 'procs',
-  context: 'memory',
-  'ai-context': 'memory',
-  monitor: 'live',
-  'events-stats': 'events',
-  token_budget: 'budget',
-  configuration: 'config',
-};
-
-export function resolveTabId(id, validIds) {
-  if (!id) return null;
-  const canonical = TAB_ALIASES[id] || id;
-  return validIds.includes(canonical) ? canonical : null;
-}
+// The board's filter hooks (useBoardFilters, useTools) own these parameters.
 
 export function parseUrlState(search) {
   const q = new URLSearchParams(search || '');
   const out = {};
-  if (q.has('tab')) out.tab = q.get('tab');
   if (q.has('range')) {
     const id = q.get('range');
     if (id === 'custom') {
@@ -69,15 +48,11 @@ export function toolsToParams(tools) {
   return { tools: tools === null || tools === undefined ? null : tools.join(',') };
 }
 
-export function tabToParams(tab, defaultTab = 'overview') {
-  return { tab: tab === defaultTab ? null : tab };
-}
-
 function currentLocation() {
   return typeof window !== 'undefined' ? window.location : null;
 }
 
-/** Write to the URL. Tab changes push (Back works); filter changes replace. */
+/** Write to the URL. Changes with `push` add a history entry (Back works); the rest replace the entry. */
 export function writeUrl(patch, { push = false } = {}) {
   const loc = currentLocation();
   if (!loc || typeof history === 'undefined') return;

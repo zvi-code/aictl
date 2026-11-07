@@ -121,12 +121,16 @@ aictl/
 │   ├── dist/               #   Built Vite static assets (served by web_server)
 │   └── ui/                 #   Frontend source (Vite + Preact + htm)
 │       └── src/
-│           ├── app.js              # App shell, tabs, SSE, global header
-│           ├── dashboard.css       # Design tokens + component styles (see docs/dashboard-design-system.md)
-│           ├── layoutConfig.js     # Sparkline/metric/tab configuration
-│           ├── utils.js            # Formatters, constants, color maps
-│           ├── context.js          # Preact context shape
-│           └── components/         # Preact components (incl. session_detail/ panels)
+│           ├── main.js, root.js    # Entry; root rewrites old ?tab= links and renders the board
+│           ├── api.js, useSse.js   # All fetch calls; SSE hook for /api/stream
+│           ├── utils.js            # Formatters and constants
+│           ├── hooks/              # urlState, useBoardFilters, useTheme, useTools
+│           ├── utils/              # a11y, auditScope, customRange, paths, platform, tools, toolScope
+│           └── components/
+│               ├── board/          # The board screen, board.css (see docs/dashboard-design-system.md)
+│               │   └── agent/      #   Agent drawer tabs and their models
+│               ├── settings/       # Settings screen (settings.css)
+│               └── ui/             # Markdown, TextView, Segmented, Icon, small shared pieces
 │
 └── data/                   # CSV registries and schema files
     ├── paths-unix.csv      #   Tool file paths for Linux/macOS
@@ -482,30 +486,28 @@ A real-time interactive dashboard built with Vite + Preact + htm tagged template
 | `/api/self-status` | GET | aictl's own runtime status |
 | `/api/layout` | GET | Widget layout configuration |
 
-**Frontend** — Preact 10 with htm/preact tagged template literals:
+**Frontend** — Preact 10 with htm/preact tagged template literals. The UI has one screen, the board
+(`components/board/`), with a Settings screen reached by `?screen=settings`. Charts are plain SVG.
 
-| Component | Tab | Purpose |
-|-----------|-----|---------|
-| `TabOverview` | Overview | Tool cards in grid, collapsible with file categories |
-| `TabProcesses` | Processes | Process table sorted by memory, anomaly detection |
-| `TabBudget` | Budget | Token budget bars, daily usage chart, model breakdown |
-| `TabEventsStats` | Events | Per-tool time series, telemetry KV cards, event feed |
-| `TabLive` | Live | Collector diagnostics, per-tool sessions, traffic |
-| `TabMcp` | MCP | Server status table with connectivity indicators |
-| `TabMemory` | Memory | Agent memory browser with content preview |
-| `TabSessions` | Sessions | Active session cards, historical session table |
-| `TabSamples` | Metrics | Time-series metric explorer |
-| `TabToolConfig` | Config | Per-tool config viewer/editor (audited writes) |
-| `TabTranscript` | Transcript | Conversation transcript with turn cards |
-| `SessionDetail` | — | Session drill-down host for the `session_detail/` panels |
-| `session_detail/*` | — | Per-session panels: cost-by-model, process tree, tool calls, MCP usage, memory diff, run history, session control (kill) |
-| `ToolCard` | — | Expandable tool card (delegates to FileTree, ToolCardSections) |
-| `FileViewer` | — | Slide-in file content panel with focus trap |
-| `MiniChart` | — | uPlot sparkline wrapper |
-| `ChartCard` | — | Chart with title and hover tooltip |
-| `ResourceBar` | — | Visual resource usage bars |
-| `EventTimeline` | — | Horizontal event timeline |
-| `ContextMap` | — | Context window file category map |
+| Part | Files | Purpose |
+|------|-------|---------|
+| Shell: rail, filters, screens | `BoardScreen.js`, `filters.js`, `useBoardData.js` | Section rail, time and tool filters, `board` and `settings` screens, data from `/api/board` |
+| Layout | `layout.js`, `Panel.js` | Sections and default panel layout (stored under `aictl-board-layout-v1`), panel frame and menu |
+| Summary strip | `summary.js` | KPI strip and the one line per section in the rail |
+| Agents section | `panels.js` | Attention list, agents and subagents table, usage by model and role |
+| Usage and cost | `panels.js`, `Chart.js`, `chartModel.js` | Token, cache, cost and message charts, project table |
+| Prompts and skills | `panels.js`, `contextPanels.js` | Prompts, project prompts, skills used, workflows and prompt files |
+| Context | `contextPanels.js` | Context window budget, token split, context map, agent memory, file inventory (`/api/board/context`) |
+| Tools, failures and speed | `panels.js` | Tool calls, confirmations, errors, latency, loops |
+| Changes and testing | `panels.js` | Changes, tests, memory and instruction files |
+| Machine | `panels.js` | CPU, RAM, processes, network (`/api/board/machine`) |
+| Settings in effect | `panels.js`, `findings.js` | Hidden changes and conflicts, values in force |
+| Data sources | `panels.js` | Data sources, collectors, ingesters, what each tool reports |
+| Tables and charts | `Table.js`, `tableModel.js`, `Chart.js`, `tip.js` | Shared table and SVG chart components, one shared tooltip |
+| Drawers | `Drawer.js`, `agent/*` | Agent (Overview, Transcript, Flow, Timeline, Events, Team, Processes, Integrations), file, skill, prompt and hidden-context drawers |
+| Command palette | `CommandPalette.js` | Cmd/Ctrl+K palette and the shortcuts dialog |
+| Settings screen | `settings/SettingsWorkspace.js`, `ToolView.js`, `TopicView.js`, `FilesView.js`, `FindingsView.js`, `Inspector.js` | Settings by tool, topic, file and finding (`/api/settings/tools`, `/api/settings/files`) |
+| Shared UI | `ui/Markdown.js`, `TextView.js`, `Segmented.js`, `Icon.js` | Markdown to vnodes (no innerHTML), Rendered/Source toggle, segmented control, icons |
 
 ### Terminal Dashboard (`dashboard/tui.py`)
 

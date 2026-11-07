@@ -1,11 +1,8 @@
 // ─── a11y utilities ───────────────────────────────────────────
-// Shared helpers for focus trapping, visually-hidden styling, and
-// polite/assertive announcements via a single shared live region.
+// Shared helpers for focus trapping and for telling whether a key press lands in a text field.
 
-export const FOCUSABLE_SELECTOR =
+const FOCUSABLE_SELECTOR =
   'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
-
-export const visuallyHidden = 'sr-only';
 
 /**
  * Trap focus within `container` while active. Returns a teardown fn.
@@ -29,32 +26,9 @@ export function focusTrap(container) {
   return () => container.removeEventListener('keydown', onKey);
 }
 
-const LIVE_REGION_ID = 'aictl-a11y-live';
-const ASSERTIVE_REGION_ID = 'aictl-a11y-live-assertive';
-
-function ensureRegion(id, politeness) {
-  if (typeof document === 'undefined') return null;
-  let el = document.getElementById(id);
-  if (!el) {
-    el = document.createElement('div');
-    el.id = id;
-    el.setAttribute('role', 'status');
-    el.setAttribute('aria-live', politeness);
-    el.setAttribute('aria-atomic', 'true');
-    el.className = visuallyHidden;
-    document.body.appendChild(el);
-  }
-  return el;
-}
-
-/** Announce a message to screen readers via a shared aria-live region. */
-export function announce(msg, priority = 'polite') {
-  if (!msg) return;
-  const id = priority === 'assertive' ? ASSERTIVE_REGION_ID : LIVE_REGION_ID;
-  const el = ensureRegion(id, priority);
-  if (!el) return;
-  // Clear then set so consecutive identical messages still fire.
-  el.textContent = '';
-  // Defer so screen readers pick up the change.
-  setTimeout(() => { el.textContent = msg; }, 16);
+/** True when a key press lands in a field that takes text, so shortcuts must not fire. */
+export function isTypingTarget(el) {
+  if (!el) return false;
+  const tag = (el.tagName || '').toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable === true;
 }

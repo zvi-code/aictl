@@ -10,7 +10,7 @@ import { byName, recordedTree } from '../src/components/board/agent/ProcessesTab
 import { treeOrder } from '../src/components/board/agent/TeamTab.js';
 import { entityOf, slotsOf } from '../src/components/board/agent/TimelineTab.js';
 import { flowToTranscript, isFlow } from '../src/components/board/agent/transcriptModel.js';
-import { agentLinkOf, listenSelectSession, redirectOf, routeOf } from '../src/root.js';
+import { agentLinkOf, listenSelectSession, redirectOf } from '../src/root.js';
 
 const NOW = Math.floor(Date.now() / 1000);
 
@@ -432,11 +432,9 @@ describe('a subagent', () => {
 
 describe('legacy explorer links', () => {
   it('route an explorer session link to the agent drawer of the board', () => {
-    expect(routeOf('?tab=explorer&session=abc')).toBe('board');
     expect(redirectOf('?tab=explorer&session=abc&range=24h')).toBe('?range=24h&agent=abc');
     expect(redirectOf('?tab=sessions&session=abc')).toBe('?agent=abc');
-    expect(routeOf('?tab=explorer')).toBe('detail');
-    expect(redirectOf('?tab=explorer')).toBeNull();
+    expect(redirectOf('?tab=explorer')).toBe('');
     expect(agentLinkOf('?tab=live', 'x y')).toBe('?agent=x+y');
   });
 

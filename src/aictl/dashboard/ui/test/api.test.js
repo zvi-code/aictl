@@ -1,19 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
-  fetchJson,
-  getSnapshot, getHistory, getEvents, getSessions, getSessionFlow,
-  getSessionEvents, getFileAt, getSamples,
-  getBudget, getOtelStatus, getSelfStatus, getSamplesList,
-  getDataQuality, getSessionMessages,
-  getToolConfig, updateToolConfig, killSession,
-  getDatapoints, resetDatapointCache, setBaseUrl, getBaseUrl, streamUrl,
-  getSessionTimeline, sessionTimelineFilteredCount, getIngesters,
+  fetchJson, getSessionEvents, getSamples, getOtelStatus,
+  getToolConfig, updateToolConfig, killSession, setBaseUrl, streamUrl,
 } from '../src/api.js';
 
 // ─── Mock fetch globally ───────────────────────────────────────
 beforeEach(() => {
   setBaseUrl('');
-  resetDatapointCache();
   globalThis.fetch = vi.fn().mockResolvedValue({
     ok: true,
     json: () => Promise.resolve({ mocked: true }),
@@ -23,20 +15,11 @@ beforeEach(() => {
 });
 
 // ─── Base URL ──────────────────────────────────────────────────
-describe('setBaseUrl / getBaseUrl', () => {
-  it('defaults to empty', () => {
-    expect(getBaseUrl()).toBe('');
-  });
-
-  it('sets and gets base URL', () => {
-    setBaseUrl('http://localhost:9090');
-    expect(getBaseUrl()).toBe('http://localhost:9090');
-  });
-
+describe('setBaseUrl', () => {
   it('prepends base URL to fetch calls', async () => {
     setBaseUrl('http://test:8080');
-    await getSnapshot();
-    expect(fetch).toHaveBeenCalledWith('http://test:8080/api/snapshot');
+    await getOtelStatus();
+    expect(fetch).toHaveBeenCalledWith('http://test:8080/api/otel-status');
   });
 });
 
@@ -52,177 +35,10 @@ describe('streamUrl', () => {
   });
 });
 
-// ─── getSnapshot ───────────────────────────────────────────────
-describe('getSnapshot', () => {
-  it('fetches /api/snapshot', async () => {
-    const result = await getSnapshot();
-    expect(fetch).toHaveBeenCalledWith('/api/snapshot');
-    expect(result).toEqual({ mocked: true });
-  });
-});
-
-// ─── getHistory ────────────────────────────────────────────────
-describe('getHistory', () => {
-  it('fetches /api/history with no opts', async () => {
-    await getHistory();
-    expect(fetch).toHaveBeenCalledWith('/api/history');
-  });
-
-  it('adds range param', async () => {
-    await getHistory({ range: '24h' });
-    expect(fetch).toHaveBeenCalledWith('/api/history?range=24h');
-  });
-
-  it('adds since and until params', async () => {
-    await getHistory({ since: 1000, until: 2000 });
-    expect(fetch).toHaveBeenCalledWith('/api/history?since=1000&until=2000');
-  });
-});
-
-// ─── getEvents ─────────────────────────────────────────────────
-describe('getEvents', () => {
-  it('fetches /api/events with no opts', async () => {
-    await getEvents();
-    expect(fetch).toHaveBeenCalledWith('/api/events');
-  });
-
-  it('adds since param', async () => {
-    await getEvents({ since: 1000 });
-    expect(fetch).toHaveBeenCalledWith('/api/events?since=1000');
-  });
-
-  it('adds sessionId param', async () => {
-    await getEvents({ sessionId: 'abc-123' });
-    expect(fetch).toHaveBeenCalledWith('/api/events?session_id=abc-123');
-  });
-
-  it('adds limit param', async () => {
-    await getEvents({ limit: 50 });
-    expect(fetch).toHaveBeenCalledWith('/api/events?limit=50');
-  });
-});
-
-// ─── getSessions ───────────────────────────────────────────────
-describe('getSessions', () => {
-  it('adds tool and active params', async () => {
-    await getSessions({ tool: 'claude-code', active: false });
-    expect(fetch).toHaveBeenCalledWith('/api/sessions?tool=claude-code&active=false');
-  });
-});
-
-// ─── getSessionFlow ────────────────────────────────────────────
-describe('getSessionFlow', () => {
-  it('builds correct URL', async () => {
-    await getSessionFlow('sess-1', 1000, 2000);
-    expect(fetch).toHaveBeenCalledWith('/api/session-flow?session_id=sess-1&since=1000&until=2000');
-  });
-});
-
-// ─── alternate-id fallback (merged sessions) ───────────────────
-// A merged session row is known by several ids (flow turns live under the
-// tool's UUID, process data under the correlator id). The flow/transcript/
-// tool-call getters accept an ordered candidate array and must fall back
-// until one id yields data — querying only the primary id rendered rich
-// sessions as an empty Flow tab.
-describe('session id candidates fallback', () => {
-  const UUID = 'fb1fced0-59a8-4c9e-b6cf-1e6b1f4d9a01';
-  const PID_ID = 'claude-code:4242:1769999400';
-
-  function mockJsonSequence(...bodies) {
-    const fn = vi.fn();
-    for (const body of bodies) {
-      fn.mockResolvedValueOnce({
-        ok: true, status: 200,
-        json: () => Promise.resolve(body),
-        text: () => Promise.resolve(''),
-      });
-    }
-    globalThis.fetch = fn;
-    return fn;
-  }
-
-  it('getSessionFlow returns the first candidate with turns', async () => {
-    const rich = { turns: [{ type: 'user_message' }], summary: {} };
-    mockJsonSequence({ turns: [], summary: {} }, rich);
-    const flow = await getSessionFlow([PID_ID, UUID], 1000, 2000);
-    expect(flow).toEqual(rich);
-    expect(fetch).toHaveBeenNthCalledWith(1,
-      `/api/session-flow?session_id=${encodeURIComponent(PID_ID)}&since=1000&until=2000`);
-    expect(fetch).toHaveBeenNthCalledWith(2,
-      `/api/session-flow?session_id=${UUID}&since=1000&until=2000`);
-  });
-
-  it('getSessionFlow stops at the first candidate when it has turns', async () => {
-    const rich = { turns: [{ type: 'user_message' }], summary: {} };
-    mockJsonSequence(rich, { turns: [], summary: {} });
-    const flow = await getSessionFlow([UUID, PID_ID], 1000, 2000);
-    expect(flow).toEqual(rich);
-    expect(fetch).toHaveBeenCalledTimes(1);
-  });
-
-  it('getSessionFlow returns the first (empty) response when no candidate has turns', async () => {
-    const empty1 = { turns: [], summary: { source: 'first' } };
-    mockJsonSequence(empty1, { turns: [], summary: { source: 'second' } });
-    const flow = await getSessionFlow([PID_ID, UUID], 1000, 2000);
-    expect(flow).toEqual(empty1);
-  });
-
-  it('getSessionFlow skips a failing candidate and uses the next', async () => {
-    const rich = { turns: [{ type: 'api_call' }], summary: {} };
-    const fn = vi.fn()
-      .mockResolvedValueOnce({ ok: false, status: 404, text: () => Promise.resolve('') })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve(rich), text: () => Promise.resolve('') });
-    globalThis.fetch = fn;
-    const flow = await getSessionFlow([PID_ID, UUID], 1000, 2000);
-    expect(flow).toEqual(rich);
-  });
-
-  it('getSessionFlow rethrows the first error when every candidate fails', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: false, status: 500, text: () => Promise.resolve('boom'),
-    });
-    const err = await getSessionFlow([PID_ID, UUID], 1000, 2000).catch(e => e);
-    expect(err).toBeInstanceOf(Error);
-    expect(err.status).toBe(500);
-  });
-
-  it('getTranscript falls back through candidates until one has turns', async () => {
-    const { getTranscript } = await import('../src/api.js');
-    const rich = { turns: [{ prompt: 'hi' }] };
-    mockJsonSequence({ turns: [] }, rich);
-    const data = await getTranscript([PID_ID, UUID]);
-    expect(data).toEqual(rich);
-    expect(fetch).toHaveBeenCalledTimes(2);
-  });
-
-  it('getSessionToolCalls falls back through candidates until one has calls', async () => {
-    const { getSessionToolCalls } = await import('../src/api.js');
-    const rich = { total: 1, errors: 0, by_tool: { Bash: 1 }, calls: [{ tool_name: 'Bash' }] };
-    mockJsonSequence({ total: 0, errors: 0, by_tool: {}, calls: [] }, rich);
-    const data = await getSessionToolCalls([PID_ID, UUID]);
-    expect(data).toEqual(rich);
-    expect(fetch).toHaveBeenCalledTimes(2);
-  });
-
-  it('single string id behaves exactly as before (one fetch, result returned)', async () => {
-    mockJsonSequence({ turns: [], summary: {} });
-    const flow = await getSessionFlow(UUID, 1, 2);
-    expect(flow).toEqual({ turns: [], summary: {} });
-    expect(fetch).toHaveBeenCalledTimes(1);
-  });
-});
-
 describe('getSessionEvents', () => {
   it('builds URL with required session id and optional range filters', async () => {
     await getSessionEvents('sess-2', { since: 111, until: 222, limit: 50 });
     expect(fetch).toHaveBeenCalledWith('/api/events?session_id=sess-2&since=111&until=222&limit=50');
-  });
-});
-
-describe('getFileAt', () => {
-  it('builds /api/files/history URL with path and ts', async () => {
-    await getFileAt('/tmp/a b.txt', 1700000000);
-    expect(fetch).toHaveBeenCalledWith('/api/files/history?path=%2Ftmp%2Fa%20b.txt&ts=1700000000');
   });
 });
 
@@ -245,93 +61,12 @@ describe('getSamples', () => {
   });
 });
 
-// ─── getBudget ─────────────────────────────────────────────────
-describe('getBudget', () => {
-  it('fetches /api/budget', async () => {
-    await getBudget();
-    expect(fetch).toHaveBeenCalledWith('/api/budget');
-  });
-});
-
-// ─── getOtelStatus / getSelfStatus ─────────────────────────────
 describe('health endpoints', () => {
   it('fetches otel-status', async () => {
     await getOtelStatus();
     expect(fetch).toHaveBeenCalledWith('/api/otel-status');
   });
 
-  it('fetches self-status', async () => {
-    await getSelfStatus();
-    expect(fetch).toHaveBeenCalledWith('/api/self-status');
-  });
-
-  it('fetches /api/ingesters', async () => {
-    await getIngesters();
-    expect(fetch).toHaveBeenCalledWith('/api/ingesters');
-  });
-});
-
-// ─── getSessionTimeline normalization ──────────────────────────
-describe('getSessionTimeline', () => {
-  it('returns the sessions array with filtered_count attached', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true, status: 200,
-      json: () => Promise.resolve({ sessions: [{ session_id: 'a' }, { session_id: 'b' }], filtered_count: 3 }),
-      text: () => Promise.resolve(''),
-    });
-    const rows = await getSessionTimeline(null, { since: 1 });
-    expect(Array.isArray(rows)).toBe(true);
-    expect(rows).toHaveLength(2);
-    expect(rows.filtered_count).toBe(3);
-    expect(sessionTimelineFilteredCount()).toBe(3);
-  });
-
-  it('tolerates the legacy bare-array response shape', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true, status: 200,
-      json: () => Promise.resolve([{ session_id: 'x' }]),
-      text: () => Promise.resolve(''),
-    });
-    const rows = await getSessionTimeline(null, {});
-    expect(rows).toHaveLength(1);
-    expect(sessionTimelineFilteredCount()).toBe(0);
-  });
-});
-
-// ─── getDataQuality ────────────────────────────────────────────
-describe('getDataQuality', () => {
-  it('fetches /api/data-quality without params by default', async () => {
-    await getDataQuality();
-    expect(fetch).toHaveBeenCalledWith('/api/data-quality');
-  });
-
-  it('builds URL with status, kind, component and limit filters', async () => {
-    await getDataQuality({ status: 'degraded', kind: 'sink', component: 'a b', limit: 20 });
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/data-quality?status=degraded&kind=sink&component=a%20b&limit=20',
-    );
-  });
-});
-
-// ─── getSessionMessages ────────────────────────────────────────
-describe('getSessionMessages', () => {
-  it('builds /api/session-messages URL with encoded session id and default limit', async () => {
-    await getSessionMessages('tool:12:34');
-    expect(fetch).toHaveBeenCalledWith('/api/session-messages?session_id=tool%3A12%3A34&limit=200');
-  });
-
-  it('honors a custom limit', async () => {
-    await getSessionMessages('s1', 50);
-    expect(fetch).toHaveBeenCalledWith('/api/session-messages?session_id=s1&limit=50');
-  });
-});
-
-// ─── getSamplesList ────────────────────────────────────────────
-describe('getSamplesList', () => {
-  it('fetches /api/samples?list=1', async () => {
-    await getSamplesList();
-    expect(fetch).toHaveBeenCalledWith('/api/samples?list=1');
-  });
 });
 
 // ─── fetchJson error handling ──────────────────────────────────
@@ -352,11 +87,11 @@ describe('fetchJson', () => {
 
   it('throws on !ok with status and path in the message', async () => {
     mockErrorResponse(500, 'boom');
-    const err = await fetchJson('/api/snapshot').catch(e => e);
+    const err = await fetchJson('/api/otel-status').catch(e => e);
     expect(err).toBeInstanceOf(Error);
     expect(err.status).toBe(500);
     expect(err.message).toContain('500');
-    expect(err.message).toContain('/api/snapshot');
+    expect(err.message).toContain('/api/otel-status');
     expect(err.message).toContain('boom');
   });
 
@@ -386,9 +121,9 @@ describe('fetchJson', () => {
 
   it('getters reject on !ok instead of returning the error body', async () => {
     mockErrorResponse(500, JSON.stringify({ error: 'db locked' }));
-    await expect(getSnapshot()).rejects.toThrow(/500/);
-    await expect(getEvents()).rejects.toThrow(/db locked/);
-    await expect(getBudget()).rejects.toThrow(/500/);
+    await expect(getOtelStatus()).rejects.toThrow(/500/);
+    await expect(getSamples('m')).rejects.toThrow(/db locked/);
+    await expect(getSessionEvents('s1')).rejects.toThrow(/500/);
   });
 
   it('getToolConfig / updateToolConfig / killSession use the same error path', async () => {
@@ -407,19 +142,3 @@ describe('fetchJson', () => {
   });
 });
 
-// ─── getDatapoints (cached) ────────────────────────────────────
-describe('getDatapoints', () => {
-  it('caches the promise', async () => {
-    await getDatapoints();
-    await getDatapoints();
-    // Should only fetch once
-    expect(fetch).toHaveBeenCalledTimes(1);
-  });
-
-  it('resets cache', async () => {
-    await getDatapoints();
-    resetDatapointCache();
-    await getDatapoints();
-    expect(fetch).toHaveBeenCalledTimes(2);
-  });
-});

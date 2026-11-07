@@ -6,7 +6,7 @@ import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/pr
 import { html } from 'htm/preact';
 
 import BoardScreen, { readScreen } from '../src/components/board/BoardScreen.js';
-import Root, { redirectOf, routeOf } from '../src/root.js';
+import Root, { redirectOf } from '../src/root.js';
 import { NOW, agentDetailFixture, boardFixture, fileDetailFixture } from './fixtures/board.fixture.js';
 
 if (typeof globalThis.localStorage?.setItem !== 'function') {
@@ -210,19 +210,18 @@ describe('the Settings screen in the board', () => {
     expect(calls.filter(c => c.includes('/api/hooks-status'))).toHaveLength(1);
   });
 
-  it('no longer lists Configuration under the detail screens', async () => {
-    const { getByText, queryByText } = await mountBoard();
-    fireEvent.click(getByText('Detail screens'));
-    expect(queryByText('Configuration')).toBeNull();
+  it('has no link to an old screen in the rail', async () => {
+    const { container, queryByText } = await mountBoard();
+    expect(queryByText('Detail screens')).toBeNull();
+    expect(container.querySelector('a[href^="?tab="]')).toBeNull();
   });
 });
 
 describe('the old Configuration link', () => {
   it('routes to the board and rewrites the query to the Settings screen', () => {
-    expect(routeOf('?tab=config')).toBe('board');
     expect(redirectOf('?tab=config&pivot=topic')).toBe('?pivot=topic&screen=settings');
     expect(redirectOf('?tab=configuration')).toBe('?screen=settings');
-    expect(redirectOf('?tab=explorer')).toBeNull();
+    expect(redirectOf('?tab=explorer')).toBe('');
     expect(redirectOf('')).toBeNull();
   });
 
