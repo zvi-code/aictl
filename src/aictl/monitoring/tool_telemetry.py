@@ -695,8 +695,10 @@ def parse_copilot_telemetry(
     The CLI and the desktop app share this directory. *tool* selects which of the
     two sessions to read, ``copilot-cli`` or ``copilot-desktop``.
     """
-    copilot_home = Path.home() / ".copilot"
-    session_dir = copilot_home / "session-state"
+    from ..platforms import copilot_global_dir, copilot_session_dir
+
+    copilot_home = copilot_global_dir()
+    session_dir = copilot_session_dir()
     if not session_dir.is_dir():
         return None
     app_ids = _copilot_app_session_ids(copilot_home)

@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from .platforms import IS_WINDOWS, claude_global_dir, config_dir, vscode_user_dir
+from .platforms import IS_WINDOWS, claude_global_dir, config_dir, copilot_global_dir, vscode_user_dir
 from .tools import PRUNE_DIRS, _expand_home, _params_to_glob, get_registry
 
 try:
@@ -1981,7 +1981,7 @@ def _collect_dynamic(inv: _Inventory, findings: list[Finding], env: dict[str, st
         path = root / "hooks" / "hooks.json"
         if path.is_file():
             _collect_hooks_from(inv, findings, "claude-code", path, "plugin")
-    for path in sorted(glob.glob(str(Path.home() / ".copilot" / "hooks" / "*.json"))):
+    for path in sorted(glob.glob(str(copilot_global_dir() / "hooks" / "*.json"))):
         _collect_hooks_from(inv, findings, "copilot-cli", Path(path), "user")
     for path in sorted(glob.glob(str(project / ".github" / "hooks" / "*.json"))):
         _collect_hooks_from(inv, findings, "copilot-cli", Path(path), "project")
