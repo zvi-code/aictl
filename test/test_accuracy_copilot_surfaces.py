@@ -398,3 +398,42 @@ def test_session_store_ingester_reports_an_unrecognised_schema(tmp_path):
     rec = _QualityRecorder()
     assert CopilotSessionStoreIngester(path, rec).poll() == 0
     assert rec.statuses == [("schema_unknown", "warning")]
+
+
+class TestHeldFiles:
+    """Windows can report a file's size as it was when another process opened it."""
+
+    def test_a_held_file_that_looks_unchanged_is_measured_through_a_handle(self, tmp_path, monkeypatch):
+        from aictl.ingesters import transcript_usage as tu
+
+        log = tmp_path / "events.jsonl"
+        log.write_bytes(b"x" * 100)
+        monkeypatch.setattr(tu.platforms, "IS_WINDOWS", True)
+        assert tu._current_size(log, 40, time.time(), 40, time.time()) == 100
+
+    def test_an_old_file_not_held_keeps_the_reported_size(self, tmp_path, monkeypatch):
+        from aictl.ingesters import transcript_usage as tu
+
+        log = tmp_path / "events.jsonl"
+        log.write_bytes(b"x" * 100)
+        monkeypatch.setattr(tu.platforms, "IS_WINDOWS", True)
+        old = time.time() - 10 * 86400
+        assert tu._current_size(log, 40, old, 40, time.time()) == 40
+        (tmp_path / "inuse.1.lock").write_text("1")
+        assert tu._current_size(log, 40, old, 40, time.time()) == 100
+
+    def test_other_systems_trust_the_reported_size(self, tmp_path, monkeypatch):
+        from aictl.ingesters import transcript_usage as tu
+
+        log = tmp_path / "events.jsonl"
+        log.write_bytes(b"x" * 100)
+        monkeypatch.setattr(tu.platforms, "IS_WINDOWS", False)
+        assert tu._current_size(log, 40, time.time(), 40, time.time()) == 40
+
+
+def test_copilot_sessions_follow_copilot_home(tmp_path, monkeypatch):
+    from aictl.ingesters import transcript_usage as tu
+
+    monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "elsewhere"))
+    ing = tu.TranscriptUsageIngester(None, claude_projects=tmp_path / "c", codex_sessions=tmp_path / "x", vscode_workspaces=tmp_path / "v")
+    assert ing.copilot_state == tmp_path / "elsewhere" / "session-state"

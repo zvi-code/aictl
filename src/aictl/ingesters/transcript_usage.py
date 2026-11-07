@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import time
 from collections.abc import Iterable, Iterator
@@ -43,6 +44,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .. import platforms
 from ..data.model_pricing import is_billable_model, request_cost_usd
 from ..data.provenance import COPILOT_COST_REASON
 from ..storage import AgentRow, RequestRow, SessionRow
@@ -63,6 +65,10 @@ from .vscode_chat_logs import default_log_dir as vscode_chat_default_log_dir
 log = logging.getLogger(__name__)
 
 POLL_INTERVAL_S = 60.0
+# Windows can report the size a file had when another process opened it, and a
+# Copilot CLI session keeps its events file open while it lives. A file this recent
+# that looks unchanged is measured through its own handle.
+HELD_FILE_RECHECK_S = 2 * 86400
 BACKFILL_DAYS = 30
 # A session idle this long gets ended_at = its last activity; a transcript has
 # no explicit end event, and an open row would show as live forever.
@@ -933,6 +939,30 @@ def _workspace_folder(workspace_storage_dir: Path) -> str:
 # ── Whole-tree scan, and the periodic ingester ─────────────────────────
 
 
+def _open_size(path: Path) -> int | None:
+    try:
+        with open(path, "rb") as fh:
+            return fh.seek(0, os.SEEK_END)
+    except OSError:
+        return None
+
+
+def _current_size(path: Path, size: int, mtime: float, offset: int, now: float) -> int:
+    """The file's size, measured through a handle when Windows may report a stale one."""
+    if not platforms.IS_WINDOWS or size > offset or now - mtime > HELD_FILE_RECHECK_S and not _held(path):
+        return size
+    measured = _open_size(path)
+    return size if measured is None else measured
+
+
+def _held(path: Path) -> bool:
+    """A Copilot CLI session marks the folder of a file it keeps open."""
+    try:
+        return any(path.parent.glob("inuse.*.lock"))
+    except OSError:
+        return False
+
+
 class TranscriptUsageIngester:
     """Tails the three transcript stores and writes one row per session.
 
@@ -951,11 +981,10 @@ class TranscriptUsageIngester:
         vscode_workspaces: Path | None = None,
         backfill_days: float = BACKFILL_DAYS,
     ) -> None:
-        home = Path.home()
         self.store = our_store
-        self.claude_projects = claude_projects or home / ".claude" / "projects"
-        self.codex_sessions = codex_sessions or home / ".codex" / "sessions"
-        self.copilot_state = copilot_state or home / ".copilot" / "session-state"
+        self.claude_projects = claude_projects or platforms.claude_projects_dir()
+        self.codex_sessions = codex_sessions or platforms.codex_global_dir() / "sessions"
+        self.copilot_state = copilot_state or platforms.copilot_session_dir()
         self.vscode_workspaces = vscode_workspaces or vscode_chat_default_log_dir()
         self.facts = FactBuffer(our_store, time.time() - backfill_days * 86400)
         self._store = CopilotStoreReader(self.copilot_state.parent, self.facts)
@@ -979,6 +1008,7 @@ class TranscriptUsageIngester:
 
     def _changed(self, paths: Iterable[Path], cutoff: float) -> list[Path]:
         found: list[tuple[float, Path]] = []
+        now = time.time()
         for p in paths:
             try:
                 st = p.stat()
@@ -986,12 +1016,13 @@ class TranscriptUsageIngester:
                 continue
             if st.st_mtime < cutoff and p not in self._offsets:
                 continue
-            if st.st_size < self._offsets.get(p, 0):
+            size = _current_size(p, st.st_size, st.st_mtime, self._offsets.get(p, 0), now)
+            if size < self._offsets.get(p, 0):
                 # Truncated or rewritten: its lines were already counted, so
                 # re-reading from 0 is the only way to see new ones, and the
                 # global request key keeps Claude's replay from double counting.
                 self._offsets[p] = 0
-            if st.st_size > self._offsets.get(p, 0):
+            if size > self._offsets.get(p, 0):
                 found.append((st.st_mtime, p))
         # Oldest first, so a replayed message stays on the session that made it.
         return [p for _, p in sorted(found, key=lambda x: x[0])]
