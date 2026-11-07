@@ -264,7 +264,7 @@ describe.each(Object.entries(EDITORIAL))('editorial theme, screen %s', (tab, spe
 describe('screens that name a screen-wide limit, not a tool', () => {
   it('config keeps the VS Code panel and the aictl card under any filter', async () => {
     const { container } = render(html`<${Screen} tab="config" enabledTools=${[]}/>`);
-    await waitFor(() => expect(container.textContent).toContain('applies to all AI tools'), { timeout: 4000 });
+    await waitFor(() => expect(container.textContent).toContain('used by every AI tool in VS Code'), { timeout: 4000 });
     expect(container.textContent).toContain('aictl');
   });
 

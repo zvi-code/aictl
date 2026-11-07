@@ -1,4 +1,4 @@
-// Tests for TabToolConfig — focused on the new "Configurable Models" section.
+// Tests for TabToolConfig: configurable models shown as Model rows (older server, no sections).
 import { describe, it, expect, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/preact';
 import { html } from 'htm/preact';
@@ -56,61 +56,60 @@ const COPILOT_CFG_BASE = {
   ],
 };
 
-describe('TabToolConfig — Configurable Models block', () => {
-  it('renders every configurable-model knob with its full settings.json key', () => {
+describe('TabToolConfig: configurable models as Model rows', () => {
+  it('renders every configurable model as a row, with its settings key in the tooltip', () => {
     const snap = {
       tools: [{ tool: 'copilot', label: 'GitHub Copilot' }],
       tool_configs: [COPILOT_CFG_BASE],
     };
     const { getByText, container } = renderWith(snap);
 
-    expect(getByText('Configurable Models')).toBeTruthy();
-    // Each label is rendered.
-    expect(getByText('Ask agent')).toBeTruthy();
-    expect(getByText('Explore subagent')).toBeTruthy();
-    expect(getByText('Execution subagent')).toBeTruthy();
-    // Each full settings key is rendered (mono caption).
-    expect(container.textContent).toContain('github.copilot.chat.askAgent.model');
-    expect(container.textContent).toContain('github.copilot.chat.exploreAgent.model');
-    expect(container.textContent).toContain('github.copilot.chat.executionSubagent.model');
+    expect(container.querySelector('.cfg-section[data-section="model"]')).toBeTruthy();
+    for (const label of ['Ask agent', 'Explore subagent', 'Execution subagent']) {
+      const el = getByText(label);
+      expect(el.getAttribute('title')).toContain('Setting: github.copilot.chat.');
+    }
+    expect(container.textContent).not.toContain('Configurable Models');
   });
 
-  it('shows user / workspace source badges and the override value', () => {
-    const snap = {
-      tools: [{ tool: 'copilot', label: 'GitHub Copilot' }],
-      tool_configs: [COPILOT_CFG_BASE],
-    };
-    const { getByText, container } = renderWith(snap);
-
-    expect(container.textContent).toContain('Claude Haiku 4.5 (copilot)');
-    expect(container.textContent).toContain('GPT-5 (copilot)');
-    expect(getByText('user')).toBeTruthy();
-    expect(getByText('workspace')).toBeTruthy();
-    // Defaulted entry shows the default hint, not a real value.
-    expect(container.textContent).toContain('default model');
-  });
-
-  it('lists the settings.json files the user can edit', () => {
+  it('shows the override value and the file that sets it; a default shows no file', () => {
     const snap = {
       tools: [{ tool: 'copilot', label: 'GitHub Copilot' }],
       tool_configs: [COPILOT_CFG_BASE],
     };
     const { container } = renderWith(snap);
-    expect(container.textContent).toContain('Edit in');
-    expect(container.textContent).toContain('/repo/.vscode/settings.json');
-    expect(container.textContent).toContain(
-      '/home/test/Library/Application Support/Code/User/settings.json',
-    );
+    const rows = [...container.querySelectorAll('.cfg-row')];
+    const rowOf = (label) => rows.find(r => r.textContent.includes(label));
+    expect(rowOf('Explore subagent').textContent).toContain('Claude Haiku 4.5 (copilot)');
+    expect(rowOf('Explore subagent').querySelector('.cfg-row__source').getAttribute('title'))
+      .toBe('/home/test/Library/Application Support/Code/User/settings.json');
+    expect(rowOf('Execution subagent').textContent).toContain('GPT-5 (copilot)');
+    expect(rowOf('Execution subagent').querySelector('.cfg-row__source').getAttribute('title'))
+      .toBe('/repo/.vscode/settings.json');
+    const ask = rowOf('Ask agent');
+    expect(ask.querySelector('.cfg-row__source').textContent).toBe('');
+    expect(ask.querySelector('.cfg-help').getAttribute('title')).toContain('Default: default model');
   });
 
-  it('omits the section when configurable_models is empty', () => {
+  it('lists both settings files in the card', () => {
+    const snap = {
+      tools: [{ tool: 'copilot', label: 'GitHub Copilot' }],
+      tool_configs: [COPILOT_CFG_BASE],
+    };
+    const { container } = renderWith(snap);
+    const titles = [...container.querySelectorAll('[title]')].map(e => e.getAttribute('title')).join('\n');
+    expect(titles).toContain('/repo/.vscode/settings.json');
+    expect(titles).toContain('/home/test/Library/Application Support/Code/User/settings.json');
+  });
+
+  it('shows no Model section when there is no model and no configurable model', () => {
     const snap = {
       tools: [{ tool: 'copilot', label: 'GitHub Copilot' }],
       tool_configs: [
         { ...COPILOT_CFG_BASE, configurable_models: [], config_files: [] },
       ],
     };
-    const { queryByText } = renderWith(snap);
-    expect(queryByText('Configurable Models')).toBeNull();
+    const { container } = renderWith(snap);
+    expect(container.querySelector('.cfg-section[data-section="model"]')).toBeNull();
   });
 });
