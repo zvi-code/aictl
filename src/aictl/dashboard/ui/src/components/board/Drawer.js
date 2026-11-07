@@ -10,6 +10,7 @@ import { Ico, PATHS } from './icons.js';
 import { Actions, Stats } from './Panel.js';
 import { statusCell } from './panels.js';
 import Table from './Table.js';
+import TextView from '../ui/TextView.js';
 import { scopeAudit } from '../../utils/auditScope.js';
 import { instructionsByTool } from './findings.js';
 
@@ -295,7 +296,7 @@ function PromptDrawer({ d, ctx, frame, act }) {
   const text = data?.text || (metadata ? 'The text of this prompt is not stored, because the capture mode is metadata.' : NA);
   const sub = [stamp(d.ts, true), projectName(data?.project || d.summary?.project), data?.title].filter(Boolean).join(', ');
   return html`<${Frame} ...${frame} title="Prompt" sub=${sub}>
-    ${data ? html`<${FixedPanel} id="ptxt" title="Full text"><div class="bd-ptext">${text}${data.prompt_file ? '\n\nUses the prompt file ' + data.prompt_file : ''}</div></${FixedPanel}>
+    ${data ? html`<${FixedPanel} id="ptxt" title="Full text"><${TextView} text=${text} source=${html`<div class="bd-ptext">${text}</div>`}/>${data.prompt_file ? html`<div class="bd-ptext">${'Uses the prompt file ' + data.prompt_file}</div>` : null}</${FixedPanel}>
       <${FixedPanel} id="pst" title="What it cost">
         <${Stats} stats=${[{ label: 'Cost', value: fmtUsd(data.cost_usd) }, { label: 'Input', value: fmtN(data.input) }, { label: 'Output', value: fmtN(data.output) }, { label: 'Cache read', value: fmtN(data.cache_read) }, { label: 'Cache write', value: fmtN(data.cache_write) }, { label: 'Model calls', value: fmtN(data.calls), sub: data.subagent_calls ? data.subagent_calls + ' by subagents' : '' }, { label: 'Model time', value: fmtMs(data.reply_ms), title: 'The time of all model calls added up. Calls can overlap.' }, { label: 'Tool calls', value: data.tool_calls ?? NA }]}/>
         ${d.agent_id ? html`<${Actions} actions=${[{ label: 'Open agent', go: () => act.openDrawer({ type: 'agent', id: d.agent_id, tab: 'overview' }) }]}/>` : null}
@@ -348,7 +349,7 @@ function SkillDrawer({ d, ctx, frame, act }) {
         ${data.file_reads ? html`<${Table} def=${readDef} label="File reads"/>` : null}
       </${FixedPanel}>
       ${locations.map((l, i) => html`<${FixedPanel} key=${l.path} id=${'sktext' + i} title="Content" sub=${l.path}>
-        ${l.same_as ? html`<div class="bd-note">Same text as ${l.same_as}.</div>` : l.content == null ? html`<div class="bd-empty">This file is not readable.</div>` : html`<div class="bd-ptext">${l.content}</div>`}
+        ${l.same_as ? html`<div class="bd-note">Same text as ${l.same_as}.</div>` : l.content == null ? html`<div class="bd-empty">This file is not readable.</div>` : html`<${TextView} text=${l.content} path=${l.path} source=${html`<div class="bd-ptext">${l.content}</div>`}/>`}
         ${l.truncated ? html`<div class="bd-note">The first 100,000 characters are shown.</div>` : null}
         ${l.content != null ? html`<div class="bd-note">Values under names that look like secrets are masked.</div>` : null}
       </${FixedPanel}>`)}`

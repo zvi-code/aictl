@@ -5,6 +5,7 @@ import { SnapContext } from '../context.js';
 import * as api from '../api.js';
 import { Icon } from './ui/index.js';
 import { fmtSz, fmtAgo } from '../utils.js';
+import TextView from './ui/TextView.js';
 import ToolScopeEmpty from './ui/ToolScopeEmpty.js';
 import { isFiltered } from '../utils/toolScope.js';
 
@@ -128,7 +129,7 @@ function PromptDetail({ prompt, view = 'prompts' }) {
         ? html`<div class="cprompts-loading">Loading\u2026</div>`
         : content === null
           ? html`<div class="cprompts-loading">No content available.</div>`
-          : html`<pre class="cprompts-code">${content}</pre>`}
+          : html`<${TextView} text=${content} path=${prompt.path} source=${html`<pre class="cprompts-code">${content}</pre>`}/>`}
     </div>
   </div>`;
 }

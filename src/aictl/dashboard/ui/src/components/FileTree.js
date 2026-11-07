@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback, useContext } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
+import TextView from './ui/TextView.js';
 import {
   fmtK, fmtSz, fmtAgo, esc, s2lColor, groupByDir, fetchFileContent,
   TAIL_LINES,
@@ -36,14 +37,14 @@ function FileItem({file, dirPrefix}) {
     const lines = text.split('\n'), total = lines.length;
     const isSmall = total <= TAIL_LINES*3;
     if(isSmall || expanded) {
-      return html`${numbered(lines,1)}
+      return html`<${TextView} text=${text} path=${file.path} source=${html`${numbered(lines,1)}`}/>
         <div class="prev-actions">
           ${expanded && html`<button class="prev-btn" onClick=${()=>setExpanded(false)}>collapse</button>`}
           <button class="prev-btn" onClick=${()=>ctx.openViewer(file.path)}>open in viewer</button>
         </div>`;
     }
     const tail = lines.slice(-TAIL_LINES), tailStart = total-TAIL_LINES+1;
-    return html`${numbered(tail,tailStart)}
+    return html`<${TextView} text=${text} path=${file.path} source=${html`${numbered(tail,tailStart)}`}/>
       <div class="prev-actions">
         <button class="prev-btn" onClick=${()=>setExpanded(true)}>show all (${total} lines)</button>
         <button class="prev-btn" onClick=${()=>ctx.openViewer(file.path)}>open in viewer</button>

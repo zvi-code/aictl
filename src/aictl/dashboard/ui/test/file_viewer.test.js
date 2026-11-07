@@ -36,4 +36,17 @@ describe('FileViewer historical mode', () => {
     await waitFor(() => expect(spyLive).toHaveBeenCalledWith('/src/b.js'));
     expect(spyAt).not.toHaveBeenCalled();
   });
+
+  it('shows a .md file rendered by default and switches to line numbers on Source', async () => {
+    try { localStorage.clear(); } catch { /* none */ }
+    vi.spyOn(utils, 'fetchFileContent').mockResolvedValue('# Title\n\nbody');
+    const ctxValue = { snap: { tools: [], agent_memory: [] } };
+    const { container, getByText } = render(html`<${SnapContext.Provider} value=${ctxValue}>
+      <${FileViewer} path="/p/CLAUDE.md" onClose=${() => {}}/>
+    </${SnapContext.Provider}>`);
+    await waitFor(() => expect(container.querySelector('.md h1')).not.toBeNull());
+    expect(container.querySelector('.fv-ln')).toBeNull();
+    getByText('Source').click();
+    await waitFor(() => expect(container.querySelector('.fv-ln')).not.toBeNull());
+  });
 });
