@@ -9,7 +9,7 @@ import { buildPanel } from './panels.js';
 import Table from './Table.js';
 
 export function Stats({ stats }) {
-  return html`<div class="bd-stats">${stats.map(st => html`<div key=${st.label} title=${st.title || st.label}>
+  return html`<div class="bd-stats">${stats.map(st => html`<div key=${st.label} class=${st.cls ? 'bd-' + st.cls : null} title=${st.title || st.label}>
     <span class="bd-l">${st.label}</span><span class="bd-v">${st.value}</span>${st.sub ? html`<span class="bd-d">${st.sub}</span>` : null}
   </div>`)}</div>`;
 }
@@ -17,6 +17,11 @@ export function Stats({ stats }) {
 export function Segbar({ segbar }) {
   return html`<div class="bd-segbar">${segbar.parts.filter(sg => sg.w > 0.01).map(sg => html`<span key=${sg.label} class="bd-segpart" title=${sg.title} style=${{ flex: sg.w + ' 1 0', background: sg.c }}>${sg.text}</span>`)}</div>
   <div class="bd-legend">${segbar.parts.map(sg => html`<span class="bd-li" key=${sg.label}><i class="bd-sw" style=${{ background: sg.c }}></i>${sg.label}</span>`)}</div>`;
+}
+
+/** One bar per CPU core, whole machine. */
+export function CoreBars({ cores }) {
+  return html`<div class="bd-cores" role="img" aria-label=${cores.label}>${cores.list.map(c => html`<span key=${c.i} class=${'bd-core bd-' + c.level} title=${c.title}><b style=${{ height: c.h + '%' }}></b></span>`)}</div>`;
 }
 
 export function Actions({ actions }) {
@@ -79,9 +84,11 @@ function PanelImpl({ pn, ctx, hiddenCols, menuOpen, over, dragging, act, section
       <button type="button" class="bd-ib-btn" aria-label=${pn.open ? 'Fold this panel' : 'Unfold this panel'} title=${pn.open ? 'Fold this panel' : 'Unfold this panel'} aria-expanded=${pn.open ? 'true' : 'false'} onClick=${() => act.toggleFold(id)}><${Ico} d=${PATHS.chev} cls=${'bd-chev' + (pn.open ? ' bd-open' : '')}/></button>
     </div>
     ${pn.open ? html`<div class="bd-pb" style=${pbStyle}>
+      ${body.banner ? html`<div class="bd-pbanner" role="alert" title=${body.banner}><${Ico} d=${PATHS.warn}/>${body.banner}</div>` : null}
       ${body.stats ? html`<${Stats} stats=${body.stats}/>` : null}
       ${body.segbar ? html`<${Segbar} segbar=${body.segbar}/>` : null}
       ${body.chart ? html`<${Chart} ...${body.chart} range=${ctx.chartRange} sel=${ctx.sel} onSelect=${act.select}/>` : null}
+      ${body.cores ? html`<${CoreBars} cores=${body.cores}/>` : null}
       ${body.table ? html`<${Table} def=${body.table} hidden=${hiddenCols} label=${title}/>` : null}
       ${body.actions ? html`<${Actions} actions=${body.actions}/>` : null}
       ${body.note ? html`<div class="bd-note" title=${body.note}>${body.note}</div>` : null}

@@ -4,16 +4,30 @@
 // null, which the formatters show as n/a.
 import { GROWS } from './layout.js';
 import {
-  NA, OTHER_COLOR, UNIT, ago, baseName, colorFor, fmtBytes, fmtCpu, fmtDur, fmtLines, fmtMem, fmtMs, fmtN, fmtRate,
+  NA, OTHER_COLOR, UNIT, ago, baseName, colorFor, fmtAge, fmtBps, fmtBytes, fmtCpu, fmtDur, fmtLines, fmtMem, fmtMs, fmtN, fmtRate,
   fmtCredits, fmtShare, fmtUsd, isLive, projectName, sparkPath, stamp, statusMeta,
 } from './format.js';
 import { bucketLabel } from './chartModel.js';
+import { STALE_AFTER_S } from './summary.js';
+import { EMPTY_MACHINE } from './useBoardData.js';
 
 const num = v => (v === null || v === undefined ? -1 : v);
 const sumOf = list => list.reduce((s, v) => s + (v || 0), 0);
 const pctBar = (v, mx) => (v && mx ? (v / mx) * 100 : 0);
 const lastVal = vals => { for (let i = vals.length - 1; i >= 0; i--) if (vals[i] !== null && vals[i] !== undefined) return vals[i]; return null; };
 const OVER_SERIES = 5;
+
+/** The /api/board/machine answer the board holds, or an empty one. */
+export const machineOf = ctx => ctx.data?.machine || EMPTY_MACHINE;
+const pctOf = v => (v == null ? NA : Math.round(v * 100) + '%');
+const SEVERITY = {
+  crit: { label: 'Critical', dot: 'var(--crit)', rank: 0 },
+  warn: { label: 'Warning', dot: 'var(--warn)', rank: 1 },
+  info: { label: 'Note', dot: 'var(--ink3)', rank: 2 },
+};
+const severityOf = s => SEVERITY[s] || SEVERITY.info;
+const ZOMBIE_RANK = { high: 3, medium: 2, low: 1 };
+const copyAction = (ctx, command) => () => ctx.actions.copy?.(command, 'Copied: ' + command);
 
 /** A model name without its vendor prefix; the full name stays in the hover text. */
 export const shortModel = m => String(m || '').replace(/^claude-/, '');
@@ -547,28 +561,182 @@ function panelResource(ctx, local, pid, pn, kind) {
   const out = chartPanel(ctx, local, pid, pn, { kind: 'line', series, unit, h: 120, legendFmt, aria: kind === 'cpu' ? 'CPU by tool' : 'Memory by tool' }, 'Now ' + (series.length ? fmt(nowSum) : NA) + ' across tools');
   const f = ctx.filters;
   if (f.project !== 'all' || f.model !== 'all' || f.status !== 'all') out.note = 'This chart follows the Tool filter and the time only.';
+  if (kind === 'cpu' && !local.tableView) out.cores = coreBars(machineOf(ctx).cpu_per_core);
   return out;
+}
+
+/** Bars for each core of the whole machine, now. Null when the monitor reports no cores. */
+export function coreBars(perCore) {
+  const list = (perCore || []).filter(v => typeof v === 'number');
+  if (!list.length) return null;
+  const avg = sumOf(list) / list.length;
+  const busy = list.filter(v => v > 80).length;
+  return {
+    label: list.length + ' cores, ' + Math.round(avg) + '% on average' + (busy ? ', ' + busy + ' over 80%' : ''),
+    list: list.map((v, i) => ({
+      i, h: Math.max(2, Math.min(100, v)), level: v > 80 ? 'crit' : v > 50 ? 'warn' : 'ok',
+      title: 'Core ' + i + ': ' + Math.round(v) + '% busy. Whole machine, every program.',
+    })),
+  };
 }
 const LAST_CPU = s => fmtCpu(lastVal(s.vals));
 const LAST_MEM = s => fmtMem(lastVal(s.vals));
 
-function panelProcs(ctx) {
-  const list = ctx.data.processes;
-  // A process with no session data has no detail to open.
-  const noDetail = new Set(ctx.data.agents.filter(a => a.placeholder).map(a => a.id));
-  const rows = list.map((p, i) => ({
-    id: p.pid + ':' + i, go: p.agent_id && !noDetail.has(p.agent_id) ? openAgent(ctx, p.agent_id) : null,
-    sort: { name: p.name, cpu: p.cpu_percent, mem: p.mem_mb, a: p.title, pid: p.pid },
-    cells: { name: { v: p.name, cls: 'm' }, pid: { v: p.pid ?? NA, cls: 'dim' }, tool: { v: ctx.toolName(p.tool), sw: colorFor('tool', p.tool) }, a: { v: p.title || NA, cls: 'dim' }, cpu: { v: fmtCpu(p.cpu_percent) }, mem: { v: fmtMem(p.mem_mb) } },
-  }));
-  const cpu = sumOf(list.map(p => p.cpu_percent));
-  const mem = sumOf(list.map(p => p.mem_mb));
+function procRow(ctx, p, i, m, noDetail, level, rootId, depth) {
+  const anomalies = (m && m.anomalies) || [];
+  const zr = m?.zombie_risk || null;
+  const ppid = m?.ppid ?? null;
+  const parent = ppid == null ? NA : (m.parent_name ? m.parent_name + ' (' + ppid + ')' : 'PID ' + ppid);
+  const worst = anomalies.reduce((r, a) => Math.min(r, severityOf(a.severity).rank), 3);
   return {
-    sub: 'Live now: ' + rows.length + ' processes, ' + fmtCpu(cpu) + ' CPU (100% is one full core), ' + fmtMem(mem) + '. The time range does not apply',
-    table: { cols: [{ k: 'name', l: 'Process', w: '170px' }, { k: 'pid', l: 'PID', n: true, w: '60px' }, { k: 'tool', l: 'Tool', w: '140px' }, { k: 'a', l: 'Agent' }, { k: 'cpu', l: 'CPU', n: true, w: '60px' }, { k: 'mem', l: 'RAM', n: true, w: '76px' }], rows, sort: { k: 'cpu', dir: 'desc' }, none: 'No live processes.' },
+    id: p.pid + ':' + i, parentId: rootId, level, go: p.agent_id && !noDetail.has(p.agent_id) ? openAgent(ctx, p.agent_id) : null,
+    sort: {
+      name: p.name, cpu: p.cpu_percent, mem: p.mem_mb, a: p.title, pid: p.pid, type: m?.process_type || null, parent: ppid,
+      anom: anomalies.length ? anomalies.length + (3 - worst) / 10 : null, zr: zr ? ZOMBIE_RANK[zr] || 0 : null,
+    },
+    cells: {
+      name: { v: p.name, cls: 'm', title: (m?.cmdline || p.name) + (ppid != null ? '\nParent: ' + parent : ''), pad: depth ? depth * 14 : 0 },
+      pid: { v: p.pid ?? NA, cls: 'dim' },
+      tool: { v: ctx.toolName(p.tool), sw: colorFor('tool', p.tool) },
+      a: { v: p.title || NA, cls: 'dim' },
+      type: { v: m?.process_type || NA, cls: 'dim', title: m?.process_type ? 'Kind of process, from the process catalog: ' + m.process_type : 'Not in the process catalog' },
+      parent: { v: parent, cls: 'dim', title: ppid == null ? 'Parent not known' : 'Started by ' + parent + (ppid === 0 || ppid === 1 ? '. Its own parent is gone, so the system adopted it.' : '') },
+      anom: anomalies.length
+        ? { v: '', chips: anomalies.map(a => ({ text: a.label, title: a.text, sev: a.severity })), title: anomalies.map(a => a.text).join('\n') }
+        : { v: 'None', cls: 'dim', title: 'No anomalies found' },
+      zr: { v: zr ? zr[0].toUpperCase() + zr.slice(1) : 'None', cls: zr === 'high' ? 'crit' : zr === 'medium' ? 'warn' : 'dim', title: zr ? 'Zombie risk in the process catalog: ' + zr + '. A process of this kind can outlive the tool that started it.' : 'No zombie risk in the process catalog' },
+      cpu: { v: fmtCpu(p.cpu_percent) },
+      mem: { v: fmtMem(p.mem_mb) },
+      act: m?.cleanup_cmd ? { v: 'Copy cleanup command', cls: 'lk', title: m.cleanup_cmd, go: copyAction(ctx, m.cleanup_cmd) } : { v: '', title: 'No cleanup command for this process' },
+    },
   };
 }
 
+/** Children under their parents. Each descendant row points at its top parent and is indented by its depth. */
+export function procTree(items, pidOf, ppidOf) {
+  const byPid = new Map(items.map(x => [pidOf(x), x]));
+  const kids = new Map();
+  const roots = [];
+  for (const x of items) {
+    const pp = ppidOf(x);
+    if (pp != null && pp !== pidOf(x) && byPid.has(pp)) {
+      if (!kids.has(pp)) kids.set(pp, []);
+      kids.get(pp).push(x);
+    } else roots.push(x);
+  }
+  const out = [];
+  const seen = new Set();
+  const walk = (x, depth, root) => {
+    if (seen.has(pidOf(x))) return;
+    seen.add(pidOf(x));
+    out.push({ x, depth, root });
+    for (const k of kids.get(pidOf(x)) || []) walk(k, depth + 1, root);
+  };
+  for (const r of roots) walk(r, 0, r);
+  // A loop of parents has no root: list what is left at the top.
+  for (const x of items) if (!seen.has(pidOf(x))) walk(x, 0, x);
+  return out;
+}
+
+function panelProcs(ctx, local) {
+  const list = ctx.data.processes;
+  const info = new Map(machineOf(ctx).processes.map(p => [p.pid, p]));
+  const tree = local.mode('view', 'list') === 'tree';
+  // A process with no session data has no detail to open.
+  const noDetail = new Set(ctx.data.agents.filter(a => a.placeholder).map(a => a.id));
+  const items = list.map((p, i) => ({ p, i, m: info.get(p.pid) || null }));
+  let rows;
+  if (tree) {
+    rows = procTree(items, x => x.p.pid, x => x.m?.ppid ?? null).map(({ x, depth, root }) => (
+      procRow(ctx, x.p, x.i, x.m, noDetail, depth ? 1 : 0, depth ? root.p.pid + ':' + root.i : null, depth)));
+  } else rows = items.map(x => procRow(ctx, x.p, x.i, x.m, noDetail, 0, null, 0));
+  const cpu = sumOf(list.map(p => p.cpu_percent));
+  const mem = sumOf(list.map(p => p.mem_mb));
+  const flagged = items.filter(x => x.m?.anomalies?.length).length;
+  return {
+    sub: 'Live now: ' + rows.length + ' processes, ' + fmtCpu(cpu) + ' CPU (100% is one full core), ' + fmtMem(mem) + (flagged ? ', ' + flagged + ' with anomalies' : '') + '. The time range does not apply',
+    modes: [{ key: 'view', label: 'Show processes as', def: 'list', items: [['list', 'List'], ['tree', 'Tree']] }],
+    hasCols: true,
+    table: {
+      cols: [
+        { k: 'name', l: 'Process', w: '170px', fixed: true }, { k: 'pid', l: 'PID', n: true, w: '60px' }, { k: 'tool', l: 'Tool', w: '130px' }, { k: 'a', l: 'Agent' },
+        { k: 'type', l: 'Type', w: '90px', t: 'Kind of process, from the process catalog' }, { k: 'parent', l: 'Parent', w: '130px', t: 'The process that started this one' },
+        { k: 'anom', l: 'Anomalies', n: true, w: '150px', t: 'What the process scan found: memory far over the expected, a dead parent, a known leak' },
+        { k: 'zr', l: 'Zombie risk', n: true, w: '84px', t: 'How likely this kind of process is to outlive its tool, from the process catalog' },
+        { k: 'cpu', l: 'CPU', n: true, w: '60px' }, { k: 'mem', l: 'RAM', n: true, w: '76px' }, { k: 'act', l: 'Cleanup', w: '150px', t: 'Copy the command that ends this process' },
+      ],
+      rows, tree, columns: true, sort: { k: 'cpu', dir: 'desc' }, none: 'No live processes.',
+    },
+    note: tree ? 'A child process is listed under its parent when both are in this list.' : null,
+  };
+}
+
+function panelAlerts(ctx) {
+  const rows = machineOf(ctx).alerts.map((a, i) => {
+    const sev = severityOf(a.severity);
+    const pids = a.pids || [];
+    return {
+      id: a.kind + ':' + i,
+      sort: { sev: sev.rank, what: a.text, tool: a.tool || null, n: pids.length },
+      cells: {
+        sev: { v: sev.label, dot: sev.dot, title: sev.label },
+        what: { v: a.text, warn: a.severity !== 'info', title: a.text + (a.detail ? '\n' + a.detail : '') },
+        detail: { v: a.detail || '', cls: 'dim', title: a.detail || '' },
+        tool: a.tool ? { v: ctx.toolName(a.tool), sw: colorFor('tool', a.tool) } : { v: 'Several tools', cls: 'dim' },
+        n: { v: pids.length ? (pids.length > 3 ? pids.slice(0, 3).join(', ') + ' +' + (pids.length - 3) : pids.join(', ')) : NA, cls: 'dim', title: pids.length ? 'PIDs ' + pids.join(', ') : 'No process' },
+        act: a.action ? { v: 'Copy command', cls: 'lk', title: a.action, go: copyAction(ctx, a.action) } : { v: '', title: 'Nothing to run' },
+      },
+    };
+  });
+  return {
+    sub: rows.length ? rows.length + ' open, whole machine' : 'Nothing to look at',
+    table: {
+      cols: [{ k: 'sev', l: 'Severity', w: '92px' }, { k: 'what', l: 'Finding', w: '330px' }, { k: 'detail', l: 'Detail' }, { k: 'tool', l: 'Tool', w: '120px' }, { k: 'n', l: 'PIDs', w: '120px' }, { k: 'act', l: 'Action', w: '120px' }],
+      rows, sort: { k: 'sev', dir: 'asc' },
+      none: 'Nothing to look at. This checks for subagents over 2 GB of RAM, MCP servers whose parent is gone, headless browsers, and more than 5 process anomalies.',
+    },
+  };
+}
+
+function panelTraffic(ctx) {
+  const per = machineOf(ctx).monitor.per_tool;
+  const rows = per.map(t => {
+    const loop = t.mcp_loop;
+    const conf = t.est_confidence;
+    return {
+      id: t.tool,
+      sort: {
+        tool: t.label || t.tool, sess: t.sessions, in: t.inbound_bps, out: t.outbound_bps, tok: t.est_tokens,
+        mcp: loop ? (loop.detected ? 1 + (loop.loops || 0) : 0) : null, fev: t.file_events, files: t.files_touched, cpu: t.cpu_pct, ws: t.workspace_bytes,
+      },
+      cells: {
+        tool: { v: t.label || ctx.toolName(t.tool), sw: colorFor('tool', t.tool) },
+        sess: { v: (t.sessions ?? NA) + ' / ' + (t.pids ?? NA), title: (t.sessions ?? NA) + ' sessions, ' + (t.pids ?? NA) + ' processes' },
+        in: { v: fmtBps(t.inbound_bps), title: 'Received now' },
+        out: { v: fmtBps(t.outbound_bps), title: 'Sent now' },
+        tok: { v: fmtN(t.est_tokens), sub: conf == null ? null : pctOf(conf) + ' sure', title: 'Estimated from network traffic' + (t.est_source ? ' (' + t.est_source + ')' : '') + ', confidence ' + pctOf(conf) + '. The tool does not report this number.' },
+        mcp: loop
+          ? { v: loop.detected ? 'Loop, ' + (loop.loops || 0) : 'No', warn: !!loop.detected, cls: loop.detected ? '' : 'dim', title: (loop.detected ? 'Repeated MCP traffic that looks like an agent loop: ' + (loop.loops || 0) + ' loops' : 'No MCP loop seen') + ', confidence ' + pctOf(loop.confidence) }
+          : { v: NA, cls: 'dim', title: 'The monitor reports no MCP traffic for this tool' },
+        fev: { v: fmtN(t.file_events), title: 'File changes the monitor saw' },
+        files: { v: fmtN(t.files_touched), title: 'Different files touched' },
+        cpu: { v: fmtCpu(t.cpu_pct), sub: t.cpu_peak == null ? null : 'peak ' + fmtCpu(t.cpu_peak) },
+        ws: { v: fmtBytes(t.workspace_bytes), title: (t.workspaces || []).join('\n') || 'No workspace reported' },
+      },
+    };
+  });
+  return {
+    sub: 'Live, from the network and file monitor. Tokens here are an estimate',
+    table: {
+      cols: [
+        { k: 'tool', l: 'Tool', w: '140px' }, { k: 'sess', l: 'Sessions', n: true, w: '76px', t: 'Sessions and processes' }, { k: 'in', l: 'In', n: true, w: '76px', t: 'Bytes received per second' },
+        { k: 'out', l: 'Out', n: true, w: '76px', t: 'Bytes sent per second' }, { k: 'tok', l: 'Tokens (estimate)', n: true, w: '128px' }, { k: 'mcp', l: 'MCP loop', w: '84px' },
+        { k: 'fev', l: 'File events', n: true, w: '80px' }, { k: 'files', l: 'Files', n: true, w: '56px' }, { k: 'cpu', l: 'CPU', n: true, w: '104px' }, { k: 'ws', l: 'Workspace', n: true },
+      ],
+      rows, sort: { k: 'in', dir: 'desc' }, none: 'The live monitor reports no tool right now.',
+    },
+  };
+}
 function panelFindings(ctx) {
   const rows = ctx.findings.list.map(f => ({
     id: f.id, go: () => ctx.actions.runFinding(f),
@@ -613,11 +781,26 @@ function panelSettings(ctx) {
 }
 
 function panelSources(ctx) {
-  const rows = ctx.data.sources.map(s => ({
-    id: s.tool, sort: { t: s.label || s.tool, s: s.data_from },
-    cells: { t: { v: s.label || ctx.toolName(s.tool), sw: colorFor('tool', s.tool) }, s: { v: s.data_from || NA, cls: 'dim', sub: (s.locations || []).map(h => h.path + ' (' + h.found_by + ')').join(', '), title: (s.locations || []).map(h => h.path + ': ' + h.found_by).join('\n') }, l: { v: ago(s.last_data_ts, ctx.nowS), cls: 'dim' } },
-  }));
-  return { sub: 'Where each tool leaves its data', table: { cols: [{ k: 't', l: 'Tool', w: '140px' }, { k: 's', l: 'Data from' }, { k: 'l', l: 'Last data', w: '84px' }], rows } };
+  const fresh = new Map(machineOf(ctx).pipeline.freshness.map(f => [f.tool, f]));
+  const rows = ctx.data.sources.map((s) => {
+    const f = fresh.get(s.tool);
+    return {
+      id: s.tool, sort: { t: s.label || s.tool, s: s.data_from, l: s.last_data_ts, f: f?.last_seen ?? null, e: f ? f.errors : null },
+      cells: {
+        t: { v: s.label || ctx.toolName(s.tool), sw: colorFor('tool', s.tool) },
+        s: { v: s.data_from || NA, cls: 'dim', sub: (s.locations || []).map(h => h.path + ' (' + h.found_by + ')').join(', '), title: (s.locations || []).map(h => h.path + ': ' + h.found_by).join('\n') },
+        l: { v: ago(s.last_data_ts, ctx.nowS), cls: 'dim', title: 'Newest record in the history: ' + stamp(s.last_data_ts, true) },
+        f: f
+          ? { v: f.last_seen ? ago(f.last_seen, ctx.nowS) : 'Not live', sub: f.confidence == null ? null : pctOf(f.confidence), cls: f.last_seen && ctx.nowS - f.last_seen > 3600 ? 'warn' : 'dim', title: 'Live monitor: ' + (f.last_seen ? 'last saw this tool ' + stamp(f.last_seen, true) : 'not running now') + '. Telemetry from ' + (f.source || NA) + ', confidence ' + pctOf(f.confidence) + '.' }
+          : { v: NA, cls: 'dim', title: 'The monitor does not report this tool' },
+        e: f ? { v: String(f.errors), cls: f.errors ? 'crit' : 'dim', title: f.last_error || 'No errors reported' } : { v: NA, cls: 'dim' },
+      },
+    };
+  });
+  return {
+    sub: 'Where each tool leaves its data, and how fresh it is',
+    table: { cols: [{ k: 't', l: 'Tool', w: '140px' }, { k: 's', l: 'Data from' }, { k: 'l', l: 'Last data', n: true, w: '84px', t: 'Newest record in the history' }, { k: 'f', l: 'Freshness', n: true, w: '104px', t: 'When the live monitor last saw the tool, and how sure the telemetry is' }, { k: 'e', l: 'Errors', n: true, w: '56px', t: 'API errors the tool logged' }], rows },
+  };
 }
 
 function panelSelf(ctx) {
@@ -630,16 +813,116 @@ function panelSelf(ctx) {
     id: r.name + i, sort: { n: r.name, c: r.cpu, m: r.rss },
     cells: { n: { v: r.name, cls: 'm' }, c: { v: fmtCpu(r.cpu) }, m: { v: fmtBytes(r.rss) } },
   }));
+  const pipe = machineOf(ctx).pipeline;
+  const me = pipe.self || {};
+  const sink = pipe.sink;
+  const otel = pipe.otel_receiver;
+  const stream = pipe.stream || {};
+  const tables = Object.entries(me.db_tables || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => k + ': ' + fmtN(v)).join('\n');
+  const pipeline = [
+    { label: 'Uptime', value: fmtDur(me.uptime_s), title: 'Since the aictl daemon started' + (me.pid ? ', PID ' + me.pid : '') },
+    { label: 'Threads', value: me.threads == null ? NA : String(me.threads) },
+    { label: 'History rows', value: fmtN(me.db_rows), title: tables ? 'Rows in each table, read once a minute:\n' + tables : 'Not read yet' },
+    { label: 'Live clients', value: stream.connected_clients == null ? NA : String(stream.connected_clients), title: 'Browser windows that follow the live stream' },
+    { label: 'Snapshot age', value: stream.snapshot_age_s == null ? NA : fmtAge(stream.snapshot_age_s), cls: stream.snapshot_age_s > STALE_AFTER_S ? 'warn' : null, title: 'Time since the collector published its last snapshot' },
+  ];
+  if (sink) {
+    pipeline.push(
+      { label: 'Samples sent', value: fmtN(sink.emitted), title: 'Samples the collectors sent to the store' + (sink.tracked != null ? '. ' + fmtN(sink.tracked) + ' metrics tracked' : '') },
+      { label: 'Written', value: fmtN(sink.flushed), title: 'Samples written to the history' + (sink.buffered != null ? '. ' + fmtN(sink.buffered) + ' waiting' : '') },
+      { label: 'Dropped', value: fmtN(sink.dropped), cls: sink.dropped ? 'crit' : null, title: sink.dropped ? 'Samples lost before they reached the history' : 'No samples lost' },
+    );
+  }
+  if (otel) {
+    pipeline.push(
+      { label: 'OTel metrics', value: fmtN(otel.metrics_received), sub: otel.active ? 'Active' : 'No data for 5 min', title: 'OpenTelemetry metrics received' + (otel.last_receive_at ? ', last ' + stamp(otel.last_receive_at, true) : '') },
+      { label: 'OTel events', value: fmtN(otel.events_received), title: 'OpenTelemetry log events received' },
+      { label: 'OTel API calls', value: fmtN(otel.api_calls_total), sub: otel.api_errors_total ? otel.api_errors_total + ' errors' : '', cls: otel.api_errors_total ? 'warn' : null, title: 'Model API calls the tools reported, and how many failed' },
+      { label: 'OTel rejected', value: fmtN((otel.errors || 0) + (otel.dropped || 0)), cls: otel.errors || otel.dropped ? 'warn' : null, title: (otel.errors || 0) + ' payloads that could not be read, ' + (otel.dropped || 0) + ' bad attributes or data points skipped' },
+    );
+  }
   return {
-    sub: 'What this monitoring costs',
+    sub: 'What this monitoring costs, and how its data pipeline runs',
+    banner: sink?.flood ? 'Data loss: flood protection is on and drops samples. ' + fmtN(sink.dropped) + ' lost so far.' : null,
     stats: [
       { label: 'CPU, with helpers', value: fmtCpu(s.cpu_percent) }, { label: 'RAM', value: fmtBytes(s.memory_rss_bytes) },
       { label: 'History data', value: fmtBytes(s.history_live_bytes ?? s.history_bytes), sub: s.history_limit_bytes ? 'Limit ' + fmtBytes(s.history_limit_bytes) : '' },
       { label: 'File on disk', value: fmtBytes(s.history_bytes), sub: s.history_live_bytes != null && s.history_bytes > s.history_live_bytes ? fmtBytes(s.history_bytes - s.history_live_bytes) + ' can be freed' : '' },
       { label: 'Kept for', value: s.retention_days == null ? NA : s.retention_days + ' d' },
+      ...pipeline,
     ],
     table: { cols: [{ k: 'n', l: 'Process' }, { k: 'c', l: 'CPU', n: true, w: '56px' }, { k: 'm', l: 'RAM', n: true, w: '64px' }], rows, sort: { k: 'c', dir: 'desc' } },
     actions: [{ label: 'Compact the history', go: () => ctx.actions.runCommand({ title: 'Compact the history', lead: 'This removes records older than the retention time, then rewrites the history file to free its empty space. On a large file this can take minutes, and new data waits until it ends.', command: 'aictl db compact', applyLabel: 'Run this command', action: 'db-compact', done: 'Compacted the history' }) }],
+  };
+}
+
+const COLLECTOR_DOT = { active: 'var(--good)', ok: 'var(--good)', degraded: 'var(--warn)', failed: 'var(--crit)', error: 'var(--crit)' };
+
+function panelCollectors(ctx, local) {
+  const mon = machineOf(ctx).monitor;
+  const open = !!local.folded['roots-open'];
+  const rows = mon.collectors.map(c => ({
+    id: 'c:' + c.name, sort: { n: c.name, st: c.status, mode: c.mode },
+    cells: {
+      n: { v: c.name, cls: 'm' },
+      st: { v: c.status, dot: COLLECTOR_DOT[c.status] || 'var(--ink3)', title: c.status + (c.detail ? ': ' + c.detail : '') },
+      mode: { v: c.mode || NA, cls: 'dim' },
+      d: { v: c.detail || '', cls: 'dim', title: c.detail || '' },
+    },
+  }));
+  if (mon.roots.length) {
+    rows.push({
+      id: 'roots', sort: {},
+      cells: { n: { v: 'Monitored folders', sub: mon.roots.length + '', foldOn: true, foldOpen: open, foldLabel: open ? 'Fold the monitored folders' : 'Unfold the monitored folders', fold: () => local.setFold('roots-open', !open), title: 'Folders the monitor watches for file events' }, d: { v: open ? '' : mon.roots.map(r => baseName(r.path)).join(', '), cls: 'dim', title: mon.roots.map(r => r.kind + ': ' + r.path).join('\n') } },
+    });
+    if (open) {
+      mon.roots.forEach((r, i) => rows.push({
+        id: 'r:' + i, parentId: 'roots', level: 1, sort: {},
+        cells: { n: { v: r.kind === 'state' ? 'Tool state' : 'Workspace', pad: 16, cls: 'dim' }, d: { v: r.path, cls: 'm', title: r.path } },
+      }));
+    }
+  }
+  const down = mon.collectors.filter(c => c.status !== 'active' && c.status !== 'ok').length;
+  return {
+    sub: mon.collectors.length ? mon.collectors.length + ' collectors' + (down ? ', ' + down + ' not active' : ', all active') : 'The live monitor is off',
+    table: { cols: [{ k: 'n', l: 'Collector', w: '170px' }, { k: 'st', l: 'Status', w: '92px' }, { k: 'mode', l: 'Mode', w: '96px' }, { k: 'd', l: 'Detail' }], rows, tree: true, none: 'No collector reports. The live monitor is off or has not started.' },
+  };
+}
+
+// An ingester that is off or has no source on this machine is not a fault.
+const QUIET_INGESTER = new Set(['ok', 'off', 'waiting', 'no source']);
+
+function panelQuality(ctx) {
+  const pipe = machineOf(ctx).pipeline;
+  const now = ctx.nowS;
+  const stats = pipe.ingesters.map(i => ({
+    label: i.name, value: i.status, cls: QUIET_INGESTER.has(i.status) ? null : 'crit',
+    sub: i.last_ok ? 'OK ' + ago(i.last_ok, now) : (i.last_poll ? 'Read ' + ago(i.last_poll, now) : 'Never read'),
+    title: i.name + ': ' + i.status + (i.error ? '. ' + i.error : '') + (i.source ? '\nReads ' + i.source : '') + (i.rows != null ? '\n' + i.rows + ' rows on the last read' : '') + (i.rows_total != null ? ', ' + fmtN(i.rows_total) + ' in all' : ''),
+  }));
+  const rows = pipe.data_quality.map((q, i) => {
+    const sev = q.severity === 'error' ? SEVERITY.crit : q.severity === 'warning' ? SEVERITY.warn : SEVERITY.info;
+    return {
+      id: q.component + ':' + q.source + ':' + i,
+      sort: { ts: q.ts, sev: sev.rank, c: q.component, st: q.status, n: q.count },
+      cells: {
+        ts: { v: ago(q.ts, now), cls: 'dim', title: stamp(q.ts, true) + (q.last_ok ? '. Last OK ' + stamp(q.last_ok, true) : '') },
+        sev: { v: q.severity || q.status || 'info', dot: sev.dot },
+        c: { v: q.component || NA, cls: 'm', sub: q.source ? baseName(q.source) : null, title: [q.component, q.source, q.kind ? 'kind ' + q.kind : ''].filter(Boolean).join('\n') },
+        st: { v: q.status || NA, cls: q.status === 'ok' ? 'dim' : '' },
+        t: { v: q.text || NA, cls: 'dim', title: (q.text || '') + (q.error ? '\n' + q.error : '') },
+        n: { v: q.count == null ? NA : String(q.count), cls: 'dim', title: 'Times seen' },
+      },
+    };
+  });
+  const bad = pipe.data_quality.filter(q => q.severity === 'error' || q.severity === 'warning').length;
+  return {
+    sub: pipe.ingesters.length + ' ingesters, ' + rows.length + ' data-quality events' + (bad ? ', ' + bad + ' need a look' : ''),
+    stats: stats.length ? stats : [{ label: 'Ingesters', value: 'None', title: 'No ingester runs in this daemon' }],
+    table: {
+      cols: [{ k: 'ts', l: 'When', n: true, w: '76px' }, { k: 'sev', l: 'Severity', w: '84px' }, { k: 'c', l: 'Component', w: '190px' }, { k: 'st', l: 'Status', w: '96px' }, { k: 't', l: 'Message' }, { k: 'n', l: 'Seen', n: true, w: '48px' }],
+      rows, sort: { k: 'ts', dir: 'desc' }, limit: 10, none: 'No data-quality events.',
+    },
   };
 }
 
@@ -671,8 +954,8 @@ const BUILDERS = {
   promptsL: panelPrompts, pprompts: panelProjectPrompts, skills: panelSkills,
   toolCalls: panelToolCalls, confirms: panelConfirms, errors: panelErrors, latency: panelLatency, loops: panelLoops,
   changesT: panelChanges, tests: panelTests, memfiles: panelMemFiles,
-  cpu: (c, l, p, n) => panelResource(c, l, p, n, 'cpu'), ram: (c, l, p, n) => panelResource(c, l, p, n, 'mem'), procs: panelProcs,
-  findings: panelFindings, settings: panelSettings, sources: panelSources, self: panelSelf, coverage: panelCoverage,
+  cpu: (c, l, p, n) => panelResource(c, l, p, n, 'cpu'), ram: (c, l, p, n) => panelResource(c, l, p, n, 'mem'), alerts: panelAlerts, procs: panelProcs, traffic: panelTraffic,
+  findings: panelFindings, settings: panelSettings, sources: panelSources, self: panelSelf, collectors: panelCollectors, quality: panelQuality, coverage: panelCoverage,
 };
 export const PANEL_IDS = Object.keys(BUILDERS);
 
