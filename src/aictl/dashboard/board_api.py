@@ -3867,6 +3867,589 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
     }
 
 
+# ─── /api/board/agent/flow and /api/board/agent/transcript ────────
+# The drawer's Flow, Timeline and Transcript tabs. The events come from the store's own
+# rows (prompts, model calls, tool calls, subagents, compactions, the session's start and
+# end), so a session that aictl reads from the tool's session files has a flow too. The
+# hook and OpenTelemetry events of the legacy session flow are merged in when they exist.
+# A subagent id shows the whole session of its main agent.
+
+MAX_FLOW_EVENTS = 2000
+FLOW_TARGET_CHARS = 300
+FLOW_MATCH_S = 2.0
+FLOW_SESSION_MATCH_S = 60.0
+FLOW_PREVIEW_CHARS = 200
+ACTION_SUMMARY_CHARS = 200
+REPLY_NOT_KEPT = "The reply text is not kept"
+# Tables that keep the text of a conversation, both sides, for the tools whose ingesters read it.
+_MESSAGE_TABLES = ("copilot_session_messages", "vscode_chat_messages", "cursor_session_messages")
+_FLOW_ORDER = {"session_start": 0, "user_message": 1, "subagent": 2, "api_call": 3, "api_response": 4, "tool_use": 5, "error": 6}
+_FLOW_MARKERS = frozenset({"session_start", "session_end"})
+_EMPTY = (None, "", [], {})
+# The store keeps the model calls and tool calls of hooks and OpenTelemetry as rows of its own,
+# so a legacy one of these that matches no row is the same call at another time stamp.
+_STORE_COUNTED = frozenset({"api_call", "tool_use"})
+
+
+def _zero_tokens() -> dict:
+    return {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone() is not None
+
+
+def _messages(conn: sqlite3.Connection, sid: str, role: str, since: float, until: float) -> list[tuple[float, str, str]]:
+    """(ts, text, model) of the stored conversation messages of one side, oldest first."""
+    out: list[tuple[float, str, str]] = []
+    for table in _MESSAGE_TABLES:
+        if not _table_exists(conn, table):
+            continue
+        model_sql = "model" if table == "vscode_chat_messages" else "''"
+        out += conn.execute(
+            f"SELECT ts, content, {model_sql} FROM {table} WHERE session_id = ? AND role = ? AND ts >= ? AND ts < ? AND content <> '' ORDER BY ts",
+            (sid, role, since, until),
+        ).fetchall()
+    return sorted(out)
+
+
+def _flow_session_known(conn: sqlite3.Connection, sid: str) -> bool:
+    return any(
+        conn.execute(f"SELECT 1 FROM {table} WHERE session_id = ? LIMIT 1", (sid,)).fetchone()
+        for table in ("sessions", "requests", "session_prompts", "tool_invocations", "events")
+    )
+
+
+def _store_flow_events(conn: sqlite3.Connection, sid: str, since: float, until: float) -> tuple[list[dict], str]:
+    """The session's events from the store's own rows, and the tool that wrote them."""
+    from .session_flow import _input_preview
+
+    session = conn.execute("SELECT tool, project_path, started_at, ended_at FROM sessions WHERE session_id = ?", (sid,)).fetchone()
+    tool = (session[0] if session else "") or ""
+    if not tool:
+        row = conn.execute("SELECT tool FROM requests WHERE session_id = ? AND tool <> '' LIMIT 1", (sid,)).fetchone()
+        tool = row[0] if row else ""
+    events: list[dict] = []
+
+    def inside(ts: float | None) -> bool:
+        return bool(ts) and since <= ts < until
+
+    if session and inside(session[2]):
+        events.append({"ts": session[2], "type": "session_start", "tool": tool, "cwd": session[1] or "", "source": "store"})
+    if session and inside(session[3]):
+        events.append({"ts": session[3], "type": "session_end", "tool": tool, "source": "store"})
+
+    task_prompts: dict[str, str] = {}
+    prompts: list[tuple[float, str]] = []
+    for ts, aid, text in conn.execute(
+        "SELECT ts, agent_id, text FROM session_prompts WHERE session_id = ? AND ts >= ? AND ts < ? ORDER BY ts", (sid, since, until)
+    ):
+        if aid:
+            task_prompts.setdefault(aid, mask_secrets(text))
+        else:
+            prompts.append((ts, mask_secrets(text)))
+    if not prompts:
+        prompts = [(ts, mask_secrets(text)) for ts, text, _model in _messages(conn, sid, "user", since, until)]
+    for ts, text in prompts:
+        message = {
+            "ts": ts,
+            "type": "user_message",
+            "from": "user",
+            "to": tool,
+            "message": text,
+            "preview": text[:FLOW_PREVIEW_CHARS],
+            "redacted": not text,
+            "tokens": _zero_tokens(),
+            "model": "",
+            "api_calls": 0,
+            "duration_ms": 0,
+            "end_ts": ts,
+            "source": "store",
+        }
+        if text:
+            message["prompt_length"] = len(text)
+        events.append(message)
+
+    for ts, aid, model, i, o, cr, cw, cost, duration, ttft, finish, is_error, error_type, status in conn.execute(
+        "SELECT ts, agent_id, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, duration_ms,"
+        " ttft_ms, finish_reason, is_error, error_type, http_status FROM requests WHERE session_id = ? AND ts >= ? AND ts < ? ORDER BY ts",
+        (sid, since, until),
+    ):
+        call = {
+            "ts": ts,
+            "type": "api_call",
+            "from": tool,
+            "to": "api",
+            "model": model or "",
+            "tokens": {"input": i or 0, "output": o or 0, "cache_read": cr or 0, "cache_creation": cw or 0},
+            "duration_ms": duration or 0,
+            "is_error": bool(is_error),
+            "source": "store",
+        }
+        for key, value in (("ttft_ms", ttft), ("cost_usd", _usd(cost) if cost else None), ("finish_reason", finish), ("agent_id", aid)):
+            if value not in _EMPTY and value != 0:
+                call[key] = value
+        if is_error:
+            call["error_type"] = error_type or ""
+            if status:
+                call["http_status"] = status
+        events.append(call)
+
+    for ts, aid, name, target, raw_input, result, duration, is_error, exit_code, confirm in conn.execute(
+        "SELECT ts, agent_id, tool_name, target, input, result_summary, duration_ms, is_error, exit_code, confirm FROM tool_invocations"
+        f" WHERE session_id = ? AND ts >= ? AND ts < ? AND {_IS_CALL_SQL} ORDER BY ts",
+        (sid, since, until),
+    ):
+        use = {"ts": ts, "type": "tool_use", "from": tool, "to": name or "tool", "success": not is_error, "duration_ms": duration or 0, "source": "store"}
+        if target:
+            use["target"] = _one_line(target, FLOW_TARGET_CHARS)
+        try:
+            args = json.loads(raw_input) if raw_input else None
+        except ValueError:
+            args = None
+        if isinstance(args, dict) and args:
+            masked = {k: mask_secrets(v) if isinstance(v, str) else v for k, v in args.items()}
+            use["params"] = json.dumps(masked, ensure_ascii=False)
+            use["input_preview"] = _input_preview(masked)
+        if result:
+            use["result_summary"] = mask_secrets(result)
+        for key, value in (("exit_code", exit_code), ("confirm", confirm), ("agent_id", aid)):
+            if value not in _EMPTY:
+                use[key] = value
+        events.append(use)
+
+    for aid, task, model, started, ended, completed in conn.execute(
+        "SELECT agent_id, task, model, started_at, ended_at, completed FROM agents WHERE session_id = ? AND agent_id <> ? ORDER BY started_at",
+        (sid, sid),
+    ):
+        label = task or "subagent"
+        if inside(started):
+            start = {"ts": started, "type": "subagent", "from": tool, "to": label, "agent_id": aid, "source": "store"}
+            if model:
+                start["model"] = model
+            if task_prompts.get(aid):
+                start["prompt"] = task_prompts[aid]
+            events.append(start)
+        if inside(ended):
+            end = {"ts": ended, "type": "subagent_end", "from": label, "to": tool, "agent_id": aid, "completed": bool(completed), "source": "store"}
+            if started and ended >= started:
+                end["duration_ms"] = round((ended - started) * 1000)
+            events.append(end)
+
+    if _table_exists(conn, "context_events"):
+        rows = conn.execute(
+            "SELECT ts, agent_id, trigger, before_tokens, after_tokens, duration_ms FROM context_events"
+            " WHERE session_id = ? AND kind = 'compaction' ORDER BY ts",
+            (sid,),
+        ).fetchall()
+        for n, (ts, aid, trigger, before, after, took) in enumerate(rows, 1):
+            if not inside(ts):
+                continue
+            compaction = {"ts": ts, "type": "compaction", "compaction_count": n, "duration_ms": took or 0, "source": "store"}
+            if took:
+                compaction["end_ts"] = ts + took / 1000
+            for key, value in (("trigger", trigger), ("before_tokens", before), ("after_tokens", after), ("agent_id", aid)):
+                if value not in _EMPTY:
+                    compaction[key] = value
+            events.append(compaction)
+
+    for ts, text, model in _messages(conn, sid, "assistant", since, until):
+        reply = mask_secrets(text)
+        events.append(
+            {
+                "ts": ts,
+                "type": "api_response",
+                "from": "api",
+                "to": tool,
+                "model": model or "",
+                "response": reply,
+                "response_preview": reply[:FLOW_PREVIEW_CHARS],
+                "source": "store",
+            }
+        )
+    return events, tool
+
+
+def _legacy_flow_events(legacy: dict) -> tuple[list[dict], str]:
+    """The events of a legacy session flow, with the tools of a hook turn as events of their own."""
+    source = (legacy.get("summary") or {}).get("source") or "hooks"
+    out: list[dict] = []
+    for turn in legacy.get("turns") or []:
+        event = {**turn, "source": source}
+        for tool_use in event.pop("tools", None) or []:
+            ts = tool_use.get("ts") or event["ts"]
+            if tool_use.get("is_agent"):
+                out.append({"ts": ts, "type": "subagent", "to": tool_use.get("agent_type") or "subagent", "prompt": tool_use.get("args_summary") or "", "source": source})
+                continue
+            use = {"ts": ts, "type": "tool_use", "to": tool_use.get("name") or "tool", "duration_ms": tool_use.get("duration_ms") or 0, "source": source}
+            for key in ("input_preview", "result_summary"):
+                if tool_use.get(key):
+                    use[key] = tool_use[key]
+            if tool_use.get("args_summary"):
+                use["target"] = tool_use["args_summary"]
+            out.append(use)
+        out.append(event)
+    return out, source
+
+
+def _match_key(event: dict) -> tuple:
+    return (event.get("type"), event.get("to") or "") if event.get("type") == "tool_use" else (event.get("type"),)
+
+
+def _merge_flow(store: list[dict], legacy: list[dict]) -> list[dict]:
+    """Store events with the legacy events added. A legacy event of the same kind within
+    FLOW_MATCH_S of a store event is the same event: it fills the fields the store lacks.
+    A legacy model call or tool call that matches nothing is added only when the store has
+    none of that kind."""
+    index: dict[tuple, list[dict]] = defaultdict(list)
+    for event in store:
+        index[_match_key(event)].append(event)
+    for group in index.values():
+        group.sort(key=lambda e: e["ts"])
+    times = {key: [e["ts"] for e in group] for key, group in index.items()}
+    taken: set[int] = set()
+    store_kinds = {e["type"] for e in store}
+    merged = list(store)
+    for event in legacy:
+        key = _match_key(event)
+        group, ts_list = index.get(key, []), times.get(key, [])
+        window = FLOW_SESSION_MATCH_S if event.get("type") in _FLOW_MARKERS else FLOW_MATCH_S
+        at = bisect.bisect_left(ts_list, event["ts"])
+        best = None
+        for j in (at - 1, at):
+            if 0 <= j < len(group) and id(group[j]) not in taken and abs(group[j]["ts"] - event["ts"]) <= window:
+                if best is None or abs(group[j]["ts"] - event["ts"]) < abs(best["ts"] - event["ts"]):
+                    best = group[j]
+        if best is None:
+            if not (event.get("type") in _STORE_COUNTED and event.get("type") in store_kinds):
+                merged.append(event)
+            continue
+        taken.add(id(best))
+        for field, value in event.items():
+            if field not in ("ts", "source", "tokens", "api_calls", "duration_ms", "end_ts", "wall_ms") and value not in _EMPTY and best.get(field) in _EMPTY:
+                best[field] = value
+        if best.get("type") == "user_message" and best.get("message"):
+            best["redacted"] = False
+            best["preview"] = best.get("preview") or best["message"][:FLOW_PREVIEW_CHARS]
+        best["source"] = "store+" + str(event.get("source") or "")
+    merged.sort(key=lambda e: (e["ts"], _FLOW_ORDER.get(e.get("type"), 9)))
+    return merged
+
+
+def _event_tokens(event: dict) -> int:
+    tokens = event.get("tokens") or {}
+    return int(tokens.get("input") or 0) + int(tokens.get("output") or 0)
+
+
+def _aggregate_flow(events: list[dict]) -> tuple[int, int]:
+    """Each prompt takes the model calls up to the next prompt. Each event gets the tokens so
+    far in the session and in its turn. Returns the session total and the largest turn."""
+    recount = any(e["type"] == "api_call" for e in events)
+    cumulative = turn_tokens = largest = 0
+    current: dict | None = None
+    for event in events:
+        kind = event["type"]
+        if kind == "user_message":
+            current, turn_tokens = event, 0
+            if recount:
+                event.update(tokens=_zero_tokens(), api_calls=0, duration_ms=0, model="", end_ts=event["ts"])
+        elif current is not None and kind not in _FLOW_MARKERS:
+            current["end_ts"] = max(current.get("end_ts") or current["ts"], event.get("end_ts") or event["ts"])
+            if kind == "api_call" and recount:
+                tokens = current["tokens"]
+                for key in ("input", "output", "cache_read", "cache_creation"):
+                    tokens[key] += int((event.get("tokens") or {}).get(key) or 0)
+                current["api_calls"] += 1
+                current["duration_ms"] += event.get("duration_ms") or 0
+                current["model"] = current["model"] or event.get("model") or ""
+        if kind == "api_call":
+            cumulative += _event_tokens(event)
+            turn_tokens += _event_tokens(event)
+            largest = max(largest, turn_tokens)
+        event["cum_tokens"] = cumulative
+        event["rt_tokens"] = turn_tokens
+    for event in events:
+        if event["type"] == "user_message":
+            end = event.get("end_ts") or event["ts"]
+            event["wall_ms"] = round((end - event["ts"]) * 1000) if end > event["ts"] else event.get("duration_ms") or 0
+    return cumulative, largest
+
+
+def _flow_summary(events: list[dict], source: str, cumulative: int, largest: int) -> dict:
+    api = [e for e in events if e["type"] == "api_call"]
+    prompts = [e for e in events if e["type"] == "user_message"]
+    token_rows = api or prompts
+    total_input = sum(int((e.get("tokens") or {}).get("input") or 0) for e in token_rows)
+    total_output = sum(int((e.get("tokens") or {}).get("output") or 0) for e in token_rows)
+    total_cache = sum(int((e.get("tokens") or {}).get("cache_read") or 0) for e in token_rows)
+    calls = len(api) or sum(e.get("api_calls") or 0 for e in prompts)
+    ttfts = sorted(float(e["ttft_ms"]) for e in api if (e.get("ttft_ms") or 0) > 0)
+    count: dict[str, int] = defaultdict(int)
+    for event in events:
+        count[event["type"]] += 1
+    first = events[0]["ts"] if events else 0
+    last = max((e.get("end_ts") or e["ts"] for e in events), default=0)
+    return {
+        "total_turns": count["user_message"],
+        "total_api_calls": calls,
+        "total_tool_uses": count["tool_use"],
+        "total_input_tokens": total_input,
+        "total_output_tokens": total_output,
+        "total_cache_tokens": total_cache,
+        "total_tokens": total_input + total_output,
+        "avg_tokens_per_call": round((total_input + total_output) / calls) if calls else 0,
+        "compactions": count["compaction"],
+        "duration_s": round(last - first, 1) if first else 0,
+        "source": source,
+        "event_count": len(events),
+        "subagents": count["subagent"],
+        "hooks": count["hook"],
+        "errors": count["error"] + sum(1 for e in api if e.get("is_error")) + sum(1 for e in events if e["type"] == "tool_use" and e.get("success") is False),
+        "cumulative_tokens": cumulative,
+        "largest_turn_tokens": largest,
+        "ttft_ms": _median(ttfts),
+        "ttft_calls": len(ttfts),
+    }
+
+
+def _session_flow(db: Any, agent_id: str, since: float, until: float, legacy_flow: Callable[[str, float, float], dict] | None) -> tuple[str, list[dict], str] | None:
+    """(session id, merged events, source) of a board agent, or None for an unknown agent."""
+    conn = db._conn()
+    sid, _agent = _resolve_agent(conn, agent_id)
+    if legacy_flow is None:
+        from .session_flow import build_session_flow
+
+        def legacy_flow(session_id: str, lo: float, hi: float) -> dict:
+            return build_session_flow(db, session_id, lo, hi)
+
+    store, _tool = _store_flow_events(conn, sid, since, until)
+    legacy, legacy_source = _legacy_flow_events(legacy_flow(sid, since, until) or {})
+    if not store and not legacy and not _flow_session_known(conn, sid):
+        return None
+    source = ("store+" + legacy_source if legacy else "store") if store else (legacy_source if legacy else "store")
+    return sid, _merge_flow(store, legacy), source
+
+
+def agent_flow(
+    db: Any,
+    agent_id: str,
+    since: float | None = None,
+    until: float | None = None,
+    now: float | None = None,
+    legacy_flow: Callable[[str, float, float], dict] | None = None,
+) -> tuple[int, dict]:
+    """The session flow of a board agent: ``{turns, summary}`` like ``build_session_flow``.
+
+    Each event carries ``cum_tokens`` (input and output so far in the session) and
+    ``rt_tokens`` (so far in its turn). The summary counts every event in the range; only the
+    newest MAX_FLOW_EVENTS events are returned.
+    """
+    now = time.time() if now is None else now
+    lo, hi = since if since is not None else 0.0, until if until is not None else now + 60.0
+    found = _session_flow(db, agent_id, lo, hi, legacy_flow)
+    if found is None:
+        return 404, {"error": "No such agent"}
+    sid, events, source = found
+    cumulative, largest = _aggregate_flow(events)
+    summary = _flow_summary(events, source, cumulative, largest)
+    shown = events[-MAX_FLOW_EVENTS:]
+    summary["shown_events"] = len(shown)
+    summary["omitted_events"] = len(events) - len(shown)
+    return 200, {"session_id": sid, "turns": shown, "summary": summary, "capture_mode": getattr(db, "capture", "full")}
+
+
+def _clip(text: Any, limit: int = ACTION_SUMMARY_CHARS) -> str:
+    text = " ".join(str(text or "").split())
+    return text[: limit - 1] + "…" if len(text) > limit else text
+
+
+def _flow_action(event: dict) -> dict | None:
+    """One transcript action of a flow event, or None for an event that is not an action."""
+    kind = event["type"]
+    if kind not in ("api_call", "api_response", "tool_use", "subagent", "error", "hook", "compaction"):
+        return None
+    name = {
+        "api_call": event.get("model"),
+        "api_response": event.get("model"),
+        "tool_use": event.get("to"),
+        "subagent": event.get("to"),
+        "error": event.get("error_type"),
+        "hook": event.get("hook_name"),
+        "compaction": event.get("trigger") or "compaction",
+    }[kind]
+    action: dict = {"ts": event["ts"], "kind": kind, "name": name or "", "duration_ms": event.get("duration_ms") or 0}
+    inputs = {"tool_use": event.get("target") or event.get("input_preview"), "subagent": event.get("prompt")}
+    outputs = {
+        "tool_use": event.get("result_summary"),
+        "api_response": event.get("response_preview"),
+        "error": event.get("error_message"),
+        "api_call": event.get("error_type") if event.get("is_error") else None,
+    }
+    if inputs.get(kind):
+        action["input_summary"] = _clip(inputs[kind])
+    if outputs.get(kind):
+        action["output_summary"] = _clip(outputs[kind])
+    if kind == "api_call":
+        action["tokens"] = dict(event.get("tokens") or _zero_tokens())
+        action["success"] = not event.get("is_error")
+    if kind == "tool_use" and isinstance(event.get("success"), bool):
+        action["success"] = event["success"]
+    detail = {key: event[key] for key in ("exit_code", "confirm", "agent_id") if event.get(key) not in _EMPTY}
+    if kind == "api_response" and event.get("response"):
+        detail["response"] = event["response"]
+    if detail:
+        action["detail"] = detail
+    return action
+
+
+def _transcript_turn(ts: float, prompt: str = "", opened_by_prompt: bool = False) -> dict:
+    return {
+        "ts": ts,
+        "end_ts": ts,
+        "prompt": prompt,
+        "prompt_preview": prompt[:FLOW_PREVIEW_CHARS],
+        "prompt_event": opened_by_prompt,
+        "response": "",
+        "response_preview": "",
+        "model": "",
+        "tokens": {**_zero_tokens(), "total": 0},
+        "api_calls": 0,
+        "duration_ms": 0,
+        "wall_ms": 0,
+        "reply_ms": None,
+        "actions": [],
+        "tool_use_count": 0,
+    }
+
+
+def _flow_transcript(events: list[dict]) -> list[dict]:
+    """Turns from flow events: each prompt opens a turn, and what follows belongs to it."""
+    turns: list[dict] = []
+    current: dict | None = None
+    for event in events:
+        if event["type"] == "user_message":
+            current = _transcript_turn(event["ts"], event.get("message") or "", True)
+            current["end_ts"] = event.get("end_ts") or event["ts"]
+            turns.append(current)
+            continue
+        action = _flow_action(event)
+        if action is None:
+            continue
+        if current is None:
+            current = _transcript_turn(event["ts"])
+            turns.append(current)
+        current["actions"].append(action)
+        current["end_ts"] = max(current["end_ts"], event.get("end_ts") or event["ts"])
+        if action["kind"] == "api_response" and event.get("response"):
+            current["response"] = (current["response"] + "\n\n" + event["response"]) if current["response"] else event["response"]
+    for turn in turns:
+        _tally_turn(turn)
+    return turns
+
+
+def _tally_turn(turn: dict) -> None:
+    """Tokens, model calls, reply time and counts of a turn, from its actions."""
+    calls = [a for a in turn["actions"] if a["kind"] == "api_call"]
+    tokens = _zero_tokens()
+    models: dict[str, int] = defaultdict(int)
+    for call in calls:
+        for key in tokens:
+            tokens[key] += int((call.get("tokens") or {}).get(key) or 0)
+        if call.get("name"):
+            models[call["name"]] += 1
+    if calls:
+        turn["tokens"] = {**tokens, "total": tokens["input"] + tokens["output"]}
+        turn["api_calls"] = len(calls)
+        turn["model"] = max(models, key=models.get) if models else turn.get("model") or ""
+    durations = [a["duration_ms"] for a in calls if a.get("duration_ms")]
+    turn["duration_ms"] = sum(durations) if durations else turn.get("duration_ms") or 0
+    turn["reply_ms"] = sum(durations) if durations else turn.get("reply_ms")
+    turn["wall_ms"] = round((turn["end_ts"] - turn["ts"]) * 1000) if turn["end_ts"] > turn["ts"] else turn["duration_ms"]
+    turn["tool_use_count"] = sum(1 for a in turn["actions"] if a["kind"] == "tool_use")
+    turn["response_preview"] = turn["response"][:FLOW_PREVIEW_CHARS]
+
+
+def _merge_transcript(turns: list[dict], legacy: dict | None) -> list[dict]:
+    """Turns with the live analyzer's turns merged in. A legacy turn whose prompt is within
+    FLOW_MATCH_S of a turn's is the same turn: it adds the text and actions the turn lacks."""
+    if not legacy or not legacy.get("turns"):
+        return turns
+    prompted = sorted((t for t in turns if t["prompt_event"]), key=lambda t: t["ts"])
+    times = [t["ts"] for t in prompted]
+    for other in legacy["turns"]:
+        at = bisect.bisect_left(times, other.get("ts") or 0)
+        near = [prompted[j] for j in (at - 1, at) if 0 <= j < len(prompted) and abs(prompted[j]["ts"] - (other.get("ts") or 0)) <= FLOW_MATCH_S]
+        if not near:
+            turn = _transcript_turn(other.get("ts") or 0, other.get("prompt") or "", bool(other.get("prompt")))
+            turn.update({k: other[k] for k in ("end_ts", "model", "tokens", "api_calls", "duration_ms", "wall_ms") if other.get(k) not in _EMPTY})
+            turn["response"] = other.get("response") or ""
+            turn["actions"] = list(other.get("actions") or [])
+            turn["tool_use_count"] = sum(1 for a in turn["actions"] if a.get("kind") == "tool_use")
+            turn["response_preview"] = turn["response"][:FLOW_PREVIEW_CHARS]
+            turns.append(turn)
+            continue
+        turn = min(near, key=lambda t: abs(t["ts"] - (other.get("ts") or 0)))
+        for key in ("prompt", "prompt_preview", "response"):
+            if other.get(key) and not turn.get(key):
+                turn[key] = other[key]
+        for action in other.get("actions") or []:
+            same = any(
+                a["kind"] == action.get("kind") and a.get("name") == action.get("name") and abs(a["ts"] - (action.get("ts") or 0)) <= FLOW_MATCH_S
+                for a in turn["actions"]
+            )
+            if not same:
+                turn["actions"].append(action)
+        turn["actions"].sort(key=lambda a: a.get("ts") or 0)
+        turn["end_ts"] = max(turn["end_ts"], other.get("end_ts") or 0)
+        _tally_turn(turn)
+    turns.sort(key=lambda t: t["ts"])
+    return turns
+
+
+def agent_transcript(
+    db: Any,
+    agent_id: str,
+    now: float | None = None,
+    legacy_flow: Callable[[str, float, float], dict] | None = None,
+    legacy_transcript: Callable[[str], dict | None] | None = None,
+) -> tuple[int, dict]:
+    """The transcript of a board agent's session: one turn per prompt, with its reply and actions.
+
+    ``replies_kept`` is False when no reply text is stored for the session; the turns then
+    carry the prompts, actions and tokens, and ``reply_note`` says that the text is not kept.
+    """
+    now = time.time() if now is None else now
+    found = _session_flow(db, agent_id, 0.0, now + 60.0, legacy_flow)
+    if found is None:
+        return 404, {"error": "No such agent"}
+    sid, events, source = found
+    cumulative, largest = _aggregate_flow(events)
+    flow_summary = _flow_summary(events, source, cumulative, largest)
+    live = legacy_transcript(sid) if legacy_transcript else None
+    turns = _merge_transcript(_flow_transcript(events), live)
+    replies_kept = any(t["response"] for t in turns)
+    actions = [a for t in turns for a in t["actions"]]
+    summary = {
+        **{k: flow_summary[k] for k in ("total_input_tokens", "total_output_tokens", "total_cache_tokens", "total_tokens", "avg_tokens_per_call", "duration_s", "source")},
+        "total_turns": sum(1 for t in turns if t["prompt_event"]),
+        "total_api_calls": sum(t["api_calls"] for t in turns),
+        "total_tool_uses": sum(t["tool_use_count"] for t in turns),
+        "compactions": sum(1 for a in actions if a.get("kind") == "compaction"),
+        "errors": sum(1 for a in actions if a.get("kind") == "error" or (a.get("kind") in ("api_call", "tool_use") and a.get("success") is False)),
+        "subagents": sum(1 for a in actions if a.get("kind") == "subagent"),
+        "event_count": len(actions) + sum(1 for t in turns if t["prompt_event"]),
+    }
+    return 200, {
+        "session_id": sid,
+        "turns": turns,
+        "summary": summary,
+        "capture_mode": getattr(db, "capture", "full"),
+        "replies_kept": replies_kept,
+        "reply_note": None if replies_kept else REPLY_NOT_KEPT,
+        "is_live": bool(live and live.get("is_live")),
+    }
+
+
 RUN_HISTORY_DAYS = 30
 MAX_RUN_ROWS = 200
 
@@ -5240,3 +5823,547 @@ def run_action(db: Any, root: Any, data: Any, port: int | None = None) -> tuple[
         except Exception:  # noqa: BLE001 - audit logging must never block the action itself
             logger.debug("Could not record board action %s", action, exc_info=True)
     return 200 if result.get("ok") else 500, {"action": action, **result}
+
+
+# ─── /api/board/context ───────────────────────────────────────────
+# What each tool loads into a model's context window: the files the scan found,
+# the agent memory, the lifetime totals each tool reports, and the last days of
+# model calls in the history. The Tool filter applies to every per-tool list.
+
+CONTEXT_RECENT_S = 300.0
+CONTEXT_DAYS = 7
+CONTEXT_GROWTH_S = 7 * 86400.0
+CONTEXT_GROWTH_POINTS = 120
+# Files listed for each tool, largest first. The category totals count every file.
+CONTEXT_MAX_FILES = 400
+CONTEXT_MAP_ITEMS = 15
+CONTEXT_ERRORS = 20
+CONTEXT_DB_TTL_S = 60.0
+CONTEXT_MEMO_KEYS = 8
+DEFAULT_CONTEXT_WINDOW = 200_000
+_CONTEXT_SKIP = frozenset({"aictl", "any"})
+_CONTEXT_GLOBAL_SCOPES = frozenset({"global", "session"})
+_CONTEXT_GLOBAL_PARTS = ("/.claude/", "/.config/", "/Library/", "/AppData/")
+_CONTEXT_FIXTURE_RE = re.compile(r"/(fixtures?|__fixtures__|__tests__)/")
+_CONTEXT_SENTINEL_RE = re.compile(r"^(SKILL|skill|index|INDEX|README|readme)$")
+_MEMORY_LABELS = {
+    "claude-user-memory": "Claude user memory",
+    "claude-project-memory": "Claude project memory",
+    "claude-auto-memory": "Claude auto memory",
+    "copilot-agent-memory": "Copilot agent memory",
+    "copilot-session-state": "Copilot session state",
+    "copilot-user-memory": "Copilot instructions",
+    "codex-user-memory": "Codex instructions",
+    "windsurf-user-memory": "Windsurf global rules",
+}
+_context_memo: dict[tuple, bytes] = {}
+_context_db_memo: dict[tuple, tuple[float, dict]] = {}
+_context_lock = threading.Lock()
+
+
+def _ctx_field(obj: Any, name: str, default: Any = None) -> Any:
+    value = obj.get(name, default) if isinstance(obj, dict) else getattr(obj, name, default)
+    return default if value is None else value
+
+
+def _ctx_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def context_policy(sent_to_llm: str | None) -> str:
+    """The Context Window Map's policy of a file: yes, on-demand, conditional or no."""
+    v = (sent_to_llm or "").lower()
+    if v in ("yes", "on-demand"):
+        return v
+    if v in ("conditional", "partial"):
+        return "conditional"
+    return "no"
+
+
+def context_project(path: str, root: str, scope: str = "") -> str:
+    """The project a file belongs to: the first folder under the root, or a bracketed place."""
+    if scope in _CONTEXT_GLOBAL_SCOPES:
+        return "(global)"
+    p = (path or "").replace("\\", "/")
+    r = (root or "").replace("\\", "/").rstrip("/")
+    if not p:
+        return "(unknown)"
+    if r and p.startswith(r + "/"):
+        first = p[len(r) + 1 :].split("/")[0]
+        return "(root)" if first.startswith(".") else first
+    if "/.claude/projects/" in p:
+        return "(shadow)"
+    if any(part in p for part in _CONTEXT_GLOBAL_PARTS):
+        return "(global)"
+    return "(other)"
+
+
+def context_item_name(path: str) -> str:
+    """A file's short name without extension. SKILL.md, index.md and README.md take their folder's name."""
+    parts = (path or "").replace("\\", "/").split("/")
+    fname = parts.pop() if parts else ""
+    if not fname:
+        return "unknown"
+    dot = fname.rfind(".")
+    base = fname[:dot] if dot > 0 else fname
+    if _CONTEXT_SENTINEL_RE.match(base) and parts and parts[-1]:
+        return parts[-1]
+    return base
+
+
+def _context_tools(snapshot: Any, tools: tuple[str, ...] | None) -> list[Any]:
+    from ..tools import budget_tools
+
+    listed = [t for t in (_ctx_field(snapshot, "tools", []) or []) if _ctx_field(t, "tool", "") not in _CONTEXT_SKIP]
+    return budget_tools(listed, tools)
+
+
+def _context_model(tool: str, configs: list, telemetry: dict[str, dict]) -> tuple[str | None, str | None]:
+    """The model a tool is set to use, and where that came from."""
+    for c in configs:
+        if isinstance(c, dict) and c.get("tool") == tool and c.get("model"):
+            return str(c["model"]), "settings"
+    tel = telemetry.get(tool) or {}
+    current = (tel.get("quota_state") or {}).get("current_model")
+    if current:
+        return str(current), "telemetry"
+    by_model = tel.get("by_model") or {}
+    if isinstance(by_model, dict) and by_model:
+        used = max(by_model, key=lambda m: _ctx_int((by_model[m] or {}).get("input_tokens")) + _ctx_int((by_model[m] or {}).get("output_tokens")))
+        return str(used), "most used"
+    return None, None
+
+
+def _context_budget(tool: Any, root: str, model: str | None, model_from: str | None) -> dict:
+    from ..data.model_pricing import context_window_for
+    from ..tools import compute_token_budget
+
+    b = compute_token_budget([tool], root)
+    known = context_window_for(model) if model else None
+    window = known or DEFAULT_CONTEXT_WINDOW
+    global_tokens = b["global_tokens"]
+    projects = []
+    for name, buckets in (b.get("projects") or {}).items():
+        own = buckets["always"] + buckets["on_demand"] + buckets["conditional"]
+        projects.append(
+            {
+                "project": name,
+                "always": buckets["always"],
+                "on_demand": buckets["on_demand"],
+                "conditional": buckets["conditional"],
+                "tokens": own,
+                "estimate": global_tokens + own,
+                "share": round((global_tokens + own) / window, 4),
+            }
+        )
+    projects.sort(key=lambda p: -p["tokens"])
+    always = b["always_loaded_tokens"]
+    potential = b["total_potential_tokens"]
+    return {
+        "tool": tool.tool,
+        "label": _ctx_field(tool, "label", "") or _label(tool.tool),
+        "model": model,
+        "model_from": model_from,
+        "window": window,
+        "window_assumed": known is None,
+        "always": always,
+        "on_demand": b["on_demand_tokens"],
+        "conditional": b["conditional_tokens"],
+        "cacheable": b["cacheable_tokens"],
+        "survives_compaction": b["survives_compaction_tokens"],
+        "never_sent_files": b["never_sent_count"],
+        "max_potential": potential,
+        "always_share": round(always / window, 4),
+        "potential_share": round(potential / window, 4),
+        "global_tokens": global_tokens,
+        "largest_project": b["largest_project"] or None,
+        "raw_total": b["raw_total_all_projects"],
+        "projects": projects,
+    }
+
+
+def _context_categories(tool: Any) -> dict:
+    from ..tools import budget_bucket
+
+    kinds: dict[str, dict] = {}
+    for f in tool.files:
+        kind = f.kind or "other"
+        row = kinds.setdefault(
+            kind, {"kind": kind, "files": 0, "bytes": 0, "tokens": 0, "sent": 0, "never_sent": 0, "always": 0, "on_demand": 0, "conditional": 0}
+        )
+        tok = _ctx_int(f.tokens)
+        bucket = budget_bucket(f.sent_to_llm, f.loaded_when)
+        row["files"] += 1
+        row["bytes"] += _ctx_int(f.size)
+        row["tokens"] += tok
+        if bucket == "never":
+            row["never_sent"] += tok
+        else:
+            row["sent"] += tok
+            row[bucket] += tok
+    rows = sorted(kinds.values(), key=lambda r: (-r["tokens"], r["kind"]))
+    return {
+        "tool": tool.tool,
+        "label": _ctx_field(tool, "label", "") or _label(tool.tool),
+        "tokens": sum(r["tokens"] for r in rows),
+        "sent": sum(r["sent"] for r in rows),
+        "never_sent": sum(r["never_sent"] for r in rows),
+        "kinds": rows,
+    }
+
+
+def _context_file(f: Any, tool: str, root: str, now: float) -> dict:
+    from ..tools import budget_bucket
+
+    mtime = _as_number(f.mtime) or None
+    return {
+        "path": f.path,
+        "name": _basename(f.path),
+        "tool": tool,
+        "kind": f.kind or "other",
+        "scope": f.scope or None,
+        "project": context_project(f.path, root, f.scope),
+        "size": _ctx_int(f.size),
+        "tokens": _ctx_int(f.tokens),
+        "sent_to_llm": f.sent_to_llm or None,
+        "policy": context_policy(f.sent_to_llm),
+        "load": budget_bucket(f.sent_to_llm, f.loaded_when),
+        "loaded_when": f.loaded_when or None,
+        "cacheable": f.cacheable or None,
+        "mtime": mtime,
+        "recent": bool(mtime and 0 <= now - mtime < CONTEXT_RECENT_S),
+    }
+
+
+def _context_map(tool_list: list[Any], root: str) -> dict:
+    cells: dict[tuple, dict] = {}
+    items: dict[tuple, dict[str, int]] = {}
+    policy = {"yes": 0, "on-demand": 0, "conditional": 0, "no": 0}
+    total = 0
+    for t in tool_list:
+        for f in t.files:
+            tok = _ctx_int(f.tokens)
+            kind = f.kind or "other"
+            scope = f.scope or "external"
+            project = context_project(f.path, root, f.scope)
+            pol = context_policy(f.sent_to_llm)
+            cell = cells.setdefault((t.tool, kind, scope, project, pol), {"files": 0, "tokens": 0})
+            cell["files"] += 1
+            cell["tokens"] += tok
+            named = items.setdefault((project, kind), {})
+            name = context_item_name(f.path)
+            named[name] = named.get(name, 0) + tok
+            policy[pol] += tok
+            total += tok
+    rows = [
+        {"tool": k[0], "kind": k[1], "scope": k[2], "project": k[3], "policy": k[4], **v}
+        for k, v in sorted(cells.items(), key=lambda kv: (-kv[1]["tokens"], kv[0]))
+    ]
+    item_rows = []
+    for (project, kind), named in sorted(items.items()):
+        ranked = sorted(named.items(), key=lambda kv: (-kv[1], kv[0]))
+        top = ranked[:CONTEXT_MAP_ITEMS]
+        rest = sum(v for _, v in ranked[CONTEXT_MAP_ITEMS:])
+        item_rows.extend({"project": project, "kind": kind, "name": n, "tokens": v} for n, v in top)
+        if rest:
+            item_rows.append({"project": project, "kind": kind, "name": "(other)", "tokens": rest})
+    return {"total": total, "policy": policy, "rows": rows, "items": item_rows}
+
+
+def _context_memory(snapshot: Any, now: float) -> list[dict]:
+    out = []
+    for m in _ctx_field(snapshot, "agent_memory", []) or []:
+        path = str(_ctx_field(m, "file", "") or "")
+        source = str(_ctx_field(m, "source", "") or "")
+        mtime = _as_number(_ctx_field(m, "mtime", 0)) or None
+        out.append(
+            {
+                "file": path,
+                "name": _basename(path),
+                "source": source,
+                "source_label": _MEMORY_LABELS.get(source, source or "Other"),
+                "profile": str(_ctx_field(m, "profile", "") or ""),
+                "tokens": _ctx_int(_ctx_field(m, "tokens", 0)),
+                "lines": _ctx_int(_ctx_field(m, "lines", 0)),
+                "mtime": mtime,
+                "recent": bool(mtime and 0 <= now - mtime < CONTEXT_RECENT_S),
+            }
+        )
+    return out
+
+
+def _context_telemetry(raw: dict) -> dict:
+    quota = raw.get("quota_state") if isinstance(raw.get("quota_state"), dict) else {}
+    by_model = raw.get("by_model") if isinstance(raw.get("by_model"), dict) else {}
+    errors = [e for e in raw.get("errors") or [] if isinstance(e, dict)]
+    errors.sort(key=lambda e: str(e.get("timestamp") or ""), reverse=True)
+    quality = raw.get("cost_quality") or "unknown"
+    cost = _as_number(raw.get("cost_usd"))
+    changes = quota.get("code_changes") if isinstance(quota.get("code_changes"), dict) else None
+    active_in = _ctx_int(raw.get("active_session_input"))
+    active_out = _ctx_int(raw.get("active_session_output"))
+    tool = str(raw.get("tool") or "")
+    return {
+        "tool": tool,
+        "label": _label(tool),
+        "source": raw.get("source") or None,
+        "confidence": _as_number(raw.get("confidence")),
+        "as_of": raw.get("as_of") or None,
+        "token_quality": raw.get("token_quality") or None,
+        "input": _ctx_int(raw.get("input_tokens")),
+        "output": _ctx_int(raw.get("output_tokens")),
+        "cache_read": _ctx_int(raw.get("cache_read_tokens")),
+        "cache_write": _ctx_int(raw.get("cache_creation_tokens")),
+        "sessions": _ctx_int(raw.get("total_sessions")),
+        "messages": _ctx_int(raw.get("total_messages")),
+        # A cost of 0 with no price source is not known, not free.
+        "cost_usd": None if quality == "unknown" and not cost else cost,
+        "cost_quality": quality,
+        "cost_reason": raw.get("cost_reason") or None,
+        "premium_requests": _as_number(quota.get("premium_requests_used")) or None,
+        "quota": {
+            "premium_requests": _as_number(quota.get("premium_requests_used")) or None,
+            "api_duration_ms": _as_number(quota.get("total_api_duration_ms")) or None,
+            "current_model": quota.get("current_model") or None,
+            "lines_added": _ctx_int(changes.get("lines_added")) if changes else None,
+            "lines_removed": _ctx_int(changes.get("lines_removed")) if changes else None,
+            "files_modified": _ctx_int(changes.get("files_modified")) if changes else None,
+        },
+        "active": {"input": active_in, "output": active_out, "messages": _ctx_int(raw.get("active_session_messages"))} if active_in or active_out else None,
+        "by_model": sorted(
+            (
+                {
+                    "model": str(model),
+                    "input": _ctx_int(u.get("input_tokens")),
+                    "output": _ctx_int(u.get("output_tokens")),
+                    "cache_read": _ctx_int(u.get("cache_read_tokens")),
+                    "cache_write": _ctx_int(u.get("cache_creation_tokens")),
+                    "requests": _ctx_int(u.get("requests")) or None,
+                    "cost_usd": _as_number(u.get("cost_usd")) or None,
+                }
+                for model, u in by_model.items()
+                if isinstance(u, dict)
+            ),
+            key=lambda r: -(r["input"] + r["output"]),
+        ),
+        "errors": [
+            {"ts": e.get("timestamp") or None, "type": e.get("type") or None, "message": str(e.get("message") or ""), "model": e.get("model") or None}
+            for e in errors[:CONTEXT_ERRORS]
+        ],
+    }
+
+
+def _is_workflow(path: str, kind: str) -> bool:
+    lower = path.lower()
+    return path.endswith(".workflow.md") or kind in ("workflow", "workflows") or (kind in ("command", "commands") and "/workflows/" in lower)
+
+
+def _is_prompt(path: str, kind: str) -> bool:
+    lower = path.lower()
+    return path.endswith(".prompt.md") or kind == "prompt" or (kind in ("command", "commands") and ("/prompts/" in lower or "/commands/" in lower))
+
+
+def _context_workflows(tool_list: list[Any]) -> list[dict]:
+    out: dict[str, dict] = {}
+    for t in tool_list:
+        for f in t.files:
+            path = (f.path or "").replace("\\", "/")
+            kind = f.kind or ""
+            if not path or path in out or _CONTEXT_FIXTURE_RE.search("/" + path.lower()):
+                continue
+            if _is_workflow(path, kind):
+                what, suffix = "workflow", ".workflow.md"
+            elif _is_prompt(path, kind):
+                what, suffix = "prompt", ".prompt.md"
+            else:
+                continue
+            name = _basename(path)
+            name = name[: -len(suffix)] if name.endswith(suffix) else (name[:-3] if name.endswith(".md") else name)
+            out[path] = {
+                "path": f.path,
+                "name": name,
+                "type": what,
+                "kind": kind or None,
+                "tool": t.tool,
+                "size": _ctx_int(f.size),
+                "tokens": _ctx_int(f.tokens),
+                "mtime": _as_number(f.mtime) or None,
+            }
+    return sorted(out.values(), key=lambda w: (w["type"], w["name"].lower(), w["path"]))
+
+
+def _context_daily(conn: sqlite3.Connection, tools: tuple[str, ...] | None, now: float) -> dict:
+    """Model calls in the history for the last CONTEXT_DAYS local days, by day and model."""
+    days, first = _context_days(now)
+    where = "ts >= ?"
+    params: list[Any] = [first]
+    if tools is not None:
+        ids = stored_ids_for(tools)
+        if not ids:
+            return {"days": days, "since": first, "models": [], "rows": []}
+        where += " AND tool IN (" + ",".join("?" for _ in ids) + ")"
+        params.extend(ids)
+    sql = (
+        "SELECT date(ts, 'unixepoch', 'localtime'), model, COUNT(*),"
+        " SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_creation_tokens),"
+        " SUM(CASE WHEN cost_usd > 0 THEN cost_usd ELSE 0 END),"
+        " SUM(CASE WHEN cost_usd > 0 THEN 0 ELSE input_tokens END), SUM(CASE WHEN cost_usd > 0 THEN 0 ELSE output_tokens END),"
+        " SUM(CASE WHEN cost_usd > 0 THEN 0 ELSE cache_read_tokens END), SUM(CASE WHEN cost_usd > 0 THEN 0 ELSE cache_creation_tokens END),"
+        " MAX(ts)"
+        f" FROM requests WHERE {where} GROUP BY 1, 2"
+    )
+    rows = []
+    models: dict[str, dict] = {}
+    for day, model, n, i, o, cr, cw, stored, ri, ro, rcr, rcw, last in conn.execute(sql, params).fetchall():
+        if day not in days:
+            continue
+        name = model or None
+        i, o, cr, cw = (_ctx_int(v) for v in (i, o, cr, cw))
+        rest = _ctx_int(ri) + _ctx_int(ro) + _ctx_int(rcr) + _ctx_int(rcw)
+        listed = _list_cost(model, _ctx_int(ri), _ctx_int(ro), _ctx_int(rcr), _ctx_int(rcw), last)[0] if rest and model else None
+        cost = None if rest and listed is None else round((stored or 0.0) + (listed or 0.0), 6)
+        tokens = i + o + cr + cw
+        rows.append(
+            {"date": day, "model": name, "requests": n, "input": i, "output": o, "cache_read": cr, "cache_write": cw, "tokens": tokens, "cost_usd": cost}
+        )
+        m = models.setdefault(name or "", {"model": name, "tokens": 0, "requests": 0, "cost_usd": 0.0})
+        m["tokens"] += tokens
+        m["requests"] += n
+        m["cost_usd"] = None if m["cost_usd"] is None or cost is None else round(m["cost_usd"] + cost, 6)
+    rows.sort(key=lambda r: (r["date"], -r["tokens"]))
+    return {"days": days, "since": first, "models": sorted(models.values(), key=lambda m: -m["tokens"]), "rows": rows}
+
+
+def _context_growth(conn: sqlite3.Connection, now: float) -> list[dict]:
+    """Agent memory size over the last days, at most CONTEXT_GROWTH_POINTS points, each the last value of its time."""
+    since = now - CONTEXT_GROWTH_S
+    first = conn.execute("SELECT MIN(ts) FROM system_snapshots WHERE ts >= ?", (since,)).fetchone()[0]
+    if first is None:
+        return []
+    step = max(60.0, (now - first) / CONTEXT_GROWTH_POINTS)
+    rows = conn.execute(
+        "SELECT MAX(ts), mem_tokens, memory_entries FROM system_snapshots WHERE ts >= ? GROUP BY CAST((ts - ?) / ? AS INTEGER) ORDER BY 1",
+        (first, first, step),
+    ).fetchall()
+    return [{"ts": ts, "mem_tokens": _ctx_int(mt), "memory_entries": _ctx_int(me)} for ts, mt, me in rows]
+
+
+def _context_db_parts(db: Any, tools: tuple[str, ...] | None, now: float) -> dict:
+    empty = {"daily": _context_daily_empty(now), "growth": []}
+    if db is None:
+        return empty
+    key = (id(db), tools)
+    with _context_lock:
+        hit = _context_db_memo.get(key)
+    if hit and 0 <= now - hit[0] < CONTEXT_DB_TTL_S:
+        return hit[1]
+    try:
+        conn = db._conn()
+        parts = {"daily": _context_daily(conn, tools, now), "growth": _context_growth(conn, now)}
+    except sqlite3.Error:
+        logger.debug("Could not read the context history", exc_info=True)
+        return empty
+    with _context_lock:
+        _context_db_memo[key] = (now, parts)
+        while len(_context_db_memo) > CONTEXT_MEMO_KEYS:
+            _context_db_memo.pop(next(iter(_context_db_memo)))
+    return parts
+
+
+def _context_days(now: float) -> tuple[list[str], float]:
+    """The last CONTEXT_DAYS local dates, oldest first, and the start of the first."""
+    today = datetime.fromtimestamp(now)
+    days = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(CONTEXT_DAYS - 1, -1, -1)]
+    return days, datetime.strptime(days[0], "%Y-%m-%d").timestamp()
+
+
+def _context_daily_empty(now: float) -> dict:
+    days, first = _context_days(now)
+    return {"days": days, "since": first, "models": [], "rows": []}
+
+
+def compute_context(db: Any, store: Any, tools: tuple[str, ...] | None = None, now: float | None = None) -> dict:
+    """Everything ``GET /api/board/context`` returns. Token counts are estimates at four characters per token."""
+    from ..tool_scope import is_selected
+    from ..tools import compute_token_budget
+
+    now = time.time() if now is None else now
+    snapshot = getattr(store, "snapshot", None)
+    root = str(_ctx_field(snapshot, "root", "") or "")
+    tool_list = _context_tools(snapshot, tools) if snapshot is not None else []
+    configs = list(_ctx_field(snapshot, "tool_configs", []) or [])
+    raw_telemetry = [t for t in _ctx_field(snapshot, "tool_telemetry", []) or [] if isinstance(t, dict)]
+    by_tool = {str(t.get("tool") or ""): t for t in raw_telemetry}
+    budget_rows = []
+    for t in tool_list:
+        if not t.files:
+            continue
+        model, model_from = _context_model(t.tool, configs, by_tool)
+        budget_rows.append(_context_budget(t, root, model, model_from))
+    budget_rows.sort(key=lambda b: (-b["always"], b["tool"]))
+    totals = compute_token_budget(tool_list, root)
+    files = []
+    for t in tool_list:
+        listed = sorted(t.files, key=lambda f: (-_ctx_int(f.tokens), f.path))
+        files.append(
+            {
+                "tool": t.tool,
+                "label": _ctx_field(t, "label", "") or _label(t.tool),
+                "count": len(listed),
+                "truncated": len(listed) > CONTEXT_MAX_FILES,
+                "files": [_context_file(f, t.tool, root, now) for f in listed[:CONTEXT_MAX_FILES]],
+            }
+        )
+    files = [f for f in files if f["count"]]
+    files.sort(key=lambda f: (-sum(x["tokens"] for x in f["files"]), f["tool"]))
+    categories = [_context_categories(t) for t in tool_list if t.files]
+    categories.sort(key=lambda c: (-c["tokens"], c["tool"]))
+    telemetry = [_context_telemetry(t) for t in raw_telemetry if t.get("tool") and is_selected(str(t["tool"]), tools)]
+    telemetry.sort(key=lambda t: (-(t["input"] + t["output"]), t["tool"]))
+    db_parts = _context_db_parts(db, tools, now)
+    memory = _context_memory(snapshot, now) if snapshot is not None else []
+    return {
+        "generated_at": now,
+        "root": root or None,
+        "budget": {
+            "tools": budget_rows,
+            "totals": {
+                "always": totals["always_loaded_tokens"],
+                "on_demand": totals["on_demand_tokens"],
+                "conditional": totals["conditional_tokens"],
+                "cacheable": totals["cacheable_tokens"],
+                "max_potential": totals["total_potential_tokens"],
+                "never_sent_files": totals["never_sent_count"],
+            },
+        },
+        "categories": categories,
+        "map": _context_map(tool_list, root),
+        "memory": {"entries": memory, "tokens": sum(m["tokens"] for m in memory), "growth": db_parts["growth"]},
+        "files": files,
+        "telemetry": telemetry,
+        "daily": db_parts["daily"],
+        "workflows": _context_workflows(tool_list),
+    }
+
+
+def context_bytes(db: Any, store: Any, query: str, now: float | None = None) -> bytes:
+    """The answer for ``/api/board/context``, kept for each snapshot version. ``tool`` is as on ``/api/board``."""
+    qs = parse_qs(query, keep_blank_values=True)
+    tools = normalize_selection(part for raw in qs["tool"] for part in raw.split(",")) if "tool" in qs else None
+    version = getattr(store, "version", None)
+    key = (id(store), version, tools)
+    if version is not None:
+        with _context_lock:
+            body = _context_memo.get(key)
+        if body is not None:
+            return body
+    body = json.dumps(compute_context(db, store, tools, now)).encode("utf-8")
+    if version is not None:
+        with _context_lock:
+            _context_memo[key] = body
+            while len(_context_memo) > CONTEXT_MEMO_KEYS:
+                _context_memo.pop(next(iter(_context_memo)))
+    return body

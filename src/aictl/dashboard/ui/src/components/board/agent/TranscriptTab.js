@@ -1,6 +1,7 @@
 // ─── Agent drawer: Transcript — each prompt with its reply and actions ─
 // Oldest first. A reply renders as Markdown, with a Source toggle. While the
-// agent runs, the transcript is read again every 5 s.
+// agent runs, the transcript is read again every 5 s. The turns come from
+// /api/board/agent/transcript, which says when the store keeps no reply text.
 import { html } from 'htm/preact';
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import * as api from '../../../api.js';
@@ -9,19 +10,13 @@ import { captureHowto } from '../../ui/TextNotRetained.js';
 import { FixedPanel, useDetail } from '../Drawer.js';
 import { NA, fmtMs, fmtN } from '../format.js';
 import { Stats } from '../Panel.js';
-import { Wait, SessionNote, clip, clock, isActive, sessionIdOf, windowOf } from './common.js';
-import { flowToTranscript, isFlow, responseOf, visibleTurns } from './transcriptModel.js';
+import { Wait, SessionNote, clip, clock, isActive } from './common.js';
+import { responseOf, visibleTurns } from './transcriptModel.js';
 
 export const REFRESH_MS = 5000;
 
 const KIND_LABEL = { tool_use: 'Tool', api_call: 'Model call', api_response: 'Reply', file_edit: 'Edit', compaction: 'Compaction', subagent: 'Subagent', error: 'Error', hook: 'Hook' };
 const KIND_COLOR = { tool_use: 'var(--s3)', api_call: 'var(--s2)', api_response: 'var(--ink3)', file_edit: 'var(--s4)', compaction: 'var(--warn)', subagent: 'var(--s5)', error: 'var(--crit)', hook: 'var(--s4)' };
-
-function load(sid, win) {
-  return api.getTranscript(sid)
-    .then(d => (isFlow(d) ? flowToTranscript(d) : d))
-    .catch(() => api.getSessionFlow(sid, win.since, win.until).then(flowToTranscript));
-}
 
 function TokenBar({ tokens }) {
   const t = tokens || {};
@@ -44,7 +39,7 @@ function ActionRow({ x, turnTs }) {
   </li>`;
 }
 
-function TurnCard({ turn, n, open, onToggle, withheld }) {
+function TurnCard({ turn, n, open, onToggle, withheld, replyNote }) {
   const actions = turn.actions || [];
   const reply = responseOf(turn);
   const tok = turn.tokens || {};
@@ -70,15 +65,13 @@ function TurnCard({ turn, n, open, onToggle, withheld }) {
     </div>
     ${reply ? html`<div class="bd-ag-msg"><span class="bd-ag-who">Reply</span>
       ${open ? html`<div class="bd-ag-reply"><${TextView} text=${reply} path="reply.md" source=${html`<div class="bd-ptext">${reply}</div>`}/></div>` : html`<div class="bd-ag-text">${clip(turn.response_preview || reply, 200)}</div>`}
-    </div>` : open ? html`<div class="bd-ag-msg"><span class="bd-ag-who">Reply</span><div class="bd-ag-text bd-ag-dim">${withheld ? 'Text not kept.' : 'No reply captured.'}</div></div>` : null}
+    </div>` : open ? html`<div class="bd-ag-msg"><span class="bd-ag-who">Reply</span><div class="bd-ag-text bd-ag-dim">${withheld ? 'Text not kept.' : replyNote || 'No reply captured.'}</div></div>` : null}
     <${TokenBar} tokens=${tok}/>
     ${open && actions.length ? html`<ul class="bd-ag-acts" aria-label=${'Actions of turn ' + n}>${actions.map((x, i) => html`<${ActionRow} key=${i} x=${x} turnTs=${turn.ts}/>`)}</ul>` : null}
   </li>`;
 }
 
 export default function TranscriptTab({ a, st, ctx }) {
-  const sid = sessionIdOf(a);
-  const win = windowOf(a);
   const live = isActive(st);
   const [auto, setAuto] = useState(true);
   const [beat, setBeat] = useState(0);
@@ -87,9 +80,9 @@ export default function TranscriptTab({ a, st, ctx }) {
     const t = setInterval(() => setBeat(b => b + 1), REFRESH_MS);
     return () => clearInterval(t);
   }, [live, auto]);
-  const { data, error } = useDetail(() => load(sid, win), 'transcript:' + sid, beat);
+  const { data, error } = useDetail(o => api.getBoardAgentTranscript(a.id, o), 'transcript:' + a.id, beat);
   const [open, setOpen] = useState(() => new Set());
-  const mode = ctx.data?.capture_mode;
+  const mode = data?.capture_mode ?? ctx.data?.capture_mode;
   const withheld = (mode != null && mode !== 'full') || data?.content_retained === false;
   const turns = useMemo(() => visibleTurns(data, withheld), [data, withheld]);
   if (!data) return html`<${Wait} error=${error} what="the transcript"/>`;
@@ -100,6 +93,7 @@ export default function TranscriptTab({ a, st, ctx }) {
     return next;
   });
   const s = data.summary || {};
+  const replyNote = data.replies_kept === false ? (data.reply_note || 'The reply text is not kept') + '.' : null;
   return html`<${SessionNote} a=${a}/>
     ${withheld ? html`<div class="bd-banner bd-ag-capture" role="status">${'Text is not kept: the capture mode is ' + (mode && mode !== 'full' ? mode : 'not full') + ' for this session. Counts, times, models and tool calls are still shown. ' + captureHowto()}</div>` : null}
     <${FixedPanel} id="agtrs" title="Summary" sub=${s.source || ''}>
@@ -110,7 +104,8 @@ export default function TranscriptTab({ a, st, ctx }) {
         ${turns.length ? html`<button type="button" class="bd-btn" onClick=${() => setOpen(allOpen ? new Set() : new Set(turns.map((_, i) => i)))}>${allOpen ? 'Collapse all' : 'Expand all'}</button>` : null}
         ${live ? html`<label class="bd-ag-check"><input type="checkbox" checked=${auto} onChange=${e => setAuto(e.currentTarget.checked)}/>Refresh while it runs</label>` : null}
       </div>
-      ${turns.length ? html`<ol class="bd-ag-turnl">${turns.map((t, i) => html`<${TurnCard} key=${i} turn=${t} n=${i + 1} open=${open.has(i)} onToggle=${() => toggle(i)} withheld=${withheld}/>`)}</ol>`
-        : html`<div class="bd-empty">${withheld ? 'No turn has times or tokens to show.' : 'No transcript for this session: no prompt or tool event was captured.'}</div>`}
+      ${replyNote && !withheld && turns.length ? html`<div class="bd-note" role="status">${replyNote} The prompts, model calls, tool calls and tokens of each turn are shown.</div>` : null}
+      ${turns.length ? html`<ol class="bd-ag-turnl">${turns.map((t, i) => html`<${TurnCard} key=${i} turn=${t} n=${i + 1} open=${open.has(i)} onToggle=${() => toggle(i)} withheld=${withheld} replyNote=${replyNote}/>`)}</ol>`
+        : html`<div class="bd-empty">${withheld ? 'No turn has times or tokens to show.' : 'No turn for this session: aictl has no prompt, model call or tool call of it.'}</div>`}
     </${FixedPanel}>`;
 }

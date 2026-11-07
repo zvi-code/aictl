@@ -9,7 +9,7 @@ import { FixedPanel, useDetail } from '../Drawer.js';
 import { NA, fmtMs, fmtN, stamp } from '../format.js';
 import { Stats } from '../Panel.js';
 import { hideTip, showTip } from '../tip.js';
-import { Wait, Seg, SessionNote, clock, isActive, pretty, sessionIdOf, usePref, windowOf } from './common.js';
+import { Wait, Seg, SessionNote, clock, isActive, pretty, usePref } from './common.js';
 import { LANE, LANE_COLOR, describe, flowModel, inputOf, outputOf, tipOf } from './flowModel.js';
 
 /** The stored choice of the old Session Flow screen, kept so the choice carries over. */
@@ -96,15 +96,19 @@ function SwimLanes({ events, participants, sel, onSel }) {
   </div>`;
 }
 
+const omitted = data => data?.summary?.omitted_events || 0;
+const eventsText = (data) => {
+  const shown = (data.turns || []).length;
+  return omitted(data) ? 'Newest ' + fmtN(shown) + ' of ' + fmtN(shown + omitted(data)) + ' events' : fmtN(shown) + ' events';
+};
+
 export default function FlowTab({ a, st, ctx }) {
-  const sid = sessionIdOf(a);
-  const win = windowOf(a);
   const tick = isActive(st) ? ctx.refreshKey : 0;
-  const { data, error } = useDetail(() => api.getSessionFlow(sid, win.since, win.until), 'flow:' + sid, tick);
+  const { data, error } = useDetail(o => api.getBoardAgentFlow(a.id, '', o), 'flow:' + a.id, tick);
   const [mode, setMode] = usePref(FLOW_MODE_KEY, 'timeline', ['timeline', 'swimlane']);
   const [sel, setSel] = useState(null);
   const toolLabel = ctx.toolName ? ctx.toolName(a.tool) : a.tool;
-  const m = useMemo(() => flowModel(data?.turns || [], toolLabel), [data, toolLabel]);
+  const m = useMemo(() => flowModel(data?.turns || [], toolLabel, data?.summary), [data, toolLabel]);
   const pick = (v) => { setSel(null); setMode(v); };
   if (!data) return html`<${Wait} error=${error} what="the session flow"/>`;
   const s = m.summary;
@@ -120,10 +124,10 @@ export default function FlowTab({ a, st, ctx }) {
     { label: 'First token', value: s.ttft == null ? NA : fmtMs(s.ttft), sub: s.ttftCalls ? 'median of ' + s.ttftCalls + ' calls' : '', title: 'Time to first token' },
   ];
   return html`<${SessionNote} a=${a}/>
-    <${FixedPanel} id="agfs" title="Summary" sub=${(data.turns || []).length + ' events'}><${Stats} stats=${stats}/></${FixedPanel}>
-    <${FixedPanel} id="agfl" title="Flow" sub="Oldest first. Select an event to read it.">
+    <${FixedPanel} id="agfs" title="Summary" sub=${eventsText(data)}><${Stats} stats=${stats}/></${FixedPanel}>
+    <${FixedPanel} id="agfl" title="Flow" sub=${omitted(data) ? 'Oldest first. The ' + fmtN(omitted(data)) + ' oldest events are left out; the summary counts them. Select an event to read it.' : 'Oldest first. Select an event to read it.'}>
       <div class="bd-ag-bar"><${Seg} label="Flow view" value=${mode} onPick=${pick} items=${[['timeline', 'Timeline'], ['swimlane', 'Swim-lane']]}/></div>
-      ${!m.events.length ? html`<div class="bd-empty">No flow data for this session. The flow is built from hook and OpenTelemetry events: run aictl otel enable to send them.</div>`
+      ${!m.events.length ? html`<div class="bd-empty">No flow data for this session: aictl has no prompt, model call or tool call of it, and no hook or OpenTelemetry event.</div>`
         : mode === 'swimlane' ? html`<${SwimLanes} events=${m.events} participants=${m.participants} sel=${sel} onSel=${setSel}/>`
           : html`<${TimelineList} events=${m.events} sel=${sel} onSel=${setSel}/>`}
     </${FixedPanel}>`;

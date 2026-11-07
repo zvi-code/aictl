@@ -3203,3 +3203,421 @@ class TestMachine:
         finally:
             srv.shutdown()
             srv.server_close()
+
+
+# ─── /api/board/context ───────────────────────────────────────────
+
+
+def _cfile(path, kind="instructions", tokens=100, scope="project", sent="yes", when="every-call", mtime=0.0, size=None):
+    from aictl.tools import ResourceFile
+
+    return ResourceFile(path=path, kind=kind, size=tokens * 4 if size is None else size, tokens=tokens, scope=scope, sent_to_llm=sent, loaded_when=when, mtime=mtime)
+
+
+def _ctool(tool="claude-code", files=()):
+    return SimpleNamespace(tool=tool, label=board_api._label(tool), files=list(files))
+
+
+def _csnap(tools, **extra):
+    return SimpleNamespace(
+        root=extra.pop("root", "/r"),
+        tools=tools,
+        tool_configs=extra.pop("tool_configs", []),
+        tool_telemetry=extra.pop("tool_telemetry", []),
+        agent_memory=extra.pop("agent_memory", []),
+        **extra,
+    )
+
+
+class TestContext:
+    NOW = 1_800_000_000.0
+
+    @pytest.fixture(autouse=True)
+    def _fresh_memo(self):
+        board_api._context_memo.clear()
+        board_api._context_db_memo.clear()
+
+    def _ctx(self, snapshot, db=None, tools=None):
+        return board_api.compute_context(db, SimpleNamespace(snapshot=snapshot), tools, now=self.NOW)
+
+    def _tools(self):
+        claude = _ctool(
+            "claude-code",
+            [
+                _cfile("/home/me/.claude/CLAUDE.md", tokens=200, scope="global"),
+                _cfile("/r/alpha/CLAUDE.md", tokens=100, mtime=self.NOW - 30),
+                _cfile("/r/beta/CLAUDE.md", tokens=40, mtime=self.NOW - 3600),
+                _cfile("/r/alpha/.claude/skills/review/SKILL.md", kind="skills", tokens=60, sent="on-demand", when="on-demand"),
+                _cfile("/home/me/.claude/projects/x/s.jsonl", kind="transcript", tokens=5000, scope="shadow", sent="no", when=""),
+            ],
+        )
+        codex = _ctool("codex-cli", [_cfile("/home/me/.codex/AGENTS.md", tokens=70, scope="global", sent="partial", when="session-start")])
+        return [claude, codex, _ctool("aictl", [_cfile("/home/me/.aictl/x.toml", tokens=9, scope="global")])]
+
+    def test_budget_sets_always_loaded_against_each_tools_model_window(self):
+        snap = _csnap(self._tools(), tool_configs=[{"tool": "claude-code", "model": "claude-opus-5"}])
+        rows = {b["tool"]: b for b in self._ctx(snap)["budget"]["tools"]}
+        assert set(rows) == {"claude-code", "codex-cli"}, "aictl's own files are never sent to a model"
+        cc = rows["claude-code"]
+        assert (cc["model"], cc["model_from"], cc["window"], cc["window_assumed"]) == ("claude-opus-5", "settings", 1_000_000, False)
+        # Global 200 plus the largest project (alpha: 100 always + 60 on demand).
+        assert (cc["always"], cc["on_demand"], cc["max_potential"]) == (300, 60, 360)
+        assert cc["always_share"] == round(300 / 1_000_000, 4)
+        assert cc["largest_project"] == "alpha" and cc["never_sent_files"] == 1
+        assert [(p["project"], p["tokens"], p["estimate"]) for p in cc["projects"]] == [("alpha", 160, 360), ("beta", 40, 240)]
+        cx = rows["codex-cli"]
+        assert cx["model"] is None and cx["window"] == board_api.DEFAULT_CONTEXT_WINDOW and cx["window_assumed"] is True
+        assert (cx["always"], cx["conditional"]) == (0, 70)
+
+    def test_a_model_without_settings_comes_from_telemetry(self):
+        tel = [{"tool": "codex-cli", "by_model": {"gpt-5": {"input_tokens": 10}, "o3": {"input_tokens": 90}}}]
+        cx = next(b for b in self._ctx(_csnap(self._tools(), tool_telemetry=tel))["budget"]["tools"] if b["tool"] == "codex-cli")
+        assert (cx["model"], cx["model_from"], cx["window"]) == ("o3", "most used", 200_000)
+
+    def test_categories_split_what_is_sent_from_what_never_is(self):
+        cats = {c["tool"]: c for c in self._ctx(_csnap(self._tools()))["categories"]}
+        kinds = {k["kind"]: k for k in cats["claude-code"]["kinds"]}
+        assert (kinds["transcript"]["sent"], kinds["transcript"]["never_sent"]) == (0, 5000)
+        assert (kinds["instructions"]["files"], kinds["instructions"]["sent"], kinds["instructions"]["always"]) == (3, 340, 340)
+        assert kinds["skills"]["on_demand"] == 60 and kinds["instructions"]["bytes"] == 340 * 4
+        assert (cats["claude-code"]["sent"], cats["claude-code"]["never_sent"]) == (400, 5000)
+
+    def test_the_map_rows_carry_scope_project_and_policy(self):
+        m = self._ctx(_csnap(self._tools()))["map"]
+        assert m["total"] == 5470 and m["policy"] == {"yes": 340, "on-demand": 60, "conditional": 70, "no": 5000}
+        keys = {(r["tool"], r["kind"], r["scope"], r["project"], r["policy"]): r["tokens"] for r in m["rows"]}
+        assert keys[("claude-code", "instructions", "global", "(global)", "yes")] == 200
+        assert keys[("claude-code", "instructions", "project", "alpha", "yes")] == 100
+        assert keys[("claude-code", "transcript", "shadow", "(shadow)", "no")] == 5000
+        assert {"project": "alpha", "kind": "skills", "name": "review", "tokens": 60} in m["items"], "SKILL.md takes its folder's name"
+
+    def test_map_items_keep_the_largest_and_sum_the_rest(self):
+        many = _ctool("claude-code", [_cfile(f"/r/alpha/rules/r{i:02d}.md", kind="rules", tokens=100 + i) for i in range(20)])
+        items = [i for i in self._ctx(_csnap([many]))["map"]["items"] if i["project"] == "alpha"]
+        assert len(items) == board_api.CONTEXT_MAP_ITEMS + 1
+        assert items[0]["name"] == "r19" and items[-1] == {"project": "alpha", "kind": "rules", "name": "(other)", "tokens": sum(100 + i for i in range(5))}
+
+    def test_files_carry_every_field_and_a_recent_change(self):
+        files = {f["tool"]: f for f in self._ctx(_csnap(self._tools()))["files"]}
+        rows = {r["path"]: r for r in files["claude-code"]["files"]}
+        alpha = rows["/r/alpha/CLAUDE.md"]
+        assert alpha["recent"] is True and rows["/r/beta/CLAUDE.md"]["recent"] is False
+        assert (alpha["kind"], alpha["scope"], alpha["project"], alpha["size"], alpha["tokens"]) == ("instructions", "project", "alpha", 400, 100)
+        assert (alpha["sent_to_llm"], alpha["loaded_when"], alpha["load"], alpha["name"]) == ("yes", "every-call", "always", "CLAUDE.md")
+        assert rows["/home/me/.claude/projects/x/s.jsonl"]["load"] == "never"
+        assert files["claude-code"]["files"][0]["tokens"] == 5000, "largest first"
+        assert rows["/home/me/.claude/CLAUDE.md"]["mtime"] is None, "no mtime is not known, not 1970"
+
+    def test_a_long_file_list_is_cut_and_says_so(self, monkeypatch):
+        monkeypatch.setattr(board_api, "CONTEXT_MAX_FILES", 2)
+        f = self._ctx(_csnap(self._tools()))["files"][0]
+        assert (f["count"], f["truncated"], len(f["files"])) == (5, True, 2)
+
+    def test_memory_entries_and_their_growth_from_the_history(self, tmp_path):
+        from aictl.tools import MemoryEntry
+
+        db = HistoryDB(db_path=str(tmp_path / "ctx.db"), flush_interval=0)
+        try:
+            conn = db._conn()
+            for i, (mt, me) in enumerate([(100, 1), (150, 2), (400, 3)]):
+                _insert(conn, "system_snapshots", ts=self.NOW - 3000 + i * 1000, mem_tokens=mt, memory_entries=me)
+            _insert(conn, "system_snapshots", ts=self.NOW - 30 * 86400, mem_tokens=1, memory_entries=1)
+            mem = [MemoryEntry(source="claude-user-memory", profile="global", file="/home/me/.claude/CLAUDE.md", tokens=12, lines=4, mtime=self.NOW - 10)]
+            out = self._ctx(_csnap(self._tools(), agent_memory=mem), db=db)["memory"]
+        finally:
+            db.close()
+        e = out["entries"][0]
+        assert (e["name"], e["source_label"], e["profile"], e["tokens"], e["lines"], e["recent"]) == ("CLAUDE.md", "Claude user memory", "global", 12, 4, True)
+        assert out["tokens"] == 12
+        assert [(g["mem_tokens"], g["memory_entries"]) for g in out["growth"]] == [(100, 1), (150, 2), (400, 3)], "older than 7 days is left out"
+
+    def test_lifetime_telemetry_keeps_quota_as_of_and_the_newest_errors(self):
+        errors = [{"timestamp": f"2026-11-0{1 + i % 7}T00:00:{i:02d}", "type": "rate_limit", "message": f"e{i}"} for i in range(25)]
+        tel = [
+            {
+                "tool": "copilot-cli", "source": "events-jsonl", "confidence": 0.9, "as_of": "2026-11-07", "input_tokens": 1000, "output_tokens": 200,
+                "cache_read_tokens": 50, "cache_creation_tokens": 5, "total_sessions": 3, "total_messages": 40, "cost_usd": 0.0, "cost_quality": "unknown",
+                "quota_state": {"premium_requests_used": 12, "total_api_duration_ms": 9000, "current_model": "gpt-5", "code_changes": {"lines_added": 5, "lines_removed": 2, "files_modified": 1}},
+                "by_model": {"gpt-5": {"input_tokens": 1000, "output_tokens": 200, "requests": 7}}, "errors": errors,
+            },
+            {"tool": "claude-code", "input_tokens": 5, "cost_usd": 1.25, "cost_quality": "reported", "cost_reason": "stats-cache costUSD"},
+        ]
+        rows = {t["tool"]: t for t in self._ctx(_csnap([], tool_telemetry=tel))["telemetry"]}
+        cp = rows["copilot-cli"]
+        assert (cp["input"], cp["output"], cp["cache_read"], cp["cache_write"], cp["sessions"], cp["messages"]) == (1000, 200, 50, 5, 3, 40)
+        assert cp["cost_usd"] is None, "a cost of 0 with no price source is not known"
+        assert (cp["premium_requests"], cp["quota"]["api_duration_ms"], cp["quota"]["lines_added"], cp["as_of"]) == (12, 9000, 5, "2026-11-07")
+        assert cp["by_model"] == [{"model": "gpt-5", "input": 1000, "output": 200, "cache_read": 0, "cache_write": 0, "requests": 7, "cost_usd": None}]
+        assert len(cp["errors"]) == board_api.CONTEXT_ERRORS
+        assert cp["errors"][0]["ts"] >= cp["errors"][-1]["ts"], "newest first"
+        assert (rows["claude-code"]["cost_usd"], rows["claude-code"]["cost_quality"]) == (1.25, "reported")
+
+    def test_daily_usage_by_model_for_the_last_seven_days(self, tmp_path):
+        db = HistoryDB(db_path=str(tmp_path / "ctx.db"), flush_interval=0)
+        try:
+            conn = db._conn()
+            _request(conn, self.NOW - 60, "s1", "claude-code", "/r/alpha", SONNET, i=100, o=50)
+            _request(conn, self.NOW - 120, "s1", "claude-code", "/r/alpha", SONNET, i=10, o=5, cost_usd=0.5)
+            _request(conn, self.NOW - 90, "s2", "copilot-cli", "/r/alpha", "no-such-model", i=7)
+            _request(conn, self.NOW - 10 * 86400, "s3", "claude-code", "/r/alpha", SONNET, i=999)
+            daily = self._ctx(_csnap([]), db=db)["daily"]
+            board_api._context_db_memo.clear()
+            only = self._ctx(_csnap([]), db=db, tools=("claude-code",))["daily"]
+        finally:
+            db.close()
+        assert len(daily["days"]) == 7 and daily["days"][-1] == time.strftime("%Y-%m-%d", time.localtime(self.NOW))
+        rows = {r["model"]: r for r in daily["rows"]}
+        son = rows[SONNET]
+        assert (son["requests"], son["input"], son["output"], son["tokens"]) == (2, 110, 55, 165)
+        assert son["cost_usd"] == round(0.5 + cost_usd(SONNET, 100, 50, 0, 0), 6), "a stored cost plus list price for the rest"
+        assert rows["no-such-model"]["cost_usd"] is None, "no price is not $0"
+        assert [m["model"] for m in only["models"]] == [SONNET]
+
+    def test_workflows_and_prompt_files_leave_test_fixtures_out(self):
+        files = [
+            _cfile("/r/alpha/.github/workflows/release.workflow.md", kind="workflows", tokens=30, sent="on-demand"),
+            _cfile("/r/alpha/.github/prompts/review.prompt.md", kind="prompt", tokens=20, sent="on-demand"),
+            _cfile("/r/alpha/.claude/commands/ship.md", kind="commands", tokens=10, sent="on-demand"),
+            _cfile("/r/alpha/test/fixtures/x.prompt.md", kind="prompt", tokens=5),
+        ]
+        out = self._ctx(_csnap([_ctool("copilot-vscode", files)]))["workflows"]
+        assert [(w["type"], w["name"], w["tool"]) for w in out] == [("prompt", "review", "copilot-vscode"), ("prompt", "ship", "copilot-vscode"), ("workflow", "release", "copilot-vscode")]
+
+    def test_the_tool_filter_applies_to_every_per_tool_list(self):
+        tel = [{"tool": "claude-code", "input_tokens": 1}, {"tool": "codex-cli", "input_tokens": 2}]
+        out = self._ctx(_csnap(self._tools(), tool_telemetry=tel), tools=("codex-cli",))
+        assert [b["tool"] for b in out["budget"]["tools"]] == ["codex-cli"]
+        assert [f["tool"] for f in out["files"]] == ["codex-cli"] and [c["tool"] for c in out["categories"]] == ["codex-cli"]
+        assert [t["tool"] for t in out["telemetry"]] == ["codex-cli"]
+        assert {r["tool"] for r in out["map"]["rows"]} == {"codex-cli"}
+        none = self._ctx(_csnap(self._tools(), tool_telemetry=tel), tools=())
+        assert none["budget"]["tools"] == [] and none["telemetry"] == [] and none["files"] == []
+
+    def test_no_snapshot_still_answers(self):
+        out = board_api.compute_context(None, SimpleNamespace(snapshot=None), now=self.NOW)
+        assert out["budget"]["tools"] == [] and out["memory"]["entries"] == [] and out["map"]["total"] == 0
+        assert len(out["daily"]["days"]) == 7 and out["daily"]["rows"] == []
+
+    def test_the_answer_is_kept_for_each_snapshot_version(self, monkeypatch):
+        calls = []
+        real = board_api.compute_context
+        monkeypatch.setattr(board_api, "compute_context", lambda *a, **k: calls.append(1) or real(*a, **k))
+        store = SimpleNamespace(snapshot=_csnap(self._tools()), version=3)
+        a = board_api.context_bytes(None, store, "")
+        assert board_api.context_bytes(None, store, "") == a and len(calls) == 1
+        board_api.context_bytes(None, store, "tool=codex-cli")
+        store.version = 4
+        board_api.context_bytes(None, store, "")
+        assert len(calls) == 3
+
+    def test_the_route_answers_this_machine_only_and_follows_the_tool_filter(self, tmp_path, monkeypatch):
+        from aictl.dashboard.models import DashboardSnapshot, DashboardTool
+        from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
+        from aictl.orchestrator import AllowedPaths, SnapshotStore
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        store = SnapshotStore()
+        root = str(tmp_path)
+        cc = DashboardTool(tool="claude-code", label="Claude Code", files=[_cfile(root + "/alpha/CLAUDE.md", tokens=50)])
+        cx = DashboardTool(tool="codex-cli", label="Codex CLI", files=[_cfile(root + "/alpha/AGENTS.md", tokens=20)])
+        store.update(DashboardSnapshot(timestamp=time.time(), root=root, tools=[cc, cx]))
+        srv = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, AllowedPaths(), tmp_path)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            base = f"http://127.0.0.1:{srv.server_address[1]}/api/board/context"
+            with urllib.request.urlopen(base, timeout=10) as resp:
+                body = json.loads(resp.read())
+            assert [b["tool"] for b in body["budget"]["tools"]] == ["claude-code", "codex-cli"]
+            assert body["files"][0]["files"][0]["project"] == "alpha"
+            with urllib.request.urlopen(base + "?tool=codex-cli", timeout=10) as resp:
+                assert [b["tool"] for b in json.loads(resp.read())["budget"]["tools"]] == ["codex-cli"]
+            req = urllib.request.Request(base, headers={"Host": "attacker.example"})
+            with pytest.raises(urllib.error.HTTPError) as err:
+                urllib.request.urlopen(req, timeout=10)
+            assert err.value.code == 403
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+
+# ─── /api/board/agent/flow and /api/board/agent/transcript ────────
+
+
+def _seed_flow(db: HistoryDB, t: float, reply: str | None = None, second_prompt: str = "Now the tests") -> None:
+    """A session read from the tool's own files: prompts, model calls, tool calls, a subagent and
+    a compaction, and no hook or OpenTelemetry event."""
+    conn = db._conn()
+    _session(conn, "flow-s", "claude-code", "/p/flow", t, t + 600)
+    _prompt(conn, t + 10, "flow-s", "claude-code", "/p/flow", text="Fix the parser")
+    _prompt(conn, t + 50, "flow-s", "claude-code", "/p/flow", text="Explore the code", aid="sub-f")
+    _prompt(conn, t + 200, "flow-s", "claude-code", "/p/flow", text=second_prompt)
+    _request(conn, t + 11, "flow-s", "claude-code", "/p/flow", SONNET, i=100, o=20, cr=400, cw=10, duration=900, ttft_ms=300)
+    _request(conn, t + 60, "flow-s", "claude-code", "/p/flow", HAIKU, i=10, o=5, aid="sub-f")
+    _request(conn, t + 201, "flow-s", "claude-code", "/p/flow", SONNET, i=50, o=10, is_error=1, error_type="overloaded", http_status=529)
+    _call(conn, t + 12, "flow-s", "claude-code", "/p/flow", "Bash", target="ls src", duration=40, input=json.dumps({"command": "ls src"}), result_summary="a.py")
+    _call(conn, t + 202, "flow-s", "claude-code", "/p/flow", "Read", target="a.py", is_error=1)
+    _insert(conn, "agents", agent_id="sub-f", session_id="flow-s", tool="claude-code", task="Explore", started_at=t + 50, ended_at=t + 90, completed=1)
+    _insert(
+        conn, "context_events", ts=t + 150, session_id="flow-s", tool="claude-code", kind="compaction", trigger="auto", before_tokens=1000, after_tokens=200, duration_ms=5000
+    )
+    if reply is not None:
+        _insert(conn, "copilot_session_messages", session_id="flow-s", source_row_id=1, source_table="t", role="assistant", content=reply, ts=t + 13)
+    conn.commit()
+
+
+def _no_legacy(sid, since, until):
+    return {}
+
+
+class TestAgentFlow:
+    def test_the_store_alone_gives_the_turns_and_the_summary(self, db):
+        t = NOW - DAY
+        _seed_flow(db, t)
+        status, flow = board_api.agent_flow(db, "flow-s", now=NOW)
+        assert status == 200
+        kinds = [e["type"] for e in flow["turns"]]
+        assert kinds == [
+            "session_start", "user_message", "api_call", "tool_use", "subagent", "api_call", "subagent_end",
+            "compaction", "user_message", "api_call", "tool_use", "session_end",
+        ]
+        first = flow["turns"][1]
+        assert first["message"] == "Fix the parser"
+        assert first["tokens"] == {"input": 110, "output": 25, "cache_read": 400, "cache_creation": 10}
+        assert first["api_calls"] == 2
+        assert first["end_ts"] == t + 150 + 5
+        bash = flow["turns"][3]
+        assert bash["to"] == "Bash" and bash["success"] is True and bash["duration_ms"] == 40
+        assert json.loads(bash["params"]) == {"command": "ls src"} and bash["result_summary"] == "a.py"
+        assert flow["turns"][4]["prompt"] == "Explore the code" and flow["turns"][4]["to"] == "Explore"
+        assert flow["turns"][6]["duration_ms"] == 40_000 and flow["turns"][6]["completed"] is True
+        assert flow["turns"][7]["before_tokens"] == 1000 and flow["turns"][7]["after_tokens"] == 200
+        failed_call = flow["turns"][9]
+        assert failed_call["is_error"] is True and failed_call["error_type"] == "overloaded" and failed_call["http_status"] == 529
+        assert flow["turns"][10]["success"] is False
+        assert "ttft_ms" not in flow["turns"][5] and flow["turns"][2]["ttft_ms"] == 300
+        assert [e["cum_tokens"] for e in flow["turns"] if e["type"] == "api_call"] == [120, 135, 195]
+        assert flow["turns"][9]["rt_tokens"] == 60
+        assert flow["summary"] == {
+            **flow["summary"],
+            "total_turns": 2,
+            "total_api_calls": 3,
+            "total_tool_uses": 2,
+            "subagents": 1,
+            "hooks": 0,
+            "compactions": 1,
+            "errors": 2,
+            "cumulative_tokens": 195,
+            "largest_turn_tokens": 135,
+            "ttft_ms": 300,
+            "ttft_calls": 1,
+            "source": "store",
+            "omitted_events": 0,
+        }
+
+    def test_a_field_the_store_does_not_know_stays_absent(self, db):
+        _seed_flow(db, NOW - DAY)
+        _, flow = board_api.agent_flow(db, "flow-s", now=NOW)
+        read = next(e for e in flow["turns"] if e.get("to") == "Read")
+        assert "params" not in read and "result_summary" not in read and "input_preview" not in read
+        assert not any(e["type"] == "api_response" for e in flow["turns"])
+
+    def test_hook_events_merge_without_duplicates(self, db):
+        t = NOW - DAY
+        _seed_flow(db, t, second_prompt="")
+        conn = db._conn()
+        _event(conn, t + 10.4, "flow-s", "hook:UserPromptSubmit", {"prompt": "Fix the parser"})
+        _event(conn, t + 12.2, "flow-s", "hook:PreToolUse", {"tool_name": "Bash", "tool_input": {"command": "ls src"}})
+        _event(conn, t + 12.3, "flow-s", "hook:PostToolUse", {"tool_name": "Bash", "tool_response": "a.py"})
+        _event(conn, t + 200.5, "flow-s", "hook:UserPromptSubmit", {"prompt": "Now the tests"})
+        _event(conn, t + 400, "flow-s", "hook:UserPromptSubmit", {"prompt": "One more thing"})
+        conn.commit()
+        _, flow = board_api.agent_flow(db, "flow-s", now=NOW)
+        prompts = [e for e in flow["turns"] if e["type"] == "user_message"]
+        assert [p["message"] for p in prompts] == ["Fix the parser", "Now the tests", "One more thing"]
+        assert prompts[1]["redacted"] is False and prompts[1]["source"] == "store+hooks"
+        assert [e["to"] for e in flow["turns"] if e["type"] == "tool_use"] == ["Bash", "Read"]
+        assert flow["summary"]["source"] == "store+hooks"
+        assert flow["summary"]["total_turns"] == 3 and flow["summary"]["total_tool_uses"] == 2
+
+    def test_a_subagent_id_gives_the_session_of_its_main_agent(self, db):
+        _seed_flow(db, NOW - DAY)
+        _, main = board_api.agent_flow(db, "flow-s", now=NOW)
+        status, sub = board_api.agent_flow(db, "sub-f", now=NOW)
+        assert status == 200 and sub["session_id"] == "flow-s"
+        assert sub["turns"] == main["turns"]
+
+    def test_the_range_and_the_event_limit(self, db, monkeypatch):
+        t = NOW - DAY
+        _seed_flow(db, t)
+        _, part = board_api.agent_flow(db, "flow-s", since=t + 100, until=t + 300, now=NOW)
+        assert [e["type"] for e in part["turns"]] == ["compaction", "user_message", "api_call", "tool_use"]
+        monkeypatch.setattr(board_api, "MAX_FLOW_EVENTS", 3)
+        _, cut = board_api.agent_flow(db, "flow-s", now=NOW)
+        assert [e["type"] for e in cut["turns"]] == ["api_call", "tool_use", "session_end"]
+        assert cut["summary"]["omitted_events"] == 9 and cut["summary"]["event_count"] == 12
+        assert cut["summary"]["cumulative_tokens"] == 195 and cut["turns"][0]["cum_tokens"] == 195
+
+    def test_an_unknown_agent_is_404(self, db):
+        assert board_api.agent_flow(db, "nobody", now=NOW, legacy_flow=_no_legacy)[0] == 404
+        assert board_api.agent_transcript(db, "nobody", now=NOW, legacy_flow=_no_legacy)[0] == 404
+
+
+class TestAgentTranscript:
+    def test_without_reply_text_the_turns_say_the_text_is_not_kept(self, db):
+        _seed_flow(db, NOW - DAY)
+        status, tr = board_api.agent_transcript(db, "flow-s", now=NOW)
+        assert status == 200
+        assert tr["replies_kept"] is False and tr["reply_note"] == "The reply text is not kept"
+        first, second = tr["turns"]
+        assert first["prompt"] == "Fix the parser" and first["response"] == ""
+        assert [a["kind"] for a in first["actions"]] == ["api_call", "tool_use", "subagent", "api_call", "compaction"]
+        assert first["tokens"] == {"input": 110, "output": 25, "cache_read": 400, "cache_creation": 10, "total": 135}
+        assert first["model"] in (SONNET, HAIKU) and first["reply_ms"] == 900 and first["tool_use_count"] == 1
+        bash = first["actions"][1]
+        assert bash == {**bash, "name": "Bash", "input_summary": "ls src", "output_summary": "a.py", "success": True, "duration_ms": 40}
+        assert [a.get("success") for a in second["actions"]] == [False, False]
+        assert tr["summary"] == {**tr["summary"], "total_turns": 2, "total_api_calls": 3, "total_tool_uses": 2, "errors": 2, "subagents": 1, "compactions": 1}
+        assert tr["capture_mode"] == "full"
+
+    def test_stored_reply_text_is_the_turns_response(self, db):
+        _seed_flow(db, NOW - DAY, reply="Done. **Fixed** the parser.")
+        _, tr = board_api.agent_transcript(db, "flow-s", now=NOW)
+        assert tr["replies_kept"] is True and tr["reply_note"] is None
+        assert tr["turns"][0]["response"] == "Done. **Fixed** the parser."
+        assert tr["turns"][1]["response"] == ""
+        _, flow = board_api.agent_flow(db, "flow-s", now=NOW)
+        assert [e["response"] for e in flow["turns"] if e["type"] == "api_response"] == ["Done. **Fixed** the parser."]
+
+    def test_the_live_transcript_merges_into_the_same_turn(self, db):
+        t = NOW - DAY
+        _seed_flow(db, t)
+        live = {
+            "is_live": True,
+            "turns": [
+                {
+                    "ts": t + 10.5,
+                    "prompt": "Fix the parser",
+                    "response": "From the live analyzer",
+                    "actions": [{"ts": t + 12.1, "kind": "tool_use", "name": "Bash"}, {"ts": t + 13, "kind": "hook", "name": "PreToolUse"}],
+                },
+                {"ts": t + 500, "prompt": "Asked later", "response": "", "actions": []},
+            ],
+        }
+        _, tr = board_api.agent_transcript(db, "flow-s", now=NOW, legacy_transcript=lambda sid: live if sid == "flow-s" else None)
+        assert [x["prompt"] for x in tr["turns"]] == ["Fix the parser", "Now the tests", "Asked later"]
+        first = tr["turns"][0]
+        assert first["response"] == "From the live analyzer" and tr["replies_kept"] is True
+        assert [a["kind"] for a in first["actions"]].count("tool_use") == 1
+        assert [a["name"] for a in first["actions"] if a["kind"] == "hook"] == ["PreToolUse"]
+        assert tr["is_live"] is True
+
+    def test_the_routes_answer_this_machine_only(self, server, db):
+        _seed_flow(db, NOW - DAY)
+        status, body, _ = _http(f"{server}/api/board/agent/flow?id=sub-f")
+        assert status == 200 and json.loads(body)["summary"]["total_turns"] == 2
+        status, body, _ = _http(f"{server}/api/board/agent/transcript?id=flow-s")
+        assert status == 200 and json.loads(body)["reply_note"] == "The reply text is not kept"
+        assert _http(f"{server}/api/board/agent/flow")[0] == 400
+        assert _http(f"{server}/api/board/agent/flow?id=flow-s&since=soon")[0] == 400
+        assert _http(f"{server}/api/board/agent/transcript?id=nobody")[0] == 404
+        assert _http(f"{server}/api/board/agent/flow?id=flow-s", headers={"Host": "attacker.example"})[0] == 403

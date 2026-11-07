@@ -76,6 +76,35 @@ const transcript = {
   is_live: false,
 };
 
+// The answer of /api/board/agent/flow for a session read from the tool's own files: running
+// token totals on each event, and a summary that counts the events left out too.
+const storeFlow = {
+  session_id: 'sess-1',
+  turns: [
+    { type: 'user_message', ts: NOW - 580, message: 'Fix the parser please', preview: 'Fix the parser please', tokens: { input: 100, output: 20 }, cum_tokens: 0, rt_tokens: 0 },
+    { type: 'api_call', ts: NOW - 579, model: 'model-a', tokens: { input: 100, output: 20, cache_read: 400 }, duration_ms: 900, cum_tokens: 5120, rt_tokens: 120 },
+    { type: 'tool_use', ts: NOW - 577, to: 'Read', target: 'src/parser.py', success: false, duration_ms: 40, cum_tokens: 5120, rt_tokens: 120 },
+    { type: 'subagent', ts: NOW - 576, to: 'Explore', agent_id: 'sub-1', prompt: 'Find the parser', cum_tokens: 5120, rt_tokens: 120 },
+    { type: 'subagent_end', ts: NOW - 500, from: 'Explore', to: 'claude-code', agent_id: 'sub-1', completed: true, duration_ms: 76000, cum_tokens: 5120, rt_tokens: 120 },
+  ],
+  summary: {
+    total_turns: 7, total_tool_uses: 40, subagents: 1, hooks: 0, errors: 3, compactions: 2, cumulative_tokens: 5120, largest_turn_tokens: 2048,
+    ttft_ms: null, ttft_calls: 0, event_count: 900, shown_events: 5, omitted_events: 895, source: 'store',
+  },
+};
+
+const storeTranscript = {
+  session_id: 'sess-1',
+  turns: [
+    { ts: NOW - 580, prompt: 'Fix the parser please', prompt_event: true, response: '', model: 'model-a', tokens: { input: 100, output: 20, cache_read: 50 }, reply_ms: 900,
+      actions: [{ ts: NOW - 577, kind: 'tool_use', name: 'Read', input_summary: 'src/parser.py', duration_ms: 40, success: false }], tool_use_count: 1 },
+  ],
+  summary: { total_turns: 1, total_api_calls: 1, total_tool_uses: 1, total_tokens: 120, source: 'store' },
+  capture_mode: 'full',
+  replies_kept: false,
+  reply_note: 'The reply text is not kept',
+};
+
 const events = [
   { ts: NOW - 100, kind: 'hook:PreToolUse', tool: 'claude-code', detail: { tool_name: 'Bash', secret_hint: 'x' } },
   { ts: NOW - 90, kind: 'otel:api_request', tool: 'claude-code', detail: { model: 'model-a' } },
@@ -89,9 +118,9 @@ function stubFetch(routes = {}) {
     const u = String(url);
     calls.push(u);
     for (const [prefix, body] of Object.entries(routes)) if (u.startsWith(prefix)) return json(typeof body === 'function' ? body(u) : body);
+    if (u.startsWith('/api/board/agent/flow')) return json(flow);
+    if (u.startsWith('/api/board/agent/transcript')) return json(transcript);
     if (u.startsWith('/api/board/agent')) return json(detail());
-    if (u.startsWith('/api/session-flow')) return json(flow);
-    if (u.startsWith('/api/transcript/')) return json(transcript);
     if (u.startsWith('/api/events/count')) return json({ count: 900 });
     if (u.startsWith('/api/events')) return json(events);
     if (u.startsWith('/api/session-stats')) return json({ agents: [], tasks: [] });
@@ -117,7 +146,7 @@ function stubFetch(routes = {}) {
 }
 
 function mount({ a = agent(), tab = 'overview', capture = 'full', routes } = {}) {
-  const calls = stubFetch({ '/api/board/agent': detail(a), ...routes });
+  const calls = stubFetch({ '/api/board/agent/flow': flow, '/api/board/agent/transcript': transcript, ...routes, '/api/board/agent?': detail(a) });
   const act = { openDrawer: vi.fn(), setDrawerTab: vi.fn(), drawerBack: vi.fn(), drawerClose: vi.fn(), copy: vi.fn(), stopAgent: vi.fn() };
   const ctx = { data: { agents: [a], capture_mode: capture }, stopped: {}, toolName: x => x, refreshKey: 1, query: '' };
   const view = render(html`<${Drawer} stack=${[{ type: 'agent', id: a.id, tab }]} ctx=${ctx} act=${act}/>`);
@@ -255,9 +284,65 @@ describe('Transcript tab', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const { findByRole, calls } = mount({ tab: 'transcript', a: agent({ status: 'running', ended_at: null }) });
     await findByRole('button', { expanded: false, name: /^1/ });
-    const before = calls.filter(c => c.startsWith('/api/transcript/')).length;
+    const before = calls.filter(c => c.startsWith('/api/board/agent/transcript')).length;
     await vi.advanceTimersByTimeAsync(5100);
-    await waitFor(() => expect(calls.filter(c => c.startsWith('/api/transcript/')).length).toBeGreaterThan(before));
+    await waitFor(() => expect(calls.filter(c => c.startsWith('/api/board/agent/transcript')).length).toBeGreaterThan(before));
+  });
+
+  it('reads the board transcript route and says when the reply text is not kept', async () => {
+    const { findByRole, container, calls } = mount({ tab: 'transcript', routes: { '/api/board/agent/transcript': storeTranscript } });
+    const head = await findByRole('button', { expanded: false, name: /^1/ });
+    expect(calls).toContain('/api/board/agent/transcript?id=sess-1');
+    expect(calls.some(c => c.startsWith('/api/transcript/') || c.startsWith('/api/session-flow'))).toBe(false);
+    expect(container.textContent).toContain('The reply text is not kept. The prompts, model calls, tool calls and tokens of each turn are shown.');
+    fireEvent.click(head);
+    await waitFor(() => expect(container.querySelector('.bd-ag-turn.bd-open').textContent).toContain('The reply text is not kept.'));
+    expect(container.textContent).not.toContain('No reply captured.');
+    expect(within(container.querySelector('.bd-ag-acts')).getByText('Failed')).toBeTruthy();
+  });
+});
+
+describe('the session views read the board routes', () => {
+  it('Flow takes the summary and the running totals from the route', async () => {
+    const { findByRole, container, calls, getByText } = mount({ tab: 'flow', routes: { '/api/board/agent/flow': storeFlow } });
+    await findByRole('list', { name: 'Events, oldest first' });
+    expect(calls).toContain('/api/board/agent/flow?id=sess-1');
+    expect(calls.some(c => c.startsWith('/api/session-flow'))).toBe(false);
+    const stats = container.querySelector('#dr-agfs');
+    expect(within(stats).getByTitle('Prompts in the session').textContent).toContain('7');
+    expect(within(stats).getByTitle('The most input and output tokens between two prompts').textContent).toContain('2');
+    expect(container.querySelector('#dr-agfs .bd-psub').textContent).toBe('Newest 5 of 900 events');
+    expect(container.querySelector('#dr-agfl .bd-psub').textContent).toContain('The 895 oldest events are left out');
+    expect(getByText('Read: src/parser.py')).toBeTruthy();
+    expect(container.textContent).toContain('Failed, 40 ms');
+    expect(getByText('Subagent Explore done')).toBeTruthy();
+    fireEvent.click(getByText('Subagent Explore'));
+    const insp = await findByRole('region', { name: 'Selected event' });
+    expect(insp.textContent).toContain('Find the parser');
+  });
+
+  it('Flow draws the end of a subagent as a reply to the tool', () => {
+    const m = flowModel(storeFlow.turns, 'claude-code', storeFlow.summary);
+    const end = m.events.find(e => e.type === 'subagent_end');
+    expect([end._from, end._to]).toEqual(['subagent:Explore', 'tool']);
+    expect(m.events[1]._cum).toBe(5120);
+    expect(m.summary).toMatchObject({ turns: 7, toolCalls: 40, errors: 3, cumulative: 5120, roundTrip: 2048, ttft: null });
+  });
+
+  it('Timeline draws the events of the flow route', async () => {
+    const { findByRole, container, calls } = mount({ tab: 'timeline', routes: { '/api/board/agent/flow': storeFlow } });
+    await findByRole('list', { name: 'Events by time' });
+    expect(calls).toContain('/api/board/agent/flow?id=sess-1');
+    expect(container.querySelectorAll('[data-entity="Read"]').length).toBe(1);
+    expect(container.querySelectorAll('[data-entity="Explore"]').length).toBe(1);
+    expect(container.querySelector('#dr-agtl .bd-psub').textContent).toContain('The 895 oldest events are left out.');
+  });
+
+  it('a subagent asks with its own id, and the route answers for the whole session', async () => {
+    const sub = agent({ id: 'sub-1', parent_id: 'sess-1', role: 'Explore', title: 'Explore' });
+    const { findByRole, calls } = mount({ tab: 'flow', a: sub, routes: { '/api/board/agent?': detail(sub) } });
+    await findByRole('list', { name: 'Events, oldest first' });
+    expect(calls).toContain('/api/board/agent/flow?id=sub-1');
   });
 });
 
