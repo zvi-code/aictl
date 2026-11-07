@@ -7,7 +7,7 @@ import { useMemo, useState } from 'preact/hooks';
 import * as api from '../../../api.js';
 import TextView from '../../ui/TextView.js';
 import { FixedPanel, Pending, useDetail } from '../Drawer.js';
-import { NA, baseName, fmtBytes, fmtMs, fmtN, stamp } from '../format.js';
+import { NA, NO_MODEL, baseName, fmtBytes, fmtMs, fmtN, stamp } from '../format.js';
 import { Actions, Stats } from '../Panel.js';
 import Table from '../Table.js';
 import { Failed, SessionNote, clock, isActive, sessionIdOf } from './common.js';
@@ -37,7 +37,7 @@ function McpPanel({ sid, tick }) {
   </${FixedPanel}>`;
 }
 
-function ApiCallsPanel({ sid, tick }) {
+function ApiCallsPanel({ sid, tick, models }) {
   const { data, error } = useDetail(() => api.getApiCalls(0, API_CALL_LIMIT, sid), 'apicalls:' + sid, tick);
   const calls = Array.isArray(data?.calls) ? data.calls : [];
   const s = data?.summary || {};
@@ -52,15 +52,23 @@ function ApiCallsPanel({ sid, tick }) {
     }),
     sort: { k: 'at', dir: 'desc' }, limit: 60, none: 'No model call events for this session. Run aictl otel enable to send them.', primary: 'm',
   }), [data]);
+  const stored = (Array.isArray(models) ? models : []).filter(x => x.msgs);
+  const fromStore = !!data && !calls.length && !s.total_calls && stored.length > 0;
   const byModel = useMemo(() => ({
     cols: [{ k: 'm', l: 'Model' }, { k: 'c', l: 'Calls', n: true, w: '60px' }],
-    rows: Object.entries(data?.summary?.by_model || {}).map(([m, n]) => ({ id: m, sort: { m, c: n }, cells: { m: { v: m || NA }, c: { v: fmtN(n) } } })),
+    rows: fromStore
+      ? stored.map(x => ({ id: x.model || 'none', sort: { m: x.model || NO_MODEL, c: x.msgs }, cells: { m: { v: x.model || NO_MODEL, title: x.model || 'The record carries no model id', cls: x.model ? '' : 'dim' }, c: { v: fmtN(x.msgs) } } }))
+      : Object.entries(data?.summary?.by_model || {}).map(([m, n]) => ({ id: m, sort: { m, c: n }, cells: { m: { v: m || NO_MODEL }, c: { v: fmtN(n) } } })),
     sort: { k: 'c', dir: 'desc' }, none: 'No successful call.',
-  }), [data]);
-  return html`<${FixedPanel} id="agapi" title="Model calls" sub=${data ? (calls.length >= API_CALL_LIMIT ? 'Newest ' + API_CALL_LIMIT : calls.length + ' calls') : ''}>
-    ${data ? html`<${Stats} stats=${[{ label: 'Calls', value: fmtN(s.total_calls) }, { label: 'Errors', value: fmtN(s.total_errors) }, { label: 'Average time', value: s.total_calls ? fmtMs(s.avg_latency_ms) : NA }, { label: '95th percentile', value: s.total_calls ? fmtMs(s.p95_latency_ms) : NA }]}/>
-      ${Object.keys(s.by_model || {}).length ? html`<${Table} def=${byModel} label="Calls by model"/>` : null}
-      <${Table} def=${def} label="Model calls"/>` : error ? html`<${Failed} error=${error} what="model calls"/>` : html`<${Pending}/>`}
+  }), [data, models]);
+  const storeCalls = stored.reduce((n, x) => n + (x.msgs || 0), 0);
+  const stats = fromStore
+    ? [{ label: 'Calls', value: fmtN(storeCalls) }, ...(stored.some(x => x.errors != null) ? [{ label: 'Errors', value: fmtN(stored.reduce((n, x) => n + (x.errors || 0), 0)) }] : []), ...(stored.some(x => x.avg_latency_ms != null) ? [{ label: 'Average time', value: fmtMs(Math.max(...stored.map(x => x.avg_latency_ms || 0))) }] : []), ...(stored.some(x => x.p95_latency_ms != null) ? [{ label: '95th percentile', value: fmtMs(Math.max(...stored.map(x => x.p95_latency_ms || 0))) }] : [])]
+    : [{ label: 'Calls', value: fmtN(s.total_calls) }, { label: 'Errors', value: fmtN(s.total_errors) }, { label: 'Average time', value: s.total_calls ? fmtMs(s.avg_latency_ms) : NA }, { label: '95th percentile', value: s.total_calls ? fmtMs(s.p95_latency_ms) : NA }];
+  return html`<${FixedPanel} id="agapi" title="Model calls" sub=${data ? (fromStore ? fmtN(storeCalls) + ' calls' : calls.length >= API_CALL_LIMIT ? 'Newest ' + API_CALL_LIMIT : calls.length + ' calls') : ''}>
+    ${data ? html`<${Stats} stats=${stats}/>
+      ${fromStore || Object.keys(s.by_model || {}).length ? html`<${Table} def=${byModel} label="Calls by model"/>` : null}
+      ${fromStore ? html`<div class="bd-note">aictl read these calls from the session files. Per-call timing comes only with telemetry: run aictl otel enable to send it.</div>` : html`<${Table} def=${def} label="Model calls"/>`}` : error ? html`<${Failed} error=${error} what="model calls"/>` : html`<${Pending}/>`}
   </${FixedPanel}>`;
 }
 
@@ -132,7 +140,7 @@ export default function IntegrationsTab({ a, st, ctx, act, data }) {
   const copilot = String(a.tool || '').startsWith('copilot');
   return html`<${SessionNote} a=${a}/>
     <${McpPanel} sid=${sid} tick=${tick}/>
-    <${ApiCallsPanel} sid=${sid} tick=${tick}/>
+    <${ApiCallsPanel} sid=${sid} tick=${tick} models=${data.by_model}/>
     ${res.rate_limit ? html`<${RateLimit} rl=${res.rate_limit}/>` : null}
     ${res.lm_by_extension?.length ? html`<${LmUsage} rows=${res.lm_by_extension}/>` : null}
     ${copilot ? html`<${Artifacts} sid=${sid} act=${act}/>` : null}

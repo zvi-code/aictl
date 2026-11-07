@@ -11,11 +11,11 @@ import Table from '../src/components/board/Table.js';
 import { bucketTotals, chartModel, indexToSel, selToIndex, tipFor } from '../src/components/board/chartModel.js';
 import { boardQuery, canClear, filtersToParams, listedTools, parseFilters, toolFilterLabel, windowOf } from '../src/components/board/filters.js';
 import { buildFindings, buildSettings, tailPath } from '../src/components/board/findings.js';
-import { fmtDur, fmtLines, fmtMs, fmtN, fmtRate, fmtShare, fmtUsd, sparkPath } from '../src/components/board/format.js';
+import { NO_MODEL, errorLabel, fmtCredits, relPath, fmtDur, fmtLines, fmtMs, fmtN, fmtRate, fmtShare, fmtUsd, sparkPath, toolDisplayName, weekdayLabel } from '../src/components/board/format.js';
 import {
   LS_KEY, freshLayout, freshUi, isDefaultLayout, loadUi, movePanel, moveSection, sanitizeLayout, saveUi, stepPanel,
 } from '../src/components/board/layout.js';
-import { PANEL_IDS, buildPanel, splitSeries } from '../src/components/board/panels.js';
+import { FOLD_FINDINGS, PANEL_IDS, buildPanel, splitSeries } from '../src/components/board/panels.js';
 import { kpiList, sectionSummary } from '../src/components/board/summary.js';
 import { nextSort, tableModel } from '../src/components/board/tableModel.js';
 import { normalizeBoard } from '../src/components/board/useBoardData.js';
@@ -534,7 +534,7 @@ describe('board screen', () => {
     const { container, getByText } = await mountBoard();
     for (const sec of freshLayout()) for (const p of sec.panels) expect(container.querySelector('#p-' + p.id), p.id).toBeTruthy();
     expect(container.querySelector('a[href^="?tab="]')).toBeNull();
-    expect(container.querySelector('.bd-navi.bd-alert').textContent).toContain('2 running, 1 subagents');
+    expect(container.querySelector('.bd-navi.bd-alert').textContent).toContain('2 running, 1 subagents running');
     expect(container.querySelector('#sec-resources .bd-sect').textContent).toBe('Machine');
     expect(container.querySelector('.bd-navi[href="#sec-resources"]').textContent).toContain('2 alerts');
     expect(container.querySelectorAll('.bd-kpi')).toHaveLength(9);
@@ -751,5 +751,118 @@ describe('cost panel and partial bucket', () => {
     const series = [{ label: 'a', c: 'var(--s1)', vals: [1, 2] }];
     const { container } = render(html`<${Chart} kind="stack" series=${series} unit="n" h=${80} range=${{ bucket_starts: starts, bucket_s: 100, partial_bucket: 1 }} sel=${null} aria="Tokens"/>`);
     expect(container.querySelectorAll('g.bd-partial')).toHaveLength(1);
+  });
+});
+
+describe('numbers people can read', () => {
+  it('rolls tokens to billions, money to thousands, and time to hours and days', () => {
+    expect(fmtN(1_534_900_000)).toBe('1.53 B');
+    expect(fmtN(12_300_000_000)).toBe('12.3 B');
+    expect(fmtN(999_400_000)).toBe('999.4 M');
+    expect(fmtUsd(13482)).toBe('$13 k');
+    expect(fmtUsd(9999)).toBe('$9999');
+    expect(fmtUsd(1746)).toBe('$1746');
+    expect(fmtCredits(48955.93)).toBe('49 k');
+    expect(fmtCredits(5423.85)).toBe('5,423.85');
+    expect(fmtMs(87.6 * 60000)).toBe('1 h 28 min');
+    expect(fmtMs(5189.6 * 60000)).toBe('3 d 14 h');
+    expect(fmtMs(59.9 * 60000)).toBe('59.9 min');
+    expect(fmtDur(26 * 3600)).toBe('1 d 2 h');
+    expect(fmtDur(3 * 86400)).toBe('3 d');
+    expect(weekdayLabel(new Date(2026, 10, 7, 12).getTime() / 1000)).toBe('Sat Nov 7');
+  });
+  it('names MCP tools and error keys for people', () => {
+    expect(toolDisplayName('mcp__ingestion-tools__local_query')).toBe('ingestion-tools › local_query');
+    expect(toolDisplayName('Bash')).toBe('Bash');
+    expect(errorLabel('tool:Bash:Exit code #')).toBe('Bash: Exit code #');
+    expect(errorLabel('tool:mcp__ccd_turn__update_plan:PreToolUse hook')).toBe('ccd_turn › update_plan: PreToolUse hook');
+    expect(errorLabel('api:api_error')).toBe('API: error');
+    expect(errorLabel('api:api_error:')).toBe('API: error');
+    expect(errorLabel('api:api_error:overloaded')).toBe('API: error overloaded');
+    expect(errorLabel('api:rate_limit')).toBe('API: rate limit');
+    expect(errorLabel('')).toBe('n/a');
+  });
+});
+
+describe('counts that agree with each other', () => {
+  const ctxFor = (extra, over = {}) => {
+    const data = normalizeBoard({ ...boardFixture(), ...extra });
+    return { data, series: data.series || {}, range: data.range, chartRange: data.range, sel: null, filters: parseFilters(''), tools: null, toolIds: [], settingToolIds: [], toolName: id => id, nowS: NOW, stopped: {}, findings: { list: [], settings: [] }, actions: {}, query: '', ...over };
+  };
+  const local = { mode: (k, d) => d, tableView: false, folded: {}, setFold() {} };
+  it('counts idle agents as idle, not running, in the agents table', () => {
+    const ctx = ctxFor({});
+    ctx.data.agents.filter(a => !a.parent_id).forEach((a, i) => { a.status = i === 0 ? 'idle' : 'ended'; a.placeholder = false; });
+    const p = buildPanel('agentsT', ctx, local, { id: 'agentsT' });
+    expect(p.sub).toMatch(/^0 running, 1 idle, \d+ ended/);
+  });
+  it('tells the rail the total of prompts, not the length of the capped list', () => {
+    const data = normalizeBoard({ ...boardFixture(), prompts_total: 352 });
+    expect(sectionSummary('prompts', data, {}, 0)).toMatch(/^352 prompts/);
+    expect(sectionSummary('agents', data, {}, 0)).toBe('2 running, 1 subagents running');
+    const quiet = normalizeBoard({ ...boardFixture(), kpis: { ...boardFixture().kpis, running: 0, idle: 6, subagents_running: 0 } });
+    expect(sectionSummary('agents', quiet, {}, 0)).toBe('0 running, 6 idle');
+  });
+  it('divides tool calls by prompts for the per-turn figure', () => {
+    const ctx = ctxFor({});
+    ctx.series = { messages: { user: [10, 10], assistant: [100, 100], tool: [0, 0] } };
+    ctx.data.kpis.tool_calls = 500;
+    const p = buildPanel('messages', ctx, local, { id: 'messages' });
+    expect(p.stats.find(s => s.label === 'Tool calls per turn').value).toBe('25');
+  });
+  it('shows the live process total as the CPU chart "now", the figure the rail shows', () => {
+    const ctx = ctxFor({});
+    ctx.data.processes = [{ pid: 1, cpu_percent: 20, mem_mb: 100 }, { pid: 2, cpu_percent: 9.5, mem_mb: 50 }];
+    ctx.series = { cpu: { 'claude-code': [1, 2, 3] }, mem: {} };
+    expect(buildPanel('cpu', ctx, local, { id: 'cpu' }).sub).toBe('Now 30% across tools');
+    expect(sectionSummary('resources', ctx.data, ctx.series, 0)).toMatch(/^30% CPU/);
+  });
+  it('labels a model the record does not carry', () => {
+    const ctx = ctxFor({});
+    ctx.data.by_model = [{ model: '', agents: 1, msgs: 2, tokens: 0, input: 0, output: 0, cache_read: 0, cache_write: 0, cached_share: null, cost_usd: null, p95_ms: null, agent_ids: [] }];
+    const row = buildPanel('byModel', ctx, local, { id: 'byModel' }).table.rows[0];
+    expect(row.cells.m.v).toBe(NO_MODEL);
+  });
+});
+
+describe('findings fold by kind', () => {
+  const finding = (i, what, tool = 'claude-code') => ({ id: 'f' + i, what, tool, where: 'w' + i, whereFull: '/full/w' + i, effect: 'does ' + i, fix: 'Show the line' });
+  const list = [finding(1, 'User level outside root'), finding(2, 'User level outside root', 'codex-cli'), finding(3, 'User level outside root'), finding(4, 'Html comment')];
+  const ctxFor = (folded = {}, setFold = () => {}) => {
+    const data = normalizeBoard(boardFixture());
+    return { ctx: { data, series: {}, range: data.range, chartRange: data.range, sel: null, filters: parseFilters(''), tools: null, toolIds: [], settingToolIds: [], toolName: id => id, nowS: NOW, stopped: {}, findings: { list, settings: [] }, actions: { runFinding() {} }, query: '' }, local: { mode: (k, d) => d, tableView: false, folded, setFold } };
+  };
+  it('folds three or more findings of one kind under one row, and lists the rest as they are', () => {
+    const { ctx, local } = ctxFor();
+    const t = buildPanel('findings', ctx, local, { id: 'findings' }).table;
+    expect(FOLD_FINDINGS).toBe(3);
+    expect(t.tree).toBe(true);
+    expect(t.rows.map(r => r.id)).toEqual(['w:User level outside root', 'f4']);
+    const g = t.rows[0].cells;
+    expect(g.what.sub).toBe('3 places');
+    expect(g.tool.v).toBe('2 tools');
+    expect(g.where.title).toContain('/full/w2');
+    expect(g.act.v).toBe('Show all 3');
+  });
+  it('unfolds to one row per place, indented under the kind', () => {
+    const calls = [];
+    const { ctx, local } = ctxFor({ 'w:User level outside root': false }, (k, v) => calls.push([k, v]));
+    const t = buildPanel('findings', ctx, local, { id: 'findings' }).table;
+    expect(t.rows.map(r => r.id)).toEqual(['w:User level outside root', 'f1', 'f2', 'f3', 'f4']);
+    expect(t.rows[1].level).toBe(1);
+    expect(t.rows[1].parentId).toBe('w:User level outside root');
+    expect(t.rows[1].cells.what.pad).toBe(14);
+    t.rows[0].cells.act.go();
+    expect(calls).toEqual([['w:User level outside root', true]]);
+  });
+  it('keeps the file name of a path visible in a table cell', () => {
+    const def = { cols: [{ k: 'f', l: 'File' }], rows: [{ id: 1, cells: { f: { v: '/very/long/folder/name/file.rs', path: true } } }] };
+    const { container } = render(html`<${Table} def=${def}/>`);
+    const cell = container.querySelector('td');
+    expect(cell.textContent).toBe('…/folder/name/file.rs');
+    expect(cell.getAttribute('title')).toBe('/very/long/folder/name/file.rs');
+    expect(relPath('/home/u/proj/src/a/b.rs', '/home/u/proj')).toBe('src/a/b.rs');
+    expect(relPath('/home/u/proj2/src/a/b.rs', '/home/u/proj')).toBe('…/src/a/b.rs');
+    expect(relPath('/home/u/proj/x.rs', '/home/u/proj/')).toBe('x.rs');
   });
 });

@@ -8,6 +8,7 @@ const isNil = v => v === null || v === undefined || (typeof v === 'number' && !N
 export const fmtN = n => {
   if (isNil(n)) return NA;
   const a = Math.abs(n);
+  if (a >= 999500000) return (n / 1e9).toFixed(a >= 1e10 ? 1 : 2) + ' B';
   if (a >= 1e6) return (n / 1e6).toFixed(a >= 1e7 ? 1 : 2) + ' M';
   if (a >= 999500) return (n / 1e6).toFixed(2) + ' M';
   if (a >= 1e4) return Math.round(n / 1e3) + ' k';
@@ -16,12 +17,15 @@ export const fmtN = n => {
 };
 export const fmtUsd = n => {
   if (isNil(n)) return NA;
+  if (n >= 10000) return '$' + fmtN(n);
   return n >= 100 ? '$' + Math.round(n) : '$' + n.toFixed(2);
 };
 /** Copilot AI credits: the tool's own unit, never dollars. */
-export const fmtCredits = n => (isNil(n) ? NA : n.toLocaleString('en-US', { maximumFractionDigits: 2 }));
+export const fmtCredits = n => (isNil(n) ? NA : n >= 10000 ? fmtN(n) : n.toLocaleString('en-US', { maximumFractionDigits: 2 }));
+/** A time in milliseconds: ms, then seconds, minutes, and hours or days past an hour. */
 export const fmtMs = n => {
   if (isNil(n)) return NA;
+  if (n >= 3600000) return fmtDur(n / 1000);
   if (n >= 60000) return (n / 60000).toFixed(1) + ' min';
   if (n >= 1000) return (n / 1000).toFixed(1) + ' s';
   return Math.round(n) + ' ms';
@@ -30,7 +34,12 @@ export const fmtMs = n => {
 export const fmtDur = s => {
   if (isNil(s)) return NA;
   const m = s / 60;
-  if (m >= 1440) return Math.round(m / 1440) + ' d';
+  if (m >= 10080) return Math.round(m / 1440) + ' d';
+  if (m >= 1440) {
+    const d = Math.floor(m / 1440);
+    const h = Math.round((m - d * 1440) / 60);
+    return h ? d + ' d ' + h + ' h' : d + ' d';
+  }
   if (m >= 60) return Math.floor(m / 60) + ' h ' + Math.round(m % 60) + ' min';
   if (m >= 1) return Math.round(m) + ' min';
   return '<1 min';
@@ -83,6 +92,12 @@ export const dayLabel = ts => {
   const d = new Date(ts * 1000);
   return MONTHS[d.getMonth()] + ' ' + d.getDate();
 };
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+/** "Sat Nov 7": a day in a table, the same month-day order as the axes. */
+export const weekdayLabel = ts => {
+  const d = new Date(ts * 1000);
+  return WEEKDAYS[d.getDay()] + ' ' + MONTHS[d.getMonth()] + ' ' + d.getDate();
+};
 export const hourLabel = ts => {
   const d = new Date(ts * 1000);
   return pad(d.getHours()) + ':' + pad(d.getMinutes());
@@ -96,6 +111,37 @@ export const ago = (ts, now = Date.now() / 1000) => {
   return Math.round(s / 86400) + ' d ago';
 };
 export const baseName = p => String(p || '').split(/[\\/]/).pop();
+/** What a tool call is named for people: an MCP tool "mcp__server__tool" reads "server › tool". */
+export const toolDisplayName = (name) => {
+  const m = /^mcp__([^_].*?)__(.+)$/.exec(String(name || ''));
+  return m ? m[1] + ' › ' + m[2] : String(name || NA);
+};
+/** An error key such as "tool:Bash:Exit code #" or "api:api_error", for people. */
+export const errorLabel = (key) => {
+  const k = String(key || '');
+  let m = /^tool:([^:]+):(.*)$/.exec(k);
+  if (m) return toolDisplayName(m[1]) + ': ' + (m[2] || 'failed');
+  m = /^api:(.*)$/.exec(k);
+  if (m) {
+    const what = m[1].replace(/^api_error:?/, 'error ').replace(/:+$/, '').replace(/_/g, ' ').trim();
+    return 'API: ' + (what || 'error');
+  }
+  return k || NA;
+};
+/** The label of a model id the record does not carry. */
+export const NO_MODEL = 'No model id';
+/** The last `keep` folders and the file name, with an ellipsis when the path is longer. */
+export function tailPath(path, keep = 3) {
+  const parts = String(path || '').split(/[\\/]/);
+  return parts.length > keep + 1 ? '…/' + parts.slice(-keep).join('/') : String(path || '');
+}
+/** A path inside `root` without the root; outside it, its tail. */
+export function relPath(path, root, keep = 3) {
+  const p = String(path || '');
+  const r = String(root || '').replace(/[\\/]+$/, '');
+  if (r && p.startsWith(r) && /[\\/]/.test(p.charAt(r.length))) return p.slice(r.length + 1);
+  return tailPath(p, keep);
+}
 /** A project id is its path. Tables show the last folder; the title shows the path. */
 export const projectName = (p) => {
   if (!p) return NA;

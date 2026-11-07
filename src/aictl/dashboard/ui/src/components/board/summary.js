@@ -56,9 +56,9 @@ const sumLast = map => {
 export function sectionSummary(id, data, series, findingsCount) {
   const k = data.kpis;
   switch (id) {
-    case 'agents': return (k.running ?? 'n/a') + ' running, ' + (k.idle ? k.idle + ' idle, ' : '') + (k.subagents_running ?? 'n/a') + ' subagents';
+    case 'agents': return (k.running ?? 'n/a') + ' running' + (k.idle ? ', ' + k.idle + ' idle' : '') + (k.subagents_running ? ', ' + k.subagents_running + ' subagents running' : '');
     case 'usage': return fmtUsd(k.cost_usd) + ', ' + fmtN(k.tokens) + ', ' + fmtShare(k.cached_share) + ' cached';
-    case 'prompts': return data.prompts.length + ' prompts, ' + data.skills.length + ' skills';
+    case 'prompts': return fmtN(data.prompts_total ?? data.prompts.length) + ' prompts, ' + data.skills.length + ' skills';
     case 'context': return contextSummary(data);
     case 'tools': return fmtN(k.tool_calls) + ' calls, ' + fmtRate(k.fail_rate) + ' failed';
     case 'changes': {

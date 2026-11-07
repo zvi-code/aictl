@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState } from 'preact/hooks';
 import * as api from '../../api.js';
 import Chart from './Chart.js';
 import { Ico, PATHS } from './icons.js';
-import { NA, OTHER_COLOR, ago, colorFor, fmtBytes, fmtMs, fmtN, fmtUsd, stamp } from './format.js';
+import { NA, OTHER_COLOR, ago, colorFor, fmtBytes, fmtMs, fmtN, fmtUsd, stamp, NO_MODEL, tailPath, weekdayLabel } from './format.js';
 import Table from './Table.js';
 import { EMPTY_CONTEXT } from './useBoardData.js';
 
@@ -337,7 +337,7 @@ function panelMemory(ctx) {
   return {
     sub: mem.entries.length + ' memory files, ' + fmtN(mem.tokens) + ' tokens. Click a file to read it',
     view: { C: MemoryView, props: { mem, none: noneText(c, 'No agent memory found.') } },
-    note: 'Memory is not split by tool, so the Tool filter does not apply here. The chart is the memory size over the last 7 days.',
+    note: 'Memory is not split by tool, so the Tool filter does not apply here.' + (mem.growth.length >= 2 ? ' The chart is the memory size since ' + stamp(mem.growth[0].ts, true) + ', as far back as the history goes within the last 7 days.' : ''),
   };
 }
 
@@ -405,9 +405,7 @@ function panelInventory(ctx, local) {
 // ─── Daily usage by model ─────────────────────────────────────────
 
 const dayStart = d => { const [y, m, day] = String(d).split('-').map(Number); return new Date(y, m - 1, day).getTime() / 1000; };
-const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const dayText = d => { const t = new Date(dayStart(d) * 1000); return WEEKDAYS[t.getDay()] + ' ' + t.getDate() + '/' + (t.getMonth() + 1); };
-const NO_MODEL = 'Model not reported';
+const dayText = d => weekdayLabel(dayStart(d));
 
 /** One series per model, the largest TOP_SERIES with a color and the rest as Other. */
 export function dailySeries(daily, key) {
@@ -460,7 +458,7 @@ function panelDailyModels(ctx, local) {
     ],
     chart: d.days.length ? { kind: 'stack', series, unit: by === 'cost' ? 'usd' : 'n', h: 120, range: { bucket_starts: d.days.map(dayStart), bucket_s: 86400 }, aria: 'Daily ' + by + ' by model, last 7 days' } : null,
     table: {
-      cols: [{ k: 'd', l: 'Day', w: '76px' }, { k: 'm', l: 'Model' }, { k: 'n', l: 'Calls', n: true, w: '52px' }, { k: 'i', l: 'Input', n: true, w: '58px' }, { k: 'o', l: 'Output', n: true, w: '58px' }, { k: 'cr', l: 'Cache read', n: true, w: '72px' }, { k: 'cw', l: 'Cache write', n: true, w: '76px' }, { k: 't', l: 'Total', n: true, w: '58px' }, { k: 'c', l: 'Cost', n: true, w: '58px' }],
+      cols: [{ k: 'd', l: 'Day', w: '92px' }, { k: 'm', l: 'Model' }, { k: 'n', l: 'Calls', n: true, w: '52px' }, { k: 'i', l: 'Input', n: true, w: '58px' }, { k: 'o', l: 'Output', n: true, w: '58px' }, { k: 'cr', l: 'Cache read', n: true, w: '72px' }, { k: 'cw', l: 'Cache write', n: true, w: '76px' }, { k: 't', l: 'Total', n: true, w: '58px' }, { k: 'c', l: 'Cost', n: true, w: '58px' }],
       rows, sort: { k: 'd', dir: 'desc' }, none: noneText(c, 'No model calls in the last 7 days.'),
     },
   };
@@ -550,7 +548,7 @@ function panelWorkflows(ctx, local) {
     id: w.path, go: () => ctx.actions.openFile?.(w.path, 1),
     sort: { n: w.name, ty: w.type, tool: w.tool, sz: w.size, t: w.tokens, ch: w.mtime },
     cells: {
-      n: { v: w.name, title: w.path, sub: w.path }, ty: { v: TYPE_LABEL[w.type] || w.type, cls: 'dim' }, tool: { v: ctx.toolName(w.tool), sw: colorFor('tool', w.tool) },
+      n: { v: w.name, title: w.path, sub: tailPath(w.path, 3) }, ty: { v: TYPE_LABEL[w.type] || w.type, cls: 'dim' }, tool: { v: ctx.toolName(w.tool), sw: colorFor('tool', w.tool) },
       sz: { v: fmtBytes(w.size) }, t: { v: fmtN(w.tokens) }, ch: { v: w.mtime ? ago(w.mtime, ctx.nowS) : NA, cls: 'dim', title: w.mtime ? stamp(w.mtime, true) : NA },
     },
   }));

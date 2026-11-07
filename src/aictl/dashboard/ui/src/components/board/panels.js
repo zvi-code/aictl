@@ -5,7 +5,7 @@
 import { GROWS } from './layout.js';
 import {
   NA, OTHER_COLOR, UNIT, ago, baseName, colorFor, fmtAge, fmtBps, fmtBytes, fmtCpu, fmtDur, fmtLines, fmtMem, fmtMs, fmtN, fmtRate,
-  fmtCredits, fmtShare, fmtUsd, isLive, projectName, sparkPath, stamp, statusMeta,
+  fmtCredits, fmtShare, fmtUsd, isLive, projectName, sparkPath, stamp, statusMeta, NO_MODEL, errorLabel, toolDisplayName, relPath,
 } from './format.js';
 import { bucketLabel } from './chartModel.js';
 import { STALE_AFTER_S } from './summary.js';
@@ -158,12 +158,14 @@ function panelAgents(ctx, local, pid) {
       },
     };
   };
-  const liveN = roots.filter(a => isLive(ctx.stopped[a.id] ? 'stopped' : a.status)).length;
+  const statusOf = a => (ctx.stopped[a.id] ? 'stopped' : a.status);
+  const idleN = roots.filter(a => statusOf(a) === 'idle').length;
+  const liveN = roots.filter(a => isLive(statusOf(a))).length - idleN;
   // The list is capped, so the count comes from the totals when the server gives them.
   const scope = ctx.data.scope || {};
   const kidCount = scope.shown_sessions != null ? scope.shown_agents - scope.shown_sessions : agents.length - roots.length;
   return {
-    sub: liveN + ' running, ' + (roots.length - liveN) + ' ended, ' + kidCount + ' subagents' + (noData ? ', ' + noData + ' with processes only' : ''),
+    sub: liveN + ' running, ' + (idleN ? idleN + ' idle, ' : '') + (roots.length - liveN - idleN) + ' ended, ' + kidCount + ' subagents' + (noData ? ', ' + noData + ' with processes only' : ''),
     modes: [{ key: 'group', label: 'Group agents by', def: 'none', items: [['none', 'No groups'], ['project', 'Project'], ['tool', 'Tool'], ['model', 'Model']] }],
     hasCols: true,
     table: { cols, rows, tree: true, sort: { k: 'st', dir: 'asc' }, columns: true, limit: 60, groupRow, none: 'No agents match these filters.', pid },
@@ -187,7 +189,7 @@ function panelByModel(ctx, local) {
     const open = !!local.folded['m:' + m.model];
     const c = colorFor('model', m.model);
     const r = line(m, c);
-    r.cells.m = { v: shortModel(m.model), sw: c, foldOn: true, foldOpen: open, foldLabel: open ? 'Fold the agents' : 'Unfold the agents', fold: () => local.setFold('m:' + m.model, !open), title: 'Click to filter by ' + m.model };
+    r.cells.m = { v: m.model ? shortModel(m.model) : NO_MODEL, cls: m.model ? '' : 'dim', sw: c, foldOn: true, foldOpen: open, foldLabel: open ? 'Fold the agents' : 'Unfold the agents', fold: () => local.setFold('m:' + m.model, !open), title: 'Click to filter by ' + m.model };
     r.sort.m = m.model;
     rows.push({ ...r, id: m.model, go: () => ctx.actions.toggleFilter('model', m.model) });
     if (open) {
@@ -326,10 +328,10 @@ function panelMessages(ctx, local, pid, pn) {
   const series = [{ label: 'User', c: 'var(--s1)', vals: m.user || [] }, { label: 'Assistant', c: 'var(--s2)', vals: m.assistant || [] }, { label: 'Tool', c: 'var(--s3)', vals: m.tool || [] }];
   const out = chartPanel(ctx, local, pid, pn, { kind: 'stack', series, unit: 'n', h: 102, aria: 'Messages' }, fmtN(k.messages) + ' in this time');
   const shown = ctx.data.scope?.shown_agents || 0;
-  const turns = sumOf(m.assistant || []);
+  const turns = sumOf(m.user || []);
   out.stats = [
     { label: 'Per agent', value: shown && k.messages != null ? (k.messages / shown).toFixed(0) : NA },
-    { label: 'Tool calls per turn', value: turns && k.tool_calls != null ? (k.tool_calls / turns).toFixed(1) : NA },
+    { label: 'Tool calls per turn', value: turns && k.tool_calls != null ? fmtN(k.tool_calls / turns) : NA, title: 'Tool calls divided by prompts: a turn starts at a prompt' },
     { label: 'Tokens per message', value: k.messages ? fmtN(k.tokens / k.messages) : NA },
   ];
   return out;
@@ -376,7 +378,7 @@ function panelPrompts(ctx) {
   });
   return {
     sub: (ctx.data.prompts_total > rows.length ? 'Newest ' + rows.length + ' of ' + ctx.data.prompts_total + ' prompts' : rows.length + ' prompts') + '. Click one for the full text',
-    table: { cols: [{ k: 'at', l: 'Time', w: '62px' }, { k: 'text', l: 'Prompt' }, { k: 'project', l: 'Project', w: '96px' }, { k: 'tokens', l: 'Tokens', n: true, w: '60px' }], rows, sort: { k: 'at', dir: 'desc' }, limit: 60, primary: 'text' },
+    table: { cols: [{ k: 'at', l: 'Time', w: '96px' }, { k: 'text', l: 'Prompt' }, { k: 'project', l: 'Project', w: '96px' }, { k: 'tokens', l: 'Tokens', n: true, w: '60px' }], rows, sort: { k: 'at', dir: 'desc' }, limit: 60, primary: 'text' },
   };
 }
 
@@ -400,7 +402,7 @@ function panelSkills(ctx) {
     sort: { s: s.name, sc: s.scope, ag: s.agents, n: s.uses, tokens: s.tokens },
     cells: { s: { v: s.name, title: [s.name, s.description, s.path, s.file_tokens != null ? 'File is about ' + fmtN(s.file_tokens) + ' tokens' : '', s.agents != null ? s.agents + ' agents' : ''].filter(Boolean).join('\n') }, ag: { v: s.agents ?? NA, cls: 'dim' }, sc: { v: s.scope || 'No file', cls: 'dim', title: s.path || 'aictl found no file with this name for this skill' }, n: { barOn: true, bar: pctBar(s.uses, mx), barC: 'var(--s1)', v: s.uses ?? NA }, tokens: { v: fmtN(s.tokens) } },
   }));
-  return { sub: 'Click a skill to see who can see it, its uses and its text', table: { cols: [{ k: 's', l: 'Skill' }, { k: 'sc', l: 'Scope', w: '70px' }, { k: 'ag', l: 'Agents', n: true, w: '48px' }, { k: 'n', l: 'Uses', n: true, w: '76px' }, { k: 'tokens', l: 'Turn tokens', n: true, w: '76px', t: 'All tokens of every agent in the turns where this skill ran. Skills used in one turn each show that turn, so do not add these up.' }], rows, sort: { k: 'n', dir: 'desc' }, none: 'No skill was used in this time.' } };
+  return { sub: 'Click a skill to see who can see it, its uses and its text', table: { cols: [{ k: 's', l: 'Skill' }, { k: 'sc', l: 'Scope', w: '70px' }, { k: 'ag', l: 'Agents', n: true, w: '48px' }, { k: 'n', l: 'Uses', n: true, w: '112px' }, { k: 'tokens', l: 'Turn tokens', n: true, w: '76px', t: 'All tokens of every agent in the turns where this skill ran. Skills used in one turn each show that turn, so do not add these up.' }], rows, sort: { k: 'n', dir: 'desc' }, none: 'No skill was used in this time.' } };
 }
 
 function panelToolCalls(ctx) {
@@ -410,7 +412,7 @@ function panelToolCalls(ctx) {
     id: t.name, go: () => ctx.actions.openDrawer({ type: 'tool', name: t.name }, true),
     sort: { k: t.name, n: t.calls, f: t.failed, fp: t.fail_rate, p50: t.p50_ms, p95: t.p95_ms, max: t.max_ms },
     cells: {
-      k: { v: t.name, sub: t.server ? 'server' : '' }, n: { barOn: true, bar: pctBar(t.calls, mx), barC: 'var(--s1)', v: fmtN(t.calls) }, f: { v: t.failed ?? NA, cls: t.failed ? 'crit' : 'dim' }, fp: { v: fmtRate(t.fail_rate), cls: t.failed ? 'crit' : 'dim' },
+      k: { v: toolDisplayName(t.name), title: t.name, sub: t.server ? 'server' : '' }, n: { barOn: true, bar: pctBar(t.calls, mx), barC: 'var(--s1)', v: fmtN(t.calls) }, f: { v: t.failed ?? NA, cls: t.failed ? 'crit' : 'dim' }, fp: { v: fmtRate(t.fail_rate), cls: t.failed ? 'crit' : 'dim' },
       p50: { v: fmtMs(t.p50_ms) }, p95: { v: fmtMs(t.p95_ms) }, max: { v: fmtMs(t.max_ms) }, spark: { spark: sparkPath(t.trend, 60, 16), sparkC: 'var(--ink2)', title: 'Calls in this range' },
     },
   }));
@@ -433,7 +435,7 @@ function panelConfirms(ctx) {
   })).concat((c.by_tool || []).map(t => ({
     id: t.name, go: () => ctx.actions.openDrawer({ type: 'tool', name: t.name }, true),
     sort: { k: t.name, auto: t.auto, approved: t.approved, denied: t.denied, blocked: t.blocked, w: t.median_wait_s },
-    cells: { k: { v: t.name }, auto: { v: t.auto ?? NA }, approved: { v: t.approved ?? NA }, denied: { v: t.denied ?? NA, cls: t.denied ? 'crit' : 'dim' }, blocked: { v: t.blocked ?? NA, cls: 'dim', title: 'A rule or hook stopped the call, and nobody was asked' }, w: { v: t.median_wait_s == null ? NA : Math.round(t.median_wait_s) + ' s', cls: 'dim' } },
+    cells: { k: { v: toolDisplayName(t.name), title: t.name }, auto: { v: t.auto ?? NA }, approved: { v: t.approved ?? NA }, denied: { v: t.denied ?? NA, cls: t.denied ? 'crit' : 'dim' }, blocked: { v: t.blocked ?? NA, cls: 'dim', title: 'A rule or hook stopped the call, and nobody was asked' }, w: { v: t.median_wait_s == null ? NA : Math.round(t.median_wait_s) + ' s', cls: 'dim' } },
   })));
   return {
     sub: pend.length ? pend.length + ' waiting now' : 'None waiting',
@@ -456,9 +458,9 @@ function panelErrors(ctx, local, pid, pn) {
   const rows = list.map(e => ({
     id: e.key, go: () => ctx.actions.openDrawer({ type: 'error', key: e.key }, true),
     sort: { k: e.key, n: e.count, last: e.last_ts, kind: e.kind, ag: e.agents },
-    cells: { k: { v: e.key, title: e.sample || e.key }, kind: { v: e.kind, cls: 'dim' }, n: { v: e.count ?? NA, cls: 'crit' }, ag: { v: e.agents ?? NA }, last: { v: stamp(e.last_ts), cls: 'dim' } },
+    cells: { k: { v: errorLabel(e.key), title: (e.sample ? e.sample + '\n' : '') + e.key }, kind: { v: e.kind, cls: 'dim' }, n: { v: e.count ?? NA, cls: 'crit' }, ag: { v: e.agents ?? NA }, last: { v: stamp(e.last_ts), cls: 'dim' } },
   }));
-  out.table = { cols: [{ k: 'k', l: 'Error' }, { k: 'kind', l: 'Kind', w: '44px' }, { k: 'n', l: 'Count', n: true, w: '48px' }, { k: 'ag', l: 'Agents', n: true, w: '52px' }, { k: 'last', l: 'Last', w: '84px' }], rows, sort: { k: 'n', dir: 'desc' }, none: 'No failures in this time.' };
+  out.table = { cols: [{ k: 'k', l: 'Error', t: 'Tool and message. # stands for a number that changes from call to call' }, { k: 'kind', l: 'Kind', w: '44px' }, { k: 'n', l: 'Count', n: true, w: '48px' }, { k: 'ag', l: 'Agents', n: true, w: '52px' }, { k: 'last', l: 'Last', w: '84px' }], rows, sort: { k: 'n', dir: 'desc' }, none: 'No failures in this time.' };
   if (local.tableView) out.chart = null;
   return out;
 }
@@ -471,7 +473,7 @@ function panelLatency(ctx, local, pid, pn) {
     id: r.what, sort: { k: r.what, n: r.count, p50: r.p50_ms, p95: r.p95_ms, p99: r.p99_ms, max: r.max_ms },
     cells: { k: { v: r.what }, n: { v: fmtN(r.count), cls: 'dim' }, p50: { v: fmtMs(r.p50_ms) }, p95: { v: fmtMs(r.p95_ms) }, p99: { v: fmtMs(r.p99_ms) }, max: { v: fmtMs(r.max_ms) } },
   }));
-  out.table = { cols: [{ k: 'k', l: 'What' }, { k: 'n', l: 'Count', n: true, w: '58px' }, { k: 'p50', l: 'p50', n: true, w: '70px' }, { k: 'p95', l: 'p95', n: true, w: '70px' }, { k: 'p99', l: 'p99', n: true, w: '70px' }, { k: 'max', l: 'Max', n: true, w: '70px' }], rows };
+  out.table = { cols: [{ k: 'k', l: 'What' }, { k: 'n', l: 'Count', n: true, w: '58px' }, { k: 'p50', l: 'p50', n: true, w: '84px' }, { k: 'p95', l: 'p95', n: true, w: '84px' }, { k: 'p99', l: 'p99', n: true, w: '84px' }, { k: 'max', l: 'Max', n: true, w: '84px' }], rows };
   if (local.tableView) out.chart = null;
   return out;
 }
@@ -502,7 +504,7 @@ function panelChanges(ctx) {
   const rows = files.map(f => ({
     id: f.path, go: () => ctx.actions.openDrawer({ type: 'file', path: f.path }, true),
     sort: { f: f.path, ch: f.lines_added == null && f.lines_removed == null ? null : (f.lines_added || 0) + (f.lines_removed || 0), edits: f.edits, last: f.last_ts, ag: f.agents },
-    cells: { f: { v: f.path, title: f.project + ': ' + f.path }, ch: { barOn: true, bar: pctBar((f.lines_added || 0) + (f.lines_removed || 0), mx), barC: 'var(--s1)', v: fmtLines(f.lines_added, f.lines_removed) }, edits: { v: f.edits ?? NA }, ag: { v: f.agents ?? NA }, last: { v: stamp(f.last_ts), cls: 'dim' } },
+    cells: { f: { v: relPath(f.path, f.project, 4), title: f.project + ': ' + f.path }, ch: { barOn: true, bar: pctBar((f.lines_added || 0) + (f.lines_removed || 0), mx), barC: 'var(--s1)', v: fmtLines(f.lines_added, f.lines_removed) }, edits: { v: f.edits ?? NA }, ag: { v: f.agents ?? NA }, last: { v: stamp(f.last_ts), cls: 'dim' } },
   }));
   return {
     sub: 'Click a file for its diff',
@@ -539,7 +541,7 @@ function panelMemFiles(ctx) {
       id: f.path, go: () => ctx.actions.openDrawer({ type: 'file', path: f.path }, true),
       sort: { path: f.path, tokens: f.tokens, ch: changed ? (f.lines_added || 0) + (f.lines_removed || 0) : null },
       cells: {
-        path: { v: f.path }, tool: { v: f.read_by || NA, cls: 'dim' }, scope: { v: f.scope || NA, cls: 'dim' }, tokens: { v: fmtN(f.tokens) },
+        path: { v: f.path, path: true }, tool: { v: f.read_by || NA, cls: 'dim' }, scope: { v: f.scope || NA, cls: 'dim' }, tokens: { v: fmtN(f.tokens) },
         ch: { v: changed ? fmtLines(f.lines_added, f.lines_removed) : 'No change', cls: changed ? '' : 'dim' },
         by: { v: by ? by.short : (f.changed_by || ''), cls: 'dim', title: by ? by.title : (f.changed_by || '') },
         at: { v: changed ? stamp(f.changed_ts, true) : '', cls: 'dim' },
@@ -557,9 +559,11 @@ function panelResource(ctx, local, pid, pn, kind) {
   const unit = kind === 'cpu' ? 'cpu' : 'mem';
   const fmt = UNIT[unit];
   const series = Object.keys(map).filter(id => map[id].some(v => v)).map(id => ({ label: ctx.toolName(id), c: colorFor('tool', id), vals: map[id] }));
-  const nowSum = sumOf(series.map(s => lastVal(s.vals)));
+  const procs = ctx.data.processes || [];
+  const liveSum = procs.length ? sumOf(procs.map(p => (kind === 'cpu' ? p.cpu_percent : p.mem_mb))) : null;
+  const nowSum = liveSum != null ? liveSum : sumOf(series.map(s => lastVal(s.vals)));
   const legendFmt = kind === 'cpu' ? LAST_CPU : LAST_MEM;
-  const out = chartPanel(ctx, local, pid, pn, { kind: 'line', series, unit, h: 120, legendFmt, aria: kind === 'cpu' ? 'CPU by tool' : 'Memory by tool' }, 'Now ' + (series.length ? fmt(nowSum) : NA) + ' across tools');
+  const out = chartPanel(ctx, local, pid, pn, { kind: 'line', series, unit, h: 120, legendFmt, aria: kind === 'cpu' ? 'CPU by tool' : 'Memory by tool' }, 'Now ' + (series.length || liveSum != null ? fmt(nowSum) : NA) + ' across tools');
   const f = ctx.filters;
   if (f.project !== 'all' || f.model !== 'all' || f.status !== 'all') out.note = 'This chart follows the Tool filter and the time only.';
   if (kind === 'cpu' && !local.tableView) out.cores = coreBars(machineOf(ctx).cpu_per_core);
@@ -662,7 +666,7 @@ function panelProcs(ctx, local) {
       cols: [
         { k: 'name', l: 'Process', w: '170px', fixed: true }, { k: 'pid', l: 'PID', n: true, w: '60px' }, { k: 'tool', l: 'Tool', w: '130px' }, { k: 'a', l: 'Agent' },
         { k: 'type', l: 'Type', w: '90px', t: 'Kind of process, from the process catalog' }, { k: 'parent', l: 'Parent', w: '130px', t: 'The process that started this one' },
-        { k: 'anom', l: 'Anomalies', n: true, w: '150px', t: 'What the process scan found: memory far over the expected, a dead parent, a known leak' },
+        { k: 'anom', l: 'Anomalies', n: true, w: '190px', t: 'What the process scan found: memory far over the expected, a dead parent, a known leak' },
         { k: 'zr', l: 'Zombie risk', n: true, w: '84px', t: 'How likely this kind of process is to outlive its tool, from the process catalog' },
         { k: 'cpu', l: 'CPU', n: true, w: '60px' }, { k: 'mem', l: 'RAM', n: true, w: '76px' }, { k: 'act', l: 'Cleanup', w: '150px', t: 'Copy the command that ends this process' },
       ],
@@ -715,7 +719,7 @@ function panelTraffic(ctx) {
         sess: { v: (t.sessions ?? NA) + ' / ' + (t.pids ?? NA), title: (t.sessions ?? NA) + ' sessions, ' + (t.pids ?? NA) + ' processes' },
         in: { v: fmtBps(t.inbound_bps), title: 'Received now' },
         out: { v: fmtBps(t.outbound_bps), title: 'Sent now' },
-        tok: { v: fmtN(t.est_tokens), sub: conf == null ? null : pctOf(conf) + ' sure', title: 'Estimated from network traffic' + (t.est_source ? ' (' + t.est_source + ')' : '') + ', confidence ' + pctOf(conf) + '. The tool does not report this number.' },
+        tok: { v: fmtN(t.est_tokens), sub: conf == null ? null : pctOf(conf) + ' confidence', title: 'Estimated from network traffic' + (t.est_source ? ' (' + t.est_source + ')' : '') + ', confidence ' + pctOf(conf) + '. The tool does not report this number.' },
         mcp: loop
           ? { v: loop.detected ? 'Loop, ' + (loop.loops || 0) : 'No', warn: !!loop.detected, cls: loop.detected ? '' : 'dim', title: (loop.detected ? 'Repeated MCP traffic that looks like an agent loop: ' + (loop.loops || 0) + ' loops' : 'No MCP loop seen') + ', confidence ' + pctOf(loop.confidence) }
           : { v: NA, cls: 'dim', title: 'The monitor reports no MCP traffic for this tool' },
@@ -738,22 +742,50 @@ function panelTraffic(ctx) {
     },
   };
 }
-function panelFindings(ctx) {
-  const rows = ctx.findings.list.map(f => ({
-    id: f.id, go: () => ctx.actions.runFinding(f),
+/** Findings of one kind fold under one row once they are this many. */
+export const FOLD_FINDINGS = 3;
+
+function panelFindings(ctx, local) {
+  const rowOf = (f, level) => ({
+    id: f.id, level, parentId: level ? 'w:' + f.what : undefined, go: () => ctx.actions.runFinding(f),
     sort: { what: f.what, tool: f.tool },
     cells: {
-      what: { v: f.what, warn: true }, tool: f.tool ? { v: ctx.toolName(f.tool), sw: colorFor('tool', f.tool) } : { v: 'All tools', cls: 'dim' },
+      what: { v: f.what, warn: true, pad: level ? 14 : 0 }, tool: f.tool ? { v: ctx.toolName(f.tool), sw: colorFor('tool', f.tool) } : { v: 'All tools', cls: 'dim' },
       where: { v: f.where, cls: 'm', title: f.whereFull || f.where }, effect: { v: f.effect, cls: 'dim' }, act: { v: f.fix, cls: 'lk', go: () => ctx.actions.runFinding(f) },
     },
-  }));
+  });
+  const byWhat = new Map();
+  for (const f of ctx.findings.list) {
+    if (!byWhat.has(f.what)) byWhat.set(f.what, []);
+    byWhat.get(f.what).push(f);
+  }
+  const rows = [];
+  for (const [what, items] of byWhat) {
+    if (items.length < FOLD_FINDINGS) { items.forEach(f => rows.push(rowOf(f, 0))); continue; }
+    const fid = 'w:' + what;
+    const open = local.folded[fid] === false;
+    const fold = () => local.setFold(fid, open);
+    const tools = [...new Set(items.map(f => f.tool || ''))];
+    rows.push({
+      id: fid, sort: { what, tool: tools[0] || null },
+      cells: {
+        what: { v: what, warn: true, sub: items.length + ' places', foldOn: true, foldOpen: open, foldLabel: open ? 'Fold these findings' : 'Unfold these findings', fold },
+        tool: tools.length === 1 && tools[0] ? { v: ctx.toolName(tools[0]), sw: colorFor('tool', tools[0]) } : { v: tools.length === 1 ? 'All tools' : tools.length + ' tools', cls: 'dim' },
+        where: { v: items.length + ' places', cls: 'dim', title: items.map(f => f.whereFull || f.where).join('\n') },
+        effect: { v: items[0].effect, cls: 'dim' },
+        act: { v: open ? 'Fold' : 'Show all ' + items.length, cls: 'lk', go: fold },
+      },
+    });
+    if (open) items.forEach(f => rows.push(rowOf(f, 1)));
+  }
   return {
     sub: 'Settings and text that change what the model gets, and that no prompt shows',
     table: {
       cols: [{ k: 'what', l: 'Finding', w: '330px' }, { k: 'tool', l: 'Tool', w: '130px' }, { k: 'where', l: 'Where', w: '240px' }, { k: 'effect', l: 'What it does' }, { k: 'act', l: 'Action', w: '124px' }],
-      rows, none: ctx.findings.loading ? 'Reading the settings...' + (ctx.findings.scan ? ' ' + ctx.findings.scan.step + ', ' + Math.round(ctx.findings.scan.elapsed_s) + ' s' : '') : (ctx.findings.error ? 'Could not read the settings: ' + ctx.findings.error : 'No open findings.'),
+      rows, tree: true, none: ctx.findings.loading ? 'Reading the settings...' + (ctx.findings.scan ? ' ' + ctx.findings.scan.step + ', ' + Math.round(ctx.findings.scan.elapsed_s) + ' s' : '') : (ctx.findings.error ? 'Could not read the settings: ' + ctx.findings.error : 'No open findings.'),
     },
     note: [
+      byWhat.size < ctx.findings.list.length ? 'Findings of one kind are folded under one row. Unfold a row for each place.' : '',
       ctx.findings.incomplete?.length ? 'The scan reached its time limit and skipped: ' + ctx.findings.incomplete.join(', ') + '.' : '',
       ctx.findings.failed?.length ? 'The scan could not read: ' + ctx.findings.failed.map(f => f.step + ' (' + f.error + ')').join(', ') + '.' : '',
     ].filter(Boolean).join(' ') || null,
@@ -823,31 +855,31 @@ function panelSelf(ctx) {
   const pipeline = [
     { label: 'Uptime', value: fmtDur(me.uptime_s), title: 'Since the aictl daemon started' + (me.pid ? ', PID ' + me.pid : '') },
     { label: 'Threads', value: me.threads == null ? NA : String(me.threads) },
-    { label: 'History rows', value: fmtN(me.db_rows), title: tables ? 'Rows in each table, read once a minute:\n' + tables : 'Not read yet' },
-    { label: 'Live clients', value: stream.connected_clients == null ? NA : String(stream.connected_clients), title: 'Browser windows that follow the live stream' },
-    { label: 'Snapshot age', value: stream.snapshot_age_s == null ? NA : fmtAge(stream.snapshot_age_s), cls: stream.snapshot_age_s > STALE_AFTER_S ? 'warn' : null, title: 'Time since the collector published its last snapshot' },
+    { label: 'Rows', value: fmtN(me.db_rows), title: tables ? 'Rows in each table, read once a minute:\n' + tables : 'Not read yet' },
+    { label: 'Viewers', value: stream.connected_clients == null ? NA : String(stream.connected_clients), title: 'Browser windows that follow the live stream' },
+    { label: 'Snapshot', value: stream.snapshot_age_s == null ? NA : fmtAge(stream.snapshot_age_s), cls: stream.snapshot_age_s > STALE_AFTER_S ? 'warn' : null, title: 'Time since the collector published its last snapshot' },
   ];
   if (sink) {
     pipeline.push(
-      { label: 'Samples sent', value: fmtN(sink.emitted), title: 'Samples the collectors sent to the store' + (sink.tracked != null ? '. ' + fmtN(sink.tracked) + ' metrics tracked' : '') },
+      { label: 'Samples', value: fmtN(sink.emitted), title: 'Samples the collectors sent to the store' + (sink.tracked != null ? '. ' + fmtN(sink.tracked) + ' metrics tracked' : '') },
       { label: 'Written', value: fmtN(sink.flushed), title: 'Samples written to the history' + (sink.buffered != null ? '. ' + fmtN(sink.buffered) + ' waiting' : '') },
       { label: 'Dropped', value: fmtN(sink.dropped), cls: sink.dropped ? 'crit' : null, title: sink.dropped ? 'Samples lost before they reached the history' : 'No samples lost' },
     );
   }
   if (otel) {
     pipeline.push(
-      { label: 'OTel metrics', value: fmtN(otel.metrics_received), sub: otel.active ? 'Active' : 'No data for 5 min', title: 'OpenTelemetry metrics received' + (otel.last_receive_at ? ', last ' + stamp(otel.last_receive_at, true) : '') },
-      { label: 'OTel events', value: fmtN(otel.events_received), title: 'OpenTelemetry log events received' },
-      { label: 'OTel API calls', value: fmtN(otel.api_calls_total), sub: otel.api_errors_total ? otel.api_errors_total + ' errors' : '', cls: otel.api_errors_total ? 'warn' : null, title: 'Model API calls the tools reported, and how many failed' },
-      { label: 'OTel rejected', value: fmtN((otel.errors || 0) + (otel.dropped || 0)), cls: otel.errors || otel.dropped ? 'warn' : null, title: (otel.errors || 0) + ' payloads that could not be read, ' + (otel.dropped || 0) + ' bad attributes or data points skipped' },
+      { label: 'Metrics in', value: fmtN(otel.metrics_received), sub: otel.active ? 'Active' : 'No data for 5 min', title: 'OpenTelemetry metrics received' + (otel.last_receive_at ? ', last ' + stamp(otel.last_receive_at, true) : '') },
+      { label: 'Events in', value: fmtN(otel.events_received), title: 'OpenTelemetry log events received' },
+      { label: 'Model calls', value: fmtN(otel.api_calls_total), sub: otel.api_errors_total ? otel.api_errors_total + ' errors' : '', cls: otel.api_errors_total ? 'warn' : null, title: 'Model API calls the tools reported, and how many failed' },
+      { label: 'Rejected', value: fmtN((otel.errors || 0) + (otel.dropped || 0)), cls: otel.errors || otel.dropped ? 'warn' : null, title: (otel.errors || 0) + ' payloads that could not be read, ' + (otel.dropped || 0) + ' bad attributes or data points skipped' },
     );
   }
   return {
     sub: 'What this monitoring costs, and how its data pipeline runs',
     banner: sink?.flood ? 'Data loss: flood protection is on and drops samples. ' + fmtN(sink.dropped) + ' lost so far.' : null,
     stats: [
-      { label: 'CPU, with helpers', value: fmtCpu(s.cpu_percent) }, { label: 'RAM', value: fmtBytes(s.memory_rss_bytes) },
-      { label: 'History data', value: fmtBytes(s.history_live_bytes ?? s.history_bytes), sub: s.history_limit_bytes ? 'Limit ' + fmtBytes(s.history_limit_bytes) : '' },
+      { label: 'CPU', value: fmtCpu(s.cpu_percent), title: 'The aictl daemon and its helper processes together. 100% is one full core' }, { label: 'RAM', value: fmtBytes(s.memory_rss_bytes) },
+      { label: 'History', value: fmtBytes(s.history_live_bytes ?? s.history_bytes), sub: s.history_limit_bytes ? 'Limit ' + fmtBytes(s.history_limit_bytes) : '', title: 'Live data in the history store' },
       { label: 'File on disk', value: fmtBytes(s.history_bytes), sub: s.history_live_bytes != null && s.history_bytes > s.history_live_bytes ? fmtBytes(s.history_bytes - s.history_live_bytes) + ' can be freed' : '' },
       { label: 'Kept for', value: s.retention_days == null ? NA : s.retention_days + ' d' },
       ...pipeline,

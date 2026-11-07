@@ -35,12 +35,12 @@ describe('agent context section', () => {
     });
     await waitFor(() => expect(container.textContent).toContain('Tool definitions'));
     const text = container.textContent;
-    expect(text).toContain('6.2 k tokens');
-    expect(text).toContain('922 k tokens');
+    expect(text).toContain('Tool definitions6.2 ktokens');
+    expect(text).toContain('Prompt limit922 ktokens');
     expect(text).toContain('3%');
     expect(text).toContain('121 KB');
     expect(text).toContain('peak 500 KB');
-    expect(text).toContain('164 k tokens');
+    expect(text).toContain('Total at shutdown164 ktokens');
     expect(text).toContain('Split at the last shutdown');
   });
 
@@ -90,8 +90,8 @@ describe('hidden context drawer', () => {
     const { container } = openHidden(audit);
     const panel = container.querySelector('#dr-hsent');
     expect(panel.textContent).toContain('Estimate from instruction files');
-    expect(panel.textContent).toContain('~1.5 k tokens');
-    expect(panel.textContent).toContain('~200 tokens');
+    expect(panel.textContent).toContain('~1.5 k');
+    expect(panel.textContent).toContain('~200');
     expect(container.textContent).not.toContain('~1.7 k');
     expect(container.textContent).not.toContain('Tokens sent each call');
   });

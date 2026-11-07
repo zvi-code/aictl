@@ -5,7 +5,7 @@
 import { html } from 'htm/preact';
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import * as api from '../../api.js';
-import { NA, colorFor, projectName, fmtBytes, fmtCpu, fmtDur, fmtLines, fmtMem, fmtMs, fmtN, fmtShare, fmtUsd, isLive, sparkPath, stamp, statusMeta } from './format.js';
+import { NA, NO_MODEL, errorLabel, colorFor, projectName, fmtBytes, fmtCpu, fmtDur, fmtLines, fmtMem, fmtMs, fmtN, fmtShare, fmtUsd, isLive, sparkPath, stamp, statusMeta } from './format.js';
 import { Ico, PATHS } from './icons.js';
 import { Actions, Stats } from './Panel.js';
 import { statusCell } from './panels.js';
@@ -128,6 +128,20 @@ function Part({ part, name = 'default', ...props }) {
   return html`<div class="bd-ag-top"><${Pending} error=${mod?.failed || null}/></div>`;
 }
 
+/** The table of a session's subagents, for the Overview and, when no team is stored, the Team tab. */
+export function subagentDef(subagents, ctx, act, withTime = false) {
+  const now = Date.now() / 1000;
+  return {
+    cols: [{ k: 'n', l: 'Subagent' }, { k: 's', l: 'Status', w: '100px' }, { k: 'm', l: 'Model', w: '70px' }, { k: 't', l: 'Tokens', n: true, w: '60px' }, { k: 'c', l: 'Cost', n: true, w: '60px' }, ...(withTime ? [{ k: 'd', l: 'Time', n: true, w: '64px' }] : [])],
+    rows: (subagents || []).map(k => {
+      const t = (k.input || 0) + (k.output || 0) + (k.cache_read || 0) + (k.cache_write || 0);
+      const dur = k.started_at ? (k.ended_at || now) - k.started_at : null;
+      return { id: k.id, go: () => act.openDrawer({ type: 'agent', id: k.id, tab: 'overview' }), sort: { n: k.role, t, c: k.cost_usd, d: dur }, cells: { n: { v: k.role || k.title, sub: k.short }, s: statusCell(k, ctx.stopped), m: { v: (k.models || []).join(', ') || NA, cls: 'dim' }, t: { v: fmtN(t) }, c: { v: fmtUsd(k.cost_usd) }, ...(withTime ? { d: { v: fmtDur(dur) } } : {}) } };
+    }),
+    sort: { k: 't', dir: 'desc' },
+  };
+}
+
 function OverviewTab({ a, data, st, ctx, act, pending }) {
   const proc = data.process || {};
   const live = isLive(st);
@@ -146,16 +160,9 @@ function OverviewTab({ a, data, st, ctx, act, pending }) {
   ];
   const models = useMemo(() => ({
     cols: [{ k: 'm', l: 'Model' }, { k: 'msgs', l: 'Calls', n: true, w: '50px', t: 'Calls to this model' }, { k: 'input', l: 'Input', n: true, w: '60px' }, { k: 'output', l: 'Output', n: true, w: '60px' }, { k: 'cr', l: 'Cache read', n: true, w: '76px' }, { k: 'cw', l: 'Cache write', n: true, w: '80px' }, { k: 'cost', l: 'Cost', n: true, w: '60px' }],
-    rows: (data.by_model || []).map(x => ({ id: x.model, sort: { m: x.model, msgs: x.msgs, input: x.input, output: x.output, cr: x.cache_read, cw: x.cache_write, cost: x.cost_usd }, cells: { m: { v: x.model, sw: colorFor('model', x.model) }, msgs: { v: fmtN(x.msgs) }, input: { v: fmtN(x.input) }, output: { v: fmtN(x.output) }, cr: { v: fmtN(x.cache_read) }, cw: { v: fmtN(x.cache_write) }, cost: { v: fmtUsd(x.cost_usd) } } })),
+    rows: (data.by_model || []).map(x => ({ id: x.model || 'none', sort: { m: x.model || NO_MODEL, msgs: x.msgs, input: x.input, output: x.output, cr: x.cache_read, cw: x.cache_write, cost: x.cost_usd }, cells: { m: { v: x.model || NO_MODEL, sw: colorFor('model', x.model), title: x.model ? x.model : 'The record carries no model id', cls: x.model ? '' : 'dim' }, msgs: { v: fmtN(x.msgs) }, input: { v: fmtN(x.input) }, output: { v: fmtN(x.output) }, cr: { v: fmtN(x.cache_read) }, cw: { v: fmtN(x.cache_write) }, cost: { v: fmtUsd(x.cost_usd) } } })),
   }), [data]);
-  const kids = useMemo(() => ({
-    cols: [{ k: 'n', l: 'Subagent' }, { k: 's', l: 'Status', w: '100px' }, { k: 'm', l: 'Model', w: '70px' }, { k: 't', l: 'Tokens', n: true, w: '60px' }, { k: 'c', l: 'Cost', n: true, w: '60px' }],
-    rows: (data.subagents || []).map(k => {
-      const t = (k.input || 0) + (k.output || 0) + (k.cache_read || 0) + (k.cache_write || 0);
-      return { id: k.id, go: () => act.openDrawer({ type: 'agent', id: k.id, tab: 'overview' }), sort: { n: k.role, t, c: k.cost_usd }, cells: { n: { v: k.role || k.title, sub: k.short }, s: statusCell(k, ctx.stopped), m: { v: (k.models || []).join(', ') || NA, cls: 'dim' }, t: { v: fmtN(t) }, c: { v: fmtUsd(k.cost_usd) } } };
-    }),
-    sort: { k: 't', dir: 'desc' },
-  }), [data, ctx.stopped]);
+  const kids = useMemo(() => subagentDef(data.subagents, ctx, act), [data, ctx.stopped]);
   const skills = useMemo(() => ({
     cols: [{ k: 'n', l: 'Skill' }, { k: 'u', l: 'Uses', n: true, w: '46px' }, { k: 'b', l: 'Started by', w: '130px' }, { k: 'l', l: 'Last use', w: '110px' }],
     rows: (data.skills || []).map(x => ({
@@ -179,12 +186,12 @@ function OverviewTab({ a, data, st, ctx, act, pending }) {
   return html`
     ${pending ? html`<${FixedPanel} id="ap" title="Waiting for your confirmation"><div class="bd-ptext">${pending.name + ': ' + pending.target + '\nWaiting for ' + fmtDur(Date.now() / 1000 - pending.since_ts) + '. Answer in the tool that asks.'}</div></${FixedPanel}>` : null}
     ${context ? html`<${FixedPanel} id="actx" title="Context size" sub=${a.parent_id ? 'What this subagent sent with each model call' : 'What the main agent sent with each model call. Each subagent has its own.'}>
-      <${Stats} stats=${[{ label: 'First call', value: fmtTokens(context.first), title: 'Everything loaded before work began: system prompt, tools, instructions and the first prompt' }, { label: 'Last call', value: fmtTokens(context.last) }, { label: 'Peak', value: fmtTokens(context.peak) }, { label: 'Calls', value: fmtN(context.calls) }, { label: 'Times it shrank', value: fmtN(context.drops), title: 'The size fell by more than half, as compaction does' }, { label: 'Compactions', value: context.compactions?.length ? fmtN(context.compactions.length) : NA, sub: context.compactions?.length ? '' : 'none stored', title: 'Compaction records in the session file. Only the time that aictl reads from these files is stored, so no record does not prove that none happened.' }]}/>
+      <${Stats} stats=${[{ label: 'First call', sub: 'tokens', value: fmtN(context.first), title: 'Everything loaded before work began: system prompt, tools, instructions and the first prompt' }, { label: 'Last call', sub: 'tokens', value: fmtN(context.last) }, { label: 'Peak', sub: 'tokens', value: fmtN(context.peak) }, { label: 'Calls', value: fmtN(context.calls) }, { label: 'Times it shrank', value: fmtN(context.drops), title: 'The size fell by more than half, as compaction does' }, { label: 'Compactions', value: context.compactions?.length ? fmtN(context.compactions.length) : NA, sub: context.compactions?.length ? '' : 'none stored', title: 'Compaction records in the session file. Only the time that aictl reads from these files is stored, so no record does not prove that none happened.' }]}/>
       <svg class="bd-ctxspark" viewBox="0 0 600 60" preserveAspectRatio="none" role="img" aria-label=${'Context size per call, from ' + fmtN(context.first) + ' to ' + fmtN(context.last) + ', peak ' + fmtN(context.peak)}><path d=${sparkPath(context.series, 600, 60)} fill="none" stroke="var(--s1)" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>
       ${copilot ? html`
-        <${Stats} stats=${[{ label: 'Tool definitions', value: fmtTokens(context.tool_tokens), title: 'toolTokenCount of the last model call that reports it' }, { label: 'Tools available', value: fmtN(context.available_tools), title: 'availableToolCount of the last model call that reports it' }, { label: 'Prompt limit', value: fmtTokens(context.prompt_limit), title: 'maxPromptTokens of the last model call that reports it' }, { label: 'Share of limit', value: fmtShare(context.limit_share), title: 'Last call, as a share of the prompt limit' }, { label: 'Request size', value: fmtBytes(context.request_bytes_last), sub: context.request_bytes_peak == null ? '' : 'peak ' + fmtBytes(context.request_bytes_peak), title: 'requestBodyBytes of the last model call that reports it, before compression' }]}/>
+        <${Stats} stats=${[{ label: 'Tool definitions', sub: 'tokens', value: fmtN(context.tool_tokens), title: 'toolTokenCount of the last model call that reports it' }, { label: 'Tools available', value: fmtN(context.available_tools), title: 'availableToolCount of the last model call that reports it' }, { label: 'Prompt limit', sub: 'tokens', value: fmtN(context.prompt_limit), title: 'maxPromptTokens of the last model call that reports it' }, { label: 'Share of limit', value: fmtShare(context.limit_share), title: 'Last call, as a share of the prompt limit' }, { label: 'Request size', value: fmtBytes(context.request_bytes_last), sub: context.request_bytes_peak == null ? '' : 'peak ' + fmtBytes(context.request_bytes_peak), title: 'requestBodyBytes of the last model call that reports it, before compression' }]}/>
         ${a.parent_id ? null : html`<div class="bd-note">${split ? 'Split at the last shutdown, ' + stamp(split.ts, true) + '.' : 'Split at shutdown: not known. The session wrote no shutdown record that aictl holds.'}</div>
-        <${Stats} stats=${[{ label: 'Total at shutdown', value: fmtTokens(split?.current), title: 'currentTokens of the last shutdown record' }, { label: 'System', value: fmtTokens(split?.system), title: 'systemTokens of the last shutdown record' }, { label: 'Conversation', value: fmtTokens(split?.conversation), title: 'conversationTokens of the last shutdown record' }, { label: 'Tool definitions', value: fmtTokens(split?.tools), title: 'toolDefinitionsTokens of the last shutdown record' }]}/>`}
+        <${Stats} stats=${[{ label: 'Total at shutdown', sub: 'tokens', value: fmtN(split?.current), title: 'currentTokens of the last shutdown record' }, { label: 'System', sub: 'tokens', value: fmtN(split?.system), title: 'systemTokens of the last shutdown record' }, { label: 'Conversation', sub: 'tokens', value: fmtN(split?.conversation), title: 'conversationTokens of the last shutdown record' }, { label: 'Tool definitions', sub: 'tokens', value: fmtN(split?.tools), title: 'toolDefinitionsTokens of the last shutdown record' }]}/>`}
       ` : null}
       <div class="bd-note">${copilot
         ? 'First, last and peak are input, cache read and cache write of each call. Copilot compaction figures count the conversation only, without the system prompt and tools.'
@@ -216,7 +223,7 @@ function TurnsTab({ data }) {
 function ToolsTab({ data, pending }) {
   const def = useMemo(() => ({
     cols: [{ k: 'at', l: 'Time', w: '58px' }, { k: 'n', l: 'Tool', w: '120px' }, { k: 'tg', l: 'Target' }, { k: 'ms', l: 'Took', n: true, w: '58px' }, { k: 'ok', l: 'Result', w: '52px' }, { k: 'conf', l: 'Confirm', w: '66px' }],
-    rows: (data.tool_calls || []).map((c, i) => ({ id: i, sort: { at: c.ts, ms: c.duration_ms, n: c.name }, cells: { at: { v: stamp(c.ts), cls: 'dim' }, n: { v: c.name, cls: 'm' }, tg: { v: c.target || NA, cls: 'm dim' }, ms: { v: fmtMs(c.duration_ms) }, ok: { v: c.failed ? 'Failed' : 'OK', cls: c.failed ? 'crit' : 'dim' }, conf: { v: c.confirm || NA, cls: 'dim' } } })),
+    rows: (data.tool_calls || []).map((c, i) => ({ id: i, sort: { at: c.ts, ms: c.duration_ms, n: c.name }, cells: { at: { v: stamp(c.ts), cls: 'dim' }, n: { v: c.name, cls: 'm' }, tg: { v: c.target || NA, cls: 'm dim', path: !!c.target, title: c.target || '' }, ms: { v: fmtMs(c.duration_ms) }, ok: { v: c.failed ? 'Failed' : 'OK', cls: c.failed ? 'crit' : 'dim' }, conf: { v: c.confirm || NA, cls: 'dim' } } })),
     sort: { k: 'at', dir: 'desc' }, limit: 120, none: 'No tool calls recorded.',
   }), [data]);
   const totals = useMemo(() => ({
@@ -232,7 +239,7 @@ function ToolsTab({ data, pending }) {
 function ChangesTab({ data, act }) {
   const files = useMemo(() => ({
     cols: [{ k: 'f', l: 'File' }, { k: 'l', l: 'Lines', n: true, w: '90px' }, { k: 'n', l: 'Edits', n: true, w: '46px' }],
-    rows: (data.files || []).map(f => ({ id: f.path, go: () => act.openDrawer({ type: 'file', path: f.path }), sort: { f: f.path, l: (f.lines_added || 0) + (f.lines_removed || 0), n: f.edits }, cells: { f: { v: f.path, cls: 'm' }, l: { v: fmtLines(f.lines_added, f.lines_removed) }, n: { v: f.edits ?? NA } } })),
+    rows: (data.files || []).map(f => ({ id: f.path, go: () => act.openDrawer({ type: 'file', path: f.path }), sort: { f: f.path, l: (f.lines_added || 0) + (f.lines_removed || 0), n: f.edits }, cells: { f: { v: f.path, cls: 'm', path: true, title: f.path }, l: { v: fmtLines(f.lines_added, f.lines_removed) }, n: { v: f.edits ?? NA } } })),
     sort: { k: 'l', dir: 'desc' }, none: 'This agent changed no files.',
   }), [data]);
   const tests = useMemo(() => ({
@@ -244,11 +251,13 @@ function ChangesTab({ data, act }) {
     <${FixedPanel} id="atst" title="Test runs"><${Table} def=${tests} label="Test runs"/></${FixedPanel}>`;
 }
 
+const bare = e => !e.detail || (e.key === 'api:api_error' && e.detail === 'api_error');
+
 function ErrorsTab({ data }) {
   const { loop } = data;
   const rows = useMemo(() => ({
     cols: [{ k: 'at', l: 'Time', w: '60px' }, { k: 'k', l: 'What', w: '160px' }, { k: 'd', l: 'Detail' }],
-    rows: (data.errors || []).map((e, i) => ({ id: i, sort: { at: e.ts }, cells: { at: { v: stamp(e.ts), cls: 'dim' }, k: { v: e.key }, d: { v: e.detail || NA, cls: 'm dim' } } })),
+    rows: (data.errors || []).map((e, i) => ({ id: i, sort: { at: e.ts }, cells: { at: { v: stamp(e.ts), cls: 'dim' }, k: { v: errorLabel(e.key), title: e.key }, d: bare(e) ? { v: 'No detail recorded', cls: 'dim' } : { v: e.detail || NA, cls: 'm dim' } } })),
     sort: { k: 'at', dir: 'desc' }, none: 'No failures for this agent.',
   }), [data]);
   return html`${loop ? html`<${FixedPanel} id="al" title="Loop"><div class="bd-ptext">${loop.pattern + '\nRepeated ' + loop.repeats + ' times, ' + fmtN(loop.tokens) + ' tokens, ' + fmtUsd(loop.cost_usd) + '.'}</div></${FixedPanel}>` : null}
@@ -471,7 +480,7 @@ function HiddenDrawer({ ctx, frame, act }) {
     cols: [{ k: 'tool', l: 'Tool' }, { k: 'tok', l: 'Tokens each call, estimate', n: true, w: '170px' }, { k: 'size', l: 'Size', n: true, w: '80px' }, { k: 'n', l: 'Files', n: true, w: '60px' }],
     rows: instructionsByTool(sources, ctx.settingToolIds || []).map(r => ({
       id: r.tool, sort: { tool: r.tool, tok: r.tokens, size: r.bytes, n: r.files },
-      cells: { tool: { v: ctx.toolName(r.tool), sw: colorFor('tool', r.tool) }, tok: { v: r.tokens == null ? NA : '~' + fmtN(r.tokens) + ' tokens' }, size: { v: fmtBytes(r.bytes) }, n: { v: r.files, sub: r.unread ? r.unread + ' not readable' : '' } },
+      cells: { tool: { v: ctx.toolName(r.tool), sw: colorFor('tool', r.tool) }, tok: { v: r.tokens == null ? NA : '~' + fmtN(r.tokens) }, size: { v: fmtBytes(r.bytes) }, n: { v: r.files, sub: r.unread ? r.unread + ' not readable' : '' } },
     })),
     sort: { k: 'tok', dir: 'desc' }, none: 'No instruction file is always sent for the selected tools.', primary: 'tool',
   }), [sources]);

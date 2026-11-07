@@ -2,6 +2,7 @@
 // The audit stays where it is: /api/context-audit finds, utils/auditScope.js scopes
 // to the tool filter. This file only turns those results into table rows.
 import { scopeAudit } from '../../utils/auditScope.js';
+import { tailPath } from './format.js';
 
 const WHAT = {
   'drift.changed-source': 'Instruction file changed, and no agent wrote to it',
@@ -37,10 +38,7 @@ const humanize = rule => {
 const ACCEPT = new Set(['drift.changed-source', 'drift.new-source', 'drift.removed-source']);
 const at = (path, line) => (line ? path + ':' + line : path);
 /** The end of a path says which file it is. The title of the cell has the rest. */
-export function tailPath(path, keep = 3) {
-  const parts = String(path || '').split(/[\\/]/);
-  return parts.length > keep + 1 ? '…/' + parts.slice(-keep).join('/') : String(path || '');
-}
+export { tailPath };
 const tailAt = (path, line) => at(tailPath(path), line);
 
 /** Audit, effective models and hook status to rows for the findings panel. */

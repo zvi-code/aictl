@@ -4,7 +4,7 @@
 import { html } from 'htm/preact';
 import { useMemo } from 'preact/hooks';
 import * as api from '../../../api.js';
-import { FixedPanel, useDetail } from '../Drawer.js';
+import { FixedPanel, subagentDef, useDetail } from '../Drawer.js';
 import { NA, fmtDur, fmtN, stamp } from '../format.js';
 import Table from '../Table.js';
 import { Wait, SessionNote, isActive, sessionIdOf } from './common.js';
@@ -40,7 +40,7 @@ export function treeOrder(agents) {
   return out;
 }
 
-export default function TeamTab({ a, st, ctx }) {
+export default function TeamTab({ a, st, ctx, act, data: detail }) {
   const sid = sessionIdOf(a);
   const tick = isActive(st) ? ctx.refreshKey : 0;
   const { data, error } = useDetail(() => api.getSessionStats(sid).catch(e => (e?.status === 404 ? {} : Promise.reject(e))), 'team:' + sid, tick);
@@ -63,7 +63,16 @@ export default function TeamTab({ a, st, ctx }) {
     none: 'No agents.',
     };
   }, [agents]);
+  const subs = Array.isArray(detail?.subagents) ? detail.subagents : [];
+  const subDef = useMemo(() => subagentDef(subs, ctx, act, true), [detail, ctx.stopped]);
   if (!data) return html`<${Wait} error=${error} what="the team"/>`;
+  if (!agents.length && !tasks.length && subs.length) {
+    return html`<${SessionNote} a=${a}/>
+      <${FixedPanel} id="agtm" title="Team" sub=${subs.length + ' subagents'}>
+        <div class="bd-note">Tasks and messages between agents are not recorded for this tool. The subagents come from the session files.</div>
+        <${Table} def=${subDef} label="Team"/>
+      </${FixedPanel}>`;
+  }
   if (!agents.length && !tasks.length) {
     return html`<${SessionNote} a=${a}/><${FixedPanel} id="agtm" title="Team"><div class="bd-empty">${(ctx.toolName ? ctx.toolName(a.tool) : a.tool) || 'This tool'} recorded no team for this session: no subagent or task events reached aictl.</div></${FixedPanel}>`;
   }
