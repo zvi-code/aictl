@@ -1,4 +1,4 @@
-import{x as N,d as S,y as z,T as W,m as a}from"./index-COdGgaml.js";import{f as X,aq as Z,K as U,L as ss,v as Y,ag as G,ai as O,b5 as es,b6 as I,b7 as ts}from"./useSse-BA3xgPtb.js";import{S as P,T as ns,b as as,D as B,j as M}from"./app-2zqrKZhA.js";import{T as os}from"./ToolScopeEmpty-sHZab3hi.js";import"./TextView-BEN-kPtl.js";function E(s){const n=s.live||{};return n.pid_count>0||n.session_count>0||(s.processes||[]).length>0}function L({label:s}){return a`<div class="c-overline cagents-rule">
+import{x as N,d as S,y as z,T as W,m as a}from"./index-NixqUkgD.js";import{f as X,aq as Z,K as U,L as ss,v as Y,ag as G,ai as O,b5 as es,b6 as I,b7 as ts}from"./useSse-WAQ32Qi7.js";import{S as P,T as ns,b as as,D as B,j as M}from"./app-Bkln0yRD.js";import{T as os}from"./ToolScopeEmpty-DM9crnSE.js";import"./TextView-C4sLySTP.js";function E(s){const n=s.live||{};return n.pid_count>0||n.session_count>0||(s.processes||[]).length>0}function L({label:s}){return a`<div class="c-overline cagents-rule">
     <div class="cagents-rule-line"></div>
     <div class="cagents-rule-label">${s}</div>
     <div class="cagents-rule-line"></div>

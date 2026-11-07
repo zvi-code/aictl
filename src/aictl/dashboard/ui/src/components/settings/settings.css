@@ -52,7 +52,7 @@
 .st-sw--big { width: 12px; height: 12px; }
 
 /* Title bar */
-.st-main { min-width: 0; }
+.st-main { min-width: 0; overflow-x: auto; }
 .st-bar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-3, 6px) var(--sp-5, 10px); padding: var(--sp-6, 12px) 0 var(--sp-4, 8px); background: var(--st-bg); }
 .st-bar__title { margin: 0; font-size: var(--fs-lg, 14px); font-weight: 600; color: var(--st-fg); }
 .st-bar__sub { color: var(--st-fg2); font-size: var(--fs-sm, 12px); }
