@@ -1,5 +1,6 @@
 // ─── Board summary — the KPI strip and the one line per section in the rail ─
 import { fmtAge, fmtCpu, fmtMem, fmtMs, fmtN, fmtRate, fmtShare, fmtUsd, fmtLines, sparkPath } from './format.js';
+import { contextSummary } from './contextPanels.js';
 
 const delta = (a, b) => {
   if (a === null || a === undefined || !b) return 'No earlier data';
@@ -58,6 +59,7 @@ export function sectionSummary(id, data, series, findingsCount) {
     case 'agents': return (k.running ?? 'n/a') + ' running, ' + (k.idle ? k.idle + ' idle, ' : '') + (k.subagents_running ?? 'n/a') + ' subagents';
     case 'usage': return fmtUsd(k.cost_usd) + ', ' + fmtN(k.tokens) + ', ' + fmtShare(k.cached_share) + ' cached';
     case 'prompts': return data.prompts.length + ' prompts, ' + data.skills.length + ' skills';
+    case 'context': return contextSummary(data);
     case 'tools': return fmtN(k.tool_calls) + ' calls, ' + fmtRate(k.fail_rate) + ' failed';
     case 'changes': {
       const t = data.changes.totals;

@@ -2,7 +2,8 @@
 export const DEFAULT_LAYOUT = [
   { id: 'agents', title: 'Agents', anchor: 'sec-agents', panels: [['attention', 12], ['agentsT', 12], ['byModel', 8], ['byRole', 4]] },
   { id: 'usage', title: 'Usage and cost', anchor: 'sec-usage', panels: [['tokens', 8], ['cacheRate', 4], ['cost', 6], ['messages', 6], ['projects', 12]] },
-  { id: 'prompts', title: 'Prompts and skills', anchor: 'sec-prompts', panels: [['promptsL', 6], ['pprompts', 3], ['skills', 3]] },
+  { id: 'prompts', title: 'Prompts and skills', anchor: 'sec-prompts', panels: [['promptsL', 6], ['pprompts', 3], ['skills', 3], ['workflows', 12]] },
+  { id: 'context', title: 'Context', anchor: 'sec-context', panels: [['budget', 12], ['tokenSplit', 6], ['ctxMap', 6], ['memory', 6], ['dailyModels', 6], ['inventory', 12], ['lifetime', 12]] },
   { id: 'tools', title: 'Tools, failures and speed', anchor: 'sec-tools', panels: [['toolCalls', 7], ['confirms', 5], ['errors', 5], ['latency', 7], ['loops', 12]] },
   { id: 'changes', title: 'Changes and testing', anchor: 'sec-changes', panels: [['changesT', 6], ['tests', 6], ['memfiles', 12]] },
   { id: 'resources', title: 'Machine', anchor: 'sec-resources', panels: [['cpu', 6], ['ram', 6], ['alerts', 12], ['procs', 12], ['traffic', 12]] },
@@ -12,7 +13,9 @@ export const DEFAULT_LAYOUT = [
 export const TITLES = {
   attention: 'Needs you now', agentsT: 'Agents and subagents', byModel: 'Usage by model', byRole: 'Main agents and subagents',
   tokens: 'Tokens, cached and not cached', cacheRate: 'Cache hit rate', cost: 'Cost', messages: 'Messages', projects: 'Projects',
-  promptsL: 'Prompts', pprompts: 'Project prompts', skills: 'Skills used',
+  promptsL: 'Prompts', pprompts: 'Project prompts', skills: 'Skills used', workflows: 'Workflows and prompt files',
+  budget: 'Context window budget', tokenSplit: 'Tokens by category', ctxMap: 'Context window map', memory: 'Agent memory',
+  dailyModels: 'Daily usage by model', inventory: 'Files each tool reads', lifetime: 'Lifetime totals each tool reports',
   toolCalls: 'Tool calls', confirms: 'Tool confirmations', errors: 'Failures and errors', latency: 'Latency and durations', loops: 'Loops',
   changesT: 'Changes', tests: 'Testing', memfiles: 'Memory and instruction files',
   cpu: 'CPU', ram: 'RAM', alerts: 'Needs a look', procs: 'Processes', traffic: 'Network, tokens and files',
@@ -20,7 +23,7 @@ export const TITLES = {
   sources: 'Data sources', self: 'aictl itself', collectors: 'Collectors', quality: 'Ingesters and data quality', coverage: 'What each tool reports',
 };
 export const GROWS = { tokens: 1, cacheRate: 1, cost: 1, messages: 1, cpu: 1, ram: 1 };
-export const HEIGHT = { attention: 'none', coverage: '470px', agentsT: '420px', projects: '300px', promptsL: '320px', pprompts: '320px', skills: '320px', toolCalls: '360px', confirms: '360px', errors: '360px', latency: '360px', loops: '220px', changesT: '360px', tests: '360px', memfiles: '200px', alerts: '220px', procs: '360px', traffic: '280px', settings: '340px', sources: '280px', collectors: '320px', quality: '360px', byModel: '280px', byRole: '280px' };
+export const HEIGHT = { attention: 'none', coverage: '470px', agentsT: '420px', projects: '300px', promptsL: '320px', pprompts: '320px', skills: '320px', toolCalls: '360px', confirms: '360px', errors: '360px', latency: '360px', loops: '220px', changesT: '360px', tests: '360px', memfiles: '200px', workflows: '260px', budget: '420px', tokenSplit: '420px', ctxMap: '460px', memory: '460px', dailyModels: '460px', inventory: '480px', lifetime: '420px', alerts: '220px', procs: '360px', traffic: '280px', settings: '340px', sources: '280px', collectors: '320px', quality: '360px', byModel: '280px', byRole: '280px' };
 export const WIDTHS = [3, 4, 6, 8, 12];
 
 export const LS_KEY = 'aictl-board-layout-v1';
