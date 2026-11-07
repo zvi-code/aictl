@@ -615,7 +615,7 @@ function panelSettings(ctx) {
 function panelSources(ctx) {
   const rows = ctx.data.sources.map(s => ({
     id: s.tool, sort: { t: s.label || s.tool, s: s.data_from },
-    cells: { t: { v: s.label || ctx.toolName(s.tool), sw: colorFor('tool', s.tool) }, s: { v: s.data_from || NA, cls: 'dim' }, l: { v: ago(s.last_data_ts, ctx.nowS), cls: 'dim' } },
+    cells: { t: { v: s.label || ctx.toolName(s.tool), sw: colorFor('tool', s.tool) }, s: { v: s.data_from || NA, cls: 'dim', sub: (s.locations || []).map(h => h.path + ' (' + h.found_by + ')').join(', '), title: (s.locations || []).map(h => h.path + ': ' + h.found_by).join('\n') }, l: { v: ago(s.last_data_ts, ctx.nowS), cls: 'dim' } },
   }));
   return { sub: 'Where each tool leaves its data', table: { cols: [{ k: 't', l: 'Tool', w: '140px' }, { k: 's', l: 'Data from' }, { k: 'l', l: 'Last data', w: '84px' }], rows } };
 }

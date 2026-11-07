@@ -7,6 +7,7 @@ import json
 import sqlite3
 import time
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -437,3 +438,54 @@ def test_copilot_sessions_follow_copilot_home(tmp_path, monkeypatch):
     monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "elsewhere"))
     ing = tu.TranscriptUsageIngester(None, claude_projects=tmp_path / "c", codex_sessions=tmp_path / "x", vscode_workspaces=tmp_path / "v")
     assert ing.copilot_state == tmp_path / "elsewhere" / "session-state"
+
+
+class TestToolHomes:
+    def test_a_home_is_found_from_a_held_session_file(self):
+        from aictl import tool_homes
+
+        held = "/data/alt-home/session-state/abc/events.jsonl"
+        assert tool_homes._home_of_open_file(held, "copilot") == Path("/data/alt-home")
+        assert tool_homes._home_of_open_file("/data/alt-home/session-state/abc/inuse.7.hold", "copilot") == Path("/data/alt-home")
+        assert tool_homes._home_of_open_file("/data/alt-home/session-store.db", "copilot") == Path("/data/alt-home")
+        assert tool_homes._home_of_open_file("/tmp/other.txt", "copilot") is None
+
+    def test_processes_are_matched_to_their_tool(self):
+        from aictl import tool_homes
+
+        assert tool_homes._tool_of("copilot.exe", []) == "copilot"
+        assert tool_homes._tool_of("node", ["node", "/opt/homebrew/bin/copilot", "--agent=x"]) == "copilot"
+        assert tool_homes._tool_of("node", ["node", "server.js"]) is None
+        assert tool_homes._tool_of("claude", []) == "claude"
+
+    def test_the_reader_reads_sessions_in_every_home_found(self, tmp_path, monkeypatch):
+        from aictl import tool_homes
+        from aictl.ingesters import transcript_usage as tu
+
+        other = tmp_path / "relocated" / "session-state"
+        (other / "s1").mkdir(parents=True)
+        (other / "s1" / "events.jsonl").write_text("{}\n")
+        monkeypatch.setattr(tool_homes, "session_dirs", lambda tool: [other] if tool == "copilot" else [])
+        ing = tu.TranscriptUsageIngester(None)
+        ing.copilot_state = tmp_path / "default" / "session-state"
+        assert ing._roots("copilot", ing.copilot_state) == [ing.copilot_state, other]
+
+    def test_explicit_folders_turn_discovery_off(self, tmp_path):
+        from aictl.ingesters import transcript_usage as tu
+
+        ing = tu.TranscriptUsageIngester(None, copilot_state=tmp_path / "s")
+        assert ing._roots("copilot", ing.copilot_state) == [tmp_path / "s"]
+
+
+def test_a_found_home_is_remembered_after_its_tool_exits(tmp_path, monkeypatch):
+    from aictl import tool_homes
+
+    moved = tmp_path / "moved"
+    (moved / "session-state").mkdir(parents=True)
+    monkeypatch.setattr(tool_homes.platforms, "config_dir", lambda: tmp_path / "cfg")
+    monkeypatch.setattr(tool_homes, "default_home", lambda tool: tmp_path / "default" / tool)
+    monkeypatch.setattr(tool_homes, "scan_processes", lambda: [tool_homes.ToolHome("copilot", moved, "process environment")])
+    assert moved in [h.path for h in tool_homes._all_homes()]
+    monkeypatch.setattr(tool_homes, "scan_processes", lambda: [])
+    found = [h for h in tool_homes._all_homes() if h.path == moved]
+    assert found and found[0].found_by == "process environment"

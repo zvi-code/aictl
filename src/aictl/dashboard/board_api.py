@@ -3232,9 +3232,25 @@ def _sources(source_rows: list[tuple], tool_ids: list[str], selected: set[str] |
     rank = {tool: i for i, tool in enumerate(tool_ids)}
     ordered = sorted(rows.values(), key=lambda r: (rank.get(r["tool"], len(rank)), r["tool"]))
     return [
-        {"tool": r["tool"], "label": r["label"], "data_from": ", ".join(sorted(r["names"])) or None, "last_data_ts": r["last_data_ts"]}
+        {
+            "tool": r["tool"],
+            "label": r["label"],
+            "data_from": ", ".join(sorted(r["names"])) or None,
+            "last_data_ts": r["last_data_ts"],
+            "locations": _tool_locations(r["tool"]),
+        }
         for r in ordered
     ]
+
+
+def _tool_locations(tool: str) -> list[dict]:
+    """The tool's home folders found on this machine, and how each was found."""
+    from .. import tool_homes
+
+    family = "copilot" if tool.startswith("copilot") else "claude" if tool.startswith("claude-code") else "codex" if tool.startswith("codex") else ""
+    if not family:
+        return []
+    return [{"path": _display_folder(h.path), "found_by": h.found_by} for h in tool_homes.homes(family)]
 
 
 # ─── /api/board ───────────────────────────────────────────────────
