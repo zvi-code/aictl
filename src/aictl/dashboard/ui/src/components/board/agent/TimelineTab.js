@@ -1,14 +1,15 @@
 // ─── Agent drawer: Timeline — one bar per event, colored by what it was ─
 // Bar height is the event's tokens on a log scale. A pause of more than 30 s
 // folds into one gap mark. The entity filter and the token mode change only
-// what is drawn; hover shows the event in the shared tooltip.
+// what is drawn; hover shows the event in the shared tooltip. The events are those of
+// the Flow tab, from /api/board/agent/flow.
 import { html } from 'htm/preact';
 import { useMemo, useState } from 'preact/hooks';
 import * as api from '../../../api.js';
 import { FixedPanel, useDetail } from '../Drawer.js';
 import { fmtDur, fmtMs, fmtN } from '../format.js';
 import { hideTip, showTip } from '../tip.js';
-import { Wait, Seg, SessionNote, clip, clock, isActive, sessionIdOf, slotColor, windowOf } from './common.js';
+import { Wait, Seg, SessionNote, clip, clock, isActive, slotColor } from './common.js';
 
 const KINDS = new Set(['user_message', 'api_call', 'api_response', 'tool_use', 'compaction', 'subagent', 'error', 'hook']);
 export const GAP_S = 30;
@@ -44,10 +45,8 @@ export function slotsOf(bars) {
 const gapText = s => (s < 60 ? Math.round(s) + ' s' : fmtDur(s));
 
 export default function TimelineTab({ a, st, ctx }) {
-  const sid = sessionIdOf(a);
-  const win = windowOf(a);
   const tick = isActive(st) ? ctx.refreshKey : 0;
-  const { data, error } = useDetail(() => api.getSessionFlow(sid, win.since, win.until), 'flow:' + sid, tick);
+  const { data, error } = useDetail(o => api.getBoardAgentFlow(a.id, '', o), 'flow:' + a.id, tick);
   const [off, setOff] = useState(() => new Set());
   const [mode, setMode] = useState('all');
   const bars = useMemo(() => (data?.turns || []).filter(t => KINDS.has(t.type)), [data]);
@@ -76,11 +75,13 @@ export default function TimelineTab({ a, st, ctx }) {
     if (b.type === 'user_message' && b.message) rows.push({ c: 'transparent', label: 'Prompt', value: clip(b.message, 60) });
     if (b.type === 'error') rows.push({ c: 'transparent', label: 'Error', value: clip((b.error_type || '') + ' ' + (b.error_message || ''), 60) });
     if (b.agent_name) rows.push({ c: 'transparent', label: 'Agent', value: b.agent_name });
+    if (b.type === 'tool_use' && b.target) rows.push({ c: 'transparent', label: 'Target', value: clip(b.target, 60) });
+    if (b.type === 'tool_use' && b.success === false) rows.push({ c: 'transparent', label: 'Result', value: 'Failed' });
     showTip(e.clientX, e.clientY, { title: entityOf(b), rows });
   };
   return html`<${SessionNote} a=${a}/>
-    <${FixedPanel} id="agtl" title="Timeline" sub=${shown.length + ' of ' + bars.length + ' events. Pauses over 30 s are folded.'}>
-      ${!bars.length ? html`<div class="bd-empty">No timeline data for this session. It is built from hook and OpenTelemetry events: run aictl otel enable to send them.</div>` : html`
+    <${FixedPanel} id="agtl" title="Timeline" sub=${shown.length + ' of ' + bars.length + ' events. Pauses over 30 s are folded.' + (data.summary?.omitted_events ? ' The ' + fmtN(data.summary.omitted_events) + ' oldest events are left out.' : '')}>
+      ${!bars.length ? html`<div class="bd-empty">No timeline data for this session: aictl has no prompt, model call or tool call of it, and no hook or OpenTelemetry event.</div>` : html`
         <div class="bd-ag-bar">
           <${Seg} label="Tokens" value=${mode} onPick=${setMode} items=${[['all', 'All tokens'], ['fresh', 'Not cached'], ['cached', 'Cached only']]}/>
           <button type="button" class="bd-btn" onClick=${() => setOff(new Set())}>All</button>

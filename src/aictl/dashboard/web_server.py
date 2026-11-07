@@ -596,6 +596,12 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._serve_effective_models()
         elif path == "/api/board/machine":
             self._serve_board_machine()
+        elif path == "/api/board/context":
+            self._serve_board_context()
+        elif path == "/api/board/agent/flow":
+            self._serve_board_agent_flow()
+        elif path == "/api/board/agent/transcript":
+            self._serve_board_agent_transcript()
         elif path == "/api/board" or path.startswith("/api/board/"):
             self._serve_board(path)
         elif path.startswith("/api/samples"):
@@ -1432,6 +1438,18 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             )
         except Exception as exc:  # any failure must reach the panel's error state
             logger.exception("Board machine route failed")
+            self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
+            return
+        self._json_response_raw(body)
+
+    def _serve_board_context(self) -> None:
+        """Context-window budget, files, memory and lifetime telemetry for the board."""
+        from .board_api import context_bytes
+
+        try:
+            body = context_bytes(self._db, self.server.store, urlparse(self.path).query)
+        except Exception as exc:  # any failure must reach the panel's error state
+            logger.exception("Board context route failed")
             self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
             return
         self._json_response_raw(body)
