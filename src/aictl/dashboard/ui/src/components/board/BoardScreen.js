@@ -23,8 +23,32 @@ import './board.css';
 
 const SECTIONS = DEFAULT_LAYOUT.map(s => ({ id: s.id, title: s.title, anchor: s.anchor }));
 const SEC_BY_ID = Object.fromEntries(SECTIONS.map(s => [s.id, s]));
-// Screens the board does not replace. Overview became the board itself.
-const DETAIL_SCREENS = LAYOUT.tabs.filter(t => t.id !== 'overview');
+// Screens the board does not replace. Overview became the board itself, and
+// Configuration became its Settings screen.
+const DETAIL_SCREENS = LAYOUT.tabs.filter(t => t.id !== 'overview' && t.id !== 'config');
+
+// The board's own screens, in the `screen` query value. The board screen has none.
+const SCREENS = new Set(['board', 'settings']);
+export function readScreen(search) {
+  const v = new URLSearchParams(search || '').get('screen');
+  return SCREENS.has(v) ? v : 'board';
+}
+const currentScreen = () => {
+  try { return readScreen(window.location.search); } catch { return 'board'; }
+};
+// The settings are read again once the board's data is this much newer.
+const SETTINGS_REFRESH_S = 60;
+const SETTINGS_NOTE = 'Settings are the current values on this machine; the time range does not apply';
+
+/** "12 set · 2 risky · 3 agents" for the rail, under the Tool filter. */
+function settingsLine(res, tools) {
+  const m = res.model;
+  const d = res.data;
+  if (!m || !d) return res.error ? 'Could not read the settings' : '…';
+  const snap = m.snapOf({ toolConfigs: d.tool_configs || [], tools: d.tools || [], monitor: d.monitor || {}, enabledTools: tools });
+  const n = m.settingsSummary(m.toolEntries(snap));
+  return n.set + ' set · ' + n.risky + ' risky · ' + n.agents + ' agents';
+}
 
 function useResolvedTheme(theme) {
   const [dark, setDark] = useState(() => {
@@ -44,7 +68,7 @@ function useResolvedTheme(theme) {
 
 const Check = ({ on }) => html`<span class=${'bd-check' + (on ? ' bd-on' : '')}>${on ? html`<${Ico} d=${PATHS.check}/>` : null}</span>`;
 
-function Rail({ ui, data, series, findingsCount, attention, act }) {
+function Rail({ ui, data, series, findingsCount, attention, screen, settingsSum, act }) {
   const [detailOpen, setDetailOpen] = useState(false);
   const mini = ui.railMini;
   const railLabel = mini ? 'Show section names' : 'Hide section names';
@@ -58,9 +82,13 @@ function Rail({ ui, data, series, findingsCount, attention, act }) {
       <button type="button" class="bd-ib-btn" aria-label=${railLabel} title=${railLabel} onClick=${act.toggleRail}><${Ico} d=${PATHS.menu}/></button>
     </div>
     <nav aria-label="Sections of this screen" class="bd-railnav">
-      ${items.map(it => html`<a key=${it.id} class=${'bd-navi' + (it.id === 'agents' && attention ? ' bd-alert' : '')} href=${'#' + it.anchor} title=${it.label + ': ' + it.sum} onClick=${() => act.openSection(it.id)}>
+      ${items.map(it => html`<a key=${it.id} class=${'bd-navi' + (it.id === 'agents' && attention ? ' bd-alert' : '')} href=${'#' + it.anchor} title=${it.label + ': ' + it.sum} onClick=${e => act.openSection(it.id, e, it.anchor)}>
         <${Ico} d=${it.icon}/><span class="bd-rl"><b>${it.label}</b><span>${it.sum}</span></span>
       </a>`)}
+      <a key="settings" class="bd-navi" href="?screen=settings" aria-current=${screen === 'settings' ? 'page' : undefined}
+        title=${'Settings: ' + settingsSum} onClick=${(e) => { e.preventDefault(); act.setScreen('settings'); }}>
+        <${Ico} d=${PATHS.settings}/><span class="bd-rl"><b>Settings</b><span>${settingsSum}</span></span>
+      </a>
     </nav>
     <span class="bd-spacer"></span>
     <div class="bd-detail">
@@ -187,6 +215,16 @@ function Kpis({ data }) {
   </a>`)}</div>`;
 }
 
+/** The Settings screen in the board's main area: the workspace once its code and data are here. */
+function SettingsArea({ Workspace, res, source }) {
+  if (res.error && !res.data) {
+    return html`<div class="bd-banner" role="alert"><${Ico} d=${PATHS.warn}/>Could not read the settings: ${res.error.message || String(res.error)}.</div>`;
+  }
+  if (!Workspace || !source) return html`<div class="bd-sk" role="status">Loading the settings...</div>`;
+  return html`${res.error ? html`<div class="bd-banner" role="alert"><${Ico} d=${PATHS.warn}/>Could not update the settings: ${res.error.message || String(res.error)}. Showing the last values.</div>` : null}
+    <${Workspace} source=${source} note=${SETTINGS_NOTE}/>`;
+}
+
 function Modal({ modal, onCancel }) {
   const ref = useRef(null);
   const [busy, setBusy] = useState(false);
@@ -217,6 +255,7 @@ export default function BoardScreen() {
   const { filters, applied, tools, update, setFind } = board;
   const { theme, setTheme } = useTheme();
   const resolvedTheme = useResolvedTheme(theme);
+  const [screen, setScreen] = useState(currentScreen);
   const [ui, setUi] = useState(() => loadUi());
   const [live, setLive] = useState(true);
   const [menu, setMenu] = useState(null);
@@ -229,6 +268,7 @@ export default function BoardScreen() {
     } catch { return []; }
   });
   const [DrawerC, setDrawerC] = useState(null);
+  const [SettingsC, setSettingsC] = useState(null);
   const [dragId, setDragId] = useState(null);
   const [over, setOver] = useState(null);
   const [modal, setModal] = useState(null);
@@ -285,6 +325,30 @@ export default function BoardScreen() {
     return () => clearTimeout(t);
   }, [loaded, loadFindings]);
 
+  // Every tool's settings, for the Settings screen and its rail line. Read after the
+  // board's first data, or at once when the screen opens first, and again once the
+  // board's data is a minute newer. The last answer stays on screen meanwhile.
+  const [settingsRes, setSettingsRes] = useState({ data: null, model: null, error: null });
+  const settingsAt = useRef(undefined);
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
+  const settingsWanted = loaded || screen === 'settings';
+  const boardAt = data.generated_at || 0;
+  useEffect(() => {
+    if (!settingsWanted) return;
+    const last = settingsAt.current;
+    if (last !== undefined) {
+      // A read made before the board had data counts as made at the board's first data.
+      if (!last) { settingsAt.current = boardAt; return; }
+      if (boardAt - last <= SETTINGS_REFRESH_S) return;
+    }
+    settingsAt.current = boardAt;
+    Promise.all([api.getSettingsTools(), import('../settings/model.js')]).then(
+      ([d, model]) => { if (mounted.current) setSettingsRes({ data: d || {}, model, error: null }); },
+      (e) => { if (mounted.current) setSettingsRes(s => ({ ...s, error: e })); },
+    );
+  }, [settingsWanted, boardAt]);
+
   const toolIds = useMemo(() => data.options.tools.map(t => t.id), [data.options]);
   // Settings apply whether or not a tool ran in this time, so its data sources count too.
   const settingToolIds = useMemo(() => [...new Set([...toolIds, ...data.sources.map(s => s.tool)])], [toolIds, data.sources]);
@@ -298,7 +362,7 @@ export default function BoardScreen() {
 
   // Latest values for handlers that keep one identity, so panels do not re-render for them.
   const latest = useRef({});
-  latest.current = { ui, filters, tools, menu, drawer, dragId, modal, over };
+  latest.current = { ui, filters, tools, menu, drawer, dragId, modal, over, screen };
 
   const notice = useCallback((text, undo) => {
     clearTimeout(latest.current.toastTimer);
@@ -337,7 +401,21 @@ export default function BoardScreen() {
         if (f.sel) return 'Time selected';
         return (f.range.id === 'custom' ? 'Custom' : (RANGES.find(r => r.id === f.range.id) || RANGES[3]).label) + ' summary';
       },
-      openSection: id => {
+      setScreen: (next) => {
+        closeMenu();
+        if (L.current.screen === next) return;
+        L.current.screen = next;
+        setScreen(next);
+        writeUrl({ screen: next === 'board' ? null : next }, { push: true });
+        document.getElementById('main-area')?.scrollTo?.(0, 0);
+      },
+      openSection: (id, e, anchor) => {
+        // From the Settings screen a section link goes back to the board, then to its place.
+        if (L.current.screen !== 'board') {
+          e?.preventDefault();
+          a.setScreen('board');
+          if (anchor) setTimeout(() => document.getElementById(anchor)?.scrollIntoView?.(), 0);
+        }
         if (id === 'top') return;
         setUi(u => ({ ...u, layout: u.layout.map(s => (s.id === id ? { ...s, open: true } : s)) }));
       },
@@ -439,6 +517,7 @@ export default function BoardScreen() {
       drawerBack: () => setDrawer(s => s.slice(0, -1)),
       drawerClose: () => { setDrawer([]); writeUrl({ agent: null, tab: null }); },
       rescan: () => loadFindings(true),
+      openFile: (path, line) => { if (path) a.openDrawer({ type: 'file', path, line: line > 0 ? line : undefined }); },
       copy: (text, done) => {
         try { navigator.clipboard?.writeText(text); notice(done); } catch { notice('Could not copy. ' + text); }
       },
@@ -499,6 +578,22 @@ export default function BoardScreen() {
   }, [drawer.length, DrawerC]);
 
   useEffect(() => {
+    if (screen !== 'settings' || SettingsC) return;
+    import('../settings/SettingsWorkspace.js').then(m => setSettingsC(() => m.default));
+  }, [screen, SettingsC]);
+
+  // Back and Forward move between the board and its Settings screen.
+  useEffect(() => {
+    const onPop = () => {
+      const next = currentScreen();
+      latest.current.screen = next;
+      setScreen(next);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  useEffect(() => {
     const onKey = (e) => {
       const typing = e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
       if (e.key === '/' && !typing && !e.metaKey && !e.ctrlKey) {
@@ -525,16 +620,29 @@ export default function BoardScreen() {
     data, series: chartSeries, range: chartRange, chartRange, sel: applied.sel, filters: applied, tools, toolIds, settingToolIds, toolName, nowS, stopped, findings, actions: act, query, refreshKey: data.generated_at,
   }), [data, chartSeries, chartRange, applied, tools, toolIds, settingToolIds, toolName, nowS, stopped, findings, query]);
 
+  const settingsFindings = useMemo(() => ({ ...findings, rescan: act.rescan }), [findings, act]);
+  const settingsSource = useMemo(() => (settingsRes.data ? {
+    toolConfigs: settingsRes.data.tool_configs || [],
+    tools: settingsRes.data.tools || [],
+    monitor: settingsRes.data.monitor || {},
+    enabledTools: tools,
+    toolName,
+    openFile: act.openFile,
+    findings: settingsFindings,
+  } : null), [settingsRes.data, tools, toolName, act, settingsFindings]);
+  const settingsSum = useMemo(() => settingsLine(settingsRes, tools), [settingsRes, tools]);
+
   const hiddenIds = useMemo(() => new Set(ui.hidden), [ui.hidden]);
   const attention = data.attention.filter(i => !stopped[i.agent_id]).length;
 
   return html`<div class="bd-app" tabindex="-1" data-theme=${resolvedTheme} data-density=${ui.density} aria-busy=${busy ? 'true' : 'false'}>
-    <${Rail} ui=${ui} data=${data} series=${chartSeries} findingsCount=${findings.list.length} attention=${attention} act=${act}/>
+    <${Rail} ui=${ui} data=${data} series=${chartSeries} findingsCount=${findings.list.length} attention=${attention} screen=${screen} settingsSum=${settingsSum} act=${act}/>
     <div class="bd-main">
       <${TopBar} f=${filters} board=${board} menu=${menu} ui=${ui} resolvedTheme=${resolvedTheme} setTheme=${setTheme} live=${live} act=${act}/>
       <${FilterRow} board=${board} data=${data} ctx=${ctx} menu=${menu} act=${act}/>
       <div class="bd-body">
-        <main class="bd-area" id="main-area">
+        <main class="bd-area" id="main-area" aria-label=${screen === 'settings' ? 'Settings' : undefined}>
+          ${screen === 'settings' ? html`<${SettingsArea} Workspace=${SettingsC} res=${settingsRes} source=${settingsSource}/>` : html`
           ${error ? html`<div class="bd-banner" role="alert"><${Ico} d=${PATHS.warn}/>Could not update the board: ${error.message}. Showing the last data.</div>` : null}
           ${!loaded && !error ? html`<div class="bd-sk" role="status">Loading the board...</div>` : null}
           <${Kpis} data=${data}/>
@@ -554,7 +662,7 @@ export default function BoardScreen() {
                   menuOpen=${menu === 'panel:' + pn.id} over=${over && over.id === pn.id ? (over.after ? 'after' : 'before') : null} dragging=${dragId === pn.id} act=${act} sections=${SECTIONS}/>`)}
               </div>` : null}
             </section>`;
-          })}
+          })}`}
         </main>
         ${drawer.length && DrawerC ? html`<${DrawerC} stack=${drawer} ctx=${ctx} act=${act}/>` : null}
       </div>

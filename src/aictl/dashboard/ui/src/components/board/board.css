@@ -25,6 +25,7 @@ html,body{margin:0;height:100%}
 .bd-navi span span{display:block;color:var(--ink3);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:162px}
 .bd-navi svg{margin-top:2px}
 .bd-navi.bd-alert span span{color:var(--warnink)}
+.bd-navi[aria-current=page]{background:var(--sel);color:var(--ink);box-shadow:inset 2px 0 var(--focus)}
 .bd-railfoot{margin-top:auto;padding:10px 14px;color:var(--ink3);font-size:11.5px;border-top:1px solid var(--line)}
 .bd-main{display:flex;flex-direction:column;min-width:0;min-height:0}
 .bd-bar{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:6px 12px;background:var(--surface);border-bottom:1px solid var(--line2)}

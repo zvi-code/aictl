@@ -495,8 +495,10 @@ describe('guards', () => {
     for (const f of files) expect(readFileSync(join(dir, f), 'utf8'), f).not.toMatch(/echarts|uplot/i);
   });
   it('keeps old links resolving', () => {
-    expect(routeOf('?tab=configuration')).toBe('detail');
     expect(routeOf('?tab=events-stats')).toBe('detail');
+    // Configuration became the board's Settings screen, under its old names too.
+    expect(routeOf('?tab=configuration')).toBe('board');
+    expect(routeOf('?tab=config')).toBe('board');
   });
   it('opens a skill from its row and shows its scope', () => {
     const opened = [];

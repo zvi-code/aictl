@@ -25,5 +25,6 @@ export const PATHS = {
   warn: 'M8 2.5l6.5 11h-13zM8 6.5v3.5M8 12v.01',
   check: 'M3.5 8.5l3 3 6-7',
   detail: 'M3 3h10v10H3zM3 6.5h10M6.5 6.5V13',
+  settings: 'M12.9 6.8L14.5 6.8L14.5 9.2L12.9 9.2L12.3 10.6L13.4 11.8L11.8 13.4L10.6 12.3L9.2 12.9L9.2 14.5L6.8 14.5L6.8 12.9L5.4 12.3L4.2 13.4L2.6 11.8L3.7 10.6L3.1 9.2L1.5 9.2L1.5 6.8L3.1 6.8L3.7 5.4L2.6 4.2L4.2 2.6L5.4 3.7L6.8 3.1L6.8 1.5L9.2 1.5L9.2 3.1L10.6 3.7L11.8 2.6L13.4 4.2L12.3 5.4zM8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z',
 };
 export const Ico = ({ d, cls = '', sw, style }) => html`<svg class=${'bd-i ' + cls} viewBox="0 0 16 16" aria-hidden="true" style=${style} stroke-width=${sw}><path d=${d}></path></svg>`;

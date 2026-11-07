@@ -1,4 +1,4 @@
-import{x as N,d as S,y as U,T as M,m as a}from"./index-DyDyJAkK.js";import{e as X,ap as Z,L as Y,M as ss,r as q,af as G,ah as O,b4 as es,b5 as I,b6 as ts}from"./useSse-DFs1a0pz.js";import{S as P,a as ns,T as as,c as os,D as W,n as B}from"./app-CcuDFzdW.js";import"./TextView-DRRCCuem.js";function E(s){const n=s.live||{};return n.pid_count>0||n.session_count>0||(s.processes||[]).length>0}function L({label:s}){return a`<div class="c-overline cagents-rule">
+import{x as N,d as S,y as z,T as W,m as a}from"./index-COdGgaml.js";import{f as X,aq as Z,K as U,L as ss,v as Y,ag as G,ai as O,b5 as es,b6 as I,b7 as ts}from"./useSse-BA3xgPtb.js";import{S as P,T as ns,b as as,D as B,j as M}from"./app-2zqrKZhA.js";import{T as os}from"./ToolScopeEmpty-sHZab3hi.js";import"./TextView-BEN-kPtl.js";function E(s){const n=s.live||{};return n.pid_count>0||n.session_count>0||(s.processes||[]).length>0}function L({label:s}){return a`<div class="c-overline cagents-rule">
     <div class="cagents-rule-line"></div>
     <div class="cagents-rule-label">${s}</div>
     <div class="cagents-rule-line"></div>
@@ -13,7 +13,7 @@ import{x as N,d as S,y as U,T as M,m as a}from"./index-DyDyJAkK.js";import{e as 
       ${e?a`${n.added.map(t=>a`<code key=${"a"+t} class="is-added">+ ${t}</code>`)}
           ${n.removed.map(t=>a`<code key=${"r"+t} class="is-removed">- ${t}</code>`)}`:a`<code>no change</code>`}
     </div>
-  </div>`}function ds({tool:s,label:n,onClose:e}){var R,j;const[t,c]=S(null),[u,r]=S(""),[d,l]=S(""),[g,$]=S(!0),[i,f]=S(!1),[w,m]=S(""),[h,T]=S("");U(()=>{let k=!0;return $(!0),m(""),T(""),es(s).then(D=>{var F,H;k&&(c(D),r(A((F=D.permissions)==null?void 0:F.allow)),l(A((H=D.permissions)==null?void 0:H.deny)),$(!1))}).catch(D=>{k&&(m(D.message||"Failed to load config"),$(!1))}),()=>{k=!1}},[s]);const _=J(u),o=J(d),b=((R=t==null?void 0:t.permissions)==null?void 0:R.allow)||[],p=((j=t==null?void 0:t.permissions)==null?void 0:j.deny)||[],y=K(b,_),x=K(p,o),v=JSON.stringify(b)!==JSON.stringify(_)||JSON.stringify(p)!==JSON.stringify(o),C=JSON.stringify({permissions:{allow:_,deny:o}},null,2),Q=()=>{f(!0),m(""),T(""),ts(s,{expected_mtime:t==null?void 0:t.mtime,permissions:{allow:_,deny:o}}).then(k=>{var D,F;c(k),r(A((D=k.permissions)==null?void 0:D.allow)),l(A((F=k.permissions)==null?void 0:F.deny)),T(k.backup_path||""),f(!1),B.success("Configuration saved")}).catch(k=>{m(k.message||"Failed to save config"),f(!1),B.error("Configuration save failed")})};return a`<${W} open=${!0} onClose=${e} ariaLabel=${"Edit "+n+" configuration"} class="cagents-editor-dialog">
+  </div>`}function ds({tool:s,label:n,onClose:e}){var R,j;const[t,c]=S(null),[u,r]=S(""),[d,l]=S(""),[g,$]=S(!0),[i,f]=S(!1),[w,m]=S(""),[h,T]=S("");z(()=>{let k=!0;return $(!0),m(""),T(""),es(s).then(D=>{var F,H;k&&(c(D),r(A((F=D.permissions)==null?void 0:F.allow)),l(A((H=D.permissions)==null?void 0:H.deny)),$(!1))}).catch(D=>{k&&(m(D.message||"Failed to load config"),$(!1))}),()=>{k=!1}},[s]);const _=J(u),o=J(d),b=((R=t==null?void 0:t.permissions)==null?void 0:R.allow)||[],p=((j=t==null?void 0:t.permissions)==null?void 0:j.deny)||[],y=K(b,_),x=K(p,o),v=JSON.stringify(b)!==JSON.stringify(_)||JSON.stringify(p)!==JSON.stringify(o),C=JSON.stringify({permissions:{allow:_,deny:o}},null,2),Q=()=>{f(!0),m(""),T(""),ts(s,{expected_mtime:t==null?void 0:t.mtime,permissions:{allow:_,deny:o}}).then(k=>{var D,F;c(k),r(A((D=k.permissions)==null?void 0:D.allow)),l(A((F=k.permissions)==null?void 0:F.deny)),T(k.backup_path||""),f(!1),M.success("Configuration saved")}).catch(k=>{m(k.message||"Failed to save config"),f(!1),M.error("Configuration save failed")})};return a`<${B} open=${!0} onClose=${e} ariaLabel=${"Edit "+n+" configuration"} class="cagents-editor-dialog">
     <div class="cagents-editor-head">
       <div>
         <div class="c-overline c-overline--wide">Project configuration</div>
@@ -48,7 +48,7 @@ import{x as N,d as S,y as U,T as M,m as a}from"./index-DyDyJAkK.js";import{e as 
         ${i?"Saving...":"Save changes"}
       </button>
     </div>
-  </${W}>`}function vs({tool:s,hooksStatus:n}){var l,g,$;const e=((l=n==null?void 0:n.tools)==null?void 0:l[s.tool])||null,t=((g=n==null?void 0:n.counts_by_tool_kind)==null?void 0:g[s.tool])||{},c=(e==null?void 0:e.warnings)||[],u=(e==null?void 0:e.configured_events)||[],r=(e==null?void 0:e.missing_events)||[],d=(e==null?void 0:e.status)==="active"?"is-active":(e==null?void 0:e.status)==="disabled"||(e==null?void 0:e.status)==="misconfigured"?"is-disabled":"";return a`<div>
+  </${B}>`}function vs({tool:s,hooksStatus:n}){var l,g,$;const e=((l=n==null?void 0:n.tools)==null?void 0:l[s.tool])||null,t=((g=n==null?void 0:n.counts_by_tool_kind)==null?void 0:g[s.tool])||{},c=(e==null?void 0:e.warnings)||[],u=(e==null?void 0:e.configured_events)||[],r=(e==null?void 0:e.missing_events)||[],d=(e==null?void 0:e.status)==="active"?"is-active":(e==null?void 0:e.status)==="disabled"||(e==null?void 0:e.status)==="misconfigured"?"is-disabled":"";return a`<div>
     <div class="cagents-hook-summary">
       <div class=${"cagents-hook-status "+d} title=${(e==null?void 0:e.status)==="misconfigured"?"hook commands post to a different port than this dashboard":""}>
         ${cs(e==null?void 0:e.status)}
@@ -76,7 +76,7 @@ import{x as N,d as S,y as U,T as M,m as a}from"./index-DyDyJAkK.js";import{e as 
         <span class=${i.host_enabled?"":"is-disabled"}>${i.host_enabled?"loaded":"ignored"}</span>
       </div>`)}
     </div>`}
-  </div>`}function us({tool:s,hooksStatus:n}){var o,b,p,y,x;const e=((o=N(P))==null?void 0:o.enabledTools)??null,t=Y(e),c=(n==null?void 0:n.skill_usage)||{},u=(n==null?void 0:n.subagents)||{},r=(n==null?void 0:n.tool_calls)||{},d=t?I(r.by_tool,e):null,l=t?I(c.by_tool,e):null,g=t?I(u.by_tool,e,v=>v==null?void 0:v.starts):null,$=t?"selected tools":"all tools",i=v=>v&&v.hidden?`${v.hidden} from tools that could not be identified are not counted`:void 0,f=c.by_tool_skill?Object.entries(c.by_tool_skill[s.tool]||{}).map(([v,C])=>({skill:v,count:C})).sort((v,C)=>C.count-v.count||v.skill.localeCompare(C.skill)):c.by_skill||[],w=((b=c.by_tool)==null?void 0:b[s.tool])||0,m=((p=u.by_tool)==null?void 0:p[s.tool])||{starts:0},h=((y=r.by_tool)==null?void 0:y[s.tool])||0,T=Object.entries(((x=r.by_tool_name)==null?void 0:x[s.tool])||{}).sort((v,C)=>C[1]-v[1]).slice(0,6),_=w===0&&(m.starts||0)===0&&h===0;return a`<div class="cagents-activity-report">
+  </div>`}function us({tool:s,hooksStatus:n}){var o,b,p,y,x;const e=((o=N(P))==null?void 0:o.enabledTools)??null,t=U(e),c=(n==null?void 0:n.skill_usage)||{},u=(n==null?void 0:n.subagents)||{},r=(n==null?void 0:n.tool_calls)||{},d=t?I(r.by_tool,e):null,l=t?I(c.by_tool,e):null,g=t?I(u.by_tool,e,v=>v==null?void 0:v.starts):null,$=t?"selected tools":"all tools",i=v=>v&&v.hidden?`${v.hidden} from tools that could not be identified are not counted`:void 0,f=c.by_tool_skill?Object.entries(c.by_tool_skill[s.tool]||{}).map(([v,C])=>({skill:v,count:C})).sort((v,C)=>C.count-v.count||v.skill.localeCompare(C.skill)):c.by_skill||[],w=((b=c.by_tool)==null?void 0:b[s.tool])||0,m=((p=u.by_tool)==null?void 0:p[s.tool])||{starts:0},h=((y=r.by_tool)==null?void 0:y[s.tool])||0,T=Object.entries(((x=r.by_tool_name)==null?void 0:x[s.tool])||{}).sort((v,C)=>C[1]-v[1]).slice(0,6),_=w===0&&(m.starts||0)===0&&h===0;return a`<div class="cagents-activity-report">
     <div class="cagents-activity-row">
       <span>Tool calls</span>
       <strong>${h}</strong>
@@ -102,8 +102,8 @@ import{x as N,d as S,y as U,T as M,m as a}from"./index-DyDyJAkK.js";import{e as 
       No tool calls, skill uses or subagents stored for this tool in the last 24h.
       Counts come from the aictl store (hooks, OTel and transcripts), not from hooks alone.
     </div>`}
-  </div>`}const z={auto:{color:"var(--green)",bg:"var(--green-soft, #E6EFE3)",border:"var(--green)"},ask:{color:"var(--orange)",bg:"transparent",border:"var(--orange)"},deny:{color:"var(--accent)",bg:"var(--accent-soft)",border:"var(--accent)"},"n/a":{color:"var(--fg3)",bg:"transparent",border:"var(--border)"}};function gs({val:s}){const n=z[s]||z["n/a"];return a`<span class="cagents-perm-badge"
-    style="color:${n.color};background:${n.bg};border-color:${n.border}">${s}</span>`}function ps(s){if(((s==null?void 0:s.features)||{}).global_autoApprove)return[["MCP Servers","auto"],["File Reads","auto"],["File Writes","auto"],["Shell","auto"],["Web Fetch","auto"],["Network","auto"]];const t=((s==null?void 0:s.settings)||{}).permissions||{},c=(t.allow||[]).map(l=>l.toLowerCase()),u=(t.deny||[]).map(l=>l.toLowerCase()),r=(t.ask||[]).map(l=>l.toLowerCase()),d=(...l)=>l.some(g=>u.some($=>$.startsWith(g)))?"deny":l.some(g=>c.some($=>$.startsWith(g)))?"auto":l.some(g=>r.some($=>$.startsWith(g)))?"ask":c.length===0&&u.length===0&&r.length===0?"n/a":"ask";return[["MCP Servers",d("mcp")],["File Reads",d("read","glob","grep","ls")],["File Writes",d("write","edit","create","multiedit")],["Shell",d("bash","execute")],["Web Fetch",d("webfetch","fetch")],["Network","n/a"]]}function $s({tool:s,toolConfig:n,hooksStatus:e,onViewSessions:t,onViewConfig:c,onEditConfig:u}){var b;const r=(b=N(P))==null?void 0:b.snap,d=s.live||{},l=s.processes||[],g=s.mcp_servers||[];l.reduce((p,y)=>p+(parseFloat(y.cpu_pct)||0),0);const i=(l.length>0&&(l[0].cmdline||l[0].name)||"").split(" ")[0]||null,f=(n==null?void 0:n.version)||null,w=(n==null?void 0:n.notes)||null,m=(n==null?void 0:n.otel)||{},h=m.enabled?["events","tokens","timing",...m.capture_content?["prompts","responses"]:[]]:[],T=[["Sessions",d.session_count??0],["Tokens",q(G(d))],["Processes",d.pid_count??l.length],["MCP servers",g.length],["Captured fields",h.length>0?h.length:"—"],["OTel",m.enabled?"active":"off"]],_=ps(n),o=[i?["binary",i]:null,f?["version",f]:null,h.length>0?["capture","["+h.map(p=>`"${p}"`).join(", ")+"]"]:["capture","—"],["enabled",E(s)?"true":"false"]].filter(Boolean);return a`<div class="cagents-detail">
+  </div>`}const q={auto:{color:"var(--green)",bg:"var(--green-soft, #E6EFE3)",border:"var(--green)"},ask:{color:"var(--orange)",bg:"transparent",border:"var(--orange)"},deny:{color:"var(--accent)",bg:"var(--accent-soft)",border:"var(--accent)"},"n/a":{color:"var(--fg3)",bg:"transparent",border:"var(--border)"}};function gs({val:s}){const n=q[s]||q["n/a"];return a`<span class="cagents-perm-badge"
+    style="color:${n.color};background:${n.bg};border-color:${n.border}">${s}</span>`}function ps(s){if(((s==null?void 0:s.features)||{}).global_autoApprove)return[["MCP Servers","auto"],["File Reads","auto"],["File Writes","auto"],["Shell","auto"],["Web Fetch","auto"],["Network","auto"]];const t=((s==null?void 0:s.settings)||{}).permissions||{},c=(t.allow||[]).map(l=>l.toLowerCase()),u=(t.deny||[]).map(l=>l.toLowerCase()),r=(t.ask||[]).map(l=>l.toLowerCase()),d=(...l)=>l.some(g=>u.some($=>$.startsWith(g)))?"deny":l.some(g=>c.some($=>$.startsWith(g)))?"auto":l.some(g=>r.some($=>$.startsWith(g)))?"ask":c.length===0&&u.length===0&&r.length===0?"n/a":"ask";return[["MCP Servers",d("mcp")],["File Reads",d("read","glob","grep","ls")],["File Writes",d("write","edit","create","multiedit")],["Shell",d("bash","execute")],["Web Fetch",d("webfetch","fetch")],["Network","n/a"]]}function $s({tool:s,toolConfig:n,hooksStatus:e,onViewSessions:t,onViewConfig:c,onEditConfig:u}){var b;const r=(b=N(P))==null?void 0:b.snap,d=s.live||{},l=s.processes||[],g=s.mcp_servers||[];l.reduce((p,y)=>p+(parseFloat(y.cpu_pct)||0),0);const i=(l.length>0&&(l[0].cmdline||l[0].name)||"").split(" ")[0]||null,f=(n==null?void 0:n.version)||null,w=(n==null?void 0:n.notes)||null,m=(n==null?void 0:n.otel)||{},h=m.enabled?["events","tokens","timing",...m.capture_content?["prompts","responses"]:[]]:[],T=[["Sessions",d.session_count??0],["Tokens",Y(G(d))],["Processes",d.pid_count??l.length],["MCP servers",g.length],["Captured fields",h.length>0?h.length:"—"],["OTel",m.enabled?"active":"off"]],_=ps(n),o=[i?["binary",i]:null,f?["version",f]:null,h.length>0?["capture","["+h.map(p=>`"${p}"`).join(", ")+"]"]:["capture","—"],["enabled",E(s)?"true":"false"]].filter(Boolean);return a`<div class="cagents-detail">
     <div class="c-overline c-overline--wide">Agent profile</div>
     <div class="cagents-detail-headline">
       <span class="cagents-detail-title">${s.label}</span>
@@ -112,7 +112,7 @@ import{x as N,d as S,y as U,T as M,m as a}from"./index-DyDyJAkK.js";import{e as 
     </div>
     ${w&&a`<div class="cagents-detail-notes">${w}</div>`}
 
-    ${O(s,r)&&a`<${os} tool=${s}/>`}
+    ${O(s,r)&&a`<${as} tool=${s}/>`}
     <div class="cagents-detail-section" hidden=${O(s,r)}><${L} label="Stats"/></div>
     <div class="cagents-stats-grid" hidden=${O(s,r)}>
       ${T.map(([p,y])=>a`<${ls} key=${p} label=${p} value=${y}/>`)}
@@ -150,14 +150,14 @@ import{x as N,d as S,y as U,T as M,m as a}from"./index-DyDyJAkK.js";import{e as 
     role="button" tabIndex=${0} aria-pressed=${u?"true":"false"}
     onKeyDown=${r=>{(r.key==="Enter"||r.key===" ")&&(r.preventDefault(),e(s.tool))}}>
     <div class="cagents-row-head">
-      <${as} tool=${s.tool} size="12px"/>
+      <${ns} tool=${s.tool} size="12px"/>
       <span class="cagents-row-label">${s.label}</span>
       <span class=${"c-overline cagents-row-status"+(c?" is-on":"")}>
         ${c?"● on":"off"}
       </span>
     </div>
     <div class="cagents-row-meta">
-      ${q(G(t))} tok \u00b7 ${t.session_count||0} sessions
+      ${Y(G(t))} tok \u00b7 ${t.session_count||0} sessions
     </div>
   </div>`}function fs({tool:s,selected:n,onSelect:e}){const t=n===s.tool;return a`<div class=${"c-row c-row--list cagents-row--inactive"+(t?" is-selected":"")}
     onClick=${()=>e(s.tool)}
@@ -168,7 +168,7 @@ import{x as N,d as S,y as U,T as M,m as a}from"./index-DyDyJAkK.js";import{e as 
       <span class="cagents-row-label" style="color:var(--fg2)">${s.label}</span>
       <span class="c-overline">view</span>
     </div>
-  </div>`}function ws({onViewSessions:s,onViewConfig:n}){const e=N(P),t=e==null?void 0:e.snap,[c,u]=S(null);U(()=>{let o=!0;const b=()=>{X().then(y=>{o&&u(y)}).catch(()=>{o&&u(null)})};b();const p=setInterval(b,15e3);return()=>{o=!1,clearInterval(p)}},[]);const r=M(()=>{const o={};for(const b of(t==null?void 0:t.tool_configs)||[])b.tool&&(o[b.tool]=b);return o},[t]),{active:d,inactive:l}=M(()=>{const o=((t==null?void 0:t.tools)||[]).filter(b=>b.tool!=="aictl");return{active:o.filter(E),inactive:o.filter(b=>!E(b))}},[t]),[g,$]=S(null),[i,f]=S(null),w=[...d,...l].map(o=>o.tool),m=g&&w.includes(g)?g:Z(d.map(o=>o.tool),null)??w[0]??null,h=d.find(o=>o.tool===m)??l.find(o=>o.tool===m),T=m?r[m]:null,_=(e==null?void 0:e.enabledTools)??null;return!d.length&&!l.length&&Y(_)?a`<div class="c-shell"><${ns} enabledTools=${_} snap=${t} what="agents"/></div>`:a`<div class="c-shell">
+  </div>`}function _s({onViewSessions:s,onViewConfig:n}){const e=N(P),t=e==null?void 0:e.snap,[c,u]=S(null);z(()=>{let o=!0;const b=()=>{X().then(y=>{o&&u(y)}).catch(()=>{o&&u(null)})};b();const p=setInterval(b,15e3);return()=>{o=!1,clearInterval(p)}},[]);const r=W(()=>{const o={};for(const b of(t==null?void 0:t.tool_configs)||[])b.tool&&(o[b.tool]=b);return o},[t]),{active:d,inactive:l}=W(()=>{const o=((t==null?void 0:t.tools)||[]).filter(b=>b.tool!=="aictl");return{active:o.filter(E),inactive:o.filter(b=>!E(b))}},[t]),[g,$]=S(null),[i,f]=S(null),w=[...d,...l].map(o=>o.tool),m=g&&w.includes(g)?g:Z(d.map(o=>o.tool),null)??w[0]??null,h=d.find(o=>o.tool===m)??l.find(o=>o.tool===m),T=m?r[m]:null,_=(e==null?void 0:e.enabledTools)??null;return!d.length&&!l.length&&U(_)?a`<div class="c-shell"><${os} enabledTools=${_} snap=${t} what="agents"/></div>`:a`<div class="c-shell">
     <div class="cagents-toolbar">
       <span class="c-overline">
         ${d.length} of ${d.length+l.length} agents active
@@ -199,4 +199,4 @@ import{x as N,d as S,y as U,T as M,m as a}from"./index-DyDyJAkK.js";import{e as 
       tool=${i.tool}
       label=${i.label}
       onClose=${()=>f(null)}/>`}
-  </div>`}export{ws as default};
+  </div>`}export{_s as default};

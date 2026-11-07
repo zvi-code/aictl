@@ -607,7 +607,7 @@ function panelSettings(ctx) {
   return {
     sub: 'Value in force for each tool, and where it comes from',
     table: { cols: [{ k: 'k', l: 'Setting', w: '180px' }].concat(shown.map(id => ({ k: id, l: ctx.toolName(id), minw: 112 }))), rows, none: ctx.findings.loading ? 'Reading the settings...' : 'No settings read yet.' },
-    actions: ctx.findings.settings.length ? [{ label: 'See all settings on the configuration screen', href: '?tab=config' }] : null,
+    actions: [{ label: 'Open the Settings screen', go: () => ctx.actions.setScreen('settings') }],
     note: ctx.findings.note || '',
   };
 }

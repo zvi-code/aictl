@@ -5,7 +5,7 @@ import { baseName } from '../../utils/paths.js';
 
 export function Swatch({ id, big = false }) {
   return html`<span class=${'st-sw' + (big ? ' st-sw--big' : '')} aria-hidden="true"
-    style=${{ background: COLORS[id] || 'var(--fg2)' }}></span>`;
+    style=${{ background: COLORS[id] || 'var(--st-fg2)' }}></span>`;
 }
 
 export function RiskDot({ label }) {

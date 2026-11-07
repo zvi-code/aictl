@@ -1,4 +1,4 @@
-import{x as W,d as h,T,q as D,y as X,m as i}from"./index-DyDyJAkK.js";import{S as Z,e as ee,f as q,h as se,a as le,T as te}from"./app-CcuDFzdW.js";import{M as x,r as b,A as K,af as ie,aY as ne,L as oe,B as ae,q as j}from"./useSse-DFs1a0pz.js";import"./TextView-DRRCCuem.js";const ce={user:"var(--fg)",api:"#B26B1B",agent:"var(--green)",bash:"var(--fg)",read:"#1F6E78",write:"#1F6E78",edit:"#1F6E78",glob:"var(--green)",grep:"var(--green)",skill:"#2E5BA6"};function G(t){const s=(t||"").toLowerCase();return ce[s]||"var(--fg2)"}function de(t){return t?new Date(t*1e3).toTimeString().slice(0,8):"—"}function re(t){return t?new Date(t*1e3).toISOString().replace("T"," ").slice(0,23):"—"}function ue(t){const s=[];let a=0;return(t||[]).forEach((l,c)=>{var g;const r=de(l.ts),u=l.tokens;if(l.type==="session_start")s.push({id:`t${c}`,lane:"agent",kind:"call",t:r,label:"session opened",meta:null,size:null,raw:l});else if(l.type==="session_end")s.push({id:`t${c}`,lane:"agent",kind:"return",t:r,label:"session closed",meta:null,size:null,raw:l});else if(l.type==="user_message"){const d=(u==null?void 0:u.output)||0;a+=d,s.push({id:`t${c}`,lane:"user",kind:"call",t:r,label:l.preview||(l.message||"").slice(0,120),meta:l.model?`${l.model} · ${b((u==null?void 0:u.input)||0)} in / ${b(d)} out`:null,size:null,cum:(a/1e3).toFixed(1),raw:l})}else if(l.type==="api_call"){const d=((g=l.tokens)==null?void 0:g.output)||0;a+=d,s.push({id:`t${c}`,lane:"api",kind:"recv",t:r,label:`← ${b(d)}t`,meta:l.model||null,size:null,cum:(a/1e3).toFixed(1),raw:l})}else if(l.type==="tool_use"){const d=l.to||"tool",_=d.toLowerCase().replace(/[^a-z0-9_-]/g,"").slice(0,24)||"tool";if(l.subtype==="decision")s.push({id:`t${c}`,lane:_,kind:"call",t:r,label:d+(l.input_preview?": "+l.input_preview.slice(0,80):""),meta:l.decision||null,size:null,raw:l});else{const $=l.result_size?j(l.result_size):null;s.push({id:`t${c}`,lane:_,kind:"return",t:r,label:d+(l.result_summary?": "+l.result_summary.slice(0,80):""),meta:l.success!==!1?`✓ ${l.duration_ms!=null?l.duration_ms+"ms":""}`:"✗ failed",size:$,raw:l})}}else l.type==="compaction"&&s.push({id:`t${c}`,lane:"agent",kind:"call",t:r,label:`Compaction #${l.compaction_count}`,meta:null,size:null,raw:l})}),s}function ve({label:t,value:s,sub:a}){return i`<div class="cdb-stat">
+import{x as W,d as g,T,q as x,y as X,m as i}from"./index-COdGgaml.js";import{S as Y,d as ee,f as M,g as se,T as le}from"./app-2zqrKZhA.js";import{L as A,v as b,B as q,ag as te,aZ as ie,K as ne,D as oe,r as j}from"./useSse-BA3xgPtb.js";import{T as ae}from"./ToolScopeEmpty-sHZab3hi.js";import"./TextView-BEN-kPtl.js";const ce={user:"var(--fg)",api:"#B26B1B",agent:"var(--green)",bash:"var(--fg)",read:"#1F6E78",write:"#1F6E78",edit:"#1F6E78",glob:"var(--green)",grep:"var(--green)",skill:"#2E5BA6"};function G(t){const s=(t||"").toLowerCase();return ce[s]||"var(--fg2)"}function de(t){return t?new Date(t*1e3).toTimeString().slice(0,8):"—"}function re(t){return t?new Date(t*1e3).toISOString().replace("T"," ").slice(0,23):"—"}function ue(t){const s=[];let a=0;return(t||[]).forEach((l,c)=>{var h;const r=de(l.ts),u=l.tokens;if(l.type==="session_start")s.push({id:`t${c}`,lane:"agent",kind:"call",t:r,label:"session opened",meta:null,size:null,raw:l});else if(l.type==="session_end")s.push({id:`t${c}`,lane:"agent",kind:"return",t:r,label:"session closed",meta:null,size:null,raw:l});else if(l.type==="user_message"){const d=(u==null?void 0:u.output)||0;a+=d,s.push({id:`t${c}`,lane:"user",kind:"call",t:r,label:l.preview||(l.message||"").slice(0,120),meta:l.model?`${l.model} · ${b((u==null?void 0:u.input)||0)} in / ${b(d)} out`:null,size:null,cum:(a/1e3).toFixed(1),raw:l})}else if(l.type==="api_call"){const d=((h=l.tokens)==null?void 0:h.output)||0;a+=d,s.push({id:`t${c}`,lane:"api",kind:"recv",t:r,label:`← ${b(d)}t`,meta:l.model||null,size:null,cum:(a/1e3).toFixed(1),raw:l})}else if(l.type==="tool_use"){const d=l.to||"tool",_=d.toLowerCase().replace(/[^a-z0-9_-]/g,"").slice(0,24)||"tool";if(l.subtype==="decision")s.push({id:`t${c}`,lane:_,kind:"call",t:r,label:d+(l.input_preview?": "+l.input_preview.slice(0,80):""),meta:l.decision||null,size:null,raw:l});else{const $=l.result_size?j(l.result_size):null;s.push({id:`t${c}`,lane:_,kind:"return",t:r,label:d+(l.result_summary?": "+l.result_summary.slice(0,80):""),meta:l.success!==!1?`✓ ${l.duration_ms!=null?l.duration_ms+"ms":""}`:"✗ failed",size:$,raw:l})}}else l.type==="compaction"&&s.push({id:`t${c}`,lane:"agent",kind:"call",t:r,label:`Compaction #${l.compaction_count}`,meta:null,size:null,raw:l})}),s}function ve({label:t,value:s,sub:a}){return i`<div class="cdb-stat">
     <div class="c-overline">${t}</div>
     <div class="cdb-stat-row">
       <span class="c-stat-value">${s}</span>
@@ -46,10 +46,10 @@ import{x as W,d as h,T,q as D,y as X,m as i}from"./index-DyDyJAkK.js";import{S a
     <div class="cdb-ev-right">
       ${t.size&&i`<span class="cdb-ev-size">${t.size}</span>`}
     </div>
-  </div>`}function $e({event:t}){var u,g,d;if(!t)return i`<div class="cdb-inspector cdb-inspector--empty">
+  </div>`}function $e({event:t}){var u,h,d;if(!t)return i`<div class="cdb-inspector cdb-inspector--empty">
       <div class="c-overline cdb-inspector-empty-label">No selection</div>
       <div>Choose an event in the timeline to read its payload.</div>
-    </div>`;const s=t.raw,a=[];s.model&&a.push(["Model",s.model]),s.ts&&a.push(["Started",re(s.ts)]),s.duration_ms!=null&&a.push(["Duration",s.duration_ms+"ms"]),((u=s.tokens)!=null&&u.input||(g=s.tokens)!=null&&g.output)&&a.push(["Tokens",`${b(s.tokens.input||0)} in / ${b(s.tokens.output||0)} out`]),s.result_size&&a.push(["Output size",j(s.result_size)]),s.decision&&a.push(["Permission",s.decision]);const l=s.message||(s.params?JSON.stringify(s.params,null,2):null)||s.input_preview||"—",c=s.result_summary||(s.type==="api_call"&&((d=s.tokens)!=null&&d.output)?`${b(s.tokens.output)} tokens`:null)||"—",r=G(t.lane);return i`<div class="cdb-inspector">
+    </div>`;const s=t.raw,a=[];s.model&&a.push(["Model",s.model]),s.ts&&a.push(["Started",re(s.ts)]),s.duration_ms!=null&&a.push(["Duration",s.duration_ms+"ms"]),((u=s.tokens)!=null&&u.input||(h=s.tokens)!=null&&h.output)&&a.push(["Tokens",`${b(s.tokens.input||0)} in / ${b(s.tokens.output||0)} out`]),s.result_size&&a.push(["Output size",j(s.result_size)]),s.decision&&a.push(["Permission",s.decision]);const l=s.message||(s.params?JSON.stringify(s.params,null,2):null)||s.input_preview||"—",c=s.result_summary||(s.type==="api_call"&&((d=s.tokens)!=null&&d.output)?`${b(s.tokens.output)} tokens`:null)||"—",r=G(t.lane);return i`<div class="cdb-inspector">
     <div class="cdb-inspector-head">
       <div class="c-overline c-overline--wide" style="color:${r}">
         ${t.lane} \u00b7 ${t.kind}
@@ -70,7 +70,7 @@ import{x as W,d as h,T,q as D,y as X,m as i}from"./index-DyDyJAkK.js";import{S a
       <div class="c-overline cdb-inspector-section-head">Output</div>
       <pre class="cdb-inspector-code">${c}</pre>
     </div>
-  </div>`}const fe=["Live","1h","6h","24h","7d"];function we(){var P,R;const t=W(Z),s=t==null?void 0:t.snap,[a,l]=h("Live"),[c,r]=h(""),[u,g]=h(null),[d,_]=h(""),[$,N]=h(null),[f,I]=h(null),[J,A]=h(!1),[k,Y]=h(null),S=T(()=>{var o;const e=new Map;for(const n of(s==null?void 0:s.tools)||[])(((o=n.live)==null?void 0:o.sessions)||[]).length>0&&e.set(n.tool,{tool:n.tool,label:n.label,color:x(n.tool)});return[...e.values()]},[s]),H=D(e=>{Y(o=>{const n=new Set(S.map(F=>F.tool)),p=o??n,v=new Set(p);return v.has(e)?v.delete(e):v.add(e),v.size===n.size?null:v})},[S]),Q=T(()=>{const e=f==null?void 0:f.summary;if(e){const z=(e.total_input_tokens||0)+(e.total_output_tokens||0),y=`${b(e.total_input_tokens||0)}/${b(e.total_output_tokens||0)}`;return[{label:"Prompts",value:e.total_turns??0},{label:"API calls",value:e.total_api_calls??0},{label:"Tools",value:e.total_tool_uses??0},{label:"Tokens",value:b(z),sub:y},{label:"Duration",value:K(e.duration_s)},{label:"Events",value:e.event_count??0}]}if(!s)return[{label:"Live sessions",value:0},{label:"Processes",value:0},{label:"Est. tokens",value:0},{label:"Active tools",value:0},{label:"Files touched",value:0},{label:"MCP servers",value:0}];let o=0,n=0,p=0,v=0,F=0,M=0;for(const z of s.tools||[]){const y=z.live||{};o+=y.session_count||0,n+=y.pid_count||(z.processes||[]).length||0,p+=ie(y),(y.pid_count||0)>0&&v++,F+=y.files_touched||0,M+=(z.mcp_servers||[]).length}return[{label:"Live sessions",value:o},{label:"Processes",value:n},{label:"Est. tokens",value:b(p)},{label:"Active tools",value:v},{label:"Files touched",value:F},{label:"MCP servers",value:M}]},[s,f]),O=T(()=>{var o;const e=[];for(const n of(s==null?void 0:s.tools)||[])for(const p of((o=n.live)==null?void 0:o.sessions)||[])e.push({...p,_tool:n.tool,_toolLabel:n.label});return ee(e)},[s]),w=T(()=>{let e=O;if(k!==null&&(e=e.filter(n=>k.has(n._tool))),!c)return e;const o=c.toLowerCase();return e.filter(n=>String(n.session_id||n.id||"").toLowerCase().includes(o)||(n._toolLabel||"").toLowerCase().includes(o)||(n.workspace||n.project||"").toLowerCase().includes(o))},[O,c,k]),L=(u&&!!q(w,u)?u:null)??((P=w[0])==null?void 0:P.session_id)??((R=w[0])==null?void 0:R.id)??null,m=q(w,L)??null;X(()=>{if(!L){I(null);return}let e=!0;A(!0),I(null),N(null);const o=0,n=Math.floor(Date.now()/1e3)+3600,p=m?se(m):[L];return ne(p,o,n).then(v=>{e&&(I(v),A(!1))}).catch(()=>{e&&A(!1)}),()=>{e=!1}},[L]);const C=T(()=>ue(f==null?void 0:f.turns),[f]),E=T(()=>{if(!d)return C;const e=d.toLowerCase();return C.filter(o=>o.label.toLowerCase().includes(e)||o.lane.toLowerCase().includes(e)||(o.meta||"").toLowerCase().includes(e))},[C,d]),U=$?E.find(e=>e.id===$)??null:null,B=D(e=>{g(e.session_id||e.id)},[]),V=D(e=>{N(e.id===$?null:e.id)},[$]);return oe(t==null?void 0:t.enabledTools)&&!((s==null?void 0:s.tools)||[]).some(e=>e.tool!=="aictl")?i`<div class="c-shell"><${le} enabledTools=${t.enabledTools} snap=${s} what="the overview"/></div>`:i`<div class="c-shell">
+  </div>`}const me=["Live","1h","6h","24h","7d"];function ye(){var P,R;const t=W(Y),s=t==null?void 0:t.snap,[a,l]=g("Live"),[c,r]=g(""),[u,h]=g(null),[d,_]=g(""),[$,N]=g(null),[m,D]=g(null),[J,I]=g(!1),[k,Z]=g(null),S=T(()=>{var o;const e=new Map;for(const n of(s==null?void 0:s.tools)||[])(((o=n.live)==null?void 0:o.sessions)||[]).length>0&&e.set(n.tool,{tool:n.tool,label:n.label,color:A(n.tool)});return[...e.values()]},[s]),H=x(e=>{Z(o=>{const n=new Set(S.map(F=>F.tool)),p=o??n,v=new Set(p);return v.has(e)?v.delete(e):v.add(e),v.size===n.size?null:v})},[S]),Q=T(()=>{const e=m==null?void 0:m.summary;if(e){const z=(e.total_input_tokens||0)+(e.total_output_tokens||0),y=`${b(e.total_input_tokens||0)}/${b(e.total_output_tokens||0)}`;return[{label:"Prompts",value:e.total_turns??0},{label:"API calls",value:e.total_api_calls??0},{label:"Tools",value:e.total_tool_uses??0},{label:"Tokens",value:b(z),sub:y},{label:"Duration",value:q(e.duration_s)},{label:"Events",value:e.event_count??0}]}if(!s)return[{label:"Live sessions",value:0},{label:"Processes",value:0},{label:"Est. tokens",value:0},{label:"Active tools",value:0},{label:"Files touched",value:0},{label:"MCP servers",value:0}];let o=0,n=0,p=0,v=0,F=0,K=0;for(const z of s.tools||[]){const y=z.live||{};o+=y.session_count||0,n+=y.pid_count||(z.processes||[]).length||0,p+=te(y),(y.pid_count||0)>0&&v++,F+=y.files_touched||0,K+=(z.mcp_servers||[]).length}return[{label:"Live sessions",value:o},{label:"Processes",value:n},{label:"Est. tokens",value:b(p)},{label:"Active tools",value:v},{label:"Files touched",value:F},{label:"MCP servers",value:K}]},[s,m]),O=T(()=>{var o;const e=[];for(const n of(s==null?void 0:s.tools)||[])for(const p of((o=n.live)==null?void 0:o.sessions)||[])e.push({...p,_tool:n.tool,_toolLabel:n.label});return ee(e)},[s]),w=T(()=>{let e=O;if(k!==null&&(e=e.filter(n=>k.has(n._tool))),!c)return e;const o=c.toLowerCase();return e.filter(n=>String(n.session_id||n.id||"").toLowerCase().includes(o)||(n._toolLabel||"").toLowerCase().includes(o)||(n.workspace||n.project||"").toLowerCase().includes(o))},[O,c,k]),L=(u&&!!M(w,u)?u:null)??((P=w[0])==null?void 0:P.session_id)??((R=w[0])==null?void 0:R.id)??null,f=M(w,L)??null;X(()=>{if(!L){D(null);return}let e=!0;I(!0),D(null),N(null);const o=0,n=Math.floor(Date.now()/1e3)+3600,p=f?se(f):[L];return ie(p,o,n).then(v=>{e&&(D(v),I(!1))}).catch(()=>{e&&I(!1)}),()=>{e=!1}},[L]);const C=T(()=>ue(m==null?void 0:m.turns),[m]),E=T(()=>{if(!d)return C;const e=d.toLowerCase();return C.filter(o=>o.label.toLowerCase().includes(e)||o.lane.toLowerCase().includes(e)||(o.meta||"").toLowerCase().includes(e))},[C,d]),U=$?E.find(e=>e.id===$)??null:null,B=x(e=>{h(e.session_id||e.id)},[]),V=x(e=>{N(e.id===$?null:e.id)},[$]);return ne(t==null?void 0:t.enabledTools)&&!((s==null?void 0:s.tools)||[]).some(e=>e.tool!=="aictl")?i`<div class="c-shell"><${ae} enabledTools=${t.enabledTools} snap=${s} what="the overview"/></div>`:i`<div class="c-shell">
     <!-- Stats strip -->
     <div class="cdb-stats-strip">
       ${Q.map(e=>i`<${ve} key=${e.label} label=${e.label} value=${e.value} sub=${e.sub}/>`)}
@@ -83,7 +83,7 @@ import{x as W,d as h,T,q as D,y as X,m as i}from"./index-DyDyJAkK.js";import{S a
       <div class="cdb-left">
         <div class="c-overline cdb-left-heading">Range</div>
         <div class="cdb-range-btns">
-          ${fe.map(e=>i`<button key=${e} type="button"
+          ${me.map(e=>i`<button key=${e} type="button"
             class=${"cdb-range-btn"+(a===e?" is-active":"")}
             onClick=${()=>l(e)}>${e}</button>`)}
         </div>
@@ -114,21 +114,21 @@ import{x as W,d as h,T,q as D,y as X,m as i}from"./index-DyDyJAkK.js";import{S a
             value=${c} onInput=${e=>r(e.target.value)}/>
         </div>
         <div class="cdb-sessions-list">
-          ${w.length===0?i`<div class="cdb-empty-list">No active sessions</div>`:w.map(e=>{const o=e.session_id||e.id||"",n=String(o).split(":").pop(),p=o===L;return x(e._tool),i`<div key=${o}
+          ${w.length===0?i`<div class="cdb-empty-list">No active sessions</div>`:w.map(e=>{const o=e.session_id||e.id||"",n=String(o).split(":").pop(),p=o===L;return A(e._tool),i`<div key=${o}
                   class=${"c-row c-row--list"+(p?" is-selected":"")}
                   onClick=${()=>B(e)}
                   role="button" tabIndex=${0}
                   onKeyDown=${v=>v.key==="Enter"&&B(e)}>
                   <div class="cdb-session-row-head">
-                    <${te} tool=${e._tool} size="0.85em"/>
+                    <${le} tool=${e._tool} size="0.85em"/>
                     <span class="cdb-session-id">${n}</span>
                     ${e.active!==!1&&i`<span class="cdb-live-badge">\u25CF Live</span>`}
                   </div>
                   <div class="cdb-session-meta">
                     ${e._toolLabel} \u00b7 ${b(e.estimated_tokens||e.tokens||0)} tok
                     ${e.files_modified>0?` · ${e.files_modified}f`:""}
-                    ${e.duration_s>0?` · ${K(e.duration_s)}`:""}
-                    \u00b7 ${ae(e.last_seen_at||e.started_at)||"—"}
+                    ${e.duration_s>0?` · ${q(e.duration_s)}`:""}
+                    \u00b7 ${oe(e.last_seen_at||e.started_at)||"—"}
                   </div>
                 </div>`})}
         </div>
@@ -139,12 +139,12 @@ import{x as W,d as h,T,q as D,y as X,m as i}from"./index-DyDyJAkK.js";import{S a
         <div class="cdb-center-head">
           <div>
             <div class="c-overline c-overline--wide">The session</div>
-            ${m?i`<div class="cdb-center-title">
-                  <span style="color:${x(m._tool)}">\u25CF</span>
-                  ${" "}${m._toolLabel}
+            ${f?i`<div class="cdb-center-title">
+                  <span style="color:${A(f._tool)}">\u25CF</span>
+                  ${" "}${f._toolLabel}
                   ${" "}
                   <span class="cdb-center-id">
-                    ${String(m.session_id||m.id||"").split(":").pop()}
+                    ${String(f.session_id||f.id||"").split(":").pop()}
                   </span>
                 </div>`:i`<div class="cdb-center-title cdb-center-title--empty">Select a session</div>`}
           </div>
@@ -160,7 +160,7 @@ import{x as W,d as h,T,q as D,y as X,m as i}from"./index-DyDyJAkK.js";import{S a
         </div>
 
         <div class="cdb-timeline">
-          ${m?J?i`<div class="cdb-timeline-loading">Loading events\u2026</div>`:E.length===0?i`<div class="cdb-timeline-loading">
+          ${f?J?i`<div class="cdb-timeline-loading">Loading events\u2026</div>`:E.length===0?i`<div class="cdb-timeline-loading">
                     ${C.length===0?"No event data for this session.":"No events match filter."}
                   </div>`:i`<div>
                     ${E.map((e,o)=>i`<${be}
@@ -181,4 +181,4 @@ import{x as W,d as h,T,q as D,y as X,m as i}from"./index-DyDyJAkK.js";import{S a
         <${$e} event=${U}/>
       </div>
     </div>
-  </div>`}export{we as default};
+  </div>`}export{ye as default};
