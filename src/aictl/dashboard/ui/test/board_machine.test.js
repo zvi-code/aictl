@@ -174,7 +174,7 @@ describe('traffic, CPU cores, sources, self, collectors and quality', () => {
   it('shows each tool rates, the token estimate with its confidence, and the MCP loop flag', () => {
     const r = buildPanel('traffic', ctxWith(), local(), { id: 'traffic' }).table.rows[0].cells;
     expect(r.in.v).toBe('2 KB/s');
-    expect(r.tok).toMatchObject({ v: '12 k', sub: '42% sure' });
+    expect(r.tok).toMatchObject({ v: '12 k', sub: '42% confidence' });
     expect(r.tok.title).toContain('does not report');
     expect(r.mcp).toMatchObject({ v: 'Loop, 3', warn: true });
     expect(r.ws.v).toBe('2 MB');
@@ -200,11 +200,11 @@ describe('traffic, CPU cores, sources, self, collectors and quality', () => {
     const stat = label => p.stats.find(s => s.label === label);
     expect(stat('Uptime').value).toBe('2 h 0 min');
     expect(stat('Threads').value).toBe('14');
-    expect(stat('History rows').title).toContain('requests: 1.00 M');
+    expect(stat('Rows').title).toContain('requests: 1.00 M');
     expect(stat('Dropped')).toMatchObject({ value: '0', cls: null });
-    expect(stat('OTel API calls')).toMatchObject({ value: '30', sub: '1 errors' });
-    expect(stat('Live clients').value).toBe('1');
-    expect(stat('Snapshot age').value).toBe('3 s');
+    expect(stat('Model calls')).toMatchObject({ value: '30', sub: '1 errors' });
+    expect(stat('Viewers').value).toBe('1');
+    expect(stat('Snapshot').value).toBe('3 s');
     expect(p.banner).toBeNull();
     const flood = machineFixture();
     flood.pipeline.sink = { ...flood.pipeline.sink, flood: true, dropped: 250 };

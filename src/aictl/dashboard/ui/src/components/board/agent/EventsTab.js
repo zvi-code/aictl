@@ -65,6 +65,6 @@ export default function EventsTab({ a, st, ctx }) {
               <td class="bd-m">${ev.kind || ''}</td><td class="bd-dim">${ev.tool || ''}</td><td class="bd-m bd-dim" title=${preview(ev.detail)}>${preview(ev.detail)}</td>
             </tr>${on ? html`<tr key=${k + ':d'} class="bd-ag-detrow"><td colspan="4"><pre class="bd-ag-pre">${pretty(ev.detail ?? {})}</pre></td></tr>` : null}`;
         })}</tbody>
-      </table></div>` : html`<div class="bd-empty">${data.rows.length ? 'No event of this kind.' : 'No events stored for this session.'}</div>`}
+      </table></div>` : html`<div class="bd-empty">${data.rows.length ? 'No event of this kind.' : 'No hook events for this session. Hook events reach aictl only when its hooks are installed for ' + ((ctx.toolName ? ctx.toolName(a.tool) : a.tool) || 'this tool') + '.'}</div>`}
     </${FixedPanel}>`;
 }

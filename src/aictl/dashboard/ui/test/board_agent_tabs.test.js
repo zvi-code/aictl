@@ -145,8 +145,8 @@ function stubFetch(routes = {}) {
   return calls;
 }
 
-function mount({ a = agent(), tab = 'overview', capture = 'full', routes } = {}) {
-  const calls = stubFetch({ '/api/board/agent/flow': flow, '/api/board/agent/transcript': transcript, ...routes, '/api/board/agent?': detail(a) });
+function mount({ a = agent(), tab = 'overview', capture = 'full', routes, over } = {}) {
+  const calls = stubFetch({ '/api/board/agent/flow': flow, '/api/board/agent/transcript': transcript, ...routes, '/api/board/agent?': detail(a, over) });
   const act = { openDrawer: vi.fn(), setDrawerTab: vi.fn(), drawerBack: vi.fn(), drawerClose: vi.fn(), copy: vi.fn(), stopAgent: vi.fn() };
   const ctx = { data: { agents: [a], capture_mode: capture }, stopped: {}, toolName: x => x, refreshKey: 1, query: '' };
   const view = render(html`<${Drawer} stack=${[{ type: 'agent', id: a.id, tab }]} ctx=${ctx} act=${act}/>`);
@@ -346,7 +346,46 @@ describe('the session views read the board routes', () => {
   });
 });
 
+describe('Overview and Changes fixes', () => {
+  it('puts the token unit in the label and a bare number in the value', async () => {
+    const ctxData = { first: 155000, last: 160000, peak: 170000, calls: 3, drops: 0, compactions: [], series: [1, 2, 3] };
+    const { findByText, container } = mount({ over: { context: ctxData } });
+    await findByText('First call');
+    const stat = [...container.querySelectorAll('#dr-actx *')].find(n => n.children.length === 0 && n.textContent === 'First call');
+    const text = stat.parentElement.textContent;
+    expect(text).toContain('155 k');
+    expect(text).not.toContain('155 k tokens');
+  });
+
+  it('names a model row that has no model id', async () => {
+    const { findByText } = mount({ over: { by_model: [{ model: '', msgs: 3, input: 1, output: 1 }] } });
+    const cell = await findByText('No model id');
+    expect(cell.closest('[title]').getAttribute('title')).toBe('The record carries no model id');
+  });
+
+  it('labels failures and notes a missing detail', async () => {
+    const errs = [{ ts: NOW - 5, key: 'api:api_error', detail: 'api_error' }, { ts: NOW - 6, key: 'tool:Bash:Exit code #', detail: 'ls' }];
+    const { findByText, getByText } = mount({ tab: 'errors', over: { errors: errs } });
+    await findByText('API: error');
+    getByText('No detail recorded');
+    getByText('Bash: Exit code #');
+  });
+
+  it('keeps the file name of a changed file visible', async () => {
+    const files = [{ path: '/very/long/absolute/path/to/src/client.py', lines_added: 1, lines_removed: 0, edits: 1 }];
+    const { findByRole } = mount({ tab: 'changes', over: { files } });
+    const t = await findByRole('table', { name: 'Files changed' });
+    expect(t.textContent).toContain('…/to/src/client.py');
+    expect(t.querySelector('[title="/very/long/absolute/path/to/src/client.py"]')).toBeTruthy();
+  });
+});
+
 describe('Events tab', () => {
+  it('says why no event is stored', async () => {
+    const { findByText } = mount({ tab: 'events', routes: { '/api/events': [] } });
+    await findByText('No hook events for this session. Hook events reach aictl only when its hooks are installed for claude-code.');
+  });
+
   it('lists newest first, filters by kind and opens the JSON detail', async () => {
     const { findByText, container, getByRole } = mount({ tab: 'events' });
     await findByText('Newest 2 of 900');
@@ -363,6 +402,15 @@ describe('Team tab', () => {
   it('says the tool recorded no team', async () => {
     const { findByText } = mount({ tab: 'team' });
     await findByText(/recorded no team for this session/);
+  });
+
+  it('falls back to the subagents of the detail when no team is stored', async () => {
+    const subs = [{ ...agent({ id: 'sub-1', parent_id: 'sess-1', role: 'Explore', title: 'Explore', models: ['model-a'] }) }];
+    const { findByRole, findByText, queryByText } = mount({ tab: 'team', over: { subagents: subs } });
+    const t = await findByRole('table', { name: 'Team' });
+    expect(within(t).getByText('Explore')).toBeTruthy();
+    await findByText(/not recorded for this tool/);
+    expect(queryByText(/recorded no team/)).toBeNull();
   });
 
   it('lists agents under their parent and tasks by state', async () => {
@@ -409,6 +457,17 @@ describe('Integrations tab', () => {
     expect(within(getByRole('table', { name: 'Calls by model' })).getByText('model-a')).toBeTruthy();
     expect(getByRole('meter', { name: '5h window used' }).getAttribute('aria-valuenow')).toBe('82');
     expect(within(getByRole('table', { name: 'VS Code language models by extension' })).getByText('ext.copilot')).toBeTruthy();
+  });
+
+  it('builds the model calls from the stored models when the call log is empty', async () => {
+    const by_model = [{ model: 'model-a', msgs: 310 }, { model: '', msgs: 2 }];
+    const { findByRole, findByText, getByRole, queryByRole } = mount({ tab: 'integrations', routes: { '/api/api-calls': { calls: [], summary: { total_calls: 0, total_errors: 0, by_model: {} } } }, over: { by_model } });
+    await findByText(/aictl read these calls from the session files/);
+    const t = await findByRole('table', { name: 'Calls by model' });
+    expect(within(t).getByText('model-a')).toBeTruthy();
+    expect(within(t).getByText('No model id')).toBeTruthy();
+    expect(queryByRole('table', { name: 'Model calls' })).toBeNull();
+    expect(getByRole('region', { name: 'Model calls' }).textContent).toContain('312');
   });
 
   it('lists Copilot session files and opens one inline', async () => {

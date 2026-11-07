@@ -1,6 +1,7 @@
 // ─── Board table — the same behaviour in every panel and in the drawer ─
 import { html } from 'htm/preact';
 import { useMemo, useState } from 'preact/hooks';
+import { tailPath } from './format.js';
 import { Ico, PATHS } from './icons.js';
 import { nextSort, tableModel } from './tableModel.js';
 
@@ -9,9 +10,11 @@ const stop = fn => e => { e.stopPropagation(); fn(e); };
 function Cell({ col, x, go, primary }) {
   const cls = 'bd-' + [col.n ? 'n' : '', col.m ? 'm' : '', x.cls || ''].join(' ').trim().split(/\s+/).join(' bd-');
   const title = x.title != null ? x.title : String(x.v == null ? '' : x.v);
+  // A path keeps its end: the file name is what a person looks for.
+  const text = x.path ? tailPath(x.v, x.keep || 3) : x.v;
   const label = x.go || (primary && go)
-    ? html`<button type="button" class="bd-lnk" onClick=${stop(x.go || go)}>${x.v}</button>`
-    : x.v;
+    ? html`<button type="button" class="bd-lnk" onClick=${stop(x.go || go)}>${text}</button>`
+    : text;
   const rich = x.foldOn || x.foldSp || x.sw || x.dot || x.warn || x.sub || x.pad || x.chips;
   let body;
   if (x.barOn) {
