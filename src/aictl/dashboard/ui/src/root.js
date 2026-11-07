@@ -1,6 +1,8 @@
 // ─── Root — which screen a URL opens ──────────────────────────────
 // The board is the default. `?tab=` opens one of the detail screens, and old links
-// keep working: `?tab=config` opens the board's Settings screen. Each side loads on demand with its own styles, so the board does
+// keep working: `?tab=config` opens the board's Settings screen, and
+// `?tab=explorer&session=<id>` or the `aictl:select-session` bus opens that agent
+// in the board's drawer. Each side loads on demand with its own styles, so the board does
 // not pay for the old screens. Crossing between them reloads the page, so the two
 // stylesheets are never active together.
 import { html } from 'htm/preact';
@@ -23,16 +25,48 @@ const BOARD_SCREENS = { config: 'settings' };
 
 const tabOf = search => resolveTabId(new URLSearchParams(search || '').get('tab'), TAB_IDS);
 
+/** The session an explorer link names, or null. The agent drawer replaced that view. */
+const explorerSession = (search) => {
+  if (tabOf(search) !== 'explorer') return null;
+  return new URLSearchParams(search || '').get('session') || null;
+};
+
 /** "detail" when the URL names a screen the board does not replace, else "board". */
 export function routeOf(search) {
   const id = tabOf(search);
+  if (explorerSession(search)) return 'board';
   return id && !ON_BOARD.has(id) && !BOARD_SCREENS[id] ? 'detail' : 'board';
+}
+
+/** The board query that opens one agent in the drawer, from any current query. */
+export function agentLinkOf(search, sessionId) {
+  return mergeSearch(search, { tab: null, session: null, screen: null, agent: sessionId });
 }
 
 /** The query that opens the same view on the board, for a tab the board took over; else null. */
 export function redirectOf(search) {
+  const sid = explorerSession(search);
+  if (sid) return agentLinkOf(search, sid);
   const screen = BOARD_SCREENS[tabOf(search)];
   return screen ? mergeSearch(search, { tab: null, screen }) : null;
+}
+
+/**
+ * Send every `aictl:select-session` request to the board's agent drawer.
+ * The request comes in the click that also switches tabs, so the move waits
+ * for that click to finish. Returns the function that stops listening.
+ */
+export function listenSelectSession(go = url => window.location.assign(url)) {
+  const onSelect = (e) => {
+    const sid = e?.detail?.sessionId;
+    if (!sid) return;
+    setTimeout(() => {
+      const loc = window.location;
+      go(loc.pathname + agentLinkOf(loc.search, sid) + loc.hash);
+    }, 0);
+  };
+  document.addEventListener('aictl:select-session', onSelect);
+  return () => document.removeEventListener('aictl:select-session', onSelect);
 }
 
 /** Rewrite the address in place, so Back does not return to the old link. */
@@ -53,6 +87,7 @@ export default function Root() {
   useEffect(() => {
     LOADERS[route]().then(m => setView(() => m.default));
   }, [route]);
+  useEffect(() => listenSelectSession(), []);
   useEffect(() => {
     const check = () => {
       applyRedirect();

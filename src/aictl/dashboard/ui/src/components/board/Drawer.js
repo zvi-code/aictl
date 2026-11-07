@@ -15,7 +15,7 @@ import { scopeAudit } from '../../utils/auditScope.js';
 import { instructionsByTool } from './findings.js';
 
 /** Fetch on open. A new `tick` fetches again and keeps the old data on screen meanwhile. */
-function useDetail(load, key, tick = 0) {
+export function useDetail(load, key, tick = 0) {
   const [state, setState] = useState({ key: null, data: null, error: null });
   useEffect(() => {
     let live = true;
@@ -31,7 +31,7 @@ function useDetail(load, key, tick = 0) {
   return state.key === key ? state : { data: null, error: null };
 }
 
-function FixedPanel({ id, title, sub, children }) {
+export function FixedPanel({ id, title, sub, children }) {
   const [open, setOpen] = useState(true);
   const label = open ? 'Fold this panel' : 'Unfold this panel';
   return html`<section class=${'bd-panel' + (open ? '' : ' bd-folded')} id=${'dr-' + id} style="grid-column:span 12" aria-label=${title}>
@@ -43,7 +43,7 @@ function FixedPanel({ id, title, sub, children }) {
   </section>`;
 }
 
-const Frame = ({ title, sub, canBack, back, close, actions, tabs, children }) => html`<aside class="bd-area bd-dr" id="drawer" aria-label=${title}>
+const Frame = ({ title, sub, head, canBack, back, close, actions, tabs, children }) => html`<aside class="bd-area bd-dr" id="drawer" aria-label=${title}>
   <div class="bd-drh">
     <div class="bd-drh1">
       ${canBack ? html`<button type="button" class="bd-ib-btn" aria-label="Back" onClick=${back}><${Ico} d=${PATHS.back}/></button>` : null}
@@ -52,13 +52,14 @@ const Frame = ({ title, sub, canBack, back, close, actions, tabs, children }) =>
       <button type="button" class="bd-ib-btn" aria-label="Close" onClick=${close}><${Ico} d=${PATHS.close}/></button>
     </div>
     <div class="bd-drsub" title=${sub}>${sub}</div>
+    ${head || null}
     ${tabs ? html`<div class="bd-tabs" role="tablist">${tabs.map(tb => html`<button key=${tb.id} type="button" role="tab" aria-selected=${tb.on ? 'true' : 'false'} onClick=${tb.pick}>${tb.label}</button>`)}</div>` : null}
   </div>
   <div class="bd-grid">${children}</div>
 </aside>`;
 
 const fmtTokens = n => (n == null ? NA : fmtN(n) + ' tokens');
-const Pending = ({ error }) => html`<div class="bd-empty" role="status">${error ? 'Could not load this: ' + error.message : 'Loading...'}</div>`;
+export const Pending = ({ error }) => html`<div class="bd-empty" role="status">${error ? 'Could not load this: ' + error.message : 'Loading...'}</div>`;
 const titleOf = a => (a.parent_id ? (a.role || a.title) + ' (subagent)' : a.title);
 const toolListText = t => (Array.isArray(t) ? t.join(', ') : (t == null ? '' : String(t)));
 
@@ -70,10 +71,17 @@ function AgentDrawer({ d, ctx, frame, act }) {
   const pending = a.pending && st === 'waiting' ? a.pending : null;
   const tabs = [
     ['overview', 'Overview'],
+    ['transcript', 'Transcript'],
+    ['flow', 'Flow'],
+    ['timeline', 'Timeline'],
     ['turns', 'Turns' + (data ? ' (' + (data.turns || []).length + ')' : '')],
     ['tools', 'Tool calls' + (a.tool_calls != null ? ' (' + a.tool_calls + ')' : data ? ' (' + (data.tool_calls || []).length + ')' : '')],
     ['changes', 'Changes'],
     ['errors', 'Failures and loops'],
+    ['events', 'Events'],
+    ['team', 'Team'],
+    ['procs', 'Processes'],
+    ['integrations', 'Integrations'],
   ].map(([id, label]) => ({ id, label, on: d.tab === id, pick: () => act.setDrawerTab(id) }));
   const models = (a.models || []).join(', ');
   const sub = [ctx.toolName(a.tool), a.project ? projectName(a.project) : '', models, statusMeta(st).label, a.id].filter(Boolean).join(', ');
@@ -85,9 +93,39 @@ function AgentDrawer({ d, ctx, frame, act }) {
     if (d.tab === 'tools') return html`<${ToolsTab} data=${data} pending=${pending}/>`;
     if (d.tab === 'changes') return html`<${ChangesTab} data=${data} act=${act}/>`;
     if (d.tab === 'errors') return html`<${ErrorsTab} data=${data}/>`;
-    return html`<${OverviewTab} a=${a} data=${data} st=${st} ctx=${ctx} act=${act} pending=${pending}/>`;
+    if (d.tab !== 'overview' && AGENT_PARTS[d.tab]) return html`<${Part} key=${d.tab} part=${d.tab} a=${a} data=${data} st=${st} ctx=${ctx} act=${act}/>`;
+    return html`<${OverviewTab} a=${a} data=${data} st=${st} ctx=${ctx} act=${act} pending=${pending}/>
+      <${Part} part="overview" name="OverviewExtras" a=${a} data=${data} st=${st} ctx=${ctx} act=${act}/>`;
   };
-  return html`<${Frame} ...${frame} title=${a.title ? titleOf(a) : a.id} sub=${sub} tabs=${tabs} actions=${actions}>${body()}</${Frame}>`;
+  const head = data?.git ? html`<${Part} part="overview" name="GitBadge" git=${data.git} a=${a}/>` : null;
+  return html`<${Frame} ...${frame} title=${a.title ? titleOf(a) : a.id} sub=${sub} head=${head} tabs=${tabs} actions=${actions}>${body()}</${Frame}>`;
+}
+
+// The session views load when their tab opens, so the board's first chunk stays small.
+const AGENT_PARTS = {
+  overview: () => import('./agent/OverviewExtras.js'),
+  transcript: () => import('./agent/TranscriptTab.js'),
+  flow: () => import('./agent/FlowTab.js'),
+  timeline: () => import('./agent/TimelineTab.js'),
+  events: () => import('./agent/EventsTab.js'),
+  team: () => import('./agent/TeamTab.js'),
+  procs: () => import('./agent/ProcessesTab.js'),
+  integrations: () => import('./agent/IntegrationsTab.js'),
+};
+
+/** One export of a lazily loaded agent view. Shows Loading until a whole tab arrives. */
+function Part({ part, name = 'default', ...props }) {
+  const [mod, setMod] = useState(null);
+  useEffect(() => {
+    let live = true;
+    AGENT_PARTS[part]().then((m) => { if (live) setMod(() => m); })
+      .catch((e) => { if (live) setMod({ failed: e }); });
+    return () => { live = false; };
+  }, [part]);
+  const View = mod?.[name];
+  if (View) return html`<${View} ...${props}/>`;
+  if (name !== 'default') return null;
+  return html`<div class="bd-ag-top"><${Pending} error=${mod?.failed || null}/></div>`;
 }
 
 function OverviewTab({ a, data, st, ctx, act, pending }) {
