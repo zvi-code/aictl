@@ -112,6 +112,24 @@ class ToolConfig:
     # Project root the config was read for; paths under it are project scope.
     # Not part of to_dict().
     project_root: str = ""
+    # Scope layers the tool reads, lowest precedence first. Each entry:
+    #   {"id", "label", "path", "exists", "changeable", "note"}. Always in to_dict().
+    scopes: list[dict] = field(default_factory=list)
+    # Row lookup key -> key as written in the file, where the row key differs.
+    # Not part of to_dict().
+    file_keys: dict[str, str] = field(default_factory=dict)
+    # Flat settings key -> section id / label / note chosen by the parser.
+    # Not part of to_dict().
+    key_sections: dict[str, str] = field(default_factory=dict)
+    key_labels: dict[str, str] = field(default_factory=dict)
+    key_notes: dict[str, str] = field(default_factory=dict)
+    # Flat settings keys added by the read-every-key pass. Not part of to_dict().
+    generic_keys: set[str] = field(default_factory=set)
+    # Keys a winning managed value locks (a key or a dotted prefix); None means
+    # every managed value locks. Not part of to_dict().
+    managed_floors: tuple[str, ...] | None = None
+    # Finished rows of the "agents" section, built by the parser. Not part of to_dict().
+    agent_rows: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)
@@ -120,6 +138,8 @@ class ToolConfig:
         del d["covered_keys"]
         del d["setting_values"]
         del d["project_root"]
+        for internal in ("file_keys", "key_sections", "key_labels", "key_notes", "generic_keys", "managed_floors", "agent_rows"):
+            del d[internal]
         if not self.feature_groups:
             del d["feature_groups"]
         if not self.configurable_models:
@@ -136,6 +156,7 @@ class ToolConfig:
 # (id, title) in display order. Sections without rows are left out.
 SECTION_ORDER: list[tuple[str, str]] = [
     ("model", "Model"),
+    ("agents", "Agents"),
     ("telemetry", "Telemetry"),
     ("autonomy", "Autonomy and safety"),
     ("context", "Context files"),
@@ -234,6 +255,9 @@ _DANGER: dict[str, tuple[object, str]] = {
     "allowallbrowseractions": (True, "The agent can take any browser action without asking."),
     "terminalsandbox": (False, "Terminal commands run outside the sandbox, with full access to this machine."),
     "capturecontent": (True, "Full prompt and response text is sent to the telemetry collector."),
+    "defaultmode": ("autopilot", "Tool calls run without a confirmation each time."),
+    "defaultpermissionmode": ("allow-all", "Every tool call is allowed without asking."),
+    "sandboxallowbypass": (True, "Commands can run outside the sandbox when the agent asks to bypass it."),
 }
 
 # Keys whose values are never put in a row (credentials).
@@ -305,11 +329,20 @@ def _key_section(key: str) -> str:
     return "other"
 
 
+def _matches(value: object, bad: object) -> bool:
+    """True when *value* is the risky value *bad*, or one of them when *bad* is a list."""
+    if isinstance(bad, list):
+        return any(_matches(value, b) for b in bad)
+    if isinstance(bad, bool) or isinstance(value, bool):
+        return value is bad
+    return value == bad
+
+
 def _danger(key: str, value: object) -> tuple[bool, str]:
     for norm in (normalize_key(key), normalize_key(key.rsplit(".", 1)[-1])):
         if norm in _DANGER:
             bad, note = _DANGER[norm]
-            if value is bad:
+            if _matches(value, bad):
                 return True, note
             return False, ""
     return False, ""
@@ -340,7 +373,33 @@ def _otel_source_file(cfg: ToolConfig, first_file: str) -> str:
     return first_file
 
 
-SCOPES = ("default", "user", "project", "workspace", "env", "policy", "managed")
+SCOPES = (
+    "default",
+    "system",
+    "user",
+    "profile",
+    "project",
+    "project-local",
+    "workspace",
+    "env",
+    "cli",
+    "policy",
+    "managed",
+)
+# Scopes the user cannot edit; a winning value from "managed" or "policy" locks its row.
+FIXED_SCOPES = frozenset({"managed", "system", "policy"})
+SCOPE_LABELS = {
+    "managed": "Managed",
+    "system": "System",
+    "user": "User",
+    "profile": "Profile",
+    "project": "Project",
+    "project-local": "Project (local)",
+    "workspace": "Workspace",
+    "env": "Environment",
+    "cli": "Command line",
+    "policy": "Policy",
+}
 
 # Row keys that the parsers make up; they name no single key in the file.
 _NO_FILE_KEY = {"project_settings", "mcp_servers", "launch_at_startup", "global_instructions", "version"}
@@ -371,28 +430,51 @@ def _is_managed(path: str) -> bool:
         or name == "managed-mcp.json"
         or "managedsettings" in low
         or "/library/application support/claudecode/" in low
+        or "/library/application support/githubcopilot/" in low
         or low.startswith("/etc/claude-code/")
+        or low.startswith("/etc/github-copilot/")
         or "/programdata/claudecode/" in low
+        or ("codex" in low and name in ("requirements.toml", "managed_config.toml"))
     )
+
+
+def _is_system(path: str) -> bool:
+    low = path.lower()
+    return low.startswith("/etc/") or "/programdata/" in low or "/program files" in low
+
+
+_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
 def setting_scope(source: str, project_root: str = "") -> str:
     """Scope a setting was read at, from the file it came from.
 
-    A scope name is kept as it is. No source is "default"; a managed-settings
-    file is "managed"; under ``<root>/.vscode/`` is "workspace"; elsewhere
-    under the root is "project"; any other file is "user".
+    A scope name is kept as it is. No source is "default"; a managed-settings or
+    requirements file is "managed"; ``/etc/vscode/`` is "policy"; under
+    ``<root>/.vscode/`` is "workspace"; a ``*.local.json`` file under the root
+    is "project-local"; elsewhere under the root is "project"; a file under
+    ``/etc``, ``%ProgramData%`` or ``%ProgramFiles%`` is "system"; a
+    ``<profile>.config.toml`` file is "profile"; any other file is "user".
     """
     if source in SCOPES:
         return source
-    if not source or not os.path.isabs(os.path.expanduser(source)):
+    if not source or not (os.path.isabs(os.path.expanduser(source)) or _DRIVE_RE.match(source)):
         return "default"
     path = _norm_path(source)
     if _is_managed(path):
         return "managed"
+    if path.lower().startswith("/etc/vscode/"):
+        return "policy"
+    name = path.rsplit("/", 1)[-1].lower()
     root = _norm_path(project_root) if project_root else ""
     if root and _under(path, root):
-        return "workspace" if _under(path, root + "/.vscode") else "project"
+        if _under(path, root + "/.vscode"):
+            return "workspace"
+        return "project-local" if name.endswith((".local.json", ".local.toml")) else "project"
+    if _is_system(path):
+        return "system"
+    if name.endswith(".config.toml") and name != "config.toml":
+        return "profile"
     return "user"
 
 
@@ -411,11 +493,51 @@ def find_key_line(text: str, key: str) -> int:
         patterns.append(r'"' + re.escape(key) + r'"\s*:')
     patterns.append(r'"' + re.escape(segment) + r'"\s*:')
     patterns.append(r'^[ \t]*"?' + re.escape(segment) + r'"?[ \t]*=')
-    for pattern in patterns:
+    for i, pattern in enumerate(patterns):
+        if i == 1 and "." in key:
+            nested = _nested_json_line(text, key.split(".")) or _nested_toml_line(text, key.split("."))
+            if nested:
+                return nested
         m = re.search(pattern, text, re.MULTILINE)
         if m:
             return text.count("\n", 0, m.start()) + 1
     return 0
+
+
+def _toml_part(part: str) -> str:
+    return r"""(?:%s|"%s"|'%s')""" % ((re.escape(part),) * 3)
+
+
+def _nested_toml_line(text: str, parts: list[str]) -> int:
+    """1-based line of a dotted key in TOML text: under its ``[table]`` header, or as a dotted key; 0 when not found."""
+    for split in range(len(parts) - 1, 0, -1):
+        header = re.compile(
+            r"^[ \t]*\[[ \t]*" + r"[ \t]*\.[ \t]*".join(_toml_part(p) for p in parts[:split]) + r"[ \t]*\][ \t]*(?:#.*)?$",
+            re.MULTILINE,
+        )
+        m = header.search(text)
+        if not m:
+            continue
+        body_end = re.compile(r"^[ \t]*\[", re.MULTILINE).search(text, m.end())
+        body = text[m.end() : body_end.start() if body_end else len(text)]
+        key = re.compile(
+            r"^[ \t]*" + r"[ \t]*\.[ \t]*".join(_toml_part(p) for p in parts[split:]) + r"[ \t]*=", re.MULTILINE
+        )
+        k = key.search(body)
+        if k:
+            return text.count("\n", 0, m.end() + k.start()) + 1
+    return 0
+
+
+def _nested_json_line(text: str, parts: list[str]) -> int:
+    """1-based line of the last of *parts* found as JSON keys one after another, 0 when one is missing."""
+    pos, start = 0, -1
+    for part in parts:
+        m = re.compile(r'"' + re.escape(part) + r'"\s*:').search(text, pos)
+        if not m:
+            return 0
+        pos, start = m.end(), m.start()
+    return text.count("\n", 0, start) + 1 if start >= 0 else 0
 
 
 def _safe_value(value: object) -> object:
@@ -424,8 +546,46 @@ def _safe_value(value: object) -> object:
     return value
 
 
-def _finish_rows(cfg: ToolConfig, sections: dict[str, list[dict]], texts: dict[str, str | None]) -> None:
-    """Add scope, line, chain and wins to every row; drop the internal lookup key."""
+def _row_file_key(cfg: ToolConfig, lookup: str, key: str, entries: list, wins: int) -> str:
+    """Key as written in the tool's file for a row, for catalog lookups."""
+    if lookup in cfg.file_keys:
+        return cfg.file_keys[lookup]
+    if entries:
+        return str(entries[min(wins, len(entries) - 1)][3])
+    return _FILE_KEYS.get(key, key).removeprefix("ws:")
+
+
+def _locks(cfg: ToolConfig, scope: str, file_key: str, catalog: dict[str, dict]) -> bool:
+    """True when a winning value at *scope* cannot be changed by the user."""
+    if scope == "policy":
+        return True
+    if scope != "managed":
+        return False
+    if cfg.managed_floors is None:
+        return True
+    if (catalog.get(file_key) or {}).get("locked_floor"):
+        return True
+    return any(file_key == f or file_key.startswith(f + ".") for f in cfg.managed_floors)
+
+
+def _catalog_danger(entry: dict, value: object) -> tuple[bool, str]:
+    if "danger_when" not in entry or not _matches(value, entry["danger_when"]):
+        return False, ""
+    return True, str(entry.get("note") or entry.get("description") or "")
+
+
+def _finish_rows(
+    cfg: ToolConfig,
+    sections: dict[str, list[dict]],
+    texts: dict[str, str | None],
+    catalog: dict[str, dict] | None = None,
+) -> None:
+    """Add scope, line, chain, wins, locked, set and documented to every row; drop internal keys.
+
+    Rows already finished by the parser (agent rows) keep their chain; only
+    ``locked`` is derived for them.
+    """
+    catalog = catalog or {}
     root = cfg.project_root
     allowed = {_norm_path(f): f for f in cfg.config_files}
 
@@ -444,6 +604,10 @@ def _finish_rows(cfg: ToolConfig, sections: dict[str, list[dict]], texts: dict[s
     telemetry_env = cfg.otel.source == "env-var"
     for section, rows in sections.items():
         for row in rows:
+            if row.pop("_done", False):
+                winner = row["chain"][row["wins"]] if row["chain"] else {"scope": row["scope"]}
+                row["locked"] = _locks(cfg, str(winner["scope"]), row["key"], catalog)
+                continue
             lookup = row.pop("_lookup", row["key"])
             key = row["key"]
             source = row["source"]
@@ -468,6 +632,8 @@ def _finish_rows(cfg: ToolConfig, sections: dict[str, list[dict]], texts: dict[s
                         wins = i
                         break
                 winner = chain[wins]
+                if winner["source"] == source and source:
+                    scope = str(winner["scope"])  # the layer the parser named, e.g. a redirected managed file
                 if winner["source"] == source or source in SCOPES or not source:
                     line = winner["line"]
                 else:
@@ -481,6 +647,24 @@ def _finish_rows(cfg: ToolConfig, sections: dict[str, list[dict]], texts: dict[s
             row["line"] = line
             row["chain"] = chain
             row["wins"] = wins
+            file_key = _row_file_key(cfg, lookup, key, entries, wins)
+            entry = catalog.get(file_key) or {}
+            if entry:
+                if not row["note"] and entry.get("description"):
+                    row["note"] = str(entry["description"])
+                if not row["danger"]:
+                    bad, bad_note = _catalog_danger(entry, row["value"])
+                    if bad:
+                        row["danger"] = True
+                        row["note"] = bad_note or row["note"]
+            row["locked"] = _locks(cfg, str(chain[wins]["scope"]), file_key, catalog)
+            is_set = row.pop("_set", None)
+            row["set"] = scope != "default" if is_set is None else bool(is_set)
+            row["documented"] = bool(row.pop("_documented", True)) or bool(entry)
+            if not row["set"]:
+                # An unset knob has nothing behind it; the one default entry is implied by the row itself.
+                row["chain"] = []
+                row["wins"] = 0
 
 
 def normalize_sections(cfg: ToolConfig, texts: dict[str, str | None] | None = None) -> list[dict]:
@@ -501,6 +685,7 @@ def normalize_sections(cfg: ToolConfig, texts: dict[str, str | None] | None = No
     first_file = cfg.config_files[0] if cfg.config_files else ""
     rows: dict[str, list[dict]] = {sid: [] for sid, _t in SECTION_ORDER}
     seen: set[str] = set()
+    catalog = settings_catalog(cfg.tool)
 
     def add(section: str, row: dict) -> None:
         rows[section].append(row)
@@ -525,9 +710,13 @@ def normalize_sections(cfg: ToolConfig, texts: dict[str, str | None] | None = No
             ),
         )
 
+    # Agents: rows the parser already finished.
+    for row in cfg.agent_rows:
+        add("agents", dict(row, _done=True))
+
     # Telemetry
     otel = cfg.otel.to_dict()
-    telemetry_flat = [k for k in cfg.settings if _key_section(k) == "telemetry"]
+    telemetry_flat = [k for k in cfg.settings if _key_section(k) == "telemetry" and k not in cfg.generic_keys]
     if otel:
         otel_src = _otel_source_file(cfg, first_file)
         add("telemetry", _row("otel.enabled", cfg.otel.enabled, otel_src, label="Export enabled"))
@@ -550,7 +739,7 @@ def normalize_sections(cfg: ToolConfig, texts: dict[str, str | None] | None = No
     if cfg.mcp_servers:
         mcp_files = [f for f in cfg.config_files if "mcp" in Path(f).name.lower()]
         add("mcp", _row("mcp_servers", list(cfg.mcp_servers), mcp_files[0] if mcp_files else "", label="MCP servers"))
-    if cfg.extensions:
+    if cfg.extensions and "extensions" not in cfg.covered_keys:
         add("extensions", _row("extensions", list(cfg.extensions), cfg.setting_sources.get("extensions", "")))
     if cfg.auto_update is not None:
         auto_src = cfg.setting_sources.get("auto_update", "")
@@ -584,14 +773,72 @@ def normalize_sections(cfg: ToolConfig, texts: dict[str, str | None] | None = No
         norm = normalize_key(key)
         if key in covered or norm in seen or _SECRET_RE.search(norm) or key.startswith("secret://"):
             continue
-        section = _key_section(key)
-        if section == "telemetry":
+        entries = cfg.setting_values.get(key) or []
+        entry = catalog.get(_row_file_key(cfg, key, key, entries, len(entries) - 1)) or {}
+        section = cfg.key_sections.get(key) or _catalog_section(entry) or _key_section(key)
+        if section == "telemetry" and (otel or key not in cfg.generic_keys):
             continue  # shown by the telemetry rows above
-        note = "Workspace override" if key.startswith("ws:") else ""
-        add(section, _row(key, value, source_of(key), note=note))
+        note = cfg.key_notes.get(key) or ("Workspace override" if key.startswith("ws:") else "")
+        label = cfg.key_labels.get(key) or _table_label(key) or str(entry.get("label") or "")
+        row = _row(key, value, source_of(key), label=label, note=note)
+        if key in cfg.generic_keys and key not in cfg.key_labels:
+            row["_documented"] = False  # catalog entries mark it documented in _finish_rows
+        add(section, row)
 
-    _finish_rows(cfg, rows, {} if texts is None else texts)
+    # Catalog keys no file sets: shown with their default so every knob is visible.
+    shown = {fk for sid in rows for r in rows[sid] for fk in _row_file_keys(cfg, r)}
+    for ckey, entry in catalog.items():
+        if ckey in shown or normalize_key(ckey) in seen or _SECRET_RE.search(normalize_key(ckey)):
+            continue
+        default = entry.get("default")
+        section = _catalog_section(entry) or _key_section(ckey)
+        row = _row(ckey, default, "", label=str(entry.get("label") or ""))
+        if default is None:
+            row["kind"] = _CATALOG_KINDS.get(str(entry.get("type") or ""), "text")
+        row["_set"] = False
+        add(section, row)
+
+    _finish_rows(cfg, rows, {} if texts is None else texts, catalog)
     return [{"id": sid, "title": title, "rows": rows[sid]} for sid, title in SECTION_ORDER if rows[sid]]
+
+
+_CATALOG_KINDS = {
+    "boolean": "flag",
+    "bool": "flag",
+    "number": "number",
+    "integer": "number",
+    "list": "list",
+    "array": "list",
+    "map": "map",
+    "object": "map",
+}
+_SECTION_IDS = frozenset(sid for sid, _t in SECTION_ORDER)
+
+
+def _catalog_section(entry: dict) -> str:
+    """Section a catalog entry names; "agents" holds only agent rows, so a setting there uses the keyword rule."""
+    section = str(entry.get("section") or "")
+    return section if section in _SECTION_IDS and section != "agents" else ""
+
+
+def _table_label(key: str) -> str:
+    """Label from the curated label table, or "" when the key has none."""
+    bare = key.removeprefix("ws:")
+    for candidate in (bare, _strip_prefixes(bare)):
+        if candidate in _LABELS:
+            return _LABELS[candidate]
+    return ""
+
+
+def _row_file_keys(cfg: ToolConfig, row: dict) -> set[str]:
+    """Every key as written in a file that a row shows."""
+    lookup = row.get("_lookup", row["key"])
+    keys = {row["key"].removeprefix("ws:"), _FILE_KEYS.get(row["key"], row["key"])}
+    if lookup in cfg.file_keys:
+        keys.add(cfg.file_keys[lookup])
+    for e in cfg.setting_values.get(lookup) or cfg.setting_values.get(row["key"]) or []:
+        keys.add(str(e[3]))
+    return keys
 
 
 def _record(
@@ -609,11 +856,21 @@ def _record(
 
 
 def _read_json(path: Path) -> dict | None:
+    """Parsed JSON of *path*; a file that is not strict JSON is retried without its ``//`` comment lines."""
     if not path.is_file():
         return None
     try:
-        return json.loads(path.read_text(errors="replace", encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+        text = path.read_text(errors="replace", encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    stripped = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("//"))
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
         return None
 
 
@@ -637,6 +894,527 @@ def _read_toml(path: Path) -> dict | None:
 def _pick(get_fn: Callable, pairs: list[tuple[str, str]]) -> dict:
     """Build a dict from (source_key, dest_label) pairs, skipping None values."""
     return {dst: v for src, dst in pairs if (v := get_fn(src)) is not None}
+
+
+# ─── Settings catalog, every-key reading, scopes and agents ────
+
+SETTINGS_CATALOG_PATH = Path(__file__).resolve().parent.parent / "data" / "settings-catalog.yaml"
+_catalog_cache: tuple[str, float, dict[str, dict[str, dict]]] | None = None
+
+
+def settings_catalog(tool: str) -> dict[str, dict]:
+    """Catalog entries of *tool* by key as written in the file.
+
+    Empty when the catalog file is missing or cannot be parsed. The file is
+    parsed again only when its modification time changes.
+    """
+    global _catalog_cache
+    path = SETTINGS_CATALOG_PATH
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return {}
+    if _catalog_cache is None or _catalog_cache[0] != str(path) or _catalog_cache[1] != mtime:
+        tools: dict[str, dict[str, dict]] = {}
+        try:
+            import yaml
+
+            with open(path, encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+        except Exception:  # noqa: BLE001 - an unreadable catalog is an empty one
+            data = {}
+        spec = data.get("tools") if isinstance(data, dict) else None
+        for tool_id, tool_spec in (spec if isinstance(spec, dict) else {}).items():
+            keys = tool_spec.get("keys") if isinstance(tool_spec, dict) else None
+            tools[str(tool_id)] = {
+                str(e["key"]): e for e in (keys if isinstance(keys, list) else []) if isinstance(e, dict) and e.get("key")
+            }
+        _catalog_cache = (str(path), mtime, tools)
+    return _catalog_cache[2].get(tool) or _catalog_cache[2].get(_CATALOG_FALLBACK.get(tool, ""), {})
+
+
+# Tools that read another tool's settings file use that tool's catalog when they have none.
+_CATALOG_FALLBACK = {"copilot-desktop": "copilot-cli"}
+
+
+# An object with more keys than this is one map row instead of one row per key.
+MAP_ROW_MAX_KEYS = 12
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Object keys never read at any depth: their values can hold credentials or commands.
+_SKIP_SEGMENTS = frozenset({"env", "headers", "http_headers", "env_http_headers", "mcpServers", "mcp_servers"})
+
+
+def _secret_name(name: object) -> bool:
+    return bool(_SECRET_RE.search(re.sub(r"[^a-z0-9]", "", str(name).lower())))
+
+
+def _scrub(value: object) -> object:
+    """*value* with credential-named object keys removed, at any depth."""
+    if isinstance(value, dict):
+        return {k: _scrub(v) for k, v in value.items() if not _secret_name(k) and k not in _SKIP_SEGMENTS}
+    if isinstance(value, list):
+        return [_scrub(v) for v in value]
+    return value
+
+
+def flatten_settings(
+    data: dict,
+    skip: tuple[str, ...] | frozenset[str] = (),
+    whole: tuple[str, ...] | frozenset[str] = (),
+    open_keys: tuple[str, ...] | frozenset[str] = (),
+    prefix: str = "",
+) -> dict[str, object]:
+    """Nested settings as dotted keys, e.g. ``{"sandbox": {"allowBypass": true}}`` -> ``sandbox.allowBypass``.
+
+    Lists stay one value. An object stays one value (a map row) when it has more
+    than MAP_ROW_MAX_KEYS keys, when one of its keys is a name rather than an
+    identifier (a plugin id, a model id, a path), or when it is named in
+    *whole*; an object named in *open_keys* is always split. Keys in *skip*,
+    keys named like credentials, the _SKIP_SEGMENTS keys and ``auth`` command
+    objects are left out.
+    """
+    out: dict[str, object] = {}
+    for k, v in data.items():
+        key = f"{prefix}{k}"
+        if key in skip or k in _SKIP_SEGMENTS or _secret_name(k):
+            continue
+        if isinstance(v, dict) and "command" in v and "args" in v and k == "auth":
+            continue  # a command that prints a credential; its arguments can hold one
+        split = key in open_keys or (
+            len(v) <= MAP_ROW_MAX_KEYS and key not in whole and all(_IDENT_RE.match(str(n)) for n in v)
+            if isinstance(v, dict)
+            else False
+        )
+        if isinstance(v, dict) and v and split:
+            out.update(flatten_settings(v, skip, whole, open_keys, key + "."))
+        else:
+            out[key] = _scrub(v)
+    return out
+
+
+Layer = tuple[str, "dict | None", "Path | str"]
+
+
+def _add_layers(
+    cfg: ToolConfig,
+    layers: list[Layer],
+    *,
+    skip: tuple[str, ...] = (),
+    whole: tuple[str, ...] = (),
+    open_keys: tuple[str, ...] = (),
+    exclude: set[str] | frozenset[str] = frozenset(),
+    prefixes: tuple[str, ...] = (),
+    flatten: bool = True,
+    value_fns: dict[str, Callable[[object], object]] | None = None,
+) -> None:
+    """Read every key of every layer (lowest precedence first) as a flat setting with its chain.
+
+    Keys the parser already handled (in cfg.settings, cfg.setting_values or
+    cfg.covered_keys, or in *exclude*) are left alone. With *prefixes*, only
+    keys starting with one of them are read. With ``flatten=False`` the keys of
+    the layer are used as they are (VS Code settings are already dotted).
+    """
+    fns = value_fns or {}
+    taken = set(cfg.settings) | set(cfg.setting_values) | set(cfg.covered_keys) | set(exclude)
+    per_key: dict[str, list[tuple[str, object, str, str]]] = {}
+    for scope, data, path in layers:
+        if not isinstance(data, dict):
+            continue
+        if flatten:
+            flat = flatten_settings(data, skip, whole, open_keys)
+        else:
+            flat = {
+                k: _scrub(v)
+                for k, v in data.items()
+                if k not in skip and not _secret_name(k.rsplit(".", 1)[-1])
+            }
+        for key, value in flat.items():
+            if key in taken or (prefixes and not key.startswith(prefixes)):
+                continue
+            fn = fns.get(key)
+            per_key.setdefault(key, []).append((scope, fn(value) if fn else value, str(path), key))
+    for key, entries in per_key.items():
+        cfg.setting_values[key] = entries
+        cfg.settings[key] = entries[-1][1]
+        cfg.setting_sources[key] = entries[-1][2]
+        cfg.generic_keys.add(key)
+
+
+def _effective(layers: list[Layer], key: str) -> tuple[object, str, str] | None:
+    """(value, scope, path) of *key* in the highest layer that sets it."""
+    for scope, data, path in reversed(layers):
+        if isinstance(data, dict) and key in data:
+            return data[key], scope, str(path)
+    return None
+
+
+def _fixed_file(path: Path) -> bool:
+    """A managed, system or policy file that exists and is not a symbolic link."""
+    try:
+        return not os.path.islink(path) and path.is_file()
+    except OSError:
+        return False
+
+
+def _program_dir(var: str, default: str) -> Path:
+    return Path(os.environ.get(var) or default)
+
+
+def _per_os(windows: list[Path], macos: list[Path], linux: list[Path]) -> list[Path]:
+    return windows if IS_WINDOWS else macos if IS_MACOS else linux
+
+
+# Managed and system files per tool, for this OS. Module-level so they can be redirected.
+COPILOT_MANAGED_FILES: list[Path] = _per_os(
+    [_program_dir("ProgramFiles", r"C:\Program Files") / "GitHubCopilot" / "managed-settings.json"],
+    [Path("/Library/Application Support/GitHubCopilot/managed-settings.json")],
+    [Path("/etc/github-copilot/managed-settings.json")],
+)
+# Managed Copilot keys that are floors: they win over every other scope.
+COPILOT_FLOOR_KEYS: tuple[str, ...] = ("sandbox", "permissions.disableBypassPermissionsMode")
+COPILOT_CLI_ENV: tuple[str, ...] = ("COPILOT_MODEL", "COPILOT_HOME", "COPILOT_ALLOW_ALL", "COPILOT_CUSTOM_INSTRUCTIONS_DIRS")
+
+CLAUDE_MANAGED_FILES: list[Path] = _per_os(
+    [_program_dir("ProgramFiles", r"C:\Program Files") / "ClaudeCode" / "managed-settings.json"],
+    [Path("/Library/Application Support/ClaudeCode/managed-settings.json")],
+    [Path("/etc/claude-code/managed-settings.json")],
+)
+CLAUDE_MANAGED_DIRS: list[Path] = _per_os([], [Path("/Library/Application Support/ClaudeCode/managed-settings.d")], [])
+CLAUDE_POLICY_REGISTRY = r"SOFTWARE\Policies\ClaudeCode"
+CLAUDE_CODE_ENV: tuple[str, ...] = (
+    "ANTHROPIC_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_ENABLE_TELEMETRY",
+)
+
+CODEX_SYSTEM_FILES: list[Path] = _per_os([], [Path("/etc/codex/config.toml")], [Path("/etc/codex/config.toml")])
+CODEX_REQUIREMENTS_FILES: list[Path] = _per_os(
+    [_program_dir("ProgramData", r"C:\ProgramData") / "OpenAI" / "Codex" / "requirements.toml"],
+    [Path("/etc/codex/requirements.toml"), Path("/etc/codex/managed_config.toml")],
+    [Path("/etc/codex/requirements.toml"), Path("/etc/codex/managed_config.toml")],
+)
+CODEX_ENV: tuple[str, ...] = ("CODEX_HOME",)
+
+# VS Code policy files probed on this OS; macOS policies come from configuration profiles and are not probed.
+VSCODE_POLICY_FILES: list[Path] = _per_os([], [], [Path("/etc/vscode/policy.json")])
+VSCODE_POLICY_REGISTRY = r"SOFTWARE\Policies\Microsoft\VSCode"
+VSCODE_ENV: tuple[str, ...] = ("COPILOT_OTEL_ENABLED", "OTEL_EXPORTER_OTLP_ENDPOINT")
+
+
+def _hklm_value_names(subkey: str) -> list[str] | None:
+    """Value names under ``HKLM\\<subkey>``; None when the key is missing or this is not Windows."""
+    if not IS_WINDOWS:
+        return None
+    try:
+        import winreg  # type: ignore[import-not-found]
+    except ImportError:
+        return None
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, subkey) as handle:
+            names: list[str] = []
+            index = 0
+            while True:
+                try:
+                    names.append(str(winreg.EnumValue(handle, index)[0]))
+                except OSError:
+                    return names
+                index += 1
+    except OSError:
+        return None
+
+
+def _hklm_string(subkey: str, name: str) -> str | None:
+    """String value *name* under ``HKLM\\<subkey>``; None when absent or not on Windows."""
+    if not IS_WINDOWS:
+        return None
+    try:
+        import winreg  # type: ignore[import-not-found]
+
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, subkey) as handle:
+            value, _kind = winreg.QueryValueEx(handle, name)
+    except (ImportError, OSError):
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _scope(sid: str, path: Path | str, exists: bool, note: str = "", label: str = "") -> dict:
+    return {
+        "id": sid,
+        "label": label or SCOPE_LABELS.get(sid, sid),
+        "path": str(path),
+        "exists": bool(exists),
+        "changeable": sid not in FIXED_SCOPES,
+        "note": note,
+    }
+
+
+def _env_scope(names: tuple[str, ...], note: str = "") -> dict:
+    set_names = [n for n in names if os.environ.get(n)]
+    text = f"Variables read: {', '.join(names)}."
+    if set_names:
+        text += f" Set: {', '.join(set_names)}."
+    return _scope("env", "environment", bool(set_names), f"{text} {note}".strip())
+
+
+def _file_scope(sid: str, path: Path, note: str = "", label: str = "") -> dict:
+    return _scope(sid, path, path.is_file(), note, label)
+
+
+def _first_fixed(paths: list[Path]) -> Path | None:
+    return next((p for p in paths if _fixed_file(p)), None)
+
+
+def _vscode_policy_scope() -> dict:
+    if IS_WINDOWS:
+        names = _hklm_value_names(VSCODE_POLICY_REGISTRY)
+        note = f"{len(names)} policy values" if names else ""
+        return _scope("policy", "HKLM\\" + VSCODE_POLICY_REGISTRY, names is not None, note)
+    if not VSCODE_POLICY_FILES:
+        return _scope("policy", "configuration profiles", False, "Not checked: policies come from configuration profiles.")
+    found = _first_fixed(VSCODE_POLICY_FILES)
+    if not found:
+        return _scope("policy", VSCODE_POLICY_FILES[0], False)
+    data = _read_json(found)
+    count = len(data) if isinstance(data, dict) else 0
+    return _scope("policy", found, True, f"{count} policies")
+
+
+_SCOPE_RANK = {sid: i for i, sid in enumerate(("system", "user", "profile", "project", "project-local", "workspace", "env", "cli", "policy", "managed"))}
+
+
+def _scopes_from_files(cfg: ToolConfig) -> list[dict]:
+    """Scope list for a tool whose parser names none: one entry per config file, lowest precedence first."""
+    out = []
+    for f in cfg.config_files:
+        sid = setting_scope(f, cfg.project_root)
+        if sid != "default":
+            out.append(_scope(sid, f, Path(f).is_file()))
+    return sorted(out, key=lambda e: _SCOPE_RANK.get(e["id"], 0))
+
+
+# ── Agents ──────────────────────────────────────────────────────
+
+AGENT_FILE_MAX_BYTES = 64 * 1024
+AGENT_FILES_MAX = 200
+_AGENT_KEYS = (
+    "name",
+    "description",
+    "model",
+    "model-policy",
+    "modelPolicy",
+    "reasoning-effort",
+    "reasoningEffort",
+    "effort",
+    "context-tier",
+    "contextTier",
+    "tools",
+    "target",
+)
+
+
+def _read_head(path: Path) -> str:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read(AGENT_FILE_MAX_BYTES)
+    except OSError:
+        return ""
+
+
+def _text_of(value: object) -> str:
+    if isinstance(value, list):
+        return str(value[0]) if value else ""
+    return str(value).strip() if value is not None else ""
+
+
+def _tool_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str):
+        return [t.strip() for t in value.strip("[]").split(",") if t.strip()]
+    return []
+
+
+def _agent_file(path: Path, scope: str) -> dict | None:
+    """Agent definition from a Markdown file with YAML front matter or a TOML file."""
+    if path.suffix == ".toml":
+        data = _read_toml(path) or {}
+        text = _read_head(path)
+        fields = {k: data[k] for k in ("name", "description", "model", "model_reasoning_effort", "tools") if k in data}
+        if "model_reasoning_effort" in fields:
+            fields["reasoning-effort"] = fields.pop("model_reasoning_effort")
+        line = find_key_line(text, "model") if "model" in fields else 0
+    else:
+        from ..effective_config import frontmatter_fields
+
+        found = frontmatter_fields(_read_head(path), _AGENT_KEYS)
+        fields = {k: v for k, (v, _line) in found.items()}
+        line = found["model"][1] if "model" in found else 0
+    stem = path.name.removesuffix(".agent.md").removesuffix(".md").removesuffix(".toml")
+    return {
+        "name": _text_of(fields.get("name")) or stem,
+        "fields": fields,
+        "path": str(path),
+        "scope": scope,
+        "line": line or 1,
+    }
+
+
+def _agent_files(folders: list[tuple[Path, str, tuple[str, ...]]]) -> dict[str, dict]:
+    """Agent definitions by name. *folders* go lowest precedence first: (folder, scope, file patterns)."""
+    out: dict[str, dict] = {}
+    count = 0
+    for folder, scope, patterns in folders:
+        if not folder.is_dir():
+            continue
+        files: list[Path] = []
+        for pattern in patterns:
+            try:
+                files.extend(p for p in sorted(folder.glob(pattern)) if p.is_file() and p not in files)
+            except OSError:
+                continue
+        for path in files:
+            if count >= AGENT_FILES_MAX:
+                return out
+            agent = _agent_file(path, scope)
+            if agent:
+                out[agent["name"]] = agent
+                count += 1
+    return out
+
+
+def _first_field(fields: dict, *names: str) -> object:
+    for name in names:
+        if name in fields:
+            return fields[name]
+    return None
+
+
+def _agent_row(
+    cfg: ToolConfig,
+    name: str,
+    defined: dict | None,
+    pins: list[dict],
+    inherits_from: str,
+    fallback: tuple[str, str] | None = None,
+) -> dict:
+    """One finished "agents" row.
+
+    *defined* is the agent file (or None); *pins* are the settings entries that
+    pin the agent, lowest precedence first, each {scope, path, line, values};
+    *fallback* is (variable, value) of an environment variable used when no
+    file or pin names a model. A pin wins over the file's model unless the
+    file's model policy is "required"; "inherit" or no model means the agent
+    uses *inherits_from*.
+    """
+    fields = defined["fields"] if defined else {}
+    file_model = fields.get("model")
+    file_model_text = _text_of(file_model)
+    policy = _text_of(_first_field(fields, "model-policy", "modelPolicy"))
+    pin = pins[-1] if pins else None
+    pin_values = pin["values"] if pin else {}
+    pin_model = _text_of(pin_values.get("model"))
+    required = policy.lower() == "required" and bool(file_model_text) and file_model_text != "inherit"
+
+    chain: list[dict] = []
+    if fallback:
+        chain.append({"scope": "env", "value": fallback[1], "source": "", "line": 0})
+    file_index = -1
+    if defined:
+        file_index = len(chain)
+        chain.append(
+            {"scope": defined["scope"], "value": file_model, "source": defined["path"], "line": defined["line"]}
+        )
+    pin_indexes = []
+    for p in pins:
+        if "model" in p["values"]:
+            pin_indexes.append(len(chain))
+            chain.append({"scope": p["scope"], "value": p["values"]["model"], "source": p["path"], "line": p["line"]})
+
+    note = ""
+    if pin_model and pin_indexes and not required:
+        model, wins = pin_model, pin_indexes[-1]
+    elif file_model_text:
+        model, wins = file_model_text, file_index
+        if required and pin_model:
+            note = "The agent file's model policy is required, so the settings pin is not used."
+    elif fallback:
+        model, wins = fallback[1], 0
+        note = f"No model in the agent file; {fallback[0]} sets it."
+    else:
+        model, wins = "", file_index if file_index >= 0 else (pin_indexes[-1] if pin_indexes else 0)
+    inherits = not model or model == "inherit"
+    if inherits:
+        note = f"Inherits {inherits_from}."
+    if not chain:
+        chain.append({"scope": pin["scope"] if pin else "default", "value": None, "source": "", "line": 0})
+        wins = 0
+    winner = chain[wins]
+    effort = _text_of(pin_values.get("effortLevel")) or _text_of(
+        _first_field(fields, "reasoning-effort", "reasoningEffort", "effort")
+    )
+    context_tier = _text_of(pin_values.get("contextTier")) or _text_of(_first_field(fields, "context-tier", "contextTier"))
+    description = _text_of(fields.get("description"))
+    agent = {
+        "name": name,
+        "description": description[:300],
+        "model": "" if inherits else model,
+        "model_policy": policy or _text_of(pin_values.get("modelPolicy")),
+        "effort": effort,
+        "context_tier": context_tier,
+        "tools": _tool_list(fields.get("tools")),
+        "target": _text_of(fields.get("target")),
+        "defined_in": defined["path"] if defined else "",
+        "defined_line": defined["line"] if defined else 0,
+        "pinned_in": pin["path"] if pin else "",
+        "pinned_line": pin["line"] if pin else 0,
+        "inherits": inherits,
+        "scope_defined": defined["scope"] if defined else "",
+        "scope_pinned": pin["scope"] if pin else "",
+    }
+    return {
+        "key": f"agent/{name}",
+        "label": name,
+        "value": "inherits" if inherits else model,
+        "kind": "agent",
+        "source": str(winner["source"]),
+        "danger": False,
+        "note": note,
+        "scope": str(winner["scope"]),
+        "line": int(winner["line"]),
+        "chain": [dict(e, value=_safe_value(e["value"])) for e in chain],
+        "wins": wins,
+        "locked": False,
+        "set": True,
+        "documented": True,
+        "agent": agent,
+    }
+
+
+def _settings_pins(layers: list[Layer], texts: dict[str, str]) -> dict[str, list[dict]]:
+    """``subagents.agents.<name>`` entries per agent, lowest precedence first."""
+    out: dict[str, list[dict]] = {}
+    for scope, data, path in layers:
+        agents = ((data or {}).get("subagents") or {}).get("agents") if isinstance(data, dict) else None
+        if not isinstance(agents, dict):
+            continue
+        for name, values in agents.items():
+            if not isinstance(values, dict):
+                continue
+            path_s = str(path)
+            if path_s not in texts:
+                texts[path_s] = _read_head(Path(path_s)) if path_s else ""
+            field_name = "model" if "model" in values else next(iter(values), "")
+            line = _nested_json_line(texts[path_s], ["subagents", "agents", str(name), field_name]) if field_name else 0
+            if not line:
+                line = _nested_json_line(texts[path_s], ["subagents", "agents", str(name)])
+            keep = {k: values[k] for k in ("model", "modelPolicy", "effortLevel", "contextTier") if k in values}
+            out.setdefault(str(name), []).append({"scope": scope, "path": path_s, "line": line, "values": keep})
+    return out
+
+
+def _main_model_text(model: str, default: str) -> str:
+    return f"the main model ({model})" if model else default
 
 
 # ─── macOS login item / launch agent detection ──────────────────
@@ -858,6 +1636,35 @@ def _permission_lists(value: object) -> object:
     return {bucket: list(value.get(bucket) or []) for bucket in ("allow", "deny", "ask")}
 
 
+def _claude_managed_layers() -> tuple[list[Layer], list[str], str]:
+    """Managed Claude Code settings, lowest precedence first, the files read and the scope path shown."""
+    layers: list[Layer] = []
+    files: list[str] = []
+    shown = str(CLAUDE_MANAGED_FILES[0]) if CLAUDE_MANAGED_FILES else ""
+    for path in CLAUDE_MANAGED_FILES:
+        if _fixed_file(path):
+            layers.append(("managed", _read_json(path), path))
+            files.append(str(path))
+            shown = str(path)
+    for folder in CLAUDE_MANAGED_DIRS:
+        if os.path.islink(folder) or not folder.is_dir():
+            continue
+        for path in sorted(folder.glob("*.json")):
+            if _fixed_file(path):
+                layers.append(("managed", _read_json(path), path))
+                files.append(str(path))
+    raw = _hklm_string(CLAUDE_POLICY_REGISTRY, "Settings")
+    if raw:
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict):
+            layers.append(("managed", data, "HKLM\\" + CLAUDE_POLICY_REGISTRY))
+            shown = shown or "HKLM\\" + CLAUDE_POLICY_REGISTRY
+    return [layer for layer in layers if isinstance(layer[1], dict)], files, shown
+
+
 def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConfig | None:
     cfg = ToolConfig(tool=tool)
 
@@ -865,6 +1672,7 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
     user_path = claude_global_dir() / "settings.json"
     account_path = Path.home() / ".claude.json"
     proj_path = root / ".claude" / "settings.json"
+    local_path = root / ".claude" / "settings.local.json"
     settings = _read_json(user_path)
     if settings:
         cfg.config_files.append(str(user_path))
@@ -905,25 +1713,53 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
             cfg.setting_sources[k] = str(proj_path)
         cfg.setting_sources.setdefault("permissions", str(proj_path))
         cfg.settings["project_settings"] = "configured"
-        if not os.environ.get("ANTHROPIC_MODEL") and proj_settings.get("model"):
-            cfg.model = str(proj_settings["model"])  # shared project file overrides user file
-            cfg.setting_sources["model"] = str(proj_path)
         proj_perms = proj_settings.get("permissions")
         if isinstance(proj_perms, dict):
             cfg.settings["project_permissions"] = "configured"
-            merged = cfg.settings.get("permissions")
-            if not isinstance(merged, dict):
-                merged = {"allow": [], "deny": [], "ask": []}
-            for bucket in ("allow", "deny", "ask"):
-                existing = list(merged.get(bucket) or [])
-                for item in proj_perms.get(bucket) or []:
-                    if item not in existing:
-                        existing.append(item)
-                merged[bucket] = existing
-            cfg.settings["permissions"] = merged
 
-    # Value of each setting per file, for the override chain (project file last).
-    layers = [("user", settings, user_path), ("project", proj_settings, proj_path)]
+    # Project-local and managed settings
+    local_settings = _read_json(local_path)
+    if isinstance(local_settings, dict):
+        cfg.config_files.append(str(local_path))
+    managed_layers, managed_files, managed_shown = _claude_managed_layers()
+    cfg.config_files.extend(managed_files)
+
+    # Value of each setting per file, lowest precedence first; managed wins over every file.
+    layers: list[Layer] = [
+        ("user", settings, user_path),
+        ("project", proj_settings, proj_path),
+        ("project-local", local_settings if isinstance(local_settings, dict) else None, local_path),
+        *managed_layers,
+    ]
+    above_user = layers[1:]
+    if (top := _effective(above_user, "model")) is not None and top[0]:
+        cfg.setting_sources["model"] = top[2]
+        if not os.environ.get("ANTHROPIC_MODEL"):
+            cfg.model = str(top[0])
+    if (top := _effective(above_user, "effortLevel")) is not None:
+        cfg.settings["effortLevel"] = top[0]
+        cfg.setting_sources["effortLevel"] = top[2]
+    for k in ("env", "hooks"):
+        if k not in cfg.settings and (top := _effective(above_user, k)) is not None:
+            cfg.settings[k] = "configured"
+            cfg.setting_sources[k] = top[2]
+    merged = cfg.settings.get("permissions")
+    for _scope_id, data, _path in above_user:
+        perms = data.get("permissions") if isinstance(data, dict) else None
+        if not isinstance(perms, dict):
+            continue
+        if not isinstance(merged, dict):
+            merged = {"allow": [], "deny": [], "ask": []}
+        for bucket in ("allow", "deny", "ask"):
+            existing = list(merged.get(bucket) or [])
+            for item in perms.get(bucket) or []:
+                if item not in existing:
+                    existing.append(item)
+            merged[bucket] = existing
+        cfg.settings["permissions"] = merged
+
+    if os.environ.get("ANTHROPIC_MODEL"):
+        cfg.model = os.environ["ANTHROPIC_MODEL"]
     for k in ("model", "effortLevel"):
         _record(cfg, k, k, layers)
     if os.environ.get("ANTHROPIC_MODEL"):
@@ -931,6 +1767,8 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
     for k in ("env", "hooks"):
         _record(cfg, k, k, layers, value_fn=lambda _v: "configured")  # values can hold commands and tokens
     _record(cfg, "permissions", "permissions", layers, value_fn=_permission_lists)
+    # Every other key of every settings file.
+    _add_layers(cfg, layers, skip=("permissions.allow", "permissions.deny", "permissions.ask", "hooks", "env"))
 
     # MCP servers from .mcp.json
     cfg.mcp_servers = _mcp_server_names(_read_json(root / ".mcp.json"))
@@ -946,7 +1784,31 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
         login_items = _macos_login_items()
         cfg.launch_at_startup = "Claude" in login_items
 
-    return _finish(cfg, bool(cfg.settings or cfg.mcp_servers or cfg.extensions))
+    # Scope layers, lowest precedence first.
+    managed_note = "Wins over every settings file."
+    if IS_WINDOWS:
+        managed_note += f" Also read: HKLM\\{CLAUDE_POLICY_REGISTRY} value Settings."
+    cfg.scopes = [
+        _file_scope("user", user_path),
+        _file_scope("project", proj_path),
+        _file_scope("project-local", local_path),
+        _env_scope(CLAUDE_CODE_ENV, "ANTHROPIC_MODEL overrides the model key of every file."),
+        _scope("managed", managed_shown, bool(managed_layers), managed_note),
+    ]
+
+    # Agents: user folder, then the project folder (same name: project wins).
+    defs = _agent_files(
+        [(claude_global_dir() / "agents", "user", ("*.md",)), (root / ".claude" / "agents", "project", ("*.md",))]
+    )
+    sub_env = os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL", "")
+    for name, defined in defs.items():
+        model = _text_of(defined["fields"].get("model"))
+        fallback = ("CLAUDE_CODE_SUBAGENT_MODEL", sub_env) if sub_env and not model else None
+        cfg.agent_rows.append(
+            _agent_row(cfg, name, defined, [], _main_model_text(cfg.model, "the main conversation's model"), fallback)
+        )
+
+    return _finish(cfg, bool(cfg.settings or cfg.mcp_servers or cfg.extensions or cfg.agent_rows))
 
 
 def _parse_claude_desktop_config(root: Path | None = None, tool: str = "claude-desktop") -> ToolConfig | None:
@@ -1006,6 +1868,22 @@ def _parse_claude_desktop_config(root: Path | None = None, tool: str = "claude-d
 
     if trusted:
         cfg.settings["trustedFolders"] = len(trusted)
+
+    # Every other key of the file; preferences already shown by a group are left out.
+    grouped = (
+        "sidebarMode",
+        "localAgentModeTrustedFolders",
+        "launchPreviewPersistSession",
+        "coworkWebSearchEnabled",
+        "coworkScheduledTasksEnabled",
+        "allowAllBrowserActions",
+    )
+    _add_layers(
+        cfg,
+        [("user", data, config_path)],
+        open_keys=("preferences",),
+        exclude={f"preferences.{k}" for k in grouped},
+    )
 
     # Startup
     if IS_MACOS:
@@ -1126,13 +2004,38 @@ def _parse_vscode_config(root: Path, tool: str = "vscode") -> ToolConfig | None:
         for full, short in pairs:
             qualified = f"{group_name}/{short}"
             _record(cfg, qualified, full, layers)
+            cfg.file_keys[qualified] = full
             entries = cfg.setting_values.get(qualified)
             cfg.setting_sources[qualified] = entries[-1][2] if entries else ""  # no file: a VS Code default
 
+    # ── Every other AI setting of the user and workspace files ──
+    _add_layers(
+        cfg,
+        layers,
+        flatten=False,
+        prefixes=VSCODE_AI_PREFIXES,
+        skip=("claudeCode.environmentVariables",),
+        exclude=set(cfg.file_keys.values()),
+    )
+
     # ── OTel ────────────────────────────────────────────────────
     cfg.otel = _detect_otel_from_vscode_settings(vscode_settings)
+    cfg.scopes = _vscode_scopes(user_path, ws_path)
 
     return cfg  # always show if VS Code is installed
+
+
+# VS Code settings read by the "vscode" tool besides its groups (Copilot reads github.copilot.*).
+VSCODE_AI_PREFIXES: tuple[str, ...] = ("chat.", "inlineChat.", "mcp.", "claudeCode.")
+
+
+def _vscode_scopes(user_path: Path, ws_path: Path) -> list[dict]:
+    return [
+        _file_scope("user", user_path),
+        _file_scope("workspace", ws_path),
+        _env_scope(VSCODE_ENV, "Read for telemetry export only."),
+        _vscode_policy_scope(),
+    ]
 
 
 _COPILOT_FEATURES: list[tuple[str, str]] = [
@@ -1241,6 +2144,30 @@ _COPILOT_CONFIGURABLE_MODELS: list[tuple[str, str, str, str]] = [
         "Next-edit suggestions",
         "none",
         "Preferred model for the inline next-edit suggestion feature.",
+    ),
+    (
+        "inlineChat.defaultModel",
+        "Inline chat",
+        "default model",
+        "Default model used by inline chat in the editor.",
+    ),
+    (
+        "chat.utilityModel",
+        "Utility model",
+        "default utility model",
+        "Model used for helper tasks such as titles and summaries.",
+    ),
+    (
+        "chat.utilitySmallModel",
+        "Small utility model",
+        "default small model",
+        "Small model used for the lightest helper tasks.",
+    ),
+    (
+        "chat.subagents.defaultToAuto",
+        "Subagents default to auto",
+        "off",
+        "Subagents without a model of their own use automatic model selection.",
     ),
     (
         "github.copilot.selectedCompletionModel",
@@ -1471,6 +2398,9 @@ def _parse_copilot_config(root: Path, tool: str = "copilot") -> ToolConfig | Non
     for group_name, pairs, store in _COPILOT_GROUPS:
         for dst, label in pairs:
             src = file_key_of.get((store, dst))
+            if src:
+                cfg.file_keys[f"{group_name}/{label}"] = src
+                cfg.file_keys[dst] = src
             if src and (entries := cfg.setting_values.get(dst)):
                 cfg.setting_values[f"{group_name}/{label}"] = entries
 
@@ -1489,6 +2419,27 @@ def _parse_copilot_config(root: Path, tool: str = "copilot") -> ToolConfig | Non
         for k in cfg.settings:
             if k.startswith("ws:"):
                 cfg.setting_sources[k] = str(ws_settings_path)
+
+    cfg.scopes = _vscode_scopes(user_settings_path, ws_settings_path)
+
+    # ── Agents: agent files, plus folders named by chat.agentFilesLocations ──
+    folders: list[tuple[Path, str, tuple[str, ...]]] = [
+        (claude_global_dir() / "agents", "user", ("*.md",)),
+        (copilot_global_dir() / "agents", "user", ("*.agent.md", "*.md")),
+    ]
+    merged = {**vscode_settings, **(ws_settings or {})}
+    locations = merged.get("chat.agentFilesLocations")
+    for loc, enabled in (locations.items() if isinstance(locations, dict) else []):
+        if enabled is not True:
+            continue
+        folder = Path(os.path.expanduser(str(loc)))
+        if not folder.is_absolute():
+            folder = root / folder
+        scope = setting_scope(str(folder / "x"), str(root))
+        folders.append((folder, "user" if scope == "default" else scope, ("*.agent.md", "*.md")))
+    folders.append((root / ".github" / "agents", "project", ("*.agent.md", "*.md")))
+    for name, defined in _agent_files(folders).items():
+        cfg.agent_rows.append(_agent_row(cfg, name, defined, [], "the model picked in the chat view"))
 
     return _finish(cfg, bool(cfg.settings or cfg.extensions or cfg.features or cfg.otel.enabled or cfg.feature_groups))
 
@@ -1512,25 +2463,148 @@ def _parse_cursor_config(root: Path, tool: str = "cursor") -> ToolConfig | None:
     return _finish(cfg, bool(cfg.settings or cfg.mcp_servers))
 
 
+def _codex_trusted(user: dict | None, root: Path | None) -> bool:
+    projects = (user or {}).get("projects")
+    if root is None or not isinstance(projects, dict):
+        return False
+    want = _norm_path(str(root))
+    return any(
+        _norm_path(str(path)) == want and isinstance(spec, dict) and spec.get("trust_level") == "trusted"
+        for path, spec in projects.items()
+    )
+
+
 def _parse_codex_config(root: Path | None = None, tool: str = "codex-cli") -> ToolConfig | None:
     cfg = ToolConfig(tool=tool)
+    home = codex_global_dir()
+    user_path = home / "config.toml"
+    user = _read_toml(user_path)
+    if user:
+        cfg.config_files.append(str(user_path))
 
-    data = _read_toml(codex_global_dir() / "config.toml")
-    if not data:
+    # Layers, lowest precedence first: system, user, profile, trusted project, requirements.
+    system_path = _first_fixed(CODEX_SYSTEM_FILES)
+    system = _read_toml(system_path) if system_path else None
+    if system:
+        cfg.config_files.insert(0, str(system_path))
+    layers: list[Layer] = [("system", system, system_path or ""), ("user", user, user_path)]
+    profile = _effective(layers, "profile")
+    profile_name = str(profile[0]) if profile and isinstance(profile[0], str) else ""
+    profile_path = home / f"{profile_name}.config.toml" if profile_name else None
+    if profile_name:
+        table = ((user or {}).get("profiles") or {}).get(profile_name)
+        if isinstance(table, dict):
+            layers.append(("profile", table, user_path))
+        if profile_path and (profile_data := _read_toml(profile_path)):
+            layers.append(("profile", profile_data, profile_path))
+            cfg.config_files.append(str(profile_path))
+    proj_path = root / ".codex" / "config.toml" if root else None
+    trusted = _codex_trusted(user, root)
+    if proj_path and trusted and (proj := _read_toml(proj_path)):
+        layers.append(("project", proj, proj_path))
+        cfg.config_files.append(str(proj_path))
+    req_files = list(CODEX_REQUIREMENTS_FILES)
+    if IS_WINDOWS:
+        req_files.append(home / "managed_config.toml")
+    requirements = [(p, d) for p in req_files if _fixed_file(p) and (d := _read_toml(p))]
+    for path, data in requirements:
+        layers.append(("managed", data, path))
+        cfg.config_files.append(str(path))
+
+    if not any(isinstance(d, dict) and d for _s, d, _p in layers):
         return None
-    cfg.config_files.append(str(codex_global_dir() / "config.toml"))
 
-    cfg.model = data.get("model", "")
-    cfg.settings["model_reasoning_effort"] = data.get("model_reasoning_effort", "")
+    model = _effective(layers, "model")
+    cfg.model = str(model[0]) if model else ""
+    effort = _effective(layers, "model_reasoning_effort")
+    cfg.settings["model_reasoning_effort"] = effort[0] if effort else ""
+    for key in ("model", "model_reasoning_effort"):
+        _record(cfg, key, key, layers)
+        if (top := _effective(layers, key)) is not None:
+            cfg.setting_sources[key] = top[2]
 
-    features = data.get("features", {})
+    features: dict = {}
+    for scope, data, path in layers:
+        table = data.get("features") if isinstance(data, dict) else None
+        if isinstance(table, dict):
+            features.update(table)
+            for k, v in table.items():
+                cfg.setting_values.setdefault(k, []).append((scope, v, str(path), k))
     for k, v in features.items():
         cfg.features[k] = v
+        cfg.setting_sources[k] = cfg.setting_values[k][-1][2]
+
+    # [agents] defaults for subagents, as ordinary model rows.
+    for key, label in (
+        ("default_subagent_model", "Subagent default model"),
+        ("default_subagent_reasoning_effort", "Subagent default reasoning effort"),
+    ):
+        cfg.key_labels[f"agents.{key}"] = label
+        cfg.key_sections[f"agents.{key}"] = "model"
+
+    projects = (user or {}).get("projects")
+    if isinstance(projects, dict):
+        trusted_list = [p for p, spec in projects.items() if isinstance(spec, dict) and spec.get("trust_level") == "trusted"]
+        cfg.settings["trustedProjects"] = trusted_list
+        cfg.setting_sources["trustedProjects"] = str(user_path)
+        cfg.key_labels["trustedProjects"] = "Trusted projects"
+        cfg.key_sections["trustedProjects"] = "autonomy"
+        cfg.key_notes["trustedProjects"] = f"{len(trusted_list)} of {len(projects)} projects are trusted."
+        cfg.file_keys["trustedProjects"] = "projects"
+
+    servers: dict = {}
+    for _scope_id, data, _path in layers:
+        table = data.get("mcp_servers") if isinstance(data, dict) else None
+        if isinstance(table, dict):
+            servers.update(table)
+    cfg.mcp_servers = list(servers)
+
+    # Every other key of every layer.
+    _add_layers(cfg, layers, skip=("features", "otel", "projects", "profiles", "shell_environment_policy.set"))
 
     # OTel detection
-    cfg.otel = _detect_otel_from_codex_toml(data)
+    merged: dict = {}
+    for _scope_id, data, _path in layers:
+        if isinstance(data, dict):
+            merged.update(data)
+    cfg.otel = _detect_otel_from_codex_toml(merged)
 
-    return _finish(cfg, bool(cfg.model or cfg.features))
+    cfg.managed_floors = None  # every key a requirements file sets is locked
+    project_note = "Read only for trusted projects."
+    if proj_path and proj_path.is_file() and not trusted:
+        project_note += " This project is not trusted, so the file is not read."
+    req_shown = next((p for p, _d in requirements), req_files[0] if req_files else "")
+    cfg.scopes = [
+        _scope("system", system_path or (CODEX_SYSTEM_FILES[0] if CODEX_SYSTEM_FILES else ""), bool(system)),
+        _file_scope("user", user_path),
+        _scope(
+            "profile",
+            profile_path or "",
+            bool(profile_name),
+            f"Profile {profile_name}." if profile_name else "No profile is selected.",
+        ),
+        _scope("project", proj_path or "", bool(proj_path and proj_path.is_file()), project_note),
+        _env_scope(CODEX_ENV),
+        _scope("managed", req_shown, bool(requirements), "Requirements: every key set here is locked.", "Requirements"),
+    ]
+
+    # Agents: user folder, then the project folder (same name: project wins).
+    folders = [(home / "agents", "user", ("*.toml",))]
+    if root:
+        folders.append((root / ".codex" / "agents", "project", ("*.toml",)))
+    sub_default = _effective(layers, "agents")
+    default_model = ""
+    if sub_default and isinstance(sub_default[0], dict):
+        default_model = str(sub_default[0].get("default_subagent_model") or "")
+    inherit_text = (
+        f"the subagent default model ({default_model})"
+        if default_model
+        else _main_model_text(cfg.model, "the parent session's model")
+    )
+    for name, defined in _agent_files(folders).items():
+        cfg.agent_rows.append(_agent_row(cfg, name, defined, [], inherit_text))
+
+    return _finish(cfg, True)
 
 
 def _parse_windsurf_config(root: Path, tool: str = "windsurf") -> ToolConfig | None:
@@ -1888,6 +2962,14 @@ _GEMINI_GROUP_PAIRS: dict[str, list[tuple[str, str]]] = {
 }
 
 
+def _hook_summary(value: object) -> object:
+    """Hooks as a count of events and rules; the commands are never copied."""
+    if isinstance(value, dict):
+        rules = sum(len(v) for v in value.values() if isinstance(v, list))
+        return f"{len(value)} events, {rules} rules"
+    return "configured"
+
+
 def _parse_generic_config(root: Path, tool_name: str, spec: dict) -> ToolConfig | None:
     """Generic parser that uses extraction rules from tool-configs.yaml."""
     from ..platforms import (
@@ -1910,6 +2992,8 @@ def _parse_generic_config(root: Path, tool_name: str, spec: dict) -> ToolConfig 
 
     cfg = ToolConfig(tool=tool_name)
     has_data = False
+    file_layers: list[Layer] = []
+    extracted: set[str] = set()
 
     # 0. Check if tool is likely installed
     # Check binary
@@ -1947,6 +3031,8 @@ def _parse_generic_config(root: Path, tool_name: str, spec: dict) -> ToolConfig 
 
         has_data = True
         cfg.config_files.append(str(path))
+        file_layers.append(("", data, path))
+        extracted.update(str(v) for v in f_spec.get("extract", {}).values())
 
         # Extraction
         for attr, key_path in f_spec.get("extract", {}).items():
@@ -1958,6 +3044,9 @@ def _parse_generic_config(root: Path, tool_name: str, spec: dict) -> ToolConfig 
                     cfg.model = str(val)
                 else:
                     cfg.settings[attr] = val
+
+    # Every other key of every file read, lowest precedence first.
+    _add_layers(cfg, file_layers, whole=("hooks",), exclude=extracted, value_fns={"hooks": _hook_summary})
 
     # 2. Apply defaults for missing settings
     defaults = spec.get("defaults", {})
@@ -2061,28 +3150,188 @@ def _copilot_desktop_version() -> str:
         return ""
 
 
+# Copilot CLI settings.json keys with a curated section and label.
+_COPILOT_CLI_KEYS: dict[str, tuple[str, str]] = {
+    "model": ("model", "Model"),
+    "effortLevel": ("model", "Reasoning effort"),
+    "contextTier": ("model", "Context tier"),
+    "planModel": ("model", "Plan model"),
+    "planEffortLevel": ("model", "Plan reasoning effort"),
+    "planContextTier": ("model", "Plan context tier"),
+    "defaultMode": ("autonomy", "Default mode"),
+    "defaultPermissionMode": ("autonomy", "Default permission mode"),
+    "sandbox.allowBypass": ("autonomy", "Allow sandbox bypass"),
+    "sandbox.allowDevToolAccess": ("autonomy", "Allow developer tool access in the sandbox"),
+    "customAgents.defaultLocalOnly": ("autonomy", "Custom agents local only by default"),
+    "subagents.maxConcurrency": ("autonomy", "Max concurrent subagents"),
+    "subagents.maxDepth": ("autonomy", "Max subagent depth"),
+    "subagents.disabledSubagents": ("autonomy", "Disabled subagents"),
+    "enabledPlugins": ("extensions", "Enabled plugins"),
+    "extraKnownMarketplaces": ("extensions", "Extra plugin marketplaces"),
+    "extensions.disabledExtensions": ("extensions", "Disabled extensions"),
+    "disabledSkills": ("extensions", "Disabled skills"),
+    "disabledMcpServers": ("mcp", "Disabled MCP servers"),
+    "hooks": ("hooks", "Hooks"),
+    "includeCoAuthoredBy": ("other", "Co-authored-by trailer"),
+    "showReasoning": ("other", "Show reasoning"),
+    "streamerMode": ("other", "Streamer mode"),
+    "logLevel": ("other", "Log level"),
+    "toolSearch": ("other", "Tool search"),
+    "experimental": ("other", "Experimental features"),
+    "footer": ("other", "Footer"),
+}
+# Objects kept as one row: maps of names, folded groups, and hooks (never their commands).
+_COPILOT_WHOLE = ("footer", "experimental", "enabledPlugins", "extraKnownMarketplaces", "hooks")
+
+
+def _enabled_names(value: object) -> object:
+    if isinstance(value, dict):
+        return sorted(str(k) for k, v in value.items() if v is True)
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    return value
+
+
+def _marketplace_names(value: object) -> object:
+    if isinstance(value, dict):
+        return sorted(str(k) for k in value)
+    if isinstance(value, list):
+        return [str(v.get("name", "")) if isinstance(v, dict) else str(v) for v in value]
+    return value
+
+
+_COPILOT_VALUE_FNS: dict[str, Callable[[object], object]] = {
+    "enabledPlugins": _enabled_names,
+    "extraKnownMarketplaces": _marketplace_names,
+    "hooks": lambda _v: "configured",
+}
+
+
+def _approval_counts(data: dict | None) -> dict[str, int]:
+    """Location -> number of saved tool approvals, from ``permissions-config.json``."""
+    locations = (data or {}).get("locations") if isinstance(data, dict) else None
+    out: dict[str, int] = {}
+    for loc, spec in (locations.items() if isinstance(locations, dict) else []):
+        if isinstance(spec, dict):
+            out[str(loc)] = sum(len(v) for v in spec.values() if isinstance(v, (list, dict)))
+        elif isinstance(spec, list):
+            out[str(loc)] = len(spec)
+    return out
+
+
 def _parse_copilot_home_config(root: Path, tool: str = "copilot-cli") -> ToolConfig | None:
     """Copilot CLI and the Copilot desktop app: both read ``~/.copilot`` (``COPILOT_HOME``).
 
     Only files that exist are parsed; absent facts are reported as ``not configured``.
+    Layers, lowest precedence first: managed baseline, user ``settings.json``,
+    ``.github/copilot/settings.json``, ``.github/copilot/settings.local.json``,
+    ``COPILOT_MODEL``, then the managed floor keys. ``config.json`` is read for
+    ``trustedFolders`` only; credential and database files are never opened.
     """
     home = copilot_global_dir()
     cfg = ToolConfig(tool=tool)
+    catalog = settings_catalog(tool)
     settings_path = home / "settings.json"
+    proj_path = root / ".github" / "copilot" / "settings.json"
+    local_path = root / ".github" / "copilot" / "settings.local.json"
+    managed_path = _first_fixed(COPILOT_MANAGED_FILES)
     settings = _read_json(settings_path) or {}
+    if not isinstance(settings, dict):
+        settings = {}
     if settings_path.is_file():
         cfg.config_files.append(str(settings_path))
-    cfg.model = str(settings.get("model", ""))
+
+    def flat(data: object) -> dict | None:
+        if not isinstance(data, dict):
+            return None
+        return flatten_settings(data, skip=("subagents.agents",), whole=_COPILOT_WHOLE)
+
+    raw: dict[str, dict | None] = {"user": settings}
+    for name, path in (("project", proj_path), ("project-local", local_path)):
+        data = _read_json(path)
+        raw[name] = data if isinstance(data, dict) else None
+        if raw[name] is not None:
+            cfg.config_files.append(str(path))
+    managed = _read_json(managed_path) if managed_path else None
+    managed = managed if isinstance(managed, dict) else None
+    if managed is not None and managed_path:
+        cfg.config_files.append(str(managed_path))
+    floors = tuple(COPILOT_FLOOR_KEYS) + tuple(k for k, e in catalog.items() if e.get("locked_floor"))
+    cfg.managed_floors = floors
+
+    def is_floor(key: str) -> bool:
+        return any(key == f or key.startswith(f + ".") for f in floors)
+
+    managed_flat = flat(managed) or {}
+    base = {k: v for k, v in managed_flat.items() if not is_floor(k)}
+    top = {k: v for k, v in managed_flat.items() if is_floor(k)}
+    env_model = os.environ.get("COPILOT_MODEL", "")
+    layers: list[Layer] = [
+        ("managed", base or None, managed_path or ""),
+        ("user", flat(settings), settings_path),
+        ("project", flat(raw["project"]), proj_path),
+        ("project-local", flat(raw["project-local"]), local_path),
+        ("env", {"model": env_model} if env_model else None, ""),
+        ("managed", top or None, managed_path or ""),
+    ]
+    for key, (section, label) in _COPILOT_CLI_KEYS.items():
+        cfg.key_sections[key] = section
+        cfg.key_labels[key] = label
+    _add_layers(cfg, layers, whole=_COPILOT_WHOLE, value_fns=_COPILOT_VALUE_FNS)
+
+    cfg.model = str(cfg.settings.get("model") or "")
+    for k in ("model", "extensions"):
+        if k == "model" and "model" in cfg.setting_sources:
+            continue
+        cfg.setting_sources[k] = str(settings_path) if settings_path.is_file() else ""
+    if env_model:
+        cfg.setting_sources["model"] = "env"
+
+    # Earlier flat rows, kept in settings; the labelled rows above win in the sections.
     if settings.get("effortLevel"):
         cfg.settings["effort"] = settings["effortLevel"]
-    if settings_path.is_file():
-        for k in ("model", "effort", "extensions", "disabled_mcp_servers"):
-            cfg.setting_sources[k] = str(settings_path)
-
-    plugins = settings.get("enabledPlugins", {})
-    cfg.extensions = sorted(plugins) if isinstance(plugins, (dict, list)) else []
+        cfg.setting_sources["effort"] = str(settings_path)
     disabled = settings.get("disabledMcpServers", [])
     cfg.settings["disabled_mcp_servers"] = list(disabled) if isinstance(disabled, (list, dict)) else []
+    cfg.setting_sources["disabled_mcp_servers"] = str(settings_path) if settings_path.is_file() else ""
+    for old, new in (("effort", "effortLevel"), ("disabled_mcp_servers", "disabledMcpServers")):
+        if new in cfg.settings:
+            cfg.covered_keys.append(old)
+    plugins = cfg.settings.get("enabledPlugins")
+    cfg.extensions = list(plugins) if isinstance(plugins, list) else []
+    if "enabledPlugins" in cfg.settings:
+        cfg.covered_keys.append("extensions")
+
+    # Trusted folders: config.json is written by Copilot; only this key is used.
+    config_json = home / "config.json"
+    trusted = (_read_json(config_json) or {}).get("trustedFolders") if config_json.is_file() else None
+    if isinstance(trusted, list):
+        cfg.settings["trustedFolders"] = [str(t) for t in trusted]
+        cfg.setting_sources["trustedFolders"] = str(config_json)
+        cfg.key_sections["trustedFolders"] = "autonomy"
+        cfg.key_notes["trustedFolders"] = f"{len(trusted)} folders. Written by Copilot; edit with the tool."
+
+    # Saved tool approvals, as a count per location.
+    approvals_path = home / "permissions-config.json"
+    approvals = _approval_counts(_read_json(approvals_path)) if approvals_path.is_file() else {}
+    if approvals:
+        cfg.settings["savedToolApprovals"] = approvals
+        cfg.setting_sources["savedToolApprovals"] = str(approvals_path)
+        cfg.key_labels["savedToolApprovals"] = "Saved tool approvals"
+        cfg.key_sections["savedToolApprovals"] = "autonomy"
+        cfg.key_notes["savedToolApprovals"] = f"{len(approvals)} locations with saved approvals."
+
+    # Models a repository allows.
+    allowed_path = root / ".github" / "allowed_models.txt"
+    if allowed_path.is_file():
+        try:
+            lines = allowed_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            lines = []
+        cfg.settings["allowedModels"] = [ln.strip() for ln in lines if ln.strip() and not ln.strip().startswith("#")]
+        cfg.setting_sources["allowedModels"] = str(allowed_path)
+        cfg.key_labels["allowedModels"] = "Allowed models"
+        cfg.key_sections["allowedModels"] = "model"
 
     for mcp_path in (home / "mcp-config.json", root / ".copilot" / "mcp-config.json", root / ".copilot-mcp.json"):
         if mcp_path.is_file():
@@ -2100,9 +3349,49 @@ def _parse_copilot_home_config(root: Path, tool: str = "copilot-cli") -> ToolCon
     version = _copilot_desktop_version() if tool == "copilot-desktop" else _copilot_cli_version()
     cfg.settings["version"] = version or "not detected"
     cfg.settings["telemetry"] = "not configured"  # no documented Copilot CLI/desktop OTel setting is read
+
+    # Scope layers, lowest precedence first.
+    managed_shown = managed_path or (COPILOT_MANAGED_FILES[0] if COPILOT_MANAGED_FILES else "")
+    cfg.scopes = [
+        _scope(
+            "managed",
+            managed_shown,
+            managed is not None,
+            "Baseline for most keys, which the other scopes can override; "
+            + ", ".join(f"{f}.*" if f == "sandbox" else f for f in floors)
+            + " are floors that win over every scope.",
+        ),
+        _file_scope("user", settings_path),
+        _file_scope("project", proj_path),
+        _file_scope("project-local", local_path, "Wins over the committed project file."),
+        _env_scope(COPILOT_CLI_ENV, "COPILOT_MODEL overrides the model key of every file."),
+    ]
+
+    # Agents: settings pins and agent files (project wins over user for the same name).
+    texts: dict[str, str] = {}
+    pin_layers: list[Layer] = [
+        ("managed", managed, managed_path or ""),
+        ("user", settings, settings_path),
+        ("project", raw["project"], proj_path),
+        ("project-local", raw["project-local"], local_path),
+    ]
+    pins = _settings_pins(pin_layers, texts)
+    defs = _agent_files(
+        [
+            (home / "agents", "user", ("*.agent.md",)),
+            (root / ".claude" / "agents", "project", ("*.md",)),
+            (root / ".github" / "agents", "project", ("*.agent.md", "*.md")),
+        ]
+    )
+    inherit_text = _main_model_text(cfg.model, "the session's model")
+    for name in list(defs) + [n for n in pins if n not in defs]:
+        cfg.agent_rows.append(_agent_row(cfg, name, defs.get(name), pins.get(name, []), inherit_text))
+
     present = (
         settings_path.is_file()
         or bool(version)
+        or raw["project"] is not None
+        or raw["project-local"] is not None
         or (tool == "copilot-desktop" and (home / "data.db").is_file())
         or (tool == "copilot-cli" and (home / "session-state").is_dir())
     )
@@ -2147,6 +3436,8 @@ def collect_tool_configs(root: Path) -> list[ToolConfig]:
                 result.local_data = {str(k): bool(v) for k, v in declared.items()}
             if result:
                 result.project_root = str(root)
+                if not result.scopes:
+                    result.scopes = _scopes_from_files(result)
                 result.sections = normalize_sections(result, texts)
                 configs.append(result)
         except Exception as exc:

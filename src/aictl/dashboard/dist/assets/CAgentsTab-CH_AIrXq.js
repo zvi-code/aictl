@@ -1,4 +1,4 @@
-import{x as N,d as S,y as U,T as M,m as a}from"./index-9VorCZJ6.js";import{e as X,ap as Z,L as Y,M as ss,r as q,af as G,ah as O,b4 as es,b5 as I,b6 as ts}from"./useSse-eOqpz3HG.js";import{S as P,a as ns,T as as,c as os,D as W,n as B}from"./app-D3wCu1uJ.js";import"./TextView-B6XMkVXA.js";function E(s){const n=s.live||{};return n.pid_count>0||n.session_count>0||(s.processes||[]).length>0}function L({label:s}){return a`<div class="c-overline cagents-rule">
+import{x as N,d as S,y as U,T as M,m as a}from"./index-DyDyJAkK.js";import{e as X,ap as Z,L as Y,M as ss,r as q,af as G,ah as O,b4 as es,b5 as I,b6 as ts}from"./useSse-DFs1a0pz.js";import{S as P,a as ns,T as as,c as os,D as W,n as B}from"./app-CcuDFzdW.js";import"./TextView-DRRCCuem.js";function E(s){const n=s.live||{};return n.pid_count>0||n.session_count>0||(s.processes||[]).length>0}function L({label:s}){return a`<div class="c-overline cagents-rule">
     <div class="cagents-rule-line"></div>
     <div class="cagents-rule-label">${s}</div>
     <div class="cagents-rule-line"></div>

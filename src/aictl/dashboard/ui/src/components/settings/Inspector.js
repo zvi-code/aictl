@@ -3,9 +3,13 @@
 import { html } from 'htm/preact';
 import { fmtAgo, fmtSz } from '../../utils.js';
 import { baseName } from '../../utils/paths.js';
-import { findingTools, isUnset, samePath, whyWins, LOCATION_LABELS, ruleLabel } from './model.js';
-import { Value, ScopeChip } from './Value.js';
-import { ToolChip, SetIn } from './parts.js';
+import {
+  agentDecision, findingTools, isAgentRow, isLockedEntry, isUnset, plainValue, samePath, scopeLabel, tildePath,
+  whyWins, writableScope, LOCATION_LABELS, ruleLabel,
+} from './model.js';
+import { Value, ScopeChip, LockGlyph } from './Value.js';
+import { ToolChip, SetIn, UndocumentedChip } from './parts.js';
+import { AgentModel, AgentTools } from './Agents.js';
 import { whereText } from './FindingsView.js';
 
 function Sec({ title, children }) {
@@ -33,7 +37,25 @@ function History({ w, path }) {
   return html`<div class="st-hint" data-testid="st-history">${lines.length ? lines.join(' · ') + ' · no aictl change recorded' : 'No aictl change recorded'}</div>`;
 }
 
+const PHASE2 = 'phase 2: diff preview, backup, change log';
+
+/** The hint next to the disabled change button: the locking layer when the winner is locked. */
+function changeHint(row, scopes) {
+  const win = row.chain?.[row.wins];
+  if (row.locked || isLockedEntry(win, scopes)) return 'Locked by ' + scopeLabel(row.locked ? row.scope : win.scope, scopes);
+  return PHASE2;
+}
+
+/** For a knob no file sets: its default and the file a person would set it in. */
+export function unsetText(row, scopes) {
+  const target = writableScope(scopes);
+  return `Not set in any file. Default: ${plainValue(row.value)}.`
+    + (target ? ` Set it in ${tildePath(target.path)} (${target.label}).` : '');
+}
+
 function RowInspector({ w, row }) {
+  if (isAgentRow(row)) return html`<${AgentInspector} w=${w} row=${row}/>`;
+  const scopes = w.scopesOf(row.tool);
   const others = w.entries
     .filter(e => e.id !== row.tool && row.source && (e.files.some(f => samePath(f, row.source))))
     .map(e => e.label);
@@ -51,16 +73,19 @@ function RowInspector({ w, row }) {
     <div class="st-insp__chips">
       ${row.risky && html`<span class="st-chip st-chip--risky">risky</span>`}
       <${ToolChip} id=${row.tool} label=${w.labelOf(row.tool)}/>
-      <${ScopeChip} scope=${row.scope}/>
+      <${ScopeChip} scope=${row.scope} locked=${row.locked} label=${scopeLabel(row.scope, scopes)}/>
+      ${row.undocumented && html`<${UndocumentedChip}/>`}
       ${others.length > 0 && html`<span class="st-chip">also read by ${others.join(', ')}</span>`}
     </div>
-    <div class="st-insp__value"><${Value} row=${row}/></div>
+    <div class=${'st-insp__value' + (row.unset ? ' is-unset' : '')}><${Value} row=${row}/></div>
+    ${row.unset && html`<p class="st-insp__tip" data-testid="st-unset-text">${unsetText(row, scopes)}</p>`}
     <${Sec} title="Override chain · what wins and why">
       <ol class="st-chain">
         ${chain.map((c, i) => {
           const win = i === wins;
-          return html`<li key=${i} class=${'st-chain__lv' + (win ? ' is-win' : '')} aria-current=${win ? 'true' : undefined}>
-            <span class="st-chain__sc">${c.scope || 'default'}</span>
+          const locked = isLockedEntry(c, scopes);
+          return html`<li key=${i} class=${'st-chain__lv' + (win ? ' is-win' : '') + (locked ? ' is-locked' : '')} aria-current=${win ? 'true' : undefined}>
+            <span class="st-chain__sc">${locked && html`<${LockGlyph} label=${'Locked: ' + scopeLabel(c.scope, scopes) + ' cannot be changed here'}/>`}${c.scope || 'default'}</span>
             <span class="st-chain__v">${isUnset(c) ? html`<span class="st-dim">not set</span>` : html`<${Value} row=${row} value=${c.value} compact/>`}</span>
             <span class="st-chain__src">${c.source ? html`<${SetIn} path=${c.source} line=${Number(c.line) > 0 ? Number(c.line) : 0} w=${w}/>` : html`<span class="st-dim">${c.note || (c.scope === 'default' ? w.labelOf(row.tool) : '—')}</span>`}</span>
             ${win && html`<span class="st-sr"> (wins)</span>`}
@@ -77,7 +102,72 @@ function RowInspector({ w, row }) {
       </div>
       <div class="st-actions">
         <button type="button" class="st-btn st-btn--primary" disabled>Change value…</button>
-        <span class="st-hint">phase 2: diff preview, backup, change log</span>
+        <span class="st-hint" data-testid="st-change-hint">${changeHint(row, scopes)}</span>
+      </div>
+    </${Sec}>
+  </div>`;
+}
+
+function AgentInspector({ w, row }) {
+  const a = row.agent;
+  const scopes = w.scopesOf(row.tool);
+  const { steps, wins, why } = agentDecision(row);
+  const line = n => (Number(n) > 0 ? Number(n) : 0);
+  const files = [
+    { label: 'Defined in', path: a.defined_in, line: line(a.defined_line), scope: a.scope_defined },
+    { label: 'Pinned in', path: a.pinned_in, line: line(a.pinned_line), scope: a.scope_pinned },
+  ];
+  const hint = changeHint(row, scopes);
+  return html`<div class="st-insp__body" data-testid="st-inspector-agent">
+    <h3 class="st-insp__title">${a.name || row.label}</h3>
+    <div class="st-insp__key st-mono">${row.key}</div>
+    ${a.description && html`<p class="st-insp__tip">${a.description}</p>`}
+    <div class="st-insp__chips">
+      <${ToolChip} id=${row.tool} label=${w.labelOf(row.tool)}/>
+      <${ScopeChip} scope=${row.scope} locked=${row.locked} label=${scopeLabel(row.scope, scopes)}/>
+    </div>
+    <div class="st-insp__value"><${AgentModel} row=${row} w=${w}/></div>
+    <${Sec} title="Model · what decides it">
+      <ol class="st-chain">
+        ${steps.map((c, i) => {
+          const win = i === wins;
+          return html`<li key=${c.id} class=${'st-chain__lv' + (win ? ' is-win' : '')} aria-current=${win ? 'true' : undefined}>
+            <span class="st-chain__sc">${c.label}</span>
+            <span class="st-chain__v">${c.value === undefined || c.value === null || c.value === ''
+              ? html`<span class="st-dim">${c.id === 'pin' && c.present ? 'set' : 'not set'}</span>`
+              : c.value === 'inherits' ? html`<span class="st-inherit">inherits</span>`
+              : html`<span class="st-v">${String(c.value)}</span>`}</span>
+            <span class="st-chain__src">${c.source ? html`<${SetIn} path=${c.source} line=${c.line} w=${w}/>` : html`<span class="st-dim">${c.id === 'effective' ? (wins === 2 ? 'session model' : '') : '—'}</span>`}</span>
+            ${win && html`<span class="st-sr"> (wins)</span>`}
+          </li>`;
+        })}
+      </ol>
+      <p class="st-hint st-insp__why">${why}</p>
+    </${Sec}>
+    <${Sec} title="Agent">
+      <dl class="st-insp__dl">
+        <dt>Effort</dt><dd>${a.effort || '—'}</dd>
+        <dt>Context</dt><dd>${a.context_tier || '—'}</dd>
+        <dt>Target</dt><dd>${a.target || '—'}</dd>
+        <dt>Model policy</dt><dd>${a.model_policy || '—'}</dd>
+      </dl>
+    </${Sec}>
+    <${Sec} title=${'Tools' + (a.tools.length ? ' · ' + a.tools.length : '')}><${AgentTools} tools=${a.tools} all/></${Sec}>
+    <${Sec} title="Files">
+      <dl class="st-insp__dl st-insp__files">
+        ${files.map(f => html`<dt key=${f.label + 't'}>${f.label}</dt><dd key=${f.label + 'd'}>
+          ${f.path ? html`<span class="st-mono" title=${f.path + (f.line ? ':' + f.line : '')}>${baseName(f.path)}${f.line ? ':' + f.line : ''}</span>
+            ${f.scope && html` <span class="st-dim">· ${scopeLabel(f.scope, scopes)}</span>`}
+            <button type="button" class="st-link" onClick=${() => w.openAt(f.path, f.line)}
+              aria-label=${openLabel(f.path, f.line)}>Open</button>` : html`<span class="st-dim">—</span>`}
+        </dd>`)}
+      </dl>
+    </${Sec}>
+    <${Sec} title="History"><${History} w=${w} path=${a.defined_in || row.source}/></${Sec}>
+    <${Sec} title="Actions">
+      <div class="st-actions">
+        <button type="button" class="st-btn st-btn--primary" disabled>Change model…</button>
+        <span class="st-hint" data-testid="st-change-hint">${hint}</span>
       </div>
     </${Sec}>
   </div>`;

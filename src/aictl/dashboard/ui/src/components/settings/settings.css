@@ -201,3 +201,53 @@
 .st-findings .st-c-what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .st-findings .st-c-act { width: 110px; }
 .st-findings .st-group th { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Configuration layers: a chip per scope in precedence order, under the tool title bar */
+.st-scopes { margin: 0 0 var(--sp-4); }
+.st-scopes__list { display: flex; flex-wrap: wrap; align-items: stretch; gap: var(--sp-2) var(--sp-3); list-style: none; margin: 0; padding: 0; }
+.st-scopes__item { display: flex; align-items: center; gap: var(--sp-3); min-width: 0; }
+.st-scopes__arrow { color: var(--fg2); font-size: var(--fs-sm); }
+.st-scopechip { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-1); min-width: 0; max-width: 220px; padding: var(--sp-2) var(--sp-4); background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--fg); font: inherit; font-size: var(--fs-xs); text-align: left; cursor: pointer; }
+.st-scopechip:hover { border-color: var(--accent); }
+.st-scopechip:focus-visible { outline: none; box-shadow: var(--ring); }
+.st-scopechip.is-on { border-color: var(--accent); background: var(--surface-3); box-shadow: inset 0 -2px var(--accent); }
+.st-scopechip.is-locked { border-color: color-mix(in srgb, var(--orange) 55%, var(--border)); }
+.st-scopechip__top { display: flex; align-items: center; gap: var(--sp-2); width: 100%; }
+.st-scopechip__label { font-weight: 600; white-space: nowrap; }
+.st-scopechip__n { margin-left: auto; padding-left: var(--sp-3); color: var(--fg2); font-family: var(--ff-mono); }
+.st-scopechip__file { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--ff-mono); color: var(--fg2); }
+.st-scopechip.is-absent .st-scopechip__file { font-family: inherit; font-style: italic; }
+.st-scopes__legend { margin: var(--sp-2) 0 0; font-size: var(--fs-xs); }
+
+/* Locked values: a lock before the scope chip, in the orange tone */
+.st-lock { display: inline-flex; align-items: center; flex: none; color: var(--orange); }
+.st-scopewrap { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.st-scope--locked { color: var(--orange); border-color: var(--orange); background: color-mix(in srgb, var(--orange) 10%, transparent); }
+.st-chain__lv.is-locked .st-chain__sc { display: inline-flex; align-items: center; gap: var(--sp-1); color: var(--orange); }
+
+/* Knobs no file sets, and keys aictl does not know */
+.st-row--unset .st-label, .st-row--unset .st-c-what { color: var(--fg2); }
+.st-row--unset .st-v, .st-row--unset .st-select, .st-row--unset .st-flag, .st-insp__value.is-unset .st-v,
+.st-insp__value.is-unset .st-flag, .st-cell.is-unset .st-cellbtn { color: var(--fg2); font-style: italic; }
+.st-unsetn { color: var(--fg2); }
+.st-chip--muted { color: var(--fg2); border-style: dashed; background: transparent; }
+.st-undoc { margin-left: var(--sp-2); vertical-align: middle; }
+
+/* Agents */
+.st-agents { margin-top: var(--sp-6); }
+.st-agents:first-child, .st-scopes + .st-agents { margin-top: 0; }
+.st-table + .st-table { margin-top: var(--sp-6); }
+.st-c-agent { min-width: 160px; }
+.st-agentdesc { margin-top: var(--sp-1); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); color: var(--fg2); }
+.st-agentmodel { display: inline-flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); max-width: 100%; }
+.st-inherit { color: var(--fg2); font-style: italic; font-family: var(--ff-mono); font-size: var(--fs-sm); }
+.st-badge { display: inline-block; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0 var(--sp-2); font-size: var(--fs-xs); line-height: 1.5; color: var(--fg2); background: var(--surface-2); white-space: nowrap; }
+.st-badge--pin { color: var(--fg); border-color: var(--accent); }
+.st-nav__model { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg2); font-family: var(--ff-mono); font-size: var(--fs-xs); }
+.st-sort { background: none; border: 0; padding: 0; color: inherit; font: inherit; cursor: pointer; }
+.st-sort:hover, .st-sort.is-on { color: var(--fg); }
+.st-sort:focus-visible { outline: none; box-shadow: var(--ring); }
+.st-insp__files dd { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-2); font-family: inherit; }
+
+/* Files: managed locations that are absent, folded at the end */
+.st-absent .st-fname { color: var(--fg2); }

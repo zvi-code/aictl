@@ -396,3 +396,310 @@ describe('Accessibility', () => {
     expect(serious.map(v => v.id + ': ' + v.nodes.map(n => n.html).join(' | '))).toEqual([]);
   });
 });
+
+// ─── Scopes, locked values, agents and unset knobs ───────────────
+const SYS = '/etc/claude-code/managed-settings.json';
+const MANAGED = '/Library/Application Support/ClaudeCode/managed-settings.json';
+const CLAUDE_LOCAL = PROJ + '/.claude/settings.local.json';
+const AGENT_DIR = HOME + '/.claude/agents/';
+
+const agentRow = (name, value, agent, extra = {}) => row('agent/' + name, value, 'agent', {
+  label: name, scope: 'user', source: agent.pinned_in || agent.defined_in, set: true, ...extra,
+  agent: { name, description: '', model: '', model_policy: 'optional', effort: '', context_tier: '', tools: [], target: 'claude-code',
+    defined_in: '', defined_line: 0, pinned_in: '', pinned_line: 0, inherits: false, scope_defined: 'user', scope_pinned: '', ...agent },
+});
+
+const CLAUDE_FULL = {
+  tool: 'claude-code',
+  config_files: [CLAUDE_USER, CLAUDE_PROJ],
+  scopes: [
+    { id: 'system', label: 'System', path: SYS, exists: true, changeable: false, note: '' },
+    { id: 'user', label: 'User', path: CLAUDE_USER, exists: true, changeable: true, note: '' },
+    { id: 'project', label: 'Project', path: CLAUDE_PROJ, exists: true, changeable: true, note: '' },
+    { id: 'project-local', label: 'Project local', path: CLAUDE_LOCAL, exists: false, changeable: true, note: '' },
+    { id: 'env', label: 'Env', path: '', exists: true, changeable: true, note: 'environment variables' },
+    { id: 'managed', label: 'Managed', path: MANAGED, exists: false, changeable: false, note: 'Set by an administrator' },
+  ],
+  sections: [
+    { id: 'model', title: 'Model', rows: [
+      row('model', 'opus', 'text', { label: 'Model', source: CLAUDE_USER, scope: 'user', line: 3, set: true }),
+      row('effortLevel', 'high', 'text', { label: 'Effort level', scope: 'default', set: false }),
+    ] },
+    { id: 'agents', title: 'Agents', rows: [
+      agentRow('reviewer', 'opus', {
+        description: 'Reviews diffs', model: 'sonnet', effort: 'high', context_tier: '1m',
+        tools: ['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write'],
+        defined_in: AGENT_DIR + 'reviewer.md', defined_line: 4, pinned_in: CLAUDE_USER, pinned_line: 12, scope_pinned: 'user',
+      }, { line: 12 }),
+      agentRow('planner', 'haiku', { model: 'haiku', model_policy: 'required', defined_in: PROJ + '/.claude/agents/planner.md', defined_line: 3, scope_defined: 'project' },
+        { scope: 'project', line: 3 }),
+      agentRow('helper', 'inherits', { inherits: true, defined_in: AGENT_DIR + 'helper.md', defined_line: 1 },
+        { note: 'The file names no model.' }),
+    ] },
+    { id: 'autonomy', title: 'Autonomy and safety', rows: [
+      row('permissions.disableBypassPermissionsMode', 'disable', 'text', {
+        label: 'Bypass mode', scope: 'system', source: SYS, line: 2, locked: true, set: true,
+        chain: [
+          { scope: 'user', value: 'allow', source: CLAUDE_USER, line: 5 },
+          { scope: 'system', value: 'disable', source: SYS, line: 2, locked: true },
+        ],
+        wins: 1,
+      }),
+      row('mysteryKey', 'x', 'text', { label: 'mysteryKey', scope: 'project', source: CLAUDE_PROJ, line: 9, set: true, documented: false }),
+      row('permissions.defaultMode', 'default', 'text', { label: 'Default mode', scope: 'default', set: false }),
+    ] },
+  ],
+};
+
+// No `scopes` list: the layers come from the row scopes.
+const COPILOT_FULL = {
+  tool: 'copilot',
+  config_files: [VS_USER],
+  sections: [
+    { id: 'agents', title: 'Agents', rows: [
+      agentRow('explore', 'GPT-5', { model: 'GPT-5', tools: ['search'], target: 'vscode', defined_in: HOME + '/.copilot/agents/explore.agent.md', defined_line: 2 }),
+    ] },
+  ],
+};
+
+const SNAP2 = {
+  ...SNAP,
+  tools: [...SNAP.tools, { tool: 'copilot', label: 'Copilot', files: [] }],
+  tool_configs: [CLAUDE_FULL, COPILOT_FULL],
+};
+
+const keysShown = c => [...c.querySelectorAll('.st-row')].map(r => r.dataset.key);
+
+describe('Configuration scopes', () => {
+  it('draws the scope strip in precedence order, with a lock on locked layers and "not present" for absent ones', () => {
+    const { container } = renderAt('tool=claude-code', { snap: SNAP2 });
+    const strip = container.querySelector('[data-testid="st-scopes"]');
+    expect(strip).toBeTruthy();
+    const chips = [...strip.querySelectorAll('.st-scopechip')];
+    expect(chips.map(c => c.dataset.scope)).toEqual(['system', 'user', 'project', 'project-local', 'env', 'managed']);
+    expect(strip.querySelectorAll('.st-scopes__arrow').length).toBe(5);
+    const managed = chips[5];
+    expect(managed.querySelector('.st-lock')).toBeTruthy();
+    expect(managed.textContent).toContain('Managed');
+    expect(managed.textContent).toContain('not present');
+    expect(chips[0].querySelector('.st-lock')).toBeTruthy();
+    expect(chips[1].querySelector('.st-lock')).toBeNull();
+    expect(chips[1].querySelector('.st-scopechip__file').textContent).toBe('settings.json');
+    expect(chips[1].getAttribute('title')).toContain(CLAUDE_USER);
+    expect(chips[3].textContent).toContain('not present');
+    // Model, reviewer and helper win at the user layer.
+    expect(chips[1].querySelector('.st-scopechip__n').textContent).toMatch(/^3/);
+    expect(strip.textContent).toContain('Later layers override earlier ones. Locked layers cannot be changed from this machine.');
+  });
+
+  it('filters the table to one layer when its chip is clicked, and clears it on a second click', () => {
+    const { container } = renderAt('tool=claude-code', { snap: SNAP2 });
+    const user = () => container.querySelector('.st-scopechip[data-scope="user"]');
+    fireEvent.click(user());
+    expect(user().getAttribute('aria-pressed')).toBe('true');
+    expect(user().classList.contains('is-on')).toBe(true);
+    expect(new URLSearchParams(window.location.search).get('scope')).toBe('user');
+    expect(keysShown(container).sort()).toEqual(['agent/helper', 'agent/reviewer', 'model']);
+    fireEvent.click(user());
+    expect(new URLSearchParams(window.location.search).get('scope')).toBeNull();
+    expect(keysShown(container)).toContain('mysteryKey');
+  });
+
+  it('derives the layers from row scopes when the record has no `scopes`', () => {
+    const { container } = renderAt('tool=vscode');
+    expect([...container.querySelectorAll('.st-scopechip')].map(c => c.dataset.scope)).toEqual(['user', 'workspace']);
+  });
+
+  it('marks a locked row with the lock and the orange chip, and the inspector says what locks it', () => {
+    const { container } = renderAt('tool=claude-code', { snap: SNAP2 });
+    const r = rowByKey(container, 'permissions.disableBypassPermissionsMode');
+    expect(r.querySelector('.st-c-scope .st-lock')).toBeTruthy();
+    const chip = r.querySelector('.st-scope');
+    expect(chip.classList.contains('st-scope--locked')).toBe(true);
+    expect(chip.getAttribute('title')).toBe('Set by System; cannot be changed here');
+    fireEvent.click(r);
+    const insp = container.querySelector('[data-testid="st-inspector-row"]');
+    expect(insp.querySelector('[data-testid="st-change-hint"]').textContent).toBe('Locked by System');
+    const levels = insp.querySelectorAll('.st-chain__lv');
+    expect(levels[1].classList.contains('is-locked')).toBe(true);
+    expect(levels[1].querySelector('.st-lock')).toBeTruthy();
+    expect(levels[0].querySelector('.st-lock')).toBeNull();
+    // An unlocked row keeps the phase-2 hint.
+    fireEvent.click(rowByKey(container, 'model'));
+    expect(container.querySelector('[data-testid="st-change-hint"]').textContent).toContain('phase 2');
+  });
+
+  it('lists absent managed locations in a folded group at the end of Files', async () => {
+    const { container } = renderAt('pivot=files', { snap: SNAP2 });
+    await waitFor(() => expect(container.textContent).toContain('File details are loading'));
+    const groups = [...container.querySelectorAll('tbody[data-root]')];
+    const last = groups[groups.length - 1];
+    expect(last.dataset.root).toBe('managed-absent');
+    expect(last.textContent).toContain('Managed locations (not present)');
+    expect(last.querySelectorAll('.st-row').length).toBe(0);
+    fireEvent.click(last.querySelector('.st-fold'));
+    const rows = container.querySelectorAll('tbody[data-root="managed-absent"] .st-row');
+    // The absent project-local file can be changed, so only the managed one is listed.
+    expect([...rows].map(x => x.dataset.path)).toEqual([MANAGED]);
+  });
+});
+
+describe('Agents', () => {
+  it('renders the agents section as its own table, with the inherits, required and pinned markers', () => {
+    const { container } = renderAt('tool=claude-code', { snap: SNAP2 });
+    const table = container.querySelector('table.st-agents');
+    expect(table).toBeTruthy();
+    expect([...table.querySelectorAll('thead th')].map(th => th.textContent))
+      .toEqual(['Agent', 'Model', 'Effort', 'Context', 'Tools', 'Defined in', 'Pinned in']);
+    const reviewer = table.querySelector('.st-row[data-key="agent/reviewer"]');
+    expect(reviewer.querySelector('.st-c-model').textContent).toContain('opus');
+    expect(reviewer.querySelector('.st-badge--pin').textContent).toBe('pinned');
+    expect(reviewer.querySelectorAll('.st-tools .st-chip').length).toBe(5);
+    expect(reviewer.querySelector('.st-more-tools').textContent).toBe('+2');
+    const srcs = reviewer.querySelectorAll('.st-src');
+    expect(srcs[0].textContent).toBe('reviewer.md:4');
+    expect(srcs[1].textContent).toBe('settings.json:12');
+    const planner = table.querySelector('.st-row[data-key="agent/planner"]');
+    expect(planner.querySelector('.st-badge').textContent).toBe('required');
+    expect(planner.querySelector('.st-badge--pin')).toBeNull();
+    const inherit = table.querySelector('.st-row[data-key="agent/helper"] .st-inherit');
+    expect(inherit.textContent).toBe('inherits');
+    expect(inherit.getAttribute('title')).toBe('The file names no model.');
+    // The generic table keeps the other sections.
+    expect(container.querySelector('table.st-table:not(.st-agents) .st-row[data-key="model"]')).toBeTruthy();
+    // The navigator counts the agents; they do not share one model, so none is named.
+    const sub = [...container.querySelectorAll('.st-nav__sub')].find(b => b.textContent.startsWith('Agents'));
+    expect(sub.querySelector('.st-nav__n').textContent).toBe('3');
+    expect(sub.querySelector('.st-nav__model')).toBeNull();
+  });
+
+  it('opens the agent inspector with the model decision and the files', () => {
+    const { container, openViewer } = renderAt('tool=claude-code', { snap: SNAP2 });
+    fireEvent.click(rowByKey(container, 'agent/reviewer'));
+    const insp = container.querySelector('[data-testid="st-inspector-agent"]');
+    expect(insp).toBeTruthy();
+    expect(insp.textContent).toContain('Reviews diffs');
+    const steps = insp.querySelectorAll('.st-chain__lv');
+    expect([...steps].map(s => s.querySelector('.st-chain__sc').textContent)).toEqual(['Agent file', 'Settings pin', 'Effective']);
+    expect(steps[0].textContent).toContain('sonnet');
+    expect(steps[1].classList.contains('is-win')).toBe(true);
+    expect(insp.textContent).toContain('The pin in settings.json wins over the model in the agent file.');
+    expect(insp.querySelectorAll('.st-tools .st-chip').length).toBe(6);
+    expect(insp.textContent).toContain('1m');
+    const btn = [...insp.querySelectorAll('.st-btn--primary')].find(b => b.textContent === 'Change model…');
+    expect(btn.disabled).toBe(true);
+    fireEvent.click(insp.querySelector('[aria-label="Open reviewer.md at line 4"]'));
+    expect(openViewer).toHaveBeenLastCalledWith(AGENT_DIR + 'reviewer.md', { line: 4 });
+  });
+
+  it('names the shared model in the navigator when every agent runs on it', () => {
+    const { container } = renderAt('tool=copilot', { snap: SNAP2 });
+    const sub = [...container.querySelectorAll('.st-nav__sub')].find(b => b.textContent.startsWith('Agents'));
+    expect(sub.querySelector('.st-nav__model').textContent).toBe('GPT-5');
+  });
+
+  it('By topic lists the agents of every tool in one table with the count line', () => {
+    const { container, getByText } = renderAt('pivot=topic&sec=agents', { snap: SNAP2 });
+    expect(container.querySelector('[data-testid="st-agents-count"]').textContent)
+      .toBe('4 agents in 2 tools, 1 inherit the session model');
+    const rows = [...container.querySelectorAll('.st-agents--all .st-row')];
+    expect(rows.map(r => r.dataset.key)).toEqual(['agent/helper', 'agent/planner', 'agent/reviewer', 'agent/explore']);
+    expect(rows[3].querySelector('.st-sw')).toBeTruthy();
+    expect(rows[3].textContent).toContain('Copilot');
+    fireEvent.click(getByText('Agent'));
+    expect([...container.querySelectorAll('.st-agents--all .st-row')].map(r => r.dataset.key))
+      .toEqual(['agent/explore', 'agent/helper', 'agent/planner', 'agent/reviewer']);
+    fireEvent.click(rows[3]);
+    expect(container.querySelector('[data-testid="st-inspector-agent"]').textContent).toContain('explore');
+  });
+
+  it('search matches an agent by name, tool and file; "Only non-default" hides agents that inherit', () => {
+    const { container, getByText } = renderAt('tool=claude-code', { snap: SNAP2 });
+    const box = container.querySelector('.st-search');
+    fireEvent.input(box, { target: { value: 'planner' } });
+    expect(keysShown(container)).toEqual(['agent/planner']);
+    fireEvent.input(box, { target: { value: 'Grep' } });
+    expect(keysShown(container)).toEqual(['agent/reviewer']);
+    fireEvent.input(box, { target: { value: 'helper.md' } });
+    expect(keysShown(container)).toEqual(['agent/helper']);
+    fireEvent.input(box, { target: { value: '' } });
+    fireEvent.click(getByText('Only non-default'));
+    expect(keysShown(container)).not.toContain('agent/helper');
+    expect(keysShown(container)).toContain('agent/reviewer');
+  });
+
+  it('counts agents in the header', () => {
+    const { container } = renderAt('tool=claude-code', { snap: SNAP2 });
+    expect(container.querySelector('[data-kpi="agents"]').textContent).toBe('4 agents');
+  });
+});
+
+describe('Unset knobs and undocumented keys', () => {
+  it('hides unset knobs behind the toggle, with "+N unset" in the section header', () => {
+    const { container, getByText } = renderAt('tool=claude-code', { snap: SNAP2 });
+    expect(rowByKey(container, 'effortLevel')).toBeNull();
+    expect(rowByKey(container, 'permissions.defaultMode')).toBeNull();
+    const head = id => container.querySelector(`tbody[data-section="${id}"] .st-group`).textContent;
+    expect(head('model')).toContain('+1 unset');
+    expect(head('autonomy')).toContain('+1 unset');
+    fireEvent.click(getByText('Show unset knobs'));
+    expect(new URLSearchParams(window.location.search).get('unset')).toBe('1');
+    const r = rowByKey(container, 'effortLevel');
+    expect(r.classList.contains('st-row--unset')).toBe(true);
+    expect(r.querySelector('.st-scope').textContent).toBe('default');
+    expect(head('model')).not.toContain('unset');
+    expect(container.querySelector('[data-kpi="unset"]').textContent).toBe('2 unset');
+  });
+
+  it('says where to set an unset knob in the inspector', () => {
+    const { container } = renderAt('tool=claude-code&unset=1', { snap: SNAP2 });
+    fireEvent.click(rowByKey(container, 'effortLevel'));
+    expect(container.querySelector('[data-testid="st-unset-text"]').textContent)
+      .toBe('Not set in any file. Default: high. Set it in ~/proj/.claude/settings.local.json (Project local).');
+  });
+
+  it('shows the undocumented chip after the label of a key aictl does not know', () => {
+    const { container } = renderAt('tool=claude-code', { snap: SNAP2 });
+    const chip = rowByKey(container, 'mysteryKey').querySelector('.st-undoc');
+    expect(chip.textContent).toBe('undocumented');
+    expect(chip.getAttribute('title')).toBe('aictl has no description for this key; the value is shown as found in the file');
+    expect(rowByKey(container, 'model').querySelector('.st-undoc')).toBeNull();
+  });
+
+  it('By topic shows an unset cell as a dash, and its default muted with the toggle on', () => {
+    const { container, getByText } = renderAt('pivot=topic&sec=autonomy', { snap: SNAP2 });
+    expect(container.querySelector('.st-cellbtn[data-key="permissions.defaultMode"]')).toBeNull();
+    fireEvent.click(getByText('Show unset knobs'));
+    const cell = container.querySelector('.st-cellbtn[data-key="permissions.defaultMode"]').closest('td');
+    expect(cell.classList.contains('is-unset')).toBe(true);
+    expect(cell.textContent).toContain('default');
+  });
+});
+
+describe('Records without scopes, agents or set', () => {
+  it('shows no strip, no agents table, no unset toggle, and does not crash', () => {
+    const { container, queryByText } = renderAt('tool=claude-code');
+    expect(container.querySelector('[data-testid="st-scopes"]')).toBeNull();
+    expect(container.querySelector('table.st-agents')).toBeNull();
+    expect(queryByText('Show unset knobs')).toBeNull();
+    expect(container.querySelector('[data-kpi="unset"]')).toBeNull();
+    expect(container.querySelector('[data-kpi="agents"]').textContent).toBe('0 agents');
+    expect(container.querySelector('.st-lock')).toBeNull();
+    expect(keysShown(container).length).toBe(4);
+  });
+
+  it('By topic agents says no tool reports agents', () => {
+    const { container } = renderAt('pivot=topic&sec=agents');
+    expect(container.textContent).toContain('No tool reports agents.');
+  });
+});
+
+describe('Accessibility of scopes and agents', () => {
+  it.each(['tool=claude-code&row=agent/reviewer', 'tool=claude-code&unset=1&row=permissions.disableBypassPermissionsMode', 'pivot=topic&sec=agents', 'pivot=files'])('%s has no serious or critical axe violations', async (search) => {
+    const { container } = renderAt(search, { snap: SNAP2 });
+    await waitFor(() => expect(container.querySelector('[data-state="scanning"]')).toBeNull());
+    const results = await axe.run(container, { rules: { 'color-contrast': { enabled: false }, region: { enabled: false } } });
+    const serious = results.violations.filter(v => v.impact === 'serious' || v.impact === 'critical');
+    expect(serious.map(v => v.id + ': ' + v.nodes.map(n => n.html).join(' | '))).toEqual([]);
+  });
+});

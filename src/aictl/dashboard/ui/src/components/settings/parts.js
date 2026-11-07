@@ -28,3 +28,9 @@ export function SetIn({ path, line, w }) {
     onClick=${e => { e.stopPropagation(); w.openAt(path, line); }}>
     <b>${baseName(path)}</b>${line > 0 ? ':' + line : ''}</button>`;
 }
+
+export const UNDOCUMENTED_TITLE = 'aictl has no description for this key; the value is shown as found in the file';
+
+export function UndocumentedChip() {
+  return html`<span class="st-chip st-chip--muted st-undoc" title=${UNDOCUMENTED_TITLE}>undocumented</span>`;
+}

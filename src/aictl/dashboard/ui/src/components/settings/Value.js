@@ -4,6 +4,7 @@
 import { useState } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { DASH, inferKind, isOn, optionsFor } from './model.js';
+import { Icon } from '../ui/index.js';
 
 function itemText(v) {
   if (v === null || v === undefined) return DASH;
@@ -52,9 +53,19 @@ export function Value({ row, value, compact = false }) {
   return html`<span class=${'st-v' + (risky ? ' is-risky' : '')} title=${text}>${text}</span>`;
 }
 
-export function ScopeChip({ scope }) {
+/** The scope a value comes from. A locked scope has a lock before it, the orange tone and a title saying so. */
+export function ScopeChip({ scope, locked = false, label = '' }) {
   const s = scope || 'default';
-  return html`<span class=${'st-chip st-scope st-scope--' + s.replace(/[^a-z-]/gi, '')}>${s}</span>`;
+  const chip = html`<span class=${'st-chip st-scope st-scope--' + s.replace(/[^a-z-]/gi, '') + (locked ? ' st-scope--locked' : '')}
+    title=${locked ? `Set by ${label || s}; cannot be changed here` : undefined}>${s}${locked ? html`<span class="st-sr"> (locked)</span>` : ''}</span>`;
+  if (!locked) return chip;
+  return html`<span class="st-scopewrap"><${LockGlyph}/>${chip}</span>`;
+}
+
+export function LockGlyph({ label = '' }) {
+  return label
+    ? html`<span class="st-lock" role="img" aria-label=${label} title=${label}><${Icon} name="lock" size="11"/></span>`
+    : html`<span class="st-lock" aria-hidden="true"><${Icon} name="lock" size="11"/></span>`;
 }
 
 export default Value;

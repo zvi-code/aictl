@@ -8,9 +8,10 @@ import { toolLabel } from '../../utils/tools.js';
 import { isToolSelected } from '../../utils/toolScope.js';
 
 // ─── Sections ────────────────────────────────────────────────────
-export const SECTION_ORDER = ['model', 'telemetry', 'autonomy', 'context', 'hooks', 'mcp', 'extensions', 'startup', 'other'];
+export const SECTION_ORDER = ['model', 'agents', 'telemetry', 'autonomy', 'context', 'hooks', 'mcp', 'extensions', 'startup', 'other'];
 export const SECTION_TITLES = {
   model: 'Model',
+  agents: 'Agents',
   telemetry: 'Telemetry',
   autonomy: 'Autonomy and safety',
   context: 'Context files',
@@ -243,6 +244,64 @@ export function projectRoots(snap) {
 // ─── Scope and override chain ────────────────────────────────────
 export const SCOPES = ['default', 'user', 'project', 'workspace', 'env', 'policy', 'managed'];
 
+export const SCOPE_LABELS = {
+  default: 'Default', system: 'System', managed: 'Managed', policy: 'Policy', user: 'User', profile: 'Profile',
+  project: 'Project', 'project-local': 'Project local', workspace: 'Workspace', env: 'Env', cli: 'CLI',
+};
+
+// Precedence used when a record has no `scopes` list: lowest first, the last one wins when set.
+const SCOPE_RANK = ['system', 'user', 'profile', 'project', 'project-local', 'workspace', 'env', 'cli', 'managed', 'policy'];
+// Scopes a person cannot change from this machine, used when a record has no `scopes` list.
+const LOCKED_SCOPES = new Set(['system', 'managed', 'policy']);
+
+export function scopeLabel(id, scopes = []) {
+  const s = (scopes || []).find(x => x.id === id);
+  return (s && s.label) || SCOPE_LABELS[id] || humanize(id || 'default');
+}
+
+/**
+ * The configuration layers of one tool, lowest precedence first: the record's
+ * `scopes`, or, without them, the scopes its rows carry. Each layer has the
+ * files it was seen in (`paths`). Empty when the record has neither.
+ */
+export function toolScopes(cfg, rows) {
+  const given = (rows || []).filter(r => r.scopeGiven && r.scope !== 'default');
+  if (Array.isArray(cfg?.scopes) && cfg.scopes.length) {
+    return cfg.scopes.filter(s => s && s.id).map(s => ({
+      id: s.id, label: s.label || scopeLabel(s.id), path: s.path || '', paths: s.path ? [s.path] : [],
+      exists: s.exists !== false, changeable: s.changeable !== false, note: s.note || '', given: true,
+    }));
+  }
+  const ids = [...new Set(given.map(r => r.scope))];
+  const at = id => { const i = SCOPE_RANK.indexOf(id); return i < 0 ? SCOPE_RANK.indexOf('cli') : i; };
+  ids.sort((a, b) => at(a) - at(b));
+  return ids.map(id => {
+    const paths = [];
+    for (const r of given) if (r.scope === id && r.source && !paths.some(p => samePath(p, r.source))) paths.push(r.source);
+    return {
+      id, label: scopeLabel(id), path: paths[0] || '', paths, exists: true,
+      changeable: !LOCKED_SCOPES.has(id) && !given.some(r => r.scope === id && r.locked), note: '', given: false,
+    };
+  });
+}
+
+/** True when a chain entry comes from a layer the person cannot change. */
+export function isLockedEntry(c, scopes = []) {
+  if (!c) return false;
+  if (c.locked === true) return true;
+  const s = (scopes || []).find(x => x.id === c.scope);
+  return !!s && s.changeable === false;
+}
+
+/** The highest layer a person can change that has a file, or null. */
+export function writableScope(scopes = []) {
+  for (let i = scopes.length - 1; i >= 0; i -= 1) {
+    const s = scopes[i];
+    if (s.changeable !== false && s.path) return s;
+  }
+  return null;
+}
+
 /** Scope from where the file is: user under the home folder, workspace in .vscode, project otherwise. */
 export function deriveScope(source, roots = []) {
   const s = String(source || '');
@@ -365,6 +424,7 @@ export function labelOf(id, snap) {
 /** One row with everything the views need: scope, line, chain, risk and help text. */
 export function enrichRow(row, tool, section, roots) {
   const scope = rowScope(row, roots);
+  const agent = row.agent && typeof row.agent === 'object' ? row.agent : null;
   const { chain, wins } = rowChain(row, scope);
   return {
     ...row,
@@ -381,7 +441,72 @@ export function enrichRow(row, tool, section, roots) {
     wins,
     risky: !!row.danger,
     tip: rowTip(row, section.id),
+    scopeGiven: typeof row.scope === 'string' && !!row.scope,
+    locked: row.locked === true,
+    // A row without `set` counts as set; one without `documented` as documented.
+    unset: row.set === false,
+    undocumented: row.documented === false,
+    agent: agent ? { ...agent, tools: Array.isArray(agent.tools) ? agent.tools.map(String) : [] } : null,
   };
+}
+
+// ─── Agents ──────────────────────────────────────────────────────
+export function isAgentRow(row) {
+  return !!row && row.kind === 'agent' && !!row.agent;
+}
+
+/** True when the agent names no model of its own and runs on the session model. */
+export function agentInherits(row) {
+  const a = row?.agent;
+  if (a && typeof a.inherits === 'boolean') return a.inherits;
+  return row?.value === 'inherits' || row?.value === null || row?.value === undefined || row?.value === '';
+}
+
+/** True when a model pin in a settings file decides the agent's model. */
+export function pinWins(row) {
+  const a = row?.agent;
+  if (!a || !a.pinned_in || agentInherits(row)) return false;
+  const win = row.chain?.[row.wins];
+  const src = (win && win.source) || row.source;
+  return !src || samePath(src, a.pinned_in);
+}
+
+/** The model every agent in the list runs on, when they all name the same one; '' otherwise. */
+export function commonModel(rows) {
+  if (!rows.length || rows.some(agentInherits)) return '';
+  const models = new Set(rows.map(r => String(r.value)));
+  return models.size === 1 ? [...models][0] : '';
+}
+
+/** The agent's model decision: the agent file, the settings pin and the result, with the entry that wins and why. */
+export function agentDecision(row) {
+  const a = row.agent || {};
+  const inherits = agentInherits(row);
+  const pinned = pinWins(row);
+  const pinEntry = a.pinned_in ? (row.chain || []).find(c => samePath(c.source, a.pinned_in)) : null;
+  const pinValue = pinEntry && !isUnset(pinEntry) ? pinEntry.value : (pinned ? row.value : undefined);
+  const steps = [
+    { id: 'file', label: 'Agent file', value: a.model || undefined, source: a.defined_in || '', line: Number(a.defined_line) > 0 ? Number(a.defined_line) : 0 },
+    { id: 'pin', label: 'Settings pin', value: pinValue, source: a.pinned_in || '', line: Number(a.pinned_line) > 0 ? Number(a.pinned_line) : 0, present: !!a.pinned_in },
+    { id: 'effective', label: 'Effective', value: inherits ? 'inherits' : row.value },
+  ];
+  let wins = 2;
+  let why;
+  if (inherits) {
+    why = 'Neither the agent file nor a settings pin names a model, so the agent runs on the session model.';
+  } else if (pinned) {
+    wins = 1;
+    why = `The pin in ${baseName(a.pinned_in)} wins over ${a.model ? 'the model in the agent file' : 'the agent file, which names no model'}.`;
+  } else {
+    wins = 0;
+    why = a.pinned_in
+      ? (a.model_policy === 'required'
+        ? 'The agent file requires its model, so it wins over the settings pin.'
+        : `The model in the agent file applies; the pin in ${baseName(a.pinned_in)} does not decide it.`)
+      : 'The agent file names the model and no settings pin applies.';
+  }
+  if (row.note) why += ' ' + row.note;
+  return { steps, wins, why };
 }
 
 /** One entry per tool record, ordered like snap.tools (most active first); tools the snapshot does not list follow. */
@@ -401,6 +526,7 @@ export function toolEntries(snap) {
     return {
       id: cfg.tool, label: labelOf(cfg.tool, snap), cfg, sections, rows, files,
       risky: rows.filter(r => r.risky).length, hints: cfg.hints || [],
+      scopes: toolScopes(cfg, rows),
     };
   });
   const at = id => {
@@ -424,16 +550,19 @@ export function aictlEntry(snap) {
 // ─── Filters ─────────────────────────────────────────────────────
 export function matchRow(row, q) {
   if (!q) return true;
-  const hay = [row.label, row.key, valueText(row.value), baseName(row.source)].join('\n').toLowerCase();
-  return hay.includes(q.toLowerCase());
+  const parts = [row.label, row.key, valueText(row.value), baseName(row.source)];
+  const a = row.agent;
+  if (a) parts.push(a.name, a.model, ...(a.tools || []), baseName(a.defined_in), baseName(a.pinned_in));
+  return parts.filter(Boolean).join('\n').toLowerCase().includes(q.toLowerCase());
 }
 
-/** Row filter from the search box and the two toggles. */
-export function rowFilter({ q = '', nonDefault = false, risky = false } = {}) {
+/** Row filter from the search box and the toggles. Unset rows show only with `unset`. */
+export function rowFilter({ q = '', nonDefault = false, risky = false, unset = false } = {}) {
   const query = q.trim().toLowerCase();
   return row => matchRow(row, query)
-    && (!nonDefault || row.scope !== 'default')
-    && (!risky || row.risky);
+    && (!nonDefault || (row.scope !== 'default' && !row.unset && !(isAgentRow(row) && agentInherits(row))))
+    && (!risky || row.risky)
+    && (unset || !row.unset);
 }
 
 // ─── By topic ────────────────────────────────────────────────────
@@ -558,6 +687,20 @@ export function mergeFiles(apiFiles, entries, roots = [], enabledTools = null) {
     .map(f => ({ ...f, tools: f.tools.filter(t => isToolSelected(t, enabledTools)) }));
 }
 
+/** Managed layers a record lists that are absent on this machine: where a policy would come from. Needs `scopes`. */
+export function absentManaged(entries) {
+  const out = [];
+  for (const e of entries || []) {
+    for (const s of e.scopes || []) {
+      if (!s.given || s.exists || s.changeable || !s.path) continue;
+      const have = out.find(x => samePath(x.path, s.path));
+      if (have) { if (!have.tools.includes(e.id)) have.tools.push(e.id); continue; }
+      out.push({ path: s.path, name: baseName(s.path), scope: s.id, label: s.label, note: s.note, tools: [e.id] });
+    }
+  }
+  return out;
+}
+
 export function matchFile(f, q) {
   if (!q) return true;
   const s = q.trim().toLowerCase();
@@ -627,9 +770,10 @@ export function findingGroups(findings) {
 }
 
 // ─── URL state ───────────────────────────────────────────────────
-// ?tab=config&pivot=topic&tool=vscode&sec=autonomy&row=<key>
+// ?tab=config&pivot=topic&tool=vscode&sec=autonomy&row=<key>&scope=user&unset=1
 // sec is a section id (by tool, by topic), a location (files) or a rule (findings);
-// row is a setting key, a file path or a finding id; tool is the "Read by" filter in files.
+// row is a setting key, a file path or a finding id; tool is the "Read by" filter in files;
+// scope filters By tool to the rows set at one layer; unset shows the knobs no file sets.
 export const PIVOTS = ['tool', 'topic', 'files', 'findings'];
 
 export function readSettingsUrl(search) {
@@ -640,6 +784,8 @@ export function readSettingsUrl(search) {
     tool: q.get('tool') || '',
     sec: q.get('sec') || '',
     row: q.get('row') || '',
+    scope: q.get('scope') || '',
+    unset: q.get('unset') === '1',
   };
 }
 
@@ -649,7 +795,9 @@ export function settingsParams(st) {
     tool: st.tool || null,
     sec: st.sec || null,
     row: st.row || null,
+    scope: st.scope || null,
+    unset: st.unset ? '1' : null,
   };
 }
 
-export const CLEAR_PARAMS = { pivot: null, tool: null, sec: null, row: null };
+export const CLEAR_PARAMS = { pivot: null, tool: null, sec: null, row: null, scope: null, unset: null };
