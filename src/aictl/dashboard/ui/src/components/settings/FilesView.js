@@ -3,7 +3,7 @@ import { useState } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { fmtAgo } from '../../utils.js';
 import { LOCATIONS, LOCATION_LABELS, fileGroups, matchFile, tildePath } from './model.js';
-import { ScopeChip } from './Value.js';
+import { ScopeChip, LockGlyph } from './Value.js';
 import { Swatch, NavHead, ToolChip } from './parts.js';
 
 export const FOLD_FILES = 8;
@@ -68,18 +68,45 @@ function FileRow({ f, w }) {
   </tr>`;
 }
 
+/** Absent managed locations the view lists last: search and "Read by" applied, hidden while a location is picked. */
+export function visibleAbsent(w) {
+  if (w.st.sec) return [];
+  const q = w.q.trim().toLowerCase();
+  return (w.managedAbsent || []).filter(m => (!q || [m.path, m.label, m.note].join('\n').toLowerCase().includes(q))
+    && (!w.st.tool || m.tools.includes(w.st.tool)));
+}
+
+function AbsentGroup({ w, items }) {
+  const [openGroup, setOpenGroup] = useState(false);
+  return html`<tbody class="st-absent" data-root="managed-absent">
+    <tr class="st-group"><th scope="colgroup" colspan="6">
+      <button type="button" class="st-fold" aria-expanded=${openGroup ? 'true' : 'false'} onClick=${() => setOpenGroup(!openGroup)}>
+        <span aria-hidden="true">${openGroup ? '▾' : '▸'}</span><span>Managed locations (not present)</span></button>
+      <span class="st-group__meta">${items.length} ${items.length === 1 ? 'location' : 'locations'} · where a policy would come from</span>
+    </th></tr>
+    ${openGroup && items.map(m => html`<tr key=${m.path} class="st-row st-row--static st-row--absent" data-path=${m.path}>
+      <td class="st-c-file"><span class="st-fname" title=${m.path + (m.note ? '\n' + m.note : '')}>${tildePath(m.path)}</span>
+        <span class="st-hint"> not present</span></td>
+      <td><span class="st-scopewrap"><${LockGlyph} label="Cannot be changed from this machine"/><${ScopeChip} scope=${m.scope}/></span></td>
+      <td><span class="st-tools">${m.tools.map(id => html`<${ToolChip} key=${id} id=${id} label=${w.labelOf(id)}/>`)}</span></td>
+      <td class="st-mono st-num">—</td><td class="st-dim">—</td><td class="st-dim">—</td>
+    </tr>`)}
+  </tbody>`;
+}
+
 export function FilesMain({ w }) {
   const [open, setOpen] = useState({});
   const [shut, setShut] = useState({});
   const files = visibleFiles(w);
   const groups = fileGroups(files);
+  const absent = visibleAbsent(w);
   return html`<section class="st-main" aria-labelledby="st-main-title">
     <div class="st-bar">
       <h2 class="st-bar__title" id="st-main-title">Files aictl reads</h2>
       <span class="st-bar__sub">${files.length} ${files.length === 1 ? 'file' : 'files'} · grouped by where they live</span>
     </div>
     ${w.filesStatus !== 'ready' && html`<p class="st-note" role="status">File details are loading</p>`}
-    ${groups.length ? html`<table class="st-table st-files">
+    ${groups.length || absent.length ? html`<table class="st-table st-files">
       <thead><tr>
         <th scope="col" class="st-c-file">File</th><th scope="col">Scope</th><th scope="col">Read by</th>
         <th scope="col">Settings</th><th scope="col">Git</th><th scope="col">Last change</th>
@@ -103,6 +130,7 @@ export function FilesMain({ w }) {
           </td></tr>`}
         </tbody>`;
       })}
+      ${absent.length > 0 && html`<${AbsentGroup} w=${w} items=${absent}/>`}
     </table>` : html`<p class="st-empty">${w.files.length ? 'No file matches the search or the filters.' : 'No settings files were found.'}</p>`}
   </section>`;
 }

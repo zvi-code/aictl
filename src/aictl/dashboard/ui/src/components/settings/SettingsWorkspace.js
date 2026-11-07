@@ -13,7 +13,7 @@ import { isTypingTarget } from '../../hooks/useTabs.js';
 import { Icon, Segmented } from '../ui/index.js';
 import ToolScopeEmpty from '../ui/ToolScopeEmpty.js';
 import {
-  CLEAR_PARAMS, aictlEntry, labelOf, mergeFiles, projectRoots, readSettingsUrl, rowFilter,
+  CLEAR_PARAMS, absentManaged, aictlEntry, isAgentRow, labelOf, mergeFiles, projectRoots, readSettingsUrl, rowFilter,
   samePath, settingsParams, toolEntries, withFindingIds,
 } from './model.js';
 import { ToolNav, ToolMain, AictlMain } from './ToolView.js';
@@ -43,6 +43,7 @@ function useSettingsState() {
     if (patch.view && patch.view !== prev.view && !(ROW_VIEWS.has(prev.view) && ROW_VIEWS.has(patch.view))) {
       for (const k of ['tool', 'sec', 'row']) if (!(k in patch)) next[k] = '';
     }
+    if (patch.view && patch.view !== prev.view && !('scope' in patch)) next.scope = '';
     return next;
   }), []);
   useEffect(() => { writeUrl(settingsParams(st)); }, [st]);
@@ -116,7 +117,10 @@ export default function SettingsWorkspace() {
   const entries = useMemo(() => toolEntries(snap), [snap]);
   const aictl = useMemo(() => aictlEntry(snap), [snap]);
   const roots = useMemo(() => projectRoots(snap), [snap]);
-  const pass = useMemo(() => rowFilter({ q, nonDefault, risky: riskyOnly }), [q, nonDefault, riskyOnly]);
+  const pass = useMemo(() => rowFilter({ q, nonDefault, risky: riskyOnly, unset: st.unset }), [q, nonDefault, riskyOnly, st.unset]);
+  const passAll = useMemo(() => rowFilter({ q, nonDefault, risky: riskyOnly, unset: true }), [q, nonDefault, riskyOnly]);
+  const passTool = useCallback(r => pass(r) && (!st.scope || r.scope === st.scope), [pass, st.scope]);
+  const managedAbsent = useMemo(() => absentManaged(entries), [entries]);
   const files = useMemo(() => mergeFiles(filesRes.files, entries, roots, enabledTools), [filesRes.files, entries, roots, enabledTools]);
   const scoped = useMemo(() => scopeAudit(audit.audit, enabledTools), [audit.audit, enabledTools]);
   const findings = useMemo(() => withFindingIds(scoped?.findings || []), [scoped]);
@@ -128,6 +132,7 @@ export default function SettingsWorkspace() {
   const select = useCallback(patch => { set(patch); setDrawer(true); }, [set]);
   const closeDrawer = useCallback(() => setDrawer(false), []);
   const labelFor = useCallback(id => labelOf(id, snap), [snap]);
+  const scopesOf = useCallback(id => entries.find(e => e.id === id)?.scopes || [], [entries]);
   const mtimeOf = useCallback(path => {
     const f = files.find(x => samePath(x.path, path));
     if (f?.mtime) return f.mtime;
@@ -150,13 +155,18 @@ export default function SettingsWorkspace() {
   const selectedFinding = st.view === 'findings' && st.row ? findings.find(f => f.id === st.row) || null : null;
 
   const w = {
-    st, set, select, q, pass, entries, aictl, toolId, files, filesStatus: filesRes.status,
+    st, set, select, q, pass, passAll, passTool, showUnset: st.unset, scopesOf, managedAbsent, entries, aictl, toolId, files, filesStatus: filesRes.status,
     findings, audit: scoped, auditStatus: audit.status, auditError: audit.error, scan: audit.scan, rescan: audit.rescan,
     selected, selectedFile, selectedFinding, openAt, labelOf: labelFor, mtimeOf, recentFiles,
     drawer, closeDrawer,
   };
 
-  const totalRows = entries.reduce((n, e) => n + e.rows.length, 0);
+  const allRows = entries.flatMap(e => e.rows);
+  const totalRows = allRows.filter(r => !r.unset).length;
+  const totalAgents = allRows.filter(isAgentRow).length;
+  // The unset toggle and count appear once the server says, per row, whether a file sets it.
+  const knowsSet = allRows.some(r => typeof r.set === 'boolean');
+  const totalUnset = allRows.filter(r => r.unset).length;
   const totalRisky = entries.reduce((n, e) => n + e.risky, 0);
   const scopeEmpty = isFiltered(enabledTools) && !entries.some(e => e.id !== 'vscode');
 
@@ -193,10 +203,14 @@ export default function SettingsWorkspace() {
         onClick=${() => setNonDefault(!nonDefault)}>Only non-default</button>
       <button type="button" class=${'st-toggle st-toggle--risky' + (riskyOnly ? ' is-on' : '')} aria-pressed=${riskyOnly ? 'true' : 'false'}
         onClick=${() => setRiskyOnly(!riskyOnly)}>Only risky</button>
+      ${knowsSet && html`<button type="button" class=${'st-toggle' + (st.unset ? ' is-on' : '')} aria-pressed=${st.unset ? 'true' : 'false'}
+        onClick=${() => set({ unset: !st.unset })}>Show unset knobs</button>`}
       <div class="st-kpis" data-testid="st-kpis">
         <span><b>${entries.length}</b> tools</span>
         <span><b>${files.length}</b> files</span>
         <span><b>${totalRows}</b> settings</span>
+        <span data-kpi="agents"><b>${totalAgents}</b> agents</span>
+        ${knowsSet && html`<span data-kpi="unset"><b>${totalUnset}</b> unset</span>`}
         <span class=${totalRisky ? 'st-red' : ''}><b>${totalRisky}</b> risky</span>
         <span><b>${audit.status === 'loading' && !audit.audit ? '…' : findings.length}</b> findings</span>
       </div>

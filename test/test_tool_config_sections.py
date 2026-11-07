@@ -21,7 +21,22 @@ from aictl.monitoring.tool_config import (
     value_kind,
 )
 
-ROW_KEYS = {"key", "label", "value", "kind", "source", "danger", "note", "scope", "line", "chain", "wins"}
+ROW_KEYS = {
+    "key",
+    "label",
+    "value",
+    "kind",
+    "source",
+    "danger",
+    "note",
+    "scope",
+    "line",
+    "chain",
+    "wins",
+    "locked",
+    "set",
+    "documented",
+}
 
 
 def _rows(sections: list[dict], section_id: str | None = None) -> list[dict]:
@@ -30,6 +45,12 @@ def _rows(sections: list[dict], section_id: str | None = None) -> list[dict]:
 
 def _section(sections: list[dict], section_id: str) -> dict:
     return next(s for s in sections if s["id"] == section_id)
+
+
+@pytest.fixture(autouse=True)
+def no_catalog(tmp_path, monkeypatch):
+    """Tests run without the shipped settings catalog unless they write their own."""
+    monkeypatch.setattr(tc, "SETTINGS_CATALOG_PATH", tmp_path / "no-catalog.yaml")
 
 
 @pytest.fixture()
@@ -66,6 +87,21 @@ def isolated_home(tmp_path, monkeypatch):
     dirs["claude_desktop_config"] = desktop_cfg
     monkeypatch.setattr("aictl.monitoring.tool_config._macos_login_items", lambda: set())
     monkeypatch.setattr("aictl.monitoring.tool_config.shutil.which", lambda _name: None)
+    # Managed, system and policy files and the settings catalog: absent unless a test writes them.
+    fixed = tmp_path / "fixed"
+    for name in (
+        "COPILOT_MANAGED_FILES",
+        "CLAUDE_MANAGED_FILES",
+        "CLAUDE_MANAGED_DIRS",
+        "CODEX_SYSTEM_FILES",
+        "CODEX_REQUIREMENTS_FILES",
+        "VSCODE_POLICY_FILES",
+    ):
+        monkeypatch.setattr(tc, name, [fixed / name.lower()])
+    monkeypatch.setattr(tc, "SETTINGS_CATALOG_PATH", tmp_path / "no-catalog.yaml")
+    for env in ("COPILOT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"):
+        monkeypatch.delenv(env, raising=False)
+    dirs["fixed"] = fixed
     return dirs
 
 
@@ -385,6 +421,9 @@ def test_model_row_first_then_configurable_models():
         "line": 0,  # the file does not exist
         "chain": [{"scope": "user", "value": "gpt-5", "source": "/u/settings.json", "line": 0}],
         "wins": 0,
+        "locked": False,
+        "set": True,
+        "documented": True,
     }
     plan = rows[1]
     assert plan["label"] == "Plan agent" and plan["source"] == "user"
@@ -452,7 +491,8 @@ def test_collect_tool_configs_fills_sections_for_every_tool(isolated_home, tmp_p
         assert c.sections == normalize_sections(c), c.tool
         for s in d["sections"]:
             assert s["rows"], c.tool
-            assert all(set(r) == ROW_KEYS for r in s["rows"]), c.tool
+            for r in s["rows"]:
+                assert set(r) == (ROW_KEYS | {"agent"} if s["id"] == "agents" else ROW_KEYS), c.tool
     codex = next(c for c in configs if c.tool == "codex-cli")
     assert codex.config_files == [str(isolated_home["codex_global_dir"] / "config.toml")]
     assert codex.sections[0]["rows"][0]["value"] == "gpt-5"
@@ -591,4 +631,4 @@ def test_vscode_workspace_overrides_user_chain(isolated_home, tmp_path):
     assert [(e["scope"], e["value"], e["line"]) for e in row["chain"]] == [("user", False, 2), ("workspace", True, 3)]
     assert row["wins"] == 1 and row["line"] == 3
     default_row = next(r for r in _rows(configs["vscode"].sections) if r["key"] == "maxRequests")
-    assert default_row["scope"] == "default" and default_row["chain"][0]["scope"] == "default"
+    assert default_row["scope"] == "default" and default_row["set"] is False and default_row["chain"] == []

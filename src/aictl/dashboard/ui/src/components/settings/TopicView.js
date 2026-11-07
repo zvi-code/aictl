@@ -1,8 +1,10 @@
 // By topic: one section across every tool, as a matrix of setting by tool.
+import { useState } from 'preact/hooks';
 import { html } from 'htm/preact';
-import { SECTION_ORDER, SECTION_TITLES, plainValue, topicMatrix } from './model.js';
+import { SECTION_ORDER, SECTION_TITLES, agentInherits, isAgentRow, plainValue, topicMatrix } from './model.js';
 import { Value } from './Value.js';
 import { Swatch, RiskDot, NavHead } from './parts.js';
+import { TopicAgentsTable } from './Agents.js';
 
 /** The section a topic view shows: the one in the URL, else autonomy, else the first one any tool has. */
 export function topicSection(w) {
@@ -32,8 +34,27 @@ export function TopicNav({ w }) {
   </nav>`;
 }
 
+/** By topic for agents: one flat table of every tool's agents. */
+function AgentsTopic({ w }) {
+  const [sort, setSort] = useState('tool');
+  const all = w.entries.flatMap(e => e.rows.filter(r => r.sec === 'agents' && isAgentRow(r)));
+  const rows = all.filter(w.pass);
+  const tools = new Set(rows.map(r => r.tool)).size;
+  const inherit = rows.filter(agentInherits).length;
+  return html`<section class="st-main" aria-labelledby="st-main-title">
+    <div class="st-bar">
+      <h2 class="st-bar__title" id="st-main-title">${SECTION_TITLES.agents}</h2>
+      <span class="st-bar__sub" data-testid="st-agents-count">${rows.length} ${rows.length === 1 ? 'agent' : 'agents'} in ${tools} ${tools === 1 ? 'tool' : 'tools'}, ${inherit} inherit the session model</span>
+    </div>
+    ${rows.length ? html`<${TopicAgentsTable} w=${w} rows=${rows} sort=${sort} onSort=${setSort}/>
+      <p class="st-hint">Click an agent for its model decision, its tools and the files that define it.</p>`
+    : html`<p class="st-empty">${all.length ? 'No agent matches the search or the toggles.' : 'No tool reports agents.'}</p>`}
+  </section>`;
+}
+
 export function TopicMain({ w }) {
   const sec = topicSection(w);
+  if (sec === 'agents') return html`<${AgentsTopic} w=${w}/>`;
   const { tools, rows } = topicMatrix(w.entries, sec, w.pass);
   const risky = rows.reduce((n, g) => n + Object.values(g.cells).filter(r => r.risky).length, 0);
   return html`<section class="st-main" aria-labelledby="st-main-title">
@@ -52,11 +73,11 @@ export function TopicMain({ w }) {
           <th scope="row" class="st-c-set" title=${g.keys.join('\n')}>${g.label}</th>
           ${tools.map(e => {
             const r = g.cells[e.id];
-            if (!r) return html`<td key=${e.id} class="st-cell st-cell--none">—</td>`;
+            if (!r || (r.unset && !w.showUnset)) return html`<td key=${e.id} class="st-cell st-cell--none">—</td>`;
             const sel = w.selected?.uid === r.uid;
-            return html`<td key=${e.id} class=${'st-cell' + (r.risky ? ' is-risky' : '') + (sel ? ' is-sel' : '')}>
+            return html`<td key=${e.id} class=${'st-cell' + (r.risky ? ' is-risky' : '') + (r.unset ? ' is-unset' : '') + (sel ? ' is-sel' : '')}>
               <button type="button" class="st-cellbtn" data-key=${r.key}
-                aria-label=${`${g.label}, ${e.label}: ${plainValue(r.value)}`}
+                aria-label=${`${g.label}, ${e.label}: ${plainValue(r.value)}${r.unset ? ' (not set, default)' : ''}`}
                 onClick=${() => w.select({ tool: e.id, row: r.key })}>
                 <${Value} row=${r} compact/>
               </button>

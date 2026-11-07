@@ -156,6 +156,49 @@ def frontmatter_model(text: str) -> tuple[list[str], int]:
     return [], 0
 
 
+def frontmatter_fields(text: str, keys: tuple[str, ...] | list[str]) -> dict[str, tuple[str | list[str], int]]:
+    """Top-level YAML frontmatter fields named in *keys*, as ``key -> (value, 1-based line)``.
+
+    A value is a string for a scalar or a folded/literal block (``>`` or ``|``), and a
+    list for an inline ``[a, b]`` list or a block ``- a`` list. Keys that are not
+    present are left out; the first occurrence of a key wins.
+    """
+    lines = text.lstrip("\ufeff").splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}
+    wanted = set(keys)
+    end = min(len(lines), MAX_FRONTMATTER_LINES)
+    out: dict[str, tuple[str | list[str], int]] = {}
+    for index in range(1, end):
+        line = lines[index]
+        if line.strip() == "---":
+            break
+        match = re.match(r"([A-Za-z_][\w-]*)\s*:(.*)$", line)
+        if not match or match.group(1) not in wanted or match.group(1) in out:
+            continue
+        key, rest = match.group(1), match.group(2).strip()
+        if rest.startswith("["):
+            out[key] = ([v for v in (_scalar(p) for p in rest.strip("[]").split(",")) if v], index + 1)
+        elif rest in (">", "|", ">-", "|-", ">+", "|+"):
+            block = []
+            for item in lines[index + 1 : end]:
+                if item.strip() and not item[:1].isspace():
+                    break
+                block.append(item.strip())
+            out[key] = (" ".join(b for b in block if b), index + 1)
+        elif rest and not rest.startswith("#"):
+            out[key] = (_scalar(rest), index + 1)
+        else:
+            values = []
+            for item in lines[index + 1 : end]:
+                block_item = re.match(r"\s*-\s+(.+)$", item)
+                if not block_item:
+                    break
+                values.append(_scalar(block_item.group(1)))
+            out[key] = (values, index + 1)
+    return out
+
+
 _MODEL_TOKEN = r"(?:claude-[\w.-]*\d[\w.-]*|gpt-[\w.-]*\d[\w.-]*|o[134](?:-[\w.-]+)?|gemini-[\w.-]*\d[\w.-]*)"
 _REQUEST_RES = (
     re.compile(rf"--model[= ]+[\"'`]?({_MODEL_TOKEN})", re.I),
