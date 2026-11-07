@@ -2817,3 +2817,389 @@ def test_sources_name_the_folders_found_for_each_tool(monkeypatch):
     monkeypatch.setattr(tool_homes, "homes", lambda tool=None: [tool_homes.ToolHome("copilot", Path("/x/home"), "process environment")])
     rows = board_api._sources([("copilot-cli", "events", 1.0)], ["copilot-cli"], None)
     assert rows[0]["locations"] == [{"path": "/x/home", "found_by": "process environment"}]
+
+
+# ─── Agent detail: git, run history and resources ────────────────
+
+
+def _event(conn, ts, sid, kind, detail, tool="claude-code", seq=0):
+    _insert(conn, "events", ts=ts, tool=tool, kind=kind, session_id=sid, detail=json.dumps(detail), seq=seq)
+
+
+def _run(conn, sid, project, started, ended, i=0, o=0, files=0, tool="claude-code"):
+    _insert(
+        conn,
+        "sessions",
+        session_id=sid,
+        tool=tool,
+        project_path=project,
+        started_at=started,
+        ended_at=ended,
+        input_tokens=i,
+        output_tokens=o,
+        files_modified=files,
+    )
+
+
+class TestAgentDetailGit:
+    def test_branch_commit_and_the_commits_attributed_to_the_session(self, db):
+        conn = db._conn()
+        conn.execute("UPDATE sessions SET git_branch = 'main', git_commit = 'abc1234' WHERE session_id = 'done'")
+        for sha, ts in (("a" * 40, NOW - DAY), ("b" * 40, NOW - DAY + 10)):
+            _insert(conn, "session_commits", session_id="done", sha=sha, ts=ts, subject="Fix")
+        conn.commit()
+        assert agent_detail(db, "done", None, NOW)[1]["git"] == {"branch": "main", "commit": "abc1234", "commits_in_session": 2}
+
+    def test_nothing_known_is_null_and_zero(self, db):
+        assert agent_detail(db, "looper", None, NOW)[1]["git"] == {"branch": None, "commit": None, "commits_in_session": 0}
+
+    def test_a_subagent_shows_the_git_state_of_its_session(self, db):
+        conn = db._conn()
+        conn.execute("UPDATE sessions SET git_branch = 'feature' WHERE session_id = 'done'")
+        conn.commit()
+        assert agent_detail(db, "sub-1", None, NOW)[1]["git"]["branch"] == "feature"
+
+
+class TestAgentDetailRuns:
+    def _seed_runs(self, db):
+        conn = db._conn()
+        conn.execute("UPDATE sessions SET input_tokens = 900, output_tokens = 100, files_modified = 4 WHERE session_id = 'done'")
+        _run(conn, "r1", "/p/alpha", NOW - 5 * DAY, NOW - 5 * DAY + 100, i=400, o=100, files=1)
+        _run(conn, "r2", "/p/alpha", NOW - 4 * DAY, NOW - 4 * DAY + 300, i=1500, o=500, files=3)
+        _run(conn, "r3", "/p/alpha", NOW - 3 * DAY, NOW - 3 * DAY + 200, i=900, o=100, files=2)
+        _run(conn, "old", "/p/alpha", NOW - 40 * DAY, NOW - 40 * DAY + 100, i=1, o=1)
+        _run(conn, "elsewhere", "/p/beta", NOW - 3 * DAY, NOW - 3 * DAY + 100, i=1, o=1)
+        _run(conn, "other-tool", "/p/alpha", NOW - 3 * DAY, NOW - 3 * DAY + 100, i=1, o=1, tool="codex-cli")
+        conn.commit()
+
+    def test_ended_runs_of_the_same_tool_and_project_in_30_days_newest_first(self, db):
+        self._seed_runs(db)
+        runs = agent_detail(db, "done", None, NOW)[1]["runs"]
+        assert [r["session_id"] for r in runs] == ["done", "r3", "r2", "r1"]
+        assert [r["current"] for r in runs] == [True, False, False, False]
+        r2 = runs[2]
+        assert (r2["duration_s"], r2["tokens"], r2["file_churn"]) == (300.0, 2000, 3)
+
+    def test_each_run_is_a_ratio_to_the_median_of_the_other_runs(self, db):
+        self._seed_runs(db)
+        runs = {r["session_id"]: r for r in agent_detail(db, "done", None, NOW)[1]["runs"]}
+        # Other runs: durations 100, 300, 200 (median 200); tokens 500, 2000, 1000 (median 1000); files 1, 3, 2 (median 2).
+        assert runs["done"]["duration_ratio"] == 1.5
+        assert runs["done"]["tokens_ratio"] == 1.0
+        assert runs["done"]["churn_ratio"] == 2.0
+        assert runs["r1"]["tokens_ratio"] == 0.5
+
+    def test_a_median_of_zero_gives_no_ratio(self, db):
+        conn = db._conn()
+        _run(conn, "z", "/p/alpha", NOW - 3 * DAY, NOW - 3 * DAY + 100)
+        conn.commit()
+        done = next(r for r in agent_detail(db, "done", None, NOW)[1]["runs"] if r["current"])
+        assert done["tokens_ratio"] is None
+        assert done["churn_ratio"] is None
+
+    def test_a_subagent_has_no_run_history(self, db):
+        self._seed_runs(db)
+        assert agent_detail(db, "sub-1", None, NOW)[1]["runs"] == []
+
+
+class TestAgentDetailResources:
+    def _snapshot(self):
+        proc = SimpleNamespace(pid=501, name="claude", cpu_pct="12.5", mem_mb="80.5")
+        tool = SimpleNamespace(tool="claude-code", meta=False, processes=[proc])
+        return SimpleNamespace(
+            sessions=[
+                {
+                    "session_id": "done",
+                    "tool": "claude-code",
+                    "project": "/p/alpha",
+                    "pids": [501, 502],
+                    "cpu_percent": 12.5,
+                    "peak_cpu_percent": 61.25,
+                    "inbound_bytes": 5000,
+                    "outbound_bytes": 1200,
+                    "state_bytes_written": 300,
+                    "started_at": NOW - 3 * DAY,
+                    "last_seen_at": NOW,
+                    "subprocess_count": {"git": 3, "node": 5},
+                    "process_tree": [
+                        {
+                            "pid": 501,
+                            "ppid": 1,
+                            "name": "claude",
+                            "role": "lead",
+                            "cpu_pct": 12.5,
+                            "mem_mb": 80.5,
+                            "children": [{"pid": 502, "ppid": 501, "name": "node", "role": "subprocess", "cpu_pct": 1.0, "mem_mb": 20.0, "children": []}],
+                        }
+                    ],
+                }
+            ],
+            tools=[tool],
+        )
+
+    def test_monitor_values_of_a_live_agent(self, db):
+        res = agent_detail(db, "done", self._snapshot(), NOW)[1]["resources"]
+        assert (res["bytes_in"], res["bytes_out"], res["state_writes"], res["cpu_peak"]) == (5000, 1200, 300, 61.25)
+        assert [(p["pid"], p["ppid"], p["depth"], p["role"]) for p in res["process_tree"]] == [(501, 1, 0, "lead"), (502, 501, 1, "subprocess")]
+        assert res["subprocesses"] == [{"name": "node", "count": 5}, {"name": "git", "count": 3}]
+
+    def test_an_ended_agent_has_null_monitor_values(self, db):
+        res = agent_detail(db, "done", None, NOW)[1]["resources"]
+        assert (res["bytes_in"], res["bytes_out"], res["state_writes"], res["cpu_peak"]) == (None, None, None, None)
+        assert res["process_tree"] == [] and res["subprocesses"] == []
+
+    def test_tool_calls_per_minute_over_the_run(self, db):
+        payload = agent_detail(db, "done", None, NOW)[1]
+        a = payload["agent"]
+        minutes = (a["ended_at"] - a["started_at"]) / 60
+        assert payload["resources"]["tool_calls_per_min"] == round(a["tool_calls"] / max(minutes, 1), 2)
+
+    def test_the_newest_rate_limit_report(self, db):
+        conn = db._conn()
+        _event(conn, NOW - 500, "done", "hook:Stop", {"rate_limits": {"5h": {"used_pct": 10.0}}})
+        _event(conn, NOW - 100, "done", "hook:Stop", {"rate_limits": {"5h": {"used_percentage": 42.5, "resets_at": "18:00"}, "7d": {"used_pct": 7}}}, seq=1)
+        conn.commit()
+        rl = agent_detail(db, "done", None, NOW)[1]["resources"]["rate_limit"]
+        assert rl["ts"] == NOW - 100
+        assert rl["windows"] == [{"window": "5h", "used_pct": 42.5, "resets_at": "18:00"}, {"window": "7d", "used_pct": 7.0, "resets_at": None}]
+
+    def test_no_rate_limit_report_is_null(self, db):
+        assert agent_detail(db, "done", None, NOW)[1]["resources"]["rate_limit"] is None
+
+    def test_language_model_tokens_by_extension(self, db):
+        conn = db._conn()
+        _event(conn, NOW - 50, "vsc", "otel:language_model.usage", {"extension.id": "ext.a", "input_tokens": 10, "output_tokens": 5}, tool="copilot-vscode")
+        _event(conn, NOW - 40, "vsc", "otel:language_model.usage", {"extension.id": "ext.b", "input_tokens": 100, "output_tokens": 50}, tool="copilot-vscode", seq=1)
+        conn.commit()
+        rows = agent_detail(db, "vsc", None, NOW)[1]["resources"]["lm_by_extension"]
+        assert [(r["extension"], r["total_tokens"], r["calls"]) for r in rows] == [("ext.b", 150, 1), ("ext.a", 15, 1)]
+
+    def test_no_language_model_record_is_null(self, db):
+        assert agent_detail(db, "vsc", None, NOW)[1]["resources"]["lm_by_extension"] is None
+
+    def test_a_subagent_has_no_monitor_or_session_records(self, db):
+        res = agent_detail(db, "sub-1", self._snapshot(), NOW)[1]["resources"]
+        assert res["bytes_in"] is None and res["rate_limit"] is None and res["process_tree"] == []
+
+
+# ─── /api/board/machine ───────────────────────────────────────────
+
+
+def _machine_tool(tool="claude-code", processes=(), live=None, meta=False):
+    return SimpleNamespace(tool=tool, label=board_api._label(tool), meta=meta, processes=list(processes), live=live)
+
+
+def _mproc(pid, name="node", kind="cli", mem="10", cpu="1.0", **extra):
+    from aictl.tools import ProcessInfo
+
+    return ProcessInfo(pid=pid, name=name, cmdline=extra.pop("cmdline", f"{name} --run"), cpu_pct=cpu, mem_mb=mem, process_type=kind, **extra)
+
+
+def _machine_snapshot(tools, **extra):
+    return SimpleNamespace(
+        tools=tools,
+        live_monitor=extra.pop("live_monitor", {}),
+        cpu_per_core=extra.pop("cpu_per_core", [12.0, 85.5]),
+        cpu_cores=2,
+        timestamp=extra.pop("timestamp", 1000.0),
+        tool_telemetry=extra.pop("tool_telemetry", []),
+        **extra,
+    )
+
+
+class TestMachine:
+    @pytest.fixture(autouse=True)
+    def _no_real_parents(self, monkeypatch):
+        """The pids in these tests may be real processes of this machine."""
+        monkeypatch.setattr(board_api, "_parent_pid", lambda pid: None)
+        board_api._db_stats_memo.clear()
+
+    def _machine(self, snapshot, db=None, tools=None, **kw):
+        return board_api.compute_machine(db, SimpleNamespace(snapshot=snapshot), tools, now=1010.0, **kw)
+
+    def test_monitor_lists_collectors_roots_and_each_tool_live_numbers(self):
+        live = {
+            "session_count": 2, "pid_count": 3, "inbound_rate_bps": 2048.0, "outbound_rate_bps": 512.0,
+            "token_estimate": {"input_tokens": 900, "output_tokens": 100, "confidence": 0.42, "source": "network-inference"},
+            "mcp": {"detected": True, "loops": 4, "confidence": 0.7},
+            "file_events": 17, "files_touched": 5, "cpu_percent": 12.5, "peak_cpu_percent": 40.0,
+            "workspace_size_mb": 2.0, "workspaces": ["/p/one"], "last_seen_at": 1005.0,
+        }
+        lm = {
+            "diagnostics": {"network": {"status": "active", "mode": "nettop", "detail": "2 tools"}, "fs": {"status": "degraded", "mode": "poll"}},
+            "workspace_paths": ["/p/one"],
+            "state_paths": ["/home/me/.claude"],
+        }
+        m = self._machine(_machine_snapshot([_machine_tool(live=live)], live_monitor=lm))
+        assert m["monitor"]["collectors"] == [
+            {"name": "fs", "mode": "poll", "status": "degraded", "detail": None},
+            {"name": "network", "mode": "nettop", "status": "active", "detail": "2 tools"},
+        ]
+        assert m["monitor"]["roots"] == [{"kind": "workspace", "path": "/p/one"}, {"kind": "state", "path": "/home/me/.claude"}]
+        row = m["monitor"]["per_tool"][0]
+        assert row["tool"] == "claude-code" and (row["sessions"], row["pids"]) == (2, 3)
+        assert (row["inbound_bps"], row["outbound_bps"]) == (2048.0, 512.0)
+        assert (row["est_tokens"], row["est_confidence"], row["est_source"]) == (1000, 0.42, "network-inference")
+        assert row["mcp_loop"] == {"detected": True, "loops": 4, "confidence": 0.7}
+        assert (row["file_events"], row["files_touched"], row["cpu_pct"], row["cpu_peak"]) == (17, 5, 12.5, 40.0)
+        assert row["workspace_bytes"] == 2 * 1048576
+        assert m["cpu_per_core"] == [12.0, 85.5]
+
+    def test_a_tool_without_live_data_has_no_traffic_row_and_unknown_numbers_stay_null(self):
+        m = self._machine(_machine_snapshot([_machine_tool(), _machine_tool("codex-cli", live={"session_count": 1})]))
+        rows = m["monitor"]["per_tool"]
+        assert [r["tool"] for r in rows] == ["codex-cli"]
+        assert rows[0]["est_tokens"] is None and rows[0]["mcp_loop"] is None and rows[0]["inbound_bps"] is None
+
+    def test_processes_carry_type_parent_anomalies_zombie_risk_and_cleanup(self):
+        proc = _mproc(
+            501, "mcp-github", kind="mcp-server", mem="900", zombie_risk="high", cleanup_cmd="pkill -f mcp-github",
+            cmdline="node mcp --token=sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789",
+            anomalies=[{"type": "high_memory", "actual_mb": 900.0, "expected_mb": 300.0}, {"type": "zombie", "ppid": 1, "risk": "high"}],
+        )
+        live = {"processes": [{"pid": 501, "ppid": 1, "name": "mcp-github"}, {"pid": 502, "ppid": 501, "name": "git", "cpu_pct": 0.5, "mem_mb": 4.0}]}
+        rows = {p["pid"]: p for p in self._machine(_machine_snapshot([_machine_tool(processes=[proc], live=live)]))["processes"]}
+        mcp = rows[501]
+        assert mcp["process_type"] == "mcp-server" and mcp["ppid"] == 1
+        assert mcp["zombie_risk"] == "high" and mcp["cleanup_cmd"] == "pkill -f mcp-github"
+        assert "sk-ant-api03" not in mcp["cmdline"]
+        assert [(a["kind"], a["severity"], a["label"]) for a in mcp["anomalies"]] == [("high_memory", "warn", "High memory"), ("zombie", "crit", "Zombie process")]
+        assert mcp["anomalies"][0]["text"] == "High memory: 900 MB, expected 300 MB"
+        assert "parent PID 1" in mcp["anomalies"][1]["text"]
+        # A child the live monitor follows and the scan does not match still shows, under its parent.
+        assert rows[502]["ppid"] == 501 and rows[502]["parent_name"] == "mcp-github" and rows[502]["process_type"] is None
+
+    def test_a_cmdline_is_cut_to_one_short_line(self):
+        proc = _mproc(7, cmdline="python\n" + "x" * 500)
+        row = self._machine(_machine_snapshot([_machine_tool(processes=[proc])]))["processes"][0]
+        assert "\n" not in row["cmdline"] and len(row["cmdline"]) <= board_api.MACHINE_CMDLINE_CHARS
+
+    def test_a_process_without_a_reported_parent_asks_the_system(self, monkeypatch):
+        monkeypatch.setattr(board_api, "_parent_pid", lambda pid: 77 if pid == 8 else None)
+        rows = {p["pid"]: p for p in self._machine(_machine_snapshot([_machine_tool(processes=[_mproc(8), _mproc(77, "claude")])]))["processes"]}
+        assert rows[8]["ppid"] == 77 and rows[8]["parent_name"] == "claude"
+        assert rows[77]["ppid"] is None and rows[77]["parent_name"] is None
+
+    def test_no_alert_on_a_healthy_machine(self):
+        assert self._machine(_machine_snapshot([_machine_tool(processes=[_mproc(1), _mproc(2, kind="subagent", mem="500")])]))["alerts"] == []
+
+    def test_subagents_over_2_gb_of_ram(self):
+        procs = [_mproc(10 + i, kind="subagent", mem="900") for i in range(3)]
+        alerts = self._machine(_machine_snapshot([_machine_tool(processes=procs)]))["alerts"]
+        assert [(a["kind"], a["severity"]) for a in alerts] == [("subagent_ram", "crit")]
+        assert alerts[0]["text"] == "Subagents use 2.7 GB of RAM, more than 2 GB"
+        assert alerts[0]["pids"] == [10, 11, 12] and alerts[0]["pid"] is None and alerts[0]["tool"] == "claude-code"
+
+    def test_an_mcp_server_whose_parent_is_gone(self):
+        orphan = _mproc(20, "mcp-fs", kind="mcp-server", cleanup_cmd="pkill -f mcp-fs")
+        live = {"processes": [{"pid": 20, "ppid": 1, "name": "mcp-fs"}]}
+        # A catalog risk alone is not a dead parent.
+        risky = _mproc(21, "mcp-ok", kind="mcp-server", zombie_risk="high")
+        live["processes"].append({"pid": 21, "ppid": 300, "name": "mcp-ok"})
+        alerts = self._machine(_machine_snapshot([_machine_tool(processes=[orphan, risky], live=live)]))["alerts"]
+        assert [(a["kind"], a["pid"], a["action"]) for a in alerts] == [("orphan_mcp", 20, "pkill -f mcp-fs")]
+        assert alerts[0]["text"] == "1 MCP server has no parent process and may be orphaned"
+
+    def test_headless_browsers_and_many_anomalies(self):
+        browsers = [_mproc(30, "chrome-headless-shell"), _mproc(31, "chromium", kind="browser")]
+        noisy = [_mproc(40 + i, anomalies=[{"type": "cpu_spike"}, {"type": "long_running"}]) for i in range(3)]
+        alerts = {a["kind"]: a for a in self._machine(_machine_snapshot([_machine_tool(processes=browsers + noisy)]))["alerts"]}
+        assert set(alerts) == {"headless_browser", "anomalies"}
+        assert alerts["headless_browser"]["severity"] == "info" and alerts["headless_browser"]["action"] == "kill 30 31"
+        assert alerts["anomalies"]["text"] == "6 process anomalies in 3 processes"
+
+    def test_the_tool_filter_applies_to_tool_lists_and_not_to_the_machine(self):
+        snap = _machine_snapshot(
+            [_machine_tool(processes=[_mproc(1)], live={"session_count": 1}), _machine_tool("codex-cli", processes=[_mproc(2)], live={"session_count": 1})],
+            live_monitor={"diagnostics": {"net": {"status": "active"}}},
+        )
+        m = self._machine(snap, tools=("codex-cli",))
+        assert [p["pid"] for p in m["processes"]] == [2]
+        assert [t["tool"] for t in m["monitor"]["per_tool"]] == ["codex-cli"]
+        assert [f["tool"] for f in m["pipeline"]["freshness"]] == ["codex-cli"]
+        assert m["cpu_per_core"] and m["monitor"]["collectors"]
+        none = json.loads(board_api.machine_bytes(None, SimpleNamespace(snapshot=snap), "tool=-", now=1010.0))
+        assert none["processes"] == [] and none["monitor"]["per_tool"] == []
+
+    def test_meta_tools_are_left_out(self):
+        m = self._machine(_machine_snapshot([_machine_tool("context", processes=[_mproc(3)], live={"session_count": 1}, meta=True)]))
+        assert m["processes"] == [] and m["monitor"]["per_tool"] == [] and m["pipeline"]["freshness"] == []
+
+    def test_pipeline_reads_the_sink_the_receiver_the_ingesters_and_data_quality(self, db):
+        from aictl.dashboard.ingester_runner import IngesterHandle
+
+        db.record_data_quality("ingester:cursor", "failed", kind="ingester", severity="error", message="poll raised", detail={"error": "disk gone"}, ts=990.0)
+        db.record_data_quality("sink", "ok", kind="sink", message="fine", ts=995.0)
+        sink = SimpleNamespace(stats=lambda: {"total_emitted": 120, "total_flushed": 100, "total_dropped": 20, "is_flooding": True, "flood_drop_count": 3, "buffer_size": 0, "metrics_tracked": 9})
+        otel = SimpleNamespace(status=lambda: {"metrics_received": 5, "events_received": 6, "api_calls_total": 7, "api_errors_total": 1, "errors": 0, "dropped": 2, "last_receive_at": 1000.0, "active": True})
+        ingesters = {
+            "cursor": IngesterHandle(name="cursor", enabled=True, source_path=Path("/x/cursor.db"), source_exists=True, ingester=SimpleNamespace(last_poll_ts=980.0, last_poll_inserted=4)),
+            "copilot": IngesterHandle(name="copilot", enabled=False, source_path=Path("/x/c.db"), source_exists=False, ingester=None),
+        }
+        store = SimpleNamespace(snapshot=_machine_snapshot([]), _sink=sink)
+        m = board_api.compute_machine(db, store, None, otel=otel, ingesters=ingesters, stream_clients=2, now=1010.0)
+        pipe = m["pipeline"]
+        assert pipe["sink"] == {"emitted": 120, "flushed": 100, "dropped": 20, "flood": True, "flood_drops": 3, "buffered": 0, "tracked": 9}
+        assert pipe["otel_receiver"]["api_calls_total"] == 7 and pipe["otel_receiver"]["active"] is True
+        by_name = {i["name"]: i for i in pipe["ingesters"]}
+        assert (by_name["cursor"]["status"], by_name["cursor"]["error"], by_name["cursor"]["rows"]) == ("failed", "disk gone", 4)
+        assert by_name["copilot"]["status"] == "off" and by_name["copilot"]["error"] is None
+        assert [q["component"] for q in pipe["data_quality"]] == ["sink", "ingester:cursor"]  # newest first
+        assert pipe["data_quality"][1]["severity"] == "error" and pipe["data_quality"][1]["text"] == "poll raised"
+        assert pipe["stream"] == {"connected_clients": 2, "snapshot_ts": 1000.0, "snapshot_age_s": 10.0}
+        assert pipe["self"]["db_bytes"] > 0 and pipe["self"]["db_rows"] == sum(pipe["self"]["db_tables"].values())
+
+    def test_history_counts_are_read_once_a_minute(self, db, monkeypatch):
+        calls = []
+        real = db.stats
+        monkeypatch.setattr(db, "stats", lambda: calls.append(1) or real())
+        store = SimpleNamespace(snapshot=None)
+        board_api.compute_machine(db, store)
+        board_api.compute_machine(db, store)
+        assert len(calls) == 1
+
+    def test_freshness_comes_from_telemetry_and_the_live_monitor(self):
+        telemetry = [{"tool": "claude-code", "source": "stats-cache", "confidence": 0.9, "errors": [{"message": "overloaded key=sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123"}, {"message": "x"}]}]
+        snap = _machine_snapshot([_machine_tool(live={"last_seen_at": 1001.0, "session_count": 1}), _machine_tool("codex-cli")], tool_telemetry=telemetry)
+        rows = {f["tool"]: f for f in self._machine(snap)["pipeline"]["freshness"]}
+        assert (rows["claude-code"]["last_seen"], rows["claude-code"]["source"], rows["claude-code"]["confidence"], rows["claude-code"]["errors"]) == (1001.0, "stats-cache", 0.9, 2)
+        assert "sk-ant-api03" not in rows["claude-code"]["last_error"]
+        assert rows["codex-cli"] == {"tool": "codex-cli", "label": board_api._label("codex-cli"), "last_seen": None, "source": "discovery", "confidence": None, "errors": 0, "last_error": None}
+
+    def test_no_snapshot_and_no_store_still_answer(self):
+        m = board_api.compute_machine(None, SimpleNamespace(snapshot=None), now=5.0)
+        assert m["processes"] == [] and m["alerts"] == [] and m["cpu_per_core"] == []
+        assert m["pipeline"]["stream"]["snapshot_age_s"] is None and m["pipeline"]["sink"] is None
+        assert m["pipeline"]["data_quality"] == [] and m["pipeline"]["ingesters"] == []
+
+    def test_the_board_answer_stays_without_the_machine_block(self, db):
+        assert "machine" not in _board(db)
+
+    def test_the_route_answers_this_machine_only_and_follows_the_tool_filter(self, tmp_path, monkeypatch):
+        from aictl.dashboard.models import DashboardSnapshot, DashboardTool
+        from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
+        from aictl.orchestrator import AllowedPaths, SnapshotStore
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        store = SnapshotStore()
+        tool = DashboardTool(tool="claude-code", label="Claude Code", processes=[_mproc(4242, "claude")], live={"session_count": 1, "inbound_rate_bps": 10.0})
+        store.update(DashboardSnapshot(timestamp=time.time(), root=str(tmp_path), tools=[tool]))
+        srv = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, AllowedPaths(), tmp_path)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            base = f"http://127.0.0.1:{srv.server_address[1]}/api/board/machine"
+            with urllib.request.urlopen(base, timeout=10) as resp:
+                body = json.loads(resp.read())
+            assert [p["pid"] for p in body["processes"]] == [4242]
+            assert body["monitor"]["per_tool"][0]["inbound_bps"] == 10.0
+            assert body["pipeline"]["otel_receiver"]["metrics_received"] == 0
+            assert body["pipeline"]["stream"]["connected_clients"] == 0
+            with urllib.request.urlopen(base + "?tool=codex-cli", timeout=10) as resp:
+                assert json.loads(resp.read())["processes"] == []
+            req = urllib.request.Request(base, headers={"Host": "attacker.example"})
+            with pytest.raises(urllib.error.HTTPError) as err:
+                urllib.request.urlopen(req, timeout=10)
+            assert err.value.code == 403
+        finally:
+            srv.shutdown()
+            srv.server_close()

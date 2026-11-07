@@ -244,3 +244,152 @@ a.bd-btn{color:inherit;text-decoration:none}
 html:has(.bd-app[data-theme=dark]){background:#0d0d0d}
 html:has(.bd-app[data-theme=light]){background:#f4f4f1}
 .bd-ctxspark{display:block;width:100%;height:60px;margin:6px 0}
+/* ---- machine and data-pipeline panels ---- */
+.bd-cores{display:flex;align-items:flex-end;gap:2px;height:34px;margin:2px 10px 6px 60px}
+.bd-core{flex:1 1 0;min-width:3px;height:100%;display:flex;align-items:flex-end;background:var(--line);border-radius:2px;overflow:hidden}
+.bd-core b{display:block;width:100%;background:var(--ink3)}
+.bd-core.bd-warn b{background:var(--warn)}
+.bd-core.bd-crit b{background:var(--crit)}
+.bd-tag{display:inline-flex;align-items:center;flex:none;height:17px;padding:0 5px;border-radius:3px;font-size:11px;background:var(--sel);color:var(--ink2);white-space:nowrap}
+.bd-tag-warn{background:var(--warnbg);color:var(--warnink)}
+.bd-tag-crit{background:color-mix(in srgb,var(--crit) 18%,var(--surface));color:var(--crit)}
+.bd-stats .bd-warn .bd-v{color:var(--warnink)}
+.bd-stats .bd-crit .bd-v{color:var(--crit)}
+.bd-pbanner{display:flex;align-items:center;gap:6px;padding:5px 8px;background:color-mix(in srgb,var(--crit) 14%,var(--surface));color:var(--crit);font-weight:500;border-bottom:1px solid var(--line)}
+.bd-kpipill{grid-column:1 / -1;display:flex;align-items:center;gap:6px;padding:4px 10px;font-weight:500;border-bottom:1px solid var(--line)}
+.bd-kpipill.bd-warn{background:var(--warnbg);color:var(--warnink)}
+.bd-kpipill.bd-crit{background:color-mix(in srgb,var(--crit) 14%,var(--surface));color:var(--crit)}
+
+/* ---- agent drawer: session views (Flow, Timeline, Transcript, Events, Team, Processes, Integrations) ---- */
+.bd-ag-top{grid-column:1 / -1}
+.bd-ag-top.bd-note{border:0;padding:0 2px}
+.bd-ag-capture{grid-column:1 / -1;margin:0}
+.bd-ag-bar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid var(--line)}
+.bd-ag-check{display:inline-flex;align-items:center;gap:5px;color:var(--ink2)}
+.bd-ag-dim{color:var(--ink3)}
+.bd-ag-bad{color:var(--crit);font-weight:500}
+.bd-ag-pre{margin:0;padding:6px 8px;max-height:320px;overflow:auto;background:var(--page);border-radius:4px;font-family:'IBM Plex Mono',Consolas,monospace;font-size:11.5px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ink)}
+.bd-ag-sect{padding:6px 0 3px;color:var(--ink3);font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.04em}
+.bd-ag-insp{margin:2px 8px 8px 8px;padding:8px 10px;background:var(--raise);border:1px solid var(--line2);border-radius:5px}
+.bd-ag-insph{display:flex;align-items:center;gap:8px;padding:2px 0 6px}
+.bd-ag-insph b{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}
+.bd-ag-insph .bd-acts{padding:0}
+.bd-ag-kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:4px 12px;margin:0}
+.bd-ag-kv div{min-width:0}
+.bd-ag-kv dt{color:var(--ink3);font-size:11px}
+.bd-ag-kv dd{margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Flow: timeline */
+.bd-ag-tl{list-style:none;margin:0;padding:0}
+.bd-ag-tlrow{display:grid;grid-template-columns:96px 14px minmax(0,1fr) auto;align-items:start;gap:6px;width:100%;padding:4px 8px;text-align:left;border-bottom:1px solid var(--line);color:inherit}
+.bd-ag-tlrow:hover{background:var(--hover)}
+.bd-ag-tlrow.bd-on{background:var(--sel)}
+.bd-ag-when{font-variant-numeric:tabular-nums;color:var(--ink2);font-size:11.5px}
+.bd-ag-when em{display:block;font-style:normal;color:var(--ink3);font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bd-ag-dot{width:10px;height:10px;margin-top:3px;border:2px solid;border-radius:50%}
+.bd-ag-body{display:flex;flex-direction:column;min-width:0}
+.bd-ag-lane{font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+.bd-ag-lbl{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bd-ag-meta{color:var(--ink3);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bd-ag-size{color:var(--ink3);font-size:11px;font-variant-numeric:tabular-nums}
+/* Flow: swim-lane */
+.bd-ag-sl{overflow-x:auto}
+.bd-ag-slhead,.bd-ag-slrow{display:grid;grid-template-columns:48px 48px 62px minmax(240px,1fr);align-items:center;width:100%;min-width:420px}
+.bd-ag-slhead{position:sticky;top:0;z-index:1;height:30px;background:var(--surface);border-bottom:1px solid var(--line2);color:var(--ink3);font-size:11px}
+.bd-ag-slhead>span{padding:0 4px}
+.bd-ag-slrow{height:34px;padding:0;text-align:left;color:inherit;border-bottom:1px solid var(--line)}
+.bd-ag-slrow:hover{background:var(--hover)}
+.bd-ag-slrow.bd-on{background:var(--sel)}
+.bd-ag-slrow>span{padding:0 4px;font-size:11px;color:var(--ink3);font-variant-numeric:tabular-nums;white-space:nowrap}
+.bd-ag-slarea{position:relative;align-self:stretch;height:100%}
+.bd-ag-slhead .bd-ag-slarea b{position:absolute;top:5px;transform:translateX(-50%);max-width:90px;padding:1px 5px;border:1px solid;border-radius:3px;background:var(--surface);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bd-ag-lanel{position:absolute;top:0;bottom:0;width:1px;background:var(--line2)}
+.bd-ag-arrow{position:absolute;top:22px;height:0;border-top:1.5px solid}
+.bd-ag-head{position:absolute;top:-5px;width:0;height:0;border-top:4px solid transparent;border-bottom:4px solid transparent}
+.bd-ag-head.bd-r{right:-1px;border-left:7px solid currentColor}
+.bd-ag-head.bd-l{left:-1px;border-right:7px solid currentColor}
+.bd-ag-alabel{position:absolute;top:3px;transform:translateX(-50%);max-width:60%;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
+.bd-ag-alabel em{font-style:normal;color:var(--ink3);margin-left:5px}
+.bd-ag-marker{position:absolute;left:4px;right:4px;top:8px;padding-left:6px;border-left:3px solid;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Timeline */
+.bd-ag-flow{display:flex;flex-wrap:wrap;align-items:flex-end;gap:2px 1px;padding:8px}
+.bd-ag-slot{display:flex;flex-direction:column;justify-content:flex-end;width:7px;outline-offset:1px}
+.bd-ag-slot:focus-visible{outline:2px solid var(--focus)}
+.bd-ag-col{display:flex;align-items:flex-end}
+.bd-ag-col b{position:relative;display:block;width:6px;border-radius:2px 2px 0 0;overflow:hidden}
+.bd-ag-col u{position:absolute;left:0;right:0;bottom:0;background:var(--surface);opacity:.45}
+.bd-ag-slot:hover .bd-ag-col b{outline:1px solid var(--ink)}
+.bd-ag-gap{display:flex;flex-direction:column;align-items:center;width:26px}
+.bd-ag-gap i{display:block;width:0;border-left:1px dashed var(--line2)}
+.bd-ag-gap span{font-size:9.5px;color:var(--ink3);white-space:nowrap}
+/* Transcript */
+.bd-ag-turnl{list-style:none;margin:0;padding:0}
+.bd-ag-turn{border-bottom:1px solid var(--line);padding:0 0 6px}
+.bd-ag-turnh{display:flex;align-items:center;gap:8px;width:100%;padding:6px 8px 3px;text-align:left;color:inherit}
+.bd-ag-turnh:hover{background:var(--hover)}
+.bd-ag-turnh b{min-width:20px;font-variant-numeric:tabular-nums}
+.bd-ag-turnh span{white-space:nowrap}
+.bd-ag-turns{margin-left:auto;color:var(--ink3);font-size:11.5px;overflow:hidden;text-overflow:ellipsis}
+.bd-ag-msg{display:grid;grid-template-columns:44px minmax(0,1fr);gap:6px;padding:2px 8px}
+.bd-ag-who{color:var(--ink3);font-size:11px;padding-top:2px}
+.bd-ag-text{white-space:pre-wrap;overflow-wrap:anywhere}
+.bd-ag-reply .tv{margin:0}
+.bd-ag-tokbar{display:flex;gap:2px;height:14px;margin:4px 8px 0 58px;border-radius:3px;overflow:hidden}
+.bd-ag-tokbar span{display:block;min-width:2px;padding:0 4px;color:var(--onfill);font-size:9.5px;line-height:14px;white-space:nowrap;overflow:hidden}
+.bd-ag-acts{list-style:none;margin:4px 8px 0 58px;padding:0;border-left:2px solid var(--line2)}
+.bd-ag-act{display:grid;grid-template-columns:72px 110px minmax(0,1fr) auto;gap:6px;padding:2px 6px;font-size:11.5px}
+.bd-ag-actk{font-weight:500}
+.bd-ag-actn,.bd-ag-acta{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bd-ag-acta{font-family:'IBM Plex Mono',Consolas,monospace;font-size:11px;color:var(--ink2)}
+.bd-ag-acta em{font-style:normal;color:var(--ink3)}
+.bd-ag-actm{color:var(--ink3);white-space:nowrap;font-variant-numeric:tabular-nums}
+/* Events */
+.bd-ag-chips{display:flex;flex-wrap:wrap;gap:4px;padding:6px 8px;border-bottom:1px solid var(--line)}
+.bd-ag-chip{height:24px;padding:0 8px;border:1px solid var(--line2);border-radius:12px;color:var(--ink2);font-size:11.5px;white-space:nowrap}
+.bd-ag-chip em{font-style:normal;color:var(--ink3);margin-left:3px}
+.bd-ag-chip:hover{background:var(--hover)}
+.bd-ag-chip[aria-pressed=true]{background:var(--ink);border-color:var(--ink);color:var(--surface)}
+.bd-ag-chip[aria-pressed=true] em{color:inherit}
+.bd-t tr.bd-ag-warnrow td{color:var(--warnink)}
+.bd-t tr.bd-ag-detrow td{height:auto;padding:4px 6px 8px;white-space:normal}
+/* Team */
+.bd-ag-board{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding:8px}
+.bd-ag-colb h4{margin:0 0 6px;padding-bottom:4px;border-bottom:2px solid;font-size:12px;font-weight:600}
+.bd-ag-colb h4 em{font-style:normal;color:var(--ink3);font-weight:400}
+.bd-ag-card{display:flex;flex-direction:column;gap:2px;margin-bottom:5px;padding:5px 7px;background:var(--raise);border:1px solid var(--line);border-radius:4px}
+.bd-ag-card b{font-weight:500;overflow-wrap:anywhere}
+.bd-ag-card span,.bd-ag-none{color:var(--ink3);font-size:11px}
+/* Integrations */
+.bd-ag-gauges{display:flex;flex-wrap:wrap;gap:10px 16px;padding:8px 10px}
+.bd-ag-gauge{flex:1 1 160px;min-width:0}
+.bd-ag-gauge>div{display:flex;justify-content:space-between;gap:6px;margin-bottom:3px;font-size:12px}
+.bd-ag-gauge em{display:block;margin-top:2px;font-style:normal;color:var(--ink3);font-size:11px}
+.bd-ag-track{display:block;height:8px;border-radius:4px;background:var(--line);overflow:hidden}
+.bd-ag-track i{display:block;height:100%;border-radius:4px}
+.bd-ag-artbox{margin:6px 8px 8px;padding:6px 8px;background:var(--raise);border:1px solid var(--line2);border-radius:5px}
+/* Overview: git, run history, charts */
+.bd-ag-git{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin:-2px 0 6px}
+.bd-ag-pill{display:inline-flex;align-items:center;height:20px;padding:0 7px;border:1px solid var(--line2);border-radius:10px;color:var(--ink2);font-size:11px;white-space:nowrap;max-width:260px;overflow:hidden;text-overflow:ellipsis}
+.bd-ag-pillb:hover{background:var(--hover);color:var(--ink)}
+.bd-ag-commits{left:0;top:24px;width:min(460px,80vw)}
+.bd-ag-commits ul{list-style:none;margin:0;padding:0}
+.bd-ag-commits li{display:flex;align-items:baseline;gap:8px;padding:3px 10px;font-size:12px}
+.bd-ag-commits li span{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bd-ag-commits code{font-family:'IBM Plex Mono',Consolas,monospace;color:var(--ink3)}
+.bd-ag-commits em{font-style:normal;color:var(--ink3);font-size:11px}
+.bd-ag-commits li.bd-ag-off{opacity:.6}
+.bd-ag-trend{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:var(--line)}
+.bd-ag-trend>div{display:flex;flex-direction:column;background:var(--surface);padding:5px 8px;min-width:0}
+.bd-ag-trend .bd-l{color:var(--ink3);font-size:11px}
+.bd-ag-trend b{font-size:15px;font-weight:600}
+.bd-ag-trend em{font-style:normal;color:var(--ink3);font-size:11px}
+.bd-ag-delta{font-size:11.5px;font-weight:500}
+.bd-ag-up{color:var(--warnink)}
+.bd-ag-down{color:var(--good)}
+.bd-ag-same{color:var(--ink3)}
+.bd-ag-sparks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;padding:6px}
+.bd-ag-spark{min-width:0;border:1px solid var(--line);border-radius:4px}
+.bd-ag-sparkh{display:flex;justify-content:space-between;gap:6px;padding:4px 8px 0;font-size:11.5px;color:var(--ink2)}
+.bd-ag-sparkh b{font-weight:500;color:var(--ink3)}
+.bd-ag-spark .bd-chart{grid-template-columns:40px minmax(0,1fr);padding:4px 6px 0 0}
+.bd-ag-spark .bd-legend{display:none}
+@media (max-width:760px){.bd-ag-board,.bd-ag-trend{grid-template-columns:minmax(0,1fr)}.bd-ag-sparks{grid-template-columns:minmax(0,1fr)}.bd-ag-act{grid-template-columns:64px minmax(0,1fr)}.bd-ag-acta,.bd-ag-actm{grid-column:2}}

@@ -594,6 +594,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._json_response(payload, status=status)
         elif path == "/api/effective-models":
             self._serve_effective_models()
+        elif path == "/api/board/machine":
+            self._serve_board_machine()
         elif path == "/api/board" or path.startswith("/api/board/"):
             self._serve_board(path)
         elif path.startswith("/api/samples"):
@@ -1414,6 +1416,25 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
             return
         self._json_response_raw(body, status=status)
+
+    def _serve_board_machine(self) -> None:
+        """Machine, process and data-pipeline health for the board."""
+        from .board_api import machine_bytes
+
+        try:
+            body = machine_bytes(
+                self._db,
+                self.server.store,
+                urlparse(self.path).query,
+                otel=getattr(self.server, "otel_receiver", None),
+                ingesters=getattr(self.server, "ingesters", None),
+                stream_clients=_sse_client_count,
+            )
+        except Exception as exc:  # any failure must reach the panel's error state
+            logger.exception("Board machine route failed")
+            self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
+            return
+        self._json_response_raw(body)
 
     def _serve_board_action(self) -> None:
         """Run one maintenance action of the panel dashboard. This machine only."""

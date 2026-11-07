@@ -102,3 +102,33 @@ export const fileDetailFixture = (path = 'src/client.py') => ({
   edits: [{ ts: NOW - 300, agent_id: 'run00001aaaa', title: 'Fix retry logic', lines_added: 4, lines_removed: 1 }],
   diff: [{ kind: 'same', n: 84, text: 'attempt = 0' }, { kind: 'add', n: 85, text: 'deadline = now()' }, { kind: 'del', n: 86, text: 'timeout = 1' }],
 });
+
+// A /api/board/machine response. Its process 4100 is the one in boardFixture.
+export function machineFixture(overrides = {}) {
+  return {
+    generated_at: NOW,
+    monitor: {
+      collectors: [{ name: 'network', mode: 'nettop', status: 'active', detail: '2 tools' }, { name: 'files', mode: 'poll', status: 'degraded', detail: 'FSEvents not available' }],
+      roots: [{ kind: 'workspace', path: '/work/alpha' }, { kind: 'state', path: '/home/me/.tool-a' }],
+      per_tool: [{ tool: 'tool-a', label: 'Tool A', sessions: 2, pids: 3, inbound_bps: 2048, outbound_bps: 512, est_tokens: 12000, est_confidence: 0.42, est_source: 'network-inference', mcp_loop: { detected: true, loops: 3, confidence: 0.7 }, file_events: 17, files_touched: 5, cpu_pct: 12.5, cpu_peak: 40, workspace_bytes: 2_000_000, workspaces: ['/work/alpha'], last_seen: NOW - 5 }],
+    },
+    processes: [
+      { pid: 4100, ppid: 4000, parent_name: 'tool-a', name: 'node', tool: 'tool-a', process_type: 'mcp-server', cpu_pct: 2.2, mem_mb: 180, cmdline: 'node server.js --port 3000', anomalies: [{ kind: 'high_memory', severity: 'warn', label: 'High memory', text: 'High memory: 180 MB, expected 60 MB' }], zombie_risk: 'high', cleanup_cmd: 'pkill -f server.js' },
+    ],
+    cpu_per_core: [12, 55, 91, 3],
+    alerts: [
+      { kind: 'headless_browser', severity: 'info', text: '1 headless browser process. Check that it is still in use.', detail: 'chrome (PID 4300, 300 MB)', pids: [4300], pid: 4300, tool: 'tool-a', action: 'kill 4300' },
+      { kind: 'subagent_ram', severity: 'crit', text: 'Subagents use 2.7 GB of RAM, more than 2 GB', detail: '3 subagent processes.', pids: [1, 2, 3], pid: null, tool: null, action: null },
+    ],
+    pipeline: {
+      self: { pid: 77, cpu: 0.3, rss: 96_000_000, uptime_s: 7200, threads: 14, db_bytes: 640_000_000, db_rows: 1_200_000, db_tables: { requests: 1_000_000, events: 200_000 } },
+      sink: { emitted: 5000, flushed: 4900, dropped: 0, flood: false, flood_drops: 0, buffered: 3, tracked: 40 },
+      otel_receiver: { metrics_received: 10, events_received: 20, api_calls_total: 30, api_errors_total: 1, errors: 0, dropped: 0, last_receive_at: NOW - 30, active: true },
+      ingesters: [{ name: 'copilot-session-store', status: 'ok', last_ok: NOW - 60, last_poll: NOW - 60, error: null, rows: 4, rows_total: 900, source: '~/.copilot/session-store.db' }, { name: 'cursor', status: 'failed', last_ok: NOW - 4000, last_poll: NOW - 20, error: 'disk gone', rows: 0, rows_total: null, source: null }],
+      data_quality: [{ ts: NOW - 20, component: 'ingester:cursor', source: '/x/cursor.db', kind: 'ingester', status: 'failed', severity: 'error', text: 'Ingester poll loop raised', error: 'disk gone', tool: null, count: 3, last_ok: NOW - 4000 }],
+      freshness: [{ tool: 'tool-a', label: 'Tool A', last_seen: NOW - 5, source: 'stats-cache', confidence: 0.9, errors: 2, last_error: 'overloaded' }],
+      stream: { connected_clients: 1, snapshot_ts: NOW - 3, snapshot_age_s: 3 },
+    },
+    ...overrides,
+  };
+}
