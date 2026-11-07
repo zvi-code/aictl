@@ -102,9 +102,15 @@ const eventsText = (data) => {
   return omitted(data) ? 'Newest ' + fmtN(shown) + ' of ' + fmtN(shown + omitted(data)) + ' events' : fmtN(shown) + ' events';
 };
 
+/** Events the flow reads at first, and how many more each "older" step adds. */
+export const FLOW_EVENTS = 500;
+export const FLOW_EVENTS_STEP = 1000;
+export const FLOW_EVENTS_MAX = 5000;
+
 export default function FlowTab({ a, st, ctx }) {
   const tick = isActive(st) ? ctx.refreshKey : 0;
-  const { data, error } = useDetail(o => api.getBoardAgentFlow(a.id, '', o), 'flow:' + a.id, tick);
+  const [limit, setLimit] = useState(FLOW_EVENTS);
+  const { data, error } = useDetail(o => api.getBoardAgentFlow(a.id, 'limit=' + limit, o), 'flow:' + a.id + ':' + limit, tick);
   const [mode, setMode] = usePref(FLOW_MODE_KEY, 'timeline', ['timeline', 'swimlane']);
   const [sel, setSel] = useState(null);
   const toolLabel = ctx.toolName ? ctx.toolName(a.tool) : a.tool;
@@ -126,7 +132,10 @@ export default function FlowTab({ a, st, ctx }) {
   return html`<${SessionNote} a=${a}/>
     <${FixedPanel} id="agfs" title="Summary" sub=${eventsText(data)}><${Stats} stats=${stats}/></${FixedPanel}>
     <${FixedPanel} id="agfl" title="Flow" sub=${omitted(data) ? 'Oldest first. The ' + fmtN(omitted(data)) + ' oldest events are left out; the summary counts them. Select an event to read it.' : 'Oldest first. Select an event to read it.'}>
-      <div class="bd-ag-bar"><${Seg} label="Flow view" value=${mode} onPick=${pick} items=${[['timeline', 'Timeline'], ['swimlane', 'Swim-lane']]}/></div>
+      <div class="bd-ag-bar"><${Seg} label="Flow view" value=${mode} onPick=${pick} items=${[['timeline', 'Timeline'], ['swimlane', 'Swim-lane']]}/>
+        ${omitted(data) && limit < FLOW_EVENTS_MAX ? html`<button type="button" class="bd-btn" onClick=${() => setLimit(l => Math.min(FLOW_EVENTS_MAX, l + FLOW_EVENTS_STEP))}>${'Show ' + fmtN(Math.min(omitted(data), FLOW_EVENTS_STEP)) + ' older events'}</button>` : null}
+        ${omitted(data) && limit >= FLOW_EVENTS_MAX ? html`<span class="bd-ag-dim">${'The ' + fmtN(omitted(data)) + ' oldest events stay out; the summary counts them.'}</span>` : null}
+      </div>
       ${!m.events.length ? html`<div class="bd-empty">No flow data for this session: aictl has no prompt, model call or tool call of it, and no hook or OpenTelemetry event.</div>`
         : mode === 'swimlane' ? html`<${SwimLanes} events=${m.events} participants=${m.participants} sel=${sel} onSel=${setSel}/>`
           : html`<${TimelineList} events=${m.events} sel=${sel} onSel=${setSel}/>`}

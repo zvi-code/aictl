@@ -184,6 +184,8 @@ export const getBoardAgent = (id, opts) => fetchJson('/api/board/agent?id=' + en
 export const getBoardAgentFlow = (id, query = '', opts) => fetchJson('/api/board/agent/flow?id=' + encodeURIComponent(id) + (query ? '&' + query : ''), opts);
 /** The transcript of a board agent's session: each prompt with its reply, actions and tokens. */
 export const getBoardAgentTranscript = (id, opts) => fetchJson('/api/board/agent/transcript?id=' + encodeURIComponent(id), opts);
+/** One turn whole: its actions and full texts. `ts` is the turn's timestamp. */
+export const getBoardAgentTranscriptTurn = (id, ts, opts) => fetchJson('/api/board/agent/transcript?id=' + encodeURIComponent(id) + '&turn=' + encodeURIComponent(ts), opts);
 export const getBoardTool = (name, query = '', opts) => fetchJson('/api/board/tool?name=' + encodeURIComponent(name) + (query ? '&' + query : ''), opts);
 export const getBoardError = (key, query = '', opts) => fetchJson('/api/board/error?key=' + encodeURIComponent(key) + (query ? '&' + query : ''), opts);
 export const getBoardSkill = (name, query = '', opts) => fetchJson('/api/board/skill?name=' + encodeURIComponent(name) + (query ? '&' + query : ''), opts);

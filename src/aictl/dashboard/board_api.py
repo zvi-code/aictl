@@ -3874,7 +3874,8 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
 # hook and OpenTelemetry events of the legacy session flow are merged in when they exist.
 # A subagent id shows the whole session of its main agent.
 
-MAX_FLOW_EVENTS = 2000
+MAX_FLOW_EVENTS = 5000
+FLOW_DEFAULT_EVENTS = 500
 FLOW_TARGET_CHARS = 300
 FLOW_MATCH_S = 2.0
 FLOW_SESSION_MATCH_S = 60.0
@@ -4212,10 +4213,40 @@ def _flow_summary(events: list[dict], source: str, cumulative: int, largest: int
     }
 
 
+FLOW_MEMO_S = 120.0
+_FLOW_STAMP_TABLES = ("requests", "tool_invocations", "session_prompts", "events")
+
+
+def _flow_stamp(conn: sqlite3.Connection, sid: str) -> tuple:
+    """What the store holds for a session, as cheap counts: a change here means a new flow."""
+    return tuple(conn.execute(f"SELECT COUNT(*), MAX(ts) FROM {table} WHERE session_id = ?", (sid,)).fetchone() for table in _FLOW_STAMP_TABLES)
+
+
 def _session_flow(db: Any, agent_id: str, since: float, until: float, legacy_flow: Callable[[str, float, float], dict] | None) -> tuple[str, list[dict], str] | None:
-    """(session id, merged events, source) of a board agent, or None for an unknown agent."""
+    """(session id, merged events, source) of a board agent, or None for an unknown agent.
+
+    Building the flow reads every record of the session, so the result is kept on the store
+    for FLOW_MEMO_S as long as the session's records have not changed. The flow of one
+    session is asked for several times in a row: the flow tab, the transcript, each turn.
+    """
     conn = db._conn()
     sid, _agent = _resolve_agent(conn, agent_id)
+    cached = legacy_flow is None and isinstance(getattr(db, "__dict__", None), dict)
+    if cached:
+        memo = db.__dict__.setdefault("_flow_memo", {})
+        # An open-ended range ends at "now plus a minute", which differs on every call.
+        key = (sid, since, None if until >= time.time() else until, _flow_stamp(conn, sid))
+        hit = memo.get(key)
+        if hit and 0 <= time.time() - hit[0] < FLOW_MEMO_S:
+            return hit[1]
+    found = _session_flow_build(db, conn, sid, since, until, legacy_flow)
+    if cached:
+        memo.clear()
+        memo[key] = (time.time(), found)
+    return found
+
+
+def _session_flow_build(db: Any, conn: sqlite3.Connection, sid: str, since: float, until: float, legacy_flow: Callable[[str, float, float], dict] | None) -> tuple[str, list[dict], str] | None:
     if legacy_flow is None:
         from .session_flow import build_session_flow
 
@@ -4237,12 +4268,14 @@ def agent_flow(
     until: float | None = None,
     now: float | None = None,
     legacy_flow: Callable[[str, float, float], dict] | None = None,
+    limit: int | None = None,
 ) -> tuple[int, dict]:
     """The session flow of a board agent: ``{turns, summary}`` like ``build_session_flow``.
 
     Each event carries ``cum_tokens`` (input and output so far in the session) and
     ``rt_tokens`` (so far in its turn). The summary counts every event in the range; only the
-    newest MAX_FLOW_EVENTS events are returned.
+    newest ``limit`` events are returned, FLOW_DEFAULT_EVENTS by default and at most
+    MAX_FLOW_EVENTS. The caller asks for more with a larger limit.
     """
     now = time.time() if now is None else now
     lo, hi = since if since is not None else 0.0, until if until is not None else now + 60.0
@@ -4252,7 +4285,8 @@ def agent_flow(
     sid, events, source = found
     cumulative, largest = _aggregate_flow(events)
     summary = _flow_summary(events, source, cumulative, largest)
-    shown = events[-MAX_FLOW_EVENTS:]
+    keep = max(1, min(int(limit or FLOW_DEFAULT_EVENTS), MAX_FLOW_EVENTS))
+    shown = events[-keep:]
     summary["shown_events"] = len(shown)
     summary["omitted_events"] = len(events) - len(shown)
     return 200, {"session_id": sid, "turns": shown, "summary": summary, "capture_mode": getattr(db, "capture", "full")}
@@ -4412,11 +4446,18 @@ def agent_transcript(
     now: float | None = None,
     legacy_flow: Callable[[str, float, float], dict] | None = None,
     legacy_transcript: Callable[[str], dict | None] | None = None,
+    turn: float | None = None,
+    brief: bool = True,
 ) -> tuple[int, dict]:
     """The transcript of a board agent's session: one turn per prompt, with its reply and actions.
 
     ``replies_kept`` is False when no reply text is stored for the session; the turns then
     carry the prompts, actions and tokens, and ``reply_note`` says that the text is not kept.
+
+    By default each turn is brief: the first FLOW_PREVIEW_CHARS of its prompt and reply, its
+    counts and tokens, no actions, and ``detail`` True when the full turn holds more. ``turn``
+    names one turn by its timestamp and returns that turn whole under ``turn``; ``brief=False``
+    returns every turn whole.
     """
     now = time.time() if now is None else now
     found = _session_flow(db, agent_id, 0.0, now + 60.0, legacy_flow)
@@ -4439,15 +4480,27 @@ def agent_transcript(
         "subagents": sum(1 for a in actions if a.get("kind") == "subagent"),
         "event_count": len(actions) + sum(1 for t in turns if t["prompt_event"]),
     }
-    return 200, {
+    body = {
         "session_id": sid,
-        "turns": turns,
         "summary": summary,
         "capture_mode": getattr(db, "capture", "full"),
         "replies_kept": replies_kept,
         "reply_note": None if replies_kept else REPLY_NOT_KEPT,
         "is_live": bool(live and live.get("is_live")),
     }
+    if turn is not None:
+        match = min(turns, key=lambda t: abs(t["ts"] - turn), default=None)
+        if match is None or abs(match["ts"] - turn) > 0.001:
+            return 404, {"error": "No such turn"}
+        return 200, {**body, "turn": match}
+    return 200, {**body, "turns": [_brief_turn(t) for t in turns] if brief else turns}
+
+
+def _brief_turn(turn: dict) -> dict:
+    """A turn without its actions and long texts, and ``detail`` when the whole turn holds more."""
+    prompt, response = turn.get("prompt") or "", turn.get("response") or ""
+    more = bool(turn.get("actions")) or len(prompt) > FLOW_PREVIEW_CHARS or len(response) > FLOW_PREVIEW_CHARS
+    return {**turn, "prompt": prompt[:FLOW_PREVIEW_CHARS], "response": response[:FLOW_PREVIEW_CHARS], "actions": [], "detail": more}
 
 
 RUN_HISTORY_DAYS = 30

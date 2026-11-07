@@ -2,6 +2,8 @@
 // Oldest first. A reply renders as Markdown, with a Source toggle. While the
 // agent runs, the transcript is read again every 5 s. The turns come from
 // /api/board/agent/transcript, which says when the store keeps no reply text.
+// The list carries brief turns: previews, counts and tokens. Opening a turn
+// reads it whole, with its actions and full texts, from the same route.
 import { html } from 'htm/preact';
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import * as api from '../../../api.js';
@@ -39,7 +41,7 @@ function ActionRow({ x, turnTs }) {
   </li>`;
 }
 
-function TurnCard({ turn, n, open, onToggle, withheld, replyNote }) {
+function TurnCard({ turn, n, open, onToggle, withheld, replyNote, loading }) {
   const actions = turn.actions || [];
   const reply = responseOf(turn);
   const tok = turn.tokens || {};
@@ -67,6 +69,7 @@ function TurnCard({ turn, n, open, onToggle, withheld, replyNote }) {
       ${open ? html`<div class="bd-ag-reply"><${TextView} text=${reply} path="reply.md" source=${html`<div class="bd-ptext">${reply}</div>`}/></div>` : html`<div class="bd-ag-text">${clip(turn.response_preview || reply, 200)}</div>`}
     </div>` : open ? html`<div class="bd-ag-msg"><span class="bd-ag-who">Reply</span><div class="bd-ag-text bd-ag-dim">${withheld ? 'Text not kept.' : replyNote || 'No reply captured.'}</div></div>` : null}
     <${TokenBar} tokens=${tok}/>
+    ${open && loading ? html`<div class="bd-ag-text bd-ag-dim" role="status">Reading the turn...</div>` : null}
     ${open && actions.length ? html`<ul class="bd-ag-acts" aria-label=${'Actions of turn ' + n}>${actions.map((x, i) => html`<${ActionRow} key=${i} x=${x} turnTs=${turn.ts}/>`)}</ul>` : null}
   </li>`;
 }
@@ -82,9 +85,23 @@ export default function TranscriptTab({ a, st, ctx }) {
   }, [live, auto]);
   const { data, error } = useDetail(o => api.getBoardAgentTranscript(a.id, o), 'transcript:' + a.id, beat);
   const [open, setOpen] = useState(() => new Set());
+  // Whole turns read on demand, by timestamp. A failed read keeps the brief turn.
+  const [full, setFull] = useState({});
   const mode = data?.capture_mode ?? ctx.data?.capture_mode;
   const withheld = (mode != null && mode !== 'full') || data?.content_retained === false;
-  const turns = useMemo(() => visibleTurns(data, withheld), [data, withheld]);
+  const brief = useMemo(() => visibleTurns(data, withheld), [data, withheld]);
+  const turns = useMemo(() => brief.map(t => (full[t.ts] ? { ...t, ...full[t.ts], detail: false } : t)), [brief, full]);
+  const wanted = [...open].map(i => brief[i]).filter(t => t && t.detail && !full[t.ts]).map(t => t.ts);
+  useEffect(() => {
+    if (!wanted.length) return undefined;
+    const ctl = new AbortController();
+    wanted.forEach((ts) => {
+      api.getBoardAgentTranscriptTurn(a.id, ts, { signal: ctl.signal })
+        .then(r => setFull(f => ({ ...f, [ts]: r.turn || { detail: false } })))
+        .catch(e => { if (e?.name !== 'AbortError') setFull(f => ({ ...f, [ts]: { detail: false } })); });
+    });
+    return () => ctl.abort();
+  }, [a.id, wanted.join(',')]);
   if (!data) return html`<${Wait} error=${error} what="the transcript"/>`;
   const allOpen = turns.length > 0 && open.size >= turns.length;
   const toggle = i => setOpen((prev) => {
@@ -105,7 +122,7 @@ export default function TranscriptTab({ a, st, ctx }) {
         ${live ? html`<label class="bd-ag-check"><input type="checkbox" checked=${auto} onChange=${e => setAuto(e.currentTarget.checked)}/>Refresh while it runs</label>` : null}
       </div>
       ${replyNote && !withheld && turns.length ? html`<div class="bd-note" role="status">${replyNote} The prompts, model calls, tool calls and tokens of each turn are shown.</div>` : null}
-      ${turns.length ? html`<ol class="bd-ag-turnl">${turns.map((t, i) => html`<${TurnCard} key=${i} turn=${t} n=${i + 1} open=${open.has(i)} onToggle=${() => toggle(i)} withheld=${withheld} replyNote=${replyNote}/>`)}</ol>`
+      ${turns.length ? html`<ol class="bd-ag-turnl">${turns.map((t, i) => html`<${TurnCard} key=${i} turn=${t} n=${i + 1} open=${open.has(i)} onToggle=${() => toggle(i)} withheld=${withheld} replyNote=${replyNote} loading=${!!t.detail && open.has(i)}/>`)}</ol>`
         : html`<div class="bd-empty">${withheld ? 'No turn has times or tokens to show.' : 'No turn for this session: aictl has no prompt, model call or tool call of it.'}</div>`}
     </${FixedPanel}>`;
 }
