@@ -33,8 +33,12 @@ def default_state_paths(root: Path) -> tuple[Path, ...]:
         platforms.gh_config_dir(),
         platforms.vscode_user_dir(),
         platforms.codex_global_dir(),
-        Path.home() / ".copilot",
+        platforms.copilot_global_dir(),
     ]
+    # Homes a tool uses outside its default folder, found on this machine.
+    from .. import tool_homes
+
+    paths += [h.path for h in tool_homes.homes() if h.found_by != "default"]
 
     project_paths = [
         root / ".vscode",
