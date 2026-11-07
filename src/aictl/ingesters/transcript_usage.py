@@ -985,6 +985,8 @@ class TranscriptUsageIngester:
         self.claude_projects = claude_projects or platforms.claude_projects_dir()
         self.codex_sessions = codex_sessions or platforms.codex_global_dir() / "sessions"
         self.copilot_state = copilot_state or platforms.copilot_session_dir()
+        # With its default folders, the reader also follows the homes found on this machine.
+        self._discover = not (claude_projects or codex_sessions or copilot_state)
         self.vscode_workspaces = vscode_workspaces or vscode_chat_default_log_dir()
         self.facts = FactBuffer(our_store, time.time() - backfill_days * 86400)
         self._store = CopilotStoreReader(self.copilot_state.parent, self.facts)
@@ -1062,7 +1064,8 @@ class TranscriptUsageIngester:
                 errors += 1
                 log.debug("transcript-usage: cannot read %s: %s", path.name, exc)
 
-        for path in self._changed(iter_claude_files(self.claude_projects), cutoff):
+        claude_files = [p for root in self._roots("claude", self.claude_projects) for p in iter_claude_files(root)]
+        for path in self._changed(claude_files, cutoff):
             sid = _claude_session_id(path)
             agent_id, role = self._claude_agent(path)
             for obj in read(path):
@@ -1071,7 +1074,8 @@ class TranscriptUsageIngester:
             if sid in self._claude.sessions:
                 touched[sid] = self._claude.sessions[sid]
 
-        for path in self._changed(self.codex_sessions.glob("**/*.jsonl"), cutoff):
+        codex_files = [p for root in self._roots("codex", self.codex_sessions) for p in root.glob("**/*.jsonl")]
+        for path in self._changed(codex_files, cutoff):
             acc = self._codex.setdefault(path, CodexAccumulator(self._codex_sessions, path.stem))
             for obj in read(path):
                 acc.feed(obj)
@@ -1080,7 +1084,8 @@ class TranscriptUsageIngester:
                 touched[sid] = self._codex_sessions[sid]
 
         copilot_ids: set[str] = set()
-        for path in self._changed(self.copilot_state.glob("*/events.jsonl"), cutoff):
+        copilot_files = [p for root in self._roots("copilot", self.copilot_state) for p in root.glob("*/events.jsonl")]
+        for path in self._changed(copilot_files, cutoff):
             sid = path.parent.name
             cop = self._copilot.setdefault(path, CopilotAccumulator(sid, facts=CopilotFacts(sid, self.facts)))
             if self._offsets.get(path, 0) == 0 and cop.facts is not None:
@@ -1149,6 +1154,14 @@ class TranscriptUsageIngester:
             message=f"{errors} transcript file(s) unreadable" if errors else f"{written} session(s) updated",
         )
         return written
+
+    def _roots(self, tool: str, default: Path) -> list[Path]:
+        """The default session folder, then those of other homes found for the tool."""
+        if not self._discover:
+            return [default]
+        from .. import tool_homes
+
+        return [default, *(d for d in tool_homes.session_dirs(tool) if d != default)]
 
     def _claude_agent(self, path: Path) -> tuple[str, str]:
         """(agent id, role) of a file under ``subagents/``, or empty for a main session."""

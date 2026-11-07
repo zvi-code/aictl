@@ -2809,3 +2809,11 @@ class TestActiveNowFilter:
         _request(conn, NOW - 300, "i", "aider", "/p/i", SONNET, i=1, finish_reason="end_turn")
         conn.commit()
         assert "i" in [a["id"] for a in _board(db, status="active")["agents"]]
+
+
+def test_sources_name_the_folders_found_for_each_tool(monkeypatch):
+    from aictl import tool_homes
+
+    monkeypatch.setattr(tool_homes, "homes", lambda tool=None: [tool_homes.ToolHome("copilot", Path("/x/home"), "process environment")])
+    rows = board_api._sources([("copilot-cli", "events", 1.0)], ["copilot-cli"], None)
+    assert rows[0]["locations"] == [{"path": "/x/home", "found_by": "process environment"}]
