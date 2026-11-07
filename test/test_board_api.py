@@ -2800,3 +2800,12 @@ class TestSubagentsInTheWindow:
         self._session_with_subagents(db)
         subs = [s["id"] for s in agent_detail(db, "long", None, NOW)[1]["subagents"]]
         assert sorted(subs) == ["new-sub", "old-sub"]
+
+
+class TestActiveNowFilter:
+    def test_an_idle_session_is_active_now(self, db):
+        conn = db._conn()
+        _session(conn, "i", "aider", "/p/i", NOW - 3000)
+        _request(conn, NOW - 300, "i", "aider", "/p/i", SONNET, i=1, finish_reason="end_turn")
+        conn.commit()
+        assert "i" in [a["id"] for a in _board(db, status="active")["agents"]]
