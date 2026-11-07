@@ -21,7 +21,7 @@ from aictl.monitoring.tool_config import (
     value_kind,
 )
 
-ROW_KEYS = {"key", "label", "value", "kind", "source", "danger", "note"}
+ROW_KEYS = {"key", "label", "value", "kind", "source", "danger", "note", "scope", "line", "chain", "wins"}
 
 
 def _rows(sections: list[dict], section_id: str | None = None) -> list[dict]:
@@ -381,9 +381,14 @@ def test_model_row_first_then_configurable_models():
         "source": "/u/settings.json",
         "danger": False,
         "note": "",
+        "scope": "user",
+        "line": 0,  # the file does not exist
+        "chain": [{"scope": "user", "value": "gpt-5", "source": "/u/settings.json", "line": 0}],
+        "wins": 0,
     }
     plan = rows[1]
     assert plan["label"] == "Plan agent" and plan["source"] == "user"
+    assert plan["scope"] == "user"  # a row that already knows its scope keeps it
     assert plan["note"] == "Default model used by the Plan agent."
     assert rows[2]["label"] == "Reasoning effort"
 
@@ -451,3 +456,139 @@ def test_collect_tool_configs_fills_sections_for_every_tool(isolated_home, tmp_p
     codex = next(c for c in configs if c.tool == "codex-cli")
     assert codex.config_files == [str(isolated_home["codex_global_dir"] / "config.toml")]
     assert codex.sections[0]["rows"][0]["value"] == "gpt-5"
+
+
+# ─── Scope, line and override chain ─────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("source", "scope"),
+    [
+        ("", "default"),
+        ("user", "user"),
+        ("workspace", "workspace"),
+        ("/home/me/.claude/settings.json", "user"),
+        ("/work/proj/.claude/settings.json", "project"),
+        ("/work/proj/.vscode/settings.json", "workspace"),
+        ("/work/proj/.vscodex/settings.json", "project"),
+        ("/Library/Application Support/ClaudeCode/managed-settings.json", "managed"),
+    ],
+)
+def test_setting_scope(source, scope):
+    assert tc.setting_scope(source, "/work/proj") == scope
+
+
+def test_row_scopes_from_sources():
+    cfg = ToolConfig(
+        tool="x",
+        project_root="/work/proj",
+        settings={"a": 1, "b": 2, "c": 3, "d": 4},
+        setting_sources={
+            "a": str(Path.home() / ".x" / "settings.json"),
+            "b": "/work/proj/.x/settings.json",
+            "c": "/work/proj/.vscode/settings.json",
+            "d": "",
+        },
+    )
+    scopes = {r["key"]: r["scope"] for r in _rows(normalize_sections(cfg))}
+    assert scopes == {"a": "user", "b": "project", "c": "workspace", "d": "default"}
+
+
+def test_env_var_telemetry_rows_are_env_scope():
+    cfg = ToolConfig(tool="x", otel=OTelConfig(enabled=True, exporter="otlp-grpc", source="env-var"))
+    rows = _section(normalize_sections(cfg), "telemetry")["rows"]
+    assert rows and all(r["scope"] == "env" for r in rows)
+
+
+def test_line_of_json_key(tmp_path):
+    f = tmp_path / "settings.json"
+    f.write_text('{\n  "model": "opus",\n  "effortLevel": "high"\n}\n')
+    cfg = ToolConfig(tool="x", settings={"effortLevel": "high", "unknownKey": 1}, config_files=[str(f)])
+    rows = {r["key"]: r for r in _rows(normalize_sections(cfg))}
+    assert rows["effortLevel"]["line"] == 3
+    assert rows["effortLevel"]["chain"] == [{"scope": "user", "value": "high", "source": str(f), "line": 3}]
+    assert rows["unknownKey"]["line"] == 0
+
+
+def test_line_of_dotted_vscode_key(tmp_path):
+    f = tmp_path / "settings.json"
+    f.write_text('{\n  "editor.enabled": true,\n  "chat.tools.global.autoApprove": true\n}\n')
+    assert tc.find_key_line(f.read_text(), "chat.tools.global.autoApprove") == 3
+    assert tc.find_key_line(f.read_text(), "chat.agent.enabled") == 0
+    cfg = ToolConfig(tool="x", settings={"chat.tools.global.autoApprove": True}, config_files=[str(f)])
+    assert _rows(normalize_sections(cfg))[0]["line"] == 3
+
+
+def test_line_of_toml_key(tmp_path):
+    f = tmp_path / "config.toml"
+    f.write_text('model = "gpt-5"\n\n[features]\nweb_search = true\n')
+    cfg = ToolConfig(tool="x", model="gpt-5", features={"web_search": True}, config_files=[str(f)])
+    rows = {r["key"]: r for r in _rows(normalize_sections(cfg))}
+    assert rows["model"]["line"] == 1
+    assert rows["web_search"]["line"] == 4
+
+
+def test_line_never_reads_a_file_outside_config_files(tmp_path):
+    f = tmp_path / "other.json"
+    f.write_text('{"a": 1}')
+    cfg = ToolConfig(tool="x", settings={"a": 1}, setting_sources={"a": str(f)})
+    assert _rows(normalize_sections(cfg))[0]["line"] == 0
+
+
+def test_file_texts_are_read_once_and_not_kept(tmp_path, monkeypatch):
+    f = tmp_path / "settings.json"
+    f.write_text('{"a": 1, "b": 2, "note": "TEXT-MARKER"}')
+    reads = []
+    real = Path.read_text
+
+    def counting(self, *args, **kwargs):
+        reads.append(str(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counting)
+    cfg = ToolConfig(tool="x", settings={"a": 1, "b": 2}, config_files=[str(f)])
+    texts: dict = {}
+    normalize_sections(cfg, texts)
+    normalize_sections(cfg, texts)
+    assert reads == [str(f)]
+    cfg.sections = normalize_sections(cfg, texts)
+    assert "TEXT-MARKER" not in json.dumps(cfg.to_dict())
+
+
+def test_claude_code_project_overrides_user_chain(isolated_home, tmp_path):
+    user = isolated_home["claude_global_dir"] / "settings.json"
+    user.write_text('{\n  "model": "sonnet",\n  "hooks": {"Stop": [{"command": "secret-cmd"}]}\n}\n')
+    proj = tmp_path / "proj"
+    (proj / ".claude").mkdir(parents=True)
+    proj_file = proj / ".claude" / "settings.json"
+    proj_file.write_text('{\n  "hooks": {},\n  "model": "opus"\n}\n')
+    configs = {c.tool: c for c in tc.collect_tool_configs(proj)}
+    rows = {r["key"]: r for r in _rows(configs["claude-code"].sections)}
+    model = rows["model"]
+    assert model["value"] == "opus"
+    assert model["scope"] == "project"
+    assert model["chain"] == [
+        {"scope": "user", "value": "sonnet", "source": str(user), "line": 2},
+        {"scope": "project", "value": "opus", "source": str(proj_file), "line": 3},
+    ]
+    assert model["wins"] == 1
+    assert model["line"] == 3
+    dumped = json.dumps(configs["claude-code"].to_dict())
+    assert "secret-cmd" not in dumped  # hook commands never reach the result
+    assert "setting_values" not in dumped and "project_root" not in dumped
+
+
+def test_vscode_workspace_overrides_user_chain(isolated_home, tmp_path):
+    user = isolated_home["vscode_user_dir"] / "settings.json"
+    user.write_text('{\n  "chat.tools.global.autoApprove": false\n}\n')
+    proj = tmp_path / "proj"
+    (proj / ".vscode").mkdir(parents=True)
+    ws = proj / ".vscode" / "settings.json"
+    ws.write_text('{\n  "x": 1,\n  "chat.tools.global.autoApprove": true\n}\n')
+    configs = {c.tool: c for c in tc.collect_tool_configs(proj)}
+    row = next(r for r in _rows(configs["vscode"].sections) if r["key"] == "globalAutoApprove")
+    assert row["source"] == str(ws) and row["scope"] == "workspace"
+    assert [(e["scope"], e["value"], e["line"]) for e in row["chain"]] == [("user", False, 2), ("workspace", True, 3)]
+    assert row["wins"] == 1 and row["line"] == 3
+    default_row = next(r for r in _rows(configs["vscode"].sections) if r["key"] == "maxRequests")
+    assert default_row["scope"] == "default" and default_row["chain"][0]["scope"] == "default"
