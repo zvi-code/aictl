@@ -21,7 +21,7 @@ import { nextSort, tableModel } from '../src/components/board/tableModel.js';
 import { normalizeBoard } from '../src/components/board/useBoardData.js';
 import { nextTools } from '../src/hooks/useBoardFilters.js';
 import { routeOf } from '../src/root.js';
-import { NOW, agentDetailFixture, boardFixture, fileDetailFixture } from './fixtures/board.fixture.js';
+import { NOW, agentDetailFixture, boardFixture, fileDetailFixture, machineFixture } from './fixtures/board.fixture.js';
 
 // jsdom's localStorage is an empty object in this project's vitest setup (see hooks.test.js).
 if (typeof globalThis.localStorage?.setItem !== 'function') {
@@ -48,6 +48,7 @@ function stubFetch(board = boardFixture()) {
     if (u.startsWith('/api/board/prompt')) return jsonResponse({ text: '', prompt_file: '', project: 'alpha', title: 'Fix', input: null, output: 1, cache_read: 2, reply_ms: 3, tool_calls: 0 });
     if (u.startsWith('/api/board/action')) return jsonResponse({ ok: true });
     if (u.startsWith('/api/session-kill')) return jsonResponse({ ok: true });
+    if (u.startsWith('/api/board/machine')) return jsonResponse(machineFixture());
     if (u.startsWith('/api/board')) return jsonResponse(board);
     if (u.startsWith('/api/context-audit')) return jsonResponse({ findings: [], sources: [], counts: {} });
     return jsonResponse({});
@@ -532,6 +533,8 @@ describe('board screen', () => {
     for (const sec of freshLayout()) for (const p of sec.panels) expect(container.querySelector('#p-' + p.id), p.id).toBeTruthy();
     expect(getByText('Detail screens')).toBeTruthy();
     expect(container.querySelector('.bd-navi.bd-alert').textContent).toContain('2 running, 1 subagents');
+    expect(container.querySelector('#sec-resources .bd-sect').textContent).toBe('Machine');
+    expect(container.querySelector('.bd-navi[href="#sec-resources"]').textContent).toContain('2 alerts');
     expect(container.querySelectorAll('.bd-kpi')).toHaveLength(9);
     expect(container.querySelector('canvas')).toBeNull();
   });

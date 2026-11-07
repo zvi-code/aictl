@@ -3299,14 +3299,19 @@ def _count_agents(board: _Board, sids: Iterable[str]) -> int:
 _self_memo: list = [0.0, None]
 
 
-def _self_section(db: Any) -> dict:
+def _self_usage() -> dict:
+    """CPU and memory of aictl and its helpers, measured at most every SELF_TTL_S."""
     if _self_memo[1] is None or time.monotonic() - _self_memo[0] >= SELF_TTL_S:
         try:
             _self_memo[1] = self_usage()
             _self_memo[0] = time.monotonic()
         except Exception:  # noqa: BLE001 - a psutil failure must not take the board down
             _self_memo[1] = None
-    usage = _self_memo[1] or {"cpu_percent": None, "memory_rss_bytes": None, "children": []}
+    return _self_memo[1] or {"cpu_percent": None, "memory_rss_bytes": None, "children": []}
+
+
+def _self_section(db: Any) -> dict:
+    usage = _self_usage()
     status = db.storage_status()
     return {
         "cpu_percent": usage.get("cpu_percent"),
@@ -3829,6 +3834,7 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
             }
         )
     errors.sort(key=lambda e: e["ts"], reverse=True)
+    session = _session_row(db, conn, sid)
     own_loops = [loop for loop in board.loops if loop["agent_id"] == agent or (root and loop["session_id"] == sid)]
     loop = None
     if own_loops:
@@ -3855,7 +3861,221 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
         "tests": tests,
         "loop": loop,
         "errors": errors[:MAX_DETAIL_ROWS],
+        "git": _agent_git(db, session, sid),
+        "runs": _agent_runs(db, session, sid, row, now) if root else [],
+        "resources": _agent_resources(db, conn, board, sid, row, root, now),
     }
+
+
+RUN_HISTORY_DAYS = 30
+MAX_RUN_ROWS = 200
+
+
+def _session_row(db: Any, conn: sqlite3.Connection, sid: str) -> dict:
+    """The sessions-table row of a board session, also when it is stored under a monitor id with the same UUID."""
+    row = db.get_session(sid)
+    if row:
+        return row
+    uuid = _session_uuid(sid)
+    if uuid:
+        found = conn.execute(
+            "SELECT session_id FROM sessions WHERE session_id LIKE ? ORDER BY started_at DESC LIMIT 1", (f"%{uuid}%",)
+        ).fetchone()
+        if found:
+            return db.get_session(found[0]) or {}
+    return {}
+
+
+def _agent_git(db: Any, session: dict, sid: str) -> dict:
+    """Branch and commit the session started on, and the commits attributed to it so far."""
+    sid_stored = session.get("session_id") or sid
+    return {
+        "branch": session.get("git_branch") or None,
+        "commit": session.get("git_commit") or None,
+        "commits_in_session": db.count_session_commits(sid_stored),
+    }
+
+
+def _median(values: list[float]) -> float | None:
+    ordered = sorted(values)
+    if not ordered:
+        return None
+    mid = len(ordered) // 2
+    return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def _agent_runs(db: Any, session: dict, sid: str, row: dict, now: float) -> list[dict]:
+    """Ended runs of the same tool in the same project over the last 30 days, newest first.
+
+    Each run has its duration, tokens (input and output) and changed files as a ratio to the
+    median of the other runs in the list. A ratio is null when that median is zero or unknown.
+    """
+    from .api_handlers import _one_row_per_session
+
+    tool = session.get("tool") or row.get("tool") or ""
+    project = session.get("project_path") or row.get("project") or ""
+    if not tool or not project:
+        return []
+    since = now - RUN_HISTORY_DAYS * 86400.0
+    # A run counts when it ended in the window. Starts are read further back so a long run is not lost.
+    rows = _one_row_per_session(
+        db.query_sessions(since=since - RUN_HISTORY_DAYS * 86400.0, tool=tool, active=False, limit=5000)
+    )
+    own = {sid, session.get("session_id") or sid}
+    runs = []
+    for r in rows:
+        ended = float(r.get("ended_at") or 0)
+        if ended < since or (r.get("project_path") or "") != project:
+            continue
+        started = float(r.get("started_at") or 0)
+        runs.append(
+            {
+                "session_id": r.get("session_id", ""),
+                "started_at": started or None,
+                "ended_at": ended,
+                "duration_s": round(ended - started, 1) if started else None,
+                "tokens": int(r.get("input_tokens") or 0) + int(r.get("output_tokens") or 0),
+                "file_churn": int(r.get("files_modified") or 0),
+                "cost_usd": _usd(r.get("cost_usd")),
+                "current": r.get("session_id") in own,
+            }
+        )
+    runs.sort(key=lambda r: r["ended_at"], reverse=True)
+    runs = runs[:MAX_RUN_ROWS]
+    others = [r for r in runs if not r["current"]]
+    medians = {
+        key: _median([float(r[key]) for r in others if r[key] is not None])
+        for key in ("duration_s", "tokens", "file_churn")
+    }
+    for r in runs:
+        for key, out in (("duration_s", "duration_ratio"), ("tokens", "tokens_ratio"), ("file_churn", "churn_ratio")):
+            med = medians[key]
+            r[out] = round(r[key] / med, 3) if r[key] is not None and med else None
+    return runs
+
+
+def _live_matches(board: _Board, sid: str) -> list[dict]:
+    """The monitor's live sessions that belong to a board session: the same processes or the same UUID."""
+    pids = set((board.live_by_sid.get(sid) or {}).get("pids", ()))
+    uuid = _session_uuid(sid)
+    out = []
+    for live in board.live_sessions:
+        live_id = str(live.get("session_id") or "")
+        same_pids = pids & {int(p) for p in live.get("pids") or []}
+        if live_id == sid or (uuid and _session_uuid(live_id) == uuid) or same_pids:
+            out.append(live)
+    return out
+
+
+def _flat_tree(nodes: list[dict], depth: int, out: list[dict]) -> None:
+    for node in nodes:
+        out.append(
+            {
+                "pid": node.get("pid"),
+                "ppid": node.get("ppid"),
+                "name": node.get("name") or "",
+                "role": node.get("role") or None,
+                "cpu_percent": _as_number(node.get("cpu_pct")),
+                "mem_mb": _as_number(node.get("mem_mb")),
+                "depth": depth,
+            }
+        )
+        _flat_tree(node.get("children") or [], depth + 1, out)
+
+
+def _rate_limit(conn: sqlite3.Connection, sid: str) -> dict | None:
+    """The newest rate-limit report that the tool sent for this session, or None."""
+    row = conn.execute(
+        "SELECT ts, detail FROM events WHERE session_id = ? AND detail LIKE '%\"rate_limits\"%' ORDER BY ts DESC LIMIT 1",
+        (sid,),
+    ).fetchone()
+    if not row:
+        return None
+    try:
+        limits = (json.loads(row[1] or "{}") or {}).get("rate_limits")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(limits, dict) or not limits:
+        return None
+    windows = []
+    for name, value in limits.items():
+        if not isinstance(value, dict):
+            continue
+        used = _as_number(value.get("used_pct", value.get("used_percentage")))
+        windows.append({"window": str(name), "used_pct": used, "resets_at": value.get("resets_at") or None})
+    return {"ts": row[0], "windows": windows} if windows else None
+
+
+def _lm_by_extension(db: Any, conn: sqlite3.Connection, sid: str) -> list[dict] | None:
+    """VS Code language-model tokens by extension, or None when the session has no such record."""
+    hit = conn.execute(
+        "SELECT 1 FROM events WHERE session_id = ? AND (kind LIKE '%lm.usage' OR kind LIKE '%language_model.usage') LIMIT 1",
+        (sid,),
+    ).fetchone()
+    if not hit:
+        return None
+    from ..analysis.lm_usage import session_lm_usage
+
+    usage = session_lm_usage(db, sid)
+    rows = [
+        {
+            "extension": ext,
+            "input_tokens": stats.get("input_tokens", 0),
+            "output_tokens": stats.get("output_tokens", 0),
+            "total_tokens": stats.get("total_tokens", 0),
+            "calls": stats.get("calls", 0),
+            "models": stats.get("models", []),
+        }
+        for ext, stats in (usage.get("by_extension") or {}).items()
+    ]
+    rows.sort(key=lambda r: (-r["total_tokens"], r["extension"]))
+    return rows or None
+
+
+def _agent_resources(
+    db: Any, conn: sqlite3.Connection, board: _Board, sid: str, row: dict, root: bool, now: float
+) -> dict:
+    """Network, state writes, peak CPU and processes from the live monitor, plus rates from the store.
+
+    The monitor values are null when the agent has no live process: aictl keeps them only while it runs.
+    """
+    started = row.get("started_at")
+    calls = row.get("tool_calls")
+    minutes = ((row.get("ended_at") or now) - started) / 60.0 if started else 0.0
+    per_min = round(calls / max(minutes, 1.0), 2) if calls is not None and minutes > 0 else None
+    out: dict = {
+        "bytes_in": None,
+        "bytes_out": None,
+        "state_writes": None,
+        "cpu_peak": None,
+        "tool_calls_per_min": per_min,
+        "rate_limit": None,
+        "lm_by_extension": None,
+        "process_tree": [],
+        "subprocesses": [],
+    }
+    if not root:
+        return out
+    out["rate_limit"] = _rate_limit(conn, sid)
+    out["lm_by_extension"] = _lm_by_extension(db, conn, sid)
+    live = _live_matches(board, sid) if sid in board.live_by_sid else []
+    if not live:
+        return out
+    out["bytes_in"] = sum(int(x.get("inbound_bytes") or 0) for x in live)
+    out["bytes_out"] = sum(int(x.get("outbound_bytes") or 0) for x in live)
+    out["state_writes"] = sum(int(x.get("state_bytes_written") or 0) for x in live)
+    peaks = [float(x["peak_cpu_percent"]) for x in live if x.get("peak_cpu_percent") is not None]
+    out["cpu_peak"] = round(max(peaks), 2) if peaks else None
+    tree: list[dict] = []
+    for x in live:
+        _flat_tree(x.get("process_tree") or [], 0, tree)
+    out["process_tree"] = tree[:MAX_DETAIL_ROWS]
+    counts: dict[str, int] = defaultdict(int)
+    for x in live:
+        for name, n in (x.get("subprocess_count") or {}).items():
+            counts[str(name)] += int(n or 0)
+    out["subprocesses"] = [{"name": n, "count": c} for n, c in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+    return out
 
 
 def _maybe_int(value: Any) -> int | None:
@@ -4460,6 +4680,486 @@ def handle_get(
     except BoardRequestError as exc:
         status, payload = 400, {"error": str(exc)}
     return status, json.dumps(payload).encode("utf-8")
+
+
+# ─── /api/board/machine ───────────────────────────────────────────
+# The live state of this machine and of aictl's own data pipeline. It changes on
+# every monitor cycle and reads the server's receivers, so it has its own route:
+# /api/board stays keyed by the store version and keeps answering 304.
+
+MACHINE_CMDLINE_CHARS = 200
+SUBAGENT_RAM_ALERT_MB = 2048.0
+MANY_ANOMALIES = 5
+MACHINE_QUALITY_ROWS = 50
+DB_STATS_TTL_S = 60.0
+_SUBAGENT_TYPES = frozenset({"subagent", "agent"})
+_ORPHAN_PARENTS = (0, 1)
+_NO_FRESHNESS_TOOLS = frozenset({"aictl", "any"})
+_ANOMALY_KINDS = {
+    "high_memory": ("High memory", "warn"),
+    "cpu_spike": ("CPU spike", "warn"),
+    "zombie": ("Zombie process", "crit"),
+    "known_leak": ("Known leak", "crit"),
+    "high_file_count": ("High file count", "info"),
+    "long_running": ("Long running", "info"),
+}
+_db_stats_memo: dict[str, tuple[float, dict]] = {}
+
+
+def _mb_text(mb: float | None) -> str:
+    if mb is None:
+        return "n/a"
+    return f"{mb / 1000:.1f} GB" if mb >= 1000 else f"{mb:.0f} MB"
+
+
+def _as_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _anomaly_detail(kind: str, a: dict, proc: Any) -> str:
+    if kind == "high_memory":
+        detail = _mb_text(_as_number(a.get("actual_mb")))
+        expected = _as_number(a.get("expected_mb"))
+        return detail + (f", expected {_mb_text(expected)}" if expected is not None else "")
+    if kind == "cpu_spike":
+        cpu = _as_number(_proc_field(proc, "cpu_pct"))
+        return f"{cpu:.0f}% CPU" if cpu is not None else ""
+    if kind == "zombie":
+        return f"its parent is gone (parent PID {a.get('ppid')}), risk {a.get('risk') or 'n/a'}"
+    if kind == "known_leak":
+        return str(a.get("pattern") or "")
+    if kind == "high_file_count":
+        files = _proc_field(proc, "file_count")
+        return f"{files} open files" if files else ""
+    if kind == "long_running":
+        up = _as_number(_proc_field(proc, "uptime_s"))
+        return f"running for {up / 60:.0f} min" if up else ""
+    return ""
+
+
+def _anomaly(raw: Any, proc: Any) -> dict:
+    """One anomaly the process scan found, as a label, a severity and a sentence."""
+    a = raw if isinstance(raw, dict) else {"type": str(raw)}
+    kind = str(a.get("type") or "unknown")
+    label, severity = _ANOMALY_KINDS.get(kind, (kind.replace("_", " ").capitalize(), "warn"))
+    detail = _anomaly_detail(kind, a, proc)
+    return {"kind": kind, "severity": severity, "label": label, "text": f"{label}: {detail}" if detail else label}
+
+
+def _parent_pid(pid: int) -> int | None:
+    """The parent of a process the scan reported without one. None when it is gone."""
+    try:
+        import psutil
+
+        return psutil.Process(pid).ppid()
+    except Exception:  # noqa: BLE001 - a process can end between the scan and this read
+        return None
+
+
+def _process_row(proc: Any, tool_id: str, live: dict | None) -> dict:
+    zombie = _proc_field(proc, "zombie_risk") or ""
+    ppid = _as_int((live or {}).get("ppid"))
+    if ppid is None:
+        ppid = _as_int(_proc_field(proc, "ppid"))
+    return {
+        "pid": _as_int(_proc_field(proc, "pid")),
+        "ppid": ppid,
+        "parent_name": None,
+        "name": _proc_field(proc, "name") or "",
+        "tool": tool_id,
+        "process_type": _proc_field(proc, "process_type") or None,
+        "cpu_pct": _as_number(_proc_field(proc, "cpu_pct")),
+        "mem_mb": _as_number(_proc_field(proc, "mem_mb")),
+        "cmdline": _one_line(_proc_field(proc, "cmdline") or (live or {}).get("exe"), MACHINE_CMDLINE_CHARS) or None,
+        "anomalies": [_anomaly(a, proc) for a in (_proc_field(proc, "anomalies") or [])],
+        "zombie_risk": zombie if zombie and zombie != "none" else None,
+        "cleanup_cmd": mask_secrets(_proc_field(proc, "cleanup_cmd") or "") or None,
+    }
+
+
+def _machine_tools(snapshot: Any, selected: set[str] | None) -> list[Any]:
+    out = []
+    for tool in getattr(snapshot, "tools", None) or []:
+        if getattr(tool, "meta", False):
+            continue
+        if selected is not None and getattr(tool, "tool", "") not in selected:
+            continue
+        out.append(tool)
+    return out
+
+
+def machine_processes(snapshot: Any, selected: set[str] | None = None) -> list[dict]:
+    """Every AI-tool process the scan and the live monitor report, with its parent and its anomalies."""
+    tools = _machine_tools(snapshot, selected)
+    live_by_pid: dict[int, dict] = {}
+    for tool in tools:
+        for p in (getattr(tool, "live", None) or {}).get("processes") or []:
+            pid = _as_int(p.get("pid")) if isinstance(p, dict) else None
+            if pid is not None:
+                live_by_pid.setdefault(pid, {**p, "tool": getattr(tool, "tool", "")})
+    rows: dict[int, dict] = {}
+    for tool in tools:
+        for proc in getattr(tool, "processes", None) or []:
+            pid = _as_int(_proc_field(proc, "pid"))
+            if pid is not None and pid not in rows:
+                rows[pid] = _process_row(proc, getattr(tool, "tool", ""), live_by_pid.get(pid))
+    # The live monitor also follows child processes that the scan does not match.
+    for pid, p in live_by_pid.items():
+        if pid not in rows:
+            rows[pid] = _process_row(p, p["tool"], p)
+    names = {pid: r["name"] for pid, r in rows.items()}
+    for pid, row in rows.items():
+        if row["ppid"] is None:
+            row["ppid"] = _parent_pid(pid)
+        row["parent_name"] = names.get(row["ppid"]) if row["ppid"] is not None else None
+    out = sorted(rows.values(), key=lambda r: (-(r["cpu_pct"] or 0.0), -(r["mem_mb"] or 0.0), r["pid"]))
+    return out[:MAX_LIST_ROWS]
+
+
+def machine_alerts(processes: list[dict]) -> list[dict]:
+    """Machine-wide findings over the processes: subagent RAM, orphaned MCP servers, headless browsers, anomalies."""
+    alerts = []
+    subagents = [p for p in processes if (p["process_type"] or "").lower() in _SUBAGENT_TYPES]
+    sub_mb = sum(p["mem_mb"] or 0.0 for p in subagents)
+    if sub_mb > SUBAGENT_RAM_ALERT_MB:
+        alerts.append(
+            {
+                "kind": "subagent_ram",
+                "severity": "crit",
+                "text": f"Subagents use {_mb_text(sub_mb)} of RAM, more than 2 GB",
+                "detail": f"{len(subagents)} subagent {'process' if len(subagents) == 1 else 'processes'}. Stop the subagents that are no longer needed.",
+                "pids": [p["pid"] for p in subagents],
+                "tool": _one_tool(subagents),
+                "action": None,
+            }
+        )
+    orphans = [
+        p
+        for p in processes
+        if (p["process_type"] or "").lower() == "mcp-server"
+        and (p["ppid"] in _ORPHAN_PARENTS or any(a["kind"] == "zombie" for a in p["anomalies"]))
+    ]
+    if orphans:
+        alerts.append(
+            {
+                "kind": "orphan_mcp",
+                "severity": "warn",
+                "text": f"{len(orphans)} MCP {'server has' if len(orphans) == 1 else 'servers have'} no parent process and may be orphaned",
+                "detail": ", ".join(f"{p['name']} (PID {p['pid']})" for p in orphans[:10]),
+                "pids": [p["pid"] for p in orphans],
+                "tool": _one_tool(orphans),
+                "action": _cleanup_of(orphans),
+            }
+        )
+    headless = [
+        p
+        for p in processes
+        if (p["process_type"] or "").lower() == "browser" or "headless" in (p["name"] or "").lower()
+    ]
+    if headless:
+        alerts.append(
+            {
+                "kind": "headless_browser",
+                "severity": "info",
+                "text": f"{len(headless)} headless browser {'process' if len(headless) == 1 else 'processes'}. Check that they are still in use.",
+                "detail": ", ".join(f"{p['name']} (PID {p['pid']}, {_mb_text(p['mem_mb'])})" for p in headless[:10]),
+                "pids": [p["pid"] for p in headless],
+                "tool": _one_tool(headless),
+                "action": _cleanup_of(headless),
+            }
+        )
+    flagged = [p for p in processes if p["anomalies"]]
+    count = sum(len(p["anomalies"]) for p in flagged)
+    if count > MANY_ANOMALIES:
+        alerts.append(
+            {
+                "kind": "anomalies",
+                "severity": "warn",
+                "text": f"{count} process anomalies in {len(flagged)} processes",
+                "detail": ", ".join(sorted({a["label"] for p in flagged for a in p["anomalies"]})),
+                "pids": [p["pid"] for p in flagged],
+                "tool": _one_tool(flagged),
+                "action": None,
+            }
+        )
+    for alert in alerts:
+        alert["pid"] = alert["pids"][0] if len(alert["pids"]) == 1 else None
+    return alerts
+
+
+def _one_tool(processes: list[dict]) -> str | None:
+    tools = {p["tool"] for p in processes}
+    return next(iter(tools)) if len(tools) == 1 else None
+
+
+def _cleanup_of(processes: list[dict]) -> str:
+    """The catalog's cleanup command when the processes share one, else a kill of their PIDs."""
+    commands = {p["cleanup_cmd"] for p in processes if p["cleanup_cmd"]}
+    if len(commands) == 1 and all(p["cleanup_cmd"] for p in processes):
+        return next(iter(commands))
+    return "kill " + " ".join(str(p["pid"]) for p in processes)
+
+
+def _monitor_section(snapshot: Any, selected: set[str] | None) -> dict:
+    lm = getattr(snapshot, "live_monitor", None) or {}
+    collectors = [
+        {
+            "name": name,
+            "mode": d.get("mode") or None,
+            "status": d.get("status") or "unknown",
+            "detail": d.get("detail") or None,
+        }
+        for name, d in sorted((lm.get("diagnostics") or {}).items())
+        if isinstance(d, dict)
+    ]
+    roots = [{"kind": "workspace", "path": p} for p in lm.get("workspace_paths") or []]
+    roots += [{"kind": "state", "path": p} for p in lm.get("state_paths") or []]
+    per_tool = []
+    for tool in _machine_tools(snapshot, selected):
+        live = getattr(tool, "live", None)
+        if not live:
+            continue
+        tokens = live.get("token_estimate") or {}
+        mcp = live.get("mcp")
+        size_mb = _as_number(live.get("workspace_size_mb"))
+        est = None
+        if tokens:
+            est = int((_as_number(tokens.get("input_tokens")) or 0) + (_as_number(tokens.get("output_tokens")) or 0))
+        per_tool.append(
+            {
+                "tool": tool.tool,
+                "label": getattr(tool, "label", "") or _label(tool.tool),
+                "sessions": _as_int(live.get("session_count")),
+                "pids": _as_int(live.get("pid_count")),
+                "inbound_bps": _as_number(live.get("inbound_rate_bps")),
+                "outbound_bps": _as_number(live.get("outbound_rate_bps")),
+                "est_tokens": est,
+                "est_confidence": _as_number(tokens.get("confidence")) if tokens else None,
+                "est_source": tokens.get("source") or None,
+                "mcp_loop": {
+                    "detected": bool(mcp.get("detected")),
+                    "loops": _as_int(mcp.get("loops")) or 0,
+                    "confidence": _as_number(mcp.get("confidence")),
+                }
+                if isinstance(mcp, dict)
+                else None,
+                "file_events": _as_int(live.get("file_events")),
+                "files_touched": _as_int(live.get("files_touched")),
+                "cpu_pct": _as_number(live.get("cpu_percent")),
+                "cpu_peak": _as_number(live.get("peak_cpu_percent")),
+                "workspace_bytes": int(size_mb * 1048576) if size_mb is not None else None,
+                "workspaces": list(live.get("workspaces") or [])[:5],
+                "last_seen": _as_number(live.get("last_seen_at")) or None,
+            }
+        )
+    return {"collectors": collectors, "roots": roots, "per_tool": per_tool}
+
+
+def _db_stats(db: Any) -> dict:
+    """Size and row counts of the history, read at most every DB_STATS_TTL_S: each count scans a table."""
+    if db is None:
+        return {}
+    key = str(getattr(db, "_path", "memory"))
+    cached = _db_stats_memo.get(key)
+    if cached and time.monotonic() - cached[0] < DB_STATS_TTL_S:
+        return cached[1]
+    try:
+        stats = db.stats()
+    except Exception:  # noqa: BLE001 - a busy or damaged store still answers the rest
+        logger.debug("History stats failed", exc_info=True)
+        stats = {}
+    _db_stats_memo[key] = (time.monotonic(), stats)
+    return stats
+
+
+def _own_process() -> dict:
+    try:
+        import psutil
+
+        proc = psutil.Process(os.getpid())
+        return {"threads": proc.num_threads(), "uptime_s": round(time.time() - proc.create_time(), 1)}
+    except Exception:  # noqa: BLE001 - psutil is optional on some platforms
+        return {"threads": None, "uptime_s": None}
+
+
+def _sink_section(store: Any) -> dict | None:
+    sink = getattr(store, "_sink", None)
+    if sink is None:
+        return None
+    try:
+        s = sink.stats()
+    except Exception:  # noqa: BLE001 - a sink failure must not take the board down
+        return None
+    return {
+        "emitted": s.get("total_emitted"),
+        "flushed": s.get("total_flushed"),
+        "dropped": s.get("total_dropped"),
+        "flood": bool(s.get("is_flooding")),
+        "flood_drops": s.get("flood_drop_count"),
+        "buffered": s.get("buffer_size"),
+        "tracked": s.get("metrics_tracked"),
+    }
+
+
+def _quality_rows(db: Any) -> list[dict]:
+    if db is None:
+        return []
+    try:
+        rows = db.query_data_quality(limit=MACHINE_QUALITY_ROWS)
+    except Exception:  # noqa: BLE001 - an old store without the table still answers the rest
+        return []
+    out = []
+    for r in rows:
+        detail = r.get("detail") if isinstance(r.get("detail"), dict) else {}
+        out.append(
+            {
+                "ts": r.get("updated_at"),
+                "component": r.get("component") or "",
+                "source": r.get("source") or "",
+                "kind": r.get("kind") or "",
+                "status": r.get("status") or "",
+                "severity": r.get("severity") or "",
+                "text": mask_secrets(r.get("message") or ""),
+                "error": mask_secrets(str(detail.get("error"))) if detail.get("error") else None,
+                "tool": detail.get("tool") or None,
+                "count": r.get("count"),
+                "last_ok": r.get("last_ok_at") or None,
+            }
+        )
+    return out
+
+
+def _ingester_rows(handles: Any, quality: list[dict]) -> list[dict]:
+    from .ingester_runner import collect_status
+
+    by_component = {q["component"]: q for q in quality}
+    out = []
+    for h in collect_status(handles):
+        name = h.get("name") or ""
+        q = by_component.get(f"ingester:{name}") or by_component.get(name)
+        polled = h.get("last_poll_ts") or None
+        if not h.get("enabled"):
+            status = "off"
+        elif not h.get("source_exists"):
+            status = "no source"
+        elif q and q["status"] not in ("ok", "") and q["severity"] in ("error", "warning"):
+            status = q["status"]
+        elif not polled:
+            status = "waiting"
+        else:
+            status = "ok"
+        failing = status not in ("ok", "off", "waiting")
+        out.append(
+            {
+                "name": name,
+                "status": status,
+                "last_ok": (q or {}).get("last_ok") or (polled if status == "ok" else None),
+                "last_poll": polled,
+                "error": ((q or {}).get("error") or (q or {}).get("text")) if failing else None,
+                "rows": h.get("last_poll_inserted"),
+                "rows_total": h.get("rows_ingested_total"),
+                "source": _display_folder(Path(h["source_path"])) if h.get("source_path") else None,
+            }
+        )
+    return out
+
+
+def _freshness(snapshot: Any, selected: set[str] | None) -> list[dict]:
+    telemetry = {t.get("tool"): t for t in getattr(snapshot, "tool_telemetry", None) or [] if isinstance(t, dict)}
+    out = []
+    for tool in _machine_tools(snapshot, selected):
+        if tool.tool in _NO_FRESHNESS_TOOLS:
+            continue
+        live = getattr(tool, "live", None) or {}
+        telem = telemetry.get(tool.tool) or {}
+        errors = [e for e in telem.get("errors") or [] if isinstance(e, dict)]
+        estimate = live.get("token_estimate") or {}
+        confidence = _as_number(telem.get("confidence")) or _as_number(estimate.get("confidence"))
+        out.append(
+            {
+                "tool": tool.tool,
+                "label": getattr(tool, "label", "") or _label(tool.tool),
+                "last_seen": _as_number(live.get("last_seen_at")) or None,
+                "source": telem.get("source") or ("live-monitor" if live.get("session_count") else "discovery"),
+                "confidence": confidence or None,
+                "errors": len(errors),
+                "last_error": _one_line(errors[0].get("message"), 200) if errors else None,
+            }
+        )
+    return out
+
+
+def compute_machine(
+    db: Any,
+    store: Any,
+    tools: tuple[str, ...] | None = None,
+    otel: Any = None,
+    ingesters: Any = None,
+    stream_clients: int | None = None,
+    now: float | None = None,
+) -> dict:
+    """Everything ``GET /api/board/machine`` returns. The Tool filter applies to the per-tool lists only."""
+    now = time.time() if now is None else now
+    snapshot = getattr(store, "snapshot", None)
+    selected = set(stored_ids_for(tools)) if tools is not None else None
+    processes = machine_processes(snapshot, selected)
+    usage = _self_usage()
+    stats = _db_stats(db)
+    counts = {k[: -len("_count")]: v for k, v in stats.items() if k.endswith("_count") and isinstance(v, int)}
+    quality = _quality_rows(db)
+    try:
+        otel_status = otel.status() if otel is not None else None
+    except Exception:  # noqa: BLE001 - the receiver is optional
+        otel_status = None
+    snap_ts = _as_number(getattr(snapshot, "timestamp", None)) if snapshot is not None else None
+    return {
+        "generated_at": now,
+        "monitor": _monitor_section(snapshot, selected),
+        "processes": processes,
+        "cpu_per_core": [round(float(v), 1) for v in getattr(snapshot, "cpu_per_core", None) or []],
+        "cpu_cores": getattr(snapshot, "cpu_cores", None) or None,
+        "alerts": machine_alerts(processes),
+        "pipeline": {
+            "self": {
+                "pid": os.getpid(),
+                "cpu": usage.get("cpu_percent"),
+                "rss": usage.get("memory_rss_bytes"),
+                **_own_process(),
+                "db_bytes": stats.get("file_size_bytes"),
+                "db_rows": sum(counts.values()) if counts else None,
+                "db_tables": counts,
+            },
+            "sink": _sink_section(store),
+            "otel_receiver": otel_status,
+            "ingesters": _ingester_rows(ingesters, quality),
+            "data_quality": quality,
+            "freshness": _freshness(snapshot, selected),
+            "stream": {
+                "connected_clients": stream_clients,
+                "snapshot_ts": snap_ts,
+                "snapshot_age_s": round(max(0.0, now - snap_ts), 1) if snap_ts else None,
+            },
+        },
+    }
+
+
+def machine_bytes(
+    db: Any,
+    store: Any,
+    query: str,
+    otel: Any = None,
+    ingesters: Any = None,
+    stream_clients: int | None = None,
+    now: float | None = None,
+) -> bytes:
+    """The answer for ``/api/board/machine``. ``tool`` takes the same values as on ``/api/board``."""
+    qs = parse_qs(query, keep_blank_values=True)
+    tools = normalize_selection(part for raw in qs["tool"] for part in raw.split(",")) if "tool" in qs else None
+    payload = compute_machine(db, store, tools, otel, ingesters, stream_clients, now)
+    return json.dumps(payload).encode("utf-8")
 
 
 # ─── Actions ──────────────────────────────────────────────────────
