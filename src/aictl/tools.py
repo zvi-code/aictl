@@ -1649,6 +1649,7 @@ def _read_memory_file(path: Path, source: str, profile: str) -> MemoryEntry | No
 
 def collect_agent_memory(root: Path) -> list[MemoryEntry]:
     """Collect all agent memory, policies, and decisions from multiple sources."""
+    from . import tool_homes
     from .memory import _find_project_dir, list_stashes
     from .platforms import copilot_global_storage, windsurf_global_dir
 
@@ -1656,12 +1657,13 @@ def collect_agent_memory(root: Path) -> list[MemoryEntry]:
     home = Path.home()
 
     # 1–2. Claude Code single-file sources
+    # The user files of each tool home found on this machine, not only the default one.
+    user_files = {"claude": ("CLAUDE.md", "claude-user-memory"), "copilot": ("copilot-instructions.md", "copilot-user-memory"), "codex": ("instructions.md", "codex-user-memory")}
+    home_sources = [(h.path / user_files[h.tool][0], user_files[h.tool][1], "(global)") for h in tool_homes.homes()]
     for path, source, profile in [
-        (home / ".claude" / "CLAUDE.md", "claude-user-memory", "(global)"),
+        *home_sources,
         (root / "CLAUDE.md", "claude-project-memory", "(project)"),
         (root / "CLAUDE.local.md", "claude-project-memory", "(local)"),
-        (home / ".copilot" / "copilot-instructions.md", "copilot-user-memory", "(global)"),
-        (home / ".codex" / "instructions.md", "codex-user-memory", "(global)"),
         (windsurf_global_dir() / "memories" / "global_rules.md", "windsurf-user-memory", "(global)"),
     ]:
         if entry := _read_memory_file(path, source, profile):
