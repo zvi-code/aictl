@@ -161,6 +161,55 @@ describe('the Settings screen in the board', () => {
     expect(container.querySelector('.st-ws')).toBeTruthy();
   });
 
+  it('passes the hook status to the workspace, and reads the settings again after a permissions save', async () => {
+    const local = '/home/u/proj/.claude/settings.local.json';
+    const rules = { allow: ['Bash'], deny: [], ask: [] };
+    const settings = {
+      ...SETTINGS,
+      tool_configs: [{
+        tool: 'claude-code', config_files: [local],
+        scopes: [{ id: 'project-local', label: 'Project (local)', path: local, exists: true, changeable: true }],
+        sections: [
+          { id: 'autonomy', title: 'Autonomy and safety', rows: [{ key: 'permissions', label: 'Permissions', value: rules, kind: 'map', source: local, scope: 'project-local', line: 2, chain: [{ scope: 'project-local', value: rules, source: local, line: 2 }], wins: 0, note: '' }] },
+          { id: 'hooks', title: 'Hooks', rows: [{ key: 'hooks', label: 'Hooks', value: 'configured', kind: 'text', source: local, scope: 'project-local', line: 3, note: '' }] },
+        ],
+      }],
+    };
+    const calls = [];
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      const u = String(url);
+      calls.push((opts?.method || 'GET') + ' ' + u);
+      if (u.startsWith('/api/settings/tools')) return json(settings);
+      if (u.startsWith('/api/hooks-status')) return json({ tools: { 'claude-code': { status: 'active', configured_events: ['Stop'], fired_24h: 3, sources: [] } } });
+      if (u.startsWith('/api/tool-config/')) {
+        return json(opts?.method === 'PUT'
+          ? { path: local, exists: true, mtime: 2, permissions: JSON.parse(opts.body).permissions, backup_path: local + '.bak.1' }
+          : { path: local, exists: true, mtime: 1, permissions: rules });
+      }
+      if (u.startsWith('/api/settings/files')) return json({ error: 'not found' }, 404);
+      if (u.startsWith('/api/board')) return json(boardFixture());
+      if (u.startsWith('/api/context-audit')) return json({ findings: [], sources: [], counts: {} });
+      return json({});
+    }));
+    window.history.replaceState(null, '', '/?screen=settings&tool=claude-code&row=permissions');
+    const { container } = render(html`<${BoardScreen}/>`);
+    await waitFor(() => expect(container.querySelector('[data-testid="st-hookstat"]')).toBeTruthy());
+    expect(calls.filter(c => c.includes('/api/hooks-status'))).toHaveLength(1);
+    const reads = () => calls.filter(c => c.startsWith('GET /api/settings/tools')).length;
+    const before = reads();
+    fireEvent.click([...container.querySelectorAll('.st-insp button')].find(b => b.textContent === 'Change value…'));
+    const area = await waitFor(() => {
+      const a = container.querySelector('textarea[data-bucket="allow"]');
+      expect(a).toBeTruthy();
+      return a;
+    });
+    fireEvent.input(area, { target: { value: 'Bash\nRead(*)' } });
+    fireEvent.click([...container.querySelectorAll('[data-testid="st-perm-editor"] button')].find(b => b.textContent === 'Save'));
+    await waitFor(() => expect(container.querySelector('[data-testid="st-editor-saved"]')).toBeTruthy());
+    await waitFor(() => expect(reads()).toBe(before + 1));
+    expect(calls.filter(c => c.includes('/api/hooks-status'))).toHaveLength(1);
+  });
+
   it('no longer lists Configuration under the detail screens', async () => {
     const { getByText, queryByText } = await mountBoard();
     fireEvent.click(getByText('Detail screens'));

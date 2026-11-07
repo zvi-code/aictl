@@ -13,6 +13,7 @@ import axe from 'axe-core';
 import {
   deriveScope, deriveLocation, readSettingsUrl, rowChain, toolEntries, whyWins, getSections, SECTION_ORDER,
 } from '../src/components/settings/model.js';
+import { derivePermissions, permissionEdit } from '../src/components/settings/permissions.js';
 
 const HOME = '/home/u';
 const PROJ = HOME + '/proj';
@@ -697,9 +698,9 @@ describe('Configuration scopes', () => {
     expect(levels[1].classList.contains('is-locked')).toBe(true);
     expect(levels[1].querySelector('.st-lock')).toBeTruthy();
     expect(levels[0].querySelector('.st-lock')).toBeNull();
-    // An unlocked row keeps the phase-2 hint.
+    // An unlocked row of a file the screen cannot edit says so.
     fireEvent.click(rowByKey(container, 'model'));
-    expect(container.querySelector('[data-testid="st-change-hint"]').textContent).toContain('phase 2');
+    expect(container.querySelector('[data-testid="st-change-hint"]').textContent).toBe('Editing this file is not supported yet');
   });
 
   it('lists absent managed locations in a folded group at the end of Files', async () => {
@@ -871,6 +872,287 @@ describe('Accessibility of scopes and agents', () => {
   it.each(['tool=claude-code&row=agent/reviewer', 'tool=claude-code&unset=1&row=permissions.disableBypassPermissionsMode', 'pivot=topic&sec=agents', 'pivot=files'])('%s has no serious or critical axe violations', async (search) => {
     const { container } = renderAt(search, { snap: SNAP2 });
     await waitFor(() => expect(container.querySelector('[data-state="scanning"]')).toBeNull());
+    const results = await axe.run(container, { rules: { 'color-contrast': { enabled: false }, region: { enabled: false } } });
+    const serious = results.violations.filter(v => v.impact === 'serious' || v.impact === 'critical');
+    expect(serious.map(v => v.id + ': ' + v.nodes.map(n => n.html).join(' | '))).toEqual([]);
+  });
+});
+
+// ─── Permissions: the matrix, the Claude Code editor, the hook status ───
+const COPILOT_USER = HOME + '/.copilot/settings.json';
+const CLAUDE_SCOPES = [
+  { id: 'user', label: 'User', path: CLAUDE_USER, exists: true, changeable: true },
+  { id: 'project', label: 'Project', path: CLAUDE_PROJ, exists: true, changeable: true },
+  { id: 'project-local', label: 'Project (local)', path: CLAUDE_LOCAL, exists: true, changeable: true },
+  { id: 'managed', label: 'Managed', path: '/etc/claude-code/managed-settings.json', exists: false, changeable: false },
+];
+const RULES = { allow: ['Bash'], deny: ['WebFetch'], ask: ['Edit'] };
+
+/** A Claude Code record whose permission rules win at `winScope`. */
+function claudePerms(winScope = 'project-local') {
+  const src = { user: CLAUDE_USER, project: CLAUDE_PROJ, 'project-local': CLAUDE_LOCAL }[winScope];
+  const chain = [{ scope: 'user', value: { allow: [], deny: [], ask: [] }, source: CLAUDE_USER, line: 2 }];
+  if (winScope === 'user') chain[0] = { scope: 'user', value: RULES, source: CLAUDE_USER, line: 2 };
+  else chain.push({ scope: winScope, value: RULES, source: src, line: 2 });
+  return {
+    tool: 'claude-code',
+    config_files: [CLAUDE_USER, CLAUDE_PROJ, CLAUDE_LOCAL],
+    scopes: CLAUDE_SCOPES,
+    sections: [
+      { id: 'autonomy', title: 'Autonomy and safety', rows: [
+        row('permissions', RULES, 'map', { label: 'Permissions', source: src, scope: winScope, line: 2, chain, wins: chain.length - 1, set: true }),
+        row('permissions.defaultMode', null, 'text', { label: 'Default mode', scope: 'default', set: false }),
+      ] },
+      { id: 'hooks', title: 'Hooks', rows: [row('hooks', 'configured', 'text', { label: 'Hooks', source: CLAUDE_USER, scope: 'user', line: 9 })] },
+    ],
+  };
+}
+
+const COPILOT_CLI = {
+  tool: 'copilot-cli',
+  config_files: [COPILOT_USER],
+  sections: [{ id: 'autonomy', title: 'Autonomy and safety', rows: [
+    row('defaultPermissionMode', 'allow-all', 'text', { label: 'Default permission mode', danger: true, source: COPILOT_USER, scope: 'user', line: 4 }),
+    row('savedToolApprovals', { '/home/u/proj': 3 }, 'map', { label: 'Saved tool approvals', source: HOME + '/.copilot/permissions-config.json', scope: 'user' }),
+  ] }],
+};
+
+const permSnap = (claude = claudePerms()) => ({
+  root: PROJ,
+  tools: [{ tool: 'claude-code', label: 'Claude Code', files: [] }, { tool: 'copilot-cli', label: 'Copilot CLI', files: [] }, { tool: 'codex-cli', label: 'Codex CLI', files: [] }],
+  tool_configs: [claude, COPILOT_CLI, CODEX_CFG],
+  live_monitor: {},
+});
+
+const CONFIG = { tool: 'claude-code', scope: 'project-local', path: CLAUDE_LOCAL, exists: true, mtime: 1779000000.25, permissions: RULES };
+
+/** The test fetch, with the tool-config endpoint answered by `onConfig(method, url, body)`. */
+function stubConfig(onConfig) {
+  const calls = [];
+  const base = globalThis.fetch;
+  globalThis.fetch = vi.fn(async (url, opts) => {
+    const u = String(url);
+    if (!u.startsWith('/api/tool-config/')) return base(url, opts);
+    const method = opts?.method || 'GET';
+    const body = opts?.body ? JSON.parse(opts.body) : null;
+    calls.push({ method, url: u, body });
+    const res = onConfig(method, u, body) || { status: 200, body: CONFIG };
+    return { ok: res.status < 400, status: res.status, json: async () => res.body, text: async () => JSON.stringify(res.body) };
+  });
+  return calls;
+}
+
+function renderPerms(search, { snap = permSnap(), ...extra } = {}) {
+  history.replaceState(null, '', '/?tab=config' + (search ? '&' + search : ''));
+  const source = { ...makeSource({ snap }), ...extra };
+  const r = render(html`<${SettingsWorkspace} source=${source}/>`);
+  return { ...r, source };
+}
+
+const cellsOf = el => Object.fromEntries([...el.querySelectorAll('td[data-cap]')].map(td => [td.dataset.cap, td]));
+const changeBtn = c => [...c.querySelectorAll('[data-testid="st-inspector-row"] button')].find(b => b.textContent === 'Change value…');
+
+describe('Permission matrix', () => {
+  it('shows the five capabilities for Claude Code, from allow Bash, deny WebFetch and ask Edit', () => {
+    const { container } = renderPerms('tool=claude-code');
+    const m = container.querySelector('[data-testid="st-perms"]');
+    expect(m).toBeTruthy();
+    // It sits in the Autonomy and safety section, above the rows.
+    expect(m.closest('tbody').dataset.section).toBe('autonomy');
+    expect([...m.querySelectorAll('thead th')].map(th => th.textContent)).toEqual(['MCP', 'Read files', 'Write files', 'Shell', 'Web']);
+    const cells = cellsOf(m);
+    expect(Object.fromEntries(Object.entries(cells).map(([k, td]) => [k, td.textContent.trim()]))).toEqual({
+      mcp: 'asks', read: 'allowed', write: 'asks', shell: 'allowed', web: 'denied',
+    });
+    expect(cells.shell.getAttribute('title')).toContain('allow Bash (Project (local))');
+    expect(cells.web.getAttribute('title')).toContain('deny WebFetch');
+    expect(cells.write.getAttribute('title')).toContain('ask Edit');
+    expect(cells.read.getAttribute('title')).toContain('Without a rule');
+  });
+
+  it('a cell click selects the setting row behind it', () => {
+    const { container } = renderPerms('tool=claude-code');
+    fireEvent.click(cellsOf(container.querySelector('[data-testid="st-perms"]')).shell.querySelector('button'));
+    expect(container.querySelector('[data-testid="st-inspector-row"] .st-insp__key').textContent).toBe('permissions');
+  });
+
+  it('shows every cell allowed for Copilot CLI in allow-all mode, with the saved approvals', () => {
+    const { container } = renderPerms('tool=copilot-cli');
+    const m = container.querySelector('[data-testid="st-perms"]');
+    expect(Object.values(cellsOf(m)).map(td => td.dataset.state)).toEqual(['allowed', 'allowed', 'allowed', 'allowed', 'allowed']);
+    expect(m.textContent).toContain('3 saved tool approvals in 1 folder');
+  });
+
+  it('has no matrix for a tool without permission settings', () => {
+    const { container } = renderPerms('tool=claude-code', { snap: { ...permSnap(), tool_configs: [{ tool: 'claude-code', sections: [{ id: 'model', title: 'Model', rows: [row('model', 'opus', 'text')] }] }] } });
+    expect(container.querySelector('[data-testid="st-perms"]')).toBeNull();
+  });
+
+  it('By topic shows one line per tool above the matrix of rows', () => {
+    const { container } = renderPerms('pivot=topic&sec=autonomy');
+    const block = container.querySelector('[data-testid="st-perms-topic"]');
+    expect([...block.querySelectorAll('tbody tr')].map(tr => tr.dataset.tool)).toEqual(['claude-code', 'copilot-cli', 'codex-cli']);
+    const codex = cellsOf(block.querySelector('tr[data-tool="codex-cli"]'));
+    expect(codex.read.dataset.state).toBe('allowed');
+    expect(block.compareDocumentPosition(container.querySelector('.st-matrix')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('calls a capability mixed when partial rules differ from the rest, and counts the rules', () => {
+    const entry = toolEntries({ root: PROJ, tools: [], tool_configs: [{ tool: 'claude-code', sections: [{ id: 'autonomy', title: 'A', rows: [
+      row('permissions', { allow: ['Bash(git status:*)', 'Read(*)'], deny: ['Bash(rm:*)'], ask: [] }, 'map', { scope: 'project', source: CLAUDE_PROJ }),
+      row('permissions.defaultMode', 'acceptEdits', 'text', { scope: 'project', source: CLAUDE_PROJ }),
+    ] }] }] })[0];
+    const cells = Object.fromEntries(derivePermissions(entry).cells.map(c => [c.cap, c]));
+    expect(cells.shell.text).toBe('mixed (2 rules)');
+    expect(cells.read.state).toBe('allowed');
+    expect(cells.write.state).toBe('allowed');
+  });
+
+  it('works Codex out from approval_policy and sandbox_mode', () => {
+    const entry = toolEntries({ root: PROJ, tools: [], tool_configs: [{ tool: 'codex-cli', sections: [{ id: 'autonomy', title: 'A', rows: [
+      row('approval_policy', 'never', 'text', { source: CODEX, scope: 'user' }),
+      row('sandbox_mode', 'danger-full-access', 'text', { source: CODEX, scope: 'user' }),
+    ] }] }] })[0];
+    expect(derivePermissions(entry).cells.map(c => c.state)).toEqual(['allowed', 'allowed', 'allowed', 'allowed', 'allowed']);
+  });
+});
+
+describe('Claude Code permissions editor', () => {
+  it('opens in the inspector for a project-local permissions row, with the lists, the file and the scope', async () => {
+    const calls = stubConfig(() => null);
+    const { container } = renderPerms('tool=claude-code&row=permissions');
+    const btn = changeBtn(container);
+    expect(btn.disabled).toBe(false);
+    expect(container.querySelector('[data-testid="st-change-hint"]').textContent).toContain('Project (local)');
+    fireEvent.click(btn);
+    const ed = container.querySelector('[data-testid="st-perm-editor"]');
+    expect(ed).toBeTruthy();
+    // A panel in the inspector, not a dialog.
+    expect(ed.closest('.st-insp')).toBeTruthy();
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    await waitFor(() => expect(ed.querySelector('textarea[data-bucket="allow"]')).toBeTruthy());
+    expect(calls[0].url).toBe('/api/tool-config/claude-code?scope=project-local');
+    expect(ed.querySelector('textarea[data-bucket="allow"]').value).toBe('Bash');
+    expect(ed.querySelector('textarea[data-bucket="deny"]').value).toBe('WebFetch');
+    expect(ed.querySelector('textarea[data-bucket="ask"]').value).toBe('Edit');
+    expect(ed.querySelector('[data-testid="st-editor-target"]').textContent).toContain(CLAUDE_LOCAL);
+    expect(ed.querySelector('[data-testid="st-editor-target"]').textContent).toContain('Project (local)');
+    const save = [...ed.querySelectorAll('button')].find(b => b.textContent === 'Save');
+    expect(save.disabled).toBe(true);
+    // Cancel closes the panel.
+    fireEvent.click([...ed.querySelectorAll('button')].find(b => b.textContent === 'Cancel'));
+    expect(container.querySelector('[data-testid="st-perm-editor"]')).toBeNull();
+  });
+
+  it('saves the lists with the expected mtime and scope, shows the backup and reads the settings again', async () => {
+    const calls = stubConfig((method, _u, body) => (method === 'PUT'
+      ? { status: 200, body: { ...CONFIG, permissions: body.permissions, mtime: 1779000100, backup_path: CLAUDE_LOCAL + '.bak.20260101000000' } }
+      : null));
+    const refresh = vi.fn();
+    const { container } = renderPerms('tool=claude-code&row=permissions', { refresh });
+    fireEvent.click(changeBtn(container));
+    const ed = container.querySelector('[data-testid="st-perm-editor"]');
+    await waitFor(() => expect(ed.querySelector('textarea[data-bucket="allow"]')).toBeTruthy());
+    fireEvent.input(ed.querySelector('textarea[data-bucket="allow"]'), { target: { value: 'Bash\nRead(*)\n' } });
+    fireEvent.input(ed.querySelector('textarea[data-bucket="ask"]'), { target: { value: '' } });
+    const diff = ed.querySelector('[data-testid="st-editor-diff"]');
+    expect(diff.querySelector('[data-bucket="allow"] .is-added').textContent).toBe('+ Read(*)');
+    expect(diff.querySelector('[data-bucket="ask"] .is-removed').textContent).toBe('- Edit');
+    expect(diff.querySelector('[data-bucket="deny"]').textContent).toContain('no change');
+    expect(JSON.parse(ed.querySelector('[data-testid="st-editor-json"]').textContent)).toEqual({ permissions: { allow: ['Bash', 'Read(*)'], deny: ['WebFetch'], ask: [] } });
+    fireEvent.click([...ed.querySelectorAll('button')].find(b => b.textContent === 'Save'));
+    await waitFor(() => expect(ed.querySelector('[data-testid="st-editor-saved"]')).toBeTruthy());
+    const put = calls.find(c => c.method === 'PUT');
+    expect(put.url).toBe('/api/tool-config/claude-code');
+    expect(put.body).toEqual({ scope: 'project-local', expected_mtime: 1779000000.25, permissions: { allow: ['Bash', 'Read(*)'], deny: ['WebFetch'], ask: [] } });
+    expect(ed.querySelector('[data-testid="st-editor-saved"]').textContent).toContain('Backup: ' + CLAUDE_LOCAL + '.bak.20260101000000');
+    expect(refresh).toHaveBeenCalledTimes(1);
+    // The saved lists are now the base: nothing is pending.
+    expect(diff.querySelector('[data-bucket="allow"]').textContent).toContain('no change');
+  });
+
+  it('shows the server error on a conflict, and Reload reads the file again', async () => {
+    const calls = stubConfig(method => (method === 'PUT' ? { status: 409, body: { error: 'Config file changed since it was loaded' } } : null));
+    const refresh = vi.fn();
+    const { container } = renderPerms('tool=claude-code&row=permissions', { refresh });
+    fireEvent.click(changeBtn(container));
+    const ed = container.querySelector('[data-testid="st-perm-editor"]');
+    await waitFor(() => expect(ed.querySelector('textarea[data-bucket="deny"]')).toBeTruthy());
+    fireEvent.input(ed.querySelector('textarea[data-bucket="deny"]'), { target: { value: 'WebFetch\nBash(rm:*)' } });
+    fireEvent.click([...ed.querySelectorAll('button')].find(b => b.textContent === 'Save'));
+    const err = await waitFor(() => {
+      const e = ed.querySelector('[data-testid="st-editor-error"]');
+      expect(e).toBeTruthy();
+      return e;
+    });
+    expect(err.textContent).toContain('Config file changed since it was loaded');
+    expect(err.textContent).not.toContain('HTTP 409');
+    expect(refresh).not.toHaveBeenCalled();
+    fireEvent.click([...err.querySelectorAll('button')].find(b => b.textContent === 'Reload'));
+    await waitFor(() => expect(calls.filter(c => c.method === 'GET')).toHaveLength(2));
+    await waitFor(() => expect(ed.querySelector('[data-testid="st-editor-error"]')).toBeNull());
+    expect(ed.querySelector('textarea[data-bucket="deny"]').value).toBe('WebFetch');
+  });
+
+  it('stays disabled, with a hint, for a user-scope permissions row and for another tool', () => {
+    const { container } = renderPerms('tool=claude-code&row=permissions', { snap: permSnap(claudePerms('user')) });
+    expect(changeBtn(container).disabled).toBe(true);
+    expect(container.querySelector('[data-testid="st-change-hint"]').textContent).toContain('Editing this file is not supported yet: the value comes from User');
+    cleanup();
+    const other = renderPerms('tool=codex-cli&row=approval_policy');
+    expect(changeBtn(other.container).disabled).toBe(true);
+    expect(other.container.querySelector('[data-testid="st-change-hint"]').textContent).toBe('Editing this file is not supported yet');
+  });
+
+  it('allows project and project-local winners only, and never a locked one', () => {
+    const scoped = scope => ({ tool: 'claude-code', key: 'permissions', scope, chain: [{ scope, source: 'x' }], wins: 0 });
+    expect(permissionEdit(scoped('project'), CLAUDE_SCOPES)).toMatchObject({ ok: true, scope: 'project' });
+    expect(permissionEdit(scoped('project-local'), CLAUDE_SCOPES)).toMatchObject({ ok: true, scope: 'project-local' });
+    expect(permissionEdit(scoped('managed'), CLAUDE_SCOPES)).toEqual({ ok: false, hint: 'Locked by Managed' });
+    expect(permissionEdit({ ...scoped('project'), locked: true }, CLAUDE_SCOPES).ok).toBe(false);
+    expect(permissionEdit({ ...scoped('project'), tool: 'copilot-cli' }, CLAUDE_SCOPES).ok).toBe(false);
+  });
+});
+
+describe('Hook status in the Hooks section', () => {
+  const NOW_S = Math.floor(Date.now() / 1000);
+  const HOOKS = { tools: { 'claude-code': {
+    status: 'active', configured_count: 2, configured_events: ['PreToolUse', 'Stop'], missing_events: ['SessionEnd'],
+    fired_24h: 12, last_fire_ts: NOW_S - 120,
+    sources: [{ scope: 'user', path: CLAUDE_USER, configured_count: 2, host_enabled: true }, { scope: 'project', path: CLAUDE_PROJ, configured_count: 0, host_enabled: false }],
+    warnings: [{ path: HOME + '/.copilot/hooks/aictl.json', message: 'VS Code ignores ~/.copilot/hooks' }],
+  } } };
+
+  it('shows the status, the events as chips, missing events, fires, last fire and the sources', () => {
+    const { container } = renderPerms('tool=claude-code', { hooks: HOOKS });
+    const line = container.querySelector('[data-testid="st-hookstat"]');
+    expect(line.closest('tbody').dataset.section).toBe('hooks');
+    expect(line.querySelector('[data-testid="st-hookstat-status"]').textContent).toBe('active');
+    expect([...line.querySelectorAll('.st-hookstat__ev')].map(c => c.textContent)).toEqual(['PreToolUse', 'Stop']);
+    expect(line.textContent).toContain('1 missing: SessionEnd');
+    expect(line.textContent).toContain('12 fired in 24 h');
+    expect(line.textContent).toContain('last 2m ago');
+    const sources = [...line.querySelectorAll('.st-hookstat__sources li')].map(li => li.textContent);
+    expect(sources[0]).toContain('user');
+    expect(sources[1]).toContain('ignored by the host');
+    expect(line.querySelector('.st-hookstat__snippet').textContent).toBe('"chat.hookFilesLocations": { "~/.copilot/hooks": true }');
+  });
+
+  it('shows nothing without hook status', () => {
+    const { container } = renderPerms('tool=claude-code');
+    expect(container.querySelector('[data-testid="st-hookstat"]')).toBeNull();
+  });
+});
+
+describe('Accessibility of the permission views', () => {
+  it.each(['tool=claude-code&row=permissions', 'pivot=topic&sec=autonomy'])('%s has no serious or critical axe violations', async (search) => {
+    stubConfig(() => null);
+    const { container } = renderPerms(search, { hooks: { tools: { 'claude-code': { status: 'configured', configured_events: ['Stop'], sources: [] } } } });
+    const btn = changeBtn(container);
+    if (btn) {
+      fireEvent.click(btn);
+      await waitFor(() => expect(container.querySelector('textarea[data-bucket="allow"]')).toBeTruthy());
+    }
     const results = await axe.run(container, { rules: { 'color-contrast': { enabled: false }, region: { enabled: false } } });
     const serious = results.violations.filter(v => v.impact === 'serious' || v.impact === 'critical');
     expect(serious.map(v => v.id + ': ' + v.nodes.map(n => n.html).join(' | '))).toEqual([]);

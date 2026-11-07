@@ -16,7 +16,7 @@ import {
   DEFAULT_LAYOUT, TITLES, findPanel, freshUi, isDefaultLayout, loadUi, moveSection, movePanel, saveUi, stepPanel, updatePanel,
 } from './layout.js';
 import Panel from './Panel.js';
-import { kpiList, sectionSummary } from './summary.js';
+import { kpiList, sectionSummary, streamPill } from './summary.js';
 import { bindTip } from './tip.js';
 import { useBoardData } from './useBoardData.js';
 import './board.css';
@@ -206,9 +206,9 @@ function FilterRow({ board, data, ctx, menu, act }) {
   </div>`;
 }
 
-function Kpis({ data }) {
+function Kpis({ data, pill }) {
   const list = useMemo(() => kpiList(data), [data]);
-  return html`<div class="bd-kpis" id="sec-top">${list.map(k => html`<a key=${k.label} class="bd-kpi" href=${k.href} title=${k.title}>
+  return html`<div class="bd-kpis" id="sec-top">${pill ? html`<div class=${'bd-kpipill bd-' + pill.sev} role="status" title=${pill.title}><${Ico} d=${PATHS.warn}/>${pill.text}</div>` : null}${list.map(k => html`<a key=${k.label} class="bd-kpi" href=${k.href} title=${k.title}>
     <span class="bd-l">${k.label}</span>
     <span class="bd-v">${k.value}</span>
     <span class="bd-d"><span>${k.delta}</span><svg viewBox="0 0 54 16" preserveAspectRatio="none" aria-hidden="true"><path d=${k.spark}></path></svg></span>
@@ -277,7 +277,8 @@ export default function BoardScreen() {
   const pausedRef = useRef(false);
   pausedRef.current = !!dragId;
 
-  const { data, chartSeries, chartRange, loaded, busy, error, refresh } = useBoardData({ filters: applied, tools, live, pausedRef });
+  const { data, chartSeries, chartRange, loaded, busy, error, refresh, connected, everConnected } = useBoardData({ filters: applied, tools, live, pausedRef });
+  const pill = streamPill({ live, connected, everConnected, ageS: data.machine?.pipeline?.stream?.snapshot_age_s });
 
   // Layout is stored shortly after the last change, so a drag writes once.
   useEffect(() => {
@@ -334,6 +335,10 @@ export default function BoardScreen() {
   useEffect(() => () => { mounted.current = false; }, []);
   const settingsWanted = loaded || screen === 'settings';
   const boardAt = data.generated_at || 0;
+  const loadSettings = useCallback(() => Promise.all([api.getSettingsTools(), import('../settings/model.js')]).then(
+    ([d, model]) => { if (mounted.current) setSettingsRes({ data: d || {}, model, error: null }); },
+    (e) => { if (mounted.current) setSettingsRes(s => ({ ...s, error: e })); },
+  ), []);
   useEffect(() => {
     if (!settingsWanted) return;
     const last = settingsAt.current;
@@ -343,11 +348,19 @@ export default function BoardScreen() {
       if (boardAt - last <= SETTINGS_REFRESH_S) return;
     }
     settingsAt.current = boardAt;
-    Promise.all([api.getSettingsTools(), import('../settings/model.js')]).then(
-      ([d, model]) => { if (mounted.current) setSettingsRes({ data: d || {}, model, error: null }); },
-      (e) => { if (mounted.current) setSettingsRes(s => ({ ...s, error: e })); },
+    loadSettings();
+  }, [settingsWanted, boardAt, loadSettings]);
+  // The hook status for the Settings screen's Hooks sections, read once when the screen first opens.
+  const [hooksStatus, setHooksStatus] = useState(null);
+  const hooksAsked = useRef(false);
+  useEffect(() => {
+    if (screen !== 'settings' || hooksAsked.current) return;
+    hooksAsked.current = true;
+    api.getHooksStatus().then(
+      (h) => { if (mounted.current && h && typeof h === 'object') setHooksStatus(h); },
+      () => {},
     );
-  }, [settingsWanted, boardAt]);
+  }, [screen]);
 
   const toolIds = useMemo(() => data.options.tools.map(t => t.id), [data.options]);
   // Settings apply whether or not a tool ran in this time, so its data sources count too.
@@ -629,7 +642,9 @@ export default function BoardScreen() {
     toolName,
     openFile: act.openFile,
     findings: settingsFindings,
-  } : null), [settingsRes.data, tools, toolName, act, settingsFindings]);
+    refresh: loadSettings,
+    hooks: hooksStatus || undefined,
+  } : null), [settingsRes.data, tools, toolName, act, settingsFindings, loadSettings, hooksStatus]);
   const settingsSum = useMemo(() => settingsLine(settingsRes, tools), [settingsRes, tools]);
 
   const hiddenIds = useMemo(() => new Set(ui.hidden), [ui.hidden]);
@@ -645,7 +660,7 @@ export default function BoardScreen() {
           ${screen === 'settings' ? html`<${SettingsArea} Workspace=${SettingsC} res=${settingsRes} source=${settingsSource}/>` : html`
           ${error ? html`<div class="bd-banner" role="alert"><${Ico} d=${PATHS.warn}/>Could not update the board: ${error.message}. Showing the last data.</div>` : null}
           ${!loaded && !error ? html`<div class="bd-sk" role="status">Loading the board...</div>` : null}
-          <${Kpis} data=${data}/>
+          <${Kpis} data=${data} pill=${pill}/>
           ${ui.layout.map((sec) => {
             const def = SEC_BY_ID[sec.id];
             return html`<section key=${sec.id} class="bd-sec" id=${def.anchor} aria-label=${def.title}>

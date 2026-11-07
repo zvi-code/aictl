@@ -5,6 +5,9 @@ import { commonModel, scopeLabel } from './model.js';
 import { Value, ScopeChip, LockGlyph } from './Value.js';
 import { Swatch, RiskDot, SetIn, NavHead, UndocumentedChip } from './parts.js';
 import { ToolAgentsTable } from './Agents.js';
+import { derivePermissions } from './permissions.js';
+import { ToolPermissionMatrix } from './PermissionMatrix.js';
+import { HookStatusLine, hookStatusOf } from './HookStatus.js';
 
 // A file chip shows the file name; when two files share a name, the parent folder is added.
 function chipName(path, all) {
@@ -114,7 +117,12 @@ export function ScopeStrip({ w, entry }) {
   </div>`;
 }
 
-function GenericTable({ w, sections, scopes }) {
+/** A block shown under a section's heading, above its rows: the permission matrix, the hook status. */
+function SectionExtra({ children, section }) {
+  return html`<tr class="st-extra" data-extra=${section}><td colspan="5">${children}</td></tr>`;
+}
+
+function GenericTable({ w, sections, scopes, extras = {} }) {
   return html`<table class="st-table">
     <thead><tr>
       <th scope="col" class="st-c-set">Setting</th><th scope="col" class="st-c-val">Value</th>
@@ -126,6 +134,7 @@ function GenericTable({ w, sections, scopes }) {
       return html`<tbody key=${s.id} data-section=${s.id}>
         <tr class="st-group"><th scope="colgroup" colspan="5">${s.title}
           <span class="st-group__meta">${s.shown.length}${k ? html` · <span class="st-red">${k} risky</span>` : ''}${s.hidden ? html` · <span class="st-unsetn">+${s.hidden} unset</span>` : ''}</span></th></tr>
+        ${extras[s.id] && html`<${SectionExtra} section=${s.id}>${extras[s.id]}</${SectionExtra}>`}
         ${s.shown.map(r => html`<${SettingRow} key=${r.uid} row=${r} w=${w} scopes=${scopes}/>`)}
       </tbody>`;
     })}
@@ -155,6 +164,12 @@ export function ToolMain({ w, entry }) {
     }))
     .filter(s => s.shown.length || s.hidden);
   const total = entry.rows.length;
+  const perms = derivePermissions(entry);
+  const hookStatus = hookStatusOf(w.hooks, entry.id);
+  const extras = {
+    autonomy: perms && html`<${ToolPermissionMatrix} w=${w} entry=${entry} perms=${perms}/>`,
+    hooks: hookStatus && html`<${HookStatusLine} status=${hookStatus}/>`,
+  };
   const scopeName = w.st.scope ? scopeLabel(w.st.scope, entry.scopes) : '';
   return html`<section class="st-main" aria-labelledby="st-main-title">
     <div class="st-bar">
@@ -171,7 +186,7 @@ export function ToolMain({ w, entry }) {
     <${ScopeStrip} w=${w} entry=${entry}/>
     ${sections.length ? tableRuns(sections).map((run, i) => (run.agents
       ? html`<${ToolAgentsTable} key=${'a' + i} w=${w} section=${run.sections[0]}/>`
-      : html`<${GenericTable} key=${'g' + i} w=${w} sections=${run.sections} scopes=${entry.scopes}/>`))
+      : html`<${GenericTable} key=${'g' + i} w=${w} sections=${run.sections} scopes=${entry.scopes} extras=${extras}/>`))
     : html`<p class="st-empty">${!total ? 'No settings were read for this tool.'
       : scopeName ? `No setting shown here is set at the ${scopeName} layer.`
       : 'No setting matches the search or the toggles.'}</p>`}

@@ -145,6 +145,51 @@
 .st-cell.is-sel .st-cellbtn { border-color: var(--st-accent); background: var(--st-sel); }
 .st-cell.is-risky .st-cellbtn { color: var(--st-red); }
 
+/* A block under a section heading: the permission matrix, the hook status */
+.st-table .st-extra td { padding: var(--sp-4, 8px) var(--sp-4, 8px) var(--sp-5, 10px); background: none; }
+.st-perms { min-width: 0; }
+.st-perms--topic { margin-bottom: var(--sp-8, 16px); }
+.st-perms__cap { caption-side: top; text-align: left; padding: 0 0 var(--sp-2, 4px); color: var(--st-fg2); font-size: var(--fs-xs, 11px); }
+.st-permtable { border-collapse: collapse; font-size: var(--fs-sm, 12px); }
+.st-permtable th { padding: var(--sp-2, 4px) var(--sp-5, 10px); color: var(--st-fgmid); font-weight: 500; font-size: var(--fs-xs, 11px); text-align: center; white-space: nowrap; border-bottom: 1px solid var(--st-border); }
+.st-permtable th[scope="row"], .st-permtable thead th:first-child:not([data-cap]) { text-align: left; color: var(--st-fg); }
+.st-permtable td { padding: var(--sp-2, 4px) var(--sp-3, 6px); text-align: center; border-bottom: 1px solid var(--st-line); white-space: nowrap; }
+.st-perm__btn, .st-perm__text { display: inline-block; min-width: 64px; border: 1px solid var(--st-border); border-radius: 999px; padding: 0 var(--sp-4, 8px); font: inherit; font-family: var(--st-mono); font-size: var(--fs-xs, 11px); line-height: 1.7; background: var(--st-bg2); color: var(--st-fg); }
+.st-perm__btn { cursor: pointer; }
+.st-perm__btn:hover { border-color: var(--st-accent); }
+.st-perm__btn:focus-visible { outline: none; box-shadow: var(--st-ring); }
+.st-perm--allowed .st-perm__btn, .st-perm--allowed .st-perm__text { color: var(--st-green); border-color: color-mix(in srgb, var(--st-green) 55%, transparent); }
+.st-perm--asks .st-perm__btn, .st-perm--asks .st-perm__text { color: var(--st-orange); border-color: color-mix(in srgb, var(--st-orange) 55%, transparent); }
+.st-perm--denied .st-perm__btn, .st-perm--denied .st-perm__text { color: var(--st-red); border-color: color-mix(in srgb, var(--st-red) 55%, transparent); }
+.st-perm--mixed .st-perm__btn, .st-perm--mixed .st-perm__text { color: var(--st-fg); border-style: dashed; }
+.st-perms__note { margin: var(--sp-2, 4px) 0 0; font-size: var(--fs-xs, 11px); }
+.st-hookstat { display: flex; flex-direction: column; gap: var(--sp-3, 6px); font-size: var(--fs-sm, 12px); color: var(--st-fgmid); }
+.st-hookstat__head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2, 4px) var(--sp-6, 12px); }
+.st-hookstat__sources { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--sp-2, 4px) var(--sp-8, 16px); font-size: var(--fs-xs, 11px); }
+.st-hookstat__sources li { display: inline-flex; gap: var(--sp-3, 6px); }
+.st-hookstat__warn { padding: var(--sp-2, 4px) var(--sp-4, 8px); border-left: 3px solid var(--st-orange); background: color-mix(in srgb, var(--st-orange) 8%, transparent); color: var(--st-fg); }
+.st-hookstat__snippet { display: block; margin-top: var(--sp-2, 4px); font-family: var(--st-mono); font-size: var(--fs-xs, 11px); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* The permissions editor in the inspector */
+.st-editor { border-top: 1px solid var(--st-border); padding-top: var(--sp-6, 12px); }
+.st-editor__target { margin: 0 0 var(--sp-4, 8px); overflow-wrap: anywhere; }
+.st-editor__fields { display: flex; flex-direction: column; gap: var(--sp-4, 8px); }
+.st-editor__field { display: flex; flex-direction: column; gap: var(--sp-1, 2px); }
+.st-editor__label { font-size: var(--fs-xs, 11px); font-weight: 600; color: var(--st-fg); }
+.st-editor__label .st-dim { font-weight: 400; }
+.st-editor__area { width: 100%; box-sizing: border-box; resize: vertical; min-height: 60px; padding: var(--sp-2, 4px) var(--sp-3, 6px); border: 1px solid var(--st-border); border-radius: var(--st-r-sm); background: var(--st-bg); color: var(--st-fg); font-family: var(--st-mono); font-size: var(--fs-xs, 11px); line-height: 1.5; }
+.st-editor__area:focus { outline: none; box-shadow: var(--st-ring); }
+.st-editor__diff { margin-top: var(--sp-6, 12px); }
+.st-diff { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: var(--sp-3, 6px); align-items: start; padding: var(--sp-1, 2px) 0; font-size: var(--fs-xs, 11px); }
+.st-diff__name { color: var(--st-fg2); font-family: var(--st-mono); }
+.st-diff__chips { display: flex; flex-wrap: wrap; gap: var(--sp-2, 4px); min-width: 0; }
+.st-diff__chip { font-family: var(--st-mono); border-radius: var(--st-r-sm); padding: 0 var(--sp-3, 6px); overflow-wrap: anywhere; }
+.st-diff__chip.is-added { color: var(--st-green); background: color-mix(in srgb, var(--st-green) 12%, transparent); }
+.st-diff__chip.is-removed { color: var(--st-red); background: color-mix(in srgb, var(--st-red) 12%, transparent); text-decoration: line-through; }
+.st-editor__json { margin: var(--sp-4, 8px) 0 0; max-height: 200px; overflow: auto; padding: var(--sp-3, 6px) var(--sp-4, 8px); border: 1px solid var(--st-line); border-radius: var(--st-r-sm); background: var(--st-bg); color: var(--st-fg); font-family: var(--st-mono); font-size: var(--fs-xs, 11px); }
+.st-editor__error { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3, 6px); margin-bottom: var(--sp-4, 8px); padding: var(--sp-3, 6px) var(--sp-4, 8px); border-left: 3px solid var(--st-red); background: color-mix(in srgb, var(--st-red) 8%, transparent); color: var(--st-fg); font-size: var(--fs-sm, 12px); }
+.st-editor__saved { margin-bottom: var(--sp-4, 8px); padding: var(--sp-3, 6px) var(--sp-4, 8px); border-left: 3px solid var(--st-green); background: color-mix(in srgb, var(--st-green) 8%, transparent); color: var(--st-fg); font-size: var(--fs-sm, 12px); overflow-wrap: anywhere; }
+
 /* Files and findings */
 .st-fold { display: inline-flex; align-items: center; gap: var(--sp-3, 6px); background: none; border: 0; padding: 0; color: var(--st-fg); font: inherit; font-weight: 600; cursor: pointer; }
 .st-fname { font-family: var(--st-mono); font-size: var(--fs-sm, 12px); color: var(--st-fg); }
@@ -362,3 +407,9 @@
 .bd-app .st-ws .st-seg__btn:hover { background: var(--hover); }
 .bd-app .st-ws .st-seg__btn[aria-pressed="true"] { background: var(--ink); color: var(--surface); font-weight: 500; }
 .bd-app .st-ws .st-folder td { height: auto; }
+.bd-app .st-ws .st-perm__btn { padding: 0 8px; border: 1px solid var(--line2); background: var(--raise); }
+.bd-app .st-ws .st-perm--allowed .st-perm__btn { border-color: color-mix(in srgb, var(--good) 55%, transparent); }
+.bd-app .st-ws .st-perm--asks .st-perm__btn { border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+.bd-app .st-ws .st-perm--denied .st-perm__btn { border-color: color-mix(in srgb, var(--crit) 55%, transparent); }
+.bd-app .st-ws .st-perm--mixed .st-perm__btn { border-style: dashed; }
+.bd-app .st-ws .st-extra td { height: auto; }
