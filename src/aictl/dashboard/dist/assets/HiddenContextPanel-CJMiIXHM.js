@@ -1,4 +1,4 @@
-import{d as _,x as R,T as C,m as o}from"./index-C_ub8iES.js";import{S as q,a as A}from"./app-Cf1eevD3.js";import{s as M,L as F,h as W}from"./useSse-C2BhVkiD.js";import{u as L}from"./useAsyncResource-CmDVUXun.js";const I=600,O={high:"var(--red)",medium:"var(--orange)",low:"var(--yellow)",info:"var(--fg2)"},$={padding:"2px 8px",borderBottom:"1px solid var(--border)",textAlign:"left"},l={fontFamily:"var(--font-mono, monospace)",wordBreak:"break-all"};function D(t){return t?t<1024?`${t} B`:t<1024*1024?`${(t/1024).toFixed(1)} KB`:`${(t/1024/1024).toFixed(1)} MB`:"0 B"}function G(t){return t<90?`${Math.round(t)} s ago`:t<5400?`${Math.round(t/60)} min ago`:`${Math.round(t/3600)} h ago`}function x({severity:t,count:e}){return o`<span
+import{d as _,x as R,T as C,m as o}from"./index-vv_D0zX4.js";import{S as q,a as A}from"./app-9z-oBkOS.js";import{s as M,L as F,h as W}from"./useSse-Choi4ZDH.js";import{u as L}from"./useAsyncResource-Dw89La3T.js";import"./TextView-Dhv-JKH_.js";const I=600,O={high:"var(--red)",medium:"var(--orange)",low:"var(--yellow)",info:"var(--fg2)"},$={padding:"2px 8px",borderBottom:"1px solid var(--border)",textAlign:"left"},l={fontFamily:"var(--font-mono, monospace)",wordBreak:"break-all"};function D(t){return t?t<1024?`${t} B`:t<1024*1024?`${(t/1024).toFixed(1)} KB`:`${(t/1024/1024).toFixed(1)} MB`:"0 B"}function G(t){return t<90?`${Math.round(t)} s ago`:t<5400?`${Math.round(t/60)} min ago`:`${Math.round(t/3600)} h ago`}function x({severity:t,count:e}){return o`<span
     data-severity=${t}
     title=${`${t} severity`}
     style=${{color:O[t],fontWeight:600,marginRight:"10px"}}
@@ -71,7 +71,7 @@ import{d as _,x as R,T as C,m as o}from"./index-C_ub8iES.js";import{S as q,a as 
   </div>`}function U({models:t}){const e=Object.values(t||{});if(!e.length)return null;const a=[...e].sort((n,r)=>(r.conflicts||[]).length-(n.conflicts||[]).length);return o`<section data-testid="effective-models" style=${{marginBottom:"8px"}}>
     <h4 style=${{margin:"0 0 4px"}}>Effective model</h4>
     ${a.map(n=>o`<${K} key=${n.tool} eff=${n} />`)}
-  </section>`}function Z(){const[t,e]=_(0),[a,n]=_(!1),r=R(q),p=(r==null?void 0:r.enabledTools)??null,[y,S]=_(null),{data:c,loading:T,error:m}=L(()=>W(t>0,S),[t]),i=C(()=>M(c,p),[c,p]),h=o`<button type="button" onClick=${()=>e(s=>s+1)}>Rescan</button>`;if(T&&!i)return o`<div data-state="loading" style=${{color:"var(--fg2)"}}>Scanning context sources...${y?" "+y.step+", "+Math.round(y.elapsed_s)+" s":""}</div>`;if(m)return o`<div data-state="error" style=${{color:"var(--red)"}}>
+  </section>`}function tt(){const[t,e]=_(0),[a,n]=_(!1),r=R(q),p=(r==null?void 0:r.enabledTools)??null,[y,S]=_(null),{data:c,loading:T,error:m}=L(()=>W(t>0,S),[t]),i=C(()=>M(c,p),[c,p]),h=o`<button type="button" onClick=${()=>e(s=>s+1)}>Rescan</button>`;if(T&&!i)return o`<div data-state="loading" style=${{color:"var(--fg2)"}}>Scanning context sources...${y?" "+y.step+", "+Math.round(y.elapsed_s)+" s":""}</div>`;if(m)return o`<div data-state="error" style=${{color:"var(--red)"}}>
       Context audit failed: ${String(m.message||m)} ${h}
     </div>`;const u=i&&i.sources||[],v=i&&i.findings||[],j=!!c&&((c.sources||[]).length||(c.findings||[]).length);if(!u.length&&!v.length&&F(p)&&j)return o`<${A} enabledTools=${p} snap=${r==null?void 0:r.snap} what="hidden context"/>`;if(!u.length&&!v.length)return o`<div data-state="empty" style=${{color:"var(--fg2)"}}>
       No context sources found for ${i&&i.project||"this project"}. ${h}
@@ -99,4 +99,4 @@ import{d as _,x as R,T as C,m as o}from"./index-C_ub8iES.js";import{S as q,a as 
       <summary style=${{cursor:"pointer"}}>All ${u.length} sources</summary>
       <${N} sources=${u} />
     </details>
-  </div>`}export{Z as HiddenContextPanel,I as STALE_AFTER_S,Z as default};
+  </div>`}export{tt as HiddenContextPanel,I as STALE_AFTER_S,tt as default};

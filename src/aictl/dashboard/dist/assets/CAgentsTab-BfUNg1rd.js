@@ -1,4 +1,4 @@
-import{x as N,d as S,y as U,T as M,m as a}from"./index-C_ub8iES.js";import{e as X,ap as Z,L as Y,M as ss,r as q,af as G,ah as O,b2 as es,b3 as I,b4 as ts}from"./useSse-C2BhVkiD.js";import{S as P,a as ns,T as as,c as os,D as W,k as B}from"./app-Cf1eevD3.js";function E(s){const n=s.live||{};return n.pid_count>0||n.session_count>0||(s.processes||[]).length>0}function L({label:s}){return a`<div class="c-overline cagents-rule">
+import{x as N,d as S,y as U,T as M,m as a}from"./index-vv_D0zX4.js";import{e as X,ap as Z,L as Y,M as ss,r as q,af as G,ah as O,b2 as es,b3 as I,b4 as ts}from"./useSse-Choi4ZDH.js";import{S as P,a as ns,T as as,c as os,D as W,k as B}from"./app-9z-oBkOS.js";import"./TextView-Dhv-JKH_.js";function E(s){const n=s.live||{};return n.pid_count>0||n.session_count>0||(s.processes||[]).length>0}function L({label:s}){return a`<div class="c-overline cagents-rule">
     <div class="cagents-rule-line"></div>
     <div class="cagents-rule-label">${s}</div>
     <div class="cagents-rule-line"></div>
@@ -168,7 +168,7 @@ import{x as N,d as S,y as U,T as M,m as a}from"./index-C_ub8iES.js";import{e as 
       <span class="cagents-row-label" style="color:var(--fg2)">${s.label}</span>
       <span class="c-overline">view</span>
     </div>
-  </div>`}function ks({onViewSessions:s,onViewConfig:n}){const e=N(P),t=e==null?void 0:e.snap,[c,u]=S(null);U(()=>{let o=!0;const b=()=>{X().then(y=>{o&&u(y)}).catch(()=>{o&&u(null)})};b();const p=setInterval(b,15e3);return()=>{o=!1,clearInterval(p)}},[]);const r=M(()=>{const o={};for(const b of(t==null?void 0:t.tool_configs)||[])b.tool&&(o[b.tool]=b);return o},[t]),{active:d,inactive:l}=M(()=>{const o=((t==null?void 0:t.tools)||[]).filter(b=>b.tool!=="aictl");return{active:o.filter(E),inactive:o.filter(b=>!E(b))}},[t]),[g,$]=S(null),[i,f]=S(null),w=[...d,...l].map(o=>o.tool),m=g&&w.includes(g)?g:Z(d.map(o=>o.tool),null)??w[0]??null,h=d.find(o=>o.tool===m)??l.find(o=>o.tool===m),T=m?r[m]:null,_=(e==null?void 0:e.enabledTools)??null;return!d.length&&!l.length&&Y(_)?a`<div class="c-shell"><${ns} enabledTools=${_} snap=${t} what="agents"/></div>`:a`<div class="c-shell">
+  </div>`}function ws({onViewSessions:s,onViewConfig:n}){const e=N(P),t=e==null?void 0:e.snap,[c,u]=S(null);U(()=>{let o=!0;const b=()=>{X().then(y=>{o&&u(y)}).catch(()=>{o&&u(null)})};b();const p=setInterval(b,15e3);return()=>{o=!1,clearInterval(p)}},[]);const r=M(()=>{const o={};for(const b of(t==null?void 0:t.tool_configs)||[])b.tool&&(o[b.tool]=b);return o},[t]),{active:d,inactive:l}=M(()=>{const o=((t==null?void 0:t.tools)||[]).filter(b=>b.tool!=="aictl");return{active:o.filter(E),inactive:o.filter(b=>!E(b))}},[t]),[g,$]=S(null),[i,f]=S(null),w=[...d,...l].map(o=>o.tool),m=g&&w.includes(g)?g:Z(d.map(o=>o.tool),null)??w[0]??null,h=d.find(o=>o.tool===m)??l.find(o=>o.tool===m),T=m?r[m]:null,_=(e==null?void 0:e.enabledTools)??null;return!d.length&&!l.length&&Y(_)?a`<div class="c-shell"><${ns} enabledTools=${_} snap=${t} what="agents"/></div>`:a`<div class="c-shell">
     <div class="cagents-toolbar">
       <span class="c-overline">
         ${d.length} of ${d.length+l.length} agents active
@@ -199,4 +199,4 @@ import{x as N,d as S,y as U,T as M,m as a}from"./index-C_ub8iES.js";import{e as 
       tool=${i.tool}
       label=${i.label}
       onClose=${()=>f(null)}/>`}
-  </div>`}export{ks as default};
+  </div>`}export{ws as default};

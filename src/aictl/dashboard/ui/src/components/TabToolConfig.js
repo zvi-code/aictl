@@ -1,4 +1,4 @@
-import { useContext, useMemo } from 'preact/hooks';
+import { useContext, useMemo, useState } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
 import { COLORS } from '../utils.js';
@@ -128,291 +128,559 @@ function tip(key, group) {
   return (group && TIPS[group] && TIPS[group][key]) || TIPS_FLAT[key] || '';
 }
 
-// ─── Value rendering ─────────────────────────────────────────────
-function Val({v}) {
-  if (v === true)  return html`<span style="color:var(--green);font-weight:600">on</span>`;
-  if (v === false) return html`<span style="color:var(--red)">off</span>`;
-  if (v === null || v === undefined || v === '') return html`<span class="text-muted">—</span>`;
-  if (Array.isArray(v)) {
-    return html`<span class="mono text-muted" style="font-size:var(--fs-xs)"
-      title=${JSON.stringify(v)}>${v.length} item${v.length === 1 ? '' : 's'}</span>`;
-  }
-  if (typeof v === 'object') {
-    const n = Object.keys(v).length;
-    // Avoid dumping huge JSON blobs (e.g. chat.tools.terminal.autoApprove
-    // command rules). Show a count + first few keys; full object on hover.
-    const preview = Object.keys(v).slice(0, 3).join(', ');
-    return html`<span class="mono text-muted" style="font-size:var(--fs-xs);max-width:20ch;
-      overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-      title=${JSON.stringify(v, null, 2)}>${n} key${n === 1 ? '' : 's'}${preview ? ': ' + preview + (n > 3 ? '…' : '') : ''}</span>`;
-  }
-  return html`<span class="mono">${String(v)}</span>`;
+// ─── Sections ────────────────────────────────────────────────────
+// Every tool card shows the same sections, in this order, with the rows the
+// server sends in `sections`. An older server sends only feature_groups and
+// settings; buildSections turns those into the same shape.
+export const SECTION_ORDER = ['model', 'telemetry', 'autonomy', 'context', 'hooks', 'mcp', 'extensions', 'startup', 'other'];
+export const SECTION_TITLES = {
+  model: 'Model',
+  telemetry: 'Telemetry',
+  autonomy: 'Autonomy and safety',
+  context: 'Context files',
+  hooks: 'Hooks',
+  mcp: 'MCP servers',
+  extensions: 'Extensions and plugins',
+  startup: 'Updates and startup',
+  other: 'Other settings',
+};
+
+const GROUP_SECTION = {
+  'Agent': 'autonomy', 'Agent Mode': 'autonomy', 'Code (Agent)': 'autonomy',
+  'Cowork (Autonomous)': 'autonomy', 'Safety': 'autonomy', 'Claude (Anthropic)': 'autonomy',
+  'Hooks': 'hooks',
+  'Context Files': 'context', 'File Locations': 'context',
+  'MCP': 'mcp',
+};
+
+// Keys that remove a human confirmation step when they are on.
+const DANGER_KEYS = new Set([
+  'globalAutoApprove', 'autoApprove', 'autoReply', 'autopilot', 'skipPermissions',
+  'allowAllBrowserActions', 'autoCommit', 'dangerouslySkipPermissions', 'yolo',
+]);
+
+function lastSegment(key) {
+  const parts = String(key || '').split('.');
+  return parts[parts.length - 1];
 }
 
-function Row({k, v, indent, group}) {
-  const label = k.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase());
-  const t = tip(k, group);
-  return html`<div
-    title=${t}
-    style="display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-4);
-           padding:3px ${indent?'var(--sp-6)':'var(--sp-4)'};font-size:var(--fs-sm);
-           border-bottom:1px solid color-mix(in srgb,var(--bg2) 60%,transparent);
-           cursor:${t?'help':'default'}">
-    <span style="color:var(--fg2)">${label}${t ? html`<span style="color:var(--fg3);margin-left:3px;font-size:var(--fs-xs)">?</span>` : ''}</span>
-    <${Val} v=${v}/>
-  </div>`;
+function normKey(key) {
+  return String(key || '').replace(/^github\.copilot\./, '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-// ─── OTel block ──────────────────────────────────────────────────
-function OTelBlock({otel}) {
-  if (!otel || (!otel.enabled && !otel.source)) return null;
-  const on = otel.enabled;
-  return html`<div style="margin-bottom:var(--sp-4)">
-    <div style="font-size:var(--fs-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.06em;
-                color:${on?'var(--green)':'var(--fg3)'};padding:var(--sp-2) var(--sp-4) var(--sp-1)">
-      OpenTelemetry ${on ? '● on' : '○ off'}
-    </div>
-    <div style="border:1px solid ${on?'var(--green)':'var(--bg2)'};border-radius:4px;overflow:hidden;
-                background:${on?'color-mix(in srgb,var(--green) 4%,transparent)':'transparent'}">
-      ${on && html`<${Row} group="OTel" k="exporter" v=${otel.exporter||'—'}/>`}
-      ${otel.endpoint && html`<${Row} group="OTel" k="endpoint" v=${otel.endpoint}/>`}
-      ${otel.file_path && html`<${Row} group="OTel" k="file_path" v=${otel.file_path}/>`}
-      ${otel.capture_content !== undefined && html`<${Row} group="OTel" k="capture_content" v=${!!otel.capture_content}/>`}
-      ${!on && otel.source && html`<${Row} group="OTel" k="source" v=${otel.source}/>`}
-    </div>
-  </div>`;
+function shortKey(key) {
+  const parts = String(key || '').split(/[._]/).filter(Boolean);
+  return normKey(parts[parts.length - 1]);
 }
 
-// ─── Feature group block ─────────────────────────────────────────
-function GroupBlock({name, items}) {
-  const entries = Object.entries(items);
-  if (!entries.length) return null;
-  return html`<div style="margin-bottom:var(--sp-4)">
-    <div style="font-size:var(--fs-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.06em;
-                color:var(--fg3);padding:var(--sp-2) var(--sp-4) var(--sp-1)">${name}</div>
-    <div style="border:1px solid var(--bg2);border-radius:4px;overflow:hidden">
-      ${entries.map(([k,v]) => html`<${Row} key=${k} k=${k} v=${v} group=${name}/>`)}
-    </div>
-  </div>`;
+export function humanize(key) {
+  const s = String(key || '')
+    .replace(/^github\.copilot\./, '')
+    .replace(/^chat\./, '')
+    .replace(/[._-]+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/\?+$/, '')
+    .trim()
+    .toLowerCase();
+  return s ? s[0].toUpperCase() + s.slice(1) : '';
 }
 
-// ─── Configurable Models block ───────────────────────────────────
-// Renders user-configurable model overrides (e.g. github.copilot.chat.askAgent.model)
-// with the exact settings.json key + the file(s) the user would edit. Read-only.
-function ConfigurableModelsBlock({models, configFiles}) {
-  if (!models || !models.length) return null;
-  const sourceColor = {
-    workspace: 'var(--accent)',
-    user:      'var(--green)',
-    default:   'var(--fg3)',
+function inferKind(v) {
+  if (typeof v === 'boolean') return 'flag';
+  if (typeof v === 'number') return 'number';
+  if (Array.isArray(v)) return 'list';
+  if (v && typeof v === 'object') return 'map';
+  if (typeof v === 'string' && /^(~|\/|[A-Za-z]:\\)/.test(v)) return 'path';
+  return 'text';
+}
+
+// True when a value turns its setting on: true, a non-empty list or map, a
+// positive number, or a string other than an "off" word.
+export function isOn(v) {
+  if (v === true) return true;
+  if (Array.isArray(v)) return v.length > 0;
+  if (v && typeof v === 'object') return Object.keys(v).length > 0;
+  if (typeof v === 'number') return v > 0;
+  if (typeof v === 'string') return !!v && !['false', 'off', 'no', '0', 'none', 'default', 'never'].includes(v.toLowerCase());
+  return false;
+}
+
+function settingSection(key) {
+  const k = String(key).toLowerCase();
+  if (/otel|telemetry/.test(k)) return 'telemetry';
+  if (/model|effort|thinking|reasoning/.test(k)) return 'model';
+  if (/hook/.test(k)) return 'hooks';
+  if (/mcp/.test(k)) return 'mcp';
+  if (/update|startup|launch/.test(k)) return 'startup';
+  return 'other';
+}
+
+function makeRow(key, value, extra = {}) {
+  return {
+    key,
+    label: extra.label || humanize(key),
+    value: value === undefined ? null : value,
+    kind: extra.kind || inferKind(value),
+    source: extra.source || '',
+    danger: extra.danger ?? DANGER_KEYS.has(lastSegment(key)),
+    note: extra.note || '',
+    group: extra.group,
   };
-  const sourceLabel = {
-    workspace: 'workspace',
-    user:      'user',
-    default:   'default',
-  };
-  return html`<div style="margin-bottom:var(--sp-4)">
-    <div style="font-size:var(--fs-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.06em;
-                color:var(--fg3);padding:var(--sp-2) var(--sp-4) var(--sp-1);
-                display:flex;align-items:baseline;gap:var(--sp-2)">
-      <span>Configurable Models</span>
-      <span class="text-muted" style="font-weight:400;text-transform:none;letter-spacing:normal;font-size:var(--fs-xs)">
-        — VS Code settings the user can override
-      </span>
-    </div>
-    <div style="border:1px solid var(--bg2);border-radius:4px;overflow:hidden">
-      ${models.map(m => html`<div key=${m.key} title=${m.description || ''}
-        style="display:flex;flex-direction:column;gap:2px;padding:var(--sp-2) var(--sp-4);
-               border-bottom:1px solid color-mix(in srgb,var(--bg2) 60%,transparent);
-               cursor:${m.description ? 'help' : 'default'}">
-        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-4);font-size:var(--fs-sm)">
-          <span style="color:var(--fg2);font-weight:500">${m.label}</span>
-          <span style="display:flex;align-items:baseline;gap:var(--sp-2)">
-            ${m.source !== 'default'
-              ? html`<span class="mono" style="font-weight:600">${m.value}</span>`
-              : html`<span class="text-muted">— ${m.default_hint || 'default'}</span>`}
-            <span class="badge" style="background:${sourceColor[m.source] || 'var(--fg3)'};
-                  color:var(--on-status);font-size:var(--fs-2xs)">${sourceLabel[m.source] || m.source}</span>
-          </span>
-        </div>
-        <div class="mono text-muted" style="font-size:var(--fs-2xs);overflow:hidden;
-             text-overflow:ellipsis;white-space:nowrap" title=${m.key}>${m.key}</div>
-      </div>`)}
-      ${(configFiles && configFiles.length > 0) && html`<div style="padding:var(--sp-2) var(--sp-4);
-        background:color-mix(in srgb,var(--bg2) 40%,transparent);font-size:var(--fs-2xs);color:var(--fg3)">
-        <span style="text-transform:uppercase;letter-spacing:0.06em;font-weight:600;margin-right:var(--sp-2)">
-          Edit in
-        </span>
-        ${configFiles.map((p,i) => html`<span key=${p} class="mono" title=${p}
-          style="margin-right:var(--sp-2)">${p}${i < configFiles.length - 1 ? ',' : ''}</span>`)}
-      </div>`}
-    </div>
-  </div>`;
 }
 
-// ─── Per-tool config card ────────────────────────────────────────
-function ToolConfigCard({cfg, label}) {
-  const color = COLORS[cfg.tool] || 'var(--fg2)';
-  const groups = Object.entries(cfg.feature_groups || {});
-  // Keys already surfaced elsewhere (grouped or in Configurable Models) — avoid double-listing.
-  const ownedShortKeys = new Set([
-    'agent_historySummarizationMode','agent_maxRequests','debug_requestLoggerMaxEntries',
-    'planModel','implementModel',
-  ]);
-  // Strip the "github.copilot." prefix from each configurable-model key to get the
-  // short form that the mass-collect step (`_parse_copilot_config`) writes into cfg.settings.
-  for (const m of (cfg.configurable_models || [])) {
-    if (typeof m?.key === 'string' && m.key.startsWith('github.copilot.')) {
-      ownedShortKeys.add(m.key.replace('github.copilot.', ''));
+// Builds the `sections` shape from the fields an older server sends.
+export function buildSections(cfg) {
+  const files = cfg.config_files || [];
+  const src = files[0] || '';
+  const buckets = Object.fromEntries(SECTION_ORDER.map(id => [id, []]));
+  const seen = new Set();
+  const shown = new Map();
+  const add = (id, row) => {
+    const n = normKey(row.key);
+    if (n && seen.has(n)) return;
+    if (n) seen.add(n);
+    shown.set(shortKey(row.key) + '=' + stable(row.value), true);
+    buckets[id].push(row);
+  };
+
+  if (cfg.model) add('model', makeRow('model', cfg.model, { label: 'Model', kind: 'text', source: src }));
+  for (const m of cfg.configurable_models || []) {
+    if (!m || !m.key) continue;
+    const set = m.source && m.source !== 'default';
+    const file = m.source === 'workspace'
+      ? (files.find(f => /[\\/]\.vscode[\\/]/.test(f)) || src)
+      : (files.find(f => !/[\\/]\.vscode[\\/]/.test(f)) || src);
+    add('model', makeRow(m.key, set ? m.value : null, {
+      label: m.label, kind: 'text', source: set ? file : '',
+      note: [m.description, set ? '' : (m.default_hint ? `Default: ${m.default_hint}` : '')].filter(Boolean).join(' '),
+    }));
+  }
+
+  const otel = cfg.otel || {};
+  if (otel.enabled !== undefined || otel.source) {
+    add('telemetry', makeRow('otel.enabled', !!otel.enabled, { label: 'OpenTelemetry export', kind: 'flag', note: TIPS.OTel.enabled }));
+    if (otel.exporter) add('telemetry', makeRow('otel.exporter', otel.exporter, { label: 'Exporter', kind: 'text', group: 'OTel' }));
+    if (otel.endpoint) add('telemetry', makeRow('otel.endpoint', otel.endpoint, { label: 'Endpoint', kind: 'text', group: 'OTel' }));
+    if (otel.file_path) add('telemetry', makeRow('otel.file_path', otel.file_path, { label: 'Output file', kind: 'path', group: 'OTel' }));
+    if (otel.capture_content !== undefined) add('telemetry', makeRow('otel.capture_content', !!otel.capture_content, { label: 'Capture content', kind: 'flag', group: 'OTel' }));
+  }
+
+  for (const [group, items] of Object.entries(cfg.feature_groups || {})) {
+    const id = GROUP_SECTION[group] || 'other';
+    for (const [k, v] of Object.entries(items || {})) add(id, makeRow(k, v, { source: src, group }));
+  }
+
+  const hasOtel = otel.enabled !== undefined || !!otel.source;
+  for (const [k, v] of Object.entries(cfg.settings || {})) {
+    const id = settingSection(k);
+    if (id === 'telemetry' && hasOtel) continue;
+    // A setting already shown under the same name with the same value is the
+    // same setting read twice (vimMode / vim_mode, maxRequests / agent_maxRequests).
+    if (shown.has(shortKey(k) + '=' + stable(v))) continue;
+    add(id, makeRow(k, v, { source: src }));
+  }
+
+  if ((cfg.mcp_servers || []).length) add('mcp', makeRow('mcp_servers', cfg.mcp_servers, { label: 'Servers', kind: 'list', source: src }));
+  if ((cfg.extensions || []).length) add('extensions', makeRow('extensions', cfg.extensions, { label: 'Installed', kind: 'list' }));
+  if (cfg.auto_update === true || cfg.auto_update === false) add('startup', makeRow('auto_update', cfg.auto_update, { label: 'Automatic updates', kind: 'flag' }));
+  if (cfg.launch_at_startup === true || cfg.launch_at_startup === false) add('startup', makeRow('launch_at_startup', cfg.launch_at_startup, { label: 'Start at login', kind: 'flag' }));
+
+  return SECTION_ORDER.filter(id => buckets[id].length)
+    .map(id => ({ id, title: SECTION_TITLES[id], rows: buckets[id] }));
+}
+
+// The sections of one record, in the fixed order, with empty ones dropped.
+export function getSections(cfg) {
+  const raw = Array.isArray(cfg?.sections) ? cfg.sections : buildSections(cfg || {});
+  return raw
+    .filter(s => s && Array.isArray(s.rows) && s.rows.length)
+    .map(s => ({ ...s, title: s.title || SECTION_TITLES[s.id] || humanize(s.id) }))
+    .sort((a, b) => rank(a.id) - rank(b.id));
+}
+
+function rank(id) {
+  const i = SECTION_ORDER.indexOf(id);
+  return i < 0 ? SECTION_ORDER.length : i;
+}
+
+function sectionRows(sections, id) {
+  return (sections.find(s => s.id === id) || {}).rows || [];
+}
+
+function allRows(sections) {
+  return sections.flatMap(s => s.rows);
+}
+
+function rowCount(v) {
+  if (Array.isArray(v)) return v.length;
+  if (v && typeof v === 'object') return Object.keys(v).length;
+  return 0;
+}
+
+// ─── Glance values ───────────────────────────────────────────────
+const DASH = '—';
+
+function plain(v) {
+  if (v === null || v === undefined || v === '') return DASH;
+  if (v === true) return 'on';
+  if (v === false) return 'off';
+  return String(v);
+}
+
+function dangerOn(row) {
+  return !!row.danger && isOn(row.value);
+}
+
+// "skipped" or "approve all" when an autonomy danger row is on, else null.
+export function permissionState(sections) {
+  const on = sectionRows(sections, 'autonomy').filter(dangerOn);
+  if (!on.length) return null;
+  return on.some(r => /skip|bypass|dangerous|yolo/i.test(r.key)) ? 'skipped' : 'approve all';
+}
+
+export function glance(cfg, sections) {
+  const model = sectionRows(sections, 'model');
+  const rows = allRows(sections);
+  const modelRow = model.find(r => !/effort|thinking|reasoning|budget/i.test(r.key) && r.value !== null && r.value !== '');
+  const effortRow = model.find(r => /effort|reasoning/i.test(r.key)) || rows.find(r => /effort|reasoning/i.test(r.key));
+
+  const tel = sectionRows(sections, 'telemetry');
+  const telFlag = tel.find(r => r.kind === 'flag' && /enabled|otel|telemetry/i.test(r.key));
+  const telOn = cfg.otel?.enabled ?? (telFlag ? telFlag.value === true : undefined);
+  const endpoint = cfg.otel?.endpoint || (tel.find(r => /endpoint/i.test(r.key)) || {}).value;
+  const telemetry = telOn === true ? (endpoint || cfg.otel?.exporter || 'on') : telOn === false ? 'off' : DASH;
+
+  const hooks = sectionRows(sections, 'hooks');
+  let hooksText = DASH;
+  if (hooks.length) {
+    const counted = hooks.filter(r => r.kind === 'list' || r.kind === 'map');
+    if (counted.length) hooksText = String(counted.reduce((n, r) => n + rowCount(r.value), 0));
+    else {
+      const flags = hooks.filter(r => r.kind === 'flag');
+      hooksText = flags.length ? (flags.some(r => r.value === true) ? 'on' : 'off') : String(hooks.length);
     }
   }
-  const flatSettings = Object.entries(cfg.settings || {}).filter(([k]) => !ownedShortKeys.has(k));
-  const hasSetModels = (cfg.configurable_models || []).some(m => m && m.source !== 'default');
-  const hasContent = cfg.otel?.enabled || cfg.otel?.source || groups.length ||
-                     flatSettings.length || (cfg.hints||[]).length ||
-                     (cfg.mcp_servers||[]).length || (cfg.extensions||[]).length ||
-                     hasSetModels;
-  if (!hasContent) return null;
 
-  return html`<div style="background:var(--bg);border:2px solid ${color};border-radius:6px;overflow:hidden;
-                           display:flex;flex-direction:column;height:100%">
-    <div style="padding:var(--sp-4) var(--sp-5);background:color-mix(in srgb,${color} 10%,var(--bg2));
-                display:flex;align-items:center;gap:var(--sp-3);border-bottom:2px solid ${color}">
-      <span><${ToolIcon} tool=${cfg.tool} size="1em"/></span>
-      <span style="font-weight:700;font-size:var(--fs-base);color:var(--fg)">${label || cfg.tool}</span>
-      ${cfg.model && html`<span class="badge mono">${cfg.model}</span>`}
-      ${cfg.auto_update===true  && html`<span class="badge">auto-update on</span>`}
-      ${cfg.auto_update===false && html`<span class="badge badge--muted">auto-update off</span>`}
-      ${cfg.launch_at_startup===true  && html`<span class="badge" style="background:var(--green);color:var(--on-status)">auto-start</span>`}
-      ${cfg.launch_at_startup===false && html`<span class="badge badge--muted">no auto-start</span>`}
+  const mcpRows = sectionRows(sections, 'mcp');
+  const mcpCounted = mcpRows.filter(r => r.kind === 'list' || r.kind === 'map');
+  const mcp = mcpCounted.length
+    ? mcpCounted.reduce((n, r) => n + rowCount(r.value), 0)
+    : (cfg.mcp_servers || []).length;
+
+  const startupRows = sectionRows(sections, 'startup');
+  const startFlag = cfg.launch_at_startup ?? (startupRows.find(r => r.kind === 'flag' && /startup|launch|login/i.test(r.key)) || {}).value;
+  const updFlag = cfg.auto_update ?? (startupRows.find(r => r.kind === 'flag' && /update/i.test(r.key)) || {}).value;
+
+  const files = [...new Set([...(cfg.config_files || []), ...rows.map(r => r.source).filter(Boolean)])];
+
+  return {
+    model: plain(modelRow ? modelRow.value : cfg.model),
+    effort: plain(effortRow && effortRow.value),
+    telemetry,
+    telemetryOn: telOn === true,
+    permission: permissionState(sections),
+    hooks: hooksText,
+    mcp,
+    startup: startFlag === true ? 'yes' : startFlag === false ? 'no' : DASH,
+    updates: updFlag === true ? 'auto' : updFlag === false ? 'off' : DASH,
+    files,
+  };
+}
+
+// ─── Merging tools that read the same files ──────────────────────
+function stable(v) {
+  if (Array.isArray(v)) return '[' + v.map(stable).join(',') + ']';
+  if (v && typeof v === 'object') {
+    return '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + stable(v[k])).join(',') + '}';
+  }
+  return JSON.stringify(v ?? null);
+}
+
+// Groups records whose config_files and settings are identical; each group
+// becomes one card. Records with no config files are never merged.
+export function groupConfigs(configs) {
+  const groups = [];
+  const bySig = new Map();
+  for (const cfg of configs) {
+    const files = cfg.config_files || [];
+    const sig = files.length ? stable([[...files].sort(), cfg.settings || {}]) : null;
+    if (sig && bySig.has(sig)) { bySig.get(sig).push(cfg); continue; }
+    const g = [cfg];
+    groups.push(g);
+    if (sig) bySig.set(sig, g);
+  }
+  return groups;
+}
+
+// ─── Value rendering ─────────────────────────────────────────────
+const SHOW = 6;
+
+function baseName(p) {
+  const parts = String(p).split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] || String(p);
+}
+
+function itemText(v) {
+  if (v === null || v === undefined) return DASH;
+  if (typeof v === 'object') return JSON.stringify(v);
+  return String(v);
+}
+
+function MoreButton({ hidden, open, onToggle }) {
+  return html`<button type="button" class="cfg-more" aria-expanded=${open ? 'true' : 'false'}
+    onClick=${onToggle}>${open ? 'show less' : `+${hidden} more`}</button>`;
+}
+
+function ListValue({ items }) {
+  const [open, setOpen] = useState(false);
+  const shown = open ? items : items.slice(0, SHOW);
+  const hidden = items.length - SHOW;
+  if (!items.length) return html`<span class="cfg-val--none">none</span>`;
+  return html`<span class="cfg-pills">
+    ${shown.map((it, i) => html`<span key=${i} class="cfg-pill mono" title=${itemText(it)}>${itemText(it)}</span>`)}
+    ${hidden > 0 && html`<${MoreButton} hidden=${hidden} open=${open} onToggle=${() => setOpen(!open)}/>`}
+  </span>`;
+}
+
+function MapValue({ map }) {
+  const [open, setOpen] = useState(false);
+  const entries = Object.entries(map);
+  const shown = open ? entries : entries.slice(0, SHOW);
+  const hidden = entries.length - SHOW;
+  if (!entries.length) return html`<span class="cfg-val--none">none</span>`;
+  return html`<span class="cfg-map">
+    ${shown.map(([k, v]) => html`<span key=${k} class="cfg-map__line mono" title=${`${k}: ${itemText(v)}`}>
+      <span class="cfg-map__key">${k}:</span> ${itemText(v)}</span>`)}
+    ${hidden > 0 && html`<${MoreButton} hidden=${hidden} open=${open} onToggle=${() => setOpen(!open)}/>`}
+  </span>`;
+}
+
+function PathValue({ path }) {
+  const s = String(path);
+  const cut = Math.max(0, s.length - 24);
+  return html`<span class="cfg-path mono" title=${s}>
+    <span class="cfg-path__head">${s.slice(0, cut)}</span><span class="cfg-path__tail">${s.slice(cut)}</span>
+  </span>`;
+}
+
+export function Value({ row }) {
+  const v = row.value;
+  const kind = row.kind || inferKind(v);
+  if (kind === 'flag') {
+    if (v === null || v === undefined) return html`<span class="cfg-val--none">${DASH}</span>`;
+    return isOn(v)
+      ? html`<span class="cfg-flag cfg-flag--on">on</span>`
+      : html`<span class="cfg-flag cfg-flag--off">off</span>`;
+  }
+  if (v === null || v === undefined || v === '') return html`<span class="cfg-val--none">${DASH}</span>`;
+  if (kind === 'list' || Array.isArray(v)) return html`<${ListValue} items=${Array.isArray(v) ? v : [v]}/>`;
+  if (kind === 'map' || (v && typeof v === 'object')) {
+    return html`<${MapValue} map=${v && typeof v === 'object' ? v : { value: v }}/>`;
+  }
+  if (kind === 'path') return html`<${PathValue} path=${v}/>`;
+  return html`<span class="cfg-text mono" title=${String(v)}>${String(v)}</span>`;
+}
+
+function rowTip(row, sectionId) {
+  const k = lastSegment(row.key);
+  return row.note
+    || (row.group && TIPS[row.group] && TIPS[row.group][k])
+    || (sectionId === 'telemetry' && TIPS.OTel[k.replace(/^otel_?/, '')])
+    || tip(k, row.group)
+    || '';
+}
+
+function SettingRow({ row, sectionId }) {
+  const t = rowTip(row, sectionId);
+  const alarm = dangerOn(row);
+  // The tooltip ends with the setting's own key, so the row can be found in its file.
+  const tip = [t, row.key && row.key !== row.label ? 'Setting: ' + row.key : ''].filter(Boolean).join('\n');
+  return html`<div class=${'cfg-row' + (alarm ? ' cfg-row--danger' : '')}>
+    <div class="cfg-row__label">
+      <span class=${tip ? 'cfg-help' : ''} title=${tip || undefined}>${row.label || humanize(row.key)}${t && html`<span class="cfg-help__mark" aria-hidden="true">?</span>`}</span>
+      ${alarm && t && html`<div class="cfg-row__note">${t}</div>`}
     </div>
-    <div style="padding:var(--sp-4);flex:1">
-      <${OTelBlock} otel=${cfg.otel}/>
-      ${groups.map(([name, items]) => html`<${GroupBlock} key=${name} name=${name} items=${items}/>`)}
-      <${ConfigurableModelsBlock} models=${cfg.configurable_models} configFiles=${cfg.config_files}/>
-      ${flatSettings.length > 0 && html`<${GroupBlock} name="Settings" items=${Object.fromEntries(flatSettings)}/>`}
-      ${(cfg.mcp_servers||[]).length > 0 && html`<div style="margin-bottom:var(--sp-4)">
-        <div style="font-size:var(--fs-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg3);padding:var(--sp-2) var(--sp-4) var(--sp-1)">MCP Servers</div>
-        <div style="border:1px solid var(--bg2);border-radius:4px;padding:var(--sp-3) var(--sp-4);display:flex;flex-wrap:wrap;gap:var(--sp-2)">
-          ${cfg.mcp_servers.map(s => html`<span key=${s} class="pill mono">${s}</span>`)}
-        </div>
-      </div>`}
-      ${(cfg.extensions||[]).length > 0 && html`<div style="margin-bottom:var(--sp-4)">
-        <div style="font-size:var(--fs-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg3);padding:var(--sp-2) var(--sp-4) var(--sp-1)">Extensions</div>
-        <div style="border:1px solid var(--bg2);border-radius:4px;padding:var(--sp-3) var(--sp-4);display:flex;flex-wrap:wrap;gap:var(--sp-2)">
-          ${cfg.extensions.map(e => html`<span key=${e} class="pill mono" style="font-size:var(--fs-2xs)">${e}</span>`)}
-        </div>
-      </div>`}
-      ${(cfg.hints||[]).length > 0 && html`<div style="padding:var(--sp-3) var(--sp-4);border-left:3px solid var(--orange);
-          background:color-mix(in srgb,var(--orange) 8%,transparent);border-radius:0 4px 4px 0">
-        ${cfg.hints.map((h,i) => html`<div key=${i} class="text-orange" style="font-size:var(--fs-sm);padding:1px 0">
-          <span style="margin-right:var(--sp-2)">💡</span>${h}
-        </div>`)}
-      </div>`}
-    </div>
+    <div class="cfg-row__value"><${Value} row=${row}/></div>
+    <div class="cfg-row__source mono" title=${row.source || undefined}>${row.source ? baseName(row.source) : ''}</div>
   </div>`;
 }
 
-// ─── VS Code platform card ───────────────────────────────────────
-function VsCodeCard({cfg}) {
-  if (!cfg) return null;
-  const groups = Object.entries(cfg.feature_groups || {});
-  if (!groups.length && !cfg.otel?.enabled && !cfg.otel?.source) return null;
-
-  // Safety alerts — highlight dangerous settings
-  const safety = cfg.feature_groups?.Safety || {};
-  const yolo    = safety.globalAutoApprove === true;
-  const noReply = (cfg.feature_groups?.Agent || {}).autoReply === true;
-
-  return html`<div style="background:var(--bg);border:2px solid var(--vscode);border-radius:6px;overflow:hidden;grid-column:span 2">
-    <div style="padding:var(--sp-4) var(--sp-5);background:color-mix(in srgb,var(--vscode) 12%,var(--bg2));
-                display:flex;align-items:center;gap:var(--sp-3);border-bottom:2px solid var(--vscode)">
-      <span>🔷</span>
-      <span style="font-weight:700;font-size:var(--fs-base);color:var(--vscode)">VS Code — AI Platform Settings</span>
-      <span class="text-muted" style="font-size:var(--fs-sm)">chat.* — applies to all AI tools</span>
-      ${yolo && html`<span class="badge" style="margin-left:auto;background:var(--red);color:var(--on-status);font-weight:700"><${Icon} name="alert-triangle" size="0.9em"/> YOLO MODE ON</span>`}
-      ${!yolo && noReply && html`<span class="badge" style="margin-left:auto;background:var(--orange);color:var(--on-status)"><${Icon} name="alert-triangle" size="0.9em"/> auto-reply on</span>`}
+function SectionBlock({ section }) {
+  return html`<section class="cfg-section" data-section=${section.id}>
+    <h4 class="cfg-section__title">${section.title}</h4>
+    <div class="cfg-rows">
+      ${section.rows.map((r, i) => html`<${SettingRow} key=${r.key + ':' + i} row=${r} sectionId=${section.id}/>`)}
     </div>
-    <div style="padding:var(--sp-4);display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:var(--sp-4)">
-      <${OTelBlock} otel=${cfg.otel}/>
-      ${groups.map(([name, items]) => html`<${GroupBlock} key=${name} name=${name} items=${items}/>`)}
-    </div>
+  </section>`;
+}
+
+function Hints({ hints }) {
+  if (!hints || !hints.length) return null;
+  return html`<div class="cfg-note">
+    ${hints.map((h, i) => html`<p key=${i} class="cfg-note__line">${h}</p>`)}
   </div>`;
 }
 
-// ─── aictl collector health card ────────────────────────────────
-function AictlCard({snap}) {
-  const color = COLORS['aictl'] || 'var(--fg2)';
+// ─── Card ────────────────────────────────────────────────────────
+function dangerBadge(sections) {
+  const perm = permissionState(sections);
+  const on = allRows(sections).filter(dangerOn);
+  if (!on.length) return null;
+  const text = perm === 'skipped' ? 'Permission checks skipped'
+    : perm === 'approve all' ? 'Approve all' : 'Risky setting on';
+  return html`<span class="badge cfg-badge--danger" title=${on.map(r => r.label || humanize(r.key)).join(', ')}>
+    <${Icon} name="alert-triangle" size="0.9em"/> ${text}</span>`;
+}
+
+function ToolCard({ group, labelMap }) {
+  const cfg = group[0];
+  const sections = getSections(cfg);
+  const hints = cfg.hints || [];
+  if (!sections.length && !hints.length) return null;
+  const labels = group.map(c => labelMap[c.tool] || (c.tool === 'vscode' ? 'VS Code' : c.tool));
+  const title = labels.length > 1
+    ? labels.slice(0, -1).join(', ') + ' and ' + labels[labels.length - 1]
+    : labels[0];
+  const g = glance(cfg, sections);
+  const color = COLORS[cfg.tool] || 'var(--fg2)';
+  const slim = !sections.length;
+  return html`<article class=${'cfg-card' + (slim ? ' cfg-card--slim' : '')} id=${'cfg-' + cfg.tool}
+      style=${'--cfg-tool:' + color} aria-label=${title + ' configuration'}>
+    ${group.slice(1).map(c => html`<span key=${c.tool} id=${'cfg-' + c.tool} class="cfg-anchor"></span>`)}
+    <header class="cfg-card__head">
+      <span class="cfg-card__icon">${group.map(c => html`<${ToolIcon} key=${c.tool} tool=${c.tool} size="1em"/>`)}</span>
+      <h3 class="cfg-card__title">${title}</h3>
+      <span class="cfg-card__badges">
+        ${g.model !== DASH && html`<span class="badge mono">${g.model}</span>`}
+        ${dangerBadge(sections)}
+      </span>
+    </header>
+    ${cfg.tool === 'vscode' && html`<p class="cfg-card__sub">chat.* settings, used by every AI tool in VS Code</p>`}
+    ${group.length > 1 && html`<p class="cfg-card__sub">${group.length === 2 ? 'Both' : 'All'} read the same files</p>`}
+    <div class="cfg-card__body">
+      ${sections.map(s => html`<${SectionBlock} key=${s.id} section=${s}/>`)}
+      <${Hints} hints=${hints}/>
+    </div>
+  </article>`;
+}
+
+// ─── At a glance ─────────────────────────────────────────────────
+function scrollToCard(tool) {
+  const el = typeof document !== 'undefined' && document.getElementById('cfg-' + tool);
+  if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function GlanceTable({ configs, labelMap }) {
+  if (!configs.length) return null;
+  return html`<section class="cfg-glance" aria-labelledby="cfg-glance-title">
+    <h3 class="cfg-glance__title" id="cfg-glance-title">At a glance</h3>
+    <div class="cfg-glance__scroll">
+      <table class="cfg-glance__table">
+        <thead><tr>
+          <th scope="col">Tool</th><th scope="col">Model</th><th scope="col">Reasoning effort</th>
+          <th scope="col">Telemetry</th><th scope="col">Permission checks</th><th scope="col">Hooks</th>
+          <th scope="col">MCP servers</th><th scope="col">Startup</th><th scope="col">Updates</th>
+          <th scope="col">Settings files</th>
+        </tr></thead>
+        <tbody>
+          ${configs.map(cfg => {
+            const g = glance(cfg, getSections(cfg));
+            const label = labelMap[cfg.tool] || (cfg.tool === 'vscode' ? 'VS Code' : cfg.tool);
+            return html`<tr key=${cfg.tool} class="cfg-glance__row" data-tool=${cfg.tool} onClick=${() => scrollToCard(cfg.tool)}>
+              <th scope="row">
+                <button type="button" class="cfg-glance__tool" onClick=${e => { e.stopPropagation(); scrollToCard(cfg.tool); }}>
+                  <${ToolIcon} tool=${cfg.tool} size="1em"/> ${label}
+                </button>
+              </th>
+              <td class="mono">${g.model}</td>
+              <td class="mono">${g.effort}</td>
+              <td class=${'mono ' + (g.telemetryOn ? 'cfg-flag--on' : '')} title=${g.telemetry}>${g.telemetry}</td>
+              <td>${g.permission
+                ? html`<span class="badge cfg-badge--danger">${g.permission}</span>`
+                : html`<span class="cfg-glance__ok">asked</span>`}</td>
+              <td class="mono">${g.hooks}</td>
+              <td class="mono">${g.mcp}</td>
+              <td>${g.startup}</td>
+              <td>${g.updates}</td>
+              <td class="mono" title=${g.files.join('\n') || undefined}>${g.files.length}</td>
+            </tr>`;
+          })}
+        </tbody>
+      </table>
+    </div>
+  </section>`;
+}
+
+// ─── aictl card ──────────────────────────────────────────────────
+function AictlCard({ snap }) {
   const diag = Object.entries((snap?.live_monitor?.diagnostics) || {});
-  const paths = [...(snap?.live_monitor?.workspace_paths||[]), ...(snap?.live_monitor?.state_paths||[])];
+  const paths = [...(snap?.live_monitor?.workspace_paths || []), ...(snap?.live_monitor?.state_paths || [])];
   if (!diag.length && !paths.length) return null;
-  return html`<div style="background:var(--bg);border:2px solid ${color};border-radius:6px;overflow:hidden;
-                           display:flex;flex-direction:column;height:100%">
-    <div style="padding:var(--sp-4) var(--sp-5);background:color-mix(in srgb,${color} 10%,var(--bg2));
-                display:flex;align-items:center;gap:var(--sp-3);border-bottom:2px solid ${color}">
-      <span><${Icon} name="settings" size="1em"/></span>
-      <span style="font-weight:700;font-size:var(--fs-base);color:var(--fg)">aictl</span>
-      <span class="text-muted" style="font-size:var(--fs-sm)">monitoring engine</span>
-    </div>
-    <div style="padding:var(--sp-4);flex:1">
-      ${diag.length > 0 && html`<div style="margin-bottom:var(--sp-4)">
-        <div style="font-size:var(--fs-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg3);padding:var(--sp-2) var(--sp-4) var(--sp-1)">Collectors</div>
-        <div style="border:1px solid var(--bg2);border-radius:4px;overflow:hidden">
+  const color = COLORS['aictl'] || 'var(--fg2)';
+  return html`<article class="cfg-card" id="cfg-aictl" style=${'--cfg-tool:' + color} aria-label="aictl configuration">
+    <header class="cfg-card__head">
+      <span class="cfg-card__icon"><${Icon} name="settings" size="1em"/></span>
+      <h3 class="cfg-card__title">aictl</h3>
+      <span class="cfg-card__badges"><span class="badge badge--muted">monitoring engine</span></span>
+    </header>
+    <div class="cfg-card__body">
+      ${diag.length > 0 && html`<section class="cfg-section">
+        <h4 class="cfg-section__title">Collectors</h4>
+        <div class="cfg-rows">
           ${diag.map(([name, d]) => {
             const ok = d.status === 'active';
-            return html`<div key=${name} title=${d.detail||''} style="display:flex;align-items:baseline;gap:var(--sp-4);padding:3px var(--sp-4);
-                font-size:var(--fs-sm);border-bottom:1px solid color-mix(in srgb,var(--bg2) 60%,transparent);cursor:help">
-              <span class="mono" style="flex:1">${name}</span>
-              <span style="color:var(--fg3)">${d.mode||''}</span>
-              <span style="color:${ok?'var(--green)':'var(--orange)'}">
-                ${ok?'●':'○'} ${d.status||'unknown'}
-              </span>
+            return html`<div key=${name} class="cfg-row">
+              <div class="cfg-row__label mono"><span class=${d.detail ? 'cfg-help' : ''} title=${d.detail || undefined}>${name}</span></div>
+              <div class="cfg-row__value"><span class=${'cfg-flag ' + (ok ? 'cfg-flag--on' : 'cfg-flag--warn')}>${d.status || 'unknown'}</span></div>
+              <div class="cfg-row__source">${d.mode || ''}</div>
             </div>`;
           })}
         </div>
-      </div>`}
-      ${paths.length > 0 && html`<div>
-        <div style="font-size:var(--fs-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg3);padding:var(--sp-2) var(--sp-4) var(--sp-1)">Monitored Roots</div>
-        <div style="border:1px solid var(--bg2);border-radius:4px;padding:var(--sp-3) var(--sp-4)">
-          ${paths.map((p,i) => html`<div key=${i} class="mono text-muted" style="font-size:var(--fs-xs);padding:1px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title=${p}>${p}</div>`)}
+      </section>`}
+      ${paths.length > 0 && html`<section class="cfg-section">
+        <h4 class="cfg-section__title">Monitored roots</h4>
+        <div class="cfg-rows">
+          ${paths.map((p, i) => html`<div key=${i} class="cfg-row cfg-row--wide">
+            <div class="cfg-row__value"><${PathValue} path=${p}/></div>
+          </div>`)}
         </div>
-      </div>`}
+      </section>`}
     </div>
-  </div>`;
+  </article>`;
 }
 
 // ─── Tab ─────────────────────────────────────────────────────────
 export default function TabToolConfig() {
-  const {snap: s, enabledTools = null} = useContext(SnapContext);
+  const { snap: s, enabledTools = null } = useContext(SnapContext);
 
-  const configs = useMemo(() => {
-    if (!s?.tool_configs) return [];
-    return s.tool_configs;
-  }, [s]);
+  const configs = useMemo(() => (s?.tool_configs ? s.tool_configs : []), [s]);
 
-  // Build label map from snap.tools
   const labelMap = useMemo(() => {
     const m = {};
-    (s?.tools||[]).forEach(t => { m[t.tool] = t.label; });
+    (s?.tools || []).forEach(t => { m[t.tool] = t.label; });
     return m;
   }, [s]);
 
-  if (!s) return html`<p class="loading-state">Loading...</p>`;
-  const vscodeCfg = configs.find(c => c.tool === 'vscode');
-  const toolCfgs  = configs.filter(c => c.tool !== 'vscode');
+  const groups = useMemo(() => groupConfigs(configs), [configs]);
 
-  // The VS Code settings panel ("all AI tools") and the aictl card belong to no
-  // single tool, so they stay under any filter. Only the per-tool cards go.
-  if (!toolCfgs.length && !vscodeCfg && !isFiltered(enabledTools)) {
+  if (!s) return html`<p class="loading-state">Loading...</p>`;
+  const toolCfgs = configs.filter(c => c.tool !== 'vscode');
+  const hasVscode = configs.some(c => c.tool === 'vscode');
+
+  // The VS Code card ("all AI tools") and the aictl card belong to no single
+  // tool, so they stay under any filter.
+  if (!toolCfgs.length && !hasVscode && !isFiltered(enabledTools)) {
     return html`<p class="empty-state">No tool configuration detected. Are AI tools installed?</p>`;
   }
 
-  return html`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:var(--sp-5)">
-    ${!toolCfgs.length && isFiltered(enabledTools) && html`<div style="grid-column:1/-1">
-      <${ToolScopeEmpty} enabledTools=${enabledTools} snap=${s} what="tool configuration cards"/>
-    </div>`}
-    ${vscodeCfg && html`<${VsCodeCard} cfg=${vscodeCfg}/>`}
-    ${toolCfgs.map(cfg => html`<${ToolConfigCard} key=${cfg.tool} cfg=${cfg} label=${labelMap[cfg.tool]||cfg.tool}/>`)}
-    <${AictlCard} snap=${s}/>
+  return html`<div class="cfg-screen">
+    <${GlanceTable} configs=${configs} labelMap=${labelMap}/>
+    <div class="cfg-grid">
+      ${!toolCfgs.length && isFiltered(enabledTools) && html`<div class="cfg-grid__full">
+        <${ToolScopeEmpty} enabledTools=${enabledTools} snap=${s} what="tool configuration cards"/>
+      </div>`}
+      ${groups.map(g => html`<${ToolCard} key=${g[0].tool} group=${g} labelMap=${labelMap}/>`)}
+      <${AictlCard} snap=${s}/>
+    </div>
   </div>`;
 }

@@ -95,10 +95,21 @@ class ToolConfig:
     # this machine" (cloud-hosted data), which is different from "zero". Empty
     # for tools that do not declare it; consumers must tolerate a missing key.
     local_data: dict[str, bool] = field(default_factory=dict)
+    # One shape for every tool: ordered sections of rows, built by
+    # normalize_sections(). Always present in to_dict(), possibly empty.
+    sections: list[dict] = field(default_factory=list)
+    # Settings key -> config file the value was read from, when the parser
+    # knows it. Read by normalize_sections(); not part of to_dict().
+    setting_sources: dict[str, str] = field(default_factory=dict)
+    # Flat settings keys whose values a feature group or model row already
+    # shows; normalize_sections() leaves them out. Not part of to_dict().
+    covered_keys: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)
         d["otel"] = self.otel.to_dict()  # use filtered version (omits falsy values)
+        del d["setting_sources"]
+        del d["covered_keys"]
         if not self.feature_groups:
             del d["feature_groups"]
         if not self.configurable_models:
@@ -108,6 +119,316 @@ class ToolConfig:
         if not self.local_data:
             del d["local_data"]
         return d
+
+
+# ─── Uniform sections (one shape for every tool) ────────────────
+
+# (id, title) in display order. Sections without rows are left out.
+SECTION_ORDER: list[tuple[str, str]] = [
+    ("model", "Model"),
+    ("telemetry", "Telemetry"),
+    ("autonomy", "Autonomy and safety"),
+    ("context", "Context files"),
+    ("hooks", "Hooks"),
+    ("mcp", "MCP servers"),
+    ("extensions", "Extensions and plugins"),
+    ("startup", "Updates and startup"),
+    ("other", "Other settings"),
+]
+
+# feature_groups name -> section id. Unknown groups go to "other".
+_GROUP_SECTIONS: dict[str, str] = {
+    "Agent": "autonomy",
+    "Agent Mode": "autonomy",
+    "Code (Agent)": "autonomy",
+    "Cowork (Autonomous)": "autonomy",
+    "Safety": "autonomy",
+    "Claude (Anthropic)": "autonomy",
+    "Session Targets": "autonomy",
+    "CLI Mode": "autonomy",
+    "Hooks": "hooks",
+    "Context Files": "context",
+    "File Locations": "context",
+    "MCP": "mcp",
+    "Debug Logging": "other",
+    "Chat": "other",
+    "General": "other",
+    "UI": "other",
+    "Memory & Tools": "other",
+}
+
+# Flat settings key -> section id, by substring of the lowercased key. First match wins.
+_KEY_SECTIONS: list[tuple[str, tuple[str, ...]]] = [
+    ("model", ("model", "effort", "reasoning", "temperature", "thinking")),
+    ("telemetry", ("otel", "telemetry")),
+    (
+        "autonomy",
+        ("permission", "approv", "autopilot", "sandbox", "skippermissions", "dangerously", "autoreply", "trusted"),
+    ),
+    ("hooks", ("hook",)),
+    ("mcp", ("mcp",)),
+    ("context", ("instruction", "claudemd", "agentsmd", "contextfile")),
+    ("startup", ("version", "installmethod", "update", "launch", "startup", "onboarding")),
+]
+
+# Leading tool prefixes removed before keys are compared.
+_KEY_PREFIXES = ("github.copilot.", "chat.", "agent_", "agent.", "debug_", "debug.")
+
+_LABELS: dict[str, str] = {
+    "otlpEndpoint": "OTLP endpoint",
+    "maxRequests": "Max requests per turn",
+    "globalAutoApprove": "Approve every tool call",
+    "skipPermissions": "Skip permission checks",
+    "allowDangerouslySkipPermissions": "Skip permission checks",
+    "autoReply": "Answer agent questions automatically",
+    "terminalSandbox": "Terminal sandbox",
+    "terminalAutoApprove": "Auto-approve terminal commands",
+    "autoApproveNpmScripts": "Auto-approve workspace npm scripts",
+    "allBrowserActions": "Allow all browser actions",
+    "hasCompletedOnboarding": "Onboarding completed",
+    "installMethod": "Install method",
+    "effortLevel": "Reasoning effort",
+    "effort": "Reasoning effort",
+    "model_reasoning_effort": "Reasoning effort",
+    "disabled_mcp_servers": "Disabled MCP servers",
+    "global_instructions": "Global instructions file",
+    "trustedFolders": "Trusted folders",
+    "useResponsesApi": "Responses API",
+    "claudeMd": "CLAUDE.md files",
+    "agentsMd": "AGENTS.md files",
+    "nestedAgentsMd": "Nested AGENTS.md files",
+}
+
+# Words kept as written in generic labels (lowercased word -> form).
+_ACRONYMS: dict[str, str] = {
+    "mcp": "MCP",
+    "otel": "OTel",
+    "otlp": "OTLP",
+    "api": "API",
+    "url": "URL",
+    "ui": "UI",
+    "npm": "npm",
+    "typescript": "TypeScript",
+    "vscode": "VS Code",
+}
+
+# Normalized key -> (dangerous value, note). The note says what the setting does.
+_DANGER: dict[str, tuple[object, str]] = {
+    "globalautoapprove": (True, "Every tool call runs without asking you for approval."),
+    "skippermissions": (True, "The agent runs tools without any permission check."),
+    "allowdangerouslyskippermissions": (True, "The agent runs tools without any permission check."),
+    "autoreply": (True, "Questions the agent asks are answered automatically, without waiting for you."),
+    "terminalautoapprove": (True, "Terminal commands that match the auto-approve rules run without asking."),
+    "autoapprovenpmscripts": (True, "npm scripts from the workspace package.json run without asking."),
+    "allbrowseractions": (True, "The agent can take any browser action without asking."),
+    "allowallbrowseractions": (True, "The agent can take any browser action without asking."),
+    "terminalsandbox": (False, "Terminal commands run outside the sandbox, with full access to this machine."),
+    "capturecontent": (True, "Full prompt and response text is sent to the telemetry collector."),
+}
+
+# Keys whose values are never put in a row (credentials).
+_SECRET_RE = re.compile(r"(secret|password|passwd|apikey|accesstoken|authtoken|bearer|token)$")
+_PATH_RE = re.compile(r"^(/|~[/\\]|\.{1,2}[/\\]|[A-Za-z]:[/\\]|\\\\|[A-Za-z][A-Za-z0-9+.-]*://)")
+_WORD_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+\d*|[A-Z]+\d*|\d+")
+
+
+def _strip_prefixes(key: str) -> str:
+    changed = True
+    while changed:
+        changed = False
+        for prefix in _KEY_PREFIXES:
+            if key.startswith(prefix) and len(key) > len(prefix):
+                key = key[len(prefix) :]
+                changed = True
+    return key
+
+
+def normalize_key(key: str) -> str:
+    """Comparison form of a key: tool prefixes removed, then only lowercase letters and digits."""
+    return re.sub(r"[^a-z0-9]", "", _strip_prefixes(key).lower())
+
+
+def setting_label(key: str) -> str:
+    """Human label for a settings key: table entry, else words from camelCase, snake_case and dots."""
+    key = key.removeprefix("ws:")
+    stripped = _strip_prefixes(key)
+    for candidate in (key, stripped, stripped.rsplit(".", 1)[-1]):
+        if candidate in _LABELS:
+            return _LABELS[candidate]
+    words = [w.lower() for w in _WORD_RE.findall(stripped)]
+    out: list[str] = []
+    i = 0
+    while i < len(words):
+        if words[i] == "vs" and i + 1 < len(words) and words[i + 1] == "code":
+            out.append("VS Code")
+            i += 2
+            continue
+        out.append(_ACRONYMS.get(words[i], words[i]))
+        i += 1
+    if not out:
+        return key.rstrip("?")
+    if out[0] not in _ACRONYMS.values():  # acronyms keep their form
+        out[0] = out[0][:1].upper() + out[0][1:]
+    return " ".join(out).rstrip("?")
+
+
+def value_kind(value: object) -> str:
+    """Row kind for a value: flag, number, list, map, path or text."""
+    if isinstance(value, bool):
+        return "flag"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, (list, tuple)):
+        return "list"
+    if isinstance(value, dict):
+        return "map"
+    if isinstance(value, str) and _PATH_RE.match(value.strip()):
+        return "path"
+    return "text"
+
+
+def _key_section(key: str) -> str:
+    low = key.lower()
+    for section, needles in _KEY_SECTIONS:
+        if any(n in low for n in needles):
+            return section
+    return "other"
+
+
+def _danger(key: str, value: object) -> tuple[bool, str]:
+    for norm in (normalize_key(key), normalize_key(key.rsplit(".", 1)[-1])):
+        if norm in _DANGER:
+            bad, note = _DANGER[norm]
+            if value is bad:
+                return True, note
+            return False, ""
+    return False, ""
+
+
+def _row(key: str, value: object, source: str, label: str = "", note: str = "") -> dict:
+    danger, danger_note = _danger(key, value)
+    return {
+        "key": key,
+        "label": label or setting_label(key),
+        "value": value,
+        "kind": value_kind(value),
+        "source": source,
+        "danger": danger,
+        "note": danger_note or note,
+    }
+
+
+def _otel_source_file(cfg: ToolConfig, first_file: str) -> str:
+    src = cfg.otel.source
+    if src == "aictl-env-file":
+        return str(Path.home() / ".config" / "aictl" / "env.sh")
+    if src in ("env-var", "claude-env"):
+        return ""
+    if src == "vscode-workspace":
+        ws = [f for f in cfg.config_files if f.replace("\\", "/").endswith(".vscode/settings.json")]
+        return ws[0] if ws else first_file
+    return first_file
+
+
+def normalize_sections(cfg: ToolConfig) -> list[dict]:
+    """Build the uniform section list for one tool.
+
+    Rows come, in order of precedence, from: the model, telemetry, configurable
+    models, MCP servers, extensions and startup fields; feature_groups; flat
+    settings; and flat features (only when the tool has no feature_groups).
+    Feature-group rows are all kept. A flat row is dropped when its normalized
+    key was already seen, when it is in cfg.covered_keys, when it is an OTel
+    setting already shown by the telemetry rows, or when its key names a credential.
+    """
+    first_file = cfg.config_files[0] if cfg.config_files else ""
+    rows: dict[str, list[dict]] = {sid: [] for sid, _t in SECTION_ORDER}
+    seen: set[str] = set()
+
+    def add(section: str, row: dict) -> None:
+        rows[section].append(row)
+        seen.add(normalize_key(row["key"]))
+
+    def source_of(key: str) -> str:
+        return cfg.setting_sources.get(key, first_file)
+
+    # Model
+    if cfg.model:
+        add("model", _row("model", cfg.model, source_of("model"), label="Model"))
+    for entry in cfg.configurable_models:
+        key = str(entry.get("key", ""))
+        add(
+            "model",
+            _row(
+                key,
+                entry.get("value"),
+                str(entry.get("source", "")),
+                label=str(entry.get("label", "")),
+                note=str(entry.get("description", "")),
+            ),
+        )
+
+    # Telemetry
+    otel = cfg.otel.to_dict()
+    telemetry_flat = [k for k in cfg.settings if _key_section(k) == "telemetry"]
+    if otel:
+        otel_src = _otel_source_file(cfg, first_file)
+        add("telemetry", _row("otel.enabled", cfg.otel.enabled, otel_src, label="Export enabled"))
+        for attr, label in (
+            ("exporter", "Exporter"),
+            ("endpoint", "Endpoint"),
+            ("file_path", "File path"),
+            ("capture_content", "Capture content"),
+            ("source", "Detected from"),
+        ):
+            if attr in otel:
+                add("telemetry", _row("otel." + attr, otel[attr], otel_src, label=label))
+    elif telemetry_flat:
+        key = telemetry_flat[0]
+        add("telemetry", _row(key, False, source_of(key), label="Telemetry", note="Telemetry: off."))
+    if otel or telemetry_flat:
+        seen.update(normalize_key(k) for k in telemetry_flat)
+
+    # MCP, extensions, startup
+    if cfg.mcp_servers:
+        mcp_files = [f for f in cfg.config_files if "mcp" in Path(f).name.lower()]
+        add("mcp", _row("mcp_servers", list(cfg.mcp_servers), mcp_files[0] if mcp_files else "", label="MCP servers"))
+    if cfg.extensions:
+        add("extensions", _row("extensions", list(cfg.extensions), cfg.setting_sources.get("extensions", "")))
+    if cfg.auto_update is not None:
+        auto_src = cfg.setting_sources.get("auto_update", "")
+        add("startup", _row("auto_update", cfg.auto_update, auto_src, label="Auto update"))
+    if cfg.launch_at_startup is not None:
+        add("startup", _row("launch_at_startup", cfg.launch_at_startup, "", label="Launch at startup"))
+
+    # Feature groups: every row kept, except a repeat of a key in the same section.
+    for group, values in cfg.feature_groups.items():
+        section = _GROUP_SECTIONS.get(group, "other")
+        in_section = {normalize_key(r["key"]) for r in rows[section]}
+        for key, value in (values or {}).items():
+            norm = normalize_key(key)
+            if norm in in_section or _SECRET_RE.search(norm):
+                continue
+            in_section.add(norm)
+            # A bare "enabled" key is named after its group, e.g. "Debug logging enabled".
+            label = f"{setting_label(group)} enabled" if norm == "enabled" else ""
+            add(section, _row(key, value, source_of(key), label=label))
+
+    # Flat settings, then flat features when there are no groups.
+    covered = set(cfg.covered_keys)
+    flat: list[tuple[str, object]] = list(cfg.settings.items())
+    if not cfg.feature_groups:
+        flat += list(cfg.features.items())
+    for key, value in flat:
+        norm = normalize_key(key)
+        if key in covered or norm in seen or _SECRET_RE.search(norm):
+            continue
+        section = _key_section(key)
+        if section == "telemetry":
+            continue  # shown by the telemetry rows above
+        note = "Workspace override" if key.startswith("ws:") else ""
+        add(section, _row(key, value, source_of(key), note=note))
+
+    return [{"id": sid, "title": title, "rows": rows[sid]} for sid, title in SECTION_ORDER if rows[sid]]
 
 
 def _read_json(path: Path) -> dict | None:
@@ -358,8 +679,14 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
     cfg = ToolConfig(tool=tool)
 
     # Global settings
-    settings = _read_json(claude_global_dir() / "settings.json")
+    user_path = claude_global_dir() / "settings.json"
+    account_path = Path.home() / ".claude.json"
+    proj_path = root / ".claude" / "settings.json"
+    settings = _read_json(user_path)
     if settings:
+        cfg.config_files.append(str(user_path))
+        for k in ("model", "effortLevel", "env", "hooks", "permissions"):
+            cfg.setting_sources[k] = str(user_path)
         # ``model`` is the documented settings key (/model saves here);
         # ANTHROPIC_MODEL in the environment overrides any file.
         cfg.model = str(os.environ.get("ANTHROPIC_MODEL") or settings.get("model") or "")
@@ -378,18 +705,26 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
             }
 
     # Account config (.claude.json)
-    account = _read_json(Path.home() / ".claude.json")
+    account = _read_json(account_path)
     if account:
+        cfg.config_files.append(str(account_path))
+        for k in ("auto_update", "installMethod", "hasCompletedOnboarding"):
+            cfg.setting_sources[k] = str(account_path)
         cfg.auto_update = bool(account.get("autoUpdates", True))
         cfg.settings["installMethod"] = account.get("installMethod", "unknown")
         cfg.settings["hasCompletedOnboarding"] = account.get("hasCompletedOnboarding", False)
 
     # Project settings
-    proj_settings = _read_json(root / ".claude" / "settings.json")
+    proj_settings = _read_json(proj_path)
     if proj_settings:
+        cfg.config_files.append(str(proj_path))
+        for k in ("project_settings", "project_permissions"):
+            cfg.setting_sources[k] = str(proj_path)
+        cfg.setting_sources.setdefault("permissions", str(proj_path))
         cfg.settings["project_settings"] = "configured"
         if not os.environ.get("ANTHROPIC_MODEL") and proj_settings.get("model"):
             cfg.model = str(proj_settings["model"])  # shared project file overrides user file
+            cfg.setting_sources["model"] = str(proj_path)
         proj_perms = proj_settings.get("permissions")
         if isinstance(proj_perms, dict):
             cfg.settings["project_permissions"] = "configured"
@@ -429,6 +764,7 @@ def _parse_claude_desktop_config(root: Path | None = None, tool: str = "claude-d
     data = _read_json(config_path)
     if not data:
         return None
+    cfg.config_files.append(str(config_path))
 
     # MCP servers
     cfg.mcp_servers = _mcp_server_names(data)
@@ -499,6 +835,9 @@ def _parse_vscode_config(root: Path, tool: str = "vscode") -> ToolConfig | None:
 
     user_settings = _read_json(user_dir / "settings.json") or {}
     ws_settings = _read_json(root / ".vscode" / "settings.json") or {}
+    for path in (user_dir / "settings.json", root / ".vscode" / "settings.json"):
+        if path.is_file():
+            cfg.config_files.append(str(path))
     # Workspace overrides user
     vscode_settings: dict = {**user_settings, **ws_settings}
 
@@ -745,6 +1084,106 @@ def _collect_copilot_configurable_models(
     return out
 
 
+# Copilot feature groups: (group, [(store key, label)], store) where store "f"
+# reads cfg.features and "s" reads cfg.settings.
+_COPILOT_GROUPS: list[tuple[str, list[tuple[str, str]], str]] = [
+    ("Session Targets", [("claude_agent", "claudeTarget"), ("autopilot", "autopilot")], "f"),
+    (
+        "Agent Mode",
+        [
+            ("agent_mode", "enabled"),
+            ("agent_autoFix", "autoFix"),
+            ("agent_editorContext", "editorContext"),
+            ("agent_largeResultsToDisk", "largeResultsToDisk"),
+            ("plugins", "plugins"),
+        ],
+        "f",
+    ),
+    (
+        "Agent Mode",
+        [
+            ("agent_maxRequests", "maxRequests"),
+            ("agent_historySummarizationMode", "historySummarizationMode"),
+        ],
+        "s",
+    ),
+    (
+        "Debug Logging",
+        [
+            ("agentDebugLog", "enabled"),
+            ("agentDebugLog_fileLogging", "fileLogging"),
+        ],
+        "f",
+    ),
+    ("Debug Logging", [("debug_requestLoggerMaxEntries", "requestLoggerMaxEntries")], "s"),
+    (
+        "Memory & Tools",
+        [
+            ("local_memory", "local"),
+            ("github_memory", "github"),
+            ("tool_viewImage", "viewImage"),
+        ],
+        "f",
+    ),
+    (
+        "CLI Mode",
+        [
+            ("cli_mcp", "mcp"),
+            ("cli_worktreeIsolation", "worktreeIsolation"),
+            ("cli_autoCommit", "autoCommit"),
+            ("cli_branchSupport", "branchSupport"),
+        ],
+        "f",
+    ),
+    (
+        "Hooks",
+        [
+            ("hooks_enabled", "enabled"),
+            ("hooks_claude", "claudeHooks"),
+            ("hooks_custom_agent", "customAgentHooks"),
+        ],
+        "f",
+    ),
+    ("Hooks", [("hookFilesLocations", "locations")], "s"),
+    (
+        "Safety",
+        [
+            ("autoApprove", "autoApprove"),
+            ("terminal_sandbox", "terminalSandbox"),
+            ("global_autoApprove", "globalAutoApprove"),
+            ("autoReply", "autoReply"),
+        ],
+        "f",
+    ),
+    (
+        "Context Files",
+        [
+            ("ctx_claudeMd", "claudeMd"),
+            ("ctx_agentsMd", "agentsMd"),
+            ("ctx_nestedAgentsMd", "nestedAgentsMd"),
+        ],
+        "f",
+    ),
+    (
+        "Claude (Anthropic)",
+        [
+            ("anthropic_websearch", "webSearch"),
+            ("claudeAgent_skipPermissions", "skipPermissions"),
+        ],
+        "f",
+    ),
+    (
+        "Claude (Anthropic)",
+        [
+            ("anthropic_thinkingBudget", "thinkingBudget"),
+            ("anthropic_thinkingEffort", "thinkingEffort"),
+            ("agent_temperature", "temperature"),
+        ],
+        "s",
+    ),
+]
+
+
 def _parse_copilot_config(root: Path, tool: str = "copilot") -> ToolConfig | None:
     cfg = ToolConfig(tool=tool)
 
@@ -807,105 +1246,26 @@ def _parse_copilot_config(root: Path, tool: str = "copilot") -> ToolConfig | Non
                 seen_servers.add(name)
 
     # ── Feature groups for structured display ───────────────────
-    f, s = cfg.features.get, cfg.settings.get
-    for group_name, pairs, store in (
-        ("Session Targets", [("claude_agent", "claudeTarget"), ("autopilot", "autopilot")], f),
-        (
-            "Agent Mode",
-            [
-                ("agent_mode", "enabled"),
-                ("agent_autoFix", "autoFix"),
-                ("agent_editorContext", "editorContext"),
-                ("agent_largeResultsToDisk", "largeResultsToDisk"),
-                ("plugins", "plugins"),
-            ],
-            f,
-        ),
-        (
-            "Agent Mode",
-            [
-                ("agent_maxRequests", "maxRequests"),
-                ("agent_historySummarizationMode", "historySummarizationMode"),
-            ],
-            s,
-        ),
-        (
-            "Debug Logging",
-            [
-                ("agentDebugLog", "enabled"),
-                ("agentDebugLog_fileLogging", "fileLogging"),
-            ],
-            f,
-        ),
-        ("Debug Logging", [("debug_requestLoggerMaxEntries", "requestLoggerMaxEntries")], s),
-        (
-            "Memory & Tools",
-            [
-                ("local_memory", "local"),
-                ("github_memory", "github"),
-                ("tool_viewImage", "viewImage"),
-            ],
-            f,
-        ),
-        (
-            "CLI Mode",
-            [
-                ("cli_mcp", "mcp"),
-                ("cli_worktreeIsolation", "worktreeIsolation"),
-                ("cli_autoCommit", "autoCommit"),
-                ("cli_branchSupport", "branchSupport"),
-            ],
-            f,
-        ),
-        (
-            "Hooks",
-            [
-                ("hooks_enabled", "enabled"),
-                ("hooks_claude", "claudeHooks"),
-                ("hooks_custom_agent", "customAgentHooks"),
-            ],
-            f,
-        ),
-        ("Hooks", [("hookFilesLocations", "locations")], s),
-        (
-            "Safety",
-            [
-                ("autoApprove", "autoApprove"),
-                ("terminal_sandbox", "terminalSandbox"),
-                ("global_autoApprove", "globalAutoApprove"),
-                ("autoReply", "autoReply"),
-            ],
-            f,
-        ),
-        (
-            "Context Files",
-            [
-                ("ctx_claudeMd", "claudeMd"),
-                ("ctx_agentsMd", "agentsMd"),
-                ("ctx_nestedAgentsMd", "nestedAgentsMd"),
-            ],
-            f,
-        ),
-        (
-            "Claude (Anthropic)",
-            [
-                ("anthropic_websearch", "webSearch"),
-                ("claudeAgent_skipPermissions", "skipPermissions"),
-            ],
-            f,
-        ),
-        (
-            "Claude (Anthropic)",
-            [
-                ("anthropic_thinkingBudget", "thinkingBudget"),
-                ("anthropic_thinkingEffort", "thinkingEffort"),
-                ("agent_temperature", "temperature"),
-            ],
-            s,
-        ),
-    ):
-        if chunk := _pick(store, pairs):
+    stores = {"f": cfg.features.get, "s": cfg.settings.get}
+    for group_name, pairs, store in _COPILOT_GROUPS:
+        if chunk := _pick(stores[store], pairs):
             cfg.feature_groups[group_name] = cfg.feature_groups.get(group_name, {}) | chunk
+
+    # Raw github.copilot.* settings whose values a group or model row shows.
+    grouped = {(store, key) for _g, pairs, store in _COPILOT_GROUPS for key, _label in pairs}
+    model_keys = {key for key, *_rest in _COPILOT_CONFIGURABLE_MODELS}
+    for table, store in ((_COPILOT_FEATURES, "f"), (_COPILOT_SETTINGS, "s")):
+        for src, dst in table:
+            if (store, dst) in grouped or src in model_keys:
+                if store == "s":
+                    cfg.covered_keys.append(dst)
+                if src.startswith("github.copilot."):
+                    cfg.covered_keys.append(src.removeprefix("github.copilot."))
+    cfg.covered_keys.extend(k.removeprefix("github.copilot.") for k in model_keys if k.startswith("github.copilot."))
+    if ws_settings and ws_settings_path.is_file():
+        for k in cfg.settings:
+            if k.startswith("ws:"):
+                cfg.setting_sources[k] = str(ws_settings_path)
 
     return _finish(cfg, bool(cfg.settings or cfg.extensions or cfg.features or cfg.otel.enabled or cfg.feature_groups))
 
@@ -915,6 +1275,7 @@ def _parse_cursor_config(root: Path, tool: str = "cursor") -> ToolConfig | None:
 
     settings = _read_json(cursor_user_dir() / "settings.json")
     if settings:
+        cfg.config_files.append(str(cursor_user_dir() / "settings.json"))
         for k, v in settings.items():
             if any(x in k.lower() for x in ("cursor", "ai", "copilot", "model", "agent")):
                 cfg.settings[k] = v
@@ -934,6 +1295,7 @@ def _parse_codex_config(root: Path | None = None, tool: str = "codex-cli") -> To
     data = _read_toml(codex_global_dir() / "config.toml")
     if not data:
         return None
+    cfg.config_files.append(str(codex_global_dir() / "config.toml"))
 
     cfg.model = data.get("model", "")
     cfg.settings["model_reasoning_effort"] = data.get("model_reasoning_effort", "")
@@ -957,10 +1319,16 @@ def _parse_windsurf_config(root: Path, tool: str = "windsurf") -> ToolConfig | N
     # Project MCP
     cfg.mcp_servers.extend(_mcp_server_names(_read_json(root / ".windsurf" / "mcp.json")))
 
+    for mcp_path in (windsurf_global_dir() / "mcp_config.json", root / ".windsurf" / "mcp.json"):
+        if mcp_path.is_file():
+            cfg.config_files.append(str(mcp_path))
+
     # Global rules
     rules = windsurf_global_dir() / "memories" / "global_rules.md"
     if rules.is_file():
         cfg.settings["global_rules"] = "configured"
+        cfg.config_files.append(str(rules))
+        cfg.setting_sources["global_rules"] = str(rules)
 
     # ── Cascade agent features ───────────────────────────────────
     # Cascade is Windsurf's autonomous coding agent. Detection points:
@@ -1122,7 +1490,9 @@ def _parse_copilot365_config(root: Path, tool: str = "copilot365") -> ToolConfig
                 import yaml
 
                 data = yaml.safe_load(manifest.read_text(errors="replace", encoding="utf-8")) or {}
+                cfg.config_files.append(str(manifest))
                 if name == main_name:
+                    cfg.setting_sources["version"] = str(manifest)
                     cfg.settings["version"] = data.get("version", "")
                     for _feat in ("provision", "deploy", "publish"):
                         if data.get(_feat):
@@ -1336,11 +1706,13 @@ def _parse_generic_config(root: Path, tool_name: str, spec: dict) -> ToolConfig 
             continue
 
         has_data = True
+        cfg.config_files.append(str(path))
 
         # Extraction
         for attr, key_path in f_spec.get("extract", {}).items():
             val = _get_nested(data, key_path)
             if val is not None:
+                cfg.setting_sources[attr] = str(path)
                 if attr == "model":
                     cfg.model = str(val)
                 else:
@@ -1469,6 +1841,9 @@ def _parse_copilot_home_config(root: Path, tool: str = "copilot-cli") -> ToolCon
     cfg.model = str(settings.get("model", ""))
     if settings.get("effortLevel"):
         cfg.settings["effort"] = settings["effortLevel"]
+    if settings_path.is_file():
+        for k in ("model", "effort", "extensions", "disabled_mcp_servers"):
+            cfg.setting_sources[k] = str(settings_path)
 
     plugins = settings.get("enabledPlugins", {})
     cfg.extensions = sorted(plugins) if isinstance(plugins, (dict, list)) else []
@@ -1486,6 +1861,7 @@ def _parse_copilot_home_config(root: Path, tool: str = "copilot-cli") -> ToolCon
     cfg.settings["global_instructions"] = "configured" if instr.is_file() else "not configured"
     if instr.is_file():
         cfg.config_files.append(str(instr))
+        cfg.setting_sources["global_instructions"] = str(instr)
 
     version = _copilot_desktop_version() if tool == "copilot-desktop" else _copilot_cli_version()
     cfg.settings["version"] = version or "not detected"
@@ -1535,6 +1911,7 @@ def collect_tool_configs(root: Path) -> list[ToolConfig]:
                 result = result or ToolConfig(tool=tool_name)
                 result.local_data = {str(k): bool(v) for k, v in declared.items()}
             if result:
+                result.sections = normalize_sections(result)
                 configs.append(result)
         except Exception as exc:
             log.error("Error parsing config for %s: %s", tool_name, exc)
