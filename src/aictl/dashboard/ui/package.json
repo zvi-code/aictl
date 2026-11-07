@@ -12,12 +12,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@tanstack/table-core": "^8.21.3",
-    "echarts": "^6.0.0",
     "htm": "^3.1.1",
     "lucide-preact": "^1.8.0",
-    "preact": "^10.25.4",
-    "uplot": "^1.6.31"
+    "preact": "^10.25.4"
   },
   "devDependencies": {
     "@preact/preset-vite": "^2.8.0",

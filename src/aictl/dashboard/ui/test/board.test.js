@@ -20,7 +20,7 @@ import { kpiList, sectionSummary } from '../src/components/board/summary.js';
 import { nextSort, tableModel } from '../src/components/board/tableModel.js';
 import { normalizeBoard } from '../src/components/board/useBoardData.js';
 import { nextTools } from '../src/hooks/useBoardFilters.js';
-import { routeOf } from '../src/root.js';
+import { redirectOf } from '../src/root.js';
 import { NOW, agentDetailFixture, boardFixture, fileDetailFixture, machineFixture } from './fixtures/board.fixture.js';
 
 // jsdom's localStorage is an empty object in this project's vitest setup (see hooks.test.js).
@@ -274,21 +274,23 @@ describe('filters in the URL', () => {
     fireEvent.click(await findByText('Undo'));
     expect(window.location.search).toContain('project=alpha');
   });
-  it('loads only the code and styles of the screen a URL opens', () => {
-    // Guard: one conditional import() made the build preload the old screens' files on the board.
-    const src = readFileSync(join(process.cwd(), 'src/root.js'), 'utf8');
-    expect(src).not.toMatch(/\?\s*import\(/);
-    const main = readFileSync(join(process.cwd(), 'src/main.js'), 'utf8');
-    expect(main).not.toMatch(/\.css|app\.js|BoardScreen/);
+  it('has no second screen: the old shell is gone from the source tree', () => {
+    // Guard: the old `?tab=` screens were deleted; nothing may bring them back.
+    const src = readdirSync(join(process.cwd(), 'src'));
+    expect(src).not.toContain('app.js');
+    expect(src).not.toContain('context.js');
+    expect(src).not.toContain('dashboard.css');
+    expect(src).not.toContain('layoutConfig.js');
+    expect(readdirSync(join(process.cwd(), 'src/components')).filter(f => f.endsWith('.js'))).toEqual([]);
   });
-  it('routes old links: a screen the board replaces opens the board', () => {
-    expect(routeOf('')).toBe('board');
-    expect(routeOf('?tab=overview')).toBe('board');
-    expect(routeOf('?tab=dashboard')).toBe('board');
-    expect(routeOf('?tab=nonsense')).toBe('board');
-    expect(routeOf('?tab=explorer')).toBe('detail');
-    expect(routeOf('?tab=sessions')).toBe('detail');
-    expect(routeOf('?tab=budget')).toBe('detail');
+  it('routes old links: every `?tab=` lands on the board', () => {
+    expect(redirectOf('')).toBeNull();
+    expect(redirectOf('?tab=overview')).toBe('');
+    expect(redirectOf('?tab=dashboard&range=1h')).toBe('?range=1h');
+    expect(redirectOf('?tab=nonsense')).toBe('');
+    expect(redirectOf('?tab=explorer')).toBe('');
+    expect(redirectOf('?tab=sessions')).toBe('');
+    expect(redirectOf('?tab=budget')).toBe('');
   });
 });
 
@@ -496,10 +498,10 @@ describe('guards', () => {
     for (const f of files) expect(readFileSync(join(dir, f), 'utf8'), f).not.toMatch(/echarts|uplot/i);
   });
   it('keeps old links resolving', () => {
-    expect(routeOf('?tab=events-stats')).toBe('detail');
+    expect(redirectOf('?tab=events-stats')).toBe('');
     // Configuration became the board's Settings screen, under its old names too.
-    expect(routeOf('?tab=configuration')).toBe('board');
-    expect(routeOf('?tab=config')).toBe('board');
+    expect(redirectOf('?tab=configuration')).toBe('?screen=settings');
+    expect(redirectOf('?tab=config')).toBe('?screen=settings');
   });
   it('opens a skill from its row and shows its scope', () => {
     const opened = [];
@@ -514,7 +516,7 @@ describe('guards', () => {
     expect(table.rows[1].cells.sc.v).toBe('No file');
   });
   it('shows hidden context on the board, not on an old screen', () => {
-    expect(routeOf('?tab=hidden')).toBe('board');
+    expect(redirectOf('?tab=hidden')).toBeNull();
   });
   it('counts only listed tools when a saved choice names more', () => {
     const six = ['a', 'b', 'c', 'd', 'e', 'f'];
@@ -531,7 +533,7 @@ describe('board screen', () => {
   it('renders all panels of the default layout in order, with the rail summaries', async () => {
     const { container, getByText } = await mountBoard();
     for (const sec of freshLayout()) for (const p of sec.panels) expect(container.querySelector('#p-' + p.id), p.id).toBeTruthy();
-    expect(getByText('Detail screens')).toBeTruthy();
+    expect(container.querySelector('a[href^="?tab="]')).toBeNull();
     expect(container.querySelector('.bd-navi.bd-alert').textContent).toContain('2 running, 1 subagents');
     expect(container.querySelector('#sec-resources .bd-sect').textContent).toBe('Machine');
     expect(container.querySelector('.bd-navi[href="#sec-resources"]').textContent).toContain('2 alerts');

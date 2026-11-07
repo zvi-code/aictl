@@ -1,14 +1,10 @@
 // Settings workspace: the four pivots, the inspector, search, the scope
 // fallback for rows without `scope`, and opening a file at a line. The workspace
-// reads a `source` prop; TabToolConfig builds one from SnapContext.
+// reads a `source` prop that the board builds.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { html } from 'htm/preact';
-import { SnapContext } from '../src/context.js';
 import SettingsWorkspace from '../src/components/settings/SettingsWorkspace.js';
-import TabToolConfig from '../src/components/TabToolConfig.js';
-import FileViewer from '../src/components/FileViewer.js';
-import * as utils from '../src/utils.js';
 import axe from 'axe-core';
 import {
   deriveScope, deriveLocation, readSettingsUrl, rowChain, toolEntries, whyWins, getSections, SECTION_ORDER,
@@ -91,7 +87,7 @@ const SNAP = {
 let filesResponse;
 let auditResponse;
 beforeEach(() => {
-  history.replaceState(null, '', '/?tab=config');
+  history.replaceState(null, '', '/?screen=settings');
   filesResponse = { status: 404, body: { error: 'not found' } };
   auditResponse = { findings: [], sources: [], effective_models: {}, transcripts_read: 0 };
   globalThis.fetch = vi.fn(async (path) => {
@@ -114,7 +110,7 @@ function makeSource({ snap = SNAP, openFile = vi.fn(), enabledTools = null, find
 }
 
 function renderAt(search, opts = {}) {
-  history.replaceState(null, '', '/?tab=config' + (search ? '&' + search : ''));
+  history.replaceState(null, '', '/?screen=settings' + (search ? '&' + search : ''));
   const source = makeSource(opts);
   const r = render(html`<${SettingsWorkspace} source=${source}/>`);
   return { ...r, openFile: source.openFile, source };
@@ -517,47 +513,6 @@ describe('File viewer at a line', () => {
     fireEvent.click([...container.querySelectorAll('.st-btn')].find(b => b.textContent === 'Open settings.json at line 412'));
     expect(openFile).toHaveBeenLastCalledWith(VS_USER, 412);
   });
-
-  it('TabToolConfig opens the file viewer of the older screens, with the line', () => {
-    const openViewer = vi.fn();
-    const { container } = render(html`<${SnapContext.Provider} value=${{ snap: SNAP, openViewer, enabledTools: null }}>
-      <${TabToolConfig}/>
-    </${SnapContext.Provider}>`);
-    fireEvent.click(container.querySelector('.st-nav__item[data-tool="vscode"]'));
-    fireEvent.click(rowByKey(container, 'chat.tools.global.autoApprove').querySelector('.st-src'));
-    expect(openViewer).toHaveBeenCalledWith(VS_USER, { line: 412 });
-    fireEvent.click(rowByKey(container, 'chat.agent.maxRequests'));
-    fireEvent.click([...container.querySelectorAll('.st-btn')].find(b => b.textContent === 'Open settings.json at line 20'));
-    expect(openViewer).toHaveBeenLastCalledWith(VS_USER, { line: 20 });
-  });
-
-  it('FileViewer shows every line, in the source view, with the line highlighted', async () => {
-    const text = Array.from({ length: 60 }, (_, i) => 'line ' + (i + 1)).join('\n');
-    vi.spyOn(utils, 'fetchFileContent').mockResolvedValue('# Title\n' + text);
-    const { container } = render(html`<${SnapContext.Provider} value=${{ snap: { tools: [], agent_memory: [] } }}>
-      <${FileViewer} path="/p/CLAUDE.md" line=${40} onClose=${() => {}}/>
-    </${SnapContext.Provider}>`);
-    await waitFor(() => expect(container.querySelector('.fv-line--hit')).toBeTruthy());
-    expect(container.querySelector('.fv-line--hit .fv-ln').textContent).toBe('40');
-    expect(container.querySelector('.fv-ellipsis')).toBeNull();
-    expect(container.querySelector('.md h1')).toBeNull();
-  });
-});
-
-describe('Routing', () => {
-  it('TabToolConfig renders the workspace, and the URL keeps tab next to the pivot', () => {
-    history.replaceState(null, '', '/?tab=config');
-    const { container, getByText } = render(html`<${SnapContext.Provider} value=${{ snap: SNAP, openViewer: () => {}, enabledTools: null }}>
-      <${TabToolConfig}/>
-    </${SnapContext.Provider}>`);
-    expect(container.querySelector('.st-ws')).toBeTruthy();
-    fireEvent.click(getByText('By topic'));
-    const q = readSettingsUrl(window.location.search);
-    expect(q.view).toBe('topic');
-    expect(new URLSearchParams(window.location.search).get('tab')).toBe('config');
-    cleanup();
-    expect(window.location.search).toBe('?tab=config');
-  });
 });
 
 describe('Accessibility', () => {
@@ -943,7 +898,7 @@ function stubConfig(onConfig) {
 }
 
 function renderPerms(search, { snap = permSnap(), ...extra } = {}) {
-  history.replaceState(null, '', '/?tab=config' + (search ? '&' + search : ''));
+  history.replaceState(null, '', '/?screen=settings' + (search ? '&' + search : ''));
   const source = { ...makeSource({ snap }), ...extra };
   const r = render(html`<${SettingsWorkspace} source=${source}/>`);
   return { ...r, source };

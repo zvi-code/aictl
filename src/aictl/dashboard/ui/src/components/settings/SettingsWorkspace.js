@@ -13,7 +13,7 @@ import { getSettingsFiles } from '../../api.js';
 import { scopeAudit } from '../../utils/auditScope.js';
 import { isFiltered } from '../../utils/toolScope.js';
 import { writeUrl } from '../../hooks/urlState.js';
-import { isTypingTarget } from '../../hooks/useTabs.js';
+import { isTypingTarget } from '../../utils/a11y.js';
 import Icon from '../ui/Icon.js';
 import Segmented from '../ui/Segmented.js';
 import ToolScopeEmpty from '../ui/ToolScopeEmpty.js';

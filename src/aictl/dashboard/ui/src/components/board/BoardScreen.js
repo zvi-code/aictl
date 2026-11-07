@@ -5,7 +5,6 @@ import * as api from '../../api.js';
 import { useTheme } from '../../hooks/useTheme.js';
 import { nextTools, useBoardFilters } from '../../hooks/useBoardFilters.js';
 import { writeUrl } from '../../hooks/urlState.js';
-import { LAYOUT } from '../../layoutConfig.js';
 import { focusTrap } from '../../utils/a11y.js';
 import { parseCustomRange, toLocalISOString } from '../../utils/customRange.js';
 import { listedTools, toolFilterLabel, canClear, clearedFilters, RANGES, STATUSES, windowOf, boardQuery } from './filters.js';
@@ -24,9 +23,6 @@ import './board.css';
 
 const SECTIONS = DEFAULT_LAYOUT.map(s => ({ id: s.id, title: s.title, anchor: s.anchor }));
 const SEC_BY_ID = Object.fromEntries(SECTIONS.map(s => [s.id, s]));
-// Screens the board does not replace. Overview became the board itself, and
-// Configuration became its Settings screen.
-const DETAIL_SCREENS = LAYOUT.tabs.filter(t => t.id !== 'overview' && t.id !== 'config');
 
 // The board's own screens, in the `screen` query value. The board screen has none.
 const SCREENS = new Set(['board', 'settings']);
@@ -63,14 +59,13 @@ function useResolvedTheme(theme) {
     return () => mq.removeEventListener?.('change', on);
   }, []);
   if (theme === 'dark') return 'dark';
-  if (theme === 'light' || theme === 'editorial') return 'light';
+  if (theme === 'light') return 'light';
   return dark ? 'dark' : 'light';
 }
 
 const Check = ({ on }) => html`<span class=${'bd-check' + (on ? ' bd-on' : '')}>${on ? html`<${Ico} d=${PATHS.check}/>` : null}</span>`;
 
 function Rail({ ui, data, series, findingsCount, attention, screen, settingsSum, act }) {
-  const [detailOpen, setDetailOpen] = useState(false);
   const mini = ui.railMini;
   const railLabel = mini ? 'Show section names' : 'Hide section names';
   const rangeSum = act.rangeSummary();
@@ -92,10 +87,6 @@ function Rail({ ui, data, series, findingsCount, attention, screen, settingsSum,
       </a>
     </nav>
     <span class="bd-spacer"></span>
-    <div class="bd-detail">
-      <button type="button" class="bd-detail-t" aria-expanded=${detailOpen ? 'true' : 'false'} onClick=${() => setDetailOpen(!detailOpen)}><${Ico} d=${PATHS.chev} cls=${'bd-chev' + (detailOpen ? ' bd-open' : '')}/>Detail screens</button>
-      ${detailOpen ? html`<nav aria-label="Detail screens">${DETAIL_SCREENS.map(t => html`<a key=${t.id} href=${'?tab=' + t.id}>${t.label}</a>`)}</nav>` : null}
-    </div>
     <div class="bd-railfoot bd-rl">Layout and options stay when you reload.</div>
   </aside>`;
 }

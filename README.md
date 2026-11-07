@@ -12,16 +12,15 @@ files, MCP servers, hooks, memory, background processes, and token bills.
 **aictl** gives you a single place to *define* what they should know and to
 *see* what they are actually doing.
 
-<img src="docs/screenshots/dashboard-light.png" width="100%" alt="aictl live dashboard: per-tool inventory sparklines, CPU cores, live traffic by tool, live monitor with sessions and token estimates, and a Monitoring Health panel with OTel receiver and ingester status">
+<img src="docs/screenshots/board.png" width="100%" alt="aictl board: KPI strip, the running agents and their subagents with status, model, tokens, cost and CPU, usage by model and by kind of agent">
 
-*The live dashboard (`aictl daemon serve`): one view across 14 supported
-tools — files and token footprint, live sessions and traffic per tool, CPU
-and memory, MCP servers, and a Monitoring Health panel that watches the
-monitor itself (ingesters, OTel receiver, dropped-sample alerts, data
-freshness).*
+*The board (`aictl daemon serve`): one screen across 14 supported tools.
+Sections for agents, usage and cost, prompts and skills, tools and failures,
+changes and testing, the machine, settings in effect, data sources and
+context; a drawer for every agent, file, skill and prompt; a Settings screen
+for every knob of every tool.*
 
-> Screenshots on this page show an earlier version of the dashboard. For step-by-step tasks, see
-> **[docs/how-to.md](docs/how-to.md)**.
+> For step-by-step tasks, see **[docs/how-to.md](docs/how-to.md)**.
 
 ## Two problems, one tool
 
@@ -100,30 +99,22 @@ To undo all of it: `aictl disable --dry-run`, then `aictl disable`.
 
 ## Screenshots
 
-### Session Explorer
+### Settings in effect
 
-<img src="docs/screenshots/sessions.png" width="100%" alt="Session Explorer: per-tool session chips, a live claude-code session with LIVE badge and kill control, action timeline with file modifications, and collapsible Conversation, Context, Memory, and Resources panels">
+<img src="docs/screenshots/settings.png" width="100%" alt="Settings screen: tools on the left with risky counts, the scope strip from managed to environment, every setting with its value, scope, file and line, and the per-agent model table">
 
-*Every recorded session, per tool. Pick a session chip to inspect it: live
-stats, an action timeline, the captured conversation, loaded context, agent
-memory, and resource breakdowns — with Flow, Transcript, Timeline, and
-Events sub-views. Short noise sessions are collapsed, not hidden silently.*
+*Every knob of every tool, set or unset, with the file and line it comes from
+and the scope that wins (managed, user, project, project-local, environment).
+Per-agent models, efforts and context tiers are read from the agent files and
+the tool settings. Risky values are marked; unset knobs show on request.*
 
-### Session Flow
+### Context
 
-<img src="docs/screenshots/session-flow.png" width="100%" alt="Session Flow: UML-style sequence diagram of a session showing user prompts, API calls with token counts, and tool executions over time">
+<img src="docs/screenshots/context.png" width="100%" alt="Context section: context window budget per tool, tokens by category, the context window map, agent memory and daily usage by model">
 
-*A sequence diagram reconstructed from structured events: user prompts,
-API calls with per-call token counts and models, tool executions, and
-subagent spawns.*
-
-### Context Window Map
-
-<img src="docs/screenshots/context-breakdown.png" width="100%" alt="Context Window Map: token breakdown by category with per-tool stacked bars and drill-down into individual files">
-
-*What is actually inside the context window: tokens by category (commands,
-instructions, skills, rules, memory, …) with per-tool stacked bars and
-per-file drill-down.*
+*What is in the context window: the budget each tool spends before the first
+prompt, tokens by category and by scope, the memory files that load, and the
+files each tool reads with their size and token estimate.*
 
 ## Install
 
@@ -566,15 +557,15 @@ aictl daemon serve --no-monitor        # disable live runtime overlay
 
 The web dashboard is a real-time, interactive interface built with Vite + Preact. It auto-updates via Server-Sent Events (with periodic full-snapshot refresh) and layers live monitor data on top of the CSV-driven discovery schema:
 
-- **Overview-first** — all tools shown as collapsed summary cards in a grid. Each card combines CSV-discovered files/processes/MCP state with live monitor signals like session count, traffic rate, token estimates, and MCP-loop inference. Click to expand.
-- **Hierarchical files** — expanded tool cards group files by category (instructions, config, rules, commands, skills, memory, transcript). Each category is collapsible with directory grouping.
-- **Inline file preview** — click any file to see content inline with line numbers. Small files show fully; large files show a tail preview with "show all (N lines)" to expand. "open in viewer" button for full slide-in panel.
-- **Process monitoring** — dedicated Processes tab with processes sorted by memory, visual memory bars, process type grouping, anomaly detection with structured details, zombie risk badges, and cleanup commands with click-to-copy.
-- **MCP server status** — connectivity table with live status indicators, CPU/memory per server, transport type, and endpoint.
-- **Agent memory browser** — collapsible groups (User Memory, Project Memory, Auto Memory) with click-to-view content.
-- **Live Monitor tab** — collector diagnostics (auto-hidden when empty), per-tool sessions, live traffic, token inference confidence, workspace roots, and monitored state paths.
-- **Token budget** — context window usage bar, always-loaded/on-demand/cacheable breakdown, daily token usage chart (7-day stacked bar by model), verified token table with cache read/write columns, and per-category/per-tool breakdowns.
-- **Events & Stats** — per-tool time series (CPU, memory, tokens, traffic), telemetry KV cards with cache metrics and per-model breakdown, and chronological event feed.
+- **One board** — a rail of sections (Agents, Usage and cost, Prompts and skills, Tools, failures and speed, Changes and testing, Machine, Settings in effect, Where the data comes from, Context) with a KPI strip, a time range, and tool, project, model and status filters. Panels can be moved, resized and hidden; the layout is kept across reloads.
+- **Agents and subagents** — every session as a row with status, model, messages, tokens, cache rate, cost, tool calls, failures, questions waiting, CPU, RAM and duration; subagents nest under their main agent. A click opens the agent drawer: Overview, Transcript, Flow, Timeline, Events, Team, Processes and Integrations, with run history and the git branch.
+- **Usage and cost** — tokens, cache reads and writes, cost and messages by model, by project and over time, with a comparison to the previous window.
+- **Context** — the context window budget per tool, tokens by category and by scope, the memory files that load, and every file each tool reads with size and token estimate.
+- **Machine** — CPU per core, RAM, the process tree of every tool with anomalies, zombie risk and cleanup commands, and network traffic per tool.
+- **Settings** — every knob of every tool in a dedicated screen: by tool, by topic, by file or by finding, with the scope strip (managed, user, project, project-local, environment), per-agent models, risky values, unset knobs behind a toggle, and an editor for the permission lists.
+- **Hidden context** — the files that reach the model without being asked for, by tool, with the model in force and conflicting model settings.
+- **Markdown rendered** — instruction, memory, skill and prompt files render as Markdown with a Source toggle; raw HTML is never injected.
+- **Command palette** — Cmd/Ctrl+K opens sections, agents, files and settings; `?` lists the shortcuts.
 - **Compact number formatting** — all values use standardized formatters (max 3 display digits, compact units: `1.2K`, `45MB`, `0.9KB/s`).
 - **Dark/light mode** — auto-detects system preference.
 - **No extra dependencies** — uses Python stdlib `http.server`.
