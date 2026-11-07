@@ -1,0 +1,277 @@
+import{m as r,A as W,y as P,T as A,d as _,q as it,k as O,x as lt}from"./index-0APVtqay.js";import{a as et,S as rt,P as M,F as R}from"./app-DoCkKEKd.js";import{I as ot}from"./Icon-1my9WQDm.js";import{T as K}from"./ToolScopeEmpty-CzCb5Yvm.js";import{az as ct,aA as dt,aB as ut,aC as pt,y as vt,x as L,aD as st,ac as mt,ax as ht,av as ft,aE as yt,ay as $t,M as Q,F as gt,aF as B,w as j}from"./useSse-Dcx1BuKe.js";import{i as bt,u as xt,a as _t,b as St,c as wt,d as Tt,e as kt,f as At,g as zt,h as Mt,j as Lt,k as Rt,l as Ct,m as Ot,n as Et,o as qt}from"./echarts-BbyLWlSf.js";import"./platform-F0jTv3XI.js";import"./TextView-DKtsDjbG.js";function Nt({enabledTools:t,what:e}){return t==null?null:r`<div class="panel-state panel-state--note" role="note">
+    <${ot} name="filter" size="12"/>
+    <span>${e} cover all tools: the tool filter does not apply, because these figures have no per-tool split.</span>
+  </div>`}xt([_t,St,wt,Tt,kt,At,zt,Mt,Lt,Rt,Ct,Ot,Et,qt]);function S(t,e){if(typeof document>"u")return e;const a=getComputedStyle(document.documentElement).getPropertyValue(t);return a&&a.trim()||e}function U(){return[S("--accent","#60a5fa"),S("--green","#34d399"),S("--orange","#f97316"),S("--yellow","#fbbf24"),S("--red","#ef4444"),S("--model-switch","#a78bfa"),"#06b6d4","#f472b6","#84cc16","#c084fc"]}function Ft(){const t=S("--bg","#0b0e14"),e=S("--fg","#e6e6e6"),a=S("--fg2","#9aa0a6"),l=S("--border","#2a2f3a");return{bg:t,fg:e,fg2:a,border:l}}function Y(t){const e=Ft();return{color:U(),backgroundColor:"transparent",textStyle:{color:e.fg,fontFamily:"inherit",fontSize:11},...t,tooltip:{backgroundColor:e.bg,borderColor:e.border,textStyle:{color:e.fg,fontSize:11},...(t==null?void 0:t.tooltip)||{}},xAxis:Z(t==null?void 0:t.xAxis,e),yAxis:Z(t==null?void 0:t.yAxis,e)}}function Z(t,e){if(!t)return t;const a=l=>l&&{axisLine:{lineStyle:{color:e.border},...l.axisLine||{}},axisTick:{lineStyle:{color:e.border},...l.axisTick||{}},axisLabel:{color:e.fg2,...l.axisLabel||{}},splitLine:{lineStyle:{color:e.border,opacity:.35},...l.splitLine||{}},...l};return Array.isArray(t)?t.map(a):a(t)}function at(t){const{option:e,style:a,className:l,onReady:n,onEvent:s,notMerge:d}=t,c=t["aria-label"],i=W(null),m=W(null),y=W({});return P(()=>{const v=i.current;if(!v)return;const h=bt(v,null,{renderer:"canvas"});m.current=h;const u=()=>{try{h.resize()}catch{}},f=typeof ResizeObserver<"u"?new ResizeObserver(u):null;f&&f.observe(v);const $=typeof MutationObserver<"u"?new MutationObserver(()=>{const p=m.current;if(p)try{p.setOption(Y(e||{}),{notMerge:!0})}catch{}}):null;if($&&typeof document<"u"&&$.observe(document.documentElement,{attributes:!0,attributeFilter:["data-theme","class"]}),n)try{n(h)}catch{}return()=>{f&&f.disconnect(),$&&$.disconnect();try{h.dispose()}catch{}m.current=null}},[]),P(()=>{const v=m.current;if(!(!v||!e))try{v.setOption(Y(e),{notMerge:!!d})}catch{}},[e,d]),P(()=>{const v=m.current;if(v){for(const[h,u]of Object.entries(y.current))try{v.off(h,u)}catch{}if(y.current={},s)for(const[h,u]of Object.entries(s))typeof u=="function"&&(v.on(h,u),y.current[h]=u)}},[s]),r`<div
+    ref=${i}
+    class=${l||"echart-container"}
+    style=${a||"width:100%;height:260px"}
+    role="img"
+    aria-label=${c||"chart"}
+  ></div>`}function Pt(t,e){const a=[];for(let l=0;l<t.length;l++){const n=e[l];n!=null&&a.push([t[l],n])}return a}function Dt({data:t,labels:e,height:a,logX:l,fmtX:n,fmtY:s,xLabel:d,yLabel:c,visualMap:i}){const m=a||220,y=A(()=>{const v=U();if(!t||t.length<2||!t[0]||t[0].length===0)return{series:[]};const[h,...u]=t,f=u.map(($,p)=>({name:(e==null?void 0:e[p])||`Series ${p+1}`,type:"scatter",data:Pt(h,$),symbolSize:6,itemStyle:{color:v[p%v.length],opacity:.7},emphasis:{focus:"series"}}));return{grid:{left:48,right:16,top:24,bottom:40},legend:{top:0,type:"scroll",textStyle:{fontSize:10}},tooltip:{trigger:"item",formatter:$=>{const[p,g]=$.value,o=n?n(p):String(p),b=s?s(g):String(g);return`<b>${$.seriesName}</b><br/>${d||"x"}: ${o}<br/>${c||"y"}: ${b}`}},xAxis:{type:l?"log":"value",name:d,nameLocation:"middle",nameGap:24,axisLabel:{fontSize:10,formatter:n},splitLine:{show:!0}},yAxis:{type:"value",name:c,nameLocation:"middle",nameGap:36,axisLabel:{fontSize:10,formatter:s},splitLine:{show:!0}},dataZoom:[{type:"inside",xAxisIndex:0,yAxisIndex:0,filterMode:"none",zoomOnMouseWheel:!0}],visualMap:i?[{type:"continuous",dimension:1,min:0,max:Math.max(1,...u.flat().filter($=>$!=null)),inRange:{colorAlpha:[.3,1]},show:!1}]:void 0,series:f}},[t,e,l,n,s,d,c,i]);return r`<${at}
+    option=${y}
+    style=${"width:100%;height:"+m+"px"}
+    aria-label="scatter chart"
+  />`}function It(t,e,a){const l=[];for(let n=0;n<t.length;n++){const s=e[n];s!=null&&l.push([a?t[n]*1e3:t[n],s])}return l}function H(t){const{mode:e,data:a,labels:l,colors:n,height:s,isTime:d,fmtX:c,fmtY:i,xLabel:m,yLabel:y,logX:v}=t,h=s||200,u=A(()=>{const f=U();if(!a||a.length<2||!a[0]||a[0].length===0)return{series:[]};const[$,...p]=a,g=p.map((o,b)=>{const x=ct(n==null?void 0:n[b],f[b%f.length]);return{name:(l==null?void 0:l[b])||`Series ${b+1}`,type:"line",smooth:!1,showSymbol:!1,data:It($,o,!!d),lineStyle:{width:1.5,color:x},areaStyle:{opacity:.08,color:x},connectNulls:!1}});return{grid:{left:48,right:12,top:16,bottom:32},legend:{top:0,type:"scroll",textStyle:{fontSize:10},show:((l==null?void 0:l.length)||0)>1},tooltip:{trigger:"axis",formatter:o=>{var q,C;const b=Array.isArray(o)?o:[o],x=(C=(q=b[0])==null?void 0:q.value)==null?void 0:C[0],D=d?new Date(x).toLocaleTimeString([],{hour12:!1}):c?c(x):String(x),I=b.map(z=>{var F;const w=(F=z.value)==null?void 0:F[1],N=w==null?"—":i?i(w):String(w);return`<span style="color:${z.color}">●</span> ${z.seriesName}: <b>${N}</b>`}).join("<br/>");return`${D}<br/>${I}`}},xAxis:{type:d?"time":v?"log":"value",axisLabel:{fontSize:10,hideOverlap:!0,formatter:d?void 0:c}},yAxis:{type:"value",axisLabel:{fontSize:10,formatter:i}},dataZoom:[{type:"inside",xAxisIndex:0}],series:g}},[a,l,n,d,v,c,i]);return e==="scatter"?r`<${Dt}
+      data=${a}
+      labels=${l}
+      height=${s}
+      logX=${v}
+      fmtX=${c}
+      fmtY=${i}
+      xLabel=${m}
+      yLabel=${y}
+    />`:r`<${at}
+    option=${u}
+    style=${"width:100%;height:"+h+"px"}
+    aria-label="analytics chart"
+  />`}function jt(t){const e={};for(const a of t){const l=typeof a=="string"?a:a.metric;if(!l)continue;const n=l.split("."),s=n.length>1?n.slice(0,-1).join("."):"(ungrouped)";(e[s]=e[s]||[]).push({name:l,count:a.count||0,lastValue:a.last_value})}return Object.entries(e).sort((a,l)=>a[0].localeCompare(l[0]))}function Wt(){const[t,e]=_([]),[a,l]=_(null),[n,s]=_(null),[d,c]=_([]),[i,m]=_(!1),[y,v]=_(null);P(()=>{dt().then(p=>{e(p||[]),v(null)}).catch(p=>{e([]),v(p.message)})},[]);const h=A(()=>jt(t),[t]),u=it(p=>{l(p),s(null),c([]),m(!0);const g=Math.floor(Date.now()/1e3)-1800,o=ut(p,g).then(x=>s(x)).catch(()=>s(null)),b=pt(p,g).then(x=>c(Array.isArray(x)?x:[])).catch(()=>c([]));Promise.allSettled([o,b]).then(()=>m(!1))},[]),f=A(()=>!n||!n.value||!n.value.length?null:n.value[n.value.length-1],[n]),$=A(()=>{const p=new Set;for(const g of d)g.tags&&Object.keys(g.tags).forEach(o=>p.add(o));return[...p].sort()},[d]);return r`<div class="es-layout">
+    <div class="es-tool-list">
+      <div class="es-section-title">Metrics</div>
+      ${y&&r`<p class="error-state" style="padding:0 var(--sp-4)">Error: ${vt(y)}</p>`}
+      ${!y&&!t.length&&r`<p class="empty-state" style="padding:0 var(--sp-4)">No metrics available.</p>`}
+      ${h.map(([p,g])=>r`<div key=${p}>
+        <div class="text-muted" style="font-size:var(--fs-xs);padding:0.35rem var(--sp-5) 0.1rem;text-transform:uppercase;letter-spacing:0.03em">${p}</div>
+        ${g.map(o=>r`<button key=${o.name}
+          class=${a===o.name?"es-tool-btn active":"es-tool-btn"}
+          onClick=${()=>u(o.name)}>
+          ${o.name.split(".").pop()}
+          ${o.count?r`<span class="badge" style="margin-left:auto;font-size:var(--fs-2xs)">${L(o.count)}</span>`:""}
+        </button>`)}
+      </div>`)}
+    </div>
+    <div>
+      ${!a&&r`<div class="diag-card text-center" style="padding:2rem">
+        <p class="text-muted">Select a metric from the sidebar to view its time series.</p>
+      </div>`}
+
+      ${a&&r`<${O}>
+        <h3 class="mb-sm">${a}</h3>
+
+        ${i&&r`<p class="loading-state">Loading...</p>`}
+
+        ${!i&&n&&n.ts&&n.ts.length>=2?r`<div class="es-section">
+          <div class="es-section-title">Time Series (last 30m)</div>
+          <${et}
+            label=${a.split(".").pop()}
+            value=${f!=null?L(f):"-"}
+            data=${[n.ts,n.value]}
+            chartColor="var(--accent)"
+            smooth />
+        </div>`:""}
+
+        ${!i&&n&&n.ts&&n.ts.length<2&&r`<div class="es-section">
+          <div class="es-section-title">Time Series</div>
+          <p class="empty-state">Not enough data points to chart.</p>
+        </div>`}
+
+        ${!i&&!n&&!i&&r`<div class="es-section">
+          <div class="es-section-title">Time Series</div>
+          <p class="empty-state">No series data available.</p>
+        </div>`}
+
+        ${!i&&d.length>0&&r`<div class="es-section" style="margin-top:var(--sp-6)">
+          <div class="es-section-title">Recent Samples (${d.length})</div>
+          <div style="overflow-x:auto">
+            <table style="width:100%;font-size:var(--fs-base);border-collapse:collapse">
+              <thead>
+                <tr class="text-muted" style="text-align:left;border-bottom:1px solid var(--border)">
+                  <th style="padding:var(--sp-2) var(--sp-4)">Time</th>
+                  <th style="padding:var(--sp-2) var(--sp-4)">Value</th>
+                  ${$.map(p=>r`<th key=${p} style="padding:var(--sp-2) var(--sp-4)">${p}</th>`)}
+                </tr>
+              </thead>
+              <tbody>
+                ${d.slice(-50).reverse().map((p,g)=>r`<tr key=${g}
+                  style="border-bottom:1px solid var(--border);${g%2?"background:var(--bg2)":""}">
+                  <td class="mono text-nowrap" style="padding:var(--sp-2) var(--sp-4)">${st(p.ts)}</td>
+                  <td class="mono" style="padding:var(--sp-2) var(--sp-4)">${L(p.value)}</td>
+                  ${$.map(o=>r`<td key=${o} style="padding:var(--sp-2) var(--sp-4)">
+                    ${p.tags&&p.tags[o]!=null?r`<span class="badge">${p.tags[o]}</span>`:"-"}
+                  </td>`)}
+                </tr>`)}
+              </tbody>
+            </table>
+          </div>
+        </div>`}
+
+        ${!i&&d.length===0&&n&&r`<div class="es-section" style="margin-top:var(--sp-6)">
+          <div class="es-section-title">Recent Samples</div>
+          <p class="empty-state">No raw samples in the last 30 minutes.</p>
+        </div>`}
+      </${O}>`}
+    </div>
+  </div>`}const E=["var(--green)","var(--orange)","var(--accent)","var(--red)","var(--yellow)","#8b5cf6","#06b6d4","#f472b6"];function k(t){return t>=1e3?L(t/1e3)+"s":Math.round(t)+"ms"}function Bt(t){return"#"+Math.round(t)}function Ht({data:t}){if(!t||!t.requests||!t.requests.length)return r`<div class="analytics-section">
+      <div class="analytics-section-title">Response Time Analysis</div>
+      <${R} count=${t==null?void 0:t.unattributed_hidden}/>
+      <${M} status="empty" emptyTitle="No request data in this time range"
+        emptyHint="Widen the time range. Response times need OTel telemetry from the tool."
+        emptyFix="aictl otel enable"/>
+    </div>`;const e=t.requests,a=A(()=>{const i=e.map(y=>y.ts),m=e.map(y=>y.duration_ms);return[i,m]},[e]),l=A(()=>{const i=[...new Set(e.map(u=>u.model||"(unknown)"))],m=i.map(()=>[]),v=[...e.filter(u=>u.input_tokens>0)].sort((u,f)=>u.input_tokens-f.input_tokens),h=v.map(u=>u.input_tokens);for(const u of i)m[i.indexOf(u)]=v.map(f=>(f.model||"(unknown)")===u?f.duration_ms:null);return{data:[h,...m],labels:i,colors:E.slice(0,i.length)}},[e]),n=t.by_model||[],s=Math.max(1,...n.map(i=>i.p95_ms)),d=A(()=>{const i=[...new Set(e.map(u=>u.model||"(unknown)"))],y=[...e.filter(u=>u.seq>0)].sort((u,f)=>u.seq-f.seq),v=y.map(u=>u.seq),h=i.map(u=>y.map(f=>(f.model||"(unknown)")===u?f.duration_ms:null));return{data:[v,...h],labels:i,colors:E.slice(0,i.length)}},[e]),c=e.length?e[e.length-1].duration_ms:0;return r`<div class="analytics-section">
+    <div class="analytics-section-title">Response Time Analysis</div>
+    <${R} count=${t.unattributed_hidden}/>
+    <div class="analytics-charts">
+      <div class="diag-card">
+        <div class="chart-hdr"><span class="chart-label">Response Time Over Time</span>
+          <span class="chart-val" style="color:var(--accent)">${k(c)}</span></div>
+        <${H} mode="line" data=${a} isTime=${!0} fmtY=${k} height=${200}/>
+      </div>
+      <div class="diag-card">
+        <div class="chart-hdr"><span class="chart-label">Response Time vs Input Size</span>
+          <span class="chart-val text-muted" style="font-size:var(--fs-sm)">${e.length} requests</span></div>
+        <${H} mode="scatter" data=${l.data} labels=${l.labels}
+          colors=${l.colors} fmtX=${L} fmtY=${k} logX=${!0} height=${200}/>
+      </div>
+      <div class="diag-card">
+        <div class="chart-hdr"><span class="chart-label">Response Time by Model</span></div>
+        <div class="hbar-list">
+          ${n.map((i,m)=>r`<div key=${i.model} class="hbar-row">
+            <span class="hbar-label" title=${i.model}>${i.model.replace(/^claude-/,"")||i.model}</span>
+            <div class="hbar-track">
+              <div class="hbar-fill" style=${"width:"+Math.round(i.avg_ms/s*100)+"%;background:"+E[m%E.length]}></div>
+              <div class="hbar-p95" style=${"left:"+Math.round(i.p95_ms/s*100)+"%"} title=${"p95: "+k(i.p95_ms)}></div>
+            </div>
+            <span class="hbar-value">${k(i.avg_ms)}</span>
+            <span class="badge">${i.count}</span>
+          </div>`)}
+        </div>
+        ${n.length>0&&r`<div class="text-muted" style="font-size:var(--fs-2xs);margin-top:var(--sp-2);padding-left:130px">
+          Bar = avg, dashed line = p95</div>`}
+      </div>
+      <div class="diag-card">
+        <div class="chart-hdr"><span class="chart-label">Session Lifecycle (seq vs latency)</span>
+          <span class="chart-val text-muted" style="font-size:var(--fs-sm)">degradation?</span></div>
+        <${H} mode="scatter" data=${d.data} labels=${d.labels}
+          colors=${d.colors} fmtX=${Bt} fmtY=${k} logX=${!0} height=${200}/>
+      </div>
+    </div>
+  </div>`}const Ut={"claude-code":"#8b5cf6",codex:"#f97316",aider:"#06b6d4",cursor:"#f472b6"};function nt(t,e){return Ut[t]||E[e%E.length]}function J({by_cli:t,total:e,barWidth:a,cliTools:l}){return!t||!t.length?r`<div class="hbar-fill" style=${"width:"+a+"%;background:var(--accent)"}></div>`:t.map((n,s)=>{const d=n.count/e*a,c=nt(n.cli_tool,l.indexOf(n.cli_tool));return r`<div key=${n.cli_tool}
+      style=${"width:"+d.toFixed(1)+"%;background:"+c+";height:100%;display:inline-block"}
+      title=${n.cli_tool+": "+n.count}></div>`})}function Vt({data:t}){if(!t||!t.invocations||!t.invocations.length)return r`<div class="analytics-section">
+      <div class="analytics-section-title">Tool Usage</div>
+      <${R} count=${t==null?void 0:t.unattributed_hidden}/>
+      ${t!=null&&t.total_all_time?r`<${M} status="empty" emptyTitle="No tool invocation data in this time range"
+            emptyHint=${"Try a wider range ("+t.total_all_time+" invocations exist)."}/>`:r`<${M} status="empty" emptyTitle="No tool invocation data yet"
+            emptyHint="Tool usage comes from hooks. Install them, then run a session." emptyFix="aictl enable"/>`}
+    </div>`;const e=t.invocations,a=t.cli_tools||[],l=Math.max(1,...e.map(s=>s.count)),n=Math.max(1,...e.map(s=>s.p95_ms));return r`<div class="analytics-section">
+    <div class="analytics-section-title">Tool Usage</div>
+    <${R} count=${t.unattributed_hidden}/>
+    ${a.length>1&&r`<div style="display:flex;gap:var(--sp-4);margin-bottom:var(--sp-3);flex-wrap:wrap">
+      ${a.map((s,d)=>r`<span key=${s} style="display:flex;align-items:center;gap:var(--sp-2);font-size:var(--fs-sm)">
+        <span style=${"width:10px;height:10px;border-radius:2px;background:"+nt(s,d)}></span>
+        ${s}
+      </span>`)}
+    </div>`}
+    <div class="analytics-charts">
+      <div class="diag-card">
+        <div class="chart-hdr"><span class="chart-label">Invocation Frequency</span>
+          <span class="chart-val text-muted" style="font-size:var(--fs-sm)">${e.reduce((s,d)=>s+d.count,0)} total</span></div>
+        <div class="hbar-list">
+          ${e.slice(0,15).map(s=>r`<div key=${s.tool_name} class="hbar-row">
+            <span class="hbar-label" title=${s.tool_name}>${s.tool_name}</span>
+            <div class="hbar-track" style="overflow:hidden">
+              <${J} by_cli=${s.by_cli} total=${s.count}
+                barWidth=${Math.round(s.count/l*100)} cliTools=${a}/>
+            </div>
+            <span class="hbar-value">${L(s.count)}</span>
+            ${s.error_count?r`<span class="badge" style="color:var(--red)">${s.error_count} err</span>`:""}
+          </div>`)}
+        </div>
+      </div>
+      <div class="diag-card">
+        <div class="chart-hdr"><span class="chart-label">Execution Duration</span>
+          <span class="chart-val text-muted" style="font-size:var(--fs-sm)">avg + p95</span></div>
+        <div class="hbar-list">
+          ${e.slice(0,15).map((s,d)=>r`<div key=${s.tool_name} class="hbar-row">
+            <span class="hbar-label" title=${s.tool_name}>${s.tool_name}</span>
+            <div class="hbar-track">
+              <${J} by_cli=${s.by_cli} total=${s.count}
+                barWidth=${Math.round(s.avg_ms/n*100)} cliTools=${a}/>
+              <div class="hbar-p95" style=${"left:"+Math.round(s.p95_ms/n*100)+"%"} title=${"p95: "+k(s.p95_ms)}></div>
+            </div>
+            <span class="hbar-value">${k(s.avg_ms)}</span>
+          </div>`)}
+        </div>
+      </div>
+    </div>
+  </div>`}function Gt({data:t}){const[e,a]=_(!1);if(!t)return null;const l=t.memory_timeline||{},n=t.memory_events||[],s=Object.keys(l);if(!s.length&&!n.length)return r`<div class="analytics-section">
+      <div class="analytics-section-title">File Write Activity</div>
+      <${R} count=${t.unattributed_hidden}/>
+      <${M} status="empty" emptyTitle="No file write data in this time range"
+        emptyHint="Widen the time range. Writes are recorded while the dashboard or the collector is running."/>
+    </div>`;const d=e?s:s.slice(0,6);return r`<div class="analytics-section">
+    <div class="analytics-section-title">File Write Activity</div>
+    <${R} count=${t.unattributed_hidden}/>
+
+    ${s.length>0&&r`<div style="margin-bottom:var(--sp-6)">
+      <div class="text-muted" style="font-size:var(--fs-sm);margin-bottom:var(--sp-3)">
+        Cumulative Bytes Written (${s.length} files)</div>
+      <div class="analytics-charts">
+        ${d.map(c=>{const i=l[c];if(!i||i.ts.length<2)return r`<div key=${c} class="diag-card">
+            <div class="chart-hdr"><span class="chart-label" title=${c}>${B(c)}</span>
+              <span class="chart-val text-muted">${i&&i.size_bytes.length?j(i.size_bytes[i.size_bytes.length-1]):"-"}</span></div>
+            <div class="empty-state" style="font-size:var(--fs-sm)">Single snapshot</div>
+          </div>`;const m=i.size_bytes[i.size_bytes.length-1];return r`<div key=${c} class="diag-card">
+            <${et} label=${B(c)} value=${j(m)}
+              data=${[i.ts,i.size_bytes]} chartColor="var(--accent)"/>
+          </div>`})}
+      </div>
+      ${s.length>6&&!e&&r`<button class="range-btn" style="margin-top:var(--sp-2)"
+        onClick=${()=>a(!0)}>Show all ${s.length} files</button>`}
+    </div>`}
+
+    ${n.length>0&&r`<div>
+      <div class="text-muted" style="font-size:var(--fs-sm);margin-bottom:var(--sp-3)">
+        Recent File Writes (${n.length})</div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;font-size:var(--fs-base);border-collapse:collapse">
+          <thead>
+            <tr class="text-muted" style="text-align:left;border-bottom:1px solid var(--border)">
+              <th style="padding:var(--sp-2) var(--sp-4)">Time</th>
+              <th style="padding:var(--sp-2) var(--sp-4)">File</th>
+              <th style="padding:var(--sp-2) var(--sp-4)">Bytes</th>
+              <th style="padding:var(--sp-2) var(--sp-4)">Growth</th>
+              <th style="padding:var(--sp-2) var(--sp-4)">Tokens</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${n.slice(0,30).map((c,i)=>r`<tr key=${i}
+              style="border-bottom:1px solid var(--border);${i%2?"background:var(--bg2)":""}">
+              <td class="mono text-nowrap" style="padding:var(--sp-2) var(--sp-4)">${st(c.ts)}</td>
+              <td style="padding:var(--sp-2) var(--sp-4)" title=${c.path}>${B(c.path)}</td>
+              <td class="mono" style="padding:var(--sp-2) var(--sp-4)">${j(c.size_bytes)}</td>
+              <td class="mono" style="padding:var(--sp-2) var(--sp-4);color:${c.delta>0?"var(--green)":c.delta<0?"var(--red)":"var(--fg2)"}">
+                ${c.delta>0?"+":""}${j(Math.abs(c.delta))}${c.delta<0?" ↓":c.delta>0?" ↑":""}
+              </td>
+              <td class="mono" style="padding:var(--sp-2) var(--sp-4)">${L(c.tokens)}</td>
+            </tr>`)}
+          </tbody>
+        </table>
+      </div>
+    </div>`}
+  </div>`}function Xt({health:t}){if(!t||t.ok!==!1)return null;const e=t.last_error||`background refresh failing (${t.consecutive_errors||0}x)`,a=t.last_success_ts?` (updated ${gt(t.last_success_ts)})`:" (no successful update yet)";return r`<div class="analytics-health-warning" role="alert"
+    style="padding:var(--sp-2) var(--sp-4);margin-bottom:var(--sp-4);
+      background:color-mix(in srgb, var(--orange) 12%, var(--bg2));
+      border:1px solid var(--orange);border-radius:4px;
+      color:var(--orange);font-size:var(--fs-sm);font-weight:600">
+    Analytics data may be stale: ${e}${a}
+  </div>`}const Kt=800,Qt=15e3;function tt(t){var e,a,l,n,s,d,c;return!((a=(e=t.response_time)==null?void 0:e.requests)!=null&&a.length)&&!((n=(l=t.tools)==null?void 0:l.invocations)!=null&&n.length)&&!Object.keys(((s=t.files)==null?void 0:s.memory_timeline)||{}).length&&!((c=(d=t.files)==null?void 0:d.memory_events)!=null&&c.length)}function ie(){var D,I,q;const t=lt(rt),e=t==null?void 0:t.globalRange,a=(t==null?void 0:t.enabledTools)??null,l=mt(a),n=ht(a),s=(e==null?void 0:e.since)||Date.now()/1e3-86400,d=(e==null?void 0:e.until)||"",c=`${s}|${d}|${ft(a)}`,[i,m]=_(null),[y,v]=_(!0),[h,u]=_(null),[f,$]=_(null),[p,g]=_(0),o=i&&i.key===c?i.data:null;P(()=>{if(l){v(!1),u(null);return}v(!0),u(null);const C=`/api/analytics?since=${s}${d?"&until="+d:""}${n?"&"+n:""}`,z=new AbortController;let w=!1,N=null;const F=()=>{w=!0,clearTimeout(G),clearTimeout(N),v(!1)},V=T=>{w||(u(T.name==="AbortError"?"The request timed out after 15 s.":T.message),F())},G=setTimeout(()=>{z.abort(),V({name:"AbortError"})},Qt),X=()=>yt(C,{signal:z.signal}).then(T=>{if(!w){if(T!=null&&T.pending){N=setTimeout(X,Kt);return}if(!$t(T,a))throw new Error("The server answered for a different tool selection. Restart the aictl server so it applies the tool filter.");m({key:c,data:T}),$(Date.now()),F()}}).catch(V);return X(),()=>{w=!0,clearTimeout(G),clearTimeout(N),z.abort()}},[c,l,p]);const b=()=>g(C=>C+1);if(l)return r`<div class="analytics-grid"><${K} enabledTools=${a} snap=${t==null?void 0:t.snap} what="analytics"/></div>`;const x=o?(((D=o.response_time)==null?void 0:D.unattributed_hidden)||0)+(((I=o.tools)==null?void 0:I.unattributed_hidden)||0)+(((q=o.files)==null?void 0:q.unattributed_hidden)||0):0;return r`<div class="analytics-grid">
+    ${y&&!o&&r`<${M} status="loading" label="analytics" skeletonHeight="240px"/>`}
+    ${h&&!o&&r`<${M} status="error" error=${h} label="analytics" onRetry=${b}/>`}
+    ${h&&o&&r`<${M} status="stale" error=${h} updatedAt=${f} onRetry=${b}/>`}
+    ${o&&Q(a)&&tt(o)&&r`<${O}>
+      <${K} enabledTools=${a} snap=${t==null?void 0:t.snap} what="analytics"/>
+      <${R} count=${x}/>
+    </${O}>`}
+    ${o&&!(Q(a)&&tt(o))&&r`<${O}>
+      <${Xt} health=${o==null?void 0:o._health}/>
+      <${Ht} data=${o==null?void 0:o.response_time}/>
+      <${Vt} data=${o==null?void 0:o.tools}/>
+      <${Gt} data=${o==null?void 0:o.files}/>
+      <details class="analytics-section">
+        <summary class="analytics-section-title" style="cursor:pointer;user-select:none">
+          Raw Metrics Explorer</summary>
+        <${Nt} enabledTools=${a} what="Raw metrics"/>
+        <div style="margin-top:var(--sp-4)"><${Wt}/></div>
+      </details>
+    </${O}>`}
+  </div>`}export{ie as default};

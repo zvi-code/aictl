@@ -1,0 +1,15 @@
+import{d as g,T as O,m as l}from"./index-0APVtqay.js";import{b0 as A,at as I}from"./useSse-Dcx1BuKe.js";import{useDetail as K,FixedPanel as y}from"./Drawer-GDv3aOws.js";import{f as b}from"./BoardScreen-Drg0U0tb.js";import{s as D,w as M,i as P,W,S as q,c as k,p as F,a as J}from"./common-4hNo9cCp.js";import"./TextView-DKtsDjbG.js";const L=500;function V(o,d){const c={since:d.since,until:d.until};return Promise.all([A(o,{...c,limit:L}),I({...c,sessionId:o}).catch(()=>({count:null}))]).then(([r,i])=>({rows:(Array.isArray(r)?r:[]).slice().sort((s,p)=>(p.ts||0)-(s.ts||0)),total:(i==null?void 0:i.count)??null}))}const v=o=>{try{return J(typeof o=="string"?o:JSON.stringify(o),140)}catch{return""}};function Q({a:o,st:d,ctx:c}){const r=D(o),i=M(o),h=P(d)?c.refreshKey:0,{data:s,error:p}=K(()=>V(r,i),"events:"+r,h),[a,$]=g(null),[E,N]=g(()=>new Set),f=O(()=>{const t=new Map;for(const e of(s==null?void 0:s.rows)||[])t.set(e.kind||"",(t.get(e.kind||"")||0)+1);return[...t.entries()].sort((e,n)=>n[1]-e[1]||e[0].localeCompare(n[0]))},[s]);if(!s)return l`<${W} error=${p} what="the events"/>`;const m=s.rows.filter(t=>a==null||(t.kind||"")===a),x=(t,e)=>(t.ts||0)+":"+(t.kind||"")+":"+(t.seq??e),S=t=>N(e=>{const n=new Set(e);return n.has(t)?n.delete(t):n.add(t),n}),u=s.total,T=u!=null&&u>s.rows.length?"Newest "+b(s.rows.length)+" of "+b(u):b(s.rows.length)+" events";return l`<${q} a=${o}/>
+    <${y} id="agev" title="Events, newest first" sub=${T}>
+      ${f.length?l`<div class="bd-ag-chips" role="group" aria-label="Kind">
+        <button type="button" class="bd-ag-chip" aria-pressed=${a==null?"true":"false"} onClick=${()=>$(null)}>All <em>${s.rows.length}</em></button>
+        ${f.map(([t,e])=>l`<button key=${t} type="button" class="bd-ag-chip" aria-pressed=${a===t?"true":"false"} onClick=${()=>$(a===t?null:t)}>${t||"no kind"} <em>${e}</em></button>`)}
+      </div>`:null}
+      ${m.length?l`<div class="bd-tw"><table class="bd-t bd-ag-evt">
+        <caption>Events</caption>
+        <thead><tr><th scope="col" style="width:76px">Time</th><th scope="col" style="width:190px">Kind</th><th scope="col" style="width:100px">Tool</th><th scope="col">Detail</th></tr></thead>
+        <tbody>${m.map((t,e)=>{const n=x(t,e),w=E.has(n),C=/permission|error|fail/i.test(t.kind||"");return l`<tr key=${n} class=${C?"bd-ag-warnrow":null}>
+              <td><button type="button" class="bd-lnk" aria-expanded=${w?"true":"false"} aria-label=${"Detail of "+(t.kind||"event")+" at "+k(t.ts)} onClick=${()=>S(n)}>${k(t.ts)}</button></td>
+              <td class="bd-m">${t.kind||""}</td><td class="bd-dim">${t.tool||""}</td><td class="bd-m bd-dim" title=${v(t.detail)}>${v(t.detail)}</td>
+            </tr>${w?l`<tr key=${n+":d"} class="bd-ag-detrow"><td colspan="4"><pre class="bd-ag-pre">${F(t.detail??{})}</pre></td></tr>`:null}`})}</tbody>
+      </table></div>`:l`<div class="bd-empty">${s.rows.length?"No event of this kind.":"No events stored for this session."}</div>`}
+    </${y}>`}export{L as EVENT_LIMIT,Q as default};
