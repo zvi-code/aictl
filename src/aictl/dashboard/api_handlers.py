@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import re
 import time
 from collections import Counter
+from pathlib import Path
 
 from ..data.model_pricing import context_window_for, resolve_pricing
 from ..data.provenance import combine_cost_quality, combine_tokens_quality, row_provenance
@@ -289,6 +291,197 @@ _USAGE_TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cach
 _budget_cache: tuple[tuple[int, tuple[str, ...] | None], dict] | None = None
 
 
+# ─── Settings files: every file aictl reads, grouped by location ──
+
+SETTINGS_FILE_KINDS = ("settings", "instructions", "agents", "skills", "prompts", "hooks", "mcp", "memory", "other")
+_AUDIT_KINDS = {
+    "agent": "agents",
+    "skill": "skills",
+    "prompt": "prompts",
+    "hook": "hooks",
+    "instruction": "instructions",
+}
+
+
+def _file_kind(path: str, audit_kind: str = "") -> str:
+    """Kind of a file: the audit's kind when it names one, else from the file name."""
+    kind = _AUDIT_KINDS.get(audit_kind, audit_kind)
+    if kind in SETTINGS_FILE_KINDS:
+        return kind
+    low = path.replace("\\", "/").lower()
+    name = low.rsplit("/", 1)[-1]
+    if "mcp" in name:
+        return "mcp"
+    if "/hooks/" in low or name.startswith("hooks."):
+        return "hooks"
+    if "/skills/" in low or name == "skill.md":
+        return "skills"
+    if "/agents/" in low or name.endswith(".agent.md"):
+        return "agents"
+    if "/prompts/" in low or name.endswith(".prompt.md"):
+        return "prompts"
+    if "memory" in name:
+        return "memory"
+    if name.endswith(".md"):
+        return "instructions"
+    if name.endswith((".json", ".jsonc", ".toml", ".yaml", ".yml")):
+        return "settings"
+    return "other"
+
+
+def _tool_home_roots() -> list[str]:
+    """Folders that hold a tool's own files, longest first."""
+    from .. import platforms, tool_homes
+
+    roots: list[Path] = []
+    for fn_name in (
+        "claude_global_dir",
+        "codex_global_dir",
+        "copilot_global_dir",
+        "gemini_global_dir",
+        "windsurf_global_dir",
+        "cursor_user_dir",
+    ):
+        fn = getattr(platforms, fn_name, None)
+        if fn is not None:
+            try:
+                roots.append(fn())
+            except Exception:  # noqa: BLE001 - one unknown home must not hide the others
+                continue
+    try:
+        roots += [h.path for h in tool_homes.homes()]
+    except Exception:  # noqa: BLE001
+        pass
+    out = {os.path.normpath(str(r)) for r in roots}
+    return sorted(out, key=len, reverse=True)
+
+
+def _location(path: str, root: str, home: str, vscode_user: str, tool_roots: list[str]) -> tuple[str, str]:
+    """(location, location_root) of a normalized path."""
+
+    def under(folder: str) -> bool:
+        return bool(folder) and (path == folder or path.startswith(folder.rstrip(os.sep) + os.sep))
+
+    if under(root):
+        return "project", root
+    if under(vscode_user):
+        return "vscode-user", vscode_user
+    for folder in tool_roots:
+        if under(folder):
+            return "tool-home", folder
+    if under(home):
+        rel = os.path.relpath(path, home).split(os.sep)
+        if len(rel) > 1 and rel[0].startswith("."):
+            return "tool-home", os.path.join(home, rel[0])
+        return "home", home
+    return "other", os.path.dirname(path)
+
+
+def settings_files(
+    root: str | Path,
+    tool_configs: list[dict],
+    audit_sources: list[dict] | None = None,
+    monitor_paths: list[str] | None = None,
+) -> dict:
+    """Every file aictl reads for the settings view, merged by path.
+
+    Sources are each tool's config files and row sources, the hidden-context
+    audit's file rows, and the live monitor's folders (``is_dir``). No file is
+    opened: each entry carries only stat facts, its git state and how many
+    setting rows read it. A path that cannot be stat'ed has ``exists: false``.
+    """
+    from ..context_audit import _git_states, _path_key
+    from ..monitoring.tool_config import setting_scope
+
+    root_s = os.path.normpath(str(root))
+    entries: dict[str, dict] = {}
+
+    def entry(path: str) -> dict | None:
+        if not path or not os.path.isabs(os.path.expanduser(path)):
+            return None
+        norm = os.path.normpath(os.path.expanduser(path))
+        key = _path_key(norm)
+        if key not in entries:
+            entries[key] = {"path": norm, "tools": [], "settings": 0, "audit": None, "is_dir": False}
+        return entries[key]
+
+    def add_tool(e: dict, tool: str) -> None:
+        if tool and tool not in e["tools"]:
+            e["tools"].append(tool)
+
+    for cfg in tool_configs or []:
+        tool = str(cfg.get("tool", ""))
+        for f in cfg.get("config_files") or []:
+            if (e := entry(str(f))) is not None:
+                add_tool(e, tool)
+        for section in cfg.get("sections") or []:
+            for row in section.get("rows") or []:
+                if (e := entry(str(row.get("source") or ""))) is not None:
+                    add_tool(e, tool)
+                    e["settings"] += 1
+    for src in audit_sources or []:
+        if src.get("scope") == "dynamic" or src.get("readable") is False:
+            continue  # a label, not a file
+        if (e := entry(str(src.get("path") or ""))) is not None:
+            add_tool(e, str(src.get("tool", "")))
+            if e["audit"] is None:
+                e["audit"] = src
+    for folder in monitor_paths or []:
+        if (e := entry(str(folder))) is not None:
+            e["is_dir"] = True
+
+    home = os.path.normpath(str(Path.home()))
+    try:
+        from ..platforms import vscode_user_dir
+
+        vscode_user = os.path.normpath(str(vscode_user_dir()))
+    except Exception:  # noqa: BLE001
+        vscode_user = ""
+    tool_roots = _tool_home_roots()
+
+    def in_project(path: str) -> bool:
+        return path == root_s or path.startswith(root_s.rstrip(os.sep) + os.sep)
+
+    project_paths = sorted({e["path"] for e in entries.values() if in_project(e["path"])})
+    states = _git_states(Path(root_s), project_paths) if project_paths else {}
+
+    files: list[dict] = []
+    for e in entries.values():
+        path = e["path"]
+        audit = e["audit"] or {}
+        location, location_root = _location(path, root_s, home, vscode_user, tool_roots)
+        try:
+            st = os.stat(path)
+            exists, size, mtime = True, int(st.st_size), float(st.st_mtime)
+        except OSError:
+            exists, size, mtime = False, 0, 0.0
+        git_state = states.get(path, "outside-repo") if in_project(path) else "outside-repo"
+        if git_state == "unknown":
+            git_state = ""
+        audit_scope = str(audit.get("scope") or "")
+        scope = "managed" if audit_scope == "managed" else setting_scope(path, root_s)
+        files.append(
+            {
+                "path": path,
+                "name": os.path.basename(path),
+                "location": location,
+                "location_root": location_root,
+                "scope": scope,
+                "kind": "other" if e["is_dir"] else _file_kind(path, str(audit.get("kind") or "")),
+                "tools": sorted(e["tools"]),
+                "settings": e["settings"],
+                "bytes": 0 if e["is_dir"] else size,
+                "mtime": mtime,
+                "git_state": git_state,
+                "loading": str(audit.get("loading") or ""),
+                "exists": exists,
+                "is_dir": e["is_dir"],
+            }
+        )
+    files.sort(key=lambda f: (f["location"], f["location_root"], f["path"]))
+    return {"files": files, "generated_at": time.time()}
+
+
 class _APIHandlersMixin:
     """REST API endpoint handler methods.
 
@@ -360,6 +553,27 @@ class _APIHandlersMixin:
                 storage_degraded_reason=str(exc),
             )
         self._json_response(result)
+
+    def _serve_settings_files(self) -> None:
+        """Every file aictl reads, grouped by location. Never starts an audit scan."""
+        from ..monitoring.config import MonitorConfig
+        from .audit_cache import AUDIT_CACHE
+
+        root = self.server.root
+        snap = self.server.store.snapshot
+        tool_configs = list(getattr(snap, "tool_configs", None) or [])
+        if not tool_configs:
+            from ..monitoring.tool_config import collect_tool_configs
+
+            tool_configs = [c.to_dict() for c in collect_tool_configs(Path(root))]
+        audit = AUDIT_CACHE._fresh(AUDIT_CACHE._key(root, None)) or {}
+        live = getattr(snap, "live_monitor", None) or {}
+        if "workspace_paths" in live or "state_paths" in live:
+            folders = [*live.get("workspace_paths", []), *live.get("state_paths", [])]
+        else:
+            monitor = MonitorConfig.for_root(Path(root))
+            folders = [str(p) for p in (*monitor.workspace_paths, *monitor.state_paths)]
+        self._json_response(settings_files(root, tool_configs, audit.get("sources") or [], folders))
 
     def _tool_name_from_config_path(self) -> str:
         from urllib.parse import unquote

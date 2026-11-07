@@ -5,12 +5,13 @@ import { SnapContext } from '../context.js';
 import TextView from './ui/TextView.js';
 import { fmtSz, fmtK, esc, fetchFileContent, fetchFileContentAt, PREVIEW_LINES } from '../utils.js';
 
-export default function FileViewer({path, at, onClose}) {
+export default function FileViewer({path, at, line, onClose}) {
   const {snap: s} = useContext(SnapContext);
   const [text, setText] = useState(null);
   const [expanded, setExpanded] = useState(false);
   const [error, setError] = useState(null);
   const dialogRef = useRef(null);
+  const hit = line > 0 ? Math.floor(line) : 0;
   const previousFocus = useRef(null);
 
   // Resize state
@@ -73,10 +74,18 @@ export default function FileViewer({path, at, onClose}) {
 
   useEffect(()=>{
     if(!path) return;
-    setExpanded(false); setError(null); setText(null);
+    setError(null); setText(null);
     const p = at ? fetchFileContentAt(path, at) : fetchFileContent(path);
     p.then(setText).catch(e=>setError(e.message));
   },[path, at]);
+
+  // A file opened at a line shows every line and scrolls that one into view.
+  useEffect(()=>{ if(path) setExpanded(!!hit); },[path, at, hit]);
+  useEffect(()=>{
+    if(!path || !hit || text === null) return;
+    const el = dialogRef.current?.querySelector('.fv-line--hit');
+    if(el && el.scrollIntoView) el.scrollIntoView({block:'center'});
+  },[path, hit, text, expanded]);
   if(!path) return null;
   const meta = useMemo(()=>{
     if(!s) return '';
@@ -90,7 +99,7 @@ export default function FileViewer({path, at, onClose}) {
   const total = lines.length;
   const canCollapse = total > PREVIEW_LINES*2;
   const buildLines = (arr, start) => arr.map((line,i)=>
-    html`<div class="fv-line"><span class="fv-ln">${start+i}</span><span class="fv-code">${esc(line)||' '}</span></div>`);
+    html`<div class=${'fv-line'+(start+i===hit?' fv-line--hit':'')}><span class="fv-ln">${start+i}</span><span class="fv-code">${esc(line)||' '}</span></div>`);
   const sourceView = (!canCollapse||expanded) ?
     html`<div class="fv-lines">${buildLines(lines,1)}</div>` :
     html`<div class="fv-lines">${buildLines(lines.slice(0,PREVIEW_LINES),1)}</div>
@@ -99,7 +108,7 @@ export default function FileViewer({path, at, onClose}) {
   return html`<div class="fv" ref=${dialogRef} role="dialog" aria-modal="true" aria-label="File viewer" style=${'width:'+width+'vw'}>
     <div class="file-viewer__resize-handle" onMouseDown=${onMouseDown}/>
     <div class="fv-head">
-      <span class="path">${path}</span>
+      <span class="path">${path}${hit ? html`<span class="fv-at">:${hit}</span>` : ''}</span>
       ${at && html`<span class="badge text-xs mono" style="background:var(--bg2);color:var(--fg2);margin-left:var(--sp-2)"
         title=${'Historical content at unix ts ' + at}>@ ${new Date(at * 1000).toLocaleString([], {
           month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'
@@ -110,7 +119,7 @@ export default function FileViewer({path, at, onClose}) {
     <div class="fv-body">
       ${error ? html`<p class="text-red" style="padding:var(--sp-10)">${error}</p>` :
         !text ? html`<p class="text-muted" style="padding:var(--sp-10)">Loading...</p>` :
-        html`<${TextView} text=${text} path=${path} source=${sourceView}/>`}
+        html`<${TextView} key=${hit ? 'at-line' : 'whole'} text=${text} path=${path} source=${sourceView} prefer=${hit ? 'source' : null}/>`}
     </div>
     <div class="fv-toolbar">
       <span>${total} lines${canCollapse&&!expanded?' (showing '+PREVIEW_LINES*2+' of '+total+')':''}</span>

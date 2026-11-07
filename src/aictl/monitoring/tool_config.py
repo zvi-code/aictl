@@ -104,12 +104,22 @@ class ToolConfig:
     # Flat settings keys whose values a feature group or model row already
     # shows; normalize_sections() leaves them out. Not part of to_dict().
     covered_keys: list[str] = field(default_factory=list)
+    # Row key -> the value of that setting in each file the parser read, lowest
+    # priority first, as (scope, value, path, key as written in the file). An
+    # empty scope is derived from the path. Group rows use "<group>/<key>".
+    # Read by normalize_sections() to build each row's chain; not part of to_dict().
+    setting_values: dict[str, list[tuple[str, object, str, str]]] = field(default_factory=dict)
+    # Project root the config was read for; paths under it are project scope.
+    # Not part of to_dict().
+    project_root: str = ""
 
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)
         d["otel"] = self.otel.to_dict()  # use filtered version (omits falsy values)
         del d["setting_sources"]
         del d["covered_keys"]
+        del d["setting_values"]
+        del d["project_root"]
         if not self.feature_groups:
             del d["feature_groups"]
         if not self.configurable_models:
@@ -330,7 +340,150 @@ def _otel_source_file(cfg: ToolConfig, first_file: str) -> str:
     return first_file
 
 
-def normalize_sections(cfg: ToolConfig) -> list[dict]:
+SCOPES = ("default", "user", "project", "workspace", "env", "policy", "managed")
+
+# Row keys that the parsers make up; they name no single key in the file.
+_NO_FILE_KEY = {"project_settings", "mcp_servers", "launch_at_startup", "global_instructions", "version"}
+# Row key -> key as written in the file, where the parser renames it.
+_FILE_KEYS = {
+    "auto_update": "autoUpdates",
+    "project_permissions": "permissions",
+    "effort": "effortLevel",
+    "disabled_mcp_servers": "disabledMcpServers",
+    "extensions": "enabledPlugins",
+}
+_LINE_SUFFIXES = (".json", ".jsonc", ".toml")
+
+
+def _norm_path(path: str) -> str:
+    return os.path.normpath(os.path.expanduser(path)).replace("\\", "/")
+
+
+def _under(path: str, folder: str) -> bool:
+    return bool(folder) and (path == folder or path.startswith(folder.rstrip("/") + "/"))
+
+
+def _is_managed(path: str) -> bool:
+    name = path.rsplit("/", 1)[-1].lower()
+    low = path.lower()
+    return (
+        name.startswith("managed-settings")
+        or name == "managed-mcp.json"
+        or "managedsettings" in low
+        or "/library/application support/claudecode/" in low
+        or low.startswith("/etc/claude-code/")
+        or "/programdata/claudecode/" in low
+    )
+
+
+def setting_scope(source: str, project_root: str = "") -> str:
+    """Scope a setting was read at, from the file it came from.
+
+    A scope name is kept as it is. No source is "default"; a managed-settings
+    file is "managed"; under ``<root>/.vscode/`` is "workspace"; elsewhere
+    under the root is "project"; any other file is "user".
+    """
+    if source in SCOPES:
+        return source
+    if not source or not os.path.isabs(os.path.expanduser(source)):
+        return "default"
+    path = _norm_path(source)
+    if _is_managed(path):
+        return "managed"
+    root = _norm_path(project_root) if project_root else ""
+    if root and _under(path, root):
+        return "workspace" if _under(path, root + "/.vscode") else "project"
+    return "user"
+
+
+def find_key_line(text: str, key: str) -> int:
+    """1-based line of *key* in JSON or TOML text, 0 when it is not found.
+
+    Tries the full dotted key as one JSON key, then its last segment as a JSON
+    key, then the last segment as a TOML key at the start of a line.
+    """
+    key = key.removeprefix("ws:")
+    if not key or not text:
+        return 0
+    segment = key.rsplit(".", 1)[-1]
+    patterns = []
+    if "." in key:
+        patterns.append(r'"' + re.escape(key) + r'"\s*:')
+    patterns.append(r'"' + re.escape(segment) + r'"\s*:')
+    patterns.append(r'^[ \t]*"?' + re.escape(segment) + r'"?[ \t]*=')
+    for pattern in patterns:
+        m = re.search(pattern, text, re.MULTILINE)
+        if m:
+            return text.count("\n", 0, m.start()) + 1
+    return 0
+
+
+def _safe_value(value: object) -> object:
+    if isinstance(value, str) and "secret://" in value:
+        return "configured"
+    return value
+
+
+def _finish_rows(cfg: ToolConfig, sections: dict[str, list[dict]], texts: dict[str, str | None]) -> None:
+    """Add scope, line, chain and wins to every row; drop the internal lookup key."""
+    root = cfg.project_root
+    allowed = {_norm_path(f): f for f in cfg.config_files}
+
+    def line_of(path: str, key: str) -> int:
+        norm = _norm_path(path) if path else ""
+        if not key or norm not in allowed or not norm.lower().endswith(_LINE_SUFFIXES):
+            return 0  # only the tool's own config files are read
+        if norm not in texts:
+            try:
+                texts[norm] = Path(allowed[norm]).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                texts[norm] = None
+        text = texts[norm]
+        return find_key_line(text, key) if text else 0
+
+    telemetry_env = cfg.otel.source == "env-var"
+    for section, rows in sections.items():
+        for row in rows:
+            lookup = row.pop("_lookup", row["key"])
+            key = row["key"]
+            source = row["source"]
+            if section == "telemetry" and key.startswith("otel.") and telemetry_env:
+                scope = "env"
+            else:
+                scope = setting_scope(source, root)
+            entries = cfg.setting_values.get(lookup) or cfg.setting_values.get(key) or []
+            if entries:
+                chain = [
+                    {
+                        "scope": e_scope or setting_scope(e_path, root),
+                        "value": _safe_value(e_value),
+                        "source": e_path,
+                        "line": line_of(e_path, e_key),
+                    }
+                    for e_scope, e_value, e_path, e_key in entries
+                ]
+                wins = len(chain) - 1
+                for i in range(len(chain) - 1, -1, -1):
+                    if chain[i]["value"] == row["value"]:
+                        wins = i
+                        break
+                winner = chain[wins]
+                if winner["source"] == source or source in SCOPES or not source:
+                    line = winner["line"]
+                else:
+                    line = line_of(source, entries[wins][3])
+            else:
+                file_key = "" if key in _NO_FILE_KEY or key.startswith("otel.") else _FILE_KEYS.get(key, key)
+                line = line_of(source, file_key)
+                chain = [{"scope": scope, "value": _safe_value(row["value"]), "source": source, "line": line}]
+                wins = 0
+            row["scope"] = scope
+            row["line"] = line
+            row["chain"] = chain
+            row["wins"] = wins
+
+
+def normalize_sections(cfg: ToolConfig, texts: dict[str, str | None] | None = None) -> list[dict]:
     """Build the uniform section list for one tool.
 
     Rows come, in order of precedence, from: the model, telemetry, configurable
@@ -339,6 +492,11 @@ def normalize_sections(cfg: ToolConfig) -> list[dict]:
     Feature-group rows are all kept. A flat row is dropped when its normalized
     key was already seen, when it is in cfg.covered_keys, when it is an OTel
     setting already shown by the telemetry rows, or when its key names a credential.
+
+    Every row also gets its scope, the line of its key in its source file (0
+    when unknown), the chain of values across scopes and the index of the
+    winning entry. *texts* keeps file texts between calls, so each config file
+    is read once per collect; no text is kept in the result.
     """
     first_file = cfg.config_files[0] if cfg.config_files else ""
     rows: dict[str, list[dict]] = {sid: [] for sid, _t in SECTION_ORDER}
@@ -406,12 +564,16 @@ def normalize_sections(cfg: ToolConfig) -> list[dict]:
         in_section = {normalize_key(r["key"]) for r in rows[section]}
         for key, value in (values or {}).items():
             norm = normalize_key(key)
-            if norm in in_section or _SECRET_RE.search(norm):
+            if norm in in_section or _SECRET_RE.search(norm) or key.startswith("secret://"):
                 continue
             in_section.add(norm)
             # A bare "enabled" key is named after its group, e.g. "Debug logging enabled".
             label = f"{setting_label(group)} enabled" if norm == "enabled" else ""
-            add(section, _row(key, value, source_of(key), label=label))
+            qualified = f"{group}/{key}"
+            src = cfg.setting_sources[qualified] if qualified in cfg.setting_sources else source_of(key)
+            row = _row(key, value, src, label=label)
+            row["_lookup"] = qualified
+            add(section, row)
 
     # Flat settings, then flat features when there are no groups.
     covered = set(cfg.covered_keys)
@@ -420,7 +582,7 @@ def normalize_sections(cfg: ToolConfig) -> list[dict]:
         flat += list(cfg.features.items())
     for key, value in flat:
         norm = normalize_key(key)
-        if key in covered or norm in seen or _SECRET_RE.search(norm):
+        if key in covered or norm in seen or _SECRET_RE.search(norm) or key.startswith("secret://"):
             continue
         section = _key_section(key)
         if section == "telemetry":
@@ -428,7 +590,22 @@ def normalize_sections(cfg: ToolConfig) -> list[dict]:
         note = "Workspace override" if key.startswith("ws:") else ""
         add(section, _row(key, value, source_of(key), note=note))
 
+    _finish_rows(cfg, rows, {} if texts is None else texts)
     return [{"id": sid, "title": title, "rows": rows[sid]} for sid, title in SECTION_ORDER if rows[sid]]
+
+
+def _record(
+    cfg: ToolConfig,
+    row_key: str,
+    file_key: str,
+    layers: list[tuple[str, dict | None, Path]],
+    value_fn: Callable[[object], object] | None = None,
+) -> None:
+    """Note the value of *file_key* in each parsed file, lowest priority first."""
+    for scope, data, path in layers:
+        if isinstance(data, dict) and file_key in data:
+            value = data[file_key] if value_fn is None else value_fn(data[file_key])
+            cfg.setting_values.setdefault(row_key, []).append((scope, value, str(path), file_key))
 
 
 def _read_json(path: Path) -> dict | None:
@@ -675,6 +852,12 @@ def _generate_hints(cfg: ToolConfig) -> list[str]:
 # ─── Tool-specific parsers ──────────────────────────────────────
 
 
+def _permission_lists(value: object) -> object:
+    if not isinstance(value, dict):
+        return "configured"
+    return {bucket: list(value.get(bucket) or []) for bucket in ("allow", "deny", "ask")}
+
+
 def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConfig | None:
     cfg = ToolConfig(tool=tool)
 
@@ -738,6 +921,16 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
                         existing.append(item)
                 merged[bucket] = existing
             cfg.settings["permissions"] = merged
+
+    # Value of each setting per file, for the override chain (project file last).
+    layers = [("user", settings, user_path), ("project", proj_settings, proj_path)]
+    for k in ("model", "effortLevel"):
+        _record(cfg, k, k, layers)
+    if os.environ.get("ANTHROPIC_MODEL"):
+        cfg.setting_values.setdefault("model", []).append(("env", os.environ["ANTHROPIC_MODEL"], "", "ANTHROPIC_MODEL"))
+    for k in ("env", "hooks"):
+        _record(cfg, k, k, layers, value_fn=lambda _v: "configured")  # values can hold commands and tokens
+    _record(cfg, "permissions", "permissions", layers, value_fn=_permission_lists)
 
     # MCP servers from .mcp.json
     cfg.mcp_servers = _mcp_server_names(_read_json(root / ".mcp.json"))
@@ -833,8 +1026,11 @@ def _parse_vscode_config(root: Path, tool: str = "vscode") -> ToolConfig | None:
     if not user_dir.exists():
         return None  # VS Code not installed
 
-    user_settings = _read_json(user_dir / "settings.json") or {}
-    ws_settings = _read_json(root / ".vscode" / "settings.json") or {}
+    user_path = user_dir / "settings.json"
+    ws_path = root / ".vscode" / "settings.json"
+    user_settings = _read_json(user_path) or {}
+    ws_settings = _read_json(ws_path) or {}
+    layers = [("user", user_settings, user_path), ("workspace", ws_settings, ws_path)]
     for path in (user_dir / "settings.json", root / ".vscode" / "settings.json"):
         if path.is_file():
             cfg.config_files.append(str(path))
@@ -927,6 +1123,11 @@ def _parse_vscode_config(root: Path, tool: str = "vscode") -> ToolConfig | None:
     ):
         if group := _pick(get, pairs):
             cfg.feature_groups[group_name] = group
+        for full, short in pairs:
+            qualified = f"{group_name}/{short}"
+            _record(cfg, qualified, full, layers)
+            entries = cfg.setting_values.get(qualified)
+            cfg.setting_sources[qualified] = entries[-1][2] if entries else ""  # no file: a VS Code default
 
     # ── OTel ────────────────────────────────────────────────────
     cfg.otel = _detect_otel_from_vscode_settings(vscode_settings)
@@ -1250,6 +1451,28 @@ def _parse_copilot_config(root: Path, tool: str = "copilot") -> ToolConfig | Non
     for group_name, pairs, store in _COPILOT_GROUPS:
         if chunk := _pick(stores[store], pairs):
             cfg.feature_groups[group_name] = cfg.feature_groups.get(group_name, {}) | chunk
+
+    # ── Value of each setting per file, for the override chain ──
+    layers = [("user", vscode_settings, user_settings_path), ("workspace", ws_settings, ws_settings_path)]
+    for k in list(vscode_settings) + list(ws_settings or {}):
+        if k.startswith("github.copilot.") and k != "github.copilot.enable":
+            short = k.removeprefix("github.copilot.")
+            if short not in cfg.setting_values:
+                _record(cfg, short, k, layers)
+                if ws_settings and k in ws_settings:
+                    cfg.setting_values["ws:" + short] = list(cfg.setting_values[short])
+    for key, *_rest in _COPILOT_CONFIGURABLE_MODELS:
+        _record(cfg, key, key, layers)
+    file_key_of = {("f", dst): src for src, dst in _COPILOT_FEATURES}
+    file_key_of.update({("s", dst): src for src, dst in _COPILOT_SETTINGS})
+    for (_store, dst), src in file_key_of.items():
+        if dst not in cfg.setting_values:
+            _record(cfg, dst, src, layers)
+    for group_name, pairs, store in _COPILOT_GROUPS:
+        for dst, label in pairs:
+            src = file_key_of.get((store, dst))
+            if src and (entries := cfg.setting_values.get(dst)):
+                cfg.setting_values[f"{group_name}/{label}"] = entries
 
     # Raw github.copilot.* settings whose values a group or model row shows.
     grouped = {(store, key) for _g, pairs, store in _COPILOT_GROUPS for key, _label in pairs}
@@ -1648,6 +1871,23 @@ def _get_nested(data: dict, key_path: str) -> Any | None:
     return curr
 
 
+_GEMINI_GROUP_PAIRS: dict[str, list[tuple[str, str]]] = {
+    "General": [
+        ("vim_mode", "vimMode"),
+        ("approval_mode", "approvalMode"),
+        ("auto_update", "autoUpdate"),
+        ("notifications", "notifications"),
+        ("max_attempts", "maxAttempts"),
+    ],
+    "UI": [
+        ("line_numbers", "lineNumbers"),
+        ("alternate_screen", "alternateScreen"),
+        ("hide_context", "hideContext"),
+        ("theme", "theme"),
+    ],
+}
+
+
 def _parse_generic_config(root: Path, tool_name: str, spec: dict) -> ToolConfig | None:
     """Generic parser that uses extraction rules from tool-configs.yaml."""
     from ..platforms import (
@@ -1713,6 +1953,7 @@ def _parse_generic_config(root: Path, tool_name: str, spec: dict) -> ToolConfig 
             val = _get_nested(data, key_path)
             if val is not None:
                 cfg.setting_sources[attr] = str(path)
+                cfg.setting_values.setdefault(attr, []).append(("", val, str(path), key_path))
                 if attr == "model":
                     cfg.model = str(val)
                 else:
@@ -1726,6 +1967,7 @@ def _parse_generic_config(root: Path, tool_name: str, spec: dict) -> ToolConfig 
                 setattr(cfg, attr, default_val)
             else:
                 cfg.settings[attr] = default_val
+            cfg.setting_sources.setdefault(attr, "")  # no file: a default value
 
     # 3. Special feature discovery
     feat_spec = spec.get("features", {})
@@ -1758,25 +2000,17 @@ def _parse_generic_config(root: Path, tool_name: str, spec: dict) -> ToolConfig 
 
     # Fallback/Legacy hardcoded groups for gemini-cli if not in YAML
     if tool_name == "gemini-cli" and not group_spec:
-        cfg.feature_groups["General"] = _pick(
-            cfg.settings.get,
-            [
-                ("vim_mode", "vimMode"),
-                ("approval_mode", "approvalMode"),
-                ("auto_update", "autoUpdate"),
-                ("notifications", "notifications"),
-                ("max_attempts", "maxAttempts"),
-            ],
-        )
-        cfg.feature_groups["UI"] = _pick(
-            cfg.settings.get,
-            [
-                ("line_numbers", "lineNumbers"),
-                ("alternate_screen", "alternateScreen"),
-                ("hide_context", "hideContext"),
-                ("theme", "theme"),
-            ],
-        )
+        for group_name, pairs in _GEMINI_GROUP_PAIRS.items():
+            cfg.feature_groups[group_name] = _pick(cfg.settings.get, pairs)
+
+    # Group rows carry the chain of the setting they show.
+    for group_name, values in cfg.feature_groups.items():
+        pairs = group_spec.get(group_name, {}).items() if group_spec else _GEMINI_GROUP_PAIRS.get(group_name, [])
+        for attr, label in pairs:
+            if label in values and attr in cfg.setting_values:
+                cfg.setting_values[f"{group_name}/{label}"] = cfg.setting_values[attr]
+            if label in values and attr in cfg.setting_sources:
+                cfg.setting_sources[f"{group_name}/{label}"] = cfg.setting_sources[attr]
 
     return _finish(cfg, has_data)
 
@@ -1899,6 +2133,7 @@ def collect_tool_configs(root: Path) -> list[ToolConfig]:
     """
     tool_configs_yaml = load_tool_configs()
     configs = []
+    texts: dict[str, str | None] = {}
     for tool_name in tool_configs_yaml:
         parser = _CONFIG_PARSER_REGISTRY.get(tool_name)
         if parser is None:
@@ -1911,7 +2146,8 @@ def collect_tool_configs(root: Path) -> list[ToolConfig]:
                 result = result or ToolConfig(tool=tool_name)
                 result.local_data = {str(k): bool(v) for k, v in declared.items()}
             if result:
-                result.sections = normalize_sections(result)
+                result.project_root = str(root)
+                result.sections = normalize_sections(result, texts)
                 configs.append(result)
         except Exception as exc:
             log.error("Error parsing config for %s: %s", tool_name, exc)

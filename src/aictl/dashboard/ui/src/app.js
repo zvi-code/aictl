@@ -447,7 +447,7 @@ export default function App() {
 
   const openViewer = useCallback((path, opts = {}) => {
     if (!path) return setViewerPath(null);
-    setViewerPath({ path, at: opts.at ?? null });
+    setViewerPath({ path, at: opts.at ?? null, line: opts.line > 0 ? opts.line : null });
   }, []);
   const filteredSnap = useMemo(
     () => filterSnap(snap, enabledTools, searchQuery),
@@ -529,6 +529,7 @@ export default function App() {
     </div>
     <${FileViewer} path=${viewerPath?.path ?? (typeof viewerPath === 'string' ? viewerPath : null)}
       at=${typeof viewerPath === 'object' ? viewerPath?.at : null}
+      line=${typeof viewerPath === 'object' ? viewerPath?.line : null}
       onClose=${() => setViewerPath(null)}/>
     <${DatapointTooltip}/>
     <${CommandPalette} commands=${commands}

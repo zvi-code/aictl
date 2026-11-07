@@ -1810,3 +1810,206 @@ class TestProjectCostsPerModelPricing:
         assert rows["p1"]["pricing_models"] == ["claude-fable-5-1"]
         assert rows["p2"]["cost_usd"] == pytest.approx(2.0)
         assert rows["p2"]["pricing_models"] == ["claude-sonnet-5"]
+
+
+# ── Settings files API ────────────────────────────────────────────
+
+SETTINGS_FILE_KEYS = {
+    "path",
+    "name",
+    "location",
+    "location_root",
+    "scope",
+    "kind",
+    "tools",
+    "settings",
+    "bytes",
+    "mtime",
+    "git_state",
+    "loading",
+    "exists",
+    "is_dir",
+}
+
+
+@pytest.fixture()
+def settings_files_server(populated_db, tmp_path, monkeypatch):
+    """A server whose snapshot names files in a temp home and a temp project."""
+    from aictl import context_audit, platforms, tool_homes
+    from aictl.dashboard.audit_cache import AUDIT_CACHE
+    from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
+
+    home = tmp_path / "home"
+    root = tmp_path / "project"
+    (home / ".claude").mkdir(parents=True)
+    (root / ".claude").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(platforms, "claude_global_dir", lambda: home / ".claude")
+    monkeypatch.setattr(platforms, "vscode_user_dir", lambda: home / "Library" / "Code" / "User")
+    monkeypatch.setattr(tool_homes, "homes", lambda tool=None: [])
+
+    def no_scan(*_a, **_k):
+        raise AssertionError("the settings files route must not start an audit scan")
+
+    monkeypatch.setattr(context_audit, "run_audit", no_scan)
+    AUDIT_CACHE.clear()
+
+    user_file = home / ".claude" / "settings.json"
+    user_file.write_text('{"model": "opus"}')
+    account_file = home / ".claude.json"
+    account_file.write_text("{}")
+    proj_file = root / ".claude" / "settings.json"
+    proj_file.write_text('{"model": "sonnet"}')
+    missing = home / ".codex" / "config.toml"
+
+    def rows(*sources):
+        return [
+            {"id": "other", "title": "Other", "rows": [{"key": f"k{i}", "source": s} for i, s in enumerate(sources)]}
+        ]
+
+    snap = _make_snapshot()
+    snap.tool_configs = [
+        {
+            "tool": "claude-code",
+            "config_files": [str(user_file), str(account_file), str(proj_file)],
+            "sections": rows(str(user_file), str(user_file), str(proj_file), "", "user"),
+        },
+        {"tool": "codex-cli", "config_files": [str(missing)], "sections": rows(str(missing))},
+        {"tool": "claude-desktop", "config_files": [str(user_file)], "sections": []},
+    ]
+    snap.live_monitor = {"workspace_paths": [str(root)], "state_paths": [str(home / ".claude")]}
+    store = SnapshotStore(db=populated_db)
+    store.update(snap)
+    srv = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, AllowedPaths(), root)
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    yield (
+        f"http://127.0.0.1:{srv.server_address[1]}",
+        {
+            "home": home,
+            "root": root,
+            "user": user_file,
+            "account": account_file,
+            "proj": proj_file,
+            "missing": missing,
+        },
+    )
+    srv.shutdown()
+    AUDIT_CACHE.clear()
+
+
+class TestSettingsFilesAPI:
+    def test_shape(self, settings_files_server):
+        url, _paths = settings_files_server
+        data = _get_json(f"{url}/api/settings/files")
+        assert set(data) == {"files", "generated_at"}
+        assert isinstance(data["generated_at"], float)
+        assert data["files"]
+        for f in data["files"]:
+            assert set(f) == SETTINGS_FILE_KEYS, f["path"]
+            assert f["location"] in ("home", "tool-home", "project", "vscode-user", "other")
+            assert f["kind"] in (
+                "settings",
+                "instructions",
+                "agents",
+                "skills",
+                "prompts",
+                "hooks",
+                "mcp",
+                "memory",
+                "other",
+            )
+            assert f["git_state"] in ("tracked", "ignored", "untracked", "outside-repo", "")
+
+    def test_location_grouping_home_vs_project(self, settings_files_server):
+        url, p = settings_files_server
+        files = {f["path"]: f for f in _get_json(f"{url}/api/settings/files")["files"]}
+        user = files[str(p["user"])]
+        assert (user["location"], user["location_root"]) == ("tool-home", str(p["home"] / ".claude"))
+        assert user["scope"] == "user" and user["kind"] == "settings"
+        account = files[str(p["account"])]
+        assert (account["location"], account["location_root"]) == ("home", str(p["home"]))
+        proj = files[str(p["proj"])]
+        assert (proj["location"], proj["location_root"]) == ("project", str(p["root"]))
+        assert proj["scope"] == "project"
+        assert user["git_state"] == "outside-repo"
+
+    def test_settings_counts_and_tools(self, settings_files_server):
+        url, p = settings_files_server
+        files = {f["path"]: f for f in _get_json(f"{url}/api/settings/files")["files"]}
+        assert files[str(p["user"])]["settings"] == 2
+        assert files[str(p["proj"])]["settings"] == 1
+        assert files[str(p["account"])]["settings"] == 0
+        assert files[str(p["user"])]["tools"] == ["claude-code", "claude-desktop"]
+        assert files[str(p["user"])]["exists"] is True and files[str(p["user"])]["bytes"] > 0
+
+    def test_missing_path_is_listed_with_exists_false(self, settings_files_server):
+        url, p = settings_files_server
+        files = {f["path"]: f for f in _get_json(f"{url}/api/settings/files")["files"]}
+        missing = files[str(p["missing"])]
+        assert missing["exists"] is False
+        assert missing["bytes"] == 0 and missing["mtime"] == 0
+        assert missing["tools"] == ["codex-cli"] and missing["settings"] == 1
+
+    def test_monitor_folders_are_dir_entries(self, settings_files_server):
+        url, p = settings_files_server
+        files = {f["path"]: f for f in _get_json(f"{url}/api/settings/files")["files"]}
+        folder = files[str(p["home"] / ".claude")]
+        assert folder["is_dir"] is True and folder["kind"] == "other"
+        assert files[str(p["root"])]["is_dir"] is True
+
+    def test_cached_audit_rows_are_merged(self, settings_files_server, monkeypatch):
+        from aictl.dashboard.audit_cache import AUDIT_CACHE
+
+        url, p = settings_files_server
+        agents_md = p["root"] / "AGENTS.md"
+        agents_md.write_text("# rules\nSECRET-TEXT\n")
+        audit = {
+            "sources": [
+                {
+                    "tool": "codex-cli",
+                    "scope": "project",
+                    "path": str(agents_md),
+                    "kind": "instructions",
+                    "loading": "always",
+                },
+                {
+                    "tool": "claude-code",
+                    "scope": "project",
+                    "path": str(p["proj"]),
+                    "kind": "settings",
+                    "loading": "config",
+                },
+                {
+                    "tool": "claude-code",
+                    "scope": "dynamic",
+                    "path": "process flags",
+                    "kind": "system-prompt",
+                    "loading": "dynamic",
+                    "readable": False,
+                },
+            ]
+        }
+        monkeypatch.setattr(AUDIT_CACHE, "_fresh", lambda key: audit)
+        data = _get_json(f"{url}/api/settings/files")
+        files = {f["path"]: f for f in data["files"]}
+        assert files[str(agents_md)]["kind"] == "instructions"
+        assert files[str(agents_md)]["loading"] == "always"
+        assert files[str(agents_md)]["tools"] == ["codex-cli"]
+        assert files[str(p["proj"])]["loading"] == "config"
+        assert "process flags" not in files
+        assert "SECRET-TEXT" not in json.dumps(data)  # file contents are never returned
+
+    def test_git_state_for_project_files_only(self, settings_files_server):
+        import shutil
+        import subprocess
+
+        if shutil.which("git") is None:
+            pytest.skip("git not installed")
+        url, p = settings_files_server
+        root = p["root"]
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(["git", "-C", str(root), "add", ".claude/settings.json"], check=True)
+        files = {f["path"]: f for f in _get_json(f"{url}/api/settings/files")["files"]}
+        assert files[str(p["proj"])]["git_state"] == "tracked"
+        assert files[str(p["user"])]["git_state"] == "outside-repo"

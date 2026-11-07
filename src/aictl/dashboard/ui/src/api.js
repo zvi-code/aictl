@@ -454,6 +454,11 @@ export async function boardAction(action, args = {}) {
   });
 }
 
+/** Every file the settings come from, with where it lives and which tools read it. */
+export async function getSettingsFiles() {
+  return fetchJson('/api/settings/files');
+}
+
 /** The hidden-context scan. It runs on the server's own thread, so this asks how far it is. */
 export async function getContextAudit(refresh = false, onProgress = null, { pollMs = 2000, maxMs = 600000, project = null } = {}) {
   const started = Date.now();
