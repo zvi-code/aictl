@@ -3565,7 +3565,7 @@ class TestAgentFlow:
 class TestAgentTranscript:
     def test_without_reply_text_the_turns_say_the_text_is_not_kept(self, db):
         _seed_flow(db, NOW - DAY)
-        status, tr = board_api.agent_transcript(db, "flow-s", now=NOW)
+        status, tr = board_api.agent_transcript(db, "flow-s", now=NOW, brief=False)
         assert status == 200
         assert tr["replies_kept"] is False and tr["reply_note"] == "The reply text is not kept"
         first, second = tr["turns"]
@@ -3579,9 +3579,41 @@ class TestAgentTranscript:
         assert tr["summary"] == {**tr["summary"], "total_turns": 2, "total_api_calls": 3, "total_tool_uses": 2, "errors": 2, "subagents": 1, "compactions": 1}
         assert tr["capture_mode"] == "full"
 
+    def test_the_turns_are_brief_until_one_is_asked_for_whole(self, db):
+        _seed_flow(db, NOW - DAY, reply="Done. **Fixed** the parser. " + "x" * 300)
+        _, tr = board_api.agent_transcript(db, "flow-s", now=NOW)
+        first = tr["turns"][0]
+        assert first["actions"] == [] and first["detail"] is True
+        assert first["response"] == ("Done. **Fixed** the parser. " + "x" * 300)[: board_api.FLOW_PREVIEW_CHARS]
+        assert first["tool_use_count"] == 1 and first["api_calls"] == 2 and first["tokens"]["total"] == 135
+        assert tr["summary"]["total_tool_uses"] == 2 and tr["replies_kept"] is True
+        status, one = board_api.agent_transcript(db, "flow-s", now=NOW, turn=first["ts"])
+        assert status == 200 and "turns" not in one
+        assert one["turn"]["response"].endswith("x" * 300)
+        kinds = [a["kind"] for a in one["turn"]["actions"]]
+        assert kinds.count("tool_use") == 1 and kinds.count("api_call") == 2 and "api_response" in kinds and "compaction" in kinds
+        assert board_api.agent_transcript(db, "flow-s", now=NOW, turn=first["ts"] + 5)[0] == 404
+
+    def test_the_flow_is_built_once_until_the_session_changes(self, db, monkeypatch):
+        t = NOW - DAY
+        _seed_flow(db, t)
+        builds = []
+        real = board_api._session_flow_build
+        monkeypatch.setattr(board_api, "_session_flow_build", lambda *a: (builds.append(1), real(*a))[1])
+        _, first = board_api.agent_transcript(db, "flow-s", now=NOW)
+        board_api.agent_transcript(db, "flow-s", now=NOW, turn=first["turns"][0]["ts"])
+        board_api.agent_flow(db, "flow-s", now=NOW)
+        assert len(builds) == 1
+        db._conn().execute(
+            "INSERT INTO session_prompts (ts, session_id, agent_id, tool, project_path, text) VALUES (?, 'flow-s', '', 'claude-code', '/p', 'One more')", (t + 900,)
+        )
+        db._conn().commit()
+        _, again = board_api.agent_transcript(db, "flow-s", now=NOW)
+        assert len(builds) == 2 and again["summary"]["total_turns"] == first["summary"]["total_turns"] + 1
+
     def test_stored_reply_text_is_the_turns_response(self, db):
         _seed_flow(db, NOW - DAY, reply="Done. **Fixed** the parser.")
-        _, tr = board_api.agent_transcript(db, "flow-s", now=NOW)
+        _, tr = board_api.agent_transcript(db, "flow-s", now=NOW, brief=False)
         assert tr["replies_kept"] is True and tr["reply_note"] is None
         assert tr["turns"][0]["response"] == "Done. **Fixed** the parser."
         assert tr["turns"][1]["response"] == ""
@@ -3603,7 +3635,7 @@ class TestAgentTranscript:
                 {"ts": t + 500, "prompt": "Asked later", "response": "", "actions": []},
             ],
         }
-        _, tr = board_api.agent_transcript(db, "flow-s", now=NOW, legacy_transcript=lambda sid: live if sid == "flow-s" else None)
+        _, tr = board_api.agent_transcript(db, "flow-s", now=NOW, legacy_transcript=lambda sid: live if sid == "flow-s" else None, brief=False)
         assert [x["prompt"] for x in tr["turns"]] == ["Fix the parser", "Now the tests", "Asked later"]
         first = tr["turns"][0]
         assert first["response"] == "From the live analyzer" and tr["replies_kept"] is True
@@ -3617,6 +3649,15 @@ class TestAgentTranscript:
         assert status == 200 and json.loads(body)["summary"]["total_turns"] == 2
         status, body, _ = _http(f"{server}/api/board/agent/transcript?id=flow-s")
         assert status == 200 and json.loads(body)["reply_note"] == "The reply text is not kept"
+        assert json.loads(body)["turns"][0]["actions"] == []
+        ts = json.loads(body)["turns"][0]["ts"]
+        status, body, _ = _http(f"{server}/api/board/agent/transcript?id=flow-s&turn={ts}")
+        assert status == 200 and len(json.loads(body)["turn"]["actions"]) == 5
+        status, body, _ = _http(f"{server}/api/board/agent/transcript?id=flow-s&full=1")
+        assert status == 200 and len(json.loads(body)["turns"][0]["actions"]) == 5
+        assert _http(f"{server}/api/board/agent/transcript?id=flow-s&turn=soon")[0] == 400
+        status, body, _ = _http(f"{server}/api/board/agent/flow?id=flow-s&limit=3")
+        assert status == 200 and len(json.loads(body)["turns"]) == 3 and json.loads(body)["summary"]["omitted_events"] == 9
         assert _http(f"{server}/api/board/agent/flow")[0] == 400
         assert _http(f"{server}/api/board/agent/flow?id=flow-s&since=soon")[0] == 400
         assert _http(f"{server}/api/board/agent/transcript?id=nobody")[0] == 404

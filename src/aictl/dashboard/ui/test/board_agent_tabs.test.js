@@ -203,6 +203,14 @@ describe('agent drawer tab list and header', () => {
 });
 
 describe('Flow tab', () => {
+  it('reads 500 events first and asks for 1000 more on request', async () => {
+    const { findByRole, calls } = mount({ tab: 'flow', routes: { '/api/board/agent/flow': storeFlow } });
+    const more = await findByRole('button', { name: 'Show 895 older events' });
+    expect(calls).toContain('/api/board/agent/flow?id=sess-1&limit=500');
+    fireEvent.click(more);
+    await waitFor(() => expect(calls).toContain('/api/board/agent/flow?id=sess-1&limit=1500'));
+  });
+
   it('renders the summary and the events, and opens an event in place', async () => {
     const { findByRole, container, getByText } = mount({ tab: 'flow' });
     await findByRole('list', { name: 'Events, oldest first' });
@@ -257,6 +265,22 @@ describe('Timeline tab', () => {
 });
 
 describe('Transcript tab', () => {
+  it('reads a brief turn whole when it opens, and shows its actions', async () => {
+    const briefTurn = { ts: NOW - 580, prompt: 'Fix the parser please', prompt_event: true, response: 'Done. **Fixed**', model: 'model-a', tokens: { input: 100, output: 20 }, actions: [], tool_use_count: 2, detail: true };
+    const whole = { ...briefTurn, detail: false, response: 'Done. **Fixed** the parser, whole.', actions: [{ ts: NOW - 577, kind: 'tool_use', name: 'Bash', input_summary: 'ls src', duration_ms: 40, success: true }, { ts: NOW - 570, kind: 'tool_use', name: 'Read', input_summary: 'a.py', success: true }] };
+    const route = u => (u.includes('turn=') ? { session_id: 'sess-1', turn: whole } : { ...storeTranscript, replies_kept: true, reply_note: null, turns: [briefTurn] });
+    const { findByRole, container, calls } = mount({ tab: 'transcript', routes: { '/api/board/agent/transcript': route } });
+    const head = await findByRole('button', { expanded: false, name: /^1/ }, { timeout: 5000 });
+    expect(head.textContent).toContain('2 tool calls');
+    expect(calls.some(c => c.includes('turn='))).toBe(false);
+    fireEvent.click(head);
+    await waitFor(() => expect(container.querySelector('.bd-ag-acts')).toBeTruthy());
+    expect(calls).toContain('/api/board/agent/transcript?id=sess-1&turn=' + encodeURIComponent(NOW - 580));
+    expect(within(container.querySelector('.bd-ag-acts')).getByText('Read')).toBeTruthy();
+    expect(container.querySelector('.bd-ag-reply').textContent).toContain('the parser, whole');
+    expect(container.textContent).not.toContain('Reading the turn');
+  });
+
   it('shows the reply rendered as Markdown when a turn opens', async () => {
     const { findByRole, container } = mount({ tab: 'transcript' });
     const head = await findByRole('button', { expanded: false, name: /^1/ }, { timeout: 5000 });
@@ -306,7 +330,7 @@ describe('the session views read the board routes', () => {
   it('Flow takes the summary and the running totals from the route', async () => {
     const { findByRole, container, calls, getByText } = mount({ tab: 'flow', routes: { '/api/board/agent/flow': storeFlow } });
     await findByRole('list', { name: 'Events, oldest first' });
-    expect(calls).toContain('/api/board/agent/flow?id=sess-1');
+    expect(calls).toContain('/api/board/agent/flow?id=sess-1&limit=500');
     expect(calls.some(c => c.startsWith('/api/session-flow'))).toBe(false);
     const stats = container.querySelector('#dr-agfs');
     expect(within(stats).getByTitle('Prompts in the session').textContent).toContain('7');
@@ -342,7 +366,7 @@ describe('the session views read the board routes', () => {
     const sub = agent({ id: 'sub-1', parent_id: 'sess-1', role: 'Explore', title: 'Explore' });
     const { findByRole, calls } = mount({ tab: 'flow', a: sub, routes: { '/api/board/agent?': detail(sub) } });
     await findByRole('list', { name: 'Events, oldest first' });
-    expect(calls).toContain('/api/board/agent/flow?id=sub-1');
+    expect(calls).toContain('/api/board/agent/flow?id=sub-1&limit=500');
   });
 });
 

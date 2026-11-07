@@ -676,8 +676,9 @@ class _APIHandlersMixin:
     def _serve_board_agent_flow(self) -> None:
         """The session flow of a board agent, from the store with hook and OTel events merged in.
 
-        GET /api/board/agent/flow?id=<agent id>&since=<unix ts>&until=<unix ts>
-        A subagent id gives the whole session of its main agent.
+        GET /api/board/agent/flow?id=<agent id>&since=<unix ts>&until=<unix ts>&limit=<events>
+        A subagent id gives the whole session of its main agent. ``limit`` is how many of the
+        newest events to return; the summary counts them all.
         """
         from .board_api import agent_flow
 
@@ -690,11 +691,12 @@ class _APIHandlersMixin:
             return
         try:
             since, until = self._qs_float_opt("since"), self._qs_float_opt("until")
+            limit = self._qs_float_opt("limit")
         except ValueError:
-            self._json_response({"error": "since and until must be numbers"}, status=400)
+            self._json_response({"error": "since, until and limit must be numbers"}, status=400)
             return
         try:
-            status, payload = agent_flow(self._db, agent_id, since, until)
+            status, payload = agent_flow(self._db, agent_id, since, until, limit=int(limit) if limit else None)
         except Exception as exc:  # any failure must reach the tab's error state
             logging.getLogger(__name__).exception("Board agent flow failed")
             self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
@@ -704,7 +706,9 @@ class _APIHandlersMixin:
     def _serve_board_agent_transcript(self) -> None:
         """The transcript of a board agent's session, from the store with the live transcript merged in.
 
-        GET /api/board/agent/transcript?id=<agent id>
+        GET /api/board/agent/transcript?id=<agent id>[&turn=<unix ts>][&full=1]
+        Without ``turn`` the turns are brief: previews, counts and tokens. ``turn`` returns one
+        turn whole, with its actions and texts; ``full=1`` returns every turn whole.
         """
         from .board_api import agent_transcript
 
@@ -722,7 +726,13 @@ class _APIHandlersMixin:
             return transcript.to_dict() if transcript is not None else None
 
         try:
-            status, payload = agent_transcript(self._db, agent_id, legacy_transcript=live)
+            turn = self._qs_float_opt("turn")
+        except ValueError:
+            self._json_response({"error": "turn must be a number"}, status=400)
+            return
+        full = self._qs_get("full") in ("1", "true", "yes")
+        try:
+            status, payload = agent_transcript(self._db, agent_id, legacy_transcript=live, turn=turn, brief=not full)
         except Exception as exc:  # any failure must reach the tab's error state
             logging.getLogger(__name__).exception("Board agent transcript failed")
             self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
