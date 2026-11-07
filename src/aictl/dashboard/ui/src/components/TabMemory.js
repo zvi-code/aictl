@@ -4,6 +4,7 @@ import { SnapContext } from '../context.js';
 import { fmtK, fmtSz, fmtAgo, esc, fetchFileContent, MEM_LABELS, TAIL_LINES } from '../utils.js';
 import ChartCard from './ChartCard.js';
 import * as api from '../api.js';
+import TextView from './ui/TextView.js';
 import ToolScopeEmpty from './ui/ToolScopeEmpty.js';
 import { isFiltered } from '../utils/toolScope.js';
 
@@ -31,14 +32,14 @@ function MemItem({mem}) {
     if(!text) return null;
     const lines = text.split('\n'), total = lines.length;
     if(total<=TAIL_LINES*3||expanded) {
-      return html`${numbered(lines,1)}
+      return html`<${TextView} text=${text} path=${mem.file} source=${html`${numbered(lines,1)}`}/>
         <div class="prev-actions">
           ${expanded && html`<button class="prev-btn" onClick=${()=>setExpanded(false)}>collapse</button>`}
           <button class="prev-btn" onClick=${()=>ctx.openViewer(mem.file)}>open in viewer</button>
         </div>`;
     }
     const tail=lines.slice(-TAIL_LINES), tailStart=total-TAIL_LINES+1;
-    return html`${numbered(tail,tailStart)}
+    return html`<${TextView} text=${text} path=${mem.file} source=${html`${numbered(tail,tailStart)}`}/>
       <div class="prev-actions">
         <button class="prev-btn" onClick=${()=>setExpanded(true)}>show all (${total} lines)</button>
         <button class="prev-btn" onClick=${()=>ctx.openViewer(mem.file)}>open in viewer</button>

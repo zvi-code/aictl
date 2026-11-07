@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'preact/hooks'
 import { useContext } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { SnapContext } from '../context.js';
+import TextView from './ui/TextView.js';
 import { fmtSz, fmtK, esc, fetchFileContent, fetchFileContentAt, PREVIEW_LINES } from '../utils.js';
 
 export default function FileViewer({path, at, onClose}) {
@@ -90,6 +91,11 @@ export default function FileViewer({path, at, onClose}) {
   const canCollapse = total > PREVIEW_LINES*2;
   const buildLines = (arr, start) => arr.map((line,i)=>
     html`<div class="fv-line"><span class="fv-ln">${start+i}</span><span class="fv-code">${esc(line)||' '}</span></div>`);
+  const sourceView = (!canCollapse||expanded) ?
+    html`<div class="fv-lines">${buildLines(lines,1)}</div>` :
+    html`<div class="fv-lines">${buildLines(lines.slice(0,PREVIEW_LINES),1)}</div>
+      <div class="fv-ellipsis" onClick=${()=>setExpanded(true)}>\u25BC ${total-PREVIEW_LINES*2} more lines \u25BC</div>
+      <div class="fv-lines">${buildLines(lines.slice(-PREVIEW_LINES),total-PREVIEW_LINES+1)}</div>`;
   return html`<div class="fv" ref=${dialogRef} role="dialog" aria-modal="true" aria-label="File viewer" style=${'width:'+width+'vw'}>
     <div class="file-viewer__resize-handle" onMouseDown=${onMouseDown}/>
     <div class="fv-head">
@@ -104,11 +110,7 @@ export default function FileViewer({path, at, onClose}) {
     <div class="fv-body">
       ${error ? html`<p class="text-red" style="padding:var(--sp-10)">${error}</p>` :
         !text ? html`<p class="text-muted" style="padding:var(--sp-10)">Loading...</p>` :
-        (!canCollapse||expanded) ?
-          html`<div class="fv-lines">${buildLines(lines,1)}</div>` :
-          html`<div class="fv-lines">${buildLines(lines.slice(0,PREVIEW_LINES),1)}</div>
-            <div class="fv-ellipsis" onClick=${()=>setExpanded(true)}>\u25BC ${total-PREVIEW_LINES*2} more lines \u25BC</div>
-            <div class="fv-lines">${buildLines(lines.slice(-PREVIEW_LINES),total-PREVIEW_LINES+1)}</div>`}
+        html`<${TextView} text=${text} path=${path} source=${sourceView}/>`}
     </div>
     <div class="fv-toolbar">
       <span>${total} lines${canCollapse&&!expanded?' (showing '+PREVIEW_LINES*2+' of '+total+')':''}</span>
