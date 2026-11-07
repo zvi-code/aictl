@@ -57,6 +57,10 @@ export const fmtBytes = b => {
   if (b >= 1e3) return Math.round(b / 1e3) + ' KB';
   return Math.round(b) + ' B';
 };
+/** An age in seconds: "40 s" below 90 s, else as a duration. */
+export const fmtAge = s => (isNil(s) ? NA : s < 90 ? Math.round(s) + ' s' : fmtDur(s));
+/** Bytes per second. */
+export const fmtBps = b => (isNil(b) ? NA : fmtBytes(b) + '/s');
 export const fmtLines = (add, del) => {
   if (isNil(add) && isNil(del)) return NA;
   return '+' + (isNil(add) ? NA : fmtN(add)) + ' −' + (isNil(del) ? NA : fmtN(del));

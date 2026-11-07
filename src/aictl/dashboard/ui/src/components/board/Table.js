@@ -12,7 +12,7 @@ function Cell({ col, x, go, primary }) {
   const label = x.go || (primary && go)
     ? html`<button type="button" class="bd-lnk" onClick=${stop(x.go || go)}>${x.v}</button>`
     : x.v;
-  const rich = x.foldOn || x.foldSp || x.sw || x.dot || x.warn || x.sub || x.pad;
+  const rich = x.foldOn || x.foldSp || x.sw || x.dot || x.warn || x.sub || x.pad || x.chips;
   let body;
   if (x.barOn) {
     body = html`<div class="bd-ibw"><span class="bd-ib" style="max-width:70px"><b style=${{ width: x.bar + '%', background: x.barC }}></b></span><span>${x.v}</span></div>`;
@@ -25,6 +25,7 @@ function Cell({ col, x, go, primary }) {
       ${x.sw && html`<i class="bd-sw" style=${{ background: x.sw }}></i>`}
       ${x.dot && html`<span class="bd-st"><i style=${{ background: x.dot }}></i></span>`}
       ${x.warn && html`<${Ico} d=${PATHS.warn} style="color:var(--warnink)"/>`}
+      ${x.chips ? x.chips.map((c, i) => html`<span key=${i} class=${'bd-tag bd-tag-' + (c.sev || 'info')} title=${c.title || c.text}>${c.text}</span>`) : null}
       <span class="bd-tx">${label}${x.sub ? html`<span class="bd-subv">${x.sub}</span>` : null}</span>
     </div>`;
   } else body = label;
