@@ -9,6 +9,7 @@ import {
 } from './format.js';
 import { bucketLabel } from './chartModel.js';
 import { STALE_AFTER_S } from './summary.js';
+import { CONTEXT_BUILDERS } from './contextPanels.js';
 import { EMPTY_MACHINE } from './useBoardData.js';
 
 const num = v => (v === null || v === undefined ? -1 : v);
@@ -956,6 +957,7 @@ const BUILDERS = {
   changesT: panelChanges, tests: panelTests, memfiles: panelMemFiles,
   cpu: (c, l, p, n) => panelResource(c, l, p, n, 'cpu'), ram: (c, l, p, n) => panelResource(c, l, p, n, 'mem'), alerts: panelAlerts, procs: panelProcs, traffic: panelTraffic,
   findings: panelFindings, settings: panelSettings, sources: panelSources, self: panelSelf, collectors: panelCollectors, quality: panelQuality, coverage: panelCoverage,
+  ...CONTEXT_BUILDERS,
 };
 export const PANEL_IDS = Object.keys(BUILDERS);
 

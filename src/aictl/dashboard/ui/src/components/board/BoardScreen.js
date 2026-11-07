@@ -10,6 +10,7 @@ import { focusTrap } from '../../utils/a11y.js';
 import { parseCustomRange, toLocalISOString } from '../../utils/customRange.js';
 import { listedTools, toolFilterLabel, canClear, clearedFilters, RANGES, STATUSES, windowOf, boardQuery } from './filters.js';
 import { buildFindings, buildSettings } from './findings.js';
+import CommandPalette, { ShortcutsDialog, boardCommands, loadRecent, pushRecent, saveRecent } from './CommandPalette.js';
 import { colorFor, projectName, stamp } from './format.js';
 import { Ico, PATHS } from './icons.js';
 import {
@@ -135,6 +136,7 @@ function TopBar({ f, board, menu, ui, resolvedTheme, setTheme, live, act }) {
     </div>
     <button type="button" class="bd-ctl" aria-pressed=${live ? 'true' : 'false'} onClick=${act.toggleLive} title=${liveTitle}><i class=${'bd-live' + (live ? '' : ' bd-off')}></i>${live ? 'Live' : 'Paused'}</button>
     <label class="bd-srch"><${Ico} d=${PATHS.search}/><input id="bd-find" aria-label="Find agents, prompts, files and tools" placeholder="Find agent, prompt, file, tool" value=${f.q} onInput=${e => act.setFind(e.target.value)}/></label>
+    <button type="button" class="bd-ctl" aria-label="Open the command palette" title="Command palette (Cmd/Ctrl+K). Press ? for the keyboard shortcuts." onClick=${act.openPalette}><${Ico} d=${PATHS.command}/>Commands</button>
     <span class="bd-sp"></span>
     <div class="bd-anch">
       <button type="button" class="bd-ctl" aria-expanded=${menu === 'layout' ? 'true' : 'false'} onClick=${() => act.toggleMenu('layout')}><${Ico} d=${PATHS.layout}/><span class="bd-k">Layout</span>${changed ? 'Changed' : 'Default'}</button>
@@ -274,6 +276,9 @@ export default function BoardScreen() {
   const [modal, setModal] = useState(null);
   const [toast, setToast] = useState(null);
   const [stopped, setStopped] = useState({});
+  const [palette, setPalette] = useState(false);
+  const [shortcuts, setShortcuts] = useState(false);
+  const [recent, setRecent] = useState(() => loadRecent());
   const pausedRef = useRef(false);
   pausedRef.current = !!dragId;
 
@@ -375,7 +380,7 @@ export default function BoardScreen() {
 
   // Latest values for handlers that keep one identity, so panels do not re-render for them.
   const latest = useRef({});
-  latest.current = { ui, filters, tools, menu, drawer, dragId, modal, over, screen };
+  latest.current = { ui, filters, tools, menu, drawer, dragId, modal, over, screen, palette, shortcuts };
 
   const notice = useCallback((text, undo) => {
     clearTimeout(latest.current.toastTimer);
@@ -525,6 +530,38 @@ export default function BoardScreen() {
         window.addEventListener('mousemove', mv);
         window.addEventListener('mouseup', up);
       },
+      openPalette: () => { closeMenu(); setShortcuts(false); setPalette(true); },
+      runPaletteCommand: (cmd) => {
+        setPalette(false);
+        setRecent((r) => { const next = pushRecent(r, cmd.id); saveRecent(next); return next; });
+        // After the palette has closed and given focus back.
+        setTimeout(() => cmd.run(), 0);
+      },
+      jumpTo: (id) => {
+        const sec = SEC_BY_ID[id];
+        if (!sec) return;
+        a.lastSection = id;
+        const onBoard = L.current.screen === 'board';
+        a.openSection(id, null, sec.anchor);
+        if (onBoard) setTimeout(() => document.getElementById(sec.anchor)?.scrollIntoView?.({ block: 'start' }), 0);
+      },
+      stepSection: (dir) => {
+        const order = L.current.ui.layout.map(sec => sec.id);
+        const area = document.getElementById('main-area');
+        const top = area ? area.getBoundingClientRect().top : 0;
+        const tops = order.map(id => document.getElementById(SEC_BY_ID[id].anchor)?.getBoundingClientRect().top);
+        // With no layout to measure (all sections at one place), the last section jumped to counts.
+        const measured = tops.some(t => t !== tops[0]);
+        const here = measured ? tops.reduce((best, t, k) => (t != null && t - top <= 8 ? k : best), -1) : order.indexOf(a.lastSection);
+        const next = Math.max(0, Math.min(order.length - 1, here + dir));
+        if (order[next]) a.jumpTo(order[next]);
+      },
+      settingsPivot: (pivot) => {
+        a.setScreen('settings');
+        writeUrl({ pivot: pivot === 'tool' ? null : pivot });
+        // The Settings screen reads its pivot from the URL when the history moves.
+        try { window.dispatchEvent(new PopStateEvent('popstate')); } catch { /* no PopStateEvent: the pivot applies on the next visit */ }
+      },
       openDrawer: (d, reset) => { setDrawer(s => (reset ? [d] : [...s, d])); closeMenu(); },
       setDrawerTab: tab => setDrawer(s => s.map((d, i) => (i === s.length - 1 ? { ...d, tab } : d))),
       drawerBack: () => setDrawer(s => s.slice(0, -1)),
@@ -607,16 +644,43 @@ export default function BoardScreen() {
   }, []);
 
   useEffect(() => {
+    // Cmd/Ctrl+K and Esc work everywhere. The other keys do nothing while typing,
+    // with a modifier held, or while a dialog is open.
     const onKey = (e) => {
-      const typing = e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
-      if (e.key === '/' && !typing && !e.metaKey && !e.ctrlKey) {
+      const typing = e.target && (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable);
+      const s = latest.current;
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === 'k' || e.key === 'K')) {
         e.preventDefault();
-        document.getElementById('bd-find')?.focus();
-      } else if (e.key === 'Escape') {
-        const s = latest.current;
-        if (s.modal) setModal(null);
+        setShortcuts(false);
+        setMenu(null);
+        setPalette(v => !v);
+        return;
+      }
+      if (e.key === 'Escape') {
+        if (s.palette) setPalette(false);
+        else if (s.shortcuts) setShortcuts(false);
+        else if (s.modal) setModal(null);
         else if (s.menu) setMenu(null);
         else if (s.drawer.length) setDrawer(d => d.slice(0, -1));
+        return;
+      }
+      if (typing || e.metaKey || e.ctrlKey || e.altKey || s.palette || s.shortcuts || s.modal) return;
+      if (e.key === '/') {
+        e.preventDefault();
+        document.getElementById('bd-find')?.focus();
+      } else if (e.key === '?') {
+        e.preventDefault();
+        setMenu(null);
+        setShortcuts(true);
+      } else if (/^[1-9]$/.test(e.key)) {
+        const sec = s.ui.layout[Number(e.key) - 1];
+        if (sec) { e.preventDefault(); actRef.current.jumpTo(sec.id); }
+      } else if (e.key === '[' || e.key === ']') {
+        e.preventDefault();
+        actRef.current.stepSection(e.key === ']' ? 1 : -1);
+      } else if (e.key === 's') {
+        e.preventDefault();
+        actRef.current.setScreen('settings');
       }
     };
     document.addEventListener('keydown', onKey);
@@ -685,6 +749,17 @@ export default function BoardScreen() {
     ${menu ? html`<button type="button" class="bd-scrim" aria-label="Close the menu" onClick=${act.closeMenu}></button>` : null}
     <div class="bd-tip" ref=${bindTip} hidden></div>
     ${modal ? html`<${Modal} modal=${modal} onCancel=${() => setModal(null)}/>` : null}
+    ${palette ? html`<${CommandPalette} recent=${recent} onRun=${act.runPaletteCommand} onClose=${() => setPalette(false)} commands=${boardCommands({
+      sections: ui.layout.map(sec => ({ ...SEC_BY_ID[sec.id], keywords: sec.panels.map(pn => TITLES[pn.id]).join(' ') })), ranges: RANGES, rangeId: filters.range.id,
+      tools: data.options.tools.map(t => ({ id: t.id, label: t.label || t.id, on: !tools || tools.includes(t.id) })),
+      agents: data.agents, theme: resolvedTheme, density: ui.density, screen,
+      go: {
+        section: act.jumpTo, screen: act.setScreen, settings: act.settingsPivot, range: act.setRange,
+        tool: id => act.toggleTool(id, toolIds), agent: id => act.openDrawer({ type: 'agent', id, tab: 'overview' }, true),
+        theme: setTheme, density: act.setDensity, resetLayout: act.resetLayout, shortcuts: () => setShortcuts(true),
+      },
+    })}/>` : null}
+    ${shortcuts ? html`<${ShortcutsDialog} onClose=${() => setShortcuts(false)}/>` : null}
     ${toast ? html`<div class="bd-toast" role="status">${toast.text}${toast.undo ? html`<button type="button" onClick=${toast.undo}>Undo</button>` : null}</div>` : null}
   </div>`;
 }

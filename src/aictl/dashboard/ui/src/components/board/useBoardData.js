@@ -5,6 +5,8 @@
 // and the selected time feeds everything else.
 // /api/board/machine (processes, collectors, pipeline health) is fetched with each
 // board fetch and on every tick while live, so a stalled collector still shows.
+// /api/board/context (context budget, files, memory, lifetime telemetry) changes
+// slowly: it is fetched when the Tool filter changes and at most every 30 s.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import * as api from '../../api.js';
 import { useSse } from '../../useSse.js';
@@ -12,6 +14,7 @@ import { boardQuery, windowOf } from './filters.js';
 
 export const TICK_MS = 5000;
 const POLL_WITHOUT_STREAM_MS = 30000;
+export const CONTEXT_REFRESH_MS = 30000;
 
 export const EMPTY_MACHINE = {
   generated_at: null,
@@ -19,6 +22,42 @@ export const EMPTY_MACHINE = {
   processes: [], cpu_per_core: [], alerts: [],
   pipeline: { self: {}, sink: null, otel_receiver: null, ingesters: [], data_quality: [], freshness: [], stream: {} },
 };
+
+export const EMPTY_CONTEXT = {
+  generated_at: null, root: null,
+  budget: { tools: [], totals: {} },
+  categories: [],
+  map: { total: 0, policy: {}, rows: [], items: [] },
+  memory: { entries: [], tokens: 0, growth: [] },
+  files: [], telemetry: [],
+  daily: { days: [], since: null, models: [], rows: [] },
+  workflows: [],
+  loaded: false,
+};
+
+/** Fill what an /api/board/context answer leaves out. */
+export function normalizeContext(raw) {
+  if (!raw || typeof raw !== 'object') return EMPTY_CONTEXT;
+  const list = v => (Array.isArray(v) ? v : []);
+  const obj = v => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+  const budget = obj(raw.budget);
+  const map = obj(raw.map);
+  const memory = obj(raw.memory);
+  const daily = obj(raw.daily);
+  return {
+    generated_at: raw.generated_at ?? null,
+    root: raw.root ?? null,
+    budget: { tools: list(budget.tools).map(b => ({ ...b, projects: list(b.projects) })), totals: obj(budget.totals) },
+    categories: list(raw.categories).map(c => ({ ...c, kinds: list(c.kinds) })),
+    map: { total: map.total || 0, policy: obj(map.policy), rows: list(map.rows), items: list(map.items) },
+    memory: { entries: list(memory.entries), tokens: memory.tokens || 0, growth: list(memory.growth) },
+    files: list(raw.files).map(f => ({ ...f, files: list(f.files) })),
+    telemetry: list(raw.telemetry).map(t => ({ ...t, by_model: list(t.by_model), errors: list(t.errors), quota: obj(t.quota) })),
+    daily: { days: list(daily.days), since: daily.since ?? null, models: list(daily.models), rows: list(daily.rows) },
+    workflows: list(raw.workflows),
+    loaded: true,
+  };
+}
 
 const EMPTY = {
   generated_at: null, capture_mode: null,
@@ -118,12 +157,40 @@ function createMachineLoader(onData) {
   };
 }
 
+/** /api/board/context for the tool filter, at most every CONTEXT_REFRESH_MS for the same filter. */
+function createContextLoader(onData) {
+  let ctrl = null;
+  let last = { key: null, at: 0 };
+  return {
+    load(tools) {
+      const q = tools ? '?tool=' + (tools.length ? tools.map(encodeURIComponent).join(',') : '-') : '';
+      const now = Date.now();
+      if (last.key === q && now - last.at < CONTEXT_REFRESH_MS) return undefined;
+      if (ctrl) ctrl.abort();
+      const mine = new AbortController();
+      ctrl = mine;
+      last = { key: q, at: now };
+      return api.fetchJson('/api/board/context' + q, { signal: mine.signal }).then((d) => {
+        if (ctrl !== mine) return;
+        ctrl = null;
+        onData(normalizeContext(d));
+      }).catch(() => {
+        if (ctrl !== mine) return;
+        ctrl = null;
+        last = { key: null, at: 0 };
+      });
+    },
+    stop() { if (ctrl) { ctrl.abort(); ctrl = null; } },
+  };
+}
+
 export function useBoardData({ filters, tools, live, pausedRef, enabled = true }) {
   const [main, setMain] = useState(null);
   const [selected, setSelected] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [machine, setMachine] = useState(EMPTY_MACHINE);
+  const [context, setContext] = useState(EMPTY_CONTEXT);
   const stateRef = useRef({ filters, tools });
   stateRef.current = { filters, tools };
   const dirty = useRef(false);
@@ -135,6 +202,7 @@ export function useBoardData({ filters, tools, live, pausedRef, enabled = true }
       main: createLoader((d) => { setBusy(false); setError(null); if (d) { mark(); setMain(d); } }, (e) => { setBusy(false); setError(e); }),
       sel: createLoader((d) => { setError(null); if (d) { mark(); setSelected(d); } }, (e) => setError(e)),
       machine: createMachineLoader(setMachine),
+      context: createContextLoader(setContext),
     };
   }
 
@@ -143,6 +211,7 @@ export function useBoardData({ filters, tools, live, pausedRef, enabled = true }
     setBusy(true);
     loaders.current.main.load(boardQuery(f, t, windowOf(f.range)));
     loaders.current.machine.load(t);
+    loaders.current.context.load(t);
     if (f.sel) loaders.current.sel.load(boardQuery(f, t, { since: Math.floor(f.sel.since), until: Math.floor(f.sel.until) }));
     else { loaders.current.sel.stop(); setSelected(null); }
   }, []);
@@ -150,7 +219,7 @@ export function useBoardData({ filters, tools, live, pausedRef, enabled = true }
   const toolKey = tools ? tools.join(',') : '*';
   const filterKey = JSON.stringify([filters.range, filters.project, filters.model, filters.status, filters.q, filters.sel]);
   useEffect(() => { if (enabled) fetchNow(); }, [filterKey, toolKey, enabled, fetchNow]);
-  useEffect(() => () => { loaders.current.main.stop(); loaders.current.sel.stop(); loaders.current.machine.stop(); }, []);
+  useEffect(() => () => { loaders.current.main.stop(); loaders.current.sel.stop(); loaders.current.machine.stop(); loaders.current.context.stop(); }, []);
 
   const onMessage = useCallback(() => { dirty.current = true; }, []);
   const { connected } = useSse(enabled && live ? api.streamUrl() : null, onMessage);
@@ -182,7 +251,7 @@ export function useBoardData({ filters, tools, live, pausedRef, enabled = true }
     const base = withSel
       ? { ...selected, series: sourceMain.series, range: sourceMain.range, options: sourceMain.options.tools.length ? sourceMain.options : selected.options, scope: selected.scope }
       : sourceMain;
-    return { ...base, machine };
-  }, [withSel, selected, sourceMain, machine]);
+    return { ...base, machine, contextData: context };
+  }, [withSel, selected, sourceMain, machine, context]);
   return { data, machine, chartSeries: sourceMain.series, chartRange: sourceMain.range, loaded: !!main, busy, error, refresh, connected, everConnected: everConnected.current };
 }

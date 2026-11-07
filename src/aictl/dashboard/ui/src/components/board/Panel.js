@@ -1,4 +1,6 @@
 // ─── Board panel — header, fold, menu, drag, resize, and the panel body ─
+// A chart with its own range (days, a memory history) does not follow the board's
+// time and cannot select one. A body `view` is a component with its own state.
 import { html } from 'htm/preact';
 import { memo } from 'preact/compat';
 import { useCallback, useMemo, useState } from 'preact/hooks';
@@ -87,7 +89,10 @@ function PanelImpl({ pn, ctx, hiddenCols, menuOpen, over, dragging, act, section
       ${body.banner ? html`<div class="bd-pbanner" role="alert" title=${body.banner}><${Ico} d=${PATHS.warn}/>${body.banner}</div>` : null}
       ${body.stats ? html`<${Stats} stats=${body.stats}/>` : null}
       ${body.segbar ? html`<${Segbar} segbar=${body.segbar}/>` : null}
-      ${body.chart ? html`<${Chart} ...${body.chart} range=${ctx.chartRange} sel=${ctx.sel} onSelect=${act.select}/>` : null}
+      ${body.view ? html`<${body.view.C} ...${body.view.props} ctx=${ctx}/>` : null}
+      ${body.chart ? (body.chart.range
+        ? html`<${Chart} ...${body.chart} sel=${null} onSelect=${null}/>`
+        : html`<${Chart} ...${body.chart} range=${ctx.chartRange} sel=${ctx.sel} onSelect=${act.select}/>`) : null}
       ${body.cores ? html`<${CoreBars} cores=${body.cores}/>` : null}
       ${body.table ? html`<${Table} def=${body.table} hidden=${hiddenCols} label=${title}/>` : null}
       ${body.actions ? html`<${Actions} actions=${body.actions}/>` : null}

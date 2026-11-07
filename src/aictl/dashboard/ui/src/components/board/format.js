@@ -135,7 +135,7 @@ export const isLive = s => s === 'running' || s === 'looping' || s === 'waiting'
 // A color stays with its tool, project or model while the page is open. The first
 // id seen takes the first free slot, so nothing about the order ranks a tool.
 const PALETTE = ['var(--s1)', 'var(--s2)', 'var(--s3)', 'var(--s4)', 'var(--s5)'];
-const assigned = { tool: new Map(), project: new Map(), model: new Map() };
+const assigned = { tool: new Map(), project: new Map(), model: new Map(), kind: new Map() };
 export function colorFor(kind, id) {
   const m = assigned[kind] || assigned.tool;
   if (!m.has(id)) m.set(id, PALETTE[m.size % PALETTE.length]);

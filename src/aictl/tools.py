@@ -1496,6 +1496,21 @@ def budget_tools(tools: list[ToolResources], selection: tuple[str, ...] | None) 
     return [t for t in tools if t.tool == "project-env" or is_selected(t.tool, selection)]
 
 
+def budget_bucket(sent_to_llm: str, loaded_when: str) -> str:
+    """How a file reaches the model: "always", "on_demand", "conditional" or "never"."""
+    stl = sent_to_llm or ""
+    lw = loaded_when or ""
+    if stl == "no" or not stl:
+        return "never"
+    if stl == "yes" and "every-call" in lw:
+        return "always"
+    if stl == "on-demand" or "on-demand" in lw:
+        return "on_demand"
+    if stl in ("conditional", "partial"):
+        return "conditional"
+    return "always"
+
+
 def compute_token_budget(tools: list[ToolResources], root: str = "") -> dict:
     """Estimate token overhead for a single context window.
 
@@ -1526,21 +1541,10 @@ def compute_token_budget(tools: list[ToolResources], root: str = "") -> dict:
 
     for tr in tools:
         for f in tr.files:
-            stl = f.sent_to_llm
-            lw = f.loaded_when
-
-            # Classify loading behavior
-            if stl == "no" or not stl:
+            bucket = budget_bucket(f.sent_to_llm, f.loaded_when)
+            if bucket == "never":
                 never_count += 1
                 continue
-            if stl == "yes" and "every-call" in lw:
-                bucket = "always"
-            elif stl == "on-demand" or "on-demand" in lw:
-                bucket = "on_demand"
-            elif stl in ("conditional", "partial"):
-                bucket = "conditional"
-            else:
-                bucket = "always"
 
             tok = f.tokens
 
@@ -1616,6 +1620,8 @@ def compute_token_budget(tools: list[ToolResources], root: str = "") -> dict:
         "largest_project": largest_proj,
         "largest_project_tokens": largest_proj_total,
         "project_count": len(by_project),
+        # Each sub-project's own files by loading behavior. Its estimate adds global_tokens.
+        "projects": {name: dict(buckets) for name, buckets in sorted(by_project.items())},
     }
 
 
