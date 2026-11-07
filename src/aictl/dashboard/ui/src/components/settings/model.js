@@ -5,7 +5,7 @@
 import { rowTip, TIPS } from './tips.js';
 import { baseName, isWindowsPath } from '../../utils/paths.js';
 import { toolLabel } from '../../utils/tools.js';
-import { isToolSelected } from '../../utils/toolScope.js';
+import { isConfigSelected, isToolSelected } from '../../utils/toolScope.js';
 
 // ─── Sections ────────────────────────────────────────────────────
 export const SECTION_ORDER = ['model', 'agents', 'telemetry', 'autonomy', 'context', 'hooks', 'mcp', 'extensions', 'startup', 'other'];
@@ -536,6 +536,33 @@ export function toolEntries(snap) {
   return entries.map((e, i) => ({ e, i })).sort((a, b) => at(a.e.id) - at(b.e.id) || a.i - b.i).map(x => x.e);
 }
 
+/**
+ * The snapshot shape the functions here read, built from a settings source: the
+ * tool records under the tool filter, the tool names, aictl's collectors and the project root.
+ */
+export function snapOf({ toolConfigs, tools, monitor, root = '', enabledTools = null } = {}) {
+  if (!Array.isArray(toolConfigs)) return null;
+  return {
+    root,
+    tools: Array.isArray(tools) ? tools : [],
+    tool_configs: toolConfigs.filter(c => isConfigSelected(c, enabledTools)),
+    live_monitor: monitor || {},
+  };
+}
+
+/** Counts for a summary line: settings a file sets, unset knobs, risky rows and agents. */
+export function settingsSummary(entries) {
+  const rows = entries.flatMap(e => e.rows);
+  return {
+    set: rows.filter(r => !r.unset).length,
+    unset: rows.filter(r => r.unset).length,
+    // The unset count means something once the server says, per row, whether a file sets it.
+    knowsSet: rows.some(r => typeof r.set === 'boolean'),
+    risky: entries.reduce((n, e) => n + e.risky, 0),
+    agents: rows.filter(isAgentRow).length,
+  };
+}
+
 /** The aictl engine: its collectors and the folders it watches. Null when there is neither. */
 export function aictlEntry(snap) {
   const lm = snap?.live_monitor || {};
@@ -602,10 +629,55 @@ export const LOCATIONS = [
   { id: 'other', label: 'Other' },
 ];
 export const LOCATION_LABELS = Object.fromEntries(LOCATIONS.map(l => [l.id, l.label]));
+/** Short location names, for the columns of the Files summary. */
+export const LOCATION_SHORT = { home: 'Home', 'tool-home': 'Tool folders', project: 'This project', 'vscode-user': 'VS Code user', other: 'Other' };
+
+/** What a file is for, from its `kind`. Any other kind counts as Other. */
+export const PURPOSES = [
+  { id: 'settings', label: 'Settings' },
+  { id: 'instructions', label: 'Instructions' },
+  { id: 'agents', label: 'Agents' },
+  { id: 'skills', label: 'Skills' },
+  { id: 'prompts', label: 'Prompts' },
+  { id: 'memory', label: 'Memory' },
+  { id: 'hooks', label: 'Hooks' },
+  { id: 'mcp', label: 'MCP' },
+  { id: 'other', label: 'Other' },
+];
+export const PURPOSE_LABELS = Object.fromEntries(PURPOSES.map(p => [p.id, p.label]));
+
+export function purposeOf(f) {
+  return PURPOSE_LABELS[f?.kind] ? f.kind : 'other';
+}
+
+/** Git states the Files filter offers, in this order. */
+export const GIT_STATES = [
+  { id: 'tracked', label: 'Tracked' },
+  { id: 'ignored', label: 'Ignored' },
+  { id: 'untracked', label: 'Untracked' },
+  { id: 'outside', label: 'Outside a repository' },
+];
+
+/** The Git filter value of a file, or '' when git says nothing about it. */
+export function gitCategory(f) {
+  const g = String(f?.git_state || '').toLowerCase();
+  if (!g) return '';
+  if (g.includes('ignored')) return 'ignored';
+  if (g.includes('untracked') || g.includes('not tracked')) return 'untracked';
+  if (g.includes('outside')) return 'outside';
+  if (g.includes('tracked') || g.includes('modified')) return 'tracked';
+  return '';
+}
+
+/** True when git leaves the file out of review while a tool always loads it. */
+export function gitRisk(f) {
+  const g = gitCategory(f);
+  return (g === 'ignored' || g === 'untracked') && f?.loading === 'always';
+}
 
 const CONFIG_DIRS = new Set(['.claude', '.github', '.vscode', '.cursor', '.codex', '.gemini', '.copilot', '.windsurf']);
 
-function dirOf(s) {
+export function dirOf(s) {
   const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
   return i > 0 ? s.slice(0, i) : s;
 }
@@ -707,6 +779,40 @@ export function matchFile(f, q) {
   return !s || [f.name, f.path, f.kind, ...(f.rows || []).map(r => r.label)].join('\n').toLowerCase().includes(s);
 }
 
+/** Files under one group, by the folder each is in: the folder once, then its files. */
+export function fileFolders(files) {
+  const by = new Map();
+  for (const f of files) {
+    const d = dirOf(f.path);
+    if (!by.has(d)) by.set(d, { dir: d, files: [] });
+    by.get(d).files.push(f);
+  }
+  const out = [...by.values()].sort((a, b) => a.dir.localeCompare(b.dir));
+  for (const g of out) g.files.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
+}
+
+/** Files grouped by purpose, in the PURPOSES order. */
+export function purposeGroups(files) {
+  return PURPOSES.map(p => ({ id: p.id, label: p.label, files: files.filter(f => purposeOf(f) === p.id) }))
+    .filter(g => g.files.length);
+}
+
+/** Counts by purpose (rows) and location (columns), for the Files summary. */
+export function fileMatrix(files) {
+  const cells = {};
+  for (const f of files) {
+    const p = purposeOf(f);
+    const l = LOCATION_LABELS[f.location] ? f.location : 'other';
+    cells[p] = cells[p] || {};
+    cells[p][l] = (cells[p][l] || 0) + 1;
+  }
+  const rows = PURPOSES.filter(p => cells[p.id]).map(p => ({
+    ...p, cells: cells[p.id], total: Object.values(cells[p.id]).reduce((a, b) => a + b, 0),
+  }));
+  return { rows, cols: LOCATIONS.map(l => ({ id: l.id, label: LOCATION_SHORT[l.id] })) };
+}
+
 /** Files grouped by the folder they live in, groups in location order. */
 export function fileGroups(files) {
   const by = new Map();
@@ -776,6 +882,11 @@ export function findingGroups(findings) {
 // scope filters By tool to the rows set at one layer; unset shows the knobs no file sets.
 export const PIVOTS = ['tool', 'topic', 'files', 'findings'];
 
+// In Files, tool and sec are comma lists (Read by, Location), and these narrow it further:
+// group (location | purpose), purpose, fscope, git (comma lists), recent (changed in 24 h)
+// and cell (one summary cell, "purpose:location").
+export const FILE_PARAMS = ['purpose', 'fscope', 'git', 'recent', 'cell'];
+
 export function readSettingsUrl(search) {
   const q = new URLSearchParams(search || '');
   const view = q.get('pivot');
@@ -786,6 +897,12 @@ export function readSettingsUrl(search) {
     row: q.get('row') || '',
     scope: q.get('scope') || '',
     unset: q.get('unset') === '1',
+    group: q.get('group') === 'purpose' ? 'purpose' : 'location',
+    purpose: q.get('purpose') || '',
+    fscope: q.get('fscope') || '',
+    git: q.get('git') || '',
+    recent: q.get('recent') === '1',
+    cell: q.get('cell') || '',
   };
 }
 
@@ -797,7 +914,20 @@ export function settingsParams(st) {
     row: st.row || null,
     scope: st.scope || null,
     unset: st.unset ? '1' : null,
+    group: st.group === 'purpose' ? 'purpose' : null,
+    purpose: st.purpose || null,
+    fscope: st.fscope || null,
+    git: st.git || null,
+    recent: st.recent ? '1' : null,
+    cell: st.cell || null,
   };
 }
 
-export const CLEAR_PARAMS = { pivot: null, tool: null, sec: null, row: null, scope: null, unset: null };
+/** A comma list from the URL as an array, and back. */
+export const listOf = s => (s ? String(s).split(',').filter(Boolean) : []);
+export const listParam = a => a.join(',');
+
+export const CLEAR_PARAMS = {
+  pivot: null, tool: null, sec: null, row: null, scope: null, unset: null,
+  group: null, purpose: null, fscope: null, git: null, recent: null, cell: null,
+};

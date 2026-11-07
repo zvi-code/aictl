@@ -575,6 +575,30 @@ class _APIHandlersMixin:
             folders = [str(p) for p in (*monitor.workspace_paths, *monitor.state_paths)]
         self._json_response(settings_files(root, tool_configs, audit.get("sources") or [], folders))
 
+    def _serve_settings_tools(self) -> None:
+        """Every tool's complete settings records, with the knobs no file sets, for the settings screen."""
+        from .. import orchestrator
+
+        snap = self.server.store.snapshot
+        tool_configs = orchestrator.full_tool_configs() or list(getattr(snap, "tool_configs", None) or [])
+        if not tool_configs:
+            from ..monitoring.tool_config import collect_tool_configs
+
+            tool_configs = [c.to_dict() for c in collect_tool_configs(Path(self.server.root))]
+        tools = []
+        for t in getattr(snap, "tools", None) or []:
+            tool_id = t.get("tool") if isinstance(t, dict) else getattr(t, "tool", None)
+            label = t.get("label") if isinstance(t, dict) else getattr(t, "label", None)
+            if tool_id:
+                tools.append({"tool": tool_id, "label": label or tool_id})
+        live = getattr(snap, "live_monitor", None) or {}
+        monitor = {
+            "diagnostics": live.get("diagnostics") or {},
+            "workspace_paths": list(live.get("workspace_paths") or []),
+            "state_paths": list(live.get("state_paths") or []),
+        }
+        self._json_response({"generated_at": time.time(), "tools": tools, "tool_configs": tool_configs, "monitor": monitor})
+
     def _tool_name_from_config_path(self) -> str:
         from urllib.parse import unquote
 

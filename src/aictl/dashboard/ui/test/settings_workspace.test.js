@@ -1,5 +1,6 @@
 // Settings workspace: the four pivots, the inspector, search, the scope
-// fallback for rows without `scope`, and opening the file viewer at a line.
+// fallback for rows without `scope`, and opening a file at a line. The workspace
+// reads a `source` prop; TabToolConfig builds one from SnapContext.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { html } from 'htm/preact';
@@ -102,12 +103,20 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
-function renderAt(search, { snap = SNAP, openViewer = vi.fn(), enabledTools = null } = {}) {
+/** A settings source as the board gives it: records, names, a file opener and the board's findings. */
+function makeSource({ snap = SNAP, openFile = vi.fn(), enabledTools = null, findings } = {}) {
+  return {
+    toolConfigs: snap.tool_configs, tools: snap.tools, monitor: snap.live_monitor, root: snap.root,
+    enabledTools, recentFiles: new Map(), openFile,
+    findings: findings || { list: [], audit: auditResponse, loading: false, error: null, scan: null, incomplete: [], failed: [], rescan: vi.fn() },
+  };
+}
+
+function renderAt(search, opts = {}) {
   history.replaceState(null, '', '/?tab=config' + (search ? '&' + search : ''));
-  const r = render(html`<${SnapContext.Provider} value=${{ snap, openViewer, enabledTools, recentFiles: new Map() }}>
-    <${SettingsWorkspace}/>
-  </${SnapContext.Provider}>`);
-  return { ...r, openViewer };
+  const source = makeSource(opts);
+  const r = render(html`<${SettingsWorkspace} source=${source}/>`);
+  return { ...r, openFile: source.openFile, source };
 }
 
 const rowByKey = (c, key) => c.querySelector(`.st-row[data-key="${key}"]`);
@@ -201,10 +210,14 @@ describe('Files', () => {
     const { container, getByText } = renderAt('pivot=files');
     await waitFor(() => expect(container.textContent).not.toContain('File details are loading'));
     const group = container.querySelector(`tbody[data-root="${HOME}/.claude"]`);
-    // 11 agent files plus settings.json from the Claude record: 12, of which 8 show.
-    expect(group.querySelectorAll('.st-row').length).toBe(8);
-    expect(group.textContent).toContain('4 more');
-    fireEvent.click(getByText(/4 more/));
+    // 11 agent files plus settings.json from the Claude record: 12. settings.json sits in the
+    // group's own folder; the agents folder is one sub-header, and its 11 files fold past 8.
+    expect(group.querySelectorAll('.st-row').length).toBe(9);
+    expect([...group.querySelectorAll('.st-folder')].map(r => r.dataset.dir)).toEqual([HOME + '/.claude/agents']);
+    expect(group.querySelector('.st-folder').textContent).toContain('~/.claude/agents');
+    expect(group.querySelector('.st-group').textContent).toContain('12 files');
+    expect(group.textContent).toContain('3 more');
+    fireEvent.click(getByText(/3 more/));
     expect(container.querySelector(`tbody[data-root="${HOME}/.claude"]`).querySelectorAll('.st-row').length).toBe(12);
     // Location groups in the navigator.
     expect(container.querySelector('.st-nav__item[data-loc="tool-home"]').textContent).toContain('13');
@@ -214,6 +227,127 @@ describe('Files', () => {
     const insp = container.querySelector('[data-testid="st-inspector-file"]');
     expect(insp.textContent).toContain('Model');
     expect(insp.textContent).toContain('Servers');
+  });
+
+  const FILES = [
+    { path: PROJ + '/AGENTS.md', name: 'AGENTS.md', location: 'project', location_root: PROJ, scope: 'project', kind: 'instructions', tools: ['claude-code', 'codex-cli'], settings: 0, bytes: 2048, mtime: 0, git_state: 'untracked', loading: 'always', exists: true },
+    { path: PROJ + '/.claude/agents/rev.md', name: 'rev.md', location: 'project', location_root: PROJ, scope: 'project', kind: 'agents', tools: ['claude-code'], settings: 0, bytes: 10, mtime: 0, git_state: 'tracked', exists: true },
+    { path: HOME + '/.claude/skills/t/SKILL.md', name: 'SKILL.md', location: 'tool-home', location_root: HOME + '/.claude', scope: 'user', kind: 'skills', tools: ['claude-code'], settings: 0, bytes: 10, mtime: Date.now() / 1000 - 600, git_state: 'outside-repo', exists: true },
+    { path: HOME + '/.codex/prompts', name: 'prompts', location: 'tool-home', location_root: HOME + '/.codex', scope: 'user', kind: 'other', tools: ['codex-cli'], settings: 0, bytes: 0, mtime: 0, git_state: 'outside-repo', exists: true, is_dir: true },
+  ];
+
+  it('switches the tree to purpose groups, and keeps the choice in the URL', async () => {
+    filesResponse = { status: 200, body: { files: FILES } };
+    const { container, getByText } = renderAt('pivot=files');
+    await waitFor(() => expect(container.textContent).not.toContain('File details are loading'));
+    fireEvent.click(getByText('By purpose'));
+    expect(new URLSearchParams(window.location.search).get('group')).toBe('purpose');
+    const purposes = [...container.querySelectorAll('tbody[data-purpose]')].map(t => t.dataset.purpose);
+    expect(purposes).toEqual(['settings', 'instructions', 'agents', 'skills']);
+    // Each folder once, under its purpose.
+    const instr = container.querySelector('tbody[data-purpose="instructions"]');
+    expect(instr.querySelector('.st-folder').dataset.dir).toBe(PROJ);
+    expect(instr.querySelector('.st-group').textContent).toContain('2KB');
+    expect(instr.querySelectorAll('.st-group .st-toolchip').length).toBe(2);
+    // An always-loaded file that git does not track is in the warn tone.
+    expect(container.querySelector(`.st-row[data-path="${PROJ}/AGENTS.md"] [data-git]`).classList.contains('st-warn')).toBe(true);
+    expect(container.querySelector(`.st-row[data-path="${PROJ}/.claude/agents/rev.md"] [data-git]`).classList.contains('st-warn')).toBe(false);
+    fireEvent.click(getByText('By location'));
+    expect(new URLSearchParams(window.location.search).get('group')).toBeNull();
+    expect(container.querySelector('tbody[data-purpose]')).toBeNull();
+  });
+
+  it('lists watched folders in their own group at the end, before absent managed locations', async () => {
+    filesResponse = { status: 200, body: { files: FILES } };
+    for (const search of ['pivot=files', 'pivot=files&group=purpose']) {
+      const { container, unmount } = renderAt(search);
+      await waitFor(() => expect(container.textContent).not.toContain('File details are loading'));
+      const groups = [...container.querySelectorAll('tbody[data-root], tbody[data-purpose]')];
+      const watched = groups[groups.length - 1];
+      expect(watched.dataset.root).toBe('watched');
+      expect(watched.textContent).toContain('Watched folders');
+      expect([...watched.querySelectorAll('.st-row')].map(r => r.dataset.path)).toEqual([HOME + '/.codex/prompts']);
+      // A folder is in no other group.
+      expect(groups.slice(0, -1).some(g => g.querySelector(`.st-row[data-path="${HOME}/.codex/prompts"]`))).toBe(false);
+      unmount();
+    }
+  });
+
+  it('a summary cell filters the tree to its purpose and location, and a second click clears it', async () => {
+    filesResponse = { status: 200, body: { files: FILES } };
+    const { container } = renderAt('pivot=files');
+    await waitFor(() => expect(container.textContent).not.toContain('File details are loading'));
+    const cell = () => container.querySelector('[data-testid="st-file-matrix"] [data-cell="instructions:project"]');
+    expect(cell().textContent).toBe('1');
+    // Watched folders are not counted in the summary.
+    expect(container.querySelector('[data-cell="other:tool-home"]')).toBeNull();
+    fireEvent.click(cell());
+    expect(cell().getAttribute('aria-pressed')).toBe('true');
+    expect(cell().closest('td').classList.contains('is-sel')).toBe(true);
+    expect(new URLSearchParams(window.location.search).get('cell')).toBe('instructions:project');
+    expect([...container.querySelectorAll('.st-files .st-row')].map(r => r.dataset.path)).toEqual([PROJ + '/AGENTS.md']);
+    expect(container.querySelector('[data-testid="st-file-chips"]').textContent).toContain('Instructions in This project');
+    fireEvent.click(cell());
+    expect(cell().getAttribute('aria-pressed')).toBe('false');
+    expect(container.querySelectorAll('.st-files .st-row').length).toBeGreaterThan(1);
+  });
+
+  it('a Read by filter hides the files no selected tool reads; its chip removes it', async () => {
+    filesResponse = { status: 200, body: { files: FILES } };
+    const { container } = renderAt('pivot=files');
+    await waitFor(() => expect(container.textContent).not.toContain('File details are loading'));
+    fireEvent.click(container.querySelector('.st-nav__item[data-tool="codex-cli"]'));
+    expect(new URLSearchParams(window.location.search).get('tool')).toBe('codex-cli');
+    const paths = [...container.querySelectorAll('.st-files .st-row')].map(r => r.dataset.path);
+    expect(paths).toContain(PROJ + '/AGENTS.md');
+    expect(paths).toContain(CODEX);
+    expect(paths).not.toContain(PROJ + '/.claude/agents/rev.md');
+    expect(paths).not.toContain(CLAUDE_USER);
+    // Multi-select: a second tool adds its files.
+    fireEvent.click(container.querySelector('.st-nav__item[data-tool="claude-code"]'));
+    expect(new URLSearchParams(window.location.search).get('tool')).toBe('codex-cli,claude-code');
+    expect([...container.querySelectorAll('.st-files .st-row')].map(r => r.dataset.path)).toContain(CLAUDE_USER);
+    fireEvent.click(container.querySelector('[data-chip="tool:claude-code"]'));
+    fireEvent.click(container.querySelector('[data-chip="tool:codex-cli"]'));
+    expect(container.querySelector('[data-testid="st-file-chips"]')).toBeNull();
+    expect(new URLSearchParams(window.location.search).get('tool')).toBeNull();
+  });
+
+  it('filters by purpose, scope, git and recent change, with counts', async () => {
+    filesResponse = { status: 200, body: { files: FILES } };
+    const { container } = renderAt('pivot=files');
+    await waitFor(() => expect(container.textContent).not.toContain('File details are loading'));
+    const rows = () => [...container.querySelectorAll('.st-files .st-row')].map(r => r.dataset.path);
+    expect(container.querySelector('.st-nav__item[data-purpose="skills"] .st-nav__n').textContent).toBe('1');
+    fireEvent.click(container.querySelector('.st-nav__item[data-recent]'));
+    expect(rows()).toEqual([HOME + '/.claude/skills/t/SKILL.md']);
+    fireEvent.click(container.querySelector('.st-nav__item[data-recent]'));
+    fireEvent.click(container.querySelector('.st-nav__item[data-git="untracked"]'));
+    expect(rows()).toEqual([PROJ + '/AGENTS.md']);
+    fireEvent.click(container.querySelector('.st-nav__item[data-git="tracked"]'));
+    expect(rows().sort()).toEqual([PROJ + '/.claude/agents/rev.md', PROJ + '/AGENTS.md']);
+    fireEvent.click(container.querySelector('.st-nav__item[data-purpose="agents"]'));
+    expect(rows()).toEqual([PROJ + '/.claude/agents/rev.md']);
+    fireEvent.click(container.querySelector('.st-nav__item[data-scope="project"]'));
+    expect(rows()).toEqual([PROJ + '/.claude/agents/rev.md']);
+    fireEvent.click([...container.querySelectorAll('.st-link')].find(b => b.textContent === 'Clear filters'));
+    expect(rows().length).toBeGreaterThan(3);
+  });
+
+  it('the name opens the file at once; a row click fills the inspector, whose Open file goes to the source', async () => {
+    filesResponse = { status: 200, body: { files: FILES } };
+    const { container, openFile } = renderAt('pivot=files');
+    await waitFor(() => expect(container.textContent).not.toContain('File details are loading'));
+    const row = container.querySelector(`.st-row[data-path="${PROJ}/AGENTS.md"]`);
+    fireEvent.click(row.querySelector('.st-fname'));
+    expect(openFile).toHaveBeenCalledWith(PROJ + '/AGENTS.md', 0);
+    expect(container.querySelector('[data-testid="st-inspector-file"]')).toBeNull();
+    fireEvent.click(row);
+    const insp = container.querySelector('[data-testid="st-inspector-file"]');
+    for (const t of [PROJ + '/AGENTS.md', 'Instructions', 'project', 'untracked', '2KB', 'always', 'Claude Code', 'Codex CLI']) expect(insp.textContent).toContain(t);
+    openFile.mockClear();
+    fireEvent.click([...insp.querySelectorAll('.st-btn')].find(b => b.textContent === 'Open file'));
+    expect(openFile).toHaveBeenCalledWith(PROJ + '/AGENTS.md', 0);
   });
 
   it('renders from the tool records when the files endpoint is missing', async () => {
@@ -233,7 +367,7 @@ describe('Findings', () => {
       ],
       sources: [], effective_models: {}, transcripts_read: 0,
     };
-    const { container, getByText, openViewer } = renderAt('pivot=findings');
+    const { container, getByText, openFile } = renderAt('pivot=findings');
     await waitFor(() => expect(container.querySelector('tbody[data-rule="differs-from-picker"]')).toBeTruthy());
     const big = container.querySelector('tbody[data-rule="differs-from-picker"]');
     expect(big.querySelector('.st-group').textContent).toContain('Differs from picker');
@@ -247,7 +381,33 @@ describe('Findings', () => {
     fireEvent.click(getByText(/2 more/));
     expect(container.querySelector('tbody[data-rule="differs-from-picker"]').querySelectorAll('.st-row').length).toBe(7);
     fireEvent.click(container.querySelector('tbody[data-rule="html-comment"]').querySelector('.st-chip--btn'));
-    expect(openViewer).toHaveBeenCalledWith(CODEX, { line: 2 });
+    expect(openFile).toHaveBeenCalledWith(CODEX, 2);
+  });
+
+  it('shows the source scan state, and Rescan asks the source', async () => {
+    const rescan = vi.fn();
+    const scanning = { list: [], audit: null, loading: true, error: null, scan: { step: 'reading transcripts', elapsed_s: 4.2 }, rescan };
+    const { container, rerender } = renderAt('pivot=findings', { findings: scanning });
+    const note = container.querySelector('[data-state="scanning"]');
+    expect(note.textContent).toContain('reading transcripts, 4 s');
+    expect(container.querySelector('[data-kpi="agents"]').parentElement.textContent).toContain('… findings');
+    // The scan ends: the results show, and Rescan goes to the source.
+    const done = { ...scanning, loading: false, scan: null, audit: { findings: [{ rule: 'a', severity: 'low', tool: 'claude-code', path: CLAUDE_USER, line: 1, why: 'x' }], incomplete: ['transcripts'] } };
+    rerender(html`<${SettingsWorkspace} source=${makeSource({ findings: done })}/>`);
+    expect(container.querySelector('tbody[data-rule="a"]')).toBeTruthy();
+    expect(container.textContent).toContain('The scan reached its time limit and skipped: transcripts.');
+    fireEvent.click([...container.querySelectorAll('.st-chip--btn')].find(b => b.textContent === 'Rescan'));
+    expect(rescan).toHaveBeenCalledTimes(1);
+    // A failed scan with no results shows the error and a Retry.
+    rerender(html`<${SettingsWorkspace} source=${makeSource({ findings: { audit: null, loading: false, error: 'boom', rescan } })}/>`);
+    expect(container.querySelector('[role="alert"]').textContent).toContain('The context audit failed: boom');
+    fireEvent.click(container.querySelector('[role="alert"] .st-btn'));
+    expect(rescan).toHaveBeenCalledTimes(2);
+  });
+
+  it('has no Rescan button when the source cannot rescan', () => {
+    const { container } = renderAt('pivot=findings', { findings: { audit: { findings: [] }, loading: false } });
+    expect([...container.querySelectorAll('button')].some(b => b.textContent === 'Rescan')).toBe(false);
   });
 
   it('scopes findings to the tool filter', async () => {
@@ -347,14 +507,27 @@ describe('Scope fallback when rows have no scope', () => {
 });
 
 describe('File viewer at a line', () => {
-  it('a set-in click calls openViewer with the line', () => {
-    const { container, openViewer } = renderAt('tool=vscode');
+  it('a set-in click calls the source openFile with the line', () => {
+    const { container, openFile } = renderAt('tool=vscode');
     fireEvent.click(rowByKey(container, 'chat.tools.global.autoApprove').querySelector('.st-src'));
-    expect(openViewer).toHaveBeenCalledWith(VS_USER, { line: 412 });
+    expect(openFile).toHaveBeenCalledWith(VS_USER, 412);
     // The inspector action opens the same place.
     fireEvent.click(rowByKey(container, 'chat.tools.global.autoApprove'));
     fireEvent.click([...container.querySelectorAll('.st-btn')].find(b => b.textContent === 'Open settings.json at line 412'));
-    expect(openViewer).toHaveBeenLastCalledWith(VS_USER, { line: 412 });
+    expect(openFile).toHaveBeenLastCalledWith(VS_USER, 412);
+  });
+
+  it('TabToolConfig opens the file viewer of the older screens, with the line', () => {
+    const openViewer = vi.fn();
+    const { container } = render(html`<${SnapContext.Provider} value=${{ snap: SNAP, openViewer, enabledTools: null }}>
+      <${TabToolConfig}/>
+    </${SnapContext.Provider}>`);
+    fireEvent.click(container.querySelector('.st-nav__item[data-tool="vscode"]'));
+    fireEvent.click(rowByKey(container, 'chat.tools.global.autoApprove').querySelector('.st-src'));
+    expect(openViewer).toHaveBeenCalledWith(VS_USER, { line: 412 });
+    fireEvent.click(rowByKey(container, 'chat.agent.maxRequests'));
+    fireEvent.click([...container.querySelectorAll('.st-btn')].find(b => b.textContent === 'Open settings.json at line 20'));
+    expect(openViewer).toHaveBeenLastCalledWith(VS_USER, { line: 20 });
   });
 
   it('FileViewer shows every line, in the source view, with the line highlighted', async () => {
@@ -574,7 +747,7 @@ describe('Agents', () => {
   });
 
   it('opens the agent inspector with the model decision and the files', () => {
-    const { container, openViewer } = renderAt('tool=claude-code', { snap: SNAP2 });
+    const { container, openFile } = renderAt('tool=claude-code', { snap: SNAP2 });
     fireEvent.click(rowByKey(container, 'agent/reviewer'));
     const insp = container.querySelector('[data-testid="st-inspector-agent"]');
     expect(insp).toBeTruthy();
@@ -589,7 +762,7 @@ describe('Agents', () => {
     const btn = [...insp.querySelectorAll('.st-btn--primary')].find(b => b.textContent === 'Change model…');
     expect(btn.disabled).toBe(true);
     fireEvent.click(insp.querySelector('[aria-label="Open reviewer.md at line 4"]'));
-    expect(openViewer).toHaveBeenLastCalledWith(AGENT_DIR + 'reviewer.md', { line: 4 });
+    expect(openFile).toHaveBeenLastCalledWith(AGENT_DIR + 'reviewer.md', 4);
   });
 
   it('names the shared model in the navigator when every agent runs on it', () => {

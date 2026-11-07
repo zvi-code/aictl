@@ -2013,3 +2013,60 @@ class TestSettingsFilesAPI:
         files = {f["path"]: f for f in _get_json(f"{url}/api/settings/files")["files"]}
         assert files[str(p["proj"])]["git_state"] == "tracked"
         assert files[str(p["user"])]["git_state"] == "outside-repo"
+
+
+class TestSettingsToolsAPI:
+    """The settings screen's own data: complete records, while the snapshot carries only set knobs."""
+
+    @staticmethod
+    def _records():
+        rows = [
+            {"key": "model", "label": "Model", "value": "opus", "set": True, "source": "/x/settings.json"},
+            {"key": "effortLevel", "label": "Reasoning effort", "value": "high", "set": False, "source": ""},
+        ]
+        return [{"tool": "claude-code", "sections": [{"id": "model", "title": "Model", "rows": rows}], "scopes": []}]
+
+    def test_slim_drops_only_unset_rows(self):
+        from aictl.orchestrator import slim_tool_configs
+
+        slim = slim_tool_configs(self._records())
+        keys = [r["key"] for sec in slim[0]["sections"] for r in sec["rows"]]
+        assert keys == ["model"]
+        # The input is left alone.
+        assert len(self._records()[0]["sections"][0]["rows"]) == 2
+
+    def test_slim_keeps_records_without_sections(self):
+        from aictl.orchestrator import slim_tool_configs
+
+        assert slim_tool_configs([{"tool": "copilot365", "hints": ["x"]}]) == [{"tool": "copilot365", "hints": ["x"]}]
+
+    def test_endpoint_returns_full_records_and_labels(self, populated_db, tmp_path, monkeypatch):
+        from aictl import orchestrator
+        from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
+
+        monkeypatch.setattr(orchestrator, "_FULL_TOOL_CONFIGS", self._records())
+        snap = _make_snapshot()
+        snap.tool_configs = orchestrator.slim_tool_configs(self._records())
+        from aictl.dashboard.models import DashboardTool
+
+        snap.tools = [DashboardTool(tool="claude-code", label="Claude Code")]
+        snap.live_monitor = {"diagnostics": {"process:psutil": {"status": "active"}}, "workspace_paths": [str(tmp_path)]}
+        store = SnapshotStore(db=populated_db)
+        store.update(snap)
+        srv = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, AllowedPaths(), str(tmp_path))
+        thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{srv.server_address[1]}"
+            data = _get_json(f"{url}/api/settings/tools")
+            assert set(data) == {"generated_at", "tools", "tool_configs", "monitor"}
+            assert data["tools"] == [{"tool": "claude-code", "label": "Claude Code"}]
+            keys = [r["key"] for sec in data["tool_configs"][0]["sections"] for r in sec["rows"]]
+            assert keys == ["model", "effortLevel"]
+            assert data["monitor"]["workspace_paths"] == [str(tmp_path)]
+            assert data["monitor"]["diagnostics"]["process:psutil"]["status"] == "active"
+            snap_keys = [r["key"] for sec in _get_json(f"{url}/api/snapshot")["tool_configs"][0]["sections"] for r in sec["rows"]]
+            assert snap_keys == ["model"]
+        finally:
+            srv.shutdown()
+            srv.server_close()

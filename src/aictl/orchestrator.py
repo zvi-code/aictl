@@ -218,6 +218,29 @@ class RefreshLoop(threading.Thread):
 # ─── Snapshot collection ─────────────────────────────────────────
 
 
+# The last complete tool configuration records, with every documented knob.
+# The snapshot carries only the knobs that a file sets; the settings API serves these.
+_FULL_TOOL_CONFIGS: list[dict] = []
+
+
+def full_tool_configs() -> list[dict]:
+    """The complete tool configuration records from the last snapshot build."""
+    return list(_FULL_TOOL_CONFIGS)
+
+
+def slim_tool_configs(configs: list[dict]) -> list[dict]:
+    """The same records without the rows for knobs that no file sets."""
+    out = []
+    for cfg in configs:
+        sections = []
+        for sec in cfg.get("sections") or []:
+            rows = [r for r in sec.get("rows") or [] if r.get("set") is not False]
+            if rows:
+                sections.append({**sec, "rows": rows})
+        out.append({**cfg, "sections": sections} if "sections" in cfg else dict(cfg))
+    return out
+
+
 def _cached(cache: dict | None, key: str, ttl: float, produce):
     """Return ``produce()``, reusing the value in ``cache`` for ``ttl`` seconds."""
     if cache is None:
@@ -295,6 +318,8 @@ def collect(
     tool_telemetry = [r.to_dict() for r in telemetry_reports]
     agent_teams = scan_agent_teams(root_path)
     tool_configs = _cached(cache, "tool_configs", 300.0, lambda: [c.to_dict() for c in collect_tool_configs(root_path)])
+    _FULL_TOOL_CONFIGS[:] = tool_configs
+    tool_configs = slim_tool_configs(tool_configs)
     _merge_telemetry_into_tools(tools, telemetry_reports)
 
     # Emit enrichment data through sink

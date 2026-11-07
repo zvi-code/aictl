@@ -1,4 +1,4 @@
-import{x as U,m as n,T as w}from"./index-DyDyJAkK.js";import{S as V,u as X,P as q,p as G,s as J,M as Q,a as Y,C as j}from"./app-CcuDFzdW.js";import{as as Z,at as tt,au as et,av as at,af as st,r as s,z as M,X as ot,C as nt,U as lt,v as rt,L as it,O as dt}from"./useSse-DFs1a0pz.js";import{D as ct}from"./DataTable-B86fVd2p.js";import{i as pt,c as ht}from"./models-DHnW0Za4.js";import"./TextView-DRRCCuem.js";const gt="The server answered for a different tool selection. Restart the aictl server so it applies the tool filter.",f=["var(--green)","var(--model-7)","var(--orange)","var(--red)","var(--model-5)","var(--yellow)","var(--accent)","var(--model-8)"];function z({always:a,onDemand:y,conditional:p,never:h,total:d}){if(!d)return null;const v=$=>($/d*100).toFixed(1)+"%";return n`<div class="overflow-hidden" style="display:flex;height:10px;border-radius:5px;background:var(--border)">
+import{x as U,m as n,T as w}from"./index-COdGgaml.js";import{S as V,u as q,P as G,p as J,s as Q,M as X,C as L}from"./app-2zqrKZhA.js";import{at as Y,au as Z,av as tt,aw as et,ag as at,v as s,A as O,W as st,C as ot,T as nt,w as lt,K as rt,M as it}from"./useSse-BA3xgPtb.js";import{D as dt}from"./DataTable-6LBmy4vf.js";import{i as ct,c as pt}from"./models-DHnW0Za4.js";import{T as ht}from"./ToolScopeEmpty-sHZab3hi.js";import"./TextView-BEN-kPtl.js";const gt="The server answered for a different tool selection. Restart the aictl server so it applies the tool filter.",f=["var(--green)","var(--model-7)","var(--orange)","var(--red)","var(--model-5)","var(--yellow)","var(--accent)","var(--model-8)"];function z({always:a,onDemand:y,conditional:p,never:h,total:d}){if(!d)return null;const v=$=>($/d*100).toFixed(1)+"%";return n`<div class="overflow-hidden" style="display:flex;height:10px;border-radius:5px;background:var(--border)">
     ${a>0&&n`<div style="width:${v(a)};height:100%;background:var(--green)" title="Always loaded: ${s(a)}"></div>`}
     ${y>0&&n`<div style="width:${v(y)};height:100%;background:var(--yellow)" title="On-demand: ${s(y)}"></div>`}
     ${p>0&&n`<div style="width:${v(p)};height:100%;background:var(--orange)" title="Conditional: ${s(p)}"></div>`}
@@ -8,15 +8,15 @@ import{x as U,m as n,T as w}from"./index-DyDyJAkK.js";import{S as V,u as X,P as 
     <span><span style=${a("var(--yellow)")}></span> on-demand</span>
     <span><span style=${a("var(--orange)")}></span> conditional</span>
     <span><span style=${a("var(--fg2)","opacity:0.3")}></span> never sent</span>
-  </span>`}function ft(){const{snap:a,history:y,enabledTools:p}=U(V),h=X(()=>tt(et(p)),[Z(p)],{pollMs:6e4}),d=h.data&&at(h.data,p)?h.data:null;if(!d){const t=!!h.data;return n`<${q} status=${t?h.loading?"loading":"error":G(h)}
+  </span>`}function $t(){const{snap:a,history:y,enabledTools:p}=U(V),h=q(()=>Z(tt(p)),[Y(p)],{pollMs:6e4}),d=h.data&&et(h.data,p)?h.data:null;if(!d){const t=!!h.data;return n`<${G} status=${t?h.loading?"loading":"error":J(h)}
       error=${t&&!h.error?gt:h.error} onRetry=${h.reload}
       label="token budget" skeletonHeight="240px" emptyTitle="No budget data"
-      emptyHint="The server returned nothing for /api/budget. It fills after the first scan of AI context files."/>`}const v=it(p),$=t=>dt(t,p),T=w(()=>{const t=(a==null?void 0:a.tool_configs)||[];for(const e of(a==null?void 0:a.tools)||[]){const r=t.find(l=>l.tool===e.tool&&l.model);if(r)return r.model}for(const e of t)if(e.model&&pt(e.model))return e.model;return""},[a]),C=ht(T),E=d.always_loaded_tokens||0,L=d.total_potential_tokens||0,_=E/C*100,k=L/C*100,A=w(()=>{if(!a)return{};const t={};return a.tools.forEach(e=>{e.tool==="aictl"||!e.token_breakdown||!e.token_breakdown.total||(t[e.tool]=e.token_breakdown)}),t},[a]),m=w(()=>a!=null&&a.tool_telemetry?a.tool_telemetry.filter(t=>$(t.tool)):[],[a,p]),D=w(()=>{if(!a)return[];const t={};return a.tools.forEach(e=>{e.tool==="aictl"||!$(e.tool)||(e.files||[]).forEach(r=>{const l=r.kind||"other";t[l]||(t[l]={kind:l,count:0,tokens:0,size:0,always:0,onDemand:0,conditional:0,never:0}),t[l].count++,t[l].tokens+=r.tokens,t[l].size+=r.size;const i=(r.sent_to_llm||"").toLowerCase();i==="yes"?t[l].always+=r.tokens:i==="on-demand"?t[l].onDemand+=r.tokens:i==="conditional"||i==="partial"?t[l].conditional+=r.tokens:t[l].never+=r.tokens})}),Object.values(t).sort((e,r)=>r.tokens-e.tokens)},[a,p]),g=w(()=>{if(!(a!=null&&a.tool_telemetry))return null;const t={},e={};a.tool_telemetry.filter(c=>$(c.tool)).forEach(c=>{(c.daily||[]).forEach(o=>{if(o.date&&(t[o.date]||(t[o.date]={}),e[o.date]||(e[o.date]={}),o.tokens_by_model&&Object.entries(o.tokens_by_model).forEach(([u,O])=>{t[o.date][u]=(t[o.date][u]||0)+O}),o.model)){const u=o.model,O=(o.input_tokens||0)+(o.output_tokens||0);t[o.date][u]=(t[o.date][u]||0)+O,e[o.date][u]||(e[o.date][u]={input:0,output:0,cache_read:0,cache_creation:0}),e[o.date][u].input+=o.input_tokens||0,e[o.date][u].output+=o.output_tokens||0,e[o.date][u].cache_read+=o.cache_read_tokens||0,e[o.date][u].cache_creation+=o.cache_creation_tokens||0}})});const r=new Date,l=[];for(let c=6;c>=0;c--){const o=new Date(r);o.setDate(o.getDate()-c),l.push(o.toLocaleDateString("en-CA"))}const i=l.filter(c=>t[c]&&Object.values(t[c]).some(o=>o>0));if(!i.length)return null;const b=[...new Set(i.flatMap(c=>Object.keys(t[c]||{})))],x=Math.max(...i.map(c=>b.reduce((o,u)=>o+((t[c]||{})[u]||0),0)),1),H=i.some(c=>Object.keys(e[c]||{}).length>0);return{dates:i,models:b,byDate:t,byDateModel:e,maxTotal:x,hasDetail:H}},[a,p]),S=!v&&y&&y.ts&&y.ts.length>=2?[y.ts,y.live_tokens||y.ts.map(()=>0)]:null,B=v?((a==null?void 0:a.tools)||[]).filter(t=>t.tool!=="aictl").reduce((t,e)=>t+st(e.live),0):(a==null?void 0:a.total_live_estimated_tokens)||0,I=m.reduce((t,e)=>t+(e.input_tokens||0),0),P=m.reduce((t,e)=>t+(e.output_tokens||0),0),R=m.reduce((t,e)=>t+(e.cache_read_tokens||0),0),F=m.reduce((t,e)=>t+(e.cache_creation_tokens||0),0),N=m.reduce((t,e)=>t+(e.total_sessions||0),0),W=J(m);return n`<div class="budget-grid">
+      emptyHint="The server returned nothing for /api/budget. It fills after the first scan of AI context files."/>`}const v=rt(p),$=t=>it(t,p),T=w(()=>{const t=(a==null?void 0:a.tool_configs)||[];for(const e of(a==null?void 0:a.tools)||[]){const r=t.find(l=>l.tool===e.tool&&l.model);if(r)return r.model}for(const e of t)if(e.model&&ct(e.model))return e.model;return""},[a]),C=pt(T),E=d.always_loaded_tokens||0,j=d.total_potential_tokens||0,_=E/C*100,k=j/C*100,A=w(()=>{if(!a)return{};const t={};return a.tools.forEach(e=>{e.tool==="aictl"||!e.token_breakdown||!e.token_breakdown.total||(t[e.tool]=e.token_breakdown)}),t},[a]),m=w(()=>a!=null&&a.tool_telemetry?a.tool_telemetry.filter(t=>$(t.tool)):[],[a,p]),D=w(()=>{if(!a)return[];const t={};return a.tools.forEach(e=>{e.tool==="aictl"||!$(e.tool)||(e.files||[]).forEach(r=>{const l=r.kind||"other";t[l]||(t[l]={kind:l,count:0,tokens:0,size:0,always:0,onDemand:0,conditional:0,never:0}),t[l].count++,t[l].tokens+=r.tokens,t[l].size+=r.size;const i=(r.sent_to_llm||"").toLowerCase();i==="yes"?t[l].always+=r.tokens:i==="on-demand"?t[l].onDemand+=r.tokens:i==="conditional"||i==="partial"?t[l].conditional+=r.tokens:t[l].never+=r.tokens})}),Object.values(t).sort((e,r)=>r.tokens-e.tokens)},[a,p]),g=w(()=>{if(!(a!=null&&a.tool_telemetry))return null;const t={},e={};a.tool_telemetry.filter(c=>$(c.tool)).forEach(c=>{(c.daily||[]).forEach(o=>{if(o.date&&(t[o.date]||(t[o.date]={}),e[o.date]||(e[o.date]={}),o.tokens_by_model&&Object.entries(o.tokens_by_model).forEach(([u,M])=>{t[o.date][u]=(t[o.date][u]||0)+M}),o.model)){const u=o.model,M=(o.input_tokens||0)+(o.output_tokens||0);t[o.date][u]=(t[o.date][u]||0)+M,e[o.date][u]||(e[o.date][u]={input:0,output:0,cache_read:0,cache_creation:0}),e[o.date][u].input+=o.input_tokens||0,e[o.date][u].output+=o.output_tokens||0,e[o.date][u].cache_read+=o.cache_read_tokens||0,e[o.date][u].cache_creation+=o.cache_creation_tokens||0}})});const r=new Date,l=[];for(let c=6;c>=0;c--){const o=new Date(r);o.setDate(o.getDate()-c),l.push(o.toLocaleDateString("en-CA"))}const i=l.filter(c=>t[c]&&Object.values(t[c]).some(o=>o>0));if(!i.length)return null;const b=[...new Set(i.flatMap(c=>Object.keys(t[c]||{})))],x=Math.max(...i.map(c=>b.reduce((o,u)=>o+((t[c]||{})[u]||0),0)),1),H=i.some(c=>Object.keys(e[c]||{}).length>0);return{dates:i,models:b,byDate:t,byDateModel:e,maxTotal:x,hasDetail:H}},[a,p]),S=!v&&y&&y.ts&&y.ts.length>=2?[y.ts,y.live_tokens||y.ts.map(()=>0)]:null,B=v?((a==null?void 0:a.tools)||[]).filter(t=>t.tool!=="aictl").reduce((t,e)=>t+at(e.live),0):(a==null?void 0:a.total_live_estimated_tokens)||0,I=m.reduce((t,e)=>t+(e.input_tokens||0),0),P=m.reduce((t,e)=>t+(e.output_tokens||0),0),R=m.reduce((t,e)=>t+(e.cache_read_tokens||0),0),F=m.reduce((t,e)=>t+(e.cache_creation_tokens||0),0),N=m.reduce((t,e)=>t+(e.total_sessions||0),0),W=Q(m);return n`<div class="budget-grid">
     <!-- Live sparkline + context window side by side -->
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-6);margin-bottom:var(--sp-6)">
       ${S||v?n`<div class="budget-card">
         <h3 class="text-accent" style="margin-bottom:var(--sp-3)">Live Token Usage</h3>
-        ${S&&n`<${Q} data=${S} color="var(--green)" height=${60}
+        ${S&&n`<${X} data=${S} color="var(--green)" height=${60}
           ariaLabel="Live token usage chart"/>`}
         <div class="text-muted" style="font-size:var(--fs-base);margin-top:var(--sp-2)">
           Current: ${s(B)} estimated tokens${v?" (selected tools; the trend chart has no per-tool split, so it shows with All tools)":""}
@@ -30,7 +30,7 @@ import{x as U,m as n,T as w}from"./index-DyDyJAkK.js";import{S as V,u as X,P as 
         <div style="margin-bottom:var(--sp-3)">
           <div class="flex-between text-sm" style="margin-bottom:2px">
             <span>Always loaded: ${s(E)} of ${s(C)}</span>
-            <span class="text-bolder" style="color:${_>80?"var(--orange)":_>50?"var(--yellow)":"var(--green)"}">${M(_)}</span>
+            <span class="text-bolder" style="color:${_>80?"var(--orange)":_>50?"var(--yellow)":"var(--green)"}">${O(_)}</span>
           </div>
           <div class="overflow-hidden" style="height:8px;border-radius:4px;background:var(--border)">
             <div style="height:100%;width:${Math.min(_,100).toFixed(1)}%;background:var(--green);border-radius:4px"></div>
@@ -38,8 +38,8 @@ import{x as U,m as n,T as w}from"./index-DyDyJAkK.js";import{S as V,u as X,P as 
         </div>
         <div style="margin-bottom:var(--sp-3)">
           <div class="flex-between text-sm" style="margin-bottom:2px">
-            <span>Max potential: ${s(L)}</span>
-            <span class="text-bolder" style="color:${k>100?"var(--red)":"var(--fg2)"}">${M(k)}${k>100?" ⚠":""}</span>
+            <span>Max potential: ${s(j)}</span>
+            <span class="text-bolder" style="color:${k>100?"var(--red)":"var(--fg2)"}">${O(k)}${k>100?" ⚠":""}</span>
           </div>
           <div class="overflow-hidden" style="height:6px;border-radius:3px;background:var(--border)">
             <div style="height:100%;width:${Math.min(k,100).toFixed(1)}%;background:${k>100?"var(--red)":"var(--fg2)"};opacity:0.5;border-radius:3px"></div>
@@ -58,7 +58,7 @@ import{x as U,m as n,T as w}from"./index-DyDyJAkK.js";import{S as V,u as X,P as 
       </div>
     </div>
 
-    ${v&&!m.length&&!D.length&&!g&&n`<${Y} enabledTools=${p} snap=${a} what="token usage and categories"/>`}
+    ${v&&!m.length&&!D.length&&!g&&n`<${ht} enabledTools=${p} snap=${a} what="token usage and categories"/>`}
 
     <!-- Daily token usage -->
     ${g&&n`<div class="budget-card mb-md">
@@ -102,18 +102,18 @@ import{x as U,m as n,T as w}from"./index-DyDyJAkK.js";import{S as V,u as X,P as 
             <th>Tool</th><th>Source</th>
             <th style="text-align:right">Input</th><th style="text-align:right">Output</th>
             <th style="text-align:right">Cache R</th><th style="text-align:right">Cache W</th>
-            <th style="text-align:right">Sessions</th><th style="text-align:right" title=${ot}>Est. cost</th>
+            <th style="text-align:right">Sessions</th><th style="text-align:right" title=${st}>Est. cost</th>
             <th style="width:100px">Context Split</th>
           </tr></thead>
           <tbody>${m.map(t=>{const e=A[t.tool];return n`<tr key=${t.tool}>
-              <td style="white-space:nowrap"><span class="dot" style=${"background:"+(nt[t.tool]||"var(--fg2)")+";margin-right:var(--sp-2)"}></span>${lt(t.tool,a)}</td>
-              <td><span class="badge" style="font-size:var(--fs-2xs)">${t.source}</span> <span class="text-muted">${M(t.confidence*100)}</span>${t.as_of?n` <span class="text-muted" data-testid="telemetry-as-of" title="This source is a cache; it was last computed on this date, so later usage is not in these totals.">as of ${t.as_of}</span>`:""}</td>
+              <td style="white-space:nowrap"><span class="dot" style=${"background:"+(ot[t.tool]||"var(--fg2)")+";margin-right:var(--sp-2)"}></span>${nt(t.tool,a)}</td>
+              <td><span class="badge" style="font-size:var(--fs-2xs)">${t.source}</span> <span class="text-muted">${O(t.confidence*100)}</span>${t.as_of?n` <span class="text-muted" data-testid="telemetry-as-of" title="This source is a cache; it was last computed on this date, so later usage is not in these totals.">as of ${t.as_of}</span>`:""}</td>
               <td style="text-align:right" class="text-bold">${s(t.input_tokens||0)}</td>
               <td style="text-align:right" class="text-bold">${s(t.output_tokens||0)}</td>
               <td style="text-align:right" class="text-muted">${s(t.cache_read_tokens||0)}</td>
               <td style="text-align:right" class="text-muted">${s(t.cache_creation_tokens||0)}</td>
               <td style="text-align:right">${s(t.total_sessions||0)}</td>
-              <td style="text-align:right"><${j} row=${t}/></td>
+              <td style="text-align:right"><${L} row=${t}/></td>
               <td>${e?n`<${z} always=${e.always_loaded||0} onDemand=${e.on_demand||0}
                 conditional=${e.conditional||0} never=${e.never_sent||0} total=${e.total||1}/>`:null}</td>
             </tr>`})}
@@ -124,7 +124,7 @@ import{x as U,m as n,T as w}from"./index-DyDyJAkK.js";import{S as V,u as X,P as 
             <td style="text-align:right" class="text-muted">${s(R)}</td>
             <td style="text-align:right" class="text-muted">${s(F)}</td>
             <td style="text-align:right">${s(N)}</td>
-            <td style="text-align:right"><${j} row=${W}/></td>
+            <td style="text-align:right"><${L} row=${W}/></td>
             <td></td>
           </tr>`}</tbody>
         </table>
@@ -136,13 +136,13 @@ import{x as U,m as n,T as w}from"./index-DyDyJAkK.js";import{S as V,u as X,P as 
       <h3 class="text-accent" style="margin-bottom:var(--sp-4);display:flex;justify-content:space-between;align-items:baseline;gap:var(--sp-4);flex-wrap:wrap">By Category <${K}/></h3>
       <p class="text-muted text-xs" style="margin-bottom:var(--sp-3)" data-testid="budget-category-basis">
         Token figures estimate file size at about 4 bytes per token. The "Never" column holds files that are not sent to the model, such as transcripts.</p>
-      <${ct}
+      <${dt}
         ariaLabel="Per-category tokens"
         rowKey="kind"
         persistKey="budget-categories"
         data=${D}
-        columns=${[{accessorKey:"kind",header:"Category",cell:t=>rt(t)},{accessorKey:"count",header:"Files",align:"right"},{accessorKey:"always",header:"Always",align:"right",cell:t=>s(t||0)},{accessorKey:"onDemand",header:"On-Demand",align:"right",cell:t=>s(t||0)},{accessorKey:"conditional",header:"Conditional",align:"right",cell:t=>s(t||0)},{accessorKey:"never",header:"Never",align:"right",cell:t=>s(t||0)},{accessorKey:"tokens",header:"Total",align:"right",cell:t=>n`<span class="text-bold">${s(t||0)}</span>`},{accessorKey:"_dist",header:"Distribution",sortable:!1,cell:(t,e)=>n`<${z} always=${e.always} onDemand=${e.onDemand} conditional=${e.conditional} never=${e.never} total=${e.tokens||1}/>`,width:140}]}
+        columns=${[{accessorKey:"kind",header:"Category",cell:t=>lt(t)},{accessorKey:"count",header:"Files",align:"right"},{accessorKey:"always",header:"Always",align:"right",cell:t=>s(t||0)},{accessorKey:"onDemand",header:"On-Demand",align:"right",cell:t=>s(t||0)},{accessorKey:"conditional",header:"Conditional",align:"right",cell:t=>s(t||0)},{accessorKey:"never",header:"Never",align:"right",cell:t=>s(t||0)},{accessorKey:"tokens",header:"Total",align:"right",cell:t=>n`<span class="text-bold">${s(t||0)}</span>`},{accessorKey:"_dist",header:"Distribution",sortable:!1,cell:(t,e)=>n`<${z} always=${e.always} onDemand=${e.onDemand} conditional=${e.conditional} never=${e.never} total=${e.tokens||1}/>`,width:140}]}
         initialSort=${{id:"tokens",desc:!0}}
       />
     </div>`}
-  </div>`}export{ft as default};
+  </div>`}export{$t as default};

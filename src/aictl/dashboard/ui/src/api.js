@@ -459,6 +459,11 @@ export async function getSettingsFiles() {
   return fetchJson('/api/settings/files');
 }
 
+/** Every tool's settings record, the tool names and aictl's own collectors, for the Settings screen. */
+export async function getSettingsTools() {
+  return fetchJson('/api/settings/tools');
+}
+
 /** The hidden-context scan. It runs on the server's own thread, so this asks how far it is. */
 export async function getContextAudit(refresh = false, onProgress = null, { pollMs = 2000, maxMs = 600000, project = null } = {}) {
   const started = Date.now();

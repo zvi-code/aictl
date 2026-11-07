@@ -62,18 +62,26 @@ export function FindingsMain({ w }) {
     return html`<section class="st-main" aria-labelledby="st-main-title">
       <div class="st-bar"><h2 class="st-bar__title" id="st-main-title">Findings</h2></div>
       <p class="st-note st-red" role="alert">The context audit failed: ${w.auditError}
-        <button type="button" class="st-btn" onClick=${w.rescan}>Retry</button></p>
+        ${w.rescan && html` <button type="button" class="st-btn" onClick=${() => w.rescan()}>Retry</button>`}</p>
     </section>`;
   }
   const all = w.findings.filter(f => matchFinding(f, w.q));
   const groups = findingGroups(all).filter(g => !w.st.sec || g.rule === w.st.sec);
   const n = groups.reduce((s, g) => s + g.count, 0);
+  const scanning = w.auditStatus === 'loading';
+  const incomplete = w.audit?.incomplete || [];
+  const failed = w.audit?.failed_steps || [];
   return html`<section class="st-main" aria-labelledby="st-main-title">
     <div class="st-bar">
       <h2 class="st-bar__title" id="st-main-title">Findings</h2>
       <span class="st-bar__sub">${n} in ${groups.length} ${groups.length === 1 ? 'rule' : 'rules'} · hidden changes, conflicts and settings outside this project</span>
-      <button type="button" class="st-chip st-chip--btn st-bar__end" onClick=${w.rescan}>Rescan</button>
+      ${w.rescan && html`<button type="button" class="st-chip st-chip--btn st-bar__end" disabled=${scanning}
+        onClick=${() => w.rescan()}>${scanning ? 'Scanning…' : 'Rescan'}</button>`}
     </div>
+    ${scanning && html`<p class="st-note" role="status" data-state="rescanning">Scanning again…${w.scan ? ' ' + (w.scan.step || '') + (w.scan.elapsed_s != null ? ', ' + Math.round(w.scan.elapsed_s) + ' s' : '') : ''} The last results stay until it ends.</p>`}
+    ${w.auditStatus === 'error' && html`<p class="st-note st-red" role="alert">The last scan failed: ${w.auditError}. These are the earlier results.</p>`}
+    ${incomplete.length > 0 && html`<p class="st-note st-warn">The scan reached its time limit and skipped: ${incomplete.join(', ')}.</p>`}
+    ${failed.length > 0 && html`<p class="st-note st-warn">The scan could not read: ${failed.map(f => f.step + ' (' + f.error + ')').join(', ')}.</p>`}
     ${groups.length ? html`<table class="st-table st-findings">
       <thead><tr>
         <th scope="col" class="st-c-tool">Tool</th><th scope="col" class="st-c-where">Where</th>

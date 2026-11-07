@@ -2,19 +2,23 @@
 // Four pivots over the same settings: By tool, By topic, Files, Findings. A
 // navigator on the left, a table in the middle, an inspector on the right.
 // The pivot and the selection live in the URL query, so a link opens the same view.
-import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+// The data comes in a `source` prop, so the board and the older Configuration
+// screen can each give it their own records, file opener and audit:
+//   { toolConfigs, tools, monitor, root, enabledTools, toolName(id), openFile(path, line),
+//     recentFiles, findings: { audit, loading, error, scan, rescan } }
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { html } from 'htm/preact';
-import { SnapContext } from '../../context.js';
-import { getContextAudit, getSettingsFiles } from '../../api.js';
+import { getSettingsFiles } from '../../api.js';
 import { scopeAudit } from '../../utils/auditScope.js';
 import { isFiltered } from '../../utils/toolScope.js';
 import { writeUrl } from '../../hooks/urlState.js';
 import { isTypingTarget } from '../../hooks/useTabs.js';
-import { Icon, Segmented } from '../ui/index.js';
+import Icon from '../ui/Icon.js';
+import Segmented from '../ui/Segmented.js';
 import ToolScopeEmpty from '../ui/ToolScopeEmpty.js';
 import {
-  CLEAR_PARAMS, absentManaged, aictlEntry, isAgentRow, labelOf, mergeFiles, projectRoots, readSettingsUrl, rowFilter,
-  samePath, settingsParams, toolEntries, withFindingIds,
+  CLEAR_PARAMS, FILE_PARAMS, absentManaged, aictlEntry, labelOf, mergeFiles, projectRoots, readSettingsUrl, rowFilter,
+  samePath, settingsParams, settingsSummary, snapOf, toolEntries, withFindingIds,
 } from './model.js';
 import { ToolNav, ToolMain, AictlMain } from './ToolView.js';
 import { TopicNav, TopicMain } from './TopicView.js';
@@ -44,6 +48,9 @@ function useSettingsState() {
       for (const k of ['tool', 'sec', 'row']) if (!(k in patch)) next[k] = '';
     }
     if (patch.view && patch.view !== prev.view && !('scope' in patch)) next.scope = '';
+    if (patch.view && patch.view !== prev.view) {
+      for (const k of FILE_PARAMS) if (!(k in patch)) next[k] = k === 'recent' ? false : '';
+    }
     return next;
   }), []);
   useEffect(() => { writeUrl(settingsParams(st)); }, [st]);
@@ -71,25 +78,17 @@ function useFiles() {
   return res;
 }
 
-function useAudit() {
-  const [gen, setGen] = useState(0);
-  const [res, setRes] = useState({ status: 'loading', audit: null, scan: null, error: null });
-  useEffect(() => {
-    let live = true;
-    setRes(s => ({ ...s, status: 'loading', error: null }));
-    getContextAudit(gen > 0, scan => { if (live) setRes(s => ({ ...s, scan })); }).then(
-      audit => { if (live) setRes({ status: 'ready', audit, scan: null, error: null }); },
-      e => { if (live) setRes(s => ({ ...s, status: 'error', scan: null, error: String(e?.message || e) })); },
-    );
-    return () => { live = false; };
-  }, [gen]);
-  const rescan = useCallback(() => setGen(g => g + 1), []);
-  return { ...res, rescan };
+/** The audit state the Findings view reads: loading, error or ready, from the source's findings. */
+export function auditState(findings) {
+  const f = findings || {};
+  const audit = f.audit || null;
+  const status = f.loading ? 'loading' : f.error ? 'error' : audit || f.loading === false ? 'ready' : 'loading';
+  return { status, audit, scan: f.scan || null, error: f.error ? String(f.error) : null };
 }
 
-export default function SettingsWorkspace() {
-  const ctx = useContext(SnapContext) || {};
-  const { snap, openViewer, enabledTools = null, recentFiles } = ctx;
+export default function SettingsWorkspace({ source = {}, note = '' }) {
+  const { toolConfigs, tools, monitor, root, enabledTools = null, recentFiles, toolName, openFile, findings: sourceFindings } = source;
+  const snap = useMemo(() => snapOf({ toolConfigs, tools, monitor, root, enabledTools }), [toolConfigs, tools, monitor, root, enabledTools]);
   const [st, set] = useSettingsState();
   const [q, setQ] = useState('');
   const [nonDefault, setNonDefault] = useState(false);
@@ -97,7 +96,8 @@ export default function SettingsWorkspace() {
   const [drawer, setDrawer] = useState(false);
   const searchRef = useRef(null);
   const filesRes = useFiles();
-  const audit = useAudit();
+  const audit = auditState(sourceFindings);
+  const rescan = sourceFindings?.rescan;
 
   // `/` focuses this search box. It listens on window, after the header's own
   // `/` handler on document, so this box keeps the focus on this screen.
@@ -126,12 +126,15 @@ export default function SettingsWorkspace() {
   const findings = useMemo(() => withFindingIds(scoped?.findings || []), [scoped]);
 
   const openAt = useCallback((path, line = 0) => {
-    if (!path || !openViewer) return;
-    openViewer(path, line > 0 ? { line } : {});
-  }, [openViewer]);
+    if (!path || !openFile) return;
+    openFile(path, line > 0 ? line : 0);
+  }, [openFile]);
   const select = useCallback(patch => { set(patch); setDrawer(true); }, [set]);
   const closeDrawer = useCallback(() => setDrawer(false), []);
-  const labelFor = useCallback(id => labelOf(id, snap), [snap]);
+  const labelFor = useCallback((id) => {
+    const l = labelOf(id, snap);
+    return l === id && toolName ? toolName(id) : l;
+  }, [snap, toolName]);
   const scopesOf = useCallback(id => entries.find(e => e.id === id)?.scopes || [], [entries]);
   const mtimeOf = useCallback(path => {
     const f = files.find(x => samePath(x.path, path));
@@ -156,18 +159,13 @@ export default function SettingsWorkspace() {
 
   const w = {
     st, set, select, q, pass, passAll, passTool, showUnset: st.unset, scopesOf, managedAbsent, entries, aictl, toolId, files, filesStatus: filesRes.status,
-    findings, audit: scoped, auditStatus: audit.status, auditError: audit.error, scan: audit.scan, rescan: audit.rescan,
+    findings, audit: scoped, auditStatus: audit.status, auditError: audit.error, scan: audit.scan, rescan,
     selected, selectedFile, selectedFinding, openAt, labelOf: labelFor, mtimeOf, recentFiles,
     drawer, closeDrawer,
   };
 
-  const allRows = entries.flatMap(e => e.rows);
-  const totalRows = allRows.filter(r => !r.unset).length;
-  const totalAgents = allRows.filter(isAgentRow).length;
   // The unset toggle and count appear once the server says, per row, whether a file sets it.
-  const knowsSet = allRows.some(r => typeof r.set === 'boolean');
-  const totalUnset = allRows.filter(r => r.unset).length;
-  const totalRisky = entries.reduce((n, e) => n + e.risky, 0);
+  const { set: totalRows, agents: totalAgents, knowsSet, unset: totalUnset, risky: totalRisky } = settingsSummary(entries);
   const scopeEmpty = isFiltered(enabledTools) && !entries.some(e => e.id !== 'vscode');
 
   let nav;
@@ -215,6 +213,7 @@ export default function SettingsWorkspace() {
         <span><b>${audit.status === 'loading' && !audit.audit ? '…' : findings.length}</b> findings</span>
       </div>
     </div>
+    ${note && html`<p class="st-wsnote" data-testid="st-wsnote">${note}</p>`}
     ${scopeEmpty && html`<div class="st-scope-empty"><${ToolScopeEmpty} enabledTools=${enabledTools} snap=${snap} what="the settings"/></div>`}
     <div class="st-grid">
       <div class="st-col st-col--nav">${nav}</div>

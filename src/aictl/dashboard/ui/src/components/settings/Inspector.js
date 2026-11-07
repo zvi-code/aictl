@@ -5,7 +5,7 @@ import { fmtAgo, fmtSz } from '../../utils.js';
 import { baseName } from '../../utils/paths.js';
 import {
   agentDecision, findingTools, isAgentRow, isLockedEntry, isUnset, plainValue, samePath, scopeLabel, tildePath,
-  whyWins, writableScope, LOCATION_LABELS, ruleLabel,
+  whyWins, writableScope, LOCATION_LABELS, PURPOSE_LABELS, purposeOf, ruleLabel,
 } from './model.js';
 import { Value, ScopeChip, LockGlyph } from './Value.js';
 import { ToolChip, SetIn, UndocumentedChip } from './parts.js';
@@ -180,7 +180,7 @@ function FileInspector({ w, file }) {
     <h3 class="st-insp__title">${file.name}</h3>
     <div class="st-insp__key st-mono">${file.path}</div>
     <div class="st-insp__chips">
-      <span class="st-chip">${file.kind || 'other'}</span>
+      <span class="st-chip">${file.is_dir ? 'Watched folder' : PURPOSE_LABELS[purposeOf(file)]}</span>
       <${ScopeChip} scope=${file.scope}/>
       <span class="st-chip">${LOCATION_LABELS[file.location] || 'Other'}</span>
       ${file.tools.map(id => html`<${ToolChip} key=${id} id=${id} label=${w.labelOf(id)}/>`)}
@@ -194,9 +194,13 @@ function FileInspector({ w, file }) {
     </${Sec}>
     <${Sec} title="File">
       <dl class="st-insp__dl">
+        <dt>Path</dt><dd class="st-insp__path">${file.path}</dd>
+        <dt>Purpose</dt><dd>${file.is_dir ? 'Watched folder' : PURPOSE_LABELS[purposeOf(file)]}${file.kind && file.kind !== purposeOf(file) ? ' (' + file.kind + ')' : ''}</dd>
+        <dt>Scope</dt><dd>${file.scope || '—'}</dd>
         <dt>Git</dt><dd>${file.git_state || '—'}</dd>
-        <dt>Size</dt><dd>${file.bytes != null ? fmtSz(file.bytes) : '—'}</dd>
+        <dt>Size</dt><dd>${file.bytes != null && !file.is_dir ? fmtSz(file.bytes) : '—'}</dd>
         <dt>Last change</dt><dd>${file.mtime ? fmtAgo(file.mtime) : '—'}</dd>
+        ${file.mtime ? html`<dt>Modified</dt><dd>${new Date(file.mtime * 1000).toLocaleString()}</dd>` : null}
         ${file.loading && html`<dt>Loading</dt><dd>${file.loading}</dd>`}
         ${file.exists === false && html`<dt>State</dt><dd>missing</dd>`}
       </dl>

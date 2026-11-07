@@ -167,7 +167,7 @@ _GZIP_MEMO = _GzipMemo()
 
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 # These read whole conversations or any project, so they answer this machine only.
-_LOCAL_ONLY_ROUTES = ("/api/copilot-sessions", "/api/context-audit", "/api/effective-models", "/api/board", "/api/settings/files")
+_LOCAL_ONLY_ROUTES = ("/api/copilot-sessions", "/api/context-audit", "/api/effective-models", "/api/board", "/api/settings/files", "/api/settings/tools")
 
 
 def _local_request(client_host: str, host_header: str | None) -> bool:
@@ -606,6 +606,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._serve_context_audit()
         elif path == "/api/settings/files":
             self._serve_settings_files()
+        elif path == "/api/settings/tools":
+            self._serve_settings_tools()
         elif path.startswith("/api/file-writes"):
             self._serve_file_writes()
         elif path.startswith("/api/data-quality"):
