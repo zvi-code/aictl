@@ -1277,7 +1277,7 @@ class _Board:
             ):
                 scope.add(sid)
         if f.status != "all":
-            allowed = ACTIVE_STATUSES if f.status == "active" else (f.status,)
+            allowed = LIVE_STATUSES if f.status == "active" else (f.status,)
             scope = {sid for sid in scope if self.status.get(sid) in allowed}
         if f.q:
             scope &= self._matching_q(scope)

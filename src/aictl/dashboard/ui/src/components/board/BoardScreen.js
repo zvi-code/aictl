@@ -153,7 +153,7 @@ function FilterRow({ board, data, ctx, menu, act }) {
   const statusCounts = {};
   if (filters.status === 'all') {
     for (const a of data.agents) if (!a.parent_id) statusCounts[a.status] = (statusCounts[a.status] || 0) + 1;
-    statusCounts.active = (statusCounts.running || 0) + (statusCounts.looping || 0) + (statusCounts.waiting || 0);
+    statusCounts.active = (statusCounts.running || 0) + (statusCounts.looping || 0) + (statusCounts.waiting || 0) + (statusCounts.idle || 0);
   }
   const selValue = filters.sel ? stamp(filters.sel.since, true) + ' to ' + stamp(filters.sel.until, true) : '';
   const clearable = canClear(filters, tools);
