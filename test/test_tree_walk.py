@@ -359,6 +359,21 @@ def test_a_past_sessions_folder_gets_its_files_by_the_same_rule(tmp_path):
 # ── Lazy discovery in the daemon ────────────────────────────────────
 
 
+def test_a_past_sessions_repository_is_read_in_the_background_when_asked(tmp_path, monkeypatch):
+    """No active session works in the repository, so only the side panel's question can start its read."""
+    monkeypatch.setattr(tree_walk, "_run_background", lambda: None)  # the test runs the background pass itself
+    repo = _repo(tmp_path / "old")
+    _touch(repo / "AGENTS.md")
+    tree_walk._names({"AGENTS.md"}, ())  # the names the daemon's first listing asked for
+    tree_walk.set_lazy(True)
+    assert tree_walk.files_for_folder(repo)["read"] is False
+    assert tree_walk._key(repo) in tree_walk._asked
+    tree_walk._background_pass(repo)
+    found = tree_walk.files_for_folder(repo)
+    assert found["read"] is True and found["files"] == [str(repo / "AGENTS.md")]
+
+
+
 def test_lazy_start_reads_only_active_repositories(tmp_path, monkeypatch, git_calls):
     monkeypatch.setattr(tree_walk, "_run_background", lambda: None)  # the test runs the background pass itself
     active = _repo(tmp_path / "active")
