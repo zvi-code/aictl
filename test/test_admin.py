@@ -518,6 +518,45 @@ class TestCatalog:
         assert "42" in result.output
 
 
+class TestCatalogFiles:
+    """The shipped catalog describes the board, the only dashboard UI.
+
+    The old tab names survived in the YAML long after the tab shell was deleted,
+    because nothing compared the two.
+    """
+
+    BOARD_TABS = {
+        "Agents",
+        "Usage and cost",
+        "Prompts and skills",
+        "Context",
+        "Tools, failures and speed",
+        "Changes and testing",
+        "Machine",
+        "Settings in effect",
+        "Where the data comes from",
+        "Agent drawer",
+        "Settings",
+    }
+
+    @staticmethod
+    def _load(name):
+        import yaml
+
+        path = Path(__file__).resolve().parent.parent / "src" / "aictl" / "data" / name
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    def test_every_entry_belongs_to_a_board_tab(self):
+        tabs = {key: e["tab"] for key, e in self._load("datapoint-catalog.yaml").items()}
+        assert {k: t for k, t in tabs.items() if t not in self.BOARD_TABS} == {}
+
+    def test_every_entry_has_a_query_and_a_calc(self):
+        catalog = self._load("datapoint-catalog.yaml")
+        queries = self._load("datapoint-queries.yaml")
+        assert sorted(set(catalog) - set(queries)) == []
+        assert sorted(set(queries) - set(catalog)) == []
+        assert [k for k, q in queries.items() if not (q.get("query") and q.get("calc"))] == []
+
 
 class TestReinstallPackageSource:
     """pip and uv read different settings, so one source must reach both."""
