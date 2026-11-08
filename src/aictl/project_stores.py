@@ -779,6 +779,13 @@ class ProjectStores:
         with self._route_lock:
             return self._sessions.get(session_id)
 
+    def knows_session(self, session_id: str) -> bool:
+        """Whether a store holds *session_id* already, so a write for it does not place it."""
+        if not self._split:
+            return True
+        with self._route_lock:
+            return session_id in self._sessions
+
     def _move_session(self, session_id: str, src: str, dst: str) -> bool:
         """Move a session's rows from *src* to *dst*: it was placed before a row named its folder.
 

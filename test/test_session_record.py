@@ -338,6 +338,16 @@ def _seed_search(db, tmp_path) -> None:
     _session(conn, "s-old", "claude-code", "/p/alpha", NOW - 9000, NOW - 8000, input_tokens=100, output_tokens=10, cost_usd=0.5, tool_call_count=3)
     _session(conn, "s-mid", "copilot-cli", "/p/beta", NOW - 5000, NOW - 4000)
     _session(conn, "s-new", "copilot-cli", "/p/gamma", NOW - 1000)
+    # The board counts the facts, not the totals on the sessions row.
+    conn.execute(
+        "INSERT INTO requests (ts, session_id, tool, project_path, model, input_tokens, output_tokens, cost_usd) VALUES (?,?,?,?,?,?,?,?)",
+        (NOW - 8950, "s-old", "claude-code", "/p/alpha", "claude-sonnet-4-5", 100, 10, 0.5),
+    )
+    for k in range(3):
+        conn.execute(
+            "INSERT INTO tool_invocations (ts, session_id, tool, project_path, tool_name) VALUES (?,?,?,?,?)",
+            (NOW - 8940 + k, "s-old", "claude-code", "/p/alpha", "Bash"),
+        )
     conn.execute("INSERT INTO session_prompts (ts, session_id, agent_id, tool, text) VALUES (?, 's-old', '', 'claude-code', 'Refactor the parser')", (NOW - 8900,))
     conn.execute("INSERT INTO session_prompts (ts, session_id, agent_id, tool, text) VALUES (?, 's-old', '', 'claude-code', 'now add the widget')", (NOW - 8800,))
     conn.execute("INSERT INTO session_prompts (ts, session_id, agent_id, tool, text) VALUES (?, 's-mid', '', 'copilot-cli', 'Write a plan')", (NOW - 4900,))
@@ -350,6 +360,18 @@ def _seed_search(db, tmp_path) -> None:
     db.replace_session_artifacts("s-mid", "copilot-cli", "/state/s-mid", 1.0, [("/state/s-mid/files/widget.md", "files", 3, NOW - 4400)], 7, 30)
 
 
+def _numbers(row: dict) -> tuple:
+    return (row["tokens"], row["cost_usd"], row["tool_calls"], row["prompts"], row["artifacts"])
+
+
+def _detail_numbers(db, sid: str) -> tuple:
+    """The same numbers as the agent side panel shows them for the session."""
+    detail = agent_detail(db, sid, None, time.time())[1]
+    agent = detail["agent"]
+    tokens = sum(int(agent[k] or 0) for k in ("input", "output", "cache_read", "cache_write"))
+    return (tokens, agent["cost_usd"], agent["tool_calls"], agent["msgs"]["user"], detail["artifacts_total"])
+
+
 class TestSearch:
     def test_no_text_lists_every_session_newest_first(self, db, tmp_path):
         _seed_search(db, tmp_path)
@@ -358,6 +380,7 @@ class TestSearch:
         assert [r["id"] for r in out["rows"]] == ["s-new", "s-mid", "s-old"]
         old = out["rows"][2]
         assert (old["title"], old["tokens"], old["cost_usd"], old["tool_calls"], old["prompts"]) == ("Refactor the parser", 110, 0.5, 3, 2)
+        assert _numbers(old) == _detail_numbers(db, "s-old")
         assert (old["match"], old["match_text"], old["ended_at"]) == ("", "", NOW - 8000)
         assert out["rows"][0]["ended_at"] is None
         mid = out["rows"][1]
@@ -604,3 +627,73 @@ def test_the_index_tables_are_per_project_tables():
     from aictl.project_stores import PROJECT_TABLES
 
     assert {"session_folders", "session_artifacts"} <= set(PROJECT_TABLES)
+
+
+
+# ─── The search row agrees with the agent detail ─────────────────
+
+
+def test_a_search_row_has_the_numbers_of_the_agent_detail(db, tmp_path):
+    _project, _outside = _seed_detail(db, tmp_path)
+    conn = db._conn()
+    for k in range(4):
+        conn.execute(
+            "INSERT INTO tool_invocations (ts, session_id, tool, tool_name) VALUES (?,?,?,?)", (NOW - 2500 + k, SID, "copilot-cli", "bash")
+        )
+    conn.execute("INSERT INTO session_prompts (ts, session_id, agent_id, tool, text) VALUES (?, ?, '', 'copilot-cli', 'Write the report')", (NOW - 3100, SID))
+    # The sessions row says something else: the facts win, as on the board.
+    conn.execute("UPDATE sessions SET tool_call_count = 99, cost_usd = 9.0, input_tokens = 5 WHERE session_id = ?", (SID,))
+    conn.commit()
+    row = next(r for r in search_sessions(db, "report")["rows"] if r["id"] == SID)
+    assert _numbers(row) == _detail_numbers(db, SID)
+    assert (row["tool_calls"], row["prompts"], row["artifacts"]) == (4, 1, 6)
+
+
+def test_a_session_whose_rows_are_in_two_stores_is_counted_whole(tmp_path, monkeypatch):
+    """A session placed in the shared store, then named a project, moves; until the move is
+    done its rows are in both stores. The search row must count both, as the agent detail does."""
+    from aictl.storage import CallFacts, FileWriteRow, RequestRow, SessionPromptRow, SessionRow, ToolInvocationRow
+
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    stores = ProjectStores(db_path=tmp_path / "config" / "history.db", flush_interval=0)
+    try:
+        # First rows with no folder: the session is placed in _shared.
+        stores.write_call_facts(
+            CallFacts(
+                prompts=[SessionPromptRow(dedup_key="p1", ts=NOW - 900, session_id=SID, tool="claude-code", project_path="", text="paste the stderr")],
+                tools=[ToolInvocationRow(dedup_key=f"t{k}", ts=NOW - 890 + k, session_id=SID, tool="claude-code", tool_name="Bash") for k in range(3)],
+            )
+        )
+        # The move to the repository's store does not finish (a busy store): it stays pending.
+        monkeypatch.setattr(stores, "_move_rows", lambda *a, **k: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked")))
+        stores.upsert_session(SessionRow(session_id=SID, tool="claude-code", project_path=str(repo), started_at=NOW - 1000))
+        assert SID in stores._pending_moves
+        stores.write_call_facts(
+            CallFacts(
+                requests=[RequestRow(dedup_key="r1", ts=NOW - 800, session_id=SID, tool="claude-code", project_path=str(repo), model="claude-sonnet-4-5", input_tokens=40, output_tokens=2)],
+                tools=[ToolInvocationRow(dedup_key=f"u{k}", ts=NOW - 700 + k, session_id=SID, tool="claude-code", tool_name="Read", project_path=str(repo)) for k in range(2)],
+                file_writes=[FileWriteRow(dedup_key="w1", ts=NOW - 600, session_id=SID, tool="claude-code", path=str(tmp_path / "out" / "notes.md"), project_path=str(repo))],
+            )
+        )
+        row = next(r for r in search_sessions(stores, "paste the stderr")["rows"] if r["id"] == SID)
+        assert (row["tool_calls"], row["prompts"], row["tokens"], row["artifacts"]) == (5, 1, 42, 1)
+        assert _numbers(row) == _detail_numbers(stores, SID)
+    finally:
+        stores.close()
+
+
+def test_the_index_does_not_place_a_session_the_stores_do_not_know(tmp_path):
+    """Written first, the index would put the session in _shared and force a move later."""
+    from aictl.storage import SessionRow
+
+    stores = ProjectStores(db_path=tmp_path / "config" / "history.db", flush_interval=0)
+    try:
+        _copilot_folder(tmp_path / "copilot")
+        indexer = _indexer(stores, copilot=tmp_path / "copilot" / "session-state")
+        assert indexer.poll() == 0
+        assert stores.store_of_session(SID) is None
+        stores.upsert_session(SessionRow(session_id=SID, tool="copilot-cli", project_path="", started_at=NOW - 100))
+        assert indexer.poll() == 1
+    finally:
+        stores.close()

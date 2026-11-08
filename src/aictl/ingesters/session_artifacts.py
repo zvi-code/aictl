@@ -143,6 +143,10 @@ class SessionArtifactIndexer:
 
         return tool_homes.session_dirs(tool)
 
+    def _knows(self, sid: str) -> bool:
+        knows = getattr(self.store, "knows_session", None)
+        return bool(knows(sid)) if callable(knows) else True
+
     def poll(self) -> int:
         """Index the folders that changed since the last scan. Returns the folders written."""
         if self._seen is None:
@@ -154,6 +158,10 @@ class SessionArtifactIndexer:
                 for sid, folder in session_folders(tool, root):
                     sig = signature(folder)
                     if not sig or self._seen.get(sid) == sig:
+                        continue
+                    if not self._knows(sid):
+                        # The index waits for the session's own rows. Written first, it would
+                        # place the session in the shared store, and its rows would move later.
                         continue
                     files, total, size = scan_folder(tool, folder)
                     try:
