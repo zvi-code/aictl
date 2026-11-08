@@ -2093,7 +2093,8 @@ def _tools_section(board: _Board) -> dict:
     where, params = board._scoped()
     step, idx = board._step()
     rows = board.conn.execute(
-        f"SELECT tool_name, {step} g, COUNT(*), SUM(is_error), MAX(duration_ms), SUM(duration_ms > 0)"
+        f"SELECT tool_name, {step} g, COUNT(*), SUM(is_error), MAX(duration_ms), SUM(duration_ms > 0),"
+        " SUM(input_bytes), COUNT(input_bytes), SUM(output_bytes), COUNT(output_bytes)"
         f" FROM {board._source('tool_invocations')} WHERE {where} AND {_IS_CALL_SQL} GROUP BY tool_name, g",
         idx + params,
     ).fetchall()
@@ -2105,9 +2106,15 @@ def _tools_section(board: _Board) -> dict:
     stats: dict[str, dict] = {}
     longest = 0.0
     timed_total = 0
-    for name, g, count, errs, slowest, timed in rows:
+    for name, g, count, errs, slowest, timed, in_sum, in_n, out_sum, out_n in rows:
         b, s = board.b_of[g], board.s_of[g]
-        row = stats.setdefault(name, {"calls": 0, "failed": 0, "max": 0.0, "timed": 0, "trend": [0] * SPARK_POINTS})
+        row = stats.setdefault(
+            name, {"calls": 0, "failed": 0, "max": 0.0, "timed": 0, "trend": [0] * SPARK_POINTS, "in": [0, 0], "out": [0, 0]}
+        )
+        row["in"][0] += in_sum or 0
+        row["in"][1] += in_n
+        row["out"][0] += out_sum or 0
+        row["out"][1] += out_n
         row["calls"] += count
         row["failed"] += errs
         row["max"] = max(row["max"], slowest or 0.0)
@@ -2153,6 +2160,10 @@ def _tools_section(board: _Board) -> dict:
                 "p50_ms": _ms(_percentile(ordered, 0.50)),
                 "p95_ms": _ms(_percentile(ordered, 0.95)),
                 "max_ms": _ms(row["max"]) if ordered else None,
+                "mcp_server": mcp_server_of(name),
+                "avg_input_bytes": round(row["in"][0] / row["in"][1]) if row["in"][1] else None,
+                "avg_output_bytes": round(row["out"][0] / row["out"][1]) if row["out"][1] else None,
+                "output_bytes": row["out"][0] if row["out"][1] else None,
                 "trend": row["trend"],
             }
         )
@@ -3872,22 +3883,23 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
             "duration_ms": duration or None,
             "failed": bool(failed),
             "confirm": confirm or None,
+            "input_bytes": in_bytes,
+            "output_bytes": out_bytes,
         }
-        for ts, name, target, duration, failed, confirm in conn.execute(
-            "SELECT ts, tool_name, target, duration_ms, is_error, confirm FROM tool_invocations"
+        for ts, name, target, duration, failed, confirm, in_bytes, out_bytes in conn.execute(
+            "SELECT ts, tool_name, target, duration_ms, is_error, confirm, input_bytes, output_bytes FROM tool_invocations"
             f" WHERE session_id = ?{agent_sql} AND {_IS_CALL_SQL} ORDER BY ts DESC LIMIT {MAX_DETAIL_ROWS}",
             [sid, *agent_params],
         )
     ]
-    # The call list above is capped, so the count per tool comes from all calls.
-    tool_totals = [
-        {"name": name, "calls": calls, "failed": failed or 0, "total_ms": total_ms or None}
-        for name, calls, failed, total_ms in conn.execute(
-            "SELECT tool_name, COUNT(*), SUM(is_error <> 0), SUM(duration_ms) FROM tool_invocations"
-            f" WHERE session_id = ?{agent_sql} AND {_IS_CALL_SQL} GROUP BY tool_name ORDER BY COUNT(*) DESC, tool_name",
+    # The call list above is capped, so the figures per tool come from all calls.
+    tool_totals = _tool_totals(
+        conn.execute(
+            "SELECT tool_name, is_error, duration_ms, input_bytes, output_bytes FROM tool_invocations"
+            f" WHERE session_id = ?{agent_sql} AND {_IS_CALL_SQL}",
             [sid, *agent_params],
         )
-    ]
+    )
     files = [
         {"path": path, "lines_added": _maybe_int(added), "lines_removed": _maybe_int(removed), "edits": edits}
         for path, added, removed, edits in conn.execute(
@@ -4902,6 +4914,60 @@ def _agent_context(conn: sqlite3.Connection, sid: str, agent: str, root: bool) -
         "drops": sum(1 for before, after in zip(values, values[1:]) if after < before / 2),
         "series": values[::step][:_CONTEXT_POINTS + 1],
     }
+
+
+def mcp_server_of(tool_name: str) -> str | None:
+    """The MCP server of a server tool; '' when the name does not say which; None for other tools.
+
+    ``mcp__<server>__<tool>`` and ``<server>/<tool>`` name it. In ``mcp_a_b`` the server
+    and the tool cannot be told apart, since both may hold underscores.
+    """
+    if not is_server_tool(tool_name):
+        return None
+    if tool_name.startswith("mcp__"):
+        return tool_name[5:].split("__", 1)[0]
+    if "/" in tool_name:
+        return tool_name.split("/", 1)[0]
+    return ""
+
+
+def _tool_totals(rows: Iterable[tuple]) -> list[dict]:
+    """Per tool: calls, failures, run time (total, median, p95, max) and input and output size.
+
+    A call with no recorded time or size does not count toward that figure.
+    """
+    by: dict[str, dict] = {}
+    for name, failed, ms, in_b, out_b in rows:
+        t = by.setdefault(name, {"calls": 0, "failed": 0, "ms": [], "in": [], "out": []})
+        t["calls"] += 1
+        t["failed"] += 1 if failed else 0
+        if ms and ms > 0:
+            t["ms"].append(ms)
+        if in_b is not None:
+            t["in"].append(in_b)
+        if out_b is not None:
+            t["out"].append(out_b)
+
+    out = []
+    for name, t in by.items():
+        ms, ins, outs = sorted(t["ms"]), t["in"], t["out"]
+        out.append({
+            "name": name,
+            "mcp_server": mcp_server_of(name),
+            "calls": t["calls"],
+            "failed": t["failed"],
+            "total_ms": _ms(sum(ms)) if ms else None,
+            "p50_ms": _ms(_percentile(ms, 0.50)),
+            "p95_ms": _ms(_percentile(ms, 0.95)),
+            "max_ms": _ms(ms[-1]) if ms else None,
+            "input_bytes": sum(ins) if ins else None,
+            "output_bytes": sum(outs) if outs else None,
+            "avg_input_bytes": round(sum(ins) / len(ins)) if ins else None,
+            "avg_output_bytes": round(sum(outs) / len(outs)) if outs else None,
+            "max_output_bytes": max(outs) if outs else None,
+        })
+    out.sort(key=lambda t: (-t["calls"], t["name"]))
+    return out
 
 
 def _agent_turns(conn: sqlite3.Connection, sid: str, agent_sql: str, agent_params: list) -> list[dict]:

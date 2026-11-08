@@ -1,12 +1,12 @@
 # aictl Dashboard Datapoint Catalog
 
-> **221** datapoints across **11** tabs.
-> Raw: 86 | Deduced: 56 | Aggregated: 79
+> **223** datapoints across **11** tabs.
+> Raw: 86 | Deduced: 56 | Aggregated: 81
 > Generated: 2026-11-08 08:03
 
 ## Contents
 
-- [Agent drawer](#Agent drawer) (28)
+- [Agent drawer](#Agent drawer) (30)
 - [Agents](#Agents) (22)
 - [Changes and testing](#Changes and testing) (4)
 - [Context](#Context) (49)
@@ -47,7 +47,9 @@
 | `board.drawer.skill.detail` | RAW | One skill: who can see it, uses, agents, trigger and file reads. | `SELECT ts, session_id, agent_id, tool, project_path, trigger FROM skill_uses WHERE name = ? ORDER BY ts DESC LIMIT 200` | Direct rows. |
 | `board.drawer.team.agent` | RAW | Subagents and tasks the tool reported: state, model, task, time and tokens. States: active, idle, ended, not started; tasks: pending, active, done. | `GET /api/session-stats?session_id=<id> -> agents[], tasks[]` | Direct rows in tree order. |
 | `board.drawer.timeline.row` | RAW | Model calls and tool calls on one time line: time, input and output, cache, duration, prompt, error, agent, target, result. | `SELECT ts, agent_id, tool_name, target, input, result_summary, duration_ms, is_error, exit_code, confirm FROM tool_invocations WHERE session_id = ? AND ts >= ? AND ts < ? ORDER BY ts` | Direct rows. |
-| `board.drawer.tools.row` | RAW | Tool calls of the agent: time, name, target, duration, result. Newest 200. | `SELECT ts, tool_name, target, duration_ms, is_error, confirm FROM tool_invocations WHERE session_id = ? ORDER BY ts DESC LIMIT 200` | Direct rows. |
+| `board.drawer.tools.row` | RAW | Tool calls of the agent: time, name, target, duration, input and output size, result. Newest 200. | `SELECT ts, tool_name, target, duration_ms, is_error, confirm, input_bytes, output_bytes FROM tool_invocations WHERE session_id = ? ORDER BY ts DESC LIMIT 200` | Direct rows. |
+| `board.drawer.tools.total` | AGGREGATED | Per tool the agent called: calls, failed, median, p95, max and total run time, average input and output size, total output, and its MCP server. | `SELECT tool_name, is_error, duration_ms, input_bytes, output_bytes FROM tool_invocations WHERE session_id = ?` | Per tool_name; nearest-rank percentiles over duration_ms > 0; averages over rows with a size. |
+| `board.drawer.mcp.row` | AGGREGATED | Per MCP server the agent called: its tools, calls, failed, total and average run time, and total output. | `SELECT tool_name, COUNT(*), SUM(is_error), SUM(duration_ms), SUM(output_bytes) FROM tool_invocations WHERE session_id = ? AND (tool_name LIKE 'mcp%' OR tool_name LIKE '%/%') GROUP BY tool_name` | Sum of board.drawer.tools.total rows per MCP server. |
 | `board.drawer.tool.detail` | RAW | One tool name: every call with time, agent, duration, target, result and confirmation. | `SELECT ts, target, session_id, agent_id, duration_ms, is_error, confirm FROM tool_invocations WHERE tool_name = ? ORDER BY ts DESC` | Direct rows. |
 | `board.drawer.transcript.turn` | RAW | Each turn: prompt, reply, model calls, tool calls, tokens and duration. Text is shown only when the tool keeps it. | `SELECT ts, agent_id, text FROM session_prompts WHERE session_id = ? AND ts >= ? AND ts < ? ORDER BY ts` | One turn per prompt. |
 | `board.drawer.turns.row` | AGGREGATED | Turns oldest first with prompt, tokens, time and tools. | `SELECT ts, text FROM session_prompts WHERE session_id = ? ORDER BY ts` | SUM per turn. |
@@ -238,7 +240,7 @@
 | `board.kpi.loops` | DEDUCED | Agents repeating the same failing work. | `SELECT session_id, agent_id, ts, tool_name, target, is_error, exit_code, input FROM tool_invocations WHERE ts BETWEEN ? AND ? ORDER BY ts, id` | Count loops that find_loops reports. |
 | `board.kpi.p95_ms` | DEDUCED | 95th percentile of model reply time (p50 shown with it). | `SELECT duration_ms FROM requests WHERE ts BETWEEN ? AND ? AND duration_ms > 0 ORDER BY duration_ms` | Sort the durations and take the 0.95 and 0.50 ranks. |
 | `board.kpi.tool_calls` | AGGREGATED | Tool calls in the range, including totals that a tool reports without rows. | `SELECT COUNT(*) FROM tool_invocations WHERE ts BETWEEN ? AND ? AND substr(tool_name, 1, 11) <> 'permission:'` | COUNT of call rows. |
-| `board.tool.row` | AGGREGATED | Per tool name: calls, failed, failure rate, p50, p95 and max duration, and a trend. | `SELECT tool_name, COUNT(*), SUM(is_error), MAX(duration_ms) FROM tool_invocations WHERE ts BETWEEN ? AND ? AND substr(tool_name, 1, 11) <> 'permission:' GROUP BY tool_name` | GROUP BY tool_name; percentiles over duration_ms. |
+| `board.tool.row` | AGGREGATED | Per tool name: calls, failed, failure rate, p50, p95 and max duration, average output size, its MCP server, and a trend. | `SELECT tool_name, COUNT(*), SUM(is_error), MAX(duration_ms), SUM(output_bytes), COUNT(output_bytes) FROM tool_invocations WHERE ts BETWEEN ? AND ? AND substr(tool_name, 1, 11) <> 'permission:' GROUP BY tool_name` | GROUP BY tool_name; percentiles over duration_ms. |
 | `board.confirm.row` | AGGREGATED | Per tool: calls run automatically, approved, denied, blocked by a rule, and the median wait for an answer. | `SELECT tool_name, confirm, COUNT(*), AVG(confirm_wait_ms) FROM tool_invocations WHERE ts BETWEEN ? AND ? AND confirm <> '' GROUP BY tool_name, confirm` | COUNT per confirm value; median of confirm_wait_ms for approved and denied. |
 
 ---

@@ -551,3 +551,35 @@ describe('run trend', () => {
     expect(trend(50, 0).dir).toBe('same');
   });
 });
+
+describe('tools, MCP servers and skills of one agent', () => {
+  const totals = [
+    { name: 'Bash', mcp_server: null, calls: 40, failed: 2, total_ms: 9000, p50_ms: 120, p95_ms: 2400, max_ms: 3000, avg_input_bytes: 80, avg_output_bytes: 2048, output_bytes: 81920, max_output_bytes: 9000 },
+    { name: 'mcp__kusto__query', mcp_server: 'kusto', calls: 6, failed: 1, total_ms: 3000, p50_ms: 400, p95_ms: 900, max_ms: 900, avg_input_bytes: 120, avg_output_bytes: 50000, output_bytes: 300000, max_output_bytes: 90000 },
+    { name: 'mcp__kusto__list', mcp_server: 'kusto', calls: 2, failed: 0, total_ms: 200, p50_ms: 100, p95_ms: 100, max_ms: 100, avg_input_bytes: 10, avg_output_bytes: 500, output_bytes: 1000, max_output_bytes: 600 },
+  ];
+  const calls = [{ ts: NOW - 100, name: 'mcp__kusto__query', target: 'T | take 1', duration_ms: 400, failed: false, input_bytes: 120, output_bytes: 50000 }];
+
+  it('shows each tool with its run time and sizes, and adds up each MCP server', async () => {
+    const { findByRole, getByRole } = mount({ tab: 'tools', over: { tool_totals: totals, tool_calls: calls } });
+    const tools = await findByRole('table', { name: 'Tools used' });
+    const kusto = within(tools).getByText('mcp__kusto__query').closest('tr');
+    expect(kusto.textContent).toContain('MCP kusto');
+    expect(kusto.textContent).toContain('400 ms');
+    expect(kusto.textContent).toContain('50 KB');
+    const servers = getByRole('table', { name: 'MCP servers' });
+    const row = within(servers).getByText('kusto').closest('tr');
+    // Two tools, eight calls, one failed.
+    expect([...row.querySelectorAll('td')].slice(1, 4).map(td => td.textContent)).toEqual(['2', '8', '1']);
+    const list = getByRole('table', { name: 'Tool calls' });
+    expect(within(list).getByText('50 KB')).toBeTruthy();
+  });
+
+  it('always shows the skills section, saying when none was used', async () => {
+    const { findByRole } = mount({ over: { skills: [] } });
+    const skills = await findByRole('heading', { name: 'Skills used' });
+    const panel = skills.closest('section');
+    expect(panel.textContent).toContain('None in this session');
+    expect(panel.textContent).toContain('This agent used no skill');
+  });
+});

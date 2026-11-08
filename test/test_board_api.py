@@ -2695,8 +2695,34 @@ class TestAgentToolTotals:
         conn.commit()
         detail = agent_detail(db, "tt", None, NOW)[1]
         assert len(detail["tool_calls"]) == board_api.MAX_DETAIL_ROWS
-        assert detail["tool_totals"][0] == {"name": "Bash", "calls": extra, "failed": 0, "total_ms": extra * 10.0}
+        bash = detail["tool_totals"][0]
+        assert (bash["name"], bash["calls"], bash["failed"], bash["total_ms"]) == ("Bash", extra, 0, extra * 10.0)
         assert detail["tool_totals"][1]["failed"] == 1
+
+    def test_totals_give_run_time_and_input_and_output_size_per_tool(self, db):
+        conn = db._conn()
+        _session(conn, "ts", "claude-code", "/p/ts", NOW - 3000)
+        for k, (ms, inb, outb) in enumerate([(100.0, 10, 1000), (200.0, 20, 3000), (900.0, 30, 5000), (0.0, None, None)]):
+            _call(conn, NOW - 2000 + k, "ts", "claude-code", "/p/ts", "Bash", "ls", duration=ms, input_bytes=inb, output_bytes=outb)
+        _call(conn, NOW - 1000, "ts", "claude-code", "/p/ts", "mcp__kusto__query", "q", duration=50.0, input_bytes=5, output_bytes=70)
+        conn.commit()
+        detail = agent_detail(db, "ts", None, NOW)[1]
+        by = {t["name"]: t for t in detail["tool_totals"]}
+        bash = by["Bash"]
+        # A call with no time or size does not count toward those figures.
+        assert (bash["calls"], bash["p50_ms"], bash["p95_ms"], bash["max_ms"]) == (4, 200.0, 900.0, 900.0)
+        assert (bash["input_bytes"], bash["output_bytes"], bash["avg_input_bytes"], bash["avg_output_bytes"]) == (60, 9000, 20, 3000)
+        assert bash["max_output_bytes"] == 5000 and bash["mcp_server"] is None
+        assert by["mcp__kusto__query"]["mcp_server"] == "kusto"
+        call = next(c for c in detail["tool_calls"] if c["name"] == "mcp__kusto__query")
+        assert (call["input_bytes"], call["output_bytes"]) == (5, 70)
+
+
+def test_mcp_server_names_come_from_the_tool_name():
+    assert board_api.mcp_server_of("mcp__github__get_issue") == "github"
+    assert board_api.mcp_server_of("kusto/query") == "kusto"
+    assert board_api.mcp_server_of("mcp_github_get_issue") == ""  # an MCP tool whose server the name cannot tell
+    assert board_api.mcp_server_of("Bash") is None
 
 
 class TestPromptFilesSearch:

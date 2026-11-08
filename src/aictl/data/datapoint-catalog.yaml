@@ -1571,7 +1571,7 @@ board.kpi.tool_calls:
 board.tool.row:
   explanation: >
     Per tool name: calls, failed, failure rate, p50, p95 and max duration,
-    and a trend.
+    average output size, its MCP server, and a trend.
   source: >
     board_api._tools_section over tool_invocations; durations only from rows
     with duration_ms > 0.
@@ -2842,8 +2842,8 @@ board.drawer.timeline.row:
 
 board.drawer.tools.row:
   explanation: >
-    Tool calls of the agent: time, name, target, duration, result. Newest
-    200.
+    Tool calls of the agent: time, name, target, duration, input and output
+    size, result. Newest 200.
   source: >
     agent_detail tool_calls from tool_invocations.
   source_type: raw
@@ -2851,6 +2851,35 @@ board.drawer.tools.row:
   update_freq: on-collect
   tab: Agent drawer
   section: Tool calls
+  dynamic_source: false
+
+board.drawer.tools.total:
+  explanation: >
+    Per tool the agent called: calls, failed, median, p95, max and total run
+    time, average input and output size, total output, and its MCP server.
+  source: >
+    agent_detail tool_totals: board_api._tool_totals over tool_invocations of
+    the session; time only from calls with duration_ms > 0, size only from
+    calls with a recorded size.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Tools used
+  dynamic_source: false
+
+board.drawer.mcp.row:
+  explanation: >
+    Per MCP server the agent called: its tools, calls, failed, total and
+    average run time, and total output.
+  source: >
+    Added up in the drawer from board.drawer.tools.total, by the server in
+    the tool name (mcp__<server>__<tool> or <server>/<tool>).
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Agent drawer
+  section: MCP servers
   dynamic_source: false
 
 board.drawer.tool.detail:

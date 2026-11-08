@@ -255,6 +255,13 @@ sources' counts and is never added to them. All token columns are disjoint class
 
 ---
 
+## Version 33 (tool call sizes)
+
+`tool_invocations` gains `input_bytes` and `output_bytes`: the size of the
+arguments an agent sent to a tool and of the result it got back, as UTF-8
+text. The Claude Code, Copilot CLI and VS Code readers fill them from the
+transcripts. Calls stored before v33 keep NULL.
+
 ## Configuration
 
 ```toml
