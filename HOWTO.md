@@ -1,7 +1,7 @@
 # How to use aictl
 
 Short, task-by-task steps. Commands work the same on macOS, Linux and Windows unless a step
-shows a separate PowerShell form. [README.md](../README.md) has the full reference.
+shows a separate PowerShell form. [README.md](README.md) has the full reference.
 
 **Status on Windows:** the recent changes to hooks, the daemon, process tables, `aictl ps` and storage
 were tested by simulating Windows on macOS. They have not been run on a real Windows machine yet.
@@ -10,8 +10,31 @@ were tested by simulating Windows on macOS. They have not been run on a real Win
 ## Install
 
 If packages must come from a private index, read
-[Install from a private package index](../README.md#install-from-a-private-package-index) first. The commands
+[Install with a private package index](#install-with-a-private-package-index) first. The commands
 below can reach PyPI.
+
+Install globally with [pipx](https://pipx.pypa.io), which keeps `aictl` apart from other Python projects.
+
+### Get pipx
+
+**macOS**
+```bash
+brew install pipx && pipx ensurepath
+```
+
+**Windows** (PowerShell)
+```powershell
+python -m pip install pipx
+python -m pipx ensurepath
+# Then restart your terminal so PATH takes effect
+```
+
+**Linux**
+```bash
+pip install --user pipx && pipx ensurepath
+```
+
+### Install from a clone or from Git
 
 From a clone, which you can update with `git pull`:
 
@@ -30,7 +53,7 @@ aictl --version
 ```
 
 The built dashboard ships with the package, so Node.js is only needed to change the UI. No `pipx`
-yet? See [Install](../README.md#install), or [Windows prerequisites](../README.md#prerequisites).
+yet? See [Get pipx](#get-pipx), or [Windows prerequisites](#prerequisites).
 
 ### Install with a private package index
 
@@ -47,19 +70,32 @@ can hold credentials; do not write it into a file in the repository.
 
 2. In the new terminal, name the index for both installers pipx can use. `pip` reads
    `PIP_INDEX_URL`; `uv`, which pipx uses when it is on `PATH`, reads `UV_DEFAULT_INDEX`.
-   PowerShell:
+   PowerShell, with single quotes, so that a `$`, a backtick or an `&` in the URL is kept as typed:
 
    ```powershell
-   $env:PIP_INDEX_URL = "https://packages.example/simple"
+   $env:PIP_INDEX_URL = 'https://packages.example/simple'
    $env:UV_DEFAULT_INDEX = $env:PIP_INDEX_URL
+   echo $env:PIP_INDEX_URL
+   ```
+
+   Command Prompt (`cmd.exe`), where `$env:` does not exist:
+
+   ```bat
+   set PIP_INDEX_URL=https://packages.example/simple
+   set UV_DEFAULT_INDEX=%PIP_INDEX_URL%
+   echo %PIP_INDEX_URL%
    ```
 
    bash or zsh:
 
    ```bash
-   export PIP_INDEX_URL=https://packages.example/simple
+   export PIP_INDEX_URL='https://packages.example/simple'
    export UV_DEFAULT_INDEX=$PIP_INDEX_URL
+   echo $PIP_INDEX_URL
    ```
+
+   The last line prints the URL back. If it prints nothing, the shell did not take the line: in
+   PowerShell, `$env:` must be at the start of the line, and the two lines go in one at a time.
 
 3. Install from the clone in that same terminal:
 
@@ -92,10 +128,310 @@ can hold credentials; do not write it into a file in the repository.
    `AICTL_INDEX_URL` in the environment does the same as `--index-url`.
 
 The variables of step 2 last for that terminal only. To keep them, set them for the user in Windows
-(`[Environment]::SetEnvironmentVariable("PIP_INDEX_URL", "...", "User")`, and the same for
-`UV_DEFAULT_INDEX`) or in the shell profile. [Install from a private package
-index](../README.md#install-from-a-private-package-index) explains how `pip` and `uv` differ, and how to keep
+(`[Environment]::SetEnvironmentVariable('PIP_INDEX_URL', 'https://packages.example/simple', 'User')`, and the same for
+`UV_DEFAULT_INDEX`) or in the shell profile. [Why pip and uv read different settings](#why-pip-and-uv-read-different-settings) explains how `pip` and `uv` differ, and how to keep
 pipx on `pip`.
+
+### Why pip and uv read different settings
+
+`pip` and `uv` read different settings. pipx uses `uv` when it is on `PATH`, and `uv` ignores `pip.ini`, `pip.conf`
+and `PIP_INDEX_URL`, so an install can reach PyPI even though `pip` is set up for a private index. Check first:
+
+```bash
+python -m pip config list
+```
+
+`uv` can have a source of its own. In PowerShell, check its environment settings and its settings file. On macOS and
+Linux, the file is `~/.config/uv/uv.toml`:
+
+```powershell
+$env:UV_DEFAULT_INDEX; $env:UV_INDEX_URL
+Test-Path "$env:APPDATA\uv\uv.toml"
+```
+
+To keep pipx on pip, set `PIPX_DEFAULT_BACKEND=pip`, which needs pipx 1.12 or later. It changes pipx only, not `uv`.
+An environment already made with `uv` has to be removed first. Run these from the clone. If the dashboard runs, stop
+it first with `aictl daemon serve --stop`:
+
+```powershell
+[Environment]::SetEnvironmentVariable("PIPX_DEFAULT_BACKEND", "pip", "User")
+$env:PIPX_DEFAULT_BACKEND = "pip"
+Remove-Item Env:UV_VENV_CLEAR -ErrorAction SilentlyContinue
+pipx uninstall aictl
+pipx install -e ".[all]"
+```
+
+To confirm which tool installed the packages, run this command. It prints `pip` or `uv`:
+
+```powershell
+Get-Content "$(pipx environment --value PIPX_HOME)\venvs\aictl\Lib\site-packages\click-*.dist-info\INSTALLER"
+```
+
+`--backend pip` on one command is not enough: a later `pipx install --force` without it still runs `uv` to read the
+package name, even for an environment made with pip. A failed `pipx install` can also reach PyPI, because `uv` needs
+`setuptools` to read the package name. If an install ran before you set this up, `pipx uninstall aictl` removes those
+packages from the aictl environment.
+
+These steps change only the aictl environment and its launcher. They do not change `uv`, the Python installation or the
+`.venv` of another project.
+
+**Warning:** do not set `UV_VENV_CLEAR` by hand. With only `pip` set up, `uv` then downloads from PyPI. In the same
+shell, `uv venv` also replaces the existing `.venv` of any project without asking. `aictl reinstall` sets this variable
+only for its own install, and also gives `uv` the package source when one is configured.
+
+After that, name the source when you update:
+
+```bash
+aictl reinstall --index-url https://packages.example/simple
+```
+
+`--index-url`, or `AICTL_INDEX_URL`, applies to both `pip` and `uv`. The URL is not printed or written to a file, so
+it can hold credentials, and the npm UI build is skipped because the package already includes the dashboard. With no
+URL, `aictl reinstall` copies `pip`'s configured index for `uv`, unless `UV_DEFAULT_INDEX` or `UV_INDEX_URL` is set.
+Either way it prints the host name of the source it will use, so you can check it. The value must be the URL of a
+package index (`http`, `https` or `file`). `--index-url` refuses a plain folder path.
+`make install`, `aictl build-ui` and an install from the Git URL do not do any of this.
+
+### Optional extras
+
+The web dashboard (`aictl daemon serve`) works with zero extra dependencies. For the TUI and process detection:
+
+| Extra | Installs | When to use |
+|-------|----------|-------------|
+| `.[dashboard]` | `textual` | Terminal TUI dashboard (`aictl daemon dashboard`) |
+| `.[processes]` | `psutil` | Cross-platform process detection |
+| `.[monitor]` | `psutil`, `watchdog` | Live observability (`aictl daemon monitor`) |
+| `.[all]` | `textual`, `psutil`, `watchdog` | Recommended for full functionality |
+
+```bash
+# Add an extra to an existing install
+pipx inject aictl psutil
+pipx inject aictl textual
+pipx inject aictl watchdog
+```
+
+> **Without `psutil`:** process detection falls back to `ps` on macOS/Linux and is unavailable on Windows, where `psutil` is therefore always installed.
+
+### Development install
+
+```bash
+# Recommended: use make (does everything)
+make install          # builds UI + reinstalls Python package
+
+# Or use the CLI command (works even with a stale install):
+aictl reinstall       # builds UI + pipx install --force -e ".[all]"
+aictl reinstall --build-ui  # build the dashboard even with no local UI changes
+
+# Or manually:
+pipx install --force -e ".[all]"   # Python only
+npm run build --prefix src/aictl/dashboard/ui  # UI only
+```
+
+> **Why is this needed?** `pipx install` copies files into an isolated
+> virtualenv. Source edits are not picked up until you reinstall.
+> The `-e` (editable) flag avoids this, but `--force` is still required
+> to re-register new CLI commands.
+
+> **Tip:** If you get `No such command 'daemon'` after pulling new code,
+> run `make install` to rebuild everything.
+
+## Install on Windows
+
+### Prerequisites
+
+- **Python 3.10+** — download from [python.org](https://www.python.org/downloads/) or the Microsoft Store.
+  During install, check **"Add Python to PATH"**.
+- **pipx** — install via PowerShell:
+  ```powershell
+  python -m pip install pipx
+  python -m pipx ensurepath
+  ```
+  Restart your terminal after `ensurepath` so the PATH change takes effect.
+
+### Install aictl
+
+```powershell
+pipx install "aictl[all] @ git+https://github.com/zvi-code/aictl.git"
+# or, from a clone:
+pipx install --force ".[all]"
+```
+
+The built dashboard ships with the package, so Node.js is only needed to change the UI.
+
+Verify:
+
+```powershell
+aictl --version
+```
+
+### Development install / reinstall on Windows
+
+The `Makefile` (and therefore `make install`) is Unix/macOS only — on Windows
+use the built-in `aictl reinstall` command instead. After editing source code
+or pulling new changes, run it from the repo root to rebuild the dashboard UI
+and reinstall the Python package so changes take effect:
+
+```powershell
+aictl reinstall              # builds UI (npm) + pipx install --force -e ".[all]"
+aictl reinstall --build-ui   # also build the dashboard with no local UI changes
+```
+
+> **Windows self-reinstall:** the running `aictl.exe` cannot overwrite itself
+> while it is in use (pip would fail with `WinError 32` and leave a half-removed
+> install). On Windows `aictl reinstall` therefore hands the install off to a
+> **new console window** that waits for the current `aictl` to exit, performs
+> the install, and stays open so you can read the result. The original command
+> exits immediately — watch the new window, then run `aictl --version`. The window
+> tries up to 5 times, because the folder can stay in use for a few seconds, so an
+> error along the way is fine if it ends with `DONE`.
+
+If `aictl` does not start (a first install or a broken install), install with pipx from
+the repo root. If you use a private package index, first read
+[Install with a private package index](#install-with-a-private-package-index):
+
+```powershell
+pipx uninstall aictl
+pipx install -e ".[all]"
+```
+
+Do not run `python -m pip install` outside a virtual environment here. That command puts a
+second `aictl.exe` in the `Scripts` folder of Python, and that copy can run instead of the
+pipx copy. See [Find a leftover copy](#find-a-leftover-copy).
+
+To rebuild the UI:
+
+```powershell
+npm install --prefix src/aictl/dashboard/ui   # one-time, if the UI needs building
+npm run build --prefix src/aictl/dashboard/ui
+```
+
+> **Requires Node.js/npm** only to build the UI. `aictl reinstall` builds it only when its source
+> has local changes. Otherwise it uses the dashboard from git, and the server never builds it.
+
+### Config file locations on Windows
+
+`aictl status` discovers config files from the standard Windows locations:
+
+| Tool | Location |
+|------|----------|
+| aictl config, history, removal script | `%APPDATA%\aictl\` |
+| Copilot CLI and desktop app | `%USERPROFILE%\.copilot\` (`COPILOT_HOME` relocates it) |
+| Copilot hook file | `%USERPROFILE%\.copilot\hooks\aictl.json` |
+| VS Code settings and MCP | `%APPDATA%\Code\User\settings.json`, `mcp.json` |
+| VS Code Copilot Chat | `%APPDATA%\Code\User\globalStorage\github.copilot-chat\` |
+| VS Code extensions | `%USERPROFILE%\.vscode\extensions\` |
+| Microsoft 365 Copilot app | `%LOCALAPPDATA%\Packages\Microsoft.Copilot_8wekyb3d8bbwe\` (unverified) |
+| Claude Code | `%USERPROFILE%\.claude\` |
+| Claude Desktop | `%APPDATA%\Claude\` |
+| Cursor settings | `%APPDATA%\Cursor\User\settings.json` |
+| Windsurf / Codeium | `%APPDATA%\Codeium\windsurf\` |
+| GitHub CLI | `%APPDATA%\GitHub CLI\` |
+| Azure Developer CLI | `%USERPROFILE%\.azd\` |
+| PromptFlow | `%USERPROFILE%\.promptflow\` |
+
+The full list, including rows marked unverified, is in `src/aictl/data/paths-windows.csv`.
+
+### Known limitations on Windows
+
+| Feature | Status |
+|---------|--------|
+| Process detection, `aictl ps`, `aictl top` | Require `psutil`, included in `[all]`. Without it there is no process data |
+| Live TUI dashboard | Requires `textual`, included in `[all]` |
+| `aictl daemon serve --daemon` | Respawns detached, because there is no `fork`. Simulated only |
+| `aictl top` keys | Use `msvcrt`. Not yet exercised on a real console |
+| Persisted environment | `setx` values under `HKCU\Environment` and PowerShell profile lines. Running processes keep old values |
+| Shell and dev-server process patterns | Disabled: names cannot tie them to a tool ([zvi-code/aictl#3](https://github.com/zvi-code/aictl/issues/3)) |
+| `--backtrace PID` | Not available (uses macOS `sample` / Linux `eu-stack`) |
+
+### Common errors
+
+**`aictl` not found after install**
+
+pipx installs to `%USERPROFILE%\.local\bin`. If that's not on your PATH:
+
+```powershell
+python -m pipx ensurepath
+# Restart PowerShell / Command Prompt
+```
+
+**`The dashboard requires the 'textual' package`**
+
+```powershell
+pipx inject aictl textual
+# or reinstall with all extras:
+pipx install --force ".[all]"
+```
+
+**`os error 32`, `Attempt 1 of 5 did not finish` or `Install attempt 1 failed` in the install window**
+
+This is not the final result. Another process has the aictl folder open, and this usually clears within seconds. The
+window tries up to 5 times, so wait for its last message: `DONE` or `FAILED`. You do not need to end a process. The same
+attempt can also print `Failed to create virtual environment`, `failed to remove directory` and
+`Not removing existing venv`.
+
+**`FAILED: aictl was not reinstalled` in the install window**
+
+A failed attempt can leave aictl's environment empty, so `aictl` may not start. Stop anything that runs from it, such
+as the dashboard or `aictl top`. If you use a private package index, follow
+[Install with a private package index](#install-with-a-private-package-index). Otherwise, from the clone:
+
+```powershell
+pipx uninstall aictl
+pipx install -e ".[all]"
+```
+
+**`A virtual environment already exists` from `pipx install --force` or `make install`**
+
+Recent pipx creates environments with `uv` when `uv` is on `PATH`, and `uv` 0.10 and later will not replace one unless
+told to. pipx has no `--clear` flag, and `--force --backend pip` fails with the same error. Setting `UV_VENV_CLEAR=1`
+gets past the error, but read the warning in
+[Why pip and uv read different settings](#why-pip-and-uv-read-different-settings) first. Or reinstall with pip:
+
+```powershell
+pipx uninstall aictl
+pipx install -e ".[all]" --backend pip
+```
+
+**`No such option: --index-url`**
+
+The `aictl` that ran is older than this option, and the command installed nothing. Run `git pull` in the clone. If the
+error stays, a second copy is running: see [Find a leftover copy](#find-a-leftover-copy).
+
+**An old version is still there after `pipx uninstall`**
+
+`pipx uninstall` cleans only the location that `pipx` uses now. See [Find a leftover copy](#find-a-leftover-copy).
+
+**The dashboard still shows the old version**
+
+The process that started before the update keeps running the old code. Run `aictl daemon serve --stop`, start the
+dashboard again, then press Ctrl+F5 in the browser.
+
+**`pipx install` silently skips (already installed)**
+
+Always use `--force` to update an existing install (or use `make install`):
+
+```powershell
+pipx install --force ".[all]"
+```
+
+**Long paths cause errors**
+
+Windows has a 260-character path limit by default. Enable long paths in PowerShell (as Administrator):
+
+```powershell
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name LongPathsEnabled -Value 1
+```
+
+Or via Group Policy: *Computer Configuration → Administrative Templates → System → Filesystem → Enable Win32 long paths*.
+
+### Running tests on Windows
+
+```powershell
+python -m pytest test\ -v --ignore=test\e2e --ignore=test\e2e_tools   # unit tests
+python -m pytest test\e2e\ -v --timeout=120                            # simulated E2E
+$env:AICTL_TEST_REAL_HOME = "1"; python -m pytest test\e2e_tools\ -v --timeout=180  # real-tool E2E, uses your real profile
+python test\run.py -v                                                   # legacy integration
+```
 
 ## Run aictl
 
@@ -113,6 +449,16 @@ The sections below explain each command. These commands do not change your tool 
 see [Connect Copilot CLI, the desktop app and VS Code](#connect-copilot-cli-the-desktop-app-and-vs-code).
 
 ## Update aictl
+
+> **After updating source code**, reinstall for changes to take effect:
+> ```bash
+> make install                        # recommended: rebuilds UI + reinstalls
+> # or: aictl reinstall               # same thing, from the CLI
+> # or: pipx install --force -e ".[all]"  # manual
+> ```
+
+To run, update or remove aictl, see [Run aictl](#run-aictl), [Update aictl](#update-aictl)
+and [Remove the aictl program](#remove-the-aictl-program).
 
 After an install from a clone with `-e`, the `aictl` command runs the code in the clone. For most updates, pull
 the changes in the clone:
@@ -143,7 +489,7 @@ gives the result:
 |---|---|---|
 | `Attempt 1 of 5 did not finish` after `os error 32` | Another process has the aictl folder open. This usually clears within seconds | Wait. The window tries again |
 | `DONE: aictl is reinstalled.` | The install finished | Run `aictl --version` |
-| `FAILED: aictl was not reinstalled after 5 attempts.` | The last error is above this message, and `aictl` may not start | See [Common errors](../README.md#common-errors) |
+| `FAILED: aictl was not reinstalled after 5 attempts.` | The last error is above this message, and `aictl` may not start | See [Common errors](#common-errors) |
 
 ## See what is running
 
@@ -653,8 +999,8 @@ Run these on a real Windows machine, in PowerShell, and note anything that diffe
 | Telemetry to a dead port after removing aictl | Open a new terminal and restart GUI apps |
 | `aictl` not found after install | `python -m pipx ensurepath`, then open a new terminal |
 | The install window shows `os error 32` or `Attempt 1 of 5 did not finish` | Wait for the last message. See [Update aictl](#update-aictl) |
-| `FAILED: aictl was not reinstalled`, or `A virtual environment already exists` | See [Common errors](../README.md#common-errors) |
-| `Python packages:` shows the wrong source | See [Install from a private package index](../README.md#install-from-a-private-package-index) |
+| `FAILED: aictl was not reinstalled`, or `A virtual environment already exists` | See [Common errors](#common-errors) |
+| `Python packages:` shows the wrong source | See [Install with a private package index](#install-with-a-private-package-index) |
 | `No such option: --index-url` | The `aictl` that ran is older than the option. Run `git pull`, then [Find a leftover copy](#find-a-leftover-copy) |
 | An old version is still there after `pipx uninstall` | [Find a leftover copy](#find-a-leftover-copy) |
 | `has more than 50000 folders` | aictl scans only part of that folder. Start the dashboard in one project, or use `--root` |
