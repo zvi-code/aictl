@@ -1241,13 +1241,14 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._send_cors_header()
             self.end_headers()
 
-            version = 0
             self._sse_sent: dict = {}
-            # Send current snapshot immediately
+            # The version is read before the snapshot. Read after, an update that lands
+            # while the first message is written would count as sent, and this client
+            # would miss it until the next one. Read before, it is at worst sent twice.
+            version = self.server.store.version
             snap = self.server.store.snapshot
             if snap:
                 self._write_sse(snap)
-                version = self.server.store.version
 
             while True:
                 try:
