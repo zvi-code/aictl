@@ -260,7 +260,48 @@ sources' counts and is never added to them. All token columns are disjoint class
 `tool_invocations` gains `input_bytes` and `output_bytes`: the size of the
 arguments an agent sent to a tool and of the result it got back, as UTF-8
 text. The Claude Code, Copilot CLI and VS Code readers fill them from the
-transcripts. Calls stored before v33 keep NULL.
+transcripts. Calls stored before v33 keep NULL until the one-time backfill
+fills them: it reads every transcript again, writes only these two sizes to
+calls that are stored, and records `tool_sizes_backfilled_at` in
+`maintenance_state` when it is done.
+
+## Version 34 (session folder index)
+
+An index of the files in each tool's own session folder: Copilot CLI
+`session-state/<id>/` and Claude Code `projects/<project>/<id>/`. The
+folders are found with `aictl.tool_homes.session_dirs`. The index holds the
+path, size and mtime of each file. aictl never copies or reads the content.
+Both tables are per-project tables (`PROJECT_TABLES`), routed by session.
+
+The indexer (`aictl.ingesters.session_artifacts`) polls every 2 minutes. It
+skips a folder whose signature (the newest mtime of the folder and of its
+direct subfolders) did not change. Each folder is one short write.
+
+### `session_folders` — One row per scanned session folder
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `session_id` | TEXT PK | The tool's session id (the folder name) |
+| `tool` | TEXT | `copilot-cli` or `claude-code` |
+| `folder` | TEXT | Absolute path of the session folder |
+| `signature` | REAL | Folder mtime signature at the last scan |
+| `files_total`, `bytes_total` | INTEGER | Count and size of all files, also past the row cap |
+| `scanned_at` | REAL | Epoch seconds of the last scan |
+
+### `session_artifacts` — One row per indexed file
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `session_id`, `path` | TEXT PK | Session and absolute file path |
+| `folder` | TEXT | First folder part under the session folder (`files`, `research`, ...); "" at the top |
+| `size_bytes` | INTEGER | Size at the scan |
+| `mtime` | REAL | Modification time at the scan |
+
+A session keeps at most 2000 rows, the newest. The tool's own records at the
+top of a Copilot CLI folder (`events.jsonl`, `workspace.yaml`, `session.db`,
+`vscode.metadata.json`, lock files) are not indexed. Index `idx_session_artifacts_path`
+lets `/api/file` find a path. v34 also adds `idx_sessions_started` on
+`sessions(started_at)` for the session search.
 
 ## Configuration
 

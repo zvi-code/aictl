@@ -73,6 +73,8 @@ PROJECT_TABLES = (
     "agents",
     "session_commits",
     "session_processes",
+    "session_folders",
+    "session_artifacts",
     "events",
 )
 SHARED = "_shared"
@@ -988,6 +990,69 @@ class ProjectStores:
         with self._using(key) as db:
             db.upsert_session_commits(session_id, commits)
         self._touch(key, [types.SimpleNamespace(ts=float(c.get("ts") or 0.0)) for c in commits])
+
+    def replace_session_artifacts(
+        self,
+        session_id: str,
+        tool: str,
+        folder: str,
+        signature: float,
+        files: list[tuple[str, str, int, float]],
+        files_total: int,
+        bytes_total: int,
+    ) -> None:
+        if not session_id:
+            return
+        key = self._route(session_id, "")
+        with self._using(key) as db:
+            db.replace_session_artifacts(session_id, tool, folder, signature, files, files_total, bytes_total)
+        self._touch(key, [_NOW_ROW])
+
+    def fill_tool_sizes(self, rows: list[tuple[str, str, int | None, int | None]]) -> int:
+        """Each row goes to the store of its session; a session that is moving, to both."""
+        groups: dict[str, list[tuple[str, str, int | None, int | None]]] = {}
+        for row in rows:
+            sid = row[0]
+            keys = [self._find_store(sid)] if sid else [MACHINE]
+            with self._route_lock:
+                pending = self._pending_moves.get(sid)
+            if pending is not None:
+                keys = list(dict.fromkeys(pending))
+            for key in keys:
+                groups.setdefault(key, []).append(row)
+        changed = 0
+        for key, part in groups.items():
+            with self._using(key) as db:
+                changed += db.fill_tool_sizes(part)
+        return changed
+
+    @contextlib.contextmanager
+    def every_store(self) -> Iterator[list[sqlite3.Connection]]:
+        """A read connection on the machine store and on each project store file.
+
+        Unlike the read connection, nothing is attached or copied: a search over all
+        time runs its query on each store and merges the rows.
+        """
+        conns = [self.machine._conn()]
+        opened: list[sqlite3.Connection] = []
+        if self._split:
+            with self._index_lock:
+                keys = list(self._index)
+            for key in keys:
+                file = self._file_of(key)
+                if file is None or not file.exists():
+                    continue
+                try:
+                    opened.append(_read_only(file))
+                except sqlite3.Error as exc:
+                    log.debug("Cannot read %s: %s", file.name, exc)
+        try:
+            yield conns + opened
+        finally:
+            for conn in opened:
+                conn.close()
+
+    artifact_scans = HistoryDB.artifact_scans
 
     def upsert_session_usage(self, row: dict) -> None:
         key = self._route(str(row.get("session_id") or ""), str(row.get("project_path") or ""))

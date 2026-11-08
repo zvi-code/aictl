@@ -111,10 +111,19 @@ board.coverage.row:
 board.credits:
   calc: SUM of billing_amount over the days inside the window.
   query: SELECT session_id, tool, daily_json FROM session_usage WHERE last_activity_at >= ? AND started_at <= ?
+board.drawer.artifacts.row:
+  calc: Index rows and write events merged by path; stat at request time.
+  query: SELECT path, folder, size_bytes, mtime FROM session_artifacts WHERE session_id = ?; SELECT path, COUNT(*), MIN(ts), MAX(ts) FROM file_write_events WHERE session_id = ? GROUP BY path
+board.drawer.artifacts.total:
+  calc: files_total plus written files outside the project.
+  query: SELECT files_total, bytes_total FROM session_folders WHERE session_id = ?
 board.drawer.changes.file:
   calc: GROUP BY path.
   query: SELECT path, SUM(json_extract(detail, '$.lines_added')), SUM(json_extract(detail, '$.lines_removed')), COUNT(*) FROM file_write_events WHERE session_id = ? GROUP BY path ORDER BY MAX(ts) DESC LIMIT
     200
+board.drawer.commits.row:
+  calc: Direct rows, newest first; prs from gh.
+  query: SELECT sha, author_name, author_email, ts, subject FROM session_commits WHERE session_id = ?
 board.drawer.error.detail:
   calc: Direct rows.
   query: SELECT ts, result_summary, session_id, agent_id FROM tool_invocations WHERE tool_name = ? AND is_error = 1
@@ -379,6 +388,9 @@ board.series.messages:
 board.series.tokens:
   calc: SUM per bucket and token kind.
   query: SELECT CAST((ts - ?) / ? AS INTEGER) b, SUM(cache_read_tokens), SUM(input_tokens), SUM(cache_creation_tokens), SUM(output_tokens) FROM requests WHERE ts BETWEEN ? AND ? GROUP BY b
+board.sessions.row:
+  calc: Hits per kind over every store, one row per logical session, newest first, one page.
+  query: SELECT session_id, started_at FROM sessions WHERE session_id IN (sessions with a hit in sessions.project_path, session_prompts.text, session_artifacts.path, file_write_events.path or session_commits.subject) ORDER BY started_at DESC LIMIT ? OFFSET ?
 board.settings.file:
   calc: os.stat of each path.
   query: GET /api/settings/files -> files[]

@@ -2525,6 +2525,37 @@ self.uptime:
 # AGENT DRAWER
 # ===============================================================
 
+board.drawer.artifacts.row:
+  explanation: >
+    Files of the session: those in the tool's own session folder (files,
+    research, checkpoints, subagents, tool results) and those it wrote outside
+    its project. Path, kind, folder, size, time, write count, and whether the
+    file still exists and can be shown as text. Newest 200.
+  source: >
+    agent_detail artifacts: session_artifacts (the index of session folders,
+    path, size and mtime only) and file_write_events outside the project
+    folder; exists, size_bytes and mtime from a stat at request time.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Artifacts
+  dynamic_source: false
+
+board.drawer.artifacts.total:
+  explanation: >
+    Count of all artifacts of the session, also past the list cap, and the
+    bytes of those that exist.
+  source: >
+    agent_detail artifacts_total and artifacts_bytes: session_folders
+    files_total and bytes_total plus the written files outside the project.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Artifacts
+  dynamic_source: false
+
 board.drawer.changes.file:
   explanation: >
     Files the agent changed, with lines added and removed and edits; and its
@@ -2536,6 +2567,22 @@ board.drawer.changes.file:
   update_freq: on-collect
   tab: Agent drawer
   section: Changes
+  dynamic_source: false
+
+board.drawer.commits.row:
+  explanation: >
+    Commits made in the session's project during the session, newest first,
+    with the pull requests that hold each one; a note says why pull requests
+    are missing.
+  source: >
+    agent_detail commits from session_commits (git attribution, computed on
+    the first request); prs from gh pr list --search <sha>, looked up in the
+    background and kept in memory; prs_note.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Commits
   dynamic_source: false
 
 board.drawer.error.detail:
@@ -2921,6 +2968,21 @@ board.drawer.turns.row:
   section: Turns
   dynamic_source: false
 
+
+board.sessions.row:
+  explanation: >
+    One session of any tool and any time: title, project, start and end,
+    tokens, cost, tool calls, prompts, artifacts and commits, and the text the
+    search found.
+  source: >
+    GET /api/board/sessions: sessions of every store, matched on title,
+    project, prompt text, artifact path, written file path and commit subject.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Agents
+  section: Session history
+  dynamic_source: false
 
 # ===============================================================
 # SETTINGS
