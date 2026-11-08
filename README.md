@@ -159,6 +159,11 @@ pip install --user pipx && pipx ensurepath
 
 ### Install from a private package index
 
+For the first install, name the index for both installers before `pipx install`, with `PIP_INDEX_URL` and
+`UV_DEFAULT_INDEX` set to the same URL; the steps are in
+[Install with a private package index](docs/how-to.md#install-with-a-private-package-index). For every later
+update, `aictl reinstall --index-url <url>` names it. The rest of this section explains why both are needed.
+
 `pip` and `uv` read different settings. pipx uses `uv` when it is on `PATH`, and `uv` ignores `pip.ini`, `pip.conf`
 and `PIP_INDEX_URL`, so an install can reach PyPI even though `pip` is set up for a private index. Check first:
 

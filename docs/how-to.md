@@ -32,6 +32,71 @@ aictl --version
 The built dashboard ships with the package, so Node.js is only needed to change the UI. No `pipx`
 yet? See [Install](../README.md#install), or [Windows prerequisites](../README.md#prerequisites).
 
+### Install with a private package index
+
+Use these steps when Python packages must come from your organization's index and not from PyPI.
+The index URL is the `simple` URL of the feed, for example `https://packages.example/simple`. It
+can hold credentials; do not write it into a file in the repository.
+
+1. Install pipx from the index, then open a new terminal:
+
+   ```powershell
+   python -m pip install --index-url https://packages.example/simple pipx
+   python -m pipx ensurepath
+   ```
+
+2. In the new terminal, name the index for both installers pipx can use. `pip` reads
+   `PIP_INDEX_URL`; `uv`, which pipx uses when it is on `PATH`, reads `UV_DEFAULT_INDEX`.
+   PowerShell:
+
+   ```powershell
+   $env:PIP_INDEX_URL = "https://packages.example/simple"
+   $env:UV_DEFAULT_INDEX = $env:PIP_INDEX_URL
+   ```
+
+   bash or zsh:
+
+   ```bash
+   export PIP_INDEX_URL=https://packages.example/simple
+   export UV_DEFAULT_INDEX=$PIP_INDEX_URL
+   ```
+
+3. Install from the clone in that same terminal:
+
+   ```bash
+   git clone https://github.com/zvi-code/aictl.git
+   cd aictl
+   pipx install -e ".[all]"
+   aictl --version
+   ```
+
+   `pipx install --pip-args="--index-url https://packages.example/simple" -e ".[all]"` does the same for the
+   `pip` backend only.
+
+4. Check which source the packages came from. The install fails, and installs nothing, when the index
+   cannot be reached; it does not fall back to PyPI while the variables are set. On Windows, this prints
+   `pip` or `uv`:
+
+   ```powershell
+   Get-Content "$(pipx environment --value PIPX_HOME)\venvs\aictl\Lib\site-packages\click-*.dist-info\INSTALLER"
+   ```
+
+5. For every later update, pull the clone and name the index on the reinstall command. It prints
+   `Python packages:` and the host name of the source it uses:
+
+   ```bash
+   git pull
+   aictl reinstall --index-url https://packages.example/simple
+   ```
+
+   `AICTL_INDEX_URL` in the environment does the same as `--index-url`.
+
+The variables of step 2 last for that terminal only. To keep them, set them for the user in Windows
+(`[Environment]::SetEnvironmentVariable("PIP_INDEX_URL", "...", "User")`, and the same for
+`UV_DEFAULT_INDEX`) or in the shell profile. [Install from a private package
+index](../README.md#install-from-a-private-package-index) explains how `pip` and `uv` differ, and how to keep
+pipx on `pip`.
+
 ## Run aictl
 
 | To | Run |
