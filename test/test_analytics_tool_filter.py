@@ -3,7 +3,7 @@
 Covers the id mapping (tool_scope), every analytics query with and without a
 tool selection against a real temporary database, the worker's cache key, the
 selection each response states, the empty selection, the unattributed-row count,
-and the two HTTP endpoints.
+and the Budget HTTP endpoint.
 """
 
 from __future__ import annotations
@@ -579,7 +579,6 @@ def server(tmp_path):
     srv = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, AllowedPaths(), Path("/work"))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{srv.server_address[1]}"
-    srv.analytics_cache.stop()
     srv.shutdown()
     file_db.close()
 
@@ -587,47 +586,6 @@ def server(tmp_path):
 def _json(url):
     with urllib.request.urlopen(url, timeout=5) as resp:
         return json.loads(resp.read())
-
-
-def _analytics(base, query):
-    url = f"{base}/api/analytics?since={SINCE}&until={UNTIL}{query}"
-    deadline = time.time() + 10
-    while time.time() < deadline:
-        body = _json(url)
-        if not body["pending"]:
-            return body
-        time.sleep(0.05)
-    raise AssertionError("analytics stayed pending")
-
-
-class TestAnalyticsEndpoint:
-    def test_no_parameter_is_all_tools(self, server):
-        body = _analytics(server, "")
-        assert body["selection"] == {"all_tools": True, "tools": None}
-        assert len(body["response_time"]["requests"]) == 10
-
-    def test_tools_parameter_filters_and_is_stated(self, server):
-        body = _analytics(server, "&tools=codex-cli")
-        assert body["selection"] == {"all_tools": False, "tools": ["codex-cli"]}
-        assert [r["duration_ms"] for r in body["response_time"]["requests"]] == [10_000, 20_000]
-
-    def test_empty_tools_parameter_is_none(self, server):
-        body = _analytics(server, "&tools=")
-        assert body["selection"] == {"all_tools": False, "tools": []}
-        assert body["response_time"]["requests"] == []
-
-    def test_first_answer_for_a_new_selection_is_pending_with_no_figures(self, server):
-        first = _json(f"{server}/api/analytics?since={SINCE}&until={UNTIL}&tools=claude-code,codex-cli")
-        if first["pending"]:
-            assert "response_time" not in first
-            assert first["selection"]["tools"] == ["claude-code", "codex-cli"]
-
-    def test_switching_selection_back_and_forth_never_mixes(self, server):
-        a = _analytics(server, "&tools=claude-code")
-        b = _analytics(server, "&tools=codex-cli")
-        again = _analytics(server, "&tools=claude-code")
-        assert len(a["response_time"]["requests"]) == len(again["response_time"]["requests"]) == 4
-        assert len(b["response_time"]["requests"]) == 2
 
 
 class TestBudgetEndpoint:

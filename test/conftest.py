@@ -234,8 +234,31 @@ class ServerHandle:
     def post_otel_traces(self, payload: dict) -> dict:
         return self.post("/v1/traces", payload)
 
-    def get_sessions(self, **kw) -> list[dict]:
-        return self.get("/api/sessions", **kw)
+    def _read_db(self, read: Any) -> Any:
+        """Run *read(db)* against the server's own database file."""
+        from aictl.storage import HistoryDB
+
+        db = HistoryDB(db_path=str(self.db_path), flush_interval=0)
+        try:
+            return read(db)
+        finally:
+            db.close()
+
+    def get_sessions(self, since: str = "0") -> list[dict]:
+        """Session rows the server stored, read from its database.
+
+        No REST route lists session rows; the board reads the same table.
+        A row without ``ended_at`` is active.
+        """
+        rows = self._read_db(lambda db: db.query_sessions(since=float(since)))
+        for r in rows:
+            r["active"] = not r.get("ended_at")
+            r["lifecycle_status"] = "ended" if r.get("ended_at") else "active"
+        return rows
+
+    def get_file_writes(self, session_id: str) -> list[dict]:
+        """File writes the server stored for *session_id*."""
+        return self._read_db(lambda db: db.query_file_writes(session_id=session_id))
 
     def get_events(self, *, timeout: float = 15, min_count: int = 0, **kw) -> list[dict]:
         """Query /api/events, polling until *min_count* results appear.

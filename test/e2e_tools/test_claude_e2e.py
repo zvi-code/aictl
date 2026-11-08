@@ -89,7 +89,7 @@ class TestClaudeHooksIntegration:
         assert has_lifecycle, f"No lifecycle hooks found. Got kinds: {event_kinds}"
 
     def test_session_created(self, run_claude, aictl_server, claude_project):
-        """Claude session appears in /api/sessions after running."""
+        """Claude session appears in the stored sessions after running."""
         result = run_claude(
             "Say exactly: SESSION_CREATE_TEST",
             cwd=claude_project,

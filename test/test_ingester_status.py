@@ -1,9 +1,9 @@
-"""Tests for the ingester status endpoint and VS Code ingester retry/quality.
+"""Tests for ingester status and VS Code ingester retry/quality.
 
-Covers two freshly-wired paths:
+Covers two paths:
 
-* ``GET /api/ingesters`` returns ``ingester_runner.collect_status`` for the
-  handles registered on the server (previously computed but uncalled).
+* ``ingester_runner.collect_status`` reports each registered handle (the
+  board's machine view reads it).
 * The VS Code chat-logs ingester records data-quality events and no longer
   advances the per-file cursor past a file it failed to parse, so a broken
   file is retried on the next poll instead of being skipped forever.
@@ -12,21 +12,12 @@ Covers two freshly-wired paths:
 from __future__ import annotations
 
 import json
-import threading
 import time
-import urllib.request
 from pathlib import Path
-
-import pytest
 
 from aictl.dashboard.ingester_runner import IngesterHandle, collect_status
 from aictl.ingesters.vscode_chat_logs import VSCodeChatLogsIngester
 from aictl.storage import HistoryDB
-
-
-def _get_json(url):
-    with urllib.request.urlopen(url, timeout=5) as resp:
-        return json.loads(resp.read())
 
 
 class _FakeIngester:
@@ -37,24 +28,14 @@ class _FakeIngester:
         self.last_poll_inserted = last_poll_inserted
 
 
-# ── /api/ingesters endpoint ───────────────────────────────────────
+# ── collect_status ────────────────────────────────────────────────
 
 
-@pytest.fixture()
-def ingester_server(tmp_path):
-    from aictl.dashboard.models import DashboardSnapshot
-    from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
-    from aictl.orchestrator import AllowedPaths, SnapshotStore
-
-    db = HistoryDB(db_path=str(tmp_path / "ing.db"), flush_interval=0)
-    store = SnapshotStore(db=db)
-    store.update(DashboardSnapshot(timestamp=time.time(), root="/tmp", tools=[], sessions=[]))
-    srv = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, AllowedPaths(), Path("/tmp"))
-
-    # Inject deterministic fake handles — the real ones depend on whatever
+def _fake_handles():
+    # Deterministic fake handles — the real ones depend on whatever
     # tool stores happen to exist on the test machine's disk.
     now = time.time()
-    srv.ingesters = {
+    return {
         "copilot-session-store": IngesterHandle(
             name="copilot-session-store",
             enabled=True,
@@ -70,18 +51,9 @@ def ingester_server(tmp_path):
         ),
     }
 
-    port = srv.server_address[1]
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
-    t.start()
-    yield f"http://127.0.0.1:{port}"
-    srv.shutdown()
-    db.close()
 
-
-def test_ingesters_endpoint_returns_registered_statuses(ingester_server):
-    data = _get_json(f"{ingester_server}/api/ingesters")
-    assert "ingesters" in data
-    by_name = {i["name"]: i for i in data["ingesters"]}
+def test_collect_status_reports_registered_handles():
+    by_name = {i["name"]: i for i in collect_status(_fake_handles())}
     assert set(by_name) == {"copilot-session-store", "cursor-conversations"}
 
     cop = by_name["copilot-session-store"]

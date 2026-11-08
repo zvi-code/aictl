@@ -111,7 +111,7 @@ aictl/
 ├── dashboard/              # All visualization renderers
 │   ├── models.py           #   DashboardTool + DashboardSnapshot dataclasses
 │   ├── web_server.py       #   ThreadingHTTPServer — routing, SSE, static
-│   ├── api_handlers.py     #   REST endpoint handlers (sessions, costs, kill, …)
+│   ├── api_handlers.py     #   REST endpoint handlers (budget, events, kill, …)
 │   ├── analytics.py        #   Cached analytics queries + cache health reporting
 │   ├── otel_receiver.py    #   OTLP metrics/logs/traces parser (defensive)
 │   ├── tool_config_editor.py #  Read/write tool config edits (audited)
@@ -455,34 +455,17 @@ A real-time interactive dashboard built with Vite + Preact + htm tagged template
 | `/api/history?range=1h\|6h\|24h\|7d` | GET | Time-series history |
 | `/api/events?tool=...&since=...` | GET | Filtered event log |
 | `/api/samples?metric=...&since=...` | GET | Prometheus-style metric samples |
-| `/api/sessions` | GET | Active and historical sessions |
-| `/api/session-timeline` | GET | Per-session activity timeline |
-| `/api/session-runs` | GET | Run history for a session |
-| `/api/session-cost-by-model` | GET | Per-session token/cost split by model |
 | `/api/session-processes` | GET | Process tree for a session |
-| `/api/session-tool-calls` | GET | Tool-call timeline for a session |
-| `/api/session-subprocesses` | GET | Subprocess breakdown for a session |
 | `/api/session-commits` | GET | Git commits attributed to a session |
 | `/api/session-stats` | GET | Aggregate stats for a session |
-| `/api/session-flow` | GET | Session conversation flow |
-| `/api/session-memory-diff` | GET | Agent-memory diff for a session |
-| `/api/session-messages` | GET | Normalized session messages (cross-source deduped) |
 | `/api/session-mcp-usage` | GET | MCP server usage for a session |
 | `/api/session-kill` | PUT | Signal a live session's process tree (TERM/KILL) |
-| `/api/file-writes` | GET | File-write index (which run wrote what, when) |
-| `/api/files`, `/api/files/history` | GET | File inventory + per-file history |
-| `/api/telemetry` | GET | Structured telemetry readings |
-| `/api/project-costs` | GET | Cost rollup by project |
-| `/api/transcript/...`, `/api/transcripts` | GET | Session transcripts |
 | `/api/otel-status` | GET | OTel receiver diagnostics |
 | `/api/hooks-status` | GET | Per-tool hook installation status |
 | `/api/hooks` | PUT | Install/repair tool hooks |
 | `/api/tool-config/...` | GET, PUT | Read/write a tool's config (PUT is audited) |
 | `/api/api-calls` | GET | Recorded API/network calls |
-| `/api/data-quality` | GET | Data-quality status feed (incl. analytics-cache health) |
 | `/api/datapoints` | GET | Datapoint catalog |
-| `/api/analytics` | GET | Cached analytics aggregates |
-| `/api/agent-teams` | GET | Agent-team rollups |
 | `/api/self-status` | GET | aictl's own runtime status |
 | `/api/layout` | GET | Widget layout configuration |
 

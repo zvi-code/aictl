@@ -1,4 +1,4 @@
-"""Tests for the /api/analytics endpoint and supporting storage methods."""
+"""Tests for the analytics computation and supporting storage methods."""
 
 from __future__ import annotations
 
@@ -343,7 +343,7 @@ class TestAnalyticsCache:
     def test_cache_recomputes_and_serves(self, db: HistoryDB):
         from unittest.mock import MagicMock
 
-        from aictl.dashboard.web_server import _AnalyticsCache
+        from aictl.dashboard.analytics import _AnalyticsCache
 
         base = time.time()
         _seed_requests(db, base)
@@ -368,7 +368,7 @@ class TestAnalyticsCache:
 
     def test_cache_get_never_blocks_on_sql(self, db: HistoryDB):
         """Verify get() returns in <1ms even with no pre-computed data."""
-        from aictl.dashboard.web_server import _AnalyticsCache
+        from aictl.dashboard.analytics import _AnalyticsCache
 
         cache = _AnalyticsCache()
 
@@ -384,7 +384,7 @@ class TestAnalyticsCache:
         in get()['_health'], not a silently-swallowed log line."""
         from unittest.mock import MagicMock
 
-        from aictl.dashboard.web_server import _AnalyticsCache
+        from aictl.dashboard.analytics import _AnalyticsCache
 
         cache = _AnalyticsCache()
         store = MagicMock()
@@ -413,11 +413,11 @@ class TestAnalyticsCache:
         assert cache.get(0, None)["_health"]["ok"] is True
 
     def test_recompute_failure_recorded_to_data_quality(self, db: HistoryDB):
-        """The analytics-thread failure must reach the operator-facing
-        /api/data-quality surface (the actor), not just get()['_health']."""
+        """The analytics-thread failure must reach the data-quality table
+        (read by the board's machine view), not just get()['_health']."""
         from unittest.mock import MagicMock
 
-        from aictl.dashboard.web_server import _AnalyticsCache
+        from aictl.dashboard.analytics import _AnalyticsCache
 
         cache = _AnalyticsCache()
         store = MagicMock()
