@@ -113,29 +113,39 @@ export function normalizeBoard(raw) {
   return out;
 }
 
+// A read in flight for the same query is left to finish: a slow server answered
+// no tick at all when each tick aborted the read before it. One more read follows
+// it when a tick asked meanwhile. A new query aborts the read of the old one.
 function createLoader(onData, onError) {
   let ctrl = null;
+  let pending = null;
+  let again = false;
   let last = { query: null, etag: null };
-  return {
+  const loader = {
     load(query) {
+      if (ctrl && pending === query) { again = true; return undefined; }
       if (ctrl) ctrl.abort();
       const mine = new AbortController();
       ctrl = mine;
+      pending = query;
+      again = false;
       const etag = last.query === query ? last.etag : null;
+      const done = () => { ctrl = null; pending = null; if (again) { again = false; loader.load(query); } };
       return api.getBoard(query, { signal: mine.signal, etag }).then((res) => {
         if (ctrl !== mine) return;
-        ctrl = null;
-        if (res.status === 304) { onData(null); return; }
+        if (res.status === 304) { onData(null); done(); return; }
         last = { query, etag: res.etag };
         onData(normalizeBoard(res.data));
+        done();
       }).catch((e) => {
         if (e?.name === 'AbortError' || ctrl !== mine) return;
-        ctrl = null;
         onError(e);
+        done();
       });
     },
-    stop() { if (ctrl) { ctrl.abort(); ctrl = null; } },
+    stop() { if (ctrl) { ctrl.abort(); ctrl = null; pending = null; again = false; } },
   };
+  return loader;
 }
 
 /** /api/board/machine for the tool filter. A failed read keeps the last answer. */

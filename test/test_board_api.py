@@ -201,7 +201,7 @@ def seed(db: HistoryDB, now: float) -> None:
 @pytest.fixture(autouse=True)
 def _no_state_from_other_tests():
     """The module keeps short-lived answers. No test may see one from another test."""
-    for memo in (board_api._facts_memo, board_api._sources_memo, board_api._disk_prompts_memo, board_api._BASE_TIMES, board_api._SENT, board_api._COMPUTED_AT):
+    for memo in (board_api._facts_memo, board_api._sources_memo, board_api._disk_prompts_memo, board_api._BASE_TIMES, board_api._SENT, board_api._COMPUTED_AT, board_api._COMPUTED_MONO):
         memo.clear()
     board_api._MEMO._entries.clear()
     board_api._BASE_MEMO._entries.clear()
@@ -1230,6 +1230,39 @@ class TestRefreshBehind:
         assert board_api.board_bytes(db, store, "", time.time(), background=True) == first
         self._wait()
         assert b'"fresh"' in board_api.board_bytes(db, store, "", time.time(), background=True)
+
+    def test_a_request_that_waited_for_a_slow_compute_takes_its_answer(self, db, monkeypatch):
+        """Two polls on a slow store compute once: the second takes the answer that finished while it waited."""
+        import threading
+
+        store = SimpleNamespace(version=1, snapshot=None)
+        real = board_api.compute_board
+        calls = []
+
+        def slow(*args, **kwargs):
+            calls.append(1)
+            time.sleep(0.4)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(board_api, "compute_board", slow)
+        out = {}
+        later = time.time() + board_api.MEMO_TTL_S  # another store version, so the memo alone would not answer
+
+        def first():
+            out["a"] = board_api.board_bytes(db, store, "", time.time(), background=True)
+
+        def second():
+            out["b"] = board_api.board_bytes(db, store, "", later, background=True)
+
+        t1 = threading.Thread(target=first)
+        t1.start()
+        time.sleep(0.1)
+        t2 = threading.Thread(target=second)
+        t2.start()
+        t1.join(5)
+        t2.join(5)
+        assert len(calls) == 1
+        assert out["a"] == out["b"]
 
     def test_an_answer_too_old_is_not_served(self, db):
         store = SimpleNamespace(version=1, snapshot=None)

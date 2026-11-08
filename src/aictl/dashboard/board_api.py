@@ -5134,6 +5134,7 @@ _BASE_MEMO = _BaseMemo()
 _BASE_TIMES: dict[tuple, tuple[float, float, float]] = {}
 _SENT: dict[tuple, tuple[str, float, bytes]] = {}
 _COMPUTED_AT: dict[tuple, float] = {}
+_COMPUTED_MONO: dict[tuple, float] = {}
 _COMPUTE_TOOK: dict[tuple, float] = {}
 _refresh_lock = threading.Lock()
 _refresh_thread: threading.Thread | None = None
@@ -5219,10 +5220,17 @@ def _compute_bytes(db: Any, store: Any, query: str, key_filters: Filters, versio
     filters = parse_filters(query, now)
     if key_filters.until == 0.0:
         filters = _clock_range(filters)
+    waited_from = time.monotonic()
     with _COMPUTE_LOCK:
         body = _MEMO.get(key)
         if body is not None:
             return body
+        # An answer for these filters finished while this request waited for the
+        # lock: it is as new as a compute begun now would be, and on a slow store a
+        # client that asks again each tick would otherwise never get one.
+        sent = _SENT.get((path, key_filters))
+        if sent is not None and _COMPUTED_MONO.get((path, key_filters), 0.0) >= waited_from:
+            return sent[2]
         started = time.monotonic()
         base_key = (path, key_filters.since, key_filters.until, filters.buckets, version)
         stamp = _BASE_TIMES.get(base_key)
@@ -5244,10 +5252,12 @@ def _compute_bytes(db: Any, store: Any, query: str, key_filters: Filters, versio
             while len(_SENT) > MEMO_MAX_KEYS:
                 _SENT.pop(next(iter(_SENT)))
         _COMPUTED_AT[(path, key_filters)] = now
+        _COMPUTED_MONO[(path, key_filters)] = time.monotonic()
         _COMPUTE_TOOK[(path, key_filters)] = time.monotonic() - started
         while len(_COMPUTED_AT) > MEMO_MAX_KEYS:
             oldest = next(iter(_COMPUTED_AT))
             _COMPUTED_AT.pop(oldest)
+            _COMPUTED_MONO.pop(oldest, None)
             _COMPUTE_TOOK.pop(oldest, None)
         _MEMO.put(key, body)
     return body
