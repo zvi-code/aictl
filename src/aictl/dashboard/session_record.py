@@ -21,12 +21,25 @@ import subprocess
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
+from dataclasses import replace
 from typing import Any
 
 from ..platforms import IS_WINDOWS
 from ..storage import _session_uuid
-from .board_api import MAX_DETAIL_ROWS, TITLE_CHARS, _basename, _label, _one_line, _short
+from .board_api import (
+    MAX_DETAIL_ROWS,
+    SPARK_POINTS,
+    TITLE_CHARS,
+    Filters,
+    _basename,
+    _Board,
+    _label,
+    _one_line,
+    _short,
+    _store_facts,
+    read_scope,
+)
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +56,8 @@ _BINARY_EXTS = frozenset(
 )
 SEARCH_DEFAULT_LIMIT = 200
 SEARCH_MAX_LIMIT = 500
+# Rows each store gives beyond the page, for the ids that fold into one session.
+PAGE_SLACK = 50
 EXCERPT_CHARS = 120
 # Commits whose pull requests are looked up, per request.
 MAX_PR_LOOKUPS = 50
@@ -62,10 +77,76 @@ def every_store(db: Any) -> Iterator[list[Any]]:
         yield conns
 
 
+# Python's sqlite3 lets go of the GIL for each row it steps to. In a busy daemon each step
+# can wait for the GIL, so a read of a few thousand rows can take seconds. The reads of the
+# search therefore come back as one row: SQLite packs the rows in a JSON array.
+_columns_of: dict[str, int] = {}
+_COLUMNS_MAX = 512
+_packing: list[bool] = []
+
+
+def _packs_exactly(conn: Any) -> bool:
+    """Whether this SQLite writes a REAL in JSON with all its digits (older ones keep 15)."""
+    if not _packing:
+        value = 0.1 + 0.2
+        try:
+            text = conn.execute("SELECT json_array(?)", (value,)).fetchone()[0]
+            _packing.append(json.loads(text)[0] == value)
+        except (sqlite3.Error, ValueError, TypeError):
+            _packing.append(False)
+    return _packing[0]
+
+
+class _Packed:
+    """The rows of a packed read, as a cursor gives them."""
+
+    def __init__(self, rows: list[tuple]) -> None:
+        self._rows = rows
+
+    def fetchall(self) -> list[tuple]:
+        return self._rows
+
+    def fetchone(self) -> tuple | None:
+        return self._rows[0] if self._rows else None
+
+    def __iter__(self) -> Iterator[tuple]:
+        return iter(self._rows)
+
+
+def _read(conn: Any, sql: str, params: Any = ()) -> Any:
+    """Run a read; its rows come back in one step when this SQLite packs them exactly."""
+    if not _packs_exactly(conn):
+        return conn.execute(sql, params)
+    n = _columns_of.get(sql)
+    if n is None:
+        n = len(conn.execute(f"SELECT * FROM ({sql}) LIMIT 0", params).description or ())
+        if len(_columns_of) >= _COLUMNS_MAX:
+            _columns_of.clear()
+        _columns_of[sql] = n
+    names = ", ".join(f"c{i}" for i in range(n))
+    packed = conn.execute(f"WITH t({names}) AS ({sql}) SELECT json_group_array(json_array({names})) FROM t", params).fetchone()[0]
+    return _Packed([tuple(row) for row in json.loads(packed or "[]")])
+
+
+class _PackedReads:
+    """A connection whose reads come back packed (see _read)."""
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+
+    def execute(self, sql: str, params: Any = ()) -> Any:
+        if sql.lstrip()[:6].upper() == "SELECT":
+            return _read(self._conn, sql, params)
+        return self._conn.execute(sql, params)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+
 def _rows(conn: Any, sql: str, params: Any = ()) -> list[tuple]:
     """Rows of one store; a store without the table (an old file) has none."""
     try:
-        return list(conn.execute(sql, params).fetchall())
+        return list(_read(conn, sql, params).fetchall())
     except sqlite3.Error as exc:
         log.debug("session record: query failed on a store: %s", exc)
         return []
@@ -125,25 +206,32 @@ def _stat(path: str) -> tuple[bool, int | None, float | None]:
     return True, st.st_size, st.st_mtime
 
 
-def _artifact_entries(conn: Any, sids: list[str], project: str) -> tuple[dict[str, dict], dict[str, int], int, int]:
+_INDEX_SQL = "SELECT session_id, path, folder, size_bytes, mtime FROM session_artifacts WHERE session_id IN (SELECT value FROM json_each(?))"
+_FOLDERS_SQL = "SELECT session_id, files_total, bytes_total FROM session_folders WHERE session_id IN (SELECT value FROM json_each(?))"
+_WRITES_SQL = (
+    "SELECT session_id, path, COUNT(*), MIN(ts), MAX(ts), MAX(size_bytes) FROM file_write_events"
+    " WHERE session_id IN (SELECT value FROM json_each(?)) GROUP BY session_id, path"
+)
+
+
+def _merge_artifacts(
+    index_rows: list[tuple], folder_rows: list[tuple], write_rows: list[tuple], project: str
+) -> tuple[dict[str, dict], dict[str, int], int, int]:
     """(artifacts by path, indexed size by path, count of all, bytes of the folder index).
 
     The one rule for what an artifact is: a file of the session folder, or a file the
     session wrote outside its project. The agent detail and the search both count with it.
+    Rows are those of the session's ids, with the session id first.
     """
-    marks = json.dumps(sorted(set(sids)))
-    in_sids = "session_id IN (SELECT value FROM json_each(?))"
     entries: dict[str, dict] = {}
     stored: dict[str, int] = {}
-    for path, part, size, mtime in _rows(conn, f"SELECT path, folder, size_bytes, mtime FROM session_artifacts WHERE {in_sids}", (marks,)):
+    for _sid, path, part, size, mtime in index_rows:
         entries[path] = {"kind": "session-folder", "folder": part or "", "writes": 0, "first_ts": None, "last_ts": None, "_mtime": mtime}
         stored[path] = int(size or 0)
-    folder_rows = _rows(conn, f"SELECT COALESCE(SUM(files_total), 0), COALESCE(SUM(bytes_total), 0) FROM session_folders WHERE {in_sids}", (marks,))
-    files_total, bytes_total = (int(folder_rows[0][0]), int(folder_rows[0][1])) if folder_rows else (0, 0)
+    files_total = sum(int(r[1] or 0) for r in folder_rows)
+    bytes_total = sum(int(r[2] or 0) for r in folder_rows)
     indexed = len(entries)
-    for path, writes, first, last, size in _rows(
-        conn, f"SELECT path, COUNT(*), MIN(ts), MAX(ts), MAX(size_bytes) FROM file_write_events WHERE {in_sids} GROUP BY path", (marks,)
-    ):
+    for _sid, path, writes, first, last, size in write_rows:
         entry = entries.get(path)
         if entry is None:
             # A file inside the project is a change, on the Changes tab. A relative path is in the project.
@@ -156,6 +244,49 @@ def _artifact_entries(conn: Any, sids: list[str], project: str) -> tuple[dict[st
         entry["last_ts"] = last if entry["last_ts"] is None else max(entry["last_ts"], last)
     total = max(files_total, indexed) + (len(entries) - indexed)
     return entries, stored, total, bytes_total
+
+
+def _artifact_entries(conn: Any, sids: list[str], project: str) -> tuple[dict[str, dict], dict[str, int], int, int]:
+    marks = (json.dumps(sorted(set(sids))),)
+    return _merge_artifacts(_rows(conn, _INDEX_SQL, marks), _rows(conn, _FOLDERS_SQL, marks), _rows(conn, _WRITES_SQL, marks), project)
+
+
+def artifact_counts(conn: Any, sessions: dict[str, tuple[list[str], str]]) -> dict[str, int]:
+    """The artifact count of each session, (its ids, its project) by session.
+
+    The same rule as the agent detail, with one row per session and per written path: a
+    page of sessions can hold hundreds of thousands of indexed files.
+    """
+    marks = (json.dumps(sorted({s for ids, _p in sessions.values() for s in ids})),)
+    in_sids = "session_id IN (SELECT value FROM json_each(?))"
+    folders: dict[str, tuple[int, int]] = {}
+    for sid, files_total, indexed in _rows(
+        conn,
+        f"SELECT f.session_id, f.files_total, (SELECT COUNT(*) FROM session_artifacts a WHERE a.session_id = f.session_id)"
+        f" FROM session_folders f WHERE f.{in_sids}",
+        marks,
+    ):
+        folders[sid] = (int(files_total or 0), int(indexed or 0))
+    writes: dict[str, list[tuple[str, int]]] = {}
+    for sid, path, indexed in _rows(
+        conn,
+        "SELECT w.session_id, w.path, EXISTS (SELECT 1 FROM session_artifacts a WHERE a.session_id = w.session_id AND a.path = w.path)"
+        f" FROM file_write_events w WHERE w.{in_sids} GROUP BY w.session_id, w.path",
+        marks,
+    ):
+        writes.setdefault(sid, []).append((path, int(indexed)))
+    out = {}
+    for sid, (ids, project) in sessions.items():
+        files_total = sum(folders.get(i, (0, 0))[0] for i in ids)
+        indexed = sum(folders.get(i, (0, 0))[1] for i in ids)
+        written = {
+            path
+            for i in ids
+            for path, in_index in writes.get(i, ())
+            if not in_index and path and os.path.isabs(path) and not _under(path, project)
+        }
+        out[sid] = max(files_total, indexed) + len(written)
+    return out
 
 
 def artifact_count(conn: Any, sids: list[str], project: str) -> int:
@@ -439,26 +570,47 @@ def _excerpt(text: str, q: str) -> str:
 
 
 _HIT_SQL = (
-    ("project", "SELECT session_id, project_path FROM sessions WHERE project_path LIKE ? ESCAPE '\\'"),
+    ("project", "SELECT session_id, project_path AS text, 0 FROM sessions WHERE project_path LIKE ? ESCAPE '\\'"),
     ("prompt", "SELECT session_id, text, MIN(ts) FROM session_prompts WHERE text LIKE ? ESCAPE '\\' GROUP BY session_id"),
-    ("artifact", "SELECT session_id, path, MAX(mtime) FROM session_artifacts WHERE path LIKE ? ESCAPE '\\' GROUP BY session_id"),
-    ("file", "SELECT session_id, path, MAX(ts) FROM file_write_events WHERE path LIKE ? ESCAPE '\\' GROUP BY session_id"),
-    ("commit", "SELECT session_id, subject, MAX(ts) FROM session_commits WHERE subject LIKE ? ESCAPE '\\' GROUP BY session_id"),
+    ("artifact", "SELECT session_id, path AS text, MAX(mtime) FROM session_artifacts WHERE path LIKE ? ESCAPE '\\' GROUP BY session_id"),
+    ("file", "SELECT session_id, path AS text, MAX(ts) FROM file_write_events WHERE path LIKE ? ESCAPE '\\' GROUP BY session_id"),
+    ("commit", "SELECT session_id, subject AS text, MAX(ts) FROM session_commits WHERE subject LIKE ? ESCAPE '\\' GROUP BY session_id"),
 )
 
 
 def _filters_sql(tools: list[str] | None, since: float | None, until: float | None) -> tuple[str, list[Any]]:
-    where, params = ["session_id != ''"], []
+    where, params = ["s.session_id != ''"], []
     if tools:
-        where.append("tool IN (SELECT value FROM json_each(?))")
+        where.append("s.tool IN (SELECT value FROM json_each(?))")
         params.append(json.dumps(tools))
     if since is not None:
-        where.append("started_at >= ?")
+        where.append("s.started_at >= ?")
         params.append(since)
     if until is not None:
-        where.append("started_at <= ?")
+        where.append("s.started_at <= ?")
         params.append(until)
     return " AND ".join(where), params
+
+
+# A session the agent detail can open: it has records of its own. The board's agents are
+# the sessions with model calls, tool calls or prompts, or usage read from a transcript. A
+# sessions row alone, such as a process the monitor saw, is not a session record.
+_HAS_RECORDS_SQL = (
+    "(EXISTS (SELECT 1 FROM requests r WHERE r.session_id = s.session_id)"
+    " OR EXISTS (SELECT 1 FROM tool_invocations t WHERE t.session_id = s.session_id)"
+    " OR EXISTS (SELECT 1 FROM session_prompts p WHERE p.session_id = s.session_id)"
+    " OR EXISTS (SELECT 1 FROM session_usage u WHERE u.session_id = s.session_id))"
+)
+
+
+def _hits_sql() -> str:
+    """Every kind of hit as (session id, rank, text) in one statement. Ranks start after "title"."""
+    return " UNION ALL ".join(f"SELECT session_id, {rank}, text FROM ({sql})" for rank, (_kind, sql) in enumerate(_HIT_SQL, start=1))
+
+
+def _moving(db: Any) -> set[str]:
+    moving = getattr(db, "moving_sessions", None)
+    return set(moving()) if callable(moving) else set()
 
 
 def search_sessions(
@@ -470,56 +622,114 @@ def search_sessions(
     limit: int = SEARCH_DEFAULT_LIMIT,
     offset: int = 0,
 ) -> dict:
-    """Sessions of all stores and all time that match *q*, newest first, one page of them."""
+    """Sessions of all stores and all time that match *q*, newest first, one page of them.
+
+    Only sessions with records of their own are listed, so the agent detail opens each row.
+    Each store answers with one query that does the search, the sort, the count and the
+    page inside SQLite. In a busy daemon each sqlite call, and each row it returns, can
+    wait for the GIL, so few calls and few rows keep the search fast.
+    """
     q = (q or "").strip()
     limit = max(1, min(int(limit or SEARCH_DEFAULT_LIMIT), SEARCH_MAX_LIMIT))
     offset = max(0, int(offset or 0))
     where, params = _filters_sql(tools, since, until)
-    hits: dict[str, tuple[int, str]] = {}
+    moving = _moving(db)
+    # Each store gives its newest sessions, a few more than the page: ids that share a UUID are one row.
+    room = offset + limit + PAGE_SLACK
+    if q:
+        hits = _hits_sql()
+        sql = (
+            f"WITH h(sid, rank, text) AS ({hits})"
+            f" SELECT s.session_id, s.started_at, MIN(h.rank), h.text, COUNT(*) OVER () FROM sessions s JOIN h ON h.sid = s.session_id"
+            f" WHERE {where} AND ({_HAS_RECORDS_SQL} OR s.session_id IN (SELECT value FROM json_each(?)))"
+            " GROUP BY s.session_id ORDER BY s.started_at DESC LIMIT ?"
+        )
+        args: list[Any] = [*(_like(q),) * len(_HIT_SQL), *params, json.dumps(sorted(moving)), room]
+    else:
+        # "+started_at" sorts in SQLite's sorter: the checks run in one call, not once per row returned.
+        sql = (
+            f"SELECT s.session_id, s.started_at, 0, '', COUNT(*) OVER () FROM sessions s"
+            f" WHERE {where} AND ({_HAS_RECORDS_SQL} OR s.session_id IN (SELECT value FROM json_each(?)))"
+            " ORDER BY +s.started_at DESC LIMIT ?"
+        )
+        args = [*params, json.dumps(sorted(moving)), room]
+    hits_of: dict[str, tuple[int, str]] = {}
     with every_store(db) as conns:
-        if q:
-            pattern = _like(q)
-            for conn in conns:
-                for kind, sql in _HIT_SQL:
-                    for row in _rows(conn, sql, (pattern,)):
-                        sid, text = row[0], row[1]
-                        rank = _RANK[kind]
-                        if sid and (sid not in hits or rank < hits[sid][0]):
-                            hits[sid] = (rank, str(text or ""))
-            if not hits:
-                return {"rows": [], "total": 0}
-            marks = json.dumps(sorted(hits))
-            listing = f"SELECT session_id, started_at FROM sessions WHERE {where} AND session_id IN (SELECT value FROM json_each(?))"
-            found = [r for conn in conns for r in _rows(conn, listing, (*params, marks))]
-        else:
-            found = [r for conn in conns for r in _rows(conn, f"SELECT session_id, started_at FROM sessions WHERE {where}", params)]
+        found: list[tuple[str, float, int]] = []
+        total = 0
+        for i, conn in enumerate(conns):
+            rows_here = _rows(conn, sql, args)
+            if rows_here:
+                total += int(rows_here[0][4])
+            for sid, at, rank, text, _n in rows_here:
+                found.append((sid, float(at or 0.0), i))
+                if q and (sid not in hits_of or rank < hits_of[sid][0]):
+                    hits_of[sid] = (int(rank), str(text or ""))
+        if q and moving:
+            total += _add_moving_hits(conns, hits, args, moving, where, params, found, hits_of)
         # One row per logical session: ids that share a tool UUID are one session.
         groups: dict[str, list[str]] = {}
         started: dict[str, float] = {}
-        for sid, at in found:
+        store_of: dict[str, int] = {}
+        for sid, at, i in found:
             key = _session_uuid(sid) or sid
             members = groups.setdefault(key, [])
             if sid not in members:
                 members.append(sid)
-            started[key] = max(started.get(key, 0.0), float(at or 0.0))
+            store_of.setdefault(sid, i)
+            started[key] = max(started.get(key, 0.0), at)
+        total -= len(found) - len(groups)
         ordered = sorted(groups, key=lambda k: (-started[k], k))
         page_keys = ordered[offset : offset + limit]
         page = {key: _representative(key, groups[key]) for key in page_keys}
-        members = [sid for key in page_keys for sid in groups[key]]
-        rows = _page_rows(conns, page, members, groups)
-    _add_numbers(db, rows)
+        rows = _page_rows(conns, store_of, page, groups)
+        _add_numbers(db, conns, store_of, moving, rows)
     out = []
     for key in page_keys:
         row = rows.get(page[key])
-        if row is None:
+        if row is None or row.pop("_closed", False):
+            total -= 1
             continue
         if q:
-            match, text = _match_of(row["title"], [hits[s] for s in groups[key] if s in hits], q)
+            match, text = _match_of(row["title"], [hits_of[s] for s in groups[key] if s in hits_of], q)
             row["match"], row["match_text"] = match, text
         else:
             row["match"], row["match_text"] = "", ""
         out.append(row)
-    return {"rows": out, "total": len(ordered)}
+    return {"rows": out, "total": max(total, len(out))}
+
+
+def _add_moving_hits(
+    conns: list[Any],
+    hits: str,
+    args: list[Any],
+    moving: set[str],
+    where: str,
+    params: list[Any],
+    found: list[tuple[str, float, int]],
+    hits_of: dict[str, tuple[int, str]],
+) -> int:
+    """Hits of sessions that move between stores: the hit can be in the store without the sessions row.
+
+    Returns how many sessions it added to *found*.
+    """
+    marks = json.dumps(sorted(moving))
+    pattern_args = args[: len(_HIT_SQL)]
+    for conn in conns:
+        for sid, rank, text in _rows(
+            conn, f"WITH h(sid, rank, text) AS ({hits}) SELECT sid, MIN(rank), text FROM h WHERE sid IN (SELECT value FROM json_each(?)) GROUP BY sid", (*pattern_args, marks)
+        ):
+            if sid not in hits_of or rank < hits_of[sid][0]:
+                hits_of[sid] = (int(rank), str(text or ""))
+    listed = {sid for sid, _at, _i in found}
+    before = len(listed)
+    wanted = json.dumps(sorted(sid for sid in hits_of if sid in moving and sid not in listed))
+    for i, conn in enumerate(conns):
+        for sid, at in _rows(conn, f"SELECT s.session_id, s.started_at FROM sessions s WHERE {where} AND s.session_id IN (SELECT value FROM json_each(?))", (*params, wanted)):
+            if sid not in listed:
+                listed.add(sid)
+                found.append((sid, float(at or 0.0), i))
+    return len(listed) - before
 
 
 def _representative(key: str, sids: list[str]) -> str:
@@ -536,24 +746,25 @@ def _match_of(title: str, found: list[tuple[int, str]], q: str) -> tuple[str, st
     return _MATCH_ORDER[rank], _excerpt(text, q)
 
 
-def _page_rows(conns: list[Any], page: dict[str, str], members: list[str], groups: dict[str, list[str]]) -> dict[str, dict]:
+def _by_store(store_of: dict[str, int], sids: Iterable[str]) -> dict[int, list[str]]:
+    out: dict[int, list[str]] = {}
+    for sid in sids:
+        out.setdefault(store_of.get(sid, 0), []).append(sid)
+    return out
+
+
+def _page_rows(conns: list[Any], store_of: dict[str, int], page: dict[str, str], groups: dict[str, list[str]]) -> dict[str, dict]:
     """The listing fields of the sessions of one page: tool, title, project, start and end."""
-    marks = json.dumps(sorted(set(members)))
     in_sids = "session_id IN (SELECT value FROM json_each(?))"
     base: dict[str, dict] = {}
     first_prompt: dict[str, tuple[float, str]] = {}
-    for conn in conns:
-        for sid, tool, project, st, en in _rows(
-            conn, f"SELECT session_id, tool, project_path, started_at, ended_at FROM sessions WHERE {in_sids}", (marks,)
-        ):
-            prior = base.get(sid)
-            # A session in two stores while it moves: the row that names a project wins.
-            if prior is None or (project and not prior["project"]):
-                base[sid] = {"tool": tool or "", "project": project or "", "started_at": st, "ended_at": en}
+    members = [sid for key in page for sid in groups[key]]
+    for i, sids in _by_store(store_of, members).items():
+        conn, marks = conns[i], (json.dumps(sorted(sids)),)
+        for sid, tool, project, st, en in _rows(conn, f"SELECT session_id, tool, project_path, started_at, ended_at FROM sessions WHERE {in_sids}", marks):
+            base[sid] = {"tool": tool or "", "project": project or "", "started_at": st, "ended_at": en}
         for sid, text, ts in _rows(
-            conn,
-            f"SELECT session_id, text, MIN(ts) FROM session_prompts WHERE {in_sids} AND agent_id = '' AND text != '' GROUP BY session_id",
-            (marks,),
+            conn, f"SELECT session_id, text, MIN(ts) FROM session_prompts WHERE {in_sids} AND agent_id = '' AND text != '' GROUP BY session_id", marks
         ):
             if sid not in first_prompt or (ts or 0.0) < first_prompt[sid][0]:
                 first_prompt[sid] = (ts or 0.0, text)
@@ -588,29 +799,113 @@ def _page_rows(conns: list[Any], page: dict[str, str], members: list[str], group
     return out
 
 
-def _store_order(db: Any, sid: str) -> str:
-    find = getattr(db, "store_of_session", None)
-    return (find(sid) or "") if callable(find) else ""
+class _PageBoard(_Board):
+    """The agent detail's board for several sessions of one store at once.
+
+    It reads the window of all the given sessions with one query per kind of row, and
+    gives each the numbers its agent detail shows. Only the counts are loaded.
+    """
+
+    def __init__(self, conn: Any, now: float, sids: list[str], facts: dict[str, set[str]]) -> None:
+        # One session id keeps the single-session reading of the board (index use, subagents).
+        super().__init__(conn, Filters(since=0.0, until=now + 60.0, buckets=1), now, None, only_session=sids[0], facts=facts)
+        self._page = sorted(set(sids))
+
+    def _window(self) -> tuple[str, list]:
+        return "ts >= ? AND ts <= ? AND session_id IN (SELECT value FROM json_each(?))", [self.f.since, self.f.until, json.dumps(self._page)]
+
+    def _load_fallback_cells(self) -> None:
+        # Usage read from a transcript, for the sessions of the page with no model call rows.
+        found = self.conn.execute(
+            "SELECT su.session_id FROM session_usage su WHERE su.session_id IN (SELECT value FROM json_each(?))"
+            " AND NOT EXISTS (SELECT 1 FROM requests r WHERE r.session_id = su.session_id)",
+            (json.dumps(self._page),),
+        ).fetchall()
+        if not found:
+            return
+        # The agent detail reads a session from its first prompt, model call or tool call on:
+        # its transcript usage counts from that time, as there.
+        marks = (json.dumps(sorted(sid for (sid,) in found)),) * 3
+        firsts = dict(
+            self.conn.execute(
+                "SELECT sid, MIN(t) FROM (SELECT session_id sid, MIN(ts) t FROM requests WHERE session_id IN (SELECT value FROM json_each(?)) GROUP BY sid"
+                " UNION ALL SELECT session_id, MIN(ts) FROM tool_invocations WHERE session_id IN (SELECT value FROM json_each(?)) GROUP BY session_id"
+                " UNION ALL SELECT session_id, MIN(ts) FROM session_prompts WHERE session_id IN (SELECT value FROM json_each(?)) GROUP BY session_id)"
+                " GROUP BY sid",
+                marks,
+            ).fetchall()
+        )
+        window = self.f
+        try:
+            for (sid,) in found:
+                first = firsts.get(sid)
+                self.only_session = sid
+                self.f = replace(window, since=first) if first and first < window.until else window
+                super()._load_fallback_cells()
+        finally:
+            self.only_session = self._page[0]
+            self.f = window
+
+    def _load_confirms(self) -> None:
+        # The confirmation rows show the pending questions, not the counts.
+        self.confirm_rows = []
+
+    def numbers(self, sid: str) -> dict | None:
+        """Tokens, cost, tool calls and prompts of a main agent, as its agent detail shows them."""
+        if sid not in self.scope:
+            return None
+        row = self._agent_row(sid, sid, "", [0] * SPARK_POINTS)
+        parts = [row.get(k) for k in ("input", "output", "cache_read", "cache_write")]
+        return {
+            "tokens": sum(int(v or 0) for v in parts),
+            "cost_usd": row["cost_usd"],
+            "tool_calls": row["tool_calls"],
+            "prompts": (row.get("msgs") or {}).get("user"),
+        }
 
 
-def _add_numbers(db: Any, rows: dict[str, dict]) -> None:
+def _numbers_in(db: Any, conn: Any, sids: list[str], now: float) -> dict[str, dict | None]:
+    facts = _store_facts(conn, str(getattr(db, "_path", "memory")))
+    board = _PageBoard(_PackedReads(conn), now, sids, facts).load(counts_only=True)
+    return {sid: board.numbers(sid) for sid in sids}
+
+
+def _add_numbers(db: Any, conns: list[Any], store_of: dict[str, int], moving: set[str], rows: dict[str, dict]) -> None:
     """Tokens, cost, tool calls, prompts, artifacts and commits, as the agent detail shows them.
 
-    Each session is read in its own read scope: one connection that sees every store
-    the session's rows are in, at one moment. Reading each store on its own misses the
-    rows of a session that moves between stores while the reads run.
+    The sessions of one store are counted together on that store's connection. A session
+    that moves between stores has rows in both: it is read in its own read scope, one
+    connection that sees every store it is in.
     """
-    from .board_api import read_scope, session_numbers
+    now = time.time()
+    numbers: dict[str, dict | None] = {}
+    artifacts: dict[str, int] = {}
+    commits: dict[str, int] = {}
 
-    # Sessions of one store share a read connection.
-    for sid in sorted(rows, key=lambda s: (_store_order(db, s), s)):
-        row = rows[sid]
-        numbers = session_numbers(db, sid) or {}
-        for name in ("tokens", "tool_calls", "prompts"):
-            row[name] = int(numbers.get(name) or 0)
-        row["cost_usd"] = numbers.get("cost_usd")
+    def wanted(sids: list[str]) -> dict[str, tuple[list[str], str]]:
+        return {sid: (_artifact_sids(sid, {}), rows[sid]["project"]) for sid in sids}
+
+    def count(conn: Any, sids: list[str]) -> None:
+        numbers.update(_numbers_in(db, conn, sids, now))
+        artifacts.update(artifact_counts(conn, wanted(sids)))
+        for sid, n in _rows(conn, "SELECT session_id, COUNT(*) FROM session_commits WHERE session_id IN (SELECT value FROM json_each(?)) GROUP BY session_id", (json.dumps(sids),)):
+            commits[sid] = int(n)
+
+    still = [sid for sid in rows if sid not in moving]
+    for i, sids in _by_store(store_of, still).items():
+        count(conns[i], sids)
+    for sid in (s for s in rows if s in moving):
         with read_scope(db, session=sid):
-            conn = db._conn()
-            row["artifacts"] = artifact_count(conn, _artifact_sids(sid, {}), row["project"])
-            found = _rows(conn, "SELECT COUNT(*) FROM session_commits WHERE session_id = ?", (sid,))
-            row["commits"] = int(found[0][0]) if found else 0
+            count(db._conn(), [sid])
+    for sid, row in rows.items():
+        found = numbers.get(sid)
+        if found is None:
+            # Records the board does not count (in another store, or outside its window): no agent to open.
+            row["_closed"] = True
+            continue
+        row["tokens"] = int(found["tokens"] or 0)
+        row["cost_usd"] = found["cost_usd"]
+        row["tool_calls"] = int(found["tool_calls"] or 0)
+        row["prompts"] = int(found["prompts"] or 0)
+        row["artifacts"] = artifacts.get(sid, 0)
+        row["commits"] = commits.get(sid, 0)

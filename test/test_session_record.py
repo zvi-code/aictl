@@ -365,6 +365,10 @@ def _seed_search(db, tmp_path) -> None:
         "INSERT INTO file_write_events (ts, session_id, tool, path, project_path) VALUES (?, 's-new', 'copilot-cli', '/tmp/out/widget-report.md', '/p/gamma')",
         (NOW - 900,),
     )
+    conn.execute(
+        "INSERT INTO tool_invocations (ts, session_id, tool, project_path, tool_name) VALUES (?, 's-new', 'copilot-cli', '/p/gamma', 'edit')",
+        (NOW - 900,),
+    )
     conn.execute("INSERT INTO session_commits (session_id, sha, ts, subject) VALUES ('s-mid', 'abc', ?, 'Add the widget API')", (NOW - 4500,))
     conn.commit()
     db.replace_session_artifacts("s-mid", "copilot-cli", "/state/s-mid", 1.0, [("/state/s-mid/files/widget.md", "files", 3, NOW - 4400)], 7, 30)
@@ -379,7 +383,8 @@ def _detail_numbers(db, sid: str) -> tuple:
     detail = agent_detail(db, sid, None, time.time())[1]
     agent = detail["agent"]
     tokens = sum(int(agent[k] or 0) for k in ("input", "output", "cache_read", "cache_write"))
-    return (tokens, agent["cost_usd"], agent["tool_calls"], agent["msgs"]["user"], detail["artifacts_total"])
+    # The search row has whole numbers: a count the agent detail leaves empty is 0 there.
+    return (tokens, agent["cost_usd"], agent["tool_calls"] or 0, agent["msgs"]["user"] or 0, detail["artifacts_total"])
 
 
 class TestSearch:
@@ -426,9 +431,32 @@ class TestSearch:
         conn = db._conn()
         _session(conn, SID, "claude-code", "/p/a", NOW - 100, input_tokens=5)
         _session(conn, f"claude-code:123:{SID}", "claude-code", "/p/a", NOW - 100)
+        for sid in (SID, f"claude-code:123:{SID}"):
+            conn.execute("INSERT INTO session_prompts (ts, session_id, agent_id, tool, text) VALUES (?, ?, '', 'claude-code', 'go')", (NOW - 90, sid))
         conn.commit()
         out = search_sessions(db)
         assert (out["total"], [r["id"] for r in out["rows"]]) == (1, [SID])
+
+    def test_a_process_the_monitor_saw_is_not_a_session_row(self, db, tmp_path):
+        """A sessions row with no records (a monitor placeholder) cannot be opened, so it is not listed."""
+        _seed_search(db, tmp_path)
+        conn = db._conn()
+        _session(conn, "claude-code:54259:1794162948", "claude-code", "", NOW - 10)
+        _session(conn, "codex-desktop:995:1794162948", "codex-desktop", "", NOW - 5)
+        conn.commit()
+        assert agent_detail(db, "claude-code:54259:1794162948", None, time.time())[0] == 404
+        out = search_sessions(db)
+        assert [r["id"] for r in out["rows"]] == ["s-new", "s-mid", "s-old"]
+        assert out["total"] == 3
+        assert search_sessions(db, "claude")["total"] == 0
+
+    def test_every_search_row_opens_in_the_agent_detail(self, db, tmp_path):
+        _seed_search(db, tmp_path)
+        _session(db._conn(), "placeholder:1:2", "claude-desktop", "", NOW - 1)
+        db._conn().commit()
+        for q in ("", "widget", "p"):
+            for row in search_sessions(db, q)["rows"]:
+                assert agent_detail(db, row["id"], None, time.time())[0] == 200, row["id"]
 
     def test_the_route_answers_with_the_contract_shape(self, db, tmp_path):
         _seed_search(db, tmp_path)
@@ -659,6 +687,33 @@ def test_a_search_row_has_the_numbers_of_the_agent_detail(db, tmp_path):
     assert (row["tool_calls"], row["prompts"], row["artifacts"]) == (4, 1, 6)
 
 
+def test_transcript_usage_counts_from_the_same_time_as_in_the_agent_detail(db):
+    """A session with usage from its transcript and no model call rows: the search row and the
+    agent detail count its usage over the same time window."""
+    conn = db._conn()
+    day = 86400.0
+    start = NOW - 3 * day
+    _session(conn, "u-1", "codex-cli", "/p/u", start)
+    models = {"gpt-5": {"requests": 4, "input_tokens": 300, "output_tokens": 30, "cache_read_tokens": 60, "cache_creation_tokens": 0}}
+    early = {"input_tokens": 200, "output_tokens": 20, "cache_read_tokens": 0, "cache_creation_tokens": 0}
+    late = {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 60, "cache_creation_tokens": 0}
+    daily = {
+        time.strftime("%Y-%m-%d", time.localtime(start)): {**early, "models": {"gpt-5": {**early, "requests": 2}}},
+        time.strftime("%Y-%m-%d", time.localtime(NOW - 100)): {**late, "models": {"gpt-5": {**late, "requests": 2}}},
+    }
+    conn.execute(
+        "INSERT INTO session_usage (session_id, tool, model, models_json, daily_json, input_tokens, output_tokens, cache_read_tokens,"
+        " cache_creation_tokens, request_count, tool_call_count, turn_count, started_at, last_activity_at, project_path)"
+        " VALUES ('u-1', 'codex-cli', 'gpt-5', ?, ?, 300, 30, 60, 0, 4, 1, 1, ?, ?, '/p/u')",
+        (json.dumps(models), json.dumps(daily), start, NOW - 100),
+    )
+    # The first tool call comes long after the transcript's first day.
+    conn.execute("INSERT INTO tool_invocations (ts, session_id, tool, tool_name) VALUES (?, 'u-1', 'codex-cli', 'shell')", (NOW - 150,))
+    conn.commit()
+    row = next(r for r in search_sessions(db)["rows"] if r["id"] == "u-1")
+    assert _numbers(row) == _detail_numbers(db, "u-1")
+
+
 def test_a_session_whose_rows_are_in_two_stores_is_counted_whole(tmp_path, monkeypatch):
     """A session placed in the shared store, then named a project, moves; until the move is
     done its rows are in both stores. The search row must count both, as the agent detail does."""
@@ -705,5 +760,51 @@ def test_the_index_does_not_place_a_session_the_stores_do_not_know(tmp_path):
         assert stores.store_of_session(SID) is None
         stores.upsert_session(SessionRow(session_id=SID, tool="copilot-cli", project_path="", started_at=NOW - 100))
         assert indexer.poll() == 1
+    finally:
+        stores.close()
+
+
+def test_the_search_answers_the_same_with_and_without_packed_reads(db, tmp_path, monkeypatch):
+    """An SQLite that writes a REAL in JSON with fewer digits reads row by row: the same answer."""
+    _seed_search(db, tmp_path)
+    packed = [search_sessions(db, q) for q in ("", "widget")]
+    monkeypatch.setattr(session_record, "_packing", [False])
+    assert [search_sessions(db, q) for q in ("", "widget")] == packed
+
+
+def test_a_page_of_many_sessions_makes_few_queries(tmp_path):
+    """Each sqlite call can wait for the GIL in a busy daemon: a page of 200 sessions in 12
+    stores must not make a query per session."""
+    from aictl.storage import CallFacts, SessionPromptRow, SessionRow, ToolInvocationRow
+
+    stores = ProjectStores(db_path=tmp_path / "config" / "history.db", flush_interval=0)
+    try:
+        for k in range(12):
+            repo = tmp_path / f"repo{k}"
+            (repo / ".git").mkdir(parents=True)
+            for j in range(20):
+                sid = f"s{k}-{j}"
+                stores.upsert_session(SessionRow(session_id=sid, tool="claude-code", project_path=str(repo), started_at=NOW - 5000 + k * 100 + j))
+                stores.write_call_facts(
+                    CallFacts(
+                        prompts=[SessionPromptRow(dedup_key=f"p{sid}", ts=NOW - 900, session_id=sid, tool="claude-code", project_path=str(repo), text="do it")],
+                        tools=[ToolInvocationRow(dedup_key=f"t{sid}", ts=NOW - 800, session_id=sid, tool="claude-code", tool_name="Bash", project_path=str(repo))],
+                    )
+                )
+        calls = []
+        real = session_record._read
+
+        def counted(conn, sql, params=()):
+            calls.append(sql)
+            return real(conn, sql, params)
+
+        session_record._read = counted
+        try:
+            out = search_sessions(stores, limit=200)
+        finally:
+            session_record._read = real
+        assert out["total"] == 240 and len(out["rows"]) == 200
+        assert all(r["tool_calls"] == 1 and r["prompts"] == 1 for r in out["rows"])
+        assert len(calls) < 15 * 13, len(calls)
     finally:
         stores.close()
