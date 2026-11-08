@@ -36,6 +36,7 @@ from .platforms import config_dir
 from .storage_migrations import CURRENT_VERSION as SCHEMA_VERSION
 from .storage_migrations import apply_pending as _apply_pending_migrations
 from .tool_scope import UNATTRIBUTED_IDS, stored_ids_for
+from .utils import estimate_tokens
 
 log = logging.getLogger(__name__)
 
@@ -297,6 +298,14 @@ CREATE TABLE IF NOT EXISTS session_loaded_files (
     session_id TEXT NOT NULL, path TEXT NOT NULL, how TEXT NOT NULL DEFAULT '',
     detail TEXT DEFAULT '', ts REAL DEFAULT 0, tool TEXT DEFAULT '', agent_id TEXT DEFAULT '',
     PRIMARY KEY (session_id, path, how)
+);
+
+-- What fills each session's context: the latest record of each item, sizes only, never content.
+CREATE TABLE IF NOT EXISTS session_context_items (
+    session_id TEXT NOT NULL, agent_id TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL, name TEXT NOT NULL,
+    ts REAL DEFAULT 0, path TEXT DEFAULT '', chars INTEGER DEFAULT 0, tokens INTEGER DEFAULT 0,
+    estimated INTEGER DEFAULT 1, removed INTEGER DEFAULT 0, tool TEXT DEFAULT '',
+    PRIMARY KEY (session_id, agent_id, kind, name)
 );
 
 CREATE TABLE IF NOT EXISTS maintenance_state (
@@ -976,6 +985,24 @@ class LoadedFileRow:
 
 
 @dataclass(slots=True)
+class ContextItemRow:
+    """One item a tool put in a session's context, as last recorded (see m036)."""
+
+    session_id: str
+    kind: str  # memory_file | skills | mcp_instructions | custom_agents | tools_listed | instruction_file | system_prompt_other | reset
+    name: str
+    ts: float = 0.0
+    agent_id: str = ""
+    path: str = ""
+    chars: int = 0
+    tokens: int = 0
+    estimated: int = 1
+    removed: int = 0
+    tool: str = ""
+    project_path: str = ""
+
+
+@dataclass(slots=True)
 class FileWriteRow:
     """One write-like file event attributed to an agent/session."""
 
@@ -1083,10 +1110,12 @@ class CallFacts:
     file_writes: list[FileWriteRow] = field(default_factory=list)
     context_events: list[ContextEventRow] = field(default_factory=list)
     loaded_files: list[LoadedFileRow] = field(default_factory=list)
+    context_items: list[ContextItemRow] = field(default_factory=list)
 
     def __len__(self) -> int:
         return (
-            len(self.loaded_files)
+            len(self.context_items)
+            + len(self.loaded_files)
             + len(self.context_events)
             + len(self.requests)
             + len(self.tools)
@@ -1360,6 +1389,22 @@ def _loaded_file_params(r: LoadedFileRow) -> tuple:
     return (r.session_id, r.path, r.how, r.detail, r.ts, r.tool, r.agent_id)
 
 
+# The newest record of an item wins: a re-send after a compaction replaces the copy before it.
+_CONTEXT_ITEM_UPSERT = (
+    "INSERT INTO session_context_items(session_id, agent_id, kind, name, ts, path, chars, tokens, estimated, removed, tool)"
+    " VALUES(?,?,?,?,?,?,?,?,?,?,?)"
+    " ON CONFLICT(session_id, agent_id, kind, name) DO UPDATE SET"
+    " ts=excluded.ts, path=excluded.path, chars=excluded.chars, tokens=excluded.tokens,"
+    " estimated=excluded.estimated, removed=excluded.removed,"
+    " tool=CASE WHEN excluded.tool != '' THEN excluded.tool ELSE session_context_items.tool END"
+    " WHERE excluded.ts >= session_context_items.ts"
+)
+
+
+def _context_item_params(r: ContextItemRow) -> tuple:
+    return (r.session_id, r.agent_id, r.kind, r.name, r.ts, r.path, r.chars, r.tokens, r.estimated, r.removed, r.tool)
+
+
 def _session_pid(session_or_id) -> str | None:
     """Return the PID string from a session dict (prefers structured ``pid`` field)
     or from a composite 'tool:pid:ts' session_id string."""
@@ -1534,8 +1579,8 @@ def _profiles_look_duplicate(a: dict, b: dict) -> bool:
 
 
 def _estimate_tokens(content: str) -> int:
-    """Rough token estimate: ~4 chars per token."""
-    return max(1, len(content) // 4) if content else 0
+    """Token estimate (utils.estimate_tokens); at least 1 for non-empty content."""
+    return max(1, estimate_tokens(content)) if content else 0
 
 
 def _parse_session_id(sid: str) -> tuple[int, float]:
@@ -5175,6 +5220,7 @@ class HistoryDB:
             )
             conn.executemany(_SUBAGENT_UPSERT, [_subagent_params(r) for r in facts.agents])
             conn.executemany(_LOADED_FILE_UPSERT, [_loaded_file_params(r) for r in facts.loaded_files])
+            conn.executemany(_CONTEXT_ITEM_UPSERT, [_context_item_params(r) for r in facts.context_items])
             self._write_transcript_file_edits(conn, facts.file_writes)
             self._drop_superseded_rows(conn, facts)
             conn.commit()
@@ -5263,7 +5309,7 @@ class HistoryDB:
         conn = self._conn()
         for table in (
             "requests", "tool_invocations", "session_prompts", "skill_uses", "agents", "file_write_events", "context_events",
-            "session_loaded_files",
+            "session_loaded_files", "session_context_items",
         ):
             conn.executemany(
                 f"UPDATE {table} SET tool = ? WHERE session_id = ? AND tool != ?",

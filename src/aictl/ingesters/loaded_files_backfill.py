@@ -27,19 +27,20 @@ LOCK_RETRY_S = 2.0
 
 
 class _LoadedFilesOnly:
-    """The store as the transcript reader sees it: only loaded-file rows are written."""
+    """The store as the transcript reader sees it: only the rows of one CallFacts list (*attr*) are written."""
 
-    def __init__(self, store: Any) -> None:
+    def __init__(self, store: Any, attr: str = "loaded_files") -> None:
         self._store = store
+        self._attr = attr
         self.changed = 0
 
     def write_call_facts(self, facts: Any) -> int:
-        rows = list(getattr(facts, "loaded_files", []) or [])
+        rows = list(getattr(facts, self._attr, []) or [])
         if not rows:
             return 0
         for attempt in range(LOCK_RETRIES):
             try:
-                written = int(self._store.write_call_facts(CallFacts(loaded_files=rows)))
+                written = int(self._store.write_call_facts(CallFacts(**{self._attr: rows})))
                 self.changed += written
                 return written
             except sqlite3.OperationalError as exc:
@@ -60,9 +61,9 @@ class _LoadedFilesOnly:
         return None
 
 
-def run(store: Any, ingester_factory: Any = None) -> bool:
-    """Run the backfill once. Returns True when it is done (now or before)."""
-    if store.state_value(STATE_KEY) is not None:
+def run(store: Any, ingester_factory: Any = None, *, attr: str = "loaded_files", state_key: str = STATE_KEY) -> bool:
+    """Run the backfill of the *attr* rows once. Returns True when it is done (now or before)."""
+    if store.state_value(state_key) is not None:
         return True
     if ingester_factory is None:
         from .transcript_usage import TranscriptUsageIngester
@@ -70,13 +71,17 @@ def run(store: Any, ingester_factory: Any = None) -> bool:
         def ingester_factory(target: Any) -> Any:
             return TranscriptUsageIngester(target, backfill_days=ALL_DAYS)
 
-    target = _LoadedFilesOnly(store)
+    target = _LoadedFilesOnly(store, attr)
     started = time.monotonic()
     ingester = ingester_factory(target)
     ingester.poll()
     if len(ingester.facts):
-        log.warning("Loaded files backfill stopped with %d rows not written; it runs again on the next start", len(ingester.facts))
+        log.warning(
+            "Backfill of %s stopped with %d rows not written; it runs again on the next start",
+            attr,
+            len(ingester.facts),
+        )
         return False
-    store.set_state(STATE_KEY, time.time())
-    log.info("Loaded files backfill: %d rows in %.0f s", target.changed, time.monotonic() - started)
+    store.set_state(state_key, time.time())
+    log.info("Backfill of %s: %d rows in %.0f s", attr, target.changed, time.monotonic() - started)
     return True

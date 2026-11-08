@@ -5,7 +5,7 @@
 import { html } from 'htm/preact';
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import * as api from '../../api.js';
-import { NA, NO_MODEL, errorLabel, colorFor, projectName, fmtBytes, fmtCpu, fmtDur, fmtLines, fmtMem, fmtMs, fmtN, fmtShare, fmtUsd, isLive, sparkPath, stamp, statusMeta } from './format.js';
+import { NA, NO_MODEL, errorLabel, colorFor, projectName, fmtBytes, fmtCpu, fmtDur, fmtLines, fmtMem, fmtMs, fmtN, fmtShare, fmtUsd, estTokens, estTokensFromSize, isLive, sparkPath, stamp, statusMeta } from './format.js';
 import { Ico, PATHS } from './icons.js';
 import { Actions, Stats } from './Panel.js';
 import { statusCell } from './panels.js';
@@ -492,9 +492,124 @@ function InstructionsTab({ a, data, act }) {
     ${a.parent_id ? null : html`<${FixedPanel} id="actxf" title="Files that can affect this session" go=${act.settingsPivot ? { label: 'All files in Settings', pick: () => act.settingsPivot('files') } : null} sub=${cf.git_root ? fmtN(cf.total) + ' files in ' + folders + (folders === 1 ? ' folder of ' : ' folders of ') + cf.git_root + ' apply to the session folder' + (hit ? ', ' + hit + ' loaded' : '') + (cf.total > cf.files.length ? ', ' + cf.files.length + ' listed' : '') : 'No git repository'}><${ContextFiles} cf=${cf} act=${act}/></${FixedPanel}>`}`;
 }
 
+// ─── What fills the context ───────────────────────────────────────
+// One colour per kind of content, never per rank, the same in the computed view and in the tool's own report.
+const CONCEPT = {
+  conversation: 's1', messages: 's1',
+  memory_files: 's2', instruction_file: 's2', system_prompt: 's2',
+  skills: 's3',
+  mcp_instructions: 's4', mcp_server_instructions: 's4', mcp_tools: 's4', mcp_tools_deferred: 's4',
+  custom_agents: 's5',
+};
+const partColor = key => (CONCEPT[key] ? 'var(--' + CONCEPT[key] + ')' : 'var(--ink3)');
+const GREY = 'var(--line2)';
+const FREE_COLOR = 'var(--sel)';
+const est = (on) => (on ? '~' : '');
+
+/** The bar and the rows of the computed breakdown: its parts, the part not itemized, and the free space under the limit. */
+export function breakdownModel(b) {
+  if (!b || b.total == null) return null;
+  const parts = (b.parts || []).filter(p => p.tokens != null && p.tokens > 0).map(p => ({ ...p, c: partColor(p.key) }));
+  const rest = b.rest && b.rest.tokens != null && b.rest.tokens > 0 ? { ...b.rest, c: GREY, rest: true } : null;
+  const free = b.limit != null && b.limit > b.total ? { key: 'free', label: 'Free space', tokens: b.limit - b.total, c: FREE_COLOR, free: true } : null;
+  const whole = b.limit != null && b.limit >= b.total ? b.limit : b.total;
+  const rows = [...parts, ...(rest ? [rest] : []), ...(free ? [free] : [])];
+  // The conversation is measured from call to call only when its items carry that basis; a tool's own split has none.
+  const byDelta = parts.some(p => p.key === 'conversation' && (p.items || []).some(x => x.basis === 'call delta'));
+  return { rows, outside: [], whole, total: b.total, limit: b.limit, share: b.limit ? b.total / b.limit : null, at: b.at_ts, estimated: rows.some(p => p.estimated || (p.items || []).some(x => x.estimated)), fixed: byDelta ? b.fixed : null };
+}
+
+/** The tool's own /context report: its categories as it counted them. Deferred tools are listed by name only and stay out of the bar. */
+export function reportModel(r) {
+  if (!r || r.total == null) return null;
+  const all = (r.parts || []).filter(p => p.tokens != null && p.tokens > 0);
+  const deferred = all.filter(p => /_deferred$/.test(p.key)).map(p => ({ ...p, c: partColor(p.key), outside: true }));
+  const inside = all.filter(p => !/_deferred$/.test(p.key) && p.key !== 'free_space' && p.key !== 'autocompact_buffer').map(p => ({ ...p, c: partColor(p.key) }));
+  const buffer = all.filter(p => p.key === 'autocompact_buffer').map(p => ({ ...p, c: GREY, rest: true }));
+  const free = all.filter(p => p.key === 'free_space').map(p => ({ ...p, c: FREE_COLOR, free: true }));
+  const rows = [...inside, ...buffer, ...free];
+  return { rows, outside: deferred, whole: r.limit || r.total, total: r.total, limit: r.limit, share: r.limit ? r.total / r.limit : null, at: r.ts, estimated: false, model: r.model };
+}
+
+function BreakdownRow({ r, whole }) {
+  const [open, setOpen] = useState(false);
+  const items = r.items || [];
+  const label = html`<i class="bd-sw" style=${{ background: r.c }}></i><span class="bd-bkname">${r.label}</span>`;
+  const anyEst = r.estimated || items.some(x => x.estimated);
+  return html`<div class=${'bd-bkrow' + (r.free || r.outside ? ' bd-bkfree' : '')} role="listitem">
+    ${items.length
+      ? html`<button type="button" class="bd-bkhead" aria-expanded=${open ? 'true' : 'false'} onClick=${() => setOpen(!open)} title=${open ? 'Hide the items' : 'Show the ' + items.length + ' items'}>${label}<small>${items.length}</small></button>`
+      : html`<span class="bd-bkhead">${label}</span>`}
+    <span class="bd-bkv" title=${r.estimated ? 'Estimated from the size of the text: about 4 bytes per token' : anyEst ? 'Measured; its items are shared out by size' : 'As the tool reports it'}>${est(r.estimated) + fmtN(r.tokens)}</span>
+    <span class="bd-bks" title=${r.outside ? 'Not in the context' : ''}>${r.outside ? '' : fmtShare(r.tokens / whole)}</span>
+    ${open ? html`<div class="bd-bkitems">${items.slice().sort((x, y) => (y.tokens || 0) - (x.tokens || 0)).map(it => html`<div key=${it.name + (it.path || '')} class="bd-bkitem" title=${it.path || it.name}><span>${it.name}</span><span class="bd-bkv">${it.tokens == null ? NA : est(it.estimated) + fmtN(it.tokens)}</span></div>`)}</div>` : null}
+  </div>`;
+}
+
+/** What the context held, by kind, against the prompt limit: aictl's count at the last call, or the tool's own last /context report. */
+function ContextBreakdown({ b, act, span = 12, go = true }) {
+  const computed = useMemo(() => breakdownModel(b), [b]);
+  const report = useMemo(() => reportModel(b?.reported), [b]);
+  const [view, setView] = useState('now');
+  const m = view === 'report' && report ? report : computed || report;
+  if (!m) return null;
+  const isReport = m === report;
+  const sub = isReport ? 'As ' + (m.model || 'the tool') + ' reported it with /context, ' + stamp(m.at, true) : 'At the last call' + (m.at ? ', ' + stamp(m.at, true) : '');
+  const notes = isReport
+    ? ['The tool\'s own count, at the time it was asked. Deferred tools are listed by name only and are not in the total.']
+    : [
+      m.fixed != null ? fmtN(m.fixed) + ' tokens were fixed at the first call after the start or the last compaction; the conversation is the growth since then, measured from each call.' : '',
+      m.estimated ? '~ marks a size estimated from the text, about 4 bytes per token.' : '',
+      'A part the tool does not itemize is one grey row.',
+    ];
+  return html`<${FixedPanel} id="actxb" span=${span} title="What fills the context" sub=${sub} go=${go ? { label: 'Context', pick: () => act.setDrawerTab('context') } : null}>
+    ${computed && report ? html`<div class="bd-bkview" role="group" aria-label="Source of the numbers">
+      <button type="button" aria-pressed=${!isReport ? 'true' : 'false'} onClick=${() => setView('now')}>Last call (aictl)</button>
+      <button type="button" aria-pressed=${isReport ? 'true' : 'false'} onClick=${() => setView('report')}>${'/context, ' + stamp(report.at, true)}</button>
+    </div>` : null}
+    <div class="bd-ctxhead">
+      <span class="bd-ctxbig" title=${isReport ? 'The total the tool reported' : 'Input, cache read and cache write of the last call'}>${fmtN(m.total)}<small>tokens</small></span>
+      <span class="bd-ctxof">${m.limit == null ? html`prompt limit <b>${NA}</b>` : html`<b>${fmtShare(m.share)}</b> of the ${fmtN(m.limit)} limit`}</span>
+    </div>
+    <div class="bd-segbar bd-ctxbar bd-bkbar" role="img" aria-label=${m.rows.map(r => r.label + ' ' + fmtN(r.tokens)).join(', ')}>${m.rows.map(r => html`<span key=${r.key} class="bd-segpart" style=${{ flex: r.tokens + ' 1 0', background: r.c }} title=${r.label + ': ' + est(r.estimated) + fmtN(r.tokens) + ' tokens'}></span>`)}</div>
+    <div class="bd-bk" role="list" aria-label="What fills the context">${[...m.rows, ...m.outside].map(r => html`<${BreakdownRow} key=${r.key} r=${r} whole=${m.whole}/>`)}</div>
+    <div class="bd-note">${notes.filter(Boolean).join(' ')}</div>
+  </${FixedPanel}>`;
+}
+
+const LARGEST = 5;
+
+/** The tool results that put the most text into the context, by size, when no measured steps exist. */
+export function largestResults(calls, n = LARGEST) {
+  return (calls || []).filter(c => c.output_bytes != null && c.output_bytes > 0).slice().sort((x, y) => y.output_bytes - x.output_bytes).slice(0, n);
+}
+
+/** The largest growth of the context from one call to the next, measured, with what came in between; else the largest tool results by size. */
+function LargestAdds({ data, act, span }) {
+  const steps = data.context?.breakdown?.heaviest || [];
+  const results = useMemo(() => largestResults(data.tool_calls), [data]);
+  const measured = steps.length > 0;
+  const def = measured ? {
+    cols: [{ k: 'w', l: 'What came in' }, { k: 'at', l: 'Time', w: '62px' }, { k: 't', l: 'Tokens', n: true, w: '70px', t: 'The growth from one model call to the next, as the tool reports the calls' }],
+    rows: steps.map((x, i) => ({ id: i, go: () => act.setDrawerTab(x.kind === 'Tool results' ? 'tools' : 'turns'), cells: { w: { v: x.name ? x.kind + ': ' + x.name : x.kind }, at: { v: stamp(x.ts), cls: 'dim' }, t: { v: fmtN(x.tokens) } } })),
+    primary: 'w',
+  } : {
+    cols: [{ k: 'n', l: 'Tool' }, { k: 'tg', l: 'Target' }, { k: 'at', l: 'Time', w: '62px' }, { k: 'o', l: 'Result', n: true, w: '84px', t: 'Size of the result as text, and about 4 bytes per token' }],
+    rows: results.map((c, i) => ({ id: i, go: () => act.setDrawerTab('tools'), cells: { n: { v: c.name, cls: 'm' }, tg: { v: c.target || NA, cls: 'm dim', path: !!c.target, title: c.target || '' }, at: { v: stamp(c.ts), cls: 'dim' }, o: { v: fmtBytes(c.output_bytes), sub: '~' + fmtN(estTokensFromSize(c.output_bytes)) + ' tokens' } } })),
+    primary: 'n', none: 'No tool result size is stored for this session.',
+  };
+  return html`<${FixedPanel} id="abig" span=${span} title="Largest additions" sub=${measured ? 'Measured from one call to the next' : 'Tool results by size'} go=${{ label: 'Tool calls', pick: () => act.setDrawerTab('tools') }}>
+    <${Table} def=${def} label="Largest additions"/>
+    <div class="bd-note">${measured
+      ? 'Each row is how much the context grew from one model call to the next, named by what came in between. It stays until a compaction removes it.'
+      : 'A result stays in the context until a compaction removes it, and the tool sends it again with each later call.'}</div>
+  </${FixedPanel}>`;
+}
+
 function ContextTab({ a, data, act }) {
   if (!data.context) return html`<div class="bd-empty">No model call of this agent is stored, so its context size is not known.</div>`;
-  return html`<${ContextPanel} a=${a} context=${data.context} copilot=${(a.tool || '').startsWith('copilot')} subagents=${data.subagents} act=${act}/>`;
+  return html`${data.context.breakdown ? html`<${ContextBreakdown} b=${data.context.breakdown} act=${act} go=${false}/>` : null}
+    <${ContextPanel} a=${a} context=${data.context} copilot=${(a.tool || '').startsWith('copilot')} subagents=${data.subagents} act=${act}/>`;
 }
 
 const OUTPUT_ROWS = 5;
@@ -564,14 +679,15 @@ function OverviewTab({ a, data, st, ctx, act, pending }) {
   const copyLink = window.location.origin + window.location.pathname + '?agent=' + encodeURIComponent(a.id);
   const main = !a.parent_id;
   const tl = useMemo(() => (main ? timelineModel(a, data) : null), [a, data]);
-  const hasTl = hasTimeline(tl);
+  const breakdown = context?.breakdown && context.breakdown.total != null ? context.breakdown : null;
   return html`
     ${pending ? html`<${FixedPanel} id="ap" title="Waiting for your confirmation"><div class="bd-ptext">${pending.name + ': ' + pending.target + '\nWaiting for ' + fmtDur(Date.now() / 1000 - pending.since_ts) + '. Answer in the tool that asks.'}</div></${FixedPanel}>` : null}
     <div class="bd-kpis bd-drkpis" role="group" aria-label="Totals">${kpis.map(k => html`<div key=${k.label} class="bd-kpi" title=${k.title || k.label}><span class="bd-l">${k.label}</span><span class="bd-v">${k.value}</span><span class=${'bd-d' + (k.cls ? ' bd-' + k.cls : '')}>${k.sub || ''}</span></div>`)}<${Anomalies} data=${data} act=${act}/></div>
-    ${main && hasTl ? html`<${AgentTimeline} m=${tl} act=${act} span=${context ? 6 : 12}/>` : null}
-    ${context ? html`<${ContextPanel} a=${a} context=${context} copilot=${copilot} subagents=${data.subagents} act=${act} compact=${true} span=${main && hasTl ? 6 : 12}/>` : null}
+    ${breakdown ? html`<${ContextBreakdown} b=${breakdown} act=${act} span=${6}/>` : context ? html`<${ContextPanel} a=${a} context=${context} copilot=${copilot} subagents=${data.subagents} act=${act} compact=${true} span=${6}/>` : null}
+    <${LargestAdds} data=${data} act=${act} span=${context ? 6 : 12}/>
     <${OutputsCard} data=${data} act=${act} span=${main ? 6 : 12}/>
     ${main ? html`<${InstructionsCard} a=${a} cf=${cf} act=${act}/>` : null}
+    ${main && tl && tl.lanes.length > 1 ? html`<${AgentTimeline} m=${tl} act=${act}/>` : null}
     <${FixedPanel} id="am" span=${6} title="Usage by model" sub=${(data.by_model || []).length ? (data.by_model.length === 1 ? '1 model' : data.by_model.length + ' models') : ''}><${Table} def=${modelDef} label="Usage by model"/></${FixedPanel}>
     <div class="bd-drcol" style="grid-column:span 6">
       <${FixedPanel} id="askill" title="Skills used" sub=${(data.skills || []).length ? data.skills.reduce((n, x) => n + x.uses, 0) + ' uses of ' + data.skills.length + ' skills' + (a.parent_id ? '' : ', with its subagents') : 'None in this session'}><${Table} def=${skills} label="Skills used"/></${FixedPanel}>
@@ -805,7 +921,7 @@ function SkillDrawer({ d, ctx, frame, act }) {
     sort: { k: 'at', dir: 'desc' }, limit: 80, none: 'No reads of the skill file in this time.', primary: 'ag',
   }), [data]);
   const tokens = d.summary?.tokens;
-  const fileTokens = d.summary?.file_tokens ?? (locations[0]?.content ? Math.round(locations[0].content.length / 4) : null);
+  const fileTokens = d.summary?.file_tokens ?? (locations[0]?.content ? estTokens(locations[0].content) : null);
   const description = locations.find(l => l.description)?.description || d.summary?.description;
   const sub = data ? [locations.length ? [...new Set(locations.map(l => l.scope))].join(', ') : 'No file found', data.uses + ' uses in this time'].join(', ') : 'Loading...';
   return html`<${Frame} ...${frame} title=${d.name} sub=${sub}>

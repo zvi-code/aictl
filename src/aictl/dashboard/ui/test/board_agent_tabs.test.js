@@ -259,8 +259,9 @@ describe('agent drawer tab list and header', () => {
     expect(container.querySelector('#dr-atl .bd-psub').textContent).toBe('2 subagents over 17 min');
     fireEvent.click(within(container.querySelector('#dr-atl')).getByRole('button', { name: 'Timeline →' }));
     expect(act.setDrawerTab).toHaveBeenCalledWith('timeline');
-    // The timeline sits right under the strip.
-    expect(container.querySelector('.bd-drkpis').nextElementSibling.id).toBe('dr-atl');
+    // What fills the context and the largest results come first; the lanes follow the outputs and instructions.
+    expect(container.querySelector('#dr-atl').previousElementSibling.id).toBe('dr-ains');
+    expect(container.querySelector('#dr-atl').style.gridColumn).toBe('span 12');
   });
 
   it('caps the lanes at eight and sends the rest to Team; a lone main agent with no tick draws nothing', async () => {

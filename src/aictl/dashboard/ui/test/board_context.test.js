@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor, within } from '@testing-library/preact';
 import { html } from 'htm/preact';
-import Drawer from '../src/components/board/Drawer.js';
+import Drawer, { breakdownModel, largestResults, reportModel } from '../src/components/board/Drawer.js';
 import { instructionsByTool } from '../src/components/board/findings.js';
 import { getContextAudit } from '../src/api.js';
 import { NOW, agentDetailFixture, boardFixture } from './fixtures/board.fixture.js';
@@ -190,5 +190,125 @@ describe('getContextAudit project', () => {
     vi.stubGlobal('fetch', fetchMock);
     await getContextAudit();
     expect(fetchMock.mock.calls[0][0]).not.toContain('project=');
+  });
+});
+
+describe('what fills the context', () => {
+  const claude = {
+    at_ts: NOW, total: 60000, limit: 200000,
+    parts: [
+      { key: 'skills', label: 'Skills', tokens: 9000, estimated: true, items: [] },
+      { key: 'memory_files', label: 'Memory files', tokens: 4000, estimated: true, items: [{ name: 'AGENTS.md', path: '/r/AGENTS.md', tokens: 3000, estimated: true }, { name: 'CLAUDE.md', path: '/h/CLAUDE.md', tokens: 1000, estimated: true }] },
+      { key: 'custom_agents', label: 'Custom agents', tokens: 0, estimated: true, items: [] },
+    ],
+    rest: { key: 'rest', label: 'System prompt, tools and conversation (not itemized)', tokens: 47000 },
+  };
+  const rows = c => [...c.querySelectorAll('#dr-actxb .bd-bkrow')].map(r => r.textContent);
+
+  it('lists each kind with its tokens and share of the limit, the part not itemized, then the free space', async () => {
+    const { container } = openAgent('claude-code', { ...base, breakdown: claude }, null, 'overview', { setDrawerTab: vi.fn() });
+    await waitFor(() => expect(container.querySelector('#dr-actxb')).toBeTruthy());
+    expect(rows(container)).toEqual([
+      'Skills~9.0 k5%',
+      'Memory files2~4.0 k2%',
+      'System prompt, tools and conversation (not itemized)47 k24%',
+      'Free space140 k70%',
+    ]);
+    expect(container.querySelector('#dr-actxb').textContent).toContain('30% of the 200 k limit');
+    expect(container.querySelector('#dr-actxb').style.gridColumn).toBe('span 6');
+    expect(container.querySelector('#dr-actxs')).toBeNull();
+  });
+
+  it('opens a kind to its items, largest first', async () => {
+    const { container } = openAgent('claude-code', { ...base, breakdown: claude }, null, 'overview', { setDrawerTab: vi.fn() });
+    await waitFor(() => expect(container.querySelector('#dr-actxb')).toBeTruthy());
+    fireEvent.click(within(container.querySelector('#dr-actxb')).getByRole('button', { name: /Memory files/ }));
+    expect([...container.querySelectorAll('.bd-bkitem')].map(i => i.textContent)).toEqual(['AGENTS.md~3.0 k', 'CLAUDE.md~1.0 k']);
+  });
+
+  it('keeps the colour of a kind when another kind is missing', () => {
+    const one = breakdownModel(claude).rows.find(r => r.key === 'memory_files').c;
+    const two = breakdownModel({ ...claude, parts: claude.parts.filter(p => p.key !== 'skills') }).rows.find(r => r.key === 'memory_files').c;
+    expect(one).toBe(two);
+  });
+
+  it('draws no free space without a limit, and shares are of the last call then', () => {
+    const m = breakdownModel({ ...claude, limit: null });
+    expect(m.rows.map(r => r.key)).toEqual(['skills', 'memory_files', 'rest']);
+    expect(m.whole).toBe(60000);
+  });
+
+  it('falls back to the context size card when the record has no breakdown', async () => {
+    const { container } = openAgent('copilot-cli', { ...base, compactions: [], split: null }, null, 'overview', { setDrawerTab: vi.fn() });
+    await waitFor(() => expect(container.querySelector('#dr-actxs')).toBeTruthy());
+    expect(container.querySelector('#dr-actxb')).toBeNull();
+  });
+
+  it('puts the breakdown above the full context panel on the Context tab', async () => {
+    const { container } = openAgent('claude-code', { ...base, compactions: [], breakdown: claude });
+    await waitFor(() => expect(container.querySelector('#dr-actxb')).toBeTruthy());
+    expect(container.querySelector('#dr-actxb').nextElementSibling.id).toBe('dr-actx');
+  });
+});
+
+describe('largest tool results', () => {
+  it('lists the five largest results with their size and an estimate in tokens', () => {
+    const calls = [10, 4000, 0, 800, 120000, 50, 9000, null].map((b, i) => ({ name: 't' + i, output_bytes: b, ts: NOW }));
+    expect(largestResults(calls).map(c => c.name)).toEqual(['t4', 't6', 't1', 't3', 't5']);
+  });
+});
+
+describe("the tool's own /context report and the measured steps", () => {
+  const reported = { ts: NOW - 3600, model: 'claude-opus-5-5', total: 131000, limit: 600000, source: 'claude /context', parts: [
+    { key: 'free_space', label: 'Free space', tokens: 436000 },
+    { key: 'mcp_tools_deferred', label: 'MCP tools (deferred)', tokens: 167000 },
+    { key: 'messages', label: 'Messages', tokens: 59800 },
+    { key: 'autocompact_buffer', label: 'Autocompact buffer', tokens: 33000 },
+    { key: 'mcp_tools', label: 'MCP tools', tokens: 17400, items: [{ name: 'mcp__a__b', tokens: 156 }] },
+    { key: 'memory_files', label: 'Memory files', tokens: 4900 },
+  ] };
+  const b = { at_ts: NOW, total: 300000, limit: 600000, fixed: 100000, parts: [{ key: 'conversation', label: 'Conversation', tokens: 200000, estimated: false, items: [{ name: 'Tool results: Bash', tokens: 60000, estimated: true, basis: 'call delta' }] }],
+    rest: { key: 'rest', label: 'System prompt and tool definitions (not itemized)', tokens: 100000 }, reported,
+    heaviest: [{ ts: NOW - 60, tokens: 12218, kind: 'Tool results', name: 'Bash' }, { ts: NOW - 30, tokens: 7372, kind: 'Replies and tool calls', name: null }] };
+
+  it('keeps deferred tools out of the bar and lists them last, the buffer grey before the free space', () => {
+    const m = reportModel(reported);
+    expect(m.rows.map(r => r.key)).toEqual(['messages', 'mcp_tools', 'memory_files', 'autocompact_buffer', 'free_space']);
+    expect(m.outside.map(r => r.key)).toEqual(['mcp_tools_deferred']);
+    expect(m.whole).toBe(600000);
+  });
+
+  it('says nothing about a fixed first call when the split is the tool\'s own', () => {
+    expect(breakdownModel({ ...b, parts: [{ key: 'conversation', label: 'Conversation', tokens: 200000, estimated: false, items: [] }] }).fixed).toBeNull();
+    expect(breakdownModel(b).fixed).toBe(100000);
+  });
+
+  it('gives a kind the same colour in both views', () => {
+    const now = breakdownModel({ ...b, parts: [{ key: 'memory_files', label: 'Memory files', tokens: 3000, estimated: true }] });
+    expect(now.rows[0].c).toBe(reportModel(reported).rows.find(r => r.key === 'memory_files').c);
+  });
+
+  it('switches between the last call and the report, and names the source', async () => {
+    const { container } = openAgent('claude-code', { ...base, breakdown: b }, null, 'overview', { setDrawerTab: vi.fn() });
+    await waitFor(() => expect(container.querySelector('#dr-actxb')).toBeTruthy());
+    const panel = container.querySelector('#dr-actxb');
+    expect(panel.textContent).toContain('100 k tokens were fixed at the first call');
+    fireEvent.click(within(panel).getByRole('button', { name: /^\/context, / }));
+    expect(panel.querySelector('.bd-psub').textContent).toContain('As claude-opus-5-5 reported it with /context');
+    expect(panel.textContent).toContain('22% of the 600 k limit');
+    expect(panel.textContent).toContain('Deferred tools are listed by name only');
+    const deferred = [...panel.querySelectorAll('.bd-bkrow')].find(r => r.textContent.startsWith('MCP tools (deferred)'));
+    expect(deferred.querySelector('.bd-bks').textContent).toBe('');
+  });
+
+  it('lists the largest measured additions, named by what came in', async () => {
+    const setDrawerTab = vi.fn();
+    const { container } = openAgent('claude-code', { ...base, breakdown: b }, null, 'overview', { setDrawerTab });
+    await waitFor(() => expect(container.querySelector('#dr-abig tbody tr')).toBeTruthy());
+    const rows = [...container.querySelectorAll('#dr-abig tbody tr')].map(r => r.textContent);
+    expect(rows[0]).toContain('Tool results: Bash');
+    expect(rows[0]).toContain('12 k');
+    expect(rows[1]).toContain('Replies and tool calls');
+    expect(container.querySelector('#dr-abig .bd-psub').textContent).toBe('Measured from one call to the next');
   });
 });

@@ -49,6 +49,7 @@ from ..ingesters._common import project_key, project_root
 from ..storage import EventRow, _session_uuid
 from ..tool_scope import is_unattributed, normalize_selection, stored_ids_for
 from ..tools import TOOL_LABELS
+from ..utils import estimate_tokens_from_size
 from .analytics import _day_span
 from .api_handlers import self_usage
 
@@ -2677,7 +2678,9 @@ def _read_text(path: str, limit: int) -> str | None:
 def _skill_file_tokens(path: str) -> int | None:
     """An estimate at four characters per token. The tools do not report a skill's size."""
     try:
-        return Path(path).stat().st_size // 4
+        from ..utils import estimate_tokens_from_size
+
+        return estimate_tokens_from_size(Path(path).stat().st_size)
     except OSError:
         return None
 
@@ -4955,7 +4958,7 @@ def _agent_context(conn: sqlite3.Connection, sid: str, agent: str, root: bool) -
         row
         for row in conn.execute(
             "SELECT input_tokens + cache_read_tokens + cache_creation_tokens, tool_tokens, max_prompt_tokens,"
-            f" request_bytes, available_tools FROM requests WHERE session_id = ?{agent_sql} AND NOT is_error ORDER BY ts",
+            f" request_bytes, available_tools, ts, tool, model FROM requests WHERE session_id = ?{agent_sql} AND NOT is_error ORDER BY ts",
             params,
         )
         if row[0]
@@ -5025,7 +5028,300 @@ def _agent_context(conn: sqlite3.Connection, sid: str, agent: str, root: bool) -
     }
     if by_agent is not None:
         result["by_agent"] = by_agent
+    breakdown = _context_breakdown(
+        conn, sid, agent, root, tool=str(sizes[-1][6] or ""), at_ts=float(sizes[-1][5] or 0.0), total=values[-1],
+        limit=limit, tool_tokens=sizes[-1][1], split=result["split"], model=str(sizes[-1][7] or ""),
+    )
+    if breakdown is not None:
+        result["breakdown"] = breakdown
     return result
+
+
+# Context parts: key -> label. See ingesters/context_items for what each kind holds.
+_CLAUDE_PARTS = {
+    "memory_file": ("memory_files", "Memory files"),
+    "skills": ("skills", "Skills"),
+    "mcp_instructions": ("mcp_instructions", "MCP instructions"),
+    "custom_agents": ("custom_agents", "Custom agents"),
+    "tools_listed": ("tools_listed", "Deferred tools"),
+}
+_COPILOT_SECTION_KINDS = ("instruction_file", "skills", "custom_agents", "system_prompt_other")
+_CLAUDE_REST = "System prompt and tool definitions (not itemized)"
+_COPILOT_REST = "Conversation (not itemized)"
+
+
+def _context_item_rows(conn: sqlite3.Connection, sid: str, agent: str, root: bool, at_ts: float) -> list[tuple]:
+    """(kind, name, path, tokens) of the items in an agent's context at *at_ts*.
+
+    The newest record of each item counts, unless the tool removed it, or a reset of
+    its kind (or of all kinds: a compaction, a new system prompt) came after it.
+    A subagent has only its own rows; a main agent the rows without an agent.
+    """
+    if not _table_exists(conn, "session_context_items"):
+        return []
+    agents = ("", sid) if root else (agent,)
+    marks = ",".join("?" for _ in agents)
+    rows = conn.execute(
+        "SELECT kind, name, path, tokens, removed, ts FROM session_context_items"
+        f" WHERE session_id = ? AND agent_id IN ({marks}) AND (ts <= ? OR ts = 0)",
+        (sid, *agents, at_ts),
+    ).fetchall()
+    resets: dict[str, float] = {}
+    for kind, name, _p, _t, _r, ts in rows:
+        if kind == "reset":
+            resets[name] = max(resets.get(name, 0.0), ts or 0.0)
+    everything = resets.get("*", 0.0)
+    return [
+        (kind, name, path or "", int(tokens or 0))
+        for kind, name, path, tokens, removed, ts in rows
+        if kind != "reset" and not removed and (ts or 0.0) >= max(everything, resets.get(kind, 0.0))
+    ]
+
+
+def _part(key: str, label: str, tokens: int | None, estimated: bool, items: list[dict]) -> dict:
+    items = sorted(items, key=lambda i: (-(i["tokens"] or 0), i["name"]))
+    return {"key": key, "label": label, "tokens": tokens, "estimated": estimated, "items": items[:MAX_LIST_ROWS], "count": len(items)}
+
+
+def _item(name: str, path: str, tokens: int) -> dict:
+    return {"name": _basename(path) if path else name, "path": path or None, "tokens": tokens, "estimated": True}
+
+
+def _tool_groups(rows: list[tuple]) -> list[dict]:
+    """Listed tool names grouped by their MCP server (``mcp__<server>__x``); other names one by one."""
+    groups: dict[str, list[int]] = {}
+    for _k, name, _p, tokens in rows:
+        server = mcp_server_of(name)
+        groups.setdefault(f"{server} (MCP)" if server else name, []).append(tokens)
+    return [
+        {"name": f"{g}: {len(v)} tools" if len(v) > 1 else g, "path": None, "tokens": sum(v), "estimated": True}
+        for g, v in groups.items()
+    ]
+
+
+def _segment_calls(conn: sqlite3.Connection, sid: str, agent: str, root: bool, at_ts: float) -> list[tuple[float, int, int]]:
+    """(ts, context size, output tokens) of the calls since the agent's last compaction up to *at_ts*."""
+    agent_sql, params = (" AND agent_id = ''", [sid]) if root else (" AND agent_id = ?", [sid, agent])
+    calls = [
+        (float(ts or 0.0), int(size), int(out or 0))
+        for ts, size, out in conn.execute(
+            "SELECT ts, input_tokens + cache_read_tokens + cache_creation_tokens, output_tokens FROM requests"
+            f" WHERE session_id = ?{agent_sql} AND NOT is_error AND ts <= ? ORDER BY ts",
+            (*params, at_ts),
+        )
+        if size
+    ]
+    cut = conn.execute(
+        f"SELECT MAX(ts) FROM context_events WHERE session_id = ?{agent_sql} AND kind = 'compaction' AND ts <= ?",
+        (*params, at_ts),
+    ).fetchone()[0]
+    if cut is not None:
+        after = [c for c in calls if c[0] > cut]
+        calls = after or calls[-1:]
+    return calls
+
+
+# A reply is weighed by its output tokens, which also count thinking and tool call input.
+_TOOL_RESULTS, _REPLIES, _PROMPTS = "Tool results", "Replies and tool calls", "User prompts"
+
+
+def _call_steps(conn: sqlite3.Connection, sid: str, agent: str, root: bool, calls: list[tuple[float, int, int]]) -> list[dict]:
+    """The growth of the context from each call to the next, given to what came between them.
+
+    A step's growth (call k minus call k-1, measured; below zero counts 0) is shared, in
+    proportion to their sizes, among the tool results of the tools called after call k-1,
+    the prompts sent after it and the reply of call k-1 (its output tokens). Each tool
+    result and prompt belongs to the first call after it.
+    """
+    if len(calls) < 2:
+        return []
+    agent_sql, params = (" AND agent_id IN ('', ?)", [sid, sid]) if root else (" AND agent_id = ?", [sid, agent])
+    lo, hi = calls[0][0], calls[-1][0]
+    tools = conn.execute(
+        f"SELECT ts, tool_name, output_bytes FROM tool_invocations WHERE session_id = ?{agent_sql} AND ts >= ? AND ts < ?",
+        (*params, lo, hi),
+    ).fetchall()
+    prompts = conn.execute(
+        f"SELECT ts, LENGTH(CAST(text AS BLOB)) FROM session_prompts WHERE session_id = ?{agent_sql} AND ts >= ? AND ts < ?",
+        (*params, lo, hi),
+    ).fetchall()
+    stamps = [c[0] for c in calls]
+    by_call: dict[int, list[tuple[str, str, float]]] = defaultdict(list)
+    for ts, name, size in tools:
+        by_call[bisect.bisect_right(stamps, ts)].append((_TOOL_RESULTS, str(name or "?"), estimate_tokens_from_size(size or 0)))
+    for ts, size in prompts:
+        by_call[bisect.bisect_right(stamps, ts)].append((_PROMPTS, "", estimate_tokens_from_size(size or 0)))
+    steps = []
+    for k in range(1, len(calls)):
+        grew = max(0, calls[k][1] - calls[k - 1][1])
+        parts = [*by_call.get(k, []), (_REPLIES, "", float(calls[k - 1][2]))]
+        weight = sum(w for _k, _n, w in parts)
+        if weight <= 0:
+            parts = [p for p in parts if p[0] != _REPLIES] or parts
+            parts, weight = [(a, b, 1.0) for a, b, _w in parts], float(len(parts))
+        shares: dict[tuple[str, str], float] = defaultdict(float)
+        for kind, name, w in parts:
+            shares[(kind, name)] += grew * w / weight
+        top = max(shares.items(), key=lambda kv: kv[1])[0]
+        steps.append({"ts": calls[k][0], "tokens": grew, "kind": top[0], "name": top[1] or None, "shares": shares})
+    return steps
+
+
+def _conversation_part(fixed: int, last: int, steps: list[dict]) -> tuple[dict, bool]:
+    """The measured conversation: last call minus the first of the segment, with its items by call delta."""
+    tokens = last - fixed
+    clamped = tokens < 0
+    totals: dict[tuple[str, str], float] = defaultdict(float)
+    for step in steps:
+        for key, value in step["shares"].items():
+            totals[key] += value
+    items = [
+        # The step totals are measured; their share among the items is by size, so the items are estimates.
+        {"name": f"{kind}: {name}" if name else kind, "path": None, "tokens": round(v), "estimated": True, "basis": "call delta"}
+        for (kind, name), v in totals.items()
+        if round(v) > 0
+    ]
+    return _part("conversation", "Conversation", max(0, tokens), False, items), clamped
+
+
+def _heaviest(steps: list[dict]) -> list[dict]:
+    top = sorted(steps, key=lambda s: -s["tokens"])[:5]
+    return [{"ts": s["ts"], "tokens": s["tokens"], "kind": s["kind"], "name": s["name"]} for s in top if s["tokens"] > 0]
+
+
+def _context_report(conn: sqlite3.Connection, sid: str, agent: str, root: bool) -> dict | None:
+    """The latest ``/context`` report of the agent: Claude Code's own count, by category and item."""
+    if not _table_exists(conn, "session_context_items"):
+        return None
+    agents = ("", sid) if root else (agent,)
+    marks = ",".join("?" for _ in agents)
+    head = conn.execute(
+        f"SELECT ts, path, tokens, chars FROM session_context_items WHERE session_id = ? AND agent_id IN ({marks})"
+        " AND kind = 'report' ORDER BY ts DESC LIMIT 1",
+        (sid, *agents),
+    ).fetchone()
+    if head is None:
+        return None
+    ts, model, total, limit = head
+    rows = conn.execute(
+        f"SELECT kind, name, path, tokens FROM session_context_items WHERE session_id = ? AND agent_id IN ({marks})"
+        " AND kind IN ('report_category', 'report_item') AND ts = ?",
+        (sid, *agents, ts),
+    ).fetchall()
+    sections: dict[str, list[dict]] = defaultdict(list)
+    for kind, name, detail, tokens in rows:
+        if kind == "report_item":
+            section, _sep, item = name.partition("|")
+            sections[section.lower()].append({"name": item, "detail": detail or None, "tokens": tokens})
+    parts = []
+    for kind, name, _d, tokens in rows:
+        if kind != "report_category":
+            continue
+        # A category's table, when the report has one: "MCP tools" -> "### MCP Tools".
+        items = sorted(sections.get(name.lower(), []), key=lambda i: -i["tokens"])[:MAX_LIST_ROWS]
+        parts.append({"key": re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_"), "label": name, "tokens": tokens, "items": items})
+    parts.sort(key=lambda p: -p["tokens"])
+    return {"ts": ts, "model": model or None, "total": total or None, "limit": limit or None, "parts": parts, "source": "claude /context"}
+
+
+def _context_breakdown(
+    conn: sqlite3.Connection,
+    sid: str,
+    agent: str,
+    root: bool,
+    *,
+    tool: str,
+    at_ts: float,
+    total: int,
+    limit: int | None,
+    tool_tokens: int | None,
+    split: dict | None,
+    model: str = "",
+) -> dict | None:
+    """What fills an agent's context at its last model call, by part and item, as /context shows it.
+
+    Claude Code: the calls since the last compaction are a segment. Its first call is ``fixed``
+    (system prompt, tools, attachments, first prompt); the conversation is the last call minus
+    it, measured, with items by call delta. The attachment parts inside ``fixed`` are size
+    estimates (utils.estimate_tokens_from_size), scaled down when they add up to more than ``fixed``; ``rest`` is what they leave
+    of it. Copilot CLI: the measured split at shutdown, else the system prompt estimate and the
+    measured tool definitions. ``clamped`` says that a figure was below zero and is shown as 0.
+    ``heaviest`` holds the five calls that grew the context most. ``reported`` is the latest
+    ``/context`` report of Claude Code, when the session has one. None when nothing is known.
+    """
+    rows = _context_item_rows(conn, sid, agent, root, at_ts)
+    calls = _segment_calls(conn, sid, agent, root, at_ts) if total else []
+    steps = _call_steps(conn, sid, agent, root, calls)
+    parts: list[dict] = []
+    fixed: int | None = None
+    clamped = False
+    rest_tokens: int | None = None
+    copilot = tool.startswith("copilot") or any(r[0] in ("instruction_file", "system_prompt_other") for r in rows)
+    reported = None if copilot else _context_report(conn, sid, agent, root)
+    if copilot:
+        if not root:
+            split = None
+        items = [_item(name, path, tokens) for kind, name, path, tokens in rows if kind in _COPILOT_SECTION_KINDS and kind != "skills"]
+        skills = [r[3] for r in rows if r[0] == "skills"]
+        if skills:
+            items.append({"name": f"Skills: {len(skills)} skills", "path": None, "tokens": sum(skills), "estimated": True})
+        if not items and split is None:
+            return None
+        if split is not None:
+            parts.append(_part("system_prompt", "System prompt", split.get("system"), False, items))
+            parts.append(_part("tool_definitions", "Tool definitions", split.get("tools"), False, []))
+            parts.append(_part("conversation", "Conversation", split.get("conversation"), False, []))
+            rest_label = "Not itemized"
+        else:
+            parts.append(_part("system_prompt", "System prompt", sum(i["tokens"] for i in items), True, items))
+            parts.append(_part("tool_definitions", "Tool definitions", tool_tokens, False, []))
+            rest_label = _COPILOT_REST
+        known = [p["tokens"] for p in parts]
+        if total and all(t is not None for t in known):
+            rest_tokens = total - sum(known)
+            if rest_tokens < 0:
+                rest_tokens, clamped = 0, True
+        if calls:
+            fixed = calls[0][1]
+    elif tool.startswith("claude") or rows:
+        if not calls:
+            return None
+        fixed = calls[0][1]
+        by_kind: dict[str, list[tuple]] = {}
+        for r in rows:
+            if r[0] in _CLAUDE_PARTS:
+                by_kind.setdefault(r[0], []).append(r)
+        estimate = sum(r[3] for kind_rows in by_kind.values() for r in kind_rows)
+        scale = fixed / estimate if estimate > fixed else 1.0
+        for kind, kind_rows in by_kind.items():
+            key, label = _CLAUDE_PARTS[kind]
+            scaled = [(k, n, p, round(t * scale)) for k, n, p, t in kind_rows]
+            items = _tool_groups(scaled) if kind == "tools_listed" else [_item(n, p, t) for _k, n, p, t in scaled]
+            part = _part(key, label, sum(r[3] for r in scaled), True, items)
+            if scale < 1.0:
+                part["scaled"] = round(scale, 4)
+            parts.append(part)
+        rest_tokens = max(0, fixed - sum(p["tokens"] for p in parts))
+        conversation, clamped = _conversation_part(fixed, total, steps)
+        parts.append(conversation)
+        rest_label = _CLAUDE_REST
+        if limit is None and reported and reported["limit"] and (not model or reported["model"] in (None, model)):
+            limit = reported["limit"]
+    else:
+        return None
+    parts.sort(key=lambda p: -(p["tokens"] or 0))
+    out = {
+        "at_ts": at_ts or None,
+        "total": total or None,
+        "limit": limit or None,
+        "fixed": fixed,
+        "parts": parts,
+        "rest": {"key": "rest", "label": rest_label, "tokens": rest_tokens, "clamped": clamped},
+        "heaviest": _heaviest(steps),
+    }
+    if reported is not None:
+        out["reported"] = reported
+    return out
 
 
 def mcp_server_of(tool_name: str) -> str | None:

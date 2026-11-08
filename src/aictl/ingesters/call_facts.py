@@ -33,6 +33,7 @@ from ..storage import (
     AgentRow,
     CallFacts,
     ContextEventRow,
+    ContextItemRow,
     FileWriteRow,
     LoadedFileRow,
     RequestRow,
@@ -41,7 +42,8 @@ from ..storage import (
     ToolInvocationRow,
     _dedup_key,
 )
-from . import loaded_files
+from ..utils import estimate_tokens_from_size
+from . import context_items, loaded_files
 from ._common import coerce_ts, decode_file_uri
 
 log = logging.getLogger(__name__)
@@ -276,6 +278,7 @@ class FactBuffer:
         self.file_writes: dict[str, FileWriteRow] = {}
         self.context_events: dict[str, ContextEventRow] = {}
         self.loaded_files: dict[tuple[str, str, str], LoadedFileRow] = {}
+        self.context_items: dict[tuple[str, str, str, str], ContextItemRow] = {}
         self.surface: Callable[[str], str] | None = None
         self.written = 0
 
@@ -328,9 +331,18 @@ class FactBuffer:
         if prior is None or (row.ts and (not prior.ts or row.ts < prior.ts)):
             self.loaded_files[key] = row
 
+    def add_context_item(self, row: ContextItemRow) -> None:
+        # Not limited to the window, like loaded files: the newest record of each item wins,
+        # and a later line of the same time wins over an earlier one (see _CONTEXT_ITEM_UPSERT).
+        key = (row.session_id, row.agent_id, row.kind, row.name)
+        prior = self.context_items.get(key)
+        if prior is None or row.ts >= prior.ts:
+            self.context_items[key] = row
+
     def __len__(self) -> int:
         return (
-            len(self.loaded_files)
+            len(self.context_items)
+            + len(self.loaded_files)
             + len(self.context_events)
             + len(self.requests)
             + len(self.tools)
@@ -353,6 +365,7 @@ class FactBuffer:
             return
         rows = [*self.requests.values(), *self.tools.values(), *self.prompts.values(), *self.skills.values()]
         rows += [*self.agents.values(), *self.file_writes.values(), *self.context_events.values(), *self.loaded_files.values()]
+        rows += [*self.context_items.values()]
         if self.surface is not None:
             for row in rows:
                 if row.tool == "copilot-cli":
@@ -366,6 +379,7 @@ class FactBuffer:
             file_writes=list(self.file_writes.values()),
             context_events=list(self.context_events.values()),
             loaded_files=list(self.loaded_files.values()),
+            context_items=list(self.context_items.values()),
         )
         try:
             self.written += writer(facts)
@@ -379,6 +393,15 @@ class FactBuffer:
         self.skills, self.agents, self.file_writes = {}, {}, {}
         self.context_events = {}
         self.loaded_files = {}
+        self.context_items = {}
+
+
+def _context_item_row(sid: str, agent_id: str, ts: float, item: Any, tool: str, project: str) -> ContextItemRow:
+    return ContextItemRow(
+        session_id=sid, kind=item.kind, name=item.name, ts=ts, agent_id=agent_id, path=item.path,
+        chars=0 if item.removed else item.chars, tokens=0 if item.removed else estimate_tokens_from_size(item.chars),
+        estimated=1, removed=1 if item.removed else 0, tool=tool, project_path=project,
+    )
 
 
 def _keep_text(store: Any) -> bool:
@@ -488,6 +511,9 @@ class ClaudeFacts:
                 )
             )
 
+        for item in context_items.claude_attachment(obj.get("attachment")):
+            self.buffer.add_context_item(_context_item_row(sid, agent_id, ts, item, "claude-code", str(obj.get("cwd") or "")))
+
     def _touch_agent(self, agent_id: str, sid: str, role: str, ts: float, obj: dict) -> None:
         row = self._open_agents.get(agent_id)
         if row is None:
@@ -592,6 +618,10 @@ class ClaudeFacts:
 
     def _compaction(self, sid: str, obj: dict, ts: float, agent_id: str) -> None:
         meta = obj.get("compactMetadata") if isinstance(obj.get("compactMetadata"), dict) else {}
+        agent_id = agent_id or (str(obj.get("agentId") or "") if obj.get("isSidechain") else "")
+        # Claude Code sends its context attachments again after a compaction: the earlier ones stop counting.
+        reset = context_items.Item(context_items.RESET, context_items.ALL)
+        self.buffer.add_context_item(_context_item_row(sid, agent_id, ts, reset, "claude-code", str(obj.get("cwd") or "")))
         # A resumed session replays the line with the same id, so the key leaves the session out.
         self.buffer.add_context_event(
             ContextEventRow(
@@ -608,9 +638,26 @@ class ClaudeFacts:
             )
         )
 
+    def _context_report(self, sid: str, obj: dict, ts: float, agent_id: str) -> None:
+        """The output of ``/context``: Claude Code's own count of what fills the context."""
+        content = obj.get("content")
+        if not isinstance(content, str) or context_items.REPORT_HEADING not in content:
+            return
+        agent_id = agent_id or (str(obj.get("agentId") or "") if obj.get("isSidechain") else "")
+        for item in context_items.claude_context_report(content):
+            self.buffer.add_context_item(
+                ContextItemRow(
+                    session_id=sid, kind=item.kind, name=item.name, ts=ts, agent_id=agent_id, path=item.path,
+                    chars=item.chars, tokens=item.tokens, estimated=0, tool="claude-code", project_path=str(obj.get("cwd") or ""),
+                )
+            )
+
     def _system_line(self, sid: str, obj: dict, ts: float, agent_id: str) -> None:
         if obj.get("subtype") == "compact_boundary":
             self._compaction(sid, obj, ts, agent_id)
+            return
+        if obj.get("subtype") == "local_command":
+            self._context_report(sid, obj, ts, agent_id)
             return
         if obj.get("subtype") != "api_error":
             return
@@ -1065,6 +1112,8 @@ class CopilotFacts:
             extra = [p for p in files_for_folder(self.cwd)["files"] if p.endswith(".md")]
         for path, detail in loaded_files.system_prompt_files(content, self._root(), extra):
             self._loaded(path, loaded_files.SYSTEM_PROMPT, ts, agent_id, detail)
+        for item in context_items.copilot_system_prompt(content, self._root(), extra):
+            self.buffer.add_context_item(_context_item_row(self.sid, agent_id, ts, item, "copilot-cli", self.cwd))
 
     def _custom_agent(self, data: dict, ts: float, agent_id: str) -> None:
         path = loaded_files.custom_agent_file(self._root(), str(data.get("agentName") or ""))
