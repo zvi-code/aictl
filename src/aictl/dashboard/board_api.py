@@ -3379,7 +3379,9 @@ def _per_store(conn: sqlite3.Connection, sql: str, params: Any = ()) -> list:
 def read_scope(db: Any, filters: Filters | None = None, session: str | None = None) -> Any:
     """The stores a read needs, for a history split by project. A single store needs no scope.
 
-    The board's range reaches back one span for the previous period.
+    The board's range reaches back one span for the previous period. A project filter
+    still reads every active store: the filter menus list every choice in the range, as
+    with one store, and a change of project reuses the read of the range.
     """
     scope = getattr(db, "read_scope", None)
     if scope is None:
@@ -3387,7 +3389,7 @@ def read_scope(db: Any, filters: Filters | None = None, session: str | None = No
     if filters is None:
         return scope(session=session)
     span = filters.until - filters.since
-    return scope(since=filters.since - span, until=filters.until, project=filters.project or None)
+    return scope(since=filters.since - span, until=filters.until)
 
 
 def _in_session_scope(arg: str) -> Callable:

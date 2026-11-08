@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from aictl.dashboard.board_api import Filters, agent_detail, board_bytes, compute_board
+from aictl.dashboard.board_api import Filters, agent_detail, compute_board
 from aictl.project_stores import SHARED, ProjectStores, repository_root, store_key
 from aictl.storage import (
     CallFacts,
@@ -364,19 +364,17 @@ def test_all_projects_over_two_stores_equals_one_store_with_the_same_rows(tmp_pa
         assert split["kpis"] == one["kpis"]
         assert split["series"] == one["series"]
         assert _comparable(split) == _comparable(one)
-        # With a project filter only that store is read: the same answer, except that the
-        # filter menus and the count of all agents know only that project.
+        # With a project filter the answer is the same too, filter menus included: the
+        # Project menu still lists every project of the range.
         fb = Filters(since=NOW - 6 * 3600, until=NOW, project=str(b))
         split_b, one_b = compute_board(stores, fb, now=NOW), compute_board(single, fb, now=NOW)
-        for payload in (split_b, one_b):
-            payload.pop("options")
-            payload["scope"].pop("all_agents")
+        assert {p["id"] for p in split_b["options"]["projects"]} == {str(a), str(b)}
         assert _comparable(split_b) == _comparable(one_b)
     finally:
         single.close()
 
 
-def test_a_project_filter_opens_only_that_store(tmp_path, stores, monkeypatch):
+def test_a_project_filter_reads_every_active_store_and_filters_after(tmp_path, stores, monkeypatch):
     a, b = _repo(tmp_path / "a"), _repo(tmp_path / "b")
     _seed(stores, a, b)
     attached: list[tuple[str, ...]] = []
@@ -388,11 +386,10 @@ def test_a_project_filter_opens_only_that_store(tmp_path, stores, monkeypatch):
 
     monkeypatch.setattr(ProjectStores, "_attach", spy)
     board = compute_board(stores, Filters(since=NOW - 6 * 3600, until=NOW, project=str(a)), now=NOW)
-    assert attached == [(store_key(str(a)),)]
+    both = sorted([store_key(str(a)), store_key(str(b))])
+    assert attached and all(sorted(w) == both for w in attached)
     assert {r["id"] for r in board["agents"]} == {"sa"}
-    attached.clear()
-    board_bytes(stores, None, f"since={NOW - 6 * 3600}&until={NOW - 1}&project={b}", now=NOW)
-    assert attached and all(w == (store_key(str(b)),) for w in attached)
+    assert {p["id"] for p in board["options"]["projects"]} == {str(a), str(b)}
 
 
 def test_all_projects_attach_only_stores_active_in_the_range(tmp_path, stores):
