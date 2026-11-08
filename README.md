@@ -3,7 +3,7 @@
 **One control plane for every AI coding tool on your machine.**
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](pyproject.toml)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)](#windows-installation--troubleshooting)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)](HOWTO.md#install-on-windows)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Local-first](https://img.shields.io/badge/data-100%25%20local-orange)](#how-it-works)
 
@@ -20,7 +20,7 @@ changes and testing, the machine, settings in effect, data sources and
 context; a drawer for every agent, file, skill and prompt; a Settings screen
 for every knob of every tool.*
 
-> For step-by-step tasks, see **[docs/how-to.md](docs/how-to.md)**.
+> For step-by-step tasks, see **[HOWTO.md](HOWTO.md)**.
 
 ## Two problems, one tool
 
@@ -65,7 +65,7 @@ your machine; the dashboard binds to loopback with CORS/CSRF protections.
 ## Quick Start
 
 ```bash
-# 1. Install (see Install section for pipx setup)
+# 1. Install (see HOWTO.md)
 pipx install "aictl[all] @ git+https://github.com/zvi-code/aictl.git"
 # …or from a clone: pipx install ".[all]"
 
@@ -121,149 +121,14 @@ files each tool reads with their size and token estimate.*
 Install globally with [pipx](https://pipx.pypa.io) (recommended — keeps `aictl` isolated from other Python projects):
 
 ```bash
-# Full install: CLI + web dashboard + TUI + process detection
-pipx install --force ".[all]"
+# Full install from the Git URL: CLI + web dashboard + TUI + process detection
+pipx install "aictl[all] @ git+https://github.com/zvi-code/aictl.git"
 
-# Core CLI only (includes web dashboard — no extra deps needed)
-pipx install .
+# Or from a clone
+pipx install ".[all]"
 ```
 
-> **After updating source code**, reinstall for changes to take effect:
-> ```bash
-> make install                        # recommended: rebuilds UI + reinstalls
-> # or: aictl reinstall               # same thing, from the CLI
-> # or: pipx install --force -e ".[all]"  # manual
-> ```
-
-To run, update or remove aictl, see [Run aictl](docs/how-to.md#run-aictl), [Update aictl](docs/how-to.md#update-aictl)
-and [Remove the aictl program](docs/how-to.md#remove-the-aictl-program).
-
-### Get pipx
-
-**macOS**
-```bash
-brew install pipx && pipx ensurepath
-```
-
-**Windows** (PowerShell)
-```powershell
-python -m pip install pipx
-python -m pipx ensurepath
-# Then restart your terminal so PATH takes effect
-```
-
-**Linux**
-```bash
-pip install --user pipx && pipx ensurepath
-```
-
-### Install from a private package index
-
-For the first install, name the index for both installers before `pipx install`, with `PIP_INDEX_URL` and
-`UV_DEFAULT_INDEX` set to the same URL; the steps are in
-[Install with a private package index](docs/how-to.md#install-with-a-private-package-index). For every later
-update, `aictl reinstall --index-url <url>` names it. The rest of this section explains why both are needed.
-
-`pip` and `uv` read different settings. pipx uses `uv` when it is on `PATH`, and `uv` ignores `pip.ini`, `pip.conf`
-and `PIP_INDEX_URL`, so an install can reach PyPI even though `pip` is set up for a private index. Check first:
-
-```bash
-python -m pip config list
-```
-
-`uv` can have a source of its own. In PowerShell, check its environment settings and its settings file. On macOS and
-Linux, the file is `~/.config/uv/uv.toml`:
-
-```powershell
-$env:UV_DEFAULT_INDEX; $env:UV_INDEX_URL
-Test-Path "$env:APPDATA\uv\uv.toml"
-```
-
-To keep pipx on pip, set `PIPX_DEFAULT_BACKEND=pip`, which needs pipx 1.12 or later. It changes pipx only, not `uv`.
-An environment already made with `uv` has to be removed first. Run these from the clone. If the dashboard runs, stop
-it first with `aictl daemon serve --stop`:
-
-```powershell
-[Environment]::SetEnvironmentVariable("PIPX_DEFAULT_BACKEND", "pip", "User")
-$env:PIPX_DEFAULT_BACKEND = "pip"
-Remove-Item Env:UV_VENV_CLEAR -ErrorAction SilentlyContinue
-pipx uninstall aictl
-pipx install -e ".[all]"
-```
-
-To confirm which tool installed the packages, run this command. It prints `pip` or `uv`:
-
-```powershell
-Get-Content "$(pipx environment --value PIPX_HOME)\venvs\aictl\Lib\site-packages\click-*.dist-info\INSTALLER"
-```
-
-`--backend pip` on one command is not enough: a later `pipx install --force` without it still runs `uv` to read the
-package name, even for an environment made with pip. A failed `pipx install` can also reach PyPI, because `uv` needs
-`setuptools` to read the package name. If an install ran before you set this up, `pipx uninstall aictl` removes those
-packages from the aictl environment.
-
-These steps change only the aictl environment and its launcher. They do not change `uv`, the Python installation or the
-`.venv` of another project.
-
-**Warning:** do not set `UV_VENV_CLEAR` by hand. With only `pip` set up, `uv` then downloads from PyPI. In the same
-shell, `uv venv` also replaces the existing `.venv` of any project without asking. `aictl reinstall` sets this variable
-only for its own install, and also gives `uv` the package source when one is configured.
-
-After that, name the source when you update:
-
-```bash
-aictl reinstall --index-url https://packages.example/simple
-```
-
-`--index-url`, or `AICTL_INDEX_URL`, applies to both `pip` and `uv`. The URL is not printed or written to a file, so
-it can hold credentials, and the npm UI build is skipped because the package already includes the dashboard. With no
-URL, `aictl reinstall` copies `pip`'s configured index for `uv`, unless `UV_DEFAULT_INDEX` or `UV_INDEX_URL` is set.
-Either way it prints the host name of the source it will use, so you can check it. The value must be the URL of a
-package index (`http`, `https` or `file`). `--index-url` refuses a plain folder path.
-`make install`, `aictl build-ui` and an install from the Git URL do not do any of this.
-
-### Optional extras
-
-The web dashboard (`aictl daemon serve`) works with zero extra dependencies. For the TUI and process detection:
-
-| Extra | Installs | When to use |
-|-------|----------|-------------|
-| `.[dashboard]` | `textual` | Terminal TUI dashboard (`aictl daemon dashboard`) |
-| `.[processes]` | `psutil` | Cross-platform process detection |
-| `.[monitor]` | `psutil`, `watchdog` | Live observability (`aictl daemon monitor`) |
-| `.[all]` | `textual`, `psutil`, `watchdog` | Recommended for full functionality |
-
-```bash
-# Add an extra to an existing install
-pipx inject aictl psutil
-pipx inject aictl textual
-pipx inject aictl watchdog
-```
-
-> **Without `psutil`:** process detection falls back to `ps` on macOS/Linux and is unavailable on Windows, where `psutil` is therefore always installed.
-
-### Development install
-
-```bash
-# Recommended: use make (does everything)
-make install          # builds UI + reinstalls Python package
-
-# Or use the CLI command (works even with a stale install):
-aictl reinstall       # builds UI + pipx install --force -e ".[all]"
-aictl reinstall --build-ui  # build the dashboard even with no local UI changes
-
-# Or manually:
-pipx install --force -e ".[all]"   # Python only
-npm run build --prefix src/aictl/dashboard/ui  # UI only
-```
-
-> **Why is this needed?** `pipx install` copies files into an isolated
-> virtualenv. Source edits are not picked up until you reinstall.
-> The `-e` (editable) flag avoids this, but `--force` is still required
-> to re-register new CLI commands.
-
-> **Tip:** If you get `No such command 'daemon'` after pulling new code,
-> run `make install` to rebuild everything.
+Install, update, removal, Windows and troubleshooting steps are in [HOWTO.md](HOWTO.md).
 
 ## How It Works
 
@@ -663,7 +528,7 @@ hurting the machine is not.
 
 `max_total_mb` (default 1024) caps the database, journal and logs together, evicting the oldest data
 first. If the database is corrupt, full or locked, the daemon continues in memory and reports it.
-Details: [how-to](docs/how-to.md#control-how-much-is-stored), [storage schema](docs/storage-schema.md).
+Details: [how-to](HOWTO.md#control-how-much-is-stored), [storage schema](docs/storage-schema.md).
 
 ### Hidden context: `aictl ctx audit`
 
@@ -671,7 +536,7 @@ Inventories every source that can reach the model, per tool, including ones you 
 concealment, what changed since the last baseline, agents writing to their own future context, and
 sources that loaded but are not in the inventory. It reads files and never runs a hook or MCP server,
 and it works in every capture mode. The dashboard shows the same report.
-Details: [how-to](docs/how-to.md#find-hidden-context).
+Details: [how-to](HOWTO.md#find-hidden-context).
 
 ### Effective model and settings: `aictl ctx effective`
 
@@ -683,7 +548,7 @@ project, still in effect". For VS Code it also shows the model selected in the p
 `--search-path` lists every location checked, including absent ones. On Windows that covers `%APPDATA%`
 and `%LOCALAPPDATA%`, VS Code profiles, packaged-app folders, OneDrive `Documents`, parent folders up to the
 drive root and policy keys. `aictl ps`, `aictl top` and the dashboard's first screen show the pin as well.
-Details: [how-to](docs/how-to.md#see-which-model-and-settings-are-really-in-force).
+Details: [how-to](HOWTO.md#see-which-model-and-settings-are-really-in-force).
 
 ### Copilot sessions: `aictl session`
 
@@ -691,7 +556,7 @@ Finds Copilot's session folders and stores for the CLI, the desktop app and VS C
 database. A session can be named by its full id, an id prefix, a PID, a path or a VS Code chat id. Files in a
 session are listed by type and can be opened from the CLI, from session detail in the dashboard, or through
 `/api/copilot-sessions`, which answers requests from this machine only.
-Details: [how-to](docs/how-to.md#find-a-copilot-session-and-its-files).
+Details: [how-to](HOWTO.md#find-a-copilot-session-and-its-files).
 
 ## Command Reference
 
@@ -842,7 +707,7 @@ File access is inferred from tool-call arguments, so files touched by shell comm
 
 `aictl db compact` takes `--dry-run`, `--retention-days N` and `--no-vacuum`.
 `aictl db trim-text` takes `--dry-run` and `--older-than-days N`. Compact deletes rows older than the
-retention window, so check `--dry-run` first: [how to shrink a database](docs/how-to.md#shrink-an-existing-database).
+retention window, so check `--dry-run` first: [how to shrink a database](HOWTO.md#shrink-an-existing-database).
 
 ### Dashboard options (`aictl daemon dashboard`)
 
@@ -891,210 +756,8 @@ as such. Microsoft 365 Copilot shows "not available from this machine" rather th
   The strict xfails in `test/e2e/test_copilot_flow.py` track this.
 - OTel service names for the CLI and desktop app are mapped but not verified against those tools.
 
-Step by step: [docs/how-to.md](docs/how-to.md#connect-copilot-cli-the-desktop-app-and-vs-code).
+Step by step: [HOWTO.md](HOWTO.md#connect-copilot-cli-the-desktop-app-and-vs-code).
 Per-tool facts: [docs/tool-copilot.md](docs/tool-copilot.md), [docs/tool-copilot365.md](docs/tool-copilot365.md).
-
-## Windows Installation & Troubleshooting
-
-Recent changes to hooks, the daemon, process tables, `aictl ps` and storage were tested by simulating
-Windows on macOS. They have not been run on a real Windows machine yet. To confirm them, follow
-[Check a Windows install](docs/how-to.md#check-a-windows-install).
-
-### Prerequisites
-
-- **Python 3.10+** — download from [python.org](https://www.python.org/downloads/) or the Microsoft Store.
-  During install, check **"Add Python to PATH"**.
-- **pipx** — install via PowerShell:
-  ```powershell
-  python -m pip install pipx
-  python -m pipx ensurepath
-  ```
-  Restart your terminal after `ensurepath` so the PATH change takes effect.
-
-### Install aictl
-
-```powershell
-pipx install "aictl[all] @ git+https://github.com/zvi-code/aictl.git"
-# or, from a clone:
-pipx install --force ".[all]"
-```
-
-The built dashboard ships with the package, so Node.js is only needed to change the UI.
-
-Verify:
-
-```powershell
-aictl --version
-```
-
-### Development install / reinstall on Windows
-
-The `Makefile` (and therefore `make install`) is Unix/macOS only — on Windows
-use the built-in `aictl reinstall` command instead. After editing source code
-or pulling new changes, run it from the repo root to rebuild the dashboard UI
-and reinstall the Python package so changes take effect:
-
-```powershell
-aictl reinstall              # builds UI (npm) + pipx install --force -e ".[all]"
-aictl reinstall --build-ui   # also build the dashboard with no local UI changes
-```
-
-> **Windows self-reinstall:** the running `aictl.exe` cannot overwrite itself
-> while it is in use (pip would fail with `WinError 32` and leave a half-removed
-> install). On Windows `aictl reinstall` therefore hands the install off to a
-> **new console window** that waits for the current `aictl` to exit, performs
-> the install, and stays open so you can read the result. The original command
-> exits immediately — watch the new window, then run `aictl --version`. The window
-> tries up to 5 times, because the folder can stay in use for a few seconds, so an
-> error along the way is fine if it ends with `DONE`.
-
-If `aictl` does not start (a first install or a broken install), install with pipx from
-the repo root. If you use a private package index, first read
-[Install from a private package index](#install-from-a-private-package-index):
-
-```powershell
-pipx uninstall aictl
-pipx install -e ".[all]"
-```
-
-Do not run `python -m pip install` outside a virtual environment here. That command puts a
-second `aictl.exe` in the `Scripts` folder of Python, and that copy can run instead of the
-pipx copy. See [Find a leftover copy](docs/how-to.md#find-a-leftover-copy).
-
-To rebuild the UI:
-
-```powershell
-npm install --prefix src/aictl/dashboard/ui   # one-time, if the UI needs building
-npm run build --prefix src/aictl/dashboard/ui
-```
-
-> **Requires Node.js/npm** only to build the UI. `aictl reinstall` builds it only when its source
-> has local changes. Otherwise it uses the dashboard from git, and the server never builds it.
-
-### Config file locations on Windows
-
-`aictl status` discovers config files from the standard Windows locations:
-
-| Tool | Location |
-|------|----------|
-| aictl config, history, removal script | `%APPDATA%\aictl\` |
-| Copilot CLI and desktop app | `%USERPROFILE%\.copilot\` (`COPILOT_HOME` relocates it) |
-| Copilot hook file | `%USERPROFILE%\.copilot\hooks\aictl.json` |
-| VS Code settings and MCP | `%APPDATA%\Code\User\settings.json`, `mcp.json` |
-| VS Code Copilot Chat | `%APPDATA%\Code\User\globalStorage\github.copilot-chat\` |
-| VS Code extensions | `%USERPROFILE%\.vscode\extensions\` |
-| Microsoft 365 Copilot app | `%LOCALAPPDATA%\Packages\Microsoft.Copilot_8wekyb3d8bbwe\` (unverified) |
-| Claude Code | `%USERPROFILE%\.claude\` |
-| Claude Desktop | `%APPDATA%\Claude\` |
-| Cursor settings | `%APPDATA%\Cursor\User\settings.json` |
-| Windsurf / Codeium | `%APPDATA%\Codeium\windsurf\` |
-| GitHub CLI | `%APPDATA%\GitHub CLI\` |
-| Azure Developer CLI | `%USERPROFILE%\.azd\` |
-| PromptFlow | `%USERPROFILE%\.promptflow\` |
-
-The full list, including rows marked unverified, is in `src/aictl/data/paths-windows.csv`.
-
-### Known limitations on Windows
-
-| Feature | Status |
-|---------|--------|
-| Process detection, `aictl ps`, `aictl top` | Require `psutil`, included in `[all]`. Without it there is no process data |
-| Live TUI dashboard | Requires `textual`, included in `[all]` |
-| `aictl daemon serve --daemon` | Respawns detached, because there is no `fork`. Simulated only |
-| `aictl top` keys | Use `msvcrt`. Not yet exercised on a real console |
-| Persisted environment | `setx` values under `HKCU\Environment` and PowerShell profile lines. Running processes keep old values |
-| Shell and dev-server process patterns | Disabled: names cannot tie them to a tool ([zvi-code/aictl#3](https://github.com/zvi-code/aictl/issues/3)) |
-| `--backtrace PID` | Not available (uses macOS `sample` / Linux `eu-stack`) |
-
-### Common errors
-
-**`aictl` not found after install**
-
-pipx installs to `%USERPROFILE%\.local\bin`. If that's not on your PATH:
-
-```powershell
-python -m pipx ensurepath
-# Restart PowerShell / Command Prompt
-```
-
-**`The dashboard requires the 'textual' package`**
-
-```powershell
-pipx inject aictl textual
-# or reinstall with all extras:
-pipx install --force ".[all]"
-```
-
-**`os error 32`, `Attempt 1 of 5 did not finish` or `Install attempt 1 failed` in the install window**
-
-This is not the final result. Another process has the aictl folder open, and this usually clears within seconds. The
-window tries up to 5 times, so wait for its last message: `DONE` or `FAILED`. You do not need to end a process. The same
-attempt can also print `Failed to create virtual environment`, `failed to remove directory` and
-`Not removing existing venv`.
-
-**`FAILED: aictl was not reinstalled` in the install window**
-
-A failed attempt can leave aictl's environment empty, so `aictl` may not start. Stop anything that runs from it, such
-as the dashboard or `aictl top`. If you use a private package index, follow
-[Install from a private package index](#install-from-a-private-package-index). Otherwise, from the clone:
-
-```powershell
-pipx uninstall aictl
-pipx install -e ".[all]"
-```
-
-**`A virtual environment already exists` from `pipx install --force` or `make install`**
-
-Recent pipx creates environments with `uv` when `uv` is on `PATH`, and `uv` 0.10 and later will not replace one unless
-told to. pipx has no `--clear` flag, and `--force --backend pip` fails with the same error. Setting `UV_VENV_CLEAR=1`
-gets past the error, but read the warning in
-[Install from a private package index](#install-from-a-private-package-index) first. Or reinstall with pip:
-
-```powershell
-pipx uninstall aictl
-pipx install -e ".[all]" --backend pip
-```
-
-**`No such option: --index-url`**
-
-The `aictl` that ran is older than this option, and the command installed nothing. Run `git pull` in the clone. If the
-error stays, a second copy is running: see [Find a leftover copy](docs/how-to.md#find-a-leftover-copy).
-
-**An old version is still there after `pipx uninstall`**
-
-`pipx uninstall` cleans only the location that `pipx` uses now. See [Find a leftover copy](docs/how-to.md#find-a-leftover-copy).
-
-**The dashboard still shows the old version**
-
-The process that started before the update keeps running the old code. Run `aictl daemon serve --stop`, start the
-dashboard again, then press Ctrl+F5 in the browser.
-
-**`pipx install` silently skips (already installed)**
-
-Always use `--force` to update an existing install (or use `make install`):
-
-```powershell
-pipx install --force ".[all]"
-```
-
-**Long paths cause errors**
-
-Windows has a 260-character path limit by default. Enable long paths in PowerShell (as Administrator):
-
-```powershell
-Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name LongPathsEnabled -Value 1
-```
-
-Or via Group Policy: *Computer Configuration → Administrative Templates → System → Filesystem → Enable Win32 long paths*.
-
-### Running tests on Windows
-
-```powershell
-python -m pytest test\ -v --ignore=test\e2e --ignore=test\e2e_tools   # unit tests
-python -m pytest test\e2e\ -v --timeout=120                            # simulated E2E
-$env:AICTL_TEST_REAL_HOME = "1"; python -m pytest test\e2e_tools\ -v --timeout=180  # real-tool E2E, uses your real profile
-python test\run.py -v                                                   # legacy integration
-```
 
 ## Testing
 
@@ -1267,7 +930,7 @@ No CI workflow is configured in this repository, so run `make test-all` before m
 
 | Doc | Contents |
 |-----|----------|
-| [docs/how-to.md](docs/how-to.md) | Step-by-step tasks: watch agents, connect tools, remove aictl, control storage, audit context, check a Windows install |
+| [HOWTO.md](HOWTO.md) | Step-by-step tasks: install, update, run, connect tools, remove aictl, control storage, audit context, Windows, troubleshooting |
 | [docs/context.toml-format.md](docs/context.toml-format.md) | Complete `.context.toml` format reference with examples |
 | [docs/architecture.md](docs/architecture.md) | Full system architecture — pipeline, monitoring, dashboard, storage, threading |
 | [docs/tool-claude-code.md](docs/tool-claude-code.md) | Claude Code: all generated and external files |
