@@ -1,7 +1,9 @@
-"""One history store per git repository: writes routed by project."""
+"""One history store per git repository: writes routed by project, reads over the stores they need."""
 
 from __future__ import annotations
 
+import json
+import logging
 import sqlite3
 import threading
 import time
@@ -9,13 +11,14 @@ from pathlib import Path
 
 import pytest
 
-from aictl.dashboard.board_api import Filters, compute_board
-from aictl.project_stores import SHARED, ProjectStores, repository_root, store_key
+from aictl.dashboard.board_api import Filters, board_bytes, compute_board
+from aictl.project_stores import ATTACH_ROOM, SHARED, ProjectStores, repository_root, store_key
 from aictl.storage import (
     CallFacts,
     EventRow,
     HistoryDB,
     RequestRow,
+    SessionPromptRow,
     SessionRow,
     SkillUseRow,
     ToolInvocationRow,
@@ -151,6 +154,8 @@ def test_a_session_seen_before_its_folder_moves_to_its_project(tmp_path, stores)
     assert _rows(file, "sessions", "session_id = 's2' AND project_path = ?", (str(repo),)) == 1
     assert _rows(file, "events", "session_id = 's2'") == 1
     assert _rows(file, "session_processes", "session_id = 's2'") == 1
+    with stores.read_scope(session="s2"):
+        assert stores._conn().execute("SELECT COUNT(*) FROM sessions WHERE session_id = 's2'").fetchone()[0] == 1
 
 
 def test_machine_rows_stay_in_the_machine_store(tmp_path, stores):
@@ -185,6 +190,8 @@ def test_a_new_process_finds_the_stores_of_known_sessions(tmp_path):
         second.append_request(RequestRow(ts=NOW, session_id="s3", model=SONNET, source="otel"))
         second.flush()
         assert _rows(_store_file(second, repo), "requests", "session_id = 's3'") == 1
+        with second.read_scope(since=NOW - 10, until=NOW + 10):
+            assert second.attached_stores() == [store_key(str(repo))]
 
 
 def test_an_idle_store_closes_and_opens_again_on_the_next_write(tmp_path, stores):
@@ -268,3 +275,177 @@ def test_a_flood_into_one_repository_does_not_block_another(tmp_path, stores):
     assert not slow, slow
     assert _rows(_store_file(stores, busy), "requests") == 40_000
     assert _rows(_store_file(stores, quiet), "requests") == 5
+
+
+# ─── Reads over the stores ────────────────────────────────────────
+
+
+def _seed(db, a: Path, b: Path) -> None:
+    """The same rows, written through the write API, into any store."""
+    for sid, repo, model, n in (("sa", a, SONNET, 4), ("sb", b, HAIKU, 3), ("sc", b, SONNET, 2)):
+        db.upsert_session(
+            SessionRow(
+                session_id=sid, tool="claude-code", project_path=str(repo), started_at=NOW - 7200, ended_at=NOW - 60
+            )
+        )
+        for k in range(n):
+            ts = NOW - 3600 + k * 300 + (1 if sid == "sb" else 0)
+            db.append_request(
+                RequestRow(
+                    ts=ts,
+                    session_id=sid,
+                    project_path=str(repo),
+                    model=model,
+                    input_tokens=100 * (k + 1),
+                    output_tokens=20,
+                    cache_read_tokens=500,
+                    duration_ms=800,
+                    source="otel",
+                    source_ts=ts,
+                )
+            )
+            db.append_tool_invocation(
+                ToolInvocationRow(
+                    ts=ts + 5,
+                    session_id=sid,
+                    tool="claude-code",
+                    tool_name="Bash",
+                    target="pytest -q",
+                    is_error=int(k == 1),
+                    exit_code=int(k == 1),
+                    source="otel",
+                    source_ts=ts + 5,
+                )
+            )
+        db.write_call_facts(
+            CallFacts(
+                prompts=[
+                    SessionPromptRow(
+                        dedup_key=f"p-{sid}",
+                        ts=NOW - 3500 + len(sid) * ord(sid[1]),
+                        session_id=sid,
+                        tool="claude-code",
+                        project_path=str(repo),
+                        text=f"do {sid}",
+                    )
+                ],
+                skills=[
+                    SkillUseRow(
+                        dedup_key=f"k-{sid}",
+                        ts=NOW - 3400 + ord(sid[1]),
+                        session_id=sid,
+                        tool="claude-code",
+                        project_path=str(repo),
+                        name="review",
+                    )
+                ],
+            )
+        )
+    db.flush()
+
+
+def _comparable(payload: dict) -> str:
+    payload = {k: v for k, v in payload.items() if k not in ("generated_at", "self")}
+    return json.dumps(payload, sort_keys=True, default=str)
+
+
+def test_all_projects_over_two_stores_equals_one_store_with_the_same_rows(tmp_path, stores):
+    a, b = _repo(tmp_path / "a"), _repo(tmp_path / "b")
+    single = HistoryDB(db_path=tmp_path / "single.db", flush_interval=0)
+    try:
+        _seed(single, a, b)
+        _seed(stores, a, b)
+        assert sorted(stores.open_stores()) == sorted([store_key(str(a)), store_key(str(b))])
+        f = Filters(since=NOW - 6 * 3600, until=NOW)
+        split = compute_board(stores, f, now=NOW)
+        one = compute_board(single, f, now=NOW)
+        assert len(split["agents"]) == 3
+        assert {r["id"] for r in split["agents"]} == {r["id"] for r in one["agents"]}
+        assert split["kpis"] == one["kpis"]
+        assert split["series"] == one["series"]
+        assert _comparable(split) == _comparable(one)
+        # With a project filter only that store is read: the same answer, except that the
+        # filter menus and the count of all agents know only that project.
+        fb = Filters(since=NOW - 6 * 3600, until=NOW, project=str(b))
+        split_b, one_b = compute_board(stores, fb, now=NOW), compute_board(single, fb, now=NOW)
+        for payload in (split_b, one_b):
+            payload.pop("options")
+            payload["scope"].pop("all_agents")
+        assert _comparable(split_b) == _comparable(one_b)
+    finally:
+        single.close()
+
+
+def test_a_project_filter_opens_only_that_store(tmp_path, stores, monkeypatch):
+    a, b = _repo(tmp_path / "a"), _repo(tmp_path / "b")
+    _seed(stores, a, b)
+    attached: list[tuple[str, ...]] = []
+    real = ProjectStores._attach
+
+    def spy(self, state, wanted):
+        attached.append(wanted)
+        return real(self, state, wanted)
+
+    monkeypatch.setattr(ProjectStores, "_attach", spy)
+    board = compute_board(stores, Filters(since=NOW - 6 * 3600, until=NOW, project=str(a)), now=NOW)
+    assert attached == [(store_key(str(a)),)]
+    assert {r["id"] for r in board["agents"]} == {"sa"}
+    attached.clear()
+    board_bytes(stores, None, f"since={NOW - 6 * 3600}&until={NOW - 1}&project={b}", now=NOW)
+    assert attached and all(w == (store_key(str(b)),) for w in attached)
+
+
+def test_all_projects_attach_only_stores_active_in_the_range(tmp_path, stores):
+    a, b = _repo(tmp_path / "a"), _repo(tmp_path / "b")
+    stores.upsert_session(
+        SessionRow(session_id="old", tool="claude-code", project_path=str(a), started_at=NOW - 40 * 86400)
+    )
+    stores.append_request(
+        RequestRow(ts=NOW - 40 * 86400, session_id="old", project_path=str(a), model=SONNET, source="otel")
+    )
+    stores.upsert_session(SessionRow(session_id="new", tool="claude-code", project_path=str(b), started_at=NOW - 60))
+    stores.append_request(RequestRow(ts=NOW - 60, session_id="new", project_path=str(b), model=SONNET, source="otel"))
+    stores.flush()
+    with stores.read_scope(since=NOW - 86400, until=NOW):
+        assert stores.attached_stores() == [store_key(str(b))]
+    with stores.read_scope(since=NOW - 50 * 86400, until=NOW):
+        assert sorted(stores.attached_stores()) == sorted([store_key(str(a)), store_key(str(b))])
+
+
+def test_more_active_stores_than_sqlite_attaches_read_the_most_recent(tmp_path, stores, caplog):
+    n = ATTACH_ROOM + 2
+    repos = [_repo(tmp_path / f"r{i}") for i in range(n)]
+    for i, repo in enumerate(repos):
+        stores.upsert_session(
+            SessionRow(session_id=f"m{i}", tool="claude-code", project_path=str(repo), started_at=NOW - 3600 + i)
+        )
+        stores.append_request(
+            RequestRow(ts=NOW - 3600 + i, session_id=f"m{i}", project_path=str(repo), model=SONNET, source="otel")
+        )
+    stores.flush()
+    with caplog.at_level(logging.WARNING, logger="aictl.project_stores"):
+        board = compute_board(stores, Filters(since=NOW - 7200, until=NOW), now=NOW)
+    assert {r["id"] for r in board["agents"]} == {f"m{i}" for i in range(2, n)}
+    assert "most recent" in caplog.text
+
+
+def test_session_reads_find_a_session_in_any_store(tmp_path, stores):
+    a = _repo(tmp_path / "a")
+    stores.upsert_session(SessionRow(session_id="s9", tool="claude-code", project_path=str(a), started_at=NOW))
+    stores.upsert_session_commits("s9", [{"sha": "abc", "subject": "fix", "ts": NOW}])
+    assert stores.get_session("s9")["session_id"] == "s9"
+    assert stores.count_session_commits("s9") == 1
+    assert stores.query_sessions(since=NOW - 10)[0]["session_id"] == "s9"
+
+
+def test_the_read_connection_takes_no_write_lock_while_a_store_writes(tmp_path, stores):
+    a = _repo(tmp_path / "a")
+    stores.upsert_session(SessionRow(session_id="s5", tool="claude-code", project_path=str(a), started_at=NOW))
+    writer = stores._stores[store_key(str(a))]._conn()
+    writer.execute("BEGIN IMMEDIATE")
+    try:
+        started = time.monotonic()
+        assert stores.get_session("s5") is not None
+        assert time.monotonic() - started < 0.25
+    finally:
+        writer.rollback()

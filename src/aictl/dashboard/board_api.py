@@ -19,6 +19,7 @@ The exception is latency: a percentile needs the values themselves.
 from __future__ import annotations
 
 import bisect
+import contextlib
 import difflib
 import hashlib
 import json
@@ -696,16 +697,24 @@ class _Board:
         """
         if self.only_session is not None or (self.narrowed and self.scope and len(self.scope) < 50):
             return table
+        view = _view_body(self.conn, table)
         span = self.spans.get(table)
         if span is None:
-            first = self.conn.execute(f"SELECT MIN(ts) FROM {table}").fetchone()[0]
-            last = self.conn.execute(f"SELECT MAX(ts) FROM {table}").fetchone()[0]
-            span = self.spans[table] = (first, last)
+            # Per store: MIN and MAX over a view of several stores would read every row.
+            ends = _per_store(self.conn, f"SELECT MIN(ts), MAX(ts) FROM {table}")
+            firsts = [r[0] for r in ends if r[0] is not None]
+            lasts = [r[1] for r in ends if r[1] is not None]
+            span = self.spans[table] = (min(firsts, default=None), max(lasts, default=None))
         first, last = span
-        if first is None:
+        if first is None or last is None:
             return table
         inside = min(last, self.f.until) - max(first, self.f.since)
-        return f"{table} NOT INDEXED" if inside * 2 >= last - first else table
+        if inside * 2 < last - first:
+            return table
+        if view is not None:
+            # A view over several stores: each store's table is read in row order.
+            return "(" + _VIEW_PART_RE.sub(r"FROM \1 NOT INDEXED", view) + f") AS {table}"
+        return f"{table} NOT INDEXED"
 
     def _step(self, column: str = "ts") -> tuple[str, list]:
         """SQL for a row's step of the time grid."""
@@ -2050,14 +2059,27 @@ def _turns(board: _Board, skill_rows: list[tuple]) -> _Turns:
         model_params = [board.f.model]
     tokens: dict[tuple[str, float], int | None] = {}
     lengths: list[float] = []
-    for sid, ts, end, turn_tokens in board.conn.execute(
-        "WITH w AS (SELECT value ->> 0 sid, value ->> 1 t, value ->> 2 nx FROM json_each(?))"
-        " SELECT w.sid, w.t, MAX(r.ts + r.duration_ms / 1000.0),"
-        " SUM(r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_creation_tokens)"
-        " FROM w LEFT JOIN requests r ON r.session_id = w.sid AND r.ts >= w.t AND r.ts < w.nx"
-        f"{model_sql} GROUP BY w.sid, w.t",
-        [json.dumps(triples), *model_params],
-    ):
+    # Over a view of several stores the join would read every store whole: it runs on
+    # each store's own table, and the turns of a session add up across them.
+    found: dict[tuple[str, float], list] = {}
+    for part in _table_parts(board.conn, "requests"):
+        for sid, ts, end, turn_tokens in board.conn.execute(
+            "WITH w AS (SELECT value ->> 0 sid, value ->> 1 t, value ->> 2 nx FROM json_each(?))"
+            " SELECT w.sid, w.t, MAX(r.ts + r.duration_ms / 1000.0),"
+            " SUM(r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_creation_tokens)"
+            f" FROM w LEFT JOIN {part} r ON r.session_id = w.sid AND r.ts >= w.t AND r.ts < w.nx"
+            f"{model_sql} GROUP BY w.sid, w.t",
+            [json.dumps(triples), *model_params],
+        ):
+            seen = found.get((sid, ts))
+            if seen is None:
+                found[(sid, ts)] = [end, turn_tokens]
+                continue
+            if end is not None:
+                seen[0] = end if seen[0] is None else max(seen[0], end)
+            if turn_tokens is not None:
+                seen[1] = turn_tokens if seen[1] is None else seen[1] + turn_tokens
+    for (sid, ts), (end, turn_tokens) in found.items():
         tokens[(sid, ts)] = turn_tokens
         if (sid, ts) in sampled and end is not None and end > ts:
             lengths.append((end - ts) * 1000.0)
@@ -3155,7 +3177,7 @@ def _store_facts(conn: sqlite3.Connection, memo_key: str) -> dict[str, set[str]]
             return cached[1]
     facts: dict[str, set[str]] = defaultdict(set)
     for sql, names in _FACTS_SQL:
-        for row in conn.execute(sql):
+        for row in _per_store(conn, sql):
             tool = row[0]
             facts[tool].add(names[0])
             for name, flag in zip(names[1:], row[2:]):
@@ -3213,8 +3235,9 @@ def _source_rows(conn: sqlite3.Connection, memo_key: str) -> list[tuple]:
         cached = _sources_memo.get(memo_key)
         if cached and time.monotonic() - cached[0] < FACTS_TTL_S:
             return cached[1]
-    rows = conn.execute("SELECT tool, source, MAX(ts) FROM requests NOT INDEXED GROUP BY tool, source").fetchall()
-    rows += conn.execute("SELECT tool, source, MAX(last_activity_at) FROM session_usage GROUP BY tool, source").fetchall()
+    # Rows of a tool and source can repeat, one per store: _sources merges them.
+    rows = _per_store(conn, "SELECT tool, source, MAX(ts) FROM requests NOT INDEXED GROUP BY tool, source")
+    rows += _per_store(conn, "SELECT tool, source, MAX(last_activity_at) FROM session_usage GROUP BY tool, source")
     with _facts_lock:
         _sources_memo[memo_key] = (time.monotonic(), rows)
     return rows
@@ -3324,6 +3347,47 @@ def _self_section(db: Any) -> dict:
     }
 
 
+_FROM_TABLE_RE = re.compile(r"\bFROM (\w+)\b")
+_VIEW_PART_RE = re.compile(r"\bFROM (\w+\.\w+)\b")
+
+
+def _view_body(conn: sqlite3.Connection, table: str) -> str | None:
+    """The SELECT of a TEMP VIEW over several stores, or None when *table* is a table."""
+    row = conn.execute("SELECT sql FROM sqlite_temp_master WHERE type = 'view' AND name = ?", (table,)).fetchone()
+    return row[0].split(" AS ", 1)[1] if row else None
+
+
+def _table_parts(conn: sqlite3.Connection, table: str) -> list[str]:
+    """Each store's own table behind a view over several stores, or the table itself."""
+    view = _view_body(conn, table)
+    return _VIEW_PART_RE.findall(view) if view is not None else [table]
+
+
+def _per_store(conn: sqlite3.Connection, sql: str, params: Any = ()) -> list:
+    """Rows of a query over one table, run on each store's own table when the table is a
+    view over several stores. A scan of each table is faster than one of the view.
+    Rows of different stores are not merged."""
+    table = _FROM_TABLE_RE.search(sql).group(1)  # type: ignore[union-attr]
+    rows: list = []
+    for part in _table_parts(conn, table):
+        rows += conn.execute(_FROM_TABLE_RE.sub(f"FROM {part}", sql, count=1), params).fetchall()
+    return rows
+
+
+def read_scope(db: Any, filters: Filters | None = None, session: str | None = None) -> Any:
+    """The stores a read needs, for a history split by project. A single store needs no scope.
+
+    The board's range reaches back one span for the previous period.
+    """
+    scope = getattr(db, "read_scope", None)
+    if scope is None:
+        return contextlib.nullcontext()
+    if filters is None:
+        return scope(session=session)
+    span = filters.until - filters.since
+    return scope(since=filters.since - span, until=filters.until, project=filters.project or None)
+
+
 def compute_board(
     db: Any,
     filters: Filters,
@@ -3333,6 +3397,18 @@ def compute_board(
     base_key: tuple | None = None,
 ) -> dict:
     """Everything ``GET /api/board`` returns, for one set of filters."""
+    with read_scope(db, filters):
+        return _compute_board(db, filters, snapshot, now, base_memo, base_key)
+
+
+def _compute_board(
+    db: Any,
+    filters: Filters,
+    snapshot: Any,
+    now: float | None,
+    base_memo: _BaseMemo | None,
+    base_key: tuple | None,
+) -> dict:
     now = time.time() if now is None else now
     conn = db._conn()
     # The usage cube sorts its rows. In memory, so that a large window never spills to a file.
@@ -5147,6 +5223,10 @@ def _store_version(db: Any, now: float) -> tuple:
     The live snapshot's own version is left out: it moves on every monitor cycle, so
     a dashboard that polls would recompute each time with nothing new to show.
     """
+    marks = getattr(db, "version_marks", None)
+    if marks is not None:
+        # A history split by project: the stores read, and the newest rows of each.
+        return (marks(), int(now / MEMO_TTL_S))
     conn = db._conn()
     ids = tuple(
         conn.execute(sql).fetchone()[0]
@@ -5188,7 +5268,8 @@ def board_bytes(db: Any, store: Any, query: str, now: float | None = None, backg
         key_filters = replace(filters, until=0.0, since=float(round((filters.until - filters.since) / 60.0)))
     path = str(getattr(db, "_path", ""))
     try:
-        version = _store_version(db, now)
+        with read_scope(db, filters):
+            version = _store_version(db, now)
     except sqlite3.OperationalError:
         # A locked or busy store: the last answer for these filters beats an error
         # that empties the board. With none yet, the error goes to the client.
