@@ -5186,8 +5186,17 @@ def board_bytes(db: Any, store: Any, query: str, now: float | None = None, backg
     key_filters = filters
     if abs(now - filters.until) <= CLOCK_RANGE_SLACK_S:
         key_filters = replace(filters, until=0.0, since=float(round((filters.until - filters.since) / 60.0)))
-    version = _store_version(db, now)
     path = str(getattr(db, "_path", ""))
+    try:
+        version = _store_version(db, now)
+    except sqlite3.OperationalError:
+        # A locked or busy store: the last answer for these filters beats an error
+        # that empties the board. With none yet, the error goes to the client.
+        sent = _SENT.get((path, key_filters))
+        if sent is None:
+            raise
+        logger.info("Board answered from memory: the history is busy")
+        return sent[2]
     body = _MEMO.get((path, key_filters, version))
     if body is not None:
         return body

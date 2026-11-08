@@ -1279,6 +1279,20 @@ class TestRefreshBehind:
         assert len(calls) == 1
         assert out["a"] == out["b"]
 
+    def test_a_locked_store_answers_with_the_last_board(self, db, monkeypatch):
+        import sqlite3
+
+        store = SimpleNamespace(version=1, snapshot=None)
+        first = board_api.board_bytes(db, store, "", time.time(), background=True)
+
+        def locked(*_a, **_k):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(board_api, "_store_version", locked)
+        assert board_api.board_bytes(db, store, "", time.time(), background=True) == first
+        with pytest.raises(sqlite3.OperationalError):
+            board_api.board_bytes(db, store, "tool=codex-cli", time.time(), background=True)
+
     def test_an_answer_too_old_is_not_served(self, db):
         store = SimpleNamespace(version=1, snapshot=None)
         first = board_api.board_bytes(db, store, "", time.time(), background=True)

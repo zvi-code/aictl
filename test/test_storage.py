@@ -2035,3 +2035,109 @@ class TestFlushCommitsInChunks:
             assert [r.tool_name for r in d._tool_invocations_buf] == ["t4"]
         finally:
             d.close()
+
+
+class TestReadsAndWritersDuringAFlush:
+    """A long flush must not lock out readers or other writers of the process."""
+
+    def test_a_new_connection_opens_and_reads_while_another_holds_the_write_lock(self, tmp_path, monkeypatch):
+        import sqlite3
+        import threading
+
+        import aictl.storage as storage
+
+        d = HistoryDB(db_path=tmp_path / "read.db", flush_interval=3600)
+        try:
+            monkeypatch.setattr(storage, "BUSY_TIMEOUT_S", 1.0)
+            writer = sqlite3.connect(str(tmp_path / "read.db"), isolation_level=None)
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute("INSERT INTO metrics(ts, metric, value, tags, tool, project_path, session_id, seq) VALUES(1,'x',1,'{}','','','',0)")
+            out = {}
+
+            def read():  # a web request runs on its own thread, so it opens its own connection
+                started = time.monotonic()
+                try:
+                    out["n"] = d._conn().execute("SELECT COUNT(*) FROM metrics").fetchone()[0]
+                except Exception as exc:  # noqa: BLE001
+                    out["error"] = exc
+                out["took"] = time.monotonic() - started
+
+            t = threading.Thread(target=read)
+            t.start()
+            t.join(5)
+            writer.execute("ROLLBACK")
+            assert "error" not in out, out
+            assert out["n"] == 0
+            assert out["took"] < 0.5
+        finally:
+            d.close()
+
+    def test_a_long_transaction_is_followed_by_a_pause(self, tmp_path, monkeypatch):
+        import aictl.storage as storage
+
+        monkeypatch.setattr(storage, "FLUSH_CHUNK_ROWS", 10)
+        monkeypatch.setattr(storage, "FLUSH_TXN_S", 0.0)
+        pauses = []
+        monkeypatch.setattr(storage.time, "sleep", lambda s: pauses.append(s))
+        d = HistoryDB(db_path=tmp_path / "pause.db", flush_interval=3600)
+        try:
+            d._events_buf.extend(EventRow(ts=float(i), tool="t", kind="k", detail={}) for i in range(35))
+            assert d.flush() == 35
+            assert len(pauses) >= 4 and set(pauses) == {storage.FLUSH_YIELD_S}
+            assert d._conn().execute("SELECT COUNT(*) FROM events").fetchone()[0] == 35
+        finally:
+            d.close()
+
+    def test_another_writer_gets_in_during_a_long_flush(self, tmp_path, monkeypatch):
+        import sqlite3
+        import threading
+
+        import aictl.storage as storage
+
+        monkeypatch.setattr(storage, "FLUSH_CHUNK_ROWS", 200)
+        monkeypatch.setattr(storage, "FLUSH_TXN_S", 0.02)
+        d = HistoryDB(db_path=tmp_path / "busy.db", flush_interval=3600)
+        try:
+            for i in range(40_000):
+                d._tool_invocations_buf.append(ToolInvocationRow(ts=1000.0 + i, session_id="s", tool_name=f"t{i}", source="test", source_event_id=f"e{i}"))
+            done = threading.Event()
+            result = {}
+
+            def flush():
+                d.flush()
+                done.set()
+
+            t = threading.Thread(target=flush)
+            t.start()
+            time.sleep(0.05)
+            other = sqlite3.connect(str(tmp_path / "busy.db"), timeout=1.0)
+            wrote = 0
+            try:
+                while not done.is_set() and wrote < 5:
+                    other.execute("INSERT INTO metrics(ts, metric, value, tags, tool, project_path, session_id, seq) VALUES(?, 'health', 1, '{}', '', '', '', 0)", (float(wrote),))
+                    other.commit()
+                    wrote += 1
+            except sqlite3.OperationalError as exc:
+                result["error"] = exc
+            t.join(60)
+            assert "error" not in result, result
+            assert wrote >= 1 or done.is_set()
+        finally:
+            d.close()
+
+
+def test_the_history_never_waits_for_the_disk(tmp_path):
+    """synchronous=OFF on every connection: a sync per checkpoint made Windows writes take minutes."""
+    import threading
+
+    d = HistoryDB(db_path=tmp_path / "sync.db", flush_interval=3600)
+    try:
+        seen = []
+        t = threading.Thread(target=lambda: seen.append(d._conn().execute("PRAGMA synchronous").fetchone()[0]))
+        t.start()
+        t.join(5)
+        assert d._conn().execute("PRAGMA synchronous").fetchone()[0] == 0
+        assert seen == [0]
+        assert d._conn().execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    finally:
+        d.close()
