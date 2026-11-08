@@ -554,3 +554,23 @@ html:has(.bd-app[data-theme=light]){background:#f4f4f1}
 .bd-fchip{display:inline-flex;align-items:center;height:20px;padding:0 7px;background:var(--sel);border-radius:4px;font-size:12px;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
 .bd-fchip:hover{background:var(--line2)}
 @container (max-width:560px){.bd-ctx.bd-ctx2{grid-template-columns:minmax(0,1fr)}.bd-ctx2>div+div{border-left:0;border-top:1px solid var(--line)}.bd-fgrp{grid-template-columns:minmax(0,1fr)}.bd-fdir{border-right:0;padding-bottom:0}}
+.bd-drkpis{grid-template-columns:repeat(6,minmax(0,1fr))}
+.bd-kpipill .bd-kpipilltx{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:400}
+.bd-kpipill .bd-plink{color:inherit;font-weight:500}
+.bd-plink{flex:none;height:22px;padding:0 6px;color:var(--focus);font-size:11.5px;white-space:nowrap;border-radius:4px}
+.bd-plink:hover{background:var(--hover)}
+.bd-ctxsub{padding:6px 10px 2px;color:var(--ink3);font-size:11.5px;border-top:1px solid var(--line)}
+.bd-tl{padding:6px 10px 4px}
+.bd-tlrow{display:grid;grid-template-columns:150px minmax(0,1fr);align-items:center;height:20px;gap:8px}
+.bd-tlname{font-size:12px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bd-tlname b{font-weight:500;color:var(--ink)}
+.bd-tltrack{position:relative;height:16px}
+.bd-tltrack::before{content:'';position:absolute;left:0;right:0;top:50%;height:1px;background:var(--line)}
+.bd-tlbar{position:absolute;top:3px;bottom:3px;border-radius:2px;min-width:2px;border:0;padding:0}
+.bd-tlbar.bd-tlmain{top:6px;bottom:6px}
+button.bd-tlbar:hover{filter:brightness(1.15)}
+.bd-tltick{position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;border-radius:1px}
+.bd-tlmore{font-size:11.5px;justify-self:start}
+.bd-tlaxis{display:grid;grid-template-columns:150px minmax(0,1fr);gap:8px;margin-top:2px;font-size:11px;color:var(--ink3);font-family:'IBM Plex Mono',Consolas,monospace}
+.bd-tlaxis>div{display:flex;justify-content:space-between}
+@container (max-width:560px){.bd-drkpis{grid-template-columns:repeat(3,minmax(0,1fr))}.bd-tlrow,.bd-tlaxis{grid-template-columns:90px minmax(0,1fr)}}

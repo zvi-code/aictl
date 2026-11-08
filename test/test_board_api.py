@@ -2536,6 +2536,24 @@ class TestAgentSkillsAndContext:
         ctx = board_api._agent_context(db._conn(), "ctx", "ctx", True)
         assert (ctx["first"], ctx["last"], ctx["peak"], ctx["calls"], ctx["drops"]) == (1000, 2000, 9000, 4, 1)
 
+    def test_context_by_agent_summarises_the_main_agent_and_each_subagent(self, db):
+        self._seed(db)
+        conn = db._conn()
+        for i, size in enumerate((12000, 28000, 20000)):
+            conn.execute(
+                "INSERT INTO requests(ts, session_id, agent_id, tool, dedup_key, model, input_tokens, cache_read_tokens) VALUES(?,?,?,?,?,?,?,?)",
+                (1010.0 + i, "ctx", "a-sub", "copilot-cli", f"a{i}", "m", 10, size - 10),
+            )
+        conn.commit()
+        ctx = board_api._agent_context(conn, "ctx", "ctx", True)
+        # The seed gives the main agent 1000, 5000, 9000, 2000 and "kid" one call of 77777.
+        assert ctx["by_agent"] == [
+            {"agent_id": "", "calls": 4, "first": 1000, "last": 2000, "peak": 9000},
+            {"agent_id": "a-sub", "calls": 3, "first": 12000, "last": 20000, "peak": 28000},
+            {"agent_id": "kid", "calls": 1, "first": 77777, "last": 77777, "peak": 77777},
+        ]
+        assert "by_agent" not in board_api._agent_context(conn, "ctx", "a-sub", False)
+
     def test_skill_agents_count_subagents_not_sessions(self, db):
         self._seed(db)
         conn = db._conn()

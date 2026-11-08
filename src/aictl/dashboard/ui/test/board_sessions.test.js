@@ -268,14 +268,15 @@ describe('Commits tab', () => {
 });
 
 describe('Overview stats', () => {
-  it('counts artifacts with their size, and commits with their pull requests', async () => {
+  it('counts artifacts and commits on their tabs, and keeps the strip to the six session totals', async () => {
     const d = agentDetail({ artifacts: [art()], artifacts_total: 7, artifacts_bytes: 4096, commits: [{ sha: 'c', short_sha: 'c', subject: 's', author_name: 'x', ts: 1, prs: [{ number: 1, url: 'u', title: 't', state: 'OPEN' }] }] });
-    const { findByTitle, container } = mountDrawer(d, 'overview');
-    const stat = await findByTitle('Files of the session folder and files the session wrote outside its project');
-    expect(stat.textContent).toContain('7');
-    expect(stat.textContent).toContain('4 KB');
-    const commitsStat = [...container.querySelectorAll('.bd-drkpis .bd-kpi')].find(x => x.textContent.startsWith('Commits'));
-    expect(commitsStat.textContent).toContain('1 pull request');
+    const { findByRole, getAllByRole, container } = mountDrawer(d, 'overview');
+    const strip = await findByRole('group', { name: 'Totals' });
+    expect([...strip.querySelectorAll('.bd-l')].map(x => x.textContent)).toEqual(['Tokens', 'Cost', 'Time', 'Messages', 'Tool calls']);
+    const tab = name => getAllByRole('tab').find(t => t.textContent.startsWith(name)).textContent;
+    await waitFor(() => expect(tab('Artifacts')).toBe('Artifacts 7'));
+    expect(tab('Commits')).toBe('Commits 1');
+    expect(container.querySelector('.bd-drkpis').textContent).not.toContain('Commits');
   });
 });
 

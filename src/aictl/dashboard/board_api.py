@@ -4909,7 +4909,8 @@ def _agent_context(conn: sqlite3.Connection, sid: str, agent: str, root: bool) -
     A subagent has its own context, so a main agent's figure leaves its subagents out. A drop
     of more than half means that the tool made the context smaller, as compaction does.
     A value that the tool did not report is None. A split belongs to the whole session, so
-    only its main agent has one.
+    only its main agent has one. A main agent's record also has by_agent: the same figures
+    (calls, first, last, peak) for the main agent and for each subagent of the session.
     """
     agent_sql, params = (" AND agent_id = ''", [sid]) if root else (" AND agent_id = ?", [sid, agent])
     sizes = [
@@ -4943,7 +4944,21 @@ def _agent_context(conn: sqlite3.Connection, sid: str, agent: str, root: bool) -
             " WHERE session_id = ? AND kind = 'split' ORDER BY ts DESC LIMIT 1",
             (sid,),
         ).fetchone()
-    return {
+    by_agent = None
+    if root:
+        per_agent: dict[str, list[int]] = {}
+        for agent_id, size in conn.execute(
+            "SELECT agent_id, input_tokens + cache_read_tokens + cache_creation_tokens FROM requests"
+            " WHERE session_id = ? AND NOT is_error ORDER BY ts",
+            (sid,),
+        ):
+            if size:
+                per_agent.setdefault(agent_id or "", []).append(size)
+        by_agent = [
+            {"agent_id": a, "calls": len(v), "first": v[0], "last": v[-1], "peak": max(v)}
+            for a, v in sorted(per_agent.items())
+        ]
+    result = {
         "tool_tokens": newest(1),
         "prompt_limit": limit,
         "limit_share": values[-1] / limit if limit else None,
@@ -4970,6 +4985,9 @@ def _agent_context(conn: sqlite3.Connection, sid: str, agent: str, root: bool) -
         "drops": sum(1 for before, after in zip(values, values[1:]) if after < before / 2),
         "series": values[::step][:_CONTEXT_POINTS + 1],
     }
+    if by_agent is not None:
+        result["by_agent"] = by_agent
+    return result
 
 
 def mcp_server_of(tool_name: str) -> str | None:
