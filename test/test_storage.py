@@ -2243,7 +2243,13 @@ def test_a_wal_truncate_does_not_keep_writers_out_while_a_reader_reads(tmp_path,
         rows = reader.execute("SELECT * FROM requests")
         rows.fetchone()  # the reader keeps its snapshot while its cursor is open
         db.append_request(RequestRow(ts=time.time() + 99, session_id="s", model="m", source="otel", dedup_key="x"))
-        checkpoint = threading.Thread(target=db._truncate_wal)
+        after: list[int] = []
+
+        def run_checkpoint() -> None:
+            db._truncate_wal()
+            after.append(db._conn().execute("PRAGMA busy_timeout").fetchone()[0])
+
+        checkpoint = threading.Thread(target=run_checkpoint)
         checkpoint.start()
         time.sleep(0.05)
         started = time.monotonic()
@@ -2252,9 +2258,65 @@ def test_a_wal_truncate_does_not_keep_writers_out_while_a_reader_reads(tmp_path,
         waited = time.monotonic() - started
         checkpoint.join()
         assert waited < 1.0, waited
-        # The checkpoint goes back to the normal wait for the writes that follow.
-        assert db._conn().execute("PRAGMA busy_timeout").fetchone()[0] == 3000
+        # The checkpoint's connection goes back to the normal wait for the writes that follow.
+        assert after == [3000]
     finally:
         reader.close()
         writer.close()
+        db.close()
+
+
+def test_only_another_connections_lock_counts_as_a_busy_store(tmp_path):
+    """SQLITE_LOCKED is a conflict inside one connection: rolling back or retrying does not help."""
+    import sqlite3
+
+    from aictl.storage import is_lock_error
+
+    path = tmp_path / "x.db"
+    holder = sqlite3.connect(path)
+    holder.execute("CREATE TABLE t(a)")
+    holder.commit()
+    holder.execute("BEGIN IMMEDIATE")
+    other = sqlite3.connect(path, timeout=0)
+    try:
+        with pytest.raises(sqlite3.OperationalError) as busy:
+            other.execute("INSERT INTO t VALUES(1)")
+        assert is_lock_error(busy.value)
+        holder.rollback()
+        holder.execute("INSERT INTO t VALUES(1)")
+        holder.execute("INSERT INTO t VALUES(2)")
+        holder.commit()
+        cur = holder.execute("SELECT a FROM t")
+        cur.fetchone()  # an open statement on the table
+        with pytest.raises(sqlite3.OperationalError) as locked:
+            holder.execute("DROP TABLE t")
+        assert not is_lock_error(locked.value)
+    finally:
+        other.close()
+        holder.close()
+
+
+def test_a_health_write_that_failed_is_tried_again(tmp_path, monkeypatch):
+    import sqlite3
+
+    db = HistoryDB(db_path=tmp_path / "h.db", flush_interval=0)
+    try:
+        real = db._conn
+
+        class _Fails:
+            def __getattr__(self, name):
+                return getattr(real(), name)
+
+            def execute(self, sql, *a):
+                if sql.startswith("INSERT OR REPLACE INTO data_quality_status"):
+                    raise sqlite3.OperationalError("database is locked")
+                return real().execute(sql, *a)
+
+        monkeypatch.setattr(db, "_conn", lambda: _Fails())
+        with pytest.raises(sqlite3.OperationalError):
+            db.record_data_quality("ingester:x", "ok")
+        monkeypatch.setattr(db, "_conn", real)
+        db.record_data_quality("ingester:x", "ok")
+        assert [r["status"] for r in db.query_data_quality(component="ingester:x")] == ["ok"]
+    finally:
         db.close()

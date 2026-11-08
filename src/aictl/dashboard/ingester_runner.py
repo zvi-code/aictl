@@ -49,6 +49,9 @@ from ..storage import is_lock_error
 
 log = logging.getLogger(__name__)
 
+# An ingester whose store stays busy this long is reported as failed, and again after as long.
+LOCKED_REPORT_S = 300.0
+
 
 @dataclass
 class IngesterHandle:
@@ -200,13 +203,14 @@ def _poll_loop(
     name: str,
 ) -> None:
     """Call ``ingester.poll()`` every *interval* seconds until *stop* is set."""
-    locked = False  # a busy store skips the round: logged once, until a poll succeeds
+    locked_since: float | None = None  # a busy store skips the round: logged once, until a poll succeeds
+    reported_at = 0.0
     first = True  # initial poll immediately so the first data point is available
     while first or not stop.wait(timeout=interval):
         first = False
         try:
             inserted = ingester.poll()
-            locked = False
+            locked_since = None
             if inserted:
                 log.debug("%s ingester: poll inserted %d rows", name, inserted)
         except sqlite3.OperationalError as exc:
@@ -216,14 +220,25 @@ def _poll_loop(
                 continue
             store = getattr(ingester, "store", None)
             writes = ", ".join(store.active_writes()) if hasattr(store, "active_writes") else ""
+            now = time.monotonic()
+            if locked_since is None:
+                locked_since = reported_at = now
+                level = logging.WARNING
+            elif now - reported_at >= LOCKED_REPORT_S:
+                # Still locked after a long time: say so loudly and mark the ingester failed.
+                reported_at = now
+                level = logging.WARNING
+                _record_poll_failure(ingester, name, exc)
+            else:
+                level = logging.DEBUG
             log.log(
-                logging.DEBUG if locked else logging.WARNING,
-                "%s ingester: store busy, round skipped and retried: %s. Writes running in this process: %s",
+                level,
+                "%s ingester: store busy for %.0f s, round skipped and retried: %s. Writes running in this process: %s",
                 name,
+                now - locked_since,
                 exc,
                 writes or "none",
             )
-            locked = True
         except Exception as exc:  # pragma: no cover - defensive
             log.exception("%s ingester: poll loop error", name)
             _record_poll_failure(ingester, name, exc)

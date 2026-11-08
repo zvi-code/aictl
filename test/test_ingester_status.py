@@ -198,3 +198,37 @@ def test_a_busy_store_skips_the_poll_round_with_one_line_and_no_traceback(caplog
     lines = [r for r in caplog.records if "store busy" in r.getMessage()]
     assert [r.levelno for r in lines] == [logging.WARNING, logging.DEBUG, logging.DEBUG]
     assert not any(r.exc_info for r in caplog.records)
+
+
+def test_a_store_busy_for_long_marks_the_ingester_failed_and_warns_again(caplog, monkeypatch):
+    import logging
+    import sqlite3
+    import threading
+
+    from aictl.dashboard import ingester_runner
+
+    clock = iter([0.0, 10.0, 400.0, 410.0])
+    monkeypatch.setattr(ingester_runner.time, "monotonic", lambda: next(clock))
+    stop = threading.Event()
+    failures: list[str] = []
+
+    class _Store:
+        def record_data_quality(self, component, status, **_k):
+            failures.append(status)
+
+    class _Locked:
+        store = _Store()
+        polls = 0
+
+        def poll(self) -> int:
+            self.polls += 1
+            if self.polls >= 4:
+                stop.set()
+            raise sqlite3.OperationalError("database is locked")
+
+    with caplog.at_level(logging.DEBUG, logger="aictl.dashboard.ingester_runner"):
+        ingester_runner._poll_loop(_Locked(), stop, 0.0, "transcript-usage")
+    lines = [r for r in caplog.records if "store busy" in r.getMessage()]
+    # First skip warns, short ones are quiet, a lock past LOCKED_REPORT_S warns and fails the ingester.
+    assert [r.levelno for r in lines] == [logging.WARNING, logging.DEBUG, logging.WARNING, logging.DEBUG]
+    assert failures == ["failed"]

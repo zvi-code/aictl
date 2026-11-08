@@ -694,3 +694,14 @@ def test_a_busy_store_skips_clearing_stale_prompts_and_says_so_once(tmp_path, mo
         skipped = [r for r in caplog.records if "clear_stale_pending_confirms skipped" in r.getMessage()]
         assert len(skipped) == 1
         assert stores.clear_stale_pending_confirms(NOW) == 0
+        # A call without a lock ends the incident: the next one warns again.
+        holder = sqlite3.connect(stores.machine._path, timeout=0.1)
+        try:
+            holder.execute("BEGIN IMMEDIATE")
+            with caplog.at_level(logging.WARNING, logger="aictl.project_stores"):
+                stores.clear_stale_pending_confirms(NOW)
+        finally:
+            holder.rollback()
+            holder.close()
+        skipped = [r for r in caplog.records if "clear_stale_pending_confirms skipped" in r.getMessage()]
+        assert len(skipped) == 2
