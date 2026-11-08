@@ -880,7 +880,8 @@ def files_for_folder(folder: str | Path) -> dict:
     """The matched files that can affect a session working in *folder*, from repositories already read.
 
     The same rule as :func:`session_links`, for any folder, so a past session gets its files too:
-    a file of *folder*'s git root whose folder is *folder* or holds it. Reads no repository itself.
+    a file of *folder*'s git root whose folder is *folder* or holds it. Reads no repository itself:
+    in lazy mode an unread repository is handed to the background thread, so a later call has it.
     ``{"git_root": str | None, "files": [paths], "read": bool}``; ``read`` is False while the
     repository has not been read yet.
     """
@@ -889,6 +890,12 @@ def files_for_folder(folder: str | Path) -> dict:
         return {"git_root": None, "files": [], "read": False}
     with _lock:
         units = [u for u in _units.values() if _key(u.top) == _key(top)]
+        # No active session may work in this repository, so no listing would ever read it.
+        asked = not units and _lazy and _key(top) not in _asked
+        if asked:
+            _asked[_key(top)] = top
+    if asked:
+        _wake.set()
     out = [
         str(u.folder / Path(*rel.split("/")))
         for u in units
