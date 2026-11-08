@@ -167,7 +167,7 @@ describe('agent drawer tab list and header', () => {
     const { findByRole, getAllByRole } = mount();
     await findByRole('heading', { name: 'Fix the parser' });
     const names = getAllByRole('tab').map(t => t.textContent.replace(/ \d+$/, ''));
-    expect(names).toEqual(['Overview', 'Transcript', 'Flow', 'Timeline', 'Turns', 'Tool calls', 'Failures and loops', 'Changes', 'Artifacts', 'Commits', 'Events', 'Team', 'Processes', 'Integrations']);
+    expect(names).toEqual(['Overview', 'Context', 'Instructions', 'Transcript', 'Flow', 'Timeline', 'Turns', 'Tool calls', 'Failures and loops', 'Changes', 'Artifacts', 'Commits', 'Events', 'Team', 'Processes', 'Integrations']);
   });
 
   it('counts the rows on a tab and separates the three groups', async () => {
@@ -209,7 +209,7 @@ describe('agent drawer tab list and header', () => {
     expect(labels).toEqual(['Tokens', 'Cost', 'Time', 'Messages', 'Tool calls', 'Model calls']);
     const kpi = name => [...strip.querySelectorAll('.bd-kpi')].find(x => x.querySelector('.bd-l').textContent === name).textContent;
     expect(kpi('Model calls')).toBe('Model calls13context 23 k → 56 k');
-    expect(container.querySelector('#dr-actx')).toBeTruthy();
+    expect(container.querySelector('#dr-actxs')).toBeTruthy();
     // Artifacts, commits and changes are counts on their tabs, not cells of the strip.
     expect(strip.textContent).not.toContain('Artifacts');
   });
@@ -289,7 +289,7 @@ describe('agent drawer tab list and header', () => {
   it('lists the context by agent when the record has more than one agent, and opens a subagent from it', async () => {
     const ctxData = { first: 23000, last: 56000, peak: 56000, calls: 13, drops: 0, compactions: [], series: [23000, 56000], by_agent: [{ agent_id: '', calls: 13, first: 23000, last: 56000, peak: 56000 }, { agent_id: 'k1', calls: 4, first: 12000, last: 20000, peak: 28000 }] };
     const subs = [{ id: 'k1', role: 'reader', short: 'k1', started_at: NOW - 900, ended_at: NOW - 400 }];
-    const { findByRole, act } = mount({ over: { context: ctxData, subagents: subs } });
+    const { findByRole, act } = mount({ tab: 'context', over: { context: ctxData, subagents: subs } });
     const t = await findByRole('table', { name: 'Context by agent' });
     const rows = [...t.querySelectorAll('tbody tr')].map(r => r.textContent);
     expect(rows[0]).toContain('Main agent');
@@ -524,9 +524,9 @@ describe('Overview and Changes fixes', () => {
     const ctxData = { first: 155000, last: 160000, peak: 170000, calls: 3, drops: 0, compactions: [], series: [1, 2, 3] };
     const { findByText, container } = mount({ over: { context: ctxData } });
     await findByText('Context size');
-    expect(container.querySelector('#dr-actx .bd-ctxlab').textContent).toBe('155 k first call');
-    expect(container.querySelector('#dr-actx .bd-ctxbig').textContent).toBe('160 ktokens at the last call');
-    expect(container.querySelector('#dr-actx').textContent).not.toContain('155 k tokens');
+    expect(container.querySelector('#dr-actxs .bd-ctxlab').textContent).toBe('155 k first call');
+    expect(container.querySelector('#dr-actxs .bd-ctxbig').textContent).toBe('160 ktokens at the last call');
+    expect(container.querySelector('#dr-actxs').textContent).not.toContain('155 k tokens');
   });
 
   it('names a model row that has no model id', async () => {

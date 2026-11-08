@@ -301,7 +301,7 @@ describe('an older server without the new fields', () => {
 describe('Files that can affect a session', () => {
   it('lists the files of the session folder, and opens one', async () => {
     const files = { git_root: '/r/app', read: true, total: 2, files: [{ path: '/r/app/AGENTS.md', name: 'AGENTS.md' }, { path: '/r/app/src/AGENTS.md', name: 'AGENTS.md' }] };
-    const { findByText, container, act } = mountDrawer(agentDetail({ context_files: files }), 'overview');
+    const { findByText, container, act } = mountDrawer(agentDetail({ context_files: files }), 'instructions');
     await findByText('2 files in 2 folders of /r/app apply to the session folder');
     const chip = container.querySelector('button[title="/r/app/src/AGENTS.md"]');
     expect(chip.textContent).toBe('AGENTS.md');
@@ -311,7 +311,7 @@ describe('Files that can affect a session', () => {
 
   it('shows each folder once, relative to the repository root, with its files as chips', async () => {
     const files = { git_root: '/r/app/', read: true, total: 3, files: [{ path: '/r/app/src/b.md', name: 'b.md' }, { path: '/r/app/AGENTS.md', name: 'AGENTS.md' }, { path: '/r/app/src/a.md', name: 'a.md' }] };
-    const { findByText, container } = mountDrawer(agentDetail({ context_files: files }), 'overview');
+    const { findByText, container } = mountDrawer(agentDetail({ context_files: files }), 'instructions');
     await findByText('3 files in 2 folders of /r/app/ apply to the session folder');
     const groups = [...container.querySelectorAll('#dr-actxf .bd-fgrp')];
     expect(groups.map(g => g.querySelector('.bd-fdir').textContent)).toEqual(['/repository root · 1 file', 'src/2 files']);
@@ -323,7 +323,7 @@ describe('Files that can affect a session', () => {
   it('offers a filter from nine files on, and narrows the groups by name or folder', async () => {
     const list = Array.from({ length: 9 }, (_, i) => ({ path: '/r/app/' + (i < 5 ? 'a/' : 'b/') + 'f' + i + '.md', name: 'f' + i + '.md' }));
     const files = { git_root: '/r/app', read: true, total: 9, files: list };
-    const { findByText, container } = mountDrawer(agentDetail({ context_files: files }), 'overview');
+    const { findByText, container } = mountDrawer(agentDetail({ context_files: files }), 'instructions');
     await findByText('9 files in 2 folders of /r/app apply to the session folder');
     const q = container.querySelector('#dr-actxf .bd-fq');
     fireEvent.input(q, { target: { value: 'f7' } });
@@ -335,12 +335,94 @@ describe('Files that can affect a session', () => {
 
   it('says the total when more files apply than are listed', async () => {
     const files = { git_root: '/r/app', read: true, total: 500, files: [{ path: '/r/app/AGENTS.md', name: 'AGENTS.md' }] };
-    const { findByText } = mountDrawer(agentDetail({ context_files: files }), 'overview');
+    const { findByText } = mountDrawer(agentDetail({ context_files: files }), 'instructions');
     await findByText('500 files in 1 folder of /r/app apply to the session folder, 1 listed');
   });
 
   it('says why when the repository is not read yet', async () => {
-    const { findByText } = mountDrawer(agentDetail({ context_files: { git_root: '/r/app', read: false, total: 0, files: [] } }), 'overview');
+    const { findByText } = mountDrawer(agentDetail({ context_files: { git_root: '/r/app', read: false, total: 0, files: [] } }), 'instructions');
     await findByText(/has not read this repository yet/);
+  });
+});
+
+describe('Overview grid: outputs and loaded instructions', () => {
+  const loaded = [
+    { path: '/r/app/.github/copilot-instructions.md', name: 'copilot-instructions.md', how: 'system_prompt', detail: '39 of 40 lines', ts: NOW - 590 },
+    { path: '/r/app/.github/agents/intake.agent.md', name: 'intake.agent.md', how: 'custom_agent', detail: '', ts: NOW - 580 },
+    { path: '/r/app/.github/agents/intake.agent.md', name: 'intake.agent.md', how: 'system_prompt', detail: '18 of 30 lines', ts: NOW - 590 },
+    { path: '/home/u/.claude/CLAUDE.md', name: 'CLAUDE.md', how: 'instructions', detail: 'User', ts: NOW - 595 },
+    { path: '/home/u/.claude/projects/p/memory/MEMORY.md', name: 'MEMORY.md', how: 'instructions', detail: 'AutoMem', ts: NOW - 594 },
+  ];
+  const cf = { git_root: '/r/app', read: true, total: 3, loaded, files: [
+    { path: '/r/app/.github/copilot-instructions.md', name: 'copilot-instructions.md', loaded: true },
+    { path: '/r/app/.github/agents/intake.agent.md', name: 'intake.agent.md', loaded: true },
+    { path: '/r/app/.github/instructions/kql.instructions.md', name: 'kql.instructions.md' },
+  ] };
+
+  it('lays out outputs and instructions side by side, each in half of the grid', async () => {
+    const { findByText, container } = mountDrawer(agentDetail({ context_files: cf }), 'overview');
+    await findByText('Outputs');
+    expect(container.querySelector('#dr-aout').style.gridColumn).toBe('span 6');
+    expect(container.querySelector('#dr-ains').style.gridColumn).toBe('span 6');
+    expect(container.querySelector('#dr-actxf')).toBeNull();
+  });
+
+  it('lists each loaded file once, with every way it was loaded, oldest first', async () => {
+    const { findByRole, container } = mountDrawer(agentDetail({ context_files: cf }), 'overview');
+    const t = await findByRole('table', { name: 'Loaded instructions' });
+    const rows = [...t.querySelectorAll('tbody tr')].map(r => r.textContent);
+    expect(rows).toHaveLength(4);
+    expect(rows[0]).toContain('CLAUDE.md');
+    expect(rows[0]).toContain('User instructions');
+    expect(rows[1]).toContain('MEMORY.md');
+    expect(rows[1]).toContain('Agent memory');
+    expect(rows[2]).toContain('copilot-instructions.md');
+    expect(rows[2]).toContain('In the system prompt');
+    expect(rows[3]).toContain('Custom agent, In the system prompt');
+    expect(container.querySelector('#dr-ains').textContent).toContain('4 loaded · 3 can apply');
+    expect(container.querySelector('#dr-ains').textContent).toContain('A file that can apply was not always loaded.');
+  });
+
+  it('does not claim 0 files can apply before the repository is read', async () => {
+    const { findByText, container } = mountDrawer(agentDetail({ context_files: { ...cf, read: false, total: 0, files: [] } }), 'overview');
+    await findByText('aictl has not read this repository yet, so the files that can apply are not known. It reads it in the background.');
+    expect(container.querySelector('#dr-ains .bd-psub').textContent).toBe('4 loaded');
+  });
+
+  it('says a tool that does not report loads does not, and does not call the files loaded', async () => {
+    const detail = agentDetail({ context_files: { ...cf, loaded: [] } });
+    detail.agent.tool = 'cursor';
+    const { findByText } = mountDrawer(detail, 'overview');
+    await findByText('This tool does not report which files it loads. The files that can apply are not proof of a load.');
+  });
+
+  it('marks the loaded files among the files that can apply on the Instructions tab', async () => {
+    const { findByText, container } = mountDrawer(agentDetail({ context_files: cf }), 'instructions');
+    await findByText('3 files in 3 folders of /r/app apply to the session folder, 2 loaded');
+    const marked = [...container.querySelectorAll('#dr-actxf .bd-floaded')].map(c => c.textContent);
+    expect(container.querySelector('[role=tab][aria-selected=true]').textContent).toBe('Instructions 4');
+    expect(marked).toEqual(['copilot-instructions.md', 'intake.agent.md']);
+  });
+
+  it('counts changes, artifacts and commits, and opens their tabs', async () => {
+    const detail = agentDetail({
+      context_files: cf,
+      files: [{ path: '/r/app/a.py', lines_added: 3, lines_removed: 1, edits: 1 }, { path: '/r/app/b.py', lines_added: 30, lines_removed: 0, edits: 2 }],
+      artifacts: [{ path: '/s/rewind/index.json', name: 'index.json', kind: 'session-folder', size_bytes: 6482, mtime: NOW - 100 }, { path: '/tmp/report.md', name: 'report.md', kind: 'written', size_bytes: 2048, mtime: NOW - 200 }],
+      artifacts_total: 2, artifacts_bytes: 8530, commits: [],
+    });
+    const { findByRole, container, act } = mountDrawer(detail, 'overview');
+    const t = await findByRole('table', { name: 'Outputs' });
+    expect([...t.querySelectorAll('tbody tr')].map(r => r.querySelector('td').textContent)).toEqual(['b.py', 'a.py', 'report.md', 'index.json']);
+    const counts = [...container.querySelectorAll('#dr-aout .bd-ocount')].map(b => b.textContent);
+    expect(counts[0]).toContain('2 files');
+    expect(counts[2]).toContain('None');
+    fireEvent.click(container.querySelectorAll('#dr-aout .bd-ocount')[1]);
+    expect(act.setDrawerTab).toHaveBeenCalledWith('artifacts');
+  });
+
+  it('says so when the session left nothing', async () => {
+    const { findByText } = mountDrawer(agentDetail({ context_files: cf, artifacts: [], artifacts_total: 0, commits: [] }), 'overview');
+    await findByText('The session changed no file in the project and wrote no file elsewhere.');
   });
 });

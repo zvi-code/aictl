@@ -133,6 +133,8 @@ function AgentDrawer({ d, ctx, frame, act }) {
   // Three groups: what the agent did, what it changed, how it ran. A count on a tab is the rows it holds.
   const tabs = [
     ['overview', 'Overview'],
+    ['context', 'Context'],
+    ['instructions', 'Instructions', data?.context_files ? new Set((data.context_files.loaded || []).map(x => x.path)).size || null : null],
     ['transcript', 'Transcript'],
     ['flow', 'Flow'],
     ['timeline', 'Timeline'],
@@ -167,6 +169,8 @@ function AgentDrawer({ d, ctx, frame, act }) {
     if (d.tab === 'tools') return html`<${ToolsTab} data=${data} pending=${pending}/>`;
     if (d.tab === 'changes') return html`<${ChangesTab} data=${data} act=${act}/>`;
     if (d.tab === 'errors') return html`<${ErrorsTab} data=${data}/>`;
+    if (d.tab === 'context') return html`<${ContextTab} a=${a} data=${data} act=${act}/>`;
+    if (d.tab === 'instructions') return html`<${InstructionsTab} a=${a} data=${data} act=${act}/>`;
     if (d.tab !== 'overview' && AGENT_PARTS[d.tab]) return html`<${Part} key=${d.tab} part=${d.tab} a=${a} data=${data} st=${st} ctx=${ctx} act=${act}/>`;
     return html`<${OverviewTab} a=${a} data=${data} st=${st} ctx=${ctx} act=${act} pending=${pending}/>
       <${Part} part="overview" name="OverviewExtras" a=${a} data=${data} st=${st} ctx=${ctx} act=${act}/>`;
@@ -233,7 +237,7 @@ function Facts({ facts }) {
 }
 
 /** Context size: the last call against the limit, the growth per call, and for a Copilot session the split at shutdown. */
-function ContextPanel({ a, context, copilot, subagents, act }) {
+function ContextPanel({ a, context, copilot, subagents, act, compact = false, span = 0 }) {
   const split = context.split;
   const byAgent = useMemo(() => {
     const rows = context.by_agent || [];
@@ -252,7 +256,9 @@ function ContextPanel({ a, context, copilot, subagents, act }) {
       sort: { k: 'n', dir: 'asc' }, primary: 'n',
     };
   }, [context, subagents]);
-  const withSplit = copilot && !a.parent_id;
+  const hasSplit = copilot && !a.parent_id;
+  // In the Overview the split sits under the growth line; on the Context tab it sits beside it.
+  const withSplit = hasSplit && !compact;
   const parts = splitParts(split);
   const known = parts.filter(p => p.v != null);
   const total = split?.current ?? (known.length ? known.reduce((n, p) => n + p.v, 0) : null);
@@ -274,7 +280,8 @@ function ContextPanel({ a, context, copilot, subagents, act }) {
     { label: 'Times it shrank', value: fmtN(context.drops), title: 'The size fell by more than half, as compaction does' },
     { label: 'Compactions', value: context.compactions?.length ? fmtN(context.compactions.length) : NA, sub: context.compactions?.length ? '' : 'none stored', title: 'Compaction records in the session file. Only the time that aictl reads from these files is stored, so no record does not prove that none happened.' },
   ];
-  return html`<${FixedPanel} id="actx" span=${withSplit ? 8 : 12} title="Context size" sub=${a.parent_id ? 'What this subagent sent with each model call' : 'What the main agent sent with each model call. Each subagent has its own.'}>
+  const go = compact ? { label: 'Context', pick: () => act.setDrawerTab('context') } : null;
+  return html`<${FixedPanel} id=${compact ? 'actxs' : 'actx'} span=${span || (compact ? 6 : 12)} go=${go} title="Context size" sub=${a.parent_id ? 'What this subagent sent with each model call' : compact ? 'What the main agent sent with each call' : 'What the main agent sent with each model call. Each subagent has its own.'}>
     <div class=${'bd-ctx' + (withSplit ? ' bd-ctx2' : '')}>
       <div>
         <div class="bd-ctxhead">
@@ -288,7 +295,7 @@ function ContextPanel({ a, context, copilot, subagents, act }) {
           <svg class="bd-ctxspark" viewBox="0 0 600 60" preserveAspectRatio="none" role="img" aria-label=${'Context size per call, from ' + fmtN(context.first) + ' to ' + fmtN(context.last) + ', peak ' + fmtN(context.peak)}><path d=${sparkPath(context.series, 600, 60)} fill="none" stroke="var(--s1)" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>
         </div>
       </div>
-      ${withSplit ? html`<div class="bd-ctxsplit">
+      ${hasSplit ? html`<div class="bd-ctxsplit">
         <div class="bd-ctxst">${split
           ? html`<span>${'Split at the last shutdown, ' + stamp(split.ts, true)}</span><b title="currentTokens of the last shutdown record">${fmtTokens(split.current)}</b>`
           : html`<span>Split at shutdown: not known. The session wrote no shutdown record that aictl holds.</span>`}</div>
@@ -296,12 +303,12 @@ function ContextPanel({ a, context, copilot, subagents, act }) {
         <div class="bd-ctxleg">${parts.map(p => html`<i key=${p.label + 'c'} class="bd-sw" style=${{ background: p.c }}></i><span key=${p.label} title=${p.title}>${p.label}</span><span key=${p.label + 'v'} class="bd-ctxlegv">${fmtN(p.v)}${p.v != null && total ? html`<small>${fmtShare(p.v / total)}</small>` : null}</span>`)}</div>
       </div>` : null}
     </div>
-    <${Facts} facts=${facts}/>
-    <div class="bd-note">${copilot
+    ${compact ? null : html`<${Facts} facts=${facts}/>`}
+    ${compact ? null : html`<div class="bd-note">${copilot
       ? 'First, last and peak are input, cache read and cache write of each call. Copilot compaction figures count the conversation only, without the system prompt and tools.'
-      : 'Input, cache read and cache write of each call. This tool reports the total, not how it splits into instructions, tools and conversation.'}</div>
-    ${byAgent ? html`<div class="bd-ctxsub">Context by agent. Each subagent has its own context; the numbers are what each one sent.</div><${Table} def=${byAgent} label="Context by agent"/>` : null}
-    ${context.compactions?.length ? html`<${Table} def=${compactionDef} label="Compactions"/>` : null}
+      : 'Input, cache read and cache write of each call. This tool reports the total, not how it splits into instructions, tools and conversation.'}</div>`}
+    ${compact ? null : byAgent ? html`<div class="bd-ctxsub">Context by agent. Each subagent has its own context; the numbers are what each one sent.</div><${Table} def=${byAgent} label="Context by agent"/>` : null}
+    ${!compact && context.compactions?.length ? html`<${Table} def=${compactionDef} label="Compactions"/>` : null}
   </${FixedPanel}>`;
 }
 
@@ -329,13 +336,15 @@ export function timelineModel(a, data, now = Date.now() / 1000) {
   return { lanes, ticks, more: Math.max(0, all.length - TIMELINE_LANES), start: a.started_at, end, live: !a.ended_at };
 }
 
-function AgentTimeline({ a, data, act }) {
-  const m = useMemo(() => timelineModel(a, data), [a, data]);
-  if (!m || (m.lanes.length < 2 && !m.ticks.length)) return null;
+/** True when the session has more to draw than the main agent's bar alone. */
+export const hasTimeline = m => !!m && (m.lanes.length > 1 || m.ticks.length > 0);
+
+function AgentTimeline({ m, act, span = 12 }) {
+  if (!hasTimeline(m)) return null;
   const kinds = [...new Set(m.ticks.map(t => t.kind))];
   const tickColor = { Prompt: 'var(--good)', Compaction: 'var(--warn)', Failure: 'var(--crit)' };
   const sub = (m.lanes.length === 1 ? 'The main agent alone' : m.lanes.length - 1 + (m.more ? ' of ' + (m.lanes.length - 1 + m.more) : '') + (m.lanes.length - 1 + m.more === 1 ? ' subagent' : ' subagents')) + ' over ' + fmtDur(m.end - m.start) + (m.live ? ' so far' : '');
-  return html`<${FixedPanel} id="atl" title="Agents over time" sub=${sub} go=${{ label: 'Timeline', pick: () => act.setDrawerTab('timeline') }}>
+  return html`<${FixedPanel} id="atl" span=${span} title="Agents over time" sub=${sub} go=${{ label: 'Timeline', pick: () => act.setDrawerTab('timeline') }}>
     <div class="bd-tl" role="list" aria-label="Agents over time">
       ${m.lanes.map(l => html`<div key=${l.id} class="bd-tlrow" role="listitem">
         <span class="bd-tlname" title=${l.name}>${l.main ? html`<b>${l.name}</b>` : l.name}</span>
@@ -400,9 +409,124 @@ function ContextFiles({ cf, act }) {
     </div>` : null}
     ${shown.map(g => html`<div key=${g.dir} class="bd-fgrp">
       <div class="bd-fdir" title=${g.dir}><span class="bd-mono">${g.rel}</span><small>${(g.rel === '/' ? 'repository root · ' : '') + (g.files.length === 1 ? '1 file' : g.files.length + ' files')}</small></div>
-      <div class="bd-fchips">${g.files.map(f => html`<button key=${f.path} type="button" class="bd-fchip" title=${f.path} onClick=${() => act.openDrawer({ type: 'file', path: f.path })}>${f.name}</button>`)}</div>
+      <div class="bd-fchips">${g.files.map(f => html`<button key=${f.path} type="button" class=${'bd-fchip' + (f.loaded ? ' bd-floaded' : '')} title=${f.path + (f.loaded ? '\nLoaded by this session' : '')} onClick=${() => act.openDrawer({ type: 'file', path: f.path })}>${f.name}</button>`)}</div>
     </div>`)}
     ${needle && !shown.length ? html`<div class="bd-empty">No file matches.</div>` : null}`;
+}
+
+// How a session loaded a file, as the tool records it.
+const LOAD_HOW = {
+  instructions: x => ({ User: 'User instructions', Project: 'Project instructions', AutoMem: 'Agent memory', Local: 'Local instructions' }[x.detail] || (x.detail ? x.detail + ' instructions' : 'Instructions')),
+  nested_memory: () => 'Folder instructions',
+  skill: () => 'Skill',
+  custom_agent: () => 'Custom agent',
+  system_prompt: () => 'In the system prompt',
+};
+const LOAD_TIP = {
+  instructions: 'The tool wrote in its transcript that it loaded this file',
+  nested_memory: 'The tool loaded this file when the session worked in its folder',
+  skill: 'The session invoked this skill',
+  custom_agent: 'The session ran as this custom agent',
+  system_prompt: 'Most of the lines of this file are in the system prompt that the tool sent',
+};
+const REPORTS_LOADS = ['claude-code', 'copilot-cli'];
+
+/** One row per loaded file; a file loaded in two ways shows both. */
+export function loadedRows(loaded) {
+  const by = new Map();
+  for (const x of loaded || []) {
+    const r = by.get(x.path) || { path: x.path, name: x.name, ts: x.ts, hows: [], tips: [] };
+    const label = (LOAD_HOW[x.how] || (() => x.how))(x);
+    if (!r.hows.includes(label)) { r.hows.push(label); r.tips.push((LOAD_TIP[x.how] || '') + (x.how === 'system_prompt' && x.detail ? ': ' + x.detail : '')); }
+    if (x.ts && (!r.ts || x.ts < r.ts)) r.ts = x.ts;
+    by.set(x.path, r);
+  }
+  return [...by.values()].sort((x, y) => (x.ts || 0) - (y.ts || 0));
+}
+
+function loadedDef(rows, gitRoot, act, max = 0) {
+  const root = gitRoot ? gitRoot.replace(/\/+$/, '') + '/' : '';
+  const shown = max ? rows.slice(0, max) : rows;
+  return {
+    cols: [{ k: 'n', l: 'File' }, { k: 'h', l: 'Loaded as', w: '250px', t: 'How the tool recorded the load. Hover a value for the evidence.' }, ...(max ? [] : [{ k: 't', l: 'First load', w: '110px' }])],
+    rows: shown.map(r => {
+      const dir = r.path.slice(0, r.path.length - r.name.length);
+      const where = root && dir.startsWith(root) ? dir.slice(root.length) || 'repository root' : dir;
+      return { id: r.path, go: r.path.startsWith('/') ? () => act.openDrawer({ type: 'file', path: r.path }) : null, sort: { n: r.name, h: r.hows[0], t: r.ts },
+        cells: { n: { v: r.name, sub: where, cls: 'm', title: r.path }, h: { v: r.hows.join(', '), title: r.tips.filter(Boolean).join('\n') }, t: { v: stamp(r.ts, true), cls: 'dim' } } };
+    }),
+    sort: { k: 't', dir: 'asc' }, primary: 'n',
+  };
+}
+
+function loadedNone(a) {
+  return REPORTS_LOADS.includes(a.tool)
+    ? 'No loaded file is recorded for this session.'
+    : 'This tool does not report which files it loads. The files that can apply are not proof of a load.';
+}
+
+/** The Overview card: the files the session loaded, and how many more can apply. */
+function InstructionsCard({ a, cf, act }) {
+  const rows = useMemo(() => loadedRows(cf.loaded), [cf]);
+  const def = useMemo(() => loadedDef(rows, cf.git_root, act, 5), [rows, cf]);
+  const sub = (rows.length === 1 ? '1 loaded' : rows.length + ' loaded') + (cf.git_root && cf.read ? ' · ' + fmtN(cf.total) + ' can apply' : '');
+  return html`<${FixedPanel} id="ains" span=${6} title="Instructions" sub=${sub} go=${{ label: 'Instructions', pick: () => act.setDrawerTab('instructions') }}>
+    ${rows.length ? html`<${Table} def=${def} label="Loaded instructions"/>` : html`<div class="bd-empty">${loadedNone(a)}</div>`}
+    ${rows.length > 5 ? html`<button type="button" class="bd-lnk" onClick=${() => act.setDrawerTab('instructions')}>${'+ ' + (rows.length - 5) + ' more'}</button>` : null}
+    <div class="bd-note">${!cf.git_root ? 'The session folder is not in a git repository.' : !cf.read ? 'aictl has not read this repository yet, so the files that can apply are not known. It reads it in the background.' : cf.git_root
+      ? fmtN(cf.total) + (cf.total === 1 ? ' file' : ' files') + ' of the repository can apply to the session folder. A file that can apply was not always loaded.'
+      : 'The session folder is not in a git repository.'}</div>
+  </${FixedPanel}>`;
+}
+
+function InstructionsTab({ a, data, act }) {
+  const cf = data.context_files || { files: [], total: 0, git_root: null, read: false, loaded: [] };
+  const rows = useMemo(() => loadedRows(cf.loaded), [cf]);
+  const def = useMemo(() => loadedDef(rows, cf.git_root, act), [rows, cf]);
+  const folders = useMemo(() => new Set(cf.files.map(f => f.path.slice(0, f.path.length - f.name.length))).size, [cf]);
+  const hit = cf.files.filter(f => f.loaded).length;
+  return html`
+    <${FixedPanel} id="aiload" title="Loaded by this session" sub=${rows.length ? rows.length + (rows.length === 1 ? ' file' : ' files') : ''}>
+      ${rows.length ? html`<${Table} def=${def} label="Loaded by this session"/>` : html`<div class="bd-empty">${loadedNone(a)}</div>`}
+    </${FixedPanel}>
+    ${a.parent_id ? null : html`<${FixedPanel} id="actxf" title="Files that can affect this session" go=${act.settingsPivot ? { label: 'All files in Settings', pick: () => act.settingsPivot('files') } : null} sub=${cf.git_root ? fmtN(cf.total) + ' files in ' + folders + (folders === 1 ? ' folder of ' : ' folders of ') + cf.git_root + ' apply to the session folder' + (hit ? ', ' + hit + ' loaded' : '') + (cf.total > cf.files.length ? ', ' + cf.files.length + ' listed' : '') : 'No git repository'}><${ContextFiles} cf=${cf} act=${act}/></${FixedPanel}>`}`;
+}
+
+function ContextTab({ a, data, act }) {
+  if (!data.context) return html`<div class="bd-empty">No model call of this agent is stored, so its context size is not known.</div>`;
+  return html`<${ContextPanel} a=${a} context=${data.context} copilot=${(a.tool || '').startsWith('copilot')} subagents=${data.subagents} act=${act}/>`;
+}
+
+const OUTPUT_ROWS = 5;
+
+/** The Overview card: what the session left behind, changed files first, then the files it wrote. */
+export function outputRows(data) {
+  const changed = (data.files || []).slice().sort((x, y) => ((y.lines_added || 0) + (y.lines_removed || 0)) - ((x.lines_added || 0) + (x.lines_removed || 0)))
+    .map(f => ({ path: f.path, name: f.path.split('/').pop(), kind: 'Changed', value: fmtLines(f.lines_added, f.lines_removed), ts: null }));
+  const arts = (data.artifacts || []).slice().sort((x, y) => (x.kind === 'written' ? 0 : 1) - (y.kind === 'written' ? 0 : 1) || (y.mtime || 0) - (x.mtime || 0))
+    .map(x => ({ path: x.path, name: x.name || x.path, kind: x.kind === 'written' ? 'Written' : 'Session folder', value: fmtBytes(x.size_bytes), ts: x.mtime }));
+  return [...changed, ...arts];
+}
+
+function OutputsCard({ data, act, span }) {
+  const rows = useMemo(() => outputRows(data), [data]);
+  const changed = data.files || [];
+  const commits = data.commits || [];
+  const counts = [
+    { label: 'Changes', value: changed.length ? fmtN(changed.length) + (changed.length === 1 ? ' file' : ' files') : 'None', sub: changed.length ? fmtLines(changed.reduce((s, f) => s + (f.lines_added || 0), 0), changed.reduce((s, f) => s + (f.lines_removed || 0), 0)) : '', tab: 'changes' },
+    { label: 'Artifacts', value: data.artifacts_total ? fmtN(data.artifacts_total) + (data.artifacts_total === 1 ? ' file' : ' files') : 'None', sub: data.artifacts_total ? fmtBytes(data.artifacts_bytes) : '', tab: 'artifacts' },
+    { label: 'Commits', value: commits.length ? fmtN(commits.length) : 'None', sub: commits.length ? commits.reduce((n, c) => n + ((c.prs || []).length), 0) + ' PRs' : '', tab: 'commits' },
+  ];
+  const def = {
+    cols: [{ k: 'n', l: 'File' }, { k: 'k', l: 'Kind', w: '110px' }, { k: 'v', l: 'Size', n: true, w: '90px', t: 'Lines added and removed for a changed file, bytes for a written file' }],
+    rows: rows.slice(0, OUTPUT_ROWS).map((r, i) => ({ id: r.kind + r.path + i, go: () => act.openDrawer({ type: 'file', path: r.path }), cells: { n: { v: r.name, cls: 'm', title: r.path }, k: { v: r.kind, cls: 'dim' }, v: { v: r.value } } })),
+    primary: 'n',
+  };
+  return html`<${FixedPanel} id="aout" span=${span} title="Outputs" sub=${rows.length ? rows.length + (rows.length === 1 ? ' file' : ' files') : 'Nothing written'}>
+    <div class="bd-ocounts">${counts.map(c => html`<button key=${c.label} type="button" class="bd-ocount" onClick=${() => act.setDrawerTab(c.tab)} title=${'Open ' + c.label}><span class="bd-l">${c.label}</span><b class=${c.value === 'None' ? 'bd-na' : ''}>${c.value}</b><small>${c.sub}</small></button>`)}</div>
+    ${rows.length ? html`<${Table} def=${def} label="Outputs"/>` : html`<div class="bd-empty">The session changed no file in the project and wrote no file elsewhere.</div>`}
+    ${rows.length > OUTPUT_ROWS ? html`<div class="bd-note">${'The ' + OUTPUT_ROWS + ' first of ' + rows.length + '. Changes and Artifacts list them all.'}</div>` : null}
+  </${FixedPanel}>`;
 }
 
 function OverviewTab({ a, data, st, ctx, act, pending }) {
@@ -435,18 +559,21 @@ function OverviewTab({ a, data, st, ctx, act, pending }) {
     })),
     sort: { k: 'u', dir: 'desc' }, none: 'This agent used no skill. Skill uses are read from Claude Code, Copilot CLI and VS Code sessions.',
   }), [data]);
-  const cf = data.context_files || { files: [], total: 0, git_root: null, read: false };
-  const folders = useMemo(() => new Set(cf.files.map(f => f.path.slice(0, f.path.length - f.name.length))).size, [cf]);
+  const cf = data.context_files || { files: [], total: 0, git_root: null, read: false, loaded: [] };
   const copilot = (a.tool || '').startsWith('copilot');
   const copyLink = window.location.origin + window.location.pathname + '?agent=' + encodeURIComponent(a.id);
-  const withSplit = !!context && copilot && !a.parent_id;
+  const main = !a.parent_id;
+  const tl = useMemo(() => (main ? timelineModel(a, data) : null), [a, data]);
+  const hasTl = hasTimeline(tl);
   return html`
     ${pending ? html`<${FixedPanel} id="ap" title="Waiting for your confirmation"><div class="bd-ptext">${pending.name + ': ' + pending.target + '\nWaiting for ' + fmtDur(Date.now() / 1000 - pending.since_ts) + '. Answer in the tool that asks.'}</div></${FixedPanel}>` : null}
     <div class="bd-kpis bd-drkpis" role="group" aria-label="Totals">${kpis.map(k => html`<div key=${k.label} class="bd-kpi" title=${k.title || k.label}><span class="bd-l">${k.label}</span><span class="bd-v">${k.value}</span><span class=${'bd-d' + (k.cls ? ' bd-' + k.cls : '')}>${k.sub || ''}</span></div>`)}<${Anomalies} data=${data} act=${act}/></div>
-    ${a.parent_id ? null : html`<${AgentTimeline} a=${a} data=${data} act=${act}/>`}
-    ${context ? html`<${ContextPanel} a=${a} context=${context} copilot=${copilot} subagents=${data.subagents} act=${act}/>` : null}
-    <div class="bd-drcol" style=${'grid-column:span ' + (withSplit ? 4 : 12)}>
-      <${FixedPanel} id="am" title="Usage by model" sub=${(data.by_model || []).length ? (data.by_model.length === 1 ? '1 model' : data.by_model.length + ' models') : ''}><${Table} def=${modelDef} label="Usage by model"/></${FixedPanel}>
+    ${main && hasTl ? html`<${AgentTimeline} m=${tl} act=${act} span=${context ? 6 : 12}/>` : null}
+    ${context ? html`<${ContextPanel} a=${a} context=${context} copilot=${copilot} subagents=${data.subagents} act=${act} compact=${true} span=${main && hasTl ? 6 : 12}/>` : null}
+    <${OutputsCard} data=${data} act=${act} span=${main ? 6 : 12}/>
+    ${main ? html`<${InstructionsCard} a=${a} cf=${cf} act=${act}/>` : null}
+    <${FixedPanel} id="am" span=${6} title="Usage by model" sub=${(data.by_model || []).length ? (data.by_model.length === 1 ? '1 model' : data.by_model.length + ' models') : ''}><${Table} def=${modelDef} label="Usage by model"/></${FixedPanel}>
+    <div class="bd-drcol" style="grid-column:span 6">
       <${FixedPanel} id="askill" title="Skills used" sub=${(data.skills || []).length ? data.skills.reduce((n, x) => n + x.uses, 0) + ' uses of ' + data.skills.length + ' skills' + (a.parent_id ? '' : ', with its subagents') : 'None in this session'}><${Table} def=${skills} label="Skills used"/></${FixedPanel}>
       <${FixedPanel} id="ar" title="Process" sub=${live ? '' : 'Ended, nothing running'} go=${{ label: 'Processes', pick: () => act.setDrawerTab('procs') }}>
         <${Stats} stats=${live
@@ -455,8 +582,7 @@ function OverviewTab({ a, data, st, ctx, act, pending }) {
         <${Actions} actions=${[{ label: 'Copy session ID', go: () => act.copy(a.id, 'Copied ' + a.id) }, { label: 'Copy link to this agent', go: () => act.copy(copyLink, 'Copied the link') }]}/>
       </${FixedPanel}>
     </div>
-    ${(data.subagents || []).length ? html`<${FixedPanel} id="ak" title="Subagents" go=${{ label: 'Team', pick: () => act.setDrawerTab('team') }}><${Table} def=${kids} label="Subagents"/></${FixedPanel}>` : null}
-    ${a.parent_id ? null : html`<${FixedPanel} id="actxf" title="Files that can affect this session" go=${act.settingsPivot ? { label: 'All files in Settings', pick: () => act.settingsPivot('files') } : null} sub=${cf.git_root ? fmtN(cf.total) + ' files in ' + folders + (folders === 1 ? ' folder of ' : ' folders of ') + cf.git_root + ' apply to the session folder' + (cf.total > cf.files.length ? ', ' + cf.files.length + ' listed' : '') : 'No git repository'}><${ContextFiles} cf=${cf} act=${act}/></${FixedPanel}>`}`;
+    ${(data.subagents || []).length ? html`<${FixedPanel} id="ak" title="Subagents" go=${{ label: 'Team', pick: () => act.setDrawerTab('team') }}><${Table} def=${kids} label="Subagents"/></${FixedPanel}>` : null}`;
 }
 
 function TurnsTab({ data }) {

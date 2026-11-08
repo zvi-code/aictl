@@ -228,7 +228,9 @@ class TestAgentDetailArtifacts:
             tree_walk, "files_for_folder", lambda folder: {"git_root": str(project), "read": True, "files": [str(project / "AGENTS.md")]}
         )
         cf = agent_detail(db, SID, None, NOW)[1]["context_files"]
-        assert cf == {"git_root": str(project), "read": True, "total": 1, "files": [{"path": str(project / "AGENTS.md"), "name": "AGENTS.md"}]}
+        assert cf == {
+            "git_root": str(project), "read": True, "total": 1, "files": [{"path": str(project / "AGENTS.md"), "name": "AGENTS.md"}], "loaded": [],
+        }
 
     def test_artifacts_are_the_session_folder_and_writes_outside_the_project(self, db, tmp_path):
         project, outside = _seed_detail(db, tmp_path)
@@ -655,7 +657,7 @@ def test_a_v33_store_gets_the_index_tables_and_a_rerun_changes_nothing(tmp_path)
         conn = store._conn()
         names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
         assert {"session_artifacts", "session_folders", "idx_session_artifacts_path", "idx_sessions_started"} <= names
-        assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 34
+        assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] >= 34
         m034_session_artifacts.apply(conn)
     finally:
         store.close()
