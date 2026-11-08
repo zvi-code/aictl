@@ -639,6 +639,44 @@ describe('board screen', () => {
       vi.useRealTimers();
     }
   });
+  it('lets a slow board read finish instead of aborting it on each tick, then reads once more', async () => {
+    const { calls } = await mountBoard();
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      cleanup();
+      // Every board read waits until released; the fetch signal is watched for an abort.
+      const pendingBoard = [];
+      const base = fetch;
+      vi.stubGlobal('fetch', vi.fn((url, opts) => {
+        const u = String(url);
+        if (!u.startsWith('/api/board?')) return base(url, opts);
+        calls.push(u);
+        return new Promise((resolve, reject) => {
+          opts?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+          pendingBoard.push(() => resolve(jsonResponse(boardFixture())));
+        });
+      }));
+      const view = render(html`<${BoardScreen}/>`);
+      await waitFor(() => expect(pendingBoard.length).toBe(1));
+      const es = FakeES.last;
+      await act(async () => { es.onopen(); });
+      const boardCalls = () => calls.filter(c => c.startsWith('/api/board?')).length;
+      const before = boardCalls();
+      // Three ticks with stream messages while the first read is still pending: no new read.
+      for (let i = 0; i < 3; i++) await act(async () => { es.onmessage({ data: '{}' }); vi.advanceTimersByTime(5000); });
+      expect(boardCalls()).toBe(before);
+      expect(pendingBoard.length).toBe(1);
+      // The slow read answers; one more read follows for the ticks that asked.
+      await act(async () => { pendingBoard.shift()(); });
+      await waitFor(() => expect(view.container.querySelector('#p-agentsT tbody tr')).toBeTruthy());
+      await waitFor(() => expect(boardCalls()).toBe(before + 1));
+      await act(async () => { pendingBoard.shift()(); });
+      await act(async () => { vi.advanceTimersByTime(5000); });
+      expect(boardCalls()).toBe(before + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it('makes a conditional request, and a 304 keeps the data', async () => {
     const seen = [];
     const fn = vi.fn(async (url, opts) => {
