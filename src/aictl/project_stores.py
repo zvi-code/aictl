@@ -779,6 +779,11 @@ class ProjectStores:
         with self._route_lock:
             return self._sessions.get(session_id)
 
+    def moving_sessions(self) -> set[str]:
+        """Sessions whose move to another store is not done: their rows are in two stores."""
+        with self._route_lock:
+            return set(self._pending_moves)
+
     def knows_session(self, session_id: str) -> bool:
         """Whether a store holds *session_id* already, so a write for it does not place it."""
         if not self._split:
