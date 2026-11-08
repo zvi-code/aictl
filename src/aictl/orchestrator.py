@@ -631,8 +631,13 @@ class CollectionService:
                 content_retention_days=store_cfg.content_retention_days,
                 log_paths=tuple(log_paths),
                 memory_fallback=True,
+                say=_say,
             )
             _say(f"  history db: {self._db_path or '~/.config/aictl/history.db'}")
+            if self.db.projects_dir is None:
+                _say("  warning: the history is in memory, so it is not split by project and is lost on exit")
+            else:
+                _say(f"  project stores: {self.db.projects_dir}")
         except Exception as exc:
             _say(f"  warning: history db unavailable ({exc})")
 

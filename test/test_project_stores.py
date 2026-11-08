@@ -614,3 +614,18 @@ def test_a_split_stopped_part_way_finishes_in_the_next_process(tmp_path):
         stores.flush()
         assert _rows(path, "requests", "session_id != ''") == 0
         assert _rows(_store_file(stores, a), "requests") + _rows(_store_file(stores, b), "requests") == 10
+
+
+def test_the_split_says_when_it_starts_and_when_it_is_done(tmp_path):
+    path = tmp_path / "config" / "history.db"
+    a, b = _repo(tmp_path / "a"), _repo(tmp_path / "b")
+    _seed_legacy(path, a, b)
+    said: list[str] = []
+    with ProjectStores(db_path=path, flush_interval=0, say=said.append) as stores:
+        stores.split_machine_sessions(budget_s=0.0)
+        assert said and "4 older sessions move" in said[0]
+        stores.split_machine_sessions()
+        assert "history split done: 4 sessions" in said[-1]
+        count = len(said)
+        stores.split_machine_sessions()
+        assert len(said) == count  # nothing left: nothing more to say
