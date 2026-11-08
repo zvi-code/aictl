@@ -34,7 +34,6 @@ Shared infrastructure (read-only open, data-quality recording) lives in
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
 import sqlite3
@@ -220,19 +219,16 @@ class CursorConversationsIngester:
         sessions have ``ended_at = NULL``.
         """
         if project_path:
-            # A history split by project reads that folder's store alone.
-            scope = getattr(self.store, "read_scope", None)
-            with scope(project=project_path) if scope else contextlib.nullcontext():
+            where = "tool = 'cursor' AND project_path = ? AND started_at <= ? AND (ended_at IS NULL OR ended_at >= ?)"
+            find = getattr(self.store, "sessions_where", None)
+            if find is not None:
+                # A history split by project: the session can be in any store.
+                rows = find(where, (project_path, ts, ts), order="newest", limit=1)
+                row = rows[0] if rows else None
+            else:
                 row = (
                     self.store._conn()
-                    .execute(
-                        "SELECT session_id FROM sessions"
-                        " WHERE tool = 'cursor' AND project_path = ?"
-                        "   AND started_at <= ?"
-                        "   AND (ended_at IS NULL OR ended_at >= ?)"
-                        " ORDER BY started_at DESC LIMIT 1",
-                        (project_path, ts, ts),
-                    )
+                    .execute(f"SELECT session_id FROM sessions WHERE {where} ORDER BY started_at DESC LIMIT 1", (project_path, ts, ts))
                     .fetchone()
                 )
             if row:

@@ -329,6 +329,151 @@ def test_an_ingester_writes_without_attaching_project_stores_and_provisions_once
     again = ingester._correlate("conv-1", str(repo), NOW - 5)
     assert first == again
     assert upserts.count("cursor:conv-1") == 1
-    del stores._local.conns
+    stores._local.__dict__.pop("conns", None)
     assert ingester._insert_message(first, 1, "user", "hello", NOW - 4)
     assert getattr(stores._local, "conns", None) is None
+
+
+# ─── Recheck: the stores' folder, one store open at a time, half moves, misses ──
+
+
+def test_reset_deletes_only_project_stores(tmp_path):
+    path = tmp_path / "data" / "history.db"
+    repo = _repo(tmp_path / "keep-repo")
+    user_projects = tmp_path / "data" / "projects" / "myapp"
+    user_projects.mkdir(parents=True)
+    (user_projects / "main.c").write_text("int main(void) { return 0; }\n")
+    with ProjectStores(db_path=path, flush_interval=0) as s:
+        assert s.projects_dir == tmp_path / "data" / "history-projects"
+        s.upsert_session(SessionRow(session_id="r1", tool="claude-code", project_path=str(repo), started_at=NOW))
+        store = _file(s, repo)
+    stray = store.parent / "notes.db"
+    stray.write_bytes(b"not a store")
+    result = CliRunner().invoke(db_cli, ["--db", str(path), "reset", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert (user_projects / "main.c").exists()
+    assert stray.exists()
+    assert not store.exists()
+
+
+def test_a_full_upkeep_pass_holds_few_stores_open(tmp_path, monkeypatch):
+    live: list[int] = [0]
+    peak: list[int] = [0]
+    real_init, real_close = project_stores._ProjectDB.__init__, project_stores._ProjectDB.close
+
+    def init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        live[0] += 1
+        peak[0] = max(peak[0], live[0])
+
+    def close(self):
+        if not getattr(self, "_counted_closed", False):
+            self._counted_closed = True
+            live[0] -= 1
+        real_close(self)
+
+    monkeypatch.setattr(project_stores._ProjectDB, "__init__", init)
+    monkeypatch.setattr(project_stores._ProjectDB, "close", close)
+    with ProjectStores(db_path=tmp_path / "config" / "history.db", flush_interval=0) as s:
+        for i in range(60):
+            repo = _repo(tmp_path / f"r{i:02d}")
+            s.upsert_session(SessionRow(session_id=f"u{i}", tool="claude-code", project_path=str(repo), started_at=NOW))
+        s.close_idle(idle_s=0)
+        live[0], peak[0] = 0, 0
+        s.auto_maintain()
+        s.clear_stale_pending_confirms(NOW)
+        s.stats()
+        assert peak[0] <= 2
+
+
+def test_a_half_done_move_is_finished_on_start(tmp_path):
+    path = tmp_path / "config" / "history.db"
+    repo = _repo(tmp_path / "half")
+    with ProjectStores(db_path=path, flush_interval=0) as s:
+        s.batch_link_sessions([("h1", "claude-code", 5, NOW - 60, "process")])
+        s.append_request(RequestRow(ts=NOW - 50, session_id="h1", model=SONNET, input_tokens=3, source="otel"))
+        s.flush()
+        s.upsert_session(SessionRow(session_id="h1", tool="claude-code", project_path=str(repo), started_at=NOW - 60))
+        target, shared = _file(s, repo), s.projects_dir / f"{SHARED}.db"
+    # A crash after the copy reached the project store, before the delete reached _shared.
+    conn = sqlite3.connect(shared)
+    conn.execute("ATTACH DATABASE ? AS t", (str(target),))
+    for table in ("sessions", "requests", "session_processes"):
+        conn.execute(f"INSERT INTO main.{table} SELECT * FROM t.{table} WHERE session_id = 'h1'")
+    conn.commit()
+    conn.close()
+    with ProjectStores(db_path=path, flush_interval=0) as again:
+        assert again.store_of_session("h1") == store_key(str(repo))
+        assert _rows(shared, "requests") == 0
+        assert _rows(shared, "sessions") == 0
+        assert _rows(target, "requests") == 1
+        assert _count(again, "requests", "session_id = 'h1'", session="h1") == 1
+
+
+def test_a_pending_move_reads_both_stores(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage, "BUSY_TIMEOUT_S", 0.2)
+    repo = _repo(tmp_path / "pending")
+    with ProjectStores(db_path=tmp_path / "config" / "history.db", flush_interval=0) as s:
+        s.batch_link_sessions([("pm", "claude-code", 6, NOW - 60, "process")])
+        s.append_request(RequestRow(ts=NOW - 50, session_id="pm", model=SONNET, input_tokens=3, source="otel"))
+        s.flush()
+        blocker = sqlite3.connect(s.projects_dir / f"{SHARED}.db")
+        blocker.execute("BEGIN IMMEDIATE")
+        try:
+            s.upsert_session(
+                SessionRow(session_id="pm", tool="claude-code", project_path=str(repo), started_at=NOW - 60)
+            )
+            assert _count(s, "requests", "session_id = 'pm'", session="pm") == 1
+        finally:
+            blocker.rollback()
+            blocker.close()
+
+
+def test_an_unknown_session_is_not_looked_up_again_until_written(tmp_path, stores, monkeypatch):
+    for i in range(3):
+        repo = _repo(tmp_path / f"m{i}")
+        stores.upsert_session(
+            SessionRow(session_id=f"k{i}", tool="claude-code", project_path=str(repo), started_at=NOW)
+        )
+    opened: list[Path] = []
+    real = project_stores._read_only
+
+    def spy(file):
+        opened.append(file)
+        return real(file)
+
+    monkeypatch.setattr(project_stores, "_read_only", spy)
+    assert stores.get_session("nope") is None
+    first = len(opened)
+    assert stores.get_session("nope") is None
+    assert len(opened) == first
+    repo = _repo(tmp_path / "late")
+    stores.upsert_session(SessionRow(session_id="nope", tool="claude-code", project_path=str(repo), started_at=NOW))
+    assert stores.get_session("nope")["session_id"] == "nope"
+
+
+def test_cursor_finds_its_session_stored_under_another_repository(tmp_path, stores):
+    first, later = _repo(tmp_path / "first"), _repo(tmp_path / "later")
+    stores.upsert_session(SessionRow(session_id="cx", tool="cursor", project_path=str(first), started_at=NOW - 100))
+    # The session is placed in its first folder's store; its folder changes afterwards.
+    stores.upsert_session(SessionRow(session_id="cx", tool="cursor", project_path=str(later), started_at=NOW - 100))
+    ingester = CursorConversationsIngester(tmp_path / "missing.db", stores)
+    assert ingester._correlate("conv-x", str(later), NOW - 10) == "cx"
+
+
+def test_a_project_store_that_falls_back_to_memory_is_reported(tmp_path, caplog):
+    path = tmp_path / "config" / "history.db"
+    repo = _repo(tmp_path / "broken")
+    with ProjectStores(db_path=path, flush_interval=0) as s:
+        s.upsert_session(SessionRow(session_id="b1", tool="claude-code", project_path=str(repo), started_at=NOW))
+        file = _file(s, repo)
+    file.write_bytes(b"this is not a database" * 100)
+    with caplog.at_level("WARNING", logger="aictl.project_stores"):
+        with ProjectStores(db_path=path, flush_interval=0, memory_fallback=True) as again:
+            again.append_request(
+                RequestRow(ts=NOW, session_id="b1", project_path=str(repo), model=SONNET, source="otel")
+            )
+    assert any(
+        r.name == "aictl.project_stores" and file.name in r.getMessage() and "in memory" in r.getMessage()
+        for r in caplog.records
+    )
