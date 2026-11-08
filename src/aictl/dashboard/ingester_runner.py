@@ -12,6 +12,7 @@ the runner never crashes the server.
 from __future__ import annotations
 
 import logging
+import sqlite3
 import threading
 import time
 from dataclasses import dataclass, field
@@ -44,6 +45,7 @@ from ..ingesters.vscode_chat_logs import (
 from ..ingesters.vscode_chat_logs import (
     default_log_dir as vscode_chat_default_log_dir,
 )
+from ..storage import is_lock_error
 
 log = logging.getLogger(__name__)
 
@@ -198,17 +200,30 @@ def _poll_loop(
     name: str,
 ) -> None:
     """Call ``ingester.poll()`` every *interval* seconds until *stop* is set."""
-    # Initial poll immediately so the first data point is available.
-    try:
-        ingester.poll()
-    except Exception as exc:  # pragma: no cover - defensive
-        log.exception("%s ingester: initial poll failed", name)
-        _record_poll_failure(ingester, name, exc)
-    while not stop.wait(timeout=interval):
+    locked = False  # a busy store skips the round: logged once, until a poll succeeds
+    first = True  # initial poll immediately so the first data point is available
+    while first or not stop.wait(timeout=interval):
+        first = False
         try:
             inserted = ingester.poll()
+            locked = False
             if inserted:
                 log.debug("%s ingester: poll inserted %d rows", name, inserted)
+        except sqlite3.OperationalError as exc:
+            if not is_lock_error(exc):
+                log.exception("%s ingester: poll loop error", name)
+                _record_poll_failure(ingester, name, exc)
+                continue
+            store = getattr(ingester, "store", None)
+            writes = ", ".join(store.active_writes()) if hasattr(store, "active_writes") else ""
+            log.log(
+                logging.DEBUG if locked else logging.WARNING,
+                "%s ingester: store busy, round skipped and retried: %s. Writes running in this process: %s",
+                name,
+                exc,
+                writes or "none",
+            )
+            locked = True
         except Exception as exc:  # pragma: no cover - defensive
             log.exception("%s ingester: poll loop error", name)
             _record_poll_failure(ingester, name, exc)

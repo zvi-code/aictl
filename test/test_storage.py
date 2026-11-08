@@ -2195,3 +2195,66 @@ class TestProjectFolders:
             assert c.execute("SELECT project_path FROM tool_invocations").fetchone()[0] == "/work/repo"
         finally:
             d.close()
+
+
+# ─── Lock errors ──────────────────────────────────────────────────
+
+
+def test_a_write_that_found_the_store_locked_does_not_fail_later_writes(tmp_path, monkeypatch):
+    """A locked write left Python's transaction open: the next read pinned a snapshot and
+    every later write of that thread failed at once, with no write running anywhere."""
+    import sqlite3
+
+    import aictl.storage as storage
+
+    monkeypatch.setattr(storage, "BUSY_TIMEOUT_S", 0.2)
+    db = HistoryDB(db_path=tmp_path / "h.db", flush_interval=0)
+    other = sqlite3.connect(tmp_path / "h.db", timeout=0.2)
+    try:
+        other.execute("BEGIN IMMEDIATE")
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            db.record_data_quality("ingester:x", "ok")
+        other.rollback()
+        assert not db._conn().in_transaction
+        db.query_data_quality()  # a read on the same connection
+        other.execute("INSERT OR REPLACE INTO maintenance_state(key, value) VALUES('k', 1)")
+        other.commit()  # another writer commits after that read
+        db.record_data_quality("ingester:x", "degraded")
+        assert db.query_data_quality(component="ingester:x")[0]["status"] == "degraded"
+    finally:
+        other.close()
+        db.close()
+
+
+def test_a_wal_truncate_does_not_keep_writers_out_while_a_reader_reads(tmp_path, monkeypatch):
+    """A TRUNCATE checkpoint holds the write lock while it waits for readers."""
+    import sqlite3
+    import threading
+
+    import aictl.storage as storage
+
+    monkeypatch.setattr(storage, "BUSY_TIMEOUT_S", 3.0)
+    db = HistoryDB(db_path=tmp_path / "h.db", flush_interval=0)
+    for i in range(50):
+        db.append_request(RequestRow(ts=time.time() + i, session_id="s", model="m", source="otel", dedup_key=str(i)))
+    reader = sqlite3.connect(tmp_path / "h.db")
+    writer = sqlite3.connect(tmp_path / "h.db", timeout=3.0)
+    try:
+        rows = reader.execute("SELECT * FROM requests")
+        rows.fetchone()  # the reader keeps its snapshot while its cursor is open
+        db.append_request(RequestRow(ts=time.time() + 99, session_id="s", model="m", source="otel", dedup_key="x"))
+        checkpoint = threading.Thread(target=db._truncate_wal)
+        checkpoint.start()
+        time.sleep(0.05)
+        started = time.monotonic()
+        writer.execute("UPDATE requests SET model = 'z' WHERE dedup_key = 'x'")
+        writer.commit()
+        waited = time.monotonic() - started
+        checkpoint.join()
+        assert waited < 1.0, waited
+        # The checkpoint goes back to the normal wait for the writes that follow.
+        assert db._conn().execute("PRAGMA busy_timeout").fetchone()[0] == 3000
+    finally:
+        reader.close()
+        writer.close()
+        db.close()
