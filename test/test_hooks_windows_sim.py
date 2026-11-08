@@ -177,7 +177,11 @@ class TestRoundTrip:
         assert written.startswith("\ufeff{".encode())
         assert b"// editor" in written
         assert b"\r\n" in written
-        assert hook_removal.jsonc_loads(written.decode())["chat.useHooks"] is True
+        settings = hook_removal.jsonc_loads(written.decode())
+        # The person's own value stays; each key aictl added carries its note.
+        assert settings["chat.useHooks"] is False
+        assert settings["chat.agent.enabled"] is True
+        assert hook_removal.AICTL_NOTE.encode() in written
         assert any(a[0] == "setx" for a in persisted)
         hook_file = win / ".copilot" / "hooks" / "aictl.json"
         assert json.loads(hook_file.read_text())["version"] == 1

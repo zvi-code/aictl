@@ -1116,7 +1116,9 @@ class TestHookMergeAndUninstallResilience:
         settings.parent.mkdir(parents=True)
         settings.write_text(json.dumps({"chat.hookFilesLocations": {"tools/hooks": True}}))
         _enable_vscode("user", 8484, [])
-        locs = json.loads(settings.read_text())["chat.hookFilesLocations"]
+        from aictl.hook_removal import jsonc_loads
+
+        locs = jsonc_loads(settings.read_text())["chat.hookFilesLocations"]
         assert locs["tools/hooks"] is True  # user entry kept
         assert locs["~/.copilot/hooks"] is True  # where the user-scope aictl file lives
 

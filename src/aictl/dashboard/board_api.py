@@ -5920,6 +5920,16 @@ def _freshness(snapshot: Any, selected: set[str] | None) -> list[dict]:
     return out
 
 
+def _hooks_by_tool(db: Any, now: float) -> dict[str, dict]:
+    """Hook events each tool sent in the last 24 hours: ``{tool: {count, last_fire_ts}}``."""
+    from .hooks_status import _hook_event_counts
+
+    try:
+        return _hook_event_counts(db, now - 86400)["by_tool"]
+    except (sqlite3.Error, AttributeError):
+        return {}
+
+
 def compute_machine(
     db: Any,
     store: Any,
@@ -5963,6 +5973,7 @@ def compute_machine(
             },
             "sink": _sink_section(store),
             "otel_receiver": otel_status,
+            "hooks": _hooks_by_tool(db, now),
             "ingesters": _ingester_rows(ingesters, quality),
             "data_quality": quality,
             "freshness": _freshness(snapshot, selected),

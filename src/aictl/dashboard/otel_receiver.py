@@ -12,7 +12,7 @@ import dataclasses
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..data.token_usage import TokenUsage
 from ..storage import EventRow, RequestRow, ToolInvocationRow
@@ -91,12 +91,14 @@ SERVICE_NAME_ALIASES: dict[str, str] = {
     "claude-code": "claude-code",
     "claude_code": "claude-code",
     "anthropic-claude": "claude-code",
+    # Copilot CLI's own resource name (its OTel code sets service.name "github-copilot").
+    "github-copilot": "copilot-cli",
     "github-copilot-cli": "copilot-cli",
     "copilot-cli": "copilot-cli",
     "github-copilot-desktop": "copilot-desktop",
     "copilot-desktop": "copilot-desktop",
+    # VS Code's Copilot Chat sets service.name "copilot-chat" unless OTEL_SERVICE_NAME is set.
     "github-copilot-chat": "copilot-vscode",
-    "github-copilot": "copilot-vscode",
     "copilot": "copilot-vscode",
     "copilot-chat": "copilot-vscode",
     "codex-cli": "codex-cli",
@@ -139,6 +141,26 @@ class OtelStats:
     # These were previously discarded silently; the counter makes the loss
     # visible in ``status()`` (and the Monitoring Health UI).
     dropped: int = 0
+    # Per tool: {"metrics": n, "events": n, "last_at": ts}, so a tool that stopped
+    # exporting shows, whatever the other tools send.
+    by_tool: dict[str, dict] = field(default_factory=dict)
+
+    def note(self, samples: list, events: list) -> None:
+        """Count what one export brought, in total and per tool."""
+        self.metrics_received += len(samples)
+        self.events_received += len(events)
+        if not samples and not events:
+            return
+        now = time.time()
+        self.last_receive_at = now
+        for kind, items in (("metrics", samples), ("events", events)):
+            for item in items:
+                tool = (
+                    (getattr(item, "tags", None) or {}).get("tool") if kind == "metrics" else getattr(item, "tool", "")
+                )
+                row = self.by_tool.setdefault(tool or "unknown", {"metrics": 0, "events": 0, "last_at": 0.0})
+                row[kind] += 1
+                row["last_at"] = now
 
 
 class OtelReceiver:
@@ -213,9 +235,7 @@ class OtelReceiver:
                             )
                         )
 
-        self.stats.metrics_received += len(samples)
-        if samples:
-            self.stats.last_receive_at = time.time()
+        self.stats.note(samples, [])
         return samples
 
     # ── Logs / events ─────────────────────────────────────────
@@ -276,9 +296,7 @@ class OtelReceiver:
                         )
                     )
 
-        self.stats.events_received += len(events)
-        if events:
-            self.stats.last_receive_at = time.time()
+        self.stats.note([], events)
         return events
 
     @staticmethod
@@ -495,10 +513,7 @@ class OtelReceiver:
                             )
                         )
 
-        self.stats.metrics_received += len(samples)
-        self.stats.events_received += len(events)
-        if samples or events:
-            self.stats.last_receive_at = time.time()
+        self.stats.note(samples, events)
         return samples, events
 
     # ── Status ────────────────────────────────────────────────

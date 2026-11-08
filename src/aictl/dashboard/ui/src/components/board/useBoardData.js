@@ -20,7 +20,7 @@ export const EMPTY_MACHINE = {
   generated_at: null,
   monitor: { collectors: [], roots: [], per_tool: [] },
   processes: [], cpu_per_core: [], alerts: [],
-  pipeline: { self: {}, sink: null, otel_receiver: null, ingesters: [], data_quality: [], freshness: [], stream: {} },
+  pipeline: { self: {}, sink: null, otel_receiver: null, hooks: {}, ingesters: [], data_quality: [], freshness: [], stream: {} },
 };
 
 export const EMPTY_CONTEXT = {
@@ -92,6 +92,7 @@ export function normalizeMachine(raw) {
       data_quality: list(pipe.data_quality),
       freshness: list(pipe.freshness),
       stream: pipe.stream || {},
+      hooks: pipe.hooks && typeof pipe.hooks === 'object' ? pipe.hooks : {},
     },
   };
 }
