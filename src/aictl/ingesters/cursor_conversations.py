@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..platforms import cursor_home_dir
-from ._common import open_readonly, record_quality
+from ._common import open_readonly, provision_session, record_quality, writer_conn
 
 if TYPE_CHECKING:
     from ..storage import HistoryDB
@@ -76,6 +76,7 @@ class CursorConversationsIngester:
     ) -> None:
         self.db_path = Path(db_path).expanduser()
         self.store = our_store
+        self._provisioned: set[str] = set()
         self.last_cursor = int(last_cursor)
         self.last_poll_ts: float = 0.0
         self.last_poll_inserted: int = 0
@@ -200,7 +201,7 @@ class CursorConversationsIngester:
         content: str,
         ts: float,
     ) -> bool:
-        conn = self.store._conn()
+        conn = writer_conn(self.store)
         cur = conn.execute(
             "INSERT OR IGNORE INTO cursor_session_messages"
             "(session_id, source_row_id, role, content, ts) VALUES(?,?,?,?,?)",
@@ -217,29 +218,32 @@ class CursorConversationsIngester:
         The window is left open-ended on the future side because live
         sessions have ``ended_at = NULL``.
         """
-        conn = self.store._conn()
         if project_path:
-            cur = conn.execute(
-                "SELECT session_id FROM sessions"
-                " WHERE tool = 'cursor' AND project_path = ?"
-                "   AND started_at <= ?"
-                "   AND (ended_at IS NULL OR ended_at >= ?)"
-                " ORDER BY started_at DESC LIMIT 1",
-                (project_path, ts, ts),
-            )
-            row = cur.fetchone()
+            where = "tool = 'cursor' AND project_path = ? AND started_at <= ? AND (ended_at IS NULL OR ended_at >= ?)"
+            find = getattr(self.store, "sessions_where", None)
+            if find is not None:
+                # A history split by project: the session can be in any store.
+                rows = find(where, (project_path, ts, ts), order="newest", limit=1)
+                row = rows[0] if rows else None
+            else:
+                row = (
+                    self.store._conn()
+                    .execute(f"SELECT session_id FROM sessions WHERE {where} ORDER BY started_at DESC LIMIT 1", (project_path, ts, ts))
+                    .fetchone()
+                )
             if row:
                 return str(row[0])
 
         # Provisional session keyed by conversation id.
         provisional_id = f"cursor:{conversation_id}"
-        conn.execute(
-            "INSERT OR IGNORE INTO sessions"
-            "(session_id, tool, project_path, started_at, source)"
-            " VALUES(?, 'cursor', ?, ?, 'cursor-ingester')",
-            (provisional_id, project_path, ts),
+        # Through the store's writer: a store split by project places the row.
+        from ..storage import SessionRow
+
+        provision_session(
+            self.store,
+            self._provisioned,
+            SessionRow(session_id=provisional_id, tool="cursor", project_path=project_path, started_at=ts, source="cursor-ingester")
         )
-        conn.commit()
         return provisional_id
 
 
