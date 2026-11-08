@@ -3,6 +3,27 @@
 SQLite database at `~/.config/aictl/history.db` (configurable via
 `[storage] db_path` in `config.toml` or `--db` CLI flag).
 
+## One store per project
+
+`history.db` is the machine store. It holds machine-wide tables: system and process
+snapshots, health, tool stats, the catalog and file history. Rows that belong to a
+session go to the store of that session's project, in a folder named after the
+database (`history.db` gives `history-projects/`):
+
+- `<repo-name>-<8 hex>.db` for each git repository. A worktree or submodule belongs
+  to its main repository.
+- `_shared.db` for sessions launched outside git.
+
+The per-session tables are listed in `PROJECT_TABLES` in
+[src/aictl/project_stores.py](../src/aictl/project_stores.py). `ProjectStores` routes
+each write and attaches the stores a read needs. The machine store's `project_stores`
+table records each store's file, time range and row count.
+
+A `history.db` written before this split is split in the background. The daemon
+moves its sessions to their project stores, a few seconds of work at a time. A
+stopped move is finished on the next start. `aictl db reset` deletes only files that
+are project stores.
+
 ## Schema Versioning
 
 The `schema_version` table tracks the current schema version.

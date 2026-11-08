@@ -562,3 +562,55 @@ def test_a_copied_store_shows_its_new_rows(tmp_path, stores):
         assert stores._read_state().copied[-1] == store_key(str(repos[0]))
     after = compute_board(stores, f, now=NOW)
     assert after["kpis"] != before["kpis"]
+
+
+def _seed_legacy(path: Path, a: Path, b: Path) -> None:
+    """A history written by one store before the split: two repositories, a session with
+    no folder, and a request forty days old."""
+    single = HistoryDB(db_path=path, flush_interval=0)
+    _seed(single, a, b)
+    single.upsert_session(SessionRow(session_id="nofolder", tool="claude-code", started_at=NOW - 600))
+    single.append_request(RequestRow(ts=NOW - 500, session_id="nofolder", model=SONNET, source="otel"))
+    old = NOW - 40 * 86400
+    single.append_request(RequestRow(ts=old, session_id="sb", project_path=str(b), model=HAIKU, source="otel"))
+    single.flush()
+    single.close()
+
+
+def test_an_old_single_store_splits_into_project_stores_with_the_same_board(tmp_path):
+    path = tmp_path / "config" / "history.db"
+    a, b = _repo(tmp_path / "a"), _repo(tmp_path / "b")
+    _seed_legacy(path, a, b)
+    recent = Filters(since=NOW - 6 * 3600, until=NOW)
+    old = Filters(since=NOW - 41 * 86400, until=NOW - 39 * 86400)
+    with ProjectStores(db_path=path, flush_interval=0) as stores:
+        # A new session already wrote to b's store: its time range starts now.
+        stores.upsert_session(SessionRow(session_id="new", tool="claude-code", project_path=str(b), started_at=NOW))
+        stores.append_request(RequestRow(ts=NOW - 100, session_id="new", project_path=str(b), model=SONNET, source="otel"))
+        stores.flush()
+        before = [compute_board(stores, f, now=NOW) for f in (recent, old)]
+        assert stores.split_machine_sessions() == 0
+        stores.flush()
+        # Every session left the machine store, and each project store holds its own.
+        for table in ("sessions", "requests", "tool_invocations", "session_prompts", "skill_uses"):
+            assert _rows(path, table, "session_id != ''") == 0, table
+        assert _rows(_store_file(stores, a), "requests") == 4
+        assert _rows(_store_file(stores, b), "requests") == 7
+        assert _rows(stores.projects_dir / f"{SHARED}.db", "requests") == 1
+        after = [compute_board(stores, f, now=NOW) for f in (recent, old)]
+    assert len(before[1]["agents"]) == 1
+    for b_, a_ in zip(before, after):
+        assert _comparable(a_) == _comparable(b_)
+
+
+def test_a_split_stopped_part_way_finishes_in_the_next_process(tmp_path):
+    path = tmp_path / "config" / "history.db"
+    a, b = _repo(tmp_path / "a"), _repo(tmp_path / "b")
+    _seed_legacy(path, a, b)
+    with ProjectStores(db_path=path, flush_interval=0) as stores:
+        assert stores.split_machine_sessions(budget_s=0.0) > 0
+    with ProjectStores(db_path=path, flush_interval=0) as stores:
+        assert stores.split_machine_sessions() == 0
+        stores.flush()
+        assert _rows(path, "requests", "session_id != ''") == 0
+        assert _rows(_store_file(stores, a), "requests") + _rows(_store_file(stores, b), "requests") == 10
