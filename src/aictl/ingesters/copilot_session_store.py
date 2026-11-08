@@ -328,14 +328,12 @@ class CopilotSessionStoreIngester:
                 return str(row[0])
             provisional = f"copilot:{source_session_key}"
 
-        conn = self.store._conn()
-        conn.execute(
-            "INSERT OR IGNORE INTO sessions"
-            "(session_id, tool, project_path, started_at, source)"
-            " VALUES(?, 'copilot-cli', '', ?, 'copilot-session-store')",
-            (provisional, ts or time.time()),
+        # Through the store's writer: a store split by project places the row.
+        from ..storage import SessionRow
+
+        self.store.upsert_session(
+            SessionRow(session_id=provisional, tool="copilot-cli", started_at=ts or time.time(), source="copilot-session-store")
         )
-        conn.commit()
         return provisional
 
 

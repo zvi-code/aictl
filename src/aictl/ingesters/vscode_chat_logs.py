@@ -293,13 +293,12 @@ class VSCodeChatLogsIngester:
         if row:
             return str(row[0])
         provisional = f"vscode-chat:{vscode_sid}"
-        conn.execute(
-            "INSERT OR IGNORE INTO sessions"
-            "(session_id, tool, project_path, started_at, source)"
-            " VALUES(?, 'copilot-vscode', '', ?, 'vscode-chat-logs')",
-            (provisional, ts or time.time()),
+        # Through the store's writer: a store split by project places the row.
+        from ..storage import SessionRow
+
+        self.store.upsert_session(
+            SessionRow(session_id=provisional, tool="copilot-vscode", started_at=ts or time.time(), source="vscode-chat-logs")
         )
-        conn.commit()
         return provisional
 
 

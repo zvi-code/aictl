@@ -233,13 +233,12 @@ class CursorConversationsIngester:
 
         # Provisional session keyed by conversation id.
         provisional_id = f"cursor:{conversation_id}"
-        conn.execute(
-            "INSERT OR IGNORE INTO sessions"
-            "(session_id, tool, project_path, started_at, source)"
-            " VALUES(?, 'cursor', ?, ?, 'cursor-ingester')",
-            (provisional_id, project_path, ts),
+        # Through the store's writer: a store split by project places the row.
+        from ..storage import SessionRow
+
+        self.store.upsert_session(
+            SessionRow(session_id=provisional_id, tool="cursor", project_path=project_path, started_at=ts, source="cursor-ingester")
         )
-        conn.commit()
         return provisional_id
 
 
