@@ -594,6 +594,12 @@ class CollectionService:
             if not quiet:
                 print(msg, file=sys.stderr)
 
+        # Discovery reads the repositories of active sessions at once and the others in the
+        # background, so a folder of many repositories does not hold up the start.
+        from . import tree_walk
+
+        tree_walk.set_lazy(True)
+
         # Datapoint file logger (optional)
         try:
             from .platforms import load_config
@@ -692,6 +698,9 @@ class CollectionService:
 
     def stop(self) -> None:
         """Stop background collection. Best-effort; safe to call once."""
+        from . import tree_walk
+
+        tree_walk.set_lazy(False)
         if self._maintenance is not None:
             self._maintenance.stop()
         if self._refresh is not None:

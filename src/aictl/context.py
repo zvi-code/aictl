@@ -414,7 +414,7 @@ def scan(root: Path) -> list[tuple[str, ParsedAictx]]:
 def _walk(root: Path, _budget: list[int] | None = None):
     """Yield .context.toml files, root first, then children, from the shared listing.
 
-    The listing skips what git ignores and caps every walk (see :mod:`aictl.tree_walk`).
+    In a repository, git lists the files and what it ignores is skipped (see :mod:`aictl.tree_walk`).
     *_budget* is kept for callers that pass it and has no effect.
     """
     from .tree_walk import listing
@@ -423,7 +423,7 @@ def _walk(root: Path, _budget: list[int] | None = None):
     f = root / AICTX_FILENAME
     if f.is_file():
         yield f
-    for folder, _dirs, files in listing(root):
+    for folder, _dirs, files in listing(root, files={AICTX_FILENAME}):
         if folder == root or AICTX_FILENAME not in files:
             continue
         try:

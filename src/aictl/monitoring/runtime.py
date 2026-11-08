@@ -158,14 +158,14 @@ class MonitorRuntime:
 
     def snapshot(self) -> MonitorSnapshot:
         """Current in-memory snapshot."""
-        from ..tree_walk import note_active_projects
+        from ..tree_walk import note_active_sessions
 
-        # Discovery reads the projects of live sessions first (see tree_walk).
-        note_active_projects(
-            folder
-            for session in list(self.correlator.sessions.values())
-            for folder in (session.project, *getattr(session, "workspaces", ()))
-            if folder
+        # Discovery reads the repositories of live sessions first and links files to them (see tree_walk).
+        note_active_sessions(
+            {
+                sid: [folder for folder in (session.project, *getattr(session, "workspaces", ())) if folder]
+                for sid, session in list(self.correlator.sessions.items())
+            }
         )
         return MonitorSnapshot(
             generated_at=time.time(),

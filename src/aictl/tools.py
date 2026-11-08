@@ -526,19 +526,12 @@ def get_registry() -> Registry:
 # One skip list for every walk; see tree_walk.
 from .tree_walk import PRUNE_DIRS  # noqa: E402
 
-# Bound project-root tree scans. Discovery is meant for a *project* root;
-# pointing aictl at a huge root (a drive root, a home directory, ...) must
-# not turn it into an endless, resource-hungry full-filesystem walk. This
-# caps how many directories any single discovery walk visits, mirroring the
-# result cap that ``safe_rglob`` already applies.
-MAX_SCAN_DIRS = 50_000
-
 
 def find_in_tree(root: Path, filename: str) -> list[Path]:
-    """Every file named *filename* under root, from the shared listing (see :mod:`tree_walk`)."""
+    """Every file named *filename* under root (see :mod:`tree_walk`)."""
     from .tree_walk import listing
 
-    return sorted(folder / filename for folder, _dirs, files in listing(root) if filename in files)
+    return sorted(folder / filename for folder, _dirs, files in listing(root, files={filename}) if filename in files)
 
 
 def _outside(found: set[Path], folder: Path) -> bool:
@@ -556,13 +549,16 @@ def batch_find_in_tree(
     filenames: set[str],
     dirnames: set[str],
 ) -> tuple[dict[str, list[Path]], dict[str, list[Path]]]:
-    """All matching files and directories, from one shared listing of the tree."""
+    """All matching files and directories, from one listing of the tree (see :mod:`tree_walk`).
+
+    Inside a repository, a directory is found when it holds at least one file.
+    """
     from .tree_walk import listing
 
     file_matches: dict[str, list[Path]] = {f: [] for f in filenames}
     dir_matches: dict[str, list[Path]] = {d: [] for d in dirnames}
     found_dirs: set[Path] = set()
-    for folder, dirs, files in sorted(listing(root), key=lambda e: len(e[0].parts)):
+    for folder, dirs, files in sorted(listing(root, files=filenames, dirs=dirnames), key=lambda e: len(e[0].parts)):
         if found_dirs and not _outside(found_dirs, folder):
             continue  # inside a found directory: not searched further
         for f in filenames:
