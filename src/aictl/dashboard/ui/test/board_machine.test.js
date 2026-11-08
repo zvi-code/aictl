@@ -212,6 +212,18 @@ describe('traffic, CPU cores, sources, self, collectors and quality', () => {
     expect(f.banner).toContain('Data loss');
     expect(f.stats.find(s => s.label === 'Dropped')).toMatchObject({ value: '250', cls: 'crit' });
   });
+  it('names the writes that run now, and warns when one has run for a minute', () => {
+    expect(buildPanel('self', ctxWith(), local(), { id: 'self' }).stats.find(s => s.label === 'Writing')).toMatchObject({ value: 'Nothing', cls: null });
+    const busy = machineFixture();
+    busy.pipeline.self = { ...busy.pipeline.self, writes: [{ name: 'flush', age_s: 249 }, { name: 'compact', age_s: 4 }] };
+    const p = buildPanel('self', ctxWith(busy), local(), { id: 'self' });
+    expect(p.stats.find(s => s.label === 'Writing')).toMatchObject({ value: 'flush, 4 min; compact, 4 s', cls: 'warn' });
+    expect(p.banner).toContain('(flush) has run for 4 min');
+    busy.pipeline.self.writes = [{ name: 'flush', age_s: 12 }];
+    const short = buildPanel('self', ctxWith(busy), local(), { id: 'self' });
+    expect(short.stats.find(s => s.label === 'Writing')).toMatchObject({ value: 'flush, 12 s', cls: null });
+    expect(short.banner).toBeNull();
+  });
   it('lists the collectors, with the monitored folders folded', () => {
     const folded = buildPanel('collectors', ctxWith(), local(), { id: 'collectors' });
     expect(folded.table.rows.map(r => r.id)).toEqual(['c:network', 'c:files', 'roots']);

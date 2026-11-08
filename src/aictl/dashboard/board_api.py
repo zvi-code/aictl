@@ -5777,6 +5777,7 @@ def compute_machine(
                 "db_bytes": stats.get("file_size_bytes"),
                 "db_rows": sum(counts.values()) if counts else None,
                 "db_tables": counts,
+                "writes": db.running_writes() if hasattr(db, "running_writes") else [],
             },
             "sink": _sink_section(store),
             "otel_receiver": otel_status,
