@@ -773,3 +773,41 @@ class TestReinstallLeavesTrackedFilesAlone:
         ).stdout
         assert "dist/index.html: text: unset" in out
         assert "root.js: eol: lf" in out
+
+
+class TestReinstallRemovesTheOldEnvironmentItself:
+    """uv deleted the environment it ran in, and Windows refused: os error 32 on every first attempt."""
+
+    def _launch(self, runner, tmp_path, monkeypatch, venv):
+        for key in ("PIP_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX_URL", "AICTL_INDEX_URL"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+        with (
+            patch("aictl.commands.admin._find_project_root", return_value=tmp_path),
+            patch("aictl.commands.admin._IS_WINDOWS", True),
+            patch("aictl.commands.admin._pip_configured_index", return_value=None),
+            patch("aictl.commands.admin._pipx_venv_dir", return_value=venv),
+            patch("shutil.which", return_value="C:\\px\\pipx.exe"),
+            patch("subprocess.Popen") as popen,
+            patch("os._exit"),
+        ):
+            assert runner.invoke(reinstall, ["--skip-ui"]).exit_code == 0
+        batch = next(tmp_path.glob("aictl-reinstall-*.bat")).read_bytes().decode("utf-8")
+        return batch, popen.call_args.kwargs["env"]
+
+    def test_the_script_removes_the_environment_from_outside_before_pipx_runs(self, runner, tmp_path, monkeypatch):
+        venv = Path("C:/Users/u/pipx/venvs/aictl")
+        batch, env = self._launch(runner, tmp_path, monkeypatch, venv)
+        assert "UV_VENV_CLEAR" not in env
+        assert "set UV_VENV_CLEAR=1" not in batch and "set UV_VENV_CLEAR=\r\n" in batch
+        assert env["AICTL_VENV"] == str(venv)
+        assert batch.index('cd /d "!AICTL_REINSTALL_FROM!"') < batch.index(":retry")
+        attempt = batch[batch.index(":retry") :]
+        assert attempt.index('rmdir /s /q "!AICTL_VENV!"') < attempt.index('"install"')
+        still_there = attempt.index("still in use, so it cannot be removed yet")
+        assert attempt.index("goto attempt_failed", still_there) < attempt.index('"install"')
+        assert attempt.index(":attempt_failed") > attempt.index('"install"')
+
+    def test_a_folder_that_is_not_the_pipx_environment_is_never_removed(self, runner, tmp_path, monkeypatch):
+        batch, env = self._launch(runner, tmp_path, monkeypatch, Path("C:/Users/u/somewhere/else"))
+        assert "rmdir" not in batch and "AICTL_VENV" not in env
