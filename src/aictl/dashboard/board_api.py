@@ -21,7 +21,9 @@ from __future__ import annotations
 import bisect
 import contextlib
 import difflib
+import functools
 import hashlib
+import inspect
 import json
 import logging
 import math
@@ -3388,6 +3390,23 @@ def read_scope(db: Any, filters: Filters | None = None, session: str | None = No
     return scope(since=filters.since - span, until=filters.until, project=filters.project or None)
 
 
+def _in_session_scope(arg: str) -> Callable:
+    """Reads of one session or agent look in the store that holds it, whatever its activity."""
+
+    def wrap(fn: Callable) -> Callable:
+        signature = inspect.signature(fn)
+
+        @functools.wraps(fn)
+        def run(*args: Any, **kwargs: Any) -> Any:
+            bound = signature.bind(*args, **kwargs)
+            with read_scope(bound.arguments["db"], session=str(bound.arguments.get(arg) or "")):
+                return fn(*args, **kwargs)
+
+        return run
+
+    return wrap
+
+
 def compute_board(
     db: Any,
     filters: Filters,
@@ -3744,6 +3763,7 @@ def _detail_filters(now: float) -> Filters:
     return Filters(since=0.0, until=now + 60.0, buckets=1)
 
 
+@_in_session_scope("agent_id")
 def live_pids_of(db: Any, snapshot: Any, agent_id: str, now: float | None = None) -> list[int]:
     """The processes of a board agent, for Stop. A subagent has none of its own."""
     now = time.time() if now is None else now
@@ -3761,6 +3781,7 @@ def live_pids_of(db: Any, snapshot: Any, agent_id: str, now: float | None = None
     return sorted((board.live_by_sid.get(sid) or {}).get("pids", ()))
 
 
+@_in_session_scope("agent_id")
 def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None = None) -> tuple[int, dict]:
     now = time.time() if now is None else now
     conn = db._conn()
@@ -4337,6 +4358,7 @@ def _session_flow_build(db: Any, conn: sqlite3.Connection, sid: str, since: floa
     return sid, _merge_flow(store, legacy), source
 
 
+@_in_session_scope("agent_id")
 def agent_flow(
     db: Any,
     agent_id: str,
@@ -4516,6 +4538,7 @@ def _merge_transcript(turns: list[dict], legacy: dict | None) -> list[dict]:
     return turns
 
 
+@_in_session_scope("agent_id")
 def agent_transcript(
     db: Any,
     agent_id: str,
@@ -5140,6 +5163,7 @@ def file_detail(db: Any, path: str, now: float | None = None) -> tuple[int, dict
     return 200, {"path": path, "edits": edits, "diff": _stored_diff(conn, path, [r[3] for r in rows])}
 
 
+@_in_session_scope("session_id")
 def prompt_detail(db: Any, ts: float, session_id: str, now: float | None = None) -> tuple[int, dict]:
     now = time.time() if now is None else now
     conn = db._conn()
@@ -6420,8 +6444,9 @@ def _context_db_parts(db: Any, tools: tuple[str, ...] | None, now: float) -> dic
     if hit and 0 <= now - hit[0] < CONTEXT_DB_TTL_S:
         return hit[1]
     try:
-        conn = db._conn()
-        parts = {"daily": _context_daily(conn, tools, now), "growth": _context_growth(conn, now)}
+        with read_scope(db, Filters(since=_context_days(now)[1], until=now)):
+            conn = db._conn()
+            parts = {"daily": _context_daily(conn, tools, now), "growth": _context_growth(conn, now)}
     except sqlite3.Error:
         logger.debug("Could not read the context history", exc_info=True)
         return empty

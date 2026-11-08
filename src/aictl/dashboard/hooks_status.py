@@ -358,7 +358,18 @@ def _subagent_usage(db, cutoff: float) -> dict[str, Any]:
     return {"starts_24h": starts, "stops_24h": stops, "by_tool": by_tool, "recent": recent[:10]}
 
 
-def collect_hooks_status(
+def collect_hooks_status(db, root: Path, **kwargs: Any) -> dict[str, Any]:
+    """Hook health and recent hook activity; a history split by project reads the hook window only."""
+    scope = getattr(db, "read_scope", None)
+    if scope is None:
+        return _collect_hooks_status(db, root, **kwargs)
+    now = kwargs.get("now")
+    now = time.time() if now is None else now
+    with scope(since=now - HOOK_WINDOW_SECONDS, until=now):
+        return _collect_hooks_status(db, root, **kwargs)
+
+
+def _collect_hooks_status(
     db,
     root: Path,
     *,
