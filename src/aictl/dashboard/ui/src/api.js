@@ -181,6 +181,15 @@ export async function getBoard(query, { signal, etag } = {}) {
 
 export const getBoardAgent = (id, opts) => fetchJson('/api/board/agent?id=' + encodeURIComponent(id), opts);
 /** The session flow of a board agent: events from the store, with hook and OTel events merged in. `query` is `since=..&until=..`. */
+/** Session search over all time: {q, tool (list of ids, or [] for none), limit, offset}. */
+export function getBoardSessions({ q = '', tool = null, limit = 50, offset = 0 } = {}, opts) {
+  const p = new URLSearchParams();
+  p.set('q', q);
+  if (tool) p.set('tool', tool.length ? tool.join(',') : '-');
+  p.set('limit', String(limit));
+  p.set('offset', String(offset));
+  return fetchJson('/api/board/sessions?' + p.toString(), opts);
+}
 export const getBoardAgentFlow = (id, query = '', opts) => fetchJson('/api/board/agent/flow?id=' + encodeURIComponent(id) + (query ? '&' + query : ''), opts);
 /** The transcript of a board agent's session: each prompt with its reply, actions and tokens. */
 export const getBoardAgentTranscript = (id, opts) => fetchJson('/api/board/agent/transcript?id=' + encodeURIComponent(id), opts);

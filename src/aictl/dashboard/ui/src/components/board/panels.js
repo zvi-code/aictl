@@ -11,6 +11,7 @@ import { bucketLabel } from './chartModel.js';
 import { STALE_AFTER_S } from './summary.js';
 import { CONTEXT_BUILDERS } from './contextPanels.js';
 import { EMPTY_MACHINE } from './useBoardData.js';
+import { panelSessions } from './sessionsPanel.js';
 
 const num = v => (v === null || v === undefined ? -1 : v);
 const sumOf = list => list.reduce((s, v) => s + (v || 0), 0);
@@ -1006,7 +1007,7 @@ function panelCoverage(ctx) {
 }
 
 const BUILDERS = {
-  attention: panelAttention, agentsT: panelAgents, byModel: panelByModel, byRole: panelByRole,
+  attention: panelAttention, sessionsT: panelSessions, agentsT: panelAgents, byModel: panelByModel, byRole: panelByRole,
   tokens: panelTokens, cacheRate: panelCacheRate, cost: panelCost, messages: panelMessages, projects: panelProjects,
   promptsL: panelPrompts, pprompts: panelProjectPrompts, skills: panelSkills,
   toolCalls: panelToolCalls, confirms: panelConfirms, errors: panelErrors, latency: panelLatency, loops: panelLoops,

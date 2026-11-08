@@ -485,3 +485,12 @@ html:has(.bd-app[data-theme=light]){background:#f4f4f1}
 .bd-keys dt,.bd-keys dd{margin:0}
 .bd-keys p{color:var(--ink3);font-size:12px}
 @media (pointer:coarse){.bd-palo{min-height:44px}}
+
+/* Sessions panel: the search row above a table that scrolls */
+.bd-sessions{display:flex;flex-direction:column;flex:1 1 auto;min-height:0}
+.bd-srchrow{display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.bd-sessq{flex:1 1 280px;min-width:160px;height:28px;padding:0 8px;background:var(--surface);border:1px solid var(--line2);border-radius:4px;color:var(--ink)}
+.bd-sessq::placeholder{color:var(--ink3)}
+.bd-sessn{border:0;padding:0}
+.bd-artq{display:block;width:100%;height:28px;padding:0 8px;margin:0 0 6px;background:var(--surface);border:1px solid var(--line2);border-radius:4px;color:var(--ink)}
+.bd-pr{display:inline-block;margin-right:8px}

@@ -362,7 +362,7 @@ describe('keyboard shortcuts', () => {
   });
   it('jumps to the nth section on a digit, and steps with [ and ]', async () => {
     const { container } = await mountBoard();
-    fireEvent.keyDown(document, { key: '4' });
+    fireEvent.keyDown(document, { key: '5' });
     await waitFor(() => expect(scrolled.at(-1)).toBe('sec-context'));
     fireEvent.keyDown(document, { key: ']' });
     await waitFor(() => expect(scrolled.at(-1)).toBe('sec-tools'));
@@ -372,14 +372,14 @@ describe('keyboard shortcuts', () => {
     // A folded section opens when it is jumped to.
     fireEvent.click(container.querySelector('#sec-usage .bd-sect'));
     expect(container.querySelector('#sec-usage .bd-grid')).toBeNull();
-    fireEvent.keyDown(document, { key: '2' });
+    fireEvent.keyDown(document, { key: '3' });
     await waitFor(() => expect(container.querySelector('#sec-usage .bd-grid')).toBeTruthy());
   });
   it('ignores the keys while typing in a field', async () => {
     const { container } = await mountBoard();
     const find = container.querySelector('#bd-find');
     find.focus();
-    fireEvent.keyDown(find, { key: '4' });
+    fireEvent.keyDown(find, { key: '5' });
     fireEvent.keyDown(find, { key: 's' });
     await new Promise(r => setTimeout(r, 10));
     expect(scrolled).not.toContain('sec-context');
