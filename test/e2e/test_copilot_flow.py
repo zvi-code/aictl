@@ -90,7 +90,7 @@ def test_otel_metrics_are_received_for_every_surface(aictl_server, service):
 
 @pytest.mark.xfail(
     strict=True,
-    reason="OTLP token metrics posted for a copilot session do not surface in /api/sessions "
+    reason="OTLP token metrics posted for a copilot session do not surface on a session row "
     "(no session row is created from metrics alone); tokens reach sessions via hooks or ingesters",
 )
 def test_vscode_otel_tokens_visible_on_session(aictl_server):

@@ -1,6 +1,6 @@
 # aictl - Cross-platform AI Tool Context Control + Dashboard
 # Copyright (c) 2026 Zvi Schneider. MIT License.
-"""Tests for :mod:`aictl.memory_snapshot` + /api/session-memory-diff."""
+"""Tests for :mod:`aictl.memory_snapshot`."""
 
 from __future__ import annotations
 
@@ -149,10 +149,8 @@ def test_record_snapshot_and_build_diff(tmp_path: Path, fake_claude_home):
     assert payload["summary"] == {"added": 1, "modified": 1, "removed": 1}
 
 
-def test_api_endpoint_returns_empty_shape(tmp_path: Path):
-    """Unknown session → empty files list + zero summary, HTTP 200."""
-    from aictl.dashboard import api_handlers  # noqa: F401
-
+def test_unknown_session_diff_is_empty(tmp_path: Path):
+    """Unknown session → empty files list + zero summary."""
     db = HistoryDB(db_path=tmp_path / "h.db", flush_interval=0)
     conn = db._conn()
     payload = build_session_memory_diff(conn, "does-not-exist")

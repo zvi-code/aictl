@@ -9,10 +9,7 @@ shown. The numbers are worked out by hand.
 
 from __future__ import annotations
 
-import json
-import threading
 import time
-import urllib.request
 from datetime import datetime, timedelta
 
 import pytest
@@ -20,7 +17,7 @@ import pytest
 from aictl.dashboard.analytics import _compute_response_time, compute_usage_summary, window_sessions
 from aictl.dashboard.board_api import Filters, compute_board
 from aictl.ingesters.transcript_usage import local_day
-from aictl.storage import HistoryDB, SessionRow
+from aictl.storage import HistoryDB
 
 # A fixed local date well in the past, so "now" never falls inside the window.
 DAY1 = datetime(2026, 3, 10)
@@ -62,56 +59,7 @@ def db(tmp_path):
     d.close()
 
 
-@pytest.fixture
-def api(tmp_path, db):
-    from test_api_endpoints import _make_snapshot
-
-    from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
-    from aictl.orchestrator import AllowedPaths, SnapshotStore
-
-    store = SnapshotStore(db=db)
-    store.update(_make_snapshot())
-    srv = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, AllowedPaths(), tmp_path)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    yield f"http://127.0.0.1:{srv.server_address[1]}"
-    srv.shutdown()
-
-
-def get_json(url):
-    with urllib.request.urlopen(url, timeout=5) as r:
-        return json.loads(r.read())
-
-
-# ── /api/sessions ─────────────────────────────────────────────────
-
-
-class TestSessionsWindow:
-    """`until` was never read, so every later session came back with its lifetime totals."""
-
-    def test_until_leaves_out_sessions_that_started_later(self, api, db):
-        early, late = at(DAY1, 9), at(DAY3, 9)
-        for sid, started in (("early", early), ("late", late)):
-            db.upsert_session(SessionRow(session_id=sid, tool="copilot-cli", source="hook", started_at=started, input_tokens=1000))
-        rows = get_json(f"{api}/api/sessions?since={at(DAY1, 0)}&until={at(DAY2, 0)}&limit=100")
-        assert [r["session_id"] for r in rows if r["tool"] == "copilot-cli"] == ["early"]
-        everything = get_json(f"{api}/api/sessions?since={at(DAY1, 0)}&limit=100")
-        assert {r["session_id"] for r in everything if r["tool"] == "copilot-cli"} == {"early", "late"}
-
-    def test_rows_that_count_add_up_to_the_usage_endpoint(self, api, db):
-        """One logical session is one counted row, so the listing does not double the total."""
-        sid = "11111111-1111-4111-8111-111111111111"
-        db.upsert_session_usage(usage_row(sid, "copilot-cli", at(DAY1, 9), at(DAY1, 10), [(at(DAY1, 9), {"input_tokens": 70, "output_tokens": 5})]))
-        db.upsert_session(SessionRow(session_id=sid, tool="copilot-cli", source="hook", started_at=at(DAY1, 9)))
-        db.upsert_session(
-            SessionRow(session_id=f"copilot-cli:7:{sid}", tool="copilot-cli", source="otel", pid=7, started_at=at(DAY1, 9), input_tokens=900)
-        )
-        q = f"since={at(DAY1, 0)}&until={at(DAY2, 0)}"
-        rows = [r for r in get_json(f"{api}/api/sessions?{q}&limit=100") if r["counted_in_totals"] and r["tool"] == "copilot-cli"]
-        usage = get_json(f"{api}/api/usage?{q}")["tools"][0]
-        assert sum(r["input_tokens"] for r in rows) == usage["input_tokens"] == 70
-
-
-# ── /api/usage and /api/project-costs ─────────────────────────────
+# ── Usage summary window ──────────────────────────────────────────
 
 
 class TestWindowEdges:
@@ -149,14 +97,6 @@ class TestWindowEdges:
         assert summary["totals"]["output_tokens"] == 70
         assert summary["window"]["approximate"] is False
 
-    def test_project_costs_read_until_and_say_how_the_window_was_applied(self, api, db):
-        self.seed(db)
-        rows = get_json(f"{api}/api/project-costs?since={at(DAY1, 12)}&until={at(DAY1, 23)}")
-        assert [r["output_tokens"] for r in rows] == [60]
-        assert rows[0]["window"]["approximate"] is True
-        none = get_json(f"{api}/api/project-costs?since={at(DAY2, 0)}&until={at(DAY3, 0)}")
-        assert none == []
-
     def test_the_running_day_is_marked_partial(self, db):
         now = time.time()
         db.upsert_session_usage(usage_row("today", "claude-code", now - 60, now, [(now, {"output_tokens": 5})]))
@@ -165,7 +105,7 @@ class TestWindowEdges:
         assert {d["date"]: d["partial"] for d in summary["daily"]} == {local_day(now): True, local_day(at(DAY1, 0)): False}
 
 
-# ── /api/analytics ────────────────────────────────────────────────
+# ── Response-time rows ────────────────────────────────────────────
 
 
 class TestResponseTimeRows:

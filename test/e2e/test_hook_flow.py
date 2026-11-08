@@ -17,7 +17,7 @@ class TestClaudeHookFlow:
     """Full Claude Code hook lifecycle: SessionStart → tools → Stop."""
 
     def test_session_created(self, aictl_server, claude_hook_sequence):
-        """SessionStart hook creates a session queryable via /api/sessions."""
+        """SessionStart hook creates a stored session row."""
         for ev in claude_hook_sequence:
             aictl_server.post_hook(ev)
 
@@ -283,12 +283,12 @@ class TestFileWriteIndex:
             }
         )
 
-        result = aictl_server.poll(
-            "/api/file-writes",
-            session_id=sid,
-            check=lambda payload: payload.get("count", 0) == 1,
-        )
-        writes = result["writes"]
+        deadline = time.monotonic() + 15
+        writes = aictl_server.get_file_writes(sid)
+        while len(writes) != 1 and time.monotonic() < deadline:
+            time.sleep(1.0)
+            writes = aictl_server.get_file_writes(sid)
+        assert len(writes) == 1
         assert writes[0]["operation"] == "write"
         assert writes[0]["path"].endswith("/tmp/aictl-e2e/src/new_file.py")
         assert writes[0]["source_event_id"] == tool_use_id

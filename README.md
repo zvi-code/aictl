@@ -1148,9 +1148,8 @@ make test-docker
 Success means all commands exit 0 and these behaviors are specifically covered:
 
 - `HistoryDB.stats()` reports the current `SCHEMA_VERSION`, plus `file_write_events` and `data_quality_status` row counts.
-- `PostToolUse` write-like hooks (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`) produce rows at `/api/file-writes` with session, tool, operation, path, and source event id.
-- Collector and ingester health is queryable from `/api/data-quality`; missing, unreadable, schema-drift, degraded, and ok states are persisted instead of only logged.
-- `/api/sessions` distinguishes live `active`, completed `ended`, imported historical `imported`, and unterminated `open` sessions instead of treating every row with no `ended_at` as live.
+- `PostToolUse` write-like hooks (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`) produce `file_write_events` rows with session, tool, operation, path, and source event id.
+- Collector and ingester health is stored in `data_quality_status`; missing, unreadable, schema-drift, degraded, and ok states are persisted instead of only logged.
 - `aictl ctx deploy --profile <name>` fails for unknown profiles unless `--allow-empty-profile` is supplied.
 - `aictl ctx deploy --strict` fails when the selected emitter cannot represent a selected feature.
 - The Docker gate derives the expected schema from `aictl.storage.SCHEMA_VERSION` and checks current table and column names, so stale schema assumptions fail fast.

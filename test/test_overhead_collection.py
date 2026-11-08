@@ -232,13 +232,6 @@ def test_sse_omits_only_unchanged_large_keys_per_client():
     assert "events" in json.loads(_omit_unchanged_sse_keys(msg, {}))
 
 
-def test_sessions_api_exposes_content_retained():
-    from aictl.dashboard import api_handlers
-
-    source = Path(api_handlers.__file__).read_text()
-    assert 's["content_retained"]' in source
-
-
 def test_daemon_status_does_not_signal_the_process(tmp_path, monkeypatch):
     """os.kill(pid, 0) terminates the target on Windows."""
     from aictl.commands import daemon

@@ -233,7 +233,6 @@ class DashboardSnapshot:
         Used for /api/snapshot and SSE — keeps team-level summaries
         (session_id, agent_count, tokens, models, tools_used) but drops
         the nested ``agents`` array which can be multi-MB.
-        Full agent detail is available via ``/api/agent-teams?session_id=X``.
         """
         d = self.to_dict()
         d["agent_teams"] = _slim_agent_teams(d.get("agent_teams", []))

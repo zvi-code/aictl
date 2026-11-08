@@ -1,6 +1,6 @@
 """aictl.data.model_pricing — per-model list prices, with no fallback.
 
-Regression guard for /api/project-costs, which used to price every model at a
+Regression guard for project costs, which used to price every model at a
 fixed $3/$15 (legacy Sonnet rates mislabelled "Opus-class"), under-reporting
 Fable 5.1 by ~3x and over-reporting Sonnet 5 by 1.5x.
 """
