@@ -1486,6 +1486,28 @@ def _parse_session_id(sid: str) -> tuple[int, float]:
         return 0, 0.0
 
 
+def _fill_folders_from_sessions(conn: sqlite3.Connection, *bufs: list) -> None:
+    """Give a row with no project folder the folder of its session.
+
+    Telemetry often reports a call without the working folder, while the session
+    it belongs to has one, from the same flush or from the store.
+    """
+    rows = [r for buf in bufs for r in buf]
+    known = {r.session_id: r.project_path for r in rows if r.session_id and r.project_path}
+    wanted = {r.session_id for r in rows if r.session_id and not r.project_path} - known.keys()
+    wanted_list = sorted(wanted)
+    for i in range(0, len(wanted_list), 500):
+        part = wanted_list[i : i + 500]
+        marks = ",".join("?" * len(part))
+        for sid, path in conn.execute(
+            f"SELECT session_id, project_path FROM sessions WHERE session_id IN ({marks}) AND project_path != ''", part
+        ):
+            known[sid] = path
+    for r in rows:
+        if not r.project_path and r.session_id in known:
+            r.project_path = known[r.session_id]
+
+
 def _event_row_tuple(e: EventRow) -> tuple:
     """Convert an EventRow to a tuple for INSERT into events table."""
     d = e.detail if isinstance(e.detail, dict) else {}
@@ -1498,7 +1520,9 @@ def _event_row_tuple(e: EventRow) -> tuple:
         e.kind,
         sid,
         pid,
-        d.get("project_path", d.get("path", "")),
+        # Only a project field names the project. A file event's ``path`` is the
+        # file itself, and taking it made every changed file a project of its own.
+        str(d.get("project_path") or ""),
         json.dumps(e.detail),
     )
 
@@ -2975,6 +2999,8 @@ class HistoryDB:
                 commit()
             committed.add("m")
 
+            if req_buf or ti_buf:
+                _fill_folders_from_sessions(conn, req_buf, ti_buf)
             if req_buf:
                 covered = _sessions_read_from_transcripts(conn, req_buf)
                 for i, r in enumerate(req_buf):

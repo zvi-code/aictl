@@ -995,3 +995,15 @@ def test_tail_reads_a_file_created_after_the_start_from_its_first_line(tmp_path)
     collector._found_at_start = set()
 
     assert [s["input_tokens"] for s in collector._parse_file(log)] == [70]
+
+
+def test_a_file_event_carries_its_session_project(tmp_path):
+    (tmp_path / ".git").mkdir()
+    config = MonitorConfig.for_root(tmp_path)
+    correlator = SessionCorrelator(config)
+    process = ProcessInfo(pid=101, ppid=1, name="copilot", exe="/usr/local/bin/copilot", cmdline=("copilot", "chat"), username="user", cwd=str(tmp_path))
+    correlator.on_process(process, cpu_percent=1.0, memory_rss=0, child_count=0, is_new=True)
+    correlator.on_file(str(tmp_path / "src" / "a.py"), growth_bytes=10, tool_hint="copilot-cli", workspace=str(tmp_path))
+    files = [e for e in correlator.pending_events if e["kind"] == "file_modified"]
+    assert files and files[0]["detail"]["project_path"] == str(tmp_path.resolve())
+    assert files[0]["detail"]["path"] == str(tmp_path / "src" / "a.py")
