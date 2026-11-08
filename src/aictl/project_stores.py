@@ -42,7 +42,9 @@ from .ingesters._common import decode_file_uri
 from .storage import (
     BUSY_TIMEOUT_S,
     CAPTURE_FULL,
+    FLUSH_CHUNK_ROWS,
     FLUSH_INTERVAL,
+    FLUSH_YIELD_S,
     AgentRow,
     CallFacts,
     EventRow,
@@ -51,6 +53,8 @@ from .storage import (
     RequestRow,
     SessionRow,
     ToolInvocationRow,
+    connect_file,
+    is_lock_error,
 )
 from .storage_migrations import CURRENT_VERSION as SCHEMA_VERSION
 
@@ -422,6 +426,8 @@ class ProjectStores:
         self.projects_dir: Path | None = projects_dir_for(path) if isinstance(path, Path) and self._split else None
         self._idle_close_s = idle_close_s
         self._stores: dict[str, _ProjectDB] = {}
+        self._visiting: dict[str, HistoryDB] = {}  # closed stores opened for one visit of _each_store
+        self._lock_noted: set[str] = set()
         self._in_use: dict[str, int] = {}
         self._last_used: dict[str, float] = {}
         self._stores_lock = threading.RLock()
@@ -774,9 +780,11 @@ class ProjectStores:
     def _move_session(self, session_id: str, src: str, dst: str) -> bool:
         """Move a session's rows from *src* to *dst*: it was placed before a row named its folder.
 
-        Copy and delete are one transaction that holds both stores' write locks. When it
-        fails (a busy store), nothing changed and the move stays pending: flush and the
-        upkeep thread retry it.
+        Rows move in chunks. Each chunk's copy and delete are one short transaction that
+        holds both stores' write locks, and other writers of either store get in between:
+        a session of many rows must not keep the machine store locked longer than they
+        wait. When a chunk fails (a busy store), the rows of each chunk are in one store
+        only and the move stays pending: reads look in both, flush and upkeep retry it.
         """
         with self._using(src) as source, self._using(dst) as target:
             source.flush()
@@ -784,23 +792,11 @@ class ProjectStores:
             if conn.in_transaction:
                 conn.commit()
             conn.execute("ATTACH DATABASE ? AS mv", (str(source._path),))
+            name = f"move of session {session_id}"
             try:
-                conn.execute("BEGIN IMMEDIATE")
-                moved: list[Any] = []
-                for table in PROJECT_TABLES:
-                    cols = ", ".join(_copy_columns(conn, table))
-                    conn.execute(
-                        f"INSERT OR IGNORE INTO main.{table}({cols}) SELECT {cols} FROM mv.{table} WHERE session_id = ?",
-                        (session_id,),
-                    )
-                    if table in _TIMED_TABLES:
-                        lo, hi = conn.execute(
-                            f"SELECT MIN(ts), MAX(ts) FROM mv.{table} WHERE session_id = ?", (session_id,)
-                        ).fetchone()
-                        moved += [types.SimpleNamespace(ts=t) for t in (lo, hi) if t]
-                for table in PROJECT_TABLES:
-                    conn.execute(f"DELETE FROM mv.{table} WHERE session_id = ?", (session_id,))
-                conn.commit()
+                with source.named_write(name), target.named_write(name):
+                    for table in PROJECT_TABLES:
+                        self._move_rows(conn, table, session_id, dst)
             except sqlite3.Error as exc:
                 if conn.in_transaction:
                     conn.rollback()
@@ -813,9 +809,38 @@ class ProjectStores:
             # Lookups that found an id in the old store are stale now.
             for ident in [i for i, k in self._found.items() if k == src]:
                 del self._found[ident]
-        # The moved rows' time range: a board range that holds only old rows still reads dst.
-        self._touch(dst, moved or [_NOW_ROW])
+        self._touch(dst, [_NOW_ROW])
         return True
+
+    def _move_rows(self, conn: sqlite3.Connection, table: str, session_id: str, dst: str) -> None:
+        """Move one table's rows of a session from ``mv`` to ``main``, a chunk per transaction."""
+        cols = ", ".join(_copy_columns(conn, table))
+        while True:
+            last = conn.execute(
+                f"SELECT MAX(rowid) FROM (SELECT rowid FROM mv.{table} WHERE session_id = ?"
+                f" ORDER BY rowid LIMIT {FLUSH_CHUNK_ROWS})",
+                (session_id,),
+            ).fetchone()[0]
+            if last is None:
+                return
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                f"INSERT OR IGNORE INTO main.{table}({cols}) SELECT {cols} FROM mv.{table}"
+                " WHERE session_id = ? AND rowid <= ?",
+                (session_id, last),
+            )
+            moved: list[Any] = []
+            if table in _TIMED_TABLES:
+                lo, hi = conn.execute(
+                    f"SELECT MIN(ts), MAX(ts) FROM mv.{table} WHERE session_id = ? AND rowid <= ?", (session_id, last)
+                ).fetchone()
+                moved = [types.SimpleNamespace(ts=t) for t in (lo, hi) if t]
+            conn.execute(f"DELETE FROM mv.{table} WHERE session_id = ? AND rowid <= ?", (session_id, last))
+            conn.commit()
+            # The moved rows' time range: a board range that holds only old rows still reads dst.
+            self._touch(dst, moved or [_NOW_ROW])
+            # A writer in SQLite's busy wait takes the lock now.
+            time.sleep(FLUSH_YIELD_S)
 
     def _retry_moves(self) -> int:
         """Moves that failed before. Returns how many are still pending."""
@@ -1033,14 +1058,31 @@ class ProjectStores:
         return False
 
     def clear_stale_pending_confirms(self, before: float) -> int:
-        """Open stores on every call; every store, closed ones too, every FULL_PASS_S."""
-        total = self.machine.clear_stale_pending_confirms(before)
+        """Open stores on every call; every store, closed ones too, every FULL_PASS_S.
+
+        Housekeeping: a busy store is left for the next call.
+        """
         full = time.monotonic() - self._last_full_pass >= FULL_PASS_S
         if full:
             self._last_full_pass = time.monotonic()
-        for db in self._each_store(open_only=not full, machine=False):
-            total += db.clear_stale_pending_confirms(before)
+        total = 0
+        for db in self._each_store(open_only=not full):
+            try:
+                total += db.clear_stale_pending_confirms(before)
+            except sqlite3.OperationalError as exc:
+                if not is_lock_error(exc):
+                    raise
+                self.note_lock("clear_stale_pending_confirms", exc)
         return total
+
+    def note_lock(self, what: str, exc: BaseException) -> None:
+        """Log a skipped write once per kind, with the writes that run now; later ones at debug."""
+        writes = ", ".join(self.active_writes()) or "none"
+        if what in self._lock_noted:
+            log.debug("%s skipped: %s. Writes running in this process: %s", what, exc, writes)
+            return
+        self._lock_noted.add(what)
+        log.warning("%s skipped, retried later: %s. Writes running in this process: %s", what, exc, writes)
 
     # ── Every store ────────────────────────────────────────────
 
@@ -1082,14 +1124,20 @@ class ProjectStores:
             if file is None or not file.exists():
                 continue
             visit = self._project_db(file, flush_thread=False)
+            with self._stores_lock:
+                self._visiting[key] = visit
             try:
                 yield visit
             finally:
+                with self._stores_lock:
+                    self._visiting.pop(key, None)
                 visit.close()
 
     def running_writes(self) -> list[dict[str, Any]]:
         rows = list(self.machine.running_writes())
-        for key, db in self.open_stores().items():
+        with self._stores_lock:
+            dbs = {**self._visiting, **self._stores}
+        for key, db in dbs.items():
             name = Path(str(db._path)).stem if key != SHARED else SHARED
             rows += [{**w, "name": f"{w['name']} [{name}]"} for w in db.running_writes()]
         return sorted(rows, key=lambda r: -r["age_s"])
@@ -1367,7 +1415,7 @@ class ProjectStores:
         plan = self._wanted()
         state = conns.pop(plan, None)
         if state is None:
-            conn = sqlite3.connect(str(self.machine._path), timeout=BUSY_TIMEOUT_S)
+            conn = connect_file(str(self.machine._path))
             conn.execute("PRAGMA synchronous=OFF")
             conn.execute("PRAGMA cache_size=-8000")
             conn.execute("PRAGMA temp_store=MEMORY")

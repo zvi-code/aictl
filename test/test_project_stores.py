@@ -629,3 +629,68 @@ def test_the_split_says_when_it_starts_and_when_it_is_done(tmp_path):
         count = len(said)
         stores.split_machine_sessions()
         assert len(said) == count  # nothing left: nothing more to say
+
+
+# ─── Locks ────────────────────────────────────────────────────────
+
+
+def test_a_large_session_moves_without_keeping_the_machine_store_locked(tmp_path, monkeypatch):
+    """The split moved a session in one transaction that held the machine store's write
+    lock for the whole session, and no running write named it."""
+    import aictl.project_stores as project_stores
+
+    monkeypatch.setattr(project_stores, "FLUSH_CHUNK_ROWS", 10_000, raising=False)  # fewer, larger chunks
+    path = tmp_path / "config" / "history.db"
+    a = _repo(tmp_path / "a")
+    single = HistoryDB(db_path=path, flush_interval=0)
+    conn = single._conn()
+    conn.execute(
+        "INSERT INTO sessions(session_id, tool, project_path, started_at) VALUES('big', 'claude-code', ?, ?)",
+        (str(a), NOW - 3600),
+    )
+    conn.executemany(
+        "INSERT INTO requests(ts, session_id, project_path, model, input_tokens, source, dedup_key) VALUES(?,?,?,?,?,?,?)",
+        [(NOW - 3000 + i * 0.01, "big", str(a), SONNET, 1, "otel", f"k{i}") for i in range(200_000)],
+    )
+    conn.commit()
+    single.close()
+    with ProjectStores(db_path=path, flush_interval=0) as stores:
+        waits: list[float] = []
+        named: list[str] = []
+        mover = threading.Thread(target=stores.split_machine_sessions)
+        probe = sqlite3.connect(path, timeout=15, isolation_level=None)
+        try:
+            mover.start()
+            while mover.is_alive():
+                started = time.monotonic()
+                probe.execute("BEGIN IMMEDIATE")
+                probe.execute("ROLLBACK")
+                waits.append(time.monotonic() - started)
+                named += stores.active_writes()
+                time.sleep(0.01)
+            mover.join()
+        finally:
+            probe.close()
+        assert max(waits) < 0.3, max(waits)
+        assert any("move of session big" in w for w in named), named
+        assert _rows(path, "requests", "session_id = 'big'") == 0
+        assert _rows(_store_file(stores, a), "requests") == 200_000
+
+
+def test_a_busy_store_skips_clearing_stale_prompts_and_says_so_once(tmp_path, monkeypatch, caplog):
+    import aictl.storage as storage
+
+    monkeypatch.setattr(storage, "BUSY_TIMEOUT_S", 0.1)
+    with ProjectStores(db_path=tmp_path / "config" / "history.db", flush_interval=0) as stores:
+        holder = sqlite3.connect(stores.machine._path, timeout=0.1)
+        try:
+            holder.execute("BEGIN IMMEDIATE")
+            with caplog.at_level(logging.WARNING, logger="aictl.project_stores"):
+                assert stores.clear_stale_pending_confirms(NOW) == 0
+                assert stores.clear_stale_pending_confirms(NOW) == 0
+        finally:
+            holder.rollback()
+            holder.close()
+        skipped = [r for r in caplog.records if "clear_stale_pending_confirms skipped" in r.getMessage()]
+        assert len(skipped) == 1
+        assert stores.clear_stale_pending_confirms(NOW) == 0

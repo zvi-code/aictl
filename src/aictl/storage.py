@@ -14,6 +14,7 @@ Design goals:
 
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import functools
 import hashlib
@@ -24,7 +25,7 @@ import re
 import sqlite3
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -95,6 +96,8 @@ COMPACT_REST_RATIO = 4.0
 # How long a write waits for the lock, and the time after which a write is logged.
 BUSY_TIMEOUT_S = 15.0
 SLOW_WRITE_S = 3.0
+# How long a TRUNCATE checkpoint waits for readers while it holds the write lock.
+CHECKPOINT_WAIT_S = 0.2
 FLUSH_CHUNK_ROWS = 1000  # rows per commit inside one flush, so other writers get in between
 FLUSH_TXN_S = 0.25  # a flush transaction commits once it has held the write lock this long
 FLUSH_YIELD_S = 0.05  # and then waits this long, so a writer in SQLite's busy wait gets the lock
@@ -1818,6 +1821,51 @@ class _BufferedCursor:
         return iter(self.fetchall())
 
 
+def is_lock_error(exc: BaseException) -> bool:
+    """A busy or locked database: transient, the next attempt can succeed."""
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    text = str(exc).lower()
+    return "locked" in text or "busy" in text
+
+
+class _Connection(sqlite3.Connection):
+    """A file connection that never stays in a transaction a lock error opened.
+
+    Python opens a transaction before a write. When that write fails with "database is
+    locked", the transaction stays open: the next read on the connection pins a snapshot,
+    and each later write fails at once with "database is locked" while no one holds the
+    lock. A locked write rolls back here. A lock error never comes after this
+    transaction's own writes to the database, so no earlier write of it is lost.
+    """
+
+    def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
+        try:
+            return super().execute(sql, parameters)
+        except sqlite3.OperationalError as exc:
+            self._end_locked(exc)
+            raise
+
+    def executemany(self, sql: str, parameters: Any, /) -> sqlite3.Cursor:
+        try:
+            return super().executemany(sql, parameters)
+        except sqlite3.OperationalError as exc:
+            self._end_locked(exc)
+            raise
+
+    def _end_locked(self, exc: sqlite3.OperationalError) -> None:
+        if self.in_transaction and is_lock_error(exc):
+            try:
+                self.rollback()
+            except sqlite3.Error as rollback_exc:
+                log.debug("Rollback after a locked write failed: %s", rollback_exc)
+
+
+def connect_file(path: str) -> sqlite3.Connection:
+    """A connection to a store file: see :class:`_Connection`."""
+    return sqlite3.connect(path, timeout=BUSY_TIMEOUT_S, factory=_Connection)
+
+
 class _SharedConnection:
     """One in-memory connection used by all threads, one call at a time.
 
@@ -1912,16 +1960,8 @@ def _named_write(name: str) -> Callable:
     def wrap(method: Callable) -> Callable:
         @functools.wraps(method)
         def run(self: HistoryDB, *args: Any, **kwargs: Any) -> Any:
-            stack = self._writers.setdefault(threading.get_ident(), [])
-            started = time.monotonic()
-            stack.append((name, started))
-            try:
+            with self.named_write(name):
                 return method(self, *args, **kwargs)
-            finally:
-                stack.pop()
-                took = time.monotonic() - started
-                if took >= SLOW_WRITE_S:
-                    log.warning("Database write %s took %.1f s", name, took)
 
         return run
 
@@ -2036,7 +2076,7 @@ class HistoryDB:
         conn = getattr(self._local, "conn", None)
         if conn is None:
             path = str(self._path) if isinstance(self._path, Path) else self._path
-            conn = sqlite3.connect(path, timeout=BUSY_TIMEOUT_S)
+            conn = connect_file(path) if isinstance(self._path, Path) else sqlite3.connect(path, timeout=BUSY_TIMEOUT_S)
             if not self._schema_ready:
                 # Only the connection that opens the store sets these. Setting
                 # auto_vacuum takes the write lock, and the web server opens a
@@ -2062,6 +2102,20 @@ class HistoryDB:
             if self._schema_ready:
                 self._install_capture_guards(conn)
         return conn
+
+    @contextlib.contextmanager
+    def named_write(self, name: str) -> Iterator[None]:
+        """Name a write in :meth:`running_writes` while it runs; log it when it runs long."""
+        stack = self._writers.setdefault(threading.get_ident(), [])
+        started = time.monotonic()
+        stack.append((name, started))
+        try:
+            yield
+        finally:
+            stack.pop()
+            took = time.monotonic() - started
+            if took >= SLOW_WRITE_S:
+                log.warning("Database write %s took %.1f s", name, took)
 
     def _open_memory_store(self) -> None:
         """One bounded in-memory DB. No file, WAL or journal touches the disk."""
@@ -6471,11 +6525,21 @@ class HistoryDB:
         return self._evictable_bytes() + self._file_size(self._path.with_name(self._path.name + "-wal"))
 
     def _truncate_wal(self) -> None:
-        """Best effort: another process may hold the file; the next pass retries."""
+        """Best effort: a reader or another writer may hold the file; the next pass retries.
+
+        A TRUNCATE checkpoint takes the write lock and then waits for every reader. With
+        the busy timeout of writes it kept other writers out for that whole wait, longer
+        than they wait themselves: it waits only briefly here.
+        """
         if self._shared_conn is not None:
             return
+        conn = self._conn()
         try:
-            self._conn().execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+            conn.execute(f"PRAGMA busy_timeout={int(CHECKPOINT_WAIT_S * 1000)}")
+            try:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+            finally:
+                conn.execute(f"PRAGMA busy_timeout={int(BUSY_TIMEOUT_S * 1000)}")
         except sqlite3.Error as exc:
             log.debug("WAL truncate deferred: %s", exc)
 

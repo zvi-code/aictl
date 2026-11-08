@@ -170,3 +170,31 @@ def test_a_locked_database_does_not_stop_the_ingester(caplog):
 
     record_quality(LockedStore(), "copilot-session-store", "x.db", "not_applicable")
     assert "compact (12 s)" in caplog.text
+
+
+def test_a_busy_store_skips_the_poll_round_with_one_line_and_no_traceback(caplog):
+    import logging
+    import sqlite3
+    import threading
+
+    from aictl.dashboard.ingester_runner import _poll_loop
+
+    stop = threading.Event()
+
+    class _Locked:
+        store = None
+        polls = 0
+
+        def poll(self) -> int:
+            self.polls += 1
+            if self.polls >= 3:
+                stop.set()
+            raise sqlite3.OperationalError("database is locked")
+
+    ingester = _Locked()
+    with caplog.at_level(logging.DEBUG, logger="aictl.dashboard.ingester_runner"):
+        _poll_loop(ingester, stop, 0.0, "transcript-usage")
+    assert ingester.polls == 3
+    lines = [r for r in caplog.records if "store busy" in r.getMessage()]
+    assert [r.levelno for r in lines] == [logging.WARNING, logging.DEBUG, logging.DEBUG]
+    assert not any(r.exc_info for r in caplog.records)

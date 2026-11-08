@@ -47,7 +47,7 @@ from typing import Any
 from .. import platforms
 from ..data.model_pricing import is_billable_model, request_cost_usd
 from ..data.provenance import COPILOT_COST_REASON
-from ..storage import AgentRow, RequestRow, SessionRow
+from ..storage import AgentRow, RequestRow, SessionRow, is_lock_error
 from ._common import coerce_ts, decode_file_uri, open_readonly, project_root, record_quality
 from .call_facts import (
     ClaudeFacts,
@@ -1194,7 +1194,14 @@ class TranscriptUsageIngester:
         setter = getattr(self.store, "set_sessions_tool", None)
         new = [s for s in self._store.app_types if s not in self._desktop_marked and self._store.surface(s) == "copilot-desktop"]
         if setter is not None and new:
-            setter(new, "copilot-desktop")
+            try:
+                setter(new, "copilot-desktop")
+            except sqlite3.OperationalError as exc:
+                if not is_lock_error(exc):
+                    raise
+                # Not marked: the next poll tries again.
+                log.debug("Copilot desktop sessions not marked yet, store busy: %s", exc)
+                return
             self._desktop_marked.update(new)
 
     def _pick_copilot_source(self, sid: str) -> SessionUsage:
