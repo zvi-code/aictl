@@ -34,6 +34,7 @@ Shared infrastructure (read-only open, data-quality recording) lives in
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import sqlite3
@@ -43,7 +44,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..platforms import cursor_home_dir
-from ._common import open_readonly, record_quality
+from ._common import open_readonly, provision_session, record_quality, writer_conn
 
 if TYPE_CHECKING:
     from ..storage import HistoryDB
@@ -76,6 +77,7 @@ class CursorConversationsIngester:
     ) -> None:
         self.db_path = Path(db_path).expanduser()
         self.store = our_store
+        self._provisioned: set[str] = set()
         self.last_cursor = int(last_cursor)
         self.last_poll_ts: float = 0.0
         self.last_poll_inserted: int = 0
@@ -200,7 +202,7 @@ class CursorConversationsIngester:
         content: str,
         ts: float,
     ) -> bool:
-        conn = self.store._conn()
+        conn = writer_conn(self.store)
         cur = conn.execute(
             "INSERT OR IGNORE INTO cursor_session_messages"
             "(session_id, source_row_id, role, content, ts) VALUES(?,?,?,?,?)",
@@ -217,17 +219,22 @@ class CursorConversationsIngester:
         The window is left open-ended on the future side because live
         sessions have ``ended_at = NULL``.
         """
-        conn = self.store._conn()
         if project_path:
-            cur = conn.execute(
-                "SELECT session_id FROM sessions"
-                " WHERE tool = 'cursor' AND project_path = ?"
-                "   AND started_at <= ?"
-                "   AND (ended_at IS NULL OR ended_at >= ?)"
-                " ORDER BY started_at DESC LIMIT 1",
-                (project_path, ts, ts),
-            )
-            row = cur.fetchone()
+            # A history split by project reads that folder's store alone.
+            scope = getattr(self.store, "read_scope", None)
+            with scope(project=project_path) if scope else contextlib.nullcontext():
+                row = (
+                    self.store._conn()
+                    .execute(
+                        "SELECT session_id FROM sessions"
+                        " WHERE tool = 'cursor' AND project_path = ?"
+                        "   AND started_at <= ?"
+                        "   AND (ended_at IS NULL OR ended_at >= ?)"
+                        " ORDER BY started_at DESC LIMIT 1",
+                        (project_path, ts, ts),
+                    )
+                    .fetchone()
+                )
             if row:
                 return str(row[0])
 
@@ -236,7 +243,9 @@ class CursorConversationsIngester:
         # Through the store's writer: a store split by project places the row.
         from ..storage import SessionRow
 
-        self.store.upsert_session(
+        provision_session(
+            self.store,
+            self._provisioned,
             SessionRow(session_id=provisional_id, tool="cursor", project_path=project_path, started_at=ts, source="cursor-ingester")
         )
         return provisional_id

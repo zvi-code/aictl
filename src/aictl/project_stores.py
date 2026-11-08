@@ -52,6 +52,7 @@ from .storage import (
     SessionRow,
     ToolInvocationRow,
 )
+from .storage_migrations import CURRENT_VERSION as SCHEMA_VERSION
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +80,11 @@ REAP_EVERY_S = 30.0
 # are attached; the tenth slot copies the rows of any further store, one at a time.
 ATTACH_ROOM = 9
 _COPY_PREFIX = "copied_"
+# Upkeep that opens every store, closed ones too, runs at most this often.
+FULL_PASS_S = 600.0
+# Tables that name a session, besides sessions, read at startup to place sessions.
+_SESSION_TABLES = ("session_processes", "agents")
+_SESSION_TABLES_SHARED = ("session_processes", "agents", "requests", "tool_invocations", "session_prompts", "events")
 # Tables copied for the scope's time range only; the others are copied whole.
 _TIMED_TABLES = frozenset(
     {"requests", "tool_invocations", "session_prompts", "skill_uses", "file_write_events", "context_events", "events"}
@@ -226,6 +232,38 @@ def store_file_name(key: str, root: str = "") -> str:
     return f"{name}-{digest}.db"
 
 
+def _read_only(file: Path) -> sqlite3.Connection:
+    """A read-only connection; the path is quoted, so %, ? and # in it stay part of it."""
+    return sqlite3.connect(file.absolute().as_uri() + "?mode=ro", uri=True, timeout=BUSY_TIMEOUT_S)
+
+
+def _schema_version(file: Path) -> int:
+    try:
+        conn = _read_only(file)
+    except sqlite3.Error:
+        return 0
+    try:
+        row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
+        return int(row[0] or 0) if row else 0
+    except sqlite3.Error:
+        return 0
+    finally:
+        conn.close()
+
+
+def _add_up(total: dict[str, Any], part: dict[str, Any], keep: tuple[str, ...] = ()) -> None:
+    """Sum the numbers of *part* into *total*, nested dicts too; *keep* names stay as first seen."""
+    for name, value in part.items():
+        if name in keep and name in total:
+            continue
+        if isinstance(value, dict):
+            _add_up(total.setdefault(name, {}), value)
+        elif isinstance(value, (int, float)) and not isinstance(value, bool) and name not in keep:
+            total[name] = (total.get(name) or 0) + value
+        else:
+            total.setdefault(name, value)
+
+
 # ─── One project store ────────────────────────────────────────────
 
 
@@ -257,6 +295,9 @@ class _ReadConn:
         self.conn = conn
         self.aliases: list[tuple[str, str]] = []  # (alias, key)
         self.copied: list[str] = []  # keys of stores whose rows were copied into TEMP tables
+
+
+_NOW_ROW = types.SimpleNamespace(ts=0.0)  # a write with no time of its own: counted, no time range
 
 
 def _row_ts(row: Any) -> float:
@@ -322,11 +363,16 @@ class ProjectStores:
         self._local = threading.local()
         self._generation: dict[str, int] = {}
         self._found: dict[str, str] = {}
+        self._opening: dict[str, threading.Event] = {}
+        self._pending_moves: dict[str, tuple[str, str]] = {}
+        self._main_rows: set[str] = set()
+        self._last_full_pass = 0.0
         self._closed = False
         if self._split:
             assert self.projects_dir is not None
             self.projects_dir.mkdir(parents=True, exist_ok=True)
             self._load_index()
+            self._migrate_stores()
             self._load_sessions()
         self._reap_stop = threading.Event()
         self._reaper: threading.Thread | None = None
@@ -364,7 +410,7 @@ class ProjectStores:
     @staticmethod
     def _store_info(file: Path) -> tuple[str, str] | None:
         try:
-            conn = sqlite3.connect(f"file:{file}?mode=ro", uri=True, timeout=BUSY_TIMEOUT_S)
+            conn = _read_only(file)
         except sqlite3.Error:
             return None
         try:
@@ -375,26 +421,55 @@ class ProjectStores:
             conn.close()
         return (str(row[0]), str(row[1])) if row else None
 
+    def _migrate_stores(self) -> None:
+        """Bring every store to the current schema: reads attach store files without opening them."""
+        for key in list(self._index):
+            file = self._file_of(key)
+            if file is None or not file.exists() or _schema_version(file) >= SCHEMA_VERSION:
+                continue
+            try:
+                _ProjectDB(db_path=file, **{**self._store_options, "flush_interval": 0}).close()
+            except (sqlite3.Error, OSError) as exc:
+                log.warning("Cannot migrate project store %s: %s", file.name, exc)
+
     def _load_sessions(self) -> None:
-        """Which store holds each known session: the machine store's, then each project file's."""
-        for (sid,) in self.machine._conn().execute("SELECT session_id FROM sessions"):
-            self._sessions[sid] = MACHINE
+        """Which store holds each known session: the machine store's, then each project file's.
+
+        A session can have rows but no sessions row (a process link, a subagent, a call):
+        those tables name it too.
+        """
+        for table in ("sessions", "session_processes", "agents"):
+            for (sid,) in self.machine._conn().execute(
+                f"SELECT DISTINCT session_id FROM {table} WHERE session_id != ''"
+            ):
+                self._sessions.setdefault(sid, MACHINE)
         for key, entry in list(self._index.items()):
             file = self._file_of(key)
             if file is None or not file.exists():
                 continue
+            tables = _SESSION_TABLES_SHARED if key == SHARED else _SESSION_TABLES
             try:
-                conn = sqlite3.connect(f"file:{file}?mode=ro", uri=True, timeout=BUSY_TIMEOUT_S)
+                conn = _read_only(file)
                 try:
-                    rows = conn.execute("SELECT session_id, project_path FROM sessions").fetchall()
+                    named = conn.execute("SELECT session_id, project_path FROM sessions").fetchall()
+                    for table in tables:
+                        named += [
+                            (sid, "")
+                            for (sid,) in conn.execute(
+                                f"SELECT DISTINCT session_id FROM {table} WHERE session_id != ''"
+                            )
+                        ]
                 finally:
                     conn.close()
             except sqlite3.Error as exc:
                 log.warning("Cannot read the sessions of %s: %s", entry["file"], exc)
                 continue
-            for sid, project in rows:
-                self._sessions.setdefault(sid, key)
-                if key == SHARED and not project:
+            with_folder = {sid for sid, project in named if project}
+            for sid, _project in named:
+                if sid in self._sessions:
+                    continue
+                self._sessions[sid] = key
+                if key == SHARED and sid not in with_folder:
                     self._provisional.add(sid)
 
     def _file_of(self, key: str) -> Path | None:
@@ -461,6 +536,17 @@ class ProjectStores:
         conn = db._conn()
         conn.execute("CREATE TABLE IF NOT EXISTS store_info(key TEXT PRIMARY KEY, root TEXT NOT NULL)")
         conn.execute("INSERT OR IGNORE INTO store_info(key, root) VALUES(?,?)", (key, entry["root"]))
+        # Automatic retention was armed when the machine store was: a new store does not
+        # restart the grace period of its imported rows.
+        armed = (
+            self.machine._conn()
+            .execute("SELECT value FROM maintenance_state WHERE key = 'retention_armed_at'")
+            .fetchone()
+        )
+        if armed is not None:
+            conn.execute(
+                "INSERT OR IGNORE INTO maintenance_state(key, value) VALUES('retention_armed_at', ?)", (armed[0],)
+            )
         conn.commit()
         return db
 
@@ -483,16 +569,43 @@ class ProjectStores:
 
     @contextlib.contextmanager
     def _using(self, key: str) -> Iterator[HistoryDB]:
-        """The store for *key*, kept open while the caller uses it."""
+        """The store for *key*, kept open while the caller uses it.
+
+        A store is opened outside the global lock: a slow disk delays only the writers
+        of that store.
+        """
         if key == MACHINE or not self._split:
             yield self.machine
             return
-        with self._stores_lock:
-            db = self._stores.get(key)
-            if db is None:
-                db = self._stores[key] = self._open(key)
-            self._in_use[key] = self._in_use.get(key, 0) + 1
-            self._last_used[key] = time.monotonic()
+        while True:
+            with self._stores_lock:
+                db = self._stores.get(key)
+                if db is not None:
+                    self._in_use[key] = self._in_use.get(key, 0) + 1
+                    self._last_used[key] = time.monotonic()
+                    break
+                opening = self._opening.get(key)
+                mine = opening is None
+                if mine:
+                    opening = self._opening[key] = threading.Event()
+            assert opening is not None
+            if not mine:
+                opening.wait()
+                continue
+            try:
+                db = self._open(key)
+            except BaseException:
+                with self._stores_lock:
+                    self._opening.pop(key, None)
+                opening.set()
+                raise
+            with self._stores_lock:
+                self._stores[key] = db
+                self._opening.pop(key, None)
+                self._in_use[key] = self._in_use.get(key, 0) + 1
+                self._last_used[key] = time.monotonic()
+            opening.set()
+            break
         try:
             yield db
         finally:
@@ -524,6 +637,7 @@ class ProjectStores:
     def _reap_loop(self) -> None:
         while not self._reap_stop.wait(REAP_EVERY_S):
             try:
+                self._retry_moves()
                 self._save_index()
                 self.close_idle()
             except Exception as exc:  # noqa: BLE001 - the loop keeps going
@@ -535,7 +649,6 @@ class ProjectStores:
         """The store key for a row of *session_id* in folder *project_path*."""
         if not self._split:
             return MACHINE
-        move = False
         with self._route_lock:
             known = self._sessions.get(session_id) if session_id else None
             if known is not None and session_id not in self._provisional:
@@ -546,14 +659,22 @@ class ProjectStores:
                     self._sessions[session_id] = SHARED
                     self._provisional.add(session_id)
                 return SHARED
-            root = repository_root(project_path)
-            key = _path_key(root) if root else SHARED
+        # Outside the lock: a slow disk must not hold the routing of every other row.
+        root = repository_root(project_path)
+        key = _path_key(root) if root else SHARED
+        move = False
+        with self._route_lock:
             if root:
                 self._note_root(key, root)
             if session_id:
+                known = self._sessions.get(session_id)
+                if known is not None and session_id not in self._provisional:
+                    return known  # another row placed it meanwhile
                 move = known == SHARED and key != SHARED
                 self._sessions[session_id] = key
                 self._provisional.discard(session_id)
+                if move:
+                    self._pending_moves[session_id] = (SHARED, key)
         if move:
             # Outside the lock: a busy _shared store must not hold the routing of other rows.
             # New rows of the session already go to its project; the copy never replaces them.
@@ -569,8 +690,13 @@ class ProjectStores:
         with self._route_lock:
             return self._sessions.get(session_id)
 
-    def _move_session(self, session_id: str, src: str, dst: str) -> None:
-        """Move a session's rows from *src* to *dst*: it was placed before a row named its folder."""
+    def _move_session(self, session_id: str, src: str, dst: str) -> bool:
+        """Move a session's rows from *src* to *dst*: it was placed before a row named its folder.
+
+        Copy and delete are one transaction that holds both stores' write locks. When it
+        fails (a busy store), nothing changed and the move stays pending: flush and the
+        upkeep thread retry it.
+        """
         with self._using(src) as source, self._using(dst) as target:
             source.flush()
             conn = target._conn()
@@ -578,21 +704,39 @@ class ProjectStores:
                 conn.commit()
             conn.execute("ATTACH DATABASE ? AS mv", (str(source._path),))
             try:
+                conn.execute("BEGIN IMMEDIATE")
                 for table in PROJECT_TABLES:
                     cols = ", ".join(_copy_columns(conn, table))
                     conn.execute(
                         f"INSERT OR IGNORE INTO main.{table}({cols}) SELECT {cols} FROM mv.{table} WHERE session_id = ?",
                         (session_id,),
                     )
-                conn.commit()
                 for table in PROJECT_TABLES:
                     conn.execute(f"DELETE FROM mv.{table} WHERE session_id = ?", (session_id,))
                 conn.commit()
             except sqlite3.Error as exc:
-                conn.rollback()
-                log.warning("Moving session %s to its project failed: %s", session_id, exc)
+                if conn.in_transaction:
+                    conn.rollback()
+                log.warning("Moving session %s to its project failed, will retry: %s", session_id, exc)
+                return False
             finally:
                 conn.execute("DETACH DATABASE mv")
+        with self._route_lock:
+            self._pending_moves.pop(session_id, None)
+            # Lookups that found an id in the old store are stale now.
+            for ident in [i for i, k in self._found.items() if k == src]:
+                del self._found[ident]
+        self._touch(dst, [_NOW_ROW])
+        return True
+
+    def _retry_moves(self) -> int:
+        """Moves that failed before. Returns how many are still pending."""
+        with self._route_lock:
+            pending = list(self._pending_moves.items())
+        for session_id, (src, dst) in pending:
+            self._move_session(session_id, src, dst)
+        with self._route_lock:
+            return len(self._pending_moves)
 
     # ── Buffered writes ────────────────────────────────────────
 
@@ -652,6 +796,7 @@ class ProjectStores:
         key = self._route(session_id, "")
         with self._using(key) as db:
             db.link_session_process(session_id, pid, tool, role)
+        self._touch(key, [types.SimpleNamespace(ts=time.time())])
 
     def batch_link_sessions(self, entries: list[tuple[str, str, int, float, str]]) -> None:
         groups: dict[str, list[tuple[str, str, int, float, str]]] = {}
@@ -660,6 +805,7 @@ class ProjectStores:
         for key, part in groups.items():
             with self._using(key) as db:
                 db.batch_link_sessions(part)
+            self._touch(key, [types.SimpleNamespace(ts=float(e[3] or 0.0)) for e in part])
 
     def update_session_stats(self, session_id: str, **kwargs: Any) -> None:
         if not session_id:
@@ -680,8 +826,10 @@ class ProjectStores:
     def upsert_session_commits(self, session_id: str, commits: list[dict]) -> None:
         if not session_id or not commits:
             return
-        with self._using(self._route(session_id, "")) as db:
+        key = self._route(session_id, "")
+        with self._using(key) as db:
             db.upsert_session_commits(session_id, commits)
+        self._touch(key, [types.SimpleNamespace(ts=float(c.get("ts") or 0.0)) for c in commits])
 
     def upsert_session_usage(self, row: dict) -> None:
         key = self._route(str(row.get("session_id") or ""), str(row.get("project_path") or ""))
@@ -736,6 +884,7 @@ class ProjectStores:
         for key, part in groups.items():
             with self._using(key) as db:
                 db.set_sessions_tool(part, tool)
+            self._touch(key, [_NOW_ROW])
 
     def update_tool_invocation_duration(
         self, dedup_key: str, duration_ms: float, is_error: int = 0, result_summary: str = ""
@@ -746,13 +895,18 @@ class ProjectStores:
         for key in [*keys, MACHINE]:
             with self._using(key) as db:
                 if db.update_tool_invocation_duration(dedup_key, duration_ms, is_error, result_summary):
+                    self._touch(key, [_NOW_ROW])
                     return True
         return False
 
     def clear_stale_pending_confirms(self, before: float) -> int:
+        """Open stores on every call; every store, closed ones too, every FULL_PASS_S."""
         total = self.machine.clear_stale_pending_confirms(before)
-        for key in list(self.open_stores()):
-            with self._using(key) as db:
+        full = time.monotonic() - self._last_full_pass >= FULL_PASS_S
+        if full:
+            self._last_full_pass = time.monotonic()
+        with self._every_store(open_only=not full) as stores:
+            for db in stores:
                 total += db.clear_stale_pending_confirms(before)
         return total
 
@@ -763,8 +917,29 @@ class ProjectStores:
         for key in list(self.open_stores()):
             with self._using(key) as db:
                 total += db.flush()
+        self._retry_moves()
         self._save_index()
         return total
+
+    @contextlib.contextmanager
+    def _every_store(self, open_only: bool = False) -> Iterator[list[HistoryDB]]:
+        """Every project store with a file (or only the open ones), held open for the block."""
+        if not self._split:
+            yield []
+            return
+        if open_only:
+            keys = list(self.open_stores())
+        else:
+            with self._index_lock:
+                keys = list(self._index)
+        with contextlib.ExitStack() as stack:
+            stores = []
+            for key in keys:
+                file = self._file_of(key)
+                if file is None or not file.exists():
+                    continue
+                stores.append(stack.enter_context(self._using(key)))
+            yield stores
 
     def running_writes(self) -> list[dict[str, Any]]:
         rows = list(self.machine.running_writes())
@@ -777,11 +952,71 @@ class ProjectStores:
         return [f"{w['name']} ({w['age_s']:.0f} s)" for w in self.running_writes()]
 
     def auto_maintain(self) -> dict[str, int]:
-        result = dict(self.machine.auto_maintain())
-        for key in list(self.open_stores()):
-            with self._using(key) as db:
-                for name, n in db.auto_maintain().items():
-                    result[name] = result.get(name, 0) + n
+        """Retention, text trimming and the size budget over every store.
+
+        ``max_total_mb`` is one budget for all stores: over it, each store gets a share
+        in proportion to the space it uses.
+        """
+        budget = self.machine._budget_bytes
+        result: dict[str, int] = {}
+        with self._every_store() as stores:
+            every = [self.machine, *stores]
+            used = {id(db): db._budget_used() for db in every}
+            total_used = sum(used.values())
+            try:
+                for db in every:
+                    share = budget if total_used <= budget else int(budget * used[id(db)] / total_used)
+                    db._budget_bytes = max(share, 1)
+                    _add_up(result, db.auto_maintain())
+            finally:
+                self.machine._budget_bytes = budget
+        return result
+
+    def compact(self, *, retention_days: int | None = None, floor: float = 0.0) -> dict[str, int]:
+        result: dict[str, int] = {}
+        with self._every_store() as stores:
+            for db in [self.machine, *stores]:
+                _add_up(result, db.compact(retention_days=retention_days, floor=floor))
+        return result
+
+    def compact_estimate(self, *, retention_days: int | None = None) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        with self._every_store() as stores:
+            for db in [self.machine, *stores]:
+                _add_up(result, db.compact_estimate(retention_days=retention_days), keep=("retention_days",))
+        return result
+
+    def trim_text(self, *, before: float | None = None, since: float = 0.0) -> int:
+        with self._every_store() as stores:
+            return sum(db.trim_text(before=before, since=since) for db in [self.machine, *stores])
+
+    def trim_text_estimate(self) -> dict[str, int]:
+        result: dict[str, int] = {}
+        with self._every_store() as stores:
+            for db in [self.machine, *stores]:
+                _add_up(result, db.trim_text_estimate())
+        return result
+
+    def vacuum(self) -> None:
+        with self._every_store() as stores:
+            for db in [self.machine, *stores]:
+                db.vacuum()
+
+    def vacuum_room_needed(self) -> int:
+        """Stores are vacuumed one after another: the largest need is the room needed."""
+        with self._every_store() as stores:
+            return max(db.vacuum_room_needed() for db in [self.machine, *stores])
+
+    def stats(self) -> dict[str, Any]:
+        """Row counts and file sizes of every store; time range and files of the machine store."""
+        result = dict(self.machine.stats())
+        with self._every_store() as stores:
+            for db in stores:
+                part = db.stats()
+                for name, value in part.items():
+                    if name.endswith("_count") or name == "file_size_bytes":
+                        result[name] = (result.get(name) or 0) + (value or 0)
+        result["project_stores"] = len(stores)
         return result
 
     def storage_bytes(self) -> int:
@@ -883,10 +1118,22 @@ class ProjectStores:
             keys = tuple(k for _n, k in active)
         attached, copied = keys[:ATTACH_ROOM], keys[ATTACH_ROOM:]
         if not copied:
-            return (attached, (), None, None, ())
+            return (attached, (), None, None, (), self._main_tables())
         with self._index_lock:
             generations = tuple(self._generation.get(k, 0) for k in copied)
-        return (attached, copied, since, until, generations)
+        return (attached, copied, since, until, generations, self._main_tables())
+
+    def _main_tables(self) -> tuple[str, ...]:
+        """Per-project tables with rows in the machine store (written before the split).
+
+        Part of the read plan: a connection built while a table was empty must not hide
+        rows written to it later. A table found with rows stays in the list.
+        """
+        conn = self.machine._conn()
+        for table in PROJECT_TABLES:
+            if table not in self._main_rows and conn.execute(f"SELECT 1 FROM main.{table} LIMIT 1").fetchone():
+                self._main_rows.add(table)
+        return tuple(t for t in PROJECT_TABLES if t in self._main_rows)
 
     def _find_store(self, ident: str) -> str:
         """The store of a session or subagent id: from the router, else looked up in every store.
@@ -906,7 +1153,7 @@ class ProjectStores:
             if file is None or not file.exists():
                 continue
             try:
-                conn = sqlite3.connect(f"file:{file}?mode=ro", uri=True, timeout=BUSY_TIMEOUT_S)
+                conn = _read_only(file)
                 try:
                     hit = any(conn.execute(sql, (ident,)).fetchone() is not None for sql in _FIND_SESSION_SQL)
                 finally:
@@ -948,6 +1195,10 @@ class ProjectStores:
             self.machine._install_capture_guards(conn)
             state = _ReadConn(conn)
             self._attach(state, plan)
+            if len(state.aliases) + len(state.copied) < len(plan[0]) + len(plan[1]):
+                # A store of the plan has no file yet: its rows come later, so this
+                # connection is used once and not kept.
+                return state
         conns[plan] = state
         while len(conns) > READ_CONNS_PER_THREAD:
             # Not closed here: a caller may still hold it. It closes when released.
@@ -955,7 +1206,7 @@ class ProjectStores:
         return state
 
     def _attach(self, state: _ReadConn, plan: tuple) -> None:
-        attached, copied, since, until, _generations = plan
+        attached, copied, since, until, _generations, main_tables = plan
         conn = state.conn
         for i, key in enumerate(attached):
             file = self._file_of(key)
@@ -977,7 +1228,7 @@ class ProjectStores:
             # The machine store's own rows (written before the split) only when it has
             # some: a view of one store alone is flattened, and keeps its indexes in joins.
             arms: list[tuple[str, list[str]]] = []
-            if conn.execute(f"SELECT 1 FROM main.{table} LIMIT 1").fetchone() is not None:
+            if table in main_tables:
                 arms.append((f"main.{table}", cols))
             for alias, _key in state.aliases:
                 have = _columns(conn, alias, table)

@@ -42,7 +42,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ._common import coerce_ts, record_quality
+from ._common import coerce_ts, provision_session, record_quality, session_tool, writer_conn
 
 if TYPE_CHECKING:
     from ..storage import HistoryDB
@@ -95,6 +95,7 @@ class VSCodeChatLogsIngester:
         self.last_cursor: dict[str, tuple[float, int]] = dict(last_cursor or {})
         self.last_poll_ts: float = 0.0
         self.last_poll_inserted: int = 0
+        self._provisioned: set[str] = set()
 
     def _quality(self, status: str, *, severity: str = "", message: str = "", detail: dict | None = None) -> None:
         record_quality(self.store, "vscode-chat-logs", self.log_dir, status, severity=severity, message=message, detail=detail)
@@ -265,7 +266,7 @@ class VSCodeChatLogsIngester:
         ts: float,
         ingested_at: float,
     ) -> bool:
-        conn = self.store._conn()
+        conn = writer_conn(self.store)
         cur = conn.execute(
             "INSERT OR IGNORE INTO vscode_chat_messages"
             "(session_id, source_file, source_row_id, role, content, model, ts, ingested_at)"
@@ -283,20 +284,15 @@ class VSCodeChatLogsIngester:
         2. Otherwise provision ``vscode-chat:<sessionId>`` and insert a
            stub session row (``INSERT OR IGNORE`` — safe on repeated polls).
         """
-        conn = self.store._conn()
-        cur = conn.execute(
-            "SELECT session_id FROM sessions"
-            " WHERE tool = 'copilot-vscode' AND session_id = ? LIMIT 1",
-            (vscode_sid,),
-        )
-        row = cur.fetchone()
-        if row:
-            return str(row[0])
+        if session_tool(self.store, vscode_sid) == "copilot-vscode":
+            return vscode_sid
         provisional = f"vscode-chat:{vscode_sid}"
         # Through the store's writer: a store split by project places the row.
         from ..storage import SessionRow
 
-        self.store.upsert_session(
+        provision_session(
+            self.store,
+            self._provisioned,
             SessionRow(session_id=provisional, tool="copilot-vscode", started_at=ts or time.time(), source="vscode-chat-logs")
         )
         return provisional

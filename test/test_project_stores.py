@@ -553,7 +553,9 @@ def test_a_copied_store_shows_its_new_rows(tmp_path, stores):
     before = compute_board(stores, f, now=NOW)
     # The least recent store stays beyond the attach limit: its new row is older than the others.
     stores.append_request(
-        RequestRow(ts=NOW - 6500, session_id="m00", project_path=str(repos[0]), model=HAIKU, input_tokens=5000, source="otel")
+        RequestRow(
+            ts=NOW - 6500, session_id="m00", project_path=str(repos[0]), model=HAIKU, input_tokens=5000, source="otel"
+        )
     )
     stores.flush()
     with stores.read_scope(since=f.since - 3 * 3600, until=f.until):
