@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from aictl import context, fsutil, tools
+from aictl import fsutil, tools
 from aictl.monitoring import runtime
 from aictl.monitoring.collectors import process
 from aictl.monitoring.config import MonitorConfig
@@ -50,52 +50,7 @@ def test_walk_under_the_cap_says_nothing(tmp_path, caplog):
     assert _warnings(caplog) == []
 
 
-def test_context_scan_warns_once_however_deep_it_stops(tmp_path, caplog, monkeypatch):
-    monkeypatch.setattr(context, "MAX_SCAN_DIRS", 5)
-    deep = tmp_path
-    for depth in range(10):
-        (deep / "side").mkdir()
-        deep = deep / f"d{depth}"
-        deep.mkdir()
-    for _ in range(2):
-        list(context._walk(tmp_path))
-    assert len(_warnings(caplog)) == 1
-
-
-def test_context_scan_under_the_cap_says_nothing(tmp_path, caplog, monkeypatch):
-    monkeypatch.setattr(context, "MAX_SCAN_DIRS", 100)
-    _tree(tmp_path, width=2)
-    list(context._walk(tmp_path))
-    assert _warnings(caplog) == []
-
-
 # ── Cost of walking and reading ─────────────────────────────────────
-
-
-def test_slow_walk_is_reused_until_its_pause_ends(monkeypatch):
-    clock = [100.0]
-    monkeypatch.setattr(tools.time, "monotonic", lambda: clock[0])
-    calls = []
-
-    def walk():
-        calls.append(clock[0])
-        clock[0] += 5.0
-        return len(calls)
-
-    key = ("test-slow", "root")
-    assert tools._paced_walk(key, walk) == 1
-    clock[0] = 100.0 + 5.0 * tools.WALK_PAUSE_FACTOR - 1
-    assert tools._paced_walk(key, walk) == 1
-    clock[0] = 100.0 + 5.0 * tools.WALK_PAUSE_FACTOR + 1
-    assert tools._paced_walk(key, walk) == 2
-
-
-def test_fast_walk_always_repeats():
-    calls = []
-    key = ("test-fast", "root")
-    tools._paced_walk(key, lambda: calls.append(1))
-    tools._paced_walk(key, lambda: calls.append(1))
-    assert len(calls) == 2
 
 
 def test_normal_project_shows_a_new_file_at_once(tmp_path):

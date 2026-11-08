@@ -15,7 +15,6 @@ import logging
 import os
 import re
 import subprocess
-import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -524,30 +523,8 @@ def get_registry() -> Registry:
 
 # ─── Tree-walk helpers ────────────────────────────────────────────
 
-PRUNE_DIRS = frozenset(
-    {
-        ".git",
-        ".venv",
-        "venv",
-        ".env",
-        "node_modules",
-        ".npm",
-        ".yarn",
-        "__pycache__",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".tox",
-        ".ruff_cache",
-        "dist",
-        "build",
-        ".cargo",
-        "target",
-        ".idea",
-        ".vs",
-        "Pods",
-        "DerivedData",
-    }
-)
+# One skip list for every walk; see tree_walk.
+from .tree_walk import PRUNE_DIRS  # noqa: E402
 
 # Bound project-root tree scans. Discovery is meant for a *project* root;
 # pointing aictl at a huge root (a drive root, a home directory, ...) must
@@ -557,46 +534,21 @@ PRUNE_DIRS = frozenset(
 MAX_SCAN_DIRS = 50_000
 
 
-# A walk shorter than this repeats on every discovery, so a normal project always shows current files.
-SLOW_WALK_S = 1.0
-# A slower walk waits this many times its own duration before it repeats. A 5 s walk repeats
-# after 100 s, so walking stays near 5% of one core however large the tree is.
-WALK_PAUSE_FACTOR = 20
-_slow_walks: dict[tuple, tuple[float, object]] = {}
-
-
-def _paced_walk(key: tuple, walk: Callable[[], object]):
-    """Return ``walk()``, reusing the result of a slow walk until its pause ends. Callers must not change it."""
-    started = time.monotonic()
-    hit = _slow_walks.get(key)
-    if hit is not None and started < hit[0]:
-        return hit[1]
-    result = walk()
-    elapsed = time.monotonic() - started
-    if elapsed >= SLOW_WALK_S:
-        _slow_walks[key] = (started + elapsed * WALK_PAUSE_FACTOR, result)
-    else:
-        _slow_walks.pop(key, None)
-    return result
-
-
 def find_in_tree(root: Path, filename: str) -> list[Path]:
-    """Find every file named *filename* under root, skipping irrelevant dirs."""
-    results = []
-    for dirpath, dirnames, filenames in safe_walk(root, prune_dirs=PRUNE_DIRS, max_dirs=MAX_SCAN_DIRS):
-        if filename in filenames:
-            results.append(dirpath / filename)
-    return sorted(results)
+    """Every file named *filename* under root, from the shared listing (see :mod:`tree_walk`)."""
+    from .tree_walk import listing
+
+    return sorted(folder / filename for folder, _dirs, files in listing(root) if filename in files)
+
+
+def _outside(found: set[Path], folder: Path) -> bool:
+    """True when *folder* is not a found directory nor inside one. Cost: the folder's depth."""
+    return folder not in found and not any(p in found for p in folder.parents)
 
 
 def find_dirs_in_tree(root: Path, dirname: str) -> list[Path]:
-    """Find every directory named *dirname* under root."""
-    results = []
-    for dirpath, dirnames, _ in safe_walk(root, prune_dirs=PRUNE_DIRS, max_dirs=MAX_SCAN_DIRS):
-        if dirname in dirnames:
-            results.append(dirpath / dirname)
-        dirnames[:] = [d for d in dirnames if d != dirname]
-    return sorted(results)
+    """Every directory named *dirname* under root. A found directory is not searched further."""
+    return batch_find_in_tree(root, set(), {dirname})[1][dirname]
 
 
 def batch_find_in_tree(
@@ -604,17 +556,22 @@ def batch_find_in_tree(
     filenames: set[str],
     dirnames: set[str],
 ) -> tuple[dict[str, list[Path]], dict[str, list[Path]]]:
-    """Single tree walk that collects all matching files and directories."""
+    """All matching files and directories, from one shared listing of the tree."""
+    from .tree_walk import listing
+
     file_matches: dict[str, list[Path]] = {f: [] for f in filenames}
     dir_matches: dict[str, list[Path]] = {d: [] for d in dirnames}
-    for dirpath, dirs, files in safe_walk(root, prune_dirs=PRUNE_DIRS, max_dirs=MAX_SCAN_DIRS):
+    found_dirs: set[Path] = set()
+    for folder, dirs, files in sorted(listing(root), key=lambda e: len(e[0].parts)):
+        if found_dirs and not _outside(found_dirs, folder):
+            continue  # inside a found directory: not searched further
         for f in filenames:
             if f in files:
-                file_matches[f].append(dirpath / f)
-        for d in list(dirs):
+                file_matches[f].append(folder / f)
+        for d in dirs:
             if d in dirnames:
-                dir_matches[d].append(dirpath / d)
-                dirs.remove(d)  # don't recurse into found dirs
+                dir_matches[d].append(folder / d)
+                found_dirs.add(folder / d)
     for v in [*file_matches.values(), *dir_matches.values()]:
         v.sort()
     return file_matches, dir_matches
@@ -851,10 +808,7 @@ def batch_resolve_paths(
     # Single tree walk
     cache: dict[str, dict[str, list[Path]]] = {"files": {}, "dirs": {}}
     if need_files or need_dirs:
-        file_matches, dir_matches = _paced_walk(
-            ("resolve", str(root), frozenset(need_files), frozenset(need_dirs)),
-            lambda: batch_find_in_tree(root, need_files, need_dirs),
-        )
+        file_matches, dir_matches = batch_find_in_tree(root, need_files, need_dirs)
         cache["files"] = file_matches
         cache["dirs"] = dir_matches
 
@@ -869,7 +823,7 @@ def batch_resolve_paths(
 
 # ─── Discovery ─────────────────────────────────────────────────────────────
 
-from .fsutil import safe_glob, safe_iterdir, safe_rglob, safe_stat, safe_walk, warn_once
+from .fsutil import safe_glob, safe_iterdir, safe_rglob, safe_stat, warn_once
 from .platforms import CURRENT_PLATFORM, IS_MACOS, IS_WINDOWS
 from .tool_scope import is_selected
 from .utils import estimate_tokens, norm_path
@@ -1159,7 +1113,7 @@ MAX_PROJECT_ENV_FILES = 2_000
 def _discover_project_env(root: Path) -> ToolResources:
     """Discover unknown hidden dirs that may contain AI-relevant config."""
     res = ToolResources("project-env", "Project Environment")
-    for path, kind in _paced_walk(("project-env", str(root)), lambda: _project_env_paths(root)):
+    for path, kind in _project_env_paths(root):
         rf = _file_resource(path, kind)
         if rf:
             res.files.append(rf)
@@ -1186,7 +1140,9 @@ def _project_env_paths(root: Path) -> list[tuple[Path, str]]:
         ".junie",
     }
     skip = PRUNE_DIRS | known_tool_dirs
-    for dp, dirnames, _ in safe_walk(root, prune_dirs=PRUNE_DIRS, max_dirs=MAX_SCAN_DIRS):
+    from .tree_walk import listing
+
+    for dp, dirnames, _ in listing(root):
         for d in sorted(dirnames):
             if d.startswith(".") and d not in skip:
                 item = dp / d
@@ -1215,7 +1171,7 @@ def _discover_aictl(root: Path) -> ToolResources:
     res = ToolResources("aictl", "aictl")
     from .context import scan
 
-    for path in _paced_walk(("aictl", str(root)), lambda: [parsed.path for _rel, parsed in scan(root)]):
+    for path in [parsed.path for _rel, parsed in scan(root)]:
         r = _file_resource(path, "context")
         if r:
             res.files.append(r)
