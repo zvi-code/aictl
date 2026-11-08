@@ -137,8 +137,8 @@ class _AnalyticsCache:
             self._consecutive_errors += 1
             self._last_error = f"{type(exc).__name__}: {exc}"
             count = self._consecutive_errors
-        # Surface to the operator-facing /api/data-quality endpoint (the actor
-        # that consumes this signal) instead of only logging. Escalate severity
+        # Record in the data-quality table (read by the board's machine view)
+        # instead of only logging. Escalate severity
         # once failures persist so a transient blip isn't treated like an outage.
         severity = "error" if count >= 3 else "warning"
         self._record_quality(

@@ -129,7 +129,7 @@ def populated_db(tmp_path):
         ts=now - 10,
     )
 
-    # Session rows (persist files_modified for /api/session-runs file_churn enrichment)
+    # Session rows
     from aictl.storage import SessionRow
 
     db.upsert_session(
@@ -409,17 +409,6 @@ class TestObservabilitySubstrateAPI:
         assert "skill_usage" in data
         assert "subagents" in data
 
-    def test_file_writes_endpoint_filters_by_session(self, server):
-        data = _get_json(f"{server}/api/file-writes?session_id=sess-001")
-        assert data["count"] == 1
-        assert data["writes"][0]["path"] == "/project/new.py"
-        assert data["writes"][0]["operation"] == "write"
-
-    def test_data_quality_endpoint_returns_summary(self, server):
-        data = _get_json(f"{server}/api/data-quality?kind=ingester")
-        assert data["summary"]["schema_unknown"] == 1
-        assert data["items"][0]["component"] == "ingester:copilot-session-store"
-
     def test_tool_config_put_updates_claude_project_permissions(self, config_server):
         base_url, root = config_server
         updated = _put_json(
@@ -490,104 +479,10 @@ class TestObservabilitySubstrateAPI:
             srv.shutdown()
 
 
-# ── Sessions API ──────────────────────────────────────────────────
-
-
-class TestSessionsAPI:
-    def test_active_sessions(self, server):
-        data = _get_json(f"{server}/api/sessions?active=true")
-        assert isinstance(data, list)
-        assert len(data) >= 1
-        live = next(s for s in data if s["session_id"] == "live-001")
-        assert live["tool"] == "claude-code"
-        assert live["active"] is True
-        assert live["duration_s"] == 120
-
-    def test_all_sessions_includes_historical(self, server):
-        data = _get_json(f"{server}/api/sessions")
-        assert isinstance(data, list)
-        ids = [s["session_id"] for s in data]
-        # Should have the live session
-        assert "live-001" in ids
-        # Should have the ended session from events
-        assert "sess-001" in ids
-        ended = next(s for s in data if s["session_id"] == "sess-001")
-        assert ended["active"] is False
-        assert ended["lifecycle_status"] == "ended"
-        assert ended["duration_s"] == 200
-
-        imported = next(s for s in data if s["session_id"] == "cursor:historic-chat")
-        assert imported["active"] is False
-        assert imported["lifecycle_status"] == "imported"
-
-    def test_filter_by_tool(self, server):
-        data = _get_json(f"{server}/api/sessions?tool=claude-code")
-        assert all(s["tool"] == "claude-code" for s in data)
-
-    def test_sessions_include_cache_hit_ratio(self, server):
-        data = _get_json(f"{server}/api/sessions")
-        detail = next(s for s in data if s["session_id"] == "sess-detail")
-        # cache_read=3000, input=1000 → 3000 / (1000 + 3000) = 0.75
-        assert detail["cache_hit_ratio"] == 0.75
-
-    def test_no_snapshot_returns_503(self):
-        """Sessions endpoint with no snapshot returns 503."""
-        from pathlib import Path
-
-        from aictl.dashboard.web_server import (
-            _DashboardHandler,
-            _DashboardHTTPServer,
-        )
-
-        store = SnapshotStore(db=None)
-        # Don't call store.update() → snapshot is None
-        allowed = AllowedPaths()
-        srv = _DashboardHTTPServer(
-            ("127.0.0.1", 0),
-            _DashboardHandler,
-            store,
-            allowed,
-            Path("/tmp"),
-        )
-        port = srv.server_address[1]
-        t = threading.Thread(target=srv.serve_forever, daemon=True)
-        t.start()
-        try:
-            status = _get_status(f"http://127.0.0.1:{port}/api/sessions")
-            assert status == 503
-        finally:
-            srv.shutdown()
-
-
-# ── Session detail API (cost-by-model, processes, tool-calls) ─────
+# ── Session detail API (processes) ────────────────────────────────
 
 
 class TestSessionDetailAPI:
-    def test_cost_by_model_breakdown(self, server):
-        data = _get_json(f"{server}/api/session-cost-by-model?session_id=sess-detail")
-        assert data["session_id"] == "sess-detail"
-        models = {m["model"]: m for m in data["models"]}
-        assert set(models) == {"claude-sonnet-4", "claude-haiku"}
-        # Two sonnet requests aggregated.
-        sonnet = models["claude-sonnet-4"]
-        assert sonnet["requests"] == 2
-        assert sonnet["input_tokens"] == 900
-        assert sonnet["output_tokens"] == 550
-        assert sonnet["cache_read_tokens"] == 3000
-        assert round(sonnet["cost_usd"], 2) == 0.38
-        # Cost-desc ordering: sonnet (0.38) before haiku (0.04).
-        assert data["models"][0]["model"] == "claude-sonnet-4"
-        assert data["totals"]["requests"] == 3
-        assert round(data["totals"]["cost_usd"], 2) == 0.42
-
-    def test_cost_by_model_requires_session_id(self, server):
-        assert _get_status(f"{server}/api/session-cost-by-model") == 400
-
-    def test_cost_by_model_empty_for_unknown(self, server):
-        data = _get_json(f"{server}/api/session-cost-by-model?session_id=nope")
-        assert data["models"] == []
-        assert data["totals"]["requests"] == 0
-
     def test_session_processes_genealogy(self, server):
         data = _get_json(f"{server}/api/session-processes?session_id=sess-detail")
         assert data["session_id"] == "sess-detail"
@@ -598,65 +493,6 @@ class TestSessionDetailAPI:
 
     def test_session_processes_requires_session_id(self, server):
         assert _get_status(f"{server}/api/session-processes") == 400
-
-    def test_session_tool_calls_timeline(self, server):
-        data = _get_json(f"{server}/api/session-tool-calls?session_id=sess-detail")
-        assert data["session_id"] == "sess-detail"
-        assert data["total"] == 2
-        assert data["errors"] == 1
-        assert data["by_tool"] == {"Read": 1, "Bash": 1}
-        names = {c["tool_name"] for c in data["calls"]}
-        assert names == {"Read", "Bash"}
-        bash = next(c for c in data["calls"] if c["tool_name"] == "Bash")
-        assert bash["is_error"] is True
-        assert bash["result_summary"] == "exit 1"
-
-    def test_session_tool_calls_totals_are_not_the_page(self, server):
-        data = _get_json(f"{server}/api/session-tool-calls?session_id=sess-detail&limit=1")
-        assert len(data["calls"]) == 1  # the page is cut ...
-        assert data["returned"] == 1
-        assert data["total"] == 2  # ... the totals are not
-        assert data["errors"] == 1
-        assert data["by_tool"] == {"Read": 1, "Bash": 1}
-
-    def test_session_tool_calls_requires_session_id(self, server):
-        assert _get_status(f"{server}/api/session-tool-calls") == 400
-
-    def test_session_tool_calls_includes_truncated_input(self, server, populated_db):
-        """The invocation ``input`` (Bash command / file path) must leave the
-        DB, clipped server-side to 500 chars with an ``input_truncated`` flag."""
-        from aictl.storage import ToolInvocationRow
-
-        long_cmd = "echo " + "x" * 800
-        populated_db.append_tool_invocation(
-            ToolInvocationRow(
-                ts=time.time(),
-                session_id="sess-input",
-                tool="claude-code",
-                tool_name="Bash",
-                input={"command": long_cmd},
-            )
-        )
-        populated_db.append_tool_invocation(
-            ToolInvocationRow(
-                ts=time.time() + 1,
-                session_id="sess-input",
-                tool="claude-code",
-                tool_name="Read",
-                input={"file_path": "/a/b.py"},
-            )
-        )
-        data = _get_json(f"{server}/api/session-tool-calls?session_id=sess-input")
-        by_tool = {c["tool_name"]: c for c in data["calls"]}
-        assert len(data["calls"]) == 2
-
-        bash = by_tool["Bash"]
-        assert len(bash["input"]) == 500
-        assert bash["input_truncated"] is True
-
-        read = by_tool["Read"]
-        assert "/a/b.py" in read["input"]
-        assert read["input_truncated"] is False
 
 
 class TestSessionKillAPI:
@@ -745,53 +581,6 @@ class TestSessionKillAPI:
             {"session_id": "live-001", "confirm": True, "signal": "HUP"},
         )
         assert status == 400
-
-
-# ── Files API ─────────────────────────────────────────────────────
-
-
-class TestFilesAPI:
-    def test_list_all_files(self, server):
-        data = _get_json(f"{server}/api/files")
-        assert isinstance(data, list)
-        assert len(data) == 2
-        paths = [f["path"] for f in data]
-        assert "/project/README.md" in paths
-        assert "/project/.env" in paths
-
-    def test_filter_by_tool(self, server):
-        data = _get_json(f"{server}/api/files?tool=claude-code")
-        assert len(data) == 1
-        assert data[0]["path"] == "/project/README.md"
-        assert data[0]["tool"] == "claude-code"
-        assert data[0]["category"] == "instructions"
-
-    def test_filter_by_category(self, server):
-        data = _get_json(f"{server}/api/files?category=config")
-        assert len(data) == 1
-        assert data[0]["path"] == "/project/.env"
-
-    def test_file_has_expected_fields(self, server):
-        data = _get_json(f"{server}/api/files?tool=claude-code")
-        f = data[0]
-        for key in (
-            "path",
-            "tool",
-            "category",
-            "scope",
-            "content_hash",
-            "size_bytes",
-            "tokens",
-            "lines",
-            "mtime",
-            "first_seen",
-            "last_read",
-            "last_changed",
-            "meta",
-        ):
-            assert key in f, f"Missing key: {key}"
-        assert f["lines"] == 2
-        assert f["tokens"] > 0
 
 
 # ── /api/file allowlist (aictl-owned .context.toml) ─────────────────
@@ -925,309 +714,6 @@ class TestContextTomlAllowlist:
                 assert body == ctx_body, body
         finally:
             srv.shutdown()
-
-
-# ── File History API ──────────────────────────────────────────────
-
-
-class TestFileHistoryAPI:
-    def test_missing_path_returns_400(self, server):
-        status = _get_status(f"{server}/api/files/history")
-        assert status == 400
-
-    def test_history_timeline(self, server, populated_db):
-        # Add a second version
-        time.sleep(0.01)
-        populated_db.upsert_file(path="/project/README.md", tool="claude-code", content="# Hello\nWorld\nUpdated")
-        data = _get_json(f"{server}/api/files/history?path=/project/README.md")
-        assert isinstance(data, list)
-        assert len(data) >= 2
-
-    def test_content_at_timestamp(self, server, populated_db):
-        # Insert a version, record its time, then insert another
-        t1 = time.time()
-        time.sleep(0.01)
-        populated_db.upsert_file(path="/project/new.md", tool="t", content="version-1")
-        time.sleep(0.01)
-        t2 = time.time()
-        time.sleep(0.01)
-        populated_db.upsert_file(path="/project/new.md", tool="t", content="version-2")
-
-        # Get content at t2 (should be version-1)
-        req = urllib.request.Request(f"{server}/api/files/history?path=/project/new.md&ts={t2}")
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            assert resp.status == 200
-            body = resp.read().decode()
-            assert body == "version-1"
-
-
-# ── Telemetry API ─────────────────────────────────────────────────
-
-
-class TestTelemetryAPI:
-    def test_query_all(self, server):
-        since = int(time.time()) - 3600
-        data = _get_json(f"{server}/api/telemetry?since={since}")
-        assert isinstance(data, list)
-        assert len(data) == 2
-        tools = {r["tool"] for r in data}
-        assert tools == {"claude-code", "copilot-cli"}
-
-    def test_filter_by_tool(self, server):
-        since = int(time.time()) - 3600
-        data = _get_json(f"{server}/api/telemetry?tool=claude-code&since={since}")
-        assert len(data) == 1
-        r = data[0]
-        assert r["tool"] == "claude-code"
-        assert r["input_tokens"] == 1000
-        assert r["output_tokens"] == 5000
-        assert r["model"] == "claude-opus-4-6"
-        assert "claude-opus-4-6" in r["by_model"]
-
-    def test_has_expected_fields(self, server):
-        since = int(time.time()) - 3600
-        data = _get_json(f"{server}/api/telemetry?since={since}")
-        r = data[0]
-        for key in (
-            "ts",
-            "tool",
-            "source",
-            "confidence",
-            "input_tokens",
-            "output_tokens",
-            "cache_read_tokens",
-            "cache_creation_tokens",
-            "total_sessions",
-            "total_messages",
-            "cost_usd",
-            "model",
-            "by_model",
-        ):
-            assert key in r, f"Missing key: {key}"
-
-
-# ── Session Runs API ──────────────────────────────────────────────
-
-
-class TestSessionRunsAPI:
-    def test_returns_session_end_runs(self, server):
-        data = _get_json(f"{server}/api/session-runs?days=1")
-        assert isinstance(data, list)
-        assert len(data) >= 1
-        run = next(r for r in data if r["session_id"] == "sess-001")
-        assert run["duration_s"] == 200
-        assert run["tool"] == "claude-code"
-        assert run["project"] == "/project"
-        assert run["input_tokens"] == 1000
-        assert run["output_tokens"] == 500
-        assert run["total_tokens"] == 1500
-
-    def test_returns_completed_sessions_without_event_pair(self, server):
-        data = _get_json(f"{server}/api/session-runs?days=1")
-        run = next(r for r in data if r["session_id"] == "sess-table-only")
-        assert run["duration_s"] == 60
-        assert run["project"] == "/project"
-        assert run["input_tokens"] == 321
-        assert run["output_tokens"] == 123
-        assert run["total_tokens"] == 444
-        assert run["file_churn"] == 2
-
-    def test_includes_file_churn_field(self, server):
-        """file_churn should be present on every run (0 when no session row)."""
-        data = _get_json(f"{server}/api/session-runs?days=1")
-        assert len(data) >= 1
-        for run in data:
-            assert "file_churn" in run
-            assert isinstance(run["file_churn"], int)
-        run = next(r for r in data if r["session_id"] == "sess-001")
-        # Populated session row has files_modified=7.
-        assert run["file_churn"] == 7
-
-
-# ── Session Timeline API ──────────────────────────────────────────
-
-
-@pytest.fixture()
-def timeline_server(tmp_path):
-    """Server whose DB rows and live snapshot describe the SAME logical
-    session under different id formats (uuid row vs correlator live id)."""
-    from pathlib import Path
-
-    from aictl.dashboard.web_server import (
-        _DashboardHandler,
-        _DashboardHTTPServer,
-    )
-    from aictl.storage import SessionRow
-
-    db = HistoryDB(db_path=str(tmp_path / "timeline.db"), flush_interval=0)
-    now = time.time()
-
-    # DB row for the live session: uuid id, prematurely closed 60s ago
-    # (the Stop-hook bug), still running per the live snapshot.
-    db.upsert_session(
-        SessionRow(
-            session_id="e2fa11bc-1234-4abc-9def-1234567890ab",
-            tool="claude-code",
-            pid=0,
-            project_path="/tmp/test-project",
-            started_at=now - 1500,
-            ended_at=now - 60,
-            input_tokens=15590,
-            output_tokens=800,
-            files_modified=5,
-            source="hook",
-        )
-    )
-    # Genuinely finished historical session, hours earlier — must NOT be
-    # marked live by the fallback matching.
-    db.upsert_session(
-        SessionRow(
-            session_id="claude-code:9999:1700000000",
-            tool="claude-code",
-            pid=9999,
-            project_path="/tmp/test-project",
-            started_at=now - 30000,
-            ended_at=now - 20000,
-            files_modified=3,
-            source="correlator",
-        )
-    )
-
-    store = SnapshotStore(db=db)
-    store.update(
-        _make_snapshot(
-            sessions=[
-                {
-                    "session_id": f"claude-code:4242:{int(now - 1500)}",
-                    "tool": "claude-code",
-                    "root_pid": 4242,
-                    "pids": [4242],
-                    "project": "/tmp/test-project",
-                    "workspaces": ["/tmp/test-project"],
-                    "started_at": now - 1500,
-                    "last_seen_at": now,
-                    "cpu_percent": 12.5,
-                    "exact_input_tokens": 18664,
-                    "exact_output_tokens": 500,
-                },
-            ]
-        )
-    )
-
-    srv = _DashboardHTTPServer(
-        ("127.0.0.1", 0),
-        _DashboardHandler,
-        store,
-        AllowedPaths(),
-        Path("/tmp/test-project"),
-    )
-    port = srv.server_address[1]
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
-    t.start()
-    yield f"http://127.0.0.1:{port}"
-    srv.shutdown()
-    db.close()
-
-
-class TestSessionTimelineAPI:
-    def test_live_session_with_different_id_format_yields_single_live_row(self, timeline_server):
-        """Regression: a live session whose snapshot id format differs from
-        the DB row id must enrich the DB row (matched by tool + overlapping
-        time window + workspace), not appear as a second stale entry."""
-        resp = _get_json(f"{timeline_server}/api/session-timeline?since={time.time() - 3600}")
-        assert "filtered_count" in resp
-        data = resp["sessions"]
-        assert len(data) == 1, f"expected exactly one recent profile, got {len(data)}"
-        p = data[0]
-        assert p["session_id"] == "e2fa11bc-1234-4abc-9def-1234567890ab"
-        assert p["active"] is True, "DB row matched to the live session must be flagged live"
-        assert p["live_session_id"].startswith("claude-code:4242:")
-        assert p["cpu_percent"] == 12.5
-        # Same tokens counted from two vantage points: keep max, never sum
-        assert p["input_tokens"] == 18664
-        assert p["output_tokens"] == 800
-
-    def test_old_session_not_matched_to_live(self, timeline_server):
-        """A historical session with no time overlap must stay inactive."""
-        resp = _get_json(f"{timeline_server}/api/session-timeline?since={time.time() - 86400}")
-        data = resp["sessions"]
-        old = next(p for p in data if p["session_id"] == "claude-code:9999:1700000000")
-        assert old["active"] is False
-        assert "live_session_id" not in old
-
-    def test_exact_id_match_still_enriches(self, server):
-        """Exact session_id equality (the original path) keeps working."""
-        resp = _get_json(f"{server}/api/session-timeline?since={time.time() - 86400}")
-        assert isinstance(resp["sessions"], list)
-        assert isinstance(resp["filtered_count"], int)
-
-
-@pytest.fixture()
-def error_timeline_server(tmp_path):
-    """Server with one long/errored session and one short/no-file session."""
-    from pathlib import Path
-
-    from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
-    from aictl.storage import RequestRow, SessionRow, ToolInvocationRow
-
-    db = HistoryDB(db_path=str(tmp_path / "etl.db"), flush_interval=0)
-    now = time.time()
-
-    # Kept: long session (>60s) carrying an errored tool invocation + request.
-    db.upsert_session(
-        SessionRow(
-            session_id="sess-long",
-            tool="claude-code",
-            project_path="/p",
-            started_at=now - 500,
-            ended_at=now - 100,
-            files_modified=0,
-            source="hook",
-        )
-    )
-    db.append_tool_invocation(
-        ToolInvocationRow(ts=now - 400, session_id="sess-long", tool="claude-code", tool_name="Bash", is_error=1)
-    )
-    db.append_tool_invocation(
-        ToolInvocationRow(ts=now - 390, session_id="sess-long", tool="claude-code", tool_name="Read", is_error=0)
-    )
-    db.append_request(RequestRow(ts=now - 395, session_id="sess-long", tool="claude-code", is_error=1))
-
-    # Filtered: short session (<60s) with no file activity.
-    db.upsert_session(
-        SessionRow(
-            session_id="sess-short",
-            tool="cursor",
-            project_path="/p",
-            started_at=now - 40,
-            ended_at=now - 20,
-            files_modified=0,
-            source="hook",
-        )
-    )
-
-    store = SnapshotStore(db=db)
-    store.update(_make_snapshot())
-    srv = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, AllowedPaths(), Path("/tmp"))
-    port = srv.server_address[1]
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
-    t.start()
-    yield f"http://127.0.0.1:{port}"
-    srv.shutdown()
-    db.close()
-
-
-class TestSessionTimelineHonesty:
-    """/api/session-timeline reports filtered_count + per-session error_count."""
-
-    def test_filtered_count_and_error_count(self, error_timeline_server):
-        resp = _get_json(f"{error_timeline_server}/api/session-timeline?since={time.time() - 86400}")
-        by_id = {p["session_id"]: p for p in resp["sessions"]}
-        # The short, no-file session is hidden but counted, not dropped silently.
-        assert "sess-short" not in by_id
-        assert resp["filtered_count"] == 1
-        # error_count aggregates is_error across tool_invocations + requests.
-        assert by_id["sess-long"]["error_count"] == 2
 
 
 # ── Hook ingest: Stop vs SessionEnd ───────────────────────────────
@@ -1560,164 +1046,6 @@ class TestApiCallsOtelEnrichment:
         assert all(c.get("model") for c in ok), [c for c in ok if not c.get("model")]
 
 
-# ── Session Subprocesses endpoint ─────────────────────────────────
-
-
-class TestSessionSubprocessesAPI:
-    def test_returns_sorted_counts_for_live_session(self, server):
-        data = _get_json(f"{server}/api/session-subprocesses?session_id=live-001")
-        assert data["session_id"] == "live-001"
-        assert isinstance(data["counts"], list)
-        assert isinstance(data["recent"], list)
-        # Fixture session has no subprocess_count, so counts/total are empty —
-        # this test primarily confirms the shape + that unknown keys don't crash.
-        assert data["total"] == 0
-        assert data["counts"] == []
-
-    def test_sorted_and_total_when_snapshot_has_subprocesses(self, populated_db):
-        from pathlib import Path
-
-        from aictl.dashboard.web_server import (
-            _DashboardHandler,
-            _DashboardHTTPServer,
-        )
-
-        store = SnapshotStore(db=populated_db)
-        store.update(
-            _make_snapshot(
-                sessions=[
-                    {
-                        "session_id": "live-sub",
-                        "tool": "claude-code",
-                        "duration_s": 30,
-                        "subprocess_count": {"git": 10, "rg": 3, "node": 7},
-                        "recent_subprocesses": [
-                            {"ts": 1.0, "name": "git"},
-                            {"ts": 2.0, "name": "rg"},
-                        ],
-                    },
-                ]
-            )
-        )
-
-        allowed = AllowedPaths()
-        srv = _DashboardHTTPServer(
-            ("127.0.0.1", 0),
-            _DashboardHandler,
-            store,
-            allowed,
-            Path("/tmp/test-project"),
-        )
-        port = srv.server_address[1]
-        t = threading.Thread(target=srv.serve_forever, daemon=True)
-        t.start()
-        try:
-            data = _get_json(f"http://127.0.0.1:{port}/api/session-subprocesses?session_id=live-sub")
-            assert data["total"] == 20
-            # Sorted by count desc
-            names = [c["name"] for c in data["counts"]]
-            assert names == ["git", "node", "rg"]
-            assert data["counts"][0]["count"] == 10
-            assert len(data["recent"]) == 2
-        finally:
-            srv.shutdown()
-
-    def test_unknown_session_returns_empty_shape(self, server):
-        data = _get_json(f"{server}/api/session-subprocesses?session_id=does-not-exist")
-        assert data == {"session_id": "does-not-exist", "total": 0, "counts": [], "recent": []}
-
-    def test_missing_session_id_returns_400(self, server):
-        status = _get_status(f"{server}/api/session-subprocesses")
-        assert status == 400
-
-
-# ── Session Messages endpoint (Slice 3.2) ─────────────────────────
-
-
-class TestSessionMessagesAPI:
-    def test_requires_session_id(self, server):
-        status = _get_status(f"{server}/api/session-messages")
-        assert status == 400
-
-    def test_returns_copilot_store_messages(self, server, populated_db):
-        conn = populated_db._conn()
-        now = time.time()
-        conn.executemany(
-            "INSERT INTO copilot_session_messages"
-            "(session_id, source_row_id, source_table, role, content, ts, ingested_at)"
-            " VALUES(?,?,?,?,?,?,?)",
-            [
-                ("sess-msg", 1, "messages", "user", "hello", now - 10, now),
-                ("sess-msg", 2, "messages", "assistant", "hi there", now - 5, now),
-            ],
-        )
-        conn.commit()
-
-        data = _get_json(f"{server}/api/session-messages?session_id=sess-msg")
-        assert data["session_id"] == "sess-msg"
-        assert data["sources"]["copilot_store"] == 2
-        roles = [m["role"] for m in data["messages"]]
-        assert roles == ["user", "assistant"]
-        assert data["messages"][0]["content"] == "hello"
-        assert all(m["source"] == "copilot_store" for m in data["messages"])
-
-    def test_dedup_across_otel_and_copilot_store(self, server, populated_db):
-        from aictl.storage import EventRow
-
-        now = int(time.time())
-        # OTel-derived user message
-        populated_db.append_event(
-            EventRow(
-                ts=float(now),
-                tool="copilot-cli",
-                kind="otel:user_prompt",
-                session_id="sess-dedup",
-                detail={"session_id": "sess-dedup", "message": "duplicate question"},
-            )
-        )
-        # Same content & rounded ts in copilot store + one unique copilot row
-        conn = populated_db._conn()
-        conn.executemany(
-            "INSERT INTO copilot_session_messages"
-            "(session_id, source_row_id, source_table, role, content, ts, ingested_at)"
-            " VALUES(?,?,?,?,?,?,?)",
-            [
-                ("sess-dedup", 11, "messages", "user", "duplicate question", float(now), float(now)),
-                ("sess-dedup", 12, "messages", "assistant", "unique answer", float(now + 1), float(now)),
-            ],
-        )
-        conn.commit()
-
-        data = _get_json(f"{server}/api/session-messages?session_id=sess-dedup")
-        contents = [m["content"] for m in data["messages"]]
-        # Dedup collapsed the duplicate user line.
-        assert contents.count("duplicate question") == 1
-        assert "unique answer" in contents
-        assert data["sources"]["otel"] >= 1
-        assert data["sources"]["copilot_store"] == 2
-
-    def test_within_source_repeats_are_preserved(self, server, populated_db):
-        """Regression: two genuinely-distinct identical messages in the SAME
-        source within one wall-clock second must not be collapsed. The old
-        `(role, content, int(ts))` key silently dropped the second one."""
-        conn = populated_db._conn()
-        now = float(int(time.time()))
-        conn.executemany(
-            "INSERT INTO copilot_session_messages"
-            "(session_id, source_row_id, source_table, role, content, ts, ingested_at)"
-            " VALUES(?,?,?,?,?,?,?)",
-            [
-                ("sess-repeat", 21, "messages", "user", "continue", now, now),
-                ("sess-repeat", 22, "messages", "user", "continue", now + 0.1, now),
-            ],
-        )
-        conn.commit()
-
-        data = _get_json(f"{server}/api/session-messages?session_id=sess-repeat")
-        contents = [m["content"] for m in data["messages"]]
-        assert contents.count("continue") == 2
-
-
 class TestHookVerifyPingIsNotPersisted:
     """`aictl hooks verify` POSTs synthetic payloads flagged _aictl_verify for
     every event. They must be acknowledged (HTTP 200) but never stored — the
@@ -1779,37 +1107,6 @@ class TestPostToolUseFailureMarksError:
         db.flush()
         rows = db.query_tool_invocations(session_id=self.SID)
         assert [r["is_error"] for r in rows] == [1]
-
-
-class TestProjectCostsPerModelPricing:
-    """/api/project-costs prices each session at its own model's list rate
-    (it used to apply a fixed $3/$15 to everything)."""
-
-    def test_costs_follow_model_and_label_rate(self, hook_server):
-        url, db = hook_server
-        now = time.time()
-        db.append_event(
-            EventRow(
-                ts=now - 60,
-                tool="claude-code",
-                kind="session_end",
-                detail={"project": "p1", "model": "claude-fable-5-1", "input_tokens": 1_000_000, "output_tokens": 0},
-            )
-        )
-        db.append_event(
-            EventRow(
-                ts=now - 30,  # distinct ts: events dedupe on (ts, tool, kind)
-                tool="claude-code",
-                kind="session_end",
-                detail={"project": "p2", "model": "claude-sonnet-5", "input_tokens": 1_000_000, "output_tokens": 0},
-            )
-        )
-        db.flush()
-        rows = {r["project"]: r for r in _get_json(f"{url}/api/project-costs?days=1")}
-        assert rows["p1"]["cost_usd"] == pytest.approx(10.0)
-        assert rows["p1"]["pricing_models"] == ["claude-fable-5-1"]
-        assert rows["p2"]["cost_usd"] == pytest.approx(2.0)
-        assert rows["p2"]["pricing_models"] == ["claude-sonnet-5"]
 
 
 # ── Settings files API ────────────────────────────────────────────
@@ -2152,3 +1449,37 @@ class TestSettingsFileEditor:
         assert status == 400
         assert "unchanged" in data["error"]
         assert f.read_text() == '{\n  "a": 1\n}\n'
+
+# ── Removed routes stay removed ───────────────────────────────────
+
+# Routes the old tab UI called. The board, the Python client and the CLI do
+# not, so the server answers 404 for them; a route added back here must have
+# a caller first.
+REMOVED_ROUTES = (
+    "/api/session-timeline",
+    "/api/sessions",
+    "/api/file-writes",
+    "/api/data-quality",
+    "/api/files/history",
+    "/api/files",
+    "/api/telemetry",
+    "/api/usage",
+    "/api/project-costs",
+    "/api/session-runs",
+    "/api/session-cost-by-model",
+    "/api/session-tool-calls",
+    "/api/session-subprocesses",
+    "/api/session-flow",
+    "/api/session-memory-diff",
+    "/api/session-messages",
+    "/api/transcript/some-session",
+    "/api/transcripts",
+    "/api/ingesters",
+    "/api/analytics",
+    "/api/agent-teams",
+)
+
+
+@pytest.mark.parametrize("path", REMOVED_ROUTES)
+def test_removed_route_is_not_served(server, path):
+    assert _get_status(f"{server}{path}?session_id=sess-001") == 404

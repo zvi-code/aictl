@@ -10,7 +10,6 @@ The frontend is built with Vite from ui/src/ into dist/.
 
 Implementation is split across focused modules:
 - otel_receiver: OTel protobuf parsing and metric mapping
-- analytics: background cache and aggregate computation
 - session_flow: session timeline reconstruction
 - api_handlers: REST endpoint handler methods
 """
@@ -37,12 +36,6 @@ from ..orchestrator import AllowedPaths, SnapshotStore
 from ..platforms import IS_WINDOWS
 from ..storage import EventRow, FileWriteRow, SessionRow, ToolInvocationRow
 from ..tool_scope import parse_tools_param
-from .analytics import (  # noqa: F401 — re-exports
-    _AnalyticsCache,
-    _compute_files,
-    _compute_response_time,
-    _compute_tools,
-)
 from .api_handlers import _APIHandlersMixin
 from .models import DashboardSnapshot, _slim_agent_teams, tools_revision
 
@@ -606,10 +599,6 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._serve_board(path)
         elif path.startswith("/api/samples"):
             self._serve_samples()
-        elif path == "/api/session-timeline":
-            self._serve_session_timeline()
-        elif path.startswith("/api/sessions"):
-            self._serve_sessions()
         elif path == "/api/context-audit":
             self._serve_context_audit()
         elif path == "/api/settings/files":
@@ -618,50 +607,16 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._serve_settings_file_get()
         elif path == "/api/settings/tools":
             self._serve_settings_tools()
-        elif path.startswith("/api/file-writes"):
-            self._serve_file_writes()
-        elif path.startswith("/api/data-quality"):
-            self._serve_data_quality()
-        elif path.startswith("/api/files/history"):
-            self._serve_file_history()
-        elif path.startswith("/api/files"):
-            self._serve_files()
-        elif path.startswith("/api/telemetry"):
-            self._serve_telemetry()
-        elif path == "/api/usage":
-            self._serve_usage()
-        elif path.startswith("/api/project-costs"):
-            self._serve_project_costs()
-        elif path.startswith("/api/session-runs"):
-            self._serve_session_runs()
-        elif path.startswith("/api/session-cost-by-model"):
-            self._serve_session_cost_by_model()
         elif path.startswith("/api/session-processes"):
             self._serve_session_processes()
-        elif path.startswith("/api/session-tool-calls"):
-            self._serve_session_tool_calls()
-        elif path.startswith("/api/session-subprocesses"):
-            self._serve_session_subprocesses()
         elif path.startswith("/api/session-commits"):
             self._serve_session_commits()
         elif path.startswith("/api/session-stats"):
             self._serve_session_stats()
-        elif path.startswith("/api/session-flow"):
-            self._serve_session_flow()
-        elif path.startswith("/api/session-memory-diff"):
-            self._serve_session_memory_diff()
-        elif path.startswith("/api/session-messages"):
-            self._serve_session_messages()
         elif path.startswith("/api/session-mcp-usage"):
             self._serve_session_mcp_usage()
-        elif path.startswith("/api/transcript/"):
-            self._serve_transcript()
-        elif path.startswith("/api/transcripts"):
-            self._serve_transcripts()
         elif path.startswith("/api/otel-status"):
             self._serve_otel_status()
-        elif path.startswith("/api/ingesters"):
-            self._serve_ingesters()
         elif path.startswith("/api/hooks-status"):
             self._serve_hooks_status()
         elif path.startswith("/api/tool-config/"):
@@ -674,10 +629,6 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._serve_events()
         elif path.startswith("/api/datapoints"):
             self._serve_datapoint_catalog()
-        elif path.startswith("/api/analytics"):
-            self._serve_analytics()
-        elif path.startswith("/api/agent-teams"):
-            self._serve_agent_teams()
         elif path.startswith("/api/self-status"):
             self._serve_self_status()
         elif path.startswith("/assets/"):
@@ -1621,9 +1572,6 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
         from ..analysis.analyzer import SessionAnalyzer
 
         self.session_analyzer: SessionAnalyzer = SessionAnalyzer()
-        # Background analytics cache — no SQL on request path
-        self.analytics_cache: _AnalyticsCache = _AnalyticsCache()
-        self.analytics_cache.start(store)
         # Periodic local-store ingesters (Slice 3.2 Copilot, 3.3 Cursor).
         from .ingester_runner import start_ingesters
 
