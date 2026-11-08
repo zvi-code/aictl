@@ -29,11 +29,10 @@ def _resolve_db_path(db_path: str | None) -> Path:
 
 
 def _project_files(path: Path) -> list[Path]:
-    """The project stores next to a machine store: each database with its WAL."""
-    from ..project_stores import PROJECTS_DIR
+    """The project stores of a machine store: each database with its WAL."""
+    from ..project_stores import project_store_files
 
-    folder = path.parent / PROJECTS_DIR
-    return sorted(f for f in folder.glob("*.db*") if not f.name.endswith("-shm")) if folder.is_dir() else []
+    return [f for f in project_store_files(path) if not f.name.endswith("-shm")]
 
 
 def _history_bytes(path: Path) -> tuple[int, int]:
@@ -208,10 +207,9 @@ def reset(ctx, yes):
     db_path = ctx.obj.db_path
     path = Path(db_path) if db_path else DEFAULT_DB_PATH
 
-    from ..project_stores import PROJECTS_DIR
+    from ..project_stores import project_store_files, remove_project_stores
 
-    projects = path.parent / PROJECTS_DIR
-    if path.exists() or projects.is_dir():
+    if path.exists() or project_store_files(path):
         size_mb = (_history_bytes(path)[0] if path.exists() else 0) / 1024**2
         click.echo(f"Database: {path}")
         click.echo(f"Size: {size_mb:.1f} MB (with {len(_project_files(path))} project store files)")
@@ -221,10 +219,10 @@ def reset(ctx, yes):
                 abort=True,
             )
         # The project stores too: a store left behind would bring its history back.
+        # Only files that are project stores go; anything else in that folder stays.
         for f in [path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")]:
             f.unlink(missing_ok=True)
-        if projects.is_dir():
-            shutil.rmtree(projects)
+        remove_project_stores(path)
         click.secho("Database deleted.", fg="yellow")
     else:
         click.echo(f"Database: {path}")
@@ -305,7 +303,6 @@ from ..platforms import IS_WINDOWS as _IS_WINDOWS
 
 def _npm() -> str:
     """Path of npm. With shell=True a missing command is only a non-zero exit, so check first."""
-    import shutil
 
     npm = shutil.which("npm")
     if not npm:
@@ -369,7 +366,6 @@ def _is_index_url(value: str) -> bool:
 def _pip_configured_index() -> str | None:
     """The index pip is set up to use: ``PIP_INDEX_URL``, then pip's own config files."""
     import os
-    import shutil
     import subprocess
 
     from_env = os.environ.get("PIP_INDEX_URL")
@@ -467,7 +463,6 @@ def reinstall(skip_ui, force_ui, index_url):
     Use this after pulling changes or editing source code. Without it,
     the installed 'aictl' command runs stale copies from site-packages.
     """
-    import shutil
     import subprocess
 
     if index_url and not _is_index_url(index_url):

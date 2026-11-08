@@ -73,13 +73,18 @@ PROJECT_TABLES = (
 )
 SHARED = "_shared"
 MACHINE = ""  # the machine store, in the session map: sessions already in it before the split
-PROJECTS_DIR = "projects"
+# The project stores sit in "<db stem>-projects" next to the machine store: a name no
+# user folder of the projects themselves takes by chance.
+PROJECTS_SUFFIX = "-projects"
 IDLE_CLOSE_S = 30 * 60.0
 REAP_EVERY_S = 30.0
 # SQLite attaches at most 10 databases (Python's build cannot raise it). Nine stores
 # are attached; the tenth slot copies the rows of any further store, one at a time.
 ATTACH_ROOM = 9
 _COPY_PREFIX = "copied_"
+# A session or agent id found in no store is not looked up again for this long.
+MISS_TTL_S = 30.0
+_MISSED_MAX = 10_000
 # Upkeep that opens every store, closed ones too, runs at most this often.
 FULL_PASS_S = 600.0
 # Tables that name a session, besides sessions, read at startup to place sessions.
@@ -232,6 +237,62 @@ def store_file_name(key: str, root: str = "") -> str:
     return f"{name}-{digest}.db"
 
 
+def projects_dir_for(db_path: Path | str) -> Path:
+    """The folder of the project stores of the machine store at *db_path*."""
+    path = Path(db_path)
+    return path.with_name(path.stem + PROJECTS_SUFFIX)
+
+
+def is_project_store(file: Path) -> bool:
+    """A database file that a ProjectStores made: it has a store_info table."""
+    return _store_info(file) is not None
+
+
+def project_store_files(db_path: Path | str) -> list[Path]:
+    """The project stores of the machine store at *db_path*, each with its -wal and -shm."""
+    folder = projects_dir_for(db_path)
+    if not folder.is_dir():
+        return []
+    files: list[Path] = []
+    for file in sorted(folder.glob("*.db")):
+        if is_project_store(file):
+            files += [
+                f for f in (file, file.with_name(file.name + "-wal"), file.with_name(file.name + "-shm")) if f.exists()
+            ]
+    return files
+
+
+def remove_project_stores(db_path: Path | str) -> int:
+    """Delete the project stores of the machine store at *db_path*, and nothing else.
+
+    Only files with a store_info table and their -wal and -shm go; the folder goes
+    when it is empty then. Returns the number of files removed.
+    """
+    files = project_store_files(db_path)
+    for file in files:
+        file.unlink(missing_ok=True)
+    folder = projects_dir_for(db_path)
+    try:
+        folder.rmdir()
+    except OSError:
+        pass  # absent, or it holds files that are not project stores
+    return len(files)
+
+
+def _store_info(file: Path) -> tuple[str, str] | None:
+    try:
+        conn = _read_only(file)
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute("SELECT key, root FROM store_info LIMIT 1").fetchone()
+    except sqlite3.Error:
+        row = None
+    finally:
+        conn.close()
+    return (str(row[0]), str(row[1])) if row else None
+
+
 def _read_only(file: Path) -> sqlite3.Connection:
     """A read-only connection; the path is quoted, so %, ? and # in it stay part of it."""
     return sqlite3.connect(file.absolute().as_uri() + "?mode=ro", uri=True, timeout=BUSY_TIMEOUT_S)
@@ -348,7 +409,7 @@ class ProjectStores:
         # Without a file (memory, capture off, or a store that fell back to memory)
         # there is nothing to attach: the machine store holds every project.
         self._split = isinstance(path, Path) and self.machine._shared_conn is None
-        self.projects_dir: Path | None = path.parent / PROJECTS_DIR if isinstance(path, Path) and self._split else None
+        self.projects_dir: Path | None = projects_dir_for(path) if isinstance(path, Path) and self._split else None
         self._idle_close_s = idle_close_s
         self._stores: dict[str, _ProjectDB] = {}
         self._in_use: dict[str, int] = {}
@@ -363,6 +424,7 @@ class ProjectStores:
         self._local = threading.local()
         self._generation: dict[str, int] = {}
         self._found: dict[str, str] = {}
+        self._missed: dict[str, float] = {}
         self._opening: dict[str, threading.Event] = {}
         self._pending_moves: dict[str, tuple[str, str]] = {}
         self._main_rows: set[str] = set()
@@ -374,6 +436,7 @@ class ProjectStores:
             self._load_index()
             self._migrate_stores()
             self._load_sessions()
+            self._retry_moves()
         self._reap_stop = threading.Event()
         self._reaper: threading.Thread | None = None
         if self._split and flush_interval > 0:
@@ -399,27 +462,13 @@ class ProjectStores:
         for file in sorted(self.projects_dir.glob("*.db")):
             if file.name in named:
                 continue
-            info = self._store_info(file)
+            info = _store_info(file)
             if info is None:
                 continue
             key, root = info
             mtime = file.stat().st_mtime
             self._index[key] = {"root": root, "file": file.name, "first_ts": 0.0, "last_ts": mtime, "rows": 0}
             self._dirty.add(key)
-
-    @staticmethod
-    def _store_info(file: Path) -> tuple[str, str] | None:
-        try:
-            conn = _read_only(file)
-        except sqlite3.Error:
-            return None
-        try:
-            row = conn.execute("SELECT key, root FROM store_info LIMIT 1").fetchone()
-        except sqlite3.Error:
-            row = None
-        finally:
-            conn.close()
-        return (str(row[0]), str(row[1])) if row else None
 
     def _migrate_stores(self) -> None:
         """Bring every store to the current schema: reads attach store files without opening them."""
@@ -428,7 +477,7 @@ class ProjectStores:
             if file is None or not file.exists() or _schema_version(file) >= SCHEMA_VERSION:
                 continue
             try:
-                _ProjectDB(db_path=file, **{**self._store_options, "flush_interval": 0}).close()
+                self._project_db(file, flush_thread=False).close()
             except (sqlite3.Error, OSError) as exc:
                 log.warning("Cannot migrate project store %s: %s", file.name, exc)
 
@@ -443,6 +492,8 @@ class ProjectStores:
                 f"SELECT DISTINCT session_id FROM {table} WHERE session_id != ''"
             ):
                 self._sessions.setdefault(sid, MACHINE)
+        holders: dict[str, set[str]] = {}
+        with_folder: set[str] = set()
         for key, entry in list(self._index.items()):
             file = self._file_of(key)
             if file is None or not file.exists():
@@ -464,13 +515,23 @@ class ProjectStores:
             except sqlite3.Error as exc:
                 log.warning("Cannot read the sessions of %s: %s", entry["file"], exc)
                 continue
-            with_folder = {sid for sid, project in named if project}
-            for sid, _project in named:
-                if sid in self._sessions:
-                    continue
-                self._sessions[sid] = key
-                if key == SHARED and sid not in with_folder:
+            for sid, project in named:
+                holders.setdefault(sid, set()).add(key)
+                if project:
+                    with_folder.add(sid)
+        for sid, keys in holders.items():
+            if sid in self._sessions:
+                continue  # in the machine store
+            projects = sorted(k for k in keys if k != SHARED)
+            if not projects:
+                self._sessions[sid] = SHARED
+                if sid not in with_folder:
                     self._provisional.add(sid)
+                continue
+            self._sessions[sid] = projects[0]
+            if SHARED in keys:
+                # A move that stopped half-way (a crash between the two files): finish it.
+                self._pending_moves[sid] = (SHARED, projects[0])
 
     def _file_of(self, key: str) -> Path | None:
         if self.projects_dir is None:
@@ -532,7 +593,7 @@ class ProjectStores:
                     "rows": 0,
                 }
                 self._dirty.add(key)
-        db = _ProjectDB(db_path=self.projects_dir / entry["file"], **self._store_options)
+        db = self._project_db(self.projects_dir / entry["file"])
         conn = db._conn()
         conn.execute("CREATE TABLE IF NOT EXISTS store_info(key TEXT PRIMARY KEY, root TEXT NOT NULL)")
         conn.execute("INSERT OR IGNORE INTO store_info(key, root) VALUES(?,?)", (key, entry["root"]))
@@ -548,6 +609,14 @@ class ProjectStores:
                 "INSERT OR IGNORE INTO maintenance_state(key, value) VALUES('retention_armed_at', ?)", (armed[0],)
             )
         conn.commit()
+        return db
+
+    def _project_db(self, file: Path, *, flush_thread: bool = True) -> _ProjectDB:
+        """Open one project store. A store that cannot be opened runs in memory, and says so."""
+        options = self._store_options if flush_thread else {**self._store_options, "flush_interval": 0}
+        db = _ProjectDB(db_path=file, **options)
+        if db._shared_conn is not None:
+            log.warning("Project store %s runs in memory, its rows are not kept: %s", file.name, db.degraded_reason)
         return db
 
     def _note_root(self, key: str, root: str) -> None:
@@ -653,6 +722,7 @@ class ProjectStores:
             known = self._sessions.get(session_id) if session_id else None
             if known is not None and session_id not in self._provisional:
                 return known
+            self._missed.pop(session_id, None)
             if not project_path:
                 if session_id and known is None:
                     # No folder yet: _shared until a row names one, then it moves.
@@ -905,9 +975,8 @@ class ProjectStores:
         full = time.monotonic() - self._last_full_pass >= FULL_PASS_S
         if full:
             self._last_full_pass = time.monotonic()
-        with self._every_store(open_only=not full) as stores:
-            for db in stores:
-                total += db.clear_stale_pending_confirms(before)
+        for db in self._each_store(open_only=not full, machine=False):
+            total += db.clear_stale_pending_confirms(before)
         return total
 
     # ── Every store ────────────────────────────────────────────
@@ -921,25 +990,39 @@ class ProjectStores:
         self._save_index()
         return total
 
-    @contextlib.contextmanager
-    def _every_store(self, open_only: bool = False) -> Iterator[list[HistoryDB]]:
-        """Every project store with a file (or only the open ones), held open for the block."""
+    def _each_store(self, open_only: bool = False, machine: bool = True) -> Iterator[HistoryDB]:
+        """The machine store, then every project store with a file (or only the open ones).
+
+        One at a time: an open store is used as it is; a closed one is opened for the
+        visit alone, with no flush thread, and closed again. Many repositories never
+        hold many files open.
+        """
+        if machine:
+            yield self.machine
         if not self._split:
-            yield []
             return
         if open_only:
             keys = list(self.open_stores())
         else:
             with self._index_lock:
                 keys = list(self._index)
-        with contextlib.ExitStack() as stack:
-            stores = []
-            for key in keys:
-                file = self._file_of(key)
-                if file is None or not file.exists():
-                    continue
-                stores.append(stack.enter_context(self._using(key)))
-            yield stores
+        for key in keys:
+            with self._stores_lock:
+                is_open = key in self._stores
+            if is_open:
+                with self._using(key) as db:
+                    yield db
+                continue
+            if open_only:
+                continue
+            file = self._file_of(key)
+            if file is None or not file.exists():
+                continue
+            visit = self._project_db(file, flush_thread=False)
+            try:
+                yield visit
+            finally:
+                visit.close()
 
     def running_writes(self) -> list[dict[str, Any]]:
         rows = list(self.machine.running_writes())
@@ -959,71 +1042,66 @@ class ProjectStores:
         """
         budget = self.machine._budget_bytes
         result: dict[str, int] = {}
-        with self._every_store() as stores:
-            every = [self.machine, *stores]
-            used = {id(db): db._budget_used() for db in every}
-            total_used = sum(used.values())
-            try:
-                for db in every:
-                    share = budget if total_used <= budget else int(budget * used[id(db)] / total_used)
-                    db._budget_bytes = max(share, 1)
-                    _add_up(result, db.auto_maintain())
-            finally:
-                self.machine._budget_bytes = budget
+        # First the space each store uses, then each store's share: one store open at a time.
+        used = [db._budget_used() for db in self._each_store()]
+        total_used = sum(used)
+        try:
+            for db, own in zip(self._each_store(), used, strict=False):
+                share = budget if total_used <= budget else int(budget * own / total_used)
+                db._budget_bytes = max(share, 1)
+                _add_up(result, db.auto_maintain())
+        finally:
+            self.machine._budget_bytes = budget
         return result
 
     def compact(self, *, retention_days: int | None = None, floor: float = 0.0) -> dict[str, int]:
         result: dict[str, int] = {}
-        with self._every_store() as stores:
-            for db in [self.machine, *stores]:
-                _add_up(result, db.compact(retention_days=retention_days, floor=floor))
+        for db in self._each_store():
+            _add_up(result, db.compact(retention_days=retention_days, floor=floor))
         return result
 
     def compact_estimate(self, *, retention_days: int | None = None) -> dict[str, Any]:
         result: dict[str, Any] = {}
-        with self._every_store() as stores:
-            for db in [self.machine, *stores]:
-                _add_up(result, db.compact_estimate(retention_days=retention_days), keep=("retention_days",))
+        for db in self._each_store():
+            _add_up(result, db.compact_estimate(retention_days=retention_days), keep=("retention_days",))
         return result
 
     def trim_text(self, *, before: float | None = None, since: float = 0.0) -> int:
-        with self._every_store() as stores:
-            return sum(db.trim_text(before=before, since=since) for db in [self.machine, *stores])
+        return sum(db.trim_text(before=before, since=since) for db in self._each_store())
 
     def trim_text_estimate(self) -> dict[str, int]:
         result: dict[str, int] = {}
-        with self._every_store() as stores:
-            for db in [self.machine, *stores]:
-                _add_up(result, db.trim_text_estimate())
+        for db in self._each_store():
+            _add_up(result, db.trim_text_estimate())
         return result
 
     def vacuum(self) -> None:
-        with self._every_store() as stores:
-            for db in [self.machine, *stores]:
-                db.vacuum()
+        for db in self._each_store():
+            db.vacuum()
 
     def vacuum_room_needed(self) -> int:
         """Stores are vacuumed one after another: the largest need is the room needed."""
-        with self._every_store() as stores:
-            return max(db.vacuum_room_needed() for db in [self.machine, *stores])
+        return max(db.vacuum_room_needed() for db in self._each_store())
 
     def stats(self) -> dict[str, Any]:
         """Row counts and file sizes of every store; time range and files of the machine store."""
         result = dict(self.machine.stats())
-        with self._every_store() as stores:
-            for db in stores:
-                part = db.stats()
-                for name, value in part.items():
-                    if name.endswith("_count") or name == "file_size_bytes":
-                        result[name] = (result.get(name) or 0) + (value or 0)
-        result["project_stores"] = len(stores)
+        count = 0
+        for db in self._each_store(machine=False):
+            count += 1
+            for name, value in db.stats().items():
+                if name.endswith("_count") or name == "file_size_bytes":
+                    result[name] = (result.get(name) or 0) + (value or 0)
+        result["project_stores"] = count
         return result
 
     def storage_bytes(self) -> int:
         total = self.machine.storage_bytes()
         if self.projects_dir is not None:
-            for file in self.projects_dir.glob("*.db*"):
-                if not file.name.endswith("-shm"):
+            with self._index_lock:
+                names = [entry["file"] for entry in self._index.values()]
+            for name in names:
+                for file in (self.projects_dir / name, self.projects_dir / (name + "-wal")):
                     total += HistoryDB._file_size(file)
         return total
 
@@ -1097,6 +1175,11 @@ class ProjectStores:
         if session:
             key = self._find_store(session)
             keys = (key,) if key else ()
+            with self._route_lock:
+                pending = self._pending_moves.get(session)
+            if pending is not None:
+                # Its rows are in both stores until the move is done.
+                keys = tuple(k for k in dict.fromkeys((pending[1], pending[0])) if k)
         elif project:
             keys = (store_key(project),)
         else:
@@ -1123,6 +1206,31 @@ class ProjectStores:
             generations = tuple(self._generation.get(k, 0) for k in copied)
         return (attached, copied, since, until, generations, self._main_tables())
 
+    def sessions_where(self, where: str, params: tuple = (), order: str = "", limit: int = 0) -> list[tuple]:
+        """``SELECT session_id FROM sessions WHERE ...`` over the machine store and every project
+        store, without attaching any: a session can be stored under another folder's store.
+        """
+        sql = f"SELECT session_id, started_at FROM sessions WHERE {where}"
+        rows = list(self.machine._conn().execute(sql, params).fetchall())
+        if self._split:
+            with self._index_lock:
+                keys = list(self._index)
+            for key in keys:
+                file = self._file_of(key)
+                if file is None or not file.exists():
+                    continue
+                try:
+                    conn = _read_only(file)
+                    try:
+                        rows += conn.execute(sql, params).fetchall()
+                    finally:
+                        conn.close()
+                except sqlite3.Error as exc:
+                    log.debug("Cannot read %s: %s", file.name, exc)
+        if order == "newest":
+            rows.sort(key=lambda r: -(r[1] or 0.0))
+        return rows[:limit] if limit else rows
+
     def _main_tables(self) -> tuple[str, ...]:
         """Per-project tables with rows in the machine store (written before the split).
 
@@ -1146,6 +1254,10 @@ class ProjectStores:
                 key = self._found.get(ident)
         if key is not None:
             return key
+        with self._route_lock:
+            missed = self._missed.get(ident)
+        if missed is not None and time.monotonic() - missed < MISS_TTL_S:
+            return MACHINE
         with self._index_lock:
             keys = list(self._index)
         for key in keys:
@@ -1165,6 +1277,10 @@ class ProjectStores:
                 with self._route_lock:
                     self._found[ident] = key
                 return key
+        with self._route_lock:
+            if len(self._missed) >= _MISSED_MAX:
+                self._missed.clear()
+            self._missed[ident] = time.monotonic()
         return MACHINE
 
     def _conn(self) -> sqlite3.Connection:
