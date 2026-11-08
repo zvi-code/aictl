@@ -474,10 +474,14 @@ def reinstall(skip_ui, force_ui, index_url):
     ui_dir = _find_package_dir(root) / "dashboard" / "ui"
 
     # ── Step 1: UI build ────────────────────────────────────────────────────
-    if index_url:
-        click.echo("⏭  Skipping UI build, which would use npm's registry. The packaged dashboard stays in place.")
-    elif skip_ui:
+    if skip_ui:
         click.echo("⏭  Skipping UI build (--skip-ui)")
+    elif index_url and not force_ui:
+        # npm does not read the Python index: it uses its own registry settings.
+        click.echo(
+            "⏭  Skipping UI build, which would use npm's registry. The dashboard from git stays in place."
+            " Add --build-ui to build it with npm's own settings."
+        )
     elif not ui_dir.is_dir():
         click.echo("⏭  UI source not found, skipping")
     elif not force_ui and not _ui_has_local_edits(root, ui_dir):

@@ -566,7 +566,7 @@ class TestReinstallPackageSource:
             monkeypatch.delenv(key, raising=False)
         for key, value in (env or {}).items():
             monkeypatch.setenv(key, value)
-        (tmp_path / "src" / "aictl" / "dashboard" / "ui").mkdir(parents=True)
+        (tmp_path / "src" / "aictl" / "dashboard" / "ui").mkdir(parents=True, exist_ok=True)
 
         def fake_run(cmd, **kwargs):
             if cmd[1:3] == ["config", "list"]:
@@ -597,6 +597,15 @@ class TestReinstallPackageSource:
     def test_supplied_url_never_runs_npm(self, runner, tmp_path, monkeypatch):
         _, _, mock_run = self._run(runner, tmp_path, monkeypatch, ["--index-url", "https://feed.example/simple"])
         assert not any("npm" in str(c.args[0]) or "run" in c.args[0] for c in mock_run.call_args_list)
+
+    def test_build_ui_flag_builds_even_with_a_supplied_url(self, runner, tmp_path, monkeypatch):
+        (tmp_path / "src" / "aictl" / "dashboard" / "ui" / "node_modules").mkdir(parents=True)
+        result, _, mock_run = self._run(
+            runner, tmp_path, monkeypatch, ["--index-url", "https://feed.example/simple", "--build-ui"]
+        )
+        assert result.exit_code == 0
+        assert any(c.args[0][1:] == ["run", "build"] for c in mock_run.call_args_list)
+        assert "Skipping UI build" not in result.output
 
     def test_url_can_come_from_the_environment(self, runner, tmp_path, monkeypatch):
         _, installs, _ = self._run(runner, tmp_path, monkeypatch, ["--skip-ui"], {"AICTL_INDEX_URL": "https://feed.example/simple"})

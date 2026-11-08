@@ -229,7 +229,8 @@ aictl reinstall --index-url 'https://packages.example/simple'
 ```
 
 `--index-url`, or `AICTL_INDEX_URL`, applies to both `pip` and `uv`. The URL is not printed or written to a file, so
-it can hold credentials, and the npm UI build is skipped because the package already includes the dashboard. With no
+it can hold credentials. The npm UI build is skipped because the package already includes the dashboard; `--build-ui`
+builds it anyway, with npm's own registry settings. With no
 URL, `aictl reinstall` copies `pip`'s configured index for `uv`, unless `UV_DEFAULT_INDEX` or `UV_INDEX_URL` is set.
 Either way it prints the host name of the source it will use, so you can check it. The value must be the URL of a
 package index (`http`, `https` or `file`). `--index-url` refuses a plain folder path.
