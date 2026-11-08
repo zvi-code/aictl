@@ -1461,9 +1461,9 @@ class AllowedPaths:
         root = getattr(snap, "root", None)
         if root:
             try:
-                from .context import AICTX_FILENAME, MAX_SCAN_DIRS, _walk
+                from .context import AICTX_FILENAME, _walk
 
-                for aictx in _walk(Path(root), _budget=[MAX_SCAN_DIRS]):
+                for aictx in _walk(Path(root)):
                     try:
                         paths.add(_os.path.realpath(aictx))
                     except (OSError, ValueError):
