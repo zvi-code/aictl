@@ -152,6 +152,16 @@ def real_home_violations() -> list[str]:
 
 
 @pytest.fixture(autouse=True)
+def _discovery_not_lazy():
+    """A test that starts the collection service turns on lazy discovery; the next test must not inherit it."""
+    yield
+    from aictl import tree_walk
+
+    if tree_walk.is_lazy():
+        tree_walk.set_lazy(False)
+
+
+@pytest.fixture(autouse=True)
 def _aictl_assume_yes(monkeypatch):
     """Tests run in non-TTY context; explicitly approve writes so WriteGuard
     doesn't abort. Individual tests can override via monkeypatch.delenv."""

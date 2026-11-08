@@ -284,6 +284,19 @@ Each row specifies a tool name, a path template with variables (`{HOME}`, `{XDG_
 3. Check filesystem for matches
 4. Return `ToolResources` per tool — containing `ResourceFile`, `ProcessInfo`, `McpServerInfo`, and `MemoryEntry` records
 
+### Project file discovery (`tree_walk.py`)
+
+Templates that can match anywhere in a project (`AGENTS.md`, `.github/**`, `.vscode/mcp.json`, `.context.toml`, the files one level inside hidden folders) are found per git repository, not by a walk of every folder under the start folder:
+
+1. **Sessions first.** The working folder of each active session is resolved to its git root (the nearest folder with a `.git` folder or file, so a worktree or a submodule is a repository of its own). These repositories are read first.
+2. **Targeted git calls.** In a repository, two `git ls-files` calls run at the same time with pathspecs for the known names only: `-c -o --exclude-standard` for tracked and new files, and `-o -i --exclude-standard --directory` for ignored files, so a tool file that `.gitignore` lists is still found. An ignored folder comes back as one entry: an ignored tool folder (`.vscode`, `.claude` ...) is read directly, another ignored hidden folder one level deep, and the rest (dependencies, build output) is skipped. Only the matches are kept. Submodules (from `.gitmodules`) and repositories inside a repository are read on their own; a repository inside a hidden or tool folder is a worktree copy and is not read.
+3. **No rescan of an unchanged repository.** Each repository keeps its result with a stat-only signature: the mtimes of `.git/index`, `.git/HEAD` (from the real git folder of a worktree or submodule), the top folder, `.gitignore`, its tool folders and every folder that held a match. While the signature is unchanged, no git process starts. A new file deep in a folder that held no match does not change the signature, so each repository is read again in full once an hour, at a time spread by its path, and one request does at most two such refreshes.
+4. **Lazy in the daemon.** `CollectionService.start()` turns on lazy mode: a listing reads only the repositories of active sessions (and the repository aictl started in, when it started in one) while the caller waits. A low-priority background thread reads the other repositories one at a time. Until it has finished, `tree_walk.state(root)` reports `partial: true`.
+5. **Outside git.** Folders that are not in a repository are walked to depth 4 with the skip list `PRUNE_DIRS`, looking only for repositories and the known names. There is no folder limit inside repositories; the walk outside git stops after 50,000 folders and then says how many repositories it found and that the active projects were read in full.
+6. **Without git.** When git is missing or cannot list a repository, that repository is read directly with the skip list, up to 20,000 folders. On Windows every git process starts without a console window.
+
+`tree_walk.session_links()` maps each active session's git root to its sessions and to the matched files each session can be affected by: a file affects a session when the session's working folder is the file's folder, or the folder that holds its tool folder, or lies below it.
+
 **Tool Taxonomy** (`TOOL_TAXONOMY` dict): 27+ tools with vendor, host, default model, color, and icon metadata. Tools include Claude Code, GitHub Copilot (CLI/VS Code/JetBrains), Cursor, Windsurf, Microsoft 365 Copilot, Semantic Kernel, Azure PromptFlow, Azure AI/azd, Codex CLI, and others.
 
 ### Feature Matrix (`feature_matrix.py`)
