@@ -813,12 +813,27 @@ function panelSettings(ctx) {
   };
 }
 
+/** Hooks and OTel cells of one tool: what reached aictl, and when. */
+function feedCells(ctx, tool) {
+  const pipe = machineOf(ctx).pipeline;
+  const h = (pipe.hooks || {})[tool];
+  const o = (pipe.otel_receiver?.by_tool || {})[tool];
+  const hooks = h && h.count
+    ? { v: fmtN(h.count), sub: ago(h.last_fire_ts, ctx.nowS), title: fmtN(h.count) + ' hook events in the last 24 hours. Newest: ' + stamp(h.last_fire_ts, true) }
+    : { v: 'None', cls: 'dim', title: 'No hook events from this tool in the last 24 hours. aictl hooks status shows whether its hooks are registered and why they may not run.' };
+  const otel = o && (o.metrics || o.events)
+    ? { v: fmtN((o.metrics || 0) + (o.events || 0)), sub: ago(o.last_at, ctx.nowS), title: fmtN(o.metrics || 0) + ' metric samples and ' + fmtN(o.events || 0) + ' log events since the daemon started. Newest: ' + stamp(o.last_at, true) }
+    : { v: 'None', cls: 'dim', title: 'No OTel data from this tool since the daemon started. aictl otel status shows what the tool is set to send.' };
+  return { hooks, otel, sort: { h: h?.count || 0, o: o ? (o.metrics || 0) + (o.events || 0) : 0 } };
+}
+
 function panelSources(ctx) {
   const fresh = new Map(machineOf(ctx).pipeline.freshness.map(f => [f.tool, f]));
   const rows = ctx.data.sources.map((s) => {
     const f = fresh.get(s.tool);
+    const feed = feedCells(ctx, s.tool);
     return {
-      id: s.tool, sort: { t: s.label || s.tool, s: s.data_from, l: s.last_data_ts, f: f?.last_seen ?? null, e: f ? f.errors : null },
+      id: s.tool, sort: { t: s.label || s.tool, s: s.data_from, l: s.last_data_ts, f: f?.last_seen ?? null, e: f ? f.errors : null, ...feed.sort },
       cells: {
         t: { v: s.label || ctx.toolName(s.tool), sw: colorFor('tool', s.tool) },
         s: { v: s.data_from || NA, cls: 'dim', sub: (s.locations || []).map(h => h.path + ' (' + h.found_by + ')').join(', '), title: (s.locations || []).map(h => h.path + ': ' + h.found_by).join('\n') },
@@ -826,13 +841,15 @@ function panelSources(ctx) {
         f: f
           ? { v: f.last_seen ? ago(f.last_seen, ctx.nowS) : 'Not live', sub: f.confidence == null ? null : pctOf(f.confidence), cls: f.last_seen && ctx.nowS - f.last_seen > 3600 ? 'warn' : 'dim', title: 'Live monitor: ' + (f.last_seen ? 'last saw this tool ' + stamp(f.last_seen, true) : 'not running now') + '. Telemetry from ' + (f.source || NA) + ', confidence ' + pctOf(f.confidence) + '.' }
           : { v: NA, cls: 'dim', title: 'The monitor does not report this tool' },
+        h: feed.hooks,
+        o: feed.otel,
         e: f ? { v: String(f.errors), cls: f.errors ? 'crit' : 'dim', title: f.last_error || 'No errors reported' } : { v: NA, cls: 'dim' },
       },
     };
   });
   return {
     sub: 'Where each tool leaves its data, and how fresh it is',
-    table: { cols: [{ k: 't', l: 'Tool', w: '140px' }, { k: 's', l: 'Data from' }, { k: 'l', l: 'Last data', n: true, w: '84px', t: 'Newest record in the history' }, { k: 'f', l: 'Freshness', n: true, w: '104px', t: 'When the live monitor last saw the tool, and how sure the telemetry is' }, { k: 'e', l: 'Errors', n: true, w: '56px', t: 'API errors the tool logged' }], rows },
+    table: { cols: [{ k: 't', l: 'Tool', w: '140px' }, { k: 's', l: 'Data from' }, { k: 'l', l: 'Last data', n: true, w: '84px', t: 'Newest record in the history' }, { k: 'f', l: 'Freshness', n: true, w: '104px', t: 'When the live monitor last saw the tool, and how sure the telemetry is' }, { k: 'h', l: 'Hooks', n: true, w: '84px', t: 'Hook events from the tool in the last 24 hours' }, { k: 'o', l: 'OTel', n: true, w: '84px', t: 'OTel samples and events from the tool since the daemon started' }, { k: 'e', l: 'Errors', n: true, w: '56px', t: 'API errors the tool logged' }], rows },
   };
 }
 

@@ -189,7 +189,7 @@ describe('traffic, CPU cores, sources, self, collectors and quality', () => {
   });
   it('adds freshness and errors to the data sources', () => {
     const p = buildPanel('sources', ctxWith(), local(), { id: 'sources' });
-    expect(p.table.cols.map(c => c.l)).toEqual(['Tool', 'Data from', 'Last data', 'Freshness', 'Errors']);
+    expect(p.table.cols.map(c => c.l)).toEqual(['Tool', 'Data from', 'Last data', 'Freshness', 'Hooks', 'OTel', 'Errors']);
     const a = p.table.rows.find(r => r.id === 'tool-a').cells;
     expect(a.f).toMatchObject({ v: '5 s ago', sub: '90%' });
     expect(a.e).toMatchObject({ v: '2', cls: 'crit', title: 'overloaded' });

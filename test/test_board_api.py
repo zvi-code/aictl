@@ -3237,6 +3237,22 @@ class TestMachine:
         assert pipe["stream"] == {"connected_clients": 2, "snapshot_ts": 1000.0, "snapshot_age_s": 10.0}
         assert pipe["self"]["db_bytes"] > 0 and pipe["self"]["db_rows"] == sum(pipe["self"]["db_tables"].values())
 
+    def test_pipeline_counts_each_tools_hook_events_of_the_last_day(self, db):
+        from aictl.storage import EventRow
+
+        db.append_events(
+            [
+                EventRow(ts=1000.0, tool="copilot-cli", kind="hook:PreToolUse"),
+                EventRow(ts=1005.0, tool="copilot-cli", kind="hook:Stop"),
+                EventRow(ts=1010.0 - 90000, tool="claude-code", kind="hook:Stop"),  # older than a day
+                EventRow(ts=1001.0, tool="claude-code", kind="file_modified"),  # not a hook
+                EventRow(ts=1002.0, tool="claude-code", kind="hook:Stop", detail={"_aictl_verify": 1}),  # aictl's own check
+            ]
+        )
+        db.flush()
+        hooks = board_api.compute_machine(db, SimpleNamespace(snapshot=None), now=1010.0)["pipeline"]["hooks"]
+        assert hooks == {"copilot-cli": {"count": 2, "last_fire_ts": 1005.0}}
+
     def test_history_counts_are_read_once_a_minute(self, db, monkeypatch):
         calls = []
         real = db.stats

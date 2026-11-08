@@ -235,10 +235,14 @@ class ServerHandle:
         return self.post("/v1/traces", payload)
 
     def _read_db(self, read: Any) -> Any:
-        """Run *read(db)* against the server's own database file."""
-        from aictl.storage import HistoryDB
+        """Run *read(db)* against the server's stores: its machine file and every project store.
 
-        db = HistoryDB(db_path=str(self.db_path), flush_interval=0)
+        A session with a project cwd is kept in that project's store, so reading the
+        machine file alone misses it.
+        """
+        from aictl.project_stores import ProjectStores
+
+        db = ProjectStores(db_path=str(self.db_path), flush_interval=0)
         try:
             return read(db)
         finally:

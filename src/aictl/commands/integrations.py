@@ -561,7 +561,7 @@ def _would_be_committed(path: Path) -> bool:
     return proc.returncode == 1  # 0 ignored, 128 not a repository
 
 
-def _update_json_file(path: Path, updates: dict, *, force: bool = False) -> bool:
+def _update_json_file(path: Path, updates: dict, *, force: bool = False, note: bool = False) -> bool:
     """Apply top-level *updates* to a JSON(C) file, preserving every other byte.
 
     Returns False, with no write, when nothing changes (a second install leaves
@@ -573,7 +573,9 @@ def _update_json_file(path: Path, updates: dict, *, force: bool = False) -> bool
         jsonc_loads(text)
     except (OSError, ValueError):
         text = ""  # force quarantined a corrupt file above
-    new_text = hook_removal.update_json_text(text, updates)
+    new_text = hook_removal.update_json_text(text, updates, note=note)
+    if text and new_text == text:
+        return False
     if text and json.dumps(existing, sort_keys=True) == json.dumps(jsonc_loads(new_text), sort_keys=True):
         return False
     guard = WriteGuard.current()
@@ -1093,10 +1095,14 @@ def _collect_hook_status(scope: str) -> dict:
             state, fix = "partial", f"aictl hooks install --scope {scope}"
         else:
             state, fix = "registered", ""
+        warnings = []
+        if tool == "copilot" and scope == "project" and rules and copilot_cli_trusts(Path.cwd()) is False:
+            warnings.append(_untrusted_folder_steps(Path.cwd()))
         tools.append(
             {
                 "tool": tool,
                 "scope": scope,
+                "warnings": warnings,
                 "path": str(path),
                 "symlink": path.is_symlink(),
                 "state": state,
@@ -1118,7 +1124,9 @@ def _collect_hook_status(scope: str) -> dict:
         "leftovers": leftovers.changes,
         "notes": leftovers.notes,
         "ok": not invalid
-        and not any(t["state"] not in ("registered", "not-registered", "not-installed", "disabled-by-rename") for t in tools),
+        and not any(
+            t["state"] not in ("registered", "not-registered", "not-installed", "disabled-by-rename") for t in tools
+        ),
     }
 
 
@@ -1162,6 +1170,8 @@ def hooks_status_cmd(scope: str, as_json: bool):
             )
             for renamed in t["disabled_files"]:
                 click.echo(f"  disabled by rename: {renamed}")
+            for warning in t["warnings"]:
+                click.secho(f"  [WARN] {warning}", fg="red")
             if t["fix"]:
                 click.echo(f"  fix: {t['fix']}")
         for bad in report["invalid_configs"]:
@@ -1413,7 +1423,8 @@ def enable(port: int | None, tool: str, profile: str | None, print_only: bool, s
     failures = [a for a in actions if "FAILED" in a]
     click.secho("OTel enabled:", fg="green", bold=True)
     for action in actions:
-        click.echo(f"  {action}")
+        if not action.startswith(NEEDS_YOU):
+            click.echo(f"  {action}")
     click.echo()
     click.echo(f"Endpoint: {endpoint}")
     click.echo(f"Tools:    {', '.join(tools)}")
@@ -1425,8 +1436,11 @@ def enable(port: int | None, tool: str, profile: str | None, print_only: bool, s
     click.echo("Restart AI tools to pick up changes.")
     if "copilot" in tools:
         click.echo("VS Code: Cmd/Ctrl+Shift+P → 'Developer: Reload Window'")
+    needs_you = _report_needs_you(actions)
     if failures:
         raise SystemExit(1)
+    if needs_you:
+        raise SystemExit(EXIT_NEEDS_YOU)
 
 
 def _print_exports(port: int | None, tool: str, shell: str | None, profile: str | None = None) -> None:
@@ -1462,6 +1476,18 @@ def _print_exports(port: int | None, tool: str, shell: str | None, profile: str 
     print(f"# Tools: {', '.join(tools)}", file=sys.stderr)
     print(f"# Make sure 'aictl serve --port {port}' is running", file=sys.stderr)
 
+
+# What Claude Code needs to export to aictl. It has no default OTLP protocol and
+# its default endpoint is not aictl's port, so both are always set.
+CLAUDE_OTEL_ENV_KEYS = (
+    "CLAUDE_CODE_ENABLE_TELEMETRY",
+    "OTEL_METRICS_EXPORTER",
+    "OTEL_LOGS_EXPORTER",
+    "OTEL_LOG_USER_PROMPTS",
+    "OTEL_LOG_TOOL_DETAILS",
+    "OTEL_EXPORTER_OTLP_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+)
 
 # Every tool `otel enable` / `aictl enable` configures by default.
 _ALL_OTEL_TOOLS = ("claude", "copilot", "codex", "gemini", "agent-workspace")
@@ -1778,10 +1804,10 @@ def status(port: int | None):
 _VSCODE_AGENT_SETTINGS: dict[str, object] = {
     # Agents
     "chat.agent.enabled": True,
-    # Hooks
-    # chat.useClaudeHooks stays off: with it VS Code runs every Claude hook of
-    # other Claude hook too, and aictl's own Claude rules fire a second time.
-    "chat.useHooks": True,
+    # Hooks: none needed. The Copilot harness loads ~/.copilot/hooks whatever
+    # chat.useHooks says; that toggle only drives the legacy Local harness, so a
+    # person's own value there is theirs. chat.useClaudeHooks stays off: with it
+    # VS Code runs every Claude hook too, and aictl's Claude rules fire twice.
     "chat.useCustomAgentHooks": True,
     # Instructions & context files
     "chat.useAgentsMdFile": True,
@@ -1794,7 +1820,60 @@ _VSCODE_AGENT_SETTINGS: dict[str, object] = {
 }
 
 
-def _write_json_settings(path: Path, updates: dict, *, force: bool = False) -> str:
+def _ours(path: Path, key: str, value: object, member: str | None = None) -> bool:
+    """*value* at *key* (or *key*.*member*) is what aictl wrote there earlier."""
+    entry = hook_removal.load_manifest(Path.home()).get(str(path), {}).get(key)
+    if not isinstance(entry, dict):
+        return False
+    wrote = entry.get("wrote")
+    if member is None:
+        return wrote == value
+    return isinstance(wrote, dict) and wrote.get(member, hook_removal.DELETE) == value
+
+
+NEEDS_YOU = "NEEDS YOU: "
+# Exit codes: 1 when a write failed, 2 when a setting was left for the person to change.
+EXIT_NEEDS_YOU = 2
+
+
+def _report_needs_you(actions: list[str]) -> bool:
+    """Print every setting aictl left alone as numbered steps, loudly. True when there was one."""
+    needs = [a[len(NEEDS_YOU) :] for a in actions if a.startswith(NEEDS_YOU)]
+    if not needs:
+        return False
+    click.echo()
+    click.secho(
+        f"NOT CHANGED: {len(needs)} setting(s) need you: aictl does not change your own values or a tool's trust.",
+        fg="red",
+        bold=True,
+    )
+    click.secho("Until you change them, that data does not reach aictl. To change them:", fg="red")
+    for i, step in enumerate(needs, 1):
+        click.secho(f"  {i}. {step}", fg="red")
+    click.secho("Then run the same aictl command again to check.", fg="red")
+    return True
+
+
+def _windows_user_env(key: str) -> str | None:
+    """The value of user environment variable *key* (``HKCU\\Environment``), or None."""
+    out = hook_removal._reg("query", "HKCU\\Environment", "/v", key)
+    for line in (out or "").splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0].lower() == key.lower() and parts[1].startswith("REG_"):
+            return parts[2].strip()
+    return None
+
+
+def _env_is_trivial(key: str, have: str | None, want: str) -> bool:
+    """aictl may set *key*: it is unset, already *want*, aictl's own, or an endpoint on this machine."""
+    if have is None or have == want or key.startswith("AICTL_"):
+        return True
+    return key.endswith("ENDPOINT") and hook_removal._is_local_endpoint(have)
+
+
+def _write_json_settings(
+    path: Path, updates: dict, *, force: bool = False, note: bool = False, conflicts: list[str] | None = None
+) -> str:
     """Merge updates into a JSON(C) settings file, recording how to undo them.
 
     Top-level keys are replaced, except that a dict value is merged one level
@@ -1805,11 +1884,37 @@ def _write_json_settings(path: Path, updates: dict, *, force: bool = False) -> s
     status = "updated" if path.exists() else "created"
     existing = _read_json_strict(path, force=force) if path.exists() else {}
     merged: dict = {}
+    edits: dict = {}
+    skipped: list[str] = []
     for key, value in updates.items():
-        current = existing.get(key)
-        merged[key] = {**current, **value} if isinstance(value, dict) and isinstance(current, dict) else value
+        current = existing.get(key, hook_removal.DELETE)
+        if isinstance(value, dict) and isinstance(current, dict):
+            # Only aictl's entries change inside the person's block, and only an entry
+            # that is missing or still holds what aictl wrote. Anything else is theirs.
+            take = {}
+            for k, v in value.items():
+                have = current.get(k, hook_removal.DELETE)
+                if have is hook_removal.DELETE or have == v or _ours(path, key, have, k):
+                    take[k] = v
+                else:
+                    skipped.append(
+                        f'In {path}, set "{k}" inside "{key}" to {json.dumps(v)}. It is {json.dumps(have)} now.'
+                    )
+            if take:
+                merged[key] = {**current, **take}
+                edits[key] = hook_removal.Members(
+                    {k: v for k, v in take.items() if current.get(k, hook_removal.DELETE) != v}
+                )
+        elif current is hook_removal.DELETE or current == value or _ours(path, key, current):
+            merged[key] = edits[key] = value
+        else:
+            skipped.append(f'In {path}, set "{key}" to {json.dumps(value)}. It is {json.dumps(current)} now.')
+    if conflicts is not None:
+        conflicts.extend(skipped)
+    if not edits:
+        return "unchanged"
     _record_vscode_manifest(path, existing, merged)
-    if not _update_json_file(path, merged, force=force):
+    if not _update_json_file(path, edits, force=force, note=note):
         return "unchanged"
     return status
 
@@ -1899,6 +2004,40 @@ def _install_vscode_hooks(
     hook_config = _build_vscode_hook_config(port, None, scope=scope)
     _register_hook_file(hook_path, hook_config, force=force, version=_COPILOT_HOOK_FILE_VERSION)
     actions.append(f"VS Code Copilot hooks ({len(VSCODE_HOOK_EVENTS)} events) → {hook_path}")
+    if scope == "project" and copilot_cli_trusts(Path.cwd()) is False:
+        actions.append(NEEDS_YOU + _untrusted_folder_steps(Path.cwd()))
+
+
+def copilot_cli_trusts(folder: Path) -> bool | None:
+    """Whether Copilot CLI loads ``.github/hooks`` in *folder*: it skips them in a folder it does not trust.
+
+    True when *folder* is in, or under, a ``trustedFolders`` entry of ``~/.copilot/config.json``.
+    None when that file is absent or unreadable (Copilot CLI is not set up here).
+    """
+    config = copilot_global_dir() / "config.json"
+    try:
+        trusted = jsonc_loads(config.read_text("utf-8")).get("trustedFolders")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not isinstance(trusted, list):
+        return False
+    here = Path(os.path.realpath(folder))
+    for entry in trusted:
+        if not isinstance(entry, str) or not entry:
+            continue
+        root = Path(os.path.realpath(os.path.expanduser(entry)))
+        if here == root or root in here.parents:
+            return True
+    return False
+
+
+def _untrusted_folder_steps(folder: Path) -> str:
+    config = copilot_global_dir() / "config.json"
+    return (
+        f"Copilot CLI does not trust {folder}, so it skips the hooks in {folder / '.github' / 'hooks'}. "
+        f'To trust it: run copilot in {folder} and choose to trust the folder, or add "{folder}" to '
+        f'"trustedFolders" in {config}. VS Code reads the hooks without this.'
+    )
 
 
 def _gemini_settings_path(scope: str) -> Path:
@@ -1985,10 +2124,20 @@ def _enable_otel(
     env_block = _build_env_block(port, tools, profile)
 
     if IS_WINDOWS:
+        written = 0
         for key, val in env_block.items():
-            _run_env_persist(["setx", key, val])
+            have = _windows_user_env(key)
+            if not _env_is_trivial(key, have, val):
+                actions.append(
+                    f'{NEEDS_YOU}Windows user environment variable {key} is "{have}"; aictl needs "{val}". '
+                    f'To change it, run: setx {key} "{val}"'
+                )
+                continue
+            if have != val:
+                _run_env_persist(["setx", key, val])
+                written += 1
             os.environ[key] = val
-        actions.append(f"OTel env vars → Windows user environment ({len(env_block)} vars via setx)")
+        actions.append(f"OTel env vars → Windows user environment ({written} set via setx, {len(env_block)} wanted)")
         actions.append("  Note: new terminals will inherit; current session updated")
     else:
         _update_shell_profiles_block(
@@ -2004,6 +2153,23 @@ def _enable_otel(
             _run_env_persist(["launchctl", "setenv", key, val])
         actions.append(f"OTel env vars → macOS launchctl ({len(env_block)} vars)")
 
+    # Claude Code reads the `env` block of its user settings however it is started:
+    # from a terminal, the desktop app or an editor. Shell profiles reach only the
+    # first, and launchctl values do not survive a restart.
+    if "claude" in tools:
+        settings_path = claude_global_dir() / "settings.json"
+        claude_env = {k: env_block[k] for k in CLAUDE_OTEL_ENV_KEYS if k in env_block}
+        try:
+            if not create_missing and not settings_path.parent.is_dir():
+                actions.append(f"Claude Code OTel settings skipped: {settings_path.parent} does not exist")
+            else:
+                needs: list[str] = []
+                status = _write_json_settings(settings_path, {"env": claude_env}, force=force, conflicts=needs)
+                actions.append(f"Claude Code OTel → {settings_path} env ({len(claude_env)} vars, {status})")
+                actions.extend(NEEDS_YOU + n for n in needs)
+        except Exception as exc:  # noqa: BLE001 — best-effort integration; FAILED is reported and exits 1
+            actions.append(f"Claude Code OTel → {settings_path} FAILED ({exc})")
+
     # Copilot OTel settings in VS Code
     if "copilot" in tools:
         try:
@@ -2011,8 +2177,12 @@ def _enable_otel(
             if not create_missing and not settings_path.parent.is_dir():
                 actions.append(f"Copilot OTel skipped: {settings_path.parent} does not exist (VS Code not installed)")
             else:
-                status = _write_json_settings(settings_path, _copilot_otel_settings(endpoint), force=force)
+                needs = []
+                status = _write_json_settings(
+                    settings_path, _copilot_otel_settings(endpoint), force=force, note=True, conflicts=needs
+                )
                 actions.append(f"Copilot OTel → VS Code settings.json ({status})")
+                actions.extend(NEEDS_YOU + n for n in needs)
         except Exception as exc:  # noqa: BLE001 — best-effort integration; FAILED is reported and exits 1
             actions.append(f"Copilot OTel → VS Code settings.json FAILED ({exc})")
 
@@ -2051,9 +2221,11 @@ def _enable_vscode(scope: str, port: int, actions: list[str], *, force: bool = F
         locations = current.get("chat.hookFilesLocations")
         if isinstance(locations, dict) and scope == "user" and "~/.copilot/hooks" not in locations:
             updates["chat.hookFilesLocations"] = {"~/.copilot/hooks": True}
-        status = _write_json_settings(settings_path, updates, force=force)
+        needs: list[str] = []
+        status = _write_json_settings(settings_path, updates, force=force, note=True, conflicts=needs)
         n = len(updates)
         actions.append(f"VS Code agent/hooks/context ({n} settings) → {settings_path} ({status})")
+        actions.extend(NEEDS_YOU + x for x in needs)
     except Exception as exc:  # noqa: BLE001 — best-effort integration; FAILED is reported and exits 1
         actions.append(f"VS Code agent settings → {settings_path} FAILED ({exc})")
 
@@ -2172,7 +2344,8 @@ def enable(scope: str, port: int | None, dry_run: bool, force: bool, replace_dis
     failures = [a for a in actions if "FAILED" in a]
     click.secho("\naictl integrations enabled:", fg="green", bold=True)
     for action in actions:
-        click.echo(f"  {action}")
+        if not action.startswith(NEEDS_YOU):
+            click.echo(f"  {action}")
 
     click.echo()
     click.echo(f"  Port:  {port}")
@@ -2183,5 +2356,8 @@ def enable(scope: str, port: int | None, dry_run: bool, force: bool, replace_dis
     click.echo("  2. Reload VS Code: Ctrl+Shift+P → 'Developer: Reload Window'")
     if not IS_WINDOWS:
         click.echo("  3. Reload shell:   source ~/.zshrc  (or open a new terminal)")
+    needs_you = _report_needs_you(actions)
     if failures:
         raise SystemExit(1)
+    if needs_you:
+        raise SystemExit(EXIT_NEEDS_YOU)

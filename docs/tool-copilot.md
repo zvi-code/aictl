@@ -92,6 +92,8 @@ Installed events, using the documented PascalCase aliases (https://docs.github.c
 
 Every entry carries `"_aictl_owner": "aictl.managed"`, and `aictl hooks status`, `aictl hooks doctor`, `aictl hooks uninstall` and `aictl disable` operate on this file too.
 
+Copilot CLI reads the same file, but it skips `.github/hooks` in a folder it does not trust. Its log then says "Skipped repository hooks (.github/hooks) because the folder ... is not trusted", and it still records hook runs from other sources. A folder is trusted when it is in, or under, an entry of `trustedFolders` in `~/.copilot/config.json`. `aictl enable --scope project` and `aictl hooks status --scope project` check this and print the steps when the folder is not trusted. aictl does not change trust itself: it is a security setting. To trust a folder, run `copilot` in it and accept the trust question, or add the folder to `trustedFolders`. VS Code reads the hooks without this.
+
 ---
 
 # Microsoft 365 Copilot

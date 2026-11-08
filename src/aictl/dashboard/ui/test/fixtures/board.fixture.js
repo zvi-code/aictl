@@ -123,7 +123,8 @@ export function machineFixture(overrides = {}) {
     pipeline: {
       self: { pid: 77, cpu: 0.3, rss: 96_000_000, uptime_s: 7200, threads: 14, db_bytes: 640_000_000, db_rows: 1_200_000, db_tables: { requests: 1_000_000, events: 200_000 }, writes: [] },
       sink: { emitted: 5000, flushed: 4900, dropped: 0, flood: false, flood_drops: 0, buffered: 3, tracked: 40 },
-      otel_receiver: { metrics_received: 10, events_received: 20, api_calls_total: 30, api_errors_total: 1, errors: 0, dropped: 0, last_receive_at: NOW - 30, active: true },
+      otel_receiver: { metrics_received: 10, events_received: 20, api_calls_total: 30, api_errors_total: 1, errors: 0, dropped: 0, last_receive_at: NOW - 30, active: true, by_tool: { 'tool-a': { metrics: 10, events: 20, last_at: NOW - 30 } } },
+      hooks: { 'tool-a': { count: 7, last_fire_ts: NOW - 60 } },
       ingesters: [{ name: 'copilot-session-store', status: 'ok', last_ok: NOW - 60, last_poll: NOW - 60, error: null, rows: 4, rows_total: 900, source: '~/.copilot/session-store.db' }, { name: 'cursor', status: 'failed', last_ok: NOW - 4000, last_poll: NOW - 20, error: 'disk gone', rows: 0, rows_total: null, source: null }],
       data_quality: [{ ts: NOW - 20, component: 'ingester:cursor', source: '/x/cursor.db', kind: 'ingester', status: 'failed', severity: 'error', text: 'Ingester poll loop raised', error: 'disk gone', tool: null, count: 3, last_ok: NOW - 4000 }],
       freshness: [{ tool: 'tool-a', label: 'Tool A', last_seen: NOW - 5, source: 'stats-cache', confidence: 0.9, errors: 2, last_error: 'overloaded' }],

@@ -421,10 +421,76 @@ def read_text_exact(path: Path) -> str:
         return fh.read()
 
 
-def update_json_text(text: str, updates: dict) -> str:
-    """Apply top-level *updates* to JSON(C) *text*; a value of ``DELETE`` removes the key."""
+class Members(dict):
+    """Entries to set inside the object at one top-level key, each on its own; ``DELETE`` removes one.
+
+    Only these entries' text changes: the person's other entries, their comments and
+    their layout inside that object stay as they are.
+    """
+
+
+# The line aictl puts above each key it sets in a file that allows comments.
+AICTL_NOTE = "// added by aictl; `aictl disable` restores the earlier value"
+
+
+def _key_line_start(text: str, key: str) -> int | None:
+    for name, key_start, _vs, _ve in _members(text)[2]:
+        if name == key:
+            return text.rfind("\n", 0, key_start) + 1
+    return None
+
+
+def _drop_note(text: str, key: str) -> str:
+    """Remove aictl's note line right above *key*, if it is there."""
+    start = _key_line_start(text, key)
+    if not start:
+        return text
+    prev_start = text.rfind("\n", 0, start - 1) + 1
+    if text[prev_start:start].strip() == AICTL_NOTE:
+        return text[:prev_start] + text[start:]
+    return text
+
+
+def _add_note(text: str, key: str) -> str:
+    """Put aictl's note line above *key*, once."""
+    start = _key_line_start(text, key)
+    if start is None or not text[start : text.find('"', start)].strip() == "":
+        return text  # the key does not start its own line: no room for a note
+    prev_start = text.rfind("\n", 0, start - 1) + 1 if start else 0
+    if start and text[prev_start:start].strip() == AICTL_NOTE:
+        return text
+    pad = text[start : text.find('"', start)]
+    newline = "\r\n" if "\r\n" in text else "\n"
+    return text[:start] + pad + AICTL_NOTE + newline + text[start:]
+
+
+def _set_members(text: str, key: str, entries: Members) -> str:
+    sets = {k: v for k, v in entries.items() if v is not _DELETE}
+    for name, _ks, value_start, value_end in _members(text)[2] if text.strip(" \t\r\n\ufeff") else []:
+        if name == key and text[value_start] == "{":
+            inner = text[value_start:value_end]
+            for member, value in entries.items():
+                inner = jsonc_delete(inner, member) if value is _DELETE else jsonc_set(inner, member, value)
+            return text[:value_start] + inner + text[value_end:]
+    return jsonc_set(text, key, sets) if sets else text
+
+
+def update_json_text(text: str, updates: dict, *, note: bool = False) -> str:
+    """Apply top-level *updates* to JSON(C) *text*; a value of ``DELETE`` removes the key.
+
+    A :class:`Members` value changes only those entries inside the key's object. With
+    *note*, for files that allow comments, each key aictl sets gets :data:`AICTL_NOTE`
+    above it, and a key aictl deletes or restores loses it.
+    """
     for key, value in updates.items():
+        if isinstance(value, Members):
+            text = _set_members(text, key, value)
+            continue
+        if text.strip(" \t\r\n\ufeff"):
+            text = _drop_note(text, key)
         text = jsonc_delete(text, key) if value is _DELETE else jsonc_set(text, key, value)
+        if note and value is not _DELETE:
+            text = _add_note(text, key)
     return text
 
 
@@ -813,6 +879,22 @@ def load_manifest(home: Path) -> dict:
     return {k: v for k, v in data.items() if _manifest_entry_is_live(k, path)}
 
 
+def _restore_merged(current: dict, wrote: dict, prev: object) -> dict:
+    """*current* with each entry aictl set back to what it was before, others untouched."""
+    before = prev if isinstance(prev, dict) else {}
+    out = dict(current)
+    for k, v in wrote.items():
+        if k in before and before[k] == v:
+            continue  # aictl did not change this entry
+        if out.get(k, _DELETE) != v:
+            continue  # changed since aictl wrote it
+        if k in before:
+            out[k] = before[k]
+        else:
+            del out[k]
+    return out
+
+
 def _vscode_updates(path: Path, data: dict, manifest: dict, include_toggles: bool, sink: _Sink) -> dict:
     """Which keys to change in one settings file, given what aictl recorded writing."""
     updates: dict = {}
@@ -821,10 +903,21 @@ def _vscode_updates(path: Path, data: dict, manifest: dict, include_toggles: boo
         for key, entry in recorded.items():
             if key not in data:
                 continue
-            if data[key] != entry.get("wrote"):
+            wrote, current = entry.get("wrote"), data[key]
+            if isinstance(current, dict) and isinstance(wrote, dict):
+                # A block aictl merged into, such as Claude Code's `env`: undo only
+                # aictl's entries that still hold what it wrote, one entry at a time.
+                restored = _restore_merged(current, wrote, entry.get("prev") if entry.get("had") else None)
+                if not restored and not entry.get("had"):
+                    updates[key] = _DELETE
+                elif restored != current:
+                    ops = Members({k: v for k, v in restored.items() if current.get(k, _DELETE) != v})
+                    ops.update({k: _DELETE for k in current if k not in restored})
+                    updates[key] = ops
+            elif current == wrote:
+                updates[key] = entry.get("prev") if entry.get("had") else _DELETE
+            else:
                 sink.result.notes.append(f"left {key} alone, changed since aictl wrote it: {path}")
-                continue
-            updates[key] = entry.get("prev") if entry.get("had") else _DELETE
         return updates
     # No manifest: an install from an older aictl. Only what is provably ours.
     if _is_local_endpoint(data.get("github.copilot.chat.otel.otlpEndpoint")):
@@ -1023,7 +1116,9 @@ def remove_everything(
         if path.name == "aictl.json":
             _remove_disabled_copies(path.parent, sink)
 
-    vscode_paths = list(dict.fromkeys([*vscode_settings_paths(home), *extra_vscode_settings]))
+    # Every settings file aictl recorded writing, such as Claude Code's `env`, is restored too.
+    recorded = [Path(p) for p in load_manifest(home)]
+    vscode_paths = list(dict.fromkeys([*vscode_settings_paths(home), *extra_vscode_settings, *recorded]))
     for root in projects:
         vscode_paths.append(root / ".vscode" / "settings.json")
     _remove_from_vscode(home, vscode_paths, include_vscode_toggles, sink)

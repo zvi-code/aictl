@@ -510,11 +510,11 @@ def test_user_change_after_enable_is_not_reverted(env):
     vs = hook_removal.vscode_settings_paths(env)[0]
     _seed(vs, "{}\n")
     ig._enable_vscode("user", 8484, [])
-    data = json.loads(vs.read_text())
-    data["chat.useHooks"] = "mine now"
+    data = hook_removal.jsonc_loads(vs.read_text())
+    data["chat.agent.enabled"] = "mine now"
     vs.write_text(json.dumps(data))
     hook_removal.remove_everything(env, projects=[])
-    assert json.loads(vs.read_text())["chat.useHooks"] == "mine now"
+    assert json.loads(vs.read_text())["chat.agent.enabled"] == "mine now"
 
 
 def test_standalone_remover_works_with_no_aictl_on_the_path(env, tmp_path):
