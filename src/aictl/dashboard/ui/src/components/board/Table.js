@@ -16,7 +16,7 @@ function Cell({ col, x, go, primary }) {
   const label = x.go || (primary && go)
     ? html`<button type="button" class="bd-lnk" onClick=${stop(x.go || go)}>${text}</button>`
     : text;
-  const rich = x.foldOn || x.foldSp || x.sw || x.dot || x.warn || x.sub || x.pad || x.chips;
+  const rich = x.foldOn || x.foldSp || x.sw || x.dot || x.warn || x.sub || x.pad || x.chips || x.links;
   let body;
   if (x.barOn) {
     body = html`<div class="bd-ibw"><span class="bd-ib" style="max-width:70px"><b style=${{ width: x.bar + '%', background: x.barC }}></b></span><span>${x.v}</span></div>`;
@@ -30,7 +30,7 @@ function Cell({ col, x, go, primary }) {
       ${x.dot && html`<span class="bd-st"><i style=${{ background: x.dot }}></i></span>`}
       ${x.warn && html`<${Ico} d=${PATHS.warn} style="color:var(--warnink)"/>`}
       ${x.chips ? x.chips.map((c, i) => html`<span key=${i} class=${'bd-tag bd-tag-' + (c.sev || 'info')} title=${c.title || c.text}>${c.text}</span>`) : null}
-      <span class="bd-tx">${label}${x.sub ? html`<span class="bd-subv">${x.sub}</span>` : null}</span>
+      <span class="bd-tx">${x.links ? x.links.map((l, i) => html`<a key=${i} class="bd-lnk bd-pr" href=${l.href} target="_blank" rel="noreferrer" title=${l.title || l.text} onClick=${e => e.stopPropagation()}>${l.text}</a>`) : label}${x.sub ? html`<span class="bd-subv">${x.sub}</span>` : null}</span>
     </div>`;
   } else body = label;
   return html`<td class=${cls} title=${title}>${body}</td>`;

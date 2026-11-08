@@ -167,7 +167,7 @@ describe('agent drawer tab list and header', () => {
     const { findByRole, getAllByRole } = mount();
     await findByRole('heading', { name: 'Fix the parser' });
     const names = getAllByRole('tab').map(t => t.textContent.replace(/ \(\d+\)$/, ''));
-    expect(names).toEqual(['Overview', 'Transcript', 'Flow', 'Timeline', 'Turns', 'Tool calls', 'Changes', 'Failures and loops', 'Events', 'Team', 'Processes', 'Integrations']);
+    expect(names).toEqual(['Overview', 'Transcript', 'Flow', 'Timeline', 'Turns', 'Tool calls', 'Changes', 'Artifacts', 'Commits', 'Failures and loops', 'Events', 'Team', 'Processes', 'Integrations']);
   });
 
   it('shows branch, commit and the commits badge, and lists the commits on click', async () => {

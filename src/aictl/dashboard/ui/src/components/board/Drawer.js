@@ -14,6 +14,7 @@ import TextView from '../ui/TextView.js';
 import { scopeAudit } from '../../utils/auditScope.js';
 import { instructionsByTool } from './findings.js';
 import FileEditor from './FileEditor.js';
+import { normalizeAgentDetail } from './useBoardData.js';
 
 /** Fetch on open. A new `tick` fetches again and keeps the old data on screen meanwhile. */
 export function useDetail(load, key, tick = 0) {
@@ -110,7 +111,8 @@ const titleOf = a => (a.parent_id ? (a.role || a.title) + ' (subagent)' : a.titl
 const toolListText = t => (Array.isArray(t) ? t.join(', ') : (t == null ? '' : String(t)));
 
 function AgentDrawer({ d, ctx, frame, act }) {
-  const { data, error } = useDetail(opts => api.getBoardAgent(d.id, opts), 'agent:' + d.id, ctx.refreshKey);
+  const { data: raw, error } = useDetail(opts => api.getBoardAgent(d.id, opts), 'agent:' + d.id, ctx.refreshKey);
+  const data = useMemo(() => normalizeAgentDetail(raw), [raw]);
   const listed = ctx.data.agents.find(a => a.id === d.id);
   const a = data?.agent || listed || { id: d.id, title: d.id };
   const st = ctx.stopped[a.id] ? 'stopped' : a.status;
@@ -123,6 +125,8 @@ function AgentDrawer({ d, ctx, frame, act }) {
     ['turns', 'Turns' + (data ? ' (' + (data.turns || []).length + ')' : '')],
     ['tools', 'Tool calls' + (a.tool_calls != null ? ' (' + a.tool_calls + ')' : data ? ' (' + (data.tool_calls || []).length + ')' : '')],
     ['changes', 'Changes'],
+    ['artifacts', 'Artifacts' + (data ? ' (' + data.artifacts_total + ')' : '')],
+    ['commits', 'Commits' + (data ? ' (' + data.commits.length + ')' : '')],
     ['errors', 'Failures and loops'],
     ['events', 'Events'],
     ['team', 'Team'],
@@ -153,6 +157,8 @@ const AGENT_PARTS = {
   transcript: () => import('./agent/TranscriptTab.js'),
   flow: () => import('./agent/FlowTab.js'),
   timeline: () => import('./agent/TimelineTab.js'),
+  artifacts: () => import('./agent/ArtifactsTab.js'),
+  commits: () => import('./agent/CommitsTab.js'),
   events: () => import('./agent/EventsTab.js'),
   team: () => import('./agent/TeamTab.js'),
   procs: () => import('./agent/ProcessesTab.js'),
@@ -203,6 +209,8 @@ function OverviewTab({ a, data, st, ctx, act, pending }) {
     { label: 'Tool calls', value: fmtN(a.tool_calls), sub: a.failures == null ? '' : a.failures + ' failed' },
     { label: 'Time', value: fmtDur((a.ended_at || Date.now() / 1000) - a.started_at) },
     { label: 'Lines', value: (data.files || []).length ? '+' + fmtN(addLines) : NA, sub: (data.files || []).length ? '−' + fmtN(delLines) : '' },
+    { label: 'Artifacts', value: fmtN(data.artifacts_total), sub: data.artifacts_bytes == null ? '' : fmtBytes(data.artifacts_bytes), title: 'Files of the session folder and files the session wrote outside its project' },
+    { label: 'Commits', value: fmtN(data.commits.length), sub: ((n) => n + (n === 1 ? ' pull request' : ' pull requests'))(data.commits.reduce((n, c) => n + c.prs.length, 0)) },
   ];
   const models = useMemo(() => ({
     cols: [{ k: 'm', l: 'Model' }, { k: 'msgs', l: 'Calls', n: true, w: '50px', t: 'Calls to this model' }, { k: 'input', l: 'Input', n: true, w: '60px' }, { k: 'output', l: 'Output', n: true, w: '60px' }, { k: 'cr', l: 'Cache read', n: true, w: '76px' }, { k: 'cw', l: 'Cache write', n: true, w: '80px' }, { k: 'cost', l: 'Cost', n: true, w: '60px' }],

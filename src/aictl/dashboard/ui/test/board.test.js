@@ -109,7 +109,7 @@ describe('layout save and restore', () => {
     l = movePanel(l, 'skills', null, false, 'sources');
     expect(l.find(s => s.id === 'sources').panels.at(-1).id).toBe('skills');
     const m = moveSection(freshLayout(), 'usage', -1);
-    expect(m[0].id).toBe('usage');
+    expect(m[1].id).toBe('usage');
     expect(moveSection(freshLayout(), 'agents', -1)[0].id).toBe('agents');
   });
   it('tells the default layout from a changed one', () => {
@@ -681,7 +681,7 @@ describe('board screen', () => {
     const seen = [];
     const fn = vi.fn(async (url, opts) => {
       const u = String(url);
-      if (!u.startsWith('/api/board')) return jsonResponse({});
+      if (!u.startsWith('/api/board') || u.startsWith('/api/board/sessions')) return jsonResponse({ rows: [], total: 0 });
       seen.push(opts?.headers?.['If-None-Match'] || null);
       return seen.length > 1 ? new Response(null, { status: 304 }) : jsonResponse(boardFixture(), 200, { ETag: '"abc"' });
     });

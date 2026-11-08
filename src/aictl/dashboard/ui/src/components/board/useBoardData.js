@@ -97,6 +97,26 @@ export function normalizeMachine(raw) {
   };
 }
 
+/** Fill what /api/board/agent leaves out, so an older server still renders the new tabs. */
+export function normalizeAgentDetail(raw) {
+  if (!raw || typeof raw !== 'object') return raw;
+  const list = v => (Array.isArray(v) ? v : []);
+  return {
+    ...raw,
+    artifacts: list(raw.artifacts),
+    artifacts_total: Number.isFinite(raw.artifacts_total) ? raw.artifacts_total : list(raw.artifacts).length,
+    artifacts_bytes: Number.isFinite(raw.artifacts_bytes) ? raw.artifacts_bytes : null,
+    commits: list(raw.commits).map(c => ({ ...c, prs: list(c.prs) })),
+    prs_note: typeof raw.prs_note === 'string' ? raw.prs_note : '',
+  };
+}
+
+/** Fill what /api/board/sessions leaves out. */
+export function normalizeSessions(raw) {
+  const rows = Array.isArray(raw?.rows) ? raw.rows : [];
+  return { rows, total: Number.isFinite(raw?.total) ? raw.total : rows.length };
+}
+
 /** Fill any key a response leaves out, so one missing list cannot blank the screen. */
 export function normalizeBoard(raw) {
   if (!raw || typeof raw !== 'object') return EMPTY;
