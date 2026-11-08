@@ -87,6 +87,9 @@ MISS_TTL_S = 30.0
 _MISSED_MAX = 10_000
 # Upkeep that opens every store, closed ones too, runs at most this often.
 FULL_PASS_S = 600.0
+# Sessions written to the machine store before the split move to their project stores
+# in the background, for at most this long per upkeep pass.
+SPLIT_PASS_S = 5.0
 # Tables that name a session, besides sessions, read at startup to place sessions.
 _SESSION_TABLES = ("session_processes", "agents")
 _SESSION_TABLES_SHARED = ("session_processes", "agents", "requests", "tool_invocations", "session_prompts", "events")
@@ -707,6 +710,7 @@ class ProjectStores:
         while not self._reap_stop.wait(REAP_EVERY_S):
             try:
                 self._retry_moves()
+                self.split_machine_sessions(SPLIT_PASS_S)
                 self._save_index()
                 self.close_idle()
             except Exception as exc:  # noqa: BLE001 - the loop keeps going
@@ -775,12 +779,18 @@ class ProjectStores:
             conn.execute("ATTACH DATABASE ? AS mv", (str(source._path),))
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                moved: list[Any] = []
                 for table in PROJECT_TABLES:
                     cols = ", ".join(_copy_columns(conn, table))
                     conn.execute(
                         f"INSERT OR IGNORE INTO main.{table}({cols}) SELECT {cols} FROM mv.{table} WHERE session_id = ?",
                         (session_id,),
                     )
+                    if table in _TIMED_TABLES:
+                        lo, hi = conn.execute(
+                            f"SELECT MIN(ts), MAX(ts) FROM mv.{table} WHERE session_id = ?", (session_id,)
+                        ).fetchone()
+                        moved += [types.SimpleNamespace(ts=t) for t in (lo, hi) if t]
                 for table in PROJECT_TABLES:
                     conn.execute(f"DELETE FROM mv.{table} WHERE session_id = ?", (session_id,))
                 conn.commit()
@@ -796,7 +806,8 @@ class ProjectStores:
             # Lookups that found an id in the old store are stale now.
             for ident in [i for i, k in self._found.items() if k == src]:
                 del self._found[ident]
-        self._touch(dst, [_NOW_ROW])
+        # The moved rows' time range: a board range that holds only old rows still reads dst.
+        self._touch(dst, moved or [_NOW_ROW])
         return True
 
     def _retry_moves(self) -> int:
@@ -807,6 +818,40 @@ class ProjectStores:
             self._move_session(session_id, src, dst)
         with self._route_lock:
             return len(self._pending_moves)
+
+    def split_machine_sessions(self, budget_s: float | None = None) -> int:
+        """Move sessions of the machine store, written before the split, to their stores.
+
+        A session goes to the store of its folder (its sessions row, else a request),
+        or to _shared. Each move is one transaction, so a stop part-way loses nothing:
+        what is left in the machine store moves on the next pass. Runs for at most
+        *budget_s* seconds (None: until done). Returns how many sessions are left.
+        """
+        if not self._split:
+            return 0
+        with self._route_lock:
+            legacy = [sid for sid, key in self._sessions.items() if key == MACHINE]
+        started = time.monotonic()
+        conn = self.machine._conn()
+        for done, sid in enumerate(legacy):
+            if budget_s is not None and time.monotonic() - started > budget_s:
+                return len(legacy) - done
+            row = conn.execute(
+                "SELECT project_path FROM sessions WHERE session_id = ? AND project_path != ''", (sid,)
+            ).fetchone() or conn.execute(
+                "SELECT project_path FROM requests WHERE session_id = ? AND project_path != '' LIMIT 1", (sid,)
+            ).fetchone()
+            root = repository_root(row[0]) if row else None
+            key = _path_key(root) if root else SHARED
+            with self._route_lock:
+                if self._sessions.get(sid) != MACHINE:
+                    continue
+                if root:
+                    self._note_root(key, root)
+                self._sessions[sid] = key
+                self._pending_moves[sid] = (MACHINE, key)
+            self._move_session(sid, MACHINE, key)
+        return 0
 
     # ── Buffered writes ────────────────────────────────────────
 
