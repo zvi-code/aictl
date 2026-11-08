@@ -27,6 +27,9 @@ function openHidden(audit, filters = { project: 'all' }, loading = false) {
 
 afterEach(() => vi.unstubAllGlobals());
 
+/** The value of one label under the context chart, unit and detail included. */
+const fact = (container, label) => [...container.querySelectorAll('#dr-actx .bd-facts dt')].find(x => x.textContent === label).nextElementSibling.textContent;
+
 describe('agent context section', () => {
   it('shows what Copilot reports, with units', async () => {
     const { container } = openAgent('copilot-cli', {
@@ -35,24 +38,36 @@ describe('agent context section', () => {
     });
     await waitFor(() => expect(container.textContent).toContain('Tool definitions'));
     const text = container.textContent;
-    expect(text).toContain('Tool definitions6.2 ktokens');
-    expect(text).toContain('Prompt limit922 ktokens');
-    expect(text).toContain('3%');
-    expect(text).toContain('121 KB');
-    expect(text).toContain('peak 500 KB');
-    expect(text).toContain('Total at shutdown164 ktokens');
+    expect(container.querySelector('#dr-actx .bd-ctxbig').textContent).toBe('24 ktokens at the last call');
+    expect(container.querySelector('#dr-actx .bd-ctxof').textContent).toBe('3% of the 922 k prompt limit');
+    expect(container.querySelector('#dr-actx .bd-ctxlimit i').style.width).toBe('2.56%');
+    expect(fact(container, 'Tool definitions')).toBe('6.2 k tokens35 tools available');
+    expect(fact(container, 'Request body')).toBe('121 KBpeak 500 KB');
     expect(text).toContain('Split at the last shutdown');
+    expect(text).toContain('164 k tokens');
+    expect([...container.querySelectorAll('#dr-actx .bd-ctxbar .bd-segpart')].map(x => x.textContent)).toEqual(['16 k', '138 k', '9.1 k']);
+    expect(container.querySelector('#dr-actx .bd-ctxleg').textContent).toBe('System prompt16 k10%Conversation138 k84%Tool definitions9.1 k6%');
+    expect(container.querySelector('#dr-actx .bd-ctxlab').textContent).toBe('1.0 k first call');
+    expect(container.querySelector('#dr-actx .bd-ctxlab-r').textContent).toBe('24 k last call, peak 40 k · 2 calls');
+  });
+
+  it('names the peak once when it is the last call', async () => {
+    const { container } = openAgent('copilot-cli', { ...base, peak: 23650, compactions: [], split: null });
+    await waitFor(() => expect(container.querySelector('#dr-actx .bd-ctxlab-r')).toBeTruthy());
+    expect(container.querySelector('#dr-actx .bd-ctxlab-r').textContent).toBe('24 k last call = peak · 2 calls');
   });
 
   it('shows each value Copilot did not report as not known, never 0', async () => {
     const { container } = openAgent('copilot-cli', { ...base, tool_tokens: null, prompt_limit: null, limit_share: null, request_bytes_last: null, request_bytes_peak: null, available_tools: null, compactions: [], split: null });
     await waitFor(() => expect(container.textContent).toContain('Split at shutdown: not known'));
-    const stats = [...container.querySelectorAll('#dr-actx .bd-stats > div')];
-    const value = label => stats.find(s => s.querySelector('.bd-l').textContent === label).querySelector('.bd-v').textContent;
-    for (const label of ['Tools available', 'Prompt limit', 'Share of limit', 'Request size', 'System', 'Conversation', 'Total at shutdown']) {
-      expect(value(label)).toBe('n/a');
-    }
-    expect(value('Compactions')).toBe('n/a');
+    expect(container.querySelector('#dr-actx .bd-ctxof').textContent).toBe('prompt limit n/a');
+    expect(container.querySelector('#dr-actx .bd-ctxlimit')).toBeNull();
+    expect(fact(container, 'Tool definitions')).toBe('n/atools available n/a');
+    expect(fact(container, 'Request body')).toBe('n/apeak n/a');
+    expect(fact(container, 'Compactions')).toBe('n/anone stored');
+    // The legend keeps its three rows, so a reader sees which figures are missing; no bar is drawn from them.
+    expect([...container.querySelectorAll('#dr-actx .bd-ctxlegv')].map(x => x.textContent)).toEqual(['n/a', 'n/a', 'n/a']);
+    expect(container.querySelector('#dr-actx .bd-ctxbar')).toBeNull();
   });
 
   it('lists the compactions of Claude Code, without Copilot figures', async () => {
@@ -64,14 +79,24 @@ describe('agent context section', () => {
     expect(text).toContain('541 k tokens');
     expect(text).toContain('1.1 min');
     expect(text).toContain('auto');
-    expect(text).not.toContain('Prompt limit');
+    expect(text).not.toContain('prompt limit');
     expect(text).not.toContain('not known');
+    expect(container.querySelector('#dr-actx .bd-ctxsplit')).toBeNull();
+    expect(container.querySelector('#dr-actx').style.gridColumn).toBe('span 12');
   });
 
   it('gives a subagent no shutdown split, because the session owns it', async () => {
     const { container } = openAgent('copilot-cli', { ...base, compactions: [], split: null }, 'parent');
-    await waitFor(() => expect(container.textContent).toContain('Prompt limit'));
+    await waitFor(() => expect(container.textContent).toContain('prompt limit'));
     expect(container.textContent).not.toContain('Split at');
+    expect(container.querySelector('#dr-actx .bd-ctxsplit')).toBeNull();
+  });
+
+  it('gives the main Copilot agent the split beside the chart, in two of three columns', async () => {
+    const { container } = openAgent('copilot-cli', { ...base, compactions: [], split: { ts: NOW, current: 100, system: 50, conversation: 30, tools: 20 } });
+    await waitFor(() => expect(container.querySelector('#dr-actx .bd-ctxsplit')).toBeTruthy());
+    expect(container.querySelector('#dr-actx').style.gridColumn).toBe('span 8');
+    expect(container.querySelector('.bd-drcol').style.gridColumn).toBe('span 4');
   });
 });
 

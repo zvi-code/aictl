@@ -274,7 +274,7 @@ describe('Overview stats', () => {
     const stat = await findByTitle('Files of the session folder and files the session wrote outside its project');
     expect(stat.textContent).toContain('7');
     expect(stat.textContent).toContain('4 KB');
-    const commitsStat = [...container.querySelectorAll('.bd-stats > div')].find(x => x.textContent.startsWith('Commits'));
+    const commitsStat = [...container.querySelectorAll('.bd-drkpis .bd-kpi')].find(x => x.textContent.startsWith('Commits'));
     expect(commitsStat.textContent).toContain('1 pull request');
   });
 });
@@ -289,7 +289,7 @@ describe('an older server without the new fields', () => {
   });
 
   it('renders the Overview, Artifacts and Commits tabs without a crash', async () => {
-    for (const [tab, text] of [['overview', 'Totals'], ['artifacts', 'No artifact is stored for this session.'], ['commits', 'No commit is stored for this session.']]) {
+    for (const [tab, text] of [['overview', 'Usage by model'], ['artifacts', 'No artifact is stored for this session.'], ['commits', 'No commit is stored for this session.']]) {
       const { findByText, unmount } = mountDrawer(agentDetail(), tab);
       await findByText(text);
       unmount();
@@ -301,11 +301,41 @@ describe('Files that can affect a session', () => {
   it('lists the files of the session folder, and opens one', async () => {
     const files = { git_root: '/r/app', read: true, total: 2, files: [{ path: '/r/app/AGENTS.md', name: 'AGENTS.md' }, { path: '/r/app/src/AGENTS.md', name: 'AGENTS.md' }] };
     const { findByText, container, act } = mountDrawer(agentDetail({ context_files: files }), 'overview');
-    await findByText('2 files of /r/app that apply to the session folder');
-    expect(container.textContent).toContain('2 files of /r/app that apply to the session folder');
-    const row = container.querySelector('td[title="/r/app/src/AGENTS.md"]');
-    fireEvent.click(row);
+    await findByText('2 files in 2 folders of /r/app apply to the session folder');
+    const chip = container.querySelector('button[title="/r/app/src/AGENTS.md"]');
+    expect(chip.textContent).toBe('AGENTS.md');
+    fireEvent.click(chip);
     expect(act.openDrawer).toHaveBeenCalledWith({ type: 'file', path: '/r/app/src/AGENTS.md' });
+  });
+
+  it('shows each folder once, relative to the repository root, with its files as chips', async () => {
+    const files = { git_root: '/r/app/', read: true, total: 3, files: [{ path: '/r/app/src/b.md', name: 'b.md' }, { path: '/r/app/AGENTS.md', name: 'AGENTS.md' }, { path: '/r/app/src/a.md', name: 'a.md' }] };
+    const { findByText, container } = mountDrawer(agentDetail({ context_files: files }), 'overview');
+    await findByText('3 files in 2 folders of /r/app/ apply to the session folder');
+    const groups = [...container.querySelectorAll('#dr-actxf .bd-fgrp')];
+    expect(groups.map(g => g.querySelector('.bd-fdir').textContent)).toEqual(['/repository root · 1 file', 'src/2 files']);
+    expect(groups.map(g => [...g.querySelectorAll('.bd-fchip')].map(c => c.textContent))).toEqual([['AGENTS.md'], ['a.md', 'b.md']]);
+    expect(groups[1].querySelector('.bd-fdir').getAttribute('title')).toBe('/r/app/src/');
+    expect(container.querySelector('#dr-actxf .bd-fq')).toBeNull();
+  });
+
+  it('offers a filter from nine files on, and narrows the groups by name or folder', async () => {
+    const list = Array.from({ length: 9 }, (_, i) => ({ path: '/r/app/' + (i < 5 ? 'a/' : 'b/') + 'f' + i + '.md', name: 'f' + i + '.md' }));
+    const files = { git_root: '/r/app', read: true, total: 9, files: list };
+    const { findByText, container } = mountDrawer(agentDetail({ context_files: files }), 'overview');
+    await findByText('9 files in 2 folders of /r/app apply to the session folder');
+    const q = container.querySelector('#dr-actxf .bd-fq');
+    fireEvent.input(q, { target: { value: 'f7' } });
+    expect([...container.querySelectorAll('#dr-actxf .bd-fchip')].map(c => c.textContent)).toEqual(['f7.md']);
+    expect(container.querySelectorAll('#dr-actxf .bd-fgrp').length).toBe(1);
+    fireEvent.input(q, { target: { value: 'nothing' } });
+    expect(container.querySelector('#dr-actxf .bd-empty').textContent).toBe('No file matches.');
+  });
+
+  it('says the total when more files apply than are listed', async () => {
+    const files = { git_root: '/r/app', read: true, total: 500, files: [{ path: '/r/app/AGENTS.md', name: 'AGENTS.md' }] };
+    const { findByText } = mountDrawer(agentDetail({ context_files: files }), 'overview');
+    await findByText('500 files in 1 folder of /r/app apply to the session folder, 1 listed');
   });
 
   it('says why when the repository is not read yet', async () => {

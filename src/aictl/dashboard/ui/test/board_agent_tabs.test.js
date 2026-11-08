@@ -166,8 +166,57 @@ describe('agent drawer tab list and header', () => {
   it('lists the session views as tabs', async () => {
     const { findByRole, getAllByRole } = mount();
     await findByRole('heading', { name: 'Fix the parser' });
-    const names = getAllByRole('tab').map(t => t.textContent.replace(/ \(\d+\)$/, ''));
-    expect(names).toEqual(['Overview', 'Transcript', 'Flow', 'Timeline', 'Turns', 'Tool calls', 'Changes', 'Artifacts', 'Commits', 'Failures and loops', 'Events', 'Team', 'Processes', 'Integrations']);
+    const names = getAllByRole('tab').map(t => t.textContent.replace(/ \d+$/, ''));
+    expect(names).toEqual(['Overview', 'Transcript', 'Flow', 'Timeline', 'Turns', 'Tool calls', 'Failures and loops', 'Changes', 'Artifacts', 'Commits', 'Events', 'Team', 'Processes', 'Integrations']);
+  });
+
+  it('counts the rows on a tab and separates the three groups', async () => {
+    const { findByRole, getAllByRole, container } = mount();
+    await findByRole('heading', { name: 'Fix the parser' });
+    const count = name => getAllByRole('tab').find(t => t.textContent.startsWith(name)).querySelector('.bd-tabn')?.textContent;
+    await waitFor(() => expect(count('Turns')).toBe(' 1'));
+    expect(count('Tool calls')).toBe(' 5');
+    expect(count('Changes')).toBe(' 1');
+    expect(count('Commits')).toBe(' 0');
+    expect(count('Events')).toBeUndefined();
+    expect(container.querySelectorAll('.bd-tabs .bd-tabsep').length).toBe(2);
+  });
+
+  it('shows status, tool, project, model and a short id as labelled chips, and copies the id', async () => {
+    const { findByRole, container, act } = mount();
+    await findByRole('heading', { name: 'Fix the parser' });
+    const chips = [...container.querySelectorAll('.bd-drmeta .bd-kv')].map(x => x.textContent);
+    expect(chips[0]).toMatch(/^Ended/);
+    expect(chips).toContain('Toolclaude-code');
+    expect(chips).toContain('Projectalpha');
+    expect(chips).toContain('Modelmodel-a');
+    expect(chips.some(c => c.startsWith('IDsess-1'))).toBe(true);
+    expect(container.querySelector('.bd-drsub')).toBeNull();
+    const copy = container.querySelector('.bd-kvcopy');
+    expect(copy.getAttribute('aria-label')).toBe('Copy session ID sess-1');
+    fireEvent.click(copy);
+    expect(act.copy).toHaveBeenCalledWith('sess-1', 'Copied sess-1');
+    // The git pills share the row.
+    await waitFor(() => expect(container.querySelector('.bd-drmeta .bd-ag-git')).toBeTruthy());
+  });
+
+  it('puts the totals first as a strip, with the model calls and the context growth', async () => {
+    const ctxData = { first: 23000, last: 56000, peak: 56000, calls: 13, drops: 0, compactions: [], series: [23000, 56000] };
+    const { findByRole, container } = mount({ over: { context: ctxData } });
+    const strip = await findByRole('group', { name: 'Totals' });
+    expect(strip.previousElementSibling).toBeNull();
+    const labels = [...strip.querySelectorAll('.bd-l')].map(x => x.textContent);
+    expect(labels).toEqual(['Tokens', 'Cost', 'Time', 'Messages', 'Tool calls', 'Model calls', 'Lines', 'Artifacts', 'Commits']);
+    const kpi = name => [...strip.querySelectorAll('.bd-kpi')].find(x => x.querySelector('.bd-l').textContent === name).textContent;
+    expect(kpi('Model calls')).toBe('Model calls13context 23 k → 56 k');
+    expect(kpi('Lines')).toBe('Lines+0−0');
+    expect(container.querySelector('#dr-actx')).toBeTruthy();
+  });
+
+  it('has no Model calls when the tool reports no context', async () => {
+    const { findByRole } = mount();
+    const strip = await findByRole('group', { name: 'Totals' });
+    expect([...strip.querySelectorAll('.bd-l')].map(x => x.textContent)).not.toContain('Model calls');
   });
 
   it('shows branch, commit and the commits badge, and lists the commits on click', async () => {
@@ -380,11 +429,10 @@ describe('Overview and Changes fixes', () => {
   it('puts the token unit in the label and a bare number in the value', async () => {
     const ctxData = { first: 155000, last: 160000, peak: 170000, calls: 3, drops: 0, compactions: [], series: [1, 2, 3] };
     const { findByText, container } = mount({ over: { context: ctxData } });
-    await findByText('First call');
-    const stat = [...container.querySelectorAll('#dr-actx *')].find(n => n.children.length === 0 && n.textContent === 'First call');
-    const text = stat.parentElement.textContent;
-    expect(text).toContain('155 k');
-    expect(text).not.toContain('155 k tokens');
+    await findByText('Context size');
+    expect(container.querySelector('#dr-actx .bd-ctxlab').textContent).toBe('155 k first call');
+    expect(container.querySelector('#dr-actx .bd-ctxbig').textContent).toBe('160 ktokens at the last call');
+    expect(container.querySelector('#dr-actx').textContent).not.toContain('155 k tokens');
   });
 
   it('names a model row that has no model id', async () => {
