@@ -15,13 +15,17 @@ session, a row that names a folder goes to the store of that folder's repository
 and the rest goes to ``_shared``. Tables that do not belong to a session stay in
 the machine store.
 
-Names ProjectStores does not define go to the machine store.
+Reads go through :meth:`ProjectStores._conn`, a connection on the machine store
+that ATTACHes the project stores a read needs and shows each per-project table as
+a TEMP VIEW over all of them, so the board's SQL runs unchanged. Which stores a
+read attaches is set with :meth:`ProjectStores.read_scope`.
 """
 
 from __future__ import annotations
 
 import contextlib
 import hashlib
+import inspect
 import logging
 import os
 import re
@@ -71,7 +75,45 @@ MACHINE = ""  # the machine store, in the session map: sessions already in it be
 PROJECTS_DIR = "projects"
 IDLE_CLOSE_S = 30 * 60.0
 REAP_EVERY_S = 30.0
+# SQLite attaches at most 10 databases by default. One slot stays free.
+ATTACH_ROOM = 9
+READ_CONNS_PER_THREAD = 3
 _ROOT_CACHE_MAX = 8192
+_VERSION_COLUMNS = (
+    ("requests", "MAX(id)"),
+    ("tool_invocations", "MAX(id)"),
+    ("session_prompts", "MAX(id)"),
+    ("file_write_events", "MAX(id)"),
+    ("session_usage", "MAX(last_activity_at)"),
+)
+# HistoryDB methods that only read. On ProjectStores they run against the read
+# connection, which sees every attached store. Every other HistoryDB name that
+# ProjectStores does not define goes to the machine store.
+_READ_PREFIXES = (
+    "query_",
+    "count_",
+    "find_session",
+    "get_session",
+    "session_tool_",
+    "_query_",
+    "_enrich_",
+    "_overlay_",
+    "content_retained",
+)
+# Reads whose first argument is a session id: they look in that session's store.
+_SESSION_READS = frozenset(
+    {
+        "get_session",
+        "get_session_commits",
+        "count_session_commits",
+        "get_session_processes",
+        "query_agents",
+        "query_session_flow",
+        "session_tool_invocation_totals",
+        "query_session_cost_by_model",
+    }
+)
+
 
 # ─── Which store a folder belongs to ──────────────────────────────
 
@@ -195,6 +237,13 @@ class _ProjectDB(HistoryDB):
             self.flush()
 
 
+class _ReadConn:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+        self.keys: tuple[str, ...] | None = None
+        self.aliases: list[tuple[str, str]] = []  # (alias, key)
+
+
 def _row_ts(row: Any) -> float:
     return float(getattr(row, "ts", 0.0) or getattr(row, "started_at", 0.0) or 0.0)
 
@@ -202,7 +251,9 @@ def _row_ts(row: Any) -> float:
 class ProjectStores:
     """The machine store plus lazily opened per-project stores, behind HistoryDB's API.
 
-    Write methods route each row to its store. Other names go to the machine store.
+    Write methods route each row to its store. Read methods of HistoryDB run on a
+    connection that attaches the stores in the current :meth:`read_scope`. Other
+    names go to the machine store.
     """
 
     def __init__(
@@ -753,11 +804,181 @@ class ProjectStores:
     def __exit__(self, *args: Any) -> None:
         self.close()
 
+    # ── Reads ──────────────────────────────────────────────────
+
+    @contextlib.contextmanager
+    def read_scope(
+        self,
+        since: float | None = None,
+        until: float | None = None,
+        project: str | None = None,
+        session: str | None = None,
+    ) -> Iterator[None]:
+        """Reads on this thread inside the block attach only the stores they need.
+
+        *project*: that folder's store. *session*: the store that holds it. Otherwise
+        the stores with rows inside [*since*, *until*], at most ATTACH_ROOM of them.
+        """
+        stack = self._scopes()
+        stack.append((since, until, project, session))
+        try:
+            yield
+        finally:
+            stack.pop()
+
+    def _scopes(self) -> list[tuple]:
+        stack = getattr(self._local, "scopes", None)
+        if stack is None:
+            stack = self._local.scopes = []
+        return stack
+
+    def _wanted(self) -> tuple[str, ...]:
+        """Keys of the stores the current read scope needs, newest activity first."""
+        stack = self._scopes()
+        since, until, project, session = stack[-1] if stack else (None, None, None, None)
+        if session:
+            key = self.store_of_session(session)
+            if key is not None:
+                return (key,) if key != MACHINE else ()
+        if project:
+            key = store_key(project)
+            return (key,)
+        with self._index_lock:
+            entries = [(k, dict(e)) for k, e in self._index.items()]
+        active = []
+        for key, e in entries:
+            first, last = e.get("first_ts"), e.get("last_ts")
+            if first is None or last is None:
+                if not e.get("rows"):
+                    continue
+            else:
+                if since is not None and last < since:
+                    continue
+                if until is not None and first > until:
+                    continue
+            active.append((-(last or 0.0), key))
+        active.sort()
+        keys = tuple(k for _n, k in active)
+        if len(keys) > ATTACH_ROOM:
+            dropped = keys[ATTACH_ROOM:]
+            if dropped != self._dropped_logged:
+                self._dropped_logged = dropped
+                log.warning(
+                    "%d project stores are active in this range; reading the %d most recent, without: %s",
+                    len(keys),
+                    ATTACH_ROOM,
+                    ", ".join(dropped),
+                )
+            keys = keys[:ATTACH_ROOM]
+        return keys
+
+    def _conn(self) -> sqlite3.Connection:
+        """This thread's read connection for the current scope.
+
+        It is a connection on the machine store: tables that are not per project are
+        the machine's own. Per-project tables are TEMP VIEWs over the machine's rows
+        (written before the split) and every attached store. This connection never
+        sets a pragma that takes a lock.
+        """
+        if not self._split:
+            return self.machine._conn()
+        return self._read_state().conn
+
+    def _read_state(self) -> _ReadConn:
+        """A connection per set of stores, so a nested scope never changes a connection in use."""
+        conns = getattr(self._local, "conns", None)
+        if conns is None:
+            conns = self._local.conns = {}
+        wanted = self._wanted()
+        state = conns.pop(wanted, None)
+        if state is None:
+            conn = sqlite3.connect(str(self.machine._path), timeout=BUSY_TIMEOUT_S)
+            conn.execute("PRAGMA synchronous=OFF")
+            conn.execute("PRAGMA cache_size=-8000")
+            conn.execute("PRAGMA temp_store=MEMORY")
+            self.machine._install_capture_guards(conn)
+            state = _ReadConn(conn)
+            self._attach(state, wanted)
+        conns[wanted] = state
+        while len(conns) > READ_CONNS_PER_THREAD:
+            # Not closed here: a caller may still hold it. It closes when released.
+            conns.pop(next(iter(conns)))
+        return state
+
+    def _attach(self, state: _ReadConn, wanted: tuple[str, ...]) -> None:
+        conn = state.conn
+        for i, key in enumerate(wanted):
+            file = self._file_of(key)
+            if file is None or not file.exists():
+                continue
+            alias = f"p{i}"
+            try:
+                conn.execute("ATTACH DATABASE ? AS " + alias, (str(file),))
+            except sqlite3.Error as exc:
+                log.warning("Cannot read project store %s: %s", file.name, exc)
+                continue
+            state.aliases.append((alias, key))
+        if state.aliases:
+            for table in PROJECT_TABLES:
+                cols = _columns(conn, "main", table)
+                # The machine store's own rows (written before the split) only when it has
+                # some: a view of one store alone is flattened, and keeps its indexes in joins.
+                arms = []
+                if conn.execute(f"SELECT 1 FROM main.{table} LIMIT 1").fetchone() is not None:
+                    arms.append(("main", cols))
+                for alias, _key in state.aliases:
+                    have = _columns(conn, alias, table)
+                    if have:
+                        arms.append((alias, have))
+                if not arms:
+                    arms = [("main", cols)]
+                common = [c for c in cols if all(c in have for _a, have in arms)]
+                select = ", ".join(common)
+                body = " UNION ALL ".join(f"SELECT {select} FROM {schema}.{table}" for schema, _c in arms)
+                conn.execute(f"CREATE TEMP VIEW {table} AS {body}")
+        state.keys = wanted
+
+    def attached_stores(self) -> list[str]:
+        """Keys of the project stores attached to this thread's read connection."""
+        if not self._split:
+            return []
+        return [key for _alias, key in self._read_state().aliases]
+
+    def version_marks(self) -> tuple:
+        """Changes when rows arrive in any store the current scope reads."""
+        if not self._split:
+            conn = self.machine._conn()
+            return ((), tuple(conn.execute(f"SELECT {c} FROM {t}").fetchone()[0] for t, c in _VERSION_COLUMNS))
+        state = self._read_state()
+        marks = []
+        for schema in ["main", *(alias for alias, _key in state.aliases)]:
+            for table, column in _VERSION_COLUMNS:
+                marks.append(state.conn.execute(f"SELECT {column} FROM {schema}.{table}").fetchone()[0])
+        return (tuple(key for _alias, key in state.aliases), tuple(marks))
+
     def __getattr__(self, name: str) -> Any:
         machine = self.__dict__.get("machine")
         if machine is None:
             raise AttributeError(name)
+        if self.__dict__.get("_split") and name.startswith(_READ_PREFIXES):
+            func = inspect.getattr_static(HistoryDB, name, None)
+            if inspect.isfunction(func):
+                bound = types.MethodType(func, self)
+                if name in _SESSION_READS:
+                    return self._in_session_scope(bound)
+                return bound
         return getattr(machine, name)
+
+    def _in_session_scope(self, method: Any) -> Any:
+        def run(session_id: str, *args: Any, **kwargs: Any) -> Any:
+            with self.read_scope(session=session_id):
+                return method(session_id, *args, **kwargs)
+
+        return run
+
+
+def _columns(conn: sqlite3.Connection, schema: str, table: str) -> list[str]:
+    return [r[1] for r in conn.execute(f"PRAGMA {schema}.table_info({table})")]
 
 
 def _copy_columns(conn: sqlite3.Connection, table: str) -> list[str]:
