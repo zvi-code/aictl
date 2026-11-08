@@ -410,9 +410,9 @@ function panelToolCalls(ctx) {
   const mx = Math.max(1, ...list.map(t => t.calls || 0));
   const rows = list.map(t => ({
     id: t.name, go: () => ctx.actions.openDrawer({ type: 'tool', name: t.name }, true),
-    sort: { k: t.name, n: t.calls, f: t.failed, fp: t.fail_rate, p50: t.p50_ms, p95: t.p95_ms, max: t.max_ms },
+    sort: { k: t.name, n: t.calls, f: t.failed, fp: t.fail_rate, p50: t.p50_ms, p95: t.p95_ms, max: t.max_ms, out: t.avg_output_bytes },
     cells: {
-      k: { v: toolDisplayName(t.name), title: t.name, sub: t.server ? 'server' : '' }, n: { barOn: true, bar: pctBar(t.calls, mx), barC: 'var(--s1)', v: fmtN(t.calls) }, f: { v: t.failed ?? NA, cls: t.failed ? 'crit' : 'dim' }, fp: { v: fmtRate(t.fail_rate), cls: t.failed ? 'crit' : 'dim' },
+      k: { v: toolDisplayName(t.name), title: t.name, sub: t.server ? (t.mcp_server ? 'MCP ' + t.mcp_server : 'MCP') : '' }, out: { v: fmtBytes(t.avg_output_bytes), cls: 'dim', title: 'Average size of one result, as text' }, n: { barOn: true, bar: pctBar(t.calls, mx), barC: 'var(--s1)', v: fmtN(t.calls) }, f: { v: t.failed ?? NA, cls: t.failed ? 'crit' : 'dim' }, fp: { v: fmtRate(t.fail_rate), cls: t.failed ? 'crit' : 'dim' },
       p50: { v: fmtMs(t.p50_ms) }, p95: { v: fmtMs(t.p95_ms) }, max: { v: fmtMs(t.max_ms) }, spark: { spark: sparkPath(t.trend, 60, 16), sparkC: 'var(--ink2)', title: 'Calls in this range' },
     },
   }));
@@ -420,7 +420,7 @@ function panelToolCalls(ctx) {
   const unnamed = (ctx.data.kpis.tool_calls || 0) - list.reduce((a, t) => a + (t.calls || 0), 0);
   return {
     sub: 'Click a tool to see its calls' + (unnamed > 0 ? '. ' + fmtN(unnamed) + ' more calls come from tools that report only a total' : ''),
-    table: { cols: [{ k: 'k', l: 'Tool', w: '170px' }, { k: 'n', l: 'Calls', n: true, w: '112px' }, { k: 'f', l: 'Failed', n: true, w: '50px' }, { k: 'fp', l: 'Rate', n: true, w: '50px' }, { k: 'p50', l: 'p50', n: true, w: '58px' }, { k: 'p95', l: 'p95', n: true, w: '58px' }, { k: 'max', l: 'Max', n: true, w: '60px' }, { k: 'spark', l: 'Trend', w: '70px' }], rows, sort: { k: 'n', dir: 'desc' }, none: 'No tool calls in this time.' },
+    table: { cols: [{ k: 'k', l: 'Tool', w: '170px' }, { k: 'n', l: 'Calls', n: true, w: '112px' }, { k: 'f', l: 'Failed', n: true, w: '50px' }, { k: 'fp', l: 'Rate', n: true, w: '50px' }, { k: 'p50', l: 'p50', n: true, w: '58px' }, { k: 'p95', l: 'p95', n: true, w: '58px' }, { k: 'max', l: 'Max', n: true, w: '60px' }, { k: 'out', l: 'Avg out', n: true, w: '64px', t: 'Average size of one result, as text. Calls read before aictl recorded sizes have none.' }, { k: 'spark', l: 'Trend', w: '70px' }], rows, sort: { k: 'n', dir: 'desc' }, none: 'No tool calls in this time.' },
   };
 }
 

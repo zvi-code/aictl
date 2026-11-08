@@ -215,7 +215,7 @@ function OverviewTab({ a, data, st, ctx, act, pending }) {
       id: x.name, go: () => act.openDrawer({ type: 'skill', name: x.name }), sort: { n: x.name, u: x.uses, l: x.last_ts },
       cells: { n: { v: x.name, title: x.name }, u: { v: x.uses }, b: { v: (x.started_by || '').split(',').filter(Boolean).join(', ') || NA, cls: 'dim' }, l: { v: stamp(x.last_ts, true), cls: 'dim' } },
     })),
-    sort: { k: 'u', dir: 'desc' }, none: 'This agent used no skill.',
+    sort: { k: 'u', dir: 'desc' }, none: 'This agent used no skill. Skill uses are read from Claude Code, Copilot CLI and VS Code sessions.',
   }), [data]);
   const context = data.context;
   const compactionDef = useMemo(() => ({
@@ -244,7 +244,7 @@ function OverviewTab({ a, data, st, ctx, act, pending }) {
         : 'Input, cache read and cache write of each call. This tool reports the total, not how it splits into instructions, tools and conversation.'}</div>
       ${context.compactions?.length ? html`<${Table} def=${compactionDef} label="Compactions"/>` : null}
     </${FixedPanel}>` : null}
-    ${(data.skills || []).length ? html`<${FixedPanel} id="askill" title="Skills used" sub=${data.skills.reduce((n, x) => n + x.uses, 0) + ' uses of ' + data.skills.length + ' skills' + (a.parent_id ? '' : ', with its subagents')}><${Table} def=${skills} label="Skills used"/></${FixedPanel}>` : null}
+    <${FixedPanel} id="askill" title="Skills used" sub=${(data.skills || []).length ? data.skills.reduce((n, x) => n + x.uses, 0) + ' uses of ' + data.skills.length + ' skills' + (a.parent_id ? '' : ', with its subagents') : 'None in this session'}><${Table} def=${skills} label="Skills used"/></${FixedPanel}>
     <${FixedPanel} id="ast" title="Totals"><${Stats} stats=${stats}/></${FixedPanel}>
     <${FixedPanel} id="am" title="Usage by model"><${Table} def=${models} label="Usage by model"/></${FixedPanel}>
     ${(data.subagents || []).length ? html`<${FixedPanel} id="ak" title="Subagents"><${Table} def=${kids} label="Subagents"/></${FixedPanel}>` : null}
@@ -266,19 +266,53 @@ function TurnsTab({ data }) {
   return html`<${FixedPanel} id="at" title="Turns, oldest first"><${Table} def=${def} label="Turns"/></${FixedPanel}>`;
 }
 
+const sizeTip = 'Size of the arguments sent to the tool and of the result it returned, as text. Calls read before aictl recorded sizes have none.';
+
 function ToolsTab({ data, pending }) {
   const def = useMemo(() => ({
-    cols: [{ k: 'at', l: 'Time', w: '58px' }, { k: 'n', l: 'Tool', w: '120px' }, { k: 'tg', l: 'Target' }, { k: 'ms', l: 'Took', n: true, w: '58px' }, { k: 'ok', l: 'Result', w: '52px' }, { k: 'conf', l: 'Confirm', w: '66px' }],
-    rows: (data.tool_calls || []).map((c, i) => ({ id: i, sort: { at: c.ts, ms: c.duration_ms, n: c.name }, cells: { at: { v: stamp(c.ts), cls: 'dim' }, n: { v: c.name, cls: 'm' }, tg: { v: c.target || NA, cls: 'm dim', path: !!c.target, title: c.target || '' }, ms: { v: fmtMs(c.duration_ms) }, ok: { v: c.failed ? 'Failed' : 'OK', cls: c.failed ? 'crit' : 'dim' }, conf: { v: c.confirm || NA, cls: 'dim' } } })),
+    cols: [{ k: 'at', l: 'Time', w: '58px' }, { k: 'n', l: 'Tool', w: '120px' }, { k: 'tg', l: 'Target' }, { k: 'ms', l: 'Took', n: true, w: '58px' }, { k: 'in', l: 'In', n: true, w: '56px', t: sizeTip }, { k: 'out', l: 'Out', n: true, w: '58px', t: sizeTip }, { k: 'ok', l: 'Result', w: '52px' }, { k: 'conf', l: 'Confirm', w: '66px' }],
+    rows: (data.tool_calls || []).map((c, i) => ({ id: i, sort: { at: c.ts, ms: c.duration_ms, n: c.name, tg: c.target, in: c.input_bytes, out: c.output_bytes, ok: c.failed ? 1 : 0, conf: c.confirm }, cells: { at: { v: stamp(c.ts), cls: 'dim' }, n: { v: c.name, cls: 'm' }, tg: { v: c.target || NA, cls: 'm dim', path: !!c.target, title: c.target || '' }, ms: { v: fmtMs(c.duration_ms) }, in: { v: fmtBytes(c.input_bytes), cls: 'dim' }, out: { v: fmtBytes(c.output_bytes) }, ok: { v: c.failed ? 'Failed' : 'OK', cls: c.failed ? 'crit' : 'dim' }, conf: { v: c.confirm || NA, cls: 'dim' } } })),
     sort: { k: 'at', dir: 'desc' }, limit: 120, none: 'No tool calls recorded.',
   }), [data]);
   const totals = useMemo(() => ({
-    cols: [{ k: 'n', l: 'Tool' }, { k: 'c', l: 'Calls', n: true, w: '58px' }, { k: 'f', l: 'Failed', n: true, w: '52px' }, { k: 'ms', l: 'Total time', n: true, w: '76px' }],
-    rows: (data.tool_totals || []).map(t => ({ id: t.name, sort: { n: t.name, c: t.calls, f: t.failed, ms: t.total_ms }, cells: { n: { v: t.name, cls: 'm' }, c: { v: fmtN(t.calls) }, f: { v: t.failed, cls: t.failed ? '' : 'dim' }, ms: { v: fmtMs(t.total_ms), cls: 'dim' } } })),
+    cols: [{ k: 'n', l: 'Tool' }, { k: 'c', l: 'Calls', n: true, w: '52px' }, { k: 'f', l: 'Failed', n: true, w: '50px' },
+      { k: 'p50', l: 'Median', n: true, w: '60px', t: 'Median run time of one call' }, { k: 'p95', l: 'p95', n: true, w: '58px', t: '95 of 100 calls took this long or less' }, { k: 'max', l: 'Max', n: true, w: '58px' },
+      { k: 'ms', l: 'Total time', n: true, w: '70px' }, { k: 'in', l: 'Avg in', n: true, w: '62px', t: sizeTip }, { k: 'out', l: 'Avg out', n: true, w: '64px', t: sizeTip }, { k: 'tout', l: 'Total out', n: true, w: '70px', t: sizeTip }],
+    rows: (data.tool_totals || []).map(t => ({
+      id: t.name,
+      sort: { n: t.name, c: t.calls, f: t.failed, p50: t.p50_ms, p95: t.p95_ms, max: t.max_ms, ms: t.total_ms, in: t.avg_input_bytes, out: t.avg_output_bytes, tout: t.output_bytes },
+      cells: {
+        n: { v: t.name, cls: 'm', chips: t.mcp_server != null ? [{ text: t.mcp_server ? 'MCP ' + t.mcp_server : 'MCP', title: 'A tool of an MCP server' }] : null },
+        c: { v: fmtN(t.calls) }, f: { v: t.failed, cls: t.failed ? 'crit' : 'dim' },
+        p50: { v: fmtMs(t.p50_ms) }, p95: { v: fmtMs(t.p95_ms) }, max: { v: fmtMs(t.max_ms), cls: 'dim' }, ms: { v: fmtMs(t.total_ms), cls: 'dim' },
+        in: { v: fmtBytes(t.avg_input_bytes), cls: 'dim' }, out: { v: fmtBytes(t.avg_output_bytes) }, tout: { v: fmtBytes(t.output_bytes), cls: 'dim', title: t.max_output_bytes != null ? 'Largest result ' + fmtBytes(t.max_output_bytes) : '' },
+      },
+    })),
     sort: { k: 'c', dir: 'desc' }, limit: 40, none: 'No tool calls recorded.',
   }), [data]);
+  // MCP servers: each server's tools added up. Medians do not add up, so the time is a total.
+  const servers = useMemo(() => {
+    const by = new Map();
+    for (const t of data.tool_totals || []) {
+      if (t.mcp_server == null) continue;
+      const k = t.mcp_server || 'Server not named';
+      const s = by.get(k) || { k, tools: 0, calls: 0, failed: 0, ms: 0, out: 0, hasOut: false };
+      s.tools += 1; s.calls += t.calls; s.failed += t.failed; s.ms += t.total_ms || 0;
+      if (t.output_bytes != null) { s.out += t.output_bytes; s.hasOut = true; }
+      by.set(k, s);
+    }
+    return {
+      cols: [{ k: 'k', l: 'MCP server' }, { k: 'tools', l: 'Tools', n: true, w: '48px' }, { k: 'c', l: 'Calls', n: true, w: '52px' }, { k: 'f', l: 'Failed', n: true, w: '50px' }, { k: 'ms', l: 'Total time', n: true, w: '70px' }, { k: 'avg', l: 'Avg time', n: true, w: '64px' }, { k: 'out', l: 'Total out', n: true, w: '70px', t: sizeTip }],
+      rows: [...by.values()].map(s => ({
+        id: s.k, sort: { k: s.k, tools: s.tools, c: s.calls, f: s.failed, ms: s.ms || null, avg: s.ms ? s.ms / s.calls : null, out: s.hasOut ? s.out : null },
+        cells: { k: { v: s.k, cls: 'm' }, tools: { v: s.tools }, c: { v: fmtN(s.calls) }, f: { v: s.failed, cls: s.failed ? 'crit' : 'dim' }, ms: { v: fmtMs(s.ms || null), cls: 'dim' }, avg: { v: fmtMs(s.ms ? s.ms / s.calls : null) }, out: { v: s.hasOut ? fmtBytes(s.out) : NA, cls: 'dim' } },
+      })),
+      sort: { k: 'c', dir: 'desc' }, none: 'This agent called no MCP server.',
+    };
+  }, [data]);
   return html`${pending ? html`<${FixedPanel} id="ap2" title="Waiting for your confirmation"><div class="bd-ptext">${pending.name + ': ' + pending.target}</div></${FixedPanel}>` : null}
-    <${FixedPanel} id="att" title="Tools used" sub=${'All ' + fmtN((data.tool_totals || []).reduce((a, t) => a + t.calls, 0)) + ' calls' + (data.agent?.parent_id ? '' : ', with its subagents')}><${Table} def=${totals}/></${FixedPanel}>
+    <${FixedPanel} id="att" title="Tools used" sub=${'All ' + fmtN((data.tool_totals || []).reduce((a, t) => a + t.calls, 0)) + ' calls' + (data.agent?.parent_id ? '' : ', with its subagents')}><${Table} def=${totals} label="Tools used"/></${FixedPanel}>
+    <${FixedPanel} id="amcp" title="MCP servers" sub=${servers.rows.length ? servers.rows.length + ' servers, ' + fmtN(servers.rows.reduce((n, r) => n + r.sort.c, 0)) + ' calls' : 'None called'}><${Table} def=${servers} label="MCP servers"/></${FixedPanel}>
     <${FixedPanel} id="atc" title="Tool calls" sub=${data.agent?.tool_calls > (data.tool_calls || []).length ? 'Newest ' + (data.tool_calls || []).length + ' of ' + data.agent.tool_calls + ', with calls of its subagents' : ''}><${Table} def=${def} label="Tool calls"/></${FixedPanel}>`;
 }
 

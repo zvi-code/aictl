@@ -222,7 +222,8 @@ CREATE TABLE IF NOT EXISTS tool_invocations (
     pid INTEGER DEFAULT 0, is_error INTEGER DEFAULT 0, duration_ms REAL DEFAULT 0,
     input TEXT DEFAULT '{}', result_summary TEXT DEFAULT '', source TEXT DEFAULT '',
     source_event_id TEXT DEFAULT '', agent_id TEXT DEFAULT '', confirm TEXT DEFAULT '',
-    confirm_wait_ms REAL DEFAULT 0, target TEXT DEFAULT '', exit_code INTEGER
+    confirm_wait_ms REAL DEFAULT 0, target TEXT DEFAULT '', exit_code INTEGER,
+    input_bytes INTEGER, output_bytes INTEGER
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_inv_dedup ON tool_invocations(dedup_key) WHERE dedup_key != '';
 
@@ -904,6 +905,8 @@ class ToolInvocationRow:
     target: str = ""  # short display text: command, file path or query
     exit_code: int | None = None
     dedup_key: str = ""
+    input_bytes: int | None = None  # size of the arguments the agent sent, as UTF-8 text
+    output_bytes: int | None = None  # size of the result the agent got back, as UTF-8 text
 
 
 @dataclass(slots=True)
@@ -1238,8 +1241,9 @@ def _request_params(r: RequestRow) -> tuple:
 
 _TOOL_UPSERT = (
     "INSERT INTO tool_invocations(dedup_key, ts, session_id, tool, tool_name, project_path, is_error, duration_ms,"
-    " input, result_summary, source, source_event_id, agent_id, confirm, confirm_wait_ms, target, exit_code)"
-    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    " input, result_summary, source, source_event_id, agent_id, confirm, confirm_wait_ms, target, exit_code,"
+    " input_bytes, output_bytes)"
+    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
     " ON CONFLICT(dedup_key) WHERE dedup_key != '' DO UPDATE SET tool=excluded.tool,"
     " is_error=MAX(tool_invocations.is_error, excluded.is_error),"
     " duration_ms=CASE WHEN excluded.duration_ms > 0 THEN excluded.duration_ms ELSE tool_invocations.duration_ms END,"
@@ -1252,7 +1256,9 @@ _TOOL_UPSERT = (
     " confirm_wait_ms=CASE WHEN excluded.confirm_wait_ms > 0 THEN excluded.confirm_wait_ms"
     " ELSE tool_invocations.confirm_wait_ms END,"
     " target=CASE WHEN excluded.target != '' THEN excluded.target ELSE tool_invocations.target END,"
-    " exit_code=COALESCE(excluded.exit_code, tool_invocations.exit_code)"
+    " exit_code=COALESCE(excluded.exit_code, tool_invocations.exit_code),"
+    " input_bytes=COALESCE(excluded.input_bytes, tool_invocations.input_bytes),"
+    " output_bytes=COALESCE(excluded.output_bytes, tool_invocations.output_bytes)"
 )
 
 
@@ -1275,6 +1281,8 @@ def _tool_params(r: ToolInvocationRow) -> tuple:
         round(r.confirm_wait_ms, 1),
         r.target,
         r.exit_code,
+        r.input_bytes,
+        r.output_bytes,
     )
 
 

@@ -1263,3 +1263,71 @@ class TestPatchLines:
 
         assert _patch_counts("not json", "/x") == {}
         assert _patch_counts(json.dumps({"other": 1}), "/x") == {}
+
+
+class TestToolCallSizesAndSkills:
+    """Each tool call keeps the size of its input and output; VS Code's skill reads are skill uses."""
+
+    def test_claude_call_keeps_input_and_output_size(self, db, tmp_path):
+        args = {"command": "ls -la", "description": "list"}
+        write_lines(
+            claude_path(tmp_path),
+            [
+                c_assistant("m1", "r1", 100, blocks=[c_tool_use("t1", "Bash", args)]),
+                c_tool_result("t1", 90, content="héllo world"),
+            ],
+        )
+        make_ingester(db, tmp_path).poll()
+        row = rows(db, "SELECT input_bytes, output_bytes FROM tool_invocations")[0]
+        assert row["input_bytes"] == len(json.dumps(args, ensure_ascii=False).encode())
+        assert row["output_bytes"] == len("héllo world".encode())
+
+    def test_copilot_call_keeps_input_and_output_size(self, db, tmp_path):
+        write_lines(
+            copilot_events(tmp_path),
+            [
+                ev("tool.execution_start", 400, {"toolCallId": "c1", "toolName": "query", "mcpServerName": "kusto", "mcpToolName": "query", "arguments": {"q": "T | take 1"}}),
+                ev("tool.execution_complete", 390, {"toolCallId": "c1", "success": True, "result": {"content": "x" * 300}}),
+            ],
+        )
+        make_ingester(db, tmp_path).poll()
+        row = rows(db, "SELECT tool_name, input_bytes, output_bytes FROM tool_invocations")[0]
+        assert row == {"tool_name": "mcp__kusto__query", "input_bytes": len(json.dumps({"q": "T | take 1"}).encode()), "output_bytes": 300}
+
+    def test_vscode_debug_call_keeps_sizes_and_a_skill_read_is_a_skill_use(self, db, tmp_path):
+        workspace_json(tmp_path)
+        skill_args = json.dumps({"filePath": "/work/vs/.github/skills/worklist/SKILL.md", "startLine": 1, "endLine": 99})
+        write_lines(
+            debug_dir(tmp_path) / "main.jsonl",
+            [
+                v_line("session_start", 500, "s0"),
+                v_line("tool_call", 380, "t1", name="read_file", args=skill_args, result="# worklist"),
+                v_line("tool_call", 370, "t2", name="read_file", args=json.dumps({"filePath": "/work/vs/README.md"}), result="readme"),
+            ],
+        )
+        make_ingester(db, tmp_path).poll()
+        tools = {r["source_event_id"]: r for r in rows(db, "SELECT * FROM tool_invocations")}
+        assert (tools["t1"]["input_bytes"], tools["t1"]["output_bytes"]) == (len(skill_args.encode()), len(b"# worklist"))
+        skills = rows(db, "SELECT name, tool, trigger, session_id FROM skill_uses")
+        assert skills == [{"name": "worklist", "tool": "copilot-vscode", "trigger": "agent-invoked", "session_id": VSCODE_SID}]
+
+    def test_vscode_chat_only_session_reads_the_skill_link(self, db, tmp_path):
+        link = "Reading skill [ui-review](file:///c%3A/work/.claude/skills/ui-review/SKILL.md?vscodeLinkType%3Dskill)"
+        part = {"kind": "toolInvocationSerialized", "toolCallId": "toolu_9", "toolId": "copilot_readFile", "isConfirmed": {"type": 1}, "invocationMessage": {"value": link}}
+        write_lines(
+            chat_file(tmp_path, CHAT_ONLY_SID),
+            [
+                {"kind": 0, "v": {"sessionId": CHAT_ONLY_SID, "creationDate": int((NOW - 500) * 1000), "requests": []}},
+                {"kind": 2, "k": ["requests"], "v": [chat_request("req-1", 400, "review the ui")]},
+                {"kind": 2, "k": ["requests", 0, "response"], "v": [part]},
+            ],
+        )
+        make_ingester(db, tmp_path).poll()
+        assert [r["name"] for r in rows(db, "SELECT name FROM skill_uses")] == ["ui-review"]
+
+    def test_skill_of_path_on_both_kinds_of_slash(self):
+        from aictl.ingesters.call_facts import skill_of_path
+
+        assert skill_of_path("C:\\work\\.github\\skills\\worklist\\SKILL.md") == "worklist"
+        assert skill_of_path("/home/u/.copilot/skills/intake/skill.md") == "intake"
+        assert skill_of_path("/work/README.md") == ""

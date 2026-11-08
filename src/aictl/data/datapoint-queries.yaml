@@ -185,9 +185,15 @@ board.drawer.timeline.row:
 board.drawer.tool.detail:
   calc: Direct rows.
   query: SELECT ts, target, session_id, agent_id, duration_ms, is_error, confirm FROM tool_invocations WHERE tool_name = ? ORDER BY ts DESC
+board.drawer.mcp.row:
+  calc: Sum of board.drawer.tools.total rows per MCP server.
+  query: SELECT tool_name, COUNT(*), SUM(is_error), SUM(duration_ms), SUM(output_bytes) FROM tool_invocations WHERE session_id = ? AND (tool_name LIKE 'mcp%' OR tool_name LIKE '%/%') GROUP BY tool_name
 board.drawer.tools.row:
   calc: Direct rows.
-  query: SELECT ts, tool_name, target, duration_ms, is_error, confirm FROM tool_invocations WHERE session_id = ? ORDER BY ts DESC LIMIT 200
+  query: SELECT ts, tool_name, target, duration_ms, is_error, confirm, input_bytes, output_bytes FROM tool_invocations WHERE session_id = ? ORDER BY ts DESC LIMIT 200
+board.drawer.tools.total:
+  calc: Per tool_name; nearest-rank percentiles over duration_ms > 0; averages over rows with a size.
+  query: SELECT tool_name, is_error, duration_ms, input_bytes, output_bytes FROM tool_invocations WHERE session_id = ?
 board.drawer.transcript.turn:
   calc: One turn per prompt.
   query: SELECT ts, agent_id, text FROM session_prompts WHERE session_id = ? AND ts >= ? AND ts < ? ORDER BY ts
@@ -406,7 +412,7 @@ board.test.row:
     BY target
 board.tool.row:
   calc: GROUP BY tool_name; percentiles over duration_ms.
-  query: SELECT tool_name, COUNT(*), SUM(is_error), MAX(duration_ms) FROM tool_invocations WHERE ts BETWEEN ? AND ? AND substr(tool_name, 1, 11) <> 'permission:' GROUP BY tool_name
+  query: SELECT tool_name, COUNT(*), SUM(is_error), MAX(duration_ms), SUM(output_bytes), COUNT(output_bytes) FROM tool_invocations WHERE ts BETWEEN ? AND ? AND substr(tool_name, 1, 11) <> 'permission:' GROUP BY tool_name
 board.unpriced:
   calc: SUM tokens of unpriced models.
   query: SELECT model, SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) FROM requests WHERE ts BETWEEN ? AND ? AND cost_usd = 0 GROUP BY model

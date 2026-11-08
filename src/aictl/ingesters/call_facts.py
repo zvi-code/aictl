@@ -100,6 +100,27 @@ _TEST_RUNNER = re.compile(
 )
 
 
+def byte_size(value: Any) -> int | None:
+    """The size of a tool call's input or output as UTF-8 text; None when there is none."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return len(value.encode("utf-8", "replace"))
+    try:
+        return len(json.dumps(value, ensure_ascii=False).encode("utf-8", "replace"))
+    except (TypeError, ValueError):
+        return None
+
+
+_SKILL_FILE = re.compile(r"[\\/]([^\\/]+)[\\/]SKILL\.md$", re.IGNORECASE)
+
+
+def skill_of_path(path: Any) -> str:
+    """The skill a SKILL.md file defines: its folder's name. '' for any other file."""
+    m = _SKILL_FILE.search(str(path or "").split("?", 1)[0])
+    return m.group(1) if m else ""
+
+
 def _short(text: str, limit: int = TARGET_MAX_CHARS) -> str:
     return _redact(" ".join(text.split()))[:limit]
 
@@ -671,6 +692,7 @@ class ClaudeFacts:
                 input=stored_input(args, self.keep_text),
                 source_event_id=tool_id,
                 target=target_of(args, self.keep_text),
+                input_bytes=byte_size(block.get("input")),
             )
             self._pending[tool_id] = (row, cwd, args)
             message_id = str(msg.get("id") or "")
@@ -695,6 +717,7 @@ class ClaudeFacts:
             row, cwd, args = pending
             failed = bool(block.get("is_error"))
             text = _text_of(block.get("content")) if not isinstance(block.get("content"), str) else block["content"]
+            row.output_bytes = byte_size(text)
             # A message's calls run when its last block is written, not when each block is.
             started = max(row.ts, self._message_last_block.get(self._tool_message.pop(row.source_event_id, ""), 0.0))
             row.duration_ms = max(0.0, (ts - started) * 1000)
@@ -1057,6 +1080,7 @@ class CopilotFacts:
             input=stored_input(args, self.keep_text),
             source_event_id=call_id,
             target=target_of(args, self.keep_text),
+            input_bytes=byte_size(raw_args),
         )
         self._running[call_id] = row
         self.buffer.add_tool(row)
@@ -1083,6 +1107,8 @@ class CopilotFacts:
         # A shell command that ran and exited with an error can still report success.
         failed = data.get("success") is False or (isinstance(shell.get("exitCode"), int) and shell["exitCode"] != 0)
         row.is_error = 1 if failed else 0
+        result = data.get("result")
+        row.output_bytes = byte_size(result.get("content") if isinstance(result, dict) else result)
         error = data.get("error") if isinstance(data.get("error"), dict) else {}
         if failed and self.keep_text:
             row.result_summary = _redact(str(error.get("message") or error.get("code") or "")[:RESULT_MAX_CHARS])
@@ -1207,6 +1233,11 @@ def _vscode_file_edits(name: str, args: Any) -> list[tuple[str, int | None, int 
     if name == "apply_patch" and isinstance(args.get("input"), str):
         return [(path, a, r) for path, a, r in apply_patch_files(args["input"])]
     return []
+
+
+# The tools VS Code reads a file with, and the link it shows when the file is a skill.
+_VSCODE_READ_TOOLS = frozenset({"read_file", "copilot_readFile"})
+_VSCODE_SKILL_LINK = re.compile(r"skill \[([^\]]+)\]\(([^)?]*SKILL\.md)", re.IGNORECASE)
 
 
 class VSCodeDebugFacts:
@@ -1334,10 +1365,27 @@ class VSCodeDebugFacts:
             source_event_id=span,
             target=target_of(args, self.keep_text),
             exit_code=int(code.group(1)) if code else None,
+            input_bytes=byte_size(attrs.get("args")),
+            output_bytes=byte_size(attrs.get("result")),
         )
         self.buffer.add_tool(row)
         if failed:
             return
+        # VS Code loads a skill by reading its SKILL.md with the file-read tool.
+        skill = skill_of_path(args.get("filePath")) if name in _VSCODE_READ_TOOLS else ""
+        if skill:
+            self.buffer.add_skill(
+                SkillUseRow(
+                    dedup_key=_dedup_key("vscode-skill", self.sid, span or f"{name}{ts}"),
+                    ts=ts,
+                    session_id=self.sid,
+                    agent_id=self.agent_id,
+                    tool="copilot-vscode",
+                    project_path=self.project_path,
+                    name=skill,
+                    trigger="agent-invoked",
+                )
+            )
         for path, added, removed in _vscode_file_edits(name, args):
             self.buffer.add_file_write(
                 FileWriteRow(
@@ -1504,6 +1552,20 @@ class VSCodeChatFacts:
                 target=_short(shown) if self.keep_text and isinstance(shown, str) else "",
             )
         )
+        # "Reading skill [name](file:///.../name/SKILL.md?vscodeLinkType=skill)"
+        link = _VSCODE_SKILL_LINK.search(shown) if isinstance(shown, str) and kind != 0 else None
+        if link:
+            self.buffer.add_skill(
+                SkillUseRow(
+                    dedup_key=_dedup_key("vscode-chat-skill", self.sid, call_id),
+                    ts=slot["ts"],
+                    session_id=self.sid,
+                    tool="copilot-vscode",
+                    project_path=self.project_path,
+                    name=skill_of_path(link.group(2)) or link.group(1),
+                    trigger="agent-invoked",
+                )
+            )
 
 
 def _vscode_prompt_file(variable_data: Any) -> str:
