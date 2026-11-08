@@ -99,3 +99,15 @@ def test_the_check_rejects_a_removed_command_and_flag() -> None:
     assert _problem("aictl serve") == "no command 'serve'"
     assert _problem("aictl daemon serve --not-a-flag") == "no option '--not-a-flag'"
     assert _problem("aictl daemon serve --no-open --port 8599") is None
+
+
+def test_every_command_quotes_the_index_url() -> None:
+    """A feed URL can hold $, & or %; a command that passes it bare breaks in PowerShell and cmd."""
+    how_to = (ROOT / "HOWTO.md").read_text(encoding="utf-8")
+    bare = []
+    for n, line in enumerate(how_to.splitlines(), 1):
+        if "packages.example" not in line or line.lstrip().startswith(("The index URL", "the single")):
+            continue
+        if re.search(r"(?<![\'\"=])https://packages\.example", line) and not re.search(r"'[^']*https://packages\.example[^']*'", line):
+            bare.append(f"{n}: {line.strip()}")
+    assert not bare, "Quote the index URL:\n" + "\n".join(bare)
