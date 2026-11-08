@@ -296,3 +296,20 @@ describe('an older server without the new fields', () => {
     }
   });
 });
+
+describe('Files that can affect a session', () => {
+  it('lists the files of the session folder, and opens one', async () => {
+    const files = { git_root: '/r/app', read: true, total: 2, files: [{ path: '/r/app/AGENTS.md', name: 'AGENTS.md' }, { path: '/r/app/src/AGENTS.md', name: 'AGENTS.md' }] };
+    const { findByText, container, act } = mountDrawer(agentDetail({ context_files: files }), 'overview');
+    await findByText('2 files of /r/app that apply to the session folder');
+    expect(container.textContent).toContain('2 files of /r/app that apply to the session folder');
+    const row = container.querySelector('td[title="/r/app/src/AGENTS.md"]');
+    fireEvent.click(row);
+    expect(act.openDrawer).toHaveBeenCalledWith({ type: 'file', path: '/r/app/src/AGENTS.md' });
+  });
+
+  it('says why when the repository is not read yet', async () => {
+    const { findByText } = mountDrawer(agentDetail({ context_files: { git_root: '/r/app', read: false, total: 0, files: [] } }), 'overview');
+    await findByText(/has not read this repository yet/);
+  });
+});

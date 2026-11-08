@@ -339,6 +339,23 @@ def test_each_file_is_linked_to_the_sessions_it_can_affect(tmp_path):
     assert str(other / "AGENTS.md") not in by_path
 
 
+def test_a_past_sessions_folder_gets_its_files_by_the_same_rule(tmp_path):
+    """No live session is needed: a session's side panel lists the files of its own folder."""
+    repo = _repo(tmp_path / "app")
+    _touch(repo / "AGENTS.md")
+    _touch(repo / "src" / "AGENTS.md")
+    _touch(repo / "docs" / "AGENTS.md")
+    _touch(repo / ".github" / "copilot-instructions.md")
+    assert tree_walk.files_for_folder(repo / "src")["read"] is False  # not read yet: says so, reads nothing
+    tools.batch_find_in_tree(tmp_path, {"AGENTS.md"}, {".github"})
+    found = tree_walk.files_for_folder(repo / "src" / "pkg")
+    assert found["git_root"] == str(repo) and found["read"] is True
+    assert found["files"] == sorted(
+        [str(repo / ".github" / "copilot-instructions.md"), str(repo / "AGENTS.md"), str(repo / "src" / "AGENTS.md")]
+    )
+    assert tree_walk.files_for_folder(tmp_path / "not-a-repo") == {"git_root": None, "files": [], "read": False}
+
+
 # ── Lazy discovery in the daemon ────────────────────────────────────
 
 

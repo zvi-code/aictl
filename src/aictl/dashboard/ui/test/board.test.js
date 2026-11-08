@@ -48,7 +48,7 @@ function stubFetch(board = boardFixture()) {
     if (u.startsWith('/api/board/prompt')) return jsonResponse({ text: '', prompt_file: '', project: 'alpha', title: 'Fix', input: null, output: 1, cache_read: 2, reply_ms: 3, tool_calls: 0 });
     if (u.startsWith('/api/board/action')) return jsonResponse({ ok: true });
     if (u.startsWith('/api/session-kill')) return jsonResponse({ ok: true });
-    if (u.startsWith('/api/board/machine')) return jsonResponse(machineFixture());
+    if (u.startsWith('/api/board/machine')) return jsonResponse(stubFetch.machine ? stubFetch.machine() : machineFixture());
     if (u.startsWith('/api/board')) return jsonResponse(board);
     if (u.startsWith('/api/context-audit')) return jsonResponse({ findings: [], sources: [], counts: {} });
     return jsonResponse({});
@@ -73,6 +73,27 @@ async function mountBoard(board) {
   await waitFor(() => expect(view.container.querySelector('#p-agentsT tbody tr')).toBeTruthy());
   return { ...view, calls };
 }
+
+describe('a daemon older than the code on disk', () => {
+  afterEach(() => { stubFetch.machine = null; });
+
+  it('shows one banner that asks for a restart', async () => {
+    stubFetch.machine = () => {
+      const m = machineFixture();
+      m.pipeline.self = { ...m.pipeline.self, code_changed_at: NOW - 60, started_at: NOW - 7200 };
+      return m;
+    };
+    const { findByText } = await mountBoard();
+    await findByText(/aictl was updated on disk/);
+    await findByText(/Restart the daemon/);
+  });
+
+  it('shows no banner when the daemon runs the current code', async () => {
+    const { container } = await mountBoard();
+    await waitFor(() => expect(container.textContent).toContain('Agents'));
+    expect(container.textContent).not.toContain('was updated on disk');
+  });
+});
 
 describe('layout save and restore', () => {
   it('restores what was saved', () => {

@@ -77,7 +77,7 @@ export function contextFixture() {
       tool: 'claude-code', label: 'Claude Code', count: 4, truncated: false,
       files: [
         file('/home/me/.claude/CLAUDE.md', 'CLAUDE.md', 'instructions', 'global', '(global)', 800_000, 200_000, 'yes', 'every-call', NOW - 86400, false),
-        file('/r/alpha/AGENTS.md', 'AGENTS.md', 'instructions', 'project', 'alpha', 400_000, 100_000, 'yes', 'every-call', NOW - 20, true),
+        { ...file('/r/alpha/AGENTS.md', 'AGENTS.md', 'instructions', 'project', 'alpha', 400_000, 100_000, 'yes', 'every-call', NOW - 20, true), sessions: ['live-1', 'live-2'] },
         file('/home/me/.claude/projects/x/s.jsonl', 's.jsonl', 'transcript', 'shadow', '(shadow)', 20_000, 5000, 'no', null, NOW - 4000, false),
         file('/r/alpha/.claude/skills/review/SKILL.md', 'SKILL.md', 'skills', 'project', 'alpha', 240, 60, 'on-demand', 'on-demand', null, false),
       ],
@@ -280,6 +280,17 @@ describe('context panels on the board', () => {
     expect(names()).toEqual(['SKILL.md', 's.jsonl', 'AGENTS.md', 'CLAUDE.md']);
     const recent = [...p.querySelectorAll('tbody tr')].find(tr => tr.textContent.includes('AGENTS.md'));
     expect(recent.querySelector('.bd-st i').getAttribute('style')).toContain('var(--good)');
+  });
+  it('names the live sessions each file can affect', async () => {
+    const { container } = await mountBoard();
+    const p = panel(container, 'inventory');
+    fireEvent.click(within(p).getByRole('button', { name: 'No groups' }));
+    const row = [...p.querySelectorAll('tbody tr')].find(tr => tr.textContent.includes('AGENTS.md'));
+    const cell = row.querySelector('td[data-col="ses"]') || [...row.querySelectorAll('td')].find(td => (td.title || '').includes('live-1'));
+    expect(cell.textContent.trim()).toBe('2');
+    expect(cell.title).toContain('live-1');
+    const none = [...p.querySelectorAll('tbody tr')].find(tr => tr.textContent.includes('CLAUDE.md'));
+    expect([...none.querySelectorAll('td')].some(td => (td.title || '').startsWith('No live session'))).toBe(true);
   });
   it('unfolds the errors a tool reported, newest first', async () => {
     const { container } = await mountBoard();

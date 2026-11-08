@@ -3373,6 +3373,15 @@ class TestContext:
         assert cx["model"] is None and cx["window"] == board_api.DEFAULT_CONTEXT_WINDOW and cx["window_assumed"] is True
         assert (cx["always"], cx["conditional"]) == (0, 70)
 
+    def test_each_file_names_the_live_sessions_it_can_affect(self, monkeypatch):
+        from aictl import tree_walk
+
+        links = {"/r/alpha": {"git_root": "/r/alpha", "sessions": ["s1", "s2"], "files": [{"path": "/r/alpha/CLAUDE.md", "sessions": ["s2", "s1"]}]}}
+        monkeypatch.setattr(tree_walk, "session_links", lambda: links)
+        files = {f["path"]: f for t in self._ctx(_csnap(self._tools()))["files"] for f in t["files"]}
+        assert files["/r/alpha/CLAUDE.md"]["sessions"] == ["s1", "s2"]
+        assert files["/r/beta/CLAUDE.md"]["sessions"] == []
+
     def test_a_model_without_settings_comes_from_telemetry(self):
         tel = [{"tool": "codex-cli", "by_model": {"gpt-5": {"input_tokens": 10}, "o3": {"input_tokens": 90}}}]
         cx = next(b for b in self._ctx(_csnap(self._tools(), tool_telemetry=tel))["budget"]["tools"] if b["tool"] == "codex-cli")

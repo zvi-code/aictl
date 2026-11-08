@@ -220,6 +220,16 @@ def _seed_detail(db, tmp_path) -> tuple[Path, Path]:
 
 
 class TestAgentDetailArtifacts:
+    def test_the_detail_lists_the_files_that_can_affect_the_session(self, db, tmp_path, monkeypatch):
+        from aictl import tree_walk
+
+        project, _outside = _seed_detail(db, tmp_path)
+        monkeypatch.setattr(
+            tree_walk, "files_for_folder", lambda folder: {"git_root": str(project), "read": True, "files": [str(project / "AGENTS.md")]}
+        )
+        cf = agent_detail(db, SID, None, NOW)[1]["context_files"]
+        assert cf == {"git_root": str(project), "read": True, "total": 1, "files": [{"path": str(project / "AGENTS.md"), "name": "AGENTS.md"}]}
+
     def test_artifacts_are_the_session_folder_and_writes_outside_the_project(self, db, tmp_path):
         project, outside = _seed_detail(db, tmp_path)
         status, detail = agent_detail(db, SID, None, NOW)

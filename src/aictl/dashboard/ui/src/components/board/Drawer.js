@@ -225,6 +225,17 @@ function OverviewTab({ a, data, st, ctx, act, pending }) {
     })),
     sort: { k: 'u', dir: 'desc' }, none: 'This agent used no skill. Skill uses are read from Claude Code, Copilot CLI and VS Code sessions.',
   }), [data]);
+  const cf = data.context_files || { files: [], total: 0, git_root: null, read: false };
+  const ctxFiles = useMemo(() => ({
+    cols: [{ k: 'n', l: 'File', w: '200px' }, { k: 'p', l: 'Folder' }],
+    rows: cf.files.map(f => ({
+      id: f.path, go: () => act.openDrawer({ type: 'file', path: f.path }),
+      sort: { n: f.name, p: f.path },
+      cells: { n: { v: f.name, title: f.path }, p: { v: f.path.slice(0, f.path.length - f.name.length) || NA, cls: 'dim', title: f.path } },
+    })),
+    sort: { k: 'p', dir: 'asc' },
+    none: !cf.git_root ? 'The session folder is not in a git repository, so aictl links no files to it.' : cf.read ? 'No instruction or config file of this repository applies to the session folder.' : 'aictl has not read this repository yet. It reads it in the background.',
+  }), [data]);
   const context = data.context;
   const compactionDef = useMemo(() => ({
     cols: [{ k: 'at', l: 'Time', w: '110px' }, { k: 'why', l: 'Trigger', w: '80px' }, { k: 'b', l: 'Before', n: true, t: 'Tokens before it, as the tool reports them' }, { k: 'a', l: 'After', n: true, t: 'Tokens after it, as the tool reports them' }, { k: 'f', l: 'Freed', n: true }, { k: 'd', l: 'Took', n: true, w: '70px' }],
@@ -252,6 +263,7 @@ function OverviewTab({ a, data, st, ctx, act, pending }) {
         : 'Input, cache read and cache write of each call. This tool reports the total, not how it splits into instructions, tools and conversation.'}</div>
       ${context.compactions?.length ? html`<${Table} def=${compactionDef} label="Compactions"/>` : null}
     </${FixedPanel}>` : null}
+    ${a.parent_id ? null : html`<${FixedPanel} id="actxf" title="Files that can affect this session" sub=${cf.git_root ? fmtN(cf.total) + ' files of ' + cf.git_root + ' that apply to the session folder' + (cf.total > cf.files.length ? ', ' + cf.files.length + ' listed' : '') : 'No git repository'}><${Table} def=${ctxFiles} label="Files that can affect this session"/></${FixedPanel}>`}
     <${FixedPanel} id="askill" title="Skills used" sub=${(data.skills || []).length ? data.skills.reduce((n, x) => n + x.uses, 0) + ' uses of ' + data.skills.length + ' skills' + (a.parent_id ? '' : ', with its subagents') : 'None in this session'}><${Table} def=${skills} label="Skills used"/></${FixedPanel}>
     <${FixedPanel} id="ast" title="Totals"><${Stats} stats=${stats}/></${FixedPanel}>
     <${FixedPanel} id="am" title="Usage by model"><${Table} def=${models} label="Usage by model"/></${FixedPanel}>
