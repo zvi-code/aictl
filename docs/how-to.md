@@ -211,8 +211,8 @@ The tool filter in the top bar applies to every screen. `Copilot VS Code` also k
 because that card holds the VS Code settings. These stay visible because they belong to no single tool: the
 VS Code settings panel, the aictl monitoring card, Project Environment, Collector Health and the monitored folders.
 
-Analytics and the context-window figures on Budget are computed by the server for the tools you ticked
-(`/api/analytics?tools=a,b` and `/api/budget?tools=a,b`; no parameter is all tools, and an empty `tools=` is none).
+The context-window figures on Budget are computed by the server for the tools you ticked
+(`/api/budget?tools=a,b`; no parameter is all tools, and an empty `tools=` is none).
 After you change the filter, these screens show the loading state until the server has the figures for the new
 selection. They never show the figures of the previous selection. Totals, averages and percentiles come from the
 selected tools' own rows. A row that stored no tool takes the tool of its session. A note counts the rows that no

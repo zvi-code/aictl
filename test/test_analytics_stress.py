@@ -172,7 +172,7 @@ class TestFullPipelineAtScale:
     """End-to-end analytics computation at production scale."""
 
     def test_full_recompute_7d(self, large_db: HistoryDB):
-        from aictl.dashboard.web_server import (
+        from aictl.dashboard.analytics import (
             _compute_files,
             _compute_response_time,
             _compute_tools,
@@ -204,7 +204,7 @@ class TestFullPipelineAtScale:
         assert total < 10.0, f"total {total:.2f}s — must be <10s (runs in background, not request path)"
 
     def test_full_recompute_1h(self, large_db: HistoryDB):
-        from aictl.dashboard.web_server import (
+        from aictl.dashboard.analytics import (
             _compute_files,
             _compute_response_time,
             _compute_tools,
@@ -230,7 +230,7 @@ class TestConcurrentAccess:
         """10 concurrent get() calls must all return in <1ms."""
         from unittest.mock import MagicMock
 
-        from aictl.dashboard.web_server import _AnalyticsCache
+        from aictl.dashboard.analytics import _AnalyticsCache
 
         cache = _AnalyticsCache()
         store = MagicMock()
@@ -263,7 +263,7 @@ class TestConcurrentAccess:
         """Reads must not block while a recompute is in progress."""
         from unittest.mock import MagicMock
 
-        from aictl.dashboard.web_server import _AnalyticsCache
+        from aictl.dashboard.analytics import _AnalyticsCache
 
         cache = _AnalyticsCache()
         store = MagicMock()

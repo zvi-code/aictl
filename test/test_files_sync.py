@@ -7,8 +7,7 @@ transaction), the blob GC step in ``compact()``, and the throttled
 
 Per wip/open-items/files-sync-design.md. The end-to-end check uses
 direct ``db.get_file`` / ``db.file_history`` / ``db.file_content_at``
-assertions (same data the /api/files and /api/files/history endpoints
-serve) rather than spinning up the web server, to keep this file
+assertions rather than spinning up the web server, to keep this file
 independent of the shared API test harness.
 """
 
@@ -454,10 +453,8 @@ class TestPersistIntegration:
         p._sync_files(_snapshot(tmp_path, []))  # must not raise
 
     def test_end_to_end_history_after_sync(self, db, tmp_path):
-        """After syncs, the data behind /api/files and /api/files/history
-        is queryable: list rows, history rows, and content at a change
-        point. (Direct-db variant of the endpoint check — the web-server
-        harness lives in shared test files edited concurrently.)"""
+        """After syncs, the stored files are queryable: list rows, history
+        rows, and content at a change point."""
         f = tmp_path / "CLAUDE.md"
         f.write_text("version-1")
         _set_mtime(f, 1_000_000.0)
