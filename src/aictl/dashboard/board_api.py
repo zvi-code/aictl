@@ -5846,7 +5846,12 @@ def _action_db_compact(db: Any, _root: Any, _args: dict, _port: int | None) -> d
     return {"ok": True, "removed": removed}
 
 
+def _action_ctx_deploy(_db: Any, root: Any, _args: dict, _port: int | None) -> dict:
+    return _run_cli("ctx", "deploy", "-r", str(root))
+
+
 _ACTIONS = {
+    "ctx-deploy": _action_ctx_deploy,
     "hooks-repair": _action_hooks_repair,
     "otel-enable": _action_otel_enable,
     "baseline-update": _action_baseline_update,

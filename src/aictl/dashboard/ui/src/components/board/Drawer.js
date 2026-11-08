@@ -13,6 +13,7 @@ import Table from './Table.js';
 import TextView from '../ui/TextView.js';
 import { scopeAudit } from '../../utils/auditScope.js';
 import { instructionsByTool } from './findings.js';
+import FileEditor from './FileEditor.js';
 
 /** Fetch on open. A new `tick` fetches again and keeps the old data on screen meanwhile. */
 export function useDetail(load, key, tick = 0) {
@@ -301,7 +302,7 @@ const CodeLines = ({ lines }) => html`<div class="bd-code">${lines.map((ln, i) =
 })}</div>`;
 
 /** The lines around one line of a file, for a finding that points at it. */
-function useExcerpt(path, line) {
+function useExcerpt(path, line, version = 0) {
   const [state, setState] = useState(null);
   useEffect(() => {
     if (!path || !line) { setState(null); return undefined; }
@@ -310,13 +311,21 @@ function useExcerpt(path, line) {
       if (live) setState({ lines: r.lines.map(x => ({ n: x.n, text: x.text, kind: x.n === line ? 'hit' : 'same' })) });
     }).catch((e) => { if (live) setState({ error: e?.message || 'The file cannot be read.' }); });
     return () => { live = false; };
-  }, [path, line]);
+  }, [path, line, version]);
   return state;
 }
 
+const CONTEXT_FILE = /(^|[\\/])\.context\.toml$/;
+
 function FileDrawer({ d, ctx, frame, act }) {
   const { data, error } = useDetail(opts => api.getBoardFile(d.path, ctx.query, opts), 'file:' + d.path + ':' + ctx.query);
-  const excerpt = useExcerpt(d.path, d.line);
+  const [editing, setEditing] = useState(false);
+  const [version, setVersion] = useState(0);
+  const excerpt = useExcerpt(d.path, d.line, version);
+  const fileActions = [
+    editing ? null : { label: 'Edit file', go: () => setEditing(true) },
+    CONTEXT_FILE.test(d.path) && act.runCommand ? { label: 'Deploy the context', go: () => act.runCommand({ title: 'Deploy the context files', lead: 'This writes every tool\'s native files from the .context.toml files of the project, the same as the command below.', command: 'aictl ctx deploy', applyLabel: 'Run this command', action: 'ctx-deploy', done: 'Deployed the context' }) } : null,
+  ].filter(Boolean);
   const def = useMemo(() => ({
     cols: [{ k: 'at', l: 'Time', w: '110px' }, { k: 'ag', l: 'Agent' }, { k: 'ch', l: 'Lines', n: true, w: '80px' }],
     rows: (data?.edits || []).map((e, i) => ({ id: i, go: e.agent_id ? () => act.openDrawer({ type: 'agent', id: e.agent_id, tab: 'changes' }) : null, sort: { at: e.ts }, cells: { at: { v: stamp(e.ts, true), cls: 'dim' }, ag: { v: e.title || NA }, ch: { v: fmtLines(e.lines_added, e.lines_removed) } } })),
@@ -324,6 +333,9 @@ function FileDrawer({ d, ctx, frame, act }) {
   }), [data]);
   const sub = d.line ? 'Line ' + d.line : (data?.diff ? 'Diff of the last edit' : '');
   return html`<${Frame} ...${frame} title=${d.path} sub=${sub}>
+    <${FixedPanel} id="edit" title=${editing ? 'Edit' : 'Actions'} sub=${editing ? d.path : ''}>
+      ${editing ? html`<${FileEditor} path=${d.path} onClose=${() => setEditing(false)} onSaved=${() => setVersion(v => v + 1)}/>` : html`<${Actions} actions=${fileActions}/>`}
+    </${FixedPanel}>
     ${excerpt?.error ? html`<${FixedPanel} id="code" title="File"><div class="bd-empty" role="status">${excerpt.error}</div></${FixedPanel}>` : null}
     ${excerpt?.lines ? html`<${FixedPanel} id="code" title="File"><${CodeLines} lines=${excerpt.lines}/><div class="bd-note">Values under names that look like secrets are never shown.</div></${FixedPanel}>` : null}
     ${data ? html`

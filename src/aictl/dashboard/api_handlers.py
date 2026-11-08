@@ -645,6 +645,38 @@ class _APIHandlersMixin:
             return
         self._json_response(payload)
 
+    def _serve_settings_file_get(self) -> None:
+        """The text of one settings file aictl has found, for the editor."""
+        from .tool_config_editor import ToolConfigEditError, load_settings_file
+
+        try:
+            self._json_response(load_settings_file(self._qs.get("path", [None])[0], self.server.allowed.is_allowed))
+        except ToolConfigEditError as exc:
+            self._json_response({"error": exc.message}, status=exc.status)
+
+    def _serve_settings_file_put(self) -> None:
+        """Write the text of one settings file. The body carries path, text and expected_mtime."""
+        from .tool_config_editor import ToolConfigEditError, save_settings_file
+
+        content_length = self._content_length()
+        if content_length is None:
+            return
+        if content_length > 1_200_000:
+            self.send_error(413, "Payload too large")
+            return
+        try:
+            data = json.loads(self.rfile.read(content_length) or b"{}")
+        except (json.JSONDecodeError, OSError):
+            self._json_response({"error": "Invalid JSON"}, status=400)
+            return
+        if not isinstance(data, dict):
+            self._json_response({"error": "Request body must be a JSON object"}, status=400)
+            return
+        try:
+            self._json_response(save_settings_file(data.get("path"), data, self.server.allowed.is_allowed))
+        except ToolConfigEditError as exc:
+            self._json_response({"error": exc.message}, status=exc.status)
+
     def _serve_session_flow(self) -> None:
         """Return conversation-turn-level data for a session.
 

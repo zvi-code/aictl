@@ -655,7 +655,7 @@ describe('Configuration scopes', () => {
     expect(levels[0].querySelector('.st-lock')).toBeNull();
     // An unlocked row of a file the screen cannot edit says so.
     fireEvent.click(rowByKey(container, 'model'));
-    expect(container.querySelector('[data-testid="st-change-hint"]').textContent).toBe('Editing this file is not supported yet');
+    expect(container.querySelector('[data-testid="st-change-hint"]').textContent).toBe('No form for this value. Open the file and use Edit file');
   });
 
   it('lists absent managed locations in a folded group at the end of Files', async () => {
@@ -1052,11 +1052,11 @@ describe('Claude Code permissions editor', () => {
   it('stays disabled, with a hint, for a user-scope permissions row and for another tool', () => {
     const { container } = renderPerms('tool=claude-code&row=permissions', { snap: permSnap(claudePerms('user')) });
     expect(changeBtn(container).disabled).toBe(true);
-    expect(container.querySelector('[data-testid="st-change-hint"]').textContent).toContain('Editing this file is not supported yet: the value comes from User');
+    expect(container.querySelector('[data-testid="st-change-hint"]').textContent).toContain('The value comes from User. Project and Project local permissions have a form here');
     cleanup();
     const other = renderPerms('tool=codex-cli&row=approval_policy');
     expect(changeBtn(other.container).disabled).toBe(true);
-    expect(other.container.querySelector('[data-testid="st-change-hint"]').textContent).toBe('Editing this file is not supported yet');
+    expect(other.container.querySelector('[data-testid="st-change-hint"]').textContent).toBe('No form for this value. Open the file and use Edit file');
   });
 
   it('allows project and project-local winners only, and never a locked one', () => {

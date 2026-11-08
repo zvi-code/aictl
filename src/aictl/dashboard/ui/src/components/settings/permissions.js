@@ -374,7 +374,7 @@ export function permissionMatrices(entries) {
 // ─── Editing Claude Code permissions ─────────────────────────────
 export const EDITABLE_SCOPES = ['project', 'project-local'];
 const CLAUDE_PERMISSION_KEYS = new Set(['permissions', 'permissions.allow', 'permissions.deny', 'permissions.ask', 'project_permissions']);
-export const NOT_SUPPORTED = 'Editing this file is not supported yet';
+export const NOT_SUPPORTED = 'No form for this value. Open the file and use Edit file';
 
 export function isPermissionRow(row) {
   return !!row && row.tool === 'claude-code' && CLAUDE_PERMISSION_KEYS.has(row.key);
@@ -398,7 +398,7 @@ export function permissionEdit(row, scopes = []) {
   if (!isPermissionRow(row)) return { ok: false, hint: NOT_SUPPORTED };
   const scope = winningScope(row);
   if (!EDITABLE_SCOPES.includes(scope)) {
-    return { ok: false, hint: `${NOT_SUPPORTED}: the value comes from ${scopeLabel(scope, scopes)}. Project and Project local permissions can be changed here.` };
+    return { ok: false, hint: `The value comes from ${scopeLabel(scope, scopes)}. Project and Project local permissions have a form here; for another file, open it and use Edit file.` };
   }
   const s = (scopes || []).find(x => x.id === scope);
   return { ok: true, scope, label: scopeLabel(scope, scopes), path: (win && win.source) || s?.path || '' };

@@ -2070,3 +2070,85 @@ class TestSettingsToolsAPI:
         finally:
             srv.shutdown()
             srv.server_close()
+
+
+# ── Settings file editor ──────────────────────────────────────────
+
+
+@pytest.fixture()
+def editor_server(populated_db, tmp_path):
+    """A server whose allowed file set holds one settings file in a temp folder."""
+    import os
+    from pathlib import Path
+
+    from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
+
+    root = tmp_path / "project"
+    (root / ".claude").mkdir(parents=True)
+    f = root / ".claude" / "settings.json"
+    f.write_text('{\n  "a": 1\n}\n')
+    other = root / ".claude" / "other.json"
+    other.write_text("{}\n")
+    store = SnapshotStore(db=populated_db)
+    store.update(_make_snapshot())
+    allowed = AllowedPaths()
+    allowed._paths.add(os.path.realpath(str(f)))
+    srv = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, allowed, Path(root))
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    yield f"http://127.0.0.1:{port}", f, other
+    srv.shutdown()
+
+
+def _request_status(url, method="GET", payload=None, headers=None):
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode() if payload is not None else None,
+        method=method,
+        headers={"Content-Type": "application/json", **(headers or {})},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read() or b"{}")
+
+
+class TestSettingsFileEditor:
+    def test_get_returns_the_text_and_the_mtime(self, editor_server):
+        base, f, _other = editor_server
+        data = _get_json(f"{base}/api/settings/file?path={urllib.parse.quote(str(f))}")
+        assert data["text"] == '{\n  "a": 1\n}\n'
+        assert data["mtime"] == f.stat().st_mtime
+        assert data["masked"] is False
+
+    def test_put_writes_the_file_and_answers_with_the_new_text(self, editor_server):
+        base, f, _other = editor_server
+        before = _get_json(f"{base}/api/settings/file?path={urllib.parse.quote(str(f))}")
+        status, data = _request_status(f"{base}/api/settings/file", "PUT", {"path": str(f), "text": '{"a": 2}\n', "expected_mtime": before["mtime"]})
+        assert status == 200
+        assert f.read_text() == '{"a": 2}\n'
+        assert data["text"] == '{"a": 2}\n'
+        assert data["backup_path"].startswith(str(f) + ".bak.")
+
+    def test_a_file_outside_the_found_set_is_refused_on_both_verbs(self, editor_server):
+        base, _f, other = editor_server
+        assert _get_status(f"{base}/api/settings/file?path={urllib.parse.quote(str(other))}") == 403
+        status, data = _request_status(f"{base}/api/settings/file", "PUT", {"path": str(other), "text": '{"b": 1}'})
+        assert status == 403
+        assert other.read_text() == "{}\n"
+        assert "scan" in data["error"]
+
+    def test_a_write_with_a_foreign_host_header_is_refused(self, editor_server):
+        base, f, _other = editor_server
+        status, _ = _request_status(f"{base}/api/settings/file", "PUT", {"path": str(f), "text": "{}"}, headers={"Host": "evil.example"})
+        assert status == 403
+        assert f.read_text() == '{\n  "a": 1\n}\n'
+
+    def test_invalid_json_is_refused_with_the_parser_message(self, editor_server):
+        base, f, _other = editor_server
+        status, data = _request_status(f"{base}/api/settings/file", "PUT", {"path": str(f), "text": "{nope"})
+        assert status == 400
+        assert "unchanged" in data["error"]
+        assert f.read_text() == '{\n  "a": 1\n}\n'
