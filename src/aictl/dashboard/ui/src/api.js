@@ -202,6 +202,20 @@ export async function boardAction(action, args = {}) {
   });
 }
 
+/** The text of one settings file aictl has found, for the editor. Secret-shaped values arrive masked. */
+export async function getSettingsFile(path) {
+  return fetchJson('/api/settings/file?path=' + encodeURIComponent(path));
+}
+
+/** Write the text of a settings file. `expectedMtime` is the mtime the text was read at. */
+export async function saveSettingsFile(path, text, expectedMtime) {
+  return fetchJson('/api/settings/file', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, text, expected_mtime: expectedMtime ?? null }),
+  });
+}
+
 /** Every file the settings come from, with where it lives and which tools read it. */
 export async function getSettingsFiles() {
   return fetchJson('/api/settings/files');

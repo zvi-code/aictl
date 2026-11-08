@@ -486,6 +486,18 @@ On Windows, `--search-path` shows raw and expanded forms for `%APPDATA%`, `%LOCA
 `Documents`, VS Code profiles, Insiders and portable data, policy registry keys, and parent folders
 up to the drive root. These were tested by simulation, not on a Windows machine.
 
+## Change a settings file from the dashboard
+
+In the Settings screen, every setting row and every file row has an Open file button. The file
+drawer shows the file and offers **Edit file**: the whole text, a Save button and a Discard button.
+Save writes the file in place, keeps a backup next to it (`<name>.bak.<time>`), and records the
+change in aictl's mutation ledger. A JSON, TOML or YAML text that does not parse is refused and the
+file stays as it was. A file changed by another program while you edited it is refused too, with a
+Reload. Values that look like secrets are shown as `<redacted>`; a line you leave as shown keeps
+its real value. Only files that aictl found in a scan can be edited, and only from this machine.
+A `.context.toml` also offers **Deploy the context**, which runs `aictl ctx deploy` after you
+confirm it. The Claude Code permission lists keep their own form (Change value) as well.
+
 ## Find hidden context
 
 Lists every source that can reach the model, including ones you never open: parent-directory files,

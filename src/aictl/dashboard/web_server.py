@@ -167,7 +167,7 @@ _GZIP_MEMO = _GzipMemo()
 
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 # These read whole conversations or any project, so they answer this machine only.
-_LOCAL_ONLY_ROUTES = ("/api/copilot-sessions", "/api/context-audit", "/api/effective-models", "/api/board", "/api/settings/files", "/api/settings/tools")
+_LOCAL_ONLY_ROUTES = ("/api/copilot-sessions", "/api/context-audit", "/api/effective-models", "/api/board", "/api/settings/file", "/api/settings/tools")
 
 
 def _local_request(client_host: str, host_header: str | None) -> bool:
@@ -614,6 +614,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._serve_context_audit()
         elif path == "/api/settings/files":
             self._serve_settings_files()
+        elif path == "/api/settings/file":
+            self._serve_settings_file_get()
         elif path == "/api/settings/tools":
             self._serve_settings_tools()
         elif path.startswith("/api/file-writes"):
@@ -689,6 +691,11 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path.startswith("/api/tool-config/"):
             self._serve_tool_config_put()
+        elif path == "/api/settings/file":
+            if not _local_request(self.client_address[0], self.headers.get("Host")):
+                self._json_response({"error": "This route answers requests from this machine only."}, status=403)
+            else:
+                self._serve_settings_file_put()
         else:
             self.send_error(404)
 
