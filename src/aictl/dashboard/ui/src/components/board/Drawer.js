@@ -33,10 +33,10 @@ export function useDetail(load, key, tick = 0) {
   return state.key === key ? state : { data: null, error: null };
 }
 
-export function FixedPanel({ id, title, sub, children }) {
+export function FixedPanel({ id, title, sub, span = 12, children }) {
   const [open, setOpen] = useState(true);
   const label = open ? 'Fold this panel' : 'Unfold this panel';
-  return html`<section class=${'bd-panel' + (open ? '' : ' bd-folded')} id=${'dr-' + id} style="grid-column:span 12" aria-label=${title}>
+  return html`<section class=${'bd-panel' + (open ? '' : ' bd-folded')} id=${'dr-' + id} style=${'grid-column:span ' + span} aria-label=${title}>
     <div class="bd-ph bd-ph-fixed">
       <h3>${title}</h3><span class="bd-psub" title=${sub || ''}>${sub || ''}</span>
       <button type="button" class="bd-ib-btn" aria-label=${label} title=${label} aria-expanded=${open ? 'true' : 'false'} onClick=${() => setOpen(!open)}><${Ico} d=${PATHS.chev} cls=${'bd-chev' + (open ? ' bd-open' : '')}/></button>
@@ -86,7 +86,17 @@ function SplitGrip({ width, setWidth }) {
     onPointerDown=${begin} onKeyDown=${key} onDblClick=${() => { setWidth(null); saveDrawerWidth(null); }}></div>`;
 }
 
-function Frame({ title, sub, head, canBack, back, close, actions, tabs, children }) {
+/** One labelled value in the drawer header: a status with its dot, the tool, the project, a short id with a copy button. */
+function MetaChip({ k, v, sub, title, dot, mono, copy }) {
+  return html`<span class=${'bd-kv' + (mono ? ' bd-kv-mono' : '')} title=${title || (k ? k + ': ' + v : v)}>
+    ${dot ? html`<i class="bd-kvdot" style=${{ background: dot }}></i>` : null}
+    ${k ? html`<span class="bd-kvk">${k}</span>` : null}
+    <b>${v}</b>${sub ? html`<span class="bd-kvs">${sub}</span>` : null}
+    ${copy ? html`<button type="button" class="bd-kvcopy" aria-label=${copy.label} title=${copy.label} onClick=${copy.go}>Copy</button>` : null}
+  </span>`;
+}
+
+function Frame({ title, sub, meta, head, canBack, back, close, actions, tabs, children }) {
   const [width, setWidth] = useState(loadDrawerWidth);
   return html`<aside class="bd-area bd-dr" id="drawer" aria-label=${title} style=${width ? { '--drw': clampDrawer(width) + 'px' } : null}>
   <${SplitGrip} width=${width} setWidth=${setWidth}/>
@@ -97,9 +107,11 @@ function Frame({ title, sub, head, canBack, back, close, actions, tabs, children
       ${(actions || []).map(a => html`<button key=${a.label} type="button" class="bd-btn" onClick=${a.go}>${a.label}</button>`)}
       <button type="button" class="bd-ib-btn" aria-label="Close" onClick=${close}><${Ico} d=${PATHS.close}/></button>
     </div>
-    <div class="bd-drsub" title=${sub}>${sub}</div>
-    ${head || null}
-    ${tabs ? html`<div class="bd-tabs" role="tablist">${tabs.map(tb => html`<button key=${tb.id} type="button" role="tab" aria-selected=${tb.on ? 'true' : 'false'} onClick=${tb.pick}>${tb.label}</button>`)}</div>` : null}
+    ${sub ? html`<div class="bd-drsub" title=${sub}>${sub}</div>` : null}
+    ${meta || head ? html`<div class="bd-drmeta">${(meta || []).map(m => html`<${MetaChip} key=${m.k || m.v} ...${m}/>`)}${head || null}</div>` : null}
+    ${tabs ? html`<div class="bd-tabs" role="tablist">${tabs.map(tb => (tb.sep
+      ? html`<span key=${tb.id} class="bd-tabsep" aria-hidden="true"></span>`
+      : html`<button key=${tb.id} type="button" role="tab" aria-selected=${tb.on ? 'true' : 'false'} onClick=${tb.pick}>${tb.label}${tb.count != null ? html`<i class="bd-tabn">${' ' + tb.count}</i>` : null}</button>`))}</div>` : null}
   </div>
   <div class="bd-grid">${children}</div>
 </aside>`;
@@ -117,24 +129,35 @@ function AgentDrawer({ d, ctx, frame, act }) {
   const a = data?.agent || listed || { id: d.id, title: d.id };
   const st = ctx.stopped[a.id] ? 'stopped' : a.status;
   const pending = a.pending && st === 'waiting' ? a.pending : null;
+  // Three groups: what the agent did, what it changed, how it ran. A count on a tab is the rows it holds.
   const tabs = [
     ['overview', 'Overview'],
     ['transcript', 'Transcript'],
     ['flow', 'Flow'],
     ['timeline', 'Timeline'],
-    ['turns', 'Turns' + (data ? ' (' + (data.turns || []).length + ')' : '')],
-    ['tools', 'Tool calls' + (a.tool_calls != null ? ' (' + a.tool_calls + ')' : data ? ' (' + (data.tool_calls || []).length + ')' : '')],
-    ['changes', 'Changes'],
-    ['artifacts', 'Artifacts' + (data ? ' (' + data.artifacts_total + ')' : '')],
-    ['commits', 'Commits' + (data ? ' (' + data.commits.length + ')' : '')],
-    ['errors', 'Failures and loops'],
+    ['turns', 'Turns', data ? (data.turns || []).length : null],
+    ['tools', 'Tool calls', a.tool_calls != null ? a.tool_calls : data ? (data.tool_calls || []).length : null],
+    ['errors', 'Failures and loops', data ? (data.errors || []).length + (data.loop ? 1 : 0) : null],
+    ['sep1'],
+    ['changes', 'Changes', data ? (data.files || []).length : null],
+    ['artifacts', 'Artifacts', data ? data.artifacts_total : null],
+    ['commits', 'Commits', data ? data.commits.length : null],
+    ['sep2'],
     ['events', 'Events'],
     ['team', 'Team'],
     ['procs', 'Processes'],
     ['integrations', 'Integrations'],
-  ].map(([id, label]) => ({ id, label, on: d.tab === id, pick: () => act.setDrawerTab(id) }));
+  ].map(([id, label, count]) => (label ? { id, label, count, on: d.tab === id, pick: () => act.setDrawerTab(id) } : { id, sep: true }));
   const models = (a.models || []).join(', ');
-  const sub = [ctx.toolName(a.tool), a.project ? projectName(a.project) : '', models, statusMeta(st).label, a.id].filter(Boolean).join(', ');
+  const sm = statusMeta(st);
+  const dur = a.started_at ? fmtDur((a.ended_at || Date.now() / 1000) - a.started_at) : '';
+  const meta = [
+    st ? { v: sm.label, dot: sm.dot, sub: a.ended_at ? stamp(a.ended_at, true) + (dur ? ' · ' + dur : '') : dur ? dur + ' so far' : '', title: a.ended_at ? 'Ended ' + stamp(a.ended_at, true) + (a.started_at ? ', started ' + stamp(a.started_at, true) : '') : sm.label } : null,
+    a.tool ? { k: 'Tool', v: ctx.toolName(a.tool) } : null,
+    a.project ? { k: 'Project', v: projectName(a.project), title: a.project } : null,
+    models ? { k: (a.models || []).length > 1 ? 'Models' : 'Model', v: models } : null,
+    { k: 'ID', v: String(a.id).slice(0, 8), mono: true, title: a.id, copy: act.copy ? { label: 'Copy session ID ' + a.id, go: () => act.copy(a.id, 'Copied ' + a.id) } : null },
+  ].filter(Boolean);
   // Only a main agent owns a process tree; a subagent stops with its parent.
   const actions = isLive(st) && !a.parent_id ? [{ label: 'Stop', go: () => act.stopAgent(a) }] : [];
   const body = () => {
@@ -148,7 +171,7 @@ function AgentDrawer({ d, ctx, frame, act }) {
       <${Part} part="overview" name="OverviewExtras" a=${a} data=${data} st=${st} ctx=${ctx} act=${act}/>`;
   };
   const head = data?.git ? html`<${Part} part="overview" name="GitBadge" git=${data.git} a=${a}/>` : null;
-  return html`<${Frame} ...${frame} title=${a.title ? titleOf(a) : a.id} sub=${sub} head=${head} tabs=${tabs} actions=${actions}>${body()}</${Frame}>`;
+  return html`<${Frame} ...${frame} title=${a.title ? titleOf(a) : a.id} meta=${meta} head=${head} tabs=${tabs} actions=${actions}>${body()}</${Frame}>`;
 }
 
 // The session views load when their tab opens, so the board's first chunk stays small.
@@ -194,27 +217,137 @@ export function subagentDef(subagents, ctx, act, withTime = false) {
   };
 }
 
+/** Shares of the shutdown split, in series order. A missing figure stays n/a; it is never drawn as 0. */
+function splitParts(split) {
+  return [
+    { label: 'System prompt', v: split?.system, c: 'var(--s1)', title: 'systemTokens of the last shutdown record' },
+    { label: 'Conversation', v: split?.conversation, c: 'var(--s2)', title: 'conversationTokens of the last shutdown record' },
+    { label: 'Tool definitions', v: split?.tools, c: 'var(--s3)', title: 'toolDefinitionsTokens of the last shutdown record' },
+  ];
+}
+
+/** Label and value pairs under a chart: a unit in the value, a detail in small type, unknown as n/a. */
+function Facts({ facts }) {
+  return html`<dl class="bd-facts">${facts.map(f => html`<div key=${f.label} title=${f.title || f.label}><dt>${f.label}</dt><dd class=${f.value === NA ? 'bd-na' : ''}>${f.value}${f.sub ? html`<small>${f.sub}</small>` : null}</dd></div>`)}</dl>`;
+}
+
+/** Context size: the last call against the limit, the growth per call, and for a Copilot session the split at shutdown. */
+function ContextPanel({ a, context, copilot }) {
+  const split = context.split;
+  const withSplit = copilot && !a.parent_id;
+  const parts = splitParts(split);
+  const known = parts.filter(p => p.v != null);
+  const total = split?.current ?? (known.length ? known.reduce((n, p) => n + p.v, 0) : null);
+  const peakText = context.peak == null || context.last == null ? '' : context.peak === context.last ? ' = peak' : ', peak ' + fmtN(context.peak);
+  const share = context.limit_share;
+  const compactionDef = useMemo(() => ({
+    cols: [{ k: 'at', l: 'Time', w: '110px' }, { k: 'why', l: 'Trigger', w: '80px' }, { k: 'b', l: 'Before', n: true, t: 'Tokens before it, as the tool reports them' }, { k: 'a', l: 'After', n: true, t: 'Tokens after it, as the tool reports them' }, { k: 'f', l: 'Freed', n: true }, { k: 'd', l: 'Took', n: true, w: '70px' }],
+    rows: (context.compactions || []).map(c => ({
+      id: c.ts, sort: { at: c.ts, b: c.before, a: c.after, f: c.freed, d: c.duration_ms },
+      cells: { at: { v: stamp(c.ts, true), cls: 'dim' }, why: { v: c.trigger || NA, cls: 'dim' }, b: { v: fmtTokens(c.before) }, a: { v: fmtTokens(c.after) }, f: { v: fmtTokens(c.freed) }, d: { v: fmtMs(c.duration_ms) } },
+    })),
+    sort: { k: 'at', dir: 'asc' }, none: 'No compaction is stored for this agent.', primary: 'at',
+  }), [context]);
+  const facts = [
+    ...(copilot ? [
+      { label: 'Tool definitions', value: fmtTokens(context.tool_tokens), sub: context.available_tools == null ? 'tools available n/a' : context.available_tools + ' tools available', title: 'toolTokenCount and availableToolCount of the last model call that reports them' },
+      { label: 'Request body', value: fmtBytes(context.request_bytes_last), sub: context.request_bytes_peak == null ? 'peak n/a' : 'peak ' + fmtBytes(context.request_bytes_peak), title: 'requestBodyBytes of the last model call that reports it, before compression' },
+    ] : []),
+    { label: 'Times it shrank', value: fmtN(context.drops), title: 'The size fell by more than half, as compaction does' },
+    { label: 'Compactions', value: context.compactions?.length ? fmtN(context.compactions.length) : NA, sub: context.compactions?.length ? '' : 'none stored', title: 'Compaction records in the session file. Only the time that aictl reads from these files is stored, so no record does not prove that none happened.' },
+  ];
+  return html`<${FixedPanel} id="actx" span=${withSplit ? 8 : 12} title="Context size" sub=${a.parent_id ? 'What this subagent sent with each model call' : 'What the main agent sent with each model call. Each subagent has its own.'}>
+    <div class=${'bd-ctx' + (withSplit ? ' bd-ctx2' : '')}>
+      <div>
+        <div class="bd-ctxhead">
+          <span class="bd-ctxbig" title="Input, cache read and cache write of the last call">${fmtN(context.last)}<small>tokens at the last call</small></span>
+          ${copilot ? html`<span class="bd-ctxof" title="Last call, as a share of the prompt limit (maxPromptTokens of the last model call that reports it)">${context.prompt_limit == null && share == null ? html`prompt limit <b>${NA}</b>` : html`<b>${fmtShare(share)}</b> of the ${fmtN(context.prompt_limit)} prompt limit`}</span>` : null}
+        </div>
+        ${copilot && share != null ? html`<div class="bd-ctxlimit" role="img" aria-label=${fmtShare(share) + ' of the prompt limit'}><i style=${{ width: Math.max(0.5, Math.min(100, share * 100)) + '%' }}></i></div>` : null}
+        <div class="bd-ctxspk">
+          <span class="bd-ctxlab" title="Everything loaded before work began: system prompt, tools, instructions and the first prompt"><b>${fmtN(context.first)}</b> first call</span>
+          <span class="bd-ctxlab bd-ctxlab-r"><b>${fmtN(context.last)}</b> last call${peakText} · ${fmtN(context.calls)} calls</span>
+          <svg class="bd-ctxspark" viewBox="0 0 600 60" preserveAspectRatio="none" role="img" aria-label=${'Context size per call, from ' + fmtN(context.first) + ' to ' + fmtN(context.last) + ', peak ' + fmtN(context.peak)}><path d=${sparkPath(context.series, 600, 60)} fill="none" stroke="var(--s1)" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>
+        </div>
+      </div>
+      ${withSplit ? html`<div class="bd-ctxsplit">
+        <div class="bd-ctxst">${split
+          ? html`<span>${'Split at the last shutdown, ' + stamp(split.ts, true)}</span><b title="currentTokens of the last shutdown record">${fmtTokens(split.current)}</b>`
+          : html`<span>Split at shutdown: not known. The session wrote no shutdown record that aictl holds.</span>`}</div>
+        ${split && known.length ? html`<div class="bd-segbar bd-ctxbar" role="img" aria-label=${known.map(p => p.label + ' ' + fmtN(p.v)).join(', ')}>${known.map(p => html`<span key=${p.label} class="bd-segpart" style=${{ flex: p.v + ' 1 0', background: p.c }} title=${p.title}>${fmtN(p.v)}</span>`)}</div>` : null}
+        <div class="bd-ctxleg">${parts.map(p => html`<i key=${p.label + 'c'} class="bd-sw" style=${{ background: p.c }}></i><span key=${p.label} title=${p.title}>${p.label}</span><span key=${p.label + 'v'} class="bd-ctxlegv">${fmtN(p.v)}${p.v != null && total ? html`<small>${fmtShare(p.v / total)}</small>` : null}</span>`)}</div>
+      </div>` : null}
+    </div>
+    <${Facts} facts=${facts}/>
+    <div class="bd-note">${copilot
+      ? 'First, last and peak are input, cache read and cache write of each call. Copilot compaction figures count the conversation only, without the system prompt and tools.'
+      : 'Input, cache read and cache write of each call. This tool reports the total, not how it splits into instructions, tools and conversation.'}</div>
+    ${context.compactions?.length ? html`<${Table} def=${compactionDef} label="Compactions"/>` : null}
+  </${FixedPanel}>`;
+}
+
+/** The files of the repository that apply to the session folder, one row per folder, names as chips that open the file. */
+export function groupContextFiles(files, gitRoot) {
+  const root = gitRoot ? gitRoot.replace(/\/+$/, '') + '/' : '';
+  const byDir = new Map();
+  for (const f of files) {
+    const dir = f.path.slice(0, f.path.length - f.name.length);
+    const rel = root && dir.startsWith(root) ? dir.slice(root.length) : dir;
+    const g = byDir.get(dir) || { dir, rel: rel || '/', files: [] };
+    g.files.push(f);
+    byDir.set(dir, g);
+  }
+  return [...byDir.values()].sort((x, y) => x.dir.localeCompare(y.dir)).map(g => ({ ...g, files: g.files.slice().sort((x, y) => x.name.localeCompare(y.name)) }));
+}
+
+const FILTER_FROM = 9;
+
+function ContextFiles({ cf, act }) {
+  const [q, setQ] = useState('');
+  const groups = useMemo(() => groupContextFiles(cf.files, cf.git_root), [cf]);
+  const needle = q.trim().toLowerCase();
+  const shown = needle ? groups.map(g => ({ ...g, files: g.files.filter(f => f.path.toLowerCase().includes(needle)) })).filter(g => g.files.length) : groups;
+  if (!cf.files.length) {
+    return html`<div class="bd-empty">${!cf.git_root ? 'The session folder is not in a git repository, so aictl links no files to it.' : cf.read ? 'No instruction or config file of this repository applies to the session folder.' : 'aictl has not read this repository yet. It reads it in the background.'}</div>`;
+  }
+  return html`
+    ${cf.files.length >= FILTER_FROM ? html`<div class="bd-ffilter">
+      <input class="bd-fq" type="search" value=${q} placeholder="Filter files" aria-label="Filter the files by name or folder" onInput=${e => setQ(e.target.value)}/>
+      <span class="bd-ffnote">${'Folders are relative to ' + cf.git_root + '. Click a file to open it.'}</span>
+    </div>` : null}
+    ${shown.map(g => html`<div key=${g.dir} class="bd-fgrp">
+      <div class="bd-fdir" title=${g.dir}><span class="bd-mono">${g.rel}</span><small>${(g.rel === '/' ? 'repository root · ' : '') + (g.files.length === 1 ? '1 file' : g.files.length + ' files')}</small></div>
+      <div class="bd-fchips">${g.files.map(f => html`<button key=${f.path} type="button" class="bd-fchip" title=${f.path} onClick=${() => act.openDrawer({ type: 'file', path: f.path })}>${f.name}</button>`)}</div>
+    </div>`)}
+    ${needle && !shown.length ? html`<div class="bd-empty">No file matches.</div>` : null}`;
+}
+
 function OverviewTab({ a, data, st, ctx, act, pending }) {
   const proc = data.process || {};
   const live = isLive(st);
   const msgs = a.msgs ? a.msgs.user + a.msgs.assistant + a.msgs.tool : null;
   const tokens = [a.input, a.output, a.cache_read, a.cache_write].some(v => v != null) ? (a.input || 0) + (a.output || 0) + (a.cache_read || 0) + (a.cache_write || 0) : null;
-  const addLines = (data.files || []).reduce((s, f) => s + (f.lines_added || 0), 0);
-  const delLines = (data.files || []).reduce((s, f) => s + (f.lines_removed || 0), 0);
-  const stats = [
+  const files = data.files || [];
+  const addLines = files.reduce((s, f) => s + (f.lines_added || 0), 0);
+  const delLines = files.reduce((s, f) => s + (f.lines_removed || 0), 0);
+  const context = data.context;
+  const models = (a.models || []).join(', ');
+  // The strip at the top: the numbers a reader opens a session for.
+  const kpis = [
+    { label: 'Tokens', value: fmtN(tokens), sub: a.cached_share != null ? fmtShare(a.cached_share) + ' cached' : a.cache_read != null ? fmtN(a.cache_read) + ' cache read' : '', title: 'Input, output, cache read and cache write' },
+    { label: 'Cost', value: fmtUsd(a.cost_usd), sub: models },
+    { label: 'Time', value: fmtDur((a.ended_at || Date.now() / 1000) - a.started_at), sub: a.started_at ? stamp(a.started_at, true) + (a.ended_at ? ' → ' + stamp(a.ended_at, false, a.started_at * 1000) : '') : '' },
     { label: 'Messages', value: fmtN(msgs), sub: a.msgs ? a.msgs.user + (a.parent_id ? ' task prompts' : ' prompts') : '' },
-    { label: 'Tokens', value: fmtN(tokens) },
-    { label: 'Cached', value: fmtShare(a.cached_share), sub: a.cache_read == null ? '' : fmtN(a.cache_read) + ' read' },
-    { label: 'Cost', value: fmtUsd(a.cost_usd) },
-    { label: 'Tool calls', value: fmtN(a.tool_calls), sub: a.failures == null ? '' : a.failures + ' failed' },
-    { label: 'Time', value: fmtDur((a.ended_at || Date.now() / 1000) - a.started_at) },
-    { label: 'Lines', value: (data.files || []).length ? '+' + fmtN(addLines) : NA, sub: (data.files || []).length ? '−' + fmtN(delLines) : '' },
+    { label: 'Tool calls', value: fmtN(a.tool_calls), sub: a.failures == null ? '' : a.failures + ' failed', cls: a.failures ? 'crit' : '' },
+    context ? { label: 'Model calls', value: fmtN(context.calls), sub: 'context ' + fmtN(context.first) + ' → ' + fmtN(context.last), title: 'Calls to a model, and what the first and the last call sent' } : null,
+    { label: 'Lines', value: files.length ? '+' + fmtN(addLines) : NA, sub: files.length ? '−' + fmtN(delLines) : 'no file changes' },
     { label: 'Artifacts', value: fmtN(data.artifacts_total), sub: data.artifacts_bytes == null ? '' : fmtBytes(data.artifacts_bytes), title: 'Files of the session folder and files the session wrote outside its project' },
     { label: 'Commits', value: fmtN(data.commits.length), sub: ((n) => n + (n === 1 ? ' pull request' : ' pull requests'))(data.commits.reduce((n, c) => n + c.prs.length, 0)) },
-  ];
-  const models = useMemo(() => ({
+  ].filter(Boolean);
+  const modelDef = useMemo(() => ({
     cols: [{ k: 'm', l: 'Model' }, { k: 'msgs', l: 'Calls', n: true, w: '50px', t: 'Calls to this model' }, { k: 'input', l: 'Input', n: true, w: '60px' }, { k: 'output', l: 'Output', n: true, w: '60px' }, { k: 'cr', l: 'Cache read', n: true, w: '76px' }, { k: 'cw', l: 'Cache write', n: true, w: '80px' }, { k: 'cost', l: 'Cost', n: true, w: '60px' }],
     rows: (data.by_model || []).map(x => ({ id: x.model || 'none', sort: { m: x.model || NO_MODEL, msgs: x.msgs, input: x.input, output: x.output, cr: x.cache_read, cw: x.cache_write, cost: x.cost_usd }, cells: { m: { v: x.model || NO_MODEL, sw: colorFor('model', x.model), title: x.model ? x.model : 'The record carries no model id', cls: x.model ? '' : 'dim' }, msgs: { v: fmtN(x.msgs) }, input: { v: fmtN(x.input) }, output: { v: fmtN(x.output) }, cr: { v: fmtN(x.cache_read) }, cw: { v: fmtN(x.cache_write) }, cost: { v: fmtUsd(x.cost_usd) } } })),
+    sort: { k: 'cost', dir: 'desc' },
   }), [data]);
   const kids = useMemo(() => subagentDef(data.subagents, ctx, act), [data, ctx.stopped]);
   const skills = useMemo(() => ({
@@ -226,52 +359,26 @@ function OverviewTab({ a, data, st, ctx, act, pending }) {
     sort: { k: 'u', dir: 'desc' }, none: 'This agent used no skill. Skill uses are read from Claude Code, Copilot CLI and VS Code sessions.',
   }), [data]);
   const cf = data.context_files || { files: [], total: 0, git_root: null, read: false };
-  const ctxFiles = useMemo(() => ({
-    cols: [{ k: 'n', l: 'File', w: '200px' }, { k: 'p', l: 'Folder' }],
-    rows: cf.files.map(f => ({
-      id: f.path, go: () => act.openDrawer({ type: 'file', path: f.path }),
-      sort: { n: f.name, p: f.path },
-      cells: { n: { v: f.name, title: f.path }, p: { v: f.path.slice(0, f.path.length - f.name.length) || NA, cls: 'dim', title: f.path } },
-    })),
-    sort: { k: 'p', dir: 'asc' },
-    none: !cf.git_root ? 'The session folder is not in a git repository, so aictl links no files to it.' : cf.read ? 'No instruction or config file of this repository applies to the session folder.' : 'aictl has not read this repository yet. It reads it in the background.',
-  }), [data]);
-  const context = data.context;
-  const compactionDef = useMemo(() => ({
-    cols: [{ k: 'at', l: 'Time', w: '110px' }, { k: 'why', l: 'Trigger', w: '80px' }, { k: 'b', l: 'Before', n: true, t: 'Tokens before it, as the tool reports them' }, { k: 'a', l: 'After', n: true, t: 'Tokens after it, as the tool reports them' }, { k: 'f', l: 'Freed', n: true }, { k: 'd', l: 'Took', n: true, w: '70px' }],
-    rows: (context?.compactions || []).map(c => ({
-      id: c.ts, sort: { at: c.ts, b: c.before, a: c.after, f: c.freed, d: c.duration_ms },
-      cells: { at: { v: stamp(c.ts, true), cls: 'dim' }, why: { v: c.trigger || NA, cls: 'dim' }, b: { v: fmtTokens(c.before) }, a: { v: fmtTokens(c.after) }, f: { v: fmtTokens(c.freed) }, d: { v: fmtMs(c.duration_ms) } },
-    })),
-    sort: { k: 'at', dir: 'asc' }, none: 'No compaction is stored for this agent.', primary: 'at',
-  }), [data]);
+  const folders = useMemo(() => new Set(cf.files.map(f => f.path.slice(0, f.path.length - f.name.length))).size, [cf]);
   const copilot = (a.tool || '').startsWith('copilot');
-  const split = context?.split;
   const copyLink = window.location.origin + window.location.pathname + '?agent=' + encodeURIComponent(a.id);
+  const withSplit = !!context && copilot && !a.parent_id;
   return html`
     ${pending ? html`<${FixedPanel} id="ap" title="Waiting for your confirmation"><div class="bd-ptext">${pending.name + ': ' + pending.target + '\nWaiting for ' + fmtDur(Date.now() / 1000 - pending.since_ts) + '. Answer in the tool that asks.'}</div></${FixedPanel}>` : null}
-    ${context ? html`<${FixedPanel} id="actx" title="Context size" sub=${a.parent_id ? 'What this subagent sent with each model call' : 'What the main agent sent with each model call. Each subagent has its own.'}>
-      <${Stats} stats=${[{ label: 'First call', sub: 'tokens', value: fmtN(context.first), title: 'Everything loaded before work began: system prompt, tools, instructions and the first prompt' }, { label: 'Last call', sub: 'tokens', value: fmtN(context.last) }, { label: 'Peak', sub: 'tokens', value: fmtN(context.peak) }, { label: 'Calls', value: fmtN(context.calls) }, { label: 'Times it shrank', value: fmtN(context.drops), title: 'The size fell by more than half, as compaction does' }, { label: 'Compactions', value: context.compactions?.length ? fmtN(context.compactions.length) : NA, sub: context.compactions?.length ? '' : 'none stored', title: 'Compaction records in the session file. Only the time that aictl reads from these files is stored, so no record does not prove that none happened.' }]}/>
-      <svg class="bd-ctxspark" viewBox="0 0 600 60" preserveAspectRatio="none" role="img" aria-label=${'Context size per call, from ' + fmtN(context.first) + ' to ' + fmtN(context.last) + ', peak ' + fmtN(context.peak)}><path d=${sparkPath(context.series, 600, 60)} fill="none" stroke="var(--s1)" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>
-      ${copilot ? html`
-        <${Stats} stats=${[{ label: 'Tool definitions', sub: 'tokens', value: fmtN(context.tool_tokens), title: 'toolTokenCount of the last model call that reports it' }, { label: 'Tools available', value: fmtN(context.available_tools), title: 'availableToolCount of the last model call that reports it' }, { label: 'Prompt limit', sub: 'tokens', value: fmtN(context.prompt_limit), title: 'maxPromptTokens of the last model call that reports it' }, { label: 'Share of limit', value: fmtShare(context.limit_share), title: 'Last call, as a share of the prompt limit' }, { label: 'Request size', value: fmtBytes(context.request_bytes_last), sub: context.request_bytes_peak == null ? '' : 'peak ' + fmtBytes(context.request_bytes_peak), title: 'requestBodyBytes of the last model call that reports it, before compression' }]}/>
-        ${a.parent_id ? null : html`<div class="bd-note">${split ? 'Split at the last shutdown, ' + stamp(split.ts, true) + '.' : 'Split at shutdown: not known. The session wrote no shutdown record that aictl holds.'}</div>
-        <${Stats} stats=${[{ label: 'Total at shutdown', sub: 'tokens', value: fmtN(split?.current), title: 'currentTokens of the last shutdown record' }, { label: 'System', sub: 'tokens', value: fmtN(split?.system), title: 'systemTokens of the last shutdown record' }, { label: 'Conversation', sub: 'tokens', value: fmtN(split?.conversation), title: 'conversationTokens of the last shutdown record' }, { label: 'Tool definitions', sub: 'tokens', value: fmtN(split?.tools), title: 'toolDefinitionsTokens of the last shutdown record' }]}/>`}
-      ` : null}
-      <div class="bd-note">${copilot
-        ? 'First, last and peak are input, cache read and cache write of each call. Copilot compaction figures count the conversation only, without the system prompt and tools.'
-        : 'Input, cache read and cache write of each call. This tool reports the total, not how it splits into instructions, tools and conversation.'}</div>
-      ${context.compactions?.length ? html`<${Table} def=${compactionDef} label="Compactions"/>` : null}
-    </${FixedPanel}>` : null}
-    ${a.parent_id ? null : html`<${FixedPanel} id="actxf" title="Files that can affect this session" sub=${cf.git_root ? fmtN(cf.total) + ' files of ' + cf.git_root + ' that apply to the session folder' + (cf.total > cf.files.length ? ', ' + cf.files.length + ' listed' : '') : 'No git repository'}><${Table} def=${ctxFiles} label="Files that can affect this session"/></${FixedPanel}>`}
-    <${FixedPanel} id="askill" title="Skills used" sub=${(data.skills || []).length ? data.skills.reduce((n, x) => n + x.uses, 0) + ' uses of ' + data.skills.length + ' skills' + (a.parent_id ? '' : ', with its subagents') : 'None in this session'}><${Table} def=${skills} label="Skills used"/></${FixedPanel}>
-    <${FixedPanel} id="ast" title="Totals"><${Stats} stats=${stats}/></${FixedPanel}>
-    <${FixedPanel} id="am" title="Usage by model"><${Table} def=${models} label="Usage by model"/></${FixedPanel}>
+    <div class="bd-kpis bd-drkpis" role="group" aria-label="Totals">${kpis.map(k => html`<div key=${k.label} class="bd-kpi" title=${k.title || k.label}><span class="bd-l">${k.label}</span><span class="bd-v">${k.value}</span><span class=${'bd-d' + (k.cls ? ' bd-' + k.cls : '')}>${k.sub || ''}</span></div>`)}</div>
+    ${context ? html`<${ContextPanel} a=${a} context=${context} copilot=${copilot}/>` : null}
+    <div class="bd-drcol" style=${'grid-column:span ' + (withSplit ? 4 : 12)}>
+      <${FixedPanel} id="am" title="Usage by model" sub=${(data.by_model || []).length ? (data.by_model.length === 1 ? '1 model' : data.by_model.length + ' models') : ''}><${Table} def=${modelDef} label="Usage by model"/></${FixedPanel}>
+      <${FixedPanel} id="askill" title="Skills used" sub=${(data.skills || []).length ? data.skills.reduce((n, x) => n + x.uses, 0) + ' uses of ' + data.skills.length + ' skills' + (a.parent_id ? '' : ', with its subagents') : 'None in this session'}><${Table} def=${skills} label="Skills used"/></${FixedPanel}>
+      <${FixedPanel} id="ar" title="Process" sub=${live ? '' : 'Ended, nothing running'}>
+        <${Stats} stats=${live
+          ? [{ label: 'Started', value: stamp(proc.started_at ?? a.started_at, true) }, { label: 'CPU', value: fmtCpu(proc.cpu_percent) }, { label: 'RAM', value: fmtMem(proc.mem_mb) }, { label: 'Processes', value: Array.isArray(proc.pids) && proc.pids.length ? proc.pids.length : NA }]
+          : [{ label: 'Started', value: stamp(proc.started_at ?? a.started_at, true) }, { label: 'Ended', value: stamp(a.ended_at, true) }]}/>
+        <${Actions} actions=${[{ label: 'Copy session ID', go: () => act.copy(a.id, 'Copied ' + a.id) }, { label: 'Copy link to this agent', go: () => act.copy(copyLink, 'Copied the link') }]}/>
+      </${FixedPanel}>
+    </div>
     ${(data.subagents || []).length ? html`<${FixedPanel} id="ak" title="Subagents"><${Table} def=${kids} label="Subagents"/></${FixedPanel}>` : null}
-    <${FixedPanel} id="ar" title="Process">
-      <${Stats} stats=${[{ label: 'CPU', value: live ? fmtCpu(proc.cpu_percent) : NA }, { label: 'RAM', value: live ? fmtMem(proc.mem_mb) : NA }, { label: 'Processes', value: live && Array.isArray(proc.pids) && proc.pids.length ? proc.pids.length : NA }, { label: 'Started', value: stamp(proc.started_at ?? a.started_at, true) }]}/>
-      <${Actions} actions=${[{ label: 'Copy session ID', go: () => act.copy(a.id, 'Copied ' + a.id) }, { label: 'Copy link to this agent', go: () => act.copy(copyLink, 'Copied the link') }]}/>
-    </${FixedPanel}>`;
+    ${a.parent_id ? null : html`<${FixedPanel} id="actxf" title="Files that can affect this session" sub=${cf.git_root ? fmtN(cf.total) + ' files in ' + folders + (folders === 1 ? ' folder of ' : ' folders of ') + cf.git_root + ' apply to the session folder' + (cf.total > cf.files.length ? ', ' + cf.files.length + ' listed' : '') : 'No git repository'}><${ContextFiles} cf=${cf} act=${act}/></${FixedPanel}>`}`;
 }
 
 function TurnsTab({ data }) {
