@@ -39,7 +39,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ._common import coerce_ts, open_readonly, record_quality
+from ._common import coerce_ts, open_readonly, provision_session, record_quality, session_tool, writer_conn
 
 if TYPE_CHECKING:
     from ..storage import HistoryDB
@@ -100,6 +100,7 @@ class CopilotSessionStoreIngester:
     ) -> None:
         self.db_path = Path(db_path).expanduser() if db_path else default_db_path()
         self.store = our_store
+        self._provisioned: set[str] = set()
         self.last_cursor: dict[str, int] = dict(last_cursor or {})
         self.last_poll_ts: float = 0.0
         self.last_poll_inserted: int = 0
@@ -265,13 +266,13 @@ class CopilotSessionStoreIngester:
 
     def _stored_cursor(self, table: str) -> int:
         """Watermark from the previous run, so a restart does not read the store again."""
-        row = self.store._conn().execute(
+        row = writer_conn(self.store).execute(
             "SELECT value FROM maintenance_state WHERE key = ?", (f"copilot_store_cursor:{table}",)
         ).fetchone()
         return int(row[0]) if row else 0
 
     def _save_cursor(self, table: str, rowid: int) -> None:
-        conn = self.store._conn()
+        conn = writer_conn(self.store)
         conn.execute(
             "INSERT OR REPLACE INTO maintenance_state(key, value) VALUES(?,?)",
             (f"copilot_store_cursor:{table}", rowid),
@@ -291,7 +292,7 @@ class CopilotSessionStoreIngester:
         ts: float,
         ingested_at: float,
     ) -> bool:
-        conn = self.store._conn()
+        conn = writer_conn(self.store)
         cur = conn.execute(
             "INSERT OR IGNORE INTO copilot_session_messages"
             "(session_id, source_row_id, source_table, role, content, ts, ingested_at)"
@@ -317,21 +318,16 @@ class CopilotSessionStoreIngester:
         if not source_session_key:
             provisional = "copilot:unknown"
         else:
-            conn = self.store._conn()
-            cur = conn.execute(
-                "SELECT session_id FROM sessions"
-                " WHERE tool = 'copilot-cli' AND session_id = ? LIMIT 1",
-                (source_session_key,),
-            )
-            row = cur.fetchone()
-            if row:
-                return str(row[0])
+            if session_tool(self.store, source_session_key) == "copilot-cli":
+                return source_session_key
             provisional = f"copilot:{source_session_key}"
 
         # Through the store's writer: a store split by project places the row.
         from ..storage import SessionRow
 
-        self.store.upsert_session(
+        provision_session(
+            self.store,
+            self._provisioned,
             SessionRow(session_id=provisional, tool="copilot-cli", started_at=ts or time.time(), source="copilot-session-store")
         )
         return provisional

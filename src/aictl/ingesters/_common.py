@@ -65,7 +65,12 @@ def record_quality(
         except sqlite3.OperationalError as exc:
             # A health row must never stop the ingester that reports it.
             writes = store.active_writes() if hasattr(store, "active_writes") else []
-            log.warning("Cannot record health of %s: %s. Writes running in this process: %s", ingester_id, exc, ", ".join(writes) or "none")
+            log.warning(
+                "Cannot record health of %s: %s. Writes running in this process: %s",
+                ingester_id,
+                exc,
+                ", ".join(writes) or "none",
+            )
 
 
 def decode_file_uri(value: str) -> str:
@@ -155,3 +160,26 @@ def coerce_ts(raw: Any) -> float:
         except ValueError:
             return 0.0
     return 0.0
+
+
+def writer_conn(store: Any) -> Any:
+    """The connection for an ingester's own tables and watermarks.
+
+    A history split by project keeps them in its machine store: this connection
+    writes there and never holds project store files open.
+    """
+    return getattr(store, "machine", store)._conn()
+
+
+def session_tool(store: Any, session_id: str) -> str | None:
+    """The tool of a stored session, or None. A split history looks in that session's store."""
+    row = store.get_session(session_id)
+    return str(row.get("tool") or "") if row else None
+
+
+def provision_session(store: Any, provisioned: set[str], row: Any) -> None:
+    """Create a placeholder session once per process; a known one is left as it is."""
+    if row.session_id in provisioned:
+        return
+    store.upsert_session(row)
+    provisioned.add(row.session_id)
