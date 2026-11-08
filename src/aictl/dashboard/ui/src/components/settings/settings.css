@@ -413,3 +413,13 @@
 .bd-app .st-ws .st-perm--denied .st-perm__btn { border-color: color-mix(in srgb, var(--crit) 55%, transparent); }
 .bd-app .st-ws .st-perm--mixed .st-perm__btn { border-style: dashed; }
 .bd-app .st-ws .st-extra td { height: auto; }
+
+/* Sortable headers and columns the person has resized */
+.st-table thead th[data-col], .st-permtable thead th[data-col] { position: relative; }
+.st-table thead th .st-sort, .st-permtable thead th .st-sort { white-space: nowrap; }
+.st-table.st-fixed, .st-permtable.st-fixed { table-layout: fixed; width: auto; }
+.st-table.st-fixed td, .st-permtable.st-fixed td { overflow: hidden; text-overflow: ellipsis; }
+.st-table.st-fixed thead th, .st-permtable.st-fixed thead th { overflow: visible; }
+.st-table th .bd-colgrip, .st-permtable th .bd-colgrip { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; z-index: 2; touch-action: none; }
+.st-table th .bd-colgrip:hover, .st-table th .bd-colgrip:focus-visible,
+.st-permtable th .bd-colgrip:hover, .st-permtable th .bd-colgrip:focus-visible { background: var(--focus); opacity: .5; outline: none; }

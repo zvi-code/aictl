@@ -1,6 +1,7 @@
 // ─── Board table — the same behaviour in every panel and in the drawer ─
 import { html } from 'htm/preact';
 import { useMemo, useState } from 'preact/hooks';
+import { useColumnWidths } from './colWidths.js';
 import { tailPath } from './format.js';
 import { Ico, PATHS } from './icons.js';
 import { nextSort, tableModel } from './tableModel.js';
@@ -43,12 +44,20 @@ export default function Table({ def, hidden, sort: sortProp, onSort, label }) {
   const m = useMemo(() => tableModel(def, { sort, hidden: hidden || {}, showAll }), [def, sort, hidden, showAll]);
   const setSort = onSort || setLocalSort;
   const primaryKey = def.primary && m.cols.some(c => c.k === def.primary) ? def.primary : (m.cols.length ? m.cols[0].k : null);
+  // Widths dragged by the person win; the table then lays out at exactly those widths.
+  const cw = useColumnWidths(def.key || label || null);
+  const pxOf = c => cw.widths[c.k] || parseInt(c.width, 10) || c.minw || 130;
+  const tableStyle = cw.set
+    ? { tableLayout: 'fixed', width: m.cols.reduce((s, c) => s + pxOf(c), 0) + 'px' }
+    : { minWidth: m.min + 'px' };
   return html`<div class="bd-tw">
-    ${m.rows.length || !m.none ? html`<table class="bd-t" style=${{ minWidth: m.min + 'px' }}>
+    ${m.rows.length || !m.none ? html`<table class=${'bd-t' + (cw.set ? ' bd-fixed' : '')} style=${tableStyle}>
       ${label ? html`<caption>${label}</caption>` : null}
-      <thead><tr>${m.cols.map(c => html`<th key=${c.k} scope="col" class=${(c.n ? 'bd-n ' : '') + (c.on ? 'bd-on' : '')} style=${{ width: c.width }} title=${c.t || c.l}
+      <thead><tr>${m.cols.map(c => html`<th key=${c.k} scope="col" class=${(c.n ? 'bd-n ' : '') + (c.on ? 'bd-on' : '')} data-col=${c.k} style=${{ width: cw.set ? pxOf(c) + 'px' : c.width }} title=${c.t || c.l}
         aria-sort=${c.on ? (c.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
-        <button type="button" onClick=${() => setSort(nextSort(c, m.sorted))}>${c.l}<span aria-hidden="true">${c.on ? (c.dir === 'asc' ? ' ↑' : ' ↓') : ''}</span></button>
+        ${c.sortable
+          ? html`<button type="button" onClick=${() => setSort(nextSort(c, m.sorted))}>${c.l}<span aria-hidden="true">${c.on ? (c.dir === 'asc' ? ' ↑' : ' ↓') : ''}</span></button>`
+          : html`<span class="bd-thx" title=${(c.t || c.l) + '. This column shows a picture and does not sort.'}>${c.l}</span>`}${cw.grip(c.k)}
       </th>`)}</tr></thead>
       <tbody>${m.rows.map((r, idx) => html`<tr key=${r.id != null ? r.id : idx}
         class=${[r.go ? 'bd-rowgo' : '', r.level ? 'bd-child' : '', r.group ? 'bd-group' : ''].join(' ').trim() || null}

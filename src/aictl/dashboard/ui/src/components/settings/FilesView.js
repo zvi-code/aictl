@@ -11,6 +11,7 @@ import {
 } from './model.js';
 import { ScopeChip, LockGlyph } from './Value.js';
 import { Swatch, NavHead, ToolChip } from './parts.js';
+import { useGrid } from './tableGrid.js';
 
 export const FOLD_FILES = 8;
 const DAY_S = 86400;
@@ -108,11 +109,17 @@ function FilterChips({ w }) {
 /** Purpose by location, counted over the files the other filters keep. A cell narrows the tree to it. */
 function Summary({ w }) {
   const m = fileMatrix(visibleFiles(w, 'cell').filter(f => !f.is_dir));
+  const cols = [
+    { k: 'purpose', l: 'Purpose', get: r => r.label },
+    ...m.cols.map(c => ({ k: c.id, l: c.label, cls: 'st-num', n: true, get: r => r.cells[c.id] || undefined })),
+    { k: 'all', l: 'All', cls: 'st-num', n: true, get: r => r.total || undefined },
+  ];
+  const g = useGrid('settings.files.matrix', cols);
   if (!m.rows.length) return null;
-  return html`<div class="st-scroll"><table class="st-table st-fmatrix" data-testid="st-file-matrix">
+  return html`<div class="st-scroll"><table class=${'st-table st-fmatrix ' + g.tableProps.class} style=${g.tableProps.style} data-testid="st-file-matrix">
     <caption class="st-sr">Files by purpose and location</caption>
-    <thead><tr><th scope="col">Purpose</th>${m.cols.map(c => html`<th key=${c.id} scope="col" class="st-num">${c.label}</th>`)}<th scope="col" class="st-num">All</th></tr></thead>
-    <tbody>${m.rows.map(r => html`<tr key=${r.id}>
+    <thead><tr>${cols.map(g.th)}</tr></thead>
+    <tbody>${g.order(m.rows).map(r => html`<tr key=${r.id}>
       <th scope="row">${r.label}</th>
       ${m.cols.map((c) => {
         const n = r.cells[c.id] || 0;
@@ -193,11 +200,11 @@ export function treeGroups(files, by) {
   return out;
 }
 
-function GroupBody({ g, w, open, setOpen, shut, setShut }) {
+function GroupBody({ g, w, open, setOpen, shut, setShut, grid }) {
   const closed = !!shut[g.key];
   const tools = [...new Set(g.files.flatMap(f => f.tools))];
   const bytes = g.files.reduce((n, f) => n + (f.is_dir ? 0 : Number(f.bytes) || 0), 0);
-  const folders = g.flat ? [{ dir: '', files: g.files }] : fileFolders(g.files);
+  const folders = (g.flat ? [{ dir: '', files: g.files }] : fileFolders(g.files)).map(d => ({ ...d, files: grid.order(d.files) }));
   // Files right in the group's own folder come first, with no folder line.
   if (g.root) folders.sort((a, b) => (b.dir === g.root) - (a.dir === g.root));
   return html`<tbody ...${g.attrs}>
@@ -227,7 +234,27 @@ function GroupBody({ g, w, open, setOpen, shut, setShut }) {
 
 const GROUP_OPTIONS = [{ value: 'location', label: 'By location' }, { value: 'purpose', label: 'By purpose' }];
 
+const timeOf = f => {
+  if (!f.mtime) return undefined;
+  const t = Number(f.mtime);
+  return t > 0 ? t : (typeof f.mtime === 'string' ? Date.parse(f.mtime) || undefined : undefined);
+};
+
+function fileCols(w) {
+  return [
+    { k: 'file', l: 'File', cls: 'st-c-file', get: f => f.name },
+    { k: 'purpose', l: 'Purpose', get: f => (f.is_dir ? 'Folder' : PURPOSE_LABELS[purposeOf(f)]) },
+    { k: 'scope', l: 'Scope', get: f => f.scope },
+    { k: 'readby', l: 'Read by', get: f => f.tools.map(w.labelOf).join(', ') },
+    { k: 'settings', l: 'Settings', cls: 'st-num', n: true, get: f => f.settings || undefined },
+    { k: 'size', l: 'Size', cls: 'st-num', n: true, get: f => (f.is_dir || f.bytes == null ? undefined : Number(f.bytes)) },
+    { k: 'git', l: 'Git', get: f => f.git_state },
+    { k: 'changed', l: 'Last change', n: true, get: timeOf },
+  ];
+}
+
 export function FilesMain({ w }) {
+  const grid = useGrid('settings.files', fileCols(w));
   const [open, setOpen] = useState({});
   const [shut, setShut] = useState({});
   const files = visibleFiles(w);
@@ -246,12 +273,9 @@ export function FilesMain({ w }) {
     ${w.filesStatus !== 'ready' && html`<p class="st-note" role="status">File details are loading</p>`}
     <${Summary} w=${w}/>
     <${FilterChips} w=${w}/>
-    ${groups.length || absent.length ? html`<div class="st-scroll"><table class="st-table st-files">
-      <thead><tr>
-        <th scope="col" class="st-c-file">File</th><th scope="col">Purpose</th><th scope="col">Scope</th><th scope="col">Read by</th>
-        <th scope="col" class="st-num">Settings</th><th scope="col" class="st-num">Size</th><th scope="col">Git</th><th scope="col">Last change</th>
-      </tr></thead>
-      ${groups.map(g => html`<${GroupBody} key=${g.key} g=${g} w=${w} open=${open} setOpen=${setOpen} shut=${shut} setShut=${setShut}/>`)}
+    ${groups.length || absent.length ? html`<div class="st-scroll"><table class=${'st-table st-files ' + grid.tableProps.class} style=${grid.tableProps.style}>
+      <thead><tr>${fileCols(w).map(grid.th)}</tr></thead>
+      ${groups.map(g => html`<${GroupBody} key=${g.key} g=${g} w=${w} open=${open} setOpen=${setOpen} shut=${shut} setShut=${setShut} grid=${grid}/>`)}
       ${absent.length > 0 && html`<${AbsentGroup} w=${w} items=${absent}/>`}
     </table></div>` : html`<p class="st-empty">${w.files.length ? 'No file matches the search or the filters.' : 'No settings files were found.'}</p>`}
   </section>`;

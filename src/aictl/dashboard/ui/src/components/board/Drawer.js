@@ -44,7 +44,51 @@ export function FixedPanel({ id, title, sub, children }) {
   </section>`;
 }
 
-const Frame = ({ title, sub, head, canBack, back, close, actions, tabs, children }) => html`<aside class="bd-area bd-dr" id="drawer" aria-label=${title}>
+// The width of the drawer, set by dragging its left edge, is kept in this browser.
+const DRAWER_W_KEY = 'aictl.drawerWidth';
+export const DRAWER_MIN_PX = 320;
+const BOARD_MIN_PX = 360;
+const DRAWER_STEP_PX = 20;
+const loadDrawerWidth = () => { try { return parseInt(localStorage.getItem(DRAWER_W_KEY), 10) || null; } catch { return null; } };
+const saveDrawerWidth = w => { try { if (w) localStorage.setItem(DRAWER_W_KEY, String(w)); else localStorage.removeItem(DRAWER_W_KEY); } catch { /* this page only */ } };
+const clampDrawer = w => Math.round(Math.max(DRAWER_MIN_PX, Math.min(w, Math.max(DRAWER_MIN_PX, window.innerWidth - BOARD_MIN_PX))));
+
+function SplitGrip({ width, setWidth }) {
+  const begin = e => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const right = e.currentTarget.parentElement.getBoundingClientRect().right;
+    let w = width;
+    const move = ev => { w = clampDrawer(right - ev.clientX); setWidth(w); };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      document.body.classList.remove('bd-resizing');
+      saveDrawerWidth(w);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    document.body.classList.add('bd-resizing');
+  };
+  const key = e => {
+    const d = e.key === 'ArrowLeft' ? DRAWER_STEP_PX : e.key === 'ArrowRight' ? -DRAWER_STEP_PX : 0;
+    if (!d) return;
+    e.preventDefault();
+    const w = clampDrawer((width || e.currentTarget.parentElement.getBoundingClientRect().width) + d);
+    setWidth(w);
+    saveDrawerWidth(w);
+  };
+  return html`<div class="bd-drgrip" role="separator" aria-orientation="vertical" tabIndex="0"
+    aria-valuemin="0" aria-valuenow=${width || 0}
+    aria-label="Width of the side panel. Drag or use the arrow keys. Double-click resets it."
+    title="Drag to change the width. Double-click to reset."
+    onPointerDown=${begin} onKeyDown=${key} onDblClick=${() => { setWidth(null); saveDrawerWidth(null); }}></div>`;
+}
+
+function Frame({ title, sub, head, canBack, back, close, actions, tabs, children }) {
+  const [width, setWidth] = useState(loadDrawerWidth);
+  return html`<aside class="bd-area bd-dr" id="drawer" aria-label=${title} style=${width ? { '--drw': clampDrawer(width) + 'px' } : null}>
+  <${SplitGrip} width=${width} setWidth=${setWidth}/>
   <div class="bd-drh">
     <div class="bd-drh1">
       ${canBack ? html`<button type="button" class="bd-ib-btn" aria-label="Back" onClick=${back}><${Ico} d=${PATHS.back}/></button>` : null}
@@ -58,6 +102,7 @@ const Frame = ({ title, sub, head, canBack, back, close, actions, tabs, children
   </div>
   <div class="bd-grid">${children}</div>
 </aside>`;
+}
 
 const fmtTokens = n => (n == null ? NA : fmtN(n) + ' tokens');
 export const Pending = ({ error }) => html`<div class="bd-empty" role="status">${error ? 'Could not load this: ' + error.message : 'Loading...'}</div>`;

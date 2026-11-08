@@ -5,6 +5,7 @@ import { SECTION_ORDER, SECTION_TITLES, agentInherits, isAgentRow, plainValue, t
 import { Value } from './Value.js';
 import { Swatch, RiskDot, NavHead } from './parts.js';
 import { TopicAgentsTable } from './Agents.js';
+import { numeric, useGrid } from './tableGrid.js';
 import { permissionMatrices } from './permissions.js';
 import { TopicPermissionMatrix } from './PermissionMatrix.js';
 
@@ -54,26 +55,28 @@ function AgentsTopic({ w }) {
   </section>`;
 }
 
-export function TopicMain({ w }) {
-  const sec = topicSection(w);
-  if (sec === 'agents') return html`<${AgentsTopic} w=${w}/>`;
-  const { tools, rows } = topicMatrix(w.entries, sec, w.pass);
-  const risky = rows.reduce((n, g) => n + Object.values(g.cells).filter(r => r.risky).length, 0);
-  const mats = sec === 'autonomy' ? permissionMatrices(w.entries) : [];
-  return html`<section class="st-main" aria-labelledby="st-main-title">
-    <div class="st-bar">
-      <h2 class="st-bar__title" id="st-main-title">${SECTION_TITLES[sec]}</h2>
-      <span class="st-bar__sub">every tool, side by side${risky ? html` · <span class="st-red">${risky} risky ${risky === 1 ? 'value' : 'values'}</span>` : ''}</span>
-    </div>
-    <${TopicPermissionMatrix} w=${w} mats=${mats}/>
-    ${rows.length ? html`<div class="st-scroll"><table class="st-table st-matrix">
-      <thead><tr>
-        <th scope="col" class="st-c-set">Setting</th>
-        ${tools.map(e => html`<th scope="col" key=${e.id} class="st-matrix__tool" data-tool=${e.id}>
-          <span class="st-matrix__toolname"><${Swatch} id=${e.id}/>${e.label}</span></th>`)}
-      </tr></thead>
+/** One tool's value in a matrix row: a number, or its plain text; nothing when unset and hidden. */
+function cellValue(g, id, showUnset) {
+  const r = g.cells[id];
+  if (!r || (r.unset && !showUnset)) return undefined;
+  return typeof r.value === 'number' ? r.value : (r.value == null || r.value === '' ? undefined : plainValue(r.value));
+}
+
+/** The setting-by-tool matrix. A tool column sorts the settings by that tool's value. */
+function SettingMatrix({ w, tools, rows }) {
+  const cols = [
+    { k: 'setting', l: 'Setting', cls: 'st-c-set', get: g => g.label },
+    ...tools.map(e => ({
+      k: e.id, cls: 'st-matrix__tool', attrs: { 'data-tool': e.id }, n: numeric(rows, g => cellValue(g, e.id, w.showUnset)),
+      l: html`<span class="st-matrix__toolname"><${Swatch} id=${e.id}/>${e.label}</span>`,
+      get: g => cellValue(g, e.id, w.showUnset),
+    })),
+  ];
+  const grid = useGrid('settings.topic', cols);
+  return html`<div class="st-scroll"><table class=${'st-table st-matrix ' + grid.tableProps.class} style=${grid.tableProps.style}>
+      <thead><tr>${cols.map(grid.th)}</tr></thead>
       <tbody>
-        ${rows.map(g => html`<tr key=${g.id} class="st-row st-row--static">
+        ${grid.order(rows).map(g => html`<tr key=${g.id} class="st-row st-row--static">
           <th scope="row" class="st-c-set" title=${g.keys.join('\n')}>${g.label}</th>
           ${tools.map(e => {
             const r = g.cells[e.id];
@@ -89,7 +92,22 @@ export function TopicMain({ w }) {
           })}
         </tr>`)}
       </tbody>
-    </table></div>
+    </table></div>`;
+}
+
+export function TopicMain({ w }) {
+  const sec = topicSection(w);
+  if (sec === 'agents') return html`<${AgentsTopic} w=${w}/>`;
+  const { tools, rows } = topicMatrix(w.entries, sec, w.pass);
+  const risky = rows.reduce((n, g) => n + Object.values(g.cells).filter(r => r.risky).length, 0);
+  const mats = sec === 'autonomy' ? permissionMatrices(w.entries) : [];
+  return html`<section class="st-main" aria-labelledby="st-main-title">
+    <div class="st-bar">
+      <h2 class="st-bar__title" id="st-main-title">${SECTION_TITLES[sec]}</h2>
+      <span class="st-bar__sub">every tool, side by side${risky ? html` · <span class="st-red">${risky} risky ${risky === 1 ? 'value' : 'values'}</span>` : ''}</span>
+    </div>
+    <${TopicPermissionMatrix} w=${w} mats=${mats}/>
+    ${rows.length ? html`<${SettingMatrix} w=${w} tools=${tools} rows=${rows}/>
     <p class="st-hint">A cell is one setting in one tool. Click it for the file, the scope and the override chain.</p>`
     : html`<p class="st-empty">${tools.length ? 'No setting matches the search or the toggles.' : 'No tool has settings in this section.'}</p>`}
   </section>`;

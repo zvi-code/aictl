@@ -2,11 +2,23 @@
 // tools and the files that define it and pin its model. By tool shows one
 // tool's agents; By topic shows every tool's agents in one table.
 import { html } from 'htm/preact';
+import { useGrid } from './tableGrid.js';
 import { agentInherits, pinWins, scopeLabel } from './model.js';
 import { LockGlyph } from './Value.js';
 import { SetIn, Swatch } from './parts.js';
 
 export const AGENT_TOOLS_SHOWN = 4;
+
+const AGENT_COLS = (w, withTool, withContext) => [
+  withTool && { k: 'tool', l: 'Tool', get: r => w.labelOf(r.tool) },
+  { k: 'agent', l: 'Agent', cls: 'st-c-agent', get: r => name(r) },
+  { k: 'model', l: 'Model', get: r => (agentInherits(r) ? undefined : String(r.value)) },
+  { k: 'effort', l: 'Effort', get: r => r.agent?.effort },
+  withContext && { k: 'context', l: 'Context', get: r => r.agent?.context_tier },
+  { k: 'tools', l: 'Tools', n: true, get: r => (r.agent?.tools?.length || undefined) },
+  { k: 'defined', l: 'Defined in', cls: 'st-c-src', get: r => r.agent?.defined_in },
+  { k: 'pinned', l: 'Pinned in', cls: 'st-c-src', get: r => r.agent?.pinned_in },
+].filter(Boolean);
 
 function lockText(row, w) {
   return `Set by ${scopeLabel(row.scope, w.scopesOf(row.tool))}; cannot be changed here`;
@@ -63,16 +75,14 @@ function AgentRow({ row, w, withTool, withContext }) {
 export function ToolAgentsTable({ w, section }) {
   const rows = section.shown;
   const inherit = rows.filter(agentInherits).length;
-  return html`<table class="st-table st-agents" data-section="agents">
-    <thead><tr>
-      <th scope="col" class="st-c-agent">Agent</th><th scope="col">Model</th><th scope="col">Effort</th>
-      <th scope="col">Context</th><th scope="col">Tools</th><th scope="col" class="st-c-src">Defined in</th>
-      <th scope="col" class="st-c-src">Pinned in</th>
-    </tr></thead>
+  const g = useGrid('settings.agents', AGENT_COLS(w, false, true));
+  const cols = AGENT_COLS(w, false, true);
+  return html`<table class=${'st-table st-agents ' + g.tableProps.class} style=${g.tableProps.style} data-section="agents">
+    <thead><tr>${cols.map(g.th)}</tr></thead>
     <tbody>
       <tr class="st-group"><th scope="colgroup" colspan="7">${section.title}
         <span class="st-group__meta">${rows.length}${inherit ? ` · ${inherit} inherit the session model` : ''}</span></th></tr>
-      ${rows.map(r => html`<${AgentRow} key=${r.uid} row=${r} w=${w} withContext/>`)}
+      ${g.order(rows).map(r => html`<${AgentRow} key=${r.uid} row=${r} w=${w} withContext/>`)}
     </tbody>
   </table>`;
 }
@@ -96,24 +106,13 @@ export function sortAgents(rows, key, w) {
   return [...rows].sort((SORTS[key] || SORTS.tool)(w));
 }
 
-function SortHead({ id, label, sort, onSort }) {
-  const on = sort === id;
-  return html`<th scope="col" aria-sort=${on ? 'ascending' : 'none'}>
-    <button type="button" class=${'st-sort' + (on ? ' is-on' : '')} onClick=${() => onSort(id)}>
-      ${label}<span aria-hidden="true">${on ? ' ▴' : ''}</span></button></th>`;
-}
-
-/** By topic: every tool's agents in one table, sorted by tool then name unless a header asks otherwise. */
-export function TopicAgentsTable({ w, rows, sort, onSort }) {
-  const sorted = sortAgents(rows, sort, w);
-  return html`<div class="st-scroll"><table class="st-table st-agents st-agents--all">
-    <thead><tr>
-      <${SortHead} id="tool" label="Tool" sort=${sort} onSort=${onSort}/>
-      <${SortHead} id="agent" label="Agent" sort=${sort} onSort=${onSort}/>
-      <${SortHead} id="model" label="Model" sort=${sort} onSort=${onSort}/>
-      <th scope="col">Effort</th><th scope="col">Tools</th>
-      <th scope="col" class="st-c-src">Defined in</th><th scope="col" class="st-c-src">Pinned in</th>
-    </tr></thead>
+/** By topic: every tool's agents in one table, sorted by tool then name until a header asks otherwise. */
+export function TopicAgentsTable({ w, rows, sort }) {
+  const cols = AGENT_COLS(w, true, false);
+  const g = useGrid('settings.agents.all', cols);
+  const sorted = g.order(sortAgents(rows, sort, w));
+  return html`<div class="st-scroll"><table class=${'st-table st-agents st-agents--all ' + g.tableProps.class} style=${g.tableProps.style}>
+    <thead><tr>${cols.map(g.th)}</tr></thead>
     <tbody>${sorted.map(r => html`<${AgentRow} key=${r.uid} row=${r} w=${w} withTool/>`)}</tbody>
   </table></div>`;
 }

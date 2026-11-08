@@ -3,6 +3,7 @@ import { useState } from 'preact/hooks';
 import { html } from 'htm/preact';
 import { findingGroups, findingTools, matchFinding, tildePath } from './model.js';
 import { RiskDot, NavHead } from './parts.js';
+import { useGrid } from './tableGrid.js';
 
 export const FOLD_FINDINGS = 5;
 
@@ -49,7 +50,18 @@ function FindingRow({ f, group, w }) {
   </tr>`;
 }
 
+function findingCols(w) {
+  const toolsOf = f => findingTools(f).map(w.labelOf).join(', ');
+  return [
+    { k: 'tool', l: 'Tool', cls: 'st-c-tool', get: toolsOf },
+    { k: 'where', l: 'Where', cls: 'st-c-where', get: f => f.path ? tildePath(f.path) + String(f.line > 0 ? f.line : 0).padStart(8, '0') : undefined },
+    { k: 'what', l: 'What it does', get: f => f.why || f.action },
+    { k: 'action', l: html`<span class="st-sr">Action</span>`, cls: 'st-c-act' },
+  ];
+}
+
 export function FindingsMain({ w }) {
+  const grid = useGrid('settings.findings', findingCols(w));
   const [open, setOpen] = useState({});
   if (w.auditStatus === 'loading' && !w.audit) {
     const s = w.scan;
@@ -82,15 +94,13 @@ export function FindingsMain({ w }) {
     ${w.auditStatus === 'error' && html`<p class="st-note st-red" role="alert">The last scan failed: ${w.auditError}. These are the earlier results.</p>`}
     ${incomplete.length > 0 && html`<p class="st-note st-warn">The scan reached its time limit and skipped: ${incomplete.join(', ')}.</p>`}
     ${failed.length > 0 && html`<p class="st-note st-warn">The scan could not read: ${failed.map(f => f.step + ' (' + f.error + ')').join(', ')}.</p>`}
-    ${groups.length ? html`<table class="st-table st-findings">
-      <thead><tr>
-        <th scope="col" class="st-c-tool">Tool</th><th scope="col" class="st-c-where">Where</th>
-        <th scope="col">What it does</th><th scope="col" class="st-c-act"><span class="st-sr">Action</span></th>
-      </tr></thead>
+    ${groups.length ? html`<table class=${'st-table st-findings ' + grid.tableProps.class} style=${grid.tableProps.style}>
+      <thead><tr>${findingCols(w).map(grid.th)}</tr></thead>
       ${groups.map(g => {
         const expanded = !!open[g.rule];
-        const shown = expanded ? g.items : g.items.slice(0, FOLD_FINDINGS);
-        const more = g.items.length - shown.length;
+        const items = grid.order(g.items);
+        const shown = expanded ? items : items.slice(0, FOLD_FINDINGS);
+        const more = items.length - shown.length;
         return html`<tbody key=${g.rule} data-rule=${g.rule}>
           <tr class="st-group"><th scope="colgroup" colspan="4">
             ${g.alarm && html`<${RiskDot} label=${g.severity + ' severity'}/>`} ${g.label}

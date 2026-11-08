@@ -61,7 +61,7 @@ function panelAttention(ctx) {
     return {
       id: i.kind + ':' + i.agent_id + ':' + idx,
       go: openAgent(ctx, i.agent_id, loop ? 'errors' : 'tools'),
-      sort: { kind: loop ? 'Loop' : 'Waiting for you' },
+      sort: { kind: loop ? 'Loop' : 'Waiting for you', title: i.title, what: i.detail, cost: loop ? i.cost_usd : (i.since_ts ? now - i.since_ts : null) },
       cells: {
         kind: { v: loop ? 'Loop' : 'Waiting for you', warn: true },
         title: { v: i.title },
@@ -368,7 +368,7 @@ function panelPrompts(ctx) {
     const text = p.text || (metadata ? 'Text not stored' : NA);
     return {
       id: p.ts + ':' + idx, go: () => ctx.actions.openDrawer({ type: 'prompt', ts: p.ts, agent_id: p.agent_id, summary: p }, true),
-      sort: { at: p.ts, tokens: p.tokens, project: p.project },
+      sort: { at: p.ts, text: p.text, tokens: p.tokens, project: p.project },
       cells: {
         at: { v: stamp(p.ts), cls: 'dim' },
         text: { v: text, cls: p.text ? '' : 'dim', sub: p.prompt_file ? baseName(p.prompt_file) : '', title: text + (p.prompt_file ? '\nUses ' + p.prompt_file : '') },
@@ -485,7 +485,7 @@ function panelLoops(ctx) {
     const a = byId.get(x.agent_id);
     return {
       id: x.agent_id + ':' + i, go: openAgent(ctx, x.agent_id, 'errors'),
-      sort: { a: x.title, n: x.repeats, tokens: x.tokens, cost: x.cost_usd },
+      sort: { a: x.title, st: x.status, pat: x.pattern, n: x.repeats, tokens: x.tokens, cost: x.cost_usd, since: x.since_ts },
       cells: {
         a: { v: x.title, sw: a ? colorFor('tool', a.tool) : null }, st: statusCell({ id: x.agent_id, status: x.status }, ctx.stopped), pat: { v: x.pattern, cls: 'm' },
         n: { v: x.repeats == null ? NA : x.repeats + ' times' }, tokens: { v: fmtN(x.tokens) }, cost: { v: fmtUsd(x.cost_usd) }, since: { v: stamp(x.since_ts, true), cls: 'dim' },
@@ -524,7 +524,7 @@ function panelTests(ctx, local, pid, pn) {
   if (ctx.data.tests_piped) out.note = ctx.data.tests_piped + ' passed runs end in a pipe with no pipefail, so the exit code is that of the last command. A failed test can count as passed.';
   const stateCls = { Failing: 'crit', Flaky: 'warn', Passing: 'dim' };
   const rows = list.map(x => ({
-    id: x.command, sort: { k: x.command, n: x.runs, f: x.failed, d: x.median_ms },
+    id: x.command, sort: { k: x.command, n: x.runs, f: x.failed, d: x.median_ms, flaky: x.state, last: x.last_ts },
     cells: { k: { v: x.command, cls: 'm' }, n: { v: x.runs ?? NA }, f: { v: x.failed ?? NA, cls: x.failed ? 'crit' : 'dim' }, d: { v: fmtMs(x.median_ms) }, flaky: { v: x.state || NA, cls: stateCls[x.state] || 'dim' }, last: { v: stamp(x.last_ts), cls: 'dim' } },
   }));
   out.table = { cols: [{ k: 'k', l: 'Command' }, { k: 'n', l: 'Runs', n: true, w: '44px' }, { k: 'f', l: 'Failed', n: true, w: '50px' }, { k: 'd', l: 'Median', n: true, w: '58px' }, { k: 'flaky', l: 'Now', w: '62px' }, { k: 'last', l: 'Last', w: '80px' }], rows, sort: { k: 'n', dir: 'desc' }, none: 'No test runs in this time.' };
@@ -539,7 +539,7 @@ function panelMemFiles(ctx) {
     const by = f.changed_by ? byId.get(f.changed_by) : null;
     return {
       id: f.path, go: () => ctx.actions.openDrawer({ type: 'file', path: f.path }, true),
-      sort: { path: f.path, tokens: f.tokens, ch: changed ? (f.lines_added || 0) + (f.lines_removed || 0) : null },
+      sort: { path: f.path, tool: f.read_by, scope: f.scope, tokens: f.tokens, ch: changed ? (f.lines_added || 0) + (f.lines_removed || 0) : null, by: by ? by.short : f.changed_by, at: f.changed_ts },
       cells: {
         path: { v: f.path, path: true }, tool: { v: f.read_by || NA, cls: 'dim' }, scope: { v: f.scope || NA, cls: 'dim' }, tokens: { v: fmtN(f.tokens) },
         ch: { v: changed ? fmtLines(f.lines_added, f.lines_removed) : 'No change', cls: changed ? '' : 'dim' },

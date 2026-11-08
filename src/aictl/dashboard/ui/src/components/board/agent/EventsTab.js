@@ -6,6 +6,9 @@ import { useMemo, useState } from 'preact/hooks';
 import * as api from '../../../api.js';
 import { FixedPanel, useDetail } from '../Drawer.js';
 import { fmtN } from '../format.js';
+import { nextSort } from '../tableModel.js';
+import { useColumnWidths } from '../colWidths.js';
+import { sortRows } from '../../settings/tableGrid.js';
 import { Wait, SessionNote, clip, clock, isActive, pretty, sessionIdOf, windowOf } from './common.js';
 
 export const EVENT_LIMIT = 500;
@@ -25,12 +28,25 @@ const preview = (detail) => {
   try { return clip(typeof detail === 'string' ? detail : JSON.stringify(detail), 140); } catch { return ''; }
 };
 
+// Columns: k, header, width when nothing was dragged, the value to sort by. Time is a number, so it starts newest first.
+const COLS = [
+  { k: 'time', l: 'Time', w: 76, n: true, get: ev => (ev.ts || undefined) },
+  { k: 'kind', l: 'Kind', w: 190, get: ev => ev.kind },
+  { k: 'tool', l: 'Tool', w: 100, get: ev => ev.tool },
+  { k: 'detail', l: 'Detail', w: 0, get: ev => preview(ev.detail) },
+];
+
+/** *rows* ordered by the column *sort* names; empty values last either way. */
+export const sortEvents = (rows, sort) => sortRows(rows, sort && COLS.find(c => c.k === sort.k), sort);
+
 export default function EventsTab({ a, st, ctx }) {
   const sid = sessionIdOf(a);
   const win = windowOf(a);
   const tick = isActive(st) ? ctx.refreshKey : 0;
   const { data, error } = useDetail(() => load(sid, win), 'events:' + sid, tick);
   const [kind, setKind] = useState(null);
+  const [sort, setSort] = useState(null);
+  const cw = useColumnWidths('agent.events');
   const [open, setOpen] = useState(() => new Set());
   const kinds = useMemo(() => {
     const m = new Map();
@@ -38,8 +54,10 @@ export default function EventsTab({ a, st, ctx }) {
     return [...m.entries()].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]));
   }, [data]);
   if (!data) return html`<${Wait} error=${error} what="the events"/>`;
-  const rows = data.rows.filter(ev => kind == null || (ev.kind || '') === kind);
-  const keyOf = (ev, i) => (ev.ts || 0) + ':' + (ev.kind || '') + ':' + (ev.seq ?? i);
+  const rows = sortEvents(data.rows.filter(ev => kind == null || (ev.kind || '') === kind), sort);
+  // An event keeps its key when a sort moves it, so an opened detail stays with its event.
+  const at = new Map(data.rows.map((ev, i) => [ev, i]));
+  const keyOf = ev => (ev.ts || 0) + ':' + (ev.kind || '') + ':' + (ev.seq ?? at.get(ev));
   const toggle = k => setOpen((prev) => {
     const next = new Set(prev);
     if (next.has(k)) next.delete(k); else next.add(k);
@@ -53,11 +71,18 @@ export default function EventsTab({ a, st, ctx }) {
         <button type="button" class="bd-ag-chip" aria-pressed=${kind == null ? 'true' : 'false'} onClick=${() => setKind(null)}>All <em>${data.rows.length}</em></button>
         ${kinds.map(([k, n]) => html`<button key=${k} type="button" class="bd-ag-chip" aria-pressed=${kind === k ? 'true' : 'false'} onClick=${() => setKind(kind === k ? null : k)}>${k || 'no kind'} <em>${n}</em></button>`)}
       </div>` : null}
-      ${rows.length ? html`<div class="bd-tw"><table class="bd-t bd-ag-evt">
+      ${rows.length ? html`<div class="bd-tw"><table class=${'bd-t bd-ag-evt' + (cw.set ? ' bd-fixed' : '')} style=${cw.set ? { tableLayout: 'fixed', width: COLS.reduce((s, c) => s + (cw.widths[c.k] || c.w || 300), 0) + 'px' } : undefined}>
         <caption>Events</caption>
-        <thead><tr><th scope="col" style="width:76px">Time</th><th scope="col" style="width:190px">Kind</th><th scope="col" style="width:100px">Tool</th><th scope="col">Detail</th></tr></thead>
-        <tbody>${rows.map((ev, i) => {
-          const k = keyOf(ev, i);
+        <thead><tr>${COLS.map(c => {
+          const on = sort && sort.k === c.k;
+          const px = cw.widths[c.k] || c.w;
+          return html`<th key=${c.k} scope="col" class=${(on ? 'bd-on' : '')} data-col=${c.k} style=${px ? { width: px + 'px' } : undefined}
+            aria-sort=${on ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+            <button type="button" onClick=${() => setSort(nextSort(c, sort))}>${c.l}<span aria-hidden="true">${on ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}</span></button>${cw.grip(c.k)}
+          </th>`;
+        })}</tr></thead>
+        <tbody>${rows.map((ev) => {
+          const k = keyOf(ev);
           const on = open.has(k);
           const warn = /permission|error|fail/i.test(ev.kind || '');
           return html`<tr key=${k} class=${warn ? 'bd-ag-warnrow' : null}>
