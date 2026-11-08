@@ -3975,7 +3975,17 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
         "git": _agent_git(db, session, sid),
         "runs": _agent_runs(db, session, sid, row, now) if root else [],
         "resources": _agent_resources(db, conn, board, sid, row, root, now),
+        **_agent_record(db, conn, session, sid, row, root),
     }
+
+
+def _agent_record(db: Any, conn: sqlite3.Connection, session: dict, sid: str, row: dict, root: bool) -> dict:
+    """Artifacts and commits of a main agent's session. A subagent shares its session's, so it has none here."""
+    from .session_record import empty_record, record_section
+
+    if not root:
+        return empty_record()
+    return record_section(db, conn, session, sid, str(session.get("project_path") or row.get("project") or ""))
 
 
 # ─── /api/board/agent/flow and /api/board/agent/transcript ────────
@@ -5479,6 +5489,19 @@ def handle_get(
         snapshot = getattr(store, "snapshot", None)
         if path == "/api/board/agent":
             status, payload = agent_detail(db, one("id"), snapshot, now) if one("id") else (400, {"error": "Missing id"})
+        elif path == "/api/board/sessions":
+            from .session_record import search_sessions
+
+            tools = normalize_selection(part for raw in qs["tool"] for part in raw.split(",")) if "tool" in qs else None
+            status, payload = 200, search_sessions(
+                db,
+                one("q"),
+                stored_ids_for(tools) if tools else None,
+                _as_number(one("since")),
+                _as_number(one("until")),
+                _as_int(one("limit")) or 200,
+                _as_int(one("offset")) or 0,
+            )
         elif path == "/api/board/tool":
             if one("name"):
                 status, payload = tool_detail(db, one("name"), now, _as_number(one("since")), _as_number(one("until")))

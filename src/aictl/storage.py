@@ -279,6 +279,19 @@ CREATE TABLE IF NOT EXISTS file_write_events (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_file_write_dedup
     ON file_write_events(dedup_key) WHERE dedup_key != '';
 
+-- The files in each tool's own session folder: path, size and time only, never content.
+CREATE TABLE IF NOT EXISTS session_folders (
+    session_id TEXT PRIMARY KEY, tool TEXT DEFAULT '', folder TEXT NOT NULL DEFAULT '',
+    signature REAL DEFAULT 0, files_total INTEGER DEFAULT 0, bytes_total INTEGER DEFAULT 0,
+    scanned_at REAL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS session_artifacts (
+    session_id TEXT NOT NULL, path TEXT NOT NULL, folder TEXT DEFAULT '',
+    size_bytes INTEGER DEFAULT 0, mtime REAL DEFAULT 0,
+    PRIMARY KEY (session_id, path)
+);
+CREATE INDEX IF NOT EXISTS idx_session_artifacts_path ON session_artifacts(path);
+
 CREATE TABLE IF NOT EXISTS maintenance_state (
     key TEXT PRIMARY KEY, value REAL NOT NULL
 );
@@ -395,6 +408,7 @@ CREATE INDEX IF NOT EXISTS idx_proc_snapshots_tool ON process_snapshots(tool, ts
 CREATE INDEX IF NOT EXISTS idx_sessions_tool ON sessions(tool, started_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_path, started_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions(ended_at, tool);
+CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at);
 -- session_processes
 CREATE INDEX IF NOT EXISTS idx_session_procs_session ON session_processes(session_id);
 -- agents
@@ -4121,6 +4135,93 @@ class HistoryDB:
             (session_id,),
         ).fetchone()
         return int(row[0]) if row else 0
+
+    # ── Session folder index (artifacts) ───────────────────────────
+
+    def replace_session_artifacts(
+        self,
+        session_id: str,
+        tool: str,
+        folder: str,
+        signature: float,
+        files: list[tuple[str, str, int, float]],
+        files_total: int,
+        bytes_total: int,
+    ) -> None:
+        """Replace the index of one session folder in one short transaction.
+
+        *files* holds (path, first folder part, size in bytes, mtime) of the files kept;
+        *files_total* and *bytes_total* count every file of the folder.
+        """
+        if not session_id:
+            return
+        conn = self._conn()
+        with self.named_write(f"artifact index of session {session_id}"):
+            try:
+                conn.execute("DELETE FROM session_artifacts WHERE session_id = ?", (session_id,))
+                conn.executemany(
+                    "INSERT OR REPLACE INTO session_artifacts(session_id, path, folder, size_bytes, mtime) VALUES(?,?,?,?,?)",
+                    [(session_id, path, part, int(size), float(mtime)) for path, part, size, mtime in files],
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO session_folders"
+                    "(session_id, tool, folder, signature, files_total, bytes_total, scanned_at) VALUES(?,?,?,?,?,?,?)",
+                    (session_id, tool, folder, float(signature), int(files_total), int(bytes_total), time.time()),
+                )
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+
+    def artifact_scans(self) -> dict[str, float]:
+        """The mtime signature of the last scan of each indexed session folder."""
+        out: dict[str, float] = {}
+        with self.every_store() as conns:
+            for conn in conns:
+                for sid, signature in conn.execute("SELECT session_id, signature FROM session_folders"):
+                    out[sid] = max(float(signature or 0.0), out.get(sid, 0.0))
+        return out
+
+    @contextlib.contextmanager
+    def every_store(self) -> Iterator[list[sqlite3.Connection]]:
+        """A read connection on each store file. A single store has one: its own."""
+        yield [self._conn()]
+
+    def fill_tool_sizes(self, rows: list[tuple[str, str, int | None, int | None]]) -> int:
+        """Fill the empty input and output sizes of stored tool calls. Never adds a row.
+
+        *rows* holds (session id, dedup key, input bytes, output bytes). A size that is
+        already set stays. Each chunk is one short transaction. Returns the rows changed.
+        """
+        conn = self._conn()
+        changed = 0
+        for start in range(0, len(rows), FLUSH_CHUNK_ROWS):
+            chunk = [(i, o, key) for _sid, key, i, o in rows[start : start + FLUSH_CHUNK_ROWS] if key]
+            with self.named_write("tool size backfill"):
+                try:
+                    for params in chunk:
+                        cur = conn.execute(
+                            "UPDATE tool_invocations SET input_bytes = COALESCE(input_bytes, ?),"
+                            " output_bytes = COALESCE(output_bytes, ?)"
+                            " WHERE dedup_key = ? AND dedup_key != '' AND (input_bytes IS NULL OR output_bytes IS NULL)",
+                            params,
+                        )
+                        changed += max(cur.rowcount, 0)
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
+            if start + FLUSH_CHUNK_ROWS < len(rows):
+                time.sleep(FLUSH_YIELD_S)
+        return changed
+
+    def state_value(self, key: str) -> float | None:
+        """A value of maintenance_state, or None when it is not set."""
+        row = self._conn().execute("SELECT value FROM maintenance_state WHERE key = ?", (key,)).fetchone()
+        return float(row[0]) if row else None
+
+    def set_state(self, key: str, value: float) -> None:
+        self._set_state(key, value)
 
     def get_session(self, session_id: str) -> dict | None:
         """Return a single session row as a dict, or None."""

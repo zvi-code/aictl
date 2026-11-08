@@ -1189,8 +1189,15 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self.send_error(400, "Missing path parameter")
             return
         if not self.server.allowed.is_allowed(file_path):
-            self.send_error(403, "Path not in discovered resource set")
-            return
+            # A session's artifact: a file in a tool's session folder, or a file a session wrote.
+            from .session_record import is_recorded_artifact, is_text_file
+
+            if not is_recorded_artifact(self._db, file_path):
+                self.send_error(403, "Path not in discovered resource set")
+                return
+            if Path(file_path).is_file() and not is_text_file(file_path):
+                self.send_error(415, "Binary file: not shown as text")
+                return
         p = Path(file_path)
         try:
             mtime = p.stat().st_mtime

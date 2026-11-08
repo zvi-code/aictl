@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..ingesters import tool_size_backfill
 from ..ingesters.copilot_session_store import (
     POLL_INTERVAL_S as COPILOT_POLL_INTERVAL_S,
 )
@@ -32,6 +33,10 @@ from ..ingesters.cursor_conversations import (
     POLL_INTERVAL_S as CURSOR_POLL_INTERVAL_S,
 )
 from ..ingesters.cursor_conversations import CursorConversationsIngester
+from ..ingesters.session_artifacts import (
+    POLL_INTERVAL_S as SESSION_ARTIFACTS_POLL_INTERVAL_S,
+)
+from ..ingesters.session_artifacts import SessionArtifactIndexer
 from ..ingesters.transcript_usage import (
     POLL_INTERVAL_S as TRANSCRIPT_USAGE_POLL_INTERVAL_S,
 )
@@ -49,6 +54,8 @@ from ..storage import is_lock_error
 
 log = logging.getLogger(__name__)
 
+# The tool size backfill starts after the first rounds of the readers: both read every transcript.
+BACKFILL_DELAY_S = 120.0
 # An ingester whose store stays busy this long is reported as failed, and again after as long.
 LOCKED_REPORT_S = 300.0
 
@@ -169,7 +176,40 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
         t_handle.thread = t_thread
         t_thread.start()
     handles[t_handle.name] = t_handle
+
+    # ── Session folders: an index of each session's files (stat only) ──
+    a_ing = SessionArtifactIndexer(db)
+    a_handle = IngesterHandle(
+        name="session-artifacts",
+        enabled=True,
+        source_path=t_ing.copilot_state,
+        source_exists=t_ing.copilot_state.exists(),
+        ingester=a_ing,
+    )
+    a_thread = threading.Thread(
+        target=_poll_loop,
+        args=(a_ing, a_handle.stop_event, SESSION_ARTIFACTS_POLL_INTERVAL_S, a_handle.name),
+        daemon=True,
+        name="ingester-session-artifacts",
+    )
+    a_handle.thread = a_thread
+    a_thread.start()
+    handles[a_handle.name] = a_handle
+
+    # ── One-time backfill of tool call sizes (v33) ──────────────
+    if t_enabled:
+        b_thread = threading.Thread(target=_backfill_tool_sizes, args=(db,), daemon=True, name="tool-size-backfill")
+        b_thread.start()
     return handles
+
+
+def _backfill_tool_sizes(db) -> None:
+    """Run the one-time tool size backfill; a failure is logged and retried on the next start."""
+    time.sleep(BACKFILL_DELAY_S)
+    try:
+        tool_size_backfill.run(db)
+    except Exception:  # noqa: BLE001 - the backfill must never stop the server
+        log.exception("Tool size backfill failed; it runs again on the next start")
 
 
 def _record_poll_failure(ingester, name: str, exc: Exception) -> None:
