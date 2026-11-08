@@ -148,3 +148,18 @@ class TestSessionStartedAt:
         sess = db.get_session(SESSION_UUID)
         assert sess is not None
         assert sess["started_at"] == SNAPSHOT_TS
+
+
+class TestProjectFolder:
+    """Each session file records the folder its agent ran in; the rows keep it."""
+
+    def test_requests_and_the_session_take_the_agent_folder(self, db):
+        main = {**_agent(turns=[_turn(SOURCE_T0 + 10)]), "cwd": "/work/repo"}
+        side = {**_agent(agent_id="agent-2", turns=[_turn(SOURCE_T0 + 20)]), "cwd": "/work/repo/sub", "is_sidechain": True}
+        p = SnapshotPersistence(db)
+        p._persist_agent_teams([_team([main, side])], SNAPSHOT_TS)
+        db.flush()
+        rows = {r["agent_id"]: r["project_path"] for r in db.query_requests(session_id=SESSION_UUID)}
+        assert rows == {"agent-1": "/work/repo", "agent-2": "/work/repo/sub"}
+        got = db._conn().execute("SELECT project_path FROM sessions WHERE session_id = ?", (SESSION_UUID,)).fetchone()[0]
+        assert got == "/work/repo"

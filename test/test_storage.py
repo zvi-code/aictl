@@ -2141,3 +2141,57 @@ def test_the_history_never_waits_for_the_disk(tmp_path):
         assert d._conn().execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     finally:
         d.close()
+
+
+class TestProjectFolders:
+    def test_a_file_event_is_not_its_own_project(self, tmp_path):
+        d = HistoryDB(db_path=tmp_path / "pf.db", flush_interval=3600)
+        try:
+            d._events_buf.append(EventRow(ts=1.0, tool="codex-cli", kind="file_modified", detail={"path": "/home/u/.codex/.tmp/x/.git/HEAD", "session_id": "s"}))
+            d._events_buf.append(EventRow(ts=2.0, tool="codex-cli", kind="file_modified", detail={"path": "/work/repo/a.py", "session_id": "s", "project_path": "/work/repo"}))
+            d.flush()
+            got = [r[0] for r in d._conn().execute("SELECT project_path FROM events ORDER BY ts")]
+            assert got == ["", "/work/repo"]
+        finally:
+            d.close()
+
+    def test_a_call_with_no_folder_takes_its_session_folder(self, tmp_path):
+        d = HistoryDB(db_path=tmp_path / "pf2.db", flush_interval=3600)
+        try:
+            d._conn().execute("INSERT INTO sessions(session_id, tool, project_path) VALUES('s-stored', 'claude-code', '/work/stored')")
+            d._conn().commit()
+            d._requests_buf.extend([
+                RequestRow(ts=1.0, session_id="s-stored", tool="claude-code", model="m", source="otel", dedup_key="a"),
+                RequestRow(ts=2.0, session_id="s-flush", tool="claude-code", model="m", source="otel", dedup_key="b", project_path="/work/flush"),
+                RequestRow(ts=3.0, session_id="s-flush", tool="claude-code", model="m", source="otel", dedup_key="c"),
+                RequestRow(ts=4.0, session_id="s-unknown", tool="claude-code", model="m", source="otel", dedup_key="d"),
+            ])
+            d._tool_invocations_buf.append(ToolInvocationRow(ts=5.0, session_id="s-stored", tool_name="Bash", source="otel", source_event_id="t1"))
+            d.flush()
+            got = dict(d._conn().execute("SELECT dedup_key, project_path FROM requests"))
+            assert got == {"a": "/work/stored", "b": "/work/flush", "c": "/work/flush", "d": ""}
+            assert d._conn().execute("SELECT project_path FROM tool_invocations").fetchone()[0] == "/work/stored"
+        finally:
+            d.close()
+
+    def test_the_migration_repairs_stored_rows(self, tmp_path):
+        from aictl.storage_migrations import m032_project_folders
+
+        d = HistoryDB(db_path=tmp_path / "pf3.db", flush_interval=3600)
+        try:
+            c = d._conn()
+            c.execute("INSERT INTO sessions(session_id, tool, project_path) VALUES('s1', 'claude-code', '/work/repo')")
+            c.execute("INSERT INTO events(ts, tool, kind, session_id, pid, project_path, detail, seq) VALUES(1, 't', 'file_modified', 's1', 0, '/work/repo/a.py', json('{\"path\": \"/work/repo/a.py\"}'), 0)")
+            c.execute("INSERT INTO events(ts, tool, kind, session_id, pid, project_path, detail, seq) VALUES(2, 't', 'session_start', 's1', 0, '/work/repo', '{}', 0)")
+            c.execute("INSERT INTO requests(dedup_key, ts, session_id, tool, project_path, source) VALUES('r1', 1, 's1', 'claude-code', '', 'otel')")
+            c.execute("INSERT INTO requests(dedup_key, ts, session_id, tool, project_path, source) VALUES('r2', 1, 's9', 'claude-code', '', 'otel')")
+            c.execute("INSERT INTO tool_invocations(dedup_key, ts, session_id, tool_name, project_path, source) VALUES('t1', 1, 's1', 'Bash', '', 'otel')")
+            c.commit()
+            for _ in range(2):  # idempotent
+                m032_project_folders.apply(c)
+            c.commit()
+            assert [r[0] for r in c.execute("SELECT project_path FROM events ORDER BY ts")] == ["", "/work/repo"]
+            assert dict(c.execute("SELECT dedup_key, project_path FROM requests")) == {"r1": "/work/repo", "r2": ""}
+            assert c.execute("SELECT project_path FROM tool_invocations").fetchone()[0] == "/work/repo"
+        finally:
+            d.close()

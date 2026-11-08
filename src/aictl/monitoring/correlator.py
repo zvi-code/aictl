@@ -138,7 +138,7 @@ class SessionCorrelator:
                 ts,
                 session.tool,
                 "file_modified",
-                {"path": path, "growth_bytes": growth_bytes, "session_id": session.session_id},
+                {"path": path, "growth_bytes": growth_bytes, "session_id": session.session_id, "project_path": session.project},
             )
 
     def on_telemetry(

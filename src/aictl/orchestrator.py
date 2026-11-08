@@ -1259,6 +1259,10 @@ class SnapshotPersistence:
                     continue
                 self._team_signatures[session_id] = signature
                 # Upsert a session row for this UUID session with aggregated token totals
+                # Each session file records the folder the agent ran in.
+                team_folder = next((a.get("cwd") for a in team.get("agents", []) if a.get("cwd") and not a.get("is_sidechain")), "") or next(
+                    (a.get("cwd") for a in team.get("agents", []) if a.get("cwd")), ""
+                )
                 if session_id:
                     agents = team.get("agents", [])
                     # Source timestamps only — the agents' own started_at,
@@ -1276,6 +1280,7 @@ class SnapshotPersistence:
                             tool="claude-code",
                             started_at=session_started,
                             source="claude-code-jsonl",
+                            project_path=team_folder,
                             input_tokens=team.get("total_input_tokens", 0),
                             output_tokens=team.get("total_output_tokens", 0),
                         )
@@ -1319,6 +1324,7 @@ class SnapshotPersistence:
                                 cache_read_tokens=turn.get("cache_read_tokens", 0),
                                 cache_creation_tokens=turn.get("cache_creation_tokens", 0),
                                 source="claude-code-jsonl",
+                                project_path=agent.get("cwd", "") or team_folder,
                             )
                         )
         except Exception as exc:
