@@ -292,6 +292,13 @@ CREATE TABLE IF NOT EXISTS session_artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_session_artifacts_path ON session_artifacts(path);
 
+-- The instruction files each session's own record shows it loaded: path only, never content.
+CREATE TABLE IF NOT EXISTS session_loaded_files (
+    session_id TEXT NOT NULL, path TEXT NOT NULL, how TEXT NOT NULL DEFAULT '',
+    detail TEXT DEFAULT '', ts REAL DEFAULT 0, tool TEXT DEFAULT '', agent_id TEXT DEFAULT '',
+    PRIMARY KEY (session_id, path, how)
+);
+
 CREATE TABLE IF NOT EXISTS maintenance_state (
     key TEXT PRIMARY KEY, value REAL NOT NULL
 );
@@ -955,6 +962,20 @@ class SkillUseRow:
 
 
 @dataclass(slots=True)
+class LoadedFileRow:
+    """A file a session loaded, as its own record shows: how, and when first seen."""
+
+    session_id: str
+    path: str
+    how: str  # instructions | nested_memory | skill | custom_agent | system_prompt
+    ts: float = 0.0
+    detail: str = ""
+    tool: str = ""
+    agent_id: str = ""
+    project_path: str = ""
+
+
+@dataclass(slots=True)
 class FileWriteRow:
     """One write-like file event attributed to an agent/session."""
 
@@ -1061,10 +1082,12 @@ class CallFacts:
     agents: list[AgentRow] = field(default_factory=list)
     file_writes: list[FileWriteRow] = field(default_factory=list)
     context_events: list[ContextEventRow] = field(default_factory=list)
+    loaded_files: list[LoadedFileRow] = field(default_factory=list)
 
     def __len__(self) -> int:
         return (
-            len(self.context_events)
+            len(self.loaded_files)
+            + len(self.context_events)
             + len(self.requests)
             + len(self.tools)
             + len(self.prompts)
@@ -1318,6 +1341,23 @@ _SUBAGENT_UPSERT = (
 
 def _subagent_params(r: AgentRow) -> tuple:
     return (r.agent_id, r.session_id, r.tool, r.task, r.model, r.started_at, r.ended_at, r.completed)
+
+
+# A file loaded again (after a compaction, a resume or a re-read) keeps its first time and agent.
+_LOADED_FILE_UPSERT = (
+    "INSERT INTO session_loaded_files(session_id, path, how, detail, ts, tool, agent_id) VALUES(?,?,?,?,?,?,?)"
+    " ON CONFLICT(session_id, path, how) DO UPDATE SET"
+    " detail=CASE WHEN excluded.detail != '' THEN excluded.detail ELSE session_loaded_files.detail END,"
+    " tool=CASE WHEN excluded.tool != '' THEN excluded.tool ELSE session_loaded_files.tool END,"
+    " agent_id=CASE WHEN session_loaded_files.ts > 0 AND session_loaded_files.ts <= excluded.ts"
+    " THEN session_loaded_files.agent_id ELSE excluded.agent_id END,"
+    " ts=CASE WHEN session_loaded_files.ts > 0 AND (excluded.ts <= 0 OR session_loaded_files.ts <= excluded.ts)"
+    " THEN session_loaded_files.ts ELSE excluded.ts END"
+)
+
+
+def _loaded_file_params(r: LoadedFileRow) -> tuple:
+    return (r.session_id, r.path, r.how, r.detail, r.ts, r.tool, r.agent_id)
 
 
 def _session_pid(session_or_id) -> str | None:
@@ -5134,6 +5174,7 @@ class HistoryDB:
                 ],
             )
             conn.executemany(_SUBAGENT_UPSERT, [_subagent_params(r) for r in facts.agents])
+            conn.executemany(_LOADED_FILE_UPSERT, [_loaded_file_params(r) for r in facts.loaded_files])
             self._write_transcript_file_edits(conn, facts.file_writes)
             self._drop_superseded_rows(conn, facts)
             conn.commit()
@@ -5220,7 +5261,10 @@ class HistoryDB:
     def set_sessions_tool(self, session_ids: list[str], tool: str) -> None:
         """Re-attribute sessions' fact rows, when their surface becomes known after they were written."""
         conn = self._conn()
-        for table in ("requests", "tool_invocations", "session_prompts", "skill_uses", "agents", "file_write_events", "context_events"):
+        for table in (
+            "requests", "tool_invocations", "session_prompts", "skill_uses", "agents", "file_write_events", "context_events",
+            "session_loaded_files",
+        ):
             conn.executemany(
                 f"UPDATE {table} SET tool = ? WHERE session_id = ? AND tool != ?",
                 [(tool, session_id, tool) for session_id in session_ids],

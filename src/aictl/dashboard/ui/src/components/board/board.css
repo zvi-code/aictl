@@ -574,3 +574,13 @@ button.bd-tlbar:hover{filter:brightness(1.15)}
 .bd-tlaxis{display:grid;grid-template-columns:150px minmax(0,1fr);gap:8px;margin-top:2px;font-size:11px;color:var(--ink3);font-family:'IBM Plex Mono',Consolas,monospace}
 .bd-tlaxis>div{display:flex;justify-content:space-between}
 @container (max-width:560px){.bd-drkpis{grid-template-columns:repeat(3,minmax(0,1fr))}.bd-tlrow,.bd-tlaxis{grid-template-columns:90px minmax(0,1fr)}}
+/* Overview: a file the session loaded stands out among the files that can apply. */
+.bd-fchip.bd-floaded{box-shadow:inset 0 0 0 1px var(--focus);color:var(--ink)}
+/* Overview Outputs: three counts that open their tabs. */
+.bd-ocounts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:var(--line);border-bottom:1px solid var(--line)}
+.bd-ocount{display:flex;flex-direction:column;align-items:flex-start;gap:1px;padding:6px 10px;background:var(--surface);text-align:left;min-width:0}
+.bd-ocount:hover{background:var(--hover)}
+.bd-ocount .bd-l{color:var(--ink3);font-size:11px}
+.bd-ocount b{font-weight:500;font-size:14px;color:var(--ink)}
+.bd-ocount b.bd-na{color:var(--ink3);font-weight:400}
+.bd-ocount small{color:var(--ink3);font-size:11px;min-height:14px}

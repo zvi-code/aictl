@@ -34,12 +34,14 @@ from ..storage import (
     CallFacts,
     ContextEventRow,
     FileWriteRow,
+    LoadedFileRow,
     RequestRow,
     SessionPromptRow,
     SkillUseRow,
     ToolInvocationRow,
     _dedup_key,
 )
+from . import loaded_files
 from ._common import coerce_ts, decode_file_uri
 
 log = logging.getLogger(__name__)
@@ -273,6 +275,7 @@ class FactBuffer:
         self.agents: dict[str, AgentRow] = {}
         self.file_writes: dict[str, FileWriteRow] = {}
         self.context_events: dict[str, ContextEventRow] = {}
+        self.loaded_files: dict[tuple[str, str, str], LoadedFileRow] = {}
         self.surface: Callable[[str], str] | None = None
         self.written = 0
 
@@ -317,9 +320,18 @@ class FactBuffer:
             # Files are read oldest first, so the first line of a replayed event is the original.
             self.context_events.setdefault(row.dedup_key, row)
 
+    def add_loaded_file(self, row: LoadedFileRow) -> None:
+        # Not limited to the window: a session loads its files once, at its start, and the
+        # store keeps the first time of each (see _LOADED_FILE_UPSERT).
+        key = (row.session_id, row.path, row.how)
+        prior = self.loaded_files.get(key)
+        if prior is None or (row.ts and (not prior.ts or row.ts < prior.ts)):
+            self.loaded_files[key] = row
+
     def __len__(self) -> int:
         return (
-            len(self.context_events)
+            len(self.loaded_files)
+            + len(self.context_events)
             + len(self.requests)
             + len(self.tools)
             + len(self.prompts)
@@ -340,7 +352,7 @@ class FactBuffer:
             self._clear()
             return
         rows = [*self.requests.values(), *self.tools.values(), *self.prompts.values(), *self.skills.values()]
-        rows += [*self.agents.values(), *self.file_writes.values(), *self.context_events.values()]
+        rows += [*self.agents.values(), *self.file_writes.values(), *self.context_events.values(), *self.loaded_files.values()]
         if self.surface is not None:
             for row in rows:
                 if row.tool == "copilot-cli":
@@ -353,6 +365,7 @@ class FactBuffer:
             agents=list(self.agents.values()),
             file_writes=list(self.file_writes.values()),
             context_events=list(self.context_events.values()),
+            loaded_files=list(self.loaded_files.values()),
         )
         try:
             self.written += writer(facts)
@@ -365,6 +378,7 @@ class FactBuffer:
         self.requests, self.tools, self.prompts = {}, {}, {}
         self.skills, self.agents, self.file_writes = {}, {}, {}
         self.context_events = {}
+        self.loaded_files = {}
 
 
 def _keep_text(store: Any) -> bool:
@@ -446,6 +460,9 @@ class ClaudeFacts:
         if kind == "system":
             self._system_line(sid, obj, ts, agent_id)
             return
+        if kind == "attachment":
+            self._attachment(sid, obj, ts, agent_id or (str(obj.get("agentId") or "") if obj.get("isSidechain") else ""))
+            return
         if kind not in ("assistant", "user"):
             return
         agent_id = agent_id or (str(obj.get("agentId") or "") if obj.get("isSidechain") else "")
@@ -460,6 +477,16 @@ class ClaudeFacts:
             return
         self._tool_uses(sid, msg, ts, agent_id, cwd)
         self._request(sid, obj, msg, ts, agent_id, cwd)
+
+    def _attachment(self, sid: str, obj: dict, ts: float, agent_id: str) -> None:
+        """The instruction files, subfolder CLAUDE.md files and skills the session loaded."""
+        for path, how, detail in loaded_files.claude_attachment(obj.get("attachment")):
+            self.buffer.add_loaded_file(
+                LoadedFileRow(
+                    session_id=sid, path=path, how=how, ts=ts, detail=detail, tool="claude-code",
+                    agent_id=agent_id, project_path=str(obj.get("cwd") or ""),
+                )
+            )
 
     def _touch_agent(self, agent_id: str, sid: str, role: str, ts: float, obj: dict) -> None:
         row = self._open_agents.get(agent_id)
@@ -832,6 +859,7 @@ class CopilotFacts:
         self.buffer = buffer
         self.keep_text = _keep_text(buffer.store)
         self.cwd = ""
+        self.git_root = ""
         self.model = ""
         self._occurrence: Counter[tuple[int, int, int, int]] = Counter()
         self._record_ids: set[str] = set()
@@ -855,6 +883,11 @@ class CopilotFacts:
         if kind in ("session.start", "session.resume"):
             ctx = data.get("context") if isinstance(data.get("context"), dict) else {}
             self.cwd = str(ctx.get("cwd") or self.cwd)
+            self.git_root = str(ctx.get("gitRoot") or self.git_root)
+        elif kind == "system.message":
+            self._system_message(data, ts, agent_id)
+        elif kind == "subagent.selected":
+            self._custom_agent(data, ts, agent_id)
         elif kind == "session.model_change" and data.get("newModel"):
             self.model = str(data["newModel"])
         elif kind == "assistant.message" and data.get("model"):
@@ -1004,10 +1037,47 @@ class CopilotFacts:
             )
         )
 
+    def _loaded(self, path: str, how: str, ts: float, agent_id: str, detail: str = "") -> None:
+        self.buffer.add_loaded_file(
+            LoadedFileRow(
+                session_id=self.sid, path=path, how=how, ts=ts, detail=detail, tool="copilot-cli",
+                agent_id=agent_id, project_path=self.cwd,
+            )
+        )
+
+    def _root(self) -> str:
+        if self.git_root or not self.cwd:
+            return self.git_root
+        from ..tree_walk import git_root
+
+        top = git_root(self.cwd)
+        return str(top) if top else ""
+
+    def _system_message(self, data: dict, ts: float, agent_id: str) -> None:
+        """The repository's instruction files whose text the system prompt holds. The text is not kept."""
+        content = data.get("content")
+        if not isinstance(content, str) or not content:
+            return
+        extra: list[str] = []
+        if self.cwd:
+            from ..tree_walk import files_for_folder
+
+            extra = [p for p in files_for_folder(self.cwd)["files"] if p.endswith(".md")]
+        for path, detail in loaded_files.system_prompt_files(content, self._root(), extra):
+            self._loaded(path, loaded_files.SYSTEM_PROMPT, ts, agent_id, detail)
+
+    def _custom_agent(self, data: dict, ts: float, agent_id: str) -> None:
+        path = loaded_files.custom_agent_file(self._root(), str(data.get("agentName") or ""))
+        if path:
+            self._loaded(path, loaded_files.CUSTOM_AGENT, ts, agent_id)
+
     def _skill(self, data: dict, ts: float, agent_id: str, event_id: str) -> None:
         name = str(data.get("name") or "")
         if not name:
             return
+        path = str(data.get("path") or "")
+        if os.path.isabs(path):
+            self._loaded(path, loaded_files.SKILL, ts, agent_id)
         self.buffer.add_skill(
             SkillUseRow(
                 dedup_key=_dedup_key("copilot-skill", self.sid, event_id or f"{name}{ts}"),

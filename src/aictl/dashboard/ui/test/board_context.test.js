@@ -1,6 +1,6 @@
 // Context size and hidden context in the board drawer: values with units, unknown never as 0.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { render, waitFor } from '@testing-library/preact';
+import { fireEvent, render, waitFor, within } from '@testing-library/preact';
 import { html } from 'htm/preact';
 import Drawer from '../src/components/board/Drawer.js';
 import { instructionsByTool } from '../src/components/board/findings.js';
@@ -10,14 +10,14 @@ import { NOW, agentDetailFixture, boardFixture } from './fixtures/board.fixture.
 const jsonResponse = body => new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
 const base = { calls: 2, first: 1000, last: 23650, peak: 40000, drops: 0, series: [1000, 23650] };
 
-function openAgent(tool, context, parent_id = null) {
+function openAgent(tool, context, parent_id = null, tab = 'context', act = {}) {
   const data = boardFixture();
   const id = data.agents[0].id;
   const fixture = agentDetailFixture(id);
   const detail = { ...fixture, agent: { ...fixture.agent, tool, parent_id }, context };
   vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(detail)));
   const ctx = { data, refreshKey: 1, stopped: {}, toolName: x => x, query: '' };
-  return render(html`<${Drawer} stack=${[{ type: 'agent', id, tab: 'overview' }]} ctx=${ctx} act=${{}}/>`);
+  return render(html`<${Drawer} stack=${[{ type: 'agent', id, tab }]} ctx=${ctx} act=${act}/>`);
 }
 
 function openHidden(audit, filters = { project: 'all' }, loading = false) {
@@ -92,11 +92,23 @@ describe('agent context section', () => {
     expect(container.querySelector('#dr-actx .bd-ctxsplit')).toBeNull();
   });
 
-  it('gives the main Copilot agent the split beside the chart, in two of three columns', async () => {
+  it('gives the main Copilot agent the split beside the chart on the Context tab, at full width', async () => {
     const { container } = openAgent('copilot-cli', { ...base, compactions: [], split: { ts: NOW, current: 100, system: 50, conversation: 30, tools: 20 } });
     await waitFor(() => expect(container.querySelector('#dr-actx .bd-ctxsplit')).toBeTruthy());
-    expect(container.querySelector('#dr-actx').style.gridColumn).toBe('span 8');
-    expect(container.querySelector('.bd-drcol').style.gridColumn).toBe('span 4');
+    expect(container.querySelector('#dr-actx').style.gridColumn).toBe('span 12');
+    expect(container.querySelector('#dr-actx .bd-ctx2')).toBeTruthy();
+  });
+
+  it('shows a short context card in the Overview, the split under the chart, and links to the Context tab', async () => {
+    const setDrawerTab = vi.fn();
+    const { container } = openAgent('copilot-cli', { ...base, compactions: [], split: { ts: NOW, current: 100, system: 50, conversation: 30, tools: 20 } }, null, 'overview', { setDrawerTab });
+    await waitFor(() => expect(container.querySelector('#dr-actxs .bd-ctxsplit')).toBeTruthy());
+    const card = container.querySelector('#dr-actxs');
+    expect(card.querySelector('.bd-ctx2')).toBeNull();
+    expect(card.querySelector('.bd-facts')).toBeNull();
+    expect(container.querySelector('#dr-actx')).toBeNull();
+    fireEvent.click(within(card).getByRole('button', { name: 'Context →' }));
+    expect(setDrawerTab).toHaveBeenCalledWith('context');
   });
 });
 

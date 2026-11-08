@@ -4012,25 +4012,63 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
 
 
 def _agent_record(db: Any, conn: sqlite3.Connection, session: dict, sid: str, row: dict, root: bool) -> dict:
-    """Artifacts and commits of a main agent's session. A subagent shares its session's, so it has none here."""
+    """Artifacts and commits of a main agent's session. A subagent shares its session's, so it has none here.
+
+    Both have ``context_files``: a subagent's ``loaded`` holds the files it loaded itself, else its main agent's.
+    """
     from .session_record import empty_record, record_section
 
-    if not root:
-        return empty_record()
     project = str(session.get("project_path") or row.get("project") or "")
-    return {**record_section(db, conn, session, sid, project), "context_files": _session_context_files(project)}
+    agent = "" if root else str(row.get("id") or "")
+    context_files = _session_context_files(project, _loaded_files(conn, sid, agent))
+    if not root:
+        return {**empty_record(), "context_files": context_files}
+    return {**record_section(db, conn, session, sid, project), "context_files": context_files}
 
 
-def _session_context_files(folder: str) -> dict:
-    """Instruction and config files that can affect a session working in *folder* (see tree_walk)."""
+def _loaded_files(conn: sqlite3.Connection, sid: str, agent: str = "") -> list[dict]:
+    """The files the session's own record shows it loaded, oldest first. See ingesters/loaded_files.
+
+    For a subagent (*agent* set): its own rows, else the main agent's (rows without an agent).
+    """
+    if not _table_exists(conn, "session_loaded_files"):
+        return []
+    rows = conn.execute(
+        "SELECT path, how, detail, ts, agent_id FROM session_loaded_files WHERE session_id = ? ORDER BY ts, path, how",
+        (sid,),
+    ).fetchall()
+    if agent:
+        own = [r for r in rows if r[4] == agent]
+        rows = own or [r for r in rows if not r[4] or r[4] == sid]
+    return [
+        {"path": path, "name": _basename(path), "how": how, "detail": detail or "", "ts": ts or 0.0}
+        for path, how, detail, ts, _a in rows[:MAX_LIST_ROWS]
+    ]
+
+
+def _session_context_files(folder: str, loaded: list[dict] | None = None) -> dict:
+    """Instruction and config files that can affect a session working in *folder* (see tree_walk).
+
+    ``loaded`` lists the files the session did load, inside the git root or not; a file of
+    ``files`` that is among them has ``loaded: true``.
+    """
     from ..tree_walk import files_for_folder
 
     found = files_for_folder(folder) if folder else {"git_root": None, "files": [], "read": False}
+    loaded = loaded or []
+    loaded_paths = {e["path"] for e in loaded}
+    files = []
+    for p in found["files"][:MAX_LIST_ROWS]:
+        entry: dict = {"path": p, "name": _basename(p)}
+        if p in loaded_paths:
+            entry["loaded"] = True
+        files.append(entry)
     return {
         "git_root": found["git_root"],
         "read": found["read"],
-        "files": [{"path": p, "name": _basename(p)} for p in found["files"][:MAX_LIST_ROWS]],
+        "files": files,
         "total": len(found["files"]),
+        "loaded": loaded,
     }
 
 
