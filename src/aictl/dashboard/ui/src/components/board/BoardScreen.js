@@ -243,6 +243,12 @@ function Modal({ modal, onCancel }) {
   </div>`;
 }
 
+/** When the code on disk changed after the daemon started, or null (see aictl.code_age). */
+export function staleCode(data) {
+  const self = data?.machine?.pipeline?.self;
+  return self && typeof self.code_changed_at === 'number' ? self.code_changed_at : null;
+}
+
 export default function BoardScreen() {
   const board = useBoardFilters();
   const { filters, applied, tools, update, setFind } = board;
@@ -714,6 +720,7 @@ export default function BoardScreen() {
         <main class="bd-area" id="main-area" aria-label=${screen === 'settings' ? 'Settings' : undefined}>
           ${screen === 'settings' ? html`<${SettingsArea} Workspace=${SettingsC} res=${settingsRes} source=${settingsSource}/>` : html`
           ${error ? html`<div class="bd-banner" role="alert"><${Ico} d=${PATHS.warn}/>Could not update the board: ${error.message}. Showing the last data.</div>` : null}
+          ${staleCode(data) ? html`<div class="bd-banner" role="alert"><${Ico} d=${PATHS.warn}/>aictl was updated on disk at ${stamp(staleCode(data), true)}, after this daemon started at ${stamp(data.machine.pipeline.self.started_at, true)}. The page is new and the daemon runs the old code, so new parts of the board may fail. Restart the daemon: stop it, then run aictl daemon serve again.</div>` : null}
           ${!loaded && !error ? html`<div class="bd-sk" role="status">Loading the board...</div>` : null}
           <${Kpis} data=${data} pill=${pill}/>
           ${ui.layout.map((sec) => {

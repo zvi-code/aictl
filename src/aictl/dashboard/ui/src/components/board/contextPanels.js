@@ -343,6 +343,12 @@ function panelMemory(ctx) {
 
 // ─── File inventory ───────────────────────────────────────────────
 
+/** A live session's title from the board's agent list, else its id. */
+function sessionName(ctx, id) {
+  const a = (ctx.data?.agents || []).find(x => x.id === id || x.session_id === id);
+  return a ? (a.title || id) + ' (' + id + ')' : id;
+}
+
 const LOAD_LABEL = { always: 'Every call', on_demand: 'On demand', conditional: 'When it applies', never: 'Never' };
 
 function InventoryView({ c, group, ctx }) {
@@ -354,13 +360,16 @@ function InventoryView({ c, group, ctx }) {
     const keyOf = f => (group === 'kind' ? f.kind : group === 'tool' ? ctx.toolName(f.tool) : null);
     const rows = all.map(f => ({
       id: f.tool + '|' + f.path, groupKey: keyOf(f), go: () => setPath(p => (p === f.path ? null : f.path)),
-      sort: { n: f.name, tool: f.tool, kind: f.kind, sc: f.scope, sz: f.size, t: f.tokens, s: f.policy, w: f.loaded_when, ch: f.mtime },
+      sort: { n: f.name, tool: f.tool, kind: f.kind, sc: f.scope, sz: f.size, t: f.tokens, s: f.policy, w: f.loaded_when, ch: f.mtime, ses: (f.sessions || []).length },
       cells: {
         n: { v: f.name, title: f.path + (f.recent ? '\nChanged in the last 5 min' : ''), dot: f.recent ? 'var(--good)' : 'var(--line2)' },
         tool: { v: ctx.toolName(f.tool), cls: 'dim' }, kind: { v: f.kind, cls: 'dim' }, sc: { v: f.scope || NA, cls: 'dim', title: (f.scope || NA) + (f.project ? ', project ' + f.project : '') },
         sz: { v: fmtBytes(f.size) }, t: { v: fmtN(f.tokens) },
         s: { v: SENT_LABEL[f.policy] || NA, cls: f.policy === 'no' ? 'dim' : '', title: 'sent_to_llm: ' + (f.sent_to_llm || 'not set') + (f.load ? '. Loads: ' + LOAD_LABEL[f.load] : '') },
         w: { v: f.loaded_when || NA, cls: 'dim' },
+        ses: (f.sessions || []).length
+          ? { v: fmtN(f.sessions.length), title: 'Live sessions this file can affect:\n' + f.sessions.map(id => sessionName(ctx, id)).join('\n') }
+          : { v: NA, cls: 'dim', title: 'No live session works in this folder or below it' },
         ch: { v: f.mtime ? ago(f.mtime, nowS) : NA, cls: f.recent ? '' : 'dim', title: f.mtime ? 'Changed ' + stamp(f.mtime, true) + (f.recent ? '. Changed in the last 5 min' : '') : 'No change time known' },
       },
     }));
@@ -380,6 +389,7 @@ function InventoryView({ c, group, ctx }) {
         { k: 'n', l: 'File', w: '220px' }, { k: 'tool', l: 'Tool', w: '104px' }, { k: 'kind', l: 'Kind', w: '92px' }, { k: 'sc', l: 'Scope', w: '70px' },
         { k: 'sz', l: 'Size', n: true, w: '64px' }, { k: 't', l: 'Tokens', n: true, w: '64px' }, { k: 's', l: 'Sent to model', w: '100px' },
         { k: 'w', l: 'Loaded when', w: '120px' }, { k: 'ch', l: 'Changed', n: true, w: '84px', t: 'A green dot: changed in the last 5 min' },
+        { k: 'ses', l: 'Sessions', n: true, w: '76px', t: 'Live sessions that work in the file\'s folder or below it, so the file can affect them' },
       ],
       rows, groupRow, sort: { k: 't', dir: 'desc' }, limit: 200, none: noneText(c, 'No files found for these tools.'),
     };

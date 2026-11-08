@@ -876,6 +876,28 @@ def session_links() -> dict[str, dict]:
     }
 
 
+def files_for_folder(folder: str | Path) -> dict:
+    """The matched files that can affect a session working in *folder*, from repositories already read.
+
+    The same rule as :func:`session_links`, for any folder, so a past session gets its files too:
+    a file of *folder*'s git root whose folder is *folder* or holds it. Reads no repository itself.
+    ``{"git_root": str | None, "files": [paths], "read": bool}``; ``read`` is False while the
+    repository has not been read yet.
+    """
+    top = git_root(folder) if folder else None
+    if top is None:
+        return {"git_root": None, "files": [], "read": False}
+    with _lock:
+        units = [u for u in _units.values() if _key(u.top) == _key(top)]
+    out = [
+        str(u.folder / Path(*rel.split("/")))
+        for u in units
+        for rel in u.files
+        if _under(str(folder), str(_scope(u.folder, rel)))
+    ]
+    return {"git_root": str(top), "files": sorted(out), "read": bool(units)}
+
+
 def clear_cache() -> None:
     global _git_missing
     with _lock:

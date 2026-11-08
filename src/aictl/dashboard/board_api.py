@@ -4017,7 +4017,21 @@ def _agent_record(db: Any, conn: sqlite3.Connection, session: dict, sid: str, ro
 
     if not root:
         return empty_record()
-    return record_section(db, conn, session, sid, str(session.get("project_path") or row.get("project") or ""))
+    project = str(session.get("project_path") or row.get("project") or "")
+    return {**record_section(db, conn, session, sid, project), "context_files": _session_context_files(project)}
+
+
+def _session_context_files(folder: str) -> dict:
+    """Instruction and config files that can affect a session working in *folder* (see tree_walk)."""
+    from ..tree_walk import files_for_folder
+
+    found = files_for_folder(folder) if folder else {"git_root": None, "files": [], "read": False}
+    return {
+        "git_root": found["git_root"],
+        "read": found["read"],
+        "files": [{"path": p, "name": _basename(p)} for p in found["files"][:MAX_LIST_ROWS]],
+        "total": len(found["files"]),
+    }
 
 
 # ─── /api/board/agent/flow and /api/board/agent/transcript ────────
@@ -5975,6 +5989,18 @@ def _freshness(snapshot: Any, selected: set[str] | None) -> list[dict]:
     return out
 
 
+def _code_changed_at() -> float | None:
+    from ..code_age import code_changed_at
+
+    return code_changed_at()
+
+
+def _process_started_at() -> float:
+    from ..code_age import STARTED_AT
+
+    return STARTED_AT
+
+
 def _hooks_by_tool(db: Any, now: float) -> dict[str, dict]:
     """Hook events each tool sent in the last 24 hours: ``{tool: {count, last_fire_ts}}``."""
     from .hooks_status import _hook_event_counts
@@ -6025,6 +6051,9 @@ def compute_machine(
                 "db_rows": sum(counts.values()) if counts else None,
                 "db_tables": counts,
                 "writes": db.running_writes() if hasattr(db, "running_writes") else [],
+                # The code on disk changed after this daemon started: it needs a restart.
+                "code_changed_at": _code_changed_at(),
+                "started_at": _process_started_at(),
             },
             "sink": _sink_section(store),
             "otel_receiver": otel_status,
@@ -6332,11 +6361,27 @@ def _context_categories(tool: Any) -> dict:
     }
 
 
-def _context_file(f: Any, tool: str, root: str, now: float) -> dict:
+def _file_sessions() -> dict[str, list[str]]:
+    """Live sessions each discovered file can affect, by normalized path (see tree_walk.session_links)."""
+    from ..tree_walk import session_links
+
+    out: dict[str, list[str]] = {}
+    try:
+        links = session_links()
+    except Exception:  # noqa: BLE001 - discovery data is optional for this view
+        return out
+    for link in links.values():
+        for f in link.get("files", []):
+            out.setdefault(os.path.normcase(os.path.normpath(f["path"])), []).extend(f.get("sessions", []))
+    return out
+
+
+def _context_file(f: Any, tool: str, root: str, now: float, sessions: dict[str, list[str]] | None = None) -> dict:
     from ..tools import budget_bucket
 
     mtime = _as_number(f.mtime) or None
     return {
+        "sessions": sorted(set((sessions or {}).get(os.path.normcase(os.path.normpath(str(f.path))), []))),
         "path": f.path,
         "name": _basename(f.path),
         "tool": tool,
@@ -6624,6 +6669,7 @@ def compute_context(db: Any, store: Any, tools: tuple[str, ...] | None = None, n
     budget_rows.sort(key=lambda b: (-b["always"], b["tool"]))
     totals = compute_token_budget(tool_list, root)
     files = []
+    affects = _file_sessions()
     for t in tool_list:
         listed = sorted(t.files, key=lambda f: (-_ctx_int(f.tokens), f.path))
         files.append(
@@ -6632,7 +6678,7 @@ def compute_context(db: Any, store: Any, tools: tuple[str, ...] | None = None, n
                 "label": _ctx_field(t, "label", "") or _label(t.tool),
                 "count": len(listed),
                 "truncated": len(listed) > CONTEXT_MAX_FILES,
-                "files": [_context_file(f, t.tool, root, now) for f in listed[:CONTEXT_MAX_FILES]],
+                "files": [_context_file(f, t.tool, root, now, affects) for f in listed[:CONTEXT_MAX_FILES]],
             }
         )
     files = [f for f in files if f["count"]]
