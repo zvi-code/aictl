@@ -75,8 +75,23 @@ MACHINE = ""  # the machine store, in the session map: sessions already in it be
 PROJECTS_DIR = "projects"
 IDLE_CLOSE_S = 30 * 60.0
 REAP_EVERY_S = 30.0
-# SQLite attaches at most 10 databases by default. One slot stays free.
+# SQLite attaches at most 10 databases (Python's build cannot raise it). Nine stores
+# are attached; the tenth slot copies the rows of any further store, one at a time.
 ATTACH_ROOM = 9
+_COPY_PREFIX = "copied_"
+# Tables copied for the scope's time range only; the others are copied whole.
+_TIMED_TABLES = frozenset(
+    {"requests", "tool_invocations", "session_prompts", "skill_uses", "file_write_events", "context_events", "events"}
+)
+# A session or subagent id the router does not know, looked up in a store.
+_FIND_SESSION_SQL = (
+    "SELECT 1 FROM sessions WHERE session_id = ?",
+    "SELECT 1 FROM agents WHERE agent_id = ?",
+    "SELECT 1 FROM session_usage WHERE session_id = ?",
+    "SELECT 1 FROM requests WHERE session_id = ? LIMIT 1",
+    "SELECT 1 FROM tool_invocations WHERE session_id = ? LIMIT 1",
+    "SELECT 1 FROM session_prompts WHERE session_id = ? LIMIT 1",
+)
 READ_CONNS_PER_THREAD = 3
 _ROOT_CACHE_MAX = 8192
 _VERSION_COLUMNS = (
@@ -240,8 +255,8 @@ class _ProjectDB(HistoryDB):
 class _ReadConn:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
-        self.keys: tuple[str, ...] | None = None
         self.aliases: list[tuple[str, str]] = []  # (alias, key)
+        self.copied: list[str] = []  # keys of stores whose rows were copied into TEMP tables
 
 
 def _row_ts(row: Any) -> float:
@@ -305,7 +320,8 @@ class ProjectStores:
         self._dirty: set[str] = set()
         self._index_lock = threading.Lock()
         self._local = threading.local()
-        self._dropped_logged: tuple[str, ...] = ()
+        self._generation: dict[str, int] = {}
+        self._found: dict[str, str] = {}
         self._closed = False
         if self._split:
             assert self.projects_dir is not None
@@ -397,6 +413,7 @@ class ProjectStores:
                 key, {"root": "", "file": store_file_name(key), "first_ts": None, "last_ts": None, "rows": 0}
             )
             entry["rows"] = int(entry.get("rows") or 0) + len(rows)
+            self._generation[key] = self._generation.get(key, 0) + 1
             if stamps:
                 lo, hi = min(stamps), max(stamps)
                 entry["first_ts"] = lo if entry.get("first_ts") is None else min(entry["first_ts"], lo)
@@ -832,65 +849,97 @@ class ProjectStores:
             stack = self._local.scopes = []
         return stack
 
-    def _wanted(self) -> tuple[str, ...]:
-        """Keys of the stores the current read scope needs, newest activity first."""
+    def _wanted(self) -> tuple:
+        """The read plan of the current scope: (attached keys, copied keys, since, until, generations).
+
+        Stores are ordered newest activity first. SQLite attaches at most 10 databases:
+        the first ATTACH_ROOM are attached, the rest are copied (their rows of the
+        scope's range) into TEMP tables of the same connection. Every store is read.
+        """
         stack = self._scopes()
         since, until, project, session = stack[-1] if stack else (None, None, None, None)
+        keys: tuple[str, ...]
         if session:
-            key = self.store_of_session(session)
-            if key is not None:
-                return (key,) if key != MACHINE else ()
-        if project:
-            key = store_key(project)
-            return (key,)
+            key = self._find_store(session)
+            keys = (key,) if key else ()
+        elif project:
+            keys = (store_key(project),)
+        else:
+            with self._index_lock:
+                entries = [(k, dict(e)) for k, e in self._index.items()]
+            active = []
+            for key, e in entries:
+                first, last = e.get("first_ts"), e.get("last_ts")
+                if first is None or last is None:
+                    if not e.get("rows"):
+                        continue
+                else:
+                    if since is not None and last < since:
+                        continue
+                    if until is not None and first > until:
+                        continue
+                active.append((-(last or 0.0), key))
+            active.sort()
+            keys = tuple(k for _n, k in active)
+        attached, copied = keys[:ATTACH_ROOM], keys[ATTACH_ROOM:]
+        if not copied:
+            return (attached, (), None, None, ())
         with self._index_lock:
-            entries = [(k, dict(e)) for k, e in self._index.items()]
-        active = []
-        for key, e in entries:
-            first, last = e.get("first_ts"), e.get("last_ts")
-            if first is None or last is None:
-                if not e.get("rows"):
-                    continue
-            else:
-                if since is not None and last < since:
-                    continue
-                if until is not None and first > until:
-                    continue
-            active.append((-(last or 0.0), key))
-        active.sort()
-        keys = tuple(k for _n, k in active)
-        if len(keys) > ATTACH_ROOM:
-            dropped = keys[ATTACH_ROOM:]
-            if dropped != self._dropped_logged:
-                self._dropped_logged = dropped
-                log.warning(
-                    "%d project stores are active in this range; reading the %d most recent, without: %s",
-                    len(keys),
-                    ATTACH_ROOM,
-                    ", ".join(dropped),
-                )
-            keys = keys[:ATTACH_ROOM]
-        return keys
+            generations = tuple(self._generation.get(k, 0) for k in copied)
+        return (attached, copied, since, until, generations)
+
+    def _find_store(self, ident: str) -> str:
+        """The store of a session or subagent id: from the router, else looked up in every store.
+
+        "" for the machine store, or when no store has it.
+        """
+        with self._route_lock:
+            key = self._sessions.get(ident)
+            if key is None:
+                key = self._found.get(ident)
+        if key is not None:
+            return key
+        with self._index_lock:
+            keys = list(self._index)
+        for key in keys:
+            file = self._file_of(key)
+            if file is None or not file.exists():
+                continue
+            try:
+                conn = sqlite3.connect(f"file:{file}?mode=ro", uri=True, timeout=BUSY_TIMEOUT_S)
+                try:
+                    hit = any(conn.execute(sql, (ident,)).fetchone() is not None for sql in _FIND_SESSION_SQL)
+                finally:
+                    conn.close()
+            except sqlite3.Error as exc:
+                log.debug("Cannot look in %s: %s", file.name, exc)
+                continue
+            if hit:
+                with self._route_lock:
+                    self._found[ident] = key
+                return key
+        return MACHINE
 
     def _conn(self) -> sqlite3.Connection:
         """This thread's read connection for the current scope.
 
         It is a connection on the machine store: tables that are not per project are
         the machine's own. Per-project tables are TEMP VIEWs over the machine's rows
-        (written before the split) and every attached store. This connection never
-        sets a pragma that takes a lock.
+        (written before the split), every attached store, and the copied rows of the
+        stores beyond SQLite's attach limit. This connection never sets a pragma that
+        takes a lock.
         """
         if not self._split:
             return self.machine._conn()
         return self._read_state().conn
 
     def _read_state(self) -> _ReadConn:
-        """A connection per set of stores, so a nested scope never changes a connection in use."""
+        """A connection per read plan, so a nested scope never changes a connection in use."""
         conns = getattr(self._local, "conns", None)
         if conns is None:
             conns = self._local.conns = {}
-        wanted = self._wanted()
-        state = conns.pop(wanted, None)
+        plan = self._wanted()
+        state = conns.pop(plan, None)
         if state is None:
             conn = sqlite3.connect(str(self.machine._path), timeout=BUSY_TIMEOUT_S)
             conn.execute("PRAGMA synchronous=OFF")
@@ -898,16 +947,17 @@ class ProjectStores:
             conn.execute("PRAGMA temp_store=MEMORY")
             self.machine._install_capture_guards(conn)
             state = _ReadConn(conn)
-            self._attach(state, wanted)
-        conns[wanted] = state
+            self._attach(state, plan)
+        conns[plan] = state
         while len(conns) > READ_CONNS_PER_THREAD:
             # Not closed here: a caller may still hold it. It closes when released.
             conns.pop(next(iter(conns)))
         return state
 
-    def _attach(self, state: _ReadConn, wanted: tuple[str, ...]) -> None:
+    def _attach(self, state: _ReadConn, plan: tuple) -> None:
+        attached, copied, since, until, _generations = plan
         conn = state.conn
-        for i, key in enumerate(wanted):
+        for i, key in enumerate(attached):
             file = self._file_of(key)
             if file is None or not file.exists():
                 continue
@@ -918,43 +968,98 @@ class ProjectStores:
                 log.warning("Cannot read project store %s: %s", file.name, exc)
                 continue
             state.aliases.append((alias, key))
-        if state.aliases:
-            for table in PROJECT_TABLES:
-                cols = _columns(conn, "main", table)
-                # The machine store's own rows (written before the split) only when it has
-                # some: a view of one store alone is flattened, and keeps its indexes in joins.
-                arms = []
-                if conn.execute(f"SELECT 1 FROM main.{table} LIMIT 1").fetchone() is not None:
-                    arms.append(("main", cols))
-                for alias, _key in state.aliases:
-                    have = _columns(conn, alias, table)
-                    if have:
-                        arms.append((alias, have))
-                if not arms:
-                    arms = [("main", cols)]
-                common = [c for c in cols if all(c in have for _a, have in arms)]
-                select = ", ".join(common)
-                body = " UNION ALL ".join(f"SELECT {select} FROM {schema}.{table}" for schema, _c in arms)
-                conn.execute(f"CREATE TEMP VIEW {table} AS {body}")
-        state.keys = wanted
+        if copied:
+            self._copy_stores(state, copied, since, until)
+        if not state.aliases and not state.copied:
+            return
+        for table in PROJECT_TABLES:
+            cols = _columns(conn, "main", table)
+            # The machine store's own rows (written before the split) only when it has
+            # some: a view of one store alone is flattened, and keeps its indexes in joins.
+            arms: list[tuple[str, list[str]]] = []
+            if conn.execute(f"SELECT 1 FROM main.{table} LIMIT 1").fetchone() is not None:
+                arms.append((f"main.{table}", cols))
+            for alias, _key in state.aliases:
+                have = _columns(conn, alias, table)
+                if have:
+                    arms.append((f"{alias}.{table}", have))
+            if state.copied:
+                arms.append((f"temp.{_COPY_PREFIX}{table}", cols))
+            if not arms:
+                arms = [(f"main.{table}", cols)]
+            common = [c for c in cols if all(c in have for _a, have in arms)]
+            select = ", ".join(common)
+            body = " UNION ALL ".join(f"SELECT {select} FROM {source}" for source, _c in arms)
+            conn.execute(f"CREATE TEMP VIEW {table} AS {body}")
+
+    def _copy_stores(self, state: _ReadConn, keys: tuple[str, ...], since: float | None, until: float | None) -> None:
+        """Copy the scope's rows of the stores beyond the attach limit into TEMP tables.
+
+        Timed tables are copied for [since, until], the others whole. The spare attach
+        slot takes one store at a time.
+        """
+        conn = state.conn
+        cols = {table: _columns(conn, "main", table) for table in PROJECT_TABLES}
+        for table, names in cols.items():
+            conn.execute(
+                f"CREATE TEMP TABLE {_COPY_PREFIX}{table} AS SELECT {', '.join(names)} FROM main.{table} WHERE 0"
+            )
+        for key in keys:
+            file = self._file_of(key)
+            if file is None or not file.exists():
+                continue
+            try:
+                conn.execute("ATTACH DATABASE ? AS cp", (str(file),))
+            except sqlite3.Error as exc:
+                log.warning("Cannot read project store %s: %s", file.name, exc)
+                continue
+            try:
+                for table, names in cols.items():
+                    have = set(_columns(conn, "cp", table))
+                    common = ", ".join(c for c in names if c in have)
+                    if not common:
+                        continue
+                    where: list[str] = []
+                    params: list[float] = []
+                    if table in _TIMED_TABLES:
+                        if since is not None:
+                            where.append("ts >= ?")
+                            params.append(since)
+                        if until is not None:
+                            where.append("ts <= ?")
+                            params.append(until)
+                    sql = f"INSERT INTO temp.{_COPY_PREFIX}{table}({common}) SELECT {common} FROM cp.{table}"
+                    if where:
+                        sql += " WHERE " + " AND ".join(where)
+                    conn.execute(sql, params)
+                conn.commit()
+                state.copied.append(key)
+            finally:
+                conn.execute("DETACH DATABASE cp")
+        for table in PROJECT_TABLES:
+            conn.execute(f"CREATE INDEX temp.{_COPY_PREFIX}{table}_sid ON {_COPY_PREFIX}{table}(session_id)")
+        conn.commit()
 
     def attached_stores(self) -> list[str]:
-        """Keys of the project stores attached to this thread's read connection."""
+        """Keys of the project stores this thread's read connection reads, attached or copied."""
         if not self._split:
             return []
-        return [key for _alias, key in self._read_state().aliases]
+        state = self._read_state()
+        return [key for _alias, key in state.aliases] + list(state.copied)
 
     def version_marks(self) -> tuple:
         """Changes when rows arrive in any store the current scope reads."""
         if not self._split:
             conn = self.machine._conn()
             return ((), tuple(conn.execute(f"SELECT {c} FROM {t}").fetchone()[0] for t, c in _VERSION_COLUMNS))
+        plan = self._wanted()
         state = self._read_state()
         marks = []
         for schema in ["main", *(alias for alias, _key in state.aliases)]:
             for table, column in _VERSION_COLUMNS:
                 marks.append(state.conn.execute(f"SELECT {column} FROM {schema}.{table}").fetchone()[0])
-        return (tuple(key for _alias, key in state.aliases), tuple(marks))
+        # Copied stores: the writes this process made to them, counted.
+        return (plan[0] + plan[1], tuple(marks), plan[4])
 
     def __getattr__(self, name: str) -> Any:
         machine = self.__dict__.get("machine")

@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from aictl.dashboard.board_api import Filters, board_bytes, compute_board
-from aictl.project_stores import ATTACH_ROOM, SHARED, ProjectStores, repository_root, store_key
+from aictl.dashboard.board_api import Filters, agent_detail, board_bytes, compute_board
+from aictl.project_stores import SHARED, ProjectStores, repository_root, store_key
 from aictl.storage import (
     CallFacts,
     EventRow,
@@ -383,7 +383,7 @@ def test_a_project_filter_opens_only_that_store(tmp_path, stores, monkeypatch):
     real = ProjectStores._attach
 
     def spy(self, state, wanted):
-        attached.append(wanted)
+        attached.append(wanted[0] + wanted[1])
         return real(self, state, wanted)
 
     monkeypatch.setattr(ProjectStores, "_attach", spy)
@@ -412,21 +412,119 @@ def test_all_projects_attach_only_stores_active_in_the_range(tmp_path, stores):
         assert sorted(stores.attached_stores()) == sorted([store_key(str(a)), store_key(str(b))])
 
 
-def test_more_active_stores_than_sqlite_attaches_read_the_most_recent(tmp_path, stores, caplog):
-    n = ATTACH_ROOM + 2
-    repos = [_repo(tmp_path / f"r{i}") for i in range(n)]
+MANY = 25
+
+
+def _seed_many(db, repos: list[Path]) -> None:
+    """One session per repository, all active in the last hours, through the write API."""
     for i, repo in enumerate(repos):
-        stores.upsert_session(
-            SessionRow(session_id=f"m{i}", tool="claude-code", project_path=str(repo), started_at=NOW - 3600 + i)
+        sid = f"m{i:02d}"
+        db.upsert_session(
+            SessionRow(session_id=sid, tool="claude-code", project_path=str(repo), started_at=NOW - 7000 + i * 10)
         )
-        stores.append_request(
-            RequestRow(ts=NOW - 3600 + i, session_id=f"m{i}", project_path=str(repo), model=SONNET, source="otel")
+        for k in range(2):
+            ts = NOW - 6000 + i * 60 + k * 7
+            db.append_request(
+                RequestRow(
+                    ts=ts,
+                    session_id=sid,
+                    project_path=str(repo),
+                    model=SONNET if i % 2 else HAIKU,
+                    input_tokens=100 + i,
+                    output_tokens=10 + k,
+                    duration_ms=500,
+                    source="otel",
+                    source_ts=ts,
+                )
+            )
+        db.append_tool_invocation(
+            ToolInvocationRow(
+                ts=NOW - 5900 + i * 60,
+                session_id=sid,
+                tool="claude-code",
+                tool_name="Bash",
+                source="otel",
+                source_ts=NOW - 5900 + i * 60,
+            )
         )
-    stores.flush()
-    with caplog.at_level(logging.WARNING, logger="aictl.project_stores"):
-        board = compute_board(stores, Filters(since=NOW - 7200, until=NOW), now=NOW)
-    assert {r["id"] for r in board["agents"]} == {f"m{i}" for i in range(2, n)}
-    assert "most recent" in caplog.text
+        db.write_call_facts(
+            CallFacts(
+                prompts=[
+                    SessionPromptRow(
+                        dedup_key=f"p-{sid}",
+                        ts=NOW - 6001 + i * 60,
+                        session_id=sid,
+                        tool="claude-code",
+                        project_path=str(repo),
+                        text=f"task {i}",
+                    )
+                ]
+            )
+        )
+    db.flush()
+
+
+def test_the_board_reads_every_active_store_beyond_the_attach_limit(tmp_path, stores, caplog):
+    repos = [_repo(tmp_path / f"r{i:02d}") for i in range(MANY)]
+    single = HistoryDB(db_path=tmp_path / "single.db", flush_interval=0)
+    try:
+        _seed_many(single, repos)
+        _seed_many(stores, repos)
+        f = Filters(since=NOW - 3 * 3600, until=NOW)
+        with caplog.at_level(logging.WARNING, logger="aictl.project_stores"):
+            split = compute_board(stores, f, now=NOW)
+        one = compute_board(single, f, now=NOW)
+        with stores.read_scope(since=f.since - 3 * 3600, until=f.until):
+            assert len(stores.attached_stores()) == MANY
+        assert {r["id"] for r in split["agents"]} == {f"m{i:02d}" for i in range(MANY)}
+        assert {p["id"] for p in split["options"]["projects"]} == {str(r) for r in repos}
+        assert split["kpis"] == one["kpis"]
+        assert split["series"] == one["series"]
+        assert _comparable(split) == _comparable(one)
+        assert "project stores" not in caplog.text
+    finally:
+        single.close()
+
+
+def test_a_session_in_store_twenty_opens_in_the_drawer(tmp_path, stores):
+    repos = [_repo(tmp_path / f"r{i:02d}") for i in range(MANY)]
+    single = HistoryDB(db_path=tmp_path / "single.db", flush_interval=0)
+    try:
+        _seed_many(single, repos)
+        _seed_many(stores, repos)
+        status, split = agent_detail(stores, "m20", now=NOW)
+        assert status == 200
+        assert json.dumps(split, sort_keys=True, default=str) == json.dumps(
+            agent_detail(single, "m20", now=NOW)[1], sort_keys=True, default=str
+        )
+    finally:
+        single.close()
+
+
+def test_a_session_unknown_to_the_router_is_found_in_its_store(tmp_path):
+    path = tmp_path / "config" / "history.db"
+    repos = [_repo(tmp_path / f"r{i:02d}") for i in range(12)]
+    with ProjectStores(db_path=path, flush_interval=0) as first:
+        _seed_many(first, repos)
+        # Rows of a session that has no sessions row anywhere.
+        first.append_request(
+            RequestRow(
+                ts=NOW - 100,
+                session_id="orphan",
+                project_path=str(repos[3]),
+                model=SONNET,
+                input_tokens=7,
+                source="otel",
+            )
+        )
+        first.flush()
+    with ProjectStores(db_path=path, flush_interval=0) as second:
+        assert second.store_of_session("orphan") is None
+        status, payload = agent_detail(second, "orphan", now=NOW)
+        assert status == 200
+        with second.read_scope(session="orphan"):
+            assert second.attached_stores() == [store_key(str(repos[3]))]
+        assert second.get_session("m11")["session_id"] == "m11"
 
 
 def test_session_reads_find_a_session_in_any_store(tmp_path, stores):
@@ -449,3 +547,19 @@ def test_the_read_connection_takes_no_write_lock_while_a_store_writes(tmp_path, 
         assert time.monotonic() - started < 0.25
     finally:
         writer.rollback()
+
+
+def test_a_copied_store_shows_its_new_rows(tmp_path, stores):
+    repos = [_repo(tmp_path / f"r{i:02d}") for i in range(12)]
+    _seed_many(stores, repos)
+    f = Filters(since=NOW - 3 * 3600, until=NOW)
+    before = compute_board(stores, f, now=NOW)
+    # The least recent store stays beyond the attach limit: its new row is older than the others.
+    stores.append_request(
+        RequestRow(ts=NOW - 6500, session_id="m00", project_path=str(repos[0]), model=HAIKU, input_tokens=5000, source="otel")
+    )
+    stores.flush()
+    with stores.read_scope(since=f.since - 3 * 3600, until=f.until):
+        assert stores._read_state().copied[-1] == store_key(str(repos[0]))
+    after = compute_board(stores, f, now=NOW)
+    assert after["kpis"] != before["kpis"]
