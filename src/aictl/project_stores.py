@@ -90,6 +90,8 @@ FULL_PASS_S = 600.0
 # Sessions written to the machine store before the split move to their project stores
 # in the background, for at most this long per upkeep pass.
 SPLIT_PASS_S = 5.0
+# The daemon prints the split's progress at most this often.
+SPLIT_REPORT_S = 60.0
 # Tables that name a session, besides sessions, read at startup to place sessions.
 _SESSION_TABLES = ("session_processes", "agents")
 _SESSION_TABLES_SHARED = ("session_processes", "agents", "requests", "tool_invocations", "session_prompts", "events")
@@ -388,7 +390,12 @@ class ProjectStores:
         log_paths: tuple[Path, ...] = (),
         memory_fallback: bool = False,
         idle_close_s: float = IDLE_CLOSE_S,
+        say: Any | None = None,
     ) -> None:
+        # Progress a person watches for, such as the split of an old history (the daemon prints it).
+        self._say = say or log.info
+        self._split_total: int | None = None
+        self._split_reported = 0.0
         self.machine = HistoryDB(
             db_path=db_path,
             flush_interval=flush_interval,
@@ -831,11 +838,21 @@ class ProjectStores:
             return 0
         with self._route_lock:
             legacy = [sid for sid, key in self._sessions.items() if key == MACHINE]
+        if not legacy:
+            return 0
+        if self._split_total is None:
+            self._split_total = len(legacy)
+            self._split_reported = time.monotonic()
+            self._say(f"  history split: {len(legacy)} older sessions move to their project stores in the background")
         started = time.monotonic()
         conn = self.machine._conn()
         for done, sid in enumerate(legacy):
             if budget_s is not None and time.monotonic() - started > budget_s:
-                return len(legacy) - done
+                left = len(legacy) - done
+                if time.monotonic() - self._split_reported >= SPLIT_REPORT_S:
+                    self._split_reported = time.monotonic()
+                    self._say(f"  history split: {self._split_total - left} of {self._split_total} sessions moved")
+                return left
             row = conn.execute(
                 "SELECT project_path FROM sessions WHERE session_id = ? AND project_path != ''", (sid,)
             ).fetchone() or conn.execute(
@@ -851,6 +868,7 @@ class ProjectStores:
                 self._sessions[sid] = key
                 self._pending_moves[sid] = (MACHINE, key)
             self._move_session(sid, MACHINE, key)
+        self._say(f"  history split done: {self._split_total} sessions moved to {len(self._index)} project stores in {self.projects_dir}")
         return 0
 
     # ── Buffered writes ────────────────────────────────────────
