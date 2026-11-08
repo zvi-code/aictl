@@ -95,6 +95,7 @@ COMPACT_REST_RATIO = 4.0
 # How long a write waits for the lock, and the time after which a write is logged.
 BUSY_TIMEOUT_S = 15.0
 SLOW_WRITE_S = 3.0
+FLUSH_CHUNK_ROWS = 1000  # rows per commit inside one flush, so other writers get in between
 # A health row that does not change is written again after this time, not on each poll.
 QUALITY_REWRITE_S = 60.0
 # Pages returned to the OS per automatic maintenance pass (64 MB).
@@ -2800,10 +2801,15 @@ class HistoryDB:
 
     # ── Flush ──────────────────────────────────────────────────────
 
+    def running_writes(self) -> list[dict[str, Any]]:
+        """Named writes that run now in this process: ``{"name", "age_s"}`` each, oldest first."""
+        now = time.monotonic()
+        rows = [{"name": name, "age_s": round(now - started, 1)} for stack in list(self._writers.values()) for name, started in list(stack)]
+        return sorted(rows, key=lambda r: -r["age_s"])
+
     def active_writes(self) -> list[str]:
         """Named writes that run now in this process, each with its age. Empty when none does."""
-        now = time.monotonic()
-        return [f"{name} ({now - started:.0f} s)" for stack in list(self._writers.values()) for name, started in list(stack)]
+        return [f"{w['name']} ({w['age_s']:.0f} s)" for w in self.running_writes()]
 
     @_named_write("flush")
     def flush(self) -> int:
@@ -2827,6 +2833,12 @@ class HistoryDB:
 
         total = 0
         conn = self._conn()
+        # Each table is its own commit, and the row-by-row tables commit every
+        # FLUSH_CHUNK_ROWS. A health record or a data-quality note from another
+        # thread waited behind one transaction of a whole import before; now it
+        # gets in between chunks. On an error only what is not committed is kept.
+        committed: set[str] = set()
+        req_done = ti_done = 0
         try:
             if ss_buf:
                 conn.executemany(
@@ -2862,6 +2874,8 @@ class HistoryDB:
                     ],
                 )
                 total += len(ss_buf)
+                conn.commit()
+            committed.add("ss")
 
             if ps_buf:
                 # Apply dedup: only write if cpu or mem changed significantly
@@ -2893,6 +2907,8 @@ class HistoryDB:
                         ],
                     )
                     total += len(filtered)
+                    conn.commit()
+            committed.add("ps")
 
             if e_buf:
                 rows = _assign_seq(
@@ -2907,6 +2923,8 @@ class HistoryDB:
                     rows,
                 )
                 total += len(e_buf)
+                conn.commit()
+            committed.add("e")
 
             if m_buf:
                 rows = _assign_seq(
@@ -2921,10 +2939,15 @@ class HistoryDB:
                     rows,
                 )
                 total += len(m_buf)
+                conn.commit()
+            committed.add("m")
 
             if req_buf:
                 covered = _sessions_read_from_transcripts(conn, req_buf)
-                for r in req_buf:
+                for i, r in enumerate(req_buf):
+                    if i and i % FLUSH_CHUNK_ROWS == 0:
+                        conn.commit()
+                        req_done = i
                     # The transcript row for the same call is already stored.
                     if r.source in _SUPERSEDED_REQUEST_SOURCES_ALWAYS and r.session_id in covered:
                         continue
@@ -2982,9 +3005,14 @@ class HistoryDB:
                         ),
                     )
                 total += len(req_buf)
+                conn.commit()
+            committed.add("req")
 
             if ti_buf:
-                for r in ti_buf:
+                for i, r in enumerate(ti_buf):
+                    if i and i % FLUSH_CHUNK_ROWS == 0:
+                        conn.commit()
+                        ti_done = i
                     # Dedup precedence:
                     # 1. source_event_id (e.g. hook tool_use_id): unique per
                     #    invocation, so legitimate identical repeats persist
@@ -3048,8 +3076,8 @@ class HistoryDB:
                         ),
                     )
                 total += len(ti_buf)
-
-            conn.commit()
+                conn.commit()
+            committed.add("ti")
         except sqlite3.Error as exc:
             log.warning("DB flush error: %s — rolling back and re-buffering batch", exc)
             self._flush_failed_with = exc
@@ -3065,12 +3093,18 @@ class HistoryDB:
             # INSERT OR REPLACE/IGNORE so the retry is idempotent.
             dropped = 0
             with self._lock:
-                self._system_snapshot_buf[:0] = ss_buf
-                self._process_snapshot_buf[:0] = ps_buf
-                self._events_buf[:0] = e_buf
-                self._metrics_buf[:0] = m_buf
-                self._requests_buf[:0] = req_buf
-                self._tool_invocations_buf[:0] = ti_buf
+                if "ss" not in committed:
+                    self._system_snapshot_buf[:0] = ss_buf
+                if "ps" not in committed:
+                    self._process_snapshot_buf[:0] = ps_buf
+                if "e" not in committed:
+                    self._events_buf[:0] = e_buf
+                if "m" not in committed:
+                    self._metrics_buf[:0] = m_buf
+                if "req" not in committed:
+                    self._requests_buf[:0] = req_buf[req_done:]
+                if "ti" not in committed:
+                    self._tool_invocations_buf[:0] = ti_buf[ti_done:]
                 # Bounded retry: drop-oldest beyond the cap per buffer.
                 for buf in (
                     self._system_snapshot_buf,
@@ -3097,7 +3131,10 @@ class HistoryDB:
                     )
                 except Exception as dq_exc:  # noqa: BLE001 — same DB may still be failing
                     log.debug("Data-quality write error for storage-flush: %s", dq_exc)
-            total = 0
+            if "req" not in committed:
+                total += req_done
+            if "ti" not in committed:
+                total += ti_done
 
         return total
 

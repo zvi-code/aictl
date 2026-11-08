@@ -898,6 +898,21 @@ class TestSections:
         assert _board(db)["capture_mode"] == db.capture
 
 
+class TestRunningWrites:
+    def test_the_machine_route_names_the_writes_that_run_now(self, db):
+        import threading
+        from types import SimpleNamespace
+
+        db._writers[threading.get_ident() + 1] = [("flush", time.monotonic() - 249.0)]
+        try:
+            writes = board_api.compute_machine(db, SimpleNamespace(snapshot=None))["pipeline"]["self"]["writes"]
+        finally:
+            db._writers.clear()
+        assert [w["name"] for w in writes] == ["flush"]
+        assert writes[0]["age_s"] == pytest.approx(249.0, abs=2.0)
+        assert board_api.compute_machine(db, SimpleNamespace(snapshot=None))["pipeline"]["self"]["writes"] == []
+
+
 class TestSelfMemo:
     def test_a_failure_is_not_remembered(self, db, monkeypatch):
         def broken():

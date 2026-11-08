@@ -836,6 +836,9 @@ function panelSources(ctx) {
   };
 }
 
+/** A write to the history that runs this long is shown as a warning. */
+export const LONG_WRITE_S = 60;
+
 function panelSelf(ctx) {
   const s = ctx.data.self || {};
   const kids = (s.children || []).map(c => ({ name: c.name, cpu: c.cpu_percent, rss: c.memory_rss_bytes }));
@@ -852,8 +855,11 @@ function panelSelf(ctx) {
   const otel = pipe.otel_receiver;
   const stream = pipe.stream || {};
   const tables = Object.entries(me.db_tables || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => k + ': ' + fmtN(v)).join('\n');
+  const writes = me.writes || [];
+  const longest = writes.reduce((m, w) => Math.max(m, w.age_s || 0), 0);
   const pipeline = [
     { label: 'Uptime', value: fmtDur(me.uptime_s), title: 'Since the aictl daemon started' + (me.pid ? ', PID ' + me.pid : '') },
+    { label: 'Writing', value: writes.length ? writes.map(w => w.name + ', ' + fmtAge(w.age_s)).join('; ') : 'Nothing', cls: longest >= LONG_WRITE_S ? 'warn' : null, title: writes.length ? 'Writes to the history that run now in the aictl daemon, with how long each has run. Another write waits for a running one; the board still reads.' : 'No write to the history runs now' },
     { label: 'Threads', value: me.threads == null ? NA : String(me.threads) },
     { label: 'Rows', value: fmtN(me.db_rows), title: tables ? 'Rows in each table, read once a minute:\n' + tables : 'Not read yet' },
     { label: 'Viewers', value: stream.connected_clients == null ? NA : String(stream.connected_clients), title: 'Browser windows that follow the live stream' },
@@ -876,7 +882,8 @@ function panelSelf(ctx) {
   }
   return {
     sub: 'What this monitoring costs, and how its data pipeline runs',
-    banner: sink?.flood ? 'Data loss: flood protection is on and drops samples. ' + fmtN(sink.dropped) + ' lost so far.' : null,
+    banner: sink?.flood ? 'Data loss: flood protection is on and drops samples. ' + fmtN(sink.dropped) + ' lost so far.'
+      : longest >= LONG_WRITE_S ? 'A write to the history (' + writes[0].name + ') has run for ' + fmtAge(longest) + '. New rows and health records wait for it; the board still reads. A slow disk, or a virus scanner reading the history file on every write, makes writes this slow.' : null,
     stats: [
       { label: 'CPU', value: fmtCpu(s.cpu_percent), title: 'The aictl daemon and its helper processes together. 100% is one full core' }, { label: 'RAM', value: fmtBytes(s.memory_rss_bytes) },
       { label: 'History', value: fmtBytes(s.history_live_bytes ?? s.history_bytes), sub: s.history_limit_bytes ? 'Limit ' + fmtBytes(s.history_limit_bytes) : '', title: 'Live data in the history store' },

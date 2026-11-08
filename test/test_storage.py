@@ -1980,3 +1980,58 @@ def test_a_write_in_progress_can_be_named(tmp_path):
     db.compact()
     assert any("compact" in text for found in seen for text in found)
     assert db.active_writes() == []
+
+
+class TestFlushCommitsInChunks:
+    """One flush is several commits, so a failure keeps what was committed and other writers get in between."""
+
+    class _FailsOn:
+        """A connection proxy that fails the Nth insert into one table."""
+
+        def __init__(self, conn, table, nth):
+            self._conn, self._table, self._nth, self.seen = conn, table, nth, 0
+
+        def execute(self, sql, *args):
+            if f"INTO {self._table}" in sql:
+                self.seen += 1
+                if self.seen == self._nth:
+                    raise __import__("sqlite3").OperationalError("database is locked")
+            return self._conn.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    def test_a_failed_table_keeps_the_tables_committed_before_it(self, tmp_path, monkeypatch):
+        d = HistoryDB(db_path=tmp_path / "chunks.db", flush_interval=3600)
+        try:
+            real = d._conn()
+            d.append_samples([Metric(ts=float(i), metric=f"m{i}", value=float(i)) for i in range(3)])
+            for i in range(4):
+                d.append_tool_invocation(ToolInvocationRow(ts=100.0 + i, session_id="s", tool_name=f"t{i}", source="test"))
+            monkeypatch.setattr(d, "_conn", lambda: self._FailsOn(real, "tool_invocations", 3))
+            assert d.flush() == 3  # the metrics; the tool rows failed inside their first chunk
+            assert real.execute("SELECT COUNT(*) FROM metrics").fetchone()[0] == 3
+            assert d._metrics_buf == []
+            # The chunk that failed is kept whole; its rows are written again by the next flush, once.
+            assert [r.tool_name for r in d._tool_invocations_buf] == ["t0", "t1", "t2", "t3"]
+            monkeypatch.setattr(d, "_conn", lambda: real)
+            assert d.flush() == 4
+            assert real.execute("SELECT COUNT(*) FROM tool_invocations").fetchone()[0] == 4
+        finally:
+            d.close()
+
+    def test_a_row_by_row_table_commits_every_chunk(self, tmp_path, monkeypatch):
+        import aictl.storage as storage
+
+        monkeypatch.setattr(storage, "FLUSH_CHUNK_ROWS", 2)
+        d = HistoryDB(db_path=tmp_path / "chunks2.db", flush_interval=3600)
+        try:
+            real = d._conn()
+            for i in range(5):
+                d.append_tool_invocation(ToolInvocationRow(ts=100.0 + i, session_id="s", tool_name=f"t{i}", source="test"))
+            monkeypatch.setattr(d, "_conn", lambda: self._FailsOn(real, "tool_invocations", 5))
+            assert d.flush() == 4
+            assert real.execute("SELECT COUNT(*) FROM tool_invocations").fetchone()[0] == 4
+            assert [r.tool_name for r in d._tool_invocations_buf] == ["t4"]
+        finally:
+            d.close()

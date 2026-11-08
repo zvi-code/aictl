@@ -121,7 +121,7 @@ export function machineFixture(overrides = {}) {
       { kind: 'subagent_ram', severity: 'crit', text: 'Subagents use 2.7 GB of RAM, more than 2 GB', detail: '3 subagent processes.', pids: [1, 2, 3], pid: null, tool: null, action: null },
     ],
     pipeline: {
-      self: { pid: 77, cpu: 0.3, rss: 96_000_000, uptime_s: 7200, threads: 14, db_bytes: 640_000_000, db_rows: 1_200_000, db_tables: { requests: 1_000_000, events: 200_000 } },
+      self: { pid: 77, cpu: 0.3, rss: 96_000_000, uptime_s: 7200, threads: 14, db_bytes: 640_000_000, db_rows: 1_200_000, db_tables: { requests: 1_000_000, events: 200_000 }, writes: [] },
       sink: { emitted: 5000, flushed: 4900, dropped: 0, flood: false, flood_drops: 0, buffered: 3, tracked: 40 },
       otel_receiver: { metrics_received: 10, events_received: 20, api_calls_total: 30, api_errors_total: 1, errors: 0, dropped: 0, last_receive_at: NOW - 30, active: true },
       ingesters: [{ name: 'copilot-session-store', status: 'ok', last_ok: NOW - 60, last_poll: NOW - 60, error: null, rows: 4, rows_total: 900, source: '~/.copilot/session-store.db' }, { name: 'cursor', status: 'failed', last_ok: NOW - 4000, last_poll: NOW - 20, error: 'disk gone', rows: 0, rows_total: null, source: null }],
