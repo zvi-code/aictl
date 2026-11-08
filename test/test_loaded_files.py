@@ -181,7 +181,7 @@ def test_a_v34_store_gets_the_table_and_a_rerun_changes_nothing(tmp_path):
     try:
         conn = store._conn()
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'session_loaded_files'").fetchone()
-        assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == CURRENT_VERSION == 35
+        assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == CURRENT_VERSION >= 35
         m035_session_loaded_files.apply(conn)
         cols = [r[1] for r in conn.execute("PRAGMA table_info(session_loaded_files)")]
         assert cols == ["session_id", "path", "how", "detail", "ts", "tool", "agent_id"]

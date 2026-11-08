@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from ..tools import TOOL_LABELS
+from ..utils import BYTES_PER_TOKEN
 
 # Paths kept per session. A build under the workspace can change tens of thousands of
 # files, and every path would travel in every snapshot. ``file_events`` still counts them all.
@@ -262,7 +263,6 @@ def _tool_has_session_files(tool: str) -> bool:
 
 # ─── Token estimation constants ────────────────────────────────
 
-CHARS_PER_TOKEN = 4  # ~4 characters per BPE token (approximate)
 NETWORK_CONTENT_RATIO = 0.7  # ~70% of HTTP bytes are actual content (rest is framing)
 SESSION_FILE_INPUT_RATIO = 0.6  # ~60% of session file bytes are prompt/input
 SESSION_FILE_OUTPUT_RATIO = 0.4  # ~40% attributed to model output
@@ -315,15 +315,15 @@ def estimate_tokens(session: SessionState) -> TokenEstimate:
 
     if session.state_bytes_written > 0 and _tool_has_session_files(session.tool):
         return TokenEstimate(
-            input_tokens=int((session.state_bytes_written * SESSION_FILE_INPUT_RATIO) / CHARS_PER_TOKEN),
-            output_tokens=int((session.inbound_bytes * SESSION_FILE_OUTPUT_RATIO) / CHARS_PER_TOKEN),
+            input_tokens=int((session.state_bytes_written * SESSION_FILE_INPUT_RATIO) / BYTES_PER_TOKEN),
+            output_tokens=int((session.inbound_bytes * SESSION_FILE_OUTPUT_RATIO) / BYTES_PER_TOKEN),
             confidence=CONFIDENCE_SESSION_FILES,
             source="session-files",
         )
 
     return TokenEstimate(
-        input_tokens=int((session.outbound_bytes * NETWORK_CONTENT_RATIO) / CHARS_PER_TOKEN),
-        output_tokens=int((session.inbound_bytes * NETWORK_CONTENT_RATIO) / CHARS_PER_TOKEN),
+        input_tokens=int((session.outbound_bytes * NETWORK_CONTENT_RATIO) / BYTES_PER_TOKEN),
+        output_tokens=int((session.inbound_bytes * NETWORK_CONTENT_RATIO) / BYTES_PER_TOKEN),
         confidence=CONFIDENCE_NETWORK if (session.outbound_bytes or session.inbound_bytes) else CONFIDENCE_NO_DATA,
         source="network-inference",
     )

@@ -584,3 +584,20 @@ button.bd-tlbar:hover{filter:brightness(1.15)}
 .bd-ocount b{font-weight:500;font-size:14px;color:var(--ink)}
 .bd-ocount b.bd-na{color:var(--ink3);font-weight:400}
 .bd-ocount small{color:var(--ink3);font-size:11px;min-height:14px}
+/* What fills the context: one row per kind, items under a row, free space last. */
+.bd-bkbar{margin:6px 0 2px!important}
+.bd-bk{display:flex;flex-direction:column;margin-top:4px}
+.bd-bkrow{display:grid;grid-template-columns:minmax(0,1fr) 70px 46px;align-items:center;column-gap:8px;min-height:var(--row);border-top:1px solid var(--line)}
+.bd-bkhead{display:flex;align-items:center;gap:7px;min-width:0;text-align:left;color:var(--ink)}
+button.bd-bkhead:hover .bd-bkname{text-decoration:underline}
+.bd-bkhead small{color:var(--ink3);font-size:11px}
+.bd-bkname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bd-bkv{text-align:right;font-variant-numeric:tabular-nums}
+.bd-bks{text-align:right;color:var(--ink3);font-size:11.5px;font-variant-numeric:tabular-nums}
+.bd-bkfree .bd-bkname,.bd-bkfree .bd-bkv{color:var(--ink3)}
+.bd-bkitems{grid-column:1 / -1;padding:0 0 4px 15px}
+.bd-bkitem{display:grid;grid-template-columns:minmax(0,1fr) 70px 46px;column-gap:8px;color:var(--ink2);font-size:12px;line-height:20px}
+.bd-bkitem span:first-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bd-bkview{display:inline-flex;gap:2px;margin:0 0 6px;padding:2px;border-radius:5px;background:var(--sel)}
+.bd-bkview button{padding:2px 8px;border-radius:4px;font-size:12px;color:var(--ink2)}
+.bd-bkview button[aria-pressed=true]{background:var(--surface);color:var(--ink)}

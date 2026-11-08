@@ -59,6 +59,11 @@ export const fmtMem = mb => {
   if (isNil(mb)) return NA;
   return mb >= 1000 ? (mb / 1000).toFixed(1) + ' GB' : Math.round(mb) + ' MB';
 };
+// The one estimate of tokens from text, as aictl.utils.estimate_tokens on the server: UTF-8 bytes / 4, rounded up.
+export const BYTES_PER_TOKEN = 4;
+export const estTokensFromSize = n => (n == null ? null : n > 0 ? Math.ceil(n / BYTES_PER_TOKEN) : 0);
+export const estTokens = text => (text == null ? null : estTokensFromSize(new TextEncoder().encode(String(text)).length));
+
 export const fmtBytes = b => {
   if (isNil(b)) return NA;
   if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB';

@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..ingesters import loaded_files_backfill, tool_size_backfill
+from ..ingesters import context_items_backfill, loaded_files_backfill, tool_size_backfill
 from ..ingesters.copilot_session_store import (
     POLL_INTERVAL_S as COPILOT_POLL_INTERVAL_S,
 )
@@ -214,6 +214,10 @@ def _backfill_tool_sizes(db) -> None:
         loaded_files_backfill.run(db)
     except Exception:  # noqa: BLE001 - the backfill must never stop the server
         log.exception("Loaded files backfill failed; it runs again on the next start")
+    try:
+        context_items_backfill.run(db)
+    except Exception:  # noqa: BLE001 - the backfill must never stop the server
+        log.exception("Context items backfill failed; it runs again on the next start")
 
 
 def _record_poll_failure(ingester, name: str, exc: Exception) -> None:

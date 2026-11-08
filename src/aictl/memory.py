@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .platforms import IS_WINDOWS
+from .utils import estimate_tokens
 
 log = logging.getLogger(__name__)
 
@@ -340,7 +341,7 @@ def get_summary(root: Path) -> dict | None:
                 {
                     "file": f.name,
                     "lines": len([l for l in c.splitlines() if l.strip()]),
-                    "tokens": -(-len(c) // 4),
+                    "tokens": estimate_tokens(c),
                     "content": c,
                 }
             )

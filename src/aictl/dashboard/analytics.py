@@ -18,6 +18,7 @@ from ..data.model_pricing import PRICING_AS_OF, PRICING_SOURCES, context_window_
 from ..data.provenance import COPILOT_COST_REASON, USD_PER_AI_CREDIT, combine_cost_quality, combine_tokens_quality
 from ..ingesters.transcript_usage import local_day
 from ..tool_scope import is_selected, is_unattributed, normalize_selection, selection_block
+from ..utils import estimate_tokens_from_size
 
 logger = logging.getLogger(__name__)
 
@@ -435,7 +436,7 @@ def _compute_files(db, since: float, until: float, tools=None) -> dict:
         memory_timeline[path] = {
             "ts": ts_list,
             "size_bytes": cumulative,
-            "tokens": [c // 4 for c in cumulative],
+            "tokens": [estimate_tokens_from_size(c) for c in cumulative],
         }
 
     memory_events = []
@@ -448,7 +449,7 @@ def _compute_files(db, since: float, until: float, tools=None) -> dict:
                     "size_bytes": growth,
                     "prev_size": 0,
                     "delta": growth,
-                    "tokens": growth // 4,
+                    "tokens": estimate_tokens_from_size(growth),
                 }
             )
             if len(memory_events) >= 50:

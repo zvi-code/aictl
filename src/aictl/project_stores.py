@@ -76,6 +76,7 @@ PROJECT_TABLES = (
     "session_folders",
     "session_artifacts",
     "session_loaded_files",
+    "session_context_items",
     "events",
 )
 SHARED = "_shared"
@@ -1095,7 +1096,7 @@ class ProjectStores:
             return 0
         parts: dict[str, CallFacts] = {}
         # Rows that name a folder go first, so that their session is placed before the rest.
-        attrs = ("requests", "tools", "prompts", "skills", "file_writes", "agents", "context_events", "loaded_files")
+        attrs = ("requests", "tools", "prompts", "skills", "file_writes", "agents", "context_events", "loaded_files", "context_items")
         for attr in attrs:
             for r in getattr(facts, attr):
                 if getattr(r, "project_path", ""):
@@ -1110,7 +1111,8 @@ class ProjectStores:
                 written += db.write_call_facts(part)
             self._touch(
                 key,
-                [*part.requests, *part.tools, *part.prompts, *part.skills, *part.file_writes, *part.context_events, *part.loaded_files],
+                [*part.requests, *part.tools, *part.prompts, *part.skills, *part.file_writes, *part.context_events, *part.loaded_files,
+                 *part.context_items],
             )
         return written
 

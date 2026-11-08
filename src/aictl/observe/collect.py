@@ -18,6 +18,7 @@ from typing import Any
 
 from ..ingesters._common import coerce_ts, open_readonly
 from ..platforms import config_path, copilot_global_dir, copilot_session_dir, vscode_user_dir
+from ..utils import estimate_tokens_from_size
 from .copilot_events import EventsFile, EventsParse, clean
 from .procs import ProcTable, assign_shares, snapshot
 
@@ -121,7 +122,7 @@ def _desktop_rows(ids: list[str]) -> dict[str, dict[str, Any]]:
 
 
 def context_files(cwd: str, git_root: str) -> list[dict[str, Any]]:
-    """Instruction and memory files in effect, by size; tokens are bytes/4 estimates."""
+    """Instruction and memory files in effect, by size; tokens are estimates at 4 bytes per token."""
     candidates: list[tuple[str, Path]] = [("instructions", copilot_global_dir() / "copilot-instructions.md")]
     if cwd:
         folder = Path(cwd)
@@ -147,7 +148,7 @@ def context_files(cwd: str, git_root: str) -> list[dict[str, Any]]:
         try:
             if path.is_file():
                 size = path.stat().st_size
-                out.append({"kind": kind, "path": clean(path, 240), "bytes": size, "est_tokens": size // 4})
+                out.append({"kind": kind, "path": clean(path, 240), "bytes": size, "est_tokens": estimate_tokens_from_size(size)})
         except OSError:
             continue
     return out
@@ -317,7 +318,7 @@ def _finish_session(s: dict[str, Any], now: float, git_root: str = "") -> None:
     ctx["files"] = context_files(s["cwd"] or "", git_root)
     ctx["total_bytes"] = sum(f["bytes"] for f in ctx["files"])
     ctx["est_tokens"] = sum(f["est_tokens"] for f in ctx["files"])
-    ctx["note"] = "file tokens are bytes/4 estimates; Copilot cloud memory is not readable locally"
+    ctx["note"] = "file tokens are estimates at 4 bytes per token; Copilot cloud memory is not readable locally"
     if ctx["current_tokens"] is None:
         s["na"]["context_tokens"] = "no context telemetry in this session's data"
 

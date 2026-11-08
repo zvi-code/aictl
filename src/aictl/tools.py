@@ -822,7 +822,7 @@ def batch_resolve_paths(
 from .fsutil import safe_glob, safe_iterdir, safe_rglob, safe_stat, warn_once
 from .platforms import CURRENT_PLATFORM, IS_MACOS, IS_WINDOWS
 from .tool_scope import is_selected
-from .utils import estimate_tokens, norm_path
+from .utils import estimate_tokens, estimate_tokens_from_size, norm_path
 
 # ─── Data classes ─────────────────────────────────────────────────
 
@@ -936,8 +936,8 @@ def _file_tokens(path: Path, st: os.stat_result) -> int:
         return hit[2]
     if st.st_size >= _TOKEN_READ_LIMIT:
         # Too large to read on every discovery: the same estimate as for text
-        # (UTF-8 bytes / 4) taken from the size.
-        tokens = -(-st.st_size // 4)
+        # (4 UTF-8 bytes per token) taken from the size.
+        tokens = estimate_tokens_from_size(st.st_size)
         _token_cache_put(key, st, tokens)
         return tokens
     try:

@@ -39,6 +39,7 @@ from urllib.parse import unquote, urlparse
 
 from .platforms import IS_WINDOWS, claude_global_dir, config_dir, copilot_global_dir, vscode_user_dir
 from .tools import PRUNE_DIRS, _expand_home, _params_to_glob, get_registry
+from .utils import estimate_tokens_from_size
 
 try:
     import winreg
@@ -185,7 +186,7 @@ def _host_of(url: str) -> str:
 
 
 def _est_tokens(text_len: int) -> int:
-    return text_len // 4
+    return estimate_tokens_from_size(text_len)
 
 
 def _strip_jsonc(text: str) -> str:
@@ -2432,7 +2433,7 @@ def _unattributed(transcripts: list[dict], sources: list[Source], dynamic_tokens
         "builtin_allowance_tokens": allowance,
         "residual_tokens": residual,
         "estimate": True,
-        "method": "First request input and cache tokens, minus estimated inventory (chars/4), minus an allowance for the built-in prompt and tool list. Numeric session data only.",
+        "method": "First request input and cache tokens, minus estimated inventory (about 4 bytes per token), minus an allowance for the built-in prompt and tool list. Numeric session data only.",
     }
     if residual > 20_000:
         findings.append(
