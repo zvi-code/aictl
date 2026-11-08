@@ -731,8 +731,12 @@ class _Board:
 
     # ── Loading ────────────────────────────────────────────────
 
-    def load(self, base_memo: _BaseMemo | None = None, base_key: tuple | None = None) -> _Board:
-        """Read the window, then apply the filters. A change of filter reuses what was read."""
+    def load(self, base_memo: _BaseMemo | None = None, base_key: tuple | None = None, counts_only: bool = False) -> _Board:
+        """Read the window, then apply the filters. A change of filter reuses what was read.
+
+        *counts_only* leaves out the test runs, failures and loops: they change a row's
+        status, never its tokens, cost, tool calls or prompts.
+        """
         base = base_memo.get(base_key) if base_memo is not None else None
         if base is not None:
             for name in _BASE_ATTRS:
@@ -746,9 +750,10 @@ class _Board:
             self._resolve_sessions()
             self._price_cells()
             self._match_live()
-            self._load_tests()
-            self._load_failures()
-            self._load_loops()
+            if not counts_only:
+                self._load_tests()
+                self._load_failures()
+                self._load_loops()
             self._load_confirms()
             self._assign_status()
             if base_memo is not None:
@@ -3794,11 +3799,8 @@ def live_pids_of(db: Any, snapshot: Any, agent_id: str, now: float | None = None
     return sorted((board.live_by_sid.get(sid) or {}).get("pids", ()))
 
 
-@_in_session_scope("agent_id")
-def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None = None) -> tuple[int, dict]:
-    now = time.time() if now is None else now
-    conn = db._conn()
-    sid, agent = _resolve_agent(conn, agent_id)
+def _session_board(db: Any, conn: sqlite3.Connection, sid: str, snapshot: Any, now: float, counts_only: bool = False) -> _Board:
+    """The board of one session over its whole life, as the agent detail reads it."""
     first = conn.execute(
         "SELECT MIN(t) FROM (SELECT MIN(ts) t FROM requests WHERE session_id = ?"
         " UNION ALL SELECT MIN(ts) FROM tool_invocations WHERE session_id = ?"
@@ -3809,7 +3811,37 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
     if first and first < filters.until:
         filters = replace(filters, since=first)
     facts = _store_facts(conn, str(getattr(db, "_path", "memory")))
-    board = _Board(conn, filters, now, snapshot, only_session=sid, facts=facts).load()
+    return _Board(conn, filters, now, snapshot, only_session=sid, facts=facts).load(counts_only=counts_only)
+
+
+@_in_session_scope("sid")
+def session_numbers(db: Any, sid: str, now: float | None = None) -> dict | None:
+    """Tokens, cost, tool calls and prompts of a main agent, the same as its agent detail.
+
+    Read in the session's own read scope, so rows of a session that are in two stores
+    (a move that is not done) are all counted. None when the board has no such session.
+    """
+    now = time.time() if now is None else now
+    conn = db._conn()
+    board = _session_board(db, conn, sid, None, now, counts_only=True)
+    if sid not in board.scope:
+        return None
+    row = board._agent_row(sid, sid, "", [0] * SPARK_POINTS)
+    parts = [row.get(k) for k in ("input", "output", "cache_read", "cache_write")]
+    return {
+        "tokens": sum(int(v or 0) for v in parts) if any(v is not None for v in parts) else None,
+        "cost_usd": row["cost_usd"],
+        "tool_calls": row["tool_calls"],
+        "prompts": (row.get("msgs") or {}).get("user"),
+    }
+
+
+@_in_session_scope("agent_id")
+def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None = None) -> tuple[int, dict]:
+    now = time.time() if now is None else now
+    conn = db._conn()
+    sid, agent = _resolve_agent(conn, agent_id)
+    board = _session_board(db, conn, sid, snapshot, now)
     if sid not in board.scope:
         return 404, {"error": "No such agent"}
     root = agent == sid

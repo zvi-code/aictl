@@ -125,8 +125,12 @@ def _stat(path: str) -> tuple[bool, int | None, float | None]:
     return True, st.st_size, st.st_mtime
 
 
-def session_artifacts(conn: Any, sids: list[str], project: str) -> tuple[list[dict], int, int]:
-    """(artifacts newest first and capped, count of all, bytes of the existing ones)."""
+def _artifact_entries(conn: Any, sids: list[str], project: str) -> tuple[dict[str, dict], dict[str, int], int, int]:
+    """(artifacts by path, indexed size by path, count of all, bytes of the folder index).
+
+    The one rule for what an artifact is: a file of the session folder, or a file the
+    session wrote outside its project. The agent detail and the search both count with it.
+    """
     marks = json.dumps(sorted(set(sids)))
     in_sids = "session_id IN (SELECT value FROM json_each(?))"
     entries: dict[str, dict] = {}
@@ -151,6 +155,17 @@ def session_artifacts(conn: Any, sids: list[str], project: str) -> tuple[list[di
         entry["first_ts"] = first if entry["first_ts"] is None else min(entry["first_ts"], first)
         entry["last_ts"] = last if entry["last_ts"] is None else max(entry["last_ts"], last)
     total = max(files_total, indexed) + (len(entries) - indexed)
+    return entries, stored, total, bytes_total
+
+
+def artifact_count(conn: Any, sids: list[str], project: str) -> int:
+    """The count of all artifacts of a session, without a stat of any file."""
+    return _artifact_entries(conn, sids, project)[2]
+
+
+def session_artifacts(conn: Any, sids: list[str], project: str) -> tuple[list[dict], int, int]:
+    """(artifacts newest first and capped, count of all, bytes of the existing ones)."""
+    entries, stored, total, bytes_total = _artifact_entries(conn, sids, project)
     ordered = sorted(entries.items(), key=lambda kv: -max(kv[1]["_mtime"] or 0.0, kv[1]["last_ts"] or 0.0))
     listed = ordered[:MAX_DETAIL_ROWS]
     out = []
@@ -352,9 +367,14 @@ def session_commits(db: Any, session: dict, sid: str) -> tuple[list[dict], str]:
     return out, note
 
 
+def _artifact_sids(sid: str, session: dict) -> list[str]:
+    """The ids whose artifacts are a session's: its own, its stored id and its tool UUID."""
+    return sorted(s for s in {sid, str(session.get("session_id") or ""), _session_uuid(sid) or ""} if s)
+
+
 def record_section(db: Any, conn: Any, session: dict, sid: str, project: str) -> dict:
     """The artifacts and commits fields of the agent detail."""
-    sids = [s for s in {sid, str(session.get("session_id") or ""), _session_uuid(sid) or ""} if s]
+    sids = _artifact_sids(sid, session)
     artifacts, total, size = session_artifacts(conn, sids, project)
     commits, note = session_commits(db, session, sid)
     return {"artifacts": artifacts, "artifacts_total": total, "artifacts_bytes": size, "commits": commits, "prs_note": note}
@@ -487,6 +507,7 @@ def search_sessions(
         page = {key: _representative(key, groups[key]) for key in page_keys}
         members = [sid for key in page_keys for sid in groups[key]]
         rows = _page_rows(conns, page, members, groups)
+    _add_numbers(db, rows)
     out = []
     for key in page_keys:
         row = rows.get(page[key])
@@ -516,35 +537,19 @@ def _match_of(title: str, found: list[tuple[int, str]], q: str) -> tuple[str, st
 
 
 def _page_rows(conns: list[Any], page: dict[str, str], members: list[str], groups: dict[str, list[str]]) -> dict[str, dict]:
-    """The shown fields of the sessions of one page, read from every store."""
+    """The listing fields of the sessions of one page: tool, title, project, start and end."""
     marks = json.dumps(sorted(set(members)))
     in_sids = "session_id IN (SELECT value FROM json_each(?))"
     base: dict[str, dict] = {}
-    usage: dict[str, tuple] = {}
     first_prompt: dict[str, tuple[float, str]] = {}
-    prompts: dict[str, int] = {}
-    folder_files: dict[str, int] = {}
-    folders: dict[str, str] = {}
-    writes: dict[str, set[str]] = {}
-    commits: dict[str, int] = {}
     for conn in conns:
-        for sid, tool, project, st, en, tokens, cost, calls in _rows(
-            conn,
-            "SELECT session_id, tool, project_path, started_at, ended_at,"
-            " COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_creation_tokens, 0),"
-            f" cost_usd, tool_call_count FROM sessions WHERE {in_sids}",
-            (marks,),
+        for sid, tool, project, st, en in _rows(
+            conn, f"SELECT session_id, tool, project_path, started_at, ended_at FROM sessions WHERE {in_sids}", (marks,)
         ):
             prior = base.get(sid)
-            if prior is None or (tokens or 0) > prior["tokens"]:
-                base[sid] = {"tool": tool or "", "project": project or "", "started_at": st, "ended_at": en, "tokens": tokens or 0, "cost_usd": cost, "tool_calls": calls or 0}
-        for sid, tokens, cost, calls in _rows(
-            conn,
-            "SELECT session_id, COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0)"
-            f" + COALESCE(cache_creation_tokens, 0), cost_usd, tool_call_count FROM session_usage WHERE {in_sids}",
-            (marks,),
-        ):
-            usage[sid] = (tokens or 0, cost, calls or 0)
+            # A session in two stores while it moves: the row that names a project wins.
+            if prior is None or (project and not prior["project"]):
+                base[sid] = {"tool": tool or "", "project": project or "", "started_at": st, "ended_at": en}
         for sid, text, ts in _rows(
             conn,
             f"SELECT session_id, text, MIN(ts) FROM session_prompts WHERE {in_sids} AND agent_id = '' AND text != '' GROUP BY session_id",
@@ -552,40 +557,19 @@ def _page_rows(conns: list[Any], page: dict[str, str], members: list[str], group
         ):
             if sid not in first_prompt or (ts or 0.0) < first_prompt[sid][0]:
                 first_prompt[sid] = (ts or 0.0, text)
-        for sid, n in _rows(conn, f"SELECT session_id, COUNT(*) FROM session_prompts WHERE {in_sids} AND agent_id = '' GROUP BY session_id", (marks,)):
-            prompts[sid] = prompts.get(sid, 0) + int(n)
-        for sid, n, folder in _rows(conn, f"SELECT session_id, files_total, folder FROM session_folders WHERE {in_sids}", (marks,)):
-            folder_files[sid] = max(folder_files.get(sid, 0), int(n or 0))
-            folders[sid] = folder or ""
-        for sid, path in _rows(conn, f"SELECT DISTINCT session_id, path FROM file_write_events WHERE {in_sids}", (marks,)):
-            writes.setdefault(sid, set()).add(path)
-        for sid, n in _rows(conn, f"SELECT session_id, COUNT(*) FROM session_commits WHERE {in_sids} GROUP BY session_id", (marks,)):
-            commits[sid] = commits.get(sid, 0) + int(n)
     out: dict[str, dict] = {}
-    by_rep = {rep: key for key, rep in page.items()}
-    for rep, key in by_rep.items():
+    for key, rep in page.items():
         sids = groups[key]
         known = [base[s] for s in sids if s in base]
         if not known:
             continue
         head = base.get(rep) or known[0]
         project = head["project"] or next((k["project"] for k in known if k["project"]), "")
-        tokens, cost, calls = head["tokens"], head["cost_usd"], head["tool_calls"]
-        exact = [usage[s] for s in sids if s in usage]
-        if exact:
-            tokens, cost, calls = max(tokens, exact[0][0]), exact[0][1] if exact[0][1] is not None else cost, max(calls, exact[0][2])
         texts = sorted(first_prompt[s] for s in sids if s in first_prompt)
         if texts:
             title = _one_line(texts[0][1], TITLE_CHARS)
         else:
             title = " · ".join(p for p in (_label(head["tool"]), _basename(project)) if p) or _short(rep)
-        own = [folders[s] for s in sids if folders.get(s)]
-        written = {
-            p
-            for s in sids
-            for p in writes.get(s, ())
-            if p and os.path.isabs(p) and not _under(p, project) and not any(_under(p, f) for f in own)
-        }
         ended = [k["ended_at"] for k in known if k["ended_at"]]
         out[rep] = {
             "id": rep,
@@ -594,11 +578,39 @@ def _page_rows(conns: list[Any], page: dict[str, str], members: list[str], group
             "project": project,
             "started_at": min((k["started_at"] for k in known if k["started_at"]), default=None),
             "ended_at": max(ended) if ended and len(ended) == len(known) else None,
-            "tokens": int(tokens),
-            "cost_usd": round(float(cost), 6) if cost else None,
-            "tool_calls": int(calls),
-            "prompts": sum(prompts.get(s, 0) for s in sids),
-            "artifacts": max((folder_files.get(s, 0) for s in sids), default=0) + len(written),
-            "commits": sum(commits.get(s, 0) for s in sids),
+            "tokens": 0,
+            "cost_usd": None,
+            "tool_calls": 0,
+            "prompts": 0,
+            "artifacts": 0,
+            "commits": 0,
         }
     return out
+
+
+def _store_order(db: Any, sid: str) -> str:
+    find = getattr(db, "store_of_session", None)
+    return (find(sid) or "") if callable(find) else ""
+
+
+def _add_numbers(db: Any, rows: dict[str, dict]) -> None:
+    """Tokens, cost, tool calls, prompts, artifacts and commits, as the agent detail shows them.
+
+    Each session is read in its own read scope: one connection that sees every store
+    the session's rows are in, at one moment. Reading each store on its own misses the
+    rows of a session that moves between stores while the reads run.
+    """
+    from .board_api import read_scope, session_numbers
+
+    # Sessions of one store share a read connection.
+    for sid in sorted(rows, key=lambda s: (_store_order(db, s), s)):
+        row = rows[sid]
+        numbers = session_numbers(db, sid) or {}
+        for name in ("tokens", "tool_calls", "prompts"):
+            row[name] = int(numbers.get(name) or 0)
+        row["cost_usd"] = numbers.get("cost_usd")
+        with read_scope(db, session=sid):
+            conn = db._conn()
+            row["artifacts"] = artifact_count(conn, _artifact_sids(sid, {}), row["project"])
+            found = _rows(conn, "SELECT COUNT(*) FROM session_commits WHERE session_id = ?", (sid,))
+            row["commits"] = int(found[0][0]) if found else 0
