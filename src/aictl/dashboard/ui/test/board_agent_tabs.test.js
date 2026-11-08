@@ -211,6 +211,12 @@ describe('Flow tab', () => {
     await waitFor(() => expect(calls).toContain('/api/board/agent/flow?id=sess-1&limit=1500'));
   });
 
+  it('counts the older events in plain digits', async () => {
+    const big = { ...storeFlow, summary: { ...storeFlow.summary, event_count: 6200, omitted_events: 5700 } };
+    const { findByRole } = mount({ tab: 'flow', routes: { '/api/board/agent/flow': big } });
+    await findByRole('button', { name: 'Show 1,000 older events' });
+  });
+
   it('renders the summary and the events, and opens an event in place', async () => {
     const { findByRole, container, getByText } = mount({ tab: 'flow' });
     await findByRole('list', { name: 'Events, oldest first' });

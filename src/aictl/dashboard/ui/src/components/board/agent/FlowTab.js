@@ -133,7 +133,7 @@ export default function FlowTab({ a, st, ctx }) {
     <${FixedPanel} id="agfs" title="Summary" sub=${eventsText(data)}><${Stats} stats=${stats}/></${FixedPanel}>
     <${FixedPanel} id="agfl" title="Flow" sub=${omitted(data) ? 'Oldest first. The ' + fmtN(omitted(data)) + ' oldest events are left out; the summary counts them. Select an event to read it.' : 'Oldest first. Select an event to read it.'}>
       <div class="bd-ag-bar"><${Seg} label="Flow view" value=${mode} onPick=${pick} items=${[['timeline', 'Timeline'], ['swimlane', 'Swim-lane']]}/>
-        ${omitted(data) && limit < FLOW_EVENTS_MAX ? html`<button type="button" class="bd-btn" onClick=${() => setLimit(l => Math.min(FLOW_EVENTS_MAX, l + FLOW_EVENTS_STEP))}>${'Show ' + fmtN(Math.min(omitted(data), FLOW_EVENTS_STEP)) + ' older events'}</button>` : null}
+        ${omitted(data) && limit < FLOW_EVENTS_MAX ? html`<button type="button" class="bd-btn" onClick=${() => setLimit(l => Math.min(FLOW_EVENTS_MAX, l + FLOW_EVENTS_STEP))}>${'Show ' + Math.min(omitted(data), FLOW_EVENTS_STEP).toLocaleString('en-US') + ' older events'}</button>` : null}
         ${omitted(data) && limit >= FLOW_EVENTS_MAX ? html`<span class="bd-ag-dim">${'The ' + fmtN(omitted(data)) + ' oldest events stay out; the summary counts them.'}</span>` : null}
       </div>
       ${!m.events.length ? html`<div class="bd-empty">No flow data for this session: aictl has no prompt, model call or tool call of it, and no hook or OpenTelemetry event.</div>`
