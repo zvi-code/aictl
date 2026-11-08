@@ -1,10 +1,11 @@
 // By tool: the tools on the left, one tool's settings as a table in the middle.
 import { html } from 'htm/preact';
 import { baseName } from '../../utils/paths.js';
-import { commonModel, scopeLabel } from './model.js';
+import { commonModel, plainValue, scopeLabel } from './model.js';
 import { Value, ScopeChip, LockGlyph } from './Value.js';
 import { Swatch, RiskDot, SetIn, NavHead, UndocumentedChip } from './parts.js';
 import { ToolAgentsTable } from './Agents.js';
+import { numeric, useGrid, useShared } from './tableGrid.js';
 import { derivePermissions } from './permissions.js';
 import { ToolPermissionMatrix } from './PermissionMatrix.js';
 import { HookStatusLine, hookStatusOf } from './HookStatus.js';
@@ -122,20 +123,30 @@ function SectionExtra({ children, section }) {
   return html`<tr class="st-extra" data-extra=${section}><td colspan="5">${children}</td></tr>`;
 }
 
-function GenericTable({ w, sections, scopes, extras = {} }) {
-  return html`<table class="st-table">
-    <thead><tr>
-      <th scope="col" class="st-c-set">Setting</th><th scope="col" class="st-c-val">Value</th>
-      <th scope="col" class="st-c-scope">Scope</th><th scope="col" class="st-c-src">Set in</th>
-      <th scope="col">What it does</th>
-    </tr></thead>
+const valueOf = r => (typeof r.value === 'number' ? r.value : (r.value == null || r.value === '' ? undefined : plainValue(r.value)));
+
+function settingCols(rows, scopes) {
+  return [
+    { k: 'setting', l: 'Setting', cls: 'st-c-set', get: r => r.label },
+    { k: 'value', l: 'Value', cls: 'st-c-val', n: numeric(rows, valueOf), get: valueOf },
+    { k: 'scope', l: 'Scope', cls: 'st-c-scope', get: r => (r.scope ? scopeLabel(r.scope, scopes) : undefined) },
+    { k: 'source', l: 'Set in', cls: 'st-c-src', get: r => r.source },
+    { k: 'what', l: 'What it does', get: r => r.tip },
+  ];
+}
+
+function GenericTable({ w, sections, scopes, shared, extras = {} }) {
+  const cols = settingCols(sections.flatMap(s => s.shown), scopes);
+  const grid = useGrid('settings.tool', cols, shared);
+  return html`<table class=${'st-table ' + grid.tableProps.class} style=${grid.tableProps.style}>
+    <thead><tr>${cols.map(grid.th)}</tr></thead>
     ${sections.map(s => {
       const k = s.shown.filter(r => r.risky).length;
       return html`<tbody key=${s.id} data-section=${s.id}>
         <tr class="st-group"><th scope="colgroup" colspan="5">${s.title}
           <span class="st-group__meta">${s.shown.length}${k ? html` · <span class="st-red">${k} risky</span>` : ''}${s.hidden ? html` · <span class="st-unsetn">+${s.hidden} unset</span>` : ''}</span></th></tr>
         ${extras[s.id] && html`<${SectionExtra} section=${s.id}>${extras[s.id]}</${SectionExtra}>`}
-        ${s.shown.map(r => html`<${SettingRow} key=${r.uid} row=${r} w=${w} scopes=${scopes}/>`)}
+        ${grid.order(s.shown).map(r => html`<${SettingRow} key=${r.uid} row=${r} w=${w} scopes=${scopes}/>`)}
       </tbody>`;
     })}
   </table>`;
@@ -155,6 +166,8 @@ function tableRuns(sections) {
 }
 
 export function ToolMain({ w, entry }) {
+  // The tables of one tool (the agents have their own) sort and resize as one.
+  const shared = useShared('settings.tool');
   const sections = entry.sections
     .filter(s => !w.st.sec || s.id === w.st.sec)
     .map(s => ({
@@ -186,14 +199,22 @@ export function ToolMain({ w, entry }) {
     <${ScopeStrip} w=${w} entry=${entry}/>
     ${sections.length ? tableRuns(sections).map((run, i) => (run.agents
       ? html`<${ToolAgentsTable} key=${'a' + i} w=${w} section=${run.sections[0]}/>`
-      : html`<${GenericTable} key=${'g' + i} w=${w} sections=${run.sections} scopes=${entry.scopes} extras=${extras}/>`))
+      : html`<${GenericTable} key=${'g' + i} w=${w} sections=${run.sections} scopes=${entry.scopes} shared=${shared} extras=${extras}/>`))
     : html`<p class="st-empty">${!total ? 'No settings were read for this tool.'
       : scopeName ? `No setting shown here is set at the ${scopeName} layer.`
       : 'No setting matches the search or the toggles.'}</p>`}
   </section>`;
 }
 
+const COLLECTOR_COLS = [
+  { k: 'collector', l: 'Collector', cls: 'st-c-set', get: c => c.name },
+  { k: 'mode', l: 'Mode', get: c => c.mode },
+  { k: 'status', l: 'Status', get: c => c.status },
+  { k: 'detail', l: 'Detail', get: c => c.detail },
+];
+
 export function AictlMain({ w, aictl }) {
+  const grid = useGrid('settings.collectors', COLLECTOR_COLS);
   const q = w.q.trim().toLowerCase();
   const collectors = aictl.collectors.filter(c => !q || [c.name, c.mode, c.status, c.detail].join(' ').toLowerCase().includes(q));
   const roots = aictl.roots.filter(p => !q || p.toLowerCase().includes(q));
@@ -203,11 +224,11 @@ export function AictlMain({ w, aictl }) {
       <h2 class="st-bar__title" id="st-main-title">aictl</h2>
       <span class="st-bar__sub">monitoring engine · ${aictl.collectors.length} collectors · ${aictl.roots.length} monitored roots</span>
     </div>
-    ${collectors.length > 0 && html`<table class="st-table">
-      <thead><tr><th scope="col" class="st-c-set">Collector</th><th scope="col">Mode</th><th scope="col">Status</th><th scope="col">Detail</th></tr></thead>
+    ${collectors.length > 0 && html`<table class=${'st-table ' + grid.tableProps.class} style=${grid.tableProps.style}>
+      <thead><tr>${COLLECTOR_COLS.map(grid.th)}</tr></thead>
       <tbody>
         <tr class="st-group"><th scope="colgroup" colspan="4">Collectors<span class="st-group__meta">${collectors.length}</span></th></tr>
-        ${collectors.map(c => html`<tr key=${c.name} class="st-row st-row--static">
+        ${grid.order(collectors).map(c => html`<tr key=${c.name} class="st-row st-row--static">
           <td class="st-c-set st-mono">${c.name}</td>
           <td class="st-mono">${c.mode || '—'}</td>
           <td><span class=${'st-status ' + (c.status === 'active' ? 'is-ok' : 'is-warn')}>${c.status}</span></td>

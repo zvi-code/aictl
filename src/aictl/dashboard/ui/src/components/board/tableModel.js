@@ -4,11 +4,23 @@
 
 const nullish = v => v === null || v === undefined;
 
+/** The value a row sorts by in column *k*: its sort value, else the text its cell shows. */
+export function sortValue(row, k) {
+  const v = row.sort?.[k];
+  if (v !== undefined) return v;
+  const cell = row.cells?.[k];
+  if (!cell) return null;
+  if (cell.sortV !== undefined) return cell.sortV;
+  const shown = typeof cell.v === 'number' || typeof cell.v === 'string' ? cell.v : (typeof cell.title === 'string' ? cell.title : null);
+  if (typeof shown === 'number') return shown;
+  return shown ? shown.toLowerCase() : null;
+}
+
 function compare(k, dir) {
   const sgn = dir === 'asc' ? 1 : -1;
   return (a, b) => {
-    const x = a.sort?.[k];
-    const y = b.sort?.[k];
+    const x = sortValue(a, k);
+    const y = sortValue(b, k);
     if (x === y) return 0;
     if (nullish(x)) return 1;
     if (nullish(y)) return -1;
@@ -73,7 +85,9 @@ export function tableModel(def, { sort = null, hidden = {}, showAll = false } = 
     cols: shown.map(c => {
       const on = !!sorted && sorted.k === c.k;
       const px = widthOf(c, on);
-      return { ...c, on, dir: on ? sorted.dir : null, width: px ? px + 'px' : 'auto' };
+      // A column of pictures only (a trend line) has nothing to sort by.
+      const sortable = !rows.length || rows.some(r => !nullish(sortValue(r, c.k)));
+      return { ...c, on, sortable, dir: on ? sorted.dir : null, width: px ? px + 'px' : 'auto' };
     }),
     rows: list,
     min,

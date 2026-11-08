@@ -4,6 +4,7 @@
 import { html } from 'htm/preact';
 import { CAPABILITIES } from './permissions.js';
 import { Swatch } from './parts.js';
+import { useGrid } from './tableGrid.js';
 
 function PermCell({ cell, onPick }) {
   const pick = cell.key && onPick ? () => onPick(cell.key) : null;
@@ -14,20 +15,24 @@ function PermCell({ cell, onPick }) {
   </td>`;
 }
 
-function Head({ first = '' }) {
-  return html`<thead><tr>
-    ${first && html`<th scope="col">${first}</th>`}
-    ${CAPABILITIES.map(c => html`<th scope="col" key=${c.id} data-cap=${c.id}>${c.label}</th>`)}
-  </tr></thead>`;
-}
+const capCols = (first, sortable) => [
+  ...(first ? [{ k: 'tool', l: first, get: sortable ? m => m.entry.label : undefined }] : []),
+  ...CAPABILITIES.map(c => ({
+    k: c.id, l: c.label, attrs: { 'data-cap': c.id },
+    get: sortable ? m => m.perms.cells.find(x => x.cap === c.id)?.text : undefined,
+  })),
+];
 
 /** One tool's matrix, shown above the rows of its Autonomy and safety section. */
 export function ToolPermissionMatrix({ w, entry, perms }) {
   const pick = key => w.select({ tool: entry.id, row: key });
+  // One row: there is nothing to order, so these headers only resize.
+  const cols = capCols('', false);
+  const g = useGrid('settings.perms', cols);
   return html`<div class="st-perms" data-testid="st-perms" data-tool=${entry.id}>
-    <table class="st-permtable">
+    <table class=${'st-permtable ' + g.tableProps.class} style=${g.tableProps.style}>
       <caption class="st-perms__cap">What the agent can do without asking</caption>
-      <${Head}/>
+      <thead><tr>${cols.map(g.th)}</tr></thead>
       <tbody><tr>${perms.cells.map(c => html`<${PermCell} key=${c.cap} cell=${c} onPick=${pick}/>`)}</tr></tbody>
     </table>
     ${perms.notes.map((n, i) => html`<p key=${i} class="st-hint st-perms__note">${n}</p>`)}
@@ -36,13 +41,15 @@ export function ToolPermissionMatrix({ w, entry, perms }) {
 
 /** Every tool's matrix, one line per tool, for By topic → Autonomy and safety. */
 export function TopicPermissionMatrix({ w, mats }) {
+  const cols = capCols('Tool', true);
+  const g = useGrid('settings.perms.all', cols);
   if (!mats.length) return null;
   return html`<div class="st-perms st-perms--topic" data-testid="st-perms-topic">
-    <div class="st-scroll"><table class="st-permtable">
+    <div class="st-scroll"><table class=${'st-permtable ' + g.tableProps.class} style=${g.tableProps.style}>
       <caption class="st-perms__cap">What each tool's agent can do without asking</caption>
-      <${Head} first="Tool"/>
+      <thead><tr>${cols.map(g.th)}</tr></thead>
       <tbody>
-        ${mats.map(({ entry, perms }) => html`<tr key=${entry.id} data-tool=${entry.id}>
+        ${g.order(mats).map(({ entry, perms }) => html`<tr key=${entry.id} data-tool=${entry.id}>
           <th scope="row" class="st-perms__tool"><span class="st-matrix__toolname"><${Swatch} id=${entry.id}/>${entry.label}</span></th>
           ${perms.cells.map(c => html`<${PermCell} key=${c.cap} cell=${c} onPick=${key => w.select({ tool: entry.id, row: key })}/>`)}
         </tr>`)}
