@@ -58,13 +58,15 @@ yet? See [Get pipx](#get-pipx), or [Windows prerequisites](#prerequisites).
 ### Install with a private package index
 
 Use these steps when Python packages must come from your organization's index and not from PyPI.
-The index URL is the `simple` URL of the feed, for example `https://packages.example/simple`. It
+The index URL is the `simple` URL of the feed, for example `https://packages.example/simple`. Keep
+the single quotes around it in every command below: a feed URL can hold `$`, `&` or `%`, which the
+shell would otherwise change or cut. In Command Prompt the quotes go around the whole `NAME=value`. It
 can hold credentials; do not write it into a file in the repository.
 
 1. Install pipx from the index, then open a new terminal:
 
    ```powershell
-   python -m pip install --index-url https://packages.example/simple pipx
+   python -m pip install --index-url 'https://packages.example/simple' pipx
    python -m pipx ensurepath
    ```
 
@@ -81,8 +83,8 @@ can hold credentials; do not write it into a file in the repository.
    Command Prompt (`cmd.exe`), where `$env:` does not exist:
 
    ```bat
-   set PIP_INDEX_URL=https://packages.example/simple
-   set UV_DEFAULT_INDEX=%PIP_INDEX_URL%
+   set "PIP_INDEX_URL=https://packages.example/simple"
+   set "UV_DEFAULT_INDEX=%PIP_INDEX_URL%"
    echo %PIP_INDEX_URL%
    ```
 
@@ -106,7 +108,7 @@ can hold credentials; do not write it into a file in the repository.
    aictl --version
    ```
 
-   `pipx install --pip-args="--index-url https://packages.example/simple" -e ".[all]"` does the same for the
+   `pipx install --pip-args='--index-url https://packages.example/simple' -e '.[all]'` does the same for the
    `pip` backend only.
 
 4. Check which source the packages came from. The install fails, and installs nothing, when the index
@@ -122,15 +124,54 @@ can hold credentials; do not write it into a file in the repository.
 
    ```bash
    git pull
-   aictl reinstall --index-url https://packages.example/simple
+   aictl reinstall --index-url 'https://packages.example/simple'
    ```
 
    `AICTL_INDEX_URL` in the environment does the same as `--index-url`.
 
-The variables of step 2 last for that terminal only. To keep them, set them for the user in Windows
-(`[Environment]::SetEnvironmentVariable('PIP_INDEX_URL', 'https://packages.example/simple', 'User')`, and the same for
-`UV_DEFAULT_INDEX`) or in the shell profile. [Why pip and uv read different settings](#why-pip-and-uv-read-different-settings) explains how `pip` and `uv` differ, and how to keep
-pipx on `pip`.
+### Set the index for every terminal
+
+The variables of step 2 last for that terminal only. To set them once for your user account, so every
+new terminal, pipx, pip and uv use the index:
+
+Windows, in PowerShell. No administrator rights are needed:
+
+```powershell
+$url = 'https://packages.example/simple'
+[Environment]::SetEnvironmentVariable('PIP_INDEX_URL', $url, 'User')
+[Environment]::SetEnvironmentVariable('UV_DEFAULT_INDEX', $url, 'User')
+```
+
+Close every terminal and open a new one, then check that both print the URL:
+
+```powershell
+echo $env:PIP_INDEX_URL
+echo $env:UV_DEFAULT_INDEX
+```
+
+A terminal or editor that was open before keeps its old environment until you restart it. The values
+are in Settings, System, About, Advanced system settings, Environment Variables, under "User variables",
+where you can also change or delete them. Do not use `setx` for this: it cuts values longer than 1,024
+characters and handles `%` in the URL differently.
+
+macOS or Linux: add the two lines to your shell profile (`~/.zshrc` for zsh, `~/.bashrc` for bash),
+then open a new terminal:
+
+```bash
+export PIP_INDEX_URL='https://packages.example/simple'
+export UV_DEFAULT_INDEX="$PIP_INDEX_URL"
+```
+
+To remove them later on Windows:
+
+```powershell
+[Environment]::SetEnvironmentVariable('PIP_INDEX_URL', $null, 'User')
+[Environment]::SetEnvironmentVariable('UV_DEFAULT_INDEX', $null, 'User')
+```
+
+`python -m pip config set global.index-url '...'` sets the index for `pip` only. `uv` ignores it, so a
+plain `pipx install` can still reach PyPI. The two variables cover both. [Why pip and uv read different
+settings](#why-pip-and-uv-read-different-settings) explains the difference, and how to keep pipx on `pip`.
 
 ### Why pip and uv read different settings
 
@@ -182,7 +223,7 @@ only for its own install, and also gives `uv` the package source when one is con
 After that, name the source when you update:
 
 ```bash
-aictl reinstall --index-url https://packages.example/simple
+aictl reinstall --index-url 'https://packages.example/simple'
 ```
 
 `--index-url`, or `AICTL_INDEX_URL`, applies to both `pip` and `uv`. The URL is not printed or written to a file, so
@@ -476,7 +517,7 @@ Run `aictl reinstall` in the clone if the update adds a dependency, or if you in
 aictl reinstall                # reinstalls, and builds the UI only if its source has local changes
 aictl reinstall --build-ui     # also builds the UI with no local changes
 aictl reinstall --skip-ui      # never builds the UI
-aictl reinstall --index-url https://packages.example/simple    # uses only this package index, with no npm build
+aictl reinstall --index-url 'https://packages.example/simple'    # uses only this package index, with no npm build
 ```
 
 The command prints `Python packages:` and the host name of the package source. Check this line.
