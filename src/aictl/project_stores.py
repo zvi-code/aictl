@@ -1066,13 +1066,18 @@ class ProjectStores:
         if full:
             self._last_full_pass = time.monotonic()
         total = 0
+        locked = False
         for db in self._each_store(open_only=not full):
             try:
                 total += db.clear_stale_pending_confirms(before)
             except sqlite3.OperationalError as exc:
                 if not is_lock_error(exc):
                     raise
+                locked = True
                 self.note_lock("clear_stale_pending_confirms", exc)
+        if not locked:
+            # The incident is over: the next one warns again.
+            self._lock_noted.discard("clear_stale_pending_confirms")
         return total
 
     def note_lock(self, what: str, exc: BaseException) -> None:

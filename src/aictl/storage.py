@@ -1822,11 +1822,17 @@ class _BufferedCursor:
 
 
 def is_lock_error(exc: BaseException) -> bool:
-    """A busy or locked database: transient, the next attempt can succeed."""
+    """Another connection holds the lock (SQLITE_BUSY): transient, the next attempt can succeed.
+
+    SQLITE_LOCKED ("database table is locked") is a conflict inside one connection and
+    is not transient, so it is not one.
+    """
     if not isinstance(exc, sqlite3.OperationalError):
         return False
-    text = str(exc).lower()
-    return "locked" in text or "busy" in text
+    code = getattr(exc, "sqlite_errorcode", None)
+    if code is not None:
+        return code & 0xFF == sqlite3.SQLITE_BUSY
+    return str(exc).lower() in ("database is locked", "database is busy")
 
 
 class _Connection(sqlite3.Connection):
@@ -4537,7 +4543,6 @@ class HistoryDB:
             ts = time.time()
             if seen and seen[:2] == (status, message) and ts - seen[2] < QUALITY_REWRITE_S:
                 return
-        self._quality_seen[seen_key] = (status, message, ts)
         conn = self._conn()
         prev = conn.execute(
             "SELECT count, last_ok_at FROM data_quality_status WHERE component = ? AND source = ?",
@@ -4563,6 +4568,8 @@ class HistoryDB:
             ),
         )
         conn.commit()
+        # Only once written: a write that failed is tried again on the next call.
+        self._quality_seen[seen_key] = (status, message, ts)
 
     def query_data_quality(
         self,
