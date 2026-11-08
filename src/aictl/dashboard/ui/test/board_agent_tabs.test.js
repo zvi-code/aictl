@@ -206,11 +206,105 @@ describe('agent drawer tab list and header', () => {
     const strip = await findByRole('group', { name: 'Totals' });
     expect(strip.previousElementSibling).toBeNull();
     const labels = [...strip.querySelectorAll('.bd-l')].map(x => x.textContent);
-    expect(labels).toEqual(['Tokens', 'Cost', 'Time', 'Messages', 'Tool calls', 'Model calls', 'Lines', 'Artifacts', 'Commits']);
+    expect(labels).toEqual(['Tokens', 'Cost', 'Time', 'Messages', 'Tool calls', 'Model calls']);
     const kpi = name => [...strip.querySelectorAll('.bd-kpi')].find(x => x.querySelector('.bd-l').textContent === name).textContent;
     expect(kpi('Model calls')).toBe('Model calls13context 23 k → 56 k');
-    expect(kpi('Lines')).toBe('Lines+0−0');
     expect(container.querySelector('#dr-actx')).toBeTruthy();
+    // Artifacts, commits and changes are counts on their tabs, not cells of the strip.
+    expect(strip.textContent).not.toContain('Artifacts');
+  });
+
+  it('calls out failures and a loop under the strip, and opens the tab that lists them', async () => {
+    const errs = [{ ts: NOW - 5, key: 'api:api_error', detail: 'x' }, { ts: NOW - 6, key: 'tool:Bash:Exit code #', detail: 'ls' }, { ts: NOW - 7, key: 'tool:Bash:Exit code #', detail: 'ls' }];
+    const { container, act } = mount({ over: { errors: errs, loop: { pattern: 'Read a.py → Edit a.py', repeats: 4, tokens: 1000, cost_usd: 0.1 } } });
+    await waitFor(() => expect(container.querySelector('.bd-kpipill')).toBeTruthy());
+    const pill = container.querySelector('.bd-kpipill');
+    expect(pill.className).toContain('bd-crit');
+    expect(pill.textContent).toContain('3 failures: Bash: Exit code # ×2, API: error · Loop: Read a.py → Edit a.py, repeated 4 times');
+    fireEvent.click(within(pill).getByRole('button', { name: 'Failures and loops →' }));
+    expect(act.setDrawerTab).toHaveBeenCalledWith('errors');
+    expect(container.querySelector('.bd-drkpis .bd-kpipill')).toBe(pill);
+  });
+
+  it('warns, not alerts, for failures without a loop, and shows nothing when there is neither', async () => {
+    const one = mount({ over: { errors: [{ ts: NOW - 5, key: 'api:api_error' }] } });
+    await waitFor(() => expect(one.container.querySelector('.bd-kpipill')).toBeTruthy());
+    const pill = one.container.querySelector('.bd-kpipill');
+    expect(pill.className).toContain('bd-warn');
+    expect(pill.textContent).toContain('1 failure: API: error');
+    one.unmount();
+    const none = mount({ over: { errors: [], loop: null } });
+    await none.findByRole('group', { name: 'Totals' });
+    expect(none.container.querySelector('.bd-kpipill')).toBeNull();
+  });
+
+  it('draws the agents over time: one lane per subagent in start order, the main agent with its ticks', async () => {
+    const a = agent({ started_at: NOW - 1000, ended_at: NOW });
+    const subs = [
+      { id: 'k2', role: 'verifier', started_at: NOW - 500, ended_at: NOW - 250, input: 10, output: 5 },
+      { id: 'k1', role: 'reader', started_at: NOW - 900, ended_at: NOW - 400, input: 100, output: 20 },
+    ];
+    const errs = [{ ts: NOW - 100, key: 'tool:Bash:Exit code #' }];
+    const ctxData = { first: 1, last: 2, peak: 2, calls: 2, drops: 0, series: [1, 2], compactions: [{ ts: NOW - 750, trigger: 'auto', before: 10, after: 5, freed: 5, duration_ms: 1 }] };
+    const { findByRole, container, act } = mount({ a, over: { subagents: subs, errors: errs, context: ctxData, turns: [{ ts: NOW - 1000, text: 'Fix it' }] } });
+    const list = await findByRole('list', { name: 'Agents over time' });
+    expect([...list.querySelectorAll('.bd-tlname')].map(x => x.textContent)).toEqual(['Main agent', 'reader', 'verifier']);
+    const bars = [...list.querySelectorAll('button.bd-tlbar')];
+    expect(bars.map(b => [b.style.left, b.style.width])).toEqual([['10%', '50%'], ['50%', '25%']]);
+    expect(bars[0].getAttribute('title')).toContain('reader: ');
+    fireEvent.click(bars[0]);
+    expect(act.openDrawer).toHaveBeenCalledWith({ type: 'agent', id: 'k1', tab: 'overview' });
+    const ticks = [...list.querySelectorAll('.bd-tltick')].map(t => [t.getAttribute('title').split(' at ')[0], t.style.left]);
+    expect(ticks).toEqual([['Prompt', '0%'], ['Compaction', '25%'], ['Failure: Bash: Exit code #', '90%']]);
+    expect(container.querySelector('#dr-atl .bd-psub').textContent).toBe('2 subagents over 17 min');
+    fireEvent.click(within(container.querySelector('#dr-atl')).getByRole('button', { name: 'Timeline →' }));
+    expect(act.setDrawerTab).toHaveBeenCalledWith('timeline');
+    // The timeline sits right under the strip.
+    expect(container.querySelector('.bd-drkpis').nextElementSibling.id).toBe('dr-atl');
+  });
+
+  it('caps the lanes at eight and sends the rest to Team; a lone main agent with no tick draws nothing', async () => {
+    const a = agent({ started_at: NOW - 1000, ended_at: NOW });
+    const subs = Array.from({ length: 10 }, (_, i) => ({ id: 'k' + i, role: 'w' + i, started_at: NOW - 900 + i * 10, ended_at: NOW - 100 }));
+    const many = mount({ a, over: { subagents: subs, turns: [] } });
+    const list = await many.findByRole('list', { name: 'Agents over time' });
+    expect(list.querySelectorAll('button.bd-tlbar').length).toBe(8);
+    fireEvent.click(within(list).getByRole('button', { name: '+ 2 more in Team' }));
+    expect(many.act.setDrawerTab).toHaveBeenCalledWith('team');
+    expect(many.container.querySelector('#dr-atl .bd-psub').textContent).toBe('8 of 10 subagents over 17 min');
+    many.unmount();
+    const lone = mount({ a, over: { subagents: [], turns: [], errors: [] } });
+    await lone.findByRole('group', { name: 'Totals' });
+    expect(lone.container.querySelector('#dr-atl')).toBeNull();
+  });
+
+  it('links a panel to the tab that holds the whole', async () => {
+    const { findByRole, container, act } = mount();
+    await findByRole('group', { name: 'Totals' });
+    fireEvent.click(within(container.querySelector('#dr-ar')).getByRole('button', { name: 'Processes →' }));
+    expect(act.setDrawerTab).toHaveBeenCalledWith('procs');
+    expect(container.querySelector('#dr-am .bd-plink')).toBeNull();
+  });
+
+  it('lists the context by agent when the record has more than one agent, and opens a subagent from it', async () => {
+    const ctxData = { first: 23000, last: 56000, peak: 56000, calls: 13, drops: 0, compactions: [], series: [23000, 56000], by_agent: [{ agent_id: '', calls: 13, first: 23000, last: 56000, peak: 56000 }, { agent_id: 'k1', calls: 4, first: 12000, last: 20000, peak: 28000 }] };
+    const subs = [{ id: 'k1', role: 'reader', short: 'k1', started_at: NOW - 900, ended_at: NOW - 400 }];
+    const { findByRole, act } = mount({ over: { context: ctxData, subagents: subs } });
+    const t = await findByRole('table', { name: 'Context by agent' });
+    const rows = [...t.querySelectorAll('tbody tr')].map(r => r.textContent);
+    expect(rows[0]).toContain('Main agent');
+    expect(rows[0]).toContain('1323 k56 k56 k');
+    expect(rows[1]).toContain('reader');
+    expect(rows[1]).toContain('412 k28 k20 k');
+    fireEvent.click(within(t).getByRole('button', { name: 'reader' }));
+    expect(act.openDrawer).toHaveBeenCalledWith({ type: 'agent', id: 'k1', tab: 'overview' });
+  });
+
+  it('has no context by agent table for a record with one agent', async () => {
+    const ctxData = { first: 1, last: 2, peak: 2, calls: 2, drops: 0, compactions: [], series: [1, 2], by_agent: [{ agent_id: '', calls: 2, first: 1, last: 2, peak: 2 }] };
+    const { findByText, queryByRole } = mount({ over: { context: ctxData } });
+    await findByText('Context size');
+    expect(queryByRole('table', { name: 'Context by agent' })).toBeNull();
   });
 
   it('has no Model calls when the tool reports no context', async () => {
@@ -449,10 +543,11 @@ describe('Overview and Changes fixes', () => {
     getByText('Bash: Exit code #');
   });
 
-  it('keeps the file name of a changed file visible', async () => {
+  it('keeps the file name of a changed file visible, and sums the lines in the panel header', async () => {
     const files = [{ path: '/very/long/absolute/path/to/src/client.py', lines_added: 1, lines_removed: 0, edits: 1 }];
-    const { findByRole } = mount({ tab: 'changes', over: { files } });
+    const { findByRole, container } = mount({ tab: 'changes', over: { files } });
     const t = await findByRole('table', { name: 'Files changed' });
+    expect(container.querySelector('#dr-afc .bd-psub').textContent).toBe('+1 −0 lines in 1 file');
     expect(t.textContent).toContain('…/to/src/client.py');
     expect(t.querySelector('[title="/very/long/absolute/path/to/src/client.py"]')).toBeTruthy();
   });

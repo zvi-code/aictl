@@ -33,12 +33,13 @@ export function useDetail(load, key, tick = 0) {
   return state.key === key ? state : { data: null, error: null };
 }
 
-export function FixedPanel({ id, title, sub, span = 12, children }) {
+export function FixedPanel({ id, title, sub, span = 12, go, children }) {
   const [open, setOpen] = useState(true);
   const label = open ? 'Fold this panel' : 'Unfold this panel';
   return html`<section class=${'bd-panel' + (open ? '' : ' bd-folded')} id=${'dr-' + id} style=${'grid-column:span ' + span} aria-label=${title}>
     <div class="bd-ph bd-ph-fixed">
       <h3>${title}</h3><span class="bd-psub" title=${sub || ''}>${sub || ''}</span>
+      ${go ? html`<button type="button" class="bd-plink" onClick=${go.pick}>${go.label + ' →'}</button>` : null}
       <button type="button" class="bd-ib-btn" aria-label=${label} title=${label} aria-expanded=${open ? 'true' : 'false'} onClick=${() => setOpen(!open)}><${Ico} d=${PATHS.chev} cls=${'bd-chev' + (open ? ' bd-open' : '')}/></button>
     </div>
     ${open ? html`<div class="bd-pb">${children}</div>` : null}
@@ -232,8 +233,25 @@ function Facts({ facts }) {
 }
 
 /** Context size: the last call against the limit, the growth per call, and for a Copilot session the split at shutdown. */
-function ContextPanel({ a, context, copilot }) {
+function ContextPanel({ a, context, copilot, subagents, act }) {
   const split = context.split;
+  const byAgent = useMemo(() => {
+    const rows = context.by_agent || [];
+    if (rows.length < 2) return null;
+    const kids = new Map((subagents || []).map(k => [k.id, k]));
+    return {
+      cols: [{ k: 'n', l: 'Agent' }, { k: 'c', l: 'Calls', n: true, w: '50px' }, { k: 'f', l: 'First', n: true, w: '64px', t: 'What the first model call sent' }, { k: 'p', l: 'Peak', n: true, w: '64px' }, { k: 'l', l: 'Last', n: true, w: '64px' }],
+      rows: rows.map(r => {
+        const kid = r.agent_id ? kids.get(r.agent_id) : null;
+        return {
+          id: r.agent_id || 'main', go: r.agent_id ? () => act.openDrawer({ type: 'agent', id: r.agent_id, tab: 'overview' }) : null,
+          sort: { n: r.agent_id ? 1 : 0, c: r.calls, f: r.first, p: r.peak, l: r.last },
+          cells: { n: r.agent_id ? { v: kid?.role || kid?.title || r.agent_id, sub: kid?.short, title: r.agent_id } : { v: 'Main agent', title: 'The session itself, without its subagents' }, c: { v: fmtN(r.calls) }, f: { v: fmtN(r.first) }, p: { v: fmtN(r.peak) }, l: { v: fmtN(r.last) } },
+        };
+      }),
+      sort: { k: 'n', dir: 'asc' }, primary: 'n',
+    };
+  }, [context, subagents]);
   const withSplit = copilot && !a.parent_id;
   const parts = splitParts(split);
   const known = parts.filter(p => p.v != null);
@@ -282,8 +300,73 @@ function ContextPanel({ a, context, copilot }) {
     <div class="bd-note">${copilot
       ? 'First, last and peak are input, cache read and cache write of each call. Copilot compaction figures count the conversation only, without the system prompt and tools.'
       : 'Input, cache read and cache write of each call. This tool reports the total, not how it splits into instructions, tools and conversation.'}</div>
+    ${byAgent ? html`<div class="bd-ctxsub">Context by agent. Each subagent has its own context; the numbers are what each one sent.</div><${Table} def=${byAgent} label="Context by agent"/>` : null}
     ${context.compactions?.length ? html`<${Table} def=${compactionDef} label="Compactions"/>` : null}
   </${FixedPanel}>`;
+}
+
+const TIMELINE_LANES = 8;
+const LANE_COLORS = ['var(--s2)', 'var(--s3)', 'var(--s4)', 'var(--s5)'];
+
+/** The agents of the session over its time: one lane each, with the prompts, failures and compactions of the main agent as ticks. */
+export function timelineModel(a, data, now = Date.now() / 1000) {
+  if (!a.started_at) return null;
+  const end = a.ended_at || now;
+  const span = Math.max(1, end - a.started_at);
+  const at = ts => Math.max(0, Math.min(100, ((ts - a.started_at) / span) * 100));
+  // The longest subagents get the lanes; they are drawn in start order.
+  const all = (data.subagents || []).filter(k => k.started_at);
+  const kids = all.slice().sort((x, y) => ((y.ended_at || end) - y.started_at) - ((x.ended_at || end) - x.started_at)).slice(0, TIMELINE_LANES).sort((x, y) => x.started_at - y.started_at);
+  const lanes = [
+    { id: a.id, name: a.parent_id ? a.role || a.title : 'Main agent', from: 0, to: 100, c: 'var(--s1)', start: a.started_at, end: a.ended_at, tokens: (a.input || 0) + (a.output || 0) + (a.cache_read || 0) + (a.cache_write || 0), main: true },
+    ...kids.map((k, i) => ({ id: k.id, name: k.role || k.title || k.short || k.id, from: at(k.started_at), to: at(k.ended_at || end), c: LANE_COLORS[i % LANE_COLORS.length], start: k.started_at, end: k.ended_at, tokens: (k.input || 0) + (k.output || 0) + (k.cache_read || 0) + (k.cache_write || 0) })),
+  ];
+  const ticks = [
+    ...(data.turns || []).filter(t => t.ts).map(t => ({ kind: 'Prompt', ts: t.ts, x: at(t.ts), c: 'var(--good)' })),
+    ...(data.context?.compactions || []).filter(c => c.ts).map(c => ({ kind: 'Compaction', ts: c.ts, x: at(c.ts), c: 'var(--warn)' })),
+    ...(data.errors || []).filter(e => e.ts).map(e => ({ kind: 'Failure', ts: e.ts, x: at(e.ts), c: 'var(--crit)', what: errorLabel(e.key) })),
+  ];
+  return { lanes, ticks, more: Math.max(0, all.length - TIMELINE_LANES), start: a.started_at, end, live: !a.ended_at };
+}
+
+function AgentTimeline({ a, data, act }) {
+  const m = useMemo(() => timelineModel(a, data), [a, data]);
+  if (!m || (m.lanes.length < 2 && !m.ticks.length)) return null;
+  const kinds = [...new Set(m.ticks.map(t => t.kind))];
+  const tickColor = { Prompt: 'var(--good)', Compaction: 'var(--warn)', Failure: 'var(--crit)' };
+  const sub = (m.lanes.length === 1 ? 'The main agent alone' : m.lanes.length - 1 + (m.more ? ' of ' + (m.lanes.length - 1 + m.more) : '') + (m.lanes.length - 1 + m.more === 1 ? ' subagent' : ' subagents')) + ' over ' + fmtDur(m.end - m.start) + (m.live ? ' so far' : '');
+  return html`<${FixedPanel} id="atl" title="Agents over time" sub=${sub} go=${{ label: 'Timeline', pick: () => act.setDrawerTab('timeline') }}>
+    <div class="bd-tl" role="list" aria-label="Agents over time">
+      ${m.lanes.map(l => html`<div key=${l.id} class="bd-tlrow" role="listitem">
+        <span class="bd-tlname" title=${l.name}>${l.main ? html`<b>${l.name}</b>` : l.name}</span>
+        <div class="bd-tltrack">
+          ${l.main ? null : html`<button type="button" class="bd-tlbar" style=${{ left: l.from + '%', width: Math.max(0.4, l.to - l.from) + '%', background: l.c }} title=${l.name + ': ' + stamp(l.start) + (l.end ? ' to ' + stamp(l.end) : ', running') + ', ' + fmtDur((l.end || m.end) - l.start) + ', ' + fmtN(l.tokens) + ' tokens'} aria-label=${l.name + ', ' + fmtDur((l.end || m.end) - l.start)} onClick=${() => act.openDrawer({ type: 'agent', id: l.id, tab: 'overview' })}></button>`}
+          ${l.main ? html`<span class="bd-tlbar bd-tlmain" style=${{ left: '0%', width: '100%', background: l.c }} title=${l.name + ': ' + stamp(l.start) + (l.end ? ' to ' + stamp(l.end) : ', running') + ', ' + fmtN(l.tokens) + ' tokens'}></span>
+            ${m.ticks.map((t, i) => html`<i key=${i} class="bd-tltick" style=${{ left: t.x + '%', background: t.c }} title=${t.kind + (t.what ? ': ' + t.what : '') + ' at ' + stamp(t.ts)}></i>`)}` : null}
+        </div>
+      </div>`)}
+      ${m.more ? html`<div class="bd-tlrow"><span></span><button type="button" class="bd-lnk bd-tlmore" onClick=${() => act.setDrawerTab('team')}>${'+ ' + m.more + ' more in Team'}</button></div>` : null}
+      <div class="bd-tlaxis"><span></span><div><span>${stamp(m.start)}</span><span>${stamp(m.start + (m.end - m.start) / 2)}</span><span>${m.live ? 'now' : stamp(m.end)}</span></div></div>
+    </div>
+    ${kinds.length ? html`<div class="bd-legend">${kinds.map(k => html`<span key=${k} class="bd-li"><i class="bd-sw" style=${{ background: tickColor[k] }}></i>${k === 'Prompt' ? 'Prompt' : k === 'Compaction' ? 'Compaction' : 'Failed call or error'}</span>`)}</div>` : null}
+  </${FixedPanel}>`;
+}
+
+/** One line under the totals when the session has failures or a loop, with the way to the tab that lists them. */
+function Anomalies({ data, act }) {
+  const errors = data.errors || [];
+  const loop = data.loop;
+  if (!errors.length && !loop) return null;
+  const groups = new Map();
+  for (const e of errors) { const k = errorLabel(e.key); groups.set(k, (groups.get(k) || 0) + 1); }
+  const top = [...groups.entries()].sort((x, y) => y[1] - x[1]).slice(0, 3).map(([k, n]) => (n > 1 ? k + ' ×' + n : k)).join(', ');
+  const parts = [];
+  if (errors.length) parts.push((errors.length === 1 ? '1 failure' : errors.length + ' failures') + (top ? ': ' + top : '') + (groups.size > 3 ? ', …' : ''));
+  if (loop) parts.push('Loop: ' + loop.pattern + ', repeated ' + fmtN(loop.repeats) + ' times');
+  return html`<div class=${'bd-kpipill ' + (loop ? 'bd-crit' : 'bd-warn')} role="status">
+    <${Ico} d=${PATHS.warn}/><span class="bd-kpipilltx" title=${parts.join(' · ')}>${parts.join(' · ')}</span>
+    <button type="button" class="bd-plink" onClick=${() => act.setDrawerTab('errors')}>Failures and loops →</button>
+  </div>`;
 }
 
 /** The files of the repository that apply to the session folder, one row per folder, names as chips that open the file. */
@@ -327,9 +410,6 @@ function OverviewTab({ a, data, st, ctx, act, pending }) {
   const live = isLive(st);
   const msgs = a.msgs ? a.msgs.user + a.msgs.assistant + a.msgs.tool : null;
   const tokens = [a.input, a.output, a.cache_read, a.cache_write].some(v => v != null) ? (a.input || 0) + (a.output || 0) + (a.cache_read || 0) + (a.cache_write || 0) : null;
-  const files = data.files || [];
-  const addLines = files.reduce((s, f) => s + (f.lines_added || 0), 0);
-  const delLines = files.reduce((s, f) => s + (f.lines_removed || 0), 0);
   const context = data.context;
   const models = (a.models || []).join(', ');
   // The strip at the top: the numbers a reader opens a session for.
@@ -340,9 +420,6 @@ function OverviewTab({ a, data, st, ctx, act, pending }) {
     { label: 'Messages', value: fmtN(msgs), sub: a.msgs ? a.msgs.user + (a.parent_id ? ' task prompts' : ' prompts') : '' },
     { label: 'Tool calls', value: fmtN(a.tool_calls), sub: a.failures == null ? '' : a.failures + ' failed', cls: a.failures ? 'crit' : '' },
     context ? { label: 'Model calls', value: fmtN(context.calls), sub: 'context ' + fmtN(context.first) + ' → ' + fmtN(context.last), title: 'Calls to a model, and what the first and the last call sent' } : null,
-    { label: 'Lines', value: files.length ? '+' + fmtN(addLines) : NA, sub: files.length ? '−' + fmtN(delLines) : 'no file changes' },
-    { label: 'Artifacts', value: fmtN(data.artifacts_total), sub: data.artifacts_bytes == null ? '' : fmtBytes(data.artifacts_bytes), title: 'Files of the session folder and files the session wrote outside its project' },
-    { label: 'Commits', value: fmtN(data.commits.length), sub: ((n) => n + (n === 1 ? ' pull request' : ' pull requests'))(data.commits.reduce((n, c) => n + c.prs.length, 0)) },
   ].filter(Boolean);
   const modelDef = useMemo(() => ({
     cols: [{ k: 'm', l: 'Model' }, { k: 'msgs', l: 'Calls', n: true, w: '50px', t: 'Calls to this model' }, { k: 'input', l: 'Input', n: true, w: '60px' }, { k: 'output', l: 'Output', n: true, w: '60px' }, { k: 'cr', l: 'Cache read', n: true, w: '76px' }, { k: 'cw', l: 'Cache write', n: true, w: '80px' }, { k: 'cost', l: 'Cost', n: true, w: '60px' }],
@@ -365,20 +442,21 @@ function OverviewTab({ a, data, st, ctx, act, pending }) {
   const withSplit = !!context && copilot && !a.parent_id;
   return html`
     ${pending ? html`<${FixedPanel} id="ap" title="Waiting for your confirmation"><div class="bd-ptext">${pending.name + ': ' + pending.target + '\nWaiting for ' + fmtDur(Date.now() / 1000 - pending.since_ts) + '. Answer in the tool that asks.'}</div></${FixedPanel}>` : null}
-    <div class="bd-kpis bd-drkpis" role="group" aria-label="Totals">${kpis.map(k => html`<div key=${k.label} class="bd-kpi" title=${k.title || k.label}><span class="bd-l">${k.label}</span><span class="bd-v">${k.value}</span><span class=${'bd-d' + (k.cls ? ' bd-' + k.cls : '')}>${k.sub || ''}</span></div>`)}</div>
-    ${context ? html`<${ContextPanel} a=${a} context=${context} copilot=${copilot}/>` : null}
+    <div class="bd-kpis bd-drkpis" role="group" aria-label="Totals">${kpis.map(k => html`<div key=${k.label} class="bd-kpi" title=${k.title || k.label}><span class="bd-l">${k.label}</span><span class="bd-v">${k.value}</span><span class=${'bd-d' + (k.cls ? ' bd-' + k.cls : '')}>${k.sub || ''}</span></div>`)}<${Anomalies} data=${data} act=${act}/></div>
+    ${a.parent_id ? null : html`<${AgentTimeline} a=${a} data=${data} act=${act}/>`}
+    ${context ? html`<${ContextPanel} a=${a} context=${context} copilot=${copilot} subagents=${data.subagents} act=${act}/>` : null}
     <div class="bd-drcol" style=${'grid-column:span ' + (withSplit ? 4 : 12)}>
       <${FixedPanel} id="am" title="Usage by model" sub=${(data.by_model || []).length ? (data.by_model.length === 1 ? '1 model' : data.by_model.length + ' models') : ''}><${Table} def=${modelDef} label="Usage by model"/></${FixedPanel}>
       <${FixedPanel} id="askill" title="Skills used" sub=${(data.skills || []).length ? data.skills.reduce((n, x) => n + x.uses, 0) + ' uses of ' + data.skills.length + ' skills' + (a.parent_id ? '' : ', with its subagents') : 'None in this session'}><${Table} def=${skills} label="Skills used"/></${FixedPanel}>
-      <${FixedPanel} id="ar" title="Process" sub=${live ? '' : 'Ended, nothing running'}>
+      <${FixedPanel} id="ar" title="Process" sub=${live ? '' : 'Ended, nothing running'} go=${{ label: 'Processes', pick: () => act.setDrawerTab('procs') }}>
         <${Stats} stats=${live
           ? [{ label: 'Started', value: stamp(proc.started_at ?? a.started_at, true) }, { label: 'CPU', value: fmtCpu(proc.cpu_percent) }, { label: 'RAM', value: fmtMem(proc.mem_mb) }, { label: 'Processes', value: Array.isArray(proc.pids) && proc.pids.length ? proc.pids.length : NA }]
           : [{ label: 'Started', value: stamp(proc.started_at ?? a.started_at, true) }, { label: 'Ended', value: stamp(a.ended_at, true) }]}/>
         <${Actions} actions=${[{ label: 'Copy session ID', go: () => act.copy(a.id, 'Copied ' + a.id) }, { label: 'Copy link to this agent', go: () => act.copy(copyLink, 'Copied the link') }]}/>
       </${FixedPanel}>
     </div>
-    ${(data.subagents || []).length ? html`<${FixedPanel} id="ak" title="Subagents"><${Table} def=${kids} label="Subagents"/></${FixedPanel}>` : null}
-    ${a.parent_id ? null : html`<${FixedPanel} id="actxf" title="Files that can affect this session" sub=${cf.git_root ? fmtN(cf.total) + ' files in ' + folders + (folders === 1 ? ' folder of ' : ' folders of ') + cf.git_root + ' apply to the session folder' + (cf.total > cf.files.length ? ', ' + cf.files.length + ' listed' : '') : 'No git repository'}><${ContextFiles} cf=${cf} act=${act}/></${FixedPanel}>`}`;
+    ${(data.subagents || []).length ? html`<${FixedPanel} id="ak" title="Subagents" go=${{ label: 'Team', pick: () => act.setDrawerTab('team') }}><${Table} def=${kids} label="Subagents"/></${FixedPanel}>` : null}
+    ${a.parent_id ? null : html`<${FixedPanel} id="actxf" title="Files that can affect this session" go=${act.settingsPivot ? { label: 'All files in Settings', pick: () => act.settingsPivot('files') } : null} sub=${cf.git_root ? fmtN(cf.total) + ' files in ' + folders + (folders === 1 ? ' folder of ' : ' folders of ') + cf.git_root + ' apply to the session folder' + (cf.total > cf.files.length ? ', ' + cf.files.length + ' listed' : '') : 'No git repository'}><${ContextFiles} cf=${cf} act=${act}/></${FixedPanel}>`}`;
 }
 
 function TurnsTab({ data }) {
@@ -454,7 +532,9 @@ function ChangesTab({ data, act }) {
     rows: (data.tests || []).map((t, i) => ({ id: i, sort: { at: t.ts }, cells: { at: { v: stamp(t.ts), cls: 'dim' }, cmd: { v: t.command, cls: 'm' }, r: { v: t.passed ? 'Passed' : 'Failed', cls: t.passed ? 'dim' : 'crit' }, d: { v: fmtMs(t.duration_ms) } } })),
     sort: { k: 'at', dir: 'desc' }, none: 'This agent ran no tests.',
   }), [data]);
-  return html`<${FixedPanel} id="afc" title="Files changed"><${Table} def=${files} label="Files changed"/></${FixedPanel}>
+  const changed = data.files || [];
+  const lines = changed.length ? '+' + fmtN(changed.reduce((s, f) => s + (f.lines_added || 0), 0)) + ' −' + fmtN(changed.reduce((s, f) => s + (f.lines_removed || 0), 0)) + ' lines in ' + changed.length + (changed.length === 1 ? ' file' : ' files') : 'No file changed';
+  return html`<${FixedPanel} id="afc" title="Files changed" sub=${lines}><${Table} def=${files} label="Files changed"/></${FixedPanel}>
     <${FixedPanel} id="atst" title="Test runs"><${Table} def=${tests} label="Test runs"/></${FixedPanel}>`;
 }
 
