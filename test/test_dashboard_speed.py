@@ -552,3 +552,40 @@ def test_an_audit_past_its_time_budget_returns_and_lists_what_it_skipped(tmp_pat
     assert steps == []
     assert "project tree" in result["incomplete"]
     assert "models in force" in result["incomplete"]
+
+
+def test_an_update_while_the_first_message_is_sent_is_not_missed(tmp_path, monkeypatch):
+    """An update that lands between the first message and the wait still reaches the client."""
+    from aictl.dashboard import web_server
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    srv, store = _serve(_snapshot(0), tmp_path)
+    real = web_server.DashboardHandler._write_sse if hasattr(web_server, "DashboardHandler") else None
+    handler_cls = srv.RequestHandlerClass
+    real = handler_cls._write_sse
+    sent = []
+
+    def write_then_update(self, snap):
+        real(self, snap)
+        if not sent:
+            sent.append(1)
+            store.update(_snapshot(1))  # lands before the handler starts to wait
+
+    monkeypatch.setattr(handler_cls, "_write_sse", write_then_update)
+    try:
+        resp = urllib.request.urlopen(f"http://127.0.0.1:{srv.server_address[1]}/api/stream", timeout=5)
+
+        def message() -> bytes:
+            lines = []
+            while True:
+                line = resp.readline()
+                if line in (b"\n", b""):
+                    return b"".join(lines)
+                lines.append(line)
+
+        message()
+        assert message().startswith(b"data: ")  # the update, not a 30 s keepalive
+        resp.close()
+    finally:
+        srv.shutdown()
+        srv.server_close()
