@@ -559,6 +559,29 @@ def _reinstall_detached_windows(install_cmd: list[str], root: Path, env: dict[st
     # parsing, so a path holding "&" prints as text instead of running as a command.
     base = dict(os.environ) if env is None else env
     env = {**base, "AICTL_REINSTALL_FROM": str(root), "AICTL_PACKAGE_SOURCE": _package_source(base)}
+    # uv clears an existing environment only when told to, and pipx starts uv with that
+    # environment as its working folder: Windows will not delete a process's working
+    # folder, so the clear failed with os error 32. The script removes the old
+    # environment itself, from outside it, and uv always starts on an empty folder.
+    env.pop("UV_VENV_CLEAR", None)
+    venv_path = _pipx_venv_dir()
+    owned = venv_path.name == "aictl" and venv_path.parent.name == "venvs"
+    if owned:
+        env["AICTL_VENV"] = str(venv_path)
+    remove_old = (
+        (
+            'if exist "!AICTL_VENV!\\" (\r\n'
+            "  echo Removing the old aictl environment...\r\n"
+            '  rmdir /s /q "!AICTL_VENV!" >nul 2>&1\r\n'
+            ")\r\n"
+            'if exist "!AICTL_VENV!\\" (\r\n'
+            "  echo The old aictl environment is still in use, so it cannot be removed yet.\r\n"
+            "  goto attempt_failed\r\n"
+            ")\r\n"
+        )
+        if owned
+        else ""
+    )
 
     bat = (
         "@echo off\r\n"
@@ -586,10 +609,9 @@ def _reinstall_detached_windows(install_cmd: list[str], root: Path, env: dict[st
         "  echo Stopping process %%P, which runs from the aictl environment...\r\n"
         "  taskkill /PID %%P /F >nul 2>&1\r\n"
         ")\r\n"
-        # pipx reuses uv as its venv backend; on --force reinstall uv refuses to
-        # overwrite the existing venv ("A virtual environment already exists")
-        # unless told to clear it. UV_VENV_CLEAR=1 is uv's documented opt-in.
-        "set UV_VENV_CLEAR=1\r\n"
+        # Not inside the environment: a process's working folder cannot be deleted.
+        'cd /d "!AICTL_REINSTALL_FROM!"\r\n'
+        "set UV_VENV_CLEAR=\r\n"
         # Retry a few times: the directory lock is transient and clears once the
         # evicted process fully releases its handles.
         "set ATTEMPT=0\r\n"
@@ -598,8 +620,10 @@ def _reinstall_detached_windows(install_cmd: list[str], root: Path, env: dict[st
         f"title aictl reinstall - attempt !ATTEMPT! of {_REINSTALL_ATTEMPTS}\r\n"
         "echo.\r\n"
         f"echo --- Attempt !ATTEMPT! of {_REINSTALL_ATTEMPTS} ---\r\n"
+        f"{remove_old}"
         f"{quoted}\r\n"
         "if not errorlevel 1 goto success\r\n"
+        ":attempt_failed\r\n"
         f"if !ATTEMPT! geq {_REINSTALL_ATTEMPTS} goto failed\r\n"
         "echo.\r\n"
         f"echo Attempt !ATTEMPT! of {_REINSTALL_ATTEMPTS} did not finish. The aictl folder may still be in use.\r\n"

@@ -217,8 +217,10 @@ These steps change only the aictl environment and its launcher. They do not chan
 `.venv` of another project.
 
 **Warning:** do not set `UV_VENV_CLEAR` by hand. With only `pip` set up, `uv` then downloads from PyPI. In the same
-shell, `uv venv` also replaces the existing `.venv` of any project without asking. `aictl reinstall` sets this variable
-only for its own install, and also gives `uv` the package source when one is configured.
+shell, `uv venv` also replaces the existing `.venv` of any project without asking. On macOS and Linux, `aictl reinstall`
+sets this variable only for its own install. On Windows it removes the old aictl environment itself instead, because
+pipx starts `uv` inside that folder and Windows will not delete a program's working folder. Either way it also gives
+`uv` the package source when one is configured.
 
 After that, name the source when you update:
 
