@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from collections import Counter
 from pathlib import Path
@@ -25,6 +26,20 @@ def _resolve_db_path(db_path: str | None) -> Path:
     if not path.exists():
         raise click.ClickException(f"Database not found: {path}")
     return path
+
+
+def _project_files(path: Path) -> list[Path]:
+    """The project stores of a machine store: each database with its WAL."""
+    from ..project_stores import project_store_files
+
+    return [f for f in project_store_files(path) if not f.name.endswith("-shm")]
+
+
+def _history_bytes(path: Path) -> tuple[int, int]:
+    """Bytes of the machine store and its project stores, and of the machine store's WAL."""
+    wal = path.with_name(path.name + "-wal")
+    stores = sum(f.stat().st_size for f in _project_files(path))
+    return path.stat().st_size + stores, wal.stat().st_size if wal.exists() else 0
 
 
 @click.group()
@@ -57,22 +72,21 @@ def compact(ctx, vacuum, dry_run, retention_days):
     size of the live data.
     """
     from ..platforms import load_config
-    from ..storage import HistoryDB
+    from ..project_stores import ProjectStores
 
     db_path = ctx.obj.db_path
     path = _resolve_db_path(db_path)
     if retention_days is None:
         retention_days = load_config().retention_days
 
-    size_before = path.stat().st_size
-    wal = path.with_name(path.name + "-wal")
-    wal_size = wal.stat().st_size if wal.exists() else 0
+    # The machine store and every project store next to it.
+    size_before, wal_size = _history_bytes(path)
     click.echo(f"Database: {path}")
     click.echo(f"Size before: {size_before / 1024**2:.1f} MB (+ {wal_size / 1024**2:.1f} MB WAL)")
 
     if dry_run:
         # flush_interval=0: no background writer for a read-only forecast.
-        with HistoryDB(db_path=db_path, flush_interval=0, retention_days=retention_days) as est_db:
+        with ProjectStores(db_path=path, flush_interval=0, retention_days=retention_days) as est_db:
             est = est_db.compact_estimate()
         mb = 1024**2
         click.echo(f"Free pages inside the file: {est['free_bytes'] / mb:.1f} MB")
@@ -85,7 +99,7 @@ def compact(ctx, vacuum, dry_run, retention_days):
         click.echo("Dry run: nothing was changed.")
         return
 
-    hist_db = HistoryDB(db_path=db_path, retention_days=retention_days)
+    hist_db = ProjectStores(db_path=path, flush_interval=0, retention_days=retention_days)
 
     click.echo("Compacting...")
     t0 = time.time()
@@ -105,7 +119,7 @@ def compact(ctx, vacuum, dry_run, retention_days):
 
     hist_db.close()
 
-    size_after = path.stat().st_size
+    size_after = _history_bytes(path)[0]
     saved = size_before - size_after
     click.echo(f"\nSize after:  {size_after / 1024**2:.1f} MB")
     if saved > 0:
@@ -122,11 +136,11 @@ def trim_text(ctx, dry_run, older_than_days):
     Tokens, cost, timings, tool names and sizes stay. Run this when moving an
     existing DB to capture = "metadata", then `aictl db compact` to shrink the file.
     """
-    from ..storage import HistoryDB
+    from ..project_stores import ProjectStores
 
     db_path = ctx.obj.db_path
-    _resolve_db_path(db_path)
-    with HistoryDB(db_path=db_path, flush_interval=0) as hist_db:
+    path = _resolve_db_path(db_path)
+    with ProjectStores(db_path=path, flush_interval=0) as hist_db:
         if dry_run:
             for name, chars in sorted(hist_db.trim_text_estimate().items()):
                 if chars:
@@ -141,16 +155,17 @@ def trim_text(ctx, dry_run, older_than_days):
 @click.pass_context
 def stats(ctx):
     """Show database size, row counts, and time ranges."""
-    from ..storage import HistoryDB
+    from ..project_stores import ProjectStores
 
     db_path = ctx.obj.db_path
     path = _resolve_db_path(db_path)
 
-    hist_db = HistoryDB(db_path=db_path)
+    hist_db = ProjectStores(db_path=path, flush_interval=0)
     s = hist_db.stats()
     hist_db.close()
 
     click.echo(f"Database: {path}")
+    click.echo(f"Project stores: {s.get('project_stores', 0)}")
     click.echo(f"File size: {s['file_size_bytes'] / 1024**2:.1f} MB")
     click.echo()
 
@@ -192,16 +207,22 @@ def reset(ctx, yes):
     db_path = ctx.obj.db_path
     path = Path(db_path) if db_path else DEFAULT_DB_PATH
 
-    if path.exists():
-        size_mb = path.stat().st_size / 1024**2
+    from ..project_stores import project_store_files, remove_project_stores
+
+    if path.exists() or project_store_files(path):
+        size_mb = (_history_bytes(path)[0] if path.exists() else 0) / 1024**2
         click.echo(f"Database: {path}")
-        click.echo(f"Size: {size_mb:.1f} MB")
+        click.echo(f"Size: {size_mb:.1f} MB (with {len(_project_files(path))} project store files)")
         if not yes:
             click.confirm(
                 "Permanently delete ALL data and start a new database?",
                 abort=True,
             )
-        path.unlink()
+        # The project stores too: a store left behind would bring its history back.
+        # Only files that are project stores go; anything else in that folder stays.
+        for f in [path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")]:
+            f.unlink(missing_ok=True)
+        remove_project_stores(path)
         click.secho("Database deleted.", fg="yellow")
     else:
         click.echo(f"Database: {path}")
@@ -282,7 +303,6 @@ from ..platforms import IS_WINDOWS as _IS_WINDOWS
 
 def _npm() -> str:
     """Path of npm. With shell=True a missing command is only a non-zero exit, so check first."""
-    import shutil
 
     npm = shutil.which("npm")
     if not npm:
@@ -346,7 +366,6 @@ def _is_index_url(value: str) -> bool:
 def _pip_configured_index() -> str | None:
     """The index pip is set up to use: ``PIP_INDEX_URL``, then pip's own config files."""
     import os
-    import shutil
     import subprocess
 
     from_env = os.environ.get("PIP_INDEX_URL")
@@ -444,7 +463,6 @@ def reinstall(skip_ui, force_ui, index_url):
     Use this after pulling changes or editing source code. Without it,
     the installed 'aictl' command runs stale copies from site-packages.
     """
-    import shutil
     import subprocess
 
     if index_url and not _is_index_url(index_url):

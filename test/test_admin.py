@@ -230,7 +230,7 @@ class TestDbStats:
             "latest_ts": time.time(),
         }
 
-        with patch("aictl.storage.HistoryDB", return_value=mock_db):
+        with patch("aictl.project_stores.ProjectStores", return_value=mock_db):
             result = runner.invoke(db, ["--db", str(db_file), "stats"])
 
         assert result.exit_code == 0
@@ -254,7 +254,7 @@ class TestDbCompact:
         mock_db.compact.return_value = {"samples_downsampled": 100, "events_deleted": 50}
         mock_db._conn.return_value = mock_conn
 
-        with patch("aictl.storage.HistoryDB", return_value=mock_db):
+        with patch("aictl.project_stores.ProjectStores", return_value=mock_db):
             result = runner.invoke(db, ["--db", str(db_file), "compact"])
 
         assert result.exit_code == 0
@@ -269,12 +269,12 @@ class TestDbCompact:
         mock_db = MagicMock()
         mock_db.compact.return_value = {}
 
-        with patch("aictl.storage.HistoryDB", return_value=mock_db):
+        with patch("aictl.project_stores.ProjectStores", return_value=mock_db):
             result = runner.invoke(db, ["--db", str(db_file), "compact", "--no-vacuum"])
 
         assert result.exit_code == 0
         # VACUUM should NOT be called
-        mock_db._conn.assert_not_called()
+        mock_db.vacuum.assert_not_called()
 
 
 # ────────────────────────────────────────────────────────────────

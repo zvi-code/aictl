@@ -614,13 +614,15 @@ class CollectionService:
         # SQLite persistence
         try:
             from .platforms import load_config as _load_config
-            from .storage import HistoryDB
+            from .project_stores import ProjectStores
 
             store_cfg = _load_config()
             log_paths = [store_cfg.effective_log_file()]
             if store_cfg.logging_enabled:
                 log_paths.append(Path(store_cfg.logging_dir).resolve())
-            self.db = HistoryDB(
+            # One store per git repository next to the machine store: an import in one
+            # project never holds the write lock of another.
+            self.db = ProjectStores(
                 db_path=self._db_path,
                 datapoint_logger=self._dp_logger,
                 retention_days=store_cfg.retention_days,
