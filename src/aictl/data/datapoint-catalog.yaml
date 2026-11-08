@@ -1,20 +1,1120 @@
-# Datapoint Catalog — explains every metric shown in the aictl dashboard.
+# Datapoint Catalog - explains every datapoint the aictl board shows.
+#
+# The board is the only dashboard UI. Each entry is a field a user sees, with a meaning and a source.
 #
 # Each entry has:
 #   explanation:    What this datapoint represents (static, human-readable)
-#   source:         How the value is collected or calculated
+#   source:         How the value is collected or calculated (the function or query that computes it)
 #   source_type:    raw | deduced | aggregated
 #   unit:           tokens, bytes, percent, count, rate_bps, usd, seconds, ratio
 #   update_freq:    realtime | on-collect | on-discovery | static
-#   tab:            Which dashboard tab(s) show this (csv if multiple)
-#   section:        Section within the tab
+#   tab:            The board section that shows it: Agents, Usage and cost, Prompts and skills,
+#                   Context, Tools, failures and speed, Changes and testing, Machine,
+#                   Settings in effect, Where the data comes from; or Agent drawer, Settings
+#   section:        The panel (or the drawer tab) inside that board section
 #   otel_metric:    Corresponding OTel metric name (if any)
 #   dynamic_source: true if the source description gains detail as data arrives
-#                   (e.g. "accumulated from 3 sessions" vs static definition)
 
-# ═══════════════════════════════════════════════════════════════════
-# OVERVIEW — SPARKLINES (top-level time series)
-# ═══════════════════════════════════════════════════════════════════
+
+# ===============================================================
+# AGENTS
+# ===============================================================
+
+board.agent.activity:
+  explanation: >
+    Calls per time slot, as a small trend.
+  source: >
+    _activity_for: request and tool-call counts per spark slot.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Agents
+  section: Agents and subagents
+  dynamic_source: false
+
+board.agent.cached:
+  explanation: >
+    Cache read as a share of all input tokens.
+  source: >
+    cache_read_tokens / (input + cache_read + cache_creation) of the agent.
+  source_type: deduced
+  unit: ratio
+  update_freq: on-collect
+  tab: Agents
+  section: Agents and subagents
+  dynamic_source: false
+
+board.agent.confirms_asked:
+  explanation: >
+    Confirmations the agent asked for.
+  source: >
+    COUNT of tool_invocations rows with a confirm value.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Agents
+  section: Agents and subagents
+  dynamic_source: false
+
+board.agent.cost:
+  explanation: >
+    Cost of the agent at stored cost or list price.
+  source: >
+    SUM(requests.cost_usd), else _list_cost from the model price table.
+  source_type: aggregated
+  unit: usd
+  update_freq: on-collect
+  tab: Agents
+  section: Agents and subagents
+  dynamic_source: false
+
+board.agent.cpu:
+  explanation: >
+    CPU of the agent's live processes.
+  source: >
+    Sum of cpu_pct of the session's pids in the collector snapshot; falls
+    back to the live session figure.
+  source_type: raw
+  unit: percent
+  update_freq: realtime
+  tab: Agents
+  section: Agents and subagents
+  dynamic_source: false
+
+board.agent.duration:
+  explanation: >
+    Time from the first record to the last, or to now while it runs.
+  source: >
+    started_at and ended_at of the session or subagent, else the first and
+    last record timestamps.
+  source_type: deduced
+  unit: seconds
+  update_freq: realtime
+  tab: Agents
+  section: Agents and subagents
+  dynamic_source: false
+
+board.agent.failures:
+  explanation: >
+    Failed tool calls of the agent.
+  source: >
+    COUNT of those rows with is_error set.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Agents
+  section: Agents and subagents
+  dynamic_source: false
+
+board.agent.input:
+  explanation: >
+    Input tokens without cache.
+  source: >
+    SUM(requests.input_tokens) of the agent.
+  source_type: aggregated
+  unit: tokens
+  update_freq: on-collect
+  tab: Agents
+  section: Agents and subagents
+  dynamic_source: false
+
+board.agent.mem:
+  explanation: >
+    RAM of the agent's live processes.
+  source: >
+    Sum of mem_mb of the session's pids in the collector snapshot.
+  source_type: raw
+  unit: bytes
+  update_freq: realtime
+  tab: Agents
+  section: Agents and subagents
+  dynamic_source: false
+
+board.agent.model:
+  explanation: >
+    Models the agent called.
+  source: >
+    Distinct requests.model values of the agent.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Agents
+  section: Agents and subagents
+  dynamic_source: false
+
+board.agent.msgs:
+  explanation: >
+    User, assistant and tool messages of the agent.
+  source: >
+    _agent_row msgs: session_prompts (user), requests (assistant),
+    tool_invocations (tool).
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Agents
+  section: Agents and subagents
+  dynamic_source: false
+
+board.agent.output:
+  explanation: >
+    Output tokens.
+  source: >
+    SUM(requests.output_tokens) of the agent.
+  source_type: aggregated
+  unit: tokens
+  update_freq: on-collect
+  tab: Agents
+  section: Agents and subagents
+  dynamic_source: false
+
+board.agent.project:
+  explanation: >
+    Project folder of the agent.
+  source: >
+    sessions.project_path, else requests.project_path.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Agents
+  section: Agents and subagents
+  dynamic_source: false
+
+board.agent.status:
+  explanation: >
+    Run state of the agent: running, looping, waiting, idle, ended or
+    stopped.
+  source: >
+    board.status for main agents and board.sub_status for subagents, from
+    live processes, the newest request and its finish_reason.
+  source_type: deduced
+  unit: count
+  update_freq: realtime
+  tab: Agents
+  section: Agents and subagents
+  dynamic_source: false
+
+board.agent.tool:
+  explanation: >
+    The AI tool the agent runs in.
+  source: >
+    sessions.tool, else requests.tool of the session.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Agents
+  section: Agents and subagents
+  dynamic_source: false
+
+board.agent.tool_calls:
+  explanation: >
+    Tool calls of the agent.
+  source: >
+    COUNT of tool_invocations rows of the agent that are not permission
+    records.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Agents
+  section: Agents and subagents
+  dynamic_source: false
+
+board.role.row:
+  explanation: >
+    Runs, messages, tokens, cost and tool failure rate per kind of agent
+    (main agents, then subagents by task).
+  source: >
+    compute_board by_role: agents grouped by agents.task, main agents first.
+  source_type: aggregated
+  unit: tokens
+  update_freq: on-collect
+  tab: Agents
+  section: Main agents and subagents
+  dynamic_source: false
+
+board.attention.item:
+  explanation: >
+    An agent that is looping, or waiting for you to confirm a tool call,
+    with the detail, cost so far and since when.
+  source: >
+    board_api._attention: loops that are at the end of the session with
+    status looping, and agents with status waiting and a pending
+    confirmation.
+  source_type: deduced
+  unit: count
+  update_freq: realtime
+  tab: Agents
+  section: Needs you now
+  dynamic_source: false
+
+board.kpi.idle:
+  explanation: >
+    Sessions that are alive or recent but whose turn has ended and nothing
+    runs.
+  source: >
+    compute_board kpis.idle: sessions in scope with status idle (turn ended,
+    last activity within IDLE_AFTER_S or process alive).
+  source_type: deduced
+  unit: count
+  update_freq: realtime
+  tab: Agents
+  section: Summary tiles
+  dynamic_source: false
+
+board.kpi.running:
+  explanation: >
+    Agents running now: sessions in view whose status is running, looping or
+    waiting.
+  source: >
+    compute_board kpis.running: count of sessions in scope whose status is
+    in ACTIVE_STATUSES. Status comes from live processes, the newest request
+    and the finish reason.
+  source_type: deduced
+  unit: count
+  update_freq: realtime
+  tab: Agents
+  section: Summary tiles
+  dynamic_source: false
+
+board.kpi.subagents_running:
+  explanation: >
+    Subagents that are running, looping or waiting.
+  source: >
+    compute_board kpis.subagents_running: agents other than the main agent
+    of each session in scope, with an active sub status.
+  source_type: deduced
+  unit: count
+  update_freq: realtime
+  tab: Agents
+  section: Summary tiles
+  dynamic_source: false
+
+board.model.row:
+  explanation: >
+    One row per model: agents, calls, tokens, input, output, cache read,
+    cache write, cached share, cost and p95 reply time.
+  source: >
+    compute_board by_model: requests grouped by model; p95 is the 0.95
+    percentile of duration_ms of that model. Cache write is null for tools
+    that never report it.
+  source_type: aggregated
+  unit: tokens
+  update_freq: on-collect
+  tab: Agents
+  section: Usage by model
+  dynamic_source: false
+
+
+# ===============================================================
+# USAGE AND COST
+# ===============================================================
+
+board.saved_usd:
+  explanation: >
+    What cache reads saved against the full input price.
+  source: >
+    compute_board saved_usd: cache-read tokens times the difference between
+    input and cache-read list price of each model.
+  source_type: deduced
+  unit: usd
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Cache hit rate
+  dynamic_source: false
+
+board.series.cache_rate:
+  explanation: >
+    Cache read share of input per time bucket.
+  source: >
+    compute_board series.cached_share.
+  source_type: deduced
+  unit: ratio
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Cache hit rate
+  dynamic_source: false
+
+board.credits:
+  explanation: >
+    AI credits GitHub Copilot reports for the sessions in view. A credit is
+    the tool's unit, not dollars.
+  source: >
+    board_api._credits_section: HistoryDB.query_session_usage daily
+    billing_amount for sessions active in the window; days cut by a window
+    edge count whole.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Cost
+  dynamic_source: false
+
+board.series.cost:
+  explanation: >
+    Cost per time bucket, split by tool, project or model.
+  source: >
+    compute_board series.cost.by_tool, by_project, by_model.
+  source_type: aggregated
+  unit: usd
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Cost
+  dynamic_source: false
+
+board.unpriced:
+  explanation: >
+    Tokens whose model has no known price, so they carry no cost.
+  source: >
+    board_api._unpriced_section: tokens of models for which no stored cost
+    and no list price exists, with their share of all tokens.
+  source_type: deduced
+  unit: tokens
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Cost
+  dynamic_source: false
+
+board.series.messages:
+  explanation: >
+    User, assistant and tool messages per time bucket.
+  source: >
+    compute_board series.messages: session_prompts, requests and
+    tool_invocations per bucket.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Messages
+  dynamic_source: false
+
+board.project.agents:
+  explanation: >
+    Agents in the project.
+  source: >
+    compute_board projects: Sessions and their subagents with this
+    project_path.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Projects
+  dynamic_source: false
+
+board.project.api_errors:
+  explanation: >
+    Failed model calls in the project.
+  source: >
+    compute_board projects: requests with is_error set.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Projects
+  dynamic_source: false
+
+board.project.cached:
+  explanation: >
+    Cached share in the project.
+  source: >
+    compute_board projects: cache_read / all input tokens of the project.
+  source_type: deduced
+  unit: ratio
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Projects
+  dynamic_source: false
+
+board.project.cost:
+  explanation: >
+    Cost in the project.
+  source: >
+    compute_board projects: SUM(cost_usd) or list price of requests in the
+    project.
+  source_type: aggregated
+  unit: usd
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Projects
+  dynamic_source: false
+
+board.project.lines:
+  explanation: >
+    Lines added and removed in the project.
+  source: >
+    compute_board projects: SUM of lines_added and lines_removed in
+    file_write_events.detail.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Projects
+  dynamic_source: false
+
+board.project.loops:
+  explanation: >
+    Loops in the project.
+  source: >
+    compute_board projects: Visible loops by project of the session.
+  source_type: deduced
+  unit: count
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Projects
+  dynamic_source: false
+
+board.project.msgs:
+  explanation: >
+    Messages in the project.
+  source: >
+    compute_board projects: Model calls plus prompts plus tool calls of the
+    project.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Projects
+  dynamic_source: false
+
+board.project.p95:
+  explanation: >
+    95th percentile reply time in the project.
+  source: >
+    compute_board projects: requests.duration_ms > 0, grouped by project.
+  source_type: deduced
+  unit: seconds
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Projects
+  dynamic_source: false
+
+board.project.prompts:
+  explanation: >
+    User prompts in the project.
+  source: >
+    compute_board projects: COUNT of session_prompts rows with agent_id
+    empty.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Projects
+  dynamic_source: false
+
+board.project.tests:
+  explanation: >
+    Test runs and passed test runs in the project.
+  source: >
+    compute_board projects: _tests_section: tool_invocations whose target
+    looks like a test command.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Projects
+  dynamic_source: false
+
+board.project.tokens:
+  explanation: >
+    Tokens in the project.
+  source: >
+    compute_board projects: SUM of token columns of requests with this
+    project_path.
+  source_type: aggregated
+  unit: tokens
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Projects
+  dynamic_source: false
+
+board.project.tool_calls:
+  explanation: >
+    Tool calls in the project.
+  source: >
+    compute_board projects: tool_invocations of the project's sessions.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Projects
+  dynamic_source: false
+
+board.project.tool_fail:
+  explanation: >
+    Share of tool calls that failed in the project.
+  source: >
+    compute_board projects: failures / tool calls of the project's sessions.
+  source_type: deduced
+  unit: ratio
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Projects
+  dynamic_source: false
+
+board.kpi.cached_share:
+  explanation: >
+    Share of input served from the prompt cache.
+  source: >
+    compute_board kpis.cached_share: cache_read / (input + cache_read +
+    cache_write).
+  source_type: deduced
+  unit: ratio
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Summary tiles
+  dynamic_source: false
+
+board.kpi.cost_usd:
+  explanation: >
+    Cost of the range at the stored cost per call, or at list price when the
+    call has none. Not a bill.
+  source: >
+    compute_board kpis.cost_usd: requests.cost_usd where stored, else
+    _list_cost from the model price table.
+  source_type: aggregated
+  unit: usd
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Summary tiles
+  dynamic_source: false
+
+board.kpi.messages:
+  explanation: >
+    User, assistant and tool messages in the range.
+  source: >
+    compute_board kpis.messages: model calls plus prompts plus tool calls,
+    including the totals a tool reports without rows.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Summary tiles
+  dynamic_source: false
+
+board.kpi.prev:
+  explanation: >
+    The same totals over the window before this one, for the change shown
+    under each tile.
+  source: >
+    board_api._previous: the filters re-applied to [since - span, since);
+    null when that window holds no data.
+  source_type: deduced
+  unit: count
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Summary tiles
+  dynamic_source: false
+
+board.kpi.tokens:
+  explanation: >
+    Input, output, cache read and cache write tokens of all model calls in
+    the range.
+  source: >
+    compute_board kpis.tokens: sum over the usage cube built from requests,
+    plus sessions that only have a session_usage total.
+  source_type: aggregated
+  unit: tokens
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Summary tiles
+  dynamic_source: false
+
+board.series.tokens:
+  explanation: >
+    Tokens per time bucket, split into cache read, input, cache write and
+    output.
+  source: >
+    compute_board series.tokens: usage cube buckets of requests.
+  source_type: aggregated
+  unit: tokens
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Tokens, cached and not cached
+  dynamic_source: false
+
+
+# ===============================================================
+# PROMPTS AND SKILLS
+# ===============================================================
+
+board.project_prompt.row:
+  explanation: >
+    A prompt file (AGENTS.md style) in a project, its parent folders or the
+    user folders, and how many prompts used it.
+  source: >
+    board_api._project_prompts: session_prompts.prompt_file grouped by file
+    and project.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Prompts and skills
+  section: Project prompts
+  dynamic_source: false
+
+board.prompt.row:
+  explanation: >
+    A user prompt with time, text, project and the tokens of its turn.
+  source: >
+    board_api._prompts_section: session_prompts rows with agent_id empty.
+    Text is masked for secrets; tokens are the whole turn's tokens.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Prompts and skills
+  section: Prompts
+  dynamic_source: false
+
+board.prompt.total:
+  explanation: >
+    Number of user prompts in the range.
+  source: >
+    compute_board prompts_total.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Prompts and skills
+  section: Prompts
+  dynamic_source: false
+
+board.skill.row:
+  explanation: >
+    A skill with scope, agents that used it, uses and the tokens of the
+    turns where it ran.
+  source: >
+    board_api._skills_section: skill_uses rows; turn tokens come from
+    _turns.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Prompts and skills
+  section: Skills used
+  dynamic_source: false
+
+board.workflow.row:
+  explanation: >
+    Workflow and prompt files of the tools with their type, size, tokens and
+    last change.
+  source: >
+    board_api._context_workflows over the collector's file inventory: files
+    whose path or kind marks a workflow or prompt.
+  source_type: raw
+  unit: count
+  update_freq: on-discovery
+  tab: Prompts and skills
+  section: Workflows and prompt files
+  dynamic_source: false
+
+
+# ===============================================================
+# CONTEXT
+# ===============================================================
+
+memory.entry.activity:
+  explanation: >
+    Activity status of a memory file — green (live active, recently
+    changed), orange (modified within 5 minutes), grey (inactive).
+  source: >
+    Based on file mtime comparison: green if changed since last collection,
+    orange if mtime within 300s, grey otherwise.
+  source_type: deduced
+  unit: count
+  update_freq: on-collect
+  tab: Context
+  section: Agent memory
+  dynamic_source: true
+
+memory.entry.tokens:
+  explanation: >
+    Estimated token count for a single memory/context file.
+  source: >
+    ceil(len(content.encode('utf-8')) / 4). The content is read from disk on
+    each collection cycle.
+  source_type: deduced
+  unit: tokens
+  update_freq: on-collect
+  tab: Context
+  section: Agent memory
+  otel_metric: aictl.memory.tokens
+  dynamic_source: false
+
+memory.growth_chart:
+  explanation: >
+    Time series chart showing growth of agent memory tokens over time.
+    Tracks how much persistent context AI tools accumulate.
+  source: >
+    board_api._context_growth: mem_tokens and memory_entries of
+    system_snapshots, at most 120 points over the last 7 days, each the last
+    value of its time slot.
+  source_type: aggregated
+  unit: tokens
+  update_freq: on-collect
+  tab: Context
+  section: Agent memory
+  dynamic_source: true
+
+overview.total_memory_tokens:
+  explanation: >
+    Total estimated tokens across all agent memory/context files. These are
+    persistent memory entries that AI tools load into their context window
+    (e.g. Claude's CLAUDE.md, user memory files, Copilot instructions).
+  source: >
+    Memory files are discovered by scanning known paths (e.g.
+    ~/.claude/memory/, ~/.claude/projects/*/memory/). Each file's content is
+    token-estimated via ceil(utf8_bytes / 4). Summed across all entries.
+  source_type: aggregated
+  unit: tokens
+  update_freq: on-collect
+  tab: Context
+  section: Agent memory
+  otel_metric: aictl.memory.tokens
+  dynamic_source: false
+
+board.context.never_sent_files:
+  explanation: >
+    Number of discovered files that the tool never sends to the model.
+  source: >
+    tools.compute_token_budget never_sent_count.
+  source_type: aggregated
+  unit: count
+  update_freq: on-discovery
+  tab: Context
+  section: Context window budget
+  dynamic_source: false
+
+board.context.project_share:
+  explanation: >
+    Per project: always, on-demand and conditional tokens, and the estimate
+    with the global files as a share of the window.
+  source: >
+    board_api._context_budget projects[]: (global_tokens + project tokens) /
+    window.
+  source_type: deduced
+  unit: ratio
+  update_freq: on-discovery
+  tab: Context
+  section: Context window budget
+  dynamic_source: false
+
+board.context.survives_compaction:
+  explanation: >
+    Tokens of the always-loaded files that stay after a compaction.
+  source: >
+    tools.compute_token_budget survives_compaction_tokens.
+  source_type: deduced
+  unit: tokens
+  update_freq: on-discovery
+  tab: Context
+  section: Context window budget
+  dynamic_source: false
+
+board.context.window:
+  explanation: >
+    Model context window used for the share figures: the known size of the
+    detected model, else 200 000 tokens (marked assumed).
+  source: >
+    board_api._context_budget: model_pricing.context_window_for(model), else
+    DEFAULT_CONTEXT_WINDOW.
+  source_type: raw
+  unit: tokens
+  update_freq: on-collect
+  tab: Context
+  section: Context window budget
+  dynamic_source: false
+
+budget.context_window.always_loaded:
+  explanation: >
+    Tokens from files always loaded into the context window on every LLM
+    call. This is the guaranteed baseline context consumption.
+  source: >
+    compute_token_budget() classifies files: sent_to_llm="yes" AND
+    loaded_when="every-call". Sums token estimates for matching files.
+    Includes global scope + largest sub-project.
+  source_type: deduced
+  unit: tokens
+  update_freq: on-discovery
+  tab: Context
+  section: Context window budget
+  dynamic_source: false
+
+budget.context_window.cacheable:
+  explanation: >
+    Tokens from files marked as cacheable — can be served from prompt cache,
+    reducing cost and latency.
+  source: >
+    Files where cacheable="yes" in paths-*.csv. These files benefit from
+    prompt caching when the AI provider supports it.
+  source_type: deduced
+  unit: tokens
+  update_freq: on-discovery
+  tab: Context
+  section: Context window budget
+  dynamic_source: false
+
+budget.context_window.conditional:
+  explanation: >
+    Tokens from files loaded conditionally based on project type or feature
+    flags.
+  source: >
+    Files where sent_to_llm in ("conditional", "partial"). Summed token
+    estimates.
+  source_type: deduced
+  unit: tokens
+  update_freq: on-discovery
+  tab: Context
+  section: Context window budget
+  dynamic_source: false
+
+budget.context_window.on_demand:
+  explanation: >
+    Tokens from files loaded on-demand. Not always in context but available
+    when referenced.
+  source: >
+    Files where sent_to_llm="on-demand" OR loaded_when="on-demand". Summed
+    token estimates.
+  source_type: deduced
+  unit: tokens
+  update_freq: on-discovery
+  tab: Context
+  section: Context window budget
+  dynamic_source: false
+
+budget.context_window.percentage:
+  explanation: >
+    Current context window usage as percentage of detected model's maximum
+    context length. Color-coded: green <50%, yellow <80%, orange >=80%.
+  source: >
+    (always_loaded_tokens / model_max_context) * 100. Model max context
+    detected from tool telemetry model field. For max potential: sums all
+    projects (not just largest).
+  source_type: deduced
+  unit: percent
+  update_freq: on-discovery
+  tab: Context
+  section: Context window budget
+  dynamic_source: false
+
+budget.model_detected:
+  explanation: >
+    The AI model detected for context window size estimation. Used to
+    calculate what percentage of the model's context window is consumed.
+  source: >
+    From tool telemetry model field or tool config model setting. Determines
+    max context length for percentage calculation.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Context
+  section: Context window budget
+  dynamic_source: true
+
+budget.project_estimate:
+  explanation: >
+    Estimated context window usage for the largest sub-project, plus global
+    tokens. Shows realistic total when multiple projects exist.
+  source: >
+    compute_token_budget() groups files by project root, finds the largest
+    sub-project by token sum, adds global (non-project) tokens. Fields:
+    largest_project name, largest_project_tokens, global_tokens.
+  source_type: deduced
+  unit: tokens
+  update_freq: on-discovery
+  tab: Context
+  section: Context window budget
+  dynamic_source: false
+
+board.context.map_item:
+  explanation: >
+    Largest files by name per project and kind, with the rest folded into
+    (other).
+  source: >
+    board_api._context_map items: top CONTEXT_MAP_ITEMS file names per
+    (project, kind).
+  source_type: aggregated
+  unit: tokens
+  update_freq: on-discovery
+  tab: Context
+  section: Context window map
+  dynamic_source: false
+
+overview.context_map.by_project:
+  explanation: >
+    Token distribution broken down by project. Shows how context budget is
+    split across different working directories/repositories.
+  source: >
+    Files grouped by resolved project root (git root or parent directory).
+    Each project's tokens = sum of file estimates within that project scope.
+  source_type: aggregated
+  unit: tokens
+  update_freq: on-discovery
+  tab: Context
+  section: Context window map
+  dynamic_source: false
+
+overview.context_map.conditional:
+  explanation: >
+    Tokens from files loaded conditionally (e.g. only in certain project
+    types or when specific features are enabled).
+  source: >
+    Files where sent_to_llm in ("conditional", "partial") in paths-*.csv.
+    Token count estimated per file, summed.
+  source_type: aggregated
+  unit: tokens
+  update_freq: on-discovery
+  tab: Context
+  section: Context window map
+  dynamic_source: false
+
+overview.context_map.not_sent:
+  explanation: >
+    Tokens from files that exist on disk but are never sent to the LLM.
+    Configuration, state, and metadata files that the tool uses internally.
+  source: >
+    Files where sent_to_llm="no" in paths-*.csv. Token count estimated per
+    file, summed.
+  source_type: aggregated
+  unit: tokens
+  update_freq: on-discovery
+  tab: Context
+  section: Context window map
+  dynamic_source: false
+
+overview.context_map.on_demand:
+  explanation: >
+    Tokens from files loaded on-demand (only when referenced or needed).
+    These don't consume context by default but contribute when activated.
+  source: >
+    Files where sent_to_llm="on-demand" OR loaded_when="on-demand" in
+    paths-*.csv. Token count estimated per file, summed.
+  source_type: aggregated
+  unit: tokens
+  update_freq: on-discovery
+  tab: Context
+  section: Context window map
+  dynamic_source: false
+
+overview.context_map.sent_to_llm:
+  explanation: >
+    Tokens from files that are always sent to the LLM on every call. These
+    consume context window capacity on every interaction and represent the
+    baseline context load.
+  source: >
+    Files where sent_to_llm="yes" AND loaded_when="every-call" in
+    paths-*.csv. Token count estimated per file, summed.
+  source_type: aggregated
+  unit: tokens
+  update_freq: on-discovery
+  tab: Context
+  section: Context window map
+  dynamic_source: false
+
+board.context.daily_row:
+  explanation: >
+    Calls, input, output, cache read, cache write, total tokens and cost per
+    local day and model, for the last 7 days.
+  source: >
+    board_api._context_daily over requests, grouped by local date and model.
+  source_type: aggregated
+  unit: tokens
+  update_freq: on-collect
+  tab: Context
+  section: Daily usage by model
+  dynamic_source: false
+
+budget.daily_tokens:
+  explanation: >
+    Calls, tokens and cost per local day and model for the last 7 days, as a
+    stacked chart and a table.
+  source: >
+    board_api._context_daily over the requests table, grouped by local date
+    and model. Cost is the stored cost, else the list price.
+  source_type: aggregated
+  unit: tokens
+  update_freq: on-collect
+  tab: Context
+  section: Daily usage by model
+  dynamic_source: false
+
+api.file_content:
+  explanation: >
+    File content for the preview of a context file in the board. Returns raw
+    text of tracked files.
+  source: >
+    GET /api/file: direct file read, limited to 200 KB. The path must be in
+    the allowed set (discovered tool files).
+  source_type: raw
+  unit: bytes
+  update_freq: on-collect
+  tab: Context
+  section: Files each tool reads
+  dynamic_source: false
+
+board.context.file:
+  explanation: >
+    Each context file with tool, kind, scope, size, tokens, whether it is
+    sent to the model, when it loads and whether it changed in the last 5
+    minutes.
+  source: >
+    board_api._context_file over the collector's discovered files. Tokens
+    are ceil(bytes / 4).
+  source_type: raw
+  unit: tokens
+  update_freq: on-discovery
+  tab: Context
+  section: Files each tool reads
+  dynamic_source: false
+
+files.item.activity:
+  explanation: >
+    File activity indicator — green pulse (actively changing), orange
+    (recently modified), grey (inactive).
+  source: >
+    Based on file mtime: green if changed since last collection cycle,
+    orange if mtime within 300s, grey otherwise. Pulsing animation for live-
+    active files.
+  source_type: deduced
+  unit: count
+  update_freq: on-collect
+  tab: Context
+  section: Files each tool reads
+  dynamic_source: true
+
+files.item.sent_to_llm:
+  explanation: >
+    Whether this file is sent to the LLM and under what conditions. Diamond
+    = always, diamond-outline = on-demand, circle = conditional/no.
+  source: >
+    sent_to_llm field from paths-*.csv for this file's path pattern. Values:
+    "yes", "on-demand", "conditional", "partial", "no".
+  source_type: raw
+  unit: count
+  update_freq: static
+  tab: Context
+  section: Files each tool reads
+  dynamic_source: false
+
+files.item.size:
+  explanation: >
+    File size in bytes from the filesystem.
+  source: >
+    os.stat(path).st_size.
+  source_type: raw
+  unit: bytes
+  update_freq: on-collect
+  tab: Context
+  section: Files each tool reads
+  otel_metric: aictl.file.bytes
+  dynamic_source: false
+
+files.item.tokens:
+  explanation: >
+    Estimated token count for a single file.
+  source: >
+    ceil(len(content.encode('utf-8')) / 4).
+  source_type: deduced
+  unit: tokens
+  update_freq: on-collect
+  tab: Context
+  section: Files each tool reads
+  otel_metric: aictl.file.tokens
+  dynamic_source: false
 
 overview.files:
   explanation: >
@@ -22,15 +1122,15 @@ overview.files:
     across all monitored AI tools on disk. Counts files matching known path
     patterns from paths-unix.csv (or paths-windows.csv on Windows).
   source: >
-    File discovery expands path templates from paths-*.csv using tool-specific
-    root strategies (home dir, XDG config, project root). Each expanded path
-    is checked for existence via os.stat(). The count is sum(len(tool.files))
-    across all tools, excluding aictl's own files.
+    File discovery expands path templates from paths-*.csv using tool-
+    specific root strategies (home dir, XDG config, project root). Each
+    expanded path is checked for existence via os.stat(). The count is
+    sum(len(tool.files)) across all tools, excluding aictl's own files.
   source_type: aggregated
   unit: count
   update_freq: on-discovery
-  tab: overview
-  section: sparklines
+  tab: Context
+  section: Files each tool reads
   otel_metric: aictl.discovery.files
   dynamic_source: false
 
@@ -46,300 +1146,251 @@ overview.tokens:
   source_type: aggregated
   unit: tokens
   update_freq: on-discovery
-  tab: overview
-  section: sparklines
+  tab: Context
+  section: Files each tool reads
   otel_metric: aictl.discovery.tokens
   dynamic_source: false
 
-overview.cpu:
+board.context.lifetime_as_of:
   explanation: >
-    Total CPU utilization across all monitored AI tool processes, expressed
-    as a percentage where 100% = one full CPU core. A value of 400% means
-    four cores are fully utilized by AI tools.
+    When a cached lifetime source was last computed, and the cost quality
+    (reported, estimated or unknown).
   source: >
-    psutil.Process.cpu_percent() is called for each monitored process on
-    every collection cycle (default 1.0s interval). Values are summed
-    across all processes belonging to AI tools. Live correlator data is
-    preferred; falls back to per-process discovery data if unavailable.
-  source_type: aggregated
-  unit: percent
-  update_freq: realtime
-  tab: overview
-  section: sparklines
-  otel_metric: process.cpu.utilization
-  dynamic_source: false
-
-overview.mem_mb:
-  explanation: >
-    Total resident memory (RSS) consumed by all monitored AI tool processes,
-    in megabytes. Shows physical RAM footprint of the AI tool ecosystem.
-  source: >
-    psutil.Process.memory_info().rss is read for each monitored process.
-    Values are summed across all AI tool processes and converted to MB
-    (bytes / 1048576).
-  source_type: aggregated
-  unit: bytes
-  update_freq: realtime
-  tab: overview
-  section: sparklines
-  otel_metric: process.memory.usage
-  dynamic_source: false
-
-# ═══════════════════════════════════════════════════════════════════
-# OVERVIEW — INVENTORY METRICS
-# ═══════════════════════════════════════════════════════════════════
-
-overview.total_processes:
-  explanation: >
-    Number of running OS processes attributed to AI tools. Includes IDE
-    extensions, language servers, daemon processes, and CLI instances.
-    Uses the higher of discovery count vs live PID count per tool.
-  source: >
-    Process discovery uses psutil.process_iter() and matches each process
-    against ps_grep_pattern regexes from processes-*.csv. The count per
-    tool is max(len(discovered_processes), live_pid_count_from_correlator).
-    Summed across all tools.
-  source_type: aggregated
-  unit: count
-  update_freq: realtime
-  tab: overview
-  section: inventory
-  otel_metric: aictl.discovery.processes
-  dynamic_source: false
-
-overview.total_size:
-  explanation: >
-    Total disk space consumed by all discovered AI tool files, in bytes.
-    Includes configuration, memory, instructions, rules, and state files.
-  source: >
-    os.stat().st_size for each discovered file, summed across all tools.
-    Only files matching path patterns from paths-*.csv are included.
-  source_type: aggregated
-  unit: bytes
-  update_freq: on-discovery
-  tab: overview
-  section: inventory
-  dynamic_source: false
-
-overview.total_mcp_servers:
-  explanation: >
-    Count of unique MCP (Model Context Protocol) servers configured across
-    all AI tools. MCP servers extend tool capabilities with external data
-    sources, APIs, and integrations.
-  source: >
-    Parsed from tool configuration files (settings.json for Claude Code,
-    mcp.json, .cursor/mcp.json, etc.). If detailed MCP status collection
-    is available, uses len(mcp_detail); otherwise counts unique server
-    names across all tool.mcp_servers lists.
-  source_type: aggregated
-  unit: count
-  update_freq: on-collect
-  tab: overview
-  section: inventory
-  otel_metric: aictl.discovery.mcp_servers
-  dynamic_source: false
-
-overview.total_memory_tokens:
-  explanation: >
-    Total estimated tokens across all agent memory/context files. These are
-    persistent memory entries that AI tools load into their context window
-    (e.g. Claude's CLAUDE.md, user memory files, Copilot instructions).
-  source: >
-    Memory files are discovered by scanning known paths (e.g.
-    ~/.claude/memory/, ~/.claude/projects/*/memory/). Each file's content
-    is token-estimated via ceil(utf8_bytes / 4). Summed across all entries.
-  source_type: aggregated
-  unit: tokens
-  update_freq: on-collect
-  tab: overview
-  section: inventory
-  otel_metric: aictl.memory.tokens
-  dynamic_source: false
-
-# ═══════════════════════════════════════════════════════════════════
-# OVERVIEW — LIVE MONITOR METRICS
-# ═══════════════════════════════════════════════════════════════════
-
-overview.total_live_sessions:
-  explanation: >
-    Number of currently active AI tool sessions. A session represents a
-    continuous interaction with an AI tool (e.g. an open Claude Code
-    conversation, an active Copilot coding session).
-  source: >
-    The SessionCorrelator creates a SessionState when a root-candidate
-    process is first observed. Sessions are considered active if seen
-    within the last 180 seconds. Count is summed from
-    tool.live.session_count across all tools with live data.
-  source_type: aggregated
-  unit: count
-  update_freq: realtime
-  tab: overview
-  section: live_monitor
-  otel_metric: aictl.tool.sessions
-  dynamic_source: true
-
-overview.total_live_estimated_tokens:
-  explanation: >
-    Estimated tokens consumed across all active sessions. Combines exact
-    telemetry (when available) with inference from network traffic and
-    state file writes.
-  source: >
-    Token estimation uses a tiered approach:
-    1. Exact telemetry (confidence 0.95) — from tool's native stats
-       (e.g. Claude stats-cache.json, Copilot events.jsonl)
-    2. Session file inference (confidence 0.60) — state_bytes_written
-       * 0.6 / 4 for input, * 0.4 / 4 for output
-    3. Network inference (confidence 0.40) — network_bytes * 0.7 / 4
-    Sum of (input_tokens + output_tokens) across all active sessions.
-  source_type: deduced
-  unit: tokens
-  update_freq: realtime
-  tab: overview
-  section: live_monitor
-  otel_metric: aictl.tool.token.usage
-  dynamic_source: true
-
-overview.total_live_outbound_rate_bps:
-  explanation: >
-    Aggregate outbound (upload) network traffic rate across all active AI
-    tool sessions, in bytes per second. Represents data being sent to AI
-    APIs (prompts, code context, file contents).
-  source: >
-    Computed from per-session recent_network deque (last 24 samples).
-    Rate = delta_bytes / delta_time over the sample window. Summed across
-    all active tool sessions. Outbound = data sent to remote APIs.
-  source_type: deduced
-  unit: rate_bps
-  update_freq: realtime
-  tab: overview
-  section: live_monitor
-  otel_metric: aictl.tool.network.io
-  dynamic_source: false
-
-overview.total_live_inbound_rate_bps:
-  explanation: >
-    Aggregate inbound (download) network traffic rate across all active
-    AI tool sessions, in bytes per second. Represents data received from
-    AI APIs (completions, streaming responses).
-  source: >
-    Same computation as outbound rate but for receive direction. Computed
-    from per-session recent_network deque, rate = delta_bytes / delta_time.
-    Summed across all active tool sessions.
-  source_type: deduced
-  unit: rate_bps
-  update_freq: realtime
-  tab: overview
-  section: live_monitor
-  otel_metric: aictl.tool.network.io
-  dynamic_source: false
-
-overview.cpu_per_core:
-  explanation: >
-    Per-core CPU utilization for every logical CPU core on the system.
-    Displayed as color-coded bars (red >80%, orange >50%, green >20%).
-    Shows overall system load, not just AI tool processes.
-  source: >
-    psutil.cpu_percent(interval=0.1, percpu=True) returns a list of
-    percentages, one per logical core. Called on every snapshot render.
+    board_api._context_telemetry as_of and cost_quality. A cost of 0 with no
+    price source shows as unknown, not free.
   source_type: raw
-  unit: percent
-  update_freq: realtime
-  tab: overview
-  section: live_monitor
-  otel_metric: system.cpu.utilization
+  unit: count
+  update_freq: on-collect
+  tab: Context
+  section: Lifetime totals each tool reports
   dynamic_source: false
 
-# ═══════════════════════════════════════════════════════════════════
-# OVERVIEW — RESOURCE BARS
-# ═══════════════════════════════════════════════════════════════════
-
-overview.csv_footprint_bar:
+board.context.lifetime_by_model:
   explanation: >
-    Stacked horizontal bar showing file count distribution per AI tool.
-    Visualizes which tools have the largest on-disk configuration footprint.
+    Per-model tokens, requests and cost inside a tool's own lifetime totals.
   source: >
-    len(tool.files) for each tool, rendered proportionally in a stacked bar.
-    File counts from discovery (paths-*.csv expansion).
+    board_api._context_telemetry by_model, from the tool's own statistics
+    file.
+  source_type: raw
+  unit: tokens
+  update_freq: on-collect
+  tab: Context
+  section: Lifetime totals each tool reports
+  dynamic_source: false
+
+board.context.lifetime_errors:
+  explanation: >
+    The newest 20 errors a tool logged, with type, message and model.
+  source: >
+    board_api._context_telemetry errors, newest first.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Context
+  section: Lifetime totals each tool reports
+  dynamic_source: false
+
+procs.tool.telemetry.api_duration_ms:
+  explanation: >
+    Total API duration in milliseconds across all sessions. Used to detect
+    timeout patterns (avg > 30s flags potential issue).
+  source: >
+    Accumulated from session.shutdown events in Copilot CLI events.jsonl.
+    Field: totalApiDurationMs. If avg per request > 30000ms, flagged as
+    timeout error.
+  source_type: aggregated
+  unit: seconds
+  update_freq: on-collect
+  tab: Context
+  section: Lifetime totals each tool reports
+  dynamic_source: true
+
+procs.tool.telemetry.cache_read:
+  explanation: >
+    Lifetime cache-read tokens — tokens retrieved from prompt cache instead
+    of re-processing. Reduces cost and latency.
+  source: >
+    From tool stats: costTracker.totalCacheReadTokens (Claude Code),
+    modelMetrics.*.usage.cacheReadTokens (Copilot), etc.
+  source_type: raw
+  unit: tokens
+  update_freq: on-collect
+  tab: Context
+  section: Lifetime totals each tool reports
+  dynamic_source: true
+
+procs.tool.telemetry.cache_write:
+  explanation: >
+    Lifetime cache-creation tokens — tokens written to prompt cache for
+    future reuse. Initial investment for cache read savings.
+  source: >
+    From tool stats: costTracker.totalCacheCreationTokens (Claude Code),
+    cacheWriteTokens (Copilot), cached_input_tokens (Codex), etc.
+  source_type: raw
+  unit: tokens
+  update_freq: on-collect
+  tab: Context
+  section: Lifetime totals each tool reports
+  dynamic_source: true
+
+procs.tool.telemetry.cost_usd:
+  explanation: >
+    Estimated total cost in USD across all sessions for this tool. Based on
+    the tool's own cost tracking, not recalculated by aictl.
+  source: >
+    From tool stats: costTracker.totalCostUSD (Claude Code),
+    modelMetrics.*.requests.cost (Copilot), usage.cost_usd (Codex). Passed
+    through from tool's native calculation.
+  source_type: raw
+  unit: usd
+  update_freq: on-collect
+  tab: Context
+  section: Lifetime totals each tool reports
+  otel_metric: aictl.telemetry.cost
+  dynamic_source: true
+
+procs.tool.telemetry.errors:
+  explanation: >
+    Errors encountered while collecting telemetry for this tool. Includes
+    parse errors, missing files, permission issues, and API timeouts.
+  source: >
+    Accumulated during telemetry parsing. Each parser catches exceptions and
+    records error type + message. Copilot-specific: timeout detection if avg
+    API latency > 30s/request.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Context
+  section: Lifetime totals each tool reports
+  dynamic_source: true
+
+procs.tool.telemetry.input_tokens:
+  explanation: >
+    Lifetime input tokens consumed by this tool — total tokens sent to the
+    LLM across all sessions. Verified from the tool's native stats.
+  source: >
+    Tool-specific parser reads the tool's stats/telemetry file: - Claude
+    Code: ~/.claude/stats-cache.json → costTracker.totalInputTokens -
+    Copilot CLI: events.jsonl → session.shutdown →
+    modelMetrics.*.usage.inputTokens - Codex CLI: session.json →
+    usage.input_tokens - Cursor: state.vscdb SQLite → keys matching %token%
+    - Continue: sessions/*.json → usage.promptTokens
+  source_type: raw
+  unit: tokens
+  update_freq: on-collect
+  tab: Context
+  section: Lifetime totals each tool reports
+  otel_metric: gen_ai.client.token.usage.verified
+  dynamic_source: true
+
+procs.tool.telemetry.messages:
+  explanation: >
+    Total number of messages (user+assistant turns) across all sessions.
+  source: >
+    From tool stats: costTracker.totalMessages (Claude Code). Not all tools
+    expose message counts.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Context
+  section: Lifetime totals each tool reports
+  otel_metric: aictl.telemetry.messages
+  dynamic_source: true
+
+procs.tool.telemetry.output_tokens:
+  explanation: >
+    Lifetime output tokens generated by this tool — total tokens received
+    from the LLM across all sessions.
+  source: >
+    Same tool-specific parsers as input_tokens, reading the output
+    counterpart field from each tool's native stats format.
+  source_type: raw
+  unit: tokens
+  update_freq: on-collect
+  tab: Context
+  section: Lifetime totals each tool reports
+  otel_metric: gen_ai.client.token.usage.verified
+  dynamic_source: true
+
+procs.tool.telemetry.premium_requests:
+  explanation: >
+    Number of premium API requests used (Copilot CLI). Tracks quota
+    consumption for rate-limited plans.
+  source: >
+    Accumulated from session.shutdown events in Copilot CLI events.jsonl.
+    Field: totalPremiumRequests. Summed across all shutdown events.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Context
+  section: Lifetime totals each tool reports
+  dynamic_source: true
+
+procs.tool.telemetry.sessions:
+  explanation: >
+    Total number of sessions recorded by this tool's telemetry.
+  source: >
+    From tool stats: costTracker.totalSessions (Claude Code), count of
+    session.shutdown events (Copilot), count of session files (Codex).
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Context
+  section: Lifetime totals each tool reports
+  otel_metric: aictl.telemetry.sessions
+  dynamic_source: true
+
+budget.token_by_category:
+  explanation: >
+    Tokens per tool and file kind (instructions, rules, memory, skills and
+    so on), with the part sent to the model and the part never sent.
+  source: >
+    board_api._context_categories: the tool's discovered files grouped by
+    kind; the sent part follows the budget bucket of each file.
+  source_type: aggregated
+  unit: tokens
+  update_freq: on-discovery
+  tab: Context
+  section: Tokens by category
+  dynamic_source: false
+
+budget.token_by_tool:
+  explanation: >
+    Tokens of each tool's context files in total, sent to the model and
+    never sent.
+  source: >
+    board_api._context_categories tokens, sent and never_sent per tool.
+  source_type: aggregated
+  unit: tokens
+  update_freq: on-collect
+  tab: Context
+  section: Tokens by category
+  dynamic_source: true
+
+files.category.count:
+  explanation: >
+    Number of files in a specific category (instructions, config, rules,
+    memory, state, etc.) for a tool.
+  source: >
+    Files grouped by category field from paths-*.csv. Count per category per
+    tool.
   source_type: aggregated
   unit: count
   update_freq: on-discovery
-  tab: overview
-  section: resource_bars
+  tab: Context
+  section: Tokens by category
   dynamic_source: false
 
-overview.live_traffic_bar:
+files.category.tokens:
   explanation: >
-    Stacked horizontal bar showing network traffic distribution per tool.
-    Visualizes which AI tools are consuming the most API bandwidth.
+    Total tokens for all files in a category for a tool.
   source: >
-    Per-tool outbound + inbound rate_bps from live correlator sessions.
-    Tools without active sessions show zero width.
-  source_type: aggregated
-  unit: rate_bps
-  update_freq: realtime
-  tab: overview
-  section: resource_bars
-  dynamic_source: true
-
-# ═══════════════════════════════════════════════════════════════════
-# OVERVIEW — CONTEXT WINDOW MAP
-# ═══════════════════════════════════════════════════════════════════
-
-overview.context_map.sent_to_llm:
-  explanation: >
-    Tokens from files that are always sent to the LLM on every call.
-    These consume context window capacity on every interaction and
-    represent the baseline context load.
-  source: >
-    Files where sent_to_llm="yes" AND loaded_when="every-call" in
-    paths-*.csv. Token count estimated per file, summed.
+    Sum of per-file token estimates within the category.
   source_type: aggregated
   unit: tokens
   update_freq: on-discovery
-  tab: overview
-  section: context_map
-  dynamic_source: false
-
-overview.context_map.on_demand:
-  explanation: >
-    Tokens from files loaded on-demand (only when referenced or needed).
-    These don't consume context by default but contribute when activated.
-  source: >
-    Files where sent_to_llm="on-demand" OR loaded_when="on-demand"
-    in paths-*.csv. Token count estimated per file, summed.
-  source_type: aggregated
-  unit: tokens
-  update_freq: on-discovery
-  tab: overview
-  section: context_map
-  dynamic_source: false
-
-overview.context_map.conditional:
-  explanation: >
-    Tokens from files loaded conditionally (e.g. only in certain project
-    types or when specific features are enabled).
-  source: >
-    Files where sent_to_llm in ("conditional", "partial") in paths-*.csv.
-    Token count estimated per file, summed.
-  source_type: aggregated
-  unit: tokens
-  update_freq: on-discovery
-  tab: overview
-  section: context_map
-  dynamic_source: false
-
-overview.context_map.not_sent:
-  explanation: >
-    Tokens from files that exist on disk but are never sent to the LLM.
-    Configuration, state, and metadata files that the tool uses internally.
-  source: >
-    Files where sent_to_llm="no" in paths-*.csv. Token count estimated
-    per file, summed.
-  source_type: aggregated
-  unit: tokens
-  update_freq: on-discovery
-  tab: overview
-  section: context_map
+  tab: Context
+  section: Tokens by category
   dynamic_source: false
 
 overview.context_map.by_category:
@@ -353,454 +1404,493 @@ overview.context_map.by_category:
   source_type: aggregated
   unit: tokens
   update_freq: on-discovery
-  tab: overview
-  section: context_map
+  tab: Context
+  section: Tokens by category
   dynamic_source: false
 
-overview.context_map.by_project:
-  explanation: >
-    Token distribution broken down by project. Shows how context budget
-    is split across different working directories/repositories.
-  source: >
-    Files grouped by resolved project root (git root or parent directory).
-    Each project's tokens = sum of file estimates within that project scope.
-  source_type: aggregated
-  unit: tokens
-  update_freq: on-discovery
-  tab: overview
-  section: context_map
-  dynamic_source: false
 
-# ═══════════════════════════════════════════════════════════════════
-# OVERVIEW — COLLECTOR HEALTH
-# ═══════════════════════════════════════════════════════════════════
+# ===============================================================
+# TOOLS, FAILURES AND SPEED
+# ===============================================================
 
-overview.collector_health.tools_with_telemetry:
+board.error.row:
   explanation: >
-    Count of AI tools that have verified telemetry data (token usage from
-    the tool's native stats) vs total tools discovered.
+    A failure with tool, message, kind (tool or API), count, agents and last
+    time. Numbers in messages are folded to #.
   source: >
-    Counts tools where tool_telemetry[].source is non-empty and
-    confidence > 0. Format: "N/M tools with telemetry".
+    board_api._errors_section: tool_invocations with is_error
+    (result_summary) and requests with error_type or http_status.
   source_type: aggregated
   unit: count
   update_freq: on-collect
-  tab: overview
-  section: collector_health
-  dynamic_source: true
+  tab: Tools, failures and speed
+  section: Failures and errors
+  dynamic_source: false
 
-overview.collector_health.live_tools:
+board.latency.reply:
   explanation: >
-    Count of tools with active live monitoring (running sessions detected).
+    Model reply time: count, p50, p95, p99 and max.
   source: >
-    Count of tools where tool.live is not None/empty.
-  source_type: aggregated
-  unit: count
-  update_freq: realtime
-  tab: overview
-  section: collector_health
-  dynamic_source: true
+    board_api._latency over requests.duration_ms > 0.
+  source_type: deduced
+  unit: seconds
+  update_freq: on-collect
+  tab: Tools, failures and speed
+  section: Latency and durations
+  dynamic_source: false
 
-overview.collector_health.stale_tools:
+board.latency.run:
   explanation: >
-    Count of tools whose telemetry data is stale (last seen timestamp
-    exceeds freshness threshold). Indicates potential collection failures.
+    Agent run: time from start to end of each agent.
   source: >
-    Tools where (now - last_seen) > staleness threshold. Last_seen comes
-    from the most recent telemetry or live sample timestamp.
+    compute_board latency_rows: ended_at - started_at of agent rows.
+  source_type: deduced
+  unit: seconds
+  update_freq: on-collect
+  tab: Tools, failures and speed
+  section: Latency and durations
+  dynamic_source: false
+
+board.latency.tool:
+  explanation: >
+    Tool call duration: count, p50, p95, p99 and max.
+  source: >
+    board_api._tools_section durations of tool_invocations.duration_ms > 0.
+  source_type: deduced
+  unit: seconds
+  update_freq: on-collect
+  tab: Tools, failures and speed
+  section: Latency and durations
+  dynamic_source: false
+
+board.latency.ttft:
+  explanation: >
+    Time to first token. Shown as not reported for tools that never send it.
+  source: >
+    board_api._latency over requests.ttft_ms > 0.
+  source_type: deduced
+  unit: seconds
+  update_freq: on-collect
+  tab: Tools, failures and speed
+  section: Latency and durations
+  dynamic_source: false
+
+board.latency.turn:
+  explanation: >
+    Whole turn: time from a prompt to the last reply or tool result before
+    the next prompt.
+  source: >
+    board_api._turns: session_prompts timestamps joined to requests end
+    times.
+  source_type: deduced
+  unit: seconds
+  update_freq: on-collect
+  tab: Tools, failures and speed
+  section: Latency and durations
+  dynamic_source: false
+
+board.loop.row:
+  explanation: >
+    A loop: agent, status, the repeated pattern, repeats, tokens and cost
+    spent in it, and since when.
+  source: >
+    board_api.find_loops over tool_invocations of each session; tokens and
+    cost are summed from requests in the loop's time range.
   source_type: deduced
   unit: count
   update_freq: on-collect
-  tab: overview
-  section: collector_health
-  dynamic_source: true
+  tab: Tools, failures and speed
+  section: Loops
+  dynamic_source: false
 
-overview.collector_health.errors:
+board.kpi.fail_rate:
   explanation: >
-    Count of tools with telemetry collection errors (parse failures,
-    missing files, permission errors, timeout errors).
+    Failed tool calls as a share of all tool calls.
   source: >
-    Accumulated from telemetry parser error lists. Each parser reports
-    errors encountered while reading stats files or event logs.
+    compute_board kpis.fail_rate: failures / tool_calls.
+  source_type: deduced
+  unit: ratio
+  update_freq: on-collect
+  tab: Tools, failures and speed
+  section: Summary tiles
+  dynamic_source: false
+
+board.kpi.failures:
+  explanation: >
+    Failed tool calls in the range. API errors are in the Failures panel.
+  source: >
+    compute_board kpis.failures: tool_invocations with is_error set. Null
+    when no tool in view reports tool calls.
   source_type: aggregated
   unit: count
   update_freq: on-collect
-  tab: overview
-  section: collector_health
-  dynamic_source: true
-
-overview.collector_health.otel_status:
-  explanation: >
-    Whether the OpenTelemetry receiver is active and receiving metrics/logs.
-  source: >
-    Boolean from otel_receiver module. Active if any metrics or logs have
-    been received via /v1/metrics or /v1/logs endpoints.
-  source_type: raw
-  unit: count
-  update_freq: realtime
-  tab: overview
-  section: collector_health
-  otel_metric: aictl.collector.status
-  dynamic_source: true
-
-overview.collector_health.otel_metrics_received:
-  explanation: >
-    Total count of OTLP metric data points received by the built-in
-    OpenTelemetry receiver since startup.
-  source: >
-    Counter incremented on each POST to /v1/metrics endpoint. Counts
-    individual metric data points within OTLP JSON payloads.
-  source_type: raw
-  unit: count
-  update_freq: realtime
-  tab: overview
-  section: collector_health
-  dynamic_source: true
-
-# ═══════════════════════════════════════════════════════════════════
-# PROCESSES TAB — PER-TOOL OVERVIEW CARDS
-# ═══════════════════════════════════════════════════════════════════
-
-procs.tool.files:
-  explanation: >
-    Number of on-disk files belonging to this specific AI tool, matching
-    path patterns from paths-*.csv.
-  source: >
-    len(tool.files) after discovery expansion. Each file was verified to
-    exist on disk via os.stat().
-  source_type: raw
-  unit: count
-  update_freq: on-discovery
-  tab: procs
-  section: tool_card
+  tab: Tools, failures and speed
+  section: Summary tiles
   dynamic_source: false
 
-procs.tool.tokens:
+board.kpi.loops:
   explanation: >
-    Total estimated tokens across all files belonging to this tool.
+    Agents repeating the same failing work.
   source: >
-    Sum of ceil(utf8_bytes / 4) for each file in tool.files.
+    compute_board kpis.loops: count of visible loops found by find_loops
+    over the tool calls of each session.
+  source_type: deduced
+  unit: count
+  update_freq: on-collect
+  tab: Tools, failures and speed
+  section: Summary tiles
+  dynamic_source: false
+
+board.kpi.p95_ms:
+  explanation: >
+    95th percentile of model reply time (p50 shown with it).
+  source: >
+    compute_board kpis.p95_ms and p50_ms: percentiles of
+    requests.duration_ms > 0.
+  source_type: deduced
+  unit: seconds
+  update_freq: on-collect
+  tab: Tools, failures and speed
+  section: Summary tiles
+  dynamic_source: false
+
+board.kpi.tool_calls:
+  explanation: >
+    Tool calls in the range, including totals that a tool reports without
+    rows.
+  source: >
+    compute_board kpis.tool_calls: tool_invocations rows that are not
+    permission records, plus the fallback totals of session_usage.
   source_type: aggregated
-  unit: tokens
-  update_freq: on-discovery
-  tab: procs
-  section: tool_card
+  unit: count
+  update_freq: on-collect
+  tab: Tools, failures and speed
+  section: Summary tiles
   dynamic_source: false
 
-procs.tool.process_count:
+board.tool.row:
   explanation: >
-    Number of running OS processes attributed to this tool.
+    Per tool name: calls, failed, failure rate, p50, p95 and max duration,
+    and a trend.
   source: >
-    Process matching via ps_grep_pattern regex from processes-*.csv
-    against psutil.process_iter() results. Includes parent and child
-    processes within the process tree.
+    board_api._tools_section over tool_invocations; durations only from rows
+    with duration_ms > 0.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Tools, failures and speed
+  section: Tool calls
+  dynamic_source: false
+
+board.confirm.row:
+  explanation: >
+    Per tool: calls run automatically, approved, denied, blocked by a rule,
+    and the median wait for an answer.
+  source: >
+    board_api._confirms_section over tool_invocations.confirm and
+    confirm_wait_ms.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Tools, failures and speed
+  section: Tool confirmations
+  dynamic_source: false
+
+
+# ===============================================================
+# CHANGES AND TESTING
+# ===============================================================
+
+board.change.file:
+  explanation: >
+    Per file: lines added and removed, edits, agents and last edit.
+  source: >
+    board_api._changes_section over file_write_events.detail lines_added and
+    lines_removed.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Changes and testing
+  section: Changes
+  dynamic_source: false
+
+board.memfile.row:
+  explanation: >
+    A memory or instruction file with the tool that reads it, scope, tokens
+    per call, lines changed in the range, who changed it and when.
+  source: >
+    board_api._memory_files: files with category memory or instruction,
+    joined to file_write_events.
+  source_type: raw
+  unit: tokens
+  update_freq: on-collect
+  tab: Changes and testing
+  section: Memory and instruction files
+  dynamic_source: false
+
+board.test.piped:
+  explanation: >
+    Passing test runs whose output is piped to a filter, which can hide a
+    failure.
+  source: >
+    compute_board tests_piped: passing runs whose target matches
+    _PIPED_TO_FILTER_RE without pipefail.
+  source_type: deduced
+  unit: count
+  update_freq: on-collect
+  tab: Changes and testing
+  section: Testing
+  dynamic_source: false
+
+board.test.row:
+  explanation: >
+    Per test command: runs, failed, median duration, state now (passing,
+    failing, flaky) and last run. A test is a tool call whose target
+    contains test, jest or tox.
+  source: >
+    board_api._tests_section over tool_invocations; failure is is_error or a
+    non-zero exit_code.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Changes and testing
+  section: Testing
+  dynamic_source: false
+
+
+# ===============================================================
+# MACHINE
+# ===============================================================
+
+board.machine.cores:
+  explanation: >
+    Number of CPU cores, to read the per-core bars.
+  source: >
+    compute_machine cpu_cores from the collector snapshot.
   source_type: raw
   unit: count
-  update_freq: realtime
-  tab: procs
-  section: tool_card
-  otel_metric: aictl.discovery.processes
+  update_freq: on-collect
+  tab: Machine
+  section: CPU
   dynamic_source: false
 
-procs.tool.cpu_pct:
+events.tool.cpu_chart:
   explanation: >
-    CPU utilization for a single process, as percentage of one core.
-    Color-coded: orange >5%, red if anomaly detected.
+    Time series of CPU utilization for a specific tool over the selected
+    time range.
   source: >
-    psutil.Process.cpu_percent(None) / 100 for the specific PID.
-    Updated on each collection cycle.
+    Historical tool_metrics.cpu values from DB, queried for the selected
+    tool and time range.
   source_type: raw
   unit: percent
   update_freq: realtime
-  tab: procs
-  section: process_row
+  tab: Machine
+  section: CPU
+  dynamic_source: false
+
+overview.cpu:
+  explanation: >
+    Total CPU utilization across all monitored AI tool processes, expressed
+    as a percentage where 100% = one full CPU core. A value of 400% means
+    four cores are fully utilized by AI tools.
+  source: >
+    psutil.Process.cpu_percent() is called for each monitored process on
+    every collection cycle (default 1.0s interval). Values are summed across
+    all processes belonging to AI tools. Live correlator data is preferred;
+    falls back to per-process discovery data if unavailable.
+  source_type: aggregated
+  unit: percent
+  update_freq: realtime
+  tab: Machine
+  section: CPU
   otel_metric: process.cpu.utilization
   dynamic_source: false
 
-procs.tool.mem_rss:
+overview.cpu_per_core:
   explanation: >
-    Resident memory (RSS) for a single process. Shown as a visual bar
-    relative to the maximum memory across all processes in the group.
+    Per-core CPU utilization for every logical CPU core on the system.
+    Displayed as color-coded bars (red >80%, orange >50%, green >20%). Shows
+    overall system load, not just AI tool processes.
   source: >
-    psutil.Process.memory_info().rss in bytes. Visual bar width =
-    this_process_mem / max_process_mem_in_group.
+    psutil.cpu_percent(interval=0.1, percpu=True) returns a list of
+    percentages, one per logical core. Called on every snapshot render.
   source_type: raw
-  unit: bytes
+  unit: percent
   update_freq: realtime
-  tab: procs
-  section: process_row
-  otel_metric: process.memory.usage
+  tab: Machine
+  section: CPU
+  otel_metric: system.cpu.utilization
   dynamic_source: false
 
-procs.tool.zombie_risk:
+alerts.headless_browser:
   explanation: >
-    Risk level that this process may become a zombie (orphaned, not
-    properly cleaned up). Based on known patterns from processes-*.csv.
+    Count of headless browser processes (Chrome, Chromium, Firefox) spawned
+    by AI tools. These are resource-heavy and may indicate tool-use loops or
+    web scraping.
   source: >
-    Static classification from processes-*.csv zombie_risk column
-    (none, low, medium, high). Based on historical analysis of each
-    process type's lifecycle behavior.
-  source_type: raw
-  unit: count
-  update_freq: static
-  tab: procs
-  section: process_row
-  dynamic_source: false
-
-procs.tool.anomaly:
-  explanation: >
-    Process anomaly detection — unusual resource consumption, unexpected
-    state, or known problematic patterns.
-  source: >
-    Anomaly rules applied per process: memory exceeding known thresholds
-    (memory_active_mb from CSV), CPU spikes, known leak patterns
-    (known_leak + leak_pattern from CSV), orphan detection.
+    Process matching against browser process name patterns in the process
+    tree of AI tool sessions.
   source_type: deduced
   unit: count
   update_freq: realtime
-  tab: procs
-  section: process_row
+  tab: Machine
+  section: Needs a look
   dynamic_source: true
 
-# ═══════════════════════════════════════════════════════════════════
-# PROCESSES TAB — TOOL CARD SECTIONS
-# ═══════════════════════════════════════════════════════════════════
-
-procs.tool.config.model:
+alerts.orphan_mcp:
   explanation: >
-    The AI model currently configured for this tool (e.g. claude-sonnet-4-5-20250514,
-    gpt-4o). Extracted from the tool's settings file.
+    Count of MCP server processes whose parent process has died. These
+    orphans consume resources but are no longer useful.
   source: >
-    Parsed from tool config files defined in tool-configs.yaml. For
-    Claude Code: settings.json → selectedModel. For Cursor: state.vscdb
-    SQLite. For Copilot: settings.json model preferences.
-  source_type: raw
+    MCP server processes where the expected parent AI tool process is no
+    longer running (ppid check fails or parent PID not in active session
+    PIDs).
+  source_type: deduced
   unit: count
-  update_freq: on-collect
-  tab: procs
-  section: tool_config
-  otel_metric: aictl.config.model
-  dynamic_source: false
-
-procs.tool.config.otel:
-  explanation: >
-    Whether OpenTelemetry export is enabled for this tool, and the
-    configured exporter type and endpoint.
-  source: >
-    Parsed from tool config files. Looks for OTel-related settings
-    (exporter, endpoint, protocol) in the tool's configuration.
-  source_type: raw
-  unit: count
-  update_freq: on-collect
-  tab: procs
-  section: tool_config
-  dynamic_source: false
-
-procs.tool.config.features:
-  explanation: >
-    Feature flags and settings extracted from the tool's configuration.
-    Shows which capabilities are enabled/disabled.
-  source: >
-    Parsed from tool config files per tool-configs.yaml feature
-    extraction rules. Boolean and string values presented as badges.
-  source_type: raw
-  unit: count
-  update_freq: on-collect
-  tab: procs
-  section: tool_config
-  dynamic_source: false
-
-procs.tool.config.mcp_servers:
-  explanation: >
-    MCP servers configured in this tool's settings. Lists server names
-    as pills.
-  source: >
-    Parsed from tool MCP config (e.g. Claude Code's
-    ~/.claude/settings.json mcpServers, or project .mcp.json files).
-  source_type: raw
-  unit: count
-  update_freq: on-collect
-  tab: procs
-  section: tool_config
-  dynamic_source: false
-
-# ═══════════════════════════════════════════════════════════════════
-# PROCESSES TAB — TELEMETRY SECTION
-# ═══════════════════════════════════════════════════════════════════
-
-procs.tool.telemetry.input_tokens:
-  explanation: >
-    Lifetime input tokens consumed by this tool — total tokens sent to
-    the LLM across all sessions. Verified from the tool's native stats.
-  source: >
-    Tool-specific parser reads the tool's stats/telemetry file:
-    - Claude Code: ~/.claude/stats-cache.json → costTracker.totalInputTokens
-    - Copilot CLI: events.jsonl → session.shutdown → modelMetrics.*.usage.inputTokens
-    - Codex CLI: session.json → usage.input_tokens
-    - Cursor: state.vscdb SQLite → keys matching %token%
-    - Continue: sessions/*.json → usage.promptTokens
-  source_type: raw
-  unit: tokens
-  update_freq: on-collect
-  tab: procs
-  section: tool_telemetry
-  otel_metric: gen_ai.client.token.usage.verified
+  update_freq: realtime
+  tab: Machine
+  section: Needs a look
   dynamic_source: true
 
-procs.tool.telemetry.output_tokens:
+alerts.process_anomalies:
   explanation: >
-    Lifetime output tokens generated by this tool — total tokens received
-    from the LLM across all sessions.
+    Total count of process-level anomalies across all AI tools. Aggregates
+    memory leaks, CPU spikes, zombie processes, and other unusual behavior.
   source: >
-    Same tool-specific parsers as input_tokens, reading the output
-    counterpart field from each tool's native stats format.
-  source_type: raw
-  unit: tokens
-  update_freq: on-collect
-  tab: procs
-  section: tool_telemetry
-  otel_metric: gen_ai.client.token.usage.verified
-  dynamic_source: true
-
-procs.tool.telemetry.cache_read:
-  explanation: >
-    Lifetime cache-read tokens — tokens retrieved from prompt cache
-    instead of re-processing. Reduces cost and latency.
-  source: >
-    From tool stats: costTracker.totalCacheReadTokens (Claude Code),
-    modelMetrics.*.usage.cacheReadTokens (Copilot), etc.
-  source_type: raw
-  unit: tokens
-  update_freq: on-collect
-  tab: procs
-  section: tool_telemetry
-  dynamic_source: true
-
-procs.tool.telemetry.cache_write:
-  explanation: >
-    Lifetime cache-creation tokens — tokens written to prompt cache
-    for future reuse. Initial investment for cache read savings.
-  source: >
-    From tool stats: costTracker.totalCacheCreationTokens (Claude Code),
-    cacheWriteTokens (Copilot), cached_input_tokens (Codex), etc.
-  source_type: raw
-  unit: tokens
-  update_freq: on-collect
-  tab: procs
-  section: tool_telemetry
-  dynamic_source: true
-
-procs.tool.telemetry.sessions:
-  explanation: >
-    Total number of sessions recorded by this tool's telemetry.
-  source: >
-    From tool stats: costTracker.totalSessions (Claude Code), count of
-    session.shutdown events (Copilot), count of session files (Codex).
-  source_type: raw
-  unit: count
-  update_freq: on-collect
-  tab: procs
-  section: tool_telemetry
-  otel_metric: aictl.telemetry.sessions
-  dynamic_source: true
-
-procs.tool.telemetry.messages:
-  explanation: >
-    Total number of messages (user+assistant turns) across all sessions.
-  source: >
-    From tool stats: costTracker.totalMessages (Claude Code). Not all
-    tools expose message counts.
-  source_type: raw
-  unit: count
-  update_freq: on-collect
-  tab: procs
-  section: tool_telemetry
-  otel_metric: aictl.telemetry.messages
-  dynamic_source: true
-
-procs.tool.telemetry.cost_usd:
-  explanation: >
-    Estimated total cost in USD across all sessions for this tool.
-    Based on the tool's own cost tracking, not recalculated by aictl.
-  source: >
-    From tool stats: costTracker.totalCostUSD (Claude Code),
-    modelMetrics.*.requests.cost (Copilot), usage.cost_usd (Codex).
-    Passed through from tool's native calculation.
-  source_type: raw
-  unit: usd
-  update_freq: on-collect
-  tab: procs
-  section: tool_telemetry
-  otel_metric: aictl.telemetry.cost
-  dynamic_source: true
-
-procs.tool.telemetry.by_model:
-  explanation: >
-    Token usage and cost broken down by AI model. Shows which models
-    are consuming resources (e.g. claude-sonnet-4-5-20250514 vs claude-haiku).
-  source: >
-    From tool stats: costTracker.byModel (Claude Code) with per-model
-    inputTokens, outputTokens, costUSD. Copilot: per-model breakdown
-    in modelMetrics. Stored as JSON dict {model: {input, output, cost}}.
-  source_type: raw
-  unit: tokens
-  update_freq: on-collect
-  tab: procs
-  section: tool_telemetry
-  dynamic_source: true
-
-procs.tool.telemetry.confidence:
-  explanation: >
-    Confidence score (0-100%) for the telemetry data accuracy. Higher
-    confidence means the data comes from a more reliable source.
-  source: >
-    Set by each parser:
-    - 0.95 (95%): Direct tool stats (Claude stats-cache, OTel spans)
-    - 0.90 (90%): Copilot events.jsonl shutdown events
-    - 0.85 (85%): Codex session.json
-    - 0.75 (75%): Continue session files
-    - 0.70 (70%): Cursor SQLite state
-    - 0.60 (60%): Session file inference
-    - 0.40 (40%): Network traffic inference
-  source_type: raw
-  unit: ratio
-  update_freq: on-collect
-  tab: procs
-  section: tool_telemetry
-  otel_metric: gen_ai.client.confidence
-  dynamic_source: false
-
-procs.tool.telemetry.errors:
-  explanation: >
-    Errors encountered while collecting telemetry for this tool. Includes
-    parse errors, missing files, permission issues, and API timeouts.
-  source: >
-    Accumulated during telemetry parsing. Each parser catches exceptions
-    and records error type + message. Copilot-specific: timeout detection
-    if avg API latency > 30s/request.
-  source_type: raw
-  unit: count
-  update_freq: on-collect
-  tab: procs
-  section: tool_telemetry
-  dynamic_source: true
-
-# ═══════════════════════════════════════════════════════════════════
-# PROCESSES TAB — LIVE MONITOR SECTION (per tool card)
-# ═══════════════════════════════════════════════════════════════════
-
-procs.tool.live.session_count:
-  explanation: >
-    Number of active sessions for this specific tool.
-  source: >
-    Count of SessionState objects for this tool where last_seen is
-    within 180s. From SessionCorrelator tool aggregation.
+    Sum of anomaly counts from all tool process inspections. Each anomaly
+    type has its own detection rule (see procs.tool.anomaly).
   source_type: aggregated
   unit: count
   update_freq: realtime
-  tab: procs
-  section: tool_live
-  otel_metric: aictl.tool.sessions
+  tab: Machine
+  section: Needs a look
+  dynamic_source: true
+
+alerts.subagent_memory:
+  explanation: >
+    Alert triggered when total memory consumption by AI tool subagent
+    processes exceeds 2GB. Indicates potential memory leak or runaway agent.
+  source: >
+    Sum of psutil.Process.memory_info().rss for all processes classified as
+    subagents or child processes. Threshold: 2 * 1024^3 bytes.
+  source_type: deduced
+  unit: bytes
+  update_freq: realtime
+  tab: Machine
+  section: Needs a look
+  dynamic_source: true
+
+board.machine.traffic.file_events:
+  explanation: >
+    File events the monitor saw for the tool.
+  source: >
+    board_api._monitor_section per_tool.file_events from live.file_events.
+  source_type: aggregated
+  unit: count
+  update_freq: realtime
+  tab: Machine
+  section: Network, tokens and files
+  dynamic_source: false
+
+board.machine.traffic.token_confidence:
+  explanation: >
+    How sure the token estimate is, and from which source.
+  source: >
+    per_tool.est_confidence and est_source from live.token_estimate.
+  source_type: raw
+  unit: ratio
+  update_freq: realtime
+  tab: Machine
+  section: Network, tokens and files
+  dynamic_source: false
+
+board.machine.traffic.workspace:
+  explanation: >
+    Size of the tool's workspace folders.
+  source: >
+    board_api._monitor_section per_tool.workspace_bytes from
+    live.workspace_size_mb.
+  source_type: raw
+  unit: bytes
+  update_freq: realtime
+  tab: Machine
+  section: Network, tokens and files
+  dynamic_source: false
+
+events.tool.live.inbound_rate_bps:
+  explanation: >
+    Inbound network rate of a tool, in bytes per second, from the In column
+    of the Network, tokens and files panel.
+  source: >
+    Live monitor _recent_rate() over the recent_network deque;
+    board_api._monitor_section per_tool.inbound_bps.
+  source_type: deduced
+  unit: rate_bps
+  update_freq: realtime
+  tab: Machine
+  section: Network, tokens and files
+  dynamic_source: true
+
+events.tool.live.outbound_rate_bps:
+  explanation: >
+    Outbound network rate of a tool, in bytes per second, from the Out
+    column of the Network, tokens and files panel.
+  source: >
+    Live monitor _recent_rate() over the recent_network deque;
+    board_api._monitor_section per_tool.outbound_bps.
+  source_type: deduced
+  unit: rate_bps
+  update_freq: realtime
+  tab: Machine
+  section: Network, tokens and files
+  dynamic_source: true
+
+procs.tool.live.cpu:
+  explanation: >
+    Current CPU utilization and peak CPU seen during this tool's active
+    sessions.
+  source: >
+    Sum of cpu_percent across sessions (current). Max of peak_cpu_percent
+    across sessions (peak). From SessionCorrelator aggregation.
+  source_type: aggregated
+  unit: percent
+  update_freq: realtime
+  tab: Machine
+  section: Network, tokens and files
+  otel_metric: aictl.tool.cpu
+  dynamic_source: true
+
+procs.tool.live.files_touched:
+  explanation: >
+    Number of unique files touched (created/modified/deleted) during this
+    tool's active sessions.
+  source: >
+    Set union of files_touched across all sessions for this tool. File
+    events detected by filesystem watching or state dir scanning.
+  source_type: aggregated
+  unit: count
+  update_freq: realtime
+  tab: Machine
+  section: Network, tokens and files
+  dynamic_source: true
+
+procs.tool.live.mcp_detected:
+  explanation: >
+    Whether MCP (Model Context Protocol) loop activity is detected for this
+    tool, and estimated number of tool-use loops.
+  source: >
+    Heuristic MCP loop detection analyzing 24-sample windows: - Network
+    bursts >32KB → min(0.45, count * 0.15) - CPU spikes >20% → min(0.30,
+    count * 0.10) - Subprocess invocations (git, rg, bash) → min(0.35, count
+    * 0.08) - Correlation bonus +0.15 if CPU AND network active Detected if
+    combined score >= 0.45. Loop count estimate = max(0, network_peaks //
+    2).
+  source_type: deduced
+  unit: count
+  update_freq: realtime
+  tab: Machine
+  section: Network, tokens and files
+  otel_metric: aictl.tool.mcp.score
   dynamic_source: true
 
 procs.tool.live.pid_count:
@@ -811,29 +1901,29 @@ procs.tool.live.pid_count:
   source_type: aggregated
   unit: count
   update_freq: realtime
-  tab: procs
-  section: tool_live
+  tab: Machine
+  section: Network, tokens and files
   otel_metric: aictl.tool.pids
   dynamic_source: true
 
-procs.tool.live.traffic:
+procs.tool.live.session_count:
   explanation: >
-    Network traffic rates (upload/download) for this tool's active sessions.
+    Number of active sessions for this specific tool.
   source: >
-    Computed from per-session recent_network deque (last 24 samples at 1s
-    intervals). Rate = delta_bytes / delta_time. Summed across sessions.
-  source_type: deduced
-  unit: rate_bps
+    Count of SessionState objects for this tool where last_seen is within
+    180s. From SessionCorrelator tool aggregation.
+  source_type: aggregated
+  unit: count
   update_freq: realtime
-  tab: procs
-  section: tool_live
-  otel_metric: aictl.tool.network.io
+  tab: Machine
+  section: Network, tokens and files
+  otel_metric: aictl.tool.sessions
   dynamic_source: true
 
 procs.tool.live.tokens:
   explanation: >
-    Estimated tokens for this tool's active sessions, with confidence
-    level indicating estimation method used.
+    Estimated tokens for this tool's active sessions, with confidence level
+    indicating estimation method used.
   source: >
     Tiered estimation: exact telemetry (0.95) > session file inference
     (0.60) > network inference (0.40). Source and confidence displayed
@@ -841,1069 +1931,247 @@ procs.tool.live.tokens:
   source_type: deduced
   unit: tokens
   update_freq: realtime
-  tab: procs
-  section: tool_live
+  tab: Machine
+  section: Network, tokens and files
   otel_metric: aictl.tool.token.usage
-  dynamic_source: true
-
-procs.tool.live.mcp_detected:
-  explanation: >
-    Whether MCP (Model Context Protocol) loop activity is detected for
-    this tool, and estimated number of tool-use loops.
-  source: >
-    Heuristic MCP loop detection analyzing 24-sample windows:
-    - Network bursts >32KB → min(0.45, count * 0.15)
-    - CPU spikes >20% → min(0.30, count * 0.10)
-    - Subprocess invocations (git, rg, bash) → min(0.35, count * 0.08)
-    - Correlation bonus +0.15 if CPU AND network active
-    Detected if combined score >= 0.45.
-    Loop count estimate = max(0, network_peaks // 2).
-  source_type: deduced
-  unit: count
-  update_freq: realtime
-  tab: procs
-  section: tool_live
-  otel_metric: aictl.tool.mcp.score
-  dynamic_source: true
-
-procs.tool.live.files_touched:
-  explanation: >
-    Number of unique files touched (created/modified/deleted) during
-    this tool's active sessions.
-  source: >
-    Set union of files_touched across all sessions for this tool.
-    File events detected by filesystem watching or state dir scanning.
-  source_type: aggregated
-  unit: count
-  update_freq: realtime
-  tab: procs
-  section: tool_live
-  dynamic_source: true
-
-procs.tool.live.cpu:
-  explanation: >
-    Current CPU utilization and peak CPU seen during this tool's
-    active sessions.
-  source: >
-    Sum of cpu_percent across sessions (current). Max of peak_cpu_percent
-    across sessions (peak). From SessionCorrelator aggregation.
-  source_type: aggregated
-  unit: percent
-  update_freq: realtime
-  tab: procs
-  section: tool_live
-  otel_metric: aictl.tool.cpu
   dynamic_source: true
 
 procs.tool.live.workspaces:
   explanation: >
-    Working directories (project roots) associated with this tool's
-    active sessions.
+    Working directories (project roots) associated with this tool's active
+    sessions.
   source: >
-    Set union of session.workspaces, derived from the cwd of root
-    processes. Resolved to git repository roots when possible.
+    Set union of session.workspaces, derived from the cwd of root processes.
+    Resolved to git repository roots when possible.
   source_type: raw
   unit: count
   update_freq: realtime
-  tab: procs
-  section: tool_live
+  tab: Machine
+  section: Network, tokens and files
   dynamic_source: true
 
-# ═══════════════════════════════════════════════════════════════════
-# MCP SERVERS TAB
-# ═══════════════════════════════════════════════════════════════════
-
-mcp.server.name:
+board.machine.cleanup:
   explanation: >
-    Name identifier of the MCP server as defined in tool configuration.
+    The command that ends a process, offered as a copy action.
   source: >
-    Parsed from tool MCP config files (mcpServers key in settings.json,
-    .mcp.json, mcp_config.json, etc.).
+    board_api._cleanup_of builds a kill command for the pids of an alert or
+    row.
+  source_type: deduced
+  unit: count
+  update_freq: on-collect
+  tab: Machine
+  section: Processes
+  dynamic_source: false
+
+board.machine.process_name:
+  explanation: >
+    Process name, PID, owning tool and the agent it belongs to.
+  source: >
+    board_api.machine_processes over snapshot.tools[].processes and live-
+    monitor pids.
   source_type: raw
   unit: count
   update_freq: on-collect
-  tab: mcp
-  section: mcp_table
+  tab: Machine
+  section: Processes
   dynamic_source: false
 
-mcp.server.tool:
+board.machine.process_parent:
   explanation: >
-    Which AI tool this MCP server belongs to (e.g. claude-code, cursor).
+    The process that started this one.
   source: >
-    Derived from which tool's configuration file contains this server
-    definition.
+    process record ppid.
   source_type: raw
   unit: count
   update_freq: on-collect
-  tab: mcp
-  section: mcp_table
+  tab: Machine
+  section: Processes
   dynamic_source: false
 
-mcp.server.transport:
+overview.total_processes:
   explanation: >
-    Communication transport used by the MCP server (stdio, sse, http).
+    Number of running OS processes attributed to AI tools. Includes IDE
+    extensions, language servers, daemon processes, and CLI instances. Uses
+    the higher of discovery count vs live PID count per tool.
   source: >
-    From MCP config: command presence → stdio, url with /sse → sse,
-    url with /mcp → streamable-http, else http.
-  source_type: raw
-  unit: count
-  update_freq: on-collect
-  tab: mcp
-  section: mcp_table
-  dynamic_source: false
-
-mcp.server.status:
-  explanation: >
-    Running status of the MCP server process. Shows PID if running.
-  source: >
-    Process matching against MCP server command. For stdio transport,
-    matches the command binary in running processes via psutil. Status
-    is "running" (with PID) or "configured" (not running).
-  source_type: raw
+    Process discovery uses psutil.process_iter() and matches each process
+    against ps_grep_pattern regexes from processes-*.csv. The count per tool
+    is max(len(discovered_processes), live_pid_count_from_correlator).
+    Summed across all tools.
+  source_type: aggregated
   unit: count
   update_freq: realtime
-  tab: mcp
-  section: mcp_table
-  otel_metric: aictl.mcp.detail.status
+  tab: Machine
+  section: Processes
+  otel_metric: aictl.discovery.processes
+  dynamic_source: false
+
+procs.tool.anomaly:
+  explanation: >
+    Process anomaly detection — unusual resource consumption, unexpected
+    state, or known problematic patterns.
+  source: >
+    Anomaly rules applied per process: memory exceeding known thresholds
+    (memory_active_mb from CSV), CPU spikes, known leak patterns (known_leak
+    + leak_pattern from CSV), orphan detection.
+  source_type: deduced
+  unit: count
+  update_freq: realtime
+  tab: Machine
+  section: Processes
   dynamic_source: true
 
-mcp.server.cpu:
+procs.tool.cpu_pct:
   explanation: >
-    CPU utilization of the MCP server process (if running).
+    CPU utilization for a single process, as percentage of one core. Color-
+    coded: orange >5%, red if anomaly detected.
   source: >
-    psutil.Process.cpu_percent() for the matched MCP server PID.
+    psutil.Process.cpu_percent(None) / 100 for the specific PID. Updated on
+    each collection cycle.
   source_type: raw
   unit: percent
   update_freq: realtime
-  tab: mcp
-  section: mcp_table
-  dynamic_source: true
-
-mcp.server.mem:
-  explanation: >
-    Memory usage of the MCP server process (if running).
-  source: >
-    psutil.Process.memory_info().rss for the matched MCP server PID.
-  source_type: raw
-  unit: bytes
-  update_freq: realtime
-  tab: mcp
-  section: mcp_table
-  dynamic_source: true
-
-# ═══════════════════════════════════════════════════════════════════
-# AI CONTEXT (MEMORY) TAB
-# ═══════════════════════════════════════════════════════════════════
-
-memory.growth_chart:
-  explanation: >
-    Time series chart showing growth of agent memory tokens over time.
-    Tracks how much persistent context AI tools accumulate.
-  source: >
-    Historical mem_tokens values from the metrics table, plotted as a
-    time series. Each point recorded on collection cycle.
-  source_type: aggregated
-  unit: tokens
-  update_freq: on-collect
-  tab: memory
-  section: memory_growth
-  dynamic_source: true
-
-memory.source_group:
-  explanation: >
-    Memory entries grouped by source (e.g. claude-user-memory,
-    copilot-agent-memory). Shows file count and token count per source.
-  source: >
-    Agent memory files discovered by scanning known memory paths.
-    Grouped by the source field from MemoryEntry (derived from path
-    structure: ~/.claude/memory/ → claude-user-memory).
-  source_type: aggregated
-  unit: tokens
-  update_freq: on-collect
-  tab: memory
-  section: memory_sources
-  dynamic_source: true
-
-memory.entry.activity:
-  explanation: >
-    Activity status of a memory file — green (live active, recently
-    changed), orange (modified within 5 minutes), grey (inactive).
-  source: >
-    Based on file mtime comparison: green if changed since last
-    collection, orange if mtime within 300s, grey otherwise.
-  source_type: deduced
-  unit: count
-  update_freq: on-collect
-  tab: memory
-  section: memory_item
-  dynamic_source: true
-
-memory.entry.tokens:
-  explanation: >
-    Estimated token count for a single memory/context file.
-  source: >
-    ceil(len(content.encode('utf-8')) / 4). The content is read from
-    disk on each collection cycle.
-  source_type: deduced
-  unit: tokens
-  update_freq: on-collect
-  tab: memory
-  section: memory_item
-  otel_metric: aictl.memory.tokens
+  tab: Machine
+  section: Processes
+  otel_metric: process.cpu.utilization
   dynamic_source: false
 
-# ═══════════════════════════════════════════════════════════════════
-# LIVE MONITOR TAB
-# ═══════════════════════════════════════════════════════════════════
-
-live.tool.sessions:
+procs.tool.mem_rss:
   explanation: >
-    Active session count and PID count for a tool in the live monitor.
+    Resident memory (RSS) of a single process, in the RAM column of the
+    Processes panel.
   source: >
-    From SessionCorrelator tool report: session_count (unique sessions)
-    and pid_count (total process IDs across sessions).
-  source_type: aggregated
-  unit: count
-  update_freq: realtime
-  tab: live
-  section: tool_sessions
-  dynamic_source: true
-
-live.tool.traffic:
-  explanation: >
-    Upload (outbound) and download (inbound) rates for a tool,
-    formatted as bytes/second.
-  source: >
-    Rates computed from SessionCorrelator recent_network deque.
-    Rate = bytes_delta / time_delta over 24-sample sliding window.
-  source_type: deduced
-  unit: rate_bps
-  update_freq: realtime
-  tab: live
-  section: tool_sessions
-  dynamic_source: true
-
-live.tool.tokens:
-  explanation: >
-    Estimated tokens with source identification and confidence score.
-    Shows which estimation method was used (exact, session-file, network).
-  source: >
-    Tiered token estimation — see overview.total_live_estimated_tokens.
-    Source text identifies the method (e.g. "stats-cache", "session-files",
-    "network-infer"). Confidence percentage shown alongside.
-  source_type: deduced
-  unit: tokens
-  update_freq: realtime
-  tab: live
-  section: tool_sessions
-  dynamic_source: true
-
-live.tool.mcp:
-  explanation: >
-    MCP loop detection result — whether tool-use loops were detected
-    and estimated loop count.
-  source: >
-    Heuristic detection from network bursts, CPU spikes, and subprocess
-    activity patterns. See procs.tool.live.mcp_detected for algorithm.
-  source_type: deduced
-  unit: count
-  update_freq: realtime
-  tab: live
-  section: tool_sessions
-  dynamic_source: true
-
-live.tool.files:
-  explanation: >
-    Files touched and file events during the live session.
-  source: >
-    files_touched = count of unique file paths modified.
-    file_events = total count of file system events observed.
-    Both from SessionState accumulation.
-  source_type: aggregated
-  unit: count
-  update_freq: realtime
-  tab: live
-  section: tool_sessions
-  dynamic_source: true
-
-live.tool.workspace:
-  explanation: >
-    Working directories and disk size for the tool's active sessions.
-  source: >
-    Set of workspace paths from session root process cwd. Size is
-    total file size across all files in tool.files.
+    psutil.Process.memory_info().rss in bytes, carried as mem_mb in the
+    snapshot.
   source_type: raw
   unit: bytes
   update_freq: realtime
-  tab: live
-  section: tool_sessions
-  dynamic_source: true
+  tab: Machine
+  section: Processes
+  otel_metric: process.memory.usage
+  dynamic_source: false
 
-live.monitor_roots:
+procs.tool.process_type:
   explanation: >
-    Workspace and state directory paths being monitored by the live
-    collector.
+    Classification of each process — app, helper, mcp-server, cli, subagent,
+    language-server, daemon, etc.
   source: >
-    Workspace roots from active session working directories.
-    State paths from tool-specific state directory functions
-    (e.g. claude_global_dir(), copilot_state_dir()).
+    Direct read from processes-*.csv process_type column, matched to the
+    running process via ps_grep_pattern regex.
   source_type: raw
   unit: count
   update_freq: realtime
-  tab: live
-  section: monitor_roots
-  dynamic_source: true
+  tab: Machine
+  section: Processes
+  dynamic_source: false
 
-# ═══════════════════════════════════════════════════════════════════
-# EVENTS & STATS TAB
-# ═══════════════════════════════════════════════════════════════════
-
-events.tool.cpu_chart:
+procs.tool.zombie_risk:
   explanation: >
-    Time series of CPU utilization for a specific tool over the
-    selected time range.
+    Risk level that this process may become a zombie (orphaned, not properly
+    cleaned up). Based on known patterns from processes-*.csv.
   source: >
-    Historical tool_metrics.cpu values from DB, queried for the
-    selected tool and time range.
+    Static classification from processes-*.csv zombie_risk column (none,
+    low, medium, high). Based on historical analysis of each process type's
+    lifecycle behavior.
   source_type: raw
-  unit: percent
-  update_freq: realtime
-  tab: events
-  section: time_series
+  unit: count
+  update_freq: static
+  tab: Machine
+  section: Processes
   dynamic_source: false
 
 events.tool.memory_chart:
   explanation: >
-    Time series of memory usage for a specific tool over the
-    selected time range.
+    Time series of memory usage for a specific tool over the selected time
+    range.
   source: >
-    Historical tool_metrics.mem_mb values from DB, queried for the
-    selected tool and time range.
+    Historical tool_metrics.mem_mb values from DB, queried for the selected
+    tool and time range.
   source_type: raw
   unit: bytes
   update_freq: realtime
-  tab: events
-  section: time_series
+  tab: Machine
+  section: RAM
   dynamic_source: false
 
-events.tool.tokens_chart:
+overview.mem_mb:
   explanation: >
-    Time series of token consumption for a specific tool over the
-    selected time range.
+    Total resident memory (RSS) consumed by all monitored AI tool processes,
+    in megabytes. Shows physical RAM footprint of the AI tool ecosystem.
   source: >
-    Historical tool_metrics.tokens values from DB.
-  source_type: raw
-  unit: tokens
-  update_freq: realtime
-  tab: events
-  section: time_series
-  dynamic_source: false
-
-events.tool.traffic_chart:
-  explanation: >
-    Time series of network traffic (bytes/sec) for a specific tool
-    over the selected time range.
-  source: >
-    Historical tool_metrics.traffic values from DB.
-  source_type: raw
-  unit: rate_bps
-  update_freq: realtime
-  tab: events
-  section: time_series
-  dynamic_source: false
-
-events.feed:
-  explanation: >
-    Chronological event log showing session starts/ends, file changes,
-    configuration updates, anomalies, and hook events.
-  source: >
-    Events table in DB. Written by:
-    - SessionCorrelator (session-start, session-end)
-    - Filesystem watcher (file events)
-    - Hook receiver (/api/hooks POST endpoint)
-    - Anomaly detector (process anomalies)
-    Each event has: timestamp, tool, kind, detail (JSON).
-  source_type: raw
-  unit: count
-  update_freq: realtime
-  tab: events
-  section: event_feed
-  dynamic_source: true
-
-# ═══════════════════════════════════════════════════════════════════
-# TOKEN BUDGET TAB
-# ═══════════════════════════════════════════════════════════════════
-
-budget.live_token_usage:
-  explanation: >
-    Sparkline chart of estimated token consumption from live sessions
-    over time.
-  source: >
-    Historical live_tokens values from metrics table, plotted as time
-    series.
+    psutil.Process.memory_info().rss is read for each monitored process.
+    Values are summed across all AI tool processes and converted to MB
+    (bytes / 1048576).
   source_type: aggregated
-  unit: tokens
-  update_freq: realtime
-  tab: budget
-  section: live_usage
-  dynamic_source: true
-
-budget.context_window.always_loaded:
-  explanation: >
-    Tokens from files always loaded into the context window on every
-    LLM call. This is the guaranteed baseline context consumption.
-  source: >
-    compute_token_budget() classifies files: sent_to_llm="yes" AND
-    loaded_when="every-call". Sums token estimates for matching files.
-    Includes global scope + largest sub-project.
-  source_type: deduced
-  unit: tokens
-  update_freq: on-discovery
-  tab: budget
-  section: context_window
-  dynamic_source: false
-
-budget.context_window.on_demand:
-  explanation: >
-    Tokens from files loaded on-demand. Not always in context but
-    available when referenced.
-  source: >
-    Files where sent_to_llm="on-demand" OR loaded_when="on-demand".
-    Summed token estimates.
-  source_type: deduced
-  unit: tokens
-  update_freq: on-discovery
-  tab: budget
-  section: context_window
-  dynamic_source: false
-
-budget.context_window.conditional:
-  explanation: >
-    Tokens from files loaded conditionally based on project type or
-    feature flags.
-  source: >
-    Files where sent_to_llm in ("conditional", "partial"). Summed
-    token estimates.
-  source_type: deduced
-  unit: tokens
-  update_freq: on-discovery
-  tab: budget
-  section: context_window
-  dynamic_source: false
-
-budget.context_window.cacheable:
-  explanation: >
-    Tokens from files marked as cacheable — can be served from prompt
-    cache, reducing cost and latency.
-  source: >
-    Files where cacheable="yes" in paths-*.csv. These files benefit
-    from prompt caching when the AI provider supports it.
-  source_type: deduced
-  unit: tokens
-  update_freq: on-discovery
-  tab: budget
-  section: context_window
-  dynamic_source: false
-
-budget.context_window.percentage:
-  explanation: >
-    Current context window usage as percentage of detected model's
-    maximum context length. Color-coded: green <50%, yellow <80%,
-    orange >=80%.
-  source: >
-    (always_loaded_tokens / model_max_context) * 100.
-    Model max context detected from tool telemetry model field.
-    For max potential: sums all projects (not just largest).
-  source_type: deduced
-  unit: percent
-  update_freq: on-discovery
-  tab: budget
-  section: context_window
-  dynamic_source: false
-
-budget.daily_tokens:
-  explanation: >
-    Stacked bar chart showing daily token consumption over the last 7
-    consecutive days, broken down by AI model.
-  source: >
-    tool_telemetry table in DB, grouped by date and model. Each day's
-    bar shows per-model segments (input + output + cache tokens).
-    Color-coded by model.
-  source_type: aggregated
-  unit: tokens
-  update_freq: on-collect
-  tab: budget
-  section: daily_chart
-  dynamic_source: true
-
-budget.token_by_tool:
-  explanation: >
-    Table showing token usage breakdown per AI tool: input, output,
-    cache read, cache write, sessions, cost, and context split.
-  source: >
-    Latest tool_telemetry records per tool. Columns directly from
-    telemetry parser output. Context split = visual bar showing
-    token distribution within the tool's files.
-  source_type: aggregated
-  unit: tokens
-  update_freq: on-collect
-  tab: budget
-  section: token_by_tool
-  dynamic_source: true
-
-budget.token_by_category:
-  explanation: >
-    Table showing token distribution by file category (instructions,
-    config, rules, memory, etc.) with visual distribution bars.
-  source: >
-    Files grouped by category from paths-*.csv. Per category:
-    file count, token sum, size sum, and proportional distribution bar.
-  source_type: aggregated
-  unit: tokens
-  update_freq: on-discovery
-  tab: budget
-  section: token_by_category
-  dynamic_source: false
-
-# ═══════════════════════════════════════════════════════════════════
-# SESSIONS TAB
-# ═══════════════════════════════════════════════════════════════════
-
-sessions.timeline:
-  explanation: >
-    Gantt chart showing session durations on a timeline. Ended sessions
-    appear as horizontal bars, live sessions as marker dots.
-  source: >
-    Session history from /api/session-timeline endpoint. Each session
-    has start_time, end_time (or "live"), tool, and session_id.
-    Rendered as lanes with time-proportional widths.
-  source_type: raw
-  unit: seconds
-  update_freq: realtime
-  tab: sessions
-  section: timeline
-  dynamic_source: true
-
-sessions.agent_teams:
-  explanation: >
-    Agent team summaries showing multi-agent sessions. Displays team
-    composition, per-agent token usage, model assignments, and
-    completion status.
-  source: >
-    scan_agent_teams() reads subagent JSONL files at
-    ~/.claude/projects/{project}/{session}/subagents/agent-*.jsonl.
-    Per agent: input/output tokens from message.usage (cumulative),
-    task (first user message, 200 chars), tools_used (from tool_use
-    content blocks), completion (has final assistant message).
-    Teams grouped by session.
-  source_type: raw
-  unit: tokens
-  update_freq: on-collect
-  tab: sessions
-  section: agent_teams
-  dynamic_source: true
-
-sessions.active.duration:
-  explanation: >
-    How long the active session has been running (since root process
-    was first observed).
-  source: >
-    now - session.started_at. started_at is set when SessionCorrelator
-    first sees the root-candidate process.
-  source_type: deduced
-  unit: seconds
-  update_freq: realtime
-  tab: sessions
-  section: active_session
-  dynamic_source: true
-
-sessions.active.cpu:
-  explanation: >
-    Current CPU utilization across all processes in this session.
-  source: >
-    Sum of psutil cpu_percent for all PIDs in session.pids.
-  source_type: aggregated
-  unit: percent
-  update_freq: realtime
-  tab: sessions
-  section: active_session
-  dynamic_source: true
-
-sessions.active.input_tokens:
-  explanation: >
-    Input tokens consumed so far in this session.
-  source: >
-    session.exact_input_tokens if available from telemetry, otherwise
-    estimated from session file inference or network inference.
-  source_type: deduced
-  unit: tokens
-  update_freq: realtime
-  tab: sessions
-  section: active_session
-  dynamic_source: true
-
-sessions.active.output_tokens:
-  explanation: >
-    Output tokens generated so far in this session.
-  source: >
-    session.exact_output_tokens if available from telemetry, otherwise
-    estimated from session file inference or network inference.
-  source_type: deduced
-  unit: tokens
-  update_freq: realtime
-  tab: sessions
-  section: active_session
-  dynamic_source: true
-
-sessions.active.file_events:
-  explanation: >
-    Number of file system events observed during this session.
-  source: >
-    session.file_events counter, incremented on each file create/modify/
-    delete detected by filesystem watching or state dir scanning.
-  source_type: raw
-  unit: count
-  update_freq: realtime
-  tab: sessions
-  section: active_session
-  dynamic_source: true
-
-sessions.active.pids:
-  explanation: >
-    Number of OS process IDs belonging to this session.
-  source: >
-    len(session.pids). PIDs are added as child processes of the root
-    process are discovered via ppid tracking.
-  source_type: raw
-  unit: count
-  update_freq: realtime
-  tab: sessions
-  section: active_session
-  dynamic_source: true
-
-sessions.active.process_tree:
-  explanation: >
-    Hierarchical process tree showing parent-child relationships within
-    the session. Processes are role-tagged: lead, teammate, subagent,
-    subprocess.
-  source: >
-    Process tree built from ppid chains starting at root_pid. Roles
-    assigned by process name pattern: "claude" → lead/teammate,
-    agent patterns → subagent, everything else → subprocess.
-    CPU and memory from psutil per process.
-  source_type: raw
-  unit: count
-  update_freq: realtime
-  tab: sessions
-  section: active_session
-  dynamic_source: true
-
-sessions.history:
-  explanation: >
-    Table of sessions with tool, session ID, duration, lifecycle status,
-    source, and end time. Lifecycle status distinguishes live active
-    sessions, completed sessions, imported historical records, and
-    unterminated open rows.
-  source: >
-    /api/sessions merges live snapshot sessions with persisted rows from
-    the sessions table. Ended rows use sessions.ended_at; active rows must
-    be confirmed by the in-memory hook entity tracker; imported rows are
-    identified by sessions.source values such as cursor-ingester,
-    copilot-session-store, vscode-chat-logs, and claude-code-jsonl.
-  source_type: deduced
-  unit: seconds
-  update_freq: on-collect
-  tab: sessions
-  section: history_table
-  dynamic_source: true
-
-# ═══════════════════════════════════════════════════════════════════
-# METRICS EXPLORER TAB
-# ═══════════════════════════════════════════════════════════════════
-
-samples.metric_list:
-  explanation: >
-    Sidebar listing all metric names with sample counts, grouped by
-    dotted-name prefix. Every data point emitted through the OTel-
-    aligned sample sink appears here.
-  source: >
-    Distinct metric names from the samples table in DB, with counts.
-    Metric names follow OTel conventions (system.cpu.*, process.*,
-    gen_ai.*, aictl.*).
-  source_type: raw
-  unit: count
-  update_freq: realtime
-  tab: samples
-  section: metric_sidebar
-  dynamic_source: true
-
-samples.metric_chart:
-  explanation: >
-    Time series chart for a selected metric over the last 30 minutes.
-  source: >
-    samples table queried for the specific metric name within the
-    time window. Raw numeric values plotted on time axis.
-  source_type: raw
-  unit: count
-  update_freq: realtime
-  tab: samples
-  section: metric_detail
-  dynamic_source: true
-
-samples.metric_table:
-  explanation: >
-    Table of recent samples (last 50) for the selected metric, showing
-    timestamp, value, and all tags.
-  source: >
-    samples table queried for the metric, ordered by timestamp DESC,
-    LIMIT 50. Tags are JSON-parsed and shown as dynamic columns.
-  source_type: raw
-  unit: count
-  update_freq: realtime
-  tab: samples
-  section: metric_detail
-  dynamic_source: true
-
-# ═══════════════════════════════════════════════════════════════════
-# ANOMALY ALERTS (banner)
-# ═══════════════════════════════════════════════════════════════════
-
-alerts.subagent_memory:
-  explanation: >
-    Alert triggered when total memory consumption by AI tool subagent
-    processes exceeds 2GB. Indicates potential memory leak or runaway
-    agent.
-  source: >
-    Sum of psutil.Process.memory_info().rss for all processes classified
-    as subagents or child processes. Threshold: 2 * 1024^3 bytes.
-  source_type: deduced
   unit: bytes
   update_freq: realtime
-  tab: overview
-  section: alerts
-  dynamic_source: true
-
-alerts.orphan_mcp:
-  explanation: >
-    Count of MCP server processes whose parent process has died. These
-    orphans consume resources but are no longer useful.
-  source: >
-    MCP server processes where the expected parent AI tool process is
-    no longer running (ppid check fails or parent PID not in active
-    session PIDs).
-  source_type: deduced
-  unit: count
-  update_freq: realtime
-  tab: overview
-  section: alerts
-  dynamic_source: true
-
-alerts.headless_browser:
-  explanation: >
-    Count of headless browser processes (Chrome, Chromium, Firefox)
-    spawned by AI tools. These are resource-heavy and may indicate
-    tool-use loops or web scraping.
-  source: >
-    Process matching against browser process name patterns in the
-    process tree of AI tool sessions.
-  source_type: deduced
-  unit: count
-  update_freq: realtime
-  tab: overview
-  section: alerts
-  dynamic_source: true
-
-alerts.process_anomalies:
-  explanation: >
-    Total count of process-level anomalies across all AI tools.
-    Aggregates memory leaks, CPU spikes, zombie processes, and
-    other unusual behavior.
-  source: >
-    Sum of anomaly counts from all tool process inspections. Each
-    anomaly type has its own detection rule (see procs.tool.anomaly).
-  source_type: aggregated
-  unit: count
-  update_freq: realtime
-  tab: overview
-  section: alerts
-  dynamic_source: true
-
-# ═══════════════════════════════════════════════════════════════════
-# FILE TREE (within tool cards)
-# ═══════════════════════════════════════════════════════════════════
-
-files.category.count:
-  explanation: >
-    Number of files in a specific category (instructions, config,
-    rules, memory, state, etc.) for a tool.
-  source: >
-    Files grouped by category field from paths-*.csv. Count per
-    category per tool.
-  source_type: aggregated
-  unit: count
-  update_freq: on-discovery
-  tab: procs
-  section: file_tree
+  tab: Machine
+  section: RAM
+  otel_metric: process.memory.usage
   dynamic_source: false
 
-files.category.tokens:
-  explanation: >
-    Total tokens for all files in a category for a tool.
-  source: >
-    Sum of per-file token estimates within the category.
-  source_type: aggregated
-  unit: tokens
-  update_freq: on-discovery
-  tab: procs
-  section: file_tree
-  dynamic_source: false
 
-files.item.sent_to_llm:
-  explanation: >
-    Whether this file is sent to the LLM and under what conditions.
-    Diamond = always, diamond-outline = on-demand, circle = conditional/no.
-  source: >
-    sent_to_llm field from paths-*.csv for this file's path pattern.
-    Values: "yes", "on-demand", "conditional", "partial", "no".
-  source_type: raw
-  unit: count
-  update_freq: static
-  tab: procs
-  section: file_tree
-  dynamic_source: false
+# ===============================================================
+# SETTINGS IN EFFECT
+# ===============================================================
 
-files.item.activity:
+board.effect.finding:
   explanation: >
-    File activity indicator — green pulse (actively changing), orange
-    (recently modified), grey (inactive).
+    A finding of the hidden-context audit: severity, rule, tool, file and
+    line, what it does.
   source: >
-    Based on file mtime: green if changed since last collection cycle,
-    orange if mtime within 300s, grey otherwise. Pulsing animation for
-    live-active files.
+    context_audit scan served by /api/context-audit, shown through
+    findings.js.
   source_type: deduced
   unit: count
   update_freq: on-collect
-  tab: procs
-  section: file_tree
-  dynamic_source: true
-
-files.item.tokens:
-  explanation: >
-    Estimated token count for a single file.
-  source: >
-    ceil(len(content.encode('utf-8')) / 4).
-  source_type: deduced
-  unit: tokens
-  update_freq: on-collect
-  tab: procs
-  section: file_tree
-  otel_metric: aictl.file.tokens
+  tab: Settings in effect
+  section: Hidden changes and conflicts
   dynamic_source: false
 
-files.item.size:
+board.effect.value:
   explanation: >
-    File size in bytes from the filesystem.
+    The value in force of each setting per tool, taken from tool_configs.
   source: >
-    os.stat(path).st_size.
-  source_type: raw
-  unit: bytes
-  update_freq: on-collect
-  tab: procs
-  section: file_tree
-  otel_metric: aictl.file.bytes
-  dynamic_source: false
-
-files.item.lines:
-  explanation: >
-    Estimated line count for a file.
-  source: >
-    Estimated from file size when content is not loaded, otherwise
-    content.count('\\n') + 1.
-  source_type: deduced
-  unit: count
-  update_freq: on-collect
-  tab: procs
-  section: file_tree
-  dynamic_source: false
-
-# ═══════════════════════════════════════════════════════════════════
-# TELEMETRY — OPERATIONAL / QUOTA METRICS (ToolCardSections.js)
-# ═══════════════════════════════════════════════════════════════════
-
-procs.tool.telemetry.premium_requests:
-  explanation: >
-    Number of premium API requests used (Copilot CLI). Tracks quota
-    consumption for rate-limited plans.
-  source: >
-    Accumulated from session.shutdown events in Copilot CLI events.jsonl.
-    Field: totalPremiumRequests. Summed across all shutdown events.
-  source_type: aggregated
-  unit: count
-  update_freq: on-collect
-  tab: procs
-  section: tool_telemetry
-  dynamic_source: true
-
-procs.tool.telemetry.api_duration_ms:
-  explanation: >
-    Total API duration in milliseconds across all sessions. Used to
-    detect timeout patterns (avg > 30s flags potential issue).
-  source: >
-    Accumulated from session.shutdown events in Copilot CLI events.jsonl.
-    Field: totalApiDurationMs. If avg per request > 30000ms, flagged as
-    timeout error.
-  source_type: aggregated
-  unit: seconds
-  update_freq: on-collect
-  tab: procs
-  section: tool_telemetry
-  dynamic_source: true
-
-procs.tool.telemetry.code_changes:
-  explanation: >
-    Code changes made during tool sessions — lines added, lines removed,
-    files modified. Shows the tool's impact on the codebase.
-  source: >
-    From Copilot CLI session.shutdown event's codeChanges object:
-    linesAdded (int), linesRemoved (int), filesModified (array length).
+    snapshot.tool_configs entries, ranked by scope (managed, project-local,
+    project, user).
   source_type: raw
   unit: count
   update_freq: on-collect
-  tab: procs
-  section: tool_telemetry
-  dynamic_source: true
-
-procs.tool.telemetry.active_session_input:
-  explanation: >
-    Input tokens consumed in the currently active session (not lifetime).
-    Shows real-time token usage of the ongoing conversation.
-  source: >
-    Claude Code: sum of usage.input_tokens from recent JSONL lines
-    (last 500 lines of active session file). Copilot: from latest
-    session state.
-  source_type: aggregated
-  unit: tokens
-  update_freq: on-collect
-  tab: procs
-  section: tool_telemetry
-  dynamic_source: true
-
-procs.tool.telemetry.active_session_output:
-  explanation: >
-    Output tokens generated in the currently active session (not lifetime).
-  source: >
-    Same as active_session_input but reading usage.output_tokens from
-    recent JSONL lines of the active session.
-  source_type: aggregated
-  unit: tokens
-  update_freq: on-collect
-  tab: procs
-  section: tool_telemetry
-  dynamic_source: true
-
-procs.tool.telemetry.active_session_messages:
-  explanation: >
-    Number of messages (turns) in the currently active session.
-  source: >
-    Count of assistant messages with usage data in the active session
-    JSONL file.
-  source_type: aggregated
-  unit: count
-  update_freq: on-collect
-  tab: procs
-  section: tool_telemetry
-  dynamic_source: true
-
-# ═══════════════════════════════════════════════════════════════════
-# TOOL CONFIG DETAILS (ToolCardSections.js)
-# ═══════════════════════════════════════════════════════════════════
-
-procs.tool.config.launch_at_startup:
-  explanation: >
-    Whether the tool is configured to launch automatically at system
-    startup (login items on macOS, autostart on Linux).
-  source: >
-    macOS: detected via osascript querying login items or launchd plist.
-    Linux: checks XDG autostart directory. Windows: checks startup folder.
-  source_type: raw
-  unit: count
-  update_freq: on-collect
-  tab: procs
-  section: tool_config
+  tab: Settings in effect
+  section: Values in force
   dynamic_source: false
 
-procs.tool.config.auto_update:
-  explanation: >
-    Whether automatic updates are enabled for the tool.
-  source: >
-    Claude Code: ~/.claude.json autoUpdates field. Other tools: from
-    respective settings files per tool-configs.yaml.
-  source_type: raw
-  unit: count
-  update_freq: on-collect
-  tab: procs
-  section: tool_config
-  dynamic_source: false
 
-procs.tool.config.otel_capture_content:
-  explanation: >
-    Whether OpenTelemetry is configured to capture message content
-    (prompts and responses). Warning shown if enabled due to privacy.
-  source: >
-    From tool OTel config: captureContent or capture_content field in
-    VS Code settings or tool-specific config files.
-  source_type: raw
-  unit: count
-  update_freq: on-collect
-  tab: procs
-  section: tool_config
-  dynamic_source: false
-
-procs.tool.config.extensions:
-  explanation: >
-    IDE extensions installed for this tool (e.g. VS Code extensions
-    related to the AI tool).
-  source: >
-    Enumeration of ~/.vscode/extensions directories matching known
-    patterns for the tool. Also from VS Code extensions list.
-  source_type: raw
-  unit: count
-  update_freq: on-collect
-  tab: procs
-  section: tool_config
-  dynamic_source: false
-
-procs.tool.config.hints:
-  explanation: >
-    Actionable suggestions generated from analyzing the tool's current
-    configuration. Warnings about suboptimal settings, missing features,
-    or security concerns.
-  source: >
-    Generated by _generate_hints() in tool_config.py based on OTel
-    config state, feature flags, and tool settings analysis.
-  source_type: deduced
-  unit: count
-  update_freq: on-collect
-  tab: procs
-  section: tool_config
-  dynamic_source: false
-
-# ═══════════════════════════════════════════════════════════════════
-# COLLECTOR DIAGNOSTICS (TabLive.js)
-# ═══════════════════════════════════════════════════════════════════
+# ===============================================================
+# WHERE THE DATA COMES FROM
+# ===============================================================
 
 live.diagnostics.collector_name:
   explanation: >
-    Name of each data collector in the monitoring pipeline (e.g.
-    process, network, discovery, filesystem, telemetry).
+    Name of each data collector in the monitoring pipeline (e.g. process,
+    network, discovery, filesystem, telemetry).
   source: >
-    Keys from SessionCorrelator.diagnostics() dict. Each collector
-    reports its status via on_collector_status(source, status, mode).
+    Keys from SessionCorrelator.diagnostics() dict. Each collector reports
+    its status via on_collector_status(source, status, mode).
   source_type: raw
   unit: count
   update_freq: realtime
-  tab: live
-  section: collector_health
+  tab: Where the data comes from
+  section: Collectors
+  dynamic_source: true
+
+live.diagnostics.mode:
+  explanation: >
+    Operating mode of each collector (e.g. polling, watching, passive).
+  source: >
+    Direct assignment from the mode parameter in
+    SessionCorrelator.on_collector_status().
+  source_type: raw
+  unit: count
+  update_freq: realtime
+  tab: Where the data comes from
+  section: Collectors
   dynamic_source: true
 
 live.diagnostics.status:
@@ -1917,690 +2185,173 @@ live.diagnostics.status:
   source_type: raw
   unit: count
   update_freq: realtime
-  tab: live
-  section: collector_health
+  tab: Where the data comes from
+  section: Collectors
   dynamic_source: true
 
-live.diagnostics.mode:
+live.monitor_roots:
   explanation: >
-    Operating mode of each collector (e.g. polling, watching, passive).
+    Workspace and state directory paths being monitored by the live
+    collector.
   source: >
-    Direct assignment from the mode parameter in
-    SessionCorrelator.on_collector_status().
+    Workspace roots from active session working directories. State paths
+    from tool-specific state directory functions (e.g. claude_global_dir(),
+    copilot_state_dir()).
   source_type: raw
   unit: count
   update_freq: realtime
-  tab: live
-  section: collector_health
+  tab: Where the data comes from
+  section: Collectors
   dynamic_source: true
 
-# ═══════════════════════════════════════════════════════════════════
-# PROCESS TYPE (ToolCardSections.js)
-# ═══════════════════════════════════════════════════════════════════
-
-procs.tool.process_type:
+board.source.errors:
   explanation: >
-    Classification of each process — app, helper, mcp-server, cli,
-    subagent, language-server, daemon, etc.
+    API errors a tool logged, from its telemetry record.
   source: >
-    Direct read from processes-*.csv process_type column, matched to
-    the running process via ps_grep_pattern regex.
+    board_api._freshness errors = len(telemetry.errors).
   source_type: raw
   unit: count
-  update_freq: realtime
-  tab: procs
-  section: process_row
+  update_freq: on-collect
+  tab: Where the data comes from
+  section: Data sources
   dynamic_source: false
 
-# ═══════════════════════════════════════════════════════════════════
-# OTEL RECEIVER STATS (CollectorHealth.js)
-# ═══════════════════════════════════════════════════════════════════
-
-overview.collector_health.otel_events_received:
+board.source.row:
   explanation: >
-    Total count of OTLP log/event data points received by the built-in
-    OpenTelemetry receiver since startup.
+    Per tool: where its data comes from (requests, session usage), the
+    newest record, freshness of the live monitor and API errors.
   source: >
-    Counter incremented in OtelStats on each POST to /v1/logs endpoint.
-    Counts individual log records within OTLP JSON payloads.
+    board_api._sources over _source_rows: MAX(ts) of requests and
+    MAX(last_activity_at) of session_usage per tool and source; freshness
+    from _freshness.
   source_type: aggregated
   unit: count
-  update_freq: realtime
-  tab: overview
-  section: collector_health
-  dynamic_source: true
+  update_freq: on-collect
+  tab: Where the data comes from
+  section: Data sources
+  dynamic_source: false
 
-overview.collector_health.otel_api_calls:
+procs.tool.telemetry.confidence:
   explanation: >
-    Total count of API call events received via OpenTelemetry. These
-    are gen_ai spans tracking individual LLM API requests.
+    Confidence score (0-100%) for the telemetry data accuracy. Higher
+    confidence means the data comes from a more reliable source.
   source: >
-    Counter in OtelStats incremented for events matching
-    API_REQUEST_EVENTS frozenset (gen_ai.request, llm.call, etc.).
-  source_type: aggregated
+    Set by each parser: - 0.95 (95%): Direct tool stats (Claude stats-cache,
+    OTel spans) - 0.90 (90%): Copilot events.jsonl shutdown events - 0.85
+    (85%): Codex session.json - 0.75 (75%): Continue session files - 0.70
+    (70%): Cursor SQLite state - 0.60 (60%): Session file inference - 0.40
+    (40%): Network traffic inference
+  source_type: raw
+  unit: ratio
+  update_freq: on-collect
+  tab: Where the data comes from
+  section: Data sources
+  otel_metric: gen_ai.client.confidence
+  dynamic_source: false
+
+board.ingester.row:
+  explanation: >
+    An ingester: status (ok, off, no source, waiting or failing), last OK,
+    last read, rows on the last read and in all.
+  source: >
+    board_api._ingester_rows from ingester_runner.collect_status and
+    data_quality.
+  source_type: deduced
   unit: count
   update_freq: realtime
-  tab: overview
-  section: collector_health
-  dynamic_source: true
+  tab: Where the data comes from
+  section: Ingesters and data quality
+  dynamic_source: false
 
-overview.collector_health.otel_api_errors:
+board.quality.row:
   explanation: >
-    Total count of API error events received via OpenTelemetry.
+    A data-quality event: time, severity, component, status, message and how
+    often it was seen.
   source: >
-    Counter in OtelStats incremented for events matching
-    API_ERROR_EVENTS frozenset (gen_ai.error, llm.error, etc.).
-  source_type: aggregated
+    board_api._quality_rows over db.query_data_quality (last 50).
+  source_type: raw
   unit: count
-  update_freq: realtime
-  tab: overview
-  section: collector_health
-  dynamic_source: true
+  update_freq: on-collect
+  tab: Where the data comes from
+  section: Ingesters and data quality
+  dynamic_source: false
 
-overview.collector_health.otel_parse_errors:
+board.coverage.row:
   explanation: >
-    Number of errors encountered while parsing incoming OTLP payloads.
+    Per data kind and tool: exact, partial, estimate, needs hooks or not
+    reported.
   source: >
-    OtelStats.errors counter, incremented on JSON parse failures or
-    schema validation errors in the /v1/metrics and /v1/logs handlers.
+    board_api.coverage_rows: what the store holds per tool (_store_facts)
+    against the static expectations of each tool.
+  source_type: deduced
+  unit: count
+  update_freq: on-collect
+  tab: Where the data comes from
+  section: What each tool reports
+  dynamic_source: false
+
+board.self.children:
+  explanation: >
+    CPU and RAM of aictl's helper processes next to the daemon.
+  source: >
+    board_api._self_usage children.
+  source_type: raw
+  unit: percent
+  update_freq: on-collect
+  tab: Where the data comes from
+  section: aictl itself
+  dynamic_source: false
+
+board.self.history:
+  explanation: >
+    History store size live and on disk, the limit, the bytes that
+    compaction can free, and the retention days.
+  source: >
+    board_api._self_section: db.storage_status() and db._retention_days.
+  source_type: raw
+  unit: bytes
+  update_freq: on-collect
+  tab: Where the data comes from
+  section: aictl itself
+  dynamic_source: false
+
+board.self.sink:
+  explanation: >
+    Samples emitted, written, dropped and buffered by the sample sink, and
+    whether flood protection is on.
+  source: >
+    board_api._sink_section from sink.stats().
   source_type: raw
   unit: count
   update_freq: realtime
-  tab: overview
-  section: collector_health
-  dynamic_source: true
+  tab: Where the data comes from
+  section: aictl itself
+  dynamic_source: false
 
-overview.collector_health.otel_last_receive:
+board.self.stream:
   explanation: >
-    Time since the last OTLP payload was received. Shows data freshness.
+    Browser windows on the live stream, and the age of the newest snapshot.
   source: >
-    OtelStats timestamp set to time.time() on each successful parse of
-    metrics or logs. Displayed as relative time (e.g. "3s ago").
+    compute_machine pipeline.stream: connected clients and now -
+    snapshot.timestamp.
   source_type: raw
   unit: seconds
   update_freq: realtime
-  tab: overview
-  section: collector_health
-  dynamic_source: true
-
-# ═══════════════════════════════════════════════════════════════════
-# COLLECTOR PIPELINE (CollectorHealth.js)
-# ═══════════════════════════════════════════════════════════════════
-
-overview.collector_pipeline.name:
-  explanation: >
-    Name identifier of each collector in the monitoring pipeline.
-  source: >
-    From live_monitor.diagnostics dict keys. Each collector registers
-    itself via on_collector_status(source=name, ...).
-  source_type: raw
-  unit: count
-  update_freq: realtime
-  tab: overview
-  section: collector_pipeline
-  dynamic_source: true
-
-overview.collector_pipeline.status:
-  explanation: >
-    Health status of each collector — active (green), degraded (orange),
-    disabled (grey), unknown.
-  source: >
-    Direct from collector status reporting. Color-coded by status value
-    in the UI. Left border indicates health.
-  source_type: raw
-  unit: count
-  update_freq: realtime
-  tab: overview
-  section: collector_pipeline
-  dynamic_source: true
-
-overview.collector_pipeline.detail:
-  explanation: >
-    Additional detail text for each collector's status (e.g. sample
-    count, error message, collection interval).
-  source: >
-    Free-text detail from collector status reporting via
-    on_collector_status(detail=...).
-  source_type: raw
-  unit: count
-  update_freq: realtime
-  tab: overview
-  section: collector_pipeline
-  dynamic_source: true
-
-# ═══════════════════════════════════════════════════════════════════
-# EVENTS TAB — LIVE MONITOR CARDS (TabEventsStats.js)
-# ═══════════════════════════════════════════════════════════════════
-
-events.tool.live.session_count:
-  explanation: >
-    Active session count for the selected tool, shown in the Events &
-    Stats tab live monitor section.
-  source: >
-    Same data as procs.tool.live.session_count — from ToolReport
-    via SessionCorrelator. Displayed in the per-tool events view.
-  source_type: aggregated
-  unit: count
-  update_freq: realtime
-  tab: events
-  section: tool_live
-  dynamic_source: true
-
-events.tool.live.pid_count:
-  explanation: >
-    Process ID count for the selected tool in the Events & Stats tab.
-  source: >
-    Same data as procs.tool.live.pid_count — PID set cardinality
-    from ToolReport.
-  source_type: aggregated
-  unit: count
-  update_freq: realtime
-  tab: events
-  section: tool_live
-  dynamic_source: true
-
-events.tool.live.cpu_percent:
-  explanation: >
-    CPU utilization for the selected tool in the Events & Stats tab.
-  source: >
-    Sum of cpu_percent across active sessions for this tool.
-  source_type: aggregated
-  unit: percent
-  update_freq: realtime
-  tab: events
-  section: tool_live
-  dynamic_source: true
-
-events.tool.live.mem_mb:
-  explanation: >
-    Memory usage for the selected tool in the Events & Stats tab.
-  source: >
-    Sum of per-PID memory from ToolReport process list.
-  source_type: aggregated
-  unit: bytes
-  update_freq: realtime
-  tab: events
-  section: tool_live
-  dynamic_source: true
-
-events.tool.live.outbound_rate_bps:
-  explanation: >
-    Outbound network rate for the selected tool in the Events tab.
-  source: >
-    Computed via _recent_rate() from recent_network deque. Same as
-    procs.tool.live.traffic outbound component.
-  source_type: deduced
-  unit: rate_bps
-  update_freq: realtime
-  tab: events
-  section: tool_live
-  dynamic_source: true
-
-events.tool.live.inbound_rate_bps:
-  explanation: >
-    Inbound network rate for the selected tool in the Events tab.
-  source: >
-    Computed via _recent_rate() from recent_network deque. Same as
-    procs.tool.live.traffic inbound component.
-  source_type: deduced
-  unit: rate_bps
-  update_freq: realtime
-  tab: events
-  section: tool_live
-  dynamic_source: true
-
-# ═══════════════════════════════════════════════════════════════════
-# SESSION TIMELINE TOOLTIP (TabSessions.js)
-# ═══════════════════════════════════════════════════════════════════
-
-sessions.timeline.conversations:
-  explanation: >
-    Number of conversation JSONL files found for this session. Each
-    file represents a distinct conversation thread.
-  source: >
-    Count of .jsonl files in ~/.claude/projects/{project}/ matching
-    the session. From query_session_profiles().
-  source_type: raw
-  unit: count
-  update_freq: on-collect
-  tab: sessions
-  section: timeline
-  dynamic_source: true
-
-sessions.timeline.subagents:
-  explanation: >
-    Number of subagent files found for this session. Indicates how
-    many parallel agents were spawned.
-  source: >
-    Count of agent-*.jsonl files in the session's subagents/ directory.
-    From query_session_profiles().
-  source_type: raw
-  unit: count
-  update_freq: on-collect
-  tab: sessions
-  section: timeline
-  dynamic_source: true
-
-sessions.timeline.source_files:
-  explanation: >
-    Number of source code files modified during this session (filtered
-    to code file extensions like .py, .js, .ts).
-  source: >
-    Filtered count from file_modified events for this session, keeping
-    only files with known source code extensions.
-  source_type: deduced
-  unit: count
-  update_freq: on-collect
-  tab: sessions
-  section: timeline
-  dynamic_source: true
-
-sessions.timeline.unique_files:
-  explanation: >
-    Number of unique file paths modified during this session.
-  source: >
-    Cardinality of unique file paths from file_modified events for
-    this session.
-  source_type: aggregated
-  unit: count
-  update_freq: on-collect
-  tab: sessions
-  section: timeline
-  dynamic_source: true
-
-sessions.timeline.bytes_written:
-  explanation: >
-    Total bytes written during this session across all file modifications.
-  source: >
-    Sum of growth_bytes from file_modified events for this session.
-  source_type: aggregated
-  unit: bytes
-  update_freq: on-collect
-  tab: sessions
-  section: timeline
-  dynamic_source: true
-
-# ═══════════════════════════════════════════════════════════════════
-# SESSION DETAIL EXTRAS (TabSessions.js)
-# ═══════════════════════════════════════════════════════════════════
-
-sessions.active.peak_cpu:
-  explanation: >
-    Peak CPU utilization recorded during this session's lifetime.
-  source: >
-    SessionState.peak_cpu_percent — maximum cpu_percent value tracked
-    via add_cpu() across the session lifetime.
-  source_type: raw
-  unit: percent
-  update_freq: realtime
-  tab: sessions
-  section: active_session
-  dynamic_source: true
-
-sessions.active.traffic:
-  explanation: >
-    Total network traffic (upload + download bytes) for this session.
-  source: >
-    SessionState.outbound_bytes + SessionState.inbound_bytes.
-    Accumulated from on_network() calls throughout the session.
-  source_type: aggregated
-  unit: bytes
-  update_freq: realtime
-  tab: sessions
-  section: active_session
-  dynamic_source: true
-
-sessions.active.state_writes:
-  explanation: >
-    Total bytes written to state/session files during this session.
-  source: >
-    SessionState.state_bytes_written — accumulated growth_bytes from
-    file events in state directories.
-  source_type: aggregated
-  unit: bytes
-  update_freq: realtime
-  tab: sessions
-  section: active_session
-  dynamic_source: true
-
-sessions.active.workspaces:
-  explanation: >
-    List of working directories (project roots) used during this session.
-  source: >
-    SessionState.workspaces — deduplicated set populated from root
-    process cwd and file activity workspace detection.
-  source_type: raw
-  unit: count
-  update_freq: realtime
-  tab: sessions
-  section: active_session
-  dynamic_source: true
-
-sessions.active.subprocesses:
-  explanation: >
-    Subprocess types spawned during this session with counts (e.g.
-    git: 12, rg: 8, bash: 3).
-  source: >
-    SessionState.subprocess_counter — Counter[str] tracking process
-    names spawned as children, accumulated via add_subprocess().
-  source_type: aggregated
-  unit: count
-  update_freq: realtime
-  tab: sessions
-  section: active_session
-  dynamic_source: true
-
-sessions.active.files_touched_list:
-  explanation: >
-    List of file paths modified during this session.
-  source: >
-    SessionState.files_touched — deduplicated set of file paths from
-    add_file_activity() calls.
-  source_type: raw
-  unit: count
-  update_freq: realtime
-  tab: sessions
-  section: active_session
-  dynamic_source: true
-
-# ═══════════════════════════════════════════════════════════════════
-# AGENT TEAM EXTRAS (TabSessions.js)
-# ═══════════════════════════════════════════════════════════════════
-
-sessions.agent_teams.tools_used:
-  explanation: >
-    Union of all tool names called across agents in a team (e.g.
-    Read, Edit, Bash, Grep, Agent).
-  source: >
-    Sorted union of tools_used across all agents in scan_agent_teams().
-    Extracted from tool_use content blocks in agent JSONL files.
-  source_type: aggregated
-  unit: count
-  update_freq: on-collect
-  tab: sessions
-  section: agent_teams
-  dynamic_source: true
-
-sessions.agent_teams.agent_slug:
-  explanation: >
-    Short identifier/slug for each agent in a team (e.g. "Explore",
-    "test-runner", "Plan").
-  source: >
-    Direct read from first JSONL line's slug field in agent-*.jsonl.
-  source_type: raw
-  unit: count
-  update_freq: on-collect
-  tab: sessions
-  section: agent_teams
-  dynamic_source: true
-
-sessions.agent_teams.agent_is_sidechain:
-  explanation: >
-    Whether an agent runs as a sidechain (isolated worktree) vs main
-    chain. Sidechain agents work in parallel on separate branches.
-  source: >
-    Direct read from first JSONL line's isSidechain boolean field
-    in agent-*.jsonl.
-  source_type: raw
-  unit: count
-  update_freq: on-collect
-  tab: sessions
-  section: agent_teams
-  dynamic_source: true
-
-sessions.agent_teams.warmup_count:
-  explanation: >
-    Number of warmup agents in a team — agents that were spawned but
-    filtered out from display (e.g. initialization agents with
-    minimal activity).
-  source: >
-    Derived in scan_agent_teams() by counting agents that meet warmup
-    criteria (minimal tokens, no meaningful task).
-  source_type: deduced
-  unit: count
-  update_freq: on-collect
-  tab: sessions
-  section: agent_teams
-  dynamic_source: true
-
-# ═══════════════════════════════════════════════════════════════════
-# BUDGET EXTRAS (TabBudget.js)
-# ═══════════════════════════════════════════════════════════════════
-
-budget.project_estimate:
-  explanation: >
-    Estimated context window usage for the largest sub-project, plus
-    global tokens. Shows realistic total when multiple projects exist.
-  source: >
-    compute_token_budget() groups files by project root, finds the
-    largest sub-project by token sum, adds global (non-project) tokens.
-    Fields: largest_project name, largest_project_tokens, global_tokens.
-  source_type: deduced
-  unit: tokens
-  update_freq: on-discovery
-  tab: budget
-  section: context_window
+  tab: Where the data comes from
+  section: aictl itself
   dynamic_source: false
 
-budget.model_detected:
+otel.receiver.active:
   explanation: >
-    The AI model detected for context window size estimation. Used to
-    calculate what percentage of the model's context window is consumed.
+    Whether the OTel receiver has received data in the last 300 s. The aictl
+    itself panel shows Active, or No data for 5 min, under Metrics in.
   source: >
-    From tool telemetry model field or tool config model setting.
-    Determines max context length for percentage calculation.
-  source_type: raw
-  unit: count
-  update_freq: on-collect
-  tab: budget
-  section: context_window
-  dynamic_source: true
-
-# ═══════════════════════════════════════════════════════════════════
-# API-ONLY ENDPOINTS (not directly displayed in dashboard tabs)
-# ═══════════════════════════════════════════════════════════════════
-
-api.project_costs:
-  explanation: >
-    Per-project cost breakdown — sessions, tokens, and estimated USD
-    cost grouped by working directory / repository.
-  source: >
-    Computed from HistoryDB: session_end events grouped by project
-    field, with token totals from telemetry. Daily breakdown from
-    tool_telemetry table. Cost from tool-native cost tracking.
+    Derived: time.time() - OtelStats.last_receive_at < 300.
   source_type: deduced
-  unit: usd
-  update_freq: on-collect
-  tab: api
-  section: project_costs
-  dynamic_source: true
-
-api.session_runs:
-  explanation: >
-    Historical session run data — per-session tokens, duration, project,
-    and tool. Used for session analytics and billing.
-  source: >
-    Primary data comes from completed rows in the sessions table.
-    Duration = ended_at - started_at. Tokens, project_path, tool, and
-    file churn come from normalized session columns. Legacy session_end
-    events are used only as a fallback when no session row exists.
-  source_type: raw
-  unit: tokens
-  update_freq: on-collect
-  tab: api
-  section: session_runs
-  dynamic_source: true
-
-api.api_calls:
-  explanation: >
-    Individual API call records received via OpenTelemetry — model,
-    latency, tokens, errors. Provides per-request visibility.
-  source: >
-    Aggregated from OTel receiver events matching gen_ai.* span types.
-    Each call logged with model, duration_ms, input/output tokens,
-    status, and optional error details.
-  source_type: aggregated
   unit: count
   update_freq: realtime
-  tab: api
-  section: api_calls
-  dynamic_source: true
-
-api.file_content:
-  explanation: >
-    File content retrieval for inline preview in the dashboard.
-    Returns raw text content of tracked files.
-  source: >
-    Direct file read from filesystem via os.open(), limited to 200KB.
-    Path must be in the AllowedPaths whitelist (discovered tool files).
-  source_type: raw
-  unit: bytes
-  update_freq: on-collect
-  tab: api
-  section: file_content
-  dynamic_source: false
-
-api.file_history:
-  explanation: >
-    Historical timeline of file modifications — when files were created,
-    modified, or deleted, with content snapshots at change points.
-  source: >
-    file_history table in DB. Content snapshots stored when content_hash
-    changes between collection cycles. Queryable by path and time range.
-  source_type: raw
-  unit: count
-  update_freq: on-collect
-  tab: api
-  section: file_history
-  dynamic_source: true
-
-# ═══════════════════════════════════════════════════════════════════
-# OTEL TRACES (from /v1/traces OTLP spans)
-# ═══════════════════════════════════════════════════════════════════
-
-otel.traces.token_usage:
-  explanation: >
-    Token usage extracted from OTLP trace spans. Each span may carry
-    gen_ai.usage.input_tokens and gen_ai.usage.output_tokens attributes,
-    providing per-request token counts with model attribution.
-  source: >
-    Parsed from /v1/traces POST. Each span's attributes are scanned for
-    gen_ai.usage.input_tokens, gen_ai.usage.output_tokens,
-    gen_ai.usage.prompt_tokens, gen_ai.usage.completion_tokens. Mapped
-    to otel.token.usage metric with gen_ai.token.type tag (input/output).
-  source_type: raw
-  unit: tokens
-  update_freq: realtime
-  tab: overview
-  section: collector_health
-  otel_metric: otel.token.usage
-  dynamic_source: true
-
-otel.traces.operation_duration:
-  explanation: >
-    Duration of LLM operations extracted from OTLP trace spans. Captures
-    inference latency, chat completion time, and API request duration.
-  source: >
-    Computed from span startTimeUnixNano and endTimeUnixNano for spans
-    whose name contains inference, chat, api, request, or completion.
-    Duration in seconds stored as otel.operation.duration metric.
-  source_type: deduced
-  unit: seconds
-  update_freq: realtime
-  tab: overview
-  section: collector_health
-  otel_metric: otel.operation.duration
-  dynamic_source: true
-
-otel.traces.span_events:
-  explanation: >
-    Events embedded within OTLP spans — exceptions, prompt content,
-    tool invocations. Each span can carry zero or more events with
-    their own timestamps and attributes.
-  source: >
-    Parsed from span.events[] array in /v1/traces POST. Each span event
-    becomes an EventRow with kind=otel:{event_name} and parent_span
-    reference. Stored in events table.
-  source_type: raw
-  unit: count
-  update_freq: realtime
-  tab: events
-  section: event_feed
-  dynamic_source: true
-
-otel.traces.api_calls:
-  explanation: >
-    Count of API call spans detected in OTLP traces. Spans whose name
-    contains api_request, inference, or chat.completion are counted.
-  source: >
-    Counter incremented for each span matching API call patterns during
-    /v1/traces parsing. Tracked in OtelStats.api_calls_total.
-  source_type: aggregated
-  unit: count
-  update_freq: realtime
-  tab: overview
-  section: collector_health
-  dynamic_source: true
-
-otel.traces.api_errors:
-  explanation: >
-    Count of error spans in OTLP traces. Spans with OTLP status code 2
-    (ERROR) are counted as API errors.
-  source: >
-    Counter incremented when span.status.code == 2 during /v1/traces
-    parsing. Tracked in OtelStats.api_errors_total.
-  source_type: aggregated
-  unit: count
-  update_freq: realtime
-  tab: overview
-  section: collector_health
-  dynamic_source: true
-
-# ═══════════════════════════════════════════════════════════════════
-# OTEL RECEIVER HEALTH (internal counters)
-# ═══════════════════════════════════════════════════════════════════
-
-otel.receiver.metrics_received:
-  explanation: >
-    Total count of metric data points received across all /v1/metrics
-    and /v1/traces POST requests since server startup.
-  source: >
-    OtelStats.metrics_received counter. Incremented by len(samples)
-    after each parse_metrics() or parse_traces() call.
-  source_type: aggregated
-  unit: count
-  update_freq: realtime
-  tab: overview
-  section: collector_health
-  dynamic_source: true
-
-otel.receiver.events_received:
-  explanation: >
-    Total count of event/log records received across all /v1/logs
-    and /v1/traces POST requests since server startup.
-  source: >
-    OtelStats.events_received counter. Incremented by len(events)
-    after each parse_logs() or parse_traces() call.
-  source_type: aggregated
-  unit: count
-  update_freq: realtime
-  tab: overview
-  section: collector_health
-  dynamic_source: true
-
-otel.receiver.traces_received:
-  explanation: >
-    Total count of span records received via /v1/traces since startup.
-    Each span produces both samples (token/duration metrics) and events.
-  source: >
-    Sum of samples + events produced by parse_traces(). Not a separate
-    counter — derived from metrics_received + events_received for the
-    traces endpoint specifically.
-  source_type: aggregated
-  unit: count
-  update_freq: realtime
-  tab: overview
-  section: collector_health
+  tab: Where the data comes from
+  section: aictl itself
   dynamic_source: true
 
 otel.receiver.api_calls_total:
@@ -2608,42 +2359,41 @@ otel.receiver.api_calls_total:
     Total API calls detected across all OTLP sources (metrics, logs,
     traces). Includes both log-based and span-based API call detection.
   source: >
-    OtelStats.api_calls_total counter. Incremented when event name
-    matches API_REQUEST_EVENTS set or span name matches API patterns.
+    OtelStats.api_calls_total counter. Incremented when event name matches
+    API_REQUEST_EVENTS set or span name matches API patterns.
   source_type: aggregated
   unit: count
   update_freq: realtime
-  tab: overview
-  section: collector_health
+  tab: Where the data comes from
+  section: aictl itself
   dynamic_source: true
 
 otel.receiver.api_errors_total:
   explanation: >
-    Total API errors detected across all OTLP sources. Includes
-    log-based errors and span status code 2 (ERROR).
+    Total API errors detected across all OTLP sources. Includes log-based
+    errors and span status code 2 (ERROR).
   source: >
-    OtelStats.api_errors_total counter. Incremented when event name
-    matches API_ERROR_EVENTS set or span has error status.
+    OtelStats.api_errors_total counter. Incremented when event name matches
+    API_ERROR_EVENTS set or span has error status.
   source_type: aggregated
   unit: count
   update_freq: realtime
-  tab: overview
-  section: collector_health
+  tab: Where the data comes from
+  section: aictl itself
   dynamic_source: true
 
-otel.receiver.parse_errors:
+otel.receiver.events_received:
   explanation: >
-    Number of errors encountered while parsing incoming OTLP payloads
-    across all three endpoints (metrics, logs, traces).
+    Total count of event/log records received across all /v1/logs and
+    /v1/traces POST requests since server startup.
   source: >
-    OtelStats.errors counter. Incremented on JSON parse failures,
-    schema validation errors, or unhandled exceptions in any receiver
-    handler.
-  source_type: raw
+    OtelStats.events_received counter. Incremented by len(events) after each
+    parse_logs() or parse_traces() call.
+  source_type: aggregated
   unit: count
   update_freq: realtime
-  tab: overview
-  section: collector_health
+  tab: Where the data comes from
+  section: aictl itself
   dynamic_source: true
 
 otel.receiver.last_receive:
@@ -2651,112 +2401,692 @@ otel.receiver.last_receive:
     Timestamp of the last successfully parsed OTLP payload from any
     endpoint. Used to determine receiver freshness.
   source: >
-    OtelStats.last_receive_at set to time.time() after any successful
-    parse. Active if within 300s. Displayed as relative time.
+    OtelStats.last_receive_at set to time.time() after any successful parse.
+    Active if within 300s. Displayed as relative time.
   source_type: raw
   unit: seconds
   update_freq: realtime
-  tab: overview
-  section: collector_health
+  tab: Where the data comes from
+  section: aictl itself
   dynamic_source: true
 
-otel.receiver.active:
+otel.receiver.metrics_received:
   explanation: >
-    Whether the OTel receiver has received data recently (within 300s).
-    Shown as green/grey badge in Collector Health.
+    Total count of metric data points received across all /v1/metrics and
+    /v1/traces POST requests since server startup.
   source: >
-    Derived: time.time() - OtelStats.last_receive_at < 300.
-  source_type: deduced
+    OtelStats.metrics_received counter. Incremented by len(samples) after
+    each parse_metrics() or parse_traces() call.
+  source_type: aggregated
   unit: count
   update_freq: realtime
-  tab: overview
-  section: collector_health
+  tab: Where the data comes from
+  section: aictl itself
   dynamic_source: true
 
-# ═══════════════════════════════════════════════════════════════════
-# AICTL SELF-MONITORING (monitoring service own resources)
-# ═══════════════════════════════════════════════════════════════════
+otel.receiver.parse_errors:
+  explanation: >
+    Number of errors encountered while parsing incoming OTLP payloads across
+    all three endpoints (metrics, logs, traces).
+  source: >
+    OtelStats.errors counter. Incremented on JSON parse failures, schema
+    validation errors, or unhandled exceptions in any receiver handler.
+  source_type: raw
+  unit: count
+  update_freq: realtime
+  tab: Where the data comes from
+  section: aictl itself
+  dynamic_source: true
 
 self.cpu_percent:
   explanation: >
-    CPU utilization of the aictl monitoring service process itself.
-    This is NOT an AI tool metric — it shows how much CPU the
-    monitoring dashboard consumes.
+    CPU use of the aictl service process itself. This is not an AI tool
+    metric: it is the cost of the monitoring.
   source: >
-    psutil.Process(os.getpid()).cpu_percent() for the aictl server
-    process. Polled via /api/self-status endpoint every 15s.
+    board_api._self_usage: psutil cpu_percent of the aictl process plus its
+    helper processes. Also served by /api/self-status.
   source_type: raw
   unit: percent
   update_freq: realtime
-  tab: overview
-  section: self_monitoring
+  tab: Where the data comes from
+  section: aictl itself
   dynamic_source: true
 
-self.memory_rss:
+self.db_rows:
   explanation: >
-    Resident memory (RSS) consumed by the aictl monitoring service.
-    This is the physical RAM footprint of aictl itself, not the
-    monitored AI tools.
+    Total number of rows across the main data tables in the aictl database
+    (metrics + tool_metrics + events + samples).
   source: >
-    psutil.Process(os.getpid()).memory_info().rss in bytes.
-  source_type: raw
-  unit: bytes
+    SUM of SELECT COUNT(*) from metrics, tool_metrics, events, samples
+    tables.
+  source_type: aggregated
+  unit: count
   update_freq: realtime
-  tab: overview
-  section: self_monitoring
+  tab: Where the data comes from
+  section: aictl itself
   dynamic_source: true
 
 self.db_size:
   explanation: >
-    On-disk size of the aictl SQLite history database (history.db).
-    Grows as metrics, events, and telemetry are collected over time.
-    Compacted automatically (24h full res, 7d 1-min avg, 30d 5-min avg).
+    On-disk size of the aictl SQLite history database (history.db). Grows as
+    metrics, events, and telemetry are collected over time. Compacted
+    automatically (24h full res, 7d 1-min avg, 30d 5-min avg).
   source: >
     os.stat(db_path).st_size for the history.db file. Default location:
     ~/.config/aictl/history.db.
   source_type: raw
   unit: bytes
   update_freq: realtime
-  tab: overview
-  section: self_monitoring
+  tab: Where the data comes from
+  section: aictl itself
   dynamic_source: true
 
-self.uptime:
+self.memory_rss:
   explanation: >
-    How long the aictl monitoring service has been running since
-    the last start of 'aictl daemon serve'.
+    Resident memory (RSS) consumed by the aictl monitoring service. This is
+    the physical RAM footprint of aictl itself, not the monitored AI tools.
   source: >
-    time.time() - psutil.Process(os.getpid()).create_time().
-  source_type: deduced
-  unit: seconds
+    psutil.Process(os.getpid()).memory_info().rss in bytes.
+  source_type: raw
+  unit: bytes
   update_freq: realtime
-  tab: overview
-  section: self_monitoring
+  tab: Where the data comes from
+  section: aictl itself
   dynamic_source: true
 
 self.threads:
   explanation: >
-    Number of threads in the aictl monitoring service. Includes
-    DB flush thread, refresh loop, SSE connections, collectors.
+    Number of threads in the aictl monitoring service. Includes DB flush
+    thread, refresh loop, SSE connections, collectors.
   source: >
     psutil.Process(os.getpid()).num_threads().
   source_type: raw
   unit: count
   update_freq: realtime
-  tab: overview
-  section: self_monitoring
+  tab: Where the data comes from
+  section: aictl itself
   dynamic_source: true
 
-self.db_rows:
+self.uptime:
   explanation: >
-    Total number of rows across the main data tables in the aictl
-    database (metrics + tool_metrics + events + samples).
+    How long the aictl monitoring service has been running since the last
+    start of 'aictl daemon serve'.
   source: >
-    SUM of SELECT COUNT(*) from metrics, tool_metrics, events,
-    samples tables.
+    time.time() - psutil.Process(os.getpid()).create_time().
+  source_type: deduced
+  unit: seconds
+  update_freq: realtime
+  tab: Where the data comes from
+  section: aictl itself
+  dynamic_source: true
+
+
+# ===============================================================
+# AGENT DRAWER
+# ===============================================================
+
+board.drawer.changes.file:
+  explanation: >
+    Files the agent changed, with lines added and removed and edits; and its
+    test runs.
+  source: >
+    agent_detail files and tests.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Changes
+  dynamic_source: false
+
+board.drawer.error.detail:
+  explanation: >
+    One error key: every time it happened, with agent and message.
+  source: >
+    board_api.error_detail (GET /api/board/error).
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Error detail
+  dynamic_source: false
+
+board.drawer.events.row:
+  explanation: >
+    Raw hook and OpenTelemetry events of the session with kind, tool and
+    stored detail. Newest 500.
+  source: >
+    GET /api/events and /api/events/count.
+  source_type: raw
+  unit: count
+  update_freq: realtime
+  tab: Agent drawer
+  section: Events
+  dynamic_source: false
+
+board.drawer.errors.row:
+  explanation: >
+    Tool failures and API errors of the agent, with time and message, and
+    the newest loop.
+  source: >
+    agent_detail errors and loop.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Failures and loops
+  dynamic_source: false
+
+board.drawer.excerpt:
+  explanation: >
+    Lines around a given line of a context file, for the places a finding or
+    a skill read points to.
+  source: >
+    board_api.file_excerpt (GET /api/board/excerpt), limited to discovered
+    tool files.
+  source_type: raw
+  unit: bytes
+  update_freq: on-collect
+  tab: Agent drawer
+  section: File detail
+  dynamic_source: false
+
+board.drawer.file.detail:
+  explanation: >
+    One file: its edits over time, the last two stored versions for a diff,
+    and the sessions that wrote it.
+  source: >
+    board_api.file_detail (GET /api/board/file) over file_write_events and
+    file_history.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Agent drawer
+  section: File detail
+  dynamic_source: false
+
+board.drawer.flow.event:
+  explanation: >
+    Each event with time, type, model, input and output tokens, cache read,
+    duration and first token.
+  source: >
+    board_api._session_flow: store rows (requests, tool_invocations,
+    session_prompts, context_events) merged with hook and OTel events.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Flow
+  dynamic_source: false
+
+board.drawer.flow.summary:
+  explanation: >
+    Turns, tool calls, subagents, hooks, errors, compactions, total tokens,
+    largest turn and time to first token of the session.
+  source: >
+    board_api._flow_summary over the merged flow events.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Flow
+  dynamic_source: false
+
+api.api_calls:
+  explanation: >
+    Individual API call records received via OpenTelemetry — model, latency,
+    tokens, errors. Provides per-request visibility.
+  source: >
+    Aggregated from OTel receiver events matching gen_ai.* span types. Each
+    call logged with model, duration_ms, input/output tokens, status, and
+    optional error details.
   source_type: aggregated
   unit: count
   update_freq: realtime
-  tab: overview
-  section: self_monitoring
+  tab: Agent drawer
+  section: Integrations
   dynamic_source: true
+
+board.drawer.integrations.extensions:
+  explanation: >
+    VS Code language-model tokens by extension: tokens in and out, calls,
+    models.
+  source: >
+    board_api._lm_by_extension over analysis.lm_usage.
+  source_type: aggregated
+  unit: tokens
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Integrations
+  dynamic_source: false
+
+board.drawer.integrations.limits:
+  explanation: >
+    Rate-limit windows the tool reported for the session: used share and
+    reset time.
+  source: >
+    board_api._rate_limit: newest events row whose detail holds rate_limits.
+  source_type: raw
+  unit: percent
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Integrations
+  dynamic_source: false
+
+board.drawer.integrations.mcp:
+  explanation: >
+    MCP servers: calls, errors, total time and last call, and servers
+    configured but not used.
+  source: >
+    GET /api/session-mcp-usage over tool_invocations of MCP tools.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Integrations
+  dynamic_source: false
+
+board.drawer.overview.compactions:
+  explanation: >
+    Compactions: time, trigger, tokens before and after, duration.
+  source: >
+    context_events rows of kind compaction.
+  source_type: raw
+  unit: tokens
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Overview
+  dynamic_source: false
+
+board.drawer.overview.context:
+  explanation: >
+    Context size per call (first, last, peak), tool definitions, tools
+    available, and the split at shutdown (system, conversation, tools).
+  source: >
+    board_api._agent_context over requests.max_prompt_tokens, tool_tokens,
+    available_tools and context_events.
+  source_type: raw
+  unit: tokens
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Overview
+  dynamic_source: false
+
+board.drawer.overview.git:
+  explanation: >
+    Branch, commit and dirty state of the project at the session.
+  source: >
+    board_api._agent_git, with commits from /api/session-commits.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Overview
+  dynamic_source: false
+
+board.drawer.overview.resources:
+  explanation: >
+    CPU, RAM and network of the agent's process tree, and tokens a minute.
+  source: >
+    board_api._agent_resources from the collector snapshot and
+    process_snapshots.
+  source_type: raw
+  unit: percent
+  update_freq: realtime
+  tab: Agent drawer
+  section: Overview
+  dynamic_source: false
+
+board.drawer.overview.runs:
+  explanation: >
+    Earlier runs in the same project with duration, tokens and file churn
+    against the median of the others.
+  source: >
+    board_api._agent_runs over the sessions table.
+  source_type: deduced
+  unit: ratio
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Overview
+  dynamic_source: false
+
+board.drawer.overview.skills:
+  explanation: >
+    Skills the agent used, with uses and who started them.
+  source: >
+    board_api._agent_skills over skill_uses.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Overview
+  dynamic_source: false
+
+board.drawer.overview.stats:
+  explanation: >
+    Messages, tokens, cached share, cost, tool calls with failures, time and
+    lines for one agent.
+  source: >
+    board_api.agent_detail: the agent row plus file_write_events lines.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Overview
+  dynamic_source: false
+
+board.drawer.procs.row:
+  explanation: >
+    Live process tree of the session and the recorded process list kept
+    after it ends, with role, CPU, RAM and the programs started.
+  source: >
+    agent_detail resources.process_tree and GET /api/session-processes.
+  source_type: raw
+  unit: count
+  update_freq: realtime
+  tab: Agent drawer
+  section: Processes
+  dynamic_source: false
+
+board.drawer.prompt.detail:
+  explanation: >
+    One prompt: full text, prompt file, and the input, output, cache read,
+    duration and tool calls of its turn.
+  source: >
+    board_api.prompt_detail (GET /api/board/prompt).
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Prompt detail
+  dynamic_source: false
+
+board.drawer.skill.detail:
+  explanation: >
+    One skill: who can see it, uses, agents, trigger and file reads.
+  source: >
+    board_api.skill_detail (GET /api/board/skill).
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Skill detail
+  dynamic_source: false
+
+board.drawer.team.agent:
+  explanation: >
+    Subagents and tasks the tool reported: state, model, task, time and
+    tokens. States: active, idle, ended, not started; tasks: pending,
+    active, done.
+  source: >
+    GET /api/session-stats (entity state built from hook events and subagent
+    files).
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Team
+  dynamic_source: false
+
+board.drawer.timeline.row:
+  explanation: >
+    Model calls and tool calls on one time line: time, input and output,
+    cache, duration, prompt, error, agent, target, result.
+  source: >
+    board_api._store_flow_events rows shown by TimelineTab.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Timeline
+  dynamic_source: false
+
+board.drawer.tools.row:
+  explanation: >
+    Tool calls of the agent: time, name, target, duration, result. Newest
+    200.
+  source: >
+    agent_detail tool_calls from tool_invocations.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Tool calls
+  dynamic_source: false
+
+board.drawer.tool.detail:
+  explanation: >
+    One tool name: every call with time, agent, duration, target, result and
+    confirmation.
+  source: >
+    board_api.tool_detail (GET /api/board/tool).
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Tool detail
+  dynamic_source: false
+
+board.drawer.transcript.turn:
+  explanation: >
+    Each turn: prompt, reply, model calls, tool calls, tokens and duration.
+    Text is shown only when the tool keeps it.
+  source: >
+    board_api.agent_transcript: turns built from session_prompts, requests
+    and tool_invocations, merged with hook turns.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Transcript
+  dynamic_source: false
+
+board.drawer.turns.row:
+  explanation: >
+    Turns oldest first with prompt, tokens, time and tools.
+  source: >
+    agent_detail turns over session_prompts and requests.
+  source_type: aggregated
+  unit: tokens
+  update_freq: on-collect
+  tab: Agent drawer
+  section: Turns
+  dynamic_source: false
+
+
+# ===============================================================
+# SETTINGS
+# ===============================================================
+
+board.settings.row:
+  explanation: >
+    A setting of a tool: key, value in force, scope, file and line, risk
+    flag and whether it is documented.
+  source: >
+    GET /api/settings/tools: orchestrator.full_tool_configs(), the complete
+    settings records including defaults no file sets.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Settings
+  section: By tool
+  dynamic_source: false
+
+procs.tool.config.extensions:
+  explanation: >
+    IDE extensions installed for this tool (e.g. VS Code extensions related
+    to the AI tool).
+  source: >
+    Enumeration of ~/.vscode/extensions directories matching known patterns
+    for the tool. Also from VS Code extensions list.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Settings
+  section: Extensions and plugins
+  dynamic_source: false
+
+board.settings.file:
+  explanation: >
+    Every file aictl reads for the settings view: stat facts, git state and
+    how many settings read it.
+  source: >
+    api_handlers.settings_files over tool configs, audit sources and
+    monitored folders. No file is opened.
+  source_type: raw
+  unit: bytes
+  update_freq: on-collect
+  tab: Settings
+  section: Files
+  dynamic_source: false
+
+board.settings.hooks:
+  explanation: >
+    Whether aictl's hooks are installed for a tool.
+  source: >
+    GET /api/hooks-status, shown by HookStatus.js.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Settings
+  section: Hooks
+  dynamic_source: false
+
+procs.tool.config.mcp_servers:
+  explanation: >
+    MCP servers configured in this tool's settings. Lists server names as
+    pills.
+  source: >
+    Parsed from tool MCP config (e.g. Claude Code's ~/.claude/settings.json
+    mcpServers, or project .mcp.json files).
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Settings
+  section: MCP servers
+  dynamic_source: false
+
+board.settings.model:
+  explanation: >
+    The model in force per tool and agent, with conflicts and pins.
+  source: >
+    GET /api/effective-models.
+  source_type: deduced
+  unit: count
+  update_freq: on-collect
+  tab: Settings
+  section: Model
+  dynamic_source: false
+
+procs.tool.config.model:
+  explanation: >
+    The AI model currently configured for this tool (e.g. claude-
+    sonnet-4-5-20250514, gpt-4o). Extracted from the tool's settings file.
+  source: >
+    Parsed from tool config files defined in tool-configs.yaml. For Claude
+    Code: settings.json → selectedModel. For Cursor: state.vscdb SQLite. For
+    Copilot: settings.json model preferences.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Settings
+  section: Model
+  otel_metric: aictl.config.model
+  dynamic_source: false
+
+procs.tool.config.features:
+  explanation: >
+    Feature flags and settings extracted from the tool's configuration. They
+    show which capabilities are enabled or disabled.
+  source: >
+    Parsed from tool config files per the feature extraction rules of tool-
+    configs.yaml. Boolean and string values.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Settings
+  section: Other settings
+  dynamic_source: false
+
+procs.tool.config.hints:
+  explanation: >
+    Actionable suggestions generated from analyzing the tool's current
+    configuration. Warnings about suboptimal settings, missing features, or
+    security concerns.
+  source: >
+    Generated by _generate_hints() in tool_config.py based on OTel config
+    state, feature flags, and tool settings analysis.
+  source_type: deduced
+  unit: count
+  update_freq: on-collect
+  tab: Settings
+  section: Other settings
+  dynamic_source: false
+
+board.settings.permissions:
+  explanation: >
+    Allow, ask and deny rules per tool, derived from the permission
+    settings.
+  source: >
+    settings/permissions.js derivePermissions over the same tool_configs
+    rows.
+  source_type: deduced
+  unit: count
+  update_freq: on-collect
+  tab: Settings
+  section: Permissions
+  dynamic_source: false
+
+procs.tool.config.otel:
+  explanation: >
+    Whether OpenTelemetry export is enabled for this tool, and the
+    configured exporter type and endpoint.
+  source: >
+    Parsed from tool config files. Looks for OTel-related settings
+    (exporter, endpoint, protocol) in the tool's configuration.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Settings
+  section: Telemetry
+  dynamic_source: false
+
+procs.tool.config.otel_capture_content:
+  explanation: >
+    Whether OpenTelemetry is configured to capture message content (prompts
+    and responses). Warning shown if enabled due to privacy.
+  source: >
+    From tool OTel config: captureContent or capture_content field in VS
+    Code settings or tool-specific config files.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Settings
+  section: Telemetry
+  dynamic_source: false
+
+procs.tool.config.auto_update:
+  explanation: >
+    Whether automatic updates are enabled for the tool.
+  source: >
+    Claude Code: ~/.claude.json autoUpdates field. Other tools: from
+    respective settings files per tool-configs.yaml.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Settings
+  section: Updates and startup
+  dynamic_source: false
+
+procs.tool.config.launch_at_startup:
+  explanation: >
+    Whether the tool is configured to launch automatically at system startup
+    (login items on macOS, autostart on Linux).
+  source: >
+    macOS: detected via osascript querying login items or launchd plist.
+    Linux: checks XDG autostart directory. Windows: checks startup folder.
+  source_type: raw
+  unit: count
+  update_freq: on-collect
+  tab: Settings
+  section: Updates and startup
+  dynamic_source: false
