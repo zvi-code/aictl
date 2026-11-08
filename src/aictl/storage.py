@@ -96,6 +96,8 @@ COMPACT_REST_RATIO = 4.0
 BUSY_TIMEOUT_S = 15.0
 SLOW_WRITE_S = 3.0
 FLUSH_CHUNK_ROWS = 1000  # rows per commit inside one flush, so other writers get in between
+FLUSH_TXN_S = 0.25  # a flush transaction commits once it has held the write lock this long
+FLUSH_YIELD_S = 0.05  # and then waits this long, so a writer in SQLite's busy wait gets the lock
 # A health row that does not change is written again after this time, not on each poll.
 QUALITY_REWRITE_S = 60.0
 # Pages returned to the OS per automatic maintenance pass (64 MB).
@@ -2003,12 +2005,21 @@ class HistoryDB:
         if conn is None:
             path = str(self._path) if isinstance(self._path, Path) else self._path
             conn = sqlite3.connect(path, timeout=BUSY_TIMEOUT_S)
-            # New databases return pages to the OS through incremental vacuum.
-            # Must precede journal_mode, which writes the header; no effect on
-            # an existing DB until ``aictl db compact`` runs VACUUM.
-            conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
+            if not self._schema_ready:
+                # Only the connection that opens the store sets these. Setting
+                # auto_vacuum takes the write lock, and the web server opens a
+                # connection per request thread: a read would wait for a running
+                # flush and then fail with "database is locked". Both settings are
+                # kept in the file. New databases return pages to the OS through
+                # incremental vacuum; it must precede journal_mode, which writes
+                # the header, and does nothing to an existing DB until VACUUM.
+                conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+                conn.execute("PRAGMA journal_mode=WAL")
+            # The history is a cache of what the tools keep themselves. No commit or
+            # checkpoint waits for the disk: a power cut or an OS crash can lose the
+            # last writes, and a damaged file is opened again on memory. Syncs are
+            # what made writes take minutes on Windows.
+            conn.execute("PRAGMA synchronous=OFF")
             conn.execute("PRAGMA cache_size=-8000")  # 8 MB
             # Bound the WAL: checkpoint every ~4 MB and truncate the file back
             # to the limit on reset, so one big transaction cannot leave a
@@ -2838,7 +2849,21 @@ class HistoryDB:
         # thread waited behind one transaction of a whole import before; now it
         # gets in between chunks. On an error only what is not committed is kept.
         committed: set[str] = set()
-        req_done = ti_done = 0
+        req_done = ti_done = e_done = m_done = 0
+        txn_start = time.monotonic()
+
+        def commit() -> None:
+            # A writer waiting in SQLite's busy handler retries with sleeps of up to
+            # 100 ms; a flush that begins its next transaction at once would take the
+            # lock first every time. A long transaction is followed by a short pause.
+            nonlocal txn_start
+            conn.commit()
+            if time.monotonic() - txn_start >= FLUSH_TXN_S:
+                time.sleep(FLUSH_YIELD_S)
+            txn_start = time.monotonic()
+
+        def due(i: int) -> bool:
+            return i > 0 and (i % FLUSH_CHUNK_ROWS == 0 or time.monotonic() - txn_start >= FLUSH_TXN_S)
         try:
             if ss_buf:
                 conn.executemany(
@@ -2874,7 +2899,7 @@ class HistoryDB:
                     ],
                 )
                 total += len(ss_buf)
-                conn.commit()
+                commit()
             committed.add("ss")
 
             if ps_buf:
@@ -2907,7 +2932,7 @@ class HistoryDB:
                         ],
                     )
                     total += len(filtered)
-                    conn.commit()
+                    commit()
             committed.add("ps")
 
             if e_buf:
@@ -2915,15 +2940,19 @@ class HistoryDB:
                     [_event_row_tuple(e) for e in e_buf],
                     key_indices=(0, 1, 2),  # ts, tool, kind
                 )
-                conn.executemany(
-                    "INSERT OR IGNORE INTO events"
-                    "(ts, tool, kind, session_id, pid,"
-                    " project_path, detail, seq)"
-                    " VALUES(?,?,?,?,?,?,?,?)",
-                    rows,
-                )
+                for start in range(0, len(rows), FLUSH_CHUNK_ROWS):
+                    if start:
+                        commit()
+                        e_done = start
+                    conn.executemany(
+                        "INSERT OR IGNORE INTO events"
+                        "(ts, tool, kind, session_id, pid,"
+                        " project_path, detail, seq)"
+                        " VALUES(?,?,?,?,?,?,?,?)",
+                        rows[start : start + FLUSH_CHUNK_ROWS],
+                    )
                 total += len(e_buf)
-                conn.commit()
+                commit()
             committed.add("e")
 
             if m_buf:
@@ -2931,22 +2960,26 @@ class HistoryDB:
                     [_metric_row_tuple(s) for s in m_buf],
                     key_indices=(0, 1),  # ts, metric
                 )
-                conn.executemany(
-                    "INSERT OR IGNORE INTO metrics"
-                    "(ts, metric, value, tags, tool,"
-                    " project_path, session_id, seq)"
-                    " VALUES(?,?,?,?,?,?,?,?)",
-                    rows,
-                )
+                for start in range(0, len(rows), FLUSH_CHUNK_ROWS):
+                    if start:
+                        commit()
+                        m_done = start
+                    conn.executemany(
+                        "INSERT OR IGNORE INTO metrics"
+                        "(ts, metric, value, tags, tool,"
+                        " project_path, session_id, seq)"
+                        " VALUES(?,?,?,?,?,?,?,?)",
+                        rows[start : start + FLUSH_CHUNK_ROWS],
+                    )
                 total += len(m_buf)
-                conn.commit()
+                commit()
             committed.add("m")
 
             if req_buf:
                 covered = _sessions_read_from_transcripts(conn, req_buf)
                 for i, r in enumerate(req_buf):
-                    if i and i % FLUSH_CHUNK_ROWS == 0:
-                        conn.commit()
+                    if due(i):
+                        commit()
                         req_done = i
                     # The transcript row for the same call is already stored.
                     if r.source in _SUPERSEDED_REQUEST_SOURCES_ALWAYS and r.session_id in covered:
@@ -3005,13 +3038,13 @@ class HistoryDB:
                         ),
                     )
                 total += len(req_buf)
-                conn.commit()
+                commit()
             committed.add("req")
 
             if ti_buf:
                 for i, r in enumerate(ti_buf):
-                    if i and i % FLUSH_CHUNK_ROWS == 0:
-                        conn.commit()
+                    if due(i):
+                        commit()
                         ti_done = i
                     # Dedup precedence:
                     # 1. source_event_id (e.g. hook tool_use_id): unique per
@@ -3076,7 +3109,7 @@ class HistoryDB:
                         ),
                     )
                 total += len(ti_buf)
-                conn.commit()
+                commit()
             committed.add("ti")
         except sqlite3.Error as exc:
             log.warning("DB flush error: %s — rolling back and re-buffering batch", exc)
@@ -3098,9 +3131,9 @@ class HistoryDB:
                 if "ps" not in committed:
                     self._process_snapshot_buf[:0] = ps_buf
                 if "e" not in committed:
-                    self._events_buf[:0] = e_buf
+                    self._events_buf[:0] = e_buf[e_done:]
                 if "m" not in committed:
-                    self._metrics_buf[:0] = m_buf
+                    self._metrics_buf[:0] = m_buf[m_done:]
                 if "req" not in committed:
                     self._requests_buf[:0] = req_buf[req_done:]
                 if "ti" not in committed:
@@ -3131,6 +3164,10 @@ class HistoryDB:
                     )
                 except Exception as dq_exc:  # noqa: BLE001 — same DB may still be failing
                     log.debug("Data-quality write error for storage-flush: %s", dq_exc)
+            if "e" not in committed:
+                total += e_done
+            if "m" not in committed:
+                total += m_done
             if "req" not in committed:
                 total += req_done
             if "ti" not in committed:
