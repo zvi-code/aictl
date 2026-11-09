@@ -458,7 +458,8 @@ describe('Transcript tab', () => {
   it('reads the transcript again every 5 s while the agent runs', async () => {
     // Only the refresh interval is faked: it moves when the test says so, and the second
     // answer adds a turn, so the wait ends on the new row rather than on a clock.
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    // Date moves with it, since a refetch waits 5 s from the last one.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
     const second = { ...transcript.turns[0], ts: NOW - 100, prompt: 'And the lexer' };
     let reads = 0;
     const route = () => (++reads === 1 ? transcript : { ...transcript, turns: [...transcript.turns, second] });

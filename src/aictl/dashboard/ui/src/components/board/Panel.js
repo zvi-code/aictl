@@ -3,7 +3,7 @@
 // time and cannot select one. A body `view` is a component with its own state.
 import { html } from 'htm/preact';
 import { memo } from 'preact/compat';
-import { useCallback, useMemo, useState } from 'preact/hooks';
+import { useCallback, useMemo, useRef, useState } from 'preact/hooks';
 import Chart from './Chart.js';
 import { Ico, PATHS } from './icons.js';
 import { HEIGHT, TITLES, WIDTHS } from './layout.js';
@@ -44,7 +44,10 @@ function PanelImpl({ pn, ctx, hiddenCols, menuOpen, over, dragging, act, section
     mode: (key, def) => modes[key] || def, tableView, folded, setFold,
   }), [modes, tableView, folded, setFold]);
   const growth = pn.h || 0;
-  const body = useMemo(() => buildPanel(id, ctx, local, pn), [id, ctx, local, growth]);
+  // A folded panel is not built; its header keeps the sub line of the last build.
+  const lastSub = useRef('');
+  const body = useMemo(() => (pn.open ? buildPanel(id, ctx, local, pn) : { sub: lastSub.current }), [id, ctx, local, growth, pn.open]);
+  if (pn.open) lastSub.current = body.sub;
   const title = TITLES[id];
   const onColToggle = k => act.toggleCol(id, k);
   const colMenu = body.table && body.hasCols

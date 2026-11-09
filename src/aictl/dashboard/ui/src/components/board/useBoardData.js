@@ -171,9 +171,12 @@ function createLoader(onData, onError) {
   return loader;
 }
 
-/** /api/board/machine for the tool filter. A failed read keeps the last answer. */
+/** /api/board/machine for the tool filter. A failed read keeps the last answer.
+ * An answer equal to the last one, apart from generated_at, is not passed on, so the
+ * board does not rebuild every panel for it. */
 function createMachineLoader(onData) {
   let ctrl = null;
+  let lastText = null;
   return {
     load(tools) {
       if (ctrl) ctrl.abort();
@@ -183,6 +186,9 @@ function createMachineLoader(onData) {
       return api.fetchJson('/api/board/machine' + q, { signal: mine.signal }).then((d) => {
         if (ctrl !== mine) return;
         ctrl = null;
+        const text = JSON.stringify(d && typeof d === 'object' ? { ...d, generated_at: null } : d);
+        if (text === lastText) return;
+        lastText = text;
         onData(normalizeMachine(d));
       }).catch(() => { if (ctrl === mine) ctrl = null; });
     },
