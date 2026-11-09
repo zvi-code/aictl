@@ -570,6 +570,108 @@ def test_retrying_repeats_transient_service_errors_and_raises_permanent_ones(mon
         C.retrying(lambda: (_ for _ in ()).throw(_ApiError(520, False)), "ingestion")
 
 
+def test_streaming_into_a_table_the_node_has_not_seen_yet_is_repeated(monkeypatch, caplog):
+    from aictl.kusto import connection as C
+    from aictl.kusto.ingest import StreamingIngester
+
+    monkeypatch.setattr(C, "RETRY_DELAYS_S", (0.0, 0.0, 0.0))
+    monkeypatch.setattr(C.time, "sleep", lambda s: None)
+    not_found = "BadRequest_EntityNotFound: Entity ID 'sessions' of kind 'Table' was not found."
+    answers = iter([_ApiError(400, True, not_found), _ApiError(400, True, not_found), None])
+    sent: list[bytes] = []
+
+    class Client:
+        def ingest_from_stream(self, stream, ingestion_properties):
+            sent.append(stream.read())
+            answer = next(answers)
+            if answer is not None:
+                raise answer
+
+    ingester = StreamingIngester(KustoSettings("https://c.kusto.windows.net", "aictl"), ingest_client=Client())
+    with caplog.at_level("WARNING", logger="aictl.kusto.connection"):
+        ingester.ingest("sessions", [{"session_id": "s1"}])
+    # The same rows three times, and the first refusal is in the log.
+    assert len(sent) == 3 and len(set(sent)) == 1
+    assert sum("BadRequest_EntityNotFound" in r.getMessage() for r in caplog.records) == 1
+    # A query or a command that names a missing table is a real error: not repeated.
+    calls = []
+
+    def missing():
+        calls.append(1)
+        raise _ApiError(400, True, not_found)
+
+    with pytest.raises(_ApiError):
+        C.retrying(missing, "query")
+    assert len(calls) == 1
+    # Any other refusal of the rows is raised at once.
+    refused = iter([_ApiError(400, True, "BadRequest_InvalidBlob")])
+
+    class Refusing:
+        def ingest_from_stream(self, stream, ingestion_properties):
+            raise next(refused)
+
+    with pytest.raises(_ApiError):
+        StreamingIngester(KustoSettings("https://c.kusto.windows.net", "aictl"), ingest_client=Refusing()).ingest(
+            "sessions", [{"session_id": "s1"}]
+        )
+
+
+def _schema_client(have_rows, clear_answers):
+    """A client whose database has *have_rows* and whose cache-clear command answers from *clear_answers*."""
+
+    def on_mgmt(cmd):
+        if cmd.startswith(".show database schema"):
+            return response([("TableName", "string"), ("ColumnName", "string")], have_rows)
+        if cmd.startswith(".clear database cache streamingingestion schema"):
+            answer = next(clear_answers)
+            if isinstance(answer, Exception):
+                raise answer
+            return response([("NodeId", "string"), ("Status", "string")], answer)
+        return response([], [])
+
+    return FakeClient(on_mgmt=on_mgmt)
+
+
+def _streaming_conn(client):
+    settings = KustoSettings("https://c.kusto.windows.net", "aictl")
+    return KustoConnection(settings, client, FakeIngester(), translator=StubTranslator(), tables=TABLES)
+
+
+def _complete_schema():
+    return [[name, col] for name, table in TABLES.items() for col in [c.name for c in table.columns] + [ROWID, VERSION, DELETED]]
+
+
+def test_new_tables_clear_the_streaming_schema_cache_until_every_node_succeeds(monkeypatch):
+    monkeypatch.setattr(KustoConnection, "_schema_done", set())
+    clear = ".clear database cache streamingingestion schema"
+    client = _schema_client([], iter([[["N0", "Succeeded"], ["N1", "Failed"]], [["N0", "Succeeded"], ["N1", "Succeeded"]]]))
+    _streaming_conn(client).ensure_schema()
+    assert client.commands.count(clear) == 2
+    # The clear comes after every table is created and the policy is set.
+    first_clear = client.commands.index(clear)
+    assert all(i < first_clear for i, c in enumerate(client.commands) if c.startswith((".create-merge table", ".alter database")))
+    assert sum(c.startswith(".create-merge table") for c in client.commands) > len(TABLES)
+
+
+def test_an_unchanged_schema_leaves_the_streaming_cache_alone(monkeypatch):
+    monkeypatch.setattr(KustoConnection, "_schema_done", set())
+    client = _schema_client(_complete_schema(), iter([]))
+    _streaming_conn(client).ensure_schema()
+    assert not [c for c in client.commands if c.startswith(".clear")]
+    assert not [c for c in client.commands if c.startswith(".create-merge table ['sessions']")]
+
+
+def test_a_widened_table_clears_the_cache_and_a_refused_clear_does_not_stop_the_start(monkeypatch, caplog):
+    monkeypatch.setattr(KustoConnection, "_schema_done", set())
+    have = [r for r in _complete_schema() if r != ["maintenance_state", "text"]]
+    client = _schema_client(have, iter([RuntimeError("Principal is not authorized")]))
+    with caplog.at_level("WARNING", logger="aictl.kusto.connection"):
+        _streaming_conn(client).ensure_schema()
+    assert [c for c in client.commands if c.startswith(".create-merge table ['maintenance_state']")]
+    assert not [c for c in client.commands if c.startswith(".create-merge table ['sessions']")]
+    assert any("not cleared" in r.getMessage() and "not authorized" in r.getMessage() for r in caplog.records)
+
+
 def test_ingest_endpoint_url_is_turned_into_the_engine_url():
     assert engine_url("https://ingest-zdev3.swedencentral.dev.kusto.windows.net") == "https://zdev3.swedencentral.dev.kusto.windows.net"
     assert engine_url("https://zdev3.swedencentral.dev.kusto.windows.net/") == "https://zdev3.swedencentral.dev.kusto.windows.net/"

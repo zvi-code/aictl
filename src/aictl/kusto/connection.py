@@ -123,25 +123,37 @@ def _transient(exc: BaseException) -> bool:
     return type(exc).__name__ == "KustoNetworkError"
 
 
-def retrying(call: Callable[[], Any], what: str) -> Any:
-    """Run *call*, waiting out throttling and transient service errors before giving up."""
-    for delay in RETRY_DELAYS_S:
+def schema_cache_behind(exc: BaseException) -> bool:
+    """Whether streaming ingestion answered that a table the database has does not exist.
+
+    Each engine node caches the schemas it streams into. For up to a minute and a half
+    after ``.create-merge table`` a node may still answer HTTP 400
+    ``BadRequest_EntityNotFound`` for the new table; ``ensure_schema`` clears that cache,
+    and a request that still meets a stale node succeeds when repeated.
+    """
+    return "BadRequest_EntityNotFound" in _server_message(exc) or "BadRequest_EntityNotFound" in str(exc)
+
+
+def retrying(call: Callable[[], Any], what: str, also: Callable[[BaseException], bool] | None = None) -> Any:
+    """Run *call*, waiting out throttling and transient service errors before giving up.
+
+    *also* names a failure that is worth repeating for this call only, on top of what
+    the service itself marks as transient.
+    """
+    for attempt, delay in enumerate(RETRY_DELAYS_S):
         try:
             return call()
         except Exception as exc:  # noqa: BLE001 - only a transient failure is retried; the rest is raised below
-            if not _transient(exc):
+            if not _transient(exc) and not (also is not None and also(exc)):
                 raise
-            say = log.warning if delay >= 8 else log.debug
-            say("Kusto %s failed transiently (%s); retrying in %.0f s", what, _server_message(exc).splitlines()[0][:160], delay)
+            # The first failure and the long waits are shown: a start that is slow because
+            # the cluster keeps refusing rows must say so in the log.
+            say = log.warning if attempt == 0 or delay >= 8 else log.debug
+            say("Kusto %s failed transiently (%s); retrying in %.1f s", what, _server_message(exc).splitlines()[0][:160], delay)
             time.sleep(delay)
     return call()
 
 
-# Row ids: milliseconds since the epoch in the high bits, then 8 bits that tell
-# processes apart and a 12-bit sequence within the millisecond. The tag is random
-# per process (drawn again in a forked child), so two processes writing in the same
-# millisecond collide only if they drew the same tag; the sequence keeps ids from one
-# process strictly increasing, borrowing the next millisecond when 4096 run out.
 _SEQ_BITS = 12
 _TAG_BITS = 8
 _rowid_lock = threading.Lock()
@@ -643,18 +655,45 @@ class KustoConnection:
                 have.setdefault(str(table_name), set())
                 if column:
                     have[str(table_name)].add(str(column))
+            changed = False
             for name, table in self.tables.items():
                 wanted = {c.name for c in table.columns} | {n for n, _t in SYSTEM_COLUMNS}
                 if name not in have or not wanted <= have[name]:
                     for command in create_commands({name: table}, streaming=False):
                         self._mgmt(command)
+                    changed = True
             if streaming:
                 # Table policies inherit from the database's: one command instead of one per table.
                 self._mgmt(f".alter database {quote(self.database)} policy streamingingestion enable")
             # The schema described as data, for anyone querying the database directly.
             for command in information_commands(self.tables):
                 self._mgmt(command)
+            if changed and streaming:
+                self._clear_streaming_schema_cache()
             KustoConnection._schema_done.add(key)
+
+    def _clear_streaming_schema_cache(self) -> None:
+        """Have every engine node read the tables just created or widened before rows are streamed in.
+
+        Without it streaming ingestion answers ``BadRequest_EntityNotFound`` for a new
+        table until each node's schema cache expires: 46 s and 22 refused requests on
+        the test cluster, against under a second with the cache cleared. The command
+        costs streaming ingestion a little speed while the caches refill, so it runs
+        only after a schema change. It reports one row per node and may be repeated.
+        """
+        command = ".clear database cache streamingingestion schema"
+        for _attempt in range(3):
+            try:
+                rows = self._mgmt(command).dicts()
+            except KustoStoreError as exc:
+                # Needs the Database Ingestor role at least. Ingestion still works without
+                # it: rows for a new table are repeated until its schema is seen.
+                log.warning("Kusto streaming schema cache was not cleared: %s", (exc.server_message or str(exc))[:300])
+                return
+            failed = [r for r in rows if str(r.get("Status", "Succeeded")) != "Succeeded"]
+            if not failed:
+                return
+        log.warning("Kusto streaming schema cache was not cleared on %d node(s)", len(failed))
 
     def command(self, text: str) -> list[tuple[Any, ...]]:
         """Run one management command (``.alter-merge database ...``) and return its result rows."""
