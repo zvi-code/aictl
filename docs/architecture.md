@@ -503,6 +503,8 @@ A real-time interactive dashboard built with Vite + Preact + htm tagged template
 | Drawers | `Drawer.js`, `agent/*` | Agent (Overview, Transcript, Flow, Timeline, Events, Team, Processes, Integrations), file, skill, prompt and hidden-context drawers |
 | Command palette | `CommandPalette.js` | Cmd/Ctrl+K palette and the shortcuts dialog |
 | Settings screen | `settings/SettingsWorkspace.js`, `ToolView.js`, `TopicView.js`, `FilesView.js`, `FindingsView.js`, `Inspector.js` | Settings by tool, topic, file and finding (`/api/settings/tools`, `/api/settings/files`) |
+
+Settings freshness: `collect_tool_configs()` records every file and folder a parser reads (settings files, agent folders, shell profiles, `env.sh`), and the refresh loop stats them each tick, so an edit shows on the next tick; without a change they are read again every `TOOL_CONFIGS_RECHECK_S` for what a stat cannot see (the registry). The board payload carries `settings_at`, the time the records last changed, and the UI reads `/api/settings/tools` again only on a new value (or every five minutes). Environment values are what a new session gets: a settings file's `env` block, else a shell profile, `env.sh` or the registry, else the daemon's own environment, which is fixed when it starts and shown apart as `process`.
 | Shared UI | `ui/Markdown.js`, `TextView.js`, `Segmented.js`, `Icon.js` | Markdown to vnodes (no innerHTML), Rendered/Source toggle, segmented control, icons |
 
 ### Terminal Dashboard (`dashboard/tui.py`)

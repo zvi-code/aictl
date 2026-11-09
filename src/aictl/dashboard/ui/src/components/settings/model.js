@@ -233,7 +233,7 @@ const ENV_KINDS = { settings: 'Settings file', persisted: 'New shells' };
 /** Where a variable is set, one line each: this process, a shell profile, the registry or a settings file. */
 export function envWhere(v) {
   const out = [];
-  if (v?.in_process) out.push({ id: 'process', label: "aictl's environment", origin: '', value: v.value, note: 'The process aictl runs in; a tool started from the same shell sees the same value.' });
+  if (v?.in_process) out.push({ id: 'process', label: "aictl's environment", origin: '', value: v.process ?? v.value, note: "The process aictl runs in, as it was when aictl started; a tool started from that shell sees the same value." });
   for (const p of v?.persisted || []) {
     const registry = /^registry:/.test(p.origin || '');
     out.push({
@@ -255,7 +255,8 @@ function envRecord(v, tool) {
   return {
     name, tool, uid: tool + '\u0001env:' + name, source: ENV_PREFIX + name,
     set: v?.set === true, value: v?.value == null ? '' : String(v.value), masked: v?.masked === true,
-    in_process: v?.in_process === true, persisted: Array.isArray(v?.persisted) ? v.persisted : [],
+    in_process: v?.in_process === true, process: v?.process == null ? '' : String(v.process),
+    persisted: Array.isArray(v?.persisted) ? v.persisted : [],
     drives: Array.isArray(v?.drives) ? v.drives : [], label: v?.label || name,
     description: v?.description || '', section: v?.section || '', documented: v?.documented !== false,
   };

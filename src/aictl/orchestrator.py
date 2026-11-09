@@ -276,6 +276,43 @@ def _cached(cache: dict | None, key: str, ttl: float, produce):
     return hit[1]
 
 
+# Without a change in any file the settings were read from, they are read again this often.
+TOOL_CONFIGS_RECHECK_S = 60.0
+_TOOL_CONFIGS_AT = 0.0
+
+
+def _tool_configs(cache: dict | None, root: Path) -> list[dict]:
+    """Every tool's settings records, read again when a file they came from changed.
+
+    The last collection's files and folders are stat'ed on every call, so an edited
+    settings file, an agent added to a folder or a changed shell profile shows on
+    the next tick. Without any change they are read again after TOOL_CONFIGS_RECHECK_S,
+    for what a stat cannot see (the registry).
+    """
+    global _TOOL_CONFIGS_AT
+    from .monitoring.tool_config import last_watched, watch_signature
+
+    now = time.monotonic()
+    hit = cache.get("tool_configs") if cache is not None else None
+    if hit is not None:
+        at, (configs, watched, signature) = hit
+        if now - at < TOOL_CONFIGS_RECHECK_S and watch_signature(watched) == signature:
+            return configs
+    configs = [c.to_dict() for c in collect_tool_configs(root)]
+    watched = last_watched()
+    if cache is not None:
+        cache["tool_configs"] = (now, (configs, watched, watch_signature(watched)))
+    if configs != _FULL_TOOL_CONFIGS:
+        _FULL_TOOL_CONFIGS[:] = configs
+        _TOOL_CONFIGS_AT = time.time()
+    return configs
+
+
+def tool_configs_at() -> float:
+    """When the settings records last changed (unix time), for clients that cache them."""
+    return _TOOL_CONFIGS_AT
+
+
 def collect(
     root: Path,
     include_processes: bool = True,
@@ -340,8 +377,7 @@ def collect(
     telemetry_reports = _cached(cache, "telemetry", 15.0, lambda: collect_tool_telemetry(root_path))
     tool_telemetry = [r.to_dict() for r in telemetry_reports]
     agent_teams = _cached(cache, "agent_teams", 30.0, lambda: scan_agent_teams(root_path))
-    tool_configs = _cached(cache, "tool_configs", 300.0, lambda: [c.to_dict() for c in collect_tool_configs(root_path)])
-    _FULL_TOOL_CONFIGS[:] = tool_configs
+    tool_configs = _tool_configs(cache, root_path)
     tool_configs = slim_tool_configs(tool_configs)
     _merge_telemetry_into_tools(tools, telemetry_reports)
 

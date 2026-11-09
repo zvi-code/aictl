@@ -3719,8 +3719,12 @@ def _compute_board(
     project_list = sorted(project_ids - {""})
     project_prompts, prompts_searched = _project_prompts(board, project_list)
 
+    from ..orchestrator import tool_configs_at
+
     return {
         "generated_at": now,
+        # When the settings records last changed: the settings screen reads them again on a new value.
+        "settings_at": tool_configs_at(),
         "capture_mode": getattr(db, "capture", "full"),
         "range": {
             "since": f.since,
@@ -5946,10 +5950,12 @@ def _store_version(db: Any, now: float) -> tuple:
     The live snapshot's own version is left out: it moves on every monitor cycle, so
     a dashboard that polls would recompute each time with nothing new to show.
     """
+    from ..orchestrator import tool_configs_at
+
     marks = getattr(db, "version_marks", None)
     if marks is not None:
         # A history split by project: the stores read, and the newest rows of each.
-        return (marks(), int(now / MEMO_TTL_S))
+        return (marks(), int(now / MEMO_TTL_S), tool_configs_at())
     conn = db._conn()
     ids = tuple(
         conn.execute(sql).fetchone()[0]
@@ -5961,7 +5967,7 @@ def _store_version(db: Any, now: float) -> tuple:
             "SELECT MAX(last_activity_at) FROM session_usage",
         )
     )
-    return (ids, int(now / MEMO_TTL_S))
+    return (ids, int(now / MEMO_TTL_S), tool_configs_at())
 
 
 def _change_digest(payload: dict) -> str:

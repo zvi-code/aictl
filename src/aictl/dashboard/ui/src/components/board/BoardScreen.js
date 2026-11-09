@@ -39,7 +39,8 @@ const currentScreen = () => {
   try { return readScreen(window.location.search); } catch { return 'board'; }
 };
 // The settings are read again once the board's data is this much newer.
-const SETTINGS_REFRESH_S = 60;
+// The settings are read again when the board says they changed (settings_at); without that word, this often.
+const SETTINGS_REFRESH_S = 300;
 const SETTINGS_NOTE = 'Settings are the current values on this machine; the time range does not apply';
 
 /** "12 set · 2 risky · 3 agents" for the rail, under the Tool filter. */
@@ -342,14 +343,17 @@ export default function BoardScreen() {
   useEffect(() => { if (idle) loadFindings(false); }, [idle, loadFindings]);
 
   // Every tool's settings, for the Settings screen and its rail line. Read at the idle
-  // moment after the board's first data, or at once when the screen opens first, and again once the
-  // board's data is a minute newer. The last answer stays on screen meanwhile.
+  // moment after the board's first data, or at once when the screen opens first, again as soon
+  // as the board reports a change in them (settings_at), and otherwise once the board's data is
+  // SETTINGS_REFRESH_S newer. The last answer stays on screen meanwhile.
   const [settingsRes, setSettingsRes] = useState({ data: null, model: null, error: null });
   const settingsAt = useRef(undefined);
+  const settingsVersion = useRef(undefined);
   const mounted = useRef(true);
   useEffect(() => () => { mounted.current = false; }, []);
   const settingsWanted = idle || screen === 'settings';
   const boardAt = data.generated_at || 0;
+  const changedAt = data.settings_at || 0;
   const loadSettings = useCallback(() => Promise.all([api.getSettingsTools(), loadChunk(() => import('../settings/model.js'))]).then(
     ([d, model]) => { if (mounted.current) setSettingsRes({ data: d || {}, model, error: null }); },
     (e) => { if (mounted.current) setSettingsRes(s => ({ ...s, error: e })); },
@@ -357,14 +361,16 @@ export default function BoardScreen() {
   useEffect(() => {
     if (!settingsWanted) return;
     const last = settingsAt.current;
-    if (last !== undefined) {
+    const changed = settingsVersion.current !== undefined && changedAt !== settingsVersion.current;
+    settingsVersion.current = changedAt;
+    if (last !== undefined && !changed) {
       // A read made before the board had data counts as made at the board's first data.
       if (!last) { settingsAt.current = boardAt; return; }
       if (boardAt - last <= SETTINGS_REFRESH_S) return;
     }
     settingsAt.current = boardAt;
     loadSettings();
-  }, [settingsWanted, boardAt, loadSettings]);
+  }, [settingsWanted, boardAt, changedAt, loadSettings]);
   // The hook status for the Settings screen's Hooks sections, read once when the screen first opens.
   const [hooksStatus, setHooksStatus] = useState(null);
   const hooksAsked = useRef(false);
