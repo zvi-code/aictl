@@ -159,6 +159,39 @@ def _discovery_not_lazy():
 
     if tree_walk.is_lazy():
         tree_walk.set_lazy(False)
+    worker = tree_walk._worker
+    if worker is not None:
+        worker.join(timeout=30)  # a pass still running would read the next test's folders
+        assert not worker.is_alive(), "worker did not finish: a hang fails the test instead of stalling the run"
+
+
+class _SteppingClock:
+    """A wall clock that moves one second forward on every read."""
+
+    def __init__(self, start: float) -> None:
+        self._next = start
+
+    def __call__(self) -> float:
+        now, self._next = self._next, self._next + 1.0
+        return now
+
+
+@pytest.fixture()
+def history_clock(monkeypatch) -> _SteppingClock:
+    """The history store's ``time.time()``, one second apart on every call.
+
+    A file version is keyed by the time it was stored: two writes in one clock tick
+    would be one version. Tests used to sleep between writes for that.
+    """
+    import types
+
+    from aictl import storage
+
+    clock = _SteppingClock(time.time())
+    fake = types.SimpleNamespace(**{n: getattr(time, n) for n in dir(time) if not n.startswith("_")})
+    fake.time = clock
+    monkeypatch.setattr(storage, "time", fake)
+    return clock
 
 
 @pytest.fixture(autouse=True)

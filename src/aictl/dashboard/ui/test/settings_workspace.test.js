@@ -1070,7 +1070,10 @@ describe('Claude Code permissions editor', () => {
 });
 
 describe('Hook status in the Hooks section', () => {
-  const NOW_S = Math.floor(Date.now() / 1000);
+  // "last 2m ago" is read against the clock, so the clock stands still at NOW_S.
+  const NOW_S = 1_800_000_000;
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(NOW_S * 1000); });
+  afterEach(() => { vi.useRealTimers(); });
   const HOOKS = { tools: { 'claude-code': {
     status: 'active', configured_count: 2, configured_events: ['PreToolUse', 'Stop'], missing_events: ['SessionEnd'],
     fired_24h: 12, last_fire_ts: NOW_S - 120,

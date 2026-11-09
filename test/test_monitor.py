@@ -946,28 +946,74 @@ def test_nettop_failure_backs_off_instead_of_spinning(monkeypatch):
 
 
 def test_self_usage_counts_child_processes():
+    """A real child process is listed, and the totals are the daemon plus its children."""
     import os
     import subprocess
     import sys
-    import time
+
+    import pytest
 
     from aictl.dashboard.api_handlers import self_usage
 
-    child = subprocess.Popen([sys.executable, "-c", "while True: pass"])
+    child = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE)
     try:
-        self_usage()
-        time.sleep(1.0)
         usage = self_usage()
     finally:
         child.kill()
-        child.wait()
+        child.wait(timeout=30)
 
     kids = {c["pid"]: c for c in usage["children"]}
     assert child.pid in kids
-    assert kids[child.pid]["cpu_percent"] > 20  # the busy helper is visible
-    assert usage["cpu_percent"] >= usage["daemon_cpu_percent"] + kids[child.pid]["cpu_percent"] - 0.2
-    assert usage["memory_rss_bytes"] >= usage["daemon_memory_rss_bytes"] + kids[child.pid]["memory_rss_bytes"]
+    assert kids[child.pid]["memory_rss_bytes"] > 0
+    assert usage["memory_rss_bytes"] == usage["daemon_memory_rss_bytes"] + sum(c["memory_rss_bytes"] for c in usage["children"])
+    assert usage["cpu_percent"] == pytest.approx(usage["daemon_cpu_percent"] + sum(c["cpu_percent"] for c in usage["children"]), abs=0.1 * (1 + len(kids)))
     assert os.getpid() not in kids
+
+
+def test_self_usage_measures_cpu_since_the_previous_call(monkeypatch):
+    """psutil's cpu_percent(interval=0) is the share since the last call on the same
+    Process object: 0.0 the first time. self_usage keeps the objects, so the second
+    call shows a busy helper instead of 0 on every poll."""
+    import types
+
+    import psutil
+
+    from aictl.dashboard import api_handlers
+
+    class _Proc:
+        made: list[int] = []
+
+        def __init__(self, pid, kids=()):
+            self.pid = pid
+            self._kids = list(kids)
+            self._calls = 0
+            _Proc.made.append(pid)
+
+        def children(self, recursive=False):
+            assert recursive
+            return [_Proc(k) for k in self._kids]  # psutil hands out new objects every time
+
+        def name(self):
+            return f"p{self.pid}"
+
+        def cpu_percent(self, interval=None):
+            assert interval == 0
+            self._calls += 1
+            return 0.0 if self._calls == 1 else {4242: 5.0, 4243: 80.0}[self.pid]
+
+        def memory_info(self):
+            return types.SimpleNamespace(rss=self.pid * 10)
+
+    monkeypatch.setattr(api_handlers, "_SELF_PROCS", {})
+    monkeypatch.setattr(psutil, "Process", lambda pid: _Proc(pid, kids=[4243]))
+    first = api_handlers.self_usage(4242)
+    second = api_handlers.self_usage(4242)
+
+    assert first["cpu_percent"] == 0.0
+    assert second["daemon_cpu_percent"] == 5.0
+    assert second["children"] == [{"pid": 4243, "name": "p4243", "cpu_percent": 80.0, "memory_rss_bytes": 42430}]
+    assert second["cpu_percent"] == 85.0
+    assert second["memory_rss_bytes"] == 42420 + 42430
 
 
 def _usage_line(tokens: int) -> str:

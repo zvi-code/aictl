@@ -71,20 +71,28 @@ def test_swap_raises_when_lock_held(fake_project):
     acquired = threading.Event()
     release = threading.Event()
 
+    held: list[bool] = []
+
     def hold_lock():
-        with _swap_lock(proj):
-            acquired.set()
-            release.wait(timeout=10)
+        try:
+            with _swap_lock(proj):
+                held.append(True)
+                acquired.set()
+                release.wait(30)  # held until the test is done, however long that takes  # bounded: a test that fails before release does not leave it hanging
+        finally:
+            acquired.set()  # a failed acquire must not leave the test waiting
 
     t = threading.Thread(target=hold_lock)
     t.start()
     try:
-        assert acquired.wait(timeout=5)
+        assert acquired.wait(30), "acquired was never set"
+        assert held == [True]
         with pytest.raises(RuntimeError, match="another aictl swap is in progress"):
             swap_memory(root, old_profile=None, new_profile="x")
     finally:
         release.set()
-        t.join(timeout=5)
+        t.join(timeout=30)
+        assert not t.is_alive(), "t did not finish: a hang fails the test instead of stalling the run"
 
 
 def test_swap_lock_released_after_success(fake_project):

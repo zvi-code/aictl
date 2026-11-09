@@ -850,29 +850,23 @@ class TestFileStore:
         config_files = db.list_files(category="config")
         assert len(config_files) == 1
 
-    def test_file_history(self, db: HistoryDB):
+    def test_file_history(self, db: HistoryDB, history_clock):
         db.upsert_file(path="/a.md", tool="t", content="v1")
-        time.sleep(0.01)
         db.upsert_file(path="/a.md", tool="t", content="v2")
-        time.sleep(0.01)
         db.upsert_file(path="/a.md", tool="t", content="v3")
 
         history = db.file_history("/a.md")
         assert len(history) == 3
         assert history[0]["tokens"] > 0
 
-    def test_file_content_at(self, db: HistoryDB):
-        t1 = time.time()
+    def test_file_content_at(self, db: HistoryDB, history_clock):
         db.upsert_file(path="/a.md", tool="t", content="version-1")
-        time.sleep(0.01)
-        t2 = time.time()
+        between = history_clock()
         db.upsert_file(path="/a.md", tool="t", content="version-2")
+        after = history_clock()
 
-        content = db.file_content_at("/a.md", t1 + 0.001)
-        assert content == "version-1"
-
-        content = db.file_content_at("/a.md", t2 + 0.001)
-        assert content == "version-2"
+        assert db.file_content_at("/a.md", between) == "version-1"
+        assert db.file_content_at("/a.md", after) == "version-2"
 
     def test_remove_file(self, db: HistoryDB):
         db.upsert_file(path="/a.md", tool="t", content="x")
@@ -2048,27 +2042,26 @@ class TestReadsAndWritersDuringAFlush:
 
         d = HistoryDB(db_path=tmp_path / "read.db", flush_interval=3600)
         try:
-            monkeypatch.setattr(storage, "BUSY_TIMEOUT_S", 1.0)
+            # No busy wait: a connection that needed the write lock to open would fail at once.
+            monkeypatch.setattr(storage, "BUSY_TIMEOUT_S", 0.0)
             writer = sqlite3.connect(str(tmp_path / "read.db"), isolation_level=None)
             writer.execute("BEGIN IMMEDIATE")
             writer.execute("INSERT INTO metrics(ts, metric, value, tags, tool, project_path, session_id, seq) VALUES(1,'x',1,'{}','','','',0)")
             out = {}
 
             def read():  # a web request runs on its own thread, so it opens its own connection
-                started = time.monotonic()
                 try:
                     out["n"] = d._conn().execute("SELECT COUNT(*) FROM metrics").fetchone()[0]
                 except Exception as exc:  # noqa: BLE001
                     out["error"] = exc
-                out["took"] = time.monotonic() - started
 
             t = threading.Thread(target=read)
             t.start()
-            t.join(5)
+            t.join(timeout=30)
+            assert not t.is_alive(), "t did not finish: a hang fails the test instead of stalling the run"
             writer.execute("ROLLBACK")
             assert "error" not in out, out
             assert out["n"] == 0
-            assert out["took"] < 0.5
         finally:
             d.close()
 
@@ -2089,41 +2082,47 @@ class TestReadsAndWritersDuringAFlush:
             d.close()
 
     def test_another_writer_gets_in_during_a_long_flush(self, tmp_path, monkeypatch):
+        """The flush gives the write lock back between its chunks: at every pause
+        another connection writes with no busy wait at all."""
         import sqlite3
-        import threading
 
         import aictl.storage as storage
 
-        monkeypatch.setattr(storage, "FLUSH_CHUNK_ROWS", 200)
-        monkeypatch.setattr(storage, "FLUSH_TXN_S", 0.02)
+        monkeypatch.setattr(storage, "FLUSH_CHUNK_ROWS", 10)
+        monkeypatch.setattr(storage, "FLUSH_TXN_S", 0.0)
         d = HistoryDB(db_path=tmp_path / "busy.db", flush_interval=3600)
+        other = sqlite3.connect(str(tmp_path / "busy.db"), timeout=0)
+        wrote: list[int] = []
+
+        def pause(_seconds):  # the flush's yield between two transactions
+            other.execute(
+                "INSERT INTO metrics(ts, metric, value, tags, tool, project_path, session_id, seq)"
+                " VALUES(?, 'health', 1, '{}', '', '', '', 0)",
+                (float(len(wrote)),),
+            )
+            other.commit()
+            wrote.append(d._conn().execute("SELECT COUNT(*) FROM tool_invocations").fetchone()[0])
+
+        monkeypatch.setattr(storage, "time", _time_with_sleep(pause))
         try:
-            for i in range(40_000):
+            for i in range(35):
                 d._tool_invocations_buf.append(ToolInvocationRow(ts=1000.0 + i, session_id="s", tool_name=f"t{i}", source="test", source_event_id=f"e{i}"))
-            done = threading.Event()
-            result = {}
-
-            def flush():
-                d.flush()
-                done.set()
-
-            t = threading.Thread(target=flush)
-            t.start()
-            time.sleep(0.05)
-            other = sqlite3.connect(str(tmp_path / "busy.db"), timeout=1.0)
-            wrote = 0
-            try:
-                while not done.is_set() and wrote < 5:
-                    other.execute("INSERT INTO metrics(ts, metric, value, tags, tool, project_path, session_id, seq) VALUES(?, 'health', 1, '{}', '', '', '', 0)", (float(wrote),))
-                    other.commit()
-                    wrote += 1
-            except sqlite3.OperationalError as exc:
-                result["error"] = exc
-            t.join(60)
-            assert "error" not in result, result
-            assert wrote >= 1 or done.is_set()
+            assert d.flush() == 35
+            assert len(wrote) >= 3
+            assert wrote[0] < 35  # the other writer got in while the flush still had rows to write
+            assert other.execute("SELECT COUNT(*) FROM metrics WHERE metric = 'health'").fetchone()[0] == len(wrote)
         finally:
+            other.close()
             d.close()
+
+
+def _time_with_sleep(sleep):
+    """The time module as the store sees it, with *sleep* in place of time.sleep."""
+    import types
+
+    fake = types.SimpleNamespace(**{n: getattr(time, n) for n in dir(time) if not n.startswith("_")})
+    fake.sleep = sleep
+    return fake
 
 
 def test_the_history_never_waits_for_the_disk(tmp_path):
@@ -2135,7 +2134,8 @@ def test_the_history_never_waits_for_the_disk(tmp_path):
         seen = []
         t = threading.Thread(target=lambda: seen.append(d._conn().execute("PRAGMA synchronous").fetchone()[0]))
         t.start()
-        t.join(5)
+        t.join(timeout=30)
+        assert not t.is_alive(), "t did not finish: a hang fails the test instead of stalling the run"
         assert d._conn().execute("PRAGMA synchronous").fetchone()[0] == 0
         assert seen == [0]
         assert d._conn().execute("PRAGMA journal_mode").fetchone()[0] == "wal"
@@ -2227,39 +2227,44 @@ def test_a_write_that_found_the_store_locked_does_not_fail_later_writes(tmp_path
 
 
 def test_a_wal_truncate_does_not_keep_writers_out_while_a_reader_reads(tmp_path, monkeypatch):
-    """A TRUNCATE checkpoint holds the write lock while it waits for readers."""
+    """A TRUNCATE checkpoint holds the write lock while it waits for readers.
+
+    So it waits for them only CHECKPOINT_WAIT_S, far less than a writer waits for the
+    lock (BUSY_TIMEOUT_S), gives up, lets go of the lock, and the connection goes
+    back to the normal wait for the writes that follow.
+    """
     import sqlite3
-    import threading
 
     import aictl.storage as storage
 
     monkeypatch.setattr(storage, "BUSY_TIMEOUT_S", 3.0)
+    assert storage.CHECKPOINT_WAIT_S < storage.BUSY_TIMEOUT_S
     db = HistoryDB(db_path=tmp_path / "h.db", flush_interval=0)
     for i in range(50):
-        db.append_request(RequestRow(ts=time.time() + i, session_id="s", model="m", source="otel", dedup_key=str(i)))
+        db.append_request(RequestRow(ts=1000.0 + i, session_id="s", model="m", source="otel", dedup_key=str(i)))
     reader = sqlite3.connect(tmp_path / "h.db")
-    writer = sqlite3.connect(tmp_path / "h.db", timeout=3.0)
+    writer = sqlite3.connect(tmp_path / "h.db", timeout=0)
     try:
         rows = reader.execute("SELECT * FROM requests")
         rows.fetchone()  # the reader keeps its snapshot while its cursor is open
-        db.append_request(RequestRow(ts=time.time() + 99, session_id="s", model="m", source="otel", dedup_key="x"))
-        after: list[int] = []
+        db.append_request(RequestRow(ts=1099.0, session_id="s", model="m", source="otel", dedup_key="x"))
+        conn = db._conn()
+        timeouts: list[int] = []
 
-        def run_checkpoint() -> None:
-            db._truncate_wal()
-            after.append(db._conn().execute("PRAGMA busy_timeout").fetchone()[0])
+        def on_statement(sql: str) -> None:
+            if "wal_checkpoint" in sql:
+                timeouts.append(conn.execute("PRAGMA busy_timeout").fetchone()[0])
 
-        checkpoint = threading.Thread(target=run_checkpoint)
-        checkpoint.start()
-        time.sleep(0.05)
-        started = time.monotonic()
+        conn.set_trace_callback(on_statement)
+        try:
+            db._truncate_wal()  # the reader is still there: the checkpoint gives up
+        finally:
+            conn.set_trace_callback(None)
+        assert timeouts == [int(storage.CHECKPOINT_WAIT_S * 1000)]
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 3000
+        # The lock is free again: a writer that does not wait at all gets in.
         writer.execute("UPDATE requests SET model = 'z' WHERE dedup_key = 'x'")
         writer.commit()
-        waited = time.monotonic() - started
-        checkpoint.join()
-        assert waited < 1.0, waited
-        # The checkpoint's connection goes back to the normal wait for the writes that follow.
-        assert after == [3000]
     finally:
         reader.close()
         writer.close()

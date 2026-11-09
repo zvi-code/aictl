@@ -223,7 +223,13 @@ def test_call_facts_split_by_store_in_one_batch(tmp_path, stores):
 # ─── A flood in one project does not hold another ─────────────────
 
 
-def test_a_flood_into_one_repository_does_not_block_another(tmp_path, stores):
+def test_a_flood_into_one_repository_does_not_block_another(tmp_path, stores, monkeypatch):
+    """While one store's write transaction is open, writes and board reads of
+    another project go through.
+
+    The flood is held inside its transaction (rows inserted, write lock held, not
+    committed) until the other project has written and read.
+    """
     busy, quiet = _repo(tmp_path / "busy"), _repo(tmp_path / "quiet")
     stores.upsert_session(
         SessionRow(session_id="q0", tool="claude-code", project_path=str(quiet), started_at=NOW - 600)
@@ -240,41 +246,62 @@ def test_a_flood_into_one_repository_does_not_block_another(tmp_path, stores):
                 source="transcript",
                 dedup_key=f"f{i}",
             )
-            for i in range(40_000)
+            for i in range(200)
         ]
     )
     busy_db = stores._stores[store_key(str(busy))]
-    writer = threading.Thread(target=stores.write_call_facts, args=(flood,))
+    real_drop = busy_db._drop_superseded_rows
+    inside, release = threading.Event(), threading.Event()
+    errors: list[BaseException] = []
+
+    def hold(conn, facts):  # the last step before the flood's commit
+        real_drop(conn, facts)
+        assert conn.in_transaction
+        inside.set()
+        release.wait(30)  # bounded: a test that fails before release does not leave it hanging
+
+    def write():
+        try:
+            stores.write_call_facts(flood)
+        except BaseException as exc:  # noqa: BLE001 - reported below
+            errors.append(exc)
+        finally:
+            inside.set()
+
+    monkeypatch.setattr(busy_db, "_drop_superseded_rows", hold)
+    writer = threading.Thread(target=write)
     writer.start()
-    deadline = time.monotonic() + 10
-    while not busy_db.running_writes() and writer.is_alive() and time.monotonic() < deadline:
-        time.sleep(0.001)
-    timings: list[tuple[str, float, bool]] = []
-    for i in range(5):
-        started = time.monotonic()
-        stores.append_request(
-            RequestRow(
-                ts=NOW - 10 + i,
-                session_id="q0",
-                project_path=str(quiet),
-                model=HAIKU,
-                input_tokens=i + 1,
-                source="otel",
+    try:
+        assert inside.wait(30), "inside was never set"
+        assert not errors, errors
+        assert busy_db.running_writes(), "the flood is not in its transaction"
+        # No lock the other project needs is held by the flood (and so nothing below can hang).
+        for lock in (stores._stores_lock, stores._route_lock, stores._index_lock, stores.machine._lock):
+            assert lock.acquire(blocking=False), lock
+            lock.release()
+        for i in range(5):
+            stores.append_request(
+                RequestRow(
+                    ts=NOW - 10 + i,
+                    session_id="q0",
+                    project_path=str(quiet),
+                    model=HAIKU,
+                    input_tokens=i + 1,
+                    source="otel",
+                )
             )
-        )
-        stores.upsert_session(
-            SessionRow(session_id=f"q{i + 1}", tool="claude-code", project_path=str(quiet), started_at=NOW - 5)
-        )
-        timings.append(("write", time.monotonic() - started, bool(busy_db.running_writes())))
-        started = time.monotonic()
-        compute_board(stores, Filters(since=NOW - 3600, until=NOW), now=NOW)
-        timings.append(("board", time.monotonic() - started, bool(busy_db.running_writes())))
-    writer.join(timeout=60)
-    assert any(during for _what, _took, during in timings), "the flood ended before the other project wrote"
-    slow = [(what, round(took, 3)) for what, took, _during in timings if took >= 0.25]
-    assert not slow, slow
-    assert _rows(_store_file(stores, busy), "requests") == 40_000
-    assert _rows(_store_file(stores, quiet), "requests") == 5
+            stores.upsert_session(
+                SessionRow(session_id=f"q{i + 1}", tool="claude-code", project_path=str(quiet), started_at=NOW - 5)
+            )
+            compute_board(stores, Filters(since=NOW - 3600, until=NOW), now=NOW)
+        assert _rows(_store_file(stores, quiet), "requests") == 5
+        assert busy_db.running_writes(), "the flood committed before the other project wrote"
+    finally:
+        release.set()
+        writer.join(timeout=30)
+        assert not writer.is_alive(), "writer did not finish: a hang fails the test instead of stalling the run"
+    assert not errors, errors
+    assert _rows(_store_file(stores, busy), "requests") == 200
 
 
 # ─── Reads over the stores ────────────────────────────────────────
@@ -533,15 +560,17 @@ def test_session_reads_find_a_session_in_any_store(tmp_path, stores):
     assert stores.query_sessions(since=NOW - 10)[0]["session_id"] == "s9"
 
 
-def test_the_read_connection_takes_no_write_lock_while_a_store_writes(tmp_path, stores):
+def test_the_read_connection_takes_no_write_lock_while_a_store_writes(tmp_path, stores, monkeypatch):
+    import aictl.storage as storage
+
     a = _repo(tmp_path / "a")
     stores.upsert_session(SessionRow(session_id="s5", tool="claude-code", project_path=str(a), started_at=NOW))
     writer = stores._stores[store_key(str(a))]._conn()
+    # No busy wait: a read connection that needed the write lock would fail at once.
+    monkeypatch.setattr(storage, "BUSY_TIMEOUT_S", 0.0)
     writer.execute("BEGIN IMMEDIATE")
     try:
-        started = time.monotonic()
         assert stores.get_session("s5") is not None
-        assert time.monotonic() - started < 0.25
     finally:
         writer.rollback()
 
@@ -636,10 +665,17 @@ def test_the_split_says_when_it_starts_and_when_it_is_done(tmp_path):
 
 def test_a_large_session_moves_without_keeping_the_machine_store_locked(tmp_path, monkeypatch):
     """The split moved a session in one transaction that held the machine store's write
-    lock for the whole session, and no running write named it."""
+    lock for the whole session, and no running write named it.
+
+    Now it moves a chunk per transaction: at every pause between two chunks another
+    connection takes the machine store's write lock with no busy wait, and the move
+    is named as a running write.
+    """
+    import types
+
     import aictl.project_stores as project_stores
 
-    monkeypatch.setattr(project_stores, "FLUSH_CHUNK_ROWS", 10_000, raising=False)  # fewer, larger chunks
+    monkeypatch.setattr(project_stores, "FLUSH_CHUNK_ROWS", 10)
     path = tmp_path / "config" / "history.db"
     a = _repo(tmp_path / "a")
     single = HistoryDB(db_path=path, flush_interval=0)
@@ -650,31 +686,32 @@ def test_a_large_session_moves_without_keeping_the_machine_store_locked(tmp_path
     )
     conn.executemany(
         "INSERT INTO requests(ts, session_id, project_path, model, input_tokens, source, dedup_key) VALUES(?,?,?,?,?,?,?)",
-        [(NOW - 3000 + i * 0.01, "big", str(a), SONNET, 1, "otel", f"k{i}") for i in range(200_000)],
+        [(NOW - 3000 + i * 0.01, "big", str(a), SONNET, 1, "otel", f"k{i}") for i in range(35)],
     )
     conn.commit()
     single.close()
     with ProjectStores(db_path=path, flush_interval=0) as stores:
-        waits: list[float] = []
+        probe = sqlite3.connect(path, timeout=0, isolation_level=None)
+        left: list[int] = []
         named: list[str] = []
-        mover = threading.Thread(target=stores.split_machine_sessions)
-        probe = sqlite3.connect(path, timeout=15, isolation_level=None)
+
+        def pause(_seconds):  # between two chunks of the move
+            probe.execute("BEGIN IMMEDIATE")
+            probe.execute("ROLLBACK")
+            left.append(_rows(path, "requests", "session_id = 'big'"))
+            named.extend(stores.active_writes())
+
+        fake = types.SimpleNamespace(**{n: getattr(time, n) for n in dir(time) if not n.startswith("_")})
+        fake.sleep = pause
+        monkeypatch.setattr(project_stores, "time", fake)
         try:
-            mover.start()
-            while mover.is_alive():
-                started = time.monotonic()
-                probe.execute("BEGIN IMMEDIATE")
-                probe.execute("ROLLBACK")
-                waits.append(time.monotonic() - started)
-                named += stores.active_writes()
-                time.sleep(0.01)
-            mover.join()
+            stores.split_machine_sessions()
         finally:
             probe.close()
-        assert max(waits) < 0.3, max(waits)
+        assert {25, 15, 5} <= set(left), left  # the lock was free after each chunk, with rows still to move
         assert any("move of session big" in w for w in named), named
         assert _rows(path, "requests", "session_id = 'big'") == 0
-        assert _rows(_store_file(stores, a), "requests") == 200_000
+        assert _rows(_store_file(stores, a), "requests") == 35
 
 
 def test_a_busy_store_skips_clearing_stale_prompts_and_says_so_once(tmp_path, monkeypatch, caplog):

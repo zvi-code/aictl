@@ -8,6 +8,7 @@ import { flowModel } from '../src/components/board/agent/flowModel.js';
 import { median, trend } from '../src/components/board/agent/OverviewExtras.js';
 import { byName, recordedTree } from '../src/components/board/agent/ProcessesTab.js';
 import { treeOrder } from '../src/components/board/agent/TeamTab.js';
+import { REFRESH_MS } from '../src/components/board/agent/TranscriptTab.js';
 import { entityOf, slotsOf } from '../src/components/board/agent/TimelineTab.js';
 import { flowToTranscript, isFlow } from '../src/components/board/agent/transcriptModel.js';
 import { agentLinkOf, listenSelectSession, redirectOf } from '../src/root.js';
@@ -327,15 +328,15 @@ describe('agent drawer tab list and header', () => {
 
   it('has no badge when the session has no git record', async () => {
     const { findByRole, queryByText } = mount({ routes: { '/api/board/agent': detail(agent(), { git: { branch: null, commit: null, commits_in_session: 0 } }) } });
-    await findByRole('heading', { name: 'Fix the parser' });
-    await new Promise(r => setTimeout(r, 0));
+    // The badge would come with the overview extras; wait until they are drawn.
+    await findByRole('group', { name: 'This run against the median of 2 runs' });
     expect(queryByText(/commits in this session/)).toBeNull();
     expect(queryByText(/^Branch /)).toBeNull();
   });
 
   it('adds the run history and the trend against the median to the overview', async () => {
     const { findByRole, container, getByRole } = mount();
-    const trendBox = await findByRole('group', { name: 'This run against the median of 2 runs' }, { timeout: 5000 });
+    const trendBox = await findByRole('group', { name: 'This run against the median of 2 runs' });
     const tokens = within(trendBox).getByTitle(/^Tokens:/);
     expect(tokens.getAttribute('data-dir')).toBe('up');
     expect(tokens.textContent).toContain('+20%');
@@ -420,7 +421,7 @@ describe('Transcript tab', () => {
     const whole = { ...briefTurn, detail: false, response: 'Done. **Fixed** the parser, whole.', actions: [{ ts: NOW - 577, kind: 'tool_use', name: 'Bash', input_summary: 'ls src', duration_ms: 40, success: true }, { ts: NOW - 570, kind: 'tool_use', name: 'Read', input_summary: 'a.py', success: true }] };
     const route = u => (u.includes('turn=') ? { session_id: 'sess-1', turn: whole } : { ...storeTranscript, replies_kept: true, reply_note: null, turns: [briefTurn] });
     const { findByRole, container, calls } = mount({ tab: 'transcript', routes: { '/api/board/agent/transcript': route } });
-    const head = await findByRole('button', { expanded: false, name: /^1/ }, { timeout: 5000 });
+    const head = await findByRole('button', { expanded: false, name: /^1/ });
     expect(head.textContent).toContain('2 tool calls');
     expect(calls.some(c => c.includes('turn='))).toBe(false);
     fireEvent.click(head);
@@ -433,7 +434,7 @@ describe('Transcript tab', () => {
 
   it('shows the reply rendered as Markdown when a turn opens', async () => {
     const { findByRole, container } = mount({ tab: 'transcript' });
-    const head = await findByRole('button', { expanded: false, name: /^1/ }, { timeout: 5000 });
+    const head = await findByRole('button', { expanded: false, name: /^1/ });
     expect(container.textContent).toContain('Fix the parser please');
     fireEvent.click(head);
     await waitFor(() => expect(container.querySelector('.bd-ag-reply strong')?.textContent).toBe('Fixed'));
@@ -455,12 +456,18 @@ describe('Transcript tab', () => {
   });
 
   it('reads the transcript again every 5 s while the agent runs', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    const { findByRole, calls } = mount({ tab: 'transcript', a: agent({ status: 'running', ended_at: null }) });
+    // Only the refresh interval is faked: it moves when the test says so, and the second
+    // answer adds a turn, so the wait ends on the new row rather than on a clock.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const second = { ...transcript.turns[0], ts: NOW - 100, prompt: 'And the lexer' };
+    let reads = 0;
+    const route = () => (++reads === 1 ? transcript : { ...transcript, turns: [...transcript.turns, second] });
+    const { findByRole, findAllByText, queryByText } = mount({ tab: 'transcript', a: agent({ status: 'running', ended_at: null }), routes: { '/api/board/agent/transcript': route } });
     await findByRole('button', { expanded: false, name: /^1/ });
-    const before = calls.filter(c => c.startsWith('/api/board/agent/transcript')).length;
-    await vi.advanceTimersByTimeAsync(5100);
-    await waitFor(() => expect(calls.filter(c => c.startsWith('/api/board/agent/transcript')).length).toBeGreaterThan(before));
+    expect(queryByText(/And the lexer/)).toBeNull();
+    await vi.advanceTimersByTimeAsync(REFRESH_MS);
+    await findAllByText(/And the lexer/);
+    expect(reads).toBe(2);
   });
 
   it('reads the board transcript route and says when the reply text is not kept', async () => {
@@ -671,16 +678,18 @@ describe('legacy explorer links', () => {
     expect(agentLinkOf('?tab=live', 'x y')).toBe('?agent=x+y');
   });
 
-  it('send the select-session bus to the board', async () => {
+  it('send the select-session bus to the board', () => {
     window.history.replaceState(null, '', '/?tab=overview');
+    vi.useFakeTimers();
     const go = vi.fn();
     const stop = listenSelectSession(go);
     document.dispatchEvent(new CustomEvent('aictl:select-session', { detail: { sessionId: 'abc', tool: 'claude-code' } }));
-    await new Promise(r => setTimeout(r, 5));
+    expect(go).not.toHaveBeenCalled();
+    vi.runAllTimers();
     expect(go).toHaveBeenCalledWith('/?agent=abc');
     stop();
     document.dispatchEvent(new CustomEvent('aictl:select-session', { detail: { sessionId: 'def' } }));
-    await new Promise(r => setTimeout(r, 5));
+    vi.runAllTimers();
     expect(go).toHaveBeenCalledTimes(1);
     window.history.replaceState(null, '', '/');
   });

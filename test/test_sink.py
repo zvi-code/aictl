@@ -194,6 +194,7 @@ class TestThreadSafety:
             t.start()
         for t in threads:
             t.join(timeout=30)
+            assert not t.is_alive(), "t did not finish: a hang fails the test instead of stalling the run"
 
         assert errors == []
         # DEDUP_TTL=0 expires every dedup entry immediately, so every

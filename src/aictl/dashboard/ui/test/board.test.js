@@ -21,6 +21,7 @@ import { nextSort, tableModel } from '../src/components/board/tableModel.js';
 import { normalizeBoard } from '../src/components/board/useBoardData.js';
 import { nextTools } from '../src/hooks/useBoardFilters.js';
 import { redirectOf } from '../src/root.js';
+import { getBoard, getContextAudit } from '../src/api.js';
 import { NOW, agentDetailFixture, boardFixture, fileDetailFixture, machineFixture } from './fixtures/board.fixture.js';
 
 // jsdom's localStorage is an empty object in this project's vitest setup (see hooks.test.js).
@@ -718,7 +719,6 @@ describe('board screen', () => {
     vi.stubGlobal('fetch', fn);
     const view = render(html`<${BoardScreen}/>`);
     await waitFor(() => expect(view.container.querySelector('#p-agentsT tbody tr')).toBeTruthy());
-    const { getBoard } = await import('../src/api.js');
     expect((await getBoard('q', { etag: '"abc"' })).status).toBe(304);
     expect(seen.at(-1)).toBe('"abc"');
     expect(view.container.querySelector('#p-agentsT tbody').textContent).toContain('Fix retry logic');
@@ -752,7 +752,6 @@ describe('rows with no session data', () => {
 
 describe('hidden-context scan', () => {
   it('keeps asking while the scan runs, and reports each step', async () => {
-    const { getContextAudit } = await import('../src/api.js');
     const answers = [{ status: 'scanning', step: 'project tree', elapsed_s: 1 }, { status: 'scanning', step: 'models in force', elapsed_s: 2 }, { findings: [] }];
     const fetchMock = vi.fn(async () => new Response(JSON.stringify(answers.shift()), { headers: { 'Content-Type': 'application/json' } }));
     vi.stubGlobal('fetch', fetchMock);
@@ -766,7 +765,6 @@ describe('hidden-context scan', () => {
   });
 
   it('turns a failed scan into an error', async () => {
-    const { getContextAudit } = await import('../src/api.js');
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'OSError: disk gone' }), { headers: { 'Content-Type': 'application/json' } })));
     await expect(getContextAudit()).rejects.toThrow('disk gone');
     vi.unstubAllGlobals();

@@ -246,57 +246,82 @@ def test_stats_and_compact_cover_every_store(tmp_path):
 # ─── 9. Slow paths do not hold the global locks ───────────────────
 
 
+def _no_global_lock_held(stores) -> None:
+    """Called on the slow thread: it holds none of the locks every other writer takes."""
+    assert not stores._route_lock._is_owned()
+    assert not stores._stores_lock._is_owned()
+    assert not stores._index_lock.locked()
+    assert not project_stores._root_lock.locked()
+
+
+def _write_from_another_thread(stores, row: RequestRow) -> None:
+    """Another writer, while the slow one is still in its slow step: it must finish."""
+    errors: list[BaseException] = []
+
+    def write():
+        try:
+            stores.append_request(row)
+        except BaseException as exc:  # noqa: BLE001 - reported below
+            errors.append(exc)
+
+    t = threading.Thread(target=write)
+    t.start()
+    t.join(timeout=30)
+    assert not t.is_alive(), "t did not finish: a hang fails the test instead of stalling the run"
+    assert not errors, errors
+
+
 def test_a_slow_folder_lookup_does_not_hold_other_writers(tmp_path, stores, monkeypatch):
     quick = _repo(tmp_path / "quick")
     stores.upsert_session(SessionRow(session_id="q", tool="claude-code", project_path=str(quick), started_at=NOW))
     real = project_stores._repository_root
+    during: list[str] = []
 
     def slow(path: str) -> str:
-        if "slow" in path:
-            time.sleep(1.0)
+        if Path(path).name == "slow":
+            _no_global_lock_held(stores)
+            _write_from_another_thread(
+                stores,
+                RequestRow(
+                    ts=NOW, session_id="q", project_path=str(quick), model=SONNET, input_tokens=2, source="otel"
+                ),
+            )
+            during.append(path)
         return real(path)
 
     monkeypatch.setattr(project_stores, "_repository_root", slow)
-    t = threading.Thread(
-        target=stores.append_request,
-        args=(RequestRow(ts=NOW, session_id="x", project_path=str(tmp_path / "slow"), model=SONNET, source="otel"),),
-    )
-    t.start()
-    time.sleep(0.1)
-    started = time.monotonic()
     stores.append_request(
-        RequestRow(ts=NOW, session_id="q", project_path=str(quick), model=SONNET, input_tokens=2, source="otel")
+        RequestRow(ts=NOW, session_id="x", project_path=str(tmp_path / "slow"), model=SONNET, source="otel")
     )
-    took = time.monotonic() - started
-    t.join()
-    assert took < 0.25
+    assert during == [str(tmp_path / "slow")]
+    with stores.read_scope(session="q"):
+        assert stores.query_requests_analytics(since=NOW - 1, until=NOW + 1)[0]["input_tokens"] == 2
 
 
 def test_a_slow_store_open_does_not_hold_other_writers(tmp_path, stores, monkeypatch):
     quick, slowrepo = _repo(tmp_path / "quick"), _repo(tmp_path / "slowopen")
     stores.upsert_session(SessionRow(session_id="q", tool="claude-code", project_path=str(quick), started_at=NOW))
     real = ProjectStores._open
+    during: list[str] = []
 
     def slow(self, key):
         if "slowopen" in key:
-            time.sleep(1.0)
+            _no_global_lock_held(self)
+            _write_from_another_thread(
+                self,
+                RequestRow(
+                    ts=NOW, session_id="q", project_path=str(quick), model=SONNET, input_tokens=4, source="otel"
+                ),
+            )
+            during.append(key)
         return real(self, key)
 
     monkeypatch.setattr(ProjectStores, "_open", slow)
-    t = threading.Thread(
-        target=stores.upsert_session,
-        args=(SessionRow(session_id="so", tool="claude-code", project_path=str(slowrepo), started_at=NOW),),
-    )
-    t.start()
-    time.sleep(0.1)
-    started = time.monotonic()
-    stores.append_request(
-        RequestRow(ts=NOW, session_id="q", project_path=str(quick), model=SONNET, input_tokens=4, source="otel")
-    )
-    took = time.monotonic() - started
-    t.join()
-    assert took < 0.25
+    stores.upsert_session(SessionRow(session_id="so", tool="claude-code", project_path=str(slowrepo), started_at=NOW))
+    assert during == [store_key(str(slowrepo))]
     assert stores.store_of_session("so") == store_key(str(slowrepo))
+    with stores.read_scope(session="q"):
+        assert stores.query_requests_analytics(since=NOW - 1, until=NOW + 1)[0]["input_tokens"] == 4
 
 
 # ─── 10. Paths with URI characters ────────────────────────────────

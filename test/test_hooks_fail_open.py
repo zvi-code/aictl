@@ -18,7 +18,6 @@ import socket
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -80,11 +79,8 @@ class TestRegisteredCommandFailsOpen:
             srv.bind(("127.0.0.1", 0))
             srv.listen(8)  # accepts into the backlog, never answers
             port = srv.getsockname()[1]
-            start = time.monotonic()
             proc = _run_shell(_command(port=port))
-            elapsed = time.monotonic() - start
         assert (proc.returncode, proc.stdout) == (0, b"")
-        assert elapsed < 1.5
 
 
 class TestHandlerIndependence:
@@ -129,22 +125,84 @@ class TestHandlerIndependence:
         )
         assert (proc.returncode, proc.stdout, proc.stderr) == (0, b"", b"")
 
-    def test_wall_time_budget(self):
-        """Tolerant budget (the handler takes ~20 ms): catches the package import coming back."""
-        best = min(self._timed_run() for _ in range(5))
-        assert best < 0.150, f"hook handler took {best * 1000:.0f} ms"
-
-    @staticmethod
-    def _timed_run() -> float:
-        start = time.perf_counter()
-        subprocess.run(
-            [sys.executable, "-I", "-S", str(SRC / "hook_handler.py"), "--event", "Stop", "--port", str(_free_port())],
+    def test_a_stop_event_imports_nothing_beyond_the_socket(self):
+        """What made the handler slow was imports (the aictl package, urllib, ssl):
+        the import log of one run names every module it loaded."""
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-S",
+                "-X",
+                "importtime",
+                str(SRC / "hook_handler.py"),
+                "--event",
+                "Stop",
+                "--port",
+                str(_free_port()),
+            ],
             input=b"{}",
             capture_output=True,
             timeout=10,
             check=False,
         )
-        return time.perf_counter() - start
+        assert (proc.returncode, proc.stdout) == (0, b"")
+        loaded = {
+            line.rsplit("|", 1)[-1].strip()
+            for line in proc.stderr.decode().splitlines()
+            if line.startswith("import time:")
+        }
+        assert "json" in loaded  # the log was read
+        heavy = {
+            m
+            for m in loaded
+            if m.split(".")[0] in {"aictl", "urllib", "http", "ssl", "email", "subprocess", "argparse"}
+        }
+        assert not heavy, sorted(heavy)
+
+
+def test_every_socket_wait_of_the_post_is_bounded(monkeypatch):
+    """A hung server cannot hold the hook: connect, send and the first-byte read
+    each run under a finite timeout set before them."""
+    import _socket
+
+    calls: list[tuple[str, object]] = []
+
+    class _Sock:
+        def __init__(self, *_a):
+            self.timeout = None
+
+        def settimeout(self, value):
+            self.timeout = value
+            calls.append(("settimeout", value))
+
+        def _wait(self, name):
+            calls.append((name, self.timeout))
+
+        def connect(self, _addr):
+            self._wait("connect")
+
+        def sendall(self, _data):
+            self._wait("sendall")
+
+        def recv(self, _n):
+            self._wait("recv")
+            raise TimeoutError("timed out")
+
+        def close(self):
+            calls.append(("close", None))
+
+    monkeypatch.setattr(_socket, "socket", _Sock)
+    with pytest.raises(TimeoutError):
+        hook_handler._post(1, b"{}")
+    waits = {name: timeout for name, timeout in calls if name in ("connect", "sendall", "recv")}
+    assert waits == {
+        "connect": hook_handler._CONNECT_TIMEOUT,
+        "sendall": hook_handler._CONNECT_TIMEOUT,
+        "recv": hook_handler._RESPONSE_TIMEOUT,
+    }
+    assert all(0 < t <= 0.5 for t in waits.values())
+    assert calls[-1] == ("close", None)
 
 
 class _Receiver(http.server.BaseHTTPRequestHandler):

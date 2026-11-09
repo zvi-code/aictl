@@ -8,8 +8,12 @@ from aictl.client import ServerClient
 class TestServerClient:
     def test_try_connect_no_server(self):
         """Should return None when no server is running."""
-        # Use a port that's almost certainly not in use
-        client = ServerClient.try_connect(port=19999, timeout=0.5)
+        import socket
+
+        # A port this test holds without listening: nothing else can serve it, and a connect is refused.
+        with socket.socket() as held:
+            held.bind(("127.0.0.1", 0))
+            client = ServerClient.try_connect(port=held.getsockname()[1], timeout=0.5)
         assert client is None
 
     def test_constructor(self):

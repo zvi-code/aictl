@@ -327,17 +327,20 @@ class TestPullRequestFinder:
         calls: list = []
         started = threading.Event()
 
+        caller = threading.current_thread()
+
         def run(argv, **kwargs):
-            started.wait(5)
+            # On the caller's thread the wait below would never end: fail instead.
+            assert threading.current_thread() is not caller, "gh ran on the caller's thread"
+            assert started.wait(30), "started was never set"
             return _fake_gh({}, calls=calls)(argv, **kwargs)
 
         finder = PullRequestFinder(run=run, which=lambda n: n)
-        t0 = time.monotonic()
         assert finder.lookup(str(tmp_path), ["a" * 40]) == ({}, "looking up pull requests")
-        assert time.monotonic() - t0 < 1.0
         started.set()
         assert finder._thread is not None
-        finder._thread.join(5)
+        finder._thread.join(timeout=30)
+        assert not finder._thread.is_alive(), "finder._thread did not finish: a hang fails the test instead of stalling the run"
         assert finder.lookup(str(tmp_path), ["a" * 40]) == ({"a" * 40: []}, "")
         assert all("creationflags" in kwargs and kwargs["timeout"] for _argv, kwargs in calls)
 
