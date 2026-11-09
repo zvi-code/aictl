@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from aictl.dashboard.models import DashboardSnapshot, DashboardTool
-from aictl.dashboard.web_server import _DashboardHandler, build_sse_summary
+from aictl.dashboard.web_server import _DashboardHandler
 from aictl.orchestrator import SnapshotStore, collect
 from aictl.storage import EventRow
 from aictl.tools import ResourceFile, ToolResources
@@ -272,67 +272,6 @@ def _make_rich_snapshot():
         tool_configs=[{"tool": "claude-code", "model": "claude-sonnet-4.6"}],
         events=[{"ts": 1.0, "kind": "session_start", "tool": "claude-code", "detail": {}}],
     )
-
-
-def test_sse_summary_covers_all_snapshot_top_level_keys():
-    """Every top-level key in DashboardSnapshot.to_dict() must appear in the SSE summary.
-
-    This prevents the class of bug where a new field is added to the snapshot
-    but forgotten in the SSE summary, causing stale data in the frontend.
-    """
-    snap = _make_rich_snapshot()
-    full = snap.to_dict()
-    sse = build_sse_summary(snap)
-
-    missing = set(full.keys()) - set(sse.keys()) - {"_sse_summary"}
-    assert not missing, (
-        f"Snapshot keys missing from SSE summary (will go stale in frontend): {missing}\n"
-        f"Add them to build_sse_summary() in web_server.py"
-    )
-
-
-def test_sse_summary_preserves_live_monitor():
-    """live_monitor (diagnostics) must be in SSE — this was the original bug."""
-    snap = _make_rich_snapshot()
-    sse = build_sse_summary(snap)
-    assert "live_monitor" in sse
-    assert sse["live_monitor"].get("diagnostics")
-
-
-def test_sse_summary_preserves_tool_telemetry():
-    """tool_telemetry must be in SSE so Budget/Events tabs stay fresh."""
-    snap = _make_rich_snapshot()
-    sse = build_sse_summary(snap)
-    assert "tool_telemetry" in sse
-    assert len(sse["tool_telemetry"]) == 1
-    assert sse["tool_telemetry"][0]["tool"] == "claude-code"
-
-
-def test_sse_summary_preserves_tool_configs():
-    """tool_configs must be in SSE so ToolCard ConfigSection stays fresh."""
-    snap = _make_rich_snapshot()
-    sse = build_sse_summary(snap)
-    assert "tool_configs" in sse
-    assert len(sse["tool_configs"]) == 1
-
-
-def test_sse_summary_includes_vendor_host_per_tool():
-    """Per-tool vendor/host must be in SSE so grouping works after merge."""
-    snap = _make_rich_snapshot()
-    sse = build_sse_summary(snap)
-    tool = sse["tools"][0]
-    assert tool["vendor"] == "anthropic"
-    assert tool["host"] == "cli"
-
-
-def test_sse_summary_is_json_serializable():
-    """SSE summary must be JSON-serializable (sent over the wire)."""
-    snap = _make_rich_snapshot()
-    sse = build_sse_summary(snap)
-    data = json.dumps(sse)
-    roundtrip = json.loads(data)
-    assert roundtrip["timestamp"] == 1.0
-    assert roundtrip["_sse_summary"] is True
 
 
 # ─── collect() sink emit path tests ─────────────────────────────

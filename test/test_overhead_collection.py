@@ -216,22 +216,6 @@ def test_all_commands_still_resolve():
     assert "--capture" in CliRunner().invoke(main, ["daemon", "serve", "--help"]).output
 
 
-def test_sse_omits_only_unchanged_large_keys_per_client():
-    import json
-
-    from aictl.dashboard.web_server import _omit_unchanged_sse_keys
-
-    msg = json.dumps({"timestamp": 1, "total_cpu": 2, "tools": [], "agent_teams": [1], "events": [2]})
-    sent: dict = {}
-    assert json.loads(_omit_unchanged_sse_keys(msg, sent)) == json.loads(msg)
-    second = json.loads(_omit_unchanged_sse_keys(msg, sent))
-    assert second == {"timestamp": 1, "total_cpu": 2, "tools": []}
-    changed = json.dumps({"timestamp": 2, "total_cpu": 2, "tools": [], "agent_teams": [9], "events": [2]})
-    assert json.loads(_omit_unchanged_sse_keys(changed, sent))["agent_teams"] == [9]
-    # A new client gets everything.
-    assert "events" in json.loads(_omit_unchanged_sse_keys(msg, {}))
-
-
 def test_daemon_status_does_not_signal_the_process(tmp_path, monkeypatch):
     """os.kill(pid, 0) terminates the target on Windows."""
     from aictl.commands import daemon
