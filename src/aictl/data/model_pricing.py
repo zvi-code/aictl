@@ -23,6 +23,7 @@ input (Anthropic's meaning), and cache reads and writes are counted apart.
 
 from __future__ import annotations
 
+import functools
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -223,8 +224,12 @@ _BEDROCK_VERSION = re.compile(r"-v\d+(?::\d+)?$")
 _PROVIDER_PREFIX = re.compile(r"^(?:openai|anthropic|google|models)/")
 
 
+@functools.lru_cache(maxsize=4096)
 def normalize_model_id(model: str | None) -> str:
-    """Canonical lower-case id with snapshot, context and platform wrapping removed."""
+    """Canonical lower-case id with snapshot, context and platform wrapping removed.
+
+    Cached: a transcript poll asks for the same few ids hundreds of thousands of times.
+    """
     if not model:
         return ""
     m = model.strip().lower()
