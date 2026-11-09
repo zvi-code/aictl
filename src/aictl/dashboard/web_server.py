@@ -22,6 +22,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import math
 import queue
 import re
 import sys
@@ -34,7 +35,7 @@ from urllib.parse import parse_qs, urlparse
 
 from ..orchestrator import AllowedPaths, SnapshotStore
 from ..platforms import IS_WINDOWS
-from ..storage import EventRow, FileWriteRow, SessionRow, ToolInvocationRow
+from ..storage import EventRow, FileWriteRow, HookCallRow, SessionRow, ToolInvocationRow
 from ..tool_scope import parse_tools_param
 from .api_handlers import _APIHandlersMixin
 from .models import DashboardSnapshot
@@ -196,6 +197,116 @@ def _loopback_origin(origin: str | None) -> str | None:
     if host in _LOOPBACK_HOSTS:
         return origin
     return None
+
+
+# ─── One hook_calls row per hook call ────────────────────────────
+
+# Keys the hook handler always sets on the payload; the keys it set only when the
+# tool left them out are listed in ``aictl_hook.added`` (format version 1).
+_HOOK_ADDED_KEYS = ("event", "aictl_hook", "_aictl_truncated")
+
+
+def _sane_ts(value: object) -> float | None:
+    """*value* as a time stamp when it is a finite positive number, else None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    ts = float(value)
+    return ts if math.isfinite(ts) and ts > 0 else None
+
+
+def _first_str(data: dict, *keys: str) -> str:
+    """The first of *keys* that holds a non-empty string (Claude snake_case, Copilot camelCase)."""
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _int_of(value: object) -> int:
+    try:
+        return int(value) if not isinstance(value, bool) else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _hook_decision(stdout: object, exit_code: int | None) -> str:
+    """What a wrapped hook told the tool: its JSON decision, else ``block`` for exit 2."""
+    parsed: object = None
+    if isinstance(stdout, str) and stdout.strip():
+        try:
+            parsed = json.loads(stdout)
+        except ValueError:
+            parsed = None
+    if isinstance(parsed, dict):
+        specific = parsed.get("hookSpecificOutput")
+        if isinstance(specific, dict) and isinstance(specific.get("permissionDecision"), str):
+            return specific["permissionDecision"]
+        if isinstance(parsed.get("decision"), str):
+            return parsed["decision"]
+        if parsed.get("continue") is False:
+            return "stop"
+    return "block" if exit_code == 2 else ""
+
+
+def _hook_call_row(
+    data: dict, *, tool: str, event: str, session_id: str, cwd: str, pid: int, received_at: float
+) -> HookCallRow:
+    """The ``hook_calls`` row of one hook POST: the envelope's fields typed, the tool's payload as it sent it.
+
+    A POST without the v1 envelope (an older wrapper, another client) gets format
+    version 0 and a call id derived from its body, so an identical retry is stored once.
+    """
+    meta = data.get("aictl_hook")
+    meta = meta if isinstance(meta, dict) else {}
+    version = _int_of(meta.get("v"))
+    call_id = meta.get("call_id")
+    if not isinstance(call_id, str) or not call_id or len(call_id) > 128:
+        canonical = json.dumps(data, sort_keys=True, separators=(",", ":"), default=str)
+        call_id = "body:" + hashlib.sha256(canonical.encode("utf-8", "surrogatepass")).hexdigest()[:32]
+    ts = _sane_ts(meta.get("ts")) or _sane_ts(data.get("ts")) or received_at
+    added = meta.get("added") if isinstance(meta.get("added"), list) else []
+    drop = {*_HOOK_ADDED_KEYS, *(k for k in added if isinstance(k, str))}
+    payload = {k: v for k, v in data.items() if k not in drop}
+    wrapped = meta.get("wrapped")
+    row = HookCallRow(
+        call_id=call_id,
+        ts=ts,
+        received_at=received_at,
+        format_version=version,
+        tool=tool,
+        event=event,
+        hook_event_name=_first_str(data, "hook_event_name", "hookEventName"),
+        source=str(meta.get("source") or data.get("source") or ""),
+        session_id=session_id,
+        agent_id=_first_str(data, "agent_id", "agentId"),
+        project_path=cwd,
+        pid=pid,
+        hook_pid=_int_of(meta.get("pid")),
+        hook_ppid=_int_of(meta.get("ppid")),
+        tool_name=_first_str(data, "tool_name", "toolName"),
+        tool_use_id=_first_str(data, "tool_use_id", "toolUseId", "toolCallId"),
+        permission_mode=_first_str(data, "permission_mode", "permissionMode"),
+        payload_bytes=_int_of(meta.get("payload_bytes")),
+        truncated=1 if meta.get("truncated") is True or data.get("_aictl_truncated") is True else 0,
+        payload=payload,
+    )
+    if isinstance(wrapped, dict):
+        command = wrapped.get("command") if isinstance(wrapped.get("command"), str) else ""
+        exit_code = wrapped.get("exit_code")
+        exit_code = exit_code if isinstance(exit_code, int) and not isinstance(exit_code, bool) else None
+        stdout = wrapped.get("stdout")
+        row.wrapped = 1
+        row.command = command
+        row.command_hash = hashlib.sha256(command.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+        row.exit_code = exit_code
+        row.duration_ms = float(_sane_ts(wrapped.get("duration_ms")) or 0.0)
+        row.overhead_ms = float(_sane_ts(wrapped.get("overhead_ms")) or 0.0)
+        row.stdout_bytes = _int_of(wrapped.get("stdout_bytes"))
+        row.stderr_bytes = _int_of(wrapped.get("stderr_bytes"))
+        row.decision = _hook_decision(stdout, exit_code)
+        row.output = stdout if isinstance(stdout, str) else ""
+    return row
 
 
 # ─── Claude memory snapshot helper ───────────────────────────────
@@ -563,6 +674,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._json_response_raw(b'{"ok":true,"verify":true}')
             return
 
+        received_at = time.time()
         # Derive tool from explicit field, or session_id pattern "tool:pid:ts",
         # or fall back to "claude-code" (the most common hook source).
         tool = data.get("tool", "") or _tool_from_hook_source(data)
@@ -573,6 +685,18 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         ts = data.get("ts") or time.time()
 
         hook_pid = int(data.get("pid", 0) or 0)
+        db = self._db
+        hook_call = _hook_call_row(
+            data, tool=tool, event=event_name, session_id=session_id, cwd=cwd, pid=hook_pid, received_at=received_at
+        )
+        meta = data.get("aictl_hook")
+        if isinstance(meta, dict) and isinstance(meta.get("wrapped"), dict):
+            # A user's own hook, run through the wrapper: aictl's hook on the same
+            # event reports the event itself, so only the call is stored.
+            if db:
+                db.append_hook_call(hook_call)
+            self._json_response_raw(b'{"ok":true}')
+            return
         _HOOK_SKIP = {"event", "hook_event_name", "session_id", "tool", "cwd", "ts", "pid"}
         detail = {"session_id": session_id, "cwd": cwd, **{k: v for k, v in data.items() if k not in _HOOK_SKIP}}
         if hook_pid:
@@ -581,7 +705,6 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         event_record = {"ts": ts, "tool": tool, "kind": f"hook:{event_name}", "detail": detail}
 
         # Store as event in the database
-        db = self._db
         if db:
             db.append_event(
                 EventRow(
@@ -593,6 +716,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                     pid=hook_pid,
                 )
             )
+            db.append_hook_call(hook_call)
 
             # Also write to structured tables
             if event_name in ("Init", "SessionStart"):

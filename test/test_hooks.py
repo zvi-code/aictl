@@ -849,6 +849,64 @@ class TestHookHandlerAictlHookEnrichment:
         assert captured.getvalue() == ""
         assert isinstance(body["pid"], int) and body["pid"] > 0  # tool pid resolved from the parent chain
 
+    def test_envelope_is_format_version_1(self, monkeypatch):
+        """Each call gets its own id, the time of the call and the size of what stdin held."""
+        import io
+        import re
+
+        from aictl import hook_handler as hh
+
+        payload = '{"session_id": "s1", "hook_event_name": "PreToolUse", "tool_name": "Bash"}\n'
+        bodies = []
+        for _ in range(2):
+            monkeypatch.setattr("sys.argv", ["hook_handler", "--event", "PreToolUse", "--source", "root.claude-user"])
+            monkeypatch.setattr("sys.stdin", io.StringIO(payload))
+            captured = io.StringIO()
+            monkeypatch.setattr("sys.stdout", captured)
+            posts = _capture_posts(monkeypatch)
+            assert hh.main() == 0
+            assert captured.getvalue() == ""
+            bodies.append(posts[-1])
+        meta = [b["aictl_hook"] for b in bodies]
+        for m in meta:
+            assert m["v"] == 1
+            assert re.fullmatch(r"[0-9a-f]{32}", m["call_id"])
+            assert isinstance(m["ts"], float) and m["ts"] > 0
+            assert m["payload_bytes"] == len(payload.encode())
+            assert m["truncated"] is False
+            assert m["added"] == ["cwd"]  # the payload had a session_id of its own
+        assert meta[0]["call_id"] != meta[1]["call_id"]
+        assert bodies[0]["hook_event_name"] == "PreToolUse"  # the tool's own name stays
+
+    def test_oversized_stdin_is_marked_truncated(self, monkeypatch):
+        import io
+
+        from aictl import hook_handler as hh
+
+        monkeypatch.setattr(hh, "_MAX_PAYLOAD_BYTES", 10)
+        monkeypatch.setattr("sys.argv", ["hook_handler", "--event", "Stop"])
+        monkeypatch.setattr("sys.stdin", io.StringIO('{"session_id": "a long one"}'))
+        posts = _capture_posts(monkeypatch)
+        hh.main()
+        meta = posts[-1]["aictl_hook"]
+        assert (meta["truncated"], meta["payload_bytes"]) == (True, 10)
+        assert posts[-1]["_aictl_truncated"] is True and "_aictl_truncated" in meta["added"]
+
+    def test_no_stdin_is_zero_bytes(self, monkeypatch):
+        import io
+
+        from aictl import hook_handler as hh
+
+        class FakeTTY(io.StringIO):
+            def isatty(self):
+                return True
+
+        monkeypatch.setattr("sys.argv", ["hook_handler", "--event", "Stop"])
+        monkeypatch.setattr("sys.stdin", FakeTTY())
+        posts = _capture_posts(monkeypatch)
+        hh.main()
+        assert posts[-1]["aictl_hook"]["payload_bytes"] == 0
+
     def test_missing_source_defaults_to_unknown(self, monkeypatch):
         import io
 

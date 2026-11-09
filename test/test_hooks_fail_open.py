@@ -94,7 +94,20 @@ class TestHandlerIndependence:
             elif isinstance(node, ast.ImportFrom):
                 assert node.level == 0, "relative import in the hook handler"
                 names.add((node.module or "").split(".")[0])
-        assert names <= {"__future__", "json", "os", "sys", "subprocess", "_socket", "socket"}
+        # base64, signal and subprocess are imported inside wrap mode only; the Stop test below
+        # checks that the observer path never loads them.
+        assert names <= {
+            "__future__",
+            "json",
+            "os",
+            "sys",
+            "time",
+            "subprocess",
+            "base64",
+            "signal",
+            "_socket",
+            "socket",
+        }
 
     def test_removal_module_imports_no_aictl(self):
         tree = ast.parse((SRC / "hook_removal.py").read_text())
@@ -119,7 +132,10 @@ class TestHandlerIndependence:
 
     def test_stdout_stays_silent_when_main_raises(self, tmp_path):
         script = tmp_path / "hook_handler.py"
-        script.write_text((SRC / "hook_handler.py").read_text().replace("    data = _read_payload()\n", "    1 / 0\n"))
+        source = (SRC / "hook_handler.py").read_text()
+        line = "    data = _parse_payload(raw, truncated)\n"
+        assert line in source, "the line this test breaks is gone: point it at the payload parse"
+        script.write_text(source.replace(line, "    1 / 0\n"))
         proc = subprocess.run(
             [sys.executable, "-I", "-S", str(script)], input=b"{}", capture_output=True, timeout=10, check=False
         )
@@ -156,7 +172,8 @@ class TestHandlerIndependence:
         heavy = {
             m
             for m in loaded
-            if m.split(".")[0] in {"aictl", "urllib", "http", "ssl", "email", "subprocess", "argparse"}
+            if m.split(".")[0]
+            in {"aictl", "urllib", "http", "ssl", "email", "subprocess", "argparse", "uuid", "base64", "signal"}
         }
         assert not heavy, sorted(heavy)
 
@@ -408,3 +425,314 @@ class TestRegistrationIsExplicit:
 
 def test_redirected_home_never_counts_as_real(tmp_path):
     assert hook_removal.is_real_home(tmp_path) is False
+
+
+# ── Wrap mode: a user's hook through the handler, unchanged ────────────────────
+
+_WRAP_HANDLER = str(SRC / "hook_handler.py")
+
+
+def _wrapped(original: str, port: int, *, handler: str = _WRAP_HANDLER, event: str = "PreToolUse") -> str:
+    return hook_removal.wrap_command(
+        original, python=sys.executable, handler=handler, event=event, port=port, source="root.claude-user"
+    )
+
+
+class _Reports(http.server.BaseHTTPRequestHandler):
+    """Receives the wrapper's reports; ``arrived`` is set on each."""
+
+    bodies: list[dict] = []
+    arrived = threading.Event()
+
+    def do_POST(self):  # noqa: N802
+        body = self.rfile.read(int(self.headers["Content-Length"]))
+        type(self).bodies.append(json.loads(body))
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"{}")
+        type(self).arrived.set()
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture
+def reports():
+    _Reports.bodies = []
+    _Reports.arrived = threading.Event()
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Reports)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield server.server_address[1], _Reports
+    server.shutdown()
+
+
+def _outcome(command: str, stdin: bytes, **kw) -> tuple[int, bytes, bytes]:
+    proc = subprocess.run(["/bin/sh", "-c", command], input=stdin, capture_output=True, timeout=20, check=False, **kw)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+@pytest.mark.skipif(os.name != "posix", reason="wrap mode is POSIX only")
+class TestWrapPassThrough:
+    @pytest.mark.parametrize("code", [0, 2, 7])
+    @pytest.mark.parametrize("stdin", [b'{"session_id": "s1", "tool_name": "Bash"}', b"not json", b"line\n", b""])
+    @pytest.mark.parametrize("daemon", [False, True])
+    def test_output_exit_code_and_stdin_are_the_commands_own(self, code, stdin, daemon, reports):
+        port = reports[0] if daemon else _free_port()
+        original = f"cat; printf 'to stderr' >&2; exit {code}"
+        direct = _outcome(original, stdin)
+        assert direct == (code, stdin, b"to stderr")  # the command echoes stdin byte for byte
+        assert _outcome(_wrapped(original, port), stdin) == direct
+
+    def test_environment_and_folder_reach_the_command(self, tmp_path):
+        original = 'printf "%s|%s" "$AICTL_WRAP_TEST" "$(pwd)"'
+        env = {**os.environ, "AICTL_WRAP_TEST": "v a l"}
+        direct = _outcome(original, b"", env=env, cwd=tmp_path)
+        assert direct[0] == 0 and direct[1].startswith(b"v a l|") and direct[1].endswith(tmp_path.name.encode())
+        assert _outcome(_wrapped(original, _free_port()), b"", env=env, cwd=tmp_path) == direct
+
+    def test_a_missing_handler_runs_the_original(self):
+        original = "cat; echo done >&2; exit 7 # a trailing comment"
+        command = _wrapped(original, _free_port(), handler="/nonexistent/aictl/hook_handler.py")
+        assert _outcome(command, b"in") == (7, b"in", b"done\n")
+        gone_python = command.replace(sys.executable, "/nonexistent/bin/python")
+        assert _outcome(gone_python, b"in") == (7, b"in", b"done\n")
+
+    def test_a_command_killed_by_a_signal_gives_128_plus_n(self):
+        assert _outcome(_wrapped("kill -TERM $$", _free_port()), b"")[0] == 128 + 15
+
+    def test_an_unreadable_command_gives_127_and_a_missing_shell_falls_back(self):
+        base = [sys.executable, "-I", "-S", _WRAP_HANDLER, "--sh", "/nonexistent/sh", "--wrap-b64"]
+        assert subprocess.run([*base, "!!"], input=b"", capture_output=True, timeout=20).returncode == 127
+        b64 = hook_removal.base64.b64encode(b"exit 5").decode()
+        assert subprocess.run([*base, b64], input=b"", capture_output=True, timeout=20).returncode == 5
+
+    def test_the_report_carries_the_envelope_and_the_result(self, reports):
+        port, receiver = reports
+        payload = json.dumps({"session_id": "s1", "hook_event_name": "PreToolUse", "tool_name": "Bash"}).encode()
+        original = """printf '{"decision": "block"}'; printf 'e' >&2; exit 2"""
+        assert _outcome(_wrapped(original, port), payload) == (2, b'{"decision": "block"}', b"e")
+        assert receiver.arrived.wait(15), "no report reached the receiver"
+        body = receiver.bodies[0]
+        meta = body["aictl_hook"]
+        assert meta["v"] == 1 and len(meta["call_id"]) == 32 and meta["payload_bytes"] == len(payload)
+        assert meta["source"] == "root.claude-user" and body["event"] == "PreToolUse"
+        assert body["session_id"] == "s1" and body["tool_name"] == "Bash"
+        wrapped = meta["wrapped"]
+        assert wrapped["command"] == original
+        assert (wrapped["exit_code"], wrapped["stdout_bytes"], wrapped["stderr_bytes"]) == (2, 21, 1)
+        assert wrapped["stdout"] == '{"decision": "block"}'
+        assert wrapped["duration_ms"] > 0 and wrapped["overhead_ms"] >= 0
+
+    def test_binary_stdout_is_counted_not_reported(self, reports):
+        port, receiver = reports
+        assert _outcome(_wrapped("printf '\\377\\376'", port), b"{}") == (0, b"\xff\xfe", b"")
+        assert receiver.arrived.wait(15)
+        wrapped = receiver.bodies[0]["aictl_hook"]["wrapped"]
+        assert wrapped["stdout_bytes"] == 2 and "stdout" not in wrapped
+
+    def test_a_wrapper_failure_before_the_command_still_runs_the_command(self):
+        """Monitoring, never control: a hook that blocks must block when the wrapper breaks."""
+        b64 = hook_removal.base64.b64encode(b"cat >/dev/null; printf out; exit 2").decode()
+        script = (
+            "import os, sys\n"
+            f"sys.path.insert(0, {str(SRC)!r})\n"
+            "import hook_handler as h\n"
+            "def boom(_name):\n    raise RuntimeError('wrapper bug')\n"
+            "h._resolve_shell = boom\n"
+            f"sys.argv = ['h', '--event', 'PreToolUse', '--port', '1', '--wrap-b64', {b64!r}]\n"
+            "os._exit(h.main())\n"
+        )
+        proc = subprocess.run([sys.executable, "-c", script], input=b"{}", capture_output=True, timeout=20)
+        assert (proc.returncode, proc.stdout) == (2, b"out")
+
+    @pytest.mark.parametrize("original", ["# switched off", "exit 3 # why", "true\n# last line is a comment"])
+    def test_a_comment_only_command_keeps_its_exit_code_either_way(self, original):
+        direct = _outcome(original, b"")
+        assert _outcome(_wrapped(original, _free_port()), b"") == direct
+        assert _outcome(_wrapped(original, _free_port(), handler="/nonexistent/hook_handler.py"), b"") == direct
+
+    def test_a_call_too_large_for_the_server_is_reported_cut(self, reports):
+        port, receiver = reports
+        payload = json.dumps({"session_id": "s1", "tool_name": "Write", "tool_input": {"content": "x" * 1_200_000}})
+        assert _outcome(_wrapped("cat >/dev/null; exit 0", port), payload.encode())[0] == 0
+        assert receiver.arrived.wait(15), "no report reached the receiver"
+        body = receiver.bodies[0]
+        assert len(json.dumps(body)) < 1_000_000 and "tool_input" not in body
+        assert body["session_id"] == "s1" and body["tool_name"] == "Write"
+        assert body["aictl_hook"]["truncated"] is True and body["aictl_hook"]["payload_bytes"] == len(payload)
+        assert body["aictl_hook"]["wrapped"]["exit_code"] == 0
+
+    def test_observer_mode_never_imports_the_wrap_modules(self):
+        source = (SRC / "hook_handler.py").read_text()
+        top = ast.parse(source)
+        top_level = {a.name for n in top.body if isinstance(n, ast.Import) for a in n.names}
+        assert not top_level & {"subprocess", "base64", "signal", "uuid", "argparse"}
+
+
+# ── hooks wrap / unwrap on a settings file ─────────────────────────────────────
+
+_TRICKY = [
+    "echo 'single' \"double\" $HOME # a comment",
+    "printf '%s' \"héllo ✓\"; exit 0",
+    "~/bin/guard.sh --flag='a b'",
+]
+
+
+def _user_settings(path: Path) -> str:
+    data = {
+        "model": "opus",
+        "hooks": {
+            "PreToolUse": [
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": _TRICKY[0], "timeout": 30}]},
+                {"matcher": "", "hooks": [{"type": "http", "url": "http://example.invalid/hook"}]},
+            ],
+            "Stop": [
+                {
+                    "hooks": [
+                        {"type": "command", "command": _TRICKY[1]},
+                        {"type": "command", "command": _TRICKY[2], "async": True},
+                    ]
+                }
+            ],
+        },
+    }
+    text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return text
+
+
+def _commands(path: Path) -> list[str]:
+    hooks = json.loads(path.read_text(encoding="utf-8"))["hooks"]
+    return [e["command"] for _e, _r, e in hook_removal._command_entries(hooks)]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="wrap is POSIX only")
+class TestWrapCommand:
+    @pytest.fixture
+    def settings(self, tmp_path, monkeypatch):
+        path = tmp_path / "claude" / "settings.json"
+        monkeypatch.setattr(ig, "claude_global_dir", lambda: tmp_path / "claude")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+        monkeypatch.setattr(ig, "_shell_profiles", lambda: [])
+        return path
+
+    def _run(self, *args):
+        result = CliRunner().invoke(ig.hooks, list(args), catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        return result.output
+
+    def test_wrap_then_unwrap_restores_the_file(self, settings):
+        before = _user_settings(settings)
+        out = self._run("wrap", "--port", "9")
+        assert "Wrapped 3 user hook command(s)" in out and "type 'http'" in out
+        commands = _commands(settings)
+        assert [hook_removal.wrapped_original(c) for c in commands] == _TRICKY
+        data = json.loads(settings.read_text())
+        entry = data["hooks"]["PreToolUse"][0]
+        assert entry["matcher"] == "Bash" and entry["hooks"][0]["timeout"] == 30  # nothing else changes
+        assert data["hooks"]["Stop"][0]["hooks"][1]["async"] is True
+        assert data["hooks"]["PreToolUse"][1] == {
+            "matcher": "",
+            "hooks": [{"type": "http", "url": "http://example.invalid/hook"}],
+        }
+        assert "--event PreToolUse --port 9 --source root.claude-user" in commands[0]
+        self._run("unwrap")
+        assert settings.read_text(encoding="utf-8") == before
+
+    def test_wrapping_twice_wraps_once_and_a_new_port_rewrites(self, settings):
+        _user_settings(settings)
+        self._run("wrap", "--port", "9")
+        once = settings.read_text()
+        assert "already wrapped: 3" in self._run("wrap", "--port", "9")
+        assert settings.read_text() == once
+        self._run("wrap", "--port", "10")
+        commands = _commands(settings)
+        assert all("--port 10 " in c for c in commands)
+        assert [hook_removal.wrapped_original(c) for c in commands] == _TRICKY
+
+    def test_a_wrapped_hook_still_runs_its_original(self, settings, tmp_path):
+        _user_settings(settings)
+        self._run("wrap", "--port", str(_free_port()))
+        for original, command in zip(_TRICKY[:2], _commands(settings)[:2], strict=True):
+            env = {**os.environ, "HOME": str(tmp_path)}
+            assert _outcome(command, b"{}", env=env) == _outcome(original, b"{}", env=env)
+
+    def test_windows_changes_nothing(self, settings, monkeypatch):
+        before = _user_settings(settings)
+        monkeypatch.setattr(ig, "IS_WINDOWS", True)
+        assert "not supported on Windows" in self._run("wrap")
+        assert settings.read_text() == before
+
+    def test_a_command_the_shell_cannot_parse_wrapped_is_left_alone(self, settings):
+        _user_settings(settings)
+        data = json.loads(settings.read_text(encoding="utf-8"))
+        broken = "echo 'never closed"
+        data["hooks"]["Stop"][0]["hooks"][0]["command"] = broken
+        settings.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        out = self._run("wrap", "--port", "9")
+        assert "Wrapped 2 user hook command(s)" in out and "cannot parse" in out
+        assert broken in _commands(settings)
+
+    def test_a_hand_edited_wrapped_hook_is_still_the_users(self, settings):
+        """An edit that breaks the wrapped shape must not make uninstall delete the user's hook."""
+        _user_settings(settings)
+        self._run("wrap", "--port", "9")
+        edited = settings.read_text(encoding="utf-8").replace('\\nfi"', '\\nfi # mine"', 1)
+        assert edited != settings.read_text(encoding="utf-8")
+        settings.write_text(edited, encoding="utf-8")
+        count = len(_commands(settings))
+        self._run("uninstall", "--scope", "user")
+        commands = _commands(settings)
+        assert len(commands) == count
+        assert sum(c.endswith("fi # mine") and hook_removal.WRAP_FLAG in c for c in commands) == 1
+
+    def test_dry_run_changes_nothing(self, settings):
+        before = _user_settings(settings)
+        assert "[dry-run] would wrap 3" in self._run("wrap", "--dry-run")
+        assert settings.read_text() == before
+
+    def test_a_wrapped_user_hook_is_never_aictls(self, settings):
+        """The wrapped command holds aictl/hook_handler.py, the legacy marker of an aictl rule."""
+        _user_settings(settings)
+        self._run("wrap", "--port", "9")
+        hooks = json.loads(settings.read_text())["hooks"]
+        assert not any(hook_removal.is_aictl_rule(r) for rules in hooks.values() for r in rules)
+        assert hook_removal.strip_rules(hooks) == (hooks, 0)
+        assert "wrapped user hooks: 3" in CliRunner().invoke(ig.hooks, ["status"]).output
+
+    def test_install_and_reinstall_keep_wrapped_user_hooks(self, settings):
+        _user_settings(settings)
+        self._run("wrap", "--port", "9")
+        wrapped = _commands(settings)
+        for _ in range(2):  # install, then reinstall over it
+            self._run("install", "--force", "--port", "9")
+            commands = _commands(settings)
+            assert [c for c in commands if hook_removal.wrapped_original(c)] == wrapped
+            assert sum("--wrap-b64" not in c and "hook_handler.py" in c for c in commands) == len(ig.HOOK_EVENTS)
+
+    def test_uninstall_restores_wrapped_user_hooks(self, settings):
+        _user_settings(settings)
+        self._run("install", "--force", "--port", "9")
+        self._run("wrap", "--port", "9")
+        self._run("uninstall")
+        assert _commands(settings) == _TRICKY
+
+    def test_disable_restores_wrapped_user_hooks(self, settings):
+        from aictl.commands.disable import disable
+
+        _user_settings(settings)
+        self._run("install", "--force", "--port", "9")
+        self._run("wrap", "--port", "9")
+        result = CliRunner().invoke(disable, [], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        assert _commands(settings) == _TRICKY
+
+    def test_the_removal_script_alone_restores_them(self, settings):
+        before = _user_settings(settings)
+        self._run("wrap", "--port", "9")
+        sink = hook_removal._Sink(dry_run=False)
+        assert hook_removal.remove_from_hook_file(settings, sink) == 0
+        assert settings.read_text(encoding="utf-8") == before

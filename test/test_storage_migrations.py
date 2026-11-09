@@ -388,3 +388,26 @@ def test_m037_adds_text_and_repairs_dashboard_dates(tmp_path):
     assert rows[2] == (100.0, 200.0, "real")
     # A store without either table is left alone.
     m037_maintenance_text.apply(sqlite3.connect(":memory:"))
+
+
+def test_m038_creates_the_hook_calls_table_the_baseline_has(tmp_path):
+    """The migration and the baseline schema must give an existing file and a new one the same table."""
+    from aictl.storage import _SCHEMA_SQL
+    from aictl.storage_migrations import m038_hook_calls
+
+    migrated = sqlite3.connect(tmp_path / "m38.db")
+    for _ in range(2):  # idempotent
+        m038_hook_calls.apply(migrated)
+    fresh = sqlite3.connect(":memory:")
+    fresh.executescript(_SCHEMA_SQL)
+
+    def shape(conn):
+        cols = conn.execute("PRAGMA table_info(hook_calls)").fetchall()
+        idx = sorted(
+            (r[1], r[2], tuple(c[2] for c in conn.execute(f"PRAGMA index_info({r[1]})")))
+            for r in conn.execute("PRAGMA index_list(hook_calls)")
+        )
+        return cols, idx
+
+    assert shape(migrated) == shape(fresh)
+    assert ("idx_hook_calls_call", 1, ("call_id",)) in shape(fresh)[1]

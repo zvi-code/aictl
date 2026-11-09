@@ -359,6 +359,24 @@ CREATE TABLE IF NOT EXISTS events (
     seq INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (ts, tool, kind, seq)
 );
+-- One row per hook call the aictl hook wrapper reports (wire format: docs/tool-claude-code.md).
+-- call_id is the wrapper's id of the call, so a retried POST is stored once.
+CREATE TABLE IF NOT EXISTS hook_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, call_id TEXT DEFAULT '',
+    ts REAL NOT NULL, received_at REAL NOT NULL, format_version INTEGER DEFAULT 0,
+    tool TEXT DEFAULT '', event TEXT DEFAULT '', hook_event_name TEXT DEFAULT '', source TEXT DEFAULT '',
+    session_id TEXT DEFAULT '', agent_id TEXT DEFAULT '', project_path TEXT DEFAULT '',
+    pid INTEGER DEFAULT 0, hook_pid INTEGER DEFAULT 0, hook_ppid INTEGER DEFAULT 0,
+    tool_name TEXT DEFAULT '', tool_use_id TEXT DEFAULT '', permission_mode TEXT DEFAULT '',
+    payload_bytes INTEGER DEFAULT 0, truncated INTEGER DEFAULT 0, payload TEXT DEFAULT '{}',
+    wrapped INTEGER DEFAULT 0, command_hash TEXT DEFAULT '', command TEXT DEFAULT '',
+    exit_code INTEGER, duration_ms REAL DEFAULT 0, overhead_ms REAL DEFAULT 0,
+    stdout_bytes INTEGER DEFAULT 0, stderr_bytes INTEGER DEFAULT 0, decision TEXT DEFAULT '',
+    output TEXT DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_hook_calls_call ON hook_calls(call_id) WHERE call_id != '';
+CREATE INDEX IF NOT EXISTS idx_hook_calls_session ON hook_calls(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_hook_calls_ts ON hook_calls(ts);
 CREATE TABLE IF NOT EXISTS metrics (
     ts REAL NOT NULL, metric TEXT NOT NULL, value REAL NOT NULL,
     tool TEXT DEFAULT '', project_path TEXT DEFAULT '',
@@ -782,6 +800,92 @@ class EventRow:
     detail: dict[str, Any] = field(default_factory=dict)
     session_id: str = ""
     pid: int = 0
+
+
+@dataclass(slots=True)
+class HookCallRow:
+    """One hook call, as the hook wrapper reported it (table ``hook_calls``).
+
+    ``payload`` is the tool's own payload. ``command`` and ``output`` belong to a
+    wrapped hook (``wrapped`` = 1) and, like ``payload``, are text: they are kept
+    only with capture ``full``.
+    """
+
+    call_id: str
+    ts: float
+    received_at: float
+    format_version: int = 0
+    tool: str = ""
+    event: str = ""
+    hook_event_name: str = ""
+    source: str = ""
+    session_id: str = ""
+    agent_id: str = ""
+    project_path: str = ""
+    pid: int = 0
+    hook_pid: int = 0
+    hook_ppid: int = 0
+    tool_name: str = ""
+    tool_use_id: str = ""
+    permission_mode: str = ""
+    payload_bytes: int = 0
+    truncated: int = 0
+    payload: dict[str, Any] = field(default_factory=dict)
+    wrapped: int = 0
+    command_hash: str = ""
+    command: str = ""
+    exit_code: int | None = None
+    duration_ms: float = 0.0
+    overhead_ms: float = 0.0
+    stdout_bytes: int = 0
+    stderr_bytes: int = 0
+    decision: str = ""
+    output: str = ""
+
+
+_HOOK_CALL_INSERT = (
+    "INSERT OR IGNORE INTO hook_calls"
+    "(call_id, ts, received_at, format_version, tool, event, hook_event_name, source,"
+    " session_id, agent_id, project_path, pid, hook_pid, hook_ppid, tool_name, tool_use_id,"
+    " permission_mode, payload_bytes, truncated, payload, wrapped, command_hash, command,"
+    " exit_code, duration_ms, overhead_ms, stdout_bytes, stderr_bytes, decision, output)"
+    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+)
+
+
+def _hook_call_row_tuple(r: HookCallRow) -> tuple:
+    return (
+        r.call_id,
+        r.ts,
+        r.received_at,
+        r.format_version,
+        r.tool,
+        r.event,
+        r.hook_event_name,
+        r.source,
+        r.session_id,
+        r.agent_id,
+        r.project_path,
+        r.pid,
+        r.hook_pid,
+        r.hook_ppid,
+        r.tool_name,
+        r.tool_use_id,
+        r.permission_mode,
+        r.payload_bytes,
+        r.truncated,
+        json.dumps(r.payload, default=str),
+        r.wrapped,
+        r.command_hash,
+        r.command,
+        r.exit_code,
+        round(r.duration_ms, 3),
+        round(r.overhead_ms, 3),
+        r.stdout_bytes,
+        r.stderr_bytes,
+        r.decision,
+        r.output,
+    )
 
 
 @dataclass(slots=True)
@@ -2132,6 +2236,7 @@ _TEXT_COLUMNS: tuple[tuple[str, str, dict[str, str]], ...] = (
     ("agents", "started_at", {"task": ""}),
     ("files", "last_read", {"content": ""}),
     ("file_blobs", "created_at", {"content": ""}),
+    ("hook_calls", "ts", {"command": "", "output": ""}),
 )
 # Columns a trim blanks but a write guard must not, because each writer already
 # stores only what the mode allows: a subagent role, or a command reduced to its
@@ -2173,6 +2278,19 @@ _EVENT_TEXT_KEYS = frozenset(
     }
 )
 _EVENT_TEXT_MAX_CHARS = 256
+# JSON columns whose text keys are removed by strip_event_text: at write time unless the
+# mode keeps text, and at maintenance once text is older than content_retention_days.
+# Literal statements, one pair per table, so the Kusto translation test reads each as it runs.
+_JSON_TEXT_COLUMNS: dict[str, tuple[str, str]] = {
+    "events": (
+        "SELECT rowid, detail FROM events WHERE rowid > ? AND ts >= ? AND ts < ? ORDER BY rowid LIMIT ?",
+        "UPDATE events SET detail=? WHERE rowid=?",
+    ),
+    "hook_calls": (
+        "SELECT rowid, payload FROM hook_calls WHERE rowid > ? AND ts >= ? AND ts < ? ORDER BY rowid LIMIT ?",
+        "UPDATE hook_calls SET payload=? WHERE rowid=?",
+    ),
+}
 # Removed oldest-first, after text, when the disk budget is still exceeded.
 # Sessions, requests, agents and files stay: they hold the totals, and context
 # inventories live in their own tables that eviction never lists.
@@ -2183,6 +2301,7 @@ _EVICTION_ORDER = (
     "copilot_session_messages",
     "metrics",
     "events",
+    "hook_calls",
     "process_snapshots",
     "system_snapshots",
     "tool_stats",
@@ -2348,6 +2467,7 @@ _RETENTION_TABLES = (
     "system_snapshots",
     "process_snapshots",
     "events",
+    "hook_calls",
     "metrics",
     "tool_stats",
     "file_history",
@@ -2449,6 +2569,7 @@ class HistoryDB:
         self._metrics_buf: list[Metric] = []
         self._requests_buf: list[RequestRow] = []
         self._tool_invocations_buf: list[ToolInvocationRow] = []
+        self._hook_calls_buf: list[HookCallRow] = []
 
         # Process snapshot dedup cache: (pid, tool) -> (cpu_percent, memory_rss_mb)
         self._proc_snapshot_cache: dict[tuple[int, str], tuple[float, float]] = {}
@@ -3300,6 +3421,21 @@ class HistoryDB:
         if self._flush_interval <= 0:
             self.flush()
 
+    def append_hook_call(self, row: HookCallRow) -> None:
+        """Buffer one hook call for batch insert, without its text unless this mode keeps text.
+
+        The text is removed here, not by a trigger, so a Kusto store (no triggers) gets the
+        same rows as a SQLite one.
+        """
+        if not self._keeps_text():
+            row.payload = strip_event_text(row.payload)
+            row.command = ""
+            row.output = ""
+        with self._lock:
+            self._hook_calls_buf.append(row)
+        if self._flush_interval <= 0:
+            self.flush()
+
     # ── Flush ──────────────────────────────────────────────────────
 
     def running_writes(self) -> list[dict[str, Any]]:
@@ -3328,8 +3464,10 @@ class HistoryDB:
             self._requests_buf = []
             ti_buf = self._tool_invocations_buf
             self._tool_invocations_buf = []
+            hc_buf = self._hook_calls_buf
+            self._hook_calls_buf = []
 
-        if not ss_buf and not ps_buf and not e_buf and not m_buf and not req_buf and not ti_buf:
+        if not ss_buf and not ps_buf and not e_buf and not m_buf and not req_buf and not ti_buf and not hc_buf:
             return 0
 
         total = 0
@@ -3339,7 +3477,7 @@ class HistoryDB:
         # thread waited behind one transaction of a whole import before; now it
         # gets in between chunks. On an error only what is not committed is kept.
         committed: set[str] = set()
-        req_done = ti_done = e_done = m_done = 0
+        req_done = ti_done = e_done = m_done = hc_done = 0
         txn_start = time.monotonic()
 
         def commit() -> None:
@@ -3511,6 +3649,18 @@ class HistoryDB:
                 total += len(ti_buf)
                 commit()
             committed.add("ti")
+
+            if hc_buf:
+                for start in range(0, len(hc_buf), FLUSH_CHUNK_ROWS):
+                    if start:
+                        commit()
+                        hc_done = start
+                    conn.executemany(
+                        _HOOK_CALL_INSERT, [_hook_call_row_tuple(r) for r in hc_buf[start : start + FLUSH_CHUNK_ROWS]]
+                    )
+                total += len(hc_buf)
+                commit()
+            committed.add("hc")
         except sqlite3.Error as exc:
             log.warning("DB flush error: %s — rolling back and re-buffering batch", exc)
             self._flush_failed_with = exc
@@ -3538,6 +3688,8 @@ class HistoryDB:
                     self._requests_buf[:0] = req_buf[req_done:]
                 if "ti" not in committed:
                     self._tool_invocations_buf[:0] = ti_buf[ti_done:]
+                if "hc" not in committed:
+                    self._hook_calls_buf[:0] = hc_buf[hc_done:]
                 # Bounded retry: drop-oldest beyond the cap per buffer.
                 for buf in (
                     self._system_snapshot_buf,
@@ -3546,6 +3698,7 @@ class HistoryDB:
                     self._metrics_buf,
                     self._requests_buf,
                     self._tool_invocations_buf,
+                    self._hook_calls_buf,
                 ):
                     excess = len(buf) - self._REBUFFER_CAP
                     if excess > 0:
@@ -3572,6 +3725,8 @@ class HistoryDB:
                 total += req_done
             if "ti" not in committed:
                 total += ti_done
+            if "hc" not in committed:
+                total += hc_done
 
         return total
 
@@ -6679,6 +6834,7 @@ class HistoryDB:
 
         # 4. Delete events older than retention
         result["events_deleted_30d"] = self._delete_range(conn, "events", floor, cutoff_retention)
+        result["hook_calls_deleted_30d"] = self._delete_range(conn, "hook_calls", floor, cutoff_retention)
 
         # 5. Delete metrics (was samples) older than 7 days
         result["samples_deleted_7d"] = self._delete_range(conn, "metrics", floor, cutoff_7d)
@@ -6803,7 +6959,7 @@ class HistoryDB:
         """
         before = time.time() if before is None else before
         total = sum(self._trim_table_text(t, c, cols, since, before) for t, c, cols in _TEXT_COLUMNS)
-        total += self._trim_event_text(since, before)
+        total += sum(self._trim_event_text(since, before, table) for table in _JSON_TEXT_COLUMNS)
         if total:
             self._set_state("content_trimmed_before", before)
         return total
@@ -6826,16 +6982,14 @@ class HistoryDB:
                 return total
             self._rest_after(started)
 
-    def _trim_event_text(self, since: float, before: float) -> int:
+    def _trim_event_text(self, since: float, before: float, table: str = "events") -> int:
+        """Strip the text keys of a table's JSON column (see ``_JSON_TEXT_COLUMNS``), in chunks."""
+        select, update = _JSON_TEXT_COLUMNS[table]
         conn = self._conn()
         total = 0
         last_rowid = 0
         while True:
-            rows = conn.execute(
-                "SELECT rowid, detail FROM events WHERE rowid > ? AND ts >= ? AND ts < ?"
-                " ORDER BY rowid LIMIT ?",
-                (last_rowid, since, before, COMPACT_CHUNK_ROWS),
-            ).fetchall()
+            rows = conn.execute(select, (last_rowid, since, before, COMPACT_CHUNK_ROWS)).fetchall()
             if not rows:
                 return total
             last_rowid = rows[-1][0]
@@ -6849,7 +7003,7 @@ class HistoryDB:
                 if stripped != parsed:
                     updates.append((json.dumps(stripped), rowid))
             if updates:
-                conn.executemany("UPDATE events SET detail=? WHERE rowid=?", updates)
+                conn.executemany(update, updates)
                 conn.commit()
                 total += len(updates)
             time.sleep(COMPACT_CHUNK_PAUSE_S)

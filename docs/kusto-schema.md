@@ -368,6 +368,46 @@ Key: ts, tool, kind, seq. Scope: was per project in SQLite. 8 columns.
 | _v | datetime | system | | |
 | _deleted | bool | system | | |
 
+### `hook_calls`
+
+Key: rowid; unique: (call_id). Scope: was per project in SQLite. 31 columns.
+
+| Column | Kusto type | SQLite type | Default | Not null |
+|---|---|---|---|---|
+| id (rowid) | long | INTEGER |  |  |
+| call_id | string | TEXT | '' |  |
+| ts | real | REAL |  | yes |
+| received_at | real | REAL |  | yes |
+| format_version | long | INTEGER | 0 |  |
+| tool | string | TEXT | '' |  |
+| event | string | TEXT | '' |  |
+| hook_event_name | string | TEXT | '' |  |
+| source | string | TEXT | '' |  |
+| session_id | string | TEXT | '' |  |
+| agent_id | string | TEXT | '' |  |
+| project_path | string | TEXT | '' |  |
+| pid | long | INTEGER | 0 |  |
+| hook_pid | long | INTEGER | 0 |  |
+| hook_ppid | long | INTEGER | 0 |  |
+| tool_name | string | TEXT | '' |  |
+| tool_use_id | string | TEXT | '' |  |
+| permission_mode | string | TEXT | '' |  |
+| payload_bytes | long | INTEGER | 0 |  |
+| truncated | long | INTEGER | 0 |  |
+| payload | string | TEXT | '{}' |  |
+| wrapped | long | INTEGER | 0 |  |
+| command_hash | string | TEXT | '' |  |
+| command | string | TEXT | '' |  |
+| exit_code | long | INTEGER |  |  |
+| duration_ms | real | REAL | 0 |  |
+| overhead_ms | real | REAL | 0 |  |
+| stdout_bytes | long | INTEGER | 0 |  |
+| stderr_bytes | long | INTEGER | 0 |  |
+| decision | string | TEXT | '' |  |
+| output | string | TEXT | '' |  |
+| _v | datetime | system | | |
+| _deleted | bool | system | | |
+
 ## Time series (machine-wide)
 
 ### `metrics`
