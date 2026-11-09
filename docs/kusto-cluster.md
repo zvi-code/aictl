@@ -120,7 +120,7 @@ kusto_ingestion = "inline"
 events = "streaming"
 ```
 
-In this example, `path_defs` and every other history table use inline ingestion except `events`. To retain streaming as the default and bypass it only for `path_defs`, use `kusto_ingestion = "auto"` and `path_defs = "inline"` in the overrides section instead. Table overrides accept only `streaming` or `inline`; an unlisted table uses the global default. Unknown history-table names and invalid modes are errors, not ignored settings.
+In this example, `path_defs` and every other history table use inline ingestion except `events`. To retain streaming as the default and bypass it only for `path_defs`, use `kusto_ingestion = "auto"` and `path_defs = "inline"` in the overrides section instead. Table overrides accept only `streaming` or `inline`; an unlisted table uses the global default. The four OpenTelemetry tables (`OTELLogs`, `OTELMetrics`, `OTELTraces`, `OTELPayloads`) take overrides the same way. Any other table name and any invalid mode is an error, not an ignored setting.
 
 The equivalent command-line options are:
 
@@ -148,6 +148,65 @@ Selecting inline changes the client routing; it does not disable existing cluste
 ## 5. Check it
 
 Open the dashboard as usual (`aictl daemon serve` prints the URL). In the Kusto web UI or any KQL client, `['sessions'] | count` and `['requests'] | summarize count() by ['tool']` show the rows arriving; `aictl_information_schema | summarize count() by ['scope']` lists the schema. Every environment variable, hook and ingester works the same as with SQLite; the only visible differences are that the Settings screen's "Data sources" shows the cluster, and the size budget never evicts (retention is the database's retention policy, set from `retention_days`).
+
+## OpenTelemetry tables
+
+With a cluster configured, everything a tool exports to the daemon's OTLP endpoints (`/v1/logs`, `/v1/metrics`, `/v1/traces`, JSON or protobuf) is also written to four tables in the same database. The first three are the tables of the OpenTelemetry Collector's `azuredataexplorer` exporter, with its columns in its order, so a collector and aictl can write to one database and one query reads both.
+
+| Table | One row per | Columns aictl adds after the collector's |
+| --- | --- | --- |
+| `OTELLogs` | log record | `EventName`, `SessionId`, `Tool`, `Model`, `MachineId`, `RowKey` |
+| `OTELMetrics` | data point (a histogram is `_sum`, `_count`, `_bucket`, `_min`, `_max` rows) | `StartTime`, `Temporality`, `Monotonic`, `SessionId`, `Tool`, `Model`, `MachineId`, `RowKey` |
+| `OTELTraces` | span | `DurationMs`, `SessionId`, `Tool`, `Model`, `MachineId`, `RowKey` |
+| `OTELPayloads` | chunk of a large text | aictl's own table |
+
+The tables are created with the first export, and `.show table OTELLogs schema as json` carries a description of every column. A request is converted and queued without a call to the cluster; one thread per table sends what has gathered within 0.2 s, so the four tables are written in parallel and a slow cluster never holds up the tool that is exporting. Rows the cluster refuses for now stay queued and are sent again. The `kusto` block of `/api/otel-status` shows rows queued, sent, waiting, rejected and dropped, per table, with the last error.
+
+**Times.** A record sent without a time is stored with the time it was received, never in 1970.
+
+**Duplicates.** A request repeated after a timeout can store a row twice. `RowKey` is the same for both copies, so read through `summarize take_any(*) by RowKey`:
+
+```kusto
+OTELLogs
+| summarize take_any(*) by RowKey
+| where EventName == "user_prompt"
+| project Timestamp, SessionId, Tool, Model, LogsAttributes
+```
+
+**Prompts and payloads.** Kusto cuts a string over 1 MiB and makes a dynamic value over 1 MiB null without an error. A text value over 32 KiB is therefore moved to `OTELPayloads` in chunks of at most 256 KiB, and the row keeps a reference in its place: `{"payload_id": "<sha256 of the text>", "bytes": <n>, "preview": "<first 256 characters>"}`. The whole text of one payload:
+
+```kusto
+OTELPayloads
+| where PayloadId == "<payload_id>"
+| summarize take_any(Text) by ChunkNo
+| order by ChunkNo asc
+| summarize Text = strcat_array(make_list(Text), "")
+```
+
+`hash_sha256(Text)` of the result equals the `PayloadId`. To search every stored text and get back to the rows it came from:
+
+```kusto
+OTELPayloads
+| where Text has "refactor"
+| distinct PayloadId, SourceTable, SourceRowKey, SessionId, Tool
+```
+
+**Capture modes.** `capture = "full"` (the default) stores text as above. `capture = "metadata"` stores no text: prompts, messages, tool input and output and any string over 256 characters are dropped from the attributes and their length kept (`prompt_chars`, `aictl.body_chars`), a log's body is emptied, and nothing is written to `OTELPayloads`. `capture = "off"` writes none of the four tables.
+
+Two more queries to start from:
+
+```kusto
+OTELMetrics
+| summarize take_any(*) by RowKey
+| where MetricName has "token"
+| summarize sum(MetricValue) by MetricName, Tool, Model
+```
+
+```kusto
+OTELTraces
+| summarize take_any(*) by RowKey
+| summarize spans = count(), p95_ms = percentile(DurationMs, 95) by SpanName, Tool
+```
 
 ## What to expect
 

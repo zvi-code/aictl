@@ -1308,6 +1308,11 @@ def connect(
     tables = tables if tables is not None else _default_tables()
     unknown = settings.table_ingestion.keys() - tables.keys()
     if unknown:
+        # The OTel tables are not the store's, but their ingestion mode is set the same way.
+        from .otel import TABLES_BY_NAME as otel_tables
+
+        unknown -= otel_tables.keys()
+    if unknown:
         raise ValueError(f"Unknown Kusto ingestion override table(s): {', '.join(sorted(unknown))}")
     if client is None:
         client = KustoClientFactory.client(settings)

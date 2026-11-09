@@ -599,6 +599,10 @@ class _APIHandlersMixin:
     def _serve_otel_status(self) -> None:
         """Return OTel receiver health status."""
         status = self.server.otel_receiver.status()
+        sink = getattr(self._db, "otel_sink", None)
+        if sink is not None:
+            # What reached the cluster's OTel tables, what waits and what was dropped.
+            status["kusto"] = sink.stats()
         self._json_response(status)
 
     def _serve_hooks_status(self) -> None:

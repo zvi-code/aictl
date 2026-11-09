@@ -888,6 +888,12 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         self.send_error(400, "Invalid JSON")
         return None
 
+    def _otel_to_kusto(self, signal: str, data: dict) -> None:
+        """Queue the request for the cluster's OTel tables. Returns at once; a no-op on SQLite."""
+        sink = getattr(self._db, "otel_sink", None)
+        if sink is not None:
+            sink.submit(signal, data)
+
     def _receive_otel_metrics(self) -> None:
         """Receive OTLP metrics (JSON or protobuf)."""
         self._receive_otel_signal("metrics", "parse_metrics", "append_samples", "samples")
@@ -901,6 +907,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         data = self._read_post_otlp("logs")
         if data is None:
             return
+        self._otel_to_kusto("logs", data)
         try:
             receiver = self.server.otel_receiver
             events = receiver.parse_logs(data)
@@ -941,6 +948,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         data = self._read_post_otlp("traces")
         if data is None:
             return
+        self._otel_to_kusto("traces", data)
         try:
             receiver = self.server.otel_receiver
             samples, events = receiver.parse_traces(data)
@@ -1400,6 +1408,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         data = self._read_post_otlp(signal)
         if data is None:
             return
+        self._otel_to_kusto(signal, data)
         try:
             receiver = self.server.otel_receiver
             items = getattr(receiver, parse_method)(data)
