@@ -589,6 +589,15 @@ class CollectionService:
 
     def start(self, *, quiet: bool = False) -> None:
         """Build and start the collection engine. Non-blocking."""
+        self.open_stores(quiet=quiet)
+        self.run(quiet=quiet)
+
+    def open_stores(self, *, quiet: bool = False) -> None:
+        """The fast part of the start: the stores, the sink and an empty snapshot store.
+
+        Hooks and OpenTelemetry need only these, so a server can take them while
+        :meth:`run` collects the first snapshot.
+        """
 
         def _say(msg: str) -> None:
             if not quiet:
@@ -652,6 +661,13 @@ class CollectionService:
 
         self.sink = SampleSink(db=self.db, buffer_size=5000, datapoint_logger=self._dp_logger)
         self.store = SnapshotStore(db=self.db, sink=self.sink)
+
+    def run(self, *, quiet: bool = False) -> None:
+        """The slow part of the start: the live monitor, the first snapshot and the loops."""
+
+        def _say(msg: str) -> None:
+            if not quiet:
+                print(msg, file=sys.stderr)
 
         # Persistent live monitor (runs continuously, accumulates state)
         if self.include_live_monitor:
@@ -771,7 +787,10 @@ def start_server(
         include_live_monitor=include_live_monitor,
         db_path=db_path,
     )
-    service.start()
+    # Open the stores, then the port, then collect: a relaunch closes the port only for the
+    # time the process takes to start. Hooks and OpenTelemetry are taken from the first
+    # second; the board's requests wait until the first snapshot is ready.
+    service.open_stores()
     store = service.store
     allowed = service.allowed
     db = service.db
@@ -781,6 +800,14 @@ def start_server(
 
     # Start HTTP server (presentation layer)
     server = _DashboardHTTPServer((host, port), _DashboardHandler, store, allowed, root)
+    server.ready.clear()
+    serving = threading.Thread(target=server.serve_forever, name="aictl-http", daemon=True)
+    serving.start()
+    print(f"  receiving hooks and telemetry at http://{host}:{port}", file=sys.stderr)
+    try:
+        service.run()
+    finally:
+        server.ready.set()
 
     # Wire session analyzer as an event listener on the database
     if db is not None:
@@ -801,7 +828,8 @@ def start_server(
         webbrowser.open(url)
 
     try:
-        server.serve_forever()
+        while serving.is_alive():
+            serving.join(1.0)
     except KeyboardInterrupt:
         pass
     finally:

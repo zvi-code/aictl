@@ -563,7 +563,21 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         """Parsed query-string parameters for the current request."""
         return parse_qs(urlparse(self.path).query)
 
+    def _wait_ready(self) -> bool:
+        """Hold a request until the first snapshot is ready; answer 503 when it takes too long."""
+        ready = getattr(self.server, "ready", None)  # a server without the flag is ready
+        if ready is None or ready.wait(READY_WAIT_S):
+            return True
+        self.send_response(503)
+        self.send_header("Retry-After", "2")
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"aictl is starting: the first snapshot is not ready yet.")
+        return False
+
     def do_GET(self) -> None:
+        if not self._wait_ready():
+            return
         path = urlparse(self.path).path
         if path.startswith(_LOCAL_ONLY_ROUTES) and not _local_request(self.client_address[0], self.headers.get("Host")):
             self._json_response({"error": "This route answers requests from this machine only."}, status=403)
@@ -654,6 +668,9 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         if self._reject_cross_origin():
             return
         path = urlparse(self.path).path
+        # Hooks and telemetry need only the stores and are taken at once; the rest waits.
+        if path not in _TAKEN_WHILE_STARTING and not self._wait_ready():
+            return
         if path == "/api/hooks":
             self._receive_hook()
         elif path == "/api/session-kill":
@@ -1560,6 +1577,12 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
 # ─── HTTP server ─────────────────────────────────────────────────
 
 
+# While the daemon collects its first snapshot, its port is already open: these routes are
+# served at once, every other request waits for the snapshot up to READY_WAIT_S.
+_TAKEN_WHILE_STARTING = frozenset({"/api/hooks", "/v1/metrics", "/v1/logs", "/v1/traces"})
+READY_WAIT_S = 120.0
+
+
 class _DashboardHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     # On Windows SO_REUSEADDR lets a second server share a port in use, with no bind error.
@@ -1569,6 +1592,9 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
         super().__init__(addr, handler)
         self.store: SnapshotStore = store
         self.allowed: AllowedPaths = allowed
+        # Set once the first snapshot is ready; start_server clears it while it collects.
+        self.ready: threading.Event = threading.Event()
+        self.ready.set()
         self.root: Path = root
         # Entity state tracker for hook events (Phase 3.3)
         from ..monitoring.correlator import EntityStateTracker
