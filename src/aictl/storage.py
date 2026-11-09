@@ -95,6 +95,8 @@ COMPACT_CHUNK_PAUSE_S = 0.15
 # A cleanup loop rests this many times as long as its last chunk took, so on a big
 # database it uses about a fifth of one core and leaves room for other writers.
 COMPACT_REST_RATIO = 4.0
+# ... but never longer than this: the pause lets another writer take the lock, which a second does.
+COMPACT_REST_MAX_S = 1.0
 # How long a write waits for the lock, and the time after which a write is logged.
 BUSY_TIMEOUT_S = 15.0
 SLOW_WRITE_S = 3.0
@@ -219,6 +221,7 @@ CREATE TABLE IF NOT EXISTS context_events (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_context_events_dedup ON context_events(dedup_key) WHERE dedup_key != '';
 CREATE INDEX IF NOT EXISTS idx_context_events_session ON context_events(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_context_events_ts ON context_events(ts);
 
 CREATE TABLE IF NOT EXISTS tool_invocations (
     id INTEGER PRIMARY KEY AUTOINCREMENT, dedup_key TEXT DEFAULT '',
@@ -421,6 +424,7 @@ CREATE INDEX IF NOT EXISTS idx_processes_pid ON processes(pid, started_at);
 -- process_snapshots
 CREATE INDEX IF NOT EXISTS idx_proc_snapshots_pid ON process_snapshots(pid, ts);
 CREATE INDEX IF NOT EXISTS idx_proc_snapshots_tool ON process_snapshots(tool, ts);
+CREATE INDEX IF NOT EXISTS idx_proc_snapshots_ts ON process_snapshots(ts);
 -- sessions
 CREATE INDEX IF NOT EXISTS idx_sessions_tool ON sessions(tool, started_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_path, started_at);
@@ -442,15 +446,18 @@ CREATE INDEX IF NOT EXISTS idx_tool_inv_ts ON tool_invocations(ts);
 -- files
 CREATE INDEX IF NOT EXISTS idx_files_tool ON files(tool);
 CREATE INDEX IF NOT EXISTS idx_file_history_path ON file_history(path, ts);
+CREATE INDEX IF NOT EXISTS idx_file_history_ts ON file_history(ts);
 CREATE INDEX IF NOT EXISTS idx_file_write_session ON file_write_events(session_id, ts);
 CREATE INDEX IF NOT EXISTS idx_file_write_path ON file_write_events(path, ts);
 CREATE INDEX IF NOT EXISTS idx_file_write_tool ON file_write_events(tool, ts);
+CREATE INDEX IF NOT EXISTS idx_file_write_ts ON file_write_events(ts);
 -- tool_config
 CREATE INDEX IF NOT EXISTS idx_tool_config_tool ON tool_config(tool, ts);
 -- environment_vars
 CREATE INDEX IF NOT EXISTS idx_env_vars_project ON environment_vars(project_path, ts);
 -- tool_stats
 CREATE INDEX IF NOT EXISTS idx_tool_stats_tool ON tool_stats(tool, ts);
+CREATE INDEX IF NOT EXISTS idx_tool_stats_ts ON tool_stats(ts);
 -- events
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_events_tool ON events(tool, ts);
@@ -603,6 +610,7 @@ CREATE TABLE IF NOT EXISTS cursor_session_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_cursor_session_messages_session
     ON cursor_session_messages(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_cursor_session_messages_ts ON cursor_session_messages(ts);
 
 -- Copilot CLI session-store ingester (Slice 3.2).
 CREATE TABLE IF NOT EXISTS copilot_session_messages (
@@ -654,6 +662,7 @@ CREATE INDEX IF NOT EXISTS idx_vscode_chat_messages_session
     ON vscode_chat_messages(session_id, ts);
 CREATE INDEX IF NOT EXISTS idx_vscode_chat_messages_file
     ON vscode_chat_messages(source_file);
+CREATE INDEX IF NOT EXISTS idx_vscode_chat_messages_ts ON vscode_chat_messages(ts);
 """
 
 
@@ -2337,7 +2346,10 @@ class HistoryDB:
                 if (table, column) in _WRITER_GUARDED_COLUMNS:
                     continue
                 when = f"new.{column} != '{blank}'"
-                action = f"UPDATE main.{table} SET {column}='{blank}' WHERE rowid=new.rowid"
+                # Unqualified: SQLite before 3.47 rejects a schema-qualified table in a
+                # trigger body ("qualified table names are not allowed ... within triggers"),
+                # and Python on Windows ships such a build.
+                action = f"UPDATE {table} SET {column}='{blank}' WHERE rowid=new.rowid"
                 for op, spec in (("insert", "INSERT"), ("update", f"UPDATE OF {column}")):
                     conn.execute(
                         f"CREATE TEMP TRIGGER IF NOT EXISTS strip_{table}_{column}_{op} AFTER {spec}"
@@ -6642,7 +6654,7 @@ class HistoryDB:
     @staticmethod
     def _rest_after(started: float) -> None:
         """Pause a cleanup loop after one chunk that began at *started*."""
-        time.sleep(max(COMPACT_CHUNK_PAUSE_S, (time.monotonic() - started) * COMPACT_REST_RATIO))
+        time.sleep(min(max(COMPACT_CHUNK_PAUSE_S, (time.monotonic() - started) * COMPACT_REST_RATIO), COMPACT_REST_MAX_S))
 
     def _delete_range(self, conn: sqlite3.Connection, table: str, since: float, until: float) -> int:
         """Delete ``since <= ts < until`` in chunks that commit separately."""
@@ -6891,16 +6903,26 @@ class HistoryDB:
         total = 0
         sets = ", ".join(f"{c}='{b}'" for c, b in columns.items())
         has_text = " OR ".join(f"{c}!='{b}'" for c, b in columns.items())
+        # Each chunk starts where the last ended: with an index on the time column a
+        # chunk reads only its own rows, instead of every row blanked before it. An
+        # eviction over a big table read the whole table once per chunk before.
+        since = -math.inf
         while self._evictable_bytes() > target:
             started = time.monotonic()
+            chunk = conn.execute(
+                f"SELECT MAX({ts_col}), COUNT(*) FROM (SELECT {ts_col} FROM {table}"
+                f" WHERE {ts_col} >= ? AND ({has_text}) ORDER BY {ts_col} LIMIT {COMPACT_CHUNK_ROWS})",
+                (since,),
+            ).fetchone()
+            if not chunk[1]:
+                break
             cur = conn.execute(
-                f"UPDATE {table} SET {sets} WHERE rowid IN (SELECT rowid FROM {table}"
-                f" WHERE {has_text} ORDER BY {ts_col} LIMIT {COMPACT_CHUNK_ROWS})"
+                f"UPDATE {table} SET {sets} WHERE {ts_col} >= ? AND {ts_col} <= ? AND ({has_text})",
+                (since, chunk[0]),
             )
             conn.commit()
             total += cur.rowcount
-            if cur.rowcount == 0:
-                break
+            since = chunk[0]
             self._rest_after(started)
         if total:
             self._set_state("content_trimmed_before", time.time())
