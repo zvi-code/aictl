@@ -841,13 +841,6 @@ def start_server(
     if db is not None:
         db.add_event_listener(server.session_analyzer.ingest_event)
 
-    # Register SSE pre-serialization callback so build_sse_summary runs once
-    # per update cycle (in the RefreshLoop thread) instead of per-SSE-client.
-    import json as _json_mod
-
-    from .dashboard.web_server import build_sse_summary as _build_sse
-
-    store._sse_builder = lambda snap: _json_mod.dumps(_build_sse(snap))
     url = f"http://{host}:{port}"
     print(f"  aictl daemon serve — dashboard at {url}", file=sys.stderr)
     print("  press Ctrl-C to stop\n", file=sys.stderr)
@@ -915,8 +908,6 @@ class SnapshotState:
         self._version: int = 0
         self._lock = _threading.Lock()
         self._condition = _threading.Condition(self._lock)
-        self._sse_json: str | None = ""
-        self._sse_builder: callable | None = None
         # Ring buffer for global time-series sparklines.
         # At ~5.86s/tick, 360 entries ≈ 35 min.
         self._history: collections.deque[tuple] = collections.deque(maxlen=360)
@@ -1003,7 +994,6 @@ class SnapshotState:
             # the 2.7 MB snapshot JSON is never built at all.
             self._serializer = serializer
             self._snap_json_bytes = None
-            self._sse_json = None
 
             self._condition.notify_all()
         return tool_rows
@@ -1026,18 +1016,6 @@ class SnapshotState:
             if self._snap_json_bytes is None:
                 self._snap_json_bytes = self._serializer.serialize_snapshot(self._snap)
             return self._snap_json_bytes
-
-    @property
-    def sse_json(self) -> str:
-        """SSE summary JSON, built once per version."""
-        with self._lock:
-            if self._sse_json is None:
-                self._sse_json = self._serializer.serialize_sse(self._snap, self._sse_builder)
-            return self._sse_json
-
-    @sse_json.setter
-    def sse_json(self, value: str) -> None:
-        self._sse_json = value
 
     @property
     def version(self) -> int:
@@ -1067,16 +1045,6 @@ class SnapshotSerializer:
             return snap.to_json_slim().encode("utf-8")
         except Exception:
             return b""
-
-    @staticmethod
-    def serialize_sse(snap: _DashboardSnapshot, builder: callable | None) -> str:
-        """SSE-formatted JSON via the registered builder callback."""
-        if builder:
-            try:
-                return builder(snap)
-            except Exception:
-                return ""
-        return ""
 
     @staticmethod
     def serialize_history(rows: list[tuple], tool_history: dict[str, list[tuple]]) -> str:
@@ -1462,14 +1430,6 @@ class SnapshotStore:
         if db:
             self._state.load_from_db(db)
 
-    @property
-    def _sse_builder(self):
-        return self._state._sse_builder
-
-    @_sse_builder.setter
-    def _sse_builder(self, value):
-        self._state._sse_builder = value
-
     def update(self, snap: _DashboardSnapshot) -> None:
         tool_rows = self._state.update(snap, self._serializer)
         self._persistence.persist(snap, tool_rows)
@@ -1494,15 +1454,6 @@ class SnapshotStore:
     def snapshot_json_bytes(self) -> bytes:
         """Pre-serialized compact JSON snapshot (slim agent_teams)."""
         return self._state.snapshot_json_bytes
-
-    @property
-    def sse_json(self) -> str:
-        """Pre-serialized SSE summary JSON (set by web_server after build)."""
-        return self._state.sse_json
-
-    @sse_json.setter
-    def sse_json(self, value: str) -> None:
-        self._state.sse_json = value
 
     @property
     def version(self) -> int:

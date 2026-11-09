@@ -543,7 +543,8 @@ start_server(root, port, interval)
     │           └── SessionCorrelator
     │
     ├── Start RefreshLoop (periodic snapshot collection)
-    │   └── Every {interval} seconds:
+    │   └── Every {interval} seconds (× 6 when idle), or 1.5 s after a hook
+    │       or OTel batch arrives while a dashboard client is attached:
     │       1. collect() — discovery + live monitor merge
     │       2. SnapshotStore.set_snapshot()
     │       3. SampleSink flush to SQLite

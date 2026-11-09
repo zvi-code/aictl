@@ -14,7 +14,6 @@ from pathlib import Path
 
 import pytest
 
-from aictl.client import _merge_stream_message
 from aictl.dashboard import web_server
 from aictl.dashboard.audit_cache import AuditCache
 from aictl.dashboard.models import DashboardSnapshot, DashboardTool, tools_revision
@@ -22,8 +21,6 @@ from aictl.dashboard.web_server import (
     _accepts_gzip,
     _DashboardHandler,
     _DashboardHTTPServer,
-    _omit_unchanged_sse_keys,
-    build_sse_summary,
 )
 from aictl.orchestrator import AllowedPaths, SnapshotStore
 from aictl.tools import ResourceFile
@@ -106,76 +103,6 @@ def _snapshot(tick: int = 0, sessions: int = 150, files: int = 1500) -> Dashboar
     )
 
 
-def _wire(snap: DashboardSnapshot, sent: dict) -> str:
-    return _omit_unchanged_sse_keys(json.dumps(build_sse_summary(snap)), sent)
-
-
-# ── Live updates stay small ───────────────────────────────────────
-
-
-def test_a_live_update_stays_small_with_a_large_state():
-    """Root cause: live_monitor (every process tree) and every session row went out on every tick."""
-    sent: dict = {}
-    first = _wire(_snapshot(0), sent)
-    follow_ups = [len(_wire(_snapshot(t), sent)) for t in range(1, 6)]
-    old_message = len(json.dumps({"live_monitor": _snapshot(1).live_monitor, "sessions": _snapshot(1).sessions}))
-    assert old_message > 100_000  # the state really is large
-    assert max(follow_ups) < 20_000, follow_ups
-    assert len(first) < old_message  # even the first message drops the duplicated process trees
-
-
-def test_live_monitor_keeps_what_the_screens_read_and_drops_the_duplicates():
-    summary = build_sse_summary(_snapshot(1))
-    monitor = summary["live_monitor"]
-    assert monitor["diagnostics"] and monitor["workspace_paths"] == ["/p"] and monitor["state_paths"] == ["/s"]
-    assert not {"sessions", "tools", "events"} & monitor.keys()
-    row = summary["sessions"][0]
-    assert row["mem_mb"] == pytest.approx(160.5)  # the process tree's memory, summed, so RAM stays visible
-    assert {"label", "started_at", "last_seen_at", "duration_s", "cpu_percent"} <= row.keys()
-    assert "process_tree" not in row and "recent_subprocesses" not in row
-
-
-def test_session_rows_travel_as_changes_and_rebuild_the_full_list():
-    sent: dict = {}
-    state: dict = {}
-    for tick in range(0, 6):
-        message = json.loads(_wire(_snapshot(tick), sent))
-        if tick:
-            assert "sessions" not in message
-            delta = message["sessions_delta"]
-            assert not delta["upsert"] and len(delta["patch"]) <= 30
-            assert all(len(patch) <= 6 for patch in delta["patch"])  # the id and what changed, not the row
-        state = _merge_stream_message(state, message)
-        expected = build_sse_summary(_snapshot(tick))["sessions"]
-        assert sorted(state["sessions"], key=lambda r: r["session_id"]) == expected
-
-
-def test_a_tool_live_block_is_sent_only_when_it_changes_and_comes_back_in_the_client():
-    sent: dict = {}
-    state = _merge_stream_message({}, json.loads(_wire(_snapshot(0), sent)))
-    same = json.loads(_wire(_snapshot(0), sent))
-    assert all("live" not in t for t in same["tools"])  # nothing changed for any tool
-    state = _merge_stream_message(state, same)
-    assert [t["live"] for t in state["tools"]] == [t.live for t in _snapshot(0).tools]
-    moved = json.loads(_wire(_snapshot(1), sent))  # live cpu_percent follows the tick
-    assert all("live" in t for t in moved["tools"])
-    state = _merge_stream_message(state, moved)
-    assert state["tools"][0]["live"]["cpu_percent"] == 1.0
-    assert json.loads(_wire(_snapshot(0), {}))["tools"][0]["live"]  # a new client gets them all
-
-
-def test_session_that_ended_is_removed_by_the_delta():
-    sent: dict = {}
-    state = _merge_stream_message({}, json.loads(_wire(_snapshot(0, sessions=5), sent)))
-    state = _merge_stream_message(state, json.loads(_wire(_snapshot(0, sessions=3), sent)))
-    assert [r["session_id"] for r in state["sessions"]] == ["s0000", "s0001", "s0002"]
-
-
-def test_a_new_client_gets_every_session_row():
-    message = json.loads(_wire(_snapshot(2), {}))
-    assert len(message["sessions"]) == 150 and "sessions_delta" not in message
-
-
 def test_tools_rev_moves_with_the_lists_not_with_the_numbers():
     base = tools_revision(_snapshot(0).tools)
     assert tools_revision(_snapshot(3).tools) == base  # CPU figures changed
@@ -185,7 +112,6 @@ def test_tools_rev_moves_with_the_lists_not_with_the_numbers():
     gone = _snapshot(0)
     gone.tools[1].mcp_servers = []
     assert tools_revision(gone.tools) != base
-    assert build_sse_summary(_snapshot(0))["tools_rev"] == base
     assert json.loads(_snapshot(0).to_json_slim())["tools_rev"] == base
 
 
@@ -323,7 +249,6 @@ def test_static_assets_are_compressed_once_and_cached_by_name(tmp_path, monkeypa
 
 def _serve(snapshot: DashboardSnapshot, tmp_path):
     store = SnapshotStore()
-    store._sse_builder = lambda snap: json.dumps(build_sse_summary(snap))
     store.update(snapshot)
     srv = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, AllowedPaths(), tmp_path)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -355,7 +280,7 @@ def test_snapshot_over_http_with_and_without_gzip(tmp_path, monkeypatch):
 
 
 def test_a_tick_over_the_wire_is_small(tmp_path, monkeypatch):
-    """Through the real handler: the second message of a connection is a delta."""
+    """Through the real handler: a message is a timestamp and a version, nothing more."""
     monkeypatch.setenv("HOME", str(tmp_path))
     srv, store = _serve(_snapshot(0), tmp_path)
     try:
@@ -372,9 +297,9 @@ def test_a_tick_over_the_wire_is_small(tmp_path, monkeypatch):
         first = message()
         store.update(_snapshot(1))
         second = message()
-        assert second.startswith(b"data: ")
-        assert len(second) < 20_000 and len(first) > len(second)
-        assert "sessions_delta" in json.loads(second[6:])
+        assert second.startswith(b"data: ") and len(second) < 200
+        assert set(json.loads(second[6:])) == {"timestamp", "version"}
+        assert json.loads(second[6:])["version"] == json.loads(first[6:])["version"] + 1
         resp.close()
     finally:
         srv.shutdown()
@@ -565,8 +490,8 @@ def test_an_update_while_the_first_message_is_sent_is_not_missed(tmp_path, monke
     real = handler_cls._write_sse
     sent = []
 
-    def write_then_update(self, snap):
-        real(self, snap)
+    def write_then_update(self, snap, *args):
+        real(self, snap, *args)
         if not sent:
             sent.append(1)
             store.update(_snapshot(1))  # lands before the handler starts to wait

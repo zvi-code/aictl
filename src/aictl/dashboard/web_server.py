@@ -16,7 +16,6 @@ Implementation is split across focused modules:
 
 from __future__ import annotations
 
-import dataclasses
 import email.utils
 import gzip
 import hashlib
@@ -37,7 +36,7 @@ from ..platforms import IS_WINDOWS
 from ..storage import EventRow, FileWriteRow, SessionRow, ToolInvocationRow
 from ..tool_scope import parse_tools_param
 from .api_handlers import _APIHandlersMixin
-from .models import DashboardSnapshot, _slim_agent_teams, tools_revision
+from .models import DashboardSnapshot
 
 # ── Re-exports for backward compatibility ────────────────────────
 # Other modules (tests, orchestrator) import these from web_server.
@@ -87,11 +86,6 @@ def _read_file_safe(path_str: str) -> str | None:
         return p.read_text(errors="replace", encoding="utf-8")
     except OSError:
         return None
-
-
-def _asdict_list(items) -> list:
-    """Convert a mixed list of dataclasses or dicts to a list of dicts."""
-    return [dataclasses.asdict(m) if dataclasses.is_dataclass(m) else m for m in items]
 
 
 def _static_dist_candidates() -> list[Path]:
@@ -376,169 +370,6 @@ def _extract_file_write_row(
         size_bytes=size_bytes,
         detail={"tool_use_id": detail.get("tool_use_id", ""), "input_keys": sorted(input_data.keys())},
     )
-
-
-# ─── SSE summary builder ─────────────────────────────────────────
-
-
-# Parts of the live monitor the UI never reads from a live update. ``tools``,
-# ``events`` and ``sessions`` repeat what the top-level keys already carry (and
-# ``sessions`` brings every process tree), so they stay in /api/snapshot only.
-_SSE_LIVE_MONITOR_HEAVY = frozenset({"tools", "events", "sessions"})
-
-
-def _tree_mem_mb(nodes: list) -> float:
-    return sum(float(n.get("mem_mb") or 0) + _tree_mem_mb(n.get("children") or []) for n in nodes or [])
-
-
-def _compact_session(s: dict) -> dict:
-    return {
-        "session_id": s.get("session_id", ""),
-        "tool": s.get("tool", ""),
-        "label": s.get("label", ""),
-        "project": s.get("project", ""),
-        "started_at": s.get("started_at", 0),
-        "last_seen_at": s.get("last_seen_at", 0),
-        "duration_s": s.get("duration_s", 0),
-        "cpu_percent": s.get("cpu_percent", 0),
-        "mem_mb": round(_tree_mem_mb(s.get("process_tree") or []), 1),
-        "exact_input_tokens": s.get("exact_input_tokens", 0),
-        "exact_output_tokens": s.get("exact_output_tokens", 0),
-        "file_events": s.get("file_events", 0),
-        "pids": len(s.get("pids", [])),
-    }
-
-
-def build_sse_summary(snap: DashboardSnapshot) -> dict:
-    """Build the live-update message from a full snapshot.
-
-    Per-tool detail (files, processes) is left out; ``tools_rev`` tells the
-    client when its copy from /api/snapshot is out of date. Process trees and
-    recent subprocesses are left out too (``live_monitor`` keeps only its
-    diagnostics and paths, ``sessions`` is one compact row per session).
-    The size of a message grows with the number of live sessions; the server
-    sends large keys only when they change, and sessions as row changes
-    (see ``_omit_unchanged_sse_keys``). A tick with a few hundred sessions of
-    which a few are active is a few KB.
-    """
-    return {
-        "timestamp": snap.timestamp,
-        "root": snap.root,
-        "cpu_cores": snap.cpu_cores,
-        "cpu_per_core": snap.cpu_per_core,
-        "total_files": snap.total_files,
-        "total_tokens": snap.total_tokens,
-        "total_size": snap.total_size,
-        "total_processes": snap.total_processes,
-        "total_cpu": snap.total_cpu,
-        "total_mem_mb": snap.total_mem_mb,
-        "total_mcp_servers": snap.total_mcp_servers,
-        "total_memory_entries": snap.total_memory_entries,
-        "total_memory_tokens": snap.total_memory_tokens,
-        "total_live_sessions": snap.total_live_sessions,
-        "total_live_tools": snap.total_live_tools,
-        "total_live_inbound_bytes": snap.total_live_inbound_bytes,
-        "total_live_outbound_bytes": snap.total_live_outbound_bytes,
-        "total_live_inbound_rate_bps": snap.total_live_inbound_rate_bps,
-        "total_live_outbound_rate_bps": snap.total_live_outbound_rate_bps,
-        "total_live_estimated_tokens": snap.total_live_estimated_tokens,
-        "total_live_files_touched": snap.total_live_files_touched,
-        "tools_rev": tools_revision(snap.tools),
-        # Per-tool summary (no files, just aggregates + live)
-        "tools": [
-            {
-                "tool": t.tool,
-                "label": t.label,
-                "vendor": t.vendor,
-                "host": t.host,
-                "files_count": len(t.files),
-                "tokens": sum(f.tokens for f in t.files),
-                "processes_count": len(t.processes),
-                "mcp_count": len(t.mcp_servers),
-                "live": t.live,
-            }
-            for t in snap.tools
-            if t.tool != "aictl"
-        ],
-        "agent_memory": _asdict_list(snap.agent_memory),
-        "mcp_detail": _asdict_list(snap.mcp_detail),
-        "live_monitor": {k: v for k, v in (snap.live_monitor or {}).items() if k not in _SSE_LIVE_MONITOR_HEAVY},
-        "tool_telemetry": snap.tool_telemetry,
-        "tool_configs": snap.tool_configs,
-        "events": snap.events[-50:] if snap.events else [],
-        "sessions": [_compact_session(s) for s in (snap.sessions or [])],
-        "agent_teams": _slim_agent_teams(snap.agent_teams or []),
-        "_sse_summary": True,
-    }
-
-
-# Large summary keys sent only when their value changed. Clients merge each
-# message over the previous state, so a missing key keeps its last value.
-# Totals and ``tools`` are always sent: the UI appends them to its history.
-_SSE_OMITTABLE_KEYS = frozenset(
-    {"agent_memory", "mcp_detail", "live_monitor", "tool_telemetry", "tool_configs", "events", "agent_teams"}
-)
-
-
-def _sessions_delta(summary: dict, sent: dict) -> None:
-    """Turn ``summary["sessions"]`` into row changes after the first message.
-
-    The first message of a connection carries every row. Later ones carry
-    ``sessions_delta = {"upsert": [rows], "patch": [fields], "remove": [ids]}``
-    or nothing when no row changed: ``upsert`` holds rows the client has not
-    seen, ``patch`` holds the session_id and only the fields that changed in a
-    row it has. A client merges the changes over the rows it already holds.
-    """
-    rows = summary.get("sessions")
-    if rows is None:
-        return
-    ids = [r.get("session_id") for r in rows]
-    mine = {r["session_id"]: r for r in rows}
-    before = sent.get("sessions_rows")
-    sent["sessions_rows"] = mine
-    if before is None or len(set(ids)) != len(ids) or "" in mine:
-        return  # first message, or ids a client could not key on: send the whole list
-    upsert, patch = [], []
-    for sid, row in mine.items():
-        old = before.get(sid)
-        if old is None:
-            upsert.append(row)
-        elif old != row:
-            patch.append({"session_id": sid, **{k: v for k, v in row.items() if old.get(k) != v}})
-    remove = [sid for sid in before if sid not in mine]
-    del summary["sessions"]
-    if upsert or patch or remove:
-        summary["sessions_delta"] = {"upsert": upsert, "patch": patch, "remove": remove}
-
-
-def _omit_unchanged_tool_live(summary: dict, sent: dict) -> None:
-    """Leave out a tool's ``live`` block when it equals what this client holds.
-
-    The client keeps the last ``live`` of each tool and puts it back when the
-    key is missing (``fillToolLive`` in selectors.js), so an idle tool costs
-    a few bytes per tick and the history still gets a point for it.
-    """
-    held = sent.setdefault("tool_live", {})
-    for tool in summary.get("tools") or []:
-        digest = hash(json.dumps(tool.get("live"), sort_keys=True))
-        if held.get(tool["tool"]) == digest:
-            tool.pop("live", None)
-        else:
-            held[tool["tool"]] = digest
-
-
-def _omit_unchanged_sse_keys(data: str, sent: dict) -> str:
-    """Drop what this client already holds: unchanged large keys, unchanged session rows."""
-    summary = json.loads(data)
-    for key in _SSE_OMITTABLE_KEYS & summary.keys():
-        digest = hash(json.dumps(summary[key], sort_keys=True))
-        if sent.get(key) == digest:
-            del summary[key]
-        else:
-            sent[key] = digest
-    _omit_unchanged_tool_live(summary, sent)
-    _sessions_delta(summary, sent)
-    return json.dumps(summary, separators=(",", ":"))
 
 
 # ─── HTTP handler ────────────────────────────────────────────────
@@ -1275,20 +1106,19 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._send_cors_header()
             self.end_headers()
 
-            self._sse_sent: dict = {}
             # The version is read before the snapshot. Read after, an update that lands
             # while the first message is written would count as sent, and this client
             # would miss it until the next one. Read before, it is at worst sent twice.
             version = self.server.store.version
             snap = self.server.store.snapshot
             if snap:
-                self._write_sse(snap)
+                self._write_sse(snap, version)
 
             while True:
                 try:
                     snap, version = self.server.store.wait_for_update(version, timeout=30.0)
                     if snap:
-                        self._write_sse(snap)
+                        self._write_sse(snap, version)
                     else:
                         self.wfile.write(b": keepalive\n\n")
                         self.wfile.flush()
@@ -1299,15 +1129,13 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             with _sse_client_lock:
                 _sse_client_count -= 1
 
-    def _write_sse(self, snap: DashboardSnapshot) -> None:
-        # Use pre-serialized SSE JSON if available (avoids per-client serialization)
-        data = self.server.store.sse_json
-        if not data:
-            # Fallback: serialize now (first push before store has SSE cached)
-            summary = build_sse_summary(snap)
-            data = json.dumps(summary)
-        data = _omit_unchanged_sse_keys(data, self._sse_sent)
-        self.wfile.write(f"data: {data}\n\n".encode())
+    def _write_sse(self, snap: DashboardSnapshot, version: int = 0) -> None:
+        """One small message per snapshot: the board fetches what it shows from /api/board.
+
+        The stream used to carry a summary of the whole snapshot, diffed per client
+        on every tick; the board only ever used it as the signal to fetch.
+        """
+        self.wfile.write(f'data: {{"timestamp": {snap.timestamp}, "version": {version}}}\n\n'.encode())
         self.wfile.flush()
 
     # ── Shared helpers (used by _APIHandlersMixin and core) ──
