@@ -1,6 +1,9 @@
 // ─── BoardScreen — the default screen: shell, sections, panels, drawer ─
 import { html } from 'htm/preact';
 import { loadChunk } from './lazy.js';
+
+// The daemon answers 503 while it collects its first snapshot after a start; the board polls again.
+export const STARTING = 'aictl is starting: it is collecting its first snapshot. The board fills in when it is ready.';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import * as api from '../../api.js';
 import { useTheme } from '../../hooks/useTheme.js';
@@ -212,7 +215,7 @@ function Kpis({ data, pill }) {
 /** The Settings screen in the board's main area: the workspace once its code and data are here. */
 function SettingsArea({ Workspace, res, source }) {
   if (res.error && !res.data) {
-    return html`<div class="bd-banner" role="alert"><${Ico} d=${PATHS.warn}/>Could not read the settings: ${res.error.message || String(res.error)}.</div>`;
+    return html`<div class="bd-banner" role="alert"><${Ico} d=${PATHS.warn}/>${res.error.status === 503 ? STARTING : 'Could not read the settings: ' + (res.error.message || String(res.error)) + '.'}</div>`;
   }
   if (!Workspace || !source) return html`<div class="bd-sk" role="status">Loading the settings...</div>`;
   return html`${res.error ? html`<div class="bd-banner" role="alert"><${Ico} d=${PATHS.warn}/>Could not update the settings: ${res.error.message || String(res.error)}. Showing the last values.</div>` : null}
@@ -720,7 +723,7 @@ export default function BoardScreen() {
       <div class="bd-body">
         <main class="bd-area" id="main-area" aria-label=${screen === 'settings' ? 'Settings' : undefined}>
           ${screen === 'settings' ? html`<${SettingsArea} Workspace=${SettingsC} res=${settingsRes} source=${settingsSource}/>` : html`
-          ${error ? html`<div class="bd-banner" role="alert"><${Ico} d=${PATHS.warn}/>Could not update the board: ${error.message}. Showing the last data.</div>` : null}
+          ${error ? html`<div class="bd-banner" role=${error.status === 503 ? 'status' : 'alert'}><${Ico} d=${PATHS.warn}/>${error.status === 503 ? STARTING : 'Could not update the board: ' + error.message + '. Showing the last data.'}</div>` : null}
           ${staleCode(data) ? html`<div class="bd-banner" role="alert"><${Ico} d=${PATHS.warn}/>aictl was updated on disk at ${stamp(staleCode(data), true)}, after this daemon started at ${stamp(data.machine.pipeline.self.started_at, true)}. The page is new and the daemon runs the old code, so new parts of the board may fail. Restart the daemon: stop it, then run aictl daemon serve again.</div>` : null}
           ${!loaded && !error ? html`<div class="bd-sk" role="status">Loading the board...</div>` : null}
           <${Kpis} data=${data} pill=${pill}/>

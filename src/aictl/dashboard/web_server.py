@@ -564,21 +564,26 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         return parse_qs(urlparse(self.path).query)
 
     def _wait_ready(self) -> bool:
-        """Hold a request until the first snapshot is ready; answer 503 when it takes too long."""
+        """Hold a data request until the first snapshot is ready; answer a short 503 when it takes longer.
+
+        The wait stays under the socket timeout. The board polls again and its stream reconnects,
+        so a 503 only delays it; the page says that aictl is starting.
+        """
         ready = getattr(self.server, "ready", None)  # a server without the flag is ready
         if ready is None or ready.wait(READY_WAIT_S):
             return True
         self.send_response(503)
         self.send_header("Retry-After", "2")
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(b"aictl is starting: the first snapshot is not ready yet.")
+        self.wfile.write(json.dumps({"error": "aictl is starting: the first snapshot is not ready yet.", "starting": True}).encode())
         return False
 
     def do_GET(self) -> None:
-        if not self._wait_ready():
-            return
         path = urlparse(self.path).path
+        # The page and its files need no snapshot: they load at once and the page says it is starting.
+        if not (path in _SERVED_WHILE_STARTING or path.startswith("/assets/")) and not self._wait_ready():
+            return
         if path.startswith(_LOCAL_ONLY_ROUTES) and not _local_request(self.client_address[0], self.headers.get("Host")):
             self._json_response({"error": "This route answers requests from this machine only."}, status=403)
             return
@@ -1580,7 +1585,9 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
 # While the daemon collects its first snapshot, its port is already open: these routes are
 # served at once, every other request waits for the snapshot up to READY_WAIT_S.
 _TAKEN_WHILE_STARTING = frozenset({"/api/hooks", "/v1/metrics", "/v1/logs", "/v1/traces"})
-READY_WAIT_S = 120.0
+_SERVED_WHILE_STARTING = frozenset({"/", "/index.html", "/favicon.ico"})
+# Under the handler's 30 s socket timeout, so the client gets the answer.
+READY_WAIT_S = 20.0
 
 
 class _DashboardHTTPServer(ThreadingHTTPServer):
@@ -1588,7 +1595,7 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
     # On Windows SO_REUSEADDR lets a second server share a port in use, with no bind error.
     allow_reuse_address = not IS_WINDOWS
 
-    def __init__(self, addr, handler, store, allowed, root):
+    def __init__(self, addr, handler, store, allowed, root, *, start_ingesters_now: bool = True):
         super().__init__(addr, handler)
         self.store: SnapshotStore = store
         self.allowed: AllowedPaths = allowed
@@ -1609,7 +1616,8 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
         # Periodic local-store ingesters (Slice 3.2 Copilot, 3.3 Cursor).
         from .ingester_runner import start_ingesters
 
-        self.ingesters = start_ingesters(store)
+        # start_server starts them after the first snapshot, so their backfills do not slow it.
+        self.ingesters = start_ingesters(store) if start_ingesters_now else {}
         # In-memory cache for matching PreToolUse → PostToolUse by tool_use_id.
         # Maps tool_use_id → (pre_ts, dedup_key, tool_input). Entries auto-expire on access.
         # Guarded by pending_tool_use_lock: hook requests are handled on

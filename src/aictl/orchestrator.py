@@ -802,7 +802,7 @@ def start_server(
     _kill_stale_server(port)
 
     # Start HTTP server (presentation layer)
-    server = _DashboardHTTPServer((host, port), _DashboardHandler, store, allowed, root)
+    server = _DashboardHTTPServer((host, port), _DashboardHandler, store, allowed, root, start_ingesters_now=False)
     server.ready.clear()
     serving = threading.Thread(target=server.serve_forever, name="aictl-http", daemon=True)
     serving.start()
@@ -811,6 +811,11 @@ def start_server(
         service.run()
     finally:
         server.ready.set()
+    # The ingesters and their one-time backfills read every session file: after the snapshot,
+    # as before the port opened early, so they do not compete with it.
+    from .dashboard.ingester_runner import start_ingesters
+
+    server.ingesters = start_ingesters(store)
 
     # Wire session analyzer as an event listener on the database
     if db is not None:
