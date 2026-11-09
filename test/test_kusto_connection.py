@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from aictl.kusto import KustoSettings
+from aictl.kusto import KustoSettings, engine_url
 from aictl.kusto.connection import (
     FLUSH_ROWS,
     KustoConnection,
@@ -510,6 +510,56 @@ def test_sdk_errors_and_unsupported_become_store_errors():
     with pytest.raises(KustoStoreError) as info2:
         conn.execute("u")
     assert "WINDOW frame" in str(info2.value) and info2.value.sql == "SELECT 1"
+
+
+class _ApiError(Exception):
+    """A KustoApiError look-alike: an HTTP status and the service's one-api error body."""
+
+    def __init__(self, status: int, permanent: bool | None, text: str = "boom"):
+        super().__init__(text)
+        self.http_response = SimpleNamespace(status_code=status)
+        self._error = SimpleNamespace(permanent=permanent)
+
+    def get_api_error(self):
+        return self._error
+
+
+def test_retrying_repeats_transient_service_errors_and_raises_permanent_ones(monkeypatch):
+    from aictl.kusto import connection as C
+
+    monkeypatch.setattr(C, "RETRY_DELAYS_S", (0.0, 0.0, 0.0))
+    monkeypatch.setattr(C.time, "sleep", lambda s: None)
+    # The Windows start: streaming ingestion into a just-created table, 520 with @permanent false.
+    attempts = iter([_ApiError(520, False, "RowStoreTrimmableStreamException"), _ApiError(520, False), "rows in"])
+    assert C.retrying(lambda: (lambda a: (_ for _ in ()).throw(a) if isinstance(a, Exception) else a)(next(attempts)), "ingestion") == "rows in"
+    # A 5xx without a verdict on permanence is retried; a permanent one and a 4xx are not.
+    assert C._transient(_ApiError(500, None)) is True
+    assert C._transient(_ApiError(520, True)) is False
+    assert C._transient(_ApiError(400, None)) is False
+    assert C._transient(_ApiError(429, True)) is True  # throttling always is
+    calls = []
+
+    def permanent():
+        calls.append(1)
+        raise _ApiError(400, True, "Syntax error")
+
+    with pytest.raises(_ApiError):
+        C.retrying(permanent, "command")
+    assert len(calls) == 1
+    # After the delays run out the failure is raised, not swallowed.
+    with pytest.raises(_ApiError):
+        C.retrying(lambda: (_ for _ in ()).throw(_ApiError(520, False)), "ingestion")
+
+
+def test_ingest_endpoint_url_is_turned_into_the_engine_url():
+    assert engine_url("https://ingest-zdev3.swedencentral.dev.kusto.windows.net") == "https://zdev3.swedencentral.dev.kusto.windows.net"
+    assert engine_url("https://zdev3.swedencentral.dev.kusto.windows.net/") == "https://zdev3.swedencentral.dev.kusto.windows.net/"
+    assert engine_url("http://localhost:8080") == "http://localhost:8080"
+    settings = KustoSettings.from_values("ingest-aictlzvif358.westeurope.kusto.windows.net/", "aictl")
+    assert settings is not None
+    assert settings.cluster == "https://aictlzvif358.westeurope.kusto.windows.net"
+    assert settings.uri == "kusto://aictlzvif358.westeurope.kusto.windows.net/aictl"
+    assert settings.streaming is True
 
 
 def test_ingest_failure_is_a_store_error():

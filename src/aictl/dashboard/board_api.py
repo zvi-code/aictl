@@ -1973,25 +1973,25 @@ def _read_thin_groups(board: _Board, where: str, params: list, by_model, by_proj
         return timed > len(have) and len(have) < MIN_GROUP_SAMPLE
 
     conn = board.conn
-    for model, timed in timed_model.items():
-        if thin(by_model[model], timed):
-            by_model[model] = [
-                r[0]
-                for r in conn.execute(
-                    f"SELECT duration_ms FROM requests WHERE {where} AND duration_ms > 0 AND model = ?", [*params, model]
-                )
-            ]
-    for project, timed in timed_project.items():
-        if thin(by_project[project], timed):
-            sids = json.dumps([sid for sid in board.scope if board.session_project.get(sid, "") == project])
-            by_project[project] = [
-                r[0]
-                for r in conn.execute(
-                    f"SELECT duration_ms FROM requests WHERE {where} AND duration_ms > 0"
-                    " AND session_id IN (SELECT value FROM json_each(?))",
-                    [*params, sids],
-                )
-            ]
+
+    def by_model_values(model: str) -> list[float]:
+        return [
+            r[0]
+            for r in conn.execute(
+                f"SELECT duration_ms FROM requests WHERE {where} AND duration_ms > 0 AND model = ?", [*params, model]
+            )
+        ]
+
+    def by_project_values(project: str) -> list[float]:
+        sids = json.dumps([sid for sid in board.scope if board.session_project.get(sid, "") == project])
+        return [
+            r[0]
+            for r in conn.execute(
+                f"SELECT duration_ms FROM requests WHERE {where} AND duration_ms > 0"
+                " AND session_id IN (SELECT value FROM json_each(?))",
+                [*params, sids],
+            )
+        ]
 
     def by_time(start: float, end: float) -> list[float]:
         return [
@@ -2002,14 +2002,31 @@ def _read_thin_groups(board: _Board, where: str, params: list, by_model, by_proj
             )
         ]
 
+    # Every thin group is read, side by side on a cluster.
+    targets: list = []
+    calls: list = []
+    for model, timed in timed_model.items():
+        if thin(by_model[model], timed):
+            targets.append((by_model, model))
+            calls.append(lambda model=model: by_model_values(model))
+    for project, timed in timed_project.items():
+        if thin(by_project[project], timed):
+            targets.append((by_project, project))
+            calls.append(lambda project=project: by_project_values(project))
     for i, timed in enumerate(timed_bucket):
         if thin(by_bucket[i], timed):
             start = f.since + i * f.bucket_s
-            by_bucket[i] = by_time(start, start + f.bucket_s + (1e-6 if i == f.buckets - 1 else 0.0))
+            end = start + f.bucket_s + (1e-6 if i == f.buckets - 1 else 0.0)
+            targets.append((by_bucket, i))
+            calls.append(lambda start=start, end=end: by_time(start, end))
     for i, timed in enumerate(timed_spark):
         if thin(by_spark[i], timed):
             start = f.since + i * f.spark_s
-            by_spark[i] = by_time(start, start + f.spark_s + (1e-6 if i == SPARK_POINTS - 1 else 0.0))
+            end = start + f.spark_s + (1e-6 if i == SPARK_POINTS - 1 else 0.0)
+            targets.append((by_spark, i))
+            calls.append(lambda start=start, end=end: by_time(start, end))
+    for (into, key), values in zip(targets, _gather(conn, calls), strict=False):
+        into[key] = values
 
 
 _UNSET: Any = object()
@@ -2146,15 +2163,25 @@ def _tools_section(board: _Board) -> dict:
         values[name].append(duration)
         overall.append(duration)
     if k > 1:
-        for name, row in stats.items():
-            if row["timed"] > len(values[name]) and len(values[name]) < MIN_GROUP_SAMPLE:
-                values[name] = [
-                    r[0]
-                    for r in board.conn.execute(
-                        f"SELECT duration_ms FROM tool_invocations WHERE {where} AND duration_ms > 0 AND tool_name = ?",
-                        [*params, name],
-                    )
-                ]
+
+        def full_values(name: str) -> list[float]:
+            return [
+                r[0]
+                for r in board.conn.execute(
+                    f"SELECT duration_ms FROM tool_invocations WHERE {where} AND duration_ms > 0 AND tool_name = ?",
+                    [*params, name],
+                )
+            ]
+
+        thin_names = [
+            name
+            for name, row in stats.items()
+            if row["timed"] > len(values[name]) and len(values[name]) < MIN_GROUP_SAMPLE
+        ]
+        for name, full in zip(
+            thin_names, _gather(board.conn, [lambda n=n: full_values(n) for n in thin_names]), strict=False
+        ):
+            values[name] = full
     overall.sort()
 
     out = []
@@ -3194,6 +3221,28 @@ _sources_memo: dict[str, tuple[float, list[tuple]]] = {}
 _facts_lock = threading.Lock()
 
 
+# Reads of a board run side by side on a store whose answers are a network round trip
+# away (a Kusto cluster, about 0.15 s each); on SQLite they run in order, since a read
+# costs microseconds and a new thread's first read copies the split stores.
+PARALLEL_READ_WORKERS = 8
+
+
+def _latency_bound(conn: Any) -> bool:
+    return type(conn).__name__ == "KustoConnection"
+
+
+def _gather(conn: Any, calls: list) -> list:
+    """The results of *calls*, in order; concurrently when each one waits on the cluster."""
+    if len(calls) < 2 or not _latency_bound(conn):
+        return [call() for call in calls]
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(
+        max_workers=min(PARALLEL_READ_WORKERS, len(calls)), thread_name_prefix="board-read"
+    ) as pool:
+        return list(pool.map(lambda call: call(), calls))
+
+
 def _store_facts(conn: sqlite3.Connection, memo_key: str) -> dict[str, set[str]]:
     """Per tool, which kinds of rows exist in the store. This changes rarely."""
     with _facts_lock:
@@ -3201,8 +3250,9 @@ def _store_facts(conn: sqlite3.Connection, memo_key: str) -> dict[str, set[str]]
         if cached and time.monotonic() - cached[0] < FACTS_TTL_S:
             return cached[1]
     facts: dict[str, set[str]] = defaultdict(set)
-    for sql, names in _FACTS_SQL:
-        for row in _per_store(conn, sql):
+    answers = _gather(conn, [lambda sql=sql: _per_store(conn, sql) for sql, _names in _FACTS_SQL])
+    for (_sql, names), rows in zip(_FACTS_SQL, answers, strict=False):
+        for row in rows:
             tool = row[0]
             facts[tool].add(names[0])
             for name, flag in zip(names[1:], row[2:]):
@@ -3384,6 +3434,8 @@ def _view_body(conn: sqlite3.Connection, table: str) -> str | None:
 
 def _table_parts(conn: sqlite3.Connection, table: str) -> list[str]:
     """Each store's own table behind a view over several stores, or the table itself."""
+    if _latency_bound(conn):
+        return [table]  # one database, no views over stores
     view = _view_body(conn, table)
     return _VIEW_PART_RE.findall(view) if view is not None else [table]
 
@@ -3463,16 +3515,29 @@ def _compute_board(
     f = filters
 
     agents = board.agents()
-    latency = _latency(board)
-    skill_rows = _skill_rows(board)
+    # The sections read the loaded board and the store; none changes the board, so on a
+    # cluster they run side by side.
+    latency, skill_rows, tool_section, errors_section, changes_section, tests_section, loops, prev, resources = _gather(
+        conn,
+        [
+            lambda: _latency(board),
+            lambda: _skill_rows(board),
+            lambda: _tools_section(board),
+            lambda: _errors_section(board),
+            lambda: _changes_section(board),
+            lambda: _tests_section(board),
+            lambda: _loop_rows(board),
+            lambda: _previous(board),
+            lambda: _resource_series(board),
+        ],
+    )
     turns = _turns(board, skill_rows)
-    tool_section = _tools_section(board)
     tool_calls_bucket = tool_section["calls_bucket"]
     tool_fail_bucket = tool_section["fail_bucket"]
     tool_spark = {"spark_calls": tool_section["spark_calls"], "spark_failed": tool_section["spark_failed"]}
-    errors, api_bucket, api_by_project = _errors_section(board)
-    changes, lines_by_project = _changes_section(board)
-    tests, tests_passed, tests_failed, tests_by_project = _tests_section(board)
+    errors, api_bucket, api_by_project = errors_section
+    changes, lines_by_project = changes_section
+    tests, tests_passed, tests_failed, tests_by_project = tests_section
     tests_piped = sum(
         1
         for sid, _aid, _ts, _name, target, is_error, exit_code, _duration in board.test_rows
@@ -3481,9 +3546,7 @@ def _compute_board(
         and _PIPED_TO_FILTER_RE.search(target or "")
         and "pipefail" not in (target or "")
     )
-    loops = _loop_rows(board)
-    prev = _previous(board)
-    cpu, mem = _resource_series(board)
+    cpu, mem = resources
 
     # Prompts per bucket and per project.
     n = f.buckets

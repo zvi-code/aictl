@@ -31,6 +31,22 @@ DEFAULT_DATABASE = "aictl"
 AUTH_MODES = ("auto", "azcli", "device", "managed-identity", "none")
 
 
+def engine_url(cluster: str) -> str:
+    """The engine (query) URL for *cluster*, given either of a cluster's two URLs.
+
+    ``https://ingest-<name>.<region>.kusto.windows.net`` is the Data Management
+    endpoint: it takes queued ingestion only, and answers a management command with
+    a syntax error. aictl queries, creates tables and streams rows through the
+    engine, ``https://<name>.<region>.kusto.windows.net``, so the ``ingest-`` prefix
+    is dropped.
+    """
+    scheme, sep, rest = cluster.partition("://")
+    host, slash, path = rest.partition("/")
+    if host.lower().startswith("ingest-"):
+        host = host[len("ingest-"):]
+    return scheme + sep + host + slash + path
+
+
 @dataclass(frozen=True)
 class KustoSettings:
     cluster: str
@@ -71,6 +87,7 @@ class KustoSettings:
             return None
         if "://" not in cluster:
             cluster = "https://" + cluster
+        cluster = engine_url(cluster)
         auth = (auth or "auto").strip().lower() or "auto"
         if auth not in AUTH_MODES:
             raise ValueError(f"{AUTH_ENV} must be one of {', '.join(AUTH_MODES)}, not {auth!r}")
