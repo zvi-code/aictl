@@ -1037,6 +1037,8 @@ class TranscriptUsageIngester:
         self._idle_before = 0.0
         self._first_poll = True
         self._last_run_ts = self._load_last_run()
+        # Files the first poll skipped, with their mtime then: read whole once one changes.
+        self._skipped: dict[Path, float] = {}
 
     _LAST_RUN_KEY = "transcript_usage:last_run_ts"
 
@@ -1067,8 +1069,16 @@ class TranscriptUsageIngester:
                 st = p.stat()
             except OSError:
                 continue
-            if p not in self._offsets and (st.st_mtime < cutoff or st.st_mtime < self._idle_before):
-                continue
+            if p not in self._offsets:
+                if st.st_mtime < cutoff:
+                    continue
+                skipped = self._skipped.get(p)
+                if skipped is not None and st.st_mtime <= skipped:
+                    continue
+                if st.st_mtime < self._idle_before:
+                    self._skipped[p] = st.st_mtime
+                    continue
+                self._skipped.pop(p, None)
             size = _current_size(p, st.st_size, st.st_mtime, self._offsets.get(p, 0), now)
             if size < self._offsets.get(p, 0):
                 # Truncated or rewritten: its lines were already counted, so
