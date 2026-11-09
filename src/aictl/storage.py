@@ -48,6 +48,7 @@ _SOURCE_FILE_EXTS = (
 )
 DEFAULT_DB_PATH = config_dir() / "history.db"
 FLUSH_INTERVAL = 10.0  # seconds between batch writes
+FLUSH_MIN_GAP_S = 1.0  # between two flushes asked for by flush_soon
 # SCHEMA_VERSION is re-exported from aictl.storage_migrations so the
 # migrations package remains the single source of truth.
 LARGE_FILE_THRESHOLD = 100_000  # bytes; files larger than this use blob storage
@@ -2171,6 +2172,7 @@ class HistoryDB:
         # Background flush thread. A project store leaves this to ProjectStores, which
         # flushes every open store from one thread instead of one thread per store.
         self._flush_stop = threading.Event()
+        self._flush_wake = threading.Event()
         self._flush_thread: threading.Thread | None = None
         if flush_interval > 0 and own_flush_thread:
             self._flush_thread = threading.Thread(target=self._flush_loop, daemon=True, name="aictl-db-flush")
@@ -3373,9 +3375,18 @@ class HistoryDB:
         return total
 
     def _flush_loop(self) -> None:
-        """Background loop: flush buffers periodically."""
-        while not self._flush_stop.wait(self._flush_interval):
+        """Background loop: flush buffers every interval, or sooner when asked, at most once a second."""
+        while not self._flush_stop.is_set():
+            self._flush_wake.wait(self._flush_interval)
+            self._flush_wake.clear()
+            if self._flush_stop.is_set():
+                return
             self.flush_once()
+            self._flush_stop.wait(FLUSH_MIN_GAP_S)
+
+    def flush_soon(self) -> None:
+        """Ask the flush thread to write the buffers now: a dashboard client waits for the rows."""
+        self._flush_wake.set()
 
     def flush_once(self) -> None:
         """One round of the background flush: write the buffers, note a failing file."""
@@ -7094,6 +7105,7 @@ class HistoryDB:
         self._closed = True
         if self._flush_thread and self._flush_thread.is_alive():
             self._flush_stop.set()
+            self._flush_wake.set()
             self._flush_thread.join(timeout=5.0)
         self.flush()
         if self._shared_conn is not None:
