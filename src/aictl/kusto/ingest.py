@@ -125,11 +125,15 @@ class StreamingIngester:
         from azure.kusto.ingest import IngestionProperties
 
         props = IngestionProperties(database=self.database, table=table, data_format=DataFormat.MULTIJSON)
-        from .connection import retrying
+        from .connection import retrying, schema_cache_behind
 
         for group in chunks([json_line(r) for r in rows], self.max_bytes):
             data = "\n".join(group).encode("ascii")
-            retrying(lambda d=data: self.ingest_client.ingest_from_stream(io.BytesIO(d), props), f"ingestion into {table}")
+            retrying(
+                lambda d=data: self.ingest_client.ingest_from_stream(io.BytesIO(d), props),
+                f"ingestion into {table}",
+                also=schema_cache_behind,
+            )
 
 
 class TableIngester:

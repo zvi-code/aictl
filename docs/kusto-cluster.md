@@ -92,7 +92,7 @@ or pass it on the command line, which also works for a one-off run:
 aictl daemon serve --kusto-cluster https://<name>.westeurope.kusto.windows.net --kusto-database aictl
 ```
 
-The start prints `history store: kusto://<host>/aictl (Kusto, azcli auth; no SQLite file)`. The first start creates the 47 tables, enables streaming ingestion on the database if any table uses it, and writes `aictl_information_schema`, which describes every column; `aictl db schema` prints the same. Later starts compare the database's schema with the code's and change only what differs.
+The start prints `history store: kusto://<host>/aictl (Kusto, azcli auth; no SQLite file)`. The first start creates the 47 tables, enables streaming ingestion on the database if any table uses it, writes `aictl_information_schema`, which describes every column, and, when a table streams, clears the engine's streaming-ingestion schema cache (`.clear database cache streamingingestion schema`) so the new tables take rows at once; `aictl db schema` prints the same. Later starts compare the database's schema with the code's and change only what differs.
 
 ### Global ingestion mode and per-table overrides
 
@@ -158,6 +158,7 @@ Measured on a `Dev(No SLA)` cluster in West Europe from a Mac: a query answers i
 - `Kusto ingestion into <table> failed ... Status: 520 ... RowStoreTrimmableStreamException`: a server-side streaming-ingestion storage error. The response alone does not establish its underlying cause; `"@permanent": false` means retryable, not guaranteed to recover. aictl retries transient errors for about a minute. If they persist, investigate the cluster traces using the request/activity and RowStore IDs. For small development/test tables, `--kusto-table-ingestion path_defs=inline` can bypass streaming for that table; `--kusto-ingestion inline` selects inline as the global default, subject to any per-table overrides.
 - Slow first polls on a dev-tier cluster: a `Dev(No SLA)` cluster has one ingestion slot and answers a query in about a tenth of a second. aictl uses streaming ingestion, which does not take the slot, and sends a batch of updates as one query, but the first polls still write every recent session's history, which takes minutes; later polls are quick.
 - `AADSTS50076 ... multi-factor authentication`: run `az login --tenant <tenant id> --scope "https://<cluster host>/.default"` and sign in again.
+- `Kusto ingestion into <table> failed transiently (BadRequest_EntityNotFound ...)` in the log right after tables were created or widened: an engine node still streams against the schema it cached before the change. aictl clears that cache after every schema change and repeats the rows for about a minute; without the clear the refusals last 45 to 90 s. `Kusto streaming schema cache was not cleared` means the account may not run the clear command (it needs Database Ingestor or higher); the rows then arrive after the cache expires on its own.
 - `Forbidden` on the first start: the account lacks Database Admin on the database (step 2).
 - `UserNotLicensed` from Fabric: the account has no Fabric license; start a Fabric trial in the Fabric portal or use an Azure Data Explorer cluster.
 - `KustoStoreError: ... Unsupported`: a statement the translator cannot express; the message names the construct. Open an issue with it.
