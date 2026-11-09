@@ -350,8 +350,10 @@ class ClaudeAccumulator:
     def __init__(self, tool: str = "claude-code") -> None:
         self.tool = tool
         self.sessions: dict[str, SessionUsage] = {}
-        self._requests: dict[tuple[str, str], tuple[str, tuple]] = {}
-        self._tool_ids: set[str] = set()
+        # Keyed by the hash of the ids, not the ids: a month of transcripts has a
+        # million of them, and the strings were most of the daemon's resident memory.
+        self._requests: dict[int, tuple[str, tuple]] = {}
+        self._tool_ids: set[int] = set()
 
     def session(self, sid: str) -> SessionUsage:
         return self.sessions.setdefault(sid, SessionUsage(session_id=sid, tool=self.tool))
@@ -376,8 +378,8 @@ class ClaudeAccumulator:
         if isinstance(content, list):
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_use":
-                    tool_id = str(block.get("id") or "")
-                    if tool_id and tool_id not in self._tool_ids:
+                    tool_id = hash(str(block.get("id") or ""))
+                    if block.get("id") and tool_id not in self._tool_ids:
                         self._tool_ids.add(tool_id)
                         s.tool_calls += 1
         usage = msg.get("usage")
@@ -412,7 +414,7 @@ class ClaudeAccumulator:
         msg_id = str(msg.get("id") or "")
         req_id = str(obj.get("requestId") or "")
         # A line with no ids cannot repeat a known request: count it as new.
-        key = (msg_id, req_id) if (msg_id or req_id) else ("uuid", str(obj.get("uuid") or id(obj)))
+        key = hash((msg_id, req_id) if (msg_id or req_id) else ("uuid", str(obj.get("uuid") or id(obj))))
         prev = self._requests.get(key)
         if prev is None:
             self._requests[key] = (sid, vals)
@@ -1137,6 +1139,7 @@ class TranscriptUsageIngester:
                 touched[sid] = usage
 
         self._claude_facts.close_idle_agents(now - IDLE_END_S)
+        self._claude_facts.drop_abandoned_calls(now - IDLE_END_S)
         self._claude_facts.flush_open_agents()
         self.facts.flush()
         clear_stale = getattr(self.store, "clear_stale_pending_confirms", None)

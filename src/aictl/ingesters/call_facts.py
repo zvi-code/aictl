@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import sqlite3
+import sys
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
@@ -463,13 +464,14 @@ class ClaudeFacts:
     def __init__(self, buffer: FactBuffer) -> None:
         self.buffer = buffer
         self.keep_text = _keep_text(buffer.store)
-        self._calls: dict[tuple[str, str], tuple] = {}
+        # Ids are kept as hashes: a month of transcripts has a million of them.
+        self._calls: dict[int, tuple] = {}
         self._api_starts: dict[str, float] = {}
         self._last_user_ts: dict[str, float] = {}
-        self._tools_seen: set[str] = set()
-        self._tool_message: dict[str, str] = {}
+        self._tools_seen: set[int] = set()
+        self._tool_message: dict[str, int] = {}
         self._last_command: dict[str, tuple[str, str]] = {}
-        self._message_last_block: dict[str, float] = {}
+        self._message_last_block: dict[int, float] = {}
         self._pending: dict[str, tuple[ToolInvocationRow, str, dict]] = {}
         self._open_agents: dict[str, AgentRow] = {}
 
@@ -489,7 +491,8 @@ class ClaudeFacts:
         if kind not in ("assistant", "user"):
             return
         agent_id = agent_id or (str(obj.get("agentId") or "") if obj.get("isSidechain") else "")
-        cwd = str(obj.get("cwd") or "")
+        # Every line repeats the folder; one string serves them all.
+        cwd = sys.intern(str(obj.get("cwd") or ""))
         if agent_id:
             self._touch_agent(agent_id, sid, role, ts, obj)
         msg = obj.get("message") if isinstance(obj.get("message"), dict) else {}
@@ -532,6 +535,14 @@ class ClaudeFacts:
                 self.buffer.add_agent(row)
                 del self._open_agents[agent_id]
 
+    def drop_abandoned_calls(self, before: float) -> None:
+        """A tool call with no result after a long time was cancelled: its arguments, kept
+        for the result, are let go. The call itself is already in the buffer."""
+        for tool_id, (row, _cwd, _args) in list(self._pending.items()):
+            if row.ts and row.ts < before:
+                del self._pending[tool_id]
+                self._tool_message.pop(tool_id, None)
+
     def flush_open_agents(self) -> None:
         """Running subagents are written with no end, so they read as still going."""
         for row in self._open_agents.values():
@@ -566,7 +577,8 @@ class ClaudeFacts:
         )
         msg_id, req_id = str(msg.get("id") or ""), str(obj.get("requestId") or "")
         call = (msg_id, req_id) if (msg_id or req_id) else ("uuid", str(obj.get("uuid") or ""))
-        prior = self._calls.get(call)
+        call_key = hash(call)
+        prior = self._calls.get(call_key)
         if prior is None:
             ref = str(obj.get("requestRef") or "")
             start = self._api_starts.pop(ref, 0.0) or self._last_user_ts.get(f"{sid}/{agent_id}", 0.0)
@@ -579,7 +591,7 @@ class ClaudeFacts:
             # A fork replays earlier messages, some with zero usage. It must not lower the real row.
             if first[0] != sid and sum(vals[:4]) <= sum(prior[1][:4]):
                 return
-        self._calls[call] = (first, vals, ts)
+        self._calls[call_key] = (first, vals, ts)
         first_sid, first_agent, first_ts, start, first_cwd = first
         reply_ms = (ts - start) * 1000 if start and ts > start else 0.0
         self.buffer.add_request(
@@ -750,9 +762,9 @@ class ClaudeFacts:
             if not isinstance(block, dict) or block.get("type") != "tool_use":
                 continue
             tool_id = str(block.get("id") or "")
-            if not tool_id or tool_id in self._tools_seen:
+            if not tool_id or hash(tool_id) in self._tools_seen:
                 continue
-            self._tools_seen.add(tool_id)
+            self._tools_seen.add(hash(tool_id))
             name = str(block.get("name") or "")
             args = block.get("input") if isinstance(block.get("input"), dict) else {}
             row = ToolInvocationRow(
@@ -769,7 +781,7 @@ class ClaudeFacts:
                 input_bytes=byte_size(block.get("input")),
             )
             self._pending[tool_id] = (row, cwd, args)
-            message_id = str(msg.get("id") or "")
+            message_id = hash(str(msg.get("id") or ""))
             self._tool_message[tool_id] = message_id
             self._message_last_block[message_id] = max(self._message_last_block.get(message_id, 0.0), ts)
             self.buffer.add_tool(row)
@@ -793,7 +805,7 @@ class ClaudeFacts:
             text = _text_of(block.get("content")) if not isinstance(block.get("content"), str) else block["content"]
             row.output_bytes = byte_size(text)
             # A message's calls run when its last block is written, not when each block is.
-            started = max(row.ts, self._message_last_block.get(self._tool_message.pop(row.source_event_id, ""), 0.0))
+            started = max(row.ts, self._message_last_block.get(self._tool_message.pop(row.source_event_id, 0), 0.0))
             row.duration_ms = max(0.0, (ts - started) * 1000)
             if confirm in _PERSON_DECIDED or row.tool_name in _PERSON_TOOLS:
                 # This time holds a person's wait, and the file does not say how much of it.
