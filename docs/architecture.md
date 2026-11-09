@@ -408,6 +408,18 @@ Tables:
 - `sessions` — session state snapshots
 - `telemetry_kv` — key-value telemetry pairs per tool
 
+### Kusto Store (`kusto/`)
+
+With `kusto_cluster` set in `config.toml` (or `aictl daemon serve --kusto-cluster URL`, or `AICTL_KUSTO_CLUSTER`), the history lives in one database of a Kusto (Azure Data Explorer) cluster and the daemon serves from it alone: no SQLite file is opened for the store. The code keeps issuing its SQLite statements; `kusto/connection.py` is a `sqlite3.Connection` look-alike that hands each statement to `kusto/translate.py` and runs the result on the cluster.
+
+- `schema.py` parses `_SCHEMA_SQL`: every table becomes a Kusto table of the same name and columns plus `rowid:long`, `_v:datetime` and `_deleted:bool`. Tables are created with `.create-merge table` on every start (idempotent, widens an older table) and get the streaming ingestion policy. There is no migration path: a Kusto store starts from the current schema, and an existing SQLite history is not moved.
+- Rows are versions. A read keeps the newest version of each key (`PRIMARY KEY`, else `UNIQUE`, else `rowid`) and drops deleted ones (`schema.current`): every store table a query names gets a `let` binding with that pipeline. An `INSERT` is rows ingested through streaming ingestion (the emulator, which has none, gets `.ingest inline`); `INSERT OR REPLACE` relies on the newest version winning; `INSERT OR IGNORE` and `ON CONFLICT DO UPDATE` read the current key first. An `UPDATE` or `DELETE` is `.set-or-append T <| <current rows> | where ... | extend ...` with `_v = now()` and, for a delete, `_deleted = true`: the cluster writes the new versions itself, nothing round-trips through Python.
+- `rowid` is assigned by the connection (time-ordered 64-bit), and is the value of an `INTEGER PRIMARY KEY` column.
+- The schema is also data: `aictl_information_schema` (one row per column: type, key position, unique sets, scope, group) is rewritten on every start, `aictl db schema` prints it, and [docs/kusto-schema.md](kusto-schema.md) is generated from the same code (a test keeps it current).
+- `PRAGMA` statements are answered from the parsed schema; `sqlite_master` is a `datatable` of the schema; indexes, triggers, `ATTACH`, `VACUUM` and transactions are no-ops. Inserts are buffered per connection until `commit()` or until a read on that connection needs them.
+- The store is never split by project on a cluster: one database holds every project. Retention and the size budget still run (`compact`, `trim_text`); the budget sees no file size on a cluster, so it never evicts.
+- Authentication: `kusto_auth = auto` uses the Azure CLI's login, or none for a local emulator (`http://localhost:8080`, `docker run --platform linux/amd64 -e ACCEPT_EULA=Y -m 4G -p 8080:8080 mcr.microsoft.com/azuredataexplorer/kustainer-linux`); `device`, `managed-identity` and `none` are the other modes. The dependencies are the `kusto` extra (`pip install aictl[kusto]`: azure-kusto-data, azure-kusto-ingest, sqlglot).
+
 ### In-Memory Store (`store.py`)
 
 `SnapshotStore` provides real-time access for the dashboard:

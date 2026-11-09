@@ -411,13 +411,17 @@ class ProjectStores:
         memory_fallback: bool = False,
         idle_close_s: float = IDLE_CLOSE_S,
         say: Any | None = None,
+        kusto: Any | None = None,
     ) -> None:
         # Progress a person watches for, such as the split of an old history (the daemon prints it).
         self._say = say or log.info
         self._split_total: int | None = None
         self._split_reported = 0.0
+        # On a Kusto cluster every project shares one database: the store is never split.
+        self.kusto = kusto
         self.machine = HistoryDB(
             db_path=db_path,
+            kusto=kusto,
             flush_interval=flush_interval,
             datapoint_logger=datapoint_logger,
             retention_days=retention_days,

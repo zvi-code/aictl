@@ -47,6 +47,8 @@ from ..platforms import (
     help="Run collection only (no web UI) — low-resource always-on monitoring",
 )
 @click.option("--db", "db_path", default=None, type=click.Path(), help="Path to SQLite history database")
+@click.option("--kusto-cluster", default=None, help="Serve from this Kusto cluster instead of SQLite (URL; http://localhost:8080 for the emulator)")
+@click.option("--kusto-database", default=None, help="The Kusto database (default aictl)")
 @click.option("--stop", is_flag=True, help="Stop a running daemon")
 @click.option("--status", "show_status", is_flag=True, help="Show daemon status")
 @click.option(
@@ -63,6 +65,8 @@ def serve(
     open_browser,
     include_live_monitor,
     db_path,
+    kusto_cluster,
+    kusto_database,
     daemon_mode,
     headless,
     stop,
@@ -78,6 +82,11 @@ def serve(
     """
     if capture:
         os.environ["AICTL_CAPTURE"] = capture
+    # The cluster reaches the daemon process (and every store opened in it) the same way.
+    if kusto_cluster:
+        os.environ["AICTL_KUSTO_CLUSTER"] = kusto_cluster
+    if kusto_database:
+        os.environ["AICTL_KUSTO_DATABASE"] = kusto_database
     cfg = load_config()
 
     # Apply config file defaults, CLI overrides take precedence

@@ -582,6 +582,11 @@ retention_days = 30  # Delete data older than this
 capture = "full"  # full: text kept but bounded | metadata: no text | off: memory only, no files
 max_total_mb = 1024  # Budget for DB + WAL + logs; oldest data is evicted first
 content_retention_days = 14  # capture = "full": blank conversation text older than this
+# A Kusto (Azure Data Explorer) cluster instead of SQLite: every table lives in one
+# database there and the daemon serves from it alone. Empty = SQLite.
+kusto_cluster = ""  # e.g. https://mycluster.westus.kusto.windows.net, or http://localhost:8080 for the emulator
+kusto_database = "aictl"
+kusto_auth = "auto"  # auto (Azure CLI login; none for a local emulator) | azcli | device | managed-identity | none
 
 [logging]
 enabled = false         # Set true to log every datapoint to file
@@ -636,6 +641,9 @@ class AictlConfig:
     capture: str = "full"
     max_total_mb: int = 1024
     content_retention_days: int = 14
+    kusto_cluster: str = ""
+    kusto_database: str = "aictl"
+    kusto_auth: str = "auto"
 
     # logging
     logging_enabled: bool = False
@@ -688,6 +696,9 @@ _CONFIG_MAP: dict[str, list[tuple[str, str, type]]] = {
         ("capture", "capture", str),
         ("max_total_mb", "max_total_mb", int),
         ("content_retention_days", "content_retention_days", int),
+        ("kusto_cluster", "kusto_cluster", str),
+        ("kusto_database", "kusto_database", str),
+        ("kusto_auth", "kusto_auth", str),
     ],
     "logging": [
         ("enabled", "logging_enabled", bool),
@@ -829,5 +840,7 @@ def show_config() -> str:
         f"  capture         = {cfg.capture}",
         f"  max_total_mb    = {cfg.max_total_mb}",
         f"  content_retention_days = {cfg.content_retention_days}",
+        f"  kusto_cluster   = {cfg.kusto_cluster or '(none: SQLite)'}",
+        f"  kusto_database  = {cfg.kusto_database}",
     ]
     return "\n".join(lines)

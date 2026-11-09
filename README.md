@@ -130,6 +130,16 @@ pipx install ".[all]"
 
 Install, update, removal, Windows and troubleshooting steps are in [HOWTO.md](HOWTO.md).
 
+### Kusto as the store
+
+The history can live in a [Kusto (Azure Data Explorer)](https://learn.microsoft.com/azure/data-explorer/) cluster instead of a SQLite file: every table is a table of one Kusto database, writes go through streaming ingestion, and the daemon serves entirely from the cluster. Set it in `~/.config/aictl/config.toml` (`[storage] kusto_cluster = "https://mycluster.westus.kusto.windows.net"`, `kusto_database = "aictl"`) or pass it once:
+
+```bash
+aictl daemon serve --kusto-cluster https://mycluster.westus.kusto.windows.net --kusto-database aictl
+```
+
+The `kusto` extra brings the SDKs (`pipx install "aictl[all]"` includes it). Sign-in is the Azure CLI's by default; `kusto_auth` picks `device`, `managed-identity` or `none` (the local emulator). An existing SQLite history is not moved to the cluster. Details in [docs/architecture.md](docs/architecture.md#kusto-store-kusto).
+
 ## How It Works
 
 ### Deploy: `.context.toml` → native tool files

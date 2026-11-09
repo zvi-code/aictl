@@ -13,6 +13,7 @@ from pathlib import Path
 import click
 
 from ..cli_context import CliContext
+from ..kusto import kusto_settings
 from ..platforms import config_path, show_config, write_default_config
 
 # ─── db ─────────────────────────────────────────────────────────────────────
@@ -86,7 +87,7 @@ def compact(ctx, vacuum, dry_run, retention_days):
 
     if dry_run:
         # flush_interval=0: no background writer for a read-only forecast.
-        with ProjectStores(db_path=path, flush_interval=0, retention_days=retention_days) as est_db:
+        with ProjectStores(db_path=path, flush_interval=0, retention_days=retention_days, kusto=kusto_settings()) as est_db:
             est = est_db.compact_estimate()
         mb = 1024**2
         click.echo(f"Free pages inside the file: {est['free_bytes'] / mb:.1f} MB")
@@ -99,7 +100,7 @@ def compact(ctx, vacuum, dry_run, retention_days):
         click.echo("Dry run: nothing was changed.")
         return
 
-    hist_db = ProjectStores(db_path=path, flush_interval=0, retention_days=retention_days)
+    hist_db = ProjectStores(db_path=path, flush_interval=0, retention_days=retention_days, kusto=kusto_settings())
 
     click.echo("Compacting...")
     t0 = time.time()
@@ -140,7 +141,7 @@ def trim_text(ctx, dry_run, older_than_days):
 
     db_path = ctx.obj.db_path
     path = _resolve_db_path(db_path)
-    with ProjectStores(db_path=path, flush_interval=0) as hist_db:
+    with ProjectStores(db_path=path, flush_interval=0, kusto=kusto_settings()) as hist_db:
         if dry_run:
             for name, chars in sorted(hist_db.trim_text_estimate().items()):
                 if chars:
@@ -160,7 +161,7 @@ def stats(ctx):
     db_path = ctx.obj.db_path
     path = _resolve_db_path(db_path)
 
-    hist_db = ProjectStores(db_path=path, flush_interval=0)
+    hist_db = ProjectStores(db_path=path, flush_interval=0, kusto=kusto_settings())
     s = hist_db.stats()
     hist_db.close()
 
@@ -190,6 +191,38 @@ def stats(ctx):
         click.echo(
             f"Files tracked: {s['files_tracked']:,} ({s['files_total_bytes'] / 1024**2:.1f} MB, {s['files_total_tokens']:,} tokens)"
         )
+
+
+@db.command()
+@click.option("--markdown", is_flag=True, help="The full reference as Markdown (what docs/kusto-schema.md holds)")
+@click.option("--json", "as_json", is_flag=True, help="One JSON object per column, as the aictl_information_schema table holds it")
+def schema(markdown, as_json):
+    """The store's information schema: every table, its key, scope and columns.
+
+    The same tables exist on SQLite and on a Kusto cluster; the types shown are
+    the Kusto ones. On a cluster the table aictl_information_schema holds these rows.
+    """
+    import json as _json
+
+    from ..kusto import schema as kusto_schema
+
+    tables = kusto_schema.store_schema()
+    if markdown:
+        click.echo(kusto_schema.render_markdown(tables))
+        return
+    if as_json:
+        for row in kusto_schema.information_rows(tables):
+            click.echo(_json.dumps(row))
+        return
+    for title, names in kusto_schema.TABLE_GROUPS:
+        click.echo(f"\n{title}")
+        for name in names:
+            table = tables.get(name)
+            if table is None:
+                continue
+            unique = "; unique " + ", ".join("(" + ",".join(u) + ")" for u in table.unique_sets) if table.unique_sets else ""
+            click.echo(f"  {name}  [key: {', '.join(table.key)}{unique}]")
+            click.echo("    " + ", ".join(f"{c.name}:{c.kusto_type}" for c in table.columns))
 
 
 @db.command()
@@ -229,7 +262,7 @@ def reset(ctx, yes):
         click.echo("(does not exist yet — will be created fresh)")
 
     # Initialise a fresh empty database by opening it.
-    HistoryDB(db_path=str(path)).close()
+    HistoryDB(db_path=str(path), kusto=kusto_settings()).close()
     click.secho(f"Fresh database initialised: {path}", fg="green")
 
 
@@ -727,7 +760,7 @@ def catalog(ctx, out_path, fmt, tab, source_type, db_path):
 
     from ..storage import HistoryDB
 
-    db = HistoryDB(db_path=db_path)
+    db = HistoryDB(db_path=db_path, kusto=kusto_settings())
     entries = db.query_datapoint_catalog(tab=tab, source_type=source_type)
     db.close()
 
@@ -759,7 +792,7 @@ def sync(ctx):
     from ..storage import HistoryDB
 
     db_path = ctx.obj.db_path if ctx.obj else None
-    db = HistoryDB(db_path=db_path)
+    db = HistoryDB(db_path=db_path, kusto=kusto_settings())
     count = db.sync_datapoint_catalog()
     db.close()
     click.echo(f"Synced {count} catalog entries to DB")
@@ -780,7 +813,7 @@ def validate(ctx, fix):
     from ..storage import HistoryDB
 
     db_path = ctx.obj.db_path if ctx.obj else None
-    db = HistoryDB(db_path=db_path)
+    db = HistoryDB(db_path=db_path, kusto=kusto_settings())
     entries = db.query_datapoint_catalog()
 
     issues = []
@@ -848,7 +881,7 @@ def validate(ctx, fix):
             click.echo(f"  - {issue}")
         if fix:
             click.echo("\nRe-syncing from YAML...")
-            db2 = HistoryDB(db_path=db_path)
+            db2 = HistoryDB(db_path=db_path, kusto=kusto_settings())
             count = db2.sync_datapoint_catalog()
             db2.close()
             click.echo(f"Synced {count} entries. Re-run validate to check.")
