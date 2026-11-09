@@ -2106,6 +2106,7 @@ class HistoryDB:
         content_retention_days: int = 14,
         log_paths: tuple[Path, ...] = (),
         memory_fallback: bool = False,
+        own_flush_thread: bool = True,
     ) -> None:
         if db_path is None:
             db_path = DEFAULT_DB_PATH
@@ -2167,10 +2168,11 @@ class HistoryDB:
                     raise
                 self._fall_back_to_memory(f"cannot open {self._path}: {exc}")
 
-        # Background flush thread
+        # Background flush thread. A project store leaves this to ProjectStores, which
+        # flushes every open store from one thread instead of one thread per store.
         self._flush_stop = threading.Event()
         self._flush_thread: threading.Thread | None = None
-        if flush_interval > 0:
+        if flush_interval > 0 and own_flush_thread:
             self._flush_thread = threading.Thread(target=self._flush_loop, daemon=True, name="aictl-db-flush")
             self._flush_thread.start()
 
@@ -3373,15 +3375,19 @@ class HistoryDB:
     def _flush_loop(self) -> None:
         """Background loop: flush buffers periodically."""
         while not self._flush_stop.wait(self._flush_interval):
-            self._flush_failed_with = None
-            try:
-                self.flush()
-                if self._flush_failed_with is not None:
-                    self._note_flush_error(self._flush_failed_with)
-                else:
-                    self._locked_flushes = 0
-            except Exception as exc:
-                log.warning("DB flush loop error: %s", exc)
+            self.flush_once()
+
+    def flush_once(self) -> None:
+        """One round of the background flush: write the buffers, note a failing file."""
+        self._flush_failed_with = None
+        try:
+            self.flush()
+            if self._flush_failed_with is not None:
+                self._note_flush_error(self._flush_failed_with)
+            else:
+                self._locked_flushes = 0
+        except Exception as exc:
+            log.warning("DB flush loop error: %s", exc)
 
     # ── Query: system snapshots (was global metrics) ──────────────
 

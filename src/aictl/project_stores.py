@@ -462,9 +462,14 @@ class ProjectStores:
             self._retry_moves()
         self._reap_stop = threading.Event()
         self._reaper: threading.Thread | None = None
+        self._flusher: threading.Thread | None = None
         if self._split and flush_interval > 0:
             self._reaper = threading.Thread(target=self._reap_loop, daemon=True, name="aictl-project-stores")
             self._reaper.start()
+            # One flush thread for every open project store, not one per store.
+            self._store_options["own_flush_thread"] = False
+            self._flusher = threading.Thread(target=self._flush_loop, daemon=True, name="aictl-project-flush")
+            self._flusher.start()
 
     # ── Index of stores and their activity ─────────────────────
 
@@ -725,6 +730,11 @@ class ProjectStores:
             except Exception as exc:  # noqa: BLE001 - one store's close must not stop the others
                 log.warning("Closing project store %s failed: %s", key, exc)
         return [key for key, _db in closing]
+
+    def _flush_loop(self) -> None:
+        while not self._reap_stop.wait(self._store_options["flush_interval"]):
+            for db in self.open_stores().values():
+                db.flush_once()
 
     def _reap_loop(self) -> None:
         while not self._reap_stop.wait(REAP_EVERY_S):
@@ -1317,6 +1327,8 @@ class ProjectStores:
         self._reap_stop.set()
         if self._reaper is not None:
             self._reaper.join(timeout=5)
+        if self._flusher is not None:
+            self._flusher.join(timeout=5)
         with self._stores_lock:
             stores = list(self._stores.items())
             self._stores.clear()
