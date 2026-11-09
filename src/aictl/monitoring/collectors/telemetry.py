@@ -21,7 +21,7 @@ _INTERESTING_NAMES = ("otel", "trace", "span", "telemetry", "usage", "session", 
 _INTERESTING_SUFFIXES = (".json", ".jsonl", ".ndjson", ".log")
 
 
-CANDIDATE_WALK_INTERVAL_S = 120.0
+CANDIDATE_WALK_INTERVAL_S = 600.0
 
 
 class StructuredTelemetryCollector(BaseCollector):
