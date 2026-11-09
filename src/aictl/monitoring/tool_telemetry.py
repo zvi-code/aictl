@@ -15,6 +15,7 @@ loop.
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import re
@@ -194,18 +195,25 @@ def _parse_agent_file(path: Path) -> dict | None:
     - Message count: total messages exchanged
     - Outcome: whether the agent completed (has a final assistant message)
     """
+    # One line at a time: an agent file can be tens of MB, and the whole scan ran in one piece.
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        fh = open(path, encoding="utf-8", errors="replace")
     except OSError:
         return None
-    if not lines:
-        return None
+    with fh:
+        first_line = fh.readline()
+        if not first_line:
+            return None
+        try:
+            first = json.loads(first_line)
+        except json.JSONDecodeError:
+            return None
+        return _parse_agent_lines(first, first_line, fh)
 
-    # Parse first line for identity
-    try:
-        first = json.loads(lines[0])
-    except json.JSONDecodeError:
-        return None
+
+def _parse_agent_lines(first: dict, first_line: str, rest: Iterator[str]) -> dict:
+    lines = itertools.chain([first_line], rest)
+    messages = 0
 
     result = {
         "agent_id": first.get("agentId", ""),
@@ -222,7 +230,7 @@ def _parse_agent_file(path: Path) -> dict | None:
         "cache_read_tokens": 0,
         "cache_creation_tokens": 0,
         "tools_used": [],
-        "messages": len(lines),
+        "messages": 0,
         "started_at": first.get("timestamp", ""),
         "ended_at": "",
         "completed": False,
@@ -233,6 +241,7 @@ def _parse_agent_file(path: Path) -> dict | None:
     last_type = ""
     turns: list[dict] = []
     for line in lines:
+        messages += 1
         if not line.strip():
             continue
         try:
@@ -300,6 +309,7 @@ def _parse_agent_file(path: Path) -> dict | None:
     result["tool_use_count"] = tool_use_count
     result["completed"] = last_type == "assistant"
     result["turns"] = turns
+    result["messages"] = messages
     return result
 
 
@@ -467,12 +477,13 @@ def _first_int(d: dict, *keys: str) -> int:
 def _iter_jsonl(path: Path) -> Iterator[dict]:
     """Yield parsed JSON objects from a JSONL file. Never raises."""
     try:
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            if line.strip():
-                try:
-                    yield json.loads(line)
-                except json.JSONDecodeError:
-                    pass
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.strip():
+                    try:
+                        yield json.loads(line)
+                    except json.JSONDecodeError:
+                        pass
     except OSError:
         pass
 
@@ -564,7 +575,9 @@ def _parse_claude_active_session(root: Path, report: ToolTelemetryReport) -> Non
         return
 
     # Several sessions can run at once, and an error in any of them matters.
-    recent = sorted((pair for pair in jsonl_files if now - pair[0] <= _CLAUDE_RECENT_S), key=lambda pair: pair[0], reverse=True)
+    recent = sorted(
+        (pair for pair in jsonl_files if now - pair[0] <= _CLAUDE_RECENT_S), key=lambda pair: pair[0], reverse=True
+    )
     for mtime, path in recent[:_CLAUDE_ERROR_SESSIONS]:
         try:
             size = path.stat().st_size
@@ -629,7 +642,9 @@ def _detect_claude_errors(obj: dict, obj_type: str, report: ToolTelemetryReport)
     # Scan what the event says for API-level error patterns. Not the whole event:
     # its ids and timestamps can contain "429", and tool output can say anything.
     if obj_type in ("system", "progress"):
-        said = " ".join(str(obj[key]) for key in ("content", "message", "error", "subtype") if isinstance(obj.get(key), (str, dict)))
+        said = " ".join(
+            str(obj[key]) for key in ("content", "message", "error", "subtype") if isinstance(obj.get(key), (str, dict))
+        )
         for pattern, error_type in _ERROR_PATTERNS.items():
             if pattern.search(said):
                 report.errors.append(
@@ -793,7 +808,15 @@ def _parse_copilot_events(events_file: Path, report: ToolTelemetryReport) -> Non
             write = int(usage.get("cacheWriteTokens", 0) or 0)
             rec = record_usage.setdefault(
                 model,
-                {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_creation_tokens": 0, "requests": 0, "cost_usd": 0.0, "premium_requests": 0.0},
+                {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "cache_creation_tokens": 0,
+                    "requests": 0,
+                    "cost_usd": 0.0,
+                    "premium_requests": 0.0,
+                },
             )
             rec["input_tokens"] += max(0, int(usage.get("inputTokens", 0) or 0) - read - write)
             rec["output_tokens"] += int(usage.get("outputTokens", 0) or 0)

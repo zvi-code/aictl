@@ -319,7 +319,7 @@ def collect(
     mcp_detail = collect_mcp_status(discovered)
     telemetry_reports = _cached(cache, "telemetry", 15.0, lambda: collect_tool_telemetry(root_path))
     tool_telemetry = [r.to_dict() for r in telemetry_reports]
-    agent_teams = scan_agent_teams(root_path)
+    agent_teams = _cached(cache, "agent_teams", 30.0, lambda: scan_agent_teams(root_path))
     tool_configs = _cached(cache, "tool_configs", 300.0, lambda: [c.to_dict() for c in collect_tool_configs(root_path)])
     _FULL_TOOL_CONFIGS[:] = tool_configs
     tool_configs = slim_tool_configs(tool_configs)
@@ -1312,9 +1312,9 @@ class SnapshotPersistence:
                 self._team_signatures[session_id] = signature
                 # Upsert a session row for this UUID session with aggregated token totals
                 # Each session file records the folder the agent ran in.
-                team_folder = next((a.get("cwd") for a in team.get("agents", []) if a.get("cwd") and not a.get("is_sidechain")), "") or next(
-                    (a.get("cwd") for a in team.get("agents", []) if a.get("cwd")), ""
-                )
+                team_folder = next(
+                    (a.get("cwd") for a in team.get("agents", []) if a.get("cwd") and not a.get("is_sidechain")), ""
+                ) or next((a.get("cwd") for a in team.get("agents", []) if a.get("cwd")), "")
                 if session_id:
                     agents = team.get("agents", [])
                     # Source timestamps only — the agents' own started_at,
@@ -1484,27 +1484,42 @@ class SnapshotStore:
         return self._serializer.serialize_history(rows, tool_history)
 
 
+# A path's real path is looked up again after this long; a symlink seldom changes.
+REALPATH_TTL_S = 300.0
+
+
 class AllowedPaths:
     """Maintains the set of file paths that may be served via /api/file."""
 
     def __init__(self) -> None:
         self._paths: set[str] = set()
         self._lock = _threading.Lock()
+        # Thousands of files are discovered, and realpath is a syscall per path part.
+        # The answers are kept across refreshes, for the paths still discovered.
+        self._real: dict[str, str] = {}
+        self._real_at = 0.0
+
+    def _realpaths(self, candidates: list[str]) -> set[str]:
+        now = _time.monotonic()
+        known = self._real if now - self._real_at < REALPATH_TTL_S else {}
+        if not known:
+            self._real_at = now
+        real: dict[str, str] = {}
+        for path in candidates:
+            hit = known.get(path)
+            if hit is None:
+                try:
+                    hit = _os.path.realpath(path)
+                except (OSError, ValueError):
+                    continue
+            real[path] = hit
+        self._real = real
+        return set(real.values())
 
     def update(self, snap: _DashboardSnapshot) -> None:
-        paths: set[str] = set()
-        for tr in snap.tools:
-            for f in tr.files:
-                try:
-                    paths.add(_os.path.realpath(f.path))
-                except (OSError, ValueError):
-                    pass
-        for mem in snap.agent_memory:
-            if mem.file:
-                try:
-                    paths.add(_os.path.realpath(mem.file))
-                except (OSError, ValueError):
-                    pass
+        candidates = [f.path for tr in snap.tools for f in tr.files]
+        candidates += [mem.file for mem in snap.agent_memory if mem.file]
+        paths = self._realpaths(candidates)
         # aictl-owned .context.toml files (hierarchical, per the AGENTS.md note)
         # are not part of any tool's discovered file set, so they would never be
         # added by the loops above. Walk the project root and include them so

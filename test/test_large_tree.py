@@ -61,28 +61,13 @@ def test_normal_project_shows_a_new_file_at_once(tmp_path):
     assert str(tmp_path / "pkg" / ".custom" / "settings.json") in found
 
 
-def test_unchanged_file_is_not_read_again(tmp_path, monkeypatch):
+def test_a_file_is_never_read_for_its_token_estimate(tmp_path, monkeypatch):
     target = tmp_path / "CLAUDE.md"
     target.write_text("hello world " * 50)
-    reads = []
-    real = Path.read_text
-    monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: (reads.append(self), real(self, *a, **k))[1])
+    monkeypatch.setattr(Path, "read_text", lambda *a, **k: (_ for _ in ()).throw(AssertionError("read")))
     first = tools._file_resource(target, "instructions")
-    second = tools._file_resource(target, "instructions")
-    assert reads == [target] and first.tokens == second.tokens > 0
     target.write_text("hello world " * 500)
-    assert tools._file_resource(target, "instructions").tokens > first.tokens
-    assert len(reads) == 2
-
-
-def test_token_cache_stays_bounded(tmp_path, monkeypatch):
-    monkeypatch.setattr(tools, "MAX_TOKEN_CACHE", 3)
-    monkeypatch.setattr(tools, "_token_cache", {})
-    for i in range(10):
-        path = tmp_path / f"f{i}.md"
-        path.write_text("x")
-        tools._file_resource(path, "instructions")
-    assert len(tools._token_cache) <= 3
+    assert tools._file_resource(target, "instructions").tokens > first.tokens > 0
 
 
 def test_hidden_folder_listing_stops_at_its_limit(tmp_path, monkeypatch, caplog):

@@ -171,13 +171,10 @@ def test_large_file_gets_a_size_based_token_estimate(tmp_path, monkeypatch):
     big.write_bytes(b"x" * 2_000_000)
     small = tmp_path / "small.md"
     small.write_text("y" * 400, encoding="utf-8")
-    tools._token_cache.clear()
-    assert tools._file_tokens(big, big.stat()) == 500_000  # bytes / 4, as for text
-    assert tools._file_tokens(small, small.stat()) == 100
-    # No read for the big file: it is estimated from its size.
+    # No file is read: the estimate comes from the size, bytes / 4 as for text.
     monkeypatch.setattr(Path, "read_text", lambda *a, **k: (_ for _ in ()).throw(AssertionError("read")))
-    tools._token_cache.clear()
     assert tools._file_tokens(big, big.stat()) == 500_000
+    assert tools._file_tokens(small, small.stat()) == 100
 
 
 # ── 7. Events count and per-tool history ──────────────────────────
