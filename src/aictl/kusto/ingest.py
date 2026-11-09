@@ -1,4 +1,4 @@
-"""Getting rows into a Kusto table: streaming ingestion on a cluster, ``.ingest inline`` on the emulator.
+"""Getting rows into a Kusto table through streaming ingestion or ``.ingest inline``.
 
 The connection hands an ingester complete rows (system columns included) for one
 table. Both ingesters send newline-delimited JSON (``multijson``), which Kusto maps
@@ -78,11 +78,10 @@ def chunks(lines: list[str], max_bytes: int) -> Iterator[list[str]]:
 
 
 class InlineIngester:
-    """Rows sent in the body of ``.ingest inline``: what the emulator supports.
+    """Rows sent in the body of a synchronous ``.ingest inline`` command.
 
-    The command is synchronous, so the rows are readable when it returns, like a
-    streaming ingest. On a real cluster it is meant for tests only, which is why it
-    is chosen only when streaming is off.
+    This preserves read-after-write behavior without RowStore. It is the emulator
+    default and an opt-in option for small development/test writes on a cluster.
     """
 
     def __init__(self, client: Any, database: str, max_bytes: int = INLINE_MAX_BYTES) -> None:
@@ -96,8 +95,13 @@ class InlineIngester:
         return [head + "\n".join(group) for group in chunks([json_line(r) for r in rows], budget)]
 
     def ingest(self, table: str, rows: list[dict[str, Any]]) -> None:
+        from .connection import retrying
+
         for command in self.commands(table, rows):
-            self.client.execute_mgmt(self.database, command)
+            retrying(
+                lambda c=command: self.client.execute_mgmt(self.database, c),
+                f"inline ingestion into {table}",
+            )
 
 
 class StreamingIngester:
@@ -128,8 +132,22 @@ class StreamingIngester:
             retrying(lambda d=data: self.ingest_client.ingest_from_stream(io.BytesIO(d), props), f"ingestion into {table}")
 
 
+class TableIngester:
+    """Route each table to its selected synchronous ingestion backend."""
+
+    def __init__(self, settings: KustoSettings, ingesters: dict[str, RowIngester]) -> None:
+        self.settings = settings
+        self.ingesters = ingesters
+
+    def ingest(self, table: str, rows: list[dict[str, Any]]) -> None:
+        self.ingesters[self.settings.ingestion_mode(table)].ingest(table, rows)
+
+
 def make_ingester(settings: KustoSettings, client: Any, ingest_client: Any = None) -> RowIngester:
-    """Streaming ingestion when the settings allow it, ``.ingest inline`` through *client* otherwise."""
-    if settings.streaming:
-        return StreamingIngester(settings, ingest_client)
-    return InlineIngester(client, settings.database)
+    """Use the global default unless the table has an explicit override."""
+    ingesters: dict[str, RowIngester] = {"inline": InlineIngester(client, settings.database)}
+    if settings.streaming or "streaming" in settings.table_ingestion.values():
+        ingesters["streaming"] = StreamingIngester(settings, ingest_client)
+    if settings.table_ingestion:
+        return TableIngester(settings, ingesters)
+    return ingesters["streaming" if settings.streaming else "inline"]

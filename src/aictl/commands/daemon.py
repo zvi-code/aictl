@@ -13,6 +13,12 @@ from pathlib import Path
 
 import click
 
+from ..kusto import (
+    INGESTION_ENV,
+    TABLE_INGESTION_ENV,
+    kusto_settings,
+    parse_table_ingestion,
+)
 from ..monitoring.config import MonitorConfig
 from ..monitoring.runtime import MonitorRuntime
 from ..orchestrator import start_server
@@ -49,6 +55,18 @@ from ..platforms import (
 @click.option("--db", "db_path", default=None, type=click.Path(), help="Path to SQLite history database")
 @click.option("--kusto-cluster", default=None, help="Serve from this Kusto cluster instead of SQLite (URL; http://localhost:8080 for the emulator)")
 @click.option("--kusto-database", default=None, help="The Kusto database (default aictl)")
+@click.option(
+    "--kusto-ingestion",
+    type=click.Choice(["auto", "streaming", "inline"]),
+    default=None,
+    help="Default ingestion mode (auto: streaming on a cluster, inline on the emulator)",
+)
+@click.option(
+    "--kusto-table-ingestion",
+    multiple=True,
+    metavar="TABLE=MODE",
+    help="Override ingestion for a table (streaming or inline); repeat for more tables",
+)
 @click.option("--stop", is_flag=True, help="Stop a running daemon")
 @click.option("--status", "show_status", is_flag=True, help="Show daemon status")
 @click.option(
@@ -67,6 +85,8 @@ def serve(
     db_path,
     kusto_cluster,
     kusto_database,
+    kusto_ingestion,
+    kusto_table_ingestion,
     daemon_mode,
     headless,
     stop,
@@ -87,7 +107,20 @@ def serve(
         os.environ["AICTL_KUSTO_CLUSTER"] = kusto_cluster
     if kusto_database:
         os.environ["AICTL_KUSTO_DATABASE"] = kusto_database
-    cfg = load_config()
+    if kusto_ingestion:
+        os.environ[INGESTION_ENV] = kusto_ingestion
+    if kusto_table_ingestion:
+        try:
+            overrides = parse_table_ingestion(os.environ.get(TABLE_INGESTION_ENV, ""))
+            overrides.update(parse_table_ingestion(",".join(kusto_table_ingestion)))
+        except ValueError as exc:
+            raise click.BadParameter(str(exc), param_hint="--kusto-table-ingestion") from exc
+        os.environ[TABLE_INGESTION_ENV] = ",".join(f"{table}={mode}" for table, mode in overrides.items())
+    try:
+        cfg = load_config()
+        kusto_settings()
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
 
     # Apply config file defaults, CLI overrides take precedence
     port = port if port is not None else cfg.serve_port
