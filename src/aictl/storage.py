@@ -1236,6 +1236,65 @@ def _dedup_key(*parts: str) -> str:
     return hashlib.sha256(combined.encode("utf-8")).hexdigest()[:16]
 
 
+# The datapoint catalog, parsed once per file version: every store opened (the machine
+# store and each project store) seeds it, and the YAML parse was 60 ms of the 70 ms a
+# new store took.
+_CATALOG_CACHE: dict[tuple, tuple[tuple, ...] | None] = {}
+
+
+def _catalog_rows() -> tuple[tuple, ...] | None:
+    """The catalog's rows, without their time stamp; None when the catalog file is missing."""
+    data_dir = Path(__file__).parent / "data"
+    cat_path = data_dir / "datapoint-catalog.yaml"
+    q_path = data_dir / "datapoint-queries.yaml"
+    stamps = []
+    for path in (cat_path, q_path):
+        try:
+            st = path.stat()
+            stamps.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            stamps.append(None)
+    key = tuple(stamps)
+    if key in _CATALOG_CACHE:
+        return _CATALOG_CACHE[key]
+    if stamps[0] is None:
+        _CATALOG_CACHE[key] = None
+        return None
+    import yaml
+
+    loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+    with open(cat_path, encoding="utf-8") as f:
+        catalog = yaml.load(f, Loader=loader) or {}  # noqa: S506 - a safe loader
+    queries: dict = {}
+    if stamps[1] is not None:
+        with open(q_path, encoding="utf-8") as f:
+            queries = yaml.load(f, Loader=loader) or {}  # noqa: S506 - a safe loader
+    rows = []
+    for key_, entry in catalog.items():
+        q_info = queries.get(key_, {})
+        explanation = entry.get("explanation", "").strip()
+        rows.append(
+            (
+                key_,
+                explanation.split("\n")[0][:120],
+                entry.get("tab", ""),
+                entry.get("section", ""),
+                explanation,
+                entry.get("source", "").strip(),
+                entry.get("source_type", "raw"),
+                entry.get("unit", ""),
+                entry.get("update_freq", ""),
+                entry.get("otel_metric", ""),
+                1 if entry.get("dynamic_source") else 0,
+                q_info.get("query", "").strip(),
+                q_info.get("calc", "").strip(),
+            )
+        )
+    _CATALOG_CACHE.clear()
+    _CATALOG_CACHE[key] = tuple(rows)
+    return _CATALOG_CACHE[key]
+
+
 # ``source`` of rows read from a tool's own session files. These are the complete
 # record of a session, so they replace other writers' rows for the same calls.
 TRANSCRIPT_SOURCE = "transcript"
@@ -2353,48 +2412,21 @@ class HistoryDB:
     @staticmethod
     def _sync_datapoint_catalog(conn: sqlite3.Connection) -> None:
         """Seed/refresh ``datapoint_catalog`` from datapoint-catalog.yaml + queries."""
-        import yaml
-
-        cat_path = Path(__file__).parent / "data" / "datapoint-catalog.yaml"
-        if not cat_path.exists():
+        rows = _catalog_rows()
+        if rows is None:
             log.warning("datapoint-catalog.yaml not found, skipping catalog seed")
             return
-        with open(cat_path, encoding="utf-8") as f:
-            catalog = yaml.safe_load(f) or {}
-        # Load queries from separate file (SQL doesn't belong in YAML)
-        queries: dict = {}
-        q_path = Path(__file__).parent / "data" / "datapoint-queries.yaml"
-        if q_path.exists():
-            with open(q_path, encoding="utf-8") as f:
-                queries = yaml.safe_load(f) or {}
         now = time.time()
-        for key, entry in catalog.items():
-            q_info = queries.get(key, {})
-            conn.execute(
-                """INSERT OR REPLACE INTO datapoint_catalog
-                   (key, label, tab, section, explanation, source_static,
-                    source_type, unit, update_freq, otel_metric,
-                    dynamic_source, query, calc, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    key,
-                    entry.get("explanation", "").strip().split("\n")[0][:120],
-                    entry.get("tab", ""),
-                    entry.get("section", ""),
-                    entry.get("explanation", "").strip(),
-                    entry.get("source", "").strip(),
-                    entry.get("source_type", "raw"),
-                    entry.get("unit", ""),
-                    entry.get("update_freq", ""),
-                    entry.get("otel_metric", ""),
-                    1 if entry.get("dynamic_source") else 0,
-                    q_info.get("query", "").strip(),
-                    q_info.get("calc", "").strip(),
-                    now,
-                ),
-            )
+        conn.executemany(
+            """INSERT OR REPLACE INTO datapoint_catalog
+               (key, label, tab, section, explanation, source_static,
+                source_type, unit, update_freq, otel_metric,
+                dynamic_source, query, calc, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            [(*row, now) for row in rows],
+        )
         conn.commit()
-        log.info("Loaded %d datapoint catalog entries", len(catalog))
+        log.info("Loaded %d datapoint catalog entries", len(rows))
 
     @staticmethod
     def _seed_ui_layout(conn: sqlite3.Connection) -> None:

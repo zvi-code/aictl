@@ -247,7 +247,7 @@ def _wait_for_http(url: str, *, timeout: float = 15) -> None:
                     return
         except (URLError, OSError, TimeoutError) as exc:
             last_err = exc
-        time.sleep(0.3)
+        time.sleep(0.05)
     raise TimeoutError(f"{url} not ready after {timeout}s: {last_err}")
 
 
@@ -325,15 +325,15 @@ class ServerHandle:
     def get_events(self, *, timeout: float = 15, min_count: int = 0, **kw) -> list[dict]:
         """Query /api/events, polling until *min_count* results appear.
 
-        The server buffers events with a 10s flush interval, so queries
-        may initially return empty.
+        The server flushes its buffers within a second of a hook while a client
+        watches, so a query may return empty at first.
         """
         deadline = time.monotonic() + timeout
         while True:
             result = self.get("/api/events", **kw)
             if len(result) >= min_count or time.monotonic() >= deadline:
                 return result
-            time.sleep(1.0)
+            time.sleep(0.05)
 
     def get_otel_status(self) -> dict:
         return self.get("/api/otel-status")
@@ -353,7 +353,7 @@ class ServerHandle:
             result = self.get(path, **params)
             if check(result):
                 return result
-            time.sleep(1.0)
+            time.sleep(0.05)
         return result
 
 
