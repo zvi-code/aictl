@@ -20,9 +20,20 @@ from typing import Any
 
 import pytest
 
-from aictl.kusto import KustoSettings, engine_url
+from aictl.kusto import (
+    AUTH_ENV,
+    CLUSTER_ENV,
+    DATABASE_ENV,
+    INGESTION_ENV,
+    TABLE_INGESTION_ENV,
+    KustoSettings,
+    engine_url,
+    kusto_settings,
+    parse_table_ingestion,
+)
 from aictl.kusto.connection import (
     FLUSH_ROWS,
+    KustoClientFactory,
     KustoConnection,
     KustoStoreError,
     Row,
@@ -37,7 +48,7 @@ from aictl.kusto.connection import (
     split_script,
     to_python,
 )
-from aictl.kusto.ingest import InlineIngester, json_line, make_ingester
+from aictl.kusto.ingest import InlineIngester, StreamingIngester, json_line, make_ingester
 from aictl.kusto.schema import DELETED, ROWID, VERSION, current, row_defaults, store_schema
 from aictl.kusto.statements import Insert, Mutation, Noop, Pragma, Query, Unsupported
 
@@ -84,6 +95,14 @@ class FakeIngester:
 
     def ingest(self, table, rows):
         self.calls.append((table, list(rows)))
+
+
+class FakeStreamingClient:
+    def __init__(self):
+        self.calls: list[tuple[str, bytes]] = []
+
+    def ingest_from_stream(self, stream, properties):
+        self.calls.append((properties.table, stream.read()))
 
 
 class StubTranslator:
@@ -658,6 +677,300 @@ def test_ingester_choice_and_connection_strings():
         assert "c.kusto.windows.net" in str(kcsb.data_source)
     with pytest.raises(ValueError):
         connection_string(KustoSettings("https://c", "db", auth="bogus"))
+
+
+@pytest.mark.parametrize(
+    ("cluster", "mode", "expected"),
+    [
+        ("https://c.kusto.windows.net", "auto", "streaming"),
+        ("https://c.kusto.windows.net", "streaming", "streaming"),
+        ("https://c.kusto.windows.net", "inline", "inline"),
+        ("http://localhost:8080", "auto", "inline"),
+        ("http://localhost:8080", "inline", "inline"),
+    ],
+)
+def test_global_ingestion_default(cluster, mode, expected):
+    settings = KustoSettings.from_values(cluster, ingestion=mode)
+    assert settings is not None
+    assert settings.ingestion_mode("path_defs") == expected
+
+
+@pytest.mark.parametrize(
+    "options",
+    [{"ingestion": "streaming"}, {"table_ingestion": {"events": "streaming"}}],
+)
+def test_local_cluster_rejects_explicit_streaming(options):
+    with pytest.raises(ValueError, match="does not support streaming"):
+        KustoSettings.from_values("http://localhost:8080", **options)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    ["inline", ["path_defs"], {"path_defs": "queued"}, {"path_defs": "auto"}, {"": "inline"}, {"events": True}],
+)
+def test_invalid_table_ingestion_is_rejected(overrides):
+    with pytest.raises(ValueError):
+        KustoSettings.from_values("https://c.kusto.windows.net", table_ingestion=overrides)
+
+
+@pytest.mark.parametrize("value", ["inline", "path_defs=", "=inline", "path_defs=inline,"])
+def test_malformed_table_ingestion_environment_is_rejected(value):
+    with pytest.raises(ValueError):
+        parse_table_ingestion(value)
+
+
+@pytest.fixture
+def kusto_config(tmp_path, monkeypatch):
+    from aictl import platforms
+
+    path = tmp_path / "config.toml"
+    monkeypatch.setattr(platforms, "config_path", lambda: path)
+    for name in (CLUSTER_ENV, DATABASE_ENV, AUTH_ENV, INGESTION_ENV, TABLE_INGESTION_ENV):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
+    return path
+
+
+def test_kusto_ingestion_config_and_environment_precedence(kusto_config, monkeypatch):
+    from aictl.platforms import load_config, show_config
+
+    kusto_config.write_text(
+        '[storage]\nkusto_cluster = "https://c.kusto.windows.net"\nkusto_ingestion = "inline"\n'
+        '[storage.kusto_table_ingestion]\npath_defs = "streaming"\nevents = "inline"\n',
+        encoding="utf-8",
+    )
+    settings = kusto_settings()
+    assert settings is not None
+    assert settings.ingestion_mode("sessions") == "inline"
+    assert settings.ingestion_mode("path_defs") == "streaming"
+    monkeypatch.setenv(INGESTION_ENV, "streaming")
+    monkeypatch.setenv(TABLE_INGESTION_ENV, "path_defs=inline,sessions=inline")
+    settings = kusto_settings()
+    assert settings is not None
+    assert settings.ingestion_mode("processes") == "streaming"
+    assert dict(settings.table_ingestion) == {"path_defs": "inline", "events": "inline", "sessions": "inline"}
+    assert load_config().kusto_ingestion == "streaming"
+    assert "kusto_ingestion = streaming" in show_config()
+    monkeypatch.setenv(CLUSTER_ENV, "https://other.kusto.windows.net")
+    settings = kusto_settings()
+    assert settings is not None and settings.cluster == "https://other.kusto.windows.net"
+    assert settings.table_ingestion["events"] == "inline"
+    assert settings.table_ingestion["path_defs"] == "inline"
+    env_settings = KustoSettings.from_env()
+    assert env_settings is not None and env_settings.ingestion_mode("sessions") == "inline"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '[storage]\nkusto_ingestion = "queued"\n',
+        '[storage]\nkusto_table_ingestion = "inline"\n',
+        '[storage.kusto_table_ingestion]\npath_defs = "queued"\n',
+    ],
+)
+def test_bad_ingestion_config_does_not_fall_back_to_sqlite(kusto_config, text):
+    kusto_config.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError):
+        kusto_settings()
+
+
+def test_daemon_ingestion_cli_merges_and_exports_overrides(kusto_config, monkeypatch):
+    from click.testing import CliRunner
+
+    from aictl.commands import daemon
+
+    kusto_config.write_text(
+        '[storage]\nkusto_ingestion = "streaming"\n'
+        '[storage.kusto_table_ingestion]\npath_defs = "streaming"\nsessions = "inline"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(INGESTION_ENV, "streaming")
+    monkeypatch.setenv(TABLE_INGESTION_ENV, "events=inline,processes=inline")
+    seen = []
+    monkeypatch.setattr(daemon, "start_server", lambda *a, **kw: seen.append(kusto_settings()))
+    monkeypatch.setattr(daemon.os, "_exit", lambda code: None)
+    result = CliRunner().invoke(
+        daemon.serve,
+        [
+            "--kusto-cluster",
+            "https://c.kusto.windows.net",
+            "--kusto-ingestion",
+            "inline",
+            "--kusto-table-ingestion",
+            "path_defs=inline",
+            "--kusto-table-ingestion",
+            "events=inline",
+            "--kusto-table-ingestion",
+            "events=streaming",
+            "--no-open",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert len(seen) == 1
+    settings = seen[0]
+    assert settings is not None and settings.ingestion_mode("requests") == "inline"
+    assert dict(settings.table_ingestion) == {
+        "path_defs": "inline",
+        "sessions": "inline",
+        "events": "streaming",
+        "processes": "inline",
+    }
+    assert parse_table_ingestion(daemon.os.environ[TABLE_INGESTION_ENV])["events"] == "streaming"
+    assert daemon.os.environ[INGESTION_ENV] == "inline"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--kusto-ingestion", "queued"],
+        ["--kusto-table-ingestion", "path_defs"],
+        ["--kusto-table-ingestion", "path_defs=queued"],
+        ["--kusto-cluster", "http://localhost:8080", "--kusto-ingestion", "streaming"],
+    ],
+)
+def test_daemon_rejects_invalid_ingestion_before_start(kusto_config, monkeypatch, args):
+    from click.testing import CliRunner
+
+    from aictl.commands import daemon
+
+    monkeypatch.setattr(daemon, "start_server", lambda *a, **kw: pytest.fail("must not start"))
+    monkeypatch.setattr(daemon.os, "_exit", lambda code: pytest.fail("must not exit"))
+    result = CliRunner().invoke(daemon.serve, args)
+    assert result.exit_code == 2, result.output
+    assert "Error" in result.output
+
+
+@pytest.mark.parametrize(
+    ("default", "overrides"),
+    [("streaming", {"path_defs": "inline"}), ("inline", {"events": "streaming"})],
+)
+def test_ingestion_routes_tables_without_changing_payloads(default, overrides):
+    settings = KustoSettings.from_values("https://c.kusto.windows.net", ingestion=default, table_ingestion=overrides)
+    assert settings is not None
+    client, streaming = FakeClient(), FakeStreamingClient()
+    ingester = make_ingester(settings, client, streaming)
+    rows = [{"text": 'a\n"b"', "n": 3, "_deleted": False}]
+    ingester.ingest("path_defs", rows)
+    ingester.ingest("events", rows)
+    assert len(client.commands) == 1 and len(streaming.calls) == 1
+    command = client.commands[0]
+    assert command.startswith(".ingest inline into table ['path_defs']")
+    assert json.loads(command.partition("<|\n")[2]) == rows[0]
+    assert streaming.calls[0][0] == "events"
+    assert json.loads(streaming.calls[0][1]) == rows[0]
+
+
+def test_inline_default_does_not_create_a_streaming_client(monkeypatch):
+    import azure.kusto.ingest
+
+    monkeypatch.setattr(
+        azure.kusto.ingest, "KustoStreamingIngestClient", lambda *a: pytest.fail("must not use streaming")
+    )
+    settings = KustoSettings.from_values("https://c.kusto.windows.net", ingestion="inline")
+    assert settings is not None
+    client = FakeClient()
+    make_ingester(settings, client).ingest("path_defs", [{"path": "x"}])
+    assert len(client.commands) == 1
+
+
+def test_mixed_ingestion_flushes_both_backends_before_read():
+    settings = KustoSettings("https://c.kusto.windows.net", table_ingestion={"events": "inline"})
+    order = []
+    client = FakeClient(
+        on_mgmt=lambda command: order.append("inline") or response([], []),
+        on_query=lambda query: order.append("query") or response([], []),
+    )
+    streaming = SimpleNamespace(ingest_from_stream=lambda *a: order.append("streaming"))
+    conn = KustoConnection(
+        settings,
+        client,
+        make_ingester(settings, client, streaming),
+        translator=StubTranslator(
+            {
+                "e": Insert("events", [row_defaults(TABLES["events"])]),
+                "s": Insert("sessions", [session_row("a")]),
+                "q": Query("T"),
+            }
+        ),
+        tables=TABLES,
+    )
+    conn.execute("e")
+    conn.execute("s")
+    conn.execute("q")
+    assert order == ["inline", "streaming", "query"]
+    assert not conn.in_transaction
+
+
+def test_inline_ingestion_retries_transient_errors_and_preserves_failed_rows(monkeypatch):
+    from aictl.kusto import connection as C
+
+    monkeypatch.setattr(C, "RETRY_DELAYS_S", (0.0,))
+    monkeypatch.setattr(C.time, "sleep", lambda delay: None)
+    outcomes = iter([_ApiError(503, False), response([], [])])
+
+    def on_mgmt(command):
+        outcome = next(outcomes)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    client = FakeClient(on_mgmt=on_mgmt)
+    ingester = make_ingester(SETTINGS, client)
+    ingester.ingest("sessions", [session_row("a")])
+    assert len(client.commands) == 2 and client.commands[0] == client.commands[1]
+
+    def fail(command):
+        raise _ApiError(400, True, "inline rejected")
+
+    client.on_mgmt = fail
+    conn = KustoConnection(
+        SETTINGS,
+        client,
+        ingester,
+        translator=StubTranslator({"s": Insert("sessions", [session_row("b")])}),
+        tables=TABLES,
+    )
+    conn.execute("s")
+    with pytest.raises(KustoStoreError, match="inline rejected"):
+        conn.commit()
+    assert conn.in_transaction
+    assert len(client.commands) == 3
+
+
+def test_ingester_cache_distinguishes_defaults_and_table_overrides(monkeypatch):
+    streaming = KustoSettings("https://c.kusto.windows.net")
+    inline = KustoSettings(streaming.cluster, streaming=False)
+    mixed = KustoSettings(streaming.cluster, streaming=False, table_ingestion={"events": "streaming"})
+    client = FakeClient()
+    monkeypatch.setattr(KustoClientFactory, "_clients", {KustoClientFactory.key(streaming): client})
+    monkeypatch.setattr(KustoClientFactory, "_ingesters", {})
+    assert isinstance(KustoClientFactory.ingester(streaming), StreamingIngester)
+    assert isinstance(KustoClientFactory.ingester(inline), InlineIngester)
+    mixed_ingester = KustoClientFactory.ingester(mixed)
+    assert mixed_ingester is not KustoClientFactory.ingester(inline)
+    assert KustoClientFactory.ingester(mixed) is mixed_ingester
+    assert KustoClientFactory.client(mixed) is client
+
+
+def test_inline_only_schema_skips_streaming_until_an_override_needs_it(monkeypatch):
+    monkeypatch.setattr(KustoConnection, "_schema_done", set())
+    inline = KustoSettings("https://c.kusto.windows.net", streaming=False)
+    client = FakeClient()
+    connect(inline, client=client, ingester=FakeIngester(), tables=TABLES)
+    assert not any("streamingingestion" in command for command in client.commands)
+    mixed = KustoSettings(inline.cluster, streaming=False, table_ingestion={"events": "streaming"})
+    connect(mixed, client=client, ingester=FakeIngester(), tables=TABLES)
+    assert sum("policy streamingingestion enable" in command for command in client.commands) == 1
+    n = len(client.commands)
+    connect(mixed, client=client, ingester=FakeIngester(), tables=TABLES)
+    assert len(client.commands) == n
+
+
+def test_unknown_override_table_is_rejected_before_creating_clients(monkeypatch):
+    monkeypatch.setattr(KustoClientFactory, "client", lambda *a: pytest.fail("must validate first"))
+    settings = KustoSettings("https://c.kusto.windows.net", table_ingestion={"path_def": "inline"})
+    with pytest.raises(ValueError, match="Unknown.*path_def"):
+        connect(settings, tables=TABLES)
 
 
 def test_connect_runs_schema_creation_once(monkeypatch):

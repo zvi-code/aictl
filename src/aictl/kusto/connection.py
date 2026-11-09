@@ -340,7 +340,7 @@ def connection_string(settings: KustoSettings) -> Any:
 
 
 class KustoClientFactory:
-    """One query client and one ingester per (cluster, database, auth) for the whole process.
+    """Share query clients per destination and ingesters per destination and ingestion settings.
 
     The SDK clients are thread-safe and hold a connection pool and a token cache;
     one per connection would sign in again on every thread.
@@ -348,7 +348,7 @@ class KustoClientFactory:
 
     _lock = threading.Lock()
     _clients: dict[tuple[str, str, str], Any] = {}
-    _ingesters: dict[tuple[str, str, str], RowIngester] = {}
+    _ingesters: dict[tuple[str, str, str, bool, tuple[tuple[str, str], ...]], RowIngester] = {}
 
     @staticmethod
     def key(settings: KustoSettings) -> tuple[str, str, str]:
@@ -368,7 +368,7 @@ class KustoClientFactory:
     @classmethod
     def ingester(cls, settings: KustoSettings) -> RowIngester:
         client = cls.client(settings)
-        key = cls.key(settings)
+        key = (*cls.key(settings), settings.streaming, tuple(sorted(settings.table_ingestion.items())))
         with cls._lock:
             ingester = cls._ingesters.get(key)
             if ingester is None:
@@ -589,7 +589,7 @@ class KustoConnection:
     """
 
     _schema_lock = threading.Lock()
-    _schema_done: set[tuple[str, str]] = set()
+    _schema_done: set[tuple[str, str, bool]] = set()
 
     def __init__(
         self,
@@ -630,8 +630,9 @@ class KustoConnection:
         return any(self._pending.values())
 
     def ensure_schema(self) -> None:
-        """Create or widen every store table, once per process per (cluster, database)."""
-        key = (self.settings.cluster, self.database)
+        """Create or widen tables and enable streaming if any table uses it."""
+        streaming = any(self.settings.ingestion_mode(name) == "streaming" for name in self.tables)
+        key = (self.settings.cluster, self.database, streaming)
         with KustoConnection._schema_lock:
             if key in KustoConnection._schema_done:
                 return
@@ -647,7 +648,7 @@ class KustoConnection:
                 if name not in have or not wanted <= have[name]:
                     for command in create_commands({name: table}, streaming=False):
                         self._mgmt(command)
-            if self.settings.streaming:
+            if streaming:
                 # Table policies inherit from the database's: one command instead of one per table.
                 self._mgmt(f".alter database {quote(self.database)} policy streamingingestion enable")
             # The schema described as data, for anyone querying the database directly.
@@ -869,7 +870,7 @@ class KustoConnection:
         """Run the mutation's query and buffer its rows as new versions, like inserted rows.
 
         The cluster computes the new versions (the UPDATE's SET, the DELETE's tombstone);
-        they reach the table through the same streaming ingestion as inserts, at the
+        they reach the table through the same selected ingestion backend as inserts, at the
         next flush. ``.set-or-append`` would write them in one command, but it takes an
         ingestion-capacity slot, of which a small cluster has one: a poll of a few
         hundred updates queued for minutes behind itself. The version stamp is this
@@ -1217,6 +1218,10 @@ def connect(
 
     *client* and *ingester* default to the process-wide shared ones; tests pass fakes.
     """
+    tables = tables if tables is not None else _default_tables()
+    unknown = settings.table_ingestion.keys() - tables.keys()
+    if unknown:
+        raise ValueError(f"Unknown Kusto ingestion override table(s): {', '.join(sorted(unknown))}")
     if client is None:
         client = KustoClientFactory.client(settings)
         if ingester is None:

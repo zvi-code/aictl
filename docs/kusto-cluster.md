@@ -50,7 +50,7 @@ az kusto cluster create --cluster-name <name> --resource-group rg-aictl --locati
 az kusto database create --cluster-name <name> --resource-group rg-aictl --database-name aictl --read-write-database soft-delete-period=P30D hot-cache-period=P7D location=westeurope
 ```
 
-The last command creates the database; run it again with another `--database-name` for a second aictl database on the same cluster. The cluster URL is `https://<name>.westeurope.kusto.windows.net`. The cluster must have streaming ingestion enabled (the flag above); aictl sets the table-level policy itself. To remove everything afterwards: `az group delete -n rg-aictl --yes`.
+The last command creates the database; run it again with another `--database-name` for a second aictl database on the same cluster. The cluster URL is `https://<name>.westeurope.kusto.windows.net`. The default ingestion mode requires streaming ingestion enabled (the flag above); aictl enables the database policy so tables inherit it. Inline-only ingestion does not require streaming ingestion. To remove everything afterwards: `az group delete -n rg-aictl --yes`.
 
 **A Microsoft Fabric Eventhouse.** Create an Eventhouse in a Fabric workspace (the account needs a Fabric license or trial and the workspace a capacity), open its KQL database and copy the query URI (`https://<id>.kusto.fabric.microsoft.com`). Fabric has streaming ingestion on by default.
 
@@ -66,7 +66,7 @@ Things that trip people up on a remote cluster:
 
 - **One person, two principals.** An Azure AD user (`aaduser=<object id>;<tenant>`) and the same person's personal Microsoft account (`msauser=name@outlook.com`) are different principals to Kusto. `az login` normally gives the Azure AD one; the Kusto web UI signs a personal account in as `msauser=...` unless its directory is switched to the cluster's tenant. Grant the one you actually use, or both.
 - **Creating the cluster grants nothing by itself.** Azure Resource Manager roles (Owner, Contributor) do not give data-plane access. Add a principal assignment (`az kusto cluster-principal-assignment create ... --role AllDatabasesAdmin`) or a database role as above.
-- **Two URLs.** `https://<name>.<region>.kusto.windows.net` is the engine: queries, commands, streaming ingestion, and what aictl uses. `https://ingest-<name>.<region>.kusto.windows.net` is the Data Management endpoint, for queued ingestion only; it accepts a connection from anyone signed in, which is why it can seem to work while the engine refuses, and it answers a management command with a syntax error. `kusto_cluster` takes either: aictl drops the `ingest-` prefix and talks to the engine.
+- **Two URLs.** `https://<name>.<region>.kusto.windows.net` is the engine: queries, commands, streaming ingestion, and what aictl uses. `https://ingest-<name>.<region>.kusto.windows.net` is the Data Management endpoint, for queued ingestion. `kusto_cluster` takes either: aictl drops the `ingest-` prefix and talks to the engine. Changing this URL does not change the ingestion mode; both supported modes use the engine URL.
 - **Tenant and MFA.** If the tenant requires multi-factor authentication, `az login --tenant <tenant id> --scope "https://<cluster host>/.default"` refreshes the sign-in aictl uses.
 - **Firewalls.** The cluster must be reachable on port 443 from the machine running the daemon; a cluster with a private endpoint or an IP allow list needs that machine's address allowed.
 - **Capacity.** A `Dev(No SLA)` cluster has one ingestion slot and a small cache. aictl writes through streaming ingestion, which does not take that slot, but heavy management commands (`.set-or-append`, `.set-or-replace`) queue behind each other, and a saturated cluster answers HTTP 429, which aictl retries for a few seconds.
@@ -92,7 +92,56 @@ or pass it on the command line, which also works for a one-off run:
 aictl daemon serve --kusto-cluster https://<name>.westeurope.kusto.windows.net --kusto-database aictl
 ```
 
-The start prints `history store: kusto://<host>/aictl (Kusto, azcli auth; no SQLite file)`. The first start creates the 47 tables, enables streaming ingestion on the database and writes `aictl_information_schema`, which describes every column; `aictl db schema` prints the same. Later starts compare the database's schema with the code's and change only what differs.
+The start prints `history store: kusto://<host>/aictl (Kusto, azcli auth; no SQLite file)`. The first start creates the 47 tables, enables streaming ingestion on the database if any table uses it, and writes `aictl_information_schema`, which describes every column; `aictl db schema` prints the same. Later starts compare the database's schema with the code's and change only what differs.
+
+### Global ingestion mode and per-table overrides
+
+The global `kusto_ingestion` setting accepts:
+
+| Mode | Behavior |
+| --- | --- |
+| `auto` (default) | Streaming ingestion on a remote cluster; inline ingestion on the local emulator. |
+| `streaming` | Use the streaming-ingestion API and RowStore. Not supported by the emulator. |
+| `inline` | Use synchronous `.ingest inline` management commands, without the streaming-ingestion/RowStore path. |
+
+Both backends finish ingestion before aictl issues a dependent read. Inline ingestion is an opt-in option for small development/test writes or a streaming-ingestion workaround, not a recommended backend for sustained telemetry. It consumes ingestion-command capacity and can create many small extents. It is **not queued ingestion**; aictl does not currently implement an asynchronous queued-ingestion backend.
+
+Set a global default and override individual history tables in `config.toml`:
+
+```toml
+[storage]
+kusto_cluster = "https://zdev3.swedencentral.dev.kusto.windows.net"
+kusto_database = "aictl"
+kusto_ingestion = "inline"
+
+[storage.kusto_table_ingestion]
+events = "streaming"
+```
+
+In this example, `path_defs` and every other history table use inline ingestion except `events`. To retain streaming as the default and bypass it only for `path_defs`, use `kusto_ingestion = "auto"` and `path_defs = "inline"` in the overrides section instead. Table overrides accept only `streaming` or `inline`; an unlisted table uses the global default. Unknown history-table names and invalid modes are errors, not ignored settings.
+
+The equivalent command-line options are:
+
+```bash
+aictl daemon serve --kusto-cluster https://zdev3.swedencentral.dev.kusto.windows.net --kusto-database aictl --kusto-ingestion inline --kusto-table-ingestion events=streaming
+```
+
+Or bypass streaming for just the failing table:
+
+```bash
+aictl daemon serve --kusto-cluster https://zdev3.swedencentral.dev.kusto.windows.net --kusto-database aictl --kusto-table-ingestion path_defs=inline
+```
+
+Repeat `--kusto-table-ingestion TABLE=MODE` for additional tables. For environment-based configuration, use `AICTL_KUSTO_INGESTION` for the default and `AICTL_KUSTO_TABLE_INGESTION` for comma-separated overrides. For example, in Windows Command Prompt:
+
+```cmd
+set AICTL_KUSTO_INGESTION=inline
+set AICTL_KUSTO_TABLE_INGESTION=events=streaming,sessions=streaming
+```
+
+For the global default, precedence is CLI, then environment, then config, then `auto`. Table overrides are merged in the same order, with the higher-priority source replacing only matching table entries; a repeated table uses its last value. Per-table overrides take precedence over the global default regardless of source. Use `aictl config show` to inspect config/environment values. CLI choices reach background daemon processes through the inherited environment. Restart a running daemon to apply changes.
+
+Selecting inline changes the client routing; it does not disable existing cluster/database/table policies or affect other clients. There is no automatic switch between backends after a failure. Transient errors receive bounded retries and exhausted/permanent failures are reported. This selection applies to history-row ingestion, including updates and tombstones; schema-management commands such as the write to `aictl_information_schema` remain management commands.
 
 ## 5. Check it
 
@@ -106,7 +155,7 @@ Measured on a `Dev(No SLA)` cluster in West Europe from a Mac: a query answers i
 
 - `Principal 'msauser=...' is not authorized` in the Kusto web UI: the web UI signed you in as your personal Microsoft account, which Kusto treats as a different principal from the Azure AD user that created the cluster. Either switch the web UI's directory to the cluster's tenant (account menu, Switch directory), open the cluster from the Azure portal (Data, Query), or add the account as a principal: `.add database ['aictl'] admins ('msauser=<you>@outlook.com')`.
 - The web UI connects to `https://ingest-<name>...` but not to `https://<name>...`: the ingest URL is the Data Management endpoint, which only takes ingestion; queries and commands go to the engine URL, and that is the one whose roles matter. Give the identity a database role (above).
-- `Kusto ingestion into <table> failed ... Status: 520 ... RowStoreTrimmableStreamException` (or any error whose body says `"@permanent": false`): streaming ingestion into a table the start just created fails inside the service until the table's row store is ready, typically for a few seconds. aictl retries such errors for about a minute, logging each wait; `history db unavailable` with this text means a minute was not enough, so start the daemon again.
+- `Kusto ingestion into <table> failed ... Status: 520 ... RowStoreTrimmableStreamException`: a server-side streaming-ingestion storage error. The response alone does not establish its underlying cause; `"@permanent": false` means retryable, not guaranteed to recover. aictl retries transient errors for about a minute. If they persist, investigate the cluster traces using the request/activity and RowStore IDs. For small development/test tables, `--kusto-table-ingestion path_defs=inline` can bypass streaming for that table; `--kusto-ingestion inline` selects inline as the global default, subject to any per-table overrides.
 - Slow first polls on a dev-tier cluster: a `Dev(No SLA)` cluster has one ingestion slot and answers a query in about a tenth of a second. aictl uses streaming ingestion, which does not take the slot, and sends a batch of updates as one query, but the first polls still write every recent session's history, which takes minutes; later polls are quick.
 - `AADSTS50076 ... multi-factor authentication`: run `az login --tenant <tenant id> --scope "https://<cluster host>/.default"` and sign in again.
 - `Forbidden` on the first start: the account lacks Database Admin on the database (step 2).

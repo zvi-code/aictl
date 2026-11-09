@@ -587,6 +587,11 @@ content_retention_days = 14  # capture = "full": blank conversation text older t
 kusto_cluster = ""  # e.g. https://mycluster.westus.kusto.windows.net, or http://localhost:8080 for the emulator
 kusto_database = "aictl"
 kusto_auth = "auto"  # auto (Azure CLI login; none for a local emulator) | azcli | device | managed-identity | none
+kusto_ingestion = "auto"  # auto: streaming on a cluster, inline on the emulator | streaming | inline
+
+[storage.kusto_table_ingestion]
+# Optional per-table overrides of kusto_ingestion (streaming | inline).
+# path_defs = "inline"
 
 [logging]
 enabled = false         # Set true to log every datapoint to file
@@ -644,6 +649,8 @@ class AictlConfig:
     kusto_cluster: str = ""
     kusto_database: str = "aictl"
     kusto_auth: str = "auto"
+    kusto_ingestion: str = "auto"
+    kusto_table_ingestion: dict[str, str] = field(default_factory=dict)
 
     # logging
     logging_enabled: bool = False
@@ -699,6 +706,7 @@ _CONFIG_MAP: dict[str, list[tuple[str, str, type]]] = {
         ("kusto_cluster", "kusto_cluster", str),
         ("kusto_database", "kusto_database", str),
         ("kusto_auth", "kusto_auth", str),
+        ("kusto_ingestion", "kusto_ingestion", str),
     ],
     "logging": [
         ("enabled", "logging_enabled", bool),
@@ -757,7 +765,16 @@ def _drop_legacy_monitor_defaults(data: dict) -> None:
 
 def load_config() -> AictlConfig:
     """Load config from TOML file and environment, falling back to defaults."""
+    from .kusto import (
+        INGESTION_ENV,
+        TABLE_INGESTION_ENV,
+        parse_table_ingestion,
+        validate_ingestion_mode,
+    )
+
     cfg = _load_config_file()
+    cfg.kusto_ingestion = validate_ingestion_mode(os.environ.get(INGESTION_ENV, cfg.kusto_ingestion), allow_auto=True)
+    cfg.kusto_table_ingestion.update(parse_table_ingestion(os.environ.get(TABLE_INGESTION_ENV, "")))
     # ``aictl daemon serve --capture`` passes its choice down this way.
     cfg.capture = os.environ.get("AICTL_CAPTURE") or cfg.capture
     if cfg.capture not in CAPTURE_MODES:
@@ -797,6 +814,9 @@ def _load_config_file() -> AictlConfig:
     if names:
         cfg.ignored_dirs = list(names)
 
+    from .kusto import validate_table_ingestion
+
+    cfg.kusto_table_ingestion = validate_table_ingestion(data.get("storage", {}).get("kusto_table_ingestion", {}))
     return cfg
 
 
@@ -842,5 +862,7 @@ def show_config() -> str:
         f"  content_retention_days = {cfg.content_retention_days}",
         f"  kusto_cluster   = {cfg.kusto_cluster or '(none: SQLite)'}",
         f"  kusto_database  = {cfg.kusto_database}",
+        f"  kusto_ingestion = {cfg.kusto_ingestion}",
+        f"  kusto_table_ingestion = {cfg.kusto_table_ingestion}",
     ]
     return "\n".join(lines)
