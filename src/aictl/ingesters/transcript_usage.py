@@ -48,7 +48,7 @@ from .. import platforms
 from ..data.model_pricing import is_billable_model, request_cost_usd
 from ..data.provenance import COPILOT_COST_REASON
 from ..storage import AgentRow, RequestRow, SessionRow, is_lock_error
-from ._common import coerce_ts, decode_file_uri, open_readonly, project_root, record_quality
+from ._common import coerce_ts, decode_file_uri, open_readonly, project_root, record_quality, writer_conn
 from .call_facts import (
     ClaudeFacts,
     CopilotFacts,
@@ -65,6 +65,8 @@ from .vscode_chat_logs import default_log_dir as vscode_chat_default_log_dir
 log = logging.getLogger(__name__)
 
 POLL_INTERVAL_S = 60.0
+# On a restart, files idle this long before the previous run's last poll are not read again.
+RESTART_GRACE_S = 3600.0
 # Windows can report the size a file had when another process opened it, and a
 # Copilot CLI session keeps its events file open while it lives. A file this recent
 # that looks unchanged is measured through its own handle.
@@ -1009,6 +1011,33 @@ class TranscriptUsageIngester:
         self._copilot: dict[Path, CopilotAccumulator] = {}
         self._offsets: dict[Path, int] = {}
         self._written: dict[str, tuple] = {}
+        # A file idle since before the last run of the previous daemon was read then, and
+        # its rows are in the store: the first poll of this run skips it. A file written
+        # since is read whole, so a session that spans the restart keeps its full totals.
+        self._idle_before = 0.0
+        self._first_poll = True
+        self._last_run_ts = self._load_last_run()
+
+    _LAST_RUN_KEY = "transcript_usage:last_run_ts"
+
+    def _load_last_run(self) -> float:
+        try:
+            row = (
+                writer_conn(self.store)
+                .execute("SELECT value FROM maintenance_state WHERE key = ?", (self._LAST_RUN_KEY,))
+                .fetchone()
+            )
+            return float(row[0]) if row and row[0] else 0.0
+        except Exception:  # noqa: BLE001 - a store without the table reads everything, as before
+            return 0.0
+
+    def _save_last_run(self, ts: float) -> None:
+        try:
+            conn = writer_conn(self.store)
+            conn.execute("INSERT OR REPLACE INTO maintenance_state(key, value) VALUES(?,?)", (self._LAST_RUN_KEY, str(ts)))
+            conn.commit()
+        except Exception as exc:  # noqa: BLE001 - the next poll saves again
+            log.debug("transcript-usage: last run not saved (%s)", exc)
 
     def _changed(self, paths: Iterable[Path], cutoff: float) -> list[Path]:
         found: list[tuple[float, Path]] = []
@@ -1018,7 +1047,7 @@ class TranscriptUsageIngester:
                 st = p.stat()
             except OSError:
                 continue
-            if st.st_mtime < cutoff and p not in self._offsets:
+            if p not in self._offsets and (st.st_mtime < cutoff or st.st_mtime < self._idle_before):
                 continue
             size = _current_size(p, st.st_size, st.st_mtime, self._offsets.get(p, 0), now)
             if size < self._offsets.get(p, 0):
@@ -1038,6 +1067,7 @@ class TranscriptUsageIngester:
         touched: dict[str, SessionUsage] = {}
         errors = 0
         self.facts.cutoff = cutoff
+        self._idle_before = (self._last_run_ts - RESTART_GRACE_S) if self._first_poll and self._last_run_ts else 0.0
         app_ids: set[str] = set()
         self._store.refresh_app_sessions(app_ids)
         self._mark_desktop_sessions()
@@ -1148,6 +1178,9 @@ class TranscriptUsageIngester:
         written = self._persist(touched.values(), now)
         self.last_poll_ts = now
         self.last_poll_inserted = written
+        self._first_poll = False
+        self._idle_before = 0.0
+        self._save_last_run(now)
         record_quality(
             self.store,
             "transcript-usage",

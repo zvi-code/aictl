@@ -362,14 +362,14 @@ _TEST_TWO_WORDS = {
 _TEST_LIKE_SQL = "(target LIKE '%test%' OR target LIKE '%jest%' OR target LIKE '%tox%')"
 
 
-@functools.lru_cache(maxsize=8192)
+@functools.lru_cache(maxsize=65536)
 def _program(word: str) -> str:
     """A command word without its directory or a Windows launcher extension."""
     name = re.split(r"[\\/]", word)[-1].lower()
     return re.sub(r"\.(exe|cmd|bat)$", "", name)
 
 
-@functools.lru_cache(maxsize=8192)
+@functools.lru_cache(maxsize=65536)
 def is_test_command(target: str | None) -> bool:
     """True when a segment of a shell command starts a known test runner.
 
