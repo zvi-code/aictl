@@ -194,6 +194,21 @@ def history_clock(monkeypatch) -> _SteppingClock:
     return clock
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _fast_server_shutdown():
+    """``serve_forever`` checks for shutdown every 0.5 s; a test server's teardown waited that long."""
+    import socketserver
+
+    original = socketserver.BaseServer.serve_forever
+
+    def serve_forever(self, poll_interval=0.05):
+        return original(self, poll_interval)
+
+    socketserver.BaseServer.serve_forever = serve_forever
+    yield
+    socketserver.BaseServer.serve_forever = original
+
+
 @pytest.fixture(autouse=True)
 def _aictl_assume_yes(monkeypatch):
     """Tests run in non-TTY context; explicitly approve writes so WriteGuard
