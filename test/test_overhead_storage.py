@@ -201,7 +201,8 @@ def test_off_mode_writes_no_file_and_works_across_threads(tmp_path):
     for t in threads:
         t.start()
     for t in threads:
-        t.join()
+        t.join(timeout=30)
+        assert not t.is_alive(), "t did not finish: a hang fails the test instead of stalling the run"
     assert errors == []
     assert _count(db, "events") > 0
     db.close()

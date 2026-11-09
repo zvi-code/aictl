@@ -1253,13 +1253,30 @@ class TestRefreshBehind:
         store = SimpleNamespace(version=1, snapshot=None)
         real = board_api.compute_board
         calls = []
+        computing, release, second_waits = threading.Event(), threading.Event(), threading.Event()
 
         def slow(*args, **kwargs):
             calls.append(1)
-            time.sleep(0.4)
+            computing.set()
+            assert release.wait(10)
             return real(*args, **kwargs)
 
+        class SeenLock:
+            """The compute lock; the second poll says when it has come to wait for it."""
+
+            def __init__(self):
+                self._lock = threading.Lock()
+
+            def __enter__(self):
+                if threading.current_thread().name == "second":
+                    second_waits.set()
+                self._lock.acquire()
+
+            def __exit__(self, *exc):
+                self._lock.release()
+
         monkeypatch.setattr(board_api, "compute_board", slow)
+        monkeypatch.setattr(board_api, "_COMPUTE_LOCK", SeenLock())
         out = {}
         later = time.time() + board_api.MEMO_TTL_S  # another store version, so the memo alone would not answer
 
@@ -1269,13 +1286,19 @@ class TestRefreshBehind:
         def second():
             out["b"] = board_api.board_bytes(db, store, "", later, background=True)
 
-        t1 = threading.Thread(target=first)
+        # The order is made, not waited for: the first poll is inside its compute when
+        # the second one comes to the lock, and only then does the compute finish.
+        t1 = threading.Thread(target=first, name="first")
         t1.start()
-        time.sleep(0.1)
-        t2 = threading.Thread(target=second)
+        assert computing.wait(10)
+        t2 = threading.Thread(target=second, name="second")
         t2.start()
-        t1.join(5)
-        t2.join(5)
+        assert second_waits.wait(10)
+        release.set()
+        t1.join(timeout=30)
+        assert not t1.is_alive(), "t1 did not finish: a hang fails the test instead of stalling the run"
+        t2.join(timeout=30)
+        assert not t2.is_alive(), "t2 did not finish: a hang fails the test instead of stalling the run"
         assert len(calls) == 1
         assert out["a"] == out["b"]
 
@@ -1343,8 +1366,15 @@ class TestUnchangedAnswers:
                 tools=[SimpleNamespace(tool="claude-code", meta=False, processes=[proc])],
             )
 
+        # A range that follows the clock ends on a step line (a quarter bucket). Taken from
+        # NOW alone, one start in thirty sat on a line, and the tick moved the range on.
+        # So the clock sits just before the next line, and a tick later still ends on it.
+        def end(t):
+            return board_api._clock_range(board_api.parse_filters(f"since={t - DAY}", t)).until
+
+        when = end(self._when()) - board_api.MEMO_TTL_S
+        assert end(when) == end(when + board_api.MEMO_TTL_S)
         store = SimpleNamespace(version=1, snapshot=snapshot(1.0))
-        when = self._when()
         first = board_api.board_bytes(db, store, f"since={when - DAY}", when)
         store.snapshot = snapshot(50.0)
         store.version = 2

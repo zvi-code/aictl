@@ -299,13 +299,12 @@ class TestLazyAndRemoval:
 
 
 class TestBlobGC:
-    def test_gc_removes_orphans_keeps_referenced(self, db):
+    def test_gc_removes_orphans_keeps_referenced(self, db, history_clock):
         v1 = "1" * (LARGE_FILE_THRESHOLD + 10)
         v2 = "2" * (LARGE_FILE_THRESHOLD + 10)
         h1, h2 = _blob_hash(v1), _blob_hash(v2)
 
         db.upsert_file(path="/big.md", tool="t", content=v1)
-        time.sleep(0.01)
         db.upsert_file(path="/big.md", tool="t", content=v2)
 
         conn = db._conn()
@@ -452,7 +451,7 @@ class TestPersistIntegration:
         p = SnapshotPersistence(None)
         p._sync_files(_snapshot(tmp_path, []))  # must not raise
 
-    def test_end_to_end_history_after_sync(self, db, tmp_path):
+    def test_end_to_end_history_after_sync(self, db, tmp_path, history_clock):
         """After syncs, the stored files are queryable: list rows, history
         rows, and content at a change point."""
         f = tmp_path / "CLAUDE.md"
@@ -461,8 +460,7 @@ class TestPersistIntegration:
         p = SnapshotPersistence(db)
         p._sync_files(_snapshot(tmp_path, [_rf(f)]))
 
-        mid_ts = time.time()
-        time.sleep(0.02)
+        mid_ts = history_clock()
 
         f.write_text("version-2")
         _set_mtime(f, 1_000_100.0)
@@ -477,5 +475,5 @@ class TestPersistIntegration:
         assert len(history) == 2
 
         assert db.file_content_at(path, mid_ts) == "version-1"
-        assert db.file_content_at(path, time.time()) == "version-2"
+        assert db.file_content_at(path, history_clock()) == "version-2"
         assert db.get_file(path).content == "version-2"

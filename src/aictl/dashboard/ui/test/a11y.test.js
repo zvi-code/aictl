@@ -4,6 +4,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/preact';
 import { useState } from 'preact/hooks';
 import { html } from 'htm/preact';
+import Segmented from '../src/components/ui/Segmented.js';
 
 beforeEach(() => {
   try { localStorage.clear(); } catch { /* noop */ }
@@ -13,8 +14,7 @@ afterEach(() => cleanup());
 // ─── Keyboard operability regression tests ─────────────────────
 
 describe('Segmented — arrow-key navigation', () => {
-  async function setup() {
-    const { default: Segmented } = await import('../src/components/ui/Segmented.js');
+  function setup() {
     function Wrap() {
       const [v, setV] = useState('a');
       return html`<${Segmented} ariaLabel="Pick"

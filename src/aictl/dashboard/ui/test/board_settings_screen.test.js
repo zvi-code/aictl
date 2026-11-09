@@ -1,7 +1,7 @@
 // The Settings screen inside the board: the rail item, the `screen` URL value,
 // Back, the file drawer for "Set in", the old `?tab=config` link and the link
 // from the "Settings in effect" section.
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/preact';
 import { html } from 'htm/preact';
 
@@ -52,13 +52,6 @@ function stubFetch() {
   return calls;
 }
 class FakeES { close() {} }
-
-// The screen loads the workspace and the drawer on demand; load them once here so a
-// first transform does not run into a test's wait.
-beforeAll(async () => {
-  await import('../src/components/settings/SettingsWorkspace.js');
-  await import('../src/components/board/Drawer.js');
-});
 
 beforeEach(() => {
   vi.stubGlobal('EventSource', FakeES);
@@ -230,6 +223,6 @@ describe('the old Configuration link', () => {
     stubFetch();
     const { container } = render(html`<${Root}/>`);
     expect(window.location.search).toBe('?screen=settings');
-    await waitFor(() => expect(container.querySelector('.st-ws')).toBeTruthy(), { timeout: 5000 });
+    await waitFor(() => expect(container.querySelector('.st-ws')).toBeTruthy());
   });
 });

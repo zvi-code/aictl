@@ -73,8 +73,9 @@ def test_nano_to_epoch():
     assert _nano_to_epoch("1000000000") == 1.0
     assert _nano_to_epoch(1000000000) == 1.0
     # Invalid input falls back to current time
+    before = time.time()
     result = _nano_to_epoch("invalid")
-    assert abs(result - time.time()) < 2
+    assert before <= result <= time.time()
 
 
 def test_extract_value():

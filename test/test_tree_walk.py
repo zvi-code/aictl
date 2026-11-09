@@ -13,7 +13,6 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
@@ -404,15 +403,24 @@ def test_lazy_mode_reads_a_changed_repository_in_the_background(tmp_path, monkey
     assert tools.find_in_tree(tmp_path, "AGENTS.md") == [a / "AGENTS.md"]
 
 
-def test_the_background_thread_finishes_the_rest(tmp_path):
+def test_the_background_thread_finishes_the_rest(tmp_path, monkeypatch):
     a = _repo(tmp_path / "a")
     _touch(a / "AGENTS.md")
-    tree_walk.set_lazy(True)
-    assert tools.find_in_tree(tmp_path, "AGENTS.md") == []
-    for _ in range(200):
+    real_pass = tree_walk._background_pass
+
+    def one_pass_then_stop(root):
+        real_pass(root)
         if not tree_walk.state(tmp_path)["partial"]:
-            break
-        time.sleep(0.05)
+            tree_walk.set_lazy(False)  # the thread ends, so the test can join it
+
+    monkeypatch.setattr(tree_walk, "_background_pass", one_pass_then_stop)
+    tree_walk.set_lazy(True)
+    worker = tree_walk._worker
+    assert tools.find_in_tree(tmp_path, "AGENTS.md") == []  # asks the thread for the rest
+    worker.join(timeout=30)
+    assert not worker.is_alive(), "worker did not finish: a hang fails the test instead of stalling the run"
+    assert not tree_walk.state(tmp_path)["partial"]
+    tree_walk.set_lazy(True)  # the result read in lazy mode, as the daemon reads it
     assert tools.find_in_tree(tmp_path, "AGENTS.md") == [a / "AGENTS.md"]
 
 

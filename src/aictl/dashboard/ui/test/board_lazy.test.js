@@ -1,4 +1,6 @@
 // A page open across a new build reloads once when a lazy chunk is gone, and never loops.
+import fs from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { isStaleChunk, loadChunk, reloadForStaleChunk } from '../src/components/board/lazy.js';
 
@@ -29,9 +31,7 @@ describe('lazy chunks across a new build', () => {
 });
 
 describe('every lazy import goes through loadChunk', () => {
-  it('has no bare import() in the UI source', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
+  it('has no bare import() in the UI source', () => {
     const root = path.resolve(__dirname, '../src');
     const bad = [];
     const walk = (dir) => {
@@ -50,5 +50,28 @@ describe('every lazy import goes through loadChunk', () => {
     };
     walk(root);
     expect(bad).toEqual([]);
+  });
+});
+
+describe('the tests load every lazy chunk up front', () => {
+  // A chunk first imported inside a test is transformed inside that test's time budget,
+  // which times out on a busy machine. test/lazy_chunks.js loads them all at setup.
+  it('lists the module of every import() of the UI source in test/lazy_chunks.js', () => {
+    const root = path.resolve(__dirname, '../src');
+    const targets = new Set();
+    const walk = (dir) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (p.endsWith('.js')) {
+          for (const m of fs.readFileSync(p, 'utf8').matchAll(/\bimport\(\s*'([^']+)'\s*\)/g)) targets.add(path.resolve(path.dirname(p), m[1]));
+        }
+      }
+    };
+    walk(root);
+    const setup = path.join(__dirname, 'lazy_chunks.js');
+    const loaded = new Set([...fs.readFileSync(setup, 'utf8').matchAll(/^import '([^']+)';/gm)].map(m => path.resolve(__dirname, m[1])));
+    expect(targets.size).toBeGreaterThan(10);
+    expect([...targets].filter(t => !loaded.has(t)).map(t => path.relative(root, t))).toEqual([]);
   });
 });

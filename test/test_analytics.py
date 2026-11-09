@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 
 import pytest
@@ -366,18 +367,84 @@ class TestAnalyticsCache:
         assert len(result["response_time"]["requests"]) > 0
         assert len(result["tools"]["invocations"]) > 0
 
-    def test_cache_get_never_blocks_on_sql(self, db: HistoryDB):
-        """Verify get() returns in <1ms even with no pre-computed data."""
+    def test_cache_get_never_runs_sql(self, monkeypatch):
+        """get() answers from memory: with nothing computed it says pending, and
+        neither the store nor the compute path is touched."""
+        from aictl.dashboard import analytics
         from aictl.dashboard.analytics import _AnalyticsCache
 
+        class _NoStore:
+            def __getattr__(self, name):
+                raise AssertionError(f"get() touched the store: {name}")
+
+        def no_compute(*_a, **_k):
+            raise AssertionError("get() ran the analytics queries")
+
+        monkeypatch.setattr(analytics, "compute_analytics", no_compute)
         cache = _AnalyticsCache()
+        cache._store = _NoStore()
 
-        start = time.monotonic()
         result = cache.get(0, None)
-        elapsed = time.monotonic() - start
+        assert result["pending"] is True
+        assert "response_time" not in result
 
-        assert elapsed < 0.001, f"get() took {elapsed * 1000:.1f}ms (must be <1ms)"
-        assert isinstance(result, dict)
+    def test_cache_get_serves_a_computed_key_without_recomputing(self, db: HistoryDB, monkeypatch):
+        """Ten readers on ten threads get the stored result; none of them computes."""
+        from concurrent.futures import ThreadPoolExecutor
+        from unittest.mock import MagicMock
+
+        from aictl.dashboard import analytics
+        from aictl.dashboard.analytics import _AnalyticsCache
+
+        base = time.time()
+        _seed_requests(db, base)
+        cache = _AnalyticsCache()
+        store = MagicMock()
+        store._db = db
+        cache._store = store
+        cache.request_range(base - 1, base + 100)
+        cache._recompute()
+
+        def no_compute(*_a, **_k):
+            raise AssertionError("get() ran the analytics queries")
+
+        monkeypatch.setattr(analytics, "compute_analytics", no_compute)
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            results = list(pool.map(lambda _i: cache.get(base - 1, base + 100), range(10)))
+        assert all(r["pending"] is False for r in results)
+        assert len({len(r["response_time"]["requests"]) for r in results}) == 1
+        assert len(results[0]["response_time"]["requests"]) > 0
+
+    def test_recompute_does_not_hold_the_lock_that_get_takes(self, db: HistoryDB, monkeypatch):
+        """A recompute runs its queries outside the cache lock, so a read during a
+        long recompute gets the previous result instead of waiting for it."""
+        from unittest.mock import MagicMock
+
+        from aictl.dashboard import analytics
+        from aictl.dashboard.analytics import _AnalyticsCache
+
+        base = time.time()
+        _seed_requests(db, base)
+        cache = _AnalyticsCache()
+        store = MagicMock()
+        store._db = db
+        cache._store = store
+        cache.request_range(base - 1, base + 100)
+        cache._recompute()  # the previous result
+
+        real = analytics.compute_analytics
+        seen: list[tuple[bool, bool]] = []
+
+        def compute_and_read(*args, **kwargs):
+            held = cache._lock.locked()
+            # Lock is not re-entrant: reading only when it is free cannot deadlock.
+            served = not held and cache.get(base - 1, base + 100)["pending"] is False
+            seen.append((held, served))
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(analytics, "compute_analytics", compute_and_read)
+        cache._recompute()
+        assert seen == [(False, True)]
 
     def test_health_surfaces_recompute_failures(self, db: HistoryDB):
         """A failing background recompute must become an observable signal
@@ -449,87 +516,70 @@ class TestAnalyticsCache:
         assert rows[0]["status"] == "ok"
 
 
-class TestAnalyticsPerformance:
-    """Ensure analytics queries complete within acceptable time bounds.
+class TestAnalyticsQueryShape:
+    """The analytics queries stay cheap as the history grows.
 
-    These tests insert realistic data volumes and verify the endpoint
-    logic finishes fast — preventing regressions where slow queries
-    block server threads and cause the dashboard to hang.
+    Wall-clock budgets fail on a loaded machine, so these check the causes of a
+    slow page instead: a query per row (the json_extract N+1 that once exhausted
+    the server threads) and a windowed query that reads the whole table.
     """
 
-    def test_response_time_under_2s_with_3k_requests(self, db: HistoryDB):
-        base = time.time()
-        _seed_many_requests(db, base, count=3000)
-
-        start = time.monotonic()
-        rows = db.query_requests_analytics(since=base - 1, until=base + 10000, limit=2000)
-        elapsed = time.monotonic() - start
-
-        assert len(rows) > 0
-        assert elapsed < 2.0, f"query_requests_analytics took {elapsed:.2f}s (limit 2s)"
-
-    def test_tool_agg_under_1s_with_5k_invocations(self, db: HistoryDB):
-        base = time.time()
-        _seed_many_tool_invocations(db, base, count=5000)
-
-        start = time.monotonic()
-        agg = db.query_tool_invocations_agg(since=base - 1, until=base + 5000)
-        elapsed = time.monotonic() - start
-
-        assert len(agg) > 0
-        assert elapsed < 1.0, f"query_tool_invocations_agg took {elapsed:.2f}s (limit 1s)"
-
-    def test_file_events_under_2s_with_10k_events(self, db: HistoryDB):
-        """The critical test: file_modified events used json_extract N+1
-        queries that caused thread exhaustion. The single-scan approach
-        must stay fast even with 10k events."""
-        base = time.time()
-        _seed_many_events(db, base, count=10000)
-
+    @staticmethod
+    def _statements(db: HistoryDB, run) -> list[str]:
         conn = db._conn()
-        start = time.monotonic()
+        seen: list[str] = []
+        conn.set_trace_callback(seen.append)
+        try:
+            run()
+        finally:
+            conn.set_trace_callback(None)
+        return seen
 
-        # Replicate the single-scan approach from _analytics_files_from_events
-        rows = conn.execute(
-            "SELECT ts, json_extract(detail, '$.path'),"
-            " CAST(json_extract(detail, '$.growth_bytes') AS INTEGER)"
-            " FROM events WHERE kind = 'file_modified' AND ts >= ? AND ts <= ?"
-            " ORDER BY ts LIMIT 5000",
-            (base - 1, base + 10000),
-        ).fetchall()
-        elapsed = time.monotonic() - start
+    def _seeded(self, count: int) -> HistoryDB:
+        d = HistoryDB(db_path=":memory:", flush_interval=0)
+        base = 1_700_000_000.0
+        _seed_many_requests(d, base, count=count)
+        _seed_many_tool_invocations(d, base, count=count)
+        _seed_many_events(d, base, count=count)
+        return d
 
-        assert len(rows) == 5000  # hit the LIMIT
-        assert elapsed < 2.0, f"file events single-scan took {elapsed:.2f}s (limit 2s)"
+    def test_statement_count_does_not_grow_with_the_rows(self):
+        """The same statements run for 70 rows and for 700: no query per row."""
+        from aictl.dashboard.analytics import compute_analytics
 
-    def test_full_analytics_under_3s(self, db: HistoryDB):
-        """End-to-end: seed all data, run all three analytics sections."""
-        base = time.time()
-        _seed_many_requests(db, base, count=2000)
-        _seed_many_tool_invocations(db, base, count=3000)
-        _seed_many_events(db, base, count=5000)
+        counts = []
+        for count in (70, 700):
+            d = self._seeded(count)
+            try:
+                stmts = self._statements(d, lambda d=d: compute_analytics(d, 1_699_999_999.0, 1_700_010_000.0, None))
+            finally:
+                d.close()
+            counts.append(len(stmts))
+        assert counts[0] == counts[1], counts
 
-        start = time.monotonic()
-
-        # Response time section
-        rows = db.query_requests_analytics(since=base - 1, until=base + 10000, limit=2000)
-        assert len(rows) > 0
-
-        # Tools section
-        agg = db.query_tool_invocations_agg(since=base - 1, until=base + 10000)
-        assert len(agg) > 0
-        for row in agg[:30]:
-            db.query_tool_invocations_durations(row["tool_name"], since=base - 1, until=base + 10000, limit=500)
-
-        # Files section (single-scan)
+    @pytest.mark.parametrize(
+        "call",
+        [
+            pytest.param(lambda d: d.query_requests_analytics(since=1.0, until=2.0, limit=2000), id="requests"),
+            pytest.param(
+                lambda d: d.query_requests_analytics(since=1.0, until=2.0, limit=2000, tools=("claude-code",)),
+                id="requests-by-tool",
+            ),
+            pytest.param(lambda d: d.query_tool_invocations_agg(since=1.0, until=2.0), id="tool-agg"),
+            pytest.param(
+                lambda d: d.query_tool_invocations_durations("Read", since=1.0, until=2.0, limit=500),
+                id="tool-durations",
+            ),
+            pytest.param(lambda d: d.query_file_modified_events(since=1.0, until=2.0), id="file-events"),
+        ],
+    )
+    def test_windowed_queries_search_an_index(self, db: HistoryDB, call):
+        """Every analytics query over a time window reads through an index, never a full table scan."""
+        stmts = [s for s in self._statements(db, lambda: call(db)) if s.lstrip().upper().startswith(("SELECT", "WITH"))]
+        assert stmts
         conn = db._conn()
-        conn.execute(
-            "SELECT ts, json_extract(detail, '$.path'),"
-            " CAST(json_extract(detail, '$.growth_bytes') AS INTEGER)"
-            " FROM events WHERE kind = 'file_modified' AND ts >= ? AND ts <= ?"
-            " ORDER BY ts LIMIT 5000",
-            (base - 1, base + 10000),
-        ).fetchall()
-
-        elapsed = time.monotonic() - start
-        assert elapsed < 3.0, f"full analytics took {elapsed:.2f}s (limit 3s)"
+        for sql in stmts:
+            plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + sql)]
+            scans = [step for step in plan if re.match(r"SCAN \w+$", step)]
+            assert not scans, (sql, plan)
+            assert any("USING INDEX" in step or "USING COVERING INDEX" in step for step in plan), (sql, plan)
