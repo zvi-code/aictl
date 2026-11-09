@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -290,7 +291,11 @@ TOOL_RELATIONSHIPS: dict[str, list[dict[str, str]]] = {
         },
     ],
     "codex-desktop": [
-        {"type": "bundles", "tool": "codex-cli", "label": "ChatGPT.app bundles its own codex binary (may differ from the CLI)"},
+        {
+            "type": "bundles",
+            "tool": "codex-cli",
+            "label": "ChatGPT.app bundles its own codex binary (may differ from the CLI)",
+        },
     ],
     "codex-cli": [
         {"type": "bundled-by", "tool": "codex-desktop", "label": "Desktop app bundles a separate codex binary"},
@@ -913,39 +918,18 @@ class ToolResources:
 # ─── File helpers ────────────────────────────────────────────────
 
 
-# Files whose token estimate is kept, so an unchanged file is not read again on every discovery.
-MAX_TOKEN_CACHE = 20_000
-_token_cache: dict[str, tuple[int, int, int]] = {}
 # Files that get their own samples per tool. Totals per tool still count every file.
 MAX_FILE_SAMPLES_PER_TOOL = 500
 
 
-_TOKEN_READ_LIMIT = 1_000_000
-
-
-def _token_cache_put(key: str, st: os.stat_result, tokens: int) -> None:
-    if len(_token_cache) >= MAX_TOKEN_CACHE:
-        _token_cache.clear()
-    _token_cache[key] = (st.st_mtime_ns, st.st_size, tokens)
-
-
 def _file_tokens(path: Path, st: os.stat_result) -> int:
-    key = str(path)
-    hit = _token_cache.get(key)
-    if hit is not None and hit[:2] == (st.st_mtime_ns, st.st_size):
-        return hit[2]
-    if st.st_size >= _TOKEN_READ_LIMIT:
-        # Too large to read on every discovery: the same estimate as for text
-        # (4 UTF-8 bytes per token) taken from the size.
-        tokens = estimate_tokens_from_size(st.st_size)
-        _token_cache_put(key, st, tokens)
-        return tokens
-    try:
-        tokens = estimate_tokens(path.read_text(errors="replace", encoding="utf-8"))
-    except OSError:
-        return 0
-    _token_cache_put(key, st, tokens)
-    return tokens
+    """The token estimate of a file, from its size.
+
+    The estimate is 4 UTF-8 bytes per token, and the size of a text file is its
+    UTF-8 byte count: reading the file gives the same number. Discovery used to
+    read every file under 1 MB, which was most of its CPU and memory churn.
+    """
+    return estimate_tokens_from_size(st.st_size)
 
 
 def files_to_sample(files: list[ResourceFile]) -> list[ResourceFile]:
@@ -1195,6 +1179,9 @@ _SKIP_COMMS = frozenset(
 )
 
 
+_cmdline_cache: dict[tuple[int, str], str] = {}
+
+
 def _parse_ps_output() -> list[tuple[str, str, str, str, str]]:
     """Return process rows as (pid, cpu, rss_kb, comm, args).
 
@@ -1204,18 +1191,27 @@ def _parse_ps_output() -> list[tuple[str, str, str, str, str]]:
         import psutil
 
         rows = []
-        for proc in psutil.process_iter(["pid", "cpu_percent", "memory_info", "name", "cmdline"]):
+        # The command line changes only on exec, which also changes the name. On Windows
+        # reading it means reading another process's memory, so it is kept per (pid, name).
+        cmdlines: dict[tuple[int, str], str] = {}
+        for proc in psutil.process_iter(["pid", "cpu_percent", "memory_info", "name"]):
             try:
                 info = proc.info
-                pid = str(info["pid"])
+                pid = int(info["pid"])
                 cpu_val = info["cpu_percent"]
                 cpu = f"{cpu_val:.1f}" if cpu_val is not None else "0.0"
                 rss_kb = str((info["memory_info"].rss // 1024) if info["memory_info"] else 0)
                 comm = info["name"] or ""
-                args = " ".join(info["cmdline"] or []) or comm
-                rows.append((pid, cpu, rss_kb, comm, args))
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                key = (pid, comm)
+                args = _cmdline_cache.get(key)
+                if args is None:
+                    args = " ".join(proc.cmdline() or []) or comm
+                cmdlines[key] = args
+                rows.append((str(pid), cpu, rss_kb, comm, args))
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 pass
+        _cmdline_cache.clear()
+        _cmdline_cache.update(cmdlines)
         return rows
     except ImportError:
         pass
@@ -1616,7 +1612,11 @@ def collect_agent_memory(root: Path) -> list[MemoryEntry]:
 
     # 1–2. Claude Code single-file sources
     # The user files of each tool home found on this machine, not only the default one.
-    user_files = {"claude": ("CLAUDE.md", "claude-user-memory"), "copilot": ("copilot-instructions.md", "copilot-user-memory"), "codex": ("instructions.md", "codex-user-memory")}
+    user_files = {
+        "claude": ("CLAUDE.md", "claude-user-memory"),
+        "copilot": ("copilot-instructions.md", "copilot-user-memory"),
+        "codex": ("instructions.md", "codex-user-memory"),
+    }
     home_sources = [(h.path / user_files[h.tool][0], user_files[h.tool][1], "(global)") for h in tool_homes.homes()]
     for path, source, profile in [
         *home_sources,
@@ -1746,17 +1746,28 @@ def _match_mcp_to_process(
     return None
 
 
+# A probe is a network round trip of up to 3 s in the refresh thread. Its answer is kept this long.
+MCP_PROBE_TTL_S = 120.0
+_mcp_probe_cache: dict[str, tuple[float, str]] = {}
+
+
 def _probe_http_mcp(url: str) -> str:
     if not url:
         return "unknown"
+    now = time.monotonic()
+    hit = _mcp_probe_cache.get(url)
+    if hit is not None and now - hit[0] < MCP_PROBE_TTL_S:
+        return hit[1]
     try:
         import urllib.request
 
         req = urllib.request.Request(url, method="HEAD")
         with urllib.request.urlopen(req, timeout=3) as resp:
-            return "running" if resp.status < 500 else "error"
+            status = "running" if resp.status < 500 else "error"
     except Exception:
-        return "stopped"
+        status = "stopped"
+    _mcp_probe_cache[url] = (now, status)
+    return status
 
 
 # ─── Process backtrace ───────────────────────────────────────────
