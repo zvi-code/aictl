@@ -4300,6 +4300,51 @@ class HistoryDB:
                 time.sleep(FLUSH_YIELD_S)
         return changed
 
+    def set_event_sessions(self, rows: list[tuple[int, str]], name: str = "otel session ids") -> int:
+        """Set the session id of stored events that have none. *rows* holds (rowid, session id).
+
+        An event that has a session id already keeps it. Each chunk is one short
+        transaction. Returns the events changed.
+        """
+        conn = self._conn()
+        changed = 0
+        for start in range(0, len(rows), FLUSH_CHUNK_ROWS):
+            chunk = [(sid, rowid) for rowid, sid in rows[start : start + FLUSH_CHUNK_ROWS] if sid]
+            with self.named_write(name):
+                try:
+                    for params in chunk:
+                        cur = conn.execute("UPDATE events SET session_id = ? WHERE rowid = ? AND session_id = ''", params)
+                        changed += max(cur.rowcount, 0)
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
+            if start + FLUSH_CHUNK_ROWS < len(rows):
+                time.sleep(FLUSH_YIELD_S)
+        return changed
+
+    def tie_otel_traces(self, traces: list[tuple[str, str]]) -> int:
+        """Give the OTel events of each trace in *traces* (trace id, session id) that session.
+
+        For spans stored before any span of their trace named the session. The events
+        without a session id are in this store; buffered ones are written first.
+        """
+        if not traces:
+            return 0
+        self.flush()
+        conn = self._conn()
+        rows: list[tuple[int, str]] = []
+        for trace_id, sid in traces:
+            rows += [
+                (rowid, sid)
+                for (rowid,) in conn.execute(
+                    "SELECT rowid FROM events WHERE session_id = '' AND kind LIKE 'otel:%'"
+                    " AND json_extract(detail, '$.\"otel.trace_id\"') = ?",
+                    (trace_id,),
+                )
+            ]
+        return self.set_event_sessions(rows, "otel trace sessions")
+
     def state_value(self, key: str) -> float | None:
         """A value of maintenance_state, or None when it is not set."""
         row = self._conn().execute("SELECT value FROM maintenance_state WHERE key = ?", (key,)).fetchone()

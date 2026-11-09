@@ -1489,6 +1489,10 @@ CLAUDE_OTEL_ENV_KEYS = (
     "OTEL_EXPORTER_OTLP_ENDPOINT",
 )
 
+# Variables older aictl versions wrote that no tool it sets up reads. `enable` no longer
+# writes them and takes them out of launchctl; `aictl remove` still removes them.
+RETIRED_ENV_KEYS = ("COPILOT_OTEL_ENDPOINT",)
+
 # Every tool `otel enable` / `aictl enable` configures by default.
 _ALL_OTEL_TOOLS = ("claude", "copilot", "codex", "gemini", "agent-workspace")
 
@@ -1552,7 +1556,8 @@ def _build_env_block(port: int, tools: list[str], profile: str | None = None) ->
     ``CLAUDE_CODE_ENABLE_TELEMETRY`` + standard ``OTEL_*``; Gemini CLI's
     ``GEMINI_TELEMETRY_*`` (it does not consume ``OTEL_*_EXPORTER``, and
     defaults to gRPC, so the protocol is pinned to http and the collector
-    path enabled); Copilot's ``COPILOT_OTEL_*`` for the CLI. Codex is
+    path enabled); ``COPILOT_OTEL_ENABLED`` for Copilot CLI, which takes its
+    endpoint from ``OTEL_EXPORTER_OTLP_ENDPOINT``. Codex is
     configured through ``config.toml`` and has no OTel env vars.
     """
     endpoint = f"http://localhost:{port}"
@@ -1570,12 +1575,10 @@ def _build_env_block(port: int, tools: list[str], profile: str | None = None) ->
         )
 
     if "copilot" in tools:
-        env.update(
-            {
-                "COPILOT_OTEL_ENABLED": "true",
-                "COPILOT_OTEL_ENDPOINT": endpoint,
-            }
-        )
+        # Copilot CLI reads only the standard OTEL_EXPORTER_OTLP_ENDPOINT (set below for
+        # every tool). It ignores COPILOT_OTEL_ENDPOINT, which only VS Code's Copilot Chat
+        # reads, and aictl sets Copilot Chat through its settings, so it is not written.
+        env["COPILOT_OTEL_ENABLED"] = "true"
 
     if "gemini" in tools:
         env.update(
@@ -1669,7 +1672,6 @@ def verify():
     _value_free = {
         "AICTL_PORT",
         "OTEL_EXPORTER_OTLP_ENDPOINT",
-        "COPILOT_OTEL_ENDPOINT",
         "GEMINI_TELEMETRY_OTLP_ENDPOINT",
         "AW_OTLP_ENDPOINT",
     }
@@ -1746,6 +1748,10 @@ def verify():
     else:
         click.echo(f"    {miss}  {codex_toml} — not found")
 
+    # ── Copilot CLI endpoint ──────────────────────────────────
+    click.echo("\n  Copilot CLI:")
+    _echo_copilot_cli_endpoint(_default_port(), "    ")
+
     # ── aictl server ──────────────────────────────────────────
     click.echo("\n  aictl server:")
     port = _default_port()
@@ -1794,6 +1800,17 @@ def status(port: int | None):
             click.echo(f"  Last data:        {ago // 3600}h ago")
     else:
         click.echo("  Last data:        never")
+    _echo_copilot_cli_endpoint(port, "  ")
+
+
+def _echo_copilot_cli_endpoint(port: int, indent: str) -> None:
+    """Say plainly whether Copilot CLI's endpoint variable sends its OTel to aictl on *port*."""
+    from ..monitoring.tool_config import copilot_cli_otel_endpoint
+
+    check = copilot_cli_otel_endpoint(port)
+    color = {"ok": "green", "missing": "red"}.get(check["status"], "yellow")
+    where = f" (from {check['source']})" if check["source"] else ""
+    click.echo(f"{indent}Copilot CLI:      " + click.style(check["text"], fg=color) + where)
 
 
 # ─── enable ──────────────────────────────────────────────────────────────────
@@ -2151,6 +2168,8 @@ def _enable_otel(
     if IS_MACOS and hook_removal.is_real_home(Path.home()):
         for key, val in env_block.items():
             _run_env_persist(["launchctl", "setenv", key, val])
+        for key in RETIRED_ENV_KEYS:
+            _run_env_persist(["launchctl", "unsetenv", key])
         actions.append(f"OTel env vars → macOS launchctl ({len(env_block)} vars)")
 
     # Claude Code reads the `env` block of its user settings however it is started:

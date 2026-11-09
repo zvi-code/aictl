@@ -601,7 +601,11 @@ def build_turns_from_otel(all_events, otel_events, session_id):
 
         # ── Agent invocation (Copilot) ───────────────────
         elif kind.startswith("otel:invoke_agent"):
-            agent_name = kind.replace("otel:invoke_agent ", "").strip()
+            agent_name = kind[len("otel:invoke_agent") :].strip()
+            if not agent_name:
+                # A span without an agent name is a turn of the main agent (Copilot CLI
+                # sends one per prompt), not a subagent.
+                continue
             turns.append(
                 {
                     "ts": ev.ts,

@@ -822,9 +822,14 @@ function feedCells(ctx, tool) {
   const hooks = h && h.count
     ? { v: fmtN(h.count), sub: ago(h.last_fire_ts, ctx.nowS), title: fmtN(h.count) + ' hook events in the last 24 hours. Newest: ' + stamp(h.last_fire_ts, true) }
     : { v: 'None', cls: 'dim', title: 'No hook events from this tool in the last 24 hours. aictl hooks status shows whether its hooks are registered and why they may not run.' };
+  // The variable that sends the tool's OTel to aictl, when aictl checks it (Copilot CLI's endpoint).
+  const setup = (pipe.otel_setup || {})[tool];
+  const off = setup && setup.status !== 'ok' ? setup : null;
   const otel = o && (o.metrics || o.events)
-    ? { v: fmtN((o.metrics || 0) + (o.events || 0)), sub: ago(o.last_at, ctx.nowS), title: fmtN(o.metrics || 0) + ' metric samples and ' + fmtN(o.events || 0) + ' log events since the daemon started. Newest: ' + stamp(o.last_at, true) }
-    : { v: 'None', cls: 'dim', title: 'No OTel data from this tool since the daemon started. aictl otel status shows what the tool is set to send.' };
+    ? { v: fmtN((o.metrics || 0) + (o.events || 0)), sub: off ? (off.status === 'missing' ? 'Not set now' : 'Sent elsewhere now') : ago(o.last_at, ctx.nowS), cls: off ? 'warn' : '', title: fmtN(o.metrics || 0) + ' metric samples and ' + fmtN(o.events || 0) + ' log events since the daemon started. Newest: ' + stamp(o.last_at, true) + (off ? '\n' + off.text : '') }
+    : off
+      ? { v: off.status === 'missing' ? 'Not set' : 'Elsewhere', cls: 'warn', title: off.text }
+      : { v: 'None', cls: 'dim', title: 'No OTel data from this tool since the daemon started. aictl otel status shows what the tool is set to send.' };
   return { hooks, otel, sort: { h: h?.count || 0, o: o ? (o.metrics || 0) + (o.events || 0) : 0 } };
 }
 

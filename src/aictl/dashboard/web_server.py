@@ -275,6 +275,13 @@ def _copilot_surface_of_process(pid: int, max_depth: int = 6) -> str:
     return ""
 
 
+def _tie_late_traces(receiver, db) -> None:
+    """Spans stored before their trace named its session get that session now."""
+    late = receiver.take_late_traces()
+    if late and db is not None and hasattr(db, "tie_otel_traces"):
+        db.tie_otel_traces(late)
+
+
 def _derive_claude_project_hash(cwd: str) -> str | None:
     """Locate the Claude projects/<hash> dir for ``cwd``; return the hash."""
     if not cwd:
@@ -1080,6 +1087,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                 db.batch_link_sessions(
                     [(r.session_id, r.tool, r.pid, r.source_ts or r.ts, "otel") for r in requests if r.session_id]
                 )
+            _tie_late_traces(receiver, db)
             logger.debug(
                 "OTel logs received: %d events, %d requests, %d invocations",
                 len(events),
@@ -1114,6 +1122,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                 db.batch_link_sessions(
                     [(r.session_id, r.tool, r.pid, r.source_ts or r.ts, "otel") for r in requests if r.session_id]
                 )
+            _tie_late_traces(receiver, db)
             logger.debug("OTel traces received: %d samples, %d events", len(samples), len(events))
         except Exception:
             logger.exception("Error processing OTel traces")
@@ -1423,6 +1432,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                 otel=getattr(self.server, "otel_receiver", None),
                 ingesters=getattr(self.server, "ingesters", None),
                 stream_clients=_sse_client_count,
+                port=int(self.server.server_address[1]),
             )
         except Exception as exc:  # any failure must reach the panel's error state
             logger.exception("Board machine route failed")
