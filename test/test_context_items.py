@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import os
 import sqlite3
-import time
 from pathlib import Path
 
 import pytest
+
+# One clock: iso() counts back from test_board_facts.NOW, so the expected times must too.
 from test_board_facts import (
+    NOW,
     c_assistant,
     claude_path,
     copilot_events,
@@ -26,7 +28,6 @@ from aictl.ingesters.transcript_usage import TranscriptUsageIngester
 from aictl.project_stores import PROJECT_TABLES, ProjectStores, store_key
 from aictl.storage import CallFacts, ContextItemRow, HistoryDB
 
-NOW = time.time()
 SESSION = "11111111-1111-4111-8111-111111111111"
 COPILOT_SID = "22222222-2222-4222-8222-222222222222"
 
