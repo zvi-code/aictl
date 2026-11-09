@@ -2092,6 +2092,8 @@ class HistoryDB:
     # data-quality event) so a persistently failing DB can't grow memory
     # without bound.
     _REBUFFER_CAP: int = 10_000
+    # SQLite page cache per connection. Every thread that writes has one.
+    CACHE_KB: int = 8000
 
     def __init__(
         self,
@@ -2197,7 +2199,7 @@ class HistoryDB:
             # last writes, and a damaged file is opened again on memory. Syncs are
             # what made writes take minutes on Windows.
             conn.execute("PRAGMA synchronous=OFF")
-            conn.execute("PRAGMA cache_size=-8000")  # 8 MB
+            conn.execute(f"PRAGMA cache_size=-{self.CACHE_KB}")
             # Bound the WAL: checkpoint every ~4 MB and truncate the file back
             # to the limit on reset, so one big transaction cannot leave a
             # WAL of hundreds of MB behind for good.

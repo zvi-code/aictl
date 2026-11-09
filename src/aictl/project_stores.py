@@ -84,7 +84,7 @@ MACHINE = ""  # the machine store, in the session map: sessions already in it be
 # The project stores sit in "<db stem>-projects" next to the machine store: a name no
 # user folder of the projects themselves takes by chance.
 PROJECTS_SUFFIX = "-projects"
-IDLE_CLOSE_S = 30 * 60.0
+IDLE_CLOSE_S = 5 * 60.0
 REAP_EVERY_S = 30.0
 # SQLite attaches at most 10 databases (Python's build cannot raise it). Nine stores
 # are attached; the tenth slot copies the rows of any further store, one at a time.
@@ -343,6 +343,9 @@ def _add_up(total: dict[str, Any], part: dict[str, Any], keep: tuple[str, ...] =
 
 class _ProjectDB(HistoryDB):
     """A HistoryDB for one project: the same file format, without the machine's seed data."""
+
+    # Dozens of these can be open, each with connections on several threads.
+    CACHE_KB = 2000
 
     @staticmethod
     def _sync_datapoint_catalog(conn: sqlite3.Connection) -> None:
