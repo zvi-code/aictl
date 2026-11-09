@@ -138,7 +138,7 @@ aictl keeps its history in a local SQLite file by default (`~/.config/aictl/hist
 aictl daemon serve --kusto-cluster https://mycluster.westus.kusto.windows.net --kusto-database aictl
 ```
 
-The `kusto` extra brings the SDKs (`pipx install "aictl[all]"` includes it). Sign-in is the Azure CLI's by default; `kusto_auth` picks `device`, `managed-identity` or `none` (the local emulator). An existing SQLite history is not moved to the cluster. Step by step, including creating a cluster, access and identities, or running the free emulator, in [docs/kusto-cluster.md](docs/kusto-cluster.md); design in [docs/architecture.md](docs/architecture.md#kusto-store-kusto); every table in [docs/kusto-schema.md](docs/kusto-schema.md).
+The `kusto` extra brings the SDKs (`pipx install "aictl[all]"` includes it). Sign-in is the Azure CLI's by default (`az login`; add `--scope "https://<cluster host>/.default"` when the tenant asks for multi-factor authentication); `kusto_auth` picks `device`, `managed-identity` or `none` (the local emulator). The signed-in account needs the Database Admin role on an existing, empty database; aictl creates the tables. The first start writes the machine's recent history to the cluster and takes a few minutes; later starts and polls are quick. An existing SQLite history is not moved to the cluster. Step by step, including creating a cluster, access and identities, or running the free emulator, in [docs/kusto-cluster.md](docs/kusto-cluster.md); design in [docs/architecture.md](docs/architecture.md#kusto-store-kusto); every table in [docs/kusto-schema.md](docs/kusto-schema.md).
 
 ## How It Works
 
