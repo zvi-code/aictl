@@ -4,7 +4,7 @@
 // board already holds.
 import { html } from 'htm/preact';
 import { loadChunk } from './lazy.js';
-import { useEffect, useMemo, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import * as api from '../../api.js';
 import { NA, NO_MODEL, errorLabel, colorFor, projectName, fmtBytes, fmtCpu, fmtDur, fmtLines, fmtMem, fmtMs, fmtN, fmtShare, fmtUsd, estTokens, estTokensFromSize, isLive, sparkPath, stamp, statusMeta } from './format.js';
 import { Ico, PATHS } from './icons.js';
@@ -17,19 +17,61 @@ import { instructionsByTool } from './findings.js';
 import FileEditor from './FileEditor.js';
 import { normalizeAgentDetail } from './useBoardData.js';
 
-/** Fetch on open. A new `tick` fetches again and keeps the old data on screen meanwhile. */
+// A new `tick` fetches again at most once per DETAIL_REFRESH_MS.
+export const DETAIL_REFRESH_MS = 5000;
+
+/** Fetch on open. A new `tick` fetches again and keeps the old data on screen meanwhile.
+ * A tick does not abort a fetch on its way: it is remembered, and fetched once that one ends.
+ * Only a new key, or closing, aborts. */
 export function useDetail(load, key, tick = 0) {
   const [state, setState] = useState({ key: null, data: null, error: null });
-  useEffect(() => {
-    let live = true;
-    const ctrl = new AbortController();
-    setState(s => (s.key === key ? s : { key, data: null, error: null }));
-    load({ signal: ctrl.signal }).then((data) => {
-      if (live) setState({ key, data, error: null });
+  const r = useRef(null);
+  if (!r.current) r.current = { ctrl: null, at: 0, again: false, timer: null, tickKey: null };
+  r.current.load = load;
+  const run = () => {
+    const s = r.current;
+    const k = s.key;
+    const mine = new AbortController();
+    s.ctrl = mine;
+    s.at = Date.now();
+    const end = () => {
+      s.ctrl = null;
+      if (s.again) { s.again = false; s.want(); }
+    };
+    s.load({ signal: mine.signal }).then((data) => {
+      if (s.ctrl !== mine) return;
+      setState({ key: k, data, error: null });
+      end();
     }).catch((e) => {
-      if (live && e?.name !== 'AbortError') setState(s => (s.key === key && s.data ? s : { key, data: null, error: e }));
+      if (s.ctrl !== mine) return;
+      if (e?.name !== 'AbortError') setState(st => (st.key === k && st.data ? st : { key: k, data: null, error: e }));
+      end();
     });
-    return () => { live = false; ctrl.abort(); };
+  };
+  r.current.want = () => {
+    const s = r.current;
+    if (s.ctrl) { s.again = true; return; }
+    if (s.timer) return;
+    const wait = s.at + DETAIL_REFRESH_MS - Date.now();
+    if (wait <= 0) run();
+    else s.timer = setTimeout(() => { s.timer = null; run(); }, wait);
+  };
+  useEffect(() => {
+    const s = r.current;
+    s.key = key;
+    setState(st => (st.key === key ? st : { key, data: null, error: null }));
+    run();
+    return () => {
+      if (s.ctrl) s.ctrl.abort();
+      clearTimeout(s.timer);
+      s.ctrl = null; s.timer = null; s.again = false;
+    };
+  }, [key]);
+  useEffect(() => {
+    const s = r.current;
+    // The key effect has just fetched for a new key.
+    if (s.tickKey !== key) { s.tickKey = key; return; }
+    s.want();
   }, [key, tick]);
   return state.key === key ? state : { data: null, error: null };
 }

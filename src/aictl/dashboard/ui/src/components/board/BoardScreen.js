@@ -4,6 +4,7 @@ import { loadChunk } from './lazy.js';
 
 // The daemon answers 503 while it collects its first snapshot after a start; the board polls again.
 export const STARTING = 'aictl is starting: it is collecting its first snapshot. The board fills in when it is ready.';
+import { memo } from 'preact/compat';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import * as api from '../../api.js';
 import { useTheme } from '../../hooks/useTheme.js';
@@ -69,10 +70,11 @@ function useResolvedTheme(theme) {
 
 const Check = ({ on }) => html`<span class=${'bd-check' + (on ? ' bd-on' : '')}>${on ? html`<${Ico} d=${PATHS.check}/>` : null}</span>`;
 
-function Rail({ ui, data, series, findingsCount, attention, screen, settingsSum, act }) {
+// Rail, TopBar and FilterRow are memo components: their props keep their identity
+// while only `busy` changes. The range summary is a prop so the rail follows it.
+const Rail = memo(({ ui, data, series, findingsCount, attention, screen, settingsSum, rangeSum, act }) => {
   const mini = ui.railMini;
   const railLabel = mini ? 'Show section names' : 'Hide section names';
-  const rangeSum = act.rangeSummary();
   const items = [{ id: 'top', label: 'Overview', anchor: 'sec-top', sum: rangeSum, icon: PATHS.top }].concat(ui.layout.map(sec => ({
     id: sec.id, label: SEC_BY_ID[sec.id].title, anchor: SEC_BY_ID[sec.id].anchor, sum: sectionSummary(sec.id, data, series, findingsCount), icon: PATHS[sec.id],
   })));
@@ -93,7 +95,7 @@ function Rail({ ui, data, series, findingsCount, attention, screen, settingsSum,
     <span class="bd-spacer"></span>
     <div class="bd-railfoot bd-rl">Layout and options stay when you reload.</div>
   </aside>`;
-}
+});
 
 function CustomRange({ range, onApply, onClose }) {
   const win = windowOf(range);
@@ -115,7 +117,7 @@ function CustomRange({ range, onApply, onClose }) {
   </form>`;
 }
 
-function TopBar({ f, board, menu, ui, resolvedTheme, setTheme, live, act }) {
+const TopBar = memo(({ f, board, menu, ui, resolvedTheme, setTheme, live, act }) => {
   const { filters } = board;
   const hiddenPanels = ui.hidden;
   const changed = !isDefaultLayout(ui);
@@ -155,7 +157,7 @@ function TopBar({ f, board, menu, ui, resolvedTheme, setTheme, live, act }) {
       </div>` : null}
     </div>
   </div>`;
-}
+});
 
 const agentsLabel = n => (n == null ? '' : n + ' agents');
 
@@ -169,7 +171,7 @@ function FilterMenu({ fkey, label, value, active, menu, items, act }) {
   </div>`;
 }
 
-function FilterRow({ board, data, ctx, menu, act }) {
+const FilterRow = memo(({ board, data, ctx, menu, act }) => {
   const { filters, tools } = board;
   const opts = data.options;
   const toolIds = opts.tools.map(t => t.id);
@@ -201,7 +203,7 @@ function FilterRow({ board, data, ctx, menu, act }) {
     <span class="bd-muted">${scope}${scopeNote}</span>
     ${clearable ? html`<button type="button" class="bd-link" onClick=${act.clearAll}>Clear filters</button>` : null}
   </div>`;
-}
+});
 
 function Kpis({ data, pill }) {
   const list = useMemo(() => kpiList(data), [data]);
@@ -326,20 +328,27 @@ export default function BoardScreen() {
       e => { if (current()) setSettingsRaw(s => ({ ...s, audit: null, scan: null, loading: false, error: e?.message })); },
     );
   }, [scanProject]);
+  // The findings and the settings wait for an idle moment after the board's first data.
+  const [idle, setIdle] = useState(false);
   useEffect(() => {
-    if (!loaded) return undefined;
-    const t = setTimeout(() => loadFindings(false), 300);
+    if (!loaded || idle) return undefined;
+    if (typeof requestIdleCallback === 'function') {
+      const id = requestIdleCallback(() => setIdle(true), { timeout: 3000 });
+      return () => cancelIdleCallback(id);
+    }
+    const t = setTimeout(() => setIdle(true), 1500);
     return () => clearTimeout(t);
-  }, [loaded, loadFindings]);
+  }, [loaded, idle]);
+  useEffect(() => { if (idle) loadFindings(false); }, [idle, loadFindings]);
 
-  // Every tool's settings, for the Settings screen and its rail line. Read after the
-  // board's first data, or at once when the screen opens first, and again once the
+  // Every tool's settings, for the Settings screen and its rail line. Read at the idle
+  // moment after the board's first data, or at once when the screen opens first, and again once the
   // board's data is a minute newer. The last answer stays on screen meanwhile.
   const [settingsRes, setSettingsRes] = useState({ data: null, model: null, error: null });
   const settingsAt = useRef(undefined);
   const mounted = useRef(true);
   useEffect(() => () => { mounted.current = false; }, []);
-  const settingsWanted = loaded || screen === 'settings';
+  const settingsWanted = idle || screen === 'settings';
   const boardAt = data.generated_at || 0;
   const loadSettings = useCallback(() => Promise.all([api.getSettingsTools(), loadChunk(() => import('../settings/model.js'))]).then(
     ([d, model]) => { if (mounted.current) setSettingsRes({ data: d || {}, model, error: null }); },
@@ -716,7 +725,7 @@ export default function BoardScreen() {
   const attention = data.attention.filter(i => !stopped[i.agent_id]).length;
 
   return html`<div class="bd-app" tabindex="-1" data-theme=${resolvedTheme} data-density=${ui.density} aria-busy=${busy ? 'true' : 'false'}>
-    <${Rail} ui=${ui} data=${data} series=${chartSeries} findingsCount=${findings.list.length} attention=${attention} screen=${screen} settingsSum=${settingsSum} act=${act}/>
+    <${Rail} ui=${ui} data=${data} series=${chartSeries} findingsCount=${findings.list.length} attention=${attention} screen=${screen} settingsSum=${settingsSum} rangeSum=${act.rangeSummary()} act=${act}/>
     <div class="bd-main">
       <${TopBar} f=${filters} board=${board} menu=${menu} ui=${ui} resolvedTheme=${resolvedTheme} setTheme=${setTheme} live=${live} act=${act}/>
       <${FilterRow} board=${board} data=${data} ctx=${ctx} menu=${menu} act=${act}/>

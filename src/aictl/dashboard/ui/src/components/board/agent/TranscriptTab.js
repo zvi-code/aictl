@@ -80,7 +80,7 @@ export default function TranscriptTab({ a, st, ctx }) {
   const [beat, setBeat] = useState(0);
   useEffect(() => {
     if (!live || !auto) return undefined;
-    const t = setInterval(() => setBeat(b => b + 1), REFRESH_MS);
+    const t = setInterval(() => { if (!document.hidden) setBeat(b => b + 1); }, REFRESH_MS);
     return () => clearInterval(t);
   }, [live, auto]);
   const { data, error } = useDetail(o => api.getBoardAgentTranscript(a.id, o), 'transcript:' + a.id, beat);

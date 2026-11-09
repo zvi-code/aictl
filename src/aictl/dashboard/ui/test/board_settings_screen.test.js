@@ -75,7 +75,8 @@ describe('the Settings screen in the board', () => {
     const { container, calls } = await mountBoard();
     const link = settingsLink(container);
     expect(link).toBeTruthy();
-    await waitFor(() => expect(link.textContent).toContain('2 set · 1 risky · 0 agents'));
+    // The settings are read at an idle moment, up to 1.5 s after the first data.
+    await waitFor(() => expect(link.textContent).toContain('2 set · 1 risky · 0 agents'), { timeout: 3000 });
     expect(calls.some(c => c.startsWith('/api/settings/tools'))).toBe(true);
     expect(link.getAttribute('aria-current')).toBeNull();
     fireEvent.click(link);
