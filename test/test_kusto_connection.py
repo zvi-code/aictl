@@ -48,7 +48,14 @@ from aictl.kusto.connection import (
     split_script,
     to_python,
 )
-from aictl.kusto.ingest import InlineIngester, StreamingIngester, json_line, make_ingester
+from aictl.kusto.ingest import (
+    InlineIngester,
+    StreamingIngester,
+    ingestion_capacity,
+    json_line,
+    make_ingester,
+    uses_inline,
+)
 from aictl.kusto.schema import DELETED, ROWID, VERSION, current, row_defaults, store_schema
 from aictl.kusto.statements import Insert, Mutation, Noop, Pragma, Query, Unsupported
 
@@ -695,6 +702,90 @@ def test_ingest_failure_is_a_store_error():
         conn.commit()
 
 
+STREAMED = KustoSettings("https://c.kusto.windows.net", "aictl")
+
+
+def _three_tables(ingester, settings=STREAMED):
+    ev = row_defaults(TABLES["events"]) | {"ts": 1.0, "tool": "t", "kind": "k"}
+    metric = row_defaults(TABLES["metrics"]) | {"ts": 1.0, "metric": "m", "value": 1.0}
+    mapping = {"s": Insert("sessions", [session_row("a")]), "e": Insert("events", [ev]), "m": Insert("metrics", [metric])}
+    conn = KustoConnection(settings, FakeClient(), ingester, translator=StubTranslator(mapping), tables=TABLES)
+    for sql in mapping:
+        conn.execute(sql)
+    return conn
+
+
+def test_a_flush_sends_its_streamed_tables_at_the_same_time():
+    together = threading.Barrier(3, timeout=10)  # passes only when three sends are under way at once
+    ing = FakeIngester()
+    record = ing.ingest
+
+    def ingest(table, rows):
+        together.wait()
+        record(table, rows)
+
+    ing.ingest = ingest  # type: ignore[method-assign]
+    conn = _three_tables(ing)
+    conn.commit()
+    assert sorted(t for t, _ in ing.calls) == ["events", "metrics", "sessions"]
+    assert not conn.in_transaction
+
+
+def test_inline_tables_are_sent_one_after_another():
+    busy = threading.Lock()
+    ing = FakeIngester()
+    record = ing.ingest
+
+    def ingest(table, rows):
+        assert busy.acquire(blocking=False), "two inline commands at once"
+        try:
+            record(table, rows)
+        finally:
+            busy.release()
+
+    ing.ingest = ingest  # type: ignore[method-assign]
+    conn = _three_tables(ing, SETTINGS)
+    conn.commit()
+    assert [t for t, _ in ing.calls] == ["sessions", "events", "metrics"]
+
+
+def test_a_table_that_fails_in_a_flush_keeps_its_rows_and_the_others_are_sent():
+    ing = FakeIngester()
+    record = ing.ingest
+    refuse = {"events"}
+
+    def ingest(table, rows):
+        if table in refuse:
+            raise RuntimeError("503 from cluster")
+        record(table, rows)
+
+    ing.ingest = ingest  # type: ignore[method-assign]
+    conn = _three_tables(ing)
+    with pytest.raises(KustoStoreError, match="(?s)ingestion into events failed.*503"):
+        conn.commit()
+    assert sorted(t for t, _ in ing.calls) == ["metrics", "sessions"]
+    assert conn.in_transaction
+    refuse.clear()
+    conn.commit()
+    assert [(t, len(r)) for t, r in ing.calls[2:]] == [("events", 1)]
+    assert not conn.in_transaction
+
+
+def test_half_a_surrogate_pair_is_written_as_the_replacement_character():
+    # Kusto stores a lone surrogate as U+0000 and says nothing.
+    row = {"cut": "ab\ud83d", "low": "\ude00x", "two": "\ud83d\ud83d", "whole": "a😀b", "plain": "\\ud83d \\\\ud83d"}
+    line = json_line(row)
+    assert line.isascii()
+    assert json.loads(line) == {
+        "cut": "ab\ufffd",
+        "low": "\ufffdx",
+        "two": "\ufffd\ufffd",
+        "whole": "a😀b",
+        "plain": "\\ud83d \\\\ud83d",
+    }
+    assert json_line({"a": "no such text"}) == '{"a":"no such text"}'
+
+
 def test_noop_begin_trace_and_interrupt():
     traced: list[str] = []
     conn, client, _ = make({"BEGIN": Noop("tx"), "COMMIT": Noop("tx")})
@@ -1239,3 +1330,59 @@ def test_emulator_unique_index_on_requests(live):
     assert conn.execute("i", ("replaced", 4, "replace")).lastrowid == first
     conn.commit()
     assert _read(conn, tr, read) == [(first, first, "replaced", 4)]
+
+
+def test_inline_commands_wait_for_one_of_the_clusters_ingestion_slots():
+    """A development cluster runs one ingestion at a time and refuses the rest with 429.
+
+    On the Azure test cluster six writer threads were refused 77 times in 140 seconds
+    and one commit failed after seven refusals in a row.
+    """
+    free_during: list[bool] = []
+
+    def on_mgmt(command):
+        got = ing.slots.acquire(blocking=False)
+        free_during.append(got)
+        if got:
+            ing.slots.release()
+        return response([], [])
+
+    client = FakeClient(on_mgmt=on_mgmt)
+    ing = InlineIngester(client, "aictl", max_bytes=4000, slots=1)
+    ing.ingest("path_defs", [{"path": "x" * 3000}, {"path": "y" * 3000}])
+    assert len(client.commands) == 2 and free_during == [False, False]
+    # Given back after each command, also after one that failed for good.
+    client.on_mgmt = lambda command: (_ for _ in ()).throw(_ApiError(400, True, "rejected"))
+    with pytest.raises(_ApiError):
+        ing.ingest("path_defs", [{"path": "z"}])
+    assert ing.slots.acquire(blocking=False)
+    ing.slots.release()
+
+    free_during.clear()
+    client.on_mgmt = on_mgmt
+    ing = InlineIngester(client, "aictl", slots=2)
+    ing.ingest("path_defs", [{"path": "x"}])
+    assert free_during == [True]
+    assert InlineIngester(client, "aictl").slots is None and make_ingester(SETTINGS, client).slots is None
+
+
+def test_the_ingestion_capacity_is_read_once_for_a_destination_that_ingests_inline(monkeypatch):
+    def on_mgmt(command):
+        assert command == ".show capacity ingestions"
+        return response([("Resource", "string"), ("Total", "long")], [{"Resource": "Ingestions", "Total": 1}])
+
+    client = FakeClient(on_mgmt=on_mgmt)
+    assert ingestion_capacity(client, "aictl") == 1
+    assert ingestion_capacity(FakeClient(on_mgmt=lambda c: (_ for _ in ()).throw(_ApiError(403, True))), "aictl") is None
+    assert ingestion_capacity(FakeClient(), "aictl") is None  # an answer without the row
+
+    streamed = KustoSettings("https://c.kusto.windows.net", "aictl")
+    mixed = KustoSettings("https://c.kusto.windows.net", "aictl", table_ingestion={"path_defs": "inline"})
+    assert uses_inline(SETTINGS) and uses_inline(mixed) and not uses_inline(streamed)
+
+    client.commands.clear()
+    monkeypatch.setattr(KustoClientFactory, "_clients", {KustoClientFactory.key(SETTINGS): client})
+    monkeypatch.setattr(KustoClientFactory, "_ingesters", {})
+    ingester = KustoClientFactory.ingester(SETTINGS)
+    assert KustoClientFactory.ingester(SETTINGS) is ingester and client.commands == [".show capacity ingestions"]
+    assert ingester.slots.acquire(blocking=False) and not ingester.slots.acquire(blocking=False)

@@ -8,9 +8,12 @@ with the schema.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import math
+import re
+import threading
 from collections.abc import Iterator
 from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING, Any, Protocol
@@ -52,6 +55,22 @@ def json_value(value: object) -> object:
     return str(value)
 
 
+# In an ASCII JSON line: an escaped backslash, a surrogate pair, or half of one.
+_SURROGATE_RE = re.compile(r"\\\\|\\ud[89ab][0-9a-f]{2}\\ud[c-f][0-9a-f]{2}|\\ud[89a-f][0-9a-f]{2}")
+
+
+def sound_line(line: str) -> str:
+    """An ASCII JSON line with every half surrogate pair written as U+FFFD.
+
+    Text cut between the two halves of a character (tools that count UTF-16 units do
+    it) carries one half. Kusto stores that half as U+0000 and says nothing; U+FFFD
+    is what it means: a character that could not be kept.
+    """
+    if "\\ud" not in line:
+        return line
+    return _SURROGATE_RE.sub(lambda m: m.group() if len(m.group()) != 6 else "\\ufffd", line)
+
+
 def json_line(row: dict[str, Any]) -> str:
     """One row as one line of JSON.
 
@@ -59,7 +78,8 @@ def json_line(row: dict[str, Any]) -> str:
     inside strings, so the line can never be split by the text it carries; that is
     what keeps an inline command's body intact.
     """
-    return json.dumps({k: json_value(v) for k, v in row.items()}, ensure_ascii=True, separators=(",", ":"))
+    line = json.dumps({k: json_value(v) for k, v in row.items()}, ensure_ascii=True, separators=(",", ":"))
+    return sound_line(line)
 
 
 def chunks(lines: list[str], max_bytes: int) -> Iterator[list[str]]:
@@ -84,24 +104,44 @@ class InlineIngester:
     default and an opt-in option for small development/test writes on a cluster.
     """
 
-    def __init__(self, client: Any, database: str, max_bytes: int = INLINE_MAX_BYTES) -> None:
+    def __init__(
+        self, client: Any, database: str, max_bytes: int = INLINE_MAX_BYTES, slots: int | None = None
+    ) -> None:
         self.client = client
         self.database = database
         self.max_bytes = max_bytes
+        # *slots* is the cluster's ingestion capacity (see ``ingestion_capacity``).
+        # A command sent past it is refused with 429 and comes back after a pause of
+        # up to 30 seconds, during which the slot is free and unused; a writer refused
+        # seven times in a row fails its commit. Writers wait here for a slot instead.
+        # Another daemon on the cluster shares the capacity, so a refusal is still retried.
+        self.slots = threading.BoundedSemaphore(slots) if slots else None
 
     def commands(self, table: str, rows: list[dict[str, Any]]) -> list[str]:
+        return self.line_commands(table, [json_line(r) for r in rows])
+
+    def line_commands(self, table: str, lines: list[str]) -> list[str]:
         head = f'.ingest inline into table {quote(table)} with (format="multijson") <|\n'
         budget = max(1, self.max_bytes - len(head))
-        return [head + "\n".join(group) for group in chunks([json_line(r) for r in rows], budget)]
+        return [head + "\n".join(group) for group in chunks(lines, budget)]
 
     def ingest(self, table: str, rows: list[dict[str, Any]]) -> None:
+        self._run(table, self.commands(table, rows))
+
+    def ingest_lines(self, table: str, lines: list[str]) -> None:
+        """Rows already written as JSON lines (ASCII, one row each), such as the OTel tables'."""
+        self._run(table, self.line_commands(table, lines))
+
+    def _run(self, table: str, commands: list[str]) -> None:
         from .connection import retrying
 
-        for command in self.commands(table, rows):
-            retrying(
-                lambda c=command: self.client.execute_mgmt(self.database, c),
-                f"inline ingestion into {table}",
-            )
+        slot = self.slots or contextlib.nullcontext()
+        for command in commands:
+            with slot:
+                retrying(
+                    lambda c=command: self.client.execute_mgmt(self.database, c),
+                    f"inline ingestion into {table}",
+                )
 
 
 class StreamingIngester:
@@ -121,13 +161,17 @@ class StreamingIngester:
         self.ingest_client = ingest_client
 
     def ingest(self, table: str, rows: list[dict[str, Any]]) -> None:
+        self.ingest_lines(table, [json_line(r) for r in rows])
+
+    def ingest_lines(self, table: str, lines: list[str]) -> None:
+        """Rows already written as JSON lines (ASCII, one row each), such as the OTel tables'."""
         from azure.kusto.data.data_format import DataFormat
         from azure.kusto.ingest import IngestionProperties
 
         props = IngestionProperties(database=self.database, table=table, data_format=DataFormat.MULTIJSON)
         from .connection import retrying, schema_cache_behind
 
-        for group in chunks([json_line(r) for r in rows], self.max_bytes):
+        for group in chunks(lines, self.max_bytes):
             data = "\n".join(group).encode("ascii")
             retrying(
                 lambda d=data: self.ingest_client.ingest_from_stream(io.BytesIO(d), props),
@@ -146,10 +190,28 @@ class TableIngester:
     def ingest(self, table: str, rows: list[dict[str, Any]]) -> None:
         self.ingesters[self.settings.ingestion_mode(table)].ingest(table, rows)
 
+    def ingest_lines(self, table: str, lines: list[str]) -> None:
+        self.ingesters[self.settings.ingestion_mode(table)].ingest_lines(table, lines)
 
-def make_ingester(settings: KustoSettings, client: Any, ingest_client: Any = None) -> RowIngester:
+
+def ingestion_capacity(client: Any, database: str) -> int | None:
+    """How many ingestions the cluster runs at a time: 1 on a development cluster, 12 on the emulator."""
+    try:
+        rows = client.execute_mgmt(database, ".show capacity ingestions").primary_results[0]
+        return max(1, int(next(iter(rows))["Total"]))
+    except Exception:  # noqa: BLE001 - not readable: inline commands go unqueued and a refusal is retried
+        return None
+
+
+def uses_inline(settings: KustoSettings) -> bool:
+    return not settings.streaming or "inline" in settings.table_ingestion.values()
+
+
+def make_ingester(
+    settings: KustoSettings, client: Any, ingest_client: Any = None, *, inline_slots: int | None = None
+) -> RowIngester:
     """Use the global default unless the table has an explicit override."""
-    ingesters: dict[str, RowIngester] = {"inline": InlineIngester(client, settings.database)}
+    ingesters: dict[str, RowIngester] = {"inline": InlineIngester(client, settings.database, slots=inline_slots)}
     if settings.streaming or "streaming" in settings.table_ingestion.values():
         ingesters["streaming"] = StreamingIngester(settings, ingest_client)
     if settings.table_ingestion:
