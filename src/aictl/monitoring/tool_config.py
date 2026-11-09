@@ -1714,6 +1714,50 @@ def _read_aictl_env_file() -> dict[str, str]:
     return out
 
 
+COPILOT_CLI_OTEL_VAR = "OTEL_EXPORTER_OTLP_ENDPOINT"
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+
+
+def copilot_cli_otel_endpoint(port: int | None, env: dict[str, str] | None = None) -> dict:
+    """Whether Copilot CLI's OpenTelemetry export reaches aictl on *port*.
+
+    Copilot CLI takes its endpoint from ``OTEL_EXPORTER_OTLP_ENDPOINT`` only; it
+    ignores ``COPILOT_OTEL_ENDPOINT`` (VS Code's Copilot Chat reads that one). The
+    value is the environment's, else ``~/.config/aictl/env.sh``'s, which new shells
+    source. Returns ``{status: ok|missing|elsewhere, variable, value, source, text}``.
+    """
+    if env is None:
+        file_env = _read_aictl_env_file()
+        env = {**file_env, **os.environ}
+        source = "environment" if COPILOT_CLI_OTEL_VAR in os.environ else ("~/.config/aictl/env.sh" if COPILOT_CLI_OTEL_VAR in file_env else "")
+    else:
+        source = "environment" if COPILOT_CLI_OTEL_VAR in env else ""
+    value = str(env.get(COPILOT_CLI_OTEL_VAR) or "").strip()
+    out = {"variable": COPILOT_CLI_OTEL_VAR, "value": value, "source": source}
+    if not value:
+        ignored = " COPILOT_OTEL_ENDPOINT is set, but Copilot CLI ignores it." if env.get("COPILOT_OTEL_ENDPOINT") else ""
+        return {
+            **out,
+            "status": "missing",
+            "text": f"Copilot CLI sends no OTel to aictl: {COPILOT_CLI_OTEL_VAR} is not set.{ignored} Run aictl enable, then open a new terminal.",
+        }
+    from urllib.parse import urlparse
+
+    try:
+        url = urlparse(value)
+        host, at = (url.hostname or "").lower(), url.port
+    except ValueError:
+        host, at = "", None
+    want = f"http://localhost:{port}" if port else "aictl"
+    if host in _LOCAL_HOSTS and (port is None or at == port):
+        return {**out, "status": "ok", "text": f"Copilot CLI sends its OTel to aictl: {COPILOT_CLI_OTEL_VAR}={value}."}
+    return {
+        **out,
+        "status": "elsewhere",
+        "text": f"Copilot CLI sends its OTel to {value}, not to aictl at {want}: {COPILOT_CLI_OTEL_VAR} points elsewhere.",
+    }
+
+
 def _detect_otel_from_claude() -> OTelConfig:
     """Detect whether Claude Code is configured to export OpenTelemetry.
 

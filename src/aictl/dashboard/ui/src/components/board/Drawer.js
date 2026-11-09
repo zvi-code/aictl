@@ -238,7 +238,7 @@ function Facts({ facts }) {
 }
 
 /** Context size: the last call against the limit, the growth per call, and for a Copilot session the split at shutdown. */
-function ContextPanel({ a, context, copilot, subagents, act, compact = false, span = 0 }) {
+function ContextPanel({ a, context, copilot, subagents, act, compact = false, span = 0, otel = null }) {
   const split = context.split;
   const byAgent = useMemo(() => {
     const rows = context.by_agent || [];
@@ -290,6 +290,7 @@ function ContextPanel({ a, context, copilot, subagents, act, compact = false, sp
           ${copilot ? html`<span class="bd-ctxof" title="Last call, as a share of the prompt limit (maxPromptTokens of the last model call that reports it)">${context.prompt_limit == null && share == null ? html`prompt limit <b>${NA}</b>` : html`<b>${fmtShare(share)}</b> of the ${fmtN(context.prompt_limit)} prompt limit`}</span>` : null}
         </div>
         ${copilot && share != null ? html`<div class="bd-ctxlimit" role="img" aria-label=${fmtShare(share) + ' of the prompt limit'}><i style=${{ width: Math.max(0.5, Math.min(100, share * 100)) + '%' }}></i></div>` : null}
+        ${otel?.context?.current != null ? html`<div class="bd-ctxotel" data-testid="ctx-otel" title=${'github.copilot.current_tokens and token_limit of the last usage_info span event, ' + stamp(otel.context.ts, true) + '. From OpenTelemetry.'}><span class="bd-chipv">OTel</span> now <b>${fmtN(otel.context.current)}</b> of ${fmtN(otel.context.limit)} tokens${otel.context.share != null ? ' (' + fmtShare(otel.context.share) + ')' : ''}${otel.context.messages != null ? ' · ' + fmtN(otel.context.messages) + ' messages' : ''}</div>` : null}
         <div class="bd-ctxspk">
           <span class="bd-ctxlab" title="Everything loaded before work began: system prompt, tools, instructions and the first prompt"><b>${fmtN(context.first)}</b> first call</span>
           <span class="bd-ctxlab bd-ctxlab-r"><b>${fmtN(context.last)}</b> last call${peakText} · ${fmtN(context.calls)} calls</span>
@@ -610,7 +611,7 @@ function LargestAdds({ data, act, span }) {
 function ContextTab({ a, data, act }) {
   if (!data.context) return html`<div class="bd-empty">No model call of this agent is stored, so its context size is not known.</div>`;
   return html`${data.context.breakdown ? html`<${ContextBreakdown} b=${data.context.breakdown} act=${act} go=${false}/>` : null}
-    <${ContextPanel} a=${a} context=${data.context} copilot=${(a.tool || '').startsWith('copilot')} subagents=${data.subagents} act=${act}/>`;
+    <${ContextPanel} a=${a} context=${data.context} copilot=${(a.tool || '').startsWith('copilot')} subagents=${data.subagents} act=${act} otel=${a.parent_id ? null : data.otel}/>`;
 }
 
 const OUTPUT_ROWS = 5;
@@ -684,11 +685,13 @@ function OverviewTab({ a, data, st, ctx, act, pending }) {
   return html`
     ${pending ? html`<${FixedPanel} id="ap" title="Waiting for your confirmation"><div class="bd-ptext">${pending.name + ': ' + pending.target + '\nWaiting for ' + fmtDur(Date.now() / 1000 - pending.since_ts) + '. Answer in the tool that asks.'}</div></${FixedPanel}>` : null}
     <div class="bd-kpis bd-drkpis" role="group" aria-label="Totals">${kpis.map(k => html`<div key=${k.label} class="bd-kpi" title=${k.title || k.label}><span class="bd-l">${k.label}</span><span class="bd-v">${k.value}</span><span class=${'bd-d' + (k.cls ? ' bd-' + k.cls : '')}>${k.sub || ''}</span></div>`)}<${Anomalies} data=${data} act=${act}/></div>
-    ${breakdown ? html`<${ContextBreakdown} b=${breakdown} act=${act} span=${6}/>` : context ? html`<${ContextPanel} a=${a} context=${context} copilot=${copilot} subagents=${data.subagents} act=${act} compact=${true} span=${6}/>` : null}
+    ${main && data.sources ? html`<${Part} part="overview" name="OtelSources" a=${a} data=${data}/>` : null}
+    ${breakdown ? html`<${ContextBreakdown} b=${breakdown} act=${act} span=${6}/>` : context ? html`<${ContextPanel} a=${a} context=${context} copilot=${copilot} subagents=${data.subagents} act=${act} compact=${true} span=${6} otel=${a.parent_id ? null : data.otel}/>` : null}
     <${LargestAdds} data=${data} act=${act} span=${context ? 6 : 12}/>
     <${OutputsCard} data=${data} act=${act} span=${main ? 6 : 12}/>
     ${main ? html`<${InstructionsCard} a=${a} cf=${cf} act=${act}/>` : null}
     ${main && tl && tl.lanes.length > 1 ? html`<${AgentTimeline} m=${tl} act=${act}/>` : null}
+    ${main && data.otel ? html`<${Part} part="overview" name="OtelOverview" data=${data}/>` : null}
     <${FixedPanel} id="am" span=${6} title="Usage by model" sub=${(data.by_model || []).length ? (data.by_model.length === 1 ? '1 model' : data.by_model.length + ' models') : ''}><${Table} def=${modelDef} label="Usage by model"/></${FixedPanel}>
     <div class="bd-drcol" style="grid-column:span 6">
       <${FixedPanel} id="askill" title="Skills used" sub=${(data.skills || []).length ? data.skills.reduce((n, x) => n + x.uses, 0) + ' uses of ' + data.skills.length + ' skills' + (a.parent_id ? '' : ', with its subagents') : 'None in this session'}><${Table} def=${skills} label="Skills used"/></${FixedPanel}>

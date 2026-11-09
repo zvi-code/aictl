@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..ingesters import context_items_backfill, loaded_files_backfill, tool_size_backfill
+from ..ingesters import context_items_backfill, loaded_files_backfill, otel_sessions_backfill, tool_size_backfill
 from ..ingesters.copilot_session_store import (
     POLL_INTERVAL_S as COPILOT_POLL_INTERVAL_S,
 )
@@ -206,6 +206,11 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
 def _backfill_tool_sizes(db) -> None:
     """Run the one-time tool size backfill; a failure is logged and retried on the next start."""
     time.sleep(BACKFILL_DELAY_S)
+    # First: it reads only the stored events and takes seconds; the others re-read every transcript.
+    try:
+        otel_sessions_backfill.run(db)
+    except Exception:  # noqa: BLE001 - the backfill must never stop the server
+        log.exception("OTel session backfill failed; it runs again on the next start")
     try:
         tool_size_backfill.run(db)
     except Exception:  # noqa: BLE001 - the backfill must never stop the server

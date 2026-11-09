@@ -3981,6 +3981,7 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
         )
     errors.sort(key=lambda e: e["ts"], reverse=True)
     session = _session_row(db, conn, sid)
+    otel = _agent_otel(conn, sid, root, [t.get("mcp_server") or t["name"] for t in tool_totals])
     own_loops = [loop for loop in board.loops if loop["agent_id"] == agent or (root and loop["session_id"] == sid)]
     loop = None
     if own_loops:
@@ -4010,6 +4011,8 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
         "git": _agent_git(db, session, sid),
         "runs": _agent_runs(db, session, sid, row, now) if root else [],
         "resources": _agent_resources(db, conn, board, sid, row, root, now),
+        "otel": otel,
+        "sources": _agent_sources(conn, sid, otel) if root else None,
         **_agent_record(db, conn, session, sid, row, root),
     }
 
@@ -4027,6 +4030,216 @@ def _agent_record(db: Any, conn: sqlite3.Connection, session: dict, sid: str, ro
     if not root:
         return {**empty_record(), "context_files": context_files}
     return {**record_section(db, conn, session, sid, project), "context_files": context_files}
+
+
+# ─── What OpenTelemetry alone says about a session ────────────────
+# Copilot CLI sends spans (invoke_agent per turn, chat per model call, execute_tool per
+# tool call) and span events at the end of a session; the receiver stores them with the
+# session id (gen_ai.conversation.id). The session file has the calls and their tokens;
+# the spans add values the file does not show per call. Tokens are never taken from a
+# span: a call the session file has keeps the file's numbers.
+
+OTEL_MCP_ROWS = 200
+# Copilot counts AI credits in nano AIU: 1e9 of them make one credit, as in its session file.
+NANO_PER_CREDIT = 1e9
+# A chat span whose session-file call is not found by its tokens matches a call of the
+# same model and output that ended this close to the span's end.
+OTEL_MATCH_S = 5.0
+
+
+def _json_list(value: Any) -> list[str]:
+    """A list attribute that Copilot sends as a JSON string, or as a list."""
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    if isinstance(value, str) and value.startswith("["):
+        try:
+            got = json.loads(value)
+        except ValueError:
+            return []
+        return [str(v) for v in got] if isinstance(got, list) else []
+    return []
+
+
+def _num_or_none(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None and value != "" else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_detail(raw: Any) -> dict:
+    try:
+        d = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def _signal(rows: list[tuple[float, dict]]) -> dict:
+    return {"count": len(rows), "last_ts": max((ts for ts, _d in rows), default=None)}
+
+
+def _otel_calls(conn: sqlite3.Connection, sid: str, chats: list[tuple[float, dict]]) -> list[dict]:
+    """Each chat span of the session, with the OTel-only values, matched to its session-file call."""
+    from ..ingesters.call_facts import copilot_call_key
+
+    stored = conn.execute(
+        "SELECT dedup_key, ts, model, output_tokens FROM requests WHERE session_id = ? ORDER BY ts", (sid,)
+    ).fetchall()
+    by_key = {key: (ts, model, out) for key, ts, model, out in stored if key}
+    taken: set[float] = set()
+    seen: set[str] = set()
+    occurrence: dict[tuple, int] = defaultdict(int)
+    calls = []
+    for ts, d in chats:
+        ident = str(d.get("otel.span_id") or d.get("gen_ai.response.id") or "")
+        if ident and ident in seen:
+            continue
+        seen.add(ident)
+        tokens = tuple(int(_num_or_none(d.get(k)) or 0) for k in (
+            "gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens",
+            "gen_ai.usage.cache_read.input_tokens", "gen_ai.usage.cache_write.input_tokens"))
+        n = occurrence[tokens]
+        occurrence[tokens] += 1
+        model = str(d.get("gen_ai.response.model") or d.get("gen_ai.request.model") or "")
+        end = ts + (_num_or_none(d.get("duration_ms")) or 0) / 1000.0
+        hit = by_key.get(copilot_call_key(sid, tokens, n))
+        if hit is None:
+            near = [r for r in stored if r[2] == model and r[3] == tokens[1] and abs(r[1] - end) <= OTEL_MATCH_S and r[1] not in taken]
+            hit = (near[0][1], near[0][2], near[0][3]) if near else None
+        ttft = _num_or_none(d.get("gen_ai.response.time_to_first_chunk"))
+        nano = _num_or_none(d.get("github.copilot.nano_aiu"))
+        call: dict = {
+            "ts": ts,
+            "end_ts": end,
+            "model": model,
+            "turn_id": str(d.get("github.copilot.turn_id") or ""),
+            "initiator": str(d.get("github.copilot.initiator") or ""),
+            "cost": _num_or_none(d.get("github.copilot.cost")),
+            "nano_aiu": nano,
+            "ai_credits": round(nano / NANO_PER_CREDIT, 6) if nano is not None else None,
+            "ttft_ms": round(ttft * 1000, 1) if ttft is not None else None,
+            "server_ms": _num_or_none(d.get("github.copilot.server_duration")),
+            "duration_ms": _num_or_none(d.get("duration_ms")),
+            "matched": hit is not None,
+            "request_ts": hit[0] if hit else None,
+        }
+        if hit is not None:
+            taken.add(hit[0])
+        else:
+            # Not in the session file: the span's own tokens, which no total of the board adds.
+            call["tokens"] = dict(zip(("input", "output", "cache_read", "cache_write"), tokens))
+        calls.append(call)
+    return calls
+
+
+def _agent_otel(conn: sqlite3.Connection, sid: str, root: bool, mcp_names: Iterable[str] = ()) -> dict | None:
+    """What OpenTelemetry sent for the session: counts per signal, and the values only OTel has.
+
+    None for a subagent: the spans name the session, not an agent of it.
+    """
+    if not root:
+        return None
+    spans: list[tuple[float, dict]] = []
+    span_events: list[tuple[float, dict]] = []
+    logs: list[tuple[float, dict]] = []
+    by_kind: dict[str, list[tuple[float, dict]]] = defaultdict(list)
+    for ts, kind, raw in conn.execute(
+        "SELECT ts, kind, detail FROM events WHERE session_id = ? AND kind LIKE 'otel:%' ORDER BY ts", (sid,)
+    ):
+        d = _parse_detail(raw)
+        row = (ts, d)
+        (spans if "span.name" in d else span_events if "parent_span" in d else logs).append(row)
+        by_kind[kind[5:]].append(row)
+    if not spans and not span_events and not logs:
+        return None
+    chats = [r for r in spans if str(r[1].get("gen_ai.operation.name") or "") == "chat" or str(r[1].get("span.name") or "").startswith("chat ")]
+    calls = _otel_calls(conn, sid, chats)
+    usage = by_kind.get("github.copilot.session.usage_info") or []
+    context = None
+    if usage:
+        ts, d = usage[-1]
+        current, limit = _num_or_none(d.get("github.copilot.current_tokens")), _num_or_none(d.get("github.copilot.token_limit"))
+        context = {
+            "ts": ts,
+            "current": int(current) if current is not None else None,
+            "limit": int(limit) if limit is not None else None,
+            "share": _ratio(current, limit) if current is not None and limit else None,
+            "messages": _maybe_int(_num_or_none(d.get("github.copilot.messages_length"))),
+            "reports": len(usage),
+        }
+    agents = [r for r in spans if str(r[1].get("gen_ai.operation.name") or "") == "invoke_agent"]
+    in_context = None
+    if agents:
+        ts, d = agents[-1]
+        in_context = {
+            "ts": ts,
+            "turns": len(agents),
+            "skills": _json_list(d.get("github.copilot.context.skills")),
+            "custom_agents": _json_list(d.get("github.copilot.context.custom_agent_names")),
+            "mcp_servers": _json_list(d.get("github.copilot.context.mcp_server_names")),
+            "agent_type": str(d.get("github.copilot.agent.type") or ""),
+        }
+    # Copilot names an MCP server by the SHA-256 of its name; a name the session used is shown.
+    # Copilot CLI calls a server's tool "<server>-<tool>", so each leading part of a tool name is tried.
+    candidates: set[str] = set()
+    for n in mcp_names:
+        candidates.update(n[:i] for i, ch in enumerate(n) if ch in "-_/")
+        candidates.add(n)
+    names = {hashlib.sha256(n.encode("utf-8")).hexdigest(): n for n in candidates if n}
+    lifecycle = []
+    servers: dict[str, dict] = {}
+    for ts, d in (by_kind.get("github.copilot.mcp.server.lifecycle") or [])[-OTEL_MCP_ROWS:]:
+        h = str(d.get("github.copilot.mcp.server.name_hash") or "")
+        entry = {"ts": ts, "state": str(d.get("github.copilot.mcp.server.state") or ""), "hash": h,
+                 "name": names.get(h), "source": str(d.get("github.copilot.mcp.server.source") or "")}
+        lifecycle.append(entry)
+        servers[h] = entry
+    if in_context:
+        in_context["mcp_servers"] = [{"hash": h, "name": names.get(h), "state": (servers.get(h) or {}).get("state")} for h in in_context["mcp_servers"]]
+    priced = [c for c in calls if c["nano_aiu"] is not None]
+    return {
+        "spans": _signal(spans),
+        "span_events": _signal(span_events),
+        "logs": _signal(logs),
+        # Copilot CLI's metrics carry no session id: they are the process's, not this session's.
+        "metrics": None,
+        "calls": calls[:MAX_DETAIL_ROWS],
+        "totals": {
+            "calls": len(calls),
+            "matched": sum(1 for c in calls if c["matched"]),
+            "nano_aiu": sum(c["nano_aiu"] for c in priced) if priced else None,
+            "ai_credits": round(sum(c["nano_aiu"] for c in priced) / NANO_PER_CREDIT, 6) if priced else None,
+            "cost": sum(c["cost"] or 0 for c in calls) if any(c["cost"] is not None for c in calls) else None,
+        },
+        "context": context,
+        "in_context": in_context,
+        "mcp_lifecycle": lifecycle,
+        "mcp_servers": list(servers.values()),
+    }
+
+
+def _agent_sources(conn: sqlite3.Connection, sid: str, otel: dict | None) -> dict:
+    """How many records of the session came from each source: its session file, OTel, hooks."""
+    one = conn.execute(
+        "SELECT (SELECT COUNT(*) FROM requests WHERE session_id = ? AND source = 'transcript'),"
+        " (SELECT COUNT(*) FROM tool_invocations WHERE session_id = ? AND source = 'transcript'),"
+        " (SELECT COUNT(*) FROM session_prompts WHERE session_id = ?)",
+        (sid, sid, sid),
+    ).fetchone()
+    hooks, hook_ts = conn.execute(
+        "SELECT COUNT(*), MAX(ts) FROM events WHERE session_id = ? AND kind LIKE 'hook:%'", (sid,)
+    ).fetchone()
+    otel = otel or {}
+    span = otel.get("spans") or {"count": 0, "last_ts": None}
+    return {
+        "session_file": sum(int(v or 0) for v in one),
+        "otel_spans": span["count"],
+        "otel_span_events": (otel.get("span_events") or {}).get("count", 0),
+        "otel_last_ts": max((x for x in (span["last_ts"], (otel.get("span_events") or {}).get("last_ts"), (otel.get("logs") or {}).get("last_ts")) if x), default=None),
+        "hooks": int(hooks or 0),
+        "hooks_last_ts": hook_ts,
+    }
 
 
 def _loaded_files(conn: sqlite3.Connection, sid: str, agent: str = "") -> list[dict]:
@@ -4330,8 +4543,14 @@ def _merge_flow(store: list[dict], legacy: list[dict]) -> list[dict]:
                 if best is None or abs(group[j]["ts"] - event["ts"]) < abs(best["ts"] - event["ts"]):
                     best = group[j]
         if best is None:
-            if not (event.get("type") in _STORE_COUNTED and event.get("type") in store_kinds):
-                merged.append(event)
+            if event.get("type") in _STORE_COUNTED and event.get("type") in store_kinds:
+                continue
+            if event.get("type") == "api_response" and "api_call" in store_kinds:
+                # The reply half of a model call the store counts already: its text only, never its tokens.
+                if not event.get("response"):
+                    continue
+                event = {**event, "tokens": {}}
+            merged.append(event)
             continue
         taken.add(id(best))
         for field, value in event.items():
@@ -6363,6 +6582,16 @@ def _hooks_by_tool(db: Any, now: float) -> dict[str, dict]:
         return {}
 
 
+def _otel_setup(port: int | None) -> dict:
+    """Per tool, whether the variable that sends its OTel to aictl is set: Copilot CLI's only for now."""
+    from ..monitoring.tool_config import copilot_cli_otel_endpoint
+
+    try:
+        return {"copilot-cli": copilot_cli_otel_endpoint(port)}
+    except OSError:
+        return {}
+
+
 def compute_machine(
     db: Any,
     store: Any,
@@ -6371,6 +6600,7 @@ def compute_machine(
     ingesters: Any = None,
     stream_clients: int | None = None,
     now: float | None = None,
+    port: int | None = None,
 ) -> dict:
     """Everything ``GET /api/board/machine`` returns. The Tool filter applies to the per-tool lists only."""
     now = time.time() if now is None else now
@@ -6409,6 +6639,7 @@ def compute_machine(
             },
             "sink": _sink_section(store),
             "otel_receiver": otel_status,
+            "otel_setup": _otel_setup(port),
             "hooks": _hooks_by_tool(db, now),
             "ingesters": _ingester_rows(ingesters, quality),
             "data_quality": quality,
@@ -6430,11 +6661,12 @@ def machine_bytes(
     ingesters: Any = None,
     stream_clients: int | None = None,
     now: float | None = None,
+    port: int | None = None,
 ) -> bytes:
     """The answer for ``/api/board/machine``. ``tool`` takes the same values as on ``/api/board``."""
     qs = parse_qs(query, keep_blank_values=True)
     tools = normalize_selection(part for raw in qs["tool"] for part in raw.split(",")) if "tool" in qs else None
-    payload = compute_machine(db, store, tools, otel, ingesters, stream_clients, now)
+    payload = compute_machine(db, store, tools, otel, ingesters, stream_clients, now, port)
     return json.dumps(payload).encode("utf-8")
 
 

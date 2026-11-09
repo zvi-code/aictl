@@ -11,6 +11,8 @@ import { NA, fmtDur, fmtN, stamp } from '../format.js';
 import Table from '../Table.js';
 import { Failed, isActive, sessionIdOf, windowOf } from './common.js';
 
+export { OtelOverview, OtelSources } from './OtelPanels.js';
+
 const MAX_COMMITS = 20;
 
 /** Branch, commit and the commits attributed to the session; the list opens on click. */

@@ -2425,7 +2425,7 @@ tools:
         label: Copilot otel endpoint
         section: telemetry
         type: string
-        description: "OTLP endpoint URL (takes precedence over OTEL_EXPORTER_OTLP_ENDPOINT)"
+        description: "OTLP endpoint URL for VS Code's Copilot Chat (takes precedence over OTEL_EXPORTER_OTLP_ENDPOINT there). Copilot CLI ignores it and is not documented to read it: it takes its endpoint from OTEL_EXPORTER_OTLP_ENDPOINT. aictl no longer writes it."
         doc: upstream/vscode-docs/docs/agents/guides/monitoring-agents.md#L273
       - key: env.OTEL_EXPORTER_OTLP_ENDPOINT
         label: Otel exporter otlp endpoint
