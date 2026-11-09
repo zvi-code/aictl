@@ -22,6 +22,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import queue
 import re
 import sys
 import threading
@@ -1431,6 +1432,13 @@ _SERVED_WHILE_STARTING = frozenset({"/", "/index.html", "/favicon.ico"})
 READY_WAIT_S = 20.0
 
 
+# Requests run on a few threads that live as long as the server: a thread's first read
+# of the history attaches and copies the project stores, 150 ms here, and a thread per
+# request paid that on every request. A request that finds no idle worker when the
+# pool is full gets a thread of its own, so streaming clients never hold the others up.
+HTTP_WORKERS = 8
+
+
 class _DashboardHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     # On Windows SO_REUSEADDR lets a second server share a port in use, with no bind error.
@@ -1438,6 +1446,11 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
 
     def __init__(self, addr, handler, store, allowed, root, *, start_ingesters_now: bool = True):
         super().__init__(addr, handler)
+        self._requests: queue.SimpleQueue = queue.SimpleQueue()
+        self._workers_lock = threading.Lock()
+        self._idle_workers = 0
+        self._worker_count = 0
+        self._closing = False
         self.store: SnapshotStore = store
         self.allowed: AllowedPaths = allowed
         # Set once the first snapshot is ready; start_server clears it while it collects.
@@ -1466,6 +1479,42 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
         # stale-eviction scan must not iterate while another thread mutates.
         self.pending_tool_use: dict[str, tuple[float, str, object]] = {}
         self.pending_tool_use_lock: threading.Lock = threading.Lock()
+
+    def process_request(self, request, client_address) -> None:
+        """Hand the request to an idle worker, a new worker while the pool has room, else a thread."""
+        with self._workers_lock:
+            if self._idle_workers:
+                self._idle_workers -= 1
+                self._requests.put((request, client_address))
+                return
+            start_worker = self._worker_count < HTTP_WORKERS and not self._closing
+            if start_worker:
+                self._worker_count += 1
+                number = self._worker_count
+        if start_worker:
+            threading.Thread(
+                target=self._work, args=((request, client_address),), daemon=True, name=f"aictl-http-worker-{number}"
+            ).start()
+            return
+        super().process_request(request, client_address)
+
+    def _work(self, item: tuple | None) -> None:
+        while item is not None:
+            self.process_request_thread(*item)
+            with self._workers_lock:
+                if self._closing:
+                    return
+                self._idle_workers += 1
+            item = self._requests.get()
+
+    def server_close(self) -> None:
+        with self._workers_lock:
+            self._closing = True
+            idle = self._idle_workers
+            self._idle_workers = 0
+        for _ in range(idle):
+            self._requests.put(None)
+        super().server_close()
 
 
 # ─── Inline HTML dashboard ───────────────────────────────────────
