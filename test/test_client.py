@@ -13,7 +13,7 @@ class TestServerClient:
         # A port this test holds without listening: nothing else can serve it, and a connect is refused.
         with socket.socket() as held:
             held.bind(("127.0.0.1", 0))
-            client = ServerClient.try_connect(port=held.getsockname()[1], timeout=0.5)
+            client = ServerClient.try_connect(port=held.getsockname()[1], timeout=0.05)
         assert client is None
 
     def test_constructor(self):
