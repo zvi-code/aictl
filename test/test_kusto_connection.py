@@ -31,13 +31,14 @@ from aictl.kusto.connection import (
     connection_string,
     is_create_table,
     kql_literal,
+    mutation_columns,
     next_rowid,
     next_version,
     split_script,
     to_python,
 )
 from aictl.kusto.ingest import InlineIngester, json_line, make_ingester
-from aictl.kusto.schema import ROWID, VERSION, current, row_defaults, store_schema
+from aictl.kusto.schema import DELETED, ROWID, VERSION, current, row_defaults, store_schema
 from aictl.kusto.statements import Insert, Mutation, Noop, Pragma, Query, Unsupported
 
 TABLES = store_schema()
@@ -193,11 +194,11 @@ def test_reads_mutations_and_pragmas_flush_first():
     ing.ingest = lambda t, r: order.append("ingest")  # type: ignore[method-assign]
     for sql in ("s", "q", "s", "m", "s", "p"):
         conn.execute(sql)
-    assert order == ["ingest", "query", "ingest", "ingest"]
-    assert len(client.commands) == 1 and client.commands[0].startswith(
-        ".set-or-append ['sessions'] <| T | project ['session_id']"
-    )
-    assert client.commands[0].endswith("['rowid'], ['_v'], ['_deleted']")
+    # A mutation is a query too: the buffer is sent first, its rows come back and wait for the next flush.
+    assert order == ["ingest", "query", "ingest", "query", "ingest"]
+    assert not client.commands
+    assert client.queries[1].startswith("T | project ['session_id']")
+    assert client.queries[1].endswith("['rowid'], ['_v'], ['_deleted']")
 
 
 def test_rowid_fills_integer_primary_key_and_lastrowid():
@@ -388,13 +389,26 @@ def test_replace_sees_buffered_rows_of_a_unique_index():
     assert len(client.queries) == 1  # the second row met the buffered one
 
 
-def test_mutation_rowcount_sums_extents_and_allows_none():
-    counts = iter([[[3, "e1"], [4, "e2"]], []])
-    client = FakeClient(on_mgmt=lambda c: response([("RowCount", "long"), ("ExtentId", "guid")], next(counts)))
-    conn, _, _ = make({"m": Mutation("sessions", "X", "delete")}, client)
-    assert conn.execute("m").rowcount == 7
+def test_mutation_rows_become_buffered_versions():
+    """The cluster computes the new versions; they are ingested with the next flush, stamped by this process."""
+    table = TABLES["sessions"]
+    names = mutation_columns(table)
+    types = [next((c.kusto_type for c in table.columns if c.name == n), "string") for n in names]
+    types = [
+        "long" if n == ROWID else "datetime" if n == VERSION else "bool" if n == DELETED else t
+        for n, t in zip(names, types, strict=False)
+    ]
+    base = row_defaults(table) | {"session_id": "a", ROWID: 5, VERSION: "2026-01-01T00:00:00Z", DELETED: True}
+    rows = iter([[tuple(base[n] for n in names), tuple((base | {"session_id": "b", ROWID: 6})[n] for n in names)], []])
+    client = FakeClient(on_query=lambda k: response(list(zip(names, types, strict=False)), next(rows)))
+    conn, _, ing = make({"m": Mutation("sessions", "X", "delete")}, client)
+    assert conn.execute("m").rowcount == 2
     assert conn.execute("m").rowcount == 0
-    assert conn.total_changes == 7
+    assert conn.total_changes == 2
+    conn.commit()
+    ((table_name, sent),) = ing.calls
+    assert table_name == "sessions" and [r[ROWID] for r in sent] == [5, 6]
+    assert all(r[DELETED] is True and r[VERSION] != "2026-01-01T00:00:00Z" for r in sent)
 
 
 def test_pragmas_are_answered_from_the_schema():

@@ -121,8 +121,11 @@ class StreamingIngester:
         from azure.kusto.ingest import IngestionProperties
 
         props = IngestionProperties(database=self.database, table=table, data_format=DataFormat.MULTIJSON)
+        from .connection import retrying
+
         for group in chunks([json_line(r) for r in rows], self.max_bytes):
-            self.ingest_client.ingest_from_stream(io.BytesIO("\n".join(group).encode("ascii")), props)
+            data = "\n".join(group).encode("ascii")
+            retrying(lambda d=data: self.ingest_client.ingest_from_stream(io.BytesIO(d), props), f"ingestion into {table}")
 
 
 def make_ingester(settings: KustoSettings, client: Any, ingest_client: Any = None) -> RowIngester:

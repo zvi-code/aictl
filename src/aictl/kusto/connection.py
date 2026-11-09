@@ -15,6 +15,7 @@ its own writes.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import random
@@ -78,6 +79,33 @@ class KustoStoreError(sqlite3.OperationalError):
 
 def _server_message(exc: BaseException) -> str:
     return str(getattr(exc, "message_text", "") or exc)
+
+
+# A small cluster throttles (HTTP 429) when ingestion commands or queries arrive
+# faster than it takes them; the request is sound and succeeds a moment later.
+log = logging.getLogger(__name__)
+RETRY_DELAYS_S = (0.5, 1.0, 2.0, 4.0, 8.0)
+
+
+def _throttled(exc: BaseException) -> bool:
+    if type(exc).__name__ == "KustoThrottlingError":
+        return True
+    response = getattr(exc, "http_response", None)
+    status = getattr(response, "status_code", None)
+    return status in (429, 503) or "throttled" in str(exc).lower()
+
+
+def retrying(call: Callable[[], Any], what: str) -> Any:
+    """Run *call*, waiting out the cluster's throttling for a few seconds before giving up."""
+    for delay in RETRY_DELAYS_S:
+        try:
+            return call()
+        except Exception as exc:  # noqa: BLE001 - only a throttled request is retried; the rest is raised below
+            if not _throttled(exc):
+                raise
+            log.debug("Kusto throttled %s; retrying in %.1f s", what, delay)
+            time.sleep(delay)
+    return call()
 
 
 # Row ids: milliseconds since the epoch in the high bits, then 8 bits that tell
@@ -741,14 +769,14 @@ class KustoConnection:
         props = ClientRequestProperties()
         props.set_option(ClientRequestProperties.request_timeout_option_name, QUERY_TIMEOUT)
         try:
-            response = self.client.execute(self.database, kql, props)
+            response = retrying(lambda: self.client.execute(self.database, kql, props), "query")
         except Exception as exc:  # noqa: BLE001 - every SDK and transport failure is a store error
             raise KustoStoreError("Kusto query failed", kql=kql, sql=sql, server_message=_server_message(exc)) from exc
         return Result.from_response(response)
 
     def _mgmt(self, command: str, sql: str | None = None) -> Result:
         try:
-            response = self.client.execute_mgmt(self.database, command)
+            response = retrying(lambda: self.client.execute_mgmt(self.database, command), "command")
         except Exception as exc:  # noqa: BLE001 - every SDK and transport failure is a store error
             raise KustoStoreError(
                 "Kusto command failed", kql=command, sql=sql, server_message=_server_message(exc)
@@ -756,19 +784,35 @@ class KustoConnection:
         return Result.from_response(response)
 
     def _mutate(self, stmt: Mutation, sql: str) -> int:
+        """Run the mutation's query and buffer its rows as new versions, like inserted rows.
+
+        The cluster computes the new versions (the UPDATE's SET, the DELETE's tombstone);
+        they reach the table through the same streaming ingestion as inserts, at the
+        next flush. ``.set-or-append`` would write them in one command, but it takes an
+        ingestion-capacity slot, of which a small cluster has one: a poll of a few
+        hundred updates queued for minutes behind itself. The version stamp is this
+        process's, so it orders against the rows it inserted in the same transaction.
+        """
         kql = stmt.kql
         table = self.tables.get(stmt.table)
         if table is not None:
-            # .set-or-append matches columns by position, and a summarize by key moves
-            # the key columns first: name them in the table's own order.
+            # The rows carry every column, in the table's own order.
             kql += " | project " + ", ".join(quote(n) for n in mutation_columns(table))
-        result = self._mgmt(f".set-or-append {quote(stmt.table)} <| {kql}", sql)
-        count = 0
-        if "RowCount" in result.names:
-            i = result.names.index("RowCount")
-            count = sum(int(r[i] or 0) for r in result.rows)
-        self.total_changes += count
-        return count
+        result = self._query(kql, sql)
+        rows: list[dict[str, Any]] = []
+        for values in result.rows:
+            row = dict(zip(result.names, values, strict=False))
+            row[VERSION] = next_version()
+            row[DELETED] = bool(row.get(DELETED))
+            if ROWID in row and row[ROWID] is not None:
+                row[ROWID] = int(row[ROWID])
+            rows.append(row)
+        for row in rows:
+            self._buffer(stmt.table, table, row)
+        if len(self._pending.get(stmt.table) or ()) >= FLUSH_ROWS:
+            self._flush()
+        self.total_changes += len(rows)
+        return len(rows)
 
     def _complete(self, table: Table | None, row: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         """The row with its system columns, typed for its table; and whether its rowid is new."""
@@ -1013,11 +1057,17 @@ class KustoConnection:
 
     def _buffer(self, name: str, table: Table | None, row: dict[str, Any]) -> None:
         self._pending.setdefault(name, []).append(row)
-        if table is not None and not row[DELETED]:
-            index = self._pending_index.setdefault(name, [{} for _ in table.conflict_keys])
-            for i, k in enumerate(self._keys(table, row)):
-                if k is not None:
-                    index[i][k] = row
+        if table is None:
+            return
+        index = self._pending_index.setdefault(name, [{} for _ in table.conflict_keys])
+        for i, k in enumerate(self._keys(table, row)):
+            if k is None:
+                continue
+            if row[DELETED]:
+                # A tombstone: a later conflict check must not meet the row it removed.
+                index[i].pop(k, None)
+            else:
+                index[i][k] = row
 
     def _flush(self) -> None:
         """Send every buffered row, table by table in first-insert order."""
