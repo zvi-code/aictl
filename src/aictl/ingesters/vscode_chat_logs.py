@@ -96,9 +96,13 @@ class VSCodeChatLogsIngester:
         self.last_poll_ts: float = 0.0
         self.last_poll_inserted: int = 0
         self._provisioned: set[str] = set()
+        # Requests already ingested per file, so a growing chat only inserts its new tail.
+        self._ingested_requests: dict[Path, int] = {}
 
     def _quality(self, status: str, *, severity: str = "", message: str = "", detail: dict | None = None) -> None:
-        record_quality(self.store, "vscode-chat-logs", self.log_dir, status, severity=severity, message=message, detail=detail)
+        record_quality(
+            self.store, "vscode-chat-logs", self.log_dir, status, severity=severity, message=message, detail=detail
+        )
 
     # ── public API ─────────────────────────────────────────────
 
@@ -218,38 +222,48 @@ class VSCodeChatLogsIngester:
         inserted = 0
         now = time.time()
         source_file = str(path)
-        for idx, req in enumerate(requests):
-            if not isinstance(req, dict):
-                continue
-            ts = coerce_ts(req.get("timestamp")) or creation_date
-            model = str(req.get("modelId") or "")
-            user_text = _extract_user_text(req.get("message"))
-            if user_text:
-                # User row: source_row_id = 2*idx.
-                if self._insert_message(
-                    session_id=session_id,
-                    source_file=source_file,
-                    source_row_id=idx * 2,
-                    role="user",
-                    content=user_text,
-                    model=model,
-                    ts=ts,
-                    ingested_at=now,
-                ):
-                    inserted += 1
-            assistant_text = _extract_assistant_text(req.get("response"))
-            if assistant_text:
-                if self._insert_message(
-                    session_id=session_id,
-                    source_file=source_file,
-                    source_row_id=idx * 2 + 1,
-                    role="assistant",
-                    content=assistant_text,
-                    model=model,
-                    ts=ts,
-                    ingested_at=now,
-                ):
-                    inserted += 1
+        start = self._ingested_requests.get(path, 0)
+        if len(requests) < start:
+            start = 0  # the file shrank: read it again from the top
+        try:
+            for idx in range(start, len(requests)):
+                req = requests[idx]
+                if not isinstance(req, dict):
+                    continue
+                ts = coerce_ts(req.get("timestamp")) or creation_date
+                model = str(req.get("modelId") or "")
+                user_text = _extract_user_text(req.get("message"))
+                if user_text:
+                    # User row: source_row_id = 2*idx.
+                    if self._insert_message(
+                        session_id=session_id,
+                        source_file=source_file,
+                        source_row_id=idx * 2,
+                        role="user",
+                        content=user_text,
+                        model=model,
+                        ts=ts,
+                        ingested_at=now,
+                    ):
+                        inserted += 1
+                assistant_text = _extract_assistant_text(req.get("response"))
+                if assistant_text:
+                    if self._insert_message(
+                        session_id=session_id,
+                        source_file=source_file,
+                        source_row_id=idx * 2 + 1,
+                        role="assistant",
+                        content=assistant_text,
+                        model=model,
+                        ts=ts,
+                        ingested_at=now,
+                    ):
+                        inserted += 1
+        finally:
+            # One commit per file; on an error keep the rows already written.
+            writer_conn(self.store).commit()
+        # The last request may still be streaming, so read it again next time.
+        self._ingested_requests[path] = max(len(requests) - 1, 0)
         return inserted, True
 
     # ── storage writes ────────────────────────────────────────
@@ -273,7 +287,6 @@ class VSCodeChatLogsIngester:
             " VALUES(?,?,?,?,?,?,?,?)",
             (session_id, source_file, source_row_id, role, content[:_MAX_CONTENT_CHARS], model, ts, ingested_at),
         )
-        conn.commit()
         return cur.rowcount > 0
 
     def _correlate(self, vscode_sid: str, ts: float) -> str:
@@ -293,7 +306,9 @@ class VSCodeChatLogsIngester:
         provision_session(
             self.store,
             self._provisioned,
-            SessionRow(session_id=provisional, tool="copilot-vscode", started_at=ts or time.time(), source="vscode-chat-logs")
+            SessionRow(
+                session_id=provisional, tool="copilot-vscode", started_at=ts or time.time(), source="vscode-chat-logs"
+            ),
         )
         return provisional
 
@@ -310,9 +325,7 @@ def _extract_user_text(message: Any) -> str:
         # Fall back to joining part texts when ``text`` is absent.
         parts = message.get("parts")
         if isinstance(parts, list):
-            return "\n".join(
-                str(p.get("text", "")) for p in parts if isinstance(p, dict) and p.get("text")
-            )
+            return "\n".join(str(p.get("text", "")) for p in parts if isinstance(p, dict) and p.get("text"))
     if isinstance(message, str):
         return message
     return ""
