@@ -395,7 +395,7 @@ The sink dispatches to registered handlers: `HistoryDB` for persistence, `Snapsh
 
 `HistoryDB` provides zero-dependency time-series storage:
 
-- **Write-behind batching**: metrics buffered in memory, flushed every 10 seconds
+- **Write-behind batching**: metrics buffered in memory, flushed every 10 seconds, or within a second of a hook or telemetry batch while a dashboard client is attached
 - **WAL mode**: concurrent readers with single writer
 - **Auto-compaction**: full resolution for 24h, 1-minute averages for 7 days, 5-minute averages for 30 days, then deleted
 - **Default location**: `~/.config/aictl/history.db`
@@ -557,7 +557,7 @@ start_server(root, port, interval)
 
 ```
 Main Thread
-├── HTTP Server (ThreadingHTTPServer — thread per request)
+├── HTTP Server (ThreadingHTTPServer — eight pooled worker threads keep their history connections; a thread per request beyond them)
 │   ├── Request handler threads (REST API, SSE clients)
 │   └── SSE push on snapshot version change
 │
@@ -574,7 +574,7 @@ Main Thread
         └── SessionCorrelator
 
 Write-Behind Thread (from HistoryDB)
-└── Flushes metric samples to SQLite every 10s
+└── Flushes metric samples to SQLite every 10s, sooner when a hook arrives while a client watches
 ```
 
 Synchronization: `SampleSink` uses `threading.Lock`, `SnapshotStore` uses `threading.Condition` for version-based notification, `HistoryDB` uses SQLite WAL mode for concurrent readers.

@@ -108,6 +108,10 @@ _SESSION_TABLES_SHARED = ("session_processes", "agents", "requests", "tool_invoc
 _TIMED_TABLES = frozenset(
     {"requests", "tool_invocations", "session_prompts", "skill_uses", "file_write_events", "context_events", "events"}
 )
+# Tables read for one session only, in a session scope, where its store is attached: a
+# copy would carry every row of the store beyond the attach room for nothing. Here that
+# was 257k context items, 65-125 MB of memory per read connection.
+_SESSION_ONLY_TABLES = frozenset({"session_context_items", "session_loaded_files"})
 # A session or subagent id the router does not know, looked up in a store.
 _FIND_SESSION_SQL = (
     "SELECT 1 FROM sessions WHERE session_id = ?",
@@ -1610,6 +1614,8 @@ class ProjectStores:
                 continue
             try:
                 for table, names in cols.items():
+                    if table in _SESSION_ONLY_TABLES:
+                        continue
                     have = set(_columns(conn, "cp", table))
                     common = ", ".join(c for c in names if c in have)
                     if not common:
