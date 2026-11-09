@@ -43,6 +43,7 @@ from .ingesters._common import decode_file_uri
 from .storage import (
     BUSY_TIMEOUT_S,
     CAPTURE_FULL,
+    CAPTURE_OFF,
     FLUSH_CHUNK_ROWS,
     FLUSH_INTERVAL,
     FLUSH_MIN_GAP_S,
@@ -419,6 +420,13 @@ class ProjectStores:
         self._split_reported = 0.0
         # On a Kusto cluster every project shares one database: the store is never split.
         self.kusto = kusto
+        # On a cluster the OTLP requests are also stored as they arrive, in the OTel
+        # tables (kusto/otel_sink.py). Capture decides whether their text is kept.
+        self.otel_sink: Any | None = None
+        if kusto is not None and capture != CAPTURE_OFF:
+            from .kusto.otel_sink import OtelSink
+
+            self.otel_sink = OtelSink(kusto, keep_text=capture == CAPTURE_FULL)
         self.machine = HistoryDB(
             db_path=db_path,
             kusto=kusto,
@@ -1387,6 +1395,8 @@ class ProjectStores:
                 log.warning("Closing project store %s failed: %s", key, exc)
         self._save_index()
         self.machine.close()
+        if self.otel_sink is not None:
+            self.otel_sink.close()
 
     def __enter__(self) -> ProjectStores:
         return self
