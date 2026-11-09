@@ -51,7 +51,7 @@ ACCEPTED_UNSUPPORTED: dict[str, str] = {
     "aictl/project_stores.py:1649": "no such table",  # the temp table of the line above
     # A trigger body (new.rowid) and SQLite internals.
     "aictl/storage.py:2367": "new.rowid",
-    "aictl/storage.py:7009": "dbstat",
+    "aictl/storage.py:7015": "dbstat",
     "aictl/storage.py:1813": "last_insert_rowid()",
 }
 
@@ -195,7 +195,7 @@ def test_delete_with_rowid_subquery(tr):
 
 def test_insert_or_replace_fills_defaults(tr):
     ins = tr.translate("INSERT OR REPLACE INTO maintenance_state(key, value) VALUES(?, ?)", ["k", "5"])
-    assert ins == Insert(table="maintenance_state", rows=[{"key": "k", "value": 5.0}], on_conflict="replace")
+    assert ins == Insert(table="maintenance_state", rows=[{"key": "k", "value": 5.0, "text": ""}], on_conflict="replace")
     ins = tr.translate("REPLACE INTO tools(tool) VALUES ('x')")
     assert ins.on_conflict == "replace"
     assert ins.rows == [

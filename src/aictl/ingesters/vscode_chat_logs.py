@@ -140,10 +140,12 @@ class VSCodeChatLogsIngester:
         try:
             row = (
                 writer_conn(self.store)
-                .execute("SELECT value FROM maintenance_state WHERE key = ?", (self._CURSOR_KEY,))
+                .execute("SELECT text, value FROM maintenance_state WHERE key = ?", (self._CURSOR_KEY,))
                 .fetchone()
             )
-            saved = json.loads(row[0]) if row and row[0] else {}
+            # An older version kept the JSON in ``value``; the cursor is not lost on upgrade.
+            raw = row[0] if row and row[0] else (row[1] if row and isinstance(row[1], str) else "")
+            saved = json.loads(raw) if raw else {}
             for key, (mtime, size, offset, count, vscode_sid, created) in saved.items():
                 self._files[key] = _FileState(
                     offset=int(offset), count=int(count), vscode_sid=str(vscode_sid), created=float(created)
@@ -164,8 +166,8 @@ class VSCodeChatLogsIngester:
         try:
             conn = writer_conn(self.store)
             conn.execute(
-                "INSERT OR REPLACE INTO maintenance_state(key, value) VALUES(?,?)",
-                (self._CURSOR_KEY, json.dumps(value)),
+                "INSERT OR REPLACE INTO maintenance_state(key, value, text) VALUES(?,?,?)",
+                (self._CURSOR_KEY, time.time(), json.dumps(value)),
             )
             conn.commit()
         except Exception as exc:  # noqa: BLE001 - the next poll saves again

@@ -1069,7 +1069,7 @@ class TranscriptUsageIngester:
     def _save_last_run(self, ts: float) -> None:
         try:
             conn = writer_conn(self.store)
-            conn.execute("INSERT OR REPLACE INTO maintenance_state(key, value) VALUES(?,?)", (self._LAST_RUN_KEY, str(ts)))
+            conn.execute("INSERT OR REPLACE INTO maintenance_state(key, value) VALUES(?,?)", (self._LAST_RUN_KEY, float(ts)))
             conn.commit()
         except Exception as exc:  # noqa: BLE001 - the next poll saves again
             log.debug("transcript-usage: last run not saved (%s)", exc)

@@ -313,7 +313,7 @@ CREATE TABLE IF NOT EXISTS session_context_items (
 );
 
 CREATE TABLE IF NOT EXISTS maintenance_state (
-    key TEXT PRIMARY KEY, value REAL NOT NULL
+    key TEXT PRIMARY KEY, value REAL NOT NULL, text TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS data_quality_status (
@@ -495,8 +495,8 @@ CREATE TABLE IF NOT EXISTS ui_dashboard (
     id          INTEGER PRIMARY KEY,
     slug        TEXT NOT NULL UNIQUE,
     title       TEXT NOT NULL,
-    created_at  REAL NOT NULL DEFAULT (strftime('%%s','now')),
-    updated_at  REAL NOT NULL DEFAULT (strftime('%%s','now'))
+    created_at  REAL NOT NULL DEFAULT (strftime('%s','now')),
+    updated_at  REAL NOT NULL DEFAULT (strftime('%s','now'))
 );
 
 CREATE TABLE IF NOT EXISTS ui_section (
@@ -2466,7 +2466,12 @@ class HistoryDB:
         All data is derived from the current hardcoded Preact/JS layout.
         """
         # ── Dashboard ──────────────────────────────────────────────
-        conn.execute("INSERT OR IGNORE INTO ui_dashboard(id, slug, title) VALUES(1, 'main', 'aictl live dashboard')")
+        now = time.time()
+        conn.execute(
+            "INSERT OR IGNORE INTO ui_dashboard(id, slug, title, created_at, updated_at)"
+            " VALUES(1, 'main', 'aictl live dashboard', ?, ?)",
+            (now, now),
+        )
 
         # ── Tabs (7) ──────────────────────────────────────────────
         conn.executemany(
@@ -6211,14 +6216,15 @@ class HistoryDB:
         conn = self._conn()
         slug = data.get("slug", "main")
         title = data.get("title", slug)
+        now = time.time()
 
         conn.execute(
-            "INSERT INTO ui_dashboard(slug, title)"
-            " VALUES(?, ?)"
+            "INSERT INTO ui_dashboard(slug, title, created_at, updated_at)"
+            " VALUES(?, ?, ?, ?)"
             " ON CONFLICT(slug) DO UPDATE SET"
             " title = excluded.title,"
-            " updated_at = strftime('%s','now')",
-            (slug, title),
+            " updated_at = excluded.updated_at",
+            (slug, title, now, now),
         )
         dash_id = conn.execute("SELECT id FROM ui_dashboard WHERE slug = ?", (slug,)).fetchone()[0]
 

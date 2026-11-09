@@ -367,3 +367,24 @@ def test_migration_reraises_non_benign_operational_error():
             raise sqlite3.OperationalError("duplicate column name: pid")
 
     m021_sessions_add_pid.apply(DuplicateColumnConn())  # must not raise
+
+
+def test_m037_adds_text_and_repairs_dashboard_dates(tmp_path):
+    from aictl.storage_migrations import m037_maintenance_text
+
+    conn = sqlite3.connect(tmp_path / "m37.db")
+    conn.execute("CREATE TABLE maintenance_state (key TEXT PRIMARY KEY, value REAL NOT NULL)")
+    conn.execute("INSERT INTO maintenance_state VALUES('k', 5)")
+    conn.execute("CREATE TABLE ui_dashboard (id INTEGER PRIMARY KEY, created_at REAL, updated_at REAL)")
+    conn.execute("INSERT INTO ui_dashboard VALUES(1, '%s', '%s')")
+    conn.execute("INSERT INTO ui_dashboard VALUES(2, 100.0, 200.0)")
+    for _ in range(2):  # idempotent
+        m037_maintenance_text.apply(conn)
+    assert conn.execute("SELECT value, text FROM maintenance_state").fetchone() == (5.0, "")
+    rows = {
+        r[0]: r[1:] for r in conn.execute("SELECT id, created_at, updated_at, typeof(created_at) FROM ui_dashboard")
+    }
+    assert rows[1][2] == "real" and rows[1][0] > 1e9 and rows[1][1] > 1e9
+    assert rows[2] == (100.0, 200.0, "real")
+    # A store without either table is left alone.
+    m037_maintenance_text.apply(sqlite3.connect(":memory:"))
