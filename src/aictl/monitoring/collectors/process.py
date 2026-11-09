@@ -122,6 +122,9 @@ def classify_process(process: ProcessInfo) -> MatchResult:
 
 # ─── Collector ─────────────────────────────────────────────────
 
+# A process can change its working directory, so a cached cwd is read again after this long.
+CWD_REFRESH_S = 60.0
+
 
 class PsutilProcessCollector(BaseCollector):
     """Poll process trees and emit process start/sample/exit events."""
@@ -138,6 +141,10 @@ class PsutilProcessCollector(BaseCollector):
         # long-running sessions when classify_process is inconsistent
         # across poll cycles (e.g. cmdline temporarily unavailable).
         self._sticky_pids: set[int] = set()
+        # Classification per (pid, name), kept like _identity: the regexes run once per process.
+        self._classified: dict[tuple[int, str], MatchResult] = {}
+        # cwd per pid with the time it was read. A failed read is kept as None.
+        self._cwd: dict[int, tuple[str | None, float]] = {}
         # Last classification-health state pushed via report_status, so
         # status flips are reported once per transition (not per cycle).
         self._classification_degraded_reported: bool = False
@@ -188,7 +195,7 @@ class PsutilProcessCollector(BaseCollector):
 
                 # Sink: full-resolution per-PID metrics (OTel conventions)
                 ptags = {"process.pid": str(pid), "process.name": proc.name}
-                match = classify_process(proc)
+                match = self._classified.get((pid, proc.name)) or classify_process(proc)
                 if match.tool:
                     ptags["aictl.tool"] = match.tool
                 if cpu_pct is not None:
@@ -198,6 +205,7 @@ class PsutilProcessCollector(BaseCollector):
 
             for pid in sorted(self._known_pids - current_pids):
                 self._handles.pop(pid, None)
+                self._cwd.pop(pid, None)
                 self._known_pids.discard(pid)
                 self._sticky_pids.discard(pid)
                 if self.correlator:
@@ -284,7 +292,9 @@ class PsutilProcessCollector(BaseCollector):
                 except (psutil_module.Error, OSError):
                     continue
 
-            cwd = None
+            cwd_cached = self._cwd.get(pid)
+            now = time.monotonic()
+            cwd = cwd_cached[0] if cwd_cached else None
             cpu_percent: float | None = 0.0
             memory_rss = 0
             child_count = len(children.get(pid, set()))
@@ -300,10 +310,12 @@ class PsutilProcessCollector(BaseCollector):
                         # One process cannot use more than all cores.
                         cpu_percent = min(cpu_percent, 100.0 * (os.cpu_count() or 1))
                     memory_rss = int(handle.memory_info().rss)
-                    try:
-                        cwd = str(handle.cwd())
-                    except (psutil_module.Error, OSError):
-                        cwd = None
+                    if cwd_cached is None or now - cwd_cached[1] >= CWD_REFRESH_S:
+                        try:
+                            cwd = str(handle.cwd())
+                        except (psutil_module.Error, OSError):
+                            cwd = None
+                        self._cwd[pid] = (cwd, now)
             except (psutil_module.Error, OSError):
                 continue
 
@@ -325,20 +337,29 @@ class PsutilProcessCollector(BaseCollector):
         return snapshot
 
     def _tracked_pids(self, all_processes, children) -> set[int]:
-        roots = {
-            pid
-            for pid, info in all_processes.items()
-            if classify_process(
-                ProcessInfo(
-                    pid=pid,
-                    ppid=info["ppid"],
-                    name=str(info["name"]),
-                    exe=info["exe"],
-                    cmdline=info["cmdline"],
-                    username=info["username"],
+        # Same rule as _identity: an empty cmdline may be an exec race, and a result
+        # from a registry that failed to load must not stick.
+        classified: dict[tuple[int, str], MatchResult] = {}
+        roots: set[int] = set()
+        for pid, info in all_processes.items():
+            key = (pid, str(info["name"]))
+            match = self._classified.get(key)
+            if match is None:
+                match = classify_process(
+                    ProcessInfo(
+                        pid=pid,
+                        ppid=info["ppid"],
+                        name=str(info["name"]),
+                        exe=info["exe"],
+                        cmdline=info["cmdline"],
+                        username=info["username"],
+                    )
                 )
-            ).root_candidate
-        }
+            if info["cmdline"] or IS_WINDOWS:
+                classified[key] = match
+            if match.root_candidate:
+                roots.add(pid)
+        self._classified = {} if classification_degraded() else classified
         # Persist newly-found roots so they survive inconsistent classification
         self._sticky_pids.update(roots)
         # Prune sticky PIDs that no longer exist as live processes
@@ -381,6 +402,22 @@ FILE_EVENT_MIN_GAP_S = 0.25
 OTHER_FILES_PATH = "(other files)"
 # Paths whose last size is kept, so a long build cannot grow this without limit.
 MAX_TRACKED_FILE_SIZES = 50_000
+# Dropped even under a tool's own folder: ~/.copilot/pkg holds whole node_modules trees.
+ALWAYS_IGNORED_DIR_NAMES = frozenset({".git", "node_modules", "__pycache__"})
+
+
+def _outermost_paths(paths: list[Path]) -> list[Path]:
+    """Drop paths inside another path in the list. Each is watched recursively, so a
+    nested root would deliver every event twice."""
+    keyed = [(os.path.normcase(str(path)).rstrip(os.sep) + os.sep, path) for path in paths]
+    kept: list[Path] = []
+    seen: set[str] = set()
+    for key, path in keyed:
+        if key in seen or any(key != other and key.startswith(other) for other, _ in keyed):
+            continue
+        seen.add(key)
+        kept.append(path)
+    return kept
 
 
 class _FileEventSampler:
@@ -453,7 +490,9 @@ class WatchdogFileCollector(BaseCollector):
             )
             return
 
-        watch_paths = [path for path in (*self.config.workspace_paths, *self.config.state_paths) if path.exists()]
+        watch_paths = _outermost_paths(
+            [path for path in (*self.config.workspace_paths, *self.config.state_paths) if path.exists()]
+        )
         if not watch_paths:
             await self.report_status(
                 status="disabled",
@@ -535,10 +574,13 @@ class _WatchHandler:  # pragma: no cover - exercised through watchdog integratio
         path = str(Path(path_override or event.src_path).expanduser())
         if _is_under(path, self._config.ignored_paths):
             return
+        parts = Path(path).parts
+        if not ALWAYS_IGNORED_DIR_NAMES.isdisjoint(parts):
+            return
         tool_hint = _tool_hint_for_path(path)
-        # Files under .git or build output say nothing about AI tools. A tool's own state stays
-        # in, even under a folder named like one of these.
-        if not tool_hint and not self._ignored_names.isdisjoint(Path(path).parts):
+        # Build output says nothing about AI tools. A tool's own state stays in, even under
+        # a folder named like one of these.
+        if not tool_hint and not self._ignored_names.isdisjoint(parts):
             return
         if event_type == "modified":
             now = time.monotonic()

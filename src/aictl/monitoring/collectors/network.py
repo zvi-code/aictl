@@ -34,10 +34,34 @@ class NetworkCollector(BaseCollector):
 
     name = "network"
 
+    def _attribute(self, pid: int, bytes_in: int, bytes_out: int, proc: ProcessInfo) -> bool:
+        """Give the bytes to the correlator. True when the sample should reach the sink:
+        only processes of an AI-tool session matter, the rest of the machine does not."""
+        if not self.correlator:
+            return True
+        resolved = self.correlator.on_network(pid, bytes_in, bytes_out, process=proc)
+        return bool(resolved) or pid in self.correlator.pid_to_session
+
+    def _emit_io(self, pid: int, name: str, bytes_in: int, bytes_out: int) -> None:
+        self.sink_emit(
+            M("process.network.io"),
+            float(bytes_in),
+            {"process.pid": str(pid), "process.name": name, "network.io.direction": "receive"},
+        )
+        self.sink_emit(
+            M("process.network.io"),
+            float(bytes_out),
+            {"process.pid": str(pid), "process.name": name, "network.io.direction": "transmit"},
+        )
+
 
 # ---------------------------------------------------------------------------
 # Psutil fallback (cross-platform degraded adapter)
 # ---------------------------------------------------------------------------
+
+
+# Stands in for the connections of processes outside any AI-tool session.
+OTHER_PID = -1
 
 
 class PsutilFallbackNetworkCollector(NetworkCollector):
@@ -58,6 +82,7 @@ class PsutilFallbackNetworkCollector(NetworkCollector):
         self._status = status
         self._mode = mode
         self._detail = detail
+        self._names: dict[int, str] = {}
 
     async def run(self) -> None:
         try:
@@ -74,7 +99,8 @@ class PsutilFallbackNetworkCollector(NetworkCollector):
         previous = psutil.net_io_counters()
 
         while True:
-            samples = await asyncio.to_thread(self._sample, psutil)
+            known = set(self.correlator.pid_to_session) if self.correlator else None
+            samples = await asyncio.to_thread(self._sample, psutil, known)
             current = psutil.net_io_counters()
             total_out = max(0, current.bytes_sent - previous.bytes_sent)
             total_in = max(0, current.bytes_recv - previous.bytes_recv)
@@ -97,23 +123,17 @@ class PsutilFallbackNetworkCollector(NetworkCollector):
                         remaining_in -= bytes_in
                     if bytes_out == 0 and bytes_in == 0:
                         continue
+                    if pid == OTHER_PID:
+                        continue
                     proc = ProcessInfo(pid=pid, ppid=None, name=str(sample["name"]))
-                    if self.correlator:
-                        self.correlator.on_network(pid, bytes_in, bytes_out, process=proc)
-                    self.sink_emit(
-                        M("process.network.io"),
-                        float(bytes_in),
-                        {"process.pid": str(pid), "process.name": proc.name, "network.io.direction": "receive"},
-                    )
-                    self.sink_emit(
-                        M("process.network.io"),
-                        float(bytes_out),
-                        {"process.pid": str(pid), "process.name": proc.name, "network.io.direction": "transmit"},
-                    )
+                    if self._attribute(pid, bytes_in, bytes_out, proc):
+                        self._emit_io(pid, proc.name, bytes_in, bytes_out)
 
             await self.sleep_paced(self.interval)
 
-    def _sample(self, psutil_module):
+    def _sample(self, psutil_module, known: set[int] | None = None):
+        """Connections per pid. With ``known`` set, other pids share one OTHER_PID entry:
+        they still take their share of the system totals, but get no name lookup."""
         grouped: dict[int, dict[str, object]] = defaultdict(lambda: {"weight": 0, "remotes": set(), "name": "unknown"})
         try:
             connections = psutil_module.net_connections(kind="tcp")
@@ -127,13 +147,24 @@ class PsutilFallbackNetworkCollector(NetworkCollector):
             remote_ip = getattr(connection.raddr, "ip", "")
             if remote_ip.startswith("127.") or remote_ip == "::1":
                 continue
+            if known is not None and pid not in known:
+                pid = OTHER_PID
             grouped[pid]["weight"] = int(grouped[pid]["weight"]) + 1
+            if pid == OTHER_PID:
+                continue
             grouped[pid]["remotes"].add(f"{remote_ip}:{getattr(connection.raddr, 'port', '')}")
             if grouped[pid]["name"] == "unknown":
-                try:
-                    grouped[pid]["name"] = psutil_module.Process(pid).name()
-                except Exception:
-                    grouped[pid]["name"] = "unknown"
+                # The name is read once per pid, not per connection per cycle.
+                name = self._names.get(pid)
+                if name is None:
+                    try:
+                        name = psutil_module.Process(pid).name()
+                        self._names[pid] = name
+                    except Exception:
+                        name = "unknown"
+                grouped[pid]["name"] = name
+        # Forget pids with no connection this cycle, so a reused pid gets its own name.
+        self._names = {pid: name for pid, name in self._names.items() if pid in grouped}
         return grouped
 
 
@@ -247,26 +278,13 @@ class MacOSNetworkCollector(NetworkCollector):
                         sample.bytes_in,
                         sample.bytes_out,
                     )
-                # Correlator: typed session tracking
-                if self.correlator:
-                    proc = ProcessInfo(pid=sample.pid, ppid=None, name=sample.name)
-                    resolved = self.correlator.on_network(sample.pid, sample.bytes_in, sample.bytes_out, process=proc)
-                    if self.debug:
-                        if resolved:
-                            log.info("  -> resolved to session %s", resolved)
-                        else:
-                            log.info("  -> unresolved (pid %d, name '%s')", sample.pid, sample.name)
+                proc = ProcessInfo(pid=sample.pid, ppid=None, name=sample.name)
+                keep = self._attribute(sample.pid, sample.bytes_in, sample.bytes_out, proc)
+                if self.debug and self.correlator:
+                    log.info("  -> %s (pid %d, name '%s')", "kept" if keep else "dropped", sample.pid, sample.name)
                 # Sink: per-PID network at full nettop resolution
-                self.sink_emit(
-                    M("process.network.io"),
-                    float(sample.bytes_in),
-                    {"process.pid": str(sample.pid), "process.name": sample.name, "network.io.direction": "receive"},
-                )
-                self.sink_emit(
-                    M("process.network.io"),
-                    float(sample.bytes_out),
-                    {"process.pid": str(sample.pid), "process.name": sample.name, "network.io.direction": "transmit"},
-                )
+                if keep:
+                    self._emit_io(sample.pid, sample.name, sample.bytes_in, sample.bytes_out)
         except asyncio.CancelledError:
             stop_event.set()
             raise
@@ -372,18 +390,8 @@ class LinuxNetworkCollector(NetworkCollector):
                     continue
                 pid, local_addr, remote_addr = key
                 proc = ProcessInfo(pid=pid, ppid=None, name=current[2])
-                if self.correlator:
-                    self.correlator.on_network(pid, bytes_in, bytes_out, process=proc)
-                self.sink_emit(
-                    M("process.network.io"),
-                    float(bytes_in),
-                    {"process.pid": str(pid), "process.name": proc.name, "network.io.direction": "receive"},
-                )
-                self.sink_emit(
-                    M("process.network.io"),
-                    float(bytes_out),
-                    {"process.pid": str(pid), "process.name": proc.name, "network.io.direction": "transmit"},
-                )
+                if self._attribute(pid, bytes_in, bytes_out, proc):
+                    self._emit_io(pid, proc.name, bytes_in, bytes_out)
             previous = snapshot
             await self.sleep_paced(self.interval)
 
