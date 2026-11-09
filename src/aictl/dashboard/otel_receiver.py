@@ -238,6 +238,7 @@ class OtelReceiver:
     def parse_metrics(self, body: dict) -> list[_Sample]:
         """Parse OTLP JSON ``/v1/metrics`` payload."""
         samples: list[_Sample] = []
+        received_at = time.time()
         for rm in _iter_otel_dicts(body, "resourceMetrics"):
             resource_attrs = _parse_otel_attributes(
                 (rm.get("resource") or {}).get("attributes", []),
@@ -255,7 +256,7 @@ class OtelReceiver:
                     )
 
                     for dp in _extract_otel_data_points(metric, self.stats):
-                        ts = _nano_to_epoch(dp.get("timeUnixNano", "0"))
+                        ts = _nano_to_epoch(dp.get("timeUnixNano", "0")) or received_at
                         value = _extract_otel_value(dp)
                         tags = _parse_otel_attributes(dp.get("attributes", []), self.stats)
                         tags["tool"] = tool
@@ -282,6 +283,7 @@ class OtelReceiver:
     def parse_logs(self, body: dict) -> list[EventRow]:
         """Parse OTLP JSON ``/v1/logs`` payload."""
         events: list[EventRow] = []
+        received_at = time.time()
         for rl in _iter_otel_dicts(body, "resourceLogs"):
             resource_attrs = _parse_otel_attributes(
                 (rl.get("resource") or {}).get("attributes", []),
@@ -291,7 +293,12 @@ class OtelReceiver:
 
             for sl in _iter_otel_dicts(rl, "scopeLogs"):
                 for record in _iter_otel_dicts(sl, "logRecords"):
-                    ts = _nano_to_epoch(record.get("timeUnixNano", "0"))
+                    # timeUnixNano 0 means unknown; the observed time is the next best.
+                    ts = (
+                        _nano_to_epoch(record.get("timeUnixNano", "0"))
+                        or _nano_to_epoch(record.get("observedTimeUnixNano", "0"))
+                        or received_at
+                    )
                     attrs = _parse_otel_attributes(
                         record.get("attributes", []),
                         self.stats,
@@ -456,6 +463,7 @@ class OtelReceiver:
         """Parse OTLP JSON ``/v1/traces`` payload."""
         samples: list[_Sample] = []
         events: list[EventRow] = []
+        received_at = time.time()
         for rs in _iter_otel_dicts(body, "resourceSpans"):
             resource_attrs = _parse_otel_attributes(
                 (rs.get("resource") or {}).get("attributes", []),
@@ -482,7 +490,9 @@ class OtelReceiver:
                     parent_id = str(span.get("parentSpanId") or "")
                     start_ts = _nano_to_epoch(span.get("startTimeUnixNano", "0"))
                     end_ts = _nano_to_epoch(span.get("endTimeUnixNano", "0"))
-                    duration_ms = (end_ts - start_ts) * 1000 if end_ts > start_ts else 0
+                    duration_ms = (end_ts - start_ts) * 1000 if end_ts > start_ts > 0 else 0
+                    # Rows are stored at the span start; an unknown start falls back to the end, then receipt.
+                    start_ts = start_ts or end_ts or received_at
 
                     attrs["tool"] = tool
                     attrs["span.name"] = name
@@ -564,7 +574,7 @@ class OtelReceiver:
 
                     # Span-level events (e.g. exceptions)
                     for span_event in span.get("events", []):
-                        ev_ts = _nano_to_epoch(span_event.get("timeUnixNano", "0"))
+                        ev_ts = _nano_to_epoch(span_event.get("timeUnixNano", "0")) or start_ts
                         ev_attrs = _parse_otel_attributes(span_event.get("attributes", []), self.stats)
                         ev_attrs["tool"] = tool
                         ev_attrs["parent_span"] = name
