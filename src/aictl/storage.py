@@ -2176,8 +2176,16 @@ class HistoryDB:
         log_paths: tuple[Path, ...] = (),
         memory_fallback: bool = False,
         own_flush_thread: bool = True,
+        kusto: Any | None = None,
     ) -> None:
-        if db_path is None:
+        # A Kusto cluster as the store (``aictl.kusto.KustoSettings``): no file, no WAL,
+        # no memory fallback (a cluster that cannot be reached is an error to see,
+        # not a history to lose quietly). ``_path`` is the store's kusto:// name.
+        self._kusto = kusto
+        if kusto is not None:
+            db_path = kusto.uri
+            memory_fallback = False
+        elif db_path is None:
             db_path = DEFAULT_DB_PATH
         self._retention_days = retention_days
         self.capture = capture
@@ -2192,7 +2200,7 @@ class HistoryDB:
         self._schema_ready = False
         self.degraded_reason = ""
         self._locked_flushes = 0
-        self._path = Path(db_path) if db_path != ":memory:" else db_path
+        self._path = Path(db_path) if db_path != ":memory:" and kusto is None else db_path
         self._flush_interval = flush_interval
         self._datapoint_logger = datapoint_logger
 
@@ -2255,6 +2263,12 @@ class HistoryDB:
         conn = getattr(self._local, "conn", None)
         if conn is None:
             path = str(self._path) if isinstance(self._path, Path) else self._path
+            if self._kusto is not None:
+                from .kusto.connection import connect as kusto_connect
+
+                conn = kusto_connect(self._kusto)
+                self._local.conn = conn
+                return conn
             conn = connect_file(path) if isinstance(self._path, Path) else sqlite3.connect(path, timeout=BUSY_TIMEOUT_S)
             if not self._schema_ready:
                 # Only the connection that opens the store sets these. Setting
@@ -2337,9 +2351,10 @@ class HistoryDB:
         """Blank text columns on this connection's writes unless text is kept.
 
         TEMP triggers cover every writer that goes through ``_conn()``, including
-        ingesters and code added later, and need no schema change.
+        ingesters and code added later, and need no schema change. Kusto has no
+        triggers: there, ``trim_text`` at maintenance is the only text removal.
         """
-        if self._keeps_text():
+        if self._keeps_text() or self._kusto is not None:
             return
         for table, _ts, columns in _TEXT_COLUMNS:
             for column, blank in columns.items():
@@ -2393,9 +2408,11 @@ class HistoryDB:
         # we run every migration whose target version is above ``current``
         # BEFORE executing the baseline, so that drops happen first and
         # ALTERs happen against freshly-created tables.
-        if current > 0 and current < SCHEMA_VERSION:
+        if current > 0 and current < SCHEMA_VERSION and self._kusto is None:
             _apply_pending_migrations(conn, current)
 
+        # On a cluster this creates or widens every table (``.create-merge``); there is
+        # no migration path, since a Kusto store always starts from the current schema.
         conn.executescript(_SCHEMA_SQL)
 
         # Fresh install: seed data tables
@@ -6693,6 +6710,8 @@ class HistoryDB:
     @_named_write("auto_maintain")
     def auto_maintain(self) -> dict[str, int]:
         """Scheduled maintenance: retention, downsampling, WAL and page reclaim."""
+        if self._kusto is not None:
+            return self._kusto_maintain()
         conn = self._conn()
         now = time.time()
         floor = self._retention_floor(now)
@@ -6710,6 +6729,26 @@ class HistoryDB:
             conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchall()
         except sqlite3.Error as exc:
             log.debug("Checkpoint deferred: %s", exc)
+        return result
+
+    def _kusto_maintain(self) -> dict[str, int]:
+        """Maintenance on a cluster: retention is the database's retention policy.
+
+        Kusto drops data past its soft-delete period itself, so nothing is
+        downsampled or deleted here. Text is still blanked as the capture mode asks:
+        a metadata-only store has no write triggers on a cluster, so the trim at
+        maintenance is what removes text there.
+        """
+        from .kusto.schema import quote
+
+        conn = self._conn()
+        days = max(1, int(self._retention_days))
+        conn.command(f".alter-merge database {quote(self._kusto.database)} policy retention softdelete = {days}d recoverability = disabled")
+        result: dict[str, int] = {"retention_policy_days": days}
+        if self._keeps_text():
+            result["text_trimmed"] = self.trim_text(before=time.time() - self._content_retention_days * _24H)
+        else:
+            result["text_trimmed"] = self.trim_text()
         return result
 
     @_named_write("trim_text")

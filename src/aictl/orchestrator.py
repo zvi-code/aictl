@@ -687,10 +687,12 @@ class CollectionService:
 
         # SQLite persistence
         try:
+            from .kusto import kusto_settings
             from .platforms import load_config as _load_config
             from .project_stores import ProjectStores
 
             store_cfg = _load_config()
+            kusto = kusto_settings()
             log_paths = [store_cfg.effective_log_file()]
             if store_cfg.logging_enabled:
                 log_paths.append(Path(store_cfg.logging_dir).resolve())
@@ -706,9 +708,15 @@ class CollectionService:
                 log_paths=tuple(log_paths),
                 memory_fallback=True,
                 say=_say,
+                kusto=kusto,
             )
-            _say(f"  history db: {self._db_path or '~/.config/aictl/history.db'}")
-            if self.db.projects_dir is None:
+            if kusto is not None:
+                _say(f"  history store: {kusto.uri} (Kusto, {kusto.auth_mode} auth; no SQLite file)")
+            else:
+                _say(f"  history db: {self._db_path or '~/.config/aictl/history.db'}")
+            if kusto is not None:
+                pass
+            elif self.db.projects_dir is None:
                 _say("  warning: the history is in memory, so it is not split by project and is lost on exit")
             else:
                 _say(f"  project stores: {self.db.projects_dir}")
