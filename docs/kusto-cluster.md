@@ -2,9 +2,9 @@
 
 SQLite is the default backend and needs no setup. Kusto (Azure Data Explorer, or a Fabric Eventhouse) is the alternative backend: the history lives in a Kusto database instead of the SQLite file. Every table becomes a table of that database, the daemon serves entirely from it, and nothing is written to `~/.config/aictl/history.db`. An existing SQLite history is not moved.
 
-## 1. Get a cluster
+## 1. Get a cluster and create the database
 
-Any of these works; pick the cheapest you have access to.
+You provide the cluster and an empty database; aictl owns everything inside the database (the tables, their policies, the information schema) and creates it all on the first start. It does not create the database itself: on Azure Data Explorer a database is an Azure resource, on Fabric it belongs to the Eventhouse. The database name is `kusto_database`, `aictl` by default. Any of these works; pick the cheapest you have access to.
 
 **A local emulator**, free, for trying it out (needs Docker; on an Apple Silicon Mac the `--platform` flag is required):
 
@@ -16,7 +16,7 @@ docker run --platform linux/amd64 -e ACCEPT_EULA=Y -m 4G -d --name kustainer -p 
 curl -s -X POST http://localhost:8080/v1/rest/mgmt -H "Content-Type: application/json" -d '{"csl":".create database aictl volatile"}'
 ```
 
-The cluster URL is then `http://localhost:8080`, no sign-in. The emulator has no streaming ingestion; aictl uses `.ingest inline` there on its own.
+The second command creates the database. The cluster URL is then `http://localhost:8080`, no sign-in. The emulator has no streaming ingestion; aictl uses `.ingest inline` there on its own.
 
 **An Azure Data Explorer cluster** in your subscription. The dev tier costs about 0.12 USD per hour while running (auto-stop pauses it after days without use), so delete it when done:
 
@@ -40,7 +40,7 @@ az kusto cluster create --cluster-name <name> --resource-group rg-aictl --locati
 az kusto database create --cluster-name <name> --resource-group rg-aictl --database-name aictl --read-write-database soft-delete-period=P30D hot-cache-period=P7D location=westeurope
 ```
 
-The cluster URL is `https://<name>.westeurope.kusto.windows.net`. The cluster must have streaming ingestion enabled (the flag above); aictl sets the table-level policy itself. To remove everything afterwards: `az group delete -n rg-aictl --yes`.
+The last command creates the database; run it again with another `--database-name` for a second aictl database on the same cluster. The cluster URL is `https://<name>.westeurope.kusto.windows.net`. The cluster must have streaming ingestion enabled (the flag above); aictl sets the table-level policy itself. To remove everything afterwards: `az group delete -n rg-aictl --yes`.
 
 **A Microsoft Fabric Eventhouse.** Create an Eventhouse in a Fabric workspace (the account needs a Fabric license or trial and the workspace a capacity), open its KQL database and copy the query URI (`https://<id>.kusto.fabric.microsoft.com`). Fabric has streaming ingestion on by default.
 
