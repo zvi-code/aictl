@@ -633,6 +633,15 @@ describe('board screen', () => {
     await waitFor(() => expect(container.querySelector('.bd-banner')).toBeTruthy());
     expect(container.querySelector('#p-agentsT tbody').textContent).toContain('Fix retry logic');
   });
+  it('says aictl is starting, not that it failed, while the daemon collects its first snapshot', async () => {
+    const { container, getByRole } = await mountBoard();
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ error: 'aictl is starting', starting: true }, 503)));
+    fireEvent.click(getByRole('button', { name: '7 d' }));
+    await waitFor(() => expect(container.querySelector('.bd-banner')).toBeTruthy());
+    expect(container.querySelector('.bd-banner').textContent).toContain('aictl is starting');
+    expect(container.querySelector('.bd-banner').textContent).not.toContain('Could not');
+    expect(container.querySelector('.bd-banner').getAttribute('role')).toBe('status');
+  });
   it('turns stream messages into at most one fetch per tick, and none when paused', async () => {
     const { calls } = await mountBoard();
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });

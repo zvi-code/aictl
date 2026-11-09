@@ -59,10 +59,25 @@ def test_the_board_waits_for_the_first_snapshot_then_answers(starting, monkeypat
     with pytest.raises(urllib.error.HTTPError) as err:
         urllib.request.urlopen(base + "/api/snapshot", timeout=5)
     assert err.value.code == 503 and err.value.headers["Retry-After"] == "2"
+    assert json.loads(err.value.read())["starting"] is True  # the board says it is starting
     store.update(DashboardSnapshot(timestamp=time.time(), root="/tmp", tools=[], sessions=[]))
     srv.ready.set()
     with urllib.request.urlopen(base + "/api/snapshot", timeout=5) as resp:
         assert resp.status == 200
+
+
+def test_the_page_loads_at_once_while_starting(starting, monkeypatch):
+    """The page needs no snapshot; a held page is what a browser showed as a blank 503 text."""
+    base, _srv, _store = starting
+    monkeypatch.setattr(web_server, "READY_WAIT_S", 30.0)
+    t0 = time.monotonic()
+    with urllib.request.urlopen(base + "/", timeout=5) as resp:
+        assert resp.status == 200 and "text/html" in resp.headers["Content-Type"]
+    assert time.monotonic() - t0 < 3.0
+
+
+def test_the_wait_stays_under_the_socket_timeout():
+    assert web_server.READY_WAIT_S < _DashboardHandler.timeout
 
 
 def test_start_server_opens_the_port_before_it_collects(tmp_path, monkeypatch):
@@ -85,11 +100,19 @@ def test_start_server_opens_the_port_before_it_collects(tmp_path, monkeypatch):
             c.settimeout(2)
             seen["open"] = c.connect_ex(("127.0.0.1", port)) == 0
         seen["ready"] = servers[0].ready.is_set()
+        seen["ingesters while collecting"] = dict(servers[0].ingesters)
         threading.Timer(0.2, servers[0].shutdown).start()
+
+    started: list = []
+    from aictl.dashboard import ingester_runner
+
+    monkeypatch.setattr(ingester_runner, "start_ingesters", lambda store: started.append(store) or {"x": object()})
 
     monkeypatch.setattr(web_server, "_DashboardHTTPServer", Capture)
     monkeypatch.setattr(orchestrator.CollectionService, "run", slow_part)
     monkeypatch.setattr(orchestrator, "_kill_stale_server", lambda port: None)
     orchestrator.start_server(tmp_path, port=port, open_browser=False, include_live_monitor=False, db_path=tmp_path / "h.db")
-    assert seen == {"open": True, "ready": False}
+    # The ingesters and their backfills read every session file; they start after the snapshot.
+    assert seen == {"open": True, "ready": False, "ingesters while collecting": {}}
     assert servers[0].ready.is_set()  # set once the slow part is done
+    assert len(started) == 1 and "x" in servers[0].ingesters
