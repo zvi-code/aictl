@@ -935,6 +935,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         logger.debug("Hook event received: %s session=%s", event_name, session_id)
 
         # Respond with success
+        self.server.store.request_refresh()
         self._json_response_raw(b'{"ok":true}')
 
     # ── OTel OTLP receivers ──────────────────────────────────────
@@ -1099,6 +1100,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self.server.otel_receiver.stats.errors += 1
             self.send_error(500, "Internal error")
             return
+        if events:
+            self.server.store.request_refresh()
         self._json_response_raw(b'{"ok":true}')
 
     def _receive_otel_traces(self) -> None:

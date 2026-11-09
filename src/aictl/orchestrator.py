@@ -138,6 +138,10 @@ class PersistentMonitor:
 # ─── Background refresh loop ─────────────────────────────────────
 
 
+# A requested refresh waits at least this long after the last one began.
+MIN_REFRESH_GAP_S = 1.5
+
+
 class RefreshLoop(threading.Thread):
     """Periodically collects a new snapshot.
 
@@ -162,19 +166,34 @@ class RefreshLoop(threading.Thread):
         self._include_live_monitor = include_live_monitor
         self._monitor = monitor
         self._stop = threading.Event()
+        # Set by stop() and by the store when a hook or telemetry arrives.
+        self._wake = store.refresh_requested
 
-    def _wait_paced(self) -> None:
-        """Wait one interval times the pace; ends early when a client attaches."""
-        waited = 0.0
-        while waited < self._interval * PACE.factor():
-            step = min(1.0, max(self._interval, 0.01))
-            if self._stop.wait(step):
+    def _wait_paced(self, started: float) -> None:
+        """Wait one interval times the pace from *started*.
+
+        A refresh request (a hook or telemetry arrived while someone watches) ends
+        the wait once MIN_REFRESH_GAP_S has passed, so the board shows a tool's
+        step within a second or two instead of at the next interval.
+        """
+        while not self._stop.is_set():
+            now = time.monotonic()
+            due = started + self._interval * PACE.factor()
+            if now >= due:
                 return
-            waited += step
+            if self._wake.is_set():
+                if now - started >= MIN_REFRESH_GAP_S:
+                    self._wake.clear()
+                    return
+                timeout = MIN_REFRESH_GAP_S - (now - started)
+            else:
+                timeout = min(1.0, due - now)
+            self._wake.wait(timeout)
 
     def run(self) -> None:
         enrichment: dict = {}
         while not self._stop.is_set():
+            started = time.monotonic()
             try:
                 # Get live monitor data from persistent runtime (instant)
                 live_monitor = {}
@@ -198,7 +217,7 @@ class RefreshLoop(threading.Thread):
                 self._allowed.update(snap)
             except Exception as exc:
                 log.warning("Refresh loop error: %s", exc)
-            self._wait_paced()
+            self._wait_paced(started)
 
     def _get_discovery_cache(self):
         """Read cached discover_all() result from the DiscoveryCollector."""
@@ -213,6 +232,7 @@ class RefreshLoop(threading.Thread):
 
     def stop(self) -> None:
         self._stop.set()
+        self._wake.set()
 
 
 # ─── Snapshot collection ─────────────────────────────────────────
@@ -1437,6 +1457,8 @@ class SnapshotStore:
         # Exposed for callers that access these directly
         self._db = db
         self._sink = sink
+        # The refresh loop waits on this; request_refresh sets it.
+        self.refresh_requested = _threading.Event()
         if db:
             self._state.load_from_db(db)
 
@@ -1451,6 +1473,14 @@ class SnapshotStore:
     def update(self, snap: _DashboardSnapshot) -> None:
         tool_rows = self._state.update(snap, self._serializer)
         self._persistence.persist(snap, tool_rows)
+
+    def request_refresh(self) -> None:
+        """A hook or telemetry arrived: refresh soon, while a dashboard client watches.
+
+        With no client the data is stored anyway and the next interval shows it.
+        """
+        if PACE.watched():
+            self.refresh_requested.set()
 
     def wait_for_update(self, known_version: int, timeout: float = 30.0) -> tuple[_DashboardSnapshot | None, int]:
         """Block until a new version is available or timeout."""
