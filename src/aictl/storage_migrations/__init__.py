@@ -47,6 +47,7 @@ from . import (
     m035_session_loaded_files,
     m036_session_context_items,
     m037_maintenance_text,
+    m038_hook_calls,
 )
 
 MigrationFn = Callable[[sqlite3.Connection], None]
@@ -72,6 +73,7 @@ MIGRATIONS: list[tuple[int, MigrationFn]] = [
     (35, m035_session_loaded_files.apply),
     (36, m036_session_context_items.apply),
     (37, m037_maintenance_text.apply),
+    (38, m038_hook_calls.apply),
 ]
 
 CURRENT_VERSION: int = MIGRATIONS[-1][0]

@@ -53,6 +53,7 @@ from .storage import (
     EventRow,
     FileWriteRow,
     HistoryDB,
+    HookCallRow,
     RequestRow,
     SessionRow,
     ToolInvocationRow,
@@ -81,6 +82,7 @@ PROJECT_TABLES = (
     "session_loaded_files",
     "session_context_items",
     "events",
+    "hook_calls",
 )
 SHARED = "_shared"
 MACHINE = ""  # the machine store, in the session map: sessions already in it before the split
@@ -108,7 +110,7 @@ _SESSION_TABLES = ("session_processes", "agents")
 _SESSION_TABLES_SHARED = ("session_processes", "agents", "requests", "tool_invocations", "session_prompts", "events")
 # Tables copied for the scope's time range only; the others are copied whole.
 _TIMED_TABLES = frozenset(
-    {"requests", "tool_invocations", "session_prompts", "skill_uses", "file_write_events", "context_events", "events"}
+    {"requests", "tool_invocations", "session_prompts", "skill_uses", "file_write_events", "context_events", "events", "hook_calls"}
 )
 # Tables read for one session only, in a session scope, where its store is attached: a
 # copy would carry every row of the store beyond the attach room for nothing. Here that
@@ -1002,6 +1004,13 @@ class ProjectStores:
         key = self._route(row.session_id, row.project_path)
         with self._using(key) as db:
             db.append_tool_invocation(row)
+        self._touch(key, [row])
+
+    def append_hook_call(self, row: HookCallRow) -> None:
+        # Routed as the hook's events row is: by session only, so a hook call never places a session.
+        key = self._route(row.session_id, "") if row.session_id else MACHINE
+        with self._using(key) as db:
+            db.append_hook_call(row)
         self._touch(key, [row])
 
     # ── Direct writes ──────────────────────────────────────────

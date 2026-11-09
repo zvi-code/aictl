@@ -92,7 +92,7 @@ or pass it on the command line, which also works for a one-off run:
 aictl daemon serve --kusto-cluster https://<name>.westeurope.kusto.windows.net --kusto-database aictl
 ```
 
-The start prints `history store: kusto://<host>/aictl (Kusto, azcli auth; no SQLite file)`. The first start creates the 47 tables, enables streaming ingestion on the database if any table uses it, writes `aictl_information_schema`, which describes every column, and, when a table streams, clears the engine's streaming-ingestion schema cache (`.clear database cache streamingingestion schema`) so the new tables take rows at once; `aictl db schema` prints the same. The streaming policy is set on the database and every table inherits it, so `.show table T policy streamingingestion` shows null for a table that streams. Later starts compare the database's schema with the code's and change only what differs.
+The start prints `history store: kusto://<host>/aictl (Kusto, azcli auth; no SQLite file)`. The first start creates the 48 tables, enables streaming ingestion on the database if any table uses it, writes `aictl_information_schema`, which describes every column, and, when a table streams, clears the engine's streaming-ingestion schema cache (`.clear database cache streamingingestion schema`) so the new tables take rows at once; `aictl db schema` prints the same. The streaming policy is set on the database and every table inherits it, so `.show table T policy streamingingestion` shows null for a table that streams. Later starts compare the database's schema with the code's and change only what differs.
 
 ### Global ingestion mode and per-table overrides
 

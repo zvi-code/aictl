@@ -8,6 +8,7 @@ endpoints return meaningful results rather than empty arrays.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import time
@@ -853,6 +854,179 @@ class TestToolInvocationHookDedup:
             )
         rows = db.query_tool_invocations(session_id=self.SID)
         assert len(rows) == 1
+
+
+# ── Hook ingest: one hook_calls row per hook call ─────────────────
+
+
+@pytest.fixture()
+def metadata_hook_server(tmp_path):
+    """The hook route on a store whose capture mode keeps no text."""
+    from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
+
+    db = HistoryDB(db_path=str(tmp_path / "meta.db"), flush_interval=0, capture="metadata")
+    store = SnapshotStore(db=db)
+    store.update(_make_snapshot())
+    srv = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, AllowedPaths(), tmp_path)
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{srv.server_address[1]}", db
+    srv.shutdown()
+
+
+def _hook_calls(db) -> list[dict]:
+    cur = db._conn().execute("SELECT * FROM hook_calls ORDER BY id")
+    names = [d[0] for d in cur.description]
+    return [dict(zip(names, row, strict=True)) for row in cur.fetchall()]
+
+
+class TestHookCallsTable:
+    SID = "5c0ffee1-cccc-4abc-9def-1234567890ab"
+
+    def _v1(self, call_id="a" * 32, ts=1731182400.5, **payload):
+        """A body as the v1 wrapper sends it."""
+        return {
+            "session_id": self.SID,
+            "cwd": "/work/repo",
+            "hook_event_name": "PreToolUse",
+            "permission_mode": "default",
+            "tool_name": "Bash",
+            "tool_use_id": "toolu_77",
+            "tool_input": {"command": "git status --short"},
+            "agent_id": "agent-3",
+            **payload,
+            "event": "PreToolUse",
+            "aictl_hook": {
+                "v": 1,
+                "call_id": call_id,
+                "ts": ts,
+                "source": "root.claude-user",
+                "pid": 4242,
+                "ppid": 4241,
+                "py": "/usr/bin/python3",
+                "payload_bytes": 321,
+                "truncated": False,
+                "added": [],
+            },
+        }
+
+    def test_a_post_stores_one_typed_row(self, hook_server):
+        url, db = hook_server
+        before = time.time()
+        assert _post_json(f"{url}/api/hooks", self._v1())[0] == 200
+        rows = _hook_calls(db)
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["call_id"] == "a" * 32
+        assert r["ts"] == 1731182400.5  # the time of the call, not of receipt
+        assert r["received_at"] >= before
+        assert (r["format_version"], r["tool"], r["event"], r["hook_event_name"]) == (1, "claude-code", "PreToolUse", "PreToolUse")
+        assert (r["source"], r["session_id"], r["agent_id"], r["project_path"]) == (
+            "root.claude-user",
+            self.SID,
+            "agent-3",
+            "/work/repo",
+        )
+        assert (r["hook_pid"], r["hook_ppid"], r["tool_name"], r["tool_use_id"]) == (4242, 4241, "Bash", "toolu_77")
+        assert (r["permission_mode"], r["payload_bytes"], r["truncated"], r["wrapped"]) == ("default", 321, 0, 0)
+        assert r["exit_code"] is None
+        payload = json.loads(r["payload"])
+        assert "aictl_hook" not in payload and "event" not in payload
+        assert payload["tool_input"] == {"command": "git status --short"}
+        assert payload["hook_event_name"] == "PreToolUse"
+        # The events row is still written as before.
+        kinds = [k for (k,) in db._conn().execute("SELECT kind FROM events WHERE session_id = ?", (self.SID,))]
+        assert kinds == ["hook:PreToolUse"]
+
+    def test_the_same_body_posted_twice_is_one_row(self, hook_server):
+        url, db = hook_server
+        for _ in range(2):
+            assert _post_json(f"{url}/api/hooks", self._v1(call_id="b" * 32))[0] == 200
+        assert len(_hook_calls(db)) == 1
+
+    def test_a_post_from_an_old_wrapper_gets_version_0_and_a_derived_id(self, hook_server):
+        url, db = hook_server
+        old = {"event": "Stop", "session_id": self.SID, "cwd": "/w", "aictl_hook": {"source": "root.claude-user", "pid": 9}}
+        for _ in range(2):
+            assert _post_json(f"{url}/api/hooks", old)[0] == 200
+        assert _post_json(f"{url}/api/hooks", {**old, "stop_hook_active": True})[0] == 200
+        rows = _hook_calls(db)
+        assert len(rows) == 2  # the identical retry dedups; another body does not
+        assert {r["format_version"] for r in rows} == {0}
+        assert all(r["call_id"].startswith("body:") and len(r["call_id"]) == 37 for r in rows)
+        assert rows[0]["call_id"] != rows[1]["call_id"]
+        assert rows[0]["ts"] == rows[0]["received_at"]  # no call time was sent
+        assert rows[0]["hook_event_name"] == ""
+
+    def test_an_insane_call_time_falls_back_to_receipt(self, hook_server):
+        url, db = hook_server
+        _post_json(f"{url}/api/hooks", self._v1(call_id="c" * 32, ts=-5))
+        r = _hook_calls(db)[0]
+        assert r["ts"] == r["received_at"]
+
+    def test_a_verify_ping_stores_no_call(self, hook_server):
+        url, db = hook_server
+        status, body = _post_json(f"{url}/api/hooks", {"event": "Stop", "session_id": "aictl-verify", "_aictl_verify": True})
+        assert status == 200 and body.get("verify") is True
+        assert _hook_calls(db) == []
+
+    def test_a_wrapped_user_hook_stores_only_its_call(self, hook_server):
+        """aictl's own hook on the same event reports the event: a wrapped call must not count it twice."""
+        url, db = hook_server
+        body = self._v1(call_id="d" * 32)
+        body["aictl_hook"]["wrapped"] = {
+            "command": "~/bin/guard.sh --strict",
+            "exit_code": 2,
+            "duration_ms": 12.5,
+            "overhead_ms": 3.25,
+            "stdout_bytes": 61,
+            "stderr_bytes": 4,
+            "stdout": json.dumps({"hookSpecificOutput": {"permissionDecision": "deny"}}),
+        }
+        assert _post_json(f"{url}/api/hooks", body)[0] == 200
+        rows = _hook_calls(db)
+        assert len(rows) == 1
+        r = rows[0]
+        assert (r["wrapped"], r["exit_code"], r["duration_ms"], r["overhead_ms"]) == (1, 2, 12.5, 3.25)
+        assert (r["stdout_bytes"], r["stderr_bytes"], r["decision"]) == (61, 4, "deny")
+        assert r["command"] == "~/bin/guard.sh --strict"
+        assert r["command_hash"] == hashlib.sha256(b"~/bin/guard.sh --strict").hexdigest()[:16]
+        assert "permissionDecision" in r["output"]
+        conn = db._conn()
+        assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM tool_invocations").fetchone()[0] == 0
+        assert db.get_session(self.SID) is None
+
+    @pytest.mark.parametrize(
+        ("stdout", "exit_code", "decision"),
+        [
+            ('{"decision": "block", "reason": "no"}', 0, "block"),
+            ('{"continue": false}', 0, "stop"),
+            ("not json", 2, "block"),
+            ("", 0, ""),
+        ],
+    )
+    def test_the_decision_of_a_wrapped_hook(self, stdout, exit_code, decision):
+        from aictl.dashboard.web_server import _hook_decision
+
+        assert _hook_decision(stdout, exit_code) == decision
+
+    def test_metadata_mode_stores_no_text(self, metadata_hook_server):
+        url, db = metadata_hook_server
+        body = self._v1(call_id="e" * 32, prompt="my secret prompt", tool_response={"stdout": "secret output"})
+        body["aictl_hook"]["wrapped"] = {"command": "secret.sh --token X", "exit_code": 0, "stdout": "secret"}
+        _post_json(f"{url}/api/hooks", self._v1(call_id="f" * 32, prompt="my secret prompt"))
+        _post_json(f"{url}/api/hooks", body)
+        rows = _hook_calls(db)
+        assert len(rows) == 2
+        for r in rows:
+            assert "secret" not in r["payload"] and "git status" not in r["payload"]
+            payload = json.loads(r["payload"])
+            assert "tool_input" not in payload and "prompt" not in payload and "tool_response" not in payload
+            assert payload["prompt_chars"] == len("my secret prompt")
+            assert payload["tool_name"] == "Bash"  # names stay
+            assert r["command"] == "" and r["output"] == ""
+        assert rows[1]["command_hash"] == hashlib.sha256(b"secret.sh --token X").hexdigest()[:16]
 
 
 # ── Events API ────────────────────────────────────────────────────

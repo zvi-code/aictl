@@ -308,6 +308,69 @@ lets `/api/file` find a path. v34 also adds `idx_sessions_started` on
 
 `maintenance_state` gains `text TEXT NOT NULL DEFAULT ''`. `value` is always a number; a cursor that is JSON goes in `text` (the VS Code chat ingester's file cursor). `ui_dashboard.created_at` and `updated_at` held the literal text `%s` in databases made before v37 (a doubled `%%` in the column default); the migration sets them to the time of the repair, and both inserts now pass the time.
 
+## Version 38 (hook calls)
+
+### `hook_calls` — One row per hook call
+
+Written by `POST /api/hooks` for every hook call the aictl hook handler reports (not for `aictl hooks verify` pings); the wire format is in [tool-claude-code.md](tool-claude-code.md#hook-wire-format-version-1). `call_id` has a partial unique index, so a retried POST is stored once. A per-project table (`PROJECT_TABLES`), routed by session like `events`, with the same retention, budget eviction and text rules: `payload` loses its text keys as an `events.detail` does, and `command` and `output` are blanked, at write time unless capture is `full` and at maintenance after `content_retention_days`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER PK | Row id |
+| `call_id` | TEXT | `aictl_hook.call_id`; for a POST without one, `body:` and 32 hex of the body's hash |
+| `ts` | REAL | Time of the call (`aictl_hook.ts`, else payload `ts`, else receive time) |
+| `received_at` | REAL | Receive time; `received_at - ts` is the delivery lag |
+| `format_version` | INTEGER | `aictl_hook.v`; 0 for an older handler |
+| `tool`, `event`, `hook_event_name`, `source` | TEXT | Resolved tool; aictl's event name (`--event`); the tool's own event name; `aictl_hook.source` |
+| `session_id`, `agent_id`, `project_path` | TEXT | Session, subagent (`agent_id`), working folder (`cwd`) |
+| `pid`, `hook_pid`, `hook_ppid` | INTEGER | Tool pid when known; the handler's pid and parent pid |
+| `tool_name`, `tool_use_id`, `permission_mode` | TEXT | From tool events (`tool_name`/`toolName`, `tool_use_id`/`toolUseId`/`toolCallId`, `permission_mode`) |
+| `payload_bytes`, `truncated` | INTEGER | Bytes read from stdin; 1 when over 16 MiB |
+| `payload` | TEXT | The tool's payload as JSON, without `aictl_hook` and the keys the handler added |
+| `wrapped` | INTEGER | 1 for a user hook run through `aictl hooks wrap` |
+| `command_hash` | TEXT | First 16 hex of the SHA-256 of the wrapped command (always stored) |
+| `command`, `output` | TEXT | The wrapped command and its stdout (capture `full` only) |
+| `exit_code` | INTEGER NULL | Wrapped command's exit code; NULL when not wrapped |
+| `duration_ms`, `overhead_ms` | REAL | Wrapped command's run time; the wrapper's own time on top |
+| `stdout_bytes`, `stderr_bytes` | INTEGER | Output sizes of the wrapped command |
+| `decision` | TEXT | From the wrapped hook's stdout JSON: `hookSpecificOutput.permissionDecision`, else `decision`, else `stop` when `continue` is false; else `block` for exit code 2 |
+
+Hook calls per event in the last day, with the delivery lag:
+
+```sql
+SELECT event, COUNT(*) AS calls, AVG(received_at - ts) AS lag_s
+FROM hook_calls WHERE ts > strftime('%s', 'now') - 86400
+GROUP BY event ORDER BY calls DESC;
+```
+
+The same on a Kusto store (a read keeps the newest version of each row):
+
+```kql
+hook_calls
+| summarize arg_max(_v, *) by rowid
+| where _deleted == false
+| where ts > (now() - 1d - datetime(1970-01-01)) / 1s
+| summarize calls = count(), lag_s = avg(received_at - ts) by event
+| order by calls desc
+```
+
+Wrapped user hooks: p95 duration and exit-code counts, by command:
+
+```kql
+let wrapped_calls = hook_calls
+    | summarize arg_max(_v, *) by rowid
+    | where _deleted == false and wrapped == 1;
+wrapped_calls
+| summarize calls = count(), p95_ms = percentile(duration_ms, 95), p95_overhead_ms = percentile(overhead_ms, 95) by command_hash
+| join kind=inner (
+    wrapped_calls
+    | summarize n = count() by command_hash, exit_code
+    | summarize exit_codes = make_bag(bag_pack(tostring(exit_code), n)) by command_hash
+  ) on command_hash
+| project command_hash, calls, p95_ms, p95_overhead_ms, exit_codes
+| order by calls desc
+```
+
 ## Configuration
 
 ```toml

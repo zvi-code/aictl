@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -679,6 +680,7 @@ def install(port: int | None, scope: str, events: str | None, force: bool, dry_r
     click.echo(f"Installed {len(target_events)} hook events → localhost:{port}/api/hooks")
     click.echo(f"  Scope: {scope} ({settings_path})")
     click.echo("  Mode: async, fail-open (reads full event payload, prints nothing)")
+    click.echo("  Collected: one hook_calls row per hook call (see docs/tool-claude-code.md)")
     if conflicts:
         click.echo(f"  Note: {len(conflicts)} event(s) have additional non-aictl hooks (preserved)")
 
@@ -733,6 +735,8 @@ def _uninstall_from(path: Path, label: str, actions: list[str]) -> None:
         actions.append(f"Removed {removed} aictl {label} hook(s) → {path}")
     elif sink.result.failures:
         actions.append(f"{label} hooks left intact at {path} (unreadable JSON)")
+    elif sink.result.changes:
+        actions.append(f"Restored wrapped {label} hook command(s) → {path}")
     elif path.exists():
         actions.append(f"{label} hooks left intact at {path} (not aictl-owned)")
 
@@ -743,6 +747,149 @@ def _uninstall_vscode_hooks(scope: str, actions: list[str]) -> None:
 
 def _uninstall_gemini_hooks(scope: str, actions: list[str]) -> None:
     _uninstall_from(_gemini_settings_path(scope), "Gemini CLI", actions)
+
+
+# ─── hooks wrap / unwrap: a user's own hooks, observed as they run ──────────────
+
+_EVENT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+
+def _shell_parses(command: str) -> bool:
+    """True when the shell accepts *command* as a script (``-n``: read it, run nothing)."""
+    shell = shutil.which("bash") or "/bin/sh"
+    try:
+        return subprocess.run([shell, "-n", "-c", command], capture_output=True, timeout=10, check=False).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _wrap_plan(text: str, port: int, source: str) -> tuple[str, int, int, list[str]]:
+    """``(new text, wrapped, already wrapped, skipped)`` for one Claude settings file."""
+    handler = str(Path(__file__).resolve().parent.parent / "hook_handler.py")
+    already = 0
+    skipped: list[str] = []
+
+    def change(event: str, rule: dict, entry: dict) -> str | None:
+        nonlocal already
+        command = entry["command"]
+        if rule.get("_aictl_owner") == _AICTL_OWNER_MARKER or hook_removal._command_is_aictl(entry):
+            return None  # aictl's own hook reports the event already
+        if entry is rule or entry.get("type") != "command":
+            skipped.append(f"{event}: not a Claude command hook entry")
+            return None
+        if entry.get("shell") not in (None, "bash", "sh"):
+            skipped.append(f"{event}: runs under {entry.get('shell')}, not a POSIX shell")
+            return None
+        if not command.strip():
+            skipped.append(f"{event}: an empty command")
+            return None
+        if not _EVENT_NAME_RE.match(str(event)):
+            skipped.append(f"{event!r}: not an event name")
+            return None
+        original = hook_removal.wrapped_original(command)
+        target = hook_removal.wrap_command(
+            command if original is None else original,
+            python=sys.executable,
+            handler=handler,
+            event=event,
+            port=port,
+            source=source,
+        )
+        if original is not None and target == command:
+            already += 1
+            return None
+        if not _shell_parses(target):
+            skipped.append(f"{event}: the shell cannot parse this command wrapped, left as it is")
+            return None
+        return target
+
+    new_text, changed = hook_removal.rewrite_hook_commands(text, change)
+    hooks_cfg = jsonc_loads(text).get("hooks")
+    for event, rules in (hooks_cfg.items() if isinstance(hooks_cfg, dict) else []):
+        for rule in rules if isinstance(rules, list) else []:
+            inner = rule.get("hooks") if isinstance(rule, dict) else None
+            for entry in inner if isinstance(inner, list) else []:
+                if not isinstance(entry, dict):
+                    skipped.append(f"{event}: an entry that is not an object")
+                elif entry.get("type") != "command":
+                    skipped.append(f"{event}: type {entry.get('type')!r} hook")
+                elif not isinstance(entry.get("command"), str):
+                    skipped.append(f"{event}: a command that is not a string")
+    return new_text, changed, already, skipped
+
+
+def _count_wrapped(path: Path) -> int:
+    """How many hook commands in *path* run through ``aictl hooks wrap``."""
+    try:
+        hooks_cfg = jsonc_loads(hook_removal.read_text_exact(path)).get("hooks")
+    except (OSError, ValueError):
+        return 0
+    return sum(
+        1 for _e, _r, entry in hook_removal._command_entries(hooks_cfg) if hook_removal.wrapped_original(entry["command"])
+    )
+
+
+@hooks.command(name="wrap")
+@click.option("--port", default=None, type=int, help="aictl server port (default: $AICTL_PORT or 8484)")
+@click.option("--scope", type=click.Choice(["project", "user"]), default="user", help="Which Claude settings file")
+@click.option("--dry-run", is_flag=True, help="Say what would change and write nothing")
+def wrap(port: int | None, scope: str, dry_run: bool):
+    """Observe your own Claude Code hooks: each runs through aictl's wrapper, unchanged.
+
+    Every command hook that aictl does not own gets a command line that runs the
+    original through the hook handler's wrap mode: same stdin, environment,
+    output and exit code, and one ``hook_calls`` row with its duration, exit code
+    and output size. If aictl's interpreter or handler is gone the original runs
+    as it is. ``aictl hooks unwrap``, ``aictl hooks uninstall`` and ``aictl
+    disable`` restore the original commands.
+    """
+    if IS_WINDOWS:
+        click.echo("hooks wrap is not supported on Windows yet; nothing changed.")
+        return
+    if port is None:
+        port = _default_port()
+    path = _settings_path(scope)
+    if not path.exists():
+        click.echo(f"No Claude Code settings file at {path}; nothing to wrap.")
+        return
+    text = hook_removal.read_text_exact(path)
+    try:
+        new_text, changed, already, skipped = _wrap_plan(text, port, _source_id(scope, "claude"))
+    except hook_removal.JsoncError as exc:
+        raise click.ClickException(f"{path}: {exc}; fix it by hand, then re-run") from exc
+    if not dry_run and changed:
+        WriteGuard.install("hooks wrap")
+    if changed:
+        _removal_sink(dry_run).write(path, new_text, f"wrap {changed} user hook command(s)")
+    prefix = "[dry-run] would wrap" if dry_run else "Wrapped"
+    click.echo(f"{prefix} {changed} user hook command(s) in {path}")
+    if already:
+        click.echo(f"  already wrapped: {already}")
+    for line in skipped:
+        click.echo(f"  skipped: {line}")
+    click.echo("  Plugin hook files, Copilot and Gemini hooks are not changed.")
+
+
+@hooks.command(name="unwrap")
+@click.option("--scope", type=click.Choice(["project", "user"]), default="user", help="Which Claude settings file")
+@click.option("--dry-run", is_flag=True, help="Say what would change and write nothing")
+def unwrap(scope: str, dry_run: bool):
+    """Give every hook that ``aictl hooks wrap`` wrapped its original command back."""
+    path = _settings_path(scope)
+    if not path.exists():
+        click.echo(f"No Claude Code settings file at {path}; nothing to unwrap.")
+        return
+    text = hook_removal.read_text_exact(path)
+    try:
+        new_text, changed = hook_removal.unwrap_hook_text(text)
+    except hook_removal.JsoncError as exc:
+        raise click.ClickException(f"{path}: {exc}; fix it by hand, then re-run") from exc
+    if not dry_run and changed:
+        WriteGuard.install("hooks unwrap")
+    if changed:
+        _removal_sink(dry_run).write(path, new_text, f"restore {changed} wrapped user hook command(s)")
+    prefix = "[dry-run] would restore" if dry_run else "Restored"
+    click.echo(f"{prefix} {changed} wrapped user hook command(s) in {path}")
 
 
 def _print_settings_diff(path: Path, before: dict, after: dict) -> None:
@@ -1110,6 +1257,7 @@ def _collect_hook_status(scope: str) -> dict:
                 "rules": len(rules),
                 "expected_rules": expected,
                 "ports": sorted({r["port"] for r in rules if r["port"] is not None}),
+                "wrapped_user_hooks": _count_wrapped(path) if tool == "claude-code" else 0,
                 "disabled_files": [str(p) for p in renamed],
                 "fix": fix,
             }
@@ -1168,6 +1316,8 @@ def hooks_status_cmd(scope: str, as_json: bool):
             click.echo(
                 f"{t['tool']:<12} {t['state']:<20} {t['rules']}/{t['expected_rules']} rules{ports}  {t['path']}{link}"
             )
+            if t["wrapped_user_hooks"]:
+                click.echo(f"  wrapped user hooks: {t['wrapped_user_hooks']} (one hook_calls row per call)")
             for renamed in t["disabled_files"]:
                 click.echo(f"  disabled by rename: {renamed}")
             for warning in t["warnings"]:

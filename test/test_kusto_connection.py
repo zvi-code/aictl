@@ -1386,3 +1386,31 @@ def test_the_ingestion_capacity_is_read_once_for_a_destination_that_ingests_inli
     ingester = KustoClientFactory.ingester(SETTINGS)
     assert KustoClientFactory.ingester(SETTINGS) is ingester and client.commands == [".show capacity ingestions"]
     assert ingester.slots.acquire(blocking=False) and not ingester.slots.acquire(blocking=False)
+
+
+@emulator
+def test_emulator_hook_calls_store_once_per_call_and_trim():
+    """The store's own statements for hook_calls, through the real translator: a retried call is one row,
+    and the text trim reaches the payload, which has no trigger on a cluster."""
+    from aictl.storage import HistoryDB, HookCallRow
+
+    tag = "kct-" + uuid.uuid4().hex[:10]
+    db = HistoryDB(kusto=EMULATOR, flush_interval=0)
+    try:
+        for _ in range(2):
+            db.append_hook_call(
+                HookCallRow(
+                    call_id=tag, ts=100.0, received_at=101.0, session_id=tag, payload={"prompt": "secret", "n": 1},
+                    wrapped=1, command="guard.sh", exit_code=2,
+                )
+            )
+        read = "SELECT call_id, payload, command, exit_code, wrapped FROM hook_calls WHERE session_id = ?"
+        rows = db._conn().execute(read, (tag,)).fetchall()
+        assert [tuple(r) for r in rows] == [(tag, '{"prompt": "secret", "n": 1}', "guard.sh", 2, 1)]
+        assert db.trim_text(before=200.0, since=50.0) >= 1
+        rows = db._conn().execute(read, (tag,)).fetchall()
+        assert [tuple(r) for r in rows] == [(tag, '{"prompt_chars": 6, "n": 1}', "", 2, 1)]
+    finally:
+        db._conn().execute("DELETE FROM hook_calls WHERE session_id = ?", (tag,))
+        db._conn().commit()
+        db.close()

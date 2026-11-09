@@ -20,6 +20,7 @@ from aictl.storage import (
     WAL_SIZE_LIMIT_BYTES,
     EventRow,
     HistoryDB,
+    HookCallRow,
     RequestRow,
     strip_event_text,
 )
@@ -494,3 +495,56 @@ def test_compact_action_makes_an_old_file_smaller(tmp_path):
     result = _action_db_compact(db, None, {}, None)
     assert result["ok"] is True
     assert db.storage_bytes() < before / 2
+
+
+# ── hook_calls: the same rules as the hook rows of events ──────────
+
+
+def _hook_call(ts: float, call_id: str = "c1", **kw) -> HookCallRow:
+    payload = {"prompt": "secret prompt", "tool_name": "Bash", "tool_input": {"command": "rm -rf x"}, "n": 3}
+    return HookCallRow(
+        call_id=call_id, ts=ts, received_at=ts, session_id="s", payload=payload, command="guard.sh --t", output="out", **kw
+    )
+
+
+def test_hook_call_text_is_trimmed_like_event_text(tmp_path):
+    db = _db(tmp_path / "h.db")
+    db.append_hook_call(_hook_call(time.time() - 20 * DAY, "old", wrapped=1, command_hash="abc"))
+    db.append_hook_call(_hook_call(time.time(), "new"))
+    db.flush()
+    assert db.trim_text(before=time.time() - 14 * DAY) >= 1
+    conn = db._conn()
+    rows = {r[0]: r[1:] for r in conn.execute("SELECT call_id, payload, command, output, command_hash FROM hook_calls")}
+    old_payload = json.loads(rows["old"][0])
+    assert "prompt" not in old_payload and "tool_input" not in old_payload
+    assert old_payload["prompt_chars"] == len("secret prompt") and old_payload["tool_name"] == "Bash"
+    assert rows["old"][1:] == ("", "", "abc")
+    assert json.loads(rows["new"][0])["prompt"] == "secret prompt" and rows["new"][1] == "guard.sh --t"
+    db.close()
+
+
+@pytest.mark.parametrize("mode", [CAPTURE_METADATA, CAPTURE_OFF])
+def test_hook_call_text_is_not_stored_without_full_capture(tmp_path, mode):
+    db = _db(tmp_path / "h.db", capture=mode)
+    db.append_hook_call(_hook_call(time.time()))
+    db.flush()
+    payload, command, output = db._conn().execute("SELECT payload, command, output FROM hook_calls").fetchone()
+    assert "secret" not in payload and "rm -rf" not in payload
+    assert (command, output) == ("", "")
+    db.close()
+
+
+def test_hook_calls_follow_event_retention_and_eviction(tmp_path):
+    from aictl.project_stores import PROJECT_TABLES
+    from aictl.storage import _EVICTION_ORDER, _RETENTION_TABLES
+
+    db = _db(tmp_path / "h.db", retention_days=5)
+    db.append_hook_call(_hook_call(time.time() - 10 * DAY, "old"))
+    db.append_hook_call(_hook_call(time.time() - 1 * DAY, "new"))
+    db.flush()
+    assert db.compact()["hook_calls_deleted_30d"] == 1
+    assert [r[0] for r in db._conn().execute("SELECT call_id FROM hook_calls")] == ["new"]
+    # Listed where events are: evicted with them over the budget, rows of a session's project.
+    assert _EVICTION_ORDER.index("hook_calls") == _EVICTION_ORDER.index("events") + 1
+    assert "hook_calls" in _RETENTION_TABLES and "hook_calls" in PROJECT_TABLES
+    db.close()

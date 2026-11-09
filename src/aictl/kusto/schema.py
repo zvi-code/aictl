@@ -269,6 +269,7 @@ TABLE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "file_write_events",
             "context_events",
             "events",
+            "hook_calls",
         ),
     ),
     ("Time series (machine-wide)", ("metrics", "system_snapshots", "process_snapshots", "tool_stats")),

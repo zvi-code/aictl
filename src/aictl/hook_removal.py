@@ -20,6 +20,8 @@ reported and skipped, never rewritten, and the remaining files still run.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 import re
@@ -497,13 +499,127 @@ def update_json_text(text: str, updates: dict, *, note: bool = False) -> str:
 DELETE = _DELETE
 
 
+# ── Wrapped user hooks (``aictl hooks wrap``) ────────────────────────────────
+
+WRAP_FLAG = "--wrap-b64"
+# The command line ``wrap_command`` writes. The original is the base64 argument; the
+# else branch repeats it so it still runs when aictl's interpreter or handler is gone.
+_WRAP_RE = re.compile(
+    r"\Aif \[ -x '(?:[^']|'\\'')*' \] && \[ -f '(?:[^']|'\\'')*' \]; then [^\n]*?"
+    r" --wrap-b64 ([A-Za-z0-9+/]+=*); else\n.*\nfi\Z",
+    re.S,
+)
+_COMMAND_LITERAL_RE = re.compile(r'"command"\s*:\s*("(?:[^"\\]|\\.)*")')
+
+
+def _sh_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
+def wrap_command(original: str, *, python: str, handler: str, event: str, port: int, source: str) -> str:
+    """The command line that runs *original* through the hook handler's wrap mode.
+
+    POSIX shell only. The original is on its own lines, so a trailing comment in it
+    cannot swallow ``fi``; the ``:`` before it keeps the branch valid when the original
+    is empty or only a comment, and starts it with ``$?`` at 0 as the tool does.
+    """
+    b64 = base64.b64encode(original.encode("utf-8")).decode("ascii")
+    py, script = _sh_quote(python), _sh_quote(handler)
+    return (
+        f"if [ -x {py} ] && [ -f {script} ]; then {py} -I -S {script} --event {event} --port {int(port)}"
+        f' --source {source} --sh "$0" {WRAP_FLAG} {b64}; else\n:\n{original}\nfi'
+    )
+
+
+def wrapped_original(command: object) -> str | None:
+    """The user's own command inside a wrapped command line, or None when *command* is not one."""
+    if not isinstance(command, str) or WRAP_FLAG not in command:
+        return None
+    m = _WRAP_RE.match(command)
+    if m is None:
+        return None
+    try:
+        return base64.b64decode(m.group(1), validate=True).decode("utf-8")
+    except (binascii.Error, ValueError, UnicodeError):
+        return None
+
+
+def _command_entries(hooks_by_event: object):
+    """Yield ``(event, rule, entry)`` for every dict with a string ``command``, in file order."""
+    if not isinstance(hooks_by_event, dict):
+        return
+    for event, rules in hooks_by_event.items():
+        if not isinstance(rules, list):
+            continue
+        for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+            if isinstance(rule.get("command"), str):
+                yield event, rule, rule
+            inner = rule.get("hooks")
+            if isinstance(inner, list):
+                for entry in inner:
+                    if isinstance(entry, dict) and isinstance(entry.get("command"), str):
+                        yield event, rule, entry
+
+
+def rewrite_hook_commands(text: str, change) -> tuple[str, int]:
+    """Replace hook ``command`` strings in JSON(C) *text*; returns the new text and the count changed.
+
+    ``change(event, rule, entry)`` returns the new command or None. Each changed string
+    is replaced where it stands, so every other byte of the file stays; when the file's
+    command strings cannot be matched one by one, the ``hooks`` value is written again.
+    """
+    data = jsonc_loads(text)
+    hooks = data.get("hooks")
+    plan: list[tuple[str, str | None]] = []
+    for event, rule, entry in _command_entries(hooks):
+        plan.append((entry["command"], change(event, rule, entry)))
+    changed = sum(1 for _old, new in plan if new is not None and new != _old)
+    if not changed:
+        return text, 0
+    span = next(((vs, ve) for name, _ks, vs, ve in _members(text)[2] if name == "hooks"), None)
+    if span is not None:
+        start, end = span
+        region = text[start:end]
+        found = list(_COMMAND_LITERAL_RE.finditer(region))
+        try:
+            values = [json.loads(m.group(1)) for m in found]
+        except ValueError:
+            values = []
+        if values == [old for old, _new in plan]:
+            out, last = [], 0
+            for m, (old, new) in zip(found, plan, strict=True):
+                if new is None or new == old:
+                    continue
+                out += [region[last : m.start(1)], json.dumps(new, ensure_ascii=False)]
+                last = m.end(1)
+            out.append(region[last:])
+            return text[:start] + "".join(out) + text[end:], changed
+    for (_event, _rule, entry), (_old, new) in zip(list(_command_entries(hooks)), plan, strict=True):
+        if new is not None:
+            entry["command"] = new
+    return update_json_text(text, {"hooks": hooks}), changed
+
+
+def unwrap_hook_text(text: str) -> tuple[str, int]:
+    """*text* with every wrapped user hook's command restored to the original."""
+    return rewrite_hook_commands(text, lambda _event, _rule, entry: wrapped_original(entry["command"]))
+
+
 # ── What counts as an aictl rule ─────────────────────────────────────────────
 
 
 def _command_is_aictl(entry: object) -> bool:
+    """True for a command aictl wrote. A user's command wrapped by ``aictl hooks wrap`` is the user's."""
     if not isinstance(entry, dict):
         return False
-    return any(any(m in str(entry.get(f, "")) for m in _COMMAND_MARKERS) for f in _COMMAND_FIELDS)
+    for f in _COMMAND_FIELDS:
+        value = str(entry.get(f, ""))
+        # Anything carrying the wrap flag holds a user's command, hand-edited or not.
+        if WRAP_FLAG not in value and any(m in value for m in _COMMAND_MARKERS):
+            return True
+    return False
 
 
 def is_legacy_rule(rule: dict) -> bool:
@@ -640,11 +756,19 @@ def remove_from_hook_file(path: Path, sink: _Sink, *, delete_if_only: tuple[str,
         sink.result.failures.append(str(path))
         sink.result.notes.append(f"skipped, unreadable ({exc}): {path}")
         return 0
+    # A user's hook that `aictl hooks wrap` wrapped gets its own command back.
+    text, unwrapped = unwrap_hook_text(text)
+    if unwrapped:
+        data = jsonc_loads(text)
     remaining, removed = strip_rules(data.get("hooks"))
     if not removed:
+        if unwrapped:
+            sink.write(path, text, f"restore {unwrapped} wrapped user hook command(s)")
         return 0
     others = {k for k in data if k != "hooks" and k not in delete_if_only}
     label = f"remove {removed} aictl hook rule(s)"
+    if unwrapped:
+        label += f", restore {unwrapped} wrapped user hook command(s)"
     if not remaining and not others and path.name in _HOOK_ONLY_NAMES:
         sink.delete(path, label + ", file now empty")
         sink.remove_dir_if_empty(path.parent, without=path)
