@@ -154,11 +154,12 @@ Open the dashboard as usual (`aictl daemon serve` prints the URL). In the Kusto 
 `aictl db report` runs a set of KQL queries against the configured cluster and writes one self-contained HTML file: no server, no script or style loaded from another site except Google Fonts. It uses the cluster, database and sign-in of the store (`AICTL_KUSTO_CLUSTER`, `AICTL_KUSTO_DATABASE`, `AICTL_KUSTO_AUTH`, or `config.toml`), so every sign-in mode and the local emulator work. It only reads. With no cluster configured it exits with a message.
 
 ```
-aictl db report [--out PATH] [--days N]
+aictl db report [--out PATH] [--days N] [--sections A,B]
 ```
 
 - `--out PATH`: the file to write; default `aictl-kusto-report.html` in the current folder.
 - `--days N`: only data of the last N days; default all data. The runner puts `let report_days = N;` (0 for all) before every query.
+- `--sections A,B`: only these sections, in this order; default all. An unknown name stops the command and lists the names.
 
 The command prints the path written, the time of each query and every section that failed. The page header shows the cluster host, the database, the time of the run, the window and the run time of each query. The page holds aggregates, 8-character session id prefixes, tool and model names and file base names; no prompt text, no full paths, no user names.
 
@@ -169,10 +170,15 @@ The command prints the path written, the time of each query and every section th
 | Cost anomalies explained | hourly cost per tool (up to four tools, at most the last 90 days), hours far above the fitted baseline and the session behind each | `requests` |
 | What slow requests share | request properties that are over-represented among the slowest 5 percent | `requests` |
 | Context sawtooth and runway | prompt size of the 8 longest main-thread `claude-code` sessions, compactions, a fitted line per climb and the requests left to the typical compaction size | `requests` |
+| What the end of a long session buys (`returns`) | sessions with 100 requests or more, cut in tenths by request order: share of spend, of files touched for the first time and of edits, and the rate of repeated calls | `requests`, `tool_invocations` |
+| Going round in circles (`stuck`) | stretches of 4 requests or more where every tool call repeats one of the last 20 requests, fails the same way again or edits a file for the fourth time; share of requests, spend and time per model | `requests`, `tool_invocations` |
+| What one edit costs, by model (`models`) | cost per request and per edited file, output tokens per request, tool calls per edit and edits that redo a file, per model inside each tool | `requests`, `tool_invocations` |
+| What changes after a skill loads (`skills`) | rate of repeated calls before and after each skill load in the same context, and contexts with and without a skill | `requests`, `tool_invocations` |
+| What each MCP server costs (`mcp`) | per server: calls, share of the tool-result text, tokens per result, failed calls and the 90th percentile wait; the tools that return the most text | `requests`, `tool_invocations` |
 
 A section whose query returns no rows says there is no data for it. A section whose query fails shows the server's error text, and the rest of the page still renders. The queries use `make-graph`, `graph-match`, `scan`, `make-series`, `series_decompose_anomalies` and `evaluate diffpatterns`; the local emulator may lack some of these, and its sections then show that error.
 
-To add a section, see `src/aictl/kusto/report/__init__.py`: drop `queries/NAME.kql`, add `<template data-section="NAME">` markup and `RENDER.NAME` to `template.html`, and add one `Section("NAME", "NAME.kql")` line to `SECTIONS`.
+To add a section, see `src/aictl/kusto/report/__init__.py`: drop `queries/NAME.kql`, add `<template data-section="NAME">` markup and `RENDER.NAME` to `template.html`, and add one `Section("NAME", "NAME.kql")` line to `SECTIONS`. A section can name a shared prelude file that is put in front of its query: the last five sections share `queries/_events.kql`, which links tool calls to requests by time because `request_id` is not set on `tool_invocations` rows.
 
 ## OpenTelemetry tables
 

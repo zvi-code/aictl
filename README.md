@@ -142,6 +142,45 @@ For small development/test writes, `--kusto-ingestion inline` selects synchronou
 
 The `kusto` extra brings the SDKs (`pipx install "aictl[all]"` includes it). Sign-in is the Azure CLI's by default (`az login`; add `--scope "https://<cluster host>/.default"` when the tenant asks for multi-factor authentication); `kusto_auth` picks `device`, `managed-identity` or `none` (the local emulator). The signed-in account needs the Database Admin role on an existing, empty database; aictl creates the tables. The first start writes the machine's recent history to the cluster and takes a few minutes; later starts and polls are quick. An existing SQLite history is not moved to the cluster. Step by step, including creating a cluster, access and identities, or running the free emulator, in [docs/kusto-cluster.md](docs/kusto-cluster.md); design in [docs/architecture.md](docs/architecture.md#kusto-store-kusto); every table in [docs/kusto-schema.md](docs/kusto-schema.md).
 
+### Insight report from a Kusto store: `aictl db report` (work in progress)
+
+With a Kusto cluster as the store, one command writes a report on how your coding agents work. It runs a fixed set of KQL queries on the configured cluster and writes one HTML file that opens in any browser, with no server. It only reads.
+
+```bash
+aictl db report --out report.html
+```
+
+```bash
+aictl db report --sections returns,stuck,models,skills,mcp --days 30 --out report.html
+```
+
+| Option | Description |
+|--------|-------------|
+| `--out PATH` | The file to write (default: `aictl-kusto-report.html` in the current folder) |
+| `--days N` | Only the data of the last N days (default: all data) |
+| `--sections A,B` | Only these sections, in this order (default: all ten). An unknown name stops the command and lists the names |
+
+The command uses the cluster, database and sign-in of the store, from `config.toml` or from `AICTL_KUSTO_CLUSTER`, `AICTL_KUSTO_DATABASE` and `AICTL_KUSTO_AUTH`. With no cluster configured it exits with a message.
+
+**What to expect.** The command prints one line per query with its run time, then the path of the file. On a dev-tier cluster with about 30,000 requests, each query takes about one second. Each section of the page has a headline computed from the rows, a chart, a short list of findings, a caveat, and the KQL that produced it. A section with no rows says so. A section whose query fails shows the error of the server, and the other sections still render. The page holds aggregates, 8-character session id prefixes, the names of tools, models, MCP servers and skills, and file base names. It holds no prompt text, no full paths and no user names.
+
+| Section | Question it answers | Data it needs to say something |
+|---------|---------------------|--------------------------------|
+| `dna` | What do the sessions with the most tool calls look like, call by call? | Tool calls |
+| `relay` | Which agents read files that other agents wrote? | Sessions with sub-agents |
+| `cost` | Which hours cost far more than usual, and which session is behind each? | Several days of requests |
+| `slow` | What do the slowest 5 percent of requests have in common? | Requests with durations |
+| `context` | How does the prompt grow and compact in the longest sessions? | Long main-thread sessions |
+| `returns` | Does the late part of a long session still reach new files and make edits, or only spend? | Sessions with 100 requests or more |
+| `stuck` | How much spend, time and how many requests go to stretches that repeat the same calls, failures or edits? Which models? | Tool calls linked to requests |
+| `models` | What does one request and one edited file cost with each model, and how many tool calls does an edit take? | Two models with 20 edits or more in one tool |
+| `skills` | Does the agent repeat itself more or less after a skill loads? | Skills with 20 tool calls before and after the load |
+| `mcp` | Which MCP servers fill the context, fail, or make the agent wait? | MCP calls. Servers with under 50 calls are dimmed |
+
+**How to read it.** The report shows patterns to look into. It does not prove a cause. The models did not get the same work, so compare models inside one tool only. A skill often loads when the work changes, so a rise after the load is a reason to open those sessions. The size of a skill text is not recorded, so the report does not show the token cost of a skill.
+
+**Status.** The last five sections are new and their thresholds are first values. Expect names, charts and wording to change. More in [docs/kusto-cluster.md](docs/kusto-cluster.md#report).
+
 ## How It Works
 
 ### Deploy: `.context.toml` → native tool files
@@ -716,6 +755,8 @@ File access is inferred from tool-call arguments, so files touched by shell comm
 | `--db PATH` | Path to SQLite database (default: `~/.config/aictl/history.db`) |
 
 `aictl db reset` accepts `-y` / `--yes` to skip the confirmation prompt.
+
+`aictl db report` takes `--out PATH`, `--days N` and `--sections A,B`, and needs a Kusto cluster as the store: [insight report](#insight-report-from-a-kusto-store-aictl-db-report-work-in-progress).
 
 `aictl db compact` takes `--dry-run`, `--retention-days N` and `--no-vacuum`.
 `aictl db trim-text` takes `--dry-run` and `--older-than-days N`. Compact deletes rows older than the
