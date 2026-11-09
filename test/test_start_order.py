@@ -44,18 +44,18 @@ def _post(url, data):
         return resp.status
 
 
-def test_telemetry_and_hooks_are_taken_before_the_first_snapshot(starting):
+def test_telemetry_and_hooks_are_taken_before_the_first_snapshot(starting, monkeypatch):
+    """With no wait at all, a route held for the snapshot answers 503: a 200 shows it is not held."""
     base, _srv, _store = starting
-    t0 = time.monotonic()
+    monkeypatch.setattr(web_server, "READY_WAIT_S", 0)
     assert _post(base + "/v1/metrics", {"resourceMetrics": []}) == 200
     assert _post(base + "/v1/logs", {"resourceLogs": []}) == 200
     assert _post(base + "/api/hooks", {"event": "Stop", "session_id": "s-start", "_aictl_verify": True}) == 200
-    assert time.monotonic() - t0 < 3.0  # not held until the snapshot
 
 
 def test_the_board_waits_for_the_first_snapshot_then_answers(starting, monkeypatch):
     base, srv, store = starting
-    monkeypatch.setattr(web_server, "READY_WAIT_S", 0.2)
+    monkeypatch.setattr(web_server, "READY_WAIT_S", 0)
     with pytest.raises(urllib.error.HTTPError) as err:
         urllib.request.urlopen(base + "/api/snapshot", timeout=5)
     assert err.value.code == 503 and err.value.headers["Retry-After"] == "2"
@@ -69,11 +69,9 @@ def test_the_board_waits_for_the_first_snapshot_then_answers(starting, monkeypat
 def test_the_page_loads_at_once_while_starting(starting, monkeypatch):
     """The page needs no snapshot; a held page is what a browser showed as a blank 503 text."""
     base, _srv, _store = starting
-    monkeypatch.setattr(web_server, "READY_WAIT_S", 30.0)
-    t0 = time.monotonic()
+    monkeypatch.setattr(web_server, "READY_WAIT_S", 0)  # a held route answers 503 at once
     with urllib.request.urlopen(base + "/", timeout=5) as resp:
         assert resp.status == 200 and "text/html" in resp.headers["Content-Type"]
-    assert time.monotonic() - t0 < 3.0
 
 
 def test_the_wait_stays_under_the_socket_timeout():
@@ -101,7 +99,7 @@ def test_start_server_opens_the_port_before_it_collects(tmp_path, monkeypatch):
             seen["open"] = c.connect_ex(("127.0.0.1", port)) == 0
         seen["ready"] = servers[0].ready.is_set()
         seen["ingesters while collecting"] = dict(servers[0].ingesters)
-        threading.Timer(0.2, servers[0].shutdown).start()
+        servers[0].shutdown()  # serve_forever runs on its own thread; start_server then returns
 
     started: list = []
     from aictl.dashboard import ingester_runner
