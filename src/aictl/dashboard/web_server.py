@@ -1585,9 +1585,9 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         self._json_response_raw(b'{"ok":true}')
 
     def log_message(self, fmt, *args) -> None:
-        # Suppress noisy SSE keepalive logs
+        # The stream and the telemetry posts arrive every few seconds; a log line each is noise.
         msg = fmt % args if args else fmt
-        if "/api/stream" in str(msg):
+        if "/api/stream" in str(msg) or '"POST /v1/' in str(msg) or '"POST /api/hooks' in str(msg):
             return
         print(f"  {msg}", file=sys.stderr)
 
