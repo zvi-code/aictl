@@ -412,6 +412,8 @@ Tables:
 
 ### Kusto Store (`kusto/`, alternative backend)
 
+Onboarding and access to a remote cluster: [kusto-cluster.md](kusto-cluster.md). Every table: [kusto-schema.md](kusto-schema.md).
+
 With `kusto_cluster` set in `config.toml` (or `aictl daemon serve --kusto-cluster URL`, or `AICTL_KUSTO_CLUSTER`), the history lives in one database of a Kusto (Azure Data Explorer) cluster and the daemon serves from it alone: no SQLite file is opened for the store. The code keeps issuing its SQLite statements; `kusto/connection.py` is a `sqlite3.Connection` look-alike that hands each statement to `kusto/translate.py` and runs the result on the cluster.
 
 - `schema.py` parses `_SCHEMA_SQL`: every table becomes a Kusto table of the same name and columns plus `rowid:long`, `_v:datetime` and `_deleted:bool`. Tables are created with `.create-merge table` on every start (idempotent, widens an older table) and get the streaming ingestion policy. There is no migration path: a Kusto store starts from the current schema, and an existing SQLite history is not moved.
