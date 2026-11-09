@@ -1,0 +1,40 @@
+// Context-window sawtooth: how the prompt size of the busiest long sessions climbs and drops at each compaction.
+// serialize with prev() and row_cumsum() number the requests and segments; series_fit_line fits each climb.
+let R = requests | summarize arg_max(_v, *) by id | where _deleted == false
+  | where report_days <= 0 or unixtime_seconds_todatetime(ts) >= ago(1d * report_days)
+  | where tool == "claude-code" and isempty(agent_id)
+  | extend ctx = input_tokens + cache_read_tokens + cache_creation_tokens
+  | where ctx > 0;
+let TopS = R | summarize reqs = count() by session_id | where reqs >= 20 | top 8 by reqs | project session_id;
+let P = R | where session_id in (TopS)
+  | project session_id, id, ts, ctx
+  | order by session_id asc, ts asc, id asc
+  | extend new_session = session_id != prev(session_id)
+  | extend pos = row_number(1, new_session), prev_ctx = iff(new_session, long(null), prev(ctx))
+  | extend compaction = iff(ctx < 0.6 * prev_ctx, 1, 0)
+  | extend seg = row_cumsum(compaction, new_session)
+  | project session_id, pos, ts, ctx, prev_ctx, compaction, seg;
+// the context size at which compactions typically start: the ceiling of the runway estimate
+let Ceiling = toscalar(P | where compaction == 1 | summarize percentile(prev_ctx, 50));
+let Seg = P
+  | summarize n = count(), start_ctx = take_any(ctx), peak_ctx = max(ctx), t_start = min(ts), t_end = max(ts), ctxs = make_list(ctx) by session_id, seg
+  | extend (rsquare, slope, variance, rvariance, interception, line_fit) = series_fit_line(ctxs)
+  | extend minutes = (t_end - t_start) / 60.0
+  | extend slope = iff(n >= 3, slope, real(null)), rsquare = iff(n >= 3, rsquare, real(null))
+  | extend tokens_per_min = iff(minutes > 0 and isnotnull(slope), slope * n / minutes, real(null));
+// 1. every point
+P | project session_id = substring(session_id, 0, 8), pos, ts, ctx, seg | order by session_id asc, pos asc;
+// 2. one row per segment
+Seg | project session_id = substring(session_id, 0, 8), seg, n, start_ctx, peak_ctx, t_start, t_end, slope = round(slope, 1), rsquare = round(rsquare, 3), tokens_per_min = round(tokens_per_min, 0)
+  | order by session_id asc, seg asc;
+// 3. compactions
+P | where compaction == 1
+  | project session_id = substring(session_id, 0, 8), pos, ts, before = prev_ctx, after = ctx, reclaimed = prev_ctx - ctx
+  | order by session_id asc, pos asc;
+// 4. runway of each session's last segment to the ceiling
+Seg | summarize arg_max(seg, *) by session_id
+  | extend last_ctx = toint(ctxs[-1]), rate_per_min = iff(minutes > 0, n / minutes, real(null))
+  | extend requests_left = iff(slope > 0 and last_ctx < Ceiling, (Ceiling - last_ctx) / slope, real(null))
+  | extend minutes_left = iff(requests_left > 0 and rate_per_min > 0, requests_left / rate_per_min, real(null))
+  | project session_id = substring(session_id, 0, 8), seg, n, last_ctx, slope = round(slope, 1), requests_left = round(requests_left, 0), rate_per_min = round(rate_per_min, 2), minutes_left = round(minutes_left, 0), ceiling = toint(Ceiling)
+  | order by session_id asc

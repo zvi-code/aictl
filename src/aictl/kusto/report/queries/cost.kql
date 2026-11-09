@@ -1,0 +1,40 @@
+// Hourly cost anomalies per tool: which hours spend far more than the fitted baseline, and which session caused it.
+// make-series builds gap-free hourly series; series_decompose_anomalies and series_periods_detect do the analysis.
+let R = requests | summarize arg_max(_v, *) by id | where _deleted == false and ts > 1e9  // a timestamp before 2001 is a bad row, and would make the series millions of hours long
+  | extend t = unixtime_seconds_todatetime(ts)
+  | where report_days <= 0 or t >= ago(1d * report_days);
+let Tools = R | summarize n = count() by tool | top 4 by n | project tool;
+// the series covers at most the last 90 days of the data, so its length stays bounded
+let newest = toscalar(R | summarize max(t));
+let R4 = R | where tool in (Tools) and t > newest - 90d;
+// an empty table gives a one-hour range at the epoch, not an unbounded series
+let lo = coalesce(toscalar(R4 | summarize bin(min(t), 1h)), unixtime_seconds_todatetime(0));
+let hi = coalesce(toscalar(R4 | summarize bin(max(t), 1h)), lo) + 1h;
+let S = R4
+  | make-series cost = sum(cost_usd) default = 0.0, reqs = count() default = 0, out_tokens = sum(output_tokens) default = 0
+      on t from lo to hi step 1h by tool
+  | extend (flag_s, score_s, baseline_s) = series_decompose_anomalies(cost, 2.5, -1, 'linefit');
+// 1. per tool and hour
+S | mv-expand t to typeof(datetime), cost to typeof(double), baseline = baseline_s to typeof(double), score = score_s to typeof(double),
+              flag = flag_s to typeof(int), reqs to typeof(long), out_tokens to typeof(long)
+  | project tool, t, cost = round(cost, 4), baseline = round(max_of(baseline, 0.0), 4), score = round(score, 2), flag, reqs, out_tokens
+  | order by tool asc, t asc;
+// 2. explanation of the 12 costliest flagged hours: the top session of each hour by cost
+let Flagged = S | mv-expand t to typeof(datetime), cost to typeof(double), flag = flag_s to typeof(int)
+  | where flag != 0 | project tool, t, cost;
+let PerSession = R4 | extend t = bin(t, 1h)
+  | summarize session_cost = sum(cost_usd), session_reqs = count(), model = arg_max(cost_usd, model) by tool, t, session_id
+  | project tool, t, session_id, model = model1, session_cost, session_reqs;
+Flagged
+| join kind=inner PerSession on tool, t
+| summarize arg_max(session_cost, session_id, model, session_reqs) by tool, t, cost
+| project tool, t, cost = round(cost, 4), session_id = substring(session_id, 0, 8), model, session_cost = round(session_cost, 4), session_reqs, share = round(session_cost / cost, 3)
+| top 12 by cost desc
+| order by t asc, tool asc;
+// 3. periodicity of the busiest tool's request series
+let Busiest = toscalar(R4 | summarize n = count() by tool | top 1 by n | project tool);
+S | where tool == Busiest
+  | extend (periods, scores) = series_periods_detect(reqs, 2.0, 168.0, 6)
+  | mv-expand period_hours = periods to typeof(double), score = scores to typeof(double)
+  | where period_hours > 0
+  | project tool, period_hours, score = round(score, 3)

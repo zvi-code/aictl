@@ -1,0 +1,1242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>aictl Kusto report</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one reading column (max 1120px); each analysis is a section with headline, capability row, chart, findings, query. */
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --ink: #0f1217;
+  --ink-2: #4b515c;
+  --muted: #7a808b;
+  --grid: #e4e7eb;
+  --axis: #c3c8cf;
+  --border: rgba(15, 18, 23, 0.10);
+  --code-bg: #eef0f3;
+  --bar: #8a93a3;
+  --accent: #2459c9;
+  --series: #2a78d6;
+  --series-wash: rgba(42, 120, 214, 0.13);
+  --rest: #a3a9b3;
+  --hl: #eb6834;
+  --crit: #d03b3b;
+  --c-b: #2a78d6; --c-e: #eb6834; --c-r: #1baf7a; --c-a: #eda100; --c-w: #e87ba4; --c-m: #008300; --c-o: #9aa0aa;
+  --on-fill: #ffffff; --on-yellow: #0b0b0b;
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1013; --surface: #16191e; --ink: #eef0f3; --ink-2: #b8bdc6; --muted: #858b95;
+    --grid: #252a31; --axis: #3a4048; --border: rgba(255, 255, 255, 0.10); --code-bg: #1c2026;
+    --bar: #6f7887; --accent: #7da2f0; --series: #3987e5; --series-wash: rgba(57, 135, 229, 0.18);
+    --rest: #5f6672; --hl: #d95926; --crit: #e05252;
+    --c-b: #3987e5; --c-e: #d95926; --c-r: #199e70; --c-a: #c98500; --c-w: #d55181; --c-m: #2f9a2f; --c-o: #6c727c;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1013; --surface: #16191e; --ink: #eef0f3; --ink-2: #b8bdc6; --muted: #858b95;
+  --grid: #252a31; --axis: #3a4048; --border: rgba(255, 255, 255, 0.10); --code-bg: #1c2026;
+  --bar: #6f7887; --accent: #7da2f0; --series: #3987e5; --series-wash: rgba(57, 135, 229, 0.18);
+  --rest: #5f6672; --hl: #d95926; --crit: #e05252;
+  --c-b: #3987e5; --c-e: #d95926; --c-r: #199e70; --c-a: #c98500; --c-w: #d55181; --c-m: #2f9a2f; --c-o: #6c727c;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 15px; line-height: 1.55;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 72px;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1120px; margin: 0 auto; display: flex; flex-direction: column; gap: 56px; }
+h1, h2, h3 { font-family: var(--f-display); text-wrap: balance; margin: 0; font-weight: 600; letter-spacing: -0.005em; }
+h1 { font-size: clamp(30px, 5vw, 46px); line-height: 1.08; max-width: 22ch; }
+h2 { font-size: clamp(22px, 3.2vw, 30px); line-height: 1.15; max-width: 44ch; }
+h3 { font-size: 17px; line-height: 1.3; font-weight: 600; }
+p { margin: 0; }
+.eyebrow { font-family: var(--f-mono); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.lede { color: var(--ink-2); max-width: 68ch; font-size: 16px; }
+.mono { font-family: var(--f-mono); }
+.num { font-variant-numeric: tabular-nums; }
+header.top { display: flex; flex-direction: column; gap: 18px; }
+
+/* index of the five queries */
+.index { display: grid; grid-template-columns: auto minmax(0, 1fr) auto 112px; gap: 0; border-top: 1px solid var(--grid); }
+.index a { display: contents; color: inherit; text-decoration: none; }
+.index a > span { padding: 10px 12px 10px 0; border-bottom: 1px solid var(--grid); display: flex; align-items: center; min-width: 0; }
+.index a:hover > span, .index a:focus-visible > span { background: var(--code-bg); }
+.index .ix-n { font-family: var(--f-mono); color: var(--muted); font-size: 13px; padding-left: 8px; }
+.index .ix-t { font-weight: 500; }
+.index .ix-c { font-family: var(--f-mono); font-size: 12px; color: var(--ink-2); justify-content: flex-end; text-align: right; }
+.index .ix-s { white-space: nowrap; gap: 8px; font-family: var(--f-mono); font-size: 12px; color: var(--ink-2); }
+.ix-bar { height: 6px; border-radius: 0 3px 3px 0; background: var(--series); flex: none; }
+.window { font-size: 13px; color: var(--muted); max-width: 80ch; }
+
+section.sec { display: flex; flex-direction: column; gap: 18px; scroll-margin-top: 16px; }
+.sec-head { display: flex; flex-direction: column; gap: 8px; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; font-size: 13px; color: var(--ink-2); }
+.chip { font-family: var(--f-mono); font-size: 12px; padding: 2px 8px; border-radius: 4px; background: var(--code-bg); color: var(--ink); border: 1px solid var(--border); }
+.runtime { font-family: var(--f-mono); font-size: 12px; color: var(--ink); display: inline-flex; gap: 6px; align-items: baseline; }
+.runtime b { font-weight: 500; font-size: 14px; }
+.meta .sep { color: var(--axis); }
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; min-width: 0; }
+.panel-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; }
+.panel-title { font-size: 13px; font-weight: 600; color: var(--ink); }
+.panel-sub { font-size: 12.5px; color: var(--muted); }
+.findings { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px 28px; }
+.findings li { border-top: 2px solid var(--ink); padding-top: 10px; font-size: 14.5px; color: var(--ink); min-width: 0; }
+.caveat { font-size: 13px; color: var(--ink-2); max-width: 90ch; padding-left: 12px; border-left: 2px solid var(--axis); }
+.caveat b { font-weight: 600; color: var(--ink); }
+details.kql { border-top: 1px solid var(--grid); padding-top: 10px; }
+details.kql summary { cursor: pointer; font-family: var(--f-mono); font-size: 12.5px; color: var(--ink-2); list-style: none; display: flex; gap: 8px; align-items: center; }
+details.kql summary::-webkit-details-marker { display: none; }
+details.kql summary::before { content: "+"; display: inline-block; width: 14px; text-align: center; color: var(--muted); }
+details.kql[open] summary::before { content: "\2212"; }
+.code-wrap { position: relative; margin-top: 10px; }
+pre.code { margin: 0; background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; padding: 14px 16px; overflow-x: auto; font-family: var(--f-mono); font-size: 12px; line-height: 1.55; color: var(--ink); tab-size: 4; }
+pre.code .cm { color: var(--muted); }
+pre.code .kw { color: var(--accent); }
+.copy { position: absolute; top: 8px; right: 8px; }
+button, .seg button { font: inherit; }
+.btn { font-family: var(--f-mono); font-size: 12px; padding: 4px 10px; border-radius: 4px; border: 1px solid var(--axis); background: var(--surface); color: var(--ink); cursor: pointer; }
+.btn:hover { border-color: var(--ink-2); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.seg { display: inline-flex; border: 1px solid var(--axis); border-radius: 5px; overflow: hidden; }
+.seg button { border: 0; background: var(--surface); color: var(--ink-2); padding: 4px 10px; font-size: 12.5px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--axis); }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12.5px; color: var(--ink-2); align-items: center; }
+.legend .k { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 14px; height: 14px; border-radius: 3px; display: inline-flex; align-items: center; justify-content: center; font-family: var(--f-mono); font-size: 10px; font-weight: 500; color: var(--on-fill); }
+.ln { width: 16px; height: 0; border-top: 2px solid; display: inline-block; }
+canvas { display: block; max-width: 100%; }
+svg { display: block; max-width: 100%; overflow: visible; }
+svg text { font-family: var(--f-body); }
+.ax text { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; font-family: var(--f-mono); }
+.two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.two-3 { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 860px) { .two, .two-3 { grid-template-columns: minmax(0, 1fr); } }
+#tip { position: fixed; z-index: 20; pointer-events: none; background: var(--ink); color: var(--surface); border-radius: 6px; padding: 8px 10px; font-size: 12px; line-height: 1.45; max-width: 300px; box-shadow: 0 4px 14px rgba(0,0,0,0.18); }
+#tip .tr { display: flex; gap: 8px; align-items: baseline; }
+#tip .tr b { font-weight: 600; font-variant-numeric: tabular-nums; }
+#tip .tr span { opacity: 0.75; }
+#tip .tr.bad b { color: #ff9b9b; }
+#tip .tr.h { font-family: var(--f-mono); font-size: 11px; opacity: 0.85; margin-bottom: 2px; }
+
+/* section 1 */
+.lens-cap { font-size: 12.5px; color: var(--ink-2); margin: 14px 0 6px; display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+.motifs-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 6px 40px; }
+.motifs { display: grid; align-content: start; grid-template-columns: auto auto minmax(40px, 1fr); gap: 6px 10px; align-items: center; font-size: 12.5px; }
+.motif-chips { display: inline-flex; gap: 2px; }
+.motif-chips .sw { width: 18px; height: 18px; font-size: 11px; }
+.mbar { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.mbar i { display: block; height: 12px; border-radius: 0 3px 3px 0; background: var(--bar); }
+.mbar span { font-family: var(--f-mono); font-size: 12px; color: var(--ink); }
+.mtool { color: var(--ink-2); white-space: nowrap; }
+
+/* section 2 */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 1px; background: var(--grid); border: 1px solid var(--grid); border-radius: 8px; overflow: hidden; }
+.stat { background: var(--surface); padding: 14px 16px; display: flex; flex-direction: column; gap: 2px; }
+.stat .v { font-family: var(--f-display); font-size: 30px; font-weight: 600; line-height: 1.1; }
+.stat .v small { font-size: 16px; font-weight: 500; color: var(--ink-2); }
+.stat .l { font-size: 12.5px; color: var(--ink-2); }
+.chains { display: flex; flex-direction: column; gap: 0; }
+.chain { display: grid; grid-template-columns: 18px 104px 64px minmax(0, 1fr) 72px 104px 72px minmax(0, 1fr) 72px 104px; align-items: center; gap: 0 6px; padding: 8px 0; border-bottom: 1px solid var(--grid); font-size: 12.5px; }
+.chain.head { padding: 0 0 6px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.chain .pill { justify-self: start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 900px) { .chain { display: flex; flex-wrap: wrap; gap: 6px 4px; } .chain.head { display: none; } }
+.chain:last-child { border-bottom: 0; }
+.pill { font-family: var(--f-mono); font-size: 11.5px; padding: 2px 7px; border-radius: 10px; border: 1px solid var(--axis); color: var(--ink); white-space: nowrap; }
+.pill.file { border-radius: 3px; background: var(--code-bg); border-color: var(--border); }
+.pill.mid { border-color: var(--hl); border-width: 1.5px; }
+.arrow { color: var(--muted); font-size: 11px; white-space: nowrap; display: inline-flex; flex-direction: column; line-height: 1.25; }
+@media (max-width: 900px) { .arrow { flex-direction: row; gap: 4px; } }
+.arrow .gap { font-family: var(--f-mono); color: var(--ink-2); }
+.arrow .gap.neg { color: var(--hl); }
+.chain .idx { font-family: var(--f-mono); font-size: 11px; color: var(--muted); width: 18px; }
+.hf { display: grid; grid-template-columns: minmax(0, 1fr) auto auto 70px; gap: 4px 12px; font-size: 12.5px; align-items: center; }
+.hf .h { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.hf .fn { font-family: var(--f-mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hf .n { font-family: var(--f-mono); text-align: right; color: var(--ink-2); }
+.hf .b { display: flex; align-items: center; gap: 5px; }
+.hf .b i { display: block; height: 9px; background: var(--bar); border-radius: 0 3px 3px 0; }
+.hf .b span { font-family: var(--f-mono); font-size: 11.5px; }
+
+/* section 3 */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.card { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; background: var(--surface); display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+.card .top { display: flex; gap: 8px; align-items: center; }
+.badge { width: 20px; height: 20px; border-radius: 50%; background: var(--crit); color: #fff; font-family: var(--f-mono); font-size: 11px; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.card .when { font-family: var(--f-mono); font-size: 12px; color: var(--ink-2); }
+.card .cost { font-family: var(--f-display); font-size: 24px; font-weight: 600; line-height: 1.1; }
+.card .cost small { font-family: var(--f-body); font-size: 12px; color: var(--muted); font-weight: 400; }
+.share { display: flex; height: 8px; border-radius: 4px; overflow: hidden; gap: 2px; background: transparent; }
+.share i { display: block; height: 100%; }
+.card .who { color: var(--ink-2); }
+.card .who b { font-family: var(--f-mono); font-weight: 500; color: var(--ink); }
+
+/* section 5 */
+.multi { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+@media (max-width: 760px) { .multi { grid-template-columns: minmax(0, 1fr); } }
+.sm { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px 8px; min-width: 0; }
+.sm-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.sm-id { font-family: var(--f-mono); font-size: 13px; font-weight: 500; }
+.sm-sub { font-size: 12px; color: var(--muted); }
+.sm-run { text-align: right; }
+.sm-run .v { font-family: var(--f-display); font-size: 22px; font-weight: 600; line-height: 1.05; }
+.sm-run .v small { font-size: 12px; font-weight: 500; color: var(--ink-2); font-family: var(--f-body); }
+.sm-run .m { font-size: 11.5px; color: var(--muted); }
+
+@media (max-width: 640px) {
+  body { padding-block: 24px 48px; font-size: 14.5px; }
+  .wrap { gap: 44px; }
+  .index { grid-template-columns: auto minmax(0, 1fr) 108px; }
+  .index .ix-c { display: none; }
+  .panel { padding: 12px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .seg button, .btn { transition: background-color 0.12s, color 0.12s, border-color 0.12s; }
+}
+/* a section with no data, or a query that failed */
+.notice { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--axis); border-radius: 8px; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; color: var(--ink-2); }
+.notice b { color: var(--ink); font-weight: 600; }
+.notice.error { border-left-color: var(--crit); }
+.notice pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--f-mono); font-size: 12px; color: var(--ink); background: var(--code-bg); border-radius: 6px; padding: 10px 12px; max-height: 280px; overflow: auto; }
+.index .ix-s.bad { color: var(--crit); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <span class="eyebrow" id="eyebrow"></span>
+    <h1>What Kusto can tell you about coding agents</h1>
+    <p class="lede" id="lede"></p>
+    <nav class="index" id="index" aria-label="The analyses"></nav>
+    <p class="window" id="window"></p>
+  </header>
+</div>
+<div id="tip" hidden></div>
+
+<!-- One <template> per section: data-section is the name in SECTIONS (src/aictl/kusto/report/__init__.py),
+     data-title the section's name on the page, data-caps the KQL features it shows. Its draw function is RENDER.NAME below. -->
+<template data-section="dna" data-title="Session DNA" data-caps="scan,partition hint.strategy=native,row_number,prev">
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <div class="panel">
+        <div class="panel-head">
+          <div class="legend" id="dna-legend"></div>
+          <div class="seg" role="group" aria-label="Strip scale">
+            <button type="button" id="dna-fit" aria-pressed="true">Each fills the width</button>
+            <button type="button" id="dna-same" aria-pressed="false">Same scale</button>
+          </div>
+        </div>
+        <div><canvas id="dna-cv" aria-label="Tool-call strips for the sessions with the most calls"></canvas></div>
+        <div class="lens-cap"><span class="panel-title" id="lens-title"></span><span class="panel-sub" id="lens-sub"></span></div>
+        <div><canvas id="lens-cv" aria-label="Magnified window of calls"></canvas></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head" style="flex-direction:column;align-items:flex-start;gap:2px">
+          <h3>Opening motifs</h3>
+          <span class="panel-sub">First three call classes, all sessions with 10 or more calls (table 3)</span>
+        </div>
+        <div class="motifs-cols" id="motifs"></div>
+      </div>
+    </div>
+    <ul class="findings" id="f-dna"></ul>
+</template>
+<template data-section="relay" data-title="Relay graph" data-caps="make-graph,graph-match,graph-mark-components,graph-to-table">
+    <div class="stats" id="relay-stats"></div>
+    <div class="panel">
+      <div class="panel-head" style="flex-direction:column;align-items:flex-start;gap:2px">
+        <h3 id="chains-title"></h3>
+        <span class="panel-sub">graph-match pattern (a1)-[write]->(f1)&lt;-[read]-(a2)-[write]->(f2)&lt;-[read]-(a3), in time order. Gaps are between first touches. Orange ring: the middle agent.</span>
+      </div>
+      <div class="chains" id="chains"></div>
+    </div>
+    <div class="two-3">
+      <div class="panel">
+        <div class="panel-head">
+          <div style="display:flex;flex-direction:column;gap:2px">
+            <h3 id="g-title"></h3>
+            <span class="panel-sub" id="g-sub"></span>
+          </div>
+          <div class="seg" role="group" aria-label="Files shown">
+            <button type="button" id="g-hand" aria-pressed="true">Files with a handoff</button>
+            <button type="button" id="g-all" aria-pressed="false">All shared files</button>
+          </div>
+        </div>
+        <div class="legend" id="g-legend" style="margin-bottom:8px"></div>
+        <div id="graph"></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:16px;min-width:0">
+        <div class="panel">
+          <div class="panel-head" style="flex-direction:column;align-items:flex-start;gap:2px">
+            <h3>Top handoff files</h3>
+            <span class="panel-sub">Distinct writer-to-reader pairs per file basename, all sessions (table 5)</span>
+          </div>
+          <div class="hf" id="hfiles"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head" style="flex-direction:column;align-items:flex-start;gap:2px">
+            <h3>Work items</h3>
+            <span class="panel-sub" id="comps-sub"></span>
+          </div>
+          <div id="comps"></div>
+        </div>
+      </div>
+    </div>
+    <ul class="findings" id="f-relay"></ul>
+    <p class="caveat" id="c-relay"></p>
+</template>
+<template data-section="cost" data-title="Cost anomalies explained" data-caps="make-series,series_decompose_anomalies,series_periods_detect">
+    <div class="panel">
+      <div class="panel-head">
+        <div class="legend" id="cost-legend"></div>
+        <span class="panel-sub">Hourly cost in USD, UTC, same scale in every panel</span>
+      </div>
+      <div id="cost-chart"></div>
+    </div>
+    <div class="cards" id="cost-cards"></div>
+    <ul class="findings" id="f-cost"></ul>
+    <p class="caveat" id="c-cost"></p>
+</template>
+<template data-section="slow" data-title="What slow requests share" data-caps="evaluate diffpatterns,percentile,toscalar">
+    <div class="stats" id="slow-stats"></div>
+    <div class="panel">
+      <div class="panel-head">
+        <div class="legend" id="slow-legend"></div>
+        <span class="panel-sub">Share of requests that match each pattern, sorted by the gap</span>
+      </div>
+      <div id="slow-chart"></div>
+    </div>
+    <ul class="findings" id="f-slow"></ul>
+    <p class="caveat" id="c-slow"></p>
+</template>
+<template data-section="context" data-title="Context sawtooth and runway" data-caps="serialize,prev,row_number,row_cumsum,series_fit_line">
+    <div class="legend" id="ctx-legend"></div>
+    <div class="multi" id="ctx-multi"></div>
+    <ul class="findings" id="f-ctx"></ul>
+    <p class="caveat" id="c-ctx"></p>
+</template>
+
+<script>
+/*__DATA__*/
+</script>
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const NS = "http://www.w3.org/2000/svg";
+function S(tag, attrs, parent) { const e = document.createElementNS(NS, tag); if (attrs) for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; }
+function H(tag, cls, text, parent) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; if (parent) parent.appendChild(e); return e; }
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const nf = new Intl.NumberFormat("en-US");
+const f0 = n => nf.format(Math.round(n));
+const f1 = n => (Math.round(n * 10) / 10).toFixed(1);
+const f2 = n => n.toFixed(2);
+const usd = n => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function fk(n) { n = Math.round(n); if (Math.abs(n) >= 100000) return Math.round(n / 1000) + "K"; if (Math.abs(n) >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, "") + "K"; return String(n); }
+const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const pad = n => String(n).padStart(2, "0");
+function fT(sec) { const d = new Date(sec * 1000); return MON[d.getUTCMonth()] + " " + d.getUTCDate() + ", " + pad(d.getUTCHours()) + ":" + pad(d.getUTCMinutes()); }
+function fD(sec) { const d = new Date(sec * 1000); return d.getUTCFullYear() + "-" + pad(d.getUTCMonth() + 1) + "-" + pad(d.getUTCDate()); }
+function fDur(sec) { const a = Math.abs(sec); if (a < 3600) return Math.max(1, Math.round(a / 60)) + " min"; return f1(a / 3600) + " h"; }
+const pct = (n, d = 1) => n.toFixed(d) + "%";
+const median = a => { const b = [...a].sort((x, y) => x - y); const m = b.length >> 1; return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2; };
+function niceMax(v, step) { return Math.ceil(v / step) * step; }
+/* tooltip */
+const tip = $("#tip");
+function showTip(ev, rows) {
+  tip.replaceChildren();
+  for (const [v, l, cls] of rows) { const r = H("div", "tr" + (cls ? " " + cls : ""), null, tip); H("b", null, v, r); if (l) H("span", null, l, r); }
+  tip.hidden = false;
+  const w = tip.offsetWidth, h = tip.offsetHeight; let L = ev.clientX + 14, T = ev.clientY + 14;
+  if (L + w > innerWidth - 8) L = ev.clientX - w - 14; if (T + h > innerHeight - 8) T = ev.clientY - h - 14;
+  tip.style.left = Math.max(8, L) + "px"; tip.style.top = Math.max(8, T) + "px";
+}
+function hideTip() { tip.hidden = true; }
+
+function findings(id, items) { const ul = $(id); items.forEach(t => { const li = H("li", null, null, ul); if (Array.isArray(t)) t.forEach(p => typeof p === "string" ? li.append(p) : li.append(p)); else li.textContent = t; }); }
+function B(text) { const b = document.createElement("b"); b.textContent = text; return b; }
+function M(text) { const b = document.createElement("span"); b.className = "mono"; b.textContent = text; return b; }
+/* KQL blocks */
+function highlightKql(pre, src) {
+  const kw = /\b(let|summarize|where|extend|project|order|by|asc|desc|partition|scan|declare|with|step|make-series|on|from|to|mv-expand|join|kind|inner|union|evaluate|make-graph|graph-match|graph-mark-components|graph-to-table|serialize|top|take|distinct|toscalar|iff|case|arg_max|count|countif|dcount|make_list|strcat_array|series_decompose_anomalies|series_periods_detect|series_fit_line|row_cumsum|row_number|prev|next|diffpatterns|nodes)\b/g;
+  src.split("\n").forEach((line, i) => {
+    if (i) pre.append("\n");
+    const ci = line.indexOf("//");
+    const code = ci >= 0 ? line.slice(0, ci) : line;
+    let last = 0; let m; kw.lastIndex = 0;
+    while ((m = kw.exec(code))) { if (m.index > last) pre.append(code.slice(last, m.index)); const s = document.createElement("span"); s.className = "kw"; s.textContent = m[0]; pre.append(s); last = m.index + m[0].length; }
+    if (last < code.length) pre.append(code.slice(last));
+    if (ci >= 0) { const s = document.createElement("span"); s.className = "cm"; s.textContent = line.slice(ci); pre.append(s); }
+  });
+}
+
+/* ---------- sections ----------
+   RENDER.NAME(tables, sec) draws the section whose template part (data-section = NAME) is already in the page and returns
+   { headline, note, draw }, or NO_DATA when the tables hold nothing to show. A throw is shown as that section's error. */
+const NO_DATA = Symbol("no data");
+const RENDER = {};
+const plural = (n, one, many) => f0(n) + " " + (n === 1 ? one : many || one + "s");
+const sum = a => a.reduce((x, y) => x + y, 0);
+const medianOf = a => (a.length ? median(a) : 0);
+const fStamp = iso => { const d = new Date(iso); return d.getUTCFullYear() + "-" + pad(d.getUTCMonth() + 1) + "-" + pad(d.getUTCDate()) + " " + pad(d.getUTCHours()) + ":" + pad(d.getUTCMinutes()) + " UTC"; };
+function niceStep(v) { const p = Math.pow(10, Math.floor(Math.log10(v))); const m = v / p; return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p; }
+
+/* =========================================================
+   1. Session DNA
+   ========================================================= */
+RENDER.dna = function (T) {
+  const [tSessions, tStreaks, tMotifs] = T;
+  if (!tSessions.length) return NO_DATA;
+  const ROWS = tSessions.map(r => [r.session_id, r.tool, r.calls, r.errors, r.longest_error_streak, r.deepest_fix_loop, Math.round(r.t_start), Math.round(r.t_end), r.dna]);
+  const STREAKS = tStreaks.map(r => [r.session_id, r.pos, r.streak]);
+  const MOTIFS = tMotifs.map(r => [r.motif, r.tool, r.sessions]);
+const CLS = "BERAWMO";
+const CLS_NAME = { B: "Shell", E: "Edit", R: "Read", A: "Agent or delegation", W: "Web", M: "MCP tool", O: "Other" };
+const CLS_VAR = { B: "--c-b", E: "--c-e", R: "--c-r", A: "--c-a", W: "--c-w", M: "--c-m", O: "--c-o" };
+const S1 = ROWS.map(r => {
+  const [id, tool, calls, errors, streak, loop, t0, t1, dna] = r;
+  const n = dna.length, code = new Uint8Array(n), fail = new Uint8Array(n), counts = new Array(7).fill(0);
+  let st = 0, cyc = 0, phase = 0, maxS = 0, maxC = 0, nFail = 0; const loopAt = [], streakEnds = [];
+  for (let i = 0; i < n; i++) {
+    const ch = dna[i], up = ch.toUpperCase(), f = ch !== up; const c = CLS.indexOf(up);
+    code[i] = c; fail[i] = f ? 1 : 0; counts[c]++; if (f) nFail++;
+    st = f ? st + 1 : 0;
+    const nc = (up === "B" && f && phase === 2) ? cyc + 1 : (up === "B" && !f) ? 0 : cyc;
+    const np = (up === "B" && f) ? 1 : (up === "B" && !f) ? 0 : (up === "E" && phase >= 1) ? 2 : phase;
+    if (nc > cyc) loopAt.push(i + 1);
+    cyc = nc; phase = np; maxS = Math.max(maxS, st); maxC = Math.max(maxC, cyc);
+    const nextFail = i + 1 < n ? dna[i + 1] !== dna[i + 1].toUpperCase() : false;
+    if (st >= 3 && !nextFail) streakEnds.push([i + 1, st]);
+  }
+  return { id, tool, calls, errors, streak, loop, t0, t1, dna, code, fail, counts, rStreak: maxS, rLoop: maxC, nFail, loopAt, streakEnds };
+});
+const recomputeOK = S1.every(s => s.rStreak === s.streak && s.rLoop === s.loop && s.nFail === s.errors && s.dna.length === s.calls)
+  && STREAKS.every(([id, pos, st]) => { const s = S1.find(x => x.id === id); return s && s.streakEnds.some(e => e[0] === pos && e[1] === st); })
+  && S1.reduce((a, s) => a + s.streakEnds.length, 0) === STREAKS.length;
+if (!recomputeOK) console.warn("DNA recompute does not match the query tables");
+const maxCalls = Math.max(...S1.map(s => s.calls));
+let dnaMode = "fit";
+let lens = { s: null, center: 0 };
+let dnaGeom = null;
+function setupCanvas(cv, W, Hh) {
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(Hh * dpr); cv.style.width = W + "px"; cv.style.height = Hh + "px";
+  const ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); return { ctx, dpr };
+}
+
+function drawDNA() {
+  const cv = $("#dna-cv"); const W = cv.parentElement.clientWidth; if (!W) return;
+  const narrow = W < 560;
+  const labelW = narrow ? 0 : 252, rowH = narrow ? 40 : 27, stripH = 10, top = 2, axisH = 22;
+  const Hh = top + S1.length * rowH + axisH;
+  const { ctx, dpr } = setupCanvas(cv, W, Hh);
+  const colors = CLS.split("").map(c => css(CLS_VAR[c]));
+  const ink = css("--ink"), ink2 = css("--ink-2"), muted = css("--muted"), crit = css("--crit"), grid = css("--grid");
+  const plotW = W - labelW - 4;
+  const rows = [];
+  S1.forEach((s, i) => {
+    const y0 = top + i * rowH;
+    const sy = narrow ? y0 + 22 : y0 + 10;
+    const ws = dnaMode === "fit" ? plotW : plotW * s.calls / maxCalls;
+    // labels
+    ctx.textBaseline = "alphabetic";
+    ctx.font = "500 12px " + css("--f-mono"); ctx.fillStyle = ink; ctx.textAlign = "left";
+    const ly = narrow ? y0 + 11 : sy + 9;
+    ctx.fillText(s.id, 0, ly);
+    ctx.font = "11.5px " + css("--f-body"); ctx.fillStyle = ink2;
+    const idW = ctx.measureText("00000000").width + 8 + (narrow ? 0 : 0);
+    ctx.fillText(s.tool, 68, ly);
+    ctx.fillStyle = muted; ctx.font = "11px " + css("--f-mono");
+    const right = f0(s.calls) + " · " + s.errors + " err";
+    if (narrow) { ctx.textAlign = "right"; ctx.fillText(right, W, ly); }
+    else { ctx.textAlign = "right"; ctx.fillText(right, labelW - 10, ly); }
+    ctx.textAlign = "left";
+    // strip in device pixels
+    const X0 = Math.round(labelW * dpr), WS = Math.max(1, Math.round(ws * dpr)), Y = Math.round(sy * dpr), SH = Math.round(stripH * dpr);
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const per = s.calls / WS;
+    const cnt = new Array(7);
+    for (let col = 0; col < WS; col++) {
+      const a = Math.floor(col * per); let b = Math.floor((col + 1) * per); if (b <= a) b = a + 1; if (a >= s.calls) break;
+      if (b - a === 1) {
+        if (per < 0.34 && Math.floor((col + 1) * per) !== a) continue; // 1-device-px gap between wide ticks
+        ctx.fillStyle = colors[s.code[a]]; ctx.fillRect(X0 + col, Y, 1, SH);
+        if (s.fail[a]) { ctx.fillStyle = crit; ctx.fillRect(X0 + col, Y - Math.round(6 * dpr), 1, Math.round(5 * dpr)); }
+      } else {
+        cnt.fill(0); let anyFail = 0;
+        for (let j = a; j < b && j < s.calls; j++) { cnt[s.code[j]]++; anyFail |= s.fail[j]; }
+        let yy = Y; const tot = b - a;
+        for (let c = 0; c < 7; c++) if (cnt[c]) { const h = SH * cnt[c] / tot; ctx.fillStyle = colors[c]; ctx.fillRect(X0 + col, yy, 1, h + 0.5); yy += h; }
+        if (anyFail) { ctx.fillStyle = crit; ctx.fillRect(X0 + col, Y - Math.round(6 * dpr), 1, Math.round(5 * dpr)); }
+      }
+    }
+    // widen failure ticks a little so they read when the strip is dense: none needed, 1 device px is crisp
+    ctx.restore();
+    // streak markers
+    STREAKS.filter(r => r[0] === s.id).forEach(([, pos, len]) => {
+      const xa = labelW + ws * (pos - len) / s.calls, xb = labelW + ws * pos / s.calls; const xm = (xa + xb) / 2;
+      ctx.fillStyle = crit; ctx.beginPath(); ctx.moveTo(xm, sy + stripH + 1.5); ctx.lineTo(xm - 4.5, sy + stripH + 8); ctx.lineTo(xm + 4.5, sy + stripH + 8); ctx.closePath(); ctx.fill();
+      ctx.font = "500 10.5px " + css("--f-body"); ctx.fillStyle = ink;
+      if (!narrow) ctx.fillText(len + " failed in a row, calls " + (pos - len + 1) + "–" + pos, xm + 8, sy + stripH + 8.5);
+    });
+    rows.push({ s, y0, sy, ws });
+  });
+  // axis
+  const ay = top + S1.length * rowH + 4;
+  ctx.fillStyle = grid; ctx.fillRect(labelW, ay, plotW, 1);
+  ctx.font = "11px " + css("--f-mono"); ctx.fillStyle = muted; ctx.textBaseline = "top";
+  if (dnaMode === "same") {
+    const step = niceStep(maxCalls / (plotW < 400 ? 3 : 6));
+    for (let v = 0; v <= maxCalls; v += step) { const x = labelW + plotW * v / maxCalls; ctx.fillRect(x, ay, 1, 4); ctx.textAlign = v === 0 ? "left" : "center"; ctx.fillText(fk(v), x, ay + 6); }
+    ctx.textAlign = "right"; ctx.fillText("calls", W, ay + 6);
+  } else {
+    ctx.textAlign = "left"; ctx.fillText("first call", labelW, ay + 6); ctx.textAlign = "right"; ctx.fillText("last call (each strip is its own session length)", W, ay + 6);
+  }
+  ctx.textAlign = "left";
+  dnaGeom = { rows, labelW, rowH, top, narrow, stripH };
+  drawLens();
+}
+
+function dnaHit(ev) {
+  if (!dnaGeom) return null;
+  const r = ev.currentTarget.getBoundingClientRect(); const x = ev.clientX - r.left, y = ev.clientY - r.top;
+  const i = Math.floor((y - dnaGeom.top) / dnaGeom.rowH); const row = dnaGeom.rows[i]; if (!row) return null;
+  const rel = (x - dnaGeom.labelW) / row.ws; if (rel < 0 || rel > 1) return { row, idx: -1 };
+  return { row, idx: Math.min(row.s.calls - 1, Math.floor(rel * row.s.calls)) };
+}
+function dnaHover(ev) {
+  const h = dnaHit(ev); if (!h || h.idx < 0) { hideTip(); return; }
+  const s = h.row.s, i = h.idx, c = CLS[s.code[i]];
+  const calls = Math.max(1, Math.round(s.calls / (h.row.ws * (window.devicePixelRatio || 1))));
+  showTip(ev, [[s.id + " · " + s.tool, null, "h"], ["call " + f0(i + 1), "of " + f0(s.calls)], [CLS_NAME[c] + " (" + c + ")", s.fail[i] ? "failed" : "succeeded", s.fail[i] ? "bad" : ""], calls > 1 ? [String(calls) + " calls", "per pixel here; see the lens below"] : ["", ""]].filter(r => r[0] !== ""));
+  lens.s = s; lens.center = i + 1; drawLens();
+}
+let lensHi = -1, lensGeom = null;
+function drawLens() {
+  const cv = $("#lens-cv"); const W = cv.parentElement.clientWidth; if (!W || !lens.s) return;
+  const n = W < 560 ? 40 : 100; const s = lens.s;
+  let a = Math.max(1, lens.center - Math.floor(n / 2)); let b = Math.min(s.calls, a + n - 1); a = Math.max(1, b - n + 1);
+  const Hh = 34; const { ctx } = setupCanvas(cv, W, Hh);
+  const cw = W / n; const colors = CLS.split("").map(c => css(CLS_VAR[c])); const crit = css("--crit");
+  ctx.font = "500 " + Math.min(11, cw * 0.9) + "px " + css("--f-mono"); ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  for (let p = a; p <= b; p++) {
+    const k = p - a, x = k * cw, i = p - 1, c = s.code[i];
+    ctx.fillStyle = colors[c]; ctx.fillRect(x + 0.5, 8, Math.max(1, cw - 1.5), 24);
+    if (s.fail[i]) { ctx.fillStyle = crit; ctx.fillRect(x + 0.5, 1, Math.max(1, cw - 1.5), 5); }
+    if (cw >= 8) { ctx.fillStyle = CLS[c] === "A" ? css("--on-yellow") : css("--on-fill"); ctx.fillText(s.dna[i], x + cw / 2, 20.5); }
+    if (k === lensHi) { ctx.strokeStyle = css("--ink"); ctx.lineWidth = 2; ctx.strokeRect(x + 1, 8, Math.max(1, cw - 2.5), 24); }
+  }
+  lensGeom = { a, b, cw };
+  $("#lens-title").textContent = "Lens: " + s.id + ", calls " + f0(a) + " to " + f0(b) + " of " + f0(s.calls);
+  $("#lens-sub").textContent = "Point at a strip to move it. One cell per call; red bar = failed.";
+}
+function lensHover(ev) {
+  if (!lensGeom) return; const r = ev.currentTarget.getBoundingClientRect(); const k = Math.floor((ev.clientX - r.left) / lensGeom.cw); const p = lensGeom.a + k;
+  if (p > lensGeom.b) { hideTip(); return; }
+  const s = lens.s, i = p - 1, c = CLS[s.code[i]]; lensHi = k; drawLens();
+  showTip(ev, [[s.id, null, "h"], ["call " + f0(p), "of " + f0(s.calls)], [CLS_NAME[c] + " (" + c + ")", s.fail[i] ? "failed" : "succeeded", s.fail[i] ? "bad" : ""]]);
+}
+  /* legend, motifs, headline and findings */
+  const total = sum(S1.map(s => s.calls)), failedTotal = sum(S1.map(s => s.errors));
+  const headline = (S1.length === 1 ? "The one session" : "The " + S1.length + " sessions with the most tool calls") + " made " + f0(total) + " calls; " + f0(failedTotal) + " of them (" + pct(100 * failedTotal / total) + ") failed";
+  const leg = $("#dna-legend");
+  for (const c of CLS) { const k = H("span", "k", null, leg); const sw = H("span", "sw", c, k); sw.style.background = "var(" + CLS_VAR[c] + ")"; if (c === "A") sw.style.color = "var(--on-yellow)"; k.append(CLS_NAME[c]); }
+  const kf = H("span", "k", null, leg); const t = H("span", null, null, kf); t.style.cssText = "width:2px;height:12px;background:var(--crit);display:inline-block"; kf.append("failed call (lowercase)");
+  if (STREAKS.length) { const ks = H("span", "k", null, leg); const tr = H("span", null, "▲", ks); tr.style.cssText = "color:var(--crit);font-size:10px"; ks.append("end of a run of 3 or more failed calls"); }
+
+  const moC = $("#motifs");
+  if (!MOTIFS.length) H("p", "panel-sub", "No session has 10 or more calls, so there are no opening motifs.", moC);
+  else {
+    const half = Math.ceil(MOTIFS.length / 2); const moA = H("div", "motifs", null, moC), moB = H("div", "motifs", null, moC); const mmax = Math.max(...MOTIFS.map(m => m[2]));
+    MOTIFS.forEach(([motif, tool, n], mi) => {
+      const mo = mi < half ? moA : moB;
+      const ch = H("span", "motif-chips", null, mo);
+      for (const c of motif) { const sw = H("span", "sw", c, ch); sw.style.background = "var(" + CLS_VAR[c] + ")"; if (c === "A") sw.style.color = "var(--on-yellow)"; }
+      ch.title = motif.split("").map(c => CLS_NAME[c]).join(", ");
+      H("span", "mtool", tool, mo);
+      const b = H("span", "mbar", null, mo); const i = H("i", null, null, b); i.style.width = (100 * n / mmax) * 0.8 + "%"; H("span", null, String(n), b);
+    });
+  }
+
+  const tools = [...new Set(S1.map(s => s.tool))];
+  const mix = tools.slice(0, 4).map(tl => {
+    const arr = S1.filter(s => s.tool === tl); const tot = sum(arr.map(s => s.calls));
+    const sh = c => pct(100 * sum(arr.map(s => s.counts[CLS.indexOf(c)])) / tot, 0);
+    return tl + " (" + plural(arr.length, "session") + ", " + f0(tot) + " calls): shell " + sh("B") + ", edit " + sh("E") + ", read " + sh("R") + ", MCP " + sh("M");
+  });
+  const F = [[B("Call mix. "), mix.join("; ") + "."]];
+  const seen = new Set(), open = [];
+  MOTIFS.forEach(([motif, tool, n]) => { if (!seen.has(tool)) { seen.add(tool); open.push([motif, tool, n]); } });
+  if (open.length) {
+    const li = [B("Openings. "), "The most common first three calls, over all sessions with 10 or more calls: "];
+    open.slice(0, 4).forEach(([motif, tool, n], i) => { if (i) li.push("; "); li.push(M(motif), " for " + tool + " (" + plural(n, "session") + ")"); });
+    li.push("."); F.push(li);
+  }
+  const loopS = S1.filter(s => s.loop > 0);
+  const loopTxt = loopS.length
+    ? "A fail-edit-fail loop (a failed command, an edit, a second failed command) closes in " + loopS.map(s => s.id + " (" + plural(s.loop, "time") + (s.loopAt.length ? ", first at call " + f0(s.loopAt[0]) : "") + ")").join(", ") + "."
+    : "No fail-edit-fail loop (a failed command, an edit, a second failed command) closes in these sessions.";
+  if (STREAKS.length) {
+    const [sid, spos, slen] = STREAKS[0]; const ss = S1.find(s => s.id === sid);
+    const sCls = [...new Set(ss.dna.slice(spos - slen, spos).toUpperCase())].map(c => CLS_NAME[c]).join(", ");
+    F.push([B("Failures. "), "The longest run of failed calls is ", B(slen + " " + sCls + " calls in a row"), " in ", M(sid), " (calls " + (spos - slen + 1) + " to " + spos + "). " + (STREAKS.length === 1 ? "It is the only run of 3 or more." : plural(STREAKS.length, "run") + " of 3 or more failed calls in all.") + " " + loopTxt]);
+    lens.s = ss; lens.center = spos - Math.floor(slen / 2);
+  } else {
+    F.push([B("Failures. "), "No run of 3 or more failed calls in these sessions. " + loopTxt]);
+    lens.s = S1[0]; lens.center = 50;
+  }
+  findings("#f-dna", F);
+
+  $("#dna-fit").addEventListener("click", () => { dnaMode = "fit"; $("#dna-fit").setAttribute("aria-pressed", "true"); $("#dna-same").setAttribute("aria-pressed", "false"); drawDNA(); });
+  $("#dna-same").addEventListener("click", () => { dnaMode = "same"; $("#dna-same").setAttribute("aria-pressed", "true"); $("#dna-fit").setAttribute("aria-pressed", "false"); drawDNA(); });
+  const cv = $("#dna-cv");
+  cv.addEventListener("pointermove", ev => dnaHover(ev));
+  cv.addEventListener("pointerdown", ev => dnaHover(ev));
+  cv.addEventListener("pointerleave", hideTip);
+  const lc = $("#lens-cv");
+  lc.addEventListener("pointermove", ev => lensHover(ev));
+  lc.addEventListener("pointerleave", () => { hideTip(); lensHi = -1; drawLens(); });
+  return { headline, note: plural(S1.length, "session") + " with the most tool calls", draw: drawDNA };
+};
+
+/* =========================================================
+   2. Relay graph
+   ========================================================= */
+RENDER.relay = function (T) {
+  const [tPer, tKinds, tComps, tChains, tHf, tEdges] = T;
+  const G = {
+    per_session: tPer.map(r => [r.session, r.chains, r.agents]),
+    kinds: tKinds.map(r => [r.kind_of, r.tool, r.pairs, r.files]),
+    components: tComps.map(r => [r.work_item, r.actors, r.files]),
+    chains: tChains.map(r => [r.a1, r.a2, r.a3, r.f1, r.f2, Math.round(r.w1_t), Math.round(r.r1_t), Math.round(r.w2_t), Math.round(r.r2_t)]),
+    hfiles: tHf.map(r => [r.file, r.writers, r.readers, r.pairs]),
+    edges: tEdges.map(r => [r.actor, r.file, r.op === "write" ? 1 : 0, r.n, Math.round(r.t_first), Math.round(r.t_last)]),
+  };
+  const SESSION = tEdges.length ? tEdges[0].session : null;
+const EDGES = G.edges.map(([actor, file, w, n, tf, tl]) => ({ actor, file, w: !!w, n, tf, tl }));
+const chainEdgeKeys = new Set(), chainActors = new Set(), chainFiles = new Set(), midActors = new Set();
+G.chains.forEach(([a1, a2, a3, f1, f2]) => {
+  chainEdgeKeys.add(a1 + "|" + f1 + "|1"); chainEdgeKeys.add(a2 + "|" + f1 + "|0"); chainEdgeKeys.add(a2 + "|" + f2 + "|1"); chainEdgeKeys.add(a3 + "|" + f2 + "|0");
+  [a1, a2, a3].forEach(a => chainActors.add(a)); chainFiles.add(f1); chainFiles.add(f2); midActors.add(a2);
+});
+const handoffFiles = new Set();
+(function () {
+  const byFile = {}; EDGES.forEach(e => (byFile[e.file] = byFile[e.file] || []).push(e));
+  for (const f in byFile) { const es = byFile[f]; if (es.some(w => w.w && es.some(r => !r.w && r.actor !== w.actor && w.tf < r.tl))) handoffFiles.add(f); }
+})();
+let graphMode = "hand";
+function svgIcon(kind) {
+  const s = S("svg", { width: 14, height: 14, viewBox: "0 0 14 14" });
+  if (kind === "file") S("rect", { x: 2, y: 2, width: 10, height: 10, rx: 1.5, fill: "var(--surface)", stroke: "var(--ink-2)", "stroke-width": 1.5 }, s);
+  else if (kind === "main") S("circle", { cx: 7, cy: 7, r: 5.5, fill: "var(--ink)" }, s);
+  else S("circle", { cx: 7, cy: 7, r: 5, fill: "var(--series)" }, s);
+  return s;
+}
+function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const layoutCache = {};
+function frLayout(N, L, aspect, seed) {
+  const rnd = mulberry32(seed); const Wl = 1000 * Math.sqrt(aspect), Hl = 1000 / Math.sqrt(aspect);
+  const P = Array.from({ length: N }, () => [rnd() * Wl, rnd() * Hl]);
+  if (N === 1) return [[0.5, 0.5]];
+  const k = Math.sqrt(Wl * Hl / N) * 0.8; let t = Wl / 8;
+  for (let it = 0; it < 450; it++) {
+    const dx = new Float64Array(N), dy = new Float64Array(N);
+    for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
+      let x = P[i][0] - P[j][0], y = P[i][1] - P[j][1]; let d2 = x * x + y * y; if (d2 < 0.01) { x = rnd() - 0.5; y = rnd() - 0.5; d2 = 0.5; }
+      const d = Math.sqrt(d2), f = k * k / d; dx[i] += x / d * f; dy[i] += y / d * f; dx[j] -= x / d * f; dy[j] -= y / d * f;
+    }
+    for (const [i, j] of L) { const x = P[i][0] - P[j][0], y = P[i][1] - P[j][1]; const d = Math.sqrt(x * x + y * y) || 0.01; const f = d * d / k; dx[i] -= x / d * f; dy[i] -= y / d * f; dx[j] += x / d * f; dy[j] += y / d * f; }
+    for (let i = 0; i < N; i++) {
+      dx[i] += (Wl / 2 - P[i][0]) * 0.01; dy[i] += (Hl / 2 - P[i][1]) * 0.01;
+      const d = Math.sqrt(dx[i] * dx[i] + dy[i] * dy[i]) || 1; const m = Math.min(d, t); P[i][0] += dx[i] / d * m; P[i][1] += dy[i] / d * m;
+    }
+    t = Math.max(1, t * 0.985);
+  }
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity; P.forEach(([x, y]) => { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); });
+  return P.map(([x, y]) => [x1 > x0 ? (x - x0) / (x1 - x0) : 0.5, y1 > y0 ? (y - y0) / (y1 - y0) : 0.5]);
+}
+/* lay out each connected component on its own: the largest gets the main area, the small ones a grid beside or below it */
+function layoutGraph(key, nodes, links, narrow, W, Hh) {
+  if (layoutCache[key]) return layoutCache[key];
+  const idx = new Map(nodes.map((n, i) => [n.id, i]));
+  const L = links.map(l => [idx.get("a:" + l.actor), idx.get("f:" + l.file)]);
+  const parent = nodes.map((_, i) => i); const find = i => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  L.forEach(([a, b]) => { parent[find(a)] = find(b); });
+  const groups = new Map(); nodes.forEach((_, i) => { const r = find(i); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(i); });
+  const comps = [...groups.values()].sort((a, b) => b.length - a.length || a[0] - b[0]);
+  const out = new Array(nodes.length);
+  const rest = comps.slice(1);
+  let main, cells = [];
+  if (!rest.length) main = [0, 0, 1, 1];
+  else if (narrow) {
+    const cols = 4, rows = Math.ceil(rest.length / cols), fr = Math.min(0.42, 0.1 * rows + 0.04);
+    main = [0, 0, 1, 1 - fr]; rest.forEach((c, i) => cells.push([(i % cols) / cols, 1 - fr + Math.floor(i / cols) * fr / rows, 1 / cols, fr / rows]));
+  } else {
+    const cols = rest.length > 8 ? 3 : 2, rows = Math.ceil(rest.length / cols), fw = cols === 3 ? 0.3 : 0.24;
+    main = [0, 0, 1 - fw - 0.02, 1]; rest.forEach((c, i) => cells.push([1 - fw + (i % cols) * fw / cols, Math.floor(i / cols) / Math.max(rows, 4), fw / cols, 1 / Math.max(rows, 4)]));
+  }
+  const place = (comp, [cx, cy, cw, chh], padF, seed) => {
+    const sub = new Map(comp.map((g, j) => [g, j]));
+    const Ls = L.filter(([a, b]) => sub.has(a)).map(([a, b]) => [sub.get(a), sub.get(b)]);
+    const pos = frLayout(comp.length, Ls, (cw * W) / (chh * Hh), seed);
+    comp.forEach((g, j) => { out[g] = [cx + cw * (padF + (1 - 2 * padF) * pos[j][0]), cy + chh * (padF + (1 - 2 * padF) * pos[j][1])]; });
+  };
+  place(comps[0], main, 0.01, 7777);
+  rest.forEach((c, i) => place(c, cells[i], 0.22, 7 + i));
+  layoutCache[key] = out; return out;
+}
+function drawGraph() {
+  const box = $("#graph"); const W = box.clientWidth; if (!W) return; box.replaceChildren();
+  const links = graphMode === "hand" ? EDGES.filter(e => handoffFiles.has(e.file)) : EDGES;
+  const nodesMap = new Map();
+  links.forEach(e => {
+    const a = nodesMap.get("a:" + e.actor) || { id: "a:" + e.actor, name: e.actor, kind: e.actor.startsWith("main:") ? "main" : "actor", w: 0, r: 0, files: [] };
+    const f = nodesMap.get("f:" + e.file) || { id: "f:" + e.file, name: e.file, kind: "file", w: 0, r: 0, files: [] };
+    if (e.w) { a.w++; f.w++; } else { a.r++; f.r++; } a.files.push(e); f.files.push(e);
+    nodesMap.set(a.id, a); nodesMap.set(f.id, f);
+  });
+  const nodes = [...nodesMap.values()].sort((p, q) => p.id < q.id ? -1 : 1);
+  const narrow = W < 560; const Hh = narrow ? 520 : 560; const padX = narrow ? 24 : 40, padY = 18;
+  const pos = layoutGraph(graphMode + (narrow ? "n" : "w") + Math.round(W / 50), nodes, links, narrow, W - 2 * padX, Hh - 2 * padY);
+  const P = new Map(nodes.map((n, i) => [n.id, [padX + pos[i][0] * (W - 2 * padX), padY + pos[i][1] * (Hh - 2 * padY)]]));
+  const nAct = nodes.filter(n => n.kind !== "file").length, nFile = nodes.length - nAct;
+  $("#g-sub").textContent = (graphMode === "hand" ? "Files where one actor wrote and a different actor read afterwards: " : "Every file touched by 2 or more actors (table 6): ") + nFile + " files, " + nAct + " actors, " + links.length + " edges.";
+  const svg = S("svg", { width: W, height: Hh, viewBox: "0 0 " + W + " " + Hh, role: "img", "aria-label": "Actor and file graph of session " + SESSION }, box);
+  const gE = S("g", null, svg), gC = S("g", null, svg), gN = S("g", null, svg), gL = S("g", null, svg);
+  const edgeEls = [], labels = [];
+  links.forEach(e => {
+    const [x1, y1] = P.get("a:" + e.actor), [x2, y2] = P.get("f:" + e.file);
+    const isChain = chainEdgeKeys.has(e.actor + "|" + e.file + "|" + (e.w ? 1 : 0));
+    const ln = S("line", { x1, y1, x2, y2, stroke: isChain ? "var(--hl)" : e.w ? "var(--series)" : "var(--rest)", "stroke-width": isChain ? 2.5 : e.w ? 1.5 : 1, "stroke-opacity": isChain ? 1 : e.w ? 0.85 : 0.7 }, isChain ? gC : gE);
+    edgeEls.push([e, ln]);
+  });
+  const deg = n => n.w + n.r;
+  nodes.forEach(n => {
+    const [x, y] = P.get(n.id); const g = S("g", { transform: "translate(" + x + "," + y + ")", tabindex: 0, role: "img" }, gN);
+    const inChain = n.kind === "file" ? chainFiles.has(n.name) : chainActors.has(n.name);
+    const r = n.kind === "file" ? Math.min(9, 3.5 + Math.sqrt(deg(n)) * 1.2) : (n.kind === "main" ? 6 : 4.5);
+    if (n.kind === "file") S("rect", { x: -r, y: -r, width: 2 * r, height: 2 * r, rx: 1.5, fill: "var(--surface)", stroke: inChain ? "var(--hl)" : "var(--ink-2)", "stroke-width": inChain ? 2.5 : 1.5 }, g);
+    else { S("circle", { r: r + 2, fill: "var(--surface)" }, g); S("circle", { r, fill: n.kind === "main" ? "var(--ink)" : "var(--series)", stroke: inChain ? "var(--hl)" : "none", "stroke-width": inChain ? 2.5 : 0 }, g); }
+    S("circle", { r: 12, fill: "transparent" }, g);
+    g.setAttribute("aria-label", n.name);
+    const want = n.kind === "file" ? (inChain || deg(n) >= 6) : inChain || n.kind === "main";
+    if (want) labels.push({ x, y, r, text: n.kind === "file" ? n.name : n.name.split(":")[1], fs: n.kind === "file" ? 11 : 10, pri: (inChain ? 0 : 2) + (n.kind === "file" ? 0 : 1) - deg(n) / 100 });
+    const enter = ev => {
+      edgeEls.forEach(([e, ln]) => { const on = (n.kind === "file" ? e.file === n.name : e.actor === n.name); ln.style.opacity = on ? 1 : 0.12; });
+      const rows = [[n.name, null, "h"]];
+      if (n.kind === "file") { const ws = new Set(n.files.filter(e => e.w).map(e => e.actor)).size, rs = new Set(n.files.filter(e => !e.w).map(e => e.actor)).size; rows.push([String(ws), "writers"], [String(rs), "readers"]); }
+      else { rows.push([String(n.w), "files written"], [String(n.r), "files read"]); const first = Math.min(...n.files.map(e => e.tf)); rows.push([fT(first), "first touch"]); }
+      if (inChain) rows.push(["in a relay chain", null]);
+      showTip(ev, rows);
+    };
+    const leave = () => { edgeEls.forEach(([, ln]) => (ln.style.opacity = "")); hideTip(); };
+    g.addEventListener("pointerenter", enter); g.addEventListener("pointermove", enter); g.addEventListener("pointerleave", leave);
+    g.addEventListener("focus", () => { const b = g.getBoundingClientRect(); enter({ clientX: b.right, clientY: b.bottom }); }); g.addEventListener("blur", leave);
+  });
+  // greedy label placement: try right, left, above, below; skip a label that fits nowhere (its node keeps the tooltip)
+  const boxes = []; const hit = (b) => b[0] < 0 || b[2] > W || b[1] < 0 || b[3] > Hh || boxes.some(o => b[0] < o[2] && b[2] > o[0] && b[1] < o[3] && b[3] > o[1]);
+  labels.sort((p, q) => p.pri - q.pri).forEach(l => {
+    const w = l.text.length * l.fs * 0.6 + 2, h = l.fs + 2;
+    const cands = [[l.x + l.r + 4, l.y - h / 2, "start"], [l.x - l.r - 4 - w, l.y - h / 2, "end"], [l.x - w / 2, l.y - l.r - 3 - h, "middle"], [l.x - w / 2, l.y + l.r + 3, "middle"]];
+    for (const [bx, by, anchor] of cands) {
+      const b = [bx, by, bx + w, by + h]; if (hit(b)) continue; boxes.push(b);
+      const tx = anchor === "start" ? bx : anchor === "end" ? bx + w : bx + w / 2;
+      const t = S("text", { x: tx, y: by + h - 3, "text-anchor": anchor, "font-size": l.fs, fill: "var(--ink)", "font-family": css("--f-mono"), "paint-order": "stroke", stroke: "var(--surface)", "stroke-width": 3, "stroke-linejoin": "round" }, gL);
+      t.textContent = l.text; break;
+    }
+  });
+}
+
+  /* headline, stats, chains, files, work items, graph controls, findings */
+  const kindRows = k => G.kinds.filter(r => r[0] === k);
+  const hand = sum(kindRows("handoff").map(r => r[2])), handFiles = sum(kindRows("handoff").map(r => r[3]));
+  const col = sum(kindRows("collision").map(r => r[2])), colFiles = sum(kindRows("collision").map(r => r[3]));
+  const toolsOf = k => [...new Set(kindRows(k).map(r => r[1]))].join(", ");
+  const chainsTotal = sum(G.per_session.map(r => r[1])), midAgents = sum(G.per_session.map(r => r[2]));
+  const big = G.components[0];
+  const headline = hand + col === 0
+    ? "No agent read a file that another agent wrote, and no two agents wrote the same file"
+    : "Agents pass work through files: " + plural(hand, "handoff") + " from one agent to another, against " + plural(col, "write collision");
+  const st = $("#relay-stats");
+  const stat = (v, small, l) => { const d = H("div", "stat", null, st); const vv = H("span", "v", v, d); if (small) { vv.append(" "); H("small", null, small, vv); } H("span", "l", l, d); };
+  stat(f0(hand), "on " + plural(handFiles, "file"), "writer-to-reader handoffs" + (hand ? ", " + toolsOf("handoff") : ""));
+  stat(f0(col), "on " + plural(colFiles, "file"), "write collisions: two actors write one file" + (col ? ", " + toolsOf("collision") : ""));
+  stat(f0(chainsTotal), chainsTotal === 1 ? "chain" : "chains", chainsTotal ? "three-agent relays in " + plural(G.per_session.length, "session") + ", through " + plural(midAgents, "middle agent") : "no three-agent relay: no agent read a file one agent wrote and then wrote one that a third agent read");
+  if (big) stat(big[1] + " + " + big[2], null, "actors + files in the largest work item");
+
+  // chains
+  $("#chains-title").textContent = G.chains.length
+    ? (G.chains.length === 1 ? "The relay chain" : "The " + (G.chains.length >= 50 ? "first 50" : G.chains.length) + " relay chains") + ": an agent writes a file, a second agent reads it and writes another, a third reads that"
+    : "Relay chains";
+  if (G.chains.length) {
+  // chains
+  const ch = $("#chains");
+  const head = H("div", "chain head", null, ch); ["", "writer", "", "file 1", "", "relay agent", "", "file 2", "", "reader"].forEach(t => H("span", null, t, head));
+  G.chains.forEach(([a1, a2, a3, f1, f2, w1, r1, w2, r2], i) => {
+    const row = H("div", "chain", null, ch);
+    H("span", "idx", String(i + 1), row);
+    const pill = (t, cls) => { const e = H("span", "pill " + cls, t, row); e.title = t; return e; };
+    const arr = (verb, gap) => { const a = H("span", "arrow", null, row); H("span", null, verb, a); const l2 = H("span", null, null, a); if (gap != null) { const g = H("span", "gap" + (gap < 0 ? " neg" : ""), (gap < 0 ? "−" : "+") + fDur(gap), l2); g.title = gap < 0 ? "This agent's first write to the second file came before it read the first file; a later write came after the read, which is what the match requires." : ""; l2.append(" "); } l2.append("→"); };
+    pill(a1, ""); arr("writes", null); pill(f1, "file"); arr("read by", r1 - w1); pill(a2, "mid"); arr("writes", w2 - r1); pill(f2, "file"); arr("read by", r2 - w2); pill(a3, "");
+  });
+  } else H("p", "panel-sub", "No relay chain found.", $("#chains"));
+
+  // handoff files
+  const hf = $("#hfiles");
+  if (!G.hfiles.length) H("p", "panel-sub", "No file was written by one agent and read by another afterwards.", hf);
+  else {
+    ["file", "writers", "readers", "pairs"].forEach((h, i) => { const e = H("span", "h", h, hf); if (i && i < 3) e.style.textAlign = "right"; });
+    const pmax = Math.max(...G.hfiles.map(r => r[3]));
+    G.hfiles.slice(0, 12).forEach(([f, w, r, p]) => { const fn = H("span", "fn", f, hf); fn.title = f; H("span", "n", String(w), hf); H("span", "n", String(r), hf); const b = H("span", "b", null, hf); const i = H("i", null, null, b); i.style.width = Math.max(2, 42 * p / pmax) + "px"; H("span", null, String(p), b); });
+    if (G.hfiles.length > 12) { const more = H("span", "panel-sub", "+ " + (G.hfiles.length - 12) + " more files with fewer pairs", hf); more.style.gridColumn = "1 / -1"; more.style.marginTop = "4px"; }
+  }
+
+  // components: actors | files butterfly
+  const comps = $("#comps");
+  $("#comps-sub").textContent = "graph-mark-components: " + (G.components.length >= 15 ? "the 15 largest" : "all " + G.components.length) + " connected " + (G.components.length === 1 ? "group" : "groups") + " of actors and files (table 3)";
+  if (!G.components.length) H("p", "panel-sub", "No connected group.", comps);
+  else {
+    const cmax = Math.max(...G.components.map(c => Math.max(c[1], c[2])));
+    const grid = H("div", null, null, comps); grid.style.cssText = "display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:3px 8px;align-items:center;font-size:11.5px";
+    const hd = (t, al) => { const e = H("span", "panel-sub", t, grid); e.style.textAlign = al; };
+    hd("actors", "right"); hd("", "center"); hd("files", "left");
+    G.components.forEach(([id, a, f]) => {
+      const L = H("span", null, null, grid); L.style.cssText = "display:flex;justify-content:flex-end;align-items:center;gap:5px";
+      H("span", "mono", String(a), L).style.color = "var(--ink-2)"; const li = H("i", null, null, L); li.style.cssText = "display:block;height:9px;border-radius:3px 0 0 3px;background:var(--series);width:" + Math.max(1, 70 * a / cmax) + "%";
+      const mid = H("span", "mono", "#" + id, grid); mid.style.cssText = "color:var(--muted);font-size:10.5px;text-align:center";
+      const R = H("span", null, null, grid); R.style.cssText = "display:flex;align-items:center;gap:5px";
+      const ri = H("i", null, null, R); ri.style.cssText = "display:block;height:9px;border-radius:0 3px 3px 0;background:var(--bar);width:" + Math.max(1, 70 * f / cmax) + "%"; H("span", "mono", String(f), R).style.color = "var(--ink-2)";
+    });
+  }
+
+  // the picked session's graph
+  if (!EDGES.length) {
+    $("#g-title").textContent = "Who wrote and read which file";
+    $("#g-sub").textContent = "No file was touched by two or more actors in the session the query picked.";
+    $("#g-hand").parentElement.hidden = true; $("#g-legend").hidden = true;
+  } else {
+    const bySess = G.per_session.length && G.per_session[0][0] === SESSION;
+    $("#g-title").textContent = "Session " + SESSION + " (" + (bySess ? "most relay chains" : "most handoffs") + "): who wrote and read which file";
+  const lg = $("#g-legend");
+  const k1 = H("span", "k", null, lg); k1.append(svgIcon("actor")); k1.append("agent");
+  const k1b = H("span", "k", null, lg); k1b.append(svgIcon("main")); k1b.append("main session");
+  const k2 = H("span", "k", null, lg); k2.append(svgIcon("file")); k2.append("file (basename)");
+  const k3 = H("span", "k", null, lg); const l3 = H("span", "ln", null, k3); l3.style.borderColor = "var(--series)"; k3.append("writes");
+  const k4 = H("span", "k", null, lg); const l4 = H("span", "ln", null, k4); l4.style.borderColor = "var(--rest)"; l4.style.borderTopWidth = "1px"; k4.append("reads");
+  const k5 = H("span", "k", null, lg); const l5 = H("span", "ln", null, k5); l5.style.borderColor = "var(--hl)"; l5.style.borderTopWidth = "3px"; k5.append("relay chain");
+
+  $("#g-hand").addEventListener("click", () => { graphMode = "hand"; $("#g-hand").setAttribute("aria-pressed", "true"); $("#g-all").setAttribute("aria-pressed", "false"); drawGraph(); });
+  $("#g-all").addEventListener("click", () => { graphMode = "all"; $("#g-all").setAttribute("aria-pressed", "true"); $("#g-hand").setAttribute("aria-pressed", "false"); drawGraph(); });
+  }
+
+  // findings
+  const F = [];
+  if (G.chains.length) {
+    const lg2 = G.chains.reduce((m, c) => (c[8] - c[5] > m[8] - m[5] ? c : m));
+    F.push(["The longest relay: ", M(lg2[0]), " writes ", M(lg2[3]), "; ", M(lg2[1]), " reads it " + fDur(lg2[6] - lg2[5]) + " later and writes ", M(lg2[4]), " " + fDur(lg2[7] - lg2[6]) + " after that; ", M(lg2[2]), " reads it " + fDur(lg2[8] - lg2[7]) + " later."]);
+  } else F.push(["No relay chain: no agent wrote a file that a second agent read and then wrote another file that a third agent read."]);
+  if (G.hfiles.length) {
+    const h = G.hfiles; const next = h.slice(1, 3).map(r => r[0] + " (" + r[3] + ")");
+    F.push(["The busiest handoff file is ", M(h[0][0]), ": " + plural(h[0][1], "writer") + ", " + plural(h[0][2], "reader") + ", " + plural(h[0][3], "distinct writer-reader pair") + (next.length ? ". Next " + (next.length > 1 ? "are " : "is ") + next.join(" and ") : "") + "."]);
+  } else F.push(["No handoff file: no agent read a file after a different agent wrote it."]);
+  if (big) {
+    const two = G.components.find(c => c[1] <= 2 && c[2] > 100);
+    F.push(["Connected components group the graph into work items. The largest holds " + plural(big[1], "actor") + " and " + plural(big[2], "file") + (G.components[1] ? ", the second " + plural(G.components[1][1], "actor") + " and " + plural(G.components[1][2], "file") : "") + (two ? "; one has just " + plural(two[1], "actor") + " touching " + plural(two[2], "file") + "." : ".")]);
+  }
+  findings("#f-relay", F);
+  const c = $("#c-relay");
+  c.append(B("Caveat. "), "Tables 5 and 6 group by file basename, so different paths with the same name merge into one node.");
+  if (EDGES.length) {
+    const readers = new Map(); EDGES.filter(e => !e.w).forEach(e => { if (!readers.has(e.file)) readers.set(e.file, new Set()); readers.get(e.file).add(e.actor); });
+    const top = [...readers.entries()].sort((a, b) => b[1].size - a[1].size)[0];
+    if (top && top[1].size >= 5) { c.append(" "); c.append(M(top[0])); c.append(", read by " + top[1].size + " actors in " + SESSION + ", may be several different files with that name."); }
+  }
+  c.append(" Chain gaps use first touches; an orange negative gap means the middle agent first wrote the second file before reading the first, and the match holds through a later write.");
+  return { headline, note: "all sessions; drawing: one session", draw: EDGES.length ? drawGraph : null };
+};
+
+/* =========================================================
+   3. Cost anomalies
+   ========================================================= */
+RENDER.cost = function (T) {
+  const [tHourly, tFlagged, tPeriods] = T;
+  if (!tHourly.length) return NO_DATA;
+  const tools = [];
+  tHourly.forEach(r => {
+    let t = tools.find(x => x.tool === r.tool);
+    if (!t) tools.push(t = { tool: r.tool, t0: r.t, cost: [], base: [], score: [], flag: [], reqs: [], out: [] });
+    t.cost.push(r.cost); t.base.push(r.baseline); t.score.push(r.score); t.flag.push(r.flag); t.reqs.push(r.reqs); t.out.push(r.out_tokens);
+  });
+  const C3 = {
+    tools,
+    flagged: tFlagged.map(r => [r.tool, r.t, r.cost, r.session_id, r.model, r.session_cost, r.session_reqs, r.share]),
+    periods: tPeriods.map(r => [r.period_hours, r.score, r.tool]),
+  };
+  const flagTotal = sum(tools.map(t => sum(t.flag.map(f => (f ? 1 : 0)))));
+const t0ms = Date.parse(C3.tools[0].t0); const NH = C3.tools[0].cost.length;
+const flaggedSorted = [...C3.flagged].sort((a, b) => Date.parse(a[1]) - Date.parse(b[1]));
+const flagNo = new Map(flaggedSorted.map((f, i) => [f[0] + "|" + f[1], i + 1]));
+const hourISO = i => new Date(t0ms + i * 3600e3).toISOString().replace(".000", "");
+const fHour = iso => { const d = new Date(iso); return MON[d.getUTCMonth()] + " " + d.getUTCDate() + ", " + pad(d.getUTCHours()) + ":00"; };
+function drawCost() {
+  const box = $("#cost-chart"); const W = box.clientWidth; if (!W) return; box.replaceChildren();
+  const narrow = W < 560;
+  const ml = 44, mr = 8, ph = narrow ? 120 : 150, gapH = 46, mt = 26;
+  const maxC = Math.max(0.01, ...C3.tools.map(t => Math.max(0, ...t.cost))); const ystep = niceStep(maxC / 4); const ymax = niceMax(maxC, ystep);
+  const Hh = mt + C3.tools.length * (ph + gapH) - 8;
+  const svg = S("svg", { width: W, height: Hh, viewBox: "0 0 " + W + " " + Hh, role: "img", "aria-label": "Hourly cost per tool with baseline and flagged hours" }, box);
+  const pw = W - ml - mr; const bw = pw / NH;
+  const x = i => ml + i * bw;
+  C3.tools.forEach((t, ti) => {
+    const oy = mt + ti * (ph + gapH);
+    const y = v => oy + ph - ph * v / ymax;
+    const g = S("g", null, svg);
+    const tl = S("text", { x: ml, y: oy - 10, "font-size": 13, "font-weight": 600, fill: "var(--ink)" }, g); tl.textContent = t.tool;
+    const tot = t.cost.reduce((a, b) => a + b, 0);
+    const ts = S("text", { x: W - mr, y: oy - 10, "font-size": 11.5, fill: "var(--muted)", "text-anchor": "end" }, g); ts.textContent = usd(tot) + " over " + NH + " h";
+    const ax = S("g", { class: "ax" }, g);
+    for (let q = 0, v = 0; v <= ymax + 1e-9; q++, v = q * ystep) { S("line", { x1: ml, x2: W - mr, y1: y(v), y2: y(v), stroke: v ? "var(--grid)" : "var(--axis)", "stroke-width": 1 }, ax); const tx = S("text", { x: ml - 6, y: y(v) + 3.5, "text-anchor": "end" }, ax); tx.textContent = "$" + (ystep < 1 ? v.toFixed(2) : v); }
+    const h0 = (24 - new Date(t0ms).getUTCHours()) % 24, dstep = Math.max(1, Math.ceil(NH / 24 / 12));
+    for (let hh = h0; hh < NH; hh += 24 * dstep) { const xx = x(hh); S("line", { x1: xx, x2: xx, y1: oy + ph, y2: oy + ph + 4, stroke: "var(--axis)" }, ax); const tx = S("text", { x: xx + (dstep === 1 ? Math.min(24, NH - hh) / 2 * bw : 0), y: oy + ph + 16, "text-anchor": "middle" }, ax); const dd = new Date(t0ms + hh * 3600e3); tx.textContent = (narrow ? "" : MON[dd.getUTCMonth()] + " ") + dd.getUTCDate(); }
+    // bars
+    t.cost.forEach((c, i) => { if (c <= 0) return; const h = Math.max(1, ph * c / ymax); S("rect", { x: x(i) + (bw > 3 ? 0.5 : 0), y: oy + ph - h, width: Math.max(0.8, bw - (bw > 3 ? 1 : 0.3)), height: h, fill: t.flag[i] ? "var(--crit)" : "var(--series)", rx: bw > 4 ? 1 : 0 }, g); });
+    // baseline
+    let d = ""; t.base.forEach((b, i) => { d += (i ? "L" : "M") + (x(i) + bw / 2).toFixed(1) + "," + y(b).toFixed(1); });
+    S("path", { d, fill: "none", stroke: "var(--ink)", "stroke-width": 1.5, "stroke-linejoin": "round", "stroke-opacity": 0.8 }, g);
+    // badges
+    let lastB = null; t.flag.forEach((f, i) => { if (!f) return; const n = flagNo.get(t.tool + "|" + hourISO(i)); const cx = x(i) + bw / 2; let cy = y(t.cost[i]) - 12; if (lastB && cx - lastB[0] < 18 && Math.abs(cy - lastB[1]) < 18) cy = lastB[1] - 18; lastB = [cx, cy]; S("circle", { cx, cy, r: 8.5, fill: "var(--crit)", stroke: "var(--surface)", "stroke-width": 2 }, g); const tx = S("text", { x: cx, y: cy + 3.6, "text-anchor": "middle", "font-size": 10.5, fill: "#fff", "font-family": css("--f-mono") }, g); tx.textContent = n; });
+    // hover layer
+    const cross = S("line", { y1: oy, y2: oy + ph, stroke: "var(--ink-2)", "stroke-width": 1, visibility: "hidden" }, g);
+    const hit = S("rect", { x: ml, y: oy, width: pw, height: ph, fill: "transparent" }, g);
+    const mv = ev => { const r = svg.getBoundingClientRect(); const i = Math.max(0, Math.min(NH - 1, Math.floor((ev.clientX - r.left - ml) / bw))); const cx = x(i) + bw / 2; cross.setAttribute("x1", cx); cross.setAttribute("x2", cx); cross.setAttribute("visibility", "visible");
+      const rows = [[t.tool + " · " + fHour(hourISO(i)), null, "h"], [usd(t.cost[i]), "cost", t.flag[i] ? "bad" : ""], [usd(t.base[i]), "baseline"], [f2(t.score[i]), "anomaly score"], [f0(t.reqs[i]), "requests"], [fk(t.out[i]), "output tokens"]];
+      if (t.flag[i]) { const f = C3.flagged.find(q => q[0] === t.tool && q[1] === hourISO(i)); if (f) rows.push([f[3] + " " + f1(f[7] * 100) + "%", "top session share", "bad"]); }
+      showTip(ev, rows); };
+    hit.addEventListener("pointermove", mv); hit.addEventListener("pointerdown", mv); hit.addEventListener("pointerleave", () => { cross.setAttribute("visibility", "hidden"); hideTip(); });
+  });
+}
+  /* headline, cards, findings */
+  const hoursText = fD(t0ms / 1000) + " to " + fD((t0ms + (NH - 1) * 3600e3) / 1000) + ", hourly";
+  const worst = C3.flagged.length ? C3.flagged.reduce((m, f) => (f[2] > m[2] ? f : m)) : null;
+  const headline = !flagTotal
+    ? "No hour stands out: no hourly cost is far above its fitted baseline"
+    : worst
+      ? "The costliest anomalous hour, " + usd(worst[2]) + ", was " + Math.round(worst[7] * 100) + "% one session"
+      : plural(flagTotal, "hour") + " cost far more than the fitted baseline";
+  const lg = $("#cost-legend");
+  const k1 = H("span", "k", null, lg); const s1 = H("span", "sw", null, k1); s1.style.cssText = "width:10px;height:12px;border-radius:2px 2px 0 0;background:var(--series)"; k1.append("cost per hour");
+  const k2 = H("span", "k", null, lg); const s2 = H("span", "ln", null, k2); s2.style.borderColor = "var(--ink)"; s2.style.borderTopWidth = "1.5px"; k2.append("baseline from the decomposition");
+  const k3 = H("span", "k", null, lg); const s3 = H("span", "sw", null, k3); s3.style.cssText = "width:10px;height:12px;border-radius:2px 2px 0 0;background:var(--crit)"; k3.append("flagged hour (score above 2.5)");
+  const cards = $("#cost-cards");
+  flaggedSorted.forEach((f, i) => {
+    const [tool, t, cost, sid, model, scost, sreq, share] = f;
+    const tt = C3.tools.find(x => x.tool === tool); const hi = Math.round((Date.parse(t) - t0ms) / 3600e3);
+    const c = H("div", "card", null, cards);
+    const top = H("div", "top", null, c); H("span", "badge", String(i + 1), top); H("span", "when", tool + " · " + fHour(t), top);
+    const v = H("div", "cost", usd(cost), c); v.append(" "); H("small", null, "baseline " + usd(tt.base[hi]) + ", score " + f2(tt.score[hi]), v);
+    const sh = H("div", "share", null, c); const a = H("i", null, null, sh); a.style.cssText = "width:" + share * 100 + "%;background:var(--crit)"; const b = H("i", null, null, sh); b.style.cssText = "flex:1;background:var(--grid)";
+    const who = H("div", "who", null, c); who.append(B(sid), " caused " + f1(share * 100) + "% (" + usd(scost) + ") in " + plural(sreq, "request") + "; costliest model " + model);
+  });
+  const F = [];
+  if (worst) {
+    const prevW = flaggedSorted.find(f => f[3] === worst[3] && f[0] === worst[0] && Date.parse(f[1]) === Date.parse(worst[1]) - 3600e3);
+    F.push(["Worst hour: " + worst[0] + " " + fHour(worst[1]) + ", " + usd(worst[2]) + ". Session ", M(worst[3]), " (" + worst[4] + ") spent " + usd(worst[5]) + " of it in " + plural(worst[6], "request") + "." + (prevW ? " The hour before is flagged too: " + usd(prevW[2]) + ", " + f1(prevW[7] * 100) + "% the same session." : "")]);
+    const jumps = C3.flagged.map(f => { const tt = C3.tools.find(x => x.tool === f[0]); const b = tt.base[Math.round((Date.parse(f[1]) - t0ms) / 3600e3)]; return { f, b, ratio: b > 0 ? f[2] / b : 0 }; }).filter(j => j.ratio > 0).sort((p, q) => q.ratio - p.ratio);
+    if (jumps.length) { const j = jumps[0].f; F.push(["Largest jump over the baseline: " + j[0] + " " + fHour(j[1]) + " cost " + usd(j[2]) + " against " + usd(jumps[0].b) + " (" + f1(jumps[0].ratio) + " times). Session ", M(j[3]), " (" + j[4] + ") accounts for " + f1(j[7] * 100) + "%."]); }
+  } else F.push(["Every hour is within the band the decomposition expects, so there is no anomaly to explain."]);
+  F.push(["Over the window: " + C3.tools.map(t => t.tool + " cost " + usd(sum(t.cost)) + " in " + plural(t.cost.filter(c => c > 0).length, "active hour") + (flagTotal ? ", " + sum(t.flag.map(f => (f ? 1 : 0))) + " flagged" : "")).join("; ") + "."]);
+  const busy = C3.tools.map(t => [t.tool, sum(t.reqs)]).sort((p, q) => q[1] - p[1])[0][0];
+  if (C3.periods.length) { const per = C3.periods[0]; F.push(["series_periods_detect finds a period of " + per[0] + " h in " + per[2] + "'s hourly requests with a score of " + per[1].toFixed(2) + (per[1] < 0.5 ? ", a weak signal" : ", a clear signal") + (Math.abs(per[0] - 24) <= 1 ? ", close to a daily cycle." : ", not a daily cycle.")]); }
+  else F.push(["series_periods_detect finds no period in " + busy + "'s hourly requests."]);
+  findings("#f-cost", F);
+  $("#c-cost").append(B("Caveat. "), "The model on each card is the model of that session's costliest request in the hour, not the only model it used. The drawn baseline is clamped at $0; the score uses the raw baseline. The series covers at most the last 90 days of the data." + (flagTotal > C3.flagged.length ? " The cards show the " + C3.flagged.length + " costliest of " + flagTotal + " flagged hours." : ""));
+  return { headline, note: hoursText, draw: drawCost };
+};
+
+/* =========================================================
+   4. Slow requests
+   ========================================================= */
+RENDER.slow = function (T) {
+  const [tPat, tCtx] = T;
+  const C4 = { patterns: tPat, ctx: tCtx[0] };
+  if (!C4.ctx || !C4.ctx.total) return NO_DATA;
+const OUT_W = { "out>4k": "output over 4k tokens", "out 1-4k": "output 1k to 4k tokens", "out 200-1k": "output 200 to 1k tokens", "out<200": "output under 200 tokens" };
+const CACHE_W = { "ctx>300k": "cached context over 300k", "ctx 150-300k": "cached context 150k to 300k", "ctx 50-150k": "cached context 50k to 150k", "ctx<50k": "cached context under 50k tokens" };
+function describe(p) {
+  const parts = [];
+  if (p.tool) parts.push(p.tool); if (p.model) parts.push(p.model); if (p.agent) parts.push(p.agent === "main" ? "main agent" : "sub-agent");
+  if (p.out_size) parts.push(OUT_W[p.out_size] || p.out_size); if (p.cache) parts.push(CACHE_W[p.cache] || p.cache); if (p.fresh) parts.push(p.fresh);
+  if (p.finish_reason) parts.push("finish reason " + p.finish_reason);
+  return parts.join(", ");
+}
+const PAT = C4.patterns.map(p => ({ ...p, desc: describe(p), lift: (p.CountB / C4.ctx.slow) / (p.CountA / C4.ctx.rest) })).sort((a, b) => Math.abs(b.PercentB - b.PercentA) - Math.abs(a.PercentB - a.PercentA));
+function drawSlow() {
+  const box = $("#slow-chart"); const W = box.clientWidth; if (!W) return; box.replaceChildren();
+  const narrow = W < 640;
+  const labW = narrow ? 0 : 340, liftW = narrow ? 0 : 110, rowH = narrow ? 56 : 44, mt = 6, axH = 24;
+  const Hh = mt + PAT.length * rowH + axH;
+  const svg = S("svg", { width: W, height: Hh, viewBox: "0 0 " + W + " " + Hh, role: "img", "aria-label": "Share of slow versus other requests per pattern" }, box);
+  const x0 = labW + 22, x1 = W - liftW - 24; const xmax = niceMax(Math.max(...PAT.map(p => Math.max(p.PercentA, p.PercentB))), 10);
+  const x = v => x0 + (x1 - x0) * v / xmax;
+  const ax = S("g", { class: "ax" }, svg);
+  for (let v = 0; v <= xmax; v += (narrow ? 20 : 10)) { S("line", { x1: x(v), x2: x(v), y1: mt, y2: Hh - axH, stroke: "var(--grid)" }, ax); const t = S("text", { x: x(v), y: Hh - axH + 15, "text-anchor": "middle" }, ax); t.textContent = v + "%"; }
+  if (!narrow) { const t = S("text", { x: W, y: Hh - axH + 15, "text-anchor": "end" }, ax); t.textContent = "slow vs rest"; }
+  PAT.forEach((p, i) => {
+    const yc = mt + i * rowH + (narrow ? 34 : rowH / 2);
+    const g = S("g", null, svg);
+    const lab = S("text", { x: narrow ? 0 : labW, y: narrow ? yc - 16 : yc + 4, "text-anchor": narrow ? "start" : "end", "font-size": 12.5, fill: "var(--ink)" }, g); lab.textContent = p.desc;
+    if (!narrow && lab.getComputedTextLength && lab.getComputedTextLength() > labW - 4) { lab.setAttribute("font-size", 11.5); }
+    const a = x(p.PercentA), b = x(p.PercentB);
+    S("line", { x1: Math.min(a, b), x2: Math.max(a, b), y1: yc, y2: yc, stroke: "var(--axis)", "stroke-width": 3, "stroke-linecap": "round" }, g);
+    S("circle", { cx: a, cy: yc, r: 5.5, fill: "var(--rest)", stroke: "var(--surface)", "stroke-width": 2 }, g);
+    S("circle", { cx: b, cy: yc, r: 6, fill: "var(--crit)", stroke: "var(--surface)", "stroke-width": 2 }, g);
+    const lt = (v, xx, side) => { const room = side > 0 || xx - x0 > 48; const t = S("text", { x: room ? xx + (side > 0 ? 10 : -10) : xx, y: room ? yc + 4 : narrow ? yc + 17 : yc - 10, "text-anchor": room ? (side > 0 ? "start" : "end") : "middle", "font-size": 11.5, fill: "var(--ink-2)", "font-family": css("--f-mono") }, g); t.textContent = pct(v, v < 1 && v > 0 ? 2 : 1); };
+    const slowRight = p.PercentB >= p.PercentA;
+    lt(p.PercentB, b, slowRight ? 1 : -1); lt(p.PercentA, a, slowRight ? -1 : 1);
+    if (!narrow) { const l = S("text", { x: W, y: yc + 4, "text-anchor": "end", "font-size": 11.5, fill: "var(--muted)", "font-family": css("--f-mono") }, g); l.textContent = p.CountB === 0 ? "never slow" : p.CountA === 0 ? "only in slow" : p.lift >= 1 ? (p.lift >= 10 ? Math.round(p.lift) : f1(p.lift)) + "× in slow" : f1(1 / p.lift) + "× rarer"; }
+    const hit = S("rect", { x: 0, y: yc - rowH / 2 - (narrow ? 8 : 0), width: W, height: rowH, fill: "transparent" }, g);
+    hit.addEventListener("pointermove", ev => showTip(ev, [[p.desc, null, "h"], [pct(p.PercentB, 2) + " (" + f0(p.CountB) + ")", "of slow requests", "bad"], [pct(p.PercentA, 2) + " (" + f0(p.CountA) + ")", "of the rest"], [p.CountB === 0 ? "never slow" : p.CountA === 0 ? "only in slow" : (p.lift >= 1 ? f1(p.lift) + "×" : "1/" + f1(1 / p.lift)), "slow share over rest share"]]));
+    hit.addEventListener("pointerleave", hideTip);
+  });
+}
+  /* headline, stats, findings */
+  const c = C4.ctx; const top = PAT[0];
+  const headline = top
+    ? "The pattern that most separates slow requests: " + top.desc + ", " + pct(top.PercentB) + " of slow requests against " + pct(top.PercentA, 2) + " of the rest"
+    : "No combination of request properties separates the slow requests from the rest";
+  const st = $("#slow-stats");
+  const stat = (v, small, l) => { const d = H("div", "stat", null, st); const vv = H("span", "v", v, d); if (small) { vv.append(" "); H("small", null, small, vv); } H("span", "l", l, d); };
+  stat(f1(c.p95_ms / 1000) + " s", null, "p95 duration: slow means at or above this");
+  stat(f1(c.median_ms / 1000) + " s", null, "median duration");
+  stat(f0(c.slow), "slow", "requests, against " + f0(c.rest) + " in the rest");
+  stat(f0(c.total), null, "requests in scope");
+  const lg = $("#slow-legend");
+  const k1 = H("span", "k", null, lg); const d1 = H("span", null, null, k1); d1.style.cssText = "width:10px;height:10px;border-radius:50%;background:var(--crit);display:inline-block"; k1.append("share among slow requests");
+  const k2 = H("span", "k", null, lg); const d2 = H("span", null, null, k2); d2.style.cssText = "width:10px;height:10px;border-radius:50%;background:var(--rest);display:inline-block"; k2.append("share among the rest");
+  const F = [];
+  if (top) {
+    const more = PAT.filter(p => p.PercentB > p.PercentA);
+    const less = PAT.filter(p => p.PercentB < p.PercentA).sort((p, q) => (q.PercentA - q.PercentB) - (p.PercentA - p.PercentB));
+    if (top.PercentB > top.PercentA) F.push([B(f0(top.CountB) + " of " + f0(c.slow)), " slow requests (" + pct(top.PercentB) + ") match " + top.desc + "; only " + f0(top.CountA) + " of " + f0(c.rest) + " other requests do." + (Number.isFinite(top.lift) ? " That pattern is " + (top.lift >= 10 ? Math.round(top.lift) : f1(top.lift)) + " times as common among slow requests." : " No request outside the slow group matches it.")]);
+    else F.push(["The strongest pattern is a rarer one among slow requests: " + top.desc + " is " + pct(top.PercentA) + " of the rest and " + pct(top.PercentB) + " of slow (" + f0(top.CountB) + " of " + f0(c.slow) + ")."]);
+    const second = more.find(p => p !== top);
+    if (second) F.push([second.desc + " is " + pct(second.PercentB) + " of slow requests against " + pct(second.PercentA) + " of the rest."]);
+    if (less.length && less[0] !== top) F.push(["Rarer among slow requests: " + less[0].desc + " is " + pct(less[0].PercentA) + " of the rest and " + pct(less[0].PercentB) + " of slow (" + f0(less[0].CountB) + " of " + f0(c.slow) + ")."]);
+  } else F.push(["evaluate diffpatterns found no attribute combination that separates the " + f0(c.slow) + " slow requests from the other " + f0(c.rest) + "."]);
+  findings("#f-slow", F);
+  $("#c-slow").append(B("Caveat. "), "Patterns overlap: one request can match several rows, so the shares do not add up to 100%. diffpatterns reports the combinations it found most separating; it does not test every combination.");
+  if (!PAT.length) { H("p", "panel-sub", "Nothing to chart.", $("#slow-chart")); }
+  return { headline, note: f0(c.total) + " requests", draw: PAT.length ? drawSlow : null };
+};
+
+/* =========================================================
+   5. Context sawtooth
+   ========================================================= */
+RENDER.context = function (T) {
+  const [tPts, tSegs, tComp, tRun] = T;
+  if (!tPts.length) return NO_DATA;
+  const points = {}; let MAXCTX = 0;
+  tPts.forEach(r => { const p = points[r.session_id] || (points[r.session_id] = { ctx: [], seg: [], ts: [] }); p.ctx.push(r.ctx); p.seg.push(r.seg); p.ts.push(Math.round(r.ts)); if (r.ctx > MAXCTX) MAXCTX = r.ctx; });
+  const C5 = { points };
+  const CEIL = tRun.length && tRun[0].ceiling ? tRun[0].ceiling : null;
+  const SEGS = tSegs.map(r => ({ id: r.session_id, seg: r.seg, n: r.n, start: r.start_ctx, peak: r.peak_ctx, ts: r.t_start, te: r.t_end, slope: r.slope, r2: r.rsquare, tpm: r.tokens_per_min }));
+  const RUN = tRun.map(r => ({ id: r.session_id, seg: r.seg, n: r.n, last: r.last_ctx, slope: r.slope, left: r.requests_left, rate: r.rate_per_min, mins: r.minutes_left }));
+  const COMP = tComp.map(r => ({ id: r.session_id, pos: r.pos, ts: Math.round(r.ts), before: r.before, after: r.after, rec: r.reclaimed }));
+// least-squares fit per segment from the points, the same fit series_fit_line does over index 0..n-1
+const FIT = {}; let fitMismatch = 0;
+for (const id in C5.points) {
+  const p = C5.points[id]; FIT[id] = {};
+  let i = 0; while (i < p.ctx.length) {
+    const sg = p.seg[i]; let j = i; while (j < p.ctx.length && p.seg[j] === sg) j++;
+    const n = j - i; if (n >= 3) { let sx = 0, sy = 0, sxx = 0, sxy = 0; for (let k = 0; k < n; k++) { const v = p.ctx[i + k]; sx += k; sy += v; sxx += k * k; sxy += k * v; } const slope = (n * sxy - sx * sy) / (n * sxx - sx * sx); const icpt = (sy - slope * sx) / n; FIT[id][sg] = { from: i + 1, to: j, slope, icpt };
+      const ref = SEGS.find(s => s.id === id && s.seg === sg); if (!ref || Math.abs(ref.slope - slope) > 0.6) fitMismatch++; }
+    i = j;
+  }
+}
+if (fitMismatch) console.warn("fit mismatch", fitMismatch);
+const ORDER0 = [...RUN].sort((a, b) => (a.left == null ? Infinity : a.left) - (b.left == null ? Infinity : b.left)).map(r => r.id);
+  const ORDER = [...new Set([...ORDER0, ...Object.keys(C5.points)])];
+function drawCtx() {
+  const box = $("#ctx-multi"); if (!box.clientWidth) return; box.replaceChildren();
+  const ymax = niceMax(Math.max(CEIL || 0, MAXCTX) * 1.02, 100000); const ystep = niceStep(ymax / 3); const ticks = []; for (let v = 0; v < ymax - ystep * 0.01; v += ystep) if (!CEIL || Math.abs(v - CEIL) > ymax * 0.06) ticks.push(v);
+  ORDER.forEach(id => {
+    const p = C5.points[id], run = RUN.find(r => r.id === id) || { id, left: null, mins: null, last: 0, slope: 0 }, comps = COMP.filter(c => c.id === id);
+    const card = H("div", "sm", null, box);
+    const hd = H("div", "sm-head", null, card);
+    const l = H("div", null, null, hd); H("div", "sm-id", id, l); H("div", "sm-sub", f0(p.ctx.length) + " requests · " + comps.length + " compaction" + (comps.length === 1 ? "" : "s"), l); H("div", "sm-sub", fD(p.ts[0]) + " to " + fD(p.ts[p.ts.length - 1]), l);
+    const r = H("div", "sm-run", null, hd); const v = H("div", "v", run.left == null ? "\u2013" : f0(run.left), r); v.append(" "); H("small", null, run.left == null ? "no runway estimate" : "requests left", v); H("div", "m", run.mins == null ? "" : "\u2248 " + f0(run.mins) + " min at average pace", r);
+    const holder = H("div", null, null, card);
+    const W = holder.clientWidth || card.clientWidth - 28; const Hh = 176, ml = 40, mr = 10, mt = 10, mb = 22; const ph = Hh - mt - mb;
+    const n = p.ctx.length; const xmaxN = n + Math.max(0, run.left);
+    const x = i => ml + (W - ml - mr) * (i - 1) / Math.max(1, xmaxN - 1); const y = vv => mt + ph - ph * vv / ymax;
+    const svg = S("svg", { width: W, height: Hh, viewBox: "0 0 " + W + " " + Hh, role: "img", "aria-label": "Context size per request for session " + id }, holder);
+    const clipId = "clip-" + id; const defs = S("defs", null, svg); S("rect", { x: ml, y: mt, width: W - ml - mr, height: ph }, S("clipPath", { id: clipId }, defs));
+    const ax = S("g", { class: "ax" }, svg);
+    ticks.forEach(vv => { S("line", { x1: ml, x2: W - mr, y1: y(vv), y2: y(vv), stroke: vv ? "var(--grid)" : "var(--axis)" }, ax); const t = S("text", { x: ml - 5, y: y(vv) + 3.5, "text-anchor": "end" }, ax); t.textContent = vv ? fk(vv) : "0"; });
+    if (CEIL) { S("line", { x1: ml, x2: W - mr, y1: y(CEIL), y2: y(CEIL), stroke: "var(--crit)", "stroke-width": 1 }, ax); const ct = S("text", { x: ml - 5, y: y(CEIL) + 3.5, "text-anchor": "end" }, ax); ct.textContent = fk(CEIL); }
+    const step = xmaxN > 1500 ? 500 : xmaxN > 600 ? 200 : xmaxN > 200 ? 100 : 25;
+    for (let i = step; i < xmaxN; i += step) { const t = S("text", { x: x(i), y: Hh - 6, "text-anchor": "middle" }, ax); t.textContent = f0(i); S("line", { x1: x(i), x2: x(i), y1: mt + ph, y2: mt + ph + 3, stroke: "var(--axis)" }, ax); }
+    // area + line
+    let d = "", da = "M" + x(1) + "," + y(0);
+    for (let i = 0; i < n; i++) { const xx = x(i + 1).toFixed(1), yy = y(p.ctx[i]).toFixed(1); d += (i ? "L" : "M") + xx + "," + yy; da += "L" + xx + "," + yy; }
+    da += "L" + x(n) + "," + y(0) + "Z";
+    S("path", { d: da, fill: "var(--series-wash)" }, svg);
+    S("path", { d, fill: "none", stroke: "var(--series)", "stroke-width": 1.25, "stroke-linejoin": "round", "stroke-opacity": 0.9 }, svg);
+    // fits
+    const gf = S("g", { "clip-path": "url(#" + clipId + ")" }, svg);
+    for (const sg in FIT[id]) { const f = FIT[id][sg]; const nn = f.to - f.from; S("line", { x1: x(f.from), y1: y(f.icpt), x2: x(f.to), y2: y(f.icpt + f.slope * nn), stroke: "var(--ink)", "stroke-width": 1.5, "stroke-linecap": "round" }, gf); }
+    // projection
+    if (CEIL && run.left > 0) { S("line", { x1: x(n), y1: y(run.last), x2: x(n + run.left), y2: y(CEIL), stroke: "var(--hl)", "stroke-width": 2, "stroke-dasharray": "4 3" }, svg); S("circle", { cx: x(n), cy: y(run.last), r: 4, fill: "var(--hl)", stroke: "var(--surface)", "stroke-width": 2 }, svg); S("circle", { cx: x(n + run.left), cy: y(CEIL), r: 3, fill: "var(--surface)", stroke: "var(--hl)", "stroke-width": 1.5 }, svg); }
+    // compaction marks
+    comps.forEach(c => { const xx = x(c.pos), yy = mt + ph + 1; const full = CEIL && c.before >= 0.95 * CEIL; S("path", { d: "M" + (xx - 4) + "," + (yy - 8) + "L" + (xx + 4) + "," + (yy - 8) + "L" + xx + "," + (yy - 1) + "Z", fill: full ? "var(--ink)" : "var(--surface)", stroke: "var(--ink)", "stroke-width": 1 }, svg); });
+    // hover
+    const cross = S("line", { y1: mt, y2: mt + ph, stroke: "var(--ink-2)", visibility: "hidden" }, svg);
+    const dot = S("circle", { r: 4, fill: "var(--series)", stroke: "var(--surface)", "stroke-width": 2, visibility: "hidden" }, svg);
+    const hit = S("rect", { x: ml, y: mt, width: W - ml - mr, height: ph + mb, fill: "transparent" }, svg);
+    const mv = ev => {
+      const rc = svg.getBoundingClientRect(); const fx = (ev.clientX - rc.left - ml) / (W - ml - mr) * (xmaxN - 1) + 1; const i = Math.round(fx);
+      if (i > n) { const k = Math.min(run.left, i - n); cross.setAttribute("x1", x(n + k)); cross.setAttribute("x2", x(n + k)); cross.setAttribute("visibility", "visible"); dot.setAttribute("visibility", "hidden");
+        showTip(ev, [[id + " · projection", null, "h"], [f0(Math.min(CEIL, run.last + run.slope * k)), "projected context"], ["+" + k, "requests from now"], [f0(run.slope), "tokens per request (last segment)"]]); return; }
+      const ii = Math.max(1, i); const sg = p.seg[ii - 1]; const seg = SEGS.find(s => s.id === id && s.seg === sg);
+      cross.setAttribute("x1", x(ii)); cross.setAttribute("x2", x(ii)); cross.setAttribute("visibility", "visible"); dot.setAttribute("cx", x(ii)); dot.setAttribute("cy", y(p.ctx[ii - 1])); dot.setAttribute("visibility", "visible");
+      const rows = [[id + " · request " + f0(ii), null, "h"], [f0(p.ctx[ii - 1]), "tokens of context"], [fT(p.ts[ii - 1]), "UTC"], ["segment " + sg, seg ? seg.n + " requests" : ""]];
+      if (seg && seg.slope != null) rows.push([f0(seg.slope) + " /req", "slope, r² " + seg.r2.toFixed(3)]);
+      const cp = comps.find(c => c.pos === ii); if (cp) rows.push(["−" + fk(cp.rec), "dropped from " + fk(cp.before), "bad"]);
+      showTip(ev, rows);
+    };
+    hit.addEventListener("pointermove", mv); hit.addEventListener("pointerdown", mv); hit.addEventListener("pointerleave", () => { cross.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); hideTip(); });
+  });
+}
+  /* legend, headline, findings */
+  const lg = $("#ctx-legend");
+  const k1 = H("span", "k", null, lg); const a = H("span", "ln", null, k1); a.style.borderColor = "var(--series)"; k1.append("context per request (input + cache read + cache write)");
+  const k2 = H("span", "k", null, lg); const b = H("span", "ln", null, k2); b.style.borderColor = "var(--ink)"; b.style.borderTopWidth = "1.5px"; k2.append("fitted line per segment");
+  if (CEIL) {
+    const k3 = H("span", "k", null, lg); const c = H("span", "ln", null, k3); c.style.cssText = "border-top:2px dashed var(--hl)"; k3.append("projection to the ceiling");
+    if (COMP.length) { const k4 = H("span", "k", null, lg); const d = H("span", null, "▼", k4); d.style.cssText = "color:var(--ink);font-size:10px"; k4.append("compaction from near the ceiling"); const k5 = H("span", "k", null, lg); const e = H("span", null, "▽", k5); e.style.cssText = "color:var(--ink);font-size:10px"; k5.append("drop from lower down"); }
+    const k6 = H("span", "k", null, lg); const f = H("span", "ln", null, k6); f.style.borderColor = "var(--crit)"; f.style.borderTopWidth = "1px"; k6.append(fk(CEIL) + " ceiling: the median context where a compaction started");
+  }
+
+  const fitted = SEGS.filter(s => s.r2 != null && s.slope != null);
+  const above = fitted.filter(s => s.r2 > 0.9).length;
+  const nSess = Object.keys(C5.points).length;
+  const headline = !fitted.length
+    ? "No climb has the 3 requests a straight-line fit needs"
+    : above * 2 >= fitted.length
+      ? "Context climbs in near-straight lines" + (CEIL ? ", so the next compaction can be counted in requests" : "")
+      : "Context climbs are not close to straight lines: " + above + " of " + fitted.length + " segments fit one";
+  const F = [];
+  if (fitted.length) {
+    const best = fitted.reduce((m, s) => (s.r2 > m.r2 ? s : m)); const steep = fitted.reduce((m, s) => (s.slope > m.slope ? s : m));
+    const slopes = fitted.map(s => s.slope).sort((p, q) => p - q);
+    F.push([B(above + " of " + fitted.length), " segments fit a straight line with r² above 0.9 (best " + best.r2.toFixed(3) + "). Slopes run from " + fk(slopes[0]) + " to " + fk(slopes[slopes.length - 1]) + " tokens per request, median " + fk(median(slopes)) + "; the steepest is " + steep.id + " segment " + steep.seg + " at " + f0(steep.slope) + " over " + plural(steep.n, "request") + "."]);
+  } else F.push(["Every segment has fewer than 3 requests, so no line is fitted."]);
+  if (COMP.length) {
+    const sessWith = new Set(COMP.map(c => c.id)).size;
+    F.push([B(plural(COMP.length, "compaction")), " in " + sessWith + " of the " + plural(nSess, "session") + ". They start at a median of " + fk(median(COMP.map(c => c.before))) + " (" + fk(Math.min(...COMP.map(c => c.before))) + " to " + fk(Math.max(...COMP.map(c => c.before))) + ") and land at a median of " + fk(median(COMP.map(c => c.after))) + ", reclaiming a median " + fk(median(COMP.map(c => c.rec))) + ". The highest request reached " + f0(MAXCTX) + "."]);
+  } else F.push(["No compaction found: no request has a context below 0.6 times the one before it, so there is no ceiling to project to."]);
+  const withLeft = RUN.filter(r => r.left != null).sort((p, q) => p.left - q.left);
+  if (withLeft.length) {
+    const r0 = withLeft[0], r1 = withLeft[1];
+    F.push(["Runway to the ceiling at each session's current slope: ", B(r0.id + " has " + plural(r0.left, "request") + " left"), " (at " + f0(r0.last) + ")" + (r1 ? ", " + r1.id + " " + f0(r1.left) : "") + "."]);
+  } else F.push(["No session has a rising slope below the ceiling, so there is no runway to report."]);
+  findings("#f-ctx", F);
+  $("#c-ctx").append(B("Caveats. "), "The ceiling is the median context size at which these sessions compacted, not a model limit. Runway leads with requests; the minute figures divide by wall-clock time including idle gaps of hours or days, so they are session averages, not working time. A drop below 0.6 times the previous request is the compaction rule, and it can also catch a model or cache change rather than a compaction.");
+  return { headline, note: plural(nSess, "long claude-code session") + ", busiest by requests", draw: drawCtx };
+};
+
+/* ---------- the page ---------- */
+function notice(parent, kind, title, text) {
+  const n = H("div", "notice " + kind, null, parent); n.setAttribute("role", kind === "error" ? "alert" : "note");
+  H("b", null, title, n);
+  if (text) H(kind === "error" ? "pre" : "p", null, text, n);
+}
+function kqlBlock(parent, sec) {
+  const d = H("details", "kql", null, parent);
+  const sum = H("summary", null, null, d);
+  sum.textContent = "Show the KQL (" + (sec.error ? "" : sec.tables.length + " result table" + (sec.tables.length === 1 ? "" : "s") + ", ") + f0(sec.kql.length) + " characters)";
+  const w = H("div", "code-wrap", null, d); const pre = H("pre", "code", null, w); highlightKql(pre, sec.kql);
+  const btn = H("button", "btn copy", "Copy", w); btn.type = "button";
+  btn.addEventListener("click", () => {
+    const done = t => { btn.textContent = t; setTimeout(() => (btn.textContent = "Copy"), 1600); };
+    const sel = () => { const r = document.createRange(); r.selectNodeContents(pre); const s = getSelection(); s.removeAllRanges(); s.addRange(r); done("Selected, press Ctrl+C"); };
+    try { navigator.clipboard.writeText(sec.kql).then(() => done("Copied"), sel); } catch (e) { sel(); }
+  });
+}
+const DRAWS = [];
+const STATUS = {};
+function buildSection(sec, n, wrap) {
+  const tpl = document.querySelector('template[data-section="' + sec.name + '"]');
+  const title = (tpl && tpl.dataset.title) || sec.name;
+  const caps = tpl && tpl.dataset.caps ? tpl.dataset.caps.split(",") : [];
+  const el = H("section", "sec", null, wrap); el.id = sec.name;
+  const head = H("div", "sec-head", null, el); H("span", "eyebrow", n + " · " + title, head); const h2 = H("h2", null, null, head);
+  const m = H("div", "meta", null, el);
+  const body = H("div", null, null, el); body.style.cssText = "display:flex;flex-direction:column;gap:18px";
+  let status = "ok", out = null, error = null;
+  if (sec.error) { status = "error"; error = sec.error; h2.textContent = title + ": the query failed"; notice(body, "error", "The query failed. The server said:", sec.error); }
+  else if (!tpl) { status = "error"; h2.textContent = title + ": nothing to draw it with"; notice(body, "error", "The page has no template for the section " + sec.name + ".", null); }
+  else if (typeof RENDER[sec.name] !== "function") { status = "error"; h2.textContent = title + ": nothing to draw it with"; notice(body, "error", "The page has no draw function RENDER." + sec.name + ".", null); }
+  else if (!sec.tables.some(t => t.length)) { status = "empty"; h2.textContent = title + ": no data"; notice(body, "empty", "No data for this section.", "The query ran and returned no rows. Either the store holds no rows of the kind it reads, or none fall in the window."); }
+  else {
+    body.append(tpl.content.cloneNode(true));
+    try { out = RENDER[sec.name](sec.tables, sec); } catch (e) { status = "error"; error = String(e && e.message || e); console.error(sec.name, e); }
+    if (status === "error") { body.replaceChildren(); h2.textContent = title + ": the page could not draw it"; notice(body, "error", "The query returned rows, but drawing them failed:", error); }
+    else if (out === NO_DATA || !out) { status = "empty"; body.replaceChildren(); h2.textContent = title + ": no data"; notice(body, "empty", "No data for this section.", "The query returned rows, but none of the kind this section draws."); }
+    else { h2.textContent = out.headline; if (out.draw) DRAWS.push(out.draw); }
+  }
+  STATUS[sec.name] = status;
+  caps.forEach(c => H("span", "chip", c, m));
+  H("span", "sep", "|", m);
+  const r = H("span", "runtime", null, m); H("b", null, sec.seconds.toFixed(2) + " s", r); H("span", null, "engine time", r);
+  if (out && out !== NO_DATA && out.note) { H("span", "sep", "|", m); H("span", null, out.note, m); }
+  kqlBlock(el, sec);
+  return { title, caps, status };
+}
+(function page() {
+  const R = REPORT; const wrap = $(".wrap");
+  document.title = "aictl Kusto report: " + R.database + " on " + R.cluster;
+  $("#eyebrow").textContent = "aictl · " + R.cluster + " · database " + R.database;
+  const meta = R.sections.map((sec, i) => buildSection(sec, i + 1, wrap));
+  const ran = R.sections.filter(s => !s.error).map(s => s.seconds);
+  const failed = R.sections.filter(s => s.error).length;
+  $("#lede").textContent = plural(R.sections.length, "KQL query", "KQL queries") + " ran on the database " + R.database + " of " + R.cluster + ", started " + fStamp(R.generated) + ". "
+    + (ran.length ? "The engine answered " + (ran.length === 1 ? "the query" : "each query that ran") + " in " + Math.min(...ran).toFixed(2) + (ran.length > 1 ? " to " + Math.max(...ran).toFixed(2) : "") + " seconds. " : "")
+    + (failed ? plural(failed, "query") + " failed; its section shows the error. " : "")
+    + "Every number on this page is read from the query results saved in this file.";
+  const ix = $("#index"); const mx = Math.max(0.01, ...R.sections.map(s => s.seconds));
+  R.sections.forEach((sec, i) => {
+    const a = H("a", null, null, ix); a.href = "#" + sec.name;
+    H("span", "ix-n", String(i + 1), a); H("span", "ix-t", meta[i].title, a); H("span", "ix-c", meta[i].caps[0] || "", a);
+    const st = STATUS[sec.name];
+    const sp = H("span", "ix-s" + (st === "error" ? " bad" : ""), null, a);
+    if (st === "error") sp.append("failed"); else if (st === "empty") sp.append("no data"); else { const bar = H("i", "ix-bar", null, sp); bar.style.width = Math.round(48 * sec.seconds / mx) + "px"; sp.append(sec.seconds.toFixed(2) + " s"); }
+  });
+  $("#window").textContent = (R.days
+    ? "Window: the last " + plural(R.days, "day") + " before " + fStamp(R.generated) + ". Every query reads only rows of that window, so a session that began earlier shows from its first row inside it."
+    : "Window: all data in the database; no query filters by time.") + " All times are UTC.";
+})();
+
+/* ---------- draw and re-draw ---------- */
+function renderAll() { DRAWS.forEach(f => { try { f(); } catch (e) { console.error(e); } }); }
+let lastW = 0, rt = 0;
+window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { const w = document.body.clientWidth; if (w !== lastW) { lastW = w; renderAll(); } }, 120); });
+new MutationObserver(renderAll).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+try { matchMedia("(prefers-color-scheme: dark)").addEventListener("change", renderAll); } catch (e) {}
+lastW = document.body.clientWidth;
+renderAll();
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(renderAll);
+
+</script>
+</body>
+</html>
