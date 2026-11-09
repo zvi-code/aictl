@@ -1687,6 +1687,243 @@ def _fill_folders_from_sessions(conn: sqlite3.Connection, *bufs: list) -> None:
             r.project_path = known[r.session_id]
 
 
+_SESSION_UPSERT = (
+    "INSERT INTO sessions"
+    "(session_id, tool, pid, project_path, model, git_branch, git_commit,"
+    " started_at, ended_at, source, input_tokens, output_tokens,"
+    " cache_read_tokens, cache_creation_tokens, cost_usd,"
+    " request_count, tool_call_count, files_modified)"
+    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    " ON CONFLICT(session_id) DO UPDATE SET"
+    " tool = CASE WHEN excluded.tool != '' THEN excluded.tool ELSE sessions.tool END,"
+    " pid = CASE WHEN excluded.pid != 0 THEN excluded.pid ELSE sessions.pid END,"
+    " project_path = CASE WHEN excluded.project_path != '' THEN excluded.project_path ELSE sessions.project_path END,"
+    " model = CASE WHEN excluded.model != '' THEN excluded.model ELSE sessions.model END,"
+    " git_branch = CASE WHEN excluded.git_branch != '' THEN excluded.git_branch ELSE sessions.git_branch END,"
+    " git_commit = CASE WHEN excluded.git_commit != '' THEN excluded.git_commit ELSE sessions.git_commit END,"
+    " started_at = CASE"
+    " WHEN sessions.started_at = 0 THEN excluded.started_at"
+    " WHEN excluded.started_at = 0 THEN sessions.started_at"
+    " ELSE MIN(sessions.started_at, excluded.started_at)"
+    " END,"
+    " ended_at = CASE"
+    " WHEN excluded.ended_at IS NULL THEN sessions.ended_at"
+    " WHEN sessions.ended_at IS NULL THEN excluded.ended_at"
+    " ELSE MAX(sessions.ended_at, excluded.ended_at)"
+    " END,"
+    " source = CASE WHEN excluded.source != '' THEN excluded.source ELSE sessions.source END,"
+    " input_tokens = CASE WHEN excluded.input_tokens != 0 THEN excluded.input_tokens ELSE sessions.input_tokens END,"
+    " output_tokens = CASE WHEN excluded.output_tokens != 0 THEN excluded.output_tokens ELSE sessions.output_tokens END,"
+    " cache_read_tokens = CASE WHEN excluded.cache_read_tokens != 0 THEN excluded.cache_read_tokens ELSE sessions.cache_read_tokens END,"
+    " cache_creation_tokens = CASE WHEN excluded.cache_creation_tokens != 0 THEN excluded.cache_creation_tokens ELSE sessions.cache_creation_tokens END,"
+    " cost_usd = CASE WHEN excluded.cost_usd != 0 THEN excluded.cost_usd ELSE sessions.cost_usd END,"
+    " request_count = CASE WHEN excluded.request_count != 0 THEN excluded.request_count ELSE sessions.request_count END,"
+    " tool_call_count = CASE WHEN excluded.tool_call_count != 0 THEN excluded.tool_call_count ELSE sessions.tool_call_count END,"
+    " files_modified = CASE WHEN excluded.files_modified != 0 THEN excluded.files_modified ELSE sessions.files_modified END"
+)
+
+_AGENT_UPSERT = (
+    "INSERT INTO agents"
+    "(agent_id, session_id, tool, task, model, is_sidechain,"
+    " started_at, ended_at, completed, input_tokens, output_tokens,"
+    " cache_read_tokens, cache_creation_tokens, cost_usd)"
+    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    " ON CONFLICT(agent_id) DO UPDATE SET session_id=excluded.session_id, tool=excluded.tool,"
+    " task=CASE WHEN agents.task != '' THEN agents.task ELSE excluded.task END,"
+    " model=excluded.model, is_sidechain=excluded.is_sidechain, started_at=excluded.started_at,"
+    " ended_at=excluded.ended_at, completed=excluded.completed, input_tokens=excluded.input_tokens,"
+    " output_tokens=excluded.output_tokens, cache_read_tokens=excluded.cache_read_tokens,"
+    " cache_creation_tokens=excluded.cache_creation_tokens, cost_usd=excluded.cost_usd"
+)
+
+# Content waiting in one batch of file writes before it is sent to the store.
+_FILE_WRITE_BYTES = 4 * 1024 * 1024
+
+
+class _FileWrite:
+    """The rows one or many tracked files need, written a statement per table.
+
+    ``add`` works out a file's rows from what the store holds for its path (*existing*:
+    mtime, content hash, first seen, last changed; None for a new path); ``run`` sends
+    everything added since the last run. It commits nothing.
+    """
+
+    def __init__(self) -> None:
+        self.stored: dict[str, tuple] = {}
+        self.pending: set[str] = set()
+        self.pending_bytes = 0
+        self._blobs: list[tuple] = []
+        self._files: list[tuple] = []
+        self._history: list[tuple] = []
+        self._meta_updates: list[tuple] = []
+        self._meta_inserts: list[tuple] = []
+
+    def add(
+        self,
+        path: str,
+        tool: str,
+        category: str,
+        scope: str,
+        content: str | None,
+        mtime: float | None,
+        meta: dict[str, Any] | None,
+        now: float,
+        existing: tuple | None,
+    ) -> bool:
+        """Queue the rows for *path*. True when its content is new or differs from the stored hash."""
+        self.pending.add(path)
+        meta_json = json.dumps(meta or {})
+        if content is None:
+            # No content to store: the file's place in the inventory and its mtime only.
+            if existing:
+                self._meta_updates.append((tool, category, scope, mtime or 0, meta_json, path))
+                self.stored[path] = (mtime or 0, existing[1], existing[2], existing[3])
+            else:
+                self._meta_inserts.append((path, tool, category, scope, mtime or 0, now, meta_json))
+                self.stored[path] = (mtime or 0, "", now, 0)
+            return False
+        raw = content.encode("utf-8", errors="replace")
+        new_hash = _content_hash(content)
+        new_tokens = _estimate_tokens(content)
+        new_lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+        new_size = len(raw)
+        changed = existing is None or existing[1] != new_hash
+        first_seen = existing[2] if existing else now
+        last_changed = now if changed else existing[3]
+        blob_hash = ""
+        if new_size > LARGE_FILE_THRESHOLD:
+            blob_hash = hashlib.sha256(raw).hexdigest()[:32]
+            self._blobs.append((blob_hash, content, new_size, now))
+            self.pending_bytes += new_size
+        self._files.append(
+            (path, tool, category, scope, content, blob_hash, new_hash, new_size, new_tokens, new_lines,
+             mtime or 0, first_seen, now, last_changed, meta_json)
+        )  # fmt: skip
+        self.pending_bytes += new_size
+        if changed:
+            # The history row of a large file points at its blob instead of repeating it.
+            self._history.append(
+                (path, now, "" if blob_hash else content, blob_hash, new_hash, new_size, new_tokens, new_lines)
+            )
+            self.pending_bytes += 0 if blob_hash else new_size
+        self.stored[path] = (mtime or 0, new_hash, first_seen, last_changed)
+        return changed
+
+    def run(self, conn: sqlite3.Connection) -> None:
+        if self._blobs:
+            conn.executemany(
+                "INSERT OR IGNORE INTO file_blobs(hash, content, size_bytes, created_at) VALUES(?,?,?,?)", self._blobs
+            )
+        if self._meta_inserts:
+            conn.executemany(
+                "INSERT INTO files(path, tool, category, scope, mtime, first_seen, meta) VALUES(?,?,?,?,?,?,?)",
+                self._meta_inserts,
+            )
+        if self._meta_updates:
+            conn.executemany(
+                "UPDATE files SET tool=?, category=?, scope=?, mtime=?, meta=? WHERE path=?", self._meta_updates
+            )
+        if self._files:
+            conn.executemany(
+                "INSERT OR REPLACE INTO files"
+                "(path, tool, category, scope, content, blob_hash, content_hash,"
+                " size_bytes, tokens, lines, mtime, first_seen, last_read,"
+                " last_changed, meta)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                self._files,
+            )
+        if self._history:
+            conn.executemany(
+                "INSERT OR REPLACE INTO file_history"
+                "(path, ts, content, blob_hash, content_hash,"
+                " size_bytes, tokens, lines)"
+                " VALUES(?,?,?,?,?,?,?,?)",
+                self._history,
+            )
+        self._blobs, self._files, self._history = [], [], []
+        self._meta_updates, self._meta_inserts = [], []
+        self.pending.clear()
+        self.pending_bytes = 0
+
+
+def _request_row_tuple(r: RequestRow) -> tuple:
+    """The stored columns of one model call, with the key that makes a repeat of it a no-op."""
+    # Use embedded source timestamp when present (Case A).
+    # Fall back to value-based dedup when absent (Case B) —
+    # never use our reporting time (r.ts) as a dedup factor.
+    if r.dedup_key:
+        dk = r.dedup_key
+    elif r.source_ts > 0:
+        dk = _dedup_key(r.session_id, str(int(r.source_ts * 1000)), r.model, r.source)
+    else:
+        dk = _dedup_key(r.session_id, r.model, str(r.input_tokens), str(r.output_tokens), r.source)
+    return (
+        dk,
+        r.ts,
+        r.session_id,
+        r.agent_id,
+        r.tool,
+        r.project_path,
+        r.pid,
+        r.model,
+        r.input_tokens,
+        r.output_tokens,
+        r.cache_read_tokens,
+        r.cache_creation_tokens,
+        round(r.cost_usd, 6),
+        round(r.duration_ms, 1),
+        r.finish_reason,
+        r.is_error,
+        r.error_type,
+        r.http_status,
+        r.source,
+        r.prompt_id,
+        round(r.ttft_ms, 1),
+    )
+
+
+def _tool_invocation_row_tuple(r: ToolInvocationRow) -> tuple:
+    """The stored columns of one tool call, with the key that makes a repeat of it a no-op."""
+    # Dedup precedence:
+    # 1. source_event_id (e.g. hook tool_use_id): unique per
+    #    invocation, so legitimate identical repeats persist
+    #    as separate rows and retried deliveries dedup.
+    # 2. Embedded source timestamp (OTel events, Case A).
+    # 3. Value-based fallback (Case B) — collapses identical
+    #    repeats, but only when the source gave us nothing
+    #    better to tell them apart.
+    if r.dedup_key:
+        dk = r.dedup_key
+    elif r.source_event_id:
+        dk = _dedup_key(r.session_id, r.tool_name, r.source_event_id, r.source)
+    elif r.source_ts > 0:
+        dk = _dedup_key(r.session_id, str(int(r.source_ts * 1000)), r.tool_name)
+    else:
+        input_sig = json.dumps(r.input, sort_keys=True) if isinstance(r.input, dict) else str(r.input)
+        dk = _dedup_key(r.session_id, r.tool_name, input_sig, str(r.is_error), r.source)
+    return (
+        dk,
+        r.ts,
+        r.session_id,
+        r.request_id,
+        r.tool,
+        r.tool_name,
+        r.project_path,
+        r.pid,
+        r.is_error,
+        round(r.duration_ms, 1),
+        json.dumps(r.input) if isinstance(r.input, dict) else r.input,
+        r.result_summary,
+        r.source,
+        r.source_event_id,
+        r.agent_id,
+        r.confirm,
+        round(r.confirm_wait_ms, 1),
+        r.target,
+        r.exit_code,
+    )
+
+
 def _event_row_tuple(e: EventRow) -> tuple:
     """Convert an EventRow to a tuple for INSERT into events table."""
     d = e.detail if isinstance(e.detail, dict) else {}
@@ -2909,16 +3146,6 @@ class HistoryDB:
     # ── File blob support ─────────────────────────────────────────
 
     @staticmethod
-    def _store_blob(conn: sqlite3.Connection, content: str) -> str:
-        """Store content in file_blobs if not already present. Returns hash."""
-        blob_hash = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:32]
-        conn.execute(
-            "INSERT OR IGNORE INTO file_blobs(hash, content, size_bytes, created_at) VALUES(?,?,?,?)",
-            (blob_hash, content, len(content.encode("utf-8", errors="replace")), time.time()),
-        )
-        return blob_hash
-
-    @staticmethod
     def _resolve_content(conn: sqlite3.Connection, content: str, blob_hash: str) -> str:
         """Resolve content: if content is empty and blob_hash is set, fetch from blobs."""
         if content:
@@ -3125,8 +3352,6 @@ class HistoryDB:
                 time.sleep(FLUSH_YIELD_S)
             txn_start = time.monotonic()
 
-        def due(i: int) -> bool:
-            return i > 0 and (i % FLUSH_CHUNK_ROWS == 0 or time.monotonic() - txn_start >= FLUSH_TXN_S)
         try:
             if ss_buf:
                 conn.executemany(
@@ -3242,34 +3467,13 @@ class HistoryDB:
                 _fill_folders_from_sessions(conn, req_buf, ti_buf)
             if req_buf:
                 covered = _sessions_read_from_transcripts(conn, req_buf)
-                for i, r in enumerate(req_buf):
-                    if due(i):
+                # One statement per chunk: on a Kusto store a statement is a request to
+                # the cluster, and a first import holds thousands of calls.
+                for start in range(0, len(req_buf), FLUSH_CHUNK_ROWS):
+                    if start:
                         commit()
-                        req_done = i
-                    # The transcript row for the same call is already stored.
-                    if r.source in _SUPERSEDED_REQUEST_SOURCES_ALWAYS and r.session_id in covered:
-                        continue
-                    # Use embedded source timestamp when present (Case A).
-                    # Fall back to value-based dedup when absent (Case B) —
-                    # never use our reporting time (r.ts) as a dedup factor.
-                    if r.dedup_key:
-                        dk = r.dedup_key
-                    elif r.source_ts > 0:
-                        dk = _dedup_key(
-                            r.session_id,
-                            str(int(r.source_ts * 1000)),
-                            r.model,
-                            r.source,
-                        )
-                    else:
-                        dk = _dedup_key(
-                            r.session_id,
-                            r.model,
-                            str(r.input_tokens),
-                            str(r.output_tokens),
-                            r.source,
-                        )
-                    conn.execute(
+                        req_done = start
+                    conn.executemany(
                         "INSERT OR IGNORE INTO requests"
                         "(dedup_key, ts, session_id, agent_id, tool,"
                         " project_path, pid, model, input_tokens,"
@@ -3278,72 +3482,23 @@ class HistoryDB:
                         " finish_reason, is_error, error_type,"
                         " http_status, source, prompt_id, ttft_ms)"
                         " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (
-                            dk,
-                            r.ts,
-                            r.session_id,
-                            r.agent_id,
-                            r.tool,
-                            r.project_path,
-                            r.pid,
-                            r.model,
-                            r.input_tokens,
-                            r.output_tokens,
-                            r.cache_read_tokens,
-                            r.cache_creation_tokens,
-                            round(r.cost_usd, 6),
-                            round(r.duration_ms, 1),
-                            r.finish_reason,
-                            r.is_error,
-                            r.error_type,
-                            r.http_status,
-                            r.source,
-                            r.prompt_id,
-                            round(r.ttft_ms, 1),
-                        ),
+                        [
+                            _request_row_tuple(r)
+                            for r in req_buf[start : start + FLUSH_CHUNK_ROWS]
+                            # The transcript row for the same call is already stored.
+                            if not (r.source in _SUPERSEDED_REQUEST_SOURCES_ALWAYS and r.session_id in covered)
+                        ],
                     )
                 total += len(req_buf)
                 commit()
             committed.add("req")
 
             if ti_buf:
-                for i, r in enumerate(ti_buf):
-                    if due(i):
+                for start in range(0, len(ti_buf), FLUSH_CHUNK_ROWS):
+                    if start:
                         commit()
-                        ti_done = i
-                    # Dedup precedence:
-                    # 1. source_event_id (e.g. hook tool_use_id): unique per
-                    #    invocation, so legitimate identical repeats persist
-                    #    as separate rows and retried deliveries dedup.
-                    # 2. Embedded source timestamp (OTel events, Case A).
-                    # 3. Value-based fallback (Case B) — collapses identical
-                    #    repeats, but only when the source gave us nothing
-                    #    better to tell them apart.
-                    if r.dedup_key:
-                        dk = r.dedup_key
-                    elif r.source_event_id:
-                        dk = _dedup_key(
-                            r.session_id,
-                            r.tool_name,
-                            r.source_event_id,
-                            r.source,
-                        )
-                    elif r.source_ts > 0:
-                        dk = _dedup_key(
-                            r.session_id,
-                            str(int(r.source_ts * 1000)),
-                            r.tool_name,
-                        )
-                    else:
-                        input_sig = json.dumps(r.input, sort_keys=True) if isinstance(r.input, dict) else str(r.input)
-                        dk = _dedup_key(
-                            r.session_id,
-                            r.tool_name,
-                            input_sig,
-                            str(r.is_error),
-                            r.source,
-                        )
-                    conn.execute(
+                        ti_done = start
+                    conn.executemany(
                         "INSERT OR IGNORE INTO tool_invocations"
                         "(dedup_key, ts, session_id, request_id, tool,"
                         " tool_name, project_path, pid, is_error,"
@@ -3351,27 +3506,7 @@ class HistoryDB:
                         " source_event_id, agent_id, confirm, confirm_wait_ms,"
                         " target, exit_code)"
                         " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (
-                            dk,
-                            r.ts,
-                            r.session_id,
-                            r.request_id,
-                            r.tool,
-                            r.tool_name,
-                            r.project_path,
-                            r.pid,
-                            r.is_error,
-                            round(r.duration_ms, 1),
-                            json.dumps(r.input) if isinstance(r.input, dict) else r.input,
-                            r.result_summary,
-                            r.source,
-                            r.source_event_id,
-                            r.agent_id,
-                            r.confirm,
-                            round(r.confirm_wait_ms, 1),
-                            r.target,
-                            r.exit_code,
-                        ),
+                        [_tool_invocation_row_tuple(r) for r in ti_buf[start : start + FLUSH_CHUNK_ROWS]],
                     )
                 total += len(ti_buf)
                 commit()
@@ -3988,60 +4123,38 @@ class HistoryDB:
         details. Keep the earliest known start, latest known end, and refresh
         fields only when the new row carries real values.
         """
+        self.upsert_sessions([row])
+
+    def upsert_sessions(self, rows: list[SessionRow]) -> None:
+        """``upsert_session`` for many rows: one statement and one commit, in the order given."""
+        if not rows:
+            return
         conn = self._conn()
-        conn.execute(
-            "INSERT INTO sessions"
-            "(session_id, tool, pid, project_path, model, git_branch, git_commit,"
-            " started_at, ended_at, source, input_tokens, output_tokens,"
-            " cache_read_tokens, cache_creation_tokens, cost_usd,"
-            " request_count, tool_call_count, files_modified)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-            " ON CONFLICT(session_id) DO UPDATE SET"
-            " tool = CASE WHEN excluded.tool != '' THEN excluded.tool ELSE sessions.tool END,"
-            " pid = CASE WHEN excluded.pid != 0 THEN excluded.pid ELSE sessions.pid END,"
-            " project_path = CASE WHEN excluded.project_path != '' THEN excluded.project_path ELSE sessions.project_path END,"
-            " model = CASE WHEN excluded.model != '' THEN excluded.model ELSE sessions.model END,"
-            " git_branch = CASE WHEN excluded.git_branch != '' THEN excluded.git_branch ELSE sessions.git_branch END,"
-            " git_commit = CASE WHEN excluded.git_commit != '' THEN excluded.git_commit ELSE sessions.git_commit END,"
-            " started_at = CASE"
-            " WHEN sessions.started_at = 0 THEN excluded.started_at"
-            " WHEN excluded.started_at = 0 THEN sessions.started_at"
-            " ELSE MIN(sessions.started_at, excluded.started_at)"
-            " END,"
-            " ended_at = CASE"
-            " WHEN excluded.ended_at IS NULL THEN sessions.ended_at"
-            " WHEN sessions.ended_at IS NULL THEN excluded.ended_at"
-            " ELSE MAX(sessions.ended_at, excluded.ended_at)"
-            " END,"
-            " source = CASE WHEN excluded.source != '' THEN excluded.source ELSE sessions.source END,"
-            " input_tokens = CASE WHEN excluded.input_tokens != 0 THEN excluded.input_tokens ELSE sessions.input_tokens END,"
-            " output_tokens = CASE WHEN excluded.output_tokens != 0 THEN excluded.output_tokens ELSE sessions.output_tokens END,"
-            " cache_read_tokens = CASE WHEN excluded.cache_read_tokens != 0 THEN excluded.cache_read_tokens ELSE sessions.cache_read_tokens END,"
-            " cache_creation_tokens = CASE WHEN excluded.cache_creation_tokens != 0 THEN excluded.cache_creation_tokens ELSE sessions.cache_creation_tokens END,"
-            " cost_usd = CASE WHEN excluded.cost_usd != 0 THEN excluded.cost_usd ELSE sessions.cost_usd END,"
-            " request_count = CASE WHEN excluded.request_count != 0 THEN excluded.request_count ELSE sessions.request_count END,"
-            " tool_call_count = CASE WHEN excluded.tool_call_count != 0 THEN excluded.tool_call_count ELSE sessions.tool_call_count END,"
-            " files_modified = CASE WHEN excluded.files_modified != 0 THEN excluded.files_modified ELSE sessions.files_modified END",
-            (
-                row.session_id,
-                row.tool,
-                row.pid,
-                row.project_path,
-                row.model,
-                row.git_branch,
-                row.git_commit,
-                row.started_at,
-                row.ended_at,
-                row.source,
-                row.input_tokens,
-                row.output_tokens,
-                row.cache_read_tokens,
-                row.cache_creation_tokens,
-                round(row.cost_usd, 6),
-                row.request_count,
-                row.tool_call_count,
-                row.files_modified,
-            ),
+        conn.executemany(
+            _SESSION_UPSERT,
+            [
+                (
+                    row.session_id,
+                    row.tool,
+                    row.pid,
+                    row.project_path,
+                    row.model,
+                    row.git_branch,
+                    row.git_commit,
+                    row.started_at,
+                    row.ended_at,
+                    row.source,
+                    row.input_tokens,
+                    row.output_tokens,
+                    row.cache_read_tokens,
+                    row.cache_creation_tokens,
+                    round(row.cost_usd, 6),
+                    row.request_count,
+                    row.tool_call_count,
+                    row.files_modified,
+                )
+                for row in rows
+            ],
         )
         conn.commit()
 
@@ -4053,12 +4166,17 @@ class HistoryDB:
         role: str = "lead",
     ) -> None:
         """Record that a PID belongs to a session (INSERT OR IGNORE)."""
-        if not session_id or not pid:
+        self.link_session_processes([(session_id, pid, tool, role)])
+
+    def link_session_processes(self, links: list[tuple[str, int, str, str]]) -> None:
+        """``link_session_process`` for many (session_id, pid, tool, role): one statement, one commit."""
+        now = time.time()
+        rows = [(sid, pid, tool, now, role) for sid, pid, tool, role in links if sid and pid]
+        if not rows:
             return
         conn = self._conn()
-        conn.execute(
-            "INSERT OR IGNORE INTO session_processes(session_id, pid, tool, joined_at, role) VALUES(?,?,?,?,?)",
-            (session_id, pid, tool, time.time(), role),
+        conn.executemany(
+            "INSERT OR IGNORE INTO session_processes(session_id, pid, tool, joined_at, role) VALUES(?,?,?,?,?)", rows
         )
         conn.commit()
 
@@ -5268,36 +5386,36 @@ class HistoryDB:
 
     def upsert_agent(self, row: AgentRow) -> None:
         """Insert or update an agent. A role already stored in ``task`` stays."""
+        self.upsert_agents([row])
+
+    def upsert_agents(self, rows: list[AgentRow]) -> None:
+        """``upsert_agent`` for many rows: one statement and one commit, in the order given."""
+        if not rows:
+            return
+        keeps_text = self._keeps_text()
         conn = self._conn()
-        conn.execute(
-            "INSERT INTO agents"
-            "(agent_id, session_id, tool, task, model, is_sidechain,"
-            " started_at, ended_at, completed, input_tokens, output_tokens,"
-            " cache_read_tokens, cache_creation_tokens, cost_usd)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-            " ON CONFLICT(agent_id) DO UPDATE SET session_id=excluded.session_id, tool=excluded.tool,"
-            " task=CASE WHEN agents.task != '' THEN agents.task ELSE excluded.task END,"
-            " model=excluded.model, is_sidechain=excluded.is_sidechain, started_at=excluded.started_at,"
-            " ended_at=excluded.ended_at, completed=excluded.completed, input_tokens=excluded.input_tokens,"
-            " output_tokens=excluded.output_tokens, cache_read_tokens=excluded.cache_read_tokens,"
-            " cache_creation_tokens=excluded.cache_creation_tokens, cost_usd=excluded.cost_usd",
-            (
-                row.agent_id,
-                row.session_id,
-                row.tool,
-                # This writer's task can be a prompt, so it follows the capture mode.
-                row.task if self._keeps_text() else "",
-                row.model,
-                row.is_sidechain,
-                row.started_at,
-                row.ended_at,
-                row.completed,
-                row.input_tokens,
-                row.output_tokens,
-                row.cache_read_tokens,
-                row.cache_creation_tokens,
-                round(row.cost_usd, 6),
-            ),
+        conn.executemany(
+            _AGENT_UPSERT,
+            [
+                (
+                    row.agent_id,
+                    row.session_id,
+                    row.tool,
+                    # This writer's task can be a prompt, so it follows the capture mode.
+                    row.task if keeps_text else "",
+                    row.model,
+                    row.is_sidechain,
+                    row.started_at,
+                    row.ended_at,
+                    row.completed,
+                    row.input_tokens,
+                    row.output_tokens,
+                    row.cache_read_tokens,
+                    row.cache_creation_tokens,
+                    round(row.cost_usd, 6),
+                )
+                for row in rows
+            ],
         )
         conn.commit()
 
@@ -5586,87 +5704,12 @@ class HistoryDB:
         ``sync_files_from_discovery`` for single-transaction sync passes).
         """
         conn = self._conn()
-        now = time.time()
-
-        cur = conn.execute(
-            "SELECT content_hash, first_seen FROM files WHERE path = ?",
-            (path,),
-        )
-        row = cur.fetchone()
-        existing_hash = row[0] if row else None
-        first_seen = row[1] if row else now
-
-        changed = False
-        if content is not None:
-            new_hash = _content_hash(content)
-            new_tokens = _estimate_tokens(content)
-            new_lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
-            new_size = len(content.encode("utf-8", errors="replace"))
-            changed = existing_hash != new_hash
-
-            last_changed = now if changed else 0
-            if not changed and row:
-                cur2 = conn.execute("SELECT last_changed FROM files WHERE path = ?", (path,))
-                r2 = cur2.fetchone()
-                last_changed = r2[0] if r2 else now
-
-            # Store blob for large files
-            blob_hash = ""
-            if new_size > LARGE_FILE_THRESHOLD:
-                blob_hash = self._store_blob(conn, content)
-
-            conn.execute(
-                "INSERT OR REPLACE INTO files"
-                "(path, tool, category, scope, content, blob_hash, content_hash,"
-                " size_bytes, tokens, lines, mtime, first_seen, last_read,"
-                " last_changed, meta)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    path,
-                    tool,
-                    category,
-                    scope,
-                    content,
-                    blob_hash,
-                    new_hash,
-                    new_size,
-                    new_tokens,
-                    new_lines,
-                    mtime or 0,
-                    first_seen,
-                    now,
-                    last_changed if changed else (row[0] if row else now) and last_changed,
-                    json.dumps(meta or {}),
-                ),
-            )
-
-            # Save history snapshot on change
-            if changed:
-                hist_content = content
-                hist_blob_hash = ""
-                if new_size > LARGE_FILE_THRESHOLD:
-                    hist_blob_hash = blob_hash
-                    hist_content = ""  # content stored in blob
-                conn.execute(
-                    "INSERT OR REPLACE INTO file_history"
-                    "(path, ts, content, blob_hash, content_hash,"
-                    " size_bytes, tokens, lines)"
-                    " VALUES(?,?,?,?,?,?,?,?)",
-                    (path, now, hist_content, hist_blob_hash, new_hash, new_size, new_tokens, new_lines),
-                )
-        else:
-            meta_json = json.dumps(meta or {})
-            if row:
-                conn.execute(
-                    "UPDATE files SET tool=?, category=?, scope=?, mtime=?, meta=? WHERE path=?",
-                    (tool, category, scope, mtime or 0, meta_json, path),
-                )
-            else:
-                conn.execute(
-                    "INSERT INTO files(path, tool, category, scope, mtime, first_seen, meta) VALUES(?,?,?,?,?,?,?)",
-                    (path, tool, category, scope, mtime or 0, now, meta_json),
-                )
-
+        stored = conn.execute(
+            "SELECT mtime, content_hash, first_seen, last_changed FROM files WHERE path = ?", (path,)
+        ).fetchone()
+        write = _FileWrite()
+        changed = write.add(path, tool, category, scope, content, mtime, meta, time.time(), stored)
+        write.run(conn)
         if commit:
             conn.commit()
         return changed
@@ -5808,8 +5851,15 @@ class HistoryDB:
         stats = {"added": 0, "updated": 0, "unchanged": 0, "removed": 0, "deferred": 0}
         seen_paths: set[str] = set()
         reads_done = 0
+        write = _FileWrite()
 
         try:
+            # What the store holds, read once. A statement per file was a request per
+            # file on a Kusto store: thousands of them on every pass.
+            stored: dict[str, tuple] = {
+                r[0]: (r[1], r[2], r[3], r[4])
+                for r in conn.execute("SELECT path, mtime, content_hash, first_seen, last_changed FROM files")
+            }
             for item in discovered:
                 path = item["path"]
                 seen_paths.add(path)
@@ -5817,14 +5867,9 @@ class HistoryDB:
                 category = item.get("category", "")
                 scope = item.get("scope", "")
                 mtime = item.get("mtime", 0)
+                existing = stored.get(path)
 
-                cur = conn.execute(
-                    "SELECT mtime, content_hash FROM files WHERE path = ?",
-                    (path,),
-                )
-                existing = cur.fetchone()
-
-                if existing and abs(existing[0] - mtime) < 0.01:
+                if existing and abs((existing[0] or 0) - mtime) < 0.01:
                     stats["unchanged"] += 1
                     continue
 
@@ -5857,40 +5902,26 @@ class HistoryDB:
                     # Oversize inline content: metadata only.
                     content = None
 
-                if content is not None:
-                    changed = self.upsert_file(
-                        path=path,
-                        tool=tool,
-                        category=category,
-                        scope=scope,
-                        content=content,
-                        mtime=mtime,
-                        commit=False,
-                    )
-                    if existing:
-                        stats["updated" if changed else "unchanged"] += 1
-                    else:
-                        stats["added"] += 1
+                if path in write.pending:
+                    # Listed twice: the first entry's rows go in before the second's.
+                    write.run(conn)
+                now = time.time()
+                changed = write.add(path, tool, category, scope, content, mtime, None, now, existing)
+                if not existing:
+                    stats["added"] += 1
                 else:
-                    self.upsert_file(
-                        path=path,
-                        tool=tool,
-                        category=category,
-                        scope=scope,
-                        mtime=mtime,
-                        commit=False,
-                    )
-                    if existing:
-                        stats["unchanged"] += 1
-                    else:
-                        stats["added"] += 1
+                    stats["updated" if changed else "unchanged"] += 1
+                # A path listed twice sees what its first entry stored.
+                stored[path] = write.stored[path]
+                if write.pending_bytes >= _FILE_WRITE_BYTES:
+                    write.run(conn)
 
+            write.run(conn)
             # Remove files no longer in discovery
-            cur = conn.execute("SELECT path FROM files")
-            for (stored_path,) in cur.fetchall():
-                if stored_path not in seen_paths:
-                    self.remove_file(stored_path, commit=False)
-                    stats["removed"] += 1
+            gone = [(p,) for p in stored if p not in seen_paths]
+            if gone:
+                conn.executemany("DELETE FROM files WHERE path = ?", gone)
+                stats["removed"] = len(gone)
 
             conn.commit()
         except Exception:
@@ -6535,10 +6566,17 @@ class HistoryDB:
 
     def update_datapoint_source(self, key: str, source_dynamic: dict[str, Any]) -> None:
         """Update the dynamic source provenance for a catalog entry."""
+        self.update_datapoint_sources({key: source_dynamic})
+
+    def update_datapoint_sources(self, sources: dict[str, dict[str, Any]]) -> None:
+        """``update_datapoint_source`` for many catalog keys: one statement, one commit."""
+        if not sources:
+            return
+        now = time.time()
         conn = self._conn()
-        conn.execute(
+        conn.executemany(
             "UPDATE datapoint_catalog SET source_dynamic=?, updated_at=? WHERE key=?",
-            (json.dumps(source_dynamic, default=str), time.time(), key),
+            [(json.dumps(prov, default=str), now, key) for key, prov in sources.items()],
         )
         conn.commit()
 
