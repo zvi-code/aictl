@@ -27,6 +27,7 @@ import contextlib
 import hashlib
 import inspect
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -122,6 +123,8 @@ _FIND_SESSION_SQL = (
     "SELECT 1 FROM session_prompts WHERE session_id = ? LIMIT 1",
 )
 READ_CONNS_PER_THREAD = 3
+# A read plan's range is rounded outwards to this step.
+PLAN_STEP_S = 900.0
 _ROOT_CACHE_MAX = 8192
 _VERSION_COLUMNS = (
     ("requests", "MAX(id)"),
@@ -1403,6 +1406,13 @@ class ProjectStores:
         """
         stack = self._scopes()
         since, until, project, session = stack[-1] if stack else (None, None, None, None)
+        # The copied rows cover the range rounded outwards to PLAN_STEP_S, so the reads of
+        # a range that follows the clock share one connection instead of copying the
+        # stores again on every request; the queries themselves keep their exact range.
+        if since is not None:
+            since = math.floor(since / PLAN_STEP_S) * PLAN_STEP_S
+        if until is not None:
+            until = math.ceil(until / PLAN_STEP_S) * PLAN_STEP_S
         keys: tuple[str, ...]
         if session:
             key = self._find_store(session)

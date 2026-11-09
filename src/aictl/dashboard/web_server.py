@@ -1432,11 +1432,11 @@ _SERVED_WHILE_STARTING = frozenset({"/", "/index.html", "/favicon.ico"})
 READY_WAIT_S = 20.0
 
 
-# Requests run on a few threads that live as long as the server: a thread's first read
+# Requests run on four threads that live as long as the server: a thread's first read
 # of the history attaches and copies the project stores, 150 ms here, and a thread per
 # request paid that on every request. A request that finds no idle worker when the
 # pool is full gets a thread of its own, so streaming clients never hold the others up.
-HTTP_WORKERS = 8
+HTTP_WORKERS = 4
 
 
 class _DashboardHTTPServer(ThreadingHTTPServer):
