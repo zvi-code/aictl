@@ -226,6 +226,57 @@ def schema(markdown, as_json):
 
 
 @db.command()
+@click.option(
+    "--out",
+    "out_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default="aictl-kusto-report.html",
+    show_default=True,
+    help="File to write",
+)
+@click.option("--days", type=click.IntRange(min=1), default=None, help="Only data of the last N days (default: all)")
+def report(out_path, days):
+    """Write an HTML report of what the Kusto store knows about coding agents.
+
+    Runs one KQL query per section against the configured cluster (see
+    docs/kusto-cluster.md) and writes one self-contained HTML file. A section whose
+    query fails shows the error; the rest of the page still renders.
+    """
+    from ..kusto import report as kusto_report
+
+    settings = kusto_settings()
+    if settings is None:
+        raise click.ClickException(
+            "No Kusto cluster is configured. Set AICTL_KUSTO_CLUSTER (and AICTL_KUSTO_DATABASE), "
+            "or kusto_cluster in config.toml (see docs/kusto-cluster.md)."
+        )
+    try:
+        import azure.kusto.data  # noqa: F401
+    except ImportError as exc:
+        raise click.ClickException('The Kusto client is not installed: pipx install "aictl[all]" (see docs/kusto-cluster.md).') from exc
+
+    click.echo(f"Running {len(kusto_report.SECTIONS)} queries on {settings.uri}" + (f", last {days} days" if days else ", all data"))
+
+    def show(result):
+        what = "FAILED" if result.error else "no data" if result.empty else "ok"
+        click.echo(f"  {result.name:<10} {result.seconds:6.2f} s  {what}")
+        if result.error:
+            click.echo("    " + result.error.strip().splitlines()[0][:300])
+
+    results = kusto_report.run_report(settings, days, on_result=show)
+    page = kusto_report.build_page(results, cluster=settings.cluster, database=settings.database, days=days)
+    out_path = Path(out_path).expanduser()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(page, encoding="utf-8")
+    click.echo(f"Wrote {out_path.resolve()}")
+    failed = [r.name for r in results if r.error]
+    if failed:
+        click.echo(f"{len(failed)} of {len(results)} sections failed: {', '.join(failed)}", err=True)
+    if len(failed) == len(results):
+        raise SystemExit(1)
+
+
+@db.command()
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
 @click.pass_context
 def reset(ctx, yes):

@@ -37,6 +37,7 @@ include = ["aictl*"]
 [tool.setuptools.package-data]
 "aictl.data" = ["*.csv", "*.yaml"]
 "aictl.dashboard" = ["*.html", "dist/**/*"]
+"aictl.kusto.report" = ["template.html", "queries/*.kql"]
 
 [tool.pytest.ini_options]
 testpaths = ["test"]

@@ -1,0 +1,64 @@
+// Relay graph: agents and the files they read and write, as a graph. graph-match finds
+// work handed from agent to agent through files; graph-mark-components groups work items.
+let T = tool_invocations | summarize arg_max(_v, *) by id | where _deleted == false
+  | where report_days <= 0 or unixtime_seconds_todatetime(ts) >= ago(1d * report_days)
+  | where isnotempty(target) and tool_name in~ ("Read", "view", "Write", "Edit", "apply_patch", "create")
+  | extend actor = iff(isempty(agent_id), strcat("main:", session_id), strcat("agent:", agent_id)),
+           op = iff(tool_name in~ ("Read", "view"), "read", "write");
+let E = T | summarize n = count(), t_first = min(ts), t_last = max(ts) by actor, file = target, op, session_id, tool;
+let N = union
+  (E | summarize session_id = take_any(session_id), tool = take_any(tool) by id = actor | extend node_type = "actor"),
+  (E | summarize session_id = "", tool = take_any(tool) by id = file | extend node_type = "file");
+let short = (id: string) { strcat(tostring(split(id, ":")[0]), ":", substring(id, strlen(id) - 6)) };
+// the file name without its folders, for POSIX and Windows paths alike
+let base = (p: string) { tostring(split(replace_string(p, "\\", "/"), "/")[-1]) };
+let G = E | make-graph actor --> file with N on id;
+let ChainBySession = G | graph-match (a1)-[w1]->(f1)<-[r1]-(a2)-[w2]->(f2)<-[r2]-(a3)
+    where w1.op == "write" and r1.op == "read" and w2.op == "write" and r2.op == "read"
+      and a1.id != a2.id and a2.id != a3.id and a1.id != a3.id and f1.id != f2.id
+      and w1.t_first < r1.t_last and r1.t_first < w2.t_last and w2.t_first < r2.t_last
+    project session = a1.session_id, a2 = a2.id
+| summarize chains = count(), agents = dcount(a2) by session;
+let HandoffBySession = G | graph-match (a1)-[e1]->(f)<-[e2]-(a2)
+    where e1.op == "write" and e2.op == "read" and a1.id != a2.id
+    project session = a1.session_id
+| summarize handoffs = count() by session;
+// the session drawn in table 6: the one with the most relay chains, else the one with the most handoffs
+let PickChain = toscalar(ChainBySession | order by chains desc, session asc | take 1 | project session);
+let PickHand = toscalar(HandoffBySession | order by handoffs desc, session asc | take 1 | project session);
+let Pick = iff(isnotempty(PickChain), PickChain, PickHand);
+// 1. relay chains per session
+ChainBySession | project session = substring(session, 0, 8), chains, agents | order by chains desc, session asc;
+// 2. handoffs and collisions on one file
+G | graph-match (a1)-[e1]->(f)<-[e2]-(a2)
+    where e1.op == "write" and a1.id != a2.id and (e2.op == "read" or strcmp(a1.id, a2.id) < 0)
+    project writer = a1.id, file = f.id, other = a2.id, kind_of = iff(e2.op == "read", "handoff", "collision"), writes = e1.n, n2 = e2.n, tool = a1.tool
+| summarize pairs = count(), files = dcount(file) by kind_of, tool;
+// 3. components
+G | graph-mark-components with_component_id = work_item
+| graph-to-table nodes
+| summarize actors = countif(node_type == "actor"), files = countif(node_type == "file") by work_item
+| top 15 by actors + files;
+// 4. the relay chains themselves, one row each
+G | graph-match (a1)-[w1]->(f1)<-[r1]-(a2)-[w2]->(f2)<-[r2]-(a3)
+    where w1.op == "write" and r1.op == "read" and w2.op == "write" and r2.op == "read"
+      and a1.id != a2.id and a2.id != a3.id and a1.id != a3.id and f1.id != f2.id
+      and w1.t_first < r1.t_last and r1.t_first < w2.t_last and w2.t_first < r2.t_last
+    project a1 = short(a1.id), a2 = short(a2.id), a3 = short(a3.id), f1 = base(f1.id), f2 = base(f2.id),
+            w1_t = w1.t_first, r1_t = r1.t_first, w2_t = w2.t_first, r2_t = r2.t_first
+| distinct *
+| order by w1_t asc
+| take 50;
+// 5. handoff files: who writes, who reads it afterwards
+G | graph-match (a1)-[e1]->(f)<-[e2]-(a2)
+    where e1.op == "write" and e2.op == "read" and a1.id != a2.id
+    project writer = a1.id, reader = a2.id, file = base(f.id)
+| summarize writers = dcount(writer), readers = dcount(reader), pairs = dcount(strcat(writer, "|", reader)) by file
+| top 25 by pairs;
+// 6. the picked session: every file touched by at least 2 actors
+let S = E | where session_id == Pick
+  | extend actor_s = short(actor), file_b = base(file)
+  | summarize n = sum(n), t_first = min(t_first), t_last = max(t_last) by actor = actor_s, file = file_b, op;
+let Multi2 = S | summarize actors = dcount(actor) by file | where actors >= 2;
+S | join kind=inner Multi2 on file | project session = substring(Pick, 0, 8), actor, file, op, n, t_first, t_last
+| order by file asc, t_first asc

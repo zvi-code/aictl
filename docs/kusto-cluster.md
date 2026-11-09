@@ -149,6 +149,31 @@ Selecting inline changes the client routing; it does not disable existing cluste
 
 Open the dashboard as usual (`aictl daemon serve` prints the URL). In the Kusto web UI or any KQL client, `['sessions'] | count` and `['requests'] | summarize count() by ['tool']` show the rows arriving; `aictl_information_schema | summarize count() by ['scope']` lists the schema. Every environment variable, hook and ingester works the same as with SQLite; the only visible differences are that the Settings screen's "Data sources" shows the cluster, and the size budget never evicts (retention is the database's retention policy, set from `retention_days`).
 
+## Report
+
+`aictl db report` runs a set of KQL queries against the configured cluster and writes one self-contained HTML file: no server, no script or style loaded from another site except Google Fonts. It uses the cluster, database and sign-in of the store (`AICTL_KUSTO_CLUSTER`, `AICTL_KUSTO_DATABASE`, `AICTL_KUSTO_AUTH`, or `config.toml`), so every sign-in mode and the local emulator work. It only reads. With no cluster configured it exits with a message.
+
+```
+aictl db report [--out PATH] [--days N]
+```
+
+- `--out PATH`: the file to write; default `aictl-kusto-report.html` in the current folder.
+- `--days N`: only data of the last N days; default all data. The runner puts `let report_days = N;` (0 for all) before every query.
+
+The command prints the path written, the time of each query and every section that failed. The page header shows the cluster host, the database, the time of the run, the window and the run time of each query. The page holds aggregates, 8-character session id prefixes, tool and model names and file base names; no prompt text, no full paths, no user names.
+
+| Section | Shows | Reads |
+|---|---|---|
+| Session DNA | the 24 sessions with the most tool calls, one letter per call, error runs, fail-edit-fail loops, opening motifs | `tool_invocations` |
+| Relay graph | which agents read files that other agents wrote, three-agent relay chains, write collisions, work items; draws the session with the most relay chains (else the most handoffs) | `tool_invocations` |
+| Cost anomalies explained | hourly cost per tool (up to four tools, at most the last 90 days), hours far above the fitted baseline and the session behind each | `requests` |
+| What slow requests share | request properties that are over-represented among the slowest 5 percent | `requests` |
+| Context sawtooth and runway | prompt size of the 8 longest main-thread `claude-code` sessions, compactions, a fitted line per climb and the requests left to the typical compaction size | `requests` |
+
+A section whose query returns no rows says there is no data for it. A section whose query fails shows the server's error text, and the rest of the page still renders. The queries use `make-graph`, `graph-match`, `scan`, `make-series`, `series_decompose_anomalies` and `evaluate diffpatterns`; the local emulator may lack some of these, and its sections then show that error.
+
+To add a section, see `src/aictl/kusto/report/__init__.py`: drop `queries/NAME.kql`, add `<template data-section="NAME">` markup and `RENDER.NAME` to `template.html`, and add one `Section("NAME", "NAME.kql")` line to `SECTIONS`.
+
 ## OpenTelemetry tables
 
 With a cluster configured, everything a tool exports to the daemon's OTLP endpoints (`/v1/logs`, `/v1/metrics`, `/v1/traces`, JSON or protobuf) is also written to four tables in the same database. The first three are the tables of the OpenTelemetry Collector's `azuredataexplorer` exporter, with its columns in its order, so a collector and aictl can write to one database and one query reads both.

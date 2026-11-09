@@ -1,0 +1,53 @@
+// Session DNA: every tool call of a session as one letter, in order, plus error streaks and opening motifs.
+// The scan operator inside partition hint.strategy=native carries state row to row per session.
+let T = tool_invocations | summarize arg_max(_v, *) by id | where _deleted == false
+  | where report_days <= 0 or unixtime_seconds_todatetime(ts) >= ago(1d * report_days);
+let top_s = T | summarize calls = count() by session_id | top 24 by calls | project session_id;
+let Cls = T
+| extend cls = case(
+    tool_name in~ ("Bash", "shell", "powershell", "run_in_terminal"), "B",
+    tool_name in~ ("Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch", "create", "str_replace_editor"), "E",
+    tool_name in~ ("Read", "view", "Grep", "Glob", "rg", "ToolSearch"), "R",
+    tool_name in~ ("Agent", "task", "SendMessage", "TaskStop", "Monitor"), "A",
+    tool_name in~ ("WebFetch", "WebSearch", "web_fetch") or tool_name has "browser", "W",
+    tool_name startswith "mcp__", "M",
+    "O")
+| project session_id, tool, ts, id, cls, failed = is_error == 1;
+let Walk = Cls
+| where session_id in (top_s)
+| partition hint.strategy = native by session_id (
+    order by ts asc, id asc
+    | scan declare (streak: long = 0, cyc: long = 0, phase: long = 0, pos: long = 0) with (
+        step s: true =>
+            streak = iff(failed, s.streak + 1, 0),
+            // phase 1: a command failed; phase 2: an edit followed it; a second failure closes one loop
+            cyc = case(cls == "B" and failed and s.phase == 2, s.cyc + 1, cls == "B" and not(failed), 0, s.cyc),
+            phase = case(cls == "B" and failed, 1, cls == "B" and not(failed), 0, cls == "E" and s.phase >= 1, 2, s.phase),
+            pos = s.pos + 1;
+    )
+  );
+// 1. one row per session
+Walk
+| order by session_id asc, pos asc
+| summarize calls = count(), errors = countif(failed), longest_error_streak = max(streak), deepest_fix_loop = max(cyc),
+            t_start = min(ts), t_end = max(ts), tool = take_any(tool),
+            dna = strcat_array(make_list(iff(failed, tolower(cls), cls)), "")
+        by session_id
+| order by calls desc, session_id asc
+| extend session_id = substring(session_id, 0, 8);
+// 2. error streak ends: the last call of every run of 3 or more failed calls
+Walk
+| order by session_id asc, pos asc
+| extend next_streak = next(streak), next_session = next(session_id)
+| where streak >= 3 and (next_session != session_id or next_streak == 0)
+| project session_id = substring(session_id, 0, 8), pos, streak
+| order by streak desc, session_id asc, pos asc;
+// 3. opening motifs: first 3 call classes of every session with 10 or more calls
+Cls
+| order by session_id asc, ts asc, id asc
+| extend rn = row_number(1, session_id != prev(session_id))
+| summarize calls = max(rn), motif = strcat_array(make_list(cls, 3), ""), tool = take_any(tool) by session_id
+| where calls >= 10
+| summarize sessions = count() by motif, tool
+| order by sessions desc, motif asc, tool asc
+| take 15
