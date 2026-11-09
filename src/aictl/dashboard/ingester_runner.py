@@ -157,7 +157,7 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
     handles[v_handle.name] = v_handle
 
     # ── Transcript usage: exact tokens for Claude Code, Codex, Copilot CLI ──
-    t_ing = TranscriptUsageIngester(db)
+    t_ing = TranscriptUsageIngester(db, defer_old=True)
     t_enabled = t_ing.source_exists()
     t_handle = IngesterHandle(
         name="transcript-usage",

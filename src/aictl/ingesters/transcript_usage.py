@@ -75,6 +75,11 @@ _HEAD_BYTES = 600
 _UNREAD_TYPES = frozenset({b"api-request-blob", b"api-request-shape", b"queued_command", b"prompt_snapshot"})
 # On a restart, files idle this long before the previous run's last poll are not read again.
 RESTART_GRACE_S = 3600.0
+# A first run on a machine reads the files written in the last RECENT_FIRST_S at once;
+# the older ones, up to DEFERRED_BYTES_PER_POLL of them a poll, follow in the background.
+# Here 30 days of transcripts are 3.2 GB and cost 40 CPU-seconds read in one burst.
+RECENT_FIRST_S = 2 * 86400.0
+DEFERRED_BYTES_PER_POLL = 128 * 1024 * 1024
 # Windows can report the size a file had when another process opened it, and a
 # Copilot CLI session keeps its events file open while it lives. A file this recent
 # that looks unchanged is measured through its own handle.
@@ -1004,8 +1009,12 @@ class TranscriptUsageIngester:
         copilot_state: Path | None = None,
         vscode_workspaces: Path | None = None,
         backfill_days: float = BACKFILL_DAYS,
+        defer_old: bool = False,
     ) -> None:
         self.store = our_store
+        # The daemon's ingester defers the old files of a first run; a backfill or a
+        # command reads every file in one pass.
+        self.defer_old = defer_old
         self.claude_projects = claude_projects or platforms.claude_projects_dir()
         self.codex_sessions = codex_sessions or platforms.codex_global_dir() / "sessions"
         self.copilot_state = copilot_state or platforms.copilot_session_dir()
@@ -1039,6 +1048,10 @@ class TranscriptUsageIngester:
         self._last_run_ts = self._load_last_run()
         # Files the first poll skipped, with their mtime then: read whole once one changes.
         self._skipped: dict[Path, float] = {}
+        # Old files a first run has not read yet, and this poll's budget of bytes for them.
+        self._deferred: set[Path] = set()
+        self._defer_before = 0.0
+        self._defer_budget = 0
 
     _LAST_RUN_KEY = "transcript_usage:last_run_ts"
 
@@ -1079,6 +1092,14 @@ class TranscriptUsageIngester:
                     self._skipped[p] = st.st_mtime
                     continue
                 self._skipped.pop(p, None)
+                if p in self._deferred:
+                    if self._defer_budget <= 0:
+                        continue
+                    self._defer_budget -= st.st_size
+                    self._deferred.discard(p)
+                elif st.st_mtime < self._defer_before:
+                    self._deferred.add(p)
+                    continue
             size = _current_size(p, st.st_size, st.st_mtime, self._offsets.get(p, 0), now)
             if size < self._offsets.get(p, 0):
                 # Truncated or rewritten: its lines were already counted, so
@@ -1098,6 +1119,10 @@ class TranscriptUsageIngester:
         errors = 0
         self.facts.cutoff = cutoff
         self._idle_before = (self._last_run_ts - RESTART_GRACE_S) if self._first_poll and self._last_run_ts else 0.0
+        # A first run: the old files wait, and later polls take them a budget at a time.
+        cold = self._first_poll and not self._last_run_ts and self.defer_old
+        self._defer_before = (now - RECENT_FIRST_S) if cold else 0.0
+        self._defer_budget = 0 if self._first_poll else DEFERRED_BYTES_PER_POLL
         app_ids: set[str] = set()
         self._store.refresh_app_sessions(app_ids)
         self._mark_desktop_sessions()
@@ -1238,6 +1263,7 @@ class TranscriptUsageIngester:
             "degraded" if errors else "ok",
             severity="warning" if errors else "info",
             message=f"{errors} transcript file(s) unreadable" if errors else f"{written} session(s) updated",
+            detail={"older_files_waiting": len(self._deferred)} if self._deferred else None,
         )
         return written
 

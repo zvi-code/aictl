@@ -30,6 +30,11 @@ from ..storage import FLUSH_YIELD_S, is_lock_error
 log = logging.getLogger(__name__)
 
 POLL_INTERVAL_S = 120.0
+# A first run indexes the folders changed in the last RECENT_FIRST_S at once; the older
+# ones follow, DEFERRED_FOLDERS_PER_POLL a poll. Here 3,700 session folders cost 24 s
+# of system time walked in one burst.
+RECENT_FIRST_S = 2 * 86400.0
+DEFERRED_FOLDERS_PER_POLL = 150
 # Files kept per session, newest first. files_total keeps the real count.
 MAX_FILES_PER_SESSION = 2000
 # A folder walk stops after this many entries: its count is then a lower bound.
@@ -133,6 +138,9 @@ class SessionArtifactIndexer:
         # Fixed roots per tool name, for tests; None follows tool_homes.session_dirs.
         self._roots = roots
         self._seen: dict[str, float] | None = None
+        # Old folders a first run has not indexed yet.
+        self._deferred: set[str] = set()
+        self._cold = False
         self.last_poll_ts = 0.0
         self.last_poll_inserted = 0
 
@@ -152,12 +160,23 @@ class SessionArtifactIndexer:
         if self._seen is None:
             # The signatures of earlier runs: a restart does not scan every folder again.
             self._seen = dict(self.store.artifact_scans())
+            self._cold = not self._seen
         written = 0
+        old_before = time.time() - RECENT_FIRST_S if self._cold else 0.0
+        budget = 0 if self._cold else DEFERRED_FOLDERS_PER_POLL
         for tool, tool_id in TOOLS.items():
             for root in self.roots(tool):
                 for sid, folder in session_folders(tool, root):
                     sig = signature(folder)
                     if not sig or self._seen.get(sid) == sig:
+                        continue
+                    if sid in self._deferred:
+                        if budget <= 0:
+                            continue
+                        budget -= 1
+                        self._deferred.discard(sid)
+                    elif sig < old_before:
+                        self._deferred.add(sid)
                         continue
                     if not self._knows(sid):
                         # The index waits for the session's own rows. Written first, it would
@@ -176,6 +195,7 @@ class SessionArtifactIndexer:
                     written += 1
                     # A writer in SQLite's busy wait takes the lock now.
                     time.sleep(FLUSH_YIELD_S)
+        self._cold = False
         self.last_poll_ts = time.time()
         self.last_poll_inserted = written
         return written
