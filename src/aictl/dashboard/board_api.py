@@ -6576,14 +6576,26 @@ def _process_started_at() -> float:
     return STARTED_AT
 
 
+# The hook counts are one query per store, ~80 ms here; the machine panel asks every tick.
+HOOKS_TTL_S = 5.0
+_HOOKS_MEMO: dict[tuple, tuple[float, dict]] = {}
+
+
 def _hooks_by_tool(db: Any, now: float) -> dict[str, dict]:
-    """Hook events each tool sent in the last 24 hours: ``{tool: {count, last_fire_ts}}``."""
+    """Hook events each tool sent in the last 24 hours: ``{tool: {count, last_fire_ts}}``. Kept HOOKS_TTL_S."""
     from .hooks_status import _hook_event_counts
 
+    key = (id(db), str(getattr(db, "_path", "")))
+    hit = _HOOKS_MEMO.get(key)
+    if hit is not None and 0 <= now - hit[0] < HOOKS_TTL_S:
+        return hit[1]
     try:
-        return _hook_event_counts(db, now - 86400)["by_tool"]
+        result = _hook_event_counts(db, now - 86400)["by_tool"]
     except (sqlite3.Error, AttributeError):
         return {}
+    _HOOKS_MEMO.clear()
+    _HOOKS_MEMO[key] = (now, result)
+    return result
 
 
 def _otel_setup(port: int | None) -> dict:
