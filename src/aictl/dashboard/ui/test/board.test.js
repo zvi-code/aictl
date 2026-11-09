@@ -643,7 +643,7 @@ describe('board screen', () => {
     expect(container.querySelector('.bd-banner').textContent).not.toContain('Could not');
     expect(container.querySelector('.bd-banner').getAttribute('role')).toBe('status');
   });
-  it('turns stream messages into at most one fetch per tick, and none when paused', async () => {
+  it('fetches at once on a stream message, a burst once more at the tick, and never when paused', async () => {
     const { calls } = await mountBoard();
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     try {
@@ -656,16 +656,16 @@ describe('board screen', () => {
       const before = boardCalls();
       await act(async () => { vi.advanceTimersByTime(5000); });
       expect(boardCalls()).toBe(before);
-      await act(async () => {
-        for (let i = 0; i < 5; i++) es.onmessage({ data: '{}' });
-        vi.advanceTimersByTime(5000);
-      });
+      await act(async () => { for (let i = 0; i < 5; i++) es.onmessage({ data: '{}' }); });
       expect(boardCalls()).toBe(before + 1);
+      // The rest of the burst is read once more at the tick, after the first read ends.
       await act(async () => { vi.advanceTimersByTime(5000); });
-      expect(boardCalls()).toBe(before + 1);
+      await waitFor(() => expect(boardCalls()).toBe(before + 2));
+      await act(async () => { vi.advanceTimersByTime(5000); });
+      expect(boardCalls()).toBe(before + 2);
       fireEvent.click(view.getByRole('button', { name: 'Live' }));
       await act(async () => { es.onmessage({ data: '{}' }); vi.advanceTimersByTime(15000); });
-      expect(boardCalls()).toBe(before + 1);
+      expect(boardCalls()).toBe(before + 2);
     } finally {
       vi.useRealTimers();
     }

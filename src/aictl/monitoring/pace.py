@@ -34,6 +34,11 @@ class Pace:
     def note_activity(self, now: float | None = None) -> None:
         self._last_activity = time.time() if now is None else now
 
+    def watched(self) -> bool:
+        """True while a dashboard client is attached."""
+        with self._lock:
+            return self._clients > 0
+
     def factor(self, now: float | None = None) -> int:
         now = time.time() if now is None else now
         with self._lock:

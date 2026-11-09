@@ -1,6 +1,7 @@
 // ─── useBoardData — /api/board for the current filters ────────────
-// A filter change fetches at once and aborts the fetch before it. Stream messages
-// fetch at most once per TICK_MS. The last good data stays on screen meanwhile.
+// A filter change fetches at once and aborts the fetch before it. A stream message
+// fetches at once, at most once per MESSAGE_FETCH_GAP_MS; a burst is caught up at the
+// next tick. The last good data stays on screen meanwhile.
 // With a selected time there are two fetches: the whole range feeds the charts,
 // and the selected time feeds everything else.
 // /api/board/machine (processes, collectors, pipeline health) is fetched with each
@@ -13,6 +14,7 @@ import { useSse } from '../../useSse.js';
 import { boardQuery, windowOf } from './filters.js';
 
 export const TICK_MS = 5000;
+export const MESSAGE_FETCH_GAP_MS = 1500;
 const POLL_WITHOUT_STREAM_MS = 30000;
 export const CONTEXT_REFRESH_MS = 30000;
 
@@ -252,10 +254,18 @@ export function useBoardData({ filters, tools, live, pausedRef, enabled = true }
   useEffect(() => { if (enabled) fetchNow(); }, [filterKey, toolKey, enabled, fetchNow]);
   useEffect(() => () => { loaders.current.main.stop(); loaders.current.sel.stop(); loaders.current.machine.stop(); loaders.current.context.stop(); }, []);
 
-  const onMessage = useCallback(() => { dirty.current = true; }, []);
+  // A stream message is a change on the server: fetch at once, unless a fetch began less
+  // than MESSAGE_FETCH_GAP_MS ago or the page is hidden or paused; then the tick fetches.
+  const lastFetch = useRef(0);
+  const onMessage = useCallback(() => {
+    const now = Date.now();
+    if (document.hidden || pausedRef?.current || now - lastFetch.current < MESSAGE_FETCH_GAP_MS) { dirty.current = true; return; }
+    dirty.current = false;
+    lastFetch.current = now;
+    fetchNow();
+  }, [fetchNow, pausedRef]);
   const { connected } = useSse(enabled && live ? api.streamUrl() : null, onMessage);
 
-  const lastFetch = useRef(0);
   useEffect(() => {
     if (!enabled || !live) return undefined;
     const id = setInterval(() => {
