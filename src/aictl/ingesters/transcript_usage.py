@@ -61,6 +61,7 @@ from .call_facts import (
     read_claude_agent_role,
 )
 from .vscode_chat_logs import default_log_dir as vscode_chat_default_log_dir
+from .vscode_chat_logs import snapshot_events
 
 log = logging.getLogger(__name__)
 
@@ -893,6 +894,7 @@ class VSCodeChatSessionAccumulator:
     def __init__(self) -> None:
         self.sessions: dict[str, SessionUsage] = {}
         self._seen: set[tuple[str, int]] = set()
+        self._count: dict[str, int] = {}
 
     def feed(self, sid: str, obj: dict) -> None:
         s = self.sessions.setdefault(
@@ -908,16 +910,27 @@ class VSCodeChatSessionAccumulator:
         path = obj.get("k")
         value = obj.get("v")
         if obj.get("kind") == 0 and isinstance(value, dict):
-            for i, req in enumerate(value.get("requests") or []):
-                if isinstance(req, dict):
-                    s.turns += 1 if (sid, -i - 1) not in self._seen else 0
-                    self._seen.add((sid, -i - 1))
-                    self._add(s, sid, i, req.get("result"), coerce_ts(req.get("timestamp")))
+            self._count[sid] = 0
+            self._requests(s, sid, value.get("requests") or [])
+        elif isinstance(path, list) and len(path) == 1 and path[0] == "requests" and isinstance(value, list):
+            # A push, or a splice at ``i``: the request count is the index of the first one added.
+            if isinstance(obj.get("i"), int):
+                self._count[sid] = obj["i"]
+            self._requests(s, sid, value)
         elif isinstance(path, list) and len(path) == 3 and path[0] == "requests" and path[2] == "result":
             if (sid, -path[1] - 1) not in self._seen:
                 self._seen.add((sid, -path[1] - 1))
                 s.turns += 1
             self._add(s, sid, _i(path[1]), value, s.last_activity_at)
+
+    def _requests(self, s: SessionUsage, sid: str, requests: list) -> None:
+        for req in requests:
+            i = self._count.get(sid, 0)
+            self._count[sid] = i + 1
+            if isinstance(req, dict):
+                s.turns += 1 if (sid, -i - 1) not in self._seen else 0
+                self._seen.add((sid, -i - 1))
+                self._add(s, sid, i, req.get("result"), coerce_ts(req.get("timestamp")))
 
     def _add(self, s: SessionUsage, sid: str, index: int, result: Any, ts: float) -> None:
         meta = result.get("metadata") if isinstance(result, dict) else None
@@ -1150,13 +1163,30 @@ class TranscriptUsageIngester:
             if usage is not None:
                 usage.project_path = usage.project_path or _workspace_folder(path.parents[3])
                 touched[sid] = usage
+        def chat_lines(path: Path) -> Iterator[dict]:
+            """A chat file's snapshot one request at a time, then its patch lines."""
+            nonlocal errors
+            if self._offsets.get(path, 0) == 0:
+                try:
+                    end, events = snapshot_events(path)
+                    yield from events
+                except OSError as exc:
+                    errors += 1
+                    log.debug("transcript-usage: cannot read %s: %s", path.name, exc)
+                    return
+                except ValueError:
+                    log.debug("transcript-usage: corrupt snapshot in %s", path.name)
+                if end:
+                    self._offsets[path] = end
+            yield from read(path)
+
         for path in self._changed(self.vscode_workspaces.glob("*/chatSessions/*.jsonl"), cutoff):
             sid = path.stem
             chat_facts = self._chat_facts_for(path, sid)
             # The debug log has per-request numbers for such a session, so the
             # chat file only adds its prompts.
             has_debug_usage = sid in self._debug_logs.sessions
-            for obj in read(path):
+            for obj in chat_lines(path):
                 chat_facts.feed(obj)
                 if not has_debug_usage:
                     self._chat_logs.feed(sid, obj)
