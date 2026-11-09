@@ -3,6 +3,7 @@
 // Token counts are estimates at four characters per token. A panel whose content
 // is more than a table returns `view`: a component with its own fold and preview state.
 import { html } from 'htm/preact';
+import { loadChunk } from './lazy.js';
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import * as api from '../../api.js';
 import Chart from './Chart.js';
@@ -50,7 +51,7 @@ export function Preview({ path, ctx, onClose }) {
   useEffect(() => {
     let live = true;
     setSt({ loading: true });
-    Promise.all([readText(path), import('../ui/TextView.js')]).then(
+    Promise.all([readText(path), loadChunk(() => import('../ui/TextView.js'))]).then(
       ([text, m]) => { if (live) setSt({ text, TV: m.default }); },
       (e) => { if (live) setSt({ error: e?.message || 'Could not read the file.' }); },
     );

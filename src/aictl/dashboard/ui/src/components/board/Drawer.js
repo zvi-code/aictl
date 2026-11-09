@@ -3,6 +3,7 @@
 // /api/board/* routes when opened. The hidden context view uses the scan that the
 // board already holds.
 import { html } from 'htm/preact';
+import { loadChunk } from './lazy.js';
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import * as api from '../../api.js';
 import { NA, NO_MODEL, errorLabel, colorFor, projectName, fmtBytes, fmtCpu, fmtDur, fmtLines, fmtMem, fmtMs, fmtN, fmtShare, fmtUsd, estTokens, estTokensFromSize, isLive, sparkPath, stamp, statusMeta } from './format.js';
@@ -198,7 +199,7 @@ function Part({ part, name = 'default', ...props }) {
   const [mod, setMod] = useState(null);
   useEffect(() => {
     let live = true;
-    AGENT_PARTS[part]().then((m) => { if (live) setMod(() => m); })
+    loadChunk(AGENT_PARTS[part]).then((m) => { if (live) setMod(() => m); })
       .catch((e) => { if (live) setMod({ failed: e }); });
     return () => { live = false; };
   }, [part]);

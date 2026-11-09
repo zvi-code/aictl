@@ -1,5 +1,6 @@
 // ─── BoardScreen — the default screen: shell, sections, panels, drawer ─
 import { html } from 'htm/preact';
+import { loadChunk } from './lazy.js';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import * as api from '../../api.js';
 import { useTheme } from '../../hooks/useTheme.js';
@@ -337,7 +338,7 @@ export default function BoardScreen() {
   useEffect(() => () => { mounted.current = false; }, []);
   const settingsWanted = loaded || screen === 'settings';
   const boardAt = data.generated_at || 0;
-  const loadSettings = useCallback(() => Promise.all([api.getSettingsTools(), import('../settings/model.js')]).then(
+  const loadSettings = useCallback(() => Promise.all([api.getSettingsTools(), loadChunk(() => import('../settings/model.js'))]).then(
     ([d, model]) => { if (mounted.current) setSettingsRes({ data: d || {}, model, error: null }); },
     (e) => { if (mounted.current) setSettingsRes(s => ({ ...s, error: e })); },
   ), []);
@@ -621,12 +622,12 @@ export default function BoardScreen() {
 
   useEffect(() => {
     if (!drawer.length || DrawerC) return;
-    import('./Drawer.js').then(m => setDrawerC(() => m.default));
+    loadChunk(() => import('./Drawer.js')).then(m => setDrawerC(() => m.default));
   }, [drawer.length, DrawerC]);
 
   useEffect(() => {
     if (screen !== 'settings' || SettingsC) return;
-    import('../settings/SettingsWorkspace.js').then(m => setSettingsC(() => m.default));
+    loadChunk(() => import('../settings/SettingsWorkspace.js')).then(m => setSettingsC(() => m.default));
   }, [screen, SettingsC]);
 
   // Back and Forward move between the board and its Settings screen.
