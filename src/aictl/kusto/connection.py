@@ -24,10 +24,11 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
-from .ingest import RowIngester, make_ingester
+from .ingest import RowIngester, ingestion_capacity, make_ingester, uses_inline
 from .schema import (
     DELETED,
     ROWID,
@@ -54,6 +55,21 @@ FLUSH_ROWS = 5000
 KEYS_PER_QUERY = 200
 # Mutations of one executemany batch sent as one union query, at most.
 MUTATIONS_PER_QUERY = 100
+# Streamed tables that one flush sends at the same time, besides the one its own
+# thread sends. Every connection shares these threads: a two-core cluster takes about
+# twelve streaming requests at once and answers 429 past that.
+FLUSH_WORKERS = 4
+
+_flush_pool: ThreadPoolExecutor | None = None
+_flush_pool_lock = threading.Lock()
+
+
+def _flush_workers() -> ThreadPoolExecutor:
+    global _flush_pool
+    with _flush_pool_lock:
+        if _flush_pool is None:
+            _flush_pool = ThreadPoolExecutor(FLUSH_WORKERS, thread_name_prefix="aictl-kusto-flush")
+        return _flush_pool
 
 
 class KustoStoreError(sqlite3.OperationalError):
@@ -384,7 +400,8 @@ class KustoClientFactory:
         with cls._lock:
             ingester = cls._ingesters.get(key)
             if ingester is None:
-                ingester = cls._ingesters[key] = make_ingester(settings, client)
+                slots = ingestion_capacity(client, settings.database) if uses_inline(settings) else None
+                ingester = cls._ingesters[key] = make_ingester(settings, client, inline_slots=slots)
             return ingester
 
 
@@ -1192,21 +1209,52 @@ class KustoConnection:
                 index[i][k] = row
 
     def _flush(self) -> None:
-        """Send every buffered row, table by table in first-insert order."""
-        while self._pending:
-            name = next(iter(self._pending))
-            rows = self._pending[name]
-            if rows:
-                try:
-                    self.ingester.ingest(name, rows)
-                except KustoStoreError:
-                    raise
-                except Exception as exc:  # noqa: BLE001 - every SDK and transport failure is a store error
-                    raise KustoStoreError(
-                        f"Kusto ingestion into {name} failed ({len(rows)} rows)", server_message=_server_message(exc)
-                    ) from exc
-            del self._pending[name]
-            self._pending_index.pop(name, None)
+        """Send every buffered row: one request per table, the streamed tables at the same time.
+
+        A table leaves the buffer when the cluster has taken its rows. When one fails,
+        its rows stay for the next flush and the first failure is raised; a streamed
+        table already on its way is still completed. Tables sent by ``.ingest inline``
+        go one after another in first-insert order: a small cluster ingests one such
+        command at a time.
+        """
+        for name in [n for n, rows in self._pending.items() if not rows]:
+            self._sent(name)
+        streamed = [n for n in self._pending if self.settings.ingestion_mode(n) == "streaming"]
+        ahead: dict[str, Future[None]] = {}
+        if len(streamed) > 1:
+            pool = _flush_workers()
+            ahead = {n: pool.submit(self._send, n, self._pending[n]) for n in streamed[1:]}
+        failed: KustoStoreError | None = None
+        for name in [n for n in self._pending if n not in ahead]:
+            try:
+                self._send(name, self._pending[name])
+            except KustoStoreError as exc:
+                failed = exc
+                break
+            self._sent(name)
+        for name, future in ahead.items():
+            try:
+                future.result()
+            except KustoStoreError as exc:
+                failed = failed or exc
+            else:
+                self._sent(name)
+        if failed is not None:
+            raise failed
+
+    def _send(self, name: str, rows: list[dict[str, Any]]) -> None:
+        try:
+            self.ingester.ingest(name, rows)
+        except KustoStoreError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - every SDK and transport failure is a store error
+            raise KustoStoreError(
+                f"Kusto ingestion into {name} failed ({len(rows)} rows)", server_message=_server_message(exc)
+            ) from exc
+
+    def _sent(self, name: str) -> None:
+        del self._pending[name]
+        self._pending_index.pop(name, None)
 
     def _pragma(self, stmt: Pragma) -> tuple[list[str], list[tuple[Any, ...]]]:
         name = stmt.name.lower()
