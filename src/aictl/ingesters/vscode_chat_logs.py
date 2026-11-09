@@ -98,6 +98,37 @@ class VSCodeChatLogsIngester:
         self._provisioned: set[str] = set()
         # Requests already ingested per file, so a growing chat only inserts its new tail.
         self._ingested_requests: dict[Path, int] = {}
+        if last_cursor is None:
+            self._load_cursor()
+
+    # The cursor outlives the daemon: a chat session file is one JSON line of every
+    # request, tens of MB for a long chat, and a restart used to parse every one again.
+    _CURSOR_KEY = "vscode_chat_logs:files"
+
+    def _load_cursor(self) -> None:
+        try:
+            row = (
+                writer_conn(self.store)
+                .execute("SELECT value FROM maintenance_state WHERE key = ?", (self._CURSOR_KEY,))
+                .fetchone()
+            )
+            saved = json.loads(row[0]) if row and row[0] else {}
+        except Exception:  # noqa: BLE001 - a store without the table or a bad value starts over
+            return
+        for key, (mtime, size, count) in saved.items():
+            self.last_cursor[key] = (float(mtime), int(size))
+            self._ingested_requests[Path(key)] = int(count)
+
+    def _save_cursor(self) -> None:
+        value = {k: [m, s, self._ingested_requests.get(Path(k), 0)] for k, (m, s) in self.last_cursor.items()}
+        try:
+            conn = writer_conn(self.store)
+            conn.execute(
+                "INSERT OR REPLACE INTO maintenance_state(key, value) VALUES(?,?)", (self._CURSOR_KEY, json.dumps(value))
+            )
+            conn.commit()
+        except Exception as exc:  # noqa: BLE001 - the next poll saves again
+            log.debug("vscode chat ingester: cursor not saved (%s)", exc)
 
     def _quality(self, status: str, *, severity: str = "", message: str = "", detail: dict | None = None) -> None:
         record_quality(
@@ -120,6 +151,7 @@ class VSCodeChatLogsIngester:
 
         inserted = 0
         failed = 0
+        advanced = False
         try:
             files = list(self.log_dir.glob("*/chatSessions/*.jsonl"))
         except OSError as exc:
@@ -161,10 +193,13 @@ class VSCodeChatLogsIngester:
             try:
                 st2 = path.stat()
                 self.last_cursor[key] = (st2.st_mtime, st2.st_size)
+                advanced = True
             except OSError:
                 pass
 
         self.last_poll_inserted = inserted
+        if advanced:
+            self._save_cursor()
         if failed:
             self._quality(
                 "parse_failed",
