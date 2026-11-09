@@ -132,7 +132,7 @@ Install, update, removal, Windows and troubleshooting steps are in [HOWTO.md](HO
 
 ### Storage backends: SQLite (default) or Kusto
 
-aictl keeps its history in a local SQLite file by default (`~/.config/aictl/history.db`, split per repository, bounded by `max_total_mb`); nothing needs to be set up. The alternative backend is a [Kusto (Azure Data Explorer)](https://learn.microsoft.com/azure/data-explorer/) cluster, or a Fabric Eventhouse: every table is a table of one Kusto database, writes go through streaming ingestion, and the daemon serves entirely from the cluster. Set it in `~/.config/aictl/config.toml` (`[storage] kusto_cluster = "https://mycluster.westus.kusto.windows.net"`, `kusto_database = "aictl"`) or pass it once:
+aictl keeps its history in a local SQLite file by default (`~/.config/aictl/history.db`, split per repository, bounded by `max_total_mb`); nothing needs to be set up. The alternative backend is a [Kusto (Azure Data Explorer)](https://learn.microsoft.com/azure/data-explorer/) cluster, or a Fabric Eventhouse: every table is a table of one Kusto database, writes go through streaming ingestion, and the daemon serves entirely from the cluster. Set it in the config file (`~/.config/aictl/config.toml` on macOS and Linux, `%APPDATA%\aictl\config.toml` on Windows; `[storage] kusto_cluster = "https://mycluster.westus.kusto.windows.net"`, `kusto_database = "aictl"`) or pass it once:
 
 ```bash
 aictl daemon serve --kusto-cluster https://mycluster.westus.kusto.windows.net --kusto-database aictl
