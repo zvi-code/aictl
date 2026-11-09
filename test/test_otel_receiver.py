@@ -764,6 +764,72 @@ def test_traces_include_session_id():
     assert any(e.detail.get("session_id") == "trace-sess-2" for e in events)
 
 
+def _log_ts(**times):
+    body = _make_otlp_logs("codex.event")
+    body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0].pop("timeUnixNano")
+    body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0].update(times)
+    before = time.time()
+    events = OtelReceiver().parse_logs(body)
+    after = time.time()
+    assert len(events) == 1
+    return events[0].ts, before, after
+
+
+def test_parse_logs_zero_time_uses_observed_time():
+    ts, _, _ = _log_ts(timeUnixNano="0", observedTimeUnixNano="1700000005000000000")
+    assert ts == 1700000005.0
+
+
+def test_parse_logs_no_time_at_all_uses_receive_time():
+    for times in ({"timeUnixNano": "0", "observedTimeUnixNano": "0"}, {}):
+        ts, before, after = _log_ts(**times)
+        assert before <= ts <= after
+
+
+def test_parse_logs_real_time_wins_over_observed_time():
+    ts, _, _ = _log_ts(timeUnixNano="1700000001000000000", observedTimeUnixNano="1700000009000000000")
+    assert ts == 1700000001.0
+
+
+def test_parse_metrics_zero_time_uses_receive_time():
+    before = time.time()
+    samples = OtelReceiver().parse_metrics(_make_otlp_metrics("claude_code.token.usage", 1, ts_nano="0"))
+    after = time.time()
+    assert before <= samples[0].ts <= after
+
+
+def _span_body(span):
+    return {"resourceSpans": [{"resource": {"attributes": []}, "scopeSpans": [{"spans": [span]}]}]}
+
+
+def test_parse_traces_zero_start_uses_end_then_receive_time():
+    samples, events = OtelReceiver().parse_traces(
+        _span_body({"name": "s", "startTimeUnixNano": "0", "endTimeUnixNano": "1700000001000000000"})
+    )
+    assert {e.ts for e in events} == {1700000001.0}
+    assert all(x.ts == 1700000001.0 for x in samples)
+    # An unknown start gives no duration: 1.7e12 ms is not one.
+    assert all("duration_ms" not in e.detail for e in events)
+    assert all(x.value < 1e6 for x in samples)
+
+    before = time.time()
+    samples, events = OtelReceiver().parse_traces(_span_body({"name": "s", "startTimeUnixNano": "0"}))
+    after = time.time()
+    assert events and all(before <= e.ts <= after for e in events)
+    assert all(before <= x.ts <= after for x in samples)
+
+
+def test_parse_traces_span_event_zero_time_follows_span_start():
+    span = {
+        "name": "s",
+        "startTimeUnixNano": "1700000000000000000",
+        "endTimeUnixNano": "1700000001000000000",
+        "events": [{"name": "exception", "timeUnixNano": "0"}],
+    }
+    _, events = OtelReceiver().parse_traces(_span_body(span))
+    assert [e.ts for e in events if e.kind == "otel:exception"] == [1700000000.0]
+
+
 def test_extract_requests_list_finish_reason():
     """finish_reason from Copilot OTel is a list ["stop"] — must not crash flush."""
     from aictl.storage import EventRow
