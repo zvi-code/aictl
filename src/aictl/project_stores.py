@@ -123,6 +123,7 @@ _FIND_SESSION_SQL = (
     "SELECT 1 FROM session_prompts WHERE session_id = ? LIMIT 1",
 )
 READ_CONNS_PER_THREAD = 3
+READ_CACHE_KB = 2000
 # A read plan's range is rounded outwards to this step.
 PLAN_STEP_S = 900.0
 _ROOT_CACHE_MAX = 8192
@@ -1548,7 +1549,9 @@ class ProjectStores:
         if state is None:
             conn = connect_file(str(self.machine._path))
             conn.execute("PRAGMA synchronous=OFF")
-            conn.execute("PRAGMA cache_size=-8000")
+            # A read connection lives as long as its thread's plan; a request thread keeps
+            # up to READ_CONNS_PER_THREAD of them, so each gets a small page cache.
+            conn.execute(f"PRAGMA cache_size=-{READ_CACHE_KB}")
             conn.execute("PRAGMA temp_store=MEMORY")
             self.machine._install_capture_guards(conn)
             state = _ReadConn(conn)

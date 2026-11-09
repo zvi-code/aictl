@@ -6576,8 +6576,8 @@ def _process_started_at() -> float:
     return STARTED_AT
 
 
-# The hook counts are one query per store, ~80 ms here; the machine panel asks every tick.
-HOOKS_TTL_S = 5.0
+# The hook counts are one query per store, 80-300 ms here; the machine panel asks every tick.
+HOOKS_TTL_S = 15.0
 _HOOKS_MEMO: dict[tuple, tuple[float, dict]] = {}
 
 
