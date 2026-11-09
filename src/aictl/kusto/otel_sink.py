@@ -5,13 +5,14 @@ on the queue of their table. It never talks to the cluster, so a slow or throttl
 cluster cannot hold up the tool that is exporting. One thread per table sends what has
 gathered, at most ``LINGER_S`` after the first row arrived and sooner when a request's
 worth is waiting: the four tables are written in parallel, each in few wide requests,
-which is what a small cluster's streaming ingestion takes best.
+with bounded upload sizes. In queued mode these requests become DM sources; DM's
+batching policy determines when they are ingested.
 
 Nothing is lost quietly:
 
 - Rows the cluster refuses for now (throttling, a transient fault, no sign-in) stay
   queued and are sent again.
-- A request the cluster refuses for good is sent once more after the tables were
+- A request refused synchronously for good is sent once more after the tables were
   checked, then split until the row at fault is alone; that row is dropped, counted
   and logged, and the rest is stored.
 - The queue is bounded. Past ``MAX_PENDING_BYTES`` a new request's rows are dropped
@@ -19,6 +20,8 @@ Nothing is lost quietly:
 
 A request repeated after a timeout may store a row twice; ``RowKey`` is the same for
 both copies, so ``summarize take_any(*) by RowKey`` reads each row once.
+In queued mode, sent counters and ``flush`` confirm submission, not ingestion.
+Downstream ingestion failures must be inspected through DM diagnostics.
 """
 
 from __future__ import annotations
@@ -31,7 +34,7 @@ from collections import deque
 from typing import Any
 
 from . import KustoSettings, otel
-from .ingest import INLINE_MAX_BYTES, STREAMING_MAX_BYTES
+from .ingest import INLINE_MAX_BYTES, QUEUED_MAX_BYTES, STREAMING_MAX_BYTES
 from .schema import quote
 
 log = logging.getLogger(__name__)
@@ -181,7 +184,7 @@ class OtelSink:
             }
 
     def flush(self, timeout: float = 30.0) -> bool:
-        """Wait until every queued row is stored or dropped. False when *timeout* passed first."""
+        """Wait until local rows are sent or dropped, not until DM ingests them. False on timeout."""
         deadline = time.monotonic() + timeout
         with self._lock:
             while self._pending_rows:
@@ -222,7 +225,10 @@ class OtelSink:
 
     def _batch_bytes(self, table: str) -> int:
         # One request per batch: a batch sent in two requests could be half stored when it fails.
-        return STREAMING_MAX_BYTES if self.settings.ingestion_mode(table) == "streaming" else INLINE_MAX_BYTES - 1024
+        mode = self.settings.ingestion_mode(table)
+        if mode == "queued":
+            return QUEUED_MAX_BYTES
+        return STREAMING_MAX_BYTES if mode == "streaming" else INLINE_MAX_BYTES - 1024
 
     def _take(self, table: str) -> list[str] | None:
         """The next batch of *table*, waiting for rows to gather. None when the sink is closed and empty."""
@@ -324,7 +330,7 @@ class OtelSink:
         return message
 
     def _settle(self, rows: int, size: int) -> None:
-        """*rows* left the sink, stored or dropped."""
+        """*rows* left the sink: submitted/ingested, or dropped."""
         with self._lock:
             self._pending_rows -= rows
             self._pending_bytes -= size

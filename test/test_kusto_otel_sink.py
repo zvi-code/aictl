@@ -139,14 +139,16 @@ def test_rows_of_a_request_reach_their_tables():
     assert stats["requests"] == 2
     assert stats["rows_queued"] == stats["rows_sent"] == 3
     assert stats["pending_rows"] == 0 and stats["pending_bytes"] == 0
-    assert stats["tables"][otel.LOGS] == {"ingestion": "streaming", "rows_sent": 2, "rows_waiting": 0}
+    assert stats["tables"][otel.LOGS] == {"ingestion": "queued", "rows_sent": 2, "rows_waiting": 0}
 
 
-def test_tables_are_created_once_and_only_when_they_differ():
+@pytest.mark.parametrize("mode", ["auto", "streaming"])
+def test_tables_are_created_once_and_only_when_they_differ(mode):
     whole = {t.name: [c.name for c in t.columns] for t in otel.TABLES}
     stale = dict(whole, **{otel.LOGS: whole[otel.LOGS][:-1]})
     del stale[otel.PAYLOADS]
-    sink, ingester, client = make(client=Client(stale))
+    ingester, client = Ingester(), Client(stale)
+    sink = OtelSink(settings(ingestion=mode), client=client, ingester=ingester, linger_s=0.0)
     sink.submit("logs", logs("one"))
     assert sink.flush(10)
     sink.submit("logs", logs("two"))
@@ -155,10 +157,12 @@ def test_tables_are_created_once_and_only_when_they_differ():
     created = [c.split()[2] for c in client.commands if c.startswith(".create-merge table ")]
     assert sorted(created) == sorted([otel.LOGS, otel.PAYLOADS])
     assert sum(c.startswith(".show database schema") for c in client.commands) == 1
-    # New tables that take streamed rows: the policy is on and every node reads the schema again.
-    assert ".alter database ['db'] policy streamingingestion enable" in client.commands
-    assert client.commands[-1] == ".clear database cache streamingingestion schema"
-    # Nothing is streamed before the tables exist.
+    if mode == "streaming":
+        assert ".alter database ['db'] policy streamingingestion enable" in client.commands
+        assert client.commands[-1] == ".clear database cache streamingingestion schema"
+    else:
+        assert not [command for command in client.commands if "streamingingestion" in command]
+    # Nothing is submitted before the tables exist.
     assert len(ingester.rows(otel.LOGS)) == 2
 
 
@@ -176,7 +180,7 @@ def test_a_table_override_decides_how_the_table_is_written():
     sink = OtelSink(settings(table_ingestion={otel.LOGS: "inline"}), client=Client(), ingester=Ingester())
     tables = sink.stats()["tables"]
     assert tables[otel.LOGS]["ingestion"] == "inline"
-    assert tables[otel.TRACES]["ingestion"] == "streaming"
+    assert tables[otel.TRACES]["ingestion"] == "queued"
     # One request per batch on either path.
     assert sink._batch_bytes(otel.LOGS) < otel_sink.INLINE_MAX_BYTES < sink._batch_bytes(otel.TRACES)
 

@@ -6,10 +6,10 @@ on the cluster: a query with ``KustoClient.execute``, a write as rows to ingest 
 ``.set-or-append`` command, a pragma answered from the schema. The connection is
 cheap; the Kusto clients behind it are shared by every connection of the process.
 
-Inserts are buffered until ``commit()``, the way SQLite code expects a transaction to
-work, and because one ingest of many rows costs about what one row costs. Any read or
-other write on the connection flushes the buffer first, so the connection always sees
-its own writes.
+Inserts are buffered until ``commit()`` or a dependent statement. Inline and streaming
+flushes finish ingestion; queued flushes only acknowledge submission to DM. Ordinary
+reads of queued tables are eventually consistent. Mutations and conflict checks wait
+for this process's preceding queued writes before reading rows they will change.
 """
 
 from __future__ import annotations
@@ -351,19 +351,20 @@ class Row(tuple):
         return f"Row({dict(zip(self._names, self, strict=False))!r})"
 
 
-def connection_string(settings: KustoSettings) -> Any:
+def connection_string(settings: KustoSettings, *, cluster: str | None = None) -> Any:
     """The SDK's connection string builder for the settings' sign-in mode."""
     from azure.kusto.data import KustoConnectionStringBuilder as K
 
     mode = settings.auth_mode
+    endpoint = cluster if cluster is not None else settings.cluster
     if mode == "none":
-        return K.with_no_authentication(settings.cluster)
+        return K.with_no_authentication(endpoint)
     if mode == "azcli":
-        return K.with_az_cli_authentication(settings.cluster)
+        return K.with_az_cli_authentication(endpoint)
     if mode == "device":
-        return K.with_aad_device_authentication(settings.cluster)
+        return K.with_aad_device_authentication(endpoint)
     if mode == "managed-identity":
-        return K.with_aad_managed_service_identity_authentication(settings.cluster)
+        return K.with_aad_managed_service_identity_authentication(endpoint)
     raise ValueError(f"unknown Kusto auth mode {mode!r}")
 
 
@@ -376,7 +377,7 @@ class KustoClientFactory:
 
     _lock = threading.Lock()
     _clients: dict[tuple[str, str, str], Any] = {}
-    _ingesters: dict[tuple[str, str, str, bool, tuple[tuple[str, str], ...]], RowIngester] = {}
+    _ingesters: dict[tuple[str, str, str, str, tuple[tuple[str, str], ...]], RowIngester] = {}
 
     @staticmethod
     def key(settings: KustoSettings) -> tuple[str, str, str]:
@@ -396,7 +397,7 @@ class KustoClientFactory:
     @classmethod
     def ingester(cls, settings: KustoSettings) -> RowIngester:
         client = cls.client(settings)
-        key = (*cls.key(settings), settings.streaming, tuple(sorted(settings.table_ingestion.items())))
+        key = (*cls.key(settings), settings.ingestion, tuple(sorted(settings.table_ingestion.items())))
         with cls._lock:
             ingester = cls._ingesters.get(key)
             if ingester is None:
@@ -932,6 +933,7 @@ class KustoConnection:
         hundred updates queued for minutes behind itself. The version stamp is this
         process's, so it orders against the rows it inserted in the same transaction.
         """
+        self._wait_for_ingestion(None if stmt.kind == "insert" else stmt.table)
         kql = stmt.kql
         table = self.tables.get(stmt.table)
         if table is not None:
@@ -1028,6 +1030,7 @@ class KustoConnection:
         One query per batch (per KEYS_PER_QUERY tuples): the filters of all sets are
         joined with ``or``, so a row is found whichever of its sets the new row shares.
         """
+        self._wait_for_ingestion(table.name)
         sets = table.conflict_keys
         found: list[dict[tuple[Any, ...], dict[str, Any]]] = [{} for _ in sets]
         pairs = [(i, k) for i, keys in enumerate(ask) for k in keys]
@@ -1052,6 +1055,7 @@ class KustoConnection:
         the SQLite WHERE sees the row and ``excluded``. The pair's position rides along,
         since two new rows may meet the same existing row.
         """
+        self._wait_for_ingestion(table.name)
         cols = [c for c in table.columns if c.name not in table.key]
         on = ", ".join(quote(n) for n in table.key)
         out: set[int] = set()
@@ -1208,10 +1212,22 @@ class KustoConnection:
             else:
                 index[i][k] = row
 
+    def _wait_for_ingestion(self, table: str | None) -> None:
+        # Synchronous ingesters, including existing caller-provided ones, need no wait hook.
+        wait = getattr(self.ingester, "wait_for_pending", None)
+        if wait is not None:
+            try:
+                wait(table)
+            except Exception as exc:  # noqa: BLE001 - async completion failures use the store's error contract
+                raise KustoStoreError(
+                    f"Waiting for queued ingestion into {table or 'pending tables'} failed",
+                    server_message=_server_message(exc),
+                ) from exc
+
     def _flush(self) -> None:
         """Send every buffered row: one request per table, the streamed tables at the same time.
 
-        A table leaves the buffer when the cluster has taken its rows. When one fails,
+        A table leaves the buffer after ingestion, or after DM accepts a queued submission. When one fails,
         its rows stay for the next flush and the first failure is raised; a streamed
         table already on its way is still completed. Tables sent by ``.ingest inline``
         go one after another in first-insert order: a small cluster ingests one such

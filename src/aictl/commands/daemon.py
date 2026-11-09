@@ -57,15 +57,15 @@ from ..platforms import (
 @click.option("--kusto-database", default=None, help="The Kusto database (default aictl)")
 @click.option(
     "--kusto-ingestion",
-    type=click.Choice(["auto", "streaming", "inline"]),
+    type=click.Choice(["auto", "queued", "streaming", "inline"]),
     default=None,
-    help="Default ingestion mode (auto: streaming on a cluster, inline on the emulator)",
+    help="Default ingestion mode (auto: queued on a cluster with inline state tables; inline on the emulator)",
 )
 @click.option(
     "--kusto-table-ingestion",
     multiple=True,
     metavar="TABLE=MODE",
-    help="Override ingestion for a table (streaming or inline); repeat for more tables",
+    help="Override ingestion for a table (queued, streaming or inline); repeat for more tables",
 )
 @click.option("--stop", is_flag=True, help="Stop a running daemon")
 @click.option("--status", "show_status", is_flag=True, help="Show daemon status")

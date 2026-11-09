@@ -50,7 +50,7 @@ az kusto cluster create --cluster-name <name> --resource-group rg-aictl --locati
 az kusto database create --cluster-name <name> --resource-group rg-aictl --database-name aictl --read-write-database soft-delete-period=P30D hot-cache-period=P7D location=westeurope
 ```
 
-The last command creates the database; run it again with another `--database-name` for a second aictl database on the same cluster. The cluster URL is `https://<name>.westeurope.kusto.windows.net`. The default ingestion mode requires streaming ingestion enabled (the flag above); aictl enables the database policy so tables inherit it. Inline-only ingestion does not require streaming ingestion. To remove everything afterwards: `az group delete -n rg-aictl --yes`.
+The last command creates the database; run it again with another `--database-name` for a second aictl database on the same cluster. The cluster URL is `https://<name>.westeurope.kusto.windows.net`. The default uses queued ingestion and inline state-table writes; neither requires streaming ingestion. The streaming flag above is optional unless you select streaming for a table; aictl then enables the database policy so tables inherit it. To remove everything afterwards: `az group delete -n rg-aictl --yes`.
 
 **A Microsoft Fabric Eventhouse.** Create an Eventhouse in a Fabric workspace (the account needs a Fabric license or trial and the workspace a capacity), open its KQL database and copy the query URI (`https://<id>.kusto.fabric.microsoft.com`). Fabric has streaming ingestion on by default.
 
@@ -66,10 +66,10 @@ Things that trip people up on a remote cluster:
 
 - **One person, two principals.** An Azure AD user (`aaduser=<object id>;<tenant>`) and the same person's personal Microsoft account (`msauser=name@outlook.com`) are different principals to Kusto. `az login` normally gives the Azure AD one; the Kusto web UI signs a personal account in as `msauser=...` unless its directory is switched to the cluster's tenant. Grant the one you actually use, or both.
 - **Creating the cluster grants nothing by itself.** Azure Resource Manager roles (Owner, Contributor) do not give data-plane access. Add a principal assignment (`az kusto cluster-principal-assignment create ... --role AllDatabasesAdmin`) or a database role as above.
-- **Two URLs.** `https://<name>.<region>.kusto.windows.net` is the engine: queries, commands, streaming ingestion, and what aictl uses. `https://ingest-<name>.<region>.kusto.windows.net` is the Data Management endpoint, for queued ingestion. `kusto_cluster` takes either: aictl drops the `ingest-` prefix and talks to the engine. Changing this URL does not change the ingestion mode; both supported modes use the engine URL.
+- **Two URLs.** `https://<name>.<region>.kusto.windows.net` is the engine: queries, management commands, inline ingestion and streaming ingestion. `https://ingest-<name>.<region>.kusto.windows.net` is the Data Management (DM) endpoint, for queued ingestion. `kusto_cluster` takes either: aictl derives the engine URL for reads and synchronous writes and the ingestion URL for queued writes. Passing the `ingest-` URL alone does not force every table to use queued ingestion; the mode settings below decide that.
 - **Tenant and MFA.** If the tenant requires multi-factor authentication, `az login --tenant <tenant id> --scope "https://<cluster host>/.default"` refreshes the sign-in aictl uses.
-- **Firewalls.** The cluster must be reachable on port 443 from the machine running the daemon; a cluster with a private endpoint or an IP allow list needs that machine's address allowed.
-- **Capacity.** A `Dev(No SLA)` cluster has one ingestion slot and a small cache. aictl writes through streaming ingestion, which does not take that slot. An `.ingest inline` command does take it: aictl reads the cluster's capacity once (`.show capacity ingestions`) and sends at most that many inline commands at a time, so they wait in the daemon instead of being refused. A saturated cluster answers HTTP 429, which aictl retries for about a minute.
+- **Firewalls.** The cluster must be reachable on port 443 from the machine running the daemon; a cluster with a private endpoint or an IP allow list needs that machine's address allowed. Queued ingestion also needs access to the Azure Storage blob and queue endpoints supplied by DM.
+- **Capacity.** A `Dev(No SLA)` cluster has one ingestion slot and a small cache. Streaming ingestion does not take that slot. An `.ingest inline` command does: aictl reads the cluster's capacity once (`.show capacity ingestions`) and sends at most that many inline commands at a time, so they wait in the daemon instead of being refused. Queued sources are batched and scheduled by DM. A saturated cluster can answer HTTP 429; inline and streaming requests receive bounded retries.
 
 ## 3. Install the Kusto extra
 
@@ -100,54 +100,82 @@ The global `kusto_ingestion` setting accepts:
 
 | Mode | Behavior |
 | --- | --- |
-| `auto` (default) | Streaming ingestion on a remote cluster; inline ingestion on the local emulator. |
+| `auto` (default) | Queued ingestion on a remote cluster, with inline writes for the state/configuration tables listed below. All tables use inline on the local emulator. |
+| `queued` | Upload sources and enqueue them through DM. DM batches and ingests them asynchronously. Not supported by the emulator. |
 | `streaming` | Use the streaming-ingestion API and RowStore. Not supported by the emulator. |
 | `inline` | Use synchronous `.ingest inline` management commands, without the streaming-ingestion/RowStore path. |
 
-Both backends finish ingestion before aictl issues a dependent read. Inline ingestion is an opt-in option for small development/test writes or a streaming-ingestion workaround, not a recommended backend for sustained telemetry. It consumes ingestion-command capacity and can create many small extents. It is **not queued ingestion**; aictl does not currently implement an asynchronous queued-ingestion backend.
+**Queued means submitted, not yet readable.** A successful queued `commit()` confirms that the SDK uploaded the source and enqueued it, not that DM finished ingestion. Ordinary reads can lag behind writes. aictl leaves the database/table batching policy unchanged, does not request `flushImmediately`, and does not add per-source ingestion tags that would separate otherwise compatible batches. The 16 MB client upload target bounds source size, not DM's final batch size; an individual larger row is sent alone.
 
-A commit that wrote several tables sends the streamed ones at the same time, four at a time, and the inline ones one after another; a table that fails keeps its rows for the next commit. Inline commands wait for one of the cluster's ingestion slots (one on a `Dev(No SLA)` cluster, twelve on the emulator). Measured on a `Dev(No SLA)` cluster, a first start stored 66,000 rows in 140 s with streaming and 21,000 with inline. Two differences in what is stored: `.ingest inline` cuts a single string longer than 1,048,576 characters at that length, where streaming stores it whole; and half of a surrogate pair, which Kusto would store as U+0000, is written as U+FFFD in both modes. NUL and other control characters are stored as sent.
+**Inline and streaming are synchronous.** Inline avoids RowStore and is suitable for small development/test writes or state/configuration that is read immediately. It consumes ingestion-command capacity and can create many small extents; it is not queued ingestion and is not the sustained-telemetry path. For a state table with high write volume, streaming is the synchronous alternative when streaming ingestion is healthy.
+
+The automatic profile keeps these tables inline because startup, updates or conflict checks use their current state:
+
+| Group | Tables |
+| --- | --- |
+| Configuration and maintenance | `schema_version`, `maintenance_state`, `data_quality_status`, `path_defs`, `process_defs`, `datapoint_catalog` |
+| Sessions and their related state | `tools`, `projects`, `processes`, `sessions`, `session_processes`, `session_commits`, `agents`, `requests`, `context_events`, `tool_invocations`, `session_prompts`, `skill_uses`, `session_usage` |
+| Files and context | `file_blobs`, `files`, `file_write_events`, `session_folders`, `session_artifacts`, `session_loaded_files`, `session_context_items`, `memory_snapshots` |
+| Dashboard configuration | `ui_dashboard`, `ui_section`, `ui_widget`, `ui_tab`, `ui_group_by_option`, `ui_datasource`, `ui_widget_datasource`, `ui_preference`, `ui_theme` |
+| Tool message state | `cursor_session_messages`, `copilot_session_messages`, `vscode_chat_messages` |
+
+Other history tables, such as `events`, `metrics` and `samples`, and the four raw OpenTelemetry tables use queued ingestion in remote `auto` mode. This automatic inline list applies **only to `auto`**. An explicit global `queued`, `streaming` or `inline` applies to every table unless a per-table override replaces it.
+
+A commit sends streaming tables concurrently, with four workers, and sends inline commands and queued submissions in its foreground loop. A failed submission leaves that table's buffered rows for a later commit; an acknowledged queued submission leaves the buffer without waiting for ingestion. Multi-request failures or ambiguous network failures can cause duplicate submissions on retry; this is not exactly-once delivery.
+
+Earlier measurements on a `Dev(No SLA)` cluster compared explicit streaming and inline modes: a first start stored 66,000 rows in 140 s with streaming and 21,000 with inline. These are not measurements of queued ingestion or the automatic mixed profile. In those synchronous paths, `.ingest inline` cut a single string longer than 1,048,576 characters at that length, where streaming stored it whole. The shared serializer replaces half of a surrogate pair with U+FFFD before sending any mode. NUL and other control characters are sent unchanged.
 
 Set a global default and override individual history tables in `config.toml`:
 
 ```toml
 [storage]
-kusto_cluster = "https://example-dev.swedencentral.dev.kusto.windows.net"
+kusto_cluster = "https://ingest-<name>.<region>.kusto.windows.net"
 kusto_database = "aictl"
-kusto_ingestion = "inline"
+kusto_ingestion = "auto"
 
 [storage.kusto_table_ingestion]
-events = "streaming"
+path_defs = "inline"
+sessions = "streaming"
 ```
 
-In this example, `path_defs` and every other history table use inline ingestion except `events`. To retain streaming as the default and bypass it only for `path_defs`, use `kusto_ingestion = "auto"` and `path_defs = "inline"` in the overrides section instead. Table overrides accept only `streaming` or `inline`; an unlisted table uses the global default. The four OpenTelemetry tables (`OTELLogs`, `OTELMetrics`, `OTELTraces`, `OTELPayloads`) take overrides the same way. Any other table name and any invalid mode is an error, not an ignored setting.
+Here, telemetry stays queued, `sessions` explicitly uses streaming, and `path_defs` explicitly stays inline (already its automatic choice). To use queued ingestion for **every** table except `path_defs`, set `kusto_ingestion = "queued"` and keep only `path_defs = "inline"`; state-table operations can then wait for DM as described below. To retain the former all-streaming default, select `kusto_ingestion = "streaming"` explicitly.
+
+Table overrides accept `queued`, `streaming` or `inline`, not `auto`. The four OpenTelemetry tables (`OTELLogs`, `OTELMetrics`, `OTELTraces`, `OTELPayloads`) take overrides the same way. Any unknown table name or invalid mode is an error, not an ignored setting.
 
 The equivalent command-line options are:
 
 ```bash
-aictl daemon serve --kusto-cluster https://example-dev.swedencentral.dev.kusto.windows.net --kusto-database aictl --kusto-ingestion inline --kusto-table-ingestion events=streaming
+aictl daemon serve --kusto-cluster https://ingest-<name>.<region>.kusto.windows.net --kusto-database aictl --kusto-ingestion auto --kusto-table-ingestion path_defs=inline --kusto-table-ingestion sessions=streaming
 ```
 
-Or bypass streaming for just the failing table:
+Or select queued globally and inline for `path_defs`:
 
 ```bash
-aictl daemon serve --kusto-cluster https://example-dev.swedencentral.dev.kusto.windows.net --kusto-database aictl --kusto-table-ingestion path_defs=inline
+aictl daemon serve --kusto-cluster https://ingest-<name>.<region>.kusto.windows.net --kusto-database aictl --kusto-ingestion queued --kusto-table-ingestion path_defs=inline
 ```
 
 Repeat `--kusto-table-ingestion TABLE=MODE` for additional tables. For environment-based configuration, use `AICTL_KUSTO_INGESTION` for the default and `AICTL_KUSTO_TABLE_INGESTION` for comma-separated overrides. For example, in Windows Command Prompt:
 
 ```cmd
-set AICTL_KUSTO_INGESTION=inline
-set AICTL_KUSTO_TABLE_INGESTION=events=streaming,sessions=streaming
+set AICTL_KUSTO_INGESTION=auto
+set AICTL_KUSTO_TABLE_INGESTION=path_defs=inline,sessions=streaming
 ```
 
 For the global default, precedence is CLI, then environment, then config, then `auto`. Table overrides are merged in the same order, with the higher-priority source replacing only matching table entries; a repeated table uses its last value. Per-table overrides take precedence over the global default regardless of source. Use `aictl config show` to inspect config/environment values. CLI choices reach background daemon processes through the inherited environment. Restart a running daemon to apply changes.
 
-Selecting inline changes the client routing; it does not disable existing cluster/database/table policies or affect other clients. There is no automatic switch between backends after a failure. Transient errors receive bounded retries and exhausted/permanent failures are reported. This selection applies to history-row ingestion, including updates and tombstones; schema-management commands such as the write to `aictl_information_schema` remain management commands.
+Selecting a mode changes client routing; it does not disable existing cluster/database/table policies, change DM batching policy or affect other clients. There is no automatic switch between backends after a failure. Inline and streaming use bounded client retries; queued uploads use the SDK's storage retries, without an additional whole-submission retry loop. Immediate failures propagate. DM can fail later, after queued submission has succeeded; inspect DM ingestion failures and diagnostics. Successful submission source IDs are logged at debug level, and the SDK requests failure reporting without aictl draining shared ingestion-status queues. This selection covers history inserts, updates and tombstones, plus raw OpenTelemetry writes; schema-management commands such as the write to `aictl_information_schema` remain synchronous management commands.
+
+### Queued writes and dependent operations
+
+Before a history-table mutation or conflict check, aictl waits for the relevant preceding queued submissions tracked by its shared ingester. `INSERT ... SELECT` waits for all tracked history tables because it can copy rows from another table. The check queries the raw table for every submitted `(rowid, _v)` pair, including tombstones, rather than treating an enqueue acknowledgement as ingestion success. Ordinary `SELECT` queries do not perform this wait.
+
+The wait polls every 5 s with a 600 s timeout. A timeout or failed visibility query is an error, not success; acknowledged sources remain tracked and are not resubmitted by the wait. A 50,000-row pending-receipt budget also triggers a wait before another source is submitted; a single large source or concurrent in-flight submissions can temporarily exceed that budget. This bounds receipt growth during normal operation but can block an otherwise asynchronous commit during a long DM delay.
+
+These receipts are **process-local and in memory**. They are shared by connections using the same cached ingester, not persisted across restarts or shared across processes/configurations. They do not make a multi-process transaction or guarantee immediate visibility of another writer's data. Changing modes or restarting does not drain earlier DM queues. Keep tables requiring immediate reads on inline or streaming, and let prior queued writes finish before relying on a changed mode. Different tables, including an OTel record and its payload chunks, can become visible at different times.
 
 ## 5. Check it
 
-Open the dashboard as usual (`aictl daemon serve` prints the URL). In the Kusto web UI or any KQL client, `['sessions'] | count` and `['requests'] | summarize count() by ['tool']` show the rows arriving; `aictl_information_schema | summarize count() by ['scope']` lists the schema. Every environment variable, hook and ingester works the same as with SQLite; the only visible differences are that the Settings screen's "Data sources" shows the cluster, and the size budget never evicts (retention is the database's retention policy, set from `retention_days`).
+Open the dashboard as usual (`aictl daemon serve` prints the URL). In the Kusto web UI or any KQL client, `['sessions'] | count` and `['requests'] | summarize count() by ['tool']` show the rows arriving; `aictl_information_schema | summarize count() by ['scope']` lists the schema. Queued tables appear after DM processes their batches, not necessarily when a client commit returns. The Settings screen's "Data sources" shows the cluster, and the size budget never evicts (retention is the database's retention policy, set from `retention_days`).
 
 ## Report
 
@@ -203,7 +231,7 @@ With a cluster configured, everything a tool exports to the daemon's OTLP endpoi
 | `OTELTraces` | span | `DurationMs`, `SessionId`, `Tool`, `Model`, `MachineId`, `RowKey` |
 | `OTELPayloads` | chunk of a large text | aictl's own table |
 
-The tables are created with the first export, and `.show table OTELLogs schema as json` carries a description of every column. A request is converted and queued without a call to the cluster; one thread per table sends what has gathered within 0.2 s, so the four tables are written in parallel and a slow cluster never holds up the tool that is exporting. Rows the cluster refuses for now stay queued and are sent again. The `kusto` block of `/api/otel-status` shows rows queued, sent, waiting, rejected and dropped, per table, with the last error.
+The tables are created with the first export, and `.show table OTELLogs schema as json` carries a description of every column. A request is converted and put on a local queue without a call to the cluster; one thread per table sends what has gathered within 0.2 s, so the four tables are submitted in parallel and a slow cluster never holds up the tool that is exporting. In remote `auto` mode, these sends upload and enqueue DM sources; DM's batching policy controls ingestion time. Rows refused synchronously for now stay on the local queue and are sent again. The `kusto` block of `/api/otel-status` shows rows queued locally, sent, waiting, rejected and dropped, per table, with the last local/submission error. For queued mode, `rows_sent`, `last_sent_at` and a successful sink `flush()` mean **submitted**, not ingested; these counters do not report downstream DM failures.
 
 **Times.** A record sent without a time is stored with the time it was received, never in 1970.
 
@@ -253,14 +281,15 @@ OTELTraces
 
 ## What to expect
 
-Measured on a `Dev(No SLA)` cluster in West Europe from a Mac: a query answers in about 0.1 to 0.2 s, so anything that asks many questions in a row is slower than on SQLite. The first start writes the machine's recent history: on an empty database the board answered 44 s after launch and 66,000 rows in 39 tables were stored after 140 s, the newest about half a second old. While that backfill runs, single writes of a large session can take tens of seconds and the board about 5 s. The board's first answer is one computation of about 175 queries, run eight at a time, about 20 s (45 s one after another); after that the daemon serves the last answer at once and recomputes behind it, so the dashboard stays responsive and is up to about a minute behind the cluster. The machine, context and settings routes answer in under two seconds. A cluster in your own region, or a larger SKU, shortens all of this.
+Earlier measurements with **streaming ingestion**, on a `Dev(No SLA)` cluster in West Europe from a Mac: a query answered in about 0.1 to 0.2 s. On an empty database the board answered 44 s after launch and 66,000 rows in 39 tables were stored after 140 s, the newest about half a second old. While that backfill ran, single writes of a large session could take tens of seconds and the board about 5 s. The board's first answer was one computation of about 175 queries, run eight at a time, about 20 s (45 s one after another); after that the daemon served the last answer and recomputed behind it, up to about a minute behind the cluster. The machine, context and settings routes answered in under two seconds. These timings do not establish queued-ingestion or automatic-profile performance. Queued visibility adds DM batching and processing delay, and automatic state-table writes still consume inline capacity.
 
 ## Troubleshooting
 
 - `Principal 'msauser=...' is not authorized` in the Kusto web UI: the web UI signed you in as your personal Microsoft account, which Kusto treats as a different principal from the Azure AD user that created the cluster. Either switch the web UI's directory to the cluster's tenant (account menu, Switch directory), open the cluster from the Azure portal (Data, Query), or add the account as a principal: `.add database ['aictl'] admins ('msauser=<you>@outlook.com')`.
 - The web UI connects to `https://ingest-<name>...` but not to `https://<name>...`: the ingest URL is the Data Management endpoint, which only takes ingestion; queries and commands go to the engine URL, and that is the one whose roles matter. Give the identity a database role (above).
 - `Kusto ingestion into <table> failed ... Status: 520 ... RowStoreTrimmableStreamException`: a server-side streaming-ingestion storage error. The response alone does not establish its underlying cause; `"@permanent": false` means retryable, not guaranteed to recover. aictl retries transient errors for about a minute. If they persist, investigate the cluster traces using the request/activity and RowStore IDs. For small development/test tables, `--kusto-table-ingestion path_defs=inline` can bypass streaming for that table; `--kusto-ingestion inline` selects inline as the global default, subject to any per-table overrides.
-- Slow first polls on a dev-tier cluster: a `Dev(No SLA)` cluster has one ingestion slot and answers a query in about a tenth of a second. aictl uses streaming ingestion, which does not take the slot, sends a batch of updates as one query and writes the tables of a commit at the same time, but the first polls still write every recent session's history, which takes two to three minutes; later polls are quick. With `inline` the same backfill is about three times slower, because every command waits for the one slot.
+- Queued commits succeed but rows are absent: allow for DM batching and processing, then inspect ingestion failures. Submission success is not a completion signal. A dependent-operation timeout retains pending source IDs; it does not silently drop or resend those sources. Use inline or streaming for tables that must be read immediately.
+- Slow first polls on a dev-tier cluster: automatic state-table writes use inline and share the cluster's ingestion-command capacity. Explicit streaming bypasses that inline path and preserves synchronous reads, but requires working streaming ingestion. Choosing queued for state tables can instead make conflict checks and updates wait for DM; it does not remove their read-before-write dependency.
 - `AADSTS50076 ... multi-factor authentication`: run `az login --tenant <tenant id> --scope "https://<cluster host>/.default"` and sign in again.
 - `Kusto ingestion into <table> failed transiently (BadRequest_EntityNotFound ...)` in the log right after tables were created or widened: an engine node still streams against the schema it cached before the change. aictl clears that cache after every schema change and repeats the rows for about a minute; without the clear the refusals last 45 to 90 s. `Kusto streaming schema cache was not cleared` means the account may not run the clear command (it needs Database Ingestor or higher); the rows then arrive after the cache expires on its own.
 - `Forbidden` on the first start: the account lacks Database Admin on the database (step 2).

@@ -27,8 +27,9 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from types import MappingProxyType
+from urllib.parse import urlsplit
 
 CLUSTER_ENV = "AICTL_KUSTO_CLUSTER"
 DATABASE_ENV = "AICTL_KUSTO_DATABASE"
@@ -40,7 +41,52 @@ DEFAULT_DATABASE = "aictl"
 # How the client signs in. "auto": no authentication for a local emulator
 # (http://localhost...), the Azure CLI's login otherwise.
 AUTH_MODES = ("auto", "azcli", "device", "managed-identity", "none")
-INGESTION_MODES = ("streaming", "inline")
+INGESTION_MODES = ("queued", "streaming", "inline")
+
+# These tables hold state, unique-key upserts, or bootstrap data used immediately.
+AUTO_INLINE_TABLES = frozenset(
+    {
+        "schema_version",
+        "tools",
+        "projects",
+        "processes",
+        "sessions",
+        "session_processes",
+        "session_commits",
+        "agents",
+        "requests",
+        "context_events",
+        "tool_invocations",
+        "session_prompts",
+        "skill_uses",
+        "file_blobs",
+        "files",
+        "file_write_events",
+        "session_folders",
+        "session_artifacts",
+        "session_loaded_files",
+        "session_context_items",
+        "maintenance_state",
+        "data_quality_status",
+        "path_defs",
+        "process_defs",
+        "memory_snapshots",
+        "ui_dashboard",
+        "ui_section",
+        "ui_widget",
+        "ui_tab",
+        "ui_group_by_option",
+        "ui_datasource",
+        "ui_widget_datasource",
+        "ui_preference",
+        "ui_theme",
+        "datapoint_catalog",
+        "cursor_session_messages",
+        "copilot_session_messages",
+        "session_usage",
+        "vscode_chat_messages",
+    }
+)
 
 
 def validate_ingestion_mode(value: object, *, allow_auto: bool = False) -> str:
@@ -82,10 +128,8 @@ def engine_url(cluster: str) -> str:
     """The engine (query) URL for *cluster*, given either of a cluster's two URLs.
 
     ``https://ingest-<name>.<region>.kusto.windows.net`` is the Data Management
-    endpoint: it takes queued ingestion only, and answers a management command with
-    a syntax error. aictl queries, creates tables and streams rows through the
-    engine, ``https://<name>.<region>.kusto.windows.net``, so the ``ingest-`` prefix
-    is dropped.
+    endpoint. Queries, management commands, inline ingestion and streaming use the
+    engine URL. Queued ingestion uses :attr:`KustoSettings.ingestion_cluster` instead.
     """
     scheme, sep, rest = cluster.partition("://")
     host, slash, path = rest.partition("/")
@@ -99,22 +143,48 @@ class KustoSettings:
     cluster: str
     database: str = DEFAULT_DATABASE
     auth: str = "auto"
-    # Both modes are synchronous: reads after a flush must see the ingested rows.
-    streaming: bool = True
-    table_ingestion: Mapping[str, str] = field(default_factory=dict)
+    # Compatibility with callers that selected the old two-mode constructor.
+    streaming: bool | None = None
+    table_ingestion: Mapping[str, str] = field(default_factory=dict, hash=False)
+    ingestion: str = "auto"
 
     def __post_init__(self) -> None:
+        mode = validate_ingestion_mode(self.ingestion, allow_auto=True)
+        if self.streaming is not None:
+            legacy = "streaming" if self.streaming else "inline"
+            if mode not in ("auto", legacy):
+                raise ValueError("Specify ingestion or streaming, not conflicting values for both")
+            mode = legacy
         modes = validate_table_ingestion(self.table_ingestion)
-        if self.is_local and "streaming" in modes.values():
-            raise ValueError("The Kusto emulator does not support streaming ingestion")
+        object.__setattr__(self, "cluster", engine_url(self.cluster))
+        if self.is_local and (mode not in ("auto", "inline") or any(m != "inline" for m in modes.values())):
+            raise ValueError("The Kusto emulator supports inline ingestion only, not queued or streaming")
+        object.__setattr__(self, "ingestion", mode)
         object.__setattr__(self, "table_ingestion", MappingProxyType(modes))
 
     def ingestion_mode(self, table: str) -> str:
-        return self.table_ingestion.get(table, "streaming" if self.streaming else "inline")
+        if table in self.table_ingestion:
+            return self.table_ingestion[table]
+        if self.ingestion == "auto" and table in AUTO_INLINE_TABLES:
+            return "inline"
+        return self.default_ingestion
+
+    @property
+    def default_ingestion(self) -> str:
+        if self.ingestion == "auto":
+            return "inline" if self.is_local else "queued"
+        return self.ingestion
+
+    @property
+    def ingestion_cluster(self) -> str:
+        """The DM endpoint, distinct from the engine endpoint used for reads."""
+        from azure.kusto.ingest.base_ingest_client import BaseIngestClient
+
+        return BaseIngestClient.get_ingestion_endpoint(self.cluster)
 
     @property
     def is_local(self) -> bool:
-        host = self.cluster.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0].lower()
+        host = (urlsplit(self.cluster).hostname or "").lower()
         return host in ("localhost", "127.0.0.1", "::1", "host.docker.internal")
 
     @property
@@ -165,19 +235,13 @@ class KustoSettings:
         auth = (auth or "auto").strip().lower() or "auto"
         if auth not in AUTH_MODES:
             raise ValueError(f"{AUTH_ENV} must be one of {', '.join(AUTH_MODES)}, not {auth!r}")
-        mode = validate_ingestion_mode(ingestion, allow_auto=True)
-        settings = cls(
+        return cls(
             cluster=cluster,
             database=(database or "").strip() or DEFAULT_DATABASE,
             auth=auth,
-            streaming=mode != "inline",
+            ingestion=ingestion,
             table_ingestion=table_ingestion if table_ingestion is not None else {},
         )
-        if settings.is_local:
-            if mode == "streaming":
-                raise ValueError("The Kusto emulator does not support streaming ingestion")
-            return replace(settings, streaming=False)
-        return settings
 
 
 def kusto_settings() -> KustoSettings | None:

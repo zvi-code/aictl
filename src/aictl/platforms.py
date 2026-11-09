@@ -587,10 +587,10 @@ content_retention_days = 14  # capture = "full": blank conversation text older t
 kusto_cluster = ""  # e.g. https://mycluster.westus.kusto.windows.net, or http://localhost:8080 for the emulator
 kusto_database = "aictl"
 kusto_auth = "auto"  # auto (Azure CLI login; none for a local emulator) | azcli | device | managed-identity | none
-kusto_ingestion = "auto"  # auto: streaming on a cluster, inline on the emulator | streaming | inline
+kusto_ingestion = "auto"  # auto: queued on a cluster with inline state tables; inline on the emulator | queued | streaming | inline
 
 [storage.kusto_table_ingestion]
-# Optional per-table overrides of kusto_ingestion (streaming | inline).
+# Optional per-table overrides of kusto_ingestion (queued | streaming | inline).
 # path_defs = "inline"
 
 [logging]

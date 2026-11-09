@@ -640,7 +640,7 @@ def _schema_client(have_rows, clear_answers):
 
 
 def _streaming_conn(client):
-    settings = KustoSettings("https://c.kusto.windows.net", "aictl")
+    settings = KustoSettings("https://c.kusto.windows.net", "aictl", ingestion="streaming")
     return KustoConnection(settings, client, FakeIngester(), translator=StubTranslator(), tables=TABLES)
 
 
@@ -687,7 +687,8 @@ def test_ingest_endpoint_url_is_turned_into_the_engine_url():
     assert settings is not None
     assert settings.cluster == "https://example-history.westeurope.kusto.windows.net"
     assert settings.uri == "kusto://example-history.westeurope.kusto.windows.net/aictl"
-    assert settings.streaming is True
+    assert settings.default_ingestion == "queued"
+    assert settings.ingestion_cluster == "https://ingest-example-history.westeurope.kusto.windows.net"
 
 
 def test_ingest_failure_is_a_store_error():
@@ -702,7 +703,7 @@ def test_ingest_failure_is_a_store_error():
         conn.commit()
 
 
-STREAMED = KustoSettings("https://c.kusto.windows.net", "aictl")
+STREAMED = KustoSettings("https://c.kusto.windows.net", "aictl", ingestion="streaming")
 
 
 def _three_tables(ingester, settings=STREAMED):
@@ -875,7 +876,8 @@ def test_ingester_choice_and_connection_strings():
 @pytest.mark.parametrize(
     ("cluster", "mode", "expected"),
     [
-        ("https://c.kusto.windows.net", "auto", "streaming"),
+        ("https://c.kusto.windows.net", "auto", "queued"),
+        ("https://c.kusto.windows.net", "queued", "queued"),
         ("https://c.kusto.windows.net", "streaming", "streaming"),
         ("https://c.kusto.windows.net", "inline", "inline"),
         ("http://localhost:8080", "auto", "inline"),
@@ -885,21 +887,26 @@ def test_ingester_choice_and_connection_strings():
 def test_global_ingestion_default(cluster, mode, expected):
     settings = KustoSettings.from_values(cluster, ingestion=mode)
     assert settings is not None
-    assert settings.ingestion_mode("path_defs") == expected
+    assert settings.ingestion_mode("events") == expected
 
 
 @pytest.mark.parametrize(
     "options",
-    [{"ingestion": "streaming"}, {"table_ingestion": {"events": "streaming"}}],
+    [
+        {"ingestion": "streaming"},
+        {"ingestion": "queued"},
+        {"table_ingestion": {"events": "streaming"}},
+        {"table_ingestion": {"events": "queued"}},
+    ],
 )
 def test_local_cluster_rejects_explicit_streaming(options):
-    with pytest.raises(ValueError, match="does not support streaming"):
+    with pytest.raises(ValueError, match="supports inline ingestion only"):
         KustoSettings.from_values("http://localhost:8080", **options)
 
 
 @pytest.mark.parametrize(
     "overrides",
-    ["inline", ["path_defs"], {"path_defs": "queued"}, {"path_defs": "auto"}, {"": "inline"}, {"events": True}],
+    ["inline", ["path_defs"], {"path_defs": "invalid"}, {"path_defs": "auto"}, {"": "inline"}, {"events": True}],
 )
 def test_invalid_table_ingestion_is_rejected(overrides):
     with pytest.raises(ValueError):
@@ -956,9 +963,9 @@ def test_kusto_ingestion_config_and_environment_precedence(kusto_config, monkeyp
 @pytest.mark.parametrize(
     "text",
     [
-        '[storage]\nkusto_ingestion = "queued"\n',
+        '[storage]\nkusto_ingestion = "invalid"\n',
         '[storage]\nkusto_table_ingestion = "inline"\n',
-        '[storage.kusto_table_ingestion]\npath_defs = "queued"\n',
+        '[storage.kusto_table_ingestion]\npath_defs = "invalid"\n',
     ],
 )
 def test_bad_ingestion_config_does_not_fall_back_to_sqlite(kusto_config, text):
@@ -1015,9 +1022,9 @@ def test_daemon_ingestion_cli_merges_and_exports_overrides(kusto_config, monkeyp
 @pytest.mark.parametrize(
     "args",
     [
-        ["--kusto-ingestion", "queued"],
+        ["--kusto-ingestion", "invalid"],
         ["--kusto-table-ingestion", "path_defs"],
-        ["--kusto-table-ingestion", "path_defs=queued"],
+        ["--kusto-table-ingestion", "path_defs=invalid"],
         ["--kusto-cluster", "http://localhost:8080", "--kusto-ingestion", "streaming"],
     ],
 )
@@ -1067,7 +1074,7 @@ def test_inline_default_does_not_create_a_streaming_client(monkeypatch):
 
 
 def test_mixed_ingestion_flushes_both_backends_before_read():
-    settings = KustoSettings("https://c.kusto.windows.net", table_ingestion={"events": "inline"})
+    settings = KustoSettings("https://c.kusto.windows.net", ingestion="streaming", table_ingestion={"events": "inline"})
     order = []
     client = FakeClient(
         on_mgmt=lambda command: order.append("inline") or response([], []),
@@ -1131,7 +1138,7 @@ def test_inline_ingestion_retries_transient_errors_and_preserves_failed_rows(mon
 
 
 def test_ingester_cache_distinguishes_defaults_and_table_overrides(monkeypatch):
-    streaming = KustoSettings("https://c.kusto.windows.net")
+    streaming = KustoSettings("https://c.kusto.windows.net", ingestion="streaming")
     inline = KustoSettings(streaming.cluster, streaming=False)
     mixed = KustoSettings(streaming.cluster, streaming=False, table_ingestion={"events": "streaming"})
     client = FakeClient()
@@ -1376,8 +1383,10 @@ def test_the_ingestion_capacity_is_read_once_for_a_destination_that_ingests_inli
     assert ingestion_capacity(FakeClient(on_mgmt=lambda c: (_ for _ in ()).throw(_ApiError(403, True))), "aictl") is None
     assert ingestion_capacity(FakeClient(), "aictl") is None  # an answer without the row
 
-    streamed = KustoSettings("https://c.kusto.windows.net", "aictl")
-    mixed = KustoSettings("https://c.kusto.windows.net", "aictl", table_ingestion={"path_defs": "inline"})
+    streamed = KustoSettings("https://c.kusto.windows.net", "aictl", ingestion="streaming")
+    mixed = KustoSettings(
+        "https://c.kusto.windows.net", "aictl", ingestion="streaming", table_ingestion={"path_defs": "inline"}
+    )
     assert uses_inline(SETTINGS) and uses_inline(mixed) and not uses_inline(streamed)
 
     client.commands.clear()

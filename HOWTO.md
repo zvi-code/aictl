@@ -840,7 +840,7 @@ SQLite is the default backend and needs no setup. The alternative backend is a K
 aictl daemon serve --kusto-cluster https://<name>.westeurope.kusto.windows.net --kusto-database aictl
 ```
 
-To bypass streaming for small development/test writes, add `--kusto-ingestion inline` for the global default, or `--kusto-table-ingestion path_defs=inline` for one table. Per-table overrides take precedence over the default. See [ingestion modes](docs/kusto-cluster.md#global-ingestion-mode-and-per-table-overrides) for TOML/environment configuration and examples combining both options.
+The remote default (`auto`) queues telemetry through DM and keeps state/configuration tables, including `path_defs`, synchronous through inline ingestion. An `ingest-` endpoint is accepted: aictl derives the engine endpoint for reads and synchronous writes. Select `--kusto-ingestion queued`, `streaming` or `inline` for an explicit global mode; repeat `--kusto-table-ingestion TABLE=MODE` for overrides. For example, `--kusto-ingestion queued --kusto-table-ingestion path_defs=inline` queues every table except `path_defs`. Queued commits confirm submission, not ingestion; updates and conflict checks can wait for DM. See [ingestion modes](docs/kusto-cluster.md#global-ingestion-mode-and-per-table-overrides) for TOML/environment configuration, precedence and consistency limits.
 
 ## Control how much is stored
 

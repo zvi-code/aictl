@@ -1,7 +1,7 @@
-"""Getting rows into a Kusto table through streaming ingestion or ``.ingest inline``.
+"""Getting rows into Kusto through queued, streaming or inline ingestion.
 
 The connection hands an ingester complete rows (system columns included) for one
-table. Both ingesters send newline-delimited JSON (``multijson``), which Kusto maps
+table. All ingesters send newline-delimited JSON (``multijson``), which Kusto maps
 onto the table's columns by name, so no ingestion mapping has to be kept in step
 with the schema.
 """
@@ -11,14 +11,18 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import logging
 import math
 import re
 import threading
+import time
+import uuid
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING, Any, Protocol
 
-from .schema import quote
+from .schema import ROWID, VERSION, quote
 
 if TYPE_CHECKING:
     from . import KustoSettings
@@ -29,10 +33,19 @@ INLINE_MAX_BYTES = 1_000_000
 # Streaming ingestion takes at most 4 MB per request (uncompressed, before the
 # service's own limit on compressed size); stay well under it.
 STREAMING_MAX_BYTES = 3_500_000
+# Bound source uploads in memory; DM still determines ingestion batches.
+QUEUED_MAX_BYTES = 16_000_000
+QUEUED_VISIBILITY_TIMEOUT_S = 600.0
+QUEUED_VISIBILITY_POLL_S = 5.0
+QUEUED_PENDING_ROWS = 50_000
+VISIBILITY_QUERY_ROWS = 500
+log = logging.getLogger(__name__)
 
 
 class RowIngester(Protocol):
     def ingest(self, table: str, rows: list[dict[str, Any]]) -> None: ...
+
+    def ingest_lines(self, table: str, lines: list[str]) -> None: ...
 
 
 def json_value(value: object) -> object:
@@ -180,8 +193,160 @@ class StreamingIngester:
             )
 
 
+@dataclass(frozen=True)
+class _QueuedSubmission:
+    source_id: str
+    table: str
+    markers: tuple[tuple[int, str], ...]
+
+
+class QueuedIngester:
+    """Submit to DM without forcing a batch flush; completion is asynchronous.
+
+    History-row versions are retained for dependent mutations/conflict checks.
+    Ordinary reads and raw OTel submissions do not wait. A pending-row budget adds
+    backpressure rather than growing the receipt cache indefinitely.
+    """
+
+    def __init__(self, settings: KustoSettings, client: Any, ingest_client: Any = None) -> None:
+        self.database = settings.database
+        self.client = client
+        if ingest_client is None:
+            from azure.kusto.ingest import QueuedIngestClient
+
+            from .connection import connection_string
+
+            ingest_client = QueuedIngestClient(
+                connection_string(settings, cluster=settings.ingestion_cluster), auto_correct_endpoint=False
+            )
+        self.ingest_client = ingest_client
+        self._lock = threading.Lock()
+        self._pending: dict[str, _QueuedSubmission] = {}
+        self._pending_rows = 0
+
+    def ingest(self, table: str, rows: list[dict[str, Any]]) -> None:
+        markers = []
+        for row in rows:
+            version = datetime.fromisoformat(str(row[VERSION]).replace("Z", "+00:00"))
+            if version.tzinfo is None:
+                version = version.replace(tzinfo=timezone.utc)
+            markers.append((int(row[ROWID]), version.astimezone(timezone.utc).isoformat()))
+        offset = 0
+        for group in chunks([json_line(row) for row in rows], QUEUED_MAX_BYTES):
+            with self._lock:
+                full = self._pending_rows + len(group) > QUEUED_PENDING_ROWS
+            if full:
+                self.wait_for_pending()
+            source_id = self._enqueue(table, group)
+            submission = _QueuedSubmission(source_id, table, tuple(markers[offset : offset + len(group)]))
+            offset += len(group)
+            with self._lock:
+                self._pending[source_id] = submission
+                self._pending_rows += len(submission.markers)
+
+    def ingest_lines(self, table: str, lines: list[str]) -> None:
+        """Submit append-only raw OTel rows; these do not have history-row version markers."""
+        for group in chunks(lines, QUEUED_MAX_BYTES):
+            self._enqueue(table, group)
+
+    def _enqueue(self, table: str, lines: list[str]) -> str:
+        from azure.kusto.data.data_format import DataFormat
+        from azure.kusto.ingest import IngestionProperties, ReportLevel, StreamDescriptor
+        from azure.kusto.ingest.base_ingest_client import IngestionStatus
+
+        data = "\n".join(lines).encode("ascii")
+        source_id = uuid.uuid4()
+        props = IngestionProperties(
+            database=self.database,
+            table=table,
+            data_format=DataFormat.MULTIJSON,
+            flush_immediately=False,
+            report_level=ReportLevel.FailuresOnly,
+        )
+        # The SDK retries storage requests. Retrying the whole upload here could
+        # duplicate a submission after an ambiguous enqueue failure.
+        with io.BytesIO(data) as stream:
+            result = self.ingest_client.ingest_from_stream(
+                StreamDescriptor(stream, source_id=source_id, size=len(data)), props
+            )
+        if result is None or result.status != IngestionStatus.QUEUED:
+            raise RuntimeError(f"Queued ingestion into {self.database}.{table} returned no queued acknowledgement")
+        log.debug(
+            "Kusto queued %d rows into %s.%s; source=%s (not yet confirmed ingested)",
+            len(lines),
+            self.database,
+            table,
+            source_id,
+        )
+        return str(source_id)
+
+    def wait_for_pending(self, table: str | None = None) -> None:
+        """Wait for this process's queued history rows without draining shared status queues."""
+        with self._lock:
+            pending = [p for p in self._pending.values() if table is None or p.table == table]
+        deadline = time.monotonic() + QUEUED_VISIBILITY_TIMEOUT_S
+        while pending:
+            remaining = []
+            for submission in pending:
+                if time.monotonic() >= deadline:
+                    self._timeout(pending)
+                if self._visible(submission, deadline):
+                    with self._lock:
+                        if self._pending.pop(submission.source_id, None) is not None:
+                            self._pending_rows -= len(submission.markers)
+                else:
+                    remaining.append(submission)
+            pending = remaining
+            if pending:
+                delay = min(QUEUED_VISIBILITY_POLL_S, deadline - time.monotonic())
+                if delay <= 0:
+                    self._timeout(pending)
+                time.sleep(delay)
+
+    def _timeout(self, pending: list[_QueuedSubmission]) -> None:
+        sources = ", ".join(f"{p.table}:{p.source_id}" for p in pending[:10])
+        raise TimeoutError(
+            f"Queued ingestion was not visible within {QUEUED_VISIBILITY_TIMEOUT_S:g} seconds "
+            f"in database {self.database}; pending sources: {sources}. "
+            "Inspect DM ingestion failures; use inline or streaming for tables requiring immediate visibility. "
+            "These submissions remain pending and have not been resubmitted."
+        )
+
+    def _visible(self, submission: _QueuedSubmission, deadline: float) -> bool:
+        from datetime import timedelta
+
+        from azure.kusto.data import ClientRequestProperties
+
+        from .connection import QUERY_TIMEOUT, Result
+
+        for start in range(0, len(submission.markers), VISIBILITY_QUERY_ROWS):
+            markers = submission.markers[start : start + VISIBILITY_QUERY_ROWS]
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._timeout([submission])
+            values = ", ".join(f"{rowid}, datetime({version})" for rowid, version in markers)
+            versions = [version for _, version in markers]
+            kql = (
+                f"datatable(rowid:long, _v:datetime)[{values}]"
+                f" | join kind=leftanti ({quote(submission.table)}"
+                f" | where ['_v'] between (datetime({min(versions)}) .. datetime({max(versions)}))"
+                " | project rowid, _v) on rowid, _v | count"
+            )
+            props = ClientRequestProperties()
+            props.set_option(
+                ClientRequestProperties.request_timeout_option_name,
+                timedelta(seconds=min(remaining, QUERY_TIMEOUT.total_seconds())),
+            )
+            result = Result.from_response(self.client.execute(self.database, kql, props))
+            if len(result.rows) != 1 or len(result.rows[0]) != 1:
+                raise RuntimeError("Queued ingestion visibility query returned an invalid result")
+            if int(result.rows[0][0]) != 0:
+                return False
+        return True
+
+
 class TableIngester:
-    """Route each table to its selected synchronous ingestion backend."""
+    """Route each table to its selected ingestion backend."""
 
     def __init__(self, settings: KustoSettings, ingesters: dict[str, RowIngester]) -> None:
         self.settings = settings
@@ -192,6 +357,11 @@ class TableIngester:
 
     def ingest_lines(self, table: str, lines: list[str]) -> None:
         self.ingesters[self.settings.ingestion_mode(table)].ingest_lines(table, lines)
+
+    def wait_for_pending(self, table: str | None = None) -> None:
+        queued = self.ingesters.get("queued")
+        if isinstance(queued, QueuedIngester):
+            queued.wait_for_pending(table)
 
 
 def ingestion_capacity(client: Any, database: str) -> int | None:
@@ -204,16 +374,28 @@ def ingestion_capacity(client: Any, database: str) -> int | None:
 
 
 def uses_inline(settings: KustoSettings) -> bool:
-    return not settings.streaming or "inline" in settings.table_ingestion.values()
+    return (
+        settings.default_ingestion == "inline"
+        or settings.ingestion == "auto"
+        or "inline" in settings.table_ingestion.values()
+    )
 
 
 def make_ingester(
-    settings: KustoSettings, client: Any, ingest_client: Any = None, *, inline_slots: int | None = None
+    settings: KustoSettings,
+    client: Any,
+    ingest_client: Any = None,
+    *,
+    inline_slots: int | None = None,
+    queued_client: Any = None,
 ) -> RowIngester:
     """Use the global default unless the table has an explicit override."""
     ingesters: dict[str, RowIngester] = {"inline": InlineIngester(client, settings.database, slots=inline_slots)}
-    if settings.streaming or "streaming" in settings.table_ingestion.values():
+    modes = {settings.default_ingestion, *settings.table_ingestion.values()}
+    if "streaming" in modes:
         ingesters["streaming"] = StreamingIngester(settings, ingest_client)
-    if settings.table_ingestion:
+    if "queued" in modes:
+        ingesters["queued"] = QueuedIngester(settings, client, queued_client)
+    if settings.table_ingestion or settings.ingestion == "auto":
         return TableIngester(settings, ingesters)
-    return ingesters["streaming" if settings.streaming else "inline"]
+    return ingesters[settings.default_ingestion]
