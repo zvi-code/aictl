@@ -402,6 +402,8 @@ FILE_EVENT_MIN_GAP_S = 0.25
 OTHER_FILES_PATH = "(other files)"
 # Paths whose last size is kept, so a long build cannot grow this without limit.
 MAX_TRACKED_FILE_SIZES = 50_000
+# Written all the time by an open editor, with or without AI work; these never keep the pace up.
+STATE_FILE_SUFFIXES = (".vscdb", ".vscdb-wal", ".vscdb-shm", ".vscdb-journal", "storage.json", ".db-wal", ".db-shm")
 # Dropped even under a tool's own folder: ~/.copilot/pkg holds whole node_modules trees.
 ALWAYS_IGNORED_DIR_NAMES = frozenset({".git", "node_modules", "__pycache__"})
 
@@ -432,8 +434,9 @@ class _FileEventSampler:
         self._tool_pending: dict[str, tuple[str, float, int]] = {}
 
     def record(self, path: str, growth: int, size: int, tool_hint: str | None) -> None:
-        if tool_hint:
+        if tool_hint and not path.endswith(STATE_FILE_SUFFIXES):
             # A tool is at work. A build in the same folder must not keep polling at full speed.
+            # An editor's state database is written while a person types; that is not AI work.
             PACE.note_activity()
         now = self._clock()
         if now - self._window_start >= 1.0:
