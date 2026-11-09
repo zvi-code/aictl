@@ -98,6 +98,10 @@ The start prints `history store: kusto://<host>/aictl (Kusto, azcli auth; no SQL
 
 Open the dashboard as usual (`aictl daemon serve` prints the URL). In the Kusto web UI or any KQL client, `['sessions'] | count` and `['requests'] | summarize count() by ['tool']` show the rows arriving; `aictl_information_schema | summarize count() by ['scope']` lists the schema. Every environment variable, hook and ingester works the same as with SQLite; the only visible differences are that the Settings screen's "Data sources" shows the cluster, and the size budget never evicts (retention is the database's retention policy, set from `retention_days`).
 
+## What to expect
+
+Measured on a `Dev(No SLA)` cluster in West Europe from a Mac: a query answers in about 0.1 to 0.2 s, so anything that asks many questions in a row is slower than on SQLite. The first start writes the machine's recent history (thousands of rows) and its first flushes take minutes. The board's first answer is one computation of about 175 queries, 30 to 50 s; after that the daemon serves the last answer at once and recomputes behind it, so the dashboard stays responsive and is up to about a minute behind the cluster. The machine, context and settings routes answer in under two seconds. A cluster in your own region, or a larger SKU, shortens all of this.
+
 ## Troubleshooting
 
 - `Principal 'msauser=...' is not authorized` in the Kusto web UI: the web UI signed you in as your personal Microsoft account, which Kusto treats as a different principal from the Azure AD user that created the cluster. Either switch the web UI's directory to the cluster's tenant (account menu, Switch directory), open the cluster from the Azure portal (Data, Query), or add the account as a principal: `.add database ['aictl'] admins ('msauser=<you>@outlook.com')`.
