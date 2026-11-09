@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 from collections.abc import Iterable, Iterator
@@ -66,6 +67,12 @@ from .vscode_chat_logs import snapshot_events
 log = logging.getLogger(__name__)
 
 POLL_INTERVAL_S = 60.0
+# A Claude transcript line's first "type" is the record's own for every record read
+# here (a message's inner type comes after it). These records are a third of an active
+# transcript's bytes and no reader uses them, so they are not parsed.
+_TYPE_RE = re.compile(rb'"type":"([a-z_-]+)"')
+_HEAD_BYTES = 600
+_UNREAD_TYPES = frozenset({b"api-request-blob", b"api-request-shape", b"queued_command", b"prompt_snapshot"})
 # On a restart, files idle this long before the previous run's last poll are not read again.
 RESTART_GRACE_S = 3600.0
 # Windows can report the size a file had when another process opened it, and a
@@ -1099,6 +1106,9 @@ class TranscriptUsageIngester:
                             break
                         offset += len(line)
                         self._offsets[path] = offset
+                        head = _TYPE_RE.search(line, 0, _HEAD_BYTES)
+                        if head is not None and head.group(1) in _UNREAD_TYPES:
+                            continue
                         try:
                             obj = json.loads(line)
                         except ValueError:
