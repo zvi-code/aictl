@@ -1,0 +1,19 @@
+// MCP servers. For each server: how often it is called, how often a call fails, how long a call takes, and how much
+// of all tool-result text it returns. A result's tokens are estimated as its bytes divided by four.
+let M = TC | extend norm = replace_string(tool_name, "__", ":") | where norm startswith "mcp:"
+  | extend srv = tostring(split(norm, ":")[1]), mcp_tool = tostring(split(norm, ":")[2]), tok = output_bytes / 4.0;
+let Tot = TC | summarize all_tok = sum(output_bytes / 4.0), all_calls = count() by tool;
+M | summarize calls = count(), tools_used = dcount(mcp_tool), contexts = dcount(stream), bad = countif(failed), tok_sum = sum(tok),
+              p50_ms = percentile(duration_ms, 50), p90_ms = percentile(duration_ms, 90) by tool, srv
+  | join kind = inner Tot on tool
+  | project tool, mcp_server = srv, calls, tools_used, contexts, fail_pct = round(100.0 * bad / calls, 2), tok_per_call = round(tok_sum / calls),
+            share_calls_pct = round(100.0 * calls / all_calls, 1), share_tok_pct = round(100.0 * tok_sum / all_tok, 1), p50_ms, p90_ms
+  | order by calls desc | take 20
+  | as servers;
+M | summarize calls = count(), bad = countif(failed), tok_sum = sum(tok), p90_ms = percentile(duration_ms, 90) by tool, srv, mcp_tool
+  | top 12 by tok_sum
+  | project tool, mcp_server = srv, mcp_tool, calls, fail_pct = round(100.0 * bad / calls, 2), tok_per_call = round(tok_sum / calls), tok_sum = round(tok_sum), p90_ms
+  | as top_tools;
+let NC = toscalar(M | count);
+print applies = NC >= 50, samples = NC, note = "MCP calls"
+| as verdict

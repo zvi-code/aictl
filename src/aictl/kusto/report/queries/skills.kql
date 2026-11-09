@@ -1,0 +1,30 @@
+// Skills. A skill load is a call of the skill tool; its target is the skill name. For each skill: the tool calls of
+// the Span requests before the load against the Span requests after it, in the same context. Then the contexts that
+// loaded a skill against those that did not.
+let Span = 10;
+let SK = TC | where tolower(tool_name) == "skill" and isnotempty(target) | project stream, tool, skill = target, sseq = seq;
+let Loads = SK | summarize loads = count(), contexts = dcount(stream) by tool, skill;
+TC | where tolower(tool_name) != "skill"
+  | join kind = inner (SK | project stream, skill, sseq) on stream
+  | where seq != sseq and seq >= sseq - Span and seq <= sseq + Span
+  | extend after = seq > sseq
+  | summarize calls_before = countif(not(after)), fb = countif(not(after) and failed), rb = countif(not(after) and rep),
+              calls_after = countif(after), fa = countif(after and failed), ra = countif(after and rep) by tool, skill
+  | join kind = rightouter Loads on tool, skill
+  | project tool = tool1, skill = skill1, loads, contexts, calls_before = coalesce(calls_before, 0), calls_after = coalesce(calls_after, 0),
+            fail_pct_before = iff(calls_before > 0, round(100.0 * fb / calls_before, 1), real(null)), repeat_pct_before = iff(calls_before > 0, round(100.0 * rb / calls_before, 1), real(null)),
+            fail_pct_after = iff(calls_after > 0, round(100.0 * fa / calls_after, 1), real(null)), repeat_pct_after = iff(calls_after > 0, round(100.0 * ra / calls_after, 1), real(null))
+  | order by loads desc | take 30
+  | as skill_help;
+let HasSkill = SK | distinct stream | extend has_skill = true;
+TC | summarize calls = count(), failed = countif(failed), reps = countif(rep), edits = countif(is_edit) by stream, tool
+  | join kind = inner (RQ | summarize requests = count(), usd = sum(cost_usd) by stream) on stream
+  | join kind = leftouter HasSkill on stream | extend has_skill = coalesce(has_skill, false)
+  | where requests >= 5
+  | summarize contexts = count(), requests_p50 = percentile(requests, 50), usd_p50 = round(percentile(usd, 50), 2), fail_pct = round(100.0 * sum(failed) / sum(calls), 2),
+              repeat_pct = round(100.0 * sum(reps) / sum(calls), 2) by tool, has_skill
+  | order by tool asc, has_skill desc
+  | as with_without;
+let NL = toscalar(SK | count);
+print applies = NL >= 20, samples = NL, span = Span, note = "skill loads"
+| as verdict

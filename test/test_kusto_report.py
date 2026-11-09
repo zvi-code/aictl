@@ -82,7 +82,64 @@ def synthetic() -> dict[str, list[list[dict]]]:
     ]
     return {"dna": [sessions, [{"session_id": "aaaaaaaa", "pos": 9, "streak": 3}],
                     [{"motif": "BRR", "tool": "tool-a", "sessions": 1}, {"motif": "ORO", "tool": "tool-b", "sessions": 1}]],
-            "relay": relay, "cost": cost, "slow": slow, "context": context}
+            "relay": relay, "cost": cost, "slow": slow, "context": context, **synthetic_convergence()}
+
+
+def synthetic_convergence() -> dict[str, list[list[dict]]]:
+    """Rows for the sections on returns, stuck stretches, models, skills and MCP servers, in each query's table order."""
+    spend = [5, 5, 5, 5, 5, 5, 10, 20, 20, 20]
+    files = [8, 4, 2, 2, 2, 1, 1, 0, 0, 0]
+    edits = [0, 0, 0, 0, 0, 0, 2, 6, 6, 6]
+    returns = [
+        [{"tool": "tool-a", "part": i + 1, "spend_pct": float(spend[i]), "new_files_pct": 5.0 * files[i], "new_files": files[i],
+          "calls": 50, "edits": edits[i], "fail_pct": 1.0, "repeat_pct": 2.0 + 3 * i, "usd": float(spend[i])} for i in range(10)],
+        [{"tool": "tool-a", "sessions": 4, "requests_p50": 200, "requests_max": 300, "usd": 100.0}],
+        [{"applies": True, "samples": 4, "min_requests": 100, "note": ""}],
+    ]
+    stuck = [
+        [{"tool": "tool-a", "model": "model-x", "requests": 1000, "stuck_requests": 50, "usd": 100.0, "stuck_usd": 10.0, "wall_h": 10.0,
+          "stuck_wall_h": 1.0, "share_requests": 5.0, "share_usd": 10.0, "share_wall": 10.0},
+         {"tool": "tool-a", "model": "model-y", "requests": 500, "stuck_requests": 0, "usd": 100.0, "stuck_usd": 0.0, "wall_h": 5.0,
+          "stuck_wall_h": 0.0, "share_requests": 0.0, "share_usd": 0.0, "share_wall": 0.0}],
+        [{"tool": "tool-a", "why": "same calls repeated", "stretches": 5, "requests": 50, "usd": 10.0, "len_p50": 8, "len_max": 20}],
+        [{"tool": "tool-a", "tool_name": "Edit", "calls": 40, "failed": 0}],
+        [{"tool": "tool-a", "model": "model-x", "session": "aaaaaaaa", "agent": "main agent", "requests": 100, "stuck_requests": 20,
+          "stuck_usd": 4.0, "runs": json.dumps([{"a": 10, "n": 20, "why": "same calls repeated"}])}],
+        [{"applies": True, "samples": 5, "min_run": 4, "window": 20, "note": ""}],
+    ]
+
+    def model(name, usd, per_request, calls_per_edit, per_file, edits=100):
+        some = edits > 0
+        return {"tool": "tool-a", "model": name, "requests": 1000, "usd": usd, "calls": 2000, "edits": edits, "files": edits // 2,
+                "usd_per_request": per_request, "calls_per_request": 2.0, "out_tok_per_request": 1000.0,
+                "calls_per_edit": calls_per_edit if some else None, "usd_per_file": per_file if some else None,
+                "rework_pct": 30.0 if some else None, "fail_pct": 1.0, "repeat_pct": 5.0, "ctx_p50": 100000}
+
+    models = [
+        [model("model-x", 200.0, 0.2, 20.0, 4.0), model("model-y", 50.0, 0.05, 30.0, 1.0), model("model-z", 5.0, 0.005, None, None, edits=0)],
+        [{"applies": True, "samples": 2, "min_requests": 50, "window": 20, "note": ""}],
+    ]
+
+    def skill(name, before, after, calls_before=100):
+        return {"tool": "tool-a", "skill": name, "loads": 5, "contexts": 3, "calls_before": calls_before, "calls_after": 100,
+                "fail_pct_before": 1.0 if calls_before else None, "repeat_pct_before": before, "fail_pct_after": 1.0, "repeat_pct_after": after}
+
+    skills = [
+        [skill("skill-a", 10.0, 30.0), skill("skill-b", 20.0, 10.0), skill("skill-c", 12.0, 25.0), skill("skill-d", None, 8.0, calls_before=0)],
+        [{"tool": "tool-a", "has_skill": True, "contexts": 5, "requests_p50": 40, "usd_p50": 3.0, "fail_pct": 1.0, "repeat_pct": 15.0},
+         {"tool": "tool-a", "has_skill": False, "contexts": 20, "requests_p50": 10, "usd_p50": 0.5, "fail_pct": 1.0, "repeat_pct": 10.0}],
+        [{"applies": True, "samples": 20, "span": 10, "note": ""}],
+    ]
+    mcp = [
+        [{"tool": "tool-a", "mcp_server": "srv-a", "calls": 1000, "tools_used": 10, "contexts": 20, "fail_pct": 0.5, "tok_per_call": 400.0,
+          "share_calls_pct": 80.0, "share_tok_pct": 60.0, "p50_ms": 30.0, "p90_ms": 900.0},
+         {"tool": "tool-a", "mcp_server": "srv-b", "calls": 200, "tools_used": 3, "contexts": 5, "fail_pct": 10.0, "tok_per_call": 50.0,
+          "share_calls_pct": 16.0, "share_tok_pct": 2.0, "p50_ms": 40.0, "p90_ms": 20000.0}],
+        [{"tool": "tool-a", "mcp_server": "srv-a", "mcp_tool": "query", "calls": 500, "fail_pct": 0.0, "tok_per_call": 800.0,
+          "tok_sum": 400000.0, "p90_ms": 5000.0}],
+        [{"applies": True, "samples": 1200, "note": ""}],
+    ]
+    return {"returns": returns, "stuck": stuck, "models": models, "skills": skills, "mcp": mcp}
 
 
 def results(tables=None, empty=(), failed=None) -> list[SectionResult]:
@@ -225,7 +282,86 @@ def test_headlines_stay_true_when_nothing_is_found(tmp_path):
     assert "No combination" in out["slow"]["headline"]
 
 
+def test_convergence_headlines_carry_the_numbers_of_the_rows(tmp_path):
+    out = render(tmp_path, page())["sections"]
+    assert out["returns"]["headline"] == ("Long tool-a sessions: the last three tenths take 60% of the spend "
+                                          "and reach 0% of the new files")
+    assert any("18 of 20 edits" in f for f in out["returns"]["findings"])
+    assert out["stuck"]["headline"] == "Going round in circles took 5.0% of the spend; model-x on tool-a lost 10.0% of its own"
+    assert any("model-y" in f and "no stuck stretch" in f for f in out["stuck"]["findings"])
+    assert out["models"]["headline"] == "One edited file costs $4.00 with model-x and $1.00 with model-y: 4.0 times apart"
+    assert any("4.0 times more per request" in f and "20.0 tool calls per edit against 30.0" in f for f in out["models"]["findings"])
+    assert out["skills"]["headline"] == "After a skill loads, the agent repeats itself more in 2 of 3 skills, and less in 1"
+    assert any("skill-d" in f and "no before" in f for f in out["skills"]["findings"])
+    assert out["mcp"]["headline"] == "One MCP server, srv-a, returns 60% of all tool-result text in tool-a"
+    assert any("srv-b" in f and "20.0 s" in f for f in out["mcp"]["findings"])
+    assert any("10.0% of the calls to srv-b" in f and "20 of 200" in f for f in out["mcp"]["findings"])
+
+
+def test_convergence_headlines_stay_true_when_nothing_is_found(tmp_path):
+    t = synthetic()
+    for row in t["returns"][0]:
+        row["spend_pct"], row["new_files_pct"] = 10.0, 10.0
+    for row in t["stuck"][0]:
+        row.update(stuck_requests=0, stuck_usd=0.0, share_requests=0.0, share_usd=0.0, share_wall=0.0)
+    t["stuck"][1], t["stuck"][2], t["stuck"][3] = [], [], []
+    t["stuck"][4] = [dict(t["stuck"][4][0], applies=False, samples=0)]
+    t["models"][0] = t["models"][0][:1]
+    for row in t["skills"][0]:
+        row.update(calls_before=0, repeat_pct_before=None, fail_pct_before=None)
+    for row in t["mcp"][0]:
+        row["share_tok_pct"] = 10.0
+    out = render(tmp_path, page(tables=t))["sections"]
+    for name in ("returns", "stuck", "models", "skills", "mcp"):
+        assert out[name]["notice"] is None, (name, out[name]["noticeText"])
+    assert out["returns"]["headline"].startswith("Long sessions keep reaching new files to the end")
+    assert out["stuck"]["headline"].startswith("No context went round in circles")
+    assert out["models"]["headline"].startswith("Too few models with 20 edits or more")
+    assert out["skills"]["headline"].startswith("Skills load before any work starts")
+    assert out["mcp"]["headline"].startswith("No MCP server dominates")
+
+
+def test_too_few_long_sessions_is_said_in_the_headline(tmp_path):
+    t = synthetic()
+    t["returns"][2] = [dict(t["returns"][2][0], applies=False, samples=1)]
+    out = render(tmp_path, page(tables=t))["sections"]
+    assert out["returns"]["headline"] == "Too few long sessions to judge their returns: 1 with 100 requests or more"
+
+
+def test_a_shared_prelude_goes_in_front_of_the_query():
+    shared = [s for s in SECTIONS if s.prelude]
+    assert {s.name for s in shared} >= {"returns", "stuck", "models", "skills", "mcp"}
+    for s in shared:
+        queries = Path(R.__file__).parent / "queries"
+        prelude = (queries / s.prelude).read_text(encoding="utf-8").strip()
+        own = (queries / s.query).read_text(encoding="utf-8").strip()
+        text = read_query(s)
+        assert text.index(prelude) < text.index(own)
+
+
 # ---- the command ----
+
+def test_command_runs_only_the_named_sections_in_the_given_order(monkeypatch, tmp_path):
+    from aictl.cli import main
+
+    monkeypatch.setattr("aictl.commands.admin.kusto_settings", lambda: KustoSettings("http://localhost:1", "d", streaming=False))
+    seen = {}
+
+    def fake(settings, days=None, sections=None, on_result=None):
+        seen["names"] = [s.name for s in sections]
+        rs = {r.name: r for r in results()}
+        return [rs[n] for n in seen["names"]]
+
+    monkeypatch.setattr(R, "run_report", fake)
+    out = tmp_path / "r.html"
+    res = CliRunner().invoke(main, ["db", "report", "--out", str(out), "--sections", "mcp, stuck"])
+    assert res.exit_code == 0, res.output
+    assert seen["names"] == ["mcp", "stuck"] and out.exists()
+    res = CliRunner().invoke(main, ["db", "report", "--out", str(tmp_path / "no.html"), "--sections", "mcp,nope"])
+    assert res.exit_code != 0 and "Unknown section: nope" in res.output
+    assert not (tmp_path / "no.html").exists()
+
+
 
 def test_command_without_a_cluster_exits_with_a_message(monkeypatch, tmp_path):
     from aictl.cli import main
