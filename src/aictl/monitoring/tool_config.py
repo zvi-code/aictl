@@ -53,6 +53,9 @@ class OTelConfig:
     file_path: str = ""  # For "file" exporter — the JSON-lines path
     capture_content: bool = False
     source: str = ""  # "vscode-settings", "codex-toml", "env-var", etc.
+    # Field -> environment variable the value came from, e.g. {"enabled": "COPILOT_OTEL_ENABLED"}.
+    # Read by normalize_sections() for the rows' sources; not part of to_dict().
+    env_names: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -130,6 +133,14 @@ class ToolConfig:
     managed_floors: tuple[str, ...] | None = None
     # Finished rows of the "agents" section, built by the parser. Not part of to_dict().
     agent_rows: list[dict] = field(default_factory=list)
+    # Every environment variable the tool reads, set ones first, built by
+    # env_var_rows(). Each entry: {"name", "set", "value", "masked", "source",
+    # "in_process", "persisted": [{"origin", "kind", "value"}], "drives": [{"key", "label"}],
+    # "label", "description", "section", "documented"}. Always in to_dict().
+    env_vars: list[dict] = field(default_factory=list)
+    # Variables a settings file sets for the tool's sessions (Claude Code's
+    # ``env`` key), as {path: {name: value}}. Read by env_var_rows(); not part of to_dict().
+    env_blocks: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)
@@ -138,7 +149,7 @@ class ToolConfig:
         del d["covered_keys"]
         del d["setting_values"]
         del d["project_root"]
-        for internal in ("file_keys", "key_sections", "key_labels", "key_notes", "generic_keys", "managed_floors", "agent_rows"):
+        for internal in ("file_keys", "key_sections", "key_labels", "key_notes", "generic_keys", "managed_floors", "agent_rows", "env_blocks"):
             del d[internal]
         if not self.feature_groups:
             del d["feature_groups"]
@@ -373,6 +384,15 @@ def _otel_source_file(cfg: ToolConfig, first_file: str) -> str:
     return first_file
 
 
+# Source of a value read from an environment variable: "env:<NAME>". The same
+# form as the origins in effective_config and context_audit.
+ENV_SOURCE = "env:"
+
+
+def env_source(name: str) -> str:
+    return ENV_SOURCE + name
+
+
 SCOPES = (
     "default",
     "system",
@@ -458,6 +478,8 @@ def setting_scope(source: str, project_root: str = "") -> str:
     """
     if source in SCOPES:
         return source
+    if source.startswith(ENV_SOURCE):
+        return "env"
     if not source or not (os.path.isabs(os.path.expanduser(source)) or _DRIVE_RE.match(source)):
         return "default"
     path = _norm_path(source)
@@ -611,8 +633,8 @@ def _finish_rows(
             lookup = row.pop("_lookup", row["key"])
             key = row["key"]
             source = row["source"]
-            if section == "telemetry" and key.startswith("otel.") and telemetry_env:
-                scope = "env"
+            if section == "telemetry" and key.startswith("otel.") and telemetry_env and not source:
+                scope = "env"  # an OTel record that does not name its variables
             else:
                 scope = setting_scope(source, root)
             entries = cfg.setting_values.get(lookup) or cfg.setting_values.get(key) or []
@@ -719,7 +741,14 @@ def normalize_sections(cfg: ToolConfig, texts: dict[str, str | None] | None = No
     telemetry_flat = [k for k in cfg.settings if _key_section(k) == "telemetry" and k not in cfg.generic_keys]
     if otel:
         otel_src = _otel_source_file(cfg, first_file)
-        add("telemetry", _row("otel.enabled", cfg.otel.enabled, otel_src, label="Export enabled"))
+        names = cfg.otel.env_names
+
+        def otel_source(attr: str) -> str:
+            # A value from an environment variable names it; the rest follow the variable that turned export on.
+            name = names.get(attr) or (names.get("enabled") if cfg.otel.source == "env-var" else "")
+            return env_source(name) if name else otel_src
+
+        add("telemetry", _row("otel.enabled", cfg.otel.enabled, otel_source("enabled"), label="Export enabled"))
         for attr, label in (
             ("exporter", "Exporter"),
             ("endpoint", "Endpoint"),
@@ -728,7 +757,7 @@ def normalize_sections(cfg: ToolConfig, texts: dict[str, str | None] | None = No
             ("source", "Detected from"),
         ):
             if attr in otel:
-                add("telemetry", _row("otel." + attr, otel[attr], otel_src, label=label))
+                add("telemetry", _row("otel." + attr, otel[attr], otel_source(attr), label=label))
     elif telemetry_flat:
         key = telemetry_flat[0]
         add("telemetry", _row(key, False, source_of(key), label="Telemetry", note="Telemetry: off."))
@@ -790,6 +819,9 @@ def normalize_sections(cfg: ToolConfig, texts: dict[str, str | None] | None = No
     for ckey, entry in catalog.items():
         if ckey in shown or normalize_key(ckey) in seen or _SECRET_RE.search(normalize_key(ckey)):
             continue
+        if ckey.startswith("env.") and _ENV_NAME_RE.match(ckey[4:]):
+            continue  # an environment variable: listed in env_vars, with whether it is set
+
         default = entry.get("default")
         section = _catalog_section(entry) or _key_section(ckey)
         row = _row(ckey, default, "", label=str(entry.get("label") or ""))
@@ -933,6 +965,134 @@ def settings_catalog(tool: str) -> dict[str, dict]:
     return _catalog_cache[2].get(tool) or _catalog_cache[2].get(_CATALOG_FALLBACK.get(tool, ""), {})
 
 
+# ─── Environment variables ──────────────────────────────────────
+# The catalog of variables a tool reads is its ``env.<NAME>`` entries in
+# settings-catalog.yaml (from each tool's documentation). Variables that are set
+# and start with one of the tool's prefixes are listed too, as undocumented.
+_ENV_PREFIXES: dict[str, tuple[str, ...]] = {
+    "copilot-cli": ("COPILOT_",),
+    "copilot-desktop": ("COPILOT_",),
+    "copilot": ("COPILOT_OTEL_",),
+    "vscode": ("COPILOT_OTEL_",),
+    "claude-code": ("ANTHROPIC_", "CLAUDE_CODE_", "CLAUDE_"),
+    "codex-cli": ("CODEX_", "OPENAI_"),
+    "cursor": ("CURSOR_",),
+    "gemini-cli": ("GEMINI_",),
+}
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# A variable whose name says it holds a credential, or whose value can carry one.
+_ENV_SECRET_RE = re.compile(r"TOKEN|KEY|SECRET|PASSWORD|PASSWD|AUTH|CREDENTIAL|HEADERS|COOKIE|EMAIL", re.I)
+ENV_MASK = "<hidden>"
+ENV_VALUE_MAX = 300
+
+
+# VS Code's own AI settings and the Copilot Chat extension read the same variables.
+_ENV_CATALOG_OF = {"vscode": "copilot"}
+
+
+def env_catalog(tool: str) -> dict[str, dict]:
+    """Documented environment variables of *tool*, by name, in catalog order."""
+    return {
+        key[4:]: entry
+        for key, entry in settings_catalog(_ENV_CATALOG_OF.get(tool, tool)).items()
+        if key.startswith("env.") and _ENV_NAME_RE.match(key[4:])
+    }
+
+
+def _related(tool: str, name: str) -> bool:
+    prefixes = _ENV_PREFIXES.get(tool, ())
+    return bool(prefixes) and name.startswith(prefixes)
+
+
+def env_names_of(tool: str, environ: dict[str, str] | None = None) -> list[str]:
+    """The catalog's names, then set variables with one of the tool's prefixes."""
+    environ = os.environ if environ is None else environ
+    names = list(env_catalog(tool))
+    return names + sorted(n for n in environ if _related(tool, n) and n not in names)
+
+
+def env_display(name: str, value: object) -> tuple[str, bool]:
+    """(text to show, masked): a credential name or a secret-shaped value is never shown."""
+    from ..context_audit import _redact
+
+    text = str(value)
+    if _ENV_SECRET_RE.search(name) or _redact(text) != text:
+        return ENV_MASK, True
+    return text[:ENV_VALUE_MAX], False
+
+
+def env_var_rows(
+    cfg: ToolConfig,
+    persisted: dict[str, dict[str, str]] | None = None,
+    environ: dict[str, str] | None = None,
+) -> list[dict]:
+    """Every environment variable *cfg*'s tool reads: set ones first, each group in catalog order.
+
+    *persisted* is ``context_audit._persistent_env()``: values a shell profile
+    or the registry sets for new shells, by origin; ``cfg.env_blocks`` are the
+    values a settings file sets for the tool's sessions. ``persisted`` lists
+    both, each with its ``kind``. ``drives`` names the rows whose chain has an
+    entry from the variable.
+    """
+    environ = os.environ if environ is None else environ
+    persisted = persisted or {}
+    catalog = env_catalog(cfg.tool)
+    drives: dict[str, list[dict]] = {}
+    for section in cfg.sections:
+        for row in section.get("rows") or []:
+            sources = {str(c.get("source") or "") for c in row.get("chain") or []} | {str(row.get("source") or "")}
+            for src in sorted(sources):
+                if src.startswith(ENV_SOURCE):
+                    drives.setdefault(src[len(ENV_SOURCE) :], []).append(
+                        {"key": row["key"], "label": row.get("label") or row["key"]}
+                    )
+    names = env_names_of(cfg.tool, environ)
+    names += [n for n in drives if n not in names]
+    names += sorted({n for values in persisted.values() for n in values if _related(cfg.tool, n) and n not in names})
+    names += sorted({n for values in cfg.env_blocks.values() for n in values if n not in names})
+    out = []
+    for name in names:
+        entry = catalog.get(name) or {}
+        here = environ.get(name)
+        saved = [
+            {"origin": origin, "kind": kind, "value": env_display(name, values[name])[0]}
+            for kind, origins in (("settings", cfg.env_blocks), ("persisted", persisted))
+            for origin, values in origins.items()
+            if name in values
+        ]
+        later = [v[name] for v in [*cfg.env_blocks.values(), *persisted.values()] if name in v]
+        raw = here if here is not None else (later[0] if later else None)
+        value, masked = env_display(name, raw) if raw is not None else ("", False)
+        out.append(
+            {
+                "name": name,
+                "set": raw is not None,
+                "value": value,
+                "masked": masked,
+                "source": env_source(name),
+                "in_process": here is not None,
+                "persisted": saved,
+                "drives": drives.get(name, []),
+                "label": str(entry.get("label") or name),
+                "description": str(entry.get("description") or ""),
+                "section": str(entry.get("section") or ""),
+                "documented": bool(entry),
+            }
+        )
+    out.sort(key=lambda e: not e["set"])  # stable sort: set first
+    return out
+
+
+def env_scope_fill(cfg: ToolConfig) -> None:
+    """Name on the Environment layer every set variable of the tool, in this process or persisted."""
+    names = [e["name"] for e in cfg.env_vars if e["set"]]
+    for scope in cfg.scopes:
+        if scope.get("id") == "env":
+            head = _env_scope_head(list(scope.get("vars") or []))
+            note = str(scope.get("note") or "")
+            _env_scope_text(scope, names, note[len(head) :].strip() if note.startswith(head) else note)
+
+
 # Tools that read another tool's settings file use that tool's catalog when they have none.
 _CATALOG_FALLBACK = {"copilot-desktop": "copilot-cli"}
 
@@ -1072,7 +1232,6 @@ COPILOT_MANAGED_FILES: list[Path] = _per_os(
 )
 # Managed Copilot keys that are floors: they win over every other scope.
 COPILOT_FLOOR_KEYS: tuple[str, ...] = ("sandbox", "permissions.disableBypassPermissionsMode")
-COPILOT_CLI_ENV: tuple[str, ...] = ("COPILOT_MODEL", "COPILOT_HOME", "COPILOT_ALLOW_ALL", "COPILOT_CUSTOM_INSTRUCTIONS_DIRS")
 
 CLAUDE_MANAGED_FILES: list[Path] = _per_os(
     [_program_dir("ProgramFiles", r"C:\Program Files") / "ClaudeCode" / "managed-settings.json"],
@@ -1081,12 +1240,6 @@ CLAUDE_MANAGED_FILES: list[Path] = _per_os(
 )
 CLAUDE_MANAGED_DIRS: list[Path] = _per_os([], [Path("/Library/Application Support/ClaudeCode/managed-settings.d")], [])
 CLAUDE_POLICY_REGISTRY = r"SOFTWARE\Policies\ClaudeCode"
-CLAUDE_CODE_ENV: tuple[str, ...] = (
-    "ANTHROPIC_MODEL",
-    "CLAUDE_CODE_SUBAGENT_MODEL",
-    "CLAUDE_CONFIG_DIR",
-    "CLAUDE_CODE_ENABLE_TELEMETRY",
-)
 
 CODEX_SYSTEM_FILES: list[Path] = _per_os([], [Path("/etc/codex/config.toml")], [Path("/etc/codex/config.toml")])
 CODEX_REQUIREMENTS_FILES: list[Path] = _per_os(
@@ -1094,12 +1247,10 @@ CODEX_REQUIREMENTS_FILES: list[Path] = _per_os(
     [Path("/etc/codex/requirements.toml"), Path("/etc/codex/managed_config.toml")],
     [Path("/etc/codex/requirements.toml"), Path("/etc/codex/managed_config.toml")],
 )
-CODEX_ENV: tuple[str, ...] = ("CODEX_HOME",)
 
 # VS Code policy files probed on this OS; macOS policies come from configuration profiles and are not probed.
 VSCODE_POLICY_FILES: list[Path] = _per_os([], [], [Path("/etc/vscode/policy.json")])
 VSCODE_POLICY_REGISTRY = r"SOFTWARE\Policies\Microsoft\VSCode"
-VSCODE_ENV: tuple[str, ...] = ("COPILOT_OTEL_ENABLED", "OTEL_EXPORTER_OTLP_ENDPOINT")
 
 
 def _hklm_value_names(subkey: str) -> list[str] | None:
@@ -1149,12 +1300,24 @@ def _scope(sid: str, path: Path | str, exists: bool, note: str = "", label: str 
     }
 
 
-def _env_scope(names: tuple[str, ...], note: str = "") -> dict:
-    set_names = [n for n in names if os.environ.get(n)]
-    text = f"Variables read: {', '.join(names)}."
-    if set_names:
-        text += f" Set: {', '.join(set_names)}."
-    return _scope("env", "environment", bool(set_names), f"{text} {note}".strip())
+def _env_scope(tool: str, note: str = "") -> dict:
+    """The Environment layer: no file, so no path; ``vars`` names the variables of *tool* that are set.
+
+    collect_tool_configs() adds the variables persisted for new shells (env_scope_fill).
+    """
+    scope = _scope("env", "", False)
+    _env_scope_text(scope, [n for n in env_names_of(tool) if os.environ.get(n)], note)
+    return scope
+
+
+def _env_scope_head(names: list[str]) -> str:
+    return f"{len(names)} set: {', '.join(names)}." if names else "No variable of this tool is set."
+
+
+def _env_scope_text(scope: dict, names: list[str], note: str) -> None:
+    scope["vars"] = names
+    scope["exists"] = bool(names)
+    scope["note"] = f"{_env_scope_head(names)} {note}".strip()
 
 
 def _file_scope(sid: str, path: Path, note: str = "", label: str = "") -> dict:
@@ -1318,7 +1481,7 @@ def _agent_row(
 
     chain: list[dict] = []
     if fallback:
-        chain.append({"scope": "env", "value": fallback[1], "source": "", "line": 0})
+        chain.append({"scope": "env", "value": fallback[1], "source": env_source(fallback[0]), "line": 0})
     file_index = -1
     if defined:
         file_index = len(chain)
@@ -1496,8 +1659,10 @@ def _detect_otel_from_vscode_settings(settings: dict) -> OTelConfig:
     if not otel.enabled and os.environ.get("COPILOT_OTEL_ENABLED", "").lower() in ("true", "1"):
         otel.enabled = True
         otel.source = "env-var"
-    if not otel.endpoint:
-        otel.endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+        otel.env_names["enabled"] = "COPILOT_OTEL_ENABLED"
+    if not otel.endpoint and os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
+        otel.endpoint = os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"]
+        otel.env_names["endpoint"] = "OTEL_EXPORTER_OTLP_ENDPOINT"
     return otel
 
 
@@ -1579,6 +1744,13 @@ def _detect_otel_from_claude() -> OTelConfig:
         otel.endpoint = env.get("OTEL_EXPORTER_OTLP_ENDPOINT", "")
         otel.capture_content = env.get("OTEL_LOG_USER_PROMPTS", "").strip() in ("1", "true")
         otel.source = "env-var" if "CLAUDE_CODE_ENABLE_TELEMETRY" in os.environ else "aictl-env-file"
+        names = {
+            "enabled": "CLAUDE_CODE_ENABLE_TELEMETRY",
+            "exporter": "OTEL_METRICS_EXPORTER" if metrics_exp else "OTEL_LOGS_EXPORTER",
+            "endpoint": "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "capture_content": "OTEL_LOG_USER_PROMPTS",
+        }
+        otel.env_names = {k: n for k, n in names.items() if n in os.environ}
     return otel
 
 
@@ -1763,9 +1935,16 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
     for k in ("model", "effortLevel"):
         _record(cfg, k, k, layers)
     if os.environ.get("ANTHROPIC_MODEL"):
-        cfg.setting_values.setdefault("model", []).append(("env", os.environ["ANTHROPIC_MODEL"], "", "ANTHROPIC_MODEL"))
+        cfg.setting_values.setdefault("model", []).append(
+            ("env", os.environ["ANTHROPIC_MODEL"], env_source("ANTHROPIC_MODEL"), "ANTHROPIC_MODEL")
+        )
+        cfg.setting_sources["model"] = env_source("ANTHROPIC_MODEL")
     for k in ("env", "hooks"):
         _record(cfg, k, k, layers, value_fn=lambda _v: "configured")  # values can hold commands and tokens
+    for _scope_id, data, path in layers:
+        block = data.get("env") if isinstance(data, dict) else None
+        if isinstance(block, dict):
+            cfg.env_blocks[str(path)] = {str(k): str(v) for k, v in block.items() if _ENV_NAME_RE.match(str(k))}
     _record(cfg, "permissions", "permissions", layers, value_fn=_permission_lists)
     # Every other key of every settings file.
     _add_layers(cfg, layers, skip=("permissions.allow", "permissions.deny", "permissions.ask", "hooks", "env"))
@@ -1792,7 +1971,7 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
         _file_scope("user", user_path),
         _file_scope("project", proj_path),
         _file_scope("project-local", local_path),
-        _env_scope(CLAUDE_CODE_ENV, "ANTHROPIC_MODEL overrides the model key of every file."),
+        _env_scope(tool, "ANTHROPIC_MODEL overrides the model key of every file."),
         _scope("managed", managed_shown, bool(managed_layers), managed_note),
     ]
 
@@ -2020,7 +2199,7 @@ def _parse_vscode_config(root: Path, tool: str = "vscode") -> ToolConfig | None:
 
     # ── OTel ────────────────────────────────────────────────────
     cfg.otel = _detect_otel_from_vscode_settings(vscode_settings)
-    cfg.scopes = _vscode_scopes(user_path, ws_path)
+    cfg.scopes = _vscode_scopes(user_path, ws_path, cfg.tool)
 
     return cfg  # always show if VS Code is installed
 
@@ -2029,11 +2208,11 @@ def _parse_vscode_config(root: Path, tool: str = "vscode") -> ToolConfig | None:
 VSCODE_AI_PREFIXES: tuple[str, ...] = ("chat.", "inlineChat.", "mcp.", "claudeCode.")
 
 
-def _vscode_scopes(user_path: Path, ws_path: Path) -> list[dict]:
+def _vscode_scopes(user_path: Path, ws_path: Path, tool: str = "vscode") -> list[dict]:
     return [
         _file_scope("user", user_path),
         _file_scope("workspace", ws_path),
-        _env_scope(VSCODE_ENV, "Read for telemetry export only."),
+        _env_scope(tool, "Read for telemetry export only."),
         _vscode_policy_scope(),
     ]
 
@@ -2420,7 +2599,7 @@ def _parse_copilot_config(root: Path, tool: str = "copilot") -> ToolConfig | Non
             if k.startswith("ws:"):
                 cfg.setting_sources[k] = str(ws_settings_path)
 
-    cfg.scopes = _vscode_scopes(user_settings_path, ws_settings_path)
+    cfg.scopes = _vscode_scopes(user_settings_path, ws_settings_path, cfg.tool)
 
     # ── Agents: agent files, plus folders named by chat.agentFilesLocations ──
     folders: list[tuple[Path, str, tuple[str, ...]]] = [
@@ -2584,7 +2763,7 @@ def _parse_codex_config(root: Path | None = None, tool: str = "codex-cli") -> To
             f"Profile {profile_name}." if profile_name else "No profile is selected.",
         ),
         _scope("project", proj_path or "", bool(proj_path and proj_path.is_file()), project_note),
-        _env_scope(CODEX_ENV),
+        _env_scope(tool),
         _scope("managed", req_shown, bool(requirements), "Requirements: every key set here is locked.", "Requirements"),
     ]
 
@@ -3271,7 +3450,7 @@ def _parse_copilot_home_config(root: Path, tool: str = "copilot-cli") -> ToolCon
         ("user", flat(settings), settings_path),
         ("project", flat(raw["project"]), proj_path),
         ("project-local", flat(raw["project-local"]), local_path),
-        ("env", {"model": env_model} if env_model else None, ""),
+        ("env", {"model": env_model} if env_model else None, env_source("COPILOT_MODEL")),
         ("managed", top or None, managed_path or ""),
     ]
     for key, (section, label) in _COPILOT_CLI_KEYS.items():
@@ -3285,7 +3464,7 @@ def _parse_copilot_home_config(root: Path, tool: str = "copilot-cli") -> ToolCon
             continue
         cfg.setting_sources[k] = str(settings_path) if settings_path.is_file() else ""
     if env_model:
-        cfg.setting_sources["model"] = "env"
+        cfg.setting_sources["model"] = env_source("COPILOT_MODEL")
 
     # Earlier flat rows, kept in settings; the labelled rows above win in the sections.
     if settings.get("effortLevel"):
@@ -3364,7 +3543,7 @@ def _parse_copilot_home_config(root: Path, tool: str = "copilot-cli") -> ToolCon
         _file_scope("user", settings_path),
         _file_scope("project", proj_path),
         _file_scope("project-local", local_path, "Wins over the committed project file."),
-        _env_scope(COPILOT_CLI_ENV, "COPILOT_MODEL overrides the model key of every file."),
+        _env_scope(tool, "COPILOT_MODEL overrides the model key of every file."),
     ]
 
     # Agents: settings pins and agent files (project wins over user for the same name).
@@ -3423,6 +3602,13 @@ def collect_tool_configs(root: Path) -> list[ToolConfig]:
     tool_configs_yaml = load_tool_configs()
     configs = []
     texts: dict[str, str | None] = {}
+    try:
+        from ..context_audit import _persistent_env
+
+        persisted = _persistent_env([])
+    except Exception as exc:  # noqa: BLE001 - the registry or a profile that cannot be read hides nothing else
+        log.debug("Persistent environment not read: %s", exc)
+        persisted = {}
     for tool_name in tool_configs_yaml:
         parser = _CONFIG_PARSER_REGISTRY.get(tool_name)
         if parser is None:
@@ -3439,6 +3625,8 @@ def collect_tool_configs(root: Path) -> list[ToolConfig]:
                 if not result.scopes:
                     result.scopes = _scopes_from_files(result)
                 result.sections = normalize_sections(result, texts)
+                result.env_vars = env_var_rows(result, persisted)
+                env_scope_fill(result)
                 configs.append(result)
         except Exception as exc:
             log.error("Error parsing config for %s: %s", tool_name, exc)

@@ -1916,6 +1916,96 @@ tools:
         type: string
         description: 'OTel diagnostic log level (not the CLI --log-level). One of: NONE, ERROR, WARN, INFO, DEBUG, VERBOSE, ALL.'
         doc: copilot help environment
+      - key: env.COPILOT_ENABLE_HTTP2
+        label: Copilot enable http2
+        section: other
+        type: string
+        description: "Set to 1 or true to opt into HTTP/2 transport. HTTP/1.1 is the default."
+        doc: upstream/copilot-docs/content/copilot/reference/copilot-cli-reference/cli-command-reference.md#L937
+      - key: env.COPILOT_ENABLE_INTERRUPTED_SESSION_RESTORE
+        label: Copilot enable interrupted session restore
+        section: other
+        type: string
+        description: "Set to 1 to enable restoring a session that was still open when the CLI process went away, for example due to a crash or a machine restart. This restore behavior is temporarily opt-in while its startup dialog is reworked. See Restoring an interrupted session."
+        doc: upstream/copilot-docs/content/copilot/reference/copilot-cli-reference/cli-command-reference.md#L938
+      - key: env.COPILOT_LARGE_OUTPUT_THRESHOLD_BYTES
+        label: Copilot large output threshold bytes
+        section: other
+        type: string
+        description: "Maximum UTF-8 byte size for tool output returned directly to the model. Default: 20480 (20 KiB)."
+        doc: upstream/copilot-docs/content/copilot/reference/copilot-cli-reference/cli-command-reference.md#L942
+      - key: env.COPILOT_MCP_TOOL_CACHE
+        label: Copilot mcp tool cache
+        section: other
+        type: string
+        description: "Set to false to disable loading and persisting local MCP server tool snapshots for the entire process. See Tool snapshot caching."
+        doc: upstream/copilot-docs/content/copilot/reference/copilot-cli-reference/cli-command-reference.md#L943
+      - key: env.COPILOT_PLAN_THEN_AUTOPILOT
+        label: Copilot plan then autopilot
+        section: other
+        type: string
+        description: "Set to 1, true, yes, or on to request plan-then-autopilot (equivalent to --plan --mode autopilot) for harnesses that can only inject environment variables. Ignored, with a warning, when an explicit --mode, --autopilot, or --plan option is passed. See Plan-then-autopilot."
+        doc: upstream/copilot-docs/content/copilot/reference/copilot-cli-reference/cli-command-reference.md#L945
+      - key: env.COPILOT_PROMPT_FRAME
+        label: Copilot prompt frame
+        section: other
+        type: string
+        description: "Set to 1 to enable the decorative UI frame around the input prompt, or 0 to disable it. Overrides the PROMPT_FRAME experimental feature flag for the current session."
+        doc: upstream/copilot-docs/content/copilot/reference/copilot-cli-reference/cli-command-reference.md#L946
+      - key: env.PLUGINS_DASHBOARD
+        label: Plugins dashboard
+        section: other
+        type: string
+        description: "Set to false to disable the plugins dashboard opened by bare /plugin, /mcp, and /skills, and to disable the non-interactive copilot plugin/copilot plugins commands."
+        doc: upstream/copilot-docs/content/copilot/reference/copilot-cli-reference/cli-command-reference.md#L950
+      - key: env.COPILOT_STRIP_REASONING_ON_RESUME
+        label: Copilot strip reasoning on resume
+        section: other
+        type: string
+        description: "Set to 0 or false to keep BYOK reasoning tokens across a session resume instead of stripping them. Defaults to stripping them."
+        doc: upstream/copilot-docs/content/copilot/reference/copilot-cli-reference/cli-command-reference.md#L951
+      - key: env.COPILOT_SUBAGENT_MAX_CONCURRENT
+        label: Copilot subagent max concurrent
+        section: other
+        type: string
+        description: "Maximum concurrent subagents per session (default: 32, range: 1\u2013256)."
+        doc: upstream/copilot-docs/content/copilot/reference/copilot-cli-reference/cli-command-reference.md#L952
+      - key: env.COPILOT_SUBAGENT_MAX_DEPTH
+        label: Copilot subagent max depth
+        section: other
+        type: string
+        description: "Maximum subagent nesting depth (default: 4, range: 1\u2013128)."
+        doc: upstream/copilot-docs/content/copilot/reference/copilot-cli-reference/cli-command-reference.md#L953
+      - key: env.GH_TOKEN
+        label: Gh token
+        section: startup
+        type: string
+        description: "Authentication token. Takes precedence over GITHUB_TOKEN."
+        doc: upstream/copilot-docs/content/copilot/reference/copilot-cli-reference/cli-command-reference.md#L956
+      - key: env.GITHUB_COPILOT_PROMPT_MODE_EXTENSIONS
+        label: Github copilot prompt mode extensions
+        section: other
+        type: string
+        description: "Set to true to load project extensions and allow extension management tools in prompt mode (-p). Disabled by default to prevent running repository-controlled extension code without interactive trust."
+        doc: upstream/copilot-docs/content/copilot/reference/copilot-cli-reference/cli-command-reference.md#L957
+      - key: env.GITHUB_COPILOT_PROMPT_MODE_REPO_HOOKS
+        label: Github copilot prompt mode repo hooks
+        section: other
+        type: string
+        description: "Set to true to load repository hooks in prompt mode (-p). Repository hooks also load automatically when the folder is already trusted or COPILOT_ALLOW_ALL is set."
+        doc: upstream/copilot-docs/content/copilot/reference/copilot-cli-reference/cli-command-reference.md#L958
+      - key: env.GITHUB_COPILOT_PROMPT_MODE_WORKSPACE_MCP
+        label: Github copilot prompt mode workspace mcp
+        section: other
+        type: string
+        description: "Set to true to load workspace MCP sources in prompt mode (-p). Disabled by default to prevent starting repository-controlled MCP servers without interactive trust."
+        doc: upstream/copilot-docs/content/copilot/reference/copilot-cli-reference/cli-command-reference.md#L959
+      - key: env.GITHUB_TOKEN
+        label: Github token
+        section: startup
+        type: string
+        description: "Authentication token."
+        doc: upstream/copilot-docs/content/copilot/reference/copilot-cli-reference/cli-command-reference.md#L960
   copilot:
     keys:
       - key: github.copilot.editor.enableCodeActions
@@ -2325,6 +2415,90 @@ tools:
         type: boolean
         description: Allow external ingest of the workspace for code search.
         doc: upstream/vscode-docs/docs/agents/reference/workspace-context.md#L165
+      - key: env.COPILOT_OTEL_ENABLED
+        label: Copilot otel enabled
+        section: telemetry
+        type: string
+        description: "Enable OTel. Also enabled when OTEL_EXPORTER_OTLP_ENDPOINT is set."
+        doc: upstream/vscode-docs/docs/agents/guides/monitoring-agents.md#L272
+      - key: env.COPILOT_OTEL_ENDPOINT
+        label: Copilot otel endpoint
+        section: telemetry
+        type: string
+        description: "OTLP endpoint URL (takes precedence over OTEL_EXPORTER_OTLP_ENDPOINT)"
+        doc: upstream/vscode-docs/docs/agents/guides/monitoring-agents.md#L273
+      - key: env.OTEL_EXPORTER_OTLP_ENDPOINT
+        label: Otel exporter otlp endpoint
+        section: telemetry
+        type: string
+        description: "Standard OTel OTLP endpoint URL"
+        doc: upstream/vscode-docs/docs/agents/guides/monitoring-agents.md#L274
+      - key: env.OTEL_EXPORTER_OTLP_PROTOCOL
+        label: Otel exporter otlp protocol
+        section: telemetry
+        type: string
+        description: "OTLP protocol. Only grpc changes behavior."
+        doc: upstream/vscode-docs/docs/agents/guides/monitoring-agents.md#L275
+      - key: env.COPILOT_OTEL_PROTOCOL
+        label: Copilot otel protocol
+        section: telemetry
+        type: string
+        description: "Override OTLP protocol (grpc or http). Takes precedence over OTEL_EXPORTER_OTLP_PROTOCOL."
+        doc: upstream/vscode-docs/docs/agents/guides/monitoring-agents.md#L276
+      - key: env.OTEL_SERVICE_NAME
+        label: Otel service name
+        section: telemetry
+        type: string
+        description: "Service name in resource attributes"
+        doc: upstream/vscode-docs/docs/agents/guides/monitoring-agents.md#L277
+      - key: env.OTEL_RESOURCE_ATTRIBUTES
+        label: Otel resource attributes
+        section: telemetry
+        type: string
+        description: "Extra resource attributes (key1=val1,key2=val2)"
+        doc: upstream/vscode-docs/docs/agents/guides/monitoring-agents.md#L278
+      - key: env.COPILOT_OTEL_CAPTURE_CONTENT
+        label: Copilot otel capture content
+        section: telemetry
+        type: string
+        description: "Capture full prompt and response content"
+        doc: upstream/vscode-docs/docs/agents/guides/monitoring-agents.md#L279
+      - key: env.COPILOT_OTEL_CAPTURE_IDENTITY
+        label: Copilot otel capture identity
+        section: telemetry
+        type: string
+        description: "Capture developer and machine identity for Local harness sessions"
+        doc: upstream/vscode-docs/docs/agents/guides/monitoring-agents.md#L280
+      - key: env.COPILOT_OTEL_MAX_ATTRIBUTE_SIZE_CHARS
+        label: Copilot otel max attribute size chars
+        section: telemetry
+        type: string
+        description: "Override the max character size for content attributes. 0 disables truncation. Takes precedence over the maxAttributeSizeChars setting."
+        doc: upstream/vscode-docs/docs/agents/guides/monitoring-agents.md#L281
+      - key: env.COPILOT_OTEL_LOG_LEVEL
+        label: Copilot otel log level
+        section: telemetry
+        type: string
+        description: "Minimum log level: trace, debug, info, warn, or error."
+        doc: upstream/vscode-docs/docs/agents/guides/monitoring-agents.md#L282
+      - key: env.COPILOT_OTEL_FILE_EXPORTER_PATH
+        label: Copilot otel file exporter path
+        section: telemetry
+        type: string
+        description: "Write all signals to this file as JSON lines."
+        doc: upstream/vscode-docs/docs/agents/guides/monitoring-agents.md#L283
+      - key: env.COPILOT_OTEL_HTTP_INSTRUMENTATION
+        label: Copilot otel http instrumentation
+        section: telemetry
+        type: string
+        description: "Enable HTTP-level OTel instrumentation."
+        doc: upstream/vscode-docs/docs/agents/guides/monitoring-agents.md#L284
+      - key: env.OTEL_EXPORTER_OTLP_HEADERS
+        label: Otel exporter otlp headers
+        section: telemetry
+        type: string
+        description: "Static HTTP headers for the collector. For managed Agent Host sessions, see dynamic headers."
+        doc: upstream/vscode-docs/docs/agents/guides/monitoring-agents.md#L285
   vscode:
     keys:
       - key: chat.commandCenter.enabled
@@ -12626,6 +12800,12 @@ tools:
         type: string
         description: Controls Rust log filtering and verbosity. codex exec defaults to error output unless you set a more verbose value.
         doc: docs/learn.chatgpt.com/docs/config-file/environment-variables.md#L71
+      - key: env.OPENAI_API_KEY
+        label: Openai api key
+        section: startup
+        type: string
+        description: "OpenAI API key for a non-interactive Codex run; set it inline rather than job-wide when the job runs repository-controlled code."
+        doc: docs/learn.chatgpt.com/docs/non-interactive-mode.md#L141
   gemini-cli:
     keys:
       - key: policyPaths
@@ -15075,3 +15255,11 @@ tools:
         type: string
         description: Specifies the endpoint for the code assist server. This is useful for development and testing.
         doc: upstream/gemini-cli-repo/docs/reference/configuration.md#L2828
+  cursor:
+    keys:
+      - key: env.CURSOR_API_KEY
+        label: Cursor api key
+        section: startup
+        type: string
+        description: "API key the Cursor CLI (agent) uses to authenticate in headless and CI runs; same as --api-key."
+        doc: docs/cursor.com/docs/cli/headless.md#L41

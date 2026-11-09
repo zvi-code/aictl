@@ -1,7 +1,7 @@
 // Findings: the context audit's findings, grouped by rule.
 import { useState } from 'preact/hooks';
 import { html } from 'htm/preact';
-import { findingGroups, findingTools, matchFinding, tildePath } from './model.js';
+import { envName, findingGroups, findingTools, isEnvSource, matchFinding, tildePath } from './model.js';
 import { RiskDot, NavHead } from './parts.js';
 import { useGrid } from './tableGrid.js';
 
@@ -45,8 +45,11 @@ function FindingRow({ f, group, w }) {
     <td class="st-c-where st-mono" title=${f.path ? f.path + (f.line > 0 ? ':' + f.line : '') : undefined}>
       ${whereText(f.path, f.line)}${f.count > 1 ? html` <span class="st-dim">×${f.count}</span>` : ''}</td>
     <td class="st-c-what" title=${[f.why, f.action].filter(Boolean).join('\n') || undefined}>${what}</td>
-    <td class="st-c-act">${f.path && html`<button type="button" class="st-chip st-chip--btn"
-      onClick=${e => { e.stopPropagation(); w.openAt(f.path, f.line); }}>Show the line</button>`}</td>
+    <td class="st-c-act">${f.path && (isEnvSource(f.path)
+      ? html`<button type="button" class="st-chip st-chip--btn"
+        onClick=${e => { e.stopPropagation(); w.openEnv(envName(f.path), findingTools(f)[0] || ''); }}>Show the variable</button>`
+      : html`<button type="button" class="st-chip st-chip--btn"
+        onClick=${e => { e.stopPropagation(); w.openAt(f.path, f.line); }}>Show the line</button>`)}</td>
   </tr>`;
 }
 

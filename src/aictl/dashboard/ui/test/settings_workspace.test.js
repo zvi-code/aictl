@@ -1113,3 +1113,128 @@ describe('Accessibility of the permission views', () => {
     expect(serious.map(v => v.id + ': ' + v.nodes.map(n => n.html).join(' | '))).toEqual([]);
   });
 });
+
+// ─── Environment variables ───────────────────────────────────────
+// The report: Copilot CLI's model came from COPILOT_MODEL, but the screen said
+// only "env" (Set in, chain, a file chip that opened a file panel with "path
+// must be an absolute path"). Every env source now names its variable.
+const COPILOT_WIN_USER = 'C:\\Users\\u\\.copilot\\settings.json';
+const COPILOT_ENV = {
+  tool: 'copilot-cli',
+  config_files: [COPILOT_WIN_USER],
+  scopes: [
+    { id: 'user', label: 'User', path: COPILOT_WIN_USER, exists: true, changeable: true, note: '' },
+    { id: 'env', label: 'Environment', path: '', exists: true, changeable: true, note: '2 set: COPILOT_MODEL, GH_TOKEN.', vars: ['COPILOT_MODEL', 'GH_TOKEN'] },
+  ],
+  sections: [
+    { id: 'model', title: 'Model', rows: [
+      row('model', 'gpt-6-sol', 'text', {
+        label: 'Model', source: 'env:COPILOT_MODEL', scope: 'env', line: 0, set: true,
+        chain: [
+          { scope: 'user', value: 'gpt-6-astra', source: COPILOT_WIN_USER, line: 19 },
+          { scope: 'env', value: 'gpt-6-sol', source: 'env:COPILOT_MODEL', line: 0 },
+        ],
+        wins: 1,
+      }),
+    ] },
+  ],
+  env_vars: [
+    { name: 'COPILOT_MODEL', set: true, value: 'gpt-6-sol', masked: false, source: 'env:COPILOT_MODEL', in_process: true,
+      persisted: [{ origin: 'registry:HKEY_CURRENT_USER\\Environment', kind: 'persisted', value: 'gpt-6-sol' }],
+      drives: [{ key: 'model', label: 'Model' }], label: 'Copilot model', description: 'Set the AI model.', section: 'model', documented: true },
+    { name: 'GH_TOKEN', set: true, value: '<hidden>', masked: true, source: 'env:GH_TOKEN', in_process: true, persisted: [],
+      drives: [], label: 'Gh token', description: 'Authentication token.', section: 'startup', documented: true },
+    { name: 'COPILOT_HOME', set: false, value: '', masked: false, source: 'env:COPILOT_HOME', in_process: false, persisted: [],
+      drives: [], label: 'Copilot home', description: 'Override the configuration and state directory.', section: 'startup', documented: true },
+  ],
+};
+const SNAP_ENV = {
+  root: PROJ,
+  tools: [{ tool: 'copilot-cli', label: 'Copilot CLI', files: [] }],
+  tool_configs: [COPILOT_ENV],
+  live_monitor: {},
+};
+
+describe('Environment variables', () => {
+  it('names COPILOT_MODEL in Set in, in the chain and as the chip, never a bare env', () => {
+    const { container } = renderAt('tool=copilot-cli', { snap: SNAP_ENV });
+    const r = rowByKey(container, 'model');
+    expect(r.querySelector('.st-scope').textContent).toBe('env');
+    expect(r.querySelector('.st-src').textContent).toBe('COPILOT_MODEL');
+    // The header chips: the settings file and the variable; no chip named "env".
+    const chips = [...container.querySelectorAll('.st-bar__files .st-chip')].map(c => c.textContent);
+    expect(chips).toEqual(['settings.json', '$COPILOT_MODEL']);
+    expect(container.querySelector('.st-bar__sub').textContent).toContain('in 1 file and 1 variable');
+    fireEvent.click(r);
+    const levels = [...container.querySelectorAll('[data-testid="st-inspector-row"] .st-chain__lv')];
+    const cells = l => ['.st-chain__sc', '.st-chain__v', '.st-chain__src'].map(c => l.querySelector(c).textContent.trim());
+    expect(levels.map(cells)).toEqual([['user', 'gpt-6-astra', 'settings.json:19'], ['env', 'gpt-6-sol', 'COPILOT_MODEL']]);
+    expect(levels[1].classList.contains('is-win')).toBe(true);
+    expect(container.textContent).toContain('The variable COPILOT_MODEL wins');
+  });
+
+  it('the Environment layer card shows the count and the names of the set variables', () => {
+    const { container } = renderAt('tool=copilot-cli', { snap: SNAP_ENV });
+    const card = container.querySelector('.st-scopechip[data-scope="env"]');
+    expect(card.querySelector('.st-scopechip__file').textContent).toBe('COPILOT_MODEL, GH_TOKEN');
+    expect(card.getAttribute('title')).toContain('Set: COPILOT_MODEL, GH_TOKEN');
+    expect(card.textContent).not.toContain('environment');
+  });
+
+  it('the variable chip opens the environment panel, not the file viewer', () => {
+    const { container, openFile } = renderAt('tool=copilot-cli', { snap: SNAP_ENV });
+    fireEvent.click(container.querySelector('.st-bar__files .st-chip--env'));
+    expect(openFile).not.toHaveBeenCalled();
+    const insp = container.querySelector('[data-testid="st-inspector-env"]');
+    expect(insp.querySelector('.st-insp__title').textContent).toBe('COPILOT_MODEL');
+    expect(insp.querySelector('[data-testid="st-env-value"]').textContent).toBe('gpt-6-sol');
+    const where = insp.querySelector('[data-testid="st-env-where"]').textContent;
+    expect(where).toContain("aictl's environment");
+    expect(where).toContain('Registry');
+    expect(where).toContain('HKEY_CURRENT_USER\\Environment');
+    expect(insp.querySelector('[data-testid="st-env-drives"]').textContent).toContain('Model');
+    expect(new URLSearchParams(window.location.search).get('row')).toBe('env:COPILOT_MODEL');
+    // Set in and the chain entry open the same panel.
+    fireEvent.click(rowByKey(container, 'model').querySelector('.st-src'));
+    expect(openFile).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="st-inspector-env"]')).toBeTruthy();
+  });
+
+  it('lists every variable of the tool, set first, the unset ones with the toggle; secrets stay hidden', () => {
+    const { container, getByText } = renderAt('tool=copilot-cli', { snap: SNAP_ENV });
+    const table = container.querySelector('[data-testid="st-env-table"]');
+    const names = () => [...table.querySelectorAll('tr[data-env]')].map(t => t.getAttribute('data-env'));
+    expect(names()).toEqual(['COPILOT_MODEL', 'GH_TOKEN']);
+    expect(table.querySelector('.st-group').textContent).toContain('+1 unset');
+    const token = table.querySelector('tr[data-env="GH_TOKEN"]');
+    expect(token.querySelector('.st-c-val').textContent).toBe('hidden');
+    expect(container.textContent).not.toContain('<hidden>');
+    expect(table.querySelector('tr[data-env="COPILOT_MODEL"]').textContent).toContain('process · HKEY_CURRENT_USER\\Environment');
+    fireEvent.click(getByText('Show unset knobs'));
+    expect(names()).toEqual(['COPILOT_MODEL', 'GH_TOKEN', 'COPILOT_HOME']);
+    fireEvent.click(token);
+    expect(container.querySelector('[data-testid="st-env-value"]').textContent).toBe('hidden');
+  });
+
+  it('the navigator has an Environment variables entry that shows only the variables', () => {
+    const { container } = renderAt('tool=copilot-cli', { snap: SNAP_ENV });
+    fireEvent.click(container.querySelector('.st-nav__sub[data-sec="env"]'));
+    expect(rowByKey(container, 'model')).toBeNull();
+    expect(container.querySelector('[data-testid="st-env-table"]')).toBeTruthy();
+    expect(container.querySelector('.st-empty')).toBeNull();
+  });
+
+  it('a bare env source from an older server is not a file chip and opens no file', () => {
+    const old = {
+      ...COPILOT_ENV, env_vars: undefined, scopes: undefined,
+      sections: [{ id: 'model', title: 'Model', rows: [row('model', 'gpt-6-sol', 'text', { label: 'Model', source: 'env', scope: 'env' })] }],
+    };
+    const { container, openFile } = renderAt('tool=copilot-cli', { snap: { ...SNAP_ENV, tool_configs: [old] } });
+    const chips = [...container.querySelectorAll('.st-bar__files .st-chip')].map(c => c.textContent);
+    expect(chips).toEqual(['settings.json']);
+    const src = rowByKey(container, 'model').querySelector('.st-src');
+    expect(src.tagName).toBe('SPAN');
+    fireEvent.click(src);
+    expect(openFile).not.toHaveBeenCalled();
+  });
+});

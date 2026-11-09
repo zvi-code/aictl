@@ -1227,10 +1227,25 @@ _PROFILE_GLOBS = (
     "~/OneDrive/Documents/WindowsPowerShell/*rofile*.ps1",
     "~/.config/powershell/*rofile*.ps1",
 )
+# POSIX shell start files, read as text for ``export NAME=value`` (fish: ``set -x NAME value``).
+_SHELL_ENV_RES = (
+    re.compile(r"^\s*export\s+([A-Za-z_]\w*)=[\"']?([^\"'\r\n#]*)", re.M),
+    re.compile(r"^\s*set\s+-[a-zA-Z]*x[a-zA-Z]*\s+([A-Za-z_]\w*)\s+[\"']?([^\"'\r\n#]*)", re.M),
+)
+_SHELL_PROFILES = (
+    "~/.zshenv",
+    "~/.zprofile",
+    "~/.zshrc",
+    "~/.bash_profile",
+    "~/.bashrc",
+    "~/.profile",
+    "~/.config/fish/config.fish",
+    "~/.config/aictl/env.sh",
+)
 
 
 def _persistent_env(findings: list[Finding]) -> dict[str, dict[str, str]]:
-    """Environment other sessions inherit: the registry, and profile files read as text, never run."""
+    """Environment other sessions inherit: the registry, and profile and shell start files read as text, never run."""
     out: dict[str, dict[str, str]] = {}
     for hive, subkey in _ENV_REGISTRY_KEYS:
         values = _registry_values(hive, subkey, depth=0)
@@ -1246,6 +1261,15 @@ def _persistent_env(findings: list[Finding]) -> dict[str, dict[str, str]]:
             values = {m.group(1): m.group(2).strip() for regex in _PROFILE_ENV_RES for m in regex.finditer(text)}
             if values:
                 out[hit] = values
+    if not IS_WINDOWS:
+        for name in _SHELL_PROFILES:
+            path = Path(_expand_home(name))
+            if not path.is_file():
+                continue
+            text = _read_text(path)
+            values = {m.group(1): m.group(2).strip() for regex in _SHELL_ENV_RES for m in regex.finditer(text)}
+            if values:
+                out[str(path)] = values
     return out
 
 

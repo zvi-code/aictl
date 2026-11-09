@@ -18,8 +18,8 @@ import Icon from '../ui/Icon.js';
 import Segmented from '../ui/Segmented.js';
 import ToolScopeEmpty from '../ui/ToolScopeEmpty.js';
 import {
-  CLEAR_PARAMS, FILE_PARAMS, absentManaged, aictlEntry, labelOf, mergeFiles, projectRoots, readSettingsUrl, rowFilter,
-  samePath, settingsParams, settingsSummary, snapOf, toolEntries, withFindingIds,
+  CLEAR_PARAMS, ENV_PREFIX, FILE_PARAMS, absentManaged, aictlEntry, envName, isEnvSource, labelOf, mergeFiles, projectRoots,
+  readSettingsUrl, rowFilter, samePath, settingsParams, settingsSummary, snapOf, toolEntries, withFindingIds,
 } from './model.js';
 import { ToolNav, ToolMain, AictlMain } from './ToolView.js';
 import { TopicNav, TopicMain } from './TopicView.js';
@@ -156,12 +156,29 @@ export default function SettingsWorkspace({ source = {}, note = '' }) {
   const selected = st.view === 'tool' ? (entry ? rowOf(entry.id, st.row) : null)
     : st.view === 'topic' ? rowOf(st.tool, st.row) : null;
   const selectedFile = st.view === 'files' && st.row ? files.find(f => f.path === st.row) || null : null;
+  // An environment variable is selected as row `env:<NAME>` of a tool.
+  const envOf = (tool, key) => {
+    if (!String(key).startsWith(ENV_PREFIX)) return null;
+    const e = entries.find(x => x.id === tool);
+    if (!e) return null;
+    const name = envName(key);
+    return e.envVars.find(v => v.name === name)
+      || { name, tool: e.id, uid: e.id + '\u0001' + key, source: key, set: false, value: '', masked: false, in_process: false, persisted: [], drives: [], label: name, description: '', section: '', documented: false };
+  };
+  const selectedEnv = st.view === 'tool' ? (entry ? envOf(entry.id, st.row) : null)
+    : st.view === 'topic' ? envOf(st.tool, st.row) : null;
+  // A variable opens in the inspector of its tool, never in the file viewer.
+  const openEnv = (name, tool = '') => {
+    const id = entries.some(e => e.id === tool) ? tool : (entry?.id || entries[0]?.id || '');
+    select({ view: ROW_VIEWS.has(st.view) ? st.view : 'tool', tool: id, row: ENV_PREFIX + name });
+  };
+  const openSource = (path, line = 0) => (isEnvSource(path) ? openEnv(envName(path)) : openAt(path, line));
   const selectedFinding = st.view === 'findings' && st.row ? findings.find(f => f.id === st.row) || null : null;
 
   const w = {
     st, set, select, q, pass, passAll, passTool, showUnset: st.unset, scopesOf, managedAbsent, entries, aictl, toolId, files, filesStatus: filesRes.status,
     findings, audit: scoped, auditStatus: audit.status, auditError: audit.error, scan: audit.scan, rescan,
-    selected, selectedFile, selectedFinding, openAt, labelOf: labelFor, mtimeOf, recentFiles,
+    selected, selectedFile, selectedFinding, selectedEnv, openAt: openSource, openEnv, labelOf: labelFor, mtimeOf, recentFiles,
     drawer, closeDrawer, refresh, hooks,
   };
 

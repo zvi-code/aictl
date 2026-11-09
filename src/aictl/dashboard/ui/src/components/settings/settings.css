@@ -423,3 +423,9 @@
 .st-table th .bd-colgrip, .st-permtable th .bd-colgrip { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; z-index: 2; touch-action: none; }
 .st-table th .bd-colgrip:hover, .st-table th .bd-colgrip:focus-visible,
 .st-permtable th .bd-colgrip:hover, .st-permtable th .bd-colgrip:focus-visible { background: var(--focus); opacity: .5; outline: none; }
+
+/* Environment variables: a source that is a variable, not a file. */
+.st-src--env b { font-family: var(--st-mono); }
+.st-chip--env { border-style: dashed; }
+.st-chip__pre { color: var(--st-fg2); margin-right: 1px; }
+.st-envtable { margin-top: var(--sp-8, 16px); }
