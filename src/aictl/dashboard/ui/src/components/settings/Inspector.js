@@ -5,8 +5,8 @@ import { html } from 'htm/preact';
 import { fmtAgo, fmtSz } from '../../utils.js';
 import { baseName } from '../../utils/paths.js';
 import {
-  agentDecision, findingTools, isAgentRow, isLockedEntry, isUnset, plainValue, samePath, scopeLabel, tildePath,
-  whyWins, writableScope, LOCATION_LABELS, PURPOSE_LABELS, purposeOf, ruleLabel,
+  agentDecision, envName, envWhere, findingTools, isAgentRow, isEnvSource, isLockedEntry, isUnset, plainValue, samePath,
+  scopeLabel, tildePath, whyWins, writableScope, LOCATION_LABELS, PURPOSE_LABELS, purposeOf, ruleLabel,
 } from './model.js';
 import { Value, ScopeChip, LockGlyph } from './Value.js';
 import { ToolChip, SetIn, UndocumentedChip } from './parts.js';
@@ -89,17 +89,19 @@ function RowInspector({ w, row }) {
           return html`<li key=${i} class=${'st-chain__lv' + (win ? ' is-win' : '') + (locked ? ' is-locked' : '')} aria-current=${win ? 'true' : undefined}>
             <span class="st-chain__sc">${locked && html`<${LockGlyph} label=${'Locked: ' + scopeLabel(c.scope, scopes) + ' cannot be changed here'}/>`}${c.scope || 'default'}</span>
             <span class="st-chain__v">${isUnset(c) ? html`<span class="st-dim">not set</span>` : html`<${Value} row=${row} value=${c.value} compact/>`}</span>
-            <span class="st-chain__src">${c.source ? html`<${SetIn} path=${c.source} line=${Number(c.line) > 0 ? Number(c.line) : 0} w=${w}/>` : html`<span class="st-dim">${c.note || (c.scope === 'default' ? w.labelOf(row.tool) : '—')}</span>`}</span>
+            <span class="st-chain__src">${c.source ? html`<${SetIn} path=${c.source} line=${Number(c.line) > 0 ? Number(c.line) : 0} w=${w} tool=${row.tool}/>` : html`<span class="st-dim">${c.note || (c.scope === 'default' ? w.labelOf(row.tool) : '—')}</span>`}</span>
             ${win && html`<span class="st-sr"> (wins)</span>`}
           </li>`;
         })}
       </ol>
       <p class="st-hint st-insp__why">${whyWins(chain, wins)}</p>
     </${Sec}>
-    <${Sec} title="History"><${History} w=${w} path=${row.source}/></${Sec}>
+    ${!isEnvSource(row.source) && html`<${Sec} title="History"><${History} w=${w} path=${row.source}/></${Sec}>`}
     <${Sec} title="Actions">
       <div class="st-actions">
-        ${row.source && html`<button type="button" class="st-btn" onClick=${() => w.openAt(row.source, row.line)}>${openLabel(row.source, row.line)}</button>`}
+        ${row.source && (isEnvSource(row.source)
+          ? html`<button type="button" class="st-btn" onClick=${() => w.openEnv(envName(row.source), row.tool)}>Show ${envName(row.source) || 'the variable'}</button>`
+          : html`<button type="button" class="st-btn" onClick=${() => w.openAt(row.source, row.line)}>${openLabel(row.source, row.line)}</button>`)}
         ${found.length > 0 && html`<button type="button" class="st-btn" onClick=${() => showFinding(w, found[0])}>Show finding</button>`}
       </div>
       <div class="st-actions">
@@ -222,6 +224,51 @@ function FileInspector({ w, file }) {
   </div>`;
 }
 
+/** One environment variable: its value, where it is set and the settings it drives. */
+function EnvInspector({ w, v }) {
+  const where = envWhere(v);
+  const found = findingsAt(w, v.source);
+  return html`<div class="st-insp__body" data-testid="st-inspector-env">
+    <h3 class="st-insp__title st-mono">${v.name || 'Environment variable'}</h3>
+    <div class="st-insp__key">Environment variable${v.name ? '' : ' (this aictl version did not name it)'}</div>
+    ${v.description && html`<p class="st-insp__tip">${v.description}</p>`}
+    <div class="st-insp__chips">
+      <${ToolChip} id=${v.tool} label=${w.labelOf(v.tool)}/>
+      <${ScopeChip} scope="env" label=${scopeLabel('env', w.scopesOf(v.tool))}/>
+      ${v.masked && html`<span class="st-chip st-chip--muted">value hidden</span>`}
+      ${!v.documented && html`<${UndocumentedChip}/>`}
+    </div>
+    <div class=${'st-insp__value' + (v.set ? '' : ' is-unset')} data-testid="st-env-value">${!v.set
+      ? html`<span class="st-dim">not set</span>`
+      : v.masked ? html`<span class="st-dim" title="The name says it holds a credential, so the value is not shown">hidden</span>`
+      : html`<span class="st-v st-mono">${v.value === '' ? '(empty)' : v.value}</span>`}</div>
+    <${Sec} title="Where it is set">
+      ${where.length ? html`<ul class="st-insp__list" data-testid="st-env-where">
+        ${where.map(x => html`<li key=${x.id}>
+          <b>${x.label}</b>${x.origin && html` <span class="st-mono" title=${x.origin}>${tildePath(x.origin)}</span>`}
+          ${x.value !== v.value && html` <span class="st-dim">= ${x.value}</span>`}
+          ${x.file && html` <button type="button" class="st-link" onClick=${() => w.openAt(x.file)}
+            aria-label=${'Open ' + baseName(x.file)}>Open</button>`}
+          <div class="st-hint">${x.note}</div>
+        </li>`)}
+      </ul>` : html`<div class="st-hint">Not set in aictl's environment, in a shell profile or in the registry.</div>`}
+    </${Sec}>
+    <${Sec} title=${'What it drives' + (v.drives.length ? ' · ' + v.drives.length : '')}>
+      ${v.drives.length ? html`<ul class="st-insp__list" data-testid="st-env-drives">
+        ${v.drives.map(d => html`<li key=${d.key}><button type="button" class="st-link"
+          onClick=${() => w.set({ view: 'tool', tool: v.tool, sec: '', row: d.key })}>${d.label}</button>
+          <span class="st-dim st-mono"> · ${d.key}</span></li>`)}
+      </ul>` : html`<div class="st-hint">No setting shown here reads it; ${w.labelOf(v.tool)} reads it when it starts.</div>`}
+    </${Sec}>
+    <${Sec} title="Actions">
+      <div class="st-actions">
+        ${found.length > 0 && html`<button type="button" class="st-btn" onClick=${() => showFinding(w, found[0])}>Show finding</button>`}
+        <span class="st-hint">A change applies to sessions started after it, from a shell that has the new value.</span>
+      </div>
+    </${Sec}>
+  </div>`;
+}
+
 function FindingInspector({ w, f }) {
   return html`<div class="st-insp__body" data-testid="st-inspector-finding">
     <h3 class="st-insp__title">${ruleLabel(f.rule)}</h3>
@@ -235,7 +282,9 @@ function FindingInspector({ w, f }) {
     ${f.action && html`<${Sec} title="What to do"><p class="st-insp__tip">${f.action}</p></${Sec}>`}
     <${Sec} title="Actions">
       <div class="st-actions">
-        ${f.path && html`<button type="button" class="st-btn" onClick=${() => w.openAt(f.path, f.line)}>${f.line > 0 ? openLabel(f.path, f.line) : 'Show the line'}</button>`}
+        ${f.path && (isEnvSource(f.path)
+          ? html`<button type="button" class="st-btn" onClick=${() => w.openEnv(envName(f.path), findingTools(f)[0] || '')}>Show ${envName(f.path) || 'the variable'}</button>`
+          : html`<button type="button" class="st-btn" onClick=${() => w.openAt(f.path, f.line)}>${f.line > 0 ? openLabel(f.path, f.line) : 'Show the line'}</button>`)}
       </div>
     </${Sec}>
   </div>`;
@@ -244,7 +293,9 @@ function FindingInspector({ w, f }) {
 export default function Inspector({ w }) {
   const { view } = w.st;
   let body = null;
-  if ((view === 'tool' || view === 'topic') && w.selected) {
+  if ((view === 'tool' || view === 'topic') && w.selectedEnv) {
+    body = html`<${EnvInspector} key=${w.selectedEnv.uid} w=${w} v=${w.selectedEnv}/>`;
+  } else if ((view === 'tool' || view === 'topic') && w.selected) {
     body = isAgentRow(w.selected)
       ? html`<${AgentInspector} key=${w.selected.uid} w=${w} row=${w.selected}/>`
       : html`<${RowInspector} key=${w.selected.uid} w=${w} row=${w.selected}/>`;

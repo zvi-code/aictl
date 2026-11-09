@@ -177,6 +177,7 @@ def test_claude_agent_alias_effort_and_env_fallback(env, monkeypatch):
     assert r["agent"]["effort"] == "high" and r["agent"]["tools"] == ["Read", "Grep"]
     helper = rows["agent/helper"]
     assert helper["value"] == "haiku" and helper["scope"] == "env" and helper["chain"][0]["scope"] == "env"
+    assert helper["source"] == helper["chain"][0]["source"] == "env:CLAUDE_CODE_SUBAGENT_MODEL"
     inheritor = rows["agent/inheritor"]
     assert inheritor["value"] == "inherits" and "opus" in inheritor["note"]
 
@@ -295,13 +296,20 @@ def test_scopes_are_emitted_in_order(env, monkeypatch):
     ):
         scopes = configs[tool].to_dict()["scopes"]
         assert [s["id"] for s in scopes] == expected, tool
-        assert all(set(s) == SCOPE_FIELDS for s in scopes)
+        assert all(set(s) == SCOPE_FIELDS | ({"vars"} if s["id"] == "env" else set()) for s in scopes)
         assert all(s["changeable"] is (s["id"] not in ("managed", "system")) for s in scopes)
     copilot = {s["id"]: s for s in configs["copilot-cli"].scopes}
     assert copilot["user"]["exists"] is True and copilot["project"]["exists"] is False
     assert copilot["env"]["exists"] is True and "COPILOT_MODEL" in copilot["env"]["note"]
+    # The Environment layer has no file: it names the variables that are set, never a path.
+    assert copilot["env"]["path"] == "" and "COPILOT_MODEL" in copilot["env"]["vars"]
     model = _rows(configs["copilot-cli"])["model"]
     assert model["value"] == "env-model" and model["scope"] == "env"
+    assert model["source"] == "env:COPILOT_MODEL"
+    assert [(c["scope"], c["value"], c["source"]) for c in model["chain"]] == [
+        ("user", "file-model", str(env["copilot_global_dir"] / "settings.json")),
+        ("env", "env-model", "env:COPILOT_MODEL"),
+    ]
     vscode_scopes = [s["id"] for s in configs["copilot"].scopes] if "copilot" in configs else []
     if vscode_scopes:
         assert vscode_scopes == ["user", "workspace", "env", "policy"]

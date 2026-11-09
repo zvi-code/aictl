@@ -237,7 +237,10 @@ def slim_tool_configs(configs: list[dict]) -> list[dict]:
             rows = [r for r in sec.get("rows") or [] if r.get("set") is not False]
             if rows:
                 sections.append({**sec, "rows": rows})
-        out.append({**cfg, "sections": sections} if "sections" in cfg else dict(cfg))
+        slim = {**cfg, "sections": sections} if "sections" in cfg else dict(cfg)
+        if "env_vars" in cfg:
+            slim["env_vars"] = [e for e in cfg["env_vars"] or [] if e.get("set")]
+        out.append(slim)
     return out
 
 

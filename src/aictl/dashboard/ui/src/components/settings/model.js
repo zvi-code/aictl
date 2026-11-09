@@ -206,6 +206,88 @@ export function samePath(a, b) {
   return !!a && !!b && normPath(a) === normPath(b);
 }
 
+// ─── Environment variables ───────────────────────────────────────
+// A value read from an environment variable has the source `env:<NAME>`. A
+// bare `env` comes from an older server that did not name the variable.
+export const ENV_PREFIX = 'env:';
+
+export function isEnvSource(source) {
+  const s = String(source || '');
+  return s === 'env' || s.startsWith(ENV_PREFIX);
+}
+
+/** The variable an `env:<NAME>` source names, or ''. */
+export function envName(source) {
+  const s = String(source || '');
+  return s.startsWith(ENV_PREFIX) ? s.slice(ENV_PREFIX.length) : '';
+}
+
+/** A source that is a file on disk: not a variable and not a bare layer name. */
+export function isFileSource(source) {
+  const s = String(source || '');
+  return !!s && !isEnvSource(s) && !SCOPE_RANK.includes(s) && s !== 'default';
+}
+
+const ENV_KINDS = { settings: 'Settings file', persisted: 'New shells' };
+
+/** Where a variable is set, one line each: this process, a shell profile, the registry or a settings file. */
+export function envWhere(v) {
+  const out = [];
+  if (v?.in_process) out.push({ id: 'process', label: "aictl's environment", origin: '', value: v.value, note: 'The process aictl runs in; a tool started from the same shell sees the same value.' });
+  for (const p of v?.persisted || []) {
+    const registry = /^registry:/.test(p.origin || '');
+    out.push({
+      id: p.origin, label: registry ? 'Registry' : ENV_KINDS[p.kind] || 'Profile', origin: p.origin || '', value: p.value,
+      file: registry ? '' : p.origin || '',
+      note: p.kind === 'settings' ? 'The tool sets it for its own sessions.' : 'Set for every new shell.',
+    });
+  }
+  return out;
+}
+
+/** Short text for the Where column: the places a variable is set. */
+export function envWhereText(v) {
+  return envWhere(v).map(w => (w.id === 'process' ? 'process' : w.file ? baseName(w.file) : String(w.origin).replace(/^registry:/, ''))).join(' · ');
+}
+
+function envRecord(v, tool) {
+  const name = String(v?.name || '');
+  return {
+    name, tool, uid: tool + '\u0001env:' + name, source: ENV_PREFIX + name,
+    set: v?.set === true, value: v?.value == null ? '' : String(v.value), masked: v?.masked === true,
+    in_process: v?.in_process === true, persisted: Array.isArray(v?.persisted) ? v.persisted : [],
+    drives: Array.isArray(v?.drives) ? v.drives : [], label: v?.label || name,
+    description: v?.description || '', section: v?.section || '', documented: v?.documented !== false,
+  };
+}
+
+/**
+ * The tool's environment variables, set ones first: the record's `env_vars`,
+ * plus a variable a row names in its source that the list lacks.
+ */
+export function toolEnvVars(cfg, rows) {
+  const out = (Array.isArray(cfg?.env_vars) ? cfg.env_vars : []).filter(v => v && v.name).map(v => envRecord(v, cfg.tool));
+  for (const r of rows || []) {
+    for (const src of [r.source, ...(r.chain || []).map(c => c.source)]) {
+      const name = envName(src);
+      if (!name) continue;
+      let v = out.find(x => x.name === name);
+      if (!v) {
+        const c = (r.chain || []).find(x => x.source === src);
+        v = envRecord({ name, set: true, value: c ? valueText(c.value) : '', documented: false }, cfg.tool);
+        out.push(v);
+      }
+      if (!v.drives.some(d => d.key === r.key)) v.drives = [...v.drives, { key: r.key, label: r.label }];
+    }
+  }
+  return [...out.filter(v => v.set), ...out.filter(v => !v.set)];
+}
+
+export function matchEnv(v, q) {
+  const s = String(q || '').trim().toLowerCase();
+  return !s || [v.name, v.label, v.description, v.masked ? '' : v.value, ...v.drives.map(d => d.label)].join('\n').toLowerCase().includes(s);
+}
+
 /** The home folder a path is in, in the path's own spelling, or ''. */
 export function homeOf(p) {
   const s = String(p || '');
@@ -270,6 +352,7 @@ export function toolScopes(cfg, rows) {
     return cfg.scopes.filter(s => s && s.id).map(s => ({
       id: s.id, label: s.label || scopeLabel(s.id), path: s.path || '', paths: s.path ? [s.path] : [],
       exists: s.exists !== false, changeable: s.changeable !== false, note: s.note || '', given: true,
+      vars: Array.isArray(s.vars) ? s.vars.map(String) : [],
     }));
   }
   const ids = [...new Set(given.map(r => r.scope))];
@@ -277,10 +360,15 @@ export function toolScopes(cfg, rows) {
   ids.sort((a, b) => at(a) - at(b));
   return ids.map(id => {
     const paths = [];
-    for (const r of given) if (r.scope === id && r.source && !paths.some(p => samePath(p, r.source))) paths.push(r.source);
+    const vars = [];
+    for (const r of given) {
+      if (r.scope !== id || !r.source) continue;
+      const name = envName(r.source);
+      if (name) { if (!vars.includes(name)) vars.push(name); } else if (isFileSource(r.source) && !paths.some(p => samePath(p, r.source))) paths.push(r.source);
+    }
     return {
       id, label: scopeLabel(id), path: paths[0] || '', paths, exists: true,
-      changeable: !LOCKED_SCOPES.has(id) && !given.some(r => r.scope === id && r.locked), note: '', given: false,
+      changeable: !LOCKED_SCOPES.has(id) && !given.some(r => r.scope === id && r.locked), note: '', given: false, vars,
     };
   });
 }
@@ -350,7 +438,10 @@ function joinList(items, word) {
 export function whyWins(chain, wins) {
   const w = chain?.[wins];
   if (!w) return '';
-  const name = w.scope === 'default' ? 'The default' : `The ${w.scope} ${w.source ? 'file' : 'value'}`;
+  const variable = envName(w.source);
+  const name = w.scope === 'default' ? 'The default'
+    : variable ? `The variable ${variable}`
+    : `The ${w.scope} ${isFileSource(w.source) ? 'file' : 'value'}`;
   if (chain.length === 1) {
     return w.scope === 'default'
       ? 'No file sets this, so the default applies.'
@@ -521,10 +612,13 @@ export function toolEntries(snap) {
     const rows = sections.flatMap(s => s.rows);
     const files = [];
     for (const f of [...(cfg.config_files || []), ...rows.map(r => r.source)]) {
-      if (f && !files.some(x => samePath(x, f))) files.push(f);
+      if (isFileSource(f) && !files.some(x => samePath(x, f))) files.push(f);
     }
+    const envVars = toolEnvVars(cfg, rows);
     return {
-      id: cfg.tool, label: labelOf(cfg.tool, snap), cfg, sections, rows, files,
+      id: cfg.tool, label: labelOf(cfg.tool, snap), cfg, sections, rows, files, envVars,
+      // The variables the rows read, shown next to the file chips.
+      envUsed: envVars.filter(v => v.drives.length),
       risky: rows.filter(r => r.risky).length, hints: cfg.hints || [],
       scopes: toolScopes(cfg, rows),
     };

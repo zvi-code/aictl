@@ -1,7 +1,7 @@
 // By tool: the tools on the left, one tool's settings as a table in the middle.
 import { html } from 'htm/preact';
 import { baseName } from '../../utils/paths.js';
-import { commonModel, plainValue, scopeLabel } from './model.js';
+import { commonModel, envWhereText, matchEnv, plainValue, scopeLabel } from './model.js';
 import { Value, ScopeChip, LockGlyph } from './Value.js';
 import { Swatch, RiskDot, SetIn, NavHead, UndocumentedChip } from './parts.js';
 import { ToolAgentsTable } from './Agents.js';
@@ -52,6 +52,16 @@ export function ToolNav({ w }) {
                 ${model && html`<span class="st-nav__model" title=${'Every agent runs on ' + model}>${model}</span>`}
               </button></li>`;
             })}
+            ${e.envVars.length > 0 && (() => {
+              const son = st.sec === 'env';
+              const n = e.envVars.filter(v => v.set && matchEnv(v, w.q)).length;
+              return html`<li key="env"><button type="button" class=${'st-nav__sub' + (son ? ' is-on' : '')}
+                aria-current=${son ? 'true' : undefined} data-sec="env"
+                onClick=${() => w.set({ sec: son ? '' : 'env' })}>
+                <span class="st-nav__label">Environment variables</span>
+                <span class="st-nav__n">${n}</span>
+              </button></li>`;
+            })()}
           </ul>`}
         </li>`;
       })}
@@ -79,7 +89,7 @@ function SettingRow({ row, w, scopes }) {
     </td>
     <td class="st-c-val"><${Value} row=${row}/></td>
     <td class="st-c-scope"><${ScopeChip} scope=${row.scope} locked=${row.locked} label=${scopeLabel(row.scope, scopes)}/></td>
-    <td class="st-c-src"><${SetIn} path=${row.source} line=${row.line} w=${w}/></td>
+    <td class="st-c-src"><${SetIn} path=${row.source} line=${row.line} w=${w} tool=${row.tool}/></td>
     <td class="st-c-what" title=${row.tip || undefined}>${row.tip}</td>
   </tr>`;
 }
@@ -95,8 +105,11 @@ export function ScopeStrip({ w, entry }) {
         const n = rows.filter(r => r.scope === s.id).length;
         const on = w.st.scope === s.id;
         const file = s.path ? baseName(s.path) : '';
+        const vars = s.vars || [];
+        // The Environment layer has no file: its card names the variables that are set.
+        const where = vars.length ? vars.slice(0, 2).join(', ') + (vars.length > 2 ? ` +${vars.length - 2}` : '') : (file || s.note);
         const title = [
-          s.label, s.paths.length ? s.paths.join('\n') : '', s.exists ? '' : 'not present', s.note,
+          s.label, s.paths.length ? s.paths.join('\n') : '', vars.length ? 'Set: ' + vars.join(', ') : '', s.exists ? '' : 'not present', s.note,
           s.changeable ? '' : 'Locked: cannot be changed from this machine',
         ].filter(Boolean).join('\n');
         return html`<li key=${s.id} class="st-scopes__item">
@@ -109,7 +122,7 @@ export function ScopeStrip({ w, entry }) {
               <span class="st-scopechip__label">${s.label}</span>
               <span class="st-scopechip__n">${n}<span class="st-sr"> ${n === 1 ? 'setting wins' : 'settings win'} here</span></span>
             </span>
-            <span class="st-scopechip__file">${s.exists ? (file || s.note) : 'not present'}</span>
+            <span class=${'st-scopechip__file' + (vars.length ? ' st-mono' : '')} data-vars=${vars.length ? vars.join(',') : undefined}>${s.exists ? where : (s.id === 'env' ? 'none set' : 'not present')}</span>
           </button>
         </li>`;
       })}
@@ -165,9 +178,42 @@ function tableRuns(sections) {
   return runs;
 }
 
+/** Every environment variable the tool reads: set ones, then (with "Show unset knobs") the rest. */
+function EnvTable({ w, entry }) {
+  const all = entry.envVars.filter(v => matchEnv(v, w.q));
+  const set = all.filter(v => v.set);
+  const shown = w.showUnset ? all : set;
+  const hidden = all.length - shown.length;
+  if (!shown.length && !hidden) return null;
+  const sel = w.selectedEnv;
+  return html`<table class="st-table st-envtable" data-testid="st-env-table">
+    <thead><tr><th>Variable</th><th>Value</th><th>Where</th><th>Drives</th><th>What it does</th></tr></thead>
+    <tbody data-section="env">
+      <tr class="st-group"><th scope="colgroup" colspan="5">Environment variables
+        <span class="st-group__meta">${set.length} set${hidden ? html` · <span class="st-unsetn">+${hidden} unset</span>` : ''}</span></th></tr>
+      ${shown.map(v => {
+        const choose = () => w.openEnv(v.name, entry.id);
+        return html`<tr key=${v.name} class=${'st-row' + (v.set ? '' : ' st-row--unset') + (sel && sel.uid === v.uid ? ' is-sel' : '')}
+          data-env=${v.name} tabindex="0" onClick=${choose}
+          onKeyDown=${e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); choose(); } }}>
+          <td class="st-c-set"><div class="st-label st-mono">${v.name}</div>${!v.documented && html` <${UndocumentedChip}/>`}</td>
+          <td class="st-c-val">${!v.set ? html`<span class="st-none">not set</span>`
+            : v.masked ? html`<span class="st-dim" title="The name says it holds a credential, so the value is not shown">hidden</span>`
+            : html`<span class="st-v st-mono" title=${v.value}>${v.value === '' ? '(empty)' : v.value}</span>`}</td>
+          <td class="st-c-src st-mono">${envWhereText(v) || html`<span class="st-none">—</span>`}</td>
+          <td>${v.drives.length ? v.drives.map(d => d.label).join(', ') : html`<span class="st-none">—</span>`}</td>
+          <td class="st-c-what" title=${v.description || undefined}>${v.description}</td>
+        </tr>`;
+      })}
+    </tbody>
+  </table>`;
+}
+
 export function ToolMain({ w, entry }) {
   // The tables of one tool (the agents have their own) sort and resize as one.
   const shared = useShared('settings.tool');
+  const showEnv = (!w.st.sec || w.st.sec === 'env') && (!w.st.scope || w.st.scope === 'env');
+  const envShown = showEnv && entry.envVars.some(v => (v.set || w.showUnset) && matchEnv(v, w.q));
   const sections = entry.sections
     .filter(s => !w.st.sec || s.id === w.st.sec)
     .map(s => ({
@@ -188,10 +234,13 @@ export function ToolMain({ w, entry }) {
     <div class="st-bar">
       <${Swatch} id=${entry.id} big/>
       <h2 class="st-bar__title" id="st-main-title">${entry.label}</h2>
-      <span class="st-bar__sub">${total} ${total === 1 ? 'setting' : 'settings'} in ${entry.files.length} ${entry.files.length === 1 ? 'file' : 'files'}${entry.risky ? html` · <span class="st-red">${entry.risky} risky</span>` : ''}</span>
+      <span class="st-bar__sub">${total} ${total === 1 ? 'setting' : 'settings'} in ${entry.files.length} ${entry.files.length === 1 ? 'file' : 'files'}${entry.envUsed.length ? ` and ${entry.envUsed.length} ${entry.envUsed.length === 1 ? 'variable' : 'variables'}` : ''}${entry.risky ? html` · <span class="st-red">${entry.risky} risky</span>` : ''}</span>
       <span class="st-bar__files">
         ${entry.files.map(f => html`<button type="button" key=${f} class="st-chip st-chip--mono st-chip--btn" title=${f}
           onClick=${() => w.openAt(f)}>${chipName(f, entry.files)}</button>`)}
+        ${entry.envUsed.map(v => html`<button type="button" key=${'env:' + v.name} class="st-chip st-chip--mono st-chip--btn st-chip--env"
+          data-env=${v.name} title=${'Environment variable ' + v.name + (v.drives.length ? ': sets ' + v.drives.map(d => d.label).join(', ') : '')}
+          onClick=${() => w.openEnv(v.name, entry.id)}><span class="st-chip__pre" aria-hidden="true">$</span>${v.name}</button>`)}
       </span>
     </div>
     ${entry.id === 'vscode' && html`<p class="st-note">chat.* settings, used by every AI tool in VS Code</p>`}
@@ -200,9 +249,10 @@ export function ToolMain({ w, entry }) {
     ${sections.length ? tableRuns(sections).map((run, i) => (run.agents
       ? html`<${ToolAgentsTable} key=${'a' + i} w=${w} section=${run.sections[0]}/>`
       : html`<${GenericTable} key=${'g' + i} w=${w} sections=${run.sections} scopes=${entry.scopes} shared=${shared} extras=${extras}/>`))
-    : html`<p class="st-empty">${!total ? 'No settings were read for this tool.'
+    : envShown ? null : html`<p class="st-empty">${!total ? 'No settings were read for this tool.'
       : scopeName ? `No setting shown here is set at the ${scopeName} layer.`
       : 'No setting matches the search or the toggles.'}</p>`}
+    ${showEnv && html`<${EnvTable} w=${w} entry=${entry}/>`}
   </section>`;
 }
 
