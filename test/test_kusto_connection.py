@@ -615,7 +615,8 @@ def test_connect_runs_schema_creation_once(monkeypatch):
     client = FakeClient()
     connect(SETTINGS, translator=StubTranslator(), tables=TABLES, client=client)
     n = len(client.commands)
-    assert n == len(TABLES) + 2  # streaming off: no streaming policy commands; plus the information schema's two
+    # One schema listing, a create per table (the fake database has none), the information schema's two.
+    assert n == len(TABLES) + 3
     connect(SETTINGS, translator=StubTranslator(), tables=TABLES, client=client)
     assert len(client.commands) == n
 

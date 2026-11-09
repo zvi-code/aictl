@@ -92,7 +92,7 @@ or pass it on the command line, which also works for a one-off run:
 aictl daemon serve --kusto-cluster https://<name>.westeurope.kusto.windows.net --kusto-database aictl
 ```
 
-The start prints `history store: kusto://<host>/aictl (Kusto, azcli auth; no SQLite file)`. The first start creates the 47 tables, enables their streaming ingestion policy and writes `aictl_information_schema`, which describes every column; `aictl db schema` prints the same.
+The start prints `history store: kusto://<host>/aictl (Kusto, azcli auth; no SQLite file)`. The first start creates the 47 tables, enables streaming ingestion on the database and writes `aictl_information_schema`, which describes every column; `aictl db schema` prints the same. Later starts compare the database's schema with the code's and change only what differs.
 
 ## 5. Check it
 
@@ -102,7 +102,7 @@ Open the dashboard as usual (`aictl daemon serve` prints the URL). In the Kusto 
 
 - `Principal 'msauser=...' is not authorized` in the Kusto web UI: the web UI signed you in as your personal Microsoft account, which Kusto treats as a different principal from the Azure AD user that created the cluster. Either switch the web UI's directory to the cluster's tenant (account menu, Switch directory), open the cluster from the Azure portal (Data, Query), or add the account as a principal: `.add database ['aictl'] admins ('msauser=<you>@outlook.com')`.
 - The web UI connects to `https://ingest-<name>...` but not to `https://<name>...`: the ingest URL is the Data Management endpoint, which only takes ingestion; queries and commands go to the engine URL, and that is the one whose roles matter. Give the identity a database role (above).
-- Slow first start on a dev-tier cluster: a `Dev(No SLA)` cluster has one ingestion slot. aictl uses streaming ingestion, which does not take it, but the first start still creates 48 tables and their policies (about 10 s) and the first polls ingest every recent session.
+- Slow first polls on a dev-tier cluster: a `Dev(No SLA)` cluster has one ingestion slot and answers a query in about a tenth of a second. aictl uses streaming ingestion, which does not take the slot, and sends a batch of updates as one query, but the first polls still write every recent session's history, which takes minutes; later polls are quick.
 - `AADSTS50076 ... multi-factor authentication`: run `az login --tenant <tenant id> --scope "https://<cluster host>/.default"` and sign in again.
 - `Forbidden` on the first start: the account lacks Database Admin on the database (step 2).
 - `UserNotLicensed` from Fabric: the account has no Fabric license; start a Fabric trial in the Fabric portal or use an Azure Data Explorer cluster.

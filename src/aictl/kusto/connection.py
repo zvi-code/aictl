@@ -52,6 +52,8 @@ FLUSH_ROWS = 5000
 # Keys per existence query of INSERT OR IGNORE / ON CONFLICT DO UPDATE: bounds the
 # size of the KQL text.
 KEYS_PER_QUERY = 200
+# Mutations of one executemany batch sent as one union query, at most.
+MUTATIONS_PER_QUERY = 100
 
 
 class KustoStoreError(sqlite3.OperationalError):
@@ -606,8 +608,21 @@ class KustoConnection:
         with KustoConnection._schema_lock:
             if key in KustoConnection._schema_done:
                 return
-            for command in create_commands(self.tables, streaming=self.settings.streaming):
-                self._mgmt(command)
+            # One read of what the database has, then commands only for what differs: a
+            # command per table on every start took half a minute on a real cluster.
+            have: dict[str, set[str]] = {}
+            for table_name, column in self._mgmt(".show database schema | project TableName, ColumnName").rows:
+                have.setdefault(str(table_name), set())
+                if column:
+                    have[str(table_name)].add(str(column))
+            for name, table in self.tables.items():
+                wanted = {c.name for c in table.columns} | {n for n, _t in SYSTEM_COLUMNS}
+                if name not in have or not wanted <= have[name]:
+                    for command in create_commands({name: table}, streaming=False):
+                        self._mgmt(command)
+            if self.settings.streaming:
+                # Table policies inherit from the database's: one command instead of one per table.
+                self._mgmt(f".alter database {quote(self.database)} policy streamingingestion enable")
             # The schema described as data, for anyone querying the database directly.
             for command in information_commands(self.tables):
                 self._mgmt(command)
@@ -713,11 +728,20 @@ class KustoConnection:
                 last_rowid = rid if rid is not None else last_rowid
                 group = None
 
+        mutations: list[Mutation] = []
+
+        def run_mutations() -> None:
+            nonlocal total
+            if mutations:
+                total += self._mutate_many(mutations, sql)
+                mutations.clear()
+
         for params in seq_of_params:
             if self._trace is not None:
                 self._trace(sql)
             stmt = self._translate(sql, params)
             if isinstance(stmt, Insert):
+                run_mutations()
                 same = group is not None and (
                     group.table,
                     group.on_conflict,
@@ -731,12 +755,43 @@ class KustoConnection:
                     group = Insert(stmt.table, list(stmt.rows), stmt.on_conflict, stmt.update_columns, stmt.update_kql)
                 continue
             run_group()
+            if isinstance(stmt, Mutation):
+                # Consecutive mutations of one table go to the cluster as one query.
+                if mutations and (mutations[0].table, mutations[0].kind) != (stmt.table, stmt.kind):
+                    run_mutations()
+                mutations.append(stmt)
+                if len(mutations) >= MUTATIONS_PER_QUERY:
+                    run_mutations()
+                continue
+            run_mutations()
             self._run(cursor, stmt, sql)
             total += max(cursor.rowcount, 0)
         run_group()
+        run_mutations()
         cursor._set([], [], total)
         if last_rowid is not None:
             cursor.lastrowid = last_rowid
+
+    def _mutate_many(self, stmts: list[Mutation], sql: str) -> int:
+        """Run a batch of mutations of one table as one query: ``union`` of their bodies over one read of the table.
+
+        Every mutation's KQL opens with the same ``let`` binding of the table's current
+        rows; the batch keeps one, materialized, and unions the bodies. An
+        ``executemany`` of an UPDATE over a few hundred sessions was a few hundred
+        round trips of half a second each; it is one. The arms do not see each other's
+        changes, as SQLite's sequential statements would; a batch whose arms touch the
+        same row is written as the union of their versions.
+        """
+        if len(stmts) == 1:
+            return self._mutate(stmts[0], sql)
+        preludes = {s.kql.split(";\n", 1)[0] for s in stmts}
+        if len(preludes) != 1 or " = " not in next(iter(preludes)) or not next(iter(preludes)).startswith("let "):
+            return sum(self._mutate(s, sql) for s in stmts)
+        prelude = next(iter(preludes))
+        name, definition = prelude[len("let ") :].split(" = ", 1)
+        bodies = [s.kql.split(";\n", 1)[1] for s in stmts]
+        kql = f"let {name} = materialize({definition});\nunion isfuzzy=false " + ", ".join(f"({b})" for b in bodies)
+        return self._mutate(Mutation(stmts[0].table, kql, stmts[0].kind), sql)
 
     def _run(self, cursor: KustoCursor, stmt: Statement, sql: str) -> None:
         if isinstance(stmt, Insert):
