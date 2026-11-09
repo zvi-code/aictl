@@ -999,18 +999,31 @@ class ProjectStores:
     # ── Direct writes ──────────────────────────────────────────
 
     def upsert_session(self, row: SessionRow) -> None:
-        key = self._route(row.session_id, row.project_path)
-        with self._using(key) as db:
-            db.upsert_session(row)
-        self._touch(key, [row])
+        self.upsert_sessions([row])
+
+    def upsert_sessions(self, rows: list[SessionRow]) -> None:
+        """Each store gets its sessions as one write."""
+        groups: dict[str, list[SessionRow]] = {}
+        for row in rows:
+            groups.setdefault(self._route(row.session_id, row.project_path), []).append(row)
+        for key, part in groups.items():
+            with self._using(key) as db:
+                db.upsert_sessions(part)
+            self._touch(key, part)
 
     def link_session_process(self, session_id: str, pid: int, tool: str = "", role: str = "lead") -> None:
-        if not session_id or not pid:
-            return
-        key = self._route(session_id, "")
-        with self._using(key) as db:
-            db.link_session_process(session_id, pid, tool, role)
-        self._touch(key, [types.SimpleNamespace(ts=time.time())])
+        self.link_session_processes([(session_id, pid, tool, role)])
+
+    def link_session_processes(self, links: list[tuple[str, int, str, str]]) -> None:
+        """Each store gets its (session_id, pid, tool, role) links as one write."""
+        groups: dict[str, list[tuple[str, int, str, str]]] = {}
+        for link in links:
+            if link[0] and link[1]:
+                groups.setdefault(self._route(link[0], ""), []).append(link)
+        for key, part in groups.items():
+            with self._using(key) as db:
+                db.link_session_processes(part)
+            self._touch(key, [types.SimpleNamespace(ts=time.time())] * len(part))
 
     def batch_link_sessions(self, entries: list[tuple[str, str, int, float, str]]) -> None:
         groups: dict[str, list[tuple[str, str, int, float, str]]] = {}
@@ -1125,10 +1138,17 @@ class ProjectStores:
         return stored
 
     def upsert_agent(self, row: AgentRow) -> None:
-        key = self._route(row.session_id, "")
-        with self._using(key) as db:
-            db.upsert_agent(row)
-        self._touch(key, [row])
+        self.upsert_agents([row])
+
+    def upsert_agents(self, rows: list[AgentRow]) -> None:
+        """Each store gets its agents as one write."""
+        groups: dict[str, list[AgentRow]] = {}
+        for row in rows:
+            groups.setdefault(self._route(row.session_id, ""), []).append(row)
+        for key, part in groups.items():
+            with self._using(key) as db:
+                db.upsert_agents(part)
+            self._touch(key, part)
 
     def write_call_facts(self, facts: CallFacts) -> int:
         """Split a batch of facts by store; each part is one transaction in its own store."""

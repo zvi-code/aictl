@@ -1323,6 +1323,10 @@ class SnapshotPersistence:
             from .monitoring.tool_telemetry import _parse_iso_ts
             from .storage import AgentRow, RequestRow, SessionRow
 
+            # Written once after the loop: a statement per session and per agent was
+            # a request each on a Kusto store, several hundred on a first refresh.
+            session_rows: list[SessionRow] = []
+            agent_rows: list[AgentRow] = []
             for team in agent_teams:
                 session_id = team.get("session_id", "")
                 # A team writes dozens of rows with one commit each: 22 MB/s of
@@ -1358,7 +1362,7 @@ class SnapshotPersistence:
                     ts_vals += [t.get("source_ts", 0.0) or 0.0 for a in agents for t in a.get("turns", [])]
                     ts_vals = [t for t in ts_vals if t > 0]
                     session_started = min(ts_vals) if ts_vals else snapshot_ts
-                    self._db.upsert_session(
+                    session_rows.append(
                         SessionRow(
                             session_id=session_id,
                             tool="claude-code",
@@ -1373,7 +1377,7 @@ class SnapshotPersistence:
                     agent_id = agent.get("agent_id", "")
                     if not agent_id:
                         continue
-                    self._db.upsert_agent(
+                    agent_rows.append(
                         AgentRow(
                             agent_id=agent_id,
                             session_id=session_id,
@@ -1411,6 +1415,8 @@ class SnapshotPersistence:
                                 project_path=agent.get("cwd", "") or team_folder,
                             )
                         )
+            self._db.upsert_sessions(session_rows)
+            self._db.upsert_agents(agent_rows)
         except Exception as exc:
             log.warning("Agent team persistence failed: %s", exc)
 
@@ -1421,6 +1427,16 @@ class SnapshotPersistence:
         try:
             from .storage import SessionRow
 
+            started: list[SessionRow] = []
+            links: list[tuple[str, int, str, str]] = []
+
+            def write_started() -> None:
+                # The starts seen so far, as one write each for sessions and their processes.
+                self._db.upsert_sessions(started)
+                self._db.link_session_processes(links)
+                started.clear()
+                links.clear()
+
             for e in events:
                 kind = e.get("kind", "")
                 detail = e.get("detail", {})
@@ -1429,7 +1445,7 @@ class SnapshotPersistence:
                     continue
                 if kind == "session_start":
                     ev_pid = int(detail.get("pid", 0) or 0)
-                    self._db.upsert_session(
+                    started.append(
                         SessionRow(
                             session_id=sid,
                             tool=e.get("tool", ""),
@@ -1439,8 +1455,10 @@ class SnapshotPersistence:
                             source="correlator",
                         )
                     )
-                    self._db.link_session_process(sid, ev_pid, tool=e.get("tool", ""))
+                    links.append((sid, ev_pid, e.get("tool", ""), "lead"))
                 elif kind == "session_end":
+                    # An end follows its start: the starts go in first.
+                    write_started()
                     self._db.update_session_end(
                         sid,
                         ended_at=e.get("ts", fallback_ts),
@@ -1451,6 +1469,7 @@ class SnapshotPersistence:
                         output_tokens=detail.get("output_tokens", 0),
                         files_modified=detail.get("files_modified", 0),
                     )
+            write_started()
         except Exception as exc:
             log.warning("Session event persistence failed: %s", exc)
 

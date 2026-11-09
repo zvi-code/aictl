@@ -41,18 +41,17 @@ FOREIGN_FILES = (
 )
 
 # Store statements the translator refuses, by file:line, with (part of) the reason.
-ACCEPTED_UNSUPPORTED: dict[str, str] = {
+ACCEPTED_UNSUPPORTED: dict[tuple[str, str], int] = {
+    # (file, part of the reason): how many statements. Keyed without line numbers,
+    # which move with every edit of the file.
     # The per-project store copy machinery works on attached SQLite files.
-    "aictl/project_stores.py:876": "attached database",
-    "aictl/project_stores.py:884": "attached database",
-    "aictl/project_stores.py:891": "attached database",
-    "aictl/project_stores.py:894": "attached database",
-    "aictl/project_stores.py:1621": "CREATE TABLE ... AS SELECT",
-    "aictl/project_stores.py:1649": "no such table",  # the temp table of the line above
+    ("aictl/project_stores.py", "attached database"): 4,
+    ("aictl/project_stores.py", "CREATE TABLE ... AS SELECT"): 1,
+    ("aictl/project_stores.py", "no such table: copied_events"): 1,  # the temp table of the line above
     # A trigger body (new.rowid) and SQLite internals.
-    "aictl/storage.py:2367": "new.rowid",
-    "aictl/storage.py:7015": "dbstat",
-    "aictl/storage.py:1813": "last_insert_rowid()",
+    ("aictl/storage.py", "new.rowid"): 1,
+    ("aictl/storage.py", "dbstat"): 1,
+    ("aictl/storage.py", "last_insert_rowid()"): 1,
 }
 
 # Statements whose f-string holes the corpus cannot fill with valid SQL.
@@ -475,13 +474,17 @@ def test_corpus_translates():
         print(f"  {w}: {r.reason}")
     assert len(untestable) <= UNTESTABLE_LIMIT, untestable
     assert (len(store) - len(failed)) / len(store) >= 0.95
-    found = {w: r.reason for w, r in failed}
-    new = {w: reason for w, reason in found.items() if w not in ACCEPTED_UNSUPPORTED}
-    assert not new, f"statements that newly fail to translate: {new}"
-    gone = sorted(set(ACCEPTED_UNSUPPORTED) - set(found))
-    assert not gone, f"allowlisted statements that now translate (remove them from the list): {gone}"
-    for w, reason in found.items():
-        assert ACCEPTED_UNSUPPORTED[w] in reason, (w, reason)
+    found: collections.Counter[tuple[str, str]] = collections.Counter()
+    unknown = {}
+    for w, r in failed:
+        file = w.rsplit(":", 1)[0]
+        known = [key for key in ACCEPTED_UNSUPPORTED if key[0] == file and key[1] in r.reason]
+        if known:
+            found[known[0]] += 1
+        else:
+            unknown[w] = r.reason
+    assert not unknown, f"statements that newly fail to translate: {unknown}"
+    assert dict(found) == ACCEPTED_UNSUPPORTED, "the allowlist names statements that now translate, or too few"
 
 
 @functools.cache

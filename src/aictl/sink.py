@@ -690,14 +690,13 @@ def update_provenance(db: HistoryDB, snap: DashboardSnapshot) -> int:
     _last_refresh = now
 
     builders = _build_provenance(snap)
-    count = 0
-    for key, prov in builders.items():
-        try:
-            db.update_datapoint_source(key, prov)
-            count += 1
-        except Exception as exc:
-            _prov_log.debug("Provenance update failed for %s: %s", key, exc)
-    return count
+    try:
+        # One write for the catalog: a statement per entry was a request per entry on a Kusto store.
+        db.update_datapoint_sources(builders)
+    except Exception as exc:
+        _prov_log.debug("Provenance update failed: %s", exc)
+        return 0
+    return len(builders)
 
 
 def _get(obj, key: str, default=None):

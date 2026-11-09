@@ -1992,6 +1992,14 @@ class TestFlushCommitsInChunks:
                     raise __import__("sqlite3").OperationalError("database is locked")
             return self._conn.execute(sql, *args)
 
+        def executemany(self, sql, rows):
+            rows = list(rows)
+            if f"INTO {self._table}" in sql:
+                before, self.seen = self.seen, self.seen + len(rows)
+                if before < self._nth <= self.seen:
+                    raise __import__("sqlite3").OperationalError("database is locked")
+            return self._conn.executemany(sql, rows)
+
         def __getattr__(self, name):
             return getattr(self._conn, name)
 
