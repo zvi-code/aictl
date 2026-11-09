@@ -1441,6 +1441,10 @@ class SnapshotStore:
         """
         if PACE.watched():
             self.refresh_requested.set()
+            # The rows are in a write buffer: flushed now, the board read after the refresh sees them.
+            flush_soon = getattr(self._db, "flush_soon", None)
+            if flush_soon is not None:
+                flush_soon()
 
     def wait_for_update(self, known_version: int, timeout: float = 30.0) -> tuple[_DashboardSnapshot | None, int]:
         """Block until a new version is available or timeout."""

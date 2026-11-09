@@ -44,6 +44,7 @@ from .storage import (
     CAPTURE_FULL,
     FLUSH_CHUNK_ROWS,
     FLUSH_INTERVAL,
+    FLUSH_MIN_GAP_S,
     FLUSH_YIELD_S,
     AgentRow,
     CallFacts,
@@ -461,6 +462,7 @@ class ProjectStores:
             self._load_sessions()
             self._retry_moves()
         self._reap_stop = threading.Event()
+        self._flush_wake = threading.Event()
         self._reaper: threading.Thread | None = None
         self._flusher: threading.Thread | None = None
         if self._split and flush_interval > 0:
@@ -732,9 +734,22 @@ class ProjectStores:
         return [key for key, _db in closing]
 
     def _flush_loop(self) -> None:
-        while not self._reap_stop.wait(self._store_options["flush_interval"]):
+        """Flush every store each interval, or sooner when asked, at most once a second."""
+        while not self._reap_stop.is_set():
+            self._flush_wake.wait(self._store_options["flush_interval"])
+            self._flush_wake.clear()
+            if self._reap_stop.is_set():
+                return
             for db in self.open_stores().values():
                 db.flush_once()
+            self._reap_stop.wait(FLUSH_MIN_GAP_S)
+
+    def flush_soon(self) -> None:
+        """Ask the flush thread to write every store's buffers now: a dashboard client waits for the rows."""
+        if self._flusher is not None:
+            self._flush_wake.set()
+        else:
+            self.machine.flush_soon()
 
     def _reap_loop(self) -> None:
         while not self._reap_stop.wait(REAP_EVERY_S):
@@ -1325,6 +1340,7 @@ class ProjectStores:
             return
         self._closed = True
         self._reap_stop.set()
+        self._flush_wake.set()
         if self._reaper is not None:
             self._reaper.join(timeout=5)
         if self._flusher is not None:
