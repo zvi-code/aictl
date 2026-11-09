@@ -391,7 +391,9 @@ The sink dispatches to registered handlers: `HistoryDB` for persistence, `Snapsh
 
 ## 4. Storage
 
-### SQLite Persistence (`storage.py`)
+Two backends behind one `HistoryDB` interface: SQLite (the default, a local file) and a Kusto cluster (the alternative, chosen by `kusto_cluster`). Everything above the store, the ingesters, the board and the API, is the same for both.
+
+### SQLite Persistence (`storage.py`, default)
 
 `HistoryDB` provides zero-dependency time-series storage:
 
@@ -408,7 +410,7 @@ Tables:
 - `sessions` — session state snapshots
 - `telemetry_kv` — key-value telemetry pairs per tool
 
-### Kusto Store (`kusto/`)
+### Kusto Store (`kusto/`, alternative backend)
 
 With `kusto_cluster` set in `config.toml` (or `aictl daemon serve --kusto-cluster URL`, or `AICTL_KUSTO_CLUSTER`), the history lives in one database of a Kusto (Azure Data Explorer) cluster and the daemon serves from it alone: no SQLite file is opened for the store. The code keeps issuing its SQLite statements; `kusto/connection.py` is a `sqlite3.Connection` look-alike that hands each statement to `kusto/translate.py` and runs the result on the cluster.
 
