@@ -911,12 +911,13 @@ Key: rowid. Scope: machine-wide. 1 columns.
 
 ### `maintenance_state`
 
-Key: key. Scope: machine-wide. 2 columns.
+Key: key. Scope: machine-wide. 3 columns.
 
 | Column | Kusto type | SQLite type | Default | Not null |
 |---|---|---|---|---|
 | key | string | TEXT |  |  |
 | value | real | REAL |  | yes |
+| text | string | TEXT | '' | yes |
 | rowid | long | system | | |
 | _v | datetime | system | | |
 | _deleted | bool | system | | |

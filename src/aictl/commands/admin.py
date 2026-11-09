@@ -208,7 +208,7 @@ def schema(markdown, as_json):
 
     tables = kusto_schema.store_schema()
     if markdown:
-        click.echo(kusto_schema.render_markdown(tables))
+        click.echo(kusto_schema.render_markdown(tables), nl=False)
         return
     if as_json:
         for row in kusto_schema.information_rows(tables):

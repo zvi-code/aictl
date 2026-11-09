@@ -2325,3 +2325,21 @@ def test_a_health_write_that_failed_is_tried_again(tmp_path, monkeypatch):
         assert [r["status"] for r in db.query_data_quality(component="ingester:x")] == ["ok"]
     finally:
         db.close()
+
+
+class TestDashboardDates:
+    def test_seeded_and_imported_dashboards_have_numeric_dates(self, db: HistoryDB):
+        conn = db._conn()
+        db.import_layout({"slug": "other", "title": "Other"})
+        db.import_layout({"slug": "other", "title": "Other 2"})
+        rows = conn.execute("SELECT typeof(created_at), typeof(updated_at), created_at FROM ui_dashboard").fetchall()
+        assert len(rows) == 2
+        assert all(r[0] == "real" and r[1] == "real" and r[2] > 1e9 for r in rows)
+
+    def test_column_default_is_a_number_for_new_databases(self, db: HistoryDB):
+        conn = db._conn()
+        conn.execute("INSERT INTO ui_dashboard(slug, title) VALUES('d', 'D')")
+        assert conn.execute("SELECT typeof(created_at), typeof(updated_at) FROM ui_dashboard WHERE slug='d'").fetchone() == (
+            "real",
+            "real",
+        )

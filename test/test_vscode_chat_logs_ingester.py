@@ -181,3 +181,46 @@ def test_empty_requests_are_ignored(tmp_path, our_db):
     _write_snapshot(ws / "empty.jsonl", session_id="empty-sid", requests=[])
     ingester = VSCodeChatLogsIngester(tmp_path / "workspaceStorage", our_db)
     assert ingester.poll() == 0
+
+
+def _cursor_rows(db):
+    return db._conn().execute("SELECT key, typeof(value), text FROM maintenance_state").fetchall()
+
+
+def test_cursor_is_saved_in_text_and_value_stays_a_number(tmp_path, our_db):
+    log_dir = _build_log_tree(tmp_path)
+    ingester = VSCodeChatLogsIngester(log_dir, our_db)
+    assert ingester.poll() > 0
+    rows = _cursor_rows(our_db)
+    assert rows
+    # A typed (Kusto) column cannot hold JSON text in a REAL column.
+    assert all(kind == "real" for _key, kind, _text in rows)
+    (cursor,) = [text for key, _kind, text in rows if key == VSCodeChatLogsIngester._CURSOR_KEY]
+    assert json.loads(cursor)
+    # A new ingester reads the cursor back and reads no file twice.
+    again = VSCodeChatLogsIngester(log_dir, our_db)
+    assert again._files
+    assert {k: v.resume_point() for k, v in again._files.items()} == {
+        k: v.resume_point() for k, v in ingester._files.items()
+    }
+    assert again.poll() == 0
+
+
+def test_cursor_saved_by_an_older_version_in_value_is_still_loaded(tmp_path, our_db):
+    log_dir = _build_log_tree(tmp_path)
+    ingester = VSCodeChatLogsIngester(log_dir, our_db)
+    assert ingester.poll() > 0
+    conn = our_db._conn()
+    (cursor,) = conn.execute(
+        "SELECT text FROM maintenance_state WHERE key = ?", (VSCodeChatLogsIngester._CURSOR_KEY,)
+    ).fetchone()
+    # The old format: the JSON in ``value``, ``text`` empty.
+    conn.execute("DELETE FROM maintenance_state WHERE key = ?", (VSCodeChatLogsIngester._CURSOR_KEY,))
+    conn.execute("INSERT INTO maintenance_state(key, value) VALUES(?, ?)", (VSCodeChatLogsIngester._CURSOR_KEY, cursor))
+    conn.commit()
+    again = VSCodeChatLogsIngester(log_dir, our_db)
+    assert again._files
+    assert {k: v.resume_point() for k, v in again._files.items()} == {
+        k: v.resume_point() for k, v in ingester._files.items()
+    }
+    assert again.poll() == 0
