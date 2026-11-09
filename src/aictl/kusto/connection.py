@@ -84,9 +84,12 @@ def _server_message(exc: BaseException) -> str:
 
 
 # A small cluster throttles (HTTP 429) when ingestion commands or queries arrive
-# faster than it takes them; the request is sound and succeeds a moment later.
+# faster than it takes them, and streaming ingestion into a table created moments
+# ago can fail inside the service (a 5xx whose error says ``@permanent: false``,
+# such as a RowStore "trimmable stream" exception) until its row store is ready.
+# Either request is sound and succeeds a little later; wait up to about a minute.
 log = logging.getLogger(__name__)
-RETRY_DELAYS_S = (0.5, 1.0, 2.0, 4.0, 8.0)
+RETRY_DELAYS_S = (0.5, 1.0, 2.0, 4.0, 8.0, 15.0, 30.0)
 
 
 def _throttled(exc: BaseException) -> bool:
@@ -97,15 +100,39 @@ def _throttled(exc: BaseException) -> bool:
     return status in (429, 503) or "throttled" in str(exc).lower()
 
 
+def _transient(exc: BaseException) -> bool:
+    """Whether the service itself says the request may succeed when repeated."""
+    if _throttled(exc):
+        return True
+    errors = []
+    for getter in ("get_api_error", "get_api_errors"):
+        fn = getattr(exc, getter, None)
+        if callable(fn):
+            try:
+                got = fn()
+            except Exception:  # noqa: BLE001 - a malformed error body is not a reason to retry
+                got = None
+            errors.extend(got if isinstance(got, list) else [got] if got is not None else [])
+    permanence = [e.permanent for e in errors if getattr(e, "permanent", None) is not None]
+    if permanence:
+        return not all(permanence)
+    response = getattr(exc, "http_response", None)
+    status = getattr(response, "status_code", None)
+    if status is not None:
+        return status >= 500
+    return type(exc).__name__ == "KustoNetworkError"
+
+
 def retrying(call: Callable[[], Any], what: str) -> Any:
-    """Run *call*, waiting out the cluster's throttling for a few seconds before giving up."""
+    """Run *call*, waiting out throttling and transient service errors before giving up."""
     for delay in RETRY_DELAYS_S:
         try:
             return call()
-        except Exception as exc:  # noqa: BLE001 - only a throttled request is retried; the rest is raised below
-            if not _throttled(exc):
+        except Exception as exc:  # noqa: BLE001 - only a transient failure is retried; the rest is raised below
+            if not _transient(exc):
                 raise
-            log.debug("Kusto throttled %s; retrying in %.1f s", what, delay)
+            say = log.warning if delay >= 8 else log.debug
+            say("Kusto %s failed transiently (%s); retrying in %.0f s", what, _server_message(exc).splitlines()[0][:160], delay)
             time.sleep(delay)
     return call()
 
