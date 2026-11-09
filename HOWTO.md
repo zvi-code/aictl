@@ -832,6 +832,90 @@ The current install is 1 launcher, normally in `.local\bin` (`.local/bin` on mac
 | `True` for `uv\tools\aictl` | A `uv` tool install | Run `uv tool uninstall aictl` |
 | A dashboard or another aictl process | The process can be older than the update | Run `aictl daemon serve --stop`. If the process stays, end it |
 
+## Store the history in a Kusto cluster
+
+SQLite is the default backend and needs no setup. Kusto (Azure Data Explorer, or a Fabric Eventhouse) is the alternative backend: the history lives in a Kusto database instead of the SQLite file. Every table becomes a table of that database, the daemon serves entirely from it, and nothing is written to `~/.config/aictl/history.db`. An existing SQLite history is not moved.
+
+### 1. Get a cluster
+
+Any of these works; pick the cheapest you have access to.
+
+**A local emulator**, free, for trying it out (needs Docker; on an Apple Silicon Mac the `--platform` flag is required):
+
+```bash
+docker run --platform linux/amd64 -e ACCEPT_EULA=Y -m 4G -d --name kustainer -p 8080:8080 mcr.microsoft.com/azuredataexplorer/kustainer-linux:latest
+```
+
+```bash
+curl -s -X POST http://localhost:8080/v1/rest/mgmt -H "Content-Type: application/json" -d '{"csl":".create database aictl volatile"}'
+```
+
+The cluster URL is then `http://localhost:8080`, no sign-in. The emulator has no streaming ingestion; aictl uses `.ingest inline` there on its own.
+
+**An Azure Data Explorer cluster** in your subscription. The dev tier costs about 0.12 USD per hour while running (auto-stop pauses it after days without use), so delete it when done:
+
+```bash
+az login
+```
+
+```bash
+az provider register -n Microsoft.Kusto --wait
+```
+
+```bash
+az group create -n rg-aictl -l westeurope
+```
+
+```bash
+az kusto cluster create --cluster-name <name> --resource-group rg-aictl --location westeurope --sku name="Dev(No SLA)_Standard_E2a_v4" tier="Basic" capacity=1 --enable-streaming-ingest true --enable-auto-stop true
+```
+
+```bash
+az kusto database create --cluster-name <name> --resource-group rg-aictl --database-name aictl --read-write-database soft-delete-period=P30D hot-cache-period=P7D location=westeurope
+```
+
+The cluster URL is `https://<name>.westeurope.kusto.windows.net`. The cluster must have streaming ingestion enabled (the flag above); aictl sets the table-level policy itself. To remove everything afterwards: `az group delete -n rg-aictl --yes`.
+
+**A Microsoft Fabric Eventhouse.** Create an Eventhouse in a Fabric workspace (the account needs a Fabric license or trial and the workspace a capacity), open its KQL database and copy the query URI (`https://<id>.kusto.fabric.microsoft.com`). Fabric has streaming ingestion on by default.
+
+### 2. Give the signed-in account rights on the database
+
+aictl creates the tables and sets policies, so the identity it runs as needs the **Database Admin** role on that database (Ingestor plus Viewer is enough once the tables exist). For your own Azure Data Explorer cluster the creator already has it.
+
+### 3. Install the Kusto extra
+
+`pipx install "aictl[all]"` includes it; otherwise `pipx inject aictl azure-kusto-data azure-kusto-ingest sqlglot`.
+
+### 4. Sign in and point aictl at the cluster
+
+Sign-in is the Azure CLI's by default, so run `az login` once (with `--scope "https://<cluster host>/.default"` if your tenant asks for multi-factor authentication again). Then either set the cluster in `~/.config/aictl/config.toml`:
+
+```toml
+[storage]
+kusto_cluster = "https://<name>.westeurope.kusto.windows.net"
+kusto_database = "aictl"
+kusto_auth = "auto"   # azcli | device | managed-identity | none (emulator)
+```
+
+or pass it on the command line, which also works for a one-off run:
+
+```bash
+aictl daemon serve --kusto-cluster https://<name>.westeurope.kusto.windows.net --kusto-database aictl
+```
+
+The start prints `history store: kusto://<host>/aictl (Kusto, azcli auth; no SQLite file)`. The first start creates the 47 tables, enables their streaming ingestion policy and writes `aictl_information_schema`, which describes every column; `aictl db schema` prints the same.
+
+### 5. Check it
+
+Open the dashboard as usual (`aictl daemon serve` prints the URL). In the Kusto web UI or any KQL client, `['sessions'] | count` and `['requests'] | summarize count() by ['tool']` show the rows arriving; `aictl_information_schema | summarize count() by ['scope']` lists the schema. Every environment variable, hook and ingester works the same as with SQLite; the only visible differences are that the Settings screen's "Data sources" shows the cluster, and the size budget never evicts (retention is the database's retention policy, set from `retention_days`).
+
+### Troubleshooting
+
+- `AADSTS50076 ... multi-factor authentication`: run `az login --tenant <tenant id> --scope "https://<cluster host>/.default"` and sign in again.
+- `Forbidden` on the first start: the account lacks Database Admin on the database (step 2).
+- `UserNotLicensed` from Fabric: the account has no Fabric license; start a Fabric trial in the Fabric portal or use an Azure Data Explorer cluster.
+- `KustoStoreError: ... Unsupported`: a statement the translator cannot express; the message names the construct. Open an issue with it.
+
 ## Control how much is stored
 
 aictl treats storage as a disposable cache. Set `[storage]` in `aictl config path`:

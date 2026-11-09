@@ -130,15 +130,15 @@ pipx install ".[all]"
 
 Install, update, removal, Windows and troubleshooting steps are in [HOWTO.md](HOWTO.md).
 
-### Kusto as the store
+### Storage backends: SQLite (default) or Kusto
 
-The history can live in a [Kusto (Azure Data Explorer)](https://learn.microsoft.com/azure/data-explorer/) cluster instead of a SQLite file: every table is a table of one Kusto database, writes go through streaming ingestion, and the daemon serves entirely from the cluster. Set it in `~/.config/aictl/config.toml` (`[storage] kusto_cluster = "https://mycluster.westus.kusto.windows.net"`, `kusto_database = "aictl"`) or pass it once:
+aictl keeps its history in a local SQLite file by default (`~/.config/aictl/history.db`, split per repository, bounded by `max_total_mb`); nothing needs to be set up. The alternative backend is a [Kusto (Azure Data Explorer)](https://learn.microsoft.com/azure/data-explorer/) cluster, or a Fabric Eventhouse: every table is a table of one Kusto database, writes go through streaming ingestion, and the daemon serves entirely from the cluster. Set it in `~/.config/aictl/config.toml` (`[storage] kusto_cluster = "https://mycluster.westus.kusto.windows.net"`, `kusto_database = "aictl"`) or pass it once:
 
 ```bash
 aictl daemon serve --kusto-cluster https://mycluster.westus.kusto.windows.net --kusto-database aictl
 ```
 
-The `kusto` extra brings the SDKs (`pipx install "aictl[all]"` includes it). Sign-in is the Azure CLI's by default; `kusto_auth` picks `device`, `managed-identity` or `none` (the local emulator). An existing SQLite history is not moved to the cluster. Details in [docs/architecture.md](docs/architecture.md#kusto-store-kusto).
+The `kusto` extra brings the SDKs (`pipx install "aictl[all]"` includes it). Sign-in is the Azure CLI's by default; `kusto_auth` picks `device`, `managed-identity` or `none` (the local emulator). An existing SQLite history is not moved to the cluster. Step by step, including creating a cluster or running the free emulator, in [HOWTO.md](HOWTO.md#store-the-history-in-a-kusto-cluster); design in [docs/architecture.md](docs/architecture.md#kusto-store-kusto); every table in [docs/kusto-schema.md](docs/kusto-schema.md).
 
 ## How It Works
 
