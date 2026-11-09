@@ -194,7 +194,9 @@ def test_env_var_rows_order_origin_and_masking(monkeypatch):
     assert [r["name"] for r in rows if not r["set"]] == ["COPILOT_HOME"]
     assert "PATH" not in by
     model = by["COPILOT_MODEL"]
-    assert model["value"] == "gpt-6-sol" and model["in_process"] and model["source"] == "env:COPILOT_MODEL"
+    # New shells get the registry's value; the process's own, fixed at its start, is shown apart.
+    assert model["value"] == "gpt-6-astra" and model["process"] == "gpt-6-sol" and model["in_process"]
+    assert model["source"] == "env:COPILOT_MODEL"
     assert model["persisted"] == [
         {"origin": "registry:HKEY_CURRENT_USER\\Environment", "kind": "persisted", "value": "gpt-6-astra"}
     ]

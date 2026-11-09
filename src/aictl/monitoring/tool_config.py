@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -41,6 +42,59 @@ from ..platforms import (
 )
 
 log = logging.getLogger(__name__)
+
+# ── What a collection read, so the daemon re-collects only when something changed ──
+# Every file or folder a parser touches is recorded here while collect_tool_configs()
+# runs. The daemon stats these paths each tick: a changed mtime or size, a file that
+# appeared or went, means the settings are read again at once instead of after a TTL.
+_WATCHED: set[str] | None = None
+_LAST_WATCHED: tuple[str, ...] = ()
+# The environment a new tool session gets: this process's variables under the values
+# the shell profiles, env.sh and the registry set now. The daemon's own environment is
+# fixed when it starts, so a value changed since then shows only through this overlay.
+_LIVE_ENV: dict[str, str] | None = None
+_COLLECT_LOCK = threading.Lock()
+_LITERAL_ENV_RE = re.compile(r"^[^$`%]*$")
+
+
+def _watch(path: object) -> None:
+    """Record *path* as one the current collection depends on."""
+    if _WATCHED is not None and isinstance(path, (str, Path)) and str(path):
+        _WATCHED.add(str(path))
+
+
+def watch_signature(paths: tuple[str, ...] | list[str]) -> tuple:
+    """(path, mtime_ns, size) of every path; (path, None, None) for one that is absent."""
+    out = []
+    for p in paths:
+        try:
+            st = os.stat(p)
+            out.append((p, st.st_mtime_ns, st.st_size))
+        except OSError:
+            out.append((p, None, None))
+    return tuple(out)
+
+
+def last_watched() -> tuple[str, ...]:
+    """The paths the last collect_tool_configs() read, for watch_signature()."""
+    return _LAST_WATCHED
+
+
+def _env() -> dict[str, str] | os._Environ[str]:
+    """The environment the tool's sessions get: the live overlay during a collection, else this process's."""
+    return _LIVE_ENV if _LIVE_ENV is not None else os.environ
+
+
+def live_environ(persisted: dict[str, dict[str, str]]) -> dict[str, str]:
+    """This process's environment under the literal values the profiles and the registry set now.
+
+    A value with a shell expansion ($HOME, %APPDATA%, a command) is not resolved
+    here, so the process's value stands for it.
+    """
+    env = dict(os.environ)
+    for values in persisted.values():
+        env.update({k: v for k, v in values.items() if _LITERAL_ENV_RE.match(v)})
+    return env
 
 
 @dataclass
@@ -889,6 +943,7 @@ def _record(
 
 def _read_json(path: Path) -> dict | None:
     """Parsed JSON of *path*; a file that is not strict JSON is retried without its ``//`` comment lines."""
+    _watch(path)
     if not path.is_file():
         return None
     try:
@@ -907,6 +962,7 @@ def _read_json(path: Path) -> dict | None:
 
 
 def _read_toml(path: Path) -> dict | None:
+    _watch(path)
     if not path.is_file():
         return None
     try:
@@ -1033,6 +1089,10 @@ def env_var_rows(
     values a settings file sets for the tool's sessions. ``persisted`` lists
     both, each with its ``kind``. ``drives`` names the rows whose chain has an
     entry from the variable.
+
+    ``value`` is what a session started now gets: a settings file's value, else a
+    persisted one, else this process's. *environ* is this process's environment,
+    fixed when it started; its own value is ``process`` so a change since then shows.
     """
     environ = os.environ if environ is None else environ
     persisted = persisted or {}
@@ -1061,7 +1121,7 @@ def env_var_rows(
             if name in values
         ]
         later = [v[name] for v in [*cfg.env_blocks.values(), *persisted.values()] if name in v]
-        raw = here if here is not None else (later[0] if later else None)
+        raw = later[0] if later else here
         value, masked = env_display(name, raw) if raw is not None else ("", False)
         out.append(
             {
@@ -1071,6 +1131,7 @@ def env_var_rows(
                 "masked": masked,
                 "source": env_source(name),
                 "in_process": here is not None,
+                "process": env_display(name, here)[0] if here is not None else "",
                 "persisted": saved,
                 "drives": drives.get(name, []),
                 "label": str(entry.get("label") or name),
@@ -1290,6 +1351,8 @@ def _hklm_string(subkey: str, name: str) -> str | None:
 
 
 def _scope(sid: str, path: Path | str, exists: bool, note: str = "", label: str = "") -> dict:
+    if isinstance(path, Path):
+        _watch(path)
     return {
         "id": sid,
         "label": label or SCOPE_LABELS.get(sid, sid),
@@ -1306,7 +1369,7 @@ def _env_scope(tool: str, note: str = "") -> dict:
     collect_tool_configs() adds the variables persisted for new shells (env_scope_fill).
     """
     scope = _scope("env", "", False)
-    _env_scope_text(scope, [n for n in env_names_of(tool) if os.environ.get(n)], note)
+    _env_scope_text(scope, [n for n in env_names_of(tool, _env()) if _env().get(n)], note)
     return scope
 
 
@@ -1377,6 +1440,7 @@ _AGENT_KEYS = (
 
 
 def _read_head(path: Path) -> str:
+    _watch(path)
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             return f.read(AGENT_FILE_MAX_BYTES)
@@ -1428,6 +1492,7 @@ def _agent_files(folders: list[tuple[Path, str, tuple[str, ...]]]) -> dict[str, 
     out: dict[str, dict] = {}
     count = 0
     for folder, scope, patterns in folders:
+        _watch(folder)
         if not folder.is_dir():
             continue
         files: list[Path] = []
@@ -1656,12 +1721,12 @@ def _detect_otel_from_vscode_settings(settings: dict) -> OTelConfig:
     otel.file_path = str(settings.get("github.copilot.chat.otel.outfile", ""))
     otel.capture_content = bool(settings.get("github.copilot.chat.otel.captureContent", False))
     # Also check env-var overrides
-    if not otel.enabled and os.environ.get("COPILOT_OTEL_ENABLED", "").lower() in ("true", "1"):
+    if not otel.enabled and _env().get("COPILOT_OTEL_ENABLED", "").lower() in ("true", "1"):
         otel.enabled = True
         otel.source = "env-var"
         otel.env_names["enabled"] = "COPILOT_OTEL_ENABLED"
-    if not otel.endpoint and os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
-        otel.endpoint = os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"]
+    if not otel.endpoint and _env().get("OTEL_EXPORTER_OTLP_ENDPOINT"):
+        otel.endpoint = _env()["OTEL_EXPORTER_OTLP_ENDPOINT"]
         otel.env_names["endpoint"] = "OTEL_EXPORTER_OTLP_ENDPOINT"
     return otel
 
@@ -1701,6 +1766,7 @@ def _read_aictl_env_file() -> dict[str, str]:
     can't tell whether ``aictl enable`` configured Claude Code's exporter.
     """
     path = Path.home() / ".config" / "aictl" / "env.sh"
+    _watch(path)
     if not path.is_file():
         return {}
     out: dict[str, str] = {}
@@ -1728,8 +1794,8 @@ def copilot_cli_otel_endpoint(port: int | None, env: dict[str, str] | None = Non
     """
     if env is None:
         file_env = _read_aictl_env_file()
-        env = {**file_env, **os.environ}
-        source = "environment" if COPILOT_CLI_OTEL_VAR in os.environ else ("~/.config/aictl/env.sh" if COPILOT_CLI_OTEL_VAR in file_env else "")
+        env = {**file_env, **_env()}
+        source = "environment" if COPILOT_CLI_OTEL_VAR in _env() else ("~/.config/aictl/env.sh" if COPILOT_CLI_OTEL_VAR in file_env else "")
     else:
         source = "environment" if COPILOT_CLI_OTEL_VAR in env else ""
     value = str(env.get(COPILOT_CLI_OTEL_VAR) or "").strip()
@@ -1769,7 +1835,7 @@ def _detect_otel_from_claude() -> OTelConfig:
     on every machine regardless of export configuration. The cache path is
     still reported as ``file_path`` so the Tool Config card can show it.
     """
-    env = {**_read_aictl_env_file(), **os.environ}
+    env = {**_read_aictl_env_file(), **_env()}
     otel = OTelConfig(source="claude-env")
     stats = claude_global_dir() / "stats-cache.json"
     if stats.is_file():
@@ -1787,14 +1853,14 @@ def _detect_otel_from_claude() -> OTelConfig:
             otel.exporter = active_exporters[0]  # console / prometheus
         otel.endpoint = env.get("OTEL_EXPORTER_OTLP_ENDPOINT", "")
         otel.capture_content = env.get("OTEL_LOG_USER_PROMPTS", "").strip() in ("1", "true")
-        otel.source = "env-var" if "CLAUDE_CODE_ENABLE_TELEMETRY" in os.environ else "aictl-env-file"
+        otel.source = "env-var" if "CLAUDE_CODE_ENABLE_TELEMETRY" in _env() else "aictl-env-file"
         names = {
             "enabled": "CLAUDE_CODE_ENABLE_TELEMETRY",
             "exporter": "OTEL_METRICS_EXPORTER" if metrics_exp else "OTEL_LOGS_EXPORTER",
             "endpoint": "OTEL_EXPORTER_OTLP_ENDPOINT",
             "capture_content": "OTEL_LOG_USER_PROMPTS",
         }
-        otel.env_names = {k: n for k, n in names.items() if n in os.environ}
+        otel.env_names = {k: n for k, n in names.items() if n in env}
     return otel
 
 
@@ -1896,7 +1962,7 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
             cfg.setting_sources[k] = str(user_path)
         # ``model`` is the documented settings key (/model saves here);
         # ANTHROPIC_MODEL in the environment overrides any file.
-        cfg.model = str(os.environ.get("ANTHROPIC_MODEL") or settings.get("model") or "")
+        cfg.model = str(_env().get("ANTHROPIC_MODEL") or settings.get("model") or "")
         cfg.settings["effortLevel"] = settings.get("effortLevel", "default")
         for k in ("env", "hooks"):
             if k in settings:
@@ -1950,7 +2016,7 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
     above_user = layers[1:]
     if (top := _effective(above_user, "model")) is not None and top[0]:
         cfg.setting_sources["model"] = top[2]
-        if not os.environ.get("ANTHROPIC_MODEL"):
+        if not _env().get("ANTHROPIC_MODEL"):
             cfg.model = str(top[0])
     if (top := _effective(above_user, "effortLevel")) is not None:
         cfg.settings["effortLevel"] = top[0]
@@ -1974,13 +2040,13 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
             merged[bucket] = existing
         cfg.settings["permissions"] = merged
 
-    if os.environ.get("ANTHROPIC_MODEL"):
-        cfg.model = os.environ["ANTHROPIC_MODEL"]
+    if _env().get("ANTHROPIC_MODEL"):
+        cfg.model = _env()["ANTHROPIC_MODEL"]
     for k in ("model", "effortLevel"):
         _record(cfg, k, k, layers)
-    if os.environ.get("ANTHROPIC_MODEL"):
+    if _env().get("ANTHROPIC_MODEL"):
         cfg.setting_values.setdefault("model", []).append(
-            ("env", os.environ["ANTHROPIC_MODEL"], env_source("ANTHROPIC_MODEL"), "ANTHROPIC_MODEL")
+            ("env", _env()["ANTHROPIC_MODEL"], env_source("ANTHROPIC_MODEL"), "ANTHROPIC_MODEL")
         )
         cfg.setting_sources["model"] = env_source("ANTHROPIC_MODEL")
     for k in ("env", "hooks"):
@@ -2023,7 +2089,7 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
     defs = _agent_files(
         [(claude_global_dir() / "agents", "user", ("*.md",)), (root / ".claude" / "agents", "project", ("*.md",))]
     )
-    sub_env = os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL", "")
+    sub_env = _env().get("CLAUDE_CODE_SUBAGENT_MODEL", "")
     for name, defined in defs.items():
         model = _text_of(defined["fields"].get("model"))
         fallback = ("CLAUDE_CODE_SUBAGENT_MODEL", sub_env) if sub_env and not model else None
@@ -3488,7 +3554,7 @@ def _parse_copilot_home_config(root: Path, tool: str = "copilot-cli") -> ToolCon
     managed_flat = flat(managed) or {}
     base = {k: v for k, v in managed_flat.items() if not is_floor(k)}
     top = {k: v for k, v in managed_flat.items() if is_floor(k)}
-    env_model = os.environ.get("COPILOT_MODEL", "")
+    env_model = _env().get("COPILOT_MODEL", "")
     layers: list[Layer] = [
         ("managed", base or None, managed_path or ""),
         ("user", flat(settings), settings_path),
@@ -3643,16 +3709,34 @@ def collect_tool_configs(root: Path) -> list[ToolConfig]:
     Iterates YAML entries, dispatches to registered parsers.
     Tool names come from YAML keys. Safe — never raises.
     """
+    global _WATCHED, _LAST_WATCHED, _LIVE_ENV
     tool_configs_yaml = load_tool_configs()
     configs = []
     texts: dict[str, str | None] = {}
-    try:
-        from ..context_audit import _persistent_env
+    with _COLLECT_LOCK:
+        _WATCHED = set()
+        try:
+            from ..context_audit import _PROFILE_GLOBS, _SHELL_PROFILES, _expand_home, _persistent_env
 
-        persisted = _persistent_env([])
-    except Exception as exc:  # noqa: BLE001 - the registry or a profile that cannot be read hides nothing else
-        log.debug("Persistent environment not read: %s", exc)
-        persisted = {}
+            persisted = _persistent_env([])
+            for name in _SHELL_PROFILES:
+                _watch(_expand_home(name))
+            for pattern in _PROFILE_GLOBS:
+                _watch(os.path.dirname(_expand_home(pattern)))
+        except Exception as exc:  # noqa: BLE001 - the registry or a profile that cannot be read hides nothing else
+            log.debug("Persistent environment not read: %s", exc)
+            persisted = {}
+        _LIVE_ENV = live_environ(persisted)
+        try:
+            _collect_into(configs, tool_configs_yaml, root, texts, persisted)
+        finally:
+            _LIVE_ENV = None
+            _LAST_WATCHED = tuple(sorted(_WATCHED))
+            _WATCHED = None
+    return configs
+
+
+def _collect_into(configs: list, tool_configs_yaml: dict, root: Path, texts: dict, persisted: dict) -> None:
     for tool_name in tool_configs_yaml:
         parser = _CONFIG_PARSER_REGISTRY.get(tool_name)
         if parser is None:
@@ -3674,4 +3758,3 @@ def collect_tool_configs(root: Path) -> list[ToolConfig]:
                 configs.append(result)
         except Exception as exc:
             log.error("Error parsing config for %s: %s", tool_name, exc)
-    return configs
