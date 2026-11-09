@@ -35,6 +35,7 @@ DATA_MARKER = "/*__DATA__*/"
 class Section:
     name: str
     query: str  # file name inside queries/
+    prelude: str = ""  # a shared file inside queries/ that goes in front of the query
 
 
 # The order here is the order on the page.
@@ -44,6 +45,11 @@ SECTIONS: tuple[Section, ...] = (
     Section("cost", "cost.kql"),
     Section("slow", "slow.kql"),
     Section("context", "context.kql"),
+    Section("returns", "returns.kql", "_events.kql"),
+    Section("stuck", "stuck.kql", "_events.kql"),
+    Section("models", "models.kql", "_events.kql"),
+    Section("skills", "skills.kql", "_events.kql"),
+    Section("mcp", "mcp.kql", "_events.kql"),
 )
 
 
@@ -61,7 +67,9 @@ class SectionResult:
 
 
 def read_query(section: Section) -> str:
-    return (resources.files(__package__) / "queries" / section.query).read_text(encoding="utf-8")
+    queries = resources.files(__package__) / "queries"
+    names = (section.prelude, section.query) if section.prelude else (section.query,)
+    return "".join((queries / name).read_text(encoding="utf-8") for name in names)
 
 
 def read_template() -> str:

@@ -1,0 +1,25 @@
+// Diminishing returns. Every long session is cut into ten equal parts by request order. For each part: its share of
+// the session's spend, its share of the files the session touched for the first time, and how many of its tool calls
+// repeat a call made shortly before. A session that converges spends less and repeats less toward its end.
+let MinRequests = 100;  // a session with fewer requests is not long
+let SR = RQ | order by session_id asc, ts asc | extend rn = row_number(1, session_id != prev(session_id));
+let N = SR | summarize n = count() by session_id | where n >= MinRequests;
+let SRD = materialize(SR | join kind = inner N on session_id | extend part = tolong(10 * (rn - 1) / n) + 1 | project session_id, tool, stream, seq, part, cost_usd);
+let CD = materialize(TC | join kind = inner (SRD | project stream, seq, part) on stream, seq);
+let S1 = SRD | summarize usd = sum(cost_usd), requests = count() by tool, part;
+let S2 = CD | summarize calls = count(), failed = countif(failed), reps = countif(rep), edits = countif(is_edit) by tool, part;
+let S3 = CD | where isnotempty(file) | summarize arg_min(ts, part, tool) by session_id, file | summarize new_files = count() by tool, part;
+let TT = S1 | summarize t_usd = sum(usd) by tool;
+let TF = S3 | summarize t_new = sum(new_files) by tool;
+S1 | join kind = leftouter S2 on tool, part | join kind = leftouter S3 on tool, part | join kind = inner TT on tool | join kind = leftouter TF on tool
+  | project tool, part, spend_pct = round(100 * usd / t_usd, 1), new_files_pct = round(100.0 * coalesce(new_files, 0) / t_new, 1), new_files = coalesce(new_files, 0),
+            calls = coalesce(calls, 0), edits = coalesce(edits, 0), fail_pct = round(100.0 * failed / calls, 2), repeat_pct = round(100.0 * reps / calls, 2), usd = round(usd, 2)
+  | order by tool asc, part asc
+  | as parts;
+SRD | summarize requests = count(), usd = sum(cost_usd) by tool, session_id
+  | summarize sessions = count(), requests_p50 = percentile(requests, 50), requests_max = max(requests), usd = round(sum(usd), 2) by tool
+  | order by sessions desc
+  | as sessions;
+let NS = toscalar(N | count);
+print applies = NS >= 3, samples = NS, min_requests = MinRequests, note = "sessions with min_requests or more requests"
+| as verdict

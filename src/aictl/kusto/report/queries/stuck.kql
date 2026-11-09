@@ -1,0 +1,44 @@
+// Stuck stretches: runs of MinRun or more requests in a row, in one context, that make no progress. A request makes
+// no progress when it issues tool calls and every one of them repeats a call made shortly before, or when a call
+// fails the same way again, or when it edits a file for the fourth time or more within the look-back window.
+let MinRun = 4;
+let Churn = TC | where is_edit and isnotempty(file) | project stream, seq, file, ts | order by stream asc, file asc, ts asc
+  | extend k3 = iff(stream == prev(stream, 3) and file == prev(file, 3), prev(seq, 3), long(null))
+  | where isnotnull(k3) and seq - k3 <= RepeatWindow | distinct stream, seq | extend churn = true;
+let PerReq = TC | summarize calls = count(), repeats = countif(rep), fail_repeats = countif(fail_rep) by stream, seq
+  | join kind = leftouter Churn on stream, seq
+  | extend churn = coalesce(churn, false)
+  | extend noprog = repeats == calls or fail_repeats > 0 or churn,
+           why = case(fail_repeats > 0, "same call failing again", churn, "same file edited again and again", "same calls repeated");
+let Q = materialize(RQ | join kind = leftouter (PerReq | project stream, seq, noprog, why) on stream, seq
+  | extend noprog = coalesce(noprog, false)
+  | order by stream asc, seq asc
+  | extend gap = iff(stream == next(stream), min_of(next(ts) - ts, 300.0), 0.0)  // a pause over five minutes counts as five
+  | extend run_id = row_cumsum(iff(noprog, 0, 1), stream != prev(stream)));
+let Runs = materialize(Q | where noprog
+  | summarize run_len = count(), run_usd = sum(cost_usd), first_seq = min(seq), n_fail = countif(why == "same call failing again"), n_churn = countif(why == "same file edited again and again") by stream, run_id
+  | where run_len >= MinRun
+  | extend why = case(n_fail > 0, "same call failing again", n_churn > 0, "same file edited again and again", "same calls repeated"));
+let RS = materialize(Q | join kind = leftouter (Runs | project stream, run_id, run_len) on stream, run_id | extend stuck = noprog and isnotnull(run_len));
+RS | summarize requests = count(), stuck_requests = countif(stuck), usd = round(sum(cost_usd), 2), stuck_usd = round(sumif(cost_usd, stuck), 2),
+               wall_h = round(sum(gap) / 3600, 2), stuck_wall_h = round(sumif(gap, stuck) / 3600, 2) by tool, model
+  | extend share_requests = round(100.0 * stuck_requests / requests, 2), share_usd = round(100 * stuck_usd / usd, 2), share_wall = round(100 * stuck_wall_h / wall_h, 2)
+  | order by usd desc
+  | as by_model;
+Runs | join kind = inner (RS | distinct stream, tool) on stream
+  | summarize stretches = count(), requests = sum(run_len), usd = round(sum(run_usd), 2), len_p50 = percentile(run_len, 50), len_max = max(run_len) by tool, why
+  | order by requests desc
+  | as by_reason;
+TC | join kind = inner (RS | where stuck | project stream, seq) on stream, seq
+  | summarize calls = count(), failed = countif(failed) by tool, tool_name = replace_string(tool_name, "__", ":")
+  | top 12 by calls
+  | as calls_inside;
+// the contexts with the most stuck requests, each with the place and length of its stretches
+Runs | summarize stuck_requests = sum(run_len), stuck_usd = round(sum(run_usd), 2), runs = tostring(make_list(bag_pack("a", first_seq, "n", run_len, "why", why))) by stream
+  | join kind = inner (Q | summarize requests = count(), model = take_any(model) by stream, tool, session_id, agent_id) on stream
+  | top 12 by stuck_requests
+  | project tool, model, session = substring(session_id, 0, 8), agent = iff(isempty(agent_id), "main agent", "sub-agent"), requests, stuck_requests, stuck_usd, runs
+  | as tracks;
+let NR = toscalar(Runs | count);
+print applies = NR >= 10, samples = NR, min_run = MinRun, window = RepeatWindow, note = "stuck stretches"
+| as verdict

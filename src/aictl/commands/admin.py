@@ -235,7 +235,8 @@ def schema(markdown, as_json):
     help="File to write",
 )
 @click.option("--days", type=click.IntRange(min=1), default=None, help="Only data of the last N days (default: all)")
-def report(out_path, days):
+@click.option("--sections", "names", default=None, help="Only these sections, comma-separated, in this order (default: all)")
+def report(out_path, days, names):
     """Write an HTML report of what the Kusto store knows about coding agents.
 
     Runs one KQL query per section against the configured cluster (see
@@ -255,7 +256,14 @@ def report(out_path, days):
     except ImportError as exc:
         raise click.ClickException('The Kusto client is not installed: pipx install "aictl[all]" (see docs/kusto-cluster.md).') from exc
 
-    click.echo(f"Running {len(kusto_report.SECTIONS)} queries on {settings.uri}" + (f", last {days} days" if days else ", all data"))
+    known = {s.name: s for s in kusto_report.SECTIONS}
+    wanted = [n.strip() for n in names.split(",") if n.strip()] if names else list(known)
+    unknown = [n for n in wanted if n not in known]
+    if unknown or not wanted:
+        raise click.ClickException(f"Unknown section: {', '.join(unknown) or repr(names)}. The sections are: {', '.join(known)}.")
+    chosen = tuple(known[n] for n in wanted)
+
+    click.echo(f"Running {len(chosen)} queries on {settings.uri}" + (f", last {days} days" if days else ", all data"))
 
     def show(result):
         what = "FAILED" if result.error else "no data" if result.empty else "ok"
@@ -263,7 +271,7 @@ def report(out_path, days):
         if result.error:
             click.echo("    " + result.error.strip().splitlines()[0][:300])
 
-    results = kusto_report.run_report(settings, days, on_result=show)
+    results = kusto_report.run_report(settings, days, sections=chosen, on_result=show)
     page = kusto_report.build_page(results, cluster=settings.cluster, database=settings.database, days=days)
     out_path = Path(out_path).expanduser()
     out_path.parent.mkdir(parents=True, exist_ok=True)

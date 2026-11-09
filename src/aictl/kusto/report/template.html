@@ -212,6 +212,10 @@ svg text { font-family: var(--f-body); }
 .notice.error { border-left-color: var(--crit); }
 .notice pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--f-mono); font-size: 12px; color: var(--ink); background: var(--code-bg); border-radius: 6px; padding: 10px 12px; max-height: 280px; overflow: auto; }
 .index .ix-s.bad { color: var(--crit); }
+.mini-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 22px 28px; }
+.mini { min-width: 0; }
+.mini-head { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+.mini-head b { font-family: var(--f-mono); font-weight: 500; font-size: 13px; color: var(--ink); }
 </style>
 </head>
 <body>
@@ -325,6 +329,69 @@ svg text { font-family: var(--f-body); }
     <div class="multi" id="ctx-multi"></div>
     <ul class="findings" id="f-ctx"></ul>
     <p class="caveat" id="c-ctx"></p>
+</template>
+
+<template data-section="returns" data-title="What the end of a long session buys" data-caps="row_number,arg_min,percentile,join">
+    <div class="stats" id="ret-stats"></div>
+    <div class="panel">
+      <div class="panel-head">
+        <div class="legend" id="ret-legend"></div>
+        <span class="panel-sub">Every long session cut into ten equal parts by request order, all sessions of a tool added up</span>
+      </div>
+      <div class="mini-grid" id="ret-grid"></div>
+    </div>
+    <ul class="findings" id="f-ret"></ul>
+    <p class="caveat" id="c-ret"></p>
+</template>
+
+<template data-section="stuck" data-title="Going round in circles" data-caps="prev,row_cumsum,make_list,bag_pack">
+    <div class="stats" id="stuck-stats"></div>
+    <div class="panel">
+      <div class="panel-head">
+        <div class="legend" id="stuck-legend"></div>
+        <span class="panel-sub">The contexts with the most stuck requests, each drawn from its first request to its last</span>
+      </div>
+      <div id="stuck-tracks"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><span class="panel-sub">How much of each model's requests, spend and time went into stuck stretches. Dimmed models took under 0.5% of the spend.</span></div>
+      <div id="stuck-models"></div>
+    </div>
+    <ul class="findings" id="f-stuck"></ul>
+    <p class="caveat" id="c-stuck"></p>
+</template>
+
+<template data-section="models" data-title="What one edit costs, by model" data-caps="dcountif,prev,percentile,join">
+    <div class="stats" id="models-stats"></div>
+    <div class="panel">
+      <div class="panel-head"><span class="panel-sub">One row per model. Every column has its own scale. The most tool calls per edit and the dearest file are red. Dimmed rows have under 20 edits.</span></div>
+      <div id="models-grid"></div>
+    </div>
+    <ul class="findings" id="f-models"></ul>
+    <p class="caveat" id="c-models"></p>
+</template>
+
+<template data-section="skills" data-title="What changes after a skill loads" data-caps="join,countif,dcount,percentile">
+    <div class="stats" id="skills-stats"></div>
+    <div class="panel">
+      <div class="panel-head">
+        <div class="legend" id="skills-legend"></div>
+        <span class="panel-sub">Share of tool calls that repeat an earlier call, in the requests before and after each load</span>
+      </div>
+      <div id="skills-chart"></div>
+    </div>
+    <ul class="findings" id="f-skills"></ul>
+    <p class="caveat" id="c-skills"></p>
+</template>
+
+<template data-section="mcp" data-title="What each MCP server costs" data-caps="split,percentile,dcount,top">
+    <div class="stats" id="mcp-stats"></div>
+    <div class="panel">
+      <div class="panel-head"><span class="panel-sub">One row per server. Every column has its own scale; the worst failure rate and wait are red.</span></div>
+      <div id="mcp-grid"></div>
+    </div>
+    <ul class="findings" id="f-mcp"></ul>
+    <p class="caveat" id="c-mcp"></p>
 </template>
 
 <script>
@@ -1173,6 +1240,323 @@ function kqlBlock(parent, sec) {
     try { navigator.clipboard.writeText(sec.kql).then(() => done("Copied"), sel); } catch (e) { sel(); }
   });
 }
+/* =========================================================
+   6 to 10. Convergence: returns, stuck stretches, model fit, skills, MCP servers
+   ========================================================= */
+const WHY_C = { "same calls repeated": "var(--c-a)", "same call failing again": "var(--crit)", "same file edited again and again": "var(--c-w)" };
+const num = v => typeof v === "number" && Number.isFinite(v);
+const times = r => (r >= 10 ? String(Math.round(r)) : f1(r)) + " times";
+function statAdder(id) { const st = $(id); return (v, l, small) => { const d = H("div", "stat", null, st); const vv = H("span", "v", v, d); if (small) { vv.append(" "); H("small", null, small, vv); } H("span", "l", l, d); }; }
+function legendKey(lg, color, text, shape) {
+  const k = H("span", "k", null, lg); const d = H("span", null, null, k);
+  d.style.cssText = "display:inline-block;box-sizing:border-box;" + (shape === "line" ? "width:18px;height:3px;border-radius:2px;background:" + color : shape === "dot" ? "width:10px;height:10px;border-radius:50%;background:" + color : shape === "ring" ? "width:10px;height:10px;border-radius:50%;border:2px solid " + color : "width:12px;height:12px;border-radius:3px;background:" + color);
+  k.append(text);
+}
+/* One row per item and one bar column per measure; every column has its own scale. rows: { label, sub, group, dim, ...values };
+   cols: { key, title, fmt, color, bad, none }. In a column marked bad, the highest value among the rows that are not dim is red. */
+function metricGrid(box, rows, cols, aria) {
+  const W = box.clientWidth; if (!W) return; box.replaceChildren();
+  const narrow = W < 720, mono = css("--f-mono");
+  const live = rows.filter(r => !r.dim);
+  cols = cols.map(c => { const lv = live.map(r => (num(r[c.key]) ? r[c.key] : 0)); return { ...c, max: Math.max(1e-9, ...rows.map(r => (num(r[c.key]) ? r[c.key] : 0))), worst: c.bad && lv.length > 1 ? Math.max(...lv) : null }; });
+  const items = []; let grp = null;
+  rows.forEach(r => { if (r.group && r.group !== grp) { grp = r.group; items.push({ g: grp }); } items.push({ r }); });
+  const labW = narrow ? 0 : Math.min(270, Math.round(W * 0.27)), cw = narrow ? W : (W - labW) / cols.length;
+  const fit = Math.max(8, Math.floor((cw - 16) / 6.7));
+  const wrap = t => { if (t.length <= fit) return [t]; const i = t.lastIndexOf(" ", fit); return i < 1 ? [t] : [t.slice(0, i), t.slice(i + 1)]; };
+  const heads = cols.map(c => wrap(c.title)), headH = narrow ? 2 : heads.some(h => h.length > 1) ? 44 : 30, gH = 30, rH = narrow ? 40 + cols.length * 18 : 40;
+  const Hh = headH + sum(items.map(i => (i.g ? gH : rH))) + 4;
+  const svg = S("svg", { width: W, height: Hh, viewBox: "0 0 " + W + " " + Hh, role: "img", "aria-label": aria }, box);
+  const none = c => c.none || "not recorded";
+  const bar = (r, c, bx, bw, yc, g) => {
+    const v = r[c.key];
+    if (!num(v)) { const t = S("text", { x: bx, y: yc + 4, "font-size": 11.5, fill: "var(--muted)" }, g); t.textContent = none(c); return; }
+    const w = Math.max(v > 0 ? 2 : 0, bw * v / c.max);
+    S("rect", { x: bx, y: yc - 6, width: w, height: 12, rx: 2, fill: c.worst != null && v === c.worst && v > 0 && !r.dim ? "var(--crit)" : (c.color || "var(--bar)") }, g);
+    const t = S("text", { x: bx + w + 6, y: yc + 4, "font-size": 11.5, fill: "var(--ink-2)", "font-family": mono }, g); t.textContent = c.fmt(v);
+  };
+  if (!narrow) cols.forEach((c, j) => { const cx = labW + j * cw + 10; const ax = S("g", { class: "ax" }, svg); S("line", { x1: cx, x2: cx, y1: headH - 8, y2: Hh - 4, stroke: "var(--grid)" }, ax); heads[j].forEach((line, k) => { const t = S("text", { x: cx, y: 14 + k * 14 }, ax); t.textContent = line; }); });
+  let y = headH;
+  items.forEach(it => {
+    if (it.g) { const t = S("text", { x: 0, y: y + 20, "font-size": 11, fill: "var(--muted)", "font-family": mono, "letter-spacing": ".06em" }, svg); t.textContent = it.g.toUpperCase(); S("line", { x1: 0, x2: W, y1: y + 27, y2: y + 27, stroke: "var(--grid)" }, svg); y += gH; return; }
+    const r = it.r; const g = S("g", r.dim ? { opacity: 0.45 } : null, svg);
+    const l1 = S("text", { x: 0, y: y + (narrow ? 16 : 17), "font-size": 12.5, fill: "var(--ink)", "font-weight": 500 }, g); l1.textContent = r.label;
+    if (r.sub) { const l2 = S("text", { x: 0, y: y + (narrow ? 31 : 32), "font-size": 11, fill: "var(--muted)" }, g); l2.textContent = r.sub; }
+    cols.forEach((c, j) => {
+      if (narrow) { const yc = y + 48 + j * 18; const t = S("text", { x: 0, y: yc + 4, "font-size": 11, fill: "var(--muted)" }, g); t.textContent = c.title; bar(r, c, 150, Math.max(20, W - 150 - 66), yc, g); }
+      else bar(r, c, labW + j * cw + 10, Math.max(20, cw - 10 - 66), y + rH / 2, g);
+    });
+    const hit = S("rect", { x: 0, y, width: W, height: rH, fill: "transparent" }, svg);
+    hit.addEventListener("pointermove", ev => showTip(ev, [[r.label + (r.group ? " · " + r.group : ""), null, "h"], ...(r.sub ? [[r.sub, null]] : []), ...cols.map(c => [num(r[c.key]) ? c.fmt(r[c.key]) : none(c), c.title])]));
+    hit.addEventListener("pointerleave", hideTip);
+    y += rH;
+  });
+}
+
+RENDER.returns = function (T) {
+  const [tParts, tSess, tV] = T; const V = tV[0] || {};
+  const span = (t, a, b, k) => sum(t.parts.filter(p => p.part >= a && p.part <= b).map(p => p[k] || 0));
+  const tools = tSess.map(s => { const t = { ...s, parts: tParts.filter(p => p.tool === s.tool).sort((a, b) => a.part - b.part) }; t.files = span(t, 1, 10, "new_files"); t.edits = span(t, 1, 10, "edits"); return t; });
+  const shown = tools.filter(t => t.files > 0);
+  if (!shown.length) return NO_DATA;
+  shown.forEach(t => { const ed = t.edits >= 20; t.parts.forEach(p => { p.edits_pct = ed ? 100 * (p.edits || 0) / t.edits : null; }); t.lateEdits = ed ? span(t, 8, 10, "edits_pct") : null; });
+  const allParts = shown.flatMap(t => t.parts);
+  const ymax = niceMax(Math.max(10, ...allParts.map(p => Math.max(p.spend_pct, p.new_files_pct, p.edits_pct || 0))), 10), rmax = niceMax(Math.max(1, ...allParts.map(p => p.repeat_pct || 0)), 10);
+  shown.forEach(t => { t.lateSpend = span(t, 8, 10, "spend_pct"); t.lateFiles = span(t, 8, 10, "new_files_pct"); t.earlySpend = span(t, 1, 3, "spend_pct"); t.earlyFiles = span(t, 1, 3, "new_files_pct"); t.gap = t.lateSpend - t.lateFiles; });
+  const grid = $("#ret-grid");
+  shown.forEach(t => { const m = H("div", "mini", null, grid); const h = H("div", "mini-head", null, m); H("b", null, t.tool, h); H("span", null, plural(t.sessions, "session") + ", median " + f0(t.requests_p50) + " requests, " + usd(t.usd), h); t.box = H("div", null, null, m); });
+  function drawOne(t) {
+    const box = t.box; const W = box.clientWidth; if (!W) return; box.replaceChildren();
+    const Hh = 250, ml = 38, mr = 42, mt = 22, mb = 42, mono = css("--f-mono"), hl = "var(--hl)";
+    const svg = S("svg", { width: W, height: Hh, viewBox: "0 0 " + W + " " + Hh, role: "img", "aria-label": "Share of the spend and of the first-touched files in each tenth of the long " + t.tool + " sessions, with the share of repeated tool calls" }, box);
+    const ph = Hh - mt - mb, y = v => mt + ph * (1 - v / ymax), yr = v => mt + ph * (1 - v / rmax);
+    const bw = (W - ml - mr) / 10, x = i => ml + i * bw;
+    const ax = S("g", { class: "ax" }, svg);
+    for (let v = 0; v <= ymax; v += ymax > 30 ? 20 : 10) { S("line", { x1: ml, x2: W - mr, y1: y(v), y2: y(v), stroke: "var(--grid)" }, ax); const tx = S("text", { x: ml - 6, y: y(v) + 4, "text-anchor": "end" }, ax); tx.textContent = v + "%"; }
+    [0, rmax].forEach(v => { const tx = S("text", { x: W - mr + 6, y: yr(v) + 4, fill: hl }, ax); tx.setAttribute("style", "fill:" + css("--hl")); tx.textContent = v + "%"; });
+    S("line", { x1: ml, x2: W - mr, y1: y(10), y2: y(10), stroke: "var(--axis)", "stroke-dasharray": "4 3" }, svg);
+    const rt = S("text", { x: W, y: 11, "text-anchor": "end", "font-size": 10.5, fill: hl }, svg); rt.textContent = "repeated calls";
+    t.parts.forEach((p, i) => {
+      const series = [[p.spend_pct, "var(--bar)"], [p.new_files_pct, "var(--series)"]]; if (num(p.edits_pct)) series.push([p.edits_pct, "var(--c-r)"]);
+      const sw = 0.76 / series.length;
+      series.forEach((q, k) => S("rect", { x: x(i) + bw * (0.12 + k * sw), y: y(q[0]), width: Math.max(2, bw * sw - 2), height: Math.max(0, y(0) - y(q[0])), rx: 1.5, fill: q[1] }, svg));
+      const tx = S("text", { x: x(i) + bw / 2, y: Hh - mb + 15, "text-anchor": "middle" }, ax); tx.textContent = p.part;
+    });
+    const at = S("text", { x: ml + (W - ml - mr) / 2, y: Hh - 8, "text-anchor": "middle" }, ax); at.textContent = "tenth of the session, first to last";
+    const pts = t.parts.map((p, i) => (p.calls > 0 && num(p.repeat_pct) ? [x(i) + bw / 2, yr(p.repeat_pct)] : null)).filter(Boolean);
+    if (pts.length > 1) S("path", { d: "M" + pts.map(q => q[0].toFixed(1) + "," + q[1].toFixed(1)).join("L"), fill: "none", stroke: hl, "stroke-width": 2, "stroke-linejoin": "round" }, svg);
+    pts.forEach(q => S("circle", { cx: q[0], cy: q[1], r: 3, fill: hl, stroke: "var(--surface)", "stroke-width": 1.5 }, svg));
+    t.parts.forEach((p, i) => {
+      const hit = S("rect", { x: x(i), y: mt, width: bw, height: ph + 18, fill: "transparent" }, svg);
+      hit.addEventListener("pointermove", e => showTip(e, [["Tenth " + p.part + " of 10, " + t.tool, null, "h"], [pct(p.spend_pct), "of the spend, " + usd(p.usd)], [pct(p.new_files_pct), "of the files touched for the first time, " + f0(p.new_files)], ...(num(p.edits_pct) ? [[pct(p.edits_pct), "of the edits, " + f0(p.edits)]] : []), [num(p.repeat_pct) ? pct(p.repeat_pct) : "none", "of " + f0(p.calls) + " tool calls repeat an earlier call"], ]));
+      hit.addEventListener("pointerleave", hideTip);
+    });
+  }
+  const worst = [...shown].sort((a, b) => b.gap - a.gap)[0];
+  const few = !V.applies;
+  const headline = few ? "Too few long sessions to judge their returns: " + f0(V.samples || 0) + " with " + f0(V.min_requests) + " requests or more"
+    : worst.gap >= 15 ? "Long " + worst.tool + " sessions: the last three tenths take " + pct(worst.lateSpend, 0) + " of the spend and reach " + pct(worst.lateFiles, 0) + " of the new files"
+    : "Long sessions keep reaching new files to the end: the last three tenths take " + pct(worst.lateSpend, 0) + " of the spend and reach " + pct(worst.lateFiles, 0) + " of the new files";
+  const stat = statAdder("#ret-stats");
+  stat(f0(sum(tools.map(t => t.sessions))), "long sessions, " + f0(V.min_requests) + " requests or more");
+  stat(usd(sum(tools.map(t => t.usd))), "spent in them");
+  stat(pct(worst.lateSpend, 0), "of the " + worst.tool + " spend falls in the last three tenths");
+  stat(pct(worst.lateFiles, 0), "of its first-touched files fall there" + (num(worst.lateEdits) ? ", and " + pct(worst.lateEdits, 0) + " of its edits" : ""));
+  const lg = $("#ret-legend");
+  legendKey(lg, "var(--bar)", "share of the spend"); legendKey(lg, "var(--series)", "share of the files touched for the first time"); legendKey(lg, "var(--c-r)", "share of the edits"); legendKey(lg, "var(--hl)", "tool calls that repeat an earlier call, right axis", "line"); legendKey(lg, "var(--axis)", "an even share, 10%", "line");
+  const F = [];
+  shown.forEach(t => {
+    const p1 = t.parts[0], p10 = t.parts[t.parts.length - 1];
+    F.push([B(t.tool + ": "), "the first three tenths take " + pct(t.earlySpend, 0) + " of the spend and reach " + pct(t.earlyFiles, 0) + " of the new files; the last three take " + pct(t.lateSpend, 0) + " and reach " + pct(t.lateFiles, 0) + "."
+      + (num(p1.repeat_pct) && num(p10.repeat_pct) ? " Repeated calls go from " + pct(p1.repeat_pct) + " of the tool calls in the first tenth to " + pct(p10.repeat_pct) + " in the last." : "")]);
+    const lateEdits = span(t, 8, 10, "edits");
+    if (t.edits >= 20 && lateEdits / t.edits >= 0.45) F.push([B(f0(lateEdits) + " of " + f0(t.edits) + " edits"), " in long " + t.tool + " sessions come in the last three tenths. The late spend buys writing, not new ground: these sessions read first and write at the end."]);
+    else if (t.edits >= 20 && t.gap >= 15) F.push([B("The late spend does not buy edits either: "), f0(lateEdits) + " of " + f0(t.edits) + " edits in long " + t.tool + " sessions come in the last three tenths."]);
+  });
+  const blind = tools.filter(t => !t.files);
+  if (blind.length) F.push([blind.map(t => t.tool).join(", ") + ": " + plural(sum(blind.map(t => t.sessions)), "long session") + " with no file-touching tool calls in the store, so not drawn."]);
+  findings("#f-ret", F);
+  $("#c-ret").append(B("Caveat. "), "A file touched for the first time marks new ground, not progress. A session that ends with tests or a write-up reaches few new files by design. The tenths follow request order, not time, and a long session of one tool can weigh more than all the others.");
+  return { headline, note: plural(sum(tools.map(t => t.sessions)), "long session"), draw: () => shown.forEach(drawOne) };
+};
+
+RENDER.stuck = function (T) {
+  const [tModel, tReason, tInside, tTracks, tV] = T; const V = tV[0] || {};
+  if (!tModel.length) return NO_DATA;
+  const tracks = tTracks.map(t => ({ ...t, runs: typeof t.runs === "string" ? JSON.parse(t.runs) : t.runs || [] }));
+  const all = sum(tModel.map(m => m.usd)), stuckUsd = sum(tModel.map(m => m.stuck_usd)), stuckReq = sum(tModel.map(m => m.stuck_requests)), allReq = sum(tModel.map(m => m.requests));
+  const stretches = sum(tReason.map(r => r.stretches)), longest = Math.max(0, ...tReason.map(r => r.len_max));
+  const big = tModel.filter(m => m.stuck_usd > 0).sort((a, b) => b.stuck_usd - a.stuck_usd)[0];
+  const share = all > 0 ? 100 * stuckUsd / all : 0;
+  function drawTracks() {
+    const box = $("#stuck-tracks"); const W = box.clientWidth; if (!W) return; box.replaceChildren();
+    const narrow = W < 640, labW = narrow ? 0 : 230, rightW = narrow ? 0 : 200, rowH = narrow ? 48 : 36, mt = 4, axH = 22, mono = css("--f-mono");
+    const Hh = mt + tracks.length * rowH + axH;
+    const svg = S("svg", { width: W, height: Hh, viewBox: "0 0 " + W + " " + Hh, role: "img", "aria-label": "Where the stuck stretches lie inside each context" }, box);
+    const x0 = labW + (narrow ? 0 : 12), x1 = W - rightW - (narrow ? 0 : 12);
+    tracks.forEach((t, i) => {
+      const yc = mt + i * rowH + (narrow ? 32 : rowH / 2);
+      const l1 = S("text", { x: 0, y: narrow ? yc - 14 : yc - 1, "font-size": 12, fill: "var(--ink)", "font-family": mono }, svg); l1.textContent = t.session + " · " + t.agent;
+      if (!narrow) { const l2 = S("text", { x: 0, y: yc + 12, "font-size": 11, fill: "var(--muted)" }, svg); l2.textContent = t.tool + " · " + t.model; }
+      const rtx = S("text", { x: W, y: narrow ? yc - 14 : yc + 4, "text-anchor": "end", "font-size": 11.5, fill: "var(--ink-2)", "font-family": mono }, svg); rtx.textContent = f0(t.stuck_requests) + " of " + f0(t.requests) + (narrow ? "" : " requests") + " · " + usd(t.stuck_usd);
+      S("rect", { x: x0, y: yc - 7, width: x1 - x0, height: 14, rx: 3, fill: "var(--grid)" }, svg);
+      const base = S("rect", { x: 0, y: yc - rowH / 2, width: W, height: rowH, fill: "transparent" }, svg);
+      base.addEventListener("pointermove", e => showTip(e, [[t.session + " · " + t.agent, null, "h"], [t.tool + " · " + t.model, null], [f0(t.stuck_requests) + " of " + f0(t.requests), "requests in stuck stretches"], [usd(t.stuck_usd), "spent in them"]]));
+      base.addEventListener("pointerleave", hideTip);
+      t.runs.forEach(r => {
+        const w = Math.min(1, r.n / t.requests), a = Math.min(1 - w, Math.max(0, (r.a - 1) / t.requests));
+        const b = S("rect", { x: x0 + (x1 - x0) * a, y: yc - 7, width: Math.max(3, (x1 - x0) * w), height: 14, rx: 2, fill: WHY_C[r.why] || "var(--crit)" }, svg);
+        b.addEventListener("pointermove", e => showTip(e, [[t.session + " · " + t.agent, null, "h"], [plural(r.n, "request") + " in a row", "from request " + f0(r.a) + " of " + f0(t.requests)], [r.why, null, "bad"]]));
+        b.addEventListener("pointerleave", hideTip);
+      });
+    });
+    const ax = S("g", { class: "ax" }, svg);
+    const a1 = S("text", { x: x0, y: Hh - 6 }, ax); a1.textContent = "first request"; const a2 = S("text", { x: x1, y: Hh - 6, "text-anchor": "end" }, ax); a2.textContent = "last request";
+  }
+  const clean = tModel.filter(m => !m.stuck_requests);
+  const rows = tModel.filter(m => m.stuck_requests > 0).sort((a, b) => (a.tool < b.tool ? -1 : a.tool > b.tool ? 1 : b.usd - a.usd)).map(m => ({ ...m, label: m.model, group: m.tool, dim: m.usd < all / 200, sub: f0(m.requests) + " requests · " + usd(m.usd) }));
+  const cols = [
+    { key: "share_requests", title: "requests stuck", fmt: v => pct(v, 2), bad: true }, { key: "share_usd", title: "spend stuck", fmt: v => pct(v, 2), bad: true },
+    { key: "share_wall", title: "time stuck", fmt: v => pct(v, 2), bad: true }, { key: "stuck_usd", title: "USD stuck", fmt: usd, color: "var(--series)" }];
+  const headline = !stretches ? "No context went round in circles: no run of " + f0(V.min_run) + " requests in a row without progress"
+    : "Going round in circles took " + pct(share) + " of the spend" + (big ? "; " + big.model + " on " + big.tool + " lost " + pct(big.share_usd) + " of its own" : "");
+  const stat = statAdder("#stuck-stats");
+  stat(f0(stretches), "stuck stretches: " + f0(V.min_run) + " or more requests in a row without progress");
+  stat(f0(stuckReq), "requests inside them, of " + f0(allReq));
+  stat(usd(stuckUsd), "spent inside them, " + pct(share) + " of " + usd(all));
+  stat(f0(longest), "requests in the longest stretch");
+  const lg = $("#stuck-legend"); Object.keys(WHY_C).forEach(k => legendKey(lg, WHY_C[k], k)); legendKey(lg, "var(--grid)", "the rest of the context");
+  const F = [];
+  tReason.slice(0, 3).forEach(r => F.push([B(r.why + ", " + r.tool + ": "), plural(r.stretches, "stretch", "stretches") + ", " + f0(r.requests) + " requests, " + usd(r.usd) + ". Median length " + f0(r.len_p50) + " requests, longest " + f0(r.len_max) + "."]));
+  if (tInside.length) {
+    const top = tInside.slice(0, 4), failed = sum(tInside.map(c => c.failed));
+    F.push(["The calls made most inside the stretches: ", ...top.flatMap((c, i) => [i ? ", " : "", M(c.tool_name), " " + f0(c.calls)]), ". " + (failed ? f0(failed) + " of the listed calls failed." : "None of the listed calls failed: a stretch of this kind can be a batch of real writes, not a loop. Open the session before you call it waste.")]);
+  }
+  if (tracks.length) { const t = tracks[0]; F.push([M(t.session), " (" + t.agent + ", " + t.model + ") has the most: " + f0(t.stuck_requests) + " of its " + f0(t.requests) + " requests lie in stuck stretches."]); }
+  if (clean.length && rows.length) F.push([plural(clean.length, "model") + " had no stuck stretch and " + (clean.length === 1 ? "is" : "are") + " not listed: ", ...clean.flatMap((m, i) => [i ? ", " : "", M(m.model)]), "."]);
+  if (stretches && !V.applies) F.push(["Only " + plural(stretches, "stretch", "stretches") + " in scope: too few to compare models."]);
+  findings("#f-stuck", F);
+  $("#c-stuck").append(B("Caveat. "), "A request makes no progress when every tool call it issues repeats a call of the last " + f0(V.window) + " requests of its context, or a call fails the same way again, or it edits a file for the fourth time in that span. A request with no tool call ends a stretch. Time counts a pause of over five minutes as five.");
+  if (!tracks.length) H("p", "panel-sub", "No stuck stretch to chart.", $("#stuck-tracks"));
+  if (!rows.length) H("p", "panel-sub", "No model had a stuck stretch.", $("#stuck-models"));
+  return { headline, note: plural(stretches, "stretch", "stretches") + " in " + f0(allReq) + " requests", draw: () => { if (tracks.length) drawTracks(); if (rows.length) metricGrid($("#stuck-models"), rows, cols, "Share of requests, spend and time in stuck stretches per model"); } };
+};
+
+RENDER.models = function (T) {
+  const [tFit, tV] = T; const V = tV[0] || {};
+  if (!tFit.length) return NO_DATA;
+  const MinEdits = 20;
+  const rows = [...tFit].sort((a, b) => (a.tool < b.tool ? -1 : a.tool > b.tool ? 1 : b.usd - a.usd)).map(m => ({ ...m, label: m.model, group: m.tool, dim: m.edits < MinEdits, sub: f0(m.requests) + " requests · " + usd(m.usd) + " · " + plural(m.edits, "edit") }));
+  const cols = [
+    { key: "usd_per_request", title: "USD per request", fmt: v => "$" + v.toFixed(3), color: "var(--series)" },
+    { key: "out_tok_per_request", title: "output tokens per request", fmt: f0 },
+    { key: "calls_per_edit", title: "tool calls per edit", fmt: f1, bad: true, none: "no edits" },
+    { key: "usd_per_file", title: "USD per edited file", fmt: usd, bad: true, none: "no edits" },
+    { key: "rework_pct", title: "edits that redo a file", fmt: v => pct(v), none: "no edits" }];
+  const fit = rows.filter(m => !m.dim && num(m.usd_per_file));
+  const byFile = [...fit].sort((a, b) => a.usd_per_file - b.usd_per_file), cheap = byFile[0], dear = byFile[byFile.length - 1];
+  const pairs = [];  // inside one tool: the two models with the most spend, the dearer per request first
+  [...new Set(fit.map(m => m.tool))].forEach(tool => { const ms = fit.filter(m => m.tool === tool).sort((a, b) => b.usd - a.usd).slice(0, 2).sort((a, b) => b.usd_per_request - a.usd_per_request); if (ms.length > 1) pairs.push({ tool, a: ms[0], b: ms[1], usd: ms[0].usd + ms[1].usd }); });
+  const pair = pairs.sort((p, q) => q.usd - p.usd)[0];
+  const headline = fit.length < 2 ? "Too few models with " + MinEdits + " edits or more to compare: " + fit.length
+    : "One edited file costs " + usd(dear.usd_per_file) + " with " + dear.model + " and " + usd(cheap.usd_per_file) + " with " + cheap.model + ": " + times(dear.usd_per_file / cheap.usd_per_file) + " apart";
+  const stat = statAdder("#models-stats");
+  stat(f0(tFit.length), "models with " + f0(V.min_requests) + " requests or more");
+  stat(usd(sum(tFit.map(m => m.usd))), "spent on them");
+  if (cheap) { stat(usd(cheap.usd_per_file), "per edited file, the lowest: " + cheap.model); stat(usd(dear.usd_per_file), "per edited file, the highest: " + dear.model); }
+  const F = [];
+  if (pair) {
+    const { a, b, tool } = pair;
+    F.push([B("Inside " + tool + ": "), a.model + " costs " + times(a.usd_per_request / b.usd_per_request) + " more per request than " + b.model + " and needs " + f1(a.calls_per_edit) + " tool calls per edit against " + f1(b.calls_per_edit) + ". One edited file comes to " + usd(a.usd_per_file) + " against " + usd(b.usd_per_file) + "."
+      + (a.calls_per_edit >= 0.9 * b.calls_per_edit ? " The dearer model does not get to an edit in fewer steps." : " The dearer model gets to an edit in fewer steps.")]);
+  }
+  if (fit.length > 1) {
+    const byCalls = [...fit].sort((x, y) => y.calls_per_edit - x.calls_per_edit), hi = byCalls[0], lo = byCalls[byCalls.length - 1];
+    F.push([B(hi.model + " on " + hi.tool), " makes " + f1(hi.calls_per_edit) + " tool calls for one edit, " + times(hi.calls_per_edit / lo.calls_per_edit) + " the " + f1(lo.calls_per_edit) + " of " + lo.model + "." + (num(hi.repeat_pct) ? " " + pct(hi.repeat_pct) + " of its calls repeat an earlier call." : "")]);
+    const rw = [...fit].sort((x, y) => y.rework_pct - x.rework_pct)[0];
+    F.push([B(pct(rw.rework_pct)), " of the edits of " + rw.model + " go back to a file the same context edited in the " + f0(V.window) + " requests before. That is the highest; the lowest is " + pct(Math.min(...fit.map(m => m.rework_pct))) + "."]);
+  }
+  const dim = rows.filter(m => m.dim);
+  if (dim.length) F.push([plural(dim.length, "model") + " with under " + MinEdits + " edits " + (dim.length === 1 ? "is" : "are") + " dimmed and left out of the comparison: ", ...dim.flatMap((m, i) => [i ? ", " : "", M(m.model)]), "."]);
+  findings("#f-models", F);
+  $("#c-models").append(B("Caveat. "), "The models did not get the same work. A model that is given reading, planning or review has many tool calls per edit by design. Compare models inside one tool, and trust the comparison only where the work is alike. Cost is the cost the store recorded for each request.");
+  return { headline, note: plural(tFit.length, "model"), draw: () => metricGrid($("#models-grid"), rows, cols, "Cost and effort per model") };
+};
+
+RENDER.skills = function (T) {
+  const [tHelp, tWith, tV] = T; const V = tV[0] || {};
+  if (!tHelp.length) return NO_DATA;
+  const MinCalls = 20;
+  const cmp = tHelp.filter(s => s.calls_before >= MinCalls && s.calls_after >= MinCalls && num(s.repeat_pct_before) && num(s.repeat_pct_after)).map(s => ({ ...s, d: s.repeat_pct_after - s.repeat_pct_before })).sort((a, b) => b.d - a.d);
+  const early = tHelp.filter(s => s.calls_before < MinCalls);
+  const up = cmp.filter(s => s.d >= 2), down = cmp.filter(s => s.d <= -2);
+  function drawSkills() {
+    const box = $("#skills-chart"); const W = box.clientWidth; if (!W) return; box.replaceChildren();
+    const narrow = W < 640, labW = narrow ? 0 : 230, dW = narrow ? 0 : 100, rowH = narrow ? 56 : 42, mt = 6, axH = 24, mono = css("--f-mono");
+    const Hh = mt + cmp.length * rowH + axH;
+    const svg = S("svg", { width: W, height: Hh, viewBox: "0 0 " + W + " " + Hh, role: "img", "aria-label": "Share of repeated tool calls before and after each skill load" }, box);
+    const x0 = labW + 26, x1 = W - dW - 30, xmax = niceMax(Math.max(10, ...cmp.map(s => Math.max(s.repeat_pct_before, s.repeat_pct_after))), 10), x = v => x0 + (x1 - x0) * v / xmax;
+    const ax = S("g", { class: "ax" }, svg);
+    for (let v = 0; v <= xmax; v += xmax > 50 || narrow ? 20 : 10) { S("line", { x1: x(v), x2: x(v), y1: mt, y2: Hh - axH, stroke: "var(--grid)" }, ax); const t = S("text", { x: x(v), y: Hh - axH + 15, "text-anchor": "middle" }, ax); t.textContent = v + "%"; }
+    if (!narrow) { const t = S("text", { x: W, y: Hh - axH + 15, "text-anchor": "end" }, ax); t.textContent = "change"; }
+    cmp.forEach((s, i) => {
+      const yc = mt + i * rowH + (narrow ? 36 : rowH / 2), col = s.d >= 2 ? "var(--crit)" : s.d <= -2 ? "var(--c-r)" : "var(--rest)";
+      const l1 = S("text", { x: 0, y: narrow ? yc - 18 : yc - 1, "font-size": 12.5, fill: "var(--ink)", "font-weight": 500 }, svg); l1.textContent = s.skill;
+      const l2 = S("text", { x: narrow ? W : 0, y: narrow ? yc - 18 : yc + 13, "text-anchor": narrow ? "end" : "start", "font-size": 11, fill: "var(--muted)" }, svg); l2.textContent = s.tool + " · " + plural(s.loads, "load") + (narrow ? " · " + (s.d > 0 ? "+" : "") + f1(s.d) + " pts" : "");
+      const a = x(s.repeat_pct_before), b = x(s.repeat_pct_after);
+      S("line", { x1: a, x2: b, y1: yc, y2: yc, stroke: col, "stroke-width": 3, "stroke-linecap": "round" }, svg);
+      S("circle", { cx: a, cy: yc, r: 5, fill: "var(--surface)", stroke: "var(--ink-2)", "stroke-width": 2 }, svg);
+      S("circle", { cx: b, cy: yc, r: 6, fill: col, stroke: "var(--surface)", "stroke-width": 2 }, svg);
+      const lt = (v, xx, side) => { const t = S("text", { x: xx + side * 11, y: yc + 4, "text-anchor": side > 0 ? "start" : "end", "font-size": 11.5, fill: "var(--ink-2)", "font-family": mono }, svg); t.textContent = pct(v); };
+      lt(s.repeat_pct_after, b, s.d >= 0 ? 1 : -1); if (Math.abs(b - a) > 8) lt(s.repeat_pct_before, a, s.d >= 0 ? -1 : 1);
+      if (!narrow) { const t = S("text", { x: W, y: yc + 4, "text-anchor": "end", "font-size": 11.5, fill: s.d >= 2 ? "var(--crit)" : "var(--ink-2)", "font-family": mono }, svg); t.textContent = (s.d > 0 ? "+" : "") + f1(s.d) + " pts"; }
+      const hit = S("rect", { x: 0, y: yc - rowH / 2, width: W, height: rowH, fill: "transparent" }, svg);
+      hit.addEventListener("pointermove", e => showTip(e, [[s.skill + " · " + s.tool, null, "h"], [plural(s.loads, "load"), "in " + plural(s.contexts, "context")], [pct(s.repeat_pct_before), "of " + f0(s.calls_before) + " calls repeat, in the " + f0(V.span) + " requests before"], [pct(s.repeat_pct_after), "of " + f0(s.calls_after) + " calls repeat, in the " + f0(V.span) + " requests after", s.d >= 2 ? "bad" : null], [(num(s.fail_pct_before) ? pct(s.fail_pct_before) : "none") + " to " + (num(s.fail_pct_after) ? pct(s.fail_pct_after) : "none"), "failed calls"]]));
+      hit.addEventListener("pointerleave", hideTip);
+    });
+  }
+  const loads = sum(tHelp.map(s => s.loads));
+  const headline = !cmp.length ? "Skills load before any work starts: " + plural(loads, "load") + ", none with calls before it to compare"
+    : up.length > down.length ? "After a skill loads, the agent repeats itself more in " + up.length + " of " + plural(cmp.length, "skill") + ", and less in " + down.length
+    : down.length > up.length ? "After a skill loads, the agent repeats itself less in " + down.length + " of " + plural(cmp.length, "skill") + ", and more in " + up.length
+    : "A skill load does not shift how often the agent repeats itself: more in " + up.length + " of " + plural(cmp.length, "skill") + ", less in " + down.length;
+  const stat = statAdder("#skills-stats");
+  stat(f0(loads), "skill loads");
+  stat(f0(tHelp.length), "skills loaded, " + f0(cmp.length) + " with enough calls on both sides");
+  const wTool = [...new Set(tWith.filter(w => w.has_skill).sort((a, b) => b.contexts - a.contexts).map(w => w.tool))][0];
+  const w1 = tWith.find(w => w.tool === wTool && w.has_skill), w0 = tWith.find(w => w.tool === wTool && !w.has_skill);
+  if (w1 && w0) { stat(usd(w1.usd_p50), "median cost of a " + wTool + " context that loaded a skill"); stat(usd(w0.usd_p50), "median cost of one that did not"); }
+  const lg = $("#skills-legend");
+  legendKey(lg, "var(--ink-2)", "before the load", "ring"); legendKey(lg, "var(--crit)", "after: repeats more", "dot"); legendKey(lg, "var(--c-r)", "after: repeats less", "dot"); legendKey(lg, "var(--rest)", "after: within 2 points", "dot");
+  const F = [];
+  if (cmp.length) {
+    const hi = cmp[0], lo = cmp[cmp.length - 1];
+    if (hi.d >= 2) F.push([B(hi.skill + ": "), "repeated calls go from " + pct(hi.repeat_pct_before) + " of " + f0(hi.calls_before) + " calls before the load to " + pct(hi.repeat_pct_after) + " of " + f0(hi.calls_after) + " after it. That is the largest rise."]);
+    if (lo.d <= -2 && lo !== hi) F.push([B(lo.skill + ": "), "the largest fall, from " + pct(lo.repeat_pct_before) + " to " + pct(lo.repeat_pct_after) + "."]);
+  }
+  if (w1 && w0) F.push([B(wTool + " contexts with a skill: "), f0(w1.contexts) + ", median " + f0(w1.requests_p50) + " requests and " + usd(w1.usd_p50) + ", " + pct(w1.repeat_pct) + " repeated calls. Without: " + f0(w0.contexts) + ", median " + f0(w0.requests_p50) + " requests and " + usd(w0.usd_p50) + ", " + pct(w0.repeat_pct) + "."]);
+  if (early.length) F.push([plural(early.length, "skill") + " load with under " + MinCalls + " tool calls before them, so there is no before to compare: ", ...early.slice(0, 6).flatMap((s, i) => [i ? ", " : "", M(s.skill)]), early.length > 6 ? " and " + (early.length - 6) + " more." : "."]);
+  F.push([B("Gap in the data. "), "The store keeps the acknowledgement of a skill call, not the skill text that enters the context. So what a skill costs in tokens cannot be read from it yet."]);
+  if (!V.applies) F.push(["Only " + plural(loads, "skill load") + " in scope: too few to trust the comparison."]);
+  findings("#f-skills", F);
+  $("#c-skills").append(B("Caveat. "), "Before and after is not cause and effect. An agent loads a skill when the work changes, and a skill for writing or querying starts a phase with many alike calls. Read a rise as a prompt to open those sessions, not as a verdict on the skill. The span is " + f0(V.span) + " requests on each side, in the same context.");
+  if (!cmp.length) H("p", "panel-sub", "No skill has " + MinCalls + " calls on both sides of its loads.", $("#skills-chart"));
+  return { headline, note: plural(loads, "skill load"), draw: cmp.length ? drawSkills : null };
+};
+
+RENDER.mcp = function (T) {
+  const [tSrv, tTools, tV] = T; const V = tV[0] || {};
+  if (!tSrv.length) return NO_DATA;
+  const rows = [...tSrv].sort((a, b) => (a.tool < b.tool ? -1 : a.tool > b.tool ? 1 : b.calls - a.calls)).map(s => ({ ...s, p90_s: num(s.p90_ms) ? s.p90_ms / 1000 : null, label: s.mcp_server, group: s.tool, dim: s.calls < 50, sub: plural(s.tools_used, "tool") + " used in " + plural(s.contexts, "context") }));
+  const cols = [
+    { key: "calls", title: "calls", fmt: f0 },
+    { key: "share_tok_pct", title: "share of tool-result text", fmt: v => pct(v), color: "var(--series)" },
+    { key: "tok_per_call", title: "tokens per result", fmt: fk, color: "var(--series)" },
+    { key: "fail_pct", title: "calls that fail", fmt: v => pct(v, 2), bad: true },
+    { key: "p90_s", title: "p90 wait", fmt: v => (v >= 10 ? f0(v) : v >= 1 ? f1(v) : f2(v)) + " s", bad: true, none: "no duration" }];
+  const live = rows.filter(s => !s.dim);
+  rows.forEach(s => { if (!num(s.share_tok_pct)) s.share_tok_pct = 0; });
+  const top = [...rows].sort((a, b) => b.share_tok_pct - a.share_tok_pct)[0];
+  const headline = top.share_tok_pct >= 20 ? "One MCP server, " + top.mcp_server + ", returns " + pct(top.share_tok_pct, 0) + " of all tool-result text in " + top.tool
+    : "No MCP server dominates the context: the largest, " + top.mcp_server + ", returns " + pct(top.share_tok_pct) + " of the tool-result text in " + top.tool;
+  const stat = statAdder("#mcp-stats");
+  stat(f0(sum(tSrv.map(s => s.calls))), "MCP calls");
+  stat(f0(tSrv.length), "servers in use");
+  stat(pct(top.share_calls_pct, 0), "of all " + top.tool + " tool calls go to " + top.mcp_server);
+  stat(pct(top.share_tok_pct, 0), "of the tool-result text comes back from it");
+  const F = [];
+  F.push([B(top.mcp_server + " on " + top.tool + ": "), f0(top.calls) + " calls to " + plural(top.tools_used, "tool") + ", about " + fk(top.tok_per_call) + " tokens per result. That is " + pct(top.share_calls_pct) + " of the tool calls and " + pct(top.share_tok_pct) + " of the tool-result text of " + top.tool + "."]);
+  const slow = live.filter(s => num(s.p90_s)).sort((a, b) => b.p90_s - a.p90_s)[0];
+  if (slow && slow.p90_s >= 2) F.push([B(slow.mcp_server + " on " + slow.tool), " makes the agent wait: one call in ten takes " + f1(slow.p90_s) + " s or more, against a median of " + (slow.p50_ms >= 1000 ? f1(slow.p50_ms / 1000) + " s" : f0(slow.p50_ms) + " ms") + "."]);
+  const bad = [...live].sort((a, b) => b.calls * b.fail_pct - a.calls * a.fail_pct)[0];
+  if (bad && bad.fail_pct >= 2) F.push([B(pct(bad.fail_pct) + " of the calls to " + bad.mcp_server), " on " + bad.tool + " fail, " + f0(Math.round(bad.calls * bad.fail_pct / 100)) + " of " + f0(bad.calls) + "."]);
+  if (tTools.length) F.push(["The MCP tools that return the most text: ", ...tTools.slice(0, 3).flatMap((t, i) => [i ? "; " : "", M(t.mcp_server + ":" + t.mcp_tool), " " + (t.tok_sum >= 1e6 ? f1(t.tok_sum / 1e6) + "M" : fk(t.tok_sum)) + " tokens in " + f0(t.calls) + " calls, " + fk(t.tok_per_call) + " each"]), "."]);
+  if (!V.applies) F.push(["Only " + plural(V.samples || 0, "MCP call") + " in scope: too few to compare servers."]);
+  findings("#f-mcp", F);
+  $("#c-mcp").append(B("Caveat. "), "Tokens are estimated as the bytes of a result divided by four. A result enters the context once and is then re-read from the cache on every later request, so its true cost grows with the length of the session. The wait is the duration the tool reported; calls without one are left out of it. Servers with under 50 calls are dimmed.");
+  return { headline, note: plural(sum(tSrv.map(s => s.calls)), "MCP call"), draw: () => metricGrid($("#mcp-grid"), rows, cols, "Calls, result size, failures and wait per MCP server") };
+};
+
 const DRAWS = [];
 const STATUS = {};
 function buildSection(sec, n, wrap) {

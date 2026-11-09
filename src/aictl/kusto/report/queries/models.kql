@@ -1,0 +1,22 @@
+// Model fit. For each model: what a request costs, how many tool calls and output tokens it needs for one edit,
+// what one edited file costs, and how often an edit goes back to a file the same context edited shortly before.
+let MinRequests = 50;
+let CM = TC | join kind = inner (RQ | project stream, seq, model) on stream, seq;
+let Ed = CM | where is_edit and isnotempty(file) | order by stream asc, file asc, ts asc
+  | extend re = stream == prev(stream) and file == prev(file) and seq - prev(seq) <= RepeatWindow;
+let A = CM | summarize calls = count(), failed = countif(failed), repeats = countif(rep), edits = countif(is_edit), reads = countif(is_read),
+                       files = dcountif(strcat(stream, "|", file), is_edit and isnotempty(file)) by tool, model;
+let B = RQ | summarize requests = count(), usd = sum(cost_usd), out_tok = sum(output_tokens), ctx_p50 = percentile(ctx, 50) by tool, model;
+let X = Ed | summarize re_edits = countif(re) by tool, model;
+B | join kind = leftouter A on tool, model | join kind = leftouter X on tool, model | where requests >= MinRequests
+  | extend calls = coalesce(calls, 0), edits = coalesce(edits, 0), files = coalesce(files, 0)
+  | project tool, model, requests, usd = round(usd, 2), calls, edits, files, usd_per_request = round(usd / requests, 4),
+            calls_per_request = round(1.0 * calls / requests, 2), out_tok_per_request = round(1.0 * out_tok / requests),
+            calls_per_edit = iff(edits > 0, round(1.0 * calls / edits, 1), real(null)), usd_per_file = iff(files > 0, round(usd / files, 2), real(null)),
+            rework_pct = iff(edits > 0, round(100.0 * coalesce(re_edits, 0) / edits, 1), real(null)),
+            fail_pct = iff(calls > 0, round(100.0 * failed / calls, 2), real(null)), repeat_pct = iff(calls > 0, round(100.0 * repeats / calls, 2), real(null)), ctx_p50
+  | order by usd desc
+  | as model_fit;
+let NM = toscalar(B | where requests >= MinRequests | count);
+print applies = NM >= 2, samples = NM, min_requests = MinRequests, window = RepeatWindow, note = "models"
+| as verdict
