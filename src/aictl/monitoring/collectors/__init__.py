@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
     from ..correlator import SessionCorrelator
 
 log = logging.getLogger(__name__)
+MAX_DEFERRED_SAMPLES = 256
 
 
 class BaseCollector(ABC):
@@ -36,7 +38,7 @@ class BaseCollector(ABC):
         self._sink: Any | None = None
         self._correlator: SessionCorrelator | None = None
         self.config = config
-        self._pending_samples: list[tuple[str, float, dict[str, Any] | None]] = []
+        self._pending_samples: list[tuple[str, float, dict[str, Any] | None, float]] = []
 
     def set_sink(self, sink: Any) -> None:
         """Inject a SampleSink for direct metric persistence."""
@@ -51,13 +53,13 @@ class BaseCollector(ABC):
         return self._correlator
 
     def _defer_on_event_loop(self, metric: str, value: float, tags: dict[str, Any] | None) -> bool:
-        """Queue sample for off-loop batch delivery when streaming observations on an asyncio loop."""
+        """Queue sample with its observation timestamp when streaming on an asyncio loop."""
         if (
             self._sink is not None
             and getattr(self._sink, "streams_observations", False) is True
             and asyncio._get_running_loop() is not None
         ):
-            self._pending_samples.append((metric, value, tags))
+            self._pending_samples.append((metric, value, tags, time.time()))
             return True
         return False
 

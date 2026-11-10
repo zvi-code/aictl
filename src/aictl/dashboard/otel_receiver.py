@@ -261,10 +261,22 @@ class OtelReceiver:
             return value
         return value - last
 
-    def parse_metrics_staged(self, body: dict) -> tuple[list[_Sample], Callable[[], None]]:
-        """Parse ``/v1/metrics`` without advancing cumulative baselines until committed."""
+    def ingest_metrics(self, body: dict, writer: Callable[[list[_Sample]], None] | None) -> list[_Sample]:
+        """Parse ``/v1/metrics``, write via *writer*, and commit cumulative baselines atomically."""
+        with self._lock:
+            samples, staged = self._parse_metrics_locked(body)
+            if writer is not None and samples:
+                writer(samples)
+            for key, final_val in staged.items():
+                if len(self._cumulative_last) >= _MAX_CUMULATIVE_SERIES and key not in self._cumulative_last:
+                    self._cumulative_last.clear()
+                self._cumulative_last[key] = final_val
+        self.stats.note(samples, [])
+        return samples
+
+    def _parse_metrics_locked(self, body: dict) -> tuple[list[_Sample], dict[tuple, float]]:
         samples: list[_Sample] = []
-        staged: dict[tuple, tuple[float | None, float]] = {}
+        staged: dict[tuple, float] = {}
         received_at = time.time()
         for rm in _iter_otel_dicts(body, "resourceMetrics"):
             resource_attrs = _parse_otel_attributes(
@@ -291,7 +303,10 @@ class OtelReceiver:
                         _promote_session_id(tags, resource_attrs)
                         _promote_pid(tags, resource_attrs)
                         if cumulative:
-                            value = self._cumulative_to_delta(tool, name, tags, value, staged=staged)
+                            key = (tool, name, tuple(sorted((k, str(v)) for k, v in tags.items() if k != "otel_metric")))
+                            last = staged.get(key, self._cumulative_last.get(key))
+                            staged[key] = value
+                            value = value if (last is None or value < last) else (value - last)
                             tags["otel_temporality"] = "cumulative"
                         samples.append(
                             _Sample(
@@ -301,24 +316,11 @@ class OtelReceiver:
                                 tags=tags,
                             )
                         )
-
-        def commit() -> None:
-            if staged:
-                with self._lock:
-                    for key, (prior, final_val) in staged.items():
-                        if self._cumulative_last.get(key) == prior:
-                            if len(self._cumulative_last) >= _MAX_CUMULATIVE_SERIES and key not in self._cumulative_last:
-                                self._cumulative_last.clear()
-                            self._cumulative_last[key] = final_val
-            self.stats.note(samples, [])
-
-        return samples, commit
+        return samples, staged
 
     def parse_metrics(self, body: dict) -> list[_Sample]:
         """Parse OTLP JSON ``/v1/metrics`` payload."""
-        samples, commit = self.parse_metrics_staged(body)
-        commit()
-        return samples
+        return self.ingest_metrics(body, None)
 
     # ── Logs / events ─────────────────────────────────────────
 

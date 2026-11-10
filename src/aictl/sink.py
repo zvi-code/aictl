@@ -417,10 +417,10 @@ class SampleSink:
 
     def emit_batch(
         self,
-        samples: list[tuple[str, float, dict[str, Any] | None]],
+        samples: list[tuple[str, float, dict[str, Any] | None] | tuple[str, float, dict[str, Any] | None, float]],
         ts: float | None = None,
     ) -> None:
-        """Write multiple samples with the same timestamp.
+        """Write multiple samples with the same or per-sample timestamp.
 
         More efficient than calling ``emit()`` in a loop — single lock
         acquisition, single handler dispatch batch.
@@ -428,47 +428,49 @@ class SampleSink:
         if ts is None:
             ts = time.time()
 
+        normalized: list[tuple[str, float, dict[str, Any], float]] = [
+            (item[0], item[1], item[2] or {}, item[3] if len(item) == 4 else ts) for item in samples
+        ]
+
         if self.streams_observations:
             from .storage import Sample
 
             # Handoff first: a refused batch must not appear accepted in caches or counters.
             self._db.append_samples(
-                [Sample(ts=ts, metric=metric, value=value, tags=tags or {}) for metric, value, tags in samples]
+                [Sample(ts=sample_ts, metric=metric, value=value, tags=t) for metric, value, t, sample_ts in normalized]
             )
             with self._lock:
-                for metric, value, tags in samples:
-                    self._lru_set_latest(metric, (ts, value, tags or {}))
-                    self._series_append(metric, (ts, value))
-                self._total_emitted += len(samples)
-                self._total_flushed += len(samples)
-            for metric, value, tags in samples:
+                for metric, value, t, sample_ts in normalized:
+                    self._lru_set_latest(metric, (sample_ts, value, t))
+                    self._series_append(metric, (sample_ts, value))
+                self._total_emitted += len(normalized)
+                self._total_flushed += len(normalized)
+            for metric, value, t, sample_ts in normalized:
                 if self._datapoint_logger:
                     try:
-                        self._datapoint_logger.log_sample(ts, metric, value, tags or {})
+                        self._datapoint_logger.log_sample(sample_ts, metric, value, t)
                     except Exception:
                         log.exception("Datapoint logging failed after Kusto accepted %s", metric)
                 for handler in self._handlers:
                     try:
-                        handler(metric, value, tags or {}, ts)
+                        handler(metric, value, t, sample_ts)
                     except Exception:
                         log.exception("Sample handler failed for %s after Kusto accepted the observation", metric)
             return
 
         with self._lock:
-            for metric, value, tags in samples:
-                t = tags or {}
-                self._lru_set_latest(metric, (ts, value, t))
-                self._series_append(metric, (ts, value))
-                self._buffer.append((ts, metric, value, t))
+            for metric, value, t, sample_ts in normalized:
+                self._lru_set_latest(metric, (sample_ts, value, t))
+                self._series_append(metric, (sample_ts, value))
+                self._buffer.append((sample_ts, metric, value, t))
                 self._total_emitted += 1
             should_flush = self._buffer_size == 0 or len(self._buffer) >= self._buffer_size
 
         # Dispatch handlers
-        for metric, value, tags in samples:
-            t = tags or {}
+        for metric, value, t, sample_ts in normalized:
             for handler in self._handlers:
                 try:
-                    handler(metric, value, t, ts)
+                    handler(metric, value, t, sample_ts)
                 except Exception as exc:
                     log.debug("Batch handler error on %s: %s", metric, exc)
 

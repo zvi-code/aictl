@@ -377,11 +377,24 @@ def _ensure_azcli_token_cache() -> None:
         except ImportError:
             return
 
-        def _cached(provider: Any) -> dict[str, str] | None:
+        def _best_token(provider: Any) -> Any:
             scope = provider._scopes[0] if getattr(provider, "_scopes", None) else getattr(provider, "_kusto_uri", "")
-            tok = getattr(provider, "_az_token", None) or _azcli_tokens.get(scope)
+            candidates = [
+                t
+                for t in (getattr(provider, "_az_token", None), _azcli_tokens.get(scope))
+                if t is not None and getattr(t, "expires_on", 0)
+            ]
+            if not candidates:
+                return None
+            best = max(candidates, key=lambda t: t.expires_on)
+            provider._az_token = best
+            if scope:
+                _azcli_tokens[scope] = best
+            return best
+
+        def _cached(provider: Any) -> dict[str, str] | None:
+            tok = _best_token(provider)
             if tok is not None and (tok.expires_on - _AZCLI_REFRESH_BUFFER_S) > time.time():
-                provider._az_token = tok
                 return {
                     TokenConstants.MSAL_TOKEN_TYPE: TokenConstants.BEARER_TYPE,
                     TokenConstants.MSAL_ACCESS_TOKEN: tok.token,
@@ -400,9 +413,8 @@ def _ensure_azcli_token_cache() -> None:
                     res = orig_get_impl(provider)
                 except Exception:  # noqa: BLE001 - fall back to an unexpired cached token if az CLI fails transiently
                     # If a still-unexpired token exists in memory, use it when az CLI invocation fails transiently.
-                    tok = getattr(provider, "_az_token", None) or _azcli_tokens.get(scope)
+                    tok = _best_token(provider)
                     if tok is not None and (tok.expires_on - 15.0) > time.time():
-                        provider._az_token = tok
                         return {
                             TokenConstants.AZ_TOKEN_TYPE: TokenConstants.BEARER_TYPE,
                             TokenConstants.AZ_ACCESS_TOKEN: tok.token,

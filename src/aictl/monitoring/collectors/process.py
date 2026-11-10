@@ -611,8 +611,8 @@ class WatchdogFileCollector(BaseCollector):
                 # Sink: per-file metrics
                 if path:
                     sampler.record(path, growth, size, tool_hint)
-                    if self._pending_samples and queue.empty():
-                        await self.sink_flush_batch()
+                if self._pending_samples and (queue.empty() or len(self._pending_samples) >= 256):
+                    await self.sink_flush_batch()
         except asyncio.CancelledError:
             raise
         finally:

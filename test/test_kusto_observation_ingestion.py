@@ -553,3 +553,108 @@ def test_retried_cumulative_otel_metrics_preserve_delta_after_failed_handoff():
     _DashboardHandler._receive_otel_signal(handler, "metrics", "parse_metrics", "append_samples", "samples")
     assert [s.value for s in accepted] == [100.0, 10.0]
 
+
+def test_concurrent_cumulative_otel_metrics_do_not_double_count_deltas():
+    import threading
+
+    from aictl.dashboard.otel_receiver import OtelReceiver
+
+    def make_payload(val: int) -> dict:
+        return {
+            "resourceMetrics": [
+                {
+                    "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "copilot-cli"}}]},
+                    "scopeMetrics": [
+                        {
+                            "metrics": [
+                                {
+                                    "name": "gen_ai.client.token.usage",
+                                    "sum": {
+                                        "aggregationTemporality": 2,
+                                        "dataPoints": [{"timeUnixNano": "1700000010000000000", "asInt": str(val)}],
+                                    },
+                                }
+                            ]
+                        }
+                    ],
+                }
+            ]
+        }
+
+    receiver = OtelReceiver()
+    accepted = []
+    receiver.ingest_metrics(make_payload(100), accepted.extend)
+    assert [s.value for s in accepted] == [100.0]
+
+    barrier = threading.Barrier(2)
+
+    def run_export(val: int) -> None:
+        barrier.wait(timeout=5.0)
+        receiver.ingest_metrics(make_payload(val), accepted.extend)
+
+    t1 = threading.Thread(target=run_export, args=(110,))
+    t2 = threading.Thread(target=run_export, args=(120,))
+    t1.start()
+    t2.start()
+    t1.join(timeout=5.0)
+    t2.join(timeout=5.0)
+
+    # Whichever order the serialized exports ran in, the next export at 130 must see baseline >= 110
+    receiver.ingest_metrics(make_payload(130), accepted.extend)
+    # If 110 ran before 120: deltas are 100, 10, 10, 10 -> sum 130.
+    # If 120 ran before 110: 110<120 is treated as a counter reset (110), then 130-110=20;
+    # in neither case can both threads compute deltas from baseline 100 concurrently.
+    assert accepted[1].value != 20.0 or accepted[2].value != 10.0
+
+
+def test_timestamp_less_patch_has_retention_ts_and_event_time_stays_null(observation_store):
+    db, ingester = observation_store
+    db.update_tool_invocation_duration("call-key", 250.0, 1, "boom")
+    table, rows = ingester.batches[-1]
+    assert table == "tool_invocations_observations"
+    row = rows[0]
+    assert row["event_time"] is None
+    assert isinstance(row["retention_ts"], float) and row["retention_ts"] > 0
+    assert row["result_summary"] == "boom"
+
+
+def test_azcli_shared_token_replaces_stale_provider_token(monkeypatch):
+    import time
+
+    from aictl.kusto import connection as C
+
+    C._ensure_azcli_token_cache()
+    from azure.kusto.data._token_providers import AzCliTokenProvider
+
+    now = time.time()
+    stale = SimpleNamespace(token="stale-tok", expires_on=now - 10)
+    fresh = SimpleNamespace(token="fresh-tok", expires_on=now + 3600)
+    scope = "https://example-dev.swedencentral.dev.kusto.windows.net/.default"
+    monkeypatch.setitem(C._azcli_tokens, scope, fresh)
+
+    provider = SimpleNamespace(_scopes=[scope], _kusto_uri="https://example-dev.swedencentral.dev.kusto.windows.net", _az_token=stale)
+    cached = AzCliTokenProvider._get_token_from_cache_impl(provider)
+    assert cached is not None
+    assert "fresh-tok" in cached.values()
+    assert provider._az_token is fresh
+
+
+def test_deferred_collector_samples_keep_original_timestamps(observation_store):
+    db, ingester = observation_store
+    sink = SampleSink(db=db)
+
+    class StampedCollector(BaseCollector):
+        name = "test:stamped"
+
+        async def run(self):
+            self._pending_samples.append(("m.early", 1.0, {"a": "1"}, 1234.5))
+            self._pending_samples.append(("m.late", 2.0, {"a": "2"}, 1239.5))
+            await self.sink_flush_batch()
+
+    c = StampedCollector()
+    c.set_sink(sink)
+    asyncio.run(c.run())
+    rows = ingester.batches[-1][1]
+    assert [r["ts"] for r in rows] == [1234.5, 1239.5]
+
+

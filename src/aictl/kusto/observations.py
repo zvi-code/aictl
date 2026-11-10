@@ -40,6 +40,7 @@ def tables_for(baseline: dict[str, Table]) -> dict[str, Table]:
         Column("source_revision", "INTEGER", "long"),
         Column("event_time", "TEXT", "datetime"),
         Column("received_time", "TEXT", "datetime"),
+        Column("retention_ts", "REAL", "real"),
         Column("presence", "TEXT", "string"),
         Column("source_presence_known", "INTEGER", "bool"),
         Column("serialized_fields", "TEXT", "string"),
@@ -71,8 +72,10 @@ def envelope(
     source_entity_id: str = "", observation_id: str | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
+    now_ts = now.timestamp()
     stamp = values.get("ts") or values.get("last_activity_at") or values.get("started_at")
     event_time = datetime.fromtimestamp(float(stamp), timezone.utc) if stamp else None
+    retention_ts = float(stamp) if stamp else now_ts
     return values | {
         "observation_id": observation_id or uuid.uuid4().hex,
         "observation_source": source,
@@ -82,6 +85,7 @@ def envelope(
         "source_revision": None,
         "event_time": event_time,
         "received_time": now,
+        "retention_ts": retention_ts,
         "presence": None,
         "source_presence_known": False,
         "serialized_fields": json.dumps(sorted(values)),

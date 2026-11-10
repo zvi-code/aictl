@@ -986,7 +986,7 @@ Key: component, source. Scope: machine-wide. 10 columns.
 
 ### `requests_observations`
 
-Key: observation_id. Scope: machine-wide. 38 columns.
+Key: observation_id. Scope: machine-wide. 39 columns.
 
 | Column | Kusto type | SQLite type | Default | Not null |
 |---|---|---|---|---|
@@ -1024,6 +1024,7 @@ Key: observation_id. Scope: machine-wide. 38 columns.
 | source_revision | long | INTEGER |  |  |
 | event_time | datetime | TEXT |  |  |
 | received_time | datetime | TEXT |  |  |
+| retention_ts | real | REAL |  |  |
 | presence | string | TEXT |  |  |
 | source_presence_known | bool | INTEGER |  |  |
 | serialized_fields | string | TEXT |  |  |
@@ -1034,7 +1035,7 @@ Key: observation_id. Scope: machine-wide. 38 columns.
 
 ### `tool_invocations_observations`
 
-Key: observation_id. Scope: machine-wide. 34 columns.
+Key: observation_id. Scope: machine-wide. 35 columns.
 
 | Column | Kusto type | SQLite type | Default | Not null |
 |---|---|---|---|---|
@@ -1068,6 +1069,7 @@ Key: observation_id. Scope: machine-wide. 34 columns.
 | source_revision | long | INTEGER |  |  |
 | event_time | datetime | TEXT |  |  |
 | received_time | datetime | TEXT |  |  |
+| retention_ts | real | REAL |  |  |
 | presence | string | TEXT |  |  |
 | source_presence_known | bool | INTEGER |  |  |
 | serialized_fields | string | TEXT |  |  |
@@ -1078,7 +1080,7 @@ Key: observation_id. Scope: machine-wide. 34 columns.
 
 ### `sessions_observations`
 
-Key: observation_id. Scope: machine-wide. 30 columns.
+Key: observation_id. Scope: machine-wide. 31 columns.
 
 | Column | Kusto type | SQLite type | Default | Not null |
 |---|---|---|---|---|
@@ -1108,6 +1110,7 @@ Key: observation_id. Scope: machine-wide. 30 columns.
 | source_revision | long | INTEGER |  |  |
 | event_time | datetime | TEXT |  |  |
 | received_time | datetime | TEXT |  |  |
+| retention_ts | real | REAL |  |  |
 | presence | string | TEXT |  |  |
 | source_presence_known | bool | INTEGER |  |  |
 | serialized_fields | string | TEXT |  |  |
@@ -1118,7 +1121,7 @@ Key: observation_id. Scope: machine-wide. 30 columns.
 
 ### `agents_observations`
 
-Key: observation_id. Scope: machine-wide. 26 columns.
+Key: observation_id. Scope: machine-wide. 27 columns.
 
 | Column | Kusto type | SQLite type | Default | Not null |
 |---|---|---|---|---|
@@ -1144,6 +1147,7 @@ Key: observation_id. Scope: machine-wide. 26 columns.
 | source_revision | long | INTEGER |  |  |
 | event_time | datetime | TEXT |  |  |
 | received_time | datetime | TEXT |  |  |
+| retention_ts | real | REAL |  |  |
 | presence | string | TEXT |  |  |
 | source_presence_known | bool | INTEGER |  |  |
 | serialized_fields | string | TEXT |  |  |
@@ -1154,7 +1158,7 @@ Key: observation_id. Scope: machine-wide. 26 columns.
 
 ### `session_usage_observations`
 
-Key: observation_id. Scope: machine-wide. 38 columns.
+Key: observation_id. Scope: machine-wide. 39 columns.
 
 | Column | Kusto type | SQLite type | Default | Not null |
 |---|---|---|---|---|
@@ -1192,6 +1196,7 @@ Key: observation_id. Scope: machine-wide. 38 columns.
 | source_revision | long | INTEGER |  |  |
 | event_time | datetime | TEXT |  |  |
 | received_time | datetime | TEXT |  |  |
+| retention_ts | real | REAL |  |  |
 | presence | string | TEXT |  |  |
 | source_presence_known | bool | INTEGER |  |  |
 | serialized_fields | string | TEXT |  |  |
@@ -1202,7 +1207,7 @@ Key: observation_id. Scope: machine-wide. 38 columns.
 
 ### `session_processes_observations`
 
-Key: observation_id. Scope: machine-wide. 18 columns.
+Key: observation_id. Scope: machine-wide. 19 columns.
 
 | Column | Kusto type | SQLite type | Default | Not null |
 |---|---|---|---|---|
@@ -1220,6 +1225,7 @@ Key: observation_id. Scope: machine-wide. 18 columns.
 | source_revision | long | INTEGER |  |  |
 | event_time | datetime | TEXT |  |  |
 | received_time | datetime | TEXT |  |  |
+| retention_ts | real | REAL |  |  |
 | presence | string | TEXT |  |  |
 | source_presence_known | bool | INTEGER |  |  |
 | serialized_fields | string | TEXT |  |  |
@@ -1230,7 +1236,7 @@ Key: observation_id. Scope: machine-wide. 18 columns.
 
 ### `session_prompts_observations`
 
-Key: observation_id. Scope: machine-wide. 20 columns.
+Key: observation_id. Scope: machine-wide. 21 columns.
 
 | Column | Kusto type | SQLite type | Default | Not null |
 |---|---|---|---|---|
@@ -1250,6 +1256,7 @@ Key: observation_id. Scope: machine-wide. 20 columns.
 | source_revision | long | INTEGER |  |  |
 | event_time | datetime | TEXT |  |  |
 | received_time | datetime | TEXT |  |  |
+| retention_ts | real | REAL |  |  |
 | presence | string | TEXT |  |  |
 | source_presence_known | bool | INTEGER |  |  |
 | serialized_fields | string | TEXT |  |  |
@@ -1260,7 +1267,7 @@ Key: observation_id. Scope: machine-wide. 20 columns.
 
 ### `skill_uses_observations`
 
-Key: observation_id. Scope: machine-wide. 20 columns.
+Key: observation_id. Scope: machine-wide. 21 columns.
 
 | Column | Kusto type | SQLite type | Default | Not null |
 |---|---|---|---|---|
@@ -1280,6 +1287,7 @@ Key: observation_id. Scope: machine-wide. 20 columns.
 | source_revision | long | INTEGER |  |  |
 | event_time | datetime | TEXT |  |  |
 | received_time | datetime | TEXT |  |  |
+| retention_ts | real | REAL |  |  |
 | presence | string | TEXT |  |  |
 | source_presence_known | bool | INTEGER |  |  |
 | serialized_fields | string | TEXT |  |  |
@@ -1290,7 +1298,7 @@ Key: observation_id. Scope: machine-wide. 20 columns.
 
 ### `file_write_events_observations`
 
-Key: observation_id. Scope: machine-wide. 26 columns.
+Key: observation_id. Scope: machine-wide. 27 columns.
 
 | Column | Kusto type | SQLite type | Default | Not null |
 |---|---|---|---|---|
@@ -1316,6 +1324,7 @@ Key: observation_id. Scope: machine-wide. 26 columns.
 | source_revision | long | INTEGER |  |  |
 | event_time | datetime | TEXT |  |  |
 | received_time | datetime | TEXT |  |  |
+| retention_ts | real | REAL |  |  |
 | presence | string | TEXT |  |  |
 | source_presence_known | bool | INTEGER |  |  |
 | serialized_fields | string | TEXT |  |  |
@@ -1326,7 +1335,7 @@ Key: observation_id. Scope: machine-wide. 26 columns.
 
 ### `context_events_observations`
 
-Key: observation_id. Scope: machine-wide. 27 columns.
+Key: observation_id. Scope: machine-wide. 28 columns.
 
 | Column | Kusto type | SQLite type | Default | Not null |
 |---|---|---|---|---|
@@ -1353,6 +1362,7 @@ Key: observation_id. Scope: machine-wide. 27 columns.
 | source_revision | long | INTEGER |  |  |
 | event_time | datetime | TEXT |  |  |
 | received_time | datetime | TEXT |  |  |
+| retention_ts | real | REAL |  |  |
 | presence | string | TEXT |  |  |
 | source_presence_known | bool | INTEGER |  |  |
 | serialized_fields | string | TEXT |  |  |
@@ -1363,7 +1373,7 @@ Key: observation_id. Scope: machine-wide. 27 columns.
 
 ### `session_loaded_files_observations`
 
-Key: observation_id. Scope: machine-wide. 19 columns.
+Key: observation_id. Scope: machine-wide. 20 columns.
 
 | Column | Kusto type | SQLite type | Default | Not null |
 |---|---|---|---|---|
@@ -1382,6 +1392,7 @@ Key: observation_id. Scope: machine-wide. 19 columns.
 | source_revision | long | INTEGER |  |  |
 | event_time | datetime | TEXT |  |  |
 | received_time | datetime | TEXT |  |  |
+| retention_ts | real | REAL |  |  |
 | presence | string | TEXT |  |  |
 | source_presence_known | bool | INTEGER |  |  |
 | serialized_fields | string | TEXT |  |  |
@@ -1392,7 +1403,7 @@ Key: observation_id. Scope: machine-wide. 19 columns.
 
 ### `session_context_items_observations`
 
-Key: observation_id. Scope: machine-wide. 23 columns.
+Key: observation_id. Scope: machine-wide. 24 columns.
 
 | Column | Kusto type | SQLite type | Default | Not null |
 |---|---|---|---|---|
@@ -1415,6 +1426,7 @@ Key: observation_id. Scope: machine-wide. 23 columns.
 | source_revision | long | INTEGER |  |  |
 | event_time | datetime | TEXT |  |  |
 | received_time | datetime | TEXT |  |  |
+| retention_ts | real | REAL |  |  |
 | presence | string | TEXT |  |  |
 | source_presence_known | bool | INTEGER |  |  |
 | serialized_fields | string | TEXT |  |  |

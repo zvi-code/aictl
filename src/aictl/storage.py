@@ -2253,9 +2253,9 @@ _TEXT_COLUMNS: tuple[tuple[str, str, dict[str, str]], ...] = (
     ("hook_calls", "ts", {"command": "", "output": ""}),
 )
 _OBSERVATION_TEXT_COLUMNS: tuple[tuple[str, str, dict[str, str]], ...] = (
-    ("session_prompts_observations", "ts", {"text": ""}),
-    ("tool_invocations_observations", "ts", {"input": "{}", "result_summary": "", "target": ""}),
-    ("agents_observations", "started_at", {"task": ""}),
+    ("session_prompts_observations", "COALESCE(NULLIF(retention_ts, 0), ts)", {"text": ""}),
+    ("tool_invocations_observations", "COALESCE(NULLIF(retention_ts, 0), ts)", {"input": "{}", "result_summary": "", "target": ""}),
+    ("agents_observations", "COALESCE(NULLIF(retention_ts, 0), started_at)", {"task": ""}),
 )
 # Columns a trim blanks but a write guard must not, because each writer already
 # stores only what the mode allows: a subagent role, or a command reduced to its

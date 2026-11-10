@@ -285,8 +285,10 @@ class MacOSNetworkCollector(NetworkCollector):
                 # Sink: per-PID network at full nettop resolution
                 if keep:
                     self._emit_io(sample.pid, sample.name, sample.bytes_in, sample.bytes_out)
-                    if self._pending_samples and queue.empty():
-                        await self.sink_flush_batch()
+                if self._pending_samples and (queue.empty() or len(self._pending_samples) >= 256):
+                    await self.sink_flush_batch()
+            if self._pending_samples:
+                await self.sink_flush_batch()
         except asyncio.CancelledError:
             stop_event.set()
             raise
