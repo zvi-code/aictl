@@ -16,6 +16,8 @@ import signal
 import struct
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -225,6 +227,24 @@ def windows_process_parents() -> dict[int, int]:
         return out
     finally:
         api.CloseHandle(handle)
+
+
+_windows_parent_lock = threading.Lock()
+_windows_parent_snapshot: tuple[float, dict[int, int]] | None = None
+
+
+def cached_windows_process_parents(*, max_age: float = 5.0, now: float | None = None) -> dict[int, int]:
+    """Share one native parent snapshot between process collection and display."""
+    global _windows_parent_snapshot
+    at = time.monotonic() if now is None else now
+    with _windows_parent_lock:
+        if (
+            _windows_parent_snapshot is None
+            or at < _windows_parent_snapshot[0]
+            or at - _windows_parent_snapshot[0] >= max_age
+        ):
+            _windows_parent_snapshot = (at, windows_process_parents())
+        return _windows_parent_snapshot[1]
 
 
 def spawn_detached_windows(argv: list[str], log_file: Path, pid_file: Path) -> subprocess.Popen:

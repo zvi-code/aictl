@@ -37,11 +37,11 @@ import hashlib
 import json
 import logging
 import os
-import re
 import socket
 import sqlite3
+import threading
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -63,18 +63,13 @@ from .call_facts import (
     list_price,
     read_claude_agent_role,
 )
+from .transcript_tail import records
 from .vscode_chat_logs import default_log_dir as vscode_chat_default_log_dir
 from .vscode_chat_logs import snapshot_events
 
 log = logging.getLogger(__name__)
 
 POLL_INTERVAL_S = 60.0
-# A Claude transcript line's first "type" is the record's own for every record read
-# here (a message's inner type comes after it). These records are a third of an active
-# transcript's bytes and no reader uses them, so they are not parsed.
-_TYPE_RE = re.compile(rb'"type":"([a-z_-]+)"')
-_HEAD_BYTES = 600
-_UNREAD_TYPES = frozenset({b"api-request-blob", b"api-request-shape", b"queued_command", b"prompt_snapshot"})
 # Re-read recently active files on restart to rebuild their in-memory session state.
 RESTART_GRACE_S = 3600.0
 # A first run on a machine reads the files written in the last RECENT_FIRST_S at once;
@@ -1074,6 +1069,31 @@ class TranscriptUsageIngester:
         self._read_complete: dict[Path, tuple[int, int]] = {}
         self._deferred: set[Path] = set()
         self._defer_budget = 0
+        self._transcript_paths: dict[Path, str] = {}
+        self._path_observers: tuple[Callable[[Path, str], None], ...] = ()
+        self._path_lock = threading.RLock()
+
+    def observe_transcript_paths(self, observer: Callable[[Path, str], None]) -> Callable[[], None]:
+        """Share discovered paths with native adapters without another history walk."""
+        with self._path_lock:
+            self._path_observers += (observer,)
+            for path, tool in self._transcript_paths.items():
+                observer(path, tool)
+
+        def detach() -> None:
+            with self._path_lock:
+                self._path_observers = tuple(item for item in self._path_observers if item is not observer)
+
+        return detach
+
+    def _note_transcript_paths(self, paths: Iterable[Path], tool: str) -> None:
+        with self._path_lock:
+            for path in paths:
+                if path in self._transcript_paths:
+                    continue
+                self._transcript_paths[path] = tool
+                for observer in self._path_observers:
+                    observer(path, tool)
 
     def _load_checkpoints(self) -> dict[Path, tuple[int, int]]:
         if not callable(getattr(getattr(self.store, "machine", self.store), "_conn", None)):
@@ -1151,6 +1171,14 @@ class TranscriptUsageIngester:
         errors = 0
         self.facts.cutoff = cutoff
         self._defer_budget = 0 if self._first_poll else DEFERRED_BYTES_PER_POLL
+        # Publish only path identities before any replay or storage work. Native
+        # output follows active append-only tails, never this history backlog.
+        claude_files = [p for root in self._roots("claude", self.claude_projects) for p in iter_claude_files(root)]
+        codex_files = [p for root in self._roots("codex", self.codex_sessions) for p in root.glob("**/*.jsonl")]
+        copilot_files = [p for root in self._roots("copilot", self.copilot_state) for p in root.glob("*/events.jsonl")]
+        self._note_transcript_paths(claude_files, "claude-code")
+        self._note_transcript_paths(codex_files, "codex-cli")
+        self._note_transcript_paths(copilot_files, "copilot-cli")
         app_ids: set[str] = set()
         self._store.refresh_app_sessions(app_ids)
         self._mark_desktop_sessions()
@@ -1164,20 +1192,11 @@ class TranscriptUsageIngester:
             try:
                 with open(path, "rb") as fh:
                     fh.seek(offset)
-                    for line in fh:
-                        if not line.endswith(b"\n"):
-                            break
-                        offset += len(line)
+                    for record in records(fh):
+                        offset = record.offset
                         self._offsets[path] = offset
-                        head = _TYPE_RE.search(line, 0, _HEAD_BYTES)
-                        if head is not None and head.group(1) in _UNREAD_TYPES:
-                            continue
-                        try:
-                            obj = json.loads(line)
-                        except ValueError:
-                            continue
-                        if isinstance(obj, dict):
-                            yield obj
+                        if record.data is not None:
+                            yield record.data
                     st = os.fstat(fh.fileno())
                     if offset == st.st_size:
                         self._read_complete[path] = (st.st_mtime_ns, offset)
@@ -1185,7 +1204,6 @@ class TranscriptUsageIngester:
                 errors += 1
                 log.debug("transcript-usage: cannot read %s: %s", path.name, exc)
 
-        claude_files = [p for root in self._roots("claude", self.claude_projects) for p in iter_claude_files(root)]
         for path in self._changed(claude_files, cutoff):
             sid = _claude_session_id(path)
             agent_id, role = self._claude_agent(path)
@@ -1195,7 +1213,6 @@ class TranscriptUsageIngester:
             if sid in self._claude.sessions:
                 touched[sid] = self._claude.sessions[sid]
 
-        codex_files = [p for root in self._roots("codex", self.codex_sessions) for p in root.glob("**/*.jsonl")]
         for path in self._changed(codex_files, cutoff):
             acc = self._codex.setdefault(path, CodexAccumulator(self._codex_sessions, path.stem))
             for obj in read(path):
@@ -1205,7 +1222,6 @@ class TranscriptUsageIngester:
                 touched[sid] = self._codex_sessions[sid]
 
         copilot_ids: set[str] = set()
-        copilot_files = [p for root in self._roots("copilot", self.copilot_state) for p in root.glob("*/events.jsonl")]
         # Copilot files are independent sessions, not Claude's cross-file replays.
         copilot_files = list(reversed(self._changed(copilot_files, cutoff)))
         if platforms.IS_WINDOWS:

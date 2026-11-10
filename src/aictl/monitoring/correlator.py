@@ -4,9 +4,11 @@
 
 from __future__ import annotations
 
+import logging
+import threading
 import time
 from collections import Counter, defaultdict
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
 
 from ..data.schema import metric_name as M
@@ -23,6 +25,7 @@ from .session import (
     estimate_tokens,
 )
 
+log = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class MonitorSnapshot:
@@ -58,6 +61,44 @@ class SessionCorrelator:
         self.collector_status: dict[str, dict[str, object]] = {}
         # Pending events for the dashboard/storage layer to drain
         self.pending_events: list[dict] = []
+        self._runtime_observers: tuple[Callable[[str, dict], None], ...] = ()
+        self._runtime_latest: dict[int, dict] = {}
+        self._runtime_snapshot: dict | None = None
+        self._runtime_lock = threading.RLock()
+
+    def observe_runtime(self, observer: Callable[[str, dict], None]) -> Callable[[], None]:
+        """Observe current process/file notifications, not historical telemetry.
+
+        Observers must only enqueue work: collectors must never wait for storage
+        or a dashboard query. Registration also supplies the existing process
+        cache, so attaching after collector startup does not lose live processes.
+        """
+        with self._runtime_lock:
+            self._runtime_observers += (observer,)
+            for data in self._runtime_latest.values():
+                observer("process", data)
+            if self._runtime_snapshot is not None:
+                observer("process_snapshot", self._runtime_snapshot)
+
+        def detach() -> None:
+            with self._runtime_lock:
+                self._runtime_observers = tuple(item for item in self._runtime_observers if item is not observer)
+
+        return detach
+
+    def _notify_runtime(self, kind: str, data: dict) -> None:
+        with self._runtime_lock:
+            if kind == "process":
+                self._runtime_latest[data["process"].pid] = data
+            elif kind == "process_exit":
+                self._runtime_latest.pop(data["pid"], None)
+            elif kind == "process_snapshot":
+                self._runtime_snapshot = data
+            for observer in self._runtime_observers:
+                try:
+                    observer(kind, data)
+                except Exception:
+                    log.exception("Runtime observer failed for %s", kind)
 
     # ── Public API ────────────────────────────────────────────────
 
@@ -67,25 +108,54 @@ class SessionCorrelator:
 
     def on_collector_status(self, source: str, status: str, mode: str, detail: str) -> None:
         self.collector_status[source] = {"status": status, "mode": mode, "detail": detail}
+        self._notify_runtime("collector_status", {"source": source, "status": status, "mode": mode})
+
+    def on_process_snapshot(self, process_count: int, ts: float | None = None) -> None:
+        """Mark completion of a process sample cycle, including a known-empty one."""
+        self._notify_runtime("process_snapshot", {"process_count": process_count, "observed_at": ts or time.time()})
 
     def on_process(
         self,
         process: ProcessInfo,
         cpu_percent: float | None,
-        memory_rss: int,
+        memory_rss: int | None,
         child_count: int,
         ts: float | None = None,
         is_new: bool = False,
     ) -> None:
         """Record one process sample. ``cpu_percent`` is None when not yet measured."""
         ts = ts or time.time()
+        previous = self.pid_to_process.get(process.pid)
+        if (
+            previous is not None
+            and previous.created_at is not None
+            and process.created_at is not None
+            and previous.created_at != process.created_at
+        ):
+            self.on_process_exit(process.pid, ts)
         if cpu_percent is not None:
             self.pid_cpu[process.pid] = cpu_percent
-        self.pid_mem[process.pid] = memory_rss / 1048576 if memory_rss else 0
+        if memory_rss is not None:
+            self.pid_mem[process.pid] = memory_rss / 1048576
         self._handle_process_event_typed(process, cpu_percent, ts, is_new)
+        sid = self.pid_to_session.get(process.pid)
+        session = self.sessions.get(sid) if sid else None
+        self._notify_runtime(
+            "process",
+            {
+                "process": process,
+                "cpu_percent": cpu_percent,
+                "memory_rss": memory_rss,
+                "session_id": sid,
+                "tool": session.tool if session else None,
+                "root_pid": session.root_pid if session else None,
+                "ts": ts,
+            },
+        )
 
     def on_process_exit(self, pid: int, ts: float | None = None) -> None:
         ts = ts or time.time()
+        process = self.pid_to_process.get(pid)
         session_id = self.pid_to_session.pop(pid, None)
         self.pid_parent.pop(pid, None)
         self.pid_to_process.pop(pid, None)
@@ -95,6 +165,7 @@ class SessionCorrelator:
             self.sessions[session_id].pids.discard(pid)
             self.sessions[session_id].cpu_percent = sum(self.pid_cpu.get(p, 0.0) for p in self.sessions[session_id].pids)
             self.sessions[session_id].last_seen_at = max(self.sessions[session_id].last_seen_at, ts)
+        self._notify_runtime("process_exit", {"pid": pid, "process": process, "session_id": session_id, "ts": ts})
 
     def on_network(
         self,
@@ -127,6 +198,7 @@ class SessionCorrelator:
         sent_to_llm: str | None = None,
     ) -> None:
         ts = ts or time.time()
+        self._notify_runtime("file", {"path": path, "event_type": event_type, "ts": ts})
         session = self._resolve_session_typed(pid, process, tool_hint, workspace, ts)
         if session is None:
             return
@@ -408,7 +480,8 @@ class SessionCorrelator:
             self.pid_to_session[process.pid] = parent_session.session_id
             return parent_session
 
-        session_id = f"{match.tool}:{process.pid}:{int(ts)}"
+        identity = f"{process.created_at:.6f}" if process.created_at is not None else str(int(ts))
+        session_id = f"{match.tool}:{process.pid}:{identity}"
         # Check for a *recent* existing session for this tool:pid.
         # Reattach if the session was seen within the last 10 minutes —
         # long enough to survive missed scan cycles, short enough that
@@ -419,10 +492,16 @@ class SessionCorrelator:
                 sess.tool == match.tool
                 and sess.root_pid == process.pid
                 and ts - sess.last_seen_at < _SESSION_REUSE_WINDOW
+                and (
+                    process.created_at is None
+                    or getattr(sess, "root_created_at", None) in (None, process.created_at)
+                )
             ):
                 session_id = sid
                 break
         session = self.sessions.get(session_id)
+        if session is not None and session.root_created_at is None:
+            session.root_created_at = process.created_at
         if session is None:
             session = SessionState(
                 session_id=session_id,
@@ -431,6 +510,7 @@ class SessionCorrelator:
                 started_at=ts,
                 last_seen_at=ts,
                 project=_derive_project(process.cwd),
+                root_created_at=process.created_at,
             )
             self.sessions[session_id] = session
             self._emit_event(

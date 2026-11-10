@@ -44,6 +44,7 @@ class ProcessInfo:
     cmdline: tuple[str, ...] = ()
     username: str | None = None
     cwd: str | None = None
+    created_at: float | None = None
 
 
 def _derive_project(cwd: str | None) -> str:
@@ -113,6 +114,7 @@ class SessionState:
     recent_network: deque[tuple[float, int, int]] = field(default_factory=lambda: deque(maxlen=24))
     recent_cpu: deque[tuple[float, float]] = field(default_factory=lambda: deque(maxlen=24))
     recent_subprocesses: deque[tuple[float, str]] = field(default_factory=lambda: deque(maxlen=32))
+    root_created_at: float | None = None
 
     @property
     def label(self) -> str:

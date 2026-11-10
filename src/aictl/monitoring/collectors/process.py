@@ -135,6 +135,7 @@ class PsutilProcessCollector(BaseCollector):
         super().__init__(config=config)
         self._known_pids: set[int] = set()
         self._handles: dict[int, object] = {}
+        self._births: dict[int, float | None] = {}
         self._identity: dict[tuple[int, str], tuple[tuple[str, ...], str | None]] = {}
         # Sticky set: once a PID is classified as AI-tool-related, keep
         # tracking it until the process actually exits.  Prevents losing
@@ -183,7 +184,7 @@ class PsutilProcessCollector(BaseCollector):
                 pass
 
             for pid, sample in snapshot.items():
-                is_new = pid not in self._known_pids
+                is_new = pid not in self._known_pids or sample.get("replaced", False)
                 self._known_pids.add(pid)
                 proc = sample["process"]
                 cpu_pct = sample["cpu_percent"]
@@ -200,17 +201,21 @@ class PsutilProcessCollector(BaseCollector):
                     ptags["aictl.tool"] = match.tool
                 if cpu_pct is not None:
                     self.sink_emit_cpu(M("process.cpu.utilization"), cpu_pct / 100, ptags)
-                self.sink_emit_memory(M("process.memory.usage"), float(mem_rss or 0), ptags)
+                if mem_rss is not None:
+                    self.sink_emit_memory(M("process.memory.usage"), float(mem_rss), ptags)
                 self.sink_emit_if_changed(M("process.thread.count"), float(sample["child_count"]), ptags)
 
             for pid in sorted(self._known_pids - current_pids):
                 self._handles.pop(pid, None)
+                self._births.pop(pid, None)
                 self._cwd.pop(pid, None)
                 self._known_pids.discard(pid)
                 self._sticky_pids.discard(pid)
                 if self.correlator:
                     self.correlator.on_process_exit(pid)
 
+            if self.correlator:
+                self.correlator.on_process_snapshot(len(current_pids))
             await self.sleep_paced(self.config.process_interval)
 
     async def _report_classification_health(self) -> None:
@@ -242,17 +247,53 @@ class PsutilProcessCollector(BaseCollector):
     def _snapshot(self, psutil_module):
         all_processes: dict[int, dict[str, object]] = {}
         children: dict[int, set[int]] = defaultdict(set)
+        replaced: set[int] = set()
+        parents = None
+        parents_refreshed = False
+        if IS_WINDOWS:
+            from ...platforms import cached_windows_process_parents
+
+            try:
+                parents = cached_windows_process_parents(max_age=max(self.config.process_interval, 0.1))
+            except OSError:
+                parents = {}
 
         # cmdline and exe need a syscall per process and change only on exec,
         # which also changes the name, so they are cached per (pid, name).
         # username is not read anywhere and takes a user lookup per process.
         identity: dict[tuple[int, str], tuple[tuple[str, ...], str | None]] = {}
-        for process in psutil_module.process_iter(["pid", "ppid", "name"]):
+        fields = ["pid", "name"] if IS_WINDOWS else ["pid", "ppid", "name"]
+        for process in psutil_module.process_iter(fields):
             try:
                 info = process.info
                 pid = int(info["pid"])
-                ppid = int(info["ppid"]) if info["ppid"] is not None else None
+                parent = parents.get(pid) if parents is not None else info["ppid"]
+                ppid = int(parent) if parent is not None else None
                 name = str(info.get("name") or "")
+                handle = self._handles.get(pid)
+                if handle is not None and not handle.is_running():
+                    # The PID can be reused between polls with the same name.
+                    # psutil's handle identity check avoids stale command lines,
+                    # CPU baselines, cwd and session attribution in that case.
+                    self._handles.pop(pid, None)
+                    self._births.pop(pid, None)
+                    self._cwd.pop(pid, None)
+                    self._sticky_pids.discard(pid)
+                    self._identity.pop((pid, name), None)
+                    self._classified.pop((pid, name), None)
+                    process = psutil_module.Process(pid)
+                    replaced.add(pid)
+                    if IS_WINDOWS and not parents_refreshed:
+                        # The cached map can still name this PID's previous
+                        # parent. Refresh once for the whole cycle, never once
+                        # per replaced PID.
+                        try:
+                            parents = cached_windows_process_parents(max_age=0)
+                        except OSError:
+                            parents = {}
+                        parents_refreshed = True
+                    if parents is not None:
+                        ppid = parents.get(pid)
                 cached = self._identity.get((pid, name))
                 if cached is None:
                     extra = process.as_dict(["cmdline", "exe"])
@@ -288,36 +329,45 @@ class PsutilProcessCollector(BaseCollector):
                 try:
                     handle = psutil_module.Process(pid)
                     handle.cpu_percent(None)
+                    self._births[pid] = float(handle.create_time())
                     self._handles[pid] = handle
-                except (psutil_module.Error, OSError):
-                    continue
+                except (psutil_module.Error, OSError) as exc:
+                    denied = getattr(psutil_module, "AccessDenied", None)
+                    if denied is None or not isinstance(exc, denied):
+                        continue
+                    handle = None
 
             cwd_cached = self._cwd.get(pid)
             now = time.monotonic()
             cwd = cwd_cached[0] if cwd_cached else None
-            cpu_percent: float | None = 0.0
-            memory_rss = 0
+            cpu_percent: float | None = None
+            memory_rss: int | None = None
             child_count = len(children.get(pid, set()))
-            try:
-                with handle.oneshot():
-                    cpu_percent = float(handle.cpu_percent(None))
-                    if primed_now:
-                        # psutil measures CPU between two calls. Right after the priming
-                        # call the interval is a few milliseconds, so this value is noise
-                        # (it can exceed what the cores can give). It is not known yet.
-                        cpu_percent = None
-                    else:
-                        # One process cannot use more than all cores.
-                        cpu_percent = min(cpu_percent, 100.0 * (os.cpu_count() or 1))
-                    memory_rss = int(handle.memory_info().rss)
-                    if cwd_cached is None or now - cwd_cached[1] >= CWD_REFRESH_S:
-                        try:
-                            cwd = str(handle.cwd())
-                        except (psutil_module.Error, OSError):
-                            cwd = None
-                        self._cwd[pid] = (cwd, now)
-            except (psutil_module.Error, OSError):
-                continue
+            if handle is not None:
+                try:
+                    with handle.oneshot():
+                        cpu_percent = float(handle.cpu_percent(None))
+                        if primed_now:
+                            # psutil measures CPU between two calls. Right after the priming
+                            # call the interval is a few milliseconds, so this value is noise
+                            # (it can exceed what the cores can give). It is not known yet.
+                            cpu_percent = None
+                        else:
+                            # One process cannot use more than all cores.
+                            cpu_percent = min(cpu_percent, 100.0 * (os.cpu_count() or 1))
+                        memory_rss = int(handle.memory_info().rss)
+                        if cwd_cached is None or now - cwd_cached[1] >= CWD_REFRESH_S:
+                            try:
+                                cwd = str(handle.cwd())
+                            except (psutil_module.Error, OSError):
+                                cwd = None
+                            self._cwd[pid] = (cwd, now)
+                except (psutil_module.Error, OSError) as exc:
+                    denied = getattr(psutil_module, "AccessDenied", None)
+                    if denied is None or not isinstance(exc, denied):
+                        continue
+                    # The process table still establishes presence. A protected
+                    # gauge is unknown, not a process exit or a zero-byte sample.
 
             snapshot[pid] = {
                 "process": ProcessInfo(
@@ -328,10 +378,12 @@ class PsutilProcessCollector(BaseCollector):
                     cmdline=base["cmdline"],
                     username=base["username"],
                     cwd=cwd,
+                    created_at=self._births.get(pid),
                 ),
                 "cpu_percent": cpu_percent,
                 "memory_rss": memory_rss,
                 "child_count": child_count,
+                "replaced": pid in replaced,
             }
 
         return snapshot

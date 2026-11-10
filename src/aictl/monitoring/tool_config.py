@@ -13,6 +13,7 @@ registered parsers — no hardcoded tool names in the collection loop.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import json
 import logging
@@ -53,7 +54,9 @@ _LAST_WATCHED: tuple[str, ...] = ()
 # the shell profiles, env.sh and the registry set now. The daemon's own environment is
 # fixed when it starts, so a value changed since then shows only through this overlay.
 _LIVE_ENV: dict[str, str] | None = None
-_COLLECT_LOCK = threading.Lock()
+_COLLECT_LOCK = threading.RLock()
+_CURRENT_LOCK = threading.Lock()
+_CURRENT_CONFIGS: dict[str, tuple[float, list[dict], tuple[str, ...], tuple]] = {}
 _LITERAL_ENV_RE = re.compile(r"^[^$`%]*$")
 
 
@@ -64,20 +67,40 @@ def _watch(path: object) -> None:
 
 
 def watch_signature(paths: tuple[str, ...] | list[str]) -> tuple:
-    """(path, mtime_ns, size) of every path; (path, None, None) for one that is absent."""
+    """Metadata identity of every dependency, including atomic file replacement."""
     out = []
     for p in paths:
         try:
             st = os.stat(p)
-            out.append((p, st.st_mtime_ns, st.st_size))
+            out.append((p, st.st_mtime_ns, st.st_size, st.st_dev, st.st_ino, st.st_ctime_ns))
         except OSError:
-            out.append((p, None, None))
+            out.append((p, None, None, None, None, None))
     return tuple(out)
 
 
 def last_watched() -> tuple[str, ...]:
     """The paths the last collect_tool_configs() read, for watch_signature()."""
     return _LAST_WATCHED
+
+
+def current_tool_configs(root: Path, *, recheck_s: float = 60.0) -> list[dict]:
+    """Share configured-on-disk records between refresh and live sources.
+
+    This says what the files configure now, not what an already running agent
+    loaded. The parser and its dependency signature are captured atomically.
+    """
+    key = os.path.normcase(str(root.absolute()))
+    now = time.monotonic()
+    with _CURRENT_LOCK, _COLLECT_LOCK:
+        hit = _CURRENT_CONFIGS.get(key)
+        if hit is None or now - hit[0] >= recheck_s or watch_signature(hit[2]) != hit[3]:
+            configs = [item.to_dict() for item in collect_tool_configs(root)]
+            watched = last_watched()
+            hit = (now, configs, watched, watch_signature(watched))
+            if len(_CURRENT_CONFIGS) >= 32 and key not in _CURRENT_CONFIGS:
+                _CURRENT_CONFIGS.pop(next(iter(_CURRENT_CONFIGS)))
+            _CURRENT_CONFIGS[key] = hit
+        return copy.deepcopy(hit[1])
 
 
 def _env() -> dict[str, str] | os._Environ[str]:
