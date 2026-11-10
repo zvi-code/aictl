@@ -111,6 +111,11 @@ aictl/
 ├── dashboard/              # All visualization renderers
 │   ├── models.py           #   DashboardTool + DashboardSnapshot dataclasses
 │   ├── web_server.py       #   ThreadingHTTPServer — routing, SSE, static
+│   ├── live_protocol.py    #   Kusto live source authority, stable IDs, wire capabilities
+│   ├── live_hub.py         #   Bounded entity state, replay, and client backpressure
+│   ├── live_projection.py  #   Shared history projection and independent operational health
+│   ├── live_queries.py     #   Dependency-invalidated Kusto SELECT-result memo, no SQLite mirror
+│   ├── queryable_context.py #  Queryable history adapter for context/file details
 │   ├── api_handlers.py     #   REST endpoint handlers (budget, events, kill, …)
 │   ├── analytics.py        #   Cached analytics queries + cache health reporting
 │   ├── otel_receiver.py    #   OTLP metrics/logs/traces parser (defensive)
@@ -391,7 +396,7 @@ The sink dispatches to registered handlers: `HistoryDB` for persistence, `Snapsh
 
 ## 4. Storage
 
-Two backends behind one `HistoryDB` interface: SQLite (the default, a local file) and a Kusto cluster (the alternative, chosen by `kusto_cluster`). Everything above the store, the ingesters, the board and the API, is the same for both.
+Two backends behind one `HistoryDB` interface: SQLite (the default, a local file) and a Kusto cluster (the alternative, chosen by `kusto_cluster`). The store, ingester and existing REST interfaces remain compatible. The incremental live UI described below is Kusto-only; SQLite keeps its existing snapshot and polling behavior.
 
 ### SQLite Persistence (`storage.py`, default)
 
@@ -473,7 +478,7 @@ class DashboardSnapshot:
 
 ### Web Dashboard (`dashboard/web_server.py` + `dashboard/ui/`)
 
-A real-time interactive dashboard built with Vite + Preact + htm tagged templates (not JSX). Auto-updates via Server-Sent Events with periodic full-snapshot fallback. Design tokens, component patterns, and accessibility status are documented in [`docs/dashboard-design-system.md`](dashboard-design-system.md).
+A real-time interactive dashboard built with Vite + Preact + htm tagged templates (not JSX). Kusto uses the incremental subscription below; SQLite and older daemons retain snapshot notifications and polling. Design tokens, component patterns, and accessibility status are documented in [`docs/dashboard-design-system.md`](dashboard-design-system.md).
 
 **Backend** — `ThreadingHTTPServer` with REST API:
 
@@ -483,7 +488,9 @@ A real-time interactive dashboard built with Vite + Preact + htm tagged template
 | `/api/snapshot` | GET | Current snapshot JSON |
 | `/api/file?path=...` | GET | File content (restricted to discovered files) |
 | `/api/budget` | GET | Token budget analysis |
-| `/api/stream` | GET | SSE real-time updates |
+| `/api/stream` | GET | Legacy snapshot-version SSE notifications; unchanged |
+| `/api/live/capabilities` | GET | Cheap incremental protocol/source capabilities; disabled for SQLite |
+| `/api/live/stream` | GET | Kusto-only scoped entity baseline, changes, and replay |
 | `/api/history?range=1h\|6h\|24h\|7d` | GET | Time-series history |
 | `/api/events?tool=...&since=...` | GET | Filtered event log |
 | `/api/samples?metric=...&since=...` | GET | Prometheus-style metric samples |
@@ -506,12 +513,192 @@ A real-time interactive dashboard built with Vite + Preact + htm tagged template
 (`components/board/`), with Settings at `?screen=settings` and aictl Health at
 `?screen=health`. Charts are plain SVG.
 
-The Health screen polls independently every five seconds while visible, without
-overlapping requests or waiting for the historical board query. It reuses the
-existing source, collector, ingester, receiver, sink and data-quality panels.
+With SQLite or an older daemon, the Health screen polls independently every five
+seconds while visible, without overlapping requests or waiting for the historical
+board query. With Kusto, the same health projection uses the shared live stream
+and does not require a board-history baseline. Its default
+overview has four compact stages (collection, queued DM, engine ingestion, and
+queryable storage/reads), one destination-group traffic matrix, and source,
+collector, ingester and issue summaries. Queued acknowledgements remain separate
+from cached stored volume and are not confirmed queryable. Store totals, upload
+sizes, table memberships, policies and the existing collection/data-quality
+panels are available in expandable details. Health uses its own responsive
+arrangement rather than stored board panel sizes or visibility; it does not
+reset board layouts, density, or sidebar preferences.
 Machine CPU and process views remain on Machine. Backend operation counters are
 process-local; cached storage volume and Kusto capacity carry their own scope and
 timestamps. Unknown measurements remain unreported rather than becoming zero.
+
+### Kusto live source contract
+
+Authority follows the **kind and field**, not the selected screen. The
+[`live_protocol.py`](../src/aictl/dashboard/live_protocol.py) rules are exposed
+by `/api/live/capabilities`; the existing discovery registries and datapoint
+catalog still define tools and datapoint meanings.
+
+| Data | Authority and delivery |
+|------|------------------------|
+| Current process presence, CPU, RSS and running/idle evidence | Runtime collectors; latest values can coalesce. A missing first sample is unknown, not zero. PID identity includes process birth time. |
+| Native output/progress of a proven running session | Supported native session adapters; ordered incremental entries with stable native identities. No hook/OTel/usage overlay. |
+| Current configured settings | Filesystem signature watchers using the shared `current_tool_configs()` cache. These are configured-on-disk records. |
+| Settings a running agent loaded/reports | Separate `configuration.loaded` evidence, from allowlisted process flags or native reports. Unreported values remain unknown; a disk edit does not establish a reload. |
+| Historical sessions, file inventory/history, hooks, OTel, usage, cost and activity | Queryable Kusto results only, including for running agents. An accepted upload or DM acknowledgement does not supply these values. |
+| Collection/transport health | Process-local operational counters can stream independently. Cached queryable volume, client upload volume and DM policies retain their separate scopes/timestamps. |
+
+`CollectionService` creates the hub and runtime/configuration producers only for
+Kusto. Collectors publish current observations without waiting for snapshot
+collection, persistence or a cluster read. The web server adds one independent
+operational-health worker and one coalescing history-projection worker. Health
+or Settings can subscribe with `history=0` without starting the board query.
+Closing a stream releases its subscription; it does not construct another
+collector or Kusto reader.
+
+One shared reader per daemon/destination reads query-visible change hints, including
+other machines' writes. A reader bootstrap captures its cursor before the first
+history baseline. Fixed cursor ranges, supplemental query-visible reads and
+reconciliation handle writes that become visible after their producer timestamp,
+streaming rows whose database cursor has not caught up, tombstones and retention.
+`_v` is a row version, not a wall-clock high-water mark. No local writer callback
+or ingestion receipt advances historical UI state.
+
+Reader API, query plans, policy/RowStore limits and the read-only validation scope
+are specified in [Kusto live reader](kusto-live-reader.md).
+
+The history worker reuses the existing board aggregate calculations. Its
+SELECT-result memo is shared across active filter scopes and invalidated by the
+reader's changed-table dependencies, parsed with the existing SQLite SQL grammar.
+Unchanged queries are not rerun for every notification; runtime gauge changes
+never invalidate historical queries. There is **no raw-fact mirror, persistent
+read cache, or SQLite connection** in this path. Result-cache eviction causes a
+later Kusto read, not loss of historical rows or altered analytics mathematics.
+Historical analytics and drawer details remain on demand.
+Current-state filters select queryable historical usage using proven runtime
+session identities/statuses, not event-derived running/idle guesses. A status
+membership change recomposes that selected population; a CPU/RSS change does
+not. Until the first runtime baseline, that population is unknown rather than
+an empty set with zero usage.
+
+Completed projections are split into stable row entities and scalar/object
+fields. Only changed entities and explicit removals enter the hub; the server
+does not stream repeated whole-board JSON. Collection order is carried separately
+from identity, so sorting does not create new agent identities. Mixed rows keep
+separate authorities: skill usage is historical, for example, while its current
+configured description is filesystem evidence. Historical status is kept apart
+from the runtime status/resources of an agent.
+
+**Wire protocol.** `/api/live/stream` accepts the existing board filters plus
+`history=0` and an optional opaque `cursor`. The `scope` is the canonical sorted
+board query without transport controls. A `bootstrap` SSE event contains
+`protocol`, `epoch`, `sequence`, `cursor`, `scope`, capabilities, retention
+information and `entities`. Each entity has `{topic, id, revision, source, data}`.
+A `change` event carries the same revision domain with `upserts` and `removals`.
+`history.board`, `configuration.board` and `catalog.board` use
+`data={scope,field,value,key?,order?,collection?,merge?}`. Complementary partial
+rows merge by the same collection key; collection markers preserve empty lists.
+The source for a topic is enforced by the hub, including the runtime-agent field
+allowlist.
+Canonicalization preserves blank values: `tool=` selects no tools and is not
+equivalent to an absent tool filter. A transport bootstrap does not prove that
+the requested data baseline has finished. Paused one-shot subscriptions wait for
+the required payloads/source readiness or an explicit source error. Health
+publishes pending/ready/error status for both its health and machine outputs;
+history status distinguishes pending/rebuild from a failed first attempt.
+Disk-only prompt definitions remain configured rows, not invented history rows.
+Queryable prompt uses retain their recorded file even when that file is absent
+locally. A skill's current path, description and file-token estimate are
+filesystem fields; its usage tokens/counts remain queryable history.
+
+The baseline capture and subscription registration share one lock, so changes
+cannot fall between them. The SSE `id` is `epoch:sequence`; reconnect supplies
+`Last-Event-ID` or `cursor` for the **same scope and retained client state**.
+Available changes replay; an old epoch, evicted journal or producer/queue overflow
+forces a fresh baseline with an explicit reason. Ordered-output loss also sets
+`ordered_gap`. Sequences may jump after scope filtering or latest-value
+coalescing; this is not itself a missing event. Entity revisions remain monotonic,
+including removal and re-addition. Filter changes request a fresh scope baseline,
+not a board GET for every stream notification.
+
+**Bounds and failure behavior.** Defaults allow eight retained history scopes;
+an unused scope expires after 60 seconds and active scopes are not evicted to
+admit another. Hub state is bounded to 30,000 entities/32 MiB of accounted payload,
+with a 1 MiB per-entity limit. The journal holds at most 2,048 changes/8 MiB.
+Historical/configured-board projections have their own 24,000-entity/24 MiB
+ceiling, reserving part of the global budget for runtime observations.
+Each client has at most 4,096 pending entities/8 MiB: latest-value slots coalesce,
+but native output has a separate ordered queue. Native output baselines retain
+at most 2,000 entries/4 MiB, with evictions reported explicitly; this bounded tail
+is not historical transcript storage. The SELECT-result LRU has 512 entries/
+16 MiB. These are application accounting budgets, not a measured RSS limit.
+An oversized historical projection leaves the last complete projection intact
+and reports it stale rather than discarding arbitrary facts. A source error does
+the same; the next attempt is delayed. Slow cluster reads run outside hub/runtime
+locks.
+
+Reader mailbox overflow/error marks history pending, invalidates the query-result
+memo and forces a new subscription baseline. A projection started before that
+reset cannot mark the scope ready. Reader policy changes, reconciliation and
+schema changes refresh affected query dependencies without claiming a native
+output gap. Reader status exposes policy-disabled/missing tables,
+reconciliation-only fallback and configured bounds rather than silently
+claiming cursor coverage.
+
+The hub cursor describes delivered projection state, **not an atomic transaction
+across Kusto queries**. History source status exposes its input reader frontier,
+completion time, pending refresh and stale state. Concurrent cluster changes can
+span an aggregate computation; a later invalidation schedules another pass.
+No measured end-to-end latency or sustained throughput follows from this design.
+
+**Freshness is per source, not a global refresh interval.** The current defaults
+below are scheduling/work settings, not measured deadlines. A collector interval
+can be changed in configuration; application/SDK time, scheduling and backlog add
+to the interval.
+
+| Data path | Current default cadence and limits |
+|-----------|------------------------------------|
+| Process CPU/RSS/presence | The daemon's process interval is configurable and defaults to 5 s. Its existing adaptive pace multiplies polling intervals by six when unwatched and inactive. Observations wake a separate publishing worker, whose fallback wait is 0.1 s; latest gauges coalesce. No history query is on this path. |
+| Native output and loaded evidence | Filesystem events wake the native worker; its follow-up poll is 0.5 s. Explicit fallback inventory reconciliation is every 5 s. It follows at most 64 runtime-proven active files, initially at most a 128 KiB suffix, and processes at most 512 KiB per file/pass. Oversized records/rewrites declare gaps; text is capped at 8,000 characters with truncation metadata. |
+| Configured-on-disk settings | Signature checks run every 1 s on an independent worker. The shared parser rechecks after 60 s even without a signature change for registry/non-file evidence. Parse/IO duration is additional; disk freshness does not establish loaded-agent freshness. |
+| Health | The independent health producer runs every 1 s while watched. Backend client operation counters are process-local. Cached storage volume uses the existing 60 s cache; Health policy reads use a 300 s cache. Both retain their observed timestamps. The existing self-CPU helper has a 10 s cache. |
+| Machine per-core CPU and discovery diagnostics | These remain runtime snapshot observations, normally collected on the daemon's 5 s snapshot refresh (also subject to adaptive pace and collection duration). Sending that value on a 1 s health tick does **not** make it a newly sampled per-core gauge. Process-level stream gauges do not wait for this snapshot. |
+| Queryable history | Reader polling adapts from 0.5 s to 15 s idle delay. A poll allows four SDK requests total, including policy/discovery work, and pages at most 250 identity hints plus lookahead. Preview's 2 s setting is a target sharing that budget, not an independent 2 s guaranteed timer. |
+| History fallback/recovery | Reader queries have a 15 s server timeout; errors can back off to 60 s. Schema/policy checks target 60/300 s. Eight-partition reconciliation targets a 300 s rotation; many tables, multi-page partitions and failures can extend it. Streaming cursor assignment can trail queryability by up to 60 s; preview reduces but does not bound that delay. |
+| History projection | One worker coalesces reader invalidations across up to eight scopes, with a 1 s scheduling wait. Only affected SELECT inputs are invalidated. Scope computation uses the existing aggregate query behavior, not the reader's 15 s query timeout. A source error delays retry by 5 s. Current-status membership changes recompose the selected population without treating gauge updates as historical writes. |
+
+Native binding requires verified Copilot in-use locks or explicit native
+resume/session-ID evidence; a recently modified transcript is not evidence that a
+process owns it. Normal watcher mode reuses existing collector events and cached
+ingester inventory. The fallback scans nonrecursively, at most 256 candidate
+entries per pass across round-robin homes. Sessions without binding evidence
+remain unknown; processes that start and exit between process samples can remain
+unobserved. Native records are bounded to 256 KiB; privacy-limited metadata
+prefixes can leave loaded settings unknown.
+
+The configured-settings stream is independent of historical computation.
+Filesystem metadata attached to historical prompt/skill rows is refreshed with
+that projection and retains the helpers' existing caches (prompt inventory
+60 s, skill metadata 300 s); it is not a 1 s loaded-configuration guarantee.
+Context/file-history detail queries are on demand rather than a second poller.
+
+Consequently there is no finite end-to-end historical freshness guarantee under
+unbounded writes, query backlog, unavailable policies or failures. Four requests
+per poll do not imply 1,000 final changed rows per poll: discovery, changed-key
+lookups, current-winner lookups and other tables share the budget. The history
+worker can also wait behind another active scope. Hub/memo budgets bound retained
+application state, not the transient memory or duration of an existing broad
+aggregate computation. Completion/frontier/pending metadata and Health's actual
+operation timings must be used instead of calling queryable updates immediate.
+
+Native/config/process channels keep the existing loopback access, capture and
+redaction boundaries: no raw command lines, environment blocks, tool arguments
+or system prompts are added. Native text requires full capture and is masked.
+Changing full capture to metadata/off removes retained native text and invalidates
+unsent/replay state; enabling full capture again does not restore old native text.
+Kusto context/file inventories are built from queryable rows, not a local scan;
+an unavailable loading policy is reported unknown and excluded from known-policy
+budget totals without removing its file. Historical artifacts use indexed size/
+mtime; current local presence is unknown. Historical transcripts do not merge the
+unpersisted analyzer, and historical commit GETs do not run local git attribution.
+SQLite paths retain their existing behavior.
 
 | Part | Files | Purpose |
 |------|-------|---------|
