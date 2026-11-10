@@ -159,8 +159,10 @@ aictl db report --sections returns,stuck,models,skills,mcp --days 30 --out repor
 | `--out PATH` | The file to write (default: `aictl-kusto-report.html` in the current folder) |
 | `--days N` | Only the data of the last N days (default: all data) |
 | `--sections A,B` | Only these sections, in this order (default: all ten). An unknown name stops the command and lists the names |
+| `--kusto-cluster URL` | Read from this cluster instead of the configured one |
+| `--kusto-database NAME` | The database (default: the configured one, else `aictl`) |
 
-The command uses the cluster, database and sign-in of the store, from `config.toml` or from `AICTL_KUSTO_CLUSTER`, `AICTL_KUSTO_DATABASE` and `AICTL_KUSTO_AUTH`. With no cluster configured it exits with a message.
+The command uses the cluster, database and sign-in of the store, from `config.toml` or from `AICTL_KUSTO_CLUSTER`, `AICTL_KUSTO_DATABASE` and `AICTL_KUSTO_AUTH`, unless `--kusto-cluster` names another. With no cluster it exits with a message. On Windows, a variable set with `setx` reaches only terminals opened after it; use `$env:AICTL_KUSTO_CLUSTER = "URL"` for the current one, or pass `--kusto-cluster`.
 
 **What to expect.** The command prints one line per query with its run time, then the path of the file. On a dev-tier cluster with about 30,000 requests, each query takes about one second. Each section of the page has a headline computed from the rows, a chart, a short list of findings, a caveat, and the KQL that produced it. A section with no rows says so. A section whose query fails shows the error of the server, and the other sections still render. The page holds aggregates, 8-character session id prefixes, the names of tools, models, MCP servers and skills, and file base names. It holds no prompt text, no full paths and no user names.
 
@@ -756,7 +758,7 @@ File access is inferred from tool-call arguments, so files touched by shell comm
 
 `aictl db reset` accepts `-y` / `--yes` to skip the confirmation prompt.
 
-`aictl db report` takes `--out PATH`, `--days N` and `--sections A,B`, and needs a Kusto cluster as the store: [insight report](#insight-report-from-a-kusto-store-aictl-db-report-work-in-progress).
+`aictl db report` takes `--out PATH`, `--days N`, `--sections A,B`, `--kusto-cluster URL` and `--kusto-database NAME`, and needs a Kusto cluster as the store: [insight report](#insight-report-from-a-kusto-store-aictl-db-report-work-in-progress).
 
 `aictl db compact` takes `--dry-run`, `--retention-days N` and `--no-vacuum`.
 `aictl db trim-text` takes `--dry-run` and `--older-than-days N`. Compact deletes rows older than the

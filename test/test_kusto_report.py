@@ -363,6 +363,40 @@ def test_command_runs_only_the_named_sections_in_the_given_order(monkeypatch, tm
 
 
 
+def test_command_takes_the_cluster_and_database_as_options(monkeypatch, tmp_path):
+    """The same options as daemon serve: the report runs with no environment variable and no config entry."""
+    from aictl.cli import main
+
+    for var in ("AICTL_KUSTO_CLUSTER", "AICTL_KUSTO_DATABASE", "AICTL_KUSTO_AUTH"):
+        monkeypatch.delenv(var, raising=False)
+    seen = []
+
+    def fake(settings, days=None, sections=None, on_result=None):
+        seen.append((settings.cluster, settings.database, settings.auth_mode))
+        return results()
+
+    monkeypatch.setattr(R, "run_report", fake)
+    out = tmp_path / "new folder" / "r.html"
+    monkeypatch.setattr("aictl.commands.admin.kusto_settings", lambda: None)
+    args = ["db", "report", "--out", str(out), "--kusto-cluster", "https://ingest-mine.westus.kusto.windows.net"]
+    res = CliRunner().invoke(main, [*args, "--kusto-database", "other"])
+    assert res.exit_code == 0, res.output
+    assert out.exists() and "kusto://mine.westus.kusto.windows.net/other" in res.output
+    res = CliRunner().invoke(main, args)
+    assert res.exit_code == 0, res.output
+    # A configured store gives the database and the sign-in; the options replace what they name.
+    configured = KustoSettings("http://localhost:8080", "configured", streaming=False)
+    monkeypatch.setattr("aictl.commands.admin.kusto_settings", lambda: configured)
+    assert CliRunner().invoke(main, args).exit_code == 0
+    assert CliRunner().invoke(main, ["db", "report", "--out", str(out), "--kusto-database", "other"]).exit_code == 0
+    assert seen == [
+        ("https://mine.westus.kusto.windows.net", "other", "azcli"),
+        ("https://mine.westus.kusto.windows.net", "aictl", "azcli"),
+        ("https://mine.westus.kusto.windows.net", "configured", "azcli"),
+        ("http://localhost:8080", "other", "none"),
+    ]
+
+
 def test_command_without_a_cluster_exits_with_a_message(monkeypatch, tmp_path):
     from aictl.cli import main
 
@@ -372,7 +406,11 @@ def test_command_without_a_cluster_exits_with_a_message(monkeypatch, tmp_path):
     out = tmp_path / "r.html"
     res = CliRunner().invoke(main, ["db", "report", "--out", str(out)])
     assert res.exit_code != 0 and "No Kusto cluster is configured" in res.output
+    assert "--kusto-cluster" in res.output and "setx" in res.output
     assert not out.exists()
+    # A database alone names no cluster.
+    res = CliRunner().invoke(main, ["db", "report", "--out", str(out), "--kusto-database", "aictl"])
+    assert res.exit_code != 0 and "No Kusto cluster is configured" in res.output
 
 
 def test_command_writes_the_page_and_reports_failures(monkeypatch, tmp_path):

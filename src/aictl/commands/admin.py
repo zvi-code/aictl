@@ -225,6 +225,25 @@ def schema(markdown, as_json):
             click.echo("    " + ", ".join(f"{c.name}:{c.kusto_type}" for c in table.columns))
 
 
+def _report_settings(cluster: str | None, database: str | None):
+    """The store to read: the options first, then the configured cluster. The report only reads, so no ingestion mode."""
+    import os
+    from dataclasses import replace
+
+    from ..kusto import AUTH_ENV, DATABASE_ENV, KustoSettings
+
+    configured = kusto_settings()
+    if cluster:
+        return KustoSettings.from_values(
+            cluster,
+            database or (configured.database if configured else os.environ.get(DATABASE_ENV, "")),
+            configured.auth if configured else os.environ.get(AUTH_ENV, ""),
+        )
+    if configured is not None and database:
+        return replace(configured, database=database)
+    return configured
+
+
 @db.command()
 @click.option(
     "--out",
@@ -236,7 +255,9 @@ def schema(markdown, as_json):
 )
 @click.option("--days", type=click.IntRange(min=1), default=None, help="Only data of the last N days (default: all)")
 @click.option("--sections", "names", default=None, help="Only these sections, comma-separated, in this order (default: all)")
-def report(out_path, days, names):
+@click.option("--kusto-cluster", default=None, help="Read from this Kusto cluster (URL) instead of the configured one")
+@click.option("--kusto-database", default=None, help="The Kusto database (default: the configured one, else aictl)")
+def report(out_path, days, names, kusto_cluster, kusto_database):
     """Write an HTML report of what the Kusto store knows about coding agents.
 
     Runs one KQL query per section against the configured cluster (see
@@ -245,11 +266,15 @@ def report(out_path, days, names):
     """
     from ..kusto import report as kusto_report
 
-    settings = kusto_settings()
+    try:
+        settings = _report_settings(kusto_cluster, kusto_database)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     if settings is None:
         raise click.ClickException(
-            "No Kusto cluster is configured. Set AICTL_KUSTO_CLUSTER (and AICTL_KUSTO_DATABASE), "
-            "or kusto_cluster in config.toml (see docs/kusto-cluster.md)."
+            "No Kusto cluster is configured. Pass --kusto-cluster URL (and --kusto-database), set AICTL_KUSTO_CLUSTER "
+            "(and AICTL_KUSTO_DATABASE) in this terminal, or set kusto_cluster in config.toml (see docs/kusto-cluster.md). "
+            "On Windows, a variable set with setx reaches only terminals opened after it."
         )
     try:
         import azure.kusto.data  # noqa: F401

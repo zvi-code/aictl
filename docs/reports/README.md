@@ -24,6 +24,14 @@ $env:AICTL_KUSTO_DATABASE = "aictl"
 
 If `config.toml` already has `[storage] kusto_cluster`, skip step 3.
 
+On Windows, `setx` does not change the terminal it runs in: a variable set with it reaches only terminals opened after it. Use the `$env:` lines above for the current terminal.
+
+Or give the store on the command line, with no variable at all:
+
+```bash
+aictl db report --kusto-cluster https://<cluster>.<region>.kusto.windows.net --kusto-database aictl --out kusto-report-all-sections.html
+```
+
 ## The lines to run
 
 All ten sections:
