@@ -269,9 +269,7 @@ class OtelReceiver:
                     delta = 0.0
             elif start_ns > last_start_ns:
                 epochs[start_ns] = (value, point_ns)
-                while len(epochs) > _MAX_EPOCHS_PER_SERIES:
-                    ev_start, _ = epochs.popitem(last=False)
-                    evicted_max_start_ns = max(evicted_max_start_ns, ev_start)
+                epochs.move_to_end(start_ns)
                 last_val, last_start_ns, last_point_ns = value, start_ns, point_ns
                 delta = value
             elif start_ns <= evicted_max_start_ns:
@@ -283,12 +281,11 @@ class OtelReceiver:
                 # Newly observed older epoch (e.g. epoch B arrived before any point of epoch A).
                 # Record epoch A's baseline and delta without moving current last_start_ns backwards.
                 epochs[start_ns] = (value, point_ns)
-                while len(epochs) > _MAX_EPOCHS_PER_SERIES:
-                    ev_start, _ = epochs.popitem(last=False)
-                    evicted_max_start_ns = max(evicted_max_start_ns, ev_start)
+                epochs.move_to_end(start_ns)
                 delta = value
         elif last_val is None:
             epochs[start_ns] = (value, point_ns)
+            epochs.move_to_end(start_ns)
             last_val, last_start_ns, last_point_ns = value, start_ns, point_ns
             delta = value
         elif point_ns > 0 and last_point_ns > 0 and point_ns < last_point_ns:
@@ -315,6 +312,11 @@ class OtelReceiver:
             tags["otel_ordering"] = "ambiguous_order"
             tags["otel_raw_cumulative"] = value
             delta = 0.0
+
+        while len(epochs) > _MAX_EPOCHS_PER_SERIES:
+            ev_start, _ = epochs.popitem(last=False)
+            if ev_start > 0:
+                evicted_max_start_ns = max(evicted_max_start_ns, ev_start)
 
         new_state = (last_val, last_start_ns, last_point_ns, epochs, evicted_max_start_ns)
         if staged is not None:

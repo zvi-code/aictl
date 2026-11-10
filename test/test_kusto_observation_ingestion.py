@@ -647,6 +647,26 @@ def test_concurrent_cumulative_otel_metrics_do_not_double_count_deltas():
     assert [s.value for s in accepted4] == [5.0, 100.0, 20.0, 10.0]
     assert sum(s.value for s in accepted4) == 135.0
 
+    # Exceeding _MAX_EPOCHS_PER_SERIES (8) across mixed missing/present startTimeUnixNano
+    # stays strictly bounded to 8 epochs after every transition and marks evicted old epochs
+    # as unresolved_epoch_baseline.
+    receiver5 = OtelReceiver()
+    accepted5 = []
+    for i in range(1, 12):
+        # Valid OTLP times (ts_s >= start_s), alternating missing start_s=0 lower-value restart
+        # and explicit new start_s=i*100 higher value:
+        receiver5.ingest_metrics(make_payload(1, ts_s=i * 100 + 1, start_s=0), accepted5.extend)
+        state = next(iter(receiver5._cumulative_last.values()))
+        assert len(state[3]) <= 8
+        receiver5.ingest_metrics(make_payload(10, ts_s=i * 100 + 5, start_s=i * 100), accepted5.extend)
+        state = next(iter(receiver5._cumulative_last.values()))
+        assert len(state[3]) <= 8
+    # Late arrival for an evicted old epoch (start_s=100, ts_s=199) is marked unresolved_epoch_baseline with delta 0.0
+    receiver5.ingest_metrics(make_payload(50, ts_s=199, start_s=100), accepted5.extend)
+    assert accepted5[-1].value == 0.0
+    assert accepted5[-1].tags["otel_ordering"] == "unresolved_epoch_baseline"
+    assert accepted5[-1].tags["otel_raw_cumulative"] == 50.0
+
 
 def test_timestamp_less_patch_has_retention_ts_and_pre_upgrade_null_rows_trim_by_received_time(observation_store, tmp_path):
     db, ingester = observation_store
