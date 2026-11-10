@@ -50,6 +50,7 @@ class MatchResult:
 # ─── CSV-driven classification ─────────────────────────────────
 
 _CSV_PATTERNS: list[tuple[re.Pattern, str]] | None = None
+_CSV_ANY_PATTERN: re.Pattern | None = None
 # True while the process registry cannot be loaded. Exposed via
 # classification_degraded() so the collector can surface the failure
 # instead of silently recording zero sessions forever.
@@ -65,13 +66,14 @@ def classification_degraded() -> bool:
 
 def _load_csv_patterns() -> list[tuple[re.Pattern, str]]:
     """Lazy-load compiled regex patterns from process CSV specs."""
-    global _CSV_PATTERNS, _LOAD_FAILED, _LAST_LOAD_ERROR_TS
+    global _CSV_PATTERNS, _CSV_ANY_PATTERN, _LOAD_FAILED, _LAST_LOAD_ERROR_TS
     if _CSV_PATTERNS is not None:
         return _CSV_PATTERNS
     try:
         from ...tools import get_registry
 
         patterns: list[tuple[re.Pattern, str]] = []
+        raw_parts: list[str] = []
         for spec in get_registry().process_specs():
             if not spec.ps_grep_pattern:
                 continue
@@ -81,9 +83,14 @@ def _load_csv_patterns() -> list[tuple[re.Pattern, str]]:
                     continue
                 try:
                     patterns.append((re.compile(pat_str, re.IGNORECASE), spec.ai_tool))
+                    raw_parts.append(f"(?:{pat_str})")
                 except re.error:
                     continue
         _CSV_PATTERNS = patterns
+        try:
+            _CSV_ANY_PATTERN = re.compile("|".join(raw_parts), re.IGNORECASE) if raw_parts else None
+        except re.error:
+            _CSV_ANY_PATTERN = None
         _LOAD_FAILED = False
         return _CSV_PATTERNS
     except Exception as exc:
@@ -113,6 +120,8 @@ def classify_process(process: ProcessInfo) -> MatchResult:
     combined = " ".join(part for part in (name, cmdline, exe) if part)
 
     patterns = _load_csv_patterns()
+    if _CSV_ANY_PATTERN is not None and not (_CSV_ANY_PATTERN.search(name) or _CSV_ANY_PATTERN.search(combined)):
+        return MatchResult(tool=None, root_candidate=False)
     for pattern, tool_name in patterns:
         if pattern.search(name) or pattern.search(combined):
             return MatchResult(tool=tool_name, root_candidate=True)

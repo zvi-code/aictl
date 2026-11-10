@@ -8,7 +8,9 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import BinaryIO
 
-TYPE_RE = re.compile(rb'"type"\s*:\s*"([^"]+)"')
+TYPE_RE = re.compile(
+    rb'^\s*\{(?:\s*"(?:[^"\\]|\\.)*"\s*:\s*(?:"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)\s*,)*\s*"type"\s*:\s*"([^"\\]+)"'
+)
 HEAD_BYTES = 600
 UNREAD_TYPES = frozenset({b"api-request-blob", b"api-request-shape", b"queued_command", b"prompt_snapshot"})
 
@@ -44,7 +46,7 @@ def records(
         line = stream.readline(limit)
         if not line:
             return
-        head = TYPE_RE.search(line, 0, HEAD_BYTES)
+        head = TYPE_RE.match(line, 0, HEAD_BYTES)
         kind = head.group(1) if head is not None else None
         oversized = max_line_bytes is not None and len(line) > max_line_bytes
         if oversized:

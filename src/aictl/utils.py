@@ -78,7 +78,8 @@ def estimate_tokens(text: str) -> int:
     # Use UTF-8 byte length rather than character count — BPE tokenizers
     # operate on bytes, so this gives much better estimates for CJK and
     # other multi-byte scripts (3 bytes/char → ~3x more than chars/4).
-    return estimate_tokens_from_size(len(text.encode("utf-8")))
+    # For pure-ASCII text, character length equals UTF-8 byte length without encoding.
+    return estimate_tokens_from_size(len(text) if text.isascii() else len(text.encode("utf-8")))
 
 
 def estimate_tokens_from_size(n_bytes: int) -> int:

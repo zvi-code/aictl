@@ -832,7 +832,7 @@ from .utils import estimate_tokens, estimate_tokens_from_size, norm_path
 # ─── Data classes ─────────────────────────────────────────────────
 
 
-@dataclass
+@dataclass(slots=True)
 class ResourceFile:
     """A file resource belonging to a tool."""
 
@@ -853,7 +853,7 @@ class ResourceFile:
         self.path = norm_path(self.path)
 
 
-@dataclass
+@dataclass(slots=True)
 class ProcessInfo:
     """A running process associated with a tool."""
 
@@ -872,7 +872,7 @@ class ProcessInfo:
     anomalies: list[dict] = field(default_factory=list)
 
 
-@dataclass
+@dataclass(slots=True)
 class McpServerInfo:
     """Extended info about a configured MCP server."""
 
@@ -887,7 +887,7 @@ class McpServerInfo:
     endpoint: str = ""  # command or URL
 
 
-@dataclass
+@dataclass(slots=True)
 class MemoryEntry:
     """A piece of agent memory / policy / decision."""
 
@@ -903,7 +903,7 @@ class MemoryEntry:
         self.file = norm_path(self.file)
 
 
-@dataclass
+@dataclass(slots=True)
 class ToolResources:
     """All discovered resources for a single tool."""
 
@@ -1254,6 +1254,19 @@ def _process_display_name(args: str) -> str:
     return Path(exe).name
 
 
+_compiled_spec_cache: dict[tuple[str, bool], re.Pattern | None] = {}
+
+
+def _compile_spec_pattern(pattern_str: str) -> re.Pattern | None:
+    key = (pattern_str, IS_WINDOWS)
+    if key not in _compiled_spec_cache:
+        try:
+            _compiled_spec_cache[key] = re.compile(pattern_str, re.IGNORECASE if IS_WINDOWS else 0)
+        except re.error:
+            _compiled_spec_cache[key] = None
+    return _compiled_spec_cache[key]
+
+
 def _discover_processes_csv(
     registry,
     results: dict[str, ToolResources],
@@ -1267,11 +1280,9 @@ def _discover_processes_csv(
     compiled: list[tuple[ProcessSpec, re.Pattern]] = []
     for spec in specs:
         if spec.ps_grep_pattern:
-            try:
-                # Windows executable names and paths are case-insensitive.
-                compiled.append((spec, re.compile(spec.ps_grep_pattern, re.IGNORECASE if IS_WINDOWS else 0)))
-            except re.error:
-                pass
+            pat = _compile_spec_pattern(spec.ps_grep_pattern)
+            if pat is not None:
+                compiled.append((spec, pat))
     if not compiled:
         return
 

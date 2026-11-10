@@ -8,6 +8,7 @@ for all dashboard renderers (web, TUI, static HTML report).
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import hashlib
 import json
@@ -234,8 +235,9 @@ class DashboardSnapshot:
         (session_id, agent_count, tokens, models, tools_used) but drops
         the nested ``agents`` array which can be multi-MB.
         """
-        d = self.to_dict()
-        d["agent_teams"] = _slim_agent_teams(d.get("agent_teams", []))
+        slim = copy.copy(self)
+        slim.agent_teams = _slim_agent_teams(self.agent_teams)
+        d = dataclasses.asdict(slim)
         d["tools_rev"] = tools_revision(self.tools)
         return d
 

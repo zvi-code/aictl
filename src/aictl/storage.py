@@ -2643,6 +2643,7 @@ class HistoryDB:
             # last writes, and a damaged file is opened again on memory. Syncs are
             # what made writes take minutes on Windows.
             conn.execute("PRAGMA synchronous=OFF")
+            conn.execute("PRAGMA temp_store=MEMORY")
             conn.execute(f"PRAGMA cache_size=-{self.CACHE_KB}")
             # Bound the WAL: checkpoint every ~4 MB and truncate the file back
             # to the limit on reset, so one big transaction cannot leave a
@@ -4006,13 +4007,13 @@ class HistoryDB:
             return []
 
         # Find matching session_end events
-        for sid in sessions:
-            end_rows = conn.execute(
-                "SELECT ts, detail FROM events WHERE kind = 'session_end'   AND session_id = ? LIMIT 1",
-                (sid,),
-            ).fetchall()
-            if end_rows:
-                end_ts, end_detail_json = end_rows[0]
+        for sid, end_ts, end_detail_json in conn.execute(
+            "SELECT session_id, MIN(ts), detail FROM events"
+            " WHERE kind = 'session_end' AND session_id IN (SELECT value FROM json_each(?))"
+            " GROUP BY session_id",
+            (json.dumps(sorted(sessions)),),
+        ):
+            if sid in sessions:
                 end_detail = _json(end_detail_json)
                 sessions[sid]["ended_at"] = end_ts
                 sessions[sid]["duration_s"] = end_detail.get(
@@ -5642,6 +5643,7 @@ class HistoryDB:
         for r in tools:
             if r.source_event_id:
                 by_session.setdefault(r.session_id, {})[r.source_event_id] = r.dedup_key
+        updates: list[tuple[str, str, str, str]] = []
         for session_id, keys in by_session.items():
             hook_ids = conn.execute(
                 "SELECT source_event_id FROM tool_invocations WHERE session_id = ? AND source = 'hook' AND source_event_id != ''",
@@ -5649,11 +5651,13 @@ class HistoryDB:
             ).fetchall()
             for (event_id,) in hook_ids:
                 if event_id in keys:
-                    conn.execute(
-                        "UPDATE OR IGNORE tool_invocations SET dedup_key = ?, source = ?"
-                        " WHERE session_id = ? AND source = 'hook' AND source_event_id = ?",
-                        (keys[event_id], TRANSCRIPT_SOURCE, session_id, event_id),
-                    )
+                    updates.append((keys[event_id], TRANSCRIPT_SOURCE, session_id, event_id))
+        if updates:
+            conn.executemany(
+                "UPDATE OR IGNORE tool_invocations SET dedup_key = ?, source = ?"
+                " WHERE session_id = ? AND source = 'hook' AND source_event_id = ?",
+                updates,
+            )
 
     @staticmethod
     def _write_transcript_file_edits(conn: sqlite3.Connection, rows: list[FileWriteRow]) -> None:

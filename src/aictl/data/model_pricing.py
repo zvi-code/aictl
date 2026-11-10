@@ -243,6 +243,7 @@ def normalize_model_id(model: str | None) -> str:
     return m
 
 
+@functools.lru_cache(maxsize=4096)
 def resolve_pricing(model: str | None) -> tuple[str | None, ModelPricing | None]:
     """Return ``(table_key, pricing)`` for *model*, or ``(None, None)`` if unknown.
 
@@ -264,11 +265,14 @@ def resolve_pricing(model: str | None) -> tuple[str | None, ModelPricing | None]
     return None, None
 
 
+@functools.lru_cache(maxsize=4096)
 def is_billable_model(model: str | None) -> bool:
     """False for placeholders such as Claude Code's ``<synthetic>`` messages."""
-    return normalize_model_id(model) not in NON_MODEL_IDS and bool(normalize_model_id(model))
+    m = normalize_model_id(model)
+    return bool(m) and m not in NON_MODEL_IDS
 
 
+@functools.lru_cache(maxsize=4096)
 def context_window_for(model: str | None) -> int | None:
     """Context window of *model* in tokens, or ``None`` when no source states it."""
     key, _ = resolve_pricing(model)

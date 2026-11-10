@@ -110,9 +110,10 @@ def byte_size(value: Any) -> int | None:
     if value is None:
         return None
     if isinstance(value, str):
-        return len(value.encode("utf-8", "replace"))
+        return len(value) if value.isascii() else len(value.encode("utf-8", "replace"))
     try:
-        return len(json.dumps(value, ensure_ascii=False).encode("utf-8", "replace"))
+        dumped = json.dumps(value, ensure_ascii=False)
+        return len(dumped) if dumped.isascii() else len(dumped.encode("utf-8", "replace"))
     except (TypeError, ValueError):
         return None
 

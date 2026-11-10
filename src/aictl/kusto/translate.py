@@ -63,6 +63,7 @@ that translates (its IANA name, else its current UTC offset).
 
 from __future__ import annotations
 
+import functools
 import json
 import math
 import os
@@ -439,6 +440,13 @@ def _strip_comments(sql: str) -> str:
     return re.sub(r"^(\s|--[^\n]*(\n|$)|/\*.*?\*/)*", "", sql, flags=re.S)
 
 
+@functools.lru_cache(maxsize=512)
+def _parse_sql_template(text: str) -> tuple[tuple[exp.Expression, ...], int]:
+    numbered, count = _number_params(text)
+    nodes = tuple(n for n in sqlglot.parse(numbered, read="sqlite") if n is not None)
+    return nodes, count
+
+
 class Translator:
     """Turns SQLite statements of aictl's store into :mod:`statements` for a Kusto cluster."""
 
@@ -486,11 +494,9 @@ class Translator:
         if head == "EXPLAIN":
             raise Unsupported("EXPLAIN", sql)
         try:
-            text, count = _number_params(text)
-            nodes = sqlglot.parse(text, read="sqlite")
+            nodes, count = _parse_sql_template(text)
         except (ParseError, TokenError) as err:
             raise Unsupported("statement SQLite syntax the parser does not read", sql, [str(err)[:300]]) from None
-        nodes = [n for n in nodes if n is not None]
         if len(nodes) != 1:
             raise Unsupported("more than one statement (use translate_script)", sql)
         if count and params is None:
@@ -724,10 +730,12 @@ class _Build:
         if values is None:
             return self.insert_rows_mutation(table, names, rows, on_conflict)
         out = []
+        base_defaults = row_defaults(table)
+        col_types = [table.column(name).kusto_type for name in names]
         for row in values:
-            full = row_defaults(table)
-            for name, value in zip(names, row, strict=True):
-                full[name] = _affinity(value, table.column(name).kusto_type)
+            full = dict(base_defaults)
+            for name, ktype, value in zip(names, col_types, row, strict=True):
+                full[name] = _affinity(value, ktype)
             out.append(full)
         return Insert(table=table.name, rows=out, on_conflict=on_conflict)
 
@@ -872,10 +880,12 @@ class _Build:
                 cols += [_Col("excluded", c.name, "__new_" + c.name, c.kusto_type) for c in table.columns]
                 update_kql = _truth(self.expr(update_where.this, _Ex(_Scope(cols))))
             out = []
+            base_defaults = row_defaults(table)
+            col_types = [table.column(name).kusto_type for name in names]
             for row in values:
-                full = row_defaults(table)
-                for name, value in zip(names, row, strict=True):
-                    full[name] = _affinity(value, table.column(name).kusto_type)
+                full = dict(base_defaults)
+                for name, ktype, value in zip(names, col_types, row, strict=True):
+                    full[name] = _affinity(value, ktype)
                 out.append(full)
             return Insert(
                 table=table.name,

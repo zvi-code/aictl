@@ -180,6 +180,20 @@ class TestClaude:
         assert ing.poll() == 1
         assert usage_of(db, CLAUDE_SID)["output_tokens"] == before + 7
 
+    def test_nested_message_type_before_top_level_type_is_not_discarded(self, db, stores):
+        path = stores["claude_projects"] / "-synthetic-project" / f"{CLAUDE_SID}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # "message" object with nested "type": "message" appears before top-level "type": "assistant"
+        line = (
+            '{"message":{"type":"message","id":"m1","model":"claude-opus-5-5",'
+            '"role":"assistant","usage":{"input_tokens":10,"output_tokens":4}},'
+            f'"requestId":"r1","timestamp":"{iso(100)}","type":"assistant"}}\n'
+        )
+        path.write_text(line, encoding="utf-8")
+        ingest(db, stores)
+        u = usage_of(db, CLAUDE_SID)
+        assert (u["input_tokens"], u["output_tokens"], u["request_count"]) == (10, 4, 1)
+
 
 def rollout(path, *, session_id, thread_id, source="vscode", total_steps=(), models=("gpt-6.1-sol",)):
     rows = [

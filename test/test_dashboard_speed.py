@@ -115,6 +115,16 @@ def test_tools_rev_moves_with_the_lists_not_with_the_numbers():
     assert json.loads(_snapshot(0).to_json_slim())["tools_rev"] == base
 
 
+def test_to_dict_slim_does_not_mutate_snapshot_in_place():
+    snap = _snapshot(0)
+    teams = [{"session_id": "s1", "agent_count": 1, "agents": [{"agent_id": "a1"}]}]
+    snap.agent_teams = teams
+    slim = snap.to_dict_slim()
+    assert snap.agent_teams is teams
+    assert snap.agent_teams[0]["agents"] == [{"agent_id": "a1"}]
+    assert "agents" not in slim["agent_teams"][0]
+
+
 # ── Compression ───────────────────────────────────────────────────
 
 

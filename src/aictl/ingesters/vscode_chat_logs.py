@@ -195,10 +195,24 @@ class VSCodeChatLogsIngester:
         inserted = 0
         failed = 0
         advanced = False
+        file_entries: list[tuple[Path, os.stat_result]] = []
         try:
-            files = list(self.log_dir.glob("*/chatSessions/*.jsonl"))
+            for ws_entry in os.scandir(self.log_dir):
+                if not ws_entry.is_dir(follow_symlinks=False):
+                    continue
+                chat_dir = os.path.join(ws_entry.path, "chatSessions")
+                try:
+                    with os.scandir(chat_dir) as chat_it:
+                        for entry in chat_it:
+                            if entry.name.endswith(".jsonl") and entry.is_file(follow_symlinks=False):
+                                try:
+                                    file_entries.append((Path(entry.path), entry.stat(follow_symlinks=False)))
+                                except OSError:
+                                    continue
+                except OSError:
+                    continue
         except OSError as exc:
-            log.debug("vscode chat ingester: glob failed (%s)", exc)
+            log.debug("vscode chat ingester: scandir failed (%s)", exc)
             self._quality(
                 "query_failed",
                 severity="warning",
@@ -208,11 +222,7 @@ class VSCodeChatLogsIngester:
             self.last_poll_inserted = 0
             return 0
 
-        for path in files:
-            try:
-                st = path.stat()
-            except OSError:
-                continue
+        for path, st in file_entries:
             key = str(path)
             prev = self.last_cursor.get(key)
             if prev and prev == (st.st_mtime, st.st_size):

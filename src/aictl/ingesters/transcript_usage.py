@@ -33,6 +33,7 @@ session cost ``partial`` or ``unknown`` and is named in ``unpriced_models``.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
@@ -89,12 +90,21 @@ IDLE_END_S = 900.0
 PENDING_CONFIRM_MAX_AGE_S = 6 * 3600.0
 
 
+# Record types consumed by ClaudeAccumulator + ClaudeFacts; all other Claude JSONL lines are skipped before json.loads.
+_CLAUDE_RECORD_TYPES = frozenset({b"assistant", b"user", b"api-request", b"system", b"attachment"})
+
+
+@functools.lru_cache(maxsize=4096)
+def _local_day_minute(minute_bucket: int) -> str:
+    return datetime.fromtimestamp(minute_bucket * 60).strftime("%Y-%m-%d")
+
+
 def local_day(ts: float) -> str:
     """The machine's local calendar day for *ts*, which is what "today" means on a dashboard."""
-    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+    return _local_day_minute(int(ts // 60))
 
 
-@dataclass
+@dataclass(slots=True)
 class ModelUsage:
     requests: int = 0
     input_tokens: int = 0
@@ -117,7 +127,7 @@ class ModelUsage:
         }
 
 
-@dataclass
+@dataclass(slots=True)
 class SessionUsage:
     """Usage of one logical session, across all of its files."""
 
@@ -983,6 +993,8 @@ def _current_size(path: Path, size: int, mtime: float, offset: int, now: float) 
 
 def _held(path: Path) -> bool:
     """A Copilot CLI session marks the folder of a file it keeps open."""
+    if path.name != "events.jsonl":
+        return False
     import psutil
 
     try:
@@ -1183,7 +1195,7 @@ class TranscriptUsageIngester:
         self._store.refresh_app_sessions(app_ids)
         self._mark_desktop_sessions()
 
-        def read(path: Path) -> Iterator[dict]:
+        def read(path: Path, allowed_types: frozenset[bytes] | None = None) -> Iterator[dict]:
             """Yield parsed lines after the file's offset, one at a time: holding
             a whole transcript in memory cost 570 MB on the first poll. A
             half-written last line stays unread until it ends with a newline."""
@@ -1192,7 +1204,7 @@ class TranscriptUsageIngester:
             try:
                 with open(path, "rb") as fh:
                     fh.seek(offset)
-                    for record in records(fh):
+                    for record in records(fh, allowed_types=allowed_types):
                         offset = record.offset
                         self._offsets[path] = offset
                         if record.data is not None:
@@ -1207,7 +1219,7 @@ class TranscriptUsageIngester:
         for path in self._changed(claude_files, cutoff):
             sid = _claude_session_id(path)
             agent_id, role = self._claude_agent(path)
-            for obj in read(path):
+            for obj in read(path, _CLAUDE_RECORD_TYPES):
                 self._claude.feed(sid, obj)
                 self._claude_facts.feed(sid, obj, agent_id=agent_id, role=role)
             if sid in self._claude.sessions:

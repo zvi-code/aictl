@@ -104,7 +104,7 @@ _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}  # noqa: S104 - c
 # ─── Result types ─────────────────────────────────────────────────
 
 
-@dataclass
+@dataclass(slots=True)
 class Source:
     tool: str
     scope: str  # managed | user | project | parent-dir | local | plugin | memory | dynamic
@@ -127,7 +127,7 @@ class Source:
     why_in_effect: str = ""
 
 
-@dataclass
+@dataclass(slots=True)
 class Finding:
     rule: str
     severity: str
@@ -148,16 +148,22 @@ _SECRET_VALUE_RE = re.compile(
     r"(?i)\b(sk-[a-z0-9_-]{8,}|gh[pousr]_[a-z0-9]{8,}|xox[a-z]-[a-z0-9-]{8,}|AKIA[0-9A-Z]{8,})"
     r"|((?:api[_-]?key|token|secret|password|passwd|bearer)[\"']?\s*[=:]\s*[\"']?)([^\s\"',;&]{4,})"
 )
+_URL_CRED_RE = re.compile(r"(https?://)[^/\s:@]+:[^/\s@]+@")
+
+
+def _redact_match(m: re.Match) -> str:
+    return f"{m.group(2)}<redacted>" if m.group(2) else "<redacted>"
 
 
 def _redact(text: str) -> str:
     """Remove secret-shaped values and URL credentials from text."""
-
-    def _sub(m: re.Match) -> str:
-        return f"{m.group(2)}<redacted>" if m.group(2) else "<redacted>"
-
-    text = _SECRET_VALUE_RE.sub(_sub, text)
-    return re.sub(r"(https?://)[^/\s:@]+:[^/\s@]+@", r"\1<redacted>@", text)
+    if not text:
+        return ""
+    if _SECRET_VALUE_RE.search(text) is not None:
+        text = _SECRET_VALUE_RE.sub(_redact_match, text)
+    if "://" in text and "@" in text:
+        text = _URL_CRED_RE.sub(r"\1<redacted>@", text)
+    return text
 
 
 def escape_invisible(text: str) -> str:

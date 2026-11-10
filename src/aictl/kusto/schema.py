@@ -14,6 +14,7 @@ The key of a table is its PRIMARY KEY, else its UNIQUE constraint, else ``rowid`
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass, field
 
 import sqlglot
@@ -53,7 +54,7 @@ def quote(name: str) -> str:
     return "['" + name.replace("'", "\\'") + "']"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Column:
     name: str
     sqlite_type: str
@@ -73,6 +74,8 @@ class Table:
     # (``WHERE dedup_key != ''``) never fires on an empty value, so a row whose
     # value for one of these columns is empty or None has no conflict on that set.
     unique_sets: tuple[tuple[str, ...], ...] = ()
+    _by_name: dict[str, Column] = field(default_factory=dict, init=False, repr=False, compare=False)
+    _defaults: dict[str, object] | None = field(default=None, init=False, repr=False, compare=False)
 
     @property
     def conflict_keys(self) -> tuple[tuple[str, ...], ...]:
@@ -80,7 +83,9 @@ class Table:
         return (self.key, *self.unique_sets)
 
     def column(self, name: str) -> Column | None:
-        return next((c for c in self.columns if c.name == name), None)
+        if len(self._by_name) != len(self.columns):
+            self._by_name = {c.name: c for c in self.columns}
+        return self._by_name.get(name)
 
     @property
     def column_names(self) -> list[str]:
@@ -169,8 +174,8 @@ def _table(node: exp.Create) -> Table:
     return table
 
 
-def parse_schema(sql: str) -> dict[str, Table]:
-    """Every table of a SQLite schema script, by name. Indexes, triggers and views are skipped."""
+@functools.lru_cache(maxsize=4)
+def _parse_schema_cached(sql: str) -> tuple[tuple[str, Table], ...]:
     tables: dict[str, Table] = {}
     statements = sqlglot.parse(sql, read="sqlite")
     for stmt in statements:
@@ -185,14 +190,19 @@ def parse_schema(sql: str) -> dict[str, Table]:
             cols = tuple(c.name for c in (params.args.get("columns") or [])) if params is not None else ()
             if table is not None and cols and cols != table.key and cols not in table.unique_sets:
                 table.unique_sets = (*table.unique_sets, cols)
-    return tables
+    return tuple(tables.items())
+
+
+def parse_schema(sql: str) -> dict[str, Table]:
+    """Every table of a SQLite schema script, by name. Indexes, triggers and views are skipped."""
+    return dict(_parse_schema_cached(sql))
 
 
 def store_schema() -> dict[str, Table]:
     """The tables of aictl's own store (``storage._SCHEMA_SQL``)."""
     from ..storage import _SCHEMA_SQL
 
-    return parse_schema(_SCHEMA_SQL)
+    return dict(_parse_schema_cached(_SCHEMA_SQL))
 
 
 def create_commands(tables: dict[str, Table] | list[Table], streaming: bool = True) -> list[str]:
@@ -227,15 +237,17 @@ def current(table: Table, alias: str | None = None) -> str:
 
 def row_defaults(table: Table) -> dict[str, object]:
     """The value of every column a write leaves out: its DEFAULT, else the type's empty value."""
-    out: dict[str, object] = {}
-    for c in table.columns:
-        if c.default is not None:
-            out[c.name] = c.default
-        elif c.kusto_type == "string":
-            out[c.name] = ""
-        else:
-            out[c.name] = None
-    return out
+    if table._defaults is None or len(table._defaults) != len(table.columns):
+        out: dict[str, object] = {}
+        for c in table.columns:
+            if c.default is not None:
+                out[c.name] = c.default
+            elif c.kusto_type == "string":
+                out[c.name] = ""
+            else:
+                out[c.name] = None
+        table._defaults = out
+    return dict(table._defaults)
 
 
 # ── The information schema: the tables described as data, in the database and in the docs ──

@@ -6,6 +6,7 @@ not facts, and never opens SQLite or receives uncommitted/local ingestion rows.
 
 from __future__ import annotations
 
+import functools
 import json
 import threading
 from collections import OrderedDict
@@ -13,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _Answer:
     names: tuple[str, ...]
     rows: tuple[tuple, ...]
@@ -89,6 +90,7 @@ class ProjectionQueries:
         return result
 
 
+@functools.lru_cache(maxsize=512)
 def _dependencies(sql: str) -> frozenset[str]:
     # Use the same SQLite grammar as the Kusto translator, including nested queries.
     import sqlglot

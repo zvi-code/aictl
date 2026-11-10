@@ -13,6 +13,7 @@ import functools
 import logging
 import re
 import sqlite3
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -138,6 +139,9 @@ def project_root(path: str | None) -> str:
     return (_git_root(folder) or folder) if folder else ""
 
 
+_ISO_Z_NATIVE = sys.version_info >= (3, 11)
+
+
 def coerce_ts(raw: Any) -> float:
     """Best-effort conversion of a source timestamp to epoch seconds.
 
@@ -150,6 +154,16 @@ def coerce_ts(raw: Any) -> float:
         v = float(raw)
         return v / 1000.0 if v > 1e12 else v
     if isinstance(raw, str):
+        # Fast-path ISO-8601 strings ("YYYY-MM-DD...") to avoid raising ValueError in float(raw).
+        if len(raw) >= 10 and raw[4] == "-":
+            try:
+                iso = raw if (_ISO_Z_NATIVE or not raw.endswith("Z")) else raw[:-1] + "+00:00"
+                return datetime.fromisoformat(iso).timestamp()
+            except ValueError:
+                try:
+                    return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+                except ValueError:
+                    pass
         try:
             v = float(raw)
             return v / 1000.0 if v > 1e12 else v

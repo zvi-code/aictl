@@ -216,12 +216,18 @@ _EXTRA_SECRET_RE = re.compile(
 )
 
 
+def _extra_secret_repl(m: re.Match) -> str:
+    return f"{m.group(1) or ''}<redacted>"
+
+
 def mask_secrets(text: str | None) -> str:
     """Text with values that look like secrets replaced."""
     if not text:
         return ""
     text = _redact(text)
-    return _EXTRA_SECRET_RE.sub(lambda m: f"{m.group(1) or ''}<redacted>", text)
+    if _EXTRA_SECRET_RE.search(text) is not None:
+        return _EXTRA_SECRET_RE.sub(_extra_secret_repl, text)
+    return text
 
 
 def _one_line(text: str | None, limit: int) -> str:
@@ -438,7 +444,7 @@ def _test_failed(is_error: int, exit_code: int | None) -> bool:
     return bool(is_error) or exit_code not in (0, None)
 
 
-@dataclass
+@dataclass(slots=True)
 class _Call:
     ts: float
     name: str
