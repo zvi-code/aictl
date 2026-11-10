@@ -139,6 +139,7 @@ class Filters:
     status: str = "all"
     q: str = ""
     buckets: int = DEFAULT_BUCKETS
+    runtime_statuses: tuple[tuple[str, str], ...] | None = None
 
     def matches_project(self, path: str | None) -> bool:
         return not self.project or project_key(path) == project_key(self.project)
@@ -1310,7 +1311,11 @@ class _Board:
                 scope.add(sid)
         if f.status != "all":
             allowed = LIVE_STATUSES if f.status == "active" else (f.status,)
-            scope = {sid for sid in scope if self.status.get(sid) in allowed}
+            if f.runtime_statuses is None:
+                scope = {sid for sid in scope if self.status.get(sid) in allowed}
+            else:
+                current = dict(f.runtime_statuses)
+                scope = {sid for sid in scope if current.get(sid, current.get(_session_uuid(sid) or "")) in allowed}
         if f.q:
             scope &= self._matching_q(scope)
         self.scope = scope
@@ -2514,13 +2519,18 @@ def _tokens_of(row: dict) -> int | None:
 def _prompts_section(board: _Board, turn_tokens: dict[tuple[str, float], int | None]) -> list[dict]:
     where, params = board._scoped()
     out = []
-    for ts, sid, aid, project, text, prompt_file in board.conn.execute(
-        f"SELECT ts, session_id, agent_id, project_path, text, prompt_file FROM session_prompts WHERE {where} AND agent_id = ''"
+    native_ids = getattr(board.conn, "_live_projection", False) is True
+    identity_column = "id, " if native_ids else ""
+    for raw in board.conn.execute(
+        f"SELECT {identity_column}ts, session_id, agent_id, project_path, text, prompt_file FROM session_prompts WHERE {where} AND agent_id = ''"
         f" ORDER BY ts DESC LIMIT {MAX_PROMPTS}",
         params,
     ):
+        row = tuple(raw)
+        ts, sid, aid, project, text, prompt_file = row[1:] if native_ids else row
         out.append(
             {
+                **({"id": str(row[0])} if native_ids else {}),
                 "ts": ts,
                 "session_id": sid,
                 "agent_id": _agent_key(sid, aid),
@@ -2667,13 +2677,17 @@ def _prompt_files_on_disk(projects: list[str]) -> tuple[list[tuple[str, str]], l
 def _project_prompts(board: _Board, project_ids: list[str]) -> tuple[list[dict], list[str]]:
     where, params = board._scoped()
     used: dict[tuple[str, str], dict] = {}
+    live = getattr(board.conn, "_live_projection", False) is True
     for prompt_file, project, sid, n, last_ts in board.conn.execute(
         "SELECT prompt_file, project_path, MAX(session_id), COUNT(*), MAX(ts) FROM session_prompts"
         f" WHERE {where} AND agent_id = '' AND prompt_file <> '' AND prompt_file NOT LIKE '%SKILL.md' GROUP BY prompt_file, project_path",  # a skill file has its own panel
         params,
     ):
         project = project or board.session_project.get(sid, "")
-        used[(project, _basename(prompt_file))] = {"file": prompt_file, "project": project, "uses": n, "last_ts": last_ts}
+        used[(project, _basename(prompt_file))] = {
+            "file": prompt_file, "project": project, "uses": n, "last_ts": last_ts,
+            **({"_history_file": prompt_file, "_configured_on_disk": False} if live else {}),
+        }
     files, searched = _prompt_files_on_disk(project_ids)
     for project, file in files:
         if project == USER_PROMPT_PROJECT:
@@ -2683,6 +2697,8 @@ def _project_prompts(board: _Board, project_ids: list[str]) -> tuple[list[dict],
             used[key]["file"] = file
         else:
             used[key] = {"file": file, "project": project, "uses": 0, "last_ts": None}
+        if live:
+            used[key]["_configured_on_disk"] = True
     # A user-level file has no project: the projects that used it by name carry its path,
     # and one that no project used is listed once with no use.
     for project, file in files:
@@ -2692,8 +2708,14 @@ def _project_prompts(board: _Board, project_ids: list[str]) -> tuple[list[dict],
         users = [row for (proj, base), row in used.items() if base == name and row["uses"] and row["file"] == base]
         for row in users:
             row["file"] = file
+            if live:
+                row["_configured_on_disk"] = True
         if not users and not any(row["file"] == file for row in used.values()):
             used[(project, file)] = {"file": file, "project": project, "uses": 0, "last_ts": None}
+        if live:
+            for row in used.values():
+                if row["file"] == file:
+                    row["_configured_on_disk"] = True
     rows = sorted(used.values(), key=lambda r: (-r["uses"], r["project"], r["file"]))
     return rows[:MAX_LIST_ROWS], searched
 
@@ -3241,7 +3263,7 @@ PARALLEL_READ_WORKERS = 8
 
 
 def _latency_bound(conn: Any) -> bool:
-    return type(conn).__name__ == "KustoConnection"
+    return type(conn).__name__ == "KustoConnection" or getattr(conn, "_live_latency_bound", False) is True
 
 
 def _gather(conn: Any, calls: list) -> list:
@@ -4115,7 +4137,13 @@ def _agent_record(db: Any, conn: sqlite3.Connection, session: dict, sid: str, ro
 
     project = str(session.get("project_path") or row.get("project") or "")
     agent = "" if root else str(row.get("id") or "")
-    context_files = _session_context_files(project, _loaded_files(conn, sid, agent))
+    loaded = _loaded_files(conn, sid, agent)
+    if getattr(db, "_kusto", None) is not None:
+        from .queryable_context import session_context_files
+
+        context_files = session_context_files(conn, project, loaded, session.get("tool") or "")
+    else:
+        context_files = _session_context_files(project, loaded)
     if not root:
         return {**empty_record(), "context_files": context_files}
     return {**record_section(db, conn, session, sid, project), "context_files": context_files}
@@ -4745,6 +4773,8 @@ def _session_flow(db: Any, agent_id: str, since: float, until: float, legacy_flo
     for FLOW_MEMO_S as long as the session's records have not changed. The flow of one
     session is asked for several times in a row: the flow tab, the transcript, each turn.
     """
+    if getattr(db, "_kusto", None) is not None:
+        legacy_flow = None
     conn = db._conn()
     sid, _agent = _resolve_agent(conn, agent_id)
     cached = legacy_flow is None and isinstance(getattr(db, "__dict__", None), dict)
@@ -4984,7 +5014,7 @@ def agent_transcript(
     sid, events, source = found
     cumulative, largest = _aggregate_flow(events)
     flow_summary = _flow_summary(events, source, cumulative, largest)
-    live = legacy_transcript(sid) if legacy_transcript else None
+    live = legacy_transcript(sid) if legacy_transcript and getattr(db, "_kusto", None) is None else None
     turns = _merge_transcript(_flow_transcript(events), live)
     replies_kept = any(t["response"] for t in turns)
     actions = [a for t in turns for a in t["actions"]]
@@ -6391,7 +6421,7 @@ def _parent_pid(pid: int) -> int | None:
             now = time.monotonic()
             if _parent_pid_snapshot is None or now - _parent_pid_snapshot[0] >= PARENT_PID_TTL_S:
                 try:
-                    parents = platforms.windows_process_parents()
+                    parents = platforms.cached_windows_process_parents(now=now, max_age=PARENT_PID_TTL_S)
                 except OSError as exc:
                     logger.warning("Cannot read Windows process parents: %s", exc)
                     parents = {}
@@ -7188,7 +7218,7 @@ def _ctx_int(value: Any) -> int:
 def context_policy(sent_to_llm: str | None) -> str:
     """The Context Window Map's policy of a file: yes, on-demand, conditional or no."""
     v = (sent_to_llm or "").lower()
-    if v in ("yes", "on-demand"):
+    if v in ("yes", "on-demand", "unknown"):
         return v
     if v in ("conditional", "partial"):
         return "conditional"
@@ -7311,7 +7341,9 @@ def _context_categories(tool: Any) -> dict:
         row["files"] += 1
         row["bytes"] += _ctx_int(f.size)
         row["tokens"] += tok
-        if bucket == "never":
+        if f.sent_to_llm == "unknown":
+            row["unknown"] = row.get("unknown", 0) + tok
+        elif bucket == "never":
             row["never_sent"] += tok
         else:
             row["sent"] += tok
@@ -7323,6 +7355,7 @@ def _context_categories(tool: Any) -> dict:
         "tokens": sum(r["tokens"] for r in rows),
         "sent": sum(r["sent"] for r in rows),
         "never_sent": sum(r["never_sent"] for r in rows),
+        **({"unknown": sum(r.get("unknown", 0) for r in rows)} if any("unknown" in r for r in rows) else {}),
         "kinds": rows,
     }
 
@@ -7358,7 +7391,7 @@ def _context_file(f: Any, tool: str, root: str, now: float, sessions: dict[str, 
         "tokens": _ctx_int(f.tokens),
         "sent_to_llm": f.sent_to_llm or None,
         "policy": context_policy(f.sent_to_llm),
-        "load": budget_bucket(f.sent_to_llm, f.loaded_when),
+        "load": None if f.sent_to_llm == "unknown" else budget_bucket(f.sent_to_llm, f.loaded_when),
         "loaded_when": f.loaded_when or None,
         "cacheable": f.cacheable or None,
         "mtime": mtime,
@@ -7384,7 +7417,7 @@ def _context_map(tool_list: list[Any], root: str) -> dict:
             named = items.setdefault((project, kind), {})
             name = context_item_name(f.path)
             named[name] = named.get(name, 0) + tok
-            policy[pol] += tok
+            policy[pol] = policy.get(pol, 0) + tok
             total += tok
     rows = [
         {"tool": k[0], "kind": k[1], "scope": k[2], "project": k[3], "policy": k[4], **v}
@@ -7621,21 +7654,36 @@ def compute_context(db: Any, store: Any, tools: tuple[str, ...] | None = None, n
 
     now = time.time() if now is None else now
     snapshot = getattr(store, "snapshot", None)
+    queryable = getattr(db, "_kusto", None) is not None
+    if queryable:
+        from .queryable_context import context_snapshot
+
+        snapshot = context_snapshot(db, snapshot)
     root = str(_ctx_field(snapshot, "root", "") or "")
     tool_list = _context_tools(snapshot, tools) if snapshot is not None else []
     configs = list(_ctx_field(snapshot, "tool_configs", []) or [])
     raw_telemetry = [t for t in _ctx_field(snapshot, "tool_telemetry", []) or [] if isinstance(t, dict)]
     by_tool = {str(t.get("tool") or ""): t for t in raw_telemetry}
     budget_rows = []
+    budget_tools = []
     for t in tool_list:
         if not t.files:
             continue
+        budget_tool = t
+        if queryable:
+            from ..tools import ToolResources
+
+            budget_tool = ToolResources(t.tool, t.label, files=[f for f in t.files if f.sent_to_llm != "unknown"])
+        budget_tools.append(budget_tool)
         model, model_from = _context_model(t.tool, configs, by_tool)
-        budget_rows.append(_context_budget(t, root, model, model_from))
+        budget_row = _context_budget(budget_tool, root, model, model_from)
+        if queryable:
+            budget_row["unknown_policy_tokens"] = sum(f.tokens for f in t.files if f.sent_to_llm == "unknown")
+        budget_rows.append(budget_row)
     budget_rows.sort(key=lambda b: (-b["always"], b["tool"]))
-    totals = compute_token_budget(tool_list, root)
+    totals = compute_token_budget(budget_tools, root)
     files = []
-    affects = _file_sessions()
+    affects = {} if queryable else _file_sessions()
     for t in tool_list:
         listed = sorted(t.files, key=lambda f: (-_ctx_int(f.tokens), f.path))
         files.append(
@@ -7676,6 +7724,11 @@ def compute_context(db: Any, store: Any, tools: tuple[str, ...] | None = None, n
         "telemetry": telemetry,
         "daily": db_parts["daily"],
         "workflows": _context_workflows(tool_list),
+        **({
+            "source": "kusto.queryable",
+            "configuration_scope": "configured-on-disk; not the model or settings loaded by a running agent",
+            "policy_note": "Budgets cover known stored/catalog loading policies; unknown policies remain in the file inventory.",
+        } if queryable else {}),
     }
 
 
@@ -7684,6 +7737,8 @@ def context_bytes(db: Any, store: Any, query: str, now: float | None = None) -> 
     qs = parse_qs(query, keep_blank_values=True)
     tools = normalize_selection(part for raw in qs["tool"] for part in raw.split(",")) if "tool" in qs else None
     version = getattr(store, "version", None)
+    if getattr(db, "_kusto", None) is not None:
+        version = ("kusto", int((time.time() if now is None else now) / MEMO_TTL_S))
     key = (id(store), version, tools)
     if version is not None:
         with _context_lock:

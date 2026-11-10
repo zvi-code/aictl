@@ -296,7 +296,7 @@ def artifact_count(conn: Any, sids: list[str], project: str) -> int:
     return _artifact_entries(conn, sids, project)[2]
 
 
-def session_artifacts(conn: Any, sids: list[str], project: str) -> tuple[list[dict], int, int]:
+def session_artifacts(conn: Any, sids: list[str], project: str, *, queryable_only: bool = False) -> tuple[list[dict], int, int]:
     """(artifacts newest first and capped, count of all, bytes of the existing ones)."""
     entries, stored, total, bytes_total = _artifact_entries(conn, sids, project)
     ordered = sorted(entries.items(), key=lambda kv: -max(kv[1]["_mtime"] or 0.0, kv[1]["last_ts"] or 0.0))
@@ -304,8 +304,11 @@ def session_artifacts(conn: Any, sids: list[str], project: str) -> tuple[list[di
     out = []
     size_sum = 0
     for path, entry in listed:
-        exists, size, mtime = _stat(path)
-        if exists and size is not None:
+        if queryable_only:
+            exists, size, mtime = None, stored.get(path), entry["_mtime"]
+        else:
+            exists, size, mtime = _stat(path)
+        if (exists or queryable_only) and size is not None:
             size_sum += size
         out.append(
             {
@@ -320,7 +323,8 @@ def session_artifacts(conn: Any, sids: list[str], project: str) -> tuple[list[di
                 "writes": entry["writes"],
                 "first_ts": entry["first_ts"],
                 "last_ts": entry["last_ts"],
-                "viewable": exists and is_text_file(path),
+                "viewable": bool(exists) and is_text_file(path),
+                **({"source": "kusto.queryable"} if queryable_only else {}),
             }
         )
     # Files not listed count with their indexed size; files past the index cap with the folder's total.
@@ -471,7 +475,8 @@ def session_commits(db: Any, session: dict, sid: str) -> tuple[list[dict], str]:
     project = str(session.get("project_path") or "")
     ended = session.get("ended_at")
     started = float(session.get("started_at") or 0.0)
-    if not commits and ended and started > 0 and project:
+    queryable_only = getattr(db, "_kusto", None) is not None
+    if not queryable_only and not commits and ended and started > 0 and project:
         last = _attributed.get(stored_sid)
         if last is None or time.monotonic() - last >= ATTRIBUTION_RETRY_S:
             from ..analysis.git_attribution import attribute_session
@@ -483,7 +488,10 @@ def session_commits(db: Any, session: dict, sid: str) -> tuple[list[dict], str]:
     commits.sort(key=lambda c: -float(c.get("ts") or 0.0))
     commits = commits[:MAX_DETAIL_ROWS]
     shas = [str(c.get("sha") or "") for c in commits if c.get("sha")]
-    prs, note = PR_FINDER.lookup(project, shas)
+    if queryable_only:
+        prs, note = {}, "Pull request links are not stored in queryable history"
+    else:
+        prs, note = PR_FINDER.lookup(project, shas)
     out = []
     for c in commits:
         sha = str(c.get("sha") or "")
@@ -508,7 +516,9 @@ def _artifact_sids(sid: str, session: dict) -> list[str]:
 def record_section(db: Any, conn: Any, session: dict, sid: str, project: str) -> dict:
     """The artifacts and commits fields of the agent detail."""
     sids = _artifact_sids(sid, session)
-    artifacts, total, size = session_artifacts(conn, sids, project)
+    artifacts, total, size = session_artifacts(
+        conn, sids, project, queryable_only=getattr(db, "_kusto", None) is not None
+    )
     commits, note = session_commits(db, session, sid)
     return {"artifacts": artifacts, "artifacts_total": total, "artifacts_bytes": size, "commits": commits, "prs_note": note}
 

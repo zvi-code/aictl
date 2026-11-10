@@ -54,12 +54,13 @@ class PersistentMonitor:
     diffs accumulate across snapshot cycles.
     """
 
-    def __init__(self, root: Path, sink=None) -> None:
+    def __init__(self, root: Path, sink=None, live_sources=None) -> None:
         self._runtime = None
         self._loop = None
         self._thread = None
         self._root = root
         self._sink = sink  # SampleSink passed to MonitorRuntime
+        self._live_sources = live_sources
         self._ready = threading.Event()
 
     def start(self) -> None:
@@ -87,6 +88,8 @@ class PersistentMonitor:
             ignored_paths=(str(Path(cfg.logging_dir).resolve()), str(config_dir())),
         )
         self._runtime = MonitorRuntime(config, sink=self._sink)
+        if self._live_sources is not None:
+            self._live_sources.attach_runtime(self._runtime)
 
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
@@ -212,6 +215,7 @@ class RefreshLoop(threading.Thread):
                     _discovered_override=discovered_cache,
                     _sink=self._store._sink,
                     _enrichment_cache=enrichment,
+                    _shared_config_cache=self._store.live_sources is not None,
                 )
                 self._store.update(snap)
                 self._allowed.update(snap)
@@ -281,7 +285,7 @@ TOOL_CONFIGS_RECHECK_S = 60.0
 _TOOL_CONFIGS_AT = 0.0
 
 
-def _tool_configs(cache: dict | None, root: Path) -> list[dict]:
+def _tool_configs(cache: dict | None, root: Path, *, shared: bool = False) -> list[dict]:
     """Every tool's settings records, read again when a file they came from changed.
 
     The last collection's files and folders are stat'ed on every call, so an edited
@@ -290,7 +294,14 @@ def _tool_configs(cache: dict | None, root: Path) -> list[dict]:
     for what a stat cannot see (the registry).
     """
     global _TOOL_CONFIGS_AT
-    from .monitoring.tool_config import last_watched, watch_signature
+    from .monitoring.tool_config import current_tool_configs, last_watched, watch_signature
+
+    if shared:
+        configs = current_tool_configs(root)
+        if configs != _FULL_TOOL_CONFIGS:
+            _FULL_TOOL_CONFIGS[:] = configs
+            _TOOL_CONFIGS_AT = time.time()
+        return configs
 
     now = time.monotonic()
     hit = cache.get("tool_configs") if cache is not None else None
@@ -321,6 +332,7 @@ def collect(
     _discovered_override: list | None = None,
     _sink=None,
     _enrichment_cache: dict | None = None,
+    _shared_config_cache: bool = False,
 ) -> DashboardSnapshot:
     """Take a single snapshot combining discovery, live, and enrichment.
 
@@ -377,7 +389,7 @@ def collect(
     telemetry_reports = _cached(cache, "telemetry", 15.0, lambda: collect_tool_telemetry(root_path))
     tool_telemetry = [r.to_dict() for r in telemetry_reports]
     agent_teams = _cached(cache, "agent_teams", 30.0, lambda: scan_agent_teams(root_path))
-    tool_configs = _tool_configs(cache, root_path)
+    tool_configs = _tool_configs(cache, root_path, shared=_shared_config_cache)
     tool_configs = slim_tool_configs(tool_configs)
     _merge_telemetry_into_tools(tools, telemetry_reports)
 
@@ -728,6 +740,22 @@ class CollectionService:
 
         self.sink = SampleSink(db=self.db, buffer_size=5000, datapoint_logger=self._dp_logger)
         self.store = SnapshotStore(db=self.db, sink=self.sink)
+        if getattr(self.db, "_kusto", None) is not None:
+            from .dashboard.live_hub import LiveHub
+            from .monitoring.live_sources import LiveRuntimeSources
+            from .observe.collect import capture_mode
+
+            self.store.live_hub = LiveHub()
+            self.store.live_sources = LiveRuntimeSources(
+                self.store.live_hub,
+                self.root,
+                capture_mode=lambda: (
+                    capture_mode()
+                    if getattr(self.db, "capture", "off") == "full"
+                    else getattr(self.db, "capture", "off")
+                ),
+            )
+            self.store.live_sources.start()
 
     def run(self, *, quiet: bool = False) -> None:
         """The slow part of the start: the live monitor, the first snapshot and the loops."""
@@ -739,7 +767,7 @@ class CollectionService:
         # Persistent live monitor (runs continuously, accumulates state)
         if self.include_live_monitor:
             _say("  starting persistent live monitor ...")
-            self._monitor = PersistentMonitor(self.root, sink=self.sink)
+            self._monitor = PersistentMonitor(self.root, sink=self.sink, live_sources=self.store.live_sources)
             self._monitor.start()
 
         # Initial collection so consumers see data immediately
@@ -750,6 +778,7 @@ class CollectionService:
             include_processes=True,
             _live_monitor_override=live_override or {},
             _sink=self.sink,
+            _shared_config_cache=self.store.live_sources is not None,
         )
         self.store.update(snap)
         self.allowed.update(snap)
@@ -788,10 +817,14 @@ class CollectionService:
             self._maintenance.stop()
         if self._refresh is not None:
             self._refresh.stop()
+        if self.store is not None and self.store.live_sources is not None:
+            self.store.live_sources.stop()
         if self._monitor is not None:
             self._monitor.stop()
         if self.sink is not None:
             self.sink.close()
+        if self.store is not None and self.store.live_hub is not None:
+            self.store.live_hub.close()
         if self.db is not None:
             self.db.close()
 
@@ -880,6 +913,7 @@ def start_server(
     from .dashboard.ingester_runner import start_ingesters
 
     server.ingesters = start_ingesters(store)
+    server.attach_live_ingesters()
 
     # Wire session analyzer as an event listener on the database
     if db is not None:
@@ -899,6 +933,7 @@ def start_server(
         pass
     finally:
         server.shutdown()
+        server.server_close()
         service.stop()
 
 
@@ -1488,6 +1523,9 @@ class SnapshotStore:
         # Exposed for callers that access these directly
         self._db = db
         self._sink = sink
+        # Kusto-only incremental channels. SQLite callers continue to use snapshots.
+        self.live_hub = None
+        self.live_sources = None
         # The refresh loop waits on this; request_refresh sets it.
         self.refresh_requested = _threading.Event()
         if db:

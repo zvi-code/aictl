@@ -156,7 +156,7 @@ _GZIP_MEMO = _GzipMemo()
 
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 # These read whole conversations or any project, so they answer this machine only.
-_LOCAL_ONLY_ROUTES = ("/api/copilot-sessions", "/api/context-audit", "/api/effective-models", "/api/board", "/api/settings/file", "/api/settings/tools")
+_LOCAL_ONLY_ROUTES = ("/api/copilot-sessions", "/api/context-audit", "/api/effective-models", "/api/board", "/api/live", "/api/settings/file", "/api/settings/tools")
 
 
 def _local_request(client_host: str, host_header: str | None) -> bool:
@@ -566,6 +566,12 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._serve_file()
         elif path == "/api/stream":
             self._serve_sse()
+        elif path == "/api/live/capabilities":
+            from .live_protocol import capabilities
+
+            self._json_response(capabilities(self.server.live_dashboard is not None))
+        elif path == "/api/live/stream":
+            self._serve_live_sse()
         elif path == "/api/budget":
             self._serve_budget()
         elif path == "/api/history":
@@ -1297,6 +1303,62 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         self.wfile.write(f'data: {{"timestamp": {snap.timestamp}, "version": {version}}}\n\n'.encode())
         self.wfile.flush()
 
+    def _serve_live_sse(self) -> None:
+        """One scoped baseline followed by entity changes, never board refetch signals."""
+        global _sse_client_count
+        from .board_api import BoardRequestError
+        from .live_hub import LiveCapacityError
+        from .live_protocol import sse_bytes
+
+        live = self.server.live_dashboard
+        if live is None:
+            self._json_response({"error": "Incremental live data requires Kusto", "enabled": False}, status=409)
+            return
+        with _sse_client_lock:
+            if _sse_client_count >= _MAX_SSE_CLIENTS:
+                self.send_error(503, "Too many SSE clients")
+                return
+            _sse_client_count += 1
+        subscription = None
+        PACE.client_connected()
+        try:
+            query = urlparse(self.path).query
+            params = parse_qs(query)
+            cursor = self.headers.get("Last-Event-ID") or (params.get("cursor") or [None])[0]
+            history = (params.get("history") or ["1"])[0] != "0"
+            try:
+                subscription = live.subscribe(query, history=history, cursor=cursor)
+            except LiveCapacityError as exc:
+                self._json_response({"error": str(exc)}, status=429)
+                return
+            except (BoardRequestError, ValueError) as exc:
+                self._json_response({"error": str(exc)}, status=400)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self._send_cors_header()
+            self.end_headers()
+            while not self.server._closing:
+                try:
+                    message = subscription.next(timeout=15.0)
+                    if message is None:
+                        self.wfile.write(b": keepalive\n\n")
+                    else:
+                        event, payload = message
+                        self.wfile.write(sse_bytes(event, payload))
+                    self.wfile.flush()
+                except (StopIteration, BrokenPipeError, ConnectionResetError, OSError):
+                    break
+        finally:
+            if subscription is not None:
+                subscription.close()
+            PACE.client_disconnected()
+            with _sse_client_lock:
+                _sse_client_count -= 1
+
     # ── Shared helpers (used by _APIHandlersMixin and core) ──
 
     @property
@@ -1601,7 +1663,9 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
 # While the daemon collects its first snapshot, its port is already open: these routes are
 # served at once, every other request waits for the snapshot up to READY_WAIT_S.
 _TAKEN_WHILE_STARTING = frozenset({"/api/hooks", "/v1/metrics", "/v1/logs", "/v1/traces"})
-_SERVED_WHILE_STARTING = frozenset({"/", "/index.html", "/favicon.ico", "/api/board/health"})
+_SERVED_WHILE_STARTING = frozenset({
+    "/", "/index.html", "/favicon.ico", "/api/board/health", "/api/live/capabilities", "/api/live/stream",
+})
 # Under the handler's 30 s socket timeout, so the client gets the answer.
 READY_WAIT_S = 20.0
 
@@ -1657,6 +1721,66 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
         # stale-eviction scan must not iterate while another thread mutates.
         self.pending_tool_use: dict[str, tuple[float, str, object]] = {}
         self.pending_tool_use_lock: threading.Lock = threading.Lock()
+        self.live_dashboard = None
+        self._owns_live_hub = False
+        db = getattr(store, "_db", None)
+        if getattr(db, "_kusto", None) is not None:
+            from .live_hub import LiveHub
+            from .live_projection import LiveDashboard
+
+            hub = getattr(store, "live_hub", None)
+            if hub is None:
+                hub = store.live_hub = LiveHub()
+                self._owns_live_hub = True
+            self.live_dashboard = LiveDashboard(hub, db, store, health_provider=self._live_health)
+            self.attach_live_ingesters()
+
+    def attach_live_ingesters(self) -> None:
+        sources = getattr(self.store, "live_sources", None)
+        handle = self.ingesters.get("transcript-usage")
+        ingester = getattr(handle, "ingester", None)
+        if sources is not None and ingester is not None:
+            sources.attach_ingester(ingester)
+
+    def _live_health(self) -> tuple[dict, dict]:
+        from .board_api import compute_health, machine_alerts, machine_processes
+
+        health = compute_health(
+            self.store._db,
+            self.store,
+            otel=self.otel_receiver,
+            ingesters=self.ingesters,
+            stream_clients=_sse_client_count,
+            port=self.server_address[1],
+            http_reads=self.health_reads,
+            http_writes=self.health_writes,
+        )
+        # A monitor's token/file estimates are not queryable historical activity.
+        monitor = health.get("monitor") or {}
+        monitor["per_tool"] = [
+            {
+                key: value
+                for key, value in row.items()
+                if key in {
+                    "tool", "label", "sessions", "pids", "inbound_bps", "outbound_bps",
+                    "cpu_pct", "cpu_peak", "workspaces", "last_seen",
+                }
+            }
+            for row in monitor.get("per_tool") or []
+        ]
+        snapshot = self.store.snapshot
+        processes = machine_processes(snapshot)
+        for process in processes:
+            process["cmdline"] = process["cleanup_cmd"] = None
+        machine = {
+            "generated_at": health["generated_at"],
+            "monitor": monitor,
+            "processes": processes,
+            "cpu_per_core": list(getattr(snapshot, "cpu_per_core", None) or []),
+            "cpu_cores": getattr(snapshot, "cpu_cores", None),
+            "alerts": machine_alerts(processes),
+        }
+        return health, machine
 
     def process_request(self, request, client_address) -> None:
         """Hand the request to an idle worker, a new worker while the pool has room, else a thread."""
@@ -1686,6 +1810,10 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
             item = self._requests.get()
 
     def server_close(self) -> None:
+        if self.live_dashboard is not None:
+            self.live_dashboard.close()
+            if self._owns_live_hub:
+                self.store.live_hub.close()
         with self._workers_lock:
             self._closing = True
             idle = self._idle_workers
