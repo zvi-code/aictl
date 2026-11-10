@@ -154,12 +154,13 @@ Open the dashboard as usual (`aictl daemon serve` prints the URL). In the Kusto 
 `aictl db report` runs a set of KQL queries against the configured cluster and writes one self-contained HTML file: no server, no script or style loaded from another site except Google Fonts. It uses the cluster, database and sign-in of the store (`AICTL_KUSTO_CLUSTER`, `AICTL_KUSTO_DATABASE`, `AICTL_KUSTO_AUTH`, or `config.toml`), so every sign-in mode and the local emulator work. It only reads. With no cluster configured it exits with a message.
 
 ```
-aictl db report [--out PATH] [--days N] [--sections A,B]
+aictl db report [--out PATH] [--days N] [--sections A,B] [--kusto-cluster URL] [--kusto-database NAME]
 ```
 
 - `--out PATH`: the file to write; default `aictl-kusto-report.html` in the current folder.
 - `--days N`: only data of the last N days; default all data. The runner puts `let report_days = N;` (0 for all) before every query.
 - `--sections A,B`: only these sections, in this order; default all. An unknown name stops the command and lists the names.
+- `--kusto-cluster URL`, `--kusto-database NAME`: read from this cluster and database instead of the configured ones, as with `aictl daemon serve`. The sign-in stays the configured one. On Windows, a variable set with `setx` reaches only terminals opened after it, so pass the option or set `$env:AICTL_KUSTO_CLUSTER` in the current terminal.
 
 The command prints the path written, the time of each query and every section that failed. The page header shows the cluster host, the database, the time of the run, the window and the run time of each query. The page holds aggregates, 8-character session id prefixes, tool and model names and file base names; no prompt text, no full paths, no user names.
 
