@@ -1606,9 +1606,13 @@ function buildSection(sec, n, wrap) {
     const sp = H("span", "ix-s" + (st === "error" ? " bad" : ""), null, a);
     if (st === "error") sp.append("failed"); else if (st === "empty") sp.append("no data"); else { const bar = H("i", "ix-bar", null, sp); bar.style.width = Math.round(48 * sec.seconds / mx) + "px"; sp.append(sec.seconds.toFixed(2) + " s"); }
   });
+  const only = R.filter || [], range = only.filter(f => f[0] === "from" || f[0] === "before"), rest = only.filter(f => !range.includes(f));
   $("#window").textContent = (R.days
     ? "Window: the last " + plural(R.days, "day") + " before " + fStamp(R.generated) + ". Every query reads only rows of that window, so a session that began earlier shows from its first row inside it."
-    : "Window: all data in the database; no query filters by time.") + " All times are UTC.";
+    : range.length ? "Window: rows " + range.map(f => f[0] + " " + f[1]).join(" and ") + ". Every query reads only rows of that window, so a session that began earlier shows from its first row inside it."
+    : "Window: all data in the database; no query filters by time.")
+    + (rest.length ? " Filter: " + rest.map(f => f[0] + " " + f[1]).join("; ") + ". Every query reads only the rows that pass it, so every number on this page is about that part of the data." : "")
+    + " All times are UTC.";
 })();
 
 /* ---------- draw and re-draw ---------- */

@@ -161,6 +161,24 @@ aictl db report --sections returns,stuck,models,skills,mcp --days 30 --out repor
 | `--sections A,B` | Only these sections, in this order (default: all ten). An unknown name stops the command and lists the names |
 | `--kusto-cluster URL` | Read from this cluster instead of the configured one |
 | `--kusto-database NAME` | The database (default: the configured one, else `aictl`) |
+| `--from TIME`, `--to TIME` | Only rows of this time range, UTC: `2026-11-01` or `2026-11-01T14:30`. A `--to` date includes that day. Not together with `--days` |
+| `--project NAME` | Only rows of this project: its folder name or its full path |
+| `--tool NAME` | Only rows of this tool, for example `copilot-cli` |
+| `--model NAME` | Only requests of this model, and the tool calls those requests issued |
+| `--mcp NAME` | Only sessions that used this MCP server |
+| `--skill NAME` | Only sessions that loaded this skill |
+| `--agent TYPE` | Only sessions that started an agent of this type |
+| `--values` | Print the values these filters can name, with the sessions behind each, and write no page |
+| `--json PATH` | Also write the results as JSON: per section the KQL as it ran and its rows |
+
+Filters narrow what every section reads, and the page header states them. Repeat an option or separate values with commas for alternatives; different options must all hold. `--mcp`, `--skill` and `--agent` keep whole sessions: every row of a session in which that MCP server, skill or agent type was used inside the time range.
+
+```bash
+aictl db report --values
+aictl db report --tool copilot-cli --mcp my-server --from 2026-11-01 --to 2026-11-09 --out report.html
+```
+
+The Copilot agent [kusto-report](.github/agents/kusto-report.agent.md) does this for a store it has not seen: it reads `--values`, chooses the filters that carry the data or answer your question, generates the pages and writes a summary of the numbers. Start it in Copilot CLI with `copilot --agent kusto-report`, or pick it in the agent list of VS Code Copilot Chat.
 
 The command uses the cluster, database and sign-in of the store, from `config.toml` or from `AICTL_KUSTO_CLUSTER`, `AICTL_KUSTO_DATABASE` and `AICTL_KUSTO_AUTH`, unless `--kusto-cluster` names another. With no cluster it exits with a message. On Windows, a variable set with `setx` reaches only terminals opened after it; use `$env:AICTL_KUSTO_CLUSTER = "URL"` for the current one, or pass `--kusto-cluster`.
 
@@ -758,7 +776,7 @@ File access is inferred from tool-call arguments, so files touched by shell comm
 
 `aictl db reset` accepts `-y` / `--yes` to skip the confirmation prompt.
 
-`aictl db report` takes `--out PATH`, `--days N`, `--sections A,B`, `--kusto-cluster URL` and `--kusto-database NAME`, and needs a Kusto cluster as the store: [insight report](#insight-report-from-a-kusto-store-aictl-db-report-work-in-progress).
+`aictl db report` takes `--out PATH`, `--days N`, `--sections A,B`, `--kusto-cluster URL`, `--kusto-database NAME` and the filters `--from`, `--to`, `--project`, `--tool`, `--model`, `--mcp`, `--skill`, `--agent`, and needs a Kusto cluster as the store: [insight report](#insight-report-from-a-kusto-store-aictl-db-report-work-in-progress).
 
 `aictl db compact` takes `--dry-run`, `--retention-days N` and `--no-vacuum`.
 `aictl db trim-text` takes `--dry-run` and `--older-than-days N`. Compact deletes rows older than the

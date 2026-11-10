@@ -1,0 +1,21 @@
+// The values a filter can name, with the sessions behind each one. Not a section of the page.
+// Table 1: what the window and the filter hold. Table 2: one row per value, counted in sessions.
+let Mcp = report_tool_calls | extend norm = replace_string(tool_name, "__", ":") | where norm startswith "mcp:"
+  | project field = "mcp", value = tostring(split(norm, ":")[1]), session_id;
+let Skill = report_tool_calls | where tolower(tool_name) == "skill" | project field = "skill", value = target, session_id;
+let Agent = report_tool_calls | where tool_name in ("Agent", "Task", "task") | extend inp = parse_json(input)
+  | project field = "agent", value = coalesce(tostring(inp.subagent_type), tostring(inp.agent_type)), session_id;
+let Project = report_requests
+  | project field = "project", value = tostring(split(replace_string(project_path, "\\", "/"), "/")[-1]), session_id;
+union
+  (report_requests | summarize rows = count(), sessions = count_distinct(session_id), first_ts = min(ts), last_ts = max(ts) | extend source = "requests"),
+  (report_tool_calls | summarize rows = count(), sessions = count_distinct(session_id), first_ts = min(ts), last_ts = max(ts) | extend source = "tool calls")
+| project source, rows, sessions, first_row = unixtime_seconds_todatetime(first_ts), last_row = unixtime_seconds_todatetime(last_ts)
+| order by source asc;
+union
+  (report_requests | project field = "tool", value = tool, session_id),
+  (report_requests | project field = "model", value = model, session_id),
+  Project, Mcp, Skill, Agent
+| where isnotempty(value)
+| summarize sessions = count_distinct(session_id) by field, value
+| order by field asc, sessions desc, value asc

@@ -1,7 +1,6 @@
 // Relay graph: agents and the files they read and write, as a graph. graph-match finds
 // work handed from agent to agent through files; graph-mark-components groups work items.
-let T = tool_invocations | summarize arg_max(_v, *) by id | where _deleted == false
-  | where report_days <= 0 or unixtime_seconds_todatetime(ts) >= ago(1d * report_days)
+let T = report_tool_calls
   | where isnotempty(target) and tool_name in~ ("Read", "view", "Write", "Edit", "apply_patch", "create")
   | extend actor = iff(isempty(agent_id), strcat("main:", session_id), strcat("agent:", agent_id)),
            op = iff(tool_name in~ ("Read", "view"), "read", "write");

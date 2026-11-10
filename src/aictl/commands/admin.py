@@ -257,14 +257,62 @@ def _report_settings(cluster: str | None, database: str | None):
 @click.option("--sections", "names", default=None, help="Only these sections, comma-separated, in this order (default: all)")
 @click.option("--kusto-cluster", default=None, help="Read from this Kusto cluster (URL) instead of the configured one")
 @click.option("--kusto-database", default=None, help="The Kusto database (default: the configured one, else aictl)")
-def report(out_path, days, names, kusto_cluster, kusto_database):
+@click.option("--from", "start", default=None, metavar="TIME", help="Only rows from this time on, UTC: 2026-11-01 or 2026-11-01T14:30")
+@click.option("--to", "end", default=None, metavar="TIME", help="Only rows up to this time, UTC; a date alone includes that day")
+@click.option("--project", "projects", multiple=True, help="Only rows of this project: its folder name or its full path")
+@click.option("--tool", "tools", multiple=True, help="Only rows of this tool, for example copilot-cli")
+@click.option("--model", "models", multiple=True, help="Only requests of this model, and the tool calls they issued")
+@click.option("--mcp", "mcps", multiple=True, help="Only sessions that used this MCP server")
+@click.option("--skill", "skills", multiple=True, help="Only sessions that loaded this skill")
+@click.option("--agent", "agents", multiple=True, help="Only sessions that started an agent of this type")
+@click.option("--values", "list_values", is_flag=True, help="Print the values the filters can name, with their sessions, and write no page")
+@click.option(
+    "--json",
+    "json_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Also write the results as JSON: per section the KQL as it ran and its rows",
+)
+def report(
+    out_path, days, names, kusto_cluster, kusto_database, start, end, projects, tools, models, mcps, skills, agents, list_values, json_path
+):
     """Write an HTML report of what the Kusto store knows about coding agents.
 
     Runs one KQL query per section against the configured cluster (see
     docs/kusto-cluster.md) and writes one self-contained HTML file. A section whose
     query fails shows the error; the rest of the page still renders.
+
+    The filter options narrow what every section reads. Repeat an option or separate
+    values with commas to name alternatives; different options must all hold.
+    --mcp, --skill and --agent keep whole sessions: every row of a session in which
+    the MCP server, skill or agent type was used. --values lists what can be named.
     """
+    import json
+    from datetime import datetime, timezone
+
     from ..kusto import report as kusto_report
+
+    def values(given):
+        return tuple(v.strip() for item in given for v in item.split(",") if v.strip())
+
+    if days and (start or end):
+        raise click.ClickException("Give the time range as --days or as --from and --to, not both.")
+    only = kusto_report.ReportFilter(
+        start=_report_time(start, "--from", end_of_day=False) if start else None,
+        end=_report_time(end, "--to", end_of_day=True) if end else None,
+        projects=values(projects),
+        tools=values(tools),
+        models=values(models),
+        mcps=values(mcps),
+        skills=values(skills),
+        agents=values(agents),
+    )
+    if only.start and only.end and only.start >= only.end:
+        raise click.ClickException("--from must be before --to.")
+    try:
+        kusto_report.filter_prelude(days, only)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
     try:
         settings = _report_settings(kusto_cluster, kusto_database)
@@ -288,7 +336,13 @@ def report(out_path, days, names, kusto_cluster, kusto_database):
         raise click.ClickException(f"Unknown section: {', '.join(unknown) or repr(names)}. The sections are: {', '.join(known)}.")
     chosen = tuple(known[n] for n in wanted)
 
-    click.echo(f"Running {len(chosen)} queries on {settings.uri}" + (f", last {days} days" if days else ", all data"))
+    window = f", last {days} days" if days else "" if only.start or only.end else ", all data"
+    narrowed = "".join(f"\n  only {label}: {value}" for label, value in only.describe())
+    if list_values:
+        click.echo(f"Reading the filter values from {settings.uri}{window}{narrowed}")
+        _report_values(kusto_report.run_values(settings, days, only))
+        return
+    click.echo(f"Running {len(chosen)} queries on {settings.uri}{window}{narrowed}")
 
     def show(result):
         what = "FAILED" if result.error else "no data" if result.empty else "ok"
@@ -296,17 +350,60 @@ def report(out_path, days, names, kusto_cluster, kusto_database):
         if result.error:
             click.echo("    " + result.error.strip().splitlines()[0][:300])
 
-    results = kusto_report.run_report(settings, days, sections=chosen, on_result=show)
-    page = kusto_report.build_page(results, cluster=settings.cluster, database=settings.database, days=days)
+    results = kusto_report.run_report(settings, days, sections=chosen, on_result=show, only=only)
+    facts = {"cluster": settings.cluster, "database": settings.database, "days": days, "only": only}
+    facts["generated"] = datetime.now(timezone.utc)
+    page = kusto_report.build_page(results, **facts)
     out_path = Path(out_path).expanduser()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(page, encoding="utf-8")
     click.echo(f"Wrote {out_path.resolve()}")
+    if json_path:
+        json_path = Path(json_path).expanduser()
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        json_path.write_text(json.dumps(kusto_report.report_data(results, **facts), indent=1), encoding="utf-8")
+        click.echo(f"Wrote {json_path.resolve()}")
     failed = [r.name for r in results if r.error]
     if failed:
         click.echo(f"{len(failed)} of {len(results)} sections failed: {', '.join(failed)}", err=True)
+    if narrowed and all(r.empty for r in results):
+        click.echo("No row passed the filter. Run the same line with --values to see what the store holds.", err=True)
     if len(failed) == len(results):
         raise SystemExit(1)
+
+
+def _report_time(text: str, option: str, *, end_of_day: bool):
+    """A --from or --to value as a UTC time. A date alone given as the end means the end of that day."""
+    from datetime import datetime, timedelta, timezone
+
+    text = text.strip()
+    try:
+        if len(text) == 10:
+            day = datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            return day + timedelta(days=1) if end_of_day else day
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise click.ClickException(f"{option} takes a date or a time such as 2026-11-01 or 2026-11-01T14:30, not {text!r}.") from exc
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def _report_values(result) -> None:
+    """Print what --values read: the size of the data, then every value by the option that takes it."""
+    if result.error:
+        raise click.ClickException(result.error.strip().splitlines()[0][:300])
+    totals, rows = (result.tables + [[], []])[:2]
+    for row in totals:
+        if row["rows"]:
+            span = f", {row['first_row']} to {row['last_row']}"
+            click.echo(f"{row['source']}: {row['rows']:,} rows in {row['sessions']:,} sessions{span}")
+        else:
+            click.echo(f"{row['source']}: no rows")
+    field = None
+    for row in rows:
+        if row["field"] != field:
+            field = row["field"]
+            click.echo(f"\n--{field}  (sessions)")
+        click.echo(f"  {row['sessions']:>6,}  {row['value']}")
 
 
 @db.command()

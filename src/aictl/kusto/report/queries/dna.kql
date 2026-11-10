@@ -1,7 +1,6 @@
 // Session DNA: every tool call of a session as one letter, in order, plus error streaks and opening motifs.
 // The scan operator inside partition hint.strategy=native carries state row to row per session.
-let T = tool_invocations | summarize arg_max(_v, *) by id | where _deleted == false
-  | where report_days <= 0 or unixtime_seconds_todatetime(ts) >= ago(1d * report_days);
+let T = report_tool_calls;
 let top_s = T | summarize calls = count() by session_id | top 24 by calls | project session_id;
 let Cls = T
 | extend cls = case(

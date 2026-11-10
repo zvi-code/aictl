@@ -155,12 +155,23 @@ Open the dashboard as usual (`aictl daemon serve` prints the URL). In the Kusto 
 
 ```
 aictl db report [--out PATH] [--days N] [--sections A,B] [--kusto-cluster URL] [--kusto-database NAME]
+                [--from TIME] [--to TIME] [--project NAME] [--tool NAME] [--model NAME]
+                [--mcp NAME] [--skill NAME] [--agent TYPE] [--values] [--json PATH]
 ```
 
 - `--out PATH`: the file to write; default `aictl-kusto-report.html` in the current folder.
 - `--days N`: only data of the last N days; default all data. The runner puts `let report_days = N;` (0 for all) before every query.
 - `--sections A,B`: only these sections, in this order; default all. An unknown name stops the command and lists the names.
 - `--kusto-cluster URL`, `--kusto-database NAME`: read from this cluster and database instead of the configured ones, as with `aictl daemon serve`. The sign-in stays the configured one. On Windows, a variable set with `setx` reaches only terminals opened after it, so pass the option or set `$env:AICTL_KUSTO_CLUSTER` in the current terminal.
+- `--from TIME`, `--to TIME`: only rows of this time range, in UTC, as `2026-11-01` or `2026-11-01T14:30`. A `--to` date includes that day. They replace `--days`; giving both stops the command.
+- `--project NAME`, `--tool NAME`: only rows of this project (its folder name or its full path) or of this tool.
+- `--model NAME`: only requests of this model. A tool call row holds no model, so a tool call passes when the latest request before it in its context (a session plus one agent) is of this model.
+- `--mcp NAME`, `--skill NAME`, `--agent TYPE`: only sessions in which this MCP server, skill or agent type was used inside the time range. Every row of such a session passes. Use is read from the tool calls: a tool named `mcp__NAME__...`, a call of the skill tool with the skill as its target, an agent start with this agent type.
+- Repeat a filter option or separate values with commas for alternatives; different options must all hold. Names compare without case.
+- `--values`: print every value these filters can name, with the sessions behind it, inside the window and the other filters. Writes no page.
+- `--json PATH`: also write the results as JSON. Each section holds the KQL as it ran, filter included, and its result rows.
+
+The runner puts the filter in front of every query as `let` statements that define `report_requests` and `report_tool_calls`: the current rows of `requests` and `tool_invocations` that pass. A query reads only these two names, and a test fails when one reads a table itself, so no section can ignore a filter. The page header states the filter.
 
 The command prints the path written, the time of each query and every section that failed. The page header shows the cluster host, the database, the time of the run, the window and the run time of each query. The page holds aggregates, 8-character session id prefixes, tool and model names and file base names; no prompt text, no full paths, no user names.
 

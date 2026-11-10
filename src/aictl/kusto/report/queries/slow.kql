@@ -1,8 +1,7 @@
 // Slow-request fingerprint: which request properties are over-represented among the slowest 5 percent.
 // The evaluate diffpatterns plugin finds the attribute combinations that separate slow from rest.
-let R = requests | summarize arg_max(_v, *) by id | where _deleted == false and duration_ms > 0
-  | extend t = unixtime_seconds_todatetime(ts)
-  | where report_days <= 0 or t >= ago(1d * report_days);
+let R = report_requests | where duration_ms > 0
+  | extend t = unixtime_seconds_todatetime(ts);
 let p95 = toscalar(R | summarize percentile(duration_ms, 95));
 R
 | extend slow = iff(duration_ms >= p95, "slow", "rest"),
