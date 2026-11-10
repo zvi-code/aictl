@@ -13,6 +13,7 @@ import json
 import logging
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -76,6 +77,7 @@ API_ERROR_EVENTS = frozenset(
 # it either as the int or the enum name depending on the exporter.
 _CUMULATIVE_TEMPORALITY = frozenset({2, "2", "AGGREGATION_TEMPORALITY_CUMULATIVE"})
 _MAX_CUMULATIVE_SERIES = 20_000
+_MAX_EPOCHS_PER_SERIES = 8
 
 # OTel log events that represent a *completed* tool invocation — they carry
 # ``tool_name`` + ``duration_ms`` + ``tool_parameters``.  ``tool_decision`` is
@@ -231,47 +233,90 @@ class OtelReceiver:
     ) -> float:
         """Convert one CUMULATIVE Sum point into its delta, distinguishing resets from stale delivery."""
         current = staged.get(key) if (staged is not None and key in staged) else self._cumulative_last.get(key)
+        epochs: OrderedDict[int, tuple[float, int]] = OrderedDict()
+        evicted_max_start_ns = 0
         if isinstance(current, (int, float)):
             last_val, last_start_ns, last_point_ns = float(current), 0, 0
+            epochs[0] = (last_val, 0)
         elif isinstance(current, tuple) and len(current) == 3:
             last_val, last_start_ns, last_point_ns = float(current[0]), int(current[1]), int(current[2])
+            epochs[last_start_ns] = (last_val, last_point_ns)
+        elif isinstance(current, tuple) and len(current) >= 4 and isinstance(current[3], dict):
+            last_val, last_start_ns, last_point_ns = float(current[0]), int(current[1]), int(current[2])
+            epochs.update(current[3])
+            if len(current) >= 5:
+                evicted_max_start_ns = int(current[4])
         else:
             last_val, last_start_ns, last_point_ns = None, 0, 0
 
-        if last_val is None:
-            new_state = (value, start_ns, point_ns)
-            delta = value
-        elif start_ns > 0 and last_start_ns > 0 and start_ns < last_start_ns:
-            # Point belongs to an older counter epoch than the current baseline: stale out-of-order export.
-            tags["otel_ordering"] = "out_of_order_ignored"
-            tags["otel_raw_cumulative"] = value
-            new_state = (last_val, last_start_ns, last_point_ns)
-            delta = 0.0
-        elif start_ns > 0 and last_start_ns > 0 and start_ns > last_start_ns:
-            # Explicit newer counter epoch: counter restarted.
-            new_state = (value, start_ns, point_ns)
+        if start_ns > 0 and (last_val is not None and last_start_ns > 0 and start_ns != last_start_ns or start_ns in epochs):
+            if start_ns in epochs:
+                ep_val, ep_point_ns = epochs[start_ns]
+                epochs.move_to_end(start_ns)
+                if point_ns > 0 and ep_point_ns > 0 and point_ns < ep_point_ns:
+                    tags["otel_ordering"] = "out_of_order_ignored"
+                    tags["otel_raw_cumulative"] = value
+                    delta = 0.0
+                elif value >= ep_val:
+                    new_ep_pt = max(point_ns, ep_point_ns)
+                    epochs[start_ns] = (value, new_ep_pt)
+                    if start_ns >= last_start_ns:
+                        last_val, last_start_ns, last_point_ns = value, start_ns, new_ep_pt
+                    delta = value - ep_val
+                else:
+                    tags["otel_ordering"] = "ambiguous_order"
+                    tags["otel_raw_cumulative"] = value
+                    delta = 0.0
+            elif start_ns > last_start_ns:
+                epochs[start_ns] = (value, point_ns)
+                while len(epochs) > _MAX_EPOCHS_PER_SERIES:
+                    ev_start, _ = epochs.popitem(last=False)
+                    evicted_max_start_ns = max(evicted_max_start_ns, ev_start)
+                last_val, last_start_ns, last_point_ns = value, start_ns, point_ns
+                delta = value
+            elif start_ns <= evicted_max_start_ns:
+                # Baseline for this older epoch was evicted: retain ambiguity rather than guessing delta.
+                tags["otel_ordering"] = "unresolved_epoch_baseline"
+                tags["otel_raw_cumulative"] = value
+                delta = 0.0
+            else:
+                # Newly observed older epoch (e.g. epoch B arrived before any point of epoch A).
+                # Record epoch A's baseline and delta without moving current last_start_ns backwards.
+                epochs[start_ns] = (value, point_ns)
+                while len(epochs) > _MAX_EPOCHS_PER_SERIES:
+                    ev_start, _ = epochs.popitem(last=False)
+                    evicted_max_start_ns = max(evicted_max_start_ns, ev_start)
+                delta = value
+        elif last_val is None:
+            epochs[start_ns] = (value, point_ns)
+            last_val, last_start_ns, last_point_ns = value, start_ns, point_ns
             delta = value
         elif point_ns > 0 and last_point_ns > 0 and point_ns < last_point_ns:
             # Older point in the same epoch arrived after a newer point already advanced the baseline.
             tags["otel_ordering"] = "out_of_order_ignored"
             tags["otel_raw_cumulative"] = value
-            new_state = (last_val, last_start_ns, last_point_ns)
             delta = 0.0
         elif value >= last_val:
-            new_state = (value, start_ns or last_start_ns, max(point_ns, last_point_ns))
+            last_start_ns = start_ns or last_start_ns
+            last_point_ns = max(point_ns, last_point_ns)
             delta = value - last_val
+            last_val = value
+            epochs[last_start_ns] = (last_val, last_point_ns)
+            epochs.move_to_end(last_start_ns)
         elif point_ns > 0 and last_point_ns > 0 and point_ns > last_point_ns and not (start_ns > 0 and last_start_ns > 0 and start_ns == last_start_ns):
             # Strictly newer point timestamp without an unchanged start_ns: counter restarted.
-            new_state = (value, start_ns, point_ns)
+            last_val, last_start_ns, last_point_ns = value, start_ns, point_ns
+            epochs[start_ns] = (value, point_ns)
+            epochs.move_to_end(start_ns)
             delta = value
         else:
             # Lower value without source timestamp/epoch proof of a counter restart (e.g. equal/missing
             # timestamps or unchanged startTimeUnixNano): retain ambiguity rather than inventing a reset.
             tags["otel_ordering"] = "ambiguous_order"
             tags["otel_raw_cumulative"] = value
-            new_state = (last_val, last_start_ns, last_point_ns)
             delta = 0.0
 
+        new_state = (last_val, last_start_ns, last_point_ns, epochs, evicted_max_start_ns)
         if staged is not None:
             staged[key] = new_state
         else:

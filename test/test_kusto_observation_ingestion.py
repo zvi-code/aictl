@@ -620,6 +620,33 @@ def test_concurrent_cumulative_otel_metrics_do_not_double_count_deltas():
     receiver2.ingest_metrics(make_payload(130, 1700000020), accepted2.extend)
     assert sum(s.value for s in accepted2) == 130.0
 
+    # Cross-epoch reordering:
+    # Epoch A (start=100) point 110 value 100 -> +100
+    # Epoch B (start=200) point 210 value 5   -> +5
+    # Delayed final Epoch A (start=100) point 120 value 120 -> +20 (not dropped as 0)
+    # Retry of delayed final Epoch A (start=100) point 120 value 120 -> +0
+    # Epoch B continuation (start=200) point 220 value 15 -> +10
+    # Total across epochs A and B = 120 + 15 = 135.0
+    receiver3 = OtelReceiver()
+    accepted3 = []
+    receiver3.ingest_metrics(make_payload(100, ts_s=110, start_s=100), accepted3.extend)
+    receiver3.ingest_metrics(make_payload(5, ts_s=210, start_s=200), accepted3.extend)
+    receiver3.ingest_metrics(make_payload(120, ts_s=120, start_s=100), accepted3.extend)
+    receiver3.ingest_metrics(make_payload(120, ts_s=120, start_s=100), accepted3.extend)
+    receiver3.ingest_metrics(make_payload(15, ts_s=220, start_s=200), accepted3.extend)
+    assert [s.value for s in accepted3] == [100.0, 5.0, 20.0, 0.0, 10.0]
+    assert sum(s.value for s in accepted3) == 135.0
+
+    # First observed epoch is B (start=200), then older epoch A (start=100) arrives later:
+    receiver4 = OtelReceiver()
+    accepted4 = []
+    receiver4.ingest_metrics(make_payload(5, ts_s=210, start_s=200), accepted4.extend)
+    receiver4.ingest_metrics(make_payload(100, ts_s=110, start_s=100), accepted4.extend)
+    receiver4.ingest_metrics(make_payload(120, ts_s=120, start_s=100), accepted4.extend)
+    receiver4.ingest_metrics(make_payload(15, ts_s=220, start_s=200), accepted4.extend)
+    assert [s.value for s in accepted4] == [5.0, 100.0, 20.0, 10.0]
+    assert sum(s.value for s in accepted4) == 135.0
+
 
 def test_timestamp_less_patch_has_retention_ts_and_pre_upgrade_null_rows_trim_by_received_time(observation_store, tmp_path):
     db, ingester = observation_store
