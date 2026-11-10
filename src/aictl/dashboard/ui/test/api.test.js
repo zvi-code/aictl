@@ -1,6 +1,6 @@
 import {
   fetchJson, getSessionEvents, getSamples, getOtelStatus,
-  getToolConfig, updateToolConfig, killSession, setBaseUrl, streamUrl,
+  getToolConfig, updateToolConfig, killSession, setBaseUrl, streamUrl, liveStreamUrl,
 } from '../src/api.js';
 
 // ─── Mock fetch globally ───────────────────────────────────────
@@ -32,6 +32,16 @@ describe('streamUrl', () => {
   it('prepends base URL', () => {
     setBaseUrl('http://x:9000');
     expect(streamUrl()).toBe('http://x:9000/api/stream');
+  });
+
+  it('keeps live filters while replacing transport controls and never reuses a query-supplied cursor', () => {
+    const fresh = new URL(liveStreamUrl('tool=a,b&q=hello+world&cursor=old&history=1', { history: false }), 'http://x');
+    expect(fresh.searchParams.get('tool')).toBe('a,b');
+    expect(fresh.searchParams.get('q')).toBe('hello world');
+    expect(fresh.searchParams.get('history')).toBe('0');
+    expect(fresh.searchParams.has('cursor')).toBe(false);
+    const resumed = new URL(liveStreamUrl('cursor=old', { cursor: 'daemon:9' }), 'http://x');
+    expect(resumed.searchParams.get('cursor')).toBe('daemon:9');
   });
 });
 

@@ -162,6 +162,16 @@ export async function killSession(sessionId, signal = 'TERM') {
 
 export function streamUrl() { return url('/api/stream'); }
 
+export const getLiveCapabilities = opts => fetchJson('/api/live/capabilities', opts);
+
+export function liveStreamUrl(query = '', { history = true, cursor = null } = {}) {
+  const params = new URLSearchParams(query);
+  params.set('history', history ? '1' : '0');
+  params.delete('cursor');
+  if (cursor) params.set('cursor', cursor);
+  return url('/api/live/stream?' + params.toString());
+}
+
 // ─── Board ─────────────────────────────────────────────────────
 
 /** GET /api/board. Returns {status: 304} when the etag still matches. */

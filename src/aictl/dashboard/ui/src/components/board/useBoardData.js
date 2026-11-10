@@ -1,7 +1,6 @@
-// ─── useBoardData — /api/board for the current filters ────────────
-// A filter change fetches at once and aborts the fetch before it. A stream message
-// fetches at once, at most once per MESSAGE_FETCH_GAP_MS; a burst is caught up at the
-// next tick. The last good data stays on screen meanwhile.
+// ─── Board data for the current filters ───────────────────────────
+// Kusto consumes one shared, scoped live projection; messages never refetch the board.
+// SQLite and older daemons retain stream-triggered REST reads and polling.
 // With a selected time there are two fetches: the whole range feeds the charts,
 // and the selected time feeds everything else.
 // /api/board/machine (processes, collectors, pipeline health) is fetched with each
@@ -11,6 +10,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import * as api from '../../api.js';
 import { useSse } from '../../useSse.js';
+import { useLiveState } from '../../live/context.js';
+import { historyReady, mergeRuntimeAgents, projectedBoard, runtimeReady, topicData, topicEntities } from '../../live/model.js';
+import { isStoredToolSelected } from '../../utils/toolScope.js';
 import { boardQuery, windowOf } from './filters.js';
 
 export const TICK_MS = 5000;
@@ -156,9 +158,9 @@ function createLoader(onData, onError) {
       const done = () => { ctrl = null; pending = null; if (again) { again = false; loader.load(query); } };
       return api.getBoard(query, { signal: mine.signal, etag }).then((res) => {
         if (ctrl !== mine) return;
-        if (res.status === 304) { onData(null); done(); return; }
+        if (res.status === 304) { onData(null, query); done(); return; }
         last = { query, etag: res.etag };
-        onData(normalizeBoard(res.data));
+        onData(normalizeBoard(res.data), query);
         done();
       }).catch((e) => {
         if (e?.name === 'AbortError' || ctrl !== mine) return;
@@ -197,7 +199,7 @@ function createMachineLoader(onData) {
 }
 
 /** /api/board/context for the tool filter, at most every CONTEXT_REFRESH_MS for the same filter. */
-function createContextLoader(onData) {
+function createContextLoader(onData, onError = () => {}) {
   let ctrl = null;
   let last = { key: null, at: 0 };
   return {
@@ -213,72 +215,155 @@ function createContextLoader(onData) {
         if (ctrl !== mine) return;
         ctrl = null;
         onData(normalizeContext(d));
-      }).catch(() => {
+      }).catch(error => {
         if (ctrl !== mine) return;
         ctrl = null;
         last = { key: null, at: 0 };
+        if (error?.name !== 'AbortError') onError(error);
       });
     },
     stop() { if (ctrl) { ctrl.abort(); ctrl = null; } },
   };
 }
 
-export function useBoardData({ filters, tools, live, pausedRef, enabled = true }) {
+export function liveBoardData(subscription, filters, tools, context = EMPTY_CONTEXT) {
+  const raw = projectedBoard(subscription);
+  const board = normalizeBoard(raw);
+  const agents = mergeRuntimeAgents(board.agents, subscription, filters, tools);
+  const runtimeMachine = topicData(subscription, 'runtime.machine');
+  const operational = topicData(subscription, 'runtime.health');
+  const machine = normalizeMachine({
+    ...runtimeMachine,
+    pipeline: {
+      ...runtimeMachine?.pipeline,
+      self: operational?.pipeline?.self || runtimeMachine?.pipeline?.self,
+      stream: operational?.pipeline?.stream || runtimeMachine?.pipeline?.stream,
+    },
+  });
+  const ownProcess = machine.pipeline.self;
+  const runtimeAgents = topicEntities(subscription, 'runtime.agent');
+  const processes = topicEntities(subscription, 'runtime.process').map(entity => {
+    const process = entity.data || {};
+    const owners = runtimeAgents.filter(agent => agent.data?.pids?.includes(process.pid));
+    return {
+      ...process,
+      cpu_pct: process.cpu_percent ?? process.cpu_pct ?? null,
+      cpu_percent: process.cpu_percent ?? process.cpu_pct ?? null,
+      mem_mb: process.mem_mb ?? (process.memory_rss_bytes == null ? null : process.memory_rss_bytes / 1048576),
+      agent_id: owners.length === 1 ? owners[0].data.session_id || owners[0].data.id : null,
+    };
+  }).filter(process => isStoredToolSelected(process.tool, tools));
+  const running = agents.filter(agent => agent.runtime_present && !agent.parent_id);
+  const children = agents.filter(agent => agent.runtime_present && agent.parent_id);
+  const knownRuntime = runtimeReady(subscription);
+  return {
+    ...board, agents,
+    source_policy: subscription.capabilities?.source_policy,
+    kpis: {
+      ...board.kpis,
+      running: knownRuntime ? running.filter(agent => agent.running === true && agent.status !== 'idle').length : null,
+      idle: knownRuntime ? running.filter(agent => agent.status === 'idle').length : null,
+      subagents_running: knownRuntime ? children.filter(agent => agent.running === true && agent.status !== 'idle').length : null,
+      activity_unknown: knownRuntime ? running.filter(agent => agent.running === true && agent.native_activity === 'unknown').length : null,
+    },
+    processes,
+    machine: { ...machine, processes: subscription.capabilities?.topics?.['runtime.process'] ? processes : machine.processes },
+    self: {
+      ...board.self,
+      ...(runtimeMachine?.self || {}),
+      cpu_percent: ownProcess.cpu ?? runtimeMachine?.self?.cpu_percent ?? null,
+      memory_rss_bytes: ownProcess.rss ?? runtimeMachine?.self?.memory_rss_bytes ?? null,
+    },
+    contextData: raw.contextData ? normalizeContext(raw.contextData) : context,
+  };
+}
+
+export function useBoardData({ filters, tools, live, pausedRef, enabled = true, history = enabled, requiredTopics = history ? ['history.board'] : [] }) {
+  const { client, state: subscription } = useLiveState();
+  const incremental = subscription.mode === 'incremental';
+  const legacy = subscription.mode === 'legacy';
   const [main, setMain] = useState(null);
+  const [mainQuery, setMainQuery] = useState(null);
   const [selected, setSelected] = useState(null);
   const [error, setError] = useState(null);
+  const [contextError, setContextError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [machine, setMachine] = useState(EMPTY_MACHINE);
   const [context, setContext] = useState(EMPTY_CONTEXT);
   const stateRef = useRef({ filters, tools });
-  stateRef.current = { filters, tools };
+  stateRef.current = { filters, tools, incremental, legacy, subscription };
   const dirty = useRef(false);
 
   const loaders = useRef(null);
   if (!loaders.current) {
     const mark = () => { try { performance.mark('board-data'); } catch { /* no timing api */ } };
     loaders.current = {
-      main: createLoader((d) => { setBusy(false); setError(null); if (d) { mark(); setMain(d); } }, (e) => { setBusy(false); setError(e); }),
+      main: createLoader((d, query) => { setBusy(false); setError(null); if (d) { mark(); setMain(d); setMainQuery(query); } }, (e) => { setBusy(false); setError(e); }),
       sel: createLoader((d) => { setError(null); if (d) { mark(); setSelected(d); } }, (e) => setError(e)),
       machine: createMachineLoader(setMachine),
-      context: createContextLoader(setContext),
+      context: createContextLoader(data => { setContext(data); setContextError(null); }, setContextError),
     };
   }
 
   const fetchNow = useCallback(() => {
-    const { filters: f, tools: t } = stateRef.current;
+    const { filters: f, tools: t, incremental: stream, legacy: rest } = stateRef.current;
+    if (stream) { client?.resync(); return; }
+    if (!rest) return;
     setBusy(true);
     loaders.current.main.load(boardQuery(f, t, windowOf(f.range)));
     loaders.current.machine.load(t);
     loaders.current.context.load(t);
     if (f.sel) loaders.current.sel.load(boardQuery(f, t, { since: Math.floor(f.sel.since), until: Math.floor(f.sel.until) }));
     else { loaders.current.sel.stop(); setSelected(null); }
-  }, []);
+  }, [client]);
 
   const toolKey = tools ? tools.join(',') : '*';
   const filterKey = JSON.stringify([filters.range, filters.project, filters.model, filters.status, filters.q, filters.sel]);
-  useEffect(() => { if (enabled) fetchNow(); }, [filterKey, toolKey, enabled, fetchNow]);
+  // Keep the scope stable across gauge updates. Only a user filter change replaces it.
+  const liveQuery = useMemo(() => {
+    const { filters: f, tools: t } = stateRef.current;
+    return boardQuery(f, t, f.sel
+      ? { since: Math.floor(f.sel.since), until: Math.floor(f.sel.until) }
+      : windowOf(f.range));
+  }, [filterKey, toolKey]);
+  const wholeRangeQuery = useMemo(() => {
+    const { filters: f, tools: t } = stateRef.current;
+    return boardQuery(f, t, windowOf(f.range));
+  }, [filterKey, toolKey]);
+  const requirementKey = JSON.stringify(requiredTopics);
+  useEffect(() => { client?.configure({ query: liveQuery, history, live, requiredTopics: JSON.parse(requirementKey) }); }, [client, liveQuery, history, live, requirementKey]);
+  useEffect(() => { if (enabled && legacy) fetchNow(); }, [filterKey, toolKey, enabled, legacy, fetchNow]);
   useEffect(() => {
-    if (enabled) return;
+    if (!incremental || !history) return;
+    // Historical context and whole-range charts are baseline queries, never stream invalidations.
+    const { filters: f, tools: t } = stateRef.current;
+    loaders.current.context.load(t);
+    if (f.sel && mainQuery !== wholeRangeQuery) loaders.current.main.load(wholeRangeQuery);
+    else loaders.current.main.stop();
+  }, [incremental, history, filterKey, toolKey, wholeRangeQuery, mainQuery]);
+  useEffect(() => {
+    if (enabled && (legacy || incremental)) return;
     for (const loader of Object.values(loaders.current)) loader.stop();
     setBusy(false);
-  }, [enabled]);
+  }, [enabled, legacy, incremental]);
   useEffect(() => () => { loaders.current.main.stop(); loaders.current.sel.stop(); loaders.current.machine.stop(); loaders.current.context.stop(); }, []);
 
   // A stream message is a change on the server: fetch at once, unless a fetch began less
   // than MESSAGE_FETCH_GAP_MS ago or the page is hidden or paused; then the tick fetches.
   const lastFetch = useRef(0);
   const onMessage = useCallback(() => {
+    if (!stateRef.current.legacy || !live) return;
     const now = Date.now();
     if (document.hidden || pausedRef?.current || now - lastFetch.current < MESSAGE_FETCH_GAP_MS) { dirty.current = true; return; }
     dirty.current = false;
     lastFetch.current = now;
     fetchNow();
-  }, [fetchNow, pausedRef]);
-  const { connected } = useSse(enabled && live ? api.streamUrl() : null, onMessage);
+  }, [fetchNow, pausedRef, live]);
+  const { connected: legacyConnected } = useSse(enabled && legacy && live ? api.streamUrl() : null, onMessage);
+  const connected = incremental ? subscription.connected : legacyConnected;
 
   useEffect(() => {
-    if (!enabled || !live) return undefined;
+    if (!enabled || !legacy || !live) return undefined;
     const id = setInterval(() => {
       if (document.hidden || pausedRef?.current) return;
       const now = Date.now();
@@ -289,7 +374,7 @@ export function useBoardData({ filters, tools, live, pausedRef, enabled = true }
       fetchNow();
     }, TICK_MS);
     return () => clearInterval(id);
-  }, [enabled, live, connected, fetchNow, pausedRef]);
+  }, [enabled, legacy, live, connected, fetchNow, pausedRef]);
 
   // A stream that was up and is down now, as against one that has not opened yet.
   const everConnected = useRef(false);
@@ -297,13 +382,37 @@ export function useBoardData({ filters, tools, live, pausedRef, enabled = true }
 
   const refresh = fetchNow;
   const sourceMain = main || EMPTY;
+  const projection = subscription.board;
+  const agentTopic = subscription.topics?.get('runtime.agent');
+  const processTopic = subscription.topics?.get('runtime.process');
+  const machineTopic = subscription.topics?.get('runtime.machine');
+  const healthTopic = subscription.topics?.get('runtime.health');
+  const sourceTopic = subscription.topics?.get('source.status');
+  const incrementalData = useMemo(() => incremental
+    ? liveBoardData(stateRef.current.subscription, stateRef.current.filters, stateRef.current.tools, context)
+    : null, [incremental, projection, agentTopic, processTopic, machineTopic, healthTopic, sourceTopic, filters, tools, context]);
   // A selected time keeps the charts on the whole range.
   const withSel = filters.sel && selected;
   const data = useMemo(() => {
+    if (incremental) {
+      if (!filters.sel) return incrementalData;
+      const current = main && mainQuery === wholeRangeQuery;
+      return { ...incrementalData, series: current ? main.series : {}, range: current ? main.range : EMPTY.range };
+    }
     const base = withSel
       ? { ...selected, series: sourceMain.series, range: sourceMain.range, options: sourceMain.options.tools.length ? sourceMain.options : selected.options, scope: selected.scope }
       : sourceMain;
     return { ...base, machine, contextData: context };
-  }, [withSel, selected, sourceMain, machine, context]);
-  return { data, machine, chartSeries: sourceMain.series, chartRange: sourceMain.range, loaded: !!main, busy, error, refresh, connected, everConnected: everConnected.current };
+  }, [incremental, incrementalData, filters.sel, main, mainQuery, wholeRangeQuery, withSel, selected, sourceMain, machine, context]);
+  return {
+    data, machine: data.machine,
+    chartSeries: incremental ? data.series : sourceMain.series,
+    chartRange: incremental ? data.range : sourceMain.range,
+    loaded: incremental ? historyReady(subscription) : !!main,
+    busy: incremental ? !subscription.ready : busy,
+    error: incremental || subscription.mode === 'unavailable' ? subscription.error : error,
+    refresh, connected, everConnected: incremental ? subscription.everConnected : everConnected.current,
+    subscription,
+    analyticsError: incremental ? error || contextError : null,
+  };
 }

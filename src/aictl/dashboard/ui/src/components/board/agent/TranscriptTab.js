@@ -14,6 +14,8 @@ import { NA, fmtMs, fmtN } from '../format.js';
 import { Stats } from '../Panel.js';
 import { Wait, SessionNote, clip, clock, isActive } from './common.js';
 import { responseOf, visibleTurns } from './transcriptModel.js';
+import { useLiveState } from '../../../live/context.js';
+import NativeOutput from './NativeOutput.js';
 
 export const REFRESH_MS = 5000;
 
@@ -75,14 +77,16 @@ function TurnCard({ turn, n, open, onToggle, withheld, replyNote, loading }) {
 }
 
 export default function TranscriptTab({ a, st, ctx }) {
+  const { state: subscription } = useLiveState();
+  const incremental = subscription.mode === 'incremental';
   const live = isActive(st);
   const [auto, setAuto] = useState(true);
   const [beat, setBeat] = useState(0);
   useEffect(() => {
-    if (!live || !auto) return undefined;
+    if (incremental || !live || !auto) return undefined;
     const t = setInterval(() => { if (!document.hidden) setBeat(b => b + 1); }, REFRESH_MS);
     return () => clearInterval(t);
-  }, [live, auto]);
+  }, [live, auto, incremental]);
   const { data, error } = useDetail(o => api.getBoardAgentTranscript(a.id, o), 'transcript:' + a.id, beat);
   const [open, setOpen] = useState(() => new Set());
   // Whole turns read on demand, by timestamp. A failed read keeps the brief turn.
@@ -102,7 +106,7 @@ export default function TranscriptTab({ a, st, ctx }) {
     });
     return () => ctl.abort();
   }, [a.id, wanted.join(',')]);
-  if (!data) return html`<${Wait} error=${error} what="the transcript"/>`;
+  if (!data) return html`<${NativeOutput} a=${a} captureMode=${ctx.data?.capture_mode}/><${Wait} error=${error} what="the transcript"/>`;
   const allOpen = turns.length > 0 && open.size >= turns.length;
   const toggle = i => setOpen((prev) => {
     const next = new Set(prev);
@@ -112,14 +116,15 @@ export default function TranscriptTab({ a, st, ctx }) {
   const s = data.summary || {};
   const replyNote = data.replies_kept === false ? (data.reply_note || 'The reply text is not kept') + '.' : null;
   return html`<${SessionNote} a=${a}/>
+    <${NativeOutput} a=${a} captureMode=${mode}/>
     ${withheld ? html`<div class="bd-banner bd-ag-capture" role="status">${'Text is not kept: the capture mode is ' + (mode && mode !== 'full' ? mode : 'not full') + ' for this session. Counts, times, models and tool calls are still shown. ' + captureHowto()}</div>` : null}
-    <${FixedPanel} id="agtrs" title="Summary" sub=${s.source || ''}>
+    <${FixedPanel} id="agtrs" title=${incremental ? 'Historical summary' : 'Summary'} sub=${s.source || ''}>
       <${Stats} stats=${[{ label: 'Turns', value: fmtN(s.total_turns ?? turns.length) }, { label: 'Model calls', value: fmtN(s.total_api_calls) }, { label: 'Tool calls', value: fmtN(s.total_tool_uses) }, { label: 'Tokens', value: fmtN(s.total_tokens) }, { label: 'Errors', value: fmtN(s.errors) }, { label: 'Subagents', value: fmtN(s.subagents) }, { label: 'Compactions', value: fmtN(s.compactions) }]}/>
     </${FixedPanel}>
-    <${FixedPanel} id="agtr" title="Transcript, oldest first" sub=${live ? (auto ? 'Read again every 5 s while the agent runs' : 'Not refreshing') : ''}>
+    <${FixedPanel} id="agtr" title="Transcript, oldest first" sub=${incremental ? 'Queryable Kusto history · read on open' : live ? (auto ? 'Read again every 5 s while the agent runs' : 'Not refreshing') : ''}>
       <div class="bd-ag-bar">
         ${turns.length ? html`<button type="button" class="bd-btn" onClick=${() => setOpen(allOpen ? new Set() : new Set(turns.map((_, i) => i)))}>${allOpen ? 'Collapse all' : 'Expand all'}</button>` : null}
-        ${live ? html`<label class="bd-ag-check"><input type="checkbox" checked=${auto} onChange=${e => setAuto(e.currentTarget.checked)}/>Refresh while it runs</label>` : null}
+        ${live && !incremental ? html`<label class="bd-ag-check"><input type="checkbox" checked=${auto} onChange=${e => setAuto(e.currentTarget.checked)}/>Refresh while it runs</label>` : null}
       </div>
       ${replyNote && !withheld && turns.length ? html`<div class="bd-note" role="status">${replyNote} The prompts, model calls, tool calls and tokens of each turn are shown.</div>` : null}
       ${turns.length ? html`<ol class="bd-ag-turnl">${turns.map((t, i) => html`<${TurnCard} key=${i} turn=${t} n=${i + 1} open=${open.has(i)} onToggle=${() => toggle(i)} withheld=${withheld} replyNote=${replyNote} loading=${!!t.detail && open.has(i)}/>`)}</ol>`

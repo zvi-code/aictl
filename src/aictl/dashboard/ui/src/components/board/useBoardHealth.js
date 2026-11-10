@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { fetchJson } from '../../api.js';
 import { normalizeMachine, TICK_MS } from './useBoardData.js';
+import { useLiveState } from '../../live/context.js';
+import { topicData } from '../../live/model.js';
 
 const object = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 
@@ -27,11 +29,13 @@ export function normalizeHealth(raw) {
 
 /** Health reads never wait for history reads, overlap, or run in a hidden tab. */
 export function useBoardHealth({ enabled, live }) {
+  const { state: subscription } = useLiveState();
+  const legacy = subscription.mode === 'legacy';
   const [state, setState] = useState({ data: null, error: null, busy: false, nowS: Date.now() / 1000 });
   const current = useRef(null);
   const requested = useRef(false);
   useEffect(() => {
-    if (!enabled) { setState(s => s.busy ? { ...s, busy: false } : s); return undefined; }
+    if (!enabled || !legacy) { setState(s => s.busy ? { ...s, busy: false } : s); return undefined; }
     let active = true;
     const load = () => {
       if (document.hidden || current.current) return;
@@ -66,6 +70,17 @@ export function useBoardHealth({ enabled, live }) {
       current.current?.abort();
       current.current = null;
     };
-  }, [enabled, live]);
+  }, [enabled, live, legacy]);
+  useEffect(() => {
+    if (!enabled || subscription.mode !== 'incremental' || !live) return undefined;
+    const timer = setInterval(() => { if (!document.hidden) setState(s => ({ ...s, nowS: Date.now() / 1000 })); }, TICK_MS);
+    return () => clearInterval(timer);
+  }, [enabled, live, subscription.mode]);
+  const streamed = topicData(subscription, 'runtime.health', 'local');
+  if (subscription.mode === 'incremental') return {
+    data: streamed ? normalizeHealth(streamed) : null,
+    error: subscription.error, busy: !streamed && !subscription.error, nowS: state.nowS,
+  };
+  if (subscription.mode === 'unavailable') return { ...state, error: subscription.error, busy: false };
   return state;
 }

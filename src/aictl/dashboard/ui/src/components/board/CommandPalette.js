@@ -76,7 +76,7 @@ export function boardCommands({ sections, ranges, rangeId, tools, agents, theme,
   }
   for (const [id, label] of [['dark', 'Dark'], ['light', 'Light']]) out.push({ id: 'theme:' + id, group: 'Display', label: 'Theme: ' + label, run: () => go.theme(id), on: theme === id });
   for (const [id, label] of [['compact', 'Compact'], ['comfortable', 'Comfortable']]) out.push({ id: 'density:' + id, group: 'Display', label: 'Row height: ' + label, keywords: 'density', run: () => go.density(id), on: density === id });
-  out.push({ id: 'layout:reset', group: 'Layout', label: 'Reset layout', keywords: 'default panels', run: () => go.resetLayout() });
+  if (screen !== 'health') out.push({ id: 'layout:reset', group: 'Layout', label: 'Reset layout', keywords: 'default panels', run: () => go.resetLayout() });
   out.push({ id: 'help:shortcuts', group: 'Help', label: 'Keyboard shortcuts', shortcut: '?', run: () => go.shortcuts() });
   return out;
 }

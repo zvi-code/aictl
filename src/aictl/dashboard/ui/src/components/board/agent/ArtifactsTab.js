@@ -14,6 +14,7 @@ export const whereOf = x => (x.kind === 'written' ? 'Written' : (x.folder || 'Se
 
 export function whyNotViewable(x) {
   if (x.exists === false) return 'This file is no longer on disk. aictl keeps only its path, size and time, not its content.';
+  if (x.exists == null && x.source === 'kusto.queryable') return 'This path, size and time are indexed in Kusto. Current disk presence and file content are unknown from this query.';
   return 'aictl cannot show this file as text. It may be binary, or outside the folders the server may read.';
 }
 
@@ -28,7 +29,7 @@ export function artifactsDef(list, { filter = '', sel = null, pick = () => {} } 
       { k: 'ext', l: 'Type', w: '60px' },
       { k: 'size', l: 'Size', n: true, w: '70px' },
       { k: 'mtime', l: 'Modified', w: '110px' },
-      { k: 'exists', l: 'Exists', w: '66px', t: 'Checked when this panel opened' },
+      { k: 'exists', l: 'Exists', w: '66px', t: 'Current disk presence when reported. Indexed metadata does not establish current existence.' },
       { k: 'writes', l: 'Writes', n: true, w: '60px', t: 'Times the session wrote this file' },
     ],
     primary: 'name',
@@ -36,14 +37,14 @@ export function artifactsDef(list, { filter = '', sel = null, pick = () => {} } 
       id: x.path,
       go: () => pick(x.path),
       cls: sel === x.path ? 'bd-sel' : '',
-      sort: { name: x.name || x.path, where: whereOf(x), ext: x.ext || '', size: x.size_bytes, mtime: x.mtime, exists: x.exists === false ? 0 : 1, writes: x.writes },
+      sort: { name: x.name || x.path, where: whereOf(x), ext: x.ext || '', size: x.size_bytes, mtime: x.mtime, exists: x.exists == null ? null : x.exists ? 1 : 0, writes: x.writes },
       cells: {
         name: { v: x.name || x.path, title: x.path, cls: 'm' },
         where: { v: whereOf(x), cls: 'dim', title: x.kind === 'written' ? 'Written by the session' : 'In the folder of the session: ' + (x.folder || 'top level') },
         ext: { v: x.ext || NA, cls: 'dim' },
         size: { v: fmtBytes(x.size_bytes), title: x.size_bytes == null ? 'No size stored' : fmtN(x.size_bytes) + ' bytes' },
         mtime: { v: stamp(x.mtime, true), cls: 'dim', title: x.mtime ? new Date(x.mtime * 1000).toLocaleString() : '' },
-        exists: { v: x.exists === false ? 'Missing' : 'Yes', cls: x.exists === false ? 'crit' : 'dim' },
+        exists: { v: x.exists == null ? (x.source === 'kusto.queryable' ? 'Indexed' : 'Unknown') : x.exists ? 'Yes' : 'Missing', cls: x.exists === false ? 'crit' : 'dim' },
         writes: { v: fmtN(x.writes), cls: 'dim' },
       },
     })),
@@ -78,10 +79,11 @@ export default function ArtifactsTab({ data, act }) {
   const item = list.find(x => x.path === sel) || null;
   const total = data.artifacts_total ?? list.length;
   const missing = list.filter(x => x.exists === false).length;
+  const unknown = list.some(x => x.exists == null);
   const stats = [
     { label: 'Artifacts', value: fmtN(total) },
-    { label: 'Total size', value: data.artifacts_bytes == null ? NA : fmtBytes(data.artifacts_bytes), sub: 'files that exist' },
-    { label: 'Missing', value: fmtN(missing), sub: 'of the ' + list.length + ' listed' },
+    { label: 'Total size', value: data.artifacts_bytes == null ? NA : fmtBytes(data.artifacts_bytes), sub: unknown ? 'indexed sizes' : 'files that exist' },
+    { label: 'Missing', value: unknown ? NA : fmtN(missing), sub: unknown ? 'current disk presence unknown' : 'of the ' + list.length + ' listed' },
   ];
   return html`<${FixedPanel} id="arts" title="Artifacts" sub=${total > list.length ? 'Showing ' + list.length + ' of ' + total : total + ' files'}>
     <${Stats} stats=${stats}/>
@@ -90,7 +92,7 @@ export default function ArtifactsTab({ data, act }) {
     ${total > list.length ? html`<div class="bd-note">Showing ${list.length} of ${total} artifacts. The newest come first. The totals count all of them.</div>` : null}
     <div class="bd-note">aictl stores the path, size and time of each file, not its content.</div>
   </${FixedPanel}>
-  ${item ? html`<${Viewer} key=${item.path} item=${item} act=${act}/>` : null}
+  ${item?.viewable && item.exists !== false ? html`<${Viewer} key=${item.path} item=${item} act=${act}/>` : null}
   ${item && (!item.viewable || item.exists === false) ? html`<${FixedPanel} id="artno" title="Cannot show this file" sub=${item.path}>
     <div class="bd-ptext">${whyNotViewable(item)}</div>
     <${Actions} actions=${[{ label: 'Copy path', go: () => act.copy(item.path, 'Copied the path') }]}/>

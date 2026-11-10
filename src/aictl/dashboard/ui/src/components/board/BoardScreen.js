@@ -20,12 +20,18 @@ import { Ico, PATHS } from './icons.js';
 import {
   DEFAULT_LAYOUT, TITLES, findPanel, freshUi, isDefaultLayout, loadUi, moveSection, movePanel, saveUi, stepPanel, updatePanel,
 } from './layout.js';
-import Panel from './Panel.js';
+import Panel, { Stats } from './Panel.js';
+import { buildPanel } from './panels.js';
+import Table from './Table.js';
 import { kpiList, sectionSummary, streamPill } from './summary.js';
 import { bindTip } from './tip.js';
 import { useBoardData } from './useBoardData.js';
 import { useBoardHealth } from './useBoardHealth.js';
-import { healthSources, healthStatus } from './health.js';
+import { HealthOverview, healthSources, healthStatus } from './health.js';
+import { LiveProvider } from '../../live/context.js';
+import LiveStatus from '../../live/Status.js';
+import { historyReady, topicData } from '../../live/model.js';
+import { isStoredToolSelected } from '../../utils/toolScope.js';
 import './board.css';
 
 const SECTIONS = DEFAULT_LAYOUT.map(s => ({ id: s.id, title: s.title, anchor: s.anchor }));
@@ -72,6 +78,23 @@ function useResolvedTheme(theme) {
 }
 
 const Check = ({ on }) => html`<span class=${'bd-check' + (on ? ' bd-on' : '')}>${on ? html`<${Ico} d=${PATHS.check}/>` : null}</span>`;
+
+function HealthCollectionDetails({ ctx }) {
+  const [folded, setFolded] = useState({});
+  const local = { folded, setFold: (key, on) => setFolded(value => ({ ...value, [key]: on })) };
+  return html`<details class="bd-healthdetails" id="health-source-details">
+    <summary>Collection details <span>Sources, collectors, ingesters and data quality</span></summary>
+    <div class="bd-healthcollectiondetails">${['self', 'sources', 'collectors', 'quality'].map(id => {
+      const body = buildPanel(id, ctx, local, {});
+      return html`<section key=${id} id=${'p-' + id} aria-label=${TITLES[id]}>
+        <h2>${TITLES[id]}</h2>
+        ${body.banner ? html`<div class="bd-pbanner" role="alert">${body.banner}</div>` : null}
+        ${body.stats ? html`<${Stats} stats=${body.stats}/>` : null}
+        ${body.table ? html`<${Table} def=${body.table} label=${TITLES[id]}/>` : null}
+      </section>`;
+    })}</div>
+  </details>`;
+}
 
 // Rail, TopBar and FilterRow are memo components: their props keep their identity
 // while only `busy` changes. The range summary is a prop so the rail follows it.
@@ -142,7 +165,7 @@ const TopBar = memo(({ f, board, menu, ui, resolvedTheme, setTheme, live, act, s
     ${screen !== 'health' ? html`<label class="bd-srch"><${Ico} d=${PATHS.search}/><input id="bd-find" aria-label="Find agents, prompts, files and tools" placeholder="Find agent, prompt, file, tool" value=${f.q} onInput=${e => act.setFind(e.target.value)}/></label>` : null}
     <button type="button" class="bd-ctl" aria-label="Open the command palette" title="Command palette (Cmd/Ctrl+K). Press ? for the keyboard shortcuts." onClick=${act.openPalette}><${Ico} d=${PATHS.command}/>Commands</button>
     <span class="bd-sp"></span>
-    <div class="bd-anch">
+    ${screen !== 'health' ? html`<div class="bd-anch">
       <button type="button" class="bd-ctl" aria-expanded=${menu === 'layout' ? 'true' : 'false'} onClick=${() => act.toggleMenu('layout')}><${Ico} d=${PATHS.layout}/><span class="bd-k">Layout</span>${changed ? 'Changed' : 'Default'}</button>
       ${menu === 'layout' ? html`<div class="bd-menu" style="right:0;top:32px">
         <button type="button" class="bd-mi" onClick=${() => act.foldAll(false)}>Fold all sections</button>
@@ -153,7 +176,7 @@ const TopBar = memo(({ f, board, menu, ui, resolvedTheme, setTheme, live, act, s
         ${hiddenPanels.map(id => html`<button key=${id} type="button" class="bd-mi" onClick=${() => act.show(id)}>Show ${TITLES[id]}</button>`)}
         ${hiddenPanels.length ? null : html`<div class="bd-mi bd-muted">None. Use the panel menu to hide one.</div>`}
       </div>` : null}
-    </div>
+    </div>` : null}
     <div class="bd-anch">
       <button type="button" class="bd-ctl" aria-expanded=${menu === 'display' ? 'true' : 'false'} onClick=${() => act.toggleMenu('display')}><span class="bd-k">Display</span>${(resolvedTheme === 'dark' ? 'Dark' : 'Light') + ', ' + ui.density}</button>
       ${menu === 'display' ? html`<div class="bd-menu" style="right:0;top:32px">
@@ -178,7 +201,7 @@ function FilterMenu({ fkey, label, value, active, menu, items, act }) {
   </div>`;
 }
 
-const FilterRow = memo(({ board, data, ctx, menu, act }) => {
+const FilterRow = memo(({ board, data, ctx, menu, act, subscription }) => {
   const { filters, tools } = board;
   const opts = data.options;
   const toolIds = opts.tools.map(t => t.id);
@@ -186,13 +209,19 @@ const FilterRow = memo(({ board, data, ctx, menu, act }) => {
   const allAgents = data.scope.all_agents;
   const statusCounts = {};
   if (filters.status === 'all') {
-    for (const a of data.agents) if (!a.parent_id) statusCounts[a.status] = (statusCounts[a.status] || 0) + 1;
+    for (const a of data.agents) if (!a.parent_id) {
+      const state = a.running === true && a.status === 'unknown' ? 'running' : a.status;
+      statusCounts[state] = (statusCounts[state] || 0) + 1;
+    }
     statusCounts.active = (statusCounts.running || 0) + (statusCounts.looping || 0) + (statusCounts.waiting || 0) + (statusCounts.idle || 0);
   }
   const selValue = filters.sel ? stamp(filters.sel.since, true) + ' to ' + stamp(filters.sel.until, true) : '';
   const clearable = canClear(filters, tools);
   const shown = data.scope.shown_agents;
-  const scope = shown === allAgents ? 'Showing all ' + allAgents + ' agents in this time' : 'Showing ' + shown + ' of ' + allAgents + ' agents in this time';
+  const queryable = subscription?.mode !== 'incremental' || historyReady(subscription);
+  const runtimeOnly = data.agents.filter(agent => agent.runtime_present && agent.queryable === false).length;
+  const scope = (queryable ? (shown === allAgents ? 'Showing all ' + allAgents + ' agents in this time' : 'Showing ' + shown + ' of ' + allAgents + ' agents in this time') : 'Queryable history is not ready')
+    + (runtimeOnly ? ' · ' + runtimeOnly + ' live runtime ' + (runtimeOnly === 1 ? 'agent' : 'agents') + ' not yet in this history' : '');
   // Tool calls, tests and errors belong to a session, not to one model or project.
   const narrowed = filters.model !== 'all' || filters.project !== 'all';
   const scopeNote = narrowed ? ' Tokens and cost follow this filter. Tool calls, tests and errors count the whole session.' : '';
@@ -262,7 +291,11 @@ export function staleCode(data) {
   return self && typeof self.code_changed_at === 'number' ? self.code_changed_at : null;
 }
 
-export default function BoardScreen() {
+export default function BoardScreen({ liveController }) {
+  return html`<${LiveProvider} controller=${liveController}><${BoardContent}/><//>`;
+}
+
+function BoardContent() {
   const board = useBoardFilters();
   const { filters, applied, tools, update, setFind } = board;
   const { theme, setTheme } = useTheme();
@@ -292,7 +325,16 @@ export default function BoardScreen() {
   const pausedRef = useRef(false);
   pausedRef.current = !!dragId;
 
-  const { data, chartSeries, chartRange, loaded, busy, error, refresh, connected, everConnected } = useBoardData({ filters: applied, tools, live, pausedRef, enabled: screen !== 'health' });
+  const { data, chartSeries, chartRange, loaded, busy, error, refresh, connected, everConnected, subscription, analyticsError } = useBoardData({
+    filters: applied, tools, live, pausedRef, enabled: screen !== 'health', history: screen === 'board',
+    requiredTopics: screen === 'health' ? ['runtime.health'] : screen === 'settings' ? ['configuration.file'] : ['history.board', 'runtime.machine'],
+  });
+  const incremental = subscription.mode === 'incremental';
+  const configured = topicData(subscription, 'configuration.file', 'current');
+  const loadedConfiguration = subscription.topics?.get('configuration.loaded');
+  const runtimeConfiguration = useMemo(() => [...(loadedConfiguration?.values() || [])]
+    .map(entity => ({ id: entity.id, ...entity.data }))
+    .filter(record => isStoredToolSelected(record.tool, tools)), [loadedConfiguration, tools]);
   const health = useBoardHealth({ enabled: screen === 'health', live });
   const healthState = useMemo(() => healthStatus(health.data, health.error, health.nowS), [health.data, health.error, health.nowS]);
   const pill = streamPill({ live, connected, everConnected, ageS: data.machine?.pipeline?.stream?.snapshot_age_s });
@@ -321,6 +363,7 @@ export default function BoardScreen() {
   const scanProject = applied.project === 'all' ? null : applied.project;
   const scanGeneration = useRef(0);
   const loadFindings = useCallback((fresh) => {
+    if (incremental && !fresh) { setSettingsRaw(s => ({ ...s, loading: false })); return; }
     const generation = ++scanGeneration.current;
     const current = () => generation === scanGeneration.current;
     // Each answer shows when it arrives, so a slow scan holds up nothing else.
@@ -329,14 +372,14 @@ export default function BoardScreen() {
       () => setSettingsRaw(s => ({ ...s, [key]: null })),
     );
     setSettingsRaw(s => ({ ...s, loading: true, error: null }));
-    put('effective', api.getEffectiveModels());
+    if (!incremental) put('effective', api.getEffectiveModels());
     put('hooks', api.getHooksStatus());
     put('otel', api.getOtelStatus());
     api.getContextAudit(fresh, scan => { if (current()) setSettingsRaw(s => ({ ...s, scan })); }, { project: scanProject }).then(
       audit => { if (current()) setSettingsRaw(s => ({ ...s, audit, scan: null, loading: false })); },
       e => { if (current()) setSettingsRaw(s => ({ ...s, audit: null, scan: null, loading: false, error: e?.message })); },
     );
-  }, [scanProject]);
+  }, [scanProject, incremental]);
   // The findings and the settings wait for an idle moment after the board's first data.
   const [idle, setIdle] = useState(false);
   useEffect(() => {
@@ -362,12 +405,18 @@ export default function BoardScreen() {
   const settingsWanted = idle || screen === 'settings';
   const boardAt = data.generated_at || 0;
   const changedAt = data.settings_at || 0;
-  const loadSettings = useCallback(() => Promise.all([api.getSettingsTools(), loadChunk(() => import('../settings/model.js'))]).then(
+  const loadSettings = useCallback(() => {
+    if (incremental && !configured) return Promise.resolve();
+    return Promise.all([incremental ? Promise.resolve(configured) : api.getSettingsTools(), loadChunk(() => import('../settings/model.js'))]).then(
     ([d, model]) => { if (mounted.current) setSettingsRes({ data: d || {}, model, error: null }); },
     (e) => { if (mounted.current) setSettingsRes(s => ({ ...s, error: e })); },
-  ), []);
+    );
+  }, [incremental, configured]);
   useEffect(() => {
-    if (!settingsWanted) return;
+    if (incremental && settingsWanted && configured) loadSettings();
+  }, [incremental, settingsWanted, configured, loadSettings]);
+  useEffect(() => {
+    if (!settingsWanted || incremental || subscription.mode === 'pending') return;
     const last = settingsAt.current;
     const changed = settingsVersion.current !== undefined && changedAt !== settingsVersion.current;
     settingsVersion.current = changedAt;
@@ -378,18 +427,18 @@ export default function BoardScreen() {
     }
     settingsAt.current = boardAt;
     loadSettings();
-  }, [settingsWanted, boardAt, changedAt, loadSettings]);
+  }, [settingsWanted, boardAt, changedAt, loadSettings, incremental, subscription.mode]);
   // The hook status for the Settings screen's Hooks sections, read once when the screen first opens.
   const [hooksStatus, setHooksStatus] = useState(null);
   const hooksAsked = useRef(false);
   useEffect(() => {
-    if (screen !== 'settings' || hooksAsked.current) return;
+    if (screen !== 'settings' || hooksAsked.current || subscription.mode === 'pending') return;
     hooksAsked.current = true;
     api.getHooksStatus().then(
       (h) => { if (mounted.current && h && typeof h === 'object') setHooksStatus(h); },
       () => {},
     );
-  }, [screen]);
+  }, [screen, subscription.mode]);
 
   const toolIds = useMemo(() => data.options.tools.map(t => t.id), [data.options]);
   // Settings apply whether or not a tool ran in this time, so its data sources count too.
@@ -571,7 +620,7 @@ export default function BoardScreen() {
         if (onBoard) setTimeout(() => document.getElementById(sec.anchor)?.scrollIntoView?.({ block: 'start' }), 0);
       },
       stepSection: (dir) => {
-        const order = L.current.ui.layout.map(sec => sec.id);
+        const order = L.current.ui.layout.filter(sec => sec.id !== 'health').map(sec => sec.id);
         const area = document.getElementById('main-area');
         const top = area ? area.getBoundingClientRect().top : 0;
         const tops = order.map(id => document.getElementById(SEC_BY_ID[id].anchor)?.getBoundingClientRect().top);
@@ -698,7 +747,7 @@ export default function BoardScreen() {
         setMenu(null);
         setShortcuts(true);
       } else if (/^[1-9]$/.test(e.key)) {
-        const sec = s.ui.layout[Number(e.key) - 1];
+        const sec = s.ui.layout.filter(section => section.id !== 'health')[Number(e.key) - 1];
         if (sec) { e.preventDefault(); actRef.current.jumpTo(sec.id); }
       } else if (e.key === '[' || e.key === ']') {
         e.preventDefault();
@@ -723,8 +772,8 @@ export default function BoardScreen() {
   }, [applied, tools]);
 
   const ctx = useMemo(() => ({
-    data: viewData, series: chartSeries, range: chartRange, chartRange, sel: applied.sel, filters: applied, tools, toolIds, settingToolIds, toolName, nowS, stopped, findings, actions: act, query, refreshKey: data.generated_at,
-  }), [viewData, data.generated_at, chartSeries, chartRange, applied, tools, toolIds, settingToolIds, toolName, nowS, stopped, findings, query, act]);
+    data: viewData, series: chartSeries, range: chartRange, chartRange, sel: applied.sel, filters: applied, tools, toolIds, settingToolIds, toolName, nowS, stopped, findings, actions: act, query, refreshKey: incremental ? 0 : data.generated_at,
+  }), [viewData, data.generated_at, chartSeries, chartRange, applied, tools, toolIds, settingToolIds, toolName, nowS, stopped, findings, query, act, incremental]);
 
   const settingsFindings = useMemo(() => ({ ...findings, rescan: act.rescan }), [findings, act]);
   const settingsSource = useMemo(() => (settingsRes.data ? {
@@ -737,7 +786,9 @@ export default function BoardScreen() {
     findings: settingsFindings,
     refresh: loadSettings,
     hooks: hooksStatus || undefined,
-  } : null), [settingsRes.data, tools, toolName, act, settingsFindings, loadSettings, hooksStatus]);
+    configuredOnly: incremental,
+    runtimeConfiguration,
+  } : null), [settingsRes.data, tools, toolName, act, settingsFindings, loadSettings, hooksStatus, incremental, runtimeConfiguration]);
   const settingsSum = useMemo(() => settingsLine(settingsRes, tools), [settingsRes, tools]);
 
   const hiddenIds = useMemo(() => new Set(ui.hidden), [ui.hidden]);
@@ -747,20 +798,21 @@ export default function BoardScreen() {
     <${Rail} ui=${ui} data=${data} series=${chartSeries} loaded=${loaded} findingsCount=${findings.list.length} attention=${attention} screen=${screen} settingsSum=${settingsSum} healthSum=${health.data ? healthState.label : 'Collection, ingestion and store'} rangeSum=${act.rangeSummary()} act=${act}/>
     <div class="bd-main">
       <${TopBar} f=${filters} board=${board} menu=${menu} ui=${ui} resolvedTheme=${resolvedTheme} setTheme=${setTheme} live=${live} act=${act} screen=${screen}/>
-      ${screen === 'health' ? html`<div class="bd-bar" role="note">Current health of this aictl daemon. Board time, project, search and tool filters do not apply.</div>` : html`<${FilterRow} board=${board} data=${data} ctx=${ctx} menu=${menu} act=${act}/>`}
+      ${screen !== 'health' ? html`<${FilterRow} board=${board} data=${data} ctx=${ctx} menu=${menu} act=${act} subscription=${subscription}/>` : null}
       <div class="bd-body">
-        <main class="bd-area" id="main-area" aria-label=${screen === 'settings' ? 'Settings' : screen === 'health' ? 'aictl Health' : undefined}>
+        <main class=${'bd-area' + (screen === 'health' ? ' bd-healtharea' : '')} id="main-area" aria-label=${screen === 'settings' ? 'Settings' : screen === 'health' ? 'aictl Health' : undefined}>
+          <${LiveStatus} state=${subscription} history=${screen === 'board'}/>
+          ${screen === 'board' && analyticsError ? html`<div class="bd-banner" role="alert">Could not read on-demand historical data: ${analyticsError.message}. Runtime fields update independently.</div>` : null}
           ${screen === 'settings' ? html`<${SettingsArea} Workspace=${SettingsC} res=${settingsRes} source=${settingsSource}/>` : html`
-          ${screen === 'health' ? html`<div class="bd-sech bd-healthhead"><h1>aictl Health</h1><span class=${'bd-' + healthState.cls} role="status">${healthState.label}</span><span class="bd-sum">${health.data?.generated_at ? 'Updated ' + stamp(health.data.generated_at, true) : 'No health timestamp'}</span></div>
-            ${health.error ? html`<div class="bd-banner" role="alert">Could not read live health: ${health.error.status === 404 ? 'this daemon does not provide /api/board/health.' : health.error.message} ${health.data ? 'Showing the last response.' : 'Health is unavailable; history is not used as a substitute.'}</div>` : null}
-            ${!health.data && !health.error ? html`<div class="bd-sk" role="status">Loading live health...</div>` : null}
-            ${healthState.issues.length ? html`<div class="bd-note" role="status">${healthState.issues.join(' ')}</div>` : null}
+          ${screen === 'health' ? html`<${HealthOverview} health=${health.data} status=${healthState} error=${incremental ? null : health.error} nowS=${nowS}>
+            <${HealthCollectionDetails} ctx=${ctx}/>
+          <//>
           ` : html`
-          ${error ? html`<div class="bd-banner" role=${error.status === 503 ? 'status' : 'alert'}><${Ico} d=${PATHS.warn}/>${error.status === 503 ? STARTING : 'Could not update the board: ' + error.message + '. Showing the last data.'}</div>` : null}
+          ${error && subscription.mode === 'legacy' ? html`<div class="bd-banner" role=${error.status === 503 ? 'status' : 'alert'}><${Ico} d=${PATHS.warn}/>${error.status === 503 ? STARTING : 'Could not update the board: ' + error.message + '. Showing the last data.'}</div>` : null}
           ${staleCode(data) ? html`<div class="bd-banner" role="alert"><${Ico} d=${PATHS.warn}/>aictl was updated on disk at ${stamp(staleCode(data), true)}, after this daemon started at ${stamp(data.machine.pipeline.self.started_at, true)}. The page is new and the daemon runs the old code, so new parts of the board may fail. Restart the daemon: stop it, then run aictl daemon serve again.</div>` : null}
           ${!loaded && !error ? html`<div class="bd-sk" role="status">Loading the board...</div>` : null}
           <${Kpis} data=${data} pill=${pill}/>`}
-          ${ui.layout.filter(sec => screen === 'health' ? sec.id === 'health' : sec.id !== 'health').map((sec) => {
+          ${ui.layout.filter(sec => screen !== 'health' && sec.id !== 'health').map((sec) => {
             const def = SEC_BY_ID[sec.id];
             return html`<section key=${sec.id} class=${'bd-sec' + (sec.id === 'health' ? ' bd-health' : '')} id=${def.anchor} aria-label=${def.title}>
               <div class="bd-sech">

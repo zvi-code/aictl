@@ -238,6 +238,17 @@ describe('Artifacts tab', () => {
     await findByText(/cannot show this file as text/);
   });
 
+  it('keeps indexed Kusto artifacts distinct from current disk presence and does not read their content', async () => {
+    const indexed = art({ exists: null, viewable: false, source: 'kusto.queryable' });
+    const { findByText, container, fn } = mountDrawer(agentDetail({ artifacts: [indexed], artifacts_total: 1, artifacts_bytes: 2048 }), 'artifacts');
+    fireEvent.click(await findByText('notes.md'));
+    await findByText(/Current disk presence and file content are unknown/);
+    expect(container.textContent).toContain('Indexed');
+    expect(container.textContent).toContain('indexed sizes');
+    expect(container.querySelector('.bd-stats [title="Missing"]').textContent).toContain('n/a');
+    expect(fn.mock.calls.some(([url]) => String(url).startsWith('/api/file?'))).toBe(false);
+  });
+
   it('sorts every column', async () => {
     const { findByText, container } = mountDrawer(detail(), 'artifacts');
     await findByText('notes.md');

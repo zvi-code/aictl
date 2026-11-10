@@ -49,10 +49,11 @@ function agentCell(ctx, a, level, foldOn, foldOpen, onFold) {
 }
 export function statusCell(a, stopped) {
   const st = stopped && stopped[a.id] ? 'stopped' : a.status;
-  const s = statusMeta(st);
+  const processOnly = a.running === true && st === 'unknown';
+  const s = statusMeta(processOnly ? 'running' : st);
   const p = a.pending;
   const wait = p && st === 'waiting' ? 'Waits for confirmation of ' + p.name + ': ' + p.target : s.label;
-  return { v: s.label, dot: s.dot, title: wait };
+  return { v: s.label, sub: processOnly ? 'Activity unknown' : undefined, dot: s.dot, title: processOnly ? 'A running process is present; native work or idle state is not reported.' : wait };
 }
 
 function panelAttention(ctx) {
@@ -97,16 +98,16 @@ function panelAgents(ctx, local, pid) {
     const hasKids = !level && kids.has(a.id);
     const open = !folded[a.id];
     const st = ctx.stopped[a.id] ? 'stopped' : a.status;
-    const meta = statusMeta(st);
-    const live = isLive(st);
-    const age = (a.ended_at || nowS) - (a.started_at || nowS);
+    const meta = statusMeta(st === 'unknown' && a.running === true ? 'running' : st);
+    const live = isLive(st) || a.running === true;
+    const age = (live ? nowS : a.ended_at || nowS) - (a.started_at || nowS);
     const key = group === 'tool' ? ctx.toolName(a.tool) : group === 'project' ? projectName(a.project) : group === 'model' ? ((a2 => a2?.primary_model || a2?.models?.[0] || NA)(level ? rootOf(a.parent_id) : a)) : null;
     const pendingOn = a.pending && st === 'waiting';
     const models = (a.models || []).join(', ');
     return {
-      id: a.id, parentId: a.parent_id, level, go: a.placeholder ? null : openAgent(ctx, a.id), groupKey: key,
+      id: a.id, parentId: a.parent_id, level, queryable: a.queryable, go: a.placeholder ? null : openAgent(ctx, a.id), groupKey: key,
       sort: {
-        _cr: a.cache_read, _in: num(a.cache_read) + num(a.input) + num(a.cache_write),
+        _cr: a.cache_read, _in: a.queryable === undefined ? num(a.cache_read) + num(a.input) + num(a.cache_write) : [a.cache_read, a.input, a.cache_write].every(value => value == null) ? null : sumOf([a.cache_read, a.input, a.cache_write]),
         name: a.title, st: meta.rank + (a.started_at ? (nowS - a.started_at) / 1e9 : 0), tool: a.tool, project: a.project, model: models,
         msgs: a.msgs ? a.msgs.user + a.msgs.assistant + a.msgs.tool : null, input: a.input, output: a.output, cr: a.cached_share, cost: a.cost_usd,
         calls: a.tool_calls, fails: a.failures, asked: a.confirms_asked, cpu: a.cpu_percent, mem: a.mem_mb, dur: age,
@@ -145,7 +146,8 @@ function panelAgents(ctx, local, pid) {
   ];
   const groupRow = group === 'none' ? null : (k, members) => {
     const top = members.filter(m => !m.level);
-    const sum = key => sumOf(top.map(m => m.sort[key]));
+    const explicitHistory = top.some(row => row.queryable !== undefined);
+    const sum = key => explicitHistory && top.some(row => row.sort[key] == null) ? null : sumOf(top.map(row => row.sort[key]));
     const fid = 'g:' + k;
     const isFolded = !!folded[fid];
     const cr = sum('_cr');
@@ -156,18 +158,20 @@ function panelAgents(ctx, local, pid) {
         name: { v: k, sub: top.length + ' agents', foldOn: true, foldOpen: !isFolded, foldLabel: isFolded ? 'Unfold this group' : 'Fold this group', fold: () => setFold(fid, !isFolded) },
         msgs: { v: fmtN(sum('msgs')) }, input: { v: fmtN(sum('input')) }, output: { v: fmtN(sum('output')) },
         cr: { v: cr ? Math.round((cr / inp) * 100) + '%' : NA }, cost: { v: fmtUsd(sum('cost')) }, calls: { v: fmtN(sum('calls')) },
-        fails: { v: sum('fails') }, asked: { v: sum('asked') }, cpu: { v: sum('cpu') ? fmtCpu(sum('cpu')) : '' }, mem: { v: sum('mem') ? fmtMem(sum('mem')) : '' },
+        fails: { v: explicitHistory ? fmtN(sum('fails')) : sum('fails') }, asked: { v: explicitHistory ? fmtN(sum('asked')) : sum('asked') },
+        cpu: { v: explicitHistory ? fmtCpu(sum('cpu')) : sum('cpu') ? fmtCpu(sum('cpu')) : '' }, mem: { v: explicitHistory ? fmtMem(sum('mem')) : sum('mem') ? fmtMem(sum('mem')) : '' },
       },
     };
   };
   const statusOf = a => (ctx.stopped[a.id] ? 'stopped' : a.status);
   const idleN = roots.filter(a => statusOf(a) === 'idle').length;
-  const liveN = roots.filter(a => isLive(statusOf(a))).length - idleN;
+  const liveN = roots.filter(a => isLive(statusOf(a)) || (statusOf(a) === 'unknown' && a.running === true)).length - idleN;
+  const unknownN = roots.filter(a => statusOf(a) === 'unknown' && a.running !== true).length;
   // The list is capped, so the count comes from the totals when the server gives them.
   const scope = ctx.data.scope || {};
   const kidCount = scope.shown_sessions != null ? scope.shown_agents - scope.shown_sessions : agents.length - roots.length;
   return {
-    sub: liveN + ' running, ' + (idleN ? idleN + ' idle, ' : '') + (roots.length - liveN - idleN) + ' ended, ' + kidCount + ' subagents' + (noData ? ', ' + noData + ' with processes only' : ''),
+    sub: liveN + ' running, ' + (idleN ? idleN + ' idle, ' : '') + (roots.length - liveN - idleN - unknownN) + ' ended, ' + kidCount + ' subagents' + (unknownN ? ', ' + unknownN + ' state unknown' : '') + (noData ? ', ' + noData + ' with processes only' : ''),
     modes: [{ key: 'group', label: 'Group agents by', def: 'none', items: [['none', 'No groups'], ['project', 'Project'], ['tool', 'Tool'], ['model', 'Model']] }],
     hasCols: true,
     table: { cols, rows, tree: true, sort: { k: 'st', dir: 'asc' }, columns: true, limit: 60, groupRow, none: 'No agents match these filters.', pid },
@@ -872,7 +876,7 @@ function panelDaemon(ctx) {
   const kids = (s.children || []).map(c => ({ name: c.name, cpu: c.cpu_percent, rss: c.memory_rss_bytes }));
   const kidCpu = sumOf(kids.map(k => k.cpu));
   const kidRss = sumOf(kids.map(k => k.rss));
-  const list = [{ name: 'aictl daemon', cpu: s.cpu_percent == null ? null : Math.max(0, s.cpu_percent - kidCpu), rss: s.memory_rss_bytes == null ? null : Math.max(0, s.memory_rss_bytes - kidRss) }, ...kids];
+  const list = [{ name: Array.isArray(s.children) ? 'aictl daemon' : 'aictl daemon and helpers', cpu: s.cpu_percent == null ? null : Math.max(0, s.cpu_percent - kidCpu), rss: s.memory_rss_bytes == null ? null : Math.max(0, s.memory_rss_bytes - kidRss) }, ...kids];
   const rows = list.map((r, i) => ({
     id: r.name + i, sort: { n: r.name, c: r.cpu, m: r.rss },
     cells: { n: { v: r.name, cls: 'm' }, c: { v: fmtCpu(r.cpu) }, m: { v: fmtBytes(r.rss) } },

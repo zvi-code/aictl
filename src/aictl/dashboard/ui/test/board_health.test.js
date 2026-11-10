@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, waitFor, within } from '@testing-library/preact';
 import { html } from 'htm/preact';
+import axe from 'axe-core';
 import BoardScreen, { readScreen } from '../src/components/board/BoardScreen.js';
-import { healthSources, healthStatus, ingestionDetailsTable, modeGroupTable, modeTrafficTable, panelStoreHealth, trafficGroupTable } from '../src/components/board/health.js';
+import { HealthOverview, healthSources, healthStatus, healthTrafficGroups, ingestionDetailsTable, modeGroupTable, modeTrafficTable, panelStoreHealth, trafficGroupTable } from '../src/components/board/health.js';
 import { normalizeHealth, useBoardHealth } from '../src/components/board/useBoardHealth.js';
-import { sanitizeLayout } from '../src/components/board/layout.js';
+import { freshUi, LS_KEY, sanitizeLayout } from '../src/components/board/layout.js';
 import { boardFixture, machineFixture, NOW } from './fixtures/board.fixture.js';
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status });
@@ -36,25 +37,36 @@ afterEach(() => {
 });
 
 describe('live Health screen', () => {
-  it('loads independently of history and reuses the pipeline panels without machine CPU panels', async () => {
+  it('loads independently of history with one overview and expandable pipeline details, not machine CPU panels', async () => {
     const calls = [];
     vi.stubGlobal('fetch', vi.fn(async url => {
       calls.push(String(url));
+      if (String(url) === '/api/live/capabilities') return json({ enabled: false, protocol: 1 });
       if (String(url) === '/api/board/health') return json(fixture());
       return new Promise(() => {});
     }));
     const { container, findByRole } = render(html`<${BoardScreen}/>`);
     await findByRole('heading', { name: 'aictl Health', level: 1 });
-    await waitFor(() => expect(container.querySelector('#p-storeHealth').textContent).toContain('kusto'));
-    expect(calls).toEqual(['/api/board/health']);
+    await waitFor(() => expect(container.querySelector('#health-overview').textContent).toContain('kusto'));
+    expect(calls).toEqual(['/api/live/capabilities', '/api/board/health']);
     for (const id of ['self', 'sources', 'collectors', 'quality']) expect(container.querySelector('#p-' + id)).toBeTruthy();
     for (const id of ['cpu', 'procs', 'daemon', 'agentsT']) expect(container.querySelector('#p-' + id)).toBeNull();
     expect(container.querySelector('a[href="?screen=health"]').getAttribute('aria-current')).toBe('page');
     expect(container.querySelector('.bd-rail').textContent).toContain('Not loaded');
     expect(container.querySelector('.bd-rail').textContent).not.toContain('0 prompts, 0 skills');
     expect(container.querySelector('[aria-label="Filters"]')).toBeNull();
-    expect(container.querySelector('#p-storeHealth').textContent).toContain('0.25/s');
-    expect(container.querySelector('#p-storeHealth').textContent).toContain('Stored rows (cached)');
+    expect(container.querySelector('#health-stages').textContent).toContain('0.25/s');
+    expect(container.querySelector('#health-stages').textContent).toContain('Stored rows (cached)');
+    expect(container.querySelectorAll('#health-stages > section')).toHaveLength(4);
+    expect(container.querySelectorAll('h1')).toHaveLength(1);
+    expect(container.querySelector('#health-store-details').open).toBe(false);
+    expect(container.querySelector('#health-source-details').open).toBe(false);
+    expect(container.querySelector('[aria-label="Health controls"]').textContent).not.toContain('Layout');
+    fireEvent.click(container.querySelector('#health-store-details > summary'));
+    expect(container.querySelector('#health-store-details').open).toBe(true);
+    fireEvent.click(container.querySelector('#health-source-details > summary'));
+    expect(container.querySelector('#health-source-details').open).toBe(true);
+    expect(container.querySelector('#p-collectors').textContent).toContain('FSEvents not available');
     expect(container.querySelector('a[href*="?web=1"]').href).toBe('https://example.kusto.windows.net/aictl?web=1');
     expect(readScreen('?screen=health')).toBe('health');
   });
@@ -84,8 +96,8 @@ describe('live Health screen', () => {
     const { container, findByRole } = render(html`<${BoardScreen}/>`);
     const alert = await findByRole('alert');
     expect(alert.textContent).toContain('does not provide /api/board/health');
-    expect(container.querySelector('#p-storeHealth').textContent).toContain('unknown');
-    expect(container.querySelector('#p-storeHealth').textContent).toContain('n/a');
+    expect(container.querySelector('#health-stages').textContent).toContain('unknown');
+    expect(container.querySelector('#health-stages').textContent).toContain('n/a');
     expect(container.querySelector('#main-area .bd-good')).toBeNull();
   });
 
@@ -115,6 +127,52 @@ describe('live Health screen', () => {
     view.unmount();
     expect(pending[2].signal.aborted).toBe(true);
   });
+
+  it('ignores legacy Health panel sizes and visibility without changing board layout or display preferences', async () => {
+    const saved = freshUi();
+    saved.density = 'comfortable';
+    saved.hidden = ['storeHealth', 'collectors'];
+    saved.layout.find(section => section.id === 'health').open = false;
+    saved.layout.find(section => section.id === 'resources').panels.find(panel => panel.id === 'cpu').span = 8;
+    const storage = new Map([[LS_KEY, JSON.stringify(saved)]]);
+    vi.stubGlobal('localStorage', {
+      getItem: key => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value),
+    });
+    vi.stubGlobal('fetch', vi.fn(async url => {
+      if (String(url) === '/api/board/health') return json(fixture());
+      if (String(url).startsWith('/api/board/machine')) return json(machineFixture());
+      if (String(url).startsWith('/api/board?')) return json(boardFixture());
+      return json({});
+    }));
+    const { container } = render(html`<${BoardScreen}/>`);
+    await waitFor(() => expect(container.querySelector('#health-stages')).toBeTruthy());
+    expect(container.querySelector('.bd-app').dataset.density).toBe('comfortable');
+    expect(container.querySelector('.bd-rail.bd-mini')).toBeNull();
+    expect(container.querySelectorAll('#health-stages > section')).toHaveLength(4);
+    expect(container.querySelector('#p-collectors')).toBeTruthy();
+    expect(JSON.parse(storage.get(LS_KEY))).toEqual(saved);
+    fireEvent.click(container.querySelector('[aria-label="Open the command palette"]'));
+    const search = container.querySelector('[aria-label="Search commands"]');
+    fireEvent.input(search, { target: { value: 'Reset layout' } });
+    expect(container.querySelectorAll('[role="listbox"] [role="option"]')).toHaveLength(0);
+    fireEvent.keyDown(search, { key: 'Escape' });
+    fireEvent.click(container.querySelector('a[href="#sec-resources"]'));
+    await waitFor(() => expect(container.querySelector('#p-cpu')).toBeTruthy());
+    expect(container.querySelector('#p-cpu').style.gridColumn).toBe('span 8');
+    expect(container.querySelector('#health-overview')).toBeNull();
+  });
+
+  it('passes the non-visual accessibility rules with closed and expanded details', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json(fixture())));
+    const { container } = render(html`<${BoardScreen}/>`);
+    await waitFor(() => expect(container.querySelector('[data-stage="store"]').textContent).toContain('90'));
+    const rules = { 'color-contrast': { enabled: false }, region: { enabled: false }, 'landmark-unique': { enabled: false }, 'scrollable-region-focusable': { enabled: false } };
+    expect((await axe.run(container, { rules })).violations.map(item => item.id)).toEqual([]);
+    fireEvent.click(container.querySelector('#health-store-details > summary'));
+    fireEvent.click(container.querySelector('#health-source-details > summary'));
+    expect((await axe.run(container, { rules })).violations.map(item => item.id)).toEqual([]);
+  }, 30000);
 });
 
 describe('health data and status', () => {
@@ -123,8 +181,8 @@ describe('health data and status', () => {
     health.store.writes.rows = 999999;
     health.store.otel_sink = { pending_rows: 13, pending_bytes: 4096 };
     health.store.ingestion_traffic = {
-      queued: { requests: 4, rows: 300, pending_history_rows: 7, avg_rows: 75, last_rows: 80, groups: [{ id: 'otel', label: 'OTel', rows: 300, requests: 4 }] },
-      streaming: { requests: 2, rows: 20, groups: [{ id: 'otel', label: 'OTel', rows: 20, requests: 2 }] },
+      queued: { requests: 4, rows: 300, rows_per_s: 30, pending_history_rows: 7, avg_rows: 75, last_rows: 80, groups: [{ id: 'otel', label: 'OTel', rows: 300, requests: 4 }] },
+      streaming: { requests: 2, rows: 20, rows_per_s: 2, groups: [{ id: 'otel', label: 'OTel', rows: 20, requests: 2 }] },
       inline: { requests: 1, rows: 5, groups: [] },
     };
     const panel = panelStoreHealth({ data: { health }, nowS: NOW });
@@ -134,16 +192,63 @@ describe('health data and status', () => {
     const engine = getByRole('region', { name: 'Engine ingestion' });
     const queryable = getByRole('region', { name: 'Queryable store / reads' });
     expect(within(input).getByText('13')).toBeTruthy();
-    expect(within(dm).getAllByText('300').length).toBeGreaterThan(0);
+    expect(within(dm).getByText('30/s')).toBeTruthy();
+    expect(within(dm).getByText('7')).toBeTruthy();
     expect(dm.textContent).toContain('Some may already be queryable');
-    expect(within(engine).getAllByText('20').length).toBeGreaterThan(0);
+    expect(within(engine).getByText('2/s')).toBeTruthy();
+    expect(container.querySelector('#health-store-details').textContent).toContain('300');
+    expect(container.querySelector('#health-store-details').textContent).toContain('20');
     expect(within(queryable).getByText('90')).toBeTruthy();
     expect(within(dm).queryByText('Stored rows (cached)')).toBeNull();
     expect(within(queryable).queryByText('300')).toBeNull();
     expect(container.textContent).not.toContain('999999');
     expect(modeTrafficTable({ writes: { rows: 999999 } }, ['queued']).rows[0].cells.rows.v).toBe('n/a');
     expect(modeGroupTable({ traffic_groups: [{ id: 'mixed', rows: 999999 }] }, ['queued']).rows).toEqual([]);
-    expect(within(queryable).getByRole('link', { name: 'Open Kusto Explorer' })).toBeTruthy();
+    expect(container.querySelector('a[href="https://example.kusto.windows.net/aictl?web=1"]')).toBeTruthy();
+  });
+
+  it('keeps six destination groups in one matrix, preserves mode-specific units, and never substitutes mixed totals', () => {
+    const health = normalizeHealth(fixture());
+    health.store.traffic_groups = [{ id: 'hooks', rows_per_s: 9999, pending: 9999, failed: 9999 }];
+    health.store.ingestion_traffic = {
+      queued: { groups: [{ id: 'otel', rows_per_s: 12.5, bytes_per_s: 2048, pending: 7, failed: 2, tables: ['OTELLogs'] }] },
+      streaming: { groups: [{ id: 'otel', rows_per_s: 0, bytes_per_s: 0, pending: null, failed: 0 }] },
+      inline: { groups: [{ id: 'otel', rows_per_s: 3, bytes_per_s: 512, pending: null, failed: 1 }] },
+    };
+    const { container, getByRole } = render(html`<${HealthOverview} health=${health} status=${healthStatus(health, null, NOW)} nowS=${NOW}/>`);
+    const matrix = getByRole('table', { name: 'Destination traffic by physical ingestion mode' });
+    expect(matrix.querySelectorAll('tbody tr')).toHaveLength(6);
+    const otel = matrix.querySelector('[data-group="otel"]');
+    expect(otel.querySelector('[data-mode="queued"]').textContent).toBe('12.5/s2 KB/s');
+    expect(otel.querySelector('[data-mode="streaming"]').textContent).toBe('0/s0 B/s');
+    expect(otel.querySelector('[data-mode="inline"]').textContent).toBe('3/s512 B/s');
+    expect(otel.textContent).toContain('7 / n/a / n/a');
+    expect(otel.textContent).toContain('2 / 0 / 1');
+    expect(matrix.querySelector('[data-group="hooks"]').textContent).toContain('n/a');
+    expect(matrix.textContent).not.toContain('9999');
+    expect(healthTrafficGroups(health.store).map(group => group.id)).toEqual(['otel', 'hooks', 'live-session', 'monitoring', 'files-config', 'other']);
+    fireEvent.click(container.querySelector('#health-store-details > summary'));
+    expect(container.querySelector('#health-store-details').open).toBe(true);
+    expect(container.querySelector('.bd-healthmembers').textContent).toContain('queued: OTELLogs');
+  });
+
+  it('shows top issues and source, collector and ingester summaries beside traffic with complete disclosures', () => {
+    const health = normalizeHealth(fixture());
+    const status = healthStatus(health, null, NOW);
+    const { container, getByRole } = render(html`<${HealthOverview} health=${health} status=${status} nowS=${NOW}/>`);
+    const diagnostics = getByRole('complementary', { name: 'Collection health and issues' });
+    expect(diagnostics.querySelectorAll(':scope > .bd-healthissues > li')).toHaveLength(3);
+    expect(diagnostics.textContent).toContain('Sources');
+    expect(diagnostics.textContent).toContain('Collectors');
+    expect(diagnostics.textContent).toContain('Ingesters');
+    const issues = container.querySelector('#health-all-issues');
+    expect(issues.open).toBe(false);
+    fireEvent.click(issues.querySelector('summary'));
+    expect(issues.open).toBe(true);
+    expect(issues.querySelectorAll('li')).toHaveLength(status.issues.length);
+    fireEvent.click(diagnostics.querySelector('.bd-healthstatus summary'));
+    expect(diagnostics.querySelector('.bd-healthstatus').open).toBe(true);
+    expect(diagnostics.textContent).toContain('overloaded');
   });
 
   it('shows configured batching, streaming, client routing and actual acknowledged batch sizes', () => {

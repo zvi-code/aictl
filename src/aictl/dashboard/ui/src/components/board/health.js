@@ -221,7 +221,7 @@ function storeLinks(store) {
   ] : [];
 }
 
-function StoreStages({ store, pipeline, nowS, links }) {
+function StoreDetails({ store, pipeline, nowS, links }) {
   const policy = store.ingestion_details?.policies;
   const queued = store.ingestion_traffic?.queued;
   const showPolicies = store.kind === 'kusto' || store.ingestion_details;
@@ -242,13 +242,13 @@ function StoreStages({ store, pipeline, nowS, links }) {
     ['Stored bytes (cached)', fmtBytes(store.volume?.bytes)],
     ['Stored volume last checked', ago(store.volume?.checked_at, nowS), stamp(store.volume?.checked_at, true)],
   ]);
-  return html`<section aria-label="Collection / input">
-    <h4 class="bd-note">1. Collection / input — received and local buffers</h4>
+  return html`<section aria-label="Collection / input details">
+    <h2 class="bd-note">1. Collection / input — received and local buffers</h2>
     <${Table} def=${input} label="Collection input and local queues"/>
     <div class="bd-note"><a class="bd-link" href="#p-self">Collection and ingestion counters</a> · <a class="bd-link" href="#p-sources">Source health</a>. Samples and raw OTel rows are separate units; a local buffer is not DM pending data.</div>
   </section>
-  <section aria-label="Queued ingestion / DM — not confirmed queryable">
-    <h4 class="bd-note">2. Queued ingestion / DM — not confirmed queryable</h4>
+  <section aria-label="Queued ingestion / DM details">
+    <h2 class="bd-note">2. Queued ingestion / DM — not confirmed queryable</h2>
     <div class="bd-note">Historical acknowledgements are submissions to queued ingestion, not a current count of unqueryable rows. Some may already be queryable.</div>
     <${Table} def=${modeTrafficTable(store, ['queued'])} label="Queued / DM client traffic — not confirmed queryable"/>
     <${Table} def=${metricTable('health-dm-pending', [
@@ -262,8 +262,8 @@ function StoreStages({ store, pipeline, nowS, links }) {
     ${showPolicies ? html`<${PolicyStatus} policy=${policy} nowS=${nowS} showError=${true}/><${Table} def=${ingestionDetailsTable(store.ingestion_details, 'queued')} label="Queued / DM batching policy and client limits"/>` : null}
     <div class="bd-note">Database batching policy is cached, not a per-table policy inspection. Observed uploads are not server-merged queued batches. Capacity and limits are not measured throughput.</div>
   </section>
-  <section aria-label="Engine ingestion">
-    <h4 class="bd-note">3. Engine ingestion — streaming and inline traffic</h4>
+  <section aria-label="Engine ingestion details">
+    <h2 class="bd-note">3. Engine ingestion — streaming and inline traffic</h2>
     <div class="bd-note">These are physical client ingestion requests and acknowledged payloads, not stored-row counts.</div>
     <${Table} def=${modeTrafficTable(store, ['streaming', 'inline'])} label="Engine streaming and inline client traffic"/>
     <${Table} def=${batchTable(store, ['streaming', 'inline'])} label="Engine acknowledged client upload sizes"/>
@@ -271,12 +271,172 @@ function StoreStages({ store, pipeline, nowS, links }) {
     ${showPolicies ? html`<${PolicyStatus} policy=${policy} nowS=${nowS}/><${Table} def=${ingestionDetailsTable(store.ingestion_details, 'engine')} label="Engine streaming policy and client limits"/>` : null}
     <div class="bd-note">Table overrides are client routing choices, not reported per-table Kusto policies.</div>
   </section>
-  <section aria-label="Queryable store / reads">
-    <h4 class="bd-note">4. Queryable store / reads</h4>
+  <section aria-label="Queryable store / reads details">
+    <h2 class="bd-note">4. Queryable store / reads</h2>
     <${Table} def=${queried} label="Queryable store — cached stored volume and client health"/>
     <${Table} def=${readRequestTable(store, nowS)} label="Store read queries"/>
     <div class="bd-note">Stored volume is a cached observation at its check time. It does not confirm the visibility of every acknowledged ingestion request.</div>
     ${links.length ? html`<div class="bd-acts">${links.map(link => html`<a key=${link.label} class="bd-btn" href=${link.href}>${link.label}</a>`)}</div>` : null}
+  </section>`;
+}
+
+const GROUPS = [
+  ['otel', 'OTel'], ['hooks', 'Hooks'], ['live-session', 'Live sessions'],
+  ['monitoring', 'Monitoring'], ['files-config', 'Files / configuration'], ['other', 'Other'],
+];
+const MODES = ['queued', 'streaming', 'inline'];
+
+export function healthTrafficGroups(store) {
+  const groups = new Map(GROUPS.map(([id, label]) => [id, { id, label, modes: {} }]));
+  for (const mode of MODES) {
+    const reported = store.ingestion_traffic?.[mode]?.groups;
+    for (const group of Array.isArray(reported) ? reported : []) {
+      if (!groups.has(group.id)) groups.set(group.id, { id: group.id, label: group.label || group.id, modes: {} });
+      groups.get(group.id).modes[mode] = group;
+    }
+  }
+  return [...groups.values()];
+}
+
+function Metrics({ items }) {
+  return html`<dl class="bd-healthmetrics">${items.map(([label, value, title, cls]) => html`<div key=${label} title=${title || undefined}>
+    <dt>${label}</dt><dd class=${cls ? 'bd-' + cls : undefined}>${value ?? NA}</dd>
+  </div>`)}</dl>`;
+}
+
+function StageCards({ store, pipeline, nowS }) {
+  const queued = store.ingestion_traffic?.queued;
+  const streaming = store.ingestion_traffic?.streaming;
+  const inline = store.ingestion_traffic?.inline;
+  return html`<div class="bd-healthstages" id="health-stages">
+    <section class="bd-healthcard" aria-label="Collection / input" data-stage="collection">
+      <h2><span>1</span> Collection / input</h2>
+      <${Metrics} items=${[
+        ['Samples buffered', fmtN(pipeline?.sink?.buffered)],
+        ['Samples dropped', fmtN(pipeline?.sink?.dropped), null, pipeline?.sink?.dropped ? 'crit' : null],
+        ['OTel rows buffered', fmtN(store.otel_sink?.pending_rows), 'Local input queue; not DM pending data'],
+        ['OTel bytes buffered', fmtBytes(store.otel_sink?.pending_bytes)],
+      ]}/>
+      <p>Local buffers · samples and rows are separate units.</p>
+    </section>
+    <section class="bd-healthcard" aria-label="Queued ingestion / DM — not confirmed queryable" data-stage="queued">
+      <h2><span>2</span> Queued DM</h2>
+      <${Metrics} items=${[
+        ['Rows/s submitted', perSecond(queued?.rows_per_s)],
+        ['Bytes/s submitted', fmtBps(queued?.bytes_per_s)],
+        ['History pending rows', fmtN(queued?.pending_history_rows), queued?.pending_scope],
+        ['Failed requests', fmtN(queued?.failed), queued?.last_error, queued?.failed ? 'crit' : null],
+      ]}/>
+      <p class="bd-warn">Not confirmed queryable. Some may already be queryable.</p>
+    </section>
+    <section class="bd-healthcard" aria-label="Engine ingestion" data-stage="engine">
+      <h2><span>3</span> Engine ingestion</h2>
+      <${Metrics} items=${[
+        ['Streaming rows/s', perSecond(streaming?.rows_per_s)],
+        ['Inline rows/s', perSecond(inline?.rows_per_s)],
+        ['Streaming failures', fmtN(streaming?.failed), streaming?.last_error, streaming?.failed ? 'crit' : null],
+        ['Inline failures', fmtN(inline?.failed), inline?.last_error, inline?.failed ? 'crit' : null],
+      ]}/>
+      <p>Streaming + inline client traffic · not stored rows.</p>
+    </section>
+    <section class="bd-healthcard" aria-label="Queryable store / reads" data-stage="store">
+      <h2><span>4</span> Queryable store / reads</h2>
+      <${Metrics} items=${[
+        ['Client availability', store.health?.state || 'unknown', 'aictl client, not whole-cluster health', store.health?.state === 'degraded' ? 'crit' : store.health?.state === 'ok' ? null : 'warn'],
+        ['Read requests/s', perSecond(store.reads?.rate_per_s)],
+        ['Stored rows (cached)', fmtN(store.volume?.rows), store.volume?.scope],
+        ['Failed reads', fmtN(store.reads?.failed), store.reads?.last_error, store.reads?.failed ? 'crit' : null],
+      ]}/>
+      <p title=${stamp(store.volume?.checked_at, true)}>Volume checked ${ago(store.volume?.checked_at, nowS)} · read latency ${fmtMs(store.reads?.avg_ms)}.</p>
+    </section>
+  </div>`;
+}
+
+function TrafficCell({ metrics }) {
+  return html`<span>${perSecond(metrics?.rows_per_s)}</span><small>${fmtBps(metrics?.bytes_per_s)}</small>`;
+}
+
+function TrafficMatrix({ store }) {
+  return html`<section class="bd-healthcard bd-healthtraffic" aria-label="Destination traffic" id="health-traffic">
+    <div class="bd-healthsectionhead"><h2>Destination traffic</h2><span>Client rows/s · bytes/s</span></div>
+    <table class="bd-healthmatrix" aria-label="Destination traffic by physical ingestion mode">
+      <thead><tr><th scope="col">Table group</th><th scope="col">Queued DM</th><th scope="col">Engine<br/>Streaming</th><th scope="col">Engine<br/>Inline</th><th scope="col">Pending rows<br/>DM / S / I</th><th scope="col">Failed requests<br/>DM / S / I</th></tr></thead>
+      <tbody>${healthTrafficGroups(store).map(group => html`<tr key=${group.id} data-group=${group.id}>
+        <th scope="row">${group.label}</th>
+        ${MODES.map(mode => html`<td key=${mode} data-mode=${mode} data-label=${mode === 'queued' ? 'Queued DM' : 'Engine ' + mode}><${TrafficCell} metrics=${group.modes[mode]}/></td>`)}
+        <td data-label="Pending rows (DM / S / I)">${MODES.map(mode => fmtN(group.modes[mode]?.pending)).join(' / ')}</td>
+        <td data-label="Failed requests (DM / S / I)" class=${MODES.some(mode => group.modes[mode]?.failed > 0) ? 'bd-crit' : undefined}>${MODES.map(mode => fmtN(group.modes[mode]?.failed)).join(' / ')}</td>
+      </tr>`)}</tbody>
+    </table>
+    <p>DM ≠ queryable storage. Pending covers local queues and tracked history receipts, not the DM service backlog. S = streaming; I = inline. n/a = not reported.</p>
+  </section>`;
+}
+
+function Diagnostics({ health, status, nowS }) {
+  const pipe = health?.pipeline;
+  const collectors = health?.monitor.collectors || [];
+  const ingesters = pipe?.ingesters || [];
+  const sources = pipe ? healthSources(health).map(source => {
+    const fresh = pipe.freshness.find(item => item.tool === source.tool);
+    const setup = pipe.otel_setup?.[source.tool];
+    const sourceStatus = fresh?.last_error || fresh?.errors > 0 ? 'errors'
+      : setup?.status && setup.status !== 'ok' ? setup.status
+        : source.last_data_ts ? (nowS - source.last_data_ts > 3600 ? 'stale' : 'active') : 'unknown';
+    return { name: source.label || source.tool, status: sourceStatus, detail: fresh?.last_error };
+  }) : [];
+  const good = item => ['ok', 'active'].includes(item.status);
+  const lists = [['Sources', sources], ['Collectors', collectors], ['Ingesters', ingesters]];
+  return html`<aside class="bd-healthcard bd-healthdiagnostics" aria-label="Collection health and issues" id="health-diagnostics">
+    <h2>Needs attention <span class="bd-healthcount">${status.issues.length}</span></h2>
+    ${status.issues.length ? html`<ul class="bd-healthissues">${status.issues.slice(0, 3).map(issue => html`<li key=${issue}>${issue}</li>`)}</ul>` : html`<p>No health issues reported.</p>`}
+    ${status.issues.length > 3 ? html`<details id="health-all-issues"><summary>All ${status.issues.length} issues</summary><ul class="bd-healthissues">${status.issues.map(issue => html`<li key=${issue}>${issue}</li>`)}</ul></details>` : null}
+    <div class="bd-healthstatuslist">${lists.map(([label, list]) => {
+      const sorted = [...list].sort((a, b) => Number(good(a)) - Number(good(b)));
+      const affected = list.filter(item => !good(item)).length;
+      return html`<details key=${label} class="bd-healthstatus">
+        <summary>${label}<span class=${affected ? 'bd-warn' : list.length ? '' : 'bd-muted'}>${list.length ? `${list.length - affected}/${list.length} active / OK` : 'Not reported'}</span></summary>
+        <ul>${sorted.map(item => html`<li key=${item.name}><b>${item.name}</b> <span class=${good(item) ? '' : 'bd-warn'}>${item.status || 'unknown'}</span>${item.detail || item.error ? html`<small>${item.detail || item.error}</small>` : null}</li>`)}</ul>
+      </details>`;
+    })}</div>
+    ${storeError(health?.store) ? html`<p class="bd-crit">${storeError(health.store)}</p>` : null}
+  </aside>`;
+}
+
+const storeError = store => store?.health?.last_error || store?.reads?.last_error || store?.ingestion_traffic?.queued?.last_error || store?.ingestion_traffic?.streaming?.last_error || store?.ingestion_traffic?.inline?.last_error;
+
+function StoreStages({ store, pipeline, nowS, links, health, status }) {
+  return html`<${StageCards} store=${store} pipeline=${pipeline} nowS=${nowS}/>
+    <div class="bd-healthmiddle"><${TrafficMatrix} store=${store}/>
+      ${status ? html`<${Diagnostics} health=${health} status=${status} nowS=${nowS}/>` : null}
+    </div>
+    <details class="bd-healthdetails" id="health-store-details">
+      <summary>Store details <span>All totals, request rates, upload sizes, table membership and policies</span></summary>
+      <${StoreDetails} store=${store} pipeline=${pipeline} nowS=${nowS} links=${links}/>
+      <h2>Reported table membership by mode</h2>
+      <ul class="bd-healthmembers">${healthTrafficGroups(store).map(group => html`<li key=${group.id}><b>${group.label}</b>
+        <ul>${MODES.map(mode => html`<li key=${mode}>${mode}: ${group.modes[mode]?.tables?.length ? group.modes[mode].tables.join(', ') : NA}</li>`)}</ul>
+      </li>`)}</ul>
+      <p class="bd-note">${store.measurement_scope || ''} Current aictl client counters, not cluster-wide statistics. No mixed-mode total is substituted for a missing physical-mode measurement.</p>
+    </details>`;
+}
+
+export function HealthOverview({ health, status, error, nowS, children }) {
+  const store = health?.store || {};
+  const links = storeLinks(store);
+  return html`<section class="bd-healthoverview" id="health-overview" aria-label="Health overview">
+    <header class="bd-healthheader">
+      <div><h1>aictl Health</h1><strong class=${'bd-' + status.cls} role="status">${status.label}</strong>
+        <span title=${stamp(health?.generated_at, true)}>${health?.generated_at ? 'Updated ' + ago(health.generated_at, nowS) : 'No health timestamp'}</span>
+      </div>
+      <div class="bd-healthdestination"><span>${store.kind || 'Store not reported'} · ${store.cluster_url || store.destination || NA} · ${store.database || NA} · ${store.ingestion_mode || NA}</span>
+        <nav aria-label="Store links">${links.map(link => html`<a key=${link.label} class="bd-link" href=${link.href}>${link.label}</a>`)}</nav>
+      </div>
+    </header>
+    ${error ? html`<div class="bd-banner" role="alert">Could not read live health: ${error.status === 404 ? 'this daemon does not provide /api/board/health.' : error.message} ${health ? 'Showing the last response.' : 'Health is unavailable; history is not used as a substitute.'}</div>` : null}
+    ${!health && !error ? html`<div class="bd-sk" role="status">Loading live health...</div>` : null}
+    <${StoreStages} store=${store} pipeline=${health?.pipeline} nowS=${nowS} links=${links} health=${health} status=${status}/>
+    ${children}
+    <p class="bd-healthscope">This daemon only · rates use the reported rolling window (up to 60 s); totals reset with the daemon. Board filters do not apply.</p>
   </section>`;
 }
 

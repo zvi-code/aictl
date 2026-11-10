@@ -16,6 +16,10 @@ import { scopeAudit } from '../../utils/auditScope.js';
 import { instructionsByTool } from './findings.js';
 import FileEditor from './FileEditor.js';
 import { normalizeAgentDetail } from './useBoardData.js';
+import { useLiveState } from '../../live/context.js';
+import { liveProcessTree, mergeRuntimeAgents } from '../../live/model.js';
+import NativeOutput from './agent/NativeOutput.js';
+import LoadedConfiguration from '../../live/LoadedConfiguration.js';
 
 // A new `tick` fetches again at most once per DETAIL_REFRESH_MS.
 export const DETAIL_REFRESH_MS = 5000;
@@ -167,10 +171,26 @@ const titleOf = a => (a.parent_id ? (a.role || a.title) + ' (subagent)' : a.titl
 const toolListText = t => (Array.isArray(t) ? t.join(', ') : (t == null ? '' : String(t)));
 
 function AgentDrawer({ d, ctx, frame, act }) {
-  const { data: raw, error } = useDetail(opts => api.getBoardAgent(d.id, opts), 'agent:' + d.id, ctx.refreshKey);
-  const data = useMemo(() => normalizeAgentDetail(raw), [raw]);
+  const { state: subscription } = useLiveState();
+  const incremental = subscription.mode === 'incremental';
+  const { data: raw, error } = useDetail(opts => api.getBoardAgent(d.id, opts), 'agent:' + d.id, incremental ? 0 : ctx.refreshKey);
+  const historical = useMemo(() => normalizeAgentDetail(raw), [raw]);
   const listed = ctx.data.agents.find(a => a.id === d.id);
-  const a = data?.agent || listed || { id: d.id, title: d.id };
+  const a = useMemo(() => {
+    const fallback = listed || { id: d.id, title: d.id };
+    if (!incremental) return historical?.agent || fallback;
+    if (!historical?.agent) return fallback;
+    return mergeRuntimeAgents([historical.agent], subscription).find(agent => agent.id === d.id) || fallback;
+  }, [incremental, historical, listed, d.id, subscription]);
+  const data = useMemo(() => {
+    if (!historical || !incremental) return historical;
+    const tree = liveProcessTree(subscription, a);
+    return {
+      ...historical, agent: a,
+      process: { cpu_percent: a.cpu_percent, mem_mb: a.mem_mb, pids: a.pid_list || a.pids, started_at: a.started_at },
+      resources: { ...historical.resources, process_tree: tree },
+    };
+  }, [historical, incremental, subscription, a]);
   const st = ctx.stopped[a.id] ? 'stopped' : a.status;
   const pending = a.pending && st === 'waiting' ? a.pending : null;
   // Three groups: what the agent did, what it changed, how it ran. A count on a tab is the rows it holds.
@@ -195,18 +215,28 @@ function AgentDrawer({ d, ctx, frame, act }) {
     ['integrations', 'Integrations'],
   ].map(([id, label, count]) => (label ? { id, label, count, on: d.tab === id, pick: () => act.setDrawerTab(id) } : { id, sep: true }));
   const models = (a.models || []).join(', ');
-  const sm = statusMeta(st);
-  const dur = a.started_at ? fmtDur((a.ended_at || Date.now() / 1000) - a.started_at) : '';
+  const processOnly = a.running === true && st === 'unknown';
+  const sm = statusMeta(processOnly ? 'running' : st);
+  const endedAt = a.running === true ? null : a.ended_at;
+  const dur = a.started_at ? fmtDur((endedAt || Date.now() / 1000) - a.started_at) : '';
   const meta = [
-    st ? { v: sm.label, dot: sm.dot, sub: a.ended_at ? stamp(a.ended_at, true) + (dur ? ' · ' + dur : '') : dur ? dur + ' so far' : '', title: a.ended_at ? 'Ended ' + stamp(a.ended_at, true) + (a.started_at ? ', started ' + stamp(a.started_at, true) : '') : sm.label } : null,
+    st ? { v: sm.label, dot: sm.dot, sub: processOnly ? 'activity unknown' : endedAt ? stamp(endedAt, true) + (dur ? ' · ' + dur : '') : dur ? dur + ' so far' : '', title: processOnly ? 'A running process is present; native work or idle state is not reported.' : endedAt ? 'Ended ' + stamp(endedAt, true) + (a.started_at ? ', started ' + stamp(a.started_at, true) : '') : sm.label } : null,
     a.tool ? { k: 'Tool', v: ctx.toolName(a.tool) } : null,
     a.project ? { k: 'Project', v: projectName(a.project), title: a.project } : null,
     models ? { k: (a.models || []).length > 1 ? 'Models' : 'Model', v: models } : null,
     { k: 'ID', v: String(a.id).slice(0, 8), mono: true, title: a.id, copy: act.copy ? { label: 'Copy session ID ' + a.id, go: () => act.copy(a.id, 'Copied ' + a.id) } : null },
   ].filter(Boolean);
   // Only a main agent owns a process tree; a subagent stops with its parent.
-  const actions = isLive(st) && !a.parent_id ? [{ label: 'Stop', go: () => act.stopAgent(a) }] : [];
+  const actions = (isLive(st) || a.running === true) && !a.parent_id ? [{ label: 'Stop', go: () => act.stopAgent(a) }] : [];
   const body = () => {
+    if (incremental && d.tab === 'transcript') return html`<${Part} key="transcript" part="transcript" a=${a} data=${data} st=${st} ctx=${ctx} act=${act}/>`;
+    if (incremental && !data) return html`
+      <${FixedPanel} id="ag-runtime" title="Live runtime">
+        <${Stats} stats=${[{ label: 'CPU', value: fmtCpu(a.cpu_percent) }, { label: 'RAM', value: fmtMem(a.mem_mb) }, { label: 'Native activity', value: a.native_activity || 'unknown' }]}/>
+        <p class="bd-note">Historical detail is ${error ? 'unavailable' : 'loading'} from Kusto. Runtime presence does not establish historical queryability.</p>
+      </${FixedPanel}>
+      <${NativeOutput} a=${a} captureMode=${ctx.data.capture_mode}/>
+      <${Pending} error=${error}/>`;
     if (!data) return html`<${Pending} error=${error}/>`;
     if (d.tab === 'turns') return html`<${TurnsTab} data=${data}/>`;
     if (d.tab === 'tools') return html`<${ToolsTab} data=${data} pending=${pending}/>`;
@@ -219,7 +249,10 @@ function AgentDrawer({ d, ctx, frame, act }) {
       <${Part} part="overview" name="OverviewExtras" a=${a} data=${data} st=${st} ctx=${ctx} act=${act}/>`;
   };
   const head = data?.git ? html`<${Part} part="overview" name="GitBadge" git=${data.git} a=${a}/>` : null;
-  return html`<${Frame} ...${frame} title=${a.title ? titleOf(a) : a.id} meta=${meta} head=${head} tabs=${tabs} actions=${actions}>${body()}</${Frame}>`;
+  return html`<${Frame} ...${frame} title=${a.title ? titleOf(a) : a.id} meta=${meta} head=${head} tabs=${tabs} actions=${actions}>
+    <${LoadedConfiguration} sessionId=${a.session_id || a.native_session_id || a.parent_id || a.id}/>
+    ${body()}
+  </${Frame}>`;
 }
 
 // The session views load when their tab opens, so the board's first chunk stays small.
@@ -690,7 +723,7 @@ function OutputsCard({ data, act, span }) {
 
 function OverviewTab({ a, data, st, ctx, act, pending }) {
   const proc = data.process || {};
-  const live = isLive(st);
+  const live = isLive(st) || a.running === true;
   const msgs = a.msgs ? a.msgs.user + a.msgs.assistant + a.msgs.tool : null;
   const tokens = [a.input, a.output, a.cache_read, a.cache_write].some(v => v != null) ? (a.input || 0) + (a.output || 0) + (a.cache_read || 0) + (a.cache_write || 0) : null;
   const context = data.context;

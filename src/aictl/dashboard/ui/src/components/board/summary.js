@@ -34,7 +34,7 @@ export function kpiList(data) {
   const sp = v => sparkPath(v, 54, 16);
   const read = data.by_model.length ? data.by_model.reduce((a, m) => a + (m.cache_read || 0), 0) : null;
   return [
-    { label: 'Agents running', value: k.running ?? 'n/a', delta: k.subagents_running == null ? 'n/a' : '+' + k.subagents_running + ' subagents' + (k.idle ? ', ' + k.idle + ' idle' : ''), spark: sp(s.running), href: '#sec-agents', title: 'Go to Agents' },
+    { label: 'Agents running', value: k.running ?? 'n/a', delta: k.subagents_running == null ? 'n/a' : '+' + k.subagents_running + ' subagents' + (k.idle ? ', ' + k.idle + ' idle' : '') + (k.activity_unknown ? ', ' + k.activity_unknown + ' activity unknown' : ''), spark: sp(s.running), href: '#sec-agents', title: data.source_policy?.agent_state === 'runtime.collector' ? 'Agents with a running process; this does not establish work-in-progress. Native idle state is reported separately.' : 'Go to Agents' },
     { label: 'Messages', value: fmtN(k.messages), delta: delta(k.messages, p.messages), spark: sp(s.messages), href: '#sec-usage', title: 'Go to Usage and cost' },
     { label: 'Tokens', value: fmtN(k.tokens), delta: delta(k.tokens, p.tokens), spark: sp(s.tokens), href: '#sec-usage', title: 'Go to Usage and cost' },
     { label: 'Cached', value: fmtShare(k.cached_share), delta: read == null ? 'n/a' : fmtN(read) + ' read', spark: sp(s.cached), href: '#sec-usage', title: 'Share of input served from cache' },
@@ -42,7 +42,7 @@ export function kpiList(data) {
     { label: 'Tool calls', value: fmtN(k.tool_calls), delta: delta(k.tool_calls, p.tool_calls), spark: sp(s.tool_calls), href: '#sec-tools', title: 'Includes calls that a tool reports only as a total, so this can be above the sum of the Tools panel' },
     { label: 'Failures', value: fmtN(k.failures), delta: fmtRate(k.fail_rate) + ' of calls', spark: sp(s.failures), href: '#sec-tools', title: 'Failed tool calls. API errors are in the Failures panel.' },
     { label: 'p95 reply', value: fmtMs(k.p95_ms), delta: 'p50 ' + fmtMs(k.p50_ms), spark: sp(s.p95), href: '#sec-tools', title: 'Model reply time' },
-    { label: 'Loops', value: k.loops ?? 'n/a', delta: k.loops ? 'Needs a look' : 'None', spark: sp(s.loops), href: '#sec-tools', title: 'Repeated failing work' },
+    { label: 'Loops', value: k.loops ?? 'n/a', delta: k.loops == null ? 'n/a' : k.loops ? 'Needs a look' : 'None', spark: sp(s.loops), href: '#sec-tools', title: 'Repeated failing work' },
   ];
 }
 

@@ -97,9 +97,67 @@ body.bd-resizing{cursor:col-resize;user-select:none}
 .bd-stats .bd-l{display:block;color:var(--ink3);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bd-stats .bd-v{display:block;font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bd-stats .bd-d{display:block;color:var(--ink3);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.bd-healthhead{height:auto;min-height:36px;gap:12px;flex-wrap:wrap}
-.bd-healthhead h1{margin:0;font-size:16px;font-weight:600}
-.bd-health .bd-stats{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.bd-healtharea{padding-bottom:12px}
+.bd-healthoverview{display:grid;gap:8px;min-width:0}
+.bd-healthoverview .bd-warn{color:var(--warnink)}
+.bd-healthoverview .bd-crit{color:var(--crit)}
+.bd-healthoverview .bd-good{color:var(--good)}
+.bd-healthoverview h1{margin:0;font-size:18px;font-weight:600}
+.bd-healthoverview h2{margin:0;font-size:14px;font-weight:600}
+.bd-healthheader{display:grid;gap:5px;padding:4px 0}
+.bd-healthheader>div:first-child{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.bd-healthheader>div:first-child>span{color:var(--ink3)}
+.bd-healthdestination{display:flex;align-items:center;gap:8px 18px;flex-wrap:wrap;color:var(--ink2);font-size:12px}
+.bd-healthdestination>span{overflow-wrap:anywhere;min-width:0}
+.bd-healthdestination nav{display:flex;flex-wrap:wrap;gap:6px 14px}
+.bd-healthstages{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.bd-healthcard{min-width:0;border:1px solid var(--line);border-radius:5px;background:var(--surface);padding:10px}
+.bd-healthcard h2>span:not(.bd-healthcount){color:var(--ink3);margin-right:5px;font-weight:400}
+.bd-healthcard p{margin:7px 0 0;color:var(--ink3);font-size:12px;line-height:1.4}
+.bd-healthcard p.bd-warn{color:var(--warnink)}
+.bd-healthcard p.bd-crit{color:var(--crit)}
+.bd-healthmetrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px 10px;margin:12px 0 0}
+.bd-healthmetrics div{min-width:0}
+.bd-healthmetrics dt{color:var(--ink3);font-size:12px;line-height:1.3}
+.bd-healthmetrics dd{margin:2px 0 0;font-size:18px;font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.bd-healthmiddle{display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,28%);gap:10px;align-items:start}
+.bd-healthsectionhead{display:flex;align-items:center;gap:8px;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap}
+.bd-healthsectionhead>span{color:var(--ink3);font-size:12px}
+.bd-healthmatrix{width:100%;border-spacing:0;border-collapse:collapse;table-layout:fixed;font-size:12px}
+.bd-healthmatrix th,.bd-healthmatrix td{padding:5px;text-align:right;vertical-align:middle;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.bd-healthmatrix th:first-child{width:19%;text-align:left}
+.bd-healthmatrix thead th{color:var(--ink3);font-weight:500;line-height:1.4}
+.bd-healthmatrix tbody th{font-weight:500}
+.bd-healthmatrix td small{display:block;color:var(--ink3);font-size:inherit;margin-top:1px}
+.bd-healthmatrix th:nth-child(2),.bd-healthmatrix td:nth-child(2),.bd-healthmatrix th:nth-child(4),.bd-healthmatrix td:nth-child(4){border-right:1px solid var(--line2)}
+.bd-healthdiagnostics h2{display:flex;align-items:center;justify-content:space-between}
+.bd-healthcount{color:var(--warnink);font-variant-numeric:tabular-nums}
+.bd-healthissues{margin:8px 0;padding-left:17px;font-size:12px;line-height:1.4}
+.bd-healthissues li+li{margin-top:5px}
+.bd-healthoverview summary{cursor:pointer;min-height:28px;padding:5px 0}
+.bd-healthoverview summary:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.bd-healthdiagnostics>details{font-size:12px;color:var(--ink2)}
+.bd-healthstatuslist{margin-top:8px;border-top:1px solid var(--line2)}
+.bd-healthstatus{border-bottom:1px solid var(--line)}
+.bd-healthstatus summary>span{float:right;font-size:12px;font-weight:400}
+.bd-healthstatus ul{list-style:none;padding:0;margin:4px 0 8px;font-size:12px;overflow-wrap:anywhere}
+.bd-healthstatus li+li{margin-top:6px}
+.bd-healthstatus li b{font-weight:500}
+.bd-healthstatus small{display:block;color:var(--ink3);font-size:inherit}
+.bd-healthdetails{border:1px solid var(--line);border-radius:5px;background:var(--surface);padding:3px 10px}
+.bd-healthdetails>summary{font-weight:500}
+.bd-healthdetails>summary>span{font-weight:400;color:var(--ink3);margin-left:10px;font-size:12px}
+.bd-healthdetails[open]>summary{margin-bottom:8px;border-bottom:1px solid var(--line)}
+.bd-healthdetails .bd-tw{max-height:420px}
+.bd-healthcollectiondetails{display:grid;gap:14px}
+.bd-healthcollectiondetails h2{margin-bottom:6px}
+.bd-healthcollectiondetails .bd-stats{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.bd-healthmembers{margin:8px 0;padding-left:20px;overflow-wrap:anywhere;font-size:12px}
+.bd-healthscope{margin:0;color:var(--ink3);font-size:12px}
+@container (max-width:1000px){.bd-healthstages{grid-template-columns:repeat(2,minmax(0,1fr))}.bd-healthmiddle{grid-template-columns:minmax(0,1fr) minmax(240px,30%)}}
+@container (max-width:780px){.bd-healthmiddle{grid-template-columns:minmax(0,1fr)}.bd-healthmatrix th,.bd-healthmatrix td{padding:7px 3px}}
+@container (max-width:620px){.bd-healthmatrix thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}.bd-healthmatrix tbody{display:grid;gap:8px}.bd-healthmatrix tbody tr{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border:1px solid var(--line);border-radius:4px}.bd-healthmatrix tbody th{grid-column:1/-1;width:auto}.bd-healthmatrix td{display:block;text-align:left;border:0!important}.bd-healthmatrix td::before{content:attr(data-label);display:block;color:var(--ink3);font-size:12px;margin-bottom:4px}}
+@container (max-width:480px){.bd-healthstages{grid-template-columns:minmax(0,1fr)}.bd-healthdetails>summary>span{display:block;margin-left:0}}
 .bd-kpis{display:grid;grid-template-columns:repeat(9,minmax(0,1fr));background:var(--surface);border-radius:5px;overflow:hidden;border:1px solid var(--line);margin-bottom:8px}
 .bd-kpi{display:block;text-align:left;background:var(--surface);padding:7px 10px;min-width:0;text-decoration:none;color:inherit;border-right:1px solid var(--line);border-bottom:1px solid var(--line);margin-bottom:-1px}
 .bd-kpi:last-child{border-right:0}

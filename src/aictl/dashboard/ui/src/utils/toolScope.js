@@ -40,6 +40,13 @@ export function isToolSelected(id, enabledTools) {
 // `copilot` card holds the VS Code settings that Copilot in VS Code reads.
 const CONFIG_CARD_OWNERS = { copilot: ['copilot', 'copilot-vscode'] };
 
+/** Stored spellings follow the backend's explicit owners, never a tool-name prefix. */
+export function isStoredToolSelected(id, enabledTools) {
+  if (!Array.isArray(enabledTools)) return true;
+  if (!id || id === 'any' || id === 'unknown') return false;
+  return enabledTools.includes(id) || !!CONFIG_CARD_OWNERS[id]?.some(owner => enabledTools.includes(owner));
+}
+
 /** Does a config card show under this filter? */
 export function isConfigSelected(row, enabledTools) {
   const owners = CONFIG_CARD_OWNERS[row?.tool];

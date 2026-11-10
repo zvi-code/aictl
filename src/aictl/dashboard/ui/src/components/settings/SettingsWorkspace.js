@@ -14,6 +14,7 @@ import { scopeAudit } from '../../utils/auditScope.js';
 import { isFiltered } from '../../utils/toolScope.js';
 import { writeUrl } from '../../hooks/urlState.js';
 import { isTypingTarget } from '../../utils/a11y.js';
+import { ConfigurationEvidence } from '../../live/LoadedConfiguration.js';
 import Icon from '../ui/Icon.js';
 import Segmented from '../ui/Segmented.js';
 import ToolScopeEmpty from '../ui/ToolScopeEmpty.js';
@@ -87,8 +88,15 @@ export function auditState(findings) {
   return { status, audit, scan: f.scan || null, error: f.error ? String(f.error) : null };
 }
 
+function RuntimeConfiguration({ records = [] }) {
+  return html`<section class="st-wsnote" aria-label="Loaded configuration evidence">
+    <h3>Configured on disk is not effective runtime configuration</h3>
+    <${ConfigurationEvidence} records=${records}/>
+  </section>`;
+}
+
 export default function SettingsWorkspace({ source = {}, note = '' }) {
-  const { toolConfigs, tools, monitor, root, enabledTools = null, recentFiles, toolName, openFile, findings: sourceFindings, refresh, hooks } = source;
+  const { toolConfigs, tools, monitor, root, enabledTools = null, recentFiles, toolName, openFile, findings: sourceFindings, refresh, hooks, configuredOnly, runtimeConfiguration } = source;
   const snap = useMemo(() => snapOf({ toolConfigs, tools, monitor, root, enabledTools }), [toolConfigs, tools, monitor, root, enabledTools]);
   const [st, set] = useSettingsState();
   const [q, setQ] = useState('');
@@ -232,6 +240,7 @@ export default function SettingsWorkspace({ source = {}, note = '' }) {
       </div>
     </div>
     ${note && html`<p class="st-wsnote" data-testid="st-wsnote">${note}</p>`}
+    ${configuredOnly ? html`<${RuntimeConfiguration} records=${runtimeConfiguration}/>` : null}
     ${scopeEmpty && html`<div class="st-scope-empty"><${ToolScopeEmpty} enabledTools=${enabledTools} snap=${snap} what="the settings"/></div>`}
     <div class="st-grid">
       <div class="st-col st-col--nav">${nav}</div>
