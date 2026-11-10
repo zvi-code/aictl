@@ -173,9 +173,61 @@ The wait polls every 5 s with a 600 s timeout. A timeout or failed visibility qu
 
 These receipts are **process-local and in memory**. They are shared by connections using the same cached ingester, not persisted across restarts or shared across processes/configurations. They do not make a multi-process transaction or guarantee immediate visibility of another writer's data. Changing modes or restarting does not drain earlier DM queues. Keep tables requiring immediate reads on inline or streaming, and let prior queued writes finish before relying on a changed mode. Different tables, including an OTel record and its payload chunks, can become visible at different times.
 
+### Session indexing and restarts
+
+The daemon reads the tools' existing session files into the selected store. Files on disk, a running tool process, and a completed session index are different things: a session's lifecycle row can arrive before its prompts, skill uses, edits and usage.
+
+- **Current Copilot sessions appear before the full history pass finishes.** Changed Copilot transcripts are read newest-first, with active Windows sessions first. Each completed file's facts, usage and session row are published before the reader continues to later files and source-store reconciliation. Older eligible files still receive their normal backfill budget. Claude transcript ordering remains oldest-first to preserve replay attribution.
+- **Restart checkpoints describe completed files, not just the time of the last poll.** File signatures are stored in `maintenance_state.text`, under a key scoped to the machine, user home and source directories. Deferred files and failed fact writes are not marked complete. A failed session write remains available for retry, and its fingerprint advances only after successful writes. The former global last-run timestamp is not used to assume that another machine's files were indexed; upgrading can therefore require a new pass over existing files.
+- **Windows file metadata is not the only growth check.** The reader checks a held transcript's size through an open handle before deciding that it is unchanged. A Copilot lock marker bypasses age and backfill limits only when its original owner process is still alive; stale markers and reused PIDs do not force old transcripts into the live-data pass. No source file or marker is deleted.
+- **Transcript edits are written in batches.** Cleanup of superseded edits is grouped by session and their replacements are inserted together, rather than forcing a Kusto query and ingestion for every edit. Re-reads use the existing deduplication and upsert rules; they do not require a database reset.
+
+The Windows dashboard also compares project paths without case or separator differences, uses completion revisions rather than coarse clock ticks to decide whether an answer is fresh, and shares one cached process-parent snapshot instead of scanning the process table for each PID. Session searches on Kusto read result rows directly; SQLite's JSON-packing optimization is not used for a remote connection.
+
+### Starting a persistent daemon on Windows
+
+Run from the workspace you want to scan, or pass `--root`. To update an existing installation, stop the daemon and follow the reinstall steps in [HOWTO.md](../HOWTO.md) before starting it again:
+
+```powershell
+aictl daemon serve --stop
+```
+
+For synchronous streaming writes, including the former remote default, start with an explicit mode:
+
+```powershell
+aictl daemon serve --daemon --kusto-cluster 'https://ingest-<name>.<region>.kusto.windows.net' --kusto-database aictl --kusto-ingestion streaming --no-open
+aictl daemon serve --status
+```
+
+This is an explicit streaming profile, **not a change to the `auto` default**. It uses the same database and does not reset history. Streaming must be available on the cluster; use the other modes above when it is not. Any per-table overrides still take precedence.
+
+Windows starts a child process with `aictl daemon serve`, not the removed top-level `serve` entry. A child that exits without recording its PID produces a startup error. The default PID and log files are `%APPDATA%\aictl\aictl.pid` and `%APPDATA%\aictl\aictl.log`; a custom `[daemon]` configuration can change them. A "daemon starting" message confirms process startup, not completion of the initial snapshot or history indexing.
+
 ## 5. Check it
 
-Open the dashboard as usual (`aictl daemon serve` prints the URL). In the Kusto web UI or any KQL client, `['sessions'] | count` and `['requests'] | summarize count() by ['tool']` show the rows arriving; `aictl_information_schema | summarize count() by ['scope']` lists the schema. Queued tables appear after DM processes their batches, not necessarily when a client commit returns. The Settings screen's "Data sources" shows the cluster, and the size budget never evicts (retention is the database's retention policy, set from `retention_days`).
+Open the dashboard as usual (`aictl daemon serve` prints the URL). The Settings screen's "Data sources" shows the cluster. `aictl_information_schema | summarize count() by ['scope']` lists the schema, and the size budget never evicts (retention is the database's retention policy, set from `retention_days`).
+
+Kusto history tables contain multiple versions and deletion markers. A raw `sessions | count` is not the number of indexed sessions. To count current session rows:
+
+```kql
+sessions
+| summarize arg_max(_v, *) by session_id
+| where _deleted == false
+| count
+```
+
+That count can still include lifecycle-only rows. Check the dashboard's session search (`/api/board/sessions?limit=200`) and the actual activity facts as well. This query counts current prompts, skill uses and edits from the last 24 hours, without displaying their content:
+
+```kql
+union withsource=SourceTable session_prompts, skill_uses, file_write_events
+| summarize arg_max(_v, *) by SourceTable, rowid
+| where _deleted == false and unixtime_seconds_todatetime(ts) >= ago(1d)
+| summarize rows=count(), sessions=count_distinct(session_id) by SourceTable
+```
+
+Use the same time range, tool and project filters when comparing these facts with the board. A responsive HTTP endpoint or a growing lifecycle-row count alone does not establish that prompts, skills and changes have been indexed. During the first transcript poll, the ingester's last-poll time can remain unset while completed Copilot sessions are already appearing. Check the Machine panel's ingester status and errors, and whether the session list and fact counts advance.
+
+Queued tables appear after DM processes their batches, not necessarily when a client commit returns. A large history or a small cluster can also delay synchronous backfill; there is no fixed completion time. Existing history is not deleted to recover indexing.
 
 ## Report
 
