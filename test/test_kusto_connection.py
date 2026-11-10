@@ -199,6 +199,27 @@ def test_rollback_and_close_drop_buffered_rows():
         conn.execute("s")
 
 
+def test_transcript_edits_are_ingested_together():
+    from aictl.storage import FileWriteRow, HistoryDB
+
+    client, ingester = FakeClient(), FakeIngester()
+    conn = KustoConnection(SETTINGS, client, ingester, tables=TABLES)
+    edits = [
+        FileWriteRow(
+            ts=100.0,
+            path=f"C:\\project\\file{i}.py",
+            session_id="session",
+            source_event_id=f"call-{i}",
+            dedup_key=f"edit-{i}",
+        )
+        for i in range(5)
+    ]
+    HistoryDB._write_transcript_file_edits(conn, edits)
+    conn.commit()
+    assert [(table, len(rows)) for table, rows in ingester.calls] == [("file_write_events", 5)]
+    assert len(client.queries) == 2  # one cleanup and one conflict lookup for the batch
+
+
 def test_buffer_flushes_at_row_limit():
     conn, _, ing = make({"s": lambda p: Insert("sessions", [session_row(f"s{i}") for i in range(FLUSH_ROWS)])})
     conn.execute("s")

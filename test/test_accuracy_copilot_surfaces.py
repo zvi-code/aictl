@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import time
 from datetime import datetime
@@ -420,8 +421,37 @@ class TestHeldFiles:
         monkeypatch.setattr(tu.platforms, "IS_WINDOWS", True)
         old = time.time() - 10 * 86400
         assert tu._current_size(log, 40, old, 40, time.time()) == 40
-        (tmp_path / "inuse.1.lock").write_text("1")
+        (tmp_path / f"inuse.{os.getpid()}.lock").write_text(str(os.getpid()))
         assert tu._current_size(log, 40, old, 40, time.time()) == 100
+
+    def test_a_dead_owner_does_not_make_an_old_file_held(self, tmp_path, monkeypatch):
+        import psutil
+
+        from aictl.ingesters import transcript_usage as tu
+
+        log = tmp_path / "events.jsonl"
+        log.write_bytes(b"x" * 100)
+        (tmp_path / "inuse.4242.lock").write_text("4242")
+        monkeypatch.setattr(tu.platforms, "IS_WINDOWS", True)
+
+        def missing(pid):
+            raise psutil.NoSuchProcess(pid)
+
+        monkeypatch.setattr(psutil, "Process", missing)
+        old = time.time() - 10 * 86400
+        assert tu._current_size(log, 40, old, 40, time.time()) == 40
+
+    def test_a_reused_pid_does_not_make_an_old_file_held(self, tmp_path, monkeypatch):
+        from aictl.ingesters import transcript_usage as tu
+
+        log = tmp_path / "events.jsonl"
+        log.write_bytes(b"x" * 100)
+        marker = tmp_path / f"inuse.{os.getpid()}.lock"
+        marker.write_text(str(os.getpid()))
+        old = time.time() - 10 * 86400
+        os.utime(marker, (old, old))
+        monkeypatch.setattr(tu.platforms, "IS_WINDOWS", True)
+        assert tu._current_size(log, 40, old, 40, time.time()) == 40
 
     def test_other_systems_trust_the_reported_size(self, tmp_path, monkeypatch):
         from aictl.ingesters import transcript_usage as tu

@@ -58,6 +58,8 @@ class Mutation:
     table: str
     kql: str
     kind: str = "update"  # update | delete | insert
+    # Queued writes to these tables must be visible. None preserves legacy waiting.
+    read_tables: tuple[str, ...] | None = None
 
 
 @dataclass

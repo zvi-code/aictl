@@ -201,7 +201,15 @@ def seed(db: HistoryDB, now: float) -> None:
 @pytest.fixture(autouse=True)
 def _no_state_from_other_tests():
     """The module keeps short-lived answers. No test may see one from another test."""
-    for memo in (board_api._facts_memo, board_api._sources_memo, board_api._disk_prompts_memo, board_api._BASE_TIMES, board_api._SENT, board_api._COMPUTED_AT, board_api._COMPUTED_MONO):
+    for memo in (
+        board_api._facts_memo,
+        board_api._sources_memo,
+        board_api._disk_prompts_memo,
+        board_api._BASE_TIMES,
+        board_api._SENT,
+        board_api._COMPUTED_AT,
+        board_api._COMPUTED_REVISIONS,
+    ):
         memo.clear()
     board_api._MEMO._entries.clear()
     board_api._BASE_MEMO._entries.clear()
@@ -471,6 +479,45 @@ class TestFilters:
         assert self._ids(payload) == {"vsc", "waiter"}
         assert payload["kpis"]["tokens"] == 2200 + 20
         assert [p["project"] for p in payload["projects"]] == ["/p/beta"]
+
+    def test_windows_project_spellings_keep_sessions_and_their_facts(self, db):
+        conn = db._conn()
+        spellings = [r"C:\Review\Repo", r"c:\review\repo", "C:/Review/Repo"]
+        for i, project in enumerate(spellings):
+            sid = f"windows-{i}"
+            _session(conn, sid, "copilot-cli", project, NOW - 100, NOW - 10)
+            _request(conn, NOW - 90, sid, "copilot-cli", project, GPT, i=10)
+            _prompt(conn, NOW - 95, sid, "copilot-cli", project, text="Windows prompt")
+            _insert(
+                conn, "skill_uses", ts=NOW - 85, session_id=sid, tool="copilot-cli", project_path=project, name="review"
+            )
+            _insert(
+                conn,
+                "file_write_events",
+                ts=NOW - 80,
+                session_id=sid,
+                tool="copilot-cli",
+                path=project + r"\a.py",
+                project_path=project,
+            )
+        conn.commit()
+        payload = _board(db, project=spellings[0])
+        assert self._ids(payload) == {"windows-0", "windows-1", "windows-2"}
+        assert payload["kpis"]["tokens"] == 30
+        assert len(payload["prompts"]) == 3
+        assert payload["skills"][0]["uses"] == 3
+        assert payload["changes"]["totals"]["edits"] == 3
+        options = [p for p in payload["options"]["projects"] if board_api.project_key(p["id"]) == "c:/review/repo"]
+        assert len(options) == 1 and options[0]["agents"] == 3
+
+    def test_windows_project_filter_also_applies_to_previous_window(self, db):
+        conn = db._conn()
+        _request(conn, NOW - 2 * DAY, "windows-old", "copilot-cli", r"c:\review\repo", GPT, i=12)
+        _prompt(conn, NOW - 2 * DAY, "windows-old", "copilot-cli", "C:/Review/Repo", text="Earlier")
+        conn.commit()
+        payload = compute_board(db, _filters(since=NOW - 1.5 * DAY, project=r"C:\Review\Repo"), None, NOW)
+        assert payload["kpis"]["prev"]["tokens"] == 12
+        assert payload["kpis"]["prev"]["messages"] == 2
 
     def test_model_filters_rows_inside_a_session(self, db):
         payload = _board(db, model=HAIKU)
@@ -1241,7 +1288,8 @@ class TestRefreshBehind:
         # Computed moments ago: the old answer stays and no refresh starts.
         assert board_api.board_bytes(db, store, "", time.time(), background=True) == first
         key = next(iter(board_api._COMPUTED_AT))
-        board_api._COMPUTED_AT[key] -= board_api.REFRESH_MIN_S
+        rest = max(board_api.REFRESH_MIN_S, board_api._COMPUTE_TOOK[key] * board_api.REFRESH_REST_RATIO)
+        board_api._COMPUTED_AT[key] -= min(rest, board_api.MAX_STALE_S / 2)
         assert board_api.board_bytes(db, store, "", time.time(), background=True) == first
         self._wait()
         assert b'"fresh"' in board_api.board_bytes(db, store, "", time.time(), background=True)
@@ -1380,7 +1428,8 @@ class TestUnchangedAnswers:
         store.version = 2
         assert board_api.board_bytes(db, store, f"since={when - DAY}", when + board_api.MEMO_TTL_S) == first
 
-    def test_new_data_changes_the_bytes(self, db):
+    def test_new_data_changes_the_bytes(self, db, monkeypatch):
+        monkeypatch.setattr(board_api, "time", SimpleNamespace(time=time.time, monotonic=lambda: 100.0))
         store = SimpleNamespace(version=1, snapshot=None)
         when = self._when()
         first = board_api.board_bytes(db, store, f"since={when - DAY}", when)

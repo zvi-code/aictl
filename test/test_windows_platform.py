@@ -37,6 +37,32 @@ def test_process_basename_splits_backslashes(windows):
     assert P.process_basename(r"C:\Program Files\nodejs\node.exe") == "node.exe"
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="requires the Windows process snapshot API")
+def test_native_process_snapshot_includes_our_parent():
+    assert P.windows_process_parents()[os.getpid()] == os.getppid()
+
+
+def test_board_parent_lookups_share_one_windows_snapshot(windows, monkeypatch):
+    from aictl.dashboard import board_api
+
+    calls = []
+
+    def parents():
+        calls.append(1)
+        return {10: 1, 20: 10}
+
+    monkeypatch.setattr(P, "windows_process_parents", parents)
+    monkeypatch.setattr(board_api, "_parent_pid_snapshot", None)
+    monkeypatch.setattr(board_api, "time", types.SimpleNamespace(monotonic=lambda: 10.0))
+    assert board_api._parent_pid(10) == 1
+    assert board_api._parent_pid(20) == 10
+    assert board_api._parent_pid(30) is None
+    assert len(calls) == 1
+    monkeypatch.setattr(board_api, "time", types.SimpleNamespace(monotonic=lambda: 10.0 + board_api.PARENT_PID_TTL_S))
+    assert board_api._parent_pid(20) == 10
+    assert len(calls) == 2
+
+
 @pytest.mark.parametrize(
     "path,tool",
     [
@@ -171,12 +197,27 @@ def test_start_daemon_on_windows_respawns_without_fork(monkeypatch, tmp_path):
     monkeypatch.setattr(daemon, "spawn_detached_windows", fake_spawn)
     cfg = types.SimpleNamespace(effective_log_file=lambda: tmp_path / "d" / "aictl.log")
     daemon._start_daemon(".", "127.0.0.1", 8484, 5.0, True, pid_file, cfg, db_path=None, headless=True)
-    assert argv_seen[1:4] == ["-m", "aictl.cli", "serve"]
+    assert argv_seen[1:5] == ["-m", "aictl.cli", "daemon", "serve"]
     assert "--headless" in argv_seen and "--no-open" in argv_seen and "--monitor" in argv_seen
     # The respawned argv has to parse: --daemon absent, every option known to the command.
     assert "--daemon" not in argv_seen
-    parser = daemon.serve.make_context("serve", argv_seen[4:])
+    parser = daemon.serve.make_context("serve", argv_seen[5:])
     assert parser.params["port"] == 8484
+    from click.testing import CliRunner
+
+    from aictl.cli import main
+
+    assert CliRunner().invoke(main, [*argv_seen[3:], "--help"]).exit_code == 0
+
+
+def test_failed_windows_daemon_start_is_an_error(monkeypatch, tmp_path):
+    import click
+
+    monkeypatch.setattr(daemon, "spawn_detached_windows", lambda *args: types.SimpleNamespace(poll=lambda: 1))
+    with pytest.raises(click.ClickException, match="did not start"):
+        daemon._start_daemon_windows(
+            ".", "127.0.0.1", 8484, 5.0, True, tmp_path / "missing.pid", tmp_path / "aictl.log"
+        )
 
 
 def test_stale_pid_file_of_a_reused_pid_is_not_killed(monkeypatch, tmp_path):

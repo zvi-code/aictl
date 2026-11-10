@@ -5657,18 +5657,23 @@ class HistoryDB:
 
     @staticmethod
     def _write_transcript_file_edits(conn: sqlite3.Connection, rows: list[FileWriteRow]) -> None:
+        by_session: dict[str, set[str]] = {}
         for r in rows:
             if r.source_event_id:
-                conn.execute(
-                    "DELETE FROM file_write_events WHERE session_id = ? AND source_event_id = ? AND source_event_kind != ?",
-                    (r.session_id, r.source_event_id, TRANSCRIPT_SOURCE),
-                )
+                by_session.setdefault(r.session_id, set()).add(r.source_event_id)
+        for sid, event_ids in by_session.items():
             conn.execute(
-                "INSERT INTO file_write_events"
-                "(dedup_key, ts, session_id, tool, tool_name, operation, path, project_path, pid,"
-                " source_event_kind, source_event_id, content_hash, size_bytes, detail)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-                " ON CONFLICT(dedup_key) WHERE dedup_key != '' DO UPDATE SET detail=excluded.detail, tool=excluded.tool",
+                "DELETE FROM file_write_events WHERE session_id = ?"
+                " AND source_event_id IN (SELECT value FROM json_each(?)) AND source_event_kind != ?",
+                (sid, json.dumps(sorted(event_ids)), TRANSCRIPT_SOURCE),
+            )
+        conn.executemany(
+            "INSERT INTO file_write_events"
+            "(dedup_key, ts, session_id, tool, tool_name, operation, path, project_path, pid,"
+            " source_event_kind, source_event_id, content_hash, size_bytes, detail)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(dedup_key) WHERE dedup_key != '' DO UPDATE SET detail=excluded.detail, tool=excluded.tool",
+            [
                 (
                     r.dedup_key,
                     r.ts,
@@ -5684,8 +5689,10 @@ class HistoryDB:
                     r.content_hash,
                     r.size_bytes,
                     json.dumps(r.detail),
-                ),
-            )
+                )
+                for r in rows
+            ],
+        )
 
     @staticmethod
     def _drop_superseded_rows(conn: sqlite3.Connection, facts: CallFacts) -> None:

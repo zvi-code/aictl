@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 from datetime import datetime
@@ -52,13 +53,14 @@ def db(tmp_path):
     store.close()
 
 
-def make_ingester(db, root: Path) -> TranscriptUsageIngester:
+def make_ingester(db, root: Path, **kwargs) -> TranscriptUsageIngester:
     return TranscriptUsageIngester(
         db,
         claude_projects=root / "claude" / "projects",
         codex_sessions=root / "codex",
         copilot_state=root / "copilot" / "session-state",
         vscode_workspaces=root / "vscode" / "workspaceStorage",
+        **kwargs,
     )
 
 
@@ -842,6 +844,164 @@ def full_fixture(root: Path) -> None:
 
 
 class TestRereads:
+    @pytest.mark.parametrize("stall", ["older_file", "source_store"])
+    @pytest.mark.parametrize("held", [False, True])
+    def test_current_copilot_session_is_published_before_later_work(self, db, tmp_path, monkeypatch, stall, held):
+        import builtins
+
+        from aictl.ingesters import transcript_usage as tu
+
+        recent = copilot_events(tmp_path)
+        older = copilot_events(tmp_path, DESKTOP_SID)
+        write_lines(recent, [ev("user.message", 100, {"content": "current"}), usage_record(90)])
+        write_lines(older, [usage_record(3600)])
+        recent_mtime = NOW - 7200 if held else NOW - 90
+        os.utime(recent, (recent_mtime, recent_mtime))
+        os.utime(older, (NOW - 3600, NOW - 3600))
+        if held:
+            (recent.parent / f"inuse.{os.getpid()}.lock").write_text(str(os.getpid()))
+            monkeypatch.setattr(tu.platforms, "IS_WINDOWS", True)
+        ingester = make_ingester(db, tmp_path)
+        original_open = builtins.open
+        original_read = ingester._store.read
+
+        def blocked():
+            assert rows(db, "SELECT session_id FROM session_usage WHERE session_id = ?", COPILOT_SID)
+            assert rows(db, "SELECT session_id FROM sessions WHERE session_id = ?", COPILOT_SID)
+            assert rows(db, "SELECT text FROM session_prompts WHERE session_id = ?", COPILOT_SID) == [{"text": "current"}]
+            assert rows(db, "SELECT input_tokens FROM requests WHERE session_id = ?", COPILOT_SID) == [{"input_tokens": 30}]
+            assert count(db, "maintenance_state") == 0
+            raise RuntimeError("later work stalled")
+
+        def open_file(path, *args, **kwargs):
+            if path == older:
+                blocked()
+            return original_open(path, *args, **kwargs)
+
+        if stall == "older_file":
+            monkeypatch.setattr(builtins, "open", open_file)
+        else:
+            monkeypatch.setattr(ingester._store, "read", blocked)
+        with pytest.raises(RuntimeError, match="later work stalled"):
+            ingester.poll()
+        monkeypatch.setattr(builtins, "open", original_open)
+        monkeypatch.setattr(ingester._store, "read", original_read)
+        ingester.poll()
+        ingester.poll()
+        make_ingester(db, tmp_path).poll()
+        assert count(db, "requests") == 2
+        assert count(db, "session_usage") == 2
+        assert rows(db, "SELECT input_tokens, output_tokens FROM session_usage WHERE session_id = ?", COPILOT_SID) == [
+            {"input_tokens": 30, "output_tokens": 30}
+        ]
+
+    def test_incremental_copilot_publish_reconciles_source_metadata_without_counting_twice(self, db, tmp_path):
+        write_lines(copilot_events(tmp_path), [usage_record(400)])
+        same = (COPILOT_SID, "", MODEL, 120, 30, 80, 10, 0, 1500, 400.0, None, "stop", iso(400))
+        make_store(tmp_path, [same])
+        ingester = make_ingester(db, tmp_path)
+        assert ingester.poll() == 1
+        assert rows(db, "SELECT project_path, git_branch FROM sessions") == [
+            {"project_path": "/work/stored", "git_branch": "main"}
+        ]
+        assert count(db, "requests") == 1
+        assert count(db, "session_usage") == 1
+        assert ingester.poll() == 0
+
+    def test_stale_lock_does_not_bypass_recent_first_deferral(self, db, tmp_path, monkeypatch):
+        from aictl.ingesters import transcript_usage as tu
+
+        path = copilot_events(tmp_path)
+        write_lines(path, [usage_record(3 * 86400)])
+        old = NOW - 3 * 86400
+        os.utime(path, (old, old))
+        marker = path.parent / f"inuse.{os.getpid()}.lock"
+        marker.write_text(str(os.getpid()))
+        os.utime(marker, (old, old))
+        monkeypatch.setattr(tu.platforms, "IS_WINDOWS", True)
+        ingester = make_ingester(db, tmp_path, defer_old=True)
+        ingester.poll()
+        assert count(db, "requests") == 0
+        assert path in ingester._deferred
+        ingester.poll()
+        assert count(db, "requests") == 1
+
+    def test_deferred_history_survives_a_restart(self, db, tmp_path):
+        path = copilot_events(tmp_path)
+        write_lines(path, [usage_record(3 * 86400)])
+        old = NOW - 3 * 86400
+        os.utime(path, (old, old))
+        make_ingester(db, tmp_path, defer_old=True).poll()
+        assert count(db, "requests") == 0
+        restarted = make_ingester(db, tmp_path, defer_old=True)
+        restarted.poll()
+        restarted.poll()
+        assert count(db, "requests") == 1
+        assert not restarted._deferred
+
+    def test_a_completed_old_file_is_skipped_but_an_unseen_source_is_not(self, db, tmp_path):
+        for root in (tmp_path / "first", tmp_path / "second"):
+            path = copilot_events(root, sid=root.name)
+            write_lines(path, [ev("user.message", 3 * 3600, {"content": root.name})])
+            old = NOW - 3 * 3600
+            os.utime(path, (old, old))
+        first = make_ingester(db, tmp_path / "first")
+        first.poll()
+        restarted = make_ingester(db, tmp_path / "first")
+        restarted.poll()
+        assert not restarted._offsets
+        second = make_ingester(db, tmp_path / "second")
+        second.poll()
+        assert rows(db, "SELECT text FROM session_prompts ORDER BY text") == [{"text": "first"}, {"text": "second"}]
+
+    def test_windows_stale_metadata_does_not_hide_growth_after_restart(self, db, tmp_path, monkeypatch):
+        from aictl.ingesters import transcript_usage as tu
+
+        path = copilot_events(tmp_path)
+        write_lines(path, [usage_record(3 * 3600)])
+        old = NOW - 3 * 3600
+        os.utime(path, (old, old))
+        make_ingester(db, tmp_path).poll()
+        stale = path.stat()
+        write_lines(path, [usage_record(10, inp=999)])
+        stat = Path.stat
+        monkeypatch.setattr(tu.platforms, "IS_WINDOWS", True)
+        monkeypatch.setattr(Path, "stat", lambda p, *a, **kw: stale if p == path else stat(p, *a, **kw))
+        make_ingester(db, tmp_path).poll()
+        assert count(db, "requests") == 2
+
+    def test_failed_facts_are_not_checkpointed_across_restart(self, db, tmp_path, monkeypatch):
+        path = copilot_events(tmp_path)
+        write_lines(path, [usage_record(3 * 3600)])
+        old = NOW - 3 * 3600
+        os.utime(path, (old, old))
+        real = db.write_call_facts
+
+        def locked(_facts):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(db, "write_call_facts", locked)
+        make_ingester(db, tmp_path).poll()
+        assert count(db, "requests") == 0
+        monkeypatch.setattr(db, "write_call_facts", real)
+        make_ingester(db, tmp_path).poll()
+        assert count(db, "requests") == 1
+
+    def test_failed_session_write_is_retried_without_new_lines(self, db, tmp_path, monkeypatch):
+        write_lines(copilot_events(tmp_path), [usage_record(100)])
+        ingester = make_ingester(db, tmp_path)
+        real = db.upsert_session
+
+        def locked(_row):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(db, "upsert_session", locked)
+        with pytest.raises(sqlite3.OperationalError):
+            ingester.poll()
+        monkeypatch.setattr(db, "upsert_session", real)
+        ingester.poll()
+        assert count(db, "sessions") == 1
+
     def test_second_poll_and_a_restart_add_nothing(self, db, tmp_path):
         full_fixture(tmp_path)
         ingester = make_ingester(db, tmp_path)

@@ -33,10 +33,12 @@ session cost ``partial`` or ``unknown`` and is named in ``unpriced_models``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import re
+import socket
 import sqlite3
 import time
 from collections.abc import Iterable, Iterator
@@ -73,7 +75,7 @@ POLL_INTERVAL_S = 60.0
 _TYPE_RE = re.compile(rb'"type":"([a-z_-]+)"')
 _HEAD_BYTES = 600
 _UNREAD_TYPES = frozenset({b"api-request-blob", b"api-request-shape", b"queued_command", b"prompt_snapshot"})
-# On a restart, files idle this long before the previous run's last poll are not read again.
+# Re-read recently active files on restart to rebuild their in-memory session state.
 RESTART_GRACE_S = 3600.0
 # A first run on a machine reads the files written in the last RECENT_FIRST_S at once;
 # the older ones, up to DEFERRED_BYTES_PER_POLL of them a poll, follow in the background.
@@ -986,18 +988,28 @@ def _current_size(path: Path, size: int, mtime: float, offset: int, now: float) 
 
 def _held(path: Path) -> bool:
     """A Copilot CLI session marks the folder of a file it keeps open."""
+    import psutil
+
     try:
-        return any(path.parent.glob("inuse.*.lock"))
+        for marker in path.parent.glob("inuse.*.lock"):
+            try:
+                pid = int(marker.name.split(".")[1])
+                # Crashes leave markers behind, and their PIDs can be reused.
+                if pid > 0 and psutil.Process(pid).create_time() <= marker.stat().st_mtime:
+                    return True
+            except (OSError, ValueError, psutil.Error):
+                continue
     except OSError:
         return False
+    return False
 
 
 class TranscriptUsageIngester:
     """Tails the three transcript stores and writes one row per session.
 
-    State is in memory: after a restart the whole window is re-read, which is
-    safe because rows are absolute totals rather than increments. Nothing under
-    the tools' own directories is ever written.
+    A restart skips only files whose complete contents were stored successfully.
+    A changed file is re-read to rebuild its in-memory totals. Nothing under the
+    tools' own directories is ever written.
     """
 
     def __init__(
@@ -1040,39 +1052,62 @@ class TranscriptUsageIngester:
         self._copilot: dict[Path, CopilotAccumulator] = {}
         self._offsets: dict[Path, int] = {}
         self._written: dict[str, tuple] = {}
-        # A file idle since before the last run of the previous daemon was read then, and
-        # its rows are in the store: the first poll of this run skips it. A file written
-        # since is read whole, so a session that spans the restart keeps its full totals.
-        self._idle_before = 0.0
+        self._pending_sessions: dict[str, SessionUsage] = {}
         self._first_poll = True
-        self._last_run_ts = self._load_last_run()
-        # Files the first poll skipped, with their mtime then: read whole once one changes.
-        self._skipped: dict[Path, float] = {}
-        # Old files a first run has not read yet, and this poll's budget of bytes for them.
+        identity = [
+            socket.gethostname(),
+            platforms.path_key(str(Path.home())),
+            *(
+                platforms.path_key(str(p.absolute()))
+                for p in (
+                    self.claude_projects,
+                    self.codex_sessions,
+                    self.copilot_state,
+                    self.vscode_workspaces,
+                )
+            ),
+        ]
+        digest = hashlib.sha256(json.dumps(identity).encode("utf-8")).hexdigest()[:24]
+        self._checkpoint_key = f"transcript_usage:files1:{digest}"
+        self._resume_before = 0.0
+        self._checkpoints = self._load_checkpoints()
+        self._read_complete: dict[Path, tuple[int, int]] = {}
         self._deferred: set[Path] = set()
-        self._defer_before = 0.0
         self._defer_budget = 0
 
-    _LAST_RUN_KEY = "transcript_usage:last_run_ts"
-
-    def _load_last_run(self) -> float:
+    def _load_checkpoints(self) -> dict[Path, tuple[int, int]]:
+        if not callable(getattr(getattr(self.store, "machine", self.store), "_conn", None)):
+            return {}
         try:
             row = (
                 writer_conn(self.store)
-                .execute("SELECT value FROM maintenance_state WHERE key = ?", (self._LAST_RUN_KEY,))
+                .execute("SELECT text, value FROM maintenance_state WHERE key = ?", (self._checkpoint_key,))
                 .fetchone()
             )
-            return float(row[0]) if row and row[0] else 0.0
-        except Exception:  # noqa: BLE001 - a store without the table reads everything, as before
-            return 0.0
+            saved = json.loads(row[0]) if row and row[0] else {}
+            checkpoints = {Path(path): (int(mtime), int(size)) for path, (mtime, size) in saved.items()}
+            self._resume_before = float(row[1]) - RESTART_GRACE_S if row else 0.0
+            return checkpoints
+        except (sqlite3.Error, ValueError, TypeError, AttributeError) as exc:
+            log.warning("transcript-usage: checkpoints unavailable; source files will be read again: %s", exc)
+            return {}
 
-    def _save_last_run(self, ts: float) -> None:
+    def _save_checkpoints(self, ts: float) -> None:
+        if not callable(getattr(getattr(self.store, "machine", self.store), "_conn", None)):
+            return
+        cutoff_ns = int((ts - self.backfill_days * 86400) * 1e9)
+        self._checkpoints = {p: sig for p, sig in self._checkpoints.items() if sig[0] >= cutoff_ns}
+        self._checkpoints.update(self._read_complete)
+        self._read_complete.clear()
         try:
             conn = writer_conn(self.store)
-            conn.execute("INSERT OR REPLACE INTO maintenance_state(key, value) VALUES(?,?)", (self._LAST_RUN_KEY, float(ts)))
+            conn.execute(
+                "INSERT OR REPLACE INTO maintenance_state(key, value, text) VALUES(?,?,?)",
+                (self._checkpoint_key, ts, json.dumps({str(p): sig for p, sig in self._checkpoints.items()})),
+            )
             conn.commit()
-        except Exception as exc:  # noqa: BLE001 - the next poll saves again
-            log.debug("transcript-usage: last run not saved (%s)", exc)
+        except (sqlite3.Error, AttributeError) as exc:
+            log.warning("transcript-usage: checkpoints not saved; the next poll will retry: %s", exc)
 
     def _changed(self, paths: Iterable[Path], cutoff: float) -> list[Path]:
         found: list[tuple[float, Path]] = []
@@ -1082,25 +1117,21 @@ class TranscriptUsageIngester:
                 st = p.stat()
             except OSError:
                 continue
+            saved = self._checkpoints.get(p)
+            offset = self._offsets.get(p, saved[1] if saved else 0)
+            size = _current_size(p, st.st_size, st.st_mtime, offset, now)
             if p not in self._offsets:
-                if st.st_mtime < cutoff:
+                if saved == (st.st_mtime_ns, size) and st.st_mtime < self._resume_before:
                     continue
-                skipped = self._skipped.get(p)
-                if skipped is not None and st.st_mtime <= skipped:
+                held = platforms.IS_WINDOWS and st.st_mtime < now - RECENT_FIRST_S and _held(p)
+                if st.st_mtime < cutoff and not held:
                     continue
-                if st.st_mtime < self._idle_before:
-                    self._skipped[p] = st.st_mtime
-                    continue
-                self._skipped.pop(p, None)
-                if p in self._deferred:
+                if self.defer_old and saved is None and st.st_mtime < now - RECENT_FIRST_S and not held:
                     if self._defer_budget <= 0:
+                        self._deferred.add(p)
                         continue
-                    self._defer_budget -= st.st_size
-                    self._deferred.discard(p)
-                elif st.st_mtime < self._defer_before:
-                    self._deferred.add(p)
-                    continue
-            size = _current_size(p, st.st_size, st.st_mtime, self._offsets.get(p, 0), now)
+                    self._defer_budget -= size
+                self._deferred.discard(p)
             if size < self._offsets.get(p, 0):
                 # Truncated or rewritten: its lines were already counted, so
                 # re-reading from 0 is the only way to see new ones, and the
@@ -1115,13 +1146,10 @@ class TranscriptUsageIngester:
         """Read what is new and persist changed sessions. Returns rows written."""
         now = time.time()
         cutoff = now - self.backfill_days * 86400
-        touched: dict[str, SessionUsage] = {}
+        touched = self._pending_sessions
+        published: set[str] = set()
         errors = 0
         self.facts.cutoff = cutoff
-        self._idle_before = (self._last_run_ts - RESTART_GRACE_S) if self._first_poll and self._last_run_ts else 0.0
-        # A first run: the old files wait, and later polls take them a budget at a time.
-        cold = self._first_poll and not self._last_run_ts and self.defer_old
-        self._defer_before = (now - RECENT_FIRST_S) if cold else 0.0
         self._defer_budget = 0 if self._first_poll else DEFERRED_BYTES_PER_POLL
         app_ids: set[str] = set()
         self._store.refresh_app_sessions(app_ids)
@@ -1150,6 +1178,9 @@ class TranscriptUsageIngester:
                             continue
                         if isinstance(obj, dict):
                             yield obj
+                    st = os.fstat(fh.fileno())
+                    if offset == st.st_size:
+                        self._read_complete[path] = (st.st_mtime_ns, offset)
             except OSError as exc:
                 errors += 1
                 log.debug("transcript-usage: cannot read %s: %s", path.name, exc)
@@ -1175,7 +1206,11 @@ class TranscriptUsageIngester:
 
         copilot_ids: set[str] = set()
         copilot_files = [p for root in self._roots("copilot", self.copilot_state) for p in root.glob("*/events.jsonl")]
-        for path in self._changed(copilot_files, cutoff):
+        # Copilot files are independent sessions, not Claude's cross-file replays.
+        copilot_files = list(reversed(self._changed(copilot_files, cutoff)))
+        if platforms.IS_WINDOWS:
+            copilot_files.sort(key=_held, reverse=True)
+        for path in copilot_files:
             sid = path.parent.name
             cop = self._copilot.setdefault(path, CopilotAccumulator(sid, facts=CopilotFacts(sid, self.facts)))
             if self._offsets.get(path, 0) == 0 and cop.facts is not None:
@@ -1191,6 +1226,9 @@ class TranscriptUsageIngester:
                 self._offsets.pop(path, None)
             self._copilot_finished[sid] = cop.finish()
             copilot_ids.add(sid)
+            touched[sid] = self._pick_copilot_source(sid)
+            self.facts.flush()
+            self._persist((touched[sid],), now, published)
 
         copilot_ids |= self._store.read() | app_ids
         for sid in copilot_ids:
@@ -1250,20 +1288,29 @@ class TranscriptUsageIngester:
         clear_stale = getattr(self.store, "clear_stale_pending_confirms", None)
         if clear_stale is not None:
             clear_stale(now - PENDING_CONFIRM_MAX_AGE_S)
-        written = self._persist(touched.values(), now)
+        self._persist(touched.values(), now, published)
+        written = len(published)
         self.last_poll_ts = now
         self.last_poll_inserted = written
         self._first_poll = False
-        self._idle_before = 0.0
-        self._save_last_run(now)
+        pending = len(self.facts)
+        if not pending:
+            touched.clear()
+            self._save_checkpoints(now)
         record_quality(
             self.store,
             "transcript-usage",
             self.claude_projects.parent,
-            "degraded" if errors else "ok",
-            severity="warning" if errors else "info",
-            message=f"{errors} transcript file(s) unreadable" if errors else f"{written} session(s) updated",
-            detail={"older_files_waiting": len(self._deferred)} if self._deferred else None,
+            "degraded" if errors or pending else "ok",
+            severity="warning" if errors or pending else "info",
+            message=(
+                f"{pending} fact row(s) waiting for storage"
+                if pending
+                else f"{errors} transcript file(s) unreadable"
+                if errors
+                else f"{written} session(s) updated"
+            ),
+            detail={"older_files_waiting": len(self._deferred), "pending_fact_rows": pending},
         )
         return written
 
@@ -1345,16 +1392,15 @@ class TranscriptUsageIngester:
         chosen.tool = self._store.surface(sid)
         return chosen
 
-    def _persist(self, sessions: Iterable[SessionUsage], now: float) -> int:
+    def _persist(self, sessions: Iterable[SessionUsage], now: float, published: set[str] | None = None) -> int:
         written = 0
         for s in sessions:
             if not s.models and not s.turns:
                 continue  # nothing but metadata, e.g. a summary-only file
             row = s.to_row()
-            fingerprint = (row["tool"], row["billing_amount"], row["input_tokens"], row["output_tokens"], row["cache_read_tokens"], row["cache_creation_tokens"], row["turn_count"], row["tool_call_count"], row["last_activity_at"])
+            fingerprint = (row, s.git_branch)
             if self._written.get(s.session_id) == fingerprint:
                 continue
-            self._written[s.session_id] = fingerprint
             self.store.upsert_session_usage(row)
             idle = now - s.last_activity_at > IDLE_END_S
             self.store.upsert_session(
@@ -1376,6 +1422,9 @@ class TranscriptUsageIngester:
                     tool_call_count=s.tool_calls,
                 )
             )
+            self._written[s.session_id] = fingerprint
+            if published is not None:
+                published.add(s.session_id)
             written += 1
         return written
 

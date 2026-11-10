@@ -876,7 +876,12 @@ class KustoConnection:
         name, definition = prelude[len("let ") :].split(" = ", 1)
         bodies = [s.kql.split(";\n", 1)[1] for s in stmts]
         kql = f"let {name} = materialize({definition});\nunion isfuzzy=false " + ", ".join(f"({b})" for b in bodies)
-        return self._mutate(Mutation(stmts[0].table, kql, stmts[0].kind), sql)
+        reads = (
+            None
+            if any(s.read_tables is None for s in stmts)
+            else tuple(sorted({t for s in stmts for t in s.read_tables or ()}))
+        )
+        return self._mutate(Mutation(stmts[0].table, kql, stmts[0].kind, reads), sql)
 
     def _run(self, cursor: KustoCursor, stmt: Statement, sql: str) -> None:
         if isinstance(stmt, Insert):
@@ -933,7 +938,11 @@ class KustoConnection:
         hundred updates queued for minutes behind itself. The version stamp is this
         process's, so it orders against the rows it inserted in the same transaction.
         """
-        self._wait_for_ingestion(None if stmt.kind == "insert" else stmt.table)
+        if stmt.read_tables is None:
+            self._wait_for_ingestion(None if stmt.kind == "insert" else stmt.table)
+        else:
+            for name in stmt.read_tables:
+                self._wait_for_ingestion(name)
         kql = stmt.kql
         table = self.tables.get(stmt.table)
         if table is not None:

@@ -568,6 +568,7 @@ class _Build:
         self.params = params
         self.sql = sql
         self.lets: dict[str, str] = {}
+        self.read_tables: set[str] = set()
         self.ctes: dict[str, list[_Col]] = {}
         self.n = 0
 
@@ -604,6 +605,7 @@ class _Build:
         table = self.tr.table(node.name)
         if table is None:
             raise Unsupported(f"no such table: {node.name}")
+        self.read_tables.add(table.name)
         self.let(quote(table.name), current(table))
         return table
 
@@ -648,7 +650,12 @@ class _Build:
                 raise Unsupported(f"no such column: {name}")
             values[col.name] = self.assigned(self.expr(assign.expression, ex), col.kusto_type)
         body = quote(table.name) + "".join(ex.pre) + (f" | where {cond}" if cond else "")
-        return Mutation(table=table.name, kql=self.finish(body + self.output(table, values)), kind="update")
+        return Mutation(
+            table=table.name,
+            kql=self.finish(body + self.output(table, values)),
+            kind="update",
+            read_tables=tuple(sorted(self.read_tables)),
+        )
 
     def assigned(self, k: _K, want: str) -> str:
         """*k* written into a column of type *want*; NULL text is ''."""
@@ -666,7 +673,12 @@ class _Build:
         where = _arg(node, "where")
         cond = _truth(self.expr(where.this, ex)) if where is not None else None
         body = quote(table.name) + "".join(ex.pre) + (f" | where {cond}" if cond else "")
-        return Mutation(table=table.name, kql=self.finish(body + self.output(table, {DELETED: "true"})), kind="delete")
+        return Mutation(
+            table=table.name,
+            kql=self.finish(body + self.output(table, {DELETED: "true"})),
+            kind="delete",
+            read_tables=tuple(sorted(self.read_tables)),
+        )
 
     def insert(self, node: exp.Insert) -> Statement:
         target = node.this
@@ -793,7 +805,12 @@ class _Build:
             on = ", ".join(quote(k) for k in table.key)
             body = f"{body} | join kind=leftanti ({quote(table.name)}) on {on}"
         body += self.rowid_stage()
-        return Mutation(table=table.name, kql=self.finish(body + self.written(table, {})), kind="insert")
+        return Mutation(
+            table=table.name,
+            kql=self.finish(body + self.written(table, {})),
+            kind="insert",
+            read_tables=tuple(sorted(self.read_tables)),
+        )
 
     def insert_select(self, table: Table, names: list[str], source: exp.Expression, on_conflict: str) -> Mutation:
         rel = self.select(source, None, names=names)
@@ -812,7 +829,12 @@ class _Build:
             on = ", ".join(quote(k) for k in table.key)
             body = f"{body} | join kind=leftanti ({quote(table.name)}) on {on}"
         body += self.rowid_stage()
-        return Mutation(table=table.name, kql=self.finish(body + self.written(table, values)), kind="insert")
+        return Mutation(
+            table=table.name,
+            kql=self.finish(body + self.written(table, values)),
+            kind="insert",
+            read_tables=tuple(sorted(self.read_tables)),
+        )
 
     def upsert(
         self, table: Table, names: list[str], rows: list[list[exp.Expression]], conflict: exp.Expression
@@ -903,7 +925,12 @@ class _Build:
         if ex.pre:
             raise Unsupported("correlated subquery in ON CONFLICT DO UPDATE")
         body += self.rowid_stage()
-        return Mutation(table=table.name, kql=self.finish(body + self.output(table, values)), kind="insert")
+        return Mutation(
+            table=table.name,
+            kql=self.finish(body + self.output(table, values)),
+            kind="insert",
+            read_tables=tuple(sorted(self.read_tables)),
+        )
 
     # Queries.
 

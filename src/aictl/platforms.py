@@ -180,6 +180,53 @@ def listening_pids(port: int) -> list[int]:
     return [int(line) for line in result.stdout.split() if line.isdigit()]
 
 
+def windows_process_parents() -> dict[int, int]:
+    """PID-to-parent mapping from one Windows process snapshot, not one scan per PID."""
+    if not IS_WINDOWS:
+        raise OSError("Windows process snapshots are not available on this platform")
+    import ctypes
+    from ctypes import wintypes
+
+    class ProcessEntry(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    api = ctypes.WinDLL("kernel32", use_last_error=True)
+    api.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    api.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    for fn in (api.Process32FirstW, api.Process32NextW):
+        fn.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry)]
+        fn.restype = wintypes.BOOL
+    api.CloseHandle.argtypes = [wintypes.HANDLE]
+    api.CloseHandle.restype = wintypes.BOOL
+    handle = api.CreateToolhelp32Snapshot(0x00000002, 0)  # TH32CS_SNAPPROCESS
+    if handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        entry = ProcessEntry()
+        entry.dwSize = ctypes.sizeof(entry)
+        out: dict[int, int] = {}
+        found = api.Process32FirstW(handle, ctypes.byref(entry))
+        while found:
+            out[entry.th32ProcessID] = entry.th32ParentProcessID
+            found = api.Process32NextW(handle, ctypes.byref(entry))
+        if ctypes.get_last_error() != 18:  # ERROR_NO_MORE_FILES
+            raise ctypes.WinError(ctypes.get_last_error())
+        return out
+    finally:
+        api.CloseHandle(handle)
+
+
 def spawn_detached_windows(argv: list[str], log_file: Path, pid_file: Path) -> subprocess.Popen:
     """Start *argv* in the background on Windows, with output in *log_file*.
 

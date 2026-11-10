@@ -306,10 +306,10 @@ def _start_daemon(
 def _start_daemon_windows(
     root_dir, host, port, interval, include_live_monitor, pid_file, log_file, *, db_path=None, headless=False
 ):
-    """Windows has no fork: start ``aictl serve`` again as a background process."""
+    """Windows has no fork: start ``aictl daemon serve`` again as a background process."""
     import time
 
-    argv = [sys.executable, "-m", "aictl.cli", "serve", "--root", str(Path(root_dir).resolve())]
+    argv = [sys.executable, "-m", "aictl.cli", "daemon", "serve", "--root", str(Path(root_dir).resolve())]
     argv += ["--port", str(port), "--host", host, "--interval", str(interval), "--no-open"]
     argv.append("--monitor" if include_live_monitor else "--no-monitor")
     if db_path:
@@ -322,8 +322,7 @@ def _start_daemon_windows(
             break
         time.sleep(0.1)
     if not pid_file.is_file():
-        click.secho(f"  aictl daemon did not start; see {log_file}", fg="red")
-        return
+        raise click.ClickException(f"aictl daemon did not start; see {log_file}")
     click.echo(f"  aictl daemon starting (PID {pid_file.read_text(encoding='utf-8').strip()})")
     if headless:
         click.echo("  headless collection (no web UI) — view with: aictl dashboard")
@@ -331,7 +330,7 @@ def _start_daemon_windows(
         click.echo(f"  dashboard at http://{host}:{port}")
     click.echo(f"  log: {log_file}")
     click.echo(f"  pid: {pid_file}")
-    click.echo("  stop: aictl serve --stop")
+    click.echo("  stop: aictl daemon serve --stop")
 
 
 def _port_servers(port: int | None) -> list[int]:

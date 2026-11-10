@@ -270,6 +270,37 @@ def test_failed_visibility_query_is_not_treated_as_completion():
     assert len(client.queries) == 1 and "change" not in client.queries[0]
 
 
+def test_session_upserts_do_not_wait_for_unrelated_queued_telemetry():
+    client, queue = FakeClient(), QueueClient()
+    settings = KustoSettings(DM)
+    ingester = QueuedIngester(settings, client, queue)
+    ingester.ingest("metrics", [marked()])
+    conn = KustoConnection(settings, client, ingester, tables=TABLES)
+    conn.executemany(
+        "INSERT INTO sessions(session_id, started_at) VALUES(?, ?)"
+        " ON CONFLICT(session_id) DO UPDATE SET started_at = MIN(sessions.started_at, excluded.started_at)",
+        [("a", 100.0), ("b", 200.0)],
+    )
+    assert len(client.queries) == 1
+    assert "['sessions']" in client.queries[0] and "['metrics']" not in client.queries[0]
+    assert ingester._pending_rows == 1
+
+
+def test_insert_select_waits_for_its_source_but_not_unrelated_tables():
+    client = FakeClient(on_query=lambda q: missing(0) if "datatable(rowid:long" in q else response([], []))
+    queue = QueueClient()
+    settings = KustoSettings(DM)
+    ingester = QueuedIngester(settings, client, queue)
+    ingester.ingest("events", [marked()])
+    ingester.ingest("metrics", [marked(2)])
+    conn = KustoConnection(settings, client, ingester, tables=TABLES)
+    conn.execute("INSERT INTO sessions(session_id) SELECT session_id FROM events")
+    assert len(client.queries) == 2
+    assert "datatable(rowid:long" in client.queries[0] and "['events']" in client.queries[0]
+    assert all("['metrics']" not in q for q in client.queries)
+    assert ingester._pending_rows == 1
+
+
 def test_pending_row_budget_waits_without_forcing_a_dm_flush(monkeypatch):
     monkeypatch.setattr(I, "QUEUED_PENDING_ROWS", 1)
     client, queue = FakeClient(on_query=lambda kql: missing(0)), QueueClient()

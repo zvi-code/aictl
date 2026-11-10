@@ -87,6 +87,8 @@ _packing: list[bool] = []
 
 def _packs_exactly(conn: Any) -> bool:
     """Whether this SQLite writes a REAL in JSON with all its digits (older ones keep 15)."""
+    if not isinstance(conn, sqlite3.Connection):
+        return False
     if not _packing:
         value = 0.1 + 0.2
         try:

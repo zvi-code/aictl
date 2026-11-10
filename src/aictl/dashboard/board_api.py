@@ -140,6 +140,9 @@ class Filters:
     q: str = ""
     buckets: int = DEFAULT_BUCKETS
 
+    def matches_project(self, path: str | None) -> bool:
+        return not self.project or project_key(path) == project_key(self.project)
+
     @property
     def bucket_s(self) -> float:
         return (self.until - self.since) / self.buckets
@@ -274,6 +277,13 @@ def _basename(path: str) -> str:
 
 def _names_another_machine(path: str) -> bool:
     return PureWindowsPath(path).drive.startswith("\\\\")
+
+
+def _project_predicate(path: str) -> tuple[str, str]:
+    key = project_key(path)
+    if PureWindowsPath(key).drive:
+        return r"rtrim(replace(lower(project_path), '\', '/'), '/') = ?", key
+    return "project_path = ?", path
 
 
 # ─── Pricing ──────────────────────────────────────────────────────
@@ -1056,8 +1066,9 @@ class _Board:
         """Viewing one session alone: only the tool and project's newest session takes a process."""
         if self.only_session is None:
             return True
+        predicate, project = _project_predicate(project)
         row = self.conn.execute(
-            "SELECT session_id FROM requests WHERE tool = ? AND project_path = ? ORDER BY ts DESC LIMIT 1", (tool, project)
+            f"SELECT session_id FROM requests WHERE tool = ? AND {predicate} ORDER BY ts DESC LIMIT 1", (tool, project)
         ).fetchone()
         return row is None or row[0] == sid
 
@@ -1279,7 +1290,7 @@ class _Board:
         cells = [
             c
             for c in self.cells
-            if tool_ok(c.tool) and (not f.project or c.project == f.project) and (not f.model or c.model == f.model)
+            if tool_ok(c.tool) and f.matches_project(c.project) and (not f.model or c.model == f.model)
         ]
         with_cells = {c.sid for c in cells}
         scope: set[str] = set()
@@ -1293,7 +1304,7 @@ class _Board:
                 continue  # its usage was all filtered out
             elif (
                 tool_ok(self.session_tool.get(sid, ""))
-                and (not f.project or self.session_project.get(sid, "") == f.project)
+                and f.matches_project(self.session_project.get(sid, ""))
                 and not f.model
             ):
                 scope.add(sid)
@@ -1559,7 +1570,7 @@ class _Board:
             tool, project = group["tool"], group["project"]
             if selected is not None and tool not in selected:
                 continue
-            if f.project and project != f.project:
+            if not f.matches_project(project):
                 continue
             label = _label(tool)
             if f.q and not any(f.q.lower() in text.lower() for text in (tool, label, project)):
@@ -1790,7 +1801,7 @@ def _credits_section(db: Any, board: _Board) -> dict | None:
             continue
         if selected is not None and u["tool"] not in selected:
             continue
-        if f.project and u["project_path"] != f.project:
+        if not f.matches_project(u["project_path"]):
             continue
         if (f.status != "all" or f.q) and u["session_id"] not in board.scope:
             continue
@@ -2962,7 +2973,8 @@ def _memory_files(board: _Board) -> list[dict]:
     rows = [
         r
         for r in rows
-        if (selected is None or r[1] in selected) and (not board.f.project or r[0].startswith(board.f.project))
+        if (selected is None or r[1] in selected)
+        and (not board.f.project or project_key(r[0]).startswith(project_key(board.f.project).rstrip("/") + "/"))
     ]
     if not rows:
         return []
@@ -3019,7 +3031,7 @@ def _processes(board: _Board) -> list[dict]:
             placeholder = placeholder_of.get(pid, (None, None))
             if board.narrowed and board.f.status != "all" and sid not in board.scope:
                 continue
-            if board.f.project and (sid is None or board.session_project.get(sid) != board.f.project):
+            if board.f.project and (sid is None or not board.f.matches_project(board.session_project.get(sid))):
                 continue
             out.append(
                 {
@@ -3072,8 +3084,9 @@ def _previous(board: _Board) -> dict:
         where += f" AND tool IN ({','.join('?' * len(stored))})" if stored else " AND 0"
         params.extend(stored)
     if f.project:
-        where += " AND project_path = ?"
-        params.append(f.project)
+        predicate, project = _project_predicate(f.project)
+        where += f" AND {predicate}"
+        params.append(project)
     if f.status != "all" or f.q:
         where += " AND session_id IN (SELECT value FROM json_each(?))"
         params.append(json.dumps(sorted(board.scope)))
@@ -3100,7 +3113,7 @@ def _previous(board: _Board) -> dict:
     for row in _fallback_rows(board.conn, since, until - 1e-6):
         if selected is not None and row["tool"] not in selected:
             continue
-        if f.project and row["project_path"] != f.project:
+        if not f.matches_project(row["project_path"]):
             continue
         if (f.status != "all" or f.q) and row["session_id"] not in board.scope:
             continue
@@ -3359,19 +3372,24 @@ def _options(board: _Board) -> dict:
     tool_agents: dict[str, set[str]] = defaultdict(set)
     tool_tokens: dict[str, int] = defaultdict(int)
     project_agents: dict[str, set[str]] = defaultdict(set)
+    project_names: dict[str, str] = {}
     model_agents: dict[str, set[str]] = defaultdict(set)
+
+    def project_name(path: str) -> str:
+        return project_names.setdefault(project_key(path), path)
+
     for c in board.all_cells:
         agent = _agent_key(c.sid, c.aid)
         tool_agents[c.tool].add(agent)
         tool_tokens[c.tool] += c.i + c.o + c.cr + c.cw
-        project_agents[c.project].add(agent)
+        project_agents[project_name(c.project)].add(agent)
         model_agents[c.model].add(agent)
     for sid, agents in board.agents_by_root.items():
         if not sid:
             continue
         keys = {sid, *agents}
         tool_agents[board.session_tool.get(sid, "")].update(keys)
-        project_agents[board.session_project.get(sid, "")].update(keys)
+        project_agents[project_name(board.session_project.get(sid, ""))].update(keys)
     # A running tool with no session in this time is still a choice in the Tool menu.
     for group in board.placeholders:
         tool_agents[group["tool"]].update(())
@@ -6000,7 +6018,7 @@ _BASE_MEMO = _BaseMemo()
 _BASE_TIMES: dict[tuple, tuple[float, float, float]] = {}
 _SENT: dict[tuple, tuple[str, float, bytes]] = {}
 _COMPUTED_AT: dict[tuple, float] = {}
-_COMPUTED_MONO: dict[tuple, float] = {}
+_COMPUTED_REVISIONS: dict[tuple, int] = {}
 _COMPUTE_TOOK: dict[tuple, float] = {}
 _refresh_lock = threading.Lock()
 _refresh_thread: threading.Thread | None = None
@@ -6102,7 +6120,7 @@ def _compute_bytes(db: Any, store: Any, query: str, key_filters: Filters, versio
     filters = parse_filters(query, now)
     if key_filters.until == 0.0:
         filters = _clock_range(filters)
-    waited_from = time.monotonic()
+    revision_before = _COMPUTED_REVISIONS.get((path, key_filters), 0)
     with _COMPUTE_LOCK:
         body = _MEMO.get(key)
         if body is not None:
@@ -6111,7 +6129,7 @@ def _compute_bytes(db: Any, store: Any, query: str, key_filters: Filters, versio
         # lock: it is as new as a compute begun now would be, and on a slow store a
         # client that asks again each tick would otherwise never get one.
         sent = _SENT.get((path, key_filters))
-        if sent is not None and _COMPUTED_MONO.get((path, key_filters), 0.0) >= waited_from:
+        if sent is not None and _COMPUTED_REVISIONS.get((path, key_filters), 0) != revision_before:
             return sent[2]
         started = time.monotonic()
         base_key = (path, key_filters.since, key_filters.until, filters.buckets, version)
@@ -6134,12 +6152,12 @@ def _compute_bytes(db: Any, store: Any, query: str, key_filters: Filters, versio
             while len(_SENT) > MEMO_MAX_KEYS:
                 _SENT.pop(next(iter(_SENT)))
         _COMPUTED_AT[(path, key_filters)] = now
-        _COMPUTED_MONO[(path, key_filters)] = time.monotonic()
+        _COMPUTED_REVISIONS[(path, key_filters)] = _COMPUTED_REVISIONS.get((path, key_filters), 0) + 1
         _COMPUTE_TOOK[(path, key_filters)] = time.monotonic() - started
         while len(_COMPUTED_AT) > MEMO_MAX_KEYS:
             oldest = next(iter(_COMPUTED_AT))
             _COMPUTED_AT.pop(oldest)
-            _COMPUTED_MONO.pop(oldest, None)
+            _COMPUTED_REVISIONS.pop(oldest, None)
             _COMPUTE_TOOK.pop(oldest, None)
         _MEMO.put(key, body)
     return body
@@ -6290,8 +6308,27 @@ def _anomaly(raw: Any, proc: Any) -> dict:
     return {"kind": kind, "severity": severity, "label": label, "text": f"{label}: {detail}" if detail else label}
 
 
+_parent_pid_lock = threading.Lock()
+_parent_pid_snapshot: tuple[float, dict[int, int]] | None = None
+PARENT_PID_TTL_S = 5.0
+
+
 def _parent_pid(pid: int) -> int | None:
     """The parent of a process the scan reported without one. None when it is gone."""
+    from .. import platforms
+
+    if platforms.IS_WINDOWS:
+        global _parent_pid_snapshot
+        with _parent_pid_lock:
+            now = time.monotonic()
+            if _parent_pid_snapshot is None or now - _parent_pid_snapshot[0] >= PARENT_PID_TTL_S:
+                try:
+                    parents = platforms.windows_process_parents()
+                except OSError as exc:
+                    logger.warning("Cannot read Windows process parents: %s", exc)
+                    parents = {}
+                _parent_pid_snapshot = (now, parents)
+            return _parent_pid_snapshot[1].get(pid)
     try:
         import psutil
 

@@ -87,6 +87,19 @@ def _artifact_rows(db, sid=SID) -> dict[str, tuple]:
     }
 
 
+def test_remote_session_reads_do_not_use_sqlite_json_packing(monkeypatch):
+    monkeypatch.setattr(session_record, "_packing", [True])
+    sql = "SELECT started_at, session_id FROM sessions"
+    rows = [(100.5, SID)]
+
+    class RemoteConnection:
+        def execute(self, query, params=()):
+            assert query == sql
+            return SimpleNamespace(fetchall=lambda: rows)
+
+    assert session_record._rows(RemoteConnection(), sql) == rows
+
+
 # ─── Index of session folders ─────────────────────────────────────
 
 
