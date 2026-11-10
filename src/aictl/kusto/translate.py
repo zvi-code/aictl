@@ -593,7 +593,7 @@ class _Build:
     def statement(self, node: exp.Expression) -> Statement:
         if isinstance(node, (exp.Select, exp.Union, exp.Subquery)):
             rel = self.select(node, None)
-            return Query(kql=self.finish(rel.text), columns=rel.names)
+            return Query(kql=self.finish(rel.text), columns=rel.names, read_tables=tuple(sorted(self.read_tables)))
         if isinstance(node, exp.Insert):
             return self.insert(node)
         if isinstance(node, exp.Update):

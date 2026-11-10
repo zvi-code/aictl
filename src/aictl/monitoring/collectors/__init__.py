@@ -73,6 +73,9 @@ class BaseCollector(ABC):
     def sink_emit_memory(self, metric: str, value: float, tags: dict[str, Any] | None = None) -> None:
         """Emit memory metric with sensitivity (bytes, rounded to 64KB)."""
         if self._sink is not None:
+            if getattr(self._sink, "streams_observations", False) is True:
+                self._sink.emit(metric, value, tags)
+                return
             # Round to nearest 64KB
             rounded = round(value / 65536) * 65536
             self._sink.emit_with_sensitivity(

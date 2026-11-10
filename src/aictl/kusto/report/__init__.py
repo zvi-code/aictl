@@ -259,10 +259,18 @@ def run_section(
     props.set_option(ClientRequestProperties.request_timeout_option_name, REPORT_TIMEOUT)
     started = time.perf_counter()
     try:
-        response = _execute(client, database, kql, props, _throttled)
-        for table in response.primary_results:
-            names = [c.column_name for c in table.columns]
-            result.tables.append([{n: _jsonable(v) for n, v in zip(names, row, strict=False)} for row in table])
+        from ..connection import Result
+        from ..observations import UnresolvedObservationsError, unresolved_query
+
+        unresolved = Result.from_response(
+            _execute(client, database, unresolved_query(("requests", "tool_invocations")), props, _throttled)
+        )
+        # Missing cutover metadata is unknown, never proof that frozen counts
+        # are complete. No request/tool projection is currently marked resolved.
+        families = ("requests", "tool_invocations")
+        known = {row.get("family") for row in unresolved.dicts() if row.get("policy") == "retain_unresolved"}
+        reason = "source identity/revision is unresolved" if set(families) <= known else "cutover state is unavailable"
+        raise UnresolvedObservationsError(families, reason=reason)
     except Exception as exc:  # noqa: BLE001 - every SDK and transport failure is shown in the section
         result.tables = []
         result.error = _server_message(exc).strip() or type(exc).__name__

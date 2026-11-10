@@ -210,6 +210,10 @@ class OtelReceiver:
         late, self._late_traces = self._late_traces, []
         return late
 
+    def restore_late_traces(self, traces: list[tuple[str, str]]) -> None:
+        """A failed handoff must not consume the only copy of identity links."""
+        self._late_traces[:0] = traces
+
     # ── Metrics ───────────────────────────────────────────────
 
     def _cumulative_to_delta(self, tool: str, name: str, tags: dict, value: float) -> float:

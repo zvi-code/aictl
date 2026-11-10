@@ -897,7 +897,7 @@ def test_ingester_choice_and_connection_strings():
 @pytest.mark.parametrize(
     ("cluster", "mode", "expected"),
     [
-        ("https://c.kusto.windows.net", "auto", "queued"),
+        ("https://c.kusto.windows.net", "auto", "streaming"),
         ("https://c.kusto.windows.net", "queued", "queued"),
         ("https://c.kusto.windows.net", "streaming", "streaming"),
         ("https://c.kusto.windows.net", "inline", "inline"),

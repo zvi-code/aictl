@@ -981,3 +981,444 @@ Key: component, source. Scope: machine-wide. 10 columns.
 | rowid | long | system | | |
 | _v | datetime | system | | |
 | _deleted | bool | system | | |
+
+## Unresolved immutable observation evidence
+
+### `requests_observations`
+
+Key: observation_id. Scope: machine-wide. 38 columns.
+
+| Column | Kusto type | SQLite type | Default | Not null |
+|---|---|---|---|---|
+| id | long | INTEGER |  |  |
+| dedup_key | string | TEXT | '' |  |
+| ts | real | REAL |  | yes |
+| session_id | string | TEXT | '' |  |
+| agent_id | string | TEXT | '' |  |
+| tool | string | TEXT | '' |  |
+| project_path | string | TEXT | '' |  |
+| pid | long | INTEGER | 0 |  |
+| model | string | TEXT | '' |  |
+| input_tokens | long | INTEGER | 0 |  |
+| output_tokens | long | INTEGER | 0 |  |
+| cache_read_tokens | long | INTEGER | 0 |  |
+| cache_creation_tokens | long | INTEGER | 0 |  |
+| cost_usd | real | REAL | 0 |  |
+| duration_ms | real | REAL | 0 |  |
+| finish_reason | string | TEXT | '' |  |
+| is_error | long | INTEGER | 0 |  |
+| error_type | string | TEXT | '' |  |
+| http_status | long | INTEGER | 0 |  |
+| source | string | TEXT | '' |  |
+| prompt_id | string | TEXT | '' |  |
+| ttft_ms | real | REAL | 0 |  |
+| tool_tokens | long | INTEGER |  |  |
+| max_prompt_tokens | long | INTEGER |  |  |
+| request_bytes | long | INTEGER |  |  |
+| available_tools | long | INTEGER |  |  |
+| source_ts | real | REAL |  |  |
+| observation_id | string | TEXT |  |  |
+| observation_source | string | TEXT |  |  |
+| source_entity_id | string | TEXT |  |  |
+| producer_id | string | TEXT |  |  |
+| source_revision | long | INTEGER |  |  |
+| event_time | datetime | TEXT |  |  |
+| received_time | datetime | TEXT |  |  |
+| presence | string | TEXT |  |  |
+| source_presence_known | bool | INTEGER |  |  |
+| serialized_fields | string | TEXT |  |  |
+| observation_operation | string | TEXT |  |  |
+| rowid | long | system | | |
+| _v | datetime | system | | |
+| _deleted | bool | system | | |
+
+### `tool_invocations_observations`
+
+Key: observation_id. Scope: machine-wide. 34 columns.
+
+| Column | Kusto type | SQLite type | Default | Not null |
+|---|---|---|---|---|
+| id | long | INTEGER |  |  |
+| dedup_key | string | TEXT | '' |  |
+| ts | real | REAL |  | yes |
+| session_id | string | TEXT | '' |  |
+| request_id | long | INTEGER | 0 |  |
+| tool | string | TEXT | '' |  |
+| tool_name | string | TEXT | '' |  |
+| project_path | string | TEXT | '' |  |
+| pid | long | INTEGER | 0 |  |
+| is_error | long | INTEGER | 0 |  |
+| duration_ms | real | REAL | 0 |  |
+| input | string | TEXT | '{}' |  |
+| result_summary | string | TEXT | '' |  |
+| source | string | TEXT | '' |  |
+| source_event_id | string | TEXT | '' |  |
+| agent_id | string | TEXT | '' |  |
+| confirm | string | TEXT | '' |  |
+| confirm_wait_ms | real | REAL | 0 |  |
+| target | string | TEXT | '' |  |
+| exit_code | long | INTEGER |  |  |
+| input_bytes | long | INTEGER |  |  |
+| output_bytes | long | INTEGER |  |  |
+| source_ts | real | REAL |  |  |
+| observation_id | string | TEXT |  |  |
+| observation_source | string | TEXT |  |  |
+| source_entity_id | string | TEXT |  |  |
+| producer_id | string | TEXT |  |  |
+| source_revision | long | INTEGER |  |  |
+| event_time | datetime | TEXT |  |  |
+| received_time | datetime | TEXT |  |  |
+| presence | string | TEXT |  |  |
+| source_presence_known | bool | INTEGER |  |  |
+| serialized_fields | string | TEXT |  |  |
+| observation_operation | string | TEXT |  |  |
+| rowid | long | system | | |
+| _v | datetime | system | | |
+| _deleted | bool | system | | |
+
+### `sessions_observations`
+
+Key: observation_id. Scope: machine-wide. 30 columns.
+
+| Column | Kusto type | SQLite type | Default | Not null |
+|---|---|---|---|---|
+| session_id | string | TEXT |  |  |
+| tool | string | TEXT | '' |  |
+| pid | long | INTEGER | 0 |  |
+| project_path | string | TEXT | '' |  |
+| model | string | TEXT | '' |  |
+| git_branch | string | TEXT | '' |  |
+| git_commit | string | TEXT | '' |  |
+| started_at | real | REAL | 0 |  |
+| ended_at | real | REAL |  |  |
+| source | string | TEXT | '' |  |
+| input_tokens | long | INTEGER | 0 |  |
+| output_tokens | long | INTEGER | 0 |  |
+| cache_read_tokens | long | INTEGER | 0 |  |
+| cache_creation_tokens | long | INTEGER | 0 |  |
+| cost_usd | real | REAL | 0 |  |
+| request_count | long | INTEGER | 0 |  |
+| tool_call_count | long | INTEGER | 0 |  |
+| files_modified | long | INTEGER | 0 |  |
+| ts | real | REAL |  |  |
+| observation_id | string | TEXT |  |  |
+| observation_source | string | TEXT |  |  |
+| source_entity_id | string | TEXT |  |  |
+| producer_id | string | TEXT |  |  |
+| source_revision | long | INTEGER |  |  |
+| event_time | datetime | TEXT |  |  |
+| received_time | datetime | TEXT |  |  |
+| presence | string | TEXT |  |  |
+| source_presence_known | bool | INTEGER |  |  |
+| serialized_fields | string | TEXT |  |  |
+| observation_operation | string | TEXT |  |  |
+| rowid | long | system | | |
+| _v | datetime | system | | |
+| _deleted | bool | system | | |
+
+### `agents_observations`
+
+Key: observation_id. Scope: machine-wide. 26 columns.
+
+| Column | Kusto type | SQLite type | Default | Not null |
+|---|---|---|---|---|
+| agent_id | string | TEXT |  |  |
+| session_id | string | TEXT | '' |  |
+| tool | string | TEXT | '' |  |
+| task | string | TEXT | '' |  |
+| model | string | TEXT | '' |  |
+| is_sidechain | long | INTEGER | 0 |  |
+| started_at | real | REAL | 0 |  |
+| ended_at | real | REAL |  |  |
+| completed | long | INTEGER | 0 |  |
+| input_tokens | long | INTEGER | 0 |  |
+| output_tokens | long | INTEGER | 0 |  |
+| cache_read_tokens | long | INTEGER | 0 |  |
+| cache_creation_tokens | long | INTEGER | 0 |  |
+| cost_usd | real | REAL | 0 |  |
+| project_path | string | TEXT |  |  |
+| observation_id | string | TEXT |  |  |
+| observation_source | string | TEXT |  |  |
+| source_entity_id | string | TEXT |  |  |
+| producer_id | string | TEXT |  |  |
+| source_revision | long | INTEGER |  |  |
+| event_time | datetime | TEXT |  |  |
+| received_time | datetime | TEXT |  |  |
+| presence | string | TEXT |  |  |
+| source_presence_known | bool | INTEGER |  |  |
+| serialized_fields | string | TEXT |  |  |
+| observation_operation | string | TEXT |  |  |
+| rowid | long | system | | |
+| _v | datetime | system | | |
+| _deleted | bool | system | | |
+
+### `session_usage_observations`
+
+Key: observation_id. Scope: machine-wide. 38 columns.
+
+| Column | Kusto type | SQLite type | Default | Not null |
+|---|---|---|---|---|
+| session_id | string | TEXT |  |  |
+| tool | string | TEXT | '' | yes |
+| source | string | TEXT | 'transcript' | yes |
+| quality | string | TEXT | 'exact' | yes |
+| quality_reason | string | TEXT | '' | yes |
+| model | string | TEXT | '' | yes |
+| models_json | string | TEXT | '{}' | yes |
+| daily_json | string | TEXT | '{}' | yes |
+| input_tokens | long | INTEGER | 0 | yes |
+| output_tokens | long | INTEGER | 0 | yes |
+| cache_read_tokens | long | INTEGER | 0 | yes |
+| cache_creation_tokens | long | INTEGER | 0 | yes |
+| request_count | long | INTEGER | 0 | yes |
+| tool_call_count | long | INTEGER | 0 | yes |
+| turn_count | long | INTEGER | 0 | yes |
+| cost_usd | real | REAL |  |  |
+| cost_quality | string | TEXT | 'unknown' | yes |
+| cost_reason | string | TEXT | '' | yes |
+| unpriced_models | string | TEXT | '[]' | yes |
+| billing_unit | string | TEXT | '' | yes |
+| billing_amount | real | REAL |  |  |
+| premium_requests | real | REAL |  |  |
+| estimated_list_usd | real | REAL |  |  |
+| started_at | real | REAL | 0 | yes |
+| last_activity_at | real | REAL | 0 | yes |
+| project_path | string | TEXT | '' | yes |
+| updated_at | real | REAL | 0 | yes |
+| observation_id | string | TEXT |  |  |
+| observation_source | string | TEXT |  |  |
+| source_entity_id | string | TEXT |  |  |
+| producer_id | string | TEXT |  |  |
+| source_revision | long | INTEGER |  |  |
+| event_time | datetime | TEXT |  |  |
+| received_time | datetime | TEXT |  |  |
+| presence | string | TEXT |  |  |
+| source_presence_known | bool | INTEGER |  |  |
+| serialized_fields | string | TEXT |  |  |
+| observation_operation | string | TEXT |  |  |
+| rowid | long | system | | |
+| _v | datetime | system | | |
+| _deleted | bool | system | | |
+
+### `session_processes_observations`
+
+Key: observation_id. Scope: machine-wide. 18 columns.
+
+| Column | Kusto type | SQLite type | Default | Not null |
+|---|---|---|---|---|
+| session_id | string | TEXT |  | yes |
+| pid | long | INTEGER |  | yes |
+| tool | string | TEXT | '' |  |
+| joined_at | real | REAL | 0 |  |
+| role | string | TEXT | 'subprocess' |  |
+| trace_id | string | TEXT |  |  |
+| project_path | string | TEXT |  |  |
+| observation_id | string | TEXT |  |  |
+| observation_source | string | TEXT |  |  |
+| source_entity_id | string | TEXT |  |  |
+| producer_id | string | TEXT |  |  |
+| source_revision | long | INTEGER |  |  |
+| event_time | datetime | TEXT |  |  |
+| received_time | datetime | TEXT |  |  |
+| presence | string | TEXT |  |  |
+| source_presence_known | bool | INTEGER |  |  |
+| serialized_fields | string | TEXT |  |  |
+| observation_operation | string | TEXT |  |  |
+| rowid | long | system | | |
+| _v | datetime | system | | |
+| _deleted | bool | system | | |
+
+### `session_prompts_observations`
+
+Key: observation_id. Scope: machine-wide. 20 columns.
+
+| Column | Kusto type | SQLite type | Default | Not null |
+|---|---|---|---|---|
+| id | long | INTEGER |  |  |
+| dedup_key | string | TEXT | '' |  |
+| ts | real | REAL |  |  |
+| session_id | string | TEXT |  |  |
+| agent_id | string | TEXT | '' |  |
+| tool | string | TEXT |  |  |
+| project_path | string | TEXT |  |  |
+| text | string | TEXT | '' |  |
+| prompt_file | string | TEXT | '' |  |
+| observation_id | string | TEXT |  |  |
+| observation_source | string | TEXT |  |  |
+| source_entity_id | string | TEXT |  |  |
+| producer_id | string | TEXT |  |  |
+| source_revision | long | INTEGER |  |  |
+| event_time | datetime | TEXT |  |  |
+| received_time | datetime | TEXT |  |  |
+| presence | string | TEXT |  |  |
+| source_presence_known | bool | INTEGER |  |  |
+| serialized_fields | string | TEXT |  |  |
+| observation_operation | string | TEXT |  |  |
+| rowid | long | system | | |
+| _v | datetime | system | | |
+| _deleted | bool | system | | |
+
+### `skill_uses_observations`
+
+Key: observation_id. Scope: machine-wide. 20 columns.
+
+| Column | Kusto type | SQLite type | Default | Not null |
+|---|---|---|---|---|
+| id | long | INTEGER |  |  |
+| dedup_key | string | TEXT | '' |  |
+| ts | real | REAL |  |  |
+| session_id | string | TEXT |  |  |
+| agent_id | string | TEXT | '' |  |
+| tool | string | TEXT |  |  |
+| project_path | string | TEXT |  |  |
+| name | string | TEXT |  |  |
+| trigger | string | TEXT | '' |  |
+| observation_id | string | TEXT |  |  |
+| observation_source | string | TEXT |  |  |
+| source_entity_id | string | TEXT |  |  |
+| producer_id | string | TEXT |  |  |
+| source_revision | long | INTEGER |  |  |
+| event_time | datetime | TEXT |  |  |
+| received_time | datetime | TEXT |  |  |
+| presence | string | TEXT |  |  |
+| source_presence_known | bool | INTEGER |  |  |
+| serialized_fields | string | TEXT |  |  |
+| observation_operation | string | TEXT |  |  |
+| rowid | long | system | | |
+| _v | datetime | system | | |
+| _deleted | bool | system | | |
+
+### `file_write_events_observations`
+
+Key: observation_id. Scope: machine-wide. 26 columns.
+
+| Column | Kusto type | SQLite type | Default | Not null |
+|---|---|---|---|---|
+| id | long | INTEGER |  |  |
+| dedup_key | string | TEXT | '' |  |
+| ts | real | REAL |  | yes |
+| session_id | string | TEXT | '' |  |
+| tool | string | TEXT | '' |  |
+| tool_name | string | TEXT | '' |  |
+| operation | string | TEXT | '' |  |
+| path | string | TEXT |  | yes |
+| project_path | string | TEXT | '' |  |
+| pid | long | INTEGER | 0 |  |
+| source_event_kind | string | TEXT | '' |  |
+| source_event_id | string | TEXT | '' |  |
+| content_hash | string | TEXT | '' |  |
+| size_bytes | long | INTEGER | 0 |  |
+| detail | string | TEXT | '{}' |  |
+| observation_id | string | TEXT |  |  |
+| observation_source | string | TEXT |  |  |
+| source_entity_id | string | TEXT |  |  |
+| producer_id | string | TEXT |  |  |
+| source_revision | long | INTEGER |  |  |
+| event_time | datetime | TEXT |  |  |
+| received_time | datetime | TEXT |  |  |
+| presence | string | TEXT |  |  |
+| source_presence_known | bool | INTEGER |  |  |
+| serialized_fields | string | TEXT |  |  |
+| observation_operation | string | TEXT |  |  |
+| rowid | long | system | | |
+| _v | datetime | system | | |
+| _deleted | bool | system | | |
+
+### `context_events_observations`
+
+Key: observation_id. Scope: machine-wide. 27 columns.
+
+| Column | Kusto type | SQLite type | Default | Not null |
+|---|---|---|---|---|
+| id | long | INTEGER |  |  |
+| dedup_key | string | TEXT | '' |  |
+| ts | real | REAL |  |  |
+| session_id | string | TEXT |  |  |
+| agent_id | string | TEXT | '' |  |
+| tool | string | TEXT |  |  |
+| kind | string | TEXT |  |  |
+| trigger | string | TEXT | '' |  |
+| before_tokens | long | INTEGER |  |  |
+| after_tokens | long | INTEGER |  |  |
+| duration_ms | real | REAL |  |  |
+| current_tokens | long | INTEGER |  |  |
+| system_tokens | long | INTEGER |  |  |
+| conversation_tokens | long | INTEGER |  |  |
+| tool_tokens | long | INTEGER |  |  |
+| project_path | string | TEXT |  |  |
+| observation_id | string | TEXT |  |  |
+| observation_source | string | TEXT |  |  |
+| source_entity_id | string | TEXT |  |  |
+| producer_id | string | TEXT |  |  |
+| source_revision | long | INTEGER |  |  |
+| event_time | datetime | TEXT |  |  |
+| received_time | datetime | TEXT |  |  |
+| presence | string | TEXT |  |  |
+| source_presence_known | bool | INTEGER |  |  |
+| serialized_fields | string | TEXT |  |  |
+| observation_operation | string | TEXT |  |  |
+| rowid | long | system | | |
+| _v | datetime | system | | |
+| _deleted | bool | system | | |
+
+### `session_loaded_files_observations`
+
+Key: observation_id. Scope: machine-wide. 19 columns.
+
+| Column | Kusto type | SQLite type | Default | Not null |
+|---|---|---|---|---|
+| session_id | string | TEXT |  | yes |
+| path | string | TEXT |  | yes |
+| how | string | TEXT | '' | yes |
+| detail | string | TEXT | '' |  |
+| ts | real | REAL | 0 |  |
+| tool | string | TEXT | '' |  |
+| agent_id | string | TEXT | '' |  |
+| project_path | string | TEXT |  |  |
+| observation_id | string | TEXT |  |  |
+| observation_source | string | TEXT |  |  |
+| source_entity_id | string | TEXT |  |  |
+| producer_id | string | TEXT |  |  |
+| source_revision | long | INTEGER |  |  |
+| event_time | datetime | TEXT |  |  |
+| received_time | datetime | TEXT |  |  |
+| presence | string | TEXT |  |  |
+| source_presence_known | bool | INTEGER |  |  |
+| serialized_fields | string | TEXT |  |  |
+| observation_operation | string | TEXT |  |  |
+| rowid | long | system | | |
+| _v | datetime | system | | |
+| _deleted | bool | system | | |
+
+### `session_context_items_observations`
+
+Key: observation_id. Scope: machine-wide. 23 columns.
+
+| Column | Kusto type | SQLite type | Default | Not null |
+|---|---|---|---|---|
+| session_id | string | TEXT |  | yes |
+| agent_id | string | TEXT | '' | yes |
+| kind | string | TEXT |  | yes |
+| name | string | TEXT |  | yes |
+| ts | real | REAL | 0 |  |
+| path | string | TEXT | '' |  |
+| chars | long | INTEGER | 0 |  |
+| tokens | long | INTEGER | 0 |  |
+| estimated | long | INTEGER | 1 |  |
+| removed | long | INTEGER | 0 |  |
+| tool | string | TEXT | '' |  |
+| project_path | string | TEXT |  |  |
+| observation_id | string | TEXT |  |  |
+| observation_source | string | TEXT |  |  |
+| source_entity_id | string | TEXT |  |  |
+| producer_id | string | TEXT |  |  |
+| source_revision | long | INTEGER |  |  |
+| event_time | datetime | TEXT |  |  |
+| received_time | datetime | TEXT |  |  |
+| presence | string | TEXT |  |  |
+| source_presence_known | bool | INTEGER |  |  |
+| serialized_fields | string | TEXT |  |  |
+| observation_operation | string | TEXT |  |  |
+| rowid | long | system | | |
+| _v | datetime | system | | |
+| _deleted | bool | system | | |

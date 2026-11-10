@@ -276,7 +276,12 @@ class LiveDashboard:
     def _on_batch(self, batch: Any) -> None:
         if self._stop.is_set():
             return
-        tables = tuple(batch.changed_tables)
+        from ..kusto.observations import FAMILIES, table_name
+
+        aliases = {table_name(family): family for family in FAMILIES}
+        tables = tuple(sorted(set(batch.changed_tables) | {
+            aliases[name] for name in batch.changed_tables if name in aliases
+        }))
         consumer_gap = batch.kind == "resync" and batch.reason in {"subscriber_overflow", "subscriber_error"}
         if batch.kind in {"bootstrap", "changes", "resync"}:
             self._queries.invalidate(tables if tables and not consumer_gap else None)

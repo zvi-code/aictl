@@ -82,16 +82,18 @@ def test_query_and_queued_clients_use_separate_endpoints(endpoint, monkeypatch):
     assert queue.calls[0][2].database == "aictl"
 
 
-def test_automatic_routing_queues_telemetry_and_keeps_state_tables_synchronous():
+def test_automatic_routing_streams_telemetry_and_keeps_state_tables_synchronous():
     settings = KustoSettings(DM)
     queue, client = QueueClient(), FakeClient()
-    ingester = make_ingester(settings, client, queued_client=queue)
+    stream = FakeStreamingClient()
+    ingester = make_ingester(settings, client, stream, queued_client=queue)
     ingester.ingest("path_defs", [marked(path_template="x")])
     ingester.ingest("sessions", [marked(session_id="s")])
     ingester.ingest("events", [marked(text="event")])
     ingester.ingest_lines(otel.LOGS, ['{"Body":"log","RowKey":"r"}'])
     assert len(client.commands) == 2
-    assert [call[2].table for call in queue.calls] == ["events", otel.LOGS]
+    assert [table for table, _ in stream.calls] == ["events", otel.LOGS]
+    assert not queue.calls
     assert not client.queries
     assert not any("streamingingestion" in command for command in client.commands)
 
@@ -131,6 +133,19 @@ def test_raw_otel_lines_are_queued_without_sql_history_markers():
     ingester.ingest_lines(otel.LOGS, lines)
     assert queue.calls[0][1].decode("ascii").splitlines() == lines
     assert not ingester._pending and not client.queries
+
+
+def test_direct_observations_never_poll_visibility_even_at_receipt_budget(monkeypatch):
+    monkeypatch.setattr(I, "QUEUED_PENDING_ROWS", 1)
+    queue, client = QueueClient(), FakeClient()
+    settings = KustoSettings(DM, ingestion="queued")
+    ingester = QueuedIngester(settings, client, queue)
+    conn = KustoConnection(settings, client, ingester, tables=TABLES)
+    conn.ingest_observations("events", [{"ts": 100, "tool": "t", "kind": "k"}])
+    conn.ingest_observations("metrics", [{"ts": 100, "metric": "m", "value": 2}])
+    assert len(queue.calls) == 2
+    assert not client.queries and not client.commands
+    assert not ingester._pending
 
 
 def test_submission_failures_preserve_rows_without_switching_backends():

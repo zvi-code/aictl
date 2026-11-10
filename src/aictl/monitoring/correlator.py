@@ -271,7 +271,25 @@ class SessionCorrelator:
         )
         # Emit derived metrics through sink (OTel units: ratio 0-1, bytes)
         # Display path (ToolReport) uses 0-100% and MB for human readability.
-        if self.sink:
+        if self.sink and getattr(self.sink, "streams_observations", False) is True:
+            samples = []
+            for report in reports:
+                tags = {"aictl.tool": report.tool}
+                samples.extend([
+                    (M("aictl.tool.cpu"), report.cpu_percent / 100, tags),
+                    (M("aictl.tool.memory"), float(report.memory_rss_bytes), tags),
+                    (M("aictl.tool.network.io"), report.inbound_rate_bps, {**tags, "network.io.direction": "receive"}),
+                    (M("aictl.tool.network.io"), report.outbound_rate_bps, {**tags, "network.io.direction": "transmit"}),
+                    (M("aictl.tool.sessions"), float(report.session_count), tags),
+                    (M("aictl.tool.pids"), float(report.pid_count), tags),
+                    (M("aictl.tool.token.usage"), float(report.token_estimate.input_tokens), {**tags, "gen_ai.token.type": "input"}),
+                    (M("aictl.tool.token.usage"), float(report.token_estimate.output_tokens), {**tags, "gen_ai.token.type": "output"}),
+                    (M("aictl.tool.token.confidence"), report.token_estimate.confidence, tags),
+                    (M("aictl.tool.mcp.score"), report.mcp.confidence, tags),
+                ])
+            if samples:
+                self.sink.emit_batch(samples)
+        elif self.sink:
             for r in reports:
                 tags = {"aictl.tool": r.tool}
                 # Continuously varying — use sensitivity-aware emission

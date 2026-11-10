@@ -20,6 +20,7 @@ class Query:
     # The column names of the result in SQLite's order, when the translator knows
     # them (SELECT a, b AS c): the connection uses them for cursor.description.
     columns: list[str] | None = None
+    read_tables: tuple[str, ...] = ()
 
 
 @dataclass

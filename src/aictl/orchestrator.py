@@ -342,6 +342,14 @@ def collect(
     """
     root_path = root.resolve()
     discovered = _discovered_override or discover_all(root_path, include_processes=include_processes)
+    streaming = getattr(_sink, "streams_observations", False) is True
+    samples = []
+
+    def emit(metric, value, tags, *, ts, gauge=False):
+        if streaming:
+            samples.append((metric, value, tags))
+        else:
+            _sink.emit_if_changed(metric, value, tags, ts=ts, gauge=gauge)
 
     # Emit discovery data through sink (skip when DiscoveryCollector handled it)
     if _sink and _discovered_override is None:
@@ -351,16 +359,16 @@ def collect(
             if tool == "aictl":
                 continue
             tags = {"tool": tool}
-            _sink.emit_if_changed(M("aictl.discovery.files"), float(len(tool_res.files)), tags, ts=ts)
-            _sink.emit_if_changed(
+            emit(M("aictl.discovery.files"), float(len(tool_res.files)), tags, ts=ts)
+            emit(
                 M("aictl.discovery.tokens"), float(sum(f.tokens for f in tool_res.files)), tags, ts=ts
             )
-            _sink.emit_if_changed(M("aictl.discovery.size"), float(sum(f.size for f in tool_res.files)), tags, ts=ts)
-            _sink.emit_if_changed(M("aictl.discovery.processes"), float(len(tool_res.processes)), tags, ts=ts)
-            _sink.emit_if_changed(M("aictl.discovery.mcp_servers"), float(len(tool_res.mcp_servers)), tags, ts=ts)
+            emit(M("aictl.discovery.size"), float(sum(f.size for f in tool_res.files)), tags, ts=ts)
+            emit(M("aictl.discovery.processes"), float(len(tool_res.processes)), tags, ts=ts)
+            emit(M("aictl.discovery.mcp_servers"), float(len(tool_res.mcp_servers)), tags, ts=ts)
             # Per-file metrics: only emit on change (not every cycle).
             # The sink's dedup handles this — we just need a stable cache key.
-            for f in files_to_sample(tool_res.files):
+            for f in tool_res.files if streaming else files_to_sample(tool_res.files):
                 ftags = {
                     "aictl.tool": tool,
                     "file.path": f.path,
@@ -368,17 +376,20 @@ def collect(
                     "aictl.file.scope": f.scope,
                     "aictl.file.sent_to_llm": f.sent_to_llm,
                 }
-                _sink.emit_if_changed(M("aictl.file.tokens"), float(f.tokens), ftags, ts=ts)
-                _sink.emit_if_changed(M("aictl.file.bytes"), float(f.size), ftags, ts=ts)
+                emit(M("aictl.file.tokens"), float(f.tokens), ftags, ts=ts)
+                emit(M("aictl.file.bytes"), float(f.size), ftags, ts=ts)
             for m in tool_res.mcp_servers:
                 mname = m.get("name", "")
                 if mname:
-                    _sink.emit_if_changed(
+                    emit(
                         M("aictl.mcp.status"),
                         1.0 if m.get("status") == "running" else 0.0,
                         {"aictl.tool": tool, "aictl.mcp.server": mname},
                         ts=ts,
                     )
+        if streaming and samples:
+            _sink.emit_batch(samples, ts=ts)
+            samples.clear()
 
     live_monitor = _live_monitor_override if _live_monitor_override is not None else {}
     tools = _merge_dashboard_tools(discovered, live_monitor)
@@ -398,12 +409,12 @@ def collect(
         ts = time.time()
         for m in agent_memory:
             if m.file:
-                _sink.emit_if_changed(
+                emit(
                     M("aictl.memory.tokens"), float(m.tokens), {"file.path": m.file, "aictl.source": m.source}, ts=ts
                 )
         for s in mcp_detail:
             if s.name:
-                _sink.emit_if_changed(
+                emit(
                     M("aictl.mcp.detail.status"),
                     1.0 if s.status == "running" else 0.0,
                     {"aictl.mcp.server": s.name, "aictl.tool": s.tool},
@@ -414,29 +425,31 @@ def collect(
                 rtags = {"tool": r.tool, "source": r.source}
                 # Cumulative counters: an unchanged value carries no news, and
                 # the 5 min re-emit keeps the series continuous.
-                _sink.emit_if_changed(
+                emit(
                     M("gen_ai.client.token.usage.verified"),
                     float(r.input_tokens),
                     {**rtags, "gen_ai.token.type": "input"},
                     ts=ts,
                     gauge=True,
                 )
-                _sink.emit_if_changed(
+                emit(
                     M("gen_ai.client.token.usage.verified"),
                     float(r.output_tokens),
                     {**rtags, "gen_ai.token.type": "output"},
                     ts=ts,
                     gauge=True,
                 )
-                _sink.emit_if_changed(M("aictl.telemetry.sessions"), float(r.total_sessions), rtags, ts=ts, gauge=True)
-                _sink.emit_if_changed(M("aictl.telemetry.messages"), float(r.total_messages), rtags, ts=ts, gauge=True)
+                emit(M("aictl.telemetry.sessions"), float(r.total_sessions), rtags, ts=ts, gauge=True)
+                emit(M("aictl.telemetry.messages"), float(r.total_messages), rtags, ts=ts, gauge=True)
                 if r.cost_usd:
-                    _sink.emit_if_changed(M("aictl.telemetry.cost"), float(r.cost_usd), rtags, ts=ts, gauge=True)
+                    emit(M("aictl.telemetry.cost"), float(r.cost_usd), rtags, ts=ts, gauge=True)
         for c in tool_configs:
             if c.get("tool") and c.get("model"):
-                _sink.emit_if_changed(
+                emit(
                     M("aictl.config.model"), 1.0, {"aictl.tool": c["tool"], "gen_ai.request.model": c["model"]}, ts=ts
                 )
+        if streaming and samples:
+            _sink.emit_batch(samples, ts=ts)
 
     monitor_events = live_monitor.get("events", [])
     monitor_sessions = live_monitor.get("sessions", [])
@@ -1279,6 +1292,8 @@ class SnapshotPersistence:
         These are cumulative totals; storing an identical row every 5 s made
         tool_stats 89k rows of mostly repeats.
         """
+        if getattr(self._db, "streams_observations", False) is True:
+            return reports
         changed = []
         for t in reports:
             tool = t.get("tool")

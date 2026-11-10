@@ -26,7 +26,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -790,8 +790,22 @@ class ToolMetricsRow:
     model: str = ""
 
 
+class _ObservationIdentity:
+    """Transport identity kept outside dataclass fields and public API serialization."""
+
+    __slots__ = ("_observation_rowid",)
+    _observation_rowid: int
+
+    def _kusto_rowid(self) -> int:
+        from .kusto.connection import next_rowid
+
+        if not hasattr(self, "_observation_rowid"):
+            self._observation_rowid = next_rowid()
+        return self._observation_rowid
+
+
 @dataclass(slots=True)
-class EventRow:
+class EventRow(_ObservationIdentity):
     """One event log entry."""
 
     ts: float
@@ -913,7 +927,7 @@ TelemetryRow = ToolStatsRow
 
 
 @dataclass(slots=True)
-class Metric:
+class Metric(_ObservationIdentity):
     """One universal metric sample (Prometheus-style)."""
 
     ts: float
@@ -972,7 +986,7 @@ class SessionRow:
 
 
 @dataclass(slots=True)
-class RequestRow:
+class RequestRow(_ObservationIdentity):
     """One LLM request record.
 
     ``ts`` is the time the request happened. Writers must set it from the
@@ -1018,7 +1032,7 @@ class RequestRow:
 
 
 @dataclass(slots=True)
-class ToolInvocationRow:
+class ToolInvocationRow(_ObservationIdentity):
     """One tool invocation record.
 
     ``source_ts`` follows the same convention as RequestRow: the timestamp
@@ -1057,7 +1071,7 @@ class ToolInvocationRow:
 
 
 @dataclass(slots=True)
-class SessionPromptRow:
+class SessionPromptRow(_ObservationIdentity):
     """One prompt given to an agent. ``agent_id`` '' is a person's prompt to the main agent."""
 
     dedup_key: str
@@ -1071,7 +1085,7 @@ class SessionPromptRow:
 
 
 @dataclass(slots=True)
-class SkillUseRow:
+class SkillUseRow(_ObservationIdentity):
     """One use of a skill."""
 
     dedup_key: str
@@ -1085,7 +1099,7 @@ class SkillUseRow:
 
 
 @dataclass(slots=True)
-class LoadedFileRow:
+class LoadedFileRow(_ObservationIdentity):
     """A file a session loaded, as its own record shows: how, and when first seen."""
 
     session_id: str
@@ -1099,7 +1113,7 @@ class LoadedFileRow:
 
 
 @dataclass(slots=True)
-class ContextItemRow:
+class ContextItemRow(_ObservationIdentity):
     """One item a tool put in a session's context, as last recorded (see m036)."""
 
     session_id: str
@@ -1117,7 +1131,7 @@ class ContextItemRow:
 
 
 @dataclass(slots=True)
-class FileWriteRow:
+class FileWriteRow(_ObservationIdentity):
     """One write-like file event attributed to an agent/session."""
 
     ts: float
@@ -1170,7 +1184,7 @@ class ProcessRow:
 
 
 @dataclass(slots=True)
-class AgentRow:
+class AgentRow(_ObservationIdentity):
     """One agent record."""
 
     agent_id: str
@@ -1190,7 +1204,7 @@ class AgentRow:
 
 
 @dataclass(slots=True)
-class ContextEventRow:
+class ContextEventRow(_ObservationIdentity):
     """A compaction, or a split of the context by kind, as a tool's session file records it.
 
     None means that the tool did not report the value.
@@ -2624,7 +2638,7 @@ class HistoryDB:
             if self._kusto is not None:
                 from .kusto.connection import connect as kusto_connect
 
-                conn = kusto_connect(self._kusto)
+                conn = kusto_connect(self._kusto, observation_writes=True)
                 self._local.conn = conn
                 return conn
             conn = connect_file(path) if isinstance(self._path, Path) else sqlite3.connect(path, timeout=BUSY_TIMEOUT_S)
@@ -3279,12 +3293,63 @@ class HistoryDB:
 
     # ── Append (buffered) ──────────────────────────────────────────
 
+    @property
+    def streams_observations(self) -> bool:
+        """Kusto observations bypass SQLite's buffering and suppression rules."""
+        return self._kusto is not None and self._shared_conn is None
+
+    def _ingest_observations(self, table: str, rows: list[dict[str, Any]]) -> None:
+        """Send a producer batch directly; failure remains the caller's responsibility."""
+        self._conn().ingest_observations(table, rows)
+
+    def _fact_observation(
+        self, family: str, values: dict[str, Any], *, source: str = "",
+        operation: str = "snapshot", identity: _ObservationIdentity | None = None,
+    ) -> dict[str, Any]:
+        from .kusto.observations import envelope, typed_identity
+
+        values = dict(values)
+        if not self._keeps_text():
+            for table, _stamp, columns in _TEXT_COLUMNS:
+                if table == family:
+                    values.update({
+                        name: blank for name, blank in columns.items()
+                        if name in values and not (
+                            source == TRANSCRIPT_SOURCE and (family, name) in _WRITER_GUARDED_COLUMNS
+                        )
+                    })
+        for name in ("input", "detail", "models_json", "daily_json", "unpriced_models"):
+            if name in values and isinstance(values[name], (dict, list)):
+                values[name] = json.dumps(values[name], default=str)
+        stable = typed_identity(identity._kusto_rowid(), values) if identity is not None else None
+        return envelope(
+            values, source=source or str(values.get("source") or ""),
+            operation=operation, source_entity_id=str(values.get("source_event_id") or values.get("trace_id") or ""),
+            observation_id=stable,
+        )
+
+    def _observe_fact(
+        self, family: str, values: dict[str, Any], *, source: str = "",
+        operation: str = "snapshot", identity: _ObservationIdentity | None = None,
+    ) -> None:
+        from .kusto.observations import table_name
+
+        self._ingest_observations(
+            table_name(family),
+            [self._fact_observation(family, values, source=source, operation=operation, identity=identity)],
+        )
+
     def append_metrics(self, row: SystemSnapshotRow | MetricsRow) -> None:
         """Buffer a system snapshot row for batch insert.
 
         Backward compat: accepts old MetricsRow (which is now an alias for
         SystemSnapshotRow).
         """
+        if self.streams_observations:
+            values = {name: getattr(row, name) for name in SYSTEM_SNAPSHOT_KEYS}
+            values["cpu_per_core"] = json.dumps(row.cpu_per_core)
+            self._ingest_observations("system_snapshots", [values])
+            return
         with self._lock:
             self._system_snapshot_buf.append(row)
         if self._flush_interval <= 0:
@@ -3313,6 +3378,12 @@ class HistoryDB:
                 )
             else:
                 converted.append(r)
+        if self.streams_observations:
+            self._ingest_observations(
+                "process_snapshots",
+                [{name: getattr(row, name) for name in row.__dataclass_fields__} for row in converted],
+            )
+            return
         with self._lock:
             self._process_snapshot_buf.extend(converted)
         if self._flush_interval <= 0:
@@ -3324,6 +3395,9 @@ class HistoryDB:
 
     def append_event(self, event: EventRow) -> None:
         """Buffer an event for batch insert."""
+        if self.streams_observations:
+            self.append_events([event])
+            return
         if self._throttled(event):
             return
         self._guard_event(event)
@@ -3342,6 +3416,8 @@ class HistoryDB:
 
     def _throttled(self, event: EventRow) -> bool:
         """True for a heartbeat event that arrived within its minimum gap."""
+        if self.streams_observations:
+            return False
         gap = _HEARTBEAT_EVENT_MIN_GAP_S.get(event.kind)
         if gap is None:
             return False
@@ -3354,6 +3430,16 @@ class HistoryDB:
     def append_events(self, events: list[EventRow]) -> None:
         """Buffer multiple events."""
         events = [self._guard_event(e) for e in events if not self._throttled(e)]
+        if self.streams_observations:
+            names = ("ts", "tool", "kind", "session_id", "pid", "project_path", "detail")
+            self._ingest_observations(
+                "events",
+                [dict(zip(names, _event_row_tuple(e), strict=True)) | {"rowid": e._kusto_rowid()} for e in events],
+            )
+            for event in events:
+                self._log_event(event)
+                self._notify_listeners(event)
+            return
         for e in events:
             self._log_event(e)
             self._notify_listeners(e)
@@ -3403,6 +3489,13 @@ class HistoryDB:
         """
         if not samples:
             return
+        if self.streams_observations:
+            names = ("ts", "metric", "value", "tags", "tool", "project_path", "session_id")
+            self._ingest_observations(
+                "metrics",
+                [dict(zip(names, _metric_row_tuple(s), strict=True)) | {"rowid": s._kusto_rowid()} for s in samples],
+            )
+            return
         with self._lock:
             self._metrics_buf.extend(samples)
         if self._flush_interval <= 0:
@@ -3410,6 +3503,9 @@ class HistoryDB:
 
     def append_request(self, row: RequestRow) -> None:
         """Buffer an LLM request for batch insert."""
+        if self.streams_observations:
+            self._observe_fact("requests", asdict(row), identity=row)
+            return
         with self._lock:
             self._requests_buf.append(row)
         if self._flush_interval <= 0:
@@ -3417,6 +3513,9 @@ class HistoryDB:
 
     def append_tool_invocation(self, row: ToolInvocationRow) -> None:
         """Buffer a tool invocation for batch insert."""
+        if self.streams_observations:
+            self._observe_fact("tool_invocations", asdict(row), identity=row)
+            return
         with self._lock:
             self._tool_invocations_buf.append(row)
         if self._flush_interval <= 0:
@@ -3432,6 +3531,11 @@ class HistoryDB:
             row.payload = strip_event_text(row.payload)
             row.command = ""
             row.output = ""
+        if self.streams_observations:
+            values = {name: getattr(row, name) for name in row.__dataclass_fields__}
+            values["payload"] = json.dumps(row.payload, default=str)
+            self._ingest_observations("hook_calls", [values])
+            return
         with self._lock:
             self._hook_calls_buf.append(row)
         if self._flush_interval <= 0:
@@ -4285,6 +4389,11 @@ class HistoryDB:
         """``upsert_session`` for many rows: one statement and one commit, in the order given."""
         if not rows:
             return
+        if self.streams_observations:
+            self._ingest_observations(
+                "sessions_observations", [self._fact_observation("sessions", asdict(row)) for row in rows]
+            )
+            return
         conn = self._conn()
         conn.executemany(
             _SESSION_UPSERT,
@@ -4329,6 +4438,13 @@ class HistoryDB:
         now = time.time()
         rows = [(sid, pid, tool, now, role) for sid, pid, tool, role in links if sid and pid]
         if not rows:
+            return
+        if self.streams_observations:
+            self._ingest_observations("session_processes_observations", [
+                self._fact_observation(
+                    "session_processes", dict(zip(("session_id", "pid", "tool", "joined_at", "role"), row, strict=True))
+                ) for row in rows
+            ])
             return
         conn = self._conn()
         conn.executemany(
@@ -4388,6 +4504,13 @@ class HistoryDB:
         """
         if not entries:
             return
+        if self.streams_observations:
+            self.upsert_sessions([
+                SessionRow(session_id=sid, tool=tool, pid=pid, started_at=started, source=source)
+                for sid, tool, pid, started, source in entries
+            ])
+            self.link_session_processes([(sid, pid, tool, "otel") for sid, tool, pid, _, _ in entries])
+            return
         conn = self._conn()
         now = time.time()
         for session_id, tool, pid, started_at, source in entries:
@@ -4416,6 +4539,11 @@ class HistoryDB:
         ``SessionEnd`` (via :meth:`update_session_end`) is terminal.
         """
         if not session_id:
+            return
+        if self.streams_observations:
+            values = dict(kwargs)
+            values.update(session_id=session_id, ended_at=None)
+            self._observe_fact("sessions", values, operation="patch")
             return
         conn = self._conn()
         sets = ["ended_at = NULL"]
@@ -4470,6 +4598,11 @@ class HistoryDB:
     def update_session_end(self, session_id: str, ended_at: float, **kwargs) -> None:
         """Update session end time and optional fields."""
         if not session_id:
+            return
+        if self.streams_observations:
+            values = dict(kwargs)
+            values.update(session_id=session_id, ended_at=ended_at)
+            self._observe_fact("sessions", values, operation="patch")
             return
         conn = self._conn()
         sets = ["ended_at = ?"]
@@ -4637,6 +4770,17 @@ class HistoryDB:
         *rows* holds (session id, dedup key, input bytes, output bytes). A size that is
         already set stays. Each chunk is one short transaction. Returns the rows changed.
         """
+        if self.streams_observations:
+            records = [
+                self._fact_observation(
+                    "tool_invocations",
+                    {"session_id": sid, "dedup_key": key, "input_bytes": inp, "output_bytes": out},
+                    operation="fill_missing_sizes",
+                )
+                for sid, key, inp, out in rows if key
+            ]
+            self._ingest_observations("tool_invocations_observations", records)
+            return len(records)
         conn = self._conn()
         changed = 0
         for start in range(0, len(rows), FLUSH_CHUNK_ROWS):
@@ -4690,6 +4834,13 @@ class HistoryDB:
         """
         if not traces:
             return 0
+        if self.streams_observations:
+            for trace_id, sid in traces:
+                self._observe_fact(
+                    "session_processes", {"session_id": sid, "trace_id": trace_id},
+                    source="otel", operation="explicit_trace_session_link",
+                )
+            return len(traces)
         self.flush()
         conn = self._conn()
         rows: list[tuple[int, str]] = []
@@ -4739,6 +4890,13 @@ class HistoryDB:
         Returns True if a row was updated, False if not found.
         Used by PostToolUse hooks to complete the record started by PreToolUse.
         """
+        if self.streams_observations:
+            self._observe_fact(
+                "tool_invocations",
+                {"dedup_key": dedup_key, "duration_ms": duration_ms, "is_error": is_error, "result_summary": result_summary},
+                source="hook", operation="patch",
+            )
+            return True
         conn = self._conn()
         sets = ["duration_ms = ?"]
         params: list[Any] = [round(duration_ms, 1)]
@@ -4800,6 +4958,12 @@ class HistoryDB:
 
     def upsert_session_usage(self, row: dict) -> None:
         """Replace one session's transcript-derived usage. Totals are absolute."""
+        if self.streams_observations:
+            values = dict(row)
+            values["models_json"] = values.pop("models", {})
+            values["daily_json"] = values.pop("daily", {})
+            self._observe_fact("session_usage", values, operation="cumulative_snapshot")
+            return
         conn = self._conn()
         conn.execute(
             "INSERT OR REPLACE INTO session_usage(session_id, tool, source, quality, quality_reason,"
@@ -5037,6 +5201,9 @@ class HistoryDB:
         """Persist a write-like file event. Returns True if inserted."""
         if not row.path:
             return False
+        if self.streams_observations:
+            self._observe_fact("file_write_events", asdict(row), identity=row)
+            return True
         conn = self._conn()
         if row.source_event_id and row.source_event_kind != TRANSCRIPT_SOURCE:
             known = conn.execute(
@@ -5548,6 +5715,11 @@ class HistoryDB:
         """``upsert_agent`` for many rows: one statement and one commit, in the order given."""
         if not rows:
             return
+        if self.streams_observations:
+            self._ingest_observations("agents_observations", [
+                self._fact_observation("agents", asdict(row), identity=row) for row in rows
+            ])
+            return
         keeps_text = self._keeps_text()
         conn = self._conn()
         conn.executemany(
@@ -5589,6 +5761,21 @@ class HistoryDB:
         """
         if not len(facts):
             return 0
+        if self.streams_observations:
+            groups = {
+                "requests": facts.requests, "tool_invocations": facts.tools,
+                "session_prompts": facts.prompts, "skill_uses": facts.skills,
+                "agents": facts.agents, "file_write_events": facts.file_writes,
+                "context_events": facts.context_events, "session_loaded_files": facts.loaded_files,
+                "session_context_items": facts.context_items,
+            }
+            for family, rows in groups.items():
+                if rows:
+                    self._ingest_observations(family + "_observations", [
+                        self._fact_observation(family, asdict(row), source=TRANSCRIPT_SOURCE, identity=row)
+                        for row in rows
+                    ])
+            return len(facts)
         conn = self._conn()
         try:
             self._promote_hook_tool_rows(conn, facts.tools)
@@ -5720,6 +5907,10 @@ class HistoryDB:
 
     def set_sessions_tool(self, session_ids: list[str], tool: str) -> None:
         """Re-attribute sessions' fact rows, when their surface becomes known after they were written."""
+        if self.streams_observations:
+            for sid in session_ids:
+                self._observe_fact("sessions", {"session_id": sid, "tool": tool}, operation="attribution")
+            return
         conn = self._conn()
         for table in (
             "requests", "tool_invocations", "session_prompts", "skill_uses", "agents", "file_write_events", "context_events",
@@ -5733,6 +5924,9 @@ class HistoryDB:
 
     def clear_stale_pending_confirms(self, before: float) -> int:
         """A prompt left open this long belongs to a session that is gone, not one still waiting."""
+        if self.streams_observations:
+            self._observe_fact("tool_invocations", {"ts": before}, operation="expire_pending_before")
+            return 0
         conn = self._conn()
         cur = conn.execute("UPDATE tool_invocations SET confirm = '' WHERE confirm = 'pending' AND ts < ?", (before,))
         conn.commit()
@@ -5810,6 +6004,9 @@ class HistoryDB:
 
     def append_telemetry(self, row: ToolStatsRow | TelemetryRow) -> None:
         """Write a tool stats row (was append_telemetry)."""
+        if self.streams_observations:
+            self.append_telemetry_batch([row])
+            return
         conn = self._conn()
         try:
             conn.execute(_TOOL_STATS_INSERT, _tool_stats_tuple(row))
@@ -5820,6 +6017,15 @@ class HistoryDB:
     def append_telemetry_batch(self, rows: list[ToolStatsRow | TelemetryRow]) -> None:
         """Batch insert tool stats rows."""
         if not rows:
+            return
+        if self.streams_observations:
+            values = []
+            for row in rows:
+                record = {name: getattr(row, name) for name in row.__dataclass_fields__}
+                record["by_model"] = json.dumps(row.by_model)
+                record["by_project"] = json.dumps(row.by_project)
+                values.append(record)
+            self._ingest_observations("tool_stats", values)
             return
         conn = self._conn()
         try:

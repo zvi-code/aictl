@@ -123,6 +123,45 @@ class OtelSink:
 
     # ── The request's side ────────────────────────────────────────────
 
+    def ingest(self, signal: str, body: Any, received_ns: int | None = None) -> None:
+        """Hand one producer export to the native ingesters before acknowledging it.
+
+        No local linger or coalescing: only the ingester's request-size splitting
+        applies. Queued acknowledgement means DM submission, not query visibility.
+        """
+        with self._lock:
+            if self._closing:
+                raise RuntimeError("Kusto OTel ingestion is closing")
+            self._stats["requests"] += 1
+        try:
+            converted = _CONVERTERS[signal](
+                body, received_ns=received_ns or time.time_ns(), host=self.host, keep_text=self.keep_text
+            )
+            lines = {name: [otel.json_line(row) for row in rows] for name, rows in converted.rows.items() if rows}
+        except Exception:
+            with self._lock:
+                self._stats["convert_errors"] += 1
+            log.exception("OTel %s export conversion failed; the request was not accepted", signal)
+            raise
+        with self._lock:
+            for name, value in converted.stats.items():
+                self._converted[name] = self._converted.get(name, 0) + value
+        if any(converted.stats.get(name) for name in ("bad_records", "bad_values", "unsupported_metrics", "dropped_nonfinite")):
+            raise ValueError("OTel export contains malformed records or unsupported metric types")
+        try:
+            self._ensure_tables()
+            for table, group in lines.items():
+                self._ingest(table, group)
+                with self._lock:
+                    self._stats["ingest_requests"] += 1
+                    self._stats["rows_sent"] += len(group)
+                    self._stats["bytes_sent"] += sum(len(line) for line in group)
+                    self._stats["last_sent_at"] = time.time()
+                    self._sent[table] += len(group)
+        except Exception as exc:
+            self._failed("", exc, "OTel export was not fully handed to Kusto; the sender must retry")
+            raise
+
     def submit(self, signal: str, body: Any, received_ns: int | None = None) -> None:
         """Queue one OTLP export request (``logs``, ``metrics`` or ``traces``). Never raises."""
         try:

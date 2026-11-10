@@ -201,8 +201,10 @@ def parse_schema(sql: str) -> dict[str, Table]:
 def store_schema() -> dict[str, Table]:
     """The tables of aictl's own store (``storage._SCHEMA_SQL``)."""
     from ..storage import _SCHEMA_SQL
+    from .observations import tables_for
 
-    return dict(_parse_schema_cached(_SCHEMA_SQL))
+    tables = dict(_parse_schema_cached(_SCHEMA_SQL))
+    return tables | tables_for(tables)
 
 
 def create_commands(tables: dict[str, Table] | list[Table], streaming: bool = True) -> list[str]:
@@ -229,6 +231,13 @@ def current(table: Table, alias: str | None = None) -> str:
     """
     key = ", ".join(quote(k) for k in table.key)
     name = quote(alias or table.name)
+    if table.name == "hook_calls":
+        return (
+            f"{name} | extend __aictl_call = iff(isempty(['call_id']), strcat('row:', tostring(['rowid'])), strcat('call:', ['call_id']))"
+            f" | summarize arg_max({quote(VERSION)}, *) by __aictl_call"
+            f" | where {quote(DELETED)} == false"
+            f" | project-away __aictl_call, {quote(VERSION)}, {quote(DELETED)}"
+        )
     return (
         f"{name} | summarize arg_max({quote(VERSION)}, *) by {key}"
         f" | where {quote(DELETED)} == false | project-away {quote(VERSION)}, {quote(DELETED)}"
@@ -311,6 +320,11 @@ TABLE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     ("Bookkeeping", ("schema_version", "maintenance_state", "data_quality_status")),
 )
+
+from .observations import FAMILIES as _OBSERVATION_FAMILIES
+from .observations import table_name as _observation_table_name
+
+TABLE_GROUPS += (("Unresolved immutable observation evidence", tuple(map(_observation_table_name, _OBSERVATION_FAMILIES))),)
 
 INFORMATION_COLUMNS: tuple[tuple[str, str], ...] = (
     ("table_name", "string"),

@@ -50,7 +50,7 @@ az kusto cluster create --cluster-name <name> --resource-group rg-aictl --locati
 az kusto database create --cluster-name <name> --resource-group rg-aictl --database-name aictl --read-write-database soft-delete-period=P30D hot-cache-period=P7D location=westeurope
 ```
 
-The last command creates the database; run it again with another `--database-name` for a second aictl database on the same cluster. The cluster URL is `https://<name>.westeurope.kusto.windows.net`. The default uses queued ingestion and inline state-table writes; neither requires streaming ingestion. The streaming flag above is optional unless you select streaming for a table; aictl then enables the database policy so tables inherit it. To remove everything afterwards: `az group delete -n rg-aictl --yes`.
+The last command creates the database; run it again with another `--database-name` for a second aictl database on the same cluster. The cluster URL is `https://<name>.westeurope.kusto.windows.net`. The default streams live telemetry and therefore requires cluster streaming ingestion to be enabled. aictl enables the database policy so tables inherit it. Explicit queued/inline modes do not require cluster streaming ingestion. To remove everything afterwards: `az group delete -n rg-aictl --yes`.
 
 **A Microsoft Fabric Eventhouse.** Create an Eventhouse in a Fabric workspace (the account needs a Fabric license or trial and the workspace a capacity), open its KQL database and copy the query URI (`https://<id>.kusto.fabric.microsoft.com`). Fabric has streaming ingestion on by default.
 
@@ -92,7 +92,7 @@ or pass it on the command line, which also works for a one-off run:
 aictl daemon serve --kusto-cluster https://<name>.westeurope.kusto.windows.net --kusto-database aictl
 ```
 
-The start prints `history store: kusto://<host>/aictl (Kusto, azcli auth; no SQLite file)`. The first start creates the 48 tables, enables streaming ingestion on the database if any table uses it, writes `aictl_information_schema`, which describes every column, and, when a table streams, clears the engine's streaming-ingestion schema cache (`.clear database cache streamingingestion schema`) so the new tables take rows at once; `aictl db schema` prints the same. The streaming policy is set on the database and every table inherits it, so `.show table T policy streamingingestion` shows null for a table that streams. Later starts compare the database's schema with the code's and change only what differs.
+The start prints `history store: kusto://<host>/aictl (Kusto, azcli auth; no SQLite file)`. The first start creates the store and companion observation tables, enables streaming ingestion on the database if any table uses it, writes `aictl_information_schema`, which describes every column, and clears the streaming-ingestion schema cache when streaming tables change; `aictl db schema` prints the schema documentation. Observation-mode setup also records the synchronous cutover markers described below. The streaming policy is set on the database and every table inherits it, so `.show table T policy streamingingestion` can show null for a table that streams. Later starts compare the database's schema with the code's and change only what differs.
 
 ### Global ingestion mode and per-table overrides
 
@@ -100,7 +100,7 @@ The global `kusto_ingestion` setting accepts:
 
 | Mode | Behavior |
 | --- | --- |
-| `auto` (default) | Queued ingestion on a remote cluster, with inline writes for the state/configuration tables listed below. All tables use inline on the local emulator. |
+| `auto` (default) | Streaming ingestion for live telemetry and raw OTLP, inline for the state/configuration tables below, queued for remaining tables. All tables use inline on the local emulator. |
 | `queued` | Upload sources and enqueue them through DM. DM batches and ingests them asynchronously. Not supported by the emulator. |
 | `streaming` | Use the streaming-ingestion API and RowStore. Not supported by the emulator. |
 | `inline` | Use synchronous `.ingest inline` management commands, without the streaming-ingestion/RowStore path. |
@@ -109,7 +109,7 @@ The global `kusto_ingestion` setting accepts:
 
 **Inline and streaming are synchronous.** Inline avoids RowStore and is suitable for small development/test writes or state/configuration that is read immediately. It consumes ingestion-command capacity and can create many small extents; it is not queued ingestion and is not the sustained-telemetry path. For a state table with high write volume, streaming is the synchronous alternative when streaming ingestion is healthy.
 
-The automatic profile keeps these tables inline because startup, updates or conflict checks use their current state:
+The SQL compatibility profile retains inline routing for the tables below. In observation mode, mutable fact writers use their streaming companion tables instead; they do not update these canonical baseline tables:
 
 | Group | Tables |
 | --- | --- |
@@ -119,7 +119,27 @@ The automatic profile keeps these tables inline because startup, updates or conf
 | Dashboard configuration | `ui_dashboard`, `ui_section`, `ui_widget`, `ui_tab`, `ui_group_by_option`, `ui_datasource`, `ui_widget_datasource`, `ui_preference`, `ui_theme` |
 | Tool message state | `cursor_session_messages`, `copilot_session_messages`, `vscode_chat_messages` |
 
-Other history tables, such as `events`, `metrics` and `samples`, and the four raw OpenTelemetry tables use queued ingestion in remote `auto` mode. This automatic inline list applies **only to `auto`**. An explicit global `queued`, `streaming` or `inline` applies to every table unless a per-table override replaces it.
+`events`, `metrics`, `system_snapshots`, `process_snapshots`, `tool_stats`, `hook_calls`, and the four raw OpenTelemetry tables use streaming ingestion in remote `auto` mode. Remaining tables not listed above use queued ingestion. These automatic profiles apply **only to `auto`**. An explicit global `queued`, `streaming` or `inline` applies to every table unless a per-table override replaces it.
+
+### Observation acceptance and remaining mutable writes
+
+The typed append methods for the live telemetry tables above send the producer's batch directly through the native ingestion backend. They do not execute SQL conflict checks, query stored keys, or wait for the ten-second SQLite flush. The SDK splits requests at the service-size limits; streaming storage and queued DM batching are Kusto's responsibility, not client-side statistical aggregation.
+
+In Kusto mode, collected sample values bypass change/sensitivity/flood suppression, memory rounding, heartbeat suppression, and the per-file metric sample cap. Process and discovery polls hand off their existing observation lists together; every row remains a separate observation. Equal-valued events and metrics receive distinct sequence keys, including observations with equal timestamps. SQLite retains its existing buffering and reduction behavior. Capture `metadata` and `off` still apply.
+
+The HTTP OTLP path converts and hands off each received export without the local OTel queue or linger timer. It returns an error when conversion or ingestion fails, so a failed handoff is not reported as success. Streaming handoff confirms completion; queued handoff confirms submission only. Retried OTLP rows retain their `RowKey`. An ambiguous delivery can create physical duplicates: use that identity when counting logical OTLP records. In-memory acceptance is not a crash-durability guarantee.
+
+### Mutable observations: retain unresolved, do not guess canonical totals
+
+The Kusto store now writes request, tool-call, session, agent, session-usage, session/process-link, prompt, skill, file-write, context-event, loaded-file and context-item observations to typed `*_observations` companion tables. Their typed writer paths do not look up existing rows, merge partial facts, or delete another source's observations. The original canonical tables remain the legacy baseline; SQL writes to those families through an observation-mode connection are rejected. SQLite retains its previous behavior.
+
+Each companion has typed fact columns plus `observation_id`, `observation_source`, `source_entity_id`, `producer_id`, nullable `source_revision`, native datetime `event_time`/`received_time`, `observation_operation`, `source_presence_known`, `presence`, and `serialized_fields`. An upstream revision is **not** inferred from the call-start or ingestion timestamp. Until an adapter supplies source presence, `source_presence_known` is false and `presence` is empty: `serialized_fields` describes the emitted row, including possible dataclass defaults, not which source fields were supplied. Missing identity/order is retained as uncertainty.
+
+In Kusto mode `FactBuffer` retains copied intermediate versions before its usual dictionary coalescing. A failed batch stays with its owner for retry; its observations retain their transport identities. Size backfills become `fill_missing_sizes` patches, not canonical updates. Session/trace associations become explicit link evidence. These operations are not interpreted as resolved state or independently countable calls.
+
+**Canonical totals are deliberately unavailable under this cutover policy.** Before accepting observations, setup synchronously records `observation_cutover:<family> = retain_unresolved` in `maintenance_state`. Observation-mode canonical reads fail closed independently of whether queued evidence is currently visible. Board routes return HTTP 409 with `incomplete` and the affected families; live history reports stale/error rather than claiming current totals; report sections report incomplete data. Missing cutover metadata is not evidence of completeness. Raw companion tables remain queryable. Direct external queries of the legacy physical tables must not be presented as complete current canonical results.
+
+This implements query-free acceptance, **not** guessed reconciliation. Canonical projections can be enabled family by family only after their source identity, revision and absence/clear contracts are established and checked. Source tables are not blindly unioned and cumulative snapshots are not summed. Schema/bootstrap, configuration, file-inventory cache and maintenance operations remain separate and may issue queries. A direct telemetry failure propagates to its producer; an unreplayable producer must handle it explicitly. No unlimited-outage or crash-durable losslessness guarantee is made.
 
 A commit sends streaming tables concurrently, with four workers, and sends inline commands and queued submissions in its foreground loop. A failed submission leaves that table's buffered rows for a later commit; an acknowledged queued submission leaves the buffer without waiting for ingestion. Multi-request failures or ambiguous network failures can cause duplicate submissions on retry; this is not exactly-once delivery.
 

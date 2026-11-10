@@ -28,7 +28,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
-from .ingest import RowIngester, ingestion_capacity, make_ingester, uses_inline
+from .ingest import RowIngester, ingestion_capacity, json_line, make_ingester, uses_inline
 from .schema import (
     DELETED,
     ROWID,
@@ -39,6 +39,7 @@ from .schema import (
     current,
     information_commands,
     quote,
+    row_defaults,
     store_schema,
 )
 from .statements import Insert, Mutation, Noop, Pragma, Query, Statement, Unsupported
@@ -633,6 +634,7 @@ class KustoConnection:
 
     _schema_lock = threading.Lock()
     _schema_done: set[tuple[str, str, bool]] = set()
+    _cutover_done: set[tuple[str, str]] = set()
 
     def __init__(
         self,
@@ -641,6 +643,7 @@ class KustoConnection:
         ingester: RowIngester,
         translator: Any = None,
         tables: dict[str, Table] | None = None,
+        observation_writes: bool = False,
     ):
         self.settings = settings
         self.database = settings.database
@@ -648,6 +651,7 @@ class KustoConnection:
         self.ingester = ingester
         self.tables = tables if tables is not None else _default_tables()
         self._translator = translator
+        self.observation_writes = observation_writes
         self.row_factory: Any = None
         self.isolation_level: str | None = ""
         self.total_changes = 0
@@ -732,6 +736,25 @@ class KustoConnection:
         self._flush()
         return self._mgmt(text).rows
 
+    def ensure_observation_cutover(self) -> None:
+        from .observations import FAMILIES
+
+        key = (self.settings.cluster, self.database)
+        with self._schema_lock:
+            if key in self._cutover_done:
+                return
+            rows = [
+                {"key": "observation_cutover:" + family, "value": time.time(),
+                 "text": "retain_unresolved", ROWID: next_rowid(), VERSION: next_version(), DELETED: False}
+                for family in FAMILIES
+            ]
+            # Setup control metadata must be visible before any queued evidence is accepted.
+            self._mgmt(
+                ".ingest inline into table ['maintenance_state'] with (format='multijson') <|\n"
+                + "\n".join(json_line(row) for row in rows)
+            )
+            self._cutover_done.add(key)
+
     def cursor(self) -> KustoCursor:
         return KustoCursor(self)
 
@@ -770,6 +793,44 @@ class KustoConnection:
 
     def commit(self) -> None:
         self._flush()
+
+    def ingest_observations(self, table_name: str, rows: list[dict[str, Any]]) -> None:
+        """Ingest an existing producer batch without reading or resolving stored keys.
+
+        This is deliberately separate from SQL's mutable-state conflict semantics.
+        Retries within the ingester use these same completed row versions.
+        """
+        from . import AUTO_STREAMING_TABLES
+
+        self._check_open()
+        from .observations import FAMILIES
+        from .observations import table_name as observation_table_name
+
+        supported = AUTO_STREAMING_TABLES | {observation_table_name(family) for family in FAMILIES}
+        if table_name not in supported or table_name not in self.tables:
+            raise ValueError(f"{table_name!r} is not an append-only observation table")
+        table = self.tables[table_name]
+        defaults = row_defaults(table)
+        completed = []
+        for values in rows:
+            row, _ = self._complete(table, defaults | values)
+            if table_name in ("events", "metrics"):
+                # Equal-valued observations at the same time are still separate samples.
+                row["seq"] = row[ROWID]
+            completed.append(row)
+        if completed:
+            # Append observations do not need queued visibility receipts or
+            # read-before-mutation waits, even when a table explicitly uses DM.
+            try:
+                self.ingester.ingest_lines(table_name, [json_line(row) for row in completed])
+            except KustoStoreError:
+                raise
+            except Exception as exc:
+                raise KustoStoreError(
+                    f"Kusto ingestion into {table_name} failed ({len(completed)} observations)",
+                    server_message=_server_message(exc),
+                ) from exc
+            self.total_changes += len(completed)
 
     def rollback(self) -> None:
         self._pending.clear()
@@ -904,6 +965,14 @@ class KustoConnection:
                 cursor.lastrowid = rid
         elif isinstance(stmt, Query):
             self._flush()
+            from .observations import FAMILIES, UnresolvedObservationsError
+
+            families = tuple(sorted(set(stmt.read_tables) & set(FAMILIES)))
+            if families and self.observation_writes:
+                # Cutover is a known connection contract, not inferred from currently
+                # visible evidence. Queued or temporarily unavailable rows cannot make
+                # frozen canonical results appear complete.
+                raise UnresolvedObservationsError(families)
             result = self._query(stmt.kql, sql)
             names = result.names
             if stmt.columns and len(stmt.columns) == len(names):
@@ -951,6 +1020,10 @@ class KustoConnection:
         hundred updates queued for minutes behind itself. The version stamp is this
         process's, so it orders against the rows it inserted in the same transaction.
         """
+        from .observations import FAMILIES, UnresolvedObservationsError
+
+        if self.observation_writes and stmt.table in FAMILIES:
+            raise UnresolvedObservationsError((stmt.table,))
         if stmt.read_tables is None:
             self._wait_for_ingestion(None if stmt.kind == "insert" else stmt.table)
         else:
@@ -1100,6 +1173,10 @@ class KustoConnection:
 
     def _insert(self, stmt: Insert) -> tuple[int, int | None]:
         """Buffer the rows of an Insert, resolving its conflict clause; returns (rows written, last rowid)."""
+        from .observations import FAMILIES, UnresolvedObservationsError
+
+        if self.observation_writes and stmt.table in FAMILIES:
+            raise UnresolvedObservationsError((stmt.table,))
         table = self.tables.get(stmt.table)
         completed = [self._complete(table, r) for r in stmt.rows]
         resolve = table is not None and (
@@ -1338,6 +1415,7 @@ def connect(
     tables: dict[str, Table] | None = None,
     client: Any = None,
     ingester: RowIngester | None = None,
+    observation_writes: bool = False,
 ) -> KustoConnection:
     """A connection to the settings' database, its tables created on the first call of the process.
 
@@ -1358,8 +1436,12 @@ def connect(
             ingester = KustoClientFactory.ingester(settings)
     elif ingester is None:
         ingester = make_ingester(settings, client)
-    conn = KustoConnection(settings, client, ingester, translator=translator, tables=tables)
+    conn = KustoConnection(
+        settings, client, ingester, translator=translator, tables=tables, observation_writes=observation_writes
+    )
     conn.ensure_schema()
+    if observation_writes:
+        conn.ensure_observation_cutover()
     return conn
 
 

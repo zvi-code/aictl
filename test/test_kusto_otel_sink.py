@@ -126,6 +126,45 @@ def make(ingester=None, client=None, **kw) -> tuple[OtelSink, Ingester, Client]:
     return OtelSink(settings(), client=client, ingester=ingester, linger_s=0.0, **kw), ingester, client
 
 
+def test_direct_ingestion_hands_off_the_export_without_linger_or_workers():
+    sink, ingester, _ = make()
+    sink.ingest("logs", logs("one", "two"))
+    assert [r["Body"] for r in ingester.rows(otel.LOGS)] == ["one", "two"]
+    assert not sink._threads
+    assert sink.stats()["pending_rows"] == 0
+    assert sink.stats()["rows_sent"] == 2
+    sink.close()
+
+
+def test_direct_ingestion_failure_reaches_the_sender():
+    def fail(_table, _rows):
+        raise Refused(503, "unavailable")
+
+    sink, _, _ = make(Ingester(fail))
+    with pytest.raises(Refused):
+        sink.ingest("logs", logs("one"))
+    assert sink.stats()["rows_sent"] == 0
+    assert sink.stats()["ingest_failures"] == 1
+    sink.close()
+
+
+def test_http_does_not_acknowledge_a_failed_kusto_export():
+    from types import SimpleNamespace
+
+    from aictl.dashboard.web_server import _DashboardHandler
+
+    def fail(_signal, _body):
+        raise RuntimeError("unavailable")
+
+    errors = []
+    handler = SimpleNamespace(
+        _db=SimpleNamespace(otel_sink=SimpleNamespace(ingest=fail)),
+        send_error=lambda status, message: errors.append((status, message)),
+    )
+    assert _DashboardHandler._otel_to_kusto(handler, "logs", logs("one")) is False
+    assert errors[0][0] == 503
+
+
 def test_rows_of_a_request_reach_their_tables():
     sink, ingester, client = make()
     sink.submit("logs", logs("one", "two"))
@@ -139,7 +178,7 @@ def test_rows_of_a_request_reach_their_tables():
     assert stats["requests"] == 2
     assert stats["rows_queued"] == stats["rows_sent"] == 3
     assert stats["pending_rows"] == 0 and stats["pending_bytes"] == 0
-    assert stats["tables"][otel.LOGS] == {"ingestion": "queued", "rows_sent": 2, "rows_waiting": 0}
+    assert stats["tables"][otel.LOGS] == {"ingestion": "streaming", "rows_sent": 2, "rows_waiting": 0}
 
 
 @pytest.mark.parametrize("mode", ["auto", "streaming"])
@@ -157,7 +196,7 @@ def test_tables_are_created_once_and_only_when_they_differ(mode):
     created = [c.split()[2] for c in client.commands if c.startswith(".create-merge table ")]
     assert sorted(created) == sorted([otel.LOGS, otel.PAYLOADS])
     assert sum(c.startswith(".show database schema") for c in client.commands) == 1
-    if mode == "streaming":
+    if mode in ("auto", "streaming"):
         assert ".alter database ['db'] policy streamingingestion enable" in client.commands
         assert client.commands[-1] == ".clear database cache streamingingestion schema"
     else:
@@ -180,7 +219,7 @@ def test_a_table_override_decides_how_the_table_is_written():
     sink = OtelSink(settings(table_ingestion={otel.LOGS: "inline"}), client=Client(), ingester=Ingester())
     tables = sink.stats()["tables"]
     assert tables[otel.LOGS]["ingestion"] == "inline"
-    assert tables[otel.TRACES]["ingestion"] == "queued"
+    assert tables[otel.TRACES]["ingestion"] == "streaming"
     # One request per batch on either path.
     assert sink._batch_bytes(otel.LOGS) < otel_sink.INLINE_MAX_BYTES < sink._batch_bytes(otel.TRACES)
 

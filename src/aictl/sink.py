@@ -95,6 +95,10 @@ class SampleSink:
         self._flood_drop_count: int = 0  # drops in current window (for stats)
         self._drop_logged: bool = False  # avoid log spam
 
+    @property
+    def streams_observations(self) -> bool:
+        return getattr(self._db, "streams_observations", False) is True
+
     # ── LRU helpers (all callers must hold self._lock) ──────────────
 
     def _lru_set_latest(self, metric: str, entry: tuple[float, float, dict]) -> None:
@@ -157,6 +161,9 @@ class SampleSink:
         """
         if ts is None:
             ts = time.time()
+        if self.streams_observations:
+            self.emit_batch([(metric, value, tags)], ts)
+            return
         t = tags or {}
 
         # Deferred record_data_quality calls — issued after the lock is
@@ -305,6 +312,9 @@ class SampleSink:
         """
         if ts is None:
             ts = time.time()
+        if self.streams_observations:
+            self.emit(metric, value, tags, ts)
+            return
 
         # Event-like datapoints: never suppress
         if not gauge and self._is_event_like(value):
@@ -362,6 +372,9 @@ class SampleSink:
         """
         if ts is None:
             ts = time.time()
+        if self.streams_observations:
+            self.emit(metric, value, tags, ts)
+            return
         if rounding is not None:
             value = round(value, rounding)
 
@@ -414,6 +427,32 @@ class SampleSink:
         """
         if ts is None:
             ts = time.time()
+
+        if self.streams_observations:
+            from .storage import Sample
+
+            # Handoff first: a refused batch must not appear accepted in caches or counters.
+            self._db.append_samples(
+                [Sample(ts=ts, metric=metric, value=value, tags=tags or {}) for metric, value, tags in samples]
+            )
+            with self._lock:
+                for metric, value, tags in samples:
+                    self._lru_set_latest(metric, (ts, value, tags or {}))
+                    self._series_append(metric, (ts, value))
+                self._total_emitted += len(samples)
+                self._total_flushed += len(samples)
+            for metric, value, tags in samples:
+                if self._datapoint_logger:
+                    try:
+                        self._datapoint_logger.log_sample(ts, metric, value, tags or {})
+                    except Exception:
+                        log.exception("Datapoint logging failed after Kusto accepted %s", metric)
+                for handler in self._handlers:
+                    try:
+                        handler(metric, value, tags or {}, ts)
+                    except Exception:
+                        log.exception("Sample handler failed for %s after Kusto accepted the observation", metric)
+            return
 
         with self._lock:
             for metric, value, tags in samples:

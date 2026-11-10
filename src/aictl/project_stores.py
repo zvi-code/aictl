@@ -976,6 +976,9 @@ class ProjectStores:
 
     def append_events(self, events: list[EventRow]) -> None:
         m = self.machine
+        if m.streams_observations:
+            m.append_events(events)
+            return
         kept = [m._guard_event(e) for e in events if not m._throttled(e)]
         for e in kept:
             m._log_event(e)

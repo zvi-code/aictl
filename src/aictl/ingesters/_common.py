@@ -187,6 +187,8 @@ def writer_conn(store: Any) -> Any:
 
 def session_tool(store: Any, session_id: str) -> str | None:
     """The tool of a stored session, or None. A split history looks in that session's store."""
+    if getattr(store, "streams_observations", False) is True:
+        return None  # The source supplies attribution; unknown is retained without a lookup.
     row = store.get_session(session_id)
     return str(row.get("tool") or "") if row else None
 

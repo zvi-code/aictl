@@ -17,6 +17,7 @@ is an estimate of value, not the amount billed, which is in AI credits.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -283,30 +284,55 @@ class FactBuffer:
         self.context_items: dict[tuple[str, str, str, str], ContextItemRow] = {}
         self.surface: Callable[[str], str] | None = None
         self.written = 0
+        self._versions: dict[str, list] = {}
+
+    def _capture(self, family: str, row: Any) -> bool:
+        if getattr(self.store, "streams_observations", False) is not True:
+            return False
+        saved = copy.deepcopy(row)
+        if not _keep_text(self.store):
+            for name in ("text", "result_summary"):
+                if hasattr(saved, name):
+                    setattr(saved, name, "")
+            if hasattr(saved, "input"):
+                saved.input = {}
+        self._versions.setdefault(family, []).append(saved)
+        self._maybe_flush()
+        return True
 
     def _in_window(self, ts: float) -> bool:
         return not self.cutoff or not ts or ts >= self.cutoff
 
     def add_request(self, row: RequestRow) -> None:
         if self._in_window(row.ts):
+            if self._capture("requests", row):
+                return
             self.requests[row.dedup_key] = row
             self._maybe_flush()
 
     def add_tool(self, row: ToolInvocationRow) -> None:
         if self._in_window(row.ts):
+            if self._capture("tools", row):
+                return
             self.tools[row.dedup_key] = row
             self._maybe_flush()
 
     def add_prompt(self, row: SessionPromptRow) -> None:
         if self._in_window(row.ts):
+            if self._capture("prompts", row):
+                return
             self.prompts[row.dedup_key] = row
 
     def add_skill(self, row: SkillUseRow) -> None:
         if self._in_window(row.ts):
+            if self._capture("skills", row):
+                return
             self.skills[row.dedup_key] = row
 
     def add_agent(self, row: AgentRow) -> None:
         if self._in_window(row.started_at or row.ended_at or 0.0):
+            if self._capture("agents", row):
+                return
             prior = self.agents.get(row.agent_id)
             if prior is not None:
                 row.task = row.task or prior.task
@@ -318,14 +344,20 @@ class FactBuffer:
 
     def add_file_write(self, row: FileWriteRow) -> None:
         if self._in_window(row.ts):
+            if self._capture("file_writes", row):
+                return
             self.file_writes[row.dedup_key] = row
 
     def add_context_event(self, row: ContextEventRow) -> None:
         if self._in_window(row.ts):
+            if self._capture("context_events", row):
+                return
             # Files are read oldest first, so the first line of a replayed event is the original.
             self.context_events.setdefault(row.dedup_key, row)
 
     def add_loaded_file(self, row: LoadedFileRow) -> None:
+        if self._capture("loaded_files", row):
+            return
         # Not limited to the window: a session loads its files once, at its start, and the
         # store keeps the first time of each (see _LOADED_FILE_UPSERT).
         key = (row.session_id, row.path, row.how)
@@ -334,6 +366,8 @@ class FactBuffer:
             self.loaded_files[key] = row
 
     def add_context_item(self, row: ContextItemRow) -> None:
+        if self._capture("context_items", row):
+            return
         # Not limited to the window, like loaded files: the newest record of each item wins,
         # and a later line of the same time wins over an earlier one (see _CONTEXT_ITEM_UPSERT).
         key = (row.session_id, row.agent_id, row.kind, row.name)
@@ -343,6 +377,8 @@ class FactBuffer:
 
     def __len__(self) -> int:
         return (
+            sum(map(len, self._versions.values()))
+            +
             len(self.context_items)
             + len(self.loaded_files)
             + len(self.context_events)
@@ -360,6 +396,19 @@ class FactBuffer:
 
     def flush(self) -> None:
         if not len(self):
+            return
+        if self._versions:
+            if self.surface is not None:
+                for rows in self._versions.values():
+                    for row in rows:
+                        if row.tool == "copilot-cli":
+                            row.tool = self.surface(row.session_id)
+            try:
+                self.written += self.store.write_call_facts(CallFacts(**self._versions))
+            except sqlite3.Error:
+                log.warning("Kusto observation handoff failed; fact versions retained for retry", exc_info=True)
+                return
+            self._clear()
             return
         writer = getattr(self.store, "write_call_facts", None)
         if writer is None:  # a store without fact tables
@@ -391,6 +440,7 @@ class FactBuffer:
         self._clear()
 
     def _clear(self) -> None:
+        self._versions = {}
         self.requests, self.tools, self.prompts = {}, {}, {}
         self.skills, self.agents, self.file_writes = {}, {}, {}
         self.context_events = {}

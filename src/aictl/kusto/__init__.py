@@ -43,6 +43,11 @@ DEFAULT_DATABASE = "aictl"
 AUTH_MODES = ("auto", "azcli", "device", "managed-identity", "none")
 INGESTION_MODES = ("queued", "streaming", "inline")
 
+AUTO_STREAMING_TABLES = frozenset(
+    {"events", "metrics", "system_snapshots", "process_snapshots", "tool_stats", "hook_calls",
+     "OTELLogs", "OTELMetrics", "OTELTraces", "OTELPayloads"}
+)
+
 # These tables hold state, unique-key upserts, or bootstrap data used immediately.
 AUTO_INLINE_TABLES = frozenset(
     {
@@ -165,6 +170,10 @@ class KustoSettings:
     def ingestion_mode(self, table: str) -> str:
         if table in self.table_ingestion:
             return self.table_ingestion[table]
+        if self.ingestion == "auto" and not self.is_local and (
+            table in AUTO_STREAMING_TABLES or table.endswith("_observations")
+        ):
+            return "streaming"
         if self.ingestion == "auto" and table in AUTO_INLINE_TABLES:
             return "inline"
         return self.default_ingestion

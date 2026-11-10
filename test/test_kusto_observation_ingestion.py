@@ -1,0 +1,386 @@
+"""Kusto observation acceptance performs ingestion, not read-before-write SQL."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from aictl.kusto import KustoSettings
+from aictl.kusto.connection import KustoConnection, KustoStoreError
+from aictl.kusto.schema import store_schema
+from aictl.monitoring.collectors import BaseCollector
+from aictl.sink import SampleSink
+from aictl.storage import (
+    AgentRow,
+    EventRow,
+    HistoryDB,
+    HookCallRow,
+    Metric,
+    ProcessSnapshotRow,
+    RequestRow,
+    SessionRow,
+    SystemSnapshotRow,
+    ToolInvocationRow,
+)
+
+
+class NoQueryClient:
+    def execute(self, *_args, **_kwargs):
+        pytest.fail("Accepting an observation must not query stored data")
+
+    def execute_mgmt(self, *_args, **_kwargs):
+        pytest.fail("Schema setup must finish before observation acceptance")
+
+
+class RecordingIngester:
+    def __init__(self):
+        self.batches = []
+        self.error = None
+
+    def ingest(self, table, rows):
+        if self.error is not None:
+            raise self.error
+        self.batches.append((table, rows))
+
+    def ingest_lines(self, table, lines):
+        self.ingest(table, [json.loads(line) for line in lines])
+
+
+@pytest.fixture
+def observation_store():
+    settings = KustoSettings("https://example.kusto.windows.net")
+    ingester = RecordingIngester()
+    conn = KustoConnection(settings, NoQueryClient(), ingester, tables=store_schema(), observation_writes=True)
+    # Test the typed acceptance boundary without schema/bootstrap or background workers.
+    db = HistoryDB.__new__(HistoryDB)
+    db._kusto = settings
+    db._shared_conn = None
+    db.capture = "full"
+    db._datapoint_logger = None
+    db._event_listeners = []
+    db._writers = {}
+    db._conn = lambda: conn
+    return db, ingester
+
+
+def test_events_and_samples_keep_equal_observations_without_queries(observation_store):
+    db, ingester = observation_store
+    db.append_events([EventRow(100, "t", "otel:health"), EventRow(100, "t", "otel:health")])
+    db.append_samples([Metric(100, "m", 7), Metric(100, "m", 7)])
+    for table, rows in ingester.batches:
+        assert table in ("events", "metrics")
+        assert len(rows) == 2
+        assert rows[0]["seq"] != rows[1]["seq"]
+        assert rows[0]["rowid"] != rows[1]["rowid"]
+
+def test_retrying_the_same_typed_observation_keeps_its_identity(observation_store):
+    from dataclasses import asdict
+
+    db, ingester = observation_store
+    event = EventRow(100, "t", "k")
+    sample = Metric(100, "m", 7)
+    for row, append in ((event, db.append_events), (sample, db.append_samples)):
+        before = asdict(row)
+        append([row])
+        first = ingester.batches[-1][1][0]
+        append([row])
+        second = ingester.batches[-1][1][0]
+        assert first["rowid"] == second["rowid"]
+        assert first["seq"] == second["seq"]
+        assert asdict(row) == before
+
+
+def test_project_wrapper_does_not_suppress_heartbeats(observation_store):
+    from aictl.project_stores import ProjectStores
+
+    db, ingester = observation_store
+    stores = ProjectStores.__new__(ProjectStores)
+    stores.machine = db
+    stores.append_events([EventRow(100, "t", "otel:health"), EventRow(101, "t", "otel:health")])
+    assert len(ingester.batches[0][1]) == 2
+
+
+def test_all_process_snapshots_and_system_snapshots_are_ingested(observation_store):
+    db, ingester = observation_store
+    db.append_tool_metrics([
+        ProcessSnapshotRow(100, pid=42, threads=2),
+        ProcessSnapshotRow(101, pid=42, threads=3),
+    ])
+    db.append_metrics(SystemSnapshotRow(100, cpu_percent=1.23456789))
+    assert [r["threads"] for r in ingester.batches[0][1]] == [2, 3]
+    assert ingester.batches[1][1][0]["cpu_percent"] == 1.23456789
+
+
+def test_sample_filters_do_not_reduce_kusto_observations(observation_store):
+    db, ingester = observation_store
+    sink = SampleSink(db=db)
+    sink._flood_max = 0
+    sink.emit("m", 3.1415926535, ts=100)
+    sink.emit_if_changed("m", 3.1415926535, ts=101, gauge=True)
+    sink.emit_with_sensitivity("m", 3.1415926535, ts=102, rounding=1, max_threshold=10)
+    sink.emit_batch([("m", 3.1415926535, None), ("m", 3.1415926535, None)], ts=103)
+    rows = [r for table, batch in ingester.batches for r in batch if table == "metrics"]
+    assert len(rows) == 5
+    assert all(r["value"] == 3.1415926535 for r in rows)
+    assert sink.stats()["total_dropped"] == 0
+    assert sink.stats()["buffer_size"] == 0
+
+
+def test_collector_does_not_round_memory_before_kusto_capture():
+    seen = []
+
+    class Collector(BaseCollector):
+        async def run(self):
+            pass
+
+    collector = Collector()
+    collector.set_sink(SimpleNamespace(streams_observations=True, emit=lambda *args: seen.append(args)))
+    collector.sink_emit_memory("memory", 65537, {"pid": 42})
+    assert seen == [("memory", 65537, {"pid": 42})]
+
+
+def test_refused_handoff_raises_and_does_not_claim_acceptance(observation_store):
+    db, ingester = observation_store
+    ingester.error = RuntimeError("unavailable")
+    sink = SampleSink(db=db)
+    with pytest.raises(KustoStoreError, match="unavailable"):
+        sink.emit("m", 2, ts=100)
+    assert sink.stats()["total_emitted"] == 0
+    assert sink.get_latest("m") is None
+
+
+def test_hook_capture_mode_applies_before_direct_ingestion(observation_store):
+    db, ingester = observation_store
+    db.capture = "metadata"
+    db.append_hook_call(HookCallRow("call", 100, 101, payload={"prompt": "private"}, command="private"))
+    table, rows = ingester.batches[0]
+    assert table == "hook_calls"
+    assert rows[0]["command"] == ""
+    assert "private" not in rows[0]["payload"]
+
+
+def test_mutable_state_is_not_silently_treated_as_an_append(observation_store):
+    db, _ = observation_store
+    with pytest.raises(ValueError, match="not an append-only"):
+        db._conn().ingest_observations("sessions", [{"session_id": "s"}])
+
+def test_mutable_typed_writers_append_evidence_without_reading_baseline(observation_store):
+    db, ingester = observation_store
+    db.append_request(RequestRow(ts=100, session_id="s", output_tokens=4, source="otel"))
+    db.append_tool_invocation(ToolInvocationRow(ts=101, session_id="s", source_event_id="call-1"))
+    db.upsert_session(SessionRow(session_id="s", started_at=99))
+    db.update_session_stats("s", output_tokens=4)
+    db.update_session_end("s", 120)
+    db.batch_link_sessions([("s", "t", 42, 99, "otel")])
+    db.upsert_agent(AgentRow(agent_id="a", session_id="s"))
+    db.update_tool_invocation_duration("call-key", 120)
+    db.tie_otel_traces([("trace-id", "s")])
+    db.set_sessions_tool(["s"], "copilot-desktop")
+    db.clear_stale_pending_confirms(50)
+    assert all(table.endswith("_observations") for table, _ in ingester.batches)
+    request = ingester.batches[0][1][0]
+    assert request["source_revision"] is None
+    assert request["source_entity_id"] == ""
+    assert request["event_time"].startswith("1970-01-01")
+    patches = [r for t, rows in ingester.batches if t == "sessions_observations" for r in rows]
+    clear = next(r for r in patches if r["observation_operation"] == "patch" and r["ended_at"] is None)
+    assert clear["source_presence_known"] is False
+    assert clear["presence"] is None
+    assert "ended_at" in json.loads(clear["serialized_fields"])
+    assert "started_at" not in json.loads(clear["serialized_fields"])
+
+
+def test_fact_buffer_retains_intermediate_versions_and_failed_batches(observation_store):
+    from aictl.ingesters.call_facts import FactBuffer
+
+    db, ingester = observation_store
+    buffer = FactBuffer(db)
+    row = RequestRow(ts=100, session_id="s", dedup_key="logical", output_tokens=1)
+    buffer.add_request(row)
+    row.output_tokens = 2
+    buffer.add_request(row)
+    assert len(buffer) == 2
+    ingester.error = RuntimeError("offline")
+    buffer.flush()
+    assert len(buffer) == 2
+    ingester.error = None
+    buffer.flush()
+    assert len(buffer) == 0
+    rows = ingester.batches[0][1]
+    assert [r["output_tokens"] for r in rows] == [1, 2]
+    assert all(r["source_revision"] is None for r in rows)
+    assert rows[0]["observation_id"] != rows[1]["observation_id"]
+
+
+def test_canonical_reads_report_unresolved_evidence_instead_of_guessing():
+    from test_kusto_connection import FakeClient, response
+
+    from aictl.kusto.observations import UnresolvedObservationsError
+
+    client = FakeClient(on_query=lambda _: response([("family", "string")], [["requests"]]))
+    conn = KustoConnection(
+        KustoSettings("https://example.kusto.windows.net"), client, RecordingIngester(),
+        tables=store_schema(), observation_writes=True,
+    )
+    with pytest.raises(UnresolvedObservationsError, match="incomplete"):
+        conn.execute("SELECT COUNT(*) FROM requests")
+    assert client.queries == []
+
+
+def test_backfill_is_fill_only_evidence_and_cannot_mutate_the_baseline(observation_store):
+    from aictl.kusto.observations import UnresolvedObservationsError
+
+    db, ingester = observation_store
+    assert db.fill_tool_sizes([("s", "key", 10, None)]) == 1
+    table, rows = ingester.batches[-1]
+    assert table == "tool_invocations_observations"
+    assert rows[0]["observation_operation"] == "fill_missing_sizes"
+    assert rows[0]["source_presence_known"] is False
+    with pytest.raises(UnresolvedObservationsError):
+        db._conn().execute("UPDATE tool_invocations SET input_bytes = 10 WHERE dedup_key = 'key'")
+
+
+def test_report_sections_do_not_publish_baseline_totals_over_unresolved_evidence():
+    from test_kusto_connection import FakeClient, response
+
+    from aictl.kusto.report import SECTIONS, run_section
+
+    client = FakeClient(on_query=lambda _: response([("family", "string")], [["requests"]]))
+    result = run_section(client, "test", SECTIONS[0], 7)
+    assert "incomplete" in result.error
+    assert result.tables == []
+    assert len(client.queries) == 1
+
+
+def test_report_completeness_fails_closed_when_cutover_state_is_missing():
+    from test_kusto_connection import FakeClient, response
+
+    from aictl.kusto.report import SECTIONS, run_section
+
+    client = FakeClient(on_query=lambda _: response([], []))
+    result = run_section(client, "test", SECTIONS[0], 7)
+    assert "cutover state is unavailable" in result.error
+    assert result.tables == []
+    assert len(client.queries) == 1
+    assert "maintenance_state" in client.queries[0]
+    assert "isfuzzy" not in client.queries[0]
+
+
+def test_cutover_control_metadata_precedes_queued_evidence(monkeypatch):
+    from test_kusto_connection import FakeClient
+
+    monkeypatch.setattr(KustoConnection, "_cutover_done", set())
+    settings = KustoSettings("https://example.kusto.windows.net", ingestion="queued")
+    client = FakeClient()
+    conn = KustoConnection(
+        settings, client, RecordingIngester(), tables=store_schema(), observation_writes=True
+    )
+    conn.ensure_observation_cutover()
+    conn.ensure_observation_cutover()
+    assert len(client.commands) == 1
+    assert client.commands[0].startswith(".ingest inline into table ['maintenance_state']")
+    assert "observation_cutover:requests" in client.commands[0]
+    assert "retain_unresolved" in client.commands[0]
+    assert not client.queries
+
+
+def test_fact_privacy_is_applied_before_a_failed_handoff_is_buffered(observation_store):
+    from aictl.ingesters.call_facts import FactBuffer
+
+    db, ingester = observation_store
+    db.capture = "metadata"
+    buffer = FactBuffer(db)
+    buffer.add_tool(ToolInvocationRow(ts=100, input={"command": "private text"}, result_summary="private"))
+    ingester.error = RuntimeError("offline")
+    buffer.flush()
+    saved = buffer._versions["tools"][0]
+    assert saved.input == {}
+    assert saved.result_summary == ""
+
+
+def test_otel_derived_write_path_does_not_read_canonical_rows(observation_store, monkeypatch):
+    from aictl.dashboard.otel_receiver import OtelReceiver
+    from aictl.dashboard.web_server import _DashboardHandler
+
+    db, ingester = observation_store
+    receiver = OtelReceiver()
+    monkeypatch.setattr(receiver, "parse_logs", lambda _: [EventRow(100, "t", "otel:api_request")])
+    monkeypatch.setattr(receiver, "extract_requests", lambda _: [
+        RequestRow(ts=100, session_id="s", pid=42, source="otel")
+    ])
+    monkeypatch.setattr(receiver, "extract_tool_invocations", lambda _: [
+        ToolInvocationRow(ts=100, session_id="s", source_event_id="native-call")
+    ])
+    receiver._late_traces = [("trace", "s")]
+    replies = []
+    handler = SimpleNamespace(
+        _db=db,
+        _read_post_otlp=lambda _: {},
+        _otel_to_kusto=lambda *_: True,
+        server=SimpleNamespace(
+            otel_receiver=receiver, store=SimpleNamespace(request_refresh=lambda: None)
+        ),
+        _json_response_raw=lambda body: replies.append(body),
+        send_error=lambda status, message: pytest.fail(f"{status}: {message}"),
+    )
+    _DashboardHandler._receive_otel_logs(handler)
+    assert replies == [b'{"ok":true}']
+    tables = {table for table, _ in ingester.batches}
+    assert {"events", "requests_observations", "tool_invocations_observations", "sessions_observations",
+            "session_processes_observations"} <= tables
+
+
+def test_failed_late_trace_handoff_restores_the_links():
+    from aictl.dashboard.otel_receiver import OtelReceiver
+    from aictl.dashboard.web_server import _tie_late_traces
+
+    receiver = OtelReceiver()
+    receiver._late_traces = [("trace", "s")]
+
+    def fail(_rows):
+        raise RuntimeError("offline")
+
+    with pytest.raises(RuntimeError, match="offline"):
+        _tie_late_traces(receiver, SimpleNamespace(tie_otel_traces=fail))
+    assert receiver.take_late_traces() == [("trace", "s")]
+
+
+def test_auto_streams_live_tables_but_respects_overrides_and_emulator():
+    cloud = KustoSettings("https://example.kusto.windows.net")
+    for table in ("events", "metrics", "hook_calls", "process_snapshots", "tool_stats", "OTELLogs"):
+        assert cloud.ingestion_mode(table) == "streaming"
+    assert cloud.ingestion_mode("sessions") == "inline"
+    assert KustoSettings(cloud.cluster, table_ingestion={"events": "queued"}).ingestion_mode("events") == "queued"
+    assert KustoSettings("http://localhost:8080").ingestion_mode("events") == "inline"
+
+
+def test_discovery_uses_one_producer_batch_without_truncating_file_metrics(tmp_path, monkeypatch):
+    from aictl import tools
+    from aictl.monitoring.config import MonitorConfig
+    from aictl.monitoring.runtime import DiscoveryCollector
+    from aictl.tools import ResourceFile, ToolResources
+
+    files = [ResourceFile(str(tmp_path / f"f{i}.md"), "rules", size=4, tokens=1) for i in range(501)]
+    monkeypatch.setattr(tools, "discover_all", lambda *_args, **_kwargs: [ToolResources("t", "T", files=files)])
+    collector = DiscoveryCollector(MonitorConfig(root=tmp_path, workspace_paths=(tmp_path,), state_paths=()))
+    batches = []
+    collector.set_sink(SimpleNamespace(streams_observations=True, emit_batch=lambda rows: batches.append(rows)))
+
+    class PollComplete(Exception):
+        pass
+
+    async def report(**_kwargs):
+        pass
+
+    async def stop(_interval):
+        raise PollComplete
+
+    collector.report_status = report
+    collector.sleep_paced = stop
+    with pytest.raises(PollComplete):
+        asyncio.run(collector.run())
+    assert len(batches) == 1
+    assert len(batches[0]) == 5 + 2 * len(files)

@@ -385,7 +385,11 @@ def _tie_late_traces(receiver, db) -> None:
     """Spans stored before their trace named its session get that session now."""
     late = receiver.take_late_traces()
     if late and db is not None and hasattr(db, "tie_otel_traces"):
-        db.tie_otel_traces(late)
+        try:
+            db.tie_otel_traces(late)
+        except Exception:
+            receiver.restore_late_traces(late)
+            raise
 
 
 def _derive_claude_project_hash(cwd: str) -> str | None:
@@ -801,7 +805,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                 _maybe_snapshot_claude_memory(db, data, session_id, cwd, "end", ts)
                 # Best-effort git commit attribution in a background
                 # thread — never block the hook response.
-                if event_name == "SessionEnd" and session_id and cwd:
+                if event_name == "SessionEnd" and session_id and cwd and getattr(db, "streams_observations", False) is not True:
                     _started_at = 0.0
                     try:
                         _sess_row = db.get_session(session_id)
@@ -1044,11 +1048,22 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         self.send_error(400, "Invalid JSON")
         return None
 
-    def _otel_to_kusto(self, signal: str, data: dict) -> None:
-        """Queue the request for the cluster's OTel tables. Returns at once; a no-op on SQLite."""
+    def _otel_to_kusto(self, signal: str, data: dict) -> bool:
+        """Acknowledge only exports accepted by the selected native ingestion backend."""
         sink = getattr(self._db, "otel_sink", None)
-        if sink is not None:
-            sink.submit(signal, data)
+        if sink is None:
+            return True
+        try:
+            sink.ingest(signal, data)
+        except ValueError:
+            logger.exception("Kusto rejected malformed OTel %s data", signal)
+            self.send_error(400, "Invalid OTel export")
+            return False
+        except Exception:
+            logger.exception("Kusto did not accept the OTel %s export", signal)
+            self.send_error(503, "Kusto ingestion unavailable; retry the export")
+            return False
+        return True
 
     def _receive_otel_metrics(self) -> None:
         """Receive OTLP metrics (JSON or protobuf)."""
@@ -1063,7 +1078,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         data = self._read_post_otlp("logs")
         if data is None:
             return
-        self._otel_to_kusto("logs", data)
+        if not self._otel_to_kusto("logs", data):
+            return
         try:
             receiver = self.server.otel_receiver
             events = receiver.parse_logs(data)
@@ -1093,7 +1109,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         except Exception:
             logger.exception("Error processing OTel logs")
             self.server.otel_receiver.stats.errors += 1
-            self.send_error(500, "Internal error")
+            status = 503 if getattr(self._db, "streams_observations", False) is True else 500
+            self.send_error(status, "OTel processing failed; retry the export")
             return
         if events:
             self.server.store.request_refresh()
@@ -1104,7 +1121,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         data = self._read_post_otlp("traces")
         if data is None:
             return
-        self._otel_to_kusto("traces", data)
+        if not self._otel_to_kusto("traces", data):
+            return
         try:
             receiver = self.server.otel_receiver
             samples, events = receiver.parse_traces(data)
@@ -1126,7 +1144,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         except Exception:
             logger.exception("Error processing OTel traces")
             self.server.otel_receiver.stats.errors += 1
-            self.send_error(500, "Internal error")
+            status = 503 if getattr(self._db, "streams_observations", False) is True else 500
+            self.send_error(status, "OTel processing failed; retry the export")
             return
         self._json_response_raw(b'{"ok":true}')
 
@@ -1459,12 +1478,18 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
 
     def _serve_board(self, path: str) -> None:
         """The panel dashboard and its detail routes."""
+        from ..kusto.observations import UnresolvedObservationsError
         from .board_api import BoardRequestError, handle_get
 
         try:
             status, body = handle_get(path, urlparse(self.path).query, self._db, self.server.store, is_allowed=self.server.allowed.is_allowed)
         except BoardRequestError as exc:
             self._json_response({"error": str(exc)}, status=400)
+            return
+        except UnresolvedObservationsError as exc:
+            self._json_response(
+                {"error": str(exc), "incomplete": True, "unresolved_families": list(exc.families)}, status=409
+            )
             return
         except Exception as exc:  # any failure must reach the panel's error state
             logger.exception("Board route failed")
@@ -1635,7 +1660,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         data = self._read_post_otlp(signal)
         if data is None:
             return
-        self._otel_to_kusto(signal, data)
+        if not self._otel_to_kusto(signal, data):
+            return
         try:
             receiver = self.server.otel_receiver
             items = getattr(receiver, parse_method)(data)
@@ -1645,7 +1671,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         except Exception:
             logger.exception("Error processing OTel %s", signal)
             self.server.otel_receiver.stats.errors += 1
-            self.send_error(500, "Internal error")
+            status = 503 if getattr(self._db, "streams_observations", False) is True else 500
+            self.send_error(status, "OTel processing failed; retry the export")
             return
         self._json_response_raw(b'{"ok":true}')
 

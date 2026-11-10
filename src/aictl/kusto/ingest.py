@@ -419,6 +419,8 @@ def make_ingester(
     """Use the global default unless the table has an explicit override."""
     ingesters: dict[str, RowIngester] = {"inline": InlineIngester(client, settings.database, slots=inline_slots)}
     modes = {settings.default_ingestion, *settings.table_ingestion.values()}
+    if settings.ingestion == "auto" and not settings.is_local:
+        modes.add("streaming")
     if "streaming" in modes:
         ingesters["streaming"] = StreamingIngester(settings, ingest_client)
     if "queued" in modes:
