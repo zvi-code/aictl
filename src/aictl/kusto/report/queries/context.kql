@@ -1,7 +1,6 @@
 // Context-window sawtooth: how the prompt size of the busiest long sessions climbs and drops at each compaction.
 // serialize with prev() and row_cumsum() number the requests and segments; series_fit_line fits each climb.
-let R = requests | summarize arg_max(_v, *) by id | where _deleted == false
-  | where report_days <= 0 or unixtime_seconds_todatetime(ts) >= ago(1d * report_days)
+let R = report_requests
   | where tool == "claude-code" and isempty(agent_id)
   | extend ctx = input_tokens + cache_read_tokens + cache_creation_tokens
   | where ctx > 0;

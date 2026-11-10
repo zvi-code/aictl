@@ -46,6 +46,16 @@ The five second-wave sections only:
 aictl db report --sections returns,stuck,models,skills,mcp --out kusto-report-second-wave.html
 ```
 
+A part of the data: list what the store holds, then name it. `--mcp`, `--skill` and `--agent` keep the sessions in which that MCP server, skill or agent type was used.
+
+```bash
+aictl db report --values
+aictl db report --tool copilot-cli --from 2026-11-01 --to 2026-11-09 --out kusto-report-copilot.html
+aictl db report --mcp <server> --sections mcp,stuck,returns --out kusto-report-mcp.html --json wip/kusto-report-mcp.json
+```
+
+The Copilot agent [kusto-report](../../.github/agents/kusto-report.agent.md) chooses such cuts from the store's own data and writes the pages and a summary into `wip/kusto-reports/`: `copilot --agent kusto-report`.
+
 Only the last 30 days:
 
 ```bash

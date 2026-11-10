@@ -23,7 +23,16 @@ from click.testing import CliRunner
 
 from aictl.kusto import KustoSettings
 from aictl.kusto import report as R
-from aictl.kusto.report import SECTIONS, SectionResult, build_page, parameterized, read_query, read_template
+from aictl.kusto.report import (
+    SECTIONS,
+    ReportFilter,
+    SectionResult,
+    build_page,
+    filter_prelude,
+    parameterized,
+    read_query,
+    read_template,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 JSDOM = REPO / "src" / "aictl" / "dashboard" / "ui" / "node_modules" / "jsdom"
@@ -224,9 +233,76 @@ def test_queries_hold_no_ids_dates_or_cluster_names():
         assert "datetime(2" not in text and "database(" not in text, s.name
 
 
-def test_every_query_reads_the_window_parameter():
-    for s in SECTIONS:
-        assert "report_days" in read_query(s), s.name
+def test_no_query_reads_a_store_table_itself():
+    """Every row a section reads comes through the two filtered sources, so no section can ignore a filter."""
+    queries = Path(R.__file__).parent / "queries"
+    for f in sorted(queries.glob("*.kql")):
+        code = "\n".join(line.split("//", 1)[0] for line in f.read_text(encoding="utf-8").splitlines())
+        assert not re.search(r"\b(requests|tool_invocations|skill_uses|hook_calls)\s*\|", code), f.name
+        assert "arg_max(_v" not in code and "_deleted" not in code, f.name
+    for s in (*SECTIONS, R.VALUES):
+        assert re.search(r"\breport_(requests|tool_calls)\b", read_query(s)), s.name
+
+
+# ---- the filter ----
+
+def test_without_a_filter_the_sources_are_the_current_rows_of_the_window():
+    kql = filter_prelude(7)
+    assert kql.startswith("let report_days = 7;\n")
+    assert "let report_requests = report_request_rows;" in kql and "let report_tool_calls = report_tool_rows;" in kql
+    assert "in~" not in kql and "session_id in" not in kql
+    assert kql.count("summarize arg_max(_v, *) by id | where _deleted == false and ts >= report_since;") == 2
+    assert filter_prelude(None).startswith("let report_days = 0;\n")
+
+
+def test_time_range_tool_and_project_choose_rows_of_both_sources():
+    start, end = datetime(2026, 1, 2, tzinfo=timezone.utc), datetime(2026, 1, 3, 12, tzinfo=timezone.utc)
+    kql = filter_prelude(None, ReportFilter(start=start, end=end, tools=("tool-a", "tool-b"), projects=("proj",)))
+    assert f"let report_since = {start.timestamp()!r};" in kql
+    rows = [line for line in kql.splitlines() if line.startswith(("let report_request_rows", "let report_tool_rows"))]
+    assert len(rows) == 2
+    for line in rows:
+        assert f"ts >= report_since and ts < {end.timestamp()!r}" in line
+        assert 'tool in~ ("tool-a", "tool-b")' in line
+        assert '"/")[-1]) in~ ("proj") or project_path in~ ("proj")' in line and r'replace_string(project_path, "\\", "/")' in line
+
+
+def test_mcp_skill_and_agent_keep_whole_sessions():
+    kql = filter_prelude(None, ReportFilter(mcps=("srv-a",), skills=("skill-a",), agents=("type-a",)))
+    assert 'startswith "mcp:" and tostring(split(report_norm, ":")[1]) in~ ("srv-a") | distinct session_id;' in kql
+    assert 'tolower(tool_name) == "skill" and target in~ ("skill-a") | distinct session_id;' in kql
+    assert 'coalesce(tostring(report_input.subagent_type), tostring(report_input.agent_type)) in~ ("type-a") | distinct session_id;' in kql
+    chosen = (" | where session_id in (report_mcp_sessions) | where session_id in (report_skill_sessions)"
+              " | where session_id in (report_agent_sessions);")
+    assert "let report_requests = report_request_rows" + chosen in kql
+    assert "let report_tool_calls = report_tool_rows" + chosen in kql
+
+
+def test_model_keeps_its_requests_and_the_tool_calls_after_them():
+    kql = filter_prelude(None, ReportFilter(models=("model-a",)))
+    assert 'let report_requests = report_request_rows | where model in~ ("model-a");' in kql
+    # the time line is built from all requests, so a call after another model's request is not given to model-a
+    assert "union (report_request_rows | project report_stream" in kql
+    assert 'where report_model in~ ("model-a") | project report_call;' in kql
+    assert "let report_tool_calls = report_tool_rows | join kind = inner report_model_calls on $left.id == $right.report_call" in kql
+
+
+def test_filter_values_cannot_leave_their_string():
+    hostile = 'x") | take 1 // \\'
+    kql = filter_prelude(None, ReportFilter(tools=(hostile,)))
+    assert "tool in~ (" + json.dumps(hostile) + ")" in kql
+    with pytest.raises(ValueError):
+        filter_prelude(None, ReportFilter(models=("a\nb",)))
+
+
+def test_page_header_states_the_filter(tmp_path):
+    only = ReportFilter(start=datetime(2026, 1, 2, tzinfo=timezone.utc), tools=("tool-a",), mcps=("srv-a", "srv-b"))
+    html = build_page(results(), cluster="c", database="d", days=None, only=only)
+    assert '"filter":[["from","2026-01-02 00:00 UTC"],["tool","tool-a"],["sessions that used the MCP server","srv-a, srv-b"]]' in html
+    assert '"filter":[]' in page()
+    text = render(tmp_path, html)["window"]
+    assert "Window: rows from 2026-01-02 00:00 UTC." in text and "no query filters by time" not in text
+    assert "Filter: tool tool-a; sessions that used the MCP server srv-a, srv-b." in text
 
 
 # ---- rendering ----
@@ -347,7 +423,7 @@ def test_command_runs_only_the_named_sections_in_the_given_order(monkeypatch, tm
     monkeypatch.setattr("aictl.commands.admin.kusto_settings", lambda: KustoSettings("http://localhost:1", "d", streaming=False))
     seen = {}
 
-    def fake(settings, days=None, sections=None, on_result=None):
+    def fake(settings, days=None, sections=None, on_result=None, only=None):
         seen["names"] = [s.name for s in sections]
         rs = {r.name: r for r in results()}
         return [rs[n] for n in seen["names"]]
@@ -371,7 +447,7 @@ def test_command_takes_the_cluster_and_database_as_options(monkeypatch, tmp_path
         monkeypatch.delenv(var, raising=False)
     seen = []
 
-    def fake(settings, days=None, sections=None, on_result=None):
+    def fake(settings, days=None, sections=None, on_result=None, only=None):
         seen.append((settings.cluster, settings.database, settings.auth_mode))
         return results()
 
@@ -397,6 +473,75 @@ def test_command_takes_the_cluster_and_database_as_options(monkeypatch, tmp_path
     ]
 
 
+def test_command_passes_the_filter_to_every_query(monkeypatch, tmp_path):
+    from aictl.cli import main
+
+    seen = []
+
+    def fake(settings, days=None, sections=None, on_result=None, only=None):
+        seen.append((days, only))
+        return results()
+
+    monkeypatch.setattr(R, "run_report", fake)
+    monkeypatch.setattr("aictl.commands.admin.kusto_settings", lambda: KustoSettings("http://localhost:8080", "d", streaming=False))
+    out, data = tmp_path / "r.html", tmp_path / "data" / "r.json"
+    args = ["db", "report", "--out", str(out)]
+    res = CliRunner().invoke(main, [*args, "--from", "2026-01-02", "--to", "2026-01-03", "--tool", "tool-a,tool-b", "--tool", "tool-c",
+                                    "--project", "proj", "--model", "model-a", "--mcp", "srv-a", "--skill", "skill-a",
+                                    "--agent", "type-a", "--json", str(data)])
+    assert res.exit_code == 0, res.output
+    assert seen == [(None, ReportFilter(
+        start=datetime(2026, 1, 2, tzinfo=timezone.utc), end=datetime(2026, 1, 4, tzinfo=timezone.utc),  # --to includes its day
+        projects=("proj",), tools=("tool-a", "tool-b", "tool-c"), models=("model-a",), mcps=("srv-a",), skills=("skill-a",), agents=("type-a",)))]
+    assert "only sessions that used the MCP server: srv-a" in res.output and "only tool: tool-a, tool-b, tool-c" in res.output
+    assert '["sessions that used the skill","skill-a"]' in out.read_text(encoding="utf-8")
+    saved = json.loads(data.read_text(encoding="utf-8"))
+    assert saved["filter"][0] == ["from", "2026-01-02 00:00 UTC"] and [s["name"] for s in saved["sections"]] == [s.name for s in SECTIONS]
+    res = CliRunner().invoke(main, [*args, "--to", "2026-01-03T06:30"])
+    assert seen[-1][1].end == datetime(2026, 1, 3, 6, 30, tzinfo=timezone.utc)
+    for bad in (["--days", "3", "--from", "2026-01-02"], ["--from", "2026-01-03", "--to", "2026-01-01"], ["--from", "yesterday"],
+                ["--model", "a\nb"]):
+        res = CliRunner().invoke(main, [*args, *bad])
+        assert res.exit_code != 0 and "Error:" in res.output, bad
+    assert len(seen) == 2
+
+
+def test_command_says_when_no_row_passed_the_filter(monkeypatch, tmp_path):
+    from aictl.cli import main
+
+    monkeypatch.setattr(R, "run_report", lambda *a, **k: results(empty={s.name for s in SECTIONS}))
+    monkeypatch.setattr("aictl.commands.admin.kusto_settings", lambda: KustoSettings("http://localhost:8080", "d", streaming=False))
+    res = CliRunner().invoke(main, ["db", "report", "--out", str(tmp_path / "r.html"), "--mcp", "nothing"])
+    assert res.exit_code == 0 and "No row passed the filter" in res.output
+    res = CliRunner().invoke(main, ["db", "report", "--out", str(tmp_path / "r.html")])
+    assert "No row passed the filter" not in res.output
+
+
+def test_command_lists_the_values_a_filter_can_name(monkeypatch, tmp_path):
+    from aictl.cli import main
+
+    seen = []
+
+    def fake(settings, days=None, only=None):
+        seen.append((days, only))
+        return SectionResult("values", "", tables=[
+            [{"source": "requests", "rows": 1200, "sessions": 30, "first_row": "2026-01-02T03:04:00Z", "last_row": "2026-01-09T03:04:00Z"},
+             {"source": "tool calls", "rows": 0, "sessions": 0, "first_row": None, "last_row": None}],
+            [{"field": "mcp", "value": "srv-a", "sessions": 12}, {"field": "tool", "value": "tool-a", "sessions": 30}],
+        ])
+
+    monkeypatch.setattr(R, "run_values", fake)
+    monkeypatch.setattr(R, "run_report", lambda *a, **k: pytest.fail("--values runs no section"))
+    monkeypatch.setattr("aictl.commands.admin.kusto_settings", lambda: KustoSettings("http://localhost:8080", "d", streaming=False))
+    out = tmp_path / "r.html"
+    res = CliRunner().invoke(main, ["db", "report", "--out", str(out), "--values", "--days", "7", "--tool", "tool-a"])
+    assert res.exit_code == 0, res.output
+    assert seen == [(7, ReportFilter(tools=("tool-a",)))] and not out.exists()
+    assert "requests: 1,200 rows in 30 sessions, 2026-01-02T03:04:00Z to 2026-01-09T03:04:00Z" in res.output
+    assert "tool calls: no rows" in res.output
+    assert "--mcp  (sessions)\n      12  srv-a" in res.output and "--tool  (sessions)\n      30  tool-a" in res.output
+
+
 def test_command_without_a_cluster_exits_with_a_message(monkeypatch, tmp_path):
     from aictl.cli import main
 
@@ -419,7 +564,7 @@ def test_command_writes_the_page_and_reports_failures(monkeypatch, tmp_path):
     monkeypatch.setattr("aictl.commands.admin.kusto_settings", lambda: KustoSettings("http://localhost:1", "d", streaming=False))
     seen = {}
 
-    def fake(settings, days=None, sections=None, on_result=None):
+    def fake(settings, days=None, sections=None, on_result=None, only=None):
         seen["days"] = days
         rs = results(failed={"slow": "boom"})
         for r in rs:

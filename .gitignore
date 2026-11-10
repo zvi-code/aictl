@@ -33,7 +33,8 @@ AGENTS.md
 .github/instructions/
 .github/prompts/
 .github/skills/
-.github/agents/
+.github/agents/*
+!.github/agents/kusto-report.agent.md
 .cursor/
 .windsurf/
 .windsurfrules

@@ -1,8 +1,7 @@
 // Hourly cost anomalies per tool: which hours spend far more than the fitted baseline, and which session caused it.
 // make-series builds gap-free hourly series; series_decompose_anomalies and series_periods_detect do the analysis.
-let R = requests | summarize arg_max(_v, *) by id | where _deleted == false and ts > 1e9  // a timestamp before 2001 is a bad row, and would make the series millions of hours long
-  | extend t = unixtime_seconds_todatetime(ts)
-  | where report_days <= 0 or t >= ago(1d * report_days);
+let R = report_requests | where ts > 1e9  // a timestamp before 2001 is a bad row, and would make the series millions of hours long
+  | extend t = unixtime_seconds_todatetime(ts);
 let Tools = R | summarize n = count() by tool | top 4 by n | project tool;
 // the series covers at most the last 90 days of the data, so its length stays bounded
 let newest = toscalar(R | summarize max(t));

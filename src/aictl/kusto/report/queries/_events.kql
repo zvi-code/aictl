@@ -4,11 +4,10 @@
 let EditTools = dynamic(["Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch", "create", "edit", "str_replace_editor", "create_file", "replace_string_in_file", "multi_replace_string_in_file", "insert_edit_into_file"]);
 let ReadTools = dynamic(["Read", "view", "read_file"]);
 let RepeatWindow = 20;  // a call is a repeat when the same call ran in the same context within this many requests before it
-let Since = iff(report_days > 0, (now() - unixtime_seconds_todatetime(0)) / 1s - 86400.0 * report_days, 0.0);
-let R = materialize(requests | summarize arg_max(_v, *) by id | where _deleted == false and ts >= Since
+let R = materialize(report_requests
   | project id, ts, session_id, agent_id, stream = strcat(session_id, "|", agent_id), tool, model, cost_usd, output_tokens,
             ctx = input_tokens + cache_read_tokens + cache_creation_tokens);
-let T = materialize(tool_invocations | summarize arg_max(_v, *) by id | where _deleted == false and ts >= Since
+let T = materialize(report_tool_calls
   | extend inp = parse_json(input), is_edit = tool_name in (EditTools), is_read = tool_name in (ReadTools)
   | extend file = iff(is_edit or is_read, coalesce(extract(@"\*\*\* (?:Update|Add|Delete) File: ([^\r\n]+)", 1, tostring(inp.input)), tostring(inp.filePath), tostring(inp.file_path), tostring(inp.path), target), "")
   | project id, ts, session_id, stream = strcat(session_id, "|", agent_id), tool, tool_name, target, file, is_edit, is_read,
