@@ -218,7 +218,7 @@ class CursorConversationsIngester:
         The window is left open-ended on the future side because live
         sessions have ``ended_at = NULL``.
         """
-        if project_path:
+        if project_path and getattr(self.store, "streams_observations", False) is not True:
             where = "tool = 'cursor' AND project_path = ? AND started_at <= ? AND (ended_at IS NULL OR ended_at >= ?)"
             find = getattr(self.store, "sessions_where", None)
             if find is not None:

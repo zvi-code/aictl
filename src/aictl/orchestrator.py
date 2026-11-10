@@ -94,9 +94,20 @@ class PersistentMonitor:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
 
+        async def _supervise(collector):
+            while True:
+                try:
+                    await collector.run()
+                    return
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    log.warning("Collector %s failed (%s); restarting in 5s", collector.name, exc)
+                    await asyncio.sleep(5.0)
+
         async def _run_forever():
             collector_tasks = [
-                asyncio.create_task(collector.run(), name=f"collector:{collector.name}")
+                asyncio.create_task(_supervise(collector), name=f"collector:{collector.name}")
                 for collector in self._runtime.collectors
             ]
             self._ready.set()
@@ -388,7 +399,10 @@ def collect(
                         ts=ts,
                     )
         if streaming and samples:
-            _sink.emit_batch(samples, ts=ts)
+            try:
+                _sink.emit_batch(samples, ts=ts)
+            except Exception as exc:
+                log.warning("Discovery metric batch delivery failed: %s", exc)
             samples.clear()
 
     live_monitor = _live_monitor_override if _live_monitor_override is not None else {}
@@ -449,7 +463,10 @@ def collect(
                     M("aictl.config.model"), 1.0, {"aictl.tool": c["tool"], "gen_ai.request.model": c["model"]}, ts=ts
                 )
         if streaming and samples:
-            _sink.emit_batch(samples, ts=ts)
+            try:
+                _sink.emit_batch(samples, ts=ts)
+            except Exception as exc:
+                log.warning("Enrichment metric batch delivery failed: %s", exc)
 
     monitor_events = live_monitor.get("events", [])
     monitor_sessions = live_monitor.get("sessions", [])

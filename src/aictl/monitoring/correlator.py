@@ -288,7 +288,10 @@ class SessionCorrelator:
                     (M("aictl.tool.mcp.score"), report.mcp.confidence, tags),
                 ])
             if samples:
-                self.sink.emit_batch(samples)
+                try:
+                    self.sink.emit_batch(samples)
+                except Exception as exc:
+                    log.warning("Correlator tool-report sample delivery failed: %s", exc)
         elif self.sink:
             for r in reports:
                 tags = {"aictl.tool": r.tool}

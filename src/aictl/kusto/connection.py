@@ -14,6 +14,7 @@ for this process's preceding queued writes before reading rows they will change.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import math
@@ -120,6 +121,8 @@ def _throttled(exc: BaseException) -> bool:
 def _transient(exc: BaseException) -> bool:
     """Whether the service itself says the request may succeed when repeated."""
     if _throttled(exc):
+        return True
+    if type(exc).__name__ == "KustoAuthenticationError" and "failed to invoke the azure cli" in str(exc).lower():
         return True
     errors = []
     for getter in ("get_api_error", "get_api_errors"):
@@ -352,6 +355,68 @@ class Row(tuple):
         return f"Row({dict(zip(self._names, self, strict=False))!r})"
 
 
+_azcli_patch_lock = threading.Lock()
+_azcli_token_lock = threading.Lock()
+_azcli_tokens: dict[str, Any] = {}
+_azcli_patched = False
+# Refresh 2 minutes before expiry (Azure CLI refreshes at ~5 minutes, so a 10-minute
+# cutoff in the SDK re-spawned `az` on every request for 5 minutes straight).
+_AZCLI_REFRESH_BUFFER_S = 120.0
+
+
+def _ensure_azcli_token_cache() -> None:
+    """Serialize Azure CLI token acquisition across threads and clients in this process."""
+    global _azcli_patched
+    if _azcli_patched:
+        return
+    with _azcli_patch_lock:
+        if _azcli_patched:
+            return
+        try:
+            from azure.kusto.data._token_providers import AzCliTokenProvider, TokenConstants
+        except ImportError:
+            return
+
+        def _cached(provider: Any) -> dict[str, str] | None:
+            scope = provider._scopes[0] if getattr(provider, "_scopes", None) else getattr(provider, "_kusto_uri", "")
+            tok = getattr(provider, "_az_token", None) or _azcli_tokens.get(scope)
+            if tok is not None and (tok.expires_on - _AZCLI_REFRESH_BUFFER_S) > time.time():
+                provider._az_token = tok
+                return {
+                    TokenConstants.MSAL_TOKEN_TYPE: TokenConstants.BEARER_TYPE,
+                    TokenConstants.MSAL_ACCESS_TOKEN: tok.token,
+                }
+            return None
+
+        orig_get_impl = AzCliTokenProvider._get_token_impl
+
+        def _get_token_impl(provider: Any) -> dict[str, str] | None:
+            with _azcli_token_lock:
+                hit = _cached(provider)
+                if hit is not None:
+                    return hit
+                scope = provider._scopes[0] if getattr(provider, "_scopes", None) else getattr(provider, "_kusto_uri", "")
+                try:
+                    res = orig_get_impl(provider)
+                except Exception:  # noqa: BLE001 - fall back to an unexpired cached token if az CLI fails transiently
+                    # If a still-unexpired token exists in memory, use it when az CLI invocation fails transiently.
+                    tok = getattr(provider, "_az_token", None) or _azcli_tokens.get(scope)
+                    if tok is not None and (tok.expires_on - 15.0) > time.time():
+                        provider._az_token = tok
+                        return {
+                            TokenConstants.AZ_TOKEN_TYPE: TokenConstants.BEARER_TYPE,
+                            TokenConstants.AZ_ACCESS_TOKEN: tok.token,
+                        }
+                    raise
+                if getattr(provider, "_az_token", None) is not None and scope:
+                    _azcli_tokens[scope] = provider._az_token
+                return res
+
+        AzCliTokenProvider._get_token_from_cache_impl = _cached
+        AzCliTokenProvider._get_token_impl = _get_token_impl
+        _azcli_patched = True
+
+
 def connection_string(settings: KustoSettings, *, cluster: str | None = None) -> Any:
     """The SDK's connection string builder for the settings' sign-in mode."""
     from azure.kusto.data import KustoConnectionStringBuilder as K
@@ -361,6 +426,7 @@ def connection_string(settings: KustoSettings, *, cluster: str | None = None) ->
     if mode == "none":
         return K.with_no_authentication(endpoint)
     if mode == "azcli":
+        _ensure_azcli_token_cache()
         return K.with_az_cli_authentication(endpoint)
     if mode == "device":
         return K.with_aad_device_authentication(endpoint)
@@ -652,6 +718,7 @@ class KustoConnection:
         self.tables = tables if tables is not None else _default_tables()
         self._translator = translator
         self.observation_writes = observation_writes
+        self._in_maintenance = False
         self.row_factory: Any = None
         self.isolation_level: str | None = ""
         self.total_changes = 0
@@ -793,6 +860,46 @@ class KustoConnection:
 
     def commit(self) -> None:
         self._flush()
+
+    @contextlib.contextmanager
+    def maintenance_scope(self) -> Iterator[None]:
+        """Allow scheduled text-retention scrubbing across baseline and companion tables."""
+        prev = self._in_maintenance
+        self._in_maintenance = True
+        try:
+            yield
+        finally:
+            self._in_maintenance = prev
+
+    def ingest_observations_many(self, batches: dict[str, list[dict[str, Any]]]) -> None:
+        """Ingest multiple observation tables, streaming independent tables concurrently."""
+        non_empty = [(name, rows) for name, rows in batches.items() if rows]
+        if not non_empty:
+            return
+        if len(non_empty) == 1:
+            self.ingest_observations(non_empty[0][0], non_empty[0][1])
+            return
+        streamed = [item for item in non_empty if self.settings.ingestion_mode(item[0]) == "streaming"]
+        ahead: dict[str, Future[None]] = {}
+        if len(streamed) > 1:
+            pool = _flush_workers()
+            ahead = {name: pool.submit(self.ingest_observations, name, rows) for name, rows in streamed[1:]}
+        failed: KustoStoreError | None = None
+        for name, rows in non_empty:
+            if name in ahead:
+                continue
+            try:
+                self.ingest_observations(name, rows)
+            except KustoStoreError as exc:
+                failed = exc
+                break
+        for future in ahead.values():
+            try:
+                future.result()
+            except KustoStoreError as exc:
+                failed = failed or exc
+        if failed is not None:
+            raise failed
 
     def ingest_observations(self, table_name: str, rows: list[dict[str, Any]]) -> None:
         """Ingest an existing producer batch without reading or resolving stored keys.
@@ -968,7 +1075,7 @@ class KustoConnection:
             from .observations import FAMILIES, UnresolvedObservationsError
 
             families = tuple(sorted(set(stmt.read_tables) & set(FAMILIES)))
-            if families and self.observation_writes:
+            if families and self.observation_writes and not self._in_maintenance:
                 # Cutover is a known connection contract, not inferred from currently
                 # visible evidence. Queued or temporarily unavailable rows cannot make
                 # frozen canonical results appear complete.
@@ -1022,7 +1129,7 @@ class KustoConnection:
         """
         from .observations import FAMILIES, UnresolvedObservationsError
 
-        if self.observation_writes and stmt.table in FAMILIES:
+        if self.observation_writes and not self._in_maintenance and stmt.table in FAMILIES:
             raise UnresolvedObservationsError((stmt.table,))
         if stmt.read_tables is None:
             self._wait_for_ingestion(None if stmt.kind == "insert" else stmt.table)

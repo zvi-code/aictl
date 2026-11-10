@@ -1664,9 +1664,15 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             return
         try:
             receiver = self.server.otel_receiver
-            items = getattr(receiver, parse_method)(data)
+            if parse_method == "parse_metrics" and hasattr(receiver, "parse_metrics_staged"):
+                items, commit_state = receiver.parse_metrics_staged(data)
+            else:
+                items = getattr(receiver, parse_method)(data)
+                commit_state = None
             if (db := self._db) and items:
                 getattr(db, append_method)(items)
+            if commit_state is not None:
+                commit_state()
             logger.debug("OTel %s received: %d %s", signal, len(items), log_unit)
         except Exception:
             logger.exception("Error processing OTel %s", signal)

@@ -105,7 +105,7 @@ class DiscoveryCollector(BaseCollector):
                         emit(_M("aictl.mcp.status"), 1.0 if m.get("status") == "running" else 0.0, {"aictl.tool": tool, "aictl.mcp.server": mname}, gauge=True)
 
             if streaming and samples:
-                await asyncio.to_thread(self._sink.emit_batch, list(samples))
+                await self.sink_flush_batch(samples)
             await self.sleep_paced(self._interval)
 
 

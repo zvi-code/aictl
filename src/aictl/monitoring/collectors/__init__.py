@@ -12,6 +12,7 @@ Collectors have two output channels:
 from __future__ import annotations
 
 import asyncio
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -23,6 +24,8 @@ if TYPE_CHECKING:
     from ..config import MonitorConfig
     from ..correlator import SessionCorrelator
 
+log = logging.getLogger(__name__)
+
 
 class BaseCollector(ABC):
     """Async collector base with correlator + sink integration."""
@@ -33,6 +36,7 @@ class BaseCollector(ABC):
         self._sink: Any | None = None
         self._correlator: SessionCorrelator | None = None
         self.config = config
+        self._pending_samples: list[tuple[str, float, dict[str, Any] | None]] = []
 
     def set_sink(self, sink: Any) -> None:
         """Inject a SampleSink for direct metric persistence."""
@@ -46,9 +50,22 @@ class BaseCollector(ABC):
     def correlator(self) -> SessionCorrelator | None:
         return self._correlator
 
+    def _defer_on_event_loop(self, metric: str, value: float, tags: dict[str, Any] | None) -> bool:
+        """Queue sample for off-loop batch delivery when streaming observations on an asyncio loop."""
+        if (
+            self._sink is not None
+            and getattr(self._sink, "streams_observations", False) is True
+            and asyncio._get_running_loop() is not None
+        ):
+            self._pending_samples.append((metric, value, tags))
+            return True
+        return False
+
     def sink_emit(self, metric: str, value: float, tags: dict[str, Any] | None = None) -> None:
         """Emit a metric sample through the sink (if available)."""
         if self._sink is not None:
+            if self._defer_on_event_loop(metric, value, tags):
+                return
             self._sink.emit(metric, value, tags)
 
     def sink_emit_if_changed(
@@ -56,11 +73,15 @@ class BaseCollector(ABC):
     ) -> None:
         """Emit only if value changed (skip DB write for unchanged)."""
         if self._sink is not None:
+            if self._defer_on_event_loop(metric, value, tags):
+                return
             self._sink.emit_if_changed(metric, value, tags, gauge=gauge)
 
     def sink_emit_cpu(self, metric: str, value: float, tags: dict[str, Any] | None = None) -> None:
         """Emit CPU metric with sensitivity (ratio 0-1, rounded to 0.1%)."""
         if self._sink is not None:
+            if self._defer_on_event_loop(metric, value, tags):
+                return
             self._sink.emit_with_sensitivity(
                 metric,
                 value,
@@ -74,6 +95,8 @@ class BaseCollector(ABC):
         """Emit memory metric with sensitivity (bytes, rounded to 64KB)."""
         if self._sink is not None:
             if getattr(self._sink, "streams_observations", False) is True:
+                if self._defer_on_event_loop(metric, value, tags):
+                    return
                 self._sink.emit(metric, value, tags)
                 return
             # Round to nearest 64KB
@@ -87,6 +110,38 @@ class BaseCollector(ABC):
                 rounding=0,
             )
 
+    async def sink_flush_batch(
+        self, samples: list[tuple[str, float, dict[str, Any] | None]] | None = None
+    ) -> bool:
+        """Send buffered and supplied samples off the event loop; log and degrade on failure."""
+        if self._sink is None:
+            self._pending_samples.clear()
+            return True
+        batch: list[tuple[str, float, dict[str, Any] | None]] = []
+        if self._pending_samples:
+            batch.extend(self._pending_samples)
+            self._pending_samples.clear()
+        if samples:
+            batch.extend(samples)
+        if not batch:
+            return True
+        try:
+            await asyncio.to_thread(self._sink.emit_batch, batch)
+            return True
+        except Exception as exc:
+            log.warning("Collector %s sample batch delivery failed: %s", self.name, exc)
+            if hasattr(self._sink, "record_data_quality"):
+                await asyncio.to_thread(
+                    self._sink.record_data_quality,
+                    f"collector:{self.name}",
+                    "degraded",
+                    kind="collector",
+                    severity="warning",
+                    message=f"Sample batch delivery failed: {type(exc).__name__}",
+                    detail={"error": str(exc), "batch_size": len(batch)},
+                )
+            return False
+
     @abstractmethod
     async def run(self) -> None:
         """Run collector until cancelled."""
@@ -96,7 +151,8 @@ class BaseCollector(ABC):
         if self._correlator:
             self._correlator.on_collector_status(self.name, status, mode, detail)
         if self._sink is not None and hasattr(self._sink, "record_data_quality"):
-            self._sink.record_data_quality(
+            await asyncio.to_thread(
+                self._sink.record_data_quality,
                 f"collector:{self.name}",
                 "ok" if status == "active" else "degraded",
                 kind="collector",
@@ -109,12 +165,18 @@ class BaseCollector(ABC):
             1.0 if status == "active" else 0.0,
             {"aictl.collector.name": self.name, "aictl.collector.mode": mode},
         )
+        if self._pending_samples:
+            await self.sink_flush_batch()
 
     async def sleep(self, seconds: float) -> None:
+        if self._pending_samples:
+            await self.sink_flush_batch()
         await asyncio.sleep(seconds)
 
     async def sleep_paced(self, seconds: float) -> None:
         """Sleep for ``seconds`` times the current pace; ends early when a client attaches."""
+        if self._pending_samples:
+            await self.sink_flush_batch()
         waited = 0.0
         while waited < seconds * PACE.factor():
             step = min(1.0, max(seconds, 0.01))

@@ -238,7 +238,7 @@ class PsutilProcessCollector(BaseCollector):
             if self.correlator:
                 self.correlator.on_process_snapshot(len(current_pids))
             if streaming and samples:
-                await asyncio.to_thread(self._sink.emit_batch, list(samples))
+                await self.sink_flush_batch(samples)
             await self.sleep_paced(self.config.process_interval)
 
     async def _report_classification_health(self) -> None:
@@ -611,6 +611,8 @@ class WatchdogFileCollector(BaseCollector):
                 # Sink: per-file metrics
                 if path:
                     sampler.record(path, growth, size, tool_hint)
+                    if self._pending_samples and queue.empty():
+                        await self.sink_flush_batch()
         except asyncio.CancelledError:
             raise
         finally:

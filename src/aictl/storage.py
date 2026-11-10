@@ -2252,6 +2252,11 @@ _TEXT_COLUMNS: tuple[tuple[str, str, dict[str, str]], ...] = (
     ("file_blobs", "created_at", {"content": ""}),
     ("hook_calls", "ts", {"command": "", "output": ""}),
 )
+_OBSERVATION_TEXT_COLUMNS: tuple[tuple[str, str, dict[str, str]], ...] = (
+    ("session_prompts_observations", "ts", {"text": ""}),
+    ("tool_invocations_observations", "ts", {"input": "{}", "result_summary": "", "target": ""}),
+    ("agents_observations", "started_at", {"task": ""}),
+)
 # Columns a trim blanks but a write guard must not, because each writer already
 # stores only what the mode allows: a subagent role, or a command reduced to its
 # program name. The board needs these to group subagents and find test runs.
@@ -3301,6 +3306,16 @@ class HistoryDB:
     def _ingest_observations(self, table: str, rows: list[dict[str, Any]]) -> None:
         """Send a producer batch directly; failure remains the caller's responsibility."""
         self._conn().ingest_observations(table, rows)
+
+    def _ingest_observations_many(self, batches: dict[str, list[dict[str, Any]]]) -> None:
+        conn = self._conn()
+        many = getattr(conn, "ingest_observations_many", None)
+        if callable(many):
+            many(batches)
+            return
+        for table, rows in batches.items():
+            if rows:
+                conn.ingest_observations(table, rows)
 
     def _fact_observation(
         self, family: str, values: dict[str, Any], *, source: str = "",
@@ -5769,12 +5784,15 @@ class HistoryDB:
                 "context_events": facts.context_events, "session_loaded_files": facts.loaded_files,
                 "session_context_items": facts.context_items,
             }
-            for family, rows in groups.items():
-                if rows:
-                    self._ingest_observations(family + "_observations", [
-                        self._fact_observation(family, asdict(row), source=TRANSCRIPT_SOURCE, identity=row)
-                        for row in rows
-                    ])
+            batches = {
+                family + "_observations": [
+                    self._fact_observation(family, asdict(row), source=TRANSCRIPT_SOURCE, identity=row)
+                    for row in rows
+                ]
+                for family, rows in groups.items()
+                if rows
+            }
+            self._ingest_observations_many(batches)
             return len(facts)
         conn = self._conn()
         try:
@@ -7175,8 +7193,12 @@ class HistoryDB:
         Metadata in the same rows stays. Returns the number of rows changed.
         """
         before = time.time() if before is None else before
-        total = sum(self._trim_table_text(t, c, cols, since, before) for t, c, cols in _TEXT_COLUMNS)
-        total += sum(self._trim_event_text(since, before, table) for table in _JSON_TEXT_COLUMNS)
+        conn = self._conn()
+        scope = getattr(conn, "maintenance_scope", contextlib.nullcontext)
+        tables = (*_TEXT_COLUMNS, *_OBSERVATION_TEXT_COLUMNS) if self.streams_observations else _TEXT_COLUMNS
+        with scope():
+            total = sum(self._trim_table_text(t, c, cols, since, before) for t, c, cols in tables)
+            total += sum(self._trim_event_text(since, before, table) for table in _JSON_TEXT_COLUMNS)
         if total:
             self._set_state("content_trimmed_before", before)
         return total
@@ -7228,12 +7250,15 @@ class HistoryDB:
     def trim_text_estimate(self) -> dict[str, int]:
         """Rows and characters of text ``trim_text`` would remove, per table."""
         conn = self._conn()
+        scope = getattr(conn, "maintenance_scope", contextlib.nullcontext)
+        tables = (*_TEXT_COLUMNS, *_OBSERVATION_TEXT_COLUMNS) if self.streams_observations else _TEXT_COLUMNS
         out: dict[str, int] = {}
-        for table, _ts, columns in _TEXT_COLUMNS:
-            for column, blank in columns.items():
-                out[f"{table}.{column}"] = conn.execute(
-                    f"SELECT COALESCE(SUM(length({column})), 0) FROM {table} WHERE {column} != ?", (blank,)
-                ).fetchone()[0]
+        with scope():
+            for table, _ts, columns in tables:
+                for column, blank in columns.items():
+                    out[f"{table}.{column}"] = conn.execute(
+                        f"SELECT COALESCE(SUM(length({column})), 0) FROM {table} WHERE {column} != ?", (blank,)
+                    ).fetchone()[0]
         return out
 
     def storage_bytes(self) -> int:

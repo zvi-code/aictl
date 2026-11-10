@@ -384,3 +384,172 @@ def test_discovery_uses_one_producer_batch_without_truncating_file_metrics(tmp_p
         asyncio.run(collector.run())
     assert len(batches) == 1
     assert len(batches[0]) == 5 + 2 * len(files)
+
+
+def test_collector_delivery_failure_records_degraded_quality_without_killing_collector():
+    class DummyCollector(BaseCollector):
+        name = "test:dummy"
+
+        async def run(self):
+            self.sink_emit("m1", 1.0, {"k": "v"})
+            ok = await self.sink_flush_batch([("m2", 2.0, None)])
+            assert ok is False
+
+    qualities = []
+    sink = SimpleNamespace(
+        streams_observations=True,
+        emit_batch=lambda _batch: (_ for _ in ()).throw(KustoStoreError("ingestion down")),
+        record_data_quality=lambda comp, status, **kw: qualities.append((comp, status, kw.get("message"))),
+    )
+    collector = DummyCollector()
+    collector.set_sink(sink)
+    asyncio.run(collector.run())
+    assert len(qualities) == 1
+    assert qualities[0][:2] == ("collector:test:dummy", "degraded")
+
+
+def test_trim_text_scrubs_baseline_and_companion_observation_tables():
+    from test_kusto_connection import FakeClient, response
+
+    from aictl.kusto.observations import UnresolvedObservationsError
+
+    queried_kql: list[str] = []
+
+    def on_query(kql: str):
+        queried_kql.append(kql)
+        return response([], [])
+
+    settings = KustoSettings("https://example.kusto.windows.net")
+    client = FakeClient(on_query=on_query)
+    ingester = RecordingIngester()
+    conn = KustoConnection(settings, client, ingester, tables=store_schema(), observation_writes=True)
+    db = HistoryDB.__new__(HistoryDB)
+    db._kusto = settings
+    db._shared_conn = None
+    db.capture = "full"
+    db._retention_days = 30
+    db._content_retention_days = 14
+    db._writers = {}
+    db._conn = lambda: conn
+
+    assert db.trim_text(before=500.0) == 0
+    joined = "\n".join(queried_kql)
+    assert "['session_prompts_observations']" in joined
+    assert "['tool_invocations_observations']" in joined
+    assert "['agents_observations']" in joined
+    # Outside maintenance_scope, canonical queries remain blocked.
+    with pytest.raises(UnresolvedObservationsError):
+        conn.execute("SELECT COUNT(*) FROM session_prompts")
+
+
+def test_cursor_ingester_provisions_session_observation_without_querying_baseline(tmp_path, observation_store):
+    import sqlite3
+
+    from aictl.ingesters.cursor_conversations import CursorConversationsIngester
+
+    src_path = tmp_path / "conversations.db"
+    src = sqlite3.connect(src_path)
+    src.execute("CREATE TABLE conversations(id TEXT PRIMARY KEY, workspace_path TEXT, created_at REAL)")
+    src.execute("CREATE TABLE messages(id INTEGER PRIMARY KEY, conversation_id TEXT, role TEXT, content TEXT, created_at REAL)")
+    src.execute("INSERT INTO conversations VALUES('conv-1', '/work/proj', 100.0)")
+    src.execute("INSERT INTO messages VALUES(1, 'conv-1', 'user', 'hello', 101.0)")
+    src.commit()
+    src.close()
+
+    db, ingester = observation_store
+    cursor_ing = CursorConversationsIngester(src_path, db)
+    # Stub _insert_message since NoQueryClient refuses SQLite-style INSERT OR IGNORE on cursor_session_messages
+    inserted = []
+    cursor_ing._insert_message = lambda **kw: (
+        inserted.append((kw["session_id"], kw["source_row_id"], kw["role"], kw["content"])),
+        True,
+    )[1]
+    cursor_ing._quality = lambda *_a, **_kw: None
+
+    assert cursor_ing.poll() == 1
+    assert inserted == [("cursor:conv-1", 1, "user", "hello")]
+    tables = [t for t, _ in ingester.batches]
+    assert "sessions_observations" in tables
+
+
+def test_retried_cumulative_otel_metrics_preserve_delta_after_failed_handoff():
+    from aictl.dashboard.otel_receiver import OtelReceiver
+    from aictl.dashboard.web_server import _DashboardHandler
+
+    payload = {
+        "resourceMetrics": [
+            {
+                "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "copilot-cli"}}]},
+                "scopeMetrics": [
+                    {
+                        "metrics": [
+                            {
+                                "name": "gen_ai.client.token.usage",
+                                "sum": {
+                                    "aggregationTemporality": 2,
+                                    "dataPoints": [{"timeUnixNano": "1700000000000000000", "asInt": "100"}],
+                                },
+                            }
+                        ]
+                    }
+                ],
+            }
+        ]
+    }
+    payload_110 = {
+        "resourceMetrics": [
+            {
+                "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "copilot-cli"}}]},
+                "scopeMetrics": [
+                    {
+                        "metrics": [
+                            {
+                                "name": "gen_ai.client.token.usage",
+                                "sum": {
+                                    "aggregationTemporality": 2,
+                                    "dataPoints": [{"timeUnixNano": "1700000010000000000", "asInt": "110"}],
+                                },
+                            }
+                        ]
+                    }
+                ],
+            }
+        ]
+    }
+
+    receiver = OtelReceiver()
+    accepted = []
+    should_fail = [False]
+    errors = []
+
+    def append_samples(items):
+        if should_fail[0]:
+            raise RuntimeError("Kusto unavailable")
+        accepted.extend(items)
+
+    current_body = [payload]
+    handler = SimpleNamespace(
+        _db=SimpleNamespace(streams_observations=True, append_samples=append_samples),
+        _read_post_otlp=lambda _: current_body[0],
+        _otel_to_kusto=lambda *_: True,
+        server=SimpleNamespace(otel_receiver=receiver),
+        _json_response_raw=lambda _b: None,
+        send_error=lambda status, msg: errors.append((status, msg)),
+    )
+
+    # 1. Baseline 100 accepted
+    _DashboardHandler._receive_otel_signal(handler, "metrics", "parse_metrics", "append_samples", "samples")
+    assert [s.value for s in accepted] == [100.0]
+
+    # 2. Export 110 fails during append_samples -> 503
+    current_body[0] = payload_110
+    should_fail[0] = True
+    _DashboardHandler._receive_otel_signal(handler, "metrics", "parse_metrics", "append_samples", "samples")
+    assert errors and errors[-1][0] == 503
+    assert [s.value for s in accepted] == [100.0]
+
+    # 3. Retry of export 110 succeeds and still emits delta 10.0, not 0.0
+    should_fail[0] = False
+    _DashboardHandler._receive_otel_signal(handler, "metrics", "parse_metrics", "append_samples", "samples")
+    assert [s.value for s in accepted] == [100.0, 10.0]
+
