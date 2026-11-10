@@ -559,7 +559,7 @@ def test_concurrent_cumulative_otel_metrics_do_not_double_count_deltas():
 
     from aictl.dashboard.otel_receiver import OtelReceiver
 
-    def make_payload(val: int) -> dict:
+    def make_payload(val: int, ts_s: int, start_s: int = 1700000000) -> dict:
         return {
             "resourceMetrics": [
                 {
@@ -571,7 +571,13 @@ def test_concurrent_cumulative_otel_metrics_do_not_double_count_deltas():
                                     "name": "gen_ai.client.token.usage",
                                     "sum": {
                                         "aggregationTemporality": 2,
-                                        "dataPoints": [{"timeUnixNano": "1700000010000000000", "asInt": str(val)}],
+                                        "dataPoints": [
+                                            {
+                                                "startTimeUnixNano": str(start_s * 1_000_000_000),
+                                                "timeUnixNano": str(ts_s * 1_000_000_000),
+                                                "asInt": str(val),
+                                            }
+                                        ],
                                     },
                                 }
                             ]
@@ -583,14 +589,27 @@ def test_concurrent_cumulative_otel_metrics_do_not_double_count_deltas():
 
     receiver = OtelReceiver()
     accepted = []
-    receiver.ingest_metrics(make_payload(100), accepted.extend)
+    receiver.ingest_metrics(make_payload(100, 1700000001), accepted.extend)
     assert [s.value for s in accepted] == [100.0]
 
+    # Even if newer 120 (ts=3) arrives before delayed 110 (ts=2), the total after 130 (ts=4) must equal 130.0.
+    receiver.ingest_metrics(make_payload(120, 1700000003), accepted.extend)
+    receiver.ingest_metrics(make_payload(110, 1700000002), accepted.extend)
+    receiver.ingest_metrics(make_payload(130, 1700000004), accepted.extend)
+    assert [s.value for s in accepted] == [100.0, 20.0, 0.0, 10.0]
+    assert sum(s.value for s in accepted) == 130.0
+    assert accepted[2].tags["otel_ordering"] == "out_of_order_ignored"
+    assert accepted[2].tags["otel_raw_cumulative"] == 110.0
+
+    # Concurrent threads with equal/ambiguous timestamps also preserve exact total 130.0 without inventing a reset.
+    receiver2 = OtelReceiver()
+    accepted2 = []
+    receiver2.ingest_metrics(make_payload(100, 1700000010), accepted2.extend)
     barrier = threading.Barrier(2)
 
     def run_export(val: int) -> None:
         barrier.wait(timeout=5.0)
-        receiver.ingest_metrics(make_payload(val), accepted.extend)
+        receiver2.ingest_metrics(make_payload(val, 1700000010), accepted2.extend)
 
     t1 = threading.Thread(target=run_export, args=(110,))
     t2 = threading.Thread(target=run_export, args=(120,))
@@ -598,16 +617,11 @@ def test_concurrent_cumulative_otel_metrics_do_not_double_count_deltas():
     t2.start()
     t1.join(timeout=5.0)
     t2.join(timeout=5.0)
-
-    # Whichever order the serialized exports ran in, the next export at 130 must see baseline >= 110
-    receiver.ingest_metrics(make_payload(130), accepted.extend)
-    # If 110 ran before 120: deltas are 100, 10, 10, 10 -> sum 130.
-    # If 120 ran before 110: 110<120 is treated as a counter reset (110), then 130-110=20;
-    # in neither case can both threads compute deltas from baseline 100 concurrently.
-    assert accepted[1].value != 20.0 or accepted[2].value != 10.0
+    receiver2.ingest_metrics(make_payload(130, 1700000020), accepted2.extend)
+    assert sum(s.value for s in accepted2) == 130.0
 
 
-def test_timestamp_less_patch_has_retention_ts_and_event_time_stays_null(observation_store):
+def test_timestamp_less_patch_has_retention_ts_and_pre_upgrade_null_rows_trim_by_received_time(observation_store, tmp_path):
     db, ingester = observation_store
     db.update_tool_invocation_duration("call-key", 250.0, 1, "boom")
     table, rows = ingester.batches[-1]
@@ -616,6 +630,36 @@ def test_timestamp_less_patch_has_retention_ts_and_event_time_stays_null(observa
     assert row["event_time"] is None
     assert isinstance(row["retention_ts"], float) and row["retention_ts"] > 0
     assert row["result_summary"] == "boom"
+
+    # Simulate a pre-upgrade row in tool_invocations_observations where both retention_ts and ts are NULL,
+    # and only received_time is populated.
+    sqlite_db = HistoryDB(db_path=tmp_path / "upgrade.db", flush_interval=0)
+    try:
+        conn = sqlite_db._conn()
+        conn.execute(
+            "CREATE TABLE tool_invocations_observations ("
+            " dedup_key TEXT, ts REAL, input TEXT DEFAULT '{}', result_summary TEXT DEFAULT '',"
+            " target TEXT DEFAULT '', retention_ts REAL, received_time TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO tool_invocations_observations(dedup_key, ts, input, result_summary, target, retention_ts, received_time)"
+            " VALUES('call-key', NULL, '{\"cmd\":\"secret\"}', 'secret summary', 'secret target', NULL, '2026-11-01T00:00:00Z')"
+        )
+        conn.commit()
+        trimmed = sqlite_db._trim_table_text(
+            "tool_invocations_observations",
+            "COALESCE(NULLIF(retention_ts, 0), NULLIF(ts, 0), unixepoch(received_time))",
+            {"input": "{}", "result_summary": "", "target": ""},
+            0.0,
+            2_000_000_000.0,
+        )
+        assert trimmed == 1
+        after = conn.execute(
+            "SELECT input, result_summary, target FROM tool_invocations_observations WHERE dedup_key = 'call-key'"
+        ).fetchone()
+        assert after == ("{}", "", "")
+    finally:
+        sqlite_db.close()
 
 
 def test_azcli_shared_token_replaces_stale_provider_token(monkeypatch):

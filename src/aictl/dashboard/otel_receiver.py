@@ -15,6 +15,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from ..data.token_usage import TokenUsage
 from ..storage import EventRow, RequestRow, ToolInvocationRow
@@ -219,47 +220,82 @@ class OtelReceiver:
 
     # ── Metrics ───────────────────────────────────────────────
 
+    def _cumulative_point_delta(
+        self,
+        key: tuple,
+        value: float,
+        start_ns: int,
+        point_ns: int,
+        tags: dict,
+        staged: dict[tuple, Any] | None = None,
+    ) -> float:
+        """Convert one CUMULATIVE Sum point into its delta, distinguishing resets from stale delivery."""
+        current = staged.get(key) if (staged is not None and key in staged) else self._cumulative_last.get(key)
+        if isinstance(current, (int, float)):
+            last_val, last_start_ns, last_point_ns = float(current), 0, 0
+        elif isinstance(current, tuple) and len(current) == 3:
+            last_val, last_start_ns, last_point_ns = float(current[0]), int(current[1]), int(current[2])
+        else:
+            last_val, last_start_ns, last_point_ns = None, 0, 0
+
+        if last_val is None:
+            new_state = (value, start_ns, point_ns)
+            delta = value
+        elif start_ns > 0 and last_start_ns > 0 and start_ns < last_start_ns:
+            # Point belongs to an older counter epoch than the current baseline: stale out-of-order export.
+            tags["otel_ordering"] = "out_of_order_ignored"
+            tags["otel_raw_cumulative"] = value
+            new_state = (last_val, last_start_ns, last_point_ns)
+            delta = 0.0
+        elif start_ns > 0 and last_start_ns > 0 and start_ns > last_start_ns:
+            # Explicit newer counter epoch: counter restarted.
+            new_state = (value, start_ns, point_ns)
+            delta = value
+        elif point_ns > 0 and last_point_ns > 0 and point_ns < last_point_ns:
+            # Older point in the same epoch arrived after a newer point already advanced the baseline.
+            tags["otel_ordering"] = "out_of_order_ignored"
+            tags["otel_raw_cumulative"] = value
+            new_state = (last_val, last_start_ns, last_point_ns)
+            delta = 0.0
+        elif value >= last_val:
+            new_state = (value, start_ns or last_start_ns, max(point_ns, last_point_ns))
+            delta = value - last_val
+        elif point_ns > 0 and last_point_ns > 0 and point_ns > last_point_ns and not (start_ns > 0 and last_start_ns > 0 and start_ns == last_start_ns):
+            # Strictly newer point timestamp without an unchanged start_ns: counter restarted.
+            new_state = (value, start_ns, point_ns)
+            delta = value
+        else:
+            # Lower value without source timestamp/epoch proof of a counter restart (e.g. equal/missing
+            # timestamps or unchanged startTimeUnixNano): retain ambiguity rather than inventing a reset.
+            tags["otel_ordering"] = "ambiguous_order"
+            tags["otel_raw_cumulative"] = value
+            new_state = (last_val, last_start_ns, last_point_ns)
+            delta = 0.0
+
+        if staged is not None:
+            staged[key] = new_state
+        else:
+            if len(self._cumulative_last) >= _MAX_CUMULATIVE_SERIES and key not in self._cumulative_last:
+                self._cumulative_last.clear()
+            self._cumulative_last[key] = new_state
+        return delta
+
     def _cumulative_to_delta(
         self,
         tool: str,
         name: str,
         tags: dict,
         value: float,
-        staged: dict[tuple, tuple[float | None, float]] | None = None,
+        staged: dict[tuple, Any] | None = None,
+        *,
+        start_ns: int = 0,
+        point_ns: int = 0,
     ) -> float:
-        """Convert a CUMULATIVE Sum point to the increment since its previous point.
-
-        Stored samples are summed downstream (per-session token totals, cost
-        charts), which is only correct for DELTA temporality. Claude Code
-        exports delta by default, but Copilot, Gemini and Codex SDKs default
-        to cumulative, and ``OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE
-        =cumulative`` flips Claude Code too — a 10k-token session alive for an
-        hour used to be stored as ~60 growing rows summing to ~300k.
-
-        The first point of a series is stored as-is (it is the total since the
-        process started); a value below the previous one means the process
-        restarted, so the new value is again a fresh total.
-        """
-        key = (tool, name, tuple(sorted((k, str(v)) for k, v in tags.items() if k != "otel_metric")))
+        key = (tool, name, tuple(sorted((k, str(v)) for k, v in tags.items() if k not in ("otel_metric", "otel_temporality", "otel_ordering", "otel_raw_cumulative"))))
         if staged is not None:
-            if key in staged:
-                prior, last = staged[key]
-            else:
-                with self._lock:
-                    prior = self._cumulative_last.get(key)
-                last = prior
-            staged[key] = (prior, value)
-            if last is None or value < last:
-                return value
-            return value - last
+            return self._cumulative_point_delta(key, value, start_ns, point_ns, tags, staged=staged)
         with self._lock:
-            last = self._cumulative_last.get(key)
-            if len(self._cumulative_last) >= _MAX_CUMULATIVE_SERIES and key not in self._cumulative_last:
-                self._cumulative_last.clear()  # pathological cardinality; start over
-            self._cumulative_last[key] = value
-        if last is None or value < last:
-            return value
-        return value - last
+            return self._cumulative_point_delta(key, value, start_ns, point_ns, tags)
 
     def ingest_metrics(self, body: dict, writer: Callable[[list[_Sample]], None] | None) -> list[_Sample]:
         """Parse ``/v1/metrics``, write via *writer*, and commit cumulative baselines atomically."""
@@ -267,16 +303,16 @@ class OtelReceiver:
             samples, staged = self._parse_metrics_locked(body)
             if writer is not None and samples:
                 writer(samples)
-            for key, final_val in staged.items():
+            for key, state in staged.items():
                 if len(self._cumulative_last) >= _MAX_CUMULATIVE_SERIES and key not in self._cumulative_last:
                     self._cumulative_last.clear()
-                self._cumulative_last[key] = final_val
+                self._cumulative_last[key] = state
         self.stats.note(samples, [])
         return samples
 
-    def _parse_metrics_locked(self, body: dict) -> tuple[list[_Sample], dict[tuple, float]]:
+    def _parse_metrics_locked(self, body: dict) -> tuple[list[_Sample], dict[tuple, Any]]:
         samples: list[_Sample] = []
-        staged: dict[tuple, float] = {}
+        staged: dict[tuple, Any] = {}
         received_at = time.time()
         for rm in _iter_otel_dicts(body, "resourceMetrics"):
             resource_attrs = _parse_otel_attributes(
@@ -294,8 +330,18 @@ class OtelReceiver:
                         isinstance(sum_body, dict) and sum_body.get("aggregationTemporality") in _CUMULATIVE_TEMPORALITY
                     )
 
-                    for dp in _extract_otel_data_points(metric, self.stats):
-                        ts = _nano_to_epoch(dp.get("timeUnixNano", "0")) or received_at
+                    dps = list(_extract_otel_data_points(metric, self.stats))
+                    if cumulative and len(dps) > 1:
+                        dps.sort(
+                            key=lambda d: (
+                                _raw_nano(d.get("startTimeUnixNano")),
+                                _raw_nano(d.get("timeUnixNano")),
+                            )
+                        )
+                    for dp in dps:
+                        point_ns = _raw_nano(dp.get("timeUnixNano"))
+                        start_ns = _raw_nano(dp.get("startTimeUnixNano"))
+                        ts = (point_ns / 1e9) if point_ns > 0 else received_at
                         value = _extract_otel_value(dp)
                         tags = _parse_otel_attributes(dp.get("attributes", []), self.stats)
                         tags["tool"] = tool
@@ -303,11 +349,15 @@ class OtelReceiver:
                         _promote_session_id(tags, resource_attrs)
                         _promote_pid(tags, resource_attrs)
                         if cumulative:
-                            key = (tool, name, tuple(sorted((k, str(v)) for k, v in tags.items() if k != "otel_metric")))
-                            last = staged.get(key, self._cumulative_last.get(key))
-                            staged[key] = value
-                            value = value if (last is None or value < last) else (value - last)
                             tags["otel_temporality"] = "cumulative"
+                            key = (
+                                tool,
+                                name,
+                                tuple(sorted((k, str(v)) for k, v in tags.items() if k not in ("otel_metric", "otel_temporality"))),
+                            )
+                            value = self._cumulative_point_delta(
+                                key, value, start_ns, point_ns, tags, staged=staged
+                            )
                         samples.append(
                             _Sample(
                                 ts=ts,
@@ -834,6 +884,17 @@ def _coerce_str(val) -> str:
     if isinstance(val, list):
         return ",".join(str(v) for v in val)
     return str(val) if val is not None else ""
+
+
+def _raw_nano(nano_str: Any) -> int:
+    """Parse an OTLP nanosecond timestamp to int; 0 when absent or invalid."""
+    if nano_str in (None, "", 0, "0"):
+        return 0
+    try:
+        v = int(nano_str)
+        return v if v > 0 else 0
+    except (ValueError, TypeError):
+        return 0
 
 
 def _nano_to_epoch(nano_str: str | int) -> float:
