@@ -229,6 +229,34 @@ Use the same time range, tool and project filters when comparing these facts wit
 
 Queued tables appear after DM processes their batches, not necessarily when a client commit returns. A large history or a small cluster can also delay synchronous backfill; there is no fixed completion time. Existing history is not deleted to recover indexing.
 
+### aictl Health
+
+Open `?screen=health` for the daemon's live collection and storage health. This
+screen uses `/api/board/health` independently of the historical board and reuses
+the existing source, collector, ingester, sink, OTel and data-quality monitors.
+It separates the stages rather than presenting submitted data as stored data:
+
+- **Queued ingestion / DM:** submission rates and volume, pending work, client
+  upload sizes and the cached database batching policy. These are not evidence
+  that the data is queryable. Client uploads are not DM's final ingestion batches.
+- **Engine ingestion:** streaming and inline traffic and the applicable
+  streaming policy. Traffic counters are not the current size of the database.
+- **Queryable store and reads:** counts read from storage, their cache time and
+  scope, read requests and available backend capacity information.
+
+Destination-table groups separate OTel, hooks, live-session data, monitoring,
+files/configuration and other tables. Effective ingestion modes and per-table
+overrides determine which stage a group's traffic belongs to; mixed groups must
+not be treated as wholly queued or wholly streaming.
+
+Kusto mode includes links to the configured cluster, database and capacity
+query. Counters reset with the daemon; rates cover up to the last 60 seconds.
+Submitted rows are not necessarily queryable rows. Stored-volume and capacity
+readings are cached and explicitly scoped; unknown values are shown as `n/a`.
+Backend health describes operations observed by this client, not cluster-wide
+Azure Resource Health. Local storage uses the same screen without Kusto-only
+statistics.
+
 ## Report
 
 `aictl db report` runs a set of KQL queries against the configured cluster and writes one self-contained HTML file: no server, no script or style loaded from another site except Google Fonts. It uses the cluster, database and sign-in of the store (`AICTL_KUSTO_CLUSTER`, `AICTL_KUSTO_DATABASE`, `AICTL_KUSTO_AUTH`, or `config.toml`), so every sign-in mode and the local emulator work. It only reads. With no cluster configured it exits with a message.

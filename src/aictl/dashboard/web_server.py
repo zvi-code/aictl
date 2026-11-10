@@ -530,6 +530,27 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         return False
 
     def do_GET(self) -> None:
+        self._observe_http(self._do_GET, self.server.health_reads)
+
+    def _observe_http(self, handler, counter) -> None:
+        started = counter.begin()
+        self._health_response_status = 200
+        error = None
+        try:
+            handler()
+            if self._health_response_status >= 400:
+                error = f"HTTP {self._health_response_status}"
+        except Exception as exc:
+            error = str(exc)
+            raise
+        finally:
+            counter.finish(started, error=error)
+
+    def send_response(self, code, message=None) -> None:
+        self._health_response_status = code
+        super().send_response(code, message)
+
+    def _do_GET(self) -> None:
         path = urlparse(self.path).path
         # The page and its files need no snapshot: they load at once and the page says it is starting.
         if not (path in _SERVED_WHILE_STARTING or path.startswith("/assets/")) and not self._wait_ready():
@@ -558,6 +579,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._serve_effective_models()
         elif path == "/api/board/machine":
             self._serve_board_machine()
+        elif path == "/api/board/health":
+            self._serve_board_health()
         elif path == "/api/board/context":
             self._serve_board_context()
         elif path == "/api/board/agent/flow":
@@ -620,6 +643,9 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self) -> None:
+        self._observe_http(self._do_POST, self.server.health_writes)
+
+    def _do_POST(self) -> None:
         if self._reject_cross_origin():
             return
         path = urlparse(self.path).path
@@ -1404,6 +1430,21 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             return
         self._json_response_raw(body)
 
+    def _serve_board_health(self) -> None:
+        from .board_api import compute_health
+
+        payload = compute_health(
+            self._db,
+            self.server.store,
+            otel=getattr(self.server, "otel_receiver", None),
+            ingesters=getattr(self.server, "ingesters", None),
+            stream_clients=_sse_client_count,
+            port=int(self.server.server_address[1]),
+            http_reads=self.server.health_reads,
+            http_writes=self.server.health_writes,
+        )
+        self._json_response(payload)
+
     def _serve_board_context(self) -> None:
         """Context-window budget, files, memory and lifetime telemetry for the board."""
         from .board_api import context_bytes
@@ -1560,7 +1601,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
 # While the daemon collects its first snapshot, its port is already open: these routes are
 # served at once, every other request waits for the snapshot up to READY_WAIT_S.
 _TAKEN_WHILE_STARTING = frozenset({"/api/hooks", "/v1/metrics", "/v1/logs", "/v1/traces"})
-_SERVED_WHILE_STARTING = frozenset({"/", "/index.html", "/favicon.ico"})
+_SERVED_WHILE_STARTING = frozenset({"/", "/index.html", "/favicon.ico", "/api/board/health"})
 # Under the handler's 30 s socket timeout, so the client gets the answer.
 READY_WAIT_S = 20.0
 
@@ -1579,6 +1620,10 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
 
     def __init__(self, addr, handler, store, allowed, root, *, start_ingesters_now: bool = True):
         super().__init__(addr, handler)
+        from ..health import OperationStats
+
+        self.health_reads = OperationStats()
+        self.health_writes = OperationStats()
         self._requests: queue.SimpleQueue = queue.SimpleQueue()
         self._workers_lock = threading.Lock()
         self._idle_workers = 0

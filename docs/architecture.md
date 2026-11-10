@@ -499,10 +499,19 @@ A real-time interactive dashboard built with Vite + Preact + htm tagged template
 | `/api/api-calls` | GET | Recorded API/network calls |
 | `/api/datapoints` | GET | Datapoint catalog |
 | `/api/self-status` | GET | aictl's own runtime status |
+| `/api/board/health` | GET | Unified collection, ingestion, request and backend health; available before the first snapshot |
 | `/api/layout` | GET | Widget layout configuration |
 
 **Frontend** — Preact 10 with htm/preact tagged template literals. The UI has one screen, the board
-(`components/board/`), with a Settings screen reached by `?screen=settings`. Charts are plain SVG.
+(`components/board/`), with Settings at `?screen=settings` and aictl Health at
+`?screen=health`. Charts are plain SVG.
+
+The Health screen polls independently every five seconds while visible, without
+overlapping requests or waiting for the historical board query. It reuses the
+existing source, collector, ingester, receiver, sink and data-quality panels.
+Machine CPU and process views remain on Machine. Backend operation counters are
+process-local; cached storage volume and Kusto capacity carry their own scope and
+timestamps. Unknown measurements remain unreported rather than becoming zero.
 
 | Part | Files | Purpose |
 |------|-------|---------|

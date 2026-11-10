@@ -7,9 +7,10 @@ export const DEFAULT_LAYOUT = [
   { id: 'context', title: 'Context', anchor: 'sec-context', panels: [['budget', 12], ['tokenSplit', 6], ['ctxMap', 6], ['memory', 6], ['dailyModels', 6], ['inventory', 12], ['lifetime', 12]] },
   { id: 'tools', title: 'Tools, failures and speed', anchor: 'sec-tools', panels: [['toolCalls', 7], ['confirms', 5], ['errors', 5], ['latency', 7], ['loops', 12]] },
   { id: 'changes', title: 'Changes and testing', anchor: 'sec-changes', panels: [['changesT', 6], ['tests', 6], ['memfiles', 12]] },
-  { id: 'resources', title: 'Machine', anchor: 'sec-resources', panels: [['cpu', 6], ['ram', 6], ['alerts', 12], ['procs', 12], ['traffic', 12]] },
+  { id: 'resources', title: 'Machine', anchor: 'sec-resources', panels: [['cpu', 6], ['ram', 6], ['alerts', 12], ['procs', 12], ['traffic', 12], ['daemon', 12]] },
   { id: 'effect', title: 'Settings in effect', anchor: 'sec-effect', panels: [['findings', 12], ['settings', 12]] },
-  { id: 'sources', title: 'Where the data comes from', anchor: 'sec-sources', panels: [['sources', 7], ['self', 5], ['collectors', 6], ['quality', 6], ['coverage', 12]] },
+  { id: 'sources', title: 'What each tool reports', anchor: 'sec-sources', panels: [['coverage', 12]] },
+  { id: 'health', title: 'aictl Health', anchor: 'sec-health', panels: [['storeHealth', 12], ['self', 12], ['sources', 12], ['collectors', 6], ['quality', 6]] },
 ];
 export const TITLES = {
   sessionsT: 'Find a session', attention: 'Needs you now', agentsT: 'Agents and subagents', byModel: 'Usage by model', byRole: 'Main agents and subagents',
@@ -21,7 +22,8 @@ export const TITLES = {
   changesT: 'Changes', tests: 'Testing', memfiles: 'Memory and instruction files',
   cpu: 'CPU', ram: 'RAM', alerts: 'Needs a look', procs: 'Processes', traffic: 'Network, tokens and files',
   findings: 'Hidden changes and conflicts', settings: 'Values in force',
-  sources: 'Data sources', self: 'aictl itself', collectors: 'Collectors', quality: 'Ingesters and data quality', coverage: 'What each tool reports',
+  sources: 'Data sources', self: 'Collection and ingestion', collectors: 'Collectors', quality: 'Ingesters and data quality', coverage: 'What each tool reports',
+  daemon: 'aictl resources and history', storeHealth: 'Store, capacity and requests',
 };
 export const GROWS = { tokens: 1, cacheRate: 1, cost: 1, messages: 1, cpu: 1, ram: 1 };
 export const HEIGHT = { attention: 'none', coverage: '470px', agentsT: '420px', sessionsT: '520px', projects: '300px', promptsL: '320px', pprompts: '320px', skills: '320px', toolCalls: '360px', confirms: '360px', errors: '360px', latency: '360px', loops: '220px', changesT: '360px', tests: '360px', memfiles: '200px', workflows: '260px', budget: '420px', tokenSplit: '420px', ctxMap: '460px', memory: '460px', dailyModels: '460px', inventory: '480px', lifetime: '420px', alerts: '220px', procs: '360px', traffic: '280px', settings: '340px', sources: '280px', collectors: '320px', quality: '360px', byModel: '280px', byRole: '280px' };
@@ -61,6 +63,14 @@ export function sanitizeLayout(stored) {
       if (at >= 0) out.splice(at + 1, 0, target); else out.push(target);
     }
     for (const p of sec.panels) if (!seen.has(p.id)) { seen.add(p.id); target.panels.push(p); }
+  }
+  const health = out.find(s => s.id === 'health');
+  const healthIds = new Set(DEFAULT_LAYOUT.find(s => s.id === 'health').panels.map(p => p[0]));
+  for (const sec of out) {
+    if (sec === health) continue;
+    const moved = sec.panels.filter(p => healthIds.has(p.id));
+    sec.panels = sec.panels.filter(p => !healthIds.has(p.id));
+    health.panels.push(...moved);
   }
   return out;
 }

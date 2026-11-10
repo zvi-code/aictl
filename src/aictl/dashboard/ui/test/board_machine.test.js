@@ -58,15 +58,16 @@ describe('layout of the Machine section', () => {
   it('is named Machine, keeps the id resources, and holds the new panels', () => {
     const sec = DEFAULT_LAYOUT.find(s => s.id === 'resources');
     expect(sec.title).toBe('Machine');
-    expect(sec.panels.map(p => p[0])).toEqual(['cpu', 'ram', 'alerts', 'procs', 'traffic']);
-    expect(DEFAULT_LAYOUT.find(s => s.id === 'sources').panels.map(p => p[0])).toEqual(['sources', 'self', 'collectors', 'quality', 'coverage']);
+    expect(sec.panels.map(p => p[0])).toEqual(['cpu', 'ram', 'alerts', 'procs', 'traffic', 'daemon']);
+    expect(DEFAULT_LAYOUT.find(s => s.id === 'sources').panels.map(p => p[0])).toEqual(['coverage']);
+    expect(DEFAULT_LAYOUT.find(s => s.id === 'health').panels.map(p => p[0])).toEqual(['storeHealth', 'self', 'sources', 'collectors', 'quality']);
     expect(TITLES.alerts).toBe('Needs a look');
   });
   it('adds the new panels to a layout stored before they existed', () => {
     const stored = [{ id: 'resources', open: false, panels: [{ id: 'procs', span: 8, open: true }, { id: 'cpu', span: 6, open: true }] }];
     const res = sanitizeLayout(stored).find(s => s.id === 'resources');
     expect(res.open).toBe(false);
-    expect(res.panels.map(p => p.id)).toEqual(['procs', 'cpu', 'ram', 'alerts', 'traffic']);
+    expect(res.panels.map(p => p.id)).toEqual(['procs', 'cpu', 'ram', 'alerts', 'traffic', 'daemon']);
     expect(res.panels[0].span).toBe(8);
   });
 });
@@ -286,7 +287,8 @@ describe('board screen with machine data', () => {
     const view = render(html`<${BoardScreen}/>`);
     await waitFor(() => expect(view.container.querySelector('#p-alerts tbody tr')).toBeTruthy());
     expect(view.container.querySelector('#sec-resources .bd-sect').textContent).toBe('Machine');
-    for (const id of ['alerts', 'traffic', 'collectors', 'quality']) expect(view.container.querySelector('#p-' + id), id).toBeTruthy();
+    for (const id of ['alerts', 'traffic', 'daemon']) expect(view.container.querySelector('#p-' + id), id).toBeTruthy();
+    for (const id of ['collectors', 'quality', 'self']) expect(view.container.querySelector('#p-' + id), id).toBeNull();
     expect(view.container.querySelectorAll('#p-cpu .bd-core')).toHaveLength(4);
     expect(view.container.querySelector('#p-procs .bd-tag')).toBeTruthy();
     fireEvent.click(view.getByRole('button', { name: 'Tree' }));

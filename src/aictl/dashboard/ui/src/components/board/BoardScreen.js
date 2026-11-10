@@ -24,13 +24,15 @@ import Panel from './Panel.js';
 import { kpiList, sectionSummary, streamPill } from './summary.js';
 import { bindTip } from './tip.js';
 import { useBoardData } from './useBoardData.js';
+import { useBoardHealth } from './useBoardHealth.js';
+import { healthSources, healthStatus } from './health.js';
 import './board.css';
 
 const SECTIONS = DEFAULT_LAYOUT.map(s => ({ id: s.id, title: s.title, anchor: s.anchor }));
 const SEC_BY_ID = Object.fromEntries(SECTIONS.map(s => [s.id, s]));
 
 // The board's own screens, in the `screen` query value. The board screen has none.
-const SCREENS = new Set(['board', 'settings']);
+const SCREENS = new Set(['board', 'settings', 'health']);
 export function readScreen(search) {
   const v = new URLSearchParams(search || '').get('screen');
   return SCREENS.has(v) ? v : 'board';
@@ -73,11 +75,11 @@ const Check = ({ on }) => html`<span class=${'bd-check' + (on ? ' bd-on' : '')}>
 
 // Rail, TopBar and FilterRow are memo components: their props keep their identity
 // while only `busy` changes. The range summary is a prop so the rail follows it.
-const Rail = memo(({ ui, data, series, findingsCount, attention, screen, settingsSum, rangeSum, act }) => {
+const Rail = memo(({ ui, data, series, loaded, findingsCount, attention, screen, settingsSum, healthSum, rangeSum, act }) => {
   const mini = ui.railMini;
   const railLabel = mini ? 'Show section names' : 'Hide section names';
-  const items = [{ id: 'top', label: 'Overview', anchor: 'sec-top', sum: rangeSum, icon: PATHS.top }].concat(ui.layout.map(sec => ({
-    id: sec.id, label: SEC_BY_ID[sec.id].title, anchor: SEC_BY_ID[sec.id].anchor, sum: sectionSummary(sec.id, data, series, findingsCount), icon: PATHS[sec.id],
+  const items = [{ id: 'top', label: 'Overview', anchor: 'sec-top', sum: rangeSum, icon: PATHS.top }].concat(ui.layout.filter(sec => sec.id !== 'health').map(sec => ({
+    id: sec.id, label: SEC_BY_ID[sec.id].title, anchor: SEC_BY_ID[sec.id].anchor, sum: screen === 'health' && !loaded && sec.id !== 'sessions' ? 'Not loaded' : sectionSummary(sec.id, data, series, findingsCount), icon: PATHS[sec.id],
   })));
   return html`<aside class=${'bd-rail' + (mini ? ' bd-mini' : '')} aria-label="Sections">
     <div class="bd-brandrow">
@@ -85,6 +87,10 @@ const Rail = memo(({ ui, data, series, findingsCount, attention, screen, setting
       <button type="button" class="bd-ib-btn" aria-label=${railLabel} title=${railLabel} onClick=${act.toggleRail}><${Ico} d=${PATHS.menu}/></button>
     </div>
     <nav aria-label="Sections of this screen" class="bd-railnav">
+      <a class="bd-navi" href="?screen=health" aria-current=${screen === 'health' ? 'page' : undefined}
+        title="Live collection, ingestion, store capacity and requests" onClick=${e => { e.preventDefault(); act.setScreen('health'); }}>
+        <${Ico} d=${PATHS.health}/><span class="bd-rl"><b>aictl Health</b><span>${healthSum}</span></span>
+      </a>
       ${items.map(it => html`<a key=${it.id} class=${'bd-navi' + (it.id === 'agents' && attention ? ' bd-alert' : '')} href=${'#' + it.anchor} title=${it.label + ': ' + it.sum} onClick=${e => act.openSection(it.id, e, it.anchor)}>
         <${Ico} d=${it.icon}/><span class="bd-rl"><b>${it.label}</b><span>${it.sum}</span></span>
       </a>`)}
@@ -118,22 +124,22 @@ function CustomRange({ range, onApply, onClose }) {
   </form>`;
 }
 
-const TopBar = memo(({ f, board, menu, ui, resolvedTheme, setTheme, live, act }) => {
+const TopBar = memo(({ f, board, menu, ui, resolvedTheme, setTheme, live, act, screen }) => {
   const { filters } = board;
   const hiddenPanels = ui.hidden;
   const changed = !isDefaultLayout(ui);
   const customOpen = menu === 'custom';
   const liveTitle = live ? 'Updates every 5 s. Click to pause.' : 'Click to resume live updates';
-  return html`<div class="bd-bar" role="region" aria-label="Time and layout">
-    <div class="bd-anch">
+  return html`<div class="bd-bar" role="region" aria-label=${screen === 'health' ? 'Health controls' : 'Time and layout'}>
+    ${screen !== 'health' ? html`<div class="bd-anch">
       <div class="bd-seg" role="group" aria-label="Time range">
         ${RANGES.map(r => html`<button key=${r.id} type="button" aria-pressed=${filters.range.id === r.id ? 'true' : 'false'} onClick=${() => act.setRange(r.id)}>${r.label}</button>`)}
         <button type="button" aria-pressed=${filters.range.id === 'custom' ? 'true' : 'false'} aria-expanded=${customOpen ? 'true' : 'false'} onClick=${() => act.toggleMenu('custom')}>Custom</button>
       </div>
       ${customOpen ? html`<${CustomRange} range=${filters.range} onApply=${act.setCustom} onClose=${act.closeMenu}/>` : null}
-    </div>
+    </div>` : null}
     <button type="button" class="bd-ctl" aria-pressed=${live ? 'true' : 'false'} onClick=${act.toggleLive} title=${liveTitle}><i class=${'bd-live' + (live ? '' : ' bd-off')}></i>${live ? 'Live' : 'Paused'}</button>
-    <label class="bd-srch"><${Ico} d=${PATHS.search}/><input id="bd-find" aria-label="Find agents, prompts, files and tools" placeholder="Find agent, prompt, file, tool" value=${f.q} onInput=${e => act.setFind(e.target.value)}/></label>
+    ${screen !== 'health' ? html`<label class="bd-srch"><${Ico} d=${PATHS.search}/><input id="bd-find" aria-label="Find agents, prompts, files and tools" placeholder="Find agent, prompt, file, tool" value=${f.q} onInput=${e => act.setFind(e.target.value)}/></label>` : null}
     <button type="button" class="bd-ctl" aria-label="Open the command palette" title="Command palette (Cmd/Ctrl+K). Press ? for the keyboard shortcuts." onClick=${act.openPalette}><${Ico} d=${PATHS.command}/>Commands</button>
     <span class="bd-sp"></span>
     <div class="bd-anch">
@@ -286,7 +292,9 @@ export default function BoardScreen() {
   const pausedRef = useRef(false);
   pausedRef.current = !!dragId;
 
-  const { data, chartSeries, chartRange, loaded, busy, error, refresh, connected, everConnected } = useBoardData({ filters: applied, tools, live, pausedRef });
+  const { data, chartSeries, chartRange, loaded, busy, error, refresh, connected, everConnected } = useBoardData({ filters: applied, tools, live, pausedRef, enabled: screen !== 'health' });
+  const health = useBoardHealth({ enabled: screen === 'health', live });
+  const healthState = useMemo(() => healthStatus(health.data, health.error, health.nowS), [health.data, health.error, health.nowS]);
   const pill = streamPill({ live, connected, everConnected, ageS: data.machine?.pipeline?.stream?.snapshot_age_s });
 
   // Layout is stored shortly after the last change, so a drag writes once.
@@ -556,6 +564,7 @@ export default function BoardScreen() {
       jumpTo: (id) => {
         const sec = SEC_BY_ID[id];
         if (!sec) return;
+        if (id === 'health') { a.setScreen('health'); return; }
         a.lastSection = id;
         const onBoard = L.current.screen === 'board';
         a.openSection(id, null, sec.anchor);
@@ -703,15 +712,19 @@ export default function BoardScreen() {
     return () => document.removeEventListener('keydown', onKey);
   }, []);
 
-  const nowS = data.generated_at || Date.now() / 1000;
+  const nowS = screen === 'health' ? health.nowS : data.generated_at || Date.now() / 1000;
+  const viewData = useMemo(() => screen === 'health' ? {
+    ...data, health: health.data, machine: health.data || data.machine,
+    sources: health.data ? healthSources(health.data) : [],
+  } : data, [screen, data, health.data]);
   const query = useMemo(() => {
     const win = applied.sel ? { since: applied.sel.since, until: applied.sel.until } : windowOf(applied.range);
     return boardQuery(applied, tools, { since: Math.floor(win.since), until: Math.floor(win.until) });
-  }, [applied.range, applied.sel, applied.project, applied.model, applied.status, applied.q, tools]);
+  }, [applied, tools]);
 
   const ctx = useMemo(() => ({
-    data, series: chartSeries, range: chartRange, chartRange, sel: applied.sel, filters: applied, tools, toolIds, settingToolIds, toolName, nowS, stopped, findings, actions: act, query, refreshKey: data.generated_at,
-  }), [data, chartSeries, chartRange, applied, tools, toolIds, settingToolIds, toolName, nowS, stopped, findings, query]);
+    data: viewData, series: chartSeries, range: chartRange, chartRange, sel: applied.sel, filters: applied, tools, toolIds, settingToolIds, toolName, nowS, stopped, findings, actions: act, query, refreshKey: data.generated_at,
+  }), [viewData, data.generated_at, chartSeries, chartRange, applied, tools, toolIds, settingToolIds, toolName, nowS, stopped, findings, query, act]);
 
   const settingsFindings = useMemo(() => ({ ...findings, rescan: act.rescan }), [findings, act]);
   const settingsSource = useMemo(() => (settingsRes.data ? {
@@ -730,21 +743,26 @@ export default function BoardScreen() {
   const hiddenIds = useMemo(() => new Set(ui.hidden), [ui.hidden]);
   const attention = data.attention.filter(i => !stopped[i.agent_id]).length;
 
-  return html`<div class="bd-app" tabindex="-1" data-theme=${resolvedTheme} data-density=${ui.density} aria-busy=${busy ? 'true' : 'false'}>
-    <${Rail} ui=${ui} data=${data} series=${chartSeries} findingsCount=${findings.list.length} attention=${attention} screen=${screen} settingsSum=${settingsSum} rangeSum=${act.rangeSummary()} act=${act}/>
+  return html`<div class="bd-app" tabindex="-1" data-theme=${resolvedTheme} data-density=${ui.density} aria-busy=${(screen === 'health' ? health.busy : busy) ? 'true' : 'false'}>
+    <${Rail} ui=${ui} data=${data} series=${chartSeries} loaded=${loaded} findingsCount=${findings.list.length} attention=${attention} screen=${screen} settingsSum=${settingsSum} healthSum=${health.data ? healthState.label : 'Collection, ingestion and store'} rangeSum=${act.rangeSummary()} act=${act}/>
     <div class="bd-main">
-      <${TopBar} f=${filters} board=${board} menu=${menu} ui=${ui} resolvedTheme=${resolvedTheme} setTheme=${setTheme} live=${live} act=${act}/>
-      <${FilterRow} board=${board} data=${data} ctx=${ctx} menu=${menu} act=${act}/>
+      <${TopBar} f=${filters} board=${board} menu=${menu} ui=${ui} resolvedTheme=${resolvedTheme} setTheme=${setTheme} live=${live} act=${act} screen=${screen}/>
+      ${screen === 'health' ? html`<div class="bd-bar" role="note">Current health of this aictl daemon. Board time, project, search and tool filters do not apply.</div>` : html`<${FilterRow} board=${board} data=${data} ctx=${ctx} menu=${menu} act=${act}/>`}
       <div class="bd-body">
-        <main class="bd-area" id="main-area" aria-label=${screen === 'settings' ? 'Settings' : undefined}>
+        <main class="bd-area" id="main-area" aria-label=${screen === 'settings' ? 'Settings' : screen === 'health' ? 'aictl Health' : undefined}>
           ${screen === 'settings' ? html`<${SettingsArea} Workspace=${SettingsC} res=${settingsRes} source=${settingsSource}/>` : html`
+          ${screen === 'health' ? html`<div class="bd-sech bd-healthhead"><h1>aictl Health</h1><span class=${'bd-' + healthState.cls} role="status">${healthState.label}</span><span class="bd-sum">${health.data?.generated_at ? 'Updated ' + stamp(health.data.generated_at, true) : 'No health timestamp'}</span></div>
+            ${health.error ? html`<div class="bd-banner" role="alert">Could not read live health: ${health.error.status === 404 ? 'this daemon does not provide /api/board/health.' : health.error.message} ${health.data ? 'Showing the last response.' : 'Health is unavailable; history is not used as a substitute.'}</div>` : null}
+            ${!health.data && !health.error ? html`<div class="bd-sk" role="status">Loading live health...</div>` : null}
+            ${healthState.issues.length ? html`<div class="bd-note" role="status">${healthState.issues.join(' ')}</div>` : null}
+          ` : html`
           ${error ? html`<div class="bd-banner" role=${error.status === 503 ? 'status' : 'alert'}><${Ico} d=${PATHS.warn}/>${error.status === 503 ? STARTING : 'Could not update the board: ' + error.message + '. Showing the last data.'}</div>` : null}
           ${staleCode(data) ? html`<div class="bd-banner" role="alert"><${Ico} d=${PATHS.warn}/>aictl was updated on disk at ${stamp(staleCode(data), true)}, after this daemon started at ${stamp(data.machine.pipeline.self.started_at, true)}. The page is new and the daemon runs the old code, so new parts of the board may fail. Restart the daemon: stop it, then run aictl daemon serve again.</div>` : null}
           ${!loaded && !error ? html`<div class="bd-sk" role="status">Loading the board...</div>` : null}
-          <${Kpis} data=${data} pill=${pill}/>
-          ${ui.layout.map((sec) => {
+          <${Kpis} data=${data} pill=${pill}/>`}
+          ${ui.layout.filter(sec => screen === 'health' ? sec.id === 'health' : sec.id !== 'health').map((sec) => {
             const def = SEC_BY_ID[sec.id];
-            return html`<section key=${sec.id} class="bd-sec" id=${def.anchor} aria-label=${def.title}>
+            return html`<section key=${sec.id} class=${'bd-sec' + (sec.id === 'health' ? ' bd-health' : '')} id=${def.anchor} aria-label=${def.title}>
               <div class="bd-sech">
                 <button type="button" class="bd-sect" aria-expanded=${sec.open ? 'true' : 'false'} onClick=${() => act.toggleSection(sec.id)}><${Ico} d=${PATHS.chev} cls=${'bd-chev' + (sec.open ? ' bd-open' : '')}/>${def.title}</button>
                 <span class="bd-sum">${sec.open ? '' : sectionSummary(sec.id, data, chartSeries, findings.list.length)}</span>
@@ -755,7 +773,7 @@ export default function BoardScreen() {
               </div>
               ${sec.open ? html`<div class="bd-grid" onDragOver=${(e) => { if (dragId) e.preventDefault(); }} onDrop=${e => act.dropOnSection(e, sec.id)}>
                 ${sec.panels.filter(p => !hiddenIds.has(p.id)).map(pn => html`<${Panel} key=${pn.id} pn=${pn} ctx=${ctx} hiddenCols=${ui.hiddenCols[pn.id]}
-                  menuOpen=${menu === 'panel:' + pn.id} over=${over && over.id === pn.id ? (over.after ? 'after' : 'before') : null} dragging=${dragId === pn.id} act=${act} sections=${SECTIONS}/>`)}
+                  menuOpen=${menu === 'panel:' + pn.id} over=${over && over.id === pn.id ? (over.after ? 'after' : 'before') : null} dragging=${dragId === pn.id} act=${act} sections=${SECTIONS.filter(s => screen === 'health' ? s.id === 'health' : s.id !== 'health')}/>`)}
               </div>` : null}
             </section>`;
           })}`}

@@ -391,8 +391,21 @@ class KustoClientFactory:
             if client is None:
                 from azure.kusto.data import KustoClient
 
-                client = cls._clients[key] = KustoClient(connection_string(settings))
+                from ..health import ObservedKustoClient
+
+                client = cls._clients[key] = ObservedKustoClient(KustoClient(connection_string(settings)))
             return client
+
+    @classmethod
+    def health_objects(cls, settings: KustoSettings) -> tuple[Any, Any]:
+        """Return already-created shared clients only, without waiting for discovery."""
+        key = (*cls.key(settings), settings.ingestion, tuple(sorted(settings.table_ingestion.items())))
+        if not cls._lock.acquire(blocking=False):
+            return None, None
+        try:
+            return cls._clients.get(cls.key(settings)), cls._ingesters.get(key)
+        finally:
+            cls._lock.release()
 
     @classmethod
     def ingester(cls, settings: KustoSettings) -> RowIngester:

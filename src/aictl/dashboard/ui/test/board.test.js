@@ -553,8 +553,9 @@ describe('guards', () => {
 
 describe('board screen', () => {
   it('renders all panels of the default layout in order, with the rail summaries', async () => {
-    const { container, getByText } = await mountBoard();
-    for (const sec of freshLayout()) for (const p of sec.panels) expect(container.querySelector('#p-' + p.id), p.id).toBeTruthy();
+    const { container } = await mountBoard();
+    for (const sec of freshLayout().filter(s => s.id !== 'health')) for (const p of sec.panels) expect(container.querySelector('#p-' + p.id), p.id).toBeTruthy();
+    expect(container.querySelector('a[href="?screen=health"]')).toBeTruthy();
     expect(container.querySelector('a[href^="?tab="]')).toBeNull();
     expect(container.querySelector('.bd-navi.bd-alert').textContent).toContain('2 running, 1 subagents running');
     expect(container.querySelector('#sec-resources .bd-sect').textContent).toBe('Machine');

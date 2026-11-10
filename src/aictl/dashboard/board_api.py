@@ -6262,7 +6262,75 @@ _ANOMALY_KINDS = {
     "high_file_count": ("High file count", "info"),
     "long_running": ("Long running", "info"),
 }
-_db_stats_memo: dict[str, tuple[float, dict]] = {}
+_db_stats_memo: dict[tuple[int, str], tuple[float, dict]] = {}
+_health_cache_lock = threading.Lock()
+_health_cache: dict[tuple[int, str], dict] = {}
+
+
+def _cached_health_data(db: Any, now: float) -> dict:
+    """Refresh costly store reads off the HTTP thread, with one refresh per store."""
+    if db is None:
+        return {}
+    key = (id(db), str(getattr(db, "_path", "")))
+    with _health_cache_lock:
+        entry = _health_cache.setdefault(key, {"data": {}, "at": 0.0, "refreshing": False})
+        if not entry["refreshing"] and time.monotonic() - entry["at"] >= HOOKS_TTL_S:
+            entry["refreshing"] = True
+
+            def refresh() -> None:
+                try:
+                    policies = _health_kusto_policies(db, entry["data"].get("policies"))
+                    with _health_cache_lock:
+                        entry["data"] = {**entry["data"], "policies": policies}
+                    data = {
+                        "policies": policies,
+                        "stats": _db_stats(db),
+                        "quality": _quality_rows(db),
+                        "hooks": _hooks_by_tool(db, now),
+                        "checked_at": time.time(),
+                    }
+                    with _health_cache_lock:
+                        entry["data"] = data
+                finally:
+                    with _health_cache_lock:
+                        entry["at"] = time.monotonic()
+                        entry["refreshing"] = False
+
+            threading.Thread(target=refresh, name="aictl-health-stats", daemon=True).start()
+        return dict(entry["data"])
+
+
+def _health_kusto_policies(db: Any, previous: dict | None = None) -> dict | None:
+    """Read database policies only on the existing background health refresh."""
+    settings = getattr(db, "_kusto", None)
+    if settings is None:
+        return None
+    result = dict(previous or {})
+    if time.time() - result.get("attempted_at", 0) < 300:
+        return result
+    from ..kusto.connection import KustoClientFactory, Result
+    from ..kusto.schema import quote
+
+    client, _ = KustoClientFactory.health_objects(settings)
+    if client is None:
+        return result or {"status": "pending", "batching": None, "streaming": None}
+    from azure.kusto.data import ClientRequestProperties
+
+    props = ClientRequestProperties()
+    props.set_option(ClientRequestProperties.request_timeout_option_name, timedelta(seconds=5))
+    result.update(attempted_at=time.time(), last_error=None, status="ok")
+    for key, policy in (("batching", "ingestionbatching"), ("streaming", "streamingingestion")):
+        try:
+            response = client.execute_mgmt(settings.database, f".show database {quote(settings.database)} policy {policy}", props)
+            rows = Result.from_response(response).dicts()
+            raw = rows[0].get("Policy") if rows else None
+            result[key] = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception as exc:  # noqa: BLE001 - policy permissions do not prevent client health
+            result.setdefault(key, None)
+            result.update(last_error=mask_secrets(str(exc)), status="error")
+    if result["status"] == "ok":
+        result["checked_at"] = time.time()
+    return result
 
 
 def _mb_text(mb: float | None) -> str:
@@ -6540,7 +6608,7 @@ def _db_stats(db: Any) -> dict:
     """Size and row counts of the history, read at most every DB_STATS_TTL_S: each count scans a table."""
     if db is None:
         return {}
-    key = str(getattr(db, "_path", "memory"))
+    key = (id(db), str(getattr(db, "_path", "memory")))
     cached = _db_stats_memo.get(key)
     if cached and time.monotonic() - cached[0] < DB_STATS_TTL_S:
         return cached[1]
@@ -6623,7 +6691,12 @@ def _ingester_rows(handles: Any, quality: list[dict]) -> list[dict]:
             status = "off"
         elif not h.get("source_exists"):
             status = "no source"
-        elif q and q["status"] not in ("ok", "") and q["severity"] in ("error", "warning"):
+        elif h.get("last_error"):
+            status = "failed"
+        elif (
+            q and q["status"] not in ("ok", "") and q["severity"] in ("error", "warning")
+            and not (h.get("last_success_at") and h["last_success_at"] > (q.get("ts") or 0))
+        ):
             status = q["status"]
         elif not polled:
             status = "waiting"
@@ -6634,12 +6707,15 @@ def _ingester_rows(handles: Any, quality: list[dict]) -> list[dict]:
             {
                 "name": name,
                 "status": status,
-                "last_ok": (q or {}).get("last_ok") or (polled if status == "ok" else None),
+                "last_ok": h.get("last_success_at") or (q or {}).get("last_ok") or (polled if status == "ok" else None),
                 "last_poll": polled,
-                "error": ((q or {}).get("error") or (q or {}).get("text")) if failing else None,
+                "error": mask_secrets(str(h.get("last_error") or (q or {}).get("error") or (q or {}).get("text") or "")) if failing else None,
                 "rows": h.get("last_poll_inserted"),
                 "rows_total": h.get("rows_ingested_total"),
                 "source": _display_folder(Path(h["source_path"])) if h.get("source_path") else None,
+                "source_path": h.get("source_path"),
+                "poll_in_flight": h.get("poll_in_flight"),
+                "last_poll_duration_ms": h.get("last_poll_duration_ms"),
             }
         )
     return out
@@ -6714,7 +6790,7 @@ def _otel_setup(port: int | None) -> dict:
         return {}
 
 
-def compute_machine(
+def _collection_health(
     db: Any,
     store: Any,
     tools: tuple[str, ...] | None = None,
@@ -6723,16 +6799,18 @@ def compute_machine(
     stream_clients: int | None = None,
     now: float | None = None,
     port: int | None = None,
+    *,
+    cached_only: bool = False,
 ) -> dict:
-    """Everything ``GET /api/board/machine`` returns. The Tool filter applies to the per-tool lists only."""
+    """The shared collection-health projection used by Machine and Health."""
     now = time.time() if now is None else now
     snapshot = getattr(store, "snapshot", None)
     selected = set(stored_ids_for(tools)) if tools is not None else None
-    processes = machine_processes(snapshot, selected)
     usage = _self_usage()
-    stats = _db_stats(db)
+    cached = _cached_health_data(db, now) if cached_only else {}
+    stats = cached.get("stats", {}) if cached_only else _db_stats(db)
     counts = {k[: -len("_count")]: v for k, v in stats.items() if k.endswith("_count") and isinstance(v, int)}
-    quality = _quality_rows(db)
+    quality = cached.get("quality", []) if cached_only else _quality_rows(db)
     try:
         otel_status = otel.status() if otel is not None else None
     except Exception:  # noqa: BLE001 - the receiver is optional
@@ -6741,17 +6819,13 @@ def compute_machine(
     return {
         "generated_at": now,
         "monitor": _monitor_section(snapshot, selected),
-        "processes": processes,
-        "cpu_per_core": [round(float(v), 1) for v in getattr(snapshot, "cpu_per_core", None) or []],
-        "cpu_cores": getattr(snapshot, "cpu_cores", None) or None,
-        "alerts": machine_alerts(processes),
         "pipeline": {
             "self": {
                 "pid": os.getpid(),
                 "cpu": usage.get("cpu_percent"),
                 "rss": usage.get("memory_rss_bytes"),
                 **_own_process(),
-                "db_bytes": stats.get("file_size_bytes"),
+                "db_bytes": stats.get("file_size_bytes") if isinstance(getattr(db, "_path", None), Path) else None,
                 "db_rows": sum(counts.values()) if counts else None,
                 "db_tables": counts,
                 "writes": db.running_writes() if hasattr(db, "running_writes") else [],
@@ -6762,7 +6836,7 @@ def compute_machine(
             "sink": _sink_section(store),
             "otel_receiver": otel_status,
             "otel_setup": _otel_setup(port),
-            "hooks": _hooks_by_tool(db, now),
+            "hooks": cached.get("hooks", {}) if cached_only else _hooks_by_tool(db, now),
             "ingesters": _ingester_rows(ingesters, quality),
             "data_quality": quality,
             "freshness": _freshness(snapshot, selected),
@@ -6773,6 +6847,192 @@ def compute_machine(
             },
         },
     }
+
+
+def compute_machine(
+    db: Any,
+    store: Any,
+    tools: tuple[str, ...] | None = None,
+    otel: Any = None,
+    ingesters: Any = None,
+    stream_clients: int | None = None,
+    now: float | None = None,
+    port: int | None = None,
+) -> dict:
+    """Everything ``GET /api/board/machine`` returns, with the original tool filter."""
+    payload = _collection_health(db, store, tools, otel, ingesters, stream_clients, now, port)
+    snapshot = getattr(store, "snapshot", None)
+    selected = set(stored_ids_for(tools)) if tools is not None else None
+    processes = machine_processes(snapshot, selected)
+    payload.update(
+        processes=processes,
+        cpu_per_core=[round(float(v), 1) for v in getattr(snapshot, "cpu_per_core", None) or []],
+        cpu_cores=getattr(snapshot, "cpu_cores", None) or None,
+        alerts=machine_alerts(processes),
+    )
+    return payload
+
+
+def compute_health(
+    db: Any,
+    store: Any,
+    *,
+    otel: Any = None,
+    ingesters: Any = None,
+    stream_clients: int | None = None,
+    port: int | None = None,
+    http_reads: Any = None,
+    http_writes: Any = None,
+    now: float | None = None,
+) -> dict:
+    """Lightweight live collection health; no store query runs on this thread."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    now = time.time() if now is None else now
+    payload = _collection_health(
+        db, store, otel=otel, ingesters=ingesters, stream_clients=stream_clients,
+        now=now, port=port, cached_only=True,
+    )
+    settings = getattr(db, "_kusto", None)
+    path = str(getattr(db, "_path", ":memory:"))
+    kind = "kusto" if settings is not None else "memory" if path == ":memory:" else "sqlite"
+    reads = http_reads.snapshot() if http_reads is not None else None
+    writes = http_writes.snapshot() if http_writes is not None else None
+    cluster_url = database = ingestion_mode = capacity = commands = pending = None
+    operations = None
+    pending_groups: dict[str, int] = {}
+    pending_history_groups: dict[str, int] = {}
+    ingestion_details = None
+    scope = "daemon HTTP GET/POST requests, including dashboard assets; not SQL operations"
+    if settings is not None:
+        from ..kusto.connection import KustoClientFactory
+
+        parsed = urlsplit(settings.cluster)
+        host = parsed.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"
+        netloc = host + (f":{parsed.port}" if parsed.port else "")
+        cluster_url = urlunsplit((parsed.scheme, netloc, parsed.path.rstrip("/"), "", ""))
+        database, ingestion_mode = settings.database, settings.ingestion
+        client, ingester = KustoClientFactory.health_objects(settings)
+        reads = client.reads.snapshot() if hasattr(client, "reads") else None
+        commands = client.commands.snapshot() if hasattr(client, "commands") else None
+        operations = getattr(ingester, "operations", None)
+        writes = operations.snapshot() if operations is not None else None
+        children = getattr(ingester, "ingesters", {})
+        inline = children.get("inline") if children else ingester
+        total = getattr(inline, "capacity_total", None)
+        if total is not None:
+            capacity = {"total": total, "in_use": None, "available": None}
+        queued = children.get("queued") if children else ingester
+        lock = getattr(queued, "_lock", None)
+        if lock is not None and hasattr(queued, "_pending_rows"):
+            with lock:
+                pending = queued._pending_rows
+                from ..health import traffic_group
+
+                for submission in queued._pending.values():
+                    group_id = traffic_group(submission.table)
+                    pending_groups[group_id] = pending_groups.get(group_id, 0) + len(submission.markers)
+                pending_history_groups = dict(pending_groups)
+        from ..kusto.ingest import INLINE_MAX_BYTES, QUEUED_MAX_BYTES, QUEUED_PENDING_ROWS, STREAMING_MAX_BYTES
+        from ..kusto.otel_sink import LINGER_S, MAX_PENDING_BYTES
+
+        ingestion_details = {
+            "mode": settings.ingestion,
+            "default_mode": settings.default_ingestion,
+            "table_overrides": dict(settings.table_ingestion),
+            "client_limits": {
+                "inline_max_bytes": INLINE_MAX_BYTES,
+                "streaming_max_bytes": STREAMING_MAX_BYTES,
+                "queued_max_bytes": QUEUED_MAX_BYTES,
+                "queued_pending_rows": QUEUED_PENDING_ROWS,
+                "otel_linger_s": LINGER_S,
+                "otel_max_pending_bytes": MAX_PENDING_BYTES,
+            },
+            "batches": {key: (writes or {}).get(key) for key in ("successful_requests", "avg_rows", "avg_bytes", "last_rows", "last_bytes")},
+            "batch_scope": "acknowledged client upload batches, not DM merged ingestion batches",
+        }
+        scope = "this process's Kusto SDK request attempts; ingestion volume is acknowledged submission"
+    operation_snapshots = [v for v in (reads, writes, commands) if v is not None]
+    for operation in operation_snapshots:
+        if operation.get("last_error"):
+            operation["last_error"] = mask_secrets(operation["last_error"])
+    success = max((v.get("last_success_at") or 0 for v in operation_snapshots), default=0) or None
+    failure = max(operation_snapshots, key=lambda v: v.get("last_error_at") or 0, default={})
+    degraded = getattr(db, "degraded_reason", "") if db is not None else ""
+    failing = any((v.get("last_error_at") or 0) > (v.get("last_success_at") or 0) for v in operation_snapshots)
+    state = "degraded" if degraded or failing else "ok" if success else "unknown"
+    sink = getattr(db, "otel_sink", None)
+    try:
+        otel_sink = sink.stats() if sink is not None else None
+    except Exception:  # noqa: BLE001 - optional sink diagnostics cannot break health
+        otel_sink = None
+    if otel_sink is not None and otel_sink.get("last_error"):
+        otel_sink["last_error"] = mask_secrets(str(otel_sink["last_error"]))
+    if otel_sink is not None and otel_sink.get("pending_rows") is not None:
+        pending_groups["otel"] = pending_groups.get("otel", 0) + otel_sink["pending_rows"]
+    cached = _cached_health_data(db, now)
+    if ingestion_details is not None:
+        policies = dict(cached.get("policies") or {"status": "pending", "batching": None, "streaming": None})
+        policies["age_s"] = max(0.0, now - policies["checked_at"]) if policies.get("checked_at") else None
+        policies.setdefault("checked_at", None)
+        policies.setdefault("attempted_at", None)
+        policies.setdefault("last_error", None)
+        policies["batching_scope"] = "DM queued ingestion database policy"
+        policies["streaming_scope"] = "engine streaming ingestion database policy"
+        ingestion_details["policies"] = policies
+    from ..health import ingestion_traffic, traffic_groups
+
+    transport_traffic = ingestion_traffic(
+        operations, settings, pending_history_rows=pending, pending_history_groups=pending_history_groups,
+    )
+    for mode_stats in (transport_traffic or {}).values():
+        if mode_stats.get("last_error"):
+            mode_stats["last_error"] = mask_secrets(mode_stats["last_error"])
+    payload["store"] = {
+        "kind": kind,
+        "destination": f"{cluster_url}/{database}" if cluster_url else path,
+        "cluster_url": cluster_url,
+        "database": database,
+        "ingestion_mode": ingestion_mode,
+        "ingestion_details": ingestion_details,
+        "traffic_groups": traffic_groups(operations, settings, pending_groups),
+        "ingestion_traffic": transport_traffic,
+        "reads": reads,
+        "writes": writes,
+        "commands": commands,
+        "commands_scope": "management requests include inline ingestion; do not add them to writes",
+        "measurement_scope": scope,
+        "ingestion_capacity": capacity,
+        "capacity_scope": "cached cluster ingestion total; cluster usage is not reported",
+        "queued_history_rows_unconfirmed": pending,
+        "otel_sink": otel_sink,
+        "volume": {
+            "rows": payload["pipeline"]["self"]["db_rows"],
+            "bytes": payload["pipeline"]["self"]["db_bytes"],
+            "tables": payload["pipeline"]["self"]["db_tables"],
+            "checked_at": cached.get("checked_at"),
+            "scope": "cached selected history tables; excludes raw OTel export tables; not submitted rows or a cluster-wide total",
+            "status": "cached" if cached.get("checked_at") else "pending",
+            "refresh_interval_s": DB_STATS_TTL_S,
+        },
+        "storage_budget_bytes": getattr(db, "_budget_bytes", None) if kind != "kusto" else None,
+        "counter_scope": "process lifetime; reset on daemon restart; rates use up to the last 60 seconds",
+        "write_volume_scope": (
+            "acknowledged JSON payload rows and ASCII bytes, excluding command headers; "
+            "queued acknowledgements do not confirm queryability"
+            if settings else "HTTP requests only; SQL rows and payload bytes are not measured"
+        ),
+        "health": {
+            "state": state,
+            "checked_at": now,
+            "last_success_at": success,
+            "last_error": mask_secrets(degraded) if degraded else failure.get("last_error"),
+            "scope": "client operations only; not cluster-wide health" if settings else scope,
+        },
+    }
+    return payload
 
 
 def machine_bytes(

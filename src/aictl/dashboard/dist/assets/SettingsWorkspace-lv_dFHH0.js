@@ -1,279 +1,279 @@
-import{R as ce,U as re,V as Lt,W as de,m as o,E as ws,X as pe,Y as ue,d as w,Z as he,$ as ct,a0 as qt,a1 as ns,q,a2 as $e,y as rt,a3 as fe,T as L,a4 as ye,h as be,a5 as as,a6 as os,a7 as me}from"./index-Ta1FIaFo.js";import{i as ke,D as Pt,a as ge,o as ve,b as Y,e as D,c as H,d as ft,p as _e,s as M,f as It,g as we,m as zt,h as Ce,j as wt,S as jt,k as Dt,t as Se,l as Cs,P as xe,G as Ss,L as Me,n as I,q as xs,r as Wt,u as Oe,v as B,w as Ae,x as Te,y as Ms,z as W,A as Ee,B as ls,C as X,E as Le,F as Pe,H as je,I as Os,J as As,K as dt,M as Ne,N as Fe,O as pt,Q as Re,R as qe,T as Ie,U as ze,V as De,W as We,X as Ve,Y as Ue,Z as is,_ as Be,$ as He,a0 as Ge,a1 as Ke,a2 as Ze,a3 as cs,a4 as rs,a5 as Je,a6 as Ye,a7 as Xe}from"./model-DTH5Ghgk.js";import{u as j,a as Qe,n as Ts}from"./tableGrid-BczN2bY3.js";/**
- * @license lucide-preact v1.8.0 - ISC
+import{R as ce,X as re,U as Lt,V as de,m as o,E as ws,W as pe,Y as ue,d as w,Z as he,$ as ct,a0 as qt,a1 as ns,q,a2 as $e,y as rt,a3 as fe,T as L,a4 as ye,h as be,a5 as as,a6 as os,a7 as me}from"./index-DvQPFYRk.js";import{i as ke,D as Pt,a as ge,o as ve,b as X,e as D,c as H,d as ft,p as _e,s as M,f as It,g as we,m as zt,h as Ce,j as wt,S as jt,k as Dt,t as Se,l as Cs,P as xe,G as Ss,L as Me,n as I,q as xs,r as Wt,u as Oe,v as B,w as Ae,x as Te,y as Ms,z as W,A as Ee,B as ls,C as Y,E as Le,F as Pe,H as je,I as Os,J as As,K as dt,M as Ne,N as Fe,O as pt,Q as Re,R as qe,T as Ie,U as ze,V as De,W as We,X as Ve,Y as Ue,Z as is,_ as Be,$ as He,a0 as Ge,a1 as Ke,a2 as Ze,a3 as cs,a4 as rs,a5 as Je,a6 as Xe,a7 as Ye}from"./model-DtOsTt8_.js";import{u as j,a as Qe,n as Ts}from"./tableGrid-DifAZpV-.js";/**
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const Es=(...t)=>t.filter((s,e,a)=>!!s&&s.trim()!==""&&a.indexOf(s)===e).join(" ").trim();/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const ds=t=>t.replace(/([a-z0-9])([A-Z])/g,"$1-$2").toLowerCase();/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const tn=t=>t.replace(/^([A-Z])|[\s-_]+(\w)/g,(s,e,a)=>a?a.toUpperCase():e.toLowerCase());/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const ps=t=>{const s=tn(t);return s.charAt(0).toUpperCase()+s.slice(1)};/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */var sn={xmlns:"http://www.w3.org/2000/svg",width:24,height:24,viewBox:"0 0 24 24",fill:"none",stroke:"currentColor","stroke-width":"2","stroke-linecap":"round","stroke-linejoin":"round"};/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const en=re({size:24,color:"currentColor",strokeWidth:2,absoluteStrokeWidth:!1,class:""}),nn=()=>ce(en);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const an=t=>{for(const s in t)if(s.startsWith("aria-")||s==="role"||s==="title")return!0;return!1};/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const on=({color:t,size:s,strokeWidth:e,absoluteStrokeWidth:a,children:n,iconNode:l,class:i="",...c})=>{const{size:d=24,strokeWidth:h=2,absoluteStrokeWidth:u=!1,color:r="currentColor",class:p=""}=nn()??{},f=a??u?Number(e??h)*24/Number(s??d):e??h;return Lt("svg",{...sn,width:s??d??24,height:s??d??24,stroke:t??r,"stroke-width":f,class:Es("lucide",p,i),...!n&&!an(c)&&{"aria-hidden":"true"},...c},[...l.map(([$,_])=>Lt($,_)),...de(n)])};/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const y=(t,s)=>{const e=({class:a="",className:n="",children:l,...i})=>Lt(on,{...i,iconNode:s,class:Es(`lucide-${ds(ps(t))}`,`lucide-${ds(t)}`,a,n)},l);return e.displayName=ps(t),e};/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const ln=y("activity",[["path",{d:"M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2",key:"169zse"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const cn=y("archive",[["rect",{width:"20",height:"5",x:"2",y:"3",rx:"1",key:"1wp1u1"}],["path",{d:"M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8",key:"1s80jp"}],["path",{d:"M10 12h4",key:"a56b0p"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const rn=y("banknote",[["rect",{width:"20",height:"12",x:"2",y:"6",rx:"2",key:"9lu3g6"}],["circle",{cx:"12",cy:"12",r:"2",key:"1c9p78"}],["path",{d:"M6 12h.01M18 12h.01",key:"113zkx"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const dn=y("book-open",[["path",{d:"M12 7v14",key:"1akyts"}],["path",{d:"M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z",key:"ruj8y"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const pn=y("bot",[["path",{d:"M12 8V4H8",key:"hb8ula"}],["rect",{width:"16",height:"12",x:"4",y:"8",rx:"2",key:"enze0r"}],["path",{d:"M2 14h2",key:"vft8re"}],["path",{d:"M20 14h2",key:"4cs60a"}],["path",{d:"M15 13v2",key:"1xurst"}],["path",{d:"M9 13v2",key:"rq6x2g"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const un=y("brain-circuit",[["path",{d:"M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z",key:"l5xja"}],["path",{d:"M9 13a4.5 4.5 0 0 0 3-4",key:"10igwf"}],["path",{d:"M6.003 5.125A3 3 0 0 0 6.401 6.5",key:"105sqy"}],["path",{d:"M3.477 10.896a4 4 0 0 1 .585-.396",key:"ql3yin"}],["path",{d:"M6 18a4 4 0 0 1-1.967-.516",key:"2e4loj"}],["path",{d:"M12 13h4",key:"1ku699"}],["path",{d:"M12 18h6a2 2 0 0 1 2 2v1",key:"105ag5"}],["path",{d:"M12 8h8",key:"1lhi5i"}],["path",{d:"M16 8V5a2 2 0 0 1 2-2",key:"u6izg6"}],["circle",{cx:"16",cy:"13",r:".5",key:"ry7gng"}],["circle",{cx:"18",cy:"3",r:".5",key:"1aiba7"}],["circle",{cx:"20",cy:"21",r:".5",key:"yhc1fs"}],["circle",{cx:"20",cy:"8",r:".5",key:"1e43v0"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const hn=y("brain",[["path",{d:"M12 18V5",key:"adv99a"}],["path",{d:"M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4",key:"1e3is1"}],["path",{d:"M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5",key:"1gqd8o"}],["path",{d:"M17.997 5.125a4 4 0 0 1 2.526 5.77",key:"iwvgf7"}],["path",{d:"M18 18a4 4 0 0 0 2-7.464",key:"efp6ie"}],["path",{d:"M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517",key:"1gq6am"}],["path",{d:"M6 18a4 4 0 0 1-2-7.464",key:"k1g0md"}],["path",{d:"M6.003 5.125a4 4 0 0 0-2.526 5.77",key:"q97ue3"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const $n=y("chart-column",[["path",{d:"M3 3v16a2 2 0 0 0 2 2h16",key:"c24i48"}],["path",{d:"M18 17V9",key:"2bz60n"}],["path",{d:"M13 17V5",key:"1frdt8"}],["path",{d:"M8 17v-3",key:"17ska0"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const fn=y("chart-line",[["path",{d:"M3 3v16a2 2 0 0 0 2 2h16",key:"c24i48"}],["path",{d:"m19 9-5 5-4-4-3 3",key:"2osh9i"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const yn=y("chevron-down",[["path",{d:"m6 9 6 6 6-6",key:"qrunsl"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const bn=y("chevron-right",[["path",{d:"m9 18 6-6-6-6",key:"mthhwq"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const mn=y("clipboard-list",[["rect",{width:"8",height:"4",x:"8",y:"2",rx:"1",ry:"1",key:"tgr4d6"}],["path",{d:"M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2",key:"116196"}],["path",{d:"M12 11h4",key:"1jrz19"}],["path",{d:"M12 16h4",key:"n85exb"}],["path",{d:"M8 11h.01",key:"1dfujw"}],["path",{d:"M8 16h.01",key:"18s6g9"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const kn=y("clock",[["circle",{cx:"12",cy:"12",r:"10",key:"1mglay"}],["path",{d:"M12 6v6l4 2",key:"mmk7yg"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const gn=y("coins",[["path",{d:"M13.744 17.736a6 6 0 1 1-7.48-7.48",key:"bq4yh3"}],["path",{d:"M15 6h1v4",key:"11y1tn"}],["path",{d:"m6.134 14.768.866-.5 2 3.464",key:"17snzx"}],["circle",{cx:"16",cy:"8",r:"6",key:"14bfc9"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const vn=y("cpu",[["path",{d:"M12 20v2",key:"1lh1kg"}],["path",{d:"M12 2v2",key:"tus03m"}],["path",{d:"M17 20v2",key:"1rnc9c"}],["path",{d:"M17 2v2",key:"11trls"}],["path",{d:"M2 12h2",key:"1t8f8n"}],["path",{d:"M2 17h2",key:"7oei6x"}],["path",{d:"M2 7h2",key:"asdhe0"}],["path",{d:"M20 12h2",key:"1q8mjw"}],["path",{d:"M20 17h2",key:"1fpfkl"}],["path",{d:"M20 7h2",key:"1o8tra"}],["path",{d:"M7 20v2",key:"4gnj0m"}],["path",{d:"M7 2v2",key:"1i4yhu"}],["rect",{x:"4",y:"4",width:"16",height:"16",rx:"2",key:"1vbyd7"}],["rect",{x:"8",y:"8",width:"8",height:"8",rx:"1",key:"z9xiuo"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const _n=y("eye-off",[["path",{d:"M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49",key:"ct8e1f"}],["path",{d:"M14.084 14.158a3 3 0 0 1-4.242-4.242",key:"151rxh"}],["path",{d:"M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143",key:"13bj9a"}],["path",{d:"m2 2 20 20",key:"1ooewy"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const wn=y("file-pen",[["path",{d:"M12.659 22H18a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v9.34",key:"o6klzx"}],["path",{d:"M14 2v5a1 1 0 0 0 1 1h5",key:"wfsgrz"}],["path",{d:"M10.378 12.622a1 1 0 0 1 3 3.003L8.36 20.637a2 2 0 0 1-.854.506l-2.867.837a.5.5 0 0 1-.62-.62l.836-2.869a2 2 0 0 1 .506-.853z",key:"zhnas1"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const Cn=y("file-text",[["path",{d:"M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z",key:"1oefj6"}],["path",{d:"M14 2v5a1 1 0 0 0 1 1h5",key:"wfsgrz"}],["path",{d:"M10 9H8",key:"b1mrlr"}],["path",{d:"M16 13H8",key:"t4e002"}],["path",{d:"M16 17H8",key:"z1uh3a"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const Sn=y("folder",[["path",{d:"M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",key:"1kt360"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const xn=y("funnel",[["path",{d:"M10 20a1 1 0 0 0 .553.895l2 1A1 1 0 0 0 14 21v-7a2 2 0 0 1 .517-1.341L21.74 4.67A1 1 0 0 0 21 3H3a1 1 0 0 0-.742 1.67l7.225 7.989A2 2 0 0 1 10 14z",key:"sc7q7i"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const Mn=y("git-branch",[["path",{d:"M15 6a9 9 0 0 0-9 9V3",key:"1cii5b"}],["circle",{cx:"18",cy:"6",r:"3",key:"1h7g24"}],["circle",{cx:"6",cy:"18",r:"3",key:"fqmcym"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const On=y("globe",[["circle",{cx:"12",cy:"12",r:"10",key:"1mglay"}],["path",{d:"M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20",key:"13o1zl"}],["path",{d:"M2 12h20",key:"9i4pu4"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const An=y("grid-3x3",[["rect",{width:"18",height:"18",x:"3",y:"3",rx:"2",key:"afitv7"}],["path",{d:"M3 9h18",key:"1pudct"}],["path",{d:"M3 15h18",key:"5xshup"}],["path",{d:"M9 3v18",key:"fh3hqa"}],["path",{d:"M15 3v18",key:"14nvp0"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
- */const Tn=y("layout-dashboard",[["rect",{width:"7",height:"9",x:"3",y:"3",rx:"1",key:"10lvy0"}],["rect",{width:"7",height:"5",x:"14",y:"3",rx:"1",key:"16une8"}],["rect",{width:"7",height:"9",x:"14",y:"12",rx:"1",key:"1hutg5"}],["rect",{width:"7",height:"5",x:"3",y:"16",rx:"1",key:"ldoo1y"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ */const Tn=y("layers",[["path",{d:"M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z",key:"zw3jo"}],["path",{d:"M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12",key:"1wduqc"}],["path",{d:"M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17",key:"kqbvx6"}]]);/**
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
- */const En=y("layers",[["path",{d:"M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z",key:"zw3jo"}],["path",{d:"M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12",key:"1wduqc"}],["path",{d:"M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17",key:"kqbvx6"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ */const En=y("layout-dashboard",[["rect",{width:"7",height:"9",x:"3",y:"3",rx:"1",key:"10lvy0"}],["rect",{width:"7",height:"5",x:"14",y:"3",rx:"1",key:"16une8"}],["rect",{width:"7",height:"9",x:"14",y:"12",rx:"1",key:"1hutg5"}],["rect",{width:"7",height:"5",x:"3",y:"16",rx:"1",key:"ldoo1y"}]]);/**
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const Ln=y("lock",[["rect",{width:"18",height:"11",x:"3",y:"11",rx:"2",ry:"2",key:"1w4ew1"}],["path",{d:"M7 11V7a5 5 0 0 1 10 0v4",key:"fwvmzm"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const Pn=y("mail",[["path",{d:"m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7",key:"132q7q"}],["rect",{x:"2",y:"4",width:"20",height:"16",rx:"2",key:"izxlao"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const jn=y("message-square",[["path",{d:"M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z",key:"18887p"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const Nn=y("moon",[["path",{d:"M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401",key:"kfwtm"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const Fn=y("package",[["path",{d:"M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z",key:"1a0edw"}],["path",{d:"M12 22V12",key:"d0xqtd"}],["polyline",{points:"3.29 7 12 12 20.71 7",key:"ousv84"}],["path",{d:"m7.5 4.27 9 5.15",key:"1c824w"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const Rn=y("pen",[["path",{d:"M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z",key:"1a8usu"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const qn=y("plug",[["path",{d:"M12 22v-5",key:"1ega77"}],["path",{d:"M15 8V2",key:"18g5xt"}],["path",{d:"M17 8a1 1 0 0 1 1 1v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1z",key:"1xoxul"}],["path",{d:"M9 8V2",key:"14iosj"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const In=y("radio",[["path",{d:"M16.247 7.761a6 6 0 0 1 0 8.478",key:"1fwjs5"}],["path",{d:"M19.075 4.933a10 10 0 0 1 0 14.134",key:"ehdyv1"}],["path",{d:"M4.925 19.067a10 10 0 0 1 0-14.134",key:"1q22gi"}],["path",{d:"M7.753 16.239a6 6 0 0 1 0-8.478",key:"r2q7qm"}],["circle",{cx:"12",cy:"12",r:"2",key:"1c9p78"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const zn=y("refresh-cw",[["path",{d:"M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8",key:"v9h5vc"}],["path",{d:"M21 3v5h-5",key:"1q7to0"}],["path",{d:"M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16",key:"3uifl3"}],["path",{d:"M8 16H3v5",key:"1cv678"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const Dn=y("search",[["path",{d:"m21 21-4.34-4.34",key:"14j7rj"}],["circle",{cx:"11",cy:"11",r:"8",key:"4ej97u"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const Wn=y("server",[["rect",{width:"20",height:"8",x:"2",y:"2",rx:"2",ry:"2",key:"ngkwjq"}],["rect",{width:"20",height:"8",x:"2",y:"14",rx:"2",ry:"2",key:"iecqi9"}],["line",{x1:"6",x2:"6.01",y1:"6",y2:"6",key:"16zg32"}],["line",{x1:"6",x2:"6.01",y1:"18",y2:"18",key:"nzw8ys"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const Vn=y("settings",[["path",{d:"M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915",key:"1i5ecw"}],["circle",{cx:"12",cy:"12",r:"3",key:"1v7zrd"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const Un=y("sun",[["circle",{cx:"12",cy:"12",r:"4",key:"4exip2"}],["path",{d:"M12 2v2",key:"tus03m"}],["path",{d:"M12 20v2",key:"1lh1kg"}],["path",{d:"m4.93 4.93 1.41 1.41",key:"149t6j"}],["path",{d:"m17.66 17.66 1.41 1.41",key:"ptbguv"}],["path",{d:"M2 12h2",key:"1t8f8n"}],["path",{d:"M20 12h2",key:"1q8mjw"}],["path",{d:"m6.34 17.66-1.41 1.41",key:"1m8zz5"}],["path",{d:"m19.07 4.93-1.41 1.41",key:"1shlcs"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const Bn=y("triangle-alert",[["path",{d:"m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3",key:"wmoenq"}],["path",{d:"M12 9v4",key:"juzpu7"}],["path",{d:"M12 17h.01",key:"p32p05"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const Hn=y("user",[["path",{d:"M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2",key:"975kel"}],["circle",{cx:"12",cy:"7",r:"4",key:"17ys0d"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const Gn=y("users",[["path",{d:"M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2",key:"1yyitq"}],["path",{d:"M16 3.128a4 4 0 0 1 0 7.744",key:"16gr8j"}],["path",{d:"M22 21v-2a4 4 0 0 0-3-3.87",key:"kshegd"}],["circle",{cx:"9",cy:"7",r:"4",key:"nufk8"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const Kn=y("wallet",[["path",{d:"M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1",key:"18etb6"}],["path",{d:"M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4",key:"xoc0q4"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const Zn=y("webhook",[["path",{d:"M18 16.98h-5.99c-1.1 0-1.95.94-2.48 1.9A4 4 0 0 1 2 17c.01-.7.2-1.4.57-2",key:"q3hayz"}],["path",{d:"m6 17 3.13-5.78c.53-.97.1-2.18-.5-3.1a4 4 0 1 1 6.89-4.06",key:"1go1hn"}],["path",{d:"m12 6 3.13 5.73C15.66 12.7 16.9 13 18 13a4 4 0 0 1 0 8",key:"qlwsc0"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const Jn=y("wrench",[["path",{d:"M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.106-3.105c.32-.322.863-.22.983.218a6 6 0 0 1-8.259 7.057l-7.91 7.91a1 1 0 0 1-2.999-3l7.91-7.91a6 6 0 0 1 7.057-8.259c.438.12.54.662.219.984z",key:"1ngwbx"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
- */const Yn=y("x",[["path",{d:"M18 6 6 18",key:"1bl5f8"}],["path",{d:"m6 6 12 12",key:"d8bk6v"}]]);/**
- * @license lucide-preact v1.8.0 - ISC
+ */const Xn=y("x",[["path",{d:"M18 6 6 18",key:"1bl5f8"}],["path",{d:"m6 6 12 12",key:"d8bk6v"}]]);/**
+ * @license lucide-preact v1.17.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
- */const Xn=y("zap",[["path",{d:"M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z",key:"1xq2db"}]]),Qn={activity:ln,"alert-triangle":Bn,filter:xn,"eye-off":_n,archive:cn,banknote:rn,"bar-chart-3":$n,"book-open":dn,bot:pn,brain:hn,"brain-circuit":un,"chevron-down":yn,"chevron-right":bn,"clipboard-list":mn,clock:kn,coins:gn,cpu:vn,"file-pen":wn,"file-text":Cn,folder:Sn,"git-branch":Mn,globe:On,"grid-3x3":An,layers:En,"layout-dashboard":Tn,"line-chart":fn,lock:Ln,mail:Pn,"message-square":jn,moon:Nn,package:Fn,pen:Rn,plug:qn,radio:In,"refresh-cw":zn,search:Dn,server:Wn,settings:Vn,sun:Un,user:Hn,users:Gn,wallet:Kn,webhook:Zn,wrench:Jn,x:Yn,zap:Xn};function ut({name:t,size:s="1em",strokeWidth:e=2,...a}){if(!t)return null;const n=Qn[String(t)];return n?o`<${n} size=${s} strokeWidth=${e} aria-hidden="true" ...${a} />`:o`<span aria-hidden="true" ...${a}>${t}</span>`}function ta({options:t=[],value:s,onChange:e,ariaLabel:a,class:n,className:l,...i}){const c=["aictl-ui-segmented",n,l].filter(Boolean).join(" "),d=ws([]),h=u=>{var f;if(!t.length)return;const r=Math.max(0,t.findIndex($=>$.value===s));let p=null;u.key==="ArrowRight"||u.key==="ArrowDown"?p=(r+1)%t.length:u.key==="ArrowLeft"||u.key==="ArrowUp"?p=(r-1+t.length)%t.length:u.key==="Home"?p=0:u.key==="End"&&(p=t.length-1),p!=null&&(u.preventDefault(),e&&e(t[p].value),(f=d.current[p])==null||f.focus())};return o`<div
+ */const Yn=y("zap",[["path",{d:"M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z",key:"1xq2db"}]]),Qn={activity:ln,"alert-triangle":Bn,filter:xn,"eye-off":_n,archive:cn,banknote:rn,"bar-chart-3":$n,"book-open":dn,bot:pn,brain:hn,"brain-circuit":un,"chevron-down":yn,"chevron-right":bn,"clipboard-list":mn,clock:kn,coins:gn,cpu:vn,"file-pen":wn,"file-text":Cn,folder:Sn,"git-branch":Mn,globe:On,"grid-3x3":An,layers:Tn,"layout-dashboard":En,"line-chart":fn,lock:Ln,mail:Pn,"message-square":jn,moon:Nn,package:Fn,pen:Rn,plug:qn,radio:In,"refresh-cw":zn,search:Dn,server:Wn,settings:Vn,sun:Un,user:Hn,users:Gn,wallet:Kn,webhook:Zn,wrench:Jn,x:Xn,zap:Yn};function ut({name:t,size:s="1em",strokeWidth:e=2,...a}){if(!t)return null;const n=Qn[String(t)];return n?o`<${n} size=${s} strokeWidth=${e} aria-hidden="true" ...${a} />`:o`<span aria-hidden="true" ...${a}>${t}</span>`}function ta({options:t=[],value:s,onChange:e,ariaLabel:a,class:n,className:l,...i}){const c=["aictl-ui-segmented",n,l].filter(Boolean).join(" "),d=ws([]),h=u=>{var f;if(!t.length)return;const r=Math.max(0,t.findIndex($=>$.value===s));let p=null;u.key==="ArrowRight"||u.key==="ArrowDown"?p=(r+1)%t.length:u.key==="ArrowLeft"||u.key==="ArrowUp"?p=(r-1+t.length)%t.length:u.key==="Home"?p=0:u.key==="End"&&(p=t.length-1),p!=null&&(u.preventDefault(),e&&e(t[p].value),(f=d.current[p])==null||f.focus())};return o`<div
     class=${c}
     role="radiogroup"
     aria-label=${a||null}
@@ -306,7 +306,7 @@ import{R as ce,U as re,V as Lt,W as de,m as o,E as ws,X as pe,Y as ue,d as w,Z a
       <span class="st-switch" aria-hidden="true"></span><span class="st-flag__text">${d?"on":"off"}</span>
     </span>`}if(a==null||a==="")return o`<span class="st-none">${Pt}</span>`;if(n==="list"||n==="map"||typeof a=="object")return o`<${ea} value=${a} compact=${e}/>`;const i=String(a),c=ve({...t,value:a});return c?o`<span class=${"st-select"+(l?" is-risky":"")} title=${"Options: "+c.join(", ")}>${i}</span>`:n==="path"?o`<span class="st-v st-path" title=${i}>${i}</span>`:o`<span class=${"st-v"+(l?" is-risky":"")} title=${i}>${i}</span>`}function G({scope:t,locked:s=!1,label:e=""}){const a=t||"default",n=o`<span class=${"st-chip st-scope st-scope--"+a.replace(/[^a-z-]/gi,"")+(s?" st-scope--locked":"")}
     title=${s?`Set by ${e||a}; cannot be changed here`:void 0}>${a}${s?o`<span class="st-sr"> (locked)</span>`:""}</span>`;return s?o`<span class="st-scopewrap"><${yt}/>${n}</span>`:n}function yt({label:t=""}){return t?o`<span class="st-lock" role="img" aria-label=${t} title=${t}><${ut} name="lock" size="11"/></span>`:o`<span class="st-lock" aria-hidden="true"><${ut} name="lock" size="11"/></span>`}function z({id:t,big:s=!1}){return o`<span class=${"st-sw"+(s?" st-sw--big":"")} aria-hidden="true"
-    style=${{background:he[t]||"var(--st-fg2)"}}></span>`}function ht({label:t}){return o`<span class="st-dot" role="img" aria-label=${t} title=${t}></span>`}function P({children:t}){return o`<div class="st-nav__h">${t}</div>`}function V({id:t,label:s}){return o`<span class="st-chip st-toolchip"><${z} id=${t}/>${s}</span>`}function $t({path:t,line:s,w:e,tool:a=""}){if(!t)return o`<span class="st-none">—</span>`;if(Y(t)){const l=D(t);return l?o`<button type="button" class="st-src st-src--env" data-env=${l}
+    style=${{background:he[t]||"var(--st-fg2)"}}></span>`}function ht({label:t}){return o`<span class="st-dot" role="img" aria-label=${t} title=${t}></span>`}function P({children:t}){return o`<div class="st-nav__h">${t}</div>`}function V({id:t,label:s}){return o`<span class="st-chip st-toolchip"><${z} id=${t}/>${s}</span>`}function $t({path:t,line:s,w:e,tool:a=""}){if(!t)return o`<span class="st-none">—</span>`;if(X(t)){const l=D(t);return l?o`<button type="button" class="st-src st-src--env" data-env=${l}
       title=${"Environment variable "+l+": where it is set and what it drives"}
       onClick=${i=>{i.stopPropagation(),e.openEnv(l,a)}}><b>${l}</b></button>`:o`<span class="st-src st-src--env" title="An environment variable; this aictl version did not name it">environment</span>`}const n=t+(s>0?":"+s:"");return o`<button type="button" class="st-src" title=${n}
     onClick=${l=>{l.stopPropagation(),e.openAt(t,s)}}>
@@ -455,7 +455,7 @@ import{R as ce,U as re,V as Lt,W as de,m as o,E as ws,X as pe,Y as ue,d as w,Z a
         </li>`})}
     </ol>
     <p class="st-hint st-scopes__legend">Later layers override earlier ones. Locked layers cannot be changed from this machine.</p>
-  </div>`}function fs({children:t,section:s}){return o`<tr class="st-extra" data-extra=${s}><td colspan="5">${t}</td></tr>`}const ys=t=>typeof t.value=="number"?t.value:t.value==null||t.value===""?void 0:wt(t.value);function Ja(t,s){return[{k:"setting",l:"Setting",cls:"st-c-set",get:e=>e.label},{k:"value",l:"Value",cls:"st-c-val",n:Ts(t,ys),get:ys},{k:"scope",l:"Scope",cls:"st-c-scope",get:e=>e.scope?M(e.scope,s):void 0},{k:"source",l:"Set in",cls:"st-c-src",get:e=>e.source},{k:"what",l:"What it does",get:e=>e.tip}]}function Ya({w:t,sections:s,scopes:e,shared:a,extras:n={}}){const l=Ja(s.flatMap(c=>c.shown),e),i=j("settings.tool",l,a);return o`<table class=${"st-table "+i.tableProps.class} style=${i.tableProps.style}>
+  </div>`}function fs({children:t,section:s}){return o`<tr class="st-extra" data-extra=${s}><td colspan="5">${t}</td></tr>`}const ys=t=>typeof t.value=="number"?t.value:t.value==null||t.value===""?void 0:wt(t.value);function Ja(t,s){return[{k:"setting",l:"Setting",cls:"st-c-set",get:e=>e.label},{k:"value",l:"Value",cls:"st-c-val",n:Ts(t,ys),get:ys},{k:"scope",l:"Scope",cls:"st-c-scope",get:e=>e.scope?M(e.scope,s):void 0},{k:"source",l:"Set in",cls:"st-c-src",get:e=>e.source},{k:"what",l:"What it does",get:e=>e.tip}]}function Xa({w:t,sections:s,scopes:e,shared:a,extras:n={}}){const l=Ja(s.flatMap(c=>c.shown),e),i=j("settings.tool",l,a);return o`<table class=${"st-table "+i.tableProps.class} style=${i.tableProps.style}>
     <thead><tr>${l.map(i.th)}</tr></thead>
     ${s.map(c=>{const d=c.shown.filter(h=>h.risky).length;return o`<tbody key=${c.id} data-section=${c.id}>
         <tr class="st-group"><th scope="colgroup" colspan="5">${c.title}
@@ -463,7 +463,7 @@ import{R as ce,U as re,V as Lt,W as de,m as o,E as ws,X as pe,Y as ue,d as w,Z a
         ${n[c.id]&&o`<${fs} section=${c.id}>${n[c.id]}</${fs}>`}
         ${i.order(c.shown).map(h=>o`<${Ka} key=${h.uid} row=${h} w=${t} scopes=${e}/>`)}
       </tbody>`})}
-  </table>`}function Xa(t){const s=[];for(const e of t){const a=e.id==="agents"&&e.shown.every(l=>l.kind==="agent"&&l.agent),n=s[s.length-1];a?s.push({agents:!0,sections:[e]}):n&&!n.agents?n.sections.push(e):s.push({agents:!1,sections:[e]})}return s}function Qa({w:t,entry:s}){const e=s.envVars.filter(c=>zt(c,t.q)),a=e.filter(c=>c.set),n=t.showUnset?e:a,l=e.length-n.length;if(!n.length&&!l)return null;const i=t.selectedEnv;return o`<table class="st-table st-envtable" data-testid="st-env-table">
+  </table>`}function Ya(t){const s=[];for(const e of t){const a=e.id==="agents"&&e.shown.every(l=>l.kind==="agent"&&l.agent),n=s[s.length-1];a?s.push({agents:!0,sections:[e]}):n&&!n.agents?n.sections.push(e):s.push({agents:!1,sections:[e]})}return s}function Qa({w:t,entry:s}){const e=s.envVars.filter(c=>zt(c,t.q)),a=e.filter(c=>c.set),n=t.showUnset?e:a,l=e.length-n.length;if(!n.length&&!l)return null;const i=t.selectedEnv;return o`<table class="st-table st-envtable" data-testid="st-env-table">
     <thead><tr><th>Variable</th><th>Value</th><th>Where</th><th>Drives</th><th>What it does</th></tr></thead>
     <tbody data-section="env">
       <tr class="st-group"><th scope="colgroup" colspan="5">Environment variables
@@ -494,7 +494,7 @@ import{R as ce,U as re,V as Lt,W as de,m as o,E as ws,X as pe,Y as ue,d as w,Z a
     ${s.id==="vscode"&&o`<p class="st-note">chat.* settings, used by every AI tool in VS Code</p>`}
     ${s.hints.map((r,p)=>o`<p key=${p} class="st-note">${r}</p>`)}
     <${Za} w=${t} entry=${s}/>
-    ${l.length?Xa(l).map((r,p)=>r.agents?o`<${la} key=${"a"+p} w=${t} section=${r.sections[0]}/>`:o`<${Ya} key=${"g"+p} w=${t} sections=${r.sections} scopes=${s.scopes} shared=${e} extras=${h}/>`):n?null:o`<p class="st-empty">${i?u?`No setting shown here is set at the ${u} layer.`:"No setting matches the search or the toggles.":"No settings were read for this tool."}</p>`}
+    ${l.length?Ya(l).map((r,p)=>r.agents?o`<${la} key=${"a"+p} w=${t} section=${r.sections[0]}/>`:o`<${Xa} key=${"g"+p} w=${t} sections=${r.sections} scopes=${s.scopes} shared=${e} extras=${h}/>`):n?null:o`<p class="st-empty">${i?u?`No setting shown here is set at the ${u} layer.`:"No setting matches the search or the toggles.":"No settings were read for this tool."}</p>`}
     ${a&&o`<${Qa} w=${t} entry=${s}/>`}
   </section>`}const bs=[{k:"collector",l:"Collector",cls:"st-c-set",get:t=>t.name},{k:"mode",l:"Mode",get:t=>t.mode},{k:"status",l:"Status",get:t=>t.status},{k:"detail",l:"Detail",get:t=>t.detail}];function so({w:t,aictl:s}){const e=j("settings.collectors",bs),a=t.q.trim().toLowerCase(),n=s.collectors.filter(i=>!a||[i.name,i.mode,i.status,i.detail].join(" ").toLowerCase().includes(a)),l=s.roots.filter(i=>!a||i.toLowerCase().includes(a));return o`<section class="st-main" aria-labelledby="st-main-title">
     <div class="st-bar">
@@ -577,7 +577,7 @@ import{R as ce,U as re,V as Lt,W as de,m as o,E as ws,X as pe,Y as ue,d as w,Z a
         data-recent="1" onClick=${()=>t.set({recent:!t.st.recent,row:""})}>
         <span class="st-nav__label">Changed in the last 24 h</span><span class="st-nav__n">${a}</span></button></li>
     </ul>
-  </nav>`}function ro({w:t}){const s=Bt(t.st),e=[...s.loc.map(a=>({k:"sec:"+a,label:"Location: "+(ls[a]||a),drop:()=>Z(t,"sec",a)})),...s.purpose.map(a=>({k:"purpose:"+a,label:"Purpose: "+(X[a]||a),drop:()=>Z(t,"purpose",a)})),...s.tools.map(a=>({k:"tool:"+a,label:"Read by: "+t.labelOf(a),drop:()=>Z(t,"tool",a)})),...s.scope.map(a=>({k:"fscope:"+a,label:"Scope: "+(xs[a]||a),drop:()=>Z(t,"fscope",a)})),...s.git.map(a=>{var n;return{k:"git:"+a,label:"Git: "+(((n=Ss.find(l=>l.id===a))==null?void 0:n.label)||a),drop:()=>Z(t,"git",a)}}),...s.recent?[{k:"recent",label:"Changed in the last 24 h",drop:()=>t.set({recent:!1,row:""})}]:[],...s.cell?[{k:"cell",label:(X[s.cell[0]]||s.cell[0])+" in "+(ls[s.cell[1]]||s.cell[1]),drop:()=>t.set({cell:"",row:""})}]:[]];return e.length?o`<div class="st-fchips" data-testid="st-file-chips">
+  </nav>`}function ro({w:t}){const s=Bt(t.st),e=[...s.loc.map(a=>({k:"sec:"+a,label:"Location: "+(ls[a]||a),drop:()=>Z(t,"sec",a)})),...s.purpose.map(a=>({k:"purpose:"+a,label:"Purpose: "+(Y[a]||a),drop:()=>Z(t,"purpose",a)})),...s.tools.map(a=>({k:"tool:"+a,label:"Read by: "+t.labelOf(a),drop:()=>Z(t,"tool",a)})),...s.scope.map(a=>({k:"fscope:"+a,label:"Scope: "+(xs[a]||a),drop:()=>Z(t,"fscope",a)})),...s.git.map(a=>{var n;return{k:"git:"+a,label:"Git: "+(((n=Ss.find(l=>l.id===a))==null?void 0:n.label)||a),drop:()=>Z(t,"git",a)}}),...s.recent?[{k:"recent",label:"Changed in the last 24 h",drop:()=>t.set({recent:!1,row:""})}]:[],...s.cell?[{k:"cell",label:(Y[s.cell[0]]||s.cell[0])+" in "+(ls[s.cell[1]]||s.cell[1]),drop:()=>t.set({cell:"",row:""})}]:[]];return e.length?o`<div class="st-fchips" data-testid="st-file-chips">
     ${e.map(a=>o`<button key=${a.k} type="button" class="st-chip st-chip--btn" data-chip=${a.k}
       aria-label=${"Remove the filter "+a.label} onClick=${a.drop}>${a.label} <span aria-hidden="true">×</span></button>`)}
     <button type="button" class="st-link" onClick=${()=>t.set({sec:"",tool:"",purpose:"",fscope:"",git:"",recent:!1,cell:"",row:""})}>Clear filters</button>
@@ -599,7 +599,7 @@ import{R as ce,U as re,V as Lt,W as de,m as o,E as ws,X as pe,Y as ue,d as w,Z a
             onClick=${l=>{l.stopPropagation(),s.openAt(t.path)}}>${t.name}</button>`}
       ${t.exists===!1&&o`<span class="st-hint"> missing</span>`}
     </td>
-    <td><span class="st-chip" data-kind=${I(t)}>${t.is_dir?"Folder":X[I(t)]}</span></td>
+    <td><span class="st-chip" data-kind=${I(t)}>${t.is_dir?"Folder":Y[I(t)]}</span></td>
     <td><${G} scope=${t.scope}/></td>
     <td><span class="st-tools">${t.tools.map(l=>o`<${V} key=${l} id=${l} label=${s.labelOf(l)}/>`)}</span></td>
     <td class="st-mono st-num">${t.settings?t.settings:"—"}</td>
@@ -640,7 +640,7 @@ import{R as ce,U as re,V as Lt,W as de,m as o,E as ws,X as pe,Y as ue,d as w,Z a
           <button type="button" class="st-link st-more" onClick=${()=>a({...e,[p]:!0})}>▸ ${$} more</button>
         </td></tr>`}
       </${ns}>`})}
-  </tbody>`}const bo=[{value:"location",label:"By location"},{value:"purpose",label:"By purpose"}],mo=t=>{if(!t.mtime)return;const s=Number(t.mtime);return s>0?s:typeof t.mtime=="string"&&Date.parse(t.mtime)||void 0};function ks(t){return[{k:"file",l:"File",cls:"st-c-file",get:s=>s.name},{k:"purpose",l:"Purpose",get:s=>s.is_dir?"Folder":X[I(s)]},{k:"scope",l:"Scope",get:s=>s.scope},{k:"readby",l:"Read by",get:s=>s.tools.map(t.labelOf).join(", ")},{k:"settings",l:"Settings",cls:"st-num",n:!0,get:s=>s.settings||void 0},{k:"size",l:"Size",cls:"st-num",n:!0,get:s=>s.is_dir||s.bytes==null?void 0:Number(s.bytes)},{k:"git",l:"Git",get:s=>s.git_state},{k:"changed",l:"Last change",n:!0,get:mo}]}function ko({w:t}){const s=j("settings.files",ks(t)),[e,a]=w({}),[n,l]=w({}),i=St(t),c=t.st.group==="purpose"?"purpose":"location",d=fo(i,c),h=ho(t);return o`<section class="st-main" aria-labelledby="st-main-title">
+  </tbody>`}const bo=[{value:"location",label:"By location"},{value:"purpose",label:"By purpose"}],mo=t=>{if(!t.mtime)return;const s=Number(t.mtime);return s>0?s:typeof t.mtime=="string"&&Date.parse(t.mtime)||void 0};function ks(t){return[{k:"file",l:"File",cls:"st-c-file",get:s=>s.name},{k:"purpose",l:"Purpose",get:s=>s.is_dir?"Folder":Y[I(s)]},{k:"scope",l:"Scope",get:s=>s.scope},{k:"readby",l:"Read by",get:s=>s.tools.map(t.labelOf).join(", ")},{k:"settings",l:"Settings",cls:"st-num",n:!0,get:s=>s.settings||void 0},{k:"size",l:"Size",cls:"st-num",n:!0,get:s=>s.is_dir||s.bytes==null?void 0:Number(s.bytes)},{k:"git",l:"Git",get:s=>s.git_state},{k:"changed",l:"Last change",n:!0,get:mo}]}function ko({w:t}){const s=j("settings.files",ks(t)),[e,a]=w({}),[n,l]=w({}),i=St(t),c=t.st.group==="purpose"?"purpose":"location",d=fo(i,c),h=ho(t);return o`<section class="st-main" aria-labelledby="st-main-title">
     <div class="st-bar">
       <h2 class="st-bar__title" id="st-main-title">Files aictl reads</h2>
       <span class="st-bar__sub">${i.length} ${i.length===1?"file":"files"} · grouped by ${c==="purpose"?"what they are for":"where they live"}</span>
@@ -678,7 +678,7 @@ import{R as ce,U as re,V as Lt,W as de,m as o,E as ws,X as pe,Y as ue,d as w,Z a
       ${Ws(t.path,t.line)}${t.count>1?o` <span class="st-dim">×${t.count}</span>`:""}</td>
     <td class="st-c-what" title=${[t.why,t.action].filter(Boolean).join(`
 `)||void 0}>${l}</td>
-    <td class="st-c-act">${t.path&&(Y(t.path)?o`<button type="button" class="st-chip st-chip--btn"
+    <td class="st-c-act">${t.path&&(X(t.path)?o`<button type="button" class="st-chip st-chip--btn"
         onClick=${c=>{c.stopPropagation(),e.openEnv(D(t.path),dt(t)[0]||"")}}>Show the variable</button>`:o`<button type="button" class="st-chip st-chip--btn"
         onClick=${c=>{c.stopPropagation(),e.openAt(t.path,t.line)}}>Show the line</button>`)}</td>
   </tr>`}function gs(t){return[{k:"tool",l:"Tool",cls:"st-c-tool",get:e=>dt(e).map(t.labelOf).join(", ")},{k:"where",l:"Where",cls:"st-c-where",get:e=>e.path?W(e.path)+String(e.line>0?e.line:0).padStart(8,"0"):void 0},{k:"what",l:"What it does",get:e=>e.why||e.action},{k:"action",l:o`<span class="st-sr">Action</span>`,cls:"st-c-act"}]}function wo({w:t}){var u,r;const s=j("settings.findings",gs(t)),[e,a]=w({});if(t.auditStatus==="loading"&&!t.audit){const p=t.scan;return o`<section class="st-main" aria-labelledby="st-main-title">
@@ -771,10 +771,10 @@ import{R as ce,U as re,V as Lt,W as de,m as o,E as ws,X as pe,Y as ue,d as w,Z a
       </ol>
       <p class="st-hint st-insp__why">${qe(i,c)}</p>
     </${k}>
-    ${!Y(s.source)&&o`<${k} title="History"><${Vs} w=${t} path=${s.source}/></${k}>`}
+    ${!X(s.source)&&o`<${k} title="History"><${Vs} w=${t} path=${s.source}/></${k}>`}
     <${k} title="Actions">
       <div class="st-actions">
-        ${s.source&&(Y(s.source)?o`<button type="button" class="st-btn" onClick=${()=>t.openEnv(D(s.source),s.tool)}>Show ${D(s.source)||"the variable"}</button>`:o`<button type="button" class="st-btn" onClick=${()=>t.openAt(s.source,s.line)}>${Ht(s.source,s.line)}</button>`)}
+        ${s.source&&(X(s.source)?o`<button type="button" class="st-btn" onClick=${()=>t.openEnv(D(s.source),s.tool)}>Show ${D(s.source)||"the variable"}</button>`:o`<button type="button" class="st-btn" onClick=${()=>t.openAt(s.source,s.line)}>${Ht(s.source,s.line)}</button>`)}
         ${l.length>0&&o`<button type="button" class="st-btn" onClick=${()=>Kt(t,l[0])}>Show finding</button>`}
       </div>
       <div class="st-actions">
@@ -836,7 +836,7 @@ import{R as ce,U as re,V as Lt,W as de,m as o,E as ws,X as pe,Y as ue,d as w,Z a
     <h3 class="st-insp__title">${s.name}</h3>
     <div class="st-insp__key st-mono">${s.path}</div>
     <div class="st-insp__chips">
-      <span class="st-chip">${s.is_dir?"Watched folder":X[I(s)]}</span>
+      <span class="st-chip">${s.is_dir?"Watched folder":Y[I(s)]}</span>
       <${G} scope=${s.scope}/>
       <span class="st-chip">${Ms[s.location]||"Other"}</span>
       ${s.tools.map(n=>o`<${V} key=${n} id=${n} label=${t.labelOf(n)}/>`)}
@@ -851,7 +851,7 @@ import{R as ce,U as re,V as Lt,W as de,m as o,E as ws,X as pe,Y as ue,d as w,Z a
     <${k} title="File">
       <dl class="st-insp__dl">
         <dt>Path</dt><dd class="st-insp__path">${s.path}</dd>
-        <dt>Purpose</dt><dd>${s.is_dir?"Watched folder":X[I(s)]}${s.kind&&s.kind!==I(s)?" ("+s.kind+")":""}</dd>
+        <dt>Purpose</dt><dd>${s.is_dir?"Watched folder":Y[I(s)]}${s.kind&&s.kind!==I(s)?" ("+s.kind+")":""}</dd>
         <dt>Scope</dt><dd>${s.scope||"—"}</dd>
         <dt>Git</dt><dd>${s.git_state||"—"}</dd>
         <dt>Size</dt><dd>${s.bytes!=null&&!s.is_dir?qt(s.bytes):"—"}</dd>
@@ -914,7 +914,7 @@ import{R as ce,U as re,V as Lt,W as de,m as o,E as ws,X as pe,Y as ue,d as w,Z a
     ${s.action&&o`<${k} title="What to do"><p class="st-insp__tip">${s.action}</p></${k}>`}
     <${k} title="Actions">
       <div class="st-actions">
-        ${s.path&&(Y(s.path)?o`<button type="button" class="st-btn" onClick=${()=>t.openEnv(D(s.path),dt(s)[0]||"")}>Show ${D(s.path)||"the variable"}</button>`:o`<button type="button" class="st-btn" onClick=${()=>t.openAt(s.path,s.line)}>${s.line>0?Ht(s.path,s.line):"Show the line"}</button>`)}
+        ${s.path&&(X(s.path)?o`<button type="button" class="st-btn" onClick=${()=>t.openEnv(D(s.path),dt(s)[0]||"")}>Show ${D(s.path)||"the variable"}</button>`:o`<button type="button" class="st-btn" onClick=${()=>t.openAt(s.path,s.line)}>${s.line>0?Ht(s.path,s.line):"Show the line"}</button>`)}
       </div>
     </${k}>
   </div>`}function Po({w:t}){const{view:s}=t.st;let e=null;return(s==="tool"||s==="topic")&&t.selectedEnv?e=o`<${Eo} key=${t.selectedEnv.uid} w=${t} v=${t.selectedEnv}/>`:(s==="tool"||s==="topic")&&t.selected?e=Cs(t.selected)?o`<${Ao} key=${t.selected.uid} w=${t} row=${t.selected}/>`:o`<${Oo} key=${t.selected.uid} w=${t} row=${t.selected}/>`:s==="files"&&t.selectedFile?e=o`<${To} w=${t} file=${t.selectedFile}/>`:s==="findings"&&t.selectedFinding&&(e=o`<${Lo} w=${t} f=${t.selectedFinding}/>`),o`<aside class=${"st-insp"+(t.drawer?" is-open":"")} aria-label="Inspector">
@@ -923,7 +923,7 @@ import{R as ce,U as re,V as Lt,W as de,m as o,E as ws,X as pe,Y as ue,d as w,Z a
       <h3 class="st-insp__title">Nothing selected</h3>
       <p class="st-hint">${s==="files"?"Click a file for its details.":s==="findings"?"Click a finding for its details.":"Click a setting to see where it is set, what wins and why, and what you can do with it."}</p>
     </div>`}
-  </aside>`}const jo=[{value:"tool",label:"By tool"},{value:"topic",label:"By topic"},{value:"files",label:"Files"},{value:"findings",label:"Findings"}],Rt=new Set(["tool","topic"]);function _s(){return typeof window<"u"?window.location.search:""}function No(){const[t,s]=w(()=>rs(_s())),e=q(a=>s(n=>{const l={...n,...a};if(a.view&&a.view!==n.view&&!(Rt.has(n.view)&&Rt.has(a.view)))for(const i of["tool","sec","row"])i in a||(l[i]="");if(a.view&&a.view!==n.view&&!("scope"in a)&&(l.scope=""),a.view&&a.view!==n.view)for(const i of Je)i in a||(l[i]=i==="recent"?!1:"");return l}),[]);return rt(()=>{os(Ye(t))},[t]),rt(()=>{const a=()=>s(rs(_s()));return window.addEventListener("popstate",a),()=>{window.removeEventListener("popstate",a),os(Xe)}},[]),[t,e]}function Fo(){const[t,s]=w({status:"loading",files:null});return rt(()=>{let e=!0;return me().then(a=>{e&&s(Array.isArray(a==null?void 0:a.files)?{status:"ready",files:a.files}:{status:"unavailable",files:null})},()=>{e&&s({status:"unavailable",files:null})}),()=>{e=!1}},[]),t}function Ro(t){const s=t||{},e=s.audit||null;return{status:s.loading?"loading":s.error?"error":e||s.loading===!1?"ready":"loading",audit:e,scan:s.scan||null,error:s.error?String(s.error):null}}function Do({source:t={},note:s=""}){var es;const{toolConfigs:e,tools:a,monitor:n,root:l,enabledTools:i=null,recentFiles:c,toolName:d,openFile:h,findings:u,refresh:r,hooks:p}=t,f=L(()=>De({toolConfigs:e,tools:a,monitor:n,root:l,enabledTools:i}),[e,a,n,l,i]),[$,_]=No(),[O,N]=w(""),[T,xt]=w(!1),[F,Mt]=w(!1),[bt,Q]=w(!1),mt=ws(null),m=Fo(),x=Ro(u),Us=u==null?void 0:u.rescan;rt(()=>{const b=g=>{var S;g.key==="/"&&!ye(g.target)&&!g.metaKey&&!g.ctrlKey&&!g.altKey?(g.preventDefault(),(S=mt.current)==null||S.focus()):g.key==="Escape"&&Q(!1)};return window.addEventListener("keydown",b),()=>window.removeEventListener("keydown",b)},[]);const C=L(()=>We(f),[f]),K=L(()=>Ve(f),[f]),Zt=L(()=>Ue(f),[f]),Ot=L(()=>is({q:O,nonDefault:T,risky:F,unset:$.unset}),[O,T,F,$.unset]),Bs=L(()=>is({q:O,nonDefault:T,risky:F,unset:!0}),[O,T,F]),Hs=q(b=>Ot(b)&&(!$.scope||b.scope===$.scope),[Ot,$.scope]),Gs=L(()=>Be(C),[C]),tt=L(()=>He(m.files,C,Zt,i),[m.files,C,Zt,i]),st=L(()=>be(x.audit,i),[x.audit,i]),At=L(()=>Ge((st==null?void 0:st.findings)||[]),[st]),Ks=q((b,g=0)=>{!b||!h||h(b,g>0?g:0)},[h]),Jt=q(b=>{_(b),Q(!0)},[_]),Zs=q(()=>Q(!1),[]),Js=q(b=>{const g=Ke(b,f);return g===b&&d?d(b):g},[f,d]),Ys=q(b=>{var g;return((g=C.find(S=>S.id===b))==null?void 0:g.scopes)||[]},[C]),Xs=q(b=>{const g=tt.find(S=>pt(S.path,b));if(g!=null&&g.mtime)return g.mtime;for(const S of(f==null?void 0:f.tools)||[])for(const A of S.files||[])if(pt(A.path,b)&&A.mtime)return A.mtime;return null},[tt,f]);if(!f)return o`<p class="loading-state">Loading...</p>`;if(!C.length&&!K&&!as(i))return o`<p class="empty-state">No tool configuration detected. Are AI tools installed?</p>`;const Tt=C.some(b=>b.id===$.tool)||$.tool==="aictl"&&K?$.tool:((es=C[0])==null?void 0:es.id)||(K?"aictl":""),R=C.find(b=>b.id===Tt)||null,Yt=(b,g)=>{var S;return g&&((S=C.find(A=>A.id===b))==null?void 0:S.rows.find(A=>A.key===g))||null},Qs=$.view==="tool"?R?Yt(R.id,$.row):null:$.view==="topic"?Yt($.tool,$.row):null,te=$.view==="files"&&$.row&&tt.find(b=>b.path===$.row)||null,Xt=(b,g)=>{if(!String(g).startsWith(cs))return null;const S=C.find(at=>at.id===b);if(!S)return null;const A=D(g);return S.envVars.find(at=>at.name===A)||{name:A,tool:S.id,uid:S.id+""+g,source:g,set:!1,value:"",masked:!1,in_process:!1,persisted:[],drives:[],label:A,description:"",section:"",documented:!1}},se=$.view==="tool"?R?Xt(R.id,$.row):null:$.view==="topic"?Xt($.tool,$.row):null,Qt=(b,g="")=>{var A;const S=C.some(at=>at.id===g)?g:(R==null?void 0:R.id)||((A=C[0])==null?void 0:A.id)||"";Jt({view:Rt.has($.view)?$.view:"tool",tool:S,row:cs+b})},ee=(b,g=0)=>Y(b)?Qt(D(b)):Ks(b,g),ne=$.view==="findings"&&$.row&&At.find(b=>b.id===$.row)||null,E={st:$,set:_,select:Jt,q:O,pass:Ot,passAll:Bs,passTool:Hs,showUnset:$.unset,scopesOf:Ys,managedAbsent:Gs,entries:C,aictl:K,toolId:Tt,files:tt,filesStatus:m.status,findings:At,audit:st,auditStatus:x.status,auditError:x.error,scan:x.scan,rescan:Us,selected:Qs,selectedFile:te,selectedFinding:ne,selectedEnv:se,openAt:ee,openEnv:Qt,labelOf:Js,mtimeOf:Xs,recentFiles:c,drawer:bt,closeDrawer:Zs,refresh:r,hooks:p},{set:ae,agents:oe,knowsSet:ts,unset:le,risky:ss}=Ze(C),ie=as(i)&&!C.some(b=>b.id!=="vscode");let et,nt;return $.view==="topic"?(et=o`<${eo} w=${E}/>`,nt=o`<${oo} w=${E}/>`):$.view==="files"?(et=o`<${co} w=${E}/>`,nt=o`<${ko} w=${E}/>`):$.view==="findings"?(et=o`<${vo} w=${E}/>`,nt=o`<${wo} w=${E}/>`):(et=o`<${Ga} w=${E}/>`,nt=R?o`<${to} w=${E} entry=${R}/>`:Tt==="aictl"&&K?o`<${so} w=${E} aictl=${K}/>`:o`<section class="st-main"><p class="st-empty">No tool settings to show.</p></section>`),o`<div class="st-ws" data-view=${$.view}>
+  </aside>`}const jo=[{value:"tool",label:"By tool"},{value:"topic",label:"By topic"},{value:"files",label:"Files"},{value:"findings",label:"Findings"}],Rt=new Set(["tool","topic"]);function _s(){return typeof window<"u"?window.location.search:""}function No(){const[t,s]=w(()=>rs(_s())),e=q(a=>s(n=>{const l={...n,...a};if(a.view&&a.view!==n.view&&!(Rt.has(n.view)&&Rt.has(a.view)))for(const i of["tool","sec","row"])i in a||(l[i]="");if(a.view&&a.view!==n.view&&!("scope"in a)&&(l.scope=""),a.view&&a.view!==n.view)for(const i of Je)i in a||(l[i]=i==="recent"?!1:"");return l}),[]);return rt(()=>{os(Xe(t))},[t]),rt(()=>{const a=()=>s(rs(_s()));return window.addEventListener("popstate",a),()=>{window.removeEventListener("popstate",a),os(Ye)}},[]),[t,e]}function Fo(){const[t,s]=w({status:"loading",files:null});return rt(()=>{let e=!0;return me().then(a=>{e&&s(Array.isArray(a==null?void 0:a.files)?{status:"ready",files:a.files}:{status:"unavailable",files:null})},()=>{e&&s({status:"unavailable",files:null})}),()=>{e=!1}},[]),t}function Ro(t){const s=t||{},e=s.audit||null;return{status:s.loading?"loading":s.error?"error":e||s.loading===!1?"ready":"loading",audit:e,scan:s.scan||null,error:s.error?String(s.error):null}}function Do({source:t={},note:s=""}){var es;const{toolConfigs:e,tools:a,monitor:n,root:l,enabledTools:i=null,recentFiles:c,toolName:d,openFile:h,findings:u,refresh:r,hooks:p}=t,f=L(()=>De({toolConfigs:e,tools:a,monitor:n,root:l,enabledTools:i}),[e,a,n,l,i]),[$,_]=No(),[O,N]=w(""),[T,xt]=w(!1),[F,Mt]=w(!1),[bt,Q]=w(!1),mt=ws(null),m=Fo(),x=Ro(u),Us=u==null?void 0:u.rescan;rt(()=>{const b=g=>{var S;g.key==="/"&&!ye(g.target)&&!g.metaKey&&!g.ctrlKey&&!g.altKey?(g.preventDefault(),(S=mt.current)==null||S.focus()):g.key==="Escape"&&Q(!1)};return window.addEventListener("keydown",b),()=>window.removeEventListener("keydown",b)},[]);const C=L(()=>We(f),[f]),K=L(()=>Ve(f),[f]),Zt=L(()=>Ue(f),[f]),Ot=L(()=>is({q:O,nonDefault:T,risky:F,unset:$.unset}),[O,T,F,$.unset]),Bs=L(()=>is({q:O,nonDefault:T,risky:F,unset:!0}),[O,T,F]),Hs=q(b=>Ot(b)&&(!$.scope||b.scope===$.scope),[Ot,$.scope]),Gs=L(()=>Be(C),[C]),tt=L(()=>He(m.files,C,Zt,i),[m.files,C,Zt,i]),st=L(()=>be(x.audit,i),[x.audit,i]),At=L(()=>Ge((st==null?void 0:st.findings)||[]),[st]),Ks=q((b,g=0)=>{!b||!h||h(b,g>0?g:0)},[h]),Jt=q(b=>{_(b),Q(!0)},[_]),Zs=q(()=>Q(!1),[]),Js=q(b=>{const g=Ke(b,f);return g===b&&d?d(b):g},[f,d]),Xs=q(b=>{var g;return((g=C.find(S=>S.id===b))==null?void 0:g.scopes)||[]},[C]),Ys=q(b=>{const g=tt.find(S=>pt(S.path,b));if(g!=null&&g.mtime)return g.mtime;for(const S of(f==null?void 0:f.tools)||[])for(const A of S.files||[])if(pt(A.path,b)&&A.mtime)return A.mtime;return null},[tt,f]);if(!f)return o`<p class="loading-state">Loading...</p>`;if(!C.length&&!K&&!as(i))return o`<p class="empty-state">No tool configuration detected. Are AI tools installed?</p>`;const Tt=C.some(b=>b.id===$.tool)||$.tool==="aictl"&&K?$.tool:((es=C[0])==null?void 0:es.id)||(K?"aictl":""),R=C.find(b=>b.id===Tt)||null,Xt=(b,g)=>{var S;return g&&((S=C.find(A=>A.id===b))==null?void 0:S.rows.find(A=>A.key===g))||null},Qs=$.view==="tool"?R?Xt(R.id,$.row):null:$.view==="topic"?Xt($.tool,$.row):null,te=$.view==="files"&&$.row&&tt.find(b=>b.path===$.row)||null,Yt=(b,g)=>{if(!String(g).startsWith(cs))return null;const S=C.find(at=>at.id===b);if(!S)return null;const A=D(g);return S.envVars.find(at=>at.name===A)||{name:A,tool:S.id,uid:S.id+""+g,source:g,set:!1,value:"",masked:!1,in_process:!1,persisted:[],drives:[],label:A,description:"",section:"",documented:!1}},se=$.view==="tool"?R?Yt(R.id,$.row):null:$.view==="topic"?Yt($.tool,$.row):null,Qt=(b,g="")=>{var A;const S=C.some(at=>at.id===g)?g:(R==null?void 0:R.id)||((A=C[0])==null?void 0:A.id)||"";Jt({view:Rt.has($.view)?$.view:"tool",tool:S,row:cs+b})},ee=(b,g=0)=>X(b)?Qt(D(b)):Ks(b,g),ne=$.view==="findings"&&$.row&&At.find(b=>b.id===$.row)||null,E={st:$,set:_,select:Jt,q:O,pass:Ot,passAll:Bs,passTool:Hs,showUnset:$.unset,scopesOf:Xs,managedAbsent:Gs,entries:C,aictl:K,toolId:Tt,files:tt,filesStatus:m.status,findings:At,audit:st,auditStatus:x.status,auditError:x.error,scan:x.scan,rescan:Us,selected:Qs,selectedFile:te,selectedFinding:ne,selectedEnv:se,openAt:ee,openEnv:Qt,labelOf:Js,mtimeOf:Ys,recentFiles:c,drawer:bt,closeDrawer:Zs,refresh:r,hooks:p},{set:ae,agents:oe,knowsSet:ts,unset:le,risky:ss}=Ze(C),ie=as(i)&&!C.some(b=>b.id!=="vscode");let et,nt;return $.view==="topic"?(et=o`<${eo} w=${E}/>`,nt=o`<${oo} w=${E}/>`):$.view==="files"?(et=o`<${co} w=${E}/>`,nt=o`<${ko} w=${E}/>`):$.view==="findings"?(et=o`<${vo} w=${E}/>`,nt=o`<${wo} w=${E}/>`):(et=o`<${Ga} w=${E}/>`,nt=R?o`<${to} w=${E} entry=${R}/>`:Tt==="aictl"&&K?o`<${so} w=${E} aictl=${K}/>`:o`<section class="st-main"><p class="st-empty">No tool settings to show.</p></section>`),o`<div class="st-ws" data-view=${$.view}>
     <div class="st-head">
       <${ta} class="st-pivot" options=${jo} value=${$.view} ariaLabel="Settings view"
         onChange=${b=>_({view:b})}/>

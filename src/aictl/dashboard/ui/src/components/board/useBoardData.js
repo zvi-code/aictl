@@ -258,6 +258,11 @@ export function useBoardData({ filters, tools, live, pausedRef, enabled = true }
   const toolKey = tools ? tools.join(',') : '*';
   const filterKey = JSON.stringify([filters.range, filters.project, filters.model, filters.status, filters.q, filters.sel]);
   useEffect(() => { if (enabled) fetchNow(); }, [filterKey, toolKey, enabled, fetchNow]);
+  useEffect(() => {
+    if (enabled) return;
+    for (const loader of Object.values(loaders.current)) loader.stop();
+    setBusy(false);
+  }, [enabled]);
   useEffect(() => () => { loaders.current.main.stop(); loaders.current.sel.stop(); loaders.current.machine.stop(); loaders.current.context.stop(); }, []);
 
   // A stream message is a change on the server: fetch at once, unless a fetch began less

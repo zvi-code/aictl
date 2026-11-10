@@ -12,6 +12,7 @@ import { STALE_AFTER_S } from './summary.js';
 import { CONTEXT_BUILDERS } from './contextPanels.js';
 import { EMPTY_MACHINE } from './useBoardData.js';
 import { panelSessions } from './sessionsPanel.js';
+import { panelStoreHealth } from './health.js';
 
 const num = v => (v === null || v === undefined ? -1 : v);
 const sumOf = list => list.reduce((s, v) => s + (v || 0), 0);
@@ -819,13 +820,17 @@ function feedCells(ctx, tool) {
   const pipe = machineOf(ctx).pipeline;
   const h = (pipe.hooks || {})[tool];
   const o = (pipe.otel_receiver?.by_tool || {})[tool];
-  const hooks = h && h.count
+  const hooks = ctx.data.health && (ctx.data.health.reported?.hooks === false || (h && h.count == null))
+    ? { v: NA, cls: 'dim', title: 'Hook counts are not reported by this daemon' }
+    : h && h.count
     ? { v: fmtN(h.count), sub: ago(h.last_fire_ts, ctx.nowS), title: fmtN(h.count) + ' hook events in the last 24 hours. Newest: ' + stamp(h.last_fire_ts, true) }
     : { v: 'None', cls: 'dim', title: 'No hook events from this tool in the last 24 hours. aictl hooks status shows whether its hooks are registered and why they may not run.' };
   // The variable that sends the tool's OTel to aictl, when aictl checks it (Copilot CLI's endpoint).
   const setup = (pipe.otel_setup || {})[tool];
   const off = setup && setup.status !== 'ok' ? setup : null;
-  const otel = o && (o.metrics || o.events)
+  const otel = ctx.data.health && (ctx.data.health.reported?.otel_receiver === false || (o && o.metrics == null && o.events == null))
+    ? { v: NA, cls: 'dim', title: 'OTel counts are not reported by this daemon' }
+    : o && (o.metrics || o.events)
     ? { v: fmtN((o.metrics || 0) + (o.events || 0)), sub: off ? (off.status === 'missing' ? 'Not set now' : 'Sent elsewhere now') : ago(o.last_at, ctx.nowS), cls: off ? 'warn' : '', title: fmtN(o.metrics || 0) + ' metric samples and ' + fmtN(o.events || 0) + ' log events since the daemon started. Newest: ' + stamp(o.last_at, true) + (off ? '\n' + off.text : '') }
     : off
       ? { v: off.status === 'missing' ? 'Not set' : 'Elsewhere', cls: 'warn', title: off.text }
@@ -843,13 +848,13 @@ function panelSources(ctx) {
       cells: {
         t: { v: s.label || ctx.toolName(s.tool), sw: colorFor('tool', s.tool) },
         s: { v: s.data_from || NA, cls: 'dim', sub: (s.locations || []).map(h => h.path + ' (' + h.found_by + ')').join(', '), title: (s.locations || []).map(h => h.path + ': ' + h.found_by).join('\n') },
-        l: { v: ago(s.last_data_ts, ctx.nowS), cls: 'dim', title: 'Newest record in the history: ' + stamp(s.last_data_ts, true) },
+        l: { v: ago(s.last_data_ts, ctx.nowS), cls: 'dim', title: (ctx.data.health ? 'Last source activity: ' : 'Newest record in the history: ') + stamp(s.last_data_ts, true) },
         f: f
           ? { v: f.last_seen ? ago(f.last_seen, ctx.nowS) : 'Not live', sub: f.confidence == null ? null : pctOf(f.confidence), cls: f.last_seen && ctx.nowS - f.last_seen > 3600 ? 'warn' : 'dim', title: 'Live monitor: ' + (f.last_seen ? 'last saw this tool ' + stamp(f.last_seen, true) : 'not running now') + '. Telemetry from ' + (f.source || NA) + ', confidence ' + pctOf(f.confidence) + '.' }
           : { v: NA, cls: 'dim', title: 'The monitor does not report this tool' },
         h: feed.hooks,
         o: feed.otel,
-        e: f ? { v: String(f.errors), cls: f.errors ? 'crit' : 'dim', title: f.last_error || 'No errors reported' } : { v: NA, cls: 'dim' },
+        e: f ? { v: fmtN(f.errors), cls: f.errors ? 'crit' : 'dim', title: f.last_error || 'No errors reported' } : { v: NA, cls: 'dim' },
       },
     };
   });
@@ -862,7 +867,7 @@ function panelSources(ctx) {
 /** A write to the history that runs this long is shown as a warning. */
 export const LONG_WRITE_S = 60;
 
-function panelSelf(ctx) {
+function panelDaemon(ctx) {
   const s = ctx.data.self || {};
   const kids = (s.children || []).map(c => ({ name: c.name, cpu: c.cpu_percent, rss: c.memory_rss_bytes }));
   const kidCpu = sumOf(kids.map(k => k.cpu));
@@ -872,6 +877,24 @@ function panelSelf(ctx) {
     id: r.name + i, sort: { n: r.name, c: r.cpu, m: r.rss },
     cells: { n: { v: r.name, cls: 'm' }, c: { v: fmtCpu(r.cpu) }, m: { v: fmtBytes(r.rss) } },
   }));
+  return {
+    sub: 'Daemon resources and local history',
+    stats: [
+      { label: 'CPU', value: fmtCpu(s.cpu_percent), title: 'The aictl daemon and its helpers. 100% is one full core' },
+      { label: 'RAM', value: fmtBytes(s.memory_rss_bytes) },
+      { label: 'History', value: fmtBytes(s.history_live_bytes ?? s.history_bytes), sub: s.history_limit_bytes ? 'Limit ' + fmtBytes(s.history_limit_bytes) : '' },
+      { label: 'File on disk', value: fmtBytes(s.history_bytes) },
+      { label: 'Kept for', value: s.retention_days == null ? NA : s.retention_days + ' d' },
+    ],
+    table: { cols: [{ k: 'n', l: 'Process' }, { k: 'c', l: 'CPU', n: true, w: '56px' }, { k: 'm', l: 'RAM', n: true, w: '64px' }], rows, sort: { k: 'c', dir: 'desc' } },
+    actions: [
+      { label: 'Open aictl Health', go: () => ctx.actions.setScreen('health') },
+      { label: 'Compact the history', go: () => ctx.actions.runCommand({ title: 'Compact the history', lead: 'This removes records older than the retention time, then rewrites the history file to free its empty space. On a large file this can take minutes, and new data waits until it ends.', command: 'aictl db compact', applyLabel: 'Run this command', action: 'db-compact', done: 'Compacted the history' }) },
+    ],
+  };
+}
+
+function panelSelf(ctx) {
   const pipe = machineOf(ctx).pipeline;
   const me = pipe.self || {};
   const sink = pipe.sink;
@@ -882,7 +905,7 @@ function panelSelf(ctx) {
   const longest = writes.reduce((m, w) => Math.max(m, w.age_s || 0), 0);
   const pipeline = [
     { label: 'Uptime', value: fmtDur(me.uptime_s), title: 'Since the aictl daemon started' + (me.pid ? ', PID ' + me.pid : '') },
-    { label: 'Writing', value: writes.length ? writes.map(w => w.name + ', ' + fmtAge(w.age_s)).join('; ') : 'Nothing', cls: longest >= LONG_WRITE_S ? 'warn' : null, title: writes.length ? 'Writes to the history that run now in the aictl daemon, with how long each has run. Another write waits for a running one; the board still reads.' : 'No write to the history runs now' },
+    { label: 'Writing', value: ctx.data.health && !Array.isArray(me.writes) ? NA : writes.length ? writes.map(w => w.name + ', ' + fmtAge(w.age_s)).join('; ') : 'Nothing', cls: longest >= LONG_WRITE_S ? 'warn' : null, title: writes.length ? 'Writes to the history that run now in the aictl daemon, with how long each has run. Another write waits for a running one; the board still reads.' : 'No active write reported' },
     { label: 'Threads', value: me.threads == null ? NA : String(me.threads) },
     { label: 'Rows', value: fmtN(me.db_rows), title: tables ? 'Rows in each table, read once a minute:\n' + tables : 'Not read yet' },
     { label: 'Viewers', value: stream.connected_clients == null ? NA : String(stream.connected_clients), title: 'Browser windows that follow the live stream' },
@@ -890,8 +913,9 @@ function panelSelf(ctx) {
   ];
   if (sink) {
     pipeline.push(
-      { label: 'Samples', value: fmtN(sink.emitted), title: 'Samples the collectors sent to the store' + (sink.tracked != null ? '. ' + fmtN(sink.tracked) + ' metrics tracked' : '') },
-      { label: 'Written', value: fmtN(sink.flushed), title: 'Samples written to the history' + (sink.buffered != null ? '. ' + fmtN(sink.buffered) + ' waiting' : '') },
+      { label: 'Samples received', value: fmtN(sink.emitted), title: 'Samples the collectors sent to the store' + (sink.tracked != null ? '. ' + fmtN(sink.tracked) + ' metrics tracked' : '') },
+      { label: 'Samples submitted', value: fmtN(sink.flushed), title: 'Samples flushed by the sink; queued delivery does not prove queryability' },
+      { label: 'Samples buffered', value: fmtN(sink.buffered) },
       { label: 'Dropped', value: fmtN(sink.dropped), cls: sink.dropped ? 'crit' : null, title: sink.dropped ? 'Samples lost before they reached the history' : 'No samples lost' },
     );
   }
@@ -900,22 +924,14 @@ function panelSelf(ctx) {
       { label: 'Metrics in', value: fmtN(otel.metrics_received), sub: otel.active ? 'Active' : 'No data for 5 min', title: 'OpenTelemetry metrics received' + (otel.last_receive_at ? ', last ' + stamp(otel.last_receive_at, true) : '') },
       { label: 'Events in', value: fmtN(otel.events_received), title: 'OpenTelemetry log events received' },
       { label: 'Model calls', value: fmtN(otel.api_calls_total), sub: otel.api_errors_total ? otel.api_errors_total + ' errors' : '', cls: otel.api_errors_total ? 'warn' : null, title: 'Model API calls the tools reported, and how many failed' },
-      { label: 'Rejected', value: fmtN((otel.errors || 0) + (otel.dropped || 0)), cls: otel.errors || otel.dropped ? 'warn' : null, title: (otel.errors || 0) + ' payloads that could not be read, ' + (otel.dropped || 0) + ' bad attributes or data points skipped' },
+      { label: 'Rejected', value: fmtN(otel.errors == null && otel.dropped == null ? null : (otel.errors || 0) + (otel.dropped || 0)), cls: otel.errors || otel.dropped ? 'warn' : null, title: fmtN(otel.errors) + ' payloads that could not be read, ' + fmtN(otel.dropped) + ' bad attributes or data points skipped' },
     );
   }
   return {
-    sub: 'What this monitoring costs, and how its data pipeline runs',
+    sub: 'Live collection, sink delivery and OTel reception',
     banner: sink?.flood ? 'Data loss: flood protection is on and drops samples. ' + fmtN(sink.dropped) + ' lost so far.'
       : longest >= LONG_WRITE_S ? 'A write to the history (' + writes[0].name + ') has run for ' + fmtAge(longest) + '. New rows and health records wait for it; the board still reads. A slow disk, or a virus scanner reading the history file on every write, makes writes this slow.' : null,
-    stats: [
-      { label: 'CPU', value: fmtCpu(s.cpu_percent), title: 'The aictl daemon and its helper processes together. 100% is one full core' }, { label: 'RAM', value: fmtBytes(s.memory_rss_bytes) },
-      { label: 'History', value: fmtBytes(s.history_live_bytes ?? s.history_bytes), sub: s.history_limit_bytes ? 'Limit ' + fmtBytes(s.history_limit_bytes) : '', title: 'Live data in the history store' },
-      { label: 'File on disk', value: fmtBytes(s.history_bytes), sub: s.history_live_bytes != null && s.history_bytes > s.history_live_bytes ? fmtBytes(s.history_bytes - s.history_live_bytes) + ' can be freed' : '' },
-      { label: 'Kept for', value: s.retention_days == null ? NA : s.retention_days + ' d' },
-      ...pipeline,
-    ],
-    table: { cols: [{ k: 'n', l: 'Process' }, { k: 'c', l: 'CPU', n: true, w: '56px' }, { k: 'm', l: 'RAM', n: true, w: '64px' }], rows, sort: { k: 'c', dir: 'desc' } },
-    actions: [{ label: 'Compact the history', go: () => ctx.actions.runCommand({ title: 'Compact the history', lead: 'This removes records older than the retention time, then rewrites the history file to free its empty space. On a large file this can take minutes, and new data waits until it ends.', command: 'aictl db compact', applyLabel: 'Run this command', action: 'db-compact', done: 'Compacted the history' }) }],
+    stats: pipeline,
   };
 }
 
@@ -1019,6 +1035,7 @@ const BUILDERS = {
   changesT: panelChanges, tests: panelTests, memfiles: panelMemFiles,
   cpu: (c, l, p, n) => panelResource(c, l, p, n, 'cpu'), ram: (c, l, p, n) => panelResource(c, l, p, n, 'mem'), alerts: panelAlerts, procs: panelProcs, traffic: panelTraffic,
   findings: panelFindings, settings: panelSettings, sources: panelSources, self: panelSelf, collectors: panelCollectors, quality: panelQuality, coverage: panelCoverage,
+  daemon: panelDaemon, storeHealth: panelStoreHealth,
   ...CONTEXT_BUILDERS,
 };
 export const PANEL_IDS = Object.keys(BUILDERS);

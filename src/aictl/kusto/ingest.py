@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING, Any, Protocol
 
+from ..health import OperationStats
 from .schema import ROWID, VERSION, quote
 
 if TYPE_CHECKING:
@@ -123,6 +124,8 @@ class InlineIngester:
         self.client = client
         self.database = database
         self.max_bytes = max_bytes
+        self.operations = OperationStats(volume=True)
+        self.capacity_total = slots
         # *slots* is the cluster's ingestion capacity (see ``ingestion_capacity``).
         # A command sent past it is refused with 429 and comes back after a pause of
         # up to 30 seconds, during which the slot is free and unused; a writer refused
@@ -152,7 +155,13 @@ class InlineIngester:
         for command in commands:
             with slot:
                 retrying(
-                    lambda c=command: self.client.execute_mgmt(self.database, c),
+                    lambda c=command: self.operations.call_table(
+                        table,
+                        lambda: self.client.execute_mgmt(self.database, c),
+                        rows=len(c.split("\n")) - 1,
+                        bytes_=len(c.split("\n", 1)[-1].encode("ascii")),
+                        mode="inline",
+                    ),
                     f"inline ingestion into {table}",
                 )
 
@@ -165,6 +174,7 @@ class StreamingIngester:
     ) -> None:
         self.database = settings.database
         self.max_bytes = max_bytes
+        self.operations = OperationStats(volume=True)
         if ingest_client is None:
             from azure.kusto.ingest import KustoStreamingIngestClient
 
@@ -186,8 +196,15 @@ class StreamingIngester:
 
         for group in chunks(lines, self.max_bytes):
             data = "\n".join(group).encode("ascii")
+            row_count = len(group)
             retrying(
-                lambda d=data: self.ingest_client.ingest_from_stream(io.BytesIO(d), props),
+                lambda d=data, n=row_count: self.operations.call_table(
+                    table,
+                    lambda: self.ingest_client.ingest_from_stream(io.BytesIO(d), props),
+                    rows=n,
+                    bytes_=len(d),
+                    mode="streaming",
+                ),
                 f"ingestion into {table}",
                 also=schema_cache_behind,
             )
@@ -211,6 +228,7 @@ class QueuedIngester:
     def __init__(self, settings: KustoSettings, client: Any, ingest_client: Any = None) -> None:
         self.database = settings.database
         self.client = client
+        self.operations = OperationStats(volume=True)
         if ingest_client is None:
             from azure.kusto.ingest import QueuedIngestClient
 
@@ -266,11 +284,17 @@ class QueuedIngester:
         # The SDK retries storage requests. Retrying the whole upload here could
         # duplicate a submission after an ambiguous enqueue failure.
         with io.BytesIO(data) as stream:
-            result = self.ingest_client.ingest_from_stream(
-                StreamDescriptor(stream, source_id=source_id, size=len(data)), props
-            )
-        if result is None or result.status != IngestionStatus.QUEUED:
-            raise RuntimeError(f"Queued ingestion into {self.database}.{table} returned no queued acknowledgement")
+            def submit() -> Any:
+                result = self.ingest_client.ingest_from_stream(
+                    StreamDescriptor(stream, source_id=source_id, size=len(data)), props
+                )
+                if result is None or result.status != IngestionStatus.QUEUED:
+                    raise RuntimeError(
+                        f"Queued ingestion into {self.database}.{table} returned no queued acknowledgement"
+                    )
+                return result
+
+            self.operations.call_table(table, submit, rows=len(lines), bytes_=len(data), mode="queued")
         log.debug(
             "Kusto queued %d rows into %s.%s; source=%s (not yet confirmed ingested)",
             len(lines),
@@ -351,6 +375,9 @@ class TableIngester:
     def __init__(self, settings: KustoSettings, ingesters: dict[str, RowIngester]) -> None:
         self.settings = settings
         self.ingesters = ingesters
+        self.operations = OperationStats(volume=True)
+        for ingester in ingesters.values():
+            ingester.operations = self.operations
 
     def ingest(self, table: str, rows: list[dict[str, Any]]) -> None:
         self.ingesters[self.settings.ingestion_mode(table)].ingest(table, rows)

@@ -73,6 +73,7 @@ class IngesterHandle:
     stop_event: threading.Event = field(default_factory=threading.Event)
 
     def status(self) -> dict:
+        poll = getattr(self.ingester, "_aictl_poll_status", {})
         return {
             "name": self.name,
             "enabled": self.enabled,
@@ -80,6 +81,7 @@ class IngesterHandle:
             "source_exists": self.source_exists,
             "last_poll_ts": getattr(self.ingester, "last_poll_ts", 0.0),
             "last_poll_inserted": getattr(self.ingester, "last_poll_inserted", 0),
+            **poll,
         }
 
 
@@ -261,12 +263,23 @@ def _poll_loop(
     first = True  # initial poll immediately so the first data point is available
     while first or not stop.wait(timeout=interval):
         first = False
+        started = time.perf_counter()
+        poll = dict(getattr(ingester, "_aictl_poll_status", {}))
+        poll.update(last_poll_ts=time.time(), poll_in_flight=True)
+        ingester._aictl_poll_status = poll
         try:
             inserted = ingester.poll()
+            poll.update(
+                last_success_at=time.time(),
+                last_error=None,
+                last_poll_inserted=inserted,
+                rows_ingested_total=poll.get("rows_ingested_total", 0) + (inserted or 0),
+            )
             locked_since = None
             if inserted:
                 log.debug("%s ingester: poll inserted %d rows", name, inserted)
         except sqlite3.OperationalError as exc:
+            poll.update(last_error=str(exc), last_error_at=time.time())
             if not is_lock_error(exc):
                 log.exception("%s ingester: poll loop error", name)
                 _record_poll_failure(ingester, name, exc)
@@ -293,8 +306,12 @@ def _poll_loop(
                 writes or "none",
             )
         except Exception as exc:  # pragma: no cover - defensive
+            poll.update(last_error=str(exc), last_error_at=time.time())
             log.exception("%s ingester: poll loop error", name)
             _record_poll_failure(ingester, name, exc)
+        finally:
+            poll.update(poll_in_flight=False, last_poll_duration_ms=(time.perf_counter() - started) * 1000)
+            ingester._aictl_poll_status = poll
 
 
 def collect_status(handles: dict[str, IngesterHandle] | None) -> list[dict]:

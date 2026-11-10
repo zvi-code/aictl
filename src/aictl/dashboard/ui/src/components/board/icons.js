@@ -2,6 +2,7 @@
 import { html } from 'htm/preact';
 
 export const PATHS = {
+  health: 'M1 8h3l2-5 4 10 2-5h3',
   top: 'M2.5 2.5h4.5v5H2.5zM9 2.5h4.5v3H9zM9 7.5h4.5v6H9zM2.5 9.5h4.5v4H2.5z',
   agents: 'M8 2.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM3 13.5c.6-2.8 2.5-4 5-4s4.4 1.2 5 4',
   usage: 'M3 13.5V8M8 13.5V3M13 13.5V6',
