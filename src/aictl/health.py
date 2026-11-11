@@ -6,6 +6,7 @@ import re
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from functools import lru_cache
 from typing import Any
 
@@ -267,18 +268,71 @@ def ingestion_traffic(
 
 
 class ObservedKustoClient:
-    """Keep the shared SDK client, counting its query and management attempts."""
+    """Count SDK attempts and log complete failed requests and responses."""
 
-    def __init__(self, client: Any) -> None:
+    def __init__(self, client: Any, *, cluster: str | None = None) -> None:
         self.client = client
+        self.cluster = cluster or getattr(client, "_kusto_cluster", "unknown")
         self.reads = OperationStats()
         self.commands = OperationStats()
+        self._responses = threading.local()
+        session = getattr(client, "_session", None)
+        if session is not None:
+            # The SDK discards the raw HTTP body when parsing a partial-query
+            # failure (HTTP 200). Retain it only for the current thread's call.
+            session.hooks.setdefault("response", []).append(self._capture_response)
 
-    def execute(self, *args: Any, **kwargs: Any) -> Any:
-        return self.reads.call(lambda: self.client.execute(*args, **kwargs))
+    def _capture_response(self, response: Any, **_kwargs: Any) -> None:
+        if getattr(self._responses, "active", False):
+            self._responses.value = response
 
-    def execute_mgmt(self, *args: Any, **kwargs: Any) -> Any:
-        return self.commands.call(lambda: self.client.execute_mgmt(*args, **kwargs))
+    def _call(
+        self, call: Callable[[], Any], database: str, *, kql: str | None = None, request: str | None = None
+    ) -> Any:
+        from .kusto.diagnostics import log_failure
+
+        self._responses.active = True
+        self._responses.value = None
+        try:
+            return call()
+        except Exception as exc:  # noqa: BLE001 - diagnostics must preserve every SDK failure
+            log_failure(
+                exc,
+                cluster=self.cluster,
+                database=database,
+                operation="request",
+                kql=kql,
+                request=request,
+                response=self._responses.value,
+            )
+            raise
+        finally:
+            self._responses.active = False
+            self._responses.value = None
+
+    def execute(self, database: str, query: str, *args: Any, **kwargs: Any) -> Any:
+        return self.reads.call(
+            lambda: self._call(lambda: self.client.execute(database, query, *args, **kwargs), database, kql=query)
+        )
+
+    def execute_query(self, database: str, query: str, *args: Any, **kwargs: Any) -> Any:
+        return self.reads.call(
+            lambda: self._call(lambda: self.client.execute_query(database, query, *args, **kwargs), database, kql=query)
+        )
+
+    def execute_mgmt(self, database: str, command: str, *args: Any, **kwargs: Any) -> Any:
+        return self.commands.call(
+            lambda: self._call(
+                lambda: self.client.execute_mgmt(database, command, *args, **kwargs), database, kql=command
+            )
+        )
+
+    def execute_streaming_ingest(self, database: str, table: str, *args: Any, **kwargs: Any) -> Any:
+        return self._call(
+            lambda: self.client.execute_streaming_ingest(database, table, *args, **kwargs),
+            database,
+            request=f"Streaming ingestion into table {table}",
+        )
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.client, name)

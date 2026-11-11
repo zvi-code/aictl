@@ -108,6 +108,7 @@ def _server_message(exc: BaseException) -> str:
 # Either request is sound and succeeds a little later; wait up to about a minute.
 log = logging.getLogger(__name__)
 RETRY_DELAYS_S = (0.5, 1.0, 2.0, 4.0, 8.0, 15.0, 30.0)
+RETRY_BUDGET_S = 60.0
 
 
 def _throttled(exc: BaseException) -> bool:
@@ -158,19 +159,30 @@ def retrying(call: Callable[[], Any], what: str, also: Callable[[BaseException],
     """Run *call*, waiting out throttling and transient service errors before giving up.
 
     *also* names a failure that is worth repeating for this call only, on top of what
-    the service itself marks as transient.
+    the service itself marks as transient. Time spent in failed requests consumes
+    the retry budget too; an individual request is bounded by its SDK timeout.
     """
+    deadline = time.monotonic() + RETRY_BUDGET_S
     for attempt, delay in enumerate(RETRY_DELAYS_S):
         try:
             return call()
         except Exception as exc:  # noqa: BLE001 - only a transient failure is retried; the rest is raised below
             if not _transient(exc) and not (also is not None and also(exc)):
                 raise
+            if time.monotonic() + delay >= deadline:
+                raise
             # The first failure and the long waits are shown: a start that is slow because
             # the cluster keeps refusing rows must say so in the log.
             say = log.warning if attempt == 0 or delay >= 8 else log.debug
-            say("Kusto %s failed transiently (%s); retrying in %.1f s", what, _server_message(exc).splitlines()[0][:160], delay)
+            say(
+                "Kusto %s failed transiently (%s); retrying in %.1f s",
+                what,
+                _server_message(exc).splitlines()[0][:160],
+                delay,
+            )
             time.sleep(delay)
+            if time.monotonic() >= deadline:
+                raise
     return call()
 
 
@@ -472,7 +484,9 @@ class KustoClientFactory:
 
                 from ..health import ObservedKustoClient
 
-                client = cls._clients[key] = ObservedKustoClient(KustoClient(connection_string(settings)))
+                client = cls._clients[key] = ObservedKustoClient(
+                    KustoClient(connection_string(settings)), cluster=settings.cluster
+                )
             return client
 
     @classmethod

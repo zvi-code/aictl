@@ -215,6 +215,101 @@ def test_fact_buffer_retains_intermediate_versions_and_failed_batches(observatio
     assert rows[0]["observation_id"] != rows[1]["observation_id"]
 
 
+def test_failed_full_fact_buffer_does_not_retry_for_every_new_fact(observation_store, monkeypatch):
+    from aictl.ingesters import call_facts
+
+    db, ingester = observation_store
+    monkeypatch.setattr(call_facts, "BUFFER_FLUSH_ROWS", 2)
+    attempts = []
+    write = db.write_call_facts
+
+    def record(facts):
+        attempts.append(len(facts))
+        return write(facts)
+
+    monkeypatch.setattr(db, "write_call_facts", record)
+    ingester.error = RuntimeError("offline")
+    buffer = call_facts.FactBuffer(db)
+    for i in range(4):
+        buffer.add_request(RequestRow(ts=100 + i, session_id="s", dedup_key=str(i)))
+    assert attempts == [2]
+    assert len(buffer) == 4 and buffer.write_error is not None
+    ingester.error = None
+    buffer.flush()
+    assert attempts == [2, 4]
+    assert len(buffer) == 0 and buffer.write_error is None
+    assert len(ingester.batches[0][1]) == 4
+
+
+def test_transcript_poll_pauses_at_record_boundary_and_retries_before_reading_more(tmp_path, monkeypatch):
+    import time
+    from datetime import datetime, timezone
+
+    from aictl.ingesters import call_facts
+    from aictl.ingesters.transcript_usage import TranscriptUsageIngester
+
+    monkeypatch.setattr(call_facts, "BUFFER_FLUSH_ROWS", 1)
+    failure = [True]
+    accepted = []
+    attempts = []
+    sessions = []
+
+    def write(facts):
+        attempts.append(len(facts))
+        if failure[0]:
+            raise KustoStoreError("offline")
+        accepted.extend(facts.requests)
+        return len(facts)
+
+    store = SimpleNamespace(
+        streams_observations=True,
+        write_call_facts=write,
+        upsert_session_usage=lambda row: sessions.append(row),
+        upsert_session=lambda row: None,
+    )
+    root = tmp_path / "session-state"
+    path = root / "session" / "events.jsonl"
+    path.parent.mkdir(parents=True)
+    stamp = datetime.fromtimestamp(time.time(), timezone.utc).isoformat()
+    lines = [
+        json.dumps(
+            {
+                "type": "session.usage_record",
+                "id": f"event-{i}",
+                "timestamp": stamp,
+                "data": {"usage": {"model": "gpt-6-astra", "inputTokens": i * 10, "outputTokens": i}},
+            }
+        )
+        + "\n"
+        for i in (1, 2)
+    ]
+    path.write_text("".join(lines), encoding="utf-8", newline="\n")
+    ingester = TranscriptUsageIngester(
+        store,
+        copilot_state=root,
+        claude_projects=tmp_path / "claude",
+        codex_sessions=tmp_path / "codex",
+        vscode_workspaces=tmp_path / "vscode",
+    )
+    with pytest.raises(KustoStoreError, match="offline"):
+        ingester.poll()
+    assert attempts == [1]
+    assert ingester._offsets[path] == len(lines[0].encode("utf-8"))
+    assert path not in ingester._read_complete
+    assert "session" in ingester._pending_sessions
+    with pytest.raises(KustoStoreError, match="offline"):
+        ingester.poll()
+    assert attempts == [1, 1]
+    assert ingester._offsets[path] == len(lines[0].encode("utf-8"))
+    failure[0] = False
+    ingester.poll()
+    assert [row.output_tokens for row in accepted] == [1, 2]
+    assert len({row.dedup_key for row in accepted}) == 2
+    assert sessions[-1]["output_tokens"] == 3
+    assert ingester._offsets[path] == path.stat().st_size
+    assert not len(ingester.facts)
+
+
 def test_canonical_reads_report_unresolved_evidence_instead_of_guessing():
     from test_kusto_connection import FakeClient, response
 

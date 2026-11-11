@@ -241,7 +241,7 @@ def test_actual_ingesters_keep_mixed_group_modes_and_failures_separate(cached_he
         table_ingestion={"requests": "streaming", "hook_calls": "inline"},
     )
     client = ObservedKustoClient(SimpleNamespace(execute_mgmt=lambda *_: None))
-    streaming_client = SimpleNamespace(ingest_from_stream=lambda *_: None)
+    streaming_client = SimpleNamespace(execute_streaming_ingest=lambda *_: None)
     queued_client = SimpleNamespace(ingest_from_stream=lambda *_: SimpleNamespace(status=IngestionStatus.QUEUED))
     ingester = make_ingester(settings, client, streaming_client, queued_client=queued_client)
     for table, count in (("OTELLogs", 1), ("events", 2), ("requests", 3), ("hook_calls", 4)):

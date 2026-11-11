@@ -733,6 +733,8 @@ class CopilotStoreReader:
                     nano_aiu=_i(nano),
                 )
                 touched.add(sid)
+                if self.facts is not None and self.facts.write_error is not None:
+                    break
             if touched:
                 self._read_session_details(conn, touched)
         except sqlite3.Error as exc:
@@ -1176,6 +1178,9 @@ class TranscriptUsageIngester:
 
     def poll(self) -> int:
         """Read what is new and persist changed sessions. Returns rows written."""
+        if self.facts.write_error is not None:
+            self.facts.flush()
+            self._check_fact_write()
         now = time.time()
         cutoff = now - self.backfill_days * 86400
         touched = self._pending_sessions
@@ -1209,6 +1214,10 @@ class TranscriptUsageIngester:
                         self._offsets[path] = offset
                         if record.data is not None:
                             yield record.data
+                        # Finish the source record before pausing: one record can emit
+                        # several facts, and its offset already belongs to this batch.
+                        if self.facts.write_error is not None:
+                            break
                     st = os.fstat(fh.fileno())
                     if offset == st.st_size:
                         self._read_complete[path] = (st.st_mtime_ns, offset)
@@ -1224,6 +1233,7 @@ class TranscriptUsageIngester:
                 self._claude_facts.feed(sid, obj, agent_id=agent_id, role=role)
             if sid in self._claude.sessions:
                 touched[sid] = self._claude.sessions[sid]
+            self._check_fact_write()
 
         for path in self._changed(codex_files, cutoff):
             acc = self._codex.setdefault(path, CodexAccumulator(self._codex_sessions, path.stem))
@@ -1255,12 +1265,14 @@ class TranscriptUsageIngester:
             self._copilot_finished[sid] = cop.finish()
             copilot_ids.add(sid)
             touched[sid] = self._pick_copilot_source(sid)
-            self.facts.flush()
+            self.facts.flush(retry=False)
+            self._check_fact_write()
             self._persist((touched[sid],), now, published)
 
         copilot_ids |= self._store.read() | app_ids
         for sid in copilot_ids:
             touched[sid] = self._pick_copilot_source(sid)
+        self._check_fact_write()
 
         debug_ids: set[str] = set()
         for path in self._changed(self.vscode_workspaces.glob("*/GitHub.copilot-chat/debug-logs/*/*.jsonl"), cutoff):
@@ -1274,6 +1286,8 @@ class TranscriptUsageIngester:
             if usage is not None:
                 usage.project_path = usage.project_path or _workspace_folder(path.parents[3])
                 touched[sid] = usage
+            self._check_fact_write()
+
         def chat_lines(path: Path) -> Iterator[dict]:
             """A chat file's snapshot one request at a time, then its patch lines."""
             nonlocal errors
@@ -1302,17 +1316,20 @@ class TranscriptUsageIngester:
                 if not has_debug_usage:
                     self._chat_logs.feed(sid, obj)
             if has_debug_usage:
+                self._check_fact_write()
                 continue
             usage = self._chat_logs.sessions.get(sid)
             if usage is not None:
                 usage.project_path = usage.project_path or _workspace_folder(path.parents[1])
                 usage.touch(path.stat().st_mtime)
                 touched[sid] = usage
+            self._check_fact_write()
 
         self._claude_facts.close_idle_agents(now - IDLE_END_S)
         self._claude_facts.drop_abandoned_calls(now - IDLE_END_S)
         self._claude_facts.flush_open_agents()
-        self.facts.flush()
+        self.facts.flush(retry=False)
+        self._check_fact_write()
         clear_stale = getattr(self.store, "clear_stale_pending_confirms", None)
         if clear_stale is not None:
             clear_stale(now - PENDING_CONFIRM_MAX_AGE_S)
@@ -1341,6 +1358,10 @@ class TranscriptUsageIngester:
             detail={"older_files_waiting": len(self._deferred), "pending_fact_rows": pending},
         )
         return written
+
+    def _check_fact_write(self) -> None:
+        if self.facts.write_error is not None:
+            raise self.facts.write_error
 
     def _roots(self, tool: str, default: Path) -> list[Path]:
         """The default session folder, then those of other homes found for the tool."""

@@ -285,6 +285,7 @@ class FactBuffer:
         self.surface: Callable[[str], str] | None = None
         self.written = 0
         self._versions: dict[str, list] = {}
+        self.write_error: sqlite3.Error | None = None
 
     def _capture(self, family: str, row: Any) -> bool:
         if getattr(self.store, "streams_observations", False) is not True:
@@ -392,10 +393,10 @@ class FactBuffer:
 
     def _maybe_flush(self) -> None:
         if len(self) >= BUFFER_FLUSH_ROWS:
-            self.flush()
+            self.flush(retry=False)
 
-    def flush(self) -> None:
-        if not len(self):
+    def flush(self, *, retry: bool = True) -> None:
+        if not len(self) or (self.write_error is not None and not retry):
             return
         if self._versions:
             if self.surface is not None:
@@ -405,7 +406,8 @@ class FactBuffer:
                             row.tool = self.surface(row.session_id)
             try:
                 self.written += self.store.write_call_facts(CallFacts(**self._versions))
-            except sqlite3.Error:
+            except sqlite3.Error as exc:
+                self.write_error = exc
                 log.warning("Kusto observation handoff failed; fact versions retained for retry", exc_info=True)
                 return
             self._clear()
@@ -441,6 +443,7 @@ class FactBuffer:
 
     def _clear(self) -> None:
         self._versions = {}
+        self.write_error = None
         self.requests, self.tools, self.prompts = {}, {}, {}
         self.skills, self.agents, self.file_writes = {}, {}, {}
         self.context_events = {}

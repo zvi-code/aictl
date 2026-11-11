@@ -9,6 +9,7 @@ emulator when it answers, and are skipped otherwise.
 
 from __future__ import annotations
 
+import gzip
 import json
 import sqlite3
 import threading
@@ -108,8 +109,8 @@ class FakeStreamingClient:
     def __init__(self):
         self.calls: list[tuple[str, bytes]] = []
 
-    def ingest_from_stream(self, stream, properties):
-        self.calls.append((properties.table, stream.read()))
+    def execute_streaming_ingest(self, database, table, stream, blob_url, stream_format, properties):
+        self.calls.append((table, gzip.decompress(stream.read())))
 
 
 class StubTranslator:
@@ -598,6 +599,52 @@ def test_retrying_repeats_transient_service_errors_and_raises_permanent_ones(mon
         C.retrying(lambda: (_ for _ in ()).throw(_ApiError(520, False)), "ingestion")
 
 
+@pytest.mark.parametrize("attempt_seconds, expected_attempts", [(61, 1), (20, 3)])
+def test_retrying_does_not_multiply_slow_failures(monkeypatch, attempt_seconds, expected_attempts):
+    from aictl.kusto import connection as C
+
+    clock = [0.0]
+    calls = []
+    monkeypatch.setattr(C.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(C.time, "sleep", lambda delay: clock.__setitem__(0, clock[0] + delay))
+
+    def unavailable():
+        calls.append(clock[0])
+        clock[0] += attempt_seconds
+        raise _ApiError(503, False, "request timed out")
+
+    with pytest.raises(_ApiError, match="timed out"):
+        C.retrying(unavailable, "ingestion")
+    assert len(calls) == expected_attempts
+    assert clock[0] < 62
+
+
+def test_streaming_has_a_bounded_sdk_timeout_and_replays_compressed_rows(monkeypatch):
+    from azure.kusto.data import KustoClient, KustoConnectionStringBuilder
+
+    from aictl.kusto import connection as C
+
+    monkeypatch.setattr(C.time, "sleep", lambda _: None)
+    requests = []
+    settings = KustoSettings("https://c.kusto.windows.net", "aictl")
+    with KustoClient(KustoConnectionStringBuilder.with_no_authentication("http://localhost:8080")) as client:
+
+        def execute(endpoint, request, properties=None):
+            requests.append((endpoint, request.payload.read(), request.timeout, request.request_headers))
+            if len(requests) == 1:
+                raise _ApiError(503, False, "temporarily unavailable")
+
+        monkeypatch.setattr(client, "_execute", execute)
+        StreamingIngester(settings, ingest_client=client).ingest("events", [{"text": "a\nb", "n": 2}])
+
+    assert len(requests) == 2
+    assert requests[0][1] == requests[1][1]
+    assert json.loads(gzip.decompress(requests[0][1])) == {"text": "a\nb", "n": 2}
+    assert all(request[2].total_seconds() <= 60 for request in requests)
+    assert requests[0][3]["Content-Encoding"] == "gzip"
+    assert "events?streamFormat=multijson" in requests[0][0]
+
+
 def test_streaming_into_a_table_the_node_has_not_seen_yet_is_repeated(monkeypatch, caplog):
     from aictl.kusto import connection as C
     from aictl.kusto.ingest import StreamingIngester
@@ -609,7 +656,7 @@ def test_streaming_into_a_table_the_node_has_not_seen_yet_is_repeated(monkeypatc
     sent: list[bytes] = []
 
     class Client:
-        def ingest_from_stream(self, stream, ingestion_properties):
+        def execute_streaming_ingest(self, database, table, stream, blob_url, stream_format, properties):
             sent.append(stream.read())
             answer = next(answers)
             if answer is not None:
@@ -635,7 +682,7 @@ def test_streaming_into_a_table_the_node_has_not_seen_yet_is_repeated(monkeypatc
     refused = iter([_ApiError(400, True, "BadRequest_InvalidBlob")])
 
     class Refusing:
-        def ingest_from_stream(self, stream, ingestion_properties):
+        def execute_streaming_ingest(self, database, table, stream, blob_url, stream_format, properties):
             raise next(refused)
 
     with pytest.raises(_ApiError):
@@ -1101,7 +1148,7 @@ def test_mixed_ingestion_flushes_both_backends_before_read():
         on_mgmt=lambda command: order.append("inline") or response([], []),
         on_query=lambda query: order.append("query") or response([], []),
     )
-    streaming = SimpleNamespace(ingest_from_stream=lambda *a: order.append("streaming"))
+    streaming = SimpleNamespace(execute_streaming_ingest=lambda *a: order.append("streaming"))
     conn = KustoConnection(
         settings,
         client,

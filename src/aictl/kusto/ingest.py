@@ -9,6 +9,7 @@ with the schema.
 from __future__ import annotations
 
 import contextlib
+import gzip
 import io
 import json
 import logging
@@ -19,10 +20,11 @@ import time
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Protocol
 
-from ..health import OperationStats
+from ..health import ObservedKustoClient, OperationStats
+from .diagnostics import log_failure
 from .schema import ROWID, VERSION, quote
 
 if TYPE_CHECKING:
@@ -34,6 +36,8 @@ INLINE_MAX_BYTES = 1_000_000
 # Streaming ingestion takes at most 4 MB per request (uncompressed, before the
 # service's own limit on compressed size); stay well under it.
 STREAMING_MAX_BYTES = 3_500_000
+# The SDK adds 30 seconds for transport; its unconfigured streaming timeout is ten minutes.
+STREAMING_TIMEOUT = timedelta(seconds=30)
 # Bound source uploads in memory; DM still determines ingestion batches.
 QUEUED_MAX_BYTES = 16_000_000
 QUEUED_VISIBILITY_TIMEOUT_S = 600.0
@@ -176,31 +180,44 @@ class StreamingIngester:
         self.max_bytes = max_bytes
         self.operations = OperationStats(volume=True)
         if ingest_client is None:
-            from azure.kusto.ingest import KustoStreamingIngestClient
+            from azure.kusto.data import KustoClient
 
             from .connection import connection_string
 
-            ingest_client = KustoStreamingIngestClient(connection_string(settings))
-        self.ingest_client = ingest_client
+            ingest_client = KustoClient(connection_string(settings))
+        self.ingest_client = (
+            ingest_client
+            if isinstance(ingest_client, ObservedKustoClient)
+            else ObservedKustoClient(ingest_client, cluster=settings.cluster)
+        )
 
     def ingest(self, table: str, rows: list[dict[str, Any]]) -> None:
         self.ingest_lines(table, [json_line(r) for r in rows])
 
     def ingest_lines(self, table: str, lines: list[str]) -> None:
         """Rows already written as JSON lines (ASCII, one row each), such as the OTel tables'."""
+        from azure.kusto.data import ClientRequestProperties
         from azure.kusto.data.data_format import DataFormat
-        from azure.kusto.ingest import IngestionProperties
 
-        props = IngestionProperties(database=self.database, table=table, data_format=DataFormat.MULTIJSON)
         from .connection import retrying, schema_cache_behind
 
+        props = ClientRequestProperties()
+        props.set_option(ClientRequestProperties.request_timeout_option_name, STREAMING_TIMEOUT)
         for group in chunks(lines, self.max_bytes):
             data = "\n".join(group).encode("ascii")
+            compressed = gzip.compress(data, mtime=0)
             row_count = len(group)
+
+            def submit(payload: bytes = compressed) -> None:
+                with io.BytesIO(payload) as stream:
+                    self.ingest_client.execute_streaming_ingest(
+                        self.database, table, stream, None, DataFormat.MULTIJSON, props
+                    )
+
             retrying(
-                lambda d=data, n=row_count: self.operations.call_table(
+                lambda d=data, n=row_count, send=submit: self.operations.call_table(
                     table,
-                    lambda: self.ingest_client.ingest_from_stream(io.BytesIO(d), props),
+                    send,
                     rows=n,
                     bytes_=len(d),
                     mode="streaming",
@@ -227,6 +244,7 @@ class QueuedIngester:
 
     def __init__(self, settings: KustoSettings, client: Any, ingest_client: Any = None) -> None:
         self.database = settings.database
+        self.cluster = settings.ingestion_cluster
         self.client = client
         self.operations = OperationStats(volume=True)
         if ingest_client is None:
@@ -237,6 +255,11 @@ class QueuedIngester:
             ingest_client = QueuedIngestClient(
                 connection_string(settings, cluster=settings.ingestion_cluster), auto_correct_endpoint=False
             )
+        # The queued SDK owns a separate query client for resource discovery
+        # and ingestion authorization commands.
+        manager = getattr(ingest_client, "_resource_manager", None)
+        if manager is not None and not isinstance(manager._kusto_client, ObservedKustoClient):
+            manager._kusto_client = ObservedKustoClient(manager._kusto_client, cluster=self.cluster)
         self.ingest_client = ingest_client
         self._lock = threading.Lock()
         self._pending: dict[str, _QueuedSubmission] = {}
@@ -285,13 +308,31 @@ class QueuedIngester:
         # duplicate a submission after an ambiguous enqueue failure.
         with io.BytesIO(data) as stream:
             def submit() -> Any:
-                result = self.ingest_client.ingest_from_stream(
-                    StreamDescriptor(stream, source_id=source_id, size=len(data)), props
-                )
+                try:
+                    result = self.ingest_client.ingest_from_stream(
+                        StreamDescriptor(stream, source_id=source_id, size=len(data)), props
+                    )
+                except Exception as exc:  # noqa: BLE001 - log storage and SDK failures without resubmitting
+                    log_failure(
+                        exc,
+                        cluster=self.cluster,
+                        database=self.database,
+                        operation="queued ingestion",
+                        request=f"Queued ingestion into table {table}; source_id={source_id}; format=multijson",
+                    )
+                    raise
                 if result is None or result.status != IngestionStatus.QUEUED:
-                    raise RuntimeError(
+                    error = RuntimeError(
                         f"Queued ingestion into {self.database}.{table} returned no queued acknowledgement"
                     )
+                    log_failure(
+                        error,
+                        cluster=self.cluster,
+                        database=self.database,
+                        operation="queued ingestion",
+                        request=f"Queued ingestion into table {table}; source_id={source_id}; SDK result={result!r}",
+                    )
+                    raise error
                 return result
 
             self.operations.call_table(table, submit, rows=len(lines), bytes_=len(data), mode="queued")
